@@ -12,6 +12,14 @@
  * command appends a snapshot to `timeline`: which registrations exist and
  * which watcher processes run, per bundle directory, so a test can prove
  * "never without a registration" and "never two watchers at once".
+ *
+ * Two real hazards are modelled on request: `callerInUnit` (linux) makes the
+ * process running the commands live inside that unit's cgroup, so stopping the
+ * unit KILLS it (the exec throws CallerKilled after the manager finished the
+ * job it was given); `bootoutLingers` (darwin) keeps a booted out job listed
+ * and running for that many further launchctl calls, as a real bootout returns
+ * before the job has unloaded. systemd's own parsing of `Environment=` (split
+ * at whitespace outside double quotes) is modelled for `show`.
  */
 
 import type { MemoryFs } from './memory-fs.ts'
@@ -37,6 +45,17 @@ export type FakeHostOptions = {
   managerHome?: string
   /** Commands that fail, matched as a substring of `<file> <args joined by space>`. */
   fail?: Array<{ match: string; code?: number; stderr?: string; times?: number }>
+  /** linux: the installer runs inside this unit's cgroup; stopping the unit kills it. */
+  callerInUnit?: string
+  /** darwin: a booted out job stays listed and running for this many further launchctl calls. */
+  bootoutLingers?: number
+}
+
+/** The process running the commands was killed (it lived in the cgroup of a unit that was stopped). */
+export class CallerKilled extends Error {
+  constructor(unit: string) {
+    super(`the caller was killed with ${unit}`)
+  }
 }
 
 const ok = (stdout = ''): ExecResult => ({ code: 0, stdout, stderr: '', error: null, timedOut: false })
@@ -95,11 +114,47 @@ function unitValue(content: string, keyName: string): string | null {
   return line ? line.slice(keyName.length + 1) : null
 }
 
+/** systemd's reading of the Environment= lines of a unit: words split at whitespace, "..." keeps one. */
+function unitAssignments(content: string): string[] {
+  const out: string[] = []
+  for (const line of content.split('\n')) {
+    if (!line.startsWith('Environment=')) continue
+    const value = line.slice('Environment='.length)
+    let word = ''
+    let quoted = false
+    let any = false
+    for (let i = 0; i < value.length; i++) {
+      const ch = value[i]!
+      if (quoted && ch === '\\' && i + 1 < value.length) {
+        word += value[++i]
+        continue
+      }
+      if (ch === '"') {
+        quoted = !quoted
+        any = true
+        continue
+      }
+      if (!quoted && /\s/.test(ch)) {
+        if (word || any) out.push(word)
+        word = ''
+        any = false
+        continue
+      }
+      word += ch
+    }
+    if (word || any) out.push(word)
+  }
+  // An assignment needs KEY=; systemd ignores a word without one.
+  return out.filter((w) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(w))
+}
+
 export function fakeServiceHost(options: FakeHostOptions) {
   const { platform, fs } = options
   const uid = options.uid ?? 501
   const managerHome = options.managerHome ?? '/home/kc'
   const failures = (options.fail ?? []).map((f) => ({ ...f, left: f.times ?? Infinity }))
+  /** darwin: booted out jobs still unloading, with the launchctl calls they have left. */
+  const lingering = new Map<string, { job: LaunchdJob; left: number }>()
 
   const calls: string[] = []
   const timeline: Snapshot[] = []
@@ -149,6 +204,7 @@ export function fakeServiceHost(options: FakeHostOptions) {
     }
     for (const [dir, n] of winProcs) add(dir, n)
     for (const [, job] of launchd) add(plistValue(job.content, 'WorkingDirectory'))
+    for (const [, { job }] of lingering) add(plistValue(job.content, 'WorkingDirectory'))
     for (const unit of active) {
       const content = fs.readFile(unitPath(unit))
       add(content ? unitValue(content, 'WorkingDirectory') : null)
@@ -226,10 +282,18 @@ export function fakeServiceHost(options: FakeHostOptions) {
   function launchdExec(args: string[]): ExecResult {
     const [verb] = args
     const targetLabel = (target: string) => target.replace(new RegExp(`^gui/${uid}/`), '')
+    // Every launchctl call is one more moment for an unloading job to finish.
+    for (const [label, entry] of lingering) {
+      entry.left -= 1
+      if (entry.left < 0) lingering.delete(label)
+    }
+    const listed = (label: string) => launchd.get(label) ?? lingering.get(label)?.job
     if (verb === 'bootout') {
       const label = targetLabel(args[1]!)
       if (!launchd.has(label)) return bad(113, `Boot-out failed: 113: Could not find service "${label}" in domain for user gui: ${uid}`)
+      const job = launchd.get(label)!
       launchd.delete(label)
+      if (options.bootoutLingers) lingering.set(label, { job, left: options.bootoutLingers })
       return ok()
     }
     if (verb === 'bootstrap') {
@@ -237,7 +301,7 @@ export function fakeServiceHost(options: FakeHostOptions) {
       const content = fs.readFile(plistPath)
       if (content == null) return bad(5, 'Bootstrap failed: 5: Input/output error')
       const label = plistValue(content, 'Label')!
-      if (launchd.has(label)) return bad(5, 'Bootstrap failed: 5: Input/output error')
+      if (launchd.has(label) || lingering.has(label)) return bad(5, 'Bootstrap failed: 5: Input/output error')
       launchd.set(label, { plistPath, content })
       started(plistValue(content, 'WorkingDirectory'))
       return ok()
@@ -251,7 +315,7 @@ export function fakeServiceHost(options: FakeHostOptions) {
     }
     if (verb === 'print') {
       const label = targetLabel(args[1]!)
-      const job = launchd.get(label)
+      const job = listed(label)
       if (!job) return bad(113, `Bad request.\nCould not find service "${label}" in domain for user gui: ${uid}`)
       const programArgs = plistArgs(job.content)
       const envBlock = /<key>EnvironmentVariables<\/key>\s*<dict>([\s\S]*?)<\/dict>/.exec(job.content)?.[1] ?? ''
@@ -293,6 +357,25 @@ export function fakeServiceHost(options: FakeHostOptions) {
     return bad(1, `fake host: launchctl ${verb} is not modelled`)
   }
 
+  /** linux: set when a stop took the cgroup the caller lives in; the exec throws once its job is done. */
+  let killedWith: string | null = null
+  const stopUnit = (name: string) => {
+    if (active.delete(name) && options.callerInUnit === name) killedWith = name
+  }
+  /** The units a unit's drop-ins (<unit>.service.d/*.conf) make it conflict with. */
+  const conflictsOf = (name: string) => {
+    const dir = `${managerHome}/.config/systemd/user/${name}.service.d`
+    const out: string[] = []
+    for (const entry of fs.listDir(dir)) {
+      if (!entry.endsWith('.conf')) continue
+      for (const line of (fs.readFile(`${dir}/${entry}`) ?? '').split('\n')) {
+        const m = /^Conflicts=(.+)\.service$/.exec(line.trim())
+        if (m) out.push(m[1]!)
+      }
+    }
+    return out
+  }
+
   function systemdExec(args: string[]): ExecResult {
     if (args[0] !== '--user') return bad(1, 'fake host: only --user is modelled')
     const verb = args[1]
@@ -313,18 +396,21 @@ export function fakeServiceHost(options: FakeHostOptions) {
       case 'disable': {
         if (file() == null && !enabled.has(unit)) return bad(1, `Failed to disable unit: Unit file ${unit}.service does not exist.`)
         enabled.delete(unit)
-        if (args.includes('--now')) active.delete(unit)
+        if (args.includes('--now')) stopUnit(unit)
         return ok()
       }
       case 'restart':
       case 'start':
         if (file() == null) return bad(5, `Failed to ${verb} ${unit}.service: Unit ${unit}.service not found.`)
+        // One job: a conflicting unit is stopped first (After=), then this one starts.
+        for (const other of conflictsOf(unit)) stopUnit(other)
+        if (verb === 'restart') stopUnit(unit)
         if (verb === 'restart' || !active.has(unit)) started(unitDir(unit))
         active.add(unit)
         return ok()
       case 'stop':
         if (file() == null && !active.has(unit)) return bad(5, `Failed to stop ${unit}.service: Unit ${unit}.service not loaded.`)
-        active.delete(unit)
+        stopUnit(unit)
         return ok()
       case 'is-active':
         return active.has(unit) ? ok('active\n') : { ...ok('inactive\n'), code: 3 }
@@ -333,11 +419,7 @@ export function fakeServiceHost(options: FakeHostOptions) {
         if (content == null && !enabled.has(unit)) {
           return ok(['LoadState=not-found', 'ActiveState=inactive', 'FragmentPath=', 'WorkingDirectory=', 'Environment='].join('\n') + '\n')
         }
-        const envs = (content ?? '')
-          .split('\n')
-          .filter((l) => l.startsWith('Environment='))
-          .map((l) => l.slice('Environment='.length))
-          .map((v) => (v.includes(' ') ? `"${v}"` : v))
+        const envs = unitAssignments(content ?? '').map((v) => (/\s/.test(v) ? `"${v}"` : v))
         return ok(
           [
             `Environment=${envs.join(' ')}`,
@@ -367,6 +449,11 @@ export function fakeServiceHost(options: FakeHostOptions) {
     else if (platform === 'linux' && file === 'loginctl') result = ok()
     else result = bad(127, `fake host: ${file} is not modelled on ${platform}`)
     timeline.push({ cmd: line, registrations: registrations(), running: running() })
+    if (killedWith) {
+      const unit = killedWith
+      killedWith = null
+      throw new CallerKilled(unit)
+    }
     return result
   }
 

@@ -240,9 +240,25 @@ test('linux spec: systemd --user unit (Restart=always, RestartSec=5, quoted Exec
     label: 'bgos-watcher',
     probeCommand: show('bgos-watcher'),
     retire: { unit: { file: 'systemctl', args: ['--user', 'disable', '--now', 'bgos-watcher'], ignoreFailure: false } },
+    disableCommands: [{ file: 'systemctl', args: ['--user', 'disable', 'bgos-watcher'], ignoreFailure: false }],
     restoreCommands: [{ file: 'systemctl', args: ['--user', 'enable', '--now', 'bgos-watcher'], ignoreFailure: false }],
     files: ['/home/kc/.config/systemd/user/bgos-watcher.service'],
   })
+  // The rename's swap is one manager job: start the new unit, whose drop-in conflicts with (and orders after) the old one.
+  assert.deepEqual(spec.swapCommands, [{ file: 'systemctl', args: ['--user', 'start', unit], ignoreFailure: false }])
+  assert.deepEqual(spec.renameDropIn, {
+    path: `/home/kc/.config/systemd/user/${unit}.service.d/hoai-rename.conf`,
+    content: '# Written by lib/watcher-service.mjs for the rename from the old unit; removed once it is done.\n[Unit]\nConflicts=bgos-watcher.service\nAfter=bgos-watcher.service\n',
+  })
+})
+
+test('linux spec: an Environment assignment holding whitespace is quoted (systemd splits an unquoted one); every other line is unchanged', () => {
+  const spec = watcherServiceSpec({ platform: 'linux', ...POSIX, home: '/home/k c', bundleDir: '/home/k c/.bgos-agent/watcher' })
+  const lines = spec.files[0]!.content.split('\n')
+  assert.ok(lines.includes('Environment="HOME=/home/k c"'), spec.files[0]!.content)
+  assert.ok(lines.some((l) => l.startsWith('Environment="PATH=/home/k c/.local/bin:')), spec.files[0]!.content)
+  assert.ok(lines.includes('Environment=USER=kc'))
+  assert.ok(lines.includes('WorkingDirectory=/home/k c/.bgos-agent/watcher'))
 })
 
 test('linux spec: no username means no linger command (never enable-linger for an empty principal)', () => {

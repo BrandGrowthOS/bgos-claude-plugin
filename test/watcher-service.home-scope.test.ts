@@ -27,12 +27,16 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import * as service from '../lib/watcher-service.mjs'
 import { installWatcherService, uninstallWatcherService, watcherServiceSpec, watcherServiceStatus } from '../lib/watcher-service.mjs'
 import { main as watcherMain } from '../bin/hoai-watcher.mjs'
 import { memoryFs, type MemoryFs } from './helpers/memory-fs.ts'
-import { evalPs, fakeServiceHost, type FakeServiceHost } from './helpers/fake-service-host.ts'
+import { CallerKilled, evalPs, fakeServiceHost, type FakeServiceHost } from './helpers/fake-service-host.ts'
 
 const sleep = async () => {}
 
@@ -339,6 +343,7 @@ test('darwin: when the new job cannot be bootstrapped, the 0.69.x job is bootstr
   const result = await installWatcherService(s, { exec: h.exec, fs, sleep })
   assert.equal(result.ok, false)
   assert.match(result.message, /rolled back/)
+  assert.equal(result.legacy?.state, 'own', 'not renamed: still the old registration of this HOME')
   assert.equal(h.launchd.has('ai.bgos.watcher'), true)
   assert.equal(h.launchd.has(s.label), false)
   assert.equal(fs.exists(LEGACY_PLIST_PATH(OWNER.darwin)), true)
@@ -354,20 +359,89 @@ test('win32: when the old task cannot be unregistered, the new one is unregister
   const result = await installWatcherService(s, { exec: h.exec, fs, sleep })
   assert.equal(result.ok, false)
   assert.match(result.message, /rolled back/)
+  assert.equal(result.legacy?.state, 'own')
   assert.deepEqual([...h.tasks.keys()], ['HOAI Watcher'])
   assert.equal(stateOf(h, fs, OWNER.win32).running, 1, 'the running watcher was never stopped')
 })
 
 test('linux: when the old unit cannot be disabled, the new one is disabled again: one registration, as before', async () => {
   const fs = memoryFs()
-  const h = fakeServiceHost({ platform: 'linux', fs, managerHome: OWNER.linux.home, fail: [{ match: 'disable --now bgos-watcher', code: 1, stderr: 'Access denied', times: 1 }] })
+  const h = fakeServiceHost({ platform: 'linux', fs, managerHome: OWNER.linux.home, fail: [{ match: 'disable bgos-watcher', code: 1, stderr: 'Access denied', times: 1 }] })
   seedLegacy('linux', h, fs, OWNER.linux)
   const s = spec('linux', OWNER.linux)
   const result = await installWatcherService(s, { exec: h.exec, fs, sleep })
   assert.equal(result.ok, false)
   assert.match(result.message, /rolled back/)
+  assert.equal(result.legacy?.state, 'own')
   assert.deepEqual([...h.enabled], ['bgos-watcher'])
   assert.deepEqual([...h.active], ['bgos-watcher'])
+  assert.equal(fs.exists(s.renameDropIn!.path), false, 'the rename drop-in is gone again')
+})
+
+test('linux: when the swap job fails, the old unit is enabled and started again and the new one disabled', async () => {
+  const fs = memoryFs()
+  const s = spec('linux', OWNER.linux)
+  const h = fakeServiceHost({ platform: 'linux', fs, managerHome: OWNER.linux.home, fail: [{ match: `--user start ${s.label}`, code: 1, stderr: 'Job for the unit failed', times: 1 }] })
+  seedLegacy('linux', h, fs, OWNER.linux)
+  const result = await installWatcherService(s, { exec: h.exec, fs, sleep })
+  assert.equal(result.ok, false)
+  assert.match(result.message, /rolled back/)
+  assert.deepEqual([...h.enabled], ['bgos-watcher'])
+  assert.deepEqual([...h.active], ['bgos-watcher'])
+  assert.equal(fs.exists(`${OWNER.linux.home}/.config/systemd/user/bgos-watcher.service`), true)
+})
+
+test('linux: an installer running INSIDE the old unit\'s cgroup (the daemon of an agent the watcher started) is killed by the rename, and the watcher still comes back under the new name', async () => {
+  // systemd stops the whole cgroup of a stopped unit; an agent on the recipe tier lives in the
+  // watcher's (lib/watcher-core.mjs cgroupCotenants), and so does its daemon, which runs this install.
+  const fs = memoryFs()
+  const options: Parameters<typeof fakeServiceHost>[0] = { platform: 'linux', fs, managerHome: OWNER.linux.home, callerInUnit: 'bgos-watcher' }
+  const h = fakeServiceHost(options)
+  seedLegacy('linux', h, fs, OWNER.linux)
+  const s = spec('linux', OWNER.linux)
+  await assert.rejects(installWatcherService(s, { exec: h.exec, fs, sleep }), CallerKilled)
+  assert.equal(h.active.has(s.label), true, 'the user manager finished the swap: the new unit runs')
+  assert.equal(h.enabled.has(s.label), true, 'and starts at the next login')
+  assert.equal(h.active.has('bgos-watcher'), false)
+  assert.equal(h.enabled.has('bgos-watcher'), false, 'the old unit never starts again')
+  for (const snap of h.timeline) {
+    assert.ok((snap.running[k(OWNER.linux.bundleDir)] ?? 0) <= 1, `${snap.cmd}: ${JSON.stringify(snap.running)}`)
+    assert.ok((snap.registrations[k(OWNER.linux.bundleDir)] ?? []).length >= 1, `${snap.cmd}: ${JSON.stringify(snap.registrations)}`)
+  }
+  // The next install (from outside that cgroup) finishes what the killed one left: the old file and the drop-in go.
+  options.callerInUnit = undefined
+  const again = await installWatcherService(s, { exec: h.exec, fs, sleep })
+  assert.equal(again.ok, true, again.message)
+  assert.equal(h.active.has(s.label), true)
+  assert.equal(fs.exists(`${OWNER.linux.home}/.config/systemd/user/bgos-watcher.service`), false)
+  assert.equal(fs.exists(s.renameDropIn!.path), false)
+})
+
+test('darwin: the old job is gone before the new one is bootstrapped, though bootout returns while it is still unloading', async () => {
+  const fs = memoryFs()
+  const h = fakeServiceHost({ platform: 'darwin', fs, bootoutLingers: 3 })
+  seedLegacy('darwin', h, fs, OWNER.darwin)
+  const s = spec('darwin', OWNER.darwin)
+  const slept: number[] = []
+  const result = await installWatcherService(s, { exec: h.exec, fs, sleep: async (ms: number) => void slept.push(ms) })
+  assert.equal(result.ok, true, result.message)
+  assert.ok(slept.length >= 1, 'it waited')
+  for (const snap of h.timeline) assert.ok((snap.running[k(OWNER.darwin.bundleDir)] ?? 0) <= 1, `${snap.cmd}: ${JSON.stringify(snap.running)}`)
+  assert.equal(h.launchd.has(s.label), true)
+  assert.equal(h.launchd.has('ai.bgos.watcher'), false)
+})
+
+test('linux: a 0.69.x unit of a HOME with a space (systemd split its HOME) is still recognised by its unit file, renamed, and the new unit quotes it', async () => {
+  const who = { ...OWNER.linux, home: '/home/k c', bundleDir: '/home/k c/.bgos-agent/watcher' }
+  const fs = memoryFs()
+  const h = fakeServiceHost({ platform: 'linux', fs, managerHome: who.home })
+  h.seed.unit('bgos-watcher', legacyUnit(who))
+  const s = spec('linux', who)
+  const result = await installWatcherService(s, { exec: h.exec, fs, sleep })
+  assert.equal(result.ok, true, result.message)
+  assert.equal(result.legacy?.state, 'migrated')
+  assert.deepEqual([...h.active], [s.label])
+  assert.ok(fs.readFile(`${who.home}/.config/systemd/user/${s.label}.service`)!.split('\n').includes('Environment="HOME=/home/k c"'))
 })
 
 // -- refuse to replace or delete a registration that records another HOME ----------------------
@@ -396,6 +470,25 @@ for (const platform of ['win32', 'darwin', 'linux'] as const) {
     assert.equal(JSON.stringify({ t: [...h.tasks], l: [...h.launchd], e: [...h.enabled], a: [...h.active] }), before)
   })
 }
+
+test('win32: an old task another HOME re-pointed, whose launcher pins no HOME, is left alone and the note says it serves the logon profile and how to remove it', async () => {
+  const { fs, h } = host('win32')
+  // The launcher a 0.69.x install wrote in that HOME: no USERPROFILE line.
+  fs.writeFile(`${SCRATCH.win32.bundleDir}\\run-hidden.vbs`, ['Set shell = CreateObject("WScript.Shell")', `shell.CurrentDirectory = "${SCRATCH.win32.bundleDir}"`, 'shell.Run "x", 0, False', ''].join('\r\n'))
+  h.seed.task('HOAI Watcher', `${SCRATCH.win32.bundleDir}\\run-hidden.vbs`)
+  const result = await installWatcherService(spec('win32', OWNER.win32), { exec: h.exec, fs, sleep })
+  assert.equal(result.ok, true, result.message)
+  assert.equal(h.tasks.has('HOAI Watcher'), true, 'left alone')
+  const note = result.notes.join('\n')
+  assert.match(note, /installed from another HOME \(E:\\rig\\scratch-home\); its launcher pins no HOME, so at logon it serves the logon user's profile/)
+  assert.ok(note.includes("Unregister-ScheduledTask -TaskName 'HOAI Watcher' -Confirm:$false"), note)
+  // A launcher this version wrote pins USERPROFILE: no such caveat.
+  const other = host('win32')
+  other.fs.writeFile(`${SCRATCH.win32.bundleDir}\\run-hidden.vbs`, spec('win32', SCRATCH.win32).files[0]!.content)
+  other.h.seed.task('HOAI Watcher', `${SCRATCH.win32.bundleDir}\\run-hidden.vbs`)
+  const quiet = await installWatcherService(spec('win32', OWNER.win32), { exec: other.h.exec, fs: other.fs, sleep })
+  assert.doesNotMatch(quiet.notes.join('\n'), /pins no HOME/)
+})
 
 test('win32: the task description is part of the record: a task whose description names another HOME is not this HOME\'s, even with this HOME\'s launcher', async () => {
   const { fs, h } = host('win32')
@@ -439,6 +532,56 @@ for (const platform of ['win32', 'darwin', 'linux'] as const) {
   })
 }
 
+test('win32: an old task this HOME owns that cannot be unregistered is reported as not removed', async () => {
+  const fs = memoryFs()
+  const h = fakeServiceHost({ platform: 'win32', fs, fail: [{ match: '-Action retire-legacy-task', code: 1, stderr: 'Access is denied.' }] })
+  seedLegacy('win32', h, fs, OWNER.win32)
+  const removed = await uninstallWatcherService(spec('win32', OWNER.win32), { exec: h.exec, fs })
+  assert.equal(removed.legacy?.state, 'own')
+  assert.match(removed.notes.join('\n'), /could not remove the Scheduled Task "HOAI Watcher"/)
+  assert.doesNotMatch(removed.notes.join('\n'), /^removed the Scheduled Task "HOAI Watcher"/m)
+})
+
+test('linux: an uninstall the user manager does not answer unregisters nothing by name, but still removes this HOME\'s own files', async () => {
+  const s = spec('linux', OWNER.linux)
+  const fs = memoryFs({ [s.files[0]!.path]: s.files[0]!.content })
+  const calls: string[] = []
+  const exec = async (_file: string, args: readonly string[]) => {
+    calls.push(args.join(' '))
+    return { code: 1, stdout: '', stderr: 'Failed to connect to bus: No medium found', error: null, timedOut: false }
+  }
+  const removed = await uninstallWatcherService(s, { exec, fs })
+  assert.equal(removed.ok, true, removed.message)
+  assert.match(removed.notes.join('\n'), /did not unregister the systemd unit/)
+  assert.equal(fs.exists(s.files[0]!.path), false)
+  assert.deepEqual(calls.filter((c) => !c.includes(' show ')), [], 'nothing but the two read-only probes ran')
+})
+
+test('status never creates a bundle folder: in a HOME with no watcher installed it writes nothing', async () => {
+  const { fs, h } = host('win32')
+  const status = await watcherServiceStatus(spec('win32', OWNER.win32), { exec: h.exec, fs })
+  assert.equal(status.active, false)
+  assert.equal(fs.files.size, 0)
+  assert.equal(fs.dirs.size, 0)
+})
+
+const POWERSHELL = process.env.SystemRoot ? join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe') : ''
+test('win32 only: Windows PowerShell 5.1 parses every generated task script cleanly (parse only, nothing in it runs)', { skip: process.platform !== 'win32' || !existsSync(POWERSHELL) }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'watcher-ps1-'))
+  try {
+    const homes: Array<[string, Record<string, string>]> = [['C:\\Users\\kc', {}], ['C:\\Users\\Jos\u00e9 \u0648\u0643\u064a\u0644', {}], ['D:\\Users\\o r', { HOAI_SERVICE_NAMESPACE: 'stage1' }]]
+    homes.forEach(([home, env], i) => {
+      const s = watcherServiceSpec({ platform: 'win32', home, nodePath: 'C:\\Program Files\\nodejs\\node.exe', bundleDir: `${home}\\.bgos-agent\\watcher`, env })
+      writeFileSync(join(dir, `t${i}.ps1`), s.files[1]!.content)
+    })
+    const script = `$n = 0; foreach ($f in Get-ChildItem -LiteralPath '${dir}' -Filter '*.ps1') { $t = $null; $e = $null; [void][System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$t, [ref]$e); $n += $e.Count; foreach ($x in $e) { Write-Output ($f.Name + ': ' + $x.Message) } }; Write-Output ('errors=' + $n)`
+    const out = execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8' })
+    assert.match(out, /errors=0\s*$/, out)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 // -- the CLI: hoai-watcher uninstall / status from a scratch HOME --------------------------------
 
 test('hoai-watcher uninstall and status from a scratch HOME (with a stale 0.69.x task script in its bundle) leave the owner\'s task alone', async () => {
@@ -448,13 +591,111 @@ test('hoai-watcher uninstall and status from a scratch HOME (with a stale 0.69.x
   const before = stateOf(h, fs, OWNER.win32)
   const out: string[] = []
   const opts = { home: SCRATCH.win32.home, env: {}, platform: 'win32', fs, exec: h.exec, out: (l: string) => out.push(l), err: (l: string) => out.push(l) }
-  assert.equal(await watcherMain(['uninstall'], opts), 0, out.join('\n'))
-  assert.deepEqual(stateOf(h, fs, OWNER.win32), before)
-  assert.match(out.join('\n'), /left .*HOAI Watcher.* alone/)
-  out.length = 0
   await watcherMain(['status', '--json'], opts)
   const status = JSON.parse(out.filter((l) => l.trim().startsWith('{')).join('\n') || out.join('\n'))
   assert.equal(status.service.active, false)
   assert.equal(status.service.legacy.state, 'foreign')
   assert.deepEqual(stateOf(h, fs, OWNER.win32), before)
+  out.length = 0
+  assert.equal(await watcherMain(['uninstall'], opts), 0, out.join('\n'))
+  assert.deepEqual(stateOf(h, fs, OWNER.win32), before)
+  assert.match(out.join('\n'), /left .*HOAI Watcher.* alone/)
+})
+
+// -- reading a registration's record (pure) -------------------------------------------------------
+
+test('readProbe (win32): base64 fields decode to the exact HOME, a non-ASCII one included; the description and the launcher both count', () => {
+  const home = 'C:\\Users\\Jos\u00e9 \u0648\u0643\u064a\u0644'
+  const b64 = (t: string) => Buffer.from(t, 'utf8').toString('base64')
+  const out = `task present Ready ${b64(`HOAI per-machine watcher, installed from home=${home}`)} ${b64(`wscript.exe //B "${home}\\.bgos-agent\\watcher\\run-hidden.vbs"`)}\r\nrun absent\r\n`
+  assert.deepEqual(service.readProbe('schtasks', { code: 0, stdout: out }), [{ what: 'task', homes: [home, home], active: true, path: `${home}\\.bgos-agent\\watcher\\run-hidden.vbs` }])
+  // A 0.69.x task: no description, the launcher alone records the HOME.
+  const old = `task present Ready - ${b64('wscript.exe //B "C:\\Users\\kc\\.bgos-agent\\watcher\\run-hidden.vbs"')}\r\nrun present ${b64('wscript.exe //B "C:\\Users\\kc\\.bgos-agent\\watcher\\run-hidden.vbs"')}\r\n`
+  assert.deepEqual(service.readProbe('schtasks', { code: 0, stdout: old }), [
+    { what: 'task', homes: ['C:\\Users\\kc'], active: true, path: 'C:\\Users\\kc\\.bgos-agent\\watcher\\run-hidden.vbs' },
+    { what: 'run', homes: ['C:\\Users\\kc'], active: true, path: 'C:\\Users\\kc\\.bgos-agent\\watcher\\run-hidden.vbs' },
+  ])
+  assert.deepEqual(service.readProbe('schtasks', { code: 0, stdout: 'task absent\r\nrun absent\r\n' }), [])
+  // Unreadable (a stale script without the probe action, a failed PowerShell): null, which is never acted on.
+  assert.equal(service.readProbe('schtasks', { code: 0, stdout: '' }), null)
+  assert.equal(service.readProbe('schtasks', { code: 1, stdout: 'task absent\r\nrun absent\r\n' }), null)
+  const judged = service.classifyRegistration({ home: 'c:/users/KC/', platform: 'win32' }, service.readProbe('schtasks', { code: 0, stdout: old }))
+  assert.equal(judged.state, 'own')
+})
+
+test('readProbe (darwin): only the job\'s own environment block counts, never the inherited or default one; a label that is not loaded is absent', () => {
+  const print = [
+    'gui/501/ai.bgos.watcher = {',
+    '\tactive count = 1',
+    '\tpath = /Users/kc/Library/LaunchAgents/ai.bgos.watcher.plist',
+    '\tstate = running',
+    '\tprogram = /usr/local/bin/node',
+    '\targuments = {',
+    '\t\t/usr/local/bin/node',
+    '\t\t/Users/kc/.bgos-agent/watcher/bin/hoai-watcher.mjs',
+    '\t\trun',
+    '\t}',
+    '\tworking directory = /Users/kc/.bgos-agent/watcher',
+    '\tstdout path = /Users/kc/.bgos-agent/watcher/logs/service.out.log',
+    '\tinherited environment = {',
+    '\t\tHOME => /tmp/somewhere-else',
+    '\t}',
+    '\tenvironment = {',
+    '\t\tPATH => /usr/bin:/bin',
+    '\t\tHOME => /Users/kc',
+    '\t}',
+    '}',
+  ].join('\n')
+  const found = service.readProbe('launchd', { code: 0, stdout: print })
+  assert.deepEqual(found, [{ what: 'job', homes: ['/Users/kc', '/Users/kc', '/Users/kc', '/Users/kc'], active: true, path: '/Users/kc/Library/LaunchAgents/ai.bgos.watcher.plist' }])
+  assert.equal(service.classifyRegistration({ home: '/Users/kc', platform: 'darwin' }, found).state, 'own')
+  assert.equal(service.classifyRegistration({ home: '/tmp/rig/scratch-home', platform: 'darwin' }, found).state, 'foreign')
+  assert.deepEqual(service.readProbe('launchd', { code: 113, stdout: '' }), [])
+  assert.deepEqual(service.readProbe('launchd', { code: 3, stdout: '', stderr: 'Bad request.\nCould not find service "x" in domain for user gui: 501' }), [])
+  // Any other failure (a domain that does not answer, no permission) is unreadable, never "not loaded".
+  assert.equal(service.readProbe('launchd', { code: 1, stdout: '', stderr: 'Operation not permitted' }), null)
+  // Loaded, but nothing in it names a HOME: unknown, never this HOME's.
+  assert.equal(service.classifyRegistration({ home: '/Users/kc', platform: 'darwin' }, service.readProbe('launchd', { code: 0, stdout: 'gui/501/x = {\n}\n' })).state, 'unknown')
+})
+
+test('readProbe (linux): FragmentPath, WorkingDirectory and a quoted Environment HOME; not-found is absent; no LoadState is unreadable', () => {
+  const show = [
+    'Environment=PATH=/usr/bin:/bin "HOME=/home/k c" USER=kc',
+    'WorkingDirectory=/home/k c/.bgos-agent/watcher',
+    'FragmentPath=/home/k c/.config/systemd/user/bgos-watcher.service',
+    'LoadState=loaded',
+    'ActiveState=active',
+  ].join('\n')
+  assert.deepEqual(service.readProbe('systemd', { code: 0, stdout: show }), [
+    { what: 'unit', homes: ['/home/k c', '/home/k c', '/home/k c'], active: true, path: '/home/k c/.config/systemd/user/bgos-watcher.service' },
+  ])
+  assert.deepEqual(service.readProbe('systemd', { code: 0, stdout: 'LoadState=not-found\nActiveState=inactive\nFragmentPath=\n' }), [])
+  assert.equal(service.readProbe('systemd', { code: 0, stdout: '' }), null)
+  assert.equal(service.readProbe('systemd', { code: 1, stdout: 'Failed to connect to bus' }), null)
+  // A unit file in the owner's folder that names another HOME is not the owner's (mixed record: foreign).
+  const mixed = service.readProbe('systemd', { code: 0, stdout: 'LoadState=loaded\nFragmentPath=/home/kc/.config/systemd/user/x.service\nEnvironment=HOME=/tmp/rig\n' })
+  assert.equal(service.classifyRegistration({ home: '/home/kc', platform: 'linux' }, mixed).state, 'foreign')
+})
+
+test('hoai-watcher uninstall --purge goes on when the registration cannot be read (no user bus): the HOME\'s files and its bundle, credentials included, are removed', async () => {
+  const fs = memoryFs({ [`${OWNER.linux.bundleDir}/credentials.json`]: '{}', [`${OWNER.linux.bundleDir}/manifest.json`]: '{}' })
+  const exec = async () => ({ code: 1, stdout: '', stderr: 'Failed to connect to bus: No medium found', error: null, timedOut: false })
+  const out: string[] = []
+  const code = await watcherMain(['uninstall', '--purge'], { home: OWNER.linux.home, env: {}, platform: 'linux', fs, exec, out: (l: string) => out.push(l), err: (l: string) => out.push(l) })
+  assert.equal(code, 0, out.join('\n'))
+  assert.equal(fs.exists(`${OWNER.linux.bundleDir}/credentials.json`), false, out.join('\n'))
+  assert.match(out.join('\n'), /did not unregister/)
+})
+
+test('hoai-watcher uninstall is refused (exit 1, no purge) when this HOME\'s own name records ANOTHER HOME', async () => {
+  const { fs, h } = host('win32')
+  const s = spec('win32', OWNER.win32)
+  h.tasks.set(s.label, { description: `HOAI per-machine watcher, installed from home=${SCRATCH.win32.home}`, action: `wscript.exe //B "${SCRATCH.win32.bundleDir}\\run-hidden.vbs"`, state: 'Ready' })
+  fs.writeFile(`${OWNER.win32.bundleDir}\\credentials.json`, '{}')
+  const out: string[] = []
+  const code = await watcherMain(['uninstall', '--purge'], { home: OWNER.win32.home, env: {}, platform: 'win32', fs, exec: h.exec, out: (l: string) => out.push(l), err: (l: string) => out.push(l) })
+  assert.equal(code, 1)
+  assert.match(out.join('\n'), /another HOME/)
+  assert.equal(h.tasks.has(s.label), true)
+  assert.equal(fs.exists(`${OWNER.win32.bundleDir}\\credentials.json`), true, 'no purge after a refusal')
 })

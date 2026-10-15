@@ -239,8 +239,9 @@ works the same on macOS and Linux, for an agent you keep running by hand.
 
 **The watcher's service is named after its HOME.** Every name the per-machine
 watcher's service is known by carries `home-<id>`, the first 8 hex characters of
-the SHA-256 of the HOME it was installed from (case and separators normalized on
-Windows): the Scheduled Task `HOAI Watcher home-<id>` (and its Run key fallback
+the SHA-256 of the HOME it was installed from, normalized as written (case and
+separators on Windows; a symlinked or short-name spelling of a HOME counts as
+another HOME): the Scheduled Task `HOAI Watcher home-<id>` (and its Run key fallback
 `HOAIWatcher-home-<id>`), the launchd label `ai.bgos.watcher.home-<id>`, the
 systemd unit `bgos-watcher-home-<id>`. The registration records that HOME (the
 task description and its launcher, which pins `USERPROFILE`; the plist's and
@@ -254,15 +255,23 @@ folder, so an install from any other HOME fails by name instead.
 Upgrading from 0.69.x: the watcher keeps running under its old name
 (`HOAI Watcher`, `ai.bgos.watcher`, `bgos-watcher`) until the next watcher
 install from the same HOME (the app's "Set up the watcher", or
-`hoai-watcher install`), which renames it in place. On Windows and Linux the new
-name is registered before the old one goes, so the watcher is never without a
-registration; on macOS the old job is booted out just before the new one is
-bootstrapped (no two watchers at once) and loaded again if the new one does not
-come up; the old plist or unit file of that HOME is removed. A registration
-under an old name that another HOME installed is left alone and reported.
+`hoai-watcher install`), which renames it in place, never running two watchers
+of one HOME at once. On Windows the new task is registered before the old one
+goes. On Linux the new unit is enabled with a temporary drop-in that conflicts
+with the old one, the old one is disabled, and one `systemctl --user start` of
+the new unit makes the user manager stop the old unit and start the new one as
+a single job, which it finishes even when the installer itself ran inside the
+old unit (an agent the watcher started). On macOS the old job is booted out,
+the install waits until launchd no longer lists it, then bootstraps the new one,
+and loads the old one again if the new one does not come up. The old plist or
+unit file of that HOME is removed. A registration under an old name that
+another HOME installed is left alone and reported (on Windows, with a warning
+when its launcher pins no HOME and so serves the logon user's profile).
 
 **Side by side installs: `HOAI_SERVICE_NAMESPACE`.** A second, isolated install
-from the same HOME (a staging install) must never stop the live watcher.
+on the same user account (a staging install, with its own HOME) must never stop
+the live watcher; the HOME id already keeps their names apart, and the
+namespace keeps them apart as before.
 With `HOAI_SERVICE_NAMESPACE` set to 1 to 16 lowercase letters or digits, the
 watcher's service names become `ai.bgos.watcher.<ns>.home-<id>`,
 `bgos-watcher-<ns>-home-<id>` and `HOAI Watcher (<ns>) home-<id>`, and
