@@ -34,6 +34,28 @@ test('reviewed exact recipient desktop is pinned before admission then stop and 
   } finally { f.epoch.key.fill(0) }
 })
 
+test('version2 proves current normal GET pages before closing source admission and seals the exact requested format', async () => {
+  const f = fixture(); try {
+    Object.assign(f.request, { version: 2, schemaVersion: 2 }); f.status.signature = shared.documentSignature(f.desktop, f.request); f.status.intentHash = wire.returnIntentHash({ request: f.request, signature: f.status.signature })
+    f.runtime.preflightResumeTabs = async () => { f.calls.push('resume-preflight'); assert.equal(f.calls.includes('close-admission'), false) }
+    await f.helper.start(f.input); assert.equal(f.state.stopped.checkpoint.manifest.schemaVersion, 2); assert.ok(f.calls.indexOf('resume-preflight') < f.calls.indexOf('close-admission'))
+  } finally { f.epoch.key.fill(0) }
+})
+test('version2 unknown POST or revoked resume evidence retains the source and never closes admission', async () => {
+  for (const fault of ['missing', 'unproved', 'revoked']) { const f = fixture(); try {
+    Object.assign(f.request, { version: 2, schemaVersion: 2 }); f.status.signature = shared.documentSignature(f.desktop, f.request); f.status.intentHash = wire.returnIntentHash({ request: f.request, signature: f.status.signature })
+    if (fault !== 'missing') f.runtime.preflightResumeTabs = async () => { if (fault === 'revoked') f.state.current = false; else throw Error('profile_resume_document_unproved') }
+    await assert.rejects(f.helper.start(f.input)); assert.equal(f.calls.includes('close-admission'), false); assert.equal(f.calls.includes('native-finalize'), false); assert.equal(f.runtime.state, 'active')
+  } finally { f.epoch.key.fill(0) } }
+})
+test('version2 native replayability preflight must physically settle before admission can close', async () => {
+  const f=fixture(),gate=deferred<void>();try{
+    Object.assign(f.request,{version:2,schemaVersion:2});f.status.signature=shared.documentSignature(f.desktop,f.request);f.status.intentHash=wire.returnIntentHash({request:f.request,signature:f.status.signature})
+    f.runtime.preflightResumeTabs=()=>gate.promise;const pending=f.helper.start(f.input);await new Promise(resolve=>setImmediate(resolve));assert.equal(f.calls.includes('close-admission'),false);gate.resolve();await pending
+    assert.equal(f.calls.includes('http-checkpoint'),true)
+  }finally{gate.resolve();f.epoch.key.fill(0)}
+})
+
 test('missing or crossed desktop pin signature source authority and predecessor refuse before admission', async () => {
   for (const fault of ['missing-pin', 'foreign-key', 'signature', 'authority', 'signed-foreign-source', 'head', 'source-key', 'expired']) {
     const f = fixture(); try {

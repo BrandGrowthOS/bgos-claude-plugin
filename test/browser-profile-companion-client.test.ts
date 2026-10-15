@@ -130,6 +130,25 @@ test('confirmed readiness remains advisory and exact signed destination plus ech
   assert.equal((await f.client.runtimeRequest(f.scope,f.endpoint,request.requestId)).state,'confirmed')
   for(const value of ['authority','signature','startSignature','nonce']){attack=value;await assert.rejects(f.client.runtimeRequest(f.scope,f.endpoint,request.requestId),{code:'profile_companion_readiness_invalid'})}
 })
+test('version2 pending and signed ready bind exact human desktop metadata through the shared validator',async()=>{
+  let f:ReturnType<typeof fixture>,request:any
+  f=fixture(async(url,options)=>{const query=JSON.parse(String(options.body));if(url.endsWith('/pending')){const{signature,...echo}=query;return response({...echo,requests:[{request,state:'pending',ready:null,confirmation:null}]})}const ready=readyValue(f,request);assert.equal(query.signature,ready.signature);assert.equal(query.startSignature,undefined);return response({request,state:'ready',ready,confirmation:null})})
+  const desktop=codec.createEndpointIdentity(randomUUID());request={...readiness(f,'receive-transfer'),version:2,schemaVersion:2,sourceEndpoint:{kind:'desktop',ownerUserId:f.scope.actingUserId,pairingId:null,identity:desktop.identity,keyFingerprint:codec.identityFingerprint(desktop.identity),grantVersion:3}}
+  const pending=await f.client.pendingRuntimeRequests(f.scope,f.endpoint);assert.deepEqual(pending[0].request,request);assert.equal(Object.isFrozen(pending[0].request.sourceEndpoint),true)
+  const ready=await f.client.ready(f.scope,f.endpoint,request,processTuple);assert.deepEqual(ready.ready.document.sourceEndpoint,request.sourceEndpoint)
+})
+test('version2 agent role another owner pairing unknown keys missing source and format ambiguity refuse before publishing ready',async()=>{
+  const f=fixture(),desktop=codec.createEndpointIdentity(randomUUID()),request={...readiness(f,'receive-transfer'),version:2,schemaVersion:2,sourceEndpoint:{kind:'desktop',ownerUserId:f.scope.actingUserId,pairingId:null,identity:desktop.identity,keyFingerprint:codec.identityFingerprint(desktop.identity),grantVersion:3}}
+  for(const patch of [{kind:'agent'},{ownerUserId:'sharer'},{pairingId:7},{grantVersion:0},{keyFingerprint:'0'.repeat(64)},{identity:codec.createEndpointIdentity(randomUUID()).identity}])await assert.rejects(f.client.ready(f.scope,f.endpoint,{...request,sourceEndpoint:{...request.sourceEndpoint,...patch}},processTuple))
+  for(const value of [{...request,purpose:'start'},{...request,schemaVersion:1},{...request,version:1},{...request,sourceEndpoint:undefined}])await assert.rejects(f.client.ready(f.scope,f.endpoint,value,processTuple))
+  assert.equal(f.calls.length,0)
+})
+test('coherently signed version2 readiness cannot change the source grant or descriptor in the agent acknowledgement',async()=>{
+  let f:ReturnType<typeof fixture>,request:any,attack='grant'
+  f=fixture(async()=>{const changed=structuredClone(request);if(attack==='grant')changed.sourceEndpoint.grantVersion++;else changed.sourceEndpoint.ownerUserId='sharer';return response({request:changed,state:'ready',ready:readyValue(f,changed),confirmation:null})})
+  const desktop=codec.createEndpointIdentity(randomUUID());request={...readiness(f,'receive-transfer'),version:2,schemaVersion:2,sourceEndpoint:{kind:'desktop',ownerUserId:f.scope.actingUserId,pairingId:null,identity:desktop.identity,keyFingerprint:codec.identityFingerprint(desktop.identity),grantVersion:3}}
+  for(const value of ['grant','owner']){attack=value;await assert.rejects(f.client.ready(f.scope,f.endpoint,request,processTuple),{code:'profile_companion_readiness_invalid'})}
+})
 test('transition, capsule and staged routes sign their own purposes and keep all state traffic on HOAI',async()=>{
   let f:ReturnType<typeof fixture>;const transitionId=randomUUID(),hash='b'.repeat(64)
   f=fixture(async(url,options)=>{const body=JSON.parse(String(options.body));assert.equal(new URL(url).origin,'https://hoai.test');assert.equal((options.headers as Record<string,string>)['X-BGOS-Pairing'],'synthetic-pairing-only');return response({metadata:true,body})})
