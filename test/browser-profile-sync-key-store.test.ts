@@ -2,6 +2,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { createRequire, syncBuiltinESMExports } from 'node:module'
+import { EventEmitter } from 'node:events'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { BrowserProfileSyncKeyStore, keyHelperEnvironment, runKeyHelper } from '../lib/browser-profile-sync-key-store.mjs'
 
 const identity = { version: 1, endpointId: '11000000-0000-4000-8000-000000000001', signingPublicKey: 'synthetic-public-sign', encryptionPublicKey: 'synthetic-public-encryption' }
@@ -258,4 +261,141 @@ test('actual shared endpoint crypto interoperates with the OS-provider adapter',
   const f = fixture({ codec: actual }), record = await f.store.protect({ binding: exact, endpoint, assertCurrent: current })
   const restored = await f.store.restore({ record, binding: exact, pinnedIdentity: endpoint.identity, assertCurrent: current })
   assert.equal(restored.signingPrivateKey.export({ type: 'pkcs8', format: 'der' }).equals(endpoint.signingPrivateKey.export({ type: 'pkcs8', format: 'der' })), true)
+})
+
+const helperTurn = () => new Promise(resolve => setImmediate(resolve))
+async function helperUntil(check: () => boolean) {
+  const deadline = Date.now() + 2000
+  while (!check()) { assert.ok(Date.now() < deadline, 'synthetic helper phase did not settle'); await helperTurn() }
+}
+function helperChild(events: string[], role = 'helper') {
+  const child: any = Object.assign(new EventEmitter(), { pid: 900001, closed: false, kills: 0, stdout: new EventEmitter(), stderr: new EventEmitter(), stdin: new EventEmitter() })
+  child.stdin.end = () => {}
+  child.kill = (signal: string) => { assert.equal(signal, 'SIGKILL'); child.kills++; events.push(role + ':kill'); return true }
+  child.close = (code: number | null = 0) => {
+    if (child.closed) return
+    child.closed = true; child.stdout?.emit('end'); child.stderr?.emit('end'); events.push(role + ':close')
+    child.emit('exit', code, null); child.emit('close', code, null)
+  }
+  return child
+}
+function helperSpawnSeam(spawn: (...args: any[]) => any) {
+  const native = createRequire(import.meta.url)('node:child_process'), original = native.spawn
+  native.spawn = spawn; syncBuiltinESMExports()
+  return () => { native.spawn = original; syncBuiltinESMExports() }
+}
+
+for (const trigger of ['timeout', 'abort', 'overflow', 'error'] as const) test(`original key helper owns physical close after ${trigger}, preserving its first safe error and zeroing late output`, { timeout: 5000 }, async () => {
+  const child = helperChild([]), controller = new AbortController(), restore = helperSpawnSeam(() => child)
+  const retained = Buffer.from('ok'), late = Buffer.from('late'); let settled = false
+  const expected = { timeout: 'profile_key_unlock_required', abort: 'profile_key_context_changed', overflow: 'profile_key_refused', error: 'profile_key_setup_required' }[trigger]
+  const work = runKeyHelper('/usr/bin/secret-tool', ['SYNTHETIC_NEVER_EXECUTED'], { timeoutMs: trigger === 'timeout' ? 5 : 1000, maxBytes: 8, signal: controller.signal })
+  const observed = work.then(() => { settled = true; return 'unexpected success' }, error => { settled = true; return error.code })
+  try {
+    child.stdout.emit('data', retained)
+    if (trigger === 'abort') controller.abort()
+    if (trigger === 'overflow') child.stdout.emit('data', Buffer.alloc(9, 120))
+    if (trigger === 'error') child.emit('error', new Error('PRIVATE_NATIVE_FAILURE'))
+    await helperUntil(() => child.kills > 0); await helperTurn()
+    assert.equal(settled, false, 'logical failure must retain the original physical helper')
+    assert.equal(child.kills, 1); assert.ok(retained.every(value => value === 0))
+    child.stdout.emit('data', late); assert.ok(late.every(value => value === 0))
+    controller.abort(); assert.equal(child.kills, 1)
+    child.close(0) // A late successful exit cannot replace the first refusal.
+    assert.equal(await observed, expected)
+  } finally { child.close(); await observed; restore() }
+})
+
+test('normal key helper success waits original close, even after exit and both output streams end', async () => {
+  const child = helperChild([]), restore = helperSpawnSeam(() => child), chunk = Buffer.from('ok'); let settled = false
+  const work = runKeyHelper('/usr/bin/secret-tool', ['SYNTHETIC_NEVER_EXECUTED']).then(value => { settled = true; return value })
+  try {
+    child.stdout.emit('data', chunk); child.emit('exit', 0); child.stdout.emit('end'); child.stderr.emit('end'); await helperTurn()
+    assert.equal(settled, false); child.close(); const value = await work
+    assert.equal(value.code, 0); assert.equal(value.output.toString(), 'ok'); value.output.fill(0)
+    assert.ok(chunk.every(byte => byte === 0)); assert.equal(child.kills, 0)
+  } finally { child.close(); await work; restore() }
+})
+
+test('no-child pre-abort and synchronous launch failure refuse immediately without a stop request', async () => {
+  let spawned = 0; const restore = helperSpawnSeam(() => { spawned++; throw new Error('PRIVATE_LAUNCH_ERROR') })
+  try {
+    const controller = new AbortController(); controller.abort()
+    await assert.rejects(runKeyHelper('/usr/bin/secret-tool', [], { signal: controller.signal }), { code: 'profile_key_context_changed' }); assert.equal(spawned, 0)
+    await assert.rejects(runKeyHelper('/usr/bin/secret-tool', []), { code: 'profile_key_setup_required' }); assert.equal(spawned, 1)
+  } finally { restore() }
+})
+
+test('a no-PID error still retains the original ChildProcess close without signalling an unknown process', async () => {
+  const child = helperChild([]); child.pid = undefined
+  const restore = helperSpawnSeam(() => child); let settled = false
+  const observed = runKeyHelper('/usr/bin/secret-tool', []).then(() => { settled = true; return '' }, error => { settled = true; return error.code })
+  try { child.emit('error', new Error('ENOENT')); await helperTurn(); assert.equal(settled, false); assert.equal(child.kills, 0); child.close(-1); assert.equal(await observed, 'profile_key_setup_required') }
+  finally { child.close(); await observed; restore() }
+})
+
+for (const trigger of ['missing-stream', 'stdin-throw', 'stop-throw'] as const) test(`key helper retains original close when ${trigger} leaves cleanup unknown`, async () => {
+  const child = helperChild([])
+  if (trigger === 'missing-stream') child.stdout = null
+  if (trigger === 'stdin-throw') child.stdin.end = () => { throw new Error('PRIVATE_PIPE_ERROR') }
+  if (trigger === 'stop-throw') child.kill = () => { child.kills++; throw new Error('PRIVATE_STOP_ERROR') }
+  const restore = helperSpawnSeam(() => child); let settled = false
+  const observed = runKeyHelper('/usr/bin/secret-tool', [], { timeoutMs: trigger === 'stop-throw' ? 5 : 1000 }).then(() => { settled = true; return '' }, error => { settled = true; return error.code })
+  try {
+    await helperUntil(() => child.kills > 0); await helperTurn(); assert.equal(settled, false)
+    child.close(); assert.equal(await observed, trigger === 'stop-throw' ? 'profile_key_unlock_required' : 'profile_key_setup_required')
+  } finally { child.close(); await observed; restore() }
+})
+
+for (const mode of ['endpoint-timeout', 'endpoint-abort', 'portable-timeout', 'host-stop'] as const) test(`failed OS store cleanup waits original close (${mode})`, { timeout: 5000 }, async () => {
+  const children: any[] = [], events: string[] = [], controller = new AbortController()
+  let original: any, inputCopy: Buffer | undefined, storeAttributes: string[] | undefined, clearAttributes: string[] | undefined
+  let settled = false, hostStopped = false, saved = false, companion: any, host: any, stopping: Promise<void> | undefined
+  const restore = helperSpawnSeam((executable: string, args: string[], settings: any) => {
+    assert.ok(['/usr/bin/gdbus', '/usr/bin/secret-tool'].includes(executable), 'no real helper executable is allowed')
+    assert.equal(settings.shell, false)
+    const role = executable.endsWith('gdbus') ? 'ready' : args[0], child = helperChild(events, role); children.push(child)
+    child.stdin.end = (input: Buffer) => {
+      if (role === 'ready') return setImmediate(() => {
+        child.stdout.emit('data', Buffer.from(args.includes('org.freedesktop.Secret.Service.ReadAlias') ? "(objectpath '/org/freedesktop/secrets/collection/login',)\n" : '(<false>,)\n')); child.close()
+      })
+      const attributes = args.slice(args.indexOf('application'))
+      if (role === 'store') { original = child; inputCopy = Buffer.from(input); storeAttributes = attributes; return }
+      assert.equal(role, 'clear'); clearAttributes = attributes; events.push('clear:start'); setImmediate(() => child.close())
+    }
+    return child
+  })
+  const keyStore = new BrowserProfileSyncKeyStore({ endpointCrypto: codec, environment, platform: 'linux', timeoutMs: mode === 'endpoint-abort' ? 1000 : 10, hasHelper: () => true })
+  let work: Promise<unknown> | undefined, observed: Promise<unknown> | undefined
+  try {
+    if (mode === 'host-stop') {
+      const { AgentBrowserProfileCompanion } = await import('../lib/browser-profile-companion.mjs'), { BrowserHost } = await import('../bin/hoai-browser-host.mjs')
+      const client = { activity: () => ({ pendingPhysicalOperations: 0, cleanupUnknown: false }), whenDrained: async () => {}, discover: async () => ({ profiles: [{ grant: { generation: 1 }, profile: { contentKeyEpoch: 1 } }] }) }
+      const connection: any = { bootId: 'synthetic-key-helper-boot', _stopped: false, pairing: { token: 'SYNTHETIC', pairingId: 7, ownerUserId: 'machine-owner', backendUrl: 'https://synthetic.invalid', assistantIds: [42] }, stop: async () => {} }
+      companion = new AgentBrowserProfileCompanion({ connection, agentRoot: join(tmpdir(), 'synthetic-key-helper-no-files'), deviceLabel: 'Synthetic helper test', environment, keyStore, client, permissionClient: client, permissionRunner: {}, returnClient: client, returnHandover: {},
+        stateStore: { loadAll: async () => [], saveNew: async () => { saved = true; throw new Error('must not persist failed enrollment') } }, loadBrowser: async () => { throw new Error('must not load browser') }, createEngine: async () => { throw new Error('must not start engine') }, createRelay: () => { throw new Error('must not create relay') } } as any)
+      companion.loaded = true; companion.cursor = 1
+      companion.candidates.set('synthetic-intent', { intent: { intentId: 'synthetic-intent', expiresAt: Date.now() + 60000 }, scope: { ...Object.fromEntries(['profileId', 'actingUserId', 'assistantId', 'endpointId', 'keyFingerprint'].map(name => [name, binding[name as keyof typeof binding]])), pairingId: 7, ownerUserId: 'machine-owner' }, endpoint, published: true, uncertain: false })
+      host = new BrowserHost({ agentRoot: join(tmpdir(), 'synthetic-key-helper-no-files'), env: {}, browserTools: async () => [], createEngine: async () => { throw new Error('must not start legacy engine') }, browserInstallations: { cancel() {}, activity: () => ({ pendingPhysicalOperations: 0, cleanupUnknown: false }), whenDrained: async () => {} } } as any)
+      connection.profileCompanion = companion; host.connections.set('synthetic', connection); work = companion.poll()
+    } else work = mode === 'portable-timeout' ? keyStore.preloadPortableExtrasProtector({ binding, pinnedIdentity: identity, createNew: true, assertCurrent: current, signal: controller.signal }) : keyStore.protect({ binding, endpoint, assertCurrent: current, signal: controller.signal })
+    observed = work!.then(() => { settled = true; return 'poll-completed' }, error => { settled = true; return error.code })
+    await helperUntil(() => !!original); if (mode === 'endpoint-abort') controller.abort()
+    await helperUntil(() => original.kills > 0); await helperTurn()
+    assert.equal(settled, false); assert.equal(clearAttributes, undefined, 'failed store clear must not race the still-open original store helper')
+    if (host) {
+      stopping = host.stop().then(() => { hostStopped = true }); await helperTurn()
+      assert.equal(hostStopped, false); assert.equal(companion.activity().pendingPhysicalOperations, 1)
+    }
+    original.close(0) // A late exit0 remains the original timeout/abort failure.
+    assert.equal(await observed, host ? 'poll-completed' : mode === 'endpoint-abort' ? 'profile_key_context_changed' : 'profile_key_unlock_required')
+    await stopping; assert.deepEqual(clearAttributes, storeAttributes); assert.match(storeAttributes!.at(-1)!, /^[a-f0-9-]{36}$/)
+    assert.ok(events.indexOf('store:close') < events.indexOf('clear:start')); assert.equal(saved, false)
+    if (host) { assert.equal(companion.records.size, 0); assert.equal(companion.stopped, true); assert.deepEqual(companion.activity(), { activeProfiles: 0, pendingPhysicalOperations: 0, cleanupUnknown: false }) }
+    // Physical helper close does not prove an accepted D-Bus store was rolled
+    // back. This fixture proves helper ordering, not Secret Service rollback.
+  } finally {
+    for (const child of children) child.close()
+    await observed; await stopping; inputCopy?.fill(0); restore()
+  }
 })
