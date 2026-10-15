@@ -73,6 +73,28 @@ import { processesMatching } from './helpers/processes.ts'
 const HOST_BIN = join(process.cwd(), 'bin', 'hoai-browser-host.mjs')
 const ROOT = join(sep, 'home', 'kc', '.bgos-agent')
 
+test('host stop fences installer admission immediately and waits its original physical drain', async () => {
+  let cancelCalls = 0, resolveDrain: (() => void) | undefined, stopped = false
+  const drain = new Promise<void>(resolve => { resolveDrain = resolve })
+  const installations = { activity: () => ({ pendingPhysicalOperations: 1, cleanupUnknown: false }), cancel() { cancelCalls++ }, whenDrained: () => drain }
+  const host = new BrowserHost({ env: {}, browserTools: [], createEngine: async () => { throw new Error('not launched') }, browserInstallations: installations })
+  assert.deepEqual(host.installationActivity(), { pendingPhysicalOperations: 1, cleanupUnknown: false })
+  const stop = host.stop().then(() => { stopped = true })
+  assert.equal(cancelCalls, 1)
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(stopped, false)
+  resolveDrain!(); await stop; assert.equal(stopped, true)
+})
+
+test('host normal and emergency stop cannot claim clean while installer cleanup is unknown', async () => {
+  for (const emergency of [false, true]) {
+    let cancelled = false
+    const installations = { activity: () => ({ pendingPhysicalOperations: 0, cleanupUnknown: true }), cancel() { cancelled = true }, async whenDrained() { throw Object.assign(new Error('fixed recovery required'), { code: 'browser_install_recovery_required' }) } }
+    const host = new BrowserHost({ env: {}, browserTools: [], createEngine: async () => { throw new Error('not launched') }, browserInstallations: installations })
+    await assert.rejects(emergency ? host.emergencyStopOwnedProfiles() : host.stop())
+    assert.equal(cancelled, true); assert.equal(host.installationActivity().cleanupUnknown, true)
+  }
+})
+
 /** The profile directory a frame lands in, exactly as the host derives it. */
 function profileDirForFrame(frame: Record<string, unknown>, assistantId = 900): string {
   const principal = readFramePrincipal(frame)
