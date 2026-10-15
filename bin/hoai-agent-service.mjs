@@ -14,7 +14,7 @@
  *       Read this agent's service back, read only (`launchctl print
  *       gui/<uid>/<label>`, `systemctl --user show <unit>` and the unit file
  *       the user manager loaded), under this HOME's own name or the OLD one
- *       (0.69.2 and earlier), and judge it against $HOME. Lines:
+ *       (before 0.69.4), and judge it against $HOME. Lines:
  *         state=own|absent|foreign|unknown
  *         home=<the HOME it records, or empty>
  *         active=1|0

@@ -54,7 +54,7 @@ type State = {
   active: string[]
   tmux: string[]
   panes?: Record<string, string[]>
-  fail: Array<{ match: string; exact?: boolean; code?: number; stderr?: string; times?: number }>
+  fail: Array<{ match: string; exact?: boolean; code?: number; stderr?: string; times?: number; skip?: number }>
   killCallerOn?: string | null
   watch?: string
   unloadWith?: { line: string; label: string; skip?: number }
@@ -562,6 +562,26 @@ test('round 2 (review): an old job whose bootout is only slow, gone during the r
   assert.equal(again[0].watched, previous, 'on the run.sh it ran before')
 })
 
+test('round 2 (verify): a launchctl print that FAILS after the old job\'s bootout (not rc 113, no such job) is unknown, never gone: the rename rolls back and the old job, its plist and its tmux server stay as they were', SLOW, (t) => {
+  if (!ready(t)) return
+  const a = account('Darwin')
+  t.after(a.cleanup)
+  seedOldAgent(a, 'Darwin')
+  a.setState((s) => {
+    // The bootout does not unload it, and every later read of it fails (after the install's own read-back).
+    s.fail.push({ match: `launchctl bootout gui/${s.uid}/${OLD_LABEL}`, exact: true, code: 5, stderr: 'Boot-out failed: 5: Input/output error', times: 99 })
+    s.fail.push({ match: `launchctl print gui/${s.uid}/${OLD_LABEL}`, exact: true, code: 1, stderr: 'launchctl: XPC error', times: 99, skip: 1 })
+  })
+  const oldJob = JSON.stringify(a.state().launchd[OLD_LABEL])
+  const r = a.install(a.owner)
+  assert.notEqual(r.status, 0, r.out)
+  assert.match(r.out, /migration rolled back .*could not be read back after its bootout/)
+  assert.deepEqual(Object.keys(a.state().launchd), [OLD_LABEL], 'the new job booted out again; the old one as it was')
+  assert.equal(JSON.stringify(a.state().launchd[OLD_LABEL]), oldJob)
+  assert.deepEqual(agentPlists(a.owner), [`${OLD_LABEL}.plist`], 'its plist back in its place, no new one')
+  assert.ok(a.state().tmux.includes(`hoai-${ID}`), 'its session was not ended for a job that may still run')
+})
+
 test('round 2 (review): an uninstall whose OLD job cannot be read back, with this HOME\'s old plist there, removes nothing (that job may be running)', SLOW, (t) => {
   if (!ready(t)) return
   const a = account('Darwin')
@@ -593,7 +613,7 @@ test('round 2 L11: a rename drop-in an interrupted swap left behind is removed b
   assert.equal(existsSync(dropIn), false)
 })
 
-test('round 2: on Linux an install from a HOME that is not the user manager\'s is refused by name before anything is written (the manager never reads that HOME\'s unit folder)', SLOW, (t) => {
+test('round 2: on Linux an install from a HOME that is not the user manager\'s is refused by name before its service file or run.sh is written (the manager never reads that HOME\'s unit folder)', SLOW, (t) => {
   if (!ready(t)) return
   const a = account('Linux')
   t.after(a.cleanup)
@@ -721,5 +741,5 @@ test('the id-less listing marks each agent job by the HOME its name carries', SL
   const listing = a.run(a.owner, ['status']).out
   assert.match(listing, new RegExp(`${label(a.owner).replace(/\./g, '\\.')}\\s+\\(this HOME\\)`))
   assert.match(listing, new RegExp(`${label(a.scratch).replace(/\./g, '\\.')}\\s+\\(another HOME\\)`))
-  assert.match(listing, new RegExp(`${OLD_LABEL.replace(/\./g, '\\.')}\\s+\\(old name, 0\\.69\\.2 or earlier`))
+  assert.match(listing, new RegExp(`${OLD_LABEL.replace(/\./g, '\\.')}\\s+\\(old name, before 0\\.69\\.4`))
 })

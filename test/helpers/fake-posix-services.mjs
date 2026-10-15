@@ -24,7 +24,7 @@
  * Every call is appended to state.calls with the loaded jobs, enabled and active
  * units and live tmux servers right after it, so a test can prove "never two at
  * once" and "never none". `fail` in the state makes matching calls fail (a substring, or the
- * whole line with `exact`); `killCallerOn` (a whole line) kills the process that ran that call,
+ * whole line with `exact`; `skip` lets that many matching calls through first); `killCallerOn` (a whole line) kills the process that ran that call,
  * once, right after it (an installer inside the job it ends). `watch` (a path) records that file's
  * content in each call as `watched` (what a job started by that call would run); `unloadWith`
  * ({ line, label, skip }) unloads that job when that whole line runs, after `skip` runs of it (an
@@ -224,7 +224,11 @@ function main() {
   const line = `${tool} ${args.join(' ')}`
   // A match is a substring, or the whole line when `exact` is set (ai.bgos.agent.42 is a prefix of its scoped label).
   const matches = (f, text) => (f.exact ? text === f.match : text.includes(f.match))
-  const failure = (state.fail ?? []).find((f) => matches(f, line) && (f.times ?? 1) > 0)
+  let failure = (state.fail ?? []).find((f) => matches(f, line) && (f.times ?? 1) > 0)
+  if (failure && (failure.skip ?? 0) > 0) {
+    failure.skip -= 1
+    failure = undefined
+  }
   let result
   if (failure) {
     failure.times = (failure.times ?? 1) - 1

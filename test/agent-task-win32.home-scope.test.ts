@@ -298,8 +298,24 @@ test('round 2 H1: the watcher\'s check registers this HOME\'s own task when the 
   const beside = result.notes.find((n: string) => n.startsWith(`registered this HOME's own Scheduled Task "${OWNER_TASK}" beside it`))
   assert.ok(beside, result.notes.join('\n'))
   assert.match(beside!, /the Scheduled Task "HOAI Agent 912" still starts at logon too/)
+  // Facts only (fresh verification of round 2): no promise that a guard keeps it to one launcher.
+  assert.doesNotMatch(beside!, /singleton guard|keeps one launcher/)
   assert.doesNotMatch(result.notes.join('\n'), /Unregister-ScheduledTask/)
   assert.deepEqual(host.calls.map((c) => c.replace(/^.* -Action /, '')), ['probe', 'probe-legacy', 'install', 'probe'])
+})
+
+test('round 2 (verify): beside a DISABLED old task of another HOME, the note says it is disabled, not that it starts at logon', async () => {
+  const { fs, host } = world()
+  fs.writeFile(vbsOf(OWNER), "' launcher\r\n")
+  fs.writeFile(vbsOf(SCRATCH), "' the rig's 0.69.2 launcher\r\n")
+  host.seed.task(OLD_TASK, vbsOf(SCRATCH), { disabled: true })
+  const result = await installAgentTask(spec(), { exec: host.exec, fs, start: false, keep: true })
+  assert.equal(result.ok, true, result.message)
+  assert.equal(host.tasks.get(OLD_TASK)?.state, 'Disabled', 'left exactly as it is')
+  const beside = result.notes.find((n: string) => n.startsWith(`registered this HOME's own Scheduled Task "${OWNER_TASK}" beside it`))
+  assert.ok(beside, result.notes.join('\n'))
+  assert.match(beside!, /the Scheduled Task "HOAI Agent 912" is Disabled/)
+  assert.doesNotMatch(beside!, /starts at logon/)
 })
 
 test('round 2 H1: with NEITHER name registered (a task removed, or renamed away by another HOME\'s 0.69.4), the check registers this HOME\'s own task and verifies it, so the agent is supervised again', async () => {

@@ -271,11 +271,12 @@ when its launcher pins no HOME and so serves the logon user's profile).
 
 **The agents' services are named after their HOME too** (0.69.4). Every name an
 agent's service is known by carries the same `home-<hid>` as the watcher of
-that HOME: the Scheduled Task `HOAI Agent <id> home-<hid>`, the launchd label
+that HOME (but see the symlink case below): the Scheduled Task `HOAI Agent <id> home-<hid>`, the launchd label
 `ai.bgos.agent.<id>.home-<hid>`, the systemd unit `bgos-agent-<id>-home-<hid>`
 and the agent's own tmux socket `hoai-<id>-home-<hid>`. On macOS and Linux the
 id is taken from the HOME's real path, so a HOME reached through a symlink is
-the same HOME with the same services. The registration
+the same HOME with the same agent services; the watcher keeps its id of the
+HOME as spelled, so for such a HOME the two ids differ. The registration
 records its HOME and agent id (on Windows the task description
 `HOAI agent <id>, installed from home=<HOME>`, the launcher path and a launcher
 that pins `USERPROFILE`; the plist's and the unit's `HOME` and `run.sh` path),
@@ -294,7 +295,7 @@ running. On Linux an install from a HOME other than the one the account's
 `systemd --user` manager reads its units from is refused before its service
 file or run.sh is written.
 
-Upgrading from 0.69.2: on Windows the watcher renames each agent's old
+Upgrading from 0.69.3 or earlier: on Windows the watcher renames each agent's old
 `HOAI Agent <id>` of its own HOME in place, once (the new task registered
 first, then the old one retired; the running agent is never stopped or
 started, and a task you disabled stays disabled). When the old name holds
