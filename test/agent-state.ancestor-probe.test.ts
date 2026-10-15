@@ -102,7 +102,7 @@ test('the ancestry script makes ONE Win32_Process query, before the walk, and st
   const script = cmd.args[3]!
   assert.deepEqual(cmd.args.slice(0, 3), ['-NoProfile', '-NonInteractive', '-Command'])
   assert.equal(script.split('Get-CimInstance').length - 1, 1, 'one CIM query')
-  assert.match(script, /Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,CreationDate,CommandLine/)
+  assert.match(script, /Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,CreationDate,CommandLine -ErrorAction Stop/, 'a CIM error ends the call non-zero')
   assert.ok(script.indexOf('Get-CimInstance') < script.indexOf('for ('), 'the query is not paid per link')
   assert.match(script, /^\$p = 29760;/)
   assert.match(script, /\$p = \$x\.ParentProcessId/)
@@ -121,6 +121,12 @@ test('a probe that could not be read is unreadable, never "no claude"', () => {
   assert.deepEqual(read(() => ({ code: 1, stdout: JSON.stringify(CHAIN) })), { readable: false }, 'non-zero exit')
   assert.deepEqual(read(() => ({ code: 0, stdout: '[{"ProcessId":29760,"Paren' })), { readable: false }, 'cut short')
   assert.deepEqual(read(() => { throw new Error('spawn EPERM') }), { readable: false }, 'spawn failed')
+  // Review M1: a CIM error that does not stop the script (a WMI quota or a
+  // cancelled call on a busy PC) leaves the table empty, and the script still
+  // prints [] and exits 0. The daemon is alive, so a chain without its own pid
+  // is no reading of anything.
+  assert.deepEqual(read(() => ({ code: 0, stdout: '[]' })), { readable: false }, 'an empty chain')
+  assert.deepEqual(read(() => ({ code: 0, stdout: JSON.stringify([LAUNCH, CLAUDE]) })), { readable: false }, 'a chain without this process')
   // A chain that was read is an answer, either way.
   assert.deepEqual(read(() => ({ code: 0, stdout: JSON.stringify(CHAIN) })), { readable: true, pid: CLAUDE.ProcessId })
   assert.deepEqual(read(noClaude), { readable: true, pid: null })

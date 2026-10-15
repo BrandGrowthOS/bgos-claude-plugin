@@ -208,11 +208,13 @@ export function nearestClaudeAncestor(
  * Get-CimInstance of the process table, walked in PowerShell, so only the chain
  * is printed. HOAI board row 7046de2a: it was one filtered Get-CimInstance per
  * link, and a filtered query costs as much as a full one (the provider walks
- * every process each time, about 0.5 s on a busy PC), so on AlienAres the nine
- * links from the daemon to wininit took 4.0 to 6.3 s against defaultExecSync's
- * 5 s cap; one query took 1.1 to 1.3 s. Ids are cast to int64 on both sides:
- * Win32_Process ids are UInt32, a PowerShell literal is Int32, and a hashtable
- * keyed by one never finds the other. Bounded at 64 links and stopped at a
+ * every process each time: each link added about 0.5 s on a busy PC), so on
+ * AlienAres the nine links from the daemon to wininit took 4.0 to 6.3 s against
+ * defaultExecSync's 5 s cap; this script took 1.1 to 1.4 s for the same chain.
+ * Ids are cast to int64 on both sides: Win32_Process ids are UInt32, a
+ * PowerShell literal is Int32, and a hashtable keyed by one never finds the
+ * other. A CIM error stops the script (-ErrorAction Stop), so it exits non-zero
+ * instead of walking an empty table. Bounded at 64 links and stopped at a
  * process that is its own parent. No double quote anywhere in the script:
  * Node escapes one as \" on the Windows command line, and a -Command must not
  * depend on how that is read back. CreationDate is converted to epoch ms
@@ -225,7 +227,7 @@ export function win32AncestryCommand(ownPid: number): { file: string; args: stri
   const script = [
     `$p = ${ownPid};`,
     '$all = @{};',
-    'Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,CreationDate,CommandLine | ForEach-Object { $all[[int64]$_.ProcessId] = $_ };',
+    'Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,CreationDate,CommandLine -ErrorAction Stop | ForEach-Object { $all[[int64]$_.ProcessId] = $_ };',
     '$out = @();',
     'for ($i = 0; $i -lt 64 -and $p -gt 0; $i++) {',
     '$x = $all[[int64]$p];',
@@ -297,7 +299,8 @@ export function isWin32ClaudeProcess(proc: { name: string | null | undefined; co
 /**
  * One look for the claude ancestor. `readable: false` when the process list
  * could not be read at all (the probe timed out, exited non-zero, printed
- * something cut short, or could not start), which says nothing about whether
+ * something cut short or a chain without this process, or could not start),
+ * which says nothing about whether
  * a claude is there; otherwise the pid, or null when the chain was read and
  * holds no claude (HOAI board row 7046de2a: a timed out probe used to read as
  * the second, and was held for 10 minutes).
@@ -323,6 +326,9 @@ export function readClaudeAncestorWin32(
     const links = parseWin32Ancestry(result.stdout)
     if (!links) return { readable: false }
     const byPid = new Map(links.map((link) => [link.pid, link]))
+    // This process is alive, so a chain without it read nothing (a CIM error
+    // that did not stop the script leaves an empty table and prints []).
+    if (!byPid.has(ownPid)) return { readable: false }
     const seen = new Set<number>()
     let child = byPid.get(ownPid)
     while (child && !seen.has(child.pid)) {
