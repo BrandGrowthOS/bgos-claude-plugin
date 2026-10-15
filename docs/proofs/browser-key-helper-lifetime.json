@@ -1,0 +1,489 @@
+{
+  "version": 1,
+  "title": "Key helper original-process lifetime and failed-store cleanup ordering",
+  "source": {
+    "mode": "Exact committed two-path repair",
+    "sourceCommit": "503d22fc4ab154a32b3b588ab77345dc8f949337",
+    "baseCommit": "c340227c4658a576b6733347b520ccdb69687836",
+    "files": {
+      "lib/browser-profile-sync-key-store.mjs": "dab468db70440a7b2fd2a5b919f96f26be7d16bf10b6a5676f840f0ef860ab62",
+      "test/browser-profile-sync-key-store.test.ts": "2d0da6cdcd8f02a4f1e4d5883bcc0e10063bf654de41363c6e3c3b99d227e8fe"
+    }
+  },
+  "behavior": [
+    "Timeout, abort, overflow and post-spawn error latch the first fixed refusal, clear buffered/late helper bytes and request stop only of the original helper.",
+    "The same returned promise remains pending until the original ChildProcess close. A stop request is not cleanup proof. Late exit0 cannot replace the refusal.",
+    "Pre-aborted calls and synchronous launch throws with no owned ChildProcess may fail immediately. No-PID asynchronous errors still wait original close.",
+    "Existing failed-store handlers therefore cannot start their exact-new-random-record clear before helper close. Existing Companion.poll/Host.stop retain the same promise; no additional activity API or Host/Companion source change."
+  ],
+  "evidenceLayers": {
+    "originalFinding": {
+      "sourceSha256": "805fe74411ff9261ef8702bb7ffe998cd3dd55a6cc363a62f6320d8746906e99",
+      "mode": "Actual imported original key-store, actual Companion.poll and actual BrowserHost.stop with builtin spawn fake seam",
+      "cases": 4,
+      "directAssertionRed": true,
+      "finding": "Clear finished before original fake store child close; actual Host.stop resolved and Companion activity reported0 while the original fake child was open. No usable failed record persisted.",
+      "lateOrphan": "A late unique-item commit is an explicit in-memory model, not an actual libsecret transaction measurement."
+    },
+    "fullTouchedFile": {
+      "file": "test/browser-profile-sync-key-store.test.ts",
+      "tests": 33,
+      "passed": 33,
+      "failed": 0,
+      "skipped": 0,
+      "cancelled": 0,
+      "sharedCryptoOptIn": true,
+      "typecheckExit": 0,
+      "scope": "Existing codec/provider unit coverage, synthetic Node subprocess case and14 new helper/order cases. New process-lifetime controls use fake ChildProcess seams, including actual imported Companion/Host wiring; no user keyring."
+    },
+    "copiedExecutableCounterfactual": {
+      "matrixSha256": "b2362264edc9d2f1c37808c904b2834e5c720ea396fae8456936b9698f277561",
+      "testsUnchanged": true,
+      "fullBaseline": {
+        "passed": 33,
+        "failed": 0,
+        "skipped": 0,
+        "cancelled": 0
+      },
+      "loadedOriginalWholeModuleSha256": "805fe74411ff9261ef8702bb7ffe998cd3dd55a6cc363a62f6320d8746906e99",
+      "printedLoadedLine": {
+        "line": 64,
+        "text": "    const stop = code => { try { child?.kill('SIGKILL') } catch {}; finish(fail(code)) }"
+      },
+      "mutant": {
+        "passed": 21,
+        "failed": 12,
+        "skipped": 0,
+        "cancelled": 0,
+        "exit": 1
+      },
+      "primaryRed": "Case20 direct ERR_ASSERTION: public promise had settled before the original helper physically closed. Secondary failures include bounded synthetic-phase deadline assertions and are not separate mutation claims.",
+      "exactRestore": {
+        "passed": 33,
+        "failed": 0,
+        "skipped": 0,
+        "cancelled": 0
+      },
+      "sourceSnapshot": {
+        "baseline": 33,
+        "mutantPassed": 21,
+        "mutantFailed": 12,
+        "mutantCancelled": 0,
+        "mutantSkipped": 0,
+        "restored": 33,
+        "originalWholeModuleSha256": "805fe74411ff9261ef8702bb7ffe998cd3dd55a6cc363a62f6320d8746906e99",
+        "fixedWholeModuleSha256": "dab468db70440a7b2fd2a5b919f96f26be7d16bf10b6a5676f840f0ef860ab62",
+        "primaryDirectCause": "Case20 asserts public logical failure remains pending before original helper close, true vs false ERR_ASSERTION",
+        "secondaryFailures": "Includes synthetic-phase deadline assertions; not counted as additional independent causal mutations",
+        "executionTimeSourcePins": 244,
+        "laterCurrentSourceDrift": [
+          {
+            "path": "lib/browser-bootstrap.pin.json",
+            "executedSha256": "19fa11a3b51096a996e1a082ad18d09d838536135db71963e7f427f42dfe1f2e",
+            "currentSha256": "21057fbfe0993ccace1bc9f5ff977039af41cd9b790c6eed473dd58a73cb13ae",
+            "parsedJsonEqual": true
+          }
+        ]
+      }
+    },
+    "actualLinuxSyntheticHelpers": {
+      "sourceManifestSha256": "b5a63b7076dc6b9661db5803a62c408b8b00ffe8dd4398089ec3bc5a36a444c7",
+      "receiptSha256": "d832c9fb945665d2a93fffb91cc1333212dcf030b94379c7dd97c2a6e856e35c",
+      "image": "hoai-profile-unit:16ca2b40-32f8c0",
+      "imageId": "sha256:c5a734894443d520ab2d6ef82c45a3b329f3d652b4dff1a4ad61dd9f6b4a84e9",
+      "node": "22.23.3",
+      "uid": 1000,
+      "gid": 1000,
+      "network": "none",
+      "privateTmpfsBytes": 67108864,
+      "cases": [
+        {
+          "name": "normal",
+          "ready": true,
+          "identity": {
+            "pid": 23,
+            "group": 7,
+            "session": 1,
+            "start": "675976130"
+          },
+          "originalIdentityAbsent": true,
+          "nativeErrorCode": null,
+          "expectedProductCancellationSignal": null,
+          "exitCode": 0,
+          "exitSignal": null,
+          "closeCode": 0,
+          "closeSignal": null,
+          "originalCloseObserved": true,
+          "stdoutEOF": true,
+          "stderrEOF": true,
+          "stdoutClosed": true,
+          "stderrClosed": true,
+          "publicCode": "success",
+          "publicSettlementAfterClose": true,
+          "events": [
+            {
+              "kind": "spawn",
+              "sequence": 1
+            },
+            {
+              "kind": "stderrEOF",
+              "sequence": 2
+            },
+            {
+              "kind": "stdoutEOF",
+              "sequence": 3
+            },
+            {
+              "kind": "stdoutClose",
+              "sequence": 4
+            },
+            {
+              "kind": "stderrClose",
+              "sequence": 5
+            },
+            {
+              "kind": "exit",
+              "sequence": 6
+            },
+            {
+              "kind": "close",
+              "sequence": 7
+            }
+          ]
+        },
+        {
+          "name": "timeout",
+          "ready": true,
+          "identity": {
+            "pid": 30,
+            "group": 7,
+            "session": 1,
+            "start": "675976132"
+          },
+          "originalIdentityAbsent": true,
+          "nativeErrorCode": null,
+          "expectedProductCancellationSignal": "SIGKILL",
+          "exitCode": null,
+          "exitSignal": "SIGKILL",
+          "closeCode": null,
+          "closeSignal": "SIGKILL",
+          "originalCloseObserved": true,
+          "stdoutEOF": true,
+          "stderrEOF": true,
+          "stdoutClosed": true,
+          "stderrClosed": true,
+          "publicCode": "profile_key_unlock_required",
+          "publicSettlementAfterClose": true,
+          "events": [
+            {
+              "kind": "spawn",
+              "sequence": 9
+            },
+            {
+              "kind": "stderrEOF",
+              "sequence": 10
+            },
+            {
+              "kind": "stdoutEOF",
+              "sequence": 11
+            },
+            {
+              "kind": "stdoutClose",
+              "sequence": 12
+            },
+            {
+              "kind": "stderrClose",
+              "sequence": 13
+            },
+            {
+              "kind": "exit",
+              "sequence": 14
+            },
+            {
+              "kind": "close",
+              "sequence": 15
+            }
+          ]
+        },
+        {
+          "name": "abort",
+          "ready": true,
+          "identity": {
+            "pid": 37,
+            "group": 7,
+            "session": 1,
+            "start": "675976232"
+          },
+          "originalIdentityAbsent": true,
+          "nativeErrorCode": null,
+          "expectedProductCancellationSignal": "SIGKILL",
+          "exitCode": null,
+          "exitSignal": "SIGKILL",
+          "closeCode": null,
+          "closeSignal": "SIGKILL",
+          "originalCloseObserved": true,
+          "stdoutEOF": true,
+          "stderrEOF": true,
+          "stdoutClosed": true,
+          "stderrClosed": true,
+          "publicCode": "profile_key_context_changed",
+          "publicSettlementAfterClose": true,
+          "events": [
+            {
+              "kind": "spawn",
+              "sequence": 17
+            },
+            {
+              "kind": "stderrEOF",
+              "sequence": 18
+            },
+            {
+              "kind": "stdoutEOF",
+              "sequence": 19
+            },
+            {
+              "kind": "stdoutClose",
+              "sequence": 20
+            },
+            {
+              "kind": "stderrClose",
+              "sequence": 21
+            },
+            {
+              "kind": "exit",
+              "sequence": 22
+            },
+            {
+              "kind": "close",
+              "sequence": 23
+            }
+          ]
+        },
+        {
+          "name": "overflow",
+          "ready": true,
+          "identity": {
+            "pid": 44,
+            "group": 7,
+            "session": 1,
+            "start": "675976235"
+          },
+          "originalIdentityAbsent": true,
+          "nativeErrorCode": null,
+          "expectedProductCancellationSignal": "SIGKILL",
+          "exitCode": null,
+          "exitSignal": "SIGKILL",
+          "closeCode": null,
+          "closeSignal": "SIGKILL",
+          "originalCloseObserved": true,
+          "stdoutEOF": true,
+          "stderrEOF": true,
+          "stdoutClosed": true,
+          "stderrClosed": true,
+          "publicCode": "profile_key_refused",
+          "publicSettlementAfterClose": true,
+          "events": [
+            {
+              "kind": "spawn",
+              "sequence": 25
+            },
+            {
+              "kind": "stderrEOF",
+              "sequence": 26
+            },
+            {
+              "kind": "stdoutEOF",
+              "sequence": 27
+            },
+            {
+              "kind": "stdoutClose",
+              "sequence": 28
+            },
+            {
+              "kind": "stderrClose",
+              "sequence": 29
+            },
+            {
+              "kind": "exit",
+              "sequence": 30
+            },
+            {
+              "kind": "close",
+              "sequence": 31
+            }
+          ]
+        },
+        {
+          "name": "missing-executable",
+          "ready": false,
+          "identity": null,
+          "originalIdentityAbsent": null,
+          "nativeErrorCode": "ENOENT",
+          "expectedProductCancellationSignal": null,
+          "exitCode": null,
+          "exitSignal": null,
+          "closeCode": -2,
+          "closeSignal": null,
+          "originalCloseObserved": true,
+          "stdoutEOF": true,
+          "stderrEOF": true,
+          "stdoutClosed": true,
+          "stderrClosed": true,
+          "publicCode": "profile_key_setup_required",
+          "publicSettlementAfterClose": true,
+          "events": [
+            {
+              "kind": "error",
+              "sequence": 33
+            },
+            {
+              "kind": "stdoutEOF",
+              "sequence": 34
+            },
+            {
+              "kind": "stderrEOF",
+              "sequence": 35
+            },
+            {
+              "kind": "stderrClose",
+              "sequence": 36
+            },
+            {
+              "kind": "close",
+              "sequence": 37
+            },
+            {
+              "kind": "stdoutClose",
+              "sequence": 38
+            }
+          ]
+        }
+      ],
+      "cleanup": {
+        "allOriginalChildrenClosed": true,
+        "allPipesClosed": true,
+        "spawnedProcesses": 4,
+        "attemptedHelpers": 5
+      },
+      "containerAbsent": true,
+      "dockerTransportExit": 0,
+      "sshTransportExit": 0,
+      "outerForcedStop": false,
+      "wrapperSignalsSent": 0,
+      "intentionalExistingProductSIGKILLCases": [
+        "timeout",
+        "abort",
+        "overflow"
+      ],
+      "sourcePinsBeforeAfterMatch": true,
+      "scope": "The actual fixed module and unchanged native spawn command/options ran private Node helpers. Four spawned original PID/start identities were absent. The fifth attempt failed to spawn with ENOENT. No Secret Service/keyring/browser/network used."
+    }
+  },
+  "limitations": [
+    "Synthetic Node helper processes only; no Secret Service/user keyring/browser/network/provider access",
+    "Physical close and exact-new-record cleanup ordering do not prove an accepted D-Bus store was rolled back",
+    "No disclosure, usable failed enrollment record or authorization bypass demonstrated",
+    "Historical source805 finding and copied tests are preserved; no tested source is relabeled immutable current Common full acceptance",
+    "The prior244 source matrix predates unrelated13CRLF-to-LF pinJSON normalization, mapping retained in causalCopy",
+    "An original process closing does not prove rollback of a D-Bus store request already accepted by Secret Service. Failed-write clear remains restricted to the newly generated random record. Unique orphan-item uncertainty is separate from physical helper ownership.",
+    "No key disclosure, returned usable failed endpoint record, older-item deletion or authorization bypass was demonstrated.",
+    "This is not a full managed session, real libsecret restart/provider, OS installation or browser acceptance proof.",
+    "The first private audit harness configuration-error attempt is retained and excluded. The initial CRLF private-copy generation was corrected before its matrix and is not evidence."
+  ],
+  "primarySources": [
+    {
+      "url": "https://nodejs.org/download/release/v24.16.0/docs/api/child_process.html#event-close",
+      "supports": "Original close follows process and stdio closure."
+    },
+    {
+      "url": "https://nodejs.org/download/release/v24.16.0/docs/api/child_process.html#subprocesskilled",
+      "supports": "Successful signal delivery is not a process termination observation."
+    }
+  ],
+  "raw": [
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\key-helper-lifetime-audit\\product\\qualification.json",
+      "sha256": "5101ed20fb24a3140889ef8e855d7c702516ef84defd5dc071528f92913cf597"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\key-helper-lifetime-audit\\product\\focused.txt",
+      "sha256": "44224ebae2a64ad5e4a4b8532273a9632b85228cbcea4f88c56541a402a06372"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\key-helper-lifetime-audit\\product\\tsc.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\key-helper-lifetime-audit\\product\\prove-copy.py",
+      "sha256": "a6c83e1d9316c1654cee0de6d845d0864091b43eb8facf958baebcac4f346aba"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\key-helper-lifetime-audit\\product\\matrix.json",
+      "sha256": "b2362264edc9d2f1c37808c904b2834e5c720ea396fae8456936b9698f277561"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\key-helper-lifetime-audit\\product\\baseline.txt",
+      "sha256": "5c5940b8bce6956f47d38c84eea1651a3ab99c4f0029121c7c996665c2897636"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\key-helper-lifetime-audit\\product\\original-helper-red.txt",
+      "sha256": "dc8363e7f77b4d621682f6ec0683163ff083f9b87dba4d4a918399603110fbc4"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\key-helper-lifetime-audit\\product\\restored.txt",
+      "sha256": "eb918ee65a7621bd7801a5506ab6f99815f9d6d909631f5d1224862ab14aba3d"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\key-helper-lifetime-audit\\linux-process-proof\\source-manifest.json",
+      "sha256": "b5a63b7076dc6b9661db5803a62c408b8b00ffe8dd4398089ec3bc5a36a444c7"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\key-helper-lifetime-audit\\linux-process-proof\\probe.mjs",
+      "sha256": "7d3fe2d8689218236919c9b15b1eb9e053ea401605d4aea6f890b322fe213c31"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\key-helper-lifetime-audit\\linux-process-proof\\synthetic-helper.mjs",
+      "sha256": "80aa1739acba8ca5dca54e990935be21d53790a74032070b1943b543ceb47954"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\key-helper-lifetime-audit\\linux-process-proof\\remote.py",
+      "sha256": "6ebb2f5a7ab3797185acfb426e02b56d150cb8036934bca448a2adc535f1a94b"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\key-helper-lifetime-audit\\linux-process-proof\\run.py",
+      "sha256": "b213dc25e20f50eeaf1366bc4ab08dd2c9393002fc61140a6ce5afec48250126"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\key-helper-lifetime-audit\\linux-process-proof\\source.tar",
+      "sha256": "e8115fd106d1c66025c61e603d006c982e62bde5854ac66151117d27fffd63f2"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\key-helper-lifetime-audit\\linux-process-proof\\receipt.json",
+      "sha256": "d832c9fb945665d2a93fffb91cc1333212dcf030b94379c7dd97c2a6e856e35c"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\key-helper-lifetime-audit\\linux-process-proof\\transport-stdout.txt",
+      "sha256": "c6985c5324f7f8d9b7c9c3c647bb0bff294f0eb0ec6f0d00560380916443bfdc"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\key-helper-lifetime-audit\\linux-process-proof\\transport-stderr.txt",
+      "sha256": "a51d7b9af122d44212fcd0d3c6cd1ebb0ad2ad362254c5ed98e7e80a96210471"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\key-helper-lifetime-audit\\report.json",
+      "sha256": "534ffa988d6676c90185ffc7ae4d18061714f875b775e9c7160346d955f35f45"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\key-helper-lifetime-audit\\actual-import-physical-red.txt",
+      "sha256": "5888018defd02605fce68f0565a2e609afc67ac04a25556dc0742169d0b8f3b5"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\key-helper-lifetime-audit\\finding.json",
+      "sha256": "2944d0f912b43e3f7ac0d09abaa68ee9fa1c015e726bc6c186606be5d72c05ec"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\key-helper-lifetime-audit\\final-qualification.json",
+      "sha256": "a4c670955f45421eafa5d52acf8d27c62e3a0a048ebc642f7bc1952a4d0f846e"
+    }
+  ]
+}
