@@ -7,8 +7,9 @@
  * instead of a second copy in bash.
  *
  *   home-id --os <Darwin|Linux>
- *       The `home-<hid>` id of $HOME (#237's watcherHomeId): every agent
- *       service name carries it. One line, 8 hex characters.
+ *       The `home-<hid>` id of $HOME (agentHomeId: #237's watcherHomeId of
+ *       its real path): every agent service name carries it. One line, 8 hex
+ *       characters.
  *   probe --assistant <id> --which own|legacy --os <Darwin|Linux> [--uid <n>]
  *       Read this agent's service back, read only (`launchctl print
  *       gui/<uid>/<label>`, `systemctl --user show <unit>` and the unit file

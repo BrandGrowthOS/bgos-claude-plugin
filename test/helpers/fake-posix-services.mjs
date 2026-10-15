@@ -25,7 +25,10 @@
  * units and live tmux servers right after it, so a test can prove "never two at
  * once" and "never none". `fail` in the state makes matching calls fail (a substring, or the
  * whole line with `exact`); `killCallerOn` (a whole line) kills the process that ran that call,
- * once, right after it (an installer inside the job it ends).
+ * once, right after it (an installer inside the job it ends). `watch` (a path) records that file's
+ * content in each call as `watched` (what a job started by that call would run); `unloadWith`
+ * ({ line, label, skip }) unloads that job when that whole line runs, after `skip` runs of it (an
+ * earlier bootout that was only slow, finishing then).
  */
 
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
@@ -227,7 +230,16 @@ function main() {
     failure.times = (failure.times ?? 1) - 1
     result = { code: failure.code ?? 1, stdout: '', stderr: failure.stderr ?? `fake: ${failure.match} failed` }
   } else result = run(state, tool, args)
-  state.calls.push({ cmd: line, code: result.code, loaded: Object.keys(state.launchd), enabled: [...state.enabled], active: [...state.active], tmux: [...state.tmux] })
+  const slow = state.unloadWith
+  if (slow && line === slow.line) {
+    if ((slow.skip ?? 0) > 0) slow.skip -= 1
+    else {
+      delete state.launchd[slow.label]
+      state.unloadWith = null
+    }
+  }
+  const watched = state.watch && existsSync(state.watch) ? readFileSync(state.watch, 'utf8') : null
+  state.calls.push({ cmd: line, code: result.code, loaded: Object.keys(state.launchd), enabled: [...state.enabled], active: [...state.active], tmux: [...state.tmux], ...(state.watch ? { watched } : {}) })
   // killCallerOn: the caller lives inside what this command ends (a hoai-agent install typed into the
   // agent's own session dies at the bootout of its job): the command is done, then the caller is killed.
   const kill = state.killCallerOn && line === state.killCallerOn

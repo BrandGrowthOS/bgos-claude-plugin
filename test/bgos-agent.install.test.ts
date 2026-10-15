@@ -187,8 +187,8 @@ function pair(m: Machine, id: string, { pin = id, creds = true }: { pin?: string
 }
 
 const callsOf = (m: Machine) => (existsSync(m.calls) ? readFileSync(m.calls, 'utf8') : '')
-/** This HOME's systemd unit for an agent: its name carries the HOME id (#237's watcherHomeId of the temp HOME). */
-const unitOf = (m: Machine, id: string) => `bgos-agent-${id}-home-${watcherHomeId(m.home, 'linux')}`
+/** This HOME's systemd unit for an agent: its name carries the HOME id (#237's watcherHomeId of the temp HOME's real path, round 2 H2). */
+const unitOf = (m: Machine, id: string) => `bgos-agent-${id}-home-${watcherHomeId(realpathSync(m.home), 'linux')}`
 /** A value baked into run.sh's header (a %q-quoted assignment), read back by bash itself. */
 const runShVar = (m: Machine, id: string, name: string) => {
   const runSh = join(m.home, '.bgos-agent', id, 'run.sh')

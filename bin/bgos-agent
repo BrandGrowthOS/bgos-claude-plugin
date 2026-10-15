@@ -362,14 +362,18 @@ require_manager_home() {
   mh="$(systemctl --user show-environment 2>/dev/null | sed -n 's/^HOME=//p' | head -n 1)"
   [ -n "$mh" ] || return 0
   [ "$(phys_dir "$mh")" = "$(phys_dir "$HOME")" ] && return 0
-  die "refused: this account's systemd --user manager reads its units from $mh/.config/systemd/user, not from this HOME ($HOME); nothing was installed"
+  die "refused: this account's systemd --user manager reads its units from $mh/.config/systemd/user, not from this HOME ($HOME); no service file or run.sh was written"
 }
 
-# A rolled back rename puts the previous run.sh back (round 2 L5), then dies.
+# A rolled back rename puts the previous run.sh back (round 2 L5): before the
+# old job or unit is started again, so it never starts on the new one.
 RUN_SH_PREV=""
-rollback_die() {
-  if [ -n "$RUN_SH_PREV" ] && [ -f "$RUN_SH_PREV" ]; then mv -f "$RUN_SH_PREV" "${RUN_SH_PREV%.prev}"; fi
+restore_run_sh() {
+  if [ -n "$RUN_SH_PREV" ] && [ -f "$RUN_SH_PREV" ]; then mv -f "$RUN_SH_PREV" "${RUN_SH_PREV%.prev}" || true; fi
   RUN_SH_PREV=""
+}
+rollback_die() {
+  restore_run_sh
   die "$@"
 }
 
@@ -614,11 +618,6 @@ cmd_install() {
   write_run_sh "$statedir/run.sh.tmp" "$statedir" "$ASSISTANT_ID" "$node_bin" "$topology" "$plugin_key" "$PLUGIN_DIR" "$(tmux_name_for "$ASSISTANT_ID")"
   chmod +x "$statedir/run.sh.tmp"
   mv -f "$statedir/run.sh.tmp" "$statedir/run.sh"
-  # Round 2 L6: a 0.69.2 tmux server orphaned on the OLD socket (its job gone,
-  # killed past run.sh's trap) with a pane in this agent's folder would hold the
-  # new job's singleton wait for good; the new run.sh clears only its own
-  # socket. Ended here unless the old name is another HOME's, or unreadable.
-  [ "$legacy_state" = absent ] && end_orphan_old_tmux "$ASSISTANT_ID" "$workdir"
 
   # The service environment carries what the shell that installed it had and the service
   # would otherwise lose: a custom CLAUDE_CONFIG_DIR (silently dropped before, so the
@@ -639,6 +638,14 @@ cmd_install() {
     *)      die "unsupported OS '$OS' (macOS + Linux only; on Windows use WSL)" ;;
   esac
   [ -n "$RUN_SH_PREV" ] && rm -f "$RUN_SH_PREV"
+  RUN_SH_PREV=""
+  # Round 2 L6: a 0.69.2 tmux server orphaned on the OLD socket (its job gone,
+  # killed past run.sh's trap) with a pane in this agent's folder would hold the
+  # new job's singleton wait for good; the new run.sh clears only its own
+  # socket. Ended once the new service is in place (an install typed into that
+  # orphan's session ends with it), unless the old name is another HOME's or
+  # unreadable.
+  if [ "$legacy_state" = absent ]; then end_orphan_old_tmux "$ASSISTANT_ID" "$workdir"; fi
 
   cmd_link >/dev/null 2>&1 || true
   echo
@@ -1115,7 +1122,7 @@ launchd_reload() { # $1 plist $2 label  -> returns nonzero on hard failure
 # exactly ONE plist of the agent; every rollback puts it back. The old job's
 # tmux server is ended once the job is gone (it daemonizes out of launchd's
 # process group, so only run.sh's trap would end it).
-launchd_rename() { # $1 id $2 new plist $3 new label -> 0 renamed, 1 rolled back (old loaded), 2 both left loaded
+launchd_rename() { # $1 id $2 new plist $3 new label -> 0 renamed, 1 rolled back (old loaded), 2 both left loaded, 3 neither loaded
   local id="$1" plist="$2" label="$3" domain n=0 tries=0 old_label old_plist parked=""
   domain="gui/$(id -u)"
   old_label="$(legacy_label_for "$id")"
@@ -1160,6 +1167,18 @@ launchd_rename() { # $1 id $2 new plist $3 new label -> 0 renamed, 1 rolled back
       return 2
     fi
     rm -f "$plist"
+    # A bootout that was only slow may have ended the old job meanwhile: it is loaded again, on its own run.sh.
+    if ! launchctl print "$domain/$old_label" >/dev/null 2>&1; then
+      restore_run_sh
+      tries=0
+      until launchctl print "$domain/$old_label" >/dev/null 2>&1 || launchctl bootstrap "$domain" "$old_plist" 2>/dev/null; do
+        tries=$((tries + 1)); [ "$tries" -ge 5 ] && break; sleep 0.5
+      done
+      if ! launchctl print "$domain/$old_label" >/dev/null 2>&1; then
+        RENAME_FAILURE="$RENAME_FAILURE; then it unloaded after all and could not be loaded again (its plist is back, so the next login starts it)"
+        return 3
+      fi
+    fi
     return 1
   fi
   # Gone: its tmux server goes with it, and so does its plist wherever it is.
@@ -1226,7 +1245,8 @@ PLIST
       0) ok "launchd service $label loaded"
          service_note "renamed the launchd job \"$(legacy_label_for "$id")\" (installed from this HOME by an older version) to launchd job \"$label\"" ;;
       1) rollback_die "migration rolled back (the old job \"$(legacy_label_for "$id")\" stays loaded, the new one is removed): $RENAME_FAILURE" ;;
-      *) rollback_die "migration rolled back, but the new job \"$label\" could not be booted out again: both are loaded until it is (the new one waits for the old claude to leave the folder), and only the old plist loads at the next login: $RENAME_FAILURE" ;;
+      2) rollback_die "migration rolled back, but the new job \"$label\" could not be booted out again: both are loaded until it is (the new one waits for the old claude to leave the folder), and only the old plist loads at the next login: $RENAME_FAILURE" ;;
+      *) rollback_die "migration rolled back, but the old job \"$(legacy_label_for "$id")\" is not loaded: $RENAME_FAILURE" ;;
     esac
     return 0
   fi
@@ -1350,6 +1370,7 @@ systemd_rename() { # $1 id $2 new unit $3 was the new unit active (1/0)
   [ "$was_active" = 1 ] && swap=restart
   if ! systemctl --user "$swap" "$unit"; then
     systemctl --user disable --now "$unit" >/dev/null 2>&1 || true
+    restore_run_sh
     systemctl --user enable --now "$old" >/dev/null 2>&1 || true
     undo_rename_dropin "$dropdir"; rm -f "$(unitfile_for "$id")"; systemctl --user daemon-reload >/dev/null 2>&1 || true
     rollback_die "migration rolled back (the old unit \"$old\" is enabled and started again): systemctl --user $swap $unit failed"
@@ -1961,7 +1982,13 @@ cmd_uninstall() {
   probe_service "$ASSISTANT_ID" legacy
   old_state="$PROBE_STATE"
   case "$old_state" in
-    foreign|unknown) service_note "$PROBE_SAY" ;;
+    foreign) service_note "$PROBE_SAY" ;;
+    unknown)
+      # The old job may be this HOME's: its files would go while it runs on (round 2 L8).
+      if file_records_home "$(legacy_service_file_for "$ASSISTANT_ID")"; then
+        die "refused: agent $ASSISTANT_ID's old service could not be read back (${PROBE_SAY#left the }) and this HOME's old service file $(legacy_service_file_for "$ASSISTANT_ID") is there, so it may be running and could not be stopped by name; nothing was removed"
+      fi
+      service_note "$PROBE_SAY" ;;
   esac
   # Remove the manifest + state FIRST, so the agent reads as uninstalled even if
   # the stop/bootout below kills this very process, which happens when the

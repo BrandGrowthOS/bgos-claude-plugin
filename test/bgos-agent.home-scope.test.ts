@@ -56,7 +56,9 @@ type State = {
   panes?: Record<string, string[]>
   fail: Array<{ match: string; exact?: boolean; code?: number; stderr?: string; times?: number }>
   killCallerOn?: string | null
-  calls: Array<{ cmd: string; code: number; loaded: string[]; enabled: string[]; active: string[]; tmux: string[] }>
+  watch?: string
+  unloadWith?: { line: string; label: string; skip?: number }
+  calls: Array<{ cmd: string; code: number; loaded: string[]; enabled: string[]; active: string[]; tmux: string[]; watched?: string | null }>
 }
 
 /** One user account: two HOMEs on it, one faked service layer, both HOMEs' PATH leading with its tools. */
@@ -491,10 +493,17 @@ test('round 2 L5: a rolled back rename puts the previous run.sh back (atomically
   a.setState((s) => {
     s.fail.push({ match: `systemctl --user start ${unit(a.owner)}`, code: 1, stderr: 'Job failed.', times: 1 })
   })
+  a.setState((s) => {
+    s.watch = runSh
+  })
   const r = a.install(a.owner)
   assert.notEqual(r.status, 0)
   assert.equal(readFileSync(runSh, 'utf8'), previous, 'the old unit runs the run.sh it ran before')
   assert.equal(existsSync(`${runSh}.prev`), false)
+  // Put back BEFORE the old unit is started again, so it never starts on the new one (review of round 2).
+  const again = a.state().calls.find((c) => c.cmd === `systemctl --user enable --now ${OLD_UNIT}`)
+  assert.ok(again, a.state().calls.map((c) => c.cmd).join('\n'))
+  assert.equal(again!.watched, previous)
 })
 
 test('round 2 L6: a 0.69.2 tmux server orphaned on the old socket with its pane in this agent\'s folder is ended by the install (it would hold the new job\'s singleton wait for good); one elsewhere is left', SLOW, (t) => {
@@ -511,6 +520,11 @@ test('round 2 L6: a 0.69.2 tmux server orphaned on the old socket with its pane 
   assert.equal(r.status, 0, r.out)
   assert.equal(a.state().tmux.includes(`hoai-${ID}`), false, 'the orphan in this agent\'s folder is ended')
   assert.match(r.out, /service note: ended an old tmux server/)
+  // Only once the new job is loaded: an install typed into that orphan's session ends with it.
+  const cmds = a.state().calls.map((c) => c.cmd)
+  const killAt = cmds.indexOf(`tmux -L hoai-${ID} kill-server`)
+  const inAt = cmds.findIndex((c) => c.startsWith('launchctl bootstrap') && c.endsWith(`${label(a.owner)}.plist`))
+  assert.ok(inAt >= 0 && killAt > inAt, cmds.join('\n'))
   // A server on the old socket whose pane is another folder (another HOME's agent of this id) is left.
   const b = account('Darwin')
   t.after(b.cleanup)
@@ -520,6 +534,51 @@ test('round 2 L6: a 0.69.2 tmux server orphaned on the old socket with its pane 
   })
   assert.equal(b.install(b.owner).status, 0)
   assert.ok(b.state().tmux.includes(`hoai-${ID}`))
+})
+
+test('round 2 (review): an old job whose bootout is only slow, gone during the rollback, is loaded again on its own run.sh: never left with nothing loaded', SLOW, (t) => {
+  if (!ready(t)) return
+  const a = account('Darwin')
+  t.after(a.cleanup)
+  seedOldAgent(a, 'Darwin')
+  const runSh = join(a.owner, '.bgos-agent', ID, 'run.sh')
+  mkdirSync(dirname(runSh), { recursive: true })
+  const previous = '#!/usr/bin/env bash\n# 0.69.2 run.sh\nsock="hoai-$id"\n'
+  writeFileSync(runSh, previous)
+  a.setState((s) => {
+    // The bootout reports a failure and the job outlasts the rename's 40 checks; it goes only while the
+    // rollback boots the new job out again (that label's second bootout; the first is before its bootstrap).
+    s.fail.push({ match: `launchctl bootout gui/${s.uid}/${OLD_LABEL}`, exact: true, code: 5, stderr: 'Boot-out failed: 5: Input/output error', times: 99 })
+    s.unloadWith = { line: `launchctl bootout gui/${s.uid}/${label(a.owner)}`, label: OLD_LABEL, skip: 1 }
+    s.watch = runSh
+  })
+  const r = a.install(a.owner)
+  assert.notEqual(r.status, 0)
+  assert.match(r.out, new RegExp(`migration rolled back \\(the old job "${OLD_LABEL}" stays loaded, the new one is removed\\)`))
+  assert.deepEqual(Object.keys(a.state().launchd), [OLD_LABEL], 'the old job is loaded again')
+  assert.deepEqual(agentPlists(a.owner), [`${OLD_LABEL}.plist`])
+  const again = a.state().calls.filter((c) => c.cmd.startsWith('launchctl bootstrap') && c.cmd.endsWith(`${OLD_LABEL}.plist`))
+  assert.equal(again.length, 1, a.state().calls.map((c) => c.cmd).join('\n'))
+  assert.equal(again[0].watched, previous, 'on the run.sh it ran before')
+})
+
+test('round 2 (review): an uninstall whose OLD job cannot be read back, with this HOME\'s old plist there, removes nothing (that job may be running)', SLOW, (t) => {
+  if (!ready(t)) return
+  const a = account('Darwin')
+  t.after(a.cleanup)
+  seedOldAgent(a, 'Darwin')
+  const runSh = join(a.owner, '.bgos-agent', ID, 'run.sh')
+  mkdirSync(dirname(runSh), { recursive: true })
+  writeFileSync(runSh, 'x')
+  a.setState((s) => {
+    s.fail.push({ match: `launchctl print gui/${s.uid}/${OLD_LABEL}`, exact: true, code: 1, stderr: 'launchctl: XPC error', times: 99 })
+  })
+  const before = JSON.stringify(a.state().launchd)
+  const r = a.run(a.owner, ['uninstall', '--assistant', ID])
+  assert.notEqual(r.status, 0)
+  assert.match(r.out, /refused: agent 42's old service could not be read back .* nothing was removed/)
+  assert.ok(existsSync(runSh) && existsSync(plistPath(a.owner, OLD_LABEL)), 'nothing removed')
+  assert.equal(JSON.stringify(a.state().launchd), before, 'and nothing stopped')
 })
 
 test('round 2 L11: a rename drop-in an interrupted swap left behind is removed by the next install', SLOW, (t) => {

@@ -294,6 +294,11 @@ test('round 2 H1: the watcher\'s check registers this HOME\'s own task when the 
   assert.equal(host.tasks.get(OWNER_TASK)?.description, `HOAI agent ${ID}, installed from home=${OWNER}`)
   assert.equal(snapshotOf(host, OLD_TASK), foreign, 'the other HOME\'s task, byte for byte')
   assert.ok(result.notes.some((n: string) => n.startsWith(`left the Scheduled Task "${OLD_TASK}" alone: it was installed from another HOME (${SCRATCH})`)), result.notes.join('\n'))
+  // Said plainly (review of round 2): both tasks start at logon now; never how to remove the other one.
+  const beside = result.notes.find((n: string) => n.startsWith(`registered this HOME's own Scheduled Task "${OWNER_TASK}" beside it`))
+  assert.ok(beside, result.notes.join('\n'))
+  assert.match(beside!, /the Scheduled Task "HOAI Agent 912" still starts at logon too/)
+  assert.doesNotMatch(result.notes.join('\n'), /Unregister-ScheduledTask/)
   assert.deepEqual(host.calls.map((c) => c.replace(/^.* -Action /, '')), ['probe', 'probe-legacy', 'install', 'probe'])
 })
 
@@ -447,6 +452,29 @@ test('start: an agent not renamed yet is still supervised under its OLD name (pr
   assert.equal(renamed.ok, true, renamed.message)
   assert.equal(renamed.name, OWNER_TASK)
   assert.ok(host.calls.includes(`schtasks.exe /Run /TN ${OWNER_TASK}`))
+})
+
+test('round 2 L12: a start of the OLD name that the sweep\'s rename retired in between (read back as this HOME\'s, gone at /Run) starts this HOME\'s renamed task instead', async () => {
+  const { fs, host } = world()
+  seedOldTask(host, fs, OWNER, false)
+  const reg = agentTaskRegistration({ assistantId: ID, home: OWNER })
+  let renamedAway = false
+  const racing = async (file: string, args: readonly string[]) => {
+    if (file === 'schtasks.exe' && args[2] === OLD_TASK && !renamedAway) {
+      renamedAway = true
+      // The sweep's rename runs right here: this HOME's new task registered, the old one retired.
+      const renamed = await installAgentTask(spec(), { exec: host.exec, fs, start: false })
+      assert.equal(renamed.ok, true, renamed.message)
+    }
+    return host.exec(file, args)
+  }
+  const started = await runAgentTask(reg, { exec: racing as any, fs })
+  assert.equal(renamedAway, true)
+  assert.equal(started.ok, true, started.message)
+  assert.equal(started.name, OWNER_TASK)
+  assert.equal(started.acted, true)
+  assert.ok(host.calls.includes(`schtasks.exe /Run /TN ${OWNER_TASK}`), host.calls.join('\n'))
+  assert.ok(host.instances.has(OWNER_TASK))
 })
 
 // -- the sweep: renames once, then supervises the renamed agent ---------------------------------------

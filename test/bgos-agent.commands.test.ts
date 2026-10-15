@@ -18,7 +18,8 @@
  * Every name of the agent's service and its tmux socket carries the HOME it was
  * installed from (board row d6198bb6): ai.bgos.agent.42.home-<hid>,
  * bgos-agent-42-home-<hid>, hoai-42-home-<hid>, where hid is #237's
- * watcherHomeId of this (temp) HOME. bgos-agent computes it, and reads the
+ * watcherHomeId of this (temp) HOME's real path (round 2 H2: on macOS the temp
+ * dir is reached through a symlink, /var to /private/var). bgos-agent computes it, and reads the
  * service back before it acts, through bin/hoai-agent-service.mjs on bun or
  * node: the `bun` on PATH hands over to the runtime running this test, and the
  * launchctl and systemctl fakes answer that read-back the way a real host does
@@ -27,7 +28,7 @@
  * Run: npx tsx --test test/bgos-agent.commands.test.ts
  */
 import { spawn, spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -56,8 +57,8 @@ function machine() {
   const log = join(home, 'calls.log')
   mkdirSync(shims)
   mkdirSync(fake)
-  // This HOME's id (#237's watcherHomeId): HOME is a fresh temp dir, so it is computed here.
-  const hid = watcherHomeId(home, OS === 'Darwin' ? 'darwin' : 'linux')
+  // This HOME's id (#237's watcherHomeId of its real path): HOME is a fresh temp dir, so it is computed here.
+  const hid = watcherHomeId(realpathSync(home), OS === 'Darwin' ? 'darwin' : 'linux')
   const label = `ai.bgos.agent.42.home-${hid}`
   const unitName = `bgos-agent-42-home-${hid}`
   const sock = `hoai-42-home-${hid}`
