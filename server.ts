@@ -593,6 +593,7 @@ import {
   readAlwaysOnSupervision,
   userBusExecSync,
 } from './lib/always-on-reconcile.js'
+import { serviceNotesFrom, serviceRefusalFrom } from './lib/agent-service.mjs'
 import { installedPluginsPath, resolvePendingRestartVersion } from './lib/pending-restart.js'
 import {
   AGENT_STATE_FILE_NAME,
@@ -15044,6 +15045,14 @@ let reconcileDisabledReason: string | null = null
 let alwaysOnDeferLogged = false
 // F4: so is the "could not read the job list, asking again next cycle" line.
 let alwaysOnWaitLogged = false
+// Board row d6198bb6: a refusal from bin/bgos-agent (this agent's service name
+// is held by a registration another HOME installed, which it never touches) is
+// said once per refusal, not every 15 minutes.
+let alwaysOnRefusalLogged: string | null = null
+/** What bin/bgos-agent said about a registration it left alone, renamed or removed, in the daemon log. */
+function logAgentServiceNotes(out: { stdout?: unknown; stderr?: unknown } | null | undefined): void {
+  for (const note of serviceNotesFrom(`${out?.stdout ?? ''}\n${out?.stderr ?? ''}`)) log(`always-on: ${note}`)
+}
 // The G11 reading's exec: systemctl --user with the user bus default
 // bin/bgos-agent uses (lib/always-on-reconcile.ts userBusExecSync).
 const alwaysOnExecSync = userBusExecSync(defaultExecSync, {
@@ -15172,11 +15181,12 @@ async function reconcileAlwaysOn(): Promise<void> {
     }
     if (decision.action === 'install') {
       log('always-on: enabled in BGOS, installing supervisor on this host')
-      await execFileAsync(
+      const installed = await execFileAsync(
         BGOS_AGENT_BIN,
         ['install', '--assistant', ASSISTANT_ID, '--dir', ALWAYS_ON_WORKDIR, '--always-on', '--no-clone'],
         { timeout: 120_000 },
       )
+      logAgentServiceNotes(installed)
       log('always-on: supervisor installed (takes over when this session ends)')
     } else if (decision.action === 'remove') {
       // A supervisor installed moments ago is NOT "switched off": the app records
@@ -15193,13 +15203,22 @@ async function reconcileAlwaysOn(): Promise<void> {
         return
       }
       log('always-on: disabled in BGOS, removing supervisor')
-      await execFileAsync(BGOS_AGENT_BIN, ['uninstall', '--assistant', ASSISTANT_ID], {
+      const removed = await execFileAsync(BGOS_AGENT_BIN, ['uninstall', '--assistant', ASSISTANT_ID], {
         timeout: 60_000,
       })
+      logAgentServiceNotes(removed)
       log('always-on: supervisor removed')
     }
   } catch (err) {
-    log(`always-on reconcile error: ${err}`)
+    const out = err as { stdout?: unknown; stderr?: unknown }
+    const refused = serviceRefusalFrom(`${out?.stdout ?? ''}\n${out?.stderr ?? ''}`)
+    if (refused) {
+      logAgentServiceNotes(out)
+      if (alwaysOnRefusalLogged !== refused) {
+        alwaysOnRefusalLogged = refused
+        log(`always-on: bin/bgos-agent ${refused} (this agent's service is left exactly as it is; logged once)`)
+      }
+    } else log(`always-on reconcile error: ${err}`)
   } finally {
     reconcileBusy = false
   }

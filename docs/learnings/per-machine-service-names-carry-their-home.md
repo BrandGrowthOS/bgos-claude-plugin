@@ -15,3 +15,12 @@
 - Test with a FAKED service layer that models the primitives (register, bootout, enable, probe) and holds several HOMEs at once, never with real tasks.
 
 **Regression guard:** `test/watcher-service.home-scope.test.ts` (two HOMEs side by side, a scratch HOME against the owner's 0.69.x registration on all three platforms, the same-HOME rename with no gap and never two watchers, the rollbacks, refusal of another HOME's record, uninstall of only its own, the CLI with a stale task script), on `test/helpers/fake-service-host.ts`.
+
+**Follow-up, the agents (0.69.3, board row d6198bb6):** the per-AGENT services had the same flaw after the watcher's was fixed: `HOAI Agent <id>`, `ai.bgos.agent.<id>`, `bgos-agent-<id>` and the tmux socket `hoai-<id>` are one name per account, so a scratch HOME holding `credentials-<id>.json` could re-register, start, stop or remove the owner's agent. Three things that were not obvious:
+
+- **Every reader of a name is part of the fix.** The name was spelled in bash (`bin/bgos-agent`), in the watcher's inventory and restart ladder, in the daemon's own canonical tier and in the always-on reconcile's "is this ours" check, and two validators pinned the old shape. Scope one and the others quietly treat the renamed service as somebody else's (the reconcile would defer to it for ever). During the migration they must accept BOTH this HOME's new name and the old one, and only the old one when its record proves it this HOME's.
+- **The tmux socket is a service name too.** It lives in the account's socket directory, and run.sh kills any server on its socket at start, so two HOMEs' agents of one id would end each other's sessions in a loop.
+- **A rename must not change what the owner chose.** Windows: a task the owner DISABLED is registered disabled again (`-Disable`), and a running agent's launcher is never stopped or started by the rename; the old task is retired only after the new one is registered.
+- **Reuse the judge, not just the idea.** The installer is bash, so it calls the same JS reader (`bin/hoai-agent-service.mjs` on bun or node) instead of parsing `launchctl print` again; without a runtime it refuses to act by name rather than guessing.
+
+**Regression guard (agents):** `test/agent-task-win32.home-scope.test.ts`, `test/agent-service.home-scope.test.ts`, `test/bgos-agent.home-scope.test.ts` (faked task layers: `test/helpers/fake-agent-tasks.ts`, `test/helpers/fake-posix-services.mjs`).

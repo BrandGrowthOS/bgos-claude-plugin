@@ -66,6 +66,8 @@ import {
   type SyncExecResult,
 } from './service-supervision.mjs'
 
+import { agentServiceNamesFor } from './agent-inventory.mjs'
+
 export type { ResolvedService, SyncExecResult }
 
 /** Mirror of bin/hoai-core.mjs SUPERVISOR_FILE_NAME / RESTART_MARKER_FILE_NAME
@@ -130,12 +132,13 @@ export function validAssistantId(
   return /^\d+$/.test(value) ? value : null
 }
 
-/** launchd label, mirror of bin/bgos-agent label_for. */
+/** The OLD launchd label (0.69.2 and earlier), mirror of bin/bgos-agent legacy_label_for.
+ *  This HOME's own name carries `home-<hid>` (lib/agent-inventory.mjs agentServiceNames). */
 export function serviceLabel(assistantId: string): string {
   return `ai.bgos.agent.${assistantId}`
 }
 
-/** systemd --user unit name, mirror of bin/bgos-agent unit_for. */
+/** The OLD systemd --user unit name (0.69.2 and earlier), mirror of bin/bgos-agent legacy_unit_for. */
 export function serviceUnit(assistantId: string): string {
   return `bgos-agent-${assistantId}`
 }
@@ -146,19 +149,22 @@ export function serviceUnit(assistantId: string): string {
 // every OS; path.join rewrote a '/' home with '\' on Windows, and they disagreed.
 
 /** The installed always-on service file for this assistant, or null when the
- *  platform has none (Windows) or the id is invalid. */
+ *  platform has none (Windows) or the id is invalid. `homeId` names the file of
+ *  that HOME's service (board row d6198bb6); without one, the OLD file name. */
 export function serviceFilePath(
   platform: string,
   home: string,
   assistantId: string | number | null | undefined,
+  homeId = '',
 ): string | null {
   const id = validAssistantId(assistantId)
   if (!id) return null
+  const scope = /^[0-9a-f]{8}$/.test(homeId) ? `home-${homeId}` : ''
   if (platform === 'darwin') {
-    return joinDir(launchAgentsDir(home), `${serviceLabel(id)}.plist`)
+    return joinDir(launchAgentsDir(home), `${serviceLabel(id)}${scope ? `.${scope}` : ''}.plist`)
   }
   if (platform === 'linux') {
-    return joinDir(systemdUserDir(home), `${serviceUnit(id)}.service`)
+    return joinDir(systemdUserDir(home), `${serviceUnit(id)}${scope ? `-${scope}` : ''}.service`)
   }
   return null
 }
@@ -479,13 +485,20 @@ export interface Supervision {
  *  additive: an agent that reported a service before still does, with the
  *  same handle, without consulting the platform at all. */
 function canonicalService(probe: SupervisionProbe): ResolvedService | null {
-  const file = serviceFilePath(probe.platform, probe.home, probe.assistantId)
-  if (!file || !probe.exists(file)) return null
   const id = validAssistantId(probe.assistantId)
-  if (!id) return null
-  return probe.platform === 'darwin'
-    ? { kind: 'launchd', handle: serviceLabel(id), via: 'canonical-file', file }
-    : { kind: 'systemd', handle: serviceUnit(id), via: 'canonical-file', file }
+  if (!id || (probe.platform !== 'darwin' && probe.platform !== 'linux')) return null
+  // This HOME's own name first (board row d6198bb6), then the old one of an
+  // agent not renamed yet: both are this HOME's file. Which HOME the LOADED job
+  // belongs to is the ownership read-back's to judge (probeServiceOwnership).
+  const names = agentServiceNamesFor(id, probe.home, probe.platform)
+  for (const side of names ? [names.current, names.legacy] : []) {
+    const file = serviceFilePath(probe.platform, probe.home, id, side.homeId)
+    if (!file || !probe.exists(file)) continue
+    return probe.platform === 'darwin'
+      ? { kind: 'launchd', handle: side.launchdLabel, via: 'canonical-file', file }
+      : { kind: 'systemd', handle: side.systemdUnit, via: 'canonical-file', file }
+  }
+  return null
 }
 
 /** What would restart this daemon right now, strongest evidence first, WITH

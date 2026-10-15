@@ -104,8 +104,9 @@ hoai-agent restart   --assistant <id>
 hoai-agent uninstall --assistant <id>     # removes the service; keeps your workspace
 ```
 
-Each agent is keyed by its assistant id, so one host can run several. Full
-options: `hoai-agent help`.
+Each agent is keyed by its assistant id and the HOME it was installed from
+(see "The agents' services are named after their HOME" below), so one host can
+run several. Full options: `hoai-agent help`.
 
 `bgos-agent` and `bgos-pair` still work as aliases for `hoai-agent` and `hoai-pair`.
 
@@ -121,15 +122,15 @@ options: `hoai-agent help`.
 ```
 launchd / systemd --user
   -> ~/.bgos-agent/<id>/run.sh          singleton wait, fast fail accounting, stop trap
-     -> tmux -L hoai-<id> new-session -d -s hoai-<id> -c <workspace>   (when tmux is installed)
+     -> tmux -L hoai-<id>-home-<hid> new-session -d -s hoai-<id>-home-<hid> -c <workspace>   (when tmux is installed)
         -> node <current plugin root>/bin/hoai-core.mjs                (HOAI_SUPERVISED=1)
            -> expect + the startup gate block -> claude --resume <pinned session id>
 ```
 
 - **hoai runs the agent, in tmux, on the agent's own socket.** The service starts
   `run.sh`, which starts hoai (`bin/hoai-core.mjs`) with `HOAI_SUPERVISED=1` in a
-  detached tmux session named `hoai-<id>` on a tmux server of its own
-  (`tmux -L hoai-<id>`), never inside someone else's tmux, in a fixed 200x50
+  detached tmux session named `hoai-<id>-home-<hid>` on a tmux server of its own
+  (`tmux -L hoai-<id>-home-<hid>`), never inside someone else's tmux, in a fixed 200x50
   window. That server starts with no tmux config (`-f /dev/null`), so settings
   in your `~/.tmux.conf` (remain-on-exit, destroy-unattached, a session restore)
   never change how the agent runs. hoai answers Claude Code's startup screens itself, under expect, with
@@ -142,8 +143,8 @@ launchd / systemd --user
   transcript does not exist yet, never `--continue`. A resume that is rejected
   gets one fresh session, kept only once it stays up. `hoai-agent uninstall`
   keeps the pin, so the conversation survives a reinstall.
-- **Remote compact is ON.** The session carries `BGOS_TMUX_SESSION=hoai-<id>` and
-  `BGOS_TMUX_SOCKET=hoai-<id>`, which is what lets the daemon type `/compact`
+- **Remote compact is ON.** The session carries `BGOS_TMUX_SESSION=hoai-<id>-home-<hid>` and
+  `BGOS_TMUX_SOCKET=hoai-<id>-home-<hid>`, which is what lets the daemon type `/compact`
   into it when the owner asks from the app. With no tmux on the host, hoai runs
   without it (expect still gives claude its terminal) and the launch status says
   `compact=off reason=no-tmux`: install tmux, then
@@ -228,7 +229,7 @@ outcome (a Node.js too old to run it, a missing file, a fatal error) is
 `hoai-exited-without-status` with its last error line.
 
 **`hoai --keep-alive`.** On Windows the always-on agent is a logon Scheduled
-Task, `HOAI Agent <id>`, that runs `node <plugin root>\bin\hoai-core.mjs
+Task, `HOAI Agent <id> home-<hid>`, that runs `node <plugin root>\bin\hoai-core.mjs
 --keep-alive` in the agent folder. `--keep-alive` makes hoai itself the
 keep-alive loop: whenever claude exits it starts it again, resuming the agent's
 own session, after 5 s, 10 s, 20 s, 40 s and then 60 s for every further quick
@@ -267,6 +268,35 @@ and loads the old one again if the new one does not come up. The old plist or
 unit file of that HOME is removed. A registration under an old name that
 another HOME installed is left alone and reported (on Windows, with a warning
 when its launcher pins no HOME and so serves the logon user's profile).
+
+**The agents' services are named after their HOME too** (0.69.3). Every name an
+agent's service is known by carries the same `home-<hid>` as the watcher of
+that HOME: the Scheduled Task `HOAI Agent <id> home-<hid>`, the launchd label
+`ai.bgos.agent.<id>.home-<hid>`, the systemd unit `bgos-agent-<id>-home-<hid>`
+and the agent's own tmux socket `hoai-<id>-home-<hid>`. The registration
+records its HOME and agent id (on Windows the task description
+`HOAI agent <id>, installed from home=<HOME>`, the launcher path and a launcher
+that pins `USERPROFILE`; the plist's and the unit's `HOME` and `run.sh` path),
+and every install, start, stop, restart, status and uninstall reads it back
+first, the watcher's restarts and task starts included: one under this HOME's
+own name that records another HOME is refused and left exactly as it is, and
+an old name another HOME installed is left alone and said (in the watcher log,
+the daemon log, `hoai-agent` and `hoai-watcher status`). So a daemon or watcher
+in a scratch or second HOME holding the same agent's credentials gets services
+of its own and never re-registers, stops or removes the owner's. `hoai-agent`
+computes the HOME id and reads back with `bin/hoai-agent-service.mjs` on bun or
+node; without either it refuses to act by name.
+
+Upgrading from 0.69.2: on Windows the watcher renames each agent's old
+`HOAI Agent <id>` of its own HOME in place, once (the new task registered
+first, then the old one retired; the running agent is never stopped or
+started, and a task you disabled stays disabled). On macOS and Linux an agent
+keeps its old `ai.bgos.agent.<id>` or `bgos-agent-<id>` until the next
+`hoai-agent install` from the same HOME, which renames it in the watcher's
+order (macOS: old job booted out and gone, new one bootstrapped, the old one
+loaded again if the new one does not come up; Linux: one user manager job with
+a temporary `Conflicts=` drop-in). Until then the old name is still found and
+supervised.
 
 **Side by side installs: `HOAI_SERVICE_NAMESPACE`.** A second, isolated install
 on the same user account (a staging install, with its own HOME) must never stop
