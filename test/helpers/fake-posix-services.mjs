@@ -28,7 +28,8 @@
  * once, right after it (an installer inside the job it ends). `watch` (a path) records that file's
  * content in each call as `watched` (what a job started by that call would run); `unloadWith`
  * ({ line, label, skip }) unloads that job when that whole line runs, after `skip` runs of it (an
- * earlier bootout that was only slow, finishing then).
+ * earlier bootout that was only slow, finishing then); `bootoutKeeps` (labels) makes a bootout of
+ * that label succeed while the job stays loaded (a bootout launchd accepted that unloads later).
  */
 
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
@@ -70,6 +71,7 @@ function run(state, tool, args) {
         label = plistValue(readFileSync(args[2], 'utf8'), 'Label')
       } else label = labelOf(args[1])
       if (!state.launchd[label]) return out('', 113, `Boot-out failed: 113: Could not find service "${label}" in domain for user gui: ${state.uid}`)
+      if ((state.bootoutKeeps ?? []).includes(label)) return out()
       delete state.launchd[label]
       return out()
     }

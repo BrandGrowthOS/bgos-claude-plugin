@@ -1145,7 +1145,7 @@ launchd_bootout_wait() { # $1 domain/label
 }
 # What the next login finds of the old job, said in a rollback's failure.
 old_plist_note() { # $1 old plist
-  if [ -f "$1" ]; then printf 'its plist is back, so the next login starts it'; else printf 'no plist of it is left, so run hoai-agent install again'; fi
+  if [ -f "$1" ]; then printf 'the old plist is back, so the next login starts the old job'; else printf 'no plist of the old job is left, so run hoai-agent install again'; fi
 }
 
 # The rename of this HOME's OLD job (before 0.69.4) to the HOME-scoped label
@@ -1233,25 +1233,29 @@ launchd_rename() { # $1 id $2 new plist $3 new label -> 0 renamed, 1 rolled back
     done
     if [ "$st" != 0 ]; then
       restore_run_sh
+      # Each read decides: listed is loaded; not listed or unknown gets a
+      # bootstrap, up to 5; unknown after launchd took the plist is loaded.
       tries=0
       taken=0
       while :; do
-        launchd_listed "$domain/$old_label" && break
-        if launchctl bootstrap "$domain" "$old_plist" 2>/dev/null; then taken=1; break; fi
-        tries=$((tries + 1)); [ "$tries" -ge 5 ] && break; sleep 0.5
+        st=0; launchd_listed "$domain/$old_label" || st=$?
+        [ "$st" = 0 ] && break
+        if [ "$st" = 2 ] && [ "$taken" = 1 ]; then break; fi
+        [ "$tries" -ge 5 ] && break
+        tries=$((tries + 1))
+        if launchctl bootstrap "$domain" "$old_plist" 2>/dev/null; then taken=1; else sleep 0.5; fi
       done
-      st=0; launchd_listed "$domain/$old_label" || st=$?
       if [ "$st" = 2 ] && [ "$taken" = 1 ]; then
         # launchd took its plist again: loaded, though no read answers.
         RENAME_FAILURE="$RENAME_FAILURE; it could not be read back, but launchd took its plist again"
         return 1
       fi
       if [ "$st" = 1 ]; then
-        RENAME_FAILURE="$RENAME_FAILURE; then it unloaded after all and could not be loaded again ($(old_plist_note "$old_plist"))"
+        RENAME_FAILURE="$RENAME_FAILURE; then it unloaded after all and could not be loaded again after $tries tries ($(old_plist_note "$old_plist"))"
         return 3
       fi
       if [ "$st" = 2 ]; then
-        RENAME_FAILURE="$RENAME_FAILURE; a bootstrap of its plist was tried again and it still could not be read back ($(old_plist_note "$old_plist"))"
+        RENAME_FAILURE="$RENAME_FAILURE; a bootstrap of its plist was tried $tries times and it still could not be read back ($(old_plist_note "$old_plist"))"
         return 4
       fi
     fi
@@ -1321,7 +1325,7 @@ PLIST
       0) ok "launchd service $label loaded"
          service_note "renamed the launchd job \"$(legacy_label_for "$id")\" (installed from this HOME by an older version) to launchd job \"$label\"" ;;
       1) rollback_die "migration rolled back (the old job \"$(legacy_label_for "$id")\" stays loaded, the new one is removed): $RENAME_FAILURE" ;;
-      2) rollback_die "migration rolled back, but the new job \"$label\" could not be booted out again (or read back): both may be loaded, sharing one run.sh, so they end each other's session in turn until it goes (run: launchctl bootout gui/$(id -u)/$label); only the old plist loads at the next login: $RENAME_FAILURE" ;;
+      2) rollback_die "migration rolled back, but the new job \"$label\" could not be booted out again (or read back): both may be loaded, sharing one run.sh, so they end each other's session in turn until it goes (run: launchctl bootout gui/$(id -u)/$label); $(old_plist_note "$(legacy_plist_for "$id")"): $RENAME_FAILURE" ;;
       3) rollback_die "migration rolled back, but the old job \"$(legacy_label_for "$id")\" is not loaded: $RENAME_FAILURE" ;;
       *) rollback_die "migration rolled back (the new one is removed), but the old job \"$(legacy_label_for "$id")\" could not be read back, so it may not be loaded: $RENAME_FAILURE" ;;
     esac
