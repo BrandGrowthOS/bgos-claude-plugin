@@ -11,6 +11,7 @@ import { join } from 'node:path'
 import { BrowserProfileRuntime, profileCrypto as codec } from '../lib/browser-profile-runtime.mjs'
 import { createChromiumRtcActivity } from '../lib/browser-profile-rtc-activity.mjs'
 import { ensureBrowser } from '../lib/browser-bootstrap.mjs'
+import { PlaywrightEngine, DEFAULT_CAPS } from '../bin/hoai-browser-host.mjs'
 const require = createRequire(import.meta.url), { chromium } = require(process.env.HOAI_PROBE_PLAYWRIGHT)
 const portable = require('../lib/browser-profile-core/portable-state.js'), directory = mkdtempSync(join(tmpdir(), 'hoai-resume-probe-'))
 const source = codec.createEndpointIdentity(randomUUID()), destination = codec.createEndpointIdentity(randomUUID()), key = codec.createContentKeyEpoch(1), cookie = randomBytes(24).toString('base64url')
@@ -60,6 +61,16 @@ try {
   await target.activate({}); await settled(target); assert.equal(reviews, 1); assert.equal(target.restoredSelectedPage(), target.context.pages()[0]); assert.deepEqual(target.context.pages().map(page => page.url()), captured.tabs.map(row => row.url))
   assert.ok(requests.slice(before).some(row => row.method === 'GET' && row.url === '/seed' && row.importedCookie)); assert.equal(requests.slice(before).filter(row => row.url === '/second?view=recent').length, 1)
   checks.push({ name: 'zero-site-traffic-before-fresh-CAS-then-one-exact-reviewed-GET-and-imported-HTTPOnly-cookie-delivery', ok: true, review: 'Synthetic constructor fixture proof, not real human approval or Companion role qualification' })
+  const existingPages = target.context.pages(), selected = target.restoredSelectedPage(), beforeSelection = requests.length
+  const engine = await new PlaywrightEngine({ endpoint: null, managedRuntime: target, caps: DEFAULT_CAPS, outputDir: directory, clientName: 'native-selection-fixture' }).start()
+  try {
+    assert.equal(engine._backend._context.tabs().length, 0)
+    await engine.selectPage(selected)
+    assert.equal(engine.selectedPage(), selected)
+    assert.deepEqual(target.context.pages(), existingPages)
+    assert.equal(requests.length, beforeSelection)
+    checks.push({ name: 'actual-lazy-MCP-backend-selects-exact-restored-page-without-new-page-or-navigation', ok: true, tabCount: existingPages.length, selectedIndex: existingPages.indexOf(selected) })
+  } finally { await engine._backend.dispose() }
   if (process.env.HOAI_PROBE_POPUP === '1') {
   const third = await make({ ...authority, runtimeId: 'popup-runtime', sessionId: 'popup-session' }), formRuntime = third.runtime; await formRuntime.activate({}); const form = await formRuntime.newPage(origin + '/form'); third.select(form)
   const popupTask = formRuntime.context.waitForEvent('page', { timeout: 10000 }); await form.click('button'); const popup = await popupTask; await popup.waitForLoadState('load'); await settled(formRuntime); assert.equal(popup.url(), origin + '/normal-result')
