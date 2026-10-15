@@ -404,6 +404,15 @@ test('service install failure: failed at service and the credentials file is REM
   assert.equal((h.diagnostics[0] as { signature: { cause: string } }).signature.cause, 'watcher_service:service_install_failed')
 })
 
+test('an old watcher registration another HOME installed is left alone and REPORTED in the daemon log, and the install still succeeds (board row dfafdfb6)', async () => {
+  const note = 'left the Scheduled Task "HOAI Watcher" alone: it was installed from another HOME (C:\\Users\\kc)'
+  const h = harness({ installService: async () => ({ ok: true, message: 'installed', ran: [], legacy: { label: 'HOAI Watcher', state: 'foreign', home: 'C:\\Users\\kc' }, notes: [note] }) })
+  await h.handler.handle(FRAME)
+  assert.equal(h.progress[h.progress.length - 1]!.state, 'done')
+  assert.ok(h.logs.some((l) => l.includes(note)), h.logs.join('\n'))
+  assert.equal(h.removals(), 0)
+})
+
 test('a throwing service install, a throwing spec builder, and a missing node all remove the credentials', async () => {
   const cases: Array<[Overrides, string]> = [
     [{ installService: async () => { throw new Error('spawn launchctl ENOENT') } }, 'service_install_failed: spawn launchctl ENOENT'],
