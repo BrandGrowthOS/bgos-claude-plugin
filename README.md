@@ -270,6 +270,18 @@ node node_modules/playwright-core/cli.js install-deps chromium
 
 That installation can request sudo privileges and change system packages. HOAI never runs it automatically. Run the browser host as a non-root user, with an operating-system or container policy that permits Chromium's user namespaces and sandbox operations. If the sandbox is unavailable, have the administrator configure a supported host or container policy. Do not add `--no-sandbox` or broadly disable security protections. See the official [system dependency instructions](https://playwright.dev/docs/browsers#install-system-dependencies) and [sandbox guidance](https://playwright.dev/docs/docker#crawling-and-scraping).
 
+#### Managed browser profiles
+
+Use the exact profile and acting person selected through HOAI. A managed profile can run in the person's HOAI desktop or on an explicitly approved agent machine. Device fingerprint review, background access and session confirmation are separate approvals. Installation does not grant them. A refused or unavailable managed profile never permits a different browser, identity or legacy fallback.
+
+On the approved agent machine, managed open/status report the already authorized runtime and advisory encrypted backup metadata. Supported writes wait for a fresh original recipient approval for at most 60 seconds; the agent-machine Companion does not use legacy parked chat gates. For the native HOAI desktop, follow its actual returned schemas, rich control and tab state, local permissions and any reported parked request. On the agent machine, ordinary supported text fields need fresh Enter page text approval. Credentials, codes and unsupported actions require the person to use the original browser directly. The managed key store uses OS-protected encrypted profile state and requires an available persistent unlocked Linux Secret Service on the agent machine.
+
+Collapse and hand back retain the live page. Close retires the runtime and commits its encrypted stopped checkpoint; an unconfirmed result remains recovery work. Moving machines transfers supported saved state after stopping the source. Live JavaScript, POST actions, popup openers, unfinished sign-ins and device-bound sessions are not portable. Files use opaque tokens and separate recipient consent. See the [managed browser skill](skills/hoai-browser/SKILL.md) for the current workflow and supported actions.
+
+#### Legacy browser sessions
+
+The following passphrase, pane and login-storage behavior applies to the separate legacy browser mode.
+
 Each agent and acting person have separate login storage. New browser sessions start locked and use a nonpersistent context. Browsing while locked is discarded when the browser closes. In the HOAI browser pane, the owner opens **Logins** to configure or unlock the encrypted vault with a passphrase entered in trusted HOAI UI. Do not send passwords or passphrases through chat or browser tool arguments.
 
 Unlock permits encrypted snapshots of cookies, including session cookies, localStorage and IndexedDB on the agent machine until the browser closes. The passphrase and key are not saved, so the owner must unlock again after a restart. A lost passphrase cannot recover existing saved state. Existing native Chrome profile data is not opened or imported automatically; clearing supported legacy artifacts requires the owner's explicit confirmation, and an active browser or unknown files block clearing.
