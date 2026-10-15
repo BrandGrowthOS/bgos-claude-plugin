@@ -186,3 +186,19 @@ test('a lost creation acknowledgement retains an opaque handle for signed read-o
   assert.equal((await f.client.read(requested.handle)).choice, 'allow_once'); assert.equal((await f.client.consume(requested.handle)).state, 'consumed')
   assert.equal(f.calls.filter(call => call.url.endsWith('/request')).length, 1)
 })
+
+test('permission request read and consume retain exact leading base64url socket identifiers', async () => {
+  for (const socketId of ['_n5e3IECWC79KlYlAAAB','-n5e3IECWC79KlYlAAAB']) {
+    const f=fixture();f.binding.socketId=socketId;let requested:any;
+    await assert.doesNotReject(async()=>{requested=await f.client.request(f.input())});
+    assert.equal(f.request().socketId,socketId);f.state.status='answered';f.state.choice='allow_once';
+    await f.client.read(requested.handle);await f.client.consume(requested.handle);
+    assert.equal(f.calls.length,3);for(const call of f.calls)assert.equal(call.body.socketId,socketId);
+    await f.client.whenDrained();
+  }
+});
+test('malformed transport identifiers never dispatch a permission request', async () => {
+  for(const socketId of ['', 'x'.repeat(65), '../socket', 'a.b', 'a:b', 'a b', String.fromCharCode(0xe9)]){
+    const f=fixture();f.binding.socketId=socketId;await assert.rejects(f.client.request(f.input()));assert.equal(f.calls.length,0);await f.client.whenDrained();
+  }
+});
