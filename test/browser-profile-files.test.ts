@@ -7,11 +7,12 @@ import { EventEmitter } from 'node:events'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { AgentProfileFiles } from '../lib/browser-profile-files.mjs'
+import { downloadFixture } from './helpers/browser-profile-downloads-fixture.mjs'
 const require = createRequire(import.meta.url), codec = require('../lib/browser-profile-core/crypto.js'), cryptoFiles = require('../lib/browser-profile-core/profile-file-crypto.js'), { ProfileFileClient } = require('../lib/browser-profile-core/profile-file-client.js'), { documentSignature } = require('../lib/browser-profile-core/coordinator-client.js')
 type Row = Record<string, any>
 class Page extends EventEmitter { address = 'https://site.test/upload'; url() { return this.address } isClosed() { return false } }
 const decoded = (value: Row) => JSON.parse(value.content.filter((item: Row) => item.type === 'text').at(-1).text)
-async function fixture(t: { after: (fn: () => unknown) => void }) {
+async function fixture(t: { after: (fn: () => unknown) => void }, options: { createDownloads?: (authority: Row) => Promise<any> } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'hoai-file-runner-')), agent = codec.createEndpointIdentity(randomUUID()), human = codec.createEndpointIdentity(randomUUID()), scope = { profileId: randomUUID(), actingUserId: 'recipient', assistantId: 42 }
   const own = { endpointId: agent.identity.endpointId, keyFingerprint: codec.identityFingerprint(agent.identity), grantVersion: 3 }, authority = { ...scope, ...own, bootId: 'boot', runtimeId: 'runtime', sessionId: 'session', writerEpoch: 3, revision: 1, contentKeyEpoch: 1 }, peer = { endpointId: human.identity.endpointId, keyFingerprint: codec.identityFingerprint(human.identity), grantVersion: 7 }
   const rows = new Map<string, Row>(), calls: Row[] = [], state: Row = { changed: false, after: null, engine: null }, page = new Page(), originalSignal = new AbortController().signal
@@ -40,7 +41,8 @@ async function fixture(t: { after: (fn: () => unknown) => void }) {
   // Real temporary I/O and shared staging. This injected proof is synthetic;
   // actual Linux ownership/mode qualification belongs to the native probe.
   const createArea = async ({ directory, assertCurrent }: Row) => { assertCurrent(); await fs.mkdir(directory, { recursive: true }); return { directory, assertPrivateDirectory: async (target: string) => { const stat = await fs.lstat(target); assert.equal(stat.isSymbolicLink(), false); assert.ok(target === directory || target.startsWith(directory + path.sep)); return true } } }
-  const runner: any = new AgentProfileFiles({ client, authority, endpoint: agent, directory: path.join(root, 'files'), peerIdentities: async (callback: () => unknown) => { callback(); return [human.identity] }, assertCurrent: check, createArea })
+  const downloads = options.createDownloads ? await options.createDownloads(authority) : undefined
+  const runner: any = new AgentProfileFiles({ client, authority, endpoint: agent, directory: path.join(root, 'files'), peerIdentities: async (callback: () => unknown) => { callback(); return [human.identity] }, assertCurrent: check, downloads, createArea })
   const allow = (row: Row) => { const document = { version: 1, kind: 'agent-browser-file-consent', fileId: row.offer.fileId, offerHash: row.offerHash, endpointId: human.identity.endpointId, keyFingerprint: peer.keyFingerprint, choice: 'allow_once', nonce: randomBytes(32).toString('base64url'), expiresAt: row.offer.expiresAt }; row.consent = { document, signature: documentSignature(human, document) }; row.state = 'allowed' }
   const incoming = (text = 'SYNTHETIC HUMAN FILE') => { const plaintext = Buffer.from(text), context = { version: 1, kind: 'agent-browser-file-offer', fileId: randomUUID(), nonce: randomBytes(32).toString('base64url'), direction: 'to-agent', authority, source: peer, destination: own, expiresAt: Date.now() + 120000, plaintextBytes: plaintext.length }, sealed = cryptoFiles.sealFile({ plaintext, fileName: 'chosen.txt', contentType: 'text/plain', context, source: human, destinationIdentity: agent.identity }), row: Row = { offer: sealed.offer, signature: sealed.signature, offerHash: cryptoFiles.offerHash(sealed.offer, sealed.signature), consent: null, state: 'offered', current: true, uploadOutcome: 'not-uploaded', uploadAttemptedAt: null, claimedAt: null, payload: sealed.payload }; allow(row); row.state = 'available'; row.uploadOutcome = 'confirmed'; row.uploadAttemptedAt = Date.now(); rows.set(row.offer.fileId, row); return row }
   const list = async () => decoded(await runner.list({ assertCurrent: check, signal: originalSignal }))
@@ -48,6 +50,17 @@ async function fixture(t: { after: (fn: () => unknown) => void }) {
   t.after(async () => { await runner.dispose().catch(() => {}); for (const row of rows.values()) row.payload?.fill(0); await fs.rm(root, { recursive: true, force: true }) })
   return { runner, client, agent, human, authority, rows, state, calls, check, engine, page, originalSignal, allow, incoming, list, capture, root }
 }
+
+test('an explicit files read privately converts a real quarantined download but sending still needs recipient consent', async t => {
+  let native: any
+  const f = await fixture(t, { createDownloads: async authority => { native = await downloadFixture({ authority }); return native.manager } }); t.after(() => native.cleanup())
+  const original = Buffer.from('SYNTHETIC OWNED BROWSER DOWNLOAD'), item = await native.download({ bytes: original, autoFinish: true, fileName: 'download-report.txt' }); native.context.emit('download', item.value); await native.manager.whenDrained(); assert.equal(f.rows.size, 0)
+  const listed = await f.list(); assert.equal(listed.downloads.length, 1); const artifact = listed.downloads[0]; assert.equal(artifact.fileName, 'download-report.txt'); assert.equal(artifact.bytes, original.length); assert.equal(Object.hasOwn(artifact, 'path'), false); await assert.rejects(fs.lstat(item.file), { code: 'ENOENT' })
+  assert.deepEqual((await f.list()).downloads, listed.downloads); assert.equal(f.rows.size, 0)
+  const offered = decoded(await f.runner.send({ args: { artifactToken: artifact.artifactToken }, assertCurrent: f.check, signal: f.originalSignal })); assert.equal(offered.state, 'offered'); const row = [...f.rows.values()][0]; assert.equal(row.payload, null); assert.equal(row.consent, null)
+  f.allow(row); assert.equal(decoded(await f.runner.send({ args: { artifactToken: artifact.artifactToken }, assertCurrent: f.check, signal: f.originalSignal })).state, 'available')
+  const opened = cryptoFiles.openFile({ offer: row.offer, signature: row.signature, payload: row.payload, expectedContext: cryptoFiles.offerContext(row.offer), sourceIdentity: f.agent.identity, destination: f.human }); try { assert.deepEqual(opened.plaintext, original); assert.equal(opened.fileName, 'download-report.txt') } finally { opened.plaintext.fill(0); original.fill(0) }
+})
 
 test('only a successful owned engine artifact becomes an opaque runtime file token', async t => {
   const f = await fixture(t), artifact = await f.capture({ filename: 'report.pdf' })

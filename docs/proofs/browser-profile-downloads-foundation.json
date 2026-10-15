@@ -1,0 +1,526 @@
+{
+  "kind": "unwired-managed-download-foundation",
+  "source": [
+    {
+      "path": "lib/browser-profile-downloads.mjs",
+      "workingSha256": "abfd52bb5263fbd3a3c3a9c41c3a9780f0ef252cdc4a8d873a749f9985386578",
+      "normalizedGitSha256": "abfd52bb5263fbd3a3c3a9c41c3a9780f0ef252cdc4a8d873a749f9985386578"
+    },
+    {
+      "path": "lib/browser-profile-artifact-inventory.mjs",
+      "workingSha256": "f4f69558b194ed12c1fd5a8056f4cdf9fae6a86de2943cea2969029c6722c0e9",
+      "normalizedGitSha256": "f4f69558b194ed12c1fd5a8056f4cdf9fae6a86de2943cea2969029c6722c0e9"
+    },
+    {
+      "path": "lib/browser-profile-artifacts.mjs",
+      "workingSha256": "7d6d9e71b37b43ec4007ba77ea273ef74dbeb674eb28669462026e63776d58c0",
+      "normalizedGitSha256": "11192d407a0a18a4a7bea1884a211ea1d45b750fd75975ef87e0c1f6669b30e9"
+    },
+    {
+      "path": "lib/browser-profile-files.mjs",
+      "workingSha256": "852a1506e026ca545e8efdc3ce9760dcbab26baaec3382089a4c52121e0abffd",
+      "normalizedGitSha256": "cf21e48e854644a430934ddcfdb276641e8e5229d4f2f65028cb746dbb0be08e"
+    },
+    {
+      "path": "test/browser-profile-downloads.test.ts",
+      "workingSha256": "bfccfbdabfde6865beb1d7588ab40d1e6da7dd387e85748150a8f1922874e22c",
+      "normalizedGitSha256": "bfccfbdabfde6865beb1d7588ab40d1e6da7dd387e85748150a8f1922874e22c"
+    },
+    {
+      "path": "test/browser-profile-artifact-inventory.test.ts",
+      "workingSha256": "0987db8b2379533f4c3531ef1dc5158743210bb435787dc4ebc33b28d7a60271",
+      "normalizedGitSha256": "0987db8b2379533f4c3531ef1dc5158743210bb435787dc4ebc33b28d7a60271"
+    },
+    {
+      "path": "test/browser-profile-files.test.ts",
+      "workingSha256": "598d8931bb6c22511b86c8e37c6ee0a6fddfd2fcb4d9d828ca53f3e7621f4888",
+      "normalizedGitSha256": "d287f930add9b49b0deeda627d01830351b9909140355c57e3659fa625acc954"
+    },
+    {
+      "path": "test/helpers/browser-profile-downloads-fixture.mjs",
+      "workingSha256": "a9f0bb46ebbafa277f661d2d21e3237f4c84af63f09abdfed67df8c0e70588e1",
+      "normalizedGitSha256": "a9f0bb46ebbafa277f661d2d21e3237f4c84af63f09abdfed67df8c0e70588e1"
+    },
+    {
+      "path": "docs/browser-profile-downloads.md",
+      "workingSha256": "9612242ae949b3fd6d5b88e28de992b9468baf744ab1ac0c5bc8c688008158a6",
+      "normalizedGitSha256": "6f0293e91513d1ab005cfc25db7d58ab81f0d3c23e18439ee0044455dec924e2"
+    }
+  ],
+  "tests": {
+    "command": "node --import tsx --test test/browser-profile-downloads.test.ts test/browser-profile-artifact-inventory.test.ts test/browser-profile-artifacts.test.ts test/browser-profile-files.test.ts test/browser-profile-file-area.test.ts test/browser-profile-companion-files.test.ts",
+    "pass": 63,
+    "fail": 0,
+    "skipped": 0,
+    "sha256": "981b45e5ed96d96c91c9d045385f94aae6deeef7ff484e20adfb3019675141f7",
+    "typescript": {
+      "command": "npx tsc --noEmit",
+      "exit": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "mutations": {
+    "cases": [
+      {
+        "name": "launch-before-await",
+        "file": "lib/browser-profile-downloads.mjs",
+        "changedLines": [
+          {
+            "number": 41,
+            "text": "    current(this.#current); await this.verifyDirectory(); this.#launchTaken = true; current(this.#current); return Object.freeze({ downloadsPath: this.directory })"
+          }
+        ],
+        "test": "test/browser-profile-downloads.test.ts",
+        "pattern": "^launch and original",
+        "originalSha256": "abfd52bb5263fbd3a3c3a9c41c3a9780f0ef252cdc4a8d873a749f9985386578",
+        "mutatedSha256": "63315d3448f3868b5b0391b877f7e5efbb9aed56c42fd4be02a5ab6c9a3920cf",
+        "restoredSha256": "abfd52bb5263fbd3a3c3a9c41c3a9780f0ef252cdc4a8d873a749f9985386578",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "4b6d2e62d7c64ce87869e87aa9c34f61ca6e13d8e665f37dc6cd0146a826e8e8",
+        "greenOutputSha256": "a701e78da2c9c0145d12610e69a0c3f008298fe10b38c13d55de8fa9a9b47f10"
+      },
+      {
+        "name": "binding-before-await",
+        "file": "lib/browser-profile-downloads.mjs",
+        "changedLines": [
+          {
+            "number": 45,
+            "text": "    this.#stop = stopBrowser"
+          },
+          {
+            "number": 46,
+            "text": "    await this.verifyDirectory(); this.#context = context; current(this.#current); if (context.pages().length) throw fail('profile_download_binding_required')"
+          }
+        ],
+        "test": "test/browser-profile-downloads.test.ts",
+        "pattern": "^launch and original",
+        "originalSha256": "abfd52bb5263fbd3a3c3a9c41c3a9780f0ef252cdc4a8d873a749f9985386578",
+        "mutatedSha256": "f9602d3f7c9edfbf1d09b4b0c589439f04a7ef13ffc37d3a4eddb4906b4bcd49",
+        "restoredSha256": "abfd52bb5263fbd3a3c3a9c41c3a9780f0ef252cdc4a8d873a749f9985386578",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "f54b7f61d22b39291f8cea64bea1aa8ad3ae9ccf7af31bbbe1b6bb9013362b17",
+        "greenOutputSha256": "06d1725d59bc536061fef9647464e90bbba291327e5e1a6a6301a3b25486f97f"
+      },
+      {
+        "name": "active-runtime",
+        "file": "lib/browser-profile-downloads.mjs",
+        "changedLines": [
+          {
+            "number": 38,
+            "text": "  assertCurrent() { if (this.#closed || this.#unknown) throw fail('profile_download_unavailable'); current(this.#current); }"
+          }
+        ],
+        "test": "test/browser-profile-downloads.test.ts",
+        "pattern": "^foreign, inactive",
+        "originalSha256": "abfd52bb5263fbd3a3c3a9c41c3a9780f0ef252cdc4a8d873a749f9985386578",
+        "mutatedSha256": "b1ff9ed4a71b5e094ee2cabbf842cc27ee25addc2f87bc93d6472f79031e4515",
+        "restoredSha256": "abfd52bb5263fbd3a3c3a9c41c3a9780f0ef252cdc4a8d873a749f9985386578",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "28bed870fe035ff39c713c5454d8c2417999d6a09156e1ad96c22c8ce4dfba56",
+        "greenOutputSha256": "0d1aa2ad3eea6484bc66f46aa145cb51c7eadb2c20925c4f9f1aa354d7178120"
+      },
+      {
+        "name": "exact-context",
+        "file": "lib/browser-profile-downloads.mjs",
+        "changedLines": [
+          {
+            "number": 60,
+            "text": "      this.assertCurrent(); if (!this.#context || !this.#context.pages().includes(download.page()) || [...this.#records].some(row => row.state === 'receiving') || this.#records.size >= 4 || receiving.size >= 4) throw fail('profile_download_refused')"
+          }
+        ],
+        "test": "test/browser-profile-downloads.test.ts",
+        "pattern": "^foreign, inactive",
+        "originalSha256": "abfd52bb5263fbd3a3c3a9c41c3a9780f0ef252cdc4a8d873a749f9985386578",
+        "mutatedSha256": "e0832da4be1f47b3a054fb2c5b588504b80a3a351a8ae766c9288a32ecd918cb",
+        "restoredSha256": "abfd52bb5263fbd3a3c3a9c41c3a9780f0ef252cdc4a8d873a749f9985386578",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "a5c2e1ef6eeca76d2541f18c6608a14790e6cad407d51c86fadd70fcacda706b",
+        "greenOutputSha256": "1476547dc348e0f5eb87a96a03dc59f15db38981f98a95874589ea0806253ce9"
+      },
+      {
+        "name": "original-context-page",
+        "file": "lib/browser-profile-downloads.mjs",
+        "changedLines": [
+          {
+            "number": 60,
+            "text": "      this.assertCurrent(); if (!this.#context || download.page()?.context() !== this.#context || [...this.#records].some(row => row.state === 'receiving') || this.#records.size >= 4 || receiving.size >= 4) throw fail('profile_download_refused')"
+          }
+        ],
+        "test": "test/browser-profile-downloads.test.ts",
+        "pattern": "^foreign, inactive",
+        "originalSha256": "abfd52bb5263fbd3a3c3a9c41c3a9780f0ef252cdc4a8d873a749f9985386578",
+        "mutatedSha256": "6517157b7fa2438e779a2f0977768220d196ff940cd2d8222148b559da0feacc",
+        "restoredSha256": "abfd52bb5263fbd3a3c3a9c41c3a9780f0ef252cdc4a8d873a749f9985386578",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "d04d2132ee0254f4ede8a4f662b587a95f92d29b5c5e963da65785932ecaca1f",
+        "greenOutputSha256": "9646aa86518146ce479bbe0b1711b7dce4d49c4cffd44986978e56e77e02787e"
+      },
+      {
+        "name": "private-raw-directory",
+        "file": "lib/browser-profile-downloads.mjs",
+        "changedLines": [
+          {
+            "number": 62,
+            "text": "      if (typeof file !== 'string' || !GUID.test(path.basename(file)) || ['failure', 'cancel', 'delete'].some(name => typeof download[name] !== 'function')) throw fail('profile_download_path_unproved')"
+          }
+        ],
+        "test": "test/browser-profile-downloads.test.ts",
+        "pattern": "^foreign, inactive",
+        "originalSha256": "abfd52bb5263fbd3a3c3a9c41c3a9780f0ef252cdc4a8d873a749f9985386578",
+        "mutatedSha256": "ab2e6855b4c4e3e5e1d490c2210a7786cb83b8aa90eb5dd27ec6fe0418143cb8",
+        "restoredSha256": "abfd52bb5263fbd3a3c3a9c41c3a9780f0ef252cdc4a8d873a749f9985386578",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "05bcfa679b1c27efd75075d542723e46a9fe65958ff7028ccdf089a6301eb11c",
+        "greenOutputSha256": "9e74b66bbb1abbbf73b384a90fdd841e672f084b7319b1dfa220e6d5b3ffca04"
+      },
+      {
+        "name": "one-receiving-runtime",
+        "file": "lib/browser-profile-downloads.mjs",
+        "changedLines": [
+          {
+            "number": 60,
+            "text": "      this.assertCurrent(); if (!this.#context || download.page()?.context() !== this.#context || !this.#context.pages().includes(download.page()) || this.#records.size >= 4 || receiving.size >= 4) throw fail('profile_download_refused')"
+          }
+        ],
+        "test": "test/browser-profile-downloads.test.ts",
+        "pattern": "^a concurrent second",
+        "originalSha256": "abfd52bb5263fbd3a3c3a9c41c3a9780f0ef252cdc4a8d873a749f9985386578",
+        "mutatedSha256": "0cf5f75f40f81a438fa399308e530286cae566ce20d639038aa8dbd0fbdd97a9",
+        "restoredSha256": "abfd52bb5263fbd3a3c3a9c41c3a9780f0ef252cdc4a8d873a749f9985386578",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "7dad32cf171168016692c105a4615b6942e4077b6d5254887942376fe50c0284",
+        "greenOutputSha256": "20fc3b2383806e09ecd4f5a337392302ac9c84886e6818b18c8fc99e4dd6ed15"
+      },
+      {
+        "name": "four-receiving-process",
+        "file": "lib/browser-profile-downloads.mjs",
+        "changedLines": [
+          {
+            "number": 60,
+            "text": "      this.assertCurrent(); if (!this.#context || download.page()?.context() !== this.#context || !this.#context.pages().includes(download.page()) || [...this.#records].some(row => row.state === 'receiving') || this.#records.size >= 4) throw fail('profile_download_refused')"
+          }
+        ],
+        "test": "test/browser-profile-downloads.test.ts",
+        "pattern": "^a fifth runtime",
+        "originalSha256": "abfd52bb5263fbd3a3c3a9c41c3a9780f0ef252cdc4a8d873a749f9985386578",
+        "mutatedSha256": "d33ec14f5b13ef0528777345a0cd5aed9f775942085149508278cec09206032d",
+        "restoredSha256": "abfd52bb5263fbd3a3c3a9c41c3a9780f0ef252cdc4a8d873a749f9985386578",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "a5aa3c6c650c90c4156c5293d95dbec6d45396b03b4e19f767645f7d5e8230c0",
+        "greenOutputSha256": "5b8531f982c690e0ad9c0b1640e05b5abe88aafc8f7a9c72598ffc2065cc46a9"
+      },
+      {
+        "name": "accepted-byte-bound",
+        "file": "lib/browser-profile-downloads.mjs",
+        "changedLines": [
+          {
+            "number": 13,
+            "text": "const regular = (stat, uid) => ownedFile(stat, uid)"
+          }
+        ],
+        "test": "test/browser-profile-downloads.test.ts",
+        "pattern": "^observed oversized bytes",
+        "originalSha256": "abfd52bb5263fbd3a3c3a9c41c3a9780f0ef252cdc4a8d873a749f9985386578",
+        "mutatedSha256": "b63c0eae416dc5238d786449714952528ee952ca145cdb7ffad4d9e0abd86320",
+        "restoredSha256": "abfd52bb5263fbd3a3c3a9c41c3a9780f0ef252cdc4a8d873a749f9985386578",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "ed7f093afd75659a35d4237fd48c774db01393661b483e907590bcbb79885ab0",
+        "greenOutputSha256": "482f68af8daca390eb797da1e1c85c1922acfd8bb56210999561a21527f0781f"
+      },
+      {
+        "name": "wall-clock-deadline",
+        "file": "lib/browser-profile-downloads.mjs",
+        "changedLines": [
+          {
+            "number": 66,
+            "text": "      row.deadlineTimer = setTimeout(() => {}, this.deadlineMs); row.deadlineTimer.unref?.()"
+          }
+        ],
+        "test": "test/browser-profile-downloads.test.ts",
+        "pattern": "^the wall deadline remains",
+        "originalSha256": "abfd52bb5263fbd3a3c3a9c41c3a9780f0ef252cdc4a8d873a749f9985386578",
+        "mutatedSha256": "7efccf2ac2297bc516b407642a7f42d70d24cf9ff1329e110eb2bcd302ad49f0",
+        "restoredSha256": "abfd52bb5263fbd3a3c3a9c41c3a9780f0ef252cdc4a8d873a749f9985386578",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "137b19c4055e5a8febab79776831ab983db15fb56561ee20670b3e314ee561b7",
+        "greenOutputSha256": "72b00aa191a9e12e34f32287f81c6edb6f924e39f356377b82c15ffa3c31167b"
+      },
+      {
+        "name": "original-copy-context",
+        "file": "lib/browser-profile-downloads.mjs",
+        "changedLines": [
+          {
+            "number": 117,
+            "text": "      const check = () => { current(assertCurrent) }"
+          }
+        ],
+        "test": "test/browser-profile-downloads.test.ts",
+        "pattern": "^loss of the original download context",
+        "originalSha256": "abfd52bb5263fbd3a3c3a9c41c3a9780f0ef252cdc4a8d873a749f9985386578",
+        "mutatedSha256": "701b4d171875918437058bb502b41a572c7b3cf1f0f4a9bd6c249a91025a7c28",
+        "restoredSha256": "abfd52bb5263fbd3a3c3a9c41c3a9780f0ef252cdc4a8d873a749f9985386578",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "1dd77a0036a6f6a59991fd19d26169e36ad417548fa29f065a58f72825187455",
+        "greenOutputSha256": "72922c8f09ea1c1a9ea63441e575f4f0c24d916de6b9f43434d3f642e9ee92e0"
+      },
+      {
+        "name": "copy-before-delete",
+        "file": "lib/browser-profile-downloads.mjs",
+        "changedLines": [
+          {
+            "number": 148,
+            "text": "    const tasks = [...this.#records].map(row => { clearTimeout(row.observer); clearTimeout(row.deadlineTimer); clearTimeout(row.expiry); return Promise.resolve().then(async () => { return this.#remove(row) }) })"
+          }
+        ],
+        "test": "test/browser-profile-downloads.test.ts",
+        "pattern": "^disposal retains the exact open copy",
+        "originalSha256": "abfd52bb5263fbd3a3c3a9c41c3a9780f0ef252cdc4a8d873a749f9985386578",
+        "mutatedSha256": "5a1faf1407dd891b0eb23d2cc27abf73bec6d92ad4b19a3781d2894f8308a0fa",
+        "restoredSha256": "abfd52bb5263fbd3a3c3a9c41c3a9780f0ef252cdc4a8d873a749f9985386578",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "12b0d00d72fd97d509d37c081af8a2137a6ed27ef8daf95caf75cc292852b3a8",
+        "greenOutputSha256": "c246a9a5b3802f62bd7fcabe5a664821bfdd3d03ca5c7982dcc3a0f26f933926"
+      },
+      {
+        "name": "cancel-before-delete",
+        "file": "lib/browser-profile-downloads.mjs",
+        "changedLines": [
+          {
+            "number": 102,
+            "text": "      try { if (!row.finished) this.#cancel(row);  } catch { failed = true }"
+          }
+        ],
+        "test": "test/browser-profile-downloads.test.ts",
+        "pattern": "^a native failure acknowledgement",
+        "originalSha256": "abfd52bb5263fbd3a3c3a9c41c3a9780f0ef252cdc4a8d873a749f9985386578",
+        "mutatedSha256": "2e0ea4548e8664b2a66d0cd73b6ca84077428e89c78e8cd39d96a8ee821bd090",
+        "restoredSha256": "abfd52bb5263fbd3a3c3a9c41c3a9780f0ef252cdc4a8d873a749f9985386578",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "db0578b74563dda8ae00965bd7a68fb86dab1a0ebcc27f5e51f5e2554de2d2a1",
+        "greenOutputSha256": "91199cbe92d74014e47cddb480786f13c23999391419e697a7c78143a24f42fd"
+      },
+      {
+        "name": "cancel-grace-after-acknowledgement",
+        "file": "lib/browser-profile-downloads.mjs",
+        "changedLines": [
+          {
+            "number": 72,
+            "text": "    if (!row.cancel) { row.cancel = this.#track(() => row.download.cancel()); void row.cancel.finally(() => { row.cancelSettled = true; clearTimeout(row.grace) }).catch(() => { void this.#fatal() }); row.grace = setTimeout(() => { if (!row.finished) void this.#fatal() }, this.cancellationGraceMs); row.grace.unref?.() }"
+          }
+        ],
+        "test": "test/browser-profile-downloads.test.ts",
+        "pattern": "^an acknowledged stream",
+        "originalSha256": "abfd52bb5263fbd3a3c3a9c41c3a9780f0ef252cdc4a8d873a749f9985386578",
+        "mutatedSha256": "1d32d91ce5cba857a2f3297e4beb98d8cf130cd3bf5560e50d7cdefa67a28f1e",
+        "restoredSha256": "abfd52bb5263fbd3a3c3a9c41c3a9780f0ef252cdc4a8d873a749f9985386578",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "288a597bda1fd5338429c38613c2c555e0db10a8b7c5733d55191d9875e8dc81",
+        "greenOutputSha256": "9d327cca87b7a35e7f25d2efbdfb7a85991bfffb474ca49c591bad47a479cfdc"
+      },
+      {
+        "name": "dispose-physical-drain",
+        "file": "lib/browser-profile-downloads.mjs",
+        "changedLines": [
+          {
+            "number": 138,
+            "text": "  async whenDrained() { await this.#drainPending(); await this.#drainPending(); if (this.#unknown) throw fail('profile_download_cleanup_unconfirmed') }"
+          }
+        ],
+        "test": "test/browser-profile-downloads.test.ts",
+        "pattern": "^a cleanup failure starts owned stop",
+        "originalSha256": "abfd52bb5263fbd3a3c3a9c41c3a9780f0ef252cdc4a8d873a749f9985386578",
+        "mutatedSha256": "493041bc14513746d04dd3e537b901d50de0cc319a7863bdd098617be4e5323c",
+        "restoredSha256": "abfd52bb5263fbd3a3c3a9c41c3a9780f0ef252cdc4a8d873a749f9985386578",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "69e0e11c0c85d9edea2047ed6b8f364dc685afe94ab7d1c7db46e69cf2d0bc5b",
+        "greenOutputSha256": "4ae8b04a06679c74da4ffa26b4ac2dabc3037fac41a8fe37e6c3c4209b8333e1"
+      },
+      {
+        "name": "final-cleanup-owned-stop",
+        "file": "lib/browser-profile-downloads.mjs",
+        "changedLines": [
+          {
+            "number": 152,
+            "text": "    if (failed || this.#unknown) { this.#unknown = true; throw fail('profile_download_cleanup_unconfirmed') }"
+          }
+        ],
+        "test": "test/browser-profile-downloads.test.ts",
+        "pattern": "^an uncertain final quarantine",
+        "originalSha256": "abfd52bb5263fbd3a3c3a9c41c3a9780f0ef252cdc4a8d873a749f9985386578",
+        "mutatedSha256": "4a07f4307227b58d5733a4203fb104a02a273ca013d79a1f75b28d3f33576eed",
+        "restoredSha256": "abfd52bb5263fbd3a3c3a9c41c3a9780f0ef252cdc4a8d873a749f9985386578",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "45bb3ff42f3c9a00159b9e6ff68311cb917df5d49836ac89b347d2a8abde31e0",
+        "greenOutputSha256": "84188849510cdb12c6af87484cefcd602220a0de5b837c19cf995b3ddd98ab12"
+      },
+      {
+        "name": "private-pending-drain",
+        "file": "lib/browser-profile-downloads.mjs",
+        "changedLines": [
+          {
+            "number": 137,
+            "text": "  async #drainPending() { while (false) await Promise.allSettled([...this.#pending]) }"
+          }
+        ],
+        "test": "test/browser-profile-downloads.test.ts",
+        "pattern": "^a held filesystem observation",
+        "originalSha256": "abfd52bb5263fbd3a3c3a9c41c3a9780f0ef252cdc4a8d873a749f9985386578",
+        "mutatedSha256": "7fc0a3d8d5766c2682a4e7dc56c7d92d684b0a693cc0938bfc6c5cfe17c3e2d0",
+        "restoredSha256": "abfd52bb5263fbd3a3c3a9c41c3a9780f0ef252cdc4a8d873a749f9985386578",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "82a457bbcaf6a1edd849d7ebbc8398bd6b446bb51b4adf2eac8c1fe959cea20d",
+        "greenOutputSha256": "e50c6c4ba92680ee48e3afb8cb3b1d115a002096c6274d4e1cc9f030fc37b4d2"
+      },
+      {
+        "name": "retained-runtime-bound",
+        "file": "lib/browser-profile-artifact-inventory.mjs",
+        "changedLines": [
+          {
+            "number": 10,
+            "text": "  if (entries.size >= 16) throw fail()"
+          }
+        ],
+        "test": "test/browser-profile-artifact-inventory.test.ts",
+        "pattern": "^four slots",
+        "originalSha256": "f4f69558b194ed12c1fd5a8056f4cdf9fae6a86de2943cea2969029c6722c0e9",
+        "mutatedSha256": "4214e5e563f8f5eb8a15f6c12923c0c38e09afe03c6aa45af6c5d16710504054",
+        "restoredSha256": "f4f69558b194ed12c1fd5a8056f4cdf9fae6a86de2943cea2969029c6722c0e9",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "ce92b472bf328834003947b9884882ace931b909331c9801603db23ed44b8799",
+        "greenOutputSha256": "46f866b344086548cfb67247b84ce2059c0ac9dff2eb9ff1b528becec8b1983c"
+      },
+      {
+        "name": "retained-process-bound",
+        "file": "lib/browser-profile-artifact-inventory.mjs",
+        "changedLines": [
+          {
+            "number": 10,
+            "text": "  if ([...entries].filter(entry => entry.scope === scope).length >= 4) throw fail()"
+          }
+        ],
+        "test": "test/browser-profile-artifact-inventory.test.ts",
+        "pattern": "^sixteen independent",
+        "originalSha256": "f4f69558b194ed12c1fd5a8056f4cdf9fae6a86de2943cea2969029c6722c0e9",
+        "mutatedSha256": "bb47fc394707f1bcfd7b418532e1ee6be22b7df55556a91ce1b94558ec6fe10d",
+        "restoredSha256": "f4f69558b194ed12c1fd5a8056f4cdf9fae6a86de2943cea2969029c6722c0e9",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "d59fb2f5354ee800f021266f1d9190dd4a43d06b6afb2dac57ff42fd3740f370",
+        "greenOutputSha256": "34fb9d6655d7585259f3d4f2a57e57ca29e1a630a5755e2d213eefc3111abbb3"
+      },
+      {
+        "name": "independent-cleanup-owners",
+        "file": "lib/browser-profile-artifact-inventory.mjs",
+        "changedLines": [
+          {
+            "number": 18,
+            "text": "  holders.delete(receipt); entry.holders.delete(receipt); entries.delete(entry)"
+          }
+        ],
+        "test": "test/browser-profile-artifact-inventory.test.ts",
+        "pattern": "^four slots",
+        "originalSha256": "f4f69558b194ed12c1fd5a8056f4cdf9fae6a86de2943cea2969029c6722c0e9",
+        "mutatedSha256": "6caf42cabe441bb9ada51b3f7133547d5341f5062469675c376023842dcae61d",
+        "restoredSha256": "f4f69558b194ed12c1fd5a8056f4cdf9fae6a86de2943cea2969029c6722c0e9",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "b6eb74887112c6a8a498669070980e8b3bdc837bfadab522103e20b75ea49a77",
+        "greenOutputSha256": "0702f297fefb065b710301c1c41abd02ec2be6a7c1cd00f09593c198f33501e1"
+      },
+      {
+        "name": "conversion-retains-slot",
+        "file": "lib/browser-profile-artifacts.mjs",
+        "changedLines": [
+          {
+            "number": 44,
+            "text": "    return this.#produce({ ...metadata, kind: 'download' }, assertCurrent, file => writeCompletedDownload(receipt, { destination: file, assertCurrent }), () => reserveArtifactInventory(this.inventoryScope))"
+          }
+        ],
+        "test": "test/browser-profile-downloads.test.ts",
+        "pattern": "^a full four-download",
+        "originalSha256": "7d6d9e71b37b43ec4007ba77ea273ef74dbeb674eb28669462026e63776d58c0",
+        "mutatedSha256": "d80b8fc2acedda4cf1778b06478e3216905bca027381e0d118b5e60e9c459fa0",
+        "restoredSha256": "7d6d9e71b37b43ec4007ba77ea273ef74dbeb674eb28669462026e63776d58c0",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "9a7ceae81b79291364f6b28d061489bb161e19f00b3a0e4e4223a59604bfeccb",
+        "greenOutputSha256": "e8b6f3181550222b572e1021f368fc0bce7d0a8e18da26e37d8c1be436fc03d9"
+      },
+      {
+        "name": "explicit-files-conversion",
+        "file": "lib/browser-profile-files.mjs",
+        "changedLines": [
+          {
+            "number": 80,
+            "text": "      for (const row of []) { check(); await this.artifacts.captureDownload({ receipt: row.receipt, assertCurrent: check }); check() }"
+          }
+        ],
+        "test": "test/browser-profile-files.test.ts",
+        "pattern": "^an explicit files read",
+        "originalSha256": "852a1506e026ca545e8efdc3ce9760dcbab26baaec3382089a4c52121e0abffd",
+        "mutatedSha256": "c880154b9e24f106836c084179d046327717ceba04a6468f7198102a44b6fdca",
+        "restoredSha256": "852a1506e026ca545e8efdc3ce9760dcbab26baaec3382089a4c52121e0abffd",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "392ab178e033f6c54367b41493b44c55768211fd91ffd8192fd248afc5f0b65c",
+        "greenOutputSha256": "9a85050433266341a0c9c09afd7fa4ad65a058078d2a40efb7a4869fe666ea3c"
+      }
+    ],
+    "sharedSourceUnchanged": true
+  },
+  "excludedDiagnostics": [
+    "The first copy-before-delete mutation survived because the test inspected deleteCalls before filesystem verification had a chance to run. An exact verification-call observer was added while the original copy was held; all twenty-two final copied mutations were then repeated successfully.",
+    "A first standalone held-cancel fixture exited with Node code13 because it awaited an unreferenced product timer with no referenced test observation. The fixture now has a bounded referenced observation wait, without changing product timers."
+  ],
+  "scope": {
+    "realTemporaryFilesAndInodes": true,
+    "syntheticWindowsUidModeProjection": true,
+    "actualLinuxPrivacy": false,
+    "actualNativeBrowser": false,
+    "actualCrossMachineDownload": false,
+    "runtimeHooks": false,
+    "production": false,
+    "sharedBytesMutated": false
+  },
+  "limits": {
+    "receivingPerRuntime": 1,
+    "receivingPerProcess": 4,
+    "acceptedFileBytes": 26214400,
+    "retainedPerRuntime": 4,
+    "retainedPerProcess": 16,
+    "acceptedRetainedBytes": 419430400,
+    "deadlineMs": 120000,
+    "observationMs": 100,
+    "cancelGraceMs": 2000,
+    "expiresMs": 600000,
+    "maxTransientCopyDuplicationBytes": 52428800,
+    "chromiumOvershootMayOccur": true,
+    "osDiskQuota": false,
+    "crashOrphansCountedAcrossProcesses": false,
+    "plaintextQuarantine": true
+  },
+  "raw": {
+    "report.json": "08ebcde0bb68e87c7633c7c2352eb30e7138c2996dbfd6e190417d974e300c8c",
+    "run.txt": "5ef019ea4f219aec92e42fa9d2b452812fff734f2ed188a386e7dc472f4b55d3",
+    "final-tests.txt": "981b45e5ed96d96c91c9d045385f94aae6deeef7ff484e20adfb3019675141f7",
+    "tsc.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}
