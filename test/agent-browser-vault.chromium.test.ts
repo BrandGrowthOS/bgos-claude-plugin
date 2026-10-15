@@ -46,8 +46,11 @@ test('actual Chromium keeps locked browsing ephemeral and restores encrypted ses
   let engine: any
   const start = async () => { engine = new ChromiumEngine({ ...paths, executable, headless: true }); await engine.start(); return engine.pages()[0] }
   t.after(async () => {
-    await engine?.pages()[0]?.evaluate(() => (globalThis as any).auditDb?.close()).catch(() => {})
-    await engine?.stop(); await new Promise<void>(resolve => server.close(() => resolve()))
+    // The server closes even when the stop throws (test/chromium-fixtures-exit.test.ts).
+    try {
+      await engine?.pages()[0]?.evaluate(() => (globalThis as any).auditDb?.close()).catch(() => {})
+      await engine?.stop()
+    } finally { await new Promise<void>(resolve => server.close(() => resolve())) }
     // Both sides CANONICAL. `root` is now the realpath of the temp dir (see
     // the note above), so comparing it against the raw tmpdir() would fail
     // on macOS where tmpdir() is an alias, and this guard is what stops the
@@ -157,9 +160,12 @@ test('unlock clears a historical origin whose service worker still holds a locke
     executable: process.env.HOAI_BROWSER_EXECUTABLE || resolveChromeExecutable({ env: process.env }).path })
   let worker: any
   t.after(async () => {
-    await worker?.evaluate(() => { (globalThis as any).auditDb?.close(); (globalThis as any).releaseHold?.() }).catch(() => {})
-    await engine.stop()
-    await Promise.all([new Promise<void>(resolve => historical.close(() => resolve())), new Promise<void>(resolve => current.close(() => resolve()))])
+    try {
+      await worker?.evaluate(() => { (globalThis as any).auditDb?.close(); (globalThis as any).releaseHold?.() }).catch(() => {})
+      await engine.stop()
+    } finally {
+      await Promise.all([new Promise<void>(resolve => historical.close(() => resolve())), new Promise<void>(resolve => current.close(() => resolve()))])
+    }
     rmSync(root, { recursive: true, force: true })
   })
   await engine.start()

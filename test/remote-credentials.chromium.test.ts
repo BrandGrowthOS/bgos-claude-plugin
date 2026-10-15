@@ -28,7 +28,13 @@ test('actual owner fill remains redacted from MCP snapshots, evaluate, console a
   const origin = `http://127.0.0.1:${(server.address() as any).port}`
   const paths = browserPathsFor({ agentRoot: root, assistantId: 901, principal: 'user-fixture' })
   const engine: any = new ChromiumEngine({ ...paths, executable: process.env.HOAI_BROWSER_EXECUTABLE || resolveChromeExecutable({ env: process.env }).path })
-  t.after(async () => { await engine.stop(); await new Promise<void>(resolve => server.close(() => resolve())); rmSync(root, { recursive: true, force: true }) })
+  // The server closes even when the stop throws (test/chromium-fixtures-exit.test.ts).
+  t.after(async () => {
+    try { await engine.stop() } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()))
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
   await engine.start()
   const page = engine.pages()[0]
   await page.goto(origin)
