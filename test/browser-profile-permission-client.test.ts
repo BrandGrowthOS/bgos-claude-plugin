@@ -139,10 +139,12 @@ test('an unknown consume acknowledgement is never resent or accepted as executio
 test('timeout retains an unresolved physical HTTP slot until actual settlement', async () => {
   const f = fixture(20), gate = deferred<Response>(); f.hooks.fetch = async () => gate.promise
   const requested = await f.client.request(f.input()); assert.equal(requested.status.state, 'outcome-unknown')
+  assert.deepEqual(f.client.activity(), { pendingPhysicalOperations: 1, cleanupUnknown: false })
   await assert.rejects(f.client.consume(requested.handle), /busy/)
   await assert.rejects(f.client.request({ ...f.input(), frame: { ...f.frame, rpcId: randomUUID() } }), /busy/)
   let drained = false; const drain = f.client.whenDrained().then(() => { drained = true }); await new Promise(resolve => setImmediate(resolve)); assert.equal(drained, false)
   gate.resolve(new Response('{}')); await drain; delete f.hooks.fetch
+  assert.deepEqual(f.client.activity(), { pendingPhysicalOperations: 0, cleanupUnknown: false })
   assert.equal((await f.client.request({ ...f.input(), frame: { ...f.frame, rpcId: randomUUID() } })).status.state, 'pending')
 })
 
@@ -159,6 +161,7 @@ test('reader cleanup failure releases the lock and refuses rather than returning
     return { status: 200, body: { getReader: () => ({ read: async () => read ? { done: true } : (read = true, { done: false, value: bytes }), cancel: async () => { throw Error('SYNTHETIC_PRIVATE_CLEANUP') }, releaseLock: () => { released = true } }) } } as unknown as Response }
   assert.equal((await f.client.request(f.input())).status.state, 'outcome-unknown'); assert.equal(released, true)
   await assert.rejects(f.client.whenDrained(), /cleanup_unconfirmed/)
+  assert.deepEqual(f.client.activity(), { pendingPhysicalOperations: 1, cleanupUnknown: true })
   await assert.rejects(f.client.request({ ...f.input(), frame: { ...f.frame, rpcId: randomUUID() } }), /busy/)
 })
 

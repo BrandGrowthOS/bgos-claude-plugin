@@ -73,6 +73,43 @@ test('failed writes and stalled readers settle once with unknown outcome and no 
   const g = fixture({ fetch: async () => new Response(new ReadableStream({ start() {} })), client: { timeoutMs: 5 } }); await assert.rejects(g.client.cancellation(g.authority, g.endpoint, g.rpc), { code: 'profile_sync_outcome_unknown' }); assert.equal(g.calls.length, 1)
   const refused = fixture({ fetch: async () => response({ code: 'browser_profile_storage_full', message: 'private-server-text' }, 507) }); await assert.rejects(refused.client.call(refused.authority, refused.request), (error: any) => error.code === 'browser_profile_storage_full' && error.statusCode === 507 && error.message === error.code); assert.equal(refused.calls.length, 1)
 })
+test('activity retains late fetch and body cancellation until positive physical settlement after timeout',async()=>{
+  let reply!:(value:Response)=>void,finish!:()=>void,cancelling=false
+  const f=fixture({client:{timeoutMs:20},fetch:()=>new Promise<Response>(resolve=>{reply=resolve})})
+  await assert.rejects(f.client.cancellation(f.authority,f.endpoint,f.rpc),/outcome_unknown/);assert.deepEqual(f.client.activity(),{pendingPhysicalOperations:1,cleanupUnknown:false})
+  let drained=false;const drain=f.client.whenDrained().then(()=>{drained=true})
+  const body=new Response(new ReadableStream({cancel(){cancelling=true;return new Promise<void>(resolve=>{finish=resolve})}}));reply(body);while(!cancelling)await tick()
+  assert.equal(drained,false);assert.equal(f.client.activity().pendingPhysicalOperations,1);finish();await drain
+  assert.deepEqual(f.client.activity(),{pendingPhysicalOperations:0,cleanupUnknown:false});assert.equal(body.body?.locked,false);assert.equal(f.calls.length,1)
+})
+test('activity tracks a stalled body and failed cancellation remains unknown without automatic retries',async()=>{
+  let read!:(value:any)=>void,finish!:()=>void,started=false,cancelled=false
+  const f=fixture({client:{timeoutMs:20},fetch:async()=>({status:200,redirected:false,body:{getReader:()=>({read:()=>{started=true;return new Promise(resolve=>{read=resolve})},cancel:()=>{cancelled=true;return new Promise<void>(resolve=>{finish=resolve})},releaseLock(){}})}})})
+  const pending=f.client.cancellation(f.authority,f.endpoint,f.rpc);while(!started)await tick();await assert.rejects(pending,/outcome_unknown/);assert.equal(f.client.activity().pendingPhysicalOperations,1)
+  read({done:true});while(!cancelled)await tick();assert.equal(f.client.activity().pendingPhysicalOperations,1);finish();await f.client.whenDrained();assert.equal(f.client.activity().pendingPhysicalOperations,0)
+  const failed=fixture({fetch:async()=>({status:200,redirected:false,body:{getReader:()=>({read:async()=>({done:true}),cancel:async()=>{throw Error('PRIVATE_CLEANUP_FAILURE')},releaseLock(){}})}})})
+  await assert.rejects(failed.client.cancellation(failed.authority,failed.endpoint,failed.rpc),/cleanup_unconfirmed/);assert.deepEqual(failed.client.activity(),{pendingPhysicalOperations:1,cleanupUnknown:true});await assert.rejects(failed.client.whenDrained(),/cleanup_unconfirmed/)
+  await assert.rejects(failed.client.cancellation(failed.authority,failed.endpoint,failed.rpc),/cleanup_unconfirmed/);assert.equal(failed.calls.length,1)
+})
+test('retained requests synchronously bound each exact profile to two slots before authorization or fetch',async()=>{
+  const replies:Array<(value:Response)=>void>=[],f=fixture({client:{timeoutMs:20},fetch:()=>new Promise<Response>(resolve=>replies.push(resolve))})
+  await assert.rejects(f.client.dispatch(f.authority,f.endpoint,f.rpc),/outcome_unknown/)
+  await assert.rejects(f.client.cancellation(f.authority,f.endpoint,f.rpc),/outcome_unknown/)
+  assert.equal(f.client.activity().pendingPhysicalOperations,2);const authorized=f.scopes.length,dispatched=f.calls.length
+  await assert.rejects(f.client.result(f.authority,f.endpoint,{...f.rpc,payload:{ok:false,error:{code:'cancelled',message:'synthetic'}}}),/request_busy/)
+  assert.equal(f.scopes.length,authorized);assert.equal(f.calls.length,dispatched)
+  for(const reply of replies)reply(response({accepted:true}));await f.client.whenDrained();assert.equal(f.client.activity().pendingPhysicalOperations,0)
+  const next=f.client.cancellation(f.authority,f.endpoint,f.rpc),rejected=assert.rejects(next,/outcome_unknown/);await rejected;assert.equal(f.calls.length,3);replies[2](response({accepted:true}));await f.client.whenDrained()
+})
+test('the ninth retained physical request is refused globally before authorization and independent profiles release only after drain',async()=>{
+  const replies:Array<(value:Response)=>void>=[],f=fixture({client:{timeoutMs:20},fetch:()=>new Promise<Response>(resolve=>replies.push(resolve))})
+  for(let index=0;index<8;index++)await assert.rejects(f.client.call({...f.authority,profileId:randomUUID()},f.request),/outcome_unknown/)
+  assert.equal(f.client.activity().pendingPhysicalOperations,8);assert.equal(f.scopes.length,8)
+  await assert.rejects(f.client.call({...f.authority,profileId:randomUUID()},f.request),/request_busy/);assert.equal(f.scopes.length,8);assert.equal(f.calls.length,8)
+  replies[0](response({accepted:true}));await tick();assert.equal(f.client.activity().pendingPhysicalOperations,7)
+  await assert.rejects(f.client.call({...f.authority,profileId:randomUUID()},f.request),/outcome_unknown/);assert.equal(f.calls.length,9)
+  for(const reply of replies.slice(1))reply(response({accepted:true}));await f.client.whenDrained();assert.deepEqual(f.client.activity(),{pendingPhysicalOperations:0,cleanupUnknown:false})
+})
 test('insecure, credential-bearing or query-bearing endpoints cannot be configured', () => {
   for (const endpoint of ['http://hoai.test', 'https://user:password@hoai.test', 'https://hoai.test/?token=x', 'https://hoai.test/#x', 'file:///private']) assert.throws(() => new PairedProfileCoordinatorClient({ endpoint, authorizePairing() {} }), { code: 'profile_sync_configuration_invalid' })
   const f = fixture(); assert.throws(() => Object.assign(f.client, { origin: 'https://foreign.test' }), TypeError)

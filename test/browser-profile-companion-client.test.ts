@@ -72,6 +72,19 @@ test('a timed-out unresolved network operation retains the one physical request 
   release(response({ intents: [], truncated: false })); blocked = false; await new Promise(resolve => setImmediate(resolve))
   assert.deepEqual(await f.client.pending(42, 'boot'), { intents: [], truncated: false })
 })
+test('activity keeps a late response cancellation reserved and clears only after positive settlement',async()=>{
+  let reply!:(value:Response)=>void,finish!:()=>void,cancelling=false
+  const f=fixture(async()=>new Promise<Response>(resolve=>{reply=resolve}),20)
+  await assert.rejects(f.client.pending(42,'boot'),/connection_unavailable/);assert.deepEqual(f.client.activity(),{pendingPhysicalOperations:1,cleanupUnknown:false})
+  let drained=false;const drain=f.client.whenDrained().then(()=>{drained=true});const body=new Response(new ReadableStream({cancel(){cancelling=true;return new Promise<void>(resolve=>{finish=resolve})}}));reply(body)
+  while(!cancelling)await new Promise(resolve=>setImmediate(resolve));assert.equal(drained,false);assert.equal(f.client.activity().pendingPhysicalOperations,1);finish();await drain
+  assert.deepEqual(f.client.activity(),{pendingPhysicalOperations:0,cleanupUnknown:false});assert.equal(body.body?.locked,false)
+})
+test('failed response cleanup remains visible and blocks every later operation',async()=>{
+  const f=fixture(async()=>({status:200,redirected:false,body:{getReader:()=>({read:async()=>({done:true}),cancel:async()=>{throw Error('PRIVATE_CLEANUP_FAILURE')},releaseLock(){}})}} as unknown as Response))
+  await assert.rejects(f.client.pending(42,'boot'),/cleanup_unconfirmed/);assert.deepEqual(f.client.activity(),{pendingPhysicalOperations:1,cleanupUnknown:true});await assert.rejects(f.client.whenDrained(),/cleanup_unconfirmed/)
+  await assert.rejects(f.client.pending(42,'boot'),/request_busy/);assert.equal(f.calls.length,1)
+})
 test('a dispatched candidate write with missing acknowledgement is not replayed', async () => {
   const f = fixture(async () => { throw Error('private transport output') })
   await assert.rejects(f.client.publish(f.intent, f.endpoint, 'boot', 'Agent browser'), { code: 'profile_companion_outcome_unknown' }); assert.equal(f.calls.length, 1)
