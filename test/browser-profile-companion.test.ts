@@ -255,7 +255,23 @@ test('active signed monitoring is independent of slow setup and coalesces one ph
   assert.equal(reads,1);assert.equal(f.calls.includes('dispose'),false);release({current:false});await f.record.monitorTask;assert.equal(f.record.revoked,true);assert.equal(f.calls.includes('dispose'),true)
 })
 test('an old signed false status cannot dispose or pause a replacement runtime',async t=>{const f=await fixture(t);f.companion.records.set(f.scope.endpointId,f.record);let reply!:(value:unknown)=>void;const old={state:'active',authority:{},dispose:async()=>f.calls.push('wrong-dispose')},replacement={state:'active',authority:{},dispose:async()=>f.calls.push('new-dispose')};f.record.runtime=old;f.record.rpc={binding:{socketId:'socket-a',bindingId:randomUUID()}};f.record.admission='active';f.companion.statusClient={status:()=>new Promise(resolve=>{reply=resolve})};const task=f.companion._active(f.record);f.record.runtime=replacement;f.record.rpc={binding:{socketId:'socket-a',bindingId:randomUUID()}};reply({current:false});await task;assert.equal(f.record.runtime,replacement);assert.equal(f.record.admission,'active');assert.deepEqual(f.calls,[])})
-test('revocation during a physical runtime launch waits for and destroys the late native object once',async t=>{const f=await fixture(t);f.companion.records.set(f.scope.endpointId,f.record);let release!:(value:unknown)=>void,entered=false,disposed=0;f.companion.createRuntime=()=>{entered=true;return new Promise(resolve=>{release=resolve})};const authority={profileId:f.scope.profileId,actingUserId:f.scope.actingUserId,assistantId:42,endpointId:f.scope.endpointId,bootId:f.connection.bootId,runtimeId:randomUUID(),sessionId:randomUUID(),grantVersion:1,keyFingerprint:f.scope.keyFingerprint,writerEpoch:1,revision:0,contentKeyEpoch:1},preparing=f.companion._prepare(f.record,authority);void preparing.catch(()=>{});for(let count=0;count<100&&!entered;count++)await new Promise(resolve=>setImmediate(resolve));assert.equal(entered,true);let done=false;const revoking=f.companion.revoke().then(()=>{done=true});await new Promise(resolve=>setImmediate(resolve));assert.equal(done,false);release({state:'new',dispose:async()=>{disposed++}});await assert.rejects(preparing,{code:'profile_companion_context_changed'});await revoking;assert.equal(disposed,1);assert.equal(f.record.runtime,null)})
+test('revocation during a physical runtime launch waits for and destroys the late native object once', { timeout: 10_000 }, async t => {
+  const f = await fixture(t); f.companion.records.set(f.scope.endpointId, f.record)
+  let release!: (value: unknown) => void, signalEntry!: () => void, rejectEntry!: (reason: Error) => void, disposed = 0, entryConfirmed = false
+  const runtimeEntered = new Promise<void>((resolve, reject) => { signalEntry = resolve; rejectEntry = reject })
+  const entryDeadline = setTimeout(() => rejectEntry(Error('runtime factory did not enter before the fixture deadline')), 5000)
+  t.after(() => clearTimeout(entryDeadline))
+  f.companion.createRuntime = () => { entryConfirmed = true; clearTimeout(entryDeadline); signalEntry(); return new Promise(resolve => { release = resolve }) }
+  const authority = { profileId: f.scope.profileId, actingUserId: f.scope.actingUserId, assistantId: 42, endpointId: f.scope.endpointId, bootId: f.connection.bootId, runtimeId: randomUUID(), sessionId: randomUUID(), grantVersion: 1, keyFingerprint: f.scope.keyFingerprint, writerEpoch: 1, revision: 0, contentKeyEpoch: 1 }, preparing = f.companion._prepare(f.record, authority)
+  void preparing.catch(() => {})
+  await runtimeEntered
+  assert.equal(entryConfirmed, true)
+  let done = false; const revoking = f.companion.revoke().then(() => { done = true })
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(done, false)
+  release({ state: 'new', dispose: async () => { disposed++ } })
+  await assert.rejects(preparing, { code: 'profile_companion_context_changed' }); await revoking
+  assert.equal(disposed, 1); assert.equal(f.record.runtime, null)
+})
 
 test('termination before queued factory admission never starts a late browser',async t=>{
   const f=await fixture(t);f.companion.records.set(f.scope.endpointId,f.record);let release!:(value:unknown)=>void,loaded=false,launches=0

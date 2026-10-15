@@ -1,4 +1,14 @@
-import { test } from 'node:test'
+import { test as nativeTest, type TestContext } from 'node:test'
+
+// Production background timers are unreferenced. A synthetic test has no
+// browser socket to keep Node alive while those original timers settle.
+function test(name: string, body: (context: TestContext) => void | Promise<void>) {
+  return nativeTest(name, { timeout: 15_000 }, async context => {
+    const fixtureKeeper = setInterval(() => {}, 1000)
+    context.after(() => clearInterval(fixtureKeeper))
+    try { await body(context) } finally { clearInterval(fixtureKeeper) }
+  })
+}
 import assert from 'node:assert/strict'
 import * as fs from 'node:fs/promises'
 import path from 'node:path'
