@@ -1,11 +1,11 @@
 {
   "version": 1,
-  "sourceCommit": "53bfe63344e7401f3052bd19cd339e58eb0cb604",
+  "sourceCommit": "6a307244d7db30a8f80df32352a20ceb787fcec0",
   "why": "Byte-identical encrypted checkpoint, lossless storage, strict complete portable state, cookie codecs, typed runtime endpoint, signed agent stopped-head lineage and encrypted local journal shared with HOAI. NativeRuntime exports are pure until its injected Electron constructor runs. The pairing adapter uses only shared signing methods and never instantiates or inherits the desktop Bearer client.",
   "files": {
     "crypto.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/crypto.js",
-      "sha256": "8618f0702f01bd2a23a59dd3fcbef388512b1b218823953b0a7e63b83158a3a3"
+      "sha256": "634bd2f26d54f21107b1fb5b669efd38330c225e1f685f4ddd95d3aba8bfe99d"
     },
     "storage.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/storage.js",
@@ -13,7 +13,11 @@
     },
     "portable-state.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/portable-state.js",
-      "sha256": "0539458b36a2d112277889c151f501881b4a2ff2d0a5653e3dca62818e3409b0"
+      "sha256": "b0fc9a2bf163fd0e556d174ae09f23a63ed30870015c72903a645c32d60fe5e0"
+    },
+    "resume-tabs.js": {
+      "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/resume-tabs.js",
+      "sha256": "c4a8320e36fad69a6874a69b37c5571c637df1c41cfd30259f66eb49e3436778"
     },
     "native-runtime.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/native-runtime.js",
@@ -21,7 +25,7 @@
     },
     "coordinator-client.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/coordinator-client.js",
-      "sha256": "0ad488fdcfe68cd0b54a3b09616d7bd272d913ff6965e277862cd87535d65c6d"
+      "sha256": "e8c902ebc426c8b40890c73f45826457edab349d77f97a5c04141925db1a64c0"
     },
     "runtime-endpoint.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/runtime-endpoint.js",
@@ -41,7 +45,7 @@
     },
     "return-intent.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/return-intent.js",
-      "sha256": "9fb2b69303c23031951f0bf8093021cc55e50c12504403e6012584709d7009fe"
+      "sha256": "3d27a0f8037dc236433cf1d22bd6d61edcc7f8a46e4ef1842ab0737535a33bd1"
     }
   }
 }
