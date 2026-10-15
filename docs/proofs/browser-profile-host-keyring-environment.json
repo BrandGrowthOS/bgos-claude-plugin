@@ -65,5 +65,39 @@
     "exclusion": "Windows cannot run the existing shell recording-wrapper end-to-end case",
     "failures": 0
   },
-  "actualPrivateKeyringPreflight": "Pending immutable env-only archive qualification; the earlier direct-bin proof inherited the full fixture environment."
+  "actualPrivateKeyringPreflight": {
+    "exit": 0,
+    "receipt": {
+      "type": "preflight",
+      "ok": true,
+      "uid": 1000,
+      "keyring": "actual-private-unlocked-persistent",
+      "provider": "libsecret-v1",
+      "endpointRoundTrip": true,
+      "portableRoundTrip": true,
+      "plaintextAbsent": true,
+      "fixedHelpers": true,
+      "keyringOwnerVerified": true,
+      "nodeHostFilter": "actual-shipped-hostEnv",
+      "nodeBusRetained": true,
+      "nodeRuntimeRetained": true,
+      "headlessBrowserBusExcluded": true,
+      "headlessBrowserRuntimeExcluded": true,
+      "sshSocketExcluded": true,
+      "keyringStopped": true,
+      "busStopped": true,
+      "pluginCommit": "855597be9a778a901eccabe3fe538cafc2213cb8",
+      "archiveSha256": "ea0da2c39998699c83698226153c71c925b5d3afe12c15d3c5f210e408c2af79"
+    },
+    "containerAbsent": true,
+    "dockerInventoryConfirmed": true,
+    "forcedStop": false,
+    "pluginArchive": {
+      "path": "/tmp/hoai-profile-archive.VsP7i3",
+      "pluginCommit": "855597be9a778a901eccabe3fe538cafc2213cb8",
+      "pluginArchiveSha256": "ea0da2c39998699c83698226153c71c925b5d3afe12c15d3c5f210e408c2af79",
+      "image": "hoai-profile-fresh:855597b"
+    },
+    "fixtureSourceSha256": "12bfeefb08ae14713d67c540daa9ee3e02bec7cc45bfa9e121127d5f764b1d0d"
+  }
 }
