@@ -141,7 +141,8 @@ test('every consumer of the channel takes the resolved value, never the constant
   )
   assert.match(
     code,
-    /write_run_sh "\$statedir\/run\.sh" "\$statedir" "\$ASSISTANT_ID" "\$node_bin" "\$topology" "\$plugin_key" "\$PLUGIN_DIR"/,
+    // Round 2 L5: written beside run.sh and moved into place.
+    /write_run_sh "\$statedir\/run\.sh\.tmp" "\$statedir" "\$ASSISTANT_ID" "\$node_bin" "\$topology" "\$plugin_key" "\$PLUGIN_DIR"/,
   )
   // And no supervisor line spells a channel flag of its own any more.
   assert.doesNotMatch(code, /spawn .*--dangerously-load-development-channels/)

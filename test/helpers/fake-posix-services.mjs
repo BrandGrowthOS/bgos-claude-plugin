@@ -20,6 +20,7 @@
  *              account's ~/.config/systemd/user; a drop-in's Conflicts= makes a
  *              start stop the other unit first (one job).
  *   tmux       -L <socket> kill-server | has-session | list-sessions
+ * `state.panes` (socket -> working directories) answers `tmux list-panes`.
  * Every call is appended to state.calls with the loaded jobs, enabled and active
  * units and live tmux servers right after it, so a test can prove "never two at
  * once" and "never none". `fail` in the state makes matching calls fail (a substring, or the
@@ -143,6 +144,8 @@ function run(state, tool, args) {
     }
     switch (verb) {
       case 'show-environment':
+        // The manager's own environment: its HOME is the account's, whatever HOME the caller has.
+        return out(`HOME=${state.managerHome}\nPATH=/usr/bin:/bin\n`)
       case 'daemon-reload':
         return out()
       case 'enable':
@@ -205,6 +208,8 @@ function run(state, tool, args) {
       return out()
     }
     if (verb === 'has-session' || verb === 'list-sessions') return state.tmux.includes(socket) ? out(`${socket}: 1 windows\n`) : out('', 1, 'no server running')
+    // list-panes -a -F '#{pane_current_path}': where the server's panes run (state.panes, seeded by a test).
+    if (verb === 'list-panes') return state.tmux.includes(socket) ? out(((state.panes ?? {})[socket] ?? []).map((p) => `${p}\n`).join('')) : out('', 1, 'no server running')
     return out()
   }
   return out('', 127, `fake: ${tool} is not modelled`)

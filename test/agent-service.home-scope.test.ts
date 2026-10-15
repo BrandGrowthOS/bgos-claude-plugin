@@ -14,11 +14,14 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
-import { agentServiceNames, listAgents } from '../lib/agent-inventory.mjs'
-import { agentServiceRecord, readBackAgentService } from '../lib/agent-service.mjs'
+import { agentHomeId, agentServiceNames, listAgents } from '../lib/agent-inventory.mjs'
+import { agentServiceRecord, posixAgentServiceSpec, readBackAgentService } from '../lib/agent-service.mjs'
 import { isOwnServiceProcess, restartAgent } from '../lib/agent-restart.mjs'
-import { classifyRegistration, readProbe } from '../lib/watcher-service.mjs'
+import { classifyRegistration, readProbe, watcherHomeId } from '../lib/watcher-service.mjs'
 import { resolveSupervision } from '../lib/update-readiness.ts'
 import { readAlwaysOnSupervision } from '../lib/always-on-reconcile.ts'
 import { main as agentServiceMain, PROBE_TIMEOUT_MS } from '../bin/hoai-agent-service.mjs'
@@ -236,4 +239,39 @@ test('bin/hoai-agent-service.mjs bounds every read-back (a hung user bus is an u
   for (const call of seen) assert.equal(call.opts?.timeoutMs, PROBE_TIMEOUT_MS, `${call.file} ${call.args.join(' ')}`)
   assert.ok(out.includes('state=unknown'), out.join('\n'))
   assert.match(out.find((l) => l.startsWith('say='))!, /^say=refused: which HOME the systemd unit "bgos-agent-912-home-dc88e57d" belongs to could not be read/)
+})
+
+// -- round 2 ----------------------------------------------------------------------------------------
+
+test('round 2 H2: a posix HOME spelled through a symlink is ONE HOME: one id (the real path\'s), and a registration or service file recording the other spelling is its own', { skip: process.platform === 'win32' ? 'a posix HOME is resolved on the posix host it lives on' : false }, async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'hoai-h2-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const real = join(root, 'Users', 'bgos')
+  mkdirSync(real, { recursive: true })
+  const alias = join(root, 'Users', 'fitecho')
+  symlinkSync(real, alias)
+  for (const platform of ['darwin', 'linux']) {
+    assert.equal(agentHomeId(alias, platform), agentHomeId(real, platform), platform)
+    assert.equal(agentHomeId(alias, platform), watcherHomeId(realpathSync(real), platform), platform)
+  }
+  // Read back from the alias, a unit recording the real spelling is this HOME's.
+  const spec = posixAgentServiceSpec({ platform: 'linux', home: alias, assistantId: ID })!
+  assert.equal(classifyRegistration(spec, [{ what: 'unit', homes: [real], active: true, path: null }]).state, 'own')
+  assert.equal(classifyRegistration(spec, [{ what: 'unit', homes: [join(root, 'other')], active: true, path: null }]).state, 'foreign')
+  // records-home (bin/bgos-agent's file_records_home): either spelling, and the layout plutil rewrites a plist to.
+  const plist = join(root, 'ai.bgos.agent.912.plist')
+  writeFileSync(plist, agentPlist(real, 'ai.bgos.agent.912').replace(`    <key>HOME</key><string>${real}</string>`, `\t\t<key>HOME</key>\n\t\t<string>${real}</string>`))
+  const unit = join(root, 'bgos-agent-912.service')
+  writeFileSync(unit, ['[Service]', `ExecStart=/bin/bash "${real}/.bgos-agent/912/run.sh"`, `Environment="HOME=${real}"`, ''].join('\n'))
+  const recordsHome = async (home: string, file: string, os: string) => {
+    const out: string[] = []
+    assert.equal(await agentServiceMain(['records-home', '--file', file, '--os', os], { env: { HOME: home }, out: (l: string) => out.push(l), err: () => {} }), 0)
+    return out.join('\n')
+  }
+  assert.equal(await recordsHome(alias, plist, 'Darwin'), 'yes')
+  assert.equal(await recordsHome(real, plist, 'Darwin'), 'yes')
+  assert.equal(await recordsHome(join(root, 'other'), plist, 'Darwin'), 'no')
+  assert.equal(await recordsHome(alias, unit, 'Linux'), 'yes')
+  assert.equal(await recordsHome(join(root, 'other'), unit, 'Linux'), 'no')
+  assert.equal(await recordsHome(alias, join(root, 'missing.plist'), 'Darwin'), 'no')
 })

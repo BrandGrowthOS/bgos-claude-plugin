@@ -20,6 +20,9 @@
  *         label=<the name read>
  *         say=<the sentence to report: why this HOME's name is refused, or
  *             why the old one is left alone; empty when there is nothing to say>
+ *   records-home --file <plist or unit> --os <Darwin|Linux>
+ *       yes when that service file records $HOME (by real path, in any layout
+ *       plutil may have rewritten it to), else no.
  *
  * Exit 0 whenever it answered (a refusal is an answer), 2 on a usage error.
  * Plain JavaScript, node >= 18 or bun, builtins only.
@@ -29,7 +32,7 @@ import { realpathSync } from 'node:fs'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { agentHomeId, agentServiceNamesFor, validAssistantId } from '../lib/agent-inventory.mjs'
-import { agentLeftAlone, posixAgentServiceSpec, readBackAgentService } from '../lib/agent-service.mjs'
+import { agentLeftAlone, fileRecordsAgentHome, posixAgentServiceSpec, readBackAgentService } from '../lib/agent-service.mjs'
 import { nodeExec, nodeFs } from '../lib/watcher-bundle.mjs'
 
 const PLATFORMS = Object.freeze({ Darwin: 'darwin', Linux: 'linux' })
@@ -91,7 +94,12 @@ export async function main(argv = process.argv.slice(2), { env = process.env, ex
     out(`say=${oneLine(say)}`)
     return 0
   }
-  err('hoai-agent-service: home-id | probe')
+  if (command === 'records-home') {
+    const content = f.file ? fs.readFile(f.file) : null
+    out(content != null && fileRecordsAgentHome(content, platform, home) ? 'yes' : 'no')
+    return 0
+  }
+  err('hoai-agent-service: home-id | probe | records-home')
   return 2
 }
 

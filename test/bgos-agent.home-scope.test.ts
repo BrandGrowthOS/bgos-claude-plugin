@@ -21,7 +21,7 @@
  * Run: npx tsx --test test/bgos-agent.home-scope.test.ts
  */
 import { spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -53,6 +53,7 @@ type State = {
   enabled: string[]
   active: string[]
   tmux: string[]
+  panes?: Record<string, string[]>
   fail: Array<{ match: string; exact?: boolean; code?: number; stderr?: string; times?: number }>
   killCallerOn?: string | null
   calls: Array<{ cmd: string; code: number; loaded: string[]; enabled: string[]; active: string[]; tmux: string[] }>
@@ -80,7 +81,8 @@ function account(os: Os) {
   shim('expect', 'exit 0')
   // bgos-agent's own runtime: `bun install` is skipped (no network), anything else (the
   // HOME id and the read-back helper, the daemon wrapper copy) runs on this test's node.
-  shim('bun', `[ "$1" = "install" ] && exit 0\nexec '${process.execPath}' "$@"`)
+  // HOAI_TEST_NO_HELPER: no runtime answers bin/hoai-agent-service.mjs (no bun and no node on the box).
+  shim('bun', `[ "$1" = "install" ] && exit 0\ncase "$1" in */hoai-agent-service.mjs) [ -n "$HOAI_TEST_NO_HELPER" ] && exit 1 ;; esac\nexec '${process.execPath}' "$@"`)
   shim('node', 'exit 0')
   const workdir = (home: string) => {
     const dir = join(home, 'agents', 'ava')
@@ -88,12 +90,12 @@ function account(os: Os) {
     writeFileSync(join(dir, '.mcp.json'), JSON.stringify({ mcpServers: { bgos: { command: 'bun', args: [join(repoRoot, 'server.ts')] } } }))
     return dir
   }
-  const run = (home: string, args: string[]) => {
+  const run = (home: string, args: string[], extraEnv: Record<string, string> = {}) => {
     const r = spawnSync(BASH!, [agentBin, ...args], {
       cwd: home,
       encoding: 'utf8',
       timeout: 100_000,
-      env: { HOME: home, USER: 'kc', LOGNAME: 'kc', NO_COLOR: '1', XDG_RUNTIME_DIR: join(root, 'run'), PATH: `${shims}:/usr/bin:/bin:/usr/sbin:/sbin` },
+      env: { HOME: home, USER: 'kc', LOGNAME: 'kc', NO_COLOR: '1', XDG_RUNTIME_DIR: join(root, 'run'), PATH: `${shims}:/usr/bin:/bin:/usr/sbin:/sbin`, ...extraEnv },
     })
     return { status: r.status, out: `${r.stdout}\n${r.stderr}` }
   }
@@ -108,7 +110,8 @@ function account(os: Os) {
 }
 
 type Account = ReturnType<typeof account>
-const hid = (home: string) => watcherHomeId(home, 'linux')
+// The HOME id of a HOME, by its real path (round 2 H2: one HOME spelled through a symlink is one HOME).
+const hid = (home: string) => watcherHomeId(existsSync(home) ? realpathSync(home) : home, 'linux')
 const label = (home: string) => `ai.bgos.agent.${ID}.home-${hid(home)}`
 const unit = (home: string) => `bgos-agent-${ID}-home-${hid(home)}`
 const OLD_LABEL = `ai.bgos.agent.${ID}`
@@ -288,7 +291,7 @@ test('macOS: this HOME\'s own label recording another HOME is refused by install
 
 // -- the same HOME's old job is renamed in place --------------------------------------------------------
 
-test('macOS same-HOME migration: install renames the 0.69.2 job in #237\'s order (old booted out and gone, then the new one bootstrapped), never two at once; its old plist and old tmux server go', SLOW, (t) => {
+test('macOS same-HOME migration: install renames the 0.69.2 job, the new one bootstrapped and read back BEFORE the old one is booted out (round 2 M1), two loaded only between the two; its old plist and old tmux server go', SLOW, (t) => {
   if (!ready(t)) return
   const a = account('Darwin')
   t.after(a.cleanup)
@@ -298,15 +301,19 @@ test('macOS same-HOME migration: install renames the 0.69.2 job in #237\'s order
   assert.deepEqual(Object.keys(a.state().launchd), [label(a.owner)])
   assert.match(r.out, new RegExp(`service note: renamed the launchd job "${OLD_LABEL}" \\(installed from this HOME by an older version\\) to launchd job "${label(a.owner)}"`))
   assert.equal(existsSync(plistPath(a.owner, OLD_LABEL)), false, 'the old plist would load again at the next login')
-  for (const c of a.state().calls) assert.ok(c.loaded.filter((l) => l.startsWith(`ai.bgos.agent.${ID}`)).length <= 1, `two jobs at: ${c.cmd}`)
-  const cmds = a.state().calls.map((c) => c.cmd)
+  const calls = a.state().calls
+  const cmds = calls.map((c) => c.cmd)
   const outAt = cmds.findIndex((c) => c === `launchctl bootout gui/${a.state().uid}/${OLD_LABEL}`)
   const inAt = cmds.findIndex((c) => c.startsWith('launchctl bootstrap') && c.endsWith(`${label(a.owner)}.plist`))
-  assert.ok(outAt >= 0 && inAt > outAt, cmds.join('\n'))
+  assert.ok(inAt >= 0 && outAt > inAt, cmds.join('\n'))
+  calls.forEach((c, i) => {
+    const jobs = c.loaded.filter((l) => l.startsWith(`ai.bgos.agent.${ID}`)).length
+    assert.ok(jobs <= (i >= inAt && i < outAt ? 2 : 1), `${jobs} jobs at: ${c.cmd}`)
+  })
   assert.equal(a.state().tmux.includes(`hoai-${ID}`), false, 'the old job\'s tmux server ended with it')
 })
 
-test('macOS same-HOME migration rollback: when the new job does not come up the old one is loaded again and the new plist removed', SLOW, (t) => {
+test('macOS same-HOME migration rollback: when the new job does not come up the old one stays loaded, as it was, and the new plist is removed', SLOW, (t) => {
   if (!ready(t)) return
   const a = account('Darwin')
   t.after(a.cleanup)
@@ -316,7 +323,7 @@ test('macOS same-HOME migration rollback: when the new job does not come up the 
   })
   const r = a.install(a.owner)
   assert.notEqual(r.status, 0)
-  assert.match(r.out, new RegExp(`migration rolled back \\(the old job "${OLD_LABEL}" is loaded again\\)`))
+  assert.match(r.out, new RegExp(`migration rolled back \\(the old job "${OLD_LABEL}" stays loaded, the new one is removed\\)`))
   assert.deepEqual(Object.keys(a.state().launchd), [OLD_LABEL])
   assert.equal(existsSync(plistPath(a.owner, label(a.owner))), false)
   assert.ok(existsSync(plistPath(a.owner, OLD_LABEL)))
@@ -372,7 +379,7 @@ test('macOS rename: a bootout that fails while the old job stays loaded rolls ba
   })
   const r = a.install(a.owner)
   assert.notEqual(r.status, 0)
-  assert.match(r.out, new RegExp(`migration rolled back \\(the old job "${OLD_LABEL}" is loaded again\\)`))
+  assert.match(r.out, new RegExp(`migration rolled back \\(the old job "${OLD_LABEL}" stays loaded, the new one is removed\\)`))
   assert.deepEqual(Object.keys(a.state().launchd), [OLD_LABEL])
   assert.deepEqual(agentPlists(a.owner), [`${OLD_LABEL}.plist`], 'exactly the old plist, back in its place')
   assert.ok(a.state().tmux.includes(`hoai-${ID}`), 'the old job\'s session was not ended for a rename that did not happen')
@@ -388,8 +395,154 @@ test('macOS rename from inside the old job\'s own session: the installer is kill
   })
   const r = a.install(a.owner)
   assert.notEqual(r.status, 0, 'the installer died at the bootout')
-  assert.deepEqual(Object.keys(a.state().launchd), [], 'the old job is gone (the installer never reached the bootstrap)')
+  // Round 2 M1: the new job was loaded and read back BEFORE the old one was booted out, so the
+  // agent is supervised under its new name right away, not only from the next login.
+  assert.deepEqual(Object.keys(a.state().launchd), [label(a.owner)], 'the new job is loaded')
   assert.deepEqual(agentPlists(a.owner), [`${label(a.owner)}.plist`], 'one plist: the next login starts the agent once, under the new name')
+  const cmds = a.state().calls.map((c) => c.cmd)
+  const inAt = cmds.findIndex((c) => c.startsWith('launchctl bootstrap') && c.endsWith(`${label(a.owner)}.plist`))
+  const outAt = cmds.findIndex((c) => c === `launchctl bootout gui/${a.state().uid}/${OLD_LABEL}`)
+  assert.ok(inAt >= 0 && outAt > inAt, cmds.join('\n'))
+})
+
+// -- round 2 -----------------------------------------------------------------------------------
+
+for (const os of ['Darwin', 'Linux'] as const) {
+  test(`round 2 H2 (${os}): a HOME spelled through a symlink is ONE HOME: its id is the real path's, and the owner's 0.69.2 job recorded under the real spelling is renamed, never joined by a second job`, SLOW, (t) => {
+    if (!ready(t)) return
+    const a = account(os)
+    t.after(a.cleanup)
+    seedOldAgent(a, os)
+    const alias = join(a.root, 'alias-kc')
+    symlinkSync(a.owner, alias)
+    const r = a.install(alias)
+    assert.equal(r.status, 0, r.out)
+    if (os === 'Darwin') {
+      assert.deepEqual(Object.keys(a.state().launchd), [label(a.owner)], 'one job, under the id of the real path')
+      assert.deepEqual(agentPlists(a.owner), [`${label(a.owner)}.plist`])
+      assert.match(r.out, new RegExp(`service note: renamed the launchd job "${OLD_LABEL}"`))
+    } else {
+      assert.deepEqual(a.state().active, [unit(a.owner)], 'one running unit, under the id of the real path')
+      assert.deepEqual(a.state().enabled, [unit(a.owner)])
+      assert.match(r.out, new RegExp(`service note: renamed the systemd unit "${OLD_UNIT}"`))
+    }
+    assert.doesNotMatch(r.out, /alone: it was installed from another HOME/)
+    // Either spelling names the same service.
+    const viaAlias = a.run(alias, ['status', '--assistant', ID]).out
+    const viaReal = a.run(a.owner, ['status', '--assistant', ID]).out
+    // macOS names the loaded job; on both, status names the agent's HOME-scoped tmux session.
+    const named = (out: string) => (os === 'Darwin' ? /ai\.bgos\.agent\.42\.home-[0-9a-f]{8}(?= is loaded)/ : /hoai-42-home-[0-9a-f]{8}/).exec(out)?.[0]
+    assert.equal(named(viaAlias), os === 'Darwin' ? label(a.owner) : `hoai-${ID}-home-${hid(a.owner)}`, viaAlias)
+    assert.equal(named(viaReal), named(viaAlias), `${viaAlias}\n----\n${viaReal}`)
+  })
+}
+
+test('round 2 L8: an uninstall whose own read-back cannot be read removes NOTHING and says so (exit 1); so does one with no runtime for the read-back', SLOW, (t) => {
+  if (!ready(t)) return
+  const a = account('Darwin')
+  t.after(a.cleanup)
+  assert.equal(a.install(a.owner).status, 0)
+  const runSh = join(a.owner, '.bgos-agent', ID, 'run.sh')
+  a.setState((s) => {
+    s.fail.push({ match: `launchctl print gui/${s.uid}/${label(a.owner)}`, exact: true, code: 1, stderr: 'launchctl: XPC error', times: 99 })
+  })
+  const unreadable = a.run(a.owner, ['uninstall', '--assistant', ID])
+  assert.notEqual(unreadable.status, 0)
+  assert.match(unreadable.out, /refused: .* could not be read .* nothing was removed/)
+  assert.ok(existsSync(runSh) && existsSync(plistPath(a.owner, label(a.owner))), 'nothing removed')
+  assert.deepEqual(Object.keys(a.state().launchd), [label(a.owner)], 'and nothing stopped')
+  a.setState((s) => {
+    s.fail = []
+  })
+  const noHelper = a.run(a.owner, ['uninstall', '--assistant', ID], { HOAI_TEST_NO_HELPER: '1' })
+  assert.notEqual(noHelper.status, 0)
+  assert.match(noHelper.out, /nothing was removed/)
+  assert.ok(existsSync(runSh) && existsSync(plistPath(a.owner, label(a.owner))))
+})
+
+test('round 2 L9: this HOME\'s old plist rewritten by plutil (key and value on their own lines) is still recognized as this HOME\'s and removed', SLOW, (t) => {
+  if (!ready(t)) return
+  const a = account('Darwin')
+  t.after(a.cleanup)
+  const ownerOld = plistPath(a.owner, OLD_LABEL)
+  mkdirSync(dirname(ownerOld), { recursive: true })
+  writeFileSync(ownerOld, oldPlist(a.owner).replace(`    <key>HOME</key><string>${a.owner}</string>`, `\t\t<key>HOME</key>\n\t\t<string>${a.owner}</string>`))
+  // The loaded ai.bgos.agent.42 is another HOME's: the owner's old plist is not part of any job.
+  const rigOld = plistPath(a.scratch, OLD_LABEL)
+  mkdirSync(dirname(rigOld), { recursive: true })
+  writeFileSync(rigOld, oldPlist(a.scratch))
+  a.setState((s) => {
+    s.launchd[OLD_LABEL] = { plistPath: rigOld, content: oldPlist(a.scratch) }
+  })
+  const r = a.install(a.owner)
+  assert.equal(r.status, 0, r.out)
+  assert.deepEqual(agentPlists(a.owner), [`${label(a.owner)}.plist`], 'one plist of the agent at the next login')
+})
+
+test('round 2 L5: a rolled back rename puts the previous run.sh back (atomically replaced, never rewritten in place)', SLOW, (t) => {
+  if (!ready(t)) return
+  const a = account('Linux')
+  t.after(a.cleanup)
+  seedOldAgent(a, 'Linux')
+  const runSh = join(a.owner, '.bgos-agent', ID, 'run.sh')
+  mkdirSync(dirname(runSh), { recursive: true })
+  const previous = '#!/usr/bin/env bash\n# 0.69.2 run.sh\nsock="hoai-$id"\n'
+  writeFileSync(runSh, previous)
+  a.setState((s) => {
+    s.fail.push({ match: `systemctl --user start ${unit(a.owner)}`, code: 1, stderr: 'Job failed.', times: 1 })
+  })
+  const r = a.install(a.owner)
+  assert.notEqual(r.status, 0)
+  assert.equal(readFileSync(runSh, 'utf8'), previous, 'the old unit runs the run.sh it ran before')
+  assert.equal(existsSync(`${runSh}.prev`), false)
+})
+
+test('round 2 L6: a 0.69.2 tmux server orphaned on the old socket with its pane in this agent\'s folder is ended by the install (it would hold the new job\'s singleton wait for good); one elsewhere is left', SLOW, (t) => {
+  if (!ready(t)) return
+  const a = account('Darwin')
+  t.after(a.cleanup)
+  const folder = join(a.owner, 'agents', 'ava')
+  mkdirSync(folder, { recursive: true })
+  a.setState((s) => {
+    s.tmux.push(`hoai-${ID}`)
+    s.panes = { [`hoai-${ID}`]: [folder] }
+  })
+  const r = a.install(a.owner)
+  assert.equal(r.status, 0, r.out)
+  assert.equal(a.state().tmux.includes(`hoai-${ID}`), false, 'the orphan in this agent\'s folder is ended')
+  assert.match(r.out, /service note: ended an old tmux server/)
+  // A server on the old socket whose pane is another folder (another HOME's agent of this id) is left.
+  const b = account('Darwin')
+  t.after(b.cleanup)
+  b.setState((s) => {
+    s.tmux.push(`hoai-${ID}`)
+    s.panes = { [`hoai-${ID}`]: [join(b.scratch, 'agents', 'ava')] }
+  })
+  assert.equal(b.install(b.owner).status, 0)
+  assert.ok(b.state().tmux.includes(`hoai-${ID}`))
+})
+
+test('round 2 L11: a rename drop-in an interrupted swap left behind is removed by the next install', SLOW, (t) => {
+  if (!ready(t)) return
+  const a = account('Linux')
+  t.after(a.cleanup)
+  assert.equal(a.install(a.owner).status, 0)
+  const dropIn = join(dirname(unitPath(a.owner, unit(a.owner))), `${unit(a.owner)}.service.d`, 'hoai-rename.conf')
+  mkdirSync(dirname(dropIn), { recursive: true })
+  writeFileSync(dropIn, `[Unit]\nConflicts=${OLD_UNIT}.service\nAfter=${OLD_UNIT}.service\n`)
+  assert.equal(a.install(a.owner).status, 0)
+  assert.equal(existsSync(dropIn), false)
+})
+
+test('round 2: on Linux an install from a HOME that is not the user manager\'s is refused by name before anything is written (the manager never reads that HOME\'s unit folder)', SLOW, (t) => {
+  if (!ready(t)) return
+  const a = account('Linux')
+  t.after(a.cleanup)
+  const r = a.install(a.scratch)
+  assert.notEqual(r.status, 0)
+  assert.match(r.out, /refused: this account's systemd --user manager reads its units from .*home\/kc.*, not from this HOME/)
+  assert.equal(existsSync(join(a.scratch, '.bgos-agent', ID, 'run.sh')), false)
+  assert.equal(existsSync(unitPath(a.scratch, unit(a.scratch))), false)
 })
 
 test('Linux same-HOME migration: install renames the 0.69.2 unit with ONE manager job (drop-in Conflicts=, new enabled first, old disabled, one start): never without an enabled unit, never two running', SLOW, (t) => {
