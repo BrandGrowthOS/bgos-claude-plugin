@@ -57,7 +57,7 @@ type State = {
   fail: Array<{ match: string; exact?: boolean; code?: number; stderr?: string; times?: number; skip?: number }>
   killCallerOn?: string | null
   watch?: string
-  unloadWith?: { line: string; label: string; skip?: number }
+  unloadWith?: { line: string; label: string; skip?: number } | Array<{ line: string; label: string; skip?: number }>
   bootoutKeeps?: string[]
   calls: Array<{ cmd: string; code: number; loaded: string[]; enabled: string[]; active: string[]; tmux: string[]; watched?: string | null }>
 }
@@ -733,6 +733,33 @@ test('round 2 (verify 4): an old job that went during the rollback and whose pli
   assert.match(r.out, /migration rolled back, but the old job "ai\.bgos\.agent\.42" is not loaded: .*could not be loaded again after 5 tries \(the old plist is back, so the next login starts the old job\)/)
   assert.deepEqual(Object.keys(a.state().launchd), [], 'nothing loaded, as said')
   assert.deepEqual(agentPlists(a.owner), [`${OLD_LABEL}.plist`])
+})
+
+test('round 2 (verify 5): the reload decides on its latest reads: a plist launchd took that is gone again, then refused, then unreadable, is "may not be loaded" after 5 tries, never "stays loaded"', SLOW, (t) => {
+  if (!ready(t)) return
+  const a = account('Darwin')
+  t.after(a.cleanup)
+  seedOldAgent(a, 'Darwin')
+  const uid = a.state().uid
+  const oldPlist = plistPath(a.owner, OLD_LABEL)
+  a.setState((s) => {
+    // The old job will not go at its bootout (still listed for the 40 checks), then goes while the
+    // rollback boots the new job out. The reload's first bootstrap is taken and undone at once; every
+    // later one is refused. Reads of it: the install's read-back, the 40 checks, the watch's one, the
+    // reload's first two answer; every later one fails.
+    s.fail.push({ match: `launchctl bootout gui/${uid}/${OLD_LABEL}`, exact: true, code: 5, stderr: 'Boot-out failed: 5: Input/output error', times: 99 })
+    s.unloadWith = [
+      { line: `launchctl bootout gui/${uid}/${label(a.owner)}`, label: OLD_LABEL, skip: 1 },
+      { line: `launchctl bootstrap gui/${uid} ${oldPlist}`, label: OLD_LABEL, skip: 0 },
+    ]
+    s.fail.push({ match: `launchctl bootstrap gui/${uid} ${oldPlist}`, exact: true, code: 5, stderr: 'Bootstrap failed: 5: Input/output error', times: 99, skip: 1 })
+    s.fail.push({ match: `launchctl print gui/${uid}/${OLD_LABEL}`, exact: true, code: 1, stderr: 'launchctl: XPC error', times: 299, skip: 44 })
+  })
+  const r = a.install(a.owner)
+  assert.notEqual(r.status, 0, r.out)
+  assert.match(r.out, /could not be read back, so it may not be loaded: .*a bootstrap of its plist was tried 5 times/)
+  assert.doesNotMatch(r.out, /stays loaded/)
+  assert.equal(a.state().calls.filter((c) => c.cmd === `launchctl bootstrap gui/${uid} ${oldPlist}`).length, 5)
 })
 
 test('round 2 (verify 4): a rollback with no old plist on disk says so: no plist of the old job is left, run install again', SLOW, (t) => {

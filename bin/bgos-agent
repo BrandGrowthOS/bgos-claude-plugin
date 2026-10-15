@@ -1234,7 +1234,8 @@ launchd_rename() { # $1 id $2 new plist $3 new label -> 0 renamed, 1 rolled back
     if [ "$st" != 0 ]; then
       restore_run_sh
       # Each read decides: listed is loaded; not listed or unknown gets a
-      # bootstrap, up to 5; unknown after launchd took the plist is loaded.
+      # bootstrap, up to 5; unknown right after launchd took the plist is loaded
+      # (taken tells only of the latest bootstrap).
       tries=0
       taken=0
       while :; do
@@ -1243,6 +1244,7 @@ launchd_rename() { # $1 id $2 new plist $3 new label -> 0 renamed, 1 rolled back
         if [ "$st" = 2 ] && [ "$taken" = 1 ]; then break; fi
         [ "$tries" -ge 5 ] && break
         tries=$((tries + 1))
+        taken=0
         if launchctl bootstrap "$domain" "$old_plist" 2>/dev/null; then taken=1; else sleep 0.5; fi
       done
       if [ "$st" = 2 ] && [ "$taken" = 1 ]; then
@@ -1324,7 +1326,7 @@ PLIST
     case "$renamed" in
       0) ok "launchd service $label loaded"
          service_note "renamed the launchd job \"$(legacy_label_for "$id")\" (installed from this HOME by an older version) to launchd job \"$label\"" ;;
-      1) rollback_die "migration rolled back (the old job \"$(legacy_label_for "$id")\" stays loaded, the new one is removed): $RENAME_FAILURE" ;;
+      1) rollback_die "migration rolled back (the old job \"$(legacy_label_for "$id")\" stays loaded, the new one is removed): $RENAME_FAILURE; $(old_plist_note "$(legacy_plist_for "$id")")" ;;
       2) rollback_die "migration rolled back, but the new job \"$label\" could not be booted out again (or read back): both may be loaded, sharing one run.sh, so they end each other's session in turn until it goes (run: launchctl bootout gui/$(id -u)/$label); $(old_plist_note "$(legacy_plist_for "$id")"): $RENAME_FAILURE" ;;
       3) rollback_die "migration rolled back, but the old job \"$(legacy_label_for "$id")\" is not loaded: $RENAME_FAILURE" ;;
       *) rollback_die "migration rolled back (the new one is removed), but the old job \"$(legacy_label_for "$id")\" could not be read back, so it may not be loaded: $RENAME_FAILURE" ;;

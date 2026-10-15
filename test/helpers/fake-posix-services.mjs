@@ -27,8 +27,8 @@
  * whole line with `exact`; `skip` lets that many matching calls through first); `killCallerOn` (a whole line) kills the process that ran that call,
  * once, right after it (an installer inside the job it ends). `watch` (a path) records that file's
  * content in each call as `watched` (what a job started by that call would run); `unloadWith`
- * ({ line, label, skip }) unloads that job when that whole line runs, after `skip` runs of it (an
- * earlier bootout that was only slow, finishing then); `bootoutKeeps` (labels) makes a bootout of
+ * ({ line, label, skip }, or a list of them) unloads that job when that whole line runs, after `skip`
+ * runs of it (an earlier bootout that was only slow, finishing then); `bootoutKeeps` (labels) makes a bootout of
  * that label succeed while the job stays loaded (a bootout launchd accepted that unloads later).
  */
 
@@ -236,12 +236,14 @@ function main() {
     failure.times = (failure.times ?? 1) - 1
     result = { code: failure.code ?? 1, stdout: '', stderr: failure.stderr ?? `fake: ${failure.match} failed` }
   } else result = run(state, tool, args)
-  const slow = state.unloadWith
-  if (slow && line === slow.line) {
+  const slows = state.unloadWith ? (Array.isArray(state.unloadWith) ? state.unloadWith : [state.unloadWith]) : []
+  const slow = slows.find((u) => u && line === u.line)
+  if (slow) {
     if ((slow.skip ?? 0) > 0) slow.skip -= 1
     else {
       delete state.launchd[slow.label]
-      state.unloadWith = null
+      const left = slows.filter((u) => u !== slow)
+      state.unloadWith = left.length ? left : null
     }
   }
   const watched = state.watch && existsSync(state.watch) ? readFileSync(state.watch, 'utf8') : null
