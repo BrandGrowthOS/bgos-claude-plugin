@@ -21,7 +21,7 @@ function fixture(timeoutMs = 2000) {
       assert.equal(verify(null, shared.canonical(document), createPublicKey(endpoint.signingPrivateKey), Buffer.from(body.signature, 'base64url')), true)
       calls.push({ url, options, body, document })
       if (!query) request = Object.fromEntries(Object.entries(body).filter(([key]) => key !== 'signature'))
-      const normal = () => new Response(JSON.stringify({ ...request, originSource: request.kind === 'navigate' ? 'request-url' : 'agent-reported', label: ({ navigate: 'Open a website', write: 'Change a page selection', sensitive: 'Perform a page action', upload: 'Upload a file', download: 'Save a page as PDF' } as any)[request.kind],
+      const normal = () => new Response(JSON.stringify({ ...request, originSource: request.kind === 'navigate' ? 'request-url' : 'agent-reported', label: ({ navigate: 'Open a website', write: 'Change a page selection', text: 'Enter page text', sensitive: 'Perform a page action', upload: 'Upload a file', download: 'Save a page as PDF' } as any)[request.kind],
         state: consumed ? 'consumed' : state.status, choice: consumed ? 'allow_once' : state.choice, ...(query ? { readNonce: body.readNonce, readExpiresAt: body.readExpiresAt } : {}), ...(consumed ? { consumed: true } : {}) }), { status: 200 })
       return hooks.fetch ? hooks.fetch(url, options, body, normal) : normal()
     } })
@@ -51,9 +51,16 @@ test('an unchanged original RPC cannot create another permission id or replay it
   const f = fixture(); await f.client.request(f.input()); await assert.rejects(f.client.request(f.input()), /duplicate/); assert.equal(f.calls.length, 1)
 })
 
-test('text, credentials, evaluation and vision require handover before any permission HTTP', async () => {
-  for (const name of ['browser_type', 'browser_press_key', 'browser_fill_form', 'browser_evaluate', 'browser_mouse_click_xy', 'unknown_tool']) {
+test('global keys, evaluation, vision and unknown methods require handover before any permission HTTP', async () => {
+  for (const name of ['browser_press_key', 'browser_evaluate', 'browser_mouse_click_xy', 'unknown_tool']) {
     const f = fixture(); f.frame.message.params.name = name; await assert.rejects(f.client.request(f.input()), /handover_required/); assert.equal(f.calls.length, 0)
+  }
+})
+
+test('supported text methods use only the original action hash and fixed text kind without field contents',async()=>{
+  for(const name of ['browser_type','browser_fill_form']){
+    const f=fixture();f.frame.message.params.name=name;(f.frame.message.params as any).arguments=name==='browser_type'?{target:'e1',element:'Title',text:'PRIVATE_TEXT_CANARY'}:{fields:[{target:'e1',name:'Title',type:'textbox',value:'PRIVATE_TEXT_CANARY'}]}
+    const result=await f.client.request(f.input());assert.equal(result.status.state,'pending');assert.equal(f.request().kind,'text');assert.equal(f.request().actionHash,createHash('sha256').update(JSON.stringify(f.frame.message)).digest('hex'));assert.equal(String(f.calls[0].options.body).includes('PRIVATE_TEXT_CANARY'),false);assert.equal(String(f.calls[0].options.body).includes('Title'),false)
   }
 })
 
