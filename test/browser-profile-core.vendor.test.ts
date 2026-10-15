@@ -10,7 +10,7 @@ const root = join(import.meta.dirname, '..'), core = join(root, 'lib/browser-pro
 const manifest = JSON.parse(readFileSync(join(core, 'vendor.json'), 'utf8'))
 test('profile codecs ship exactly the pinned committed bytes and CommonJS boundary', () => {
   assert.deepEqual(readdirSync(core).filter(name => name.endsWith('.js')).sort(), Object.keys(manifest.files).sort())
-  assert.deepEqual(Object.keys(manifest.files).sort(), ['checkpoint-store.js', 'coordinator-client.js', 'crypto.js', 'native-runtime.js', 'portable-state.js', 'resume-tabs.js', 'return-intent.js', 'runtime-endpoint.js', 'runtime-status-client.js', 'stopped-head-stage.js', 'storage.js'])
+  assert.deepEqual(Object.keys(manifest.files).sort(), ['checkpoint-store.js', 'coordinator-client.js', 'crypto.js', 'native-runtime.js', 'portable-state.js', 'resume-tabs.js', 'return-intent.js', 'runtime-endpoint.js', 'runtime-readiness.js', 'runtime-status-client.js', 'stopped-head-stage.js', 'storage.js'])
   assert.match(manifest.sourceCommit, /^[a-f0-9]{40}$/)
   for (const [name, pin] of Object.entries(manifest.files) as Array<[string, any]>) {
     const bytes = readFileSync(join(core, name)); assert.equal(bytes.includes(13), false)
@@ -24,6 +24,7 @@ test('profile codecs ship exactly the pinned committed bytes and CommonJS bounda
   assert.equal(require('../lib/browser-profile-core/portable-state.js').SCHEMA, 'hoai-portable-profile-state-v1')
   assert.equal(require('../lib/browser-profile-core/portable-state.js').SCHEMA_V2, 'hoai-portable-profile-state-v2')
   assert.equal(typeof require('../lib/browser-profile-core/resume-tabs.js').validateResumeTabs, 'function')
+  assert.equal(typeof require('../lib/browser-profile-core/runtime-readiness.js').validateRuntimeRequestStatus, 'function')
   assert.equal(typeof require('../lib/browser-profile-core/native-runtime.js').cookies, 'function')
   assert.equal(typeof require('../lib/browser-profile-core/coordinator-client.js').documentSignature, 'function')
   assert.equal(typeof require('../lib/browser-profile-core/runtime-endpoint.js').ProfileRuntimeEndpoint, 'function')
