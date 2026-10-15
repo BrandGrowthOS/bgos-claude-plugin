@@ -269,11 +269,13 @@ unit file of that HOME is removed. A registration under an old name that
 another HOME installed is left alone and reported (on Windows, with a warning
 when its launcher pins no HOME and so serves the logon user's profile).
 
-**The agents' services are named after their HOME too** (0.69.3). Every name an
+**The agents' services are named after their HOME too** (0.69.4). Every name an
 agent's service is known by carries the same `home-<hid>` as the watcher of
 that HOME: the Scheduled Task `HOAI Agent <id> home-<hid>`, the launchd label
 `ai.bgos.agent.<id>.home-<hid>`, the systemd unit `bgos-agent-<id>-home-<hid>`
-and the agent's own tmux socket `hoai-<id>-home-<hid>`. The registration
+and the agent's own tmux socket `hoai-<id>-home-<hid>`. On macOS and Linux the
+id is taken from the HOME's real path, so a HOME reached through a symlink is
+the same HOME with the same services. The registration
 records its HOME and agent id (on Windows the task description
 `HOAI agent <id>, installed from home=<HOME>`, the launcher path and a launcher
 that pins `USERPROFILE`; the plist's and the unit's `HOME` and `run.sh` path),
@@ -285,17 +287,27 @@ the daemon log, `hoai-agent` and `hoai-watcher status`). So a daemon or watcher
 in a scratch or second HOME holding the same agent's credentials gets services
 of its own and never re-registers, stops or removes the owner's. `hoai-agent`
 computes the HOME id and reads back with `bin/hoai-agent-service.mjs` on bun or
-node; without either it refuses to act by name.
+node; without either it refuses to act by name. An uninstall that cannot read
+its own service back (or has no bun or node) removes nothing and says so
+(exit 1), since files removed under a job it cannot stop would leave the agent
+running. On Linux an install from a HOME other than the one the account's
+`systemd --user` manager reads its units from is refused before its service
+file or run.sh is written.
 
 Upgrading from 0.69.2: on Windows the watcher renames each agent's old
 `HOAI Agent <id>` of its own HOME in place, once (the new task registered
 first, then the old one retired; the running agent is never stopped or
-started, and a task you disabled stays disabled). On macOS and Linux an agent
-keeps its old `ai.bgos.agent.<id>` or `bgos-agent-<id>` until the next
-`hoai-agent install` from the same HOME, which renames it in the watcher's
-order (macOS: the old plist parked first, old job booted out and gone, new one
-bootstrapped, the old one loaded again if the new one does not come up; Linux:
-one user manager job with a temporary `Conflicts=` drop-in). Until then the old
+started, and a task you disabled stays disabled). When the old name holds
+another HOME's task, or neither name is registered, it registers this HOME's
+own task beside it (enabled, not started) and leaves the other one alone; an
+agent counts as checked only once its own task is read back. On macOS and
+Linux an agent keeps its old `ai.bgos.agent.<id>` or `bgos-agent-<id>` until
+the next `hoai-agent install` from the same HOME, which renames it (macOS: the
+old plist parked first, the new job loaded and read back, then the old one booted
+out, so an install typed into the agent's own session leaves it running under
+the new name; the new job waits for the old claude to leave the folder, and
+when it does not come up it is removed and the old one stays; Linux: one user
+manager job with a temporary `Conflicts=` drop-in). Until then the old
 name is still found and supervised while it runs; a stopped one is started
 again by `hoai-agent install`, never loaded anew under its old name.
 
