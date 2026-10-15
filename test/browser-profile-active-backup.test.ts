@@ -42,6 +42,70 @@ test('automatic scheduling waits the production60s debounce under a synthetic cl
 test('bounded periodic hints capture storage-only changes without a command or network hint and stop synchronously on pause',async t=>{
  const f=fixture(t),backup=f.create();t.mock.timers.enable({apis:['setTimeout','Date']});backup.start();t.mock.timers.tick(60000);await backup.whenDrained();assert.equal(f.state.uploads,1);f.hooks.send=(method:string,params:any)=>{if(method==='Runtime.evaluate'&&params.awaitPromise===true)return{result:{value:JSON.stringify({schema:'hoai-origin-storage-v1',origin:'https://site.test',localStorage:[{name:'storage-only',value:'changed'}],indexedDB:[]})}}};t.mock.timers.tick(60000);await backup.whenDrained();assert.equal(f.state.uploads,2);assert.equal(f.state.retained[0].bundle.sequence,2);await backup.pause();const contexts=f.state.contexts;t.mock.timers.tick(300000);await backup.whenDrained();assert.equal(f.state.contexts,contexts);assert.equal(f.state.uploads,2);backup.start();await backup.whenDrained();assert.equal(f.state.uploads,3);await backup.dispose();const stopped=f.state.contexts;t.mock.timers.tick(300000);assert.equal(f.state.contexts,stopped);t.mock.timers.reset()
 })
+
+test('storage-only cadence follows asynchronous confirmation rather than the earlier periodic tick',async t=>{
+ const f=fixture(t),entered=deferred<void>(),release=deferred<void>(),backup=f.create();
+ f.state.uploadHook=async(options:any)=>{entered.resolve();await release.promise;f.state.retained=[f.journal.metadata(options.handle)];return{}};
+ t.mock.timers.enable({apis:['setTimeout','Date']});
+ try{
+  backup.start();t.mock.timers.tick(60000);await entered.promise;
+  // Real sealing, durable journaling and HTTP confirmation finish after the
+  // original timer. This delay must not add a second debounce interval.
+  t.mock.timers.tick(250);release.resolve();await backup.whenDrained();
+  assert.equal(backup.status().state,'confirmed');assert.equal(f.state.uploads,1);
+  f.state.uploadHook=null;
+  t.mock.timers.tick(59999);await backup.whenDrained();assert.equal(f.state.uploads,1);
+  t.mock.timers.tick(1);await backup.whenDrained();assert.equal(f.state.uploads,2);
+  assert.equal(f.state.retained[0].bundle.sequence,2);assert.equal(f.runtime.state,'active');assert.equal(f.runtime.network,'active');
+ }finally{release.resolve();await backup.dispose();t.mock.timers.reset()}
+})
+
+test('an automatic tick coalesced with original manual work cannot release its cooldown on pause',async t=>{
+ const f=fixture(t),entered=deferred<void>(),release=deferred<void>(),backup=f.create();
+ f.state.contextHook=async()=>{entered.resolve();await release.promise};t.mock.timers.enable({apis:['setTimeout','Date']});
+ try{
+  backup.start();const manual=backup.captureNow();await entered.promise;t.mock.timers.tick(60000);
+  const paused=backup.pause();release.resolve();await manual;await paused;assert.equal(f.state.contexts,1);
+  f.state.contextHook=null;backup.start();await backup.whenDrained();assert.equal(f.state.contexts,1);
+  t.mock.timers.tick(59999);await backup.whenDrained();assert.equal(f.state.contexts,1);
+  t.mock.timers.tick(1);await backup.whenDrained();assert.equal(f.state.contexts,2);
+ }finally{release.resolve();await backup.dispose();t.mock.timers.reset()}
+})
+
+test('a reentrant confirmed observer pause clears the owned hint without timer resurrection',async t=>{
+ const f=fixture(t);let stopping:Promise<unknown>|null=null;
+ const backup=f.create({onStatus:(value:any)=>{if(value.state==='confirmed'&&!stopping)stopping=backup.pause()}});
+ t.mock.timers.enable({apis:['setTimeout','Date']});
+ try{
+  backup.start();t.mock.timers.tick(60000);await backup.whenDrained();await stopping;
+  assert.equal(backup.status().paused,true);assert.equal(f.state.uploads,1);const contexts=f.state.contexts;
+  t.mock.timers.tick(300000);await backup.whenDrained();assert.equal(f.state.contexts,contexts);assert.equal(f.state.uploads,1);
+ }finally{await backup.dispose();t.mock.timers.reset()}
+})
+
+test('an unentered due attempt waits for independent physical cleanup before a resumed retry',async t=>{
+ const f=fixture(t),entered=deferred<void>(),release=deferred<void>(),backup=f.create();
+ t.mock.timers.enable({apis:['setTimeout','Date']});
+ try{
+  backup.start();t.mock.timers.tick(60000);await backup.whenDrained();assert.equal(f.state.uploads,1);
+  f.state.drainHook=async()=>{entered.resolve();await release.promise};
+  t.mock.timers.tick(60000);const pausing=backup.pause();await entered.promise;
+  assert.equal(f.state.contexts,1);assert.throws(()=>backup.start(),/cleanup_unknown/);
+  release.resolve();await pausing;f.state.drainHook=null;backup.start();await backup.whenDrained();
+  assert.equal(f.state.contexts,2);assert.equal(f.state.uploads,2);
+ }finally{release.resolve();await backup.dispose();t.mock.timers.reset()}
+})
+
+test('a backward wall clock jump cannot overflow the owned timer into a millisecond loop',async t=>{
+ const f=fixture(t),backup=f.create(),delays:number[]=[];t.mock.timers.enable({apis:['setTimeout','Date']});
+ const original=globalThis.setTimeout;
+ globalThis.setTimeout=((callback:any,delay?:number,...args:any[])=>{delays.push(Number(delay));return original(callback,delay,...args)}) as typeof setTimeout;
+ try{
+  t.mock.timers.setTime(10**12);backup.start();await backup.pause();t.mock.timers.setTime(0);backup.start();
+  assert.ok(delays.length>0);assert.equal(delays.every(value=>value>=1&&value<=60000),true);
+  assert.equal(f.state.contexts,0);assert.equal(f.state.uploads,0);
+ }finally{await backup.dispose();globalThis.setTimeout=original;t.mock.timers.reset()}
+})
 test('repeated short command pauses cannot postpone the absolute backup due cadence indefinitely',async t=>{
  const f=fixture(t),backup=f.create();t.mock.timers.enable({apis:['setTimeout','Date']});backup.start();for(let command=0;command<6;command++){t.mock.timers.tick(10000);await backup.pause();if(command===1)f.hooks.send=(method:string,params:any)=>{if(method==='Runtime.evaluate'&&params.awaitPromise===true)return{result:{value:JSON.stringify({schema:'hoai-origin-storage-v1',origin:'https://site.test',localStorage:[{name:'background-storage',value:'changed-without-network'}],indexedDB:[]})}}};backup.start();await backup.whenDrained();assert.equal(f.state.uploads,command<5?0:1)}assert.equal(backup.status().state,'confirmed');assert.equal(f.runtime.state,'active');assert.equal(f.runtime.network,'active');await backup.dispose();t.mock.timers.reset()
 })
