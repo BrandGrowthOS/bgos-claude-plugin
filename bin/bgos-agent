@@ -140,6 +140,12 @@ statedir_for() { printf '%s/%s' "$STATE_ROOT" "$1"; }
 # directory per account (/tmp/tmux-<uid>), so it carries the HOME id too.
 tmux_name_for() { printf 'hoai-%s-home-%s' "$1" "$HOME_ID"; }
 legacy_tmux_name_for() { printf 'hoai-%s' "$1"; }
+legacy_service_file_for() { # $1 id
+  case "$OS" in
+    Darwin) legacy_plist_for "$1" ;;
+    Linux)  legacy_unitfile_for "$1" ;;
+  esac
+}
 # The installed service file of this HOME for an agent: its own name's, else the
 # OLD one's (an agent not renamed yet); nothing when neither exists.
 service_file_for() { # $1 id
@@ -149,7 +155,16 @@ service_file_for() { # $1 id
     Linux)  own="$(unitfile_for "$1")"; old="$(legacy_unitfile_for "$1")" ;;
     *)      return 0 ;;
   esac
-  if [ -n "$HOME_ID" ] && [ -f "$own" ]; then printf '%s' "$own"; elif [ -f "$old" ]; then printf '%s' "$old"; fi
+  if [ -n "$HOME_ID" ] && [ -f "$own" ]; then printf '%s' "$own"; return 0; fi
+  if [ -z "$HOME_ID" ]; then
+    # No HOME id: a renamed agent's file is still found (its name carries some home-<hid>), so the
+    # caller can say it was not acted on rather than miss it.
+    local f
+    for f in "${own%-home-*}"-home-*.service "${own%.home-*}".home-*.plist; do
+      if [ -f "$f" ]; then printf '%s' "$f"; return 0; fi
+    done
+  fi
+  if [ -f "$old" ]; then printf '%s' "$old"; fi
 }
 
 # The shared helper (bin/hoai-agent-service.mjs) on bun, this script's runtime,
@@ -206,10 +221,8 @@ service_note() { printf '%s!%s service note: %s\n' "$Y" "$Z" "$*" >&2; }
 # with the refusal, with mode warn it says so and returns 1. An old name another
 # HOME installed is left alone and said.
 SVC_TARGET=""
-SVC_LEGACY_STATE=""
 resolve_target() { # $1 id $2 die|warn
   need_home_id
-  SVC_LEGACY_STATE=""
   probe_service "$1" own
   case "$PROBE_STATE" in
     own) SVC_TARGET=own; return 0 ;;
@@ -218,7 +231,6 @@ resolve_target() { # $1 id $2 die|warn
       warn "$PROBE_SAY"; return 1 ;;
   esac
   probe_service "$1" legacy
-  SVC_LEGACY_STATE="$PROBE_STATE"
   case "$PROBE_STATE" in
     own)    SVC_TARGET=legacy ;;
     absent) SVC_TARGET=none ;;
@@ -493,7 +505,14 @@ cmd_install() {
   probe_service "$ASSISTANT_ID" legacy
   local legacy_state="$PROBE_STATE"
   case "$legacy_state" in
-    foreign|unknown) service_note "$PROBE_SAY" ;;
+    foreign) service_note "$PROBE_SAY" ;;
+    unknown)
+      # The loaded old job or unit may be this HOME's own: with this HOME's old
+      # service file there, a new one beside it could run this agent twice.
+      if file_records_home "$(legacy_service_file_for "$ASSISTANT_ID")"; then
+        die "refused: the old service of agent $ASSISTANT_ID could not be read back (${PROBE_SAY#left the }) and this HOME's old service file $(legacy_service_file_for "$ASSISTANT_ID") is there, so a new one beside it could run the agent twice; nothing was changed"
+      fi
+      service_note "$PROBE_SAY" ;;
   esac
   local claude_bin bun_bin expect_bin node_bin tmux_bin path topology plugin_key=""
   claude_bin="${SELECTED_CLAUDE_BIN:-$(command -v claude)}"
@@ -1041,32 +1060,43 @@ launchd_reload() { # $1 plist $2 label  -> returns nonzero on hard failure
 # then the new job is bootstrapped. When the new one does not come up the old
 # one is bootstrapped again and the new plist removed; when even that fails the
 # old plist goes and the new one stays, so the next login starts the agent once.
-# The old job's tmux server is ended with it (it daemonizes out of launchd's
-# process group, so only run.sh's trap would end it), and its plist removed, so
-# it cannot load again at the next login beside the new one.
+# The old plist is parked before anything is booted out, so an installer that
+# dies on the way (one running inside the old job's own session dies at the
+# bootout) still leaves one plist: the next login starts the agent once. The
+# old job's tmux server is ended once the job is gone (it daemonizes out of
+# launchd's process group, so only run.sh's trap would end it).
 launchd_rename() { # $1 id $2 new plist $3 new label -> 0 renamed, 1 rolled back, 2 not restored
-  local id="$1" plist="$2" label="$3" domain n=0 tries=0 old_label old_plist
+  local id="$1" plist="$2" label="$3" domain n=0 tries=0 old_label old_plist parked=""
   domain="gui/$(id -u)"
   old_label="$(legacy_label_for "$id")"
   old_plist="$(legacy_plist_for "$id")"
-  launchctl bootout "$domain/$label" >/dev/null 2>&1 || true
-  if ! launchctl bootout "$domain/$old_label" >/dev/null 2>&1; then
-    RENAME_FAILURE="launchctl bootout $domain/$old_label failed"
-    return 1
+  # The old plist is parked in the agent's state dir FIRST: whatever ends this
+  # installer from here on (it may run inside the old job's own session, which
+  # the bootout ends), the next login finds exactly one plist of this agent in
+  # ~/Library/LaunchAgents, the new one. Every rollback puts it back.
+  if [ -f "$old_plist" ]; then
+    parked="$(statedir_for "$id")/$old_label.plist.renaming"
+    mv -f "$old_plist" "$parked" 2>/dev/null || parked=""
   fi
+  launchctl bootout "$domain/$label" >/dev/null 2>&1 || true
+  # A bootout can fail and still unload, or succeed and unload later: what
+  # counts is whether launchd still lists the old job after the wait.
+  launchctl bootout "$domain/$old_label" >/dev/null 2>&1 || true
   while launchctl print "$domain/$old_label" >/dev/null 2>&1; do
     n=$((n + 1)); [ "$n" -ge 40 ] && break; sleep 0.25
   done
-  tmux -L "$(legacy_tmux_name_for "$id")" kill-server >/dev/null 2>&1 || true
   RENAME_FAILURE=""
   if launchctl print "$domain/$old_label" >/dev/null 2>&1; then
     RENAME_FAILURE="the old job \"$old_label\" was still loaded after $n checks"
   else
+    # Gone: its tmux server goes with it (it daemonizes out of launchd's process group).
+    tmux -L "$(legacy_tmux_name_for "$id")" kill-server >/dev/null 2>&1 || true
     until launchctl bootstrap "$domain" "$plist" 2>/dev/null; do
       tries=$((tries + 1)); [ "$tries" -ge 5 ] && { RENAME_FAILURE="launchctl bootstrap $domain $plist failed"; break; }; sleep 0.5
     done
   fi
   if [ -n "$RENAME_FAILURE" ]; then
+    if [ -n "$parked" ] && [ -f "$parked" ]; then mv -f "$parked" "$old_plist"; fi
     tries=0
     until launchctl print "$domain/$old_label" >/dev/null 2>&1 || launchctl bootstrap "$domain" "$old_plist" 2>/dev/null; do
       tries=$((tries + 1)); [ "$tries" -ge 5 ] && break; sleep 0.5
@@ -1078,7 +1108,7 @@ launchd_rename() { # $1 id $2 new plist $3 new label -> 0 renamed, 1 rolled back
     rm -f "$old_plist"
     return 2
   fi
-  rm -f "$old_plist"
+  if [ -n "$parked" ]; then rm -f "$parked"; fi
   return 0
 }
 
@@ -1145,9 +1175,9 @@ PLIST
   fi
   launchd_reload "$plist" "$label" || die "launchctl bootstrap failed for $label (try: hoai-agent status --assistant $id)"
   ok "launchd service $label loaded"
-  # An old plist of THIS HOME that no job holds any more would load again at the
-  # next login, beside this one.
-  if [ "$legacy_state" = absent ] && file_records_home "$(legacy_plist_for "$id")"; then
+  # An old plist of THIS HOME would load again at the next login, beside this
+  # one, whoever holds the old label now (another HOME's job is not touched).
+  if file_records_home "$(legacy_plist_for "$id")"; then
     rm -f "$(legacy_plist_for "$id")"
     service_note "removed $(legacy_plist_for "$id"), an old service file of this HOME that would start a second agent at the next login"
   fi
@@ -1221,9 +1251,9 @@ UNIT
   else
     ok "systemd --user service $unit enabled + started"
   fi
-  # An old unit file of THIS HOME that the manager no longer knows would be
-  # enabled again by nothing, but is removed so no later reload finds it.
-  if [ "$legacy_state" = absent ] && file_records_home "$(legacy_unitfile_for "$id")"; then
+  # An old unit file of THIS HOME is removed so no later reload or login finds
+  # it beside this one (another HOME's loaded unit is not touched).
+  if file_records_home "$(legacy_unitfile_for "$id")"; then
     rm -f "$(legacy_unitfile_for "$id")"
     service_note "removed $(legacy_unitfile_for "$id"), an old service file of this HOME that would start a second agent at the next login"
   fi
@@ -1238,7 +1268,8 @@ UNIT
 # unit's cgroup (a hoai-agent install typed into the agent's own session) dies
 # when the old unit stops; the manager still finishes the job, so the agent
 # comes back under the new name. A failed step enables and starts the old unit
-# again. The drop-in and the old unit file go once it is done.
+# again and removes the new unit file, so nothing later acts on a new unit that
+# does not run. The drop-in and the old unit file go once it is done.
 undo_rename_dropin() { rm -f "$1/hoai-rename.conf"; rmdir "$1" 2>/dev/null || true; }
 systemd_rename() { # $1 id $2 new unit $3 was the new unit active (1/0)
   local id="$1" unit="$2" was_active="$3" old dropdir
@@ -1247,12 +1278,12 @@ systemd_rename() { # $1 id $2 new unit $3 was the new unit active (1/0)
   mkdir -p "$dropdir"
   printf '# Written by bin/bgos-agent for the rename from the old unit; removed once it is done.\n[Unit]\nConflicts=%s.service\nAfter=%s.service\n' "$old" "$old" > "$dropdir/hoai-rename.conf"
   if ! systemctl --user daemon-reload || ! systemctl --user enable "$unit"; then
-    undo_rename_dropin "$dropdir"; systemctl --user daemon-reload >/dev/null 2>&1 || true
+    undo_rename_dropin "$dropdir"; rm -f "$(unitfile_for "$id")"; systemctl --user daemon-reload >/dev/null 2>&1 || true
     die "systemctl --user enable failed for $unit; the old unit \"$old\" stays"
   fi
   if ! systemctl --user disable "$old"; then
     systemctl --user disable --now "$unit" >/dev/null 2>&1 || true
-    undo_rename_dropin "$dropdir"; systemctl --user daemon-reload >/dev/null 2>&1 || true
+    undo_rename_dropin "$dropdir"; rm -f "$(unitfile_for "$id")"; systemctl --user daemon-reload >/dev/null 2>&1 || true
     die "migration rolled back (the new unit was disabled again, the old \"$old\" stays): systemctl --user disable $old failed"
   fi
   local swap=start
@@ -1260,7 +1291,7 @@ systemd_rename() { # $1 id $2 new unit $3 was the new unit active (1/0)
   if ! systemctl --user "$swap" "$unit"; then
     systemctl --user disable --now "$unit" >/dev/null 2>&1 || true
     systemctl --user enable --now "$old" >/dev/null 2>&1 || true
-    undo_rename_dropin "$dropdir"; systemctl --user daemon-reload >/dev/null 2>&1 || true
+    undo_rename_dropin "$dropdir"; rm -f "$(unitfile_for "$id")"; systemctl --user daemon-reload >/dev/null 2>&1 || true
     die "migration rolled back (the old unit \"$old\" is enabled and started again): systemctl --user $swap $unit failed"
   fi
   undo_rename_dropin "$dropdir"
@@ -1457,21 +1488,26 @@ cmd_status() {
 }
 
 # After resolve_target: the label, unit and service file the command acts on.
-# The OLD name when that is the one proven this HOME's, or when nothing at all
-# is loaded under it and only this HOME's old service file is there (an agent
-# not renamed yet, stopped); this HOME's own name otherwise. An old name another
-# HOME holds (or whose HOME cannot be read) is never the target, whatever file
-# this HOME has.
-target_names() { # $1 id -> T_LABEL T_UNIT T_FILE
+# The OLD name only when it is loaded and proven this HOME's (an agent not
+# renamed yet); this HOME's own name otherwise. An old name is never LOADED
+# anew: the label and unit are one per account, so a HOME that bootstrapped its
+# leftover old plist would take the name from whichever HOME's agent runs under
+# it. T_RENAME_HINT says what to run instead when only this HOME's old file is
+# there.
+target_names() { # $1 id -> T_LABEL T_UNIT T_FILE T_RENAME_HINT
   local id="$1" own_file old_file
   case "$OS" in
     Darwin) own_file="$(plist_for "$id")"; old_file="$(legacy_plist_for "$id")" ;;
     *)      own_file="$(unitfile_for "$id")"; old_file="$(legacy_unitfile_for "$id")" ;;
   esac
-  if [ "$SVC_TARGET" = legacy ] || { [ "$SVC_TARGET" = none ] && [ "$SVC_LEGACY_STATE" = absent ] && [ ! -f "$own_file" ] && [ -f "$old_file" ]; }; then
+  T_RENAME_HINT=""
+  if [ "$SVC_TARGET" = legacy ]; then
     T_LABEL="$(legacy_label_for "$id")"; T_UNIT="$(legacy_unit_for "$id")"; T_FILE="$old_file"
   else
     T_LABEL="$(label_for "$id")"; T_UNIT="$(unit_for "$id")"; T_FILE="$own_file"
+    if [ ! -f "$own_file" ] && [ -f "$old_file" ]; then
+      T_RENAME_HINT="agent $id's service is installed under its old name and not loaded; run: hoai-agent install --assistant $id --always-on (it renames it to $([ "$OS" = Darwin ] && echo "$T_LABEL" || echo "$T_UNIT") and starts it)"
+    fi
   fi
 }
 
@@ -1493,9 +1529,12 @@ cmd_start() {
   target_names "$ASSISTANT_ID"
   case "$OS" in
     Darwin)
+      [ -z "$T_RENAME_HINT" ] || die "$T_RENAME_HINT"
       [ -f "$T_FILE" ] || die "not installed, run: hoai-agent install --assistant $ASSISTANT_ID --always-on"
       launchd_reload "$T_FILE" "$T_LABEL" && ok "started" || die "could not start $T_LABEL";;
-    Linux)  systemctl --user start "$T_UNIT" && ok "started" || die "could not start $T_UNIT";;
+    Linux)
+      [ -z "$T_RENAME_HINT" ] || die "$T_RENAME_HINT"
+      systemctl --user start "$T_UNIT" && ok "started" || die "could not start $T_UNIT";;
   esac
 }
 
@@ -1506,9 +1545,12 @@ cmd_restart() {
   target_names "$ASSISTANT_ID"
   case "$OS" in
     Darwin)
+      [ -z "$T_RENAME_HINT" ] || die "$T_RENAME_HINT"
       [ -f "$T_FILE" ] || die "not installed"
       launchd_reload "$T_FILE" "$T_LABEL" && ok "restarted" || die "restart failed";;
-    Linux)  systemctl --user restart "$T_UNIT" && ok "restarted" || die "restart failed for $T_UNIT";;
+    Linux)
+      [ -z "$T_RENAME_HINT" ] || die "$T_RENAME_HINT"
+      systemctl --user restart "$T_UNIT" && ok "restarted" || die "restart failed for $T_UNIT";;
   esac
 }
 
@@ -1597,7 +1639,12 @@ refresh_hook_entries() { # $1 assistant id
 # warning, never an update failure.
 restart_after_update() { # $1 assistant id
   local id="$1"
-  need_home_id
+  # The update itself has already succeeded: without a HOME id (no bun or node
+  # answers the helper) no service is named, so none is restarted, by name.
+  if ! compute_home_id; then
+    warn "agent $id was not restarted: its service is named after this HOME and the HOME id could not be computed ($AGENT_SERVICE_JS runs on bun or node); quit and relaunch Claude Code"
+    return 0
+  fi
   refresh_hook_entries "$id"
   [ "$OS" = Linux ] && export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
   # Read back first: a service under this HOME's name that another HOME
@@ -1607,6 +1654,10 @@ restart_after_update() { # $1 assistant id
     return 0
   fi
   target_names "$id"
+  if [ -n "$T_RENAME_HINT" ]; then
+    warn "agent $id was not restarted: $T_RENAME_HINT"
+    return 0
+  fi
   case "$OS" in
     Darwin)
       if [ ! -f "$T_FILE" ]; then
@@ -1707,7 +1758,8 @@ cmd_update() {
   fi
 
   local state_dir id service_file installed=0
-  need_home_id
+  # Without a HOME id service_file_for still finds this HOME's files, old and renamed, and restart_after_update says why it restarts none.
+  compute_home_id || true
   for state_dir in "$STATE_ROOT"/[0-9]*; do
     [ -d "$state_dir" ] || continue
     id="${state_dir##*/}"

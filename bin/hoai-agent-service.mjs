@@ -46,6 +46,15 @@ function flags(argv) {
 
 const oneLine = (text) => String(text ?? '').replace(/[\r\n]+/g, ' ').trim()
 
+/** How long one read-back may take: a probe that hangs (a user bus that does not answer) is an unreadable one, refused, never a command that hangs. */
+export const PROBE_TIMEOUT_MS = 30_000
+
+/**
+ * @param {string[]} [argv]
+ * @param {{ env?: Record<string, string | undefined>, exec?: import('../lib/watcher-bundle.mjs').Exec, fs?: import('../lib/watcher-bundle.mjs').WatcherFs,
+ *   out?: (line: string) => unknown, err?: (line: string) => unknown, uid?: number | null }} [deps]
+ * @returns {Promise<number>}
+ */
 export async function main(argv = process.argv.slice(2), { env = process.env, exec = nodeExec(), fs = nodeFs(), out = (l) => process.stdout.write(`${l}\n`), err = (l) => process.stderr.write(`${l}\n`), uid = typeof process.getuid === 'function' ? process.getuid() : null } = {}) {
   const [command, ...rest] = argv
   const f = flags(rest)
@@ -70,7 +79,8 @@ export async function main(argv = process.argv.slice(2), { env = process.env, ex
     const side = which === 'own' ? names.current : names.legacy
     const handle = platform === 'darwin' ? side.launchdLabel : side.systemdUnit
     const uidValue = f.uid !== undefined && /^\d+$/.test(f.uid) ? Number(f.uid) : uid
-    const read = await readBackAgentService({ platform, home, assistantId: id, uid: uidValue, handle }, { exec, fs })
+    const bounded = (file, args) => exec(file, args, { timeoutMs: PROBE_TIMEOUT_MS })
+    const read = await readBackAgentService({ platform, home, assistantId: id, uid: uidValue, handle }, { exec: bounded, fs })
     // The old name: what a caller says when it leaves it alone (#237's wording).
     const spec = { ...posixAgentServiceSpec({ platform, home, assistantId: id }), label: names.current[platform === 'darwin' ? 'launchdLabel' : 'systemdUnit'] }
     const say = which === 'own' ? read.refusal ?? '' : agentLeftAlone(spec, read).join('; ')

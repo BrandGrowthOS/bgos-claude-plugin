@@ -293,10 +293,11 @@ first, then the old one retired; the running agent is never stopped or
 started, and a task you disabled stays disabled). On macOS and Linux an agent
 keeps its old `ai.bgos.agent.<id>` or `bgos-agent-<id>` until the next
 `hoai-agent install` from the same HOME, which renames it in the watcher's
-order (macOS: old job booted out and gone, new one bootstrapped, the old one
-loaded again if the new one does not come up; Linux: one user manager job with
-a temporary `Conflicts=` drop-in). Until then the old name is still found and
-supervised.
+order (macOS: the old plist parked first, old job booted out and gone, new one
+bootstrapped, the old one loaded again if the new one does not come up; Linux:
+one user manager job with a temporary `Conflicts=` drop-in). Until then the old
+name is still found and supervised while it runs; a stopped one is started
+again by `hoai-agent install`, never loaded anew under its old name.
 
 **Side by side installs: `HOAI_SERVICE_NAMESPACE`.** A second, isolated install
 on the same user account (a staging install, with its own HOME) must never stop
