@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import vm from 'node:vm'
 import { EventEmitter } from 'node:events'
 import { randomUUID } from 'node:crypto'
-import { createChromiumRtcActivity, RTC_BROWSER_VERSION, RTC_MAX_HISTORY } from '../lib/browser-profile-rtc-activity.mjs'
+import { createChromiumRtcActivity, RTC_BROWSER_VERSION, RTC_BROWSER_VERSIONS, RTC_MAX_HISTORY } from '../lib/browser-profile-rtc-activity.mjs'
 function fixture(t: any, options: any = {}) {
   const authority = { profileId: randomUUID(), actingUserId: 'recipient', assistantId: 7, endpointId: randomUUID(), bootId: 'boot', runtimeId: 'runtime', sessionId: 'session', writerEpoch: 1, revision: 0, contentKeyEpoch: 1, grantVersion: 1, keyFingerprint: 'a'.repeat(64) }
   let contextSequence = 0, pageSequence = 0, markerSequence = 0
@@ -29,19 +29,24 @@ function fixture(t: any, options: any = {}) {
     deliver(event: string, data: any) { this.world.event = event; this.world.data = data; vm.runInContext('cr.webUIListenerCallback(event,data)', this.world); delete this.world.event; delete this.world.data }
     async close() { this.closed = true; targets.delete(this.target.targetId); root.emit('Target.targetDestroyed', { targetId: this.target.targetId }); this.emit('close') }
   }
-  Object.assign(browser, { isConnected: () => true, version: async () => RTC_BROWSER_VERSION, contexts: () => [...nativeContexts], newContext: async () => {
+  Object.assign(browser, { isConnected: () => true, version: async () => options.version || RTC_BROWSER_VERSION, contexts: () => [...nativeContexts], newContext: async () => {
     const pages: any[] = [], context: any = { id: 'context-' + ++contextSequence, pages: () => pages.filter(p => !p.isClosed()), newPage: async () => { const page = new Page(context); pages.push(page); return page }, newCDPSession: async (page: any) => page.cdp,
       close: async () => { if (options.delayedClose) await new Promise(resolve => setImmediate(resolve)); for (const page of pages) await page.close(); nativeContexts.splice(nativeContexts.indexOf(context), 1) } }
     nativeContexts.push(context); return context
   } })
-  const create = async (overrides: any = {}) => { const observer = await createChromiumRtcActivity({ browser, root, authority, browserVersion: RTC_BROWSER_VERSION, processIdentity: { pid: 123, started: '1234' }, timeoutMs: 30, ...overrides }); t.after(() => observer.dispose()); return observer }
-  const bind = async (observer: any) => { const context = await browser.newContext(); await observer.bindContext({ context, contextId: context.id }); return { authority, context, browserVersion: RTC_BROWSER_VERSION } }
+  const create = async (overrides: any = {}) => { const observer = await createChromiumRtcActivity({ browser, root, authority, browserVersion: options.version || RTC_BROWSER_VERSION, processIdentity: { pid: 123, started: '1234' }, timeoutMs: 30, ...overrides }); t.after(() => observer.dispose()); return observer }
+  const bind = async (observer: any) => { const context = await browser.newContext(); await observer.bindContext({ context, contextId: context.id }); return { authority, context, browserVersion: options.version || RTC_BROWSER_VERSION } }
   return { authority, browser, root, calls, targets, nativeContexts, create, bind }
 }
 
 test('exact native version and empty exclusive Browser are required before observer startup', async t => {
-  const f = fixture(t); await assert.rejects(f.create({ browserVersion: '155.0.8059.40' }), /version_unqualified/); assert.equal(f.nativeContexts.length, 0)
+  const f = fixture(t); for(const browserVersion of ['155.0.8059.40','153.0.8010.13','154.0.0.0'])await assert.rejects(f.create({ browserVersion }), /version_unqualified/); assert.equal(f.nativeContexts.length, 0)
   await f.browser.newContext(); await assert.rejects(f.create(), /exclusive_browser_required/); assert.equal(f.nativeContexts.length, 1)
+})
+test('bundled153 and explicit155 each require their exact observed native version',async t=>{
+  assert.equal(Object.isFrozen(RTC_BROWSER_VERSIONS),true)
+  for(const version of ['153.0.8010.12',RTC_BROWSER_VERSION]){const f=fixture(t,{version}),observer=await f.create(),scope=await f.bind(observer);assert.throws(()=>observer.assertQualified({...scope,browserVersion:version==='153.0.8010.12'?'155.0.8059.39':'153.0.8010.12'}),/scope_unqualified/);assert.equal(await observer.confirmStopped({...scope,assertPhysicalZero:async()=>true}),true)}
+  const f=fixture(t,{version:'153.0.8010.12'});await assert.rejects(f.create({browserVersion:'155.0.8059.39'}),/exclusive_browser_required/);assert.equal(f.nativeContexts.length,0)
 })
 test('startup native marker derives only private rid and permits clean exact owned context qualification', async t => {
   const f = fixture(t), observer = await f.create(), scope = await f.bind(observer); assert.equal(observer.kind, 'qualified-chromium-native-observer-v1'); assert.equal(observer.assertQualified(scope), true)

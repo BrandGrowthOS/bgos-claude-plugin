@@ -5,9 +5,9 @@ import { createServer } from 'node:http'
 import assert from 'node:assert/strict'
 import { chromeEnv } from '../lib/browser-env.mjs'
 import { profileLaunchArguments } from '../lib/browser-profile-launch.mjs'
-import { createChromiumRtcActivity, RTC_BROWSER_VERSION } from '../lib/browser-profile-rtc-activity.mjs'
+import { createChromiumRtcActivity } from '../lib/browser-profile-rtc-activity.mjs'
 const require = createRequire(import.meta.url), { chromium } = require('playwright-core')
-const report = { kind: 'Actual disposable sandboxed Chrome155 private native RTC qualification', checks: [] }, active = []
+const report = { kind: 'Actual disposable sandboxed Chromium private native RTC qualification', checks: [] }, active = []
 let server
 const authority = { profileId: randomUUID(), actingUserId: 'synthetic-recipient', assistantId: 7, endpointId: randomUUID(), bootId: 'synthetic-boot', runtimeId: 'synthetic-runtime', sessionId: 'synthetic-session', writerEpoch: 1, revision: 0, contentKeyEpoch: 1, grantVersion: 1, keyFingerprint: 'a'.repeat(64) }
 const expression = '(()=>{const peer=new RTCPeerConnection({iceServers:[]});peer.close();return true})()'
@@ -15,13 +15,15 @@ const check = (name, value = {}) => { report.checks.push({ name, ok: true, ...va
 async function create() {
   const environment = chromeEnv(process.env, { platform: 'linux', headed: false })
   for (const name of Object.keys(environment)) if (['DBUS_SESSION_BUS_ADDRESS', 'SSH_AUTH_SOCK', 'SSH_AGENT_PID', 'NODE_OPTIONS', 'LD_PRELOAD', 'DYLD_INSERT_LIBRARIES'].includes(name.toUpperCase())) delete environment[name]
-  const browser = await chromium.launch({ executablePath: '/usr/bin/google-chrome', headless: true, chromiumSandbox: true, ...profileLaunchArguments(), env: environment }); active.push(browser)
+  const executable=process.env.HOAI_PROBE_EXECUTABLE||chromium.executablePath()
+  const browser = await chromium.launch({ executablePath: executable, headless: true, chromiumSandbox: true, ...profileLaunchArguments(), env: environment }); active.push(browser)
+  const browserVersion=await browser.version();report.browserVersion=browserVersion;report.executable=executable
   const root = await browser.newBrowserCDPSession(), processes = await root.send('SystemInfo.getProcessInfo'), pid = processes.processInfo.find(value => value.type === 'browser').id
   const stat = readFileSync(`/proc/${pid}/stat`, 'utf8'), started = stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19]
-  const observer = await createChromiumRtcActivity({ browser, root, authority, browserVersion: await browser.version(), processIdentity: { pid, started } })
+  const observer = await createChromiumRtcActivity({ browser, root, authority, browserVersion, processIdentity: { pid, started } })
   const context = await browser.newContext(), ids = (await root.send('Target.getBrowserContexts')).browserContextIds.filter(value => value !== observer.privateContextId)
   assert.equal(ids.length, 1); await observer.bindContext({ context, contextId: ids[0] })
-  return { browser, root, observer, context, contextId: ids[0], scope: { authority, context, browserVersion: RTC_BROWSER_VERSION } }
+  return { browser, root, observer, context, contextId: ids[0], scope: { authority, context, browserVersion } }
 }
 const zero = f => async () => f.context.pages().length === 0 && !(await f.root.send('Target.getTargets')).targetInfos.some(value => value.browserContextId === f.contextId)
 try {

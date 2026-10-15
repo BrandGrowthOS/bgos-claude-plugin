@@ -175,7 +175,7 @@ function runtimeFixture(overrides: any = {}) {
   let connected = true
   const browser = { close: async () => { calls.push('process-close'); connected = false }, isConnected: () => connected }
   const ledger: any = { generation: 1, frozen: false, inventory: async () => [], assertIdle() {}, freeze: async () => { calls.push('freeze'); ledger.frozen = true; return ledger.generation }, resume: async () => { calls.push('resume'); ledger.frozen = false }, dispose: () => calls.push('dispose') }
-  const runtime: any = new BrowserProfileRuntime({ browser, browserVersion:'155.0.0.1',transferQualification:{kind:'qualified-chromium-native-observer-v1',browserVersion:'155.0.0.1',confirmStopped:async()=>true,assertQualified:()=>true},context: nativeContext, root: { send: async () => ({ targetInfos: [] }) }, ledger, authority, timeoutMs: 30, assertProcessExited: async () => { calls.push('exit-proof'); return true },
+  const runtime: any = new BrowserProfileRuntime({ browser, browserVersion:'155.0.8059.39',transferQualification:{kind:'qualified-chromium-native-observer-v1',browserVersion:'155.0.8059.39',confirmStopped:async()=>true,assertQualified:()=>true},context: nativeContext, root: { send: async () => ({ targetInfos: [] }) }, ledger, authority, timeoutMs: 30, assertProcessExited: async () => { calls.push('exit-proof'); return true },
     closeAndDrain: async () => { calls.push('drain'); return { admissionClosed: true, drained: true } }, checkpoint: async (value: any) => { calls.push('checkpoint'); return { durable: true, manifestHash: profileCrypto.manifestHash(value.checkpoint.manifest) } },
     authorizeActivation: async ({ authority }: any) => ({ authority, assertCurrent() { calls.push('current') } }),
     preflightExtras: () => emptyExtras(), captureExtras: () => ({ bundle: emptyExtras(), assertCurrent() {}, release() {} }), commitExtras: () => ({ committed: true }), ...overrides })
@@ -184,11 +184,13 @@ function runtimeFixture(overrides: any = {}) {
 }
 
 test('missing native transport qualification refuses before drain and cannot borrow a desktop browser proof',async()=>{
-  for(const transferQualification of [undefined,{kind:'qualified-chromium-native-observer-v1',browserVersion:'155.0.0.2',confirmStopped:async()=>true,assertQualified:()=>true},{kind:'qualified-chromium-native-observer-v1',browserVersion:'155.0.0.1',confirmStopped:async()=>true,assertQualified:()=>false},{kind:'qualified-chromium-native-observer-v1',browserVersion:'155.0.0.1',confirmStopped:async()=>true,assertQualified:async()=>true}]){
+  for(const transferQualification of [undefined,{kind:'qualified-chromium-native-observer-v1',browserVersion:'155.0.8059.39',confirmStopped:async()=>true,assertQualified:()=>false},{kind:'qualified-chromium-native-observer-v1',browserVersion:'155.0.8059.39',confirmStopped:async()=>true,assertQualified:async()=>true}]){
     const f=runtimeFixture({transferQualification});await f.runtime.activate({});f.calls.length=0
     await assert.rejects(f.finalize());assert.equal(f.calls.includes('drain'),false);assert.equal(f.runtime.state,'active');assert.equal(f.runtime.network,'active');assert.equal(f.runtime.browser.isConnected(),true)
   }
   assert.throws(()=>runtimeFixture({transferQualification:{kind:'qualified-native-observer-v1',browserVersion:'144.0.7559.173',assertQualified:()=>true}}),{reason:'profile_transport_qualification_required'})
+  for(const browserVersion of ['153.0.8010.13','155.0.8059.40','155.0.0.1'])assert.throws(()=>runtimeFixture({transferQualification:{kind:'qualified-chromium-native-observer-v1',browserVersion,confirmStopped:async()=>true,assertQualified:()=>true}}),{reason:'profile_transport_qualification_required'})
+  const bundled=runtimeFixture({browserVersion:'153.0.8010.12',transferQualification:{kind:'qualified-chromium-native-observer-v1',browserVersion:'153.0.8010.12',confirmStopped:async()=>true,assertQualified:()=>true}});await bundled.runtime.activate({});await bundled.finalize();assert.equal(bundled.runtime.state,'stopped')
 })
 
 test('fixture-only movement is restricted to exact literal-loopback origins and immutable scope',async()=>{
@@ -201,28 +203,28 @@ test('fixture-only movement is restricted to exact literal-loopback origins and 
 
 test('transport qualification is checked again after JS freeze before any destructive stop',async()=>{
   let checks=0
-  const f=runtimeFixture({transferQualification:{kind:'qualified-chromium-native-observer-v1',browserVersion:'155.0.0.1',confirmStopped:async()=>true,assertQualified:()=>++checks<3}});await f.runtime.activate({});f.calls.length=0
+  const f=runtimeFixture({transferQualification:{kind:'qualified-chromium-native-observer-v1',browserVersion:'155.0.8059.39',confirmStopped:async()=>true,assertQualified:()=>++checks<3}});await f.runtime.activate({});f.calls.length=0
   await assert.rejects(f.finalize(),{reason:'profile_transport_qualification_required'});assert.equal(checks,3);assert.equal(f.calls.includes('freeze'),true);assert.equal(f.calls.includes('process-close'),false);assert.equal(f.calls.includes('checkpoint'),false);assert.equal(f.runtime.state,'active');assert.equal(f.runtime.network,'active')
 })
 test('qualified product movement requires asynchronous stopped-history confirmation before extras capture',async()=>{
-  assert.throws(()=>runtimeFixture({transferQualification:{kind:'qualified-chromium-native-observer-v1',browserVersion:'155.0.0.1',assertQualified:()=>true}}),{reason:'profile_transport_qualification_required'})
+  assert.throws(()=>runtimeFixture({transferQualification:{kind:'qualified-chromium-native-observer-v1',browserVersion:'155.0.8059.39',assertQualified:()=>true}}),{reason:'profile_transport_qualification_required'})
   let observed=false,f:any
-  f=runtimeFixture({transferQualification:{kind:'qualified-chromium-native-observer-v1',browserVersion:'155.0.0.1',assertQualified:()=>true,async confirmStopped({authority,context,browserVersion,assertPhysicalZero}:any){assert.equal(context,f.nativeContext);assert.deepEqual(authority,f.authority);assert.equal(browserVersion,'155.0.0.1');assert.equal(f.runtime.state,'quiescing');assert.equal(await assertPhysicalZero(),true);await tick();observed=true;return true}},captureExtras:()=>{assert.equal(observed,true);return{bundle:emptyExtras(),assertCurrent(){},release(){}}}})
+  f=runtimeFixture({transferQualification:{kind:'qualified-chromium-native-observer-v1',browserVersion:'155.0.8059.39',assertQualified:()=>true,async confirmStopped({authority,context,browserVersion,assertPhysicalZero}:any){assert.equal(context,f.nativeContext);assert.deepEqual(authority,f.authority);assert.equal(browserVersion,'155.0.8059.39');assert.equal(f.runtime.state,'quiescing');assert.equal(await assertPhysicalZero(),true);await tick();observed=true;return true}},captureExtras:()=>{assert.equal(observed,true);return{bundle:emptyExtras(),assertCurrent(){},release(){}}}})
   await f.runtime.activate({});await f.finalize();assert.equal(observed,true);assert.equal(f.runtime.state,'stopped')
 })
 test('failed stopped-history proof or revived exact-context worker never captures or seals a checkpoint',async()=>{
   for(const confirmStopped of [async()=>false,async()=>{throw Error('fixture native history unavailable')}]){
     let captured=false
-    const f=runtimeFixture({transferQualification:{kind:'qualified-chromium-native-observer-v1',browserVersion:'155.0.0.1',assertQualified:()=>true,confirmStopped},captureExtras:()=>{captured=true;throw Error('must not capture')}});await f.runtime.activate({})
+    const f=runtimeFixture({transferQualification:{kind:'qualified-chromium-native-observer-v1',browserVersion:'155.0.8059.39',assertQualified:()=>true,confirmStopped},captureExtras:()=>{captured=true;throw Error('must not capture')}});await f.runtime.activate({})
     await assert.rejects(f.finalize(),{reason:'profile_transport_qualification_required'});assert.equal(captured,false);assert.equal(f.calls.includes('checkpoint'),false);assert.equal(f.runtime.network,'blocked')
   }
   let revived=false,captured=false
-  const f=runtimeFixture({transferQualification:{kind:'qualified-chromium-native-observer-v1',browserVersion:'155.0.0.1',assertQualified:()=>true,confirmStopped:async()=>{revived=true;return true}},captureExtras:()=>{captured=true;throw Error('must not capture')}});f.runtime.root.send=async()=>({targetInfos:revived?[{browserContextId:'context-a',type:'worker'}]:[]});await f.runtime.activate({})
+  const f=runtimeFixture({transferQualification:{kind:'qualified-chromium-native-observer-v1',browserVersion:'155.0.8059.39',assertQualified:()=>true,confirmStopped:async()=>{revived=true;return true}},captureExtras:()=>{captured=true;throw Error('must not capture')}});f.runtime.root.send=async()=>({targetInfos:revived?[{browserContextId:'context-a',type:'worker'}]:[]});await f.runtime.activate({})
   await assert.rejects(f.finalize(),{reason:'profile_runtime_workers_running'});assert.equal(captured,false);assert.equal(f.calls.includes('checkpoint'),false)
 })
 test('revocation during stopped-history confirmation cannot reach capture or resume the page',async()=>{
   let release:any,captured=false,current=true
-  const f=runtimeFixture({authorizeActivation:async({authority}:any)=>({authority,assertCurrent(){if(!current)throw Error('fixture revoked')}}),transferQualification:{kind:'qualified-chromium-native-observer-v1',browserVersion:'155.0.0.1',assertQualified:()=>true,confirmStopped:()=>new Promise(resolve=>release=resolve)},captureExtras:()=>{captured=true;throw Error('must not capture')}})
+  const f=runtimeFixture({authorizeActivation:async({authority}:any)=>({authority,assertCurrent(){if(!current)throw Error('fixture revoked')}}),transferQualification:{kind:'qualified-chromium-native-observer-v1',browserVersion:'155.0.8059.39',assertQualified:()=>true,confirmStopped:()=>new Promise(resolve=>release=resolve)},captureExtras:()=>{captured=true;throw Error('must not capture')}})
   await f.runtime.activate({});const task=f.finalize();void task.catch(()=>{});for(let count=0;count<100&&!release;count++)await tick();assert.equal(typeof release,'function');current=false;release(true);await assert.rejects(task,/fixture revoked/);assert.equal(captured,false);assert.equal(f.calls.includes('checkpoint'),false);assert.equal(f.runtime.network,'blocked');assert.equal(f.runtime.browser.isConnected(),false)
 })
 test('activation binds every runtime field and a nonfresh revision requires a staged checkpoint', async () => {
