@@ -149,7 +149,7 @@ function setup(over: Record<string, any> = {}) {
     key: 'owner',
     gates,
     gateKey: join(agentRoot, '900', 'browser', 'owner'),
-    context: () => ({ agentName: 'Data', purpose: 'Create an App Store Connect key' }),
+    context: () => ({ agentName: 'agentName' in over ? over.agentName : 'Data', purpose: 'Create an App Store Connect key' }),
     decide: () => verdict,
     remember: (origin: string | null, choice: string) => remembered.push({ origin, choice }),
     ownerControl: () => owner,
@@ -716,6 +716,71 @@ test('card text stays under the 500 characters the card route takes, with the na
   assert.match(ask, /If you don't answer, the file is kept for you/)
   assert.match(kept, /Deny deletes it/)
   assert.equal(cleanFileName(''), 'download')
+})
+
+// Mission 150 goal 12: the app words the card itself (in the owner's language),
+// so each download card carries its facts beside the English summary, and the
+// card's footer says what no answer does to this file.
+test('the ask card carries its facts for the app: the file, the folder, the device and what no answer does', async () => {
+  const s = setup({ limits: { fileBytes: 1000, sessionBytes: 10_000, sessionFiles: 5, totalBytes: 100_000, totalFiles: 25 } })
+  try {
+    s.slot.onDownload(fakeDownload(s.paths.held, { name: 'small.csv', bytes: 100 }))
+    await until(() => s.downloadCards().length === 1, () => 'asked')
+    assert.deepEqual(s.downloadCards()[0]!.download, {
+      stage: 'ask',
+      fileName: 'small.csv',
+      folder: '~/.bgos-agent/900/browser-output/owner',
+      device: 'box-1',
+      keepsIfUnanswered: true,
+    })
+    assert.equal(s.downloadCards()[0]!.agentName, 'Data')
+    s.srv.answer(String(s.downloadCards()[0]!.gateId), 'deny')
+    s.slot.onDownload(fakeDownload(s.paths.held, { name: 'big.bin', bytes: 5000 }))
+    await until(() => s.downloadCards().length === 2, () => 'asked again')
+    assert.equal(s.downloadCards()[1]!.download.keepsIfUnanswered, false, 'a file over the limit is deleted when nobody answers')
+  } finally {
+    s.done()
+  }
+})
+
+test('the kept notice carries its facts and why it was kept, and names the agent', async () => {
+  const s = setup()
+  try {
+    s.slot.onDownload(fakeDownload(s.paths.held))
+    await until(() => s.downloadCards().length === 1, () => 'asked')
+    s.srv.answer(String(s.downloadCards()[0]!.gateId), null, 'expired')
+    await until(() => s.downloadCards().length === 2, () => 'the notice card')
+    const notice = s.downloadCards()[1]!
+    assert.deepEqual(notice.download, {
+      stage: 'kept',
+      fileName: 'AuthKey_7KQ2X9.p8',
+      folder: '~/.bgos-agent/900/browser-output/owner',
+      device: 'box-1',
+      reason: 'no_answer',
+    })
+    assert.equal(notice.agentName, 'Data')
+  } finally {
+    s.done()
+  }
+})
+
+test('with no agent name known, a card leaves the name to the backend and the summary never capitalises "your agent" mid sentence', async () => {
+  const s = setup({ agentName: null })
+  try {
+    s.slot.onDownload(fakeDownload(s.paths.held))
+    await until(() => s.downloadCards().length === 1, () => 'asked')
+    const ask = s.downloadCards()[0]!
+    assert.equal(ask.agentName ?? null, null)
+    assert.match(ask.summary, /and your agent doesn't get it/)
+    s.srv.answer(String(ask.gateId), null, 'expired')
+    await until(() => s.downloadCards().length === 2, () => 'the notice card')
+    const notice = s.downloadCards()[1]!
+    assert.equal(notice.agentName ?? null, null, 'no "Your agent" in place of the name: the backend reads the agent record')
+    assert.match(notice.summary, /and your agent does not get it\. Allow gives this one file to your agent in /)
+    assert.doesNotMatch(notice.summary + ask.summary, /Your agent/)
+  } finally {
+    s.done()
+  }
 })
 
 test('the name saved into the output folder is a plain file name on every system', () => {
