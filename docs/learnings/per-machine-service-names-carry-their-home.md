@@ -1,0 +1,17 @@
+# A per-machine service name must carry the HOME it was installed from
+
+**Date:** 2026-10-15
+
+**Context:** BGOS #2432. A test rig's backend asked a daemon running v0.69.0 from a scratch HOME to "set up the watcher on this machine", on the owner's own computer, where the owner's real watcher runs as the Scheduled Task `HOAI Watcher`. The install got as far as enroll and stopped only because the rig's backend answered 409. With a 200, the next step was `Register-ScheduledTask -TaskName 'HOAI Watcher' -Force`, pointed at the scratch HOME's bundle: the owner's watcher replaced by a rig's.
+
+**Gotcha / Pattern:** The watcher's files were already HOME scoped (`<HOME>/.bgos-agent/watcher`), and that made the service LOOK isolated. Its NAMES were not: a Scheduled Task name and the HKCU Run value belong to the Windows user, a launchd label to the one `gui/<uid>` domain, a systemd `--user` unit to the one user manager (which reads only the real HOME's unit folder, so a scratch install there restarted and could disable the owner's unit by name). `HOAI_SERVICE_NAMESPACE` fixed this only for whoever remembered to set it. Two more traps sat behind it: the Windows launcher set no HOME, so a task installed from a scratch HOME still ran against the logon profile's real credentials and agents (`os.homedir()` reads `USERPROFILE`); and uninstall ran whatever `install-task.ps1` an older version had left in the bundle, with the old name baked in.
+
+**How to apply next time:**
+
+- Name every machine-level registration after the HOME it serves (`home-<first 8 hex of sha256(normalized HOME)>`), record that HOME inside the registration, and read the record back before replacing or removing anything. A registration under your own name that records another HOME is refused, never "repaired".
+- An old, unscoped registration is renamed in place only when its record proves it is this HOME's. Register the new name first where registering does not start anything (a logon task, an enabled unit). Assume the installer may live INSIDE the thing it replaces: on Linux the daemon of an agent the watcher started sits in the watcher unit's cgroup, so `disable --now` of the old unit kills the installer before it starts the new one (no watcher until reboot). Make the swap one job the service manager finishes on its own (a drop-in with `Conflicts=`/`After=` the old unit, then one `start` of the new one). Where registering starts the job (launchd), boot out the old job, WAIT until it is no longer listed (bootout returns early), then bootstrap the new one, and put the old one back when the new one does not come up: never a moment with two watchers.
+- Pin the HOME in the launcher too (`USERPROFILE` on Windows, `HOME` in the plist and the unit), or the scoped name runs unscoped code.
+- Regenerate a script before running it; never execute one an older version left on disk.
+- Test with a FAKED service layer that models the primitives (register, bootout, enable, probe) and holds several HOMEs at once, never with real tasks.
+
+**Regression guard:** `test/watcher-service.home-scope.test.ts` (two HOMEs side by side, a scratch HOME against the owner's 0.69.x registration on all three platforms, the same-HOME rename with no gap and never two watchers, the rollbacks, refusal of another HOME's record, uninstall of only its own, the CLI with a stale task script), on `test/helpers/fake-service-host.ts`.

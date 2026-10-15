@@ -9,3 +9,5 @@
 **How to apply next time:** On Windows, prefer the API (PowerShell cmdlets) over the legacy exe for anything a standard user should be able to do, and keep one documented fallback. Log the exact refusal into the ledger; it is the diagnostic. Watch the `recordingExec` test key format: it keys on `<file> <first arg>`, so the refusal must be scripted on the install action, not on a later one.
 
 **Regression guard:** `test/watcher-service.test.ts` (win32 spec: files, commands, the run-key fallback ladder, refusal stops the ladder). Live: task `HOAI Watcher` Ready, watcher online, survived its own bundle swap and restart.
+
+**Since 0.69.2 (board row dfafdfb6):** the task is `HOAI Watcher home-<id>`, named after the HOME it was installed from, not `HOAI Watcher`; see [per-machine-service-names-carry-their-home](per-machine-service-names-carry-their-home.md).
