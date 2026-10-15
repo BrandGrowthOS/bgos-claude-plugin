@@ -22,7 +22,7 @@
     "test": "node scripts/run-tests.mjs"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@modelcontextprotocol/sdk": "1.32.1",
     "playwright-core": "1.63.0",
     "socket.io-client": "^4.8.1",
     "zod": "^4.3.6"
