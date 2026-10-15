@@ -34,6 +34,29 @@ test('normal browser close refusal preserves the active page and never uses daem
   await assert.rejects(f.companion._tool(f.record,'browser_close',{},new AbortController().signal),{code:'profile_unsaved_form_state'});assert.equal(f.record.runtime.state,'active');assert.equal(f.record.admission,'active');assert.equal(f.record.uncertain,false);assert.equal(f.calls.includes('dispose'),false);assert.equal(f.calls.includes('emergency'),false)
 })
 
+test('persistent extras proofs survive normal closing but reject runtime record scope and revocation changes',async t=>{
+  for(const fault of ['replacement-runtime','authority','recipient','disposal','revocation']){
+    const f=await fixture(t);f.companion.records.set(f.scope.endpointId,f.record);let stored!:()=>void
+    f.companion.preloadExtras=async(input:Row)=>{stored=input.assertCurrent;stored();return{preflightExtras(){stored();return{}},captureExtras(){stored();return{}},commitExtras(){stored()},dispose(){}}}
+    const authority={profileId:f.scope.profileId,actingUserId:f.scope.actingUserId,assistantId:42,endpointId:f.scope.endpointId,bootId:f.connection.bootId,runtimeId:randomUUID(),sessionId:randomUUID(),grantVersion:1,keyFingerprint:f.scope.keyFingerprint,writerEpoch:1,revision:0,contentKeyEpoch:1}
+    await f.companion._prepare(f.record,authority);f.companion.closing=true;assert.doesNotThrow(stored);assert.doesNotThrow(()=>f.options!.preflightExtras({authority}));assert.doesNotThrow(()=>f.options!.captureExtras({authority}))
+    const originalRuntime=f.record.runtime
+    if(fault==='replacement-runtime')f.record.runtime={...f.record.runtime}
+    else if(fault==='authority')f.record.runtime.authority={...authority,revision:1}
+    else if(fault==='recipient')f.record.scope={...f.record.scope,actingUserId:'sharer'}
+    else if(fault==='disposal'){await f.companion._dispose(f.record);f.record.runtime=originalRuntime}
+    else f.record.revoked=true
+    assert.throws(stored,/context_changed/)
+  }
+})
+
+test('normal closing during extras creation still refuses before native construction',async t=>{
+  const f=await fixture(t);f.companion.records.set(f.scope.endpointId,f.record);let entered=false,release!:(value:unknown)=>void
+  f.companion.preloadExtras=()=>{entered=true;return new Promise(resolve=>{release=resolve})}
+  const authority={profileId:f.scope.profileId,actingUserId:f.scope.actingUserId,assistantId:42,endpointId:f.scope.endpointId,bootId:f.connection.bootId,runtimeId:randomUUID(),sessionId:randomUUID(),grantVersion:1,keyFingerprint:f.scope.keyFingerprint,writerEpoch:1,revision:0,contentKeyEpoch:1},work=f.companion._prepare(f.record,authority),rejected=assert.rejects(work,/context_changed/)
+  while(!entered)await new Promise(resolve=>setImmediate(resolve));f.companion.closing=true;release({dispose(){}});await rejected;assert.equal(f.calls.includes('runtime-blocked'),false)
+})
+
 test('active signed monitoring is independent of slow setup and coalesces one physical operation per runtime',async t=>{
   const f=await fixture(t);let release!:(value:unknown)=>void,reads=0;f.companion.records.set(f.scope.endpointId,f.record);f.record.runtime={state:'active',authority:{},dispose:async()=>{f.calls.push('dispose')}};f.record.rpc={binding:{socketId:'socket-a',bindingId:randomUUID()},close:async()=>{}};f.record.admission='active'
   f.companion.statusClient={status:()=>{reads++;return new Promise(resolve=>{release=resolve})}};f.companion.pending=new Promise(()=>{})
