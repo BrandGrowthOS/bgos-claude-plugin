@@ -2,6 +2,16 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.69.3 (2026-10-15)
+
+**On a busy Windows PC a slow look for the agent's own claude no longer refuses every browser call for 10 minutes (HOAI board row 7046de2a, mission 154 goal 10).** Seen during the BGOS #2432 download ask proof on AlienAres under normal worker load.
+
+- **Why.** The signed browser context names the claude the daemon serves, and is live only with that pid (`lib/private-turn.mjs` `publishPrivateContext`); the managed browser shim refuses every call while it is not live (`bin/hoai-browser-mcp.mjs` `readManagedContext`, `acting_context_unavailable`). On Windows the daemon finds that pid with one PowerShell call (`lib/agent-state.ts` `win32AncestryCommand`) that ran one `Get-CimInstance Win32_Process -Filter` per parent link, all the way up to wininit. A filtered query costs as much as a full one (each link added about 0.5 s on a busy PC), so on AlienAres the nine links took 4.0 s to 6.3 s (median 4.9 s, 4 of 10 runs over) against `defaultExecSync`'s 5 s cap (`lib/service-supervision.mjs`). A probe killed at the cap read as "no claude", and `memoizeUntilFound` held that miss for `CLAUDE_ANCESTOR_RETRY_MS`, 10 minutes (`server.ts`).
+- **The fix.** The script makes one `Get-CimInstance` of the process table and walks the parents in PowerShell, printing the same chain: 1.1 s to 1.4 s on the same PC for the same nine links (median 1.2 s). A CIM error now stops the script (`-ErrorAction Stop`), and a chain that does not hold the daemon's own pid is no reading. A probe that could not be read (timed out, non-zero exit, output cut short or without the daemon, could not start) is now `readable: false` (`readClaudeAncestorWin32`, `readClaudeAncestor`), and `memoizeAncestorReading` retries it after 30 s, doubling while it keeps failing, never held past 10 minutes.
+- **Unchanged:** a found claude is kept for the daemon's life; a chain that was read and holds no claude (a reused parent pid included) is still held 10 minutes, and the browser context is still not live, so its calls are still refused; macOS and Linux read through `ps` exactly as before, every answer held as before.
+
+Guards: `test/agent-state.ancestor-probe.test.ts` on a faked PowerShell with this PC's measured costs (no real process listing): a slow probe over the cap, a timeout followed by a good answer, a real absence still refused, the cached answers expiring, and the server wiring. No version is published or tagged here.
+
 ## 0.69.2 (2026-10-15)
 
 **The watcher's OS service is named after the HOME it was installed from, so a second install on the same computer, a test rig's scratch HOME among them, can never replace or stop the owner's watcher (board row dfafdfb6, mission 151 goal 8).** BGOS #2432: a rig backend asked a scratch HOME daemon on v0.69.0 to install the watcher on the owner's own computer; only the rig's 409 from enroll stopped it before `Register-ScheduledTask -TaskName 'HOAI Watcher' -Force` pointed the owner's task at the scratch bundle.
