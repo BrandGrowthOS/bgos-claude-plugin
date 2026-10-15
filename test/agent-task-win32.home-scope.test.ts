@@ -20,7 +20,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -475,6 +475,24 @@ test('round 2 L12: a start of the OLD name that the sweep\'s rename retired in b
   assert.equal(started.acted, true)
   assert.ok(host.calls.includes(`schtasks.exe /Run /TN ${OWNER_TASK}`), host.calls.join('\n'))
   assert.ok(host.instances.has(OWNER_TASK))
+})
+
+test('round 2 L3: the status read-back is bounded: agentTaskStatus limits both probes it runs, and hoai-watcher status gives it 60 s', async () => {
+  const { fs, host } = world()
+  seedOldTask(host, fs, OWNER, false)
+  const seen: Array<{ action: string; timeoutMs: unknown }> = []
+  const recording = (file: string, args: readonly string[], opts?: { timeoutMs?: number }) => {
+    seen.push({ action: String(args[args.length - 1]), timeoutMs: opts?.timeoutMs })
+    return host.exec(file, args)
+  }
+  const status = await agentTaskStatus(agentTaskRegistration({ assistantId: ID, home: OWNER }), { exec: recording as any, fs, timeoutMs: 60_000 })
+  assert.equal(status.label, OLD_TASK)
+  assert.deepEqual(seen, [
+    { action: 'probe', timeoutMs: 60_000 },
+    { action: 'probe-legacy', timeoutMs: 60_000 },
+  ])
+  const watcherCli = readFileSync(new URL('../bin/hoai-watcher.mjs', import.meta.url), 'utf8')
+  assert.match(watcherCli, /agentTaskStatus\(agentTaskRegistration\(\{ assistantId: a\.assistantId, home \}\), \{ exec, fs, timeoutMs: 60_000 \}\)/)
 })
 
 // -- the sweep: renames once, then supervises the renamed agent ---------------------------------------
