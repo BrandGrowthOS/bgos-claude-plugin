@@ -58,14 +58,15 @@
  */
 
 import { spawn } from 'node:child_process'
-import { createHash, randomBytes } from 'node:crypto'
-import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync } from 'node:fs'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
+import { chmodSync, closeSync, constants, existsSync, fstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir, hostname, tmpdir } from 'node:os'
-import { delimiter, dirname, join, posix as posixPath, win32 as win32Path } from 'node:path'
+import { delimiter, dirname, isAbsolute, join, posix as posixPath, win32 as win32Path } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { AgentBrowserVault, browserVaultScope } from '../lib/agent-browser-vault.mjs'
 import { ensureBrowser, bundledChromium } from '../lib/browser-bootstrap.mjs'
+import { terminateBrowserDaemon } from '../lib/browser-profile-daemon-stop.mjs'
 import { BrowserSecretRedactor } from '../lib/browser-secret-redactor.mjs'
 import { DOWNLOAD_ASK_WAIT_S, DownloadStore, SlotDownloads, downloadLines, downloadPaths } from '../lib/browser-downloads.mjs'
 
@@ -78,6 +79,8 @@ import { chromeEnv } from '../lib/browser-env.mjs'
 import { GateKeeper, deniedMessage, waitSecondsFrom, GATE_ATTACH_MS, GATE_WAIT_MAX_S } from '../lib/browser-gate.mjs'
 import { RemoteBrowserViews, REMOTE_BROWSER_TAB_MAX } from '../lib/remote-view.mjs'
 import { OWNER_CONTROL_MESSAGE, runAgentBrowserWork } from '../lib/remote-input.mjs'
+import { AgentBrowserProfileCompanion } from '../lib/browser-profile-companion.mjs'
+import { reviewAgentProfilePeer } from '../lib/browser-profile-peer-review.mjs'
 
 /**
  * The permission rules, byte-identical copies of the desktop Agent Browser's
@@ -625,10 +628,10 @@ export function readPairings({ agentRoot, allow = null, listDir = defaultListDir
  * it (the query), the role, agents and label where it reads those (the
  * auth). Mirrors lib/agent-credentials.ts wsAuthOptions for the pairing lane.
  */
-export function handshakeOptions(pairing, deviceLabel) {
+export function handshakeOptions(pairing, deviceLabel, deviceBootId = /** @type {string|undefined} */ (undefined)) {
   return {
     query: { pairingToken: pairing.token },
-    auth: { role: BROWSER_HOST_ROLE, agents: [...pairing.assistantIds], deviceLabel },
+    auth: { role: BROWSER_HOST_ROLE, agents: [...pairing.assistantIds], deviceLabel, ...(deviceBootId ? { deviceBootId } : {}) },
   }
 }
 
@@ -973,7 +976,7 @@ export async function listTools({ caps, outputDir }) {
  * when the browser under it goes away, so the pool relaunches it.
  */
 export class PlaywrightEngine {
-  constructor({ endpoint, caps, outputDir, clientName, clientVersion, connectTimeoutMs = 0, artifactsDir = /** @type {string | null} */ (null), acceptDownloads = false, onDownload = /** @type {((download: any) => void) | null} */ (null), log = /** @type {(line: string) => void} */ (() => {}) }) {
+  constructor({ endpoint, caps, outputDir, clientName, clientVersion, connectTimeoutMs = 0, artifactsDir = /** @type {string | null} */ (null), acceptDownloads = false, onDownload = /** @type {((download: any) => void) | null} */ (null), managedRuntime = /** @type {any} */ (null), log = /** @type {(line: string) => void} */ (() => {}) }) {
     this._endpoint = endpoint
     // Chrome writes downloads into Playwright's artifacts folder. Given here it
     // is the held folder inside the agent's own folder; never given, Playwright
@@ -983,6 +986,7 @@ export class PlaywrightEngine {
     this.onDownload = onDownload
     this._log = log
     this._connectTimeoutMs = connectTimeoutMs
+    this._managedRuntime = managedRuntime
     this._caps = caps
     this._outputDir = outputDir
     this._clientName = clientName || 'hoai'
@@ -998,16 +1002,18 @@ export class PlaywrightEngine {
 
   async start() {
     const { chromium, tools } = loadPlaywright()
-    this._browser = await chromium.connectOverCDP(this._endpoint, { isLocal: true, timeout: this._connectTimeoutMs, noDefaults: true, ...(this._artifactsDir ? { artifactsDir: this._artifactsDir } : {}) })
+    this._managedRuntime?.assertCurrent()
+    this._browser = this._managedRuntime ? this._managedRuntime.browser : await chromium.connectOverCDP(this._endpoint, { isLocal: true, timeout: this._connectTimeoutMs, noDefaults: true, ...(this._artifactsDir ? { artifactsDir: this._artifactsDir } : {}) })
     this._browser.on('disconnected', () => this.onDisconnected?.())
     // Downloads are accepted only into a guarded held folder; otherwise Chrome
     // is told to refuse them (Browser.setDownloadBehavior deny).
-    const context = await this._browser.newContext({ viewport: { width: 1280, height: 800 }, acceptDownloads: this._acceptDownloads && !!this._artifactsDir })
+    const context = this._managedRuntime ? this._managedRuntime.context : await this._browser.newContext({ viewport: { width: 1280, height: 800 }, acceptDownloads: this._acceptDownloads && !!this._artifactsDir })
     context.on('page', page => { if (context.pages().length > REMOTE_BROWSER_TAB_MAX) void page.close().catch(() => {}) })
     context.on('download', (download) => this._download(download))
-    await context.newPage()
+    if (!this._managedRuntime) await context.newPage()
     const config = await resolveConfig({ caps: this._caps, outputDir: this._outputDir })
     const filtered = tools.filteredTools(config)
+    this._toolSchemas = filtered.map(tool => tool.schema)
     this._toolNames = new Set(filtered.map((t) => t.schema.name))
     this._backend = new tools.BrowserBackend(config, context, filtered)
     await this._backend.initialize({ cwd: this._outputDir, name: this._clientName, version: this._clientVersion })
@@ -1022,6 +1028,7 @@ export class PlaywrightEngine {
   hasTool(name) {
     return this._toolNames.has(name)
   }
+  roster() { return [...SESSION_TOOLS, ...servedBrowserTools(this._toolSchemas || [])] }
 
   /**
    * Every download of this browser, from any page, popup or tab. With nobody
@@ -1068,6 +1075,7 @@ export class PlaywrightEngine {
   }
 
   async callTool(name, args, signal) {
+    this._managedRuntime?.assertCurrent()
     if (!this._backend) throw new Error('Engine not started')
     if (name === 'browser_tabs' && args?.action === 'new' && this.pages().length >= REMOTE_BROWSER_TAB_MAX) throw new HostError('browser_tabs_full', 'The browser has reached its tab limit.')
     try { return this._secrets.value(await this._backend.callTool(name, args || {}, signal)) }
@@ -1093,7 +1101,7 @@ export class PlaywrightEngine {
       await backend?.dispose()
     } catch {}
     try {
-      await browser?.close()
+      if (!this._managedRuntime) await browser?.close()
     } catch {}
     this._secrets.clear()
   }
@@ -2101,6 +2109,8 @@ export class PairingConnection {
     // as the host's proof, and a reconnect mints a new one, so it is set on
     // connect and cleared on disconnect rather than read once at start.
     this.socketId = ''
+    this.bootId = randomUUID()
+    this.profileCompanion = null
     this._name = `pairing ${pairing.pairingId ?? '(no id)'} [${pairing.assistantIds.join(',')}]`
   }
 
@@ -2110,12 +2120,13 @@ export class PairingConnection {
       reconnection: true,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 30000,
-      ...handshakeOptions(this.pairing, this._label),
+      ...handshakeOptions(this.pairing, this._label, this.bootId),
     })
     this.socket = socket
     socket.on('connect', () => {
       this._connectedAt = Date.now()
       this.socketId = socket.id ?? ''
+      void this.profileCompanion?.poll()
       this._log(`${this._name}: connected as ${BROWSER_HOST_ROLE} (socket ${socket.id}); the backend now checks the agents against this pairing`)
       try {
         this._onConnect?.(this.pairing.assistantIds)
@@ -2142,6 +2153,7 @@ export class PairingConnection {
       }
     })
     socket.on('disconnect', () => {
+      this.profileCompanion?.disconnected()
       if (this.socketId) void this._remoteViews?.closeConnection(this.socketId)
       this.socketId = ''
     })
@@ -2158,6 +2170,7 @@ export class PairingConnection {
     socket.on('browser_view_open', (input) => {
       const connectionId = this.socketId
       if (!connectionId || !this._remoteViews || !this.pairing.assistantIds.includes(input?.assistantId)) return
+      if (this.profileCompanion?.hasNamespace(input)) { socket.emit('browser_view_close', { viewId: input.viewId, reason: 'profile_namespace_managed' }); return }
       const current = () => !this._stopped && this.socketId === connectionId && socket.connected
       void this._remoteViews.open(input, {
         connectionId,
@@ -2166,6 +2179,8 @@ export class PairingConnection {
       }).catch(() => { if (current()) socket.emit('browser_view_close', { viewId: input?.viewId, reason: 'view_start_failed' }) })
     })
     socket.on('browser_view_command', input => {
+      const prior = this._remoteViews?.views?.get(input?.viewId)
+      if (prior && this.profileCompanion?.hasNamespace(prior.context)) { void this._remoteViews.close(prior.viewId, this.socketId, 'profile_namespace_managed'); return }
       if (this.socketId) void this._remoteViews?.command(input, this.socketId).catch(() => {})
     })
     socket.on('browser_view_close', input => {
@@ -2180,6 +2195,11 @@ export class PairingConnection {
    */
   async handleFrame(frame, socketId) {
     const f = frame && typeof frame === 'object' ? frame : {}
+    if (f.event_type === 'browser_profile_rpc' || f.event_type === 'browser_profile_rpc_cancel') {
+      if (!this.profileCompanion) return null
+      await this.profileCompanion.receive(f, socketId)
+      return null
+    }
     const rpcId = typeof f.rpcId === 'string' && f.rpcId ? f.rpcId : ''
     const message = f.message && typeof f.message === 'object' ? f.message : null
     const hasId = !!message && message.id !== undefined && message.id !== null
@@ -2191,8 +2211,9 @@ export class PairingConnection {
     }
     const started = Date.now()
     const assistantId = assistantIdOrNull(f.assistantId)
-    const answer =
-      assistantId !== null && this.pairing.assistantIds.includes(assistantId)
+    const answer = this.profileCompanion?.hasNamespace(f)
+      ? relayError('browser_profile_managed', 'This person has a managed browser profile. Use its exact typed HOAI route; a legacy browser was not opened.')
+      : assistantId !== null && this.pairing.assistantIds.includes(assistantId)
         ? await this._relay.relay(f)
         : relayError('bad_frame', 'This host does not serve that agent on this pairing.')
     if (!hasId) return null
@@ -2279,10 +2300,12 @@ export class PairingConnection {
 
   stop() {
     this._stopped = true
+    if(!this.stopTask){this.stopTask=Promise.resolve().then(()=>this.profileCompanion?.revoke());void this.stopTask.catch(()=>this._log('managed browser: local stop could not be confirmed; recovery is required'))}
     if (this.socketId) void this._remoteViews?.closeConnection(this.socketId)
     if (this._retryTimer) clearTimeout(this._retryTimer)
     this._retryTimer = null
     this.socket?.disconnect()
+    return this.stopTask
   }
 }
 
@@ -2316,6 +2339,7 @@ export class BrowserHost {
     listDir = defaultListDir,
     readText = defaultReadText,
     scope = scopeFromEnv(env),
+    createProfileCompanion = null,
   }) {
     this.agentRoot = agentRoot
     this.scope = scope
@@ -2328,6 +2352,8 @@ export class BrowserHost {
     this._listDir = listDir
     this._readText = readText
     this._allow = parseAgentAllowList(env.HOAI_BROWSER_HOST_AGENTS)
+    this._createProfileCompanion = createProfileCompanion
+    this._profileTimer = null
     this._deviceLabel = deviceLabel
     /** assistantId -> DownloadStore: what is held and kept for that agent (lib/browser-downloads.mjs). */
     this.downloadStores = new Map()
@@ -2336,6 +2362,8 @@ export class BrowserHost {
     this.pool = new BrowserPool({ agentRoot, createEngine, log, bindEngine: (engine, slot, ctx) => this.core?.bindEngine(engine, slot, ctx) })
     this.remoteViews = new RemoteBrowserViews({ pool: this.pool })
     this.connections = new Map()
+    this.retiringConnections = new Map()
+    this._closing = false
     // The gate reaches the backend through whichever pairing serves the agent
     // the call is for, resolved at the moment of asking rather than captured:
     // a reconnect mints a new socket id, and the gate routes read that id as
@@ -2415,6 +2443,8 @@ export class BrowserHost {
     this._lastSweep = Date.now()
     this._downloadsTimer = setInterval(() => this._downloadsTick(), DOWNLOAD_TICK_MS)
     this._downloadsTimer.unref?.()
+    this._profileTimer = setInterval(() => { for (const connection of this.connections.values()) void connection.profileCompanion?.poll() }, 2000)
+    this._profileTimer.unref?.()
     return this
   }
 
@@ -2444,6 +2474,7 @@ export class BrowserHost {
 
   /** Brings the live sockets in line with the credentials on disk. */
   reconcile() {
+    if(this._closing)return
     const read = readPairings({ agentRoot: this.agentRoot, allow: this._allow, listDir: this._listDir, readText: this._readText })
     const pairings = scopePairings(read.pairings, this.scope)
     const skipped = read.skipped
@@ -2452,12 +2483,15 @@ export class BrowserHost {
       const next = wanted.get(key)
       if (next && next.token === conn.pairing.token && next.assistantIds.join(',') === conn.pairing.assistantIds.join(',')) continue
       conn.stop()
+      this.retiringConnections.set(key,conn)
+      void conn.stopTask.then(()=>{if(this.retiringConnections.get(key)===conn){this.retiringConnections.delete(key);if(!this._closing)try{this.reconcile()}catch{this._log('managed browser: pairing reconciliation requires recovery')}}},()=>{})
       this.connections.delete(key)
       this._log(`pairing ${conn.pairing.pairingId ?? '(no id)'}: ${next ? 'its agents or token changed; reconnecting' : 'no longer on this machine; disconnected'}`)
     }
     for (const [key, pairing] of wanted) {
-      if (this.connections.has(key)) continue
+      if (this.connections.has(key)||this.retiringConnections.has(key)) continue
       const conn = new PairingConnection({ pairing, deviceLabel: this.deviceLabel, relay: this.relay, remoteViews: this.remoteViews, io: this._io, fetchImpl: this._fetch, log: this._log, onConnect: (ids) => this._agentsConnected(ids) })
+      conn.profileCompanion = this._createProfileCompanion?.(conn, this) || null
       this.connections.set(key, conn)
       this._log(`pairing ${pairing.pairingId ?? '(no id)'} on ${pairing.backendUrl}: serving agents [${pairing.assistantIds.join(', ')}]${pairing.staleTokens ? ` (${pairing.staleTokens} older token file(s) ignored)` : ''}`)
       conn.start()
@@ -2475,19 +2509,33 @@ export class BrowserHost {
   }
 
   async stop() {
+    this._closing = true
+    if (this._profileTimer) clearInterval(this._profileTimer)
+    this._profileTimer = null
     if (this._rescanTimer) clearInterval(this._rescanTimer)
     this._rescanTimer = null
     if (this._downloadsTimer) clearInterval(this._downloadsTimer)
     this._downloadsTimer = null
+    for (const connection of this.connections.values()) await connection.profileCompanion?.stop()
+    await Promise.all([...this.retiringConnections.values()].map(connection=>connection.stopTask))
     // Downloads first, while the sockets are up: what nobody decided is kept
     // and its owner told, before the gates close and the browsers quit.
     await this._drainDownloads()
     this.gates.closeAll()
     await this.remoteViews.stop()
-    for (const conn of this.connections.values()) conn.stop()
+    await Promise.all([...this.connections.values()].map(conn=>conn.stop()))
     this.connections.clear()
     this.relay.close()
     await this.pool.stopAll()
+  }
+  async emergencyStopOwnedProfiles() {
+    this._closing = true
+    const retained=[...new Set([...this.connections.values(),...this.retiringConnections.values()])]
+    const results=await Promise.allSettled(retained.map(connection=>connection.profileCompanion?.emergencyTerminate()))
+    killStartedChromes()
+    for(const connection of retained)connection.stop()
+    if(results.some(result=>result.status==='rejected'))throw new Error('profile_companion_stop_unconfirmed')
+    return{stopped:true,recoveryRequired:true}
   }
 }
 
@@ -2553,6 +2601,22 @@ export async function main({
   for (const p of pairings) log(`pairing ${p.pairingId ?? '(no id)'} on ${p.backendUrl}: agents [${p.assistantIds.join(', ')}]`)
   for (const s of skipped) log(`skipped ${s.file}: ${s.reason}`)
   if (!pairings.length) log(`no paired agent found in ${agentRoot}`)
+  if (argv.includes('--review-profile-peer')) {
+    const at = argv.indexOf('--review-profile-peer'), confirmAt = argv.indexOf('--confirm-fingerprint')
+    if (argv.length !== 4 || at < 0 || confirmAt < 0 || !argv[at + 1] || !argv[confirmAt + 1]) { log('peer review: provide --review-profile-peer <public JSON file> --confirm-fingerprint <full fingerprint>'); return 1 }
+    try {
+      const file = argv[at + 1];if(!isAbsolute(file))throw new Error('public review file must be absolute')
+      const descriptor = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW || 0))
+      let bytes
+      try { const info = fstatSync(descriptor); if (!info.isFile() || info.size < 1 || info.size > 8192) throw new Error('public review file refused'); bytes = Buffer.alloc(info.size + 1); const length = readSync(descriptor, bytes, 0, bytes.length, 0), after = fstatSync(descriptor); if (length !== info.size || info.size !== after.size || info.mtimeMs !== after.mtimeMs || info.ctimeMs !== after.ctimeMs) throw new Error('public review file refused'); bytes = bytes.subarray(0, length) }
+      finally { closeSync(descriptor) }
+      const document = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)), result = await reviewAgentProfilePeer({ agentRoot, pairings, document, confirmation: argv[confirmAt + 1], environment: env,
+        assertPairingCurrent: expected => scopePairings(readPairings({ agentRoot, allow: parseAgentAllowList(env.HOAI_BROWSER_HOST_AGENTS) }).pairings, scope).some(current => current.key === expected.key && current.token === expected.token && current.backendUrl === expected.backendUrl && current.pairingId === expected.pairingId && JSON.stringify(current.assistantIds) === JSON.stringify(expected.assistantIds)),
+      })
+      log(`peer review: stored exact public source fingerprint ${result.peerKeyFingerprint}; background and site permissions remain separate`)
+      return 0
+    } catch { log('peer review refused: verify the full fingerprint, current enrollment, recipient grant and unlocked OS key service; no key was repinned'); return 1 }
+  }
 
   // playwright-core is only LOCATED here, not loaded: loading it costs about
   // 80 MB resident, and a host that never receives a frame never needs it.
@@ -2564,6 +2628,8 @@ export async function main({
   }
   const loadBrowserTools = async () => servedBrowserTools(await listTools({ caps: DEFAULT_CAPS, outputDir: join(agentRoot, 'browser-host') }))
   if (check) {
+    log('managed profiles: explicit recipient device review, separate background grant and session confirmation are required; no profile is invented by installation')
+    log(process.platform === 'linux' ? 'managed profile keys: require an unlocked persistent Secret Service collection, /usr/bin/gdbus and /usr/bin/secret-tool; this read-only check does not unlock it' : 'managed profiles: Linux Secret Service setup is required on the agent machine; no plaintext or alternate key-store fallback is used')
     log(`tools: ${SESSION_TOOLS.length} session tools and ${(await loadBrowserTools()).length} browser_ tools`)
     if (!chrome.path && !env.HOAI_BROWSER_EXECUTABLE) {
       const cached = bundledChromium().executable
@@ -2578,7 +2644,13 @@ export async function main({
     const executable = await ensureBrowser({ findInstalled: () => resolveChromeExecutable({ env }), env, log })
     return new ChromiumEngine({ executable, profileDir, outputDir, heldDir, scope, headless, clientName: 'hoai-browser-host', clientVersion: readPackageVersion(), log })
   }
-  const host = new BrowserHost({ agentRoot, env, deviceLabel, browserTools: loadBrowserTools, createEngine, log, scope }).start()
+  const createProfileCompanion = (connection, legacyHost) => new AgentBrowserProfileCompanion({ connection, agentRoot, environment: env, deviceLabel, log,
+    assertNoLegacyActive: scope => !legacyHost.pool.peek({ assistantId: scope.assistantId, principal: `user-${scope.actingUserId}` }),
+    loadBrowser: async () => ({ chromium: loadPlaywright().chromium, executable: await ensureBrowser({ findInstalled: () => env.HOAI_BROWSER_EXECUTABLE ? resolveChromeExecutable({ env }) : { path: null }, env, log }) }),
+    createEngine: async ({ runtime, directory }) => { ensurePrivateDir(directory); return new PlaywrightEngine({ endpoint: null, managedRuntime: runtime, caps: DEFAULT_CAPS, outputDir: directory, clientName: 'hoai-profile-companion', clientVersion: readPackageVersion(), log }).start() },
+    createRelay: core => new RelaySessions({ core, serverInfo: { name: 'hoai-profile-companion', version: readPackageVersion() }, instructions: hostInstructions(deviceLabel), log }),
+  })
+  const host = new BrowserHost({ agentRoot, env, deviceLabel, browserTools: loadBrowserTools, createEngine, createProfileCompanion, log, scope }).start()
 
   return await new Promise((resolve) => {
     // The retry, rescan and parent timers are unref'd so an embedder (and a
@@ -2593,7 +2665,10 @@ export async function main({
       stopping = true
       clearInterval(keepAlive)
       log(`${why}: closing the browsers (profiles stay) and the sockets`)
-      stopWithin(() => host.stop(), { ms: stopDeadlineMs, log, exit }).then(() => resolve(0))
+      // Only process signals, daemon EOF and daemon death enter this path.
+      // A normal browser_close uses the companion's guarded retirement and
+      // leaves its page alive when saving is refused.
+      terminateBrowserDaemon({stop:()=>host.stop(),emergencyStop:()=>host.emergencyStopOwnedProfiles(),ms:stopDeadlineMs,log}).then(code=>resolve(code))
     }
     onSignal('SIGINT', () => stop('SIGINT'))
     onSignal('SIGTERM', () => stop('SIGTERM'))

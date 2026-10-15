@@ -1,0 +1,95 @@
+{
+  "scope": "Disposable copies of exact frozen product source, never installed agent files. Harness restored green exit is0; the explicit shutdown child must exit1.",
+  "results": [
+    {
+      "name": "dirty-form",
+      "file": "lib/browser-profile-document-safety.mjs",
+      "line": 31,
+      "changedLine": "  return { ready: document.readyState === 'complete', credentials, unsaved: false }",
+      "sha256": "ffcf87ac0626603163a4e563463b3c61e1bf04a4b7f532c30cea18bb9e6091da",
+      "disposableCopy": true,
+      "red": 1,
+      "restored": 0,
+      "restoredChildExit": 0,
+      "proof": {
+        "ok": true,
+        "version": "155.0.8059.39",
+        "checks": [
+          "native_reset_select_baselines_clean",
+          "private_evaluation_while_paused",
+          "paused_race_detected_without_field_output",
+          "website_scripts_stay_paused",
+          "same_document_edit_and_timer_survive_refusal",
+          "textarea_changes_refuse",
+          "select_changes_refuse",
+          "case_insensitive_credential_tokens",
+          "form_inventory_refuses_before_reconstruction"
+        ],
+        "simulation": false,
+        "scope": "fresh sandboxed Chrome155, boolean DOM/form guard primitive, no live profile or transfer"
+      }
+    },
+    {
+      "name": "owned-group-kill",
+      "file": "lib/browser-profile-runtime.mjs",
+      "line": 245,
+      "changedLine": "      process.kill(-identity.pid,'SIGCONT');killed=true",
+      "sha256": "cbdb2a170706a36c4d900175a33b059f5f3a48581d67f775857777fdae705eea",
+      "disposableCopy": true,
+      "red": 1,
+      "restored": 0,
+      "restoredChildExit": 1,
+      "proof": {
+        "ok": true,
+        "scope": "disposable real Chrome155 shutdown; coordinator/activation/empty extras/restricted origin are fixtures",
+        "browserVersion": "155.0.8059.39",
+        "exitCode": 1,
+        "receipts": 0,
+        "checks": [
+          "native_root_pgid_equals_pid",
+          "immutable_root_start_token",
+          "normal_stop_refusal_preserves_page_edit_timer",
+          "explicit_shutdown_exits_nonzero",
+          "all_owned_group_processes_zero",
+          "no_stopped_receipt_or_failover",
+          "recovery_required_reported"
+        ],
+        "lines": [
+          "recovery_required: guarded browser save did not complete; no stopped checkpoint or failover is confirmed",
+          "owned native processes stopped; prior encrypted journal retained for explicit recovery"
+        ]
+      }
+    },
+    {
+      "name": "immutable-owned-token",
+      "file": "lib/browser-profile-runtime.mjs",
+      "line": 520,
+      "changedLine": "    const ownedStop = ownProcessStop(this.processIdentity,this.timeoutMs)",
+      "sha256": "cbdb2a170706a36c4d900175a33b059f5f3a48581d67f775857777fdae705eea",
+      "disposableCopy": true,
+      "red": 1,
+      "restored": 0,
+      "restoredChildExit": 1,
+      "proof": {
+        "ok": true,
+        "scope": "disposable real Chrome155 shutdown; coordinator/activation/empty extras/restricted origin are fixtures",
+        "browserVersion": "155.0.8059.39",
+        "exitCode": 1,
+        "receipts": 0,
+        "checks": [
+          "native_root_pgid_equals_pid",
+          "immutable_root_start_token",
+          "normal_stop_refusal_preserves_page_edit_timer",
+          "explicit_shutdown_exits_nonzero",
+          "all_owned_group_processes_zero",
+          "no_stopped_receipt_or_failover",
+          "recovery_required_reported"
+        ],
+        "lines": [
+          "recovery_required: guarded browser save did not complete; no stopped checkpoint or failover is confirmed",
+          "owned native processes stopped; prior encrypted journal retained for explicit recovery"
+        ]
+      }
+    }
+  ]
+}

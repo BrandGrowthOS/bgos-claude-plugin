@@ -355,8 +355,10 @@ test('the host opens one socket per pairing, each listing only its own agents, a
     const sockB = await relayB.waitForHost()
     assert.equal(relayA.handshakes.length, 1)
     assert.equal(relayB.handshakes.length, 1)
-    assert.deepEqual(relayA.handshakes[0].auth, { role: 'browser_host', agents: [900, 905], deviceLabel: 'kc-server' })
-    assert.deepEqual(relayB.handshakes[0].auth, { role: 'browser_host', agents: [901], deviceLabel: 'kc-server' })
+    assert.match(String(relayA.handshakes[0].auth.deviceBootId), /^[a-f0-9-]{36}$/)
+    assert.match(String(relayB.handshakes[0].auth.deviceBootId), /^[a-f0-9-]{36}$/)
+    assert.deepEqual(relayA.handshakes[0].auth, { role: 'browser_host', agents: [900, 905], deviceLabel: 'kc-server', deviceBootId: relayA.handshakes[0].auth.deviceBootId })
+    assert.deepEqual(relayB.handshakes[0].auth, { role: 'browser_host', agents: [901], deviceLabel: 'kc-server', deviceBootId: relayB.handshakes[0].auth.deviceBootId })
     assert.equal(relayA.handshakes[0].query.pairingToken, 'tokA')
     assert.equal(relayB.handshakes[0].query.pairingToken, 'tokB')
 
@@ -812,7 +814,8 @@ test(
     let bodyPassed = false
     try {
       const sock = await relay.waitForHost(30_000)
-      assert.deepEqual(relay.handshakes[0].auth, { role: 'browser_host', agents: [900], deviceLabel: relay.handshakes[0].auth.deviceLabel })
+      assert.match(String(relay.handshakes[0].auth.deviceBootId), /^[a-f0-9-]{36}$/)
+      assert.deepEqual(relay.handshakes[0].auth, { role: 'browser_host', agents: [900], deviceLabel: relay.handshakes[0].auth.deviceLabel, deviceBootId: relay.handshakes[0].auth.deviceBootId })
       assert.equal(relay.handshakes[0].query.pairingToken, 'tok-e2e')
       let id = 0
       const rpc = async (principal: string | undefined, message: Record<string, unknown>) => {

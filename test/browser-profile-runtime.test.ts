@@ -5,7 +5,7 @@ import { ProfileTargetLedger, restoreProfileEndpoint, restoreProfileEnrollment, 
 import { profileLaunchArguments } from '../lib/browser-profile-launch.mjs'
 import { createRequire } from 'node:module'
 import { readFileSync } from 'node:fs'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, sign } from 'node:crypto'
 
 const tick = () => new Promise(resolve => setImmediate(resolve))
 const emptyExtras = () => ({ passwordVault: { v: 1, entries: [], neverOrigins: [] }, preferences: { v: 1, searchEngine: 'google' } })
@@ -287,11 +287,22 @@ test('destination cookie import mismatch purges instead of issuing an inactive-s
   await assert.rejects(target.runtime.stage({ checkpoint: stopped.checkpoint, expectedContext: source.context, sourceIdentity: source.source.identity, destination: source.destination }), { reason: 'profile_runtime_cookie_import_mismatch' }); assert.equal(target.runtime.state, 'disposed'); assert.equal(target.runtime.stagedReceipt, undefined)
 })
 test('isolated document safety returns booleans only and refuses pending loads and unfinished credentials', async () => {
-  for (const [value, reason] of [[{ ready: false, credentials: false }, 'profile_document_loading'], [{ ready: true, credentials: true }, 'profile_authentication_in_progress'], [{ ready: true, credentials: false }, null]] as const) {
+  for (const [value, reason] of [[{ ready: false, credentials: false, unsaved: false }, 'profile_document_loading'], [{ ready: true, credentials: true, unsaved: false }, 'profile_authentication_in_progress'], [{ ready: true, credentials: false, unsaved: true }, 'profile_unsaved_form_state'], [{ ready: true, credentials: false, unsaved: false }, null]] as const) {
     const f = runtimeFixture(), calls: any[] = [], page = {}; f.nativeContext.pages = () => [page]; f.nativeContext.newCDPSession = async () => ({ detach: async () => calls.push('detach'), send: async (method: string, params: any) => { calls.push({ method, params }); return method === 'Page.getFrameTree' ? { frameTree: { frame: { id: 'main' } } } : method === 'Page.createIsolatedWorld' ? { executionContextId: 77 } : { result: { value } } } })
     if (reason) await assert.rejects(f.runtime._assertDocumentSafety(), { reason }); else await f.runtime._assertDocumentSafety()
     assert.equal(calls.find(value => value.method === 'Runtime.evaluate').params.contextId, 77); assert.equal(calls.at(-1), 'detach'); assert.equal(calls.find(value => value.method === 'Page.createIsolatedWorld').params.grantUniveralAccess, false)
   }
+})
+
+test('a dirty-form race after first inspection resumes the original paused source without destruction or receipt',async()=>{
+  const f=runtimeFixture();await f.runtime.activate({});f.calls.length=0;let inspections=0
+  f.runtime._assertDocumentSafety=async()=>{if(++inspections===2){assert.equal(f.ledger.frozen,true);throw Object.assign(Error('dirty form'),{reason:'profile_unsaved_form_state'})}}
+  await assert.rejects(f.finalize(),{reason:'profile_unsaved_form_state'});assert.equal(inspections,2);assert.equal(f.runtime.state,'active');assert.equal(f.runtime.network,'active');assert.equal(f.ledger.frozen,false);assert.equal(f.runtime.browser.isConnected(),true);assert.equal(f.calls.includes('resume'),true);assert.equal(f.calls.includes('process-close'),false);assert.equal(f.calls.includes('checkpoint'),false)
+})
+
+test('mutable or injected process metadata can never create an emergency kill capability',async()=>{
+  const f=runtimeFixture();f.runtime.processIdentity={pid:process.pid,started:'untrusted-constructor'}
+  await assert.rejects(f.runtime.emergencyStopOwnedProcess(),{reason:'profile_owned_process_proof_required'});assert.equal(f.runtime.state,'new');assert.equal(f.runtime.browser.isConnected(),true)
 })
 test('dispose zeroes the owned key even when browser shutdown fails', async () => {
   const f = runtimeFixture(), owned = Buffer.alloc(32, 7); f.runtime.contentKeyEpoch = { epoch: 1, key: owned }; f.runtime.browser.close = async () => { throw new Error('shutdown failed') }
@@ -366,4 +377,48 @@ test('false and asynchronous activation assertions never enable native networkin
   for (const assertCurrent of [() => false, () => Promise.resolve(true), () => Promise.reject(new Error('synthetic-secret'))]) {
     const f = runtimeFixture({ authorizeActivation: async ({ authority }: any) => ({ authority, assertCurrent }) }); await assert.rejects(f.runtime.activate({})); assert.equal(f.runtime.network, 'blocked'); assert.equal(f.calls.includes('offline:false'), false)
   }
+})
+
+function agentStageFixture() {
+  const require = createRequire(import.meta.url), { canonical } = require('../lib/browser-profile-core/coordinator-client.js')
+  const portable = require('../lib/browser-profile-core/portable-state.js'), { createAgentStoppedHeadStageAuthorization } = require('../lib/browser-profile-core/stopped-head-stage.js')
+  const endpoint = profileCrypto.createEndpointIdentity(randomUUID()), pin = profileCrypto.identityFingerprint(endpoint.identity), profileId = randomUUID()
+  const originalSource = { endpointId: endpoint.identity.endpointId, bootId: 'old-boot', runtimeId: 'old-runtime', sessionId: 'old-session', writerEpoch: 3 }
+  const destination = { endpointId: endpoint.identity.endpointId, bootId: 'prepared-boot', runtimeId: 'prepared-runtime', sessionId: 'prepared-session', grantVersion: 2, keyFingerprint: pin }
+  const context = { version: 1, schemaVersion: 1, profileId, actingUserId: 'recipient', assistantId: 7, transitionId: randomUUID(), revision: 1, previousManifestHash: null, keyEpoch: 1, source: originalSource, destination }
+  const key = profileCrypto.createContentKeyEpoch(1), plaintext = portable.encodePortableState({ schema: portable.SCHEMA, cookies: [], origins: [], ...emptyExtras() })
+  let checkpoint
+  try { checkpoint = profileCrypto.sealCheckpoint({ plaintext, context, source: endpoint, destinationIdentity: endpoint.identity, contentKeyEpoch: key }) }
+  finally { plaintext.fill(0); key.key.fill(0) }
+  const manifestHash = profileCrypto.manifestHash(checkpoint.manifest), target = { ...destination, bootId: 'fresh-boot', runtimeId: 'fresh-runtime', sessionId: 'fresh-session' }
+  const authority = { profileId, actingUserId: 'recipient', assistantId: 7, ...target, writerEpoch: 4, revision: 1, contentKeyEpoch: 1 }
+  const document = { version: 1, kind: 'agent-stopped-head-readdress', profileId, actingUserId: 'recipient', assistantId: 7, transitionId: randomUUID(), expectedTransitionId: context.transitionId, manifestHash, expectedRevision: 1, expectedWriterEpoch: 3, expectedKeyEpoch: 1, destination: target }
+  const retirement = { version: 1, kind: 'agent-runtime-retire', profileId, authority: { profileId, actingUserId: 'recipient', assistantId: 7, ...originalSource, revision: 0, contentKeyEpoch: 1, grantVersion: 2, keyFingerprint: pin }, transitionId: context.transitionId, manifestHash, revision: 1, destination }
+  const response = { profile: { id: profileId, actingUserId: 'recipient', assistantId: 7, writerState: 'stopped', ...originalSource, revision: 1, contentKeyEpoch: 1, headManifestHash: manifestHash }, transition: { id: document.transitionId, profileId, kind: 'stopped_head_readdress', phase: 'checkpoint_committed', capsuleTransitionId: context.transitionId, supersedesTransitionId: context.transitionId, supersededByTransitionId: null, source: originalSource, destination: target, sourceRevision: 0, sourceManifestHash: null, contentKeyEpoch: 1, manifestHash }, originalContext: context, agentRetirement: { document: retirement, signature: sign(null, canonical(retirement), endpoint.signingPrivateKey).toString('base64url') } }
+  let current = true
+  const options = { authority, document, signature: sign(null, canonical(document), endpoint.signingPrivateKey).toString('base64url'), response, checkpoint, sourceIdentity: endpoint.identity, destination: endpoint, assertCurrent: () => current }
+  const f = runtimeFixture(); f.runtime.authority = Object.freeze(authority)
+  return { ...f, authority, checkpoint, context, endpoint, response, document, options, revoke: () => { current = false }, authorization: () => createAgentStoppedHeadStageAuthorization(options),
+    input: { checkpoint, originalContext: context, sourceIdentity: endpoint.identity, destination: endpoint } }
+}
+test('separate stopped-head import requires a real one-use agent capability and leaves generic stage exact', async () => {
+  const f = agentStageFixture()
+  await assert.rejects(f.runtime.stage({ checkpoint: f.checkpoint, expectedContext: f.context, sourceIdentity: f.endpoint.identity, destination: f.endpoint }), { reason: 'profile_runtime_context_mismatch' })
+  await assert.rejects(f.runtime.stageStoppedHead({ ...f.input, authorization: { kind: 'stopped-head-readdress-stage' } }), { code: 'profile_stopped_head_stage_refused' })
+  const authorization = f.authorization(), staged = await f.runtime.stageStoppedHead({ ...f.input, authorization })
+  assert.equal(f.runtime.state, 'staged'); assert.equal(f.runtime.network, 'blocked'); assert.equal(f.calls.includes('offline:false'), false)
+  assert.equal(staged.receipt.transitionId, f.document.transitionId); assert.notEqual(staged.receipt.transitionId, f.checkpoint.manifest.transitionId)
+  assert.deepEqual(staged.readdress.agentRetirement, f.response.agentRetirement); assert.deepEqual(f.checkpoint.manifest.destination, f.context.destination)
+  await assert.rejects(f.runtime.stageStoppedHead({ ...f.input, authorization }), { code: 'profile_stopped_head_stage_refused' }); await f.runtime.dispose()
+})
+test('stopped-head cached revocation during inactive import disposes plaintext state before any staged receipt', async () => {
+  const f = agentStageFixture(), authorization = f.authorization()
+  f.nativeContext.newCDPSession = async () => { f.revoke(); return { send: async () => ({ cookies: [] }) } }
+  await assert.rejects(f.runtime.stageStoppedHead({ ...f.input, authorization }), { code: 'profile_stopped_head_stage_refused' })
+  assert.equal(f.runtime.state, 'disposed'); assert.equal(f.runtime.network, 'blocked'); assert.equal(f.runtime.stagedExtras, null); assert.equal(f.calls.includes('offline:false'), false)
+})
+test('stopped-head import cannot replace the admitted exact new process authority', async () => {
+  const f = agentStageFixture(), authorization = f.authorization(); f.runtime.authority = Object.freeze({ ...f.authority, sessionId: 'wrong-session' })
+  await assert.rejects(f.runtime.stageStoppedHead({ ...f.input, authorization }), { code: 'profile_stopped_head_stage_refused' })
+  assert.equal(f.calls.includes('offline:true'), false); await f.runtime.dispose()
 })

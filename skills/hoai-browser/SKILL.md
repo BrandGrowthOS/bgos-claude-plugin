@@ -9,6 +9,20 @@ When HOAI reports a managed browser profile, the shipped launcher resolves that 
 
 A fresh agent installation ships the browser runtime, paired protocol and setup instructions. It does not silently enroll a machine, approve a device key or grant background access. Until the person reviews that machine's identity and explicitly permits background use, report `setup_required` and direct them to Browser in HOAI. Agent-machine profile key storage requires an available persistent OS secret service on supported Linux. A locked or missing provider is a setup or unlock requirement; never save endpoint keys, profile keys or passwords in plaintext as a workaround. Product support for moving a particular browser state must be qualified; a successful disposable-site test does not establish support for every website, active connection or unfinished sign-in.
 
+For managed profiles, the shipped companion starts with the daemon's browser host. It observes only a person's explicit device setup request. That person's public endpoint candidate is distinct from every other recipient's, including recipients of a shared agent. The person compares the full public fingerprint in HOAI, accepts that exact key and separately grants background use. A new browser stays blocked until a separate exact session request is confirmed in HOAI. Background consent does not authorize site actions, credentials, payments or downloads. A recipient permission that is unavailable must refuse the action, never ask the original sharer on the recipient's behalf.
+
+The managed companion uses the plugin's pinned, sandboxed Chromium by default. An explicit `HOAI_BROWSER_EXECUTABLE` override still has to pass the exact native browser qualification. Unsupported versions refuse profile movement. Movement refuses populated password or security-code fields, changed form fields, outstanding or uncertain network operations, and WebSocket, WebTransport or RTC history that cannot be safely moved. These checks are not a generic inventory of application memory or every unfinished OAuth flow. Finish sign-in in its current browser instead of bypassing a refusal or moving a pending login.
+
+Before moving a person's desktop checkpoint to the agent machine, the machine operator must independently compare and review the desktop's full source fingerprint. HOAI exports public review JSON. The operator runs the shipped command only after that comparison:
+
+```bash
+node bin/hoai-browser-host.mjs --review-profile-peer /absolute/path/public-peer-review.json --confirm-fingerprint <full-64-character-fingerprint>
+```
+
+This is a human setup decision, not an agent tool or an instruction to approve a key found on a website. Do not run it autonomously or substitute a fingerprint from relay metadata. Missing, stale or changed own enrollment and source pins refuse. Review data contains public keys only. Browser traffic and encrypted state continue through HOAI; this command opens no direct peer connection. See [companion setup](../../docs/browser-profile-companion.md) and [Linux encrypted login storage](../../docs/browser-profile-portable-extras.md).
+
+Managed profile cookies, saved logins and search preference use the approved profile's OS-protected encrypted state, separate from the legacy passphrase vault below. A successful normal stop proves native shutdown and local encrypted journal readback before committing to HOAI. Unknown writes are not replayed. A fresh process can restore its own verified committed stopped checkpoint only after current pairing, share, grant and key checks, a new process tuple, inactive staging and the server's new writer epoch. It never resumes an old active boot. A network status failure pauses new agent actions and reports unknown while retaining the live page. A verified revocation stops the local runtime. Neither condition invents a saved checkpoint or authorizes failover.
+
 For missing Linux libraries, inspect dependencies from the installed plugin directory with the pinned CLI:
 
 ```bash
@@ -33,7 +47,7 @@ An owner click inside the browser pane takes control. Pointer movement, keys, sc
 
 On the agent machine, a running browser action finishes once before owner input starts. A new request refused with `owner_control` did not start and can be retried once control returns. Check `hoai_browser_status` before retrying. Do not replay any action reported as interrupted after dispatch or with an unknown outcome; inspect the page first to avoid repeating a submission or other side effect.
 
-Every new browser starts with login storage locked and a nonpersistent browsing context. This agent and each person it acts for have separate encrypted storage. Browsing while locked is discarded when the browser closes. Site permission grants are separate from login storage consent.
+The following passphrase and pane-specific instructions apply to legacy browser sessions, not the managed OS-protected profile described above. Every new legacy browser starts with login storage locked and a nonpersistent browsing context. This agent and each person it acts for have separate encrypted storage. Browsing while locked is discarded when the browser closes. Site permission grants are separate from login storage consent.
 
 For sign-in, tell the owner to open **Logins** in the browser pane. Only the owner can enter the vault passphrase in trusted HOAI UI. Never request passwords, passphrases, codes, cookies or login tokens in chat, tool arguments or agent instructions. Do not put them in scripts, files, environment variables or logs.
 

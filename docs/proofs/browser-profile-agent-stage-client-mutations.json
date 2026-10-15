@@ -1,0 +1,182 @@
+[
+  {
+    "name": "client-pairing-only",
+    "file": "lib\\browser-profile-companion-client.mjs",
+    "line": 85,
+    "changedLine": "        const response = await this.fetchImpl(new URL('/api/v1/browser/profile-sync/' + route, this.origin).href, { method: 'POST', headers: { 'Authorization': token, Accept: 'application/json', 'Accept-Encoding': 'identity', 'Content-Type': 'application/json' }, body: bytes, credentials: 'omit', redirect: 'error', cache: 'no-store', signal: controller.signal })",
+    "red": 1,
+    "restored": 0,
+    "exactRestore": true,
+    "sha256": "7f5ea2caf8984e2ae72b35c1da2fec03b70e2a91fb121f44113f2abba11141eb"
+  },
+  {
+    "name": "client-no-ambient-credentials",
+    "file": "lib\\browser-profile-companion-client.mjs",
+    "line": 85,
+    "changedLine": "        const response = await this.fetchImpl(new URL('/api/v1/browser/profile-sync/' + route, this.origin).href, { method: 'POST', headers: { 'X-BGOS-Pairing': token, Accept: 'application/json', 'Accept-Encoding': 'identity', 'Content-Type': 'application/json' }, body: bytes, credentials: 'include', redirect: 'error', cache: 'no-store', signal: controller.signal })",
+    "red": 1,
+    "restored": 0,
+    "exactRestore": true,
+    "sha256": "7f5ea2caf8984e2ae72b35c1da2fec03b70e2a91fb121f44113f2abba11141eb"
+  },
+  {
+    "name": "client-physical-budget",
+    "file": "lib\\browser-profile-companion-client.mjs",
+    "line": 73,
+    "changedLine": "    if (false) throw fail('profile_companion_request_busy')",
+    "red": 1,
+    "restored": 0,
+    "exactRestore": true,
+    "sha256": "7f5ea2caf8984e2ae72b35c1da2fec03b70e2a91fb121f44113f2abba11141eb"
+  },
+  {
+    "name": "client-recipient-discovery",
+    "file": "lib\\browser-profile-companion-client.mjs",
+    "line": 145,
+    "changedLine": "      if (profile?.id !== scope.profileId || false || profile.assistantId !== scope.assistantId || !['idle', 'active', 'quiescing', 'stopped', 'staged', 'fenced'].includes(profile.writerState) || !Number.isSafeInteger(profile.writerEpoch) || profile.writerEpoch < 0 || !Number.isSafeInteger(profile.revision) || profile.revision < 0 || !Number.isSafeInteger(profile.contentKeyEpoch) || profile.contentKeyEpoch < 1 || !(profile.revision === 0 ? profile.headManifestHash === null : HASH.test(profile.headManifestHash))) throw fail('profile_companion_scope_invalid')",
+    "red": 1,
+    "restored": 0,
+    "exactRestore": true,
+    "sha256": "7f5ea2caf8984e2ae72b35c1da2fec03b70e2a91fb121f44113f2abba11141eb"
+  },
+  {
+    "name": "client-recipient-readiness",
+    "file": "lib\\browser-profile-companion-client.mjs",
+    "line": 34,
+    "changedLine": "      raw.profileId !== scope.profileId || false || raw.assistantId !== scope.assistantId || raw.endpointId !== scope.endpointId || raw.keyFingerprint !== scope.keyFingerprint || raw.endpointOwnerUserId !== scope.ownerUserId || raw.pairingId !== scope.pairingId ||",
+    "red": 1,
+    "restored": 0,
+    "exactRestore": true,
+    "sha256": "7f5ea2caf8984e2ae72b35c1da2fec03b70e2a91fb121f44113f2abba11141eb"
+  },
+  {
+    "name": "client-ready-signature",
+    "file": "lib\\browser-profile-companion-client.mjs",
+    "line": 48,
+    "changedLine": "    if (!equal(document,{...request,kind:'agent-runtime-ready',...process}) || false ||",
+    "red": 1,
+    "restored": 0,
+    "exactRestore": true,
+    "sha256": "7f5ea2caf8984e2ae72b35c1da2fec03b70e2a91fb121f44113f2abba11141eb"
+  },
+  {
+    "name": "client-start-signature",
+    "file": "lib\\browser-profile-companion-client.mjs",
+    "line": 49,
+    "changedLine": "        false ||",
+    "red": 1,
+    "restored": 0,
+    "exactRestore": true,
+    "sha256": "7f5ea2caf8984e2ae72b35c1da2fec03b70e2a91fb121f44113f2abba11141eb"
+  },
+  {
+    "name": "client-confirmed-authority",
+    "file": "lib\\browser-profile-companion-client.mjs",
+    "line": 57,
+    "changedLine": "      if (false) throw fail('profile_companion_readiness_invalid')",
+    "red": 1,
+    "restored": 0,
+    "exactRestore": true,
+    "sha256": "7f5ea2caf8984e2ae72b35c1da2fec03b70e2a91fb121f44113f2abba11141eb"
+  },
+  {
+    "name": "client-read-query-echo",
+    "file": "lib\\browser-profile-companion-client.mjs",
+    "line": 176,
+    "changedLine": "    if(false||query.expiresAt<=Date.now())throw fail('profile_companion_readiness_invalid')",
+    "red": 1,
+    "restored": 0,
+    "exactRestore": true,
+    "sha256": "7f5ea2caf8984e2ae72b35c1da2fec03b70e2a91fb121f44113f2abba11141eb"
+  },
+  {
+    "name": "client-receive-no-start",
+    "file": "lib\\browser-profile-companion-client.mjs",
+    "line": 166,
+    "changedLine": "    const document={...request,kind:'agent-runtime-ready',...process},body={...process,signature:signature(endpoint,document),...({startSignature:signature(endpoint,startDocument(request,process))})}",
+    "red": 1,
+    "restored": 0,
+    "exactRestore": true,
+    "sha256": "7f5ea2caf8984e2ae72b35c1da2fec03b70e2a91fb121f44113f2abba11141eb"
+  },
+  {
+    "name": "client-staged-signature",
+    "file": "lib\\browser-profile-companion-client.mjs",
+    "line": 191,
+    "changedLine": "    if(staged.receipt?.transitionId!==transitionId||staged.receipt.profileId!==scope.profileId||false)throw fail('profile_companion_scope_invalid')",
+    "red": 1,
+    "restored": 0,
+    "exactRestore": true,
+    "sha256": "7f5ea2caf8984e2ae72b35c1da2fec03b70e2a91fb121f44113f2abba11141eb"
+  },
+  {
+    "name": "client-rejected-thenable-observed",
+    "file": "lib\\browser-profile-companion-client.mjs",
+    "line": 19,
+    "changedLine": "const current = callback => { let value; try { value = callback() } catch { throw fail('profile_companion_context_changed') }; if (value?.then) { void value; throw fail('profile_companion_context_changed') }; if (value === false) throw fail('profile_companion_context_changed') }",
+    "red": 1,
+    "restored": 0,
+    "exactRestore": true,
+    "sha256": "7f5ea2caf8984e2ae72b35c1da2fec03b70e2a91fb121f44113f2abba11141eb"
+  },
+  {
+    "name": "runtime-generic-destination",
+    "file": "lib\\browser-profile-runtime.mjs",
+    "line": 443,
+    "changedLine": "    void expectedContext",
+    "red": 1,
+    "restored": 0,
+    "exactRestore": true,
+    "sha256": "8a52419146d0736846be915b6794f16f6f04e70227304f1bb2eaa433f756f90b"
+  },
+  {
+    "name": "runtime-real-stage-brand",
+    "file": "lib\\browser-profile-runtime.mjs",
+    "line": 447,
+    "changedLine": "    const proof = ({ transitionId: originalContext.transitionId, binding: null, assertCurrent() {} })",
+    "red": 1,
+    "restored": 0,
+    "exactRestore": true,
+    "sha256": "8a52419146d0736846be915b6794f16f6f04e70227304f1bb2eaa433f756f90b"
+  },
+  {
+    "name": "runtime-new-receipt-transition",
+    "file": "lib\\browser-profile-runtime.mjs",
+    "line": 464,
+    "changedLine": "      const receipt = { version: 1, kind: 'destination-staged', profileId: expectedContext.profileId, transitionId: expectedContext.transitionId, manifestHash: profileCrypto.manifestHash(checkpoint.manifest), revision: expectedContext.revision, destination: destinationOf(this.authority), stagedInactive: true }",
+    "red": 1,
+    "restored": 0,
+    "exactRestore": true,
+    "sha256": "8a52419146d0736846be915b6794f16f6f04e70227304f1bb2eaa433f756f90b"
+  },
+  {
+    "name": "runtime-stage-cached-rechecks",
+    "file": "lib\\browser-profile-runtime.mjs",
+    "line": 452,
+    "changedLine": "    syncCall(stageCheck, undefined); const token = this._admit(['new']), current = () => { this._current(token) }; let opened",
+    "red": 1,
+    "restored": 0,
+    "exactRestore": true,
+    "sha256": "8a52419146d0736846be915b6794f16f6f04e70227304f1bb2eaa433f756f90b"
+  },
+  {
+    "name": "runtime-retirement-journal-link",
+    "file": "lib\\browser-profile-runtime.mjs",
+    "line": 467,
+    "changedLine": "      return { receipt, signature: sign(null, Buffer.from(canonical(receipt)), destination.signingPrivateKey).toString('base64url'), ...({}) }",
+    "red": 1,
+    "restored": 0,
+    "exactRestore": true,
+    "sha256": "8a52419146d0736846be915b6794f16f6f04e70227304f1bb2eaa433f756f90b"
+  },
+  {
+    "name": "runtime-failed-stage-disposal",
+    "file": "lib\\browser-profile-runtime.mjs",
+    "line": 468,
+    "changedLine": "    } catch (error) { throw error } finally { opened?.plaintext.fill(0); opened?.contentKeyEpoch.key.fill(0); if (this.operation === token) this.operation = null }",
+    "red": 1,
+    "restored": 0,
+    "exactRestore": true,
+    "sha256": "8a52419146d0736846be915b6794f16f6f04e70227304f1bb2eaa433f756f90b"
+  }
+]
