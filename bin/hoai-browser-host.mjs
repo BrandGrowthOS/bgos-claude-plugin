@@ -1115,6 +1115,12 @@ export class PlaywrightEngine {
   }
 }
 
+/** Shared by the daemon factory and the bounded native download probe. */
+export async function createManagedProfileEngine({ runtime, directory, onDownload, log = /** @type {(line:string)=>void} */ (() => {}) }) {
+  ensurePrivateDir(directory)
+  return new PlaywrightEngine({ endpoint: null, managedRuntime: runtime, caps: DEFAULT_CAPS, outputDir: directory, onDownload, clientName: 'hoai-profile-companion', clientVersion: readPackageVersion(), log }).start()
+}
+
 function waitForExit(child, ms) {
   if (!child || child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true)
   return new Promise((resolve) => {
@@ -2655,7 +2661,7 @@ export async function main({
   const createProfileCompanion = (connection, legacyHost) => new AgentBrowserProfileCompanion({ connection, agentRoot, environment: env, deviceLabel, log,
     assertNoLegacyActive: scope => !legacyHost.pool.peek({ assistantId: scope.assistantId, principal: `user-${scope.actingUserId}` }),
     loadBrowser: async () => ({ chromium: loadPlaywright().chromium, executable: await ensureBrowser({ findInstalled: () => env.HOAI_BROWSER_EXECUTABLE ? resolveChromeExecutable({ env }) : { path: null }, env, log }) }),
-    createEngine: async ({ runtime, directory }) => { ensurePrivateDir(directory); return new PlaywrightEngine({ endpoint: null, managedRuntime: runtime, caps: DEFAULT_CAPS, outputDir: directory, clientName: 'hoai-profile-companion', clientVersion: readPackageVersion(), log }).start() },
+    createEngine: input => createManagedProfileEngine({ ...input, log }),
     createRelay: core => new RelaySessions({ core, serverInfo: { name: 'hoai-profile-companion', version: readPackageVersion() }, instructions: hostInstructions(deviceLabel), log }),
   })
   const host = new BrowserHost({ agentRoot, env, deviceLabel, browserTools: loadBrowserTools, createEngine, createProfileCompanion, log, scope }).start()
