@@ -842,7 +842,8 @@ test(
       const init = await rpc('user-user_2Alice', { jsonrpc: '2.0', id: ++id, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'hoai-browser-mcp', version: '0.44.0' } } })
       assert.equal(init.result.serverInfo.name, 'hoai-agent-browser')
       const list = await rpc('user-user_2Alice', { jsonrpc: '2.0', id: ++id, method: 'tools/list' })
-      assert.equal(list.result.tools.length, 28, 'the desktop roster: 4 session tools and 24 browser_ tools')
+      assert.equal(list.result.tools.length, 29, 'the pinned roster: 4 session tools and 25 browser_ tools')
+      assert.equal(list.result.tools.some((entry: { name: string }) => entry.name === 'browser_emulate_media'), true)
 
       // THE PERMISSION GATE, END TO END, on the real host process.
       //

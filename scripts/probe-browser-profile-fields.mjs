@@ -11,7 +11,7 @@ const {chromium}=require('playwright-core'),{tools}=require('playwright-core/lib
 const {profileLaunchArguments}=await import('../lib/browser-profile-launch.mjs')
 const {ensureBrowser}=await import('../lib/browser-bootstrap.mjs')
 const bundle=require.resolve('playwright-core/lib/coreBundle'),bundleHash=crypto.createHash('sha256').update(fs.readFileSync(bundle)).digest('hex')
-assert.equal(bundleHash,'549070af3acabb3efcc4f55bfe6210f9f7c2fcf633cf7eaa59bfe60719969171')
+assert.equal(bundleHash,'829521b67ed7be90c7d6d6098ff39f2241562d47e4ad7ccab13710924a56001d')
 const canary='FIELD_CANARY_PRIVATE_TEXT_ONLY',results=[],tickets=new Map()
 let browser,backend,website,browserPid,selected,fieldHelper,epoch=0,authorized=true,phase='launch'
 const fail=code=>Object.assign(Error(code),{code})
@@ -36,9 +36,9 @@ async function reset(){authorized=true;await selected.goto(website.origin);await
 async function record(name,callback){phase=name;await reset();await callback();results.push({case:name,passed:true})}
 try{
   website=http.createServer((_req,res)=>{res.setHeader('Content-Type','text/html');res.end(fixedHTML)});await new Promise(resolve=>website.listen(0,'127.0.0.1',resolve));website.origin='http://127.0.0.1:'+website.address().port
-  browser=await chromium.launch({headless:true,chromiumSandbox:true,executablePath:await ensureBrowser({findInstalled:()=>({path:null})}),...profileLaunchArguments()});const actualVersion=browser.version();assert.equal(actualVersion,'153.0.8010.12');assert.equal(process.getuid(),1000);const root=await browser.newBrowserCDPSession();browserPid=(await root.send('SystemInfo.getProcessInfo')).processInfo.find(row=>row.type==='browser').id
+  browser=await chromium.launch({headless:true,chromiumSandbox:true,executablePath:await ensureBrowser({findInstalled:()=>({path:null})}),...profileLaunchArguments()});const actualVersion=browser.version();assert.equal(actualVersion,'156.0.8078.4');assert.equal(process.getuid(),1000);const root=await browser.newBrowserCDPSession();browserPid=(await root.send('SystemInfo.getProcessInfo')).processInfo.find(row=>row.type==='browser').id
   const context=await browser.newContext({serviceWorkers:'block',acceptDownloads:false});selected=await context.newPage();selected.on('framenavigated',()=>epoch++)
-  const config=await tools.resolveCLIConfigForMCP({caps:'core-input',imageResponses:'omit',outputDir:'/tmp/field-utility-output'},{});config.saveSession=false
+  const config=await tools.resolveCLIConfigForMCP({webmcp:false,caps:'core-input',imageResponses:'omit',outputDir:'/tmp/field-utility-output'},{});config.saveSession=false
   backend=new tools.BrowserBackend(config,context,tools.filteredTools(config));await backend.initialize({cwd:'/tmp',name:'isolated-field-proof',version:'1'});await backend._context.ensureBrowserContext();await backend._context.selectTab(0)
   fieldHelper=new AgentProfileFieldInput({engine:{_backend:backend,selectedPage:()=>selected},runtime:{},assertCurrent:()=>{if(!authorized)throw fail('synthetic_authority_revoked')}})
   await record('normal input and textarea through actual snapshot refs and isolated exact handles',async()=>{const token=await capture(['Title','Notes']);assert.deepEqual(await apply(token,[canary,'SYNTHETIC_NOTES']),{state:'applied',fields:2});assert.equal(await nativeValue('title',canary),true);assert.equal(await nativeValue('notes','SYNTHETIC_NOTES'),true);assert.deepEqual(await apply(token,['REPLAY','REPLAY']),{state:'refused',reason:'one_use'});assert.equal(await nativeValue('title',canary),true)})

@@ -43,10 +43,12 @@ test('exact native version and empty exclusive Browser are required before obser
   const f = fixture(t); for(const browserVersion of ['155.0.8059.40','153.0.8010.13','154.0.0.0'])await assert.rejects(f.create({ browserVersion }), /version_unqualified/); assert.equal(f.nativeContexts.length, 0)
   await f.browser.newContext(); await assert.rejects(f.create(), /exclusive_browser_required/); assert.equal(f.nativeContexts.length, 1)
 })
-test('bundled153 and explicit155 each require their exact observed native version',async t=>{
+test('only the qualified bundled156 is accepted and stale or mismatched native versions refuse',async t=>{
   assert.equal(Object.isFrozen(RTC_BROWSER_VERSIONS),true)
-  for(const version of ['153.0.8010.12',RTC_BROWSER_VERSION]){const f=fixture(t,{version}),observer=await f.create(),scope=await f.bind(observer);assert.throws(()=>observer.assertQualified({...scope,browserVersion:version==='153.0.8010.12'?'155.0.8059.39':'153.0.8010.12'}),/scope_unqualified/);assert.equal(await observer.confirmStopped({...scope,assertPhysicalZero:async()=>true}),true)}
-  const f=fixture(t,{version:'153.0.8010.12'});await assert.rejects(f.create({browserVersion:'155.0.8059.39'}),/exclusive_browser_required/);assert.equal(f.nativeContexts.length,0)
+  assert.deepEqual(RTC_BROWSER_VERSIONS,['156.0.8078.4'])
+  const f=fixture(t),observer=await f.create(),scope=await f.bind(observer);assert.throws(()=>observer.assertQualified({...scope,browserVersion:'156.0.8078.5'}),/scope_unqualified/);assert.equal(await observer.confirmStopped({...scope,assertPhysicalZero:async()=>true}),true)
+  for(const version of ['153.0.8010.12','155.0.8059.39','156.0.8078.5']){const stale=fixture(t,{version});await assert.rejects(stale.create(),/native_version_unqualified/);assert.equal(stale.nativeContexts.length,0)}
+  const mismatch=fixture(t,{version:'153.0.8010.12'});await assert.rejects(mismatch.create({browserVersion:RTC_BROWSER_VERSION}),/exclusive_browser_required/);assert.equal(mismatch.nativeContexts.length,0)
 })
 test('startup native marker derives only private rid and permits clean exact owned context qualification', async t => {
   const f = fixture(t), observer = await f.create(), scope = await f.bind(observer); assert.equal(observer.kind, 'qualified-chromium-native-observer-v1'); assert.equal(observer.assertQualified(scope), true)

@@ -250,7 +250,9 @@ invalid value is ignored, with a warning.
 
 ### Agent browser and saved logins (0.60.5)
 
-The paired daemon starts its browser host automatically. On the first browser task, HOAI uses an installed Chrome or Chromium when available. Otherwise it downloads the Chromium revision pinned by the plugin's Playwright dependency into the machine user's browser cache. The initial download needs network access and a writable cache. Later starts reuse that revision. No separate browser-host command or executable wrapper is needed.
+Use a current patched Node.js 22 or 24 LTS release. The package minimum is 22.12.0; the browser refuses an older runtime before loading Playwright, including imported managed-host paths. The minimum is a compatibility floor, not a recommendation to install an old Node patch.
+
+The paired daemon starts its browser host automatically. Managed agent-machine profiles use the exact sandboxed Chromium revision pinned by the plugin's Playwright dependency. Legacy sessions prefer an installed Chrome or Chromium. When the required bundled browser is absent, the plugin downloads it into the machine user's browser cache. The initial download needs network access and a writable cache. Later starts reuse that revision. No separate browser-host command or executable wrapper is needed.
 
 Chromium keeps its normal sandbox. Linux still needs the browser's operating-system libraries and sandbox support. A missing prerequisite or failed download returns an installation error; HOAI does not install system packages or disable the sandbox. An explicitly configured `HOAI_BROWSER_EXECUTABLE` must name a working installed browser. Unset an invalid override to use automatic provisioning.
 

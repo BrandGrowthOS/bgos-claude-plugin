@@ -26,7 +26,7 @@ async function fixture(t: { after: (callback: () => unknown) => void }, options:
     async whenDrained() { calls.push({ kind: 'drain' }); if (hooks.drain) await hooks.drain() }
   }
   const runner = new AgentRuntimePermissionRunner({ client: permissionClient, now: () => state.now, delay: async (ms: number, signal: AbortSignal) => { calls.push({ kind: 'wait', ms }); if (hooks.wait) await hooks.wait(signal); state.now += ms } })
-  const engine: Row = { selectedPage: () => state.selected, roster: () => [{ name: 'browser_click', description: 'Fixture action', inputSchema: { type: 'object', additionalProperties: true } }, { name: 'browser_navigate', description: 'Fixture navigation', inputSchema: { type: 'object', additionalProperties: true } }],
+  const engine: Row = { selectedPage: () => state.selected, roster: () => [{ name: 'browser_click', description: 'Fixture action', inputSchema: { type: 'object', additionalProperties: true } }, { name: 'browser_navigate', description: 'Fixture navigation', inputSchema: { type: 'object', additionalProperties: true } }, ...(options.additionalTools ?? []).map((name: string) => ({ name, description: 'Fixture upgraded tool', inputSchema: { type: 'object', additionalProperties: true } }))],
     async callTool(name: string, args: Row, signal: AbortSignal) { signal.throwIfAborted(); calls.push({ kind: 'engine', name, args }); if (hooks.engine) return hooks.engine(name, args); return { content: [{ type: 'text', text: 'fixture action ran' }] } },
     async stop() { calls.push({ kind: 'engine-stop' }) }
   }
@@ -74,6 +74,16 @@ test('credential, type, press, evaluation, vision, unknown and policy hard deny 
   for (const [name, args] of [['browser_click', { target: 'password', element: 'Password field' }], ['browser_type', { text: 'synthetic' }], ['browser_press_key', { key: 'Enter' }], ['browser_evaluate', { function: '() => true' }], ['browser_mouse_click_xy', { x: 1, y: 1 }], ['unknown_tool', {}], ['browser_navigate', { url: 'https://paypal.com' }], ['browser_navigate', { url: 'http://10.0.0.1' }]] as [string, Row][]) {
     const f = await fixture(t); f.page.address = 'about:blank'; await f.companion._tool(f.record, name, args, new AbortController().signal)
     assert.equal(f.calls.some(row => ['request', 'engine'].includes(row.kind)), false, name)
+  }
+})
+
+test('new Playwright media and isolated-context tab actions cannot acquire a recipient permission or reach the engine', async t => {
+  for (const [name, args] of [['browser_emulate_media', { colorScheme: 'dark' }], ['browser_tabs', { action: 'new', isolatedContext: 'security-fixture' }]] as [string, Row][]) {
+    const f = await fixture(t, { additionalTools: [name] })
+    assert.equal((await f.run(name, args)).completionAccepted, true)
+    assert.equal(f.calls.some(row => ['request', 'consume', 'engine'].includes(row.kind)), false, name)
+    const payload = f.calls.find(row => row.kind === 'completion')!.payload
+    assert.equal(payload.ok, true); assert.equal(payload.message.result.isError, true)
   }
 })
 

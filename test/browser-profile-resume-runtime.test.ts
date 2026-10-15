@@ -27,7 +27,7 @@ function fixture(options: any = {}) {
     freeze: async () => { calls.push('freeze'); ledger.frozen = true; options.afterFreeze?.(); return ledger.generation }, resume: async () => { ledger.frozen = false }, dispose() {} }
   const runtime: any = new BrowserProfileRuntime({ context: nativeContext, root: { send: async () => ({ targetInfos: [] }) }, ledger, authority, timeoutMs: 30,
     browser: { close: async () => { calls.push('process-close'); connected = false; pages.length = 0 }, isConnected: () => connected }, assertProcessExited: async () => true,
-    browserVersion: '153.0.8010.12', transferQualification: { kind: 'qualified-chromium-native-observer-v1', browserVersion: '153.0.8010.12', assertQualified: () => true, confirmStopped: async () => true },
+    browserVersion: '156.0.8078.4', transferQualification: { kind: 'qualified-chromium-native-observer-v1', browserVersion: '156.0.8078.4', assertQualified: () => true, confirmStopped: async () => true },
     selectedPage: () => selected, closeAndDrain: async () => { calls.push('drain'); return { admissionClosed: true, drained: true } }, checkpoint: async (value: any) => ({ durable: true, manifestHash: profileCrypto.manifestHash(value.checkpoint.manifest) }),
     authorizeActivation: async ({ authority }: any) => ({ authority, assertCurrent() { calls.push('authority') } }),
     preflightExtras: extras, captureExtras: () => ({ bundle: extras(), assertCurrent() {}, release() {} }), commitExtras: () => ({ committed: true }), ...options.runtime })
