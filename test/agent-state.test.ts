@@ -722,7 +722,10 @@ test('win32: the ancestry is one PowerShell call that follows ParentProcessId up
   assert.deepEqual(cmd.args.slice(0, 3), ['-NoProfile', '-NonInteractive', '-Command'])
   const script = cmd.args[3]!
   assert.match(script, /^\$p = 4912;/, 'starts at this process')
-  assert.match(script, /Get-CimInstance Win32_Process -Filter \('ProcessId=' \+ \$p\)/)
+  // One query for the whole table, walked in PowerShell: a filtered query
+  // costs as much as a full one, and one per link ran past the 5 s exec cap
+  // on a busy PC (test/agent-state.ancestor-probe.test.ts).
+  assert.match(script, /Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,CreationDate,CommandLine/)
   assert.match(script, /\$p = \$x\.ParentProcessId/)
   // No double quote anywhere: Node escapes one as \" on the Windows command
   // line, which is the kind of quoting a PowerShell -Command must not depend on.
@@ -793,6 +796,6 @@ test('server.ts finds the claude ancestor through the platform aware walk', () =
   const server = readFileSync(join(root, 'server.ts'), 'utf8').replace(/\r\n/g, '\n')
   assert.match(
     server,
-    /const agentClaudePid = memoizeUntilFound\(CLAUDE_ANCESTOR_RETRY_MS, Date\.now, \(\) =>\s*findClaudeAncestor\(\{ platform: process\.platform, ownPid: process\.pid, execSync: defaultExecSync \}\),?\s*\)/,
+    /const agentClaudePid = memoizeAncestorReading\(CLAUDE_ANCESTOR_RETRY_MS, CLAUDE_ANCESTOR_UNREADABLE_RETRY_MS, Date\.now, \(\) =>\s*readClaudeAncestor\(\{ platform: process\.platform, ownPid: process\.pid, execSync: defaultExecSync \}\),?\s*\)/,
   )
 })
