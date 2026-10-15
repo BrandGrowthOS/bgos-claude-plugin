@@ -1,7 +1,7 @@
 {
   "status": "qualified scoped common runtime tests; mounted HOAI acceptance separate",
-  "productCommit": "7106437b6ed128a2fd2f9f5fd7339cd756588e1a",
-  "archiveSha256": "6755ca108336244e3fd01f5c045511c8e0b077db62dfa8720b8e1f3daba79c68",
+  "productCommit": "cb50541350dd42359411fccc118d904ab3dbfae3",
+  "archiveSha256": "70d3664a382c9d0500d46ecafb0e2e0d4e143d159de68cd3641a963e251ab545",
   "runtime": {
     "uid": 1000,
     "node": "22.23.3",
@@ -72,18 +72,18 @@
     ],
     "count": 52,
     "derivation": "Prior exact 51-file common qualification scope plus the new actual managed initialize/roster test. Explicit filenames only; no substring discovery or .tmp test copies.",
-    "note": "The selection document and execution marker both name exact commit710. The unchanged qualified unit image provides dependencies only; source executes from the new852-file tracked archive."
+    "note": "Both selection and execution marker name exactcb505. The unchanged qualified unit image supplies dependencies only; the855-file tracked archive supplies all executed source. The existing active-backup file now includes five cadence regressions."
   },
   "results": {
-    "tests": 718,
-    "passed": 718,
+    "tests": 723,
+    "passed": 723,
     "failed": 0,
     "skipped": 0,
     "typescriptExit": 0,
-    "durationSeconds": 215.46423244476318,
-    "sourceCount": 852,
+    "durationSeconds": 219.7064390182495,
+    "sourceCount": 855,
     "sourceHashesBeforeAfterMatch": true,
-    "rawGitBlobMatches": 851,
+    "rawGitBlobMatches": 854,
     "gitArchiveAttributeExceptions": [
       {
         "path": "bin/hoai.cmd",
@@ -105,64 +105,75 @@
     "The private Linux unit image supplies fixture OS prerequisites, not a clean operating-system installation",
     "No production login, real human approval, deployment or installed-user claim"
   ],
-  "rawDirectory": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-c063f35e",
+  "rawDirectory": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-d4e131bc",
   "raw": [
     {
-      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-c063f35e\\bootstrap.mjs",
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-d4e131bc\\bootstrap.mjs",
       "sha256": "384f6cacbda0bd4d215cf687225f10bdf1457532a1aa3fa08e7a833fe087c4c0"
     },
     {
-      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-c063f35e\\executed-sources.json",
-      "sha256": "a31136b7ef228c1a5dadfc7d6480eb4907a03530d2e01c623845a994f9892c1e"
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-d4e131bc\\executed-sources.json",
+      "sha256": "400d49257a783279c81302b94500b729c5ddf3b67b0c9d1d1262ca61ee7fa32f"
     },
     {
-      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-c063f35e\\mounted.tar",
-      "sha256": "2a357aa60912824798092227e006b765904862f32f906507d9f21cd40a443671"
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-d4e131bc\\mounted.tar",
+      "sha256": "f382e8c53de9e1c73e580e3483ff32621aaf3ee06468a617e9675b17cba26122"
     },
     {
-      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-c063f35e\\mounted.txt",
-      "sha256": "35efc9c67b57d0587e741a0723f9d39acb639e435efd7734d9ff92623b0d580b"
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-d4e131bc\\mounted.txt",
+      "sha256": "aac0b360c1a6a1d05acb45e95d304b26e612df850ed646edbb015f26b820200d"
     },
     {
-      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-c063f35e\\plugin.tar",
-      "sha256": "6755ca108336244e3fd01f5c045511c8e0b077db62dfa8720b8e1f3daba79c68"
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-d4e131bc\\plugin.tar",
+      "sha256": "70d3664a382c9d0500d46ecafb0e2e0d4e143d159de68cd3641a963e251ab545"
     },
     {
-      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-c063f35e\\remote.py",
-      "sha256": "9da27bd7b6916c89c1d560a6ce79a68d7b220b5f5a59a77bda78d7cafa0498cc"
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-d4e131bc\\remote.py",
+      "sha256": "ced05f2a495861bd6fe358cdf87433f36199396a78df5ba4a070cc723bcb3eab"
     },
     {
-      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-c063f35e\\root-closure.json",
-      "sha256": "66c758bf53496741af85121779b38b4710cd0b2b14f32be5e0918b4c71b0bcc2"
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-d4e131bc\\root-closure.json",
+      "sha256": "143ac0371cc796a86105975a2d3b2f61c6369491dba361762eea75fc3b961eac"
     },
     {
-      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-c063f35e\\run-input.json",
-      "sha256": "2acba928ffa1ae7f65b3c6a76949a63fe63b40cdf1b42b9fdf8b99509d328bff"
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-d4e131bc\\run-input.json",
+      "sha256": "31c5c91597cffa1beb1083c879b058daa78dc981819e3469402f1926093d5e33"
     },
     {
-      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-c063f35e\\run-qualification.mjs",
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-d4e131bc\\run-qualification.mjs",
       "sha256": "16570178a8a1bccd4bf5680fdeb50dbd3facd25ca905033785555d53f1896871"
     },
     {
-      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-c063f35e\\run-receipt.json",
-      "sha256": "37dbcba346d175e2d2bef72858dda5b9cde5e90b1c5d09785a7ba1201b50f30e"
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-d4e131bc\\run-receipt.json",
+      "sha256": "ee9fe804324fffd01dc67bf80f0b055e1e6a2cccf731c5a71af9f012e8c1dcc8"
     },
     {
-      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-c063f35e\\selected-tests.json",
-      "sha256": "f8ca93c181d903693e66a6d0f2a49dd5cca4cfadbbf211c2eefd7ed4b57d1823"
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-d4e131bc\\selected-tests.json",
+      "sha256": "49b37c90a42b1b1eb601b24ac2f6701e19ca7d3537ed00e5adeba80205b42e2d"
     },
     {
-      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-c063f35e\\transport.log",
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-d4e131bc\\transport.log",
       "sha256": "a51d7b9af122d44212fcd0d3c6cd1ebb0ad2ad362254c5ed98e7e80a96210471"
     }
   ],
-  "historicalQualification": {
-    "productCommit": "7ecc3fb4cd3f48d6586133616d4eb7236418cf00",
-    "tests": 715,
-    "selectedFiles": 51,
-    "rawDirectory": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-909592e0",
-    "runReceiptSha256": "bef6d6fb2959d907f53588f99ef4d052e216e4d22dd7c67469b94dd9738238ec",
-    "sourceCount": 846,
-    "note": "Preserved historical 7ecc qualification; not relabelled as 710."
-  }
+  "historicalQualifications": [
+    {
+      "productCommit": "7ecc3fb4cd3f48d6586133616d4eb7236418cf00",
+      "tests": 715,
+      "selectedFiles": 51,
+      "rawDirectory": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-909592e0",
+      "runReceiptSha256": "bef6d6fb2959d907f53588f99ef4d052e216e4d22dd7c67469b94dd9738238ec",
+      "sourceCount": 846,
+      "note": "Preserved historical 7ecc qualification; not relabelled as 710."
+    },
+    {
+      "productCommit": "7106437b6ed128a2fd2f9f5fd7339cd756588e1a",
+      "tests": 718,
+      "selectedFiles": 52,
+      "sourceCount": 852,
+      "rawDirectory": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-c063f35e",
+      "runReceiptSha256": "37dbcba346d175e2d2bef72858dda5b9cde5e90b1c5d09785a7ba1201b50f30e",
+      "note": "Preserved historical managed-guidance710 qualification."
+    }
+  ]
 }
