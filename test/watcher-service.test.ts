@@ -23,6 +23,7 @@ import {
   readWatcherCredentials,
   uninstallWatcherService,
   watcherCredentialsPath,
+  watcherHomeId,
   watcherServiceSpec,
   writeWatcherCredentials,
   xmlEscape,
@@ -31,6 +32,11 @@ import { memoryFs } from './helpers/memory-fs.ts'
 
 // An explicit EMPTY env: watcherServiceSpec reads process.env when none is passed, and
 // every expectation below is the un-namespaced service (HOAI_SERVICE_NAMESPACE unset).
+// Every name carries the HOME id (board row dfafdfb6): the first 8 hex chars of the SHA-256 of the
+// normalized HOME, pinned here as literals because an id that drifted between versions would orphan
+// every installed watcher under its old name. '/home/kc' -> dc88e57d, 'C:\Users\kc' (as c:\users\kc) -> 66ede649.
+const POSIX_ID = 'dc88e57d'
+const WIN_ID = '66ede649'
 const POSIX = { home: '/home/kc', nodePath: '/usr/local/bin/node', bundleDir: '/home/kc/.bgos-agent/watcher', uid: 501, username: 'kc', env: {} }
 const WIN = {
   home: 'C:\\Users\\kc',
@@ -67,6 +73,12 @@ test('watcherCredentialsPath: <watcherHome>/credentials.json', () => {
   assert.equal(watcherCredentialsPath('C:\\Users\\kc'), 'C:\\Users\\kc\\.bgos-agent\\watcher\\credentials.json')
 })
 
+test('the HOME ids these fixtures pin are the ones watcherHomeId computes', () => {
+  assert.equal(watcherHomeId('/home/kc', 'darwin'), POSIX_ID)
+  assert.equal(watcherHomeId('/home/kc', 'linux'), POSIX_ID)
+  assert.equal(watcherHomeId('C:\\Users\\kc', 'win32'), WIN_ID)
+})
+
 test('the fixtures carry an explicit empty env, so a HOAI_SERVICE_NAMESPACE exported in the shell cannot move the names these tests pin', () => {
   // watcherServiceSpec reads process.env when no env is passed (the side by side
   // install, design section 4). Every expectation in this file is the
@@ -75,9 +87,9 @@ test('the fixtures carry an explicit empty env, so a HOAI_SERVICE_NAMESPACE expo
   const before = process.env.HOAI_SERVICE_NAMESPACE
   try {
     process.env.HOAI_SERVICE_NAMESPACE = 'stage1'
-    assert.equal(watcherServiceSpec({ platform: 'darwin', ...POSIX }).label, 'ai.bgos.watcher')
-    assert.equal(watcherServiceSpec({ platform: 'linux', ...POSIX }).label, 'bgos-watcher')
-    assert.equal(watcherServiceSpec({ platform: 'win32', ...WIN }).label, 'HOAI Watcher')
+    assert.equal(watcherServiceSpec({ platform: 'darwin', ...POSIX }).label, `ai.bgos.watcher.home-${POSIX_ID}`)
+    assert.equal(watcherServiceSpec({ platform: 'linux', ...POSIX }).label, `bgos-watcher-home-${POSIX_ID}`)
+    assert.equal(watcherServiceSpec({ platform: 'win32', ...WIN }).label, `HOAI Watcher home-${WIN_ID}`)
   } finally {
     if (before === undefined) delete process.env.HOAI_SERVICE_NAMESPACE
     else process.env.HOAI_SERVICE_NAMESPACE = before
@@ -88,11 +100,13 @@ test('the fixtures carry an explicit empty env, so a HOAI_SERVICE_NAMESPACE expo
 
 test('darwin spec: launchd plist (KeepAlive, RunAtLoad, node + watcher run, logs, PATH env) and the launchctl ladder', () => {
   const spec = watcherServiceSpec({ platform: 'darwin', ...POSIX })
+  const label = `ai.bgos.watcher.home-${POSIX_ID}`
+  const plistPath = `/home/kc/Library/LaunchAgents/${label}.plist`
   assert.equal(spec.kind, 'launchd')
-  assert.equal(spec.label, 'ai.bgos.watcher')
+  assert.equal(spec.label, label)
   assert.deepEqual(spec.dirs, ['/home/kc/.bgos-agent/watcher/logs'])
   assert.equal(spec.files.length, 1)
-  assert.equal(spec.files[0]!.path, '/home/kc/Library/LaunchAgents/ai.bgos.watcher.plist')
+  assert.equal(spec.files[0]!.path, plistPath)
   assert.equal(spec.files[0]!.mode, 0o644)
   assert.equal(
     spec.files[0]!.content,
@@ -101,7 +115,7 @@ test('darwin spec: launchd plist (KeepAlive, RunAtLoad, node + watcher run, logs
       '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
       '<plist version="1.0">',
       '<dict>',
-      '  <key>Label</key><string>ai.bgos.watcher</string>',
+      `  <key>Label</key><string>${label}</string>`,
       '  <key>ProgramArguments</key>',
       '  <array>',
       '    <string>/usr/local/bin/node</string>',
@@ -128,21 +142,32 @@ test('darwin spec: launchd plist (KeepAlive, RunAtLoad, node + watcher run, logs
     ].join('\n'),
   )
   assert.deepEqual(spec.installCommands, [
-    { file: 'launchctl', args: ['bootout', 'gui/501/ai.bgos.watcher'], ignoreFailure: true },
-    { file: 'launchctl', args: ['bootstrap', 'gui/501', '/home/kc/Library/LaunchAgents/ai.bgos.watcher.plist'], ignoreFailure: false, retry: { attempts: 6, delayMs: 500 } },
+    { file: 'launchctl', args: ['bootout', `gui/501/${label}`], ignoreFailure: true },
+    { file: 'launchctl', args: ['bootstrap', 'gui/501', plistPath], ignoreFailure: false, retry: { attempts: 6, delayMs: 500 } },
   ])
   assert.deepEqual(spec.startCommands, [
-    { file: 'launchctl', args: ['kickstart', '-k', 'gui/501/ai.bgos.watcher'], ignoreFailure: false },
+    { file: 'launchctl', args: ['kickstart', '-k', `gui/501/${label}`], ignoreFailure: false },
   ])
   assert.deepEqual(spec.stopCommands, [
-    { file: 'launchctl', args: ['bootout', 'gui/501/ai.bgos.watcher'], ignoreFailure: true },
+    { file: 'launchctl', args: ['bootout', `gui/501/${label}`], ignoreFailure: true },
   ])
   assert.deepEqual(spec.uninstallCommands, [
-    { file: 'launchctl', args: ['bootout', 'gui/501/ai.bgos.watcher'], ignoreFailure: true },
+    { file: 'launchctl', args: ['bootout', `gui/501/${label}`], ignoreFailure: true },
   ])
   assert.deepEqual(spec.statusCommands, [
-    { file: 'launchctl', args: ['print', 'gui/501/ai.bgos.watcher'], ignoreFailure: true },
+    { file: 'launchctl', args: ['print', `gui/501/${label}`], ignoreFailure: true },
   ])
+  // The registration's record is read back with print, under this HOME's name and under the OLD one.
+  assert.deepEqual(spec.probeCommand, { file: 'launchctl', args: ['print', `gui/501/${label}`], ignoreFailure: true })
+  assert.deepEqual(spec.legacy, {
+    label: 'ai.bgos.watcher',
+    probeCommand: { file: 'launchctl', args: ['print', 'gui/501/ai.bgos.watcher'], ignoreFailure: true },
+    retire: { job: { file: 'launchctl', args: ['bootout', 'gui/501/ai.bgos.watcher'], ignoreFailure: false } },
+    restoreCommands: [
+      { file: 'launchctl', args: ['bootstrap', 'gui/501', '/home/kc/Library/LaunchAgents/ai.bgos.watcher.plist'], ignoreFailure: false, retry: { attempts: 6, delayMs: 500 } },
+    ],
+    files: ['/home/kc/Library/LaunchAgents/ai.bgos.watcher.plist'],
+  })
 })
 
 test('darwin spec: xml-escapes a hostile home and refuses to build without a uid', () => {
@@ -156,15 +181,16 @@ test('darwin spec: xml-escapes a hostile home and refuses to build without a uid
 
 test('linux spec: systemd --user unit (Restart=always, RestartSec=5, quoted ExecStart, PATH env) and the systemctl ladder with best-effort linger', () => {
   const spec = watcherServiceSpec({ platform: 'linux', ...POSIX })
+  const unit = `bgos-watcher-home-${POSIX_ID}`
   assert.equal(spec.kind, 'systemd')
-  assert.equal(spec.label, 'bgos-watcher')
-  assert.equal(spec.files[0]!.path, '/home/kc/.config/systemd/user/bgos-watcher.service')
+  assert.equal(spec.label, unit)
+  assert.equal(spec.files[0]!.path, `/home/kc/.config/systemd/user/${unit}.service`)
   assert.equal(spec.files[0]!.mode, 0o644)
   assert.equal(
     spec.files[0]!.content,
     [
       '[Unit]',
-      'Description=HOAI per-machine watcher (bgos-watcher)',
+      `Description=HOAI per-machine watcher (${unit})`,
       'StartLimitIntervalSec=0',
       '',
       '[Service]',
@@ -187,22 +213,36 @@ test('linux spec: systemd --user unit (Restart=always, RestartSec=5, quoted Exec
   )
   assert.deepEqual(spec.installCommands, [
     { file: 'systemctl', args: ['--user', 'daemon-reload'], ignoreFailure: false },
-    { file: 'systemctl', args: ['--user', 'enable', '--now', 'bgos-watcher'], ignoreFailure: false },
+    { file: 'systemctl', args: ['--user', 'enable', '--now', unit], ignoreFailure: false },
     { file: 'loginctl', args: ['enable-linger', 'kc'], ignoreFailure: true },
   ])
   assert.deepEqual(spec.startCommands, [
-    { file: 'systemctl', args: ['--user', 'restart', 'bgos-watcher'], ignoreFailure: false },
+    { file: 'systemctl', args: ['--user', 'restart', unit], ignoreFailure: false },
   ])
   assert.deepEqual(spec.stopCommands, [
-    { file: 'systemctl', args: ['--user', 'stop', 'bgos-watcher'], ignoreFailure: true },
+    { file: 'systemctl', args: ['--user', 'stop', unit], ignoreFailure: true },
   ])
   assert.deepEqual(spec.uninstallCommands, [
-    { file: 'systemctl', args: ['--user', 'disable', '--now', 'bgos-watcher'], ignoreFailure: true },
+    { file: 'systemctl', args: ['--user', 'disable', '--now', unit], ignoreFailure: true },
     { file: 'systemctl', args: ['--user', 'daemon-reload'], ignoreFailure: true },
   ])
   assert.deepEqual(spec.statusCommands, [
-    { file: 'systemctl', args: ['--user', 'is-active', 'bgos-watcher'], ignoreFailure: true },
+    { file: 'systemctl', args: ['--user', 'is-active', unit], ignoreFailure: true },
   ])
+  // A rename registers the new unit (enabled, not started) before the old one is disabled.
+  assert.deepEqual(spec.registerCommands, [
+    { file: 'systemctl', args: ['--user', 'daemon-reload'], ignoreFailure: false },
+    { file: 'systemctl', args: ['--user', 'enable', unit], ignoreFailure: false },
+  ])
+  const show = (name: string) => ({ file: 'systemctl', args: ['--user', 'show', '--property=LoadState,ActiveState,FragmentPath,WorkingDirectory,Environment', name], ignoreFailure: true })
+  assert.deepEqual(spec.probeCommand, show(unit))
+  assert.deepEqual(spec.legacy, {
+    label: 'bgos-watcher',
+    probeCommand: show('bgos-watcher'),
+    retire: { unit: { file: 'systemctl', args: ['--user', 'disable', '--now', 'bgos-watcher'], ignoreFailure: false } },
+    restoreCommands: [{ file: 'systemctl', args: ['--user', 'enable', '--now', 'bgos-watcher'], ignoreFailure: false }],
+    files: ['/home/kc/.config/systemd/user/bgos-watcher.service'],
+  })
 })
 
 test('linux spec: no username means no linger command (never enable-linger for an empty principal)', () => {
@@ -216,7 +256,7 @@ test('linux spec: no username means no linger command (never enable-linger for a
 test('win32 spec: run-hidden.vbs plus a generated install-task.ps1 driven through the Task Scheduler API (never schtasks /SC ONLOGON)', () => {
   const spec = watcherServiceSpec({ platform: 'win32', ...WIN })
   assert.equal(spec.kind, 'schtasks')
-  assert.equal(spec.label, 'HOAI Watcher')
+  assert.equal(spec.label, `HOAI Watcher home-${WIN_ID}`)
   assert.deepEqual(spec.dirs, ['C:\\Users\\kc\\.bgos-agent\\watcher\\logs'])
   assert.equal(spec.files.length, 2)
   assert.equal(spec.files[0]!.path, 'C:\\Users\\kc\\.bgos-agent\\watcher\\run-hidden.vbs')
@@ -225,9 +265,10 @@ test('win32 spec: run-hidden.vbs plus a generated install-task.ps1 driven throug
     spec.files[0]!.content,
     [
       "' HOAI Watcher: start the per-machine watcher with no console window.",
-      "' Generated by lib/watcher-service.mjs; the Scheduled Task 'HOAI Watcher' runs this at logon.",
+      `' Generated by lib/watcher-service.mjs; the Scheduled Task 'HOAI Watcher home-${WIN_ID}' runs this at logon.`,
       'Set shell = CreateObject("WScript.Shell")',
       'shell.CurrentDirectory = "C:\\Users\\kc\\.bgos-agent\\watcher"',
+      'shell.Environment("Process")("USERPROFILE") = "C:\\Users\\kc"',
       'shell.Run """C:\\Program Files\\nodejs\\node.exe"" ""C:\\Users\\kc\\.bgos-agent\\watcher\\bin\\hoai-watcher.mjs"" run", 0, False',
       '',
     ].join('\r\n'),
@@ -258,6 +299,26 @@ test('win32 spec: run-hidden.vbs plus a generated install-task.ps1 driven throug
   assert.deepEqual(spec.stopCommands, [ps('stop', true)])
   assert.deepEqual(spec.uninstallCommands, [ps('uninstall', true)])
   assert.deepEqual(spec.statusCommands, [ps('status', true)])
+  // The record is read back through the same script, under this HOME's name and under the OLD one;
+  // the OLD registration is retired only by its own actions, which fail loudly.
+  assert.deepEqual(spec.probeCommand, ps('probe', true))
+  assert.deepEqual(spec.legacy, {
+    label: 'HOAI Watcher',
+    runValue: 'HOAIWatcher',
+    probeCommand: ps('probe-legacy', true),
+    retire: { task: ps('retire-legacy-task', false), run: ps('retire-legacy-run', false) },
+    restoreCommands: [],
+    files: [],
+  })
+  assert.ok(script.content.includes(`$name = 'HOAI Watcher home-${WIN_ID}'`))
+  assert.ok(script.content.includes("$legacyName = 'HOAI Watcher'"))
+  assert.ok(script.content.includes(`$runValue = 'HOAIWatcher-home-${WIN_ID}'`))
+  assert.ok(script.content.includes("$legacyRunValue = 'HOAIWatcher'"))
+  // The probe prints every recorded text as base64 UTF-8 (a non-ASCII HOME survives the console code page).
+  assert.ok(script.content.includes('[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($text))'))
+  // Retiring touches ONLY the old name, and says so when it fails.
+  assert.match(script.content, /"retire-legacy-task" \{\r\n {4}try \{ Unregister-ScheduledTask -TaskPath '\\' -TaskName \$legacyName -Confirm:\$false -ErrorAction Stop;/)
+  assert.match(script.content, /"retire-legacy-run" \{\r\n {4}try \{ Remove-ItemProperty -Path \$runKey -Name \$legacyRunValue -ErrorAction Stop;/)
 })
 
 test('win32 spec: a double quote inside a path is refused (it would break the vbs string and the /TR line)', () => {
@@ -342,27 +403,36 @@ test('service PATH: the dirs where node, bun, claude, tmux, expect and git were 
 
 // -- installWatcherService --------------------------------------------------------------------
 
-test('installWatcherService (darwin): mkdirs logs, writes the plist, runs bootout (rc ignored) then bootstrap then kickstart, in order', async () => {
+const NOT_LOADED = { code: 113, stderr: 'Could not find service in domain for user gui: 501' }
+
+test('installWatcherService (darwin): mkdirs logs, reads back both names (print), writes the plist, runs bootout (rc ignored) then bootstrap then kickstart, in order', async () => {
   const spec = watcherServiceSpec({ platform: 'darwin', ...POSIX })
+  const label = `ai.bgos.watcher.home-${POSIX_ID}`
   const fs = memoryFs()
-  const { calls, exec } = recordingExec({ 'launchctl bootout': { code: 3, stderr: 'Boot-out failed: 3: No such process' } })
+  const { calls, exec } = recordingExec({ 'launchctl bootout': { code: 3, stderr: 'Boot-out failed: 3: No such process' }, 'launchctl print': NOT_LOADED })
   const result = await installWatcherService(spec, { exec, fs })
   assert.equal(result.ok, true, result.message)
   assert.equal(result.message, 'installed')
+  assert.deepEqual(result.legacy, { label: 'ai.bgos.watcher', state: 'absent', home: null })
+  assert.deepEqual(result.notes, [])
   assert.equal(fs.dirs.has('/home/kc/.bgos-agent/watcher/logs'), true)
-  assert.equal(fs.files.get('/home/kc/Library/LaunchAgents/ai.bgos.watcher.plist'), spec.files[0]!.content)
-  assert.equal(fs.modes.get('/home/kc/Library/LaunchAgents/ai.bgos.watcher.plist'), 0o644)
+  assert.equal(fs.files.get(`/home/kc/Library/LaunchAgents/${label}.plist`), spec.files[0]!.content)
+  assert.equal(fs.modes.get(`/home/kc/Library/LaunchAgents/${label}.plist`), 0o644)
   assert.deepEqual(
     calls.map((c) => `${c.file} ${c.args.join(' ')}`),
     [
-      'launchctl bootout gui/501/ai.bgos.watcher',
-      'launchctl bootstrap gui/501 /home/kc/Library/LaunchAgents/ai.bgos.watcher.plist',
-      'launchctl kickstart -k gui/501/ai.bgos.watcher',
+      `launchctl print gui/501/${label}`,
+      'launchctl print gui/501/ai.bgos.watcher',
+      `launchctl bootout gui/501/${label}`,
+      `launchctl bootstrap gui/501 /home/kc/Library/LaunchAgents/${label}.plist`,
+      `launchctl kickstart -k gui/501/${label}`,
     ],
   )
   assert.deepEqual(
     result.ran.map((r) => [r.args[0], r.code, r.ignored]),
     [
+      ['print', 113, true],
+      ['print', 113, true],
       ['bootout', 3, true],
       ['bootstrap', 0, false],
       ['kickstart', 0, false],
@@ -381,6 +451,7 @@ test('installWatcherService (darwin): a bootstrap that loses the race with the a
   let bootstraps = 0
   const exec = async (file: string, args: readonly string[]) => {
     calls.push(`${file} ${args[0]}`)
+    if (args[0] === 'print') return { ...NOT_LOADED, stdout: '', error: null, timedOut: false }
     if (args[0] === 'bootstrap') {
       bootstraps += 1
       if (bootstraps <= 2) return { code: 5, stdout: '', stderr: 'Bootstrap failed: 5: Input/output error', error: null, timedOut: false }
@@ -390,7 +461,7 @@ test('installWatcherService (darwin): a bootstrap that loses the race with the a
   const slept: number[] = []
   const result = await installWatcherService(spec, { exec, fs, sleep: async (ms: number) => { slept.push(ms) } })
   assert.equal(result.ok, true, result.message)
-  assert.deepEqual(calls, ['launchctl bootout', 'launchctl bootstrap', 'launchctl bootstrap', 'launchctl bootstrap', 'launchctl kickstart'])
+  assert.deepEqual(calls, ['launchctl print', 'launchctl print', 'launchctl bootout', 'launchctl bootstrap', 'launchctl bootstrap', 'launchctl bootstrap', 'launchctl kickstart'])
   assert.deepEqual(slept, [500, 500])
   assert.deepEqual(result.ran.filter((r) => r.args[0] === 'bootstrap').map((r) => r.code), [5, 5, 0])
 })
@@ -401,6 +472,7 @@ test('installWatcherService (darwin): a bootstrap that keeps failing is reported
   const calls: string[] = []
   const exec = async (file: string, args: readonly string[]) => {
     calls.push(`${file} ${args[0]}`)
+    if (args[0] === 'print') return { ...NOT_LOADED, stdout: '', error: null, timedOut: false }
     if (args[0] === 'bootstrap') return { code: 5, stdout: '', stderr: 'Bootstrap failed: 5: Input/output error', error: null, timedOut: false }
     return { code: 0, stdout: '', stderr: '', error: null, timedOut: false }
   }
@@ -419,10 +491,16 @@ test('installWatcherService (linux): a failing START command is reported by name
     'loginctl enable-linger': { code: 1, stderr: 'Could not enable linger: Access denied' },
   })
   // Make only the restart fail: same file + first arg as the others, so key on the full argv.
+  // Neither name is loaded: `systemctl --user show` answers LoadState=not-found.
+  const unit = `bgos-watcher-home-${POSIX_ID}`
   const failingExec = async (file: string, args: readonly string[]) => {
+    if (file === 'systemctl' && args[1] === 'show') {
+      calls.push({ file, args: [...args] })
+      return { code: 0, stdout: 'LoadState=not-found\nActiveState=inactive\nFragmentPath=\n', stderr: '', error: null, timedOut: false }
+    }
     if (file === 'systemctl' && args[1] === 'restart') {
       calls.push({ file, args: [...args] })
-      return { code: 5, stdout: '', stderr: 'Failed to restart bgos-watcher.service: Unit not found.\nmore', error: null, timedOut: false }
+      return { code: 5, stdout: '', stderr: `Failed to restart ${unit}.service: Unit not found.\nmore`, error: null, timedOut: false }
     }
     return exec(file, args)
   }
@@ -430,72 +508,102 @@ test('installWatcherService (linux): a failing START command is reported by name
   assert.equal(result.ok, false)
   assert.equal(
     result.message,
-    'systemctl --user restart bgos-watcher failed (rc 5): Failed to restart bgos-watcher.service: Unit not found.',
+    `systemctl --user restart ${unit} failed (rc 5): Failed to restart ${unit}.service: Unit not found.`,
   )
-  assert.equal(fs.files.has('/home/kc/.config/systemd/user/bgos-watcher.service'), true)
+  assert.equal(fs.files.has(`/home/kc/.config/systemd/user/${unit}.service`), true)
+  const show = '--user show --property=LoadState,ActiveState,FragmentPath,WorkingDirectory,Environment'
   assert.deepEqual(
     calls.map((c) => `${c.file} ${c.args.join(' ')}`),
     [
+      `systemctl ${show} ${unit}`,
+      `systemctl ${show} bgos-watcher`,
       'systemctl --user daemon-reload',
-      'systemctl --user enable --now bgos-watcher',
+      `systemctl --user enable --now ${unit}`,
       'loginctl enable-linger kc',
-      'systemctl --user restart bgos-watcher',
+      `systemctl --user restart ${unit}`,
     ],
   )
   // The best-effort linger failure was recorded as ignored, not fatal.
   assert.deepEqual(result.ran.find((r) => r.file === 'loginctl'), { file: 'loginctl', args: ['enable-linger', 'kc'], code: 1, ignored: true })
 })
 
-test('installWatcherService (win32): writes the vbs + task script, registers then starts; a refused install stops before start', async () => {
+/** A task-script exec keyed on `-Action <action>`: probes say nothing is registered, `fail` names the actions that fail. */
+function taskScriptExec(fail: Record<string, { code: number; stdout?: string }> = {}) {
+  const actions: string[] = []
+  const exec = async (_file: string, args: readonly string[]) => {
+    const action = args[args.indexOf('-Action') + 1]!
+    actions.push(action)
+    const hit = fail[action]
+    if (hit) return { code: hit.code, stdout: hit.stdout ?? '', stderr: '', error: null, timedOut: false }
+    const stdout = action.startsWith('probe') ? 'task absent\r\nrun absent\r\n' : ''
+    return { code: 0, stdout, stderr: '', error: null, timedOut: false }
+  }
+  return { actions, exec }
+}
+
+test('installWatcherService (win32): writes the vbs + task script, reads back both names, registers then starts; a refused install stops before start', async () => {
   const spec = watcherServiceSpec({ platform: 'win32', ...WIN })
   const fs = memoryFs()
-  // recordingExec keys on `<file> <first arg>`; install runs first, so the refusal lands on the install action and the ladder stops there.
-  const { calls, exec } = recordingExec({ 'powershell.exe -NoProfile': { code: 1, stdout: 'run key refused: Access is denied.' } })
-  const result = await installWatcherService(spec, { exec, fs })
+  const refused = taskScriptExec({ install: { code: 1, stdout: 'run key refused: Access is denied.' } })
+  const result = await installWatcherService(spec, { exec: refused.exec, fs })
   assert.equal(result.ok, false)
   assert.match(result.message, /-Action install failed \(rc 1\): run key refused: Access is denied\./)
-  assert.equal(calls.length, 1)
+  assert.deepEqual(refused.actions, ['probe', 'probe-legacy', 'install'])
   assert.equal(fs.files.get('C:\\Users\\kc\\.bgos-agent\\watcher\\run-hidden.vbs'), spec.files[0]!.content)
   assert.equal(fs.files.get('C:\\Users\\kc\\.bgos-agent\\watcher\\install-task.ps1'), spec.files[1]!.content)
-  const ok = await installWatcherService(spec, { exec: recordingExec().exec, fs })
-  assert.equal(ok.ok, true)
+  const fine = taskScriptExec()
+  const ok = await installWatcherService(spec, { exec: fine.exec, fs })
+  assert.equal(ok.ok, true, ok.message)
+  assert.deepEqual(fine.actions, ['probe', 'probe-legacy', 'install', 'stop', 'start'])
 })
 
-test('installWatcherService: a spawn failure (command not found) is reported, never thrown', async () => {
+test('installWatcherService: a spawn failure (command not found) is reported, never thrown; with no readable record nothing is installed', async () => {
   const spec = watcherServiceSpec({ platform: 'linux', ...POSIX })
-  const exec = async () => ({ code: null, stdout: '', stderr: '', error: 'spawn systemctl ENOENT', timedOut: false })
+  const calls: string[] = []
+  const exec = async (_file: string, args: readonly string[]) => {
+    calls.push(args[1]!)
+    return { code: null, stdout: '', stderr: '', error: 'spawn systemctl ENOENT', timedOut: false }
+  }
   const result = await installWatcherService(spec, { exec, fs: memoryFs() })
   assert.equal(result.ok, false)
-  assert.equal(result.message, 'systemctl --user daemon-reload failed (rc null): spawn systemctl ENOENT')
+  assert.equal(
+    result.message,
+    `refused: which HOME the systemd unit "bgos-watcher-home-${POSIX_ID}" belongs to could not be read (systemctl --user show --property=LoadState,ActiveState,FragmentPath,WorkingDirectory,Environment bgos-watcher-home-${POSIX_ID} failed (rc null): spawn systemctl ENOENT); nothing was changed`,
+  )
+  assert.deepEqual(calls, ['show'])
 })
 
-test('installWatcherService: a file write failure is reported before any command runs', async () => {
+test('installWatcherService: a file write failure is reported before any command that changes anything runs (only the read-only probes ran)', async () => {
   const spec = watcherServiceSpec({ platform: 'linux', ...POSIX })
   const fs = memoryFs()
   fs.writeFile = () => {
     throw new Error('EACCES: permission denied')
   }
-  const { calls, exec } = recordingExec()
+  const { calls, exec } = recordingExec({ 'systemctl --user': { code: 0, stdout: 'LoadState=not-found\n' } })
   const result = await installWatcherService(spec, { exec, fs })
   assert.equal(result.ok, false)
-  assert.match(result.message, /write .*bgos-watcher\.service failed: EACCES/)
-  assert.equal(calls.length, 0)
+  assert.match(result.message, /write .*bgos-watcher-home-[0-9a-f]{8}\.service failed: EACCES/)
+  assert.deepEqual(calls.map((c) => c.args[1]), ['show', 'show'])
 })
 
 // -- uninstallWatcherService ------------------------------------------------------------------
 
 test('uninstallWatcherService: stop + uninstall commands (failures recorded, never fatal), then service files removed', async () => {
   const spec = watcherServiceSpec({ platform: 'linux', ...POSIX })
-  const fs = memoryFs({ '/home/kc/.config/systemd/user/bgos-watcher.service': 'x' })
-  const { calls, exec } = recordingExec({ 'systemctl --user': { code: 5, stderr: 'not loaded' } })
+  const unit = `bgos-watcher-home-${POSIX_ID}`
+  const fs = memoryFs({ [`/home/kc/.config/systemd/user/${unit}.service`]: 'x' })
+  const calls: string[] = []
+  const exec = async (_file: string, args: readonly string[]) => {
+    calls.push(args.join(' '))
+    if (args[1] === 'show') return { code: 0, stdout: 'LoadState=not-found\n', stderr: '', error: null, timedOut: false }
+    return { code: 5, stdout: '', stderr: 'not loaded', error: null, timedOut: false }
+  }
   const result = await uninstallWatcherService(spec, { exec, fs })
   assert.equal(result.ok, true)
-  assert.deepEqual(
-    calls.map((c) => c.args.join(' ')),
-    ['--user stop bgos-watcher', '--user disable --now bgos-watcher', '--user daemon-reload'],
-  )
-  assert.equal(fs.files.has('/home/kc/.config/systemd/user/bgos-watcher.service'), false)
-  assert.deepEqual(result.removed, ['/home/kc/.config/systemd/user/bgos-watcher.service'])
+  const show = '--user show --property=LoadState,ActiveState,FragmentPath,WorkingDirectory,Environment'
+  assert.deepEqual(calls, [`${show} ${unit}`, `--user stop ${unit}`, `--user disable --now ${unit}`, '--user daemon-reload', `${show} bgos-watcher`])
+  assert.equal(fs.files.has(`/home/kc/.config/systemd/user/${unit}.service`), false)
+  assert.deepEqual(result.removed, [`/home/kc/.config/systemd/user/${unit}.service`])
 })
 
 // -- credentials ---------------------------------------------------------------------------------

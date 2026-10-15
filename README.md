@@ -237,13 +237,38 @@ exit (back to 5 s once a session has stayed up), and records
 launch-status. Ending the task (TERM or HUP) stops it without a relaunch. It
 works the same on macOS and Linux, for an agent you keep running by hand.
 
+**The watcher's service is named after its HOME.** Every name the per-machine
+watcher's service is known by carries `home-<id>`, the first 8 hex characters of
+the SHA-256 of the HOME it was installed from (case and separators normalized on
+Windows): the Scheduled Task `HOAI Watcher home-<id>` (and its Run key fallback
+`HOAIWatcher-home-<id>`), the launchd label `ai.bgos.watcher.home-<id>`, the
+systemd unit `bgos-watcher-home-<id>`. The registration records that HOME (the
+task description and its launcher, which pins `USERPROFILE`; the plist's and
+the unit's `HOME`), and an install, a status or an uninstall reads it back first:
+one under this HOME's own name that records another HOME is refused, never
+replaced or removed. So a second install on the same account, a test rig's
+daemon in a scratch HOME among them, gets a service of its own and never
+touches the owner's. On Linux the user manager only reads the real HOME's unit
+folder, so an install from any other HOME fails by name instead.
+
+Upgrading from 0.69.x: the watcher keeps running under its old name
+(`HOAI Watcher`, `ai.bgos.watcher`, `bgos-watcher`) until the next watcher
+install from the same HOME (the app's "Set up the watcher", or
+`hoai-watcher install`), which renames it in place. On Windows and Linux the new
+name is registered before the old one goes, so the watcher is never without a
+registration; on macOS the old job is booted out just before the new one is
+bootstrapped (no two watchers at once) and loaded again if the new one does not
+come up; the old plist or unit file of that HOME is removed. A registration
+under an old name that another HOME installed is left alone and reported.
+
 **Side by side installs: `HOAI_SERVICE_NAMESPACE`.** A second, isolated install
-on the same user account (a staging install) must never stop the live watcher.
+from the same HOME (a staging install) must never stop the live watcher.
 With `HOAI_SERVICE_NAMESPACE` set to 1 to 16 lowercase letters or digits, the
-watcher's service names become `ai.bgos.watcher.<ns>`, `bgos-watcher-<ns>` and
-`HOAI Watcher (<ns>)`, and `hoai-agent install` writes the variable into every
+watcher's service names become `ai.bgos.watcher.<ns>.home-<id>`,
+`bgos-watcher-<ns>-home-<id>` and `HOAI Watcher (<ns>) home-<id>`, and
+`hoai-agent install` writes the variable into every
 agent service it installs, so the agent's daemon, and the watcher it installs,
-stay in the namespace. Unset, every name is exactly what it always was; an
+stay in the namespace. Unset, the names are the ones above; an
 invalid value is ignored, with a warning.
 
 ## Quick Start

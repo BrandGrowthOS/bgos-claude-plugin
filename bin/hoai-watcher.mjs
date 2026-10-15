@@ -230,6 +230,7 @@ async function commandInstall({ m, flags, home, env, platform, fs, exec, scriptP
       uid: typeof process.getuid === 'function' ? process.getuid() : null,
       localAppData: String(env.LOCALAPPDATA ?? '').trim() || undefined,
       username: defaultUsername(env),
+      env,
     })
   } catch (error) {
     err(`[hoai-watcher] service spec failed: ${error?.message ?? error}`)
@@ -237,6 +238,7 @@ async function commandInstall({ m, flags, home, env, platform, fs, exec, scriptP
   }
   const result = await installWatcherService(spec, { exec, fs })
   for (const ran of result.ran) out(`[hoai-watcher]   ${ran.file} ${ran.args.join(' ')} -> rc ${ran.code}${ran.ignored && ran.code !== 0 ? ' (ignored)' : ''}`)
+  for (const note of result.notes ?? []) out(`[hoai-watcher] ${note}`)
   if (!result.ok) {
     err(`[hoai-watcher] service install failed: ${result.message}`)
     return EXIT.FAILED
@@ -260,6 +262,7 @@ async function commandUninstall({ m, flags, home, env, platform, fs, exec, out, 
       bundleDir: watcherHome(home),
       uid: typeof process.getuid === 'function' ? process.getuid() : null,
       username: defaultUsername(env),
+      env,
     })
   } catch (error) {
     err(`[hoai-watcher] service spec failed: ${error?.message ?? error}`)
@@ -267,6 +270,12 @@ async function commandUninstall({ m, flags, home, env, platform, fs, exec, out, 
   }
   const result = await uninstallWatcherService(spec, { exec, fs })
   for (const ran of result.ran) out(`[hoai-watcher]   ${ran.file} ${ran.args.join(' ')} -> rc ${ran.code}`)
+  for (const note of result.notes ?? []) out(`[hoai-watcher] ${note}`)
+  if (!result.ok) {
+    // Another HOME's registration under this HOME's own name: nothing of it was touched, and no purge.
+    err(`[hoai-watcher] uninstall ${result.message}`)
+    return EXIT.FAILED
+  }
   out(`[hoai-watcher] service ${spec.kind} "${spec.label}" removed (${result.removed.length} file(s))`)
   if (flags.purge) {
     try {
@@ -302,10 +311,10 @@ async function commandStatus({ m, flags, home, env, platform, fs, exec, out }) {
       bundleDir: watcherHome(home),
       uid: typeof process.getuid === 'function' ? process.getuid() : null,
       username: defaultUsername(env),
+      env,
     })
-    service = await watcherServiceStatus(spec, { exec })
+    service = await watcherServiceStatus(spec, { exec, fs })
     service.kind = spec.kind
-    service.label = spec.label
   } catch (error) {
     service = { active: false, output: String(error?.message ?? error), ran: [] }
   }
@@ -313,7 +322,7 @@ async function commandStatus({ m, flags, home, env, platform, fs, exec, out }) {
   const status = {
     bundleDir: watcherHome(home),
     manifest: manifest ? { version: manifest.version, fingerprint: manifest.fingerprint, installedAt: manifest.installedAt, pluginRoot: manifest.pluginRoot } : null,
-    service: { kind: service.kind ?? null, label: service.label ?? null, active: service.active, output: service.output },
+    service: { kind: service.kind ?? null, label: service.label ?? null, active: service.active, output: service.output, legacy: service.legacy ?? null },
     credentials: credentials
       ? { present: true, pairingId: credentials.pairingId, backendUrl: credentials.backendUrl, machineId: credentials.machineId }
       : { present: false, path: watcherCredentialsPath(home) },
@@ -330,6 +339,10 @@ async function commandStatus({ m, flags, home, env, platform, fs, exec, out }) {
   }
   out(`[hoai-watcher] bundle     : ${manifest ? `${manifest.version} (${manifest.fingerprint.slice(0, 12)}) installed ${manifest.installedAt ?? '?'} from ${manifest.pluginRoot ?? '?'}` : 'not installed'}`)
   out(`[hoai-watcher] service    : ${status.service.kind ?? '-'} ${status.service.label ?? ''} ${status.service.active ? 'active' : 'inactive'}${status.service.output ? ` (${status.service.output.split(/\r?\n/)[0]})` : ''}`)
+  const oldName = status.service.legacy
+  if (oldName && oldName.state !== 'absent') {
+    out(`[hoai-watcher] old name   : ${oldName.label} ${oldName.state === 'own' ? 'installed from this HOME (the next install renames it)' : `left alone (${oldName.home ? `installed from ${oldName.home}` : 'its HOME could not be read'})`}`)
+  }
   out(`[hoai-watcher] credentials: ${credentials ? `present (pairing ${credentials.pairingId}, machine ${credentials.machineId}, ${credentials.backendUrl})` : `absent (${watcherCredentialsPath(home)})`}`)
   out(`[hoai-watcher] heartbeat  : ${status.lastHeartbeatAt ?? 'never'}${status.lastHeartbeatOk === false ? ' (last one FAILED)' : ''}`)
   out(`[hoai-watcher] last job   : ${status.lastJob ? `${status.lastJob.op} ${status.lastJob.state} at ${status.lastJob.at}` : 'none'}`)
