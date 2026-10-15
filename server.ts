@@ -598,10 +598,11 @@ import {
   AGENT_STATE_FILE_NAME,
   AGENT_STATE_MAX_INTERVAL_MS,
   AgentStatePublisher,
-  findClaudeAncestor,
   hookTurnSignal,
+  memoizeAncestorReading,
   memoizeFor,
   memoizeUntilFound,
+  readClaudeAncestor,
   readSessionTranscript,
 } from './lib/agent-state.js'
 import {
@@ -12091,10 +12092,15 @@ const AGENT_STATE_TICK_MS = 1_000
 // The ancestor walk is synchronous ps spawns (one PowerShell call on Windows,
 // code review F2: before it, a Windows daemon published claudePid null forever
 // and the watcher could never read its process tree); a found claude never
-// changes, a miss is retried every 10 minutes.
+// changes, a miss is retried every 10 minutes. A Windows probe that could not
+// be read (HOAI board row 7046de2a: on a busy PC it ran past the 5 s exec cap)
+// is no miss: the signed browser context needs this pid, and every browser
+// call was refused until the 10 minute retry. It is retried after 30 s,
+// doubling while it keeps failing, up to the same 10 minutes.
 const CLAUDE_ANCESTOR_RETRY_MS = 10 * 60_000
-const agentClaudePid = memoizeUntilFound(CLAUDE_ANCESTOR_RETRY_MS, Date.now, () =>
-  findClaudeAncestor({ platform: process.platform, ownPid: process.pid, execSync: defaultExecSync }),
+const CLAUDE_ANCESTOR_UNREADABLE_RETRY_MS = 30_000
+const agentClaudePid = memoizeAncestorReading(CLAUDE_ANCESTOR_RETRY_MS, CLAUDE_ANCESTOR_UNREADABLE_RETRY_MS, Date.now, () =>
+  readClaudeAncestor({ platform: process.platform, ownPid: process.pid, execSync: defaultExecSync }),
 )
 // installed_plugins.json is a file read; the 1 s tick must not repeat it.
 const agentStatePendingRestart = memoizeFor(AGENT_STATE_MAX_INTERVAL_MS, Date.now, () =>
