@@ -1,0 +1,157 @@
+{
+  "feature": "Companion exact physical activation and socket-proof ownership",
+  "source": {
+    "path": "lib/browser-profile-companion.mjs",
+    "sha256": "4abdb468e76825f9268c5d6ab03aa20967f6786505ecd54a0ddb5fb850ff12c0"
+  },
+  "tests": {
+    "companionCases": 43,
+    "newCases": 9,
+    "relatedFourSuiteCases": 84,
+    "relatedCommand": "node --import tsx --test test/browser-profile-companion.test.ts test/browser-profile-companion-host.test.ts test/browser-profile-return-handover.test.ts test/browser-profile-companion-permission.test.ts",
+    "skipped": 0,
+    "typecheck": "node node_modules/typescript/bin/tsc --noEmit: exit0"
+  },
+  "reproduction": "Before repair, a copied actual Companion fixture with createEngine physically held allowed monitor to dispatch proof. Corrected diagnostic failed the intended assertion true!==false after independent disposal/stop; initial diagnostic cleanup-only failure was excluded.",
+  "mutationProof": {
+    "baselineExit": 0,
+    "sourceSha256": "4abdb468e76825f9268c5d6ab03aa20967f6786505ecd54a0ddb5fb850ff12c0",
+    "mutations": [
+      {
+        "name": "activation-same-promise",
+        "lineNumber": 268,
+        "printedExecutableLine": "      if(existing){if(existing.runtime!==runtime||!shared.sameAuthority(existing.authority,authority))throw fail('profile_companion_context_changed');return existing.task.then(value=>value)}",
+        "before": "return existing.task}",
+        "after": "return existing.task.then(value=>value)}",
+        "mutantSha256": "ea78b2325d5ac501e039aa122855bc4d42c26e5ed58667068707d0a746422c6d",
+        "redExit": 1,
+        "restoredExit": 0,
+        "restoredSha256": "4abdb468e76825f9268c5d6ab03aa20967f6786505ecd54a0ddb5fb850ff12c0"
+      },
+      {
+        "name": "activation-full-authority",
+        "lineNumber": 268,
+        "printedExecutableLine": "      if(existing){if(false)throw fail('profile_companion_context_changed');return existing.task}",
+        "before": "existing.runtime!==runtime||!shared.sameAuthority(existing.authority,authority)",
+        "after": "false",
+        "mutantSha256": "8cc9147302ca563e559d4475794423ecfdf27644f0683aea9a21e956787b4d64",
+        "redExit": 1,
+        "restoredExit": 0,
+        "restoredSha256": "4abdb468e76825f9268c5d6ab03aa20967f6786505ecd54a0ddb5fb850ff12c0"
+      },
+      {
+        "name": "activation-physical-accounting",
+        "lineNumber": 68,
+        "printedExecutableLine": "      void record",
+        "before": "if(this.#activations.get(record)?.pending)pendingPhysicalOperations++",
+        "after": "void record",
+        "mutantSha256": "0df9828c1b779c9f68971e35b2deefb37f06220a04298aa309dacf2bf48363e8",
+        "redExit": 1,
+        "restoredExit": 0,
+        "restoredSha256": "4abdb468e76825f9268c5d6ab03aa20967f6786505ecd54a0ddb5fb850ff12c0"
+      },
+      {
+        "name": "proof-physical-accounting",
+        "lineNumber": 69,
+        "printedExecutableLine": "      void record",
+        "before": "if(this.#proofs.get(record)?.pending)pendingPhysicalOperations++",
+        "after": "void record",
+        "mutantSha256": "1a12ec7f10b3790e86fe02d11bb19fa68425422ef4b6c6eaa3fa0bd9dd089c84",
+        "redExit": 1,
+        "restoredExit": 0,
+        "restoredSha256": "4abdb468e76825f9268c5d6ab03aa20967f6786505ecd54a0ddb5fb850ff12c0"
+      },
+      {
+        "name": "monitor-activation-fence",
+        "lineNumber": 93,
+        "printedExecutableLine": "    for(const record of this.records.values())if(record.runtime?.state==='active'){",
+        "before": "&&!this.#activations.has(record)",
+        "after": "",
+        "mutantSha256": "29330067dd38ad70953bb0d8bccee9bc4618a4098c06a430b5ff10e7c41e17ac",
+        "redExit": 1,
+        "restoredExit": 0,
+        "restoredSha256": "4abdb468e76825f9268c5d6ab03aa20967f6786505ecd54a0ddb5fb850ff12c0"
+      },
+      {
+        "name": "active-activation-fence",
+        "lineNumber": 309,
+        "printedExecutableLine": "    if(record.returnTask||record.returnRequestId)return",
+        "before": "||this.#activations.has(record)",
+        "after": "",
+        "mutantSha256": "16fda56ba9965204c3eed486ea3dab5cfd88f16126b86ceb118c21b4ef973237",
+        "redExit": 1,
+        "restoredExit": 0,
+        "restoredSha256": "4abdb468e76825f9268c5d6ab03aa20967f6786505ecd54a0ddb5fb850ff12c0"
+      },
+      {
+        "name": "failed-activation-no-retry",
+        "lineNumber": 270,
+        "printedExecutableLine": "      const task=Promise.resolve().then(()=>this._activateOwned(record,authority,token)).then(value=>{token.pending=false;if(this.#activations.get(record)===token)this.#activations.delete(record);return value},error=>{token.pending=false;this.#activations.delete(record);if(!record.revoked&&record.runtime===runtime)record.admission='unknown';throw error})",
+        "before": "token.pending=false;if(!record.revoked&&record.runtime===runtime)",
+        "after": "token.pending=false;this.#activations.delete(record);if(!record.revoked&&record.runtime===runtime)",
+        "mutantSha256": "d12733c35321b2fa5af071838663b37d128c20bdd13dcb8e1908d35dd8a7c8b9",
+        "redExit": 1,
+        "restoredExit": 0,
+        "restoredSha256": "4abdb468e76825f9268c5d6ab03aa20967f6786505ecd54a0ddb5fb850ff12c0"
+      },
+      {
+        "name": "proof-same-promise",
+        "lineNumber": 301,
+        "printedExecutableLine": "      if(existing){if(existing.rpc!==rpc||existing.runtime!==runtime||existing.socket!==socket||existing.socketId!==socketId||!shared.sameAuthority(existing.authority,authority))throw fail('profile_companion_context_changed');return existing.task.then(value=>value)}",
+        "before": "return existing.task}",
+        "after": "return existing.task.then(value=>value)}",
+        "mutantSha256": "21016d26618bf0a622c6629e6fc2d02d0d1d95eabb0e6a8451c7c5bc30688648",
+        "redExit": 1,
+        "restoredExit": 0,
+        "restoredSha256": "4abdb468e76825f9268c5d6ab03aa20967f6786505ecd54a0ddb5fb850ff12c0"
+      },
+      {
+        "name": "proof-original-context",
+        "lineNumber": 301,
+        "printedExecutableLine": "      if(existing){if(false)throw fail('profile_companion_context_changed');return existing.task}",
+        "before": "existing.rpc!==rpc||existing.runtime!==runtime||existing.socket!==socket||existing.socketId!==socketId||!shared.sameAuthority(existing.authority,authority)",
+        "after": "false",
+        "mutantSha256": "8e173d9c82e9484cb3d214922b4fab7c71737fcb63fb6948d371820ecfc9591d",
+        "redExit": 1,
+        "restoredExit": 0,
+        "restoredSha256": "4abdb468e76825f9268c5d6ab03aa20967f6786505ecd54a0ddb5fb850ff12c0"
+      },
+      {
+        "name": "dispose-activation-physical-drain",
+        "lineNumber": 368,
+        "printedExecutableLine": "    const task=Promise.resolve().then(async()=>{const failures=[];await record.runtimeCreating?.catch(()=>{});const native=Promise.resolve().then(()=>record.runtime?.dispose()),commands=Promise.resolve().then(()=>this._drainCommands(record));for(const result of await Promise.allSettled([native,commands]))if(result.status==='rejected')failures.push(result.reason);for(const cleanup of [async()=>{await record.engineCreating?.catch(()=>{});await record.engine?.stop()},async()=>{await record.extrasCreating?.catch(()=>{});record.extras?.dispose()}])try{await cleanup()}catch(error){failures.push(error)}await Promise.allSettled([proof?.task].filter(Boolean));if(this.#activations.get(record)===activation)this.#activations.delete(record);record.contentKeyEpoch?.key.fill(0);record.contentKeyEpoch=null;if(failures.length)throw fail('profile_companion_stop_unconfirmed');record.relay?.close();record.runtime=null;record.engine=null;record.extras=null;if(record.rpc){const rpc=record.rpc;this._trackPhysical(record,'rpc-close',Promise.resolve().then(()=>rpc.close()));record.rpc=null}})",
+        "before": "[activation?.task,proof?.task]",
+        "after": "[proof?.task]",
+        "mutantSha256": "f06b3dfb9fe2333fae3abe796968f8bbb89aa90550d8c2cea3f8de024d26e6b3",
+        "redExit": 1,
+        "restoredExit": 0,
+        "restoredSha256": "4abdb468e76825f9268c5d6ab03aa20967f6786505ecd54a0ddb5fb850ff12c0"
+      },
+      {
+        "name": "dispose-proof-physical-drain",
+        "lineNumber": 368,
+        "printedExecutableLine": "    const task=Promise.resolve().then(async()=>{const failures=[];await record.runtimeCreating?.catch(()=>{});const native=Promise.resolve().then(()=>record.runtime?.dispose()),commands=Promise.resolve().then(()=>this._drainCommands(record));for(const result of await Promise.allSettled([native,commands]))if(result.status==='rejected')failures.push(result.reason);for(const cleanup of [async()=>{await record.engineCreating?.catch(()=>{});await record.engine?.stop()},async()=>{await record.extrasCreating?.catch(()=>{});record.extras?.dispose()}])try{await cleanup()}catch(error){failures.push(error)}await Promise.allSettled([activation?.task].filter(Boolean));if(this.#activations.get(record)===activation)this.#activations.delete(record);record.contentKeyEpoch?.key.fill(0);record.contentKeyEpoch=null;if(failures.length)throw fail('profile_companion_stop_unconfirmed');record.relay?.close();record.runtime=null;record.engine=null;record.extras=null;if(record.rpc){const rpc=record.rpc;this._trackPhysical(record,'rpc-close',Promise.resolve().then(()=>rpc.close()));record.rpc=null}})",
+        "before": "[activation?.task,proof?.task]",
+        "after": "[activation?.task]",
+        "mutantSha256": "5aa78a705f6d02b5de13661d8957f6754dc700393399ca0cec99684c5eb1c84e",
+        "redExit": 1,
+        "restoredExit": 0,
+        "restoredSha256": "4abdb468e76825f9268c5d6ab03aa20967f6786505ecd54a0ddb5fb850ff12c0"
+      },
+      {
+        "name": "stop-starts-native-before-producer-wait",
+        "lineNumber": 373,
+        "printedExecutableLine": "    const activating=[...this.records.values()].filter(record=>this.#activations.get(record)?.pending),activationStops=[]",
+        "before": "activationStops=activating.map(record=>this._dispose(record))",
+        "after": "activationStops=[]",
+        "mutantSha256": "7ecf024345e88ed93091c17781626ab90cc5f97a3e82a8be7bac28e7936ccaeb",
+        "redExit": 1,
+        "restoredExit": 0,
+        "restoredSha256": "4abdb468e76825f9268c5d6ab03aa20967f6786505ecd54a0ddb5fb850ff12c0"
+      }
+    ],
+    "finalExit": 0,
+    "sharedSourceUnchanged": true
+  },
+  "evidenceBoundary": "Local ownership/protocol unit fixtures use actual Companion and actual ProfileRuntimeEndpoint with synthetic socket challenge/bind callbacks, native engine/runtime fixtures, and positive held-promise observations. This is not fresh Linux or full HOAI acceptance. Full committed archive and two-machine run follow separately."
+}

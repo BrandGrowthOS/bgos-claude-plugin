@@ -24,6 +24,74 @@ async function fixture(t:{after:(callback:()=>unknown)=>void}){
   const request:any={version:1,kind:'agent-runtime-request',requestId:randomUUID(),endpointId:scope.endpointId,purpose:'start',expectedWriterEpoch:0,expectedRevision:0,expectedHeadManifestHash:null,profileId:scope.profileId,actingUserId:scope.actingUserId,assistantId:42,endpointOwnerUserId:scope.ownerUserId,pairingId:7,nonce:'a'.repeat(64),expiresAt:Date.now()+200000,grantVersion:1,keyFingerprint:scope.keyFingerprint,contentKeyEpoch:1}
   return{companion,connection,record,scope,endpoint,entry,client,returnClient,calls,logs,saved,request,get options(){return options}}
 }
+
+async function activationFixture(t:{after:(callback:()=>unknown)=>void}){
+  const f=await fixture(t);f.companion.records.set(f.scope.endpointId,f.record)
+  const authority={profileId:f.scope.profileId,actingUserId:f.scope.actingUserId,assistantId:42,endpointId:f.scope.endpointId,keyFingerprint:f.scope.keyFingerprint,bootId:f.connection.bootId,runtimeId:randomUUID(),sessionId:randomUUID(),writerEpoch:1,revision:0,contentKeyEpoch:1,grantVersion:1}
+  await f.companion._prepare(f.record,authority);Object.assign(f.entry.profile,{writerState:'active',...Object.fromEntries(['endpointId','bootId','runtimeId','sessionId','writerEpoch','revision','contentKeyEpoch'].map(key=>[key,authority[key as keyof typeof authority]]))})
+  return{...f,authority}
+}
+
+function proofSocket(f:any,holdBinding=false){
+  let release!:()=>void;const events:string[]=[],socketId='socket-'+randomUUID(),socket:any={connected:true,emit(event:string,body:any,reply:(value:unknown)=>void){events.push(event);if(event==='browser_profile_challenge')reply({ok:true,challenge:{version:1,kind:'runtime-socket-binding',challengeId:randomUUID(),nonce:'a'.repeat(43),socketId,expiresAt:Date.now()+30000,authority:f.authority}});else if(event==='browser_profile_bind'){const complete=()=>reply({ok:true,binding:{bindingId:randomUUID(),socketId,authority:f.authority}});if(holdBinding)release=complete;else complete()}else if(event==='browser_profile_release')reply({ok:true,released:true});else throw Error('unexpected fixture proof event')}}
+  f.connection.socket=socket;f.connection.socketId=socketId
+  return{events,socket,socketId,get held(){return typeof release==='function'},release:()=>release()}
+}
+
+test('activation owns one exact promise before its first await and monitoring never proves a held engine',async t=>{
+  const f=await activationFixture(t);let release!:(value:unknown)=>void
+  f.companion.createEngine=()=>new Promise(resolve=>{release=resolve});const activating=f.companion._activate(f.record,f.authority),duplicate=f.companion._activate(f.record,{...f.authority});assert.equal(activating,duplicate);assert.equal(f.companion.activity().pendingPhysicalOperations,1)
+  const mismatch=assert.rejects(f.companion._activate(f.record,{...f.authority,runtimeId:randomUUID()}),{code:'profile_companion_context_changed'});await until(()=>!!release)
+  await f.companion.monitor();assert.equal(f.record.monitorTask,undefined);await f.companion._active(f.record);assert.equal(f.calls.includes('prove'),false);assert.ok(f.companion.activity().pendingPhysicalOperations>0)
+  release({roster:()=>[],stop:async()=>{}});await activating;await mismatch;assert.equal(f.calls.filter(value=>value==='activate').length,1);assert.equal(f.calls.filter(value=>value==='prove').length,1);await f.companion._dispose(f.record);await f.companion.stop()
+})
+
+test('an initial held proof coalesces exact calls and blocks monitor until original activation completes',async t=>{
+  const f=await activationFixture(t),socket=proofSocket(f,true);f.companion._prove=AgentBrowserProfileCompanion.prototype._prove
+  const activating=f.companion._activate(f.record,f.authority);await until(()=>socket.held);const one=f.companion._prove(f.record),two=f.companion._prove(f.record);assert.equal(one,two);await f.companion.monitor();await f.companion._active(f.record);assert.equal(socket.events.filter(value=>value==='browser_profile_challenge').length,1);assert.equal(f.companion.activity().pendingPhysicalOperations,2)
+  socket.release();await Promise.all([activating,one]);assert.ok(f.record.rpc.binding);assert.equal(f.companion.activity().pendingPhysicalOperations,0);await f.companion._dispose(f.record);await f.companion.stop()
+})
+
+test('normal stop begins physical native disposal before held engine activation settles',async t=>{
+  const f=await activationFixture(t);let release!:(value:unknown)=>void,stopped=false,engines=0
+  f.companion.createEngine=()=>new Promise(resolve=>{release=resolve});const activating=f.companion._activate(f.record,f.authority);void activating.catch(()=>{});await until(()=>!!release)
+  const stopping=f.companion.stop().then(()=>{stopped=true});await until(()=>f.calls.includes('dispose'));assert.equal(stopped,false);assert.equal(f.record.runtime.state,'disposed');assert.ok(f.companion.activity().pendingPhysicalOperations>0)
+  release({roster:()=>[],stop:async()=>{engines++}});await assert.rejects(activating,{code:'profile_companion_context_changed'});await stopping;assert.equal(engines,1);assert.equal(f.calls.includes('prove'),false);assert.deepEqual(f.companion.activity(),{activeProfiles:0,pendingPhysicalOperations:0,cleanupUnknown:false})
+})
+
+test('revoke starts native disposal independently and drains the original held socket proof',async t=>{
+  const f=await activationFixture(t),socket=proofSocket(f,true);f.companion._prove=AgentBrowserProfileCompanion.prototype._prove
+  const activating=f.companion._activate(f.record,f.authority);void activating.catch(()=>{});await until(()=>socket.held);let stopped=false;const revoking=f.companion.revoke().then(()=>{stopped=true});await until(()=>f.calls.includes('dispose'));assert.equal(stopped,false);assert.ok(f.companion.activity().pendingPhysicalOperations>0)
+  socket.release();await assert.rejects(activating);await revoking;assert.equal(f.record.runtime,null);assert.equal(f.companion.activity().pendingPhysicalOperations,0)
+})
+
+test('failed activation cannot automatically reactivate or monitor an incompletely proved runtime',async t=>{
+  const f=await activationFixture(t);let proofs=0;f.companion._prove=async()=>{proofs++;throw Error('synthetic proof refused')}
+  const activating=f.companion._activate(f.record,f.authority);await assert.rejects(activating,/synthetic proof refused/);assert.equal(f.companion._activate(f.record,f.authority),activating);await assert.rejects(activating);await f.companion.monitor();await f.companion._active(f.record);assert.equal(proofs,1);assert.equal(f.record.admission,'unknown');await f.companion._dispose(f.record);await f.companion.stop()
+})
+
+test('a proved runtime retains legitimate same-authority reconnect after actual endpoint disconnect',async t=>{
+  const f=await activationFixture(t),first=proofSocket(f);f.companion._prove=AgentBrowserProfileCompanion.prototype._prove;await f.companion._activate(f.record,f.authority);assert.equal(f.record.rpc.binding.socketId,first.socketId)
+  f.companion.disconnected();first.socket.connected=false;assert.equal(f.record.rpc.binding,null);const next=proofSocket(f);await f.companion._active(f.record);assert.equal(f.record.rpc.binding.socketId,next.socketId);assert.equal(next.events.filter(value=>value==='browser_profile_challenge').length,1);assert.equal(f.record.admission,'active');await f.companion._dispose(f.record);await f.companion.stop()
+})
+
+test('a changed socket cannot borrow a held proof and original activation never replays it',async t=>{
+  const f=await activationFixture(t),first=proofSocket(f,true);f.companion._prove=AgentBrowserProfileCompanion.prototype._prove;const activating=f.companion._activate(f.record,f.authority);void activating.catch(()=>{});await until(()=>first.held)
+  f.companion.disconnected();first.socket.connected=false;const next=proofSocket(f);f.record.admission='active';const crossed=assert.rejects(f.companion._prove(f.record),{code:'profile_companion_context_changed'});assert.deepEqual(next.events,[]);first.release();await crossed;await assert.rejects(activating);await f.companion.monitor();assert.deepEqual(next.events,[]);await f.companion._dispose(f.record);await f.companion.stop()
+})
+
+test('disposal retains original activation before engine or RPC creation until its physical promise settles',async t=>{
+  const f=await activationFixture(t);let release!:()=>void,entered=false,done=false
+  f.record.runtime.activate=async()=>{entered=true;await new Promise<void>(resolve=>{release=resolve});throw Error('synthetic activation cancelled')}
+  const activating=f.companion._activate(f.record,f.authority);void activating.catch(()=>{});await until(()=>entered);const disposing=f.companion._dispose(f.record).then(()=>{done=true});await until(()=>f.calls.includes('dispose'));assert.equal(done,false);assert.ok(f.companion.activity().pendingPhysicalOperations>0)
+  release();await assert.rejects(activating,/synthetic activation cancelled/);await disposing;assert.equal(f.record.runtime,null);await f.companion.stop()
+})
+
+test('disposal retains a reconnect proof independently after original activation ownership completed',async t=>{
+  const f=await activationFixture(t),first=proofSocket(f);f.companion._prove=AgentBrowserProfileCompanion.prototype._prove;await f.companion._activate(f.record,f.authority);f.companion.disconnected();first.socket.connected=false;const next=proofSocket(f,true)
+  const monitoring=f.companion._active(f.record);void monitoring.catch(()=>{});await until(()=>next.held);let done=false;const disposing=f.companion._dispose(f.record).then(()=>{done=true});await until(()=>f.calls.includes('dispose'));assert.equal(done,false);assert.ok(f.companion.activity().pendingPhysicalOperations>0)
+  next.release();await assert.rejects(monitoring);await disposing;await f.companion.stop();assert.equal(f.companion.activity().pendingPhysicalOperations,0)
+})
 test('fresh host with no explicit recipient intent never invents a profile, key or native runtime',async t=>{const f=await fixture(t);await f.companion.poll();assert.deepEqual(f.calls,[]);assert.equal(f.companion.records.size,0);assert.ok(f.logs.some(line=>line.includes('setup_required')))})
 test('activity counts held creation and actual disposal even after public native state becomes disposed',async t=>{
   const f=await fixture(t);f.companion.records.set(f.scope.endpointId,f.record);let launch!:(value:unknown)=>void,finish!:()=>void,entered=false
