@@ -2,6 +2,16 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.69.1 (2026-10-15)
+
+**An agent's browser profile on a Windows drive where the user has Modify but not Full control is no longer refused without a reason (HOAI board row 221ec9db, mission 151 goal 9).** The vault makes the profile folder private by setting its owner to the user and writing an access list with one entry, the user's own Full control. Setting the owner needs WRITE_OWNER, which Modify alone does not give, not even to the folder's owner. So on such a drive (E: on a PC that grants users Modify) every profile was refused as `unsafe_profile`, the PowerShell error was thrown away, and nothing said why (found in BGOS #2432).
+
+- **A folder that is already the user's own and that no other account can write is accepted without SetOwner.** The vault writes it the same access list (an owner may always write that list), reads it back, and accepts it only when it is owned by the user, protected, and holds that one entry. The allow-list is the vault's own, the user alone: SYSTEM and Administrators count as other accounts, since the access list the vault writes has no entry for them either. Any allow entry for another account with a bit beyond read, list and traverse counts as write, inherit-only entries and the entry types .NET's GetAccessRules leaves out included; deny entries do not. A folder whose owner the vault can set (Full control) goes through the same steps as before.
+- **Every other folder is still refused, and the refusal says why.** `unsafe_profile` now carries a `reason`: `owner_foreign` (another account owns the folder), `other_writer` (another account can write to it), `owner_not_set` (the owner could not be set and the folder could not be checked), `not_private` (the lock did not read back as the user's alone), `acl_step_failed` (PowerShell did not finish) or `alias` (a link, not a plain folder). The agent's answer, where `unsafe_profile` was reported before, now reads `tool_error: unsafe_profile: ` and a fixed sentence per reason saying what is wrong and what to do, with no path, account or Windows error in it. The browser host log names the folder, the accounts and the Windows error. The macOS and Linux refusals carry the same reasons. The owner pane's credential errors keep their fixed `credential_storage` code and message.
+- **On a drive like this PC's E: a fresh profile is still refused**, now as `other_writer`, naming Authenticated Users, SYSTEM and Administrators: the folder inherits write for them. The owner can give the agent's account Full control of the agent's folder (the vault then takes the folder over as before) or make the folder private to that account.
+
+Guards: `test/agent-browser-vault.test.ts`: the Windows step with a fake PowerShell on every platform, the same cases with real access lists (icacls) on Windows, and the agent's answer and the host log.
+
 ## 0.69.0 (2026-10-15)
 
 One release carrying four pull requests: the agent can save an email as a draft and send one only on its owner's own instruction (#228, written as 0.68.5); the plugin's second copy of a channel stands aside when the session already runs the checkout (#231, written as 0.68.5); two deliveries submitted together open their private turn (#232, written as 0.68.7); and shared agents Phase 0, the plugin half (#233). Where they meet, found merging them:
