@@ -1,0 +1,265 @@
+{
+  "status": "Qualified scoped cadence repair; successor real composed acceptance pending",
+  "productCommit": "cb50541350dd42359411fccc118d904ab3dbfae3",
+  "sourcePins": {
+    "lib/browser-profile-active-backup.mjs": "078e03cfbc3377c91dd7952f6961331eb14f06f58bc60ef276380b008a1ed0f8",
+    "test/browser-profile-active-backup.test.ts": "0b445bf10713b4b56bf0e86d68dbc446ad0df1ee94238b55f78b395fbd03c6c3"
+  },
+  "change": "Owned timer follows confirmation plus60000ms eligibility and existing automatic cooldown. This is eligibility, not guaranteed capture on protected/busy/unknown pages.",
+  "beforeFix": {
+    "productCommit": "7106437b6ed128a2fd2f9f5fd7339cd756588e1a",
+    "sourceSha256": "8dba6a5095cba6baa9a08b9af65ba217492a421d1c3137f8ebbc2427aba1bb04",
+    "syntheticDelayMs": 250,
+    "directAssertion": true,
+    "exit": 1,
+    "assertion": "Second upload count remains1 instead of2 at the next normal eligibility"
+  },
+  "causalPhysicalTrial": {
+    "integrationCommit": "0c73054e4068df607ae875da813e3b622aef4b7f",
+    "commonCommit": "7106437b6ed128a2fd2f9f5fd7339cd756588e1a",
+    "tests": 73,
+    "passed": 72,
+    "failed": 1,
+    "skipped": 0,
+    "sourceCount": 3887,
+    "sourceUnchanged": true,
+    "failure": "agent_storage_only_second_backup_timeout:state=confirmed,reason=none,upload=confirmed",
+    "firstBackup": "Actual first automatic seal, durable journal and confirmed upload while source active; complete two-snapshot fixture did not finish",
+    "cleanup": {
+      "sourceExit": 0,
+      "remainingWebContents": 0,
+      "runtimeState": "disposed",
+      "agentExit": 1,
+      "containerAbsent": true,
+      "forcedStop": false,
+      "successfulAgentIpcCleanupClaim": false
+    },
+    "notQualifyingFinalAcceptance": true
+  },
+  "focused": {
+    "files": [
+      "test/browser-profile-active-backup.test.ts",
+      "test/browser-profile-companion-backups.test.ts"
+    ],
+    "tests": 34,
+    "passed": 34,
+    "failed": 0,
+    "skipped": 0,
+    "cancelled": 0,
+    "typescriptExit": 0,
+    "typescriptBoundary": "Normal full noEmit command completed0 on frozen two-file source; coherent Linux archive noEmit retained separately"
+  },
+  "mutations": [
+    {
+      "name": "original_fixed_phase",
+      "path": "lib/browser-profile-active-backup.mjs",
+      "pattern": "storage-only cadence follows",
+      "changedLines": [
+        {
+          "line": 35,
+          "loadedLine": "  this.scheduler=new ActiveBackupScheduler({scope,currentContext:()=>this.#context(),client:this.client,journal:this.journal,debounceMs,timeoutMs,onStatus:value=>{if(value.state==='confirmed'&&value.lastConfirmed?.bundleHash&&value.lastConfirmed.bundleHash!==this.#confirmedHash){this.#confirmedHash=value.lastConfirmed.bundleHash;this.#nextDue=Date.now()+60000}onStatus(value)}})"
+        },
+        {
+          "line": 61,
+          "loadedLine": " #armHint(){if(this.#paused||this.#closed||this.#cleanupUnknown||this.#hintTimer!==null)return;const generation=this.#hintGeneration,now=Date.now(),eligible=Math.max(this.#nextDue??now+60000,this.#automaticAfter),timer=setTimeout(()=>{if(generation!==this.#hintGeneration||this.#hintTimer!==timer||this.#paused||this.#closed)return;this.#hintTimer=null;try{this.checkCurrent();this.#dueHint();if(generation===this.#hintGeneration)this.#armHint()}catch{void this.pause().catch(()=>{})}},60000);this.#hintTimer=timer;timer.unref?.()}"
+        }
+      ],
+      "redExit": 1,
+      "directAssertion": true,
+      "restoredExit": 0,
+      "restoredSourceSha256": "078e03cfbc3377c91dd7952f6961331eb14f06f58bc60ef276380b008a1ed0f8",
+      "restoredSelectedTests": 1
+    },
+    {
+      "name": "unused_cancel_not_released",
+      "path": "lib/browser-profile-active-backup.mjs",
+      "pattern": "repeated short command pauses",
+      "changedLines": [
+        {
+          "line": 67,
+          "loadedLine": " pause(){const attempt=this.#automaticAttempt;this.#clearHints();this.#paused=true;this.#pausedDrained=false;this.#stop();return this.whenDrained().then(()=>{this.#pausedDrained=true;void attempt;return Object.freeze({drained:true})})}"
+        }
+      ],
+      "redExit": 1,
+      "directAssertion": true,
+      "restoredExit": 0,
+      "restoredSourceSha256": "078e03cfbc3377c91dd7952f6961331eb14f06f58bc60ef276380b008a1ed0f8",
+      "restoredSelectedTests": 1
+    },
+    {
+      "name": "automatic_cooldown_omitted",
+      "path": "lib/browser-profile-active-backup.mjs",
+      "pattern": "overdue skipped and unknown",
+      "changedLines": [
+        {
+          "line": 60,
+          "loadedLine": " #dueHint(){const now=Date.now();if(this.#nextDue!==null&&now>=this.#nextDue&&true){const previousWork=this.scheduler.physical,attempt={previous:this.#automaticAfter,deadline:now+60000,entered:false,owned:false,work:previousWork};this.#automaticAttempt=attempt;this.#automaticAfter=attempt.deadline;const pending=this.scheduler.captureNow();attempt.work=this.scheduler.physical;attempt.owned=previousWork===null&&attempt.work!==null;void pending.finally(()=>{if(this.#automaticAttempt===attempt&&!(this.#paused&&attempt.owned&&!attempt.entered))this.#automaticAttempt=null}).catch(()=>{})}else this.scheduler.notify()}"
+        }
+      ],
+      "redExit": 1,
+      "directAssertion": true,
+      "restoredExit": 0,
+      "restoredSourceSha256": "078e03cfbc3377c91dd7952f6961331eb14f06f58bc60ef276380b008a1ed0f8",
+      "restoredSelectedTests": 1
+    },
+    {
+      "name": "absolute_due_reset_on_resume",
+      "path": "lib/browser-profile-active-backup.mjs",
+      "pattern": "repeated short command pauses",
+      "changedLines": [
+        {
+          "line": 62,
+          "loadedLine": " start(){if(this.#closed||this.#cleanupUnknown||!this.#pausedDrained)throw fail('profile_backup_cleanup_unknown');const wasPaused=this.#paused;this.#paused=false;try{this.checkCurrent()}catch(error){this.#paused=true;throw error}if(wasPaused){this.scheduler.start();this.#nextDue=Date.now()+60000;this.#dueHint();this.#clearHints();this.#armHint()}return this.status()}"
+        }
+      ],
+      "redExit": 1,
+      "directAssertion": true,
+      "restoredExit": 0,
+      "restoredSourceSha256": "078e03cfbc3377c91dd7952f6961331eb14f06f58bc60ef276380b008a1ed0f8",
+      "restoredSelectedTests": 1
+    },
+    {
+      "name": "timer_upper_bound_omitted",
+      "path": "lib/browser-profile-active-backup.mjs",
+      "pattern": "backward wall clock jump",
+      "changedLines": [
+        {
+          "line": 61,
+          "loadedLine": " #armHint(){if(this.#paused||this.#closed||this.#cleanupUnknown||this.#hintTimer!==null)return;const generation=this.#hintGeneration,now=Date.now(),eligible=Math.max(this.#nextDue??now+60000,this.#automaticAfter),timer=setTimeout(()=>{if(generation!==this.#hintGeneration||this.#hintTimer!==timer||this.#paused||this.#closed)return;this.#hintTimer=null;try{this.checkCurrent();this.#dueHint();if(generation===this.#hintGeneration)this.#armHint()}catch{void this.pause().catch(()=>{})}},Math.max(1,eligible-now));this.#hintTimer=timer;timer.unref?.()}"
+        }
+      ],
+      "redExit": 1,
+      "directAssertion": true,
+      "restoredExit": 0,
+      "restoredSourceSha256": "078e03cfbc3377c91dd7952f6961331eb14f06f58bc60ef276380b008a1ed0f8",
+      "restoredSelectedTests": 1
+    },
+    {
+      "name": "unentered_token_discarded",
+      "path": "lib/browser-profile-active-backup.mjs",
+      "pattern": "unentered due attempt",
+      "changedLines": [
+        {
+          "line": 60,
+          "loadedLine": " #dueHint(){const now=Date.now();if(this.#nextDue!==null&&now>=this.#nextDue&&now>=this.#automaticAfter){const previousWork=this.scheduler.physical,attempt={previous:this.#automaticAfter,deadline:now+60000,entered:false,owned:false,work:previousWork};this.#automaticAttempt=attempt;this.#automaticAfter=attempt.deadline;const pending=this.scheduler.captureNow();attempt.work=this.scheduler.physical;attempt.owned=previousWork===null&&attempt.work!==null;void pending.finally(()=>{if(this.#automaticAttempt===attempt)this.#automaticAttempt=null}).catch(()=>{})}else this.scheduler.notify()}"
+        }
+      ],
+      "redExit": 1,
+      "directAssertion": true,
+      "restoredExit": 0,
+      "restoredSourceSha256": "078e03cfbc3377c91dd7952f6961331eb14f06f58bc60ef276380b008a1ed0f8",
+      "restoredSelectedTests": 1
+    }
+  ],
+  "copiedExecution": {
+    "baseCommit": "fc9a23923b993f522d014b4567922dceb966ccc2",
+    "sourceKind": "Recorded committed archive plus exact frozen two proposed files; unchanged development dependency graph",
+    "baselineTests": 19,
+    "workingSourceUnchanged": true,
+    "restoredSelection": "Each red/restored drill selects one causal test by its exact recorded name pattern; the unmutated full-file baseline contains19tests."
+  },
+  "boundaries": [
+    "No authority, recipient, encryption, source-stop, activation, upload retry or shared scheduler changes",
+    "Only exact owned automatic work cancelled before context may release unused cooldown, after all independent pause cleanup succeeds",
+    "Entered/coalesced/unknown work retains automatic cooldown; unknown upload remains read-only reconciliation",
+    "Native timer waits bounded1..60000ms; backup eligibility and automatic attempt intervals remain60000ms",
+    "Synthetic clock/native/coordinator fixtures plus actual workers retain their boundaries",
+    "Successor real full73 with two automatic backups and packaged Codex qualification remain separate gates",
+    "No production records, deployment or installed-user claim"
+  ],
+  "reproduce": "python scripts/prove-browser-profile-backup-cadence.py --source <configured checkout>",
+  "raw": [
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\backup-cadence-mutations-kxy4es36\\results.json",
+      "sha256": "8718f625c5b03ae7f9ff7e671f15ab5debac6dfbd97f2928b76bb85b8c8bf3b8"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\backup-cadence-mutations-kxy4es36\\absolute_due_reset_on_resume-red.log",
+      "sha256": "a929016bc335f0a82e4a065768b22e772969e25f476ad413a090ce55448f5135"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\backup-cadence-mutations-kxy4es36\\absolute_due_reset_on_resume-restored.log",
+      "sha256": "d1fed79648e1d99a9cfcee76a7aba01d1a4d7d30946e6db0064396a16f850229"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\backup-cadence-mutations-kxy4es36\\automatic_cooldown_omitted-red.log",
+      "sha256": "97a899a05b5c46c633e876be3297ccdbc88df50d9b3a82670cf6fcdba5d70527"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\backup-cadence-mutations-kxy4es36\\automatic_cooldown_omitted-restored.log",
+      "sha256": "1de3b5d8310bf9ad8f28ede346907559d239295c84a79bfe30591e6863611d20"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\backup-cadence-mutations-kxy4es36\\baseline.log",
+      "sha256": "f20c0207828f4e6a43f1e3b27a13d62bfc06ebe887be17894e9a82a459031204"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\backup-cadence-mutations-kxy4es36\\original_fixed_phase-red.log",
+      "sha256": "d0d3191a4a1a833c175ffe0000b8736f311816906496eb5463ba09e8934fede6"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\backup-cadence-mutations-kxy4es36\\original_fixed_phase-restored.log",
+      "sha256": "9947df8c53feed62607e7c11de4197e04480d1c5e04032087acba8e12b3d33c0"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\backup-cadence-mutations-kxy4es36\\timer_upper_bound_omitted-red.log",
+      "sha256": "ebdbe2d2d08fda73891324bb6a5ac0dfc2fa83ca4f0ea0dbfe16a94c6a86a1f2"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\backup-cadence-mutations-kxy4es36\\timer_upper_bound_omitted-restored.log",
+      "sha256": "e679627817cf474c86756b7347d323969fdc1564846dd89d5b029ef1662b6972"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\backup-cadence-mutations-kxy4es36\\unentered_token_discarded-red.log",
+      "sha256": "03771324a69f3ce3e64e54855477aa95616eb1b37e67f4970cea9a8e1f62fc45"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\backup-cadence-mutations-kxy4es36\\unentered_token_discarded-restored.log",
+      "sha256": "9f2fcad8136ecd13b45f8b846ce51fe4b8f44fafed24fbbe76adc9a6aef31a99"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\backup-cadence-mutations-kxy4es36\\unused_cancel_not_released-red.log",
+      "sha256": "80fbd58e2c34b2f6ced6afffe7a1742aef2fd814d355e97c5749be71f8b8286d"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\backup-cadence-mutations-kxy4es36\\unused_cancel_not_released-restored.log",
+      "sha256": "187f70709804ca22cc6f332aaa7ba2a91eb34110d39e66cf5d9a5fa8940271be"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\backup-cadence-a51f2def\\before-fix-red.log",
+      "sha256": "57b5d61802780ca3a90e2197f996c3ee3063635f3154765bf353aab77de1c0a9"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\backup-cadence-a51f2def\\before-fix.json",
+      "sha256": "8beb0406e89203769e7e8f1d631371168560f8b219e246766c8c9752b43ebb13"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\backup-cadence-a51f2def\\focused-final-green.log",
+      "sha256": "80f94dff2c0513eca04490ca260baebf333a22c5e53dc6cce4d98995050203bb"
+    },
+    {
+      "path": "C:\\Users\\karim\\.codex\\worktrees\\browser-profile-sync-proposal\\0000 BGOS Final V2\\.tmp\\browser-profile-sync\\final73-9fefc199\\result.json",
+      "sha256": "c82779094836da9a1fc2639588689599d7ff49f55bb42b9656ba86c2075c14af"
+    },
+    {
+      "path": "C:\\Users\\karim\\.codex\\worktrees\\browser-profile-sync-proposal\\0000 BGOS Final V2\\.tmp\\browser-profile-sync\\final73-9fefc199\\configuration.json",
+      "sha256": "fdb11e354b4db105a218732f95b35df223845bfd932c1896200df02d2dcdcde9"
+    },
+    {
+      "path": "C:\\Users\\karim\\.codex\\worktrees\\browser-profile-sync-proposal\\0000 BGOS Final V2\\.tmp\\browser-profile-sync\\final73-9fefc199\\run.log",
+      "sha256": "a7f37e8a0b4b1afbfbf71ef5296c0eb3b34c9e8b0c1e2cc114aeaa40bac83868"
+    },
+    {
+      "path": "C:\\Users\\karim\\.codex\\worktrees\\browser-profile-sync-proposal\\0000 BGOS Final V2\\.tmp\\browser-profile-sync\\final73-9fefc199\\source\\.tmp\\profile-sync-fresh-dd86d774-f9d3-402a-a618-f124dc9ff44f\\failure.json",
+      "sha256": "139cf6d43886407845d003619351fd477cefe6855b7e8bf18cec540928763f3e"
+    },
+    {
+      "path": "C:\\Users\\karim\\.codex\\worktrees\\browser-profile-sync-proposal\\0000 BGOS Final V2\\.tmp\\browser-profile-sync\\final73-9fefc199\\source\\.tmp\\profile-sync-fresh-dd86d774-f9d3-402a-a618-f124dc9ff44f\\agent-snapshot.json",
+      "sha256": "9657577827de6809feafc7e60745bff52ff779704109db4ccd5b6dc9935f2b2f"
+    },
+    {
+      "path": "C:\\Users\\karim\\.codex\\worktrees\\browser-profile-sync-proposal\\0000 BGOS Final V2\\.tmp\\browser-profile-sync\\final73-9fefc199\\source\\.tmp\\profile-sync-fresh-dd86d774-f9d3-402a-a618-f124dc9ff44f\\browser-prerequisite.json",
+      "sha256": "32383e2e754e3193cf392e87f294d73a50fb28abd0b4f43ab35f4480d984e4ce"
+    }
+  ]
+}
