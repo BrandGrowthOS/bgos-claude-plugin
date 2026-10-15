@@ -47,9 +47,38 @@ function run(label, command, args) {
   return result.status ?? 1
 }
 
-const nodeStatus = nodeFiles.length
-  ? run('node:test family', 'npx', ['tsx', '--test', ...nodeFiles])
-  : 0
+// On Windows `shell: true` sends the command through cmd.exe, which refuses a
+// line over 8,191 characters with "The syntax of the command is incorrect."
+// and runs nothing. The node:test family crossed that at about 262 files
+// (PR #235's Windows job), so there it runs in batches that each stay well
+// under the limit. Elsewhere it stays one run, as before.
+const CMD_LINE_BUDGET = 7000
+
+function batches(list, prefixLength) {
+  if (process.platform !== 'win32') return list.length ? [list] : []
+  const out = []
+  let current = []
+  let length = prefixLength
+  for (const file of list) {
+    if (current.length && length + file.length + 1 > CMD_LINE_BUDGET) {
+      out.push(current)
+      current = []
+      length = prefixLength
+    }
+    current.push(file)
+    length += file.length + 1
+  }
+  if (current.length) out.push(current)
+  return out
+}
+
+let nodeStatus = 0
+const nodeBatches = batches(nodeFiles, 'npx tsx --test'.length)
+nodeBatches.forEach((batch, i) => {
+  const label = nodeBatches.length > 1 ? `node:test family, batch ${i + 1} of ${nodeBatches.length}` : 'node:test family'
+  const status = run(label, 'npx', ['tsx', '--test', ...batch])
+  if (status !== 0) nodeStatus = status
+})
 const bunStatus = bunFiles.length
   ? run('bun:test family', 'bun', ['test', ...bunFiles])
   : 0
