@@ -10,7 +10,7 @@ const root = join(import.meta.dirname, '..'), core = join(root, 'lib/browser-pro
 const manifest = JSON.parse(readFileSync(join(core, 'vendor.json'), 'utf8'))
 test('profile codecs ship exactly the pinned committed bytes and CommonJS boundary', () => {
   assert.deepEqual(readdirSync(core).filter(name => name.endsWith('.js')).sort(), Object.keys(manifest.files).sort())
-  assert.deepEqual(Object.keys(manifest.files).sort(), ['checkpoint-store.js', 'coordinator-client.js', 'crypto.js', 'native-runtime.js', 'portable-state.js', 'resume-tabs.js', 'return-intent.js', 'runtime-endpoint.js', 'runtime-readiness.js', 'runtime-status-client.js', 'stopped-head-stage.js', 'storage.js'])
+  assert.deepEqual(Object.keys(manifest.files).sort(), ['checkpoint-store.js', 'coordinator-client.js', 'crypto.js', 'native-runtime.js', 'portable-state.js', 'profile-file-client.js', 'profile-file-crypto.js', 'profile-file-staging.js', 'profile-file-wire.js', 'resume-tabs.js', 'return-intent.js', 'runtime-endpoint.js', 'runtime-readiness.js', 'runtime-status-client.js', 'stopped-head-stage.js', 'storage.js'])
   assert.match(manifest.sourceCommit, /^[a-f0-9]{40}$/)
   for (const [name, pin] of Object.entries(manifest.files) as Array<[string, any]>) {
     const bytes = readFileSync(join(core, name)); assert.equal(bytes.includes(13), false)
@@ -33,6 +33,10 @@ test('profile codecs ship exactly the pinned committed bytes and CommonJS bounda
   assert.equal(typeof require('../lib/browser-profile-core/checkpoint-store.js').EncryptedCheckpointStore, 'function')
   assert.equal(typeof require('../lib/browser-profile-core/runtime-status-client.js').ProfileRuntimeStatusClient, 'function')
   assert.equal(typeof require('../lib/browser-profile-core/return-intent.js').verifyReturnSourceStopped, 'function')
+  assert.equal(typeof require('../lib/browser-profile-core/profile-file-crypto.js').sealFile, 'function')
+  assert.equal(typeof require('../lib/browser-profile-core/profile-file-wire.js').statusOf, 'function')
+  assert.equal(typeof require('../lib/browser-profile-core/profile-file-client.js').ProfileFileClient.prototype.pendingReviewed, 'function')
+  assert.equal(typeof require('../lib/browser-profile-core/profile-file-staging.js').ProfileFileStaging, 'function')
   assert.match(readFileSync(join(root, '.gitattributes'), 'utf8'), /^lib\/browser-profile-core\/\*\.js text eol=lf$/m)
 })
 test('cross-tree verification reads the declared commit, not a mutable working copy', { skip: !process.env.HOAI_BROWSER_PROFILE_CORE_SOURCE && 'BGOS source checkout not present; local committed pin is always checked' }, () => {

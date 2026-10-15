@@ -1,0 +1,7 @@
+# Separate file core distribution proof
+
+The explicit vendor generator now copies sixteen committed BGOS modules. Four additions are profile-file-crypto.js, profile-file-wire.js, profile-file-client.js and profile-file-staging.js from BGOS commit 17a310c044550f906d1d7df30890d2228486c635. The existing twelve module bytes are unchanged. Electron native dialogs and platform folder policy are excluded. The shared client fixes either human or paired proof at construction; agent composition uses only fresh pairing proof.
+
+With HOAI_BROWSER_PROFILE_CORE_SOURCE pointing to the BGOS feature worktree, node --import tsx --test test/browser-profile-core.vendor.test.ts passes both tests with zero skips. The tests check exact inventory, CommonJS boundary, all exports, every SHA-256 and the actual generator against the declared committed Git ref. node node_modules/typescript/bin/tsc --noEmit exits zero.
+
+One direct executable mutation changes the distributed pending request version from 2 to 3 on the actual client code path. Both integrity and cross-tree checks fail. Exact LF source bytes are restored and the same two tests pass. The adjacent JSON records the changed executable line and restored hash. Canonical runtime behavior has separate BGOS coverage: 70 backend, 79 Node and 14 disposable SQL tests, 24 direct red/restore/green drills and two independent reviews in the reviewed-peer discovery foundation proof. This distribution receipt does not claim agent file-tool wiring, website upload permission, human approval or cross-machine file delivery.
