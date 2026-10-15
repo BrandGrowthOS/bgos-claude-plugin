@@ -485,6 +485,34 @@ function aclFolder(t: any, grants: string[], name = 'profile') {
 }
 const lockedSddl = (me: string) => new RegExp(`^O:${asTrustee(me)}D:P(AI)?\\(A;OICI;FA;;;${asTrustee(me)}\\)$`)
 const windowsOnly = { skip: process.platform !== 'win32' ? 'Windows only (the mocked cases above run everywhere)' : false }
+/**
+ * Whether this token sets a folder's owner with Modify alone, asked the way
+ * the vault asks (.NET SetAccessControl, which enables no privilege). A token
+ * with SeTakeOwnership or SeRestore already enabled can (GitHub's Windows
+ * runner): Modify only cannot be reproduced there, and the vault takes such a
+ * folder over as it always has with Full control. An unelevated user cannot.
+ */
+let takesAnyFolder: boolean | undefined
+function takesAnyFolderOver(t: any): boolean {
+  if (takesAnyFolder === undefined) {
+    const { dir } = aclFolder(t, ['ME:(OI)(CI)M'], 'probe')
+    const r = spawnSync(system32('WindowsPowerShell\\v1.0\\powershell.exe'), ['-NoProfile', '-NonInteractive', '-Command',
+      "$ErrorActionPreference = 'Stop'; $acl = New-Object System.Security.AccessControl.DirectorySecurity; $acl.SetOwner([System.Security.Principal.WindowsIdentity]::GetCurrent().User); [System.IO.Directory]::SetAccessControl($env:VAULT_TEST_FOLDER, $acl)"],
+    { encoding: 'utf8', windowsHide: true, env: { ...process.env, VAULT_TEST_FOLDER: dir } })
+    takesAnyFolder = r.status === 0
+  }
+  return takesAnyFolder
+}
+/** A folder the vault must refuse with Modify alone; a token that takes any folder over gets it locked, as with Full control. */
+function refusedOrTakenOver(dir: string, me: string, before: string, check: (error: any) => void) {
+  if (takesAnyFolder) {
+    assert.doesNotThrow(() => new AgentBrowserVault({ profileDir: dir, scope: 'fixture' }), 'this token takes any folder over, as with Full control')
+    assert.match(securityOf(dir), lockedSddl(me))
+    return
+  }
+  assert.throws(() => new AgentBrowserVault({ profileDir: dir, scope: 'fixture' }), (error: any) => { check(error); return true })
+  assert.equal(securityOf(dir), before)
+}
 
 test('REAL ACL: Modify only, the user\'s own and private: accepted, and locked to the user exactly as with Full control', windowsOnly, t => {
   const { dir, me } = aclFolder(t, ['ME:(OI)(CI)M'])
@@ -510,13 +538,12 @@ test('REAL ACL: a folder name with a non-ASCII letter and a curly quote reaches 
     assert.doesNotThrow(() => new AgentBrowserVault({ profileDir: dir, scope: 'fixture' }), grant)
     assert.match(securityOf(dir), lockedSddl(me), grant)
   }
-  const { dir, before } = aclFolder(t, ['ME:(OI)(CI)M', '*S-1-5-11:(OI)(CI)M'], 'José\u2019s profile')
-  assert.throws(() => new AgentBrowserVault({ profileDir: dir, scope: 'fixture' }), (error: any) => {
+  takesAnyFolderOver(t)
+  const { dir, me, before } = aclFolder(t, ['ME:(OI)(CI)M', '*S-1-5-11:(OI)(CI)M'], 'José\u2019s profile')
+  refusedOrTakenOver(dir, me, before, error => {
     assert.equal(error.reason, 'other_writer', error.detail)
     assert.ok(error.detail.includes(dir), error.detail)
-    return true
   })
-  assert.equal(securityOf(dir), before)
 })
 
 const REAL_WRITERS: Array<[string, string, RegExp]> = [
@@ -526,15 +553,14 @@ const REAL_WRITERS: Array<[string, string, RegExp]> = [
 ]
 for (const [label, grant, named] of REAL_WRITERS) {
   test(`REAL ACL: Modify only and another account can write (${label}): refused with the reason, folder untouched`, windowsOnly, t => {
-    const { dir, before } = aclFolder(t, ['ME:(OI)(CI)M', grant])
-    assert.throws(() => new AgentBrowserVault({ profileDir: dir, scope: 'fixture' }), (error: any) => {
+    takesAnyFolderOver(t)
+    const { dir, me, before } = aclFolder(t, ['ME:(OI)(CI)M', grant])
+    refusedOrTakenOver(dir, me, before, error => {
       assert.equal(error.code, 'unsafe_profile')
       assert.equal(error.reason, 'other_writer')
       assert.match(error.message, /^unsafe_profile: another account can write to the browser profile folder/)
       assert.match(error.detail, named)
-      return true
     })
-    assert.equal(securityOf(dir), before)
   })
 }
 
@@ -549,14 +575,12 @@ test('REAL ACL: Modify only and another account owns the folder: refused with th
     return
   }
   icacls(dir, '/inheritance:r', '/grant:r', `*${me}:(OI)(CI)M`)
-  const before = securityOf(dir)
-  assert.throws(() => new AgentBrowserVault({ profileDir: dir, scope: 'fixture' }), (error: any) => {
+  takesAnyFolderOver(t)
+  refusedOrTakenOver(dir, me, securityOf(dir), error => {
     assert.equal(error.code, 'unsafe_profile')
     assert.equal(error.reason, 'owner_foreign')
     assert.match(error.detail, /Administrators|S-1-5-32-544/)
-    return true
   })
-  assert.equal(securityOf(dir), before)
 })
 
 // ── Where the refusal is reported: the agent's answer and the host log ───────
@@ -583,6 +607,10 @@ test('a refused profile folder tells the agent why (no path), and the host log n
 })
 
 test('REAL ACL: on a Modify-only drive the agent hears that another account can write, and the log names it', windowsOnly, async t => {
+  if (takesAnyFolderOver(t)) {
+    t.skip('this token takes any folder over, so no Modify-only refusal can happen here; the junction case covers the answer and the log')
+    return
+  }
   const agentRoot = realpathSync(mkdtempSync(join(tmpdir(), 'vault-host-')))
   t.after(() => rmSync(agentRoot, { recursive: true, force: true }))
   const logs: string[] = []
