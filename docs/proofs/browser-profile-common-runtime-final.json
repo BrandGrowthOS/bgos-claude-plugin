@@ -1,0 +1,152 @@
+{
+  "status": "qualified scoped common runtime tests; mounted HOAI acceptance separate",
+  "productCommit": "7ecc3fb4cd3f48d6586133616d4eb7236418cf00",
+  "archiveSha256": "d9621dbd9367a59e92a45f52322ce4afee621094c48dea3b1e1873a4a430d035",
+  "runtime": {
+    "uid": 1000,
+    "node": "22.23.3",
+    "playwright": "1.64.1",
+    "playwrightPackage": "/opt/hoai-fresh/node_modules/playwright-core/package.json",
+    "bundleSha256": "829521b67ed7be90c7d6d6098ff39f2241562d47e4ad7ccab13710924a56001d",
+    "nodePath": null
+  },
+  "selection": {
+    "files": [
+      "test/bgos-doctor.test.ts",
+      "test/browser-env.test.ts",
+      "test/browser-host-core.vendor.test.ts",
+      "test/browser-host-supervisor.test.ts",
+      "test/browser-profile-active-backup.test.ts",
+      "test/browser-profile-artifact-inventory.test.ts",
+      "test/browser-profile-artifacts.test.ts",
+      "test/browser-profile-backup-workers.test.ts",
+      "test/browser-profile-cdp-targets.test.ts",
+      "test/browser-profile-companion-backups.test.ts",
+      "test/browser-profile-companion-client.test.ts",
+      "test/browser-profile-companion-downloads.test.ts",
+      "test/browser-profile-companion-fields.test.ts",
+      "test/browser-profile-companion-files.test.ts",
+      "test/browser-profile-companion-host.test.ts",
+      "test/browser-profile-companion-permission.test.ts",
+      "test/browser-profile-companion-state.test.ts",
+      "test/browser-profile-companion-transfer.test.ts",
+      "test/browser-profile-companion.test.ts",
+      "test/browser-profile-core.vendor.test.ts",
+      "test/browser-profile-daemon-stop.test.ts",
+      "test/browser-profile-downloads-failure.test.ts",
+      "test/browser-profile-downloads-runtime.test.ts",
+      "test/browser-profile-downloads.test.ts",
+      "test/browser-profile-engine-selection.test.ts",
+      "test/browser-profile-field-input.test.ts",
+      "test/browser-profile-file-area.test.ts",
+      "test/browser-profile-files.test.ts",
+      "test/browser-profile-kdf.test.ts",
+      "test/browser-profile-live-capture.test.ts",
+      "test/browser-profile-live-read.test.ts",
+      "test/browser-profile-node-runtime.test.ts",
+      "test/browser-profile-pairing-client.test.ts",
+      "test/browser-profile-peer-pins.test.ts",
+      "test/browser-profile-peer-review.test.ts",
+      "test/browser-profile-permission-client.test.ts",
+      "test/browser-profile-portable-extras.test.ts",
+      "test/browser-profile-resume-ledger.test.ts",
+      "test/browser-profile-resume-runtime.test.ts",
+      "test/browser-profile-return-client.test.ts",
+      "test/browser-profile-return-handover.test.ts",
+      "test/browser-profile-rtc-activity.test.ts",
+      "test/browser-profile-runtime-bootstrap.test.ts",
+      "test/browser-profile-runtime-security.test.ts",
+      "test/browser-profile-runtime.test.ts",
+      "test/browser-profile-sdk-pin.test.ts",
+      "test/browser-profile-sync-key-store.test.ts",
+      "test/hoai-browser-host.downloads.test.ts",
+      "test/hoai-browser-host.test.ts",
+      "test/hoai-browser-launch.test.ts",
+      "test/hoai-browser-mcp.profile-runtime.test.ts"
+    ],
+    "count": 51,
+    "derivation": [
+      "git",
+      "diff",
+      "--name-only",
+      "c8f17d0cdc2e484865bd1308f4b244b1325d47a9",
+      "16ca2b40eef31802feff381196bbb48b80b48d16",
+      "--",
+      "test"
+    ],
+    "note": "The preserved selection file contains inherited 418/16ca provenance fields. This run consumes its selected filenames only; exact archive and before/after source hashes establish 7ecc execution. No runtime or test source overlay is applied."
+  },
+  "results": {
+    "tests": 715,
+    "passed": 715,
+    "failed": 0,
+    "skipped": 0,
+    "typescriptExit": 0,
+    "durationSeconds": 215.88142585754395,
+    "sourceCount": 846,
+    "sourceHashesBeforeAfterMatch": true,
+    "rawGitBlobMatches": 845,
+    "gitArchiveAttributeExceptions": [
+      {
+        "path": "bin/hoai.cmd",
+        "archiveSha256": "8f696430435e3167208240d227fd2fb1ef0738bb06fce779d6dea1ac5b780bfe",
+        "gitBlobSha256": "2fd68a7e12b5b194f015ddd32116e57ebf0c1ad4634d12b7e327c14a073d3a3b",
+        "archiveBytes": 252,
+        "gitBlobBytes": 247,
+        "reason": "Git archive applies the committed CRLF export attribute to this Windows command file; LF-normalized bytes are equal."
+      }
+    ],
+    "containerAbsent": true,
+    "forcedStop": false
+  },
+  "limits": [
+    "Not the entire plugin test suite",
+    "No actual HOAI automatic 60 second backup acceptance follows from this unit result",
+    "Synthetic authorization and native doubles retain their source-level boundaries",
+    "The private Linux unit image supplies fixture OS prerequisites, not a clean operating-system installation",
+    "No production login, real human approval, deployment or installed-user claim"
+  ],
+  "rawDirectory": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-909592e0",
+  "raw": [
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-909592e0\\executed-sources.json",
+      "sha256": "9bb01c39774d12949d91c18f02dc7cb04b05ba1cebfc294327079f566f523976"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-909592e0\\mounted.txt",
+      "sha256": "6c31d297477898b4b96076d26a1f98f0029d4708241c63a4f47eb6dbf19e5a13"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-909592e0\\plugin.tar",
+      "sha256": "d9621dbd9367a59e92a45f52322ce4afee621094c48dea3b1e1873a4a430d035"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-909592e0\\run-input.json",
+      "sha256": "9c04439976fca659d862442c199177e839ad87dfdd4683990945b10dc822f15b"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-909592e0\\run-qualification.mjs",
+      "sha256": "0f2b50da27ca75d9940fd6f6321a716e941320fae97699796065e5f25d4dd291"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-909592e0\\run-receipt.json",
+      "sha256": "bef6d6fb2959d907f53588f99ef4d052e216e4d22dd7c67469b94dd9738238ec"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-909592e0\\selected-tests.json",
+      "sha256": "36172351cd74ce29ed65dc25c95d0e5b7cbf4644ea370b21aa473924d8fa780a"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-909592e0\\transport.log",
+      "sha256": "a51d7b9af122d44212fcd0d3c6cd1ebb0ad2ad362254c5ed98e7e80a96210471"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-909592e0\\qualification.json",
+      "sha256": "ca5af5859b39f1c0f2138aeaed0cb7e9f55f6108b42d12712f83d44bf3e33263"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\common-final-tests-909592e0\\root-unit-closure.json",
+      "sha256": "c8e1700fef663b795d2373f39bcc1394cfbf6c9b85beab19f1b8ca176c776a5a"
+    }
+  ]
+}
