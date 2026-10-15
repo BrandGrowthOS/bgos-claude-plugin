@@ -423,6 +423,17 @@ export function assistantIdOrNull(value) {
   return Number.isSafeInteger(n) && n > 0 ? n : null
 }
 
+/**
+ * The agent's name as the frame carries it (the backend sends the
+ * assistant's own name), or null. The cards name the agent with it; null
+ * leaves the naming to the backend, which reads its own record.
+ */
+export function assistantNameOrNull(value) {
+  if (typeof value !== 'string') return null
+  const name = value.trim().slice(0, 60)
+  return name || null
+}
+
 /** ~/.bgos-agent, where every per-agent folder of this machine lives. */
 export function defaultAgentRoot(home = homedir()) {
   return join(home, '.bgos-agent')
@@ -1651,7 +1662,9 @@ export class BrowserHostCore {
       }
     }
     const wait = waitSecondsFrom(waitSeconds)
-    const summary = policy.summarizeToolCall(name, engineArgs)
+    // The words after "<agent> wants to" on the card: the imperative the
+    // desktop's strip prints, never the trail's past tense ("wants to opened").
+    const summary = policy.intentPhrase(name, engineArgs, { kind: decision.gate, origin: classification.origin ?? null })
     // A download ask the page raised is not the agent's: its action waits for
     // it (at most its 60 s) rather than being told the browser is busy. The
     // wait comes out of this call's own budget: the relay cuts a call at
@@ -1941,7 +1954,7 @@ export class RelaySessions {
       return relayError('bad_frame', 'This relay client already speaks for another agent; a frame cannot change the assistant it speaks for.')
     }
     try {
-      const entry = await this._entry(clientId, { assistantId, principal: principal.principal })
+      const entry = await this._entry(clientId, { assistantId, assistantName: assistantNameOrNull(f.assistantName), principal: principal.principal })
       entry.lastSeenAt = Date.now()
       const hasId = message.id !== undefined && message.id !== null
       if (!hasId) {

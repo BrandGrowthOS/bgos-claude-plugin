@@ -2,6 +2,16 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.69.1 (2026-10-15)
+
+**The agent's browser cards read right (mission 150 goal 12, the wording step 8 of BGOS #2432 failed on).** Three causes, each fixed where the text is built:
+
+- **The cards name the agent.** The browser host dropped the relay frame's `assistantName` (`bin/hoai-browser-host.mjs`, `RelaySessions.relay`), so every card and every download record said "Your agent". The session context now carries it (`assistantNameOrNull`). A kept file's notice whose record has no name (one written before this fix) sends no name, and the backend names the agent from its own record rather than "Your agent"; inside a summary the fallback reads "your agent", never capitalised mid sentence.
+- **Every verb reads after "wants to".** The host passed the trail's past tense as the card summary ("Sage wants to opened ...", "wants to clicked ..."). It now passes `policy.intentPhrase`, the imperative the desktop's gate strip prints. `lib/browser-host-core/policy.js` is re-vendored from BGOS (the gate words of every tool that can ask: drag, drop, close, highlight, annotate, the mouse tools, one form field); `vendor.json` carries the new hash.
+- **A download card carries its facts.** The ask and the kept notice now send `download` beside the English summary (`stage`, `fileName`, `folder`, `device`, and `keepsIfUnanswered` on an ask or `reason` on a notice; `lib/browser-gate.mjs` forwards it). The app (BGOS, same mission) words the card from them in the owner's language and says in its last line that an unanswered file is kept, not skipped. A backend that predates the field strips it and the card reads as before.
+
+Guards: `test/hoai-browser-host.card-wording.test.ts` (the name through the relay; every verb the host can ask about) and the three download card tests in `test/browser-downloads.test.ts`. No version is published or tagged here.
+
 ## 0.69.0 (2026-10-15)
 
 One release carrying four pull requests: the agent can save an email as a draft and send one only on its owner's own instruction (#228, written as 0.68.5); the plugin's second copy of a channel stands aside when the session already runs the checkout (#231, written as 0.68.5); two deliveries submitted together open their private turn (#232, written as 0.68.7); and shared agents Phase 0, the plugin half (#233). Where they meet, found merging them:
