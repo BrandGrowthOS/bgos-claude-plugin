@@ -1341,6 +1341,9 @@ export class BrowserPool {
           try {
             await engine.start()
           } catch (err) {
+            // The agent hears why a profile folder was refused; the folder and
+            // the accounts involved go to this log only.
+            if (err?.code === 'unsafe_profile') this._log(`the browser on ${paths.profileDir} was refused (${err.reason || 'unsafe_profile'}): ${err.detail || err.message}`)
             try {
               engine.onStartFailed?.()
             } catch {}
