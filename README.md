@@ -256,6 +256,10 @@ The paired daemon starts its browser host automatically. Managed agent-machine p
 
 Chromium keeps its normal sandbox. Linux still needs the browser's operating-system libraries and sandbox support. A missing prerequisite or failed download returns an installation error; HOAI does not install system packages or disable the sandbox. An explicitly configured `HOAI_BROWSER_EXECUTABLE` must name a working installed browser. Unset an invalid override to use automatic provisioning.
 
+First-use installation retains its pending work and private cache marker until physical completion is proved. A logical timeout or stop request does not permit another installer to start. `--check` is a read-only observation and returns nonzero for pending or recovery-required installation, including when a separate installed Chrome is discovered. Without that recovery condition, ordinary installed-browser selection is unchanged.
+
+For `browser_install_recovery_required`, do not retry automatically or delete the marker because its owner PID is dead or the CLI later exits successfully. The machine operator must verify that the original installer and downloader have ended and their original output pipes have closed before explicitly recovering the cache. Normal acceptance requires the pinned installer sources, original successful exit and close, pipe EOF and complete installation marker; it is not proof about every OS descendant. After an installer starts, abnormal cleanup is automatically accepted only with the supported Linux process-group absence proof. Other unknown outcomes retain recovery-required state.
+
 On Linux, inspect missing dependencies from the installed plugin directory with its pinned CLI:
 
 ```bash

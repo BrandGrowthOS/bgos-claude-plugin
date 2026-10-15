@@ -8,6 +8,8 @@ Supported agent storage requires Linux with an unlocked persistent Secret Servic
 
 The default managed browser comes from the plugin's pinned Playwright revision and runs sandboxed. An explicit executable override must pass the same exact native qualification. Arbitrary browser versions, active transport histories, uncommitted site drafts and unfinished login are not promised portable. Cookies and supported website state move as encrypted checkpoints. The actual page, network request and JavaScript process do not teleport.
 
+Browser installation has a separate physical lifetime from the requesting tool call. A timeout or daemon stop retains the original pending work and cache recovery marker until cleanup is proved, and never authorizes an overlapping retry. The read-only `--check` returns nonzero for pending or recovery-required installation, including when an unrelated installed Chrome exists. Do not clear that marker based only on a dead PID or late successful CLI exit. The machine operator must independently verify the original installer, downloader and output-pipe completion before explicit cache recovery. Normal pinned-installer completion and the supported Linux abnormal process-group proof are distinct checks; neither promises blanket OS descendant cleanup. Installation recovery does not grant device enrollment, background access or a profile session.
+
 ## Review the source machine
 
 A foreign checkpoint requires a locally reviewed source key. A source identity supplied by HOAI metadata alone cannot create that trust. HOAI exports public JSON with these exact fields:
