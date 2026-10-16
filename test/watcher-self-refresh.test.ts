@@ -13,8 +13,16 @@
  * observeMarketplaceInstall, and the real bundle installer. No job is ever sent
  * unless a test says so.
  *
+ * The window and process layer is always a fake (test/helpers/fake-window-host.ts, through the
+ * harness): a refresh that does not end the loop goes on to the windows pass, which on win32 lists
+ * every process and closes every HOAI viewer it lists while Show agent windows is off. The sentinel,
+ * imported first, refuses any real listing, signal or launch that still gets through, so this file
+ * is safe to run on the owner's own computer (board row afa70b0c, test/watcher-real-os.guard.test.ts).
+ *
  * Run: npx tsx --test test/watcher-self-refresh.test.ts
  */
+
+import './helpers/real-os-sentinel.ts'
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -385,13 +393,16 @@ test('the real bundle of this checkout is staged, passes the real probe under th
   const repo = dirname(dirname(fileURLToPath(import.meta.url)))
   const base = mkdtempSync(join(tmpdir(), 'watcher-self-refresh-'))
   try {
-    const { code, platform, live, execs, spawns } = await realFilesRun(repo, base)
+    const { code, platform, live, execs, spawns, host } = await realFilesRun(repo, base)
     assert.equal(code, platform === 'win32' ? 0 : EXIT_SELF_REFRESH)
     assert.deepEqual(execs, [[process.execPath, join(live, 'next', 'bin', 'hoai-watcher.mjs'), 'help']], 'the real probe ran once')
     assert.equal(readFileSync(join(live, 'bin', 'hoai-watcher.mjs'), 'utf8'), readFileSync(join(repo, 'bin', 'hoai-watcher.mjs'), 'utf8'))
     assert.equal(readFileSync(join(live, 'lib', 'watcher-core.mjs'), 'utf8'), readFileSync(join(repo, 'lib', 'watcher-core.mjs'), 'utf8'))
     assert.equal(JSON.parse(readFileSync(join(live, 'manifest.json'), 'utf8')).pluginRoot, repo)
     assert.deepEqual(spawns, platform === 'win32' ? ['wscript.exe'] : [])
+    // A refresh that ends the loop never reaches its windows pass: nothing listed, nothing signalled.
+    assert.deepEqual(host.listings, [])
+    assert.deepEqual(host.kills, [])
   } finally {
     rmSync(base, { recursive: true, force: true })
   }

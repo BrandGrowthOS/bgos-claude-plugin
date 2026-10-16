@@ -3,13 +3,22 @@
  * installed_plugins.json, the real loop (runWatcher) run once over it, and the real files run of
  * this checkout's own bundle. A module of its own so test/watcher-real-os.guard.test.ts can drive
  * the very same deps through the self-refresh failure path without running that file's tests.
+ *
+ * The window and process layer is always the fake one (test/helpers/fake-window-host.ts): when a
+ * self refresh does not end the loop it goes on to the windows pass, which on win32 lists every
+ * process and closes every HOAI viewer it lists while Show agent windows is off. Every exec other
+ * than the staged bundle probe, and every kill, is answered by the fake; the sentinel (first
+ * import) refuses anything that still reaches the real layer (board row afa70b0c).
  */
+
+import './real-os-sentinel.ts'
 
 import { join } from 'node:path'
 
 import { runWatcher } from '../../lib/watcher-core.mjs'
 import { WATCHER_BUNDLE_FILES, installWatcherBundle, nodeExec, nodeFs } from '../../lib/watcher-bundle.mjs'
 import { observeMarketplaceInstall } from '../../lib/plugin-cli.mjs'
+import { fakeWindowHost, type FakeWindowHost } from './fake-window-host.ts'
 import { memoryFs, type MemoryFs } from './memory-fs.ts'
 
 export const T0 = Date.parse('2026-10-11T08:00:00.000Z')
@@ -95,8 +104,13 @@ export function fakeBackend(opts: { frames?: any[]; jobs?: Record<string, any> }
 }
 
 /** One watcher process over `fs`: the real loop, once, with the lifecycle modules a job would use stubbed. */
-export function watcherRun(L: Layout, fs: MemoryFs, opts: { now?: number; probeCode?: number; backend?: ReturnType<typeof fakeBackend>; modules?: Record<string, unknown>; spawnPid?: number | null } = {}) {
+export function watcherRun(
+  L: Layout,
+  fs: MemoryFs,
+  opts: { now?: number; probeCode?: number; backend?: ReturnType<typeof fakeBackend>; modules?: Record<string, unknown>; spawnPid?: number | null; host?: FakeWindowHost } = {},
+) {
   let nowMs = opts.now ?? T0
+  const host = opts.host ?? fakeWindowHost()
   const execs: Array<{ file: string; args: string[] }> = []
   const spawns: Array<{ file: string; args: string[] }> = []
   const logs: string[] = []
@@ -107,11 +121,14 @@ export function watcherRun(L: Layout, fs: MemoryFs, opts: { now?: number; probeC
     platform: L.platform,
     fetch: backend.fetch,
     fs,
-    exec: async (file: string, args: readonly string[]) => {
+    exec: async (file: string, args: readonly string[], execOpts?: unknown) => {
       execs.push({ file, args: [...args] })
       const probe = args[args.length - 1] === 'help'
-      return { code: probe ? opts.probeCode ?? 0 : 0, stdout: '', stderr: '', error: null, timedOut: false }
+      if (probe) return { code: opts.probeCode ?? 0, stdout: '', stderr: '', error: null, timedOut: false }
+      // Anything else (the windows pass's process listing above all) is the fake layer's.
+      return host.exec(file, args, execOpts)
     },
+    kill: host.kill,
     spawnDetached: (file: string, args: readonly string[]) => {
       spawns.push({ file, args: [...args] })
       return { pid: opts.spawnPid === undefined ? 4343 : opts.spawnPid }
@@ -148,6 +165,7 @@ export function watcherRun(L: Layout, fs: MemoryFs, opts: { now?: number; probeC
     spawns,
     logs,
     backend,
+    host,
     advance: (ms: number) => {
       nowMs += ms
     },
@@ -160,9 +178,12 @@ export const stateOf = (L: Layout, fs: MemoryFs) => JSON.parse(fs.readFile(at(L,
 /**
  * The real files run: an old bundle installed from the checkout at `repo` as a clone (its manifest
  * names the checkout) under `base`/home, and the real loop run once over the real filesystem, the
- * staged copy probed by the real exec under this node.
+ * staged copy probed by the real exec under this node. Only that probe reaches the real exec
+ * (`probe: 'fails'` answers it as a bundle that does not load, without running it); every other
+ * exec, and every kill, is the fake layer's, whatever the platform.
  */
-export async function realFilesRun(repo: string, base: string) {
+export async function realFilesRun(repo: string, base: string, opts: { platform?: 'win32' | 'darwin'; probe?: 'real' | 'fails'; host?: FakeWindowHost } = {}) {
+  const host = opts.host ?? fakeWindowHost()
   const home = join(base, 'home')
   const live = join(home, '.bgos-agent', 'watcher')
   const fs = nodeFs()
@@ -175,17 +196,23 @@ export async function realFilesRun(repo: string, base: string) {
   const execs: string[][] = []
   const realExec = nodeExec()
   // Linux is told it is darwin here: the cgroup guard would read this test runner's own cgroup.
-  const platform = process.platform === 'win32' ? 'win32' : 'darwin'
+  const platform = opts.platform ?? (process.platform === 'win32' ? 'win32' : 'darwin')
+  const stagedProbe = join(live, 'next', 'bin', 'hoai-watcher.mjs')
   const code = await runWatcher({
     home,
     env: { USER: 'kc' },
     platform,
     fetch: fakeBackend().fetch as any,
     fs,
-    exec: (file: string, args: readonly string[], opts?: any) => {
+    exec: async (file: string, args: readonly string[], execOpts?: any) => {
       execs.push([file, ...args])
-      return realExec(file, args, opts)
+      if (file === process.execPath && args.length === 2 && args[0] === stagedProbe && args[1] === 'help') {
+        if (opts.probe === 'fails') return { code: 1, stdout: '', stderr: 'the staged bundle does not load (this test)', error: null, timedOut: false }
+        return realExec(file, args, execOpts)
+      }
+      return host.exec(file, args, execOpts)
     },
+    kill: host.kill,
     spawnDetached: (file: string) => {
       spawns.push(file)
       return { pid: 4343 }
@@ -203,5 +230,5 @@ export async function realFilesRun(repo: string, base: string) {
     keepAliveSweep: async () => ({ enabled: false, agents: [] }),
     modules: { planMachine: () => ({ verdict: 'nothing_to_do', steps: [] }), executePlan: async () => ({}), observeMarketplaceInstall, runClaudeCli: async () => ({ code: 1 }) },
   } as any)
-  return { code, platform, live, execs, spawns }
+  return { code, platform, live, execs, spawns, host }
 }
