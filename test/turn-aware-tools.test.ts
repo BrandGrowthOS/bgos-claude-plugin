@@ -71,7 +71,8 @@ function session(t: any) {
     if (record) recordPrivateBoundary({ hook_event_name: 'UserPromptSubmit', session_id: 's', cwd, prompt: text }, env)
     tracker.begin({ prompt: text, sessionId: 's' })
   }
-  const stop = () => tracker.end()
+  // The CLI's Stop: the private turn hook closes the marker, then the daemon drains the Stop line.
+  const stop = () => { recordPrivateBoundary({ hook_event_name: 'Stop', session_id: 's', cwd }, env); tracker.end() }
   const call = () => {
     try { return turnAwarePrivateTurn({ tracker, markerPaths, ownerUserId: OWNER }) } catch (err) { return { refused: (err as Error).message } }
   }

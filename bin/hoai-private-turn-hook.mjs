@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // A synchronous boundary for private tools. The existing telemetry hook stays async.
 import { randomUUID } from 'node:crypto'
-import { realpathSync, rmSync } from 'node:fs'
+import { existsSync, realpathSync, rmSync } from 'node:fs'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { findOwnAttachedKey, floorKey, floorStateRoot, sessionFolders } from '../lib/floor-state.mjs'
-import { PRIVATE_TOOL_MATCHER, privateAgentsPath, privateMarkerPath, privatePromptHash, privateUnservedPath, readPrivateJson, writePrivateJson } from '../lib/private-turn.mjs'
+import { PRIVATE_TOOL_MATCHER, privateAgentsPath, privateMarkerPath, privatePromptHash, privateTurnRecord, privateUnservedPath, readPrivateJson, writePrivateJson } from '../lib/private-turn.mjs'
 
 const envText = (env, name) => (env && typeof env[name] === 'string' ? env[name].trim() : '')
 
@@ -101,10 +101,18 @@ export function recordPrivateBoundary(payload, env = process.env, report = () =>
   // promptId: the CLI's prompt_id, shared by every hook of one submission, so the daemon can tell a second hook
   // source re-stamping this marker from the same words submitted again (lib/private-turn.mjs current).
   const promptId = typeof payload?.prompt_id === 'string' ? payload.prompt_id.trim().slice(0, 128) : ''
+  const turnId = randomUUID()
+  // A prompt records the CLI turn it belongs to, from the marker before it (lib/private-turn.mjs privateTurnRecord):
+  // this hook runs in step with the CLI, the forwarder lines the daemon reads do not (board row f81a527c).
+  const previous = event === 'UserPromptSubmit' ? readPrivateJson(path, 2048) : null
+  const record = event === 'UserPromptSubmit'
+    ? privateTurnRecord({ previous, previousUnreadable: previous === null && existsSync(path), sessionId, prompt: payload.prompt, turnId })
+    : {}
   const marker = {
-    schemaVersion: 1, turnId: randomUUID(), sessionId,
+    schemaVersion: 1, turnId, sessionId,
     promptHash: privatePromptHash(payload.prompt), live: event === 'UserPromptSubmit',
     ...(promptId ? { promptId } : {}),
+    ...record,
   }
   writePrivateJson(path, marker)
   if (notePath && event === 'UserPromptSubmit') {
