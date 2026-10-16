@@ -464,6 +464,8 @@ function observedFrameFixture(options: any = {}) {
       calls.push({ method, params }); await options.command?.(method, params)
       if (method === 'Target.getTargetInfo') return { targetInfo: { type: targetType, targetId, browserContextId: nativeContextId, url: main.nativeURL } }
       if (method === 'Page.getFrameTree') return { frameTree: structuredClone(tree(main)) }
+      if (options.ownerNode && method === 'DOM.getFrameOwner') { const value=frames.find(value=>value.id===params.frameId);assert.ok(value);value.ownerBackend ||= 1000+frames.indexOf(value);return {backendNodeId:value.ownerBackend} }
+      if (options.ownerNode && method === 'DOM.describeNode') { const value=frames.find(value=>value.ownerBackend===params.backendNodeId);assert.ok(value);return {node:{nodeType:1,nodeName:value.ownerName || 'IFRAME',localName:value.ownerName==='FENCEDFRAME'?'fencedframe':'iframe',backendNodeId:value.ownerBackend,frameId:value.ownerFrame || value.id}} }
       if (method === 'Storage.getStorageKeyForFrame') {
         const value = frames.find(value => value.id === params.frameId); assert.ok(value); lastFrame = value
         const storageKey = typeof options.storageKey === 'function' ? options.storageKey(value) : options.storageKey === undefined ? value.securityOrigin + '/' : options.storageKey
@@ -716,4 +718,87 @@ test('initial empty native key rejects loader or authority replacement while its
     finally { release?.(true); await f.drain() }
     assert.equal(marker.qualified, false, mode); await assert.rejects(f.runtime.assertMovable())
   }
+})
+
+
+test('156 URL-derived blank security origin needs its actual original literal key', async () => {
+  const f=await activeObservedFrames({storageKey:(value:any)=>(value.currentURL==='about:blank'?new URL(value.parent.url()).origin:value.securityOrigin)+'/'}), child=f.attach('about:blank');child.securityOrigin='://';await f.drain()
+  assert.equal(f.runtime.markers.at(-1).qualified,true);assert.equal(f.runtime.markers.at(-1).qualification,undefined);assert.equal((await f.runtime.assertMovable()).origins.length,1)
+})
+test('156 original empty native URL can prove its own inherited literal key without a dummy loader', async () => {
+  const f=await activeObservedFrames({storageKey:(value:any)=>(value.currentURL===''?new URL(value.parent.url()).origin:value.securityOrigin)+'/'}),child=f.attach();child.nativeURL='';child.securityOrigin='://';await f.drain()
+  assert.equal(f.runtime.markers.at(-1).qualified,true);assert.equal(f.runtime.markers.at(-1).qualification,undefined)
+})
+test('overtaken initial construction is covered by original parent namespace, not the later child key', async () => {
+  const f=await activeObservedFrames({ownerNode:true}),child=f.attach(),initial=f.runtime.markers.at(-1);f.navigate(child,'https://same.test:555/child');await f.drain()
+  assert.equal(initial.qualified,true);assert.equal(initial.qualification,'initial-portable-state-covered');assert.deepEqual((await f.runtime.assertMovable()).origins,['https://same.test:444','https://same.test:555']);assert.equal(f.calls.some((x:any)=>x.method==='DOM.getFrameOwner'),true)
+})
+test('initial coverage waits for the exact original parent native key proof',async()=>{
+  let held=false,release:any,block=true
+  const f=observedFrameFixture({ownerNode:true,storage(value:any){if(!value.parent&&block)return new Promise(resolve=>{held=true;release=resolve})}});await f.runtime.activate({});f.page.emit('framenavigated',f.main)
+  for(let n=0;n<100&&!held;n++)await tick();assert.equal(held,true)
+  const child=f.attach(),initial=f.runtime.markers.at(-1);f.navigate(child,'https://same.test:555/child');await tick();assert.equal(initial.qualified,false);assert.ok(f.runtime.frameJobs.size>0)
+  block=false;release(true);await f.drain();assert.equal(initial.qualified,true);assert.equal(initial.qualification,'initial-portable-state-covered')
+})
+test('current ordinary owner metadata cannot erase a known nonliteral or opaque original initial key',async()=>{
+  for(const mode of ['nonce','opaque']){
+    let held=false,release:any
+    const f=await activeObservedFrames({ownerNode:true,storageKey:(value:any)=>value.currentURL===''?'https://same.test:444/^1nonce^2other':value.securityOrigin+'/',storage(value:any){if(value.currentURL==='')return new Promise((resolve,reject)=>{held=true;release=()=>mode==='opaque'?reject(new Error('Frame corresponds to an opaque origin')):resolve(true)})}}),child=f.attach(),initial=f.runtime.markers.at(-1)
+    child.ownerAttributes=mode==='opaque'?['sandbox','']:['credentialless',''];for(let n=0;n<100&&!held;n++)await tick();assert.equal(held,true);child.ownerAttributes=[];f.navigate(child,'https://same.test:555/child');release();await f.drain();assert.equal(initial.qualified,false,mode);await assert.rejects(f.runtime.assertMovable())
+  }
+})
+test('parent coverage refuses fenced or unknown owners, owner replacement and parent-document replacement',async()=>{
+  for(const mode of ['fenced','wrong-child','owner-replaced','parent-loader','parent-generation','authority','custom-version']){
+    let f:any,lookups=0
+    f=await activeObservedFrames({ownerNode:true,command(method:string){if(method==='DOM.getFrameOwner'){
+      lookups++;const child=f.frames.at(-1)
+      if(mode==='fenced')child.ownerName='FENCEDFRAME'
+      if(mode==='wrong-child')child.ownerFrame='foreign-frame'
+      if(mode==='owner-replaced'&&lookups===2)child.ownerBackend++
+      if(mode==='parent-loader')f.main.loaderId='replacement-loader'
+      if(mode==='parent-generation')f.page.emit('framenavigated',f.main)
+      if(mode==='authority')f.runtime.authority=Object.freeze({...f.runtime.authority,grantVersion:99})
+    }}})
+    if(mode==='custom-version')f.runtime.browserVersion='157.0.8103.0'
+    const child=f.attach(),initial=f.runtime.markers.at(-1);f.navigate(child,'https://same.test:555/child');await f.drain();assert.equal(initial.qualified,false,mode);await assert.rejects(f.runtime.assertMovable())
+  }
+})
+test('a nonliteral original parent cannot cover an initial child even after an ordinary child commit',async()=>{
+  const f=await activeObservedFrames({ownerNode:true,storageKey:(value:any)=>value.currentURL.includes('/parent')?'https://same.test:555/^1nonce^2other':value.securityOrigin+'/'}),parent=await qualifiedObservedChild(f);f.navigate(parent,'https://same.test:555/parent');await f.drain();assert.equal(f.runtime.markers.at(-1).qualified,false)
+  const child=f.attach('',parent),initial=f.runtime.markers.at(-1);f.navigate(child,'https://same.test:555/child');await f.drain();assert.equal(initial.qualified,false);await assert.rejects(f.runtime.assertMovable())
+})
+test('initial coverage retains actual owner-command work and rejects a newer child document',async()=>{
+  let held=false,release:any,block=true
+  const f=await activeObservedFrames({ownerNode:true,command(method:string){if(method==='DOM.describeNode'&&block)return new Promise(resolve=>{held=true;release=resolve})}}),child=f.attach(),initial=f.runtime.markers.at(-1);f.navigate(child,'https://same.test:555/first')
+  for(let n=0;n<100&&!held;n++)await tick();assert.equal(held,true);assert.equal(initial.qualified,false);assert.ok(f.runtime.frameJobs.size>0)
+  f.navigate(child,'https://same.test:555/second');block=false;release();await f.drain();assert.equal(initial.qualified,false);await assert.rejects(f.runtime.assertMovable())
+})
+
+
+test('parent coverage binds the complete original native ancestor document chain',async()=>{
+  const f=await activeObservedFrames({ownerNode:true}),parent=await qualifiedObservedChild(f);f.navigate(parent,'https://same.test:555/parent');await f.drain()
+  const child=f.attach('',parent),initial=f.runtime.markers.at(-1);f.navigate(child,'https://same.test:555/child');f.main.loaderId='unreported-new-ancestor-loader';await f.drain();assert.equal(initial.qualified,false);await assert.rejects(f.runtime.assertMovable())
+})
+test('native owner adoption cannot rebind the original iframe to another parent document',async()=>{
+  let f:any,other:any,moved=false
+  f=await activeObservedFrames({ownerNode:true,command(method:string){if(method==='DOM.describeNode'&&!moved){moved=true;f.frames.at(-1).nativeParent=other}}});other=await qualifiedObservedChild(f);f.navigate(other,'https://same.test:555/other');await f.drain()
+  const child=f.attach(),initial=f.runtime.markers.at(-1);f.navigate(child,'https://same.test:555/child');await f.drain();assert.equal(initial.qualified,false);await assert.rejects(f.runtime.assertMovable())
+})
+
+
+test('parent namespace covers only first observed construction, never a repeated attached frame',async()=>{
+  for(const previous of ['initial-generation-zero','committed-generation']){
+    const f=await activeObservedFrames({ownerNode:true}),child=await qualifiedObservedChild(f)
+    if(previous==='committed-generation'){f.navigate(child,'https://same.test:555/old');await f.drain()}
+    child.currentURL='';child.nativeURL='';child.securityOrigin='://';f.page.emit('frameattached',child);const repeated=f.runtime.markers.at(-1);f.navigate(child,'https://same.test:555/new');await f.drain()
+    assert.equal(repeated.qualified,false,previous);await assert.rejects(f.runtime.assertMovable())
+  }
+})
+
+
+test('overtaken sandbox-opaque construction is labelled portable-state coverage, never literal key proof',async()=>{
+  let initialKeyCommands=0
+  const f=await activeObservedFrames({ownerNode:true,storageKey(value:any){if(value.parent&&value.currentURL===''){initialKeyCommands++;throw new Error('Frame corresponds to an opaque origin')}return value.securityOrigin+'/'}}),child=f.attach(),initial=f.runtime.markers.at(-1)
+  child.nativeURL='';child.securityOrigin='null';child.ownerAttributes=['sandbox',''];child.ownerAttributes=[];f.navigate(child,'https://same.test:555/ordinary');await f.drain()
+  assert.equal(initialKeyCommands,0,'opaque initial result was not observed; known opaque remains a separate terminal negative');assert.equal(initial.qualified,true);assert.equal(initial.qualification,'initial-portable-state-covered');assert.equal(initial.origin,'https://same.test:444');assert.equal(f.calls.some((x:any)=>x.method==='DOM.getFrameOwner'),true);assert.deepEqual((await f.runtime.assertMovable()).origins,['https://same.test:444','https://same.test:555'])
 })
