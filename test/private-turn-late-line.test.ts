@@ -62,7 +62,7 @@ import {
   writePrivateJson,
 } from '../lib/private-turn.mjs'
 
-// Exports new in 0.69.7 are read through the namespace, so on a build without them only the tests that need them fail.
+// Exports new in 0.69.8 are read through the namespace, so on a build without them only the tests that need them fail.
 const { PRIVATE_TURN_TAGS_MAX, privateTokenTag, privateTurnRecord } = privateTurn as any
 
 const OWNER = 'user_owner945'
