@@ -106,7 +106,7 @@ export function recordPrivateBoundary(payload, env = process.env, report = () =>
   // this hook runs in step with the CLI, the forwarder lines the daemon reads do not (board row f81a527c).
   const previous = event === 'UserPromptSubmit' ? readPrivateJson(path, 2048) : null
   const record = event === 'UserPromptSubmit'
-    ? privateTurnRecord({ previous, previousUnreadable: previous === null && existsSync(path), sessionId, prompt: payload.prompt, turnId })
+    ? privateTurnRecord({ previous, previousUnreadable: previous === null && existsSync(path), previousMissing: previous === null && !existsSync(path), sessionId, prompt: payload.prompt, turnId, promptId })
     : {}
   const marker = {
     schemaVersion: 1, turnId, sessionId,
