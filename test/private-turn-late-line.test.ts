@@ -792,6 +792,40 @@ test('a recipient message that reaches the daemon while the marker cannot be rea
   }
 })
 
+test('a turn whose earlier prompts the marker cannot list bars the owner: a marker before it that could not be read, past the tag limit, or with no tags', (t) => {
+  {
+    const c = cli(t)
+    c.stopHook()
+    writeFileSync(c.markerPaths[0]!, '{ not json')
+    c.prompt(c.card(OWNER, '1'))()
+    assert.equal(readPrivateJson(c.markerPaths[0]!, 2048)?.unsure, true)
+    assert.equal(c.gated(), 'refused', 'unsure')
+  }
+  {
+    const c = cli(t)
+    c.stopHook()
+    let last: () => string = () => ''
+    for (let n = 0; n <= PRIVATE_TURN_TAGS_MAX; n++) last = c.prompt(c.card(OWNER, '1'))
+    last()
+    assert.equal(readPrivateJson(c.markerPaths[0]!, 2048)?.tagsLost, true)
+    assert.equal(c.gated(), 'refused', 'past the tag limit, even when every prompt was the owner\'s')
+  }
+  {
+    const c = cli(t)
+    const card = c.card(OWNER, '1')
+    c.prompt(card)()
+    assert.equal(c.gated(), OWNER, 'the same turn, recorded in full')
+    c.tracker.end()
+    const again = c.card(OWNER, '1')
+    const begin = c.prompt(again)
+    const marker = readPrivateJson(c.markerPaths[0]!, 2048)
+    delete marker.tags
+    writePrivateJson(c.markerPaths[0]!, marker)
+    begin()
+    assert.equal(c.gated(), 'refused', 'a recorded turn without its tags')
+  }
+})
+
 test('the marker records the CLI turn: one turn until a Stop, the gap it followed, each prompt\'s token by tag, never the token', () => {
   const token = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
   const card = (n: number) => `card ${n}\n<hoai-private-turn id="${token(n)}"/>`
