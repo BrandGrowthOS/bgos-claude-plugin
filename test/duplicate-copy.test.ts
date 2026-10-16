@@ -20,7 +20,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -36,6 +36,7 @@ import {
   duplicateCopyInstructions,
   serveDuplicateCopy,
 } from '../lib/pair-required-server.mjs'
+import { linkFolder } from './helpers/links.ts'
 
 const OWN_SPEC = 'plugin:hoai@hoai'
 const sibling = { root: '/home/karim/bgos-claude-plugin' }
@@ -97,7 +98,7 @@ test('a relative server.ts path resolves against the folder, and a symlinked che
   assert.ok(findSiblingClone({ cwd: f.cwd, ownRoot: f.cache }))
   // The "checkout" is this very copy through a link: not a sibling.
   const alias = join(f.root, 'alias')
-  symlinkSync(f.cache, alias)
+  linkFolder(f.cache, alias)
   writeFileSync(join(f.cache, 'server.ts'), '// own\n')
   writeFileSync(join(f.cwd, '.mcp.json'), JSON.stringify(registers(join(alias, 'server.ts'))))
   assert.equal(findSiblingClone({ cwd: f.cwd, ownRoot: f.cache }), null)

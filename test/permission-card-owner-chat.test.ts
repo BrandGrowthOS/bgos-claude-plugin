@@ -29,6 +29,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import ts from 'typescript'
+import { errorBodyText } from '../lib/error-body.ts'
 import * as peerRefusal from '../lib/peer-refusal.ts'
 import { createRefusedChats, pickPermissionChat } from '../lib/peer-refusal.ts'
 import * as permissionRelay from '../lib/permission-relay.ts'
@@ -377,7 +378,7 @@ test('bgosPost carries the whole refusal body, so the backend sentence is read p
   const err = await execute(`${httpErrorSource}\n${bgosPostSource}\nreturn bgosPost('messages', { chatId: 20 }).then(() => null, (e) => e);`, {
     API_BASE: 'https://hoai.invalid/api/v1', HTTP_TIMEOUT_MS: 1000, AUTH: {}, ASSISTANT_ID: '900', authHeaders: () => ({}),
     messagesCallerHeaders: () => ({}), meetingChatIds: new Set(), peerConvByChat: new Map(), closedPeerChats: new Set(), a2aRouteRefusedChats: new Set(),
-    classifyPeerRefusal: peerRefusal.classifyPeerRefusal,
+    classifyPeerRefusal: peerRefusal.classifyPeerRefusal, errorBodyText,
     bgosCall: async (_call: unknown, consume: (res: any) => Promise<unknown>) => consume({ ok: false, status: 403, text: async () => body }),
   })
   assert.ok(err instanceof Error)

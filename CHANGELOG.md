@@ -2,7 +2,7 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
-## 0.69.4 (2026-10-15)
+## 0.69.5 (2026-10-16)
 
 **Every per-agent service is named after the HOME it was installed from, so a daemon or watcher in a scratch or second HOME holding the same agent's credentials can never re-register, start, stop or remove the owner's real agent (HOAI board row d6198bb6, mission 154 goal 8).** 0.69.2 scoped the per-machine watcher's service (#237); the agents' services were still named by agent id alone.
 
@@ -17,6 +17,16 @@ Notable changes to the HOAI Claude Code plugin.
 - **Unchanged:** an explicit install (create_agent, the sweep's install of an agent with no task) registers the task enabled and starts it when asked, as before; the task's settings and the launcher's launch apart from the name, its description and the `USERPROFILE` pin; the plist and unit contents apart from the label or unit name and run.sh's baked tmux socket; supervisor generation 2; the restart ladder's tiers and limits; a HOME with no old registration installs exactly as before. Agent names still carry no `HOAI_SERVICE_NAMESPACE`.
 
 Guards: `test/agent-task-win32.home-scope.test.ts` (a faked Task Scheduler for agent tasks, `test/helpers/fake-agent-tasks.ts`, which answers a failed query the way the generated script does), `test/agent-service.home-scope.test.ts` (#237's faked launchd domain and user manager; a symlinked HOME on the host) and `test/bgos-agent.home-scope.test.ts` (bin/bgos-agent run for real on a faked launchd domain, user manager and tmux shared by two HOMEs, `test/helpers/fake-posix-services.mjs`): two HOMEs with the same agent id side by side, a scratch HOME against the owner's 0.69.2 agent (install, start, stop, restart, status, uninstall, the watcher's sweep and the restart ladder), the same-HOME rename (Windows and Linux with no moment without a registration and never two at once; macOS with the new job loaded before the old one goes, from inside the old job's own session too), a foreign or missing old task on Windows, a failed query or `launchctl print`, a symlinked HOME, the rollbacks and the run.sh they put back, a Disabled task kept disabled, refusal of another HOME's record, uninstall of only its own and a blind uninstall refused, the watcher supervising a renamed agent and one not renamed yet; on Windows, PowerShell 5.1 parses the generated task script (parse only). No version is published or tagged here.
+
+## 0.69.4 (2026-10-16)
+
+**A backend refusal reaches the model whole, and the MCP server reports the real plugin version (HOAI board row 81a68f4).** A share recipient's 403 mission refusal reached the model as "...works in that person's chat ins", and the MCP `serverInfo` said 0.19.0 while package.json said 0.69.x.
+
+- **Why.** Every REST helper in `server.ts` threw `text.slice(0, 200)` of the error body, so any backend sentence longer than 200 characters was cut mid-word. The `Server` was built with the literal `{ name: 'bgos', version: '0.19.0' }`, never moved.
+- **The fix.** One helper, `errorBodyText` (`lib/error-body.ts`), used by every error site (GET, POST, PUT, PATCH, DELETE, and the peer GET, POST, DELETE). When the body is JSON with a `message` (the NestJS `{message, error, statusCode}` shape), the message is surfaced whole, bounded at 600 characters; a string-array message (validation failures) is joined with `; `. The status code stays in front (`POST 403: ...`). A body that is not JSON, or has no usable message, keeps the old 200 character bound. `HttpError.body` and the peer refusal reader are unchanged. `mcpServerInfo` (`lib/mcp-server-info.ts`) builds `serverInfo` from `RUNNING_VERSION`, the package version the heartbeat reads (`readOwnVersion`).
+- **Unchanged:** the status codes, the error classes, what is retried, and every success path.
+
+Guards: `test/error-body.test.ts` (the real 403 sentence whole, a string-array message joined, an over-long message and a non-JSON or huge body bounded, no `slice(0, 200)` left in `server.ts`, `serverInfo` equal to package.json). No version is published or tagged here.
 
 ## 0.69.3 (2026-10-15)
 

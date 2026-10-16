@@ -522,6 +522,8 @@ import {
   startVersionHeartbeat,
   VERSION_HEARTBEAT_INTERVAL_MS,
 } from './lib/version-heartbeat'
+import { errorBodyText } from './lib/error-body'
+import { mcpServerInfo } from './lib/mcp-server-info'
 import { markConnectionText } from './lib/connection-texts.ts'
 import { createVerdictSender } from './lib/verdict-sender.ts'
 import {
@@ -1220,7 +1222,7 @@ async function bgosGet(
       if (response.status === 304) return NOT_MODIFIED
       if (!response.ok) {
         const text = await response.text().catch(() => '')
-        throw new Error(`GET ${response.status}: ${text.slice(0, 200)}`)
+        throw new Error(`GET ${response.status}: ${errorBodyText(text)}`)
       }
       if (!personal) bgosEtagCache.record(cacheKey, response.headers.get('etag'))
       return response.json()
@@ -1331,7 +1333,7 @@ async function bgosGetCapped(
     async (response) => {
       if (!response.ok) {
         const text = await response.text().catch(() => '')
-        throw new Error(`GET ${response.status}: ${text.slice(0, 200)}`)
+        throw new Error(`GET ${response.status}: ${errorBodyText(text)}`)
       }
       // Read the declared size BEFORE touching the body: the point of the cap
       // is to refuse a giant response, not to buffer it and then complain.
@@ -1468,7 +1470,7 @@ async function bgosPost(
       if (!response.ok) {
         const text = await response.text().catch(() => '')
         throw new HttpError(
-          `POST ${response.status}: ${text.slice(0, 200)}`,
+          `POST ${response.status}: ${errorBodyText(text)}`,
           response.status,
           classifyPeerRefusal(response.status, text),
           text.slice(0, 8192),
@@ -1498,7 +1500,7 @@ async function bgosPatch(path: string, body: Record<string, unknown>, privateHea
     async (response) => {
       if (!response.ok) {
         const text = await response.text().catch(() => '')
-        throw new Error(`PATCH ${response.status}: ${text.slice(0, 200)}`)
+        throw new Error(`PATCH ${response.status}: ${errorBodyText(text)}`)
       }
       return response.json()
     },
@@ -1517,7 +1519,7 @@ async function bgosDelete(path: string, privateHeaders: Record<string, string> =
     async (response) => {
       if (!response.ok) {
         const text = await response.text().catch(() => '')
-        throw new Error(`DELETE ${response.status}: ${text.slice(0, 200)}`)
+        throw new Error(`DELETE ${response.status}: ${errorBodyText(text)}`)
       }
       return response.json()
     },
@@ -2347,7 +2349,7 @@ async function bgosPut(path: string, body: Record<string, unknown>, privateHeade
     async (response) => {
       if (!response.ok) {
         const text = await response.text().catch(() => '')
-        throw new HttpError(`PUT ${response.status}: ${text.slice(0, 200)}`, response.status)
+        throw new HttpError(`PUT ${response.status}: ${errorBodyText(text)}`, response.status)
       }
       return response.json().catch(() => null)
     },
@@ -2379,7 +2381,7 @@ async function bgosPeerGet(path: string, privateHeaders: Record<string, string> 
     async (response) => {
       if (!response.ok) {
         const text = await response.text().catch(() => '')
-        throw new Error(`GET ${response.status}: ${text.slice(0, 200)}`)
+        throw new Error(`GET ${response.status}: ${errorBodyText(text)}`)
       }
       return response.json()
     },
@@ -2411,7 +2413,7 @@ async function bgosPeerPost(path: string, body: Record<string, unknown>, private
     async (response) => {
       if (!response.ok) {
         const text = await response.text().catch(() => '')
-        throw new Error(`POST ${response.status}: ${text.slice(0, 200)}`)
+        throw new Error(`POST ${response.status}: ${errorBodyText(text)}`)
       }
       return response.json()
     },
@@ -2437,7 +2439,7 @@ async function bgosPeerDelete(path: string, privateHeaders: Record<string, strin
     async (response) => {
       if (!response.ok) {
         const text = await response.text().catch(() => '')
-        throw new Error(`DELETE ${response.status}: ${text.slice(0, 200)}`)
+        throw new Error(`DELETE ${response.status}: ${errorBodyText(text)}`)
       }
       // DELETE may return an empty body; tolerate both.
       const raw = await response.text().catch(() => '')
@@ -2674,7 +2676,7 @@ function senderUserIdOf(message: unknown): string {
 // ── MCP Server ───────────────────────────────────────────────────────────────
 
 const mcp = new Server(
-  { name: 'bgos', version: '0.19.0' },
+  mcpServerInfo(RUNNING_VERSION),
   {
     capabilities: {
       tools: {},

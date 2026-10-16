@@ -18,7 +18,7 @@
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
@@ -26,13 +26,14 @@ import { fileURLToPath } from 'node:url'
 
 import { floorKey, floorStateRoot, markFloorAttached, sessionFolders } from '../lib/floor-state.mjs'
 import { privateMarkerPath } from '../lib/private-turn.mjs'
+import { linkFolder } from './helpers/links.ts'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 function aliasOfRepo(): string {
   const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'entry-alias-')))
   const alias = join(scratch, 'alias')
-  symlinkSync(repoRoot, alias)
+  linkFolder(repoRoot, alias)
   return alias
 }
 

@@ -43,6 +43,7 @@ import {
   removeAgentSkill,
   type SkillItem,
 } from '../lib/skills-inventory.ts'
+import { fileSymlinkRefused, linkFolder } from './helpers/links.ts'
 
 const LEAK = 'LEAKED-FILE-CONTENT-must-never-be-read'
 const AWS = 'AKIAIOSFODNN7EXAMPLQ'
@@ -68,12 +69,13 @@ function fixture() {
   skill(join(agent, '.claude', 'skills', 'agent-skill'), 'name: agent-skill\ndescription: Does the agent thing.')
   skill(join(agent, '.claude', 'skills', 'dup-skill'), 'description: The project copy.')
   skill(join(home, 'elsewhere', 'linked-target'), 'description: Reached through a folder link.')
-  symlinkSync(join(home, 'elsewhere', 'linked-target'), join(agent, '.claude', 'skills', 'linked-dir'))
+  linkFolder(join(home, 'elsewhere', 'linked-target'), join(agent, '.claude', 'skills', 'linked-dir'))
   mkdirSync(join(agent, '.claude', 'skills', 'escaper'), { recursive: true })
-  symlinkSync(join(home, 'secret.txt'), join(agent, '.claude', 'skills', 'escaper', 'SKILL.md'))
+  // The two file links only where this account may make one; the tests that read them skip elsewhere.
+  if (!fileSymlinkRefused) symlinkSync(join(home, 'secret.txt'), join(agent, '.claude', 'skills', 'escaper', 'SKILL.md'))
   // a loop and an escaping extra file inside a real skill
-  symlinkSync(join(agent, '.claude', 'skills', 'agent-skill'), join(agent, '.claude', 'skills', 'agent-skill', 'loop'))
-  symlinkSync(join(home, 'secret.txt'), join(agent, '.claude', 'skills', 'agent-skill', 'leak.md'))
+  linkFolder(join(agent, '.claude', 'skills', 'agent-skill'), join(agent, '.claude', 'skills', 'agent-skill', 'loop'))
+  if (!fileSymlinkRefused) symlinkSync(join(home, 'secret.txt'), join(agent, '.claude', 'skills', 'agent-skill', 'leak.md'))
   skill(
     join(agent, '.claude', 'skills', 'runs-cmds'),
     'description: Pre approves tools.\nallowed-tools: Bash(git *)',
@@ -201,7 +203,7 @@ test('a display path is ~/a/b on every OS: Windows separators under the home bec
   assert.equal(displayPath('/opt/skills/x', '/home/kc', '/'), '/opt/skills/x')
 })
 
-test('a symlinked skill folder is followed; a SKILL.md that leaves its folder is never read', () => {
+test('a symlinked skill folder is followed; a SKILL.md that leaves its folder is never read', { skip: fileSymlinkRefused }, () => {
   const f = fixture()
   const { skills } = list(f)
   const linked = byName(skills, 'linked-dir', 'agent')!
@@ -213,7 +215,7 @@ test('a symlinked skill folder is followed; a SKILL.md that leaves its folder is
   assert.ok(!JSON.stringify(skills).includes(LEAK), 'nothing from the escaping target reaches the answer')
 })
 
-test('the size walk survives a loop and does not count a file that leaves the skill', () => {
+test('the size walk survives a loop and does not count a file that leaves the skill', { skip: fileSymlinkRefused }, () => {
   const f = fixture()
   const a = byName(list(f).skills, 'agent-skill', 'agent')!
   assert.equal(a.files, 1, 'SKILL.md only: the loop and the escaping leak.md are not counted')
@@ -396,7 +398,7 @@ test('remove refuses when the skills folder of the agent is a symlinked parent',
   const f = fixture()
   const agent2 = join(f.home, 'agent2')
   mkdirSync(join(agent2, '.claude'), { recursive: true })
-  symlinkSync(join(f.config, 'skills'), join(agent2, '.claude', 'skills'))
+  linkFolder(join(f.config, 'skills'), join(agent2, '.claude', 'skills'))
   const { answer } = remove(f, { name: 'computer-skill', scope: 'agent', path: '~/agent2/.claude/skills/computer-skill' }, agent2)
   assert.equal((answer as any).code, 'scope_refused')
   assert.ok(existsSync(join(f.config, 'skills', 'computer-skill')))
@@ -404,7 +406,7 @@ test('remove refuses when the skills folder of the agent is a symlinked parent',
   skill(join(f.home, 'other-skills', 'victim'), 'description: Not this agent own.')
   const agent4 = join(f.home, 'agent4')
   mkdirSync(join(agent4, '.claude'), { recursive: true })
-  symlinkSync(join(f.home, 'other-skills'), join(agent4, '.claude', 'skills'))
+  linkFolder(join(f.home, 'other-skills'), join(agent4, '.claude', 'skills'))
   const other = remove(f, { name: 'victim', scope: 'agent', path: '~/agent4/.claude/skills/victim' }, agent4)
   assert.equal((other.answer as any).code, 'scope_refused')
   assert.ok(existsSync(join(f.home, 'other-skills', 'victim', 'SKILL.md')))
@@ -414,14 +416,14 @@ test('remove refuses when .claude itself is a symlinked parent', () => {
   const f = fixture()
   const agent3 = join(f.home, 'agent3')
   mkdirSync(agent3, { recursive: true })
-  symlinkSync(f.config, join(agent3, '.claude'))
+  linkFolder(f.config, join(agent3, '.claude'))
   const { answer } = remove(f, { name: 'computer-skill', scope: 'agent', path: '~/agent3/.claude/skills/computer-skill' }, agent3)
   assert.equal((answer as any).code, 'scope_refused')
   assert.ok(existsSync(join(f.config, 'skills', 'computer-skill')))
   skill(join(f.home, 'other-claude', 'skills', 'victim'), 'description: Not this agent own.')
   const agent5 = join(f.home, 'agent5')
   mkdirSync(agent5, { recursive: true })
-  symlinkSync(join(f.home, 'other-claude'), join(agent5, '.claude'))
+  linkFolder(join(f.home, 'other-claude'), join(agent5, '.claude'))
   const other = remove(f, { name: 'victim', scope: 'agent', path: '~/agent5/.claude/skills/victim' }, agent5)
   assert.equal((other.answer as any).code, 'scope_refused')
   assert.ok(existsSync(join(f.home, 'other-claude', 'skills', 'victim', 'SKILL.md')))
@@ -509,7 +511,10 @@ test('the same folder spelled in another case or in NFD is still the computer fo
   }
 })
 
-test('a FIFO in the config dir never blocks the list', () => {
+// Windows has no FIFO in a folder: Git for Windows' mkfifo exits 0 and writes `<name>.lnk` beside the name,
+// so on the Windows runner (where Git Bash puts it on PATH) this only ever listed a config with no file there,
+// and on a PC whose PATH has no mkfifo it failed. It runs where a FIFO exists.
+test('a FIFO in the config dir never blocks the list', { skip: process.platform === 'win32' && 'Windows has no FIFO in a folder' }, () => {
   const f = fixture()
   rmSync(join(f.config, 'plugins', 'installed_plugins.json'))
   const made = spawnSync('mkfifo', [join(f.config, 'plugins', 'installed_plugins.json'), join(f.config, 'settings.json')])
@@ -555,7 +560,7 @@ test('a parent swapped for a link between the checks and the move is caught and 
     rename: (from, to) => {
       // the swap: the agent's skills folder becomes a link to the computer's
       renameSync(skillsDir, skillsDir + '-moved')
-      symlinkSync(join(f.config, 'skills'), skillsDir)
+      linkFolder(join(f.config, 'skills'), skillsDir)
       renameSync(from, to)
     },
   })
@@ -582,7 +587,7 @@ test('the list never marks a row removable that Remove would refuse (a linked sk
   skill(join(f.home, 'other-skills', 'victim'), 'description: Not this agent own.')
   const agent4 = join(f.home, 'agent4')
   mkdirSync(join(agent4, '.claude'), { recursive: true })
-  symlinkSync(join(f.home, 'other-skills'), join(agent4, '.claude', 'skills'))
+  linkFolder(join(f.home, 'other-skills'), join(agent4, '.claude', 'skills'))
   const { skills } = listSkills({ agentDir: agent4, configDir: f.config, home: f.home, managedDir: f.managed })
   const row = byName(skills, 'victim', 'agent')!
   assert.ok(row)
@@ -632,7 +637,7 @@ test('a trash folder under a computer skills root that does not exist yet is ref
 test('a linked skill can be removed by the name the list showed, and its target stays', () => {
   const f = fixture()
   skill(join(f.home, 'elsewhere', 'pretty'), 'name: pretty-name\ndescription: linked with its own name')
-  symlinkSync(join(f.home, 'elsewhere', 'pretty'), join(f.agent, '.claude', 'skills', 'pretty-link'))
+  linkFolder(join(f.home, 'elsewhere', 'pretty'), join(f.agent, '.claude', 'skills', 'pretty-link'))
   const row = byName(list(f).skills, 'pretty-name', 'agent')!
   assert.equal(row.removable, true)
   const { answer } = remove(f, { name: row.name, scope: 'agent', path: row.path })
