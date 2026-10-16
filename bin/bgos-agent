@@ -119,7 +119,7 @@ die()  { printf '%s✗%s %s\n' "$R" "$Z" "$*" >&2; exit 1; }
 # directory are one per user ACCOUNT, so a name with the agent id alone let an
 # install, stop or uninstall from a scratch or second HOME holding the same
 # agent's credentials boot out, restart or stop the owner's real agent. The OLD
-# names (before 0.69.4) are legacy_*: an agent not renamed yet is still
+# names (before 0.69.5) are legacy_*: an agent not renamed yet is still
 # found and supervised under them, and the next install from the same HOME
 # renames it in place. Before acting on either name, the registration is read
 # back (hoai-agent-service.mjs probe, #237's reader): one that records another
@@ -534,7 +534,7 @@ cmd_install() {
   esac
   # Read back BEFORE anything of the supervisor is written (board row d6198bb6):
   # this HOME's own name recording another HOME, or none readable, is refused
-  # and left exactly as it is; the OLD name (before 0.69.4) is renamed in
+  # and left exactly as it is; the OLD name (before 0.69.5) is renamed in
   # place below when it is this HOME's, and left alone and said otherwise.
   need_home_id
   if [ "$OS" = Linux ]; then ensure_user_bus; require_manager_home; fi
@@ -639,7 +639,7 @@ cmd_install() {
   esac
   [ -n "$RUN_SH_PREV" ] && rm -f "$RUN_SH_PREV"
   RUN_SH_PREV=""
-  # Round 2 L6: a tmux server from before 0.69.4 orphaned on the OLD socket (its job gone,
+  # Round 2 L6: a tmux server from before 0.69.5 orphaned on the OLD socket (its job gone,
   # killed past run.sh's trap) with a pane in this agent's folder would hold the
   # new job's singleton wait for good; the new run.sh clears only its own
   # socket. Ended once the new service is in place (an install typed into that
@@ -1148,7 +1148,7 @@ old_plist_note() { # $1 old plist
   if [ -f "$1" ]; then printf 'the old plist is back, so the next login starts the old job'; else printf 'no plist of the old job is left, so run hoai-agent install again'; fi
 }
 
-# The rename of this HOME's OLD job (before 0.69.4) to the HOME-scoped label
+# The rename of this HOME's OLD job (before 0.69.5) to the HOME-scoped label
 # (round 2 M1): the NEW job is bootstrapped and read back FIRST, and only then
 # is the old one booted out. An installer typed into the old job's own session
 # dies at that bootout (its tmux server is the session), and the agent is
@@ -1422,7 +1422,7 @@ UNIT
   fi
 }
 
-# The rename of this HOME's OLD unit (before 0.69.4) to the HOME-scoped
+# The rename of this HOME's OLD unit (before 0.69.5) to the HOME-scoped
 # one, in #237's Linux order, never a moment without an enabled unit: a drop-in
 # makes the new unit conflict with (and order after) the old one, the new unit
 # is enabled (not started), the old one disabled (not stopped), then ONE
@@ -1549,7 +1549,7 @@ say_launch_hint() { # $1 workdir $2 channel
 # domain and one user manager per account list every HOME's agents.
 LIST_MARK='function mark(name) {
   sub(/\.service$/, "", name)
-  if (name !~ /[.-]home-[0-9a-f]+$/) return "  (old name, before 0.69.4: its HOME is not in its name)"
+  if (name !~ /[.-]home-[0-9a-f]+$/) return "  (old name, before 0.69.5: its HOME is not in its name)"
   if (hid == "") return "  (this HOME id could not be computed)"
   if (name ~ ("[.-]home-" hid "$")) return "  (this HOME)"
   return "  (another HOME)"
@@ -2048,7 +2048,7 @@ cmd_uninstall() {
   # removed (no purge). So is one that cannot be read back, and one that cannot
   # be named (no bun or node runs the helper) (round 2 L8): removing the files
   # of a job that cannot be stopped by name would leave the agent running, kept
-  # alive, while this says it was removed. The OLD name (before 0.69.4) is
+  # alive, while this says it was removed. The OLD name (before 0.69.5) is
   # stopped only when it is proven this HOME's; another HOME's is left alone and
   # said.
   local own_state="unknown" old_state="unknown"

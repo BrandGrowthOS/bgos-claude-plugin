@@ -996,5 +996,5 @@ test('the id-less listing marks each agent job by the HOME its name carries', SL
   const listing = a.run(a.owner, ['status']).out
   assert.match(listing, new RegExp(`${label(a.owner).replace(/\./g, '\\.')}\\s+\\(this HOME\\)`))
   assert.match(listing, new RegExp(`${label(a.scratch).replace(/\./g, '\\.')}\\s+\\(another HOME\\)`))
-  assert.match(listing, new RegExp(`${OLD_LABEL.replace(/\./g, '\\.')}\\s+\\(old name, before 0\\.69\\.4`))
+  assert.match(listing, new RegExp(`${OLD_LABEL.replace(/\./g, '\\.')}\\s+\\(old name, before 0\\.69\\.5`))
 })

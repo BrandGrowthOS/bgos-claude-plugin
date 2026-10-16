@@ -37,7 +37,7 @@ import { fakeAgentTasks, type FakeAgentTasks } from './helpers/fake-agent-tasks.
 const OWNER = 'C:\\Users\\kc'
 const SCRATCH = 'E:\\rig\\scratch-home'
 const NODE = 'C:\\Program Files\\nodejs\\node.exe'
-const ROOT = 'C:\\Users\\kc\\.claude\\plugins\\cache\\hoai\\hoai\\0.69.4'
+const ROOT = 'C:\\Users\\kc\\.claude\\plugins\\cache\\hoai\\hoai\\0.69.5'
 const CWD = 'C:\\Users\\kc\\hoai-agents\\ava'
 const SCRATCH_CWD = 'E:\\rig\\scratch-home\\agents\\ava'
 const ID = '912'
@@ -318,7 +318,7 @@ test('round 2 (verify): beside a DISABLED old task of another HOME, the note say
   assert.doesNotMatch(beside!, /starts at logon/)
 })
 
-test('round 2 H1: with NEITHER name registered (a task removed, or renamed away by another HOME\'s 0.69.4), the check registers this HOME\'s own task and verifies it, so the agent is supervised again', async () => {
+test('round 2 H1: with NEITHER name registered (a task removed, or renamed away by another HOME\'s 0.69.5), the check registers this HOME\'s own task and verifies it, so the agent is supervised again', async () => {
   const { fs, host } = world()
   fs.writeFile(vbsOf(OWNER), "' launcher\r\n")
   const result = await installAgentTask(spec(), { exec: host.exec, fs, start: false, keep: true })
@@ -522,7 +522,7 @@ function sweepMachine(fs: MemoryFs) {
     [`${OWNER}\\.bgos-agent\\credentials-${ID}.json`]: '{}',
     [`${stateDir(OWNER)}\\launch.json`]: JSON.stringify(buildLaunchRecipe({ assistantId: ID, cwd: CWD, argv: [], installMethod: 'marketplace', pluginRoot: ROOT, node: 'node', startedAt: 'x', pid: null })),
     [`${CWD}\\.bgos-agent-id`]: `${ID}\n`,
-    [`${OWNER}\\.claude\\plugins\\installed_plugins.json`]: JSON.stringify({ plugins: { 'hoai@hoai': [{ scope: 'user', version: '0.69.4', installPath: ROOT, lastUpdated: '2026-10-15T11:00:00.000Z' }] } }),
+    [`${OWNER}\\.claude\\plugins\\installed_plugins.json`]: JSON.stringify({ plugins: { 'hoai@hoai': [{ scope: 'user', version: '0.69.5', installPath: ROOT, lastUpdated: '2026-10-15T11:00:00.000Z' }] } }),
     [`${stateDir(OWNER)}\\supervisor-generation`]: '2\n',
   }
   for (const [path, text] of Object.entries(files)) fs.writeFile(path, text)
@@ -549,7 +549,7 @@ function sweepCtx(fs: MemoryFs, host: FakeAgentTasks, logs: string[], now = { at
     pidAlive: () => false,
     nodePath: NODE,
     uid: null,
-    manifest: { version: '0.69.4', fingerprint: 'f', installedAt: 'x', pluginRoot: ROOT, files: [], claudeConfigDir: null },
+    manifest: { version: '0.69.5', fingerprint: 'f', installedAt: 'x', pluginRoot: ROOT, files: [], claudeConfigDir: null },
     hasTmux: false,
     hasScript: false,
     hasCommand: () => false,
@@ -669,18 +669,18 @@ test('the watcher in a scratch HOME leaves the owner\'s old task alone (logged),
   const { fs, host } = world()
   seedOldTask(host, fs, OWNER, false)
   // The scratch HOME: its own credentials and recipe for the same agent, no task of its own yet.
-  const sroot = 'E:\\rig\\scratch-home\\.claude\\plugins\\cache\\hoai\\hoai\\0.69.4'
+  const sroot = 'E:\\rig\\scratch-home\\.claude\\plugins\\cache\\hoai\\hoai\\0.69.5'
   for (const [path, text] of Object.entries({
     [`${sroot}\\bin\\hoai-core.mjs`]: HOAI_CORE_KEEP_ALIVE,
     [`${SCRATCH}\\.bgos-agent\\credentials-${ID}.json`]: '{}',
     [`${stateDir(SCRATCH)}\\launch.json`]: JSON.stringify(buildLaunchRecipe({ assistantId: ID, cwd: SCRATCH_CWD, argv: [], installMethod: 'marketplace', pluginRoot: sroot, node: 'node', startedAt: 'x', pid: null })),
     [`${SCRATCH_CWD}\\.bgos-agent-id`]: `${ID}\n`,
-    [`${SCRATCH}\\.claude\\plugins\\installed_plugins.json`]: JSON.stringify({ plugins: { 'hoai@hoai': [{ scope: 'user', version: '0.69.4', installPath: sroot, lastUpdated: '2026-10-15T11:00:00.000Z' }] } }),
+    [`${SCRATCH}\\.claude\\plugins\\installed_plugins.json`]: JSON.stringify({ plugins: { 'hoai@hoai': [{ scope: 'user', version: '0.69.5', installPath: sroot, lastUpdated: '2026-10-15T11:00:00.000Z' }] } }),
   })) fs.writeFile(path, text)
   fs.mkdir(SCRATCH_CWD)
   const before = snapshotOf(host, OLD_TASK)
   const logs: string[] = []
-  const ctx = { ...sweepCtx(fs, host, logs), home: SCRATCH, manifest: { version: '0.69.4', fingerprint: 'f', installedAt: 'x', pluginRoot: sroot, files: [], claudeConfigDir: null } }
+  const ctx = { ...sweepCtx(fs, host, logs), home: SCRATCH, manifest: { version: '0.69.5', fingerprint: 'f', installedAt: 'x', pluginRoot: sroot, files: [], claudeConfigDir: null } }
   await runKeepAliveSweep(ctx as any)
   assert.equal(snapshotOf(host, OLD_TASK), before)
   assert.ok(host.tasks.has(SCRATCH_TASK), logs.join('\n'))

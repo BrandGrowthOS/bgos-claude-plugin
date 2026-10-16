@@ -132,13 +132,13 @@ export function validAssistantId(
   return /^\d+$/.test(value) ? value : null
 }
 
-/** The OLD launchd label (before 0.69.4), mirror of bin/bgos-agent legacy_label_for.
+/** The OLD launchd label (before 0.69.5), mirror of bin/bgos-agent legacy_label_for.
  *  This HOME's own name carries `home-<hid>` (lib/agent-inventory.mjs agentServiceNames). */
 export function serviceLabel(assistantId: string): string {
   return `ai.bgos.agent.${assistantId}`
 }
 
-/** The OLD systemd --user unit name (before 0.69.4), mirror of bin/bgos-agent legacy_unit_for. */
+/** The OLD systemd --user unit name (before 0.69.5), mirror of bin/bgos-agent legacy_unit_for. */
 export function serviceUnit(assistantId: string): string {
   return `bgos-agent-${assistantId}`
 }

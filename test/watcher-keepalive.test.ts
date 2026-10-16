@@ -189,7 +189,7 @@ const WIN32_AGENT_IDS = ['912', '913']
 /** What this HOME's Task Scheduler holds for one agent, by the `win32Task` the recorder was given. */
 function seedWin32Task(tasks: FakeAgentTasks, id: string, world: 'own' | 'absent' | 'legacy') {
   const vbs = `${WHOME}\\.bgos-agent\\${id}\\run-agent.vbs`
-  // This HOME's task under its own name, as 0.69.4 registers it.
+  // This HOME's task under its own name, as 0.69.5 registers it.
   if (world === 'own') tasks.seed.task(`HOAI Agent ${id} home-${WHID}`, vbs, { description: `HOAI agent ${id}, installed from home=${WHOME}` })
   // This HOME's task as 0.69.2 registered it: the old name, no description, the same launcher.
   if (world === 'legacy') tasks.seed.task(`HOAI Agent ${id}`, vbs)
@@ -1996,7 +1996,7 @@ function taskScript0692(id: string) {
  *
  * `world` is the recorder's `win32Task` the machine goes with, and the task script beside the
  * launcher is the one that world's task was registered with: 'own' (the default, as the recorder's)
- * this HOME's task as 0.69.4 registers it, so the current install-agent-task.ps1; 'legacy' the old
+ * this HOME's task as 0.69.5 registers it, so the current install-agent-task.ps1; 'legacy' the old
  * task 0.69.2 registered, so the 0.69.2 script (taskScript0692), which a HOME upgraded from 0.69.2
  * holds until the first act on the task rewrites it.
  */
@@ -2061,7 +2061,7 @@ test('board row 69337efa (win32): a crashed agent (launcher dead, lock holder de
   assert.deepEqual(starts(rec), [`/Run /TN ${WTASK}`], 'started now, not 30 minutes after its own last writes')
   assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['supervised', 'task_started']])
   assert.equal(JSON.parse(fs.files.get(keepAliveStatePath(WHOME))!).agents['912'].taskStarts, 1, 'the start is counted')
-  // This HOME's task was registered by 0.69.4 (the 'own' world), and its files are the current ones.
+  // This HOME's task was registered by 0.69.5 (the 'own' world), and its files are the current ones.
   // What the sweep writes outside the watcher's own folder: the once-per-agent check
   // (installAgentTask, keep) writes the task script before its read back, then the launcher and the
   // generation stamp once the read back allows it (and registers nothing: the task is this HOME's

@@ -269,7 +269,7 @@ unit file of that HOME is removed. A registration under an old name that
 another HOME installed is left alone and reported (on Windows, with a warning
 when its launcher pins no HOME and so serves the logon user's profile).
 
-**The agents' services are named after their HOME too** (0.69.4). Every name an
+**The agents' services are named after their HOME too** (0.69.5). Every name an
 agent's service is known by carries the same `home-<hid>` as the watcher of
 that HOME (but see the symlink case below): the Scheduled Task `HOAI Agent <id> home-<hid>`, the launchd label
 `ai.bgos.agent.<id>.home-<hid>`, the systemd unit `bgos-agent-<id>-home-<hid>`
@@ -295,7 +295,7 @@ running. On Linux an install from a HOME other than the one the account's
 `systemd --user` manager reads its units from is refused before its service
 file or run.sh is written.
 
-Upgrading from 0.69.3 or earlier: on Windows the watcher renames each agent's old
+Upgrading from 0.69.4 or earlier: on Windows the watcher renames each agent's old
 `HOAI Agent <id>` of its own HOME in place, once (the new task registered
 first, then the old one retired; the running agent is never stopped or
 started, provided `Unregister-ScheduledTask` leaves the old task's running
