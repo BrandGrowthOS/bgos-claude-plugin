@@ -880,6 +880,11 @@ test('two hook sources of one submission that both read the closed marker name o
   stamp()
   c.tracker.begin({ prompt: card, sessionId: 's', promptId })
   assert.equal(c.gated(), 'refused')
+  // The hook itself names a new turn by the prompt_id it was given.
+  c.stopHook()
+  const payload = { hook_event_name: 'UserPromptSubmit', session_id: 's', cwd: c.cwd, prompt: c.card(OWNER, '1'), prompt_id: randomUUID() }
+  recordPrivateBoundary(payload, c.env)
+  assert.equal(readPrivateJson(c.markerPaths[0]!, 2048)?.cliTurn, payload.prompt_id)
 })
 
 test('another CLI session overwriting the marker between the recipient\'s and the owner\'s prompts of one turn leaves the owner\'s turn unsure (review round 2, R5)', (t) => {
