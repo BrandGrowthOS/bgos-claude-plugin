@@ -2,6 +2,16 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.69.4 (2026-10-16)
+
+**A backend refusal reaches the model whole, and the MCP server reports the real plugin version (HOAI board row 81a68f4).** A share recipient's 403 mission refusal reached the model as "...works in that person's chat ins", and the MCP `serverInfo` said 0.19.0 while package.json said 0.69.x.
+
+- **Why.** Every REST helper in `server.ts` threw `text.slice(0, 200)` of the error body, so any backend sentence longer than 200 characters was cut mid-word. The `Server` was built with the literal `{ name: 'bgos', version: '0.19.0' }`, never moved.
+- **The fix.** One helper, `errorBodyText` (`lib/error-body.ts`), used by every error site (GET, POST, PUT, PATCH, DELETE, and the peer GET, POST, DELETE). When the body is JSON with a `message` (the NestJS `{message, error, statusCode}` shape), the message is surfaced whole, bounded at 600 characters; a string-array message (validation failures) is joined with `; `. The status code stays in front (`POST 403: ...`). A body that is not JSON, or has no usable message, keeps the old 200 character bound. `HttpError.body` and the peer refusal reader are unchanged. `mcpServerInfo` (`lib/mcp-server-info.ts`) builds `serverInfo` from `RUNNING_VERSION`, the package version the heartbeat reads (`readOwnVersion`).
+- **Unchanged:** the status codes, the error classes, what is retried, and every success path.
+
+Guards: `test/error-body.test.ts` (the real 403 sentence whole, a string-array message joined, an over-long message and a non-JSON or huge body bounded, no `slice(0, 200)` left in `server.ts`, `serverInfo` equal to package.json). No version is published or tagged here.
+
 ## 0.69.3 (2026-10-15)
 
 **On a busy Windows PC a slow look for the agent's own claude no longer refuses every browser call for 10 minutes (HOAI board row 7046de2a, mission 154 goal 10).** Seen during the BGOS #2432 download ask proof on AlienAres under normal worker load.
