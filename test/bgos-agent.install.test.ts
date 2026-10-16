@@ -26,7 +26,12 @@
  * The machine is stood in for, never the script: HOME is a temp dir, and PATH
  * leads with stand-ins for claude, launchctl, systemctl and loginctl, plus a
  * `bun` that skips `bun install` (no network in a test) and otherwise hands
- * over to the real runtime running this test. The script is run from an
+ * over to the real runtime running this test. Before it writes a supervisor the
+ * install reads this agent's service back (board row d6198bb6, through
+ * bin/hoai-agent-service.mjs on that bun), under this HOME's own name
+ * (bgos-agent-<id>-home-<hid>, ai.bgos.agent.<id>.home-<hid>) and the old one;
+ * the launchctl and systemctl stand-ins answer that read-back the way a real
+ * host does (test/helpers/bash-service-probes.ts). The script is run from an
  * npx-shaped copy (.../_npx/<hash>/node_modules/<pkg>/bin), because that is
  * where the desktop's launch line really runs it from, and because the shared
  * resolver treats a clone checkout as a clone (one of the refusals below).
@@ -43,6 +48,8 @@ import assert from 'node:assert/strict'
 
 import { CLONE_CHANNEL_SPEC, MARKETPLACE_CHANNEL_SPEC } from '../bin/bgos-install-method.mjs'
 import { resolvePosixBash } from './helpers/posix-bash.ts'
+import { LAUNCHCTL_PRINT_NOT_LOADED, systemctlShowFromUnitFile } from './helpers/bash-service-probes.ts'
+import { watcherHomeId } from '../lib/watcher-service.mjs'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 // bin/bgos-agent is the macOS and Linux installer: it refuses any other OS by name (on Windows it
@@ -116,10 +123,13 @@ function machine({ fromClone = false, fromCache = false, pluginInstalled = true,
     chmodSync(join(shims, name), 0o755)
   }
   shim('claude', 'exit 0')
-  // "print" answers "not loaded", so the reload loop does not wait for a job that was never there
-  shim('launchctl', '[ "$1" = "print" ] && exit 1\nexit 0')
-  // `is-active` answers from a file, so a test can stand in for a unit that is already running.
-  shim('systemctl', `[ "$2" = "is-active" ] && { [ -f "${home}/unit-active" ] && exit 0; exit 3; }\nexit 0`)
+  // "print" answers "not loaded" as launchd does (113, Could not find service): no job is ever
+  // loaded here, so the read-back finds none under either name and the reload loop does not wait
+  // for a job that was never there.
+  shim('launchctl', `${LAUNCHCTL_PRINT_NOT_LOADED}\nexit 0`)
+  // `is-active` answers from a file, so a test can stand in for a unit that is already running;
+  // `show` (the read-back) knows a unit exactly when its file is installed in this HOME.
+  shim('systemctl', `[ "$2" = "is-active" ] && { [ -f "${home}/unit-active" ] && exit 0; exit 3; }\n${systemctlShowFromUnitFile({ activeIf: `[ -f "${home}/unit-active" ]` })}\nexit 0`)
   shim('loginctl', 'exit 0')
   // The systemd --user path, on any host: the script reads the OS from `uname -s` once, at the top.
   if (os) shim('uname', `echo ${os}`)
@@ -177,6 +187,8 @@ function pair(m: Machine, id: string, { pin = id, creds = true }: { pin?: string
 }
 
 const callsOf = (m: Machine) => (existsSync(m.calls) ? readFileSync(m.calls, 'utf8') : '')
+/** This HOME's systemd unit for an agent: its name carries the HOME id (#237's watcherHomeId of the temp HOME's real path, round 2 H2). */
+const unitOf = (m: Machine, id: string) => `bgos-agent-${id}-home-${watcherHomeId(realpathSync(m.home), 'linux')}`
 /** A value baked into run.sh's header (a %q-quoted assignment), read back by bash itself. */
 const runShVar = (m: Machine, id: string, name: string) => {
   const runSh = join(m.home, '.bgos-agent', id, 'run.sh')
@@ -400,13 +412,18 @@ test('Linux: a reinstall over a RUNNING unit restarts it (enable --now leaves an
   const upgrade = machine({ os: 'Linux' })
   const ws = pair(upgrade, '904')
   writeFileSync(join(ws, '.mcp.json'), JSON.stringify({ mcpServers: { bgos: { command: 'bun', args: ['w.mjs'], env: { BGOS_ASSISTANT_ID: '904' } } } }))
+  // The unit an earlier install from this HOME left, running: the read-back finds it this HOME's.
+  const unit904 = unitOf(upgrade, '904')
+  const unitFile = join(upgrade.home, '.config', 'systemd', 'user', `${unit904}.service`)
+  mkdirSync(dirname(unitFile), { recursive: true })
+  writeFileSync(unitFile, `[Unit]\nDescription=BGOS Claude Code agent 904\n\n[Service]\nWorkingDirectory=${ws}\nExecStart=/bin/bash "${join(upgrade.home, '.bgos-agent', '904', 'run.sh')}"\nEnvironment=HOME=${upgrade.home}\n`)
   writeFileSync(join(upgrade.home, 'unit-active'), '')
   const r = upgrade.run(['--assistant', '904', '--dir', ws, '--always-on'])
   assert.equal(r.status, 0, r.out)
-  assert.ok(existsSync(join(upgrade.home, '.config', 'systemd', 'user', 'bgos-agent-904.service')), 'the systemd path ran')
+  assert.match(readFileSync(unitFile, 'utf8'), /^StartLimitIntervalSec=0$/m, 'the systemd path ran: the unit file is the one this install wrote')
   const calls = callsOf(upgrade).split('\n').filter((l) => l.startsWith('systemctl '))
-  const enabled = calls.indexOf('systemctl --user enable --now bgos-agent-904')
-  const restarted = calls.indexOf('systemctl --user restart bgos-agent-904')
+  const enabled = calls.indexOf(`systemctl --user enable --now ${unit904}`)
+  const restarted = calls.indexOf(`systemctl --user restart ${unit904}`)
   assert.ok(enabled >= 0, calls.join('\n'))
   assert.ok(restarted > enabled, `the running unit is restarted onto the new run.sh, after it is enabled:\n${calls.join('\n')}`)
   assert.ok(calls.indexOf('systemctl --user daemon-reload') < enabled, 'the new unit file is loaded first')
@@ -418,7 +435,7 @@ test('Linux: a reinstall over a RUNNING unit restarts it (enable --now leaves an
   const r2 = fresh.run(['--assistant', '905', '--dir', ws2, '--always-on'])
   assert.equal(r2.status, 0, r2.out)
   const calls2 = callsOf(fresh).split('\n').filter((l) => l.startsWith('systemctl '))
-  assert.ok(calls2.includes('systemctl --user enable --now bgos-agent-905'), calls2.join('\n'))
+  assert.ok(calls2.includes(`systemctl --user enable --now ${unitOf(fresh, '905')}`), calls2.join('\n'))
   assert.equal(calls2.filter((l) => / restart /.test(` ${l} `)).length, 0, calls2.join('\n'))
 })
 

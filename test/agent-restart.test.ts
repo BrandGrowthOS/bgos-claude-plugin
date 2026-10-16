@@ -27,7 +27,8 @@ import {
   shellQuote,
   envForRecipe,
 } from '../lib/agent-restart.mjs'
-import { memoryFs } from './helpers/memory-fs.ts'
+import { memoryFs, type MemoryFs } from './helpers/memory-fs.ts'
+import { fakeAgentTasks } from './helpers/fake-agent-tasks.ts'
 
 const SESSION = '11111111-1111-4111-8111-111111111111'
 const ROOT = '/home/kc/.claude/plugins/cache/hoai/hoai/0.38.3'
@@ -80,13 +81,114 @@ function recordingSpawn() {
   return { spawns, spawnDetached }
 }
 
-function recordingExec(code = 0, stderr = '') {
+type ExecAnswer = { code: number | null; stdout: string; stderr: string; error: string | null; timedOut: boolean }
+
+/** `readBack` answers the read-only probes a canonical service restart makes first (ownServiceReadBack); every other command gets `code`. */
+function recordingExec(code = 0, stderr = '', readBack: ((file: string, args: readonly string[]) => ExecAnswer | null) | null = null) {
   const calls: Array<{ file: string; args: string[] }> = []
   const exec = async (file: string, args: readonly string[]) => {
     calls.push({ file, args: [...args] })
-    return { code, stdout: '', stderr, error: null, timedOut: false }
+    return readBack?.(file, args) ?? { code, stdout: '', stderr, error: null, timedOut: false }
   }
   return { calls, exec }
+}
+
+/**
+ * What a real host answers when a canonical agent service is read back before its restart
+ * (lib/agent-service.mjs readBackAgentService, board row d6198bb6): THIS HOME's (/home/kc, the
+ * rows' state dir) own registration of agent 912 under the name asked for. darwin: the
+ * `launchctl print gui/<uid>/<label>` shape test/helpers/fake-service-host.ts prints (its plist
+ * path, HOME and run.sh name the HOME); linux: `systemctl --user show` (its fragment under
+ * ~/.config/systemd/user and its HOME). Anything else: null (the command's own answer).
+ */
+function ownServiceReadBack(file: string, args: readonly string[]): ExecAnswer | null {
+  const ok = (stdout: string): ExecAnswer => ({ code: 0, stdout, stderr: '', error: null, timedOut: false })
+  if (file === 'launchctl' && args[0] === 'print') {
+    const target = String(args[1])
+    const label = target.slice(target.lastIndexOf('/') + 1)
+    return ok(
+      [
+        `${target} = {`,
+        '\tactive count = 1',
+        `\tpath = /home/kc/Library/LaunchAgents/${label}.plist`,
+        '\ttype = LaunchAgent',
+        '\tstate = running',
+        '',
+        '\tprogram = /bin/bash',
+        '\targuments = {',
+        '\t\t/bin/bash',
+        '\t\t/home/kc/.bgos-agent/912/run.sh',
+        '\t}',
+        '',
+        '\tworking directory = /home/kc/hoai-agents/ava',
+        '',
+        '\tenvironment = {',
+        '\t\tHOME => /home/kc',
+        `\t\tXPC_SERVICE_NAME => ${label}`,
+        '\t}',
+        '}',
+        '',
+      ].join('\n'),
+    )
+  }
+  if (file === 'systemctl' && args[0] === '--user' && args[1] === 'show') {
+    const unit = String(args.at(-1))
+    return ok(['LoadState=loaded', 'ActiveState=active', `FragmentPath=/home/kc/.config/systemd/user/${unit}.service`, 'WorkingDirectory=/home/kc/hoai-agents/ava', 'Environment=HOME=/home/kc', ''].join('\n'))
+  }
+  return null
+}
+
+/**
+ * The unit file bin/bgos-agent writes (install_systemd) for agent 912 installed from /home/kc, at
+ * the FragmentPath ownServiceReadBack names for `unit`: the read-back reads the HOME and run.sh from
+ * this file (readProbe, agentServiceRecord), as on a real host, not from the Environment= property.
+ */
+function ownUnitFile(unit: string): Record<string, string> {
+  return {
+    [`/home/kc/.config/systemd/user/${unit}.service`]: [
+      '[Unit]',
+      'Description=BGOS Claude Code agent 912',
+      'StartLimitIntervalSec=0',
+      '',
+      '[Service]',
+      'Type=simple',
+      'WorkingDirectory=/home/kc/hoai-agents/ava',
+      'ExecStart=/bin/bash "/home/kc/.bgos-agent/912/run.sh"',
+      'Restart=always',
+      'RestartSec=10',
+      'Environment=PATH=/usr/local/bin:/usr/bin:/bin',
+      'Environment=HOME=/home/kc',
+      'Environment=TERM=xterm-256color',
+      'Environment=USER=kc',
+      'Environment=LOGNAME=kc',
+      'Environment=CLAUDE_CODE_ENABLE_TODO_TOOLS=1',
+      'StandardOutput=journal',
+      'StandardError=journal',
+      '',
+      '[Install]',
+      'WantedBy=default.target',
+      '',
+    ].join('\n'),
+  }
+}
+
+/** A memoryFs that also records every path read, so a test can prove the read-back read the unit file the manager loaded. */
+function readRecordingFs(files: Record<string, string> = {}): MemoryFs & { reads: string[] } {
+  const fs = memoryFs(files)
+  const reads: string[] = []
+  const readFile = fs.readFile
+  fs.readFile = (path: string) => {
+    reads.push(path)
+    return readFile(path)
+  }
+  return Object.assign(fs, { reads })
+}
+
+/** The read-back a canonical service restart makes first, then the restart itself, by full argv (uid 501). */
+function readBackThenRestart(platform: string, handle: string): Array<{ file: string; args: string[] }> {
+  return platform === 'darwin'
+    ? [{ file: 'launchctl', args: ['print', `gui/501/${handle}`] }, { file: 'launchctl', args: ['kickstart', '-k', `gui/501/${handle}`] }]
+    : [{ file: 'systemctl', args: ['--user', 'show', '--property=LoadState,ActiveState,FragmentPath,WorkingDirectory,Environment', handle] }, { file: 'systemctl', args: ['--user', 'restart', handle] }]
 }
 
 const BASE_DEPS = {
@@ -475,26 +577,53 @@ test('restartAgent: a SIGTERM that fails (the session already gone) is a named k
   assert.deepEqual(calls, [])
 })
 
-const TASK = { kind: 'schtasks', handle: 'HOAI Agent 912', via: 'canonical-file', file: 'C:\\Users\\kc\\.bgos-agent\\912\\run-agent.vbs' }
+// The win32 agent task as lib/agent-inventory.mjs now names it (board row d6198bb6): this HOME's
+// name, the old one carried for the read-back. 66ede649 = watcherHomeId('C:\\Users\\kc', 'win32')
+// (hashed as c:\users\kc), the HOME the win32 rows' state dir is under.
+const TASK_NAME = 'HOAI Agent 912 home-66ede649'
+const TASK = { kind: 'schtasks', handle: TASK_NAME, legacyHandle: 'HOAI Agent 912', via: 'canonical-file', file: 'C:\\Users\\kc\\.bgos-agent\\912\\run-agent.vbs' }
 const WIN_ROW = { stateDir: 'C:\\Users\\kc\\.bgos-agent\\912', cwd: 'C:\\Users\\kc\\hoai-agents\\ava' }
+/** The read-back the task tier runs first (lib/agent-task-win32.mjs runAgentTask): the task script's probe of this HOME's name. */
+const TASK_PROBE = { file: 'powershell.exe', args: ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', 'C:\\Users\\kc\\.bgos-agent\\912\\install-agent-task.ps1', '-Action', 'probe'] }
+
+/**
+ * This HOME's own agent task, registered as the current install registers it (its description and
+ * its launcher name C:\Users\kc), on a faked Task Scheduler that answers the read-back from the task
+ * script the restart writes into `fs` (test/helpers/fake-agent-tasks.ts). `fail` makes the matching
+ * commands fail; calls are recorded as { file, args } like recordingExec.
+ */
+function ownTaskHost(fs: MemoryFs, fail: Array<{ match: string; code?: number; stderr?: string }> = []) {
+  const host = fakeAgentTasks({ fs, fail })
+  host.seed.task(TASK_NAME, TASK.file, { description: 'HOAI agent 912, installed from home=C:\\Users\\kc' })
+  const calls: Array<{ file: string; args: string[] }> = []
+  const exec = async (file: string, args: readonly string[]) => {
+    calls.push({ file, args: [...args] })
+    return host.exec(file, args)
+  }
+  return { host, calls, exec }
+}
 
 test('restartAgent win32: the agent task with a LIVE launcher restarts through the marker; a dead launcher is started with schtasks /Run /TN "HOAI Agent <id>"', async () => {
   const fs = memoryFs()
   const live = await restartAgent(agentRow({ ...WIN_ROW, supervisor: 'service', service: TASK, launcherLive: true }), { ...BASE_DEPS, platform: 'win32', fs, exec: recordingExec().exec, spawnDetached: recordingSpawn().spawnDetached })
   assert.equal(live.how, 'marker')
   assert.equal(fs.files.get('C:\\Users\\kc\\.bgos-agent\\912\\restart-requested.json'), '{}')
-  const { calls, exec } = recordingExec()
+  const deadFs = memoryFs()
+  const { calls, exec } = ownTaskHost(deadFs)
   const { spawns, spawnDetached } = recordingSpawn()
-  const dead = await restartAgent(agentRow({ ...WIN_ROW, supervisor: 'service', service: TASK, launcherLive: false }), { ...BASE_DEPS, platform: 'win32', fs: memoryFs(), exec, spawnDetached })
-  assert.deepEqual(calls, [{ file: 'schtasks.exe', args: ['/Run', '/TN', 'HOAI Agent 912'] }])
+  const dead = await restartAgent(agentRow({ ...WIN_ROW, supervisor: 'service', service: TASK, launcherLive: false }), { ...BASE_DEPS, platform: 'win32', fs: deadFs, exec, spawnDetached })
+  // Read back first (this HOME's own task), then started by this HOME's name.
+  assert.deepEqual(calls, [TASK_PROBE, { file: 'schtasks.exe', args: ['/Run', '/TN', TASK_NAME] }])
   assert.deepEqual(spawns, [], 'never a cmd /k console beside the task')
   assert.equal(dead.ok, true)
   assert.equal(dead.how, 'task')
-  const failing = recordingExec(1, 'ERROR: The system cannot find the file specified.')
-  const bad = await restartAgent(agentRow({ ...WIN_ROW, supervisor: 'service', service: TASK, launcherLive: false }), { ...BASE_DEPS, platform: 'win32', fs: memoryFs(), exec: failing.exec, spawnDetached })
+  const failFs = memoryFs()
+  const failing = ownTaskHost(failFs, [{ match: 'schtasks.exe /Run', code: 1, stderr: 'ERROR: The system cannot find the file specified.' }])
+  const bad = await restartAgent(agentRow({ ...WIN_ROW, supervisor: 'service', service: TASK, launcherLive: false }), { ...BASE_DEPS, platform: 'win32', fs: failFs, exec: failing.exec, spawnDetached })
   assert.equal(bad.ok, false)
   assert.equal(bad.how, 'task')
   assert.match(bad.message, /rc 1/)
+  assert.deepEqual(failing.calls, [TASK_PROBE, { file: 'schtasks.exe', args: ['/Run', '/TN', TASK_NAME] }], 'the /Run itself failed (read back as this HOME\'s first)')
 })
 
 // systemctl --user restart blocks until the unit has stopped (SIGTERM to the
@@ -502,25 +631,78 @@ test('restartAgent win32: the agent task with a LIVE launcher restarts through t
 // hung user bus blocks it for ever. nodeExec's default timeout is 0 (none),
 // and the watcher's whole job loop and heartbeat wait on this call.
 test('restartAgent: the service and task commands are BOUNDED (RESTART_EXEC_TIMEOUT_MS); one that times out is a named failure', async () => {
-  const seen: Array<{ file: string; opts: any }> = []
-  const exec = (timedOut: boolean) => async (file: string, _args: readonly string[], opts?: any) => {
-    seen.push({ file, opts })
-    return timedOut ? { code: null, stdout: '', stderr: '', error: 'Command failed: killed', timedOut: true } : { code: 0, stdout: '', stderr: '', error: null, timedOut: false }
-  }
+  const seen: Array<{ file: string; args: string[]; opts: any }> = []
+  const HUNG: ExecAnswer = { code: null, stdout: '', stderr: '', error: 'Command failed: killed', timedOut: true }
+  const OK: ExecAnswer = { code: 0, stdout: '', stderr: '', error: null, timedOut: false }
+  // `tasks` answers the task tier's read-back (powershell.exe ... -Action probe) as this HOME's own
+  // task, so the command under test is the schtasks /Run after it. `readBack` answers a canonical
+  // service's read-back (launchctl print, systemctl --user show) before its restart.
+  const exec =
+    (timedOut: boolean, tasks: ReturnType<typeof ownTaskHost> | null = null, readBack: ((file: string, args: readonly string[]) => ExecAnswer | null) | null = null) =>
+    async (file: string, args: readonly string[], opts?: any) => {
+      seen.push({ file, args: [...args], opts })
+      if (tasks && file === 'powershell.exe') return tasks.exec(file, args)
+      return readBack?.(file, args) ?? (timedOut ? HUNG : OK)
+    }
+  const argv = (calls: Array<{ file: string; args: string[] }>) => calls.map((c) => [c.file, ...c.args])
   const spawnDetached = recordingSpawn().spawnDetached
+  // This HOME's own canonical service of agent 912 (its new name, home-dc88e57d = the home id of
+  // /home/kc on darwin and linux), on a row that carries that HOME.
+  const SYSTEMD_OWN = { kind: 'systemd', handle: 'bgos-agent-912-home-dc88e57d', via: 'canonical-file', file: '/home/kc/.config/systemd/user/bgos-agent-912-home-dc88e57d.service' }
+  const LAUNCHD_OWN = { kind: 'launchd', handle: 'ai.bgos.agent.912.home-dc88e57d', via: 'canonical-file', file: '/home/kc/Library/LaunchAgents/ai.bgos.agent.912.home-dc88e57d.plist' }
+  const canonicalRow = (service: Record<string, string>) => agentRow({ home: '/home/kc', supervisor: 'service', service })
   await restartAgent(agentRow({ supervisor: 'service', serviceFile: '/x.service' }), { ...BASE_DEPS, platform: 'linux', fs: memoryFs(), exec: exec(false), spawnDetached })
   await restartAgent(agentRow({ supervisor: 'service', serviceFile: '/x.plist' }), { ...BASE_DEPS, platform: 'darwin', fs: memoryFs(), exec: exec(false), spawnDetached })
-  await restartAgent(agentRow({ ...WIN_ROW, supervisor: 'service', service: TASK, launcherLive: false }), { ...BASE_DEPS, platform: 'win32', fs: memoryFs(), exec: exec(false), spawnDetached })
-  assert.deepEqual(seen.map((c) => c.file), ['systemctl', 'launchctl', 'schtasks.exe'])
-  for (const call of seen) assert.equal(call.opts?.timeoutMs, RESTART_EXEC_TIMEOUT_MS, call.file)
+  const linuxOwn = await restartAgent(canonicalRow(SYSTEMD_OWN), { ...BASE_DEPS, platform: 'linux', fs: memoryFs(ownUnitFile(SYSTEMD_OWN.handle)), exec: exec(false, null, ownServiceReadBack), spawnDetached })
+  assert.deepEqual(linuxOwn, { ok: true, how: 'service', message: `systemctl --user restart ${SYSTEMD_OWN.handle} ok`, detail: { command: { file: 'systemctl', args: ['--user', 'restart', SYSTEMD_OWN.handle] } } })
+  const macOwn = await restartAgent(canonicalRow(LAUNCHD_OWN), { ...BASE_DEPS, platform: 'darwin', fs: memoryFs(), exec: exec(false, null, ownServiceReadBack), spawnDetached })
+  assert.deepEqual(macOwn, { ok: true, how: 'service', message: `launchctl kickstart -k gui/501/${LAUNCHD_OWN.handle} ok`, detail: { command: { file: 'launchctl', args: ['kickstart', '-k', `gui/501/${LAUNCHD_OWN.handle}`] } } })
+  const winFs = memoryFs()
+  await restartAgent(agentRow({ ...WIN_ROW, supervisor: 'service', service: TASK, launcherLive: false }), { ...BASE_DEPS, platform: 'win32', fs: winFs, exec: exec(false, ownTaskHost(winFs)), spawnDetached })
+  // Every command, the read-backs included, by full argv.
+  assert.deepEqual(argv(seen), [
+    ['systemctl', '--user', 'restart', 'bgos-agent-912'],
+    ['launchctl', 'kickstart', '-k', 'gui/501/ai.bgos.agent.912'],
+    ...argv(readBackThenRestart('linux', SYSTEMD_OWN.handle)),
+    ...argv(readBackThenRestart('darwin', LAUNCHD_OWN.handle)),
+    [TASK_PROBE.file, ...TASK_PROBE.args],
+    ['schtasks.exe', '/Run', '/TN', TASK_NAME],
+  ])
   assert.ok(RESTART_EXEC_TIMEOUT_MS > 90_000 && RESTART_EXEC_TIMEOUT_MS <= 5 * 60_000, 'past systemd\'s default 90 s stop, never unbounded')
   const hung = await restartAgent(agentRow({ supervisor: 'service', serviceFile: '/x.service' }), { ...BASE_DEPS, platform: 'linux', fs: memoryFs(), exec: exec(true), spawnDetached })
   assert.equal(hung.ok, false)
   assert.equal(hung.how, 'service')
   assert.match(hung.message, /^systemctl --user restart bgos-agent-912 failed \(rc null, timed out\)/)
-  const task = await restartAgent(agentRow({ ...WIN_ROW, supervisor: 'service', service: TASK, launcherLive: false }), { ...BASE_DEPS, platform: 'win32', fs: memoryFs(), exec: exec(true), spawnDetached })
+  const hungFs = memoryFs()
+  const task = await restartAgent(agentRow({ ...WIN_ROW, supervisor: 'service', service: TASK, launcherLive: false }), { ...BASE_DEPS, platform: 'win32', fs: hungFs, exec: exec(true, ownTaskHost(hungFs)), spawnDetached })
   assert.equal(task.ok, false)
-  assert.match(task.message, /failed \(rc null, timed out\)/)
+  assert.equal(task.how, 'task')
+  assert.match(task.message, /^schtasks\.exe \/Run \/TN HOAI Agent 912 home-66ede649 failed \(rc null, timed out\)/)
+  // The read-back itself hangs (a user bus or launchd that never answers): it is cut at the bound and
+  // read as unknown, so the restart is a named refusal and no kickstart or restart is sent.
+  const readBackHangs = (file: string, args: readonly string[]) => ((file === 'launchctl' && args[0] === 'print') || (file === 'systemctl' && args[1] === 'show') ? HUNG : null)
+  const refusals: Array<[string, Record<string, string>, Record<string, string>, string]> = [
+    [
+      'linux',
+      SYSTEMD_OWN,
+      ownUnitFile(SYSTEMD_OWN.handle),
+      `refused: which HOME the systemd unit "${SYSTEMD_OWN.handle}" belongs to could not be read (systemctl --user show --property=LoadState,ActiveState,FragmentPath,WorkingDirectory,Environment ${SYSTEMD_OWN.handle} failed (rc null, timed out): Command failed: killed); nothing was changed`,
+    ],
+    [
+      'darwin',
+      LAUNCHD_OWN,
+      {},
+      `refused: which HOME the launchd job "${LAUNCHD_OWN.handle}" belongs to could not be read (launchctl print gui/501/${LAUNCHD_OWN.handle} failed (rc null, timed out): Command failed: killed); nothing was changed`,
+    ],
+  ]
+  for (const [platform, service, files, refusal] of refusals) {
+    const from = seen.length
+    const out = await restartAgent(canonicalRow(service), { ...BASE_DEPS, platform, fs: memoryFs(files), exec: exec(false, null, readBackHangs), spawnDetached })
+    assert.deepEqual(out, { ok: false, how: 'service', message: refusal }, platform)
+    assert.deepEqual(argv(seen.slice(from)), [argv(readBackThenRestart(platform, service.handle))[0]], `${platform}: the read-back only, no kickstart or restart`)
+  }
+  // Every command above, the read-backs that answered and the ones that hung included, carried the bound.
+  for (const call of seen) assert.equal(call.opts?.timeoutMs, RESTART_EXEC_TIMEOUT_MS, `${call.file} ${call.args.join(' ')}`)
 })
 
 test('restartAgent win32 (F4): a dead launcher whose agent session is still live (an orphaned claude, a person\'s) is never started beside it: no schtasks /Run, a named refusal', async () => {
@@ -554,11 +736,12 @@ test('restartAgent win32 (F4): a dead launcher whose agent session is still live
     assert.equal(out.how, 'task', name)
     assert.match(out.message, /^session_without_launcher/, name)
   }
-  // The daemon is gone (its pid dead, the lock stale): the task starts as before.
-  const { calls, exec } = recordingExec()
-  const gone = await restartAgent(row, { ...BASE_DEPS, platform: 'win32', fs: memoryFs(Object.assign({}, ...cases.map(([, f]) => f))), exec, spawnDetached: recordingSpawn().spawnDetached, pidAlive: () => false } as any)
+  // The daemon is gone (its pid dead, the lock stale): the task starts as before (read back first, this HOME's own).
+  const goneFs = memoryFs(Object.assign({}, ...cases.map(([, f]) => f)))
+  const { calls, exec } = ownTaskHost(goneFs)
+  const gone = await restartAgent(row, { ...BASE_DEPS, platform: 'win32', fs: goneFs, exec, spawnDetached: recordingSpawn().spawnDetached, pidAlive: () => false } as any)
   assert.equal(gone.ok, true)
-  assert.deepEqual(calls, [{ file: 'schtasks.exe', args: ['/Run', '/TN', 'HOAI Agent 912'] }])
+  assert.deepEqual(calls, [TASK_PROBE, { file: 'schtasks.exe', args: ['/Run', '/TN', TASK_NAME] }])
 })
 
 test('restartAgent posix: a LIVE hoai launcher restarts through the marker even when a canonical service exists (a run.sh waiting behind it would restart nothing)', async () => {
@@ -576,11 +759,22 @@ test('restartAgent posix: a LIVE hoai launcher restarts through the marker even 
     assert.equal(fs.files.get('/home/kc/.bgos-agent/912/restart-requested.json'), '{}', platform)
     assert.deepEqual(calls, [], `${platform}: no kickstart -k / systemctl restart`)
     assert.deepEqual(spawns, [], platform)
-    // A dead launcher leaves the service as the authority, exactly as before.
-    const svc = recordingExec()
-    const dead = await restartAgent(agentRow({ supervisor: 'service', service: CANONICAL[platform], launcherLive: false }), { ...BASE_DEPS, platform, fs: memoryFs(), exec: svc.exec, spawnDetached })
+    // A dead launcher leaves the service as the authority, exactly as before: read back first (this
+    // HOME's own registration, under the old name of an agent not renamed yet), then restarted.
+    const svc = recordingExec(0, '', ownServiceReadBack)
+    // Linux: the unit file the read-back's FragmentPath names, as bgos-agent wrote it (read, not the Environment= fallback).
+    const deadFs = readRecordingFs(platform === 'linux' ? ownUnitFile('bgos-agent-912') : {})
+    const dead = await restartAgent(agentRow({ supervisor: 'service', service: CANONICAL[platform], launcherLive: false }), { ...BASE_DEPS, platform, fs: deadFs, exec: svc.exec, spawnDetached })
     assert.equal(dead.how, 'service', platform)
-    assert.equal(svc.calls.length, 1, platform)
+    assert.equal(dead.ok, true, `${platform}: ${dead.message}`)
+    if (platform === 'linux') assert.ok(deadFs.reads.includes('/home/kc/.config/systemd/user/bgos-agent-912.service'), `the unit file was read: ${deadFs.reads.join(', ')}`)
+    assert.deepEqual(
+      svc.calls,
+      platform === 'darwin'
+        ? [{ file: 'launchctl', args: ['print', 'gui/501/ai.bgos.agent.912'] }, { file: 'launchctl', args: ['kickstart', '-k', 'gui/501/ai.bgos.agent.912'] }]
+        : [{ file: 'systemctl', args: ['--user', 'show', '--property=LoadState,ActiveState,FragmentPath,WorkingDirectory,Environment', 'bgos-agent-912'] }, { file: 'systemctl', args: ['--user', 'restart', 'bgos-agent-912'] }],
+      platform,
+    )
   }
 })
 
@@ -608,15 +802,21 @@ test('restartAgent posix (design): a live hoai that is the canonical v2 service\
     ['a person\'s own hoai in a terminal: the marker (a service restart restarts only the waiting run.sh)', LAUNCHD, supervisorFile, byHand, 'marker'],
     ['no process table at all: the marker (never a guess)', LAUNCHD, supervisorFile, [], 'marker'],
   ]
+  // Every exec answers the read-back a canonical service restart makes first (lib/agent-service.mjs)
+  // as this HOME's own registration (an agent not renamed yet, under its old name), so the tier
+  // chosen is what acts.
   for (const [name, service, files, processes, how] of cases) {
-    const fs = memoryFs(files)
-    const { calls, exec } = recordingExec()
     const platform = service.kind === 'systemd' ? 'linux' : 'darwin'
+    // Linux: the unit file the read-back's FragmentPath names is there, as bgos-agent wrote it.
+    const fs = readRecordingFs({ ...files, ...(platform === 'linux' ? ownUnitFile(service.handle) : {}) })
+    const { calls, exec } = recordingExec(0, '', ownServiceReadBack)
     const out = await restartAgent(row(service), { ...BASE_DEPS, platform, fs, exec, spawnDetached: recordingSpawn().spawnDetached, processes } as any)
     assert.equal(out.how, how, name)
     assert.equal(out.ok, true, name)
     if (how === 'service') {
-      assert.deepEqual(calls.map((c) => c.file), [platform === 'linux' ? 'systemctl' : 'launchctl'], name)
+      // The read-back and the restart, of the same name, by full argv.
+      assert.deepEqual(calls, readBackThenRestart(platform, service.handle), name)
+      if (platform === 'linux') assert.ok(fs.reads.includes(`/home/kc/.config/systemd/user/${service.handle}.service`), `${name}: the unit file was read`)
       assert.equal(fs.files.has('/home/kc/.bgos-agent/912/restart-requested.json'), false, name)
     } else {
       assert.deepEqual(calls, [], name)
@@ -627,8 +827,9 @@ test('restartAgent posix (design): a live hoai that is the canonical v2 service\
   const statusFs = memoryFs({ ...supervisorFile, [STATUS]: '2026-10-06 19:00:00 outcome=live answered=[]\n' })
   statusFs.touch(SUP, 1_000)
   statusFs.touch(STATUS, 2_000)
-  const viaStatus = await restartAgent(row(LAUNCHD), { ...BASE_DEPS, platform: 'darwin', fs: statusFs, exec: recordingExec().exec, spawnDetached: recordingSpawn().spawnDetached, processes: [] } as any)
+  const viaStatus = await restartAgent(row(LAUNCHD), { ...BASE_DEPS, platform: 'darwin', fs: statusFs, exec: recordingExec(0, '', ownServiceReadBack).exec, spawnDetached: recordingSpawn().spawnDetached, processes: [] } as any)
   assert.equal(viaStatus.how, 'service')
+  assert.equal(viaStatus.ok, true, viaStatus.message)
   // A wait behind a hand-run hoai, or an older status than the launcher, is not.
   for (const [outcome, statusAt] of [['waiting-for-incumbent pids=3100', 2_000], ['live', 500]] as Array<[string, number]>) {
     const f = memoryFs({ ...supervisorFile, [STATUS]: `2026-10-06 19:00:00 outcome=${outcome}\n` })
@@ -644,11 +845,12 @@ test('restartAgent posix (design): a live hoai that is the canonical v2 service\
   const listing = underTmux.map((p) => ` ${p.pid} ${p.ppid} 501 Tue Oct  6 18:00:00 2026 ${p.command}`).join('\n')
   const self = { calls: [] as any[], exec: async (file: string, args: readonly string[]) => {
     self.calls.push([file, ...args])
-    return file === 'ps' ? { code: 0, stdout: listing, stderr: '', error: null, timedOut: false } : { code: 0, stdout: '', stderr: '', error: null, timedOut: false }
+    return file === 'ps' ? { code: 0, stdout: listing, stderr: '', error: null, timedOut: false } : ownServiceReadBack(file, args) ?? { code: 0, stdout: '', stderr: '', error: null, timedOut: false }
   } }
   const own = await restartAgent(row(LAUNCHD), { ...BASE_DEPS, platform: 'darwin', fs: memoryFs(supervisorFile), exec: self.exec, spawnDetached: recordingSpawn().spawnDetached } as any)
   assert.equal(own.how, 'service')
-  assert.deepEqual(self.calls.map((c: any) => c[0]), ['ps', 'launchctl'])
+  assert.equal(own.ok, true, own.message)
+  assert.deepEqual(self.calls.map((c: any) => (c[0] === 'ps' ? ['ps'] : c)), [['ps'], ...readBackThenRestart('darwin', 'ai.bgos.agent.912').map((c) => [c.file, ...c.args])])
 })
 
 test('restartAgent posix (design): the service\'s own hoai still restarts through the MARKER while its tmux server holds anything else (run.sh\'s trap kills that whole server), or when no process table can be read', async () => {
@@ -667,13 +869,22 @@ test('restartAgent posix (design): the service\'s own hoai still restarts throug
     ['supervisor.json says supervised, but the server holds a person\'s shell too', LAUNCHD, { [SUP]: JSON.stringify({ pid: 3000, capabilities: ['relaunch'], startedAt: 'x', supervised: true }) }, [proc(1, 0, '/sbin/launchd'), server, ...hoai, proc(6200, 2900, '-zsh')], 'marker'],
     // The pane's own shell (`sh -c` before it execs hoai) is the pane, not another job.
     ['the pane shell above hoai is the pane itself', LAUNCHD, supervisorFile, [proc(1, 0, '/sbin/launchd'), server, proc(2950, 2900, 'sh -c /usr/bin/env HOAI_SUPERVISED=1 node /x/bin/hoai-core.mjs'), proc(3000, 2950, 'node /x/bin/hoai-core.mjs'), proc(3100, 3000, 'claude --resume x')], 'service'],
+    ['linux: the pane shell above hoai, the server as Linux titles it', SYSTEMD, supervisorFile, [proc(1, 0, '/sbin/init'), proc(2900, 1, 'tmux: server (/tmp/tmux-501/hoai-912)'), proc(2950, 2900, 'sh -c /usr/bin/env HOAI_SUPERVISED=1 node /x/bin/hoai-core.mjs'), proc(3000, 2950, 'node /x/bin/hoai-core.mjs'), proc(3100, 3000, 'claude --resume x')], 'service'],
   ]
   for (const [name, service, files, processes, how] of cases) {
-    const fs = memoryFs(files)
-    const { calls, exec } = recordingExec()
     const platform = service.kind === 'systemd' ? 'linux' : 'darwin'
+    // Linux: the unit file the read-back's FragmentPath names is there, as bgos-agent wrote it.
+    const fs = readRecordingFs({ ...files, ...(platform === 'linux' ? ownUnitFile(service.handle) : {}) })
+    // The read-back a service restart makes first answers this HOME's own registration (ownServiceReadBack).
+    const { calls, exec } = recordingExec(0, '', ownServiceReadBack)
     const out = await restartAgent(row(service), { ...BASE_DEPS, platform, fs, exec, spawnDetached: recordingSpawn().spawnDetached, processes } as any)
     assert.equal(out.how, how, name)
+    if (how === 'service') {
+      assert.equal(out.ok, true, `${name}: ${out.message}`)
+      assert.deepEqual(calls, readBackThenRestart(platform, service.handle), name)
+      // Linux: the read-back judged the unit file its FragmentPath names (read, not the Environment= fallback).
+      if (platform === 'linux') assert.ok(fs.reads.includes(`/home/kc/.config/systemd/user/${service.handle}.service`), `${name}: the unit file was read: ${fs.reads.join(', ')}`)
+    }
     if (how === 'marker') {
       assert.deepEqual(calls, [], `${name}: no service restart`)
       assert.equal(fs.files.get('/home/kc/.bgos-agent/912/restart-requested.json'), '{}', name)

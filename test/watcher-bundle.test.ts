@@ -76,6 +76,10 @@ test('WATCHER_BUNDLE_FILES is exactly the design 7.5 list (order and names)', ()
     'lib/keepalive-plan.mjs',
     'lib/process-tree.mjs',
     'lib/agent-task-win32.mjs',
+    // The read-back of an agent's own service before the sweep or a restart acts on it
+    // (board row d6198bb6): agent-task-win32 and agent-restart import it, so a bundle
+    // without it is an import error at the watcher's first sweep.
+    'lib/agent-service.mjs',
     // The shared ASCII-only vbs/ps1 strings (the watcher's own service files and the agent task).
     'lib/win32-script-text.mjs',
     // Show agent windows (board row d133ddb2): the windows pass, its pure rules, and the Windows

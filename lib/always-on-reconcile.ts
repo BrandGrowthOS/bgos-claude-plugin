@@ -53,7 +53,7 @@
  * supervisor: a bespoke job was installed by someone else, for their reasons.
  */
 
-import { readDeclaredKeepalive } from './agent-inventory.mjs'
+import { agentServiceNamesFor, readDeclaredKeepalive } from './agent-inventory.mjs'
 import {
   listLoadedJobs,
   parseLaunchctlList,
@@ -95,13 +95,17 @@ export type AlwaysOnReconcileDecision =
   | { action: 'defer'; other: OtherSupervisor }
   | { action: 'wait'; reason: 'listing-unreadable' | 'error' | 'unread' }
 
-/** Is `handle` this agent's canonical bin/bgos-agent job? systemd discovery
- *  reports `<unit>.service`, the canonical name has no suffix, so the suffix
- *  is dropped before comparing. */
-function isCanonicalHandle(kind: 'launchd' | 'systemd', handle: string, assistantId: string | null): boolean {
+/** Is `handle` this agent's canonical bin/bgos-agent job: this HOME's own name
+ *  (`home-<hid>`, board row d6198bb6) or the OLD one of an agent not renamed
+ *  yet? Another HOME's name is not ours. systemd discovery reports
+ *  `<unit>.service`, the canonical name has no suffix, so the suffix is dropped
+ *  before comparing. */
+function isCanonicalHandle(kind: 'launchd' | 'systemd', handle: string, assistantId: string | null, home: string, platform: string): boolean {
   if (!assistantId) return false
-  if (kind === 'launchd') return handle === serviceLabel(assistantId)
-  return handle.replace(/\.service$/, '') === serviceUnit(assistantId)
+  const names = agentServiceNamesFor(assistantId, home, platform)
+  if (kind === 'launchd') return handle === serviceLabel(assistantId) || handle === names?.current.launchdLabel
+  const unit = handle.replace(/\.service$/, '')
+  return unit === serviceUnit(assistantId) || unit === names?.current.systemdUnit
 }
 
 /** The exact listing commands lib/service-supervision.mjs runs, so the memo
@@ -184,7 +188,7 @@ export function readAlwaysOnSupervision(probe: SupervisionProbe): AlwaysOnSuperv
       declared &&
       declared.kind === kind &&
       declared.handle &&
-      !isCanonicalHandle(kind, declared.handle, id) &&
+      !isCanonicalHandle(kind, declared.handle, id, probe.home, probe.platform) &&
       isLoaded(declared.handle)
     ) {
       return { state: 'other', other: { kind, handle: declared.handle, via: 'declared' } }
@@ -201,7 +205,7 @@ export function readAlwaysOnSupervision(probe: SupervisionProbe): AlwaysOnSuperv
       execSync: exec,
     }
     const sole = resolveSupervisingService({ ...io, listDir: probe.listDir })
-    if (sole && !isCanonicalHandle(sole.kind, sole.handle, id)) {
+    if (sole && !isCanonicalHandle(sole.kind, sole.handle, id, probe.home, probe.platform)) {
       return { state: 'other', other: { kind: sole.kind, handle: sole.handle, via: sole.via as OtherSupervisor['via'] } }
     }
     // No single answer: a tie (F4) or nothing. Every loaded job is matched on
@@ -213,7 +217,7 @@ export function readAlwaysOnSupervision(probe: SupervisionProbe): AlwaysOnSuperv
       const jobs = listLoadedJobs({ platform: probe.platform, home: probe.home, listDir: probe.listDir, readFile: probe.readFile, execSync: exec })
       for (const via of ['state-dir', 'working-directory'] as const) {
         for (const job of jobs) {
-          if (isCanonicalHandle(job.kind, job.handle, id)) continue
+          if (isCanonicalHandle(job.kind, job.handle, id, probe.home, probe.platform)) continue
           if (resolveSupervisingService({ ...io, jobs: [job] })?.via === via) {
             return { state: 'other', other: { kind: job.kind, handle: job.handle, via } }
           }

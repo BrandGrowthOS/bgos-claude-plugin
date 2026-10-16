@@ -319,6 +319,22 @@ async function commandStatus({ m, flags, home, env, platform, fs, exec, out }) {
     service = { active: false, output: String(error?.message ?? error), ran: [] }
   }
   const agents = listAgents({ home, env, platform, fs, pidAlive: defaultPidAlive })
+  // Board row d6198bb6: each Windows agent's task is read back, so status says whose it is: this
+  // HOME's own task, its old "HOAI Agent <id>" not renamed yet, or one another HOME installed.
+  // Through watcher-core (the entry imports only what a 0.61.4 bundle already had); an older core has none.
+  const tasks = new Map()
+  const { agentTaskRegistration, agentTaskStatus } = m.core ?? {}
+  if (platform === 'win32' && typeof agentTaskStatus === 'function' && typeof agentTaskRegistration === 'function') {
+    for (const a of agents) {
+      if (a.service?.kind !== 'schtasks') continue
+      try {
+        // Bounded like every other read-back: a hung CIM call is an unreadable task, never a hung status.
+        tasks.set(a.assistantId, await agentTaskStatus(agentTaskRegistration({ assistantId: a.assistantId, home }), { exec, fs, timeoutMs: 60_000 }))
+      } catch (error) {
+        tasks.set(a.assistantId, { state: 'unknown', label: null, line: `not read back: ${String(error?.message ?? error)}`, notes: [] })
+      }
+    }
+  }
   const status = {
     bundleDir: watcherHome(home),
     manifest: manifest ? { version: manifest.version, fingerprint: manifest.fingerprint, installedAt: manifest.installedAt, pluginRoot: manifest.pluginRoot } : null,
@@ -330,7 +346,10 @@ async function commandStatus({ m, flags, home, env, platform, fs, exec, out }) {
     lastHeartbeatOk: stateJson?.lastHeartbeatOk ?? null,
     lastJob: stateJson?.lastJob ?? null,
     health: buildWatcherHealth({ boots: readBoots(home, fs), crash: readCrash(home, fs), now: Date.now() }),
-    agents: agents.map((a) => ({ assistantId: a.assistantId, supervisor: a.supervisor, recipe: Boolean(a.recipe), cwd: a.cwd })),
+    agents: agents.map((a) => {
+      const task = tasks.get(a.assistantId)
+      return { assistantId: a.assistantId, supervisor: a.supervisor, recipe: Boolean(a.recipe), cwd: a.cwd, ...(task ? { task: { label: task.label, state: task.state, line: task.line, notes: task.notes } } : {}) }
+    }),
     logPath: watcherLogPath(home),
   }
   if (flags.json) {
@@ -348,6 +367,10 @@ async function commandStatus({ m, flags, home, env, platform, fs, exec, out }) {
   out(`[hoai-watcher] last job   : ${status.lastJob ? `${status.lastJob.op} ${status.lastJob.state} at ${status.lastJob.at}` : 'none'}`)
   out(`[hoai-watcher] health     : ${status.health.status}, ${status.health.bootsLastHour} start(s) in the last hour${status.health.lastFatal ? `, last fatal ${status.health.lastFatal.at}: ${status.health.lastFatal.message}` : ''}`)
   out(`[hoai-watcher] agents     : ${agents.length ? agents.map((a) => `${a.assistantId}:${a.supervisor}${a.recipe ? '+recipe' : ''}`).join(', ') : 'none'}`)
+  for (const [id, task] of tasks) {
+    out(`[hoai-watcher] agent ${id} task: ${task.line}`)
+    for (const note of task.notes ?? []) out(`[hoai-watcher] agent ${id} task: ${note}`)
+  }
   out(`[hoai-watcher] log        : ${status.logPath}`)
   return manifest && credentials ? EXIT.OK : EXIT.NO_CONFIG
 }

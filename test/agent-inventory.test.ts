@@ -996,10 +996,18 @@ test('parseSupervisorGeneration: absent is generation 1 (run.expect, fresh sessi
   assert.equal(parseSupervisorGeneration('0'), 1)
 })
 
-test('win32: the canonical agent task (HOAI Agent <id>, its run-agent.vbs in the state dir) counts as the agent service', () => {
+test('win32: the canonical agent task (HOAI Agent <id> home-<hid>, its run-agent.vbs in the state dir) counts as the agent service, the old name carried for the read-back', () => {
   const vbs = 'C:\\Users\\kc\\.bgos-agent\\912\\run-agent.vbs'
   const resolved = resolveAgentSupervisor({ platform: 'win32', home: 'C:\\Users\\kc', assistantId: '912', exists: (p) => p === vbs, readFile: () => null, pidAlive: () => false })
-  assert.deepEqual(resolved, { supervisor: 'service', service: { kind: 'schtasks', handle: 'HOAI Agent 912', via: 'canonical-file', file: vbs } })
+  // 66ede649 = watcherHomeId('C:\\Users\\kc', 'win32') (hashed as c:\users\kc), pinned: a change
+  // to it renames every installed task. The launcher file says nothing about which name the task
+  // is registered under, so the row names this HOME's task and carries the OLD one (an agent not
+  // renamed yet) for the read-back every act makes first.
+  assert.deepEqual(resolved, {
+    supervisor: 'service',
+    service: { kind: 'schtasks', handle: 'HOAI Agent 912 home-66ede649', legacyHandle: 'HOAI Agent 912', via: 'canonical-file', file: vbs },
+  })
+  // agentTaskName (id only) is the OLD name, documented as such.
   assert.equal(agentTaskName('912'), 'HOAI Agent 912')
   assert.equal(agentTaskName('9 12'), null)
   assert.equal(AGENT_TASK_LAUNCHER_FILE_NAME, 'run-agent.vbs')
