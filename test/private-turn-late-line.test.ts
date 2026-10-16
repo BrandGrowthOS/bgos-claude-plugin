@@ -27,7 +27,9 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { once } from 'node:events'
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -63,7 +65,7 @@ import {
 } from '../lib/private-turn.mjs'
 
 // Exports new in 0.69.8 are read through the namespace, so on a build without them only the tests that need them fail.
-const { PRIVATE_TURN_TAGS_MAX, privateTokenTag, privateTurnRecord } = privateTurn as any
+const { PRIVATE_TURN_TAGS_MAX, TURN_AWARE_UNVERIFIED_REFUSAL, privateTokenTag, privateTurnRecord } = privateTurn as any
 
 const OWNER = 'user_owner945'
 const RECIPIENT = 'user_recipient945'
@@ -142,8 +144,10 @@ function agentHost(t: any) {
   const begins: string[] = []
 
   /** One daemon life, wired as server.ts wires it. */
+  let lives = 0
   function daemon() {
-    markFloorAttached({ root, folders, projectDir })
+    // Each daemon life attaches anew, as server.ts does at its start: a new `at`.
+    markFloorAttached({ root, folders, projectDir, now: Date.now() + ++lives })
     const tracker = createPrivateTurnTracker({ ownerUserId: OWNER, markerPaths, fires: createFireLedger({ path: privateFiresPath(root, AGENT) }) })
     const turnChat = createTurnChatTracker()
     const publish = () => publishPrivateContext({
@@ -689,14 +693,17 @@ function cli(t: any) {
   const cwd = join(root, 'agent')
   mkdirSync(cwd)
   const env = { ...process.env, BGOS_PLUGIN_STATE_DIR: root, CLAUDE_PROJECT_DIR: cwd }
-  markFloorAttached({ root, folders: [cwd] })
+  let lives = 0
+  /** The daemon's attached entry (server.ts markFloorAttached): which daemon life serves this folder. */
+  const attach = ({ pid = process.pid, now = Date.now() + ++lives }: { pid?: number, now?: number } = {}) => markFloorAttached({ root, folders: [cwd], pid, now })
+  attach()
   const markerPaths = [privateMarkerPath(root, floorKey(cwd))]
   let tracker = createPrivateTurnTracker({ ownerUserId: OWNER, markerPaths })
   const c = {
-    markerPaths, cwd, env,
+    markerPaths, cwd, env, root, attach,
     get tracker() { return tracker },
-    /** A new daemon process: nothing but the disk survives. */
-    restart() { tracker = createPrivateTurnTracker({ ownerUserId: OWNER, markerPaths }) },
+    /** A new daemon process, which attaches anew: nothing but the disk survives. */
+    restart() { tracker = createPrivateTurnTracker({ ownerUserId: OWNER, markerPaths }); attach() },
     card: (actingUserId: string, chatId: string) => tracker.deliver({ content: `card ${randomUUID()}`, actingUserId, chatId }),
     /** The CLI submits a prompt: the hook writes its marker now; the returned function is its line reaching begin(). */
     prompt(prompt: string, session = 's') {
@@ -709,6 +716,8 @@ function cli(t: any) {
     end() { tracker.end() },
     gated() { try { return requirePrivateTurn(tracker, markerPaths, OWNER).actingUserId } catch { return 'refused' } },
     turnAware() { try { return turnAwarePrivateTurn({ tracker, markerPaths, ownerUserId: OWNER }).actingUserId } catch { return 'refused' } },
+    /** The turn aware tools' refusal text, or null when they act. */
+    turnAwareText() { try { turnAwarePrivateTurn({ tracker, markerPaths, ownerUserId: OWNER }); return null } catch (err) { return (err as Error).message } },
   }
   return c
 }
@@ -887,17 +896,81 @@ test('two hook sources of one submission that both read the closed marker name o
   assert.equal(readPrivateJson(c.markerPaths[0]!, 2048)?.cliTurn, payload.prompt_id)
 })
 
-test('another CLI session overwriting the marker between the recipient\'s and the owner\'s prompts of one turn leaves the owner\'s turn unsure (review round 2, R5)', (t) => {
+// ── A CLI killed without SessionEnd (the #247 review, Data): its live marker bars nothing that comes after it ──
+
+test('a CLI killed without SessionEnd and started again on its pinned session: the owner\'s first turn is the owner\'s, on every tool', async (t) => {
+  const host = agentHost(t)
+  host.submit(host.card(ownerFrame('Draft the launch plan.')))
+  await assertOwnerTurn(host, 'before')
+  // kill -TERM: no Stop, no SessionEnd, so the marker stays live; the supervisor starts claude again on the same
+  // session, and its daemon is a new life.
+  host.restart()
+  host.submit(host.card(ownerFrame('Carry on with the launch card.')))
+  await assertOwnerTurn(host, 'the first turn after the restart', { kind: 'owner_message', id: String(messageId) })
+})
+
+test('a session killed without SessionEnd: a new session\'s owner turn is the owner\'s, even when the dead session\'s last turn had a recipient in it', (t) => {
+  for (const newLife of [false, true]) {
+    const c = cli(t)
+    c.prompt(c.card(RECIPIENT, '2'), 's1')
+    c.prompt(c.card(OWNER, '1'), 's1')()
+    assert.equal(c.gated(), 'refused', 'that turn itself (#247)')
+    if (newLife) c.restart()
+    c.prompt(c.card(OWNER, '1'), 's2')()
+    assert.equal(c.gated(), OWNER, `a new session${newLife ? ', a new daemon life' : ''}`)
+    assert.equal(c.turnAware(), OWNER)
+  }
+})
+
+test('a live marker of the same session and daemon life is still this turn (#247), and it names that daemon life', (t) => {
   const c = cli(t)
+  c.prompt(c.card(RECIPIENT, '2'))
   c.prompt(c.card(OWNER, '1'))()
-  c.stopHook()
-  c.end()
-  const recipientCard = c.card(RECIPIENT, '2')
-  const ownerCard = c.card(OWNER, '1')
-  c.prompt(recipientCard)
-  recordPrivateBoundary({ hook_event_name: 'UserPromptSubmit', session_id: 'other-cli', cwd: c.cwd, prompt: 'hello', prompt_id: randomUUID() }, c.env)
-  c.prompt(ownerCard)()
   assert.equal(c.gated(), 'refused')
+  const attached = JSON.parse(readFileSync(join(c.root, 'floor', 'attached', `${floorKey(c.cwd)}.json`), 'utf8'))
+  assert.deepEqual(readPrivateJson(c.markerPaths[0]!, 2048)?.daemon, { pid: attached.pid, at: attached.at })
+})
+
+test('the same session after its daemon\'s pid died, or the same pid in a new daemon life: the marker before is not this turn', async (t) => {
+  // The pid alone: the same attach time, another pid, the first one dead.
+  {
+    const c = cli(t)
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true })
+    t.after(() => { try { child.kill() } catch { /* gone */ } })
+    c.attach({ pid: child.pid!, now: 1000 })
+    c.prompt(c.card(RECIPIENT, '2'))
+    child.kill()
+    await once(child, 'exit')
+    c.restart()
+    c.attach({ pid: process.pid, now: 1000 })
+    c.prompt(c.card(OWNER, '1'))()
+    assert.equal(c.gated(), OWNER, 'its daemon died: a new life')
+  }
+  // A reused pid never keeps a dead life's marker: the same pid, attached anew.
+  {
+    const c = cli(t)
+    c.attach({ pid: process.pid, now: 2000 })
+    c.prompt(c.card(RECIPIENT, '2'))
+    c.restart()
+    c.attach({ pid: process.pid, now: 3000 })
+    c.prompt(c.card(OWNER, '1'))()
+    assert.equal(c.gated(), OWNER, 'the same pid, a new life')
+  }
+})
+
+test('the turn aware refusal names a person only when one reached the turn: plain words on an agent nobody it is shared with reached', (t) => {
+  const alone = cli(t)
+  alone.stopHook()
+  writeFileSync(alone.markerPaths[0]!, '{ not json')
+  alone.prompt(alone.card(OWNER, '1'))()
+  const plain = alone.turnAwareText()
+  assert.equal(plain, TURN_AWARE_UNVERIFIED_REFUSAL)
+  assert.doesNotMatch(String(plain), /shared/i)
+  assert.match(String(plain), /could not be verified/)
+  const shared = cli(t)
+  shared.prompt(shared.card(RECIPIENT, '2'))
+  shared.prompt(shared.card(OWNER, '1'))()
+  assert.equal(shared.turnAwareText(), TURN_AWARE_REFUSAL, 'a person this agent is shared with reached it')
 })
 
 test('a bar from a delivery whose place was unknown ends with the next Stop the CLI ran after it (review round 2, R7)', (t) => {
