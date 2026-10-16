@@ -917,6 +917,21 @@ test('a bar from a delivery whose place was unknown ends with the next Stop the 
   assert.equal(c.gated(), OWNER, 'the next turn, after a Stop written after it')
 })
 
+test('a bar from a delivery whose place was unknown outlives a late Stop line that lands after the next prompt\'s hook', (t) => {
+  const c = cli(t)
+  c.prompt(c.card(OWNER, '1'))()
+  c.stopHook()
+  rmSync(c.markerPaths[0]!)
+  mkdirSync(c.markerPaths[0]!)
+  c.card(RECIPIENT, '2')
+  rmSync(c.markerPaths[0]!, { recursive: true })
+  // The next prompt's hook runs, then the previous turn's Stop line lands: the marker it finds is the new live one.
+  const begin = c.prompt(c.card(OWNER, '1'))
+  c.end()
+  begin()
+  assert.equal(c.gated(), 'refused', 'the recipient may be in this turn')
+})
+
 test('the marker records the CLI turn: one turn until a Stop, the gap it followed, each prompt\'s token by tag, never the token', () => {
   const token = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
   const card = (n: number) => `card ${n}\n<hoai-private-turn id="${token(n)}"/>`
