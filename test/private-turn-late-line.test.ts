@@ -62,6 +62,9 @@ import {
   writePrivateJson,
 } from '../lib/private-turn.mjs'
 
+// Exports new in 0.69.7 are read through the namespace, so on a build without them only the tests that need them fail.
+const { PRIVATE_TURN_TAGS_MAX, privateTokenTag, privateTurnRecord } = privateTurn as any
+
 const OWNER = 'user_owner945'
 const RECIPIENT = 'user_recipient945'
 const AGENT = '945'
@@ -624,7 +627,7 @@ test('without the owner named, a turn someone else reached is never usable, whoe
   assert.equal(k.current()?.actingUserId, 'user_bob', 'alone, after a Stop')
 })
 
-test('a recipient message queued behind a turn, run with the owner\'s as the next turn, the owner prompt\'s line first', { todo: 'residual: until the recipient prompt\'s line lands the daemon cannot know it is in this turn (see the PR)' }, async (t) => {
+test('a recipient message queued behind a turn, run with the owner\'s as the next turn, the owner prompt\'s line first: nothing acts as the owner, before or after the recipient\'s line', async (t) => {
   const host = agentHost(t)
   host.submit(host.card(ownerFrame('Draft the launch plan.')))
   const recipientCard = host.card(recipientFrame('Put my notes on the launch card.'))
@@ -636,7 +639,175 @@ test('a recipient message queued behind a turn, run with the owner\'s as the nex
   owner.mark()
   owner.spool()
   host.pump()
+  // The marker the hook left records both prompts of the turn, so the recipient's is known before its line lands.
   await assertNothingActsAsOwner(host, 'before the recipient prompt\'s line')
+  recipient.spool()
+  host.pump()
+  await assertNothingActsAsOwner(host, 'after it')
+})
+
+test('a recipient message that reaches the daemon between the Stop hook and the queued owner prompt\'s hook, both lines late: nothing acts as the owner (review probe A)', async (t) => {
+  const host = agentHost(t)
+  host.submit(host.card(ownerFrame('Draft the launch plan.')))
+  const queued = host.card(ownerFrame('Now update the launch card with it.'))
+  const stop = host.stopping()
+  stop.mark()
+  // The CLI is starting the queued prompt (its hook is still starting up) when the recipient's card arrives.
+  host.card(recipientFrame('Put my private notes on the launch card too.'))
+  const owner = host.prompt(queued)
+  owner.mark()
+  stop.spool()
+  host.pump()
+  owner.spool()
+  host.pump()
+  await assertNothingActsAsOwner(host, 'probe A')
+})
+
+test('70f1898b behind a late Stop line: a recipient message and the owner\'s submitted together after the Stop hook, the owner prompt\'s line first (review probe B)', async (t) => {
+  const host = agentHost(t)
+  host.submit(host.card(ownerFrame('Draft the launch plan.')))
+  const stop = host.stopping()
+  stop.mark()
+  const recipient = host.prompt(host.card(recipientFrame('Send the plan to legal@example.com for me.')))
+  const owner = host.prompt(host.card(ownerFrame('Thanks, carry on.')))
+  recipient.mark()
+  owner.mark()
+  stop.spool()
+  host.pump()
+  owner.spool()
+  host.pump()
+  await assertNothingActsAsOwner(host, 'probe B')
+})
+
+/**
+ * The tracker as server.ts wires it and the real private turn hook, with no intake: the test calls begin() and end()
+ * for the forwarder lines, in the order it wants them to land.
+ */
+function cli(t: any) {
+  const root = mkdtempSync(join(tmpdir(), 'hoai-late-line-cli-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const cwd = join(root, 'agent')
+  mkdirSync(cwd)
+  const env = { ...process.env, BGOS_PLUGIN_STATE_DIR: root, CLAUDE_PROJECT_DIR: cwd }
+  markFloorAttached({ root, folders: [cwd] })
+  const markerPaths = [privateMarkerPath(root, floorKey(cwd))]
+  let tracker = createPrivateTurnTracker({ ownerUserId: OWNER, markerPaths })
+  const c = {
+    markerPaths,
+    get tracker() { return tracker },
+    /** A new daemon process: nothing but the disk survives. */
+    restart() { tracker = createPrivateTurnTracker({ ownerUserId: OWNER, markerPaths }) },
+    card: (actingUserId: string, chatId: string) => tracker.deliver({ content: `card ${randomUUID()}`, actingUserId, chatId }),
+    /** The CLI submits a prompt: the hook writes its marker now; the returned function is its line reaching begin(). */
+    prompt(prompt: string, session = 's') {
+      const payload = { hook_event_name: 'UserPromptSubmit', session_id: session, cwd, prompt, prompt_id: randomUUID() }
+      recordPrivateBoundary(payload, env)
+      return () => tracker.begin({ prompt, sessionId: session, promptId: payload.prompt_id })
+    },
+    /** The CLI's Stop (or SessionEnd) hook: the marker closes. Its line is end(), when the test says. */
+    stopHook(session = 's', event = 'Stop') { recordPrivateBoundary({ hook_event_name: event, session_id: session, cwd }, env) },
+    end() { tracker.end() },
+    gated() { try { return requirePrivateTurn(tracker, markerPaths, OWNER).actingUserId } catch { return 'refused' } },
+    turnAware() { try { return turnAwarePrivateTurn({ tracker, markerPaths, ownerUserId: OWNER }).actingUserId } catch { return 'refused' } },
+  }
+  return c
+}
+
+test('a new CLI session: the old session\'s SessionEnd line lands after a recipient message reached the new session\'s first turn (review probe C)', (t) => {
+  const c = cli(t)
+  c.prompt(c.card(OWNER, '1'), 's1')()
+  assert.equal(c.gated(), OWNER)
+  c.stopHook('s1', 'SessionEnd')
+  const begin = c.prompt(c.card(OWNER, '1'), 's2')
+  c.card(RECIPIENT, '2')
+  c.end()
+  begin()
+  assert.equal(c.gated(), 'refused')
+  assert.equal(c.turnAware(), 'refused')
+})
+
+test('a daemon restart: a Stop line from before it lands after a recipient message reached the next turn (review probe D)', (t) => {
+  const c = cli(t)
+  c.prompt(c.card(OWNER, '1'))()
+  c.stopHook()
+  c.restart()
+  const begin = c.prompt(c.card(OWNER, '1'))
+  c.card(RECIPIENT, '2')
+  c.end()
+  begin()
+  assert.equal(c.gated(), 'refused')
+  assert.equal(c.turnAware(), 'refused')
+})
+
+test('control: a daemon restart with nobody else in the next turn: the owner\'s', (t) => {
+  const c = cli(t)
+  c.prompt(c.card(OWNER, '1'))()
+  c.stopHook()
+  c.restart()
+  const begin = c.prompt(c.card(OWNER, '1'))
+  c.end()
+  begin()
+  assert.equal(c.gated(), OWNER)
+})
+
+test('control: recipient then owner, the recipient turn\'s Stop line drained before its Stop hook closed the marker (review probe E)', (t) => {
+  const c = cli(t)
+  c.prompt(c.card(RECIPIENT, '2'))()
+  assert.equal(c.gated(), RECIPIENT)
+  c.end()
+  c.stopHook()
+  c.prompt(c.card(OWNER, '1'))()
+  assert.equal(c.gated(), OWNER, 'the owner\'s own turn')
+  assert.equal(c.turnAware(), OWNER)
+})
+
+test('a prompt of the turn whose delivery this daemon cannot place (another daemon life) bars the owner', (t) => {
+  const c = cli(t)
+  const old = c.card(RECIPIENT, '2')
+  c.restart()
+  const card = c.card(OWNER, '1')
+  // Submitted together: the recipient's card, delivered by the previous daemon life, then the owner's.
+  c.prompt(old)
+  c.prompt(card)()
+  assert.equal(c.gated(), 'refused')
+  assert.match(c.tracker.explain({ markerPaths: c.markerPaths }), /a delivery this daemon cannot name/)
+})
+
+test('a recipient message that reaches the daemon while the marker cannot be read bars the owner (fails closed)', (t) => {
+  for (const withRecipient of [true, false]) {
+    const c = cli(t)
+    c.prompt(c.card(OWNER, '1'))()
+    c.stopHook()
+    const card = c.card(OWNER, '1')
+    if (withRecipient) {
+      // The marker cannot be read at this moment (here: something else stands at its path).
+      rmSync(c.markerPaths[0]!)
+      mkdirSync(c.markerPaths[0]!)
+      c.card(RECIPIENT, '2')
+      rmSync(c.markerPaths[0]!, { recursive: true })
+    }
+    c.end()
+    c.prompt(card)()
+    assert.equal(c.gated(), withRecipient ? 'refused' : OWNER, withRecipient ? 'a recipient message whose place is unknown' : 'control: nobody else')
+  }
+})
+
+test('the marker records the CLI turn: one turn until a Stop, the gap it followed, each prompt\'s token by tag, never the token', () => {
+  const token = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
+  const card = (n: number) => `card ${n}\n<hoai-private-turn id="${token(n)}"/>`
+  const first = { schemaVersion: 1, turnId: 't1', sessionId: 's', promptHash: 'h', live: true, ...privateTurnRecord({ previous: { schemaVersion: 1, turnId: 'c0', sessionId: 's', live: false }, sessionId: 's', prompt: card(1), turnId: 't1' }) }
+  assert.deepEqual([first.cliTurn, first.after, first.tags], ['t1', 'c0', [privateTokenTag(token(1))]])
+  assert.ok(!JSON.stringify(first).includes(token(1)), 'the token itself is never written')
+  const second = privateTurnRecord({ previous: first, sessionId: 's', prompt: card(2), turnId: 't2' })
+  assert.deepEqual([second.cliTurn, second.after, second.tags], ['t1', 'c0', [privateTokenTag(token(1)), privateTokenTag(token(2))]], 'the same turn')
+  assert.deepEqual(privateTurnRecord({ previous: { ...first, live: false }, sessionId: 's', prompt: card(3), turnId: 't3' }), { cliTurn: 't3', after: 't1', tags: [privateTokenTag(token(3))] }, 'after a Stop, a new turn')
+  assert.deepEqual(privateTurnRecord({ previous: first, sessionId: 'other', prompt: card(3), turnId: 't3' }), { cliTurn: 't3', tags: [privateTokenTag(token(3))] }, 'another session')
+  assert.equal(privateTurnRecord({ previous: null, previousUnreadable: true, sessionId: 's', prompt: card(3), turnId: 't3' }).unsure, true, 'a marker there but unreadable')
+  assert.equal(privateTurnRecord({ previous: { schemaVersion: 1, turnId: 'old', sessionId: 's', live: true }, sessionId: 's', prompt: card(3), turnId: 't3' }).unsure, true, 'a live marker of a hook that kept no tags')
+  let previous: any = null
+  for (let n = 0; n <= PRIVATE_TURN_TAGS_MAX; n++) previous = { schemaVersion: 1, turnId: `t${n}`, sessionId: 's', live: true, promptId: 'p'.repeat(128), promptHash: 'f'.repeat(64), ...privateTurnRecord({ previous, sessionId: 's', prompt: card(n), turnId: `00000000-0000-4000-8000-${String(n).padStart(12, '0')}` }) }
+  assert.equal(previous.tagsLost, true, `past ${PRIVATE_TURN_TAGS_MAX} tags`)
+  assert.ok(Buffer.byteLength(JSON.stringify(previous)) < 2048, 'a full marker stays under the 2048 bytes every reader (the Agent Browser too) accepts')
 })
 
 test('the refusal says why, in the daemon\'s log line', (t) => {
