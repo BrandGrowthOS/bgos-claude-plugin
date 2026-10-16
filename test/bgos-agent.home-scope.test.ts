@@ -825,6 +825,10 @@ test('round 2 (verify 2): a launchctl print that says "Could not find service" i
   t.after(a.cleanup)
   seedOldAgent(a, 'Darwin')
   a.setState((s) => {
+    // The bootout reports a failure but the job goes (only the answer's text can say so: launchd did not
+    // accept the bootout), and every later read of it answers rc 3 with "Could not find service".
+    s.fail.push({ match: `launchctl bootout gui/${s.uid}/${OLD_LABEL}`, exact: true, code: 5, stderr: 'Boot-out failed: 5: Input/output error', times: 99 })
+    s.unloadWith = { line: `launchctl bootout gui/${s.uid}/${OLD_LABEL}`, label: OLD_LABEL, skip: 0 }
     s.fail.push({ match: `launchctl print gui/${s.uid}/${OLD_LABEL}`, exact: true, code: 3, stderr: `Bad request.\nCould not find service "${OLD_LABEL}" in domain for user gui: ${s.uid}`, times: 299, skip: 1 })
   })
   const r = a.install(a.owner)
