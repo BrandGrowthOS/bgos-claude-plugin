@@ -127,6 +127,7 @@ function agentHost(t: any) {
     markFloorAttached({ root, folders, projectDir })
     const ledger = createFireLedger({ path: firesPath })
     const tracker = createPrivateTurnTracker({
+      ownerUserId: OWNER,
       fires: {
         handledAt: (key: string) => ledger.handledAt(key),
         record: (key: string) => { recorded.push(key); return unwritable.has(key) ? false : ledger.record(key) },

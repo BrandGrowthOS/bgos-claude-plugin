@@ -195,7 +195,7 @@ function fleetHost(t: any, { now = Date.now }: { now?: () => number } = {}) {
       markFloorAttached({ root, folders, projectDir })
       // server.ts privateTurns: a new process reads the agent's fire ledger from disk; nothing else survives.
       const tracker = createPrivateTurnTracker({
-        now, fires: createFireLedgerOf({ path: firesPath, now }),
+        ownerUserId: OWNER, now, fires: createFireLedgerOf({ path: firesPath, now }),
         onRepeat: (repeat) => repeats.push(privateRepeatLine(repeat)),
         onReplay: (replay) => replays.push(privateReplayLineOf(replay)),
         onUnrecorded: (info) => unrecorded.push(privateUnrecordedLineOf(info)),
@@ -578,7 +578,7 @@ test('control: a late record of an older submission never displaces the newer tu
 })
 
 test('control: past 64 remembered submissions a late record fails closed', () => {
-  const tracker = createPrivateTurnTracker()
+  const tracker = createPrivateTurnTracker({ ownerUserId: OWNER })
   const first = { prompt: tracker.deliver({ content: 'first', actingUserId: OWNER, chatId: '1' }), promptId: randomUUID() }
   tracker.begin({ ...first, sessionId: 's' })
   for (let i = 0; i < 64; i++) {

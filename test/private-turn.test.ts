@@ -22,7 +22,8 @@ function fixture(t: any) {
   const env = { ...process.env, BGOS_PLUGIN_STATE_DIR: root, CLAUDE_PROJECT_DIR: cwd }
   markFloorAttached({ root, folders: [cwd] })
   const markerPaths = [privateMarkerPath(root, floorKey(cwd))]
-  const tracker = createPrivateTurnTracker()
+  // The owner every requirePrivateTurn below names, as server.ts tells its tracker (board row f81a527c).
+  const tracker = createPrivateTurnTracker({ ownerUserId: 'user_owner' })
   const start = (actor: string | null, text = 'identical incoming user text', session = 'session-a') => {
     const prompt = tracker.deliver({ content: text, actingUserId: actor, chatId: actor === 'user_owner' ? '10' : '20' })
     const payload = { hook_event_name: 'UserPromptSubmit', session_id: session, cwd, prompt }
@@ -204,7 +205,7 @@ test('a mid-turn delivery from another person or an unattributed sender revokes 
   const f = fixture(t)
   const path = privateContextPath(f.root, '7')
   const revoked: number[] = []
-  const tracker = createPrivateTurnTracker({ onRevoke: () => {
+  const tracker = createPrivateTurnTracker({ ownerUserId: 'user_owner', onRevoke: () => {
     revoked.push(1)
     publishPrivateContext({ path, secret: 'synthetic-test-key', assistantId: '7', ownerUserId: 'user_owner', claudePid: process.pid, turn: tracker.current({ markerPaths: f.markerPaths }) })
   } })
