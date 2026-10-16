@@ -21,13 +21,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
-import * as host from '../bin/hoai-browser-host.mjs'
-import { ChromiumEngine, launchChromium } from '../bin/hoai-browser-host.mjs'
+import { BROWSER_KILL_WAIT_MS, ChromiumEngine, RUNTIME_DIR_RETRY_MS, launchChromium } from '../bin/hoai-browser-host.mjs'
 
-const BROWSER_KILL_WAIT_MS: number = (host as any).BROWSER_KILL_WAIT_MS
-
-/** A Chrome that never reports its endpoint, exits `exitAfterKillMs` after a kill (null: never), and holds its folder `holdAfterExitMs` after that. */
-function fakeChrome({ exitAfterKillMs = 150 as number | null, holdAfterExitMs = 150 } = {}) {
+/** A Chrome that never reports its endpoint, exits `exitAfterKillMs` after a kill, and holds its folder `holdAfterExitMs` after that (null: never). */
+function fakeChrome({ exitAfterKillMs = 150 as number | null, holdAfterExitMs = 150 as number | null } = {}) {
   const events: string[] = []
   const child: any = Object.assign(new EventEmitter(), { stderr: new EventEmitter(), pid: 4242, exitCode: null, signalCode: null, held: true, events })
   child.kill = (signal: string) => {
@@ -38,7 +35,7 @@ function fakeChrome({ exitAfterKillMs = 150 as number | null, holdAfterExitMs = 
         child.signalCode = signal
         events.push('exit')
         child.emit('exit', null, signal)
-        setTimeout(() => { child.held = false }, holdAfterExitMs)
+        if (holdAfterExitMs !== null) setTimeout(() => { child.held = false }, holdAfterExitMs)
       }, exitAfterKillMs)
     }
     return true
@@ -91,7 +88,7 @@ test('win32: a killed Chrome that never exits still lets the start fail, after a
 })
 
 test('linux and macOS are unchanged: a start that timed out rejects as it kills', async () => {
-  for (const platform of ['linux', 'darwin']) {
+  for (const platform of ['linux', 'darwin'] as const) {
     const child = fakeChrome({ exitAfterKillMs: 200 })
     await launchChromium({ executable: '/fake/chrome', profileDir: '/fake/profile', timeoutMs: 50, spawnImpl: (() => child) as any, platform, env: {} })
       .catch((err: any) => { child.events.push(`rejected ${err.code}`) })
@@ -105,29 +102,28 @@ test('win32: stop() after a start timeout does not throw, removes the runtime fo
   const engine = engineFor(t, child, { log: (l) => lines.push(l) })
   await assert.rejects(engine.start(), { code: 'browser_start_failed' })
   const runtimeDir = engine._runtimeDir
+  t.after(() => rmSync(runtimeDir, { recursive: true, force: true }))
   assert.ok(runtimeDir && existsSync(runtimeDir), 'the failed start left its runtime folder for the stop')
-  let cleanedUp = false
-  try {
-    await engine.stop()
-  } finally {
-    cleanedUp = true
-  }
-  assert.equal(cleanedUp, true)
+  await engine.stop() // resolving is the point: the caller's cleanup after it runs
   assert.equal(existsSync(runtimeDir), false, 'the folder was removed once Chrome let go of it')
   assert.equal(engine._runtimeDir, null)
   assert.deepEqual(lines.filter((l) => /runtime folder/.test(l)), [], 'a folder that freed up in time is not reported')
 })
 
 test('win32: a runtime folder still busy after the retry is logged and left, never thrown, and the next start removes it', async (t) => {
-  const child = fakeChrome({ exitAfterKillMs: 50, holdAfterExitMs: 60_000 })
+  const child = fakeChrome({ exitAfterKillMs: 50, holdAfterExitMs: null })
   const lines: string[] = []
   const calls: string[] = []
   const engine = engineFor(t, child, { removeDir: removeDirHeldBy(child, calls), log: (l) => lines.push(l) })
   await assert.rejects(engine.start(), { code: 'browser_start_failed' })
   const runtimeDir = engine._runtimeDir
+  t.after(() => rmSync(runtimeDir, { recursive: true, force: true }))
   const began = Date.now()
   await engine.stop()
-  assert.ok(Date.now() - began < 5_000, 'the retry is short and bounded')
+  const retried = Date.now() - began
+  assert.ok(retried >= RUNTIME_DIR_RETRY_MS - 300, `the removal was retried for its whole window (${retried} ms)`)
+  assert.ok(retried < 5_000, `and the retry is short and bounded (${retried} ms)`)
+  assert.equal(engine._runtimeDir, null)
   assert.ok(calls.length > 1, `the removal was retried (${calls.length} attempts)`)
   assert.equal(existsSync(runtimeDir), true, 'the busy folder is left in place')
   assert.ok(lines.some((l) => l.includes(runtimeDir) && /EPERM/.test(l) && /next/.test(l)), `logged: ${lines.join(' | ')}`)
@@ -170,5 +166,6 @@ test('linux and macOS are unchanged: a folder the stop cannot remove still fails
     engine._runtimeDir = runtimeDir
     engine._child = child
     await assert.rejects(engine.stop(), { code: 'EPERM' }, platform)
+    assert.equal(engine._runtimeDir, runtimeDir, 'and the folder is still recorded, as before')
   }
 })

@@ -1177,14 +1177,15 @@ export class ChromiumEngine {
   async start() {
     this.vault = new AgentBrowserVault({ profileDir: this.profileDir, scope: this._scope })
     ensurePrivateDir(this.outputDir)
-    // Never attach to a legacy native profile: it may contain unencrypted
-    // login state. Owner consent can clear it through the vault protocol.
+    // Windows: runtime folders an earlier stop had to leave while Chrome still held them.
     for (const dir of leftRuntimeDirs) {
       try {
         this._removeDir(dir)
         leftRuntimeDirs.delete(dir)
       } catch {}
     }
+    // Never attach to a legacy native profile: it may contain unencrypted
+    // login state. Owner consent can clear it through the vault protocol.
     this._runtimeDir = mkdtempSync(join(tmpdir(), 'hoai-browser-runtime-'))
     ensurePrivateDir(this._runtimeDir)
     // Downloads only into the held folder, and only when its guard holds
@@ -1309,16 +1310,17 @@ export class ChromiumEngine {
    */
   async _removeRuntimeDir() {
     const dir = this._runtimeDir
-    this._runtimeDir = null
     const deadline = Date.now() + RUNTIME_DIR_RETRY_MS
     for (;;) {
       try {
         this._removeDir(dir)
+        this._runtimeDir = null
         return
       } catch (err) {
         if (this._platform !== 'win32' || !RUNTIME_DIR_BUSY.has(err?.code)) throw err
         if (Date.now() >= deadline) {
           leftRuntimeDirs.add(dir)
+          this._runtimeDir = null
           this._log(`the browser's runtime folder ${dir} is still in use (${err.code}); it is left for the next browser start to remove`)
           return
         }
