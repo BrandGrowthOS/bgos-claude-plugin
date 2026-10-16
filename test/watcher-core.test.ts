@@ -15,6 +15,10 @@
  * Run: npx tsx --test test/watcher-core.test.ts
  */
 
+// First: any real process listing, signal or launch from the loop fails this file instead of
+// acting on the computer it runs on (board row afa70b0c, test/watcher-real-os.guard.test.ts).
+import './helpers/real-os-sentinel.ts'
+
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
