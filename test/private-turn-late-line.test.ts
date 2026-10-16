@@ -693,7 +693,7 @@ function cli(t: any) {
   const markerPaths = [privateMarkerPath(root, floorKey(cwd))]
   let tracker = createPrivateTurnTracker({ ownerUserId: OWNER, markerPaths })
   const c = {
-    markerPaths,
+    markerPaths, cwd, env,
     get tracker() { return tracker },
     /** A new daemon process: nothing but the disk survives. */
     restart() { tracker = createPrivateTurnTracker({ ownerUserId: OWNER, markerPaths }) },
@@ -826,6 +826,92 @@ test('a turn whose earlier prompts the marker cannot list bars the owner: a mark
   }
 })
 
+test('a recipient message in the gap before a new session\'s first prompt, the old session\'s SessionEnd line late: nothing acts as the owner (review round 2, R1)', (t) => {
+  const c = cli(t)
+  c.prompt(c.card(OWNER, '1'), 's1')()
+  c.stopHook('s1', 'SessionEnd')
+  const card = c.card(OWNER, '1')
+  c.card(RECIPIENT, '2')
+  const begin = c.prompt(card, 's2')
+  c.end()
+  begin()
+  assert.equal(c.gated(), 'refused')
+  assert.equal(c.turnAware(), 'refused')
+})
+
+test('a recipient message in the gap after a Stop hook that failed and closed the marker as a stale one (review round 2, R2)', (t) => {
+  const c = cli(t)
+  c.prompt(c.card(OWNER, '1'))()
+  // What closeMarkers writes (bin/hoai-private-turn-hook.mjs), when the Stop could not be recorded.
+  writePrivateJson(c.markerPaths[0]!, { schemaVersion: 1, turnId: randomUUID(), sessionId: '', promptHash: '', live: false })
+  const card = c.card(OWNER, '1')
+  c.card(RECIPIENT, '2')
+  const begin = c.prompt(card)
+  c.end()
+  begin()
+  assert.equal(c.gated(), 'refused')
+})
+
+test('a recipient message before the first prompt at a marker key ever (a new install, a wiped state): nothing acts as the owner (review round 2, R3)', (t) => {
+  const c = cli(t)
+  const card = c.card(OWNER, '1')
+  c.card(RECIPIENT, '2')
+  c.prompt(card)()
+  assert.equal(c.gated(), 'refused')
+  const alone = cli(t)
+  alone.prompt(alone.card(OWNER, '1'))()
+  assert.equal(alone.gated(), OWNER, 'control: the owner alone')
+})
+
+test('two hook sources of one submission that both read the closed marker name one turn: a recipient message between their writes is caught (review round 2, R4)', (t) => {
+  const c = cli(t)
+  c.prompt(c.card(OWNER, '1'))()
+  c.stopHook()
+  c.end()
+  const card = c.card(OWNER, '1')
+  const previous = readPrivateJson(c.markerPaths[0]!, 2048)
+  const promptId = randomUUID()
+  const stamp = () => {
+    const turnId = randomUUID()
+    writePrivateJson(c.markerPaths[0]!, { schemaVersion: 1, turnId, sessionId: 's', promptHash: privatePromptHash(card), live: true, promptId, ...privateTurnRecord({ previous, sessionId: 's', prompt: card, turnId, promptId }) })
+  }
+  stamp()
+  c.card(RECIPIENT, '2')
+  stamp()
+  c.tracker.begin({ prompt: card, sessionId: 's', promptId })
+  assert.equal(c.gated(), 'refused')
+})
+
+test('another CLI session overwriting the marker between the recipient\'s and the owner\'s prompts of one turn leaves the owner\'s turn unsure (review round 2, R5)', (t) => {
+  const c = cli(t)
+  c.prompt(c.card(OWNER, '1'))()
+  c.stopHook()
+  c.end()
+  const recipientCard = c.card(RECIPIENT, '2')
+  const ownerCard = c.card(OWNER, '1')
+  c.prompt(recipientCard)
+  recordPrivateBoundary({ hook_event_name: 'UserPromptSubmit', session_id: 'other-cli', cwd: c.cwd, prompt: 'hello', prompt_id: randomUUID() }, c.env)
+  c.prompt(ownerCard)()
+  assert.equal(c.gated(), 'refused')
+})
+
+test('a bar from a delivery whose place was unknown ends with the next Stop the CLI ran after it (review round 2, R7)', (t) => {
+  const c = cli(t)
+  c.prompt(c.card(OWNER, '1'))()
+  c.stopHook()
+  c.end()
+  rmSync(c.markerPaths[0]!)
+  mkdirSync(c.markerPaths[0]!)
+  c.card(RECIPIENT, '2')
+  rmSync(c.markerPaths[0]!, { recursive: true })
+  c.prompt(c.card(OWNER, '1'))()
+  assert.equal(c.gated(), 'refused', 'the turn it may have reached')
+  c.stopHook()
+  c.end()
+  c.prompt(c.card(OWNER, '1'))()
+  assert.equal(c.gated(), OWNER, 'the next turn, after a Stop written after it')
+})
+
 test('the marker records the CLI turn: one turn until a Stop, the gap it followed, each prompt\'s token by tag, never the token', () => {
   const token = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
   const card = (n: number) => `card ${n}\n<hoai-private-turn id="${token(n)}"/>`
@@ -835,7 +921,9 @@ test('the marker records the CLI turn: one turn until a Stop, the gap it followe
   const second = privateTurnRecord({ previous: first, sessionId: 's', prompt: card(2), turnId: 't2' })
   assert.deepEqual([second.cliTurn, second.after, second.tags], ['t1', 'c0', [privateTokenTag(token(1)), privateTokenTag(token(2))]], 'the same turn')
   assert.deepEqual(privateTurnRecord({ previous: { ...first, live: false }, sessionId: 's', prompt: card(3), turnId: 't3' }), { cliTurn: 't3', after: 't1', tags: [privateTokenTag(token(3))] }, 'after a Stop, a new turn')
-  assert.deepEqual(privateTurnRecord({ previous: first, sessionId: 'other', prompt: card(3), turnId: 't3' }), { cliTurn: 't3', tags: [privateTokenTag(token(3))] }, 'another session')
+  assert.deepEqual(privateTurnRecord({ previous: { ...first, live: false }, sessionId: 'other', prompt: card(3), turnId: 't3' }), { cliTurn: 't3', after: 't1', tags: [privateTokenTag(token(3))] }, 'after another session\'s Stop: the gap it followed all the same')
+  assert.deepEqual(privateTurnRecord({ previous: first, sessionId: 'other', prompt: card(3), turnId: 't3' }), { cliTurn: 't3', tags: [privateTokenTag(token(3))], unsure: true }, 'another session\'s live marker: its prompts may be in this turn')
+  assert.deepEqual(privateTurnRecord({ previous: null, previousMissing: true, sessionId: 's', prompt: card(3), turnId: 't3', promptId: 'p3' }), { cliTurn: 'p3', after: 'none', tags: [privateTokenTag(token(3))] }, 'no marker yet; a new turn named by its prompt_id')
   assert.equal(privateTurnRecord({ previous: null, previousUnreadable: true, sessionId: 's', prompt: card(3), turnId: 't3' }).unsure, true, 'a marker there but unreadable')
   assert.equal(privateTurnRecord({ previous: { schemaVersion: 1, turnId: 'old', sessionId: 's', live: true }, sessionId: 's', prompt: card(3), turnId: 't3' }).unsure, true, 'a live marker of a hook that kept no tags')
   let previous: any = null
