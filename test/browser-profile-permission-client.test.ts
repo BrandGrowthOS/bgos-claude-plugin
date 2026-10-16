@@ -36,7 +36,7 @@ test('paired request and one consume bind the original RPC, authority, origin an
   const originalWire = '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_navigate","arguments":{"url":"https://site.test/private?token=SYNTHETIC_PERMISSION_SECRET"}}}'
   const request = f.request(); assert.equal(request.actionHash, createHash('sha256').update(originalWire).digest('hex'))
   assert.notEqual(request.actionHash, createHash('sha256').update(shared.canonical(f.frame.message)).digest('hex'))
-  assert.deepEqual(request.authority, f.authority); assert.equal(request.expiresAt, f.state.now + 60000)
+  assert.deepEqual(request.authority, f.authority); assert.equal(request.expiresAt, f.state.now + 59000)
   const first = f.calls[0]; assert.equal(first.url, 'https://hoai.test/api/v1/browser/profile-sync/runtime/permissions/request')
   assert.deepEqual(Object.keys(first.options.headers).sort(), ['X-BGOS-Pairing', 'Content-Type', 'Accept', 'Accept-Encoding'].sort())
   assert.equal(first.options.credentials, 'omit'); assert.equal(first.options.redirect, 'error'); assert.equal(first.options.cache, 'no-store')
@@ -209,3 +209,29 @@ test('malformed transport identifiers never dispatch a permission request', asyn
     const f=fixture();f.binding.socketId=socketId;await assert.rejects(f.client.request(f.input()));assert.equal(f.calls.length,0);await f.client.whenDrained();
   }
 });
+
+test('constructed permission requests leave sender clock headroom and clip to the original RPC deadline', async () => {
+  for (const remaining of [120000, 59000, 15000, 5000, 1]) {
+    const f=fixture(); f.state.now=1800000000000; f.frame.deadlineAt=new Date(f.state.now+remaining).toISOString()
+    const original=JSON.stringify(f.frame.message), requested=await f.client.request(f.input()), body=f.calls[0].body
+    assert.equal(body.expiresAt,Math.min(f.state.now+59000,Date.parse(f.frame.deadlineAt)))
+    assert.deepEqual(body.authority,f.authority);assert.equal(body.bindingId,f.binding.bindingId);assert.equal(body.socketId,f.binding.socketId)
+    assert.equal(body.rpcId,f.frame.rpcId);assert.equal(body.rpcNonce,f.frame.rpcNonce)
+    assert.equal(body.actionHash,createHash('sha256').update(original).digest('hex'));assert.equal(JSON.stringify(f.frame.message),original)
+    assert.equal(requested.status.state,'pending');await f.client.whenDrained()
+  }
+})
+
+test('constructed permission reads and consume leave sender clock headroom and clip to the original gate', async () => {
+  for (const remaining of [59000, 9000, 5000, 1]) {
+    const f=fixture();f.state.now=1800000000000;f.frame.deadlineAt=new Date(f.state.now+remaining).toISOString()
+    const requested=await f.client.request(f.input());f.state.status='answered';f.state.choice='allow_once'
+    await f.client.read(requested.handle);await f.client.consume(requested.handle)
+    for(const call of f.calls.slice(1)) {
+      assert.equal(call.body.readExpiresAt,Math.min(f.state.now+9000,f.request().expiresAt))
+      for(const key of ['gateId','requestNonce','bindingId','socketId','rpcId','rpcNonce','actionHash'])assert.equal(call.body[key],f.request()[key])
+      assert.deepEqual(call.body.authority,f.authority)
+    }
+    assert.notEqual(f.calls[1].body.readNonce,f.calls[2].body.readNonce);await f.client.whenDrained()
+  }
+})

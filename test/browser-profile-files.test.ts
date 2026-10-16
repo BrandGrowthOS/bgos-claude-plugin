@@ -212,3 +212,19 @@ test('a synchronous first disposer failure cannot skip independent staging or ar
   f.runner.staging.dispose = async () => { called.push('staging'); await originalStage() }; f.runner.artifacts.dispose = async () => { called.push('artifacts'); await originalArtifacts() }
   await assert.rejects(f.runner.dispose(), /cleanup_unconfirmed/); assert.deepEqual(called, ['client', 'staging', 'artifacts']); assert.equal(f.runner.activity().cleanupUnknown, true); assert.deepEqual(await fs.readdir(path.join(f.root, 'files')), [])
 })
+
+test('constructed agent file offers leave sender headroom while preserving signed scope and encrypted payload', async t => {
+  t.mock.timers.enable({apis:['Date'],now:1800000000000})
+  try {
+    const f=await fixture(t),artifact=await f.capture(),issued=Date.now()
+    assert.equal(decoded(await f.runner.send({args:{artifactToken:artifact.artifactToken},assertCurrent:f.check,signal:f.originalSignal})).state,'offered')
+    const row=[...f.rows.values()][0]
+    assert.equal(cryptoFiles.FILE_TTL_MS,600000);assert.equal(row.offer.expiresAt,issued+599000)
+    assert.deepEqual(row.offer.authority,f.authority);assert.equal(row.offer.direction,'to-desktop')
+    assert.equal(row.offer.source.endpointId,f.agent.identity.endpointId);assert.equal(row.offer.destination.endpointId,f.human.identity.endpointId)
+    f.allow(row);assert.equal(decoded(await f.runner.send({args:{artifactToken:artifact.artifactToken},assertCurrent:f.check,signal:f.originalSignal})).state,'available')
+    const opened=cryptoFiles.openFile({offer:row.offer,signature:row.signature,payload:row.payload,expectedContext:cryptoFiles.offerContext(row.offer),sourceIdentity:f.agent.identity,destination:f.human})
+    try{assert.equal(opened.plaintext.toString(),'SYNTHETIC BROWSER ARTIFACT')}finally{opened.plaintext.fill(0)}
+    await f.runner.whenDrained()
+  } finally { t.mock.timers.reset() }
+})
