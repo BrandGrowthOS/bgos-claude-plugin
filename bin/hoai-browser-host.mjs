@@ -129,6 +129,20 @@ export const RELAY_SWEEP_MS = 60_000
 export const BROWSER_IDLE_MS = 30 * 60_000
 /** How long Chrome may take to report its DevTools endpoint. */
 export const BROWSER_START_TIMEOUT_MS = 30_000
+/**
+ * Windows: how long a start that failed waits for the Chrome it killed to exit. Chrome holds its
+ * runtime folder until it has, so a stop right after the failed start could not remove it.
+ */
+export const BROWSER_KILL_WAIT_MS = 3_000
+/**
+ * Windows: how long a stop keeps retrying the removal of a runtime folder that Chrome's helper
+ * processes still hold for a moment after the browser exited. Past this it is left (and logged)
+ * for the next browser start to remove; it is never thrown into the stop's caller.
+ */
+export const RUNTIME_DIR_RETRY_MS = 2_000
+const RUNTIME_DIR_RETRY_STEP_MS = 100
+/** The errors Windows gives for a folder a process still holds. */
+const RUNTIME_DIR_BUSY = new Set(['EPERM', 'EBUSY', 'EACCES', 'ENOTEMPTY'])
 
 export const RESULT_POST_TIMEOUT_MS = 30_000
 export const RESULT_POST_ATTEMPTS = 3
@@ -864,7 +878,7 @@ export function killStartedChromes(chromes = startedChromes) {
   }
 }
 
-export function launchChromium({ executable, profileDir, headless = true, timeoutMs = BROWSER_START_TIMEOUT_MS, spawnImpl = spawn, platform = process.platform, env = process.env }) {
+export function launchChromium({ executable, profileDir, headless = true, timeoutMs = BROWSER_START_TIMEOUT_MS, killWaitMs = BROWSER_KILL_WAIT_MS, spawnImpl = spawn, platform = process.platform, env = process.env }) {
   return new Promise((resolve, reject) => {
     let child
     try {
@@ -887,7 +901,10 @@ export function launchChromium({ executable, profileDir, headless = true, timeou
         try {
           child.kill('SIGKILL')
         } catch {}
-        reject(err)
+        // On Windows the killed Chrome holds its runtime folder until it has exited, and the caller
+        // removes that folder next. Bounded: a Chrome that never exits still fails the start.
+        if (platform === 'win32' && child.pid !== undefined) void waitForExit(child, killWaitMs).then(() => reject(err))
+        else reject(err)
       } else resolve({ child, endpoint })
     }
     const timer = setTimeout(
@@ -1121,13 +1138,16 @@ function waitForExit(child, ms) {
   })
 }
 
+/** Windows: runtime folders a stop could not remove yet (Chrome still held them); the next start removes them. */
+const leftRuntimeDirs = new Set()
+
 /**
  * A fresh Chrome shell and a nonpersistent Playwright browsing context.
  * The stable profile contains encrypted owner storage and policy only. Never
  * attach an old native profile or recover its unauthenticated CDP endpoint.
  */
 export class ChromiumEngine {
-  constructor({ executable, profileDir, outputDir, heldDir = /** @type {string | null} */ (null), scope = '', headless = true, caps = DEFAULT_CAPS, clientName = 'hoai-browser-host', clientVersion = '0.0.0', log = () => {} }) {
+  constructor({ executable, profileDir, outputDir, heldDir = /** @type {string | null} */ (null), scope = '', headless = true, caps = DEFAULT_CAPS, clientName = 'hoai-browser-host', clientVersion = '0.0.0', log = () => {}, launch = launchChromium, platform = process.platform, removeDir = (/** @type {string} */ dir) => rmSync(dir, { recursive: true, force: true }) }) {
     this.profileDir = profileDir
     this.outputDir = outputDir
     this.heldDir = heldDir
@@ -1142,6 +1162,9 @@ export class ChromiumEngine {
     this._clientName = clientName
     this._clientVersion = clientVersion
     this._log = log
+    this._launch = launch
+    this._platform = platform
+    this._removeDir = removeDir
     this._child = null
     this._engine = null
     this.alive = false
@@ -1156,6 +1179,12 @@ export class ChromiumEngine {
     ensurePrivateDir(this.outputDir)
     // Never attach to a legacy native profile: it may contain unencrypted
     // login state. Owner consent can clear it through the vault protocol.
+    for (const dir of leftRuntimeDirs) {
+      try {
+        this._removeDir(dir)
+        leftRuntimeDirs.delete(dir)
+      } catch {}
+    }
     this._runtimeDir = mkdtempSync(join(tmpdir(), 'hoai-browser-runtime-'))
     ensurePrivateDir(this._runtimeDir)
     // Downloads only into the held folder, and only when its guard holds
@@ -1172,7 +1201,7 @@ export class ChromiumEngine {
     }
     this._acceptDownloads = acceptDownloads
     if (!this._engine) {
-      const { child, endpoint } = await launchChromium({ executable: this._executable, profileDir: this._runtimeDir, headless: this._headless })
+      const { child, endpoint } = await this._launch({ executable: this._executable, profileDir: this._runtimeDir, headless: this._headless, platform: this._platform })
       this._child = child
       child.on('exit', () => this._gone())
       // Bounded: a connect that hangs after Chrome printed its endpoint would
@@ -1269,8 +1298,33 @@ export class ChromiumEngine {
     await engine?.stop().catch(() => {})
     await this._killChild()
     await this.vault?.lock()
-    if (this._runtimeDir) { rmSync(this._runtimeDir, { recursive: true, force: true }); this._runtimeDir = null }
+    if (this._runtimeDir) await this._removeRuntimeDir()
     if (persistenceFailed) throw Object.assign(new HostError('credential_storage', 'The browser closed and locked, but its latest state could not be saved encrypted. The previous saved state is retained.'), { browserClosed: true })
+  }
+
+  /**
+   * Removes this browser's runtime folder. On Windows Chrome's helper processes hold it for a
+   * moment after the browser exited: the removal is retried for RUNTIME_DIR_RETRY_MS, and a folder
+   * still held after that is left for the next start to remove, never thrown into the stop's caller.
+   */
+  async _removeRuntimeDir() {
+    const dir = this._runtimeDir
+    this._runtimeDir = null
+    const deadline = Date.now() + RUNTIME_DIR_RETRY_MS
+    for (;;) {
+      try {
+        this._removeDir(dir)
+        return
+      } catch (err) {
+        if (this._platform !== 'win32' || !RUNTIME_DIR_BUSY.has(err?.code)) throw err
+        if (Date.now() >= deadline) {
+          leftRuntimeDirs.add(dir)
+          this._log(`the browser's runtime folder ${dir} is still in use (${err.code}); it is left for the next browser start to remove`)
+          return
+        }
+      }
+      await new Promise((r) => setTimeout(r, RUNTIME_DIR_RETRY_STEP_MS))
+    }
   }
 
   async _killChild() {
