@@ -84,9 +84,11 @@ import {
   detectInstallMethod,
 } from './bgos-install-method.mjs'
 import {
+  BEACON_HEARTBEAT_FILE_NAME,
   buildLaunchRecipe,
   isSupervisorWriter,
   parseSupervisorRecord,
+  pluginStateDirFor,
   readBootClock,
   readLauncherProcesses,
   writeLaunchRecipe,
@@ -1304,6 +1306,53 @@ export function win32GateHelperArgs({ scriptDir = '', consolePid, timeoutSeconds
   ]
 }
 
+/** The helper's exit when it wrote the Enter but could not record both `attached` and
+ *  `accepted` in its log. Agent 888, 16 Oct 07:59Z, a cold start after logon: the log had
+ *  `start` and `accepted`, no `attached`, and claude never started its MCP server. The old
+ *  helper lost a log line silently (PowerShell 5.1 Add-Content refuses a file another process
+ *  has open for reading, as a non-terminating error) and exited 0 anyway, and hoai never looked
+ *  at its exit. A 6 is a gate nobody can show was answered, so an unattended launch relaunches
+ *  claude for it (superviseClaude, under the restart budget). */
+export const WIN32_GATE_EXIT_UNPROVEN = 6
+
+/** How long after a launch an unattended hoai gives the channel to send its first heartbeat.
+ *  A healthy daemon touches its beacon within seconds of finishing its boot sweep (and about every
+ *  5 s after; a poll cycle that ran counts, so a backend that refuses does not stop it); 888 sat
+ *  with no MCP server at all for 10 minutes. */
+export const CHANNEL_HEARTBEAT_WAIT_MS = 3 * 60_000
+
+/** The daemon's channel beacon (lib/pairing-lock.ts touchBeaconHeartbeat, `{ beaconAt, pid }`,
+ *  in the plugin state dir), or null for anything else. */
+export function parseChannelBeacon(raw) {
+  if (typeof raw !== 'string' || !raw) return null
+  let parsed
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return null
+  }
+  const beaconAt = Number(parsed?.beaconAt)
+  const pid = Number(parsed?.pid)
+  if (!Number.isFinite(beaconAt) || !Number.isInteger(pid) || pid <= 0) return null
+  return { beaconAt, pid }
+}
+
+/** How long after a launch a beacon from the daemon the file already named still counts as a
+ *  predecessor's: one winding down beacons within seconds of its claude's end, never a minute on. */
+const PREDECESSOR_BEACON_GRACE_MS = 60_000
+
+/** Has the agent's channel sent a heartbeat since THIS launch started? A beacon written since then
+ *  counts, except one from the daemon the file named at that moment written in the first minute:
+ *  the previous claude's daemon, winding down, can beacon once more after the relaunch, and that
+ *  proves nothing. The same daemon still beaconing a minute on is a live channel (another session
+ *  of this agent holds it), and relaunching this claude would not change that.
+ *  @param {{ beacon: { beaconAt: number, pid: number } | null, startedAt: number, stalePid?: number | null }} input */
+export function channelHeartbeatSince({ beacon, startedAt, stalePid = null }) {
+  if (!beacon || beacon.beaconAt < startedAt) return false
+  if (beacon.pid !== stalePid) return true
+  return beacon.beaconAt - startedAt >= PREDECESSOR_BEACON_GRACE_MS
+}
+
 /**
  * The shared startup gate block (lib/gate-block.tcl): ONE copy of the rules for
  * answering Claude Code's first-run screens, embedded here in the launcher's
@@ -1985,7 +2034,7 @@ export async function superviseClaude(args, opts = {}) {
   // fleet's run.expect); otherwise spawn directly and warn once.
   let warnedGate = false
   const spawnGateHelper = opts.spawnGateHelper ?? defaultSpawnGateHelper
-  const spawnSupervised = (spawnArgs, onSpawn) => {
+  const spawnSupervised = (spawnArgs, onSpawn, onGateHelperExit) => {
     const method = relaunchInstallMethod({ scriptDir, env, home })
     // Built at every spawn: main() adds the plan's env before the first one.
     const childEnv = childEnvWithoutSupervision(env, platform)
@@ -2001,6 +2050,8 @@ export async function superviseClaude(args, opts = {}) {
         try {
           const helper = spawnGateHelper({ scriptDir, consolePid: process.pid, spawnImpl, writeErr, home })
           print(`[hoai] dev-channels gate helper armed (helper pid ${helper?.pid ?? '?'}, console ${process.pid})`)
+          // Its exit code says whether the gate is PROVEN answered (WIN32_GATE_EXIT_UNPROVEN).
+          helper?.on?.('exit', (code) => onGateHelperExit?.(code))
         } catch (err) {
           writeErr(`[hoai] could not start the dev-channels gate helper: ${err?.message ?? err}\n`)
         }
@@ -2076,6 +2127,15 @@ export async function superviseClaude(args, opts = {}) {
     )
   }
   if (supervised) supervisedStateDir = stateDir
+  // Nobody at the terminal: the launches noteStatus reports on, and the only ones hoai relaunches
+  // for a gate that is not proven answered or a channel that never sent a heartbeat (board row
+  // d806c69f). A person at the terminal sees the screen and is never relaunched under.
+  const unattended = keepAlive || supervised
+  // The channel's heartbeat: the beacon the daemon touches while it delivers (lib/pairing-lock.ts).
+  const beaconPath = joinDir(pluginStateDirFor({ env, home, assistantId: id, cwd }), BEACON_HEARTBEAT_FILE_NAME)
+  // A launch with no channel heartbeat CHANNEL_HEARTBEAT_WAIT_MS after it started is relaunched
+  // ONCE; the next one is reported and left running. A launch that does send one earns it back.
+  let heartbeatRelaunchSpent = false
   // Supervised on posix, the startup gates are answered under expect or not at
   // all. Without it claude would sit on the dev-channels warning (shown on
   // every launch) with nobody there: alive to the service, deaf to the owner.
@@ -2265,10 +2325,77 @@ export async function superviseClaude(args, opts = {}) {
       /** @type {import('node:child_process').ChildProcess | null} */
       let childRef = null
       let restartRequested = false
+      // False once this launch's claude has exited: a late helper exit or check is not about it.
+      let live = true
       const startedAt = now()
-      const exited = spawnSupervised(currentArgs, (child) => {
-        childRef = child
-      })
+      // Relaunch THIS claude because it is not proven healthy: the same relaunch a restart marker
+      // gets (its own pinned session, a fresh fallback cycle) and the same budget, so it can never
+      // loop. Past the budget it is reported and claude is left as it is.
+      const healthRelaunch = (reason, why) => {
+        // A launcher asked to stop is ending this claude anyway; nothing to relaunch or record.
+        if (!live || restartRequested || !childRef || stopSignal?.aborted) return
+        const decision = decideMarkerRelaunch(relaunchesAt, now())
+        relaunchesAt = decision.recent
+        if (!decision.allow) {
+          noteStatus('health-relaunch-refused', { reason })
+          print(
+            `[hoai] ${why}. NOT relaunching: ${MAX_RELAUNCHES_PER_WINDOW} relaunches in the last hour already, ` +
+              'so claude is left as it is. Run hoai doctor in this folder.',
+          )
+          return
+        }
+        relaunchesAt.push(now())
+        restartRequested = true
+        noteStatus('health-relaunch', { reason })
+        print(`[hoai] ${why}. Relaunching claude on this agent's own session...`)
+        try {
+          childRef.kill()
+        } catch {
+          // Already gone; its exit resolves the loop below.
+        }
+      }
+      // Read before the spawn: whatever daemon the beacon names now is not this launch's.
+      const staleBeaconPid = unattended ? (parseChannelBeacon(readFile(beaconPath))?.pid ?? null) : null
+      const exited = spawnSupervised(
+        currentArgs,
+        (child) => {
+          childRef = child
+        },
+        (code) => {
+          if (!unattended || code !== WIN32_GATE_EXIT_UNPROVEN) return
+          healthRelaunch(
+            'gate-accept-unproven',
+            `the dev-channels gate helper wrote the Enter but could not record "attached" and "accepted" in its log ` +
+              `(exit ${code}), so nothing proves the gate was answered`,
+          )
+        },
+      )
+      let heartbeatTimer = null
+      if (unattended) {
+        heartbeatTimer = setTimer(() => {
+          heartbeatTimer = null
+          if (!live || restartRequested) return
+          const beacon = parseChannelBeacon(readFile(beaconPath))
+          if (channelHeartbeatSince({ beacon, startedAt, stalePid: staleBeaconPid })) {
+            heartbeatRelaunchSpent = false
+            return
+          }
+          const waited = `${Math.round(CHANNEL_HEARTBEAT_WAIT_MS / 1000)}s`
+          if (!heartbeatRelaunchSpent) {
+            heartbeatRelaunchSpent = true
+            healthRelaunch('no-channel-heartbeat', `claude has run ${waited} and its channel has sent no heartbeat (${beaconPath})`)
+            return
+          }
+          noteStatus('no-channel-heartbeat', { waited, beacon: beaconPath })
+          print(
+            `[hoai] ALERT (no-channel-heartbeat): claude has run ${waited} and its channel has sent no heartbeat ` +
+              `(${beaconPath}), after the one relaunch hoai makes for that. Not relaunching again: the agent stays ` +
+              'up for a person to look at. Run hoai doctor in this folder.',
+          )
+        }, CHANNEL_HEARTBEAT_WAIT_MS)
+        // Never what keeps this process alive; claude's own handle does that.
+        if (heartbeatTimer && typeof heartbeatTimer === 'object' && typeof heartbeatTimer.unref === 'function') heartbeatTimer.unref()
+      }
       // A stop request ends the live claude; the exit below then returns
       // instead of relaunching. Checked once more after registering, because an
       // abort that already happened fires no event.
@@ -2333,6 +2460,11 @@ export async function superviseClaude(args, opts = {}) {
       // idle, for hours.
       poller.unref?.()
       const code = await exited
+      live = false
+      if (heartbeatTimer) {
+        clearTimer(heartbeatTimer)
+        heartbeatTimer = null
+      }
       clearInterval(poller)
       stopSignal?.removeEventListener?.('abort', onStop)
       if (pinTimer) {

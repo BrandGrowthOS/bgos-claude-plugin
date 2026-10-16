@@ -238,6 +238,26 @@ exit (back to 5 s once a session has stayed up), and records
 launch-status. Ending the task (TERM or HUP) stops it without a relaunch. It
 works the same on macOS and Linux, for an agent you keep running by hand.
 
+**A start that is not proven healthy is relaunched once.** On Windows every
+launch shows the dev-channels gate, and a hidden helper
+(`bin/win32-accept-dev-channels.ps1`) presses its Enter once the gate is on
+screen, logging `start`, `attached` and `accepted` to
+`~\.bgos-agent\logs\win32-gate-helper.log`. It exits 0 only when both
+`attached` and `accepted` are on record; an Enter the log cannot show is exit 6
+and an `unproven:` line, and an unattended hoai (the task, `HOAI_SUPERVISED`,
+or `--keep-alive`) relaunches claude for it on the agent's own session. The
+helper appends to that log sharing read, write and delete, so a reader (an
+indexer, a scanner, a tail) never costs it a line. On every platform an
+unattended hoai also checks the channel's heartbeat (the daemon's
+`channel-beacon.json` in `~/.bgos-plugin-state/<id>/`) 3 minutes after each
+launch: a launch without one is relaunched ONCE, and the next launch without
+one is recorded as `no-channel-heartbeat` in launch-status and left running for
+a person to look at. Each relaunch records `health-relaunch` with its reason
+(`gate-accept-unproven` or `no-channel-heartbeat`) and counts against the same 3
+relaunches per hour as restart markers; past that it records
+`health-relaunch-refused`. A person's own `hoai` at a terminal is never
+relaunched this way.
+
 **The watcher's service is named after its HOME.** Every name the per-machine
 watcher's service is known by carries `home-<id>`, the first 8 hex characters of
 the SHA-256 of the HOME it was installed from, normalized as written (case and
