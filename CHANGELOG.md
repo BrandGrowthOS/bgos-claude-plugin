@@ -2,6 +2,16 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.69.6 (2026-10-16)
+
+**On Windows, a browser stop no longer throws because Chrome still holds its runtime folder, so the cleanup after it runs (HOAI board row 717860f8).** Found by #242's Windows suite: a Chrome that never reported its DevTools endpoint was killed at the start timeout, and the `ChromiumEngine.stop()` after it threw `EPERM` removing the browser's runtime folder, so the caller's cleanup after the stop never ran.
+
+- **Why.** On Windows a killed Chrome holds its `hoai-browser-runtime-*` folder until it and its helper processes have exited, which takes up to about a second. `launchChromium` killed Chrome at the timeout and rejected at once, and `stop()` removed the folder with a bare `rmSync`. The same `rmSync` runs in every stop, so in the browser host any stop that met a folder Chrome's helpers still held would throw: the pool then marks the browser as not closed safely, and that agent and person's browser refuses every later start until the host restarts, and a host stop (`pool.stopAll`) fails. (The pool itself never stops a browser whose start failed; the start timeout then stop sequence is a direct caller's, such as #242's test hooks.) Reproduced with a real Chrome 154 on Windows 11 that refused remote debugging: on 0.69.5 the stop threw `EPERM` and the folder stayed.
+- **The fix.** On Windows a failed start waits, bounded at 3 s (`BROWSER_KILL_WAIT_MS`), for the Chrome it killed to exit before it rejects. A stop retries a folder Windows reports busy (`EPERM`, `EBUSY`, `EACCES`, `ENOTEMPTY`) every 100 ms for up to 2 s (`RUNTIME_DIR_RETRY_MS`). A folder still held after that is left in place and logged (`the browser's runtime folder <path> is still in use (EPERM); it is left for the next browser start to remove`), never thrown, and the host's next browser start removes it.
+- **Unchanged:** macOS and Linux (no wait, no retry, a removal error still fails the stop as before), a stop whose folder is free (one removal, no wait), any other removal error (still thrown), the stop's other failures (`browser_stop_failed`, `credential_storage`), and every browser that starts. A runtime folder of a start that failed, which the pool never stops, is still not removed (as before).
+
+Guards: `test/browser-runtime-folder.test.ts`, on a fake Chrome that holds its folder while it runs and briefly after it exits, as Windows does: a timed-out start rejects only after the killed Chrome exited, and still rejects within the bound when it never does; `stop()` after a start timeout resolves, removes the folder and lets the cleanup after it run; a folder still busy after the retry is logged and left, and the next start removes it; a stop on a clean exit is one removal with no wait; macOS and Linux behave as before. No version is published or tagged here.
+
 ## 0.69.5 (2026-10-16)
 
 **Every per-agent service is named after the HOME it was installed from, so a daemon or watcher in a scratch or second HOME holding the same agent's credentials can never re-register, start, stop or remove the owner's real agent (HOAI board row d6198bb6, mission 154 goal 8).** 0.69.2 scoped the per-machine watcher's service (#237); the agents' services were still named by agent id alone.
