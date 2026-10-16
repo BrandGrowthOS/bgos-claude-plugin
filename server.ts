@@ -9060,13 +9060,15 @@ const HOOK_STEPS_HEARTBEAT_MS = 60_000
  *  whoever sent it. Fed at the three inbound sites and the two meeting sites. */
 const turnChat = createTurnChatTracker()
 // A mid-turn card from another person revokes the signed browser context at once, not on the next tick.
+// The owner is named so that no turn acts as the owner once someone else reached it (board row f81a527c), and the
+// markers tie each person who reached the session to the CLI turn running then, whatever the forwarder lines' order.
 // A second record of the same prompt (a second hook source) keeps the turn, and says so once per record.
 // The scheduled fires this agent opened a private turn for, in its own state folder (0.68.4): a fire that restart
 // recovery re-offers as backlog after a restart reaches the agent as text but opens no second turn. A person's own
 // message the same way, as owner:<message id>.
 const privateFires = createFireLedger({ path: privateFiresPath(FLOOR_STATE_ROOT, ASSISTANT_ID) })
-const privateTurns = createPrivateTurnTracker({ fires: privateFires, onRevoke: (info) => { log(privateRevokeLine(info)); publishBrowserPrivateTurn() }, onRepeat: (repeat) => log(privateRepeatLine(repeat)), onReplay: (replay) => log(privateReplayLine(replay)), onUnrecorded: (info) => log(privateUnrecordedLine(info)) })
 const PRIVATE_MARKER_PATHS = FLOOR_KEYS.map((key) => privateMarkerPath(FLOOR_STATE_ROOT, key))
+const privateTurns = createPrivateTurnTracker({ ownerUserId: USER_ID, markerPaths: PRIVATE_MARKER_PATHS, fires: privateFires, onRevoke: (info) => { log(privateRevokeLine(info)); publishBrowserPrivateTurn() }, onRepeat: (repeat) => log(privateRepeatLine(repeat)), onReplay: (replay) => log(privateReplayLine(replay)), onUnrecorded: (info) => log(privateUnrecordedLine(info)) })
 // Every channel card passes here. One that skipped privateTurns.deliver (a meeting line, a button tap, a voice
 // dispatch or stop) names nobody, so it ends a voice consult's private turn, whose authority is that consult's
 // alone. Chat and scheduler turns keep today's rules (privateTurns.rawCard).

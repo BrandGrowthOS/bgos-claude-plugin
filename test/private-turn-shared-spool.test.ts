@@ -126,7 +126,7 @@ function fleetHost(t: any) {
     const folders = daemonFloorFolders({ launchCwd: folder, cwd: folder, env: { CLAUDE_PROJECT_DIR: folder } })
     markFloorAttached({ root, folders })
     const markerPaths = [...new Set(folders.map((f: string) => floorKey(f)))].map((key) => privateMarkerPath(root, key))
-    const tracker = createPrivateTurnTracker()
+    const tracker = createPrivateTurnTracker({ ownerUserId: OWNER })
     const turnChat = createTurnChatTracker()
     const events: Array<Record<string, unknown>> = []
     const publish = () => publishPrivateContext({

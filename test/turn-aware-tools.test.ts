@@ -71,7 +71,8 @@ function session(t: any) {
     if (record) recordPrivateBoundary({ hook_event_name: 'UserPromptSubmit', session_id: 's', cwd, prompt: text }, env)
     tracker.begin({ prompt: text, sessionId: 's' })
   }
-  const stop = () => tracker.end()
+  // The CLI's Stop: the private turn hook closes the marker, then the daemon drains the Stop line.
+  const stop = () => { recordPrivateBoundary({ hook_event_name: 'Stop', session_id: 's', cwd }, env); tracker.end() }
   const call = () => {
     try { return turnAwarePrivateTurn({ tracker, markerPaths, ownerUserId: OWNER }) } catch (err) { return { refused: (err as Error).message } }
   }
@@ -125,13 +126,18 @@ test('a recipient message that reaches a running owner turn is refused until the
   assert.deepEqual([s.call().actingUserId, s.call().headers], [OWNER, {}])
 })
 
-test('a recipient message during an unverified owner turn (the goal lane) is refused too', (t) => {
+test('a recipient message during an unverified owner turn (the goal lane) is refused too, until the turn ends', (t) => {
   const s = session(t)
   s.prompt('/goal ship the landing page')
   s.deliver(RECIPIENT, '20')
   assert.equal(s.call().refused, TURN_AWARE_REFUSAL)
+  // A prompt with no Stop before it is the same CLI turn (several prompts submitted together, a second hook source,
+  // a late forwarder line): the recipient's words are still in it (board row f81a527c).
   s.prompt('/goal ship the landing page, still')
-  assert.equal(s.call().actingUserId, OWNER, 'a new prompt clears it')
+  assert.equal(s.call().refused, TURN_AWARE_REFUSAL, 'a new prompt of the same turn does not clear it')
+  s.stop()
+  s.prompt('/goal ship the landing page, still')
+  assert.equal(s.call().actingUserId, OWNER, 'the next turn, after a Stop, is the owner\'s')
 })
 
 test('a peer agent message, mid turn or as its own prompt, is the owner, as on main', (t) => {
@@ -150,7 +156,8 @@ test('turnSenders names the prompt and the people who reached it; a Stop starts 
   s.prompt(s.deliver(OWNER, '10'))
   s.deliver(RECIPIENT, '20')
   s.deliver(null, 'a2a-55', true)
-  assert.deepEqual(s.tracker.turnSenders(), { prompt: OWNER, people: [RECIPIENT] })
+  // The prompt's own sender is among the people too: one CLI turn runs from Stop to Stop (board row f81a527c).
+  assert.deepEqual(s.tracker.turnSenders(), { prompt: OWNER, people: [OWNER, RECIPIENT] })
   s.stop()
   assert.deepEqual(s.tracker.turnSenders(), { prompt: null, people: [] }, 'after Stop')
 })
