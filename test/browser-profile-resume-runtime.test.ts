@@ -72,8 +72,8 @@ test('empty tab capture stays explicit and selected callback cannot become async
 })
 test('native main-frame fragment event races retain exact root storage proof while query or path changes refuse', async () => {
   for (const suffix of ['#part', '?changed=1', '/changed']) {
-    const f = fixture(), page = f.add('https://site.test/document'), original = page.url(), frame: any = { url: () => page.currentURL, isDetached: () => false }; page.mainFrame = () => frame
-    f.runtime.context.newCDPSession = async () => ({ send: async (method: string) => method === 'Page.getFrameTree' ? { frameTree: { frame: { id: 'actual-main', url: page.currentURL }, childFrames: [{ frame: { id: 'same-url-iframe', url: page.currentURL } }] } } : { storageKey: 'https://site.test/' }, detach: async () => {} })
+    const f = fixture(); await f.runtime.activate({}); const page = f.add('https://site.test/document'), original = page.url(), frame: any = { url: () => page.currentURL, isDetached: () => false, parentFrame: () => null, page: () => page }; page.mainFrame = () => frame; page.context = () => f.runtime.context; page.frames = () => [frame]; f.runtime.context.browser = () => f.runtime.browser
+    f.runtime.context.newCDPSession = async () => ({ send: async (method: string) => method === 'Target.getTargetInfo' ? { targetInfo: { type: 'page', targetId: page.id, browserContextId: 'context', url: page.currentURL } } : method === 'Page.getFrameTree' ? { frameTree: { frame: { id: 'actual-main', loaderId: 'actual-loader', securityOrigin: 'https://site.test', url: page.currentURL }, childFrames: [{ frame: { id: 'same-url-iframe', url: page.currentURL } }] } } : { storageKey: 'https://site.test/' }, detach: async () => {} })
     f.runtime._frame(page, frame); page.currentURL = original + suffix; await Promise.all([...f.runtime.frameJobs])
     assert.equal(f.runtime.markers[0].qualified, suffix === '#part')
   }

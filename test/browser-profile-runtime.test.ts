@@ -439,3 +439,281 @@ test('cookie import URL preserves Secure independently from source metadata', ()
     assert.equal(domain.secure, secure); assert.equal(domain.sourceScheme, sourceScheme)
   }
 })
+
+
+// All protocol responses below are controlled memory fixtures. They qualify
+// guards and event ordering, not an actual browser or cross-platform roundtrip.
+function observedFrameFixture(options: any = {}) {
+  const f = runtimeFixture(options.runtime), pages: any[] = [], frames: any[] = [], calls: any[] = []
+  const hiddenPublic = new Set()
+  let alive = true, pageContext = f.nativeContext, targetId = 'actual-page', nativeContextId = 'context-a', targetType = 'page'
+  const page: any = new EventEmitter()
+  const make = (url: string, parent: any, id: string) => {
+    const value: any = { currentURL: url, nativeURL: url || 'about:blank', parent, nativeParent: parent, id, loaderId: 'loader-' + id, securityOrigin: url ? new URL(url).origin : new URL(parent.currentURL).origin, detached: false, owner: page }
+    value.url = () => value.currentURL; value.parentFrame = () => value.parent; value.page = () => value.owner; value.isDetached = () => value.detached
+    frames.push(value); return value
+  }
+  const main = make(options.topURL || 'https://same.test:444/top', null, 'actual-main'); let currentMain = main
+  page.mainFrame = () => currentMain; page.frames = () => frames.filter(value => !hiddenPublic.has(value)); page.url = () => currentMain.url(); page.context = () => pageContext; page.isClosed = () => !alive
+  f.nativeContext.pages = () => [...pages]; f.nativeContext.browser = () => f.runtime.browser
+  const tree = (value: any): any => ({ frame: { id: value.id, loaderId: value.loaderId, url: value.nativeURL, securityOrigin: value.securityOrigin, ...(value.nativeParent ? { parentId: value.nativeParentId || value.nativeParent.id } : {}) }, ...(frames.some(child => child.nativeParent === value) ? { childFrames: frames.filter(child => child.nativeParent === value).map(tree) } : {}) })
+  f.nativeContext.newCDPSession = async (actualPage: any) => {
+    assert.equal(actualPage, page); await options.session?.()
+    let lastFrame: any
+    return { send: async (method: string, params: any) => {
+      calls.push({ method, params }); await options.command?.(method, params)
+      if (method === 'Target.getTargetInfo') return { targetInfo: { type: targetType, targetId, browserContextId: nativeContextId, url: main.nativeURL } }
+      if (method === 'Page.getFrameTree') return { frameTree: structuredClone(tree(main)) }
+      if (method === 'Storage.getStorageKeyForFrame') {
+        const value = frames.find(value => value.id === params.frameId); assert.ok(value); lastFrame = value
+        const storageKey = typeof options.storageKey === 'function' ? options.storageKey(value) : options.storageKey === undefined ? value.securityOrigin + '/' : options.storageKey
+        await options.storage?.(value)
+        return { storageKey }
+      }
+      throw Error('unexpected memory protocol method')
+    }, detach: async () => { calls.push({ method: 'detach' }); await options.detach?.(lastFrame) } }
+  }
+  pages.push(page); f.nativeContext.emit('page', page)
+  const navigate = (frame: any, url: string) => { frame.currentURL = url; frame.nativeURL = url; frame.securityOrigin = url === 'about:blank' ? new URL(frame.parent.currentURL).origin : new URL(url).origin; page.emit('framenavigated', frame) }
+  return { ...f, page, main, frames, pages, calls, make, navigate,
+    attach(url = '', parent = main) { const value = make(url, parent, 'child-' + frames.length); if (url === 'about:blank') value.securityOrigin = new URL(parent.url()).origin; page.emit('frameattached', value); return value },
+    drain: async () => { while (f.runtime.frameJobs.size) await Promise.all([...f.runtime.frameJobs]) },
+    setTarget(value: any) { if (value.id) targetId = value.id; if (value.context) nativeContextId = value.context; if (value.type) targetType = value.type },
+    hidePublic(value: any) { hiddenPublic.add(value) }, replaceMain(value: any) { currentMain = value }, foreignContext() { pageContext = {} }, closePage() { alive = false }
+  }
+}
+async function qualifiedObservedChild(f: any, parent: any = f.main) { const frame = f.attach('', parent); await f.drain(); assert.equal(f.runtime.markers.at(-1).qualified, true, 'original native initial key must qualify'); return frame }
+async function activeObservedFrames(options: any = {}) { const f = observedFrameFixture(options); await f.runtime.activate({}); f.page.emit('framenavigated', f.main); await f.drain(); assert.equal(f.runtime.markers[0].qualified, true); return f }
+
+test('same hostname child keeps its distinct full origin and literal storage key', async () => {
+  for (const origin of ['https://same.test:444', 'https://same.test:555']) {
+    const f = await activeObservedFrames(), child = await qualifiedObservedChild(f); f.navigate(child, origin + '/child'); await f.drain()
+    assert.deepEqual(await f.runtime.assertMovable(), { origins: [...new Set(['https://same.test:444', origin])].sort() })
+    assert.equal(f.runtime.markers.at(-1).origin, origin); assert.equal(f.runtime.markers.at(-1).qualified, true)
+    assert.deepEqual(f.calls.filter(value => value.method === 'Storage.getStorageKeyForFrame').at(-1).params, { frameId: child.id })
+  }
+})
+test('construction attachment qualifies only its original native about blank literal parent key', async () => {
+  const f = await activeObservedFrames(), child = f.attach(), attachment = f.runtime.markers.at(-1)
+  assert.equal(attachment.qualified, false); assert.equal(attachment.pending, true); await f.drain()
+  assert.equal(attachment.qualified, true); assert.equal(attachment.origin, 'https://same.test:444'); assert.equal(attachment.pending, false)
+  f.navigate(child, 'https://same.test:555/child'); await f.drain(); assert.deepEqual((await f.runtime.assertMovable()).origins, ['https://same.test:444', 'https://same.test:555'])
+})
+test('nested construction keeps its original nonopaque parent origin instead of substituting the top', async () => {
+  const f = await activeObservedFrames(), parent = await qualifiedObservedChild(f); f.navigate(parent, 'https://same.test:555/parent'); await f.drain()
+  const child = await qualifiedObservedChild(f, parent), attachment = f.runtime.markers.at(-1); f.navigate(child, 'https://same.test:555/child'); await f.drain()
+  assert.equal(attachment.qualified, true); assert.equal(attachment.origin, 'https://same.test:555'); assert.deepEqual((await f.runtime.assertMovable()).origins, ['https://same.test:444', 'https://same.test:555'])
+})
+test('cross hostname protocol opaque srcdoc nonce and nonliteral keys never become movable', async () => {
+  for (const row of [
+    { url: 'https://foreign.test:555/child' }, { url: 'http://same.test:555/child' }, { url: 'about:srcdoc' },
+    { url: 'https://same.test:555/child', opaque: true },
+    { url: 'https://same.test:555/child', storageKey: 'https://same.test:555/^0https://same.test:444' },
+    { url: 'https://same.test:555/child', storageKey: 'https://same.test:444/' },
+    { url: 'https://same.test:555/child', storageKey: 'https://same.test:555/path' }
+  ]) {
+    const f = await activeObservedFrames(), child = await qualifiedObservedChild(f); if (row.storageKey) { const original = f.runtime.context.newCDPSession; f.runtime.context.newCDPSession = async (page: any) => { const cdp = await original(page), send = cdp.send; cdp.send = async (method: string, params: any) => method === 'Storage.getStorageKeyForFrame' ? { storageKey: row.storageKey } : send(method, params); return cdp } }
+    f.navigate(child, row.url); if (row.opaque) child.securityOrigin = 'null'; await f.drain()
+    assert.equal(f.runtime.markers.at(-1).qualified, false, row.url); await assert.rejects(f.runtime.assertMovable())
+  }
+})
+test('true inherited about blank stays supported while a committed unsupported document cannot be erased', async () => {
+  const f = await activeObservedFrames(), child = f.attach('about:blank'); await f.drain(); assert.equal(f.runtime.markers.at(-1).qualified, true)
+  f.navigate(child, 'https://foreign.test/committed'); await f.drain(); const refused = f.runtime.markers.at(-1); assert.equal(refused.qualified, false)
+  f.navigate(child, 'https://same.test:555/supported'); await f.drain(); assert.equal(f.runtime.markers.at(-1).qualified, true); assert.equal(refused.qualified, false); await assert.rejects(f.runtime.assertMovable())
+})
+test('a replaced original parent or top document cannot settle an initial attachment', async () => {
+  for (const mode of ['parent', 'top-generation']) {
+    const f = await activeObservedFrames(), child = f.attach(), attachment = f.runtime.markers.at(-1)
+    if (mode === 'parent') { const replacement = f.make(f.main.url(), null, 'replacement-parent'); child.parent = replacement }
+    else f.page.emit('framenavigated', f.main)
+    f.navigate(child, 'https://same.test:555/child'); await f.drain(); assert.equal(attachment.qualified, false); await assert.rejects(f.runtime.assertMovable())
+  }
+})
+test('exact public frame page context authority and native ownership stay current across a held key read', async () => {
+  const modes = ['context', 'browser', 'root', 'ledger', 'context-id', 'authority', 'authority-copy', 'proof', 'page-context', 'page-member', 'frame-member', 'frame-parent', 'frame-owner', 'detached', 'closed', 'main-object', 'child-url', 'top-url']
+  for (const mode of modes) {
+    let held: any, release: any
+    const f = await activeObservedFrames({ storage(value: any) { if (value.parent && value.currentURL !== '' && value.currentURL !== 'about:blank') return new Promise(resolve => { held = true; release = resolve }) } }), child = await qualifiedObservedChild(f); f.navigate(child, 'https://same.test:555/child')
+    try {
+      for (let count = 0; count < 100 && !held; count++) await tick(); assert.equal(held, true, mode)
+      if (mode === 'context') f.runtime.context = {}
+      if (mode === 'browser') f.runtime.browser = {}
+      if (mode === 'root') f.runtime.root = {}
+      if (mode === 'ledger') f.runtime.ledger = {}
+      if (mode === 'context-id') f.runtime.contextId = 'foreign-context'
+      if (mode === 'authority') f.runtime.authority = Object.freeze({ ...f.runtime.authority, grantVersion: 2 })
+      if (mode === 'authority-copy') f.runtime.authority = Object.freeze({ ...f.runtime.authority })
+      if (mode === 'proof') f.runtime.activeProof = () => true
+      if (mode === 'page-context') f.foreignContext()
+      if (mode === 'page-member') f.pages.length = 0
+      if (mode === 'frame-member') f.hidePublic(child)
+      if (mode === 'frame-parent') child.parent = null
+      if (mode === 'frame-owner') child.owner = {}
+      if (mode === 'detached') child.detached = true
+      if (mode === 'closed') f.closePage()
+      if (mode === 'main-object') f.replaceMain({ url: () => f.main.url() })
+      if (mode === 'child-url') child.currentURL += '?changed=1'
+      if (mode === 'top-url') f.main.currentURL += '?changed=1'
+    } finally { release?.(true); await f.drain() }
+    assert.equal(f.runtime.markers.at(-1).qualified, false, mode)
+  }
+})
+test('same URL document ABA stays rejected even after native IDs return to their original values', async () => {
+  for (const mode of ['main', 'child']) {
+    let held: any, release: any, first = true
+    const f = await activeObservedFrames({ storage(value: any) { if (value.parent && value.currentURL !== '' && value.currentURL !== 'about:blank' && first) { first = false; return new Promise(resolve => { held = true; release = resolve }) } } }), child = await qualifiedObservedChild(f); f.navigate(child, 'https://same.test:555/child'); const marker = f.runtime.markers.at(-1)
+    try { for (let count = 0; count < 100 && !held; count++) await tick(); assert.equal(held, true); f.page.emit('framenavigated', mode === 'main' ? f.main : child) }
+    finally { release?.(true); await f.drain() }
+    assert.equal(marker.qualified, false, mode); await assert.rejects(f.runtime.assertMovable())
+  }
+})
+test('native frame ID loader origin and parent races cannot borrow the earlier key result', async () => {
+  for (const mode of ['main-id', 'main-loader', 'child-id', 'child-loader', 'child-origin', 'parent-id', 'duplicate']) {
+    let held: any, release: any
+    const f = await activeObservedFrames({ storage(value: any) { if (value.parent && value.currentURL !== '' && value.currentURL !== 'about:blank') return new Promise(resolve => { held = true; release = resolve }) } }), child = await qualifiedObservedChild(f); f.navigate(child, 'https://same.test:555/child')
+    try {
+      for (let count = 0; count < 100 && !held; count++) await tick(); assert.equal(held, true)
+      if (mode === 'main-id') f.main.id = 'changed-main'
+      if (mode === 'main-loader') f.main.loaderId = 'changed-main-loader'
+      if (mode === 'child-id') child.id = 'changed-child'
+      if (mode === 'child-loader') child.loaderId = 'changed-child-loader'
+      if (mode === 'child-origin') child.securityOrigin = 'https://same.test:666'
+      if (mode === 'parent-id') child.nativeParentId = 'foreign-parent'
+      if (mode === 'duplicate') f.make(child.url(), f.main, 'duplicate-child')
+    } finally { release?.(true); await f.drain() }
+    assert.equal(f.runtime.markers.at(-1).qualified, false, mode)
+  }
+})
+test('native target identity and browser context are rechecked after the key result', async () => {
+  for (const mode of ['id', 'context', 'type']) {
+    let held: any, release: any
+    const f = await activeObservedFrames({ storage(value: any) { if (value.parent && value.currentURL !== '' && value.currentURL !== 'about:blank') return new Promise(resolve => { held = true; release = resolve }) } }), child = await qualifiedObservedChild(f); f.navigate(child, 'https://same.test:555/child')
+    try { for (let count = 0; count < 100 && !held; count++) await tick(); assert.equal(held, true); f.setTarget({ [mode]: 'foreign' }) }
+    finally { release?.(true); await f.drain() }
+    assert.equal(f.runtime.markers.at(-1).qualified, false, mode)
+  }
+})
+test('revoked held native frame work remains owned until the original command and detach settle', async () => {
+  let held: any, release: any, valid = true
+  const f = await activeObservedFrames({ runtime: { authorizeActivation: async ({ authority }: any) => ({ authority, assertCurrent() { if (!valid) throw Error('fixture_authority_revoked') } }) }, storage(value: any) { if (value.parent && value.currentURL !== '' && value.currentURL !== 'about:blank') return new Promise(resolve => { held = true; release = resolve }) } }), child = await qualifiedObservedChild(f); f.navigate(child, 'https://same.test:555/child'); const detached = f.calls.filter(value => value.method === 'detach').length
+  try { for (let count = 0; count < 100 && !held; count++) await tick(); assert.equal(held, true); valid = false; await tick(); assert.equal(f.runtime.frameJobs.size, 1); assert.equal(f.calls.filter(value => value.method === 'detach').length, detached) }
+  finally { release?.(true); await f.drain() }
+  assert.equal(f.runtime.markers.at(-1).qualified, false); assert.equal(f.calls.filter(value => value.method === 'detach').length, detached + 1)
+})
+test('a reentrant authority proof cannot qualify a replaced context', async () => {
+  const f = await activeObservedFrames(), child = await qualifiedObservedChild(f), originalProof = f.runtime.activeProof
+  let called = false; f.runtime.activeProof = () => { originalProof(); if (!called) { called = true; f.foreignContext() } }
+  f.navigate(child, 'https://same.test:555/child'); await f.drain(); assert.equal(called, true); assert.equal(f.runtime.markers.at(-1).qualified, false)
+})
+
+test('a main fragment event during the key await retains the original native document', async () => {
+  let held: any, release: any
+  const f = await activeObservedFrames({ storage(value: any) { if (value.parent && value.currentURL !== '' && value.currentURL !== 'about:blank') return new Promise(resolve => { held = true; release = resolve }) } }), child = await qualifiedObservedChild(f); f.navigate(child, 'https://same.test:555/child'); const marker = f.runtime.markers.at(-1)
+  try { for (let count = 0; count < 100 && !held; count++) await tick(); assert.equal(held, true); f.navigate(f.main, f.main.url() + '#part') }
+  finally { release?.(true); await f.drain() }
+  assert.equal(marker.qualified, true); assert.deepEqual((await f.runtime.assertMovable()).origins, ['https://same.test:444', 'https://same.test:555'])
+})
+test('a main fragment before the original native anchor stays unproved', async () => {
+  let held: any, release: any, block = false
+  const f = await activeObservedFrames({ session() { if (block) return new Promise(resolve => { held = true; release = resolve }) } }); block = true
+  const child = f.attach('https://same.test:555/initial'); f.navigate(child, 'https://same.test:555/child'); const marker = f.runtime.markers.at(-1)
+  try { for (let count = 0; count < 100 && !held; count++) await tick(); assert.equal(held, true); f.main.currentURL += '#part'; f.main.nativeURL = f.main.currentURL; f.page.emit('framenavigated', f.main); block = false }
+  finally { release?.(true); await f.drain() }
+  assert.equal(marker.qualified, false)
+})
+test('native opaque parent and ambiguous sibling mapping remain refused', async () => {
+  for (const mode of ['opaque-parent', 'ambiguous']) {
+    const f = await activeObservedFrames(), child = f.attach()
+    if (mode === 'opaque-parent') f.main.securityOrigin = 'null'
+    if (mode === 'ambiguous') f.make('https://same.test:555/child', f.main, 'same-url-other-child')
+    f.navigate(child, 'https://same.test:555/child'); await f.drain(); assert.equal(f.runtime.markers.at(-1).qualified, false); await assert.rejects(f.runtime.assertMovable())
+  }
+})
+
+test('supported loopback origins still refuse a protocol change independently of hostname equality', async () => {
+  const f = await activeObservedFrames({ topURL: 'http://127.0.0.1:444/top' }), child = await qualifiedObservedChild(f); f.navigate(child, 'https://127.0.0.1:555/child'); await f.drain()
+  assert.equal(f.runtime.markers.at(-1).qualified, false); await assert.rejects(f.runtime.assertMovable())
+})
+test('unobserved public frame membership refuses the source inventory', async () => {
+  let held: any, release: any
+  const f = await activeObservedFrames({ storage(value: any) { if (value.parent && value.currentURL !== '' && value.currentURL !== 'about:blank') return new Promise(resolve => { held = true; release = resolve }) } }), child = await qualifiedObservedChild(f); f.navigate(child, 'https://same.test:555/child')
+  try { for (let count = 0; count < 100 && !held; count++) await tick(); assert.equal(held, true); f.make('https://same.test:555/unobserved', f.main, 'unobserved-child') }
+  finally { release?.(true); await f.drain() }
+  assert.equal(f.runtime.markers.at(-1).qualified, false)
+})
+
+test('the original native detach remains in frame work until its actual promise settles', async () => {
+  let held: any, release: any
+  const f = await activeObservedFrames({ detach(value: any) { if (value?.parent && value.currentURL !== '' && value.currentURL !== 'about:blank') return new Promise(resolve => { held = true; release = resolve }) } }), child = await qualifiedObservedChild(f); f.navigate(child, 'https://same.test:555/child')
+  try { for (let count = 0; count < 100 && !held; count++) await tick(); assert.equal(held, true); await tick(); assert.equal(f.runtime.frameJobs.size, 1, 'physical native detach must remain owned') }
+  finally { release?.(true); await f.drain() }
+  assert.equal(f.runtime.frameJobs.size, 0); assert.equal(f.runtime.markers.at(-1).qualified, true)
+})
+
+test('known unsupported attached about blank remains terminal after a later supported first commit', async () => {
+  for (const mode of ['opaque', 'nonliteral-key']) {
+    const f = await activeObservedFrames(), child = f.attach('about:blank'), attachment = f.runtime.markers.at(-1)
+    if (mode === 'opaque') child.securityOrigin = 'null'
+    else { const original = f.runtime.context.newCDPSession; f.runtime.context.newCDPSession = async (page: any) => { const cdp = await original(page), send = cdp.send; cdp.send = async (method: string, params: any) => method === 'Storage.getStorageKeyForFrame' && child.currentURL === 'about:blank' ? { storageKey: 'https://same.test:444/^0nonce' } : send(method, params); return cdp } }
+    await f.drain(); assert.equal(attachment.qualified, false, mode); assert.equal(attachment.reason, 'profile_partitioned_origin_unsupported')
+    f.navigate(child, 'https://same.test:555/supported'); await f.drain(); assert.equal(f.runtime.markers.at(-1).qualified, true); assert.equal(attachment.qualified, false, mode); assert.notEqual(attachment.pending, true, mode); assert.equal(attachment.reason, 'profile_partitioned_origin_unsupported'); await assert.rejects(f.runtime.assertMovable())
+  }
+})
+
+test('a held real about blank key cannot disappear behind its first supported child commit', async () => {
+  for (const oldKey of ['https://same.test:444/', 'https://same.test:444/^0nonce']) {
+    let held: any, release: any
+    const f = await activeObservedFrames({ storageKey(value: any) { return value.currentURL === 'about:blank' ? oldKey : value.securityOrigin + '/' }, storage(value: any) { if (value.currentURL === 'about:blank') return new Promise(resolve => { held = true; release = resolve }) } }), child = f.attach('about:blank'), original = f.runtime.markers.at(-1)
+    try {
+      for (let count = 0; count < 100 && !held; count++) await tick(); assert.equal(held, true)
+      f.navigate(child, 'https://same.test:555/committed'); const committed = f.runtime.markers.at(-1)
+      for (let count = 0; count < 100 && !committed.qualified; count++) await tick(); assert.equal(committed.qualified, true)
+      assert.equal(original.qualified, false, 'unknown original blank must remain blocking'); assert.equal(f.runtime.frameJobs.size, 1, 'original blank key command remains physically owned')
+    } finally { release?.(true); await f.drain() }
+    assert.equal(original.qualified, false); await assert.rejects(f.runtime.assertMovable())
+  }
+})
+
+test('internal staged restoration accepts current active network proof without borrowing a new authority', async () => {
+  const f = await activeObservedFrames(); f.runtime.state = 'staged'; const authority = f.runtime.authority, child = await qualifiedObservedChild(f); f.navigate(child, 'https://same.test:555/restored'); await f.drain()
+  assert.equal(f.runtime.authority, authority); assert.equal(f.runtime.markers.at(-1).qualified, true); assert.deepEqual((await f.runtime.assertMovable()).origins, ['https://same.test:444', 'https://same.test:555'])
+})
+
+test('initial empty native document requires literal nonopaque key and unambiguous original frame identity', async () => {
+  for (const mode of ['nonce', 'opaque', 'native-url', 'unknown-loader', 'ambiguous']) {
+    const f = await activeObservedFrames({ storageKey(value: any) { return value.currentURL === '' && mode === 'nonce' ? 'https://same.test:444/^0nonce' : value.securityOrigin + '/' } }), child = f.attach(), marker = f.runtime.markers.at(-1)
+    if (mode === 'opaque') child.securityOrigin = 'null'
+    if (mode === 'native-url') child.nativeURL = 'https://same.test:555/other'
+    if (mode === 'unknown-loader') child.loaderId = ''
+    if (mode === 'ambiguous') f.attach()
+    await f.drain(); assert.equal(marker.qualified, false, mode); await assert.rejects(f.runtime.assertMovable())
+  }
+})
+test('a fast first supported commit never promotes the unproved initial empty document', async () => {
+  const f = await activeObservedFrames(), child = f.attach(), initial = f.runtime.markers.at(-1)
+  f.navigate(child, 'https://same.test:555/fast'); await f.drain()
+  assert.equal(f.runtime.markers.at(-1).qualified, true); assert.equal(initial.qualified, false); await assert.rejects(f.runtime.assertMovable())
+})
+test('initial empty key work stays owned and unknown after the next supported document qualifies', async () => {
+  for (const oldKey of ['https://same.test:444/', 'https://same.test:444/^0nonce']) {
+    let held: any, release: any
+    const f = await activeObservedFrames({ storageKey(value: any) { return value.currentURL === '' ? oldKey : value.securityOrigin + '/' }, storage(value: any) { if (value.currentURL === '') return new Promise(resolve => { held = true; release = resolve }) } }), child = f.attach(), original = f.runtime.markers.at(-1)
+    try {
+      for (let count = 0; count < 100 && !held; count++) await tick(); assert.equal(held, true)
+      f.navigate(child, 'https://same.test:555/committed'); const committed = f.runtime.markers.at(-1)
+      for (let count = 0; count < 100 && !committed.qualified; count++) await tick(); assert.equal(committed.qualified, true)
+      assert.equal(original.qualified, false); assert.equal(f.runtime.frameJobs.size, 1)
+    } finally { release?.(true); await f.drain() }
+    assert.equal(original.qualified, false); await assert.rejects(f.runtime.assertMovable())
+  }
+})
+test('initial empty native key rejects loader or authority replacement while its original read is held', async () => {
+  for (const mode of ['loader', 'authority']) {
+    let held: any, release: any
+    const f = await activeObservedFrames({ storage(value: any) { if (value.currentURL === '') return new Promise(resolve => { held = true; release = resolve }) } }), child = f.attach(), marker = f.runtime.markers.at(-1)
+    try { for (let count = 0; count < 100 && !held; count++) await tick(); assert.equal(held, true); if (mode === 'loader') child.loaderId = 'replacement-loader'; else f.runtime.authority = Object.freeze({ ...f.runtime.authority, grantVersion: 2 }) }
+    finally { release?.(true); await f.drain() }
+    assert.equal(marker.qualified, false, mode); await assert.rejects(f.runtime.assertMovable())
+  }
+})
