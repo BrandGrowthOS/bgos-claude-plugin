@@ -47,8 +47,8 @@ function managedMarker(payload, env) {
   const projectFolder = envText(env, 'CLAUDE_PROJECT_DIR')
   const transcriptPath = typeof payload?.transcript_path === 'string' ? payload.transcript_path : ''
   const base = projectFolder || (typeof payload?.cwd === 'string' ? payload.cwd : '')
-  const { key, seen } = findOwnAttachedKey({ root, folders, transcriptPath, projectFolder, base })
-  if (key) return { root, path: privateMarkerPath(root, key), stale: [] }
+  const { key, seen, daemon } = findOwnAttachedKey({ root, folders, transcriptPath, projectFolder, base })
+  if (key) return { root, path: privateMarkerPath(root, key), stale: [], daemon }
   const held = new Set(seen.filter((entry) => entry.state === 'other-project' || entry.state === 'older-daemon').map((entry) => entry.key))
   const sessionId = String(payload?.session_id ?? '').trim()
   const markers = folders.map(floorKey).filter(Boolean)
@@ -106,7 +106,7 @@ export function recordPrivateBoundary(payload, env = process.env, report = () =>
   // this hook runs in step with the CLI, the forwarder lines the daemon reads do not (board row f81a527c).
   const previous = event === 'UserPromptSubmit' ? readPrivateJson(path, 2048) : null
   const record = event === 'UserPromptSubmit'
-    ? privateTurnRecord({ previous, previousUnreadable: previous === null && existsSync(path), previousMissing: previous === null && !existsSync(path), sessionId, prompt: payload.prompt, turnId, promptId })
+    ? privateTurnRecord({ previous, previousUnreadable: previous === null && existsSync(path), previousMissing: previous === null && !existsSync(path), sessionId, prompt: payload.prompt, turnId, promptId, daemon: target.daemon })
     : {}
   const marker = {
     schemaVersion: 1, turnId, sessionId,
