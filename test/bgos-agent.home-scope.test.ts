@@ -40,7 +40,9 @@ const SLOW = { timeout: 120_000 }
 
 function ready(t: TestContext): boolean {
   if (BASH) return true
-  assert.notEqual(process.env.HOAI_REQUIRE_BASH, '1', 'HOAI_REQUIRE_BASH=1 but no bash')
+  // On Windows there is deliberately no bash here (bgos-agent is the macOS and Linux installer):
+  // CI's HOAI_REQUIRE_BASH=1 guards a posix leg that lost its bash, never this skip.
+  if (process.platform !== 'win32') assert.notEqual(process.env.HOAI_REQUIRE_BASH, '1', 'HOAI_REQUIRE_BASH=1 but no bash')
   t.skip(process.platform === 'win32' ? 'bin/bgos-agent is the macOS and Linux installer' : 'no bash')
   return false
 }
