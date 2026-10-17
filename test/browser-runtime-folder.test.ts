@@ -304,6 +304,13 @@ function runtimeFolder(tmp: string, name: string) {
   return dir
 }
 
+/** A folder last touched this long ago, as one is whose host and Chrome are long gone. */
+function quiet<T extends string>(dir: T, agoMs = 2 * HOUR_MS): T {
+  const at = (Date.now() - agoMs) / 1000
+  utimesSync(dir, at, at)
+  return dir
+}
+
 const ownedBy = (pid: number, startedAtMs: number, suffix = 'Ab12Cd') => `${H.runtimeDirPrefix({ pid, startedAtMs })}${suffix}`
 
 /** The pid of a process that ran and has exited: an owner that is gone. */
@@ -377,7 +384,7 @@ test('host start: a pid now held by a process that started after the folder\'s h
     t.skip('this Linux machine booted too recently for a start that long before the holder')
     return
   }
-  const dir = runtimeFolder(tmp, ownedBy(holder.pid, recorded))
+  const dir = quiet(runtimeFolder(tmp, ownedBy(holder.pid, recorded)))
   const { swept } = await sweep(tmp)
   assert.deepEqual(swept, [dir], 'the real process table proves the recorded host gone')
   assert.equal(existsSync(dir), false)
@@ -397,7 +404,7 @@ test('host start: a holder that started within the slack after the recorded star
   const tmp = scratchTemp(t)
   const recorded = Date.now() - HOUR_MS
   const owner = runtimeFolder(tmp, ownedBy(4242, recorded))
-  const reused = runtimeFolder(tmp, ownedBy(4243, recorded))
+  const reused = quiet(runtimeFolder(tmp, ownedBy(4243, recorded)))
   const starts = new Map([[4242, { startedAtMs: recorded + 30_000 }], [4243, { startedAtMs: recorded + H.RUNTIME_DIR_OWNER_SLACK_MS + 1_000 }]])
   const { swept } = await sweep(tmp, { platform: 'win32', alive: () => true, processStarts: async () => starts, busy: () => null })
   assert.deepEqual(swept, [reused])
@@ -408,7 +415,7 @@ test('linux: the owner is checked on the boot clock, so a step of the wall clock
   const tmp = scratchTemp(t)
   const recorded = 5 * HOUR_MS // ms since boot, as a Linux host records its start (startStampNow)
   const stepped = runtimeFolder(tmp, ownedBy(4244, recorded, 'Step01'))
-  const reused = runtimeFolder(tmp, ownedBy(4245, recorded, 'Reus01'))
+  const reused = quiet(runtimeFolder(tmp, ownedBy(4245, recorded, 'Reus01')))
   const unknown = runtimeFolder(tmp, ownedBy(4246, recorded, 'Unkn01'))
   const starts = new Map<number, any>([
     // The wall clock was stepped forward after the host started: on it, the host seems to start much later.
@@ -420,6 +427,69 @@ test('linux: the owner is checked on the boot clock, so a step of the wall clock
   assert.deepEqual(swept, [reused])
   assert.equal(existsSync(stepped), true, 'a live host after a wall clock step')
   assert.equal(existsSync(unknown), true, 'no boot clock reading proves nothing on Linux')
+})
+
+/**
+ * Windows dates a process's start through CIM in local time, so a host started in the repeated hour
+ * when daylight saving ends can read an hour later than it recorded: a live host that looks like a
+ * reused pid. The time comparison alone never removes its folder.
+ */
+function dstShifted(recorded: number) {
+  return async () => new Map([[4250, { startedAtMs: recorded + HOUR_MS + 2_000 }]])
+}
+
+test('win32 DST: a live host whose start reads an hour late keeps its folder while its Chrome holds the lockfile', async (t) => {
+  const tmp = scratchTemp(t)
+  const recorded = Date.now() - 3 * HOUR_MS
+  // Chrome has run in it for hours: nothing new at its top, and its lockfile held.
+  const dir = runtimeFolder(tmp, ownedBy(4250, recorded, 'Dst001'))
+  writeFileSync(join(dir, 'lockfile'), '')
+  quiet(dir)
+  const busy = (d: string) => H.runtimeDirBusy(d, { platform: 'win32', unlink: (p: string) => { throw Object.assign(new Error(`EBUSY: resource busy or locked, unlink '${p}'`), { code: 'EBUSY' }) } })
+  let removed = 0
+  const { swept, lines } = await sweep(tmp, { platform: 'win32', alive: () => true, processStarts: dstShifted(recorded), busy, removeDir: () => { removed++ } })
+  assert.deepEqual(swept, [])
+  assert.equal(removed, 0)
+  assert.equal(existsSync(join(dir, 'Default', 'Cookies')), true)
+  assert.ok(lines.some((l) => l.includes(dir) && /in use/.test(l) && /EBUSY/.test(l)), `logged: ${lines.join(' | ')}`)
+})
+
+test('win32 DST: a live host\'s folder no Chrome holds is kept while recent (a browser still starting), and removed once quiet', async (t) => {
+  const tmp = scratchTemp(t)
+  const recorded = Date.now() - 3 * HOUR_MS
+  // Made a moment ago by the live host's browser start: its Chrome has not taken the lockfile yet.
+  const starting = runtimeFolder(tmp, ownedBy(4250, recorded, 'Start1'))
+  // Untouched for longer than any start takes, and no Chrome in it: a stop's leftover, nothing runs there.
+  const idle = quiet(runtimeFolder(tmp, ownedBy(4250, recorded, 'Idle01')))
+  const busy = (d: string) => H.runtimeDirBusy(d, { platform: 'win32' })
+  const { swept } = await sweep(tmp, { platform: 'win32', alive: () => true, processStarts: dstShifted(recorded), busy })
+  assert.deepEqual(swept, [idle])
+  assert.equal(existsSync(join(starting, 'Default', 'Cookies')), true, 'a folder whose browser may still be starting is never removed on the time comparison')
+  assert.equal(existsSync(idle), false)
+  assert.ok(H.RUNTIME_DIR_REUSE_QUIET_MS >= 5 * 60_000 && H.RUNTIME_DIR_REUSE_QUIET_MS < 2 * HOUR_MS, 'quiet: well past a start, and within the two hours this test ages the folder')
+})
+
+test('win32: a true reused pid with a free, quiet folder is removed', async (t) => {
+  const tmp = scratchTemp(t)
+  const recorded = Date.now() - 5 * HOUR_MS
+  const dir = quiet(runtimeFolder(tmp, ownedBy(4251, recorded, 'Reus02')))
+  const starts = new Map([[4251, { startedAtMs: recorded + 4 * HOUR_MS }]])
+  const busy = (d: string) => H.runtimeDirBusy(d, { platform: 'win32' })
+  const { swept, lines } = await sweep(tmp, { platform: 'win32', alive: () => true, processStarts: async () => starts, busy })
+  assert.deepEqual(swept, [dir])
+  assert.equal(existsSync(dir), false)
+  assert.ok(lines.some((l) => l.includes(dir) && /newer process/.test(l)), `logged: ${lines.join(' | ')}`)
+})
+
+test('macOS: a wall clock step that makes a live host read late leaves its recent folder too; the same rule as Windows', async (t) => {
+  const tmp = scratchTemp(t)
+  const recorded = Date.now() - 3 * HOUR_MS
+  const starting = runtimeFolder(tmp, ownedBy(4252, recorded, 'Start2'))
+  const idle = quiet(runtimeFolder(tmp, ownedBy(4252, recorded, 'Idle02')))
+  const starts = new Map([[4252, { startedAtMs: recorded + 20 * 60_000 }]])
+  const { swept } = await sweep(tmp, { platform: 'darwin', alive: () => true, processStarts: async () => starts, busy: () => null })
+  assert.deepEqual(swept, [idle])
+  assert.equal(existsSync(starting), true)
 })
 
 test('host start: this host\'s own folders are its own, with no process query', async (t) => {
