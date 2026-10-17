@@ -161,6 +161,55 @@ test('a start whose browser connection failed after Chrome reported its endpoint
   assert.equal(engine._runtimeDir, null)
 })
 
+test('a start whose Chrome did not exit leaves its folder whole and forgets it, so no later stop removes it', async (t) => {
+  const child = fakeChrome()
+  child.held = false
+  const launched: string[] = []
+  const lines: string[] = []
+  const calls: string[] = []
+  const engine = engineFor(t, child, { launched, log: (l) => lines.push(l), removeDir: removeDirHeldBy(child, calls) })
+  engine._launch = async (opts: any) => {
+    launched.push(opts.profileDir)
+    return { child, endpoint: 'ws://127.0.0.1:1/devtools/browser/fake' }
+  }
+  engine._newEngine = () => ({ start: async () => { throw Object.assign(new Error('connect failed'), { code: 'browser_start_failed' }) }, stop: async () => {} })
+  // _killChild gives up on a Chrome that outlived SIGKILL; a second call finds no child, as the real one does.
+  let kills = 0
+  engine._killChild = async () => { if (kills++ === 0) throw Object.assign(new Error('The browser process did not finish closing safely.'), { code: 'browser_stop_failed' }) }
+  await assert.rejects(engine.start(), { code: 'browser_stop_failed' })
+  const [runtimeDir] = launched
+  t.after(() => rmSync(runtimeDir, { recursive: true, force: true }))
+  assert.equal(existsSync(join(runtimeDir)), true, 'the folder of a Chrome that may still run is left')
+  assert.deepEqual(calls, [], 'not even partly removed')
+  assert.equal(engine._runtimeDir, null)
+  assert.ok(lines.some((l) => l.includes(runtimeDir) && /did not exit/.test(l)), `logged: ${lines.join(' | ')}`)
+  await engine.stop()
+  assert.deepEqual(calls, [], 'a stop after it does not remove it either')
+})
+
+test('a start that failed while a Chrome still runs in its folder leaves the folder whole, for the next host start', async (t) => {
+  const child = fakeChrome()
+  const launched: string[] = []
+  const lines: string[] = []
+  const calls: string[] = []
+  const engine = engineFor(t, child, { launched, log: (l) => lines.push(l), removeDir: removeDirHeldBy(child, calls) })
+  // launchChromium's wait for the Chrome it killed is bounded: a Chrome past it still holds its lockfile (EBUSY).
+  engine._launch = async (opts: any) => {
+    launched.push(opts.profileDir)
+    throw Object.assign(new Error('Chrome did not report its DevTools endpoint'), { code: 'browser_start_failed' })
+  }
+  const asked: string[] = []
+  engine._runtimeBusy = (dir: string) => { asked.push(dir); return 'EBUSY' }
+  await assert.rejects(engine.start(), { code: 'browser_start_failed' })
+  const [runtimeDir] = launched
+  t.after(() => rmSync(runtimeDir, { recursive: true, force: true }))
+  assert.deepEqual(asked, [runtimeDir])
+  assert.deepEqual(calls, [], 'a folder a Chrome still runs in is not even partly removed')
+  assert.equal(existsSync(runtimeDir), true)
+  assert.equal(engine._runtimeDir, null)
+  assert.ok(lines.some((l) => l.includes(runtimeDir) && /in use \(EBUSY\)/.test(l)), `logged: ${lines.join(' | ')}`)
+})
+
 test('win32: a runtime folder still busy after the retry is logged and left, never thrown, and the next start removes it', async (t) => {
   const child = fakeChrome({ exitAfterKillMs: 50, holdAfterExitMs: null })
   const lines: string[] = []
@@ -256,7 +305,7 @@ async function liveProcess(t: any) {
   const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })
   t.after(() => child.kill('SIGKILL'))
   await new Promise((r) => child.once('spawn', r))
-  return { pid: child.pid as number, startedAtMs: Date.now() }
+  return { pid: child.pid as number, startedAtMs: H.startStampNow() as number }
 }
 
 function sweep(tmp: string, opts: Record<string, unknown> = {}) {
@@ -309,7 +358,12 @@ test('host start: a pid now held by a process that started after the folder\'s h
     t.skip('the process table cannot be read here (a stand-in for ps or powershell): the sweep then keeps the folder')
     return
   }
-  const dir = runtimeFolder(tmp, ownedBy(holder.pid, holder.startedAtMs - 3 * HOUR_MS))
+  const recorded = holder.startedAtMs - H.RUNTIME_DIR_OWNER_SLACK_MS - 60_000
+  if (recorded < 0) {
+    t.skip('this Linux machine booted too recently for a start that long before the holder')
+    return
+  }
+  const dir = runtimeFolder(tmp, ownedBy(holder.pid, recorded))
   const { swept } = await sweep(tmp)
   assert.deepEqual(swept, [dir], 'the real process table proves the recorded host gone')
   assert.equal(existsSync(dir), false)
@@ -323,6 +377,35 @@ test('host start: an owner whose pid lives but whose start cannot be read is kep
   assert.deepEqual(asked, [4242])
   assert.deepEqual(swept, [])
   assert.equal(existsSync(dir), true)
+})
+
+test('host start: a holder that started within the slack after the recorded start is the owner; one past it is not', async (t) => {
+  const tmp = scratchTemp(t)
+  const recorded = Date.now() - HOUR_MS
+  const owner = runtimeFolder(tmp, ownedBy(4242, recorded))
+  const reused = runtimeFolder(tmp, ownedBy(4243, recorded))
+  const starts = new Map([[4242, { startedAtMs: recorded + 30_000 }], [4243, { startedAtMs: recorded + H.RUNTIME_DIR_OWNER_SLACK_MS + 1_000 }]])
+  const { swept } = await sweep(tmp, { platform: 'win32', alive: () => true, processStarts: async () => starts, busy: () => null })
+  assert.deepEqual(swept, [reused])
+  assert.equal(existsSync(owner), true, 'a start read to the second, a little after the host recorded its own, is still its host')
+})
+
+test('linux: the owner is checked on the boot clock, so a step of the wall clock never makes a live host look gone', async (t) => {
+  const tmp = scratchTemp(t)
+  const recorded = 5 * HOUR_MS // ms since boot, as a Linux host records its start (startStampNow)
+  const stepped = runtimeFolder(tmp, ownedBy(4244, recorded, 'Step01'))
+  const reused = runtimeFolder(tmp, ownedBy(4245, recorded, 'Reus01'))
+  const unknown = runtimeFolder(tmp, ownedBy(4246, recorded, 'Unkn01'))
+  const starts = new Map<number, any>([
+    // The wall clock was stepped forward after the host started: on it, the host seems to start much later.
+    [4244, { startedAtMs: Date.now(), boot: { id: 'b', startedUptimeMs: recorded - 1_000 } }],
+    [4245, { startedAtMs: 0, boot: { id: 'b', startedUptimeMs: recorded + H.RUNTIME_DIR_OWNER_SLACK_MS + 1_000 } }],
+    [4246, { startedAtMs: recorded + 10 * HOUR_MS }],
+  ])
+  const { swept } = await sweep(tmp, { platform: 'linux', alive: () => true, processStarts: async () => starts, busy: () => null })
+  assert.deepEqual(swept, [reused])
+  assert.equal(existsSync(stepped), true, 'a live host after a wall clock step')
+  assert.equal(existsSync(unknown), true, 'no boot clock reading proves nothing on Linux')
 })
 
 test('host start: this host\'s own folders are its own, with no process query', async (t) => {
@@ -452,6 +535,11 @@ test('END TO END: the host, started as a process, sweeps its own TEMP at start a
   await exited
   assert.match(stderr, /runtime folder sweep/, stderr)
   assert.ok(stderr.includes(tmp), `the sweep names the TEMP it read: ${stderr}`)
+  // Off the start path: the host's first line and the sweep's, by the host's own stamps.
+  const at = (line: string | undefined) => Date.parse(String(line).split(' ')[0])
+  const lines = stderr.split(/\r?\n/).filter(Boolean)
+  const waited = at(lines.find((l) => /runtime folder sweep/.test(l))) - at(lines[0])
+  assert.ok(waited >= H.RUNTIME_SWEEP_DELAY_MS - 50, `the sweep ran ${waited} ms after the host's first line`)
   assert.equal(existsSync(deadDir), false, 'the dead host\'s folder is gone')
   assert.equal(existsSync(join(liveDir, 'Default', 'Cookies')), true, 'the live host\'s folder is whole')
 })
