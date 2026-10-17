@@ -106,12 +106,13 @@ test('win32: a killed Chrome that never exits still lets the start fail, after a
   assert.ok(waited < BROWSER_KILL_WAIT_MS + 1_500, `and no longer than its bound (${waited} ms)`)
 })
 
-test('linux and macOS are unchanged: a start that timed out rejects as it kills', async () => {
+test('linux and macOS too: a start that timed out rejects only once the Chrome it killed has exited', async () => {
+  // Until then Chrome's SingletonLock names a live pid, and the start's own cleanup leaves a folder that is in use.
   for (const platform of ['linux', 'darwin'] as const) {
     const child = fakeChrome({ exitAfterKillMs: 200 })
     await launchChromium({ executable: '/fake/chrome', profileDir: '/fake/profile', timeoutMs: 50, spawnImpl: (() => child) as any, platform, env: {} })
       .catch((err: any) => { child.events.push(`rejected ${err.code}`) })
-    assert.deepEqual(child.events, ['kill SIGKILL', 'rejected browser_start_failed'], platform)
+    assert.deepEqual(child.events, ['kill SIGKILL', 'exit', 'rejected browser_start_failed'], platform)
   }
 })
 
@@ -140,6 +141,19 @@ test('a start that failed leaves no runtime folder, on every platform', async (t
     assert.equal(launched.length, 1, platform)
     assert.equal(existsSync(launched[0]), false, `${platform}: the folder of the failed start is gone`)
     assert.equal(engine._runtimeDir, null, platform)
+  }
+})
+
+test('linux and macOS: a start that timed out removes its folder once the Chrome it killed has exited and let go of its lock', async (t) => {
+  for (const platform of ['linux', 'darwin']) {
+    const child = fakeChrome({ exitAfterKillMs: 30, holdAfterExitMs: 0 })
+    const launched: string[] = []
+    const lines: string[] = []
+    const engine = engineFor(t, child, { platform, launched, log: (l) => lines.push(l), removeDir: (dir) => rmSync(dir, { recursive: true, force: true }) })
+    // As runtimeDirBusy reads a real Chrome's SingletonLock: in use while that Chrome's pid lives.
+    engine._runtimeBusy = () => (child.signalCode === null && child.exitCode === null ? 'SingletonLock' : null)
+    await assert.rejects(engine.start(), { code: 'browser_start_failed' }, platform)
+    assert.equal(existsSync(launched[0]), false, `${platform}: the folder is gone (${lines.join(' | ')})`)
   }
 })
 
