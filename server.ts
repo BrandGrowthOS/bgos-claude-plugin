@@ -138,8 +138,10 @@ import {
 } from './lib/health-log.js'
 import {
   BOARDS_TOOL_DECLS,
+  boardFilesFolder,
   createBoardsTransports,
   handleBoardsTool,
+  sweepBoardFiles,
 } from './lib/boards-tools.js'
 import { createActingUserTracker } from './lib/acting-user.js'
 import { createPrivateTurnTracker, emailSendBasis, PRIVATE_TURN_REFUSAL, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requireEmailSendTurn, requirePrivateTurn, turnAwarePrivateTurn } from './lib/private-turn.mjs'
@@ -1306,6 +1308,23 @@ const actingUser = createActingUserTracker({
 // response.json() unconditionally (which turns a 204 on a landed write into a
 // tool failure the model would retry). The shared helpers stay exactly as they
 // are for every other tool; boards gets its own, in lib/boards-tools.ts.
+// Where boards_download saves a board file (HOAI board rows 01a14840-19e0):
+// inside the agent's own folder, the folder claude runs in, so the agent can
+// open the file with its Read tool. LAUNCH_CWD and never process.cwd(): a
+// marketplace install runs this process in the plugin cache. A name of its own
+// keeps the counted identity sites (test/agent-credentials.test.ts) as they are. Each
+// call saves under the folder of the person the turn acts for
+// (boardFilesFolder), the same principal the call's acting-user header names.
+const BOARD_FILES_WORKDIR = LAUNCH_CWD
+const BOARD_FILES_ROOT = pathJoin(BOARD_FILES_WORKDIR, '.hoai', 'board-files')
+// Saved copies expire (lib/boards-tools.ts BOARD_FILE_KEEP_MS): until person
+// lanes every turn shares this folder, so a copy fetched for one person must
+// not outlive its use. Swept at start and every ten minutes; best effort, and
+// only folders boardFilesFolder names are ever entered.
+const BOARD_FILES_SWEEP_MS = 10 * 60_000
+void sweepBoardFiles(BOARD_FILES_ROOT).catch(() => 0)
+setInterval(() => void sweepBoardFiles(BOARD_FILES_ROOT).catch(() => 0), BOARD_FILES_SWEEP_MS).unref()
+
 const boardsTransports = (privateHeaders: Record<string, string>) => createBoardsTransports({
   apiBase: API_BASE,
   headers: () => ({ ...authHeaders(AUTH), ...privateHeaders }),
@@ -5552,7 +5571,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {},
       },
     },
-    // Agent Boards: the 12 boards_* tools (lib/boards-tools.ts). They ride
+    // Agent Boards: the 13 boards_* tools (lib/boards-tools.ts). They ride
     // this daemon's existing pairing, so they only ever reach boards the
     // owner granted THIS assistant; an ungranted board answers not_found and
     // never reveals that it exists.
@@ -5802,6 +5821,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
     return handleBoardsTool(req.params.name, rawArgs, {
       ...boardsTransports(privateCall!.headers),
       assistantId: ASSISTANT_ID,
+      downloadDir: boardFilesFolder(BOARD_FILES_ROOT, privateCall!.actingUserId, USER_ID),
     })
   }
 
