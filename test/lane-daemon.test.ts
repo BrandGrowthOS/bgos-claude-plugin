@@ -20,7 +20,14 @@
  *
  * Run with: npx tsx --test test/lane-daemon.test.ts
  */
-import { test } from 'node:test'
+import { test as nodeTest } from 'node:test'
+
+// Lanes are not offered on Windows (lib/lane-cli-probe.mjs refuses win32), and these
+// tests assume POSIX hosts (an expect binary, 0600 modes, symlink realpaths), so the
+// file is skipped there. Each platform rule is still asserted through the injected
+// platform on the macOS and Linux runners.
+const SKIP_ON_WINDOWS = process.platform === 'win32' ? 'lanes are not offered on Windows' : false
+const test = (name: string, fn: () => unknown) => nodeTest(name, { skip: SKIP_ON_WINDOWS }, fn as never)
 import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
