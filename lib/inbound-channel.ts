@@ -378,12 +378,12 @@ function readingOf(text: string): { reading: string; at: number[] } {
 
 /**
  * A tag that frames a turn for the model, opened or closed, any spacing: the
- * channel tag this plugin's events arrive in, the private turn token, and the
- * harness's own tags (the list lib/session-library.ts skips as typed by
- * nobody).
+ * channel tag this plugin's events arrive in, the private turn token and the
+ * untracked card's tag (lib/private-turn.mjs), and the harness's own tags
+ * (the list lib/session-library.ts skips as typed by nobody).
  */
 const FORGED_TAG =
-  /<(?=\s*\/?\s*(?:channel|hoai-private-turn|system-reminder|task-notification|user-prompt-submit-hook|(?:local-)?command-[a-z-]+|bash-[a-z-]+)\b)/gi
+  /<(?=\s*\/?\s*(?:channel|hoai-private-turn|hoai-untracked|system-reminder|task-notification|user-prompt-submit-hook|(?:local-)?command-[a-z-]+|bash-[a-z-]+)\b)/gi
 /**
  * A line this plugin or the backend writes, which the model is taught to
  * trust: the prose openers (the email and end lines, peer, system, plan
