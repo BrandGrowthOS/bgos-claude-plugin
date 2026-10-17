@@ -132,8 +132,9 @@ export const BROWSER_IDLE_MS = 30 * 60_000
 /** How long Chrome may take to report its DevTools endpoint. */
 export const BROWSER_START_TIMEOUT_MS = 30_000
 /**
- * Windows: how long a start that failed waits for the Chrome it killed to exit. Chrome holds its
- * runtime folder until it has, so a stop right after the failed start could not remove it.
+ * How long a start that failed waits for the Chrome it killed to exit. Until it has, Chrome holds its
+ * runtime folder on Windows, and its SingletonLock names a live pid on macOS and Linux, so the start's
+ * own cleanup (or a stop right after it) would find the folder in use.
  */
 export const BROWSER_KILL_WAIT_MS = 3_000
 /**
@@ -921,9 +922,10 @@ export function launchChromium({ executable, profileDir, headless = true, timeou
         try {
           child.kill('SIGKILL')
         } catch {}
-        // On Windows the killed Chrome holds its runtime folder until it has exited, and the caller
-        // removes that folder next. Bounded: a Chrome that never exits still fails the start.
-        if (platform === 'win32' && child.pid !== undefined) void waitForExit(child, killWaitMs).then(() => reject(err))
+        // The killed Chrome holds its runtime folder until it has exited (Windows; elsewhere its
+        // SingletonLock names its pid), and the caller removes that folder next. Bounded: a Chrome
+        // that never exits still fails the start.
+        if (child.pid !== undefined) void waitForExit(child, killWaitMs).then(() => reject(err))
         else reject(err)
       } else resolve({ child, endpoint })
     }
