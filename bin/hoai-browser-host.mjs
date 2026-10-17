@@ -1265,8 +1265,9 @@ export function processStartsOf(pids, { platform = process.platform } = {}) {
  * host (RUNTIME_DIR_OWNER_SLACK_MS; on Linux both on the boot clock, and a holder of a later boot reads
  * as earlier, so it is kept), and in both cases the folder is untouched for RUNTIME_DIR_REUSE_QUIET_MS:
  * never on the time comparison alone, which a live host's misread start can pass, and never at once for a
- * dead pid, whose Chrome may outlive it and still be starting. This host's own folders, and an owner whose start cannot be read, are
- * kept. Two hosts run at once (the desktop app's and an agent's); each keeps the other's folders. A
+ * dead pid, whose Chrome may outlive it and still be starting (a folder kept for being recent waits for a
+ * later host start). This host's own folders, and an owner whose start cannot be read, are kept. Two
+ * hosts run at once (the desktop app's and an agent's); each keeps the other's folders. A
  * folder that names no owner is removed only once untouched for RUNTIME_DIR_UNOWNED_AGE_MS. A folder
  * a Chrome still runs in (runtimeDirBusy), or one Windows refuses to remove, stays and is logged;
  * nothing is ever thrown. The removals are awaited one at a time, so a large one never holds the host.

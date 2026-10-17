@@ -365,7 +365,7 @@ test('a TEMP reached through a link (macOS /var -> /private/var) still gets the 
   const link = join(holder, 'tmp-link')
   symlinkSync(real, link, process.platform === 'win32' ? 'junction' : 'dir')
   // Unlink only: the link is removed, never its target (the scratch folder above goes with its own after-hook).
-  t.after(() => { try { unlinkSync(link) } catch { rmSync(link, { recursive: false, force: true }) } })
+  t.after(() => unlinkSync(link))
   const keys = process.platform === 'win32' ? ['TEMP', 'TMP'] : ['TMPDIR']
   const saved = keys.map((k) => [k, process.env[k]] as const)
   t.after(() => { for (const [k, v] of saved) { if (v === undefined) delete process.env[k]; else process.env[k] = v } })
