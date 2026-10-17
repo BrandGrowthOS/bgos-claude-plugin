@@ -363,11 +363,17 @@ export function deafFixCommand(input: {
  * `reply` tool now") pushes an agent to answer the stranger when its job is
  * to tell the owner and let them decide. Unanswered spam would also count as
  * a message waiting and feed the deaf verdict. The email is still delivered.
+ *
+ * NOR DOES ANOTHER AGENT'S MESSAGE IN A GROUP (sender type room_agent, the
+ * follow-up window). BGOS hands one over only as a follow-up, and its canon
+ * says silence is a correct answer to it and nothing waits for a reply. A
+ * nudge would push the agent to answer another agent, the back and forth the
+ * window is built to prevent. The message is still delivered.
  */
 export function inboundOwesReply(senderKind: string | null | undefined): boolean {
   if (senderKind == null) return true
   const kind = String(senderKind).trim().toLowerCase()
-  return kind !== 'system' && kind !== 'external_email'
+  return kind !== 'system' && kind !== 'external_email' && kind !== 'room_agent'
 }
 
 /**
