@@ -152,6 +152,15 @@
  *                       declares this token, independently of the two
  *                       playbook sentences, and no bundled fallback mentions
  *                       runs.
+ *   boards_download     this daemon has the boards_download tool (0.69.9,
+ *                       HOAI board rows 01a14840-19e0): it saves a row's file
+ *                       into the agent's folder under .hoai/board-files, one
+ *                       folder per person, by the id boards_get_row prints.
+ *                       Every host: a typed tool and a file write, with no
+ *                       platform limit. The backend serves the canon's
+ *                       boards_download line only to a connection that
+ *                       declares this token, so an agent on an older plugin
+ *                       is never told about a tool it does not have.
  *   stop_pauses_mission an owner Stop pauses the chat's open mission with the
  *                       reason "Stopped by you" instead of letting it run on,
  *                       and the owner's next message there resumes it (P6
@@ -247,6 +256,7 @@ export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   'boards_playbook',
   'boards_playbook_does',
   'boards_runs',
+  'boards_download',
   SESSIONS_LIBRARY,
   'changes_rpc',
   'skills_list',
