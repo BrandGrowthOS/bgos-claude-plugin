@@ -36,6 +36,10 @@ test('the poll tick refuses to forward while not armed', () => {
 // times, N duplicate consult cards, and "late/unknown voice_rpc result"
 // warnings, which is what gating only the poll tick would leave in place.
 const PAIRING_FRAMES = [
+  // Person lanes (P3): only the lock holder starts or stops a person's lane.
+  'lanes_state',
+  'lane_wake',
+  'lane_revoked',
   'voice_rpc',
   'export_pack',
   'export_pack_manifest',

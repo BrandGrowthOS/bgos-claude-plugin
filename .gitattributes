@@ -36,3 +36,7 @@ lib/session-controls-contract.ts text eol=lf
 # in test/session-status-contract.pin.test.ts, so it must not pick up CRLF on a
 # Windows checkout either.
 lib/session-status-contract.ts text eol=lf
+# The lane floor fixture is a byte identical copy of the BGOS backend's
+# backend/src/services/hard-floor-lane-fixture.ts, pinned by sha256 on both
+# sides (test/hard-floor-lane.test.ts), so it must not pick up CRLF either.
+lib/hard-floor-lane-fixture.ts text eol=lf
