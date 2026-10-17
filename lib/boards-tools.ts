@@ -8,7 +8,7 @@
 // Everything in this file is pure except the four injected transports, so the
 // whole surface is unit-testable:
 //
-//  - BOARDS_TOOL_DECLS   the 12 declarations server.ts spreads into ListTools
+//  - BOARDS_TOOL_DECLS   the 13 declarations server.ts spreads into ListTools
 //  - handleBoardsTool()  validate -> build path/body -> call -> render
 //
 // Three rules this module is built around, all of them load-bearing:
@@ -24,11 +24,13 @@
 //     identifiers, so the board segment is percent-encoded; row and field keys
 //     are shape-checked against a safe-token pattern.
 
-import { readFile, stat } from 'node:fs/promises'
-import { basename } from 'node:path'
+import { createHash, randomUUID } from 'node:crypto'
+import { chmod, lstat, mkdir, readdir, readFile, realpath, rename, rm, rmdir, stat, writeFile } from 'node:fs/promises'
+import { basename, dirname, join } from 'node:path'
 
 import { guessOutboundMime } from './message-text.js'
 import { boundedFetch, UPLOAD_DEADLINE_MS } from './bounded-fetch.js'
+import { saveName } from './browser-downloads.mjs'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -40,6 +42,17 @@ export interface BoardsToolDeps {
   bgosDelete?: (path: string) => Promise<unknown>
   /** Presigned upload for attachments over the inline cap. Defaults to fetch. */
   putBytes?: (url: string, bytes: Uint8Array, mime: string) => Promise<void>
+  /**
+   * boards_download: the folder a fetched file is saved under, absolute, and
+   * already the folder of the person this turn acts for (boardFilesFolder).
+   * Absent, boards_download refuses before it mints anything.
+   */
+  downloadDir?: string
+  /**
+   * boards_download: fetch the signed download link, at most `maxBytes`.
+   * Defaults to createBoardsDownloader(): no BGOS header, no redirect.
+   */
+  getBytes?: (url: string, maxBytes: number) => Promise<{ bytes: Uint8Array }>
   assistantId: string | number
 }
 
@@ -186,6 +199,35 @@ const MAX_LIMIT = 200
 const MAX_SEARCH_LIMIT = 100
 const INLINE_ATTACH_BYTES = 1024 * 1024
 const MAX_ATTACH_BYTES = 25 * 1024 * 1024
+/**
+ * The largest file boards_download fetches. Board files are capped at 25 MB
+ * server side today; this is the largest file class HOAI stores at all (a
+ * video), so a raised board cap does not silently break the tool, while a
+ * runaway link still cannot fill the disk.
+ */
+const MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024
+/** An attachment id. Files have no short key, so only the full uuid is accepted. */
+const ATTACHMENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+/**
+ * How long a saved board file is kept. Before person lanes every turn on a
+ * shared agent runs in ONE session in ONE folder, so a copy saved for one
+ * person is a file any later turn on this machine can read, whoever it is
+ * for; the per person folders organise copies, they do not isolate them
+ * (the plugin review of rows 01a14840-19e0). Keeping each copy only this long
+ * bounds that exposure; the agent fetches a fresh copy whenever it needs one.
+ */
+export const BOARD_FILE_KEEP_MS = 60 * 60 * 1000
+/** A saved name's ceiling in BYTES: ext4 and most file systems refuse a name over 255. */
+const BOARD_FILE_NAME_MAX_BYTES = 200
+/**
+ * File names an agent's CLI may read as INSTRUCTIONS when it works in the
+ * folder that holds them (Claude Code loads a nested CLAUDE.md; other agents
+ * read AGENTS.md or GEMINI.md). The name comes from whoever attached the file,
+ * so one of these is saved under a prefix and can never be taken as one.
+ */
+const INSTRUCTION_FILE_NAME = /^(claude(\.local)?|agents?|gemini|copilot-instructions)\.md$/i
+/** A plain type/subtype (RFC 6838 restricted names). Anything else is not printed to the model. */
+const MIME_TYPE = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$/i
 /**
  * How much of a backend error body survives into the thrown Error. The shared
  * plugin transports cut at 200 chars, which truncates the ambiguous-board
@@ -718,9 +760,10 @@ export const BOARDS_TOOL_DECLS = [
   {
     name: 'boards_get_row',
     description:
-      'One row by key, with its attachments. Anything not granted answers ' +
-      'not_found, whether or not it exists. Read the row before you change ' +
-      'it so you write against what is actually there.',
+      'One row by key, with its attachments: each file\'s name, id, size and ' +
+      'column, and boards_download takes that id. Anything not granted ' +
+      'answers not_found, whether or not it exists. Read the row before you ' +
+      'change it so you write against what is actually there.',
     inputSchema: {
       type: 'object' as const,
       additionalProperties: false,
@@ -767,7 +810,8 @@ export const BOARDS_TOOL_DECLS = [
     name: 'boards_attach',
     description:
       'Put a file on a row. It is stored server-side, so every agent granted ' +
-      'that row can fetch it later. Attach the file instead of pasting its ' +
+      'that row can fetch it later with boards_download. Attach the file ' +
+      'instead of pasting its ' +
       'contents into a cell: cells are for the one-line truth, files are for ' +
       'the evidence. Give either file_path or content_base64 with a name.',
     inputSchema: {
@@ -806,6 +850,31 @@ export const BOARDS_TOOL_DECLS = [
         },
       },
       required: ['board', 'row_key'],
+    },
+  },
+  {
+    name: 'boards_download',
+    description:
+      'Save one file from a row onto this machine. Pass the attachment id ' +
+      'exactly as boards_get_row prints it on its Files line. The answer is ' +
+      'the path it was saved to, with its type and size; open it from there ' +
+      'with your Read tool. It reaches exactly the files boards_get_row ' +
+      'reaches: a file on a row you cannot read answers not_found, the same ' +
+      'as one that does not exist.',
+    inputSchema: {
+      type: 'object' as const,
+      additionalProperties: false,
+      properties: {
+        board: BOARD_ARG,
+        attachment_id: {
+          type: 'string',
+          description:
+            'The file\'s full id, a uuid, copied from the Files line of ' +
+            'boards_get_row. Files have no short key.',
+        },
+        response_format: RESPONSE_FORMAT_ARG,
+      },
+      required: ['board', 'attachment_id'],
     },
   },
   {
@@ -899,6 +968,7 @@ const ARG_HINTS: Record<string, string> = {
   table:
     'the table id or its exact name, from boards_describe. Omit for the default table.',
   row_key: 'the short 8-character row key or the full row uuid, copied as printed.',
+  attachment_id: 'the file\'s full id, from the Files line of boards_get_row.',
   cells: 'a map of field label to string value.',
   name: 'the name to show.',
   query: 'what you are looking for, in your own words.',
@@ -2266,7 +2336,7 @@ async function defaultPutBytes(
 // ── Dispatch ─────────────────────────────────────────────────────────────────
 
 /**
- * One entry point for all 12 tools. server.ts routes every name starting with
+ * One entry point for all 13 tools. server.ts routes every name starting with
  * `boards_` here, so the family stays in one testable place.
  */
 export async function handleBoardsTool(
@@ -2440,6 +2510,9 @@ async function buildCall(
 
     case 'boards_attach':
       return attach(name, args, deps, boardSeg)
+
+    case 'boards_download':
+      return download(name, args, deps, boardSeg, fmt)
 
     case 'boards_search': {
       const query = readString(name, args, 'query', true)
@@ -2715,4 +2788,368 @@ async function attach(
     `/attachments/${encodeURIComponent(attachmentId)}/complete`,
   )
   return { ok: true, data: await deps.bgosPost(completePath, {}) }
+}
+
+// ── boards_download (HOAI board rows 01a14840-19e0, 01a14840-27c2) ───────────
+//
+// Before this tool an agent granted a board read every file's name and id
+// from boards_get_row and had no way to fetch one: the agent route that mints
+// the link (GET .../attachments/:id/url) answered every grant, and no tool
+// called it. The route decides who may have the file (the same tier as
+// boards_get_row, and the same verbatim denial), so this side only has to
+// keep three promises: the signed link is a credential (https, no BGOS
+// header, no redirect, never echoed), what arrives is exactly the file
+// (its recorded size, or nothing is kept), and the owner's file name never
+// picks a folder (saveName, then `<downloadDir>/<attachment id>/<name>`).
+
+/**
+ * The folder a turn's board files are saved under. The owner's own turns use
+ * `owner`; each person the agent is shared with gets `person-<16 hex of the
+ * sha256 of their user id>`, so a file fetched from one person's board never
+ * lands beside another's. The comparison is the one server.ts uses to decide
+ * whether a call carries X-BGOS-Acting-User, so the folder always names the
+ * principal the server answered for. The id never becomes a path segment.
+ *
+ * THIS ORGANISES, IT DOES NOT ISOLATE, until person lanes: today every turn
+ * on a shared agent runs in one session in one folder, and Read or a shell
+ * reaches any of these folders. That is why copies expire
+ * (BOARD_FILE_KEEP_MS). Under lanes each person's daemon runs in that
+ * person's own folder (LAUNCH_CWD), and the folder becomes the boundary.
+ */
+export function boardFilesFolder(
+  root: string,
+  actingUserId: string,
+  ownerUserId: string,
+): string {
+  if (actingUserId === ownerUserId) return join(root, 'owner')
+  const digest = createHash('sha256')
+    .update(String(actingUserId), 'utf8')
+    .digest('hex')
+    .slice(0, 16)
+  return join(root, `person-${digest}`)
+}
+
+interface DownloadResponse {
+  ok: boolean
+  status: number
+  headers: { get(name: string): string | null }
+  body: ReadableStream<Uint8Array> | null
+  arrayBuffer?: () => Promise<ArrayBuffer>
+}
+
+type DownloadFetch = (
+  url: string,
+  init: {
+    method: 'GET'
+    redirect: 'error'
+    headers: Record<string, string>
+    signal?: AbortSignal
+  },
+) => Promise<DownloadResponse>
+
+/**
+ * The default fetch behind boards_download. A presigned link carries its own
+ * authorization, so it is sent NO header of this daemon's (the pairing token
+ * must never reach the storage host), follows no redirect (a 3xx is not the
+ * file), and is read at most `maxBytes`: a declared length over it is refused
+ * before the body is read, a body that runs past it is cut off. Errors name
+ * the status, never the link, which is a credential until it expires.
+ */
+export function createBoardsDownloader(
+  opts: { fetchImpl?: DownloadFetch; timeoutMs?: number; log?: (msg: string) => void } = {},
+): (url: string, maxBytes: number) => Promise<{ bytes: Uint8Array }> {
+  return (url, maxBytes) =>
+    boundedFetch<{ bytes: Uint8Array }, DownloadResponse>(
+      {
+        url,
+        init: { method: 'GET', redirect: 'error', headers: {} } as RequestInit,
+        timeoutMs: opts.timeoutMs ?? UPLOAD_DEADLINE_MS,
+        // Never the url: it is a signed link.
+        label: `GET board attachment (up to ${maxBytes} bytes)`,
+      },
+      async (response) => {
+        if (!response.ok) {
+          throw new Error(`the storage server answered ${response.status}`)
+        }
+        const tooLarge = () =>
+          new Error(`the file is larger than the ${maxBytes} bytes the board recorded`)
+        const declared = Number(response.headers.get('content-length') ?? '')
+        if (Number.isFinite(declared) && declared > maxBytes) throw tooLarge()
+        if (!response.body) {
+          const whole = new Uint8Array(await (response.arrayBuffer?.() ?? Promise.resolve(new ArrayBuffer(0))))
+          if (whole.byteLength > maxBytes) throw tooLarge()
+          return { bytes: whole }
+        }
+        const reader = response.body.getReader()
+        const chunks: Uint8Array[] = []
+        let total = 0
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          total += value.byteLength
+          if (total > maxBytes) {
+            await reader.cancel().catch(() => {})
+            throw tooLarge()
+          }
+          chunks.push(value)
+        }
+        const bytes = new Uint8Array(total)
+        let at = 0
+        for (const chunk of chunks) {
+          bytes.set(chunk, at)
+          at += chunk.byteLength
+        }
+        return { bytes }
+      },
+      { fetchImpl: opts.fetchImpl as never, log: opts.log },
+    )
+}
+
+/** An error's message with any link in it replaced, so a signed url never reaches the model. */
+function withoutLinks(err: unknown, url: string): string {
+  const raw = err instanceof Error ? err.message : String(err)
+  return (url ? raw.split(url).join('the link') : raw).replace(/https?:\/\/\S+/g, 'the link')
+}
+
+/**
+ * The name a board file is saved under: saveName (one plain segment, no
+ * control, direction or Windows reserved names), then an instruction file
+ * name prefixed, then cut to BOARD_FILE_NAME_MAX_BYTES with its extension
+ * kept, so a long non-ASCII name cannot make a file undownloadable.
+ */
+export function boardFileSaveName(raw: string): string {
+  let name = saveName(raw)
+  // Compared folded: a look-alike (the long s of `agent\u017f.md`) is the
+  // same name to a case-insensitive file system.
+  if (INSTRUCTION_FILE_NAME.test(name.normalize('NFKC').toLowerCase())) name = `board-file-${name}`
+  if (Buffer.byteLength(name, 'utf8') <= BOARD_FILE_NAME_MAX_BYTES) return name
+  const ext = /\.[A-Za-z0-9]{1,15}$/.exec(name)?.[0] ?? ''
+  const chars = Array.from(name.slice(0, name.length - ext.length))
+  while (chars.length > 1 && Buffer.byteLength(`${chars.join('')}\u2026${ext}`, 'utf8') > BOARD_FILE_NAME_MAX_BYTES) {
+    chars.pop()
+  }
+  return `${chars.join('')}\u2026${ext}`
+}
+
+/** A folder this tool writes through must be a real folder, never a link to somewhere else. */
+async function refuseLinkedFolder(path: string): Promise<void> {
+  let info
+  try {
+    info = await lstat(path)
+  } catch {
+    return // not there yet: mkdir creates it as a real folder
+  }
+  if (info.isSymbolicLink() || !info.isDirectory()) {
+    throw new Error('the folder for board files is a link or not a folder, so nothing was written')
+  }
+}
+
+/** A person folder this tool creates (boardFilesFolder): nothing else under the base is ever touched. */
+const PERSON_FOLDER = /^(owner|person-[0-9a-f]{16})$/
+
+/** A folder's entries, or none when it is missing, unreadable, or a link (never read through one). */
+async function entriesOf(dir: string) {
+  try {
+    const info = await lstat(dir)
+    if (info.isSymbolicLink() || !info.isDirectory()) return []
+    return await readdir(dir, { withFileTypes: true })
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Deletes one person's saved board files older than BOARD_FILE_KEEP_MS
+ * (`<personDir>/<attachment id>/<file>`), leftover partial writes included,
+ * and the attachment folders they leave empty. Descends only into folders
+ * named by a full attachment id, never follows a link (a link found there is
+ * removed itself, whatever it points at is left alone). Best effort; answers
+ * how many entries it removed.
+ */
+export async function sweepBoardFilesOf(
+  personDir: string,
+  now: number = Date.now(),
+  keepMs: number = BOARD_FILE_KEEP_MS,
+): Promise<number> {
+  let removed = 0
+  for (const folder of await entriesOf(personDir)) {
+    if (!ATTACHMENT_ID.test(folder.name)) continue
+    const folderPath = join(personDir, folder.name)
+    if (!folder.isDirectory()) {
+      if (folder.isSymbolicLink()) {
+        await rm(folderPath, { force: true }).catch(() => {})
+        removed++
+      }
+      continue
+    }
+    for (const entry of await entriesOf(folderPath)) {
+      const path = join(folderPath, entry.name)
+      try {
+        const info = await lstat(path)
+        if (info.isSymbolicLink() || (!info.isDirectory() && now - info.mtimeMs > keepMs)) {
+          await rm(path, { force: true })
+          removed++
+        }
+      } catch {
+        /* gone already */
+      }
+    }
+    await rmdir(folderPath).catch(() => {}) // only when empty
+  }
+  return removed
+}
+
+/**
+ * The same sweep over every person folder under the board files base
+ * (`<base>/<owner | person-hex>/...`), for the daemon's timer. Only folders
+ * named the way boardFilesFolder names them are entered.
+ */
+export async function sweepBoardFiles(
+  base: string,
+  now: number = Date.now(),
+  keepMs: number = BOARD_FILE_KEEP_MS,
+): Promise<number> {
+  let removed = 0
+  for (const person of await entriesOf(base)) {
+    if (!PERSON_FOLDER.test(person.name) || !person.isDirectory()) continue
+    removed += await sweepBoardFilesOf(join(base, person.name), now, keepMs)
+  }
+  return removed
+}
+
+/** Writes the file beside nothing else of its own: a private folder per attachment id, then an atomic rename. */
+async function saveBoardFile(
+  root: string,
+  attachmentId: string,
+  fileName: string,
+  bytes: Uint8Array,
+): Promise<string> {
+  // The three folders this tool owns (<person>, board-files, .hoai) and the
+  // attachment's own folder must be real folders: a link planted at any of
+  // them would carry the write, and the chmod, somewhere else.
+  for (const own of [dirname(dirname(root)), dirname(root), root]) await refuseLinkedFolder(own)
+  const folder = join(root, attachmentId)
+  await refuseLinkedFolder(folder)
+  await mkdir(folder, { recursive: true, mode: 0o700 })
+  if ((await realpath(folder)) !== join(await realpath(root), attachmentId)) {
+    throw new Error('the folder for this file resolved somewhere else, so nothing was written')
+  }
+  // mkdir's mode only applies to folders it creates: tighten one that exists.
+  if (process.platform !== 'win32') await chmod(folder, 0o700)
+  const target = join(folder, fileName)
+  const part = join(folder, `.${randomUUID()}.part`)
+  try {
+    await writeFile(part, bytes, { mode: 0o600 })
+    await rename(part, target)
+  } catch (err) {
+    await rm(part, { force: true }).catch(() => {})
+    throw err
+  }
+  return target
+}
+
+async function download(
+  name: string,
+  args: Record<string, unknown>,
+  deps: BoardsToolDeps,
+  boardSeg: string,
+  fmt: 'markdown' | 'json',
+): Promise<{ ok: true; data: unknown } | Fail> {
+  const idRaw = readString(name, args, 'attachment_id', true)
+  if (!idRaw.ok) return idRaw
+  // Lower case: the folder is named by the id, and a case-insensitive disk
+  // would otherwise answer the same folder under two spellings.
+  const attachmentId = String(idRaw.value).trim().toLowerCase()
+  if (!ATTACHMENT_ID.test(attachmentId)) {
+    return fail(
+      `${name} "attachment_id" must be the file's full id (a uuid) exactly ` +
+        'as the Files line of boards_get_row prints it. Files have no short key.',
+    )
+  }
+  if (!deps.downloadDir) {
+    return fail(
+      `${name} has no folder to save files into on this connection, so ` +
+        'nothing was fetched.',
+    )
+  }
+
+  // The server decides who may have the file. A refusal throws here and
+  // reaches the model verbatim through handleBoardsTool.
+  const minted = (await deps.bgosGet(
+    boardPath(deps, boardSeg, `/attachments/${encodeURIComponent(attachmentId)}/url`),
+  )) as { url?: unknown; name?: unknown; mime?: unknown; size?: unknown } | null
+
+  const url = typeof minted?.url === 'string' ? minted.url : ''
+  let parsed: URL | null = null
+  try {
+    parsed = new URL(url)
+  } catch {
+    parsed = null
+  }
+  if (!parsed || parsed.protocol !== 'https:') {
+    return fail(
+      `${name} refused to fetch that file: the download link is not https, ` +
+        'and file bytes only travel over https. Nothing was saved.',
+    )
+  }
+
+  const shownName = typeof minted?.name === 'string' && minted.name.trim() !== ''
+    ? minted.name
+    : `attachment-${attachmentId}`
+  const fileName = boardFileSaveName(shownName)
+  const size = typeof minted?.size === 'number' && Number.isSafeInteger(minted.size) && minted.size >= 0
+    ? minted.size
+    : null
+  if (size !== null && size > MAX_DOWNLOAD_BYTES) {
+    return fail(
+      `${name} refused "${fileName}": it is ${size} bytes, over the ` +
+        `${MAX_DOWNLOAD_BYTES} bytes this tool fetches. Nothing was saved.`,
+    )
+  }
+
+  const get = deps.getBytes ?? createBoardsDownloader()
+  let bytes: Uint8Array
+  try {
+    bytes = (await get(url, size ?? MAX_DOWNLOAD_BYTES)).bytes
+  } catch (err) {
+    return fail(
+      `${name} could not fetch "${fileName}": ${withoutLinks(err, url)}. ` +
+        'Nothing was saved; call it again for a fresh link.',
+    )
+  }
+  if (size !== null && bytes.byteLength !== size) {
+    return fail(
+      `${name} got ${bytes.byteLength} bytes for "${fileName}" where the ` +
+        `board records ${size}, so the file did not arrive whole. Nothing was saved.`,
+    )
+  }
+
+  // The uploader's type is printed to the model, so only a plain type/subtype
+  // is; anything else is guessed from the saved name.
+  const sentMime = typeof minted?.mime === 'string' ? minted.mime.trim() : ''
+  const mime = MIME_TYPE.test(sentMime)
+    ? sentMime
+    : guessOutboundMime('', fileName, null) || 'application/octet-stream'
+  // This person's expired copies go first; the daemon's timer sweeps the rest.
+  await sweepBoardFilesOf(deps.downloadDir).catch(() => 0)
+  const path = await saveBoardFile(deps.downloadDir, attachmentId, fileName, bytes)
+
+  const note =
+    'This copy is deleted after an hour, and until then any turn on this ' +
+    'machine can read it, so never open or show it while answering anyone ' +
+    'but the person you fetched it for.'
+  if (fmt === 'json') {
+    return {
+      ok: true,
+      data: { attachmentId, name: fileName, mime, size: bytes.byteLength, path, note },
+    }
+  }
+  return {
+    ok: true,
+    data: {
+      markdown:
+        `Saved "${fileName}" (${bytes.byteLength} bytes, ${mime}) to ${path}. ` +
+        `Open it from there with your Read tool. ${note}`,
+    },
+  }
 }

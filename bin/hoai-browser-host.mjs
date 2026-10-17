@@ -153,7 +153,7 @@ const RUNTIME_DIR_BUSY = new Set(['EPERM', 'EBUSY', 'EACCES', 'ENOTEMPTY'])
  * Windows that took everything else in the folder before Chrome's helpers let go of the rest.
  */
 export const RUNTIME_DIR_PREFIX = 'hoai-browser-runtime-'
-/** A runtime folder that names no owner (made by a host before 0.69.9) is swept once untouched this long. */
+/** A runtime folder that names no owner (made by a host before 0.69.10) is swept once untouched this long. */
 export const RUNTIME_DIR_UNOWNED_AGE_MS = 24 * 60 * 60_000
 /**
  * A live pid still owns its folder unless its process started later than the recorded start by more
