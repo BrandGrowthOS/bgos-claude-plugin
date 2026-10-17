@@ -105,6 +105,12 @@ export type EmailToolResult = {
 export interface EmailSendBasis {
   kind: 'owner_message' | 'owner_task'
   id: string
+  /**
+   * Board row 70f1898b: words that are not the owner's (an email, another agent, a meeting card) reached the CLI turn
+   * before the owner's own message (lib/private-turn.mjs requireEmailSendTurn). The send then goes only with the owner's
+   * approval of exactly this email, from their tap on its card; without one it is kept as a draft for the owner.
+   */
+  askOwner?: boolean
 }
 
 export interface EmailToolDeps {
@@ -177,6 +183,15 @@ export function emailSendUnrecordedDraftText(line: string): string {
  */
 export function emailSendWithoutCardDraftText(line: string): string {
   return `Not sent: the email was kept as a draft for your owner, because your owner asks before every send and this email could not be put on an approval card. Your owner can read all of it and send it from the Email chat (${line}). Do not try again; tell your owner it is waiting as a draft in the Email chat.`
+}
+
+/**
+ * Board row 70f1898b: words that are not the owner's reached this CLI turn before the owner's own message, and no
+ * approval of the owner's came with the send, so the plugin kept it as a draft (the drafts route, which never sends)
+ * instead of posting it to the send route. The agent is told why, and where the owner sends it.
+ */
+export function emailSendAskOwnerDraftText(line: string): string {
+  return `Not sent: the email was kept as a draft for your owner, because words that are not your owner's reached this turn (an email, another agent's message or a meeting card), so only your owner can send it. Your owner can read all of it and send it from the Email chat (${line}). Do not try again; tell your owner it is waiting as a draft in the Email chat, and why.`
 }
 
 /** A uuid as the server's IsUUID() reads one (version 1 to 8, variant 8 to b, or the nil and max ids). */
@@ -506,6 +521,21 @@ export async function handleEmailTool(name: string, rawArgs: unknown, deps: Emai
   const approval = typeof approvalId === 'string' && APPROVAL_UUID.test(approvalId) ? { approval: { id: approvalId } } : {}
   const alwaysAskOff = Boolean(go && typeof go === 'object' && (go as EmailSendGo).alwaysAskOff === true)
   const withoutCard = Boolean(go && typeof go === 'object' && (go as EmailSendGo).withoutCard === true)
+  if (basis.askOwner === true && !('approval' in approval)) {
+    // 70f1898b: someone other than the owner reached this turn and the owner approved nothing, so it never reaches the
+    // send route: email_draft's own body on the drafts route, which only the owner can send.
+    const draft = target.kind === 'reply'
+      ? { assistantId, emailId: target.emailId, text }
+      : { assistantId, kind: 'new', to: target.to, subject: target.subject, text }
+    try {
+      const answer = await deps.post(AGENT_EMAIL_DRAFT_PATH, draft, caller)
+      return { content: [{ type: 'text', text: `${emailSendAskOwnerDraftText(draftLine(answer as Record<string, unknown>))}\n${JSON.stringify(answer)}` }] }
+    } catch (err) {
+      return fail(serverAnswered(err)
+        ? `email_send did not send it, because words that are not your owner's reached this turn, and could not keep it as a draft: ${errorText(err)}. Save it with email_draft and tell your owner.`
+        : `email_send did not send it, because words that are not your owner's reached this turn, and the draft for your owner may have been saved: do not save it again; tell your owner to look in the Email chat. ${errorText(err)}`)
+    }
+  }
   try {
     const answer = await deps.post(AGENT_EMAIL_SEND_PATH, { ...body, basis: { kind: basis.kind, id: basis.id }, ...approval }, caller)
     deps.answered?.(rawArgs, answer)

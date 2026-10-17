@@ -5847,6 +5847,8 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
     try {
       if (!lockHeld) throw new Error('This private action did not start because this daemon does not hold the active agent connection.')
       emailSendReason = requireEmailSendTurn(privateTurns, PRIVATE_MARKER_PATHS, USER_ID)
+      // 70f1898b: the send then goes only with the owner's approval of exactly this email, else it is kept as a draft.
+      if (emailSendReason?.askOwner) log('email_send: words that are not the owner\'s (an email, a peer or a meeting card) reached this CLI turn before the owner\'s message, so it goes only with the owner\'s approval on its card, else it is kept as a draft for the owner')
     } catch (err) {
       const message = String((err as Error).message)
       // Like every refused private call, the log names the failed check: the tracker's account when no turn was
@@ -9032,7 +9034,8 @@ async function announceMissedPlanAnswers(): Promise<void> {
         mcp.notification({
           method: 'notifications/claude/channel',
           params: {
-            content: contentLines.join('\n'),
+            // 70f1898b: a tap by anyone but the owner is someone else's words in the turn it reaches.
+            content: contentLines.join('\n') + privateTurns.noteTap({ chatId: String(chatId), tapperUserId: readTapperUserId(payload) }),
             meta: buildButtonClickedMeta({
               chatId,
               messageId: row.id,
@@ -10586,7 +10589,8 @@ async function pollChat(chatId: string): Promise<void> {
       void trackMessageOperation(() => mcp.notification({
         method: 'notifications/claude/channel',
         params: {
-          content: contentLines.join('\n'),
+          // 70f1898b: a tap by anyone but the owner is someone else's words in the turn it reaches.
+          content: contentLines.join('\n') + privateTurns.noteTap({ chatId: String(chatId), tapperUserId: readTapperUserId(payload) }),
           // `user_id` is the tapper the server stamped on the answer, or
           // absent. It was this daemon's own USER_ID, so every tap read as
           // the owner's whoever made it.
@@ -10714,8 +10718,9 @@ async function pollChat(chatId: string): Promise<void> {
           serverSender: msg.message,
           files: msg.messageFiles ?? [],
         })
-        // Another party's words with no delivery token: an email_send in the turn it reaches refuses.
-        privateTurns.noteUntracked({ chatId })
+        // Another party's words with no delivery token: an email_send in the turn it reaches refuses, and the tag on the
+        // card's end names it in whatever CLI turn the card runs in (70f1898b).
+        card.content += privateTurns.noteUntracked({ chatId })
         void trackMessageOperation(() => mcp.notification({
           method: 'notifications/claude/channel',
           params: card,
@@ -13444,7 +13449,8 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
     mcp.notification({
       method: 'notifications/claude/channel',
       params: {
-        content: contentLines.join('\n'),
+        // 70f1898b: a tap by anyone but the owner is someone else's words in the turn it reaches.
+        content: contentLines.join('\n') + privateTurns.noteTap({ chatId: String(chatId), tapperUserId: answer.tapperUserId }),
         meta: buildStreamClickMeta({
           chatId,
           messageId: view.messageId,
@@ -14374,7 +14380,7 @@ function connectWebsocket(): void {
           `meeting twin rx (meeting=${wsMeeting.meetingId} msg=${messageId} ` +
             `your_turn=${wsMeeting.yourTurn ? 'YES' : 'NO'})`,
         )
-        privateTurns.noteUntracked({ chatId })
+        card.content += privateTurns.noteUntracked({ chatId })
         void trackMessageOperation(() => mcp.notification({
           method: 'notifications/claude/channel',
           params: card,
@@ -14637,6 +14643,8 @@ function connectWebsocket(): void {
       log(
         `meeting_invitation accepted (id=${meetingId}, peers=${peerNames}, history=${rawHistory.length})`,
       )
+      // Like a meeting line: the room's earlier words ride on it, so an email_send in a turn it reached asks the owner.
+      const untracked = privateTurns.noteUntracked({ chatId: String(payload?.chatId ?? '') })
       void trackMessageOperation(() => mcp.notification({
         method: 'notifications/claude/channel',
         params: {
@@ -14646,7 +14654,8 @@ function connectWebsocket(): void {
             `Other participants: ${peerNames || '(none yet)'}\n` +
             `Speaker policy: ${payload?.speakerPolicy ?? 'user_mediated'}.\n` +
             `Wait for messages with your_turn=YES before calling the meeting_reply tool.` +
-            historyBlock,
+            historyBlock +
+            untracked,
           meta: {
             event_type: 'meeting_invitation',
             meeting_id: String(meetingId),
@@ -14788,7 +14797,7 @@ function connectWebsocket(): void {
         files: Array.isArray(payload?.files) ? payload.files : [],
         filesUnknown: !Array.isArray(payload?.files),
       })
-      privateTurns.noteUntracked({ chatId })
+      card.content += privateTurns.noteUntracked({ chatId })
       void trackMessageOperation(() => mcp.notification({
         method: 'notifications/claude/channel',
         params: card,

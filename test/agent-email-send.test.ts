@@ -132,7 +132,7 @@ function basisOf(turn: TurnShape): unknown {
   return pt.emailSendBasis({ senderType: turn.senderType, agentOrigin: turn.agentOrigin ?? null, eventMeta: turn.eventMeta ?? null, messageId: turn.messageId })
 }
 
-function fixture(t: any) {
+function fixture(t: any, { wired = false }: { wired?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'hoai-email-send-'))
   t.after(() => {
     assert.ok(resolve(root).startsWith(resolve(tmpdir())))
@@ -143,7 +143,8 @@ function fixture(t: any) {
   const env = { ...process.env, BGOS_PLUGIN_STATE_DIR: root, CLAUDE_PROJECT_DIR: cwd }
   markFloorAttached({ root, folders: [cwd] })
   const markerPaths = [privateMarkerPath(root, floorKey(cwd))]
-  const tracker = createPrivateTurnTracker()
+  // wired: the tracker as server.ts builds it, told the owner and the markers to read.
+  const tracker = wired ? createPrivateTurnTracker({ ownerUserId: OWNER, markerPaths }) : createPrivateTurnTracker()
   /** Deliver one turn exactly as the three lanes do. Returns the prompt. */
   const deliver = (turn: TurnShape, content = `turn text for message ${turn.messageId}`) =>
     tracker.deliver({
@@ -163,7 +164,12 @@ function fixture(t: any) {
     begin(prompt)
     return prompt
   }
-  return { root, cwd, env, markerPaths, tracker, deliver, begin, start }
+  /** The CLI ends the turn: the private turn hook closes the marker, then the Stop line reaches the tracker. */
+  const stop = (session = 'session-a') => {
+    recordPrivateBoundary({ hook_event_name: 'Stop', session_id: session, cwd }, env)
+    tracker.end()
+  }
+  return { root, cwd, env, markerPaths, tracker, deliver, begin, start, stop }
 }
 
 /** What requireEmailSendTurn answers: the basis, or the refusal text. */
@@ -222,7 +228,12 @@ test('an email turn cannot send: refused locally, whatever was delivered before 
   const f = fixture(t)
   f.start(TURNS.email)
   assert.deepEqual(sendTurn(f), { refused: REFUSAL })
-  // A fresh owner turn sends again: the refusal belongs to the email turn only.
+  // The owner's prompt right after it, no Stop between: the same CLI turn, so the owner's message is still the reason,
+  // but the send asks the owner first (70f1898b): the email's words are in front of the model.
+  f.start(TURNS.ownerMessage)
+  assert.deepEqual(sendTurn(f), { basis: { kind: 'owner_message', id: String(OWNER_MESSAGE_ID), askOwner: true } })
+  // A fresh owner turn after a Stop sends again: the refusal belongs to the email turn only.
+  f.stop()
   f.start(TURNS.ownerMessage)
   assert.deepEqual(sendTurn(f), { basis: { kind: 'owner_message', id: String(OWNER_MESSAGE_ID) } })
 })
@@ -1095,9 +1106,9 @@ test('server.ts, run: a daemon without the agent connection, or without the priv
   assert.equal(noLock.backend.requests.length + noHook.backend.requests.length, 0)
 })
 
-test('server.ts notes every meeting card with the tracker, so one mid turn stops a send', () => {
+test('server.ts notes every meeting card with the tracker, so one mid turn stops a send, and tags the card with what it hands back (70f1898b)', () => {
   const cards = SRC.match(/params: card,/g) ?? []
-  const noted = SRC.match(/privateTurns\.noteUntracked\(\{ chatId[^\n]*\}\)\n\s*void trackMessageOperation\(\(\) => mcp\.notification\(\{\n\s*method: 'notifications\/claude\/channel',\n\s*params: card,/g) ?? []
+  const noted = SRC.match(/card\.content \+= privateTurns\.noteUntracked\(\{ chatId[^\n]*\}\)\n\s*void trackMessageOperation\(\(\) => mcp\.notification\(\{\n\s*method: 'notifications\/claude\/channel',\n\s*params: card,/g) ?? []
   assert.ok(cards.length >= 3, 'the meeting lanes')
   assert.equal(noted.length, cards.length)
 })
@@ -2642,4 +2653,150 @@ test('server.ts, run, Data 06:43Z: the send goes to the server with no approval 
   store.allow(SEND_TOOL, cliPreview(input), { requestId: 'bcdef', approval: null, binding: null, withoutCard: true, tooLongForCard: true })
   assert.match(textOf(await call('email_send', input)), /too long for your owner to approve on a card/)
   assert.equal(backend.pulls.length, 0)
+})
+
+// ── 15. 70f1898b: an email, a peer or a meeting card before the owner's prompt in one CLI turn ─────────────────
+//
+// email_send names the owner's message, but a delivery that names no person (an email, a peer or room agent, a meeting
+// card) reached the CLI turn first (Stop to Stop, as the marker records it; test/private-turn-late-line.test.ts holds the
+// late line orders). Then the send goes only with the owner's own approval of exactly that email: the Always ask card's
+// approval. Without one it is never posted to the send route; it is kept as a draft for the owner, which only the owner
+// can send, and the agent is told why. With Always ask on and the owner's Allow, nothing changes.
+
+/** What the plugin keeps for SEND_ARGS: exactly email_draft's body for a new email, on the drafts route. */
+const KEPT_DRAFT = { assistantId: 12, kind: 'new', to: SEND_ARGS.to, subject: SEND_ARGS.subject, text: SEND_ARGS.text }
+const DRAFTS_ROUTE = '/api/v1/integrations/agent-email/reply-drafts'
+const SEND_ROUTE = '/api/v1/integrations/agent-email/send'
+
+/** Each kind of delivery that names no person, reaching the CLI turn before the owner's prompt (after an earlier Stop). */
+const BEFORE_THE_OWNER: Record<string, (f: ReturnType<typeof fixture>) => void> = {
+  'an email with its own prompt': (f) => { f.start(TURNS.email) },
+  'an email injected with no prompt': (f) => { f.deliver(TURNS.email) },
+  'a peer agent\'s message': (f) => { f.start(TURNS.peer) },
+  'a meeting card': (f) => { f.tracker.noteUntracked({ chatId: '77' }) },
+}
+
+/** The agent hears it was kept as a draft, why, and where the owner sends it. */
+function assertKeptForTheOwner(result: { content: Array<{ text: string }>; isError?: boolean }, label: string) {
+  const said = textOf(result)
+  assert.equal(result.isError, undefined, `${label}: ${said}`)
+  assert.match(said, /^Not sent: the email was kept as a draft for your owner, because /, label)
+  assert.match(said, /not your owner's/, `${label}: says why`)
+  assert.match(said, new RegExp(`send it from the Email chat \\(draft ${DRAFT_ID}`), label)
+  assert.match(said, /Do not try again/, label)
+  assert.equal(/^Sent|\bwas sent\b/i.test(said), false, label)
+}
+
+test('server.ts, run, 70f1898b: an email, a peer or a meeting card before the owner\'s prompt in one CLI turn: nothing is sent; the email is kept as a draft for the owner and the agent hears why', async (t) => {
+  for (const [label, before] of Object.entries(BEFORE_THE_OWNER)) {
+    const f = fixture(t, { wired: true })
+    const { backend, call, logs } = await serverCallTool(t, f, {}, { floor: { hold: false } })
+    f.start(TURNS.ownerMessage)
+    f.stop()
+    before(f)
+    f.start(TURNS.ownerMessage)
+    const result = await call('email_send', SEND_ARGS)
+    assert.deepEqual(backend.requests.map((r) => r.path), [DRAFTS_ROUTE], `${label}: never the send route`)
+    assert.deepEqual(backend.requests[0]!.body, KEPT_DRAFT, label)
+    assert.equal(backend.requests[0]!.headers['x-caller-assistant-id'], ASSISTANT_ID, label)
+    assertKeptForTheOwner(result, label)
+    assert.ok(logs.some((line) => /^email_send: .*reached this CLI turn/.test(line)), `${label}: the log says why: ${logs.join(' | ')}`)
+    assert.equal(logs.some((line) => line.includes('Harbor room')), false, 'never the email\'s text in the log')
+  }
+})
+
+test('server.ts, run, 70f1898b: a reply is kept as a draft of that reply', async (t) => {
+  const f = fixture(t, { wired: true })
+  const { backend, call } = await serverCallTool(t, f, {}, { floor: { hold: false } })
+  f.start(TURNS.email)
+  f.start(TURNS.ownerMessage)
+  const result = await call('email_send', { email_id: EMAIL_ID, text: 'Hi Dana, Kc picks the Harbor room.' })
+  assert.deepEqual(backend.requests.map((r) => r.path), [DRAFTS_ROUTE])
+  assert.deepEqual(backend.requests[0]!.body, { assistantId: 12, emailId: EMAIL_ID, text: 'Hi Dana, Kc picks the Harbor room.' })
+  assertKeptForTheOwner(result, 'a reply')
+})
+
+test('server.ts, run, 70f1898b: with Always ask on, the owner\'s Allow of exactly this email on its card sends it as before; an Allow that carried no approval keeps a draft, never a send', async (t) => {
+  const f = fixture(t, { wired: true })
+  const store = (await approval()).createEmailSendApprovals()
+  const { backend, call } = await serverCallTool(t, f, { emailSendApprovals: store }, { floor: { hold: true } })
+  const issued = backend.tap('abcde', SEND_BLOCK)
+  store.allow(SEND_TOOL, previewOf(SEND_ARGS), { requestId: 'abcde', approval: issued, binding: SEND_BLOCK })
+  f.start(TURNS.email)
+  f.start(TURNS.ownerMessage)
+  const sent = await call('email_send', SEND_ARGS)
+  assert.match(textOf(sent), /^Sent/)
+  assert.deepEqual(backend.requests[0]!.body, { ...SEND_ARGS, assistantId: 12, basis: { kind: 'owner_message', id: String(OWNER_MESSAGE_ID) }, approval: { id: issued.id } })
+  assert.equal(backend.approvals.get(issued.id)!.used, true)
+  // The owner allowed it, but no approval rode on the tap and the pull finds none (none was issued).
+  store.allow(SEND_TOOL, previewOf(SEND_ARGS), { requestId: 'bcdef', approval: null, binding: SEND_BLOCK })
+  const kept = await call('email_send', SEND_ARGS)
+  assert.equal(backend.pulls.length, 1)
+  assert.deepEqual(backend.requests.slice(1).map((r) => r.path), [DRAFTS_ROUTE])
+  assertKeptForTheOwner(kept, 'an Allow with no approval')
+  // No card behind the call at all (the floor hook failed open): Always ask's own refusal, as before; nothing saved.
+  const refused = await call('email_send', SEND_ARGS)
+  assert.equal(refused.isError, true)
+  assert.match(textOf(refused), /asks before every email/)
+  assert.equal(backend.requests.length, 2)
+})
+
+test('server.ts, run, 70f1898b: with no card possible (too long, or no hook record) the plugin keeps the draft itself, never the send route', async (t) => {
+  const f = fixture(t, { wired: true })
+  const store = (await approval()).createEmailSendApprovals()
+  const { backend, call } = await serverCallTool(t, f, { emailSendApprovals: store }, { floor: { hold: true } })
+  f.start(TURNS.email)
+  f.start(TURNS.ownerMessage)
+  store.allow(SEND_TOOL, cliPreview(SEND_ARGS), { requestId: 'abcde', approval: null, binding: null, withoutCard: true })
+  assertKeptForTheOwner(await call('email_send', SEND_ARGS), 'no hook record')
+  const input = { ...SEND_ARGS, text: LONG_BODY }
+  store.allow(SEND_TOOL, cliPreview(input), { requestId: 'bcdef', approval: null, binding: null, withoutCard: true, tooLongForCard: true })
+  assertKeptForTheOwner(await call('email_send', input), 'too long for a card')
+  assert.deepEqual(backend.requests.map((r) => r.path), [DRAFTS_ROUTE, DRAFTS_ROUTE])
+  assert.equal(backend.requests[1]!.body.text, LONG_BODY, 'the whole email, for the owner to read')
+})
+
+test('server.ts, run, 70f1898b: a server that cannot say whether the owner asks first (no floor route) keeps a draft too', async (t) => {
+  const f = fixture(t, { wired: true })
+  const { backend, call } = await serverCallTool(t, f, {}, { floor: { status: 404 } })
+  f.start(TURNS.peer)
+  f.start(TURNS.ownerMessage)
+  assertKeptForTheOwner(await call('email_send', SEND_ARGS), 'no floor route')
+  assert.deepEqual(backend.requests.map((r) => r.path), [DRAFTS_ROUTE])
+})
+
+test('server.ts, run, control, 70f1898b: an email in the turn before a Stop leaves the owner\'s next turn a direct send', async (t) => {
+  const f = fixture(t, { wired: true })
+  const { backend, call } = await serverCallTool(t, f, {}, { floor: { hold: false } })
+  f.start(TURNS.email)
+  f.deliver(TURNS.email)
+  f.stop()
+  f.start(TURNS.ownerMessage)
+  assert.match(textOf(await call('email_send', SEND_ARGS)), /^Sent/)
+  assert.deepEqual(backend.requests.map((r) => r.path), [SEND_ROUTE])
+  assert.deepEqual(backend.requests[0]!.body.basis, { kind: 'owner_message', id: String(OWNER_MESSAGE_ID) })
+})
+
+test('server.ts, run, control, 70f1898b: a share recipient\'s message before the owner\'s prompt in one CLI turn is still refused (#247), nothing saved', async (t) => {
+  const f = fixture(t, { wired: true })
+  const { backend, call } = await serverCallTool(t, f, {}, { floor: { hold: false } })
+  f.start({ senderType: 'user', senderUserId: 'user_recipient', messageId: 91000, chatId: '42' })
+  f.start(TURNS.ownerMessage)
+  const result = await call('email_send', SEND_ARGS)
+  assert.equal(result.isError, true)
+  assert.match(textOf(result), /did not start/)
+  assert.equal(backend.requests.length, 0)
+})
+
+test('server.ts notes a meeting invitation with the tracker too: it carries the room\'s earlier words, and the card carries its tag', () => {
+  const handler = serverSlice("realtimeSocket.on('meeting_invitation'", "realtimeSocket.on('meeting_message'")
+  assert.match(handler, /const untracked = privateTurns\.noteUntracked\(\{ chatId: [^\n]*\}\)\n\s*void trackMessageOperation\(\(\) => mcp\.notification\(\{\n\s*method: 'notifications\/claude\/channel',\n\s*params: \{\n\s*content:\n\s*`\[meeting_invitation\]/)
+  assert.match(handler, /historyBlock \+\n\s*untracked,\n/)
+})
+
+test('server.ts notes every button tap announced to the session with its tapper (70f1898b, review): someone else\'s tap asks the owner before email_send sends', () => {
+  const announced = SRC.match(/`\[button_clicked\] /g) ?? []
+  const tagged = SRC.match(/content: contentLines\.join\('\\n'\) \+ privateTurns\.noteTap\(\{ chatId: String\(chatId\), tapperUserId: [^\n]+ \}\),\n/g) ?? []
+  assert.equal(announced.length, 3, 'the boot sweep, the poll and the stream')
+  assert.equal(tagged.length, announced.length)
 })

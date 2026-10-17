@@ -37,6 +37,7 @@ import * as messageText from '../lib/message-text.ts'
 import { LoginController } from '../lib/auth-login.ts'
 import type { StreamUpdate } from '../lib/update-stream.ts'
 import { ownerAnnounceRefused, ownerLaneVerdict } from '../lib/lane-core.mjs'
+import { createPrivateTurnTracker } from '../lib/private-turn.mjs'
 
 // Normalized to LF: the working tree is CRLF on a Windows checkout.
 const SERVER = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(
@@ -315,6 +316,8 @@ function streamHarness(record: { requesterUserId?: string } = { requesterUserId:
     chatOwnership: { isOthers: () => false },
     USER_ID: OWNER,
     ASSISTANT_ID: 9,
+    // The daemon's own tracker (server.ts): a tap by anyone but the owner is noted with it (70f1898b).
+    privateTurns: createPrivateTurnTracker({ ownerUserId: OWNER }),
     streamAuthority: {},
     announcedClickIds,
     rememberAnnouncedClick: (id: number) => announcedClickIds.add(id),
@@ -402,6 +405,9 @@ test("STREAM: A's own stamped tap, and an unstamped tap, reach the model with th
       h.notes[0].params.content.includes(planCard.planAnswerDirective('go')!),
       'the go ahead directive reaches the model',
     )
+    // Neither is the owner's tap, so the card carries the untracked tag: an email_send in the turn it reaches asks the
+    // owner first (70f1898b).
+    assert.ok(h.notes[0].params.content.endsWith('\n<hoai-untracked/>'), `the tap ${JSON.stringify(answer)} is someone else's words`)
     assert.equal(h.settled.length, 1)
   }
 })
