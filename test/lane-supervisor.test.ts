@@ -21,7 +21,23 @@
  *
  * Run with: npx tsx --test test/lane-supervisor.test.ts
  */
-import { test } from 'node:test'
+import { test as nodeTest } from 'node:test'
+
+// Lanes are not offered on Windows (lib/lane-cli-probe.mjs refuses win32, and the
+// supervisor relies on POSIX link() locks and an expect child), so this file is
+// skipped there. Before this skip, the first test's spawn wait never ended on the
+// Windows CI runner and held the job to its 30 minute cancel (PR #252).
+const SKIP_ON_WINDOWS = process.platform === 'win32' ? 'lanes are not offered on Windows' : false
+const test = (name: string, fn: () => unknown) => nodeTest(name, { skip: SKIP_ON_WINDOWS }, fn as never)
+
+// A bounded wait: a supervisor that never spawns fails the test instead of hanging the run.
+async function waitFor(cond: () => boolean, what: string, maxTicks = 200_000): Promise<void> {
+  for (let i = 0; i < maxTicks; i++) {
+    if (cond()) return
+    await new Promise((resolve) => setImmediate(resolve))
+  }
+  throw new Error(`timed out waiting for ${what}`)
+}
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -139,7 +155,7 @@ test('two wakes for one person start ONE Claude: the second supervisor leaves', 
   const r = rig()
   try {
     const first = run(r, { selfPid: 1001, onSpawn: (_c, n) => { if (n === 1) writeLaneJson(r, { lastActivityAtMs: r.clock.t, inFlight: true, inFlightSinceMs: r.clock.t }) } })
-    while (r.spawns.length === 0) await new Promise((resolve) => setImmediate(resolve))
+    await waitFor(() => r.spawns.length > 0, 'the first Claude to spawn')
     const second = await run(r, { selfPid: 1002 })
     assert.deepEqual(second, { outcome: 'already_running' })
     assert.equal(r.spawns.length, 1, 'one Claude for one lane')
