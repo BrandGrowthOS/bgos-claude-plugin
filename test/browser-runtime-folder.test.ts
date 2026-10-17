@@ -361,11 +361,14 @@ test('a browser start makes its runtime folder under its host\'s name', async (t
 
 test('a TEMP reached through a link (macOS /var -> /private/var) still gets the runtime folder: only the profile under the home folder is link-checked', async (t) => {
   const real = scratchTemp(t)
-  const holder = scratchTemp(t, 'rtlink-')
+  const holder = mkdtempSync(join(realTmp(), 'rtlink-'))
   const link = join(holder, 'tmp-link')
   symlinkSync(real, link, process.platform === 'win32' ? 'junction' : 'dir')
-  // Unlink only: the link is removed, never its target (the scratch folder above goes with its own after-hook).
-  t.after(() => unlinkSync(link))
+  // Unlink only: the link is removed first, never its target, and only then the folder that held it.
+  t.after(() => {
+    unlinkSync(link)
+    rmSync(holder, { recursive: true, force: true })
+  })
   const keys = process.platform === 'win32' ? ['TEMP', 'TMP'] : ['TMPDIR']
   const saved = keys.map((k) => [k, process.env[k]] as const)
   t.after(() => { for (const [k, v] of saved) { if (v === undefined) delete process.env[k]; else process.env[k] = v } })
