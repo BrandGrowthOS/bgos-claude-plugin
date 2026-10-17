@@ -1106,9 +1106,9 @@ test('server.ts, run: a daemon without the agent connection, or without the priv
   assert.equal(noLock.backend.requests.length + noHook.backend.requests.length, 0)
 })
 
-test('server.ts notes every meeting card with the tracker, so one mid turn stops a send', () => {
+test('server.ts notes every meeting card with the tracker, so one mid turn stops a send, and tags the card with what it hands back (70f1898b)', () => {
   const cards = SRC.match(/params: card,/g) ?? []
-  const noted = SRC.match(/privateTurns\.noteUntracked\(\{ chatId[^\n]*\}\)\n\s*void trackMessageOperation\(\(\) => mcp\.notification\(\{\n\s*method: 'notifications\/claude\/channel',\n\s*params: card,/g) ?? []
+  const noted = SRC.match(/card\.content \+= privateTurns\.noteUntracked\(\{ chatId[^\n]*\}\)\n\s*void trackMessageOperation\(\(\) => mcp\.notification\(\{\n\s*method: 'notifications\/claude\/channel',\n\s*params: card,/g) ?? []
   assert.ok(cards.length >= 3, 'the meeting lanes')
   assert.equal(noted.length, cards.length)
 })
@@ -2788,7 +2788,15 @@ test('server.ts, run, control, 70f1898b: a share recipient\'s message before the
   assert.equal(backend.requests.length, 0)
 })
 
-test('server.ts notes a meeting invitation with the tracker too: it carries the room\'s earlier words', () => {
+test('server.ts notes a meeting invitation with the tracker too: it carries the room\'s earlier words, and the card carries its tag', () => {
   const handler = serverSlice("realtimeSocket.on('meeting_invitation'", "realtimeSocket.on('meeting_message'")
-  assert.match(handler, /privateTurns\.noteUntracked\(\{ chatId: [^\n]*\}\)\n\s*void trackMessageOperation\(\(\) => mcp\.notification\(\{\n\s*method: 'notifications\/claude\/channel',\n\s*params: \{\n\s*content:\n\s*`\[meeting_invitation\]/)
+  assert.match(handler, /const untracked = privateTurns\.noteUntracked\(\{ chatId: [^\n]*\}\)\n\s*void trackMessageOperation\(\(\) => mcp\.notification\(\{\n\s*method: 'notifications\/claude\/channel',\n\s*params: \{\n\s*content:\n\s*`\[meeting_invitation\]/)
+  assert.match(handler, /historyBlock \+\n\s*untracked,\n/)
+})
+
+test('server.ts notes every button tap announced to the session with its tapper (70f1898b, review): someone else\'s tap asks the owner before email_send sends', () => {
+  const announced = SRC.match(/`\[button_clicked\] /g) ?? []
+  const tagged = SRC.match(/content: contentLines\.join\('\\n'\) \+ privateTurns\.noteTap\(\{ chatId: String\(chatId\), tapperUserId: [^\n]+ \}\),\n/g) ?? []
+  assert.equal(announced.length, 3, 'the boot sweep, the poll and the stream')
+  assert.equal(tagged.length, announced.length)
 })
