@@ -12,16 +12,32 @@
  *
  * The fake Chrome here behaves as the real one does on Windows: its folder is busy (EPERM) while
  * it runs, and for a moment after it exits. Nothing real is spawned and nothing is killed.
+ *
+ * Two leaks of those folders (board row 5e811669): the pool never stops an engine whose start
+ * failed, so the start itself must remove its folder; and a folder still busy after a stop's retry
+ * outlived the host's final stop, since only a next browser start in the same process removed it.
+ * A host start now sweeps its own TEMP for folders no live host owns. The owner is in the folder's
+ * name (its host's pid and that process's start time), so a removal that took everything else in
+ * the folder never loses it. The sweep cases run on scratch TEMP folders of their own; the end to
+ * end case starts the real host with TEMP pointed at one.
  */
 
 import assert from 'node:assert/strict'
+import { spawn, spawnSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { hostname, tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
 import { test } from 'node:test'
+import { fileURLToPath } from 'node:url'
 
-import { BROWSER_KILL_WAIT_MS, ChromiumEngine, RUNTIME_DIR_RETRY_MS, launchChromium } from '../bin/hoai-browser-host.mjs'
+import * as host from '../bin/hoai-browser-host.mjs'
+import { BROWSER_KILL_WAIT_MS, ChromiumEngine, RUNTIME_DIR_RETRY_MS, STOP_ON_STDIN_EOF_ENV, launchChromium } from '../bin/hoai-browser-host.mjs'
+
+// The sweep's exports are read through the namespace, so on a build without them only the tests that need them fail.
+const H: any = host
+const HOST_BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'hoai-browser-host.mjs')
+const HOUR_MS = 60 * 60_000
 
 /** A Chrome that never reports its endpoint, exits `exitAfterKillMs` after a kill, and holds its folder `holdAfterExitMs` after that (null: never). */
 function fakeChrome({ exitAfterKillMs = 150 as number | null, holdAfterExitMs = 150 as number | null } = {}) {
@@ -52,14 +68,17 @@ function removeDirHeldBy(child: any, calls: string[] = []) {
   }
 }
 
-function engineFor(t: any, child: any, { platform = 'win32', removeDir, log }: { platform?: string; removeDir?: (dir: string) => void; log?: (line: string) => void } = {}) {
+function engineFor(t: any, child: any, { platform = 'win32', removeDir, log, launched = [] }: { platform?: string; removeDir?: (dir: string) => void; log?: (line: string) => void; launched?: string[] } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'chromestop-'))
   t.after(() => rmSync(root, { recursive: true, force: true }))
   return new ChromiumEngine({
     executable: '/fake/chrome',
     profileDir: join(root, 'profile'),
     outputDir: join(root, 'output'),
-    launch: (opts: any) => launchChromium({ ...opts, timeoutMs: 100, spawnImpl: (() => child) as any, env: {} }),
+    launch: (opts: any) => {
+      launched.push(opts.profileDir)
+      return launchChromium({ ...opts, timeoutMs: 100, spawnImpl: (() => child) as any, env: {} })
+    },
     platform,
     removeDir: removeDir ?? removeDirHeldBy(child),
     log: log ?? (() => {}),
@@ -96,44 +115,78 @@ test('linux and macOS are unchanged: a start that timed out rejects as it kills'
   }
 })
 
-test('win32: stop() after a start timeout does not throw, removes the runtime folder, and the cleanup after it runs', async (t) => {
+test('win32: a start that timed out removes its own runtime folder once Chrome let go, and a stop after it still resolves', async (t) => {
   const child = fakeChrome({ exitAfterKillMs: 150, holdAfterExitMs: 300 })
   const lines: string[] = []
-  const engine = engineFor(t, child, { log: (l) => lines.push(l) })
+  const launched: string[] = []
+  const engine = engineFor(t, child, { log: (l) => lines.push(l), launched })
   await assert.rejects(engine.start(), { code: 'browser_start_failed' })
-  const runtimeDir = engine._runtimeDir
+  const [runtimeDir] = launched
   t.after(() => rmSync(runtimeDir, { recursive: true, force: true }))
-  assert.ok(runtimeDir && existsSync(runtimeDir), 'the failed start left its runtime folder for the stop')
-  await engine.stop() // resolving is the point: the caller's cleanup after it runs
-  assert.equal(existsSync(runtimeDir), false, 'the folder was removed once Chrome let go of it')
+  assert.ok(runtimeDir, 'the start made a runtime folder')
+  // The pool never stops an engine whose start failed (BrowserPool.acquire): the start cleans up after itself.
+  assert.equal(existsSync(runtimeDir), false, 'the failed start removed its own folder once Chrome let go of it')
   assert.equal(engine._runtimeDir, null)
+  await engine.stop() // resolving is the point: a direct caller's cleanup after it runs
   assert.deepEqual(lines.filter((l) => /runtime folder/.test(l)), [], 'a folder that freed up in time is not reported')
+})
+
+test('a start that failed leaves no runtime folder, on every platform', async (t) => {
+  for (const platform of ['win32', 'linux', 'darwin']) {
+    const child = fakeChrome({ exitAfterKillMs: 20, holdAfterExitMs: 0 })
+    const launched: string[] = []
+    const engine = engineFor(t, child, { platform, launched, removeDir: platform === 'win32' ? undefined : (dir) => rmSync(dir, { recursive: true, force: true }) })
+    await assert.rejects(engine.start(), { code: 'browser_start_failed' }, platform)
+    assert.equal(launched.length, 1, platform)
+    assert.equal(existsSync(launched[0]), false, `${platform}: the folder of the failed start is gone`)
+    assert.equal(engine._runtimeDir, null, platform)
+  }
+})
+
+test('a start whose browser connection failed after Chrome reported its endpoint removes its folder too', async (t) => {
+  const child = fakeChrome()
+  child.held = false
+  const launched: string[] = []
+  const engine = engineFor(t, child, { launched })
+  engine._launch = async (opts: any) => {
+    launched.push(opts.profileDir)
+    child.exitCode = 0 // the Chrome is gone by the time the start cleans up
+    return { child, endpoint: 'ws://127.0.0.1:1/devtools/browser/fake' }
+  }
+  let stopped = 0
+  engine._newEngine = () => ({ start: async () => { throw Object.assign(new Error('connect failed'), { code: 'browser_start_failed' }) }, stop: async () => { stopped++ } })
+  await assert.rejects(engine.start(), { code: 'browser_start_failed', message: 'connect failed' })
+  assert.equal(stopped, 1)
+  assert.equal(existsSync(launched[0]), false, 'the folder of the failed start is gone')
+  assert.equal(engine._runtimeDir, null)
 })
 
 test('win32: a runtime folder still busy after the retry is logged and left, never thrown, and the next start removes it', async (t) => {
   const child = fakeChrome({ exitAfterKillMs: 50, holdAfterExitMs: null })
   const lines: string[] = []
   const calls: string[] = []
-  const engine = engineFor(t, child, { removeDir: removeDirHeldBy(child, calls), log: (l) => lines.push(l) })
-  await assert.rejects(engine.start(), { code: 'browser_start_failed' })
-  const runtimeDir = engine._runtimeDir
-  t.after(() => rmSync(runtimeDir, { recursive: true, force: true }))
+  const launched: string[] = []
+  const engine = engineFor(t, child, { removeDir: removeDirHeldBy(child, calls), log: (l) => lines.push(l), launched })
   const began = Date.now()
-  await engine.stop()
+  // The start's own error reaches the caller, never the folder's EPERM.
+  await assert.rejects(engine.start(), { code: 'browser_start_failed' })
   const retried = Date.now() - began
+  const [runtimeDir] = launched
+  t.after(() => rmSync(runtimeDir, { recursive: true, force: true }))
   assert.ok(retried >= RUNTIME_DIR_RETRY_MS - 300, `the removal was retried for its whole window (${retried} ms)`)
-  assert.ok(retried < 5_000, `and the retry is short and bounded (${retried} ms)`)
+  assert.ok(retried < 6_000, `and the retry is short and bounded (${retried} ms)`)
   assert.equal(engine._runtimeDir, null)
   assert.ok(calls.length > 1, `the removal was retried (${calls.length} attempts)`)
   assert.equal(existsSync(runtimeDir), true, 'the busy folder is left in place')
   assert.ok(lines.some((l) => l.includes(runtimeDir) && /EPERM/.test(l) && /next/.test(l)), `logged: ${lines.join(' | ')}`)
+  await engine.stop() // nothing is left for the stop to remove, and it resolves
 
-  // Chrome has let go; the next browser start clears what the last stop left.
+  // Chrome has let go; the next browser start clears what the failed one left.
   child.held = false
   const next = fakeChrome({ exitAfterKillMs: 10, holdAfterExitMs: 0 })
   const nextEngine = engineFor(t, next, { removeDir: (dir) => rmSync(dir, { recursive: true, force: true }) })
   await assert.rejects(nextEngine.start(), { code: 'browser_start_failed' })
-  assert.equal(existsSync(runtimeDir), false, 'the next start removed the folder the last stop left')
+  assert.equal(existsSync(runtimeDir), false, 'the next start removed the folder the failed one left')
   await nextEngine.stop()
 })
 
@@ -168,4 +221,237 @@ test('linux and macOS are unchanged: a folder the stop cannot remove still fails
     await assert.rejects(engine.stop(), { code: 'EPERM' }, platform)
     assert.equal(engine._runtimeDir, runtimeDir, 'and the folder is still recorded, as before')
   }
+})
+
+// ── The sweep at host start: folders no live host owns ───────────────────────
+
+/** A scratch folder that stands in for the host's TEMP: the sweep never runs on the real one here. */
+function scratchTemp(t: any, label = 'rtsweep-') {
+  const dir = mkdtempSync(join(tmpdir(), label))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  return dir
+}
+
+/** A runtime folder as Chrome leaves one: files at the top and a profile folder below. */
+function runtimeFolder(tmp: string, name: string) {
+  const dir = join(tmp, name)
+  mkdirSync(join(dir, 'Default'), { recursive: true })
+  writeFileSync(join(dir, 'Local State'), '{}')
+  writeFileSync(join(dir, 'Default', 'Cookies'), 'c')
+  return dir
+}
+
+const ownedBy = (pid: number, startedAtMs: number, suffix = 'Ab12Cd') => `${H.runtimeDirPrefix({ pid, startedAtMs })}${suffix}`
+
+/** The pid of a process that ran and has exited: an owner that is gone. */
+function deadPid() {
+  const r = spawnSync(process.execPath, ['-e', ''], { stdio: 'ignore' })
+  assert.equal(r.status, 0)
+  assert.ok(r.pid && !H.pidAlive(r.pid), 'the process has exited')
+  return r.pid as number
+}
+
+/** A live process this test started (and stops), with its start time as its host would record it. */
+async function liveProcess(t: any) {
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })
+  t.after(() => child.kill('SIGKILL'))
+  await new Promise((r) => child.once('spawn', r))
+  return { pid: child.pid as number, startedAtMs: Date.now() }
+}
+
+function sweep(tmp: string, opts: Record<string, unknown> = {}) {
+  const lines: string[] = []
+  return H.sweepRuntimeFolders({ tmp, log: (l: string) => lines.push(l), ...opts }).then((r: any) => ({ ...r, lines }))
+}
+
+test('the runtime folder is named after its host: pid and start time, read back from the name alone', () => {
+  const prefix = H.runtimeDirPrefix({ pid: 4242, startedAtMs: 1_760_000_000_123 })
+  assert.match(prefix, /^hoai-browser-runtime-/)
+  assert.deepEqual(H.runtimeDirOwner(`${prefix}Ab12Cd`), { pid: 4242, startedAtMs: 1_760_000_000_123 })
+  assert.equal(H.runtimeDirOwner('hoai-browser-runtime-Ab12Cd'), null, 'a folder of a host before this one names no owner')
+  assert.equal(H.runtimeDirOwner(`${prefix}Ab12Cd-x`), null)
+  assert.deepEqual(H.runtimeDirOwner(`${H.runtimeDirPrefix()}Ab12Cd`), { pid: process.pid, startedAtMs: H.HOST_STARTED_AT_MS }, 'by default: this process')
+})
+
+test('a browser start makes its runtime folder under its host\'s name', async (t) => {
+  const child = fakeChrome({ exitAfterKillMs: 10, holdAfterExitMs: 0 })
+  const launched: string[] = []
+  const engine = engineFor(t, child, { launched })
+  await assert.rejects(engine.start(), { code: 'browser_start_failed' })
+  assert.equal(dirname(launched[0]), tmpdir())
+  assert.deepEqual(H.runtimeDirOwner(launched[0].slice(tmpdir().length + 1)), { pid: process.pid, startedAtMs: H.HOST_STARTED_AT_MS })
+})
+
+test('host start: a folder whose host is gone is removed, and the removal is logged', async (t) => {
+  const tmp = scratchTemp(t)
+  const name = ownedBy(deadPid(), Date.now() - HOUR_MS)
+  const dir = runtimeFolder(tmp, name)
+  const { swept, lines } = await sweep(tmp)
+  assert.equal(existsSync(dir), false, 'the dead host\'s folder is gone')
+  assert.deepEqual(swept, [dir])
+  assert.ok(lines.some((l) => l.includes(dir) && /removed/.test(l)), `logged: ${lines.join(' | ')}`)
+})
+
+test('host start: a folder whose host still runs is kept, read from the real process table', async (t) => {
+  const tmp = scratchTemp(t)
+  const owner = await liveProcess(t)
+  const dir = runtimeFolder(tmp, ownedBy(owner.pid, owner.startedAtMs))
+  const { swept } = await sweep(tmp)
+  assert.deepEqual(swept, [])
+  assert.equal(existsSync(join(dir, 'Default', 'Cookies')), true, 'a live host\'s folder is never touched')
+})
+
+test('host start: a pid now held by a process that started after the folder\'s host is not its owner', async (t) => {
+  const tmp = scratchTemp(t)
+  // The recorded host started hours before the process that holds its pid now: a reused pid.
+  const holder = await liveProcess(t)
+  if (typeof (await H.processStartsOf([holder.pid])).get(holder.pid)?.startedAtMs !== 'number') {
+    t.skip('the process table cannot be read here (a stand-in for ps or powershell): the sweep then keeps the folder')
+    return
+  }
+  const dir = runtimeFolder(tmp, ownedBy(holder.pid, holder.startedAtMs - 3 * HOUR_MS))
+  const { swept } = await sweep(tmp)
+  assert.deepEqual(swept, [dir], 'the real process table proves the recorded host gone')
+  assert.equal(existsSync(dir), false)
+})
+
+test('host start: an owner whose pid lives but whose start cannot be read is kept', async (t) => {
+  const tmp = scratchTemp(t)
+  const dir = runtimeFolder(tmp, ownedBy(4242, Date.now() - HOUR_MS))
+  let asked: number[] = []
+  const { swept } = await sweep(tmp, { alive: () => true, processStarts: async (pids: number[]) => { asked = pids; return new Map() } })
+  assert.deepEqual(asked, [4242])
+  assert.deepEqual(swept, [])
+  assert.equal(existsSync(dir), true)
+})
+
+test('host start: this host\'s own folders are its own, with no process query', async (t) => {
+  const tmp = scratchTemp(t)
+  const dir = runtimeFolder(tmp, `${H.runtimeDirPrefix()}Ab12Cd`)
+  let asked = 0
+  const { swept } = await sweep(tmp, { processStarts: async () => { asked++; return new Map() } })
+  assert.equal(asked, 0)
+  assert.deepEqual(swept, [])
+  assert.equal(existsSync(dir), true)
+})
+
+test('host start: a folder that names no owner is kept while young, and removed once older than a day', async (t) => {
+  const tmp = scratchTemp(t)
+  const young = runtimeFolder(tmp, 'hoai-browser-runtime-Young1')
+  const old = runtimeFolder(tmp, 'hoai-browser-runtime-Old123')
+  const aged = (Date.now() - 25 * HOUR_MS) / 1000
+  utimesSync(old, aged, aged)
+  const nearly = (Date.now() - 23 * HOUR_MS) / 1000
+  utimesSync(young, nearly, nearly)
+  const { swept } = await sweep(tmp)
+  assert.deepEqual(swept, [old])
+  assert.equal(existsSync(join(young, 'Default', 'Cookies')), true, 'a young folder of an older host is kept whole')
+  assert.equal(existsSync(old), false)
+})
+
+test('win32: a folder Chrome still runs in is skipped, never thrown, and nothing in it is removed', async (t) => {
+  const tmp = scratchTemp(t)
+  const dir = runtimeFolder(tmp, ownedBy(deadPid(), Date.now() - HOUR_MS))
+  writeFileSync(join(dir, 'lockfile'), '')
+  // A running Chrome holds its lockfile without delete sharing: Windows refuses to remove it (EBUSY).
+  const unlinked: string[] = []
+  const busy = (d: string) => H.runtimeDirBusy(d, { platform: 'win32', unlink: (p: string) => { unlinked.push(p); throw Object.assign(new Error(`EBUSY: resource busy or locked, unlink '${p}'`), { code: 'EBUSY' }) } })
+  let removed = 0
+  const { swept, lines } = await sweep(tmp, { platform: 'win32', busy, removeDir: () => { removed++ } })
+  assert.deepEqual(unlinked, [join(dir, 'lockfile')])
+  assert.deepEqual(swept, [])
+  assert.equal(removed, 0, 'a busy folder is not even partly removed')
+  assert.equal(existsSync(join(dir, 'Default', 'Cookies')), true)
+  assert.ok(lines.some((l) => l.includes(dir) && /in use/.test(l) && /EBUSY/.test(l)), `logged: ${lines.join(' | ')}`)
+})
+
+test('win32: a removal refused as busy is logged and left, never thrown, and the sweep goes on', async (t) => {
+  const tmp = scratchTemp(t)
+  const gone = deadPid()
+  const held = runtimeFolder(tmp, ownedBy(gone, Date.now() - HOUR_MS, 'Held01'))
+  const free = runtimeFolder(tmp, ownedBy(gone, Date.now() - HOUR_MS, 'Free01'))
+  const removeDir = (d: string) => {
+    if (d === held) throw Object.assign(new Error(`EPERM: operation not permitted, rmdir '${d}'`), { code: 'EPERM' })
+    rmSync(d, { recursive: true, force: true })
+  }
+  const { swept, lines } = await sweep(tmp, { platform: 'win32', removeDir })
+  assert.deepEqual(swept, [free])
+  assert.equal(existsSync(held), true)
+  assert.equal(existsSync(free), false)
+  assert.ok(lines.some((l) => l.includes(held) && /in use/.test(l) && /EPERM/.test(l)), `logged: ${lines.join(' | ')}`)
+})
+
+test('posix: a folder whose Chrome lock names a live process on this machine is busy', () => {
+  const readlinkFor = (target: string) => () => target
+  const at = '/tmp/hoai-browser-runtime-x'
+  for (const platform of ['linux', 'darwin']) {
+    assert.equal(H.runtimeDirBusy(at, { platform, readlink: readlinkFor(`${hostname()}-${process.pid}`) }), 'SingletonLock', `${platform}: a live Chrome`)
+    assert.equal(H.runtimeDirBusy(at, { platform, readlink: readlinkFor(`${hostname()}-${deadPid()}`) }), null, `${platform}: a Chrome that is gone`)
+    assert.equal(H.runtimeDirBusy(at, { platform, readlink: readlinkFor('another-machine-12') }), 'SingletonLock', `${platform}: another machine's Chrome cannot be checked`)
+    assert.equal(H.runtimeDirBusy(at, { platform, readlink: () => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }) } }), null, `${platform}: no lock`)
+  }
+})
+
+test('a link inside a swept folder is unlinked, never followed: its target survives', async (t) => {
+  const tmp = scratchTemp(t)
+  const outside = scratchTemp(t, 'rtsweep-outside-')
+  writeFileSync(join(outside, 'keep.txt'), 'owner data')
+  const dir = runtimeFolder(tmp, ownedBy(deadPid(), Date.now() - HOUR_MS))
+  // A junction on Windows needs no privilege; elsewhere a directory symlink (Chrome's SingletonLock is one).
+  symlinkSync(outside, join(dir, 'Default', 'link'), process.platform === 'win32' ? 'junction' : 'dir')
+  const { swept } = await sweep(tmp)
+  assert.deepEqual(swept, [dir])
+  assert.equal(existsSync(dir), false)
+  assert.deepEqual(readdirSync(outside), ['keep.txt'], 'the link\'s target is untouched')
+})
+
+test('only real folders named hoai-browser-runtime-* directly in TEMP are swept; a link by that name is left whole', async (t) => {
+  const tmp = scratchTemp(t)
+  const outside = scratchTemp(t, 'rtsweep-outside-')
+  writeFileSync(join(outside, 'keep.txt'), 'owner data')
+  const gone = deadPid()
+  const link = join(tmp, ownedBy(gone, Date.now() - HOUR_MS, 'Link01'))
+  symlinkSync(outside, link, process.platform === 'win32' ? 'junction' : 'dir')
+  const file = join(tmp, ownedBy(gone, Date.now() - HOUR_MS, 'File01'))
+  writeFileSync(file, 'x')
+  const other = runtimeFolder(tmp, 'chrome-runtime-Ab12Cd')
+  const nested = runtimeFolder(other, ownedBy(gone, Date.now() - HOUR_MS, 'Nest01'))
+  const aged = (Date.now() - 25 * HOUR_MS) / 1000
+  utimesSync(other, aged, aged)
+  const { swept } = await sweep(tmp)
+  assert.deepEqual(swept, [])
+  assert.equal(existsSync(link), true, 'the link is not removed')
+  assert.deepEqual(readdirSync(outside), ['keep.txt'], 'and it is never followed')
+  assert.equal(existsSync(file), true)
+  assert.equal(existsSync(other), true, 'another program\'s folder is never touched, however old')
+  assert.equal(existsSync(nested), true, 'nothing below TEMP\'s own entries is looked at')
+})
+
+test('a TEMP that cannot be read sweeps nothing and throws nothing', async (t) => {
+  const tmp = join(scratchTemp(t), 'missing')
+  const { swept } = await sweep(tmp)
+  assert.deepEqual(swept, [])
+})
+
+test('END TO END: the host, started as a process, sweeps its own TEMP at start and keeps a live host\'s folder', { timeout: 60_000 }, async (t) => {
+  const tmp = scratchTemp(t, 'rtsweep-e2e-')
+  const home = scratchTemp(t, 'rtsweep-home-')
+  const deadDir = runtimeFolder(tmp, ownedBy(deadPid(), Date.now() - HOUR_MS, 'Dead01'))
+  const liveDir = runtimeFolder(tmp, ownedBy(process.pid, H.HOST_STARTED_AT_MS, 'Live01'))
+  const env: Record<string, string> = {}
+  for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !/^(BGOS_|HOAI_)/i.test(k)) env[k] = v
+  Object.assign(env, { HOME: home, USERPROFILE: home, TEMP: tmp, TMP: tmp, TMPDIR: tmp, [STOP_ON_STDIN_EOF_ENV]: '1' })
+  const child = spawn(process.execPath, [HOST_BIN], { stdio: ['pipe', 'ignore', 'pipe'], env })
+  t.after(() => child.kill('SIGKILL'))
+  let stderr = ''
+  child.stderr.on('data', (c) => { stderr += c })
+  const began = Date.now()
+  while (!/runtime folder sweep/.test(stderr) && Date.now() - began < 30_000) await new Promise((r) => setTimeout(r, 100))
+  const exited = new Promise((r) => child.once('exit', r))
+  child.stdin.end()
+  await exited
+  assert.match(stderr, /runtime folder sweep/, stderr)
+  assert.ok(stderr.includes(tmp), `the sweep names the TEMP it read: ${stderr}`)
+  assert.equal(existsSync(deadDir), false, 'the dead host\'s folder is gone')
+  assert.equal(existsSync(join(liveDir, 'Default', 'Cookies')), true, 'the live host\'s folder is whole')
 })
