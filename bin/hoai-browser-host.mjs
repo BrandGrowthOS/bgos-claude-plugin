@@ -162,13 +162,14 @@ export const RUNTIME_DIR_UNOWNED_AGE_MS = 24 * 60 * 60_000
  */
 export const RUNTIME_DIR_OWNER_SLACK_MS = 2 * 60_000
 /**
- * A pid held by a newer process proves its folder's host gone only for a folder untouched this long.
- * A live host's start can be misread as later than it recorded: on Windows CIM dates a start in local
- * time, so a host started in the repeated hour when daylight saving ends reads an hour late, and on
- * macOS a step of the wall clock moves it. Such a host's folder whose browser is still starting has no
- * Chrome lock yet for the busy check to find; this is well past what a start takes from making its
- * folder to its Chrome taking the lock (the private folder and downloads steps, then
- * BROWSER_START_TIMEOUT_MS).
+ * A folder whose host is proven gone (its pid is dead, or held by a newer process) is removed only once
+ * untouched this long. A folder whose Chrome is still starting has no Chrome lock yet for the busy check
+ * to find, and two things put one there: a host that crashed after making its folder and before its Chrome
+ * took the lock (the Chrome it spawned can outlive it), and a live host whose start is misread as later
+ * than it recorded (on Windows CIM dates a start in local time, so a host started in the repeated hour when
+ * daylight saving ends reads an hour late, and on macOS a step of the wall clock moves it). This is well
+ * past what a start takes from making its folder to its Chrome taking the lock (the private folder and
+ * downloads steps, then BROWSER_START_TIMEOUT_MS).
  */
 export const RUNTIME_DIR_REUSE_QUIET_MS = 10 * 60_000
 /** The host's start sweep runs this long after its start, off the start path. */
@@ -1262,9 +1263,11 @@ export function processStartsOf(pids, { platform = process.platform } = {}) {
  * links inside a folder without following them (fs rm). A folder is removed only when its owner is
  * proven gone: its pid is not alive, or the process holding that pid now started after the recorded
  * host (RUNTIME_DIR_OWNER_SLACK_MS; on Linux both on the boot clock, and a holder of a later boot reads
- * as earlier, so it is kept) and the folder is untouched for RUNTIME_DIR_REUSE_QUIET_MS: never on the
- * time comparison alone, which a live host's misread start can pass. This host's own folders, and an owner whose start cannot be read, are
- * kept. Two hosts run at once (the desktop app's and an agent's); each keeps the other's folders. A
+ * as earlier, so it is kept), and in both cases the folder is untouched for RUNTIME_DIR_REUSE_QUIET_MS:
+ * never on the time comparison alone, which a live host's misread start can pass, and never at once for a
+ * dead pid, whose Chrome may outlive it and still be starting (a folder kept for being recent waits for a
+ * later host start). This host's own folders, and an owner whose start cannot be read, are kept. Two
+ * hosts run at once (the desktop app's and an agent's); each keeps the other's folders. A
  * folder that names no owner is removed only once untouched for RUNTIME_DIR_UNOWNED_AGE_MS. A folder
  * a Chrome still runs in (runtimeDirBusy), or one Windows refuses to remove, stays and is logged;
  * nothing is ever thrown. The removals are awaited one at a time, so a large one never holds the host.
@@ -1306,7 +1309,8 @@ export async function sweepRuntimeFolders({
     } else if (owner.pid === process.pid && owner.startedAtMs === HOST_STARTED_AT_MS) {
       // This host's own: a stop's leftover is removed by its next browser start.
     } else if (!alive(owner.pid)) {
-      stale.push({ dir, why: `its host (pid ${owner.pid}) is gone` })
+      // A Chrome the dead host spawned can outlive it and still be starting, with no lock for the busy check yet.
+      if (now - stat.mtimeMs >= RUNTIME_DIR_REUSE_QUIET_MS) stale.push({ dir, why: `its host (pid ${owner.pid}) is gone` })
     } else asks.push({ dir, owner, mtimeMs: stat.mtimeMs })
   }
   if (asks.length) {
@@ -1443,7 +1447,7 @@ export class ChromiumEngine {
    * A start that failed removes its own runtime folder: the pool never stops an engine whose start
    * failed (BrowserPool.acquire). Not while its Chrome may still run in it: a Chrome _killChild gave up
    * on, or one still holding the folder (runtimeDirBusy; launchChromium's wait for the Chrome it killed
-   * is bounded, and only on Windows). Such a folder is left whole and forgotten, so no later stop of
+   * is bounded, on every platform). Such a folder is left whole and forgotten, so no later stop of
    * this engine touches it; the next host's start sweep removes it once no Chrome runs there. The
    * removal gets the stop's bounded retry on Windows.
    */
