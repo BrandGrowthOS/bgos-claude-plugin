@@ -60,12 +60,13 @@
 import { execFile, spawn } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
 import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, rmSync, unlinkSync } from 'node:fs'
+import { readdir, rm } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { homedir, hostname, tmpdir } from 'node:os'
 import { delimiter, dirname, join, posix as posixPath, win32 as win32Path } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { AgentBrowserVault, browserVaultScope } from '../lib/agent-browser-vault.mjs'
-import { launcherProcessQuery, parseLauncherProcesses } from '../lib/agent-inventory.mjs'
+import { launcherProcessQuery, parseLauncherProcesses, readBootClock } from '../lib/agent-inventory.mjs'
 import { ensureBrowser, bundledChromium } from '../lib/browser-bootstrap.mjs'
 import { BrowserSecretRedactor } from '../lib/browser-secret-redactor.mjs'
 import { DOWNLOAD_ASK_WAIT_S, DownloadStore, SlotDownloads, downloadLines, downloadPaths } from '../lib/browser-downloads.mjs'
@@ -146,21 +147,21 @@ const RUNTIME_DIR_RETRY_STEP_MS = 100
 const RUNTIME_DIR_BUSY = new Set(['EPERM', 'EBUSY', 'EACCES', 'ENOTEMPTY'])
 /**
  * Every runtime folder is named `hoai-browser-runtime-<pid>-<start>-XXXXXX` in the host's TEMP: its
- * host's pid and that process's start time (epoch ms, base 36). The owner rides in the name, not in a
- * file, so it is there from the moment the folder exists and survives a removal on Windows that took
- * everything else in the folder before Chrome's helpers let go of the rest.
+ * host's pid and that process's start time (ms on startStampNow's clock, base 36). The owner rides in
+ * the name, not in a file, so it is there from the moment the folder exists and survives a removal on
+ * Windows that took everything else in the folder before Chrome's helpers let go of the rest.
  */
 export const RUNTIME_DIR_PREFIX = 'hoai-browser-runtime-'
-/** This process's start time, as its runtime folders record it. */
-export const HOST_STARTED_AT_MS = Math.floor(performance.timeOrigin)
 /** A runtime folder that names no owner (made by a host before 0.69.9) is swept once untouched this long. */
 export const RUNTIME_DIR_UNOWNED_AGE_MS = 24 * 60 * 60_000
 /**
  * A live pid still owns its folder unless its process started later than the recorded start by more
- * than this: then the pid was reused and the recorded host is gone. Generous, because a wrong "gone"
- * would remove a live host's folder and a wrong "alive" only keeps a folder until a later sweep.
+ * than this: then the pid was reused and the recorded host is gone. A process's start is read to the
+ * second (ps etime), and a host records its own a little after the system dated it.
  */
-export const RUNTIME_DIR_OWNER_SLACK_MS = 60 * 60_000
+export const RUNTIME_DIR_OWNER_SLACK_MS = 2 * 60_000
+/** The host's start sweep runs this long after its start, off the start path. */
+export const RUNTIME_SWEEP_DELAY_MS = 5_000
 const PROCESS_START_QUERY_MS = 30_000
 
 export const RESULT_POST_TIMEOUT_MS = 30_000
@@ -1160,6 +1161,21 @@ function waitForExit(child, ms) {
 /** Windows: runtime folders a stop could not remove yet (Chrome still held them); the next start removes them, or the next host's start sweep (sweepRuntimeFolders). */
 const leftRuntimeDirs = new Set()
 
+/**
+ * Now, on the clock a runtime folder's name records its host's start on. Linux: the boot clock (ms
+ * since boot, what ps measures etime on), which no step of the wall clock moves (a WSL2 or other
+ * paused VM resynced after sleep, a board without a clock battery that NTP corrects); on the wall
+ * clock such a step would make a live host's start read later than recorded (lib/agent-inventory.mjs,
+ * review 3 F1). Elsewhere the wall clock, which Windows and macOS date a process's start on.
+ */
+export function startStampNow(platform = process.platform) {
+  const boot = readBootClock({ platform })
+  return boot ? boot.uptimeMs : Date.now()
+}
+
+/** This process's start, as its runtime folders record it. */
+export const HOST_STARTED_AT_MS = Math.floor(startStampNow() - process.uptime() * 1000)
+
 /** The prefix of this host's runtime folders: its pid and start time (RUNTIME_DIR_PREFIX). */
 export function runtimeDirPrefix({ pid = process.pid, startedAtMs = HOST_STARTED_AT_MS } = {}) {
   return `${RUNTIME_DIR_PREFIX}${pid}-${startedAtMs.toString(36)}-`
@@ -1200,7 +1216,11 @@ export function runtimeDirBusy(dir, { platform = process.platform, unlink = unli
   return m && m[1] === host && !alive(Number(m[2])) ? null : 'SingletonLock'
 }
 
-/** The start times of these pids, pid -> {startedAtMs}, by lib/agent-inventory.mjs's one query. A pid absent could not be read. Never rejects. */
+/**
+ * The start times of these pids, pid -> {startedAtMs, boot?}, by lib/agent-inventory.mjs's one query
+ * (on Linux with the start on the boot clock, `boot.startedUptimeMs`). A pid absent could not be read.
+ * Never rejects.
+ */
 export function processStartsOf(pids, { platform = process.platform } = {}) {
   const query = launcherProcessQuery(platform, pids)
   if (!query) return Promise.resolve(new Map())
@@ -1209,7 +1229,7 @@ export function processStartsOf(pids, { platform = process.platform } = {}) {
       execFile(query.file, query.args, { encoding: 'utf8', timeout: PROCESS_START_QUERY_MS, windowsHide: true, maxBuffer: 1 << 20 }, (_err, stdout) => {
         // ps exits 1 when one of several pids is gone, with the others still printed.
         try {
-          resolve(parseLauncherProcesses(platform, stdout, pids))
+          resolve(parseLauncherProcesses(platform, stdout, pids, Date.now(), platform === 'linux' ? readBootClock({ platform }) : null))
         } catch {
           resolve(new Map())
         }
@@ -1225,14 +1245,16 @@ export function processStartsOf(pids, { platform = process.platform } = {}) {
  * crashed, or whose final stop met a folder Chrome's helpers still held, leaves its folder behind,
  * and nothing else in that process will ever remove it.
  *
- * Only real folders named hoai-browser-runtime-* directly in `tmp` are looked at: a link by that name
- * is left whole and never followed, and a removal unlinks the links inside a folder without following
- * them (rmSync). A folder is removed only when its owner is proven gone: its pid is not alive, or the
- * process holding that pid now started after the recorded host (RUNTIME_DIR_OWNER_SLACK_MS). This
- * host's own folders, and an owner whose start cannot be read, are kept. Two hosts run at once (the
- * desktop app's and an agent's); each keeps the other's folders. A folder that names no owner is
- * removed only once untouched for RUNTIME_DIR_UNOWNED_AGE_MS. A folder a Chrome still runs in
- * (runtimeDirBusy), or one Windows refuses to remove, stays and is logged; nothing is ever thrown.
+ * Only real folders named hoai-browser-runtime-* directly in `tmp` are looked at (on macOS and Linux
+ * only this user's): a link by that name is left whole and never followed, and a removal unlinks the
+ * links inside a folder without following them (fs rm). A folder is removed only when its owner is
+ * proven gone: its pid is not alive, or the process holding that pid now started after the recorded
+ * host (RUNTIME_DIR_OWNER_SLACK_MS; on Linux both on the boot clock, and a holder of a later boot reads
+ * as earlier, so it is kept). This host's own folders, and an owner whose start cannot be read, are
+ * kept. Two hosts run at once (the desktop app's and an agent's); each keeps the other's folders. A
+ * folder that names no owner is removed only once untouched for RUNTIME_DIR_UNOWNED_AGE_MS. A folder
+ * a Chrome still runs in (runtimeDirBusy), or one Windows refuses to remove, stays and is logged;
+ * nothing is ever thrown. The removals are awaited one at a time, so a large one never holds the host.
  * @returns {Promise<{ swept: string[], left: string[] }>}
  */
 export async function sweepRuntimeFolders({
@@ -1242,14 +1264,14 @@ export async function sweepRuntimeFolders({
   alive = pidAlive,
   processStarts = (/** @type {number[]} */ pids) => processStartsOf(pids, { platform }),
   busy = (/** @type {string} */ dir) => runtimeDirBusy(dir, { platform }),
-  removeDir = (/** @type {string} */ dir) => rmSync(dir, { recursive: true, force: true }),
+  removeDir = (/** @type {string} */ dir) => rm(dir, { recursive: true, force: true }),
   log = (/** @type {string} */ _line) => {},
 } = {}) {
   /** @type {string[]} */ const swept = []
   /** @type {string[]} */ const left = []
   let names
   try {
-    names = readdirSync(tmp).filter((name) => name.startsWith(RUNTIME_DIR_PREFIX))
+    names = (await readdir(tmp)).filter((name) => name.startsWith(RUNTIME_DIR_PREFIX))
   } catch {
     return { swept, left }
   }
@@ -1264,6 +1286,7 @@ export async function sweepRuntimeFolders({
       continue
     }
     if (!stat.isDirectory()) continue
+    if (platform !== 'win32' && typeof process.getuid === 'function' && stat.uid !== process.getuid()) continue
     const owner = runtimeDirOwner(name)
     if (!owner) {
       if (now - stat.mtimeMs >= RUNTIME_DIR_UNOWNED_AGE_MS) stale.push({ dir, why: 'it names no owner and was untouched for over a day' })
@@ -1279,7 +1302,8 @@ export async function sweepRuntimeFolders({
       starts = await processStarts([...new Set(asks.map((a) => a.owner.pid))])
     } catch {}
     for (const { dir, owner } of asks) {
-      const started = starts.get(owner.pid)?.startedAtMs
+      const proc = starts.get(owner.pid)
+      const started = platform === 'linux' ? proc?.boot?.startedUptimeMs : proc?.startedAtMs
       if (typeof started === 'number' && started > owner.startedAtMs + RUNTIME_DIR_OWNER_SLACK_MS) stale.push({ dir, why: `its host (pid ${owner.pid}) is gone; that pid is a newer process now` })
     }
   }
@@ -1296,7 +1320,7 @@ export async function sweepRuntimeFolders({
       continue
     }
     try {
-      removeDir(dir)
+      await removeDir(dir)
       swept.push(dir)
       log(`removed the stale browser runtime folder ${dir}: ${why}`)
     } catch (err) {
@@ -1314,7 +1338,7 @@ export async function sweepRuntimeFolders({
  * attach an old native profile or recover its unauthenticated CDP endpoint.
  */
 export class ChromiumEngine {
-  constructor({ executable, profileDir, outputDir, heldDir = /** @type {string | null} */ (null), scope = '', headless = true, caps = DEFAULT_CAPS, clientName = 'hoai-browser-host', clientVersion = '0.0.0', log = () => {}, launch = launchChromium, platform = process.platform, removeDir = (/** @type {string} */ dir) => rmSync(dir, { recursive: true, force: true }) }) {
+  constructor({ executable, profileDir, outputDir, heldDir = /** @type {string | null} */ (null), scope = '', headless = true, caps = DEFAULT_CAPS, clientName = 'hoai-browser-host', clientVersion = '0.0.0', log = () => {}, launch = launchChromium, platform = process.platform, removeDir = (/** @type {string} */ dir) => rmSync(dir, { recursive: true, force: true }), runtimeBusy = (/** @type {string} */ dir) => runtimeDirBusy(dir, { platform }) }) {
     this.profileDir = profileDir
     this.outputDir = outputDir
     this.heldDir = heldDir
@@ -1332,6 +1356,7 @@ export class ChromiumEngine {
     this._launch = launch
     this._platform = platform
     this._removeDir = removeDir
+    this._runtimeBusy = runtimeBusy
     this._child = null
     this._engine = null
     this.alive = false
@@ -1403,8 +1428,11 @@ export class ChromiumEngine {
 
   /**
    * A start that failed removes its own runtime folder: the pool never stops an engine whose start
-   * failed (BrowserPool.acquire). Only once the Chrome it launched has exited (launchChromium and the
-   * connect failure in _startIn both wait for that), and with the stop's bounded retry on Windows.
+   * failed (BrowserPool.acquire). Not while its Chrome may still run in it: a Chrome _killChild gave up
+   * on, or one still holding the folder (runtimeDirBusy; launchChromium's wait for the Chrome it killed
+   * is bounded, and only on Windows). Such a folder is left whole and forgotten, so no later stop of
+   * this engine touches it; the next host's start sweep removes it once no Chrome runs there. The
+   * removal gets the stop's bounded retry on Windows.
    */
   async _abandonStart(err) {
     const engine = this._engine
@@ -1416,8 +1444,17 @@ export class ChromiumEngine {
     } catch {
       exited = false
     }
-    if (!exited) {
-      this._log(`the browser's runtime folder ${this._runtimeDir} is left: its Chrome did not exit`)
+    let inUse = exited ? null : 'its Chrome did not exit'
+    if (!inUse) {
+      try {
+        inUse = this._runtimeBusy(this._runtimeDir)
+      } catch (e) {
+        inUse = e?.code || 'unreadable'
+      }
+    }
+    if (inUse) {
+      this._log(`the browser's runtime folder ${this._runtimeDir} is left for the next host start: still in use (${inUse})`)
+      this._runtimeDir = null
       return
     }
     await this._removeRuntimeDir().catch((err) => this._log(`the browser's runtime folder ${this._runtimeDir} could not be removed (${err?.code ?? err?.message ?? err})`))
@@ -2849,8 +2886,9 @@ export async function main({
     return new ChromiumEngine({ executable, profileDir, outputDir, heldDir, scope, headless, clientName: 'hoai-browser-host', clientVersion: readPackageVersion(), log })
   }
   const host = new BrowserHost({ agentRoot, env, deviceLabel, browserTools: loadBrowserTools, createEngine, log, scope }).start()
-  // What a host gone since left in this TEMP: a crash, or a folder Chrome still held at its final stop.
-  void sweepRuntimeFolders({ log }).catch(() => {})
+  // What a host gone since left in this TEMP: a crash, or a folder Chrome still held at its final
+  // stop. Off the start path, so the sockets connect first.
+  setTimeout(() => void sweepRuntimeFolders({ log }).catch(() => {}), RUNTIME_SWEEP_DELAY_MS).unref?.()
 
   return await new Promise((resolve) => {
     // The retry, rescan and parent timers are unref'd so an embedder (and a
