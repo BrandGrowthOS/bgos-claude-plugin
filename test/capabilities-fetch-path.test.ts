@@ -122,7 +122,7 @@ test('the canon fetch at connect carries the declared list', () => {
   // served canon would have told this daemon).
   assert.match(
     body,
-    /const declared = declaredCapabilities\(\{ canInjectGoal: false, floorHook: FLOOR_HOOK\.registered, authMode: AUTH\.mode \}\)/,
+    /const declared = declaredCapabilities\(\{ canInjectGoal: false, floorHook: FLOOR_HOOK\.registered, personLanes: laneSupport\(\)\.ok, authMode: AUTH\.mode \}\)/,
   )
   assert.match(body, /capabilitiesFetchPath\(\s*RUNNING_VERSION \?\? '0\.0\.0',\s*declared\s*,?\s*\)/)
   assert.match(body, /pickCapabilities\(data, declared\)/)

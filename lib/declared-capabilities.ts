@@ -244,6 +244,7 @@ import { HARD_FLOOR_RULES_2_TOKEN, HARD_FLOOR_TOKEN, PERMISSION_CARD, PLAN_CARD 
 import { SESSIONS_LIBRARY, STOP_PAUSES_MISSION } from './session-controls-contract.ts'
 import { EMAIL_LABEL, labelsExternalEmail } from './inbound-channel.ts'
 import { EMAIL_SEND, shipsEmailTools } from './agent-email-tools.ts'
+import { PERSON_LANES_TOKEN } from './lane-core.mjs'
 
 /** Declared wherever this plugin runs, on every host and every connection. */
 export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
@@ -320,6 +321,15 @@ export function declaredCapabilities(input: {
    * cannot happen: an always on clone updated in place is the case.
    */
   floorHook: boolean
+  /**
+   * Can this host run a person's lane LOCKED (shared agents Phase 3, P3)? The
+   * cached CLI probe (lib/lane-cli-probe.mjs): every flag of the locked launch
+   * known to the installed CLI, `expect` present, not Windows. `person_lanes`
+   * is declared only then, and only on a pairing (a lane mints its session
+   * from a pairing's ticket), so an older CLI keeps today's single mind and
+   * the backend never routes a recipient's turn to a lane that cannot start.
+   */
+  personLanes?: boolean
   authMode: 'pairing' | 'apikey'
 }): readonly string[] {
   return [
@@ -328,5 +338,6 @@ export function declaredCapabilities(input: {
     ...(shipsEmailTools() ? [EMAIL_SEND] : []),
     ...(input.authMode === 'pairing' && input.floorHook === true ? DECLARED_CAPABILITIES_PAIRING : []),
     ...(input.canInjectGoal === true ? DECLARED_CAPABILITIES_INJECTOR : []),
+    ...(input.authMode === 'pairing' && input.personLanes === true ? [PERSON_LANES_TOKEN] : []),
   ]
 }
