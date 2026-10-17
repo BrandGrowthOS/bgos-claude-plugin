@@ -35,7 +35,18 @@ for (const file of files) {
   else nodeFiles.push(file)
 }
 
-console.log(`[run-tests] ${nodeFiles.length} node:test files via tsx, ${bunFiles.length} bun:test files via bun`)
+// Files that drive a REAL Chromium (named *.chromium.test.ts) run one at a
+// time, after the rest. Run side by side they fight over the machine: two of
+// remote-browser-controls.chromium's tests fail (a popup that is not selected
+// within 3 s, a CDP answer that never comes, 45 s timeouts) whenever the real
+// Chromium files run together, on main 97d977d exactly as after it, and pass
+// when run one at a time. Which files the parallel pool overlaps depends on
+// how many files sort before them, so adding test files elsewhere turned a
+// rare overlap into a usual one (shared agents P3, 2026-10-17).
+const chromiumFiles = nodeFiles.filter((file) => file.endsWith('.chromium.test.ts'))
+const parallelFiles = nodeFiles.filter((file) => !file.endsWith('.chromium.test.ts'))
+
+console.log(`[run-tests] ${parallelFiles.length} node:test files via tsx, then ${chromiumFiles.length} real Chromium files one at a time, ${bunFiles.length} bun:test files via bun`)
 
 function run(label, command, args) {
   console.log(`\n[run-tests] ${label}: ${command} ${args.slice(0, 3).join(' ')} ... (${args.length} args)`)
@@ -73,10 +84,16 @@ function batches(list, prefixLength) {
 }
 
 let nodeStatus = 0
-const nodeBatches = batches(nodeFiles, 'npx tsx --test'.length)
+const nodeBatches = batches(parallelFiles, 'npx tsx --test'.length)
 nodeBatches.forEach((batch, i) => {
   const label = nodeBatches.length > 1 ? `node:test family, batch ${i + 1} of ${nodeBatches.length}` : 'node:test family'
   const status = run(label, 'npx', ['tsx', '--test', ...batch])
+  if (status !== 0) nodeStatus = status
+})
+const chromiumBatches = batches(chromiumFiles, 'npx tsx --test --test-concurrency=1'.length)
+chromiumBatches.forEach((batch, i) => {
+  const label = chromiumBatches.length > 1 ? `real Chromium files, one at a time, batch ${i + 1} of ${chromiumBatches.length}` : 'real Chromium files, one at a time'
+  const status = run(label, 'npx', ['tsx', '--test', '--test-concurrency=1', ...batch])
   if (status !== 0) nodeStatus = status
 })
 const bunStatus = bunFiles.length

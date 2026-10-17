@@ -40,6 +40,7 @@ import * as streamApply from '../lib/stream-apply.ts'
 import { senderUserIdCandidate, parsePermissionChoice } from '../lib/permission-relay.ts'
 import * as privateTurnModule from '../lib/private-turn.mjs'
 import { privateActor, privateSenderUserId } from '../lib/private-turn.mjs'
+import { ownerLaneVerdict } from '../lib/lane-core.mjs'
 import { isOwnerAuthoredInbound } from '../lib/stop-pause.ts'
 import { isUserTurn } from '../lib/acting-user.ts'
 import { inboundOwesReply } from '../lib/channel-liveness.ts'
@@ -647,6 +648,9 @@ function compile(source: string, name: string, extra: Record<string, unknown> = 
     return Promise.resolve()
   }
   const known: Record<string, unknown> = {
+    // The second lock of person lanes (P3) runs first in every delivery lane.
+    ownerLaneVerdict,
+    noteLaneMisroute: () => undefined,
     ...inboundChannel,
     ...slashCatalog,
     ...messageText,

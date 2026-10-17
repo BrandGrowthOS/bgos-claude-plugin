@@ -100,6 +100,10 @@ import {
 } from './lib/process-lifecycle.js'
 import { ensureMarketplaceAutoUpdate, readMarketplaceAutoUpdate } from './lib/claude-preseed.mjs'
 import { recordKnownGood } from './lib/known-good-store.mjs'
+import { ownerAnnounceRefused, ownerLaneVerdict } from './lib/lane-core.mjs'
+import { laneCliSupport } from './lib/lane-cli-probe.mjs'
+import { drainLaneEvents, handleLaneRevoked, handleLaneWake, lanesOnFor, supervisorEnv } from './lib/lane-owner.js'
+import { claudeCandidates } from './lib/claude-binary.mjs'
 import {
   capabilitiesFetchPath,
   pickCapabilities,
@@ -800,6 +804,34 @@ const USER_ID = AUTH.userId
 const ASSISTANT_ID = AUTH.assistantId
 const POLL_INTERVAL_MS = Number(process.env.BGOS_POLL_INTERVAL_MS) || 2000
 const AUTO_APPROVE = process.env.BGOS_AUTO_APPROVE === 'true'
+
+// Person lanes (P3): asked by the three declaredCapabilities call sites, so it
+// lives above them all.
+/** Lanes can run here: a pairing, a host and a CLI with every locked flag (cached per binary). */
+let laneSupportMemo: { ok: boolean; missing: string[]; reason?: string } | null = null
+function laneSupport(): { ok: boolean; missing: string[]; reason?: string } {
+  if (laneSupportMemo) return laneSupportMemo
+  if (AUTH.mode !== 'pairing') {
+    laneSupportMemo = { ok: false, missing: [], reason: 'not_paired' }
+    return laneSupportMemo
+  }
+  try {
+    const claudePath = claudeCandidates({ pathVar: process.env.PATH ?? '', home: homedir() })[0] ?? null
+    laneSupportMemo = laneCliSupport({
+      claudePath,
+      cachePath: pathJoin(process.env.BGOS_PLUGIN_STATE_DIR?.trim() || pathJoin(homedir(), '.bgos-plugin-state'), 'lane-cli-probe.json'),
+    })
+  } catch (err) {
+    laneSupportMemo = { ok: false, missing: [], reason: `probe_failed: ${String(err)}` }
+  }
+  log(
+    laneSupportMemo.ok
+      ? 'person lanes: this host and CLI can run locked lanes; declaring person_lanes'
+      : `person lanes: not declared (${laneSupportMemo.reason ?? `missing ${laneSupportMemo.missing.join(', ')}`})`,
+  )
+  return laneSupportMemo
+}
+
 // Confirm gate belt (Iris G5): when on, voice_task_dispatch events lacking
 // confirmed:true are rejected instead of surfaced to the agent. Default OFF
 // so an unset var preserves current accept-all behavior (the backend-side
@@ -1384,7 +1416,7 @@ async function loadServedCapabilities(): Promise<ServedCapabilities> {
     // ONE declared list for the fetch AND the offline copy, so a fetch that
     // fails tells the agent no more than the served canon would have told
     // this daemon (capabilitiesFallbackFor, the stage 6 backend review).
-    const declared = declaredCapabilities({ canInjectGoal: false, floorHook: FLOOR_HOOK.registered, authMode: AUTH.mode })
+    const declared = declaredCapabilities({ canInjectGoal: false, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, authMode: AUTH.mode })
     try {
       data = await bgosGetCapped(
         capabilitiesFetchPath(
@@ -10401,6 +10433,13 @@ async function pollChat(chatId: string): Promise<void> {
       isFirstPoll,
     })
     const announced = new Set(announce)
+    // The second lock (person lanes) for taps: once lanes run for this agent,
+    // a tap in a share recipient's chat is that person's turn, never the
+    // owner's (lib/lane-core.mjs ownerAnnounceRefused).
+    if (announced.size > 0 && ownerAnnounceRefused({ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership.isOthers(chatId) })) {
+      noteLaneMisroute('poll tap', [...announced].join(','), 'a recipient chat')
+      announced.clear()
+    }
     // Cross-transport single-announce: every id this poll announces joins
     // the shared dedup set so a stream buttons_answered replay of the same
     // tap stays silent (see rememberAnnouncedClick).
@@ -10569,6 +10608,12 @@ async function pollChat(chatId: string): Promise<void> {
     chatUnansweredButtons.set(chatId, nextUnanswered)
 
     for (const msg of newUserMessages) {
+      // The second lock (person lanes), on the poll as on the socket.
+      const pollLaneVerdict = ownerLaneVerdict(msg.message)
+      if (!pollLaneVerdict.deliver) {
+        noteLaneMisroute('poll', msg.message.id, pollLaneVerdict.stamp)
+        continue
+      }
       const text = msg.message.text ?? ''
       // Recorded HERE, where the message is accepted, and not further down where it is handed to the
       // model: the daemon-answered commands take a `continue` before that point, so /status was
@@ -11775,7 +11820,7 @@ const stopPauseLane = new StopPauseLane({
  *  this daemon never pauses on a host whose owner was never offered Pause. */
 function stopGoalView(): StopGoalView {
   return {
-    pauseDeclared: declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, authMode: AUTH.mode }).includes('mission_pause'),
+    pauseDeclared: declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, authMode: AUTH.mode }).includes('mission_pause'),
     held: goalHeld,
     attachedMissionId: goalMissionId,
     pending: goalPendingArm,
@@ -12968,6 +13013,12 @@ async function forwardStreamInbound(
   view: StreamMessageView,
   isSystem: boolean,
 ): Promise<void> {
+  // The second lock (person lanes), on the stream as on the socket and poll.
+  const streamLaneVerdict = ownerLaneVerdict(view.raw)
+  if (!streamLaneVerdict.deliver) {
+    noteLaneMisroute('stream', view.messageId, streamLaneVerdict.stamp)
+    return
+  }
   const chatId = view.chatId
   // Claim the id first so the WS and poll transports dedup against it, the
   // same ordering the poll path uses.
@@ -13237,6 +13288,14 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
     return
   }
   const chatId = view.chatId
+  // The second lock (person lanes) for taps, as on the poll: a stamped row
+  // for a person, or a tap in a share recipient's chat once lanes run, is
+  // never announced into the owner's session.
+  const tapLaneVerdict = ownerLaneVerdict(view.raw)
+  if (!tapLaneVerdict.deliver || ownerAnnounceRefused({ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership.isOthers(chatId) })) {
+    noteLaneMisroute('stream tap', view.messageId, tapLaneVerdict.deliver ? 'a recipient chat' : tapLaneVerdict.stamp)
+    return
+  }
   const answer = view.answerPayload
   if (!answer) {
     // answerPayloadOf() returned null: neither callbackData nor buttonText nor
@@ -13765,6 +13824,87 @@ async function initUpdateStream(): Promise<void> {
   }
 }
 
+// ── Person lanes, the owner's side (shared agents Phase 3, P3) ───────────────
+//
+// lib/lane-owner.ts holds the logic; this is the wiring. Everything here is
+// INERT until the server says lanes are on for this agent (`lanes_state`), so
+// with PERSON_LANES_ENABLED off, an old backend, or a pairing outside the
+// allow list, the owner's chat path is exactly today's. The one part that is
+// always on is the second lock (ownerLaneVerdict): a delivery the backend
+// stamped for a PERSON never runs in the owner's lane, whatever else is wrong.
+
+let lanesOnForThisAgent = false
+let laneDrainTimer: ReturnType<typeof setInterval> | null = null
+const LANE_DRAIN_MS = 5_000
+
+/** The second lock in the owner's lane: refuse, log, never acknowledge. */
+function noteLaneMisroute(transport: string, messageId: unknown, stamp: string): void {
+  log(`lane_misroute ${transport} message ${String(messageId)} stamped ${stamp}: not the owner's lane, not delivered`)
+}
+
+const LANE_OWNER_DEPS = {
+  assistantId: String(ASSISTANT_ID),
+  home: homedir(),
+  stateRoot: process.env.BGOS_PLUGIN_STATE_DIR,
+  log: (line: string) => log(`person lanes: ${line}`),
+}
+
+function startLaneSupervisor(userId: string): void {
+  const child = spawnProcess(
+    process.execPath,
+    [pathJoin(RUNNING_ROOT, 'bin', 'hoai-lane.mjs'), 'run', '--assistant', String(ASSISTANT_ID), '--lane', userId],
+    { detached: true, stdio: 'ignore', env: supervisorEnv(process.env, BACKEND_URL) },
+  )
+  child.on('error', (err) => log(`person lanes: supervisor for ${userId} did not start: ${String(err)}`))
+  child.unref()
+}
+
+function onLanesState(frame: unknown): void {
+  const on = lanesOnFor(frame, String(ASSISTANT_ID))
+  if (on === null) return
+  if (on !== lanesOnForThisAgent) log(`person lanes: the server says lanes are ${on ? 'ON' : 'off'} for this agent`)
+  lanesOnForThisAgent = on && laneSupport().ok
+  if (lanesOnForThisAgent && !laneDrainTimer) {
+    laneDrainTimer = setInterval(() => void drainLaneEventsOnce(), LANE_DRAIN_MS)
+    laneDrainTimer.unref?.()
+  }
+}
+
+let laneDrainBusy = false
+async function drainLaneEventsOnce(): Promise<void> {
+  if (laneDrainBusy || !lockHeld) return
+  laneDrainBusy = true
+  try {
+    await drainLaneEvents(LANE_OWNER_DEPS, {
+      report: async (userId, event) => {
+        await bgosPost('integrations/lanes/report', { assistantId: Number(ASSISTANT_ID), actorUserId: userId, event })
+      },
+      notify: async (chatId, sentence) => {
+        // A lane's notice belongs in that person's chat, never the owner's
+        // own (security review finding 7, defence in depth).
+        if (chatOwnership.isOwners(String(chatId))) {
+          log(`person lanes: notice for chat ${chatId} refused: it is the owner's own chat`)
+          return
+        }
+        await bgosPost('send-message', {
+          chatId,
+          assistantId: Number(ASSISTANT_ID),
+          text: sentence,
+          sender: 'assistant',
+          sentDate: new Date().toISOString(),
+          hasAttachment: false,
+          files: [],
+          options: [],
+        })
+      },
+    })
+  } catch (err) {
+    log(`person lanes: event drain failed: ${String(err)}`)
+  } finally {
+    laneDrainBusy = false
+  }
+}
+
 function connectWebsocket(): void {
   // Drawn ONCE per process, so 51 daemons dropped by one nginx reload do not
   // all come back inside the same second and meet a cold auth cache. See
@@ -14039,8 +14179,38 @@ function connectWebsocket(): void {
     }
   }))
 
+  // Person lanes (P3): which agents run lanes, a person's wake, a revoke.
+  // Only the lock holder acts (whenArmed); each is inert until the server
+  // says lanes are on for this agent.
+  realtimeSocket.on('lanes_state', whenArmed('lanes_state', (frame: unknown) => onLanesState(frame)))
+  realtimeSocket.on('lane_wake', whenArmed('lane_wake', (frame: unknown) => {
+    void (async () => {
+      // `lanes_state` comes once per connection; a wake that finds lanes off
+      // here asks the server again before deciding, so a declaration that
+      // landed after the connect does not drop the person's turn.
+      if (!lanesOnForThisAgent) {
+        try {
+          onLanesState(await bgosGet('integrations/lanes/state'))
+        } catch (err) {
+          log(`person lanes: lanes/state unreadable: ${String(err)}`)
+        }
+      }
+      handleLaneWake(frame, lanesOnForThisAgent, { ...LANE_OWNER_DEPS, startSupervisor: startLaneSupervisor })
+    })()
+  }))
+  realtimeSocket.on('lane_revoked', whenArmed('lane_revoked', (frame: unknown) => {
+    handleLaneRevoked(frame, LANE_OWNER_DEPS)
+  }))
+
   realtimeSocket.on('inbound_message', whenArmed('inbound_message', (payload: any) => {
     if (updateDrainMode) return
+    // The second lock (person lanes): a delivery stamped for a person's lane
+    // never runs in the owner's. No stamp is today's path, untouched.
+    const laneVerdict = ownerLaneVerdict(payload)
+    if (!laneVerdict.deliver) {
+      noteLaneMisroute('socket', payload?.messageId ?? payload?.message_id, laneVerdict.stamp)
+      return
+    }
     // Agent Update Stream (flag-gated): a stamped event routes through the
     // consumer's seq arithmetic; the apply callback is the EXACT legacy
     // delivery below (deliverWsInbound). Flag off, no stream mode, or an
@@ -16503,7 +16673,7 @@ async function main(): Promise<void> {
       // CLI's composer, and lib/compact-capability.ts can discover that up to
       // thirty minutes after boot. See lib/declared-capabilities.ts.
       capabilities: () => [
-        ...declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, authMode: AUTH.mode }),
+        ...declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, authMode: AUTH.mode }),
       ],
       // One-click update telemetry (wire contract v1): the newest version this
       // daemon found at its own pinned source (origin/main for a clone, the

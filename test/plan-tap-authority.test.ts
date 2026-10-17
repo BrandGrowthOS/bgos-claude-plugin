@@ -36,6 +36,7 @@ import * as streamApply from '../lib/stream-apply.ts'
 import * as messageText from '../lib/message-text.ts'
 import { LoginController } from '../lib/auth-login.ts'
 import type { StreamUpdate } from '../lib/update-stream.ts'
+import { ownerAnnounceRefused, ownerLaneVerdict } from '../lib/lane-core.mjs'
 
 // Normalized to LF: the working tree is CRLF on a Windows checkout.
 const SERVER = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(
@@ -305,6 +306,13 @@ function streamHarness(record: { requesterUserId?: string } = { requesterUserId:
       openPlansByChat.delete(chatId)
     },
     log: (line: string) => logs.push(line),
+    // The second lock of person lanes (P3) runs first on a stream tap; lanes
+    // are off here, so the tap goes on exactly as before.
+    ownerLaneVerdict,
+    ownerAnnounceRefused,
+    noteLaneMisroute: () => undefined,
+    lanesOnForThisAgent: false,
+    chatOwnership: { isOthers: () => false },
     USER_ID: OWNER,
     ASSISTANT_ID: 9,
     streamAuthority: {},

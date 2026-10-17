@@ -61,6 +61,7 @@ import * as inboundChannel from '../lib/inbound-channel.ts'
 import * as slashCatalog from '../lib/slash-catalog.ts'
 import * as authLogin from '../lib/auth-login.ts'
 import { createPrivateTurnTracker, privateActor, privateSenderUserId } from '../lib/private-turn.mjs'
+import { ownerLaneVerdict } from '../lib/lane-core.mjs'
 import ts from 'typescript'
 
 const OWNER = 'user_2owner000000000000000000000'
@@ -1037,6 +1038,9 @@ function streamRail(controller: LoginController) {
     ...authLogin,
     privateActor,
     privateSenderUserId,
+    // The second lock of person lanes (P3) runs first in the stream rail.
+    ownerLaneVerdict,
+    noteLaneMisroute: (transport: string, messageId: unknown, stamp: string) => logs.push(`lane_misroute ${transport} ${String(messageId)} ${stamp}`),
     privateTurns: {
       deliver: (delivery: { content: string, actingUserId: string | null, chatId: string }) => {
         privateDeliveries.push(delivery)

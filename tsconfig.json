@@ -11,5 +11,5 @@
     "allowJs": true,
     "types": ["node", "bun"]
   },
-  "include": ["server.ts", "lib/**/*.ts", "test/**/*.ts"]
+  "include": ["server.ts", "lane-server.ts", "lib/**/*.ts", "test/**/*.ts"]
 }
