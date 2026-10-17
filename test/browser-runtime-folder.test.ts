@@ -322,9 +322,9 @@ async function liveProcess(t: any) {
   return { pid: child.pid as number, startedAtMs: H.startStampNow() as number }
 }
 
-function sweep(tmp: string, opts: Record<string, unknown> = {}) {
+function sweep(tmp: string, opts: Record<string, unknown> = {}): Promise<{ swept: string[]; left: string[]; lines: string[] }> {
   const lines: string[] = []
-  return H.sweepRuntimeFolders({ tmp, log: (l: string) => lines.push(l), ...opts }).then((r: any) => ({ ...r, lines }))
+  return H.sweepRuntimeFolders({ tmp, log: (l: string) => lines.push(l), ...opts }).then((r: { swept: string[]; left: string[] }) => ({ ...r, lines }))
 }
 
 test('the runtime folder is named after its host: pid and start time, read back from the name alone', () => {
