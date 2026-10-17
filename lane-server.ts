@@ -19,7 +19,18 @@
  *      activity in lane.json for the supervisor's idle stop, and stops the
  *      lane on `lane_revoked` or when its session ends;
  *   5. under the person's own sign in (K2 option b), watches its transcript
- *      for a refused login and then tells the person and stops.
+ *      for a refused login and then tells the person and stops;
+ *   6. (P5) answers the person's Memory screen from the lane's own memory
+ *      folder (`memory_rpc` stamped for this lane, `lane_memory_rpc` declared
+ *      in its handshake, the echo on every answer, a write at most once per
+ *      rpcId across processes); performs `/new`, `/model x` and `/effort x`
+ *      itself (a restart request for the supervisor) and hands every other
+ *      command to the model from the LANE catalog only, never the owner's
+ *      command folders; reports its model and effort with its lane session;
+ *   7. (P7) watches the share's policy (`lane_policy_changed`, every heartbeat
+ *      answer, and `lanes/me` at boot) against the policy its Claude was
+ *      launched with: tighter restarts the lane at once (a turn in flight is
+ *      told in one sentence), looser restarts it at its next idle moment.
  *
  * NOTICE MODE (`HOAI_LANE_NOTICE` set, no Claude, not an MCP server): the
  * supervisor runs it when the lane cannot start at all (option b with no
@@ -42,17 +53,33 @@ import { io as socketIoClient, type Socket } from 'socket.io-client'
 
 import {
   laneEventLine,
+  lanePaths,
   laneStateBody,
   LANE_LOGIN_OWN_TOKEN,
+  LANE_MEMORY_RPC_TOKEN,
   LANE_TURN_STUCK_MS,
 } from './lib/lane-core.mjs'
+import { heartbeatToolPolicy, laneMePolicy, readLaneChoices, readToolPolicy } from './lib/lane-policy.mjs'
+import {
+  laneChoiceQuestionFor,
+  launchedFacts,
+  LanePolicyWatch,
+  performLaneCommand,
+  requestLaneRestart,
+  type RestartAsk,
+} from './lib/lane-controls.ts'
+import { classifyMemoryFrame, LaneMemoryRpcHandler } from './lib/lane-memory-rpc.ts'
+import { routeLaneSlash } from './lib/lane-slash.ts'
 import { acquireLaneLock, defaultPidAlive, releaseLaneLock } from './lib/lane-registry.mjs'
 import {
   buildLaneChannelEvent,
+  buildLaneCommandEvent,
   checkLaneReply,
   debugLogSaysTokenRefused,
   inboxAdvanceCursor,
+  inboxForNewConversation,
   inboxNoteDelivered,
+  inboxNoteHandled,
   inboxNoteReplied,
   inboxPollFrom,
   inboxShouldDeliver,
@@ -104,6 +131,15 @@ const DAEMON_LOCK_PATH = join(CFG.stateDir, 'daemon.lock')
 const LANE_JSON_PATH = join(CFG.laneDir, 'lane.json')
 const STOP_REQUEST_PATH = join(CFG.laneDir, 'stop-request.json')
 const EVENTS_PATH = join(CFG.laneDir, 'events.jsonl')
+// P5 and P7: the same folders readLaneDaemonConfig checked, under their names.
+const PATHS = lanePaths({ home: HOME, assistantId: CFG.assistantId, userId: CFG.userId, stateRoot: process.env.BGOS_PLUGIN_STATE_DIR })
+// What this launch was given (policy, model, effort), read ONCE from this
+// process's own environment, which the supervisor wrote into mcp.json.
+const LAUNCHED_ENV: Record<string, string | undefined> = {
+  HOAI_LANE_LAUNCH_POLICY: process.env.HOAI_LANE_LAUNCH_POLICY,
+  HOAI_LANE_LAUNCH_MODEL: process.env.HOAI_LANE_LAUNCH_MODEL,
+  HOAI_LANE_LAUNCH_EFFORT: process.env.HOAI_LANE_LAUNCH_EFFORT,
+}
 mkdirSync(CFG.stateDir, { recursive: true, mode: 0o700 })
 
 function writePrivateJson(path: string, value: unknown): void {
@@ -434,21 +470,133 @@ async function deliverRaw(raw: unknown, transport: 'lane-socket' | 'lane-poll', 
   }
   const d = gate.delivery
   if (!inboxShouldDeliver(inbox, d.messageId, { reoffer: opts.reoffer === true })) return
+  // P5: the lane's own commands. Only the LANE catalog is consulted, never a
+  // command folder on this computer.
+  const route = routeLaneSlash(d.raw as Record<string, unknown>)
+  if ((route.kind === 'new') || ((route.kind === 'model' || route.kind === 'effort') && route.commandArgs !== '')) {
+    inbox = inboxNoteHandled(inbox, d)
+    if (route.kind === 'new') {
+      // The new conversation starts empty: no turn of the old one is re-offered.
+      inbox = inboxForNewConversation(inbox)
+      inFlightChats.clear()
+      inFlight = false
+      inFlightSinceMs = null
+      writeLaneState()
+    }
+    saveInbox()
+    deliveredChats.add(d.chatId)
+    await ackDelivery(d.messageId)
+    performLaneCommand({ kind: route.kind, commandArgs: route.commandArgs }, d.chatId, CONTROL_DEPS)
+    return
+  }
   inbox = inboxNoteDelivered(inbox, d)
   saveInbox()
   deliveredChats.add(d.chatId)
-  const event = buildLaneChannelEvent(d, LANE, transport, { backlog: opts.backlog === true })
+  const plain = buildLaneChannelEvent(d, LANE, transport, { backlog: opts.backlog === true })
+  const event = route.kind === 'directive'
+    ? buildLaneCommandEvent(d, LANE, transport, { content: route.delivery.content, meta: route.delivery.meta }, { backlog: opts.backlog === true })
+    : route.kind === 'model' || route.kind === 'effort'
+      ? buildLaneCommandEvent(d, LANE, transport, laneChoiceQuestionFor(route.kind, PATHS, LAUNCHED_ENV), { backlog: opts.backlog === true })
+      : plain
   await mcp.notification({ method: 'notifications/claude/channel', params: { content: event.content, meta: event.meta } })
   inFlightChats.add(d.chatId)
   if (!inFlight) inFlightSinceMs = Date.now()
   inFlight = true
   lastActivityAtMs = Date.now()
   writeLaneState()
+  await ackDelivery(d.messageId)
+}
+
+async function ackDelivery(messageId: number): Promise<void> {
   try {
-    await laneFetch('POST', `integrations/messages/${d.messageId}/ack`, {})
+    await laneFetch('POST', `integrations/messages/${messageId}/ack`, {})
   } catch (err) {
     if (err instanceof LaneHttpError && err.status === 401) await sessionRefused('ack')
-    else log(`ack ${d.messageId} failed: ${err instanceof LaneHttpError ? err.status : String(err)}`)
+    else log(`ack ${messageId} failed: ${err instanceof LaneHttpError ? err.status : String(err)}`)
+  }
+}
+
+// ── P5: the person's own commands, memory and model ─────────────────────────
+
+function notice(name: string, chatIds: Array<string | number>): void {
+  appendEvent({ event: 'notice', notice: name, chatIds: chatIds.map(Number) })
+}
+
+function requestRestart(next: RestartAsk): void {
+  try {
+    const merged = requestLaneRestart(PATHS.restartRequestPath, next)
+    log(`restart asked (${merged.reasons.join(', ')}, ${merged.when}${merged.fresh ? ', new session' : ''})`)
+  } catch (err) {
+    log(`could not ask for a restart: ${String(err)}`)
+  }
+}
+
+const CONTROL_DEPS = { paths: PATHS, notice, requestRestart, log }
+
+/**
+ * The lane's model and effort, reported with its lane session on the chat
+ * where the person last chose one (the server writes it on her chat and
+ * tells her). What is reported is what this Claude was launched with.
+ */
+const SESSION_SETTINGS_MODEL_RE = /^[\w./:-]{1,160}$/
+async function reportModelAndEffort(): Promise<void> {
+  const choices = readLaneChoices(readText(PATHS.choicesPath))
+  if (!choices.chatId) return
+  const launched = launchedFacts(LAUNCHED_ENV)
+  const model = launched.model && SESSION_SETTINGS_MODEL_RE.test(launched.model) ? launched.model : null
+  const effort = launched.effort
+  try {
+    await laneFetch('PATCH', `integrations/assistants/${encodeURIComponent(LANE.assistantId)}/chats/${encodeURIComponent(choices.chatId)}/session-settings`, {
+      model,
+      effort,
+      reportedAt: new Date().toISOString(),
+    })
+    log(`model and effort reported (${model ?? 'default'}, ${effort ?? 'default'})`)
+  } catch (err) {
+    log(`model report refused: ${err instanceof LaneHttpError ? err.status : String(err)}`)
+  }
+}
+
+function readText(path: string): string {
+  try {
+    return readFileSync(path, 'utf8')
+  } catch {
+    return ''
+  }
+}
+
+const laneMemory = new LaneMemoryRpcHandler({
+  assistantId: LANE.assistantId,
+  home: HOME,
+  stateRoot: process.env.BGOS_PLUGIN_STATE_DIR,
+  // A running lane answers only for its own person (design section 6).
+  accepts: (userId) => userId === LANE.userId,
+  postAck: (rpcId) => laneFetch('POST', `integrations/memory-rpc/${encodeURIComponent(rpcId)}/ack`, {}),
+  postResult: (rpcId, body) => laneFetch('POST', `integrations/memory-rpc/${encodeURIComponent(rpcId)}/result`, body),
+  log: (line) => log(line),
+})
+
+// ── P7: the share's policy against the one this Claude was launched with ────
+
+const policyWatch = new LanePolicyWatch({
+  launchedPolicy: () => launchedFacts(LAUNCHED_ENV).policy,
+  inFlightChats: () => (inFlight ? [...inFlightChats] : []),
+  notice,
+  requestRestart,
+  log,
+})
+
+function onPolicy(current: ReturnType<typeof readToolPolicy>, where: string): void {
+  policyWatch.onPolicy(current, where)
+}
+
+async function readPolicyNow(where: string): Promise<void> {
+  try {
+    const policy = laneMePolicy(await laneFetch('GET', 'integrations/lanes/me'), LANE)
+    if (policy) onPolicy(policy, where)
+  } catch (err) {
+    if (err instanceof LaneHttpError && (err.status === 401 || err.status === 403)) await sessionRefused('lanes/me')
+    else log(`lanes/me failed: ${err instanceof LaneHttpError ? err.status : String(err)}`)
   }
 }
 
@@ -508,7 +656,9 @@ function connectSocket(): void {
     // The lane session ALONE: a socket that also presents a pairing token,
     // an API key or a user id is refused by the server (a lane never holds
     // the credential that acts as the owner).
-    auth: (cb: (auth: Record<string, string>) => void) => cb({ laneSession: session?.sessionToken ?? '' }),
+    // P5: and `lane_memory_rpc`, declared in THIS socket's own handshake,
+    // which is what the server routes the person's memory frames by.
+    auth: (cb: (auth: Record<string, unknown>) => void) => cb({ laneSession: session?.sessionToken ?? '', capabilities: [LANE_MEMORY_RPC_TOKEN] }),
   })
   socket.on('connect', () => {
     log('lane socket connected')
@@ -545,16 +695,30 @@ function connectSocket(): void {
     }
   })
   socket.on('lane_policy_changed', (frame: unknown) => {
-    // Every P3 lane is the locked base, which no policy loosens or tightens
-    // below; honouring the options is P7's.
-    if (frameIsMine(frame)) log(`lane policy changed (v=${String((frame as { v?: unknown }).v)}); the locked base stays`)
+    // The frame is a nudge and carries no policy (its `v` is the shape's
+    // version): read the policy the session's share has now.
+    if (!frameIsMine(frame)) return
+    log('lane policy changed; reading the share\'s policy')
+    void readPolicyNow('lane_policy_changed')
+  })
+  socket.on('memory_rpc', (payload: unknown) => {
+    const sorted = classifyMemoryFrame(payload)
+    if (sorted.kind !== 'person') {
+      log(`memory_rpc dropped: ${sorted.kind === 'owner' ? 'not stamped for a person' : sorted.why}`)
+      return
+    }
+    void laneMemory.handle(sorted.frame).catch((err) => log(`memory_rpc failed: ${String(err)}`))
   })
 }
 
 async function heartbeat(): Promise<void> {
   if (ending || !session) return
   try {
-    await laneFetch('POST', 'integrations/lanes/heartbeat', errorCode ? { errorCode } : {})
+    const answer = await laneFetch('POST', 'integrations/lanes/heartbeat', errorCode ? { errorCode } : {})
+    // The catch up a lost `lane_policy_changed` needs. No policy in the
+    // answer (a database error on the server) means keep the launch flags.
+    const policy = heartbeatToolPolicy(answer)
+    if (policy) onPolicy(policy, 'heartbeat')
   } catch (err) {
     if (err instanceof LaneHttpError && (err.status === 401 || err.status === 403)) await sessionRefused('lanes/heartbeat')
   }
@@ -676,8 +840,14 @@ if (!(await ensureSession())) {
   endLane('no_session')
 } else {
   try {
-    if (!laneMeMatches(await laneFetch('GET', 'integrations/lanes/me'), LANE)) endLane('identity')
-    else startLoops()
+    const me = await laneFetch('GET', 'integrations/lanes/me')
+    if (!laneMeMatches(me, LANE)) endLane('identity')
+    else {
+      startLoops()
+      const policy = laneMePolicy(me, LANE)
+      if (policy) onPolicy(policy, 'boot')
+      void reportModelAndEffort()
+    }
   } catch (err) {
     if (err instanceof LaneHttpError && (err.status === 401 || err.status === 403)) await sessionRefused('lanes/me')
     else log(`lanes/me failed: ${err instanceof LaneHttpError ? err.status : String(err)}`)

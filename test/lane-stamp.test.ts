@@ -128,12 +128,16 @@ test('button taps: once lanes run, a tap in a share recipient\'s chat never reac
 })
 
 test('lane daemon: the gate runs first, and a refused delivery is never acknowledged or delivered', () => {
-  const body = bodyAfter(LANE_SERVER, 'async function deliverRaw(', 1800)
+  const body = bodyAfter(LANE_SERVER, 'async function deliverRaw(', 3600)
   const gate = body.indexOf('laneDeliveryGate(raw, LANE)')
   const refusedReturn = body.indexOf('return', gate)
   assert.ok(gate > 0)
   assert.ok(refusedReturn < body.indexOf('mcp.notification('), 'refused before the channel event')
-  assert.ok(refusedReturn < body.indexOf('/ack'), 'refused before any acknowledgement')
+  // Since 0.71.0 the acknowledgement is ackDelivery() (a handled /new or /model
+  // is acknowledged too); the first call to it comes after the refusal.
+  assert.ok(body.indexOf('ackDelivery(') > 0, 'deliverRaw acknowledges through ackDelivery')
+  assert.ok(refusedReturn < body.indexOf('ackDelivery('), 'refused before any acknowledgement')
+  assert.match(LANE_SERVER, /async function ackDelivery\(messageId: number\): Promise<void> \{\n\s*try \{\n\s*await laneFetch\('POST', `integrations\/messages\/\$\{messageId\}\/ack`/)
   // Both the socket and the poll go through deliverRaw.
   assert.match(LANE_SERVER, /socket\.on\('inbound_message', \(payload: unknown\) => \{\n\s*void deliverRaw\(payload, 'lane-socket'\)/)
   assert.match(LANE_SERVER, /await deliverRaw\(r\.raw, 'lane-poll'/)

@@ -107,7 +107,9 @@ test('the lane daemon never holds the pairing token or the agent lock (source pi
   // The only credential it sends.
   assert.match(LANE_SERVER, /headers\['X-BGOS-Session'\] = session\.sessionToken/)
   // The socket presents the lane session alone.
-  assert.match(LANE_SERVER, /auth: \(cb: \(auth: Record<string, string>\) => void\) => cb\(\{ laneSession: session\?\.sessionToken \?\? '' \}\)/)
+  // The lane session ALONE as its credential; since 0.71.0 (P5) the same
+  // handshake also declares lane_memory_rpc, a capability and no credential.
+  assert.match(LANE_SERVER, /auth: \(cb: \(auth: Record<string, unknown>\) => void\) => cb\(\{ laneSession: session\?\.sessionToken \?\? '', capabilities: \[LANE_MEMORY_RPC_TOKEN\] \}\)/)
   // The mint is the ticket alone, with no credential at all.
   assert.match(LANE_SERVER, /laneFetch\('POST', 'integrations\/lanes\/session', \{ laneTicket: ticket \}, \{ auth: false \}\)/)
 })

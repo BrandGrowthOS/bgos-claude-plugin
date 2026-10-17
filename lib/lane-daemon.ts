@@ -113,71 +113,10 @@ export interface StoredLaneSession {
   pairingId: string
 }
 
-/** A lane session token as the backend mints it. */
-export const LANE_SESSION_RE = /^lsess_[A-Za-z0-9_-]{8,512}$/
-
-/** Is a stored session still usable for this lane (a minute of margin)? */
-export function storedSessionUsable(
-  stored: unknown,
-  lane: { userId: string; assistantId: string },
-  nowMs: number,
-): stored is StoredLaneSession {
-  if (!stored || typeof stored !== 'object') return false
-  const s = stored as Record<string, unknown>
-  if (typeof s.sessionToken !== 'string' || !LANE_SESSION_RE.test(s.sessionToken)) return false
-  if (s.actorUserId !== lane.userId || String(s.assistantId) !== String(lane.assistantId)) return false
-  const exp = typeof s.expiresAt === 'string' ? Date.parse(s.expiresAt) : NaN
-  return Number.isFinite(exp) && exp - nowMs > 60_000
-}
-
-/**
- * Read the backend's mint answer. It must name THIS lane: a session for any
- * other person or agent is refused, never used.
- */
-export function readMintAnswer(
-  body: unknown,
-  lane: { userId: string; assistantId: string },
-): StoredLaneSession | null {
-  if (!body || typeof body !== 'object') return null
-  const b = body as Record<string, any>
-  if (typeof b.sessionToken !== 'string' || !LANE_SESSION_RE.test(b.sessionToken)) return null
-  if (typeof b.expiresAt !== 'string' || !Number.isFinite(Date.parse(b.expiresAt))) return null
-  const l = b.lane ?? {}
-  if (l.actorUserId !== lane.userId || String(l.assistantId) !== String(lane.assistantId)) return null
-  if (l.stamp !== undefined && l.stamp !== personLaneStamp(lane.userId)) return null
-  return {
-    sessionToken: b.sessionToken,
-    expiresAt: b.expiresAt,
-    actorUserId: lane.userId,
-    assistantId: String(lane.assistantId),
-    pairingId: String(l.pairingId ?? ''),
-  }
-}
-
-/** Does `GET lanes/me` say this is exactly our lane? */
-export function laneMeMatches(body: unknown, lane: { userId: string; assistantId: string }): boolean {
-  if (!body || typeof body !== 'object') return false
-  const b = body as Record<string, unknown>
-  return (
-    b.actorUserId === lane.userId &&
-    String(b.assistantId) === String(lane.assistantId) &&
-    b.lane === personLaneStamp(lane.userId)
-  )
-}
-
-/** A ticket as the owner's daemon leaves it: single use, two minutes. */
-export function readTicketFile(text: string, nowMs: number): string | null {
-  try {
-    const raw = JSON.parse(text)
-    const ticket = raw?.laneTicket
-    if (typeof ticket !== 'string' || ticket.length === 0 || ticket.length > 200) return null
-    const exp = typeof raw.ticketExpiresAt === 'string' ? Date.parse(raw.ticketExpiresAt) : NaN
-    if (Number.isFinite(exp) && exp <= nowMs) return null
-    return ticket
-  } catch {
-    return null
-  }
-}
+// The pure session checks live in lib/lane-session.mjs, shared with the
+// supervisor, which mints the session first since P7 (it reads the policy
+// before the lane's Claude starts).
+export { LANE_SESSION_RE, laneMeMatches, readMintAnswer, readTicketFile, storedSessionUsable } from './lane-session.mjs'
 
 // ── A delivery ──────────────────────────────────────────────────────────────
 
@@ -258,6 +197,31 @@ export function buildLaneChannelEvent(
   }
   meta.lane = personLaneStamp(lane.userId)
   return { content: built.content, meta }
+}
+
+/**
+ * The channel event for a lane command the model answers (a lane catalog
+ * directive, or the question form of `/model` and `/effort`): the delivery's
+ * own lane event with the command's content and its slash fields. EVERY meta
+ * value is a string (the wake card contract), the sender fields stay the
+ * server's, and the lane stamp is kept.
+ */
+export function buildLaneCommandEvent(
+  delivery: LaneDelivery,
+  lane: { userId: string; assistantId: string },
+  transport: 'lane-socket' | 'lane-poll',
+  command: { content: string; meta: Record<string, string> },
+  opts: { backlog?: boolean } = {},
+): { content: string; meta: Record<string, string> } {
+  const base = buildLaneChannelEvent(delivery, lane, transport, opts)
+  const meta: Record<string, string> = { ...base.meta }
+  for (const [key, value] of Object.entries(command.meta)) {
+    if (value === undefined || value === null) continue
+    if (key in base.meta && key !== 'event_type') continue
+    meta[key] = String(value)
+  }
+  meta.lane = personLaneStamp(lane.userId)
+  return { content: command.content, meta }
 }
 
 /**
@@ -342,6 +306,28 @@ export function inboxNoteDelivered(state: LaneInboxState, d: { messageId: number
     ? state.pending
     : [...state.pending, { id: d.messageId, chatId: d.chatId }].slice(-20)
   return { ...state, delivered, pending }
+}
+
+/**
+ * A command the lane daemon performed itself (`/new`, `/model x`, `/effort
+ * x`): never handed to Claude again, and never waiting for a reply, so it is
+ * remembered as delivered and NOT as pending.
+ */
+export function inboxNoteHandled(state: LaneInboxState, d: { messageId: number }): LaneInboxState {
+  const delivered = state.delivered.includes(d.messageId)
+    ? state.delivered
+    : [...state.delivered, d.messageId].slice(-LANE_INBOX_DELIVERED_MAX)
+  return { ...state, delivered, pending: state.pending.filter((p) => p.id !== d.messageId) }
+}
+
+/**
+ * `/new`: the turns still waiting belong to the conversation the person just
+ * left, so the new one must not be handed them on its first poll (found in
+ * the live run: they were re-offered into the fresh session). They stay
+ * delivered, so nothing is handed over twice; nothing waits any more.
+ */
+export function inboxForNewConversation(state: LaneInboxState): LaneInboxState {
+  return { ...state, pending: [] }
 }
 
 /** A reply in a chat answers every turn waiting there. */
@@ -434,7 +420,7 @@ export function laneInstructions(agentName: string): string {
   return [
     `You are ${name}, talking with ONE person in their own private chat. Their messages arrive as <channel source="bgos"> events with chat_id and message_id.`,
     'Answer with the `reply` tool, using the chat_id of the message you are answering. Text you write outside the tool is not seen by anyone.',
-    'You run on the agent owner\'s computer in a locked lane: you can read and write files only in your working folder, you cannot run commands or fetch web pages, and you cannot reach the owner\'s files, accounts or other people\'s conversations.',
+    'You run on the agent owner\'s computer in a locked lane: your working folder is the only folder you can write, what else this lane allows is in your instructions for this lane, and you cannot reach the owner\'s accounts or other people\'s conversations.',
     'If you are asked for something you cannot do here, say so in one plain sentence.',
   ].join('\n')
 }

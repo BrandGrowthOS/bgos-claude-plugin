@@ -448,13 +448,23 @@ export function authHeaders(auth: ResolvedAuth): Record<string, string> {
  * The socket.io handshake options for the resolved mode. The backend gateway
  * reads a pairing token ONLY from the handshake query, and the legacy path from
  * auth.apiKey + auth.assistantId.
+ *
+ * `capabilities` (person lanes P5): what THIS socket declares in its own
+ * handshake (`auth.capabilities`), which the server reads per socket, never
+ * from the pairing's last heartbeat. Pairing only, and only when non empty,
+ * so every other handshake is byte for byte today's.
  */
 export function wsAuthOptions(
   auth: ResolvedAuth,
-): { query?: { pairingToken: string }; auth?: { apiKey: string; assistantId: string } } {
-  return auth.mode === 'pairing'
-    ? { query: { pairingToken: auth.pairingToken } }
-    : { auth: { apiKey: auth.apiKey, assistantId: auth.assistantId } }
+  capabilities: readonly string[] = [],
+): { query?: { pairingToken: string }; auth?: { apiKey: string; assistantId: string } | { capabilities: string[] } } {
+  if (auth.mode === 'pairing') {
+    return {
+      query: { pairingToken: auth.pairingToken },
+      ...(capabilities.length > 0 ? { auth: { capabilities: [...capabilities] } } : {}),
+    }
+  }
+  return { auth: { apiKey: auth.apiKey, assistantId: auth.assistantId } }
 }
 
 /** A friendly, secret free message when creds are incomplete. */

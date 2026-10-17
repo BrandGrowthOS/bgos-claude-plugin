@@ -132,6 +132,50 @@ function textOf(value: unknown): string | null {
   return value
 }
 
+/**
+ * One frame's op against a store (rules 6 and 7 above, minus the home check,
+ * which belongs to the caller): the owner's daemon here, and a person's lane
+ * (lib/lane-memory-rpc.ts) over that lane's own folder.
+ */
+export async function runMemoryRpcOp(store: MemoryRpcStore, frame: MemoryRpcFrame): Promise<MemoryRpcResult> {
+  const p = frame.payload
+  switch (frame.op) {
+    case 'list':
+      return fromAnswer(await store.list())
+    case 'add': {
+      const target = targetOf(p)
+      if (!target) return failure('bad_request', MSG.target)
+      const content = textOf(p.content)
+      if (content == null) return failure('bad_request', MSG.text)
+      return fromAnswer(await store.add(target, content))
+    }
+    case 'replace': {
+      const target = targetOf(p)
+      if (!target) return failure('bad_request', MSG.target)
+      const oldText = textOf(p.oldText)
+      const newContent = textOf(p.newContent)
+      if (oldText == null || newContent == null) return failure('bad_request', MSG.text)
+      return fromAnswer(await store.replace(target, oldText, newContent))
+    }
+    case 'remove': {
+      const target = targetOf(p)
+      if (!target) return failure('bad_request', MSG.target)
+      const oldText = textOf(p.oldText)
+      if (oldText == null) return failure('bad_request', MSG.text)
+      return fromAnswer(await store.remove(target, oldText))
+    }
+    case 'search':
+      return failure('unsupported', MSG.search)
+    default:
+      return failure('unsupported', MSG.unsupported)
+  }
+}
+
+/** A failure answer in the wire shape (code 1 to 40 characters, a short dash free message). */
+export function memoryRpcFailure(code: string, message: string): MemoryRpcResult {
+  return failure(code, message)
+}
+
 type Seen = { state: 'running' } | { state: 'done'; result: MemoryRpcResult }
 
 export class MemoryRpcHandler {
@@ -185,38 +229,7 @@ export class MemoryRpcHandler {
 
   private async run(frame: MemoryRpcFrame): Promise<MemoryRpcResult> {
     if (!this.deps.homeConfirmed()) return failure('unavailable', MSG.notConfirmed)
-    const { store } = this.deps
-    const p = frame.payload
-    switch (frame.op) {
-      case 'list':
-        return fromAnswer(await store.list())
-      case 'add': {
-        const target = targetOf(p)
-        if (!target) return failure('bad_request', MSG.target)
-        const content = textOf(p.content)
-        if (content == null) return failure('bad_request', MSG.text)
-        return fromAnswer(await store.add(target, content))
-      }
-      case 'replace': {
-        const target = targetOf(p)
-        if (!target) return failure('bad_request', MSG.target)
-        const oldText = textOf(p.oldText)
-        const newContent = textOf(p.newContent)
-        if (oldText == null || newContent == null) return failure('bad_request', MSG.text)
-        return fromAnswer(await store.replace(target, oldText, newContent))
-      }
-      case 'remove': {
-        const target = targetOf(p)
-        if (!target) return failure('bad_request', MSG.target)
-        const oldText = textOf(p.oldText)
-        if (oldText == null) return failure('bad_request', MSG.text)
-        return fromAnswer(await store.remove(target, oldText))
-      }
-      case 'search':
-        return failure('unsupported', MSG.search)
-      default:
-        return failure('unsupported', MSG.unsupported)
-    }
+    return runMemoryRpcOp(this.deps.store, frame)
   }
 
   private remember(rpcId: string, state: Seen): void {

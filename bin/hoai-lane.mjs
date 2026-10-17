@@ -2,10 +2,15 @@
 /**
  * hoai-lane: the person lanes command (shared agents Phase 3, P3).
  *
- *   hoai-lane run    --assistant <id> --lane <userId>
+ *   hoai-lane run    --assistant <id> --lane <userId> [--agent-folder <path>]
  *       Supervise one person's lane until it stops (lib/lane-supervisor.mjs).
  *       The owner's daemon starts this, detached, on a `lane_wake`; it is not
- *       meant to be typed.
+ *       meant to be typed. `--agent-folder` is the agent's own folder, which a
+ *       share whose policy allows `readAgentFolder` may read (P7).
+ *   hoai-lane models --assistant <id> [--set <a,b>] [--efforts <low,high>] [--clear]
+ *       The models and effort levels people this agent is shared with may
+ *       switch to with /model and /effort in their own chat (P5, decision
+ *       K7). With no list, only the agent's own default is used.
  *   hoai-lane login  --assistant <id> --lane <userId> --mode inherit|own_token
  *       Choose whose Claude sign in that person's lane uses (decision K2):
  *       `inherit` (the default) signs in exactly as the agent does;
@@ -22,7 +27,7 @@
  *
  * No em or en dashes in this file.
  */
-import { appendFileSync, mkdirSync, realpathSync, renameSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -37,6 +42,7 @@ import {
   peopleDirOf,
 } from '../lib/lane-core.mjs'
 import { laneTokenStore, readLoginModes, writeLoginMode } from '../lib/lane-login.mjs'
+import { LANE_EFFORT_LEVELS, LANE_MODEL_RE, readLaneAllowedChoices } from '../lib/lane-policy.mjs'
 import { readRegistry } from '../lib/lane-registry.mjs'
 import { superviseLane } from '../lib/lane-supervisor.mjs'
 
@@ -79,8 +85,8 @@ export async function main(argv = process.argv.slice(2), { env = process.env, ho
   const args = parseLaneArgs(argv)
   const assistantId = args.flags.assistant
   const userId = args.flags.lane
-  if (!['run', 'login', 'token', 'status'].includes(args.command)) {
-    process.stdout.write('usage: hoai-lane run|login|token set|token clear|status --assistant <id> [--lane <userId>]\n')
+  if (!['run', 'login', 'token', 'status', 'models'].includes(args.command)) {
+    process.stdout.write('usage: hoai-lane run|login|token set|token clear|status|models --assistant <id> [--lane <userId>]\n')
     return args.command === '' || args.command === 'help' ? 0 : 1
   }
   if (!isSafeAssistantId(assistantId)) return fail('--assistant must be the agent\'s id')
@@ -98,6 +104,35 @@ export async function main(argv = process.argv.slice(2), { env = process.env, ho
       const live = running.some((l) => l.userId === person) ? 'running' : 'stopped'
       process.stdout.write(`  ${person}: ${live}, login ${mode}, token ${token}\n`)
     }
+    return 0
+  }
+
+  if (args.command === 'models') {
+    const path = join(peopleDirOf({ home, assistantId, platform }), 'lane-models.json')
+    let current = { models: [], efforts: [] }
+    try { current = readLaneAllowedChoices(readFileSync(path, 'utf8')) } catch { /* none yet */ }
+    if (Object.prototype.hasOwnProperty.call(args.flags, 'clear')) {
+      current = { models: [], efforts: [] }
+    }
+    if (typeof args.flags.set === 'string') {
+      const models = args.flags.set.split(',').map((m) => m.trim()).filter(Boolean)
+      const bad = models.filter((m) => !LANE_MODEL_RE.test(m))
+      if (bad.length > 0) return fail(`not a model name: ${bad.join(', ')}`)
+      current = { ...current, models: [...new Set(models)] }
+    }
+    if (typeof args.flags.efforts === 'string') {
+      const efforts = args.flags.efforts.split(',').map((e) => e.trim()).filter(Boolean)
+      const bad = efforts.filter((e) => !LANE_EFFORT_LEVELS.includes(e))
+      if (bad.length > 0) return fail(`effort levels are ${LANE_EFFORT_LEVELS.join(', ')}; not: ${bad.join(', ')}`)
+      current = { ...current, efforts: [...new Set(efforts)] }
+    }
+    if (typeof args.flags.set === 'string' || typeof args.flags.efforts === 'string' || Object.prototype.hasOwnProperty.call(args.flags, 'clear')) {
+      mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
+      const tmp = `${path}.${process.pid}.tmp`
+      writeFileSync(tmp, `${JSON.stringify({ v: 1, ...current }, null, 2)}\n`, { mode: 0o600 })
+      renameSync(tmp, path)
+    }
+    process.stdout.write(`agent ${assistantId}: people may switch to models ${current.models.length ? current.models.join(', ') : '(none: the agent\'s own only)'}; effort ${current.efforts.length ? current.efforts.join(', ') : '(none: the agent\'s own only)'}\n`)
     return 0
   }
 
@@ -178,6 +213,7 @@ export async function main(argv = process.argv.slice(2), { env = process.env, ho
     claudePath,
     platform,
     log,
+    agentFolder: typeof args.flags['agent-folder'] === 'string' && args.flags['agent-folder'] !== '' ? args.flags['agent-folder'] : null,
   })
   log(`supervisor done: ${result.outcome}${result.reason ? ` (${result.reason})` : ''}`)
   return 0
