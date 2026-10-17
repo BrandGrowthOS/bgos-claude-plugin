@@ -5847,6 +5847,8 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
     try {
       if (!lockHeld) throw new Error('This private action did not start because this daemon does not hold the active agent connection.')
       emailSendReason = requireEmailSendTurn(privateTurns, PRIVATE_MARKER_PATHS, USER_ID)
+      // 70f1898b: the send then goes only with the owner's approval of exactly this email, else it is kept as a draft.
+      if (emailSendReason?.askOwner) log('email_send: words that are not the owner\'s (an email, a peer or a meeting card) reached this CLI turn before the owner\'s message, so it goes only with the owner\'s approval on its card, else it is kept as a draft for the owner')
     } catch (err) {
       const message = String((err as Error).message)
       // Like every refused private call, the log names the failed check: the tracker's account when no turn was
@@ -14637,6 +14639,8 @@ function connectWebsocket(): void {
       log(
         `meeting_invitation accepted (id=${meetingId}, peers=${peerNames}, history=${rawHistory.length})`,
       )
+      // Like a meeting line: the room's earlier words ride on it, so an email_send in a turn it reached asks the owner.
+      privateTurns.noteUntracked({ chatId: String(payload?.chatId ?? '') })
       void trackMessageOperation(() => mcp.notification({
         method: 'notifications/claude/channel',
         params: {
