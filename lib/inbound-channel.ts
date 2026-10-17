@@ -561,11 +561,101 @@ export function labelsExternalEmail(): boolean {
   return emailLabelProbe
 }
 
+/**
+ * An agent wrote it: a peer (agentOrigin, or a sender labelled agent) or
+ * another agent seated in the same group or channel (room_agent). Neither is a
+ * person, so neither answers a permission request or reads as the owner.
+ */
 export function isAgentInbound(input: {
   senderType?: string | null
   agentOrigin?: AgentOriginLike | null
 }): boolean {
-  return input.agentOrigin != null || input.senderType === 'agent'
+  return input.agentOrigin != null || input.senderType === 'agent' || isRoomAgentSenderType(input.senderType)
+}
+
+// ── Another agent in a group or channel (follow-up window, step 2) ──────────
+
+/**
+ * The sender type BGOS gives a message ANOTHER AGENT seated in the same group
+ * or channel wrote, when it hands that message to this agent inside the
+ * follow-up window (BGOS #2521, follow-up window step 2, behind
+ * COLLAB_FOLLOWUP_AGENTS; HOAI board row 2d6ac222). The socket's
+ * inbound_message and the update stream's hydrated payload both say
+ * `senderType: 'room_agent'` with the author's `senderAssistantId` (a
+ * number) and no human sender block. The envelope `userId` is then THIS
+ * agent's owner and the stream payload's `sender` stays the stored
+ * 'assistant', so a reader that does not know the marker takes the message
+ * for the owner speaking (the socket) or for its own reply (the stream). The
+ * backend turns the flag on only once the plugins read the marker.
+ */
+export const ROOM_AGENT_SENDER_TYPE = 'room_agent'
+
+/** meta.user on another agent's message: an agent, not a person. */
+export const ROOM_AGENT_USER = 'Agent'
+
+/** The room_agent sender type, exactly as BGOS spells it. */
+export function isRoomAgentSenderType(value: unknown): boolean {
+  return value === ROOM_AGENT_SENDER_TYPE
+}
+
+/** Who wrote a room_agent message, as the server stated it. */
+export interface RoomAgentSender {
+  /** The author agent's id as a decimal string; null when no usable one was stated. */
+  senderAssistantId: string | null
+}
+
+function statedAssistantId(value: unknown): string | null {
+  const id =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' && /^\s*\d+\s*$/.test(value)
+        ? Number(value)
+        : Number.NaN
+  return Number.isSafeInteger(id) && id > 0 ? String(id) : null
+}
+
+/**
+ * The author of a room_agent message, read off the SERVER's records for it
+ * (the socket payload, or the stream's row and its envelope). Null when no
+ * record says room_agent. The id is null when the records name no usable
+ * author or name two different ones.
+ */
+export function readRoomAgentSender(...records: unknown[]): RoomAgentSender | null {
+  let marked = false
+  const ids: unknown[] = []
+  for (const record of records) {
+    const r = plainObject(record)
+    if (!r) continue
+    if (isRoomAgentSenderType(r.senderType) || isRoomAgentSenderType(r.sender_type)) marked = true
+    ids.push(r.senderAssistantId, r.sender_assistant_id)
+  }
+  return marked ? { senderAssistantId: agreed(ids, statedAssistantId) } : null
+}
+
+/**
+ * Is this room_agent message this agent's OWN? BGOS marks every agent's row in
+ * a group or channel, so the agent's own reply comes back on the update stream
+ * marked room_agent too, and it must stay a reply boundary that never wakes
+ * the agent. A message whose author cannot be read, or an agent whose own id
+ * cannot be, counts as its own: it is not delivered, which is what every
+ * plugin before this one did with it.
+ */
+export function isOwnRoomAgentMessage(
+  sender: RoomAgentSender,
+  assistantId: string | number | null | undefined,
+): boolean {
+  const own = statedAssistantId(assistantId)
+  return sender.senderAssistantId === null || own === null || sender.senderAssistantId === own
+}
+
+/**
+ * meta.user_id on another agent's message: it names that agent and no person,
+ * so per user memory keyed on it never files the agent's words under the
+ * owner. The host drops a channel card without a user_id, so it is never left
+ * out.
+ */
+export function roomAgentUserId(sender: RoomAgentSender): string {
+  return `${ROOM_AGENT_SENDER_TYPE}:${sender.senderAssistantId ?? 'unknown'}`
 }
 
 export function isSelfAuthoredAgentOrigin(
@@ -789,7 +879,17 @@ export function buildInboundChannel(
   if (isExternalEmailSenderType(input.senderType) || isExternalEmailInbound(input.serverSender)) {
     return buildExternalEmailChannel(input)
   }
-  const senderType = input.agentOrigin ? 'agent' : String(input.senderType ?? 'user')
+  // Another agent in a group or channel, from either side as an email is: the
+  // lane's sender type or the server's own record.
+  const roomAgent = input.agentOrigin
+    ? null
+    : (readRoomAgentSender(input.serverSender) ??
+      (isRoomAgentSenderType(input.senderType) ? { senderAssistantId: null } : null))
+  const senderType = input.agentOrigin
+    ? 'agent'
+    : roomAgent
+      ? ROOM_AGENT_SENDER_TYPE
+      : String(input.senderType ?? 'user')
   const rawText = String(input.text ?? '')
   const framedText =
     senderType === 'agent' && input.agentOrigin
@@ -818,7 +918,7 @@ export function buildInboundChannel(
   // true whatever a record says). It rides in front of everything, as a note
   // about the turn, and the person's words follow it unchanged.
   const senderGuardrail =
-    senderType === 'agent' || senderType === 'system'
+    senderType === 'agent' || senderType === 'system' || roomAgent
       ? null
       : readSenderGuardrailField(input.serverSender)
   const guardedText = senderGuardrail
@@ -833,18 +933,29 @@ export function buildInboundChannel(
   const meta: Record<string, string> = {
     chat_id: String(input.chatId),
     message_id: String(input.messageId),
-    user: senderType === 'system' ? 'System' : 'User',
-    user_id: String(input.userId),
+    user: senderType === 'system' ? 'System' : roomAgent ? ROOM_AGENT_USER : 'User',
+    // Another agent's message names that agent, never the owner the lane's
+    // fallback would put here.
+    user_id: roomAgent ? roomAgentUserId(roomAgent) : String(input.userId),
     assistant_id: String(input.assistantId),
     ts: String(input.timestamp ?? new Date().toISOString()),
     transport: String(input.transport),
     ...extraMetaWithoutSender(input.extraMeta),
-    ...readServerSenderMeta(input.serverSender),
+    // No person sender block on another agent's message, whatever a record
+    // says: the backend strips one, and this keeps that true.
+    ...(roomAgent ? {} : readServerSenderMeta(input.serverSender)),
     ...(senderType === 'system'
       ? { system: 'true', sender_type: 'system' }
       : senderType === 'agent'
         ? { sender_type: 'agent' }
-        : {}),
+        : roomAgent
+          ? {
+              sender_type: ROOM_AGENT_SENDER_TYPE,
+              ...(roomAgent.senderAssistantId
+                ? { sender_assistant_id: roomAgent.senderAssistantId }
+                : {}),
+            }
+          : {}),
     ...(input.sessionHandle
       ? { session_handle: String(input.sessionHandle) }
       : {}),
