@@ -803,6 +803,51 @@ test('the login alert spends nothing: once the login works again, a launch witho
   await done
 })
 
+test('the check comes back after a login alert: alerted once while the login stays failed, then the one relaunch once it works', async () => {
+  let failure: { at: number; text: string } | null = { at: T0 + 30_000, text: 'Login expired · Please run /login' }
+  const h = harness({ claudeLoginFailure: () => failure })
+  await launched(h, 1)
+  h.fire(THREE_MIN)
+  await settle()
+  const alerts = () => h.prints.filter((line) => line.includes('ALERT (claude-login-expired)')).length
+  assert.equal(alerts(), 1)
+  h.fire(THREE_MIN)
+  await settle()
+  assert.equal(h.claudes.length, 1, 'still failing: no relaunch')
+  assert.equal(alerts(), 1, 'and no second alert for the same launch')
+  // Someone runs /login; this launch's channel is still silent: a different cause, the one relaunch.
+  failure = null
+  h.fire(THREE_MIN)
+  await launched(h, 2)
+  assert.match(h.files.get(STATUS_PATH) ?? '', /outcome=health-relaunch reason=no-channel-heartbeat/)
+  await h.end()
+})
+
+test('a heartbeat that arrives after a login alert ends the checks: nothing relaunched, nothing armed', async () => {
+  let failure: { at: number; text: string } | null = { at: T0 + 30_000, text: 'Login expired · Please run /login' }
+  const h = harness({ claudeLoginFailure: () => failure })
+  await launched(h, 1)
+  h.fire(THREE_MIN)
+  await settle()
+  failure = null
+  h.files.set(`${HOME}\\.bgos-plugin-state\\888\\channel-beacon.json`, JSON.stringify({ beaconAt: T0 + 4 * 60_000, pid: 7140 }))
+  h.fire(THREE_MIN)
+  await settle()
+  assert.equal(h.claudes.length, 1)
+  assert.equal(h.armed(THREE_MIN), undefined)
+  await h.end()
+})
+
+test('the login alert names the newest failure it read, and when', async () => {
+  const h = harness({ claudeLoginFailure: () => ({ at: T0 + 30_000, text: 'Login expired · Please run /login' }) })
+  await launched(h, 1)
+  h.fire(THREE_MIN)
+  await settle()
+  assert.match(h.files.get(STATUS_PATH) ?? '', /outcome=claude-login-expired waited=180s lastFailedAt=2026-10-18T07:00:30.000Z /)
+  assert.ok(h.prints.some((line) => line.includes('the newest failure recorded at 2026-10-18T07:00:30.000Z')), h.prints.join('\n'))
+  await h.end()
+})
+
 test('a heartbeat in time never asks about the login', async () => {
   let asked = 0
   const h = harness({

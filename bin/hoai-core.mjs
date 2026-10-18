@@ -2652,45 +2652,55 @@ export async function superviseClaude(args, opts = {}) {
         },
       )
       let heartbeatTimer = null
-      if (unattended) {
-        heartbeatTimer = setTimer(() => {
-          heartbeatTimer = null
-          if (!live || restartRequested) return
-          const beacon = parseChannelBeacon(readFile(beaconPath))
-          if (channelHeartbeatSince({ beacon, startedAt, stalePid: staleBeaconPid })) {
-            heartbeatRelaunchSpent = false
-            return
-          }
-          const waited = `${Math.round(CHANNEL_HEARTBEAT_WAIT_MS / 1000)}s`
-          // The Claude login every agent here shares has failed: this session cannot sign in, and a
-          // relaunched one meets the same wall. Alert instead, and spend nothing (board row 31583f86).
-          const login = claudeLoginFailure()
-          if (login) {
-            const since = new Date(login.at).toISOString()
-            noteStatus('claude-login-expired', { waited, since, cli: login.text })
-            print(
-              `[hoai] ALERT (claude-login-expired): claude has run ${waited} and its channel has sent no heartbeat, ` +
-                `and the Claude login the agents on this computer share has failed since ${since}` +
-                `${login.text ? ` (the CLI says: "${login.text}")` : ''}. A relaunch cannot fix that, so hoai does not ` +
-                'relaunch. Sign in again: run /login in a claude session on this computer.',
-            )
-            return
-          }
-          if (!heartbeatRelaunchSpent) {
-            heartbeatRelaunchSpent = true
-            healthRelaunch('no-channel-heartbeat', `claude has run ${waited} and its channel has sent no heartbeat (${beaconPath})`)
-            return
-          }
-          noteStatus('no-channel-heartbeat', { waited, beacon: beaconPath })
-          print(
-            `[hoai] ALERT (no-channel-heartbeat): claude has run ${waited} and its channel has sent no heartbeat ` +
-              `(${beaconPath}), after the one relaunch hoai makes for that. Not relaunching again: the agent stays ` +
-              'up for a person to look at. Run hoai doctor in this folder.',
-          )
-        }, CHANNEL_HEARTBEAT_WAIT_MS)
+      // Alerted once per launch: the check keeps coming back while the login stays failed, quietly.
+      let loginAlerted = false
+      const armHeartbeatCheck = () => {
+        heartbeatTimer = setTimer(checkHeartbeat, CHANNEL_HEARTBEAT_WAIT_MS)
         // Never what keeps this process alive; claude's own handle does that.
         if (heartbeatTimer && typeof heartbeatTimer === 'object' && typeof heartbeatTimer.unref === 'function') heartbeatTimer.unref()
       }
+      const checkHeartbeat = () => {
+        heartbeatTimer = null
+        if (!live || restartRequested) return
+        const beacon = parseChannelBeacon(readFile(beaconPath))
+        if (channelHeartbeatSince({ beacon, startedAt, stalePid: staleBeaconPid })) {
+          heartbeatRelaunchSpent = false
+          return
+        }
+        const waited = `${Math.round((now() - startedAt) / 1000)}s`
+        // The Claude login every agent here shares has failed: this session cannot sign in, and a
+        // relaunched one meets the same wall. Alert instead, spend nothing, and look again later: once
+        // the login works, a launch still without a heartbeat has another cause and gets its one
+        // relaunch (board row 31583f86).
+        const login = claudeLoginFailure()
+        if (login) {
+          if (!loginAlerted) {
+            loginAlerted = true
+            const lastFailedAt = new Date(login.at).toISOString()
+            noteStatus('claude-login-expired', { waited, lastFailedAt, cli: login.text })
+            print(
+              `[hoai] ALERT (claude-login-expired): claude has run ${waited} and its channel has sent no heartbeat, ` +
+                `and the Claude login the agents on this computer share has failed (the newest failure recorded at ${lastFailedAt}` +
+                `${login.text ? `; the CLI says: "${login.text}"` : ''}). A relaunch cannot fix that, so hoai does not ` +
+                'relaunch. Sign in again: run /login in a claude session on this computer.',
+            )
+          }
+          armHeartbeatCheck()
+          return
+        }
+        if (!heartbeatRelaunchSpent) {
+          heartbeatRelaunchSpent = true
+          healthRelaunch('no-channel-heartbeat', `claude has run ${waited} and its channel has sent no heartbeat (${beaconPath})`)
+          return
+        }
+        noteStatus('no-channel-heartbeat', { waited, beacon: beaconPath })
+        print(
+          `[hoai] ALERT (no-channel-heartbeat): claude has run ${waited} and its channel has sent no heartbeat ` +
+            `(${beaconPath}), after the one relaunch hoai makes for that. Not relaunching again: the agent stays ` +
+            'up for a person to look at. Run hoai doctor in this folder.',
+        )
+      }
+      if (unattended) armHeartbeatCheck()
       // A stop request ends the live claude; the exit below then returns
       // instead of relaunching. Checked once more after registering, because an
       // abort that already happened fires no event.
