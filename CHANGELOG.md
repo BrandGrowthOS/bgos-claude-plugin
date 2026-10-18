@@ -2,7 +2,7 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
-## 0.71.3 (2026-10-18)
+## 0.71.5 (2026-10-18)
 
 **The owner can now see which sites an agent's own browser remembers (every Always allow and Trust this site answer) and forget one or all of them from the agent editor; a forgotten site asks again on its very next visit, in a browser that is already open as well as after a restart (HOAI board row 79fda9a6).**
 
