@@ -7,7 +7,7 @@
  * That is the whole job:
  *
  *   <state>/hooks/<session_id>/events.jsonl
- *   { "id": "<line id>", "receivedAt": <ms>, "event": "<name>", "payload": { ... } }
+ *   { "id": "<line id>", "receivedAt": <ms>, "startedAt": <ms>, "event": "<name>", "payload": { ... } }
  *
  * The daemon (server.ts, through lib/hook-intake.ts) watches that directory and
  * drains it. See lib/hook-intake.ts for why the transport is a file rather than
@@ -342,8 +342,8 @@ export function rotateIfFull(path, fs, maxBytes = SPOOL_MAX_BYTES) {
 }
 
 /** The one line the forwarder writes. Pure, so the shape is testable. */
-export function buildSpoolLine({ id, receivedAt, event, payload }) {
-  return `${JSON.stringify({ id, receivedAt, event, payload })}\n`
+export function buildSpoolLine({ id, receivedAt, startedAt, event, payload }) {
+  return `${JSON.stringify({ id, receivedAt, startedAt, event, payload })}\n`
 }
 
 function defaultSpoolFs() {
@@ -382,6 +382,10 @@ export function appendEvent(payload, opts = {}) {
   const env = opts.env ?? process.env
   const home = opts.home ?? homedir()
   const now = opts.now ?? Date.now()
+  // This process's own start: claude spawns the forwarder at the event, so it is the moment the event happened, before
+  // the cold start and the stdin read that receivedAt comes after (seconds on a slow Windows start). The private turn
+  // places a Stop by it (lib/private-turn.mjs end, the re-review of c09e214e). Never later than receivedAt.
+  const startedAt = Math.min(opts.startedAt ?? Math.floor(performance.timeOrigin), now)
   if (!isRecord(payload)) return null
   const sessionId = String(payload.session_id ?? '').trim()
   if (!sessionId) return null
@@ -397,6 +401,7 @@ export function appendEvent(payload, opts = {}) {
   const line = buildSpoolLine({
     id,
     receivedAt: now,
+    startedAt,
     event: String(payload.hook_event_name ?? ''),
     payload: clipPayload(payload, opts.payloadMaxBytes ?? PAYLOAD_MAX_BYTES),
   })

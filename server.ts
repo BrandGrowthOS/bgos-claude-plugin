@@ -9787,13 +9787,17 @@ function runHookEffects(effects: Effect[]): void {
  * up to a minute, so a card built on it can report minutes that are wrong by
  * more than the turn was long.
  */
-/** The receivedAt of the hook line whose effects run now (onHookPayload), for privateTurns.end(); null otherwise. */
+/** The time of the hook line whose effects run now (onHookPayload's lineAt), for privateTurns.end(); null otherwise. */
 let hookLineAt: number | null = null
 
 function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void {
   const event = parseHookEvent(payload)
   if (event === null) return
   const receivedAt = line?.receivedAt ?? Date.now()
+  // When the CLI got to this event, for privateTurns.end(): the forwarder's own process start, which claude spawns
+  // with the Stop hook at the Stop, before the next prompt's hook can run. Its receivedAt comes after the forwarder's
+  // cold start and stdin read, which can be after the next prompt's marker (the re-review of c09e214e).
+  const lineAt = line?.startedAt ?? receivedAt
   // The payload carries the CLI's own transcript_path, which is the strongest
   // binding evidence there is (lib/session-binding.ts). Feeding it here is what
   // lets the context gauge stop guessing.
@@ -9811,7 +9815,7 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
     liveSessionId = hookSessionId
     liveSessionSeenAtMs = Date.now()
   }
-  if (event.name === 'SessionEnd') privateTurns.end({ at: receivedAt })
+  if (event.name === 'SessionEnd') privateTurns.end({ at: lineAt })
   if (event.name === 'UserPromptSubmit') {
     // A prompt past the forwarder's clip arrives as its token(s) plus the full prompt's hash.
     const began = privateTurns.begin({ prompt: payload.prompt, promptHash: payload.hoai_clipped === true ? payload.prompt_sha256 : undefined, sessionId: hookSessionId, promptId: payload.prompt_id })
@@ -9828,7 +9832,7 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
   }
   const { next, effects } = applyHookEventToTurn(hookTurn, event, receivedAt)
   hookTurn = next
-  hookLineAt = receivedAt
+  hookLineAt = lineAt
   try {
     runHookEffects(effects)
   } finally {

@@ -163,6 +163,12 @@ export interface SpoolLine {
    */
   id: string
   receivedAt: number
+  /**
+   * The forwarder process's own start (bin/hoai-hook.mjs): claude spawns it at the event, so a Stop line says when the
+   * CLI stopped by it, never by receivedAt, which comes after the forwarder's cold start and stdin read. Absent on a
+   * line from a forwarder before it, and when it is not a time at or before receivedAt.
+   */
+  startedAt?: number
   event: string
   payload: Record<string, unknown>
 }
@@ -194,7 +200,10 @@ export function parseSpoolLine(raw: string): SpoolLine | null {
     typeof parsed.receivedAt === 'number' && Number.isFinite(parsed.receivedAt)
       ? parsed.receivedAt
       : 0
-  return { id, receivedAt, event: String(parsed.event ?? ''), payload: parsed.payload }
+  const line: SpoolLine = { id, receivedAt, event: String(parsed.event ?? ''), payload: parsed.payload }
+  const startedAt = parsed.startedAt
+  if (typeof startedAt === 'number' && Number.isFinite(startedAt) && startedAt > 0 && startedAt <= receivedAt) line.startedAt = startedAt
+  return line
 }
 
 // ── The persisted drain cursor ───────────────────────────────────────────────
