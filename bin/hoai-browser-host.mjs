@@ -70,6 +70,7 @@ import { launcherProcessQuery, parseLauncherProcesses, readBootClock } from '../
 import { ensureBrowser, bundledChromium } from '../lib/browser-bootstrap.mjs'
 import { BrowserSecretRedactor } from '../lib/browser-secret-redactor.mjs'
 import { DOWNLOAD_ASK_WAIT_S, DownloadStore, SlotDownloads, downloadLines, downloadPaths } from '../lib/browser-downloads.mjs'
+import { SAVED_GRANT_WORDS, SAVED_SITES_MAX, forgetInGrants, readSavedSitesRequest, savedSiteDirs, savedSitesOf, withoutSavedSites } from '../lib/browser-saved-sites.mjs'
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
@@ -105,6 +106,8 @@ export const LOG_PREFIX = '[hoai-browser-host]'
 
 /** The handshake role the gateway routes to `connectBrowserHost`. */
 export const BROWSER_HOST_ROLE = 'browser_host'
+/** The handshake feature word of a host that answers `browser_saved_sites`. */
+export const BROWSER_HOST_FEATURE_SAVED_SITES = 'saved_sites'
 /** The socket event the relay emits to one host socket. */
 export const BROWSER_RPC_EVENT = 'browser_rpc'
 /** The gateway keeps at most this much of `deviceLabel`. */
@@ -685,7 +688,11 @@ export function readPairings({ agentRoot, allow = null, listDir = defaultListDir
 export function handshakeOptions(pairing, deviceLabel) {
   return {
     query: { pairingToken: pairing.token },
-    auth: { role: BROWSER_HOST_ROLE, agents: [...pairing.assistantIds], deviceLabel },
+    // `features`: what this host answers beyond browser_rpc, so the backend
+    // asks only a host that can (saved_sites: the owner's list and forget of
+    // the answers this browser saved, board row 79fda9a6). An older backend
+    // ignores the field.
+    auth: { role: BROWSER_HOST_ROLE, agents: [...pairing.assistantIds], deviceLabel, features: [BROWSER_HOST_FEATURE_SAVED_SITES] },
   }
 }
 
@@ -1691,6 +1698,12 @@ export class BrowserPool {
     await Promise.all([...this._slots.values()].map((slot) => this._stopSlot(slot)))
   }
 
+  /** Every slot of one agent, running or not: each keeps its grants for as long as this host runs. */
+  slotsOf(assistantId) {
+    const base = join(this._agentRoot, String(assistantId), 'browser')
+    return [...this._slots.values()].filter((s) => dirname(s.paths.profileDir) === base)
+  }
+
   /** Every slot that has downloads to settle. */
   downloadSlots() {
     return [...this._slots.values()].filter((s) => s.downloads)
@@ -2071,6 +2084,80 @@ export class BrowserHostCore {
     return id === null ? null : hostProfiles.agentProfileKey(`relay:${id}`)
   }
 
+  /**
+   * The sites this agent's browser saved an answer for (Always allow, Trust
+   * this site), over every person it browsed for on this machine, one row per
+   * origin, sorted. Read from the files, never from a live slot, so the owner
+   * sees what a restart would honour. For the owner only: it is reached from
+   * the backend's owner route as `browser_saved_sites`, never from a tool.
+   */
+  savedSites(assistantId) {
+    const id = assistantIdOrNull(assistantId)
+    const key = id === null ? null : hostProfiles.agentProfileKey(`relay:${id}`)
+    if (!key) return { ok: false, reason: 'bad_request', sites: [] }
+    const rows = new Map()
+    for (const dir of savedSiteDirs(this.pool._agentRoot, id, hostSettings.SETTINGS_FILE)) {
+      const read = hostSettings.readSettings(dir)
+      if (read.error || read.corrupt) continue
+      for (const row of savedSitesOf(read.settings, key, hostProfiles.sessionGrants)) {
+        const seen = rows.get(row.origin) || { origin: row.origin, trusted: false, allowed: [] }
+        seen.trusted = seen.trusted || row.trusted
+        seen.allowed = SAVED_GRANT_WORDS.map(([, word]) => word).filter((word) => seen.allowed.includes(word) || row.allowed.includes(word))
+        rows.set(row.origin, seen)
+      }
+    }
+    const sites = [...rows.values()].sort((a, b) => (a.origin < b.origin ? -1 : a.origin > b.origin ? 1 : 0)).slice(0, SAVED_SITES_MAX)
+    return { ok: true, sites }
+  }
+
+  /**
+   * Forget one saved site (`{ origin }`) or every one (`{ all: true }`) of
+   * this agent, in every person's file on this machine AND in every slot of
+   * this host, running or not, so the very next visit asks again. Each file is
+   * read, changed and written in one step (settings.updateSettings), so an
+   * answer saved meanwhile by another call is not lost. A file that could not
+   * be written makes the answer ok: false: a forget that did not forget must
+   * not read as done.
+   */
+  forgetSavedSites(assistantId, { origin, all } = {}) {
+    const id = assistantIdOrNull(assistantId)
+    const key = id === null ? null : hostProfiles.agentProfileKey(`relay:${id}`)
+    const one = typeof origin === 'string' && origin !== ''
+    if (!key || one === (all === true)) return { ok: false, reason: 'bad_request', forgot: 0, sites: [] }
+    const target = one ? origin : null
+    const forgot = new Set()
+    let failed = false
+    for (const dir of savedSiteDirs(this.pool._agentRoot, id, hostSettings.SETTINGS_FILE)) {
+      const read = hostSettings.readSettings(dir)
+      if (read.corrupt || (!read.error && !withoutSavedSites(read.settings, key, target))) continue
+      try {
+        hostSettings.updateSettings(dir, (fresh) => {
+          const out = withoutSavedSites(fresh, key, target)
+          if (!out) return fresh
+          for (const o of out.forgot) forgot.add(o)
+          return out.settings
+        })
+      } catch (err) {
+        failed = true
+        this._log(`could not forget saved browser answers in ${dir}: ${err?.message ?? err}`)
+      }
+    }
+    for (const slot of this.pool.slotsOf(id)) {
+      if (slot.grants) slot.grants = forgetInGrants(slot.grants, target).map
+      slot.settings = null
+    }
+    const list = this.savedSites(id)
+    if (failed) return { ok: false, reason: 'not_saved', forgot: forgot.size, sites: list.sites }
+    this._log(`the owner forgot ${forgot.size} saved browser answer(s) of agent ${id}${one ? ` for ${origin}` : ''}`)
+    return { ok: true, forgot: forgot.size, sites: list.sites }
+  }
+
+  /** One checked `browser_saved_sites` request (readSavedSitesRequest), answered. */
+  savedSitesRequest(request) {
+    if (request.op === 'list') return this.savedSites(request.assistantId)
+    return this.forgetSavedSites(request.assistantId, request.all ? { all: true } : { origin: request.origin })
+  }
+
   /** This browser's settings, read once per slot and kept. */
   _settingsFor(slot) {
     if (!slot.settings) {
@@ -2404,8 +2491,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
  * the id of the socket the frame arrived on.
  */
 export class PairingConnection {
-  constructor({ pairing, deviceLabel, relay, remoteViews = null, io = socketIoClient, fetchImpl = globalThis.fetch, log = () => {}, retryMinMs = REFUSED_RETRY_MIN_MS, retryMaxMs = REFUSED_RETRY_MAX_MS, onConnect = null }) {
+  constructor({ pairing, deviceLabel, relay, remoteViews = null, savedSites = null, io = socketIoClient, fetchImpl = globalThis.fetch, log = () => {}, retryMinMs = REFUSED_RETRY_MIN_MS, retryMaxMs = REFUSED_RETRY_MAX_MS, onConnect = null }) {
     this.pairing = pairing
+    /** Answers the owner's saved sites requests (BrowserHostCore.savedSitesRequest), or null. */
+    this._savedSites = savedSites
     /** Told on every connect: a kept file whose owner could not be told yet is told now. */
     this._onConnect = onConnect
     this._label = deviceLabel
@@ -2491,6 +2580,23 @@ export class PairingConnection {
     })
     socket.on('browser_view_command', input => {
       if (this.socketId) void this._remoteViews?.command(input, this.socketId).catch(() => {})
+    })
+    // The OWNER's list and forget of the answers this agent's browser saved.
+    // The backend emits it only from its owner route (a signed-in person who
+    // owns the agent), and only to the host of the agent's own pairing; the
+    // agent's own traffic arrives as browser_rpc and can never raise it. The
+    // answer is the socket.io acknowledgement, so nothing is posted back.
+    socket.on('browser_saved_sites', (input, ack) => {
+      if (typeof ack !== 'function') return
+      const request = readSavedSitesRequest(input)
+      if (!request) return ack({ ok: false, reason: 'bad_request' })
+      if (!this.pairing.assistantIds.includes(request.assistantId) || !this._savedSites) return ack({ ok: false, reason: 'not_served' })
+      try {
+        ack(this._savedSites(request))
+      } catch (err) {
+        this._log(`${this._name}: saved sites request failed: ${err?.message ?? err}`)
+        ack({ ok: false, reason: 'host_error' })
+      }
     })
     socket.on('browser_view_close', input => {
       if (this.socketId) void this._remoteViews?.close(input?.viewId, this.socketId, 'viewer_closed')
@@ -2781,7 +2887,7 @@ export class BrowserHost {
     }
     for (const [key, pairing] of wanted) {
       if (this.connections.has(key)) continue
-      const conn = new PairingConnection({ pairing, deviceLabel: this.deviceLabel, relay: this.relay, remoteViews: this.remoteViews, io: this._io, fetchImpl: this._fetch, log: this._log, onConnect: (ids) => this._agentsConnected(ids) })
+      const conn = new PairingConnection({ pairing, deviceLabel: this.deviceLabel, relay: this.relay, remoteViews: this.remoteViews, savedSites: (request) => this.core.savedSitesRequest(request), io: this._io, fetchImpl: this._fetch, log: this._log, onConnect: (ids) => this._agentsConnected(ids) })
       this.connections.set(key, conn)
       this._log(`pairing ${pairing.pairingId ?? '(no id)'} on ${pairing.backendUrl}: serving agents [${pairing.assistantIds.join(', ')}]${pairing.staleTokens ? ` (${pairing.staleTokens} older token file(s) ignored)` : ''}`)
       conn.start()
