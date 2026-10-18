@@ -15,7 +15,10 @@
  *   3. connects its lane socket presenting the lane session ALONE, catches up
  *      from its own cursor through `GET lanes/inbound`, and delivers each turn
  *      to Claude as a channel event, only when it is stamped for this lane,
- *      and never before Claude has this server's tools (0.71.1);
+ *      and never before Claude has this server's tools (0.71.1); each
+ *      message at most once per process, and, when it starts with no inbox
+ *      note, never a backlog turn the server shows already answered or a
+ *      command it already performed (0.71.2);
  *   4. acknowledges each delivered turn, beats its own heartbeat, records its
  *      activity in lane.json for the supervisor's idle stop, and stops the
  *      lane on `lane_revoked` or when its session ends;
@@ -83,12 +86,23 @@ import {
   inboxNoteHandled,
   inboxNoteReplied,
   inboxPollFrom,
-  inboxShouldDeliver,
+  inboxTrusted,
+  inboxVerified,
   LaneClaudeReady,
   laneDeliveryGate,
+  LaneDeliveryClaims,
+  laneHistoryAfterPathFor,
+  laneHistoryAnsweredAfter,
+  laneHistoryDeliveryState,
+  laneHistoryPathFor,
+  LANE_NOTICE_SENTENCES,
+  LANE_HISTORY_READ_ATTEMPTS,
+  LANE_HISTORY_READ_TIMEOUT_MS,
+  LANE_HISTORY_RETRY_MS,
   laneInstructions,
   laneMeMatches,
   LANE_INLINE_FILE_MAX_BYTES,
+  LANE_SERVER_ACKNOWLEDGED,
   LANE_TOOLS,
   normaliseLaneDelivery,
   readLaneDaemonConfig,
@@ -170,14 +184,14 @@ class LaneHttpError extends Error {
   }
 }
 
-async function laneFetch(method: string, path: string, body?: unknown, opts: { auth?: boolean } = {}): Promise<unknown> {
+async function laneFetch(method: string, path: string, body?: unknown, opts: { auth?: boolean; timeoutMs?: number } = {}): Promise<unknown> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (opts.auth !== false) {
     if (!session) throw new LaneHttpError(401, 'no lane session')
     headers['X-BGOS-Session'] = session.sessionToken
   }
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 20_000)
+  const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 20_000)
   try {
     const res = await fetch(`${CFG.apiBase}/${path.replace(/^\//, '')}`, {
       method,
@@ -374,12 +388,21 @@ function writeLaneState(): void {
   }
 }
 
-let inbox: LaneInboxState = readLaneInbox(readJson(CURSOR_PATH))
+const launchNote = readJson(CURSOR_PATH)
+let inbox: LaneInboxState = readLaneInbox(launchNote)
+// No note (a first start, or a lane whose folders were deleted): only then
+// does the boot poll ask the server what was already handed over (0.71.2).
+// With a note, the note is the authority. A note saved before that boot
+// poll has asked is marked, so a restart in between does not trust it.
+const launchHadNote = inboxTrusted(launchNote)
+if (!launchHadNote) inbox = { ...inbox, unverified: true }
 function saveInbox(): void {
   try { writePrivateJson(CURSOR_PATH, inbox) } catch (err) { log(`could not save the inbox: ${String(err)}`) }
 }
 // Chats this lane was handed a turn in: the only chats `reply` may write to.
 const deliveredChats = new Set<string>(inbox.pending.map((p) => p.chatId))
+// Which turns this process hands over, decided once per message id (0.71.2).
+const claims = new LaneDeliveryClaims(inbox)
 
 const ROOT = dirname(fileURLToPath(import.meta.url))
 const mcp = new Server(mcpServerInfo(readOwnVersion(ROOT)), {
@@ -480,7 +503,19 @@ async function deliverRaw(raw: unknown, transport: 'lane-socket' | 'lane-poll', 
     return
   }
   const d = gate.delivery
-  if (!inboxShouldDeliver(inbox, d.messageId, { reoffer: opts.reoffer === true })) return
+  if (d.messageId < (inbox.newFrom ?? 0)) {
+    // From the conversation the person left with a `/new` (in this life or,
+    // through the note, the last): never handed over, never waiting, even one
+    // the boot poll was still deciding (0.71.2).
+    if (!inbox.delivered.includes(d.messageId)) {
+      inbox = inboxNoteHandled(inbox, d)
+      saveInbox()
+    }
+    return
+  }
+  // The one decision for this id, before any await: the socket and the poll
+  // can never both hand it over (0.71.2).
+  if (!claims.take(inbox, d.messageId, { reoffer: opts.reoffer === true })) return
   // P5: the lane's own commands. Only the LANE catalog is consulted, never a
   // command folder on this computer.
   const route = routeLaneSlash(d.raw as Record<string, unknown>)
@@ -489,6 +524,8 @@ async function deliverRaw(raw: unknown, transport: 'lane-socket' | 'lane-poll', 
     if (route.kind === 'new') {
       // The new conversation starts empty: no turn of the old one is re-offered.
       inbox = inboxForNewConversation(inbox)
+      // Saved with the note below, before the restart this /new asks for.
+      inbox = { ...inbox, newFrom: Math.max(inbox.newFrom ?? 0, d.messageId) }
       inFlightChats.clear()
       inFlight = false
       inFlightSinceMs = null
@@ -629,18 +666,40 @@ async function poll(): Promise<void> {
       .filter((r): r is { raw: unknown; d: LaneDelivery } => r.d !== null)
       .sort((a, b) => a.d.messageId - b.d.messageId)
     const boot = firstPoll
-    firstPoll = false
     // New rows: on the very first start only the turn that woke the lane
     // (selectLaneBacklog); after that, every row past the cursor.
-    const fresh = new Set(
-      selectLaneBacklog(rows.filter((r) => !inbox.delivered.includes(r.d.messageId)).map((r) => r.d), {
-        cursor: inbox.cursor,
-        nowMs: Date.now(),
-      }).map((d) => d.messageId),
-    )
-    const pendingIds = new Set(inbox.pending.map((p) => p.id))
+    let backlog = selectLaneBacklog(rows.filter((r) => !inbox.delivered.includes(r.d.messageId)).map((r) => r.d), {
+      cursor: inbox.cursor,
+      nowMs: Date.now(),
+    })
+    if (boot && !launchHadNote && backlog.length > 0) {
+      // A lane whose folders were deleted boots with no inbox note and would
+      // re-answer the person's last 15 minutes: the server's record of what
+      // was already answered decides instead (0.71.2). Only rows stamped
+      // for this lane are asked about: the rest never go over (the second
+      // lock refuses them below), and the server would refuse the read.
+      const { answered, unsure, newFrom } = await answeredAtServer(backlog.filter((d) => laneDeliveryGate(d.raw, LANE).deliver))
+      // A `/new` she sent, performed before the folders went: the turns older
+      // than it belong to the conversation she left (deliverRaw keeps them out).
+      if (newFrom > (inbox.newFrom ?? 0)) inbox = { ...inbox, newFrom }
+      for (const d of backlog) {
+        if (!answered.has(d.messageId)) continue
+        // Handed over in this life during the reads, and the server cannot
+        // show an answer: its own note stands, waiting for one.
+        if (unsure.has(d.messageId) && inbox.delivered.includes(d.messageId)) continue
+        log(`backlog turn ${d.messageId} was already ${unsure.has(d.messageId) ? 'picked up (acknowledged at the server, its answer unknown)' : 'answered (acknowledged at the server, and answered or performed)'}; not offered again`)
+        inbox = inboxNoteHandled(inbox, d)
+      }
+      backlog = backlog.filter((d) => !answered.has(d.messageId))
+    }
+    // The server was asked (or nothing needed asking): the note is trusted from here.
+    if (boot && inbox.unverified) inbox = inboxVerified(inbox)
+    firstPoll = false
+    const fresh = new Set(backlog.map((d) => d.messageId))
     for (const r of rows) {
-      const reoffer = boot && pendingIds.has(r.d.messageId)
+      // Only a turn the inbox held at launch, and not yet handed over in
+      // this life, is re-offered (LaneDeliveryClaims).
+      const reoffer = boot && claims.mayReoffer(r.d.messageId)
       if (fresh.has(r.d.messageId) || reoffer) {
         await deliverRaw(r.raw, 'lane-poll', { backlog: boot, reoffer })
       }
@@ -653,6 +712,59 @@ async function poll(): Promise<void> {
   } finally {
     polling = false
   }
+}
+
+/** One history read, retried a few times (LANE_HISTORY_READ_ATTEMPTS); undefined when the server could not answer. */
+async function readHistory(path: string, messageId: number): Promise<unknown> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await laneFetch('GET', path, undefined, { timeoutMs: LANE_HISTORY_READ_TIMEOUT_MS })
+    } catch (err) {
+      const why = err instanceof LaneHttpError ? err.status : String(err)
+      if (attempt >= LANE_HISTORY_READ_ATTEMPTS) {
+        log(`the server could not say whether backlog turn ${messageId} was answered (${why})`)
+        return undefined
+      }
+      await new Promise((r) => setTimeout(r, LANE_HISTORY_RETRY_MS * attempt))
+    }
+  }
+}
+
+/**
+ * Which of these backlog rows were already ANSWERED, by the server's record
+ * (0.71.2), and the latest `/new` she sent that was performed. A row is
+ * answered when the server shows it acknowledged (an agent picked it up) AND
+ * either an agent answered it after (an agent row that is not one of the
+ * lane's fixed notices: the backend's reply hook acks for those too) or it is
+ * a command the lane performs itself (`/new`, `/model x`, `/effort x`), so an
+ * acknowledged one is not performed twice. A row whose state the server
+ * cannot give is offered as before; an acknowledged row whose answer it
+ * cannot give is kept out, never re-answered. Two reads per row at most,
+ * rows in parallel: at most 30 s in all, only when the route fails or hangs,
+ * and a refusal here never ends the lane.
+ */
+async function answeredAtServer(backlog: LaneDelivery[]): Promise<{ answered: Set<number>; unsure: Set<number>; newFrom: number }> {
+  const answered = new Set<number>()
+  // Acknowledged, but the server could not show whether an agent answered.
+  const unsure = new Set<number>()
+  let newFrom = 0
+  await Promise.all(backlog.map(async (d) => {
+    const page = await readHistory(laneHistoryPathFor(d), d.messageId)
+    if (page === undefined) return
+    if (laneHistoryDeliveryState(page, d.messageId) !== LANE_SERVER_ACKNOWLEDGED) return
+    const route = routeLaneSlash(d.raw as Record<string, unknown>)
+    if (route.kind === 'new' || ((route.kind === 'model' || route.kind === 'effort') && route.commandArgs !== '')) {
+      answered.add(d.messageId)
+      if (route.kind === 'new') newFrom = Math.max(newFrom, d.messageId)
+      return
+    }
+    const after = await readHistory(laneHistoryAfterPathFor(d), d.messageId)
+    const said = after === undefined ? null : laneHistoryAnsweredAfter(after, d.messageId, LANE_NOTICE_SENTENCES)
+    if (said === false) return
+    answered.add(d.messageId)
+    if (said === null) unsure.add(d.messageId)
+  }))
+  return { answered, unsure, newFrom }
 }
 
 function frameIsMine(frame: unknown): boolean {
