@@ -11,7 +11,10 @@
 #
 # The gate log is shared by every agent of this Windows user, so only helpers of THIS agent's
 # launcher count: those whose "start" names its console (-ConsolePid, by default the launcher pid in
-# supervisor.json; every relaunch under one launcher shares it).
+# supervisor.json; every relaunch under one launcher shares it). Without a launcher pid only the
+# newest helper run since -Since is judged, so an older PASS (an earlier start, or another agent's)
+# never outweighs a newer UNPROVEN. A helper run begins at its "start" line: a pid Windows reused
+# for a later helper is a second run.
 #
 # PASS needs, from ONE such helper process (one pid=) since -Since (default: the last 30 minutes):
 # "start", "attached" AND "accepted", then a daemon boot within 3 minutes of that accepted and a
@@ -44,10 +47,12 @@ if ($ConsolePid -le 0 -and (Test-Path $supervisorFile)) {
   try { $ConsolePid = [int]((Lines $supervisorFile) -join "`n" | ConvertFrom-Json).pid } catch {}
 }
 Say "agent $Id, since $($from.ToString('o')) (UTC)"
-if ($ConsolePid -gt 0) { Say "this agent's launcher (console) pid: $ConsolePid" } else { Say 'WARNING: no launcher pid (no supervisor.json, no -ConsolePid): every helper in the log is judged, and on a PC with several agents one of theirs can pass for this one' }
+if ($ConsolePid -gt 0) { Say "this agent's launcher (console) pid: $ConsolePid" } else { Say 'WARNING: no launcher pid (no supervisor.json, no -ConsolePid): only the newest helper run in the log is judged, and on a PC with several agents it can be another agent''s' }
 
-# 1. The gate helper, one verdict per helper process.
-$helpers = [ordered]@{}
+# 1. The gate helper, one verdict per helper run. A run begins at its "start" line, so a pid that
+#    Windows reused for a later helper is a run of its own, never merged with the earlier one.
+$runs = New-Object System.Collections.ArrayList
+$open = @{}
 $errors = 0
 $last = $null
 foreach ($line in (Lines $gateLog)) {
@@ -56,21 +61,26 @@ foreach ($line in (Lines $gateLog)) {
     $last = $at
     if ($at -lt $from) { continue }
     $hp = $Matches[2]; $text = $Matches[3]; $word = ($text -split '[ :]')[0]
-    if (-not $helpers.Contains($hp)) { $helpers[$hp] = [ordered]@{ words = @(); lines = @(); acceptedAt = $null; console = 0 } }
-    if ($text -match '^start console=(\d+)') { $helpers[$hp].console = [int]$Matches[1] }
-    $helpers[$hp].words += $word
-    $helpers[$hp].lines += $line
-    if ($word -eq 'accepted') { $helpers[$hp].acceptedAt = $at }
+    if ($word -eq 'start' -or -not $open.Contains($hp)) {
+      $open[$hp] = $runs.Count
+      [void]$runs.Add([ordered]@{ pid = $hp; words = @(); lines = @(); acceptedAt = $null; console = 0 })
+    }
+    $run = $runs[$open[$hp]]
+    if ($text -match '^start console=(\d+)') { $run.console = [int]$Matches[1] }
+    $run.words += $word
+    $run.lines += $line
+    if ($word -eq 'accepted') { $run.acceptedAt = $at }
   } elseif ($line -match 'Add-Content|being used by another process' -and $last -and $last -ge $from) {
     $errors++
   }
 }
 if ($errors -gt 0) { Say "gate log: $errors line(s) of Add-Content's refusal (a log write the helper lost; the 888 cause, an old helper)" }
-if ($helpers.Count -eq 0) { Say "gate log: NO helper since then ($gateLog)" }
+if ($runs.Count -eq 0) { Say "gate log: NO helper since then ($gateLog)" }
 $passAt = $null
-foreach ($hp in $helpers.Keys) {
-  $h = $helpers[$hp]
+for ($i = 0; $i -lt $runs.Count; $i++) {
+  $h = $runs[$i]; $hp = $h.pid
   if ($ConsolePid -gt 0 -and $h.console -ne $ConsolePid) { Say "helper pid $hp : another launcher's (console $($h.console)), not judged"; continue }
+  if ($ConsolePid -le 0 -and $i -lt $runs.Count - 1) { Say "helper pid $hp : an earlier helper run (console $($h.console)), not judged: without the launcher pid only the newest helper run counts"; continue }
   $ok = ($h.words -contains 'start') -and ($h.words -contains 'attached') -and ($h.words -contains 'accepted')
   $verdict = if ($ok) { 'PASS (start, attached, accepted)' } elseif ($h.words -contains 'unproven') { 'UNPROVEN (exit 6: hoai relaunches claude for it)' } elseif ($h.words -contains 'accepted') { 'FAIL (accepted WITHOUT attached: the 888 shape)' } else { 'NOT PASSED (' + ($h.words -join ', ') + ')' }
   Say "helper pid $hp : $verdict"
