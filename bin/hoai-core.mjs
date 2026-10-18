@@ -1576,6 +1576,26 @@ function defaultSpawnGateHelper({ scriptDir, consolePid, spawnImpl = spawn, writ
   return child
 }
 
+/** End a Windows process and every process under it: `taskkill /PID <pid> /T /F`, from System32 when
+ *  SystemRoot names it. A claude installed by npm is `claude.cmd`, which hoai starts as
+ *  `cmd.exe /c claude.cmd`, and node's kill() of that child is TerminateProcess on cmd.exe alone: the
+ *  real claude under it (node running cli.js) is not in libuv's kill-on-close job either (it breaks
+ *  away silently), so it ran on beside the relaunched one (board row 978da5db, measured with a fake
+ *  claude behind a real cmd-shim claude.cmd). True only when taskkill exits 0.
+ *  @param {number} pid
+ *  @param {{ spawnSyncImpl?: typeof spawnSync, env?: Record<string, string | undefined> }} [opts] */
+export function endWin32ProcessTree(pid, { spawnSyncImpl = spawnSync, env = process.env } = {}) {
+  if (!Number.isInteger(pid) || pid <= 0) return false
+  const root = String(env.SystemRoot ?? env.SYSTEMROOT ?? '').trim()
+  const taskkill = root ? joinDir(joinDir(root, 'System32'), 'taskkill.exe') : 'taskkill.exe'
+  try {
+    const r = spawnSyncImpl(taskkill, ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true, timeout: 15_000 })
+    return r?.status === 0
+  } catch {
+    return false
+  }
+}
+
 /**
  * Is `expect` available to auto-accept the dev-channels startup gate? Never on
  * win32 (no expect; win32 uses the console-input helper instead).
@@ -2028,6 +2048,22 @@ export async function superviseClaude(args, opts = {}) {
         handle = setTimer(done, ms)
       }))
 
+  // Ending claude for a relaunch or a stop. On Windows its whole process tree, not the first process
+  // alone (endWin32ProcessTree: the cmd.exe of the npm shim left the real claude running). Only a
+  // claude node's own spawn started and whose exit is not recorded yet, so its pid is still its own:
+  // a child from an injected spawn (a test's fake) is ended by its own kill(), never by a taskkill
+  // aimed at a made up pid that may be anyone's.
+  const endProcessTree =
+    opts.endProcessTree ??
+    (platform === 'win32' && spawnImpl === spawn ? (pid) => endWin32ProcessTree(pid, { spawnSyncImpl: opts.spawnSyncImpl ?? spawnSync, env }) : null)
+  const endClaude = (child) => {
+    if (platform === 'win32' && endProcessTree && child.exitCode == null && child.signalCode == null) {
+      if (endProcessTree(child.pid)) return
+      print(`[hoai] could not end the process tree of claude (pid ${child.pid}); ending that process alone`)
+    }
+    child.kill()
+  }
+
   // GAP 2: a clone (dev) launch shows the dev-channels confirm prompt at
   // (re)start; an unattended supervised launch strands on it. When expect is
   // available, spawn claude under it and auto-accept the gate (mirror of the
@@ -2349,7 +2385,7 @@ export async function superviseClaude(args, opts = {}) {
         noteStatus('health-relaunch', { reason })
         print(`[hoai] ${why}. Relaunching claude on this agent's own session...`)
         try {
-          childRef.kill()
+          endClaude(childRef)
         } catch {
           // Already gone; its exit resolves the loop below.
         }
@@ -2401,7 +2437,7 @@ export async function superviseClaude(args, opts = {}) {
       // abort that already happened fires no event.
       const onStop = () => {
         try {
-          childRef?.kill()
+          if (childRef) endClaude(childRef)
         } catch {
           // Already gone; its exit resolves the loop.
         }
@@ -2448,7 +2484,7 @@ export async function superviseClaude(args, opts = {}) {
         restartRequested = true
         print('[hoai] restart requested by the daemon; restarting claude to pick up the update...')
         try {
-          childRef.kill()
+          endClaude(childRef)
         } catch {
           // The child already died; its exit resolves the loop below.
         }

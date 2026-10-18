@@ -74,6 +74,7 @@ class FakeProc extends EventEmitter {
   args: string[]
   killed = false
   treeEnded = false
+  ended = false
   exitCode: number | null = null
   signalCode: string | null = null
   constructor(pid: number, file: string, args: readonly string[]) {
@@ -89,7 +90,8 @@ class FakeProc extends EventEmitter {
     return true
   }
   end(code: number | null, signal: string | null) {
-    if (this.exitCode !== null || this.signalCode !== null) return
+    if (this.ended) return
+    this.ended = true
     this.exitCode = code
     this.signalCode = signal
     this.emit('exit', code, signal)
@@ -340,6 +342,18 @@ test('a claude that already exited is never sent to the tree ender (its pid may 
   h.files.set(MARKER_PATH, '{}')
   await launched(h, 3)
   assert.deepEqual(h.treeEnds, [h.claudes[1]!.pid], 'only the live claude, never the pid of one that is gone')
+  await h.end()
+})
+
+test('a claude whose exit is already recorded (node sets exitCode just before it emits exit) is never sent to the tree ender', async () => {
+  const h = harness()
+  await launched(h, 1)
+  const first = h.claudes[0]!
+  first.exitCode = 1
+  h.files.set(MARKER_PATH, '{}')
+  await waitUntil(() => first.killed, 'the restart to end claude')
+  assert.deepEqual(h.treeEnds, [], 'its pid may be someone else by now: only its own kill(), a no-op on an exited child')
+  await launched(h, 2)
   await h.end()
 })
 
