@@ -1,11 +1,11 @@
 {
   "file": "bin/hoai-browser-mcp.mjs",
   "source": "BGOS: frontend/electron-app/agent-browser/shim/hoai-browser-mcp.mjs",
-  "sha256": "007dd4f6f27af2bd71df63a335424e624afbb88b85cd481dc9392134214e8e50",
-  "vendoredAt": "2026-10-14",
-  "sourceCommit": "166f1fbe6d7a9fad3c545cbec780200e4d93d754",
-  "why": "bin/hoai-browser-mcp.mjs is a byte-identical COPY of the BGOS shim, not a fork. This file is the copy's expected sha256, checked by test/hoai-browser-mcp.vendor.test.ts on every run, so the identity claim lives in the tree instead of in a commit message.",
+  "sha256": "a55d97ae441d157cd26c50c25aa63f4d4d2dbe9094278e00f3b0550001f06fa9",
+  "vendoredAt": "2026-10-18",
+  "sourceCommit": "62193f7a500a6405fdfaddb7a0557c2a08a0cf75",
+  "why": "Byte-identical copy of the shim reviewed in BGOS PR #2625. It preserves existing relay behavior; managed profile discovery requires the explicit paired launcher flag, absent from this prerequisite. The complete runtime and launcher integration remain in Common PR #253.",
   "howToUpdate": "docs/vendoring-the-hoai-browser-shim.md",
   "crossTreeCheck": "HOAI_BROWSER_SHIM_SOURCE=<path to the BGOS shim> npx tsx --test test/hoai-browser-mcp.vendor.test.ts",
-  "sourceBranch": "BGOS fix/shared-agents-phase0-shim, a local commit not yet merged (shared agents Phase 0, item 0.2): the BGOS shim, its hoai-browser-mcp.pin.json and its tests there carry the same bytes, so land the two together. codex-channel-bgos vendor/hoai-browser-mcp.mjs is behind until it is re-vendored."
+  "sourceBranch": "BGOS codex/browser-profile-sync-integration, PR #2625. Both vendor main copies must match this source before the unchanged BGOS parity check can pass."
 }
