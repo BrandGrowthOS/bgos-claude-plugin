@@ -229,7 +229,10 @@ export function buildLaneCommandEvent(
  * idle stop), every row after it from the last 24 hours, at most ten. With
  * none (the lane's very first start), only the last 15 minutes, at most five:
  * the turn that woke it, never a person's older history that the agent's
- * single mind may already have answered before lanes. Oldest first.
+ * single mind may already have answered before lanes. Oldest first. The boot
+ * poll then drops every row the server says was already handed over
+ * (LANE_SERVER_ACKNOWLEDGED), since a lane whose folders were deleted has no
+ * cursor either (0.71.2).
  */
 export function selectLaneBacklog(
   deliveries: LaneDelivery[],
@@ -337,6 +340,70 @@ export function inboxNoteReplied(state: LaneInboxState, chatId: string): LaneInb
 
 export function inboxAdvanceCursor(state: LaneInboxState, id: number): LaneInboxState {
   return id > state.cursor ? { ...state, cursor: id } : state
+}
+
+/**
+ * ONE DECISION PER MESSAGE ID (0.71.2). The socket and the poll both hand
+ * turns over, and each used to decide from the inbox alone; the boot poll
+ * read its re-offer set AFTER its fetch, so a message the socket path had
+ * noted during that fetch looked like a turn the last life left unanswered
+ * and was handed to Claude a second time, and acked twice (measured: the
+ * 0.71.1 hold is not needed for it). Now each id is decided once per
+ * process, synchronously, before the caller's first await, and only the
+ * turns the inbox held at launch can be re-offered.
+ */
+export class LaneDeliveryClaims {
+  private readonly taken = new Set<number>()
+  private readonly reofferable: Set<number>
+
+  /** `launch` is the inbox this process read at launch: its waiting turns are this life's only re-offers. */
+  constructor(launch: LaneInboxState) {
+    this.reofferable = new Set(launch.pending.map((p) => p.id))
+  }
+
+  /** A turn the last life handed over and left unanswered (`take` still decides). */
+  mayReoffer(id: number): boolean {
+    return this.reofferable.has(id)
+  }
+
+  /**
+   * Hand message `id` to Claude? True once per process at most; the caller
+   * acts on it before any await. A re-offer must also still be waiting in
+   * `state`, so after a `/new` (which empties the waiting list) none is.
+   */
+  take(state: LaneInboxState, id: number, opts: { reoffer: boolean }): boolean {
+    if (this.taken.has(id)) return false
+    if (!inboxShouldDeliver(state, id, { reoffer: opts.reoffer && this.reofferable.has(id) })) return false
+    this.taken.add(id)
+    return true
+  }
+}
+
+// ── What the server says was handed over (0.71.2) ───────────────────────────
+
+/**
+ * The delivery state a lane's ack leaves on a message: the lane acks a turn
+ * the moment it hands it to Claude, and the person's chat history
+ * (`GET chats/:chatId/messages`, a route a lane session may read for its own
+ * chats) carries it on the row as `deliveryState`.
+ */
+export const LANE_SERVER_ACKNOWLEDGED = 'acknowledged'
+
+/** The history page for exactly one message of a chat. */
+export function laneHistoryPathFor(d: { chatId: string; messageId: number }): string {
+  return `chats/${encodeURIComponent(d.chatId)}/messages?afterId=${d.messageId - 1}&beforeId=${d.messageId + 1}&limit=1`
+}
+
+/** The delivery state a history page shows for `messageId`, or null when the page does not carry that row. */
+export function laneHistoryDeliveryState(answer: unknown, messageId: number): string | null {
+  const page = (answer as { messages?: unknown } | null)?.messages
+  const rows: unknown[] = Array.isArray(answer) ? answer : Array.isArray(page) ? page : []
+  for (const row of rows) {
+    const r = (row ?? {}) as Record<string, unknown>
+    if (Number(r.id) !== messageId) continue
+    return typeof r.deliveryState === 'string' ? r.deliveryState : null
+  }
+  return null
 }
 
 // ── A refused sign in (K2 option b) ─────────────────────────────────────────

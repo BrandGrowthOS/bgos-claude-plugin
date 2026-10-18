@@ -15,7 +15,9 @@
  *   3. connects its lane socket presenting the lane session ALONE, catches up
  *      from its own cursor through `GET lanes/inbound`, and delivers each turn
  *      to Claude as a channel event, only when it is stamped for this lane,
- *      and never before Claude has this server's tools (0.71.1);
+ *      and never before Claude has this server's tools (0.71.1); each
+ *      message at most once per process, and never a backlog turn the server
+ *      says this lane was already handed (0.71.2);
  *   4. acknowledges each delivered turn, beats its own heartbeat, records its
  *      activity in lane.json for the supervisor's idle stop, and stops the
  *      lane on `lane_revoked` or when its session ends;
@@ -83,12 +85,15 @@ import {
   inboxNoteHandled,
   inboxNoteReplied,
   inboxPollFrom,
-  inboxShouldDeliver,
   LaneClaudeReady,
   laneDeliveryGate,
+  LaneDeliveryClaims,
+  laneHistoryDeliveryState,
+  laneHistoryPathFor,
   laneInstructions,
   laneMeMatches,
   LANE_INLINE_FILE_MAX_BYTES,
+  LANE_SERVER_ACKNOWLEDGED,
   LANE_TOOLS,
   normaliseLaneDelivery,
   readLaneDaemonConfig,
@@ -380,6 +385,8 @@ function saveInbox(): void {
 }
 // Chats this lane was handed a turn in: the only chats `reply` may write to.
 const deliveredChats = new Set<string>(inbox.pending.map((p) => p.chatId))
+// Which turns this process hands over, decided once per message id (0.71.2).
+const claims = new LaneDeliveryClaims(inbox)
 
 const ROOT = dirname(fileURLToPath(import.meta.url))
 const mcp = new Server(mcpServerInfo(readOwnVersion(ROOT)), {
@@ -480,7 +487,9 @@ async function deliverRaw(raw: unknown, transport: 'lane-socket' | 'lane-poll', 
     return
   }
   const d = gate.delivery
-  if (!inboxShouldDeliver(inbox, d.messageId, { reoffer: opts.reoffer === true })) return
+  // The one decision for this id, before any await: the socket and the poll
+  // can never both hand it over (0.71.2).
+  if (!claims.take(inbox, d.messageId, { reoffer: opts.reoffer === true })) return
   // P5: the lane's own commands. Only the LANE catalog is consulted, never a
   // command folder on this computer.
   const route = routeLaneSlash(d.raw as Record<string, unknown>)
@@ -629,18 +638,35 @@ async function poll(): Promise<void> {
       .filter((r): r is { raw: unknown; d: LaneDelivery } => r.d !== null)
       .sort((a, b) => a.d.messageId - b.d.messageId)
     const boot = firstPoll
-    firstPoll = false
     // New rows: on the very first start only the turn that woke the lane
     // (selectLaneBacklog); after that, every row past the cursor.
-    const fresh = new Set(
-      selectLaneBacklog(rows.filter((r) => !inbox.delivered.includes(r.d.messageId)).map((r) => r.d), {
-        cursor: inbox.cursor,
-        nowMs: Date.now(),
-      }).map((d) => d.messageId),
-    )
-    const pendingIds = new Set(inbox.pending.map((p) => p.id))
+    let backlog = selectLaneBacklog(rows.filter((r) => !inbox.delivered.includes(r.d.messageId)).map((r) => r.d), {
+      cursor: inbox.cursor,
+      nowMs: Date.now(),
+    })
+    if (boot && backlog.length > 0) {
+      // A lane whose folders were deleted boots with no inbox note and would
+      // re-answer the person's last 15 minutes: the server's record of what
+      // a Claude of this lane was handed decides instead (0.71.2). When it
+      // cannot say, nothing is handed over yet and the next poll asks again.
+      // Only rows stamped for this lane are asked about: the rest never go
+      // over (the second lock refuses them below), and the server would
+      // refuse the read.
+      const handed = await acknowledgedAtServer(backlog.filter((d) => laneDeliveryGate(d.raw, LANE).deliver))
+      if (!handed) return
+      for (const d of backlog) {
+        if (!handed.has(d.messageId)) continue
+        log(`backlog turn ${d.messageId} was already handed over (acknowledged at the server); not offered again`)
+        inbox = inboxNoteHandled(inbox, d)
+      }
+      backlog = backlog.filter((d) => !handed.has(d.messageId))
+    }
+    firstPoll = false
+    const fresh = new Set(backlog.map((d) => d.messageId))
     for (const r of rows) {
-      const reoffer = boot && pendingIds.has(r.d.messageId)
+      // Only a turn the inbox held at launch, and not yet handed over in
+      // this life, is re-offered (LaneDeliveryClaims).
+      const reoffer = boot && claims.mayReoffer(r.d.messageId)
       if (fresh.has(r.d.messageId) || reoffer) {
         await deliverRaw(r.raw, 'lane-poll', { backlog: boot, reoffer })
       }
@@ -652,6 +678,22 @@ async function poll(): Promise<void> {
     else log(`poll failed: ${err instanceof LaneHttpError ? err.status : String(err)}`)
   } finally {
     polling = false
+  }
+}
+
+/**
+ * Which of these backlog rows a Claude of this lane was already handed, by
+ * the server's own record (LANE_SERVER_ACKNOWLEDGED on the person's chat
+ * history), or null when the server could not say. A refusal here never ends
+ * the lane: it only postpones the boot backlog to the next poll.
+ */
+async function acknowledgedAtServer(backlog: LaneDelivery[]): Promise<Set<number> | null> {
+  try {
+    const states = await Promise.all(backlog.map(async (d) => laneHistoryDeliveryState(await laneFetch('GET', laneHistoryPathFor(d)), d.messageId)))
+    return new Set(backlog.filter((_, i) => states[i] === LANE_SERVER_ACKNOWLEDGED).map((d) => d.messageId))
+  } catch (err) {
+    log(`the server could not say which backlog turns were handed over (${err instanceof LaneHttpError ? err.status : String(err)}); asking again at the next poll`)
+    return null
   }
 }
 

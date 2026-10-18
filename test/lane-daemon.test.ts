@@ -39,12 +39,17 @@ import {
   checkLaneReply,
   debugLogSaysTokenRefused,
   inboxAdvanceCursor,
+  inboxForNewConversation,
   inboxNoteDelivered,
   inboxNoteReplied,
   inboxPollFrom,
   inboxShouldDeliver,
+  LaneDeliveryClaims,
+  laneHistoryDeliveryState,
+  laneHistoryPathFor,
   laneInstructions,
   laneMeMatches,
+  LANE_SERVER_ACKNOWLEDGED,
   LANE_TOOLS,
   normaliseLaneDelivery,
   readLaneDaemonConfig,
@@ -224,6 +229,45 @@ test('the inbox: a relaunch re-offers an unanswered turn once, never an answered
   assert.equal(inboxPollFrom(relaunched), 9, 'the poll asks from before the waiting turn')
   assert.equal(inboxPollFrom(inboxNoteReplied(relaunched, '777')), 11)
   assert.deepEqual(readLaneInbox({ cursor: -5, delivered: ['x', 3], pending: [{ id: 'y' }, { id: 4, chatId: '0' }] }), { cursor: 0, delivered: [3], pending: [] })
+})
+
+test('one decision per message id: two paths that both check before either notes cannot both hand a turn over (0.71.2)', () => {
+  const inbox = readLaneInbox(null)
+  const claims = new LaneDeliveryClaims(inbox)
+  // The socket path and the poll both decide from the same, not yet noted, inbox.
+  assert.equal(claims.take(inbox, 701, { reoffer: false }), true, 'the first path hands it over')
+  assert.equal(claims.take(inbox, 701, { reoffer: false }), false, 'the second path, from the same inbox, does not')
+  assert.equal(claims.take(inbox, 701, { reoffer: true }), false, 'nor as a re-offer')
+  assert.equal(claims.take(inbox, 702, { reoffer: false }), true, 'another id is its own decision')
+})
+
+test('a re-offer is only a turn the inbox held at launch, once (0.71.2)', () => {
+  // The last life handed 10 over and it is still waiting for an answer.
+  const atLaunch = readLaneInbox({ cursor: 10, delivered: [10], pending: [{ id: 10, chatId: '777' }] })
+  const claims = new LaneDeliveryClaims(atLaunch)
+  // In this life the socket path notes 11 (delivered, waiting) without this claims object, as main's daemon did.
+  const now = inboxNoteDelivered(atLaunch, { messageId: 11, chatId: '777' })
+  assert.equal(claims.mayReoffer(11), false, 'a turn noted in this life is not a re-offer')
+  assert.equal(claims.take(now, 11, { reoffer: true }), false, 'and the re-offer flag does not let it through')
+  assert.equal(claims.mayReoffer(10), true)
+  assert.equal(claims.take(now, 10, { reoffer: true }), true, 'the turn waiting since the last life is re-offered')
+  assert.equal(claims.take(now, 10, { reoffer: true }), false, 'once')
+  // `/new` empties the waiting list: a turn waiting at launch is no longer re-offered.
+  const fresh = new LaneDeliveryClaims(atLaunch)
+  assert.equal(fresh.take(inboxForNewConversation(atLaunch), 10, { reoffer: true }), false)
+})
+
+test('the server\'s record of a hand over: the history page for exactly one message, and its delivery state (0.71.2)', () => {
+  assert.equal(laneHistoryPathFor({ chatId: '77', messageId: 601 }), 'chats/77/messages?afterId=600&beforeId=602&limit=1')
+  const page = { messages: [{ id: 600, deliveryState: 'delivered' }, { id: 601, deliveryState: LANE_SERVER_ACKNOWLEDGED }] }
+  assert.equal(laneHistoryDeliveryState(page, 601), 'acknowledged')
+  assert.equal(laneHistoryDeliveryState(page, 600), 'delivered')
+  assert.equal(laneHistoryDeliveryState({ messages: [{ id: '601', deliveryState: 'acknowledged' }] }, 601), 'acknowledged', 'an id as a string')
+  assert.equal(laneHistoryDeliveryState(page, 602), null, 'a row the page does not carry')
+  assert.equal(laneHistoryDeliveryState({ messages: [{ id: 601, deliveryState: null }] }, 601), null)
+  assert.equal(laneHistoryDeliveryState([{ id: 601, deliveryState: 'queued' }], 601), 'queued', 'a bare array')
+  assert.equal(laneHistoryDeliveryState(null, 601), null)
+  assert.equal(laneHistoryDeliveryState({ messages: 'nope' }, 601), null)
 })
 
 test('the first start offers only the turn that woke the lane; a relaunch offers what came after', () => {
