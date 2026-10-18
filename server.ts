@@ -3816,12 +3816,13 @@ let floorMarkerKeys: string[] = []
  * transcripts live in, and the folder a relative transcript path is read
  * against (the intake's own two), so the private turn hook writes its marker
  * only under its own daemon's key, never another agent's (lib/floor-state.mjs
- * findOwnAttachedKey).
+ * findOwnAttachedKey), and the session the intake is bound to once it is, so
+ * never another claude session's of the same folder either.
  */
 function markFloorAttachedIfHolder(): void {
   if (!lockHeld) return
   try {
-    floorMarkerKeys = markFloorAttached({ root: FLOOR_STATE_ROOT, folders: FLOOR_FOLDERS, projectDir: sessionBinder.projectDirectory, baseDir: LAUNCH_CWD })
+    floorMarkerKeys = markFloorAttached({ root: FLOOR_STATE_ROOT, folders: FLOOR_FOLDERS, projectDir: sessionBinder.projectDirectory, baseDir: LAUNCH_CWD, sessionId: liveSessionId ?? '' })
     if (floorMarkerKeys.length === 0) {
       log('floor: could not write the attached marker; the floor hook stays silent in this session')
     }
@@ -9814,6 +9815,9 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
   if (hookSessionId && hookSessionId !== liveSessionId) {
     liveSessionId = hookSessionId
     liveSessionSeenAtMs = Date.now()
+    // The attached entry names the session this intake is bound to, so another claude session of the folder never
+    // writes the agent's private turn marker (lib/floor-state.mjs findOwnAttachedKey, the third review of c69224fe).
+    markFloorAttachedIfHolder()
   }
   if (event.name === 'SessionEnd') privateTurns.end({ at: lineAt })
   if (event.name === 'UserPromptSubmit') {
