@@ -54,6 +54,7 @@ const fixed = core as unknown as {
     readTail: (path: string) => string | null
   }) => { at: number; text: string } | null
   loginSignalOf?: (chunk: string, nowMs: number) => unknown
+  claudeSignedInSince?: (input: { configDir: string; since: number; mtimeMs: (path: string) => number | null }) => boolean
   fleetClaudeLoginAnswered?: (input: {
     configDir: string
     since: number
@@ -87,6 +88,8 @@ const GATE_TEXT = 'WARNING: Loading development channels'
 class FakeProc extends EventEmitter {
   pid: number
   file: string
+  /** node's ChildProcess.spawnfile: the file it was started as. */
+  spawnfile: string
   args: string[]
   killed = false
   treeEnded = false
@@ -97,6 +100,7 @@ class FakeProc extends EventEmitter {
     super()
     this.pid = pid
     this.file = file
+    this.spawnfile = file
     this.args = [...args]
   }
   /** TerminateProcess on this one process, which is all node's kill() is on Windows. */
@@ -147,8 +151,10 @@ interface HarnessOpts {
   files?: Record<string, string>
   /** The shared-login detector (absent: the default one, which reads nothing here). */
   claudeLoginFailure?: () => { at: number; text: string } | null
-  /** Has any agent answered since that failure? (absent: the default, which reads nothing here) */
-  claudeLoginAnsweredSince?: (at: number) => boolean
+  /** Has the login come back since that failure (a sign-in, an answer)? (absent: the default, which reads nothing here) */
+  claudeLoginBackSince?: (at: number) => boolean
+  /** claude.exe is on PATH: launches are the native exe, not the npm shim. */
+  native?: boolean
   spawnSyncImpl?: (...args: unknown[]) => unknown
 }
 
@@ -198,7 +204,7 @@ function harness(o: HarnessOpts = {}) {
     spawnImpl: ((file: string, args: readonly string[]) => {
       const proc = new FakeProc(nextPid, file, args)
       nextPid += 4
-      if (file !== COMSPEC) {
+      if (file !== (o.native ? 'claude' : COMSPEC)) {
         // No claude.exe on PATH: node reports ENOENT after the spawn call returns.
         setImmediate(() => proc.emit('error', Object.assign(new Error(`spawn ${file} ENOENT`), { code: 'ENOENT' })))
         return proc
@@ -219,7 +225,7 @@ function harness(o: HarnessOpts = {}) {
           },
         }),
     ...(o.claudeLoginFailure ? { claudeLoginFailure: o.claudeLoginFailure } : {}),
-    ...(o.claudeLoginAnsweredSince ? { claudeLoginAnsweredSince: o.claudeLoginAnsweredSince } : {}),
+    ...(o.claudeLoginBackSince ? { claudeLoginBackSince: o.claudeLoginBackSince } : {}),
     spawnGateHelper: () => {
       const helper = new FakeHelper(30000 + helpers.length, screen.some((line) => line.includes(GATE_TEXT)))
       helpers.push(helper)
@@ -421,6 +427,17 @@ test('posix is unchanged: a marker relaunch is a plain kill, no tree ender', asy
   assert.deepEqual(treeEnds, [])
   stop.abort()
   await done
+})
+
+test('a native claude.exe is ended by its own kill(): no listing, its children end with its job as on main', async () => {
+  const h = harness({ native: true })
+  await launched(h, 1)
+  assert.equal(h.claudes[0]!.file, 'claude')
+  h.files.set(MARKER_PATH, '{}')
+  await launched(h, 2)
+  assert.deepEqual(h.treeEnds, [], 'only the npm shim hides claude; a native one pays for no listing')
+  assert.equal(h.claudes[0]!.killed, true)
+  await h.end()
 })
 
 test('a launch through an injected spawn never reaches the real process listing or kill: the default tree ender is for real children only', async () => {
@@ -773,7 +790,7 @@ test('the login alert spends nothing: once the login works again, a launch witho
     clearConsole: () => {},
     claudeLoginFailure: () => failure,
     // Signing in again shows as an answer after the failure.
-    claudeLoginAnsweredSince: () => failure === null,
+    claudeLoginBackSince: () => failure === null,
     spawnGateHelper: () => new FakeHelper(31000, false),
     writeErr: () => {},
     exists: (p: string) => files.has(p),
@@ -828,7 +845,7 @@ test('the check comes back after a login alert: alerted once while the login sta
   const asked: number[] = []
   const h = harness({
     claudeLoginFailure: () => failure,
-    claudeLoginAnsweredSince: (at) => {
+    claudeLoginBackSince: (at) => {
       asked.push(at)
       return answered
     },
@@ -856,7 +873,7 @@ test('a failure stays a failure: once it is older than 10 minutes and nobody has
   // The quiet fleet: one agent's attempt failed, nobody tried since. The fresh-record detector finds
   // nothing any more; nothing proves the login works, so the alert stands.
   let fresh: { at: number; text: string } | null = { at: T0 + 30_000, text: 'Login expired · Please run /login' }
-  const h = harness({ claudeLoginFailure: () => fresh, claudeLoginAnsweredSince: () => false })
+  const h = harness({ claudeLoginFailure: () => fresh, claudeLoginBackSince: () => false })
   await launched(h, 1)
   h.fire(THREE_MIN)
   await settle()
@@ -885,13 +902,15 @@ test('a heartbeat that arrives after a login alert ends the checks: nothing rela
   await h.end()
 })
 
-test('the login alert names the newest failure it read, and when', async () => {
+test('the login alert names the failure it was made for, first seen when, and says hoai looks again', async () => {
   const h = harness({ claudeLoginFailure: () => ({ at: T0 + 30_000, text: 'Login expired · Please run /login' }) })
   await launched(h, 1)
   h.fire(THREE_MIN)
   await settle()
-  assert.match(h.files.get(STATUS_PATH) ?? '', /outcome=claude-login-expired waited=180s lastFailedAt=2026-10-18T07:00:30.000Z /)
-  assert.ok(h.prints.some((line) => line.includes('the newest failure recorded at 2026-10-18T07:00:30.000Z')), h.prints.join('\n'))
+  assert.match(h.files.get(STATUS_PATH) ?? '', /outcome=claude-login-expired waited=180s failedAt=2026-10-18T07:00:30.000Z /)
+  const alert = h.prints.find((line) => line.includes('ALERT (claude-login-expired)')) ?? ''
+  assert.ok(alert.includes('first seen failing at 2026-10-18T07:00:30.000Z'), alert)
+  assert.match(alert, /looks again every 3 minutes/)
   await h.end()
 })
 
@@ -1017,6 +1036,20 @@ test('fleetClaudeLoginFailure: nothing to read (no projects folder, junk lines) 
   assert.equal(fixed.fleetClaudeLoginFailure!(none), null)
   const s = store({ 'C--agents-888/a.jsonl': { mtime: NOW, lines: ['{not json', '[]', 'null', JSON.stringify({ type: 'user' })] } })
   assert.equal(fixed.fleetClaudeLoginFailure!(s.input), null)
+})
+
+test('claudeSignedInSince: the CLI rewrote its credentials file after the failure (a /login, a refresh); only its time is looked at', () => {
+  assert.equal(typeof fixed.claudeSignedInSince, 'function')
+  const asked: string[] = []
+  const at = (ms: number | null) => (path: string) => {
+    asked.push(path)
+    return ms
+  }
+  const FAILED = NOW - 5 * 60_000
+  assert.equal(fixed.claudeSignedInSince!({ configDir: CONFIG, since: FAILED, mtimeMs: at(NOW - 60_000) }), true)
+  assert.deepEqual(asked, [`${CONFIG}\\.credentials.json`])
+  assert.equal(fixed.claudeSignedInSince!({ configDir: CONFIG, since: FAILED, mtimeMs: at(FAILED - 60_000) }), false, 'written before the failure')
+  assert.equal(fixed.claudeSignedInSince!({ configDir: CONFIG, since: FAILED, mtimeMs: at(null) }), false, 'no such file (a Keychain login)')
 })
 
 test('fleetClaudeLoginAnswered: an agent answered after the failure, at any age; a newer failure, or nothing, is no answer', () => {
@@ -1170,6 +1203,23 @@ test('the default detector reads real transcripts: an expired login another agen
   const other = join(store, 'projects', 'C--agents-872')
   mkdirSync(other, { recursive: true })
   writeFileSync(join(other, 'c.jsonl'), `${record('activity', T0 + 5 * 60_000)}\n`)
+  b.fireHeartbeatCheck()
+  await waitUntil(() => b.claudes.length === 2, 'the one heartbeat relaunch')
+  await b.end()
+})
+
+test('the default detector sees a sign-in on disk: the CLI rewrote the store s credentials file after the failure, so the one relaunch follows', async () => {
+  const store = mkdtempSync(join(tmpdir(), 'hoai-login-signin-'))
+  const agent = join(store, 'projects', 'C--agents-871')
+  mkdirSync(agent, { recursive: true })
+  writeFileSync(join(agent, 'b.jsonl'), `${record('failed', T0 + THREE_MIN - 30_000)}\n`)
+  const b = bare({ ...SUPERVISED, CLAUDE_CONFIG_DIR: store }, (path) => (path.startsWith(store) ? readdirSync(path) : []))
+  await waitUntil(() => b.claudes.length === 1, 'launch 1')
+  b.fireHeartbeatCheck()
+  await settle()
+  assert.equal(b.claudes.length, 1, 'alerted')
+  // A stand in for what /login writes; written now, after the failure (fake clock, 07:02:30Z).
+  writeFileSync(join(store, '.credentials.json'), '{}\n')
   b.fireHeartbeatCheck()
   await waitUntil(() => b.claudes.length === 2, 'the one heartbeat relaunch')
   await b.end()

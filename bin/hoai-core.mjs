@@ -1465,6 +1465,16 @@ export function fleetClaudeLoginAnswered({ configDir, since, listDir, mtimeMs, r
   return fleetNewestLoginSignal({ configDir, since, listDir, mtimeMs, readTail })?.type === 'activity'
 }
 
+/** Did the CLI sign in again after a failure at `since`? It rewrites `<configDir>/.credentials.json` on
+ *  /login (and on each token refresh, which also proves the login works). Only the file's time is
+ *  looked at, never what it holds; a login kept elsewhere (the macOS Keychain) has no such file, and
+ *  only an answer clears its failure.
+ *  @param {{ configDir: string, since: number, mtimeMs: (path: string) => number | null }} input */
+export function claudeSignedInSince({ configDir, since, mtimeMs }) {
+  const written = mtimeMs(joinDir(configDir, '.credentials.json'))
+  return written != null && written > since
+}
+
 /** A file's modification time in ms, or null. Never throws. */
 export function fileMtimeMs(path) {
   try {
@@ -1912,6 +1922,7 @@ export function hostHasExpect({ platform, env = process.env, exists = existsSync
  *   spawnSyncImpl?: typeof spawnSync,
  *   clearConsole?: () => unknown,
  *   claudeLoginFailure?: () => { at: number, text: string } | null,
+ *   claudeLoginBackSince?: (at: number) => boolean,
  * }} [opts]
  * @returns {Promise<number>}
  *
@@ -2268,9 +2279,12 @@ export async function superviseClaude(args, opts = {}) {
   // with no channel heartbeat: the CLI's own records, in the store it signs in through.
   const loginStore = { configDir: claudeConfigDir({ env, home }), listDir, mtimeMs: fileMtimeMs, readTail: (path) => readFileTail(path, LOGIN_TAIL_BYTES) }
   const claudeLoginFailure = opts.claudeLoginFailure ?? (() => fleetClaudeLoginFailure({ ...loginStore, now: now() }))
-  const claudeLoginAnsweredSince = opts.claudeLoginAnsweredSince ?? ((at) => fleetClaudeLoginAnswered({ ...loginStore, since: at }))
-  // The shared login failure an alert was made for: it stands, across relaunches too, until an
-  // agent answers after it.
+  // Has the login come back since a failure: a sign-in after it, or an agent's answer after it.
+  const claudeLoginBackSince =
+    opts.claudeLoginBackSince ??
+    ((at) => claudeSignedInSince({ ...loginStore, since: at }) || fleetClaudeLoginAnswered({ ...loginStore, since: at }))
+  // The shared login failure an alert was made for: it stands, across relaunches too, until the
+  // login comes back after it.
   let loginFailure = null
   // Nobody at the terminal (bin/bgos-agent run.sh v2): see SUPERVISED_ENV.
   const supervised = isSupervisedLaunch(env)
@@ -2307,8 +2321,11 @@ export async function superviseClaude(args, opts = {}) {
   const endProcessTree =
     opts.endProcessTree ??
     (platform === 'win32' && spawnImpl === spawn ? (pid) => endWin32ShimTree(pid, { spawnSyncImpl: opts.spawnSyncImpl ?? spawnSync, env }) : null)
+  // Only the npm shim hides claude: a native claude.exe is ended by its own kill(), its children with
+  // its job as on main, and pays for no listing.
+  const shimFile = String(env.ComSpec ?? env.COMSPEC ?? '').trim() || 'cmd.exe'
   const endClaude = (child) => {
-    if (platform === 'win32' && endProcessTree && child.exitCode == null && child.signalCode == null) {
+    if (platform === 'win32' && endProcessTree && child.spawnfile === shimFile && child.exitCode == null && child.signalCode == null) {
       if (endProcessTree(child.pid)) return
       print(`[hoai] could not list the processes under claude (pid ${child.pid}); ending that process alone`)
     }
@@ -2690,22 +2707,23 @@ export async function superviseClaude(args, opts = {}) {
         const waited = `${Math.round((now() - startedAt) / 1000)}s`
         // The Claude login every agent here shares has failed: this session cannot sign in, and a
         // relaunched one meets the same wall. Alert instead, spend nothing, and look again later. The
-        // failure stands until an agent answers after it (not merely once it is too old to read as
-        // fresh); then a launch still without a heartbeat has another cause and gets its one relaunch
-        // (board row 31583f86).
-        if (loginFailure && claudeLoginAnsweredSince(loginFailure.at)) loginFailure = null
+        // failure stands until the login comes back after it, a sign-in or an answer (not merely once
+        // it is too old to read as fresh); then a launch still without a heartbeat has another cause
+        // and gets its one relaunch (board row 31583f86).
+        if (loginFailure && claudeLoginBackSince(loginFailure.at)) loginFailure = null
         else loginFailure ??= claudeLoginFailure()
         const login = loginFailure
         if (login) {
           if (!loginAlerted) {
             loginAlerted = true
-            const lastFailedAt = new Date(login.at).toISOString()
-            noteStatus('claude-login-expired', { waited, lastFailedAt, cli: login.text })
+            const failedAt = new Date(login.at).toISOString()
+            noteStatus('claude-login-expired', { waited, failedAt, cli: login.text })
             print(
               `[hoai] ALERT (claude-login-expired): claude has run ${waited} and its channel has sent no heartbeat, ` +
-                `and the Claude login the agents on this computer share has failed (the newest failure recorded at ${lastFailedAt}` +
+                `and the Claude login the agents on this computer share has failed (first seen failing at ${failedAt}` +
                 `${login.text ? `; the CLI says: "${login.text}"` : ''}). A relaunch cannot fix that, so hoai does not ` +
-                'relaunch. Sign in again: run /login in a claude session on this computer.',
+                'relaunch. Sign in again: run /login in a claude session on this computer. hoai looks again every 3 ' +
+                'minutes and relaunches claude once the login is back.',
             )
           }
           armHeartbeatCheck()
