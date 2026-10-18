@@ -1,0 +1,69 @@
+[scratch-run] proof-fix1: scratch env OK (HOME=E:\bgos-worktrees\winrelaunch\tmp\home, TEMP=E:\bgos-worktrees\winrelaunch\tmp\temp, removed 1 BGOS_/HOAI_ vars), runner pid 30220
+[scratch-run] proof-fix1: child pid 4616
+2026-10-18T07:25:40.701Z [fix1-only] proof folder E:\bgos-worktrees\winrelaunch\tmp\temp\hoai-relaunch-proof-fix1-only-Sg5dtw
+2026-10-18T07:25:40.704Z [fix1-only] hoai launcher pid 28836 (hidden console), core E:\bgos-worktrees\winrelaunch\repo\bin\hoai-core.mjs
+2026-10-18T07:25:46.281Z [fix1-only] launch 1 processes before the relaunch:
+    pid 28836 ppid 76696 node.exe
+    pid 19968 ppid 28836 conhost.exe
+    pid 75608 ppid 28836 cmd.exe
+    pid 58976 ppid 75608 node.exe
+2026-10-18T07:25:46.285Z [fix1-only] restart marker written
+2026-10-18T07:25:56.038Z [fix1-only] processes after the relaunch:
+    pid 28836 ppid 76696 node.exe
+    pid 19968 ppid 28836 conhost.exe
+    pid 4484 ppid 28836 cmd.exe
+    pid 65208 ppid 4484 node.exe
+2026-10-18T07:25:56.042Z [fix1-only] helper log:
+    2026-10-18T11:25:41.6546625+04:00 pid=39252 start console=28836 timeout=120
+    2026-10-18T11:25:41.8302076+04:00 pid=39252 attached
+    2026-10-18T11:25:42.8971776+04:00 pid=39252 accepted
+    2026-10-18T11:25:48.1245852+04:00 pid=4796 start console=28836 timeout=120
+    2026-10-18T11:25:48.3748413+04:00 pid=4796 attached
+    2026-10-18T11:25:48.4403546+04:00 pid=4796 accepted
+2026-10-18T07:25:56.044Z [fix1-only] fake claude events:
+    2026-10-18T07:25:40.916Z launch 1 pid 58976 start
+    2026-10-18T07:25:40.920Z launch 1 pid 58976 stdin
+    2026-10-18T07:25:40.922Z launch 1 pid 58976 reading
+    2026-10-18T07:25:41.933Z launch 1 pid 58976 tick
+    2026-10-18T07:25:42.438Z launch 1 pid 58976 drawing
+    2026-10-18T07:25:42.440Z launch 1 pid 58976 gate-drawn (gate on screen)
+    2026-10-18T07:25:42.897Z launch 1 pid 58976 enter (gate on screen)
+    2026-10-18T07:25:42.943Z launch 1 pid 58976 tick (gate on screen)
+    2026-10-18T07:25:43.951Z launch 1 pid 58976 tick (gate on screen)
+    2026-10-18T07:25:44.964Z launch 1 pid 58976 tick (gate on screen)
+    2026-10-18T07:25:45.974Z launch 1 pid 58976 tick (gate on screen)
+    2026-10-18T07:25:46.985Z launch 1 pid 58976 tick (gate on screen)
+    2026-10-18T07:25:47.350Z launch 2 pid 65208 start
+    2026-10-18T07:25:47.354Z launch 2 pid 65208 stdin
+    2026-10-18T07:25:47.356Z launch 2 pid 65208 reading
+    2026-10-18T07:25:48.356Z launch 2 pid 65208 tick
+    2026-10-18T07:25:48.440Z launch 2 pid 65208 early-enter
+    2026-10-18T07:25:49.357Z launch 2 pid 65208 tick
+    2026-10-18T07:25:50.356Z launch 2 pid 65208 tick
+    2026-10-18T07:25:51.359Z launch 2 pid 65208 tick
+    2026-10-18T07:25:51.361Z launch 2 pid 65208 drawing
+    2026-10-18T07:25:51.365Z launch 2 pid 65208 gate-drawn (gate on screen)
+    2026-10-18T07:25:52.373Z launch 2 pid 65208 tick (gate on screen)
+    2026-10-18T07:25:53.386Z launch 2 pid 65208 tick (gate on screen)
+    2026-10-18T07:25:54.398Z launch 2 pid 65208 tick (gate on screen)
+    2026-10-18T07:25:55.410Z launch 2 pid 65208 tick (gate on screen)
+2026-10-18T07:25:56.046Z [fix1-only] launcher log:
+    2026-10-18T07:25:40.729Z launcher pid 28836
+    2026-10-18T07:25:40.736Z [hoai] restart supervisor armed for assistant 9901
+    2026-10-18T07:25:40.762Z [hoai] dev-channels gate helper armed (helper pid 39252, console 28836)
+    2026-10-18T07:25:46.770Z [hoai] restart requested by the daemon; restarting claude to pick up the update...
+    2026-10-18T07:25:47.158Z [hoai] relaunching: claude --dangerously-skip-permissions --dangerously-load-development-channels server:bgos --session-id 5cff2d33-07db-4cb7-8e59-5394f4260065
+    2026-10-18T07:25:47.183Z [hoai] dev-channels gate helper armed (helper pid 4796, console 28836)
+2026-10-18T07:25:56.048Z [fix1-only] VERDICT {
+ "launch1FakeClaudePid": 58976,
+ "launch1FakeClaudeAliveAfterRelaunch": false,
+ "launch2FakeClaudePid": 65208,
+ "launch2HelperAcceptedAt": "2026-10-18T07:25:48.440Z",
+ "launch2GateDrawnAt": "2026-10-18T07:25:51.365Z",
+ "launch2HelperPressedBeforeItsGate": true,
+ "launch2GateAnswered": false,
+ "launch2EarlyEnter": true,
+ "enterTakenByLaunch1AfterRelaunch": false
+}
+2026-10-18T07:26:00.478Z [fix1-only] left running afterwards (should be none):
+    (none)

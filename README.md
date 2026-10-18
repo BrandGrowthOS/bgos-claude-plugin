@@ -252,11 +252,23 @@ unattended hoai also checks the channel's heartbeat (the daemon's
 `channel-beacon.json` in `~/.bgos-plugin-state/<id>/`) 3 minutes after each
 launch: a launch without one is relaunched ONCE, and the next launch without
 one is recorded as `no-channel-heartbeat` in launch-status and left running for
-a person to look at. Each relaunch records `health-relaunch` with its reason
-(`gate-accept-unproven` or `no-channel-heartbeat`) and counts against the same 3
-relaunches per hour as restart markers; past that it records
-`health-relaunch-refused`. A person's own `hoai` at a terminal is never
-relaunched this way.
+a person to look at. Except when the Claude login the agents of this computer
+share has failed (the CLI's own `authentication_failed` record, the newest
+login record in the last 10 minutes of any agent's transcripts in the store the
+CLI signs in through): no relaunch fixes that, so hoai records
+`claude-login-expired`, prints an ALERT saying to run `/login`, and looks again
+every 3 minutes; once the login is back after the failure (a sign-in, or some
+agent's answer), a launch still without a heartbeat gets its one relaunch. Each relaunch records `health-relaunch` with its reason
+(`gate-accept-unproven` or `no-channel-heartbeat`) and counts against a budget
+of its own, 3 health relaunches per hour, apart from the restart markers' 3;
+past that it records `health-relaunch-refused`. A person's own `hoai` at a
+terminal is never relaunched this way.
+
+On Windows every relaunch and stop ends the claude under an npm `claude.cmd`
+shim as well as the shim's `cmd.exe` (the shim's own children, never deeper:
+what the daemon detached, its browser host and a person lane's supervisor,
+lives on), and before every launch after the first hoai clears its console, so
+the new gate helper never presses Enter on a gate the ended claude left there.
 
 **The watcher's service is named after its HOME.** Every name the per-machine
 watcher's service is known by carries `home-<id>`, the first 8 hex characters of

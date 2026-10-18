@@ -1,0 +1,60 @@
+[scratch-run] proof-main-2: scratch env OK (HOME=E:\bgos-worktrees\winrelaunch\tmp\home, TEMP=E:\bgos-worktrees\winrelaunch\tmp\temp, removed 1 BGOS_/HOAI_ vars), runner pid 70428
+[scratch-run] proof-main-2: child pid 22024
+2026-10-18T07:23:49.362Z [main] proof folder E:\bgos-worktrees\winrelaunch\tmp\temp\hoai-relaunch-proof-main-TdBUXQ
+2026-10-18T07:23:49.366Z [main] hoai launcher pid 76780 (hidden console), core E:\bgos-worktrees\winrelaunch\main-base\bin\hoai-core.mjs
+2026-10-18T07:23:54.338Z [main] launch 1 processes before the relaunch:
+    pid 76780 ppid 71164 node.exe
+    pid 63032 ppid 76780 conhost.exe
+    pid 76416 ppid 76780 cmd.exe
+    pid 5884 ppid 76416 node.exe
+2026-10-18T07:23:54.341Z [main] restart marker written
+2026-10-18T07:24:56.599Z [main] timed out waiting for launch 2 to draw its gate
+2026-10-18T07:25:01.432Z [main] processes after the relaunch:
+    pid 76780 ppid 71164 node.exe
+    pid 63032 ppid 76780 conhost.exe
+    pid 5884 ppid 76416 node.exe
+    pid 66184 ppid 76780 cmd.exe
+    pid 55752 ppid 66184 node.exe
+2026-10-18T07:25:01.436Z [main] helper log:
+    2026-10-18T11:23:50.3963029+04:00 pid=25568 start console=76780 timeout=120
+    2026-10-18T11:23:50.5843747+04:00 pid=25568 attached
+    2026-10-18T11:23:51.1623805+04:00 pid=25568 accepted
+    2026-10-18T11:23:56.3727555+04:00 pid=55340 start console=76780 timeout=120
+    2026-10-18T11:23:56.5625323+04:00 pid=55340 attached
+    2026-10-18T11:23:56.6238166+04:00 pid=55340 accepted
+2026-10-18T07:25:01.438Z [main] fake claude events:
+    2026-10-18T07:23:49.586Z launch 1 pid 5884 start
+    2026-10-18T07:23:49.590Z launch 1 pid 5884 stdin
+    2026-10-18T07:23:49.592Z launch 1 pid 5884 reading
+    2026-10-18T07:23:50.595Z launch 1 pid 5884 tick
+    2026-10-18T07:23:51.097Z launch 1 pid 5884 drawing
+    2026-10-18T07:23:51.100Z launch 1 pid 5884 gate-drawn (gate on screen)
+    2026-10-18T07:23:51.162Z launch 1 pid 5884 enter (gate on screen)
+    2026-10-18T07:23:51.596Z launch 1 pid 5884 tick (gate on screen)
+    2026-10-18T07:23:52.606Z launch 1 pid 5884 tick (gate on screen)
+    2026-10-18T07:23:53.615Z launch 1 pid 5884 tick (gate on screen)
+    2026-10-18T07:23:54.622Z launch 1 pid 5884 tick (gate on screen)
+    2026-10-18T07:23:55.633Z launch 1 pid 5884 tick (gate on screen)
+    2026-10-18T07:23:55.641Z launch 2 pid 55752 start
+    2026-10-18T07:23:55.647Z launch 2 pid 55752 stdin
+    2026-10-18T07:23:55.649Z launch 2 pid 55752 reading
+2026-10-18T07:25:01.439Z [main] launcher log:
+    2026-10-18T07:23:49.394Z launcher pid 76780
+    2026-10-18T07:23:49.402Z [hoai] restart supervisor armed for assistant 9901
+    2026-10-18T07:23:49.426Z [hoai] dev-channels gate helper armed (helper pid 25568, console 76780)
+    2026-10-18T07:23:55.447Z [hoai] restart requested by the daemon; restarting claude to pick up the update...
+    2026-10-18T07:23:55.454Z [hoai] relaunching: claude --dangerously-skip-permissions --dangerously-load-development-channels server:bgos --session-id 2c493eb9-9b59-429e-97ad-f556a78dd247
+    2026-10-18T07:23:55.476Z [hoai] dev-channels gate helper armed (helper pid 55340, console 76780)
+2026-10-18T07:25:01.441Z [main] VERDICT {
+ "launch1FakeClaudePid": 5884,
+ "launch1FakeClaudeAliveAfterRelaunch": true,
+ "launch2FakeClaudePid": 55752,
+ "launch2HelperAcceptedAt": "2026-10-18T07:23:56.623Z",
+ "launch2GateDrawnAt": null,
+ "launch2HelperPressedBeforeItsGate": null,
+ "launch2GateAnswered": false,
+ "launch2EarlyEnter": false,
+ "enterTakenByLaunch1AfterRelaunch": false
+}
+2026-10-18T07:25:07.285Z [main] left running afterwards (should be none):
+    (none)
