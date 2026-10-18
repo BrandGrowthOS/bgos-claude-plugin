@@ -13,15 +13,17 @@
  *      life: two channel events and two acks for one message.
  *   2. A lane whose inbox note is gone (its folders deleted) started as if
  *      brand new and re-answered every message of the last 15 minutes. The
- *      server knows which of them a Claude of this lane was already handed
- *      (the lane acked it, `deliveryState: acknowledged` on the person's chat
- *      history), so the boot poll asks it and hands over only the rest; when
- *      the server cannot say, it hands over nothing yet and asks again.
+ *      server knows which of them were already picked up (the lane acked
+ *      them: `deliveryState: acknowledged` on the person's chat history, in
+ *      the backend's own envelope), so a boot with no note asks it and hands
+ *      over only the rest; a failed read is retried, and a server that keeps
+ *      failing gets the backlog offered as before, never a stall.
  *
- * And what must not change: a relaunch WITH its note still re-offers the turn
- * its last life left unanswered (the server has that one acknowledged too),
- * once, and a `/new` performed during the boot fetch still keeps that turn
- * out of the new conversation.
+ * And what must not change: a relaunch WITH its note never asks the server
+ * and still re-offers the turn its last life left unanswered (the server has
+ * that one acknowledged too), once; a turn the socket hands over while the
+ * server is asked keeps its note; and a `/new` performed during the boot
+ * fetch still keeps the old waiting turn out of the new conversation.
  *
  * Run with: npx tsx --test test/lane-dedupe.test.ts
  */
@@ -84,6 +86,8 @@ interface BackendOpts {
   historyFailures?: number
   /** Chats whose history a lane may not read (the real backend answers 403). */
   forbiddenChats?: number[]
+  /** Runs while the FIRST history read is held, before it is answered. */
+  duringFirstHistory?: (io: SocketServer) => Promise<void>
 }
 
 interface Backend {
@@ -105,6 +109,7 @@ async function startBackend(opts: BackendOpts): Promise<Backend> {
     close: async () => {},
   }
   let historyFailuresLeft = opts.historyFailures ?? 0
+  let historyReadsSeen = 0
   const json = (res: ServerResponse, body: unknown, status = 200) => {
     res.writeHead(status, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify(body))
@@ -127,8 +132,10 @@ async function startBackend(opts: BackendOpts): Promise<Backend> {
       const since = Number(url.searchParams.get('since_message_id') ?? 0)
       return json(res, { messages: opts.rows.filter((r) => Number(r.id) > since) })
     }
-    // Her chat history, the route a lane may read for its own chats; each
-    // row carries the server's delivery state.
+    // Her chat history, the route a lane may read for its own chats, in the
+    // backend's own envelope (MessagesDto: each entry is { message,
+    // messageFiles, messageOptions }); the message carries the server's
+    // delivery state.
     const history = /^chats\/(\d+)\/messages$/.exec(path)
     if (req.method === 'GET' && history) {
       const afterId = url.searchParams.get('afterId')
@@ -142,12 +149,19 @@ async function startBackend(opts: BackendOpts): Promise<Backend> {
         state.historyReads.push({ chatId: Number(history[1]), afterId, beforeId, status: 500 })
         return json(res, { message: 'stand in failure' }, 500)
       }
+      historyReadsSeen += 1
+      if (historyReadsSeen === 1 && opts.duringFirstHistory) await opts.duringFirstHistory(state.io)
       state.historyReads.push({ chatId: Number(history[1]), afterId, beforeId, status: 200 })
       const after = afterId === null ? 0 : Number(afterId)
       const before = beforeId === null ? Number.POSITIVE_INFINITY : Number(beforeId)
       const messages = opts.rows
         .filter((r) => Number(r.chat_id) === Number(history[1]) && Number(r.id) > after && Number(r.id) < before)
-        .map((r) => ({ id: Number(r.id), chatId: Number(r.chat_id), sender: 'user', text: r.text, deliveryState: opts.deliveryStates?.[Number(r.id)] ?? 'delivered' }))
+        .map((r) => ({
+          // As the real server: a row this lane acked shows acknowledged.
+          message: { id: Number(r.id), chatId: Number(r.chat_id), sender: 'user', text: r.text, deliveryState: state.acks.includes(Number(r.id)) ? 'acknowledged' : (opts.deliveryStates?.[Number(r.id)] ?? 'delivered') },
+          messageFiles: [],
+          messageOptions: [],
+        }))
       return json(res, { messages })
     }
     const ack = /^integrations\/messages\/(\d+)\/ack$/.exec(path)
@@ -295,7 +309,7 @@ test('bug 2: a lane with no inbox note hands over only what the server says no C
   }
 })
 
-test('bug 2: when the server cannot say what was handed over, the lane hands over nothing yet and asks again', async () => {
+test('bug 2: a history read that fails once is asked again at once, and the answer still decides', async () => {
   const OLD_ID = 601
   const NEW_ID = 603
   const backend = await startBackend({
@@ -305,19 +319,35 @@ test('bug 2: when the server cannot say what was handed over, the lane hands ove
   })
   const rig = await startLane(backend)
   try {
-    await waitFor(() => backend.historyReads.some((h) => h.status === 500), 'the failed history read')
-    // Past the settle: a turn that was going to go out has gone out.
-    await sleep(3_000)
-    assert.equal(rig.channel.length, 0, 'nothing handed over while the server could not say')
-    assert.equal(backend.acks.length, 0, 'and nothing acknowledged')
-    // The next boot poll (here: the server cuts the socket and the lane
-    // reconnects, which polls at once) asks again and hands over the new one.
-    backend.io.disconnectSockets(true)
-    await waitFor(() => rig.channel.length > 0, 'the new turn after the retry')
+    // No reconnect and no 30 s poll: the retry is the lane's own, within seconds.
+    await waitFor(() => rig.channel.length > 0, 'the new turn', 12_000)
     await waitFor(() => backend.acks.length > 0, 'the ack')
     await sleep(1_500)
-    assert.deepEqual(rig.channel.map((c) => c.messageId), [String(NEW_ID)])
+    assert.ok(backend.historyReads.some((h) => h.status === 500), 'one read failed')
+    assert.deepEqual(rig.channel.map((c) => c.messageId), [String(NEW_ID)], 'the retried answer still keeps the answered message out')
     assert.deepEqual(backend.acks, [NEW_ID])
+  } finally {
+    await stopLane(rig)
+  }
+})
+
+test('bug 2: when the server keeps failing, the lane stops asking and offers the backlog as before: it never stalls', async () => {
+  const OLD_ID = 601
+  const NEW_ID = 603
+  const backend = await startBackend({
+    rows: [inboundRow(OLD_ID, 6, 'An earlier question, already answered'), inboundRow(NEW_ID, 1, 'A new question')],
+    deliveryStates: { [OLD_ID]: 'acknowledged', [NEW_ID]: 'delivered' },
+    historyFailures: 1_000,
+  })
+  const rig = await startLane(backend)
+  try {
+    await waitFor(() => rig.channel.length >= 2, 'the backlog offered as before', 15_000)
+    await sleep(1_500)
+    // The server could not say, so main's rule applies: the turn that woke
+    // the lane goes over, and so does the one it could not vouch for.
+    assert.deepEqual(rig.channel.map((c) => c.messageId), [String(OLD_ID), String(NEW_ID)])
+    const failedReads = backend.historyReads.filter((h) => h.status === 500)
+    assert.ok(failedReads.length >= 2 && failedReads.length <= 2 * 3, `a bounded number of reads (${failedReads.length})`)
   } finally {
     await stopLane(rig)
   }
@@ -391,6 +421,56 @@ test('bug 2: a backlog row stamped for another person is never asked about at th
     assert.deepEqual(rig.channel.map((c) => c.messageId), [String(NEW_ID)])
     assert.deepEqual(backend.acks, [NEW_ID], 'Ben\'s row is never acknowledged by her lane')
     assert.ok(!backend.historyReads.some((h) => h.chatId === BEN_CHAT_ID), 'her lane never asks about Ben\'s chat')
+  } finally {
+    await stopLane(rig)
+  }
+})
+
+test('a relaunch WITH its inbox note never asks the server: a message the note does not list goes over, though an owner notice acked it', async () => {
+  // She sent /model, the lane restarted, and she sent 611 before it was back.
+  // The owner's daemon then posted the lane's notice as an assistant row,
+  // which marks her latest message acknowledged (the backend's reply hook),
+  // though no Claude was handed it. Her lane's own note says it never was.
+  const COMMAND_ID = 610
+  const MISSED_ID = 611
+  const backend = await startBackend({
+    rows: [inboundRow(COMMAND_ID, 3, '/model opus'), inboundRow(MISSED_ID, 2, 'Sent while my lane restarted')],
+    deliveryStates: { [COMMAND_ID]: 'acknowledged', [MISSED_ID]: 'acknowledged' },
+  })
+  const rig = await startLane(backend, { inbox: { cursor: COMMAND_ID, delivered: [COMMAND_ID], pending: [] } })
+  try {
+    await waitFor(() => rig.channel.length > 0, 'the missed turn')
+    await waitFor(() => backend.acks.length > 0, 'the ack')
+    await sleep(1_500)
+    assert.deepEqual(rig.channel.map((c) => c.messageId), [String(MISSED_ID)], 'her note is the authority: 611 was never handed over')
+    assert.deepEqual(backend.acks, [MISSED_ID])
+    assert.equal(backend.historyReads.length, 0, 'a lane with its note does not ask the server')
+  } finally {
+    await stopLane(rig)
+  }
+})
+
+test('bug 2: a turn the socket hands over (and acks) while the server is asked stays waiting for its answer', async () => {
+  const MESSAGE_ID = 621
+  const row = inboundRow(MESSAGE_ID, 1, 'Sent while my lane asked the server')
+  const backend: Backend = await startBackend({
+    rows: [row],
+    // The history read for 621 is answered only after the socket path handed
+    // 621 to Claude and acked it, so the server then says acknowledged: by
+    // this life's own hand over, not an earlier one.
+    duringFirstHistory: async (io) => {
+      io.emit('inbound_message', row)
+      await waitFor(() => backend.acks.includes(MESSAGE_ID), 'the socket path to hand 621 over and ack it')
+    },
+  })
+  const rig = await startLane(backend)
+  try {
+    await waitFor(() => backend.historyReads.length > 0, 'the history read')
+    await sleep(1_500)
+    assert.deepEqual(rig.channel.map((c) => c.messageId), [String(MESSAGE_ID)], 'handed over once')
+    assert.deepEqual(backend.acks, [MESSAGE_ID])
+    const saved = savedInbox(rig.home)
+    assert.ok(saved.pending.some((p) => p.id === MESSAGE_ID), 'still waiting for its answer, so a relaunch re-offers it')
   } finally {
     await stopLane(rig)
   }

@@ -229,10 +229,10 @@ export function buildLaneCommandEvent(
  * idle stop), every row after it from the last 24 hours, at most ten. With
  * none (the lane's very first start), only the last 15 minutes, at most five:
  * the turn that woke it, never a person's older history that the agent's
- * single mind may already have answered before lanes. Oldest first. The boot
- * poll then drops every row the server says was already handed over
- * (LANE_SERVER_ACKNOWLEDGED), since a lane whose folders were deleted has no
- * cursor either (0.71.2).
+ * single mind may already have answered before lanes. Oldest first. A lane
+ * whose folders were deleted has no cursor either, so a boot with no inbox
+ * note then drops every row the server shows acknowledged
+ * (LANE_SERVER_ACKNOWLEDGED, 0.71.2).
  */
 export function selectLaneBacklog(
   deliveries: LaneDelivery[],
@@ -385,23 +385,41 @@ export class LaneDeliveryClaims {
  * The delivery state a lane's ack leaves on a message: the lane acks a turn
  * the moment it hands it to Claude, and the person's chat history
  * (`GET chats/:chatId/messages`, a route a lane session may read for its own
- * chats) carries it on the row as `deliveryState`.
+ * chats) carries it as the message's `deliveryState`. It is not the lane's
+ * alone: the owner's daemon acked the same way before lanes, and the backend
+ * marks the chat's latest user message acknowledged whenever an agent row is
+ * saved there (a lane notice included). So only a lane with no inbox note
+ * trusts it.
  */
 export const LANE_SERVER_ACKNOWLEDGED = 'acknowledged'
+
+/**
+ * How often the boot poll asks about one message before it gives up and
+ * offers that message as before, and the pause before each retry (times the
+ * attempt). The person's waiting turn is held only this long.
+ */
+export const LANE_HISTORY_READ_ATTEMPTS = 3
+export const LANE_HISTORY_RETRY_MS = 1_000
 
 /** The history page for exactly one message of a chat. */
 export function laneHistoryPathFor(d: { chatId: string; messageId: number }): string {
   return `chats/${encodeURIComponent(d.chatId)}/messages?afterId=${d.messageId - 1}&beforeId=${d.messageId + 1}&limit=1`
 }
 
-/** The delivery state a history page shows for `messageId`, or null when the page does not carry that row. */
+/**
+ * The delivery state a history page shows for `messageId`, or null when the
+ * page does not carry that row. The page is the backend's MessagesDto: each
+ * entry is `{ message, messageFiles, messageOptions }` and the state is on
+ * `message` (a bare message is read the same way).
+ */
 export function laneHistoryDeliveryState(answer: unknown, messageId: number): string | null {
   const page = (answer as { messages?: unknown } | null)?.messages
   const rows: unknown[] = Array.isArray(answer) ? answer : Array.isArray(page) ? page : []
   for (const row of rows) {
-    const r = (row ?? {}) as Record<string, unknown>
-    if (Number(r.id) !== messageId) continue
-    return typeof r.deliveryState === 'string' ? r.deliveryState : null
+    const entry = (row ?? {}) as Record<string, unknown>
+    const m = (entry.message && typeof entry.message === 'object' ? entry.message : entry) as Record<string, unknown>
+    if (Number(m.id) !== messageId) continue
+    return typeof m.deliveryState === 'string' ? m.deliveryState : null
   }
   return null
 }

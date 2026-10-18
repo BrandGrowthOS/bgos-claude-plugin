@@ -259,13 +259,16 @@ test('a re-offer is only a turn the inbox held at launch, once (0.71.2)', () => 
 
 test('the server\'s record of a hand over: the history page for exactly one message, and its delivery state (0.71.2)', () => {
   assert.equal(laneHistoryPathFor({ chatId: '77', messageId: 601 }), 'chats/77/messages?afterId=600&beforeId=602&limit=1')
-  const page = { messages: [{ id: 600, deliveryState: 'delivered' }, { id: 601, deliveryState: LANE_SERVER_ACKNOWLEDGED }] }
+  // The backend's own envelope (MessagesDto): { messages: [{ message, messageFiles, messageOptions }] }.
+  const entry = (message: Record<string, unknown>) => ({ message, messageFiles: [], messageOptions: [] })
+  const page = { messages: [entry({ id: 600, deliveryState: 'delivered' }), entry({ id: 601, deliveryState: LANE_SERVER_ACKNOWLEDGED })] }
   assert.equal(laneHistoryDeliveryState(page, 601), 'acknowledged')
   assert.equal(laneHistoryDeliveryState(page, 600), 'delivered')
-  assert.equal(laneHistoryDeliveryState({ messages: [{ id: '601', deliveryState: 'acknowledged' }] }, 601), 'acknowledged', 'an id as a string')
+  assert.equal(laneHistoryDeliveryState({ messages: [entry({ id: '601', deliveryState: 'acknowledged' })] }, 601), 'acknowledged', 'an id as a string')
   assert.equal(laneHistoryDeliveryState(page, 602), null, 'a row the page does not carry')
-  assert.equal(laneHistoryDeliveryState({ messages: [{ id: 601, deliveryState: null }] }, 601), null)
-  assert.equal(laneHistoryDeliveryState([{ id: 601, deliveryState: 'queued' }], 601), 'queued', 'a bare array')
+  assert.equal(laneHistoryDeliveryState({ messages: [entry({ id: 601, deliveryState: null })] }, 601), null)
+  assert.equal(laneHistoryDeliveryState({ messages: [{ message: null, messageFiles: [] }] }, 601), null)
+  assert.equal(laneHistoryDeliveryState({ messages: [{ id: 601, deliveryState: 'queued' }] }, 601), 'queued', 'a bare message is read the same way')
   assert.equal(laneHistoryDeliveryState(null, 601), null)
   assert.equal(laneHistoryDeliveryState({ messages: 'nope' }, 601), null)
 })
