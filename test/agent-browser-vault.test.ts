@@ -1,11 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { AgentBrowserVault, browserVaultScope } from '../lib/agent-browser-vault.mjs'
+import * as vaultExports from '../lib/agent-browser-vault.mjs'
 import { BrowserPool, ChromiumEngine, BrowserHostCore, HostError } from '../bin/hoai-browser-host.mjs'
 
 const PASSPHRASE = 'fixture owner passphrase 123'
@@ -116,7 +117,8 @@ test('unknown legacy files, live legacy browser and symbolic profile refuse clea
   writeFileSync(join(dir, 'DevToolsActivePort'), 'invalid')
   await assert.rejects(vault.unlock(PASSPHRASE, { clearLegacy: true }), { code: 'legacy_browser_active' })
   const linked = join(root, 'alias'); symlinkSync(dir, linked, process.platform === 'win32' ? 'junction' : 'dir')
-  assert.throws(() => new AgentBrowserVault({ profileDir: linked, scope: 'fixture' }), { code: 'unsafe_profile' })
+  assert.throws(() => new AgentBrowserVault({ profileDir: linked, scope: 'fixture' }),
+    { code: 'unsafe_profile', reason: 'alias', message: /^unsafe_profile: the browser profile folder is a link or not a plain folder\. / })
 })
 
 test('saved login metadata is origin scoped and locked vault never returns entries', async t => {
@@ -281,4 +283,366 @@ test('origin tracking retains closed-page and worker history until context close
   await vault.unlock(PASSPHRASE)
   await assert.rejects(vault.restore(context), { code: 'invalid_browser_state' })
   assert.equal(vault.restored, false)
+})
+
+// ── The Windows owner step (HOAI board row 221ec9db) ─────────────────────────
+// Making the user the owner needs WRITE_OWNER, which Modify alone (a shared
+// data drive such as E: on a PC where users get Modify) does not give, so every
+// profile there was refused as unsafe_profile with no reason. A folder that is
+// already the user's own and that no other account can write is now locked the
+// same way without SetOwner; everything else is still refused, and says why.
+// The vault's own allow-list is the user alone (the access list it writes has
+// one entry, for the user), so SYSTEM and Administrators count as other accounts.
+
+const vaultModule: any = vaultExports
+const ME = 'S-1-5-21-1000-2000-3000-1001', OTHER = 'S-1-5-21-1000-2000-3000-1002'
+const MODIFY = 0x1301BF, FULL = 0x1F01FF, READ_EXECUTE = 0x1200A9
+const NAMES: Record<string, string> = { [ME]: 'HOST\\owner', [OTHER]: 'HOST\\someone', 'S-1-5-11': 'NT AUTHORITY\\Authenticated Users',
+  'S-1-5-18': 'NT AUTHORITY\\SYSTEM', 'S-1-5-32-544': 'BUILTIN\\Administrators', 'S-1-5-32-545': 'BUILTIN\\Users', 'S-1-3-0': 'CREATOR OWNER' }
+const entry = (sid: string, mask: number, extra: any = {}) => ({ type: 0, flags: 3, mask, sid, name: NAMES[sid] || sid, ...extra })
+/** What the first PowerShell step answers when Windows refuses the owner: the folder as it is. */
+const ownerRefused = (extra: any) => ({ me: ME, meName: NAMES[ME], set: false, error: 'Attempted to perform an unauthorized operation.',
+  owner: ME, ownerName: NAMES[ME], protected: false, ...extra })
+/** What the second step answers after writing the vault's access list without SetOwner. */
+const lockedForMe = { me: ME, meName: NAMES[ME], set: true, owner: ME, ownerName: NAMES[ME], protected: true, dacl: [entry(ME, FULL)] }
+function fakePowerShell(...answers: any[]) {
+  const scripts: string[] = []
+  return { scripts, run: (script: string) => { scripts.push(script); return answers[scripts.length - 1] ?? { failed: 'no answer left in the fixture' } } }
+}
+let fakeFolders = 0
+const fakeFolder = () => `C:\\fixture\\profiles\\${++fakeFolders}\\José\u2019s it's here`
+/** The folder a script works on, decoded from the script, and the script is plain ASCII (stdin is read in the console code page). */
+function targetOf(script: string) {
+  assert.match(script, /^[\x00-\x7f]*$/, 'the script PowerShell reads from stdin is plain ASCII')
+  const b64 = /^\$target = \[System\.Text\.Encoding\]::Unicode\.GetString\(\[System\.Convert\]::FromBase64String\('([A-Za-z0-9+\/=]+)'\)\)$/m.exec(script)?.[1]
+  assert.ok(b64, script)
+  return Buffer.from(b64, 'base64').toString('utf16le')
+}
+// The statements of the 0.69.0 script, in order: a folder that can take an owner gets exactly this.
+const MAIN_STATEMENTS = ["$ErrorActionPreference = 'Stop'", '$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()',
+  '$acl = New-Object System.Security.AccessControl.DirectorySecurity', '$acl.SetOwner($identity.User)', '$acl.SetAccessRuleProtection($true, $false)',
+  "$rule = New-Object System.Security.AccessControl.FileSystemAccessRule($identity.User, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')",
+  '$acl.AddAccessRule($rule)']
+function statementsInOrder(script: string, statements: string[]) {
+  const lines = script.split('\n')
+  let at = -1
+  for (const statement of statements) { at = lines.indexOf(statement, at + 1); if (at < 0) return false }
+  return true
+}
+
+test('Windows owner step, Full control (unchanged): one step, the 0.69.0 statements, owner set and access list written', () => {
+  const folder = fakeFolder(), ps = fakePowerShell({ ...lockedForMe })
+  vaultModule.protectWindowsDirectory(folder, { ino: 1 }, ps.run)
+  assert.equal(ps.scripts.length, 1)
+  assert.ok(statementsInOrder(ps.scripts[0]!, MAIN_STATEMENTS), ps.scripts[0])
+  assert.equal(targetOf(ps.scripts[0]!), folder)
+  assert.ok(ps.scripts[0]!.includes('[System.IO.Directory]::SetAccessControl($target, $acl)'), ps.scripts[0])
+  vaultModule.protectWindowsDirectory(folder, { ino: 1 }, ps.run)
+  assert.equal(ps.scripts.length, 1, 'the same folder is not stepped again in this process')
+})
+
+test('Windows owner step, Modify only but the user\'s own and private: locked with the same access list, without SetOwner', () => {
+  const folder = fakeFolder(), ps = fakePowerShell(ownerRefused({ dacl: [entry(ME, MODIFY)] }), { ...lockedForMe })
+  vaultModule.protectWindowsDirectory(folder, { ino: 2 }, ps.run)
+  assert.equal(ps.scripts.length, 2)
+  assert.ok(!ps.scripts[1]!.includes('SetOwner'), ps.scripts[1])
+  assert.ok(statementsInOrder(ps.scripts[1]!, MAIN_STATEMENTS.filter(s => !s.includes('SetOwner'))), ps.scripts[1])
+  assert.ok(ps.scripts[1]!.includes('[System.IO.Directory]::SetAccessControl($target, $acl)'), ps.scripts[1])
+  assert.equal(targetOf(ps.scripts[0]!), folder)
+  assert.equal(targetOf(ps.scripts[1]!), folder)
+  vaultModule.protectWindowsDirectory(folder, { ino: 2 }, ps.run)
+  assert.equal(ps.scripts.length, 2, 'accepted once, like a folder whose owner was set')
+})
+
+test('Windows owner step, read-only entries for others and deny entries do not refuse a private folder', () => {
+  const lists = [
+    [entry(ME, MODIFY), entry('S-1-5-32-545', READ_EXECUTE), entry(OTHER, FULL, { type: 1 }), entry('S-1-5-11', FULL, { type: 10 })],
+    // Inherit-only GENERIC_READ | GENERIC_EXECUTE, as PowerShell's [int] gives it: negative.
+    [entry(ME, MODIFY), entry('S-1-5-11', 0xA0000000 | 0, { flags: 11 })],
+    // An empty access list: no one but the owner.
+    [],
+  ]
+  for (const dacl of lists) {
+    const ps = fakePowerShell(ownerRefused({ dacl }), { ...lockedForMe })
+    vaultModule.protectWindowsDirectory(fakeFolder(), { ino: 3 }, ps.run)
+    assert.equal(ps.scripts.length, 2, JSON.stringify(dacl))
+  }
+})
+
+test('Windows owner step, a folder another account owns is refused, says so, and is not touched', () => {
+  const ps = fakePowerShell(ownerRefused({ owner: OTHER, ownerName: NAMES[OTHER], dacl: [entry(ME, MODIFY)] }))
+  assert.throws(() => vaultModule.protectWindowsDirectory(fakeFolder(), { ino: 4 }, ps.run), (error: any) => {
+    assert.equal(error.code, 'unsafe_profile')
+    assert.equal(error.reason, 'owner_foreign')
+    assert.match(error.message, /^unsafe_profile: the browser profile folder belongs to another account\. /)
+    assert.doesNotMatch(error.message, /HOST|S-1-5|fixture/, 'the agent never gets an account name, a SID or a path')
+    assert.match(error.detail, /HOST\\someone/)
+    assert.match(error.detail, /Attempted to perform an unauthorized operation/)
+    return true
+  })
+  assert.equal(ps.scripts.length, 1, 'nothing is written to a folder that is refused')
+})
+
+const OTHER_WRITERS: Array<[string, any, RegExp]> = [
+  ['Authenticated Users with Modify', entry('S-1-5-11', MODIFY), /Authenticated Users/],
+  ['Authenticated Users inherit-only generic write, as E: hands down', entry('S-1-5-11', 0xE0010000 | 0, { flags: 11 }), /Authenticated Users/],
+  ['another user with only WRITE_DAC', entry(OTHER, 0x40000), /HOST\\someone/],
+  ['another user with only WRITE_OWNER', entry(OTHER, 0x80000), /HOST\\someone/],
+  ['another user with only DELETE', entry(OTHER, 0x10000), /HOST\\someone/],
+  ['another user with only add-subfolder', entry(OTHER, 0x4), /HOST\\someone/],
+  ['another user with GENERIC_ALL', entry(OTHER, 0x10000000), /HOST\\someone/],
+  ['another user with an access bit the vault does not know', entry(OTHER, 0x1000000), /HOST\\someone/],
+  ['SYSTEM with Full control (the vault\'s list is the user alone)', entry('S-1-5-18', FULL), /SYSTEM/],
+  ['Administrators with Full control (the vault\'s list is the user alone)', entry('S-1-5-32-544', FULL), /Administrators/],
+  ['CREATOR OWNER with inherit-only Full control', entry('S-1-3-0', 0x10000000, { flags: 11 }), /CREATOR OWNER/],
+  ['an object entry for another user', entry(OTHER, 0x2, { type: 5 }), /HOST\\someone/],
+  ['an entry with no account and no mask', { type: 3, flags: 0, mask: null, sid: null, name: null }, /an entry with no account/],
+]
+for (const [label, other, named] of OTHER_WRITERS) {
+  test(`Windows owner step, another account can write (${label}): refused, says so, not touched`, () => {
+    const ps = fakePowerShell(ownerRefused({ dacl: [entry(ME, MODIFY), other] }))
+    assert.throws(() => vaultModule.protectWindowsDirectory(fakeFolder(), { ino: 5 }, ps.run), (error: any) => {
+      assert.equal(error.code, 'unsafe_profile')
+      assert.equal(error.reason, 'other_writer')
+      assert.match(error.message, /^unsafe_profile: another account can write to the browser profile folder\. /)
+      assert.match(error.detail, named)
+      return true
+    })
+    assert.equal(ps.scripts.length, 1)
+  })
+}
+
+test('Windows owner step, a folder with no access list at all lets everyone write: refused', () => {
+  const ps = fakePowerShell(ownerRefused({ dacl: null }))
+  assert.throws(() => vaultModule.protectWindowsDirectory(fakeFolder(), { ino: 6 }, ps.run), { code: 'unsafe_profile', reason: 'other_writer' })
+  assert.equal(ps.scripts.length, 1)
+})
+
+test('Windows owner step fails closed: no PowerShell, an unreadable owner, a lock that fails or does not read back as the user\'s alone', () => {
+  const cases: Array<[string, any[], string]> = [
+    ['PowerShell did not finish', [{ failed: 'PowerShell did not finish within 10 s' }], 'acl_step_failed'],
+    ['the owner could not be read', [ownerRefused({ owner: undefined, ownerName: undefined, readError: 'denied' })], 'owner_not_set'],
+    ['no access list in the answer', [ownerRefused({ dacl: undefined })], 'owner_not_set'],
+    ['the lock is refused', [ownerRefused({ dacl: [entry(ME, MODIFY)] }), { ...lockedForMe, set: false, error: 'denied' }], 'not_private'],
+    ['the lock step does not finish', [ownerRefused({ dacl: [entry(ME, MODIFY)] }), { failed: 'PowerShell did not finish within 10 s' }], 'acl_step_failed'],
+    ['read back with a second entry', [ownerRefused({ dacl: [entry(ME, MODIFY)] }), { ...lockedForMe, dacl: [entry(ME, FULL), entry('S-1-5-11', READ_EXECUTE)] }], 'not_private'],
+    ['read back unprotected', [ownerRefused({ dacl: [entry(ME, MODIFY)] }), { ...lockedForMe, protected: false }], 'not_private'],
+    ['read back owned by another account', [ownerRefused({ dacl: [entry(ME, MODIFY)] }), { ...lockedForMe, owner: OTHER }], 'not_private'],
+    ['read back with less than Full control', [ownerRefused({ dacl: [entry(ME, MODIFY)] }), { ...lockedForMe, dacl: [entry(ME, MODIFY)] }], 'not_private'],
+    ['read back with its one entry for another account', [ownerRefused({ dacl: [entry(ME, MODIFY)] }), { ...lockedForMe, dacl: [entry(OTHER, FULL)] }], 'not_private'],
+    ['read back with its one entry a deny', [ownerRefused({ dacl: [entry(ME, MODIFY)] }), { ...lockedForMe, dacl: [entry(ME, FULL, { type: 1 })] }], 'not_private'],
+    ['read back with its entry not handed to what is made in it', [ownerRefused({ dacl: [entry(ME, MODIFY)] }), { ...lockedForMe, dacl: [entry(ME, FULL, { flags: 0 })] }], 'not_private'],
+    ['read back with its entry inherited', [ownerRefused({ dacl: [entry(ME, MODIFY)] }), { ...lockedForMe, dacl: [entry(ME, FULL, { flags: 0x13 })] }], 'not_private'],
+    ['read back with no access list', [ownerRefused({ dacl: [entry(ME, MODIFY)] }), { ...lockedForMe, dacl: null }], 'not_private'],
+  ]
+  for (const [label, answers, reason] of cases) {
+    const ps = fakePowerShell(...answers)
+    assert.throws(() => vaultModule.protectWindowsDirectory(fakeFolder(), { ino: 7 }, ps.run), (error: any) => {
+      assert.equal(error.code, 'unsafe_profile', label)
+      assert.equal(error.reason, reason, label)
+      assert.match(error.message, /^unsafe_profile: \S/, label)
+      assert.equal(typeof error.detail, 'string', label)
+      return true
+    }, label)
+  }
+})
+
+// ── The same cases on the REAL file system (Windows, icacls) ─────────────────
+
+function system32(exe: string): string {
+  return join(process.env.SystemRoot || process.env.SYSTEMROOT || 'C:\\Windows', 'System32', exe)
+}
+function currentSid(): string {
+  const sid = /"(S-1-[0-9-]+)"\s*$/.exec(spawnSync(system32('whoami.exe'), ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8' }).stdout.trim())?.[1]
+  assert.ok(sid, 'the current user SID')
+  return sid
+}
+function icacls(dir: string, ...args: string[]) {
+  const r = spawnSync(system32('icacls.exe'), [dir, ...args], { encoding: 'utf8' })
+  assert.equal(r.status, 0, `icacls ${args.join(' ')}: ${r.stdout}${r.stderr}`)
+}
+/** The folder's owner and access list, read with Get-Acl, independently of the vault. */
+function securityOf(dir: string): string {
+  const r = spawnSync(system32('WindowsPowerShell\\v1.0\\powershell.exe'), ['-NoProfile', '-NonInteractive', '-Command',
+    "(Get-Acl -LiteralPath $env:VAULT_TEST_FOLDER).GetSecurityDescriptorSddlForm('Owner,Access')"], { encoding: 'utf8', windowsHide: true, env: { ...process.env, VAULT_TEST_FOLDER: dir } })
+  assert.equal(r.status, 0, r.stderr)
+  return r.stdout.trim()
+}
+const asTrustee = (sid: string) => /^S-1-5-21-[0-9-]+-500$/.test(sid) ? `(${sid}|LA)` : sid
+/** A temp folder the test user owns, with exactly these access entries ("ME" is the user). */
+function aclFolder(t: any, grants: string[], name = 'profile') {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'vault-acl-')))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const dir = join(root, name), me = currentSid()
+  mkdirSync(dir)
+  // An elevated runner makes Administrators the owner of what it creates; an
+  // unelevated user already owns it (and may lack the right to set it again).
+  spawnSync(system32('icacls.exe'), [dir, '/setowner', `*${me}`], { encoding: 'utf8' })
+  icacls(dir, '/inheritance:r', '/grant:r', ...grants.map(grant => grant.replace(/^ME:/, `*${me}:`)))
+  const before = securityOf(dir)
+  assert.match(before, new RegExp(`^O:${asTrustee(me)}D:`), 'the fixture folder is the user\'s own')
+  return { dir, me, before }
+}
+const lockedSddl = (me: string) => new RegExp(`^O:${asTrustee(me)}D:P(AI)?\\(A;OICI;FA;;;${asTrustee(me)}\\)$`)
+const windowsOnly = { skip: process.platform !== 'win32' ? 'Windows only (the mocked cases above run everywhere)' : false }
+/**
+ * Whether this token sets a folder's owner with Modify alone, asked the way
+ * the vault asks (.NET SetAccessControl, which enables no privilege). A token
+ * with SeTakeOwnership or SeRestore already enabled can (GitHub's Windows
+ * runner): Modify only cannot be reproduced there, and the vault takes such a
+ * folder over as it always has with Full control. An unelevated user cannot.
+ */
+let takesAnyFolder: boolean | undefined
+function takesAnyFolderOver(t: any): boolean {
+  if (takesAnyFolder === undefined) {
+    const { dir } = aclFolder(t, ['ME:(OI)(CI)M'], 'probe')
+    const r = spawnSync(system32('WindowsPowerShell\\v1.0\\powershell.exe'), ['-NoProfile', '-NonInteractive', '-Command',
+      "$ErrorActionPreference = 'Stop'; $acl = New-Object System.Security.AccessControl.DirectorySecurity; $acl.SetOwner([System.Security.Principal.WindowsIdentity]::GetCurrent().User); [System.IO.Directory]::SetAccessControl($env:VAULT_TEST_FOLDER, $acl)"],
+    { encoding: 'utf8', windowsHide: true, env: { ...process.env, VAULT_TEST_FOLDER: dir } })
+    takesAnyFolder = r.status === 0
+  }
+  return takesAnyFolder
+}
+/** A folder the vault must refuse with Modify alone; a token that takes any folder over gets it locked, as with Full control. */
+function refusedOrTakenOver(dir: string, me: string, before: string, check: (error: any) => void) {
+  if (takesAnyFolder) {
+    assert.doesNotThrow(() => new AgentBrowserVault({ profileDir: dir, scope: 'fixture' }), 'this token takes any folder over, as with Full control')
+    assert.match(securityOf(dir), lockedSddl(me))
+    return
+  }
+  assert.throws(() => new AgentBrowserVault({ profileDir: dir, scope: 'fixture' }), (error: any) => { check(error); return true })
+  assert.equal(securityOf(dir), before)
+}
+
+test('REAL ACL: Modify only, the user\'s own and private: accepted, and locked to the user exactly as with Full control', windowsOnly, t => {
+  const { dir, me } = aclFolder(t, ['ME:(OI)(CI)M'])
+  assert.doesNotThrow(() => new AgentBrowserVault({ profileDir: dir, scope: 'fixture' }))
+  assert.match(securityOf(dir), lockedSddl(me))
+})
+
+test('REAL ACL: Modify only, read-only for Users: accepted, and the read entry is gone afterwards', windowsOnly, t => {
+  const { dir, me } = aclFolder(t, ['ME:(OI)(CI)M', '*S-1-5-32-545:(OI)(CI)RX'])
+  assert.doesNotThrow(() => new AgentBrowserVault({ profileDir: dir, scope: 'fixture' }))
+  assert.match(securityOf(dir), lockedSddl(me))
+})
+
+test('REAL ACL: Full control (unchanged): accepted and taken over, even with another account that can write', windowsOnly, t => {
+  const { dir, me } = aclFolder(t, ['ME:(OI)(CI)F', '*S-1-5-11:(OI)(CI)M'])
+  assert.doesNotThrow(() => new AgentBrowserVault({ profileDir: dir, scope: 'fixture' }))
+  assert.match(securityOf(dir), lockedSddl(me))
+})
+
+test('REAL ACL: a folder name with a non-ASCII letter and a curly quote reaches Windows intact (Modify only and Full control)', windowsOnly, t => {
+  for (const grant of ['ME:(OI)(CI)M', 'ME:(OI)(CI)F']) {
+    const { dir, me } = aclFolder(t, [grant], 'José\u2019s profile')
+    assert.doesNotThrow(() => new AgentBrowserVault({ profileDir: dir, scope: 'fixture' }), grant)
+    assert.match(securityOf(dir), lockedSddl(me), grant)
+  }
+  takesAnyFolderOver(t)
+  const { dir, me, before } = aclFolder(t, ['ME:(OI)(CI)M', '*S-1-5-11:(OI)(CI)M'], 'José\u2019s profile')
+  refusedOrTakenOver(dir, me, before, error => {
+    assert.equal(error.reason, 'other_writer', error.detail)
+    assert.ok(error.detail.includes(dir), error.detail)
+  })
+})
+
+const REAL_WRITERS: Array<[string, string, RegExp]> = [
+  ['Authenticated Users with Modify, as on E:', '*S-1-5-11:(OI)(CI)M', /Authenticated Users|S-1-5-11/],
+  ['Authenticated Users inherit-only Modify', '*S-1-5-11:(OI)(CI)(IO)M', /Authenticated Users|S-1-5-11/],
+  ['SYSTEM with Full control', '*S-1-5-18:(OI)(CI)F', /SYSTEM|S-1-5-18/],
+]
+for (const [label, grant, named] of REAL_WRITERS) {
+  test(`REAL ACL: Modify only and another account can write (${label}): refused with the reason, folder untouched`, windowsOnly, t => {
+    takesAnyFolderOver(t)
+    const { dir, me, before } = aclFolder(t, ['ME:(OI)(CI)M', grant])
+    refusedOrTakenOver(dir, me, before, error => {
+      assert.equal(error.code, 'unsafe_profile')
+      assert.equal(error.reason, 'other_writer')
+      assert.match(error.message, /^unsafe_profile: another account can write to the browser profile folder/)
+      assert.match(error.detail, named)
+    })
+  })
+}
+
+test('REAL ACL: Modify only and another account owns the folder: refused with the reason, folder untouched', windowsOnly, t => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'vault-acl-')))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const dir = join(root, 'profile'), me = currentSid()
+  mkdirSync(dir)
+  const owned = spawnSync(system32('icacls.exe'), [dir, '/setowner', '*S-1-5-32-544'], { encoding: 'utf8' })
+  if (owned.status !== 0) {
+    t.skip('giving a folder to another owner needs an elevated token (CI has one); the mocked case covers it here')
+    return
+  }
+  icacls(dir, '/inheritance:r', '/grant:r', `*${me}:(OI)(CI)M`)
+  takesAnyFolderOver(t)
+  refusedOrTakenOver(dir, me, securityOf(dir), error => {
+    assert.equal(error.code, 'unsafe_profile')
+    assert.equal(error.reason, 'owner_foreign')
+    assert.match(error.detail, /Administrators|S-1-5-32-544/)
+  })
+})
+
+// ── Where the refusal is reported: the agent's answer and the host log ───────
+
+test('a refused profile folder tells the agent why (no path), and the host log names the folder', async t => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'vault-host-')))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  mkdirSync(join(root, 'real'))
+  const agentRoot = join(root, 'agents')
+  symlinkSync(join(root, 'real'), agentRoot, process.platform === 'win32' ? 'junction' : 'dir')
+  const logs: string[] = []
+  const pool = new BrowserPool({ agentRoot, log: ((line: string) => { logs.push(line) }) as any,
+    createEngine: (paths: any) => new ChromiumEngine({ ...paths, executable: 'unused' }) as any })
+  const core = new BrowserHostCore({ pool, browserTools: [], deviceLabel: 'fixture' } as any)
+  const context = { assistantId: 901, principal: 'user-fixture' }
+  const result: any = await core.callTool(context, 'hoai_browser_open_session', {})
+  assert.equal(result.isError, true)
+  const text = result.content[0].text
+  assert.match(text, /unsafe_profile: a folder above the browser profile folder is a link or not a plain folder\./)
+  assert.ok(!text.includes(root), text)
+  const profileDir = pool.pathsFor(context).profileDir
+  assert.ok(logs.some(line => line.includes(profileDir) && line.includes('alias') && line.includes(agentRoot)), logs.join('\n'))
+  await pool.stopAll()
+})
+
+test('REAL ACL: on a Modify-only drive the agent hears that another account can write, and the log names it', windowsOnly, async t => {
+  if (takesAnyFolderOver(t)) {
+    t.skip('this token takes any folder over, so no Modify-only refusal can happen here; the junction case covers the answer and the log')
+    return
+  }
+  const agentRoot = realpathSync(mkdtempSync(join(tmpdir(), 'vault-host-')))
+  t.after(() => rmSync(agentRoot, { recursive: true, force: true }))
+  const logs: string[] = []
+  const pool = new BrowserPool({ agentRoot, log: ((line: string) => { logs.push(line) }) as any,
+    createEngine: (paths: any) => new ChromiumEngine({ ...paths, executable: 'unused' }) as any })
+  const core = new BrowserHostCore({ pool, browserTools: [], deviceLabel: 'fixture' } as any)
+  const context = { assistantId: 901, principal: 'user-fixture' }
+  // The profile folder as E: hands it down: the user's own, Modify for the user and for Authenticated Users.
+  const profileDir = pool.pathsFor(context).profileDir, me = currentSid()
+  mkdirSync(profileDir, { recursive: true })
+  spawnSync(system32('icacls.exe'), [profileDir, '/setowner', `*${me}`], { encoding: 'utf8' })
+  icacls(profileDir, '/inheritance:r', '/grant:r', `*${me}:(OI)(CI)M`, '*S-1-5-11:(OI)(CI)M')
+  assert.match(securityOf(profileDir), new RegExp(`^O:${asTrustee(me)}D:`))
+  const result: any = await core.callTool(context, 'hoai_browser_open_session', {})
+  assert.equal(result.isError, true)
+  const text = result.content[0].text
+  assert.match(text, /unsafe_profile: another account can write to the browser profile folder\. /)
+  assert.ok(!text.includes(agentRoot), text)
+  assert.doesNotMatch(text, /S-1-|Authenticated Users|SYSTEM|Administrators|ALIENARES|\\/, 'no SID, account or path reaches the agent')
+  assert.ok(logs.some(line => line.includes(pool.pathsFor(context).profileDir) && /other_writer/.test(line) && /Authenticated Users|S-1-5-11/.test(line)), logs.join('\n'))
+  await pool.stopAll()
+})
+
+test('POSIX: a folder above the profile that its group or everyone can write is refused with that reason', { skip: process.platform === 'win32' ? 'POSIX only' : false }, t => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'vault-posix-')))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  chmodSync(root, 0o777)
+  assert.throws(() => new AgentBrowserVault({ profileDir: join(root, 'profile'), scope: 'fixture' }), (error: any) => {
+    assert.equal(error.code, 'unsafe_profile')
+    assert.equal(error.reason, 'other_writer')
+    assert.match(error.message, /^unsafe_profile: another account can write to a folder above the browser profile folder\. /)
+    assert.ok(error.detail.includes(root), error.detail)
+    return true
+  })
 })

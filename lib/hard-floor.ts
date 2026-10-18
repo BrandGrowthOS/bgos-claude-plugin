@@ -146,6 +146,12 @@ export const toolNameWords: (name: unknown) => string[] = core.toolNameWords
 /** The HOAI channel's own MCP server names, exact (spec 4.2). */
 export const HOAI_OWN_SERVERS: readonly string[] = core.HOAI_OWN_SERVERS
 
+/** The channel's own tools that act on the owner's behalf, exact: `email_send` (Always ask stops a send). */
+export const HOAI_OWN_SENDING_TOOLS: readonly string[] = core.HOAI_OWN_SENDING_TOOLS
+
+/** This channel's own `email_send`, under any of its server names. */
+export const isOwnSendingTool: (toolName: unknown) => boolean = core.isOwnSendingTool
+
 /** The HOAI Agent Browser's MCP server names, exact; left to the browser's own gate. */
 export const HOAI_AGENT_BROWSER_SERVERS: readonly string[] = core.HOAI_AGENT_BROWSER_SERVERS
 

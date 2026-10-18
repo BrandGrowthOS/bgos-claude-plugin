@@ -383,6 +383,7 @@ export const OWN_MCP_TOOLS = [
   'boards_insert',
   'boards_update',
   'boards_attach',
+  'boards_download',
   'boards_search',
   'boards_changes',
   'boards_grant',

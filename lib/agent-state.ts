@@ -204,9 +204,17 @@ export function nearestClaudeAncestor(
 // process tree, and every staged update waited in process_tree_unreadable.
 
 /**
- * One PowerShell call that follows ParentProcessId up from `ownPid`, one
- * filtered Get-CimInstance per link (a whole-table listing is far more output
- * than a chain of a few processes). Bounded at 64 links and stopped at a
+ * One PowerShell call that follows ParentProcessId up from `ownPid` through ONE
+ * Get-CimInstance of the process table, walked in PowerShell, so only the chain
+ * is printed. HOAI board row 7046de2a: it was one filtered Get-CimInstance per
+ * link, and a filtered query costs as much as a full one (the provider walks
+ * every process each time: each link added about 0.5 s on a busy PC), so on
+ * AlienAres the nine links from the daemon to wininit took 4.0 to 6.3 s against
+ * defaultExecSync's 5 s cap; this script took 1.1 to 1.4 s for the same chain.
+ * Ids are cast to int64 on both sides: Win32_Process ids are UInt32, a
+ * PowerShell literal is Int32, and a hashtable keyed by one never finds the
+ * other. A CIM error stops the script (-ErrorAction Stop), so it exits non-zero
+ * instead of walking an empty table. Bounded at 64 links and stopped at a
  * process that is its own parent. No double quote anywhere in the script:
  * Node escapes one as \" on the Windows command line, and a -Command must not
  * depend on how that is read back. CreationDate is converted to epoch ms
@@ -218,9 +226,11 @@ export function win32AncestryCommand(ownPid: number): { file: string; args: stri
   if (!Number.isInteger(ownPid) || ownPid <= 0) return null
   const script = [
     `$p = ${ownPid};`,
+    '$all = @{};',
+    'Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,CreationDate,CommandLine -ErrorAction Stop | ForEach-Object { $all[[int64]$_.ProcessId] = $_ };',
     '$out = @();',
     'for ($i = 0; $i -lt 64 -and $p -gt 0; $i++) {',
-    "$x = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $p);",
+    '$x = $all[[int64]$p];',
     'if (-not $x) { break };',
     '$out += [pscustomobject]@{',
     'ProcessId = $x.ProcessId;',
@@ -287,49 +297,88 @@ export function isWin32ClaudeProcess(proc: { name: string | null | undefined; co
 }
 
 /**
- * The claude this daemon serves on Windows: the NEAREST ancestor that
- * isWin32ClaudeProcess accepts, self excluded, or null. Windows reuses pids,
- * so a "parent" created after its child is a stranger that inherited a dead
- * parent's pid, and the walk stops there rather than adopt it. Never throws.
+ * One look for the claude ancestor. `readable: false` when the process list
+ * could not be read at all (the probe timed out, exited non-zero, printed
+ * something cut short or a chain without this process, or could not start),
+ * which says nothing about whether
+ * a claude is there; otherwise the pid, or null when the chain was read and
+ * holds no claude (HOAI board row 7046de2a: a timed out probe used to read as
+ * the second, and was held for 10 minutes).
  */
-export function nearestClaudeAncestorWin32(
+export type ClaudeAncestorReading = { readable: true; pid: number | null } | { readable: false }
+
+/**
+ * The claude this daemon serves on Windows: the NEAREST ancestor that
+ * isWin32ClaudeProcess accepts, self excluded. Windows reuses pids, so a
+ * "parent" created after its child is a stranger that inherited a dead
+ * parent's pid, and the walk stops there rather than adopt it: a chain that
+ * was read, with no claude in it. Never throws.
+ */
+export function readClaudeAncestorWin32(
   ownPid: number,
   execSync: (file: string, args: string[]) => SyncExecResult,
-): number | null {
+): ClaudeAncestorReading {
   try {
     const cmd = win32AncestryCommand(ownPid)
-    if (!cmd) return null
+    if (!cmd) return { readable: true, pid: null }
     const result = execSync(cmd.file, cmd.args)
-    if (result.code !== 0) return null
+    if (result.code !== 0) return { readable: false }
     const links = parseWin32Ancestry(result.stdout)
-    if (!links) return null
+    if (!links) return { readable: false }
     const byPid = new Map(links.map((link) => [link.pid, link]))
+    // This process is alive, so a chain without it read nothing (a CIM error
+    // that did not stop the script leaves an empty table and prints []).
+    if (!byPid.has(ownPid)) return { readable: false }
     const seen = new Set<number>()
     let child = byPid.get(ownPid)
     while (child && !seen.has(child.pid)) {
       seen.add(child.pid)
       const parent = byPid.get(child.ppid)
-      if (!parent || parent.pid <= 0 || parent.pid === child.pid) return null
-      if (parent.createdAtMs !== null && child.createdAtMs !== null && parent.createdAtMs > child.createdAtMs) return null
-      if (isWin32ClaudeProcess(parent)) return parent.pid
+      if (!parent || parent.pid <= 0 || parent.pid === child.pid) break
+      if (parent.createdAtMs !== null && child.createdAtMs !== null && parent.createdAtMs > child.createdAtMs) break
+      if (isWin32ClaudeProcess(parent)) return { readable: true, pid: parent.pid }
       child = parent
     }
-    return null
+    return { readable: true, pid: null }
   } catch {
-    return null
+    return { readable: false }
   }
 }
 
-/** The claude ancestor on this platform: PowerShell on win32, ps elsewhere. */
+/** readClaudeAncestorWin32's pid, null for no claude and for no reading. */
+export function nearestClaudeAncestorWin32(
+  ownPid: number,
+  execSync: (file: string, args: string[]) => SyncExecResult,
+): number | null {
+  const reading = readClaudeAncestorWin32(ownPid, execSync)
+  return reading.readable ? reading.pid : null
+}
+
+/**
+ * The claude ancestor on this platform: PowerShell on win32, ps elsewhere.
+ * Only the win32 walk tells a failed read from an absence; a ps walk's every
+ * answer is a reading, as it always was, so macOS and Linux keep their hold.
+ */
+export function readClaudeAncestor(input: {
+  platform: string
+  ownPid: number
+  execSync: (file: string, args: string[]) => SyncExecResult
+}): ClaudeAncestorReading {
+  if (input.platform === 'win32') return readClaudeAncestorWin32(input.ownPid, input.execSync)
+  const pid = nearestClaudeAncestor(readProcessAncestry(input.ownPid, input.execSync), (p) =>
+    readProcessComm(p, input.execSync),
+  )
+  return { readable: true, pid }
+}
+
+/** readClaudeAncestor's pid, null for no claude and for no reading. */
 export function findClaudeAncestor(input: {
   platform: string
   ownPid: number
   execSync: (file: string, args: string[]) => SyncExecResult
 }): number | null {
-  if (input.platform === 'win32') return nearestClaudeAncestorWin32(input.ownPid, input.execSync)
-  return nearestClaudeAncestor(readProcessAncestry(input.ownPid, input.execSync), (pid) =>
-    readProcessComm(pid, input.execSync),
-  )
+  const reading = readClaudeAncestor(input)
+  return reading.readable ? reading.pid : null
 }
 
 /**
@@ -570,6 +619,49 @@ export function memoizeUntilFound<T>(
       found = compute()
     } catch {
       found = null
+    }
+    return found
+  }
+}
+
+/**
+ * memoizeUntilFound for the claude ancestor, telling a failed read from an
+ * absence (HOAI board row 7046de2a). A found pid is kept forever; a reading
+ * that found no claude is held for `retryMs`, as before, and so is a read that
+ * throws; a reading that could not be taken (on a busy Windows PC the probe can
+ * run past its exec cap) is retried after `unreadableRetryMs`, doubling while
+ * it keeps failing and never held longer than `retryMs`, so one slow probe no
+ * longer reads as "no claude" for 10 minutes, and a PC where the probe never
+ * answers does not pay for it every half minute.
+ */
+export function memoizeAncestorReading(
+  retryMs: number,
+  unreadableRetryMs: number,
+  now: () => number,
+  read: () => ClaudeAncestorReading,
+): () => number | null {
+  let found: number | null = null
+  let triedAt = Number.NEGATIVE_INFINITY
+  let holdMs = 0
+  let unreadable = 0
+  return () => {
+    if (found !== null) return found
+    const t = now()
+    if (t - triedAt < holdMs) return null
+    triedAt = t
+    let reading: ClaudeAncestorReading
+    try {
+      reading = read()
+    } catch {
+      reading = { readable: true, pid: null }
+    }
+    if (reading.readable) {
+      unreadable = 0
+      found = reading.pid
+      holdMs = retryMs
+    } else {
+      unreadable += 1
+      holdMs = Math.min(unreadableRetryMs * 2 ** Math.min(unreadable - 1, 30), retryMs)
     }
     return found
   }

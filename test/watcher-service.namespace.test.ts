@@ -11,9 +11,15 @@
  * into it, and the service carries the variable so a reinstall from inside the
  * namespaced watcher stays namespaced.
  *
- * Unset (or invalid, which means unset) the output is byte for byte today's:
- * test/watcher-service.test.ts is unchanged and still green, and the first
- * test below pins the equality directly.
+ * Since board row dfafdfb6 every name also carries the HOME id
+ * (`home-<id>`, test/watcher-service.home-scope.test.ts), so a sandboxed HOME
+ * no longer reaches the live watcher's names even without a namespace; the
+ * namespace still separates two installs from ONE HOME, and the two compose:
+ * "HOAI Watcher (<ns>) home-<id>".
+ *
+ * Unset (or invalid, which means unset) the namespace adds nothing: the spec
+ * is byte for byte the un-namespaced one (test/watcher-service.test.ts), and
+ * the first test below pins the equality directly.
  *
  * Run: npx tsx --test test/watcher-service.namespace.test.ts
  */
@@ -32,6 +38,9 @@ const WIN = {
   username: 'kc',
 }
 const NS = { HOAI_SERVICE_NAMESPACE: 'stage1' }
+// The HOME id every name carries (board row dfafdfb6), see test/watcher-service.test.ts.
+const POSIX_ID = 'dc88e57d'
+const WIN_ID = '66ede649'
 
 test('serviceNamespace: ^[a-z0-9]{1,16}$ or nothing; an invalid value means unset, never a guess', () => {
   assert.equal(serviceNamespace({ HOAI_SERVICE_NAMESPACE: 'stage1' }), 'stage1')
@@ -58,8 +67,10 @@ test('unset or invalid: every platform spec is exactly the un-namespaced one (by
     assert.deepEqual(watcherServiceSpec({ platform, ...base, env: { HOAI_SERVICE_NAMESPACE: 'NOT-valid' } }), today, platform)
     assert.deepEqual(watcherServiceSpec({ platform, ...base, env: { HOAI_SERVICE_NAMESPACE: '' } }), today, platform)
   }
+  // Without a HOME id these are the OLD names, exactly: what a same-HOME upgrade renames.
   assert.deepEqual(watcherServiceNames(''), {
     namespace: '',
+    homeId: '',
     launchdLabel: 'ai.bgos.watcher',
     systemdUnit: 'bgos-watcher',
     taskName: 'HOAI Watcher',
@@ -69,10 +80,11 @@ test('unset or invalid: every platform spec is exactly the un-namespaced one (by
 
 test('darwin, namespaced: label, plist path, every launchctl target and the service env all move into the namespace', () => {
   const spec = watcherServiceSpec({ platform: 'darwin', ...POSIX, env: NS })
-  assert.equal(spec.label, 'ai.bgos.watcher.stage1')
-  assert.equal(spec.files[0]!.path, '/home/kc/Library/LaunchAgents/ai.bgos.watcher.stage1.plist')
+  const label = `ai.bgos.watcher.stage1.home-${POSIX_ID}`
+  assert.equal(spec.label, label)
+  assert.equal(spec.files[0]!.path, `/home/kc/Library/LaunchAgents/${label}.plist`)
   const plist = spec.files[0]!.content
-  assert.match(plist, /<key>Label<\/key><string>ai\.bgos\.watcher\.stage1<\/string>/)
+  assert.ok(plist.includes(`<key>Label</key><string>${label}</string>`), plist)
   assert.match(plist, /<key>HOAI_SERVICE_NAMESPACE<\/key><string>stage1<\/string>/)
   const all = [...spec.installCommands, ...spec.startCommands, ...spec.stopCommands, ...spec.uninstallCommands, ...spec.statusCommands]
   for (const cmd of all) {
@@ -81,42 +93,49 @@ test('darwin, namespaced: label, plist path, every launchctl target and the serv
     assert.doesNotMatch(line, /ai\.bgos\.watcher(\s|$)/, line)
   }
   assert.deepEqual(spec.installCommands.map((c) => c.args.join(' ')), [
-    'bootout gui/501/ai.bgos.watcher.stage1',
-    'bootstrap gui/501 /home/kc/Library/LaunchAgents/ai.bgos.watcher.stage1.plist',
+    `bootout gui/501/${label}`,
+    `bootstrap gui/501 /home/kc/Library/LaunchAgents/${label}.plist`,
   ])
-  assert.deepEqual(spec.startCommands.map((c) => c.args.join(' ')), ['kickstart -k gui/501/ai.bgos.watcher.stage1'])
-  assert.deepEqual(spec.statusCommands.map((c) => c.args.join(' ')), ['print gui/501/ai.bgos.watcher.stage1'])
+  assert.deepEqual(spec.startCommands.map((c) => c.args.join(' ')), [`kickstart -k gui/501/${label}`])
+  assert.deepEqual(spec.statusCommands.map((c) => c.args.join(' ')), [`print gui/501/${label}`])
+  // The OLD name of THIS namespace is the one a same-HOME upgrade renames; never the un-namespaced live one.
+  assert.equal(spec.legacy.label, 'ai.bgos.watcher.stage1')
 })
 
 test('linux, namespaced: unit file, Description, every systemctl call and the service env all move into the namespace', () => {
   const spec = watcherServiceSpec({ platform: 'linux', ...POSIX, env: NS })
-  assert.equal(spec.label, 'bgos-watcher-stage1')
-  assert.equal(spec.files[0]!.path, '/home/kc/.config/systemd/user/bgos-watcher-stage1.service')
+  const name = `bgos-watcher-stage1-home-${POSIX_ID}`
+  assert.equal(spec.label, name)
+  assert.equal(spec.files[0]!.path, `/home/kc/.config/systemd/user/${name}.service`)
   const unit = spec.files[0]!.content
-  assert.match(unit, /^Description=HOAI per-machine watcher \(bgos-watcher-stage1\)$/m)
+  assert.ok(unit.split('\n').includes(`Description=HOAI per-machine watcher (${name})`), unit)
   assert.match(unit, /^Environment=HOAI_SERVICE_NAMESPACE=stage1$/m)
   assert.deepEqual(spec.installCommands.map((c) => c.args.join(' ')), [
     '--user daemon-reload',
-    '--user enable --now bgos-watcher-stage1',
+    `--user enable --now ${name}`,
     'enable-linger kc',
   ])
-  assert.deepEqual(spec.startCommands.map((c) => c.args.join(' ')), ['--user restart bgos-watcher-stage1'])
-  assert.deepEqual(spec.stopCommands.map((c) => c.args.join(' ')), ['--user stop bgos-watcher-stage1'])
-  assert.deepEqual(spec.uninstallCommands.map((c) => c.args.join(' ')), ['--user disable --now bgos-watcher-stage1', '--user daemon-reload'])
-  assert.deepEqual(spec.statusCommands.map((c) => c.args.join(' ')), ['--user is-active bgos-watcher-stage1'])
+  assert.deepEqual(spec.startCommands.map((c) => c.args.join(' ')), [`--user restart ${name}`])
+  assert.deepEqual(spec.stopCommands.map((c) => c.args.join(' ')), [`--user stop ${name}`])
+  assert.deepEqual(spec.uninstallCommands.map((c) => c.args.join(' ')), [`--user disable --now ${name}`, '--user daemon-reload'])
+  assert.deepEqual(spec.statusCommands.map((c) => c.args.join(' ')), [`--user is-active ${name}`])
+  assert.equal(spec.legacy.label, 'bgos-watcher-stage1')
 })
 
 test('win32, namespaced: the task name, the Run key value and the launcher env all move into the namespace', () => {
   const spec = watcherServiceSpec({ platform: 'win32', ...WIN, env: NS })
-  assert.equal(spec.label, 'HOAI Watcher (stage1)')
+  assert.equal(spec.label, `HOAI Watcher (stage1) home-${WIN_ID}`)
   const [vbs, ps1] = spec.files
-  assert.match(vbs!.content, /the Scheduled Task 'HOAI Watcher \(stage1\)' runs this at logon/)
+  assert.ok(vbs!.content.includes(`the Scheduled Task 'HOAI Watcher (stage1) home-${WIN_ID}' runs this at logon`), vbs!.content)
   // The process environment of the launcher shell is what node inherits.
   assert.ok(vbs!.content.includes('shell.Environment("Process")("HOAI_SERVICE_NAMESPACE") = "stage1"'), vbs!.content)
   assert.ok(vbs!.content.indexOf('HOAI_SERVICE_NAMESPACE') < vbs!.content.indexOf('shell.Run'), 'set before node starts')
-  assert.match(ps1!.content, /^\$name = 'HOAI Watcher \(stage1\)'\r?$/m)
+  assert.ok(ps1!.content.split('\r\n').includes(`$name = 'HOAI Watcher (stage1) home-${WIN_ID}'`), ps1!.content)
   // The Run key fallback must not overwrite the live watcher's value either.
-  assert.match(ps1!.content, /^\$runValue = 'HOAIWatcher-stage1'\r?$/m)
+  assert.ok(ps1!.content.split('\r\n').includes(`$runValue = 'HOAIWatcher-stage1-home-${WIN_ID}'`), ps1!.content)
+  // The old name it may rename is this namespace's own, never the un-namespaced live one.
+  assert.ok(ps1!.content.split('\r\n').includes("$legacyName = 'HOAI Watcher (stage1)'"), ps1!.content)
+  assert.ok(ps1!.content.split('\r\n').includes("$legacyRunValue = 'HOAIWatcher-stage1'"), ps1!.content)
   assert.doesNotMatch(ps1!.content, /'HOAI Watcher'/)
 })
 
@@ -124,9 +143,9 @@ test('the namespace is read from process.env by default, so no call site has to 
   const before = process.env.HOAI_SERVICE_NAMESPACE
   try {
     process.env.HOAI_SERVICE_NAMESPACE = 'stage1'
-    assert.equal(watcherServiceSpec({ platform: 'linux', ...POSIX }).label, 'bgos-watcher-stage1')
+    assert.equal(watcherServiceSpec({ platform: 'linux', ...POSIX }).label, `bgos-watcher-stage1-home-${POSIX_ID}`)
     delete process.env.HOAI_SERVICE_NAMESPACE
-    assert.equal(watcherServiceSpec({ platform: 'linux', ...POSIX }).label, 'bgos-watcher')
+    assert.equal(watcherServiceSpec({ platform: 'linux', ...POSIX }).label, `bgos-watcher-home-${POSIX_ID}`)
   } finally {
     if (before === undefined) delete process.env.HOAI_SERVICE_NAMESPACE
     else process.env.HOAI_SERVICE_NAMESPACE = before

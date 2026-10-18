@@ -152,6 +152,15 @@
  *                       declares this token, independently of the two
  *                       playbook sentences, and no bundled fallback mentions
  *                       runs.
+ *   boards_download     this daemon has the boards_download tool (0.69.9,
+ *                       HOAI board rows 01a14840-19e0): it saves a row's file
+ *                       into the agent's folder under .hoai/board-files, one
+ *                       folder per person, by the id boards_get_row prints.
+ *                       Every host: a typed tool and a file write, with no
+ *                       platform limit. The backend serves the canon's
+ *                       boards_download line only to a connection that
+ *                       declares this token, so an agent on an older plugin
+ *                       is never told about a tool it does not have.
  *   stop_pauses_mission an owner Stop pauses the chat's open mission with the
  *                       reason "Stopped by you" instead of letting it run on,
  *                       and the owner's next message there resumes it (P6
@@ -202,6 +211,18 @@
  *                       hands an email to it is proved by
  *                       test/external-email-label.test.ts, which runs each
  *                       lane's real code out of server.ts.
+ *   email_send          this daemon ships the agent's two email tools,
+ *                       email_draft (a draft for the owner, never sent) and
+ *                       email_send (sent only on the owner's own message or
+ *                       a task the owner scheduled, refused in an email, peer
+ *                       or non wake system turn; lib/agent-email-tools.ts,
+ *                       outgoing email modes, HOAI board row 2dd04488). The
+ *                       backend serves the canon's sentence about the two
+ *                       tools, the signature line included, only to a daemon
+ *                       that declares it. Every host and connection: the
+ *                       tools are plain code. Declared only while
+ *                       shipsEmailTools(), the tools' own check, holds (the
+ *                       email_label precedent).
  *
  * Token grammar is the backend's: /^[a-z][a-z0-9_]{0,63}$/, at most 32
  * entries (backend/src/dto/integrations/pair-exchange.dto.ts). The base is
@@ -222,6 +243,8 @@
 import { HARD_FLOOR_RULES_2_TOKEN, HARD_FLOOR_TOKEN, PERMISSION_CARD, PLAN_CARD } from './claude-capability-tokens.js'
 import { SESSIONS_LIBRARY, STOP_PAUSES_MISSION } from './session-controls-contract.ts'
 import { EMAIL_LABEL, labelsExternalEmail } from './inbound-channel.ts'
+import { EMAIL_SEND, shipsEmailTools } from './agent-email-tools.ts'
+import { LANE_MEMORY_RPC_TOKEN, PERSON_LANES_TOKEN } from './lane-core.mjs'
 
 /** Declared wherever this plugin runs, on every host and every connection. */
 export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
@@ -234,6 +257,7 @@ export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   'boards_playbook',
   'boards_playbook_does',
   'boards_runs',
+  'boards_download',
   SESSIONS_LIBRARY,
   'changes_rpc',
   'skills_list',
@@ -297,12 +321,26 @@ export function declaredCapabilities(input: {
    * cannot happen: an always on clone updated in place is the case.
    */
   floorHook: boolean
+  /**
+   * Can this host run a person's lane LOCKED (shared agents Phase 3, P3)? The
+   * cached CLI probe (lib/lane-cli-probe.mjs): every flag of the locked launch
+   * known to the installed CLI, `expect` present, not Windows. `person_lanes`
+   * is declared only then, and only on a pairing (a lane mints its session
+   * from a pairing's ticket), so an older CLI keeps today's single mind and
+   * the backend never routes a recipient's turn to a lane that cannot start.
+   * `lane_memory_rpc` (P5) rides with it: a lane that runs answers its
+   * person's Memory screen from its own folder (lib/lane-memory-rpc.ts), and
+   * the panel opens a person's lane only when the pairing declares both.
+   */
+  personLanes?: boolean
   authMode: 'pairing' | 'apikey'
 }): readonly string[] {
   return [
     ...DECLARED_CAPABILITIES_BASE,
     ...(labelsExternalEmail() ? [EMAIL_LABEL] : []),
+    ...(shipsEmailTools() ? [EMAIL_SEND] : []),
     ...(input.authMode === 'pairing' && input.floorHook === true ? DECLARED_CAPABILITIES_PAIRING : []),
     ...(input.canInjectGoal === true ? DECLARED_CAPABILITIES_INJECTOR : []),
+    ...(input.authMode === 'pairing' && input.personLanes === true ? [PERSON_LANES_TOKEN, LANE_MEMORY_RPC_TOKEN] : []),
   ]
 }

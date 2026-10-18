@@ -18,17 +18,49 @@
 # settings file and this helper does not touch it. If the marker never shows
 # (a newer CLI stopped prompting), it exits quietly after the timeout.
 #
-# Exit codes: 0 accepted, 2 could not attach, 3 could not inject, 4 timeout.
+# Exit codes: 0 accepted, 2 could not attach, 3 could not inject, 4 timeout, 5 add-type failed, 6 unproven.
+#
+# "accepted" is a claim about the log as much as the console: with -LogFile
+# (hoai always passes one), 0 means the Enter was written AND both "attached"
+# and "accepted" are on record in the log. 6 means the Enter was written but one
+# of those two lines could not be recorded, so nothing proves the gate was
+# answered on this console (agent
+# 888, 16 Oct 07:59Z, a cold start after logon: "start", then "accepted" 16 s
+# later, no "attached", and claude never started its MCP server). An
+# unattended hoai relaunches claude for a 6 (bin/hoai-core.mjs
+# WIN32_GATE_EXIT_UNPROVEN).
 param(
   [Parameter(Mandatory = $true)][int]$ConsolePid,
   [int]$TimeoutSeconds = 120,
   [string]$Marker = 'Loading development channels',
   [string]$LogFile = ''
 )
+# Note appends one line and says whether it did. The log is opened append-only
+# (every write lands at the end) and shares read, write and delete, so the
+# line lands beside hoai's own handle on the log, another agent's helper, and
+# any reader (an indexer, a scanner, a person's tail). The 0.69.6 helper used
+# Add-Content, which shares no read: any process with the log open for reading
+# made it fail, with a NON-terminating error its `catch {}` never saw, so the
+# line was lost and the helper carried on (agent 888, 16 Oct 07:59Z; measured
+# on scratch files, 2026-10-16). A write that still fails (a process holding
+# the log exclusively) is retried for about a second, then reported on stderr,
+# which hoai points at the same log through the handle it already holds. The
+# FileSystemRights constructor is .NET Framework's, which powershell.exe runs.
 function Note([string]$line) {
-  if ($LogFile) { try { Add-Content -Path $LogFile -Value ((Get-Date).ToString('o') + ' pid=' + $PID + ' ' + $line) } catch {} }
+  if (-not $LogFile) { return $true }
+  $bytes = [System.Text.Encoding]::UTF8.GetBytes((Get-Date).ToString('o') + ' pid=' + $PID + ' ' + $line + "`r`n")
+  $why = ''
+  for ($try = 1; $try -le 10; $try++) {
+    try {
+      $fs = New-Object System.IO.FileStream($LogFile, [System.IO.FileMode]::Append, [System.Security.AccessControl.FileSystemRights]::AppendData, [System.IO.FileShare]'ReadWrite, Delete', 4096, [System.IO.FileOptions]::None)
+      try { $fs.Write($bytes, 0, $bytes.Length) } finally { $fs.Dispose() }
+      return $true
+    } catch { $why = $_.Exception.Message; Start-Sleep -Milliseconds 100 }
+  }
+  $host.UI.WriteErrorLine('log write refused, one line lost: ' + $why)
+  return $false
 }
-Note "start console=$ConsolePid timeout=$TimeoutSeconds"
+[void](Note "start console=$ConsolePid timeout=$TimeoutSeconds")
 
 $src = @'
 using System;
@@ -56,10 +88,10 @@ public static class HoaiConsole {
   }
 }
 '@
-try { Add-Type -TypeDefinition $src -ErrorAction Stop } catch { Note ("add-type failed: " + $_.Exception.Message); exit 5 }
+try { Add-Type -TypeDefinition $src -ErrorAction Stop } catch { [void](Note ("add-type failed: " + $_.Exception.Message)); exit 5 }
 [HoaiConsole]::FreeConsole() | Out-Null
-if (-not [HoaiConsole]::AttachConsole([uint32]$ConsolePid)) { Note ("attach failed err=" + [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()); exit 2 }
-Note "attached"
+if (-not [HoaiConsole]::AttachConsole([uint32]$ConsolePid)) { [void](Note ("attach failed err=" + [System.Runtime.InteropServices.Marshal]::GetLastWin32Error())); exit 2 }
+$attachedNoted = Note "attached"
 # GENERIC_READ | GENERIC_WRITE as an unsigned literal (0xC0000000 parses as a
 # negative int32 in PowerShell and fails the cast).
 $GENERIC_RW = [uint32]3221225472; $SHARE_RW = [uint32]3; $OPEN_EXISTING = [uint32]3
@@ -91,11 +123,17 @@ while ((Get-Date) -lt $deadline) {
         $recs[$i] = $r
       }
       $written = [uint32]0
-      if ([HoaiConsole]::WriteConsoleInputW($in, $recs, 2, [ref]$written)) { Note "accepted"; exit 0 } else { Note ("inject failed err=" + [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()); exit 3 }
+      if (-not [HoaiConsole]::WriteConsoleInputW($in, $recs, 2, [ref]$written)) { [void](Note ("inject failed err=" + [System.Runtime.InteropServices.Marshal]::GetLastWin32Error())); exit 3 }
+      # Success only with both lines on record: the log is what proves the gate
+      # was answered on this console. A press the log cannot show is exit 6,
+      # and its note avoids both words, so a check that looks for them fails.
+      if ($attachedNoted -and (Note "accepted")) { exit 0 }
+      [void](Note ("unproven: the Enter was written but the log does not show it (attach line recorded: " + $attachedNoted + ")"))
+      exit 6
     }
   }
   [HoaiConsole]::CloseHandle($out) | Out-Null
   Start-Sleep -Milliseconds 500
 }
-Note "timeout without the gate on screen"
+[void](Note "timeout without the gate on screen")
 exit 4

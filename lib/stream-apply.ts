@@ -34,8 +34,12 @@ import {
   type AgentOriginLike,
   EXTERNAL_EMAIL_SENDER_TYPE,
   isExternalEmailInbound,
+  isOwnRoomAgentMessage,
   isSelfAuthoredAgentOrigin,
+  readRoomAgentSender,
   readTapperUserId,
+  ROOM_AGENT_SENDER_TYPE,
+  type RoomAgentSender,
 } from './inbound-channel.ts'
 import { senderUserIdCandidate } from './permission-relay.ts'
 
@@ -70,6 +74,13 @@ export interface StreamAnswerPayload {
    * and moving what they decide on is not this field's job.
    */
   tapperUserId: string | null
+  /**
+   * The email send approval an owner's Allow once tap issued (the server
+   * approval contract's section 3), as the answer carries it, unvalidated:
+   * resolvePermissionClick reads it as exactly {id, expiresAt} or not at all.
+   * Present only when the answer carries one.
+   */
+  emailSendApproval?: unknown
 }
 
 export interface StreamMessageView {
@@ -77,8 +88,10 @@ export interface StreamMessageView {
   messageId: number
   text: string
   files: unknown[]
-  senderKind: 'user' | 'assistant' | 'system' | 'agent' | 'external_email' | 'unknown'
+  senderKind: 'user' | 'assistant' | 'system' | 'agent' | 'external_email' | 'room_agent' | 'unknown'
   agentOrigin?: AgentOriginLike
+  /** Set on another agent's message in a group or channel (senderKind 'room_agent'). */
+  roomAgent?: RoomAgentSender
   peerConversationId?: string
   turnState?: string
   sessionHandle?: string
@@ -116,6 +129,7 @@ function answerPayloadOf(raw: unknown): StreamAnswerPayload | null {
     customText,
     clickerUserId: senderUserIdCandidate(r),
     tapperUserId: readTapperUserId(r),
+    ...(r.emailSendApproval !== undefined && r.emailSendApproval !== null ? { emailSendApproval: r.emailSendApproval } : {}),
   }
 }
 
@@ -167,8 +181,21 @@ export function viewStreamMessage(
   // flat push. It outranks everything but the agent's own reply, so it can
   // never read as the owner ('user'), a peer or a system wake.
   const isEmail = isExternalEmailInbound(source) || isExternalEmailInbound(payload)
-  const senderKind: StreamMessageView['senderKind'] =
-    persistedSenderKind === 'assistant' || isSelfAuthoredAgent
+  // Another agent seated in this group or channel wrote it (room_agent, the
+  // follow-up window). Its stored sender is 'assistant' like this agent's own
+  // reply, which BGOS marks room_agent too, so the author id decides: only a
+  // match with this agent's id is its own reply boundary. With no recipient
+  // to compare (the button lane's view) the row reads as before.
+  const roomAgent = agentOrigin || isEmail ? null : readRoomAgentSender(source, payload)
+  const otherRoomAgent =
+    roomAgent !== null &&
+    recipientAssistantId != null &&
+    !(roomAgent.senderAssistantId !== null && isOwnRoomAgentMessage(roomAgent, recipientAssistantId))
+      ? roomAgent
+      : null
+  const senderKind: StreamMessageView['senderKind'] = otherRoomAgent
+    ? ROOM_AGENT_SENDER_TYPE
+    : persistedSenderKind === 'assistant' || isSelfAuthoredAgent || roomAgent
       ? 'assistant'
       : isEmail
         ? EXTERNAL_EMAIL_SENDER_TYPE
@@ -193,9 +220,10 @@ export function viewStreamMessage(
   const nestedSender = (isRow ? undefined : payload.sender) as
     | { userId?: unknown }
     | undefined
-  // An email has no sender on this account. The flat push's `userId` is the
-  // transport owner, so reading it here would name the owner as its author.
-  const senderUserId = isEmail
+  // An email has no sender on this account, and another agent's message no
+  // person behind it. The flat push's `userId` is the transport owner, so
+  // reading it here would name the owner as its author.
+  const senderUserId = isEmail || roomAgent
     ? undefined
     : str(nestedSender && typeof nestedSender === 'object' ? nestedSender.userId : undefined) ??
       str(source.senderUserId ?? source.sender_user_id) ??
@@ -219,6 +247,7 @@ export function viewStreamMessage(
     files,
     senderKind,
     agentOrigin,
+    ...(otherRoomAgent ? { roomAgent: otherRoomAgent } : {}),
     peerConversationId:
       peerConversationIdRaw == null
         ? undefined
@@ -245,10 +274,39 @@ export type StreamMessageDecision =
       action: 'advance_only'
       reason:
         | 'assistant_authored'
+        | 'room_agent_settling'
         | 'already_covered'
         | 'already_forwarded'
         | 'empty_non_system'
     }
+
+/**
+ * Another agent's message in a group or channel is not forwarded as the
+ * stream hands it over: that agent writes it by creating the row and then
+ * editing it, so a message_new or message_finalized is often only its first
+ * chunk. The caller hands each version to the settle wait
+ * (lib/room-agent-settle.ts), which delivers the latest one once no newer one
+ * has come for BGOS's settle time, unless the push delivered it first. It is
+ * not this agent's reply either, so it ends no pending reply.
+ *
+ * A FINALIZE behind the persisted cursor is covered, as a person's is, unless
+ * the wait still holds the message (the cursor moves past it at its first
+ * version): so an edit long after delivery, or after a restart, is not a new
+ * one. A message_new always goes to the wait: BGOS writes one per message, and
+ * the cursor can be ahead of it for reasons of its own (a later message pushed
+ * on the socket first while the stream catches up).
+ */
+function roomAgentSettling(
+  view: StreamMessageView,
+  opts: { lastSeenInChat: number; roomAgentWaiting?: boolean },
+  finalize: boolean,
+): StreamMessageDecision | null {
+  if (view.senderKind !== ROOM_AGENT_SENDER_TYPE) return null
+  if (finalize && view.messageId <= opts.lastSeenInChat && !opts.roomAgentWaiting) {
+    return { action: 'advance_only', reason: 'already_covered' }
+  }
+  return { action: 'advance_only', reason: 'room_agent_settling' }
+}
 
 function isEmptyBody(view: StreamMessageView): boolean {
   return view.text.trim().length === 0 && view.files.length === 0
@@ -256,11 +314,13 @@ function isEmptyBody(view: StreamMessageView): boolean {
 
 export function decideMessageNew(
   view: StreamMessageView,
-  opts: { lastSeenInChat: number; alreadyForwarded: boolean },
+  opts: { lastSeenInChat: number; alreadyForwarded: boolean; roomAgentWaiting?: boolean },
 ): StreamMessageDecision {
   if (view.senderKind === 'assistant') {
     return { action: 'advance_only', reason: 'assistant_authored' }
   }
+  const settling = roomAgentSettling(view, opts, false)
+  if (settling) return settling
   if (view.messageId <= opts.lastSeenInChat) {
     return { action: 'advance_only', reason: 'already_covered' }
   }
@@ -275,11 +335,13 @@ export function decideMessageNew(
 
 export function decideMessageFinalized(
   view: StreamMessageView,
-  opts: { held: boolean; lastSeenInChat: number; alreadyForwarded: boolean },
+  opts: { held: boolean; lastSeenInChat: number; alreadyForwarded: boolean; roomAgentWaiting?: boolean },
 ): StreamMessageDecision {
   if (view.senderKind === 'assistant') {
     return { action: 'advance_only', reason: 'assistant_authored' }
   }
+  const settling = roomAgentSettling(view, opts, true)
+  if (settling) return settling
   if (opts.held) {
     // The wake's body fill: deliver AS the wake, unless the fill is somehow
     // still empty, in which case it stays parked for the next fill.

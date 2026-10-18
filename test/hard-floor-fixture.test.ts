@@ -58,8 +58,8 @@ import { permissionCardTool } from '../lib/permission-relay.ts'
 
 const sha256 = (value: string): string => createHash('sha256').update(value).digest('hex')
 
-test('the rules version is the cross repo key, and both sides say 1', () => {
-  assert.equal(HARD_FLOOR_FIXTURE_RULES_VERSION, 2)
+test('the rules version is the cross repo key, and both sides say 3', () => {
+  assert.equal(HARD_FLOOR_FIXTURE_RULES_VERSION, 3)
   assert.equal(HARD_FLOOR_RULES_VERSION, HARD_FLOOR_FIXTURE_RULES_VERSION)
 })
 
@@ -75,8 +75,8 @@ test('this plugin carries exactly the fixture rule ids and words, in order', () 
  * and PINNED_RULES_DIGEST. Change these only together with a fixture copied
  * afresh from the backend.
  */
-const PINNED_FIXTURE_DIGEST = '348c65c0cb60e83150c5d002bd7781275ecdae8d5be55bc6f97823a8e7af87b8'
-const PINNED_CARD_FIXTURE_DIGEST = 'babfef7b64bf5b817b59ff8d8b0163d99553e138307e9e71005ff87449f26f0f'
+const PINNED_FIXTURE_DIGEST = 'fcf7ed968947d326bb7afa077f920e5bf5b3657025b8be39f42d8d37ef9599fa'
+const PINNED_CARD_FIXTURE_DIGEST = '87efa65cfcfbd2f24e8a991d1229d5ab53461eb8aeb4619b045590d3ebebd920'
 const PINNED_RULES_DIGEST = 'f92093a8f99e6d472ddc5b5834d044cb628cb54727795247b2189c8f6d5c75e9'
 /**
  * sha256 of lib/hard-floor-fixture.ts's BYTES, equal to the backend spec's
@@ -84,7 +84,7 @@ const PINNED_RULES_DIGEST = 'f92093a8f99e6d472ddc5b5834d044cb628cb54727795247b21
  * above let a comment, a type or the header drift in one copy while both
  * suites stay green; this does not.
  */
-const PINNED_FIXTURE_FILE_SHA256 = 'b4ee2cb79ef0e2744a9fbb1564909878df45f839a7c3023ff0e193c13c647a2d'
+const PINNED_FIXTURE_FILE_SHA256 = 'ae22949ff2a207422a773f29f2d67107121ee4844037dab8e799823699d9ebbb'
 
 test('pins the fixture data and the rules against the file AND a literal here (regenerate BOTH repos together)', () => {
   const fixture = sha256(JSON.stringify(HARD_FLOOR_FIXTURE))

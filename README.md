@@ -104,8 +104,9 @@ hoai-agent restart   --assistant <id>
 hoai-agent uninstall --assistant <id>     # removes the service; keeps your workspace
 ```
 
-Each agent is keyed by its assistant id, so one host can run several. Full
-options: `hoai-agent help`.
+Each agent is keyed by its assistant id and the HOME it was installed from
+(see "The agents' services are named after their HOME" below), so one host can
+run several. Full options: `hoai-agent help`.
 
 `bgos-agent` and `bgos-pair` still work as aliases for `hoai-agent` and `hoai-pair`.
 
@@ -121,15 +122,15 @@ options: `hoai-agent help`.
 ```
 launchd / systemd --user
   -> ~/.bgos-agent/<id>/run.sh          singleton wait, fast fail accounting, stop trap
-     -> tmux -L hoai-<id> new-session -d -s hoai-<id> -c <workspace>   (when tmux is installed)
+     -> tmux -L hoai-<id>-home-<hid> new-session -d -s hoai-<id>-home-<hid> -c <workspace>   (when tmux is installed)
         -> node <current plugin root>/bin/hoai-core.mjs                (HOAI_SUPERVISED=1)
            -> expect + the startup gate block -> claude --resume <pinned session id>
 ```
 
 - **hoai runs the agent, in tmux, on the agent's own socket.** The service starts
   `run.sh`, which starts hoai (`bin/hoai-core.mjs`) with `HOAI_SUPERVISED=1` in a
-  detached tmux session named `hoai-<id>` on a tmux server of its own
-  (`tmux -L hoai-<id>`), never inside someone else's tmux, in a fixed 200x50
+  detached tmux session named `hoai-<id>-home-<hid>` on a tmux server of its own
+  (`tmux -L hoai-<id>-home-<hid>`), never inside someone else's tmux, in a fixed 200x50
   window. That server starts with no tmux config (`-f /dev/null`), so settings
   in your `~/.tmux.conf` (remain-on-exit, destroy-unattached, a session restore)
   never change how the agent runs. hoai answers Claude Code's startup screens itself, under expect, with
@@ -142,8 +143,8 @@ launchd / systemd --user
   transcript does not exist yet, never `--continue`. A resume that is rejected
   gets one fresh session, kept only once it stays up. `hoai-agent uninstall`
   keeps the pin, so the conversation survives a reinstall.
-- **Remote compact is ON.** The session carries `BGOS_TMUX_SESSION=hoai-<id>` and
-  `BGOS_TMUX_SOCKET=hoai-<id>`, which is what lets the daemon type `/compact`
+- **Remote compact is ON.** The session carries `BGOS_TMUX_SESSION=hoai-<id>-home-<hid>` and
+  `BGOS_TMUX_SOCKET=hoai-<id>-home-<hid>`, which is what lets the daemon type `/compact`
   into it when the owner asks from the app. With no tmux on the host, hoai runs
   without it (expect still gives claude its terminal) and the launch status says
   `compact=off reason=no-tmux`: install tmux, then
@@ -228,7 +229,7 @@ outcome (a Node.js too old to run it, a missing file, a fatal error) is
 `hoai-exited-without-status` with its last error line.
 
 **`hoai --keep-alive`.** On Windows the always-on agent is a logon Scheduled
-Task, `HOAI Agent <id>`, that runs `node <plugin root>\bin\hoai-core.mjs
+Task, `HOAI Agent <id> home-<hid>`, that runs `node <plugin root>\bin\hoai-core.mjs
 --keep-alive` in the agent folder. `--keep-alive` makes hoai itself the
 keep-alive loop: whenever claude exits it starts it again, resuming the agent's
 own session, after 5 s, 10 s, 20 s, 40 s and then 60 s for every further quick
@@ -237,13 +238,123 @@ exit (back to 5 s once a session has stayed up), and records
 launch-status. Ending the task (TERM or HUP) stops it without a relaunch. It
 works the same on macOS and Linux, for an agent you keep running by hand.
 
+**A start that is not proven healthy is relaunched once.** On Windows every
+launch shows the dev-channels gate, and a hidden helper
+(`bin/win32-accept-dev-channels.ps1`) presses its Enter once the gate is on
+screen, logging `start`, `attached` and `accepted` to
+`~\.bgos-agent\logs\win32-gate-helper.log`. It exits 0 only when both
+`attached` and `accepted` are on record; an Enter the log cannot show is exit 6
+and an `unproven:` line, and an unattended hoai (the task, `HOAI_SUPERVISED`,
+or `--keep-alive`) relaunches claude for it on the agent's own session. The
+helper appends to that log sharing read, write and delete, so a reader (an
+indexer, a scanner, a tail) never costs it a line. On every platform an
+unattended hoai also checks the channel's heartbeat (the daemon's
+`channel-beacon.json` in `~/.bgos-plugin-state/<id>/`) 3 minutes after each
+launch: a launch without one is relaunched ONCE, and the next launch without
+one is recorded as `no-channel-heartbeat` in launch-status and left running for
+a person to look at. Except when the Claude login the agents of this computer
+share has failed (the CLI's own `authentication_failed` record, the newest
+login record in the last 10 minutes of any agent's transcripts in the store the
+CLI signs in through): no relaunch fixes that, so hoai records
+`claude-login-expired`, prints an ALERT saying to run `/login`, and looks again
+every 3 minutes; once the login is back after the failure (a sign-in, or some
+agent's answer), a launch still without a heartbeat gets its one relaunch. Each relaunch records `health-relaunch` with its reason
+(`gate-accept-unproven` or `no-channel-heartbeat`) and counts against a budget
+of its own, 3 health relaunches per hour, apart from the restart markers' 3;
+past that it records `health-relaunch-refused`. A person's own `hoai` at a
+terminal is never relaunched this way.
+
+On Windows every relaunch and stop ends the claude under an npm `claude.cmd`
+shim as well as the shim's `cmd.exe` (the shim's own children, never deeper:
+what the daemon detached, its browser host and a person lane's supervisor,
+lives on), and before every launch after the first hoai clears its console, so
+the new gate helper never presses Enter on a gate the ended claude left there.
+
+**The watcher's service is named after its HOME.** Every name the per-machine
+watcher's service is known by carries `home-<id>`, the first 8 hex characters of
+the SHA-256 of the HOME it was installed from, normalized as written (case and
+separators on Windows; a symlinked or short-name spelling of a HOME counts as
+another HOME): the Scheduled Task `HOAI Watcher home-<id>` (and its Run key fallback
+`HOAIWatcher-home-<id>`), the launchd label `ai.bgos.watcher.home-<id>`, the
+systemd unit `bgos-watcher-home-<id>`. The registration records that HOME (the
+task description and its launcher, which pins `USERPROFILE`; the plist's and
+the unit's `HOME`), and an install, a status or an uninstall reads it back first:
+one under this HOME's own name that records another HOME is refused, never
+replaced or removed. So a second install on the same account, a test rig's
+daemon in a scratch HOME among them, gets a service of its own and never
+touches the owner's. On Linux the user manager only reads the real HOME's unit
+folder, so an install from any other HOME fails by name instead.
+
+Upgrading from 0.69.x: the watcher keeps running under its old name
+(`HOAI Watcher`, `ai.bgos.watcher`, `bgos-watcher`) until the next watcher
+install from the same HOME (the app's "Set up the watcher", or
+`hoai-watcher install`), which renames it in place, never running two watchers
+of one HOME at once. On Windows the new task is registered before the old one
+goes. On Linux the new unit is enabled with a temporary drop-in that conflicts
+with the old one, the old one is disabled, and one `systemctl --user start` of
+the new unit makes the user manager stop the old unit and start the new one as
+a single job, which it finishes even when the installer itself ran inside the
+old unit (an agent the watcher started). On macOS the old job is booted out,
+the install waits until launchd no longer lists it, then bootstraps the new one,
+and loads the old one again if the new one does not come up. The old plist or
+unit file of that HOME is removed. A registration under an old name that
+another HOME installed is left alone and reported (on Windows, with a warning
+when its launcher pins no HOME and so serves the logon user's profile).
+
+**The agents' services are named after their HOME too** (0.69.5). Every name an
+agent's service is known by carries the same `home-<hid>` as the watcher of
+that HOME (but see the symlink case below): the Scheduled Task `HOAI Agent <id> home-<hid>`, the launchd label
+`ai.bgos.agent.<id>.home-<hid>`, the systemd unit `bgos-agent-<id>-home-<hid>`
+and the agent's own tmux socket `hoai-<id>-home-<hid>`. On macOS and Linux the
+id is taken from the HOME's real path, so a HOME reached through a symlink is
+the same HOME with the same agent services; the watcher keeps its id of the
+HOME as spelled, so for such a HOME the two ids differ. The registration
+records its HOME and agent id (on Windows the task description
+`HOAI agent <id>, installed from home=<HOME>`, the launcher path and a launcher
+that pins `USERPROFILE`; the plist's and the unit's `HOME` and `run.sh` path),
+and every install, start, stop, restart, status and uninstall reads it back
+first, the watcher's restarts and task starts included: one under this HOME's
+own name that records another HOME is refused and left exactly as it is, and
+an old name another HOME installed is left alone and said (in the watcher log,
+the daemon log, `hoai-agent` and `hoai-watcher status`). So a daemon or watcher
+in a scratch or second HOME holding the same agent's credentials gets services
+of its own and never re-registers, stops or removes the owner's. `hoai-agent`
+computes the HOME id and reads back with `bin/hoai-agent-service.mjs` on bun or
+node; without either it refuses to act by name. An uninstall that cannot read
+its own service back (or has no bun or node) removes nothing and says so
+(exit 1), since files removed under a job it cannot stop would leave the agent
+running. On Linux an install from a HOME other than the one the account's
+`systemd --user` manager reads its units from is refused before its service
+file or run.sh is written.
+
+Upgrading from 0.69.4 or earlier: on Windows the watcher renames each agent's old
+`HOAI Agent <id>` of its own HOME in place, once (the new task registered
+first, then the old one retired; the running agent is never stopped or
+started, provided `Unregister-ScheduledTask` leaves the old task's running
+instance alone, which is not verified yet; a task you disabled stays disabled). When the old name holds
+another HOME's task, or neither name is registered, it registers this HOME's
+own task beside it (enabled, not started) and leaves the other one alone; an
+agent counts as checked only once its own task is read back. On macOS and
+Linux an agent keeps its old `ai.bgos.agent.<id>` or `bgos-agent-<id>` until
+the next `hoai-agent install` from the same HOME, which renames it (macOS: the
+old plist parked first, the new job loaded and read back, then the old one booted
+out, so an install typed into the agent's own session leaves it running under
+the new name; the new job waits for the old claude to leave the folder, and
+when it does not come up it is removed and the old one stays; Linux: one user
+manager job with a temporary `Conflicts=` drop-in). Until then the old
+name is still found and supervised while it runs; a stopped one is started
+again by `hoai-agent install`, never loaded anew under its old name.
+
 **Side by side installs: `HOAI_SERVICE_NAMESPACE`.** A second, isolated install
-on the same user account (a staging install) must never stop the live watcher.
+on the same user account (a staging install, with its own HOME) must never stop
+the live watcher; the HOME id already keeps their names apart, and the
+namespace keeps them apart as before.
 With `HOAI_SERVICE_NAMESPACE` set to 1 to 16 lowercase letters or digits, the
-watcher's service names become `ai.bgos.watcher.<ns>`, `bgos-watcher-<ns>` and
-`HOAI Watcher (<ns>)`, and `hoai-agent install` writes the variable into every
+watcher's service names become `ai.bgos.watcher.<ns>.home-<id>`,
+`bgos-watcher-<ns>-home-<id>` and `HOAI Watcher (<ns>) home-<id>`, and
+`hoai-agent install` writes the variable into every
 agent service it installs, so the agent's daemon, and the watcher it installs,
-stay in the namespace. Unset, every name is exactly what it always was; an
+stay in the namespace. Unset, the names are the ones above; an
 invalid value is ignored, with a warning.
 
 ## Quick Start

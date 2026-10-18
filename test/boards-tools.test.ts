@@ -2,7 +2,7 @@
  * boards_* MCP tool family: declarations, argument validation, wire shapes.
  *
  * The contract this pins (agent-boards C3/C7/C8):
- *  - 12 tools, every schema closed (additionalProperties false) so a model
+ *  - 13 tools, every schema closed (additionalProperties false) so a model
  *    that invents an argument is told, not silently ignored.
  *  - Validation is PURE and instructive: unknown field, wrong type and
  *    missing required all name what is allowed.
@@ -105,12 +105,14 @@ const EXPECTED_NAMES = [
   'boards_insert',
   'boards_update',
   'boards_attach',
+  // HOAI board rows 01a14840-19e0: the fetch half of boards_attach (0.69.9).
+  'boards_download',
   'boards_search',
   'boards_changes',
   'boards_grant',
 ]
 
-test('declares exactly the 12 contract tools, in roster order', () => {
+test('declares exactly the 13 contract tools, in roster order', () => {
   assert.deepEqual(
     BOARDS_TOOL_DECLS.map((d) => d.name),
     EXPECTED_NAMES,
@@ -1495,7 +1497,8 @@ test('update_schema lists the table ops when the op is unknown', async () => {
 //     its setting about words that changed.
 // 10. SUGGESTION IN THE LINES TEXT. The `lines` description back to "kept as
 //     a suggestion for the owner" -> "set_column_lines is an op, and the tool
-//     roster is still the 12" and "no text the boards tools declare says
+//     roster is still the contract roster" (named "... still the 12" until
+//     boards_download made it 13) and "no text the boards tools declare says
 //     suggestion" fail. Re proved in 0.57.0, where the roster case pins the
 //     new last sentence instead: "any other change you send is kept as a
 //     suggestion for the owner" put into the lines text -> "no text the
@@ -1516,7 +1519,7 @@ function playbookEcho(filed: string[] = []) {
   })
 }
 
-test('set_column_lines is an op, and the tool roster is still the 12', () => {
+test('set_column_lines is an op, and the tool roster is still the contract roster', () => {
   assert.deepEqual(
     BOARDS_TOOL_DECLS.map((d) => d.name),
     EXPECTED_NAMES,

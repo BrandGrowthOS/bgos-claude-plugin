@@ -235,11 +235,13 @@ test('the daemon\'s own base declaration reaches the fetch, boards_playbook incl
     'boards_playbook',
     'boards_playbook_does',
     'boards_runs',
+    'boards_download',
     'sessions_library',
     'changes_rpc',
     'skills_list',
     'skills_receive',
     'email_label',
+    'email_send',
     'hard_floor',
     'hard_floor_rules_2',
   ])
@@ -302,7 +304,7 @@ test('the canon fetch carries boards_playbook', () => {
   // the offline copy. Taken at the merge of main at 0.54.0.
   assert.match(
     body,
-    /const declared = declaredCapabilities\(\{ canInjectGoal: false, floorHook: FLOOR_HOOK\.registered, authMode: AUTH\.mode \}\)/,
+    /const declared = declaredCapabilities\(\{ canInjectGoal: false, floorHook: FLOOR_HOOK\.registered, personLanes: laneSupport\(\)\.ok, authMode: AUTH\.mode \}\)/,
   )
   assert.match(body, /capabilitiesFetchPath\(\s*RUNNING_VERSION \?\? '0\.0\.0',\s*declared\s*,?\s*\)/)
   assert.equal(body.includes('integrations/capabilities?'), false, 'a hand built fetch path is back')

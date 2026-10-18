@@ -445,7 +445,8 @@ test('the floor is asked BEFORE the auto approve branch, from the hook record fi
   assert.ok(record < plan && plan < auto, 'the record and the plan are read before auto approve')
   assert.ok(settle < auto && owner < auto, 'and a match leaves before auto approve can answer it')
   // The preview is read only when there is no record (it is the lossy copy).
-  assert.match(handler, /floorRecord === null && AUTO_APPROVE\s*\?\s*classifyPermissionRequest\(tool_name, input_preview\)\s*:\s*null/)
+  // (and with auto approve off for this channel's email_send only, whose card needs the floor to hold it)
+  assert.match(handler, /floorRecord === null && \(AUTO_APPROVE \|\| isOwnSendingTool\(tool_name\)\)\s*\?\s*classifyPermissionRequest\(tool_name, input_preview\)\s*:\s*null/)
   assert.match(handler, /autoApprove: AUTO_APPROVE,/)
   const ownerExit = handler.slice(owner, auto)
   assert.ok(ownerExit.includes('return settleElidedFloorRequest(params)'), 'a cut preview with no record asks the server')

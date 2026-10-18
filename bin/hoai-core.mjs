@@ -65,12 +65,16 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import {
+  closeSync,
   existsSync,
+  fstatSync,
   mkdirSync,
   openSync,
   readFileSync,
+  readSync,
   readdirSync,
   realpathSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs'
@@ -84,9 +88,11 @@ import {
   detectInstallMethod,
 } from './bgos-install-method.mjs'
 import {
+  BEACON_HEARTBEAT_FILE_NAME,
   buildLaunchRecipe,
   isSupervisorWriter,
   parseSupervisorRecord,
+  pluginStateDirFor,
   readBootClock,
   readLauncherProcesses,
   writeLaunchRecipe,
@@ -887,6 +893,10 @@ export const SESSION_ID_FILE_NAME = 'session-id'
 /** Marker-triggered relaunch budget: 3 per rolling hour. A daemon stuck in
  *  an update-crash loop must not bounce the session forever. */
 export const MAX_RELAUNCHES_PER_WINDOW = 3
+/** Health relaunches (an unproven gate, no channel heartbeat) have a budget of their own, 3 per
+ *  rolling hour too: a gate that keeps failing must never use up the update restarts, nor an update
+ *  loop the relaunches that bring a broken launch back (board row 31583f86). */
+export const MAX_HEALTH_RELAUNCHES_PER_WINDOW = 3
 export const RELAUNCH_WINDOW_MS = 60 * 60 * 1000
 export const MARKER_POLL_MS = 3000
 
@@ -1078,13 +1088,14 @@ export function keepaliveMarkerBody({ pid, claudePid, tmuxSession, startedAt, bo
  * decision out. `recent` is the pruned rolling window the caller keeps.
  * @param {readonly number[]} relaunchesAt
  * @param {number} now
+ * @param {number} [max] the budget; health relaunches pass MAX_HEALTH_RELAUNCHES_PER_WINDOW
  * @returns {{ allow: boolean, recent: number[] }}
  */
-export function decideMarkerRelaunch(relaunchesAt, now) {
+export function decideMarkerRelaunch(relaunchesAt, now, max = MAX_RELAUNCHES_PER_WINDOW) {
   const recent = (Array.isArray(relaunchesAt) ? relaunchesAt : []).filter(
     (at) => Number.isFinite(at) && now - at < RELAUNCH_WINDOW_MS,
   )
-  return { allow: recent.length < MAX_RELAUNCHES_PER_WINDOW, recent }
+  return { allow: recent.length < max, recent }
 }
 
 /**
@@ -1302,6 +1313,198 @@ export function win32GateHelperArgs({ scriptDir = '', consolePid, timeoutSeconds
     String(timeoutSeconds),
     ...(logFile ? ['-LogFile', logFile] : []),
   ]
+}
+
+/** The helper's exit when it wrote the Enter but could not record both `attached` and
+ *  `accepted` in its log. Agent 888, 16 Oct 07:59Z, a cold start after logon: the log had
+ *  `start` and `accepted`, no `attached`, and claude never started its MCP server. The old
+ *  helper lost a log line silently (PowerShell 5.1 Add-Content refuses a file another process
+ *  has open for reading, as a non-terminating error) and exited 0 anyway, and hoai never looked
+ *  at its exit. A 6 is a gate nobody can show was answered, so an unattended launch relaunches
+ *  claude for it (superviseClaude, under the health relaunch budget). */
+export const WIN32_GATE_EXIT_UNPROVEN = 6
+
+/** How long after a launch an unattended hoai gives the channel to send its first heartbeat.
+ *  A healthy daemon touches its beacon within seconds of finishing its boot sweep (and about every
+ *  5 s after; a poll cycle that ran counts, so a backend that refuses does not stop it); 888 sat
+ *  with no MCP server at all for 10 minutes. */
+export const CHANNEL_HEARTBEAT_WAIT_MS = 3 * 60_000
+
+/** The daemon's channel beacon (lib/pairing-lock.ts touchBeaconHeartbeat, `{ beaconAt, pid }`,
+ *  in the plugin state dir), or null for anything else. */
+export function parseChannelBeacon(raw) {
+  if (typeof raw !== 'string' || !raw) return null
+  let parsed
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return null
+  }
+  const beaconAt = Number(parsed?.beaconAt)
+  const pid = Number(parsed?.pid)
+  if (!Number.isFinite(beaconAt) || !Number.isInteger(pid) || pid <= 0) return null
+  return { beaconAt, pid }
+}
+
+/** How long after a launch a beacon from the daemon the file already named still counts as a
+ *  predecessor's: one winding down beacons within seconds of its claude's end, never a minute on. */
+const PREDECESSOR_BEACON_GRACE_MS = 60_000
+
+/** Has the agent's channel sent a heartbeat since THIS launch started? A beacon written since then
+ *  counts, except one from the daemon the file named at that moment written in the first minute:
+ *  the previous claude's daemon, winding down, can beacon once more after the relaunch, and that
+ *  proves nothing. The same daemon still beaconing a minute on is a live channel (another session
+ *  of this agent holds it), and relaunching this claude would not change that.
+ *  @param {{ beacon: { beaconAt: number, pid: number } | null, startedAt: number, stalePid?: number | null }} input */
+export function channelHeartbeatSince({ beacon, startedAt, stalePid = null }) {
+  if (!beacon || beacon.beaconAt < startedAt) return false
+  if (beacon.pid !== stalePid) return true
+  return beacon.beaconAt - startedAt >= PREDECESSOR_BEACON_GRACE_MS
+}
+
+/** Login records older than this never count (lib/claude-login.ts LOGIN_STALE_MS, the daemon's rule). */
+export const LOGIN_STALE_MS = 10 * 60_000
+/** How much of each fresh transcript the shared-login check reads, from the end (the daemon's startup tail). */
+export const LOGIN_TAIL_BYTES = 64 * 1024
+
+// eslint-disable-next-line no-control-regex
+const LOGIN_TEXT_CONTROL = /[\u0000-\u001f\u007f]/g
+
+/**
+ * The LAST login signal in a transcript chunk: `{ type: 'login_failed', at, text }` for the CLI's own
+ * `authentication_failed` record, `{ type: 'activity', at }` for a real assistant turn (not synthetic,
+ * not a sidechain), or null. A mirror of lib/claude-login.ts extractLoginSignal, which hoai cannot
+ * import: it runs under bare node. Pinned against it by test/hoai-core.win-relaunch.test.ts.
+ * @param {string} chunk
+ * @param {number} nowMs
+ */
+export function loginSignalOf(chunk, nowMs) {
+  let signal = null
+  for (const line of String(chunk ?? '').split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    let e
+    try {
+      e = JSON.parse(trimmed)
+    } catch {
+      continue
+    }
+    if (typeof e !== 'object' || e === null || e.type !== 'assistant') continue
+    const m = e.message
+    if (typeof m !== 'object' || m === null) continue
+    const at = typeof e.timestamp === 'string' ? Date.parse(e.timestamp) || 0 : 0
+    if (at === 0 || at < nowMs - LOGIN_STALE_MS) continue
+    if (e.isApiErrorMessage === true) {
+      if (e.error !== 'authentication_failed') continue
+      const text = (Array.isArray(m.content) ? m.content : [])
+        .filter((b) => typeof b === 'object' && b !== null && b.type === 'text' && typeof b.text === 'string')
+        .map((b) => b.text)
+        .join(' ')
+        .replace(LOGIN_TEXT_CONTROL, ' ')
+        .trim()
+        .slice(0, 160)
+      signal = { type: 'login_failed', at, text }
+    } else {
+      if (e.isSidechain === true || m.model === '<synthetic>') continue
+      signal = { type: 'activity', at }
+    }
+  }
+  return signal
+}
+
+/** The newest login signal (loginSignalOf) across every agent folder's transcripts under
+ *  `<configDir>/projects`, counting only records from `since` on; files not written since then are not
+ *  read. Null when there is none. Never throws. */
+function fleetNewestLoginSignal({ configDir, since, listDir, mtimeMs, readTail }) {
+  const projects = joinDir(configDir, 'projects')
+  const list = (path) => {
+    try {
+      return listDir(path) ?? []
+    } catch {
+      return []
+    }
+  }
+  let newest = null
+  for (const folder of list(projects)) {
+    const dir = joinDir(projects, folder)
+    for (const name of list(dir)) {
+      if (!String(name).endsWith('.jsonl')) continue
+      const path = joinDir(dir, name)
+      const mtime = mtimeMs(path)
+      if (mtime == null || mtime < since) continue
+      // loginSignalOf counts records from LOGIN_STALE_MS before its clock: this clock makes that `since`.
+      const signal = loginSignalOf(readTail(path) ?? '', since + LOGIN_STALE_MS)
+      if (signal && (!newest || signal.at >= newest.at)) newest = signal
+    }
+  }
+  return newest
+}
+
+/**
+ * Has the Claude login every agent of this credential store shares failed? The newest login signal
+ * across the fresh transcripts (LOGIN_STALE_MS, the daemon's rule) of every agent folder under
+ * `<configDir>/projects` decides: the CLI's failure record, unless some agent answered after it.
+ * Returns `{ at, text }` (the CLI's words) or null; never throws.
+ * @param {{ configDir: string, now: number, listDir: (path: string) => string[],
+ *   mtimeMs: (path: string) => number | null, readTail: (path: string) => string | null }} input
+ */
+export function fleetClaudeLoginFailure({ configDir, now, listDir, mtimeMs, readTail }) {
+  const newest = fleetNewestLoginSignal({ configDir, since: now - LOGIN_STALE_MS, listDir, mtimeMs, readTail })
+  return newest?.type === 'login_failed' ? { at: newest.at, text: newest.text } : null
+}
+
+/**
+ * Has some agent of this credential store answered since a login failure at `since`, at any age, with
+ * no failure after that answer? Only that proves the login works again: a failure nobody has tried
+ * past is still a failure once it is older than LOGIN_STALE_MS (lib/claude-login.ts reduceLoginState:
+ * "a dead login stays dead until proven otherwise"). Never throws.
+ * @param {{ configDir: string, since: number, listDir: (path: string) => string[],
+ *   mtimeMs: (path: string) => number | null, readTail: (path: string) => string | null }} input
+ */
+export function fleetClaudeLoginAnswered({ configDir, since, listDir, mtimeMs, readTail }) {
+  return fleetNewestLoginSignal({ configDir, since, listDir, mtimeMs, readTail })?.type === 'activity'
+}
+
+/** Did the CLI sign in again after a failure at `since`? It rewrites `<configDir>/.credentials.json` on
+ *  /login (and on each token refresh, which also proves the login works). Only the file's time is
+ *  looked at, never what it holds; a login kept elsewhere (the macOS Keychain) has no such file, and
+ *  only an answer clears its failure.
+ *  @param {{ configDir: string, since: number, mtimeMs: (path: string) => number | null }} input */
+export function claudeSignedInSince({ configDir, since, mtimeMs }) {
+  const written = mtimeMs(joinDir(configDir, '.credentials.json'))
+  return written != null && written > since
+}
+
+/** A file's modification time in ms, or null. Never throws. */
+export function fileMtimeMs(path) {
+  try {
+    return statSync(path).mtimeMs
+  } catch {
+    return null
+  }
+}
+
+/** The last `bytes` of a file as text, from its first whole line on, or null. Never throws. */
+export function readFileTail(path, bytes) {
+  let fd = null
+  try {
+    fd = openSync(path, 'r')
+    const size = fstatSync(fd).size
+    const from = Math.max(0, size - bytes)
+    const buf = Buffer.alloc(size - from)
+    const text = buf.subarray(0, readSync(fd, buf, 0, buf.length, from)).toString('utf8')
+    return from > 0 ? text.slice(text.indexOf('\n') + 1) : text
+  } catch {
+    return null
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd)
+      } catch {
+        // Nothing more to do with it.
+      }
+    }
+  }
 }
 
 /**
@@ -1527,6 +1730,121 @@ function defaultSpawnGateHelper({ scriptDir, consolePid, spawnImpl = spawn, writ
   return child
 }
 
+/** What hoai writes to the console before a relaunch on Windows: leave an alternate screen buffer a
+ *  killed claude left active (conhost discards it), erase the screen and the scrollback, cursor home.
+ *  The gate helper reads the active buffer up to 40 lines above the cursor; after this there is
+ *  nothing of the old claude's there (measured on conhost with the real helper, alternate and main
+ *  screen both). */
+export const WIN32_CONSOLE_CLEAR = '\x1b[?1049l\x1b[2J\x1b[3J\x1b[H'
+
+/** Write WIN32_CONSOLE_CLEAR to a console stream. Nothing for a stream that is not a TTY (a redirected
+ *  stdout: claude draws nowhere a helper reads then). True when it was written. */
+export function clearWin32Console(stream) {
+  if (!stream?.isTTY) return false
+  try {
+    stream.write(WIN32_CONSOLE_CLEAR)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Every Windows process as `<pid> <parent pid> <start ms or -> <name>` lines: Win32_Process through
+ *  the System32 powershell, never a command line. */
+const WIN32_PROCESS_ROWS_SCRIPT =
+  "Get-CimInstance Win32_Process | ForEach-Object { '{0} {1} {2} {3}' -f $_.ProcessId, $_.ParentProcessId, " +
+  "$(if ($_.CreationDate) { ([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() } else { '-' }), $_.Name }"
+
+/** WIN32_PROCESS_ROWS_SCRIPT's lines as `{ pid, ppid, startedAtMs, name }` (a name may hold spaces;
+ *  an unknown start is null). Lines of any other shape are skipped. */
+export function parseWin32ProcessRows(stdout) {
+  const out = []
+  for (const line of String(stdout ?? '').split(/\r?\n/)) {
+    const m = line.trim().match(/^(\d+) (\d+) (\d+|-) (.+)$/)
+    if (m) out.push({ pid: Number(m[1]), ppid: Number(m[2]), startedAtMs: m[3] === '-' ? null : Number(m[3]), name: m[4] })
+  }
+  return out
+}
+
+/** Every process on this Windows computer (pid, parent pid, start, name), or null when it could not be
+ *  listed. Fails closed: with no SystemRoot there is no System32 powershell to name, and a bare
+ *  `powershell.exe` would be looked up in the current folder (the agent's) first.
+ *  @param {{ spawnSyncImpl?: typeof spawnSync, env?: Record<string, string | undefined> }} [opts] */
+export function listWin32Processes({ spawnSyncImpl = spawnSync, env = process.env } = {}) {
+  const root = String(env.SystemRoot ?? env.SYSTEMROOT ?? '').trim()
+  if (!root) return null
+  const powershell = joinDir(joinDir(joinDir(joinDir(root, 'System32'), 'WindowsPowerShell'), 'v1.0'), 'powershell.exe')
+  try {
+    const r = spawnSyncImpl(powershell, ['-NoProfile', '-NonInteractive', '-Command', WIN32_PROCESS_ROWS_SCRIPT], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 15_000,
+    })
+    if (r?.status !== 0) return null
+    return parseWin32ProcessRows(r.stdout)
+  } catch {
+    return null
+  }
+}
+
+/** What ending a claude started through a shim takes, besides the shim (`rootPid`) itself: the
+ *  processes the shim started, and theirs through any further cmd.exe layer (a .cmd that runs another
+ *  with cmd /c); never deeper. Claude's own children (its MCP servers) are in claude's kill-on-close
+ *  job and end with it, as under a native claude.exe; what the daemon started DETACHED to outlive
+ *  claude (its browser host, which closes Chrome cleanly once the daemon is gone; a person lane's
+ *  supervisor) must live on, and `taskkill /T` would end it: a detached process still names its parent.
+ *  A process that started before its named parent is no child (a pid Windows reused), and neither is
+ *  one whose start is unknown.
+ *  @param {{ pid: number, ppid: number, startedAtMs: number | null, name: string }[]} processes
+ *  @param {number} rootPid
+ *  @returns {number[]} */
+export function win32ShimTargets(processes, rootPid) {
+  const root = processes.find((p) => p.pid === rootPid)
+  // Only a shim hides claude: a native claude.exe's children are its MCP servers and tools, in its own
+  // kill-on-close job, ended with it as on main.
+  if (!root || !/^cmd\.exe$/i.test(root.name)) return []
+  const targets = []
+  const seen = new Set([rootPid])
+  let layer = [root]
+  while (layer.length > 0) {
+    const next = []
+    for (const parent of layer) {
+      for (const p of processes) {
+        if (p.ppid !== parent.pid || seen.has(p.pid)) continue
+        if (p.startedAtMs == null || parent.startedAtMs == null || p.startedAtMs < parent.startedAtMs) continue
+        seen.add(p.pid)
+        targets.push(p.pid)
+        if (/^cmd\.exe$/i.test(p.name)) next.push(p)
+      }
+    }
+    layer = next
+  }
+  return targets
+}
+
+/** End a claude hoai started through a shim: the processes the shim started (win32ShimTargets), then
+ *  the shim. A claude installed by npm is `claude.cmd`, which hoai starts as `cmd.exe /c claude.cmd`,
+ *  and node's kill() of that child is TerminateProcess on cmd.exe alone: the real claude under it (node
+ *  running cli.js) is not in libuv's kill-on-close job either (it breaks away silently), so it ran on
+ *  beside the relaunched one (board row 978da5db, measured with a fake claude behind a real cmd-shim
+ *  claude.cmd). True once the listing found the shim and every kill was sent; false (nothing ended,
+ *  the caller's own kill() is the fallback) when the processes could not be listed.
+ *  @param {number} pid
+ *  @param {{ spawnSyncImpl?: typeof spawnSync, env?: Record<string, string | undefined>, kill?: (pid: number) => unknown }} [opts] */
+export function endWin32ShimTree(pid, { spawnSyncImpl = spawnSync, env = process.env, kill = (target) => process.kill(target) } = {}) {
+  if (!Number.isInteger(pid) || pid <= 0) return false
+  const processes = listWin32Processes({ spawnSyncImpl, env })
+  if (!processes || !processes.some((p) => p.pid === pid)) return false
+  for (const target of [...win32ShimTargets(processes, pid), pid]) {
+    try {
+      kill(target)
+    } catch {
+      // Already gone.
+    }
+  }
+  return true
+}
+
 /**
  * Is `expect` available to auto-accept the dev-channels startup gate? Never on
  * win32 (no expect; win32 uses the console-input helper instead).
@@ -1600,6 +1918,11 @@ export function hostHasExpect({ platform, env = process.env, exists = existsSync
  *   setTimer?: (fn: () => void, ms: number) => unknown,
  *   clearTimer?: (handle: unknown) => void,
  *   keepAlive?: boolean, signal?: AbortSignal | null,
+ *   endProcessTree?: ((pid: number) => boolean) | null,
+ *   spawnSyncImpl?: typeof spawnSync,
+ *   clearConsole?: () => unknown,
+ *   claudeLoginFailure?: () => { at: number, text: string } | null,
+ *   claudeLoginBackSince?: (at: number) => boolean,
  * }} [opts]
  * @returns {Promise<number>}
  *
@@ -1952,6 +2275,17 @@ export async function superviseClaude(args, opts = {}) {
   const incumbentTimeoutMs = opts.incumbentTimeoutMs ?? INCUMBENT_WAIT_TIMEOUT_MS
   const keepAlive = opts.keepAlive === true
   const stopSignal = opts.signal ?? null
+  // Has the Claude login every agent of this credential store shares failed? Asked only for a launch
+  // with no channel heartbeat: the CLI's own records, in the store it signs in through.
+  const loginStore = { configDir: claudeConfigDir({ env, home }), listDir, mtimeMs: fileMtimeMs, readTail: (path) => readFileTail(path, LOGIN_TAIL_BYTES) }
+  const claudeLoginFailure = opts.claudeLoginFailure ?? (() => fleetClaudeLoginFailure({ ...loginStore, now: now() }))
+  // Has the login come back since a failure: a sign-in after it, or an agent's answer after it.
+  const claudeLoginBackSince =
+    opts.claudeLoginBackSince ??
+    ((at) => claudeSignedInSince({ ...loginStore, since: at }) || fleetClaudeLoginAnswered({ ...loginStore, since: at }))
+  // The shared login failure an alert was made for: it stands, across relaunches too, until the
+  // login comes back after it.
+  let loginFailure = null
   // Nobody at the terminal (bin/bgos-agent run.sh v2): see SUPERVISED_ENV.
   const supervised = isSupervisedLaunch(env)
   // In tmux the launcher has a terminal and relays it; under launchd with no
@@ -1979,13 +2313,36 @@ export async function superviseClaude(args, opts = {}) {
         handle = setTimer(done, ms)
       }))
 
+  // Ending claude for a relaunch or a stop. On Windows the claude under the shim too, not the shim
+  // alone (endWin32ShimTree: the cmd.exe of the npm shim left the real claude running), and never
+  // deeper (what the daemon detached lives on). Only a claude node's own spawn started and whose exit
+  // is not recorded yet, so its pid is still its own: a child from an injected spawn (a test's fake)
+  // is ended by its own kill(), never by a kill aimed at a made up pid that may be anyone's.
+  const endProcessTree =
+    opts.endProcessTree ??
+    (platform === 'win32' && spawnImpl === spawn ? (pid) => endWin32ShimTree(pid, { spawnSyncImpl: opts.spawnSyncImpl ?? spawnSync, env }) : null)
+  // Only the npm shim hides claude: a native claude.exe is ended by its own kill(), its children with
+  // its job as on main, and pays for no listing.
+  const shimFile = String(env.ComSpec ?? env.COMSPEC ?? '').trim() || 'cmd.exe'
+  const endClaude = (child) => {
+    if (platform === 'win32' && endProcessTree && child.spawnfile === shimFile && child.exitCode == null && child.signalCode == null) {
+      if (endProcessTree(child.pid)) return
+      print(`[hoai] could not list the processes under claude (pid ${child.pid}); ending that process alone`)
+    }
+    child.kill()
+  }
+
   // GAP 2: a clone (dev) launch shows the dev-channels confirm prompt at
   // (re)start; an unattended supervised launch strands on it. When expect is
   // available, spawn claude under it and auto-accept the gate (mirror of the
   // fleet's run.expect); otherwise spawn directly and warn once.
   let warnedGate = false
   const spawnGateHelper = opts.spawnGateHelper ?? defaultSpawnGateHelper
-  const spawnSupervised = (spawnArgs, onSpawn) => {
+  const clearConsole = opts.clearConsole ?? (() => clearWin32Console(process.stdout))
+  let spawnsSoFar = 0
+  const spawnSupervised = (spawnArgs, onSpawn, onGateHelperExit) => {
+    const relaunch = spawnsSoFar > 0
+    spawnsSoFar += 1
     const method = relaunchInstallMethod({ scriptDir, env, home })
     // Built at every spawn: main() adds the plan's env before the first one.
     const childEnv = childEnvWithoutSupervision(env, platform)
@@ -1997,10 +2354,21 @@ export async function superviseClaude(args, opts = {}) {
       if (platform === 'win32') {
         // No expect on Windows: claude gets the console, and a hidden helper
         // attached to that same console accepts the gate once it is on screen.
+        // A relaunch shares this console with the claude it replaced, which has
+        // ended by now, and a killed claude leaves its last screen behind (the
+        // gate in the alternate screen buffer included). The new helper reads the
+        // screen seconds before the new claude draws anything, so a gate left
+        // there got this launch's one Enter and the new gate none (board row
+        // 978da5db, measured with a fake claude). Cleared first, screen and
+        // scrollback, hoai's own lines about the relaunch included; never before
+        // the first launch, so what a person had on screen before hoai is kept.
+        if (relaunch) clearConsole()
         const exited = spawnClaude(spawnArgs, { platform, env, spawnImpl, writeErr, onSpawn, childEnv })
         try {
           const helper = spawnGateHelper({ scriptDir, consolePid: process.pid, spawnImpl, writeErr, home })
           print(`[hoai] dev-channels gate helper armed (helper pid ${helper?.pid ?? '?'}, console ${process.pid})`)
+          // Its exit code says whether the gate is PROVEN answered (WIN32_GATE_EXIT_UNPROVEN).
+          helper?.on?.('exit', (code) => onGateHelperExit?.(code))
         } catch (err) {
           writeErr(`[hoai] could not start the dev-channels gate helper: ${err?.message ?? err}\n`)
         }
@@ -2076,6 +2444,15 @@ export async function superviseClaude(args, opts = {}) {
     )
   }
   if (supervised) supervisedStateDir = stateDir
+  // Nobody at the terminal: the launches noteStatus reports on, and the only ones hoai relaunches
+  // for a gate that is not proven answered or a channel that never sent a heartbeat (board row
+  // d806c69f). A person at the terminal sees the screen and is never relaunched under.
+  const unattended = keepAlive || supervised
+  // The channel's heartbeat: the beacon the daemon touches while it delivers (lib/pairing-lock.ts).
+  const beaconPath = joinDir(pluginStateDirFor({ env, home, assistantId: id, cwd }), BEACON_HEARTBEAT_FILE_NAME)
+  // A launch with no channel heartbeat CHANNEL_HEARTBEAT_WAIT_MS after it started is relaunched
+  // ONCE; the next one is reported and left running. A launch that does send one earns it back.
+  let heartbeatRelaunchSpent = false
   // Supervised on posix, the startup gates are answered under expect or not at
   // all. Without it claude would sit on the dev-channels warning (shown on
   // every launch) with nobody there: alive to the service, deaf to the owner.
@@ -2239,6 +2616,7 @@ export async function superviseClaude(args, opts = {}) {
   }
 
   let relaunchesAt = []
+  let healthRelaunchesAt = []
   let exhausted = false
   let currentArgs = [...args, ...sessionArgsFor(pinnedId, sessionExistsNow())]
   // The never-leave-dead fresh fallback is one-shot per relaunch cycle; a
@@ -2265,16 +2643,111 @@ export async function superviseClaude(args, opts = {}) {
       /** @type {import('node:child_process').ChildProcess | null} */
       let childRef = null
       let restartRequested = false
+      // False once this launch's claude has exited: a late helper exit or check is not about it.
+      let live = true
       const startedAt = now()
-      const exited = spawnSupervised(currentArgs, (child) => {
-        childRef = child
-      })
+      // Relaunch THIS claude because it is not proven healthy: the same relaunch a restart marker
+      // gets (its own pinned session, a fresh fallback cycle), on a budget of its own so it can
+      // never loop. Past the budget it is reported and claude is left as it is.
+      const healthRelaunch = (reason, why) => {
+        // A launcher asked to stop is ending this claude anyway; nothing to relaunch or record.
+        if (!live || restartRequested || !childRef || stopSignal?.aborted) return
+        const decision = decideMarkerRelaunch(healthRelaunchesAt, now(), MAX_HEALTH_RELAUNCHES_PER_WINDOW)
+        healthRelaunchesAt = decision.recent
+        if (!decision.allow) {
+          noteStatus('health-relaunch-refused', { reason })
+          print(
+            `[hoai] ${why}. NOT relaunching: ${MAX_HEALTH_RELAUNCHES_PER_WINDOW} health relaunches in the last hour ` +
+              'already, so claude is left as it is. Run hoai doctor in this folder.',
+          )
+          return
+        }
+        healthRelaunchesAt.push(now())
+        restartRequested = true
+        noteStatus('health-relaunch', { reason })
+        print(`[hoai] ${why}. Relaunching claude on this agent's own session...`)
+        try {
+          endClaude(childRef)
+        } catch {
+          // Already gone; its exit resolves the loop below.
+        }
+      }
+      // Read before the spawn: whatever daemon the beacon names now is not this launch's.
+      const staleBeaconPid = unattended ? (parseChannelBeacon(readFile(beaconPath))?.pid ?? null) : null
+      const exited = spawnSupervised(
+        currentArgs,
+        (child) => {
+          childRef = child
+        },
+        (code) => {
+          if (!unattended || code !== WIN32_GATE_EXIT_UNPROVEN) return
+          healthRelaunch(
+            'gate-accept-unproven',
+            `the dev-channels gate helper wrote the Enter but could not record "attached" and "accepted" in its log ` +
+              `(exit ${code}), so nothing proves the gate was answered`,
+          )
+        },
+      )
+      let heartbeatTimer = null
+      // Alerted once per launch: the check keeps coming back while the login stays failed, quietly.
+      let loginAlerted = false
+      const armHeartbeatCheck = () => {
+        heartbeatTimer = setTimer(checkHeartbeat, CHANNEL_HEARTBEAT_WAIT_MS)
+        // Never what keeps this process alive; claude's own handle does that.
+        if (heartbeatTimer && typeof heartbeatTimer === 'object' && typeof heartbeatTimer.unref === 'function') heartbeatTimer.unref()
+      }
+      const checkHeartbeat = () => {
+        heartbeatTimer = null
+        if (!live || restartRequested) return
+        const beacon = parseChannelBeacon(readFile(beaconPath))
+        if (channelHeartbeatSince({ beacon, startedAt, stalePid: staleBeaconPid })) {
+          heartbeatRelaunchSpent = false
+          return
+        }
+        const waited = `${Math.round((now() - startedAt) / 1000)}s`
+        // The Claude login every agent here shares has failed: this session cannot sign in, and a
+        // relaunched one meets the same wall. Alert instead, spend nothing, and look again later. The
+        // failure stands until the login comes back after it, a sign-in or an answer (not merely once
+        // it is too old to read as fresh); then a launch still without a heartbeat has another cause
+        // and gets its one relaunch (board row 31583f86).
+        if (loginFailure && claudeLoginBackSince(loginFailure.at)) loginFailure = null
+        else loginFailure ??= claudeLoginFailure()
+        const login = loginFailure
+        if (login) {
+          if (!loginAlerted) {
+            loginAlerted = true
+            const failedAt = new Date(login.at).toISOString()
+            noteStatus('claude-login-expired', { waited, failedAt, cli: login.text })
+            print(
+              `[hoai] ALERT (claude-login-expired): claude has run ${waited} and its channel has sent no heartbeat, ` +
+                `and the Claude login the agents on this computer share has failed (first seen failing at ${failedAt}` +
+                `${login.text ? `; the CLI says: "${login.text}"` : ''}). A relaunch cannot fix that, so hoai does not ` +
+                'relaunch. Sign in again: run /login in a claude session on this computer. hoai looks again every 3 ' +
+                'minutes and relaunches claude once the login is back.',
+            )
+          }
+          armHeartbeatCheck()
+          return
+        }
+        if (!heartbeatRelaunchSpent) {
+          heartbeatRelaunchSpent = true
+          healthRelaunch('no-channel-heartbeat', `claude has run ${waited} and its channel has sent no heartbeat (${beaconPath})`)
+          return
+        }
+        noteStatus('no-channel-heartbeat', { waited, beacon: beaconPath })
+        print(
+          `[hoai] ALERT (no-channel-heartbeat): claude has run ${waited} and its channel has sent no heartbeat ` +
+            `(${beaconPath}), after the one relaunch hoai makes for that. Not relaunching again: the agent stays ` +
+            'up for a person to look at. Run hoai doctor in this folder.',
+        )
+      }
+      if (unattended) armHeartbeatCheck()
       // A stop request ends the live claude; the exit below then returns
       // instead of relaunching. Checked once more after registering, because an
       // abort that already happened fires no event.
       const onStop = () => {
         try {
-          childRef?.kill()
+          if (childRef) endClaude(childRef)
         } catch {
           // Already gone; its exit resolves the loop.
         }
@@ -2288,11 +2761,16 @@ export async function superviseClaude(args, opts = {}) {
       // redirected console put claude in print mode and the old rule burned
       // the pin on the retry). Committed only if the child is still up.
       let pinTimer = null
+      // The fresh session this launch runs while its window is open: a relaunch hoai itself asks for
+      // in that window carries it on (below), because the session is not what was judged.
+      let windowPin = null
       if (pendingPin) {
         const candidate = pendingPin
         pendingPin = null
+        windowPin = candidate
         pinTimer = setTimer(() => {
           pinTimer = null
+          windowPin = null
           if (writeFile(sessionIdPath, candidate)) {
             pinnedId = candidate
             print('[hoai] the fresh session stayed up; it is now this agent\'s pinned session')
@@ -2321,7 +2799,7 @@ export async function superviseClaude(args, opts = {}) {
         restartRequested = true
         print('[hoai] restart requested by the daemon; restarting claude to pick up the update...')
         try {
-          childRef.kill()
+          endClaude(childRef)
         } catch {
           // The child already died; its exit resolves the loop below.
         }
@@ -2333,6 +2811,11 @@ export async function superviseClaude(args, opts = {}) {
       // idle, for hours.
       poller.unref?.()
       const code = await exited
+      live = false
+      if (heartbeatTimer) {
+        clearTimer(heartbeatTimer)
+        heartbeatTimer = null
+      }
       clearInterval(poller)
       stopSignal?.removeEventListener?.('abort', onStop)
       if (pinTimer) {
@@ -2345,16 +2828,19 @@ export async function superviseClaude(args, opts = {}) {
         // A daemon-driven update restart: relaunch THIS agent's OWN session
         // (resume it when its transcript exists, else create it again by
         // id; never --continue), and give this cycle a fresh fallback.
+        const pinBefore = pinnedId
         rereadPin()
-        const relaunchArgs = relaunchClaudeArgs({
-          scriptDir,
-          env,
-          home,
-          cwd,
-          readFile,
-          sessionArgs: sessionArgsFor(pinnedId, sessionExistsNow()),
-        })
+        // Inside a fresh session's window the pin still names the session whose resume was just
+        // rejected. An update, an unproven gate or a missing heartbeat is no verdict on the fresh
+        // session, so it is the one relaunched, and its window starts again (board row 978da5db).
+        // A pin the daemon rewrote meanwhile names the live session and wins, as everywhere.
+        const carried = windowPin && pinnedId === pinBefore ? windowPin : null
+        const sessionArgs = carried
+          ? sessionArgsFor(carried, exists(sessionTranscriptPath(home, cwd, carried, env.CLAUDE_CONFIG_DIR)))
+          : sessionArgsFor(pinnedId, sessionExistsNow())
+        const relaunchArgs = relaunchClaudeArgs({ scriptDir, env, home, cwd, readFile, sessionArgs })
         if (!relaunchArgs) return stopUnresolved()
+        if (carried) pendingPin = carried
         currentArgs = relaunchArgs
         freshTried = false
         lastLaunchWasRelaunch = true

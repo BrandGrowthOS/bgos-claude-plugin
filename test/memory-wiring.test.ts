@@ -53,7 +53,9 @@ test('the handler answers on the memory lane', () => {
   assert.match(built, /bgosPost\(\s*`integrations\/memory-rpc\/\$\{encodeURIComponent\(rpcId\)\}\/result`/)
   assert.doesNotMatch(built, /voice-rpc|export-pack/)
   const handler = handlerSlice()
-  assert.ok(handler.includes('normalizeMemoryRpc('), 'the frame is normalised before it is handled')
+  // Since 0.71.0 (person lanes P5) classifyMemoryFrame normalises the frame
+  // (normalizeMemoryRpc inside) and sorts the owner's own from a person's.
+  assert.ok(handler.includes('classifyMemoryFrame('), 'the frame is normalised before it is handled')
   assert.ok(
     handler.includes('trackMessageOperation(() => memoryRpc.handle(frame))'),
     'the frame is handed to the handler as a tracked operation',

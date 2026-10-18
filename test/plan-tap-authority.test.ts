@@ -36,6 +36,8 @@ import * as streamApply from '../lib/stream-apply.ts'
 import * as messageText from '../lib/message-text.ts'
 import { LoginController } from '../lib/auth-login.ts'
 import type { StreamUpdate } from '../lib/update-stream.ts'
+import { ownerAnnounceRefused, ownerLaneVerdict } from '../lib/lane-core.mjs'
+import { createPrivateTurnTracker } from '../lib/private-turn.mjs'
 
 // Normalized to LF: the working tree is CRLF on a Windows checkout.
 const SERVER = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(
@@ -305,8 +307,17 @@ function streamHarness(record: { requesterUserId?: string } = { requesterUserId:
       openPlansByChat.delete(chatId)
     },
     log: (line: string) => logs.push(line),
+    // The second lock of person lanes (P3) runs first on a stream tap; lanes
+    // are off here, so the tap goes on exactly as before.
+    ownerLaneVerdict,
+    ownerAnnounceRefused,
+    noteLaneMisroute: () => undefined,
+    lanesOnForThisAgent: false,
+    chatOwnership: { isOthers: () => false },
     USER_ID: OWNER,
     ASSISTANT_ID: 9,
+    // The daemon's own tracker (server.ts): a tap by anyone but the owner is noted with it (70f1898b).
+    privateTurns: createPrivateTurnTracker({ ownerUserId: OWNER }),
     streamAuthority: {},
     announcedClickIds,
     rememberAnnouncedClick: (id: number) => announcedClickIds.add(id),
@@ -394,6 +405,9 @@ test("STREAM: A's own stamped tap, and an unstamped tap, reach the model with th
       h.notes[0].params.content.includes(planCard.planAnswerDirective('go')!),
       'the go ahead directive reaches the model',
     )
+    // Neither is the owner's tap, so the card carries the untracked tag: an email_send in the turn it reaches asks the
+    // owner first (70f1898b).
+    assert.ok(h.notes[0].params.content.endsWith('\n<hoai-untracked/>'), `the tap ${JSON.stringify(answer)} is someone else's words`)
     assert.equal(h.settled.length, 1)
   }
 })
@@ -435,8 +449,13 @@ test('the record names the plan\'s person, from the permission relay\'s own sour
   )
   assert.ok(post.length > 0)
   assert.match(post, /requesterUserId: lastInboundUserByChat\.get\(planChatId\) \?\? USER_ID,/)
-  // The permission relay's line, so the two stay one source.
-  assert.match(SERVER, /const requesterUserId = lastInboundUserByChat\.get\(chatId\) \?\? USER_ID/)
+  // The permission relay USED to bind the same way, and this line kept the two
+  // one source. Shared agents Phase 0, item 0.8 split them on purpose: a plan
+  // belongs to the person it was proposed to, but a permission card is about a
+  // tool on the OWNER's machine, so only the owner may answer it
+  // (test/permission-card-owner-chat.test.ts holds that binding).
+  assert.match(SERVER, /const requesterUserId = USER_ID\n/)
+  assert.doesNotMatch(SERVER, /const requesterUserId = lastInboundUserByChat\.get\(chatId\) \?\? USER_ID/)
 })
 
 test('all three call sites pass a NULL AWARE clicker id and drop a refused tap', () => {

@@ -1,3 +1,5 @@
+import type { ChatOwnership } from './chat-ownership.ts'
+
 /**
  * The two backend refusals this daemon treats as PERMANENT for a chat.
  *
@@ -231,10 +233,49 @@ export function a2aRouteRequiredResult(
  * failed closed again (Ares's check of plugin 0.62.1, 2026-10-08). Undefined
  * when every monitored chat has refused, and the caller denies, as it does
  * when there is no chat at all.
+ *
+ * WITH `ownership` (shared agents Phase 0, item 0.8; MATRIX M13.2) the card is
+ * about the OWNER's machine, so it goes to the owner's own chat first, the
+ * most recently confirmed first (lib/chat-ownership.ts), and never to a chat
+ * known to be somebody else's: on a shared agent the first monitored chat can
+ * be a recipient's DM, which then saw the owner's command text. A chat neither
+ * known to be the owner's nor somebody else's keeps today's order, so with no
+ * evidence at all the answer is exactly what it was.
  */
 export function pickPermissionChat(
   monitored: readonly string[],
   refused: ReadonlyArray<Pick<RefusedChats, 'has'>>,
+  ownership?: Pick<ChatOwnership, 'ownerChats' | 'isOthers'>,
 ): string | undefined {
-  return monitored.find((chatId) => !refused.some((set) => set.has(chatId)))
+  const open = (chatId: string): boolean => !refused.some((set) => set.has(chatId))
+  if (!ownership) return monitored.find(open)
+  const watched = new Set(monitored)
+  const owners = ownership.ownerChats().find((chatId) => watched.has(chatId) && open(chatId))
+  if (owners !== undefined) return owners
+  return monitored.find((chatId) => open(chatId) && !ownership.isOthers(chatId))
+}
+
+/**
+ * The backend's own words when a Claude Code permission card is posted into a
+ * share recipient's chat (BGOS backend/src/services/permission-card-placement.ts
+ * PERMISSION_CARD_OWNER_CHAT_ONLY, shared agents Phase 0, item 0.8), byte for
+ * byte. It is a 403 from POST /messages, with no `code`.
+ */
+export const PERMISSION_CARD_OWNER_CHAT_ONLY_MESSAGE =
+  "A permission card for the owner's machine goes only into the owner's own chat with this agent, never into a chat another person can read."
+
+/**
+ * Is this thrown HTTP failure that refusal: a 403 whose WHOLE body (`body`,
+ * never the error's 200 character excerpt) parses to that `message`, whole?
+ * Read as narrowly as the peer refusals above: every other 403 stays a deny,
+ * so an unrelated refusal never moves a card or drops a chat for good.
+ */
+export function isPermissionCardOwnerChatOnly(err: unknown): boolean {
+  const failure = err as { status?: unknown; body?: unknown } | null
+  if (failure === null || typeof failure !== 'object' || failure.status !== 403 || typeof failure.body !== 'string') return false
+  try {
+    return (JSON.parse(failure.body) as { message?: unknown } | null)?.message === PERMISSION_CARD_OWNER_CHAT_ONLY_MESSAGE
+  } catch {
+    return false
+  }
 }

@@ -15,6 +15,10 @@
  * Run: npx tsx --test test/watcher-core.test.ts
  */
 
+// First: any real process listing, signal or launch from the loop fails this file instead of
+// acting on the computer it runs on (board row afa70b0c, test/watcher-real-os.guard.test.ts).
+import './helpers/real-os-sentinel.ts'
+
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
@@ -794,6 +798,10 @@ test('runWatcher create_agent: a folder pinned to another agent fails at folder;
 
 // -- create_agent: hidden, and supervised when the computer keeps agents running (board row d133ddb2) ----------
 
+// The new agent's task under this HOME's name (board row d6198bb6). 238eaec6 = watcherHomeId('/home/kc', 'win32')
+// (hashed as \home\kc): these win32 runs keep the posix-shaped HOME of this file.
+const TASK_55 = 'HOAI Agent 55 home-238eaec6'
+
 /**
  * One create_agent job end to end against the fake backend, whose keep-alive answer is `keepAlive`
  * (undefined: the route answers {}, as a backend without it). The plugin root carries the v2
@@ -828,14 +836,19 @@ async function createAgentRun(opts: {
     }
     opts.onExec?.(file, [...args], fs)
     const code = opts.execCode ? opts.execCode(file, [...args]) : 0
-    return { code, stdout: '', stderr: code === 0 ? '' : 'Access is denied.', error: null, timedOut: false }
+    // The task script's read-back (lib/agent-task-win32.mjs, -Action probe / probe-legacy, before any
+    // registration) on a computer where no task of this agent is registered yet, under this HOME's
+    // name or the old one: what the Task Scheduler prints for a new agent.
+    const probe = file === 'powershell.exe' && /^probe(-legacy)?$/.test(String(args.at(-1)))
+    return { code, stdout: code === 0 && probe ? 'task absent\r\n' : '', stderr: code === 0 ? '' : 'Access is denied.', error: null, timedOut: false }
   }
   const recorder = spawnRecorder()
   const { deps, logs } = baseDeps(fs, backend, clock, { platform: opts.platform, modules: stubModules(), exec, spawnDetached: recorder.spawnDetached })
   assert.equal(await runWatcher(deps as any), 0)
   const terminal = backend.progress('c1').at(-1)!
   const folder = `${HOME}/hoai-agents/wolf`
-  // Commands that start or supervise an agent, in order (the pair, the process table and tmux probes aside).
+  // Commands that start or supervise an agent, in order (the pair, the process table and tmux probes
+  // aside), the task script's read-back that every act on a task makes first included.
   const launches = execCalls.filter((c) => /^(powershell\.exe|schtasks\.exe|bash)$/.test(c.file) && !c.args.includes('-Command'))
   return { fs, backend, terminal, folder, launches, spawns: recorder.spawns, logs }
 }
@@ -864,14 +877,18 @@ test('create_agent win32, Keep agents running off (or a backend without the rout
 test('create_agent win32, Keep agents running on: the agent task is registered AND started (its launcher hidden, style 0); no one shot launch beside it', async () => {
   const run = await createAgentRun({ platform: 'win32', keepAlive: { enabled: true, enabledAt: '2026-10-01T00:00:00.000Z', assistantIds: [], switchState: 'on' } })
   assert.equal(run.terminal.state, 'done', JSON.stringify(run.terminal))
+  // Read back first (this HOME's name, then the old one: neither registered), then registered and
+  // started under this HOME's name.
   assert.deepEqual(
     run.launches.map((c) => [c.file, ...c.args.slice(-2)]),
     [
+      ['powershell.exe', '-Action', 'probe'],
+      ['powershell.exe', '-Action', 'probe-legacy'],
       ['powershell.exe', '-Action', 'install'],
-      ['schtasks.exe', '/TN', 'HOAI Agent 55'],
+      ['schtasks.exe', '/TN', TASK_55],
     ],
   )
-  assert.deepEqual(run.launches[1]!.args, ['/Run', '/TN', 'HOAI Agent 55'])
+  assert.deepEqual(run.launches[3]!.args, ['/Run', '/TN', TASK_55])
   assert.deepEqual(run.spawns, [], 'the task is the launch: no wscript one shot, no cmd')
   const vbs = run.fs.files.get(`${HOME}/.bgos-agent/55/run-agent.vbs`)!
   assert.match(vbs, /--keep-alive", 0, True\)\r\n$/, 'the task launcher runs hidden')
@@ -881,9 +898,10 @@ test('create_agent win32, Keep agents running on: the agent task is registered A
 test('create_agent win32, a computer never set (choice 1): the first new agent there is kept running, the task registered and started', async () => {
   const run = await createAgentRun({ platform: 'win32', keepAlive: { enabled: false, enabledAt: null, assistantIds: [], switchState: 'never_set' } })
   assert.equal(run.terminal.state, 'done', JSON.stringify(run.terminal))
-  assert.deepEqual(run.launches.map((c) => c.file), ['powershell.exe', 'schtasks.exe'])
+  assert.deepEqual(run.launches.map((c) => c.file), ['powershell.exe', 'powershell.exe', 'powershell.exe', 'schtasks.exe'])
   assert.deepEqual(run.spawns, [])
   assert.equal(run.terminal.steps[3]!.message, 'launched via task (keep agents running: never_set)')
+  assert.deepEqual(run.launches.map((c) => c.args.at(-1)), ['probe', 'probe-legacy', 'install', TASK_55])
 })
 
 test('create_agent win32, the task cannot be registered: the files it wrote are removed and the agent still starts, hidden, once', async () => {
@@ -896,6 +914,7 @@ test('create_agent win32, the task cannot be registered: the files it wrote are 
   assert.deepEqual(run.spawns.map((s) => [s.file, ...s.args]), [['wscript.exe', '//B', `${HOME}/.bgos-agent/55/launch-hidden.vbs`]])
   assert.equal(run.fs.files.has(`${HOME}/.bgos-agent/55/run-agent.vbs`), false, 'no task launcher left to read as a supervisor')
   assert.equal(run.launches.some((c) => c.file === 'schtasks.exe'), false, 'an unregistered task is never run')
+  assert.deepEqual(run.launches.map((c) => c.args.at(-1)), ['probe', 'probe-legacy', 'install'], 'read back (none registered), then the registration that failed')
   assert.match(run.terminal.steps[3]!.message, /^launched via recipe-hidden \(keep agents running: switch_on; supervisor not installed: /)
 })
 
@@ -910,7 +929,7 @@ test('create_agent win32 (review), re-creating an agent that already runs with t
     },
   })
   assert.equal(run.terminal.state, 'done', JSON.stringify(run.terminal))
-  assert.deepEqual(run.launches.map((c) => [c.file, c.args.at(-1)]), [['powershell.exe', 'install']], 'registered, never /Run beside the live session')
+  assert.deepEqual(run.launches.map((c) => [c.file, c.args.at(-1)]), [['powershell.exe', 'probe'], ['powershell.exe', 'probe-legacy'], ['powershell.exe', 'install']], 'read back, registered, never /Run beside the live session')
   assert.deepEqual(run.spawns, [], 'no one shot beside it')
   assert.equal(run.fs.files.get(`${HOME}/.bgos-agent/55/restart-requested.json`), '{}', 'restarted in place through its live launcher')
   assert.equal(run.terminal.steps[3]!.message, 'launched via task, restarted via marker (keep agents running: switch_on)')
@@ -924,7 +943,10 @@ test('create_agent win32 (review): the task registered but its start refused: th
   })
   assert.equal(run.terminal.state, 'done', JSON.stringify(run.terminal))
   assert.equal(run.fs.files.has(`${HOME}/.bgos-agent/55/run-agent.vbs`), true)
-  assert.deepEqual(run.launches.map((c) => c.file), ['powershell.exe', 'schtasks.exe'])
+  assert.deepEqual(run.launches.map((c) => c.file), ['powershell.exe', 'powershell.exe', 'powershell.exe', 'schtasks.exe'])
+  // Which actions ran: read back (this HOME's name, then the old one), registered, then the one /Run of this HOME's name that was refused.
+  assert.deepEqual(run.launches.map((c) => c.args.at(-1)), ['probe', 'probe-legacy', 'install', TASK_55])
+  assert.deepEqual(run.launches[3]!.args, ['/Run', '/TN', TASK_55])
   assert.deepEqual(run.spawns.map((s) => s.args[1]), [`${HOME}/.bgos-agent/55/launch-hidden.vbs`])
 })
 
@@ -936,6 +958,7 @@ test('create_agent win32 (review): a failed registration removes only the task f
     execCode: (file, args) => (file === 'powershell.exe' && args.at(-1) === 'install' ? 1 : 0),
   })
   assert.equal(run.terminal.state, 'done', JSON.stringify(run.terminal))
+  assert.deepEqual(run.launches.map((c) => c.args.at(-1)), ['probe', 'probe-legacy', 'install'], 'read back (none registered), then the registration that failed')
   assert.equal(run.fs.files.has(`${HOME}/.bgos-agent/55/install-agent-task.ps1`), true, 'kept')
   assert.equal(run.fs.files.has(`${HOME}/.bgos-agent/55/run-agent.vbs`), false, 'removed: this attempt wrote it')
 })
