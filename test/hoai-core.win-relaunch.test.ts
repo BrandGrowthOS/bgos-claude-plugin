@@ -4,7 +4,9 @@
  *   1. KILL. claude installed by npm is `claude.cmd`, which hoai starts as `cmd.exe /c claude.cmd`.
  *      On Windows `child.kill()` is TerminateProcess on that cmd.exe alone, and the real claude
  *      (node running cli.js) is not in libuv's kill-on-close job either (it breaks away silently),
- *      so it ran on beside the relaunched one. Every relaunch, and a stop, now ends the TREE.
+ *      so it ran on beside the relaunched one. Every relaunch, and a stop, now ends the claude under
+ *      the shim and then the shim; never deeper, so what the daemon detached to outlive claude (its
+ *      browser host, a person lane's supervisor) lives on, as with a native claude.exe.
  *   2. STALE GATE TEXT. A relaunch shares the console with the claude it replaced, and a killed
  *      claude leaves its last screen there. The new launch's gate helper reads the screen before
  *      the new claude has drawn anything, so a gate left on screen got the new launch's one Enter.
@@ -41,7 +43,9 @@ const fixed = core as unknown as {
   MAX_HEALTH_RELAUNCHES_PER_WINDOW?: number
   WIN32_CONSOLE_CLEAR?: string
   clearWin32Console?: (stream: { isTTY?: boolean; write: (text: string) => unknown }) => boolean
-  endWin32ProcessTree?: (pid: number, opts: { spawnSyncImpl: unknown; env: Record<string, string> }) => boolean
+  endWin32ShimTree?: (pid: number, opts: { spawnSyncImpl: unknown; env: Record<string, string>; kill?: (pid: number) => unknown }) => boolean
+  parseWin32ProcessRows?: (stdout: string) => { pid: number; ppid: number; startedAtMs: number | null; name: string }[]
+  win32ShimTargets?: (processes: { pid: number; ppid: number; startedAtMs: number | null; name: string }[], rootPid: number) => number[]
   fleetClaudeLoginFailure?: (input: {
     configDir: string
     now: number
@@ -333,7 +337,7 @@ test('a tree that cannot be ended still gets its first process ended, and the la
   await launched(h, 2)
   assert.deepEqual(h.treeEnds, [h.claudes[0]!.pid])
   assert.equal(h.claudes[0]!.killed, true, 'TerminateProcess on cmd.exe, as before, rather than nothing')
-  assert.ok(h.prints.some((line) => line.includes('process tree') && line.includes(String(h.claudes[0]!.pid))), h.prints.join('\n'))
+  assert.ok(h.prints.some((line) => line.includes('processes under claude') && line.includes(String(h.claudes[0]!.pid))), h.prints.join('\n'))
   await h.end()
 })
 
@@ -409,7 +413,7 @@ test('posix is unchanged: a marker relaunch is a plain kill, no tree ender', asy
   await done
 })
 
-test('a launch through an injected spawn never reaches the real taskkill: the default tree ender is for real children only', async () => {
+test('a launch through an injected spawn never reaches the real process listing or kill: the default tree ender is for real children only', async () => {
   const calls: unknown[][] = []
   const h = harness({
     endTree: false,
@@ -421,37 +425,93 @@ test('a launch through an injected spawn never reaches the real taskkill: the de
   await launched(h, 1)
   h.files.set(MARKER_PATH, '{}')
   await launched(h, 2)
-  assert.deepEqual(calls, [], 'a fake child is ended by its own kill(), never by a taskkill aimed at its made up pid')
+  assert.deepEqual(calls, [], 'a fake child is ended by its own kill(), never by a kill aimed at its made up pid')
   assert.equal(h.claudes[0]!.killed, true)
   await h.end()
 })
 
-test('endWin32ProcessTree: taskkill /PID <pid> /T /F from System32, true only on exit 0', () => {
-  assert.equal(typeof fixed.endWin32ProcessTree, 'function')
+/** One Win32_Process row as the shim tree query prints it: pid, parent pid, start (ms), name. */
+const row = (pid: number, ppid: number, startedAtMs: number | null, name: string) => `${pid} ${ppid} ${startedAtMs ?? '-'} ${name}`
+
+/** hoai (1000) > cmd.exe shim (2000) > claude (3000) > daemon (4000, an MCP server) > browser host
+ *  (5000, detached by the daemon, built to close Chrome after the daemon is gone), and a person
+ *  lane's supervisor (6000, detached by the daemon, running another person's claude). */
+const SHIM_LISTING = [
+  row(1000, 900, 100, 'node.exe'),
+  row(2000, 1000, 200, 'cmd.exe'),
+  row(3000, 2000, 300, 'node.exe'),
+  row(4000, 3000, 400, 'bun.exe'),
+  row(5000, 4000, 500, 'node.exe'),
+  row(6000, 4000, 600, 'node.exe'),
+  row(7000, 2000, 150, 'Some Old App.exe'),
+].join('\r\n')
+
+test('win32ShimTargets: the shim s own children, born after it, through further cmd.exe layers only, never deeper', () => {
+  assert.equal(typeof fixed.win32ShimTargets, 'function')
+  const procs = fixed.parseWin32ProcessRows!(SHIM_LISTING)
+  assert.deepEqual(procs.find((p) => p.pid === 7000), { pid: 7000, ppid: 2000, startedAtMs: 150, name: 'Some Old App.exe' })
+  // claude only: its MCP servers end with claude's own job, and the daemon's detached browser host
+  // and lane supervisors (5000, 6000) are never touched. 7000 is older than the shim: a pid Windows
+  // reused, not its child.
+  assert.deepEqual(fixed.win32ShimTargets!(procs, 2000), [3000])
+  // A .cmd that runs another through cmd /c: the inner shim and the claude it started.
+  const nested = fixed.parseWin32ProcessRows!([row(2000, 1000, 200, 'cmd.exe'), row(2100, 2000, 210, 'CMD.EXE'), row(3000, 2100, 300, 'claude.exe'), row(4000, 3000, 400, 'bun.exe')].join('\n'))
+  assert.deepEqual(fixed.win32ShimTargets!(nested, 2000), [2100, 3000])
+  // An unknown start time is no proof of a child: never ended.
+  assert.deepEqual(fixed.win32ShimTargets!(fixed.parseWin32ProcessRows!([row(2000, 1000, 200, 'cmd.exe'), row(3000, 2000, null, 'node.exe')].join('\n')), 2000), [])
+  assert.deepEqual(fixed.win32ShimTargets!(procs, 9999), [], 'a shim not in the listing has nothing under it to end')
+})
+
+test('endWin32ShimTree: lists processes with System32 powershell, ends the claude under the shim and then the shim, nothing deeper', () => {
+  assert.equal(typeof fixed.endWin32ShimTree, 'function')
   const calls: { file: string; args: string[]; opts: Record<string, unknown> }[] = []
-  let status: number | null = 0
+  const killed: number[] = []
   const spawnSyncImpl = (file: string, args: string[], opts: Record<string, unknown>) => {
     calls.push({ file, args, opts })
-    return { status }
+    return { status: 0, stdout: SHIM_LISTING }
   }
-  assert.equal(fixed.endWin32ProcessTree!(4242, { spawnSyncImpl, env: { SystemRoot: 'C:\\Windows' } }), true)
-  assert.equal(calls[0]!.file, 'C:\\Windows\\System32\\taskkill.exe')
-  assert.deepEqual(calls[0]!.args, ['/PID', '4242', '/T', '/F'])
+  const env = { SystemRoot: 'C:\\Windows' }
+  assert.equal(fixed.endWin32ShimTree!(2000, { spawnSyncImpl, env, kill: (pid: number) => killed.push(pid) }), true)
+  assert.equal(calls[0]!.file, 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe')
+  assert.match(calls[0]!.args.join(' '), /Get-CimInstance Win32_Process/)
+  assert.doesNotMatch(calls[0]!.args.join(' '), /CommandLine/, 'pid, parent pid, start and name only')
   assert.equal(calls[0]!.opts.windowsHide, true)
   assert.ok(Number(calls[0]!.opts.timeout) > 0, 'bounded')
-  status = 128
-  assert.equal(fixed.endWin32ProcessTree!(4242, { spawnSyncImpl, env: { SystemRoot: 'C:\\Windows' } }), false)
-  status = null
-  assert.equal(fixed.endWin32ProcessTree!(4242, { spawnSyncImpl, env: {} }), false, 'a timed out taskkill is a failure')
-  assert.equal(calls.at(-1)!.file, 'taskkill.exe', 'no SystemRoot: by name')
+  assert.deepEqual(killed, [3000, 2000], 'claude first, then the shim; the daemon s browser host and lane supervisors live on')
+  // A target already gone is no failure.
+  killed.length = 0
+  const gone = (pid: number) => {
+    killed.push(pid)
+    if (pid === 3000) throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' })
+  }
+  assert.equal(fixed.endWin32ShimTree!(2000, { spawnSyncImpl, env, kill: gone }), true)
+  assert.deepEqual(killed, [3000, 2000])
+})
+
+test('endWin32ShimTree fails closed: no SystemRoot, a failed or timed out listing, a shim not listed, a junk pid: false, nothing ended', () => {
+  const killed: number[] = []
+  const kill = (pid: number) => killed.push(pid)
+  const listing = (status: number | null, stdout = SHIM_LISTING) => () => ({ status, stdout })
+  const env = { SystemRoot: 'C:\\Windows' }
+  let asked = 0
+  const counting = () => {
+    asked += 1
+    return { status: 0, stdout: SHIM_LISTING }
+  }
+  assert.equal(fixed.endWin32ShimTree!(2000, { spawnSyncImpl: counting, env: {}, kill }), false, 'never a bare powershell.exe looked up from the agent folder')
+  assert.equal(asked, 0)
+  assert.equal(fixed.endWin32ShimTree!(2000, { spawnSyncImpl: listing(1), env, kill }), false)
+  assert.equal(fixed.endWin32ShimTree!(2000, { spawnSyncImpl: listing(null), env, kill }), false, 'timed out')
+  assert.equal(fixed.endWin32ShimTree!(2000, { spawnSyncImpl: listing(0, row(1000, 900, 100, 'node.exe')), env, kill }), false, 'the shim is not listed')
   const throwing = () => {
     throw new Error('boom')
   }
-  assert.equal(fixed.endWin32ProcessTree!(4242, { spawnSyncImpl: throwing, env: {} }), false)
+  assert.equal(fixed.endWin32ShimTree!(2000, { spawnSyncImpl: throwing, env, kill }), false)
   for (const bad of [0, -1, 1.5, Number.NaN]) {
-    assert.equal(fixed.endWin32ProcessTree!(bad, { spawnSyncImpl, env: {} }), false, `pid ${bad}`)
+    assert.equal(fixed.endWin32ShimTree!(bad, { spawnSyncImpl: counting, env, kill }), false, `pid ${bad}`)
   }
-  assert.equal(calls.filter((c) => c.args[1] !== '4242').length, 0, 'a junk pid never reaches taskkill')
+  assert.equal(asked, 0, 'a junk pid is never even looked up')
+  assert.deepEqual(killed, [], 'a failure ends nothing: the caller falls back to its own kill()')
 })
 
 // -- 2. the console a killed claude leaves behind ---------------------------------------------------

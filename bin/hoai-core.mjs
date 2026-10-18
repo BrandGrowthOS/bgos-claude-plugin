@@ -1718,24 +1718,98 @@ export function clearWin32Console(stream) {
   }
 }
 
-/** End a Windows process and every process under it: `taskkill /PID <pid> /T /F`, from System32 when
- *  SystemRoot names it. A claude installed by npm is `claude.cmd`, which hoai starts as
- *  `cmd.exe /c claude.cmd`, and node's kill() of that child is TerminateProcess on cmd.exe alone: the
- *  real claude under it (node running cli.js) is not in libuv's kill-on-close job either (it breaks
- *  away silently), so it ran on beside the relaunched one (board row 978da5db, measured with a fake
- *  claude behind a real cmd-shim claude.cmd). True only when taskkill exits 0.
- *  @param {number} pid
- *  @param {{ spawnSyncImpl?: typeof spawnSync, env?: Record<string, string | undefined> }} [opts] */
-export function endWin32ProcessTree(pid, { spawnSyncImpl = spawnSync, env = process.env } = {}) {
-  if (!Number.isInteger(pid) || pid <= 0) return false
-  const root = String(env.SystemRoot ?? env.SYSTEMROOT ?? '').trim()
-  const taskkill = root ? joinDir(joinDir(root, 'System32'), 'taskkill.exe') : 'taskkill.exe'
-  try {
-    const r = spawnSyncImpl(taskkill, ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true, timeout: 15_000 })
-    return r?.status === 0
-  } catch {
-    return false
+/** Every Windows process as `<pid> <parent pid> <start ms or -> <name>` lines: Win32_Process through
+ *  the System32 powershell, never a command line. */
+const WIN32_PROCESS_ROWS_SCRIPT =
+  "Get-CimInstance Win32_Process | ForEach-Object { '{0} {1} {2} {3}' -f $_.ProcessId, $_.ParentProcessId, " +
+  "$(if ($_.CreationDate) { ([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() } else { '-' }), $_.Name }"
+
+/** WIN32_PROCESS_ROWS_SCRIPT's lines as `{ pid, ppid, startedAtMs, name }` (a name may hold spaces;
+ *  an unknown start is null). Lines of any other shape are skipped. */
+export function parseWin32ProcessRows(stdout) {
+  const out = []
+  for (const line of String(stdout ?? '').split(/\r?\n/)) {
+    const m = line.trim().match(/^(\d+) (\d+) (\d+|-) (.+)$/)
+    if (m) out.push({ pid: Number(m[1]), ppid: Number(m[2]), startedAtMs: m[3] === '-' ? null : Number(m[3]), name: m[4] })
   }
+  return out
+}
+
+/** Every process on this Windows computer (pid, parent pid, start, name), or null when it could not be
+ *  listed. Fails closed: with no SystemRoot there is no System32 powershell to name, and a bare
+ *  `powershell.exe` would be looked up in the current folder (the agent's) first.
+ *  @param {{ spawnSyncImpl?: typeof spawnSync, env?: Record<string, string | undefined> }} [opts] */
+export function listWin32Processes({ spawnSyncImpl = spawnSync, env = process.env } = {}) {
+  const root = String(env.SystemRoot ?? env.SYSTEMROOT ?? '').trim()
+  if (!root) return null
+  const powershell = joinDir(joinDir(joinDir(joinDir(root, 'System32'), 'WindowsPowerShell'), 'v1.0'), 'powershell.exe')
+  try {
+    const r = spawnSyncImpl(powershell, ['-NoProfile', '-NonInteractive', '-Command', WIN32_PROCESS_ROWS_SCRIPT], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 15_000,
+    })
+    if (r?.status !== 0) return null
+    return parseWin32ProcessRows(r.stdout)
+  } catch {
+    return null
+  }
+}
+
+/** What ending a claude started through a shim takes, besides the shim (`rootPid`) itself: the
+ *  processes the shim started, and theirs through any further cmd.exe layer (a .cmd that runs another
+ *  with cmd /c); never deeper. Claude's own children (its MCP servers) are in claude's kill-on-close
+ *  job and end with it, as under a native claude.exe; what the daemon started DETACHED to outlive
+ *  claude (its browser host, which closes Chrome cleanly once the daemon is gone; a person lane's
+ *  supervisor) must live on, and `taskkill /T` would end it: a detached process still names its parent.
+ *  A process that started before its named parent is no child (a pid Windows reused), and neither is
+ *  one whose start is unknown.
+ *  @param {{ pid: number, ppid: number, startedAtMs: number | null, name: string }[]} processes
+ *  @param {number} rootPid
+ *  @returns {number[]} */
+export function win32ShimTargets(processes, rootPid) {
+  const root = processes.find((p) => p.pid === rootPid)
+  if (!root) return []
+  const targets = []
+  const seen = new Set([rootPid])
+  let layer = [root]
+  while (layer.length > 0) {
+    const next = []
+    for (const parent of layer) {
+      for (const p of processes) {
+        if (p.ppid !== parent.pid || seen.has(p.pid)) continue
+        if (p.startedAtMs == null || parent.startedAtMs == null || p.startedAtMs < parent.startedAtMs) continue
+        seen.add(p.pid)
+        targets.push(p.pid)
+        if (/^cmd\.exe$/i.test(p.name)) next.push(p)
+      }
+    }
+    layer = next
+  }
+  return targets
+}
+
+/** End a claude hoai started through a shim: the processes the shim started (win32ShimTargets), then
+ *  the shim. A claude installed by npm is `claude.cmd`, which hoai starts as `cmd.exe /c claude.cmd`,
+ *  and node's kill() of that child is TerminateProcess on cmd.exe alone: the real claude under it (node
+ *  running cli.js) is not in libuv's kill-on-close job either (it breaks away silently), so it ran on
+ *  beside the relaunched one (board row 978da5db, measured with a fake claude behind a real cmd-shim
+ *  claude.cmd). True once the listing found the shim and every kill was sent; false (nothing ended,
+ *  the caller's own kill() is the fallback) when the processes could not be listed.
+ *  @param {number} pid
+ *  @param {{ spawnSyncImpl?: typeof spawnSync, env?: Record<string, string | undefined>, kill?: (pid: number) => unknown }} [opts] */
+export function endWin32ShimTree(pid, { spawnSyncImpl = spawnSync, env = process.env, kill = (target) => process.kill(target) } = {}) {
+  if (!Number.isInteger(pid) || pid <= 0) return false
+  const processes = listWin32Processes({ spawnSyncImpl, env })
+  if (!processes || !processes.some((p) => p.pid === pid)) return false
+  for (const target of [...win32ShimTargets(processes, pid), pid]) {
+    try {
+      kill(target)
+    } catch {
+      // Already gone.
+    }
+  }
+  return true
 }
 
 /**
@@ -2206,18 +2280,18 @@ export async function superviseClaude(args, opts = {}) {
         handle = setTimer(done, ms)
       }))
 
-  // Ending claude for a relaunch or a stop. On Windows its whole process tree, not the first process
-  // alone (endWin32ProcessTree: the cmd.exe of the npm shim left the real claude running). Only a
-  // claude node's own spawn started and whose exit is not recorded yet, so its pid is still its own:
-  // a child from an injected spawn (a test's fake) is ended by its own kill(), never by a taskkill
-  // aimed at a made up pid that may be anyone's.
+  // Ending claude for a relaunch or a stop. On Windows the claude under the shim too, not the shim
+  // alone (endWin32ShimTree: the cmd.exe of the npm shim left the real claude running), and never
+  // deeper (what the daemon detached lives on). Only a claude node's own spawn started and whose exit
+  // is not recorded yet, so its pid is still its own: a child from an injected spawn (a test's fake)
+  // is ended by its own kill(), never by a kill aimed at a made up pid that may be anyone's.
   const endProcessTree =
     opts.endProcessTree ??
-    (platform === 'win32' && spawnImpl === spawn ? (pid) => endWin32ProcessTree(pid, { spawnSyncImpl: opts.spawnSyncImpl ?? spawnSync, env }) : null)
+    (platform === 'win32' && spawnImpl === spawn ? (pid) => endWin32ShimTree(pid, { spawnSyncImpl: opts.spawnSyncImpl ?? spawnSync, env }) : null)
   const endClaude = (child) => {
     if (platform === 'win32' && endProcessTree && child.exitCode == null && child.signalCode == null) {
       if (endProcessTree(child.pid)) return
-      print(`[hoai] could not end the process tree of claude (pid ${child.pid}); ending that process alone`)
+      print(`[hoai] could not list the processes under claude (pid ${child.pid}); ending that process alone`)
     }
     child.kill()
   }
