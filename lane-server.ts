@@ -14,7 +14,8 @@
  *      valid), and checks `GET lanes/me` names exactly this lane;
  *   3. connects its lane socket presenting the lane session ALONE, catches up
  *      from its own cursor through `GET lanes/inbound`, and delivers each turn
- *      to Claude as a channel event, only when it is stamped for this lane;
+ *      to Claude as a channel event, only when it is stamped for this lane,
+ *      and never before Claude has this server's tools (0.71.1);
  *   4. acknowledges each delivered turn, beats its own heartbeat, records its
  *      activity in lane.json for the supervisor's idle stop, and stops the
  *      lane on `lane_revoked` or when its session ends;
@@ -83,6 +84,7 @@ import {
   inboxNoteReplied,
   inboxPollFrom,
   inboxShouldDeliver,
+  LaneClaudeReady,
   laneDeliveryGate,
   laneInstructions,
   laneMeMatches,
@@ -390,7 +392,16 @@ const mcp = new Server(mcpServerInfo(readOwnVersion(ROOT)), {
   instructions: laneInstructions(''),
 })
 
-mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: LANE_TOOLS.map((t) => ({ ...t })) }))
+// No turn reaches Claude before Claude has `reply` in its tool pool (0.71.1,
+// lib/lane-daemon.ts LaneClaudeReady): a lane's first turn is waiting when
+// this daemon connects, and one handed over at once was answered in text
+// nobody sees.
+const claudeReady = new LaneClaudeReady({ ping: () => mcp.ping(), setTimer: (fn, ms) => setTimeout(fn, ms), log })
+
+mcp.setRequestHandler(ListToolsRequestSchema, async () => {
+  claudeReady.noteToolsListed()
+  return { tools: LANE_TOOLS.map((t) => ({ ...t })) }
+})
 
 mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   if (req.params.name !== 'reply') {
@@ -498,6 +509,7 @@ async function deliverRaw(raw: unknown, transport: 'lane-socket' | 'lane-poll', 
     : route.kind === 'model' || route.kind === 'effort'
       ? buildLaneCommandEvent(d, LANE, transport, laneChoiceQuestionFor(route.kind, PATHS, LAUNCHED_ENV), { backlog: opts.backlog === true })
       : plain
+  await claudeReady.whenReady()
   await mcp.notification({ method: 'notifications/claude/channel', params: { content: event.content, meta: event.meta } })
   inFlightChats.add(d.chatId)
   if (!inFlight) inFlightSinceMs = Date.now()
@@ -822,6 +834,7 @@ function tick(): void {
 const transport = new StdioServerTransport()
 transport.onclose = () => shutdown(0)
 await mcp.connect(transport)
+claudeReady.start()
 process.stdin.on('end', () => shutdown(0))
 log(`lane daemon up for person ${LANE.userId} on agent ${LANE.assistantId} (login ${CFG.loginMode || 'unknown'})`)
 writeLaneState()

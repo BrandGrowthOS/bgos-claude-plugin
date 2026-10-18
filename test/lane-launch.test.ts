@@ -19,6 +19,8 @@
  *     had it, byte for byte; CLAUDE_CONFIG_DIR is never invented.
  *   - K2 option (b): the lane's own config folder and token, and none of the
  *     owner's login variables.
+ *   - Tool search is off in every lane (0.71.1): ToolSearch is not in its
+ *     --tools, so a tool the CLI deferred could never be loaded.
  *
  * Run with: npx tsx --test test/lane-launch.test.ts
  */
@@ -34,6 +36,7 @@ import {
   laneSessionArgs,
   laneSettingsBody,
   LANE_BUILTIN_TOOLS,
+  LANE_CLAUDE_FIXED_ENV,
   LANE_FORBIDDEN_FLAGS,
   LANE_LOGIN_ENV,
 } from '../lib/lane-core.mjs'
@@ -196,6 +199,17 @@ test('K2 (b), own token: the lane\'s own config folder and token, never the owne
   assert.equal(env.HOAI_LANE_LOGIN_MODE, 'own_token')
   assert.throws(() => envFor(owner, { mode: 'own_token', token: '', configDir: PATHS.configDir }), /without a token/)
   assert.throws(() => envFor(owner, { mode: 'bogus' } as never), /unknown login mode/)
+})
+
+test('tool search is off in every lane, whatever the owner exported, under either login (0.71.1)', () => {
+  // ToolSearch is not in a lane's --tools, so a tool the CLI deferred could
+  // never be loaded; off, a tool that arrives late is sent in full next turn.
+  const logins = [{ mode: 'inherit' as const }, { mode: 'own_token' as const, token: 'sk-ant-oat01-standin-person-token', configDir: PATHS.configDir }]
+  for (const login of logins) {
+    assert.equal(envFor(OWNER_ENV, login).ENABLE_TOOL_SEARCH, 'false')
+    assert.equal(envFor({ ...OWNER_ENV, ENABLE_TOOL_SEARCH: 'true' }, login).ENABLE_TOOL_SEARCH, 'false', 'the owner\'s own setting never reaches a lane')
+  }
+  assert.deepEqual(LANE_CLAUDE_FIXED_ENV, { ENABLE_TOOL_SEARCH: 'false' }, 'the one fixed variable, and nothing that widens the lane')
 })
 
 test('lane folders: the floor\'s own-lane key, secrets in the plugin state folder, unsafe ids refused', () => {

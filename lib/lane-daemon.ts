@@ -353,6 +353,91 @@ export function debugLogSaysTokenRefused(text: string): boolean {
   return LANE_TOKEN_REFUSED_RE.test(String(text ?? ''))
 }
 
+// ── Claude has the tools before the first turn (0.71.1) ─────────────────────
+
+/**
+ * How long a turn waits after Claude Code read this server's tool list.
+ * Claude Code 2.1.302 registers a server's channel handler the moment the
+ * server connects but puts the server's tools into its tool pool on a 16 ms
+ * batch, so a turn that reaches it in between is built without `reply`, and
+ * with ToolSearch outside the lane's --tools the tool then stays out for the
+ * whole session (measured on the lane's locked launch: a turn 2 ms after the
+ * list had no `reply`, one 100 ms after had it). A lane's first turn is
+ * waiting when its daemon connects, so it always landed in that gap.
+ */
+export const LANE_CLAUDE_SETTLE_MS = 2_000
+
+/** How long the ping that proves Claude read the tool list may take. */
+export const LANE_CLAUDE_PING_TIMEOUT_MS = 5_000
+
+/**
+ * A Claude that never asks for the tool list still gets its turns after this
+ * long (the CLI's own MCP connect timeout), so a turn is never held forever.
+ */
+export const LANE_CLAUDE_READY_MAX_MS = 30_000
+
+export interface LaneClaudeReadyDeps {
+  /** A ping to Claude Code; it answers once it has read what came before. */
+  ping: () => Promise<unknown>
+  setTimer: (fn: () => void, ms: number) => unknown
+  log: (line: string) => void
+}
+
+/**
+ * When the lane daemon may hand Claude a turn: after Claude asked for the
+ * tool list, a ping sent after that answer came back (or failed, or took
+ * LANE_CLAUDE_PING_TIMEOUT_MS), and LANE_CLAUDE_SETTLE_MS passed. Once ready
+ * it stays ready.
+ */
+export class LaneClaudeReady {
+  private ready = false
+  private listed = false
+  private waiters: Array<() => void> = []
+
+  constructor(private readonly deps: LaneClaudeReadyDeps) {}
+
+  /** From the daemon's start: the limit for a Claude that never lists the tools. */
+  start(): void {
+    this.deps.setTimer(() => this.open('Claude did not ask for the tool list in time; handing turns over anyway'), LANE_CLAUDE_READY_MAX_MS)
+  }
+
+  /** Claude asked for the tool list. Called inside the handler, before its answer is written. */
+  noteToolsListed(): void {
+    if (this.listed || this.ready) return
+    this.listed = true
+    // A timer, so the ping goes out after the answer: Claude reads the two in that order.
+    this.deps.setTimer(() => void this.probe(), 0)
+  }
+
+  get isReady(): boolean {
+    return this.ready
+  }
+
+  whenReady(): Promise<void> {
+    if (this.ready) return Promise.resolve()
+    return new Promise((resolve) => { this.waiters.push(resolve) })
+  }
+
+  private async probe(): Promise<void> {
+    try {
+      await new Promise((resolve, reject) => {
+        this.deps.setTimer(() => reject(new Error('no answer')), LANE_CLAUDE_PING_TIMEOUT_MS)
+        this.deps.ping().then(resolve, reject)
+      })
+    } catch (err) {
+      this.deps.log(`the ping after the tool list failed (${err instanceof Error ? err.message : String(err)}); settling anyway`)
+    }
+    this.deps.setTimer(() => this.open(null), LANE_CLAUDE_SETTLE_MS)
+  }
+
+  private open(why: string | null): void {
+    if (this.ready) return
+    this.ready = true
+    if (why) this.deps.log(why)
+    for (const resolve of this.waiters.splice(0)) resolve()
+  }
+}
+
 // ── The reply tool ──────────────────────────────────────────────────────────
 
 /** The largest file a lane reply inlines (the owner's inline threshold). */
