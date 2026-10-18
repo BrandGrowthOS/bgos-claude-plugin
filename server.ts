@@ -75,7 +75,7 @@ import {
   type AgentIdentity,
 } from './lib/voice-rpc.js'
 import { createClaudeMemoryStore, nodeMemoryFs, resolveMemoryFolder } from './lib/memory.js'
-import { MemoryRpcHandler, normalizeMemoryRpc } from './lib/memory-rpc.js'
+import { MemoryRpcHandler, memoryRpcFailure } from './lib/memory-rpc.js'
 import { SkillsRpcHandler, normalizeSkillsRpc } from './lib/skills-rpc.js'
 import { listSkills, managedSkillsDir, removeAgentSkill } from './lib/skills-inventory.js'
 import { exportSkill, installBundle } from './lib/skills-share.js'
@@ -100,7 +100,8 @@ import {
 } from './lib/process-lifecycle.js'
 import { ensureMarketplaceAutoUpdate, readMarketplaceAutoUpdate } from './lib/claude-preseed.mjs'
 import { recordKnownGood } from './lib/known-good-store.mjs'
-import { ownerAnnounceRefused, ownerLaneVerdict } from './lib/lane-core.mjs'
+import { LANE_MEMORY_RPC_TOKEN, ownerAnnounceRefused, ownerLaneVerdict } from './lib/lane-core.mjs'
+import { classifyMemoryFrame, laneMemoryAnswer, LaneMemoryRpcHandler } from './lib/lane-memory-rpc.ts'
 import { laneCliSupport } from './lib/lane-cli-probe.mjs'
 import { drainLaneEvents, handleLaneRevoked, handleLaneWake, lanesOnFor, supervisorEnv } from './lib/lane-owner.js'
 import { claudeCandidates } from './lib/claude-binary.mjs'
@@ -13855,10 +13856,52 @@ const LANE_OWNER_DEPS = {
   log: (line: string) => log(`person lanes: ${line}`),
 }
 
+// A person's STOPPED lane (P5): the server hands her memory frame to this
+// daemon, which answers it from her lane's folder on disk (never the owner's
+// memory), with the echo, applying a write at most once per rpcId across
+// processes (lib/lane-memory-rpc.ts). Inert until lanes are on for this
+// agent: before that the answer is a refusal with the echo, never a guess.
+const stoppedLaneMemory = new LaneMemoryRpcHandler({
+  assistantId: String(ASSISTANT_ID),
+  home: homedir(),
+  stateRoot: process.env.BGOS_PLUGIN_STATE_DIR,
+  accepts: () => true,
+  postAck: (rpcId) => bgosPost(`integrations/memory-rpc/${encodeURIComponent(rpcId)}/ack`, {}),
+  postResult: (rpcId, body) => bgosPost(`integrations/memory-rpc/${encodeURIComponent(rpcId)}/result`, body),
+  log: (line: string) => log(`person lanes: ${line}`),
+})
+
+async function answerStoppedLaneMemory(frame: Parameters<LaneMemoryRpcHandler['handle']>[0]): Promise<void> {
+  if (String(frame.assistantId) !== String(ASSISTANT_ID)) return
+  if (!lanesOnForThisAgent) {
+    try {
+      onLanesState(await bgosGet('integrations/lanes/state'))
+    } catch (err) {
+      log(`person lanes: lanes/state unreadable: ${String(err)}`)
+    }
+  }
+  if (!lanesOnForThisAgent) {
+    log(`person lanes: memory frame ${frame.rpcId} refused: lanes are not on for this agent`)
+    await bgosPost(
+      `integrations/memory-rpc/${encodeURIComponent(frame.rpcId)}/result`,
+      laneMemoryAnswer(memoryRpcFailure('unavailable', 'person lanes are not on for this agent'), frame.actorUserId),
+    ).catch((err) => log(`person lanes: memory refusal not delivered: ${String(err)}`))
+    return
+  }
+  await stoppedLaneMemory.handle(frame)
+}
+
 function startLaneSupervisor(userId: string): void {
+  // The agent folder a `readAgentFolder` share may read (P7): the launcher's
+  // own BGOS_LAUNCH_CWD and NOTHING without it (process.cwd() is the plugin
+  // cache on a marketplace install), the rule skills_rpc keeps.
+  const agentFolder = String(process.env.BGOS_LAUNCH_CWD ?? '').trim()
   const child = spawnProcess(
     process.execPath,
-    [pathJoin(RUNNING_ROOT, 'bin', 'hoai-lane.mjs'), 'run', '--assistant', String(ASSISTANT_ID), '--lane', userId],
+    [
+      pathJoin(RUNNING_ROOT, 'bin', 'hoai-lane.mjs'), 'run', '--assistant', String(ASSISTANT_ID), '--lane', userId,
+      ...(agentFolder ? ['--agent-folder', agentFolder] : []),
+    ],
     { detached: true, stdio: 'ignore', env: supervisorEnv(process.env, BACKEND_URL) },
   )
   child.on('error', (err) => log(`person lanes: supervisor for ${userId} did not start: ${String(err)}`))
@@ -13926,7 +13969,10 @@ function connectWebsocket(): void {
     // pairing mode sends the token in the query (the backend gateway reads
     // pairing tokens only from client.handshake.query.pairingToken), and the
     // legacy path sends apiKey + assistantId in client.handshake.auth.
-    ...wsAuthOptions(AUTH),
+    // Person lanes (P5): this socket declares lane memory in its OWN
+    // handshake, which is what the server routes a stopped lane's memory
+    // frame by (pairing only; nothing else in the handshake changes).
+    ...wsAuthOptions(AUTH, laneSupport().ok ? [LANE_MEMORY_RPC_TOKEN] : []),
   })
 
   realtimeSocket.on('connect', () => {
@@ -14011,8 +14057,24 @@ function connectWebsocket(): void {
   realtimeSocket.on('memory_rpc', whenArmed('memory_rpc', (payload: any) => {
     if (updateDrainMode) return
     try {
-      const frame = normalizeMemoryRpc(payload)
-      if (!frame) return
+      // Person lanes (P5): a frame stamped for a PERSON is that person's
+      // stopped lane, answered from their own folder on disk with the echo;
+      // it never reaches the owner's memory. Unstamped (or `owner`) is the
+      // owner's own frame, exactly as before.
+      const sorted = classifyMemoryFrame(payload)
+      if (sorted.kind === 'drop') {
+        log(`memory_rpc dropped: ${sorted.why}`)
+        return
+      }
+      if (sorted.kind === 'person') {
+        const laneFrame = sorted.frame
+        log(`memory_rpc for a person's stopped lane received (op=${laneFrame.op}, rpc=${laneFrame.rpcId})`)
+        void trackMessageOperation(() => answerStoppedLaneMemory(laneFrame)).catch((err) => {
+          log(`memory_rpc (lane) handler error: ${err}`)
+        })
+        return
+      }
+      const frame = sorted.frame
       log(`memory_rpc received (op=${frame.op}, rpc=${frame.rpcId})`)
       void trackMessageOperation(() => memoryRpc.handle(frame)).catch((err) => {
         log(`memory_rpc handler error: ${err}`)

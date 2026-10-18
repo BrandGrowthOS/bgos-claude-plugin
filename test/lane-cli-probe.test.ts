@@ -9,6 +9,10 @@
  *     <bogus>` for the `dontAsk` mode, and a bare
  *     `--dangerously-load-development-channels` (hidden from the help) for
  *     "argument missing" versus "unknown option";
+ *   - P5: also `--model` and `--effort` in the help (a person's own model
+ *     and effort) and a bare `--append-system-prompt-file` (hidden; it
+ *     carries the lane's memory index under `--restricted`), so a CLI that
+ *     lacks one never declares lanes that would fail to launch;
  *   - is CACHED per binary (real path, size, modification time): asked once,
  *     asked again only when the binary changes;
  *   - never says yes on Windows or without `expect`.
@@ -38,7 +42,9 @@ import { declaredCapabilities } from '../lib/declared-capabilities.ts'
 const HELP_2_1_302 = [
   'Usage: claude [options] [command] [prompt]',
   '  --debug-file <path>                   Write debug logs to a specific file path (implicitly enables debug mode)',
+  '  --effort <level>                      Effort level for the current session',
   '  --mcp-config <configs...>             Load MCP servers from JSON files or strings (space-separated)',
+  '  --model <model>                       Model for the current session. Provide',
   '  --permission-mode <mode>              Permission mode to use for the session',
   '  --restricted                          Restricted mode: removes the built-in',
   '  -r, --resume [value]                  Resume a conversation by session ID',
@@ -52,12 +58,17 @@ const HELP_2_1_302 = [
 const MODES_2_1_302 = "error: option '--permission-mode <mode>' argument 'hoai-lane-probe' is invalid. Allowed choices are acceptEdits, auto, bypassPermissions, manual, dontAsk, plan."
 const DEV_KNOWN = "error: option '--dangerously-load-development-channels <servers...>' argument missing"
 const DEV_UNKNOWN = "error: unknown option '--dangerously-load-development-channels'"
+const PROMPT_FILE_KNOWN = "error: option '--append-system-prompt-file <file>' argument missing"
+const PROMPT_FILE_UNKNOWN = "error: unknown option '--append-system-prompt-file'"
 
-function outs(help = HELP_2_1_302, modes = MODES_2_1_302, dev = DEV_KNOWN) {
+function outs(help = HELP_2_1_302, modes = MODES_2_1_302, dev = DEV_KNOWN, promptFile = PROMPT_FILE_KNOWN) {
   return {
     help: { stdout: help, stderr: '' },
     mode: { stdout: '', stderr: modes },
-    hidden: { '--dangerously-load-development-channels': { stdout: '', stderr: dev } },
+    hidden: {
+      '--dangerously-load-development-channels': { stdout: '', stderr: dev },
+      '--append-system-prompt-file': { stdout: '', stderr: promptFile },
+    },
   }
 }
 
@@ -76,16 +87,25 @@ test('each missing piece says no, and names itself', () => {
   assert.equal(classifyLaneCliProbe(outs('', '', '')).ok, false)
 })
 
+test('P5: a CLI without --model, --effort or the hidden --append-system-prompt-file declares no lanes', () => {
+  const without = (flag: string) => HELP_2_1_302.split('\n').filter((l) => !l.startsWith(`  ${flag} `)).join('\n')
+  assert.deepEqual(classifyLaneCliProbe(outs(without('--model'))).missing, ['--model'])
+  assert.deepEqual(classifyLaneCliProbe(outs(without('--effort'))).missing, ['--effort'])
+  assert.deepEqual(classifyLaneCliProbe(outs(HELP_2_1_302, MODES_2_1_302, DEV_KNOWN, PROMPT_FILE_UNKNOWN)).missing, ['--append-system-prompt-file'])
+  assert.deepEqual(classifyLaneCliProbe(outs(HELP_2_1_302, MODES_2_1_302, DEV_KNOWN, '')).missing, ['--append-system-prompt-file'])
+})
+
 test('probeLaneCli asks exactly the three kinds of question, none of which starts a session', () => {
   const asked: string[][] = []
   const run = ((_path: string, args: string[]) => {
     asked.push(args)
     if (args[0] === '--help') return { status: 0, stdout: HELP_2_1_302, stderr: '' }
     if (args[0] === '--permission-mode') return { status: 1, stdout: '', stderr: MODES_2_1_302 }
+    if (args[0] === '--append-system-prompt-file') return { status: 1, stdout: '', stderr: PROMPT_FILE_KNOWN }
     return { status: 1, stdout: '', stderr: DEV_KNOWN }
   }) as never
   assert.deepEqual(probeLaneCli('/bin/claude', { run }), { ok: true, missing: [] })
-  assert.deepEqual(asked, [['--dangerously-load-development-channels'], ['--help'], ['--permission-mode', 'hoai-lane-probe']])
+  assert.deepEqual(asked, [['--dangerously-load-development-channels'], ['--append-system-prompt-file'], ['--help'], ['--permission-mode', 'hoai-lane-probe']])
 })
 
 function fakeBin(dir: string, name: string): string {
