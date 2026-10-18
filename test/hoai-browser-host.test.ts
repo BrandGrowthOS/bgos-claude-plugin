@@ -355,8 +355,8 @@ test('the host opens one socket per pairing, each listing only its own agents, a
     const sockB = await relayB.waitForHost()
     assert.equal(relayA.handshakes.length, 1)
     assert.equal(relayB.handshakes.length, 1)
-    assert.deepEqual(relayA.handshakes[0].auth, { role: 'browser_host', agents: [900, 905], deviceLabel: 'kc-server' })
-    assert.deepEqual(relayB.handshakes[0].auth, { role: 'browser_host', agents: [901], deviceLabel: 'kc-server' })
+    assert.deepEqual(relayA.handshakes[0].auth, { role: 'browser_host', agents: [900, 905], deviceLabel: 'kc-server', features: ['saved_sites'] })
+    assert.deepEqual(relayB.handshakes[0].auth, { role: 'browser_host', agents: [901], deviceLabel: 'kc-server', features: ['saved_sites'] })
     assert.equal(relayA.handshakes[0].query.pairingToken, 'tokA')
     assert.equal(relayB.handshakes[0].query.pairingToken, 'tokB')
 
