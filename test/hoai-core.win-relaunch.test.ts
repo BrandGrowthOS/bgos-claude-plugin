@@ -26,6 +26,9 @@
  */
 
 import { EventEmitter } from 'node:events'
+import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
@@ -47,6 +50,8 @@ const fixed = core as unknown as {
     readTail: (path: string) => string | null
   }) => { at: number; text: string } | null
   loginSignalOf?: (chunk: string, nowMs: number) => unknown
+  readFileTail?: (path: string, bytes: number) => string | null
+  fileMtimeMs?: (path: string) => number | null
 }
 
 const HOME = 'C:\\Users\\mark'
@@ -811,7 +816,7 @@ function store(transcripts: Record<string, { mtime: number; lines: string[] }>) 
   }
 }
 
-test('fleetClaudeLoginFailure: the newest login record of every agent here is a failure: failing, with the CLIs words', () => {
+test('fleetClaudeLoginFailure: the newest login record across every agent here is a failure: failing, with the CLIs words', () => {
   assert.equal(typeof fixed.fleetClaudeLoginFailure, 'function')
   const s = store({
     'C--agents-888/a.jsonl': { mtime: NOW - 60_000, lines: [record('activity', NOW - 9 * 60_000), record('failed', NOW - 60_000)] },
@@ -884,77 +889,118 @@ test('loginSignalOf mirrors lib/claude-login.ts extractLoginSignal on every reco
   }
 })
 
+/** superviseClaude on Windows with the DEFAULT login detector, fed through `listDir`. */
+function bare(env: Record<string, string>, listDir: (path: string) => string[]) {
+  const files = new Map<string, string>()
+  const claudes: FakeProc[] = []
+  const timers: FakeTimer[] = []
+  const prints: string[] = []
+  const clock = { now: T0 }
+  const stop = new AbortController()
+  const done = superviseClaude(BASE_ARGS, {
+    platform: 'win32',
+    env,
+    home: HOME,
+    cwd: CWD,
+    scriptDir: SCRIPT_DIR,
+    readFile: (p: string) => (p === `${CWD}\\${FOLDER_PIN_FILE}` ? '888' : files.get(p) ?? null),
+    listDir,
+    spawnImpl: ((file: string, args: readonly string[]) => {
+      const proc = new FakeProc(27000 + claudes.length, file, args)
+      if (file !== COMSPEC) {
+        setImmediate(() => proc.emit('error', Object.assign(new Error('ENOENT'), { code: 'ENOENT' })))
+        return proc
+      }
+      claudes.push(proc)
+      return proc
+    }) as never,
+    endProcessTree: (pid: number) => {
+      const proc = claudes.find((c) => c.pid === pid)
+      setImmediate(() => proc?.end(1, null))
+      return true
+    },
+    clearConsole: () => {},
+    spawnGateHelper: () => new FakeHelper(32000, false),
+    writeErr: () => {},
+    exists: (p: string) => files.has(p),
+    writeFile: (p: string, content: string) => {
+      files.set(p, content)
+      return true
+    },
+    removeFile: (p: string) => files.delete(p),
+    print: (line: string) => prints.push(line),
+    now: () => clock.now,
+    setTimer: ((fn: () => void, ms: number) => {
+      const timer: FakeTimer = { fn, ms, at: clock.now, cleared: false, fired: false }
+      timers.push(timer)
+      return timer
+    }) as never,
+    clearTimer: ((timer: FakeTimer | null) => {
+      if (timer) timer.cleared = true
+    }) as never,
+    sleep: async () => {},
+    pollMs: 5,
+    keepAlive: true,
+    signal: stop.signal,
+    listProcesses: () => [],
+    pidProcess: () => null,
+    pidAlive: () => false,
+    generateId: () => PIN,
+  } as never)
+  const fireHeartbeatCheck = () => {
+    const check = timers.filter((t) => t.ms === THREE_MIN && !t.cleared && !t.fired).at(-1)!
+    clock.now = check.at + check.ms
+    check.fired = true
+    check.fn()
+  }
+  const end = async () => {
+    stop.abort()
+    await done
+  }
+  return { files, claudes, prints, fireHeartbeatCheck, end }
+}
+
 test('superviseClaude reads the store the CLI signs in through: CLAUDE_CONFIG_DIR when set, else <home>\\.claude', async () => {
   // Pinned through the default detector's inputs: the injected listDir sees which projects folder is asked for.
   const asked: string[] = []
   for (const env of [SUPERVISED, { ...SUPERVISED, CLAUDE_CONFIG_DIR: 'D:\\claude-store' }]) {
-    const files = new Map<string, string>()
-    const claudes: FakeProc[] = []
-    const timers: FakeTimer[] = []
-    const clock = { now: T0 }
-    const stop = new AbortController()
-    const done = superviseClaude(BASE_ARGS, {
-      platform: 'win32',
-      env,
-      home: HOME,
-      cwd: CWD,
-      scriptDir: SCRIPT_DIR,
-      readFile: (p: string) => (p === `${CWD}\\${FOLDER_PIN_FILE}` ? '888' : files.get(p) ?? null),
-      listDir: (path: string) => {
-        asked.push(path)
-        return []
-      },
-      spawnImpl: ((file: string, args: readonly string[]) => {
-        const proc = new FakeProc(27000 + claudes.length, file, args)
-        if (file !== COMSPEC) {
-          setImmediate(() => proc.emit('error', Object.assign(new Error('ENOENT'), { code: 'ENOENT' })))
-          return proc
-        }
-        claudes.push(proc)
-        return proc
-      }) as never,
-      endProcessTree: (pid: number) => {
-        const proc = claudes.find((c) => c.pid === pid)
-        setImmediate(() => proc?.end(1, null))
-        return true
-      },
-      clearConsole: () => {},
-      spawnGateHelper: () => new FakeHelper(32000, false),
-      writeErr: () => {},
-      exists: (p: string) => files.has(p),
-      writeFile: (p: string, content: string) => {
-        files.set(p, content)
-        return true
-      },
-      removeFile: (p: string) => files.delete(p),
-      print: () => {},
-      now: () => clock.now,
-      setTimer: ((fn: () => void, ms: number) => {
-        const timer: FakeTimer = { fn, ms, at: clock.now, cleared: false, fired: false }
-        timers.push(timer)
-        return timer
-      }) as never,
-      clearTimer: ((timer: FakeTimer | null) => {
-        if (timer) timer.cleared = true
-      }) as never,
-      sleep: async () => {},
-      pollMs: 5,
-      keepAlive: true,
-      signal: stop.signal,
-      listProcesses: () => [],
-      pidProcess: () => null,
-      pidAlive: () => false,
-      generateId: () => PIN,
-    } as never)
-    await waitUntil(() => claudes.length === 1, 'launch 1')
-    const check = timers.find((t) => t.ms === THREE_MIN && !t.cleared)!
-    clock.now = check.at + check.ms
-    check.fired = true
-    check.fn()
-    await waitUntil(() => claudes.length === 2, 'no failure found: the relaunch, as before')
-    stop.abort()
-    await done
+    const b = bare(env, (path) => {
+      asked.push(path)
+      return []
+    })
+    await waitUntil(() => b.claudes.length === 1, 'launch 1')
+    b.fireHeartbeatCheck()
+    await waitUntil(() => b.claudes.length === 2, 'no failure found: the relaunch, as before')
+    await b.end()
   }
   assert.ok(asked.includes(`${HOME}\\.claude\\projects`), asked.join('\n'))
   assert.ok(asked.includes('D:\\claude-store\\projects'), asked.join('\n'))
+})
+
+test('the default detector reads real transcripts: an expired login another agent recorded on disk is an alert, not a relaunch', async () => {
+  const store = mkdtempSync(join(tmpdir(), 'hoai-login-store-'))
+  const agent = join(store, 'projects', 'C--agents-871')
+  mkdirSync(agent, { recursive: true })
+  // Written now (a fresh mtime), recorded 30 s before the fake clock's launch check.
+  writeFileSync(join(agent, 'b.jsonl'), `${record('activity', T0 - 60_000)}\n${record('failed', T0 + THREE_MIN - 30_000)}\n`)
+  const b = bare({ ...SUPERVISED, CLAUDE_CONFIG_DIR: store }, (path) => (path.startsWith(store) ? readdirSync(path) : []))
+  await waitUntil(() => b.claudes.length === 1, 'launch 1')
+  b.fireHeartbeatCheck()
+  await settle()
+  assert.equal(b.claudes.length, 1)
+  assert.ok(b.prints.some((line) => line.includes('ALERT (claude-login-expired)') && line.includes('Login expired')), b.prints.join('\n'))
+  await b.end()
+})
+
+test('readFileTail and fileMtimeMs on real files: the tail starts at a whole line, a missing file is null', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hoai-login-tail-'))
+  const file = join(dir, 'a.jsonl')
+  const lines = [record('activity', NOW - 3000), record('failed', NOW - 2000), record('failed', NOW - 1000, 'Not logged in · Please run /login')]
+  writeFileSync(file, `${lines.join('\n')}\n`)
+  // The last line and 10 bytes of the one before it: those 10 bytes are dropped, never parsed.
+  assert.equal(fixed.readFileTail!(file, Buffer.byteLength(`${lines[2]}\n`) + 10), `${lines[2]}\n`)
+  assert.equal(fixed.readFileTail!(file, 1 << 20), `${lines.join('\n')}\n`)
+  assert.equal(fixed.readFileTail!(join(dir, 'none.jsonl'), 1024), null)
+  assert.ok(Math.abs(fixed.fileMtimeMs!(file)! - Date.now()) < 60_000)
+  assert.equal(fixed.fileMtimeMs!(join(dir, 'none.jsonl')), null)
 })

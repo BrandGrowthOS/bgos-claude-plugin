@@ -65,12 +65,16 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import {
+  closeSync,
   existsSync,
+  fstatSync,
   mkdirSync,
   openSync,
   readFileSync,
+  readSync,
   readdirSync,
   realpathSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs'
@@ -1358,6 +1362,120 @@ export function channelHeartbeatSince({ beacon, startedAt, stalePid = null }) {
   return beacon.beaconAt - startedAt >= PREDECESSOR_BEACON_GRACE_MS
 }
 
+/** Login records older than this never count (lib/claude-login.ts LOGIN_STALE_MS, the daemon's rule). */
+export const LOGIN_STALE_MS = 10 * 60_000
+/** How much of each fresh transcript the shared-login check reads, from the end (the daemon's startup tail). */
+export const LOGIN_TAIL_BYTES = 64 * 1024
+
+// eslint-disable-next-line no-control-regex
+const LOGIN_TEXT_CONTROL = /[\u0000-\u001f\u007f]/g
+
+/**
+ * The LAST login signal in a transcript chunk: `{ type: 'login_failed', at, text }` for the CLI's own
+ * `authentication_failed` record, `{ type: 'activity', at }` for a real assistant turn (not synthetic,
+ * not a sidechain), or null. A mirror of lib/claude-login.ts extractLoginSignal, which hoai cannot
+ * import: it runs under bare node. Pinned against it by test/hoai-core.win-relaunch.test.ts.
+ * @param {string} chunk
+ * @param {number} nowMs
+ */
+export function loginSignalOf(chunk, nowMs) {
+  let signal = null
+  for (const line of String(chunk ?? '').split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    let e
+    try {
+      e = JSON.parse(trimmed)
+    } catch {
+      continue
+    }
+    if (typeof e !== 'object' || e === null || e.type !== 'assistant') continue
+    const m = e.message
+    if (typeof m !== 'object' || m === null) continue
+    const at = typeof e.timestamp === 'string' ? Date.parse(e.timestamp) || 0 : 0
+    if (at === 0 || at < nowMs - LOGIN_STALE_MS) continue
+    if (e.isApiErrorMessage === true) {
+      if (e.error !== 'authentication_failed') continue
+      const text = (Array.isArray(m.content) ? m.content : [])
+        .filter((b) => typeof b === 'object' && b !== null && b.type === 'text' && typeof b.text === 'string')
+        .map((b) => b.text)
+        .join(' ')
+        .replace(LOGIN_TEXT_CONTROL, ' ')
+        .trim()
+        .slice(0, 160)
+      signal = { type: 'login_failed', at, text }
+    } else {
+      if (e.isSidechain === true || m.model === '<synthetic>') continue
+      signal = { type: 'activity', at }
+    }
+  }
+  return signal
+}
+
+/**
+ * Has the Claude login every agent of this credential store shares failed? The newest login signal
+ * across the fresh transcripts of every agent folder under `<configDir>/projects` decides: the CLI's
+ * failure record, unless some agent answered after it. Files not written for LOGIN_STALE_MS are not
+ * read. Returns `{ at, text }` (the CLI's words) or null; never throws.
+ * @param {{ configDir: string, now: number, listDir: (path: string) => string[],
+ *   mtimeMs: (path: string) => number | null, readTail: (path: string) => string | null }} input
+ */
+export function fleetClaudeLoginFailure({ configDir, now, listDir, mtimeMs, readTail }) {
+  const projects = joinDir(configDir, 'projects')
+  const list = (path) => {
+    try {
+      return listDir(path) ?? []
+    } catch {
+      return []
+    }
+  }
+  let newest = null
+  for (const folder of list(projects)) {
+    const dir = joinDir(projects, folder)
+    for (const name of list(dir)) {
+      if (!String(name).endsWith('.jsonl')) continue
+      const path = joinDir(dir, name)
+      const mtime = mtimeMs(path)
+      if (mtime == null || mtime < now - LOGIN_STALE_MS) continue
+      const signal = loginSignalOf(readTail(path) ?? '', now)
+      if (signal && (!newest || signal.at >= newest.at)) newest = signal
+    }
+  }
+  return newest?.type === 'login_failed' ? { at: newest.at, text: newest.text } : null
+}
+
+/** A file's modification time in ms, or null. Never throws. */
+export function fileMtimeMs(path) {
+  try {
+    return statSync(path).mtimeMs
+  } catch {
+    return null
+  }
+}
+
+/** The last `bytes` of a file as text, from its first whole line on, or null. Never throws. */
+export function readFileTail(path, bytes) {
+  let fd = null
+  try {
+    fd = openSync(path, 'r')
+    const size = fstatSync(fd).size
+    const from = Math.max(0, size - bytes)
+    const buf = Buffer.alloc(size - from)
+    const text = buf.subarray(0, readSync(fd, buf, 0, buf.length, from)).toString('utf8')
+    return from > 0 ? text.slice(text.indexOf('\n') + 1) : text
+  } catch {
+    return null
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd)
+      } catch {
+        // Nothing more to do with it.
+      }
+    }
+  }
+}
+
 /**
  * The shared startup gate block (lib/gate-block.tcl): ONE copy of the rules for
  * answering Claude Code's first-run screens, embedded here in the launcher's
@@ -1693,6 +1811,10 @@ export function hostHasExpect({ platform, env = process.env, exists = existsSync
  *   setTimer?: (fn: () => void, ms: number) => unknown,
  *   clearTimer?: (handle: unknown) => void,
  *   keepAlive?: boolean, signal?: AbortSignal | null,
+ *   endProcessTree?: ((pid: number) => boolean) | null,
+ *   spawnSyncImpl?: typeof spawnSync,
+ *   clearConsole?: () => unknown,
+ *   claudeLoginFailure?: () => { at: number, text: string } | null,
  * }} [opts]
  * @returns {Promise<number>}
  *
@@ -2045,6 +2167,18 @@ export async function superviseClaude(args, opts = {}) {
   const incumbentTimeoutMs = opts.incumbentTimeoutMs ?? INCUMBENT_WAIT_TIMEOUT_MS
   const keepAlive = opts.keepAlive === true
   const stopSignal = opts.signal ?? null
+  // Has the Claude login every agent of this credential store shares failed? Asked only for a launch
+  // with no channel heartbeat: the CLI's own records, in the store it signs in through.
+  const claudeLoginFailure =
+    opts.claudeLoginFailure ??
+    (() =>
+      fleetClaudeLoginFailure({
+        configDir: claudeConfigDir({ env, home }),
+        now: now(),
+        listDir,
+        mtimeMs: fileMtimeMs,
+        readTail: (path) => readFileTail(path, LOGIN_TAIL_BYTES),
+      }))
   // Nobody at the terminal (bin/bgos-agent run.sh v2): see SUPERVISED_ENV.
   const supervised = isSupervisedLaunch(env)
   // In tmux the launcher has a terminal and relays it; under launchd with no
@@ -2454,6 +2588,20 @@ export async function superviseClaude(args, opts = {}) {
             return
           }
           const waited = `${Math.round(CHANNEL_HEARTBEAT_WAIT_MS / 1000)}s`
+          // The Claude login every agent here shares has failed: this session cannot sign in, and a
+          // relaunched one meets the same wall. Alert instead, and spend nothing (board row 31583f86).
+          const login = claudeLoginFailure()
+          if (login) {
+            const since = new Date(login.at).toISOString()
+            noteStatus('claude-login-expired', { waited, since, cli: login.text })
+            print(
+              `[hoai] ALERT (claude-login-expired): claude has run ${waited} and its channel has sent no heartbeat, ` +
+                `and the Claude login the agents on this computer share has failed since ${since}` +
+                `${login.text ? ` (the CLI says: "${login.text}")` : ''}. A relaunch cannot fix that, so hoai does not ` +
+                'relaunch. Sign in again: run /login in a claude session on this computer.',
+            )
+            return
+          }
           if (!heartbeatRelaunchSpent) {
             heartbeatRelaunchSpent = true
             healthRelaunch('no-channel-heartbeat', `claude has run ${waited} and its channel has sent no heartbeat (${beaconPath})`)
