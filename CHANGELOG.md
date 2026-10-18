@@ -2,7 +2,7 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
-## Unreleased: managed browser profile caller
+## 0.71.5 (2026-10-18): managed browser profile caller
 
 Managed paired launches discover the acting person's browser profile through HOAI before every call. A stopped, stale, revoked or unavailable managed profile refuses without opening a different local or legacy browser. Polls and cancellation retain the original actor and exact runtime authority. Fresh machines still need explicit human device and background-use approval; the caller does not enroll an endpoint or grant itself access.
 
