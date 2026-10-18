@@ -32,6 +32,7 @@ import {
   lanePaths,
   personLaneStamp,
   personLaneVerdict,
+  LANE_NOTICES,
 } from './lane-core.mjs'
 import { buildInboundChannel } from './inbound-channel.js'
 
@@ -229,7 +230,11 @@ export function buildLaneCommandEvent(
  * idle stop), every row after it from the last 24 hours, at most ten. With
  * none (the lane's very first start), only the last 15 minutes, at most five:
  * the turn that woke it, never a person's older history that the agent's
- * single mind may already have answered before lanes. Oldest first.
+ * single mind may already have answered before lanes. Oldest first. A lane
+ * whose folders were deleted has no cursor either, so a boot with no inbox
+ * note then drops every row the server shows already answered (acknowledged,
+ * LANE_SERVER_ACKNOWLEDGED, and answered after it or a performed command;
+ * lane-server.ts answeredAtServer, 0.71.2).
  */
 export function selectLaneBacklog(
   deliveries: LaneDelivery[],
@@ -264,6 +269,19 @@ export interface LaneInboxState {
   cursor: number
   delivered: number[]
   pending: Array<{ id: number; chatId: string }>
+  /**
+   * Set while a launch with no note has not yet asked the server what was
+   * already handed over (0.71.2): a note saved in that window is not trusted
+   * by the next launch.
+   */
+  unverified?: true
+  /**
+   * The message id of the last `/new` this lane performed: a turn older than
+   * it belongs to the conversation the person left and is never handed over
+   * after it. In the note, so a restart (which the `/new` itself asks for)
+   * keeps it too (0.71.2).
+   */
+  newFrom?: number
 }
 
 export const LANE_INBOX_DELIVERED_MAX = 500
@@ -280,7 +298,31 @@ export function readLaneInbox(raw: unknown): LaneInboxState {
       .filter((p) => Number.isSafeInteger(p.id) && p.id > 0 && /^[1-9][0-9]*$/.test(p.chatId))
       .slice(-20)
     : []
-  return { cursor: Number.isSafeInteger(cursor) && cursor > 0 ? cursor : 0, delivered, pending }
+  const newFrom = Number(r.newFrom)
+  return {
+    cursor: Number.isSafeInteger(cursor) && cursor > 0 ? cursor : 0,
+    delivered,
+    pending,
+    ...(r.unverified === true ? { unverified: true as const } : {}),
+    ...(Number.isSafeInteger(newFrom) && newFrom > 0 ? { newFrom } : {}),
+  }
+}
+
+/** The note once the boot poll has asked the server: trusted again, nothing else changed. */
+export function inboxVerified(state: LaneInboxState): LaneInboxState {
+  const next = { ...state }
+  delete next.unverified
+  return next
+}
+
+/**
+ * Does a launch trust this inbox note? Only a note that is an object and was
+ * not saved by a first boot that never finished asking the server. Without
+ * one, the boot poll asks the server what was already handed over (0.71.2).
+ */
+export function inboxTrusted(raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false
+  return (raw as Record<string, unknown>).unverified !== true
 }
 
 /** The id the poll should ask from: never past a turn still waiting for its answer. */
@@ -337,6 +379,137 @@ export function inboxNoteReplied(state: LaneInboxState, chatId: string): LaneInb
 
 export function inboxAdvanceCursor(state: LaneInboxState, id: number): LaneInboxState {
   return id > state.cursor ? { ...state, cursor: id } : state
+}
+
+/**
+ * ONE DECISION PER MESSAGE ID (0.71.2). The socket and the poll both hand
+ * turns over, and each used to decide from the inbox alone; the boot poll
+ * read its re-offer set AFTER its fetch, so a message the socket path had
+ * noted during that fetch looked like a turn the last life left unanswered
+ * and was handed to Claude a second time, and acked twice (measured: the
+ * 0.71.1 hold is not needed for it). Now each id is decided once per
+ * process, synchronously, before the caller's first await, and only the
+ * turns the inbox held at launch can be re-offered.
+ */
+export class LaneDeliveryClaims {
+  private readonly taken = new Set<number>()
+  private readonly reofferable: Set<number>
+
+  /** `launch` is the inbox this process read at launch: its waiting turns are this life's only re-offers. */
+  constructor(launch: LaneInboxState) {
+    this.reofferable = new Set(launch.pending.map((p) => p.id))
+  }
+
+  /** A turn the last life handed over and left unanswered (`take` still decides). */
+  mayReoffer(id: number): boolean {
+    return this.reofferable.has(id)
+  }
+
+  /**
+   * Hand message `id` to Claude? True once per process at most; the caller
+   * acts on it before any await. A re-offer must also still be waiting in
+   * `state`, so after a `/new` (which empties the waiting list) none is.
+   */
+  take(state: LaneInboxState, id: number, opts: { reoffer: boolean }): boolean {
+    if (this.taken.has(id)) return false
+    if (!inboxShouldDeliver(state, id, { reoffer: opts.reoffer && this.reofferable.has(id) })) return false
+    this.taken.add(id)
+    return true
+  }
+}
+
+// ── What the server says was picked up and answered (0.71.2) ────────────────
+
+/**
+ * The delivery state a lane's ack leaves on a message: the lane acks a turn
+ * the moment it hands it to Claude, and the person's chat history
+ * (`GET chats/:chatId/messages`, a route a lane session may read for its own
+ * chats) carries it as the message's `deliveryState`. It is not the lane's
+ * alone: the owner's daemon acked the same way before lanes, and the backend
+ * marks the chat's latest user message acknowledged whenever an agent row is
+ * saved there (a lane notice included). So acknowledged alone is not
+ * answered, and only a lane with no inbox note asks at all.
+ */
+export const LANE_SERVER_ACKNOWLEDGED = 'acknowledged'
+
+/**
+ * How often the boot poll tries one history read before it gives up, how
+ * long one try may take, and the pause before each retry (times the attempt):
+ * one read takes at most 3 x 4 s + 1 s + 2 s = 15 s. A row needs at most two
+ * reads (the second only when it is acknowledged) and rows are asked in
+ * parallel, so the person's waiting turn is held at most 30 s, and only when
+ * the route fails or hangs; a healthy read takes milliseconds.
+ */
+export const LANE_HISTORY_READ_ATTEMPTS = 3
+export const LANE_HISTORY_READ_TIMEOUT_MS = 4_000
+export const LANE_HISTORY_RETRY_MS = 1_000
+
+/**
+ * How many rows after a message the boot poll reads to see whether an agent
+ * answered it (the backend serves the newest of them).
+ */
+export const LANE_HISTORY_AFTER_LIMIT = 50
+
+/**
+ * The fixed sentences the owner's daemon posts as the agent for a lane
+ * (lib/lane-core.mjs LANE_NOTICES). The backend's reply hook marks her latest
+ * message acknowledged for them too, though they answer nothing.
+ */
+export const LANE_NOTICE_SENTENCES: readonly string[] = Object.freeze(Object.values(LANE_NOTICES as Record<string, string>))
+
+/** The history page for exactly one message of a chat. */
+export function laneHistoryPathFor(d: { chatId: string; messageId: number }): string {
+  return `chats/${encodeURIComponent(d.chatId)}/messages?afterId=${d.messageId - 1}&beforeId=${d.messageId + 1}&limit=1`
+}
+
+/** The history page after one message of a chat: the rows that follow it. */
+export function laneHistoryAfterPathFor(d: { chatId: string; messageId: number }): string {
+  return `chats/${encodeURIComponent(d.chatId)}/messages?afterId=${d.messageId}&limit=${LANE_HISTORY_AFTER_LIMIT}`
+}
+
+/**
+ * Did an agent ANSWER `messageId`? True when the page carries an agent row
+ * after it that is not one of the lane's fixed notices; false when it carries
+ * none; null when the page is unreadable. The page is the backend's
+ * MessagesDto, as for laneHistoryDeliveryState.
+ */
+export function laneHistoryAnsweredAfter(answer: unknown, messageId: number, notices: readonly string[]): boolean | null {
+  const rows = historyMessages(answer)
+  if (!rows) return null
+  for (const m of rows) {
+    if (!(Number(m.id) > messageId) || m.sender !== 'assistant') continue
+    if (!notices.includes(String(m.text ?? '').trim())) return true
+  }
+  return false
+}
+
+/**
+ * The delivery state a history page shows for `messageId`, or null when the
+ * page does not carry that row. The page is the backend's MessagesDto: each
+ * entry is `{ message, messageFiles, messageOptions }` and the state is on
+ * `message` (a bare message is read the same way).
+ */
+export function laneHistoryDeliveryState(answer: unknown, messageId: number): string | null {
+  for (const m of historyMessages(answer) ?? []) {
+    if (Number(m.id) !== messageId) continue
+    return typeof m.deliveryState === 'string' ? m.deliveryState : null
+  }
+  return null
+}
+
+/**
+ * The messages of a history page, or null when it is not one. The backend
+ * answers MessagesDto, `{ messages: [{ message, messageFiles, messageOptions }] }`;
+ * a bare message is read the same way.
+ */
+function historyMessages(answer: unknown): Array<Record<string, unknown>> | null {
+  const page = (answer as { messages?: unknown } | null)?.messages
+  const rows: unknown[] | null = Array.isArray(answer) ? answer : Array.isArray(page) ? page : null
+  if (!rows) return null
+  return rows.map((row) => {
+    const entry = (row ?? {}) as Record<string, unknown>
+    return (entry.message && typeof entry.message === 'object' ? entry.message : entry) as Record<string, unknown>
+  })
 }
 
 // ── A refused sign in (K2 option b) ─────────────────────────────────────────
