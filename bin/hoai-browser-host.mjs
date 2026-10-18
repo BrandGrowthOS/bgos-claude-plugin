@@ -106,6 +106,8 @@ export const LOG_PREFIX = '[hoai-browser-host]'
 
 /** The handshake role the gateway routes to `connectBrowserHost`. */
 export const BROWSER_HOST_ROLE = 'browser_host'
+/** The handshake feature word of a host that answers `browser_saved_sites`. */
+export const BROWSER_HOST_FEATURE_SAVED_SITES = 'saved_sites'
 /** The socket event the relay emits to one host socket. */
 export const BROWSER_RPC_EVENT = 'browser_rpc'
 /** The gateway keeps at most this much of `deviceLabel`. */
@@ -686,7 +688,11 @@ export function readPairings({ agentRoot, allow = null, listDir = defaultListDir
 export function handshakeOptions(pairing, deviceLabel) {
   return {
     query: { pairingToken: pairing.token },
-    auth: { role: BROWSER_HOST_ROLE, agents: [...pairing.assistantIds], deviceLabel },
+    // `features`: what this host answers beyond browser_rpc, so the backend
+    // asks only a host that can (saved_sites: the owner's list and forget of
+    // the answers this browser saved, board row 79fda9a6). An older backend
+    // ignores the field.
+    auth: { role: BROWSER_HOST_ROLE, agents: [...pairing.assistantIds], deviceLabel, features: [BROWSER_HOST_FEATURE_SAVED_SITES] },
   }
 }
 

@@ -288,7 +288,7 @@ test('relay: no installed browser is a clear tool error, not a crash', async () 
 
 test('handshake: the token rides in the query, role, agents and label in the auth', () => {
   const opts = handshakeOptions({ token: 'tok', assistantIds: [900, 901] }, 'kc-server')
-  assert.deepEqual(opts, { query: { pairingToken: 'tok' }, auth: { role: 'browser_host', agents: [900, 901], deviceLabel: 'kc-server' } })
+  assert.deepEqual(opts, { query: { pairingToken: 'tok' }, auth: { role: 'browser_host', agents: [900, 901], deviceLabel: 'kc-server', features: ['saved_sites'] } })
   assert.equal(BROWSER_HOST_ROLE, 'browser_host')
 })
 
@@ -812,7 +812,7 @@ test(
     let bodyPassed = false
     try {
       const sock = await relay.waitForHost(30_000)
-      assert.deepEqual(relay.handshakes[0].auth, { role: 'browser_host', agents: [900], deviceLabel: relay.handshakes[0].auth.deviceLabel })
+      assert.deepEqual(relay.handshakes[0].auth, { role: 'browser_host', agents: [900], deviceLabel: relay.handshakes[0].auth.deviceLabel, features: ['saved_sites'] })
       assert.equal(relay.handshakes[0].query.pairingToken, 'tok-e2e')
       let id = 0
       const rpc = async (principal: string | undefined, message: Record<string, unknown>) => {

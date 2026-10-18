@@ -29,11 +29,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, symlinkSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { BrowserHostCore, BrowserPool, PairingConnection, SESSION_TOOLS, browserPathsFor, hostProfiles, hostSettings } from '../bin/hoai-browser-host.mjs'
+import { BrowserHostCore, BrowserPool, PairingConnection, SESSION_TOOLS, browserPathsFor, handshakeOptions, hostProfiles, hostSettings } from '../bin/hoai-browser-host.mjs'
 import { GateKeeper } from '../lib/browser-gate.mjs'
 
 type Card = Record<string, any>
@@ -195,14 +195,16 @@ test('forget all clears every saved answer of this agent in every person folder,
     writeSaved(r.agentRoot, 900, { v: 2, agentGrants: { [KEY(900)]: { [SHOP]: { access: 'allow' }, 'https://bad.example.com': { access: 'deny' }, [BOTH]: { access: 'deny', trust: 'allow' } } } })
     writeSaved(r.agentRoot, 900, { v: 2, agentGrants: { [KEY(900)]: { [MAIL]: { trust: 'allow' } } } }, 'user-friend')
     const host = startHost(r.agentRoot, 'allow_once')
-    assert.deepEqual(origins(host.core.savedSites(900)), [BOTH, MAIL, SHOP], 'both people, one list, and a Deny alone is not a saved site')
+    assert.deepEqual(origins(host.core.savedSites(900)), [MAIL, SHOP], 'both people, one list; a refused site (a Deny, alone or over a trust) is not listed as saved')
+    // The friend's browser is LIVE and has the trust cached before the forget.
+    assert.equal(await host.visit(900, MAIL, 'user-friend'), false)
 
     const out = host.core.forgetSavedSites(900, { all: true })
     assert.equal(out.ok, true)
     assert.equal(out.forgot, 3)
     assert.deepEqual(out.sites, [])
     assert.equal(await host.visit(900, SHOP), true)
-    assert.equal(await host.visit(900, MAIL, 'user-friend'), true)
+    assert.equal(await host.visit(900, MAIL, 'user-friend'), true, "the friend's live browser asks again too")
     await host.stop()
     assert.deepEqual(saved(r.agentRoot, 900).agentGrants[KEY(900)], { 'https://bad.example.com': { access: 'deny' }, [BOTH]: { access: 'deny' } })
     assert.deepEqual(saved(r.agentRoot, 900, 'user-friend').agentGrants[KEY(900)], {})
@@ -332,4 +334,58 @@ test('the owner request reaches the host only as browser_saved_sites, only for a
   } finally {
     conn.stop()
   }
+})
+
+test('a forget keeps every Deny the policy enforces, per kind as well as for the whole site', async () => {
+  const r = root()
+  try {
+    writeSaved(r.agentRoot, 900, { v: 2, agentGrants: { [KEY(900)]: { [SHOP]: { access: 'allow', uploads: 'deny', downloads: 'deny' } } } })
+    const host = startHost(r.agentRoot, 'allow_once')
+    assert.equal(host.core.forgetSavedSites(900, { origin: SHOP }).forgot, 1)
+    await host.stop()
+    assert.deepEqual(saved(r.agentRoot, 900).agentGrants[KEY(900)], { [SHOP]: { uploads: 'deny', downloads: 'deny' } })
+  } finally {
+    r.done()
+  }
+})
+
+test('a symbolic link among the person folders is never followed: its file is neither listed nor written', async () => {
+  if (process.platform === 'win32') return
+  const r = root()
+  try {
+    const elsewhere = join(r.home, 'elsewhere')
+    mkdirSync(elsewhere, { recursive: true })
+    const target = join(elsewhere, 'agent-browser.settings.json')
+    const body = JSON.stringify({ v: 2, agentGrants: { [KEY(900)]: { [SHOP]: { access: 'allow' } } } })
+    writeFileSync(target, body)
+    mkdirSync(join(r.agentRoot, '900', 'browser'), { recursive: true })
+    symlinkSync(elsewhere, join(r.agentRoot, '900', 'browser', 'user-linked'))
+    const host = startHost(r.agentRoot, 'allow_once')
+    assert.deepEqual(origins(host.core.savedSites(900)), [])
+    host.core.forgetSavedSites(900, { all: true })
+    await host.stop()
+    assert.equal(readFileSync(target, 'utf8'), body)
+  } finally {
+    r.done()
+  }
+})
+
+test('a site saved only in the legacy map and cached in a live browser asks again after a forget', async () => {
+  const r = root()
+  try {
+    writeSaved(r.agentRoot, 900, { v: 1, alwaysGrants: { [SHOP]: { access: 'allow' } } })
+    const host = startHost(r.agentRoot, 'allow_once')
+    assert.equal(await host.visit(900, SHOP), false, 'the legacy grant is honoured and now cached')
+    assert.equal(host.core.forgetSavedSites(900, { origin: SHOP }).forgot, 1)
+    assert.equal(await host.visit(900, SHOP), true)
+    await host.stop()
+  } finally {
+    r.done()
+  }
+})
+
+test('the host tells the backend it answers browser_saved_sites, in its handshake', () => {
+  const opts: any = handshakeOptions({ token: 'tok', assistantIds: [900] }, 'box')
+  assert.deepEqual(opts.auth.features, ['saved_sites'])
+  assert.equal(opts.auth.role, 'browser_host')
 })
