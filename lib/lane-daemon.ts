@@ -32,6 +32,7 @@ import {
   lanePaths,
   personLaneStamp,
   personLaneVerdict,
+  LANE_NOTICES,
 } from './lane-core.mjs'
 import { buildInboundChannel } from './inbound-channel.js'
 
@@ -441,9 +442,43 @@ export const LANE_HISTORY_READ_ATTEMPTS = 3
 export const LANE_HISTORY_READ_TIMEOUT_MS = 4_000
 export const LANE_HISTORY_RETRY_MS = 1_000
 
+/**
+ * How many rows after a message the boot poll reads to see whether an agent
+ * answered it (the backend serves the newest of them).
+ */
+export const LANE_HISTORY_AFTER_LIMIT = 50
+
+/**
+ * The fixed sentences the owner's daemon posts as the agent for a lane
+ * (lib/lane-core.mjs LANE_NOTICES). The backend's reply hook marks her latest
+ * message acknowledged for them too, though they answer nothing.
+ */
+export const LANE_NOTICE_SENTENCES: readonly string[] = Object.freeze(Object.values(LANE_NOTICES as Record<string, string>))
+
 /** The history page for exactly one message of a chat. */
 export function laneHistoryPathFor(d: { chatId: string; messageId: number }): string {
   return `chats/${encodeURIComponent(d.chatId)}/messages?afterId=${d.messageId - 1}&beforeId=${d.messageId + 1}&limit=1`
+}
+
+/** The history page after one message of a chat: the rows that follow it. */
+export function laneHistoryAfterPathFor(d: { chatId: string; messageId: number }): string {
+  return `chats/${encodeURIComponent(d.chatId)}/messages?afterId=${d.messageId}&limit=${LANE_HISTORY_AFTER_LIMIT}`
+}
+
+/**
+ * Did an agent ANSWER `messageId`? True when the page carries an agent row
+ * after it that is not one of the lane's fixed notices; false when it carries
+ * none; null when the page is unreadable. The page is the backend's
+ * MessagesDto, as for laneHistoryDeliveryState.
+ */
+export function laneHistoryAnsweredAfter(answer: unknown, messageId: number, notices: readonly string[]): boolean | null {
+  const rows = historyMessages(answer)
+  if (!rows) return null
+  for (const m of rows) {
+    if (!(Number(m.id) > messageId) || m.sender !== 'assistant') continue
+    if (!notices.includes(String(m.text ?? '').trim())) return true
+  }
+  return false
 }
 
 /**
@@ -453,15 +488,26 @@ export function laneHistoryPathFor(d: { chatId: string; messageId: number }): st
  * `message` (a bare message is read the same way).
  */
 export function laneHistoryDeliveryState(answer: unknown, messageId: number): string | null {
-  const page = (answer as { messages?: unknown } | null)?.messages
-  const rows: unknown[] = Array.isArray(answer) ? answer : Array.isArray(page) ? page : []
-  for (const row of rows) {
-    const entry = (row ?? {}) as Record<string, unknown>
-    const m = (entry.message && typeof entry.message === 'object' ? entry.message : entry) as Record<string, unknown>
+  for (const m of historyMessages(answer) ?? []) {
     if (Number(m.id) !== messageId) continue
     return typeof m.deliveryState === 'string' ? m.deliveryState : null
   }
   return null
+}
+
+/**
+ * The messages of a history page, or null when it is not one. The backend
+ * answers MessagesDto, `{ messages: [{ message, messageFiles, messageOptions }] }`;
+ * a bare message is read the same way.
+ */
+function historyMessages(answer: unknown): Array<Record<string, unknown>> | null {
+  const page = (answer as { messages?: unknown } | null)?.messages
+  const rows: unknown[] | null = Array.isArray(answer) ? answer : Array.isArray(page) ? page : null
+  if (!rows) return null
+  return rows.map((row) => {
+    const entry = (row ?? {}) as Record<string, unknown>
+    return (entry.message && typeof entry.message === 'object' ? entry.message : entry) as Record<string, unknown>
+  })
 }
 
 // ── A refused sign in (K2 option b) ─────────────────────────────────────────

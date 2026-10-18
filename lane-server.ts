@@ -90,8 +90,11 @@ import {
   LaneClaudeReady,
   laneDeliveryGate,
   LaneDeliveryClaims,
+  laneHistoryAfterPathFor,
+  laneHistoryAnsweredAfter,
   laneHistoryDeliveryState,
   laneHistoryPathFor,
+  LANE_NOTICE_SENTENCES,
   LANE_HISTORY_READ_ATTEMPTS,
   LANE_HISTORY_READ_TIMEOUT_MS,
   LANE_HISTORY_RETRY_MS,
@@ -674,16 +677,19 @@ async function poll(): Promise<void> {
       // was already handed over decides instead (0.71.2). Only rows stamped
       // for this lane are asked about: the rest never go over (the second
       // lock refuses them below), and the server would refuse the read.
-      const handed = await acknowledgedAtServer(backlog.filter((d) => laneDeliveryGate(d.raw, LANE).deliver))
+      const { answered, newFrom } = await answeredAtServer(backlog.filter((d) => laneDeliveryGate(d.raw, LANE).deliver))
+      // A `/new` she sent, performed before the folders went: the turns older
+      // than it belong to the conversation she left (deliverRaw keeps them out).
+      if (newFrom > (inbox.newFrom ?? 0)) inbox = { ...inbox, newFrom }
       for (const d of backlog) {
         // Handed over in this life while the server was asked (the socket
         // path noted it, and its ack is what the server saw): its own note
         // stands, waiting for its answer.
-        if (!handed.has(d.messageId) || inbox.delivered.includes(d.messageId)) continue
-        log(`backlog turn ${d.messageId} was already handed over (acknowledged at the server); not offered again`)
+        if (!answered.has(d.messageId) || inbox.delivered.includes(d.messageId)) continue
+        log(`backlog turn ${d.messageId} was already answered (acknowledged at the server, and answered or performed); not offered again`)
         inbox = inboxNoteHandled(inbox, d)
       }
-      backlog = backlog.filter((d) => !handed.has(d.messageId))
+      backlog = backlog.filter((d) => !answered.has(d.messageId))
     }
     // The server was asked (or nothing needed asking): the note is trusted from here.
     if (boot && inbox.unverified) inbox = inboxVerified(inbox)
@@ -707,32 +713,51 @@ async function poll(): Promise<void> {
   }
 }
 
-/**
- * Which of these backlog rows the server has acknowledged (LANE_SERVER_ACKNOWLEDGED
- * on the person's chat history): the lane acks a turn when it hands it over.
- * One short read per row, retried a few times (LANE_HISTORY_READ_ATTEMPTS:
- * at most 15 s in all); a row the server still cannot vouch for is offered
- * as before, and a refusal here never ends the lane.
- */
-async function acknowledgedAtServer(backlog: LaneDelivery[]): Promise<Set<number>> {
-  const acknowledged = new Set<number>()
-  await Promise.all(backlog.map(async (d) => {
-    for (let attempt = 1; ; attempt += 1) {
-      try {
-        const page = await laneFetch('GET', laneHistoryPathFor(d), undefined, { timeoutMs: LANE_HISTORY_READ_TIMEOUT_MS })
-        if (laneHistoryDeliveryState(page, d.messageId) === LANE_SERVER_ACKNOWLEDGED) acknowledged.add(d.messageId)
-        return
-      } catch (err) {
-        const why = err instanceof LaneHttpError ? err.status : String(err)
-        if (attempt >= LANE_HISTORY_READ_ATTEMPTS) {
-          log(`the server could not say whether backlog turn ${d.messageId} was handed over (${why}); offering it as before`)
-          return
-        }
-        await new Promise((r) => setTimeout(r, LANE_HISTORY_RETRY_MS * attempt))
+/** One history read, retried a few times (LANE_HISTORY_READ_ATTEMPTS); undefined when the server could not answer. */
+async function readHistory(path: string, messageId: number): Promise<unknown> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await laneFetch('GET', path, undefined, { timeoutMs: LANE_HISTORY_READ_TIMEOUT_MS })
+    } catch (err) {
+      const why = err instanceof LaneHttpError ? err.status : String(err)
+      if (attempt >= LANE_HISTORY_READ_ATTEMPTS) {
+        log(`the server could not say whether backlog turn ${messageId} was answered (${why})`)
+        return undefined
       }
+      await new Promise((r) => setTimeout(r, LANE_HISTORY_RETRY_MS * attempt))
     }
+  }
+}
+
+/**
+ * Which of these backlog rows were already ANSWERED, by the server's record
+ * (0.71.2), and the latest `/new` she sent that was performed. A row is
+ * answered when the server shows it acknowledged (an agent picked it up) AND
+ * either an agent answered it after (an agent row that is not one of the
+ * lane's fixed notices: the backend's reply hook acks for those too) or it is
+ * a command the lane performs itself (`/new`, `/model x`, `/effort x`), so it
+ * is never performed twice. A row whose state the server cannot give is
+ * offered as before; an acknowledged row whose answer it cannot give is kept
+ * out, never re-answered. All rows in parallel, at most 15 s in all, and a
+ * refusal here never ends the lane.
+ */
+async function answeredAtServer(backlog: LaneDelivery[]): Promise<{ answered: Set<number>; newFrom: number }> {
+  const answered = new Set<number>()
+  let newFrom = 0
+  await Promise.all(backlog.map(async (d) => {
+    const page = await readHistory(laneHistoryPathFor(d), d.messageId)
+    if (page === undefined) return
+    if (laneHistoryDeliveryState(page, d.messageId) !== LANE_SERVER_ACKNOWLEDGED) return
+    const route = routeLaneSlash(d.raw as Record<string, unknown>)
+    if (route.kind === 'new' || ((route.kind === 'model' || route.kind === 'effort') && route.commandArgs !== '')) {
+      answered.add(d.messageId)
+      if (route.kind === 'new') newFrom = Math.max(newFrom, d.messageId)
+      return
+    }
+    const after = await readHistory(laneHistoryAfterPathFor(d), d.messageId)
+    if (after === undefined || laneHistoryAnsweredAfter(after, d.messageId, LANE_NOTICE_SENTENCES) !== false) answered.add(d.messageId)
   }))
-  return acknowledged
+  return { answered, newFrom }
 }
 
 function frameIsMine(frame: unknown): boolean {

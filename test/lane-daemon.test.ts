@@ -33,7 +33,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { confineLanePath, laneDaemonEnv, lanePaths } from '../lib/lane-core.mjs'
+import { confineLanePath, LANE_NOTICES, laneDaemonEnv, lanePaths } from '../lib/lane-core.mjs'
 import {
   buildLaneChannelEvent,
   checkLaneReply,
@@ -47,6 +47,8 @@ import {
   inboxShouldDeliver,
   inboxTrusted,
   LaneDeliveryClaims,
+  laneHistoryAfterPathFor,
+  laneHistoryAnsweredAfter,
   laneHistoryDeliveryState,
   laneHistoryPathFor,
   laneInstructions,
@@ -277,6 +279,22 @@ test('the last /new a lane performed is kept in its note, read back only as a po
   assert.deepEqual(readLaneInbox({ cursor: 4, delivered: [4], pending: [] }), { cursor: 4, delivered: [4], pending: [] }, 'a note without one reads as before')
   const kept = inboxForNewConversation(inboxNoteHandled(readLaneInbox({ newFrom: 9 }), { messageId: 10 }))
   assert.equal(kept.newFrom, 9, 'kept by every note')
+})
+
+test('was it answered: a real agent row after the message, never one of the lane\'s fixed notices (0.71.2)', () => {
+  assert.equal(laneHistoryAfterPathFor({ chatId: '77', messageId: 601 }), 'chats/77/messages?afterId=601&limit=50')
+  const entry = (message: Record<string, unknown>) => ({ message, messageFiles: [], messageOptions: [] })
+  const notices = Object.values(LANE_NOTICES)
+  const answered = { messages: [entry({ id: 602, sender: 'user', text: 'and another thing' }), entry({ id: 603, sender: 'assistant', text: 'Here is your answer.' })] }
+  assert.equal(laneHistoryAnsweredAfter(answered, 601, notices), true)
+  assert.equal(laneHistoryAnsweredAfter(answered, 603, notices), false, 'only rows after the message count')
+  const noticeOnly = { messages: [entry({ id: 602, sender: 'assistant', text: LANE_NOTICES.login_token_failed }), entry({ id: 603, sender: 'system', text: 'lane busy' })] }
+  assert.equal(laneHistoryAnsweredAfter(noticeOnly, 601, notices), false, 'a lane notice is not an answer, nor a system row')
+  assert.equal(laneHistoryAnsweredAfter({ messages: [entry({ id: 602, sender: 'assistant', text: `  ${LANE_NOTICES.new_session}  ` })] }, 601, notices), false, 'trimmed')
+  assert.equal(laneHistoryAnsweredAfter({ messages: [] }, 601, notices), false, 'nothing after it')
+  assert.equal(laneHistoryAnsweredAfter({ messages: [{ id: 602, sender: 'assistant', text: 'bare row' }] }, 601, notices), true, 'a bare message is read the same way')
+  assert.equal(laneHistoryAnsweredAfter(null, 601, notices), null, 'unreadable')
+  assert.equal(laneHistoryAnsweredAfter({ messages: 'x' }, 601, notices), null)
 })
 
 test('the server\'s record of a hand over: the history page for exactly one message, and its delivery state (0.71.2)', () => {

@@ -39,7 +39,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { Server as SocketServer } from 'socket.io'
 
-import { laneDaemonEnv, lanePaths, personLaneStamp } from '../lib/lane-core.mjs'
+import { LANE_NOTICES, laneDaemonEnv, lanePaths, personLaneStamp } from '../lib/lane-core.mjs'
 
 // Lanes are not offered on Windows (lib/lane-cli-probe.mjs refuses win32).
 const SKIP_ON_WINDOWS = process.platform === 'win32' ? 'lanes are not offered on Windows' : false
@@ -92,6 +92,10 @@ interface BackendOpts {
   failReadsOf?: Record<number, number>
   /** Per message id: how many of its history reads are never answered. */
   hangReadsOf?: Record<number, number>
+  /** Agent rows in her chat history (answers, or the lane notices the owner's daemon posts as the agent). */
+  agentRows?: Array<{ id: number; text: string }>
+  /** Per message id: how many reads of the page AFTER it fail with a 500. */
+  failAfterReadsOf?: Record<number, number>
 }
 
 interface Backend {
@@ -117,6 +121,7 @@ async function startBackend(opts: BackendOpts): Promise<Backend> {
   const failsLeft: Record<number, number> = { ...(opts.failReadsOf ?? {}) }
   const hangsLeft: Record<number, number> = { ...(opts.hangReadsOf ?? {}) }
   const hung: ServerResponse[] = []
+  const afterFailsLeft: Record<number, number> = { ...(opts.failAfterReadsOf ?? {}) }
   const json = (res: ServerResponse, body: unknown, status = 200) => {
     res.writeHead(status, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify(body))
@@ -163,6 +168,12 @@ async function startBackend(opts: BackendOpts): Promise<Backend> {
         state.historyReads.push({ chatId: Number(history[1]), afterId, beforeId, status: 500 })
         return json(res, { message: 'stand in failure' }, 500)
       }
+      // A read of the page after a message (afterId = that message, no beforeId).
+      if (beforeId === null && (afterFailsLeft[Number(afterId)] ?? 0) > 0) {
+        afterFailsLeft[Number(afterId)] -= 1
+        state.historyReads.push({ chatId: Number(history[1]), afterId, beforeId, status: 500 })
+        return json(res, { message: 'stand in failure' }, 500)
+      }
       if (historyFailuresLeft > 0) {
         historyFailuresLeft -= 1
         state.historyReads.push({ chatId: Number(history[1]), afterId, beforeId, status: 500 })
@@ -173,14 +184,20 @@ async function startBackend(opts: BackendOpts): Promise<Backend> {
       state.historyReads.push({ chatId: Number(history[1]), afterId, beforeId, status: 200 })
       const after = afterId === null ? 0 : Number(afterId)
       const before = beforeId === null ? Number.POSITIVE_INFINITY : Number(beforeId)
-      const messages = opts.rows
-        .filter((r) => Number(r.chat_id) === Number(history[1]) && Number(r.id) > after && Number(r.id) < before)
-        .map((r) => ({
+      const limit = Number(url.searchParams.get('limit') ?? 50)
+      const all = [
+        ...opts.rows.map((r) => ({
           // As the real server: a row this lane acked shows acknowledged.
-          message: { id: Number(r.id), chatId: Number(r.chat_id), sender: 'user', text: r.text, deliveryState: state.acks.includes(Number(r.id)) ? 'acknowledged' : (opts.deliveryStates?.[Number(r.id)] ?? 'delivered') },
-          messageFiles: [],
-          messageOptions: [],
-        }))
+          id: Number(r.id), chatId: Number(r.chat_id), sender: 'user', text: r.text,
+          deliveryState: state.acks.includes(Number(r.id)) ? 'acknowledged' : (opts.deliveryStates?.[Number(r.id)] ?? 'delivered'),
+        })),
+        ...(opts.agentRows ?? []).map((a) => ({ id: a.id, chatId: CHAT_ID, sender: 'assistant', text: a.text, deliveryState: null })),
+      ]
+      // As the backend's chat page: the NEWEST `limit` rows in the range, oldest first.
+      const inRange = all
+        .filter((m) => m.chatId === Number(history[1]) && m.id > after && m.id < before)
+        .sort((a, b) => a.id - b.id)
+      const messages = inRange.slice(Math.max(0, inRange.length - limit)).map((message) => ({ message, messageFiles: [], messageOptions: [] }))
       return json(res, { messages })
     }
     const ack = /^integrations\/messages\/(\d+)\/ack$/.exec(path)
@@ -309,6 +326,8 @@ test('bug 2: a lane with no inbox note hands over only what the server says no C
   const backend = await startBackend({
     rows: [inboundRow(OLD_ID, 6, 'An earlier question, already answered'), inboundRow(NEW_ID, 1, 'A new question')],
     deliveryStates: { [OLD_ID]: 'acknowledged', [NEW_ID]: 'delivered' },
+    // An agent answered her earlier message.
+    agentRows: [{ id: OLD_ID + 1, text: 'Here is the answer to your earlier question.' }],
   })
   const rig = await startLane(backend)
   try {
@@ -335,6 +354,8 @@ test('bug 2: a history read that fails once is asked again after a second, and t
   const backend = await startBackend({
     rows: [inboundRow(OLD_ID, 6, 'An earlier question, already answered'), inboundRow(NEW_ID, 1, 'A new question')],
     deliveryStates: { [OLD_ID]: 'acknowledged', [NEW_ID]: 'delivered' },
+    // An agent answered her earlier message.
+    agentRows: [{ id: OLD_ID + 1, text: 'Here is the answer to your earlier question.' }],
     // The read about the ANSWERED message fails once: without the retry it
     // would be offered again.
     failReadsOf: { [OLD_ID]: 1 },
@@ -510,6 +531,8 @@ test('bug 2: a history read that hangs is given up after a few seconds and asked
   const backend = await startBackend({
     rows: [inboundRow(OLD_ID, 6, 'An earlier question, already answered'), inboundRow(NEW_ID, 1, 'A new question')],
     deliveryStates: { [OLD_ID]: 'acknowledged', [NEW_ID]: 'delivered' },
+    // An agent answered her earlier message.
+    agentRows: [{ id: OLD_ID + 1, text: 'Here is the answer to your earlier question.' }],
     hangReadsOf: { [OLD_ID]: 1 },
   })
   const rig = await startLane(backend)
@@ -531,6 +554,8 @@ test('bug 2: a note saved by a first boot that never finished asking the server 
   const backend = await startBackend({
     rows: [inboundRow(OLD_ID, 6, 'An earlier question, already answered'), inboundRow(NEW_ID, 1, 'A new question')],
     deliveryStates: { [OLD_ID]: 'acknowledged', [NEW_ID]: 'delivered' },
+    // An agent answered her earlier message.
+    agentRows: [{ id: OLD_ID + 1, text: 'Here is the answer to your earlier question.' }],
   })
   const rig = await startLane(backend, { inbox: { cursor: 0, delivered: [], pending: [], unverified: true } })
   try {
@@ -594,6 +619,90 @@ test('a next life whose last life performed a /new before it recorded the older 
     assert.equal(rig.channel.length, 0, 'the older turn never reaches the new conversation')
     assert.equal(backend.acks.length, 0)
     assert.ok(savedInbox(rig.home).delivered.includes(WAITING_ID), 'and it is noted as handled')
+  } finally {
+    await stopLane(rig)
+  }
+})
+
+test('bug 2: a message only a lane notice marked acknowledged was never answered, so a lane with no note offers it', async () => {
+  // The lane could not sign in; the owner's daemon posted the fixed notice as
+  // the agent, and the backend's reply hook marked her message acknowledged.
+  // No Claude was handed it, and nothing answered it.
+  const NOTICED_ID = 641
+  const NEW_ID = 643
+  const backend = await startBackend({
+    rows: [inboundRow(NOTICED_ID, 6, 'Sent while my lane could not sign in'), inboundRow(NEW_ID, 1, 'A new question')],
+    deliveryStates: { [NOTICED_ID]: 'acknowledged', [NEW_ID]: 'delivered' },
+    agentRows: [{ id: NOTICED_ID + 1, text: LANE_NOTICES.login_token_missing }],
+  })
+  const rig = await startLane(backend)
+  try {
+    await waitFor(() => rig.channel.length >= 2, 'both turns')
+    await sleep(1_500)
+    assert.deepEqual(rig.channel.map((c) => c.messageId), [String(NOTICED_ID), String(NEW_ID)], 'a notice is not an answer')
+  } finally {
+    await stopLane(rig)
+  }
+})
+
+test('bug 2: a message handed over and never answered (acknowledged, no answer after it) is offered again by a lane with no note', async () => {
+  const HANDED_ID = 651
+  const backend = await startBackend({
+    rows: [inboundRow(HANDED_ID, 3, 'Handed over, then the lane and its folders were gone')],
+    deliveryStates: { [HANDED_ID]: 'acknowledged' },
+  })
+  const rig = await startLane(backend)
+  try {
+    await waitFor(() => rig.channel.length > 0, 'the unanswered turn')
+    await sleep(1_500)
+    assert.deepEqual(rig.channel.map((c) => c.messageId), [String(HANDED_ID)], 'not answered, so offered once more')
+  } finally {
+    await stopLane(rig)
+  }
+})
+
+test('bug 2: a lane with no note after a /new it performed keeps the older turn out and does not perform the /new again', async () => {
+  // Her /new (662) was performed and acknowledged, the lane posted its notice,
+  // then the lane's folders were deleted. 661, from the conversation she left,
+  // was never handed over and is not acknowledged.
+  const OLD_ID = 661
+  const NEW_COMMAND_ID = 662
+  const backend = await startBackend({
+    rows: [inboundRow(OLD_ID, 4, 'From the conversation she left'), inboundRow(NEW_COMMAND_ID, 3, '/new')],
+    deliveryStates: { [OLD_ID]: 'delivered', [NEW_COMMAND_ID]: 'acknowledged' },
+    agentRows: [{ id: NEW_COMMAND_ID + 1, text: LANE_NOTICES.new_session }],
+  })
+  const rig = await startLane(backend)
+  try {
+    await waitFor(() => backend.historyReads.length >= 2, 'the server asked')
+    await sleep(3_500)
+    assert.equal(rig.channel.length, 0, 'neither the older turn nor the /new reaches Claude')
+    assert.equal(backend.acks.length, 0)
+    const p = lanePaths({ home: rig.home, assistantId: ASSISTANT_ID, userId: USER_ID })
+    assert.throws(() => readFileSync(p.restartRequestPath, 'utf8'), 'the /new is not performed again (no restart asked)')
+    const saved = savedInbox(rig.home) as unknown as { delivered: number[]; newFrom?: number }
+    assert.equal(saved.newFrom, NEW_COMMAND_ID, 'the /new is in the note again')
+    assert.ok(saved.delivered.includes(OLD_ID) && saved.delivered.includes(NEW_COMMAND_ID))
+  } finally {
+    await stopLane(rig)
+  }
+})
+
+test('bug 2: an acknowledged message whose answer the server cannot show is kept out, never re-answered', async () => {
+  const OLD_ID = 671
+  const NEW_ID = 673
+  const backend = await startBackend({
+    rows: [inboundRow(OLD_ID, 6, 'An earlier question'), inboundRow(NEW_ID, 1, 'A new question')],
+    deliveryStates: { [OLD_ID]: 'acknowledged', [NEW_ID]: 'delivered' },
+    agentRows: [{ id: OLD_ID + 1, text: 'The answer.' }],
+    failAfterReadsOf: { [OLD_ID]: 1_000 },
+  })
+  const rig = await startLane(backend)
+  try {
+    await waitFor(() => rig.channel.length > 0, 'the new turn', 15_000)
+    await sleep(1_500)
+    assert.ok(backend.historyReads.some((h) => h.status === 500 && h.afterId === String(OLD_ID) && h.beforeId === null), 'the page after it could not be read')
+    assert.deepEqual(rig.channel.map((c) => c.messageId), [String(NEW_ID)], 'picked up, answer unknown: kept out')
   } finally {
     await stopLane(rig)
   }
