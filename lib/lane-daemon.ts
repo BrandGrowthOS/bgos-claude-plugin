@@ -432,11 +432,12 @@ export class LaneDeliveryClaims {
 export const LANE_SERVER_ACKNOWLEDGED = 'acknowledged'
 
 /**
- * How often the boot poll asks about one message before it gives up and
- * offers that message as before, how long one read may take, and the pause
- * before each retry (times the attempt). Rows are asked in parallel, so the
- * person's waiting turn is held at most 3 x 4 s + 1 s + 2 s = 15 s, and only
- * when the route fails or hangs; a healthy read takes milliseconds.
+ * How often the boot poll tries one history read before it gives up, how
+ * long one try may take, and the pause before each retry (times the attempt):
+ * one read takes at most 3 x 4 s + 1 s + 2 s = 15 s. A row needs at most two
+ * reads (the second only when it is acknowledged) and rows are asked in
+ * parallel, so the person's waiting turn is held at most 30 s, and only when
+ * the route fails or hangs; a healthy read takes milliseconds.
  */
 export const LANE_HISTORY_READ_ATTEMPTS = 3
 export const LANE_HISTORY_READ_TIMEOUT_MS = 4_000

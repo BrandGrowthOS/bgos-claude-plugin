@@ -735,11 +735,12 @@ async function readHistory(path: string, messageId: number): Promise<unknown> {
  * answered when the server shows it acknowledged (an agent picked it up) AND
  * either an agent answered it after (an agent row that is not one of the
  * lane's fixed notices: the backend's reply hook acks for those too) or it is
- * a command the lane performs itself (`/new`, `/model x`, `/effort x`), so it
- * is never performed twice. A row whose state the server cannot give is
- * offered as before; an acknowledged row whose answer it cannot give is kept
- * out, never re-answered. All rows in parallel, at most 15 s in all, and a
- * refusal here never ends the lane.
+ * a command the lane performs itself (`/new`, `/model x`, `/effort x`), so an
+ * acknowledged one is not performed twice. A row whose state the server
+ * cannot give is offered as before; an acknowledged row whose answer it
+ * cannot give is kept out, never re-answered. Two reads per row at most,
+ * rows in parallel: at most 30 s in all, only when the route fails or hangs,
+ * and a refusal here never ends the lane.
  */
 async function answeredAtServer(backlog: LaneDelivery[]): Promise<{ answered: Set<number>; newFrom: number }> {
   const answered = new Set<number>()
