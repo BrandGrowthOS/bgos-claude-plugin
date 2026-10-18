@@ -1,0 +1,70 @@
+[scratch-run] proof-fix12: scratch env OK (HOME=E:\bgos-worktrees\winrelaunch\tmp\home, TEMP=E:\bgos-worktrees\winrelaunch\tmp\temp, removed 1 BGOS_/HOAI_ vars), runner pid 27136
+[scratch-run] proof-fix12: child pid 69024
+2026-10-18T07:27:25.479Z [fix1-and-2] proof folder E:\bgos-worktrees\winrelaunch\tmp\temp\hoai-relaunch-proof-fix1-and-2-cGR4Vi
+2026-10-18T07:27:25.484Z [fix1-and-2] hoai launcher pid 75916 (hidden console), core E:\bgos-worktrees\winrelaunch\repo\bin\hoai-core.mjs
+2026-10-18T07:27:31.043Z [fix1-and-2] launch 1 processes before the relaunch:
+    pid 75916 ppid 10664 node.exe
+    pid 75812 ppid 75916 conhost.exe
+    pid 62172 ppid 75916 cmd.exe
+    pid 66432 ppid 62172 node.exe
+2026-10-18T07:27:31.047Z [fix1-and-2] restart marker written
+2026-10-18T07:27:41.071Z [fix1-and-2] processes after the relaunch:
+    pid 75916 ppid 10664 node.exe
+    pid 75812 ppid 75916 conhost.exe
+    pid 77488 ppid 75916 cmd.exe
+    pid 75828 ppid 77488 node.exe
+2026-10-18T07:27:41.075Z [fix1-and-2] helper log:
+    2026-10-18T11:27:26.4634436+04:00 pid=21388 start console=75916 timeout=120
+    2026-10-18T11:27:26.6418015+04:00 pid=21388 attached
+    2026-10-18T11:27:27.7243209+04:00 pid=21388 accepted
+    2026-10-18T11:27:32.9727510+04:00 pid=74068 start console=75916 timeout=120
+    2026-10-18T11:27:33.1586362+04:00 pid=74068 attached
+    2026-10-18T11:27:36.2918700+04:00 pid=74068 accepted
+2026-10-18T07:27:41.077Z [fix1-and-2] fake claude events:
+    2026-10-18T07:27:25.708Z launch 1 pid 66432 start
+    2026-10-18T07:27:25.712Z launch 1 pid 66432 stdin
+    2026-10-18T07:27:25.714Z launch 1 pid 66432 reading
+    2026-10-18T07:27:26.728Z launch 1 pid 66432 tick
+    2026-10-18T07:27:27.225Z launch 1 pid 66432 drawing
+    2026-10-18T07:27:27.228Z launch 1 pid 66432 gate-drawn (gate on screen)
+    2026-10-18T07:27:27.724Z launch 1 pid 66432 enter (gate on screen)
+    2026-10-18T07:27:27.738Z launch 1 pid 66432 tick (gate on screen)
+    2026-10-18T07:27:28.752Z launch 1 pid 66432 tick (gate on screen)
+    2026-10-18T07:27:29.766Z launch 1 pid 66432 tick (gate on screen)
+    2026-10-18T07:27:30.767Z launch 1 pid 66432 tick (gate on screen)
+    2026-10-18T07:27:31.771Z launch 1 pid 66432 tick (gate on screen)
+    2026-10-18T07:27:32.182Z launch 2 pid 75828 start
+    2026-10-18T07:27:32.192Z launch 2 pid 75828 stdin
+    2026-10-18T07:27:32.196Z launch 2 pid 75828 reading
+    2026-10-18T07:27:33.210Z launch 2 pid 75828 tick
+    2026-10-18T07:27:34.212Z launch 2 pid 75828 tick
+    2026-10-18T07:27:35.226Z launch 2 pid 75828 tick
+    2026-10-18T07:27:36.206Z launch 2 pid 75828 drawing
+    2026-10-18T07:27:36.210Z launch 2 pid 75828 gate-drawn (gate on screen)
+    2026-10-18T07:27:36.238Z launch 2 pid 75828 tick (gate on screen)
+    2026-10-18T07:27:36.292Z launch 2 pid 75828 enter (gate on screen)
+    2026-10-18T07:27:36.294Z launch 2 pid 75828 live
+    2026-10-18T07:27:37.253Z launch 2 pid 75828 tick
+    2026-10-18T07:27:38.263Z launch 2 pid 75828 tick
+    2026-10-18T07:27:39.274Z launch 2 pid 75828 tick
+    2026-10-18T07:27:40.280Z launch 2 pid 75828 tick
+2026-10-18T07:27:41.079Z [fix1-and-2] launcher log:
+    2026-10-18T07:27:25.511Z launcher pid 75916
+    2026-10-18T07:27:25.519Z [hoai] restart supervisor armed for assistant 9901
+    2026-10-18T07:27:25.545Z [hoai] dev-channels gate helper armed (helper pid 21388, console 75916)
+    2026-10-18T07:27:31.566Z [hoai] restart requested by the daemon; restarting claude to pick up the update...
+    2026-10-18T07:27:31.983Z [hoai] relaunching: claude --dangerously-skip-permissions --dangerously-load-development-channels server:bgos --session-id 71c00205-35f8-4c40-b3fe-2db32dd1ce75
+    2026-10-18T07:27:32.008Z [hoai] dev-channels gate helper armed (helper pid 74068, console 75916)
+2026-10-18T07:27:41.081Z [fix1-and-2] VERDICT {
+ "launch1FakeClaudePid": 66432,
+ "launch1FakeClaudeAliveAfterRelaunch": false,
+ "launch2FakeClaudePid": 75828,
+ "launch2HelperAcceptedAt": "2026-10-18T07:27:36.291Z",
+ "launch2GateDrawnAt": "2026-10-18T07:27:36.210Z",
+ "launch2HelperPressedBeforeItsGate": false,
+ "launch2GateAnswered": true,
+ "launch2EarlyEnter": false,
+ "enterTakenByLaunch1AfterRelaunch": false
+}
+2026-10-18T07:27:45.835Z [fix1-and-2] left running afterwards (should be none):
+    (none)
