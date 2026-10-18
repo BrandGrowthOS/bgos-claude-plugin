@@ -208,13 +208,13 @@ export function agentHost(t: any) {
         endedSession = payload.hook_event_name === 'SessionEnd' ? hookSessionId || null : null
         if (hookSessionId && hookSessionId !== liveSession) liveSession = hookSessionId
         if (entrySession() !== attachedSession) attach()
-        if (payload.hook_event_name === 'SessionEnd') tracker.end({ at: lineAt(line) })
+        if (payload.hook_event_name === 'SessionEnd') tracker.end({ at: lineAt(line), startedAt: line?.startedAt })
         if (payload.hook_event_name === 'UserPromptSubmit') {
-          const began = tracker.begin({ prompt: payload.prompt, promptHash: payload.hoai_clipped === true ? payload.prompt_sha256 : undefined, sessionId: hookSessionId, promptId: payload.prompt_id })
+          const began = tracker.begin({ prompt: payload.prompt, promptHash: payload.hoai_clipped === true ? payload.prompt_sha256 : undefined, sessionId: hookSessionId, promptId: payload.prompt_id, startedAt: line?.startedAt })
           const matched = turnChat.matchDelivered(String(payload.prompt ?? ''))
           if (began !== 'repeat' && began !== 'replayed' && (began !== 'no-token' || matched !== null)) lines.push(privateBeginLine(began, hookSessionId))
         }
-        if (payload.hook_event_name === 'Stop') tracker.end({ at: lineAt(line) })
+        if (payload.hook_event_name === 'Stop') tracker.end({ at: lineAt(line), startedAt: line?.startedAt })
         publish()
       },
       provesDelivery: (prompt) => turnChat.matchDelivered(prompt) !== null,
@@ -228,8 +228,25 @@ export function agentHost(t: any) {
   let life = daemon()
   const payloadOf = (event: string, extra: Record<string, unknown> = {}) =>
     ({ session_id: session, transcript_path: transcript, cwd: folder, hook_event_name: event, permission_mode: 'bypassPermissions', ...extra })
+  /**
+   * One prompt's UserPromptSubmit: claude starts the private turn hook and the forwarder together at the submission, so
+   * the forwarder's line says it started then (startedAt), when mark() ran the hook; with no mark() (the hook killed at
+   * its timeout before it wrote), when the line was spooled.
+   */
+  // A forwarder older than the startedAt stamp (before the re-review of c09e214e) writes none: `host.unstamped`. The
+  // intake keeps only a positive one, so -1 leaves the line with none, and the tracker counts Stops instead.
+  const stamp = (at: number) => (host.unstamped ? -1 : at)
+  const submission = (payload: Record<string, unknown>, report?: (why: string) => void): Submission => {
+    let startedAt: number | undefined
+    return {
+      mark: () => { startedAt ??= Date.now(); recordPrivateBoundary(payload, hookEnv, report); settle() },
+      spool: () => { appendEvent(payload, { env: hookEnv, startedAt: stamp(startedAt ?? Date.now()) }); settle() },
+    }
+  }
 
   const host = {
+    /** Every forwarder line from now on carries no startedAt (an older forwarder). */
+    unstamped: false,
     session, markerPaths, lines, recorded, firesPath, root, folder, folders, projectDir,
     get tracker(): any { return life.tracker },
     /** A lane delivers a frame (server.ts deliverWsInbound): actor, reason to send, fire key. The card the CLI gets. */
@@ -310,8 +327,7 @@ export function agentHost(t: any) {
     },
     /** The CLI's UserPromptSubmit for one prompt (its own prompt_id); nothing runs until mark() or spool(). */
     prompt(prompt: string): Submission {
-      const payload = payloadOf('UserPromptSubmit', { prompt_id: randomUUID(), prompt })
-      return { mark: () => { recordPrivateBoundary(payload, hookEnv); settle() }, spool: () => { appendEvent(payload, { env: hookEnv }) } }
+      return submission(payloadOf('UserPromptSubmit', { prompt_id: randomUUID(), prompt }))
     },
     /**
      * Another claude session in this agent's folder (a person's own claude there, or a second session of the agent),
@@ -332,26 +348,28 @@ export function agentHost(t: any) {
      * The operator's /clear in the agent's claude (claude 2.1.302 clearConversation): this session's SessionEnd (its
      * hook, its line drained), then a new session of the same claude and daemon, whose prompts' hooks and lines go as
      * prompt() gives them, to the same spool. Its first delivered prompt binds it (lib/hook-intake.ts); `said` is what
-     * its hook reported when it wrote no marker.
+     * its hook reported when it wrote no marker. With `endLate`, the SessionEnd forwarder (async, never waited for) has
+     * not spooled its line yet: endLine() spools and drains it (spools only, with `pump: false`). `session` names the
+     * new session (its spool folder's place in a directory listing).
      */
-    clear() {
+    clear({ endLate = false, session: next = randomUUID() }: { endLate?: boolean, session?: string } = {}) {
       const end = payloadOf('SessionEnd', { reason: 'clear' })
+      const endedAt = Date.now()
       recordPrivateBoundary(end, hookEnv); settle()
-      appendEvent(end, { env: hookEnv }); host.pump()
-      const next = randomUUID()
+      const endLine = ({ pump = true }: { pump?: boolean } = {}) => { appendEvent(end, { env: hookEnv, startedAt: stamp(endedAt) }); if (pump) host.pump() }
+      if (!endLate) endLine()
       const nextTranscript = join(projectDir, `${next}.jsonl`)
       writeFileSync(nextTranscript, '')
       const nextPayload = (event: string, extra: Record<string, unknown> = {}) =>
         ({ ...payloadOf(event, extra), session_id: next, transcript_path: nextTranscript })
       const said: string[] = []
       return {
-        session: next, said,
+        session: next, said, endLine,
         prompt(prompt: string): Submission {
-          const payload = nextPayload('UserPromptSubmit', { prompt_id: randomUUID(), prompt })
-          return { mark: () => { recordPrivateBoundary(payload, hookEnv, (why: string) => said.push(why)); settle() }, spool: () => { appendEvent(payload, { env: hookEnv }) } }
+          return submission(nextPayload('UserPromptSubmit', { prompt_id: randomUUID(), prompt }), (why: string) => said.push(why))
         },
         submit(prompt: string) { const sub = this.prompt(prompt); sub.mark(); sub.spool(); host.pump() },
-        stop() { const payload = nextPayload('Stop', { stop_hook_active: false }); recordPrivateBoundary(payload, hookEnv); settle(); appendEvent(payload, { env: hookEnv }); host.pump() },
+        stop() { const payload = nextPayload('Stop', { stop_hook_active: false }); const at = Date.now(); recordPrivateBoundary(payload, hookEnv); settle(); appendEvent(payload, { env: hookEnv, startedAt: stamp(at) }); host.pump() },
       }
     },
     /** A prompt whose hook and line both ran in time: marked, spooled, drained. */
@@ -372,7 +390,7 @@ export function agentHost(t: any) {
         mark: () => { stoppedAt = Date.now(); settle(); if (hook) recordPrivateBoundary(payload, hookEnv); settle() },
         spool: () => {
           const startedAt = stoppedAt ?? Date.now()
-          appendEvent(payload, { env: hookEnv, startedAt, ...(stampedAtStop ? { now: startedAt } : {}) })
+          appendEvent(payload, { env: hookEnv, startedAt: stamp(startedAt), ...(stampedAtStop ? { now: startedAt } : {}) })
         },
       }
     },
