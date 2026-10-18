@@ -85,12 +85,14 @@ import {
   inboxNoteHandled,
   inboxNoteReplied,
   inboxPollFrom,
+  inboxTrusted,
   LaneClaudeReady,
   laneDeliveryGate,
   LaneDeliveryClaims,
   laneHistoryDeliveryState,
   laneHistoryPathFor,
   LANE_HISTORY_READ_ATTEMPTS,
+  LANE_HISTORY_READ_TIMEOUT_MS,
   LANE_HISTORY_RETRY_MS,
   laneInstructions,
   laneMeMatches,
@@ -177,14 +179,14 @@ class LaneHttpError extends Error {
   }
 }
 
-async function laneFetch(method: string, path: string, body?: unknown, opts: { auth?: boolean } = {}): Promise<unknown> {
+async function laneFetch(method: string, path: string, body?: unknown, opts: { auth?: boolean; timeoutMs?: number } = {}): Promise<unknown> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (opts.auth !== false) {
     if (!session) throw new LaneHttpError(401, 'no lane session')
     headers['X-BGOS-Session'] = session.sessionToken
   }
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 20_000)
+  const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 20_000)
   try {
     const res = await fetch(`${CFG.apiBase}/${path.replace(/^\//, '')}`, {
       method,
@@ -385,8 +387,10 @@ const launchNote = readJson(CURSOR_PATH)
 let inbox: LaneInboxState = readLaneInbox(launchNote)
 // No note (a first start, or a lane whose folders were deleted): only then
 // does the boot poll ask the server what was already handed over (0.71.2).
-// With a note, the note is the authority.
-const launchHadNote = launchNote !== null
+// With a note, the note is the authority. A note saved before that boot
+// poll has asked is marked, so a restart in between does not trust it.
+const launchHadNote = inboxTrusted(launchNote)
+if (!launchHadNote) inbox = { ...inbox, unverified: true }
 function saveInbox(): void {
   try { writePrivateJson(CURSOR_PATH, inbox) } catch (err) { log(`could not save the inbox: ${String(err)}`) }
 }
@@ -668,6 +672,8 @@ async function poll(): Promise<void> {
       }
       backlog = backlog.filter((d) => !handed.has(d.messageId))
     }
+    // The server was asked (or nothing needed asking): the note is trusted from here.
+    if (boot && inbox.unverified) inbox = { cursor: inbox.cursor, delivered: inbox.delivered, pending: inbox.pending }
     firstPoll = false
     const fresh = new Set(backlog.map((d) => d.messageId))
     for (const r of rows) {
@@ -691,16 +697,17 @@ async function poll(): Promise<void> {
 /**
  * Which of these backlog rows the server has acknowledged (LANE_SERVER_ACKNOWLEDGED
  * on the person's chat history): the lane acks a turn when it hands it over.
- * One read per row, retried a few times; a row the server still cannot vouch
- * for is offered as before, so the person's turn is never held for long, and
- * a refusal here never ends the lane.
+ * One short read per row, retried a few times (LANE_HISTORY_READ_ATTEMPTS:
+ * at most 15 s in all); a row the server still cannot vouch for is offered
+ * as before, and a refusal here never ends the lane.
  */
 async function acknowledgedAtServer(backlog: LaneDelivery[]): Promise<Set<number>> {
   const acknowledged = new Set<number>()
   await Promise.all(backlog.map(async (d) => {
     for (let attempt = 1; ; attempt += 1) {
       try {
-        if (laneHistoryDeliveryState(await laneFetch('GET', laneHistoryPathFor(d)), d.messageId) === LANE_SERVER_ACKNOWLEDGED) acknowledged.add(d.messageId)
+        const page = await laneFetch('GET', laneHistoryPathFor(d), undefined, { timeoutMs: LANE_HISTORY_READ_TIMEOUT_MS })
+        if (laneHistoryDeliveryState(page, d.messageId) === LANE_SERVER_ACKNOWLEDGED) acknowledged.add(d.messageId)
         return
       } catch (err) {
         const why = err instanceof LaneHttpError ? err.status : String(err)

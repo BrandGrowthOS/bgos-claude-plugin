@@ -88,6 +88,10 @@ interface BackendOpts {
   forbiddenChats?: number[]
   /** Runs while the FIRST history read is held, before it is answered. */
   duringFirstHistory?: (io: SocketServer) => Promise<void>
+  /** Per message id: how many of its history reads fail with a 500. */
+  failReadsOf?: Record<number, number>
+  /** Per message id: how many of its history reads are never answered. */
+  hangReadsOf?: Record<number, number>
 }
 
 interface Backend {
@@ -110,6 +114,9 @@ async function startBackend(opts: BackendOpts): Promise<Backend> {
   }
   let historyFailuresLeft = opts.historyFailures ?? 0
   let historyReadsSeen = 0
+  const failsLeft: Record<number, number> = { ...(opts.failReadsOf ?? {}) }
+  const hangsLeft: Record<number, number> = { ...(opts.hangReadsOf ?? {}) }
+  const hung: ServerResponse[] = []
   const json = (res: ServerResponse, body: unknown, status = 200) => {
     res.writeHead(status, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify(body))
@@ -144,6 +151,18 @@ async function startBackend(opts: BackendOpts): Promise<Backend> {
         state.historyReads.push({ chatId: Number(history[1]), afterId, beforeId, status: 403 })
         return json(res, { message: 'not this lane' }, 403)
       }
+      const asked = Number(afterId) + 1
+      if ((hangsLeft[asked] ?? 0) > 0) {
+        hangsLeft[asked] -= 1
+        state.historyReads.push({ chatId: Number(history[1]), afterId, beforeId, status: 0 })
+        hung.push(res)
+        return
+      }
+      if ((failsLeft[asked] ?? 0) > 0) {
+        failsLeft[asked] -= 1
+        state.historyReads.push({ chatId: Number(history[1]), afterId, beforeId, status: 500 })
+        return json(res, { message: 'stand in failure' }, 500)
+      }
       if (historyFailuresLeft > 0) {
         historyFailuresLeft -= 1
         state.historyReads.push({ chatId: Number(history[1]), afterId, beforeId, status: 500 })
@@ -176,6 +195,7 @@ async function startBackend(opts: BackendOpts): Promise<Backend> {
   await new Promise<void>((r) => http.listen(0, '127.0.0.1', () => r()))
   state.url = `http://127.0.0.1:${(http.address() as AddressInfo).port}`
   state.close = () => new Promise<void>((r) => {
+    for (const res of hung) res.destroy()
     state.io.close()
     http.close(() => r())
   })
@@ -309,13 +329,15 @@ test('bug 2: a lane with no inbox note hands over only what the server says no C
   }
 })
 
-test('bug 2: a history read that fails once is asked again at once, and the answer still decides', async () => {
+test('bug 2: a history read that fails once is asked again after a second, and the answer still decides', async () => {
   const OLD_ID = 601
   const NEW_ID = 603
   const backend = await startBackend({
     rows: [inboundRow(OLD_ID, 6, 'An earlier question, already answered'), inboundRow(NEW_ID, 1, 'A new question')],
     deliveryStates: { [OLD_ID]: 'acknowledged', [NEW_ID]: 'delivered' },
-    historyFailures: 1,
+    // The read about the ANSWERED message fails once: without the retry it
+    // would be offered again.
+    failReadsOf: { [OLD_ID]: 1 },
   })
   const rig = await startLane(backend)
   try {
@@ -323,7 +345,7 @@ test('bug 2: a history read that fails once is asked again at once, and the answ
     await waitFor(() => rig.channel.length > 0, 'the new turn', 12_000)
     await waitFor(() => backend.acks.length > 0, 'the ack')
     await sleep(1_500)
-    assert.ok(backend.historyReads.some((h) => h.status === 500), 'one read failed')
+    assert.ok(backend.historyReads.some((h) => h.status === 500 && h.afterId === String(OLD_ID - 1)), 'its read failed once')
     assert.deepEqual(rig.channel.map((c) => c.messageId), [String(NEW_ID)], 'the retried answer still keeps the answered message out')
     assert.deepEqual(backend.acks, [NEW_ID])
   } finally {
@@ -453,6 +475,8 @@ test('a relaunch WITH its inbox note never asks the server: a message the note d
 test('bug 2: a turn the socket hands over (and acks) while the server is asked stays waiting for its answer', async () => {
   const MESSAGE_ID = 621
   const row = inboundRow(MESSAGE_ID, 1, 'Sent while my lane asked the server')
+  let homeOf: () => string = () => ''
+  let markedWhileAsking: unknown
   const backend: Backend = await startBackend({
     rows: [row],
     // The history read for 621 is answered only after the socket path handed
@@ -461,16 +485,61 @@ test('bug 2: a turn the socket hands over (and acks) while the server is asked s
     duringFirstHistory: async (io) => {
       io.emit('inbound_message', row)
       await waitFor(() => backend.acks.includes(MESSAGE_ID), 'the socket path to hand 621 over and ack it')
+      markedWhileAsking = (savedInbox(homeOf()) as Record<string, unknown>).unverified
     },
   })
   const rig = await startLane(backend)
+  homeOf = () => rig.home
   try {
     await waitFor(() => backend.historyReads.length > 0, 'the history read')
     await sleep(1_500)
+    assert.equal(markedWhileAsking, true, 'a note saved before the boot poll finished asking says so')
+    assert.equal((savedInbox(rig.home) as Record<string, unknown>).unverified, undefined, 'and the note saved after it does not')
     assert.deepEqual(rig.channel.map((c) => c.messageId), [String(MESSAGE_ID)], 'handed over once')
     assert.deepEqual(backend.acks, [MESSAGE_ID])
     const saved = savedInbox(rig.home)
     assert.ok(saved.pending.some((p) => p.id === MESSAGE_ID), 'still waiting for its answer, so a relaunch re-offers it')
+  } finally {
+    await stopLane(rig)
+  }
+})
+
+test('bug 2: a history read that hangs is given up after a few seconds and asked again, never the HTTP client\'s 20 s', async () => {
+  const OLD_ID = 601
+  const NEW_ID = 603
+  const backend = await startBackend({
+    rows: [inboundRow(OLD_ID, 6, 'An earlier question, already answered'), inboundRow(NEW_ID, 1, 'A new question')],
+    deliveryStates: { [OLD_ID]: 'acknowledged', [NEW_ID]: 'delivered' },
+    hangReadsOf: { [OLD_ID]: 1 },
+  })
+  const rig = await startLane(backend)
+  try {
+    await waitFor(() => rig.channel.length > 0, 'the new turn', 12_000)
+    await sleep(1_500)
+    assert.ok(backend.historyReads.some((h) => h.status === 0), 'one read hung')
+    assert.deepEqual(rig.channel.map((c) => c.messageId), [String(NEW_ID)], 'the retried answer still keeps the answered message out')
+  } finally {
+    await stopLane(rig)
+  }
+})
+
+test('bug 2: a note saved by a first boot that never finished asking the server is not trusted at the next launch', async () => {
+  // The last life had no note, saved one (a socket hand over) while its boot
+  // poll was still asking the server, and stopped before it finished.
+  const OLD_ID = 601
+  const NEW_ID = 603
+  const backend = await startBackend({
+    rows: [inboundRow(OLD_ID, 6, 'An earlier question, already answered'), inboundRow(NEW_ID, 1, 'A new question')],
+    deliveryStates: { [OLD_ID]: 'acknowledged', [NEW_ID]: 'delivered' },
+  })
+  const rig = await startLane(backend, { inbox: { cursor: 0, delivered: [], pending: [], unverified: true } })
+  try {
+    await waitFor(() => rig.channel.length > 0, 'the new turn')
+    await waitFor(() => backend.acks.length > 0, 'the ack')
+    await sleep(1_500)
+    assert.deepEqual(rig.channel.map((c) => c.messageId), [String(NEW_ID)], 'asked the server, as with no note')
+    assert.ok(backend.historyReads.length > 0)
+    assert.equal((savedInbox(rig.home) as Record<string, unknown>).unverified, undefined, 'and once the boot poll asked, the note is trusted again')
   } finally {
     await stopLane(rig)
   }

@@ -267,6 +267,12 @@ export interface LaneInboxState {
   cursor: number
   delivered: number[]
   pending: Array<{ id: number; chatId: string }>
+  /**
+   * Set while a launch with no note has not yet asked the server what was
+   * already handed over (0.71.2): a note saved in that window is not trusted
+   * by the next launch.
+   */
+  unverified?: true
 }
 
 export const LANE_INBOX_DELIVERED_MAX = 500
@@ -283,7 +289,22 @@ export function readLaneInbox(raw: unknown): LaneInboxState {
       .filter((p) => Number.isSafeInteger(p.id) && p.id > 0 && /^[1-9][0-9]*$/.test(p.chatId))
       .slice(-20)
     : []
-  return { cursor: Number.isSafeInteger(cursor) && cursor > 0 ? cursor : 0, delivered, pending }
+  return {
+    cursor: Number.isSafeInteger(cursor) && cursor > 0 ? cursor : 0,
+    delivered,
+    pending,
+    ...(r.unverified === true ? { unverified: true as const } : {}),
+  }
+}
+
+/**
+ * Does a launch trust this inbox note? Only a note that is an object and was
+ * not saved by a first boot that never finished asking the server. Without
+ * one, the boot poll asks the server what was already handed over (0.71.2).
+ */
+export function inboxTrusted(raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false
+  return (raw as Record<string, unknown>).unverified !== true
 }
 
 /** The id the poll should ask from: never past a turn still waiting for its answer. */
@@ -395,10 +416,13 @@ export const LANE_SERVER_ACKNOWLEDGED = 'acknowledged'
 
 /**
  * How often the boot poll asks about one message before it gives up and
- * offers that message as before, and the pause before each retry (times the
- * attempt). The person's waiting turn is held only this long.
+ * offers that message as before, how long one read may take, and the pause
+ * before each retry (times the attempt). Rows are asked in parallel, so the
+ * person's waiting turn is held at most 3 x 4 s + 1 s + 2 s = 15 s, and only
+ * when the route fails or hangs; a healthy read takes milliseconds.
  */
 export const LANE_HISTORY_READ_ATTEMPTS = 3
+export const LANE_HISTORY_READ_TIMEOUT_MS = 4_000
 export const LANE_HISTORY_RETRY_MS = 1_000
 
 /** The history page for exactly one message of a chat. */

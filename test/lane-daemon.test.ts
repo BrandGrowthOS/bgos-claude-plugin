@@ -44,6 +44,7 @@ import {
   inboxNoteReplied,
   inboxPollFrom,
   inboxShouldDeliver,
+  inboxTrusted,
   LaneDeliveryClaims,
   laneHistoryDeliveryState,
   laneHistoryPathFor,
@@ -255,6 +256,17 @@ test('a re-offer is only a turn the inbox held at launch, once (0.71.2)', () => 
   // `/new` empties the waiting list: a turn waiting at launch is no longer re-offered.
   const fresh = new LaneDeliveryClaims(atLaunch)
   assert.equal(fresh.take(inboxForNewConversation(atLaunch), 10, { reoffer: true }), false)
+})
+
+test('which inbox note a launch trusts: an object, not one a first boot saved before it finished asking the server (0.71.2)', () => {
+  assert.equal(inboxTrusted(null), false, 'no note')
+  assert.equal(inboxTrusted([]), false)
+  assert.equal(inboxTrusted('x'), false)
+  assert.equal(inboxTrusted({ cursor: 0, delivered: [], pending: [] }), true, 'a note, even with cursor 0')
+  assert.equal(inboxTrusted({ cursor: 4, delivered: [4], pending: [], unverified: true }), false, 'saved before the server was asked')
+  assert.deepEqual(readLaneInbox({ cursor: 4, delivered: [4], pending: [], unverified: true }), { cursor: 4, delivered: [4], pending: [], unverified: true })
+  assert.deepEqual(readLaneInbox({ cursor: 4, delivered: [4], pending: [], unverified: 'yes' }), { cursor: 4, delivered: [4], pending: [] })
+  assert.equal(inboxNoteDelivered(readLaneInbox({ unverified: true }), { messageId: 5, chatId: '7' }).unverified, true, 'kept by every note')
 })
 
 test('the server\'s record of a hand over: the history page for exactly one message, and its delivery state (0.71.2)', () => {
