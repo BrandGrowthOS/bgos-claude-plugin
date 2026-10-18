@@ -347,7 +347,10 @@ export function rotateIfFull(path, fs, maxBytes = SPOOL_MAX_BYTES) {
   }
 }
 
-/** The one line the forwarder writes. Pure, so the shape is testable. */
+/**
+ * The one line the forwarder writes. Pure, so the shape is testable.
+ * @param {{ id: string, receivedAt: number, startedAt?: number, event: string, payload: unknown }} line
+ */
 export function buildSpoolLine({ id, receivedAt, startedAt, event, payload }) {
   return `${JSON.stringify({ id, receivedAt, startedAt, event, payload })}\n`
 }
