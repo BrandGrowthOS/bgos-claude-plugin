@@ -30,7 +30,13 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { spoolPath } from '../bin/hoai-hook.mjs'
+import { parseSpoolLine } from '../lib/hook-intake.ts'
 import { privateBeginLine, privateRevokeLine, privatePromptHash, privateTurnRecord, readPrivateJson, EMAIL_SEND_REFUSAL, PRIVATE_TURN_REFUSAL } from '../lib/private-turn.mjs'
 import {
   GATED, OTHER_CHAT, OWN_CHAT, OWNER, RECIPIENT, RECIPIENT_CHAT, SIDE_CHAT, TURN_AWARE,
@@ -317,7 +323,11 @@ for (const kind of ['a share recipient\'s message', 'a peer agent\'s message', '
     host.stop()
     const pa = host.prompt(a); const ps = host.prompt(s); const pc = host.prompt(c)
     pa.mark(); pa.spool(); host.pump()
-    await assertOwnerTurn(host, 'the owner\'s prompt')
+    // A card naming nobody, delivered after the owner's message and queued with it, runs in the same CLI turn (with it,
+    // injected, or as the next prompt): the owner's turn is refused from the start (the re-review of e7166041). A share
+    // recipient is a person: their prompt ends the owner's turn when it runs (f81a527c).
+    if (kind === 'a share recipient\'s message') await assertOwnerTurn(host, 'the owner\'s prompt')
+    else await assertGatedRefused(host, `the owner's prompt, ${kind} queued after it`)
     ps.mark() // the stranger's prompt runs; its forwarder line is late
     await assertGatedRefused(host, `at ${kind}'s marker`)
     pc.mark(); pc.spool(); host.pump() // the carried card, hook and line on time
@@ -438,9 +448,88 @@ test('review: privateTurnRecord lists each prompt once, the latest 16 of the tur
   assert.deepEqual(closed.prompts, [privatePromptHash('p20').slice(0, 16)])
 })
 
-test('review: server.ts ends the private turn with the hook line\'s receivedAt, on the Stop line and on SessionEnd', () => {
+test('review: server.ts ends the private turn at the hook line\'s own time (the forwarder\'s start, else its receivedAt), on the Stop line and on SessionEnd', () => {
   const source = readFileSync('server.ts', 'utf8')
+  assert.match(source, /const lineAt = line\?\.startedAt \?\? receivedAt\n/, 'the forwarder\'s process start first')
   assert.match(source, /privateTurns\.end\(hookLineAt === null \? \{\} : \{ at: hookLineAt \}\)/, 'the Stop line (endHookTurn)')
-  assert.match(source, /if \(event\.name === 'SessionEnd'\) privateTurns\.end\(\{ at: receivedAt \}\)/, 'SessionEnd')
-  assert.match(source, /hookLineAt = receivedAt\n  try \{\n    runHookEffects\(effects\)\n  \} finally \{\n    hookLineAt = null\n  \}/, 'set only while the line\'s effects run')
+  assert.match(source, /if \(event\.name === 'SessionEnd'\) privateTurns\.end\(\{ at: lineAt \}\)/, 'SessionEnd')
+  assert.match(source, /hookLineAt = lineAt\n  try \{\n    runHookEffects\(effects\)\n  \} finally \{\n    hookLineAt = null\n  \}/, 'set only while the line\'s effects run')
+})
+
+// ── The security re-review of c09e214e ──
+// Medium: the forwarder stamps receivedAt after its cold start and its stdin read, which on a slow start comes after the
+// next prompt's marker, so end({ at }) took a late Stop line for a Stop after that prompt and ended the owner's next
+// turn: bug (d) again. The line now carries the forwarder's process start (startedAt), which claude spawns with the
+// Stop hook at the Stop, before the next prompt's hook can run. Low: a Stop whose hook never closed the marker, then a
+// carried card run as the next CLI turn's first prompt, kept the owner's authority past the Stop: end() measured the
+// marker written last, the carried card's, not the one the owner's turn was verified on.
+
+test('re-review (Medium): the real forwarder stamps its line with its own process start (startedAt), at or before its receivedAt', (t) => {
+  const base = mkdtempSync(join(tmpdir(), 'hoai-forwarder-'))
+  t.after(() => rmSync(base, { recursive: true, force: true }))
+  const session = randomUUID()
+  const env = { ...process.env, BGOS_PLUGIN_STATE_DIR: base }
+  const before = Date.now()
+  const run = spawnSync(process.execPath, ['bin/hoai-hook.mjs'], {
+    input: JSON.stringify({ session_id: session, hook_event_name: 'Stop', stop_hook_active: false }), env, encoding: 'utf8', timeout: 60_000,
+  })
+  assert.equal(run.status, 0, run.stderr)
+  const raw = readFileSync(spoolPath(session, env), 'utf8').trim()
+  const line = parseSpoolLine(raw) as (ReturnType<typeof parseSpoolLine> & { startedAt?: number }) | null
+  assert.equal(typeof line?.startedAt, 'number', raw)
+  assert.ok(line!.startedAt! >= before - 50 && line!.startedAt! <= line!.receivedAt, raw)
+})
+
+test('re-review (Medium): parseSpoolLine keeps a startedAt at or before the line\'s receivedAt, and drops any other', () => {
+  const at = (startedAt: string) => (parseSpoolLine(`{"id":"a-1","receivedAt":9,"startedAt":${startedAt},"event":"Stop","payload":{}}`) as any)?.startedAt
+  assert.equal(at('7'), 7)
+  assert.equal(at('9'), 9)
+  for (const bad of ['10', '0', '-1', '"7"', 'null', '1e400', '{}']) assert.equal(at(bad), undefined, bad)
+  assert.equal('startedAt' in parseSpoolLine('{"id":"a-1","receivedAt":9,"event":"Stop","payload":{}}')!, false, 'an older forwarder\'s line has none')
+})
+
+test('re-review (Medium): the turn before\'s Stop line, its forwarder slow to start (receivedAt after the next prompt\'s marker), leaves the owner\'s next turn to the owner', async (t) => {
+  const { host } = await wakeTurn(t)
+  const stop = host.stopping()
+  stop.mark() // claude stops: the Stop hook closes the marker, the forwarder process starts beside it
+  const next = ownerFrame('Now the budget.')
+  const prompt = host.prompt(host.card(next))
+  prompt.mark(); prompt.spool(); host.pump()
+  await assertOwnerTurn(host, 'the next prompt', reasonOf(next))
+  stop.spool(); host.pump() // its receivedAt only now, after the next marker; its startedAt the Stop
+  await assertOwnerTurn(host, 'after the late Stop line', reasonOf(next))
+  host.stop()
+  await assertGatedRefused(host, 'its own Stop still ends it')
+})
+
+test('re-review (Low): a Stop whose hook was killed before it wrote, a reply reminder run as the next CLI turn\'s first prompt, its line first, then the Stop line: the Stop ends the owner\'s turn', async (t) => {
+  const { host } = await wakeTurn(t)
+  const stop = host.stopping({ hook: false, stampedAtStop: true })
+  stop.mark()
+  const reminder = host.prompt(host.replyOverdue())
+  reminder.mark(); reminder.spool(); host.pump()
+  host.tick()
+  stop.spool(); host.pump()
+  await assertGatedRefused(host, 'after the Stop line')
+  assert.ok(typeof await sendAdmitted(host) === 'string', 'email_send names no reason of the turn that ended')
+})
+
+test('re-review (Low) control: a Stop whose hook was killed, a reply reminder of the SAME CLI turn before it: the Stop line ends the owner\'s turn', async (t) => {
+  const { host } = await wakeTurn(t)
+  host.submit(host.replyOverdue())
+  await assertOwnerTurn(host, 'the reminder in the wake\'s turn')
+  const stop = host.stopping({ hook: false, stampedAtStop: true })
+  stop.mark(); stop.spool(); host.pump()
+  await assertGatedRefused(host, 'after the Stop line')
+})
+
+test('re-review (Low) control: a Stop whose hook was killed, the owner\'s next message as the next CLI turn, its line before the Stop line: the owner\'s', async (t) => {
+  const { host } = await wakeTurn(t)
+  const stop = host.stopping({ hook: false, stampedAtStop: true })
+  stop.mark()
+  const next = ownerFrame('Now the budget.')
+  host.submit(host.card(next))
+  await assertOwnerTurn(host, 'the next message', reasonOf(next))
+  stop.spool(); host.pump()
+  await assertOwnerTurn(host, 'after the Stop line', reasonOf(next))
 })

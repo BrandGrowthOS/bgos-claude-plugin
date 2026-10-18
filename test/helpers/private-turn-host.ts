@@ -18,7 +18,7 @@ import { join } from 'node:path'
 import ts from 'typescript'
 import { appendEvent } from '../../bin/hoai-hook.mjs'
 import { recordPrivateBoundary } from '../../bin/hoai-private-turn-hook.mjs'
-import { startHookIntake } from '../../lib/hook-intake.ts'
+import { startHookIntake, type SpoolLine } from '../../lib/hook-intake.ts'
 import { buildInboundChannel } from '../../lib/inbound-channel.ts'
 import { SessionTranscriptBinder } from '../../lib/session-binding.ts'
 import { createTurnChatTracker } from '../../lib/turn-chat.ts'
@@ -125,6 +125,12 @@ function settle() { const at = Date.now(); while (Date.now() < at + 2) { /* spin
 /** One UserPromptSubmit (or Stop) as two steps the test orders: mark() the synchronous hook, spool() the forwarder line. */
 export interface Submission { mark: () => void; spool: () => void }
 
+/**
+ * The moment a Stop or SessionEnd line says the CLI got there, as server.ts onHookPayload reads it: the forwarder's own
+ * process start (its startedAt, taken before its cold start and its stdin read), else its receivedAt.
+ */
+const lineAt = (line: SpoolLine & { startedAt?: number }) => line.startedAt ?? line.receivedAt
+
 export function agentHost(t: any) {
   const base = realpathSync(mkdtempSync(join(tmpdir(), 'hoai-privturn-')))
   t.after(() => rmSync(base, { recursive: true, force: true }))
@@ -180,13 +186,13 @@ export function agentHost(t: any) {
       // server.ts onHookPayload's private turn statements, then the publish it ends with.
       onEvent: (payload, line) => {
         const hookSessionId = String(payload.session_id ?? '').trim()
-        if (payload.hook_event_name === 'SessionEnd') tracker.end({ at: line.receivedAt })
+        if (payload.hook_event_name === 'SessionEnd') tracker.end({ at: lineAt(line) })
         if (payload.hook_event_name === 'UserPromptSubmit') {
           const began = tracker.begin({ prompt: payload.prompt, promptHash: payload.hoai_clipped === true ? payload.prompt_sha256 : undefined, sessionId: hookSessionId, promptId: payload.prompt_id })
           const matched = turnChat.matchDelivered(String(payload.prompt ?? ''))
           if (began !== 'repeat' && began !== 'replayed' && (began !== 'no-token' || matched !== null)) lines.push(privateBeginLine(began, hookSessionId))
         }
-        if (payload.hook_event_name === 'Stop') tracker.end({ at: line.receivedAt })
+        if (payload.hook_event_name === 'Stop') tracker.end({ at: lineAt(line) })
         publish()
       },
       provesDelivery: (prompt) => turnChat.matchDelivered(prompt) !== null,
@@ -290,15 +296,21 @@ export function agentHost(t: any) {
     /** The CLI ends the turn: the hook closes the marker, the forwarder spools Stop, the daemon drains. */
     stop() { const stop = host.stopping(); stop.mark(); stop.spool(); host.pump() },
     /**
-     * The forwarder stamps its line when the CLI's Stop happened (its receivedAt), however late the line lands; with no
-     * mark() (the Stop hook failed and never closed the marker) the moment it is spooled.
+     * The CLI's Stop: mark() is the moment it happened, when claude starts the Stop hook and the forwarder together, and
+     * the Stop hook closing the marker (none when `hook` is false: killed at its 5 s timeout, a locked file, before it
+     * wrote). spool() is the forwarder's line however late it lands: its startedAt the Stop (its process start), its
+     * receivedAt the moment it is spooled, after its cold start and its stdin read; both at the Stop when
+     * `stampedAtStop` (a forwarder that started fast, its line drained late). With no mark(), both at the spool.
      */
-    stopping(): Submission {
+    stopping({ hook = true, stampedAtStop = false }: { hook?: boolean, stampedAtStop?: boolean } = {}): Submission {
       const payload = payloadOf('Stop', { stop_hook_active: false })
       let stoppedAt: number | undefined
       return {
-        mark: () => { stoppedAt = Date.now(); settle(); recordPrivateBoundary(payload, hookEnv); settle() },
-        spool: () => { appendEvent(payload, { env: hookEnv, now: stoppedAt ?? Date.now() }) },
+        mark: () => { stoppedAt = Date.now(); settle(); if (hook) recordPrivateBoundary(payload, hookEnv); settle() },
+        spool: () => {
+          const startedAt = stoppedAt ?? Date.now()
+          appendEvent(payload, { env: hookEnv, startedAt, ...(stampedAtStop ? { now: startedAt } : {}) })
+        },
       }
     },
     /** server.ts arms delivery again in the SAME daemon process (each armDelivery, a reclaim): the entry written anew. */
