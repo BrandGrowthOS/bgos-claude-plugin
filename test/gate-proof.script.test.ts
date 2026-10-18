@@ -5,8 +5,9 @@
  * The gate log is shared by every agent of the Windows user. Without the agent's launcher pid
  * (no supervisor.json, no -ConsolePid) the script judged EVERY helper since -Since, and any one
  * PASS among them made the result: an old PASS (an earlier start, or another agent's helper)
- * outweighed the newest run's UNPROVEN. Without a launcher pid it now judges only the newest helper
- * run since -Since, and a pid that ran twice is two runs (Windows reuses pids).
+ * outweighed the newest run's UNPROVEN. It now judges only the newest helper run since -Since (of the
+ * agent's launcher when that is known, else of the whole log), and a pid that ran twice is two runs
+ * (Windows reuses pids).
  *
  * Every file is fake and lives in a temporary USERPROFILE and TEMP: the script reads nothing else
  * and writes only its report into TEMP. Windows only (PowerShell 5.1, and pwsh when PWSH_EXE names
@@ -116,6 +117,17 @@ for (const shell of SHELLS) {
     const { out, result } = prove(shell, p)
     assert.equal(result, 'PASS', out)
     assert.match(out, /helper pid 4700 : another launcher's \(console 2600\), not judged/, out)
+  })
+
+  test(`${shell}: the launcher pid known, an older PASS then a newer UNPROVEN from that same launcher: only its newest run is judged, FAIL`, { skip, timeout: 120_000 }, () => {
+    const p = profile([
+      { pid: 4800, console: 2500, at: NOW - 20 * 60_000, words: ['start', 'attached', 'accepted'] },
+      { pid: 4900, console: 2500, at: NOW - 2 * 60_000, words: ['start', 'attached', 'unproven'] },
+    ], { supervisorPid: 2500, bootAt: NOW - 20 * 60_000 + 30_000 })
+    const { out, result } = prove(shell, p)
+    assert.equal(result, 'FAIL', out)
+    assert.match(out, /helper pid 4900 : UNPROVEN/, out)
+    assert.match(out, /helper pid 4800 .*not judged/, out)
   })
 }
 
