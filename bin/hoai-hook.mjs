@@ -73,6 +73,8 @@ export const PAYLOAD_MAX_BYTES = 256 * 1024
 
 /** The private turn token lib/private-turn.mjs appends to a delivered card. */
 const PRIVATE_TURN_TOKEN = /<hoai-private-turn id="[a-f0-9-]{36}"\/>/g
+/** The tag lib/private-turn.mjs (PRIVATE_UNTRACKED_TAG) puts on a card with no delivery behind it. */
+const PRIVATE_UNTRACKED_TAG = '<hoai-untracked/>'
 /** Per field clip inside a reduced tool_input. */
 export const REDUCED_FIELD_MAX = 200
 
@@ -308,8 +310,12 @@ export function clipPayload(payload, maxBytes = PAYLOAD_MAX_BYTES) {
   if (payload.hook_event_name === 'UserPromptSubmit' && typeof payload.prompt === 'string') {
     // The private turn needs only its opaque delivery token(s) and the full
     // prompt's hash, never the prompt text. Two tokens are kept so an
-    // ambiguous prompt stays ambiguous.
-    reduced.prompt = (payload.prompt.match(PRIVATE_TURN_TOKEN) ?? []).slice(0, 2).join('\n')
+    // ambiguous prompt stays ambiguous, and the untracked tag, which the
+    // daemon reads in place of the hook's own flag when an older hook beside
+    // this plugin's drops it (the re-review of c69224fe).
+    const kept = (payload.prompt.match(PRIVATE_TURN_TOKEN) ?? []).slice(0, 2)
+    if (payload.prompt.includes(PRIVATE_UNTRACKED_TAG)) kept.push(PRIVATE_UNTRACKED_TAG)
+    reduced.prompt = kept.join('\n')
     reduced.prompt_sha256 = createHash('sha256').update(payload.prompt).digest('hex')
   }
   reduced.hoai_clipped = true

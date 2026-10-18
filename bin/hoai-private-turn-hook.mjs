@@ -40,6 +40,7 @@ function describeEntry({ key, state, pid, projectDir }) {
  * 2026-10-13). Now nothing is written unless this session's own daemon is attached (findOwnAttachedKey).
  * `stale`: this session's own live markers at keys no other live daemon holds. With nowhere to write, they are
  * closed instead, so a turn they carried (its signed browser context lives up to 60 s) cannot outlast this boundary.
+ * `holding`: this session's stale closes that still hold a CLI turn (closeMarkers) at such keys.
  */
 function managedMarker(payload, env) {
   const root = floorStateRoot(env)
@@ -48,23 +49,40 @@ function managedMarker(payload, env) {
   const transcriptPath = typeof payload?.transcript_path === 'string' ? payload.transcript_path : ''
   const base = projectFolder || (typeof payload?.cwd === 'string' ? payload.cwd : '')
   const { key, seen, daemon } = findOwnAttachedKey({ root, folders, transcriptPath, projectFolder, base })
-  if (key) return { root, path: privateMarkerPath(root, key), stale: [], daemon }
+  if (key) return { root, path: privateMarkerPath(root, key), stale: [], holding: [], daemon }
   const held = new Set(seen.filter((entry) => entry.state === 'other-project' || entry.state === 'older-daemon').map((entry) => entry.key))
   const sessionId = String(payload?.session_id ?? '').trim()
   const markers = folders.map(floorKey).filter(Boolean)
     .map((candidate) => ({ key: candidate, path: privateMarkerPath(root, candidate), marker: readPrivateJson(privateMarkerPath(root, candidate), 2048) }))
     .filter((entry) => entry.marker)
   const stale = markers.filter((entry) => sessionId && entry.marker.sessionId === sessionId && entry.marker.live === true && !held.has(entry.key)).map((entry) => entry.path)
-  if (seen.length === 0 && markers.length === 0) return { root, path: null, why: null, stale }
+  const holding = markers.filter((entry) => sessionId && entry.marker.live === false && entry.marker.staleTurn === sessionId && !held.has(entry.key)).map((entry) => entry.path)
+  if (seen.length === 0 && markers.length === 0) return { root, path: null, why: null, stale, holding }
   const found = seen.length > 0 ? seen.map(describeEntry).join('; ') : 'none of them has a daemon attached'
-  return { root, path: null, why: `no live daemon attached to this session's folders serves its transcript ${transcriptPath || '(none named)'} (${found})`, stale }
+  return { root, path: null, why: `no live daemon attached to this session's folders serves its transcript ${transcriptPath || '(none named)'} (${found})`, stale, holding }
 }
 
-/** Best effort: turn these markers non-live. */
-function closeMarkers(paths) {
+/** What a stale close keeps of the live marker it closes: the record of its CLI turn (privateTurnRecord). */
+const HELD_TURN_KEYS = ['cliTurn', 'after', 'afterLive', 'tags', 'tagsLost', 'untracked', 'prompts', 'daemon']
+
+/**
+ * Best effort: turn these markers non-live. With `holdFor`, a session's prompt that found no daemon of its own
+ * attached (a daemon standing down after it lost the pairing lock, a torn read of its attached entry): the CLI is still
+ * in the turn that session's live marker names, so the close holds that turn (`staleTurn`, the session) and its record,
+ * and the next prompt with the daemon attached again continues it, unsure, since this prompt ran in it with no marker
+ * (lib/private-turn.mjs privateTurnRecord). Without it the turn is over for good (a Stop, a SessionEnd); the next
+ * prompt used to open a new CLI turn inside the same one (the re-review of c69224fe).
+ */
+function closeMarkers(paths, holdFor = '') {
   for (const path of paths) {
     try {
-      writePrivateJson(path, { schemaVersion: 1, turnId: randomUUID(), sessionId: '', promptHash: '', live: false })
+      const marker = holdFor ? readPrivateJson(path, 2048) : null
+      const held = {}
+      if (marker?.live === true && marker.sessionId === holdFor && typeof marker.cliTurn === 'string' && marker.cliTurn) {
+        for (const key of HELD_TURN_KEYS) if (marker[key] !== undefined) held[key] = marker[key]
+        held.staleTurn = holdFor
+      }
+      writePrivateJson(path, { schemaVersion: 1, turnId: randomUUID(), sessionId: '', promptHash: '', live: false, ...held })
     } catch {
       try { rmSync(path, { force: true }) } catch { /* Nothing more can be done from a hook. */ }
     }
@@ -84,7 +102,8 @@ export function recordPrivateBoundary(payload, env = process.env, report = () =>
   const sessionId = String(payload?.session_id ?? '').trim()
   const notePath = fileSafeSession(sessionId) ? privateUnservedPath(target.root, sessionId) : ''
   if (!target.path) {
-    closeMarkers(target.stale)
+    if (event === 'UserPromptSubmit') closeMarkers(target.stale, sessionId)
+    else closeMarkers([...target.stale, ...target.holding])
     // A standalone CLI session has no managed private tools; any other session's prompt says why it has no turn,
     // here and in a note its own daemon's refusal line quotes (lib/private-turn.mjs explain).
     if (event === 'UserPromptSubmit' && target.why) {
@@ -173,7 +192,7 @@ export function privateToolRefusal(payload, env = process.env) {
 export function invalidatePrivateBoundary(payload, env = process.env) {
   try {
     const target = managedMarker(payload, env)
-    closeMarkers(target.path ? (readPrivateJson(target.path, 2048) ? [target.path] : []) : target.stale)
+    closeMarkers(target.path ? (readPrivateJson(target.path, 2048) ? [target.path] : []) : [...target.stale, ...target.holding])
   } catch { /* An unreadable payload has no folders to close. */ }
 }
 
