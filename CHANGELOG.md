@@ -2,7 +2,7 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
-## 0.71.3 (2026-10-18)
+## 0.71.4 (2026-10-18)
 
 **A Windows agent's relaunch no longer leaves the real claude running behind its npm shim, nor lets the new launch's gate helper press Enter on a gate the killed claude left on screen; a relaunch inside a fresh session's window keeps that fresh session; health relaunches have a budget of their own; an expired Claude login every agent shares is an alert instead of a relaunch; and gate-proof.ps1 without a launcher pid judges only the newest helper run (HOAI board rows 978da5db and 31583f86, the #246 review's open points).**
 
