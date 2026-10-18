@@ -116,6 +116,12 @@ const admissionJs = ts.transpileModule(`${admissionSource}\nreturn { privateCall
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
 }).outputText
 
+/**
+ * The clock moves on past this instant, so a marker written before it and a time stamped after it never share one
+ * millisecond (end() compares the two; on a real machine a hook's cold start keeps them seconds apart).
+ */
+function settle() { const at = Date.now(); while (Date.now() < at + 2) { /* spin */ } }
+
 /** One UserPromptSubmit (or Stop) as two steps the test orders: mark() the synchronous hook, spool() the forwarder line. */
 export interface Submission { mark: () => void; spool: () => void }
 
@@ -142,9 +148,15 @@ export function agentHost(t: any) {
   const recorded: string[] = []
 
   let lives = 0
+  // The `at` the current daemon life attached with: none for the first, which attaches exactly as server.ts does (no
+  // `now`, markFloorAttachedIfHolder); a fixed one for each later life, another daemon process (restart).
+  let lifeAt: number | undefined
+  /** server.ts's markFloorAttachedIfHolder: the attached entry this daemon process writes, again at every arm. */
+  const attach = () => markFloorAttached({ root, folders, projectDir, ...(lifeAt === undefined ? {} : { now: lifeAt }) })
   function daemon() {
-    // Each daemon life attaches anew, as server.ts does at its start: a new `at`.
-    markFloorAttached({ root, folders, projectDir, now: Date.now() + ++lives })
+    // Each daemon life attaches anew, as server.ts does at its start: a new process, a new `at`.
+    if (lives++ > 0) lifeAt = Date.now() + lives
+    attach()
     const ledger = createFireLedger({ path: firesPath })
     let publish = () => {}
     // Built as server.ts:9146 builds it; the callbacks log as server.ts logs, and a revoke republishes the context.
@@ -166,15 +178,15 @@ export function agentHost(t: any) {
     const intake = startHookIntake({
       stateRoot: root, projectDir, baseDir: folder, isArmed: () => true,
       // server.ts onHookPayload's private turn statements, then the publish it ends with.
-      onEvent: (payload) => {
+      onEvent: (payload, line) => {
         const hookSessionId = String(payload.session_id ?? '').trim()
-        if (payload.hook_event_name === 'SessionEnd') tracker.end()
+        if (payload.hook_event_name === 'SessionEnd') tracker.end({ at: line.receivedAt })
         if (payload.hook_event_name === 'UserPromptSubmit') {
           const began = tracker.begin({ prompt: payload.prompt, promptHash: payload.hoai_clipped === true ? payload.prompt_sha256 : undefined, sessionId: hookSessionId, promptId: payload.prompt_id })
           const matched = turnChat.matchDelivered(String(payload.prompt ?? ''))
           if (began !== 'repeat' && began !== 'replayed' && (began !== 'no-token' || matched !== null)) lines.push(privateBeginLine(began, hookSessionId))
         }
-        if (payload.hook_event_name === 'Stop') tracker.end()
+        if (payload.hook_event_name === 'Stop') tracker.end({ at: line.receivedAt })
         publish()
       },
       provesDelivery: (prompt) => turnChat.matchDelivered(prompt) !== null,
@@ -271,16 +283,26 @@ export function agentHost(t: any) {
     /** The CLI's UserPromptSubmit for one prompt (its own prompt_id); nothing runs until mark() or spool(). */
     prompt(prompt: string): Submission {
       const payload = payloadOf('UserPromptSubmit', { prompt_id: randomUUID(), prompt })
-      return { mark: () => { recordPrivateBoundary(payload, hookEnv) }, spool: () => { appendEvent(payload, { env: hookEnv }) } }
+      return { mark: () => { recordPrivateBoundary(payload, hookEnv); settle() }, spool: () => { appendEvent(payload, { env: hookEnv }) } }
     },
     /** A prompt whose hook and line both ran in time: marked, spooled, drained. */
     submit(prompt: string) { const sub = host.prompt(prompt); sub.mark(); sub.spool(); host.pump() },
     /** The CLI ends the turn: the hook closes the marker, the forwarder spools Stop, the daemon drains. */
     stop() { const stop = host.stopping(); stop.mark(); stop.spool(); host.pump() },
+    /**
+     * The forwarder stamps its line when the CLI's Stop happened (its receivedAt), however late the line lands; with no
+     * mark() (the Stop hook failed and never closed the marker) the moment it is spooled.
+     */
     stopping(): Submission {
       const payload = payloadOf('Stop', { stop_hook_active: false })
-      return { mark: () => { recordPrivateBoundary(payload, hookEnv) }, spool: () => { appendEvent(payload, { env: hookEnv }) } }
+      let stoppedAt: number | undefined
+      return {
+        mark: () => { stoppedAt = Date.now(); settle(); recordPrivateBoundary(payload, hookEnv); settle() },
+        spool: () => { appendEvent(payload, { env: hookEnv, now: stoppedAt ?? Date.now() }) },
+      }
     },
+    /** server.ts arms delivery again in the SAME daemon process (each armDelivery, a reclaim): the entry written anew. */
+    rearm() { attach() },
     pump() { life.intake.pump() },
     /** The 1 s tick and every hook line republish the signed context (server.ts:15816, :9822). */
     tick() { life.publish() },

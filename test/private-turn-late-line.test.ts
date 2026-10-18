@@ -1011,27 +1011,34 @@ test('a bar from a delivery whose place was unknown outlives a late Stop line th
 test('the marker records the CLI turn: one turn until a Stop, the gap it followed, each prompt\'s token by tag, never the token', () => {
   const token = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
   const card = (n: number) => `card ${n}\n<hoai-private-turn id="${token(n)}"/>`
+  const short = (prompt: string) => privatePromptHash(prompt).slice(0, 16)
   const first = { schemaVersion: 1, turnId: 't1', sessionId: 's', promptHash: 'h', live: true, ...privateTurnRecord({ previous: { schemaVersion: 1, turnId: 'c0', sessionId: 's', live: false }, sessionId: 's', prompt: card(1), turnId: 't1' }) }
   assert.deepEqual([first.cliTurn, first.after, first.tags], ['t1', 'c0', [privateTokenTag(token(1))]])
   assert.ok(!JSON.stringify(first).includes(token(1)), 'the token itself is never written')
   const second = privateTurnRecord({ previous: first, sessionId: 's', prompt: card(2), turnId: 't2' })
   assert.deepEqual([second.cliTurn, second.after, second.tags], ['t1', 'c0', [privateTokenTag(token(1)), privateTokenTag(token(2))]], 'the same turn')
-  assert.deepEqual(privateTurnRecord({ previous: { ...first, live: false }, sessionId: 's', prompt: card(3), turnId: 't3' }), { cliTurn: 't3', after: 't1', tags: [privateTokenTag(token(3))], record: 2 }, 'after a Stop, a new turn')
-  assert.deepEqual(privateTurnRecord({ previous: { ...first, live: false }, sessionId: 'other', prompt: card(3), turnId: 't3' }), { cliTurn: 't3', after: 't1', tags: [privateTokenTag(token(3))], record: 2 }, 'after another session\'s Stop: the gap it followed all the same')
-  assert.deepEqual(privateTurnRecord({ previous: first, sessionId: 'other', prompt: card(3), turnId: 't3' }), { cliTurn: 't3', tags: [privateTokenTag(token(3))], record: 2 }, 'another session\'s live marker (a CLI killed without SessionEnd): a new turn it never bars')
+  assert.deepEqual(privateTurnRecord({ previous: { ...first, live: false }, sessionId: 's', prompt: card(3), turnId: 't3' }), { cliTurn: 't3', after: 't1', tags: [privateTokenTag(token(3))], prompts: [short(card(3))], record: 2 }, 'after a Stop, a new turn')
+  assert.deepEqual(privateTurnRecord({ previous: { ...first, live: false }, sessionId: 'other', prompt: card(3), turnId: 't3' }), { cliTurn: 't3', after: 't1', tags: [privateTokenTag(token(3))], prompts: [short(card(3))], record: 2 }, 'after another session\'s Stop: the gap it followed all the same')
+  assert.deepEqual(privateTurnRecord({ previous: first, sessionId: 'other', prompt: card(3), turnId: 't3' }), { cliTurn: 't3', afterLive: 't1', tags: [privateTokenTag(token(3))], prompts: [short(card(3))], record: 2 }, 'another session\'s live marker (a CLI killed without SessionEnd): a new turn it never bars, that names the turn it followed')
   const life = { pid: 4242, at: 1000 }
   const ownLife = { ...first, daemon: life }
   assert.equal(privateTurnRecord({ previous: ownLife, sessionId: 's', prompt: card(2), turnId: 't2', daemon: life }).cliTurn, 't1', 'the same session and daemon life: the same turn')
-  assert.deepEqual(privateTurnRecord({ previous: ownLife, sessionId: 's', prompt: card(2), turnId: 't2', daemon: { pid: 4242, at: 2000 } }), { cliTurn: 't2', tags: [privateTokenTag(token(2))], record: 2, daemon: { pid: 4242, at: 2000 } }, 'the same session, a new daemon life with a reused pid: a new turn')
+  assert.deepEqual(privateTurnRecord({ previous: ownLife, sessionId: 's', prompt: card(2), turnId: 't2', daemon: { pid: 4242, at: 2000 } }), { cliTurn: 't2', afterLive: 't1', tags: [privateTokenTag(token(2))], prompts: [short(card(2))], record: 2, daemon: { pid: 4242, at: 2000 } }, 'the same session, a new daemon life with a reused pid: a new turn')
   assert.equal(privateTurnRecord({ previous: ownLife, sessionId: 's', prompt: card(2), turnId: 't2', daemon: { pid: 4343, at: 1000 } }).cliTurn, 't2', 'another pid: a new turn')
   assert.equal(privateTurnRecord({ previous: first, sessionId: 's', prompt: card(2), turnId: 't2', daemon: life }).cliTurn, 't1', 'a marker of a hook before 0.69.8 names no daemon life: the session decides')
-  assert.deepEqual(privateTurnRecord({ previous: null, previousMissing: true, sessionId: 's', prompt: card(3), turnId: 't3', promptId: 'p3' }), { cliTurn: 'p3', after: 'none', tags: [privateTokenTag(token(3))], record: 2 }, 'no marker yet; a new turn named by its prompt_id')
+  assert.deepEqual(privateTurnRecord({ previous: null, previousMissing: true, sessionId: 's', prompt: card(3), turnId: 't3', promptId: 'p3' }), { cliTurn: 'p3', after: 'none', tags: [privateTokenTag(token(3))], prompts: [short(card(3))], record: 2 }, 'no marker yet; a new turn named by its prompt_id')
   assert.equal(privateTurnRecord({ previous: null, previousUnreadable: true, sessionId: 's', prompt: card(3), turnId: 't3' }).unsure, true, 'a marker there but unreadable')
   assert.equal(privateTurnRecord({ previous: { schemaVersion: 1, turnId: 'old', sessionId: 's', live: true }, sessionId: 's', prompt: card(3), turnId: 't3' }).unsure, true, 'a live marker of a hook that kept no tags')
   let previous: any = null
   for (let n = 0; n <= PRIVATE_TURN_TAGS_MAX; n++) previous = { schemaVersion: 1, turnId: `t${n}`, sessionId: 's', live: true, promptId: 'p'.repeat(128), promptHash: 'f'.repeat(64), ...privateTurnRecord({ previous, sessionId: 's', prompt: card(n), turnId: `00000000-0000-4000-8000-${String(n).padStart(12, '0')}` }) }
   assert.equal(previous.tagsLost, true, `past ${PRIVATE_TURN_TAGS_MAX} tags`)
   assert.ok(Buffer.byteLength(JSON.stringify(previous)) < 2048, 'a full marker stays under the 2048 bytes every reader (the Agent Browser too) accepts')
+  // The longest a marker gets (review of c09e214e and e7166041): every list full, each turn named by a 128 character
+  // prompt_id, the turn it followed a live one of another daemon life.
+  const longest = { ...previous, cliTurn: 'q'.repeat(128), ...privateTurnRecord({ previous: { ...previous, cliTurn: 'q'.repeat(128), daemon: { pid: 4141, at: 1_750_000_000_000 } }, sessionId: 's', prompt: card(99), turnId: 't99', promptId: 'r'.repeat(128), daemon: { pid: 4242, at: 1_760_000_000_000 } }) }
+  longest.tags = previous.tags; longest.tagsLost = true; longest.prompts = Array.from({ length: 16 }, (_, k) => short(card(k)))
+  assert.equal(longest.afterLive, 'q'.repeat(128))
+  assert.ok(Buffer.byteLength(JSON.stringify({ ...longest, promptId: 'r'.repeat(128), after: '00000000-0000-4000-8000-000000000000' })) < 2048, `the longest marker stays under 2048 bytes: ${Buffer.byteLength(JSON.stringify(longest))}`)
 })
 
 test('the refusal says why, in the daemon\'s log line', (t) => {
