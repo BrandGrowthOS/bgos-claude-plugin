@@ -86,6 +86,7 @@ import {
   inboxNoteReplied,
   inboxPollFrom,
   inboxTrusted,
+  inboxVerified,
   LaneClaudeReady,
   laneDeliveryGate,
   LaneDeliveryClaims,
@@ -398,10 +399,6 @@ function saveInbox(): void {
 const deliveredChats = new Set<string>(inbox.pending.map((p) => p.chatId))
 // Which turns this process hands over, decided once per message id (0.71.2).
 const claims = new LaneDeliveryClaims(inbox)
-// The id of the last `/new` performed in this life: a turn older than it
-// belongs to the conversation the person left, and is never handed over
-// after it, even one the boot poll was still deciding (0.71.2).
-let newConversationFrom = 0
 
 const ROOT = dirname(fileURLToPath(import.meta.url))
 const mcp = new Server(mcpServerInfo(readOwnVersion(ROOT)), {
@@ -502,8 +499,10 @@ async function deliverRaw(raw: unknown, transport: 'lane-socket' | 'lane-poll', 
     return
   }
   const d = gate.delivery
-  if (d.messageId < newConversationFrom) {
-    // From the conversation the person left: never handed over, never waiting.
+  if (d.messageId < (inbox.newFrom ?? 0)) {
+    // From the conversation the person left with a `/new` (in this life or,
+    // through the note, the last): never handed over, never waiting, even one
+    // the boot poll was still deciding (0.71.2).
     if (!inbox.delivered.includes(d.messageId)) {
       inbox = inboxNoteHandled(inbox, d)
       saveInbox()
@@ -521,7 +520,8 @@ async function deliverRaw(raw: unknown, transport: 'lane-socket' | 'lane-poll', 
     if (route.kind === 'new') {
       // The new conversation starts empty: no turn of the old one is re-offered.
       inbox = inboxForNewConversation(inbox)
-      newConversationFrom = Math.max(newConversationFrom, d.messageId)
+      // Saved with the note below, before the restart this /new asks for.
+      inbox = { ...inbox, newFrom: Math.max(inbox.newFrom ?? 0, d.messageId) }
       inFlightChats.clear()
       inFlight = false
       inFlightSinceMs = null
@@ -686,7 +686,7 @@ async function poll(): Promise<void> {
       backlog = backlog.filter((d) => !handed.has(d.messageId))
     }
     // The server was asked (or nothing needed asking): the note is trusted from here.
-    if (boot && inbox.unverified) inbox = { cursor: inbox.cursor, delivered: inbox.delivered, pending: inbox.pending }
+    if (boot && inbox.unverified) inbox = inboxVerified(inbox)
     firstPoll = false
     const fresh = new Set(backlog.map((d) => d.messageId))
     for (const r of rows) {

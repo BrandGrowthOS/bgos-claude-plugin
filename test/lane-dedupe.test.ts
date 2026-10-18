@@ -570,6 +570,30 @@ test('a /new handled while the boot poll asks the server: the older waking turn 
     const saved = savedInbox(rig.home)
     assert.ok(saved.delivered.includes(WAITING_ID), 'it is noted as handled, so it is never offered')
     assert.ok(!saved.pending.some((p) => p.id === WAITING_ID), 'and nothing waits, so the next life does not re-offer it')
+    assert.equal((saved as Record<string, unknown>).newFrom, NEW_COMMAND_ID, 'the /new is in the note, for a next life that starts before this one recorded the older turn')
+  } finally {
+    await stopLane(rig)
+  }
+})
+
+test('a next life whose last life performed a /new before it recorded the older turn still keeps that turn out', async () => {
+  // Review pass 5, finding 1: the supervisor restarted the lane for the /new
+  // (632) while its boot poll was still asking the server about 631, so the
+  // note holds the /new but not 631, and it is unverified.
+  const WAITING_ID = 631
+  const NEW_COMMAND_ID = 632
+  const backend = await startBackend({
+    rows: [inboundRow(WAITING_ID, 1, 'From the conversation she left'), inboundRow(NEW_COMMAND_ID, 0, '/new')],
+    deliveryStates: { [WAITING_ID]: 'delivered', [NEW_COMMAND_ID]: 'acknowledged' },
+  })
+  const rig = await startLane(backend, { inbox: { cursor: 0, delivered: [NEW_COMMAND_ID], pending: [], unverified: true, newFrom: NEW_COMMAND_ID } })
+  try {
+    await waitFor(() => backend.inboundGets > 0, 'the boot poll')
+    // Past the settle: a turn that was going to go out has gone out.
+    await sleep(3_500)
+    assert.equal(rig.channel.length, 0, 'the older turn never reaches the new conversation')
+    assert.equal(backend.acks.length, 0)
+    assert.ok(savedInbox(rig.home).delivered.includes(WAITING_ID), 'and it is noted as handled')
   } finally {
     await stopLane(rig)
   }

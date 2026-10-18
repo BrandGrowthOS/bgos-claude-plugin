@@ -41,6 +41,7 @@ import {
   inboxAdvanceCursor,
   inboxForNewConversation,
   inboxNoteDelivered,
+  inboxNoteHandled,
   inboxNoteReplied,
   inboxPollFrom,
   inboxShouldDeliver,
@@ -267,6 +268,15 @@ test('which inbox note a launch trusts: an object, not one a first boot saved be
   assert.deepEqual(readLaneInbox({ cursor: 4, delivered: [4], pending: [], unverified: true }), { cursor: 4, delivered: [4], pending: [], unverified: true })
   assert.deepEqual(readLaneInbox({ cursor: 4, delivered: [4], pending: [], unverified: 'yes' }), { cursor: 4, delivered: [4], pending: [] })
   assert.equal(inboxNoteDelivered(readLaneInbox({ unverified: true }), { messageId: 5, chatId: '7' }).unverified, true, 'kept by every note')
+})
+
+test('the last /new a lane performed is kept in its note, read back only as a positive id (0.71.2)', () => {
+  assert.equal(readLaneInbox({ cursor: 9, delivered: [9], pending: [], newFrom: 9 }).newFrom, 9)
+  assert.equal(readLaneInbox({ newFrom: '9' }).newFrom, 9)
+  for (const bad of [0, -3, 'x', null, 1.5]) assert.equal('newFrom' in readLaneInbox({ newFrom: bad }), false, String(bad))
+  assert.deepEqual(readLaneInbox({ cursor: 4, delivered: [4], pending: [] }), { cursor: 4, delivered: [4], pending: [] }, 'a note without one reads as before')
+  const kept = inboxForNewConversation(inboxNoteHandled(readLaneInbox({ newFrom: 9 }), { messageId: 10 }))
+  assert.equal(kept.newFrom, 9, 'kept by every note')
 })
 
 test('the server\'s record of a hand over: the history page for exactly one message, and its delivery state (0.71.2)', () => {

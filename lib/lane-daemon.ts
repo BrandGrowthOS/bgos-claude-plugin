@@ -273,6 +273,13 @@ export interface LaneInboxState {
    * by the next launch.
    */
   unverified?: true
+  /**
+   * The message id of the last `/new` this lane performed: a turn older than
+   * it belongs to the conversation the person left and is never handed over
+   * after it. In the note, so a restart (which the `/new` itself asks for)
+   * keeps it too (0.71.2).
+   */
+  newFrom?: number
 }
 
 export const LANE_INBOX_DELIVERED_MAX = 500
@@ -289,12 +296,21 @@ export function readLaneInbox(raw: unknown): LaneInboxState {
       .filter((p) => Number.isSafeInteger(p.id) && p.id > 0 && /^[1-9][0-9]*$/.test(p.chatId))
       .slice(-20)
     : []
+  const newFrom = Number(r.newFrom)
   return {
     cursor: Number.isSafeInteger(cursor) && cursor > 0 ? cursor : 0,
     delivered,
     pending,
     ...(r.unverified === true ? { unverified: true as const } : {}),
+    ...(Number.isSafeInteger(newFrom) && newFrom > 0 ? { newFrom } : {}),
   }
+}
+
+/** The note once the boot poll has asked the server: trusted again, nothing else changed. */
+export function inboxVerified(state: LaneInboxState): LaneInboxState {
+  const next = { ...state }
+  delete next.unverified
+  return next
 }
 
 /**
