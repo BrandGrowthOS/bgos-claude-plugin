@@ -466,9 +466,9 @@ test('review: privateTurnRecord lists each prompt once, the latest 16 of the tur
 test('review: server.ts ends the private turn at the hook line\'s own time (the forwarder\'s start, else its receivedAt), on the Stop line and on SessionEnd', () => {
   const source = readFileSync('server.ts', 'utf8')
   assert.match(source, /const lineAt = line\?\.startedAt \?\? receivedAt\n/, 'the forwarder\'s process start first')
-  assert.match(source, /privateTurns\.end\(hookLineAt === null \? \{\} : \{ at: hookLineAt \}\)/, 'the Stop line (endHookTurn)')
-  assert.match(source, /if \(event\.name === 'SessionEnd'\) privateTurns\.end\(\{ at: lineAt \}\)/, 'SessionEnd')
-  assert.match(source, /hookLineAt = lineAt\n  try \{\n    runHookEffects\(effects\)\n  \} finally \{\n    hookLineAt = null\n  \}/, 'set only while the line\'s effects run')
+  assert.match(source, /privateTurns\.end\(hookLineAt === null \? \{\} : \{ at: hookLineAt(, startedAt: hookLineStartedAt)? \}\)/, 'the Stop line (endHookTurn)')
+  assert.match(source, /if \(event\.name === 'SessionEnd'\) privateTurns\.end\(\{ at: lineAt(, startedAt: line\?\.startedAt)? \}\)/, 'SessionEnd')
+  assert.match(source, /hookLineAt = lineAt\n(  hookLineStartedAt = line\?\.startedAt\n)?  try \{\n    runHookEffects\(effects\)\n  \} finally \{\n    hookLineAt = null\n(    hookLineStartedAt = undefined\n)?  \}/, 'set only while the line\'s effects run')
 })
 
 // ── The security re-review of c09e214e ──

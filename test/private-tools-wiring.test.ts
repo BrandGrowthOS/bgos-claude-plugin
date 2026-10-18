@@ -57,7 +57,7 @@ test('all three admitted message lanes use opaque private delivery identity and 
   assert.match(source, /senderUserId: privateSenderUserId\(msg\.message\)/)
   assert.match(source, /senderUserId: privateSenderUserId\(view\.raw\)/)
   assert.match(source, /senderUserId: privateSenderUserId\(payload\)/)
-  assert.match(source, /privateTurns\.begin\(\{ prompt: payload\.prompt, promptHash: payload\.hoai_clipped === true \? payload\.prompt_sha256 : undefined, sessionId: hookSessionId, promptId: payload\.prompt_id \}\)/)
+  assert.match(source, /privateTurns\.begin\(\{ prompt: payload\.prompt, promptHash: payload\.hoai_clipped === true \? payload\.prompt_sha256 : undefined, sessionId: hookSessionId, promptId: payload\.prompt_id(?:, startedAt: line\?\.startedAt)? \}\)/)
   // What begin() decided is logged for every prompt that carried a token, and a refused call names the failed check.
   // A replayed fire is said once, by its own line (onReplay), not also by the begin line.
   assert.match(source, /if \(began !== 'repeat' && began !== 'replayed' && \(began !== 'no-token' \|\| matched !== null\)\) log\(privateBeginLine\(began, hookSessionId\)\)/)

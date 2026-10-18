@@ -9708,8 +9708,9 @@ function endHookTurn(keepCard: boolean): void {
   hookStepsTurnId = null
   stopHookStepsHeartbeat()
   turnChat.end(Date.now())
-  // The Stop line's stamp, when a hook line ended the turn: a live marker written before it is the turn that stopped.
-  privateTurns.end(hookLineAt === null ? {} : { at: hookLineAt })
+  // The Stop line's stamp, when a hook line ended the turn: a live marker written before it is the turn that stopped,
+  // and a prompt submitted before its forwarder's start ran in that turn (startedAt).
+  privateTurns.end(hookLineAt === null ? {} : { at: hookLineAt, startedAt: hookLineStartedAt })
   publishBrowserPrivateTurn()
 }
 
@@ -9793,6 +9794,8 @@ function runHookEffects(effects: Effect[]): void {
  */
 /** The time of the hook line whose effects run now (onHookPayload's lineAt), for privateTurns.end(); null otherwise. */
 let hookLineAt: number | null = null
+/** That line's own forwarder start when it carried one (startedAt alone, never receivedAt), for privateTurns.end(). */
+let hookLineStartedAt: number | undefined
 
 function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void {
   const event = parseHookEvent(payload)
@@ -9823,10 +9826,12 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
   // writes the agent's private turn marker (lib/floor-state.mjs findOwnAttachedKey, the third review of c69224fe), and
   // none once that session ended, so the first prompt of the session a /clear starts writes its own (the fourth).
   if (floorEntrySession(liveSessionId, hookEndedSessionId) !== floorEntrySessionWritten) markFloorAttachedIfHolder()
-  if (event.name === 'SessionEnd') privateTurns.end({ at: lineAt })
+  if (event.name === 'SessionEnd') privateTurns.end({ at: lineAt, startedAt: line?.startedAt })
   if (event.name === 'UserPromptSubmit') {
     // A prompt past the forwarder's clip arrives as its token(s) plus the full prompt's hash.
-    const began = privateTurns.begin({ prompt: payload.prompt, promptHash: payload.hoai_clipped === true ? payload.prompt_sha256 : undefined, sessionId: hookSessionId, promptId: payload.prompt_id })
+    // startedAt: when claude submitted it (the forwarder's own start), so a Stop line places it by that, wherever the
+    // two lines land (lib/private-turn.mjs ranSinceStop, the final review of e7166041).
+    const began = privateTurns.begin({ prompt: payload.prompt, promptHash: payload.hoai_clipped === true ? payload.prompt_sha256 : undefined, sessionId: hookSessionId, promptId: payload.prompt_id, startedAt: line?.startedAt })
     hookTurnLive = true
     // The turn's chat is decided HERE and held until Stop. The prompt carries
     // the message we delivered, so the delivery it matches names the chat; with
@@ -9841,10 +9846,12 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
   const { next, effects } = applyHookEventToTurn(hookTurn, event, receivedAt)
   hookTurn = next
   hookLineAt = lineAt
+  hookLineStartedAt = line?.startedAt
   try {
     runHookEffects(effects)
   } finally {
     hookLineAt = null
+    hookLineStartedAt = undefined
   }
   // A turn starting or ending is exactly what the watcher's safe moment reads,
   // so it is published now rather than on the next tick.
