@@ -416,6 +416,8 @@ test('posix is unchanged: a marker relaunch is a plain kill, no tree ender', asy
 test('a launch through an injected spawn never reaches the real process listing or kill: the default tree ender is for real children only', async () => {
   const calls: unknown[][] = []
   const h = harness({
+    // A SystemRoot, so the System32 listing could be named: only the guard keeps it from running.
+    env: { ...SUPERVISED, SystemRoot: 'C:\\Windows' },
     endTree: false,
     spawnSyncImpl: (...args: unknown[]) => {
       calls.push(args)
