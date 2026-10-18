@@ -330,7 +330,7 @@ test('server.ts keys the floor by daemonFloorFolders with LAUNCH_CWD, the folder
   assert.match(server, /const LAUNCH_CWD = process\.env\.BGOS_LAUNCH_CWD\?\.trim\(\) \|\| process\.cwd\(\)/)
   // The entry names the folder this daemon's transcripts live in: the private turn hook writes only under its own
   // daemon's key (findOwnAttachedKey), never another agent's (0.68.4).
-  assert.match(server, /markFloorAttached\(\{ root: FLOOR_STATE_ROOT, folders: FLOOR_FOLDERS, projectDir: sessionBinder\.projectDirectory, baseDir: LAUNCH_CWD, sessionId: liveSessionId \?\? '' \}\)/)
+  assert.match(server, /markFloorAttached\(\{ root: FLOOR_STATE_ROOT, folders: FLOOR_FOLDERS, projectDir: sessionBinder\.projectDirectory, baseDir: LAUNCH_CWD, sessionId: floorEntrySession\(liveSessionId, hookEndedSessionId\) \}\)/)
   assert.match(server, /const FLOOR_KEYS = \[\.\.\.new Set\(FLOOR_FOLDERS\.map/)
   // And the launcher still hands the folder through under that name.
   const launcher = readFileSync(join(import.meta.dirname, '..', 'bin', 'bgos-launch.mjs'), 'utf8')

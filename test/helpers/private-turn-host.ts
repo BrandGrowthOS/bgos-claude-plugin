@@ -22,6 +22,7 @@ import { startHookIntake, type SpoolLine } from '../../lib/hook-intake.ts'
 import { buildInboundChannel } from '../../lib/inbound-channel.ts'
 import { SessionTranscriptBinder } from '../../lib/session-binding.ts'
 import { createTurnChatTracker } from '../../lib/turn-chat.ts'
+import * as floorState from '../../lib/floor-state.mjs'
 import { daemonFloorFolders, floorKey, markFloorAttached } from '../../lib/floor-state.mjs'
 import * as privateTurn from '../../lib/private-turn.mjs'
 import {
@@ -157,17 +158,28 @@ export function agentHost(t: any) {
   // The `at` the current daemon life attached with: none for the first, which attaches exactly as server.ts does (no
   // `now`, markFloorAttachedIfHolder); a fixed one for each later life, another daemon process (restart).
   let lifeAt: number | undefined
-  // The CLI session this daemon process's intake bound to (server.ts liveSessionId), null until its first admitted line.
+  // The CLI session this daemon process's intake bound to (server.ts liveSessionId), null until its first admitted line,
+  // and the session whose SessionEnd was the last line it consumed (server.ts hookEndedSessionId).
   let liveSession: string | null = null
+  let endedSession: string | null = null
+  // The session the attached entry names (lib/floor-state.mjs floorEntrySession; before it, the bound session).
+  const entrySession = (): string => typeof (floorState as any).floorEntrySession === 'function'
+    ? (floorState as any).floorEntrySession(liveSession, endedSession)
+    : liveSession ?? ''
+  let attachedSession: string | null = null
   /**
    * server.ts's markFloorAttachedIfHolder: the attached entry this daemon process writes, again at every arm, naming the
-   * session it is bound to once it is (the third review of c69224fe).
+   * session it is bound to once it is (the third review of c69224fe), none once that session ended (the fourth).
    */
-  const attach = () => markFloorAttached({ root, folders, projectDir, sessionId: liveSession ?? '', ...(lifeAt === undefined ? {} : { now: lifeAt }) })
+  const attach = () => {
+    attachedSession = entrySession()
+    return markFloorAttached({ root, folders, projectDir, sessionId: attachedSession, ...(lifeAt === undefined ? {} : { now: lifeAt }) })
+  }
   function daemon() {
     // Each daemon life attaches anew, as server.ts does at its start: a new process, a new `at`, bound to nothing yet.
     if (lives++ > 0) lifeAt = Date.now() + lives
     liveSession = null
+    endedSession = null
     attach()
     const ledger = createFireLedger({ path: firesPath })
     let publish = () => {}
@@ -192,8 +204,10 @@ export function agentHost(t: any) {
       // server.ts onHookPayload's private turn statements, then the publish it ends with.
       onEvent: (payload, line) => {
         const hookSessionId = String(payload.session_id ?? '').trim()
-        // server.ts onHookPayload: a session newly live is named in the attached entry.
-        if (hookSessionId && hookSessionId !== liveSession) { liveSession = hookSessionId; attach() }
+        // server.ts onHookPayload: a session newly live is named in the attached entry, and none once it ended.
+        endedSession = payload.hook_event_name === 'SessionEnd' ? hookSessionId || null : null
+        if (hookSessionId && hookSessionId !== liveSession) liveSession = hookSessionId
+        if (entrySession() !== attachedSession) attach()
         if (payload.hook_event_name === 'SessionEnd') tracker.end({ at: lineAt(line) })
         if (payload.hook_event_name === 'UserPromptSubmit') {
           const began = tracker.begin({ prompt: payload.prompt, promptHash: payload.hoai_clipped === true ? payload.prompt_sha256 : undefined, sessionId: hookSessionId, promptId: payload.prompt_id })
@@ -312,6 +326,32 @@ export function agentHost(t: any) {
         session: other,
         prompt(prompt: string) { recordPrivateBoundary(otherPayload('UserPromptSubmit', { prompt_id: randomUUID(), prompt }), hookEnv); settle() },
         stop() { recordPrivateBoundary(otherPayload('Stop', { stop_hook_active: false }), hookEnv); settle() },
+      }
+    },
+    /**
+     * The operator's /clear in the agent's claude (claude 2.1.302 clearConversation): this session's SessionEnd (its
+     * hook, its line drained), then a new session of the same claude and daemon, whose prompts' hooks and lines go as
+     * prompt() gives them, to the same spool. Its first delivered prompt binds it (lib/hook-intake.ts); `said` is what
+     * its hook reported when it wrote no marker.
+     */
+    clear() {
+      const end = payloadOf('SessionEnd', { reason: 'clear' })
+      recordPrivateBoundary(end, hookEnv); settle()
+      appendEvent(end, { env: hookEnv }); host.pump()
+      const next = randomUUID()
+      const nextTranscript = join(projectDir, `${next}.jsonl`)
+      writeFileSync(nextTranscript, '')
+      const nextPayload = (event: string, extra: Record<string, unknown> = {}) =>
+        ({ ...payloadOf(event, extra), session_id: next, transcript_path: nextTranscript })
+      const said: string[] = []
+      return {
+        session: next, said,
+        prompt(prompt: string): Submission {
+          const payload = nextPayload('UserPromptSubmit', { prompt_id: randomUUID(), prompt })
+          return { mark: () => { recordPrivateBoundary(payload, hookEnv, (why: string) => said.push(why)); settle() }, spool: () => { appendEvent(payload, { env: hookEnv }) } }
+        },
+        submit(prompt: string) { const sub = this.prompt(prompt); sub.mark(); sub.spool(); host.pump() },
+        stop() { const payload = nextPayload('Stop', { stop_hook_active: false }); recordPrivateBoundary(payload, hookEnv); settle(); appendEvent(payload, { env: hookEnv }); host.pump() },
       }
     },
     /** A prompt whose hook and line both ran in time: marked, spooled, drained. */
