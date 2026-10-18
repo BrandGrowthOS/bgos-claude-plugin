@@ -43,7 +43,9 @@ function describeEntry({ key, state, pid, projectDir }) {
  * closed instead, so a turn they carried (its signed browser context lives up to 60 s) cannot outlast this boundary.
  * `holding`: this session's stale closes that still hold a CLI turn (closeMarkers) at such keys. A daemon bound to
  * another session of the same folder holds its key too: another claude session there (a person's own claude in the
- * agent's folder) never writes the agent's marker (the third review of c69224fe).
+ * agent's folder) never writes the agent's marker (the third review of c69224fe). Unless the marker there says that
+ * session ended (`ended`, its SessionEnd hook's close): the session a /clear starts writes its own markers before the
+ * daemon reads that SessionEnd line, and each says the entry it took names the ended session (the final review).
  */
 function managedMarker(payload, env) {
   const root = floorStateRoot(env)
@@ -52,8 +54,12 @@ function managedMarker(payload, env) {
   const transcriptPath = typeof payload?.transcript_path === 'string' ? payload.transcript_path : ''
   const base = projectFolder || (typeof payload?.cwd === 'string' ? payload.cwd : '')
   const sessionId = String(payload?.session_id ?? '').trim()
-  const { key, seen, daemon } = findOwnAttachedKey({ root, folders, transcriptPath, projectFolder, base, sessionId })
-  if (key) return { root, path: privateMarkerPath(root, key), stale: [], holding: [], daemon }
+  const endedSession = (candidate) => {
+    const marker = readPrivateJson(privateMarkerPath(root, candidate), 2048)
+    return typeof marker?.ended === 'string' ? marker.ended : ''
+  }
+  const { key, seen, daemon, ended } = findOwnAttachedKey({ root, folders, transcriptPath, projectFolder, base, sessionId, endedSession })
+  if (key) return { root, path: privateMarkerPath(root, key), stale: [], holding: [], daemon, ended }
   const held = new Set(seen.filter((entry) => ['other-project', 'older-daemon', 'other-session'].includes(entry.state)).map((entry) => entry.key))
   const markers = folders.map(floorKey).filter(Boolean)
     .map((candidate) => ({ key: candidate, path: privateMarkerPath(root, candidate), marker: readPrivateJson(privateMarkerPath(root, candidate), 2048) }))
@@ -164,11 +170,15 @@ export function recordPrivateBoundary(payload, env = process.env, report = () =>
       daemon: target.daemon, previousLifeAlive: otherLifeRunning(before.previous, target.daemon), interloped: before.interloped,
     })
     : {}
+  // `ended`: a SessionEnd says its session is over, and a marker written while the entry still names a session that
+  // ended says so again, until the daemon reads that SessionEnd line and names none (managedMarker).
+  const ended = event === 'SessionEnd' ? sessionId : target.ended
   const marker = {
     schemaVersion: 1, turnId, sessionId,
     promptHash: privatePromptHash(payload.prompt), live: event === 'UserPromptSubmit',
     ...(promptId ? { promptId } : {}),
     ...record,
+    ...(ended ? { ended } : {}),
   }
   writePrivateJson(path, marker)
   if (event === 'SessionEnd') {
