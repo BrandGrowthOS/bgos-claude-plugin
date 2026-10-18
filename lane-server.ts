@@ -677,12 +677,15 @@ async function poll(): Promise<void> {
       // was already handed over decides instead (0.71.2). Only rows stamped
       // for this lane are asked about: the rest never go over (the second
       // lock refuses them below), and the server would refuse the read.
-      const { answered, newFrom } = await answeredAtServer(backlog.filter((d) => laneDeliveryGate(d.raw, LANE).deliver))
+      const { answered, unsure, newFrom } = await answeredAtServer(backlog.filter((d) => laneDeliveryGate(d.raw, LANE).deliver))
       // A `/new` she sent, performed before the folders went: the turns older
       // than it belong to the conversation she left (deliverRaw keeps them out).
       if (newFrom > (inbox.newFrom ?? 0)) inbox = { ...inbox, newFrom }
       for (const d of backlog) {
         if (!answered.has(d.messageId)) continue
+        // Handed over in this life during the reads, and the server cannot
+        // show an answer: its own note stands, waiting for one.
+        if (unsure.has(d.messageId) && inbox.delivered.includes(d.messageId)) continue
         log(`backlog turn ${d.messageId} was already answered (acknowledged at the server, and answered or performed); not offered again`)
         inbox = inboxNoteHandled(inbox, d)
       }
@@ -739,8 +742,10 @@ async function readHistory(path: string, messageId: number): Promise<unknown> {
  * rows in parallel: at most 30 s in all, only when the route fails or hangs,
  * and a refusal here never ends the lane.
  */
-async function answeredAtServer(backlog: LaneDelivery[]): Promise<{ answered: Set<number>; newFrom: number }> {
+async function answeredAtServer(backlog: LaneDelivery[]): Promise<{ answered: Set<number>; unsure: Set<number>; newFrom: number }> {
   const answered = new Set<number>()
+  // Acknowledged, but the server could not show whether an agent answered.
+  const unsure = new Set<number>()
   let newFrom = 0
   await Promise.all(backlog.map(async (d) => {
     const page = await readHistory(laneHistoryPathFor(d), d.messageId)
@@ -753,9 +758,12 @@ async function answeredAtServer(backlog: LaneDelivery[]): Promise<{ answered: Se
       return
     }
     const after = await readHistory(laneHistoryAfterPathFor(d), d.messageId)
-    if (after === undefined || laneHistoryAnsweredAfter(after, d.messageId, LANE_NOTICE_SENTENCES) !== false) answered.add(d.messageId)
+    const said = after === undefined ? null : laneHistoryAnsweredAfter(after, d.messageId, LANE_NOTICE_SENTENCES)
+    if (said === false) return
+    answered.add(d.messageId)
+    if (said === null) unsure.add(d.messageId)
   }))
-  return { answered, newFrom }
+  return { answered, unsure, newFrom }
 }
 
 function frameIsMine(frame: unknown): boolean {

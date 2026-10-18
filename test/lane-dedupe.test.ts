@@ -727,3 +727,29 @@ test('bug 2: a message never acknowledged goes over though an agent row follows 
     await stopLane(rig)
   }
 })
+
+test('bug 2: a turn the socket hands over while the server is asked, whose answer the server then cannot show, keeps its own note', async () => {
+  // Review pass 10, finding 1: picked up (by this life) and the page after it
+  // unreadable. It is not handed over twice, and it stays waiting, so a crash
+  // before its answer still re-offers it.
+  const MESSAGE_ID = 691
+  const row = inboundRow(MESSAGE_ID, 1, 'Sent while my lane asked the server')
+  const backend: Backend = await startBackend({
+    rows: [row],
+    duringFirstHistory: async (io) => {
+      io.emit('inbound_message', row)
+      await waitFor(() => backend.acks.includes(MESSAGE_ID), 'the socket path to hand 691 over and ack it')
+    },
+    failAfterReadsOf: { [MESSAGE_ID]: 1_000 },
+  })
+  const rig = await startLane(backend)
+  try {
+    await waitFor(() => backend.historyReads.some((h) => h.status === 500 && h.afterId === String(MESSAGE_ID)), 'the failed read of the page after it', 15_000)
+    // Past the retries (1 s, 2 s): the boot poll has decided.
+    await sleep(5_000)
+    assert.deepEqual(rig.channel.map((c) => c.messageId), [String(MESSAGE_ID)], 'handed over once')
+    assert.ok(savedInbox(rig.home).pending.some((p) => p.id === MESSAGE_ID), 'still waiting for its answer')
+  } finally {
+    await stopLane(rig)
+  }
+})
