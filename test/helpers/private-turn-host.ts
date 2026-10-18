@@ -227,6 +227,27 @@ export function agentHost(t: any) {
       }
       return host.raw(`[button_clicked] Clicked: ${text}\n(in reply to message_id=${messageId})${tag}`, meta)
     },
+    /**
+     * A button tap as one of server.ts's three tap sites announces it (the boot sweep, the poll, the stream): the card's
+     * content through the lane's private tap rule (privateTapCard, 4bf28148; on a build without it, noteTap's tag as
+     * every site did), then the notification wrapper's rawCard with its meta. The card the CLI gets.
+     */
+    laneTap(opts: { lane: 'boot' | 'poll' | 'stream', tapperUserId: string | null, answeredAt?: unknown, receivedAt?: number, messageId?: number, chatId?: number, text?: string }): string {
+      const chatId = opts.chatId ?? OWN_CHAT
+      const tapped = opts.messageId ?? ++messageId
+      const content = `[button_clicked] Clicked: ${opts.text ?? 'Yes, go ahead'}\n(in reply to message_id=${tapped})\nOriginal question: Shall I archive the launch card?`
+      const tapCard = (privateTurn as any).privateTapCard ?? ((input: any) => input.content + input.tracker.noteTap({ chatId: input.chatId, tapperUserId: input.tapperUserId }))
+      const card = tapCard({
+        tracker: life.tracker, lane: opts.lane, ownerUserId: OWNER, chatId: String(chatId), messageId: tapped,
+        tapperUserId: opts.tapperUserId, answeredAt: 'answeredAt' in opts ? opts.answeredAt : new Date().toISOString(), receivedAt: opts.receivedAt ?? Date.now(), content,
+      })
+      const meta: Record<string, string> = {
+        chat_id: String(chatId), message_id: String(tapped), event_type: 'button_clicked', callback_data: 'yes', button_text: opts.text ?? 'Yes, go ahead',
+        user: 'User', ...(opts.tapperUserId ? { user_id: opts.tapperUserId } : {}), assistant_id: AGENT, ts: new Date().toISOString(),
+      }
+      life.tracker.rawCard(card, meta)
+      return renderChannel(card, meta)
+    },
     /** server.ts's peer_conversation_closed card (server.ts:14596): the backend's fixed reason, no peer's words. */
     peerClose(reason = 'completed', conversationId = 4411): string {
       return host.raw(
@@ -349,4 +370,9 @@ export function assertRecordedOnce(host: Host, keys: string[], label: string) {
     assert.equal(host.recorded.filter((k) => k === key).length, 1, `${label}: ${key} recorded exactly once (recorded: ${JSON.stringify(host.recorded)})`)
     assert.equal(typeof readPrivateJson(host.firesPath, 262144)?.fires?.[key], 'number', `${label}: ${key} is in the ledger`)
   }
+}
+
+/** The fire ledger on disk: `{ <key>: <handled at ms> }`. */
+export function readFiresOf(host: Host): Record<string, number> {
+  return readPrivateJson(host.firesPath, 262144)?.fires ?? {}
 }
