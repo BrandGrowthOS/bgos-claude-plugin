@@ -563,6 +563,17 @@ test('the window still does its job: a fresh session that dies by itself inside 
   await h.end()
 })
 
+test('a pin the daemon rewrote inside the window names the live session, and wins over the carry', async () => {
+  const h = await freshWindow()
+  const LIVE = 'abababab-abab-4bab-8bab-abababababab'
+  h.files.set(PIN_PATH, LIVE)
+  h.files.set(transcript(LIVE), '{}\n')
+  h.files.set(MARKER_PATH, '{}')
+  await launched(h, 3)
+  assert.deepEqual(sessionArgsOf(h.claudes[2]!), ['--resume', LIVE])
+  await h.end()
+})
+
 test('after the window committed the fresh session, a relaunch resumes the pin as always', async () => {
   const h = await freshWindow()
   h.fire(HEALTHY_MS)

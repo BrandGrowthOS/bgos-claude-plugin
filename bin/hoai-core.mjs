@@ -2482,11 +2482,16 @@ export async function superviseClaude(args, opts = {}) {
       // redirected console put claude in print mode and the old rule burned
       // the pin on the retry). Committed only if the child is still up.
       let pinTimer = null
+      // The fresh session this launch runs while its window is open: a relaunch hoai itself asks for
+      // in that window carries it on (below), because the session is not what was judged.
+      let windowPin = null
       if (pendingPin) {
         const candidate = pendingPin
         pendingPin = null
+        windowPin = candidate
         pinTimer = setTimer(() => {
           pinTimer = null
+          windowPin = null
           if (writeFile(sessionIdPath, candidate)) {
             pinnedId = candidate
             print('[hoai] the fresh session stayed up; it is now this agent\'s pinned session')
@@ -2544,16 +2549,19 @@ export async function superviseClaude(args, opts = {}) {
         // A daemon-driven update restart: relaunch THIS agent's OWN session
         // (resume it when its transcript exists, else create it again by
         // id; never --continue), and give this cycle a fresh fallback.
+        const pinBefore = pinnedId
         rereadPin()
-        const relaunchArgs = relaunchClaudeArgs({
-          scriptDir,
-          env,
-          home,
-          cwd,
-          readFile,
-          sessionArgs: sessionArgsFor(pinnedId, sessionExistsNow()),
-        })
+        // Inside a fresh session's window the pin still names the session whose resume was just
+        // rejected. An update, an unproven gate or a missing heartbeat is no verdict on the fresh
+        // session, so it is the one relaunched, and its window starts again (board row 978da5db).
+        // A pin the daemon rewrote meanwhile names the live session and wins, as everywhere.
+        const carried = windowPin && pinnedId === pinBefore ? windowPin : null
+        const sessionArgs = carried
+          ? sessionArgsFor(carried, exists(sessionTranscriptPath(home, cwd, carried, env.CLAUDE_CONFIG_DIR)))
+          : sessionArgsFor(pinnedId, sessionExistsNow())
+        const relaunchArgs = relaunchClaudeArgs({ scriptDir, env, home, cwd, readFile, sessionArgs })
         if (!relaunchArgs) return stopUnresolved()
+        if (carried) pendingPin = carried
         currentArgs = relaunchArgs
         freshTried = false
         lastLaunchWasRelaunch = true
