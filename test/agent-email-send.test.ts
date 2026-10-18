@@ -2796,7 +2796,9 @@ test('server.ts notes a meeting invitation with the tracker too: it carries the 
 
 test('server.ts notes every button tap announced to the session with its tapper (70f1898b, review): someone else\'s tap asks the owner before email_send sends', () => {
   const announced = SRC.match(/`\[button_clicked\] /g) ?? []
-  const tagged = SRC.match(/content: contentLines\.join\('\\n'\) \+ privateTurns\.noteTap\(\{ chatId: String\(chatId\), tapperUserId: [^\n]+ \}\),\n/g) ?? []
+  // Through privateTapCard since 0.71.3 (4bf28148), which notes a tap with noteTap unless it is the owner's own on the
+  // stream, in its window (test/private-turn-owner-tap.test.ts).
+  const tagged = SRC.match(/content: privateTapCard\(\{ tracker: privateTurns, lane: '(?:boot|poll|stream)', ownerUserId: USER_ID, chatId: String\(chatId\), [^\n]+, content: contentLines\.join\('\\n'\) \}\),\n/g) ?? []
   assert.equal(announced.length, 3, 'the boot sweep, the poll and the stream')
   assert.equal(tagged.length, announced.length)
 })
