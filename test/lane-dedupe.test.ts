@@ -544,3 +544,33 @@ test('bug 2: a note saved by a first boot that never finished asking the server 
     await stopLane(rig)
   }
 })
+
+test('a /new handled while the boot poll asks the server: the older waking turn is never handed to Claude, in this life or the next', async () => {
+  // Review pass 3, finding 1. Her turn 631 woke the lane; while the lane asked
+  // the server about it, her /new (632) arrived over the socket and was
+  // performed. 631 belongs to the conversation she just left.
+  const WAITING_ID = 631
+  const NEW_COMMAND_ID = 632
+  const command = inboundRow(NEW_COMMAND_ID, 0, '/new')
+  let homeOf: () => string = () => ''
+  const backend: Backend = await startBackend({
+    rows: [inboundRow(WAITING_ID, 1, 'From the conversation she is leaving'), command],
+    duringFirstHistory: async (io) => {
+      io.emit('inbound_message', command)
+      await waitFor(() => homeOf() !== '' && savedInbox(homeOf()).delivered.includes(NEW_COMMAND_ID), 'the daemon to perform the /new')
+    },
+  })
+  const rig = await startLane(backend)
+  homeOf = () => rig.home
+  try {
+    await waitFor(() => backend.acks.includes(NEW_COMMAND_ID), 'the /new acknowledged')
+    // Past the settle: a turn that was going to go out has gone out.
+    await sleep(3_500)
+    assert.equal(rig.channel.length, 0, 'the older turn is not handed to Claude')
+    const saved = savedInbox(rig.home)
+    assert.ok(saved.delivered.includes(WAITING_ID), 'it is noted as handled, so it is never offered')
+    assert.ok(!saved.pending.some((p) => p.id === WAITING_ID), 'and nothing waits, so the next life does not re-offer it')
+  } finally {
+    await stopLane(rig)
+  }
+})

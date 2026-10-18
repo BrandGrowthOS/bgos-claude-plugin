@@ -398,6 +398,10 @@ function saveInbox(): void {
 const deliveredChats = new Set<string>(inbox.pending.map((p) => p.chatId))
 // Which turns this process hands over, decided once per message id (0.71.2).
 const claims = new LaneDeliveryClaims(inbox)
+// The id of the last `/new` performed in this life: a turn older than it
+// belongs to the conversation the person left, and is never handed over
+// after it, even one the boot poll was still deciding (0.71.2).
+let newConversationFrom = 0
 
 const ROOT = dirname(fileURLToPath(import.meta.url))
 const mcp = new Server(mcpServerInfo(readOwnVersion(ROOT)), {
@@ -498,6 +502,14 @@ async function deliverRaw(raw: unknown, transport: 'lane-socket' | 'lane-poll', 
     return
   }
   const d = gate.delivery
+  if (d.messageId < newConversationFrom) {
+    // From the conversation the person left: never handed over, never waiting.
+    if (!inbox.delivered.includes(d.messageId)) {
+      inbox = inboxNoteHandled(inbox, d)
+      saveInbox()
+    }
+    return
+  }
   // The one decision for this id, before any await: the socket and the poll
   // can never both hand it over (0.71.2).
   if (!claims.take(inbox, d.messageId, { reoffer: opts.reoffer === true })) return
@@ -509,6 +521,7 @@ async function deliverRaw(raw: unknown, transport: 'lane-socket' | 'lane-poll', 
     if (route.kind === 'new') {
       // The new conversation starts empty: no turn of the old one is re-offered.
       inbox = inboxForNewConversation(inbox)
+      newConversationFrom = Math.max(newConversationFrom, d.messageId)
       inFlightChats.clear()
       inFlight = false
       inFlightSinceMs = null
