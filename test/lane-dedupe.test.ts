@@ -707,3 +707,23 @@ test('bug 2: an acknowledged message whose answer the server cannot show is kept
     await stopLane(rig)
   }
 })
+
+test('bug 2: a message never acknowledged goes over though an agent row follows it (the agent answered something else)', async () => {
+  // The reply hook acks only her latest message: 682 was picked up and
+  // answered (683); 681, sent before it, was never picked up by anyone.
+  const NEVER_ID = 681
+  const ANSWERED_ID = 682
+  const backend = await startBackend({
+    rows: [inboundRow(NEVER_ID, 4, 'Never picked up'), inboundRow(ANSWERED_ID, 3, 'Picked up and answered')],
+    deliveryStates: { [NEVER_ID]: 'delivered', [ANSWERED_ID]: 'acknowledged' },
+    agentRows: [{ id: ANSWERED_ID + 1, text: 'The answer to the second one.' }],
+  })
+  const rig = await startLane(backend)
+  try {
+    await waitFor(() => rig.channel.length > 0, 'the turn never picked up')
+    await sleep(1_500)
+    assert.deepEqual(rig.channel.map((c) => c.messageId), [String(NEVER_ID)], 'not acknowledged: offered; acknowledged and answered: kept out')
+  } finally {
+    await stopLane(rig)
+  }
+})

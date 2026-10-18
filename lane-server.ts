@@ -682,10 +682,7 @@ async function poll(): Promise<void> {
       // than it belong to the conversation she left (deliverRaw keeps them out).
       if (newFrom > (inbox.newFrom ?? 0)) inbox = { ...inbox, newFrom }
       for (const d of backlog) {
-        // Handed over in this life while the server was asked (the socket
-        // path noted it, and its ack is what the server saw): its own note
-        // stands, waiting for its answer.
-        if (!answered.has(d.messageId) || inbox.delivered.includes(d.messageId)) continue
+        if (!answered.has(d.messageId)) continue
         log(`backlog turn ${d.messageId} was already answered (acknowledged at the server, and answered or performed); not offered again`)
         inbox = inboxNoteHandled(inbox, d)
       }
