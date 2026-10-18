@@ -257,8 +257,8 @@ share has failed (the CLI's own `authentication_failed` record, the newest
 login record in the last 10 minutes of any agent's transcripts in the store the
 CLI signs in through): no relaunch fixes that, so hoai records
 `claude-login-expired`, prints an ALERT saying to run `/login`, and looks again
-every 3 minutes; once the login works, a launch still without a heartbeat gets
-its one relaunch. Each relaunch records `health-relaunch` with its reason
+every 3 minutes; once the login is back after the failure (a sign-in, or some
+agent's answer), a launch still without a heartbeat gets its one relaunch. Each relaunch records `health-relaunch` with its reason
 (`gate-accept-unproven` or `no-channel-heartbeat`) and counts against a budget
 of its own, 3 health relaunches per hour, apart from the restart markers' 3;
 past that it records `health-relaunch-refused`. A person's own `hoai` at a

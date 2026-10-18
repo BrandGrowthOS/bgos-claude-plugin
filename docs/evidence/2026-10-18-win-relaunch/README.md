@@ -18,7 +18,7 @@ recorded; each log ends with "left running afterwards: (none)".
 | `proof-main.log` | main (64af2f6) | **true** | (gate never drawn) | false |
 | `proof-fix1-only.log` | point 1 only (b4dabf8) | false | **true** (07:25:48.440, gate at 07:25:51.365) | false |
 | `proof-fix1-and-2.log` | points 1 and 2 (b4f6584) | false | false (gate at 07:27:36.210, Enter at 07:27:36.291) | true |
-| `proof-final.log` | the final tree (74d85f5) | false | false (gate at 08:03:27.836, Enter at 08:03:28.075) | true |
+| `proof-final.log` | the final tree (4b41e85) | false | false (gate at 08:20:38.614, Enter at 08:20:38.824) | true |
 
 On main both fake claudes froze once launch 2 put the console in raw mode: two readers on one console,
 which is point 1's survivor at work. With point 1 alone, launch 2's helper found launch 1's gate still on
