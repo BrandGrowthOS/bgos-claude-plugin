@@ -70,7 +70,10 @@ test('all three admitted message lanes use opaque private delivery identity and 
   // A second record of the same prompt keeps the turn and is logged (test/private-turn-duplicate-boundary.test.ts).
   // The fires this agent opened a turn for persist in its own state folder (0.68.4): a replay after a restart opens none.
   assert.match(source, /const privateFires = createFireLedger\(\{ path: privateFiresPath\(FLOOR_STATE_ROOT, ASSISTANT_ID\) \}\)/)
-  assert.match(source, /const privateTurns = createPrivateTurnTracker\(\{ ownerUserId: USER_ID, markerPaths: PRIVATE_MARKER_PATHS, fires: privateFires, onRevoke: \(info\) => \{ log\(privateRevokeLine\(info\)\); publishBrowserPrivateTurn\(\) \}, onRepeat: \(repeat\) => log\(privateRepeatLine\(repeat\)\), onReplay: \(replay\) => log\(privateReplayLine\(replay\)\), onUnrecorded: \(info\) => log\(privateUnrecordedLine\(info\)\) \}\)/)
+  assert.match(source, /const privateTurns = createPrivateTurnTracker\(\{ ownerUserId: USER_ID, markerPaths: PRIVATE_MARKER_PATHS, fires: privateFires, onRevoke: \(info\) => \{ log\(privateRevokeLine\(info\)\); publishBrowserPrivateTurn\(\) \}, onRepeat: \(repeat\) => log\(privateRepeatLine\(repeat\)\), onReplay: \(replay\) => log\(privateReplayLine\(replay\)\), onUnrecorded: \(info\) => log\(privateUnrecordedLine\(info\)\), onEnded: \(info\) => log\(privateEndedLine\(info\)\) \}\)/)
+  // A prompt that ends an open private turn is logged (c09e214e); a card's meta reaches rawCard, which carries the
+  // owner's tap, a peer conversation close and a reply reminder through a prompt of the owner's turn.
+  assert.match(source, /privateTurns\.rawCard\(String\(params\?\.content \?\? ''\), params\?\.meta\)/)
   assert.match(source, /boardsTransports\(privateCall!\.headers\)/)
 })
 

@@ -154,7 +154,7 @@ import {
 } from './lib/boards-tools.js'
 import { createActingUserTracker } from './lib/acting-user.js'
 import { createPrivateTurnTracker, emailSendBasis, PRIVATE_TURN_REFUSAL, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requireEmailSendTurn, requirePrivateTurn, turnAwarePrivateTurn } from './lib/private-turn.mjs'
-import { createFireLedger, privateFireKey, privateFiresPath, privateReplayLine, privateUnrecordedLine } from './lib/private-turn.mjs'
+import { createFireLedger, privateFireKey, privateFiresPath, privateEndedLine, privateReplayLine, privateUnrecordedLine } from './lib/private-turn.mjs'
 import {
   AGENT_EMAIL_SEND_APPROVALS_PATH,
   EMAIL_SEND_NO_OWNER_CHAT,
@@ -9143,14 +9143,17 @@ const turnChat = createTurnChatTracker()
 // message the same way, as owner:<message id>.
 const privateFires = createFireLedger({ path: privateFiresPath(FLOOR_STATE_ROOT, ASSISTANT_ID) })
 const PRIVATE_MARKER_PATHS = FLOOR_KEYS.map((key) => privateMarkerPath(FLOOR_STATE_ROOT, key))
-const privateTurns = createPrivateTurnTracker({ ownerUserId: USER_ID, markerPaths: PRIVATE_MARKER_PATHS, fires: privateFires, onRevoke: (info) => { log(privateRevokeLine(info)); publishBrowserPrivateTurn() }, onRepeat: (repeat) => log(privateRepeatLine(repeat)), onReplay: (replay) => log(privateReplayLine(replay)), onUnrecorded: (info) => log(privateUnrecordedLine(info)) })
+const privateTurns = createPrivateTurnTracker({ ownerUserId: USER_ID, markerPaths: PRIVATE_MARKER_PATHS, fires: privateFires, onRevoke: (info) => { log(privateRevokeLine(info)); publishBrowserPrivateTurn() }, onRepeat: (repeat) => log(privateRepeatLine(repeat)), onReplay: (replay) => log(privateReplayLine(replay)), onUnrecorded: (info) => log(privateUnrecordedLine(info)), onEnded: (info) => log(privateEndedLine(info)) })
 // Every channel card passes here. One that skipped privateTurns.deliver (a meeting line, a button tap, a voice
 // dispatch or stop) names nobody, so it ends a voice consult's private turn, whose authority is that consult's
-// alone. Chat and scheduler turns keep today's rules (privateTurns.rawCard).
+// alone. Chat and scheduler turns keep today's rules (privateTurns.rawCard). Its meta says which card it is: one that
+// names nobody but the owner (the owner's tap, a peer conversation close, a reply reminder) may run as a prompt of
+// the owner's turn without ending it (c09e214e).
 const sendMcpNotification = mcp.notification.bind(mcp)
 mcp.notification = ((notification: Parameters<typeof mcp.notification>[0]) => {
   if (notification?.method === 'notifications/claude/channel') {
-    privateTurns.rawCard(String((notification.params as { content?: unknown } | undefined)?.content ?? ''))
+    const params = notification.params as { content?: unknown; meta?: unknown } | undefined
+    privateTurns.rawCard(String(params?.content ?? ''), params?.meta)
   }
   return sendMcpNotification(notification)
 }) as typeof mcp.notification

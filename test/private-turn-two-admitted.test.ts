@@ -404,15 +404,17 @@ test('control: another person\'s wake admitted in the same turn never lets the o
   assert.deepEqual(host.privateCall()?.headers, { 'X-BGOS-Acting-User': 'user_stranger42' }, 'only the later sender, never the owner')
 })
 
-test('control: the owner\'s wake in another chat admitted in the same turn never lets the first prompt open it', (t) => {
-  const { host, cardA, cardB } = twoWakes(t, () => [wakeFrame(5001, 1460), wakeFrame(5002, 1658)])
+// Two wakes of the owner in two chats are one turn since 0.71.3 (c09e214e, test/private-turn-owner-authority.test.ts);
+// a wake and the owner's message of another chat are still not.
+test('control: the owner\'s message in another chat admitted in the same turn never lets the wake\'s prompt open it', (t) => {
+  const { host, cardA, cardB } = twoWakes(t, () => [wakeFrame(5001, 1460), ownerFrame(5002, 'And in this chat, the budget.')])
   const a = host.prompt(cardA)
   const b = host.prompt(cardB)
   a.mark()
   a.spool()
   b.spool()
   host.pump()
-  assert.equal(host.privateCall(), null, 'the first chat\'s marker refuses once a wake of another chat was admitted after it')
+  assert.equal(host.privateCall(), null, 'the first chat\'s marker refuses once a message of another chat was admitted after it')
 })
 
 test('control: a marker of an admitted prompt in another session refuses', (t) => {
