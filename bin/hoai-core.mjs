@@ -2323,8 +2323,9 @@ export async function superviseClaude(args, opts = {}) {
         // gate in the alternate screen buffer included). The new helper reads the
         // screen seconds before the new claude draws anything, so a gate left
         // there got this launch's one Enter and the new gate none (board row
-        // 978da5db, measured with a fake claude). Cleared first; never before the
-        // first launch, so a person's own terminal keeps its screen.
+        // 978da5db, measured with a fake claude). Cleared first, screen and
+        // scrollback, hoai's own lines about the relaunch included; never before
+        // the first launch, so what a person had on screen before hoai is kept.
         if (relaunch) clearConsole()
         const exited = spawnClaude(spawnArgs, { platform, env, spawnImpl, writeErr, onSpawn, childEnv })
         try {
