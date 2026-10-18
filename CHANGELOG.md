@@ -2,6 +2,16 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.71.3 (2026-10-18)
+
+**The owner can now see which sites an agent's own browser remembers (every Always allow and Trust this site answer) and forget one or all of them from the agent editor; a forgotten site asks again on its very next visit, in a browser that is already open as well as after a restart (HOAI board row 79fda9a6).**
+
+- **Why.** Since 0.68.5 (#224) the browser host keeps those answers in `~/.bgos-agent/<id>/browser/<principal>/agent-browser.settings.json` (`agentGrants["assistant-<id>"]`, beside the legacy `alwaysGrants` map a session also reads), and the only way to take one back was to edit that file by hand.
+- **The owner's request (`bin/hoai-browser-host.mjs` `PairingConnection`).** A new socket event, `browser_saved_sites`, `{ assistantId, op: "list" }` or `{ assistantId, op: "forget", origin | all: true }`, answered through the socket.io acknowledgement. The backend emits it only from its owner route (a signed-in person who owns the agent, never an agent credential) and only to the host of the agent's own pairing. The agent's own traffic is `browser_rpc`, which never reaches it, and no tool on the agent's roster lists or forgets anything. A request for an agent this pairing does not serve, or one that is not exactly one site or all, is refused.
+- **The forget (`BrowserHostCore.forgetSavedSites`, `lib/browser-saved-sites.mjs`).** Every person's file of that agent on this machine is read, changed and written in one step (`settings.updateSettings`), and every slot of that agent in this host drops the site from its cached grants, so the next visit asks. It removes the whole saved grant of the site (fields a newer host added included) and keeps an owner's Deny. Every other key of the file is kept as read, so an older or newer host still reads it. A file it could not write makes the answer `ok: false`, never a success. The vendored rule tier (`lib/browser-host-core/`) is unchanged.
+
+Guards: `test/hoai-browser-host.forget-sites.test.ts` (a forgotten Always allow and a forgotten Trust this site ask again in the live browser and after a restart; forgetting one keeps the others; forget all across two people's folders keeps a Deny; per agent; an unreadable file is not reported as forgotten; unknown keys survive and the vendored `sessionGrants` reads the result; the agent has no tool for it; the socket event refuses an agent the pairing does not serve and a malformed request). The owner surface and the route are BGOS's (the agent editor's "Sites this agent's browser remembers").
+
 ## 0.71.1 (2026-10-18)
 
 **A person's lane now answers her very first message with `reply` on its first launch, with no `/new` needed: the lane daemon hands Claude no turn until Claude has the lane's tools, and tool search is off in every lane, so a tool that reaches Claude late is never left where nothing can load it (mission 161 goal 9).**
