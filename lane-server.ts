@@ -502,7 +502,6 @@ async function deliverRaw(raw: unknown, transport: 'lane-socket' | 'lane-poll', 
   }
   inbox = inboxNoteDelivered(inbox, d)
   saveInbox()
-  deliveredChats.add(d.chatId)
   const plain = buildLaneChannelEvent(d, LANE, transport, { backlog: opts.backlog === true })
   const event = route.kind === 'directive'
     ? buildLaneCommandEvent(d, LANE, transport, { content: route.delivery.content, meta: route.delivery.meta }, { backlog: opts.backlog === true })
@@ -510,6 +509,8 @@ async function deliverRaw(raw: unknown, transport: 'lane-socket' | 'lane-poll', 
       ? buildLaneCommandEvent(d, LANE, transport, laneChoiceQuestionFor(route.kind, PATHS, LAUNCHED_ENV), { backlog: opts.backlog === true })
       : plain
   await claudeReady.whenReady()
+  // Only now is the chat one `reply` may write to: the turn is Claude's.
+  deliveredChats.add(d.chatId)
   await mcp.notification({ method: 'notifications/claude/channel', params: { content: event.content, meta: event.meta } })
   inFlightChats.add(d.chatId)
   if (!inFlight) inFlightSinceMs = Date.now()

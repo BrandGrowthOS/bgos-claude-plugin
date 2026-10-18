@@ -16,8 +16,12 @@
  * in backend, with a stand in for Claude Code as its MCP client:
  *   - Claude lists the tools straight after the handshake (as the CLI does):
  *     the turn waiting since the lane woke goes out only after that list, and
- *     the settle after it, and is acknowledged only after it went out.
- *   - Claude lists the tools late: no turn goes out before the list.
+ *     the settle after it, and is acknowledged only after it went out; a row
+ *     stamped for another person is never handed over nor acknowledged.
+ *   - Claude lists the tools late: no turn goes out, and nothing is
+ *     acknowledged, before the list.
+ *   - `reply` accepts a chat only once its turn was handed to Claude (review
+ *     finding 3): during the wait it is refused and nothing is sent.
  *
  * Run with: npx tsx --test test/lane-first-turn.test.ts
  */
@@ -44,6 +48,9 @@ const ASSISTANT_ID = '1076'
 const USER_ID = 'user_ana'
 const CHAT_ID = 77
 const MESSAGE_ID = 501
+/** A row the backend wrongly hands this lane: stamped for another person. */
+const BEN_MESSAGE_ID = 500
+const BEN_CHAT_ID = 78
 /** lib/lane-daemon.ts LANE_CLAUDE_SETTLE_MS is 2 s; this leaves timer slack. */
 const SETTLE_FLOOR_MS = 1_900
 
@@ -60,12 +67,14 @@ async function waitFor(check: () => boolean, what: string, ms = 20_000): Promise
 interface Backend {
   url: string
   acks: Array<{ id: number; at: number }>
+  sends: Array<{ chatId: unknown; text: unknown }>
   close: () => Promise<void>
 }
 
 /** The backend routes the lane daemon uses, with ONE turn waiting for her. */
 async function startBackend(): Promise<Backend> {
   const acks: Backend['acks'] = []
+  const sends: Backend['sends'] = []
   const stamp = personLaneStamp(USER_ID)
   const row = {
     id: MESSAGE_ID,
@@ -78,6 +87,7 @@ async function startBackend(): Promise<Backend> {
     assistantId: Number(ASSISTANT_ID),
     sender_user_id: USER_ID,
   }
+  const bensRow = { ...row, id: BEN_MESSAGE_ID, message_id: BEN_MESSAGE_ID, chat_id: BEN_CHAT_ID, text: 'For Ben only', lane: personLaneStamp('user_ben'), sender_user_id: 'user_ben' }
   const json = (res: ServerResponse, body: unknown, status = 200) => {
     res.writeHead(status, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify(body))
@@ -85,6 +95,17 @@ async function startBackend(): Promise<Backend> {
   const handler = (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
     const path = url.pathname.replace(/^\/api\/v1\//, '')
+    let raw = ''
+    req.on('data', (c) => { raw += c })
+    if (req.method === 'POST' && path === 'send-message') {
+      req.on('end', () => {
+        let body: Record<string, unknown> = {}
+        try { body = JSON.parse(raw || '{}') } catch { /* recorded as empty */ }
+        sends.push({ chatId: body.chatId, text: body.text })
+        json(res, { id: 900 + sends.length })
+      })
+      return
+    }
     req.resume()
     if (req.method === 'POST' && path === 'integrations/lanes/session') {
       return json(res, {
@@ -96,7 +117,7 @@ async function startBackend(): Promise<Backend> {
     if (req.method === 'GET' && path === 'integrations/lanes/me') return json(res, { actorUserId: USER_ID, assistantId: ASSISTANT_ID, lane: stamp })
     if (req.method === 'GET' && path === 'integrations/lanes/inbound') {
       const since = Number(url.searchParams.get('since_message_id') ?? 0)
-      return json(res, { messages: since < MESSAGE_ID ? [row] : [] })
+      return json(res, { messages: [bensRow, row].filter((r) => r.id > since) })
     }
     const ack = /^integrations\/messages\/(\d+)\/ack$/.exec(path)
     if (req.method === 'POST' && ack) {
@@ -113,6 +134,7 @@ async function startBackend(): Promise<Backend> {
   return {
     url: `http://127.0.0.1:${port}`,
     acks,
+    sends,
     close: () => new Promise<void>((r) => { io.close(); http.close(() => r()) }),
   }
 }
@@ -164,12 +186,11 @@ async function stopLane(rig: Rig): Promise<void> {
   try { daemonPid = JSON.parse(readFileSync(p.laneJsonPath, 'utf8')).pid ?? null } catch { /* never wrote it */ }
   await rig.client.close().catch(() => {})
   if (daemonPid) {
+    const alive = () => { try { process.kill(daemonPid as number, 0); return true } catch { return false } }
     const until = Date.now() + 5_000
-    while (Date.now() < until) {
-      try { process.kill(daemonPid, 0) } catch { break }
-      await sleep(50)
-    }
-    try { process.kill(daemonPid, 'SIGKILL') } catch { /* exited */ }
+    while (alive() && Date.now() < until) await sleep(50)
+    // Only a daemon still running at the deadline, never a pid it has given up.
+    if (alive()) try { process.kill(daemonPid, 'SIGKILL') } catch { /* exited meanwhile */ }
   }
   await rig.backend.close()
   rmSync(rig.home, { recursive: true, force: true })
@@ -190,19 +211,37 @@ test('first launch: the waiting turn reaches Claude only after Claude listed the
     assert.ok(gap >= SETTLE_FLOOR_MS, `the turn went out ${gap} ms after Claude listed the tools; Claude may not have reply in its pool yet (needs at least ${SETTLE_FLOOR_MS} ms)`)
     await waitFor(() => rig.backend.acks.length > 0, 'the ack')
     assert.equal(rig.backend.acks[0].id, MESSAGE_ID)
-    assert.ok(rig.backend.acks[0].at >= turn.at, 'a turn is acknowledged only after Claude was handed it')
-    assert.equal(rig.channel.length, 1, 'handed over once')
+    assert.ok(rig.backend.acks[0].at - listedAt >= SETTLE_FLOOR_MS, 'a turn is acknowledged only after the wait, never ahead of Claude')
+    // Now the turn is Claude's: its reply goes to her chat.
+    const sent = await rig.client.callTool({ name: 'reply', arguments: { chat_id: String(CHAT_ID), text: 'Yes, I am here.' } })
+    assert.equal(sent.isError, undefined, JSON.stringify(sent.content))
+    assert.deepEqual(rig.backend.sends, [{ chatId: CHAT_ID, text: 'Yes, I am here.' }], 'the reply went to her chat')
+    await sleep(500)
+    assert.equal(rig.channel.length, 1, 'handed over once, and Ben\'s row never')
+    assert.ok(!JSON.stringify(rig.channel).includes('For Ben only'))
+    assert.deepEqual(rig.backend.acks.map((a) => a.id), [MESSAGE_ID], 'Ben\'s row is never acknowledged by her lane')
   } finally {
     await stopLane(rig)
   }
 })
 
-test('first launch: a Claude that lists the tools late gets no turn before its list', async () => {
+test('first launch: a Claude that lists the tools late gets no turn, no ack and no reply before its list', async () => {
   const rig = await startLane()
   try {
     // The daemon is up and the turn is waiting; this Claude has not asked for the tools yet.
     await sleep(2_500)
     assert.equal(rig.channel.length, 0, 'no turn may reach a Claude that has not listed the tools')
+    assert.equal(rig.backend.acks.length, 0, 'and nothing is acknowledged before it went out')
+    // The daemon has noted the turn (its inbox is saved before the wait) and
+    // holds it: the turn is not Claude's yet, so neither is its chat.
+    const p = lanePaths({ home: rig.home, assistantId: ASSISTANT_ID, userId: USER_ID })
+    const noted = () => { try { return (JSON.parse(readFileSync(p.cursorPath, 'utf8')).delivered ?? []).includes(MESSAGE_ID) } catch { return false } }
+    await waitFor(noted, 'the daemon to note the waiting turn')
+    const early = await rig.client.callTool({ name: 'reply', arguments: { chat_id: String(CHAT_ID), text: 'too early' } })
+    assert.equal(early.isError, true, 'a reply while the turn is held is refused')
+    assert.match(JSON.stringify(early.content), /only reply in the chat of the person you are talking to/)
+    assert.deepEqual(rig.backend.sends, [], 'and nothing was sent')
+    assert.equal(rig.channel.length, 0)
     await rig.client.listTools()
     const listedAt = Date.now()
     await waitFor(() => rig.channel.length > 0, 'the waiting turn after the list')
