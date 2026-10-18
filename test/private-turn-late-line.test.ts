@@ -522,10 +522,12 @@ test('a recipient\'s prompt whose line lands before the previous turn\'s late St
 test('control: a recipient message injected into a turn does not reach the next turn when that turn\'s Stop line is late', async (t) => {
   const host = agentHost(t)
   host.submit(host.card(ownerFrame('Draft the launch plan.')))
-  const queued = host.card(ownerFrame('Now update the launch card with it.'))
   // Injected into the running turn: it ends that turn, as on main.
   host.card(recipientFrame('What is on the plan?'))
   await assertNothingActsAsOwner(host, 'mid turn')
+  // The owner's next message comes after it. (One queued BEFORE the recipient's runs before it, or with it: the CLI
+  // takes its queue in order, so a recipient's message delivered after it reaches its turn: the third review.)
+  const queued = host.card(ownerFrame('Now update the launch card with it.'))
   const stop = host.stopping()
   stop.mark()
   const owner = host.prompt(queued)
@@ -534,8 +536,23 @@ test('control: a recipient message injected into a turn does not reach the next 
   host.pump()
   owner.spool()
   host.pump()
-  // email_send still refuses here, as on main: the recipient's message came after the owner's own delivery.
   await assertOwnerTurn(host, 'the queued owner prompt, a turn of its own')
+})
+
+test('review 3 (behavior): the owner\'s message queued while a turn runs, a share recipient\'s message delivered after it: the owner\'s turn is refused from the start (the CLI takes its queue in order, so the recipient\'s message runs with it or after it)', async (t) => {
+  const host = agentHost(t)
+  host.submit(host.card(ownerFrame('Draft the launch plan.')))
+  const queued = host.card(ownerFrame('Now update the launch card with it.'))
+  host.card(recipientFrame('What is on the plan?'))
+  const stop = host.stopping()
+  stop.mark()
+  const owner = host.prompt(queued)
+  owner.mark()
+  stop.spool()
+  host.pump()
+  owner.spool()
+  host.pump()
+  await assertNothingActsAsOwner(host, 'the owner\'s prompt queued before the recipient\'s message')
 })
 
 test('a second record of a recipient\'s prompt with no prompt_id does not hand the turn aware tools to the owner', async (t) => {

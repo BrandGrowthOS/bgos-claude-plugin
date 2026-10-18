@@ -157,11 +157,17 @@ export function agentHost(t: any) {
   // The `at` the current daemon life attached with: none for the first, which attaches exactly as server.ts does (no
   // `now`, markFloorAttachedIfHolder); a fixed one for each later life, another daemon process (restart).
   let lifeAt: number | undefined
-  /** server.ts's markFloorAttachedIfHolder: the attached entry this daemon process writes, again at every arm. */
-  const attach = () => markFloorAttached({ root, folders, projectDir, ...(lifeAt === undefined ? {} : { now: lifeAt }) })
+  // The CLI session this daemon process's intake bound to (server.ts liveSessionId), null until its first admitted line.
+  let liveSession: string | null = null
+  /**
+   * server.ts's markFloorAttachedIfHolder: the attached entry this daemon process writes, again at every arm, naming the
+   * session it is bound to once it is (the third review of c69224fe).
+   */
+  const attach = () => markFloorAttached({ root, folders, projectDir, sessionId: liveSession ?? '', ...(lifeAt === undefined ? {} : { now: lifeAt }) })
   function daemon() {
-    // Each daemon life attaches anew, as server.ts does at its start: a new process, a new `at`.
+    // Each daemon life attaches anew, as server.ts does at its start: a new process, a new `at`, bound to nothing yet.
     if (lives++ > 0) lifeAt = Date.now() + lives
+    liveSession = null
     attach()
     const ledger = createFireLedger({ path: firesPath })
     let publish = () => {}
@@ -186,6 +192,8 @@ export function agentHost(t: any) {
       // server.ts onHookPayload's private turn statements, then the publish it ends with.
       onEvent: (payload, line) => {
         const hookSessionId = String(payload.session_id ?? '').trim()
+        // server.ts onHookPayload: a session newly live is named in the attached entry.
+        if (hookSessionId && hookSessionId !== liveSession) { liveSession = hookSessionId; attach() }
         if (payload.hook_event_name === 'SessionEnd') tracker.end({ at: lineAt(line) })
         if (payload.hook_event_name === 'UserPromptSubmit') {
           const began = tracker.begin({ prompt: payload.prompt, promptHash: payload.hoai_clipped === true ? payload.prompt_sha256 : undefined, sessionId: hookSessionId, promptId: payload.prompt_id })
@@ -208,7 +216,7 @@ export function agentHost(t: any) {
     ({ session_id: session, transcript_path: transcript, cwd: folder, hook_event_name: event, permission_mode: 'bypassPermissions', ...extra })
 
   const host = {
-    session, markerPaths, lines, recorded, firesPath, root,
+    session, markerPaths, lines, recorded, firesPath, root, folder, folders, projectDir,
     get tracker(): any { return life.tracker },
     /** A lane delivers a frame (server.ts deliverWsInbound): actor, reason to send, fire key. The card the CLI gets. */
     card(frame: Frame, opts: { backlog?: boolean } = {}): string {
@@ -290,6 +298,21 @@ export function agentHost(t: any) {
     prompt(prompt: string): Submission {
       const payload = payloadOf('UserPromptSubmit', { prompt_id: randomUUID(), prompt })
       return { mark: () => { recordPrivateBoundary(payload, hookEnv); settle() }, spool: () => { appendEvent(payload, { env: hookEnv }) } }
+    },
+    /**
+     * Another claude session in this agent's folder (a person's own claude there, or a second session of the agent),
+     * served by no daemon of its own: its hooks, under its own session id and transcript in the same project folder.
+     * Its forwarder lines go to its own spool, which this daemon's intake, bound to its own session, leaves alone.
+     */
+    otherSession() {
+      const other = randomUUID()
+      const otherPayload = (event: string, extra: Record<string, unknown> = {}) =>
+        ({ ...payloadOf(event, extra), session_id: other, transcript_path: join(projectDir, `${other}.jsonl`) })
+      return {
+        session: other,
+        prompt(prompt: string) { recordPrivateBoundary(otherPayload('UserPromptSubmit', { prompt_id: randomUUID(), prompt }), hookEnv); settle() },
+        stop() { recordPrivateBoundary(otherPayload('Stop', { stop_hook_active: false }), hookEnv); settle() },
+      }
     },
     /** A prompt whose hook and line both ran in time: marked, spooled, drained. */
     submit(prompt: string) { const sub = host.prompt(prompt); sub.mark(); sub.spool(); host.pump() },

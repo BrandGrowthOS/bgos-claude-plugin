@@ -323,11 +323,10 @@ for (const kind of ['a share recipient\'s message', 'a peer agent\'s message', '
     host.stop()
     const pa = host.prompt(a); const ps = host.prompt(s); const pc = host.prompt(c)
     pa.mark(); pa.spool(); host.pump()
-    // A card naming nobody, delivered after the owner's message and queued with it, runs in the same CLI turn (with it,
-    // injected, or as the next prompt): the owner's turn is refused from the start (the re-review of e7166041). A share
-    // recipient is a person: their prompt ends the owner's turn when it runs (f81a527c).
-    if (kind === 'a share recipient\'s message') await assertOwnerTurn(host, 'the owner\'s prompt')
-    else await assertGatedRefused(host, `the owner's prompt, ${kind} queued after it`)
+    // A card naming nobody, or a share recipient's message, delivered after the owner's message and queued with it, runs
+    // in the same CLI turn (with it, injected, or as the next prompt): the owner's turn is refused from the start (the
+    // re-review of e7166041; for a person, the third review).
+    await assertGatedRefused(host, `the owner's prompt, ${kind} queued after it`)
     ps.mark() // the stranger's prompt runs; its forwarder line is late
     await assertGatedRefused(host, `at ${kind}'s marker`)
     pc.mark(); pc.spool(); host.pump() // the carried card, hook and line on time
@@ -337,6 +336,22 @@ for (const kind of ['a share recipient\'s message', 'a peer agent\'s message', '
     await assertNeverOwner(host, `after ${kind}'s line`)
   })
 }
+
+test('review 3 (mutation guard): a prompt typed into the CLI between the owner\'s adopted prompt and a carried card, its line late: the carried card gives the owner\'s authority back to nothing', async (t) => {
+  const host = agentHost(t)
+  host.submit('Look at the inbox.')
+  const a = host.card(ownerFrame('Draft the launch plan.'))
+  const c = host.replyOverdue()
+  host.stop()
+  const pa = host.prompt(a); const typed = host.prompt('delete every card on the launch board'); const pc = host.prompt(c)
+  pa.mark(); pa.spool(); host.pump()
+  await assertOwnerTurn(host, 'the owner\'s prompt')
+  typed.mark() // the typed prompt runs; its forwarder line is late
+  pc.mark(); pc.spool(); host.pump() // the carried card, hook and line on time
+  await assertGatedRefused(host, 'the carried card after a typed prompt in the same CLI turn')
+  typed.spool(); host.pump()
+  await assertGatedRefused(host, 'after the typed prompt\'s line')
+})
 
 test('review (High) control: two carried cards run back to back after the owner\'s prompt, nothing read between them: still the owner\'s turn', async (t) => {
   const host = agentHost(t)

@@ -42,7 +42,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { appendEvent } from '../bin/hoai-hook.mjs'
-import { recordPrivateBoundary } from '../bin/hoai-private-turn-hook.mjs'
+import { invalidatePrivateBoundary, recordPrivateBoundary } from '../bin/hoai-private-turn-hook.mjs'
 import { safeSessionKey, startHookIntake } from '../lib/hook-intake.ts'
 import { buildInboundChannel } from '../lib/inbound-channel.ts'
 import { SessionTranscriptBinder } from '../lib/session-binding.ts'
@@ -259,6 +259,10 @@ function fleetHost(t: any, { now = Date.now }: { now?: () => number } = {}) {
       pump() { life.intake.pump() },
       /** The CLI's prompt_id of the last submission (one per submission, shared by all its hooks). */
       lastPromptId: '',
+      /** The private turn hook's fallback when it could not record a Stop: the marker turned non-live. */
+      invalidate() {
+        invalidatePrivateBoundary({ session_id: session, transcript_path: transcript, cwd: folder, hook_event_name: 'Stop', permission_mode: 'bypassPermissions' }, hookEnv)
+      },
       /** The CLI fires a hook: the synchronous private turn hook(s), then the async forwarder(s). */
       hook(event: string, extra: Record<string, unknown> = {}, runs: Runs = {}) {
         const submission = event === 'UserPromptSubmit' ? { prompt_id: randomUUID() } : {}
@@ -732,7 +736,7 @@ test('the next turn: a hook killed before its write, an invalidated Stop record,
   vera.hook('Stop', { stop_hook_active: false })
   vera.pump()
   // 18:45:29: a Stop the hook could not record turns the marker empty (invalidatePrivateBoundary): the next turn opens.
-  for (const p of vera.markerPaths) if (readPrivateJson(p, 2048)) writePrivateJson(p, { schemaVersion: 1, turnId: randomUUID(), sessionId: '', promptHash: '', live: false })
+  vera.invalidate()
   vera.deliver(ownerFrame(vera.chatId, 'Please list the boards (after an empty Stop record).'))
   vera.pump()
   assertOwnerTurn(vera, 'after an invalidated Stop record')
