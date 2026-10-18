@@ -601,3 +601,68 @@ test('final re-review control: an older forwarder (no startedAt on its lines), m
   host.submit(message)
   assert.deepEqual(await sendAdmitted(host), { ...directOf(owner), askOwner: true })
 })
+
+// ── Re-verify of the round 6 fix for 4bf28148 (a Low it opened, fixed red first) ──
+// A second Stop line of the same Stop (another hook source) whose forwarder started after the next prompt's and was
+// read before that prompt's marker counted as a second Stop: the prompt start between them made a whole CLI turn, so
+// a reply reminder queued after it skipped its OWN push, the CLI turn lost its anchor and an email or a share
+// recipient's card injected behind the reminder went unseen (it failed open). A Stop is kept once per closed marker.
+function typedFirst(host: Host, who: 'email' | 'recipient', second: 'none' | 'race' | 'late') {
+  host.submit('Looking at the launch board now.')
+  const typed = host.prompt('Also check the hiring board when you are done.')
+  const reminder = host.replyOverdue()
+  if (who === 'email') emailCard(host)
+  else recipientCard(host)
+  const owner = ownerFrame('Go ahead and email Dana the venue confirmation.')
+  const message = host.card(owner)
+  const stop = host.stopping(); stop.mark(); stop.spool(); host.pump()
+  if (second === 'race') {
+    typed.spool()
+    const again = host.stopping({ hook: false }); again.mark(); again.spool(); host.pump()
+    typed.mark()
+  } else if (second === 'late') {
+    typed.mark(); typed.spool()
+    const again = host.stopping({ hook: false }); again.mark(); again.spool(); host.pump()
+  } else {
+    typed.mark(); typed.spool(); host.pump()
+  }
+  host.submit(reminder)
+  host.submit(message)
+  return owner
+}
+
+for (const second of ['race', 'late', 'none'] as const) {
+  const what = second === 'race' ? 're-verify (Low)' : 're-verify control'
+  const how = second === 'race' ? 'a second Stop line started after the typed prompt\'s and read before its marker' : second === 'late' ? 'a second Stop line read after the typed prompt\'s marker' : 'one Stop line'
+  test(`${what}: a typed prompt, a reply reminder, an outside email injected behind it and the owner's message queued while the turn before ran (${how}): email_send asks`, async (t) => {
+    const host = agentHost(t)
+    const owner = typedFirst(host, 'email', second)
+    assert.deepEqual(await sendAdmitted(host), { ...directOf(owner), askOwner: true })
+  })
+  test(`${what}: a typed prompt, a reply reminder, a share recipient's message injected behind it and the owner's message queued while the turn before ran (${how}): the owner is barred`, async (t) => {
+    const host = agentHost(t)
+    typedFirst(host, 'recipient', second)
+    for (const name of GATED) assert.equal(await actsFor(host, name), `refused: ${PRIVATE_TURN_REFUSAL}`, `${name}; explain: ${host.explain()}`)
+  })
+}
+
+// A Stop hook that blocks (decision: block) keeps the CLI in its turn: the CLI stops again with no prompt between,
+// each Stop closing the marker anew. Two Stops after a push with no prompt between them are no whole CLI turn, so the
+// card queued during that turn keeps its own push (turnBetween).
+for (const who of ['email', 'recipient'] as const) {
+  test(`re-verify control: mission #7 paused while the turn before ran, ${who === 'email' ? 'an outside email' : 'a share recipient\'s message'} delivered behind it and run with no prompt line of its own, the turn before stops twice (a Stop hook blocked once), then the pause and the owner's message: the pause keeps its push`, async (t) => {
+    const host = agentHost(t)
+    host.submit('Working the launch mission now.')
+    const again = missionPaused(host)
+    if (who === 'email') emailCard(host)
+    else recipientCard(host)
+    const owner = ownerFrame('Also email Dana the venue confirmation.')
+    const message = host.card(owner)
+    host.stop()
+    host.stop()
+    host.submit(again)
+    host.submit(message)
+    if (who === 'email') assert.deepEqual(await sendAdmitted(host), { ...directOf(owner), askOwner: true })
+    else for (const name of GATED) assert.equal(await actsFor(host, name), `refused: ${PRIVATE_TURN_REFUSAL}`, `${name}; explain: ${host.explain()}`)
+  })
+}
