@@ -9704,7 +9704,8 @@ function endHookTurn(keepCard: boolean): void {
   hookStepsTurnId = null
   stopHookStepsHeartbeat()
   turnChat.end(Date.now())
-  privateTurns.end()
+  // The Stop line's stamp, when a hook line ended the turn: a live marker written before it is the turn that stopped.
+  privateTurns.end(hookLineAt === null ? {} : { at: hookLineAt })
   publishBrowserPrivateTurn()
 }
 
@@ -9786,6 +9787,9 @@ function runHookEffects(effects: Effect[]): void {
  * up to a minute, so a card built on it can report minutes that are wrong by
  * more than the turn was long.
  */
+/** The receivedAt of the hook line whose effects run now (onHookPayload), for privateTurns.end(); null otherwise. */
+let hookLineAt: number | null = null
+
 function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void {
   const event = parseHookEvent(payload)
   if (event === null) return
@@ -9807,7 +9811,7 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
     liveSessionId = hookSessionId
     liveSessionSeenAtMs = Date.now()
   }
-  if (event.name === 'SessionEnd') privateTurns.end()
+  if (event.name === 'SessionEnd') privateTurns.end({ at: receivedAt })
   if (event.name === 'UserPromptSubmit') {
     // A prompt past the forwarder's clip arrives as its token(s) plus the full prompt's hash.
     const began = privateTurns.begin({ prompt: payload.prompt, promptHash: payload.hoai_clipped === true ? payload.prompt_sha256 : undefined, sessionId: hookSessionId, promptId: payload.prompt_id })
@@ -9824,7 +9828,12 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
   }
   const { next, effects } = applyHookEventToTurn(hookTurn, event, receivedAt)
   hookTurn = next
-  runHookEffects(effects)
+  hookLineAt = receivedAt
+  try {
+    runHookEffects(effects)
+  } finally {
+    hookLineAt = null
+  }
   // A turn starting or ending is exactly what the watcher's safe moment reads,
   // so it is published now rather than on the next tick.
   agentStatePublisher.tick()
