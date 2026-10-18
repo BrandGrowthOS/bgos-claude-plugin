@@ -272,7 +272,8 @@ export function agentHost(t: any) {
      * with its meta. The card the CLI gets.
      */
     raw(content: string, meta: Record<string, string> = {}): string {
-      life.tracker.rawCard(content, meta)
+      // The push is its own moment, as each hook's is (settle): a Stop or prompt after it is later (turnBetween).
+      life.tracker.rawCard(content, meta); settle()
       return renderChannel(content, meta)
     },
     /** A button tap card, as server.ts's poll and boot sweep announce one with no delivery: noteTap's tag on its end. */
@@ -302,7 +303,7 @@ export function agentHost(t: any) {
         chat_id: String(chatId), message_id: String(tapped), event_type: 'button_clicked', callback_data: 'yes', button_text: opts.text ?? 'Yes, go ahead',
         user: 'User', ...(opts.tapperUserId ? { user_id: opts.tapperUserId } : {}), assistant_id: AGENT, ts: new Date().toISOString(),
       }
-      life.tracker.rawCard(card, meta)
+      life.tracker.rawCard(card, meta); settle()
       return renderChannel(card, meta)
     },
     /** server.ts's peer_conversation_closed card (server.ts:14596): the backend's fixed reason, no peer's words. */

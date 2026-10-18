@@ -476,3 +476,128 @@ test('final review control: a pause card\'s prompt read twice (a second forwarde
   host.submit(message)
   assert.deepEqual(await sendAdmitted(host), { ...directOf(owner), askOwner: true })
 })
+
+// ── Final re-review of 4bf28148 (findings fixed red first) ──
+// Medium: a push of a card's words that no prompt line ever took (the card injected into a running turn, or its line
+// lost) stayed at the front of the FIFO, so the next prompt of the same words took it and anchored the owner's CLI turn
+// in an earlier one: a share recipient or an email of a CLI turn in between barred the owner or made email_send ask,
+// mid turn for a peer close announced again. A push a whole CLI turn before the prompt's submission is not its own.
+const meetingTurn = (host: Host, meetingId = 77) => host.raw(
+  `[Meeting #${meetingId}] It is now your turn. Reply via the meeting_reply tool with meeting_id=${meetingId}, or send "PASS" to yield without contributing.`,
+  { event_type: 'meeting_turn_changed', meeting_id: String(meetingId), your_turn: 'YES', user_id: OWNER, assistant_id: '900' },
+)
+const REPEATED = [
+  ['mission #7 paused', (host: Host) => missionPaused(host)],
+  ['meeting #77 your turn', (host: Host) => meetingTurn(host)],
+] as const
+
+for (const [what, push] of REPEATED) {
+  for (const [who, between] of [['a share recipient', recipientCard], ['an outside email', emailCard]] as const) {
+    test(`final re-review (Medium): ${what} injected into the owner's turn (no prompt line), ${who}'s own CLI turn, then the same card and the owner's message run as one CLI turn: the owner's turn, sends directly`, async (t) => {
+      const host = agentHost(t)
+      host.submit(host.card(ownerFrame('Good morning.')))
+      push(host)
+      host.stop()
+      host.submit(between(host))
+      host.stop()
+      const again = push(host)
+      const owner = ownerFrame('Please draft the launch plan.')
+      const message = host.card(owner)
+      host.submit(again)
+      host.submit(message)
+      await assertOwnerTurn(host, `${what}, ${who}`, directOf(owner))
+    })
+  }
+}
+
+test('final re-review (Medium): mission #7 paused and injected, three CLI turns (the owner\'s, a share recipient\'s, the owner\'s), then the pause and the owner\'s message run as one CLI turn: the owner\'s turn', async (t) => {
+  const host = agentHost(t)
+  host.submit(host.card(ownerFrame('Good morning.')))
+  missionPaused(host)
+  host.stop()
+  host.submit(host.card(ownerFrame('Anything new?')))
+  host.stop()
+  host.submit(recipientCard(host))
+  host.stop()
+  host.submit(host.card(ownerFrame('Thanks.')))
+  host.stop()
+  const again = missionPaused(host)
+  const owner = ownerFrame('Please draft the launch plan.')
+  const message = host.card(owner)
+  host.submit(again)
+  host.submit(message)
+  await assertOwnerTurn(host, 'three turns later', directOf(owner))
+})
+
+for (const [who, between] of [['a share recipient', recipientCard], ['an outside email', emailCard]] as const) {
+  test(`final re-review (Medium): a peer close injected into the owner's turn, ${who}'s own CLI turn, the owner's message adopted, then the same close announced again and run as a prompt of it: the owner keeps the turn`, async (t) => {
+    const host = agentHost(t)
+    host.submit(host.card(ownerFrame('Good morning.')))
+    host.peerClose('completed', 4801)
+    host.stop()
+    host.submit(between(host))
+    host.stop()
+    const owner = ownerFrame('Please draft the launch plan.')
+    host.submit(host.card(owner))
+    await assertOwnerTurn(host, 'the owner\'s message', directOf(owner))
+    host.submit(host.peerClose('completed', 4801))
+    await assertOwnerTurn(host, 'the same close announced again', directOf(owner))
+  })
+}
+
+test('final re-review control: mission #7 paused and injected, a share recipient\'s own CLI turn, then the pause alone as its own CLI turn and the owner\'s message as the next: the owner\'s turn', async (t) => {
+  const host = agentHost(t)
+  host.submit(host.card(ownerFrame('Good morning.')))
+  missionPaused(host)
+  host.stop()
+  host.submit(recipientCard(host))
+  host.stop()
+  host.submit(missionPaused(host))
+  host.stop()
+  const owner = ownerFrame('Please draft the launch plan.')
+  host.submit(host.card(owner))
+  await assertOwnerTurn(host, 'the next CLI turn', directOf(owner))
+})
+
+for (const stops of ['one Stop line', 'two Stop lines for the one Stop (a second hook source)'] as const) {
+  test(`final re-review control: mission #7 paused while the turn before ran, a share recipient's message delivered behind it and run with no prompt line of its own, the turn before stops (${stops}), then the pause and the owner's message: the pause keeps its push, so the owner is barred`, async (t) => {
+    const host = agentHost(t)
+    host.submit('Working the launch mission now.')
+    const again = missionPaused(host)
+    recipientCard(host)
+    const owner = ownerFrame('Please draft the launch plan.')
+    const message = host.card(owner)
+    if (stops === 'one Stop line') host.stop()
+    else { const a = host.stopping(); const b = host.stopping(); a.mark(); b.mark(); a.spool(); b.spool(); host.pump() }
+    host.submit(again)
+    host.submit(message)
+    for (const name of GATED) assert.equal(await actsFor(host, name), `refused: ${PRIVATE_TURN_REFUSAL}`, `${stops}: ${name}; explain: ${host.explain()}`)
+  })
+}
+
+test('final re-review control: mission #7 paused run as a prompt of a CLI turn a share recipient\'s message also ran in, the pause pushed again while that turn ran, then the pause and the owner\'s message as the next CLI turn: the second copy takes its own push, the owner\'s turn', async (t) => {
+  const host = agentHost(t)
+  host.submit(missionPaused(host))
+  host.submit(recipientCard(host))
+  const again = missionPaused(host)
+  const owner = ownerFrame('Please draft the launch plan.')
+  const message = host.card(owner)
+  host.stop()
+  host.submit(again)
+  host.submit(message)
+  await assertOwnerTurn(host, 'the next CLI turn', directOf(owner))
+})
+
+test('final re-review control: an older forwarder (no startedAt on its lines), mission #7 paused while the turn before ran, an outside email delivered behind it and run with no prompt line, then the pause and the owner\'s message: the pause keeps its push, so email_send asks', async (t) => {
+  const host = agentHost(t)
+  host.unstamped = true
+  host.submit('Working the launch mission now.')
+  const again = missionPaused(host)
+  emailCard(host)
+  const owner = ownerFrame('Also email Dana the venue confirmation.')
+  const message = host.card(owner)
+  host.stop()
+  host.submit(again)
+  host.submit(message)
+  assert.deepEqual(await sendAdmitted(host), { ...directOf(owner), askOwner: true })
+})

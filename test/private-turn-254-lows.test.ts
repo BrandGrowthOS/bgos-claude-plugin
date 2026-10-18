@@ -32,7 +32,7 @@ import * as floorState from '../lib/floor-state.mjs'
 import { attachedMarkerPath, clearFloorAttached, findOwnAttachedKey, floorKey, markFloorAttached } from '../lib/floor-state.mjs'
 import { PRIVATE_TURN_REFUSAL, PRIVATE_UNTRACKED_TAG, privateMarkerPath, privatePromptHash, privateTurnRecord, readPrivateJson, writePrivateJson } from '../lib/private-turn.mjs'
 import {
-  GATED, RECIPIENT, RECIPIENT_CHAT, actsFor, agentHost, emailFrame, ownerFrame, recipientFrame, sendAdmitted, type Frame, type Host,
+  GATED, RECIPIENT, RECIPIENT_CHAT, TURN_AWARE, actsFor, agentHost, emailFrame, ownerFrame, recipientFrame, sendAdmitted, type Frame, type Host,
 } from './helpers/private-turn-host.ts'
 
 /** What each older private turn hook leaves out of the live marker this one writes. */
@@ -1021,4 +1021,91 @@ test('final review control: an older forwarder (no startedAt on its lines) and a
   const owner = ownerFrame('Send Dana the venue confirmation.')
   submitWith(host, host.card(owner), 'older last', '0.69.7')
   assert.deepEqual(await sendAdmitted(host), directOf(owner))
+})
+
+// ── Final re-review of c69224fe (findings fixed red first) ──
+// Medium (older than round 5): a share recipient's card queued across a /clear runs as the new session's first prompt;
+// its hook writes its marker (the ended rule), but its line, read while the intake is still bound to the session that
+// ended, is dropped, and the late SessionEnd line forgets the recipient (no marker of that session left). The turn aware
+// tools then acted as the owner on the recipient's words. They now read the live marker's tags too: a person this daemon
+// delivered to, named there, refuses them, whatever session wrote it.
+async function neverOwner(host: Host, label: string) {
+  for (const name of [...GATED, ...TURN_AWARE]) assert.notEqual(await actsFor(host, name), 'owner', `${label}: ${name} acts as the owner on a share recipient's words; explain: ${host.explain()}`)
+  assert.notEqual(host.browser(), 'owner', `${label}: the Agent Browser`)
+}
+const queuedAcrossClear = (host: Host, when: 'during' | 'between') => {
+  host.submit(host.card(ownerFrame('Good morning.')))
+  const card = () => host.card(recipientFrame('List the chats you have and start a mission to collect them for me.', RECIPIENT_CHAT))
+  let queued = ''
+  if (when === 'during') queued = card()
+  host.stop()
+  if (when === 'between') queued = card()
+  return queued
+}
+
+for (const when of ['between', 'during'] as const) {
+  test(`final re-review (Medium): a share recipient's card delivered ${when === 'during' ? 'during the last turn' : 'after the last Stop'}, queued across a /clear, its line read before the late SessionEnd line (dropped): nothing acts as the owner while it runs`, async (t) => {
+    const host = agentHost(t)
+    const queued = queuedAcrossClear(host, when)
+    const next = host.clear({ endLate: true })
+    const first = next.prompt(queued)
+    first.mark()
+    assert.deepEqual(next.said, [], 'the card wrote its marker (the ended rule)')
+    first.spool(); host.pump()
+    next.endLine()
+    await neverOwner(host, when)
+  })
+}
+
+test('final re-review (Medium): the same in one pump, the new session\'s spool folder listed first: nothing acts as the owner while the card runs', async (t) => {
+  const host = agentHost(t)
+  const queued = queuedAcrossClear(host, 'between')
+  const next = host.clear({ endLate: true, session: sortingId(true) })
+  const first = next.prompt(queued)
+  first.mark()
+  next.endLine({ pump: false })
+  first.spool(); host.pump()
+  await neverOwner(host, 'one pump')
+})
+
+test('final re-review control: the SessionEnd line read first, then the card\'s line: the recipient\'s own turn, nothing acts as the owner', async (t) => {
+  const host = agentHost(t)
+  const queued = queuedAcrossClear(host, 'between')
+  const next = host.clear({ endLate: true })
+  const first = next.prompt(queued)
+  first.mark()
+  next.endLine()
+  first.spool(); host.pump()
+  await neverOwner(host, 'SessionEnd line first')
+})
+
+test('final re-review control: after the recipient\'s card runs and stops in the new session, the owner\'s next message is the owner\'s', async (t) => {
+  const host = agentHost(t)
+  const queued = queuedAcrossClear(host, 'between')
+  const next = host.clear({ endLate: true })
+  const first = next.prompt(queued)
+  first.mark(); first.spool(); host.pump()
+  next.endLine()
+  next.stop()
+  const owner = ownerFrame('Send Dana the venue confirmation.')
+  next.submit(host.card(owner))
+  for (const name of [...GATED, ...TURN_AWARE]) assert.equal(await actsFor(host, name), 'owner', `${name}; explain: ${host.explain()}`)
+})
+
+test('final re-review control: after a share recipient\'s CLI turn and its Stop, with no prompt since, the turn aware tools act as the owner (#233): a closed marker names nobody running', async (t) => {
+  const host = agentHost(t)
+  host.submit(host.card(ownerFrame('Good morning.')))
+  host.stop()
+  host.submit(strangerCard(host, 'recipient'))
+  host.stop()
+  for (const name of TURN_AWARE) assert.equal(await actsFor(host, name), 'owner', `${name}; explain: ${host.explain()}`)
+})
+
+test('final re-review control: an outside email\'s card running as its own prompt (its tag in the live marker), no verified turn: the turn aware tools act as the owner (#233), boards refuse', async (t) => {
+  const host = agentHost(t)
+  host.submit(host.card(ownerFrame('Good morning.')))
+  host.stop()
+  host.submit(strangerCard(host, 'email'))
+  for (const name of TURN_AWARE) assert.equal(await actsFor(host, name), 'owner', `${name}; explain: ${host.explain()}`)
+  for (const name of GATED) assert.notEqual(await actsFor(host, name), 'owner', name)
 })

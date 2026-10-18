@@ -548,3 +548,100 @@ test('re-review (Low) control: a Stop whose hook was killed, the owner\'s next m
   stop.spool(); host.pump()
   await assertOwnerTurn(host, 'after the Stop line', reasonOf(next))
 })
+
+// ── Final re-review of c09e214e (findings fixed red first) ──
+// Medium (older than round 5): the same peer close announced twice while the owner's turn works runs as two prompts
+// back to back. The second has the first's words and meta, so its promptHash, and current() took it for the same words
+// submitted again after an interrupt (a new prompt_id): the owner lost every gated tool to the end of the CLI turn. A
+// carried card restamped under a new prompt_id is followed as a carried card, through the same checks and bars.
+async function ownerMessageTurn(t: any, withRecipient: boolean) {
+  const host = agentHost(t)
+  if (withRecipient) {
+    host.submit(host.card(recipientFrame('Please list my launch cards.')))
+    host.stop()
+  }
+  const owner = ownerFrame('Draft the launch plan.')
+  host.submit(host.card(owner))
+  await assertOwnerTurn(host, 'the owner\'s message', reasonOf(owner))
+  return { host, owner }
+}
+
+for (const withRecipient of [false, true]) {
+  test(`final re-review (Medium): the same peer close twice, each run as its own prompt of the owner's turn${withRecipient ? ', a share recipient\'s CLI turn before it' : ''}: the owner keeps the turn`, async (t) => {
+    const { host, owner } = await ownerMessageTurn(t, withRecipient)
+    host.submit(host.peerClose('completed', 4902))
+    await assertOwnerTurn(host, 'the first close', reasonOf(owner))
+    host.submit(host.peerClose('completed', 4902))
+    await assertOwnerTurn(host, 'the second close', reasonOf(owner))
+    host.tick(); host.tick()
+    await assertOwnerTurn(host, 'a later tool call of the same CLI turn', reasonOf(owner))
+  })
+}
+
+test('final re-review (Medium): the same peer close twice, no tool call between, only the daemon\'s publish after each line: the owner keeps the turn', async (t) => {
+  const { host, owner } = await ownerMessageTurn(t, false)
+  const first = host.prompt(host.peerClose('completed', 4902))
+  const second = host.prompt(host.peerClose('completed', 4902))
+  first.mark(); first.spool(); host.pump(); host.tick()
+  second.mark(); second.spool(); host.pump(); host.tick()
+  await assertOwnerTurn(host, 'both closes', reasonOf(owner))
+})
+
+test('final re-review control: the same peer close twice, both hooks before the first close\'s line is drained: the owner keeps the turn', async (t) => {
+  const { host, owner } = await ownerMessageTurn(t, false)
+  const first = host.prompt(host.peerClose('completed', 4902))
+  const second = host.prompt(host.peerClose('completed', 4902))
+  first.mark(); second.mark(); first.spool(); second.spool(); host.pump()
+  await assertOwnerTurn(host, 'both closes', reasonOf(owner))
+})
+
+test('final re-review control: the same peer close run again in the NEXT CLI turn, with no owner prompt of its own, opens nothing', async (t) => {
+  const { host } = await ownerMessageTurn(t, false)
+  host.submit(host.peerClose('completed', 4902))
+  host.stop()
+  host.submit(host.peerClose('completed', 4902))
+  await assertGatedRefused(host, 'the close alone in the next CLI turn')
+})
+
+test('final re-review control: the same peer close twice with a share recipient\'s message run between them: the owner is barred', async (t) => {
+  const { host } = await ownerMessageTurn(t, false)
+  host.submit(host.peerClose('completed', 4902))
+  host.submit(host.card(recipientFrame('Please clear the launch board.')))
+  host.submit(host.peerClose('completed', 4902))
+  for (const name of GATED) assert.notEqual(await actsFor(host, name), 'owner', `${name}; explain: ${host.explain()}`)
+  assert.notEqual(host.browser(), 'owner')
+})
+
+test('final re-review control: the same peer close twice with a card that is not carried run between them, only its hook writing (its line never read): the owner loses the turn', async (t) => {
+  const { host } = await ownerMessageTurn(t, false)
+  host.submit(host.peerClose('completed', 4902))
+  const between = host.prompt(host.raw('[mission_started] Mission #9 "Hiring" started. Begin with its first goal.',
+    { event_type: 'mission_started', mission_id: '9', chat_id: String(OWN_CHAT), assistant_id: '900' }))
+  between.mark()
+  host.submit(host.peerClose('completed', 4902))
+  for (const name of GATED) assert.notEqual(await actsFor(host, name), 'owner', `${name}; explain: ${host.explain()}`)
+  assert.notEqual(host.browser(), 'owner')
+})
+
+test('final re-review control: the owner\'s message submitted again (an interrupt, no Stop), its hook written and its line not read yet: the turn does not follow it', async (t) => {
+  const host = agentHost(t)
+  const card = host.card(ownerFrame('Draft the launch plan.'))
+  host.submit(card)
+  await assertOwnerTurn(host, 'the owner\'s message')
+  const again = host.prompt(card)
+  again.mark()
+  host.tick()
+  await assertGatedRefused(host, 'a resubmission before its line')
+})
+
+test('final re-review control: the marker\'s list of prompts full (fifteen reply reminders), the same peer close twice with a card that is not carried run between them (only its hook writing): the owner loses the turn', async (t) => {
+  const { host, owner } = await ownerMessageTurn(t, false)
+  for (let i = 0; i < 15; i++) host.submit(host.replyOverdue(OWN_CHAT, 5000 + i))
+  host.submit(host.peerClose('completed', 4902))
+  await assertOwnerTurn(host, 'fifteen reminders and the first close', reasonOf(owner))
+  const between = host.prompt(host.raw('[mission_started] Mission #9 "Hiring" started. Begin with its first goal.',
+    { event_type: 'mission_started', mission_id: '9', chat_id: String(OWN_CHAT), assistant_id: '900' }))
+  between.mark()
+  host.submit(host.peerClose('completed', 4902))
+  for (const name of GATED) assert.notEqual(await actsFor(host, name), 'owner', `${name}; explain: ${host.explain()}`)
+})
