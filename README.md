@@ -253,9 +253,9 @@ unattended hoai also checks the channel's heartbeat (the daemon's
 launch: a launch without one is relaunched ONCE, and the next launch without
 one is recorded as `no-channel-heartbeat` in launch-status and left running for
 a person to look at. Each relaunch records `health-relaunch` with its reason
-(`gate-accept-unproven` or `no-channel-heartbeat`) and counts against the same 3
-relaunches per hour as restart markers; past that it records
-`health-relaunch-refused`. A person's own `hoai` at a terminal is never
+(`gate-accept-unproven` or `no-channel-heartbeat`) and counts against a budget
+of its own, 3 health relaunches per hour, apart from the restart markers' 3;
+past that it records `health-relaunch-refused`. A person's own `hoai` at a terminal is never
 relaunched this way.
 
 **The watcher's service is named after its HOME.** Every name the per-machine

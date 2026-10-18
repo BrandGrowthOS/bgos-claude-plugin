@@ -889,6 +889,10 @@ export const SESSION_ID_FILE_NAME = 'session-id'
 /** Marker-triggered relaunch budget: 3 per rolling hour. A daemon stuck in
  *  an update-crash loop must not bounce the session forever. */
 export const MAX_RELAUNCHES_PER_WINDOW = 3
+/** Health relaunches (an unproven gate, no channel heartbeat) have a budget of their own, 3 per
+ *  rolling hour too: a gate that keeps failing must never use up the update restarts, nor an update
+ *  loop the relaunches that bring a broken launch back (board row 31583f86). */
+export const MAX_HEALTH_RELAUNCHES_PER_WINDOW = 3
 export const RELAUNCH_WINDOW_MS = 60 * 60 * 1000
 export const MARKER_POLL_MS = 3000
 
@@ -1080,13 +1084,14 @@ export function keepaliveMarkerBody({ pid, claudePid, tmuxSession, startedAt, bo
  * decision out. `recent` is the pruned rolling window the caller keeps.
  * @param {readonly number[]} relaunchesAt
  * @param {number} now
+ * @param {number} [max] the budget; health relaunches pass MAX_HEALTH_RELAUNCHES_PER_WINDOW
  * @returns {{ allow: boolean, recent: number[] }}
  */
-export function decideMarkerRelaunch(relaunchesAt, now) {
+export function decideMarkerRelaunch(relaunchesAt, now, max = MAX_RELAUNCHES_PER_WINDOW) {
   const recent = (Array.isArray(relaunchesAt) ? relaunchesAt : []).filter(
     (at) => Number.isFinite(at) && now - at < RELAUNCH_WINDOW_MS,
   )
-  return { allow: recent.length < MAX_RELAUNCHES_PER_WINDOW, recent }
+  return { allow: recent.length < max, recent }
 }
 
 /**
@@ -1312,7 +1317,7 @@ export function win32GateHelperArgs({ scriptDir = '', consolePid, timeoutSeconds
  *  helper lost a log line silently (PowerShell 5.1 Add-Content refuses a file another process
  *  has open for reading, as a non-terminating error) and exited 0 anyway, and hoai never looked
  *  at its exit. A 6 is a gate nobody can show was answered, so an unattended launch relaunches
- *  claude for it (superviseClaude, under the restart budget). */
+ *  claude for it (superviseClaude, under the health relaunch budget). */
 export const WIN32_GATE_EXIT_UNPROVEN = 6
 
 /** How long after a launch an unattended hoai gives the channel to send its first heartbeat.
@@ -2366,6 +2371,7 @@ export async function superviseClaude(args, opts = {}) {
   }
 
   let relaunchesAt = []
+  let healthRelaunchesAt = []
   let exhausted = false
   let currentArgs = [...args, ...sessionArgsFor(pinnedId, sessionExistsNow())]
   // The never-leave-dead fresh fallback is one-shot per relaunch cycle; a
@@ -2396,22 +2402,22 @@ export async function superviseClaude(args, opts = {}) {
       let live = true
       const startedAt = now()
       // Relaunch THIS claude because it is not proven healthy: the same relaunch a restart marker
-      // gets (its own pinned session, a fresh fallback cycle) and the same budget, so it can never
-      // loop. Past the budget it is reported and claude is left as it is.
+      // gets (its own pinned session, a fresh fallback cycle), on a budget of its own so it can
+      // never loop. Past the budget it is reported and claude is left as it is.
       const healthRelaunch = (reason, why) => {
         // A launcher asked to stop is ending this claude anyway; nothing to relaunch or record.
         if (!live || restartRequested || !childRef || stopSignal?.aborted) return
-        const decision = decideMarkerRelaunch(relaunchesAt, now())
-        relaunchesAt = decision.recent
+        const decision = decideMarkerRelaunch(healthRelaunchesAt, now(), MAX_HEALTH_RELAUNCHES_PER_WINDOW)
+        healthRelaunchesAt = decision.recent
         if (!decision.allow) {
           noteStatus('health-relaunch-refused', { reason })
           print(
-            `[hoai] ${why}. NOT relaunching: ${MAX_RELAUNCHES_PER_WINDOW} relaunches in the last hour already, ` +
-              'so claude is left as it is. Run hoai doctor in this folder.',
+            `[hoai] ${why}. NOT relaunching: ${MAX_HEALTH_RELAUNCHES_PER_WINDOW} health relaunches in the last hour ` +
+              'already, so claude is left as it is. Run hoai doctor in this folder.',
           )
           return
         }
-        relaunchesAt.push(now())
+        healthRelaunchesAt.push(now())
         restartRequested = true
         noteStatus('health-relaunch', { reason })
         print(`[hoai] ${why}. Relaunching claude on this agent's own session...`)
