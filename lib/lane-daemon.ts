@@ -232,8 +232,9 @@ export function buildLaneCommandEvent(
  * the turn that woke it, never a person's older history that the agent's
  * single mind may already have answered before lanes. Oldest first. A lane
  * whose folders were deleted has no cursor either, so a boot with no inbox
- * note then drops every row the server shows acknowledged
- * (LANE_SERVER_ACKNOWLEDGED, 0.71.2).
+ * note then drops every row the server shows already answered (acknowledged,
+ * LANE_SERVER_ACKNOWLEDGED, and answered after it or a performed command;
+ * lane-server.ts answeredAtServer, 0.71.2).
  */
 export function selectLaneBacklog(
   deliveries: LaneDelivery[],
@@ -417,7 +418,7 @@ export class LaneDeliveryClaims {
   }
 }
 
-// ── What the server says was handed over (0.71.2) ───────────────────────────
+// ── What the server says was picked up and answered (0.71.2) ────────────────
 
 /**
  * The delivery state a lane's ack leaves on a message: the lane acks a turn
@@ -426,8 +427,8 @@ export class LaneDeliveryClaims {
  * chats) carries it as the message's `deliveryState`. It is not the lane's
  * alone: the owner's daemon acked the same way before lanes, and the backend
  * marks the chat's latest user message acknowledged whenever an agent row is
- * saved there (a lane notice included). So only a lane with no inbox note
- * trusts it.
+ * saved there (a lane notice included). So acknowledged alone is not
+ * answered, and only a lane with no inbox note asks at all.
  */
 export const LANE_SERVER_ACKNOWLEDGED = 'acknowledged'
 

@@ -17,7 +17,8 @@
  *      to Claude as a channel event, only when it is stamped for this lane,
  *      and never before Claude has this server's tools (0.71.1); each
  *      message at most once per process, and, when it starts with no inbox
- *      note, never a backlog turn the server shows acknowledged (0.71.2);
+ *      note, never a backlog turn the server shows already answered or a
+ *      command it already performed (0.71.2);
  *   4. acknowledges each delivered turn, beats its own heartbeat, records its
  *      activity in lane.json for the supervisor's idle stop, and stops the
  *      lane on `lane_revoked` or when its session ends;
@@ -674,7 +675,7 @@ async function poll(): Promise<void> {
     if (boot && !launchHadNote && backlog.length > 0) {
       // A lane whose folders were deleted boots with no inbox note and would
       // re-answer the person's last 15 minutes: the server's record of what
-      // was already handed over decides instead (0.71.2). Only rows stamped
+      // was already answered decides instead (0.71.2). Only rows stamped
       // for this lane are asked about: the rest never go over (the second
       // lock refuses them below), and the server would refuse the read.
       const { answered, unsure, newFrom } = await answeredAtServer(backlog.filter((d) => laneDeliveryGate(d.raw, LANE).deliver))
@@ -686,7 +687,7 @@ async function poll(): Promise<void> {
         // Handed over in this life during the reads, and the server cannot
         // show an answer: its own note stands, waiting for one.
         if (unsure.has(d.messageId) && inbox.delivered.includes(d.messageId)) continue
-        log(`backlog turn ${d.messageId} was already answered (acknowledged at the server, and answered or performed); not offered again`)
+        log(`backlog turn ${d.messageId} was already ${unsure.has(d.messageId) ? 'picked up (acknowledged at the server, its answer unknown)' : 'answered (acknowledged at the server, and answered or performed)'}; not offered again`)
         inbox = inboxNoteHandled(inbox, d)
       }
       backlog = backlog.filter((d) => !answered.has(d.messageId))
