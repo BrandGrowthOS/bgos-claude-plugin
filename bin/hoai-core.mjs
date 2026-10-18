@@ -1576,6 +1576,25 @@ function defaultSpawnGateHelper({ scriptDir, consolePid, spawnImpl = spawn, writ
   return child
 }
 
+/** What hoai writes to the console before a relaunch on Windows: leave an alternate screen buffer a
+ *  killed claude left active (conhost discards it), erase the screen and the scrollback, cursor home.
+ *  The gate helper reads the active buffer up to 40 lines above the cursor; after this there is
+ *  nothing of the old claude's there (measured on conhost with the real helper, alternate and main
+ *  screen both). */
+export const WIN32_CONSOLE_CLEAR = '\x1b[?1049l\x1b[2J\x1b[3J\x1b[H'
+
+/** Write WIN32_CONSOLE_CLEAR to a console stream. Nothing for a stream that is not a TTY (a redirected
+ *  stdout: claude draws nowhere a helper reads then). True when it was written. */
+export function clearWin32Console(stream) {
+  if (!stream?.isTTY) return false
+  try {
+    stream.write(WIN32_CONSOLE_CLEAR)
+    return true
+  } catch {
+    return false
+  }
+}
+
 /** End a Windows process and every process under it: `taskkill /PID <pid> /T /F`, from System32 when
  *  SystemRoot names it. A claude installed by npm is `claude.cmd`, which hoai starts as
  *  `cmd.exe /c claude.cmd`, and node's kill() of that child is TerminateProcess on cmd.exe alone: the
@@ -2070,7 +2089,11 @@ export async function superviseClaude(args, opts = {}) {
   // fleet's run.expect); otherwise spawn directly and warn once.
   let warnedGate = false
   const spawnGateHelper = opts.spawnGateHelper ?? defaultSpawnGateHelper
+  const clearConsole = opts.clearConsole ?? (() => clearWin32Console(process.stdout))
+  let spawnsSoFar = 0
   const spawnSupervised = (spawnArgs, onSpawn, onGateHelperExit) => {
+    const relaunch = spawnsSoFar > 0
+    spawnsSoFar += 1
     const method = relaunchInstallMethod({ scriptDir, env, home })
     // Built at every spawn: main() adds the plan's env before the first one.
     const childEnv = childEnvWithoutSupervision(env, platform)
@@ -2082,6 +2105,14 @@ export async function superviseClaude(args, opts = {}) {
       if (platform === 'win32') {
         // No expect on Windows: claude gets the console, and a hidden helper
         // attached to that same console accepts the gate once it is on screen.
+        // A relaunch shares this console with the claude it replaced, which has
+        // ended by now, and a killed claude leaves its last screen behind (the
+        // gate in the alternate screen buffer included). The new helper reads the
+        // screen seconds before the new claude draws anything, so a gate left
+        // there got this launch's one Enter and the new gate none (board row
+        // 978da5db, measured with a fake claude). Cleared first; never before the
+        // first launch, so a person's own terminal keeps its screen.
+        if (relaunch) clearConsole()
         const exited = spawnClaude(spawnArgs, { platform, env, spawnImpl, writeErr, onSpawn, childEnv })
         try {
           const helper = spawnGateHelper({ scriptDir, consolePid: process.pid, spawnImpl, writeErr, home })
