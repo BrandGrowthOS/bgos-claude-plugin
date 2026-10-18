@@ -6,6 +6,8 @@ Notable changes to the HOAI Claude Code plugin.
 
 Managed paired launches discover the acting person's browser profile through HOAI before every call. A stopped, stale, revoked or unavailable managed profile refuses without opening a different local or legacy browser. Polls and cancellation retain the original actor and exact runtime authority. Fresh machines still need explicit human device and background-use approval; the caller does not enroll an endpoint or grant itself access.
 
+Bundled Chromium startup supports Bun's hardlinked dependency cache while checking the exact pinned package bytes. The browser executable, completion marker and installation lock keep their single-link checks. Managed-launch regression tests now model explicit no-profile discovery before exercising the legacy relay.
+
 The zero-dependency shim is byte-identical to BGOS commit `190525c600b77b4faf8563fa3a97ad22b2850316`, SHA256 `a55d97ae441d157cd26c50c25aa63f4d4d2dbe9094278e00f3b0550001f06fa9`. The cross-tree guard and focused caller, launcher, legacy and managed-profile tests cover this copy. This source change is not a published plugin release. The separate Codex channel copy has not been updated in this worktree.
 
 ## 0.71.4 (2026-10-18)

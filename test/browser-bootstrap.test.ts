@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { mkdtempSync, writeFileSync, rmSync, existsSync, mkdirSync, readFileSync, copyFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, rmSync, existsSync, mkdirSync, readFileSync, copyFileSync, linkSync, lstatSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { pathToFileURL } from 'node:url'
@@ -123,6 +123,43 @@ test('actual bundled installer provenance is exact and exposes its complete mark
   assert.match(resolved.executable, /chromium-1248/)
   assert.match(resolved.marker, /chromium-1248[\\/]INSTALLATION_COMPLETE$/)
   assert.match(resolved.cli, /playwright-core[\\/]cli\.js$/)
+})
+
+test('exact hash-pinned Bun-style dependency hardlinks are admitted and rechecked after alias changes', async t => {
+  const f = fixture(t), lib = join(f.paths.cache, 'lib'), pkg = join(f.paths.cache, 'node_modules', 'playwright-core'), store = join(f.paths.cache, 'package-store')
+  mkdirSync(lib); mkdirSync(pkg, { recursive: true }); mkdirSync(store)
+  for (const name of ['browser-bootstrap.mjs', 'browser-install-lifetime.mjs', 'browser-env.mjs', 'browser-bootstrap.pin.json']) copyFileSync(new URL(`../lib/${name}`, import.meta.url), join(lib, name))
+  const require = createRequire(import.meta.url), original = dirname(require.resolve('playwright-core/package.json'))
+  copyFileSync(join(original, 'package.json'), join(pkg, 'package.json'))
+  for (const name of ['cli.js', 'lib/bootstrap.js', 'lib/coreBundle.js', 'lib/utilsBundle.js', 'lib/entry/oopBrowserDownload.js']) {
+    const source = join(store, name), target = join(pkg, name)
+    mkdirSync(dirname(source), { recursive: true }); mkdirSync(dirname(target), { recursive: true })
+    copyFileSync(join(original, name), source); linkSync(source, target)
+    assert.equal(lstatSync(target).nlink, 2, 'the fixture must use physical hardlinks, not copied bytes')
+    assert.deepEqual(readFileSync(target), readFileSync(join(original, name)))
+  }
+  writeFileSync(join(pkg, 'index.js'), `module.exports = { chromium: { executablePath: () => ${JSON.stringify(join(f.paths.cache, 'chromium-1248', 'chrome'))} } }`)
+  const actual = await import(pathToFileURL(join(lib, 'browser-bootstrap.mjs')).href)
+  assert.equal(actual.bundledChromium().cli, join(pkg, 'cli.js'))
+  assert.equal(await actual.createBrowserBootstrap().ensureBrowser({ findInstalled: () => ({ path: '/unrelated/installed/chrome' }) }), '/unrelated/installed/chrome')
+  // Change the private store alias only. The next resolution must still check
+  // the package's exact hash before loading or spawning any installer code.
+  writeFileSync(join(store, 'cli.js'), 'throw new Error("DO NOT EXECUTE THIS CLI")')
+  assert.throws(() => actual.bundledChromium(), { code: 'browser_install_failed' })
+  assert.equal(f.calls(), 0)
+})
+
+test('hardlinked browser executables, completion markers and active lock files remain refused', async t => {
+  for (const key of ['executable', 'marker'] as const) {
+    const f = fixture(t); f.finishFiles(); linkSync(f.paths[key], join(f.paths.cache, `${key}-alias`))
+    assert.equal(f.controller.readiness({ bundle: () => f.paths }).state, 'needs-install')
+    assert.equal(f.calls(), 0)
+  }
+  const f = fixture(t), first = f.controller.ensureBrowser(f.request); await turn()
+  linkSync(f.lock, join(f.paths.cache, 'lock-alias')); f.finishFiles(); f.close()
+  await assert.rejects(first, { code: 'browser_install_recovery_required' })
+  await assert.rejects(f.controller.whenDrained(), { code: 'browser_install_recovery_required' })
+  assert.equal(existsSync(f.lock), true)
 })
 
 test('copied actual resolver refuses changed bundled CLI bytes before loading or spawning it', async t => {
