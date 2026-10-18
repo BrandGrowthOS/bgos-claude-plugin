@@ -7830,6 +7830,11 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         approve: (args) => emailSendApproval(args),
         // A too long email the server kept as a draft: the very same one again saves no second.
         answered: (args, answer) => emailSendApprovals.noteSendAnswer(args, answer),
+        // A draft kept for the owner (words not theirs reached the turn): the very same one again saves no second.
+        ownerDraft: {
+          keep: (args, basis) => emailSendApprovals.keepOwnerDraft(args, basis),
+          forget: (args, basis) => emailSendApprovals.forgetOwnerDraft(args, basis),
+        },
       })
 
     default:
