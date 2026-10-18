@@ -472,6 +472,7 @@ import {
 import {
   clearFloorAttached,
   daemonFloorFolders,
+  floorEntrySession,
   floorKey,
   floorStateRoot,
   markFloorAttached,
@@ -3807,6 +3808,8 @@ const FLOOR_FOLDERS: string[] = daemonFloorFolders({
 })
 const FLOOR_KEYS = [...new Set(FLOOR_FOLDERS.map((folder) => floorKey(folder)).filter(Boolean))]
 let floorMarkerKeys: string[] = []
+/** The session the attached entry was last written naming (lib/floor-state.mjs floorEntrySession), null before. */
+let floorEntrySessionWritten: string | null = null
 
 /**
  * Say to the floor hook that a HOAI daemon is attached to this project folder,
@@ -3817,15 +3820,15 @@ let floorMarkerKeys: string[] = []
  * against (the intake's own two), so the private turn hook writes its marker
  * only under its own daemon's key, never another agent's (lib/floor-state.mjs
  * findOwnAttachedKey), and the session the intake is bound to once it is, so
- * never another claude session's of the same folder either.
+ * never another claude session's of the same folder either; none again once
+ * that session's SessionEnd is consumed (floorEntrySession).
  */
 function markFloorAttachedIfHolder(): void {
   if (!lockHeld) return
   try {
-    floorMarkerKeys = markFloorAttached({ root: FLOOR_STATE_ROOT, folders: FLOOR_FOLDERS, projectDir: sessionBinder.projectDirectory, baseDir: LAUNCH_CWD, sessionId: liveSessionId ?? '' })
-    if (floorMarkerKeys.length === 0) {
-      log('floor: could not write the attached marker; the floor hook stays silent in this session')
-    }
+    floorMarkerKeys = markFloorAttached({ root: FLOOR_STATE_ROOT, folders: FLOOR_FOLDERS, projectDir: sessionBinder.projectDirectory, baseDir: LAUNCH_CWD, sessionId: floorEntrySession(liveSessionId, hookEndedSessionId) })
+    if (floorMarkerKeys.length === 0) log('floor: could not write the attached marker; the floor hook stays silent in this session')
+    else floorEntrySessionWritten = floorEntrySession(liveSessionId, hookEndedSessionId)
   } catch (err) {
     log(`floor: could not write the attached marker (${err})`)
   }
@@ -9815,10 +9818,11 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
   if (hookSessionId && hookSessionId !== liveSessionId) {
     liveSessionId = hookSessionId
     liveSessionSeenAtMs = Date.now()
-    // The attached entry names the session this intake is bound to, so another claude session of the folder never
-    // writes the agent's private turn marker (lib/floor-state.mjs findOwnAttachedKey, the third review of c69224fe).
-    markFloorAttachedIfHolder()
   }
+  // The attached entry names the session this intake is bound to, so another claude session of the folder never
+  // writes the agent's private turn marker (lib/floor-state.mjs findOwnAttachedKey, the third review of c69224fe), and
+  // none once that session ended, so the first prompt of the session a /clear starts writes its own (the fourth).
+  if (floorEntrySession(liveSessionId, hookEndedSessionId) !== floorEntrySessionWritten) markFloorAttachedIfHolder()
   if (event.name === 'SessionEnd') privateTurns.end({ at: lineAt })
   if (event.name === 'UserPromptSubmit') {
     // A prompt past the forwarder's clip arrives as its token(s) plus the full prompt's hash.
