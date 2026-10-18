@@ -1412,15 +1412,10 @@ export function loginSignalOf(chunk, nowMs) {
   return signal
 }
 
-/**
- * Has the Claude login every agent of this credential store shares failed? The newest login signal
- * across the fresh transcripts of every agent folder under `<configDir>/projects` decides: the CLI's
- * failure record, unless some agent answered after it. Files not written for LOGIN_STALE_MS are not
- * read. Returns `{ at, text }` (the CLI's words) or null; never throws.
- * @param {{ configDir: string, now: number, listDir: (path: string) => string[],
- *   mtimeMs: (path: string) => number | null, readTail: (path: string) => string | null }} input
- */
-export function fleetClaudeLoginFailure({ configDir, now, listDir, mtimeMs, readTail }) {
+/** The newest login signal (loginSignalOf) across every agent folder's transcripts under
+ *  `<configDir>/projects`, counting only records from `since` on; files not written since then are not
+ *  read. Null when there is none. Never throws. */
+function fleetNewestLoginSignal({ configDir, since, listDir, mtimeMs, readTail }) {
   const projects = joinDir(configDir, 'projects')
   const list = (path) => {
     try {
@@ -1436,12 +1431,38 @@ export function fleetClaudeLoginFailure({ configDir, now, listDir, mtimeMs, read
       if (!String(name).endsWith('.jsonl')) continue
       const path = joinDir(dir, name)
       const mtime = mtimeMs(path)
-      if (mtime == null || mtime < now - LOGIN_STALE_MS) continue
-      const signal = loginSignalOf(readTail(path) ?? '', now)
+      if (mtime == null || mtime < since) continue
+      // loginSignalOf counts records from LOGIN_STALE_MS before its clock: this clock makes that `since`.
+      const signal = loginSignalOf(readTail(path) ?? '', since + LOGIN_STALE_MS)
       if (signal && (!newest || signal.at >= newest.at)) newest = signal
     }
   }
+  return newest
+}
+
+/**
+ * Has the Claude login every agent of this credential store shares failed? The newest login signal
+ * across the fresh transcripts (LOGIN_STALE_MS, the daemon's rule) of every agent folder under
+ * `<configDir>/projects` decides: the CLI's failure record, unless some agent answered after it.
+ * Returns `{ at, text }` (the CLI's words) or null; never throws.
+ * @param {{ configDir: string, now: number, listDir: (path: string) => string[],
+ *   mtimeMs: (path: string) => number | null, readTail: (path: string) => string | null }} input
+ */
+export function fleetClaudeLoginFailure({ configDir, now, listDir, mtimeMs, readTail }) {
+  const newest = fleetNewestLoginSignal({ configDir, since: now - LOGIN_STALE_MS, listDir, mtimeMs, readTail })
   return newest?.type === 'login_failed' ? { at: newest.at, text: newest.text } : null
+}
+
+/**
+ * Has some agent of this credential store answered since a login failure at `since`, at any age, with
+ * no failure after that answer? Only that proves the login works again: a failure nobody has tried
+ * past is still a failure once it is older than LOGIN_STALE_MS (lib/claude-login.ts reduceLoginState:
+ * "a dead login stays dead until proven otherwise"). Never throws.
+ * @param {{ configDir: string, since: number, listDir: (path: string) => string[],
+ *   mtimeMs: (path: string) => number | null, readTail: (path: string) => string | null }} input
+ */
+export function fleetClaudeLoginAnswered({ configDir, since, listDir, mtimeMs, readTail }) {
+  return fleetNewestLoginSignal({ configDir, since, listDir, mtimeMs, readTail })?.type === 'activity'
 }
 
 /** A file's modification time in ms, or null. Never throws. */
@@ -1769,7 +1790,9 @@ export function listWin32Processes({ spawnSyncImpl = spawnSync, env = process.en
  *  @returns {number[]} */
 export function win32ShimTargets(processes, rootPid) {
   const root = processes.find((p) => p.pid === rootPid)
-  if (!root) return []
+  // Only a shim hides claude: a native claude.exe's children are its MCP servers and tools, in its own
+  // kill-on-close job, ended with it as on main.
+  if (!root || !/^cmd\.exe$/i.test(root.name)) return []
   const targets = []
   const seen = new Set([rootPid])
   let layer = [root]
@@ -2243,16 +2266,12 @@ export async function superviseClaude(args, opts = {}) {
   const stopSignal = opts.signal ?? null
   // Has the Claude login every agent of this credential store shares failed? Asked only for a launch
   // with no channel heartbeat: the CLI's own records, in the store it signs in through.
-  const claudeLoginFailure =
-    opts.claudeLoginFailure ??
-    (() =>
-      fleetClaudeLoginFailure({
-        configDir: claudeConfigDir({ env, home }),
-        now: now(),
-        listDir,
-        mtimeMs: fileMtimeMs,
-        readTail: (path) => readFileTail(path, LOGIN_TAIL_BYTES),
-      }))
+  const loginStore = { configDir: claudeConfigDir({ env, home }), listDir, mtimeMs: fileMtimeMs, readTail: (path) => readFileTail(path, LOGIN_TAIL_BYTES) }
+  const claudeLoginFailure = opts.claudeLoginFailure ?? (() => fleetClaudeLoginFailure({ ...loginStore, now: now() }))
+  const claudeLoginAnsweredSince = opts.claudeLoginAnsweredSince ?? ((at) => fleetClaudeLoginAnswered({ ...loginStore, since: at }))
+  // The shared login failure an alert was made for: it stands, across relaunches too, until an
+  // agent answers after it.
+  let loginFailure = null
   // Nobody at the terminal (bin/bgos-agent run.sh v2): see SUPERVISED_ENV.
   const supervised = isSupervisedLaunch(env)
   // In tmux the launcher has a terminal and relays it; under launchd with no
@@ -2670,10 +2689,13 @@ export async function superviseClaude(args, opts = {}) {
         }
         const waited = `${Math.round((now() - startedAt) / 1000)}s`
         // The Claude login every agent here shares has failed: this session cannot sign in, and a
-        // relaunched one meets the same wall. Alert instead, spend nothing, and look again later: once
-        // the login works, a launch still without a heartbeat has another cause and gets its one
-        // relaunch (board row 31583f86).
-        const login = claudeLoginFailure()
+        // relaunched one meets the same wall. Alert instead, spend nothing, and look again later. The
+        // failure stands until an agent answers after it (not merely once it is too old to read as
+        // fresh); then a launch still without a heartbeat has another cause and gets its one relaunch
+        // (board row 31583f86).
+        if (loginFailure && claudeLoginAnsweredSince(loginFailure.at)) loginFailure = null
+        else loginFailure ??= claudeLoginFailure()
+        const login = loginFailure
         if (login) {
           if (!loginAlerted) {
             loginAlerted = true

@@ -54,6 +54,13 @@ const fixed = core as unknown as {
     readTail: (path: string) => string | null
   }) => { at: number; text: string } | null
   loginSignalOf?: (chunk: string, nowMs: number) => unknown
+  fleetClaudeLoginAnswered?: (input: {
+    configDir: string
+    since: number
+    listDir: (path: string) => string[]
+    mtimeMs: (path: string) => number | null
+    readTail: (path: string) => string | null
+  }) => boolean
   readFileTail?: (path: string, bytes: number) => string | null
   fileMtimeMs?: (path: string) => number | null
 }
@@ -140,6 +147,8 @@ interface HarnessOpts {
   files?: Record<string, string>
   /** The shared-login detector (absent: the default one, which reads nothing here). */
   claudeLoginFailure?: () => { at: number; text: string } | null
+  /** Has any agent answered since that failure? (absent: the default, which reads nothing here) */
+  claudeLoginAnsweredSince?: (at: number) => boolean
   spawnSyncImpl?: (...args: unknown[]) => unknown
 }
 
@@ -210,6 +219,7 @@ function harness(o: HarnessOpts = {}) {
           },
         }),
     ...(o.claudeLoginFailure ? { claudeLoginFailure: o.claudeLoginFailure } : {}),
+    ...(o.claudeLoginAnsweredSince ? { claudeLoginAnsweredSince: o.claudeLoginAnsweredSince } : {}),
     spawnGateHelper: () => {
       const helper = new FakeHelper(30000 + helpers.length, screen.some((line) => line.includes(GATE_TEXT)))
       helpers.push(helper)
@@ -462,6 +472,11 @@ test('win32ShimTargets: the shim s own children, born after it, through further 
   // An unknown start time is no proof of a child: never ended.
   assert.deepEqual(fixed.win32ShimTargets!(fixed.parseWin32ProcessRows!([row(2000, 1000, 200, 'cmd.exe'), row(3000, 2000, null, 'node.exe')].join('\n')), 2000), [])
   assert.deepEqual(fixed.win32ShimTargets!(procs, 9999), [], 'a shim not in the listing has nothing under it to end')
+})
+
+test('win32ShimTargets: a root that is no cmd.exe shim (a native claude.exe) has its children left to its own job, as on main', () => {
+  const procs = fixed.parseWin32ProcessRows!([row(2000, 1000, 200, 'claude.exe'), row(3000, 2000, 300, 'bun.exe'), row(3100, 2000, 310, 'node.exe')].join('\n'))
+  assert.deepEqual(fixed.win32ShimTargets!(procs, 2000), [])
 })
 
 test('endWin32ShimTree: lists processes with System32 powershell, ends the claude under the shim and then the shim, nothing deeper', () => {
@@ -757,6 +772,8 @@ test('the login alert spends nothing: once the login works again, a launch witho
     },
     clearConsole: () => {},
     claudeLoginFailure: () => failure,
+    // Signing in again shows as an answer after the failure.
+    claudeLoginAnsweredSince: () => failure === null,
     spawnGateHelper: () => new FakeHelper(31000, false),
     writeErr: () => {},
     exists: (p: string) => files.has(p),
@@ -806,8 +823,16 @@ test('the login alert spends nothing: once the login works again, a launch witho
 })
 
 test('the check comes back after a login alert: alerted once while the login stays failed, then the one relaunch once it works', async () => {
-  let failure: { at: number; text: string } | null = { at: T0 + 30_000, text: 'Login expired · Please run /login' }
-  const h = harness({ claudeLoginFailure: () => failure })
+  const failure = { at: T0 + 30_000, text: 'Login expired · Please run /login' }
+  let answered = false
+  const asked: number[] = []
+  const h = harness({
+    claudeLoginFailure: () => failure,
+    claudeLoginAnsweredSince: (at) => {
+      asked.push(at)
+      return answered
+    },
+  })
   await launched(h, 1)
   h.fire(THREE_MIN)
   await settle()
@@ -817,11 +842,31 @@ test('the check comes back after a login alert: alerted once while the login sta
   await settle()
   assert.equal(h.claudes.length, 1, 'still failing: no relaunch')
   assert.equal(alerts(), 1, 'and no second alert for the same launch')
-  // Someone runs /login; this launch's channel is still silent: a different cause, the one relaunch.
-  failure = null
+  assert.deepEqual(asked, [failure.at], 'judged against the failure it alerted on')
+  // Someone runs /login and an agent answers; this launch's channel is still silent: a different
+  // cause, the one relaunch.
+  answered = true
   h.fire(THREE_MIN)
   await launched(h, 2)
   assert.match(h.files.get(STATUS_PATH) ?? '', /outcome=health-relaunch reason=no-channel-heartbeat/)
+  await h.end()
+})
+
+test('a failure stays a failure: once it is older than 10 minutes and nobody has answered since, still no relaunch', async () => {
+  // The quiet fleet: one agent's attempt failed, nobody tried since. The fresh-record detector finds
+  // nothing any more; nothing proves the login works, so the alert stands.
+  let fresh: { at: number; text: string } | null = { at: T0 + 30_000, text: 'Login expired · Please run /login' }
+  const h = harness({ claudeLoginFailure: () => fresh, claudeLoginAnsweredSince: () => false })
+  await launched(h, 1)
+  h.fire(THREE_MIN)
+  await settle()
+  fresh = null
+  for (let n = 0; n < 5; n += 1) {
+    h.fire(THREE_MIN)
+    await settle()
+  }
+  assert.equal(h.claudes.length, 1, 'no relaunch: a dead login stays dead until an answer proves otherwise')
+  assert.match(h.files.get(STATUS_PATH) ?? '', /outcome=claude-login-expired /)
   await h.end()
 })
 
@@ -974,6 +1019,28 @@ test('fleetClaudeLoginFailure: nothing to read (no projects folder, junk lines) 
   assert.equal(fixed.fleetClaudeLoginFailure!(s.input), null)
 })
 
+test('fleetClaudeLoginAnswered: an agent answered after the failure, at any age; a newer failure, or nothing, is no answer', () => {
+  assert.equal(typeof fixed.fleetClaudeLoginAnswered, 'function')
+  const FAILED = NOW - 40 * 60_000
+  const answeredLater = store({
+    'C--agents-888/a.jsonl': { mtime: FAILED, lines: [record('failed', FAILED)] },
+    'C--agents-871/b.jsonl': { mtime: NOW - 20 * 60_000, lines: [record('activity', NOW - 20 * 60_000)] },
+  })
+  assert.equal(fixed.fleetClaudeLoginAnswered!({ ...answeredLater.input, since: FAILED }), true, 'an answer 20 minutes ago still proves it')
+  const failedAgain = store({
+    'C--agents-888/a.jsonl': { mtime: NOW - 20 * 60_000, lines: [record('failed', FAILED), record('activity', NOW - 30 * 60_000), record('failed', NOW - 20 * 60_000)] },
+  })
+  assert.equal(fixed.fleetClaudeLoginAnswered!({ ...failedAgain.input, since: FAILED }), false, 'it failed again after that answer')
+  const quiet = store({ 'C--agents-888/a.jsonl': { mtime: FAILED, lines: [record('failed', FAILED)] } })
+  assert.equal(fixed.fleetClaudeLoginAnswered!({ ...quiet.input, since: FAILED }), false, 'nobody tried since: still failed')
+  const before = store({
+    'C--agents-888/a.jsonl': { mtime: FAILED, lines: [record('failed', FAILED)] },
+    'C--agents-871/b.jsonl': { mtime: FAILED - 60_000, lines: [record('activity', FAILED - 60_000)] },
+  })
+  assert.equal(fixed.fleetClaudeLoginAnswered!({ ...before.input, since: FAILED }), false, 'an answer before the failure proves nothing')
+  assert.deepEqual(before.reads, [`${PROJECTS}\\C--agents-888\\a.jsonl`], 'a file untouched since the failure is not read')
+})
+
 test('loginSignalOf mirrors lib/claude-login.ts extractLoginSignal on every record shape (hoai runs under bare node, no TS import)', () => {
   assert.equal(typeof fixed.loginSignalOf, 'function')
   const chunks = [
@@ -1084,7 +1151,7 @@ test('superviseClaude reads the store the CLI signs in through: CLAUDE_CONFIG_DI
   assert.ok(asked.includes('D:\\claude-store\\projects'), asked.join('\n'))
 })
 
-test('the default detector reads real transcripts: an expired login another agent recorded on disk is an alert, not a relaunch', async () => {
+test('the default detector reads real transcripts: an expired login another agent recorded on disk is an alert, not a relaunch, until an agent answers after it', async () => {
   const store = mkdtempSync(join(tmpdir(), 'hoai-login-store-'))
   const agent = join(store, 'projects', 'C--agents-871')
   mkdirSync(agent, { recursive: true })
@@ -1096,6 +1163,15 @@ test('the default detector reads real transcripts: an expired login another agen
   await settle()
   assert.equal(b.claudes.length, 1)
   assert.ok(b.prints.some((line) => line.includes('ALERT (claude-login-expired)') && line.includes('Login expired')), b.prints.join('\n'))
+  b.fireHeartbeatCheck()
+  await settle()
+  assert.equal(b.claudes.length, 1, 'nobody has answered since')
+  // Another agent answers after the failure: the login works, and this launch's silence has another cause.
+  const other = join(store, 'projects', 'C--agents-872')
+  mkdirSync(other, { recursive: true })
+  writeFileSync(join(other, 'c.jsonl'), `${record('activity', T0 + 5 * 60_000)}\n`)
+  b.fireHeartbeatCheck()
+  await waitUntil(() => b.claudes.length === 2, 'the one heartbeat relaunch')
   await b.end()
 })
 
