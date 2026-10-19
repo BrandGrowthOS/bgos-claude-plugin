@@ -153,7 +153,10 @@ test('managed profile resolves fresh actor authority and uses typed HTTP without
 
 test('idle and every stopped or fenced managed state refuses without command, local fallback or legacy host selection', async t => {
   const f = await rig(t)
-  for (const writer of ['idle', 'stopped', 'staged', 'quiescing', 'fenced']) { f.state.writer = writer; const result = await f.request(); assert.equal(result.result.isError, true); assert.match(result.result.content[0].text, /managed browser/) }
+  // Each state is said as its browser_profile_* code and one sentence (0.72.0, mission 173); the words are pinned in
+  // test/hoai-browser-mcp.refusals.test.ts.
+  const codes: Record<string, string> = { idle: 'setup_required', stopped: 'restart_review_required', staged: 'restart_review_required', quiescing: 'closing', fenced: 'recovery_required' }
+  for (const writer of ['idle', 'stopped', 'staged', 'quiescing', 'fenced']) { f.state.writer = writer; const result = await f.request(); assert.equal(result.result.isError, true); assert.match(result.result.content[0].text, new RegExp(`^browser_profile_${codes[writer]}: `)) }
   assert.ok(f.frames.every(frame => frame.path.endsWith('/resolve')))
 })
 
