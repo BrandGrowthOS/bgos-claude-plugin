@@ -9052,7 +9052,7 @@ async function announceMissedPlanAnswers(): Promise<void> {
           params: {
             // 70f1898b: a tap by anyone but the owner is someone else's words in the turn it reaches. A late announce
             // opens no private turn (4bf28148: only the stream's, in its window).
-            content: privateTapCard({ tracker: privateTurns, lane: 'boot', ownerUserId: USER_ID, chatId: String(chatId), messageId: row.id, tapperUserId: readTapperUserId(payload), answeredAt: mm.answeredAt, receivedAt: Date.now(), content: contentLines.join('\n') }),
+            content: privateTapCard({ tracker: privateTurns, lane: 'boot', ownerUserId: USER_ID, chatId: String(chatId), messageId: row.id, tapperUserId: readTapperUserId(payload), answeredAt: mm.answeredAt, receivedAt: Date.now(), callbackData: callbackData, customText: customText, content: contentLines.join('\n') }),
             meta: buildButtonClickedMeta({
               chatId,
               messageId: row.id,
@@ -10635,7 +10635,7 @@ async function pollChat(chatId: string): Promise<void> {
         params: {
           // 70f1898b: a tap by anyone but the owner is someone else's words in the turn it reaches. The poll opens no
           // private turn, however fresh the tap (4bf28148: only the stream's, in its window).
-          content: privateTapCard({ tracker: privateTurns, lane: 'poll', ownerUserId: USER_ID, chatId: String(chatId), messageId: mm.id, tapperUserId: readTapperUserId(payload), answeredAt: mm.answeredAt, receivedAt: Date.now(), content: contentLines.join('\n') }),
+          content: privateTapCard({ tracker: privateTurns, lane: 'poll', ownerUserId: USER_ID, chatId: String(chatId), messageId: mm.id, tapperUserId: readTapperUserId(payload), answeredAt: mm.answeredAt, receivedAt: Date.now(), callbackData: agentCallbackData, customText: customText, content: contentLines.join('\n') }),
           // `user_id` is the tapper the server stamped on the answer, or
           // absent. It was this daemon's own USER_ID, so every tap read as
           // the owner's whoever made it.
@@ -13498,7 +13498,7 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
         // 70f1898b: a tap by anyone but the owner is someone else's words in the turn it reaches. The owner's own tap,
         // as the backend stamped it, within PRIVATE_TAP_WINDOW_MS of its answeredAt, opens a private turn as the owner
         // (4bf28148), and the fire ledger makes a second announce of it a replay.
-        content: privateTapCard({ tracker: privateTurns, lane: 'stream', ownerUserId: USER_ID, chatId: String(chatId), messageId: view.messageId, tapperUserId: answer.tapperUserId, answeredAt: update.payload.answeredAt ?? update.payload.answered_at, receivedAt: receivedAtMs, content: contentLines.join('\n') }),
+        content: privateTapCard({ tracker: privateTurns, lane: 'stream', ownerUserId: USER_ID, chatId: String(chatId), messageId: view.messageId, tapperUserId: answer.tapperUserId, answeredAt: update.payload.answeredAt ?? update.payload.answered_at, receivedAt: receivedAtMs, callbackData: agentCallbackData, customText: answer.customText, content: contentLines.join('\n') }),
         meta: buildStreamClickMeta({
           chatId,
           messageId: view.messageId,
