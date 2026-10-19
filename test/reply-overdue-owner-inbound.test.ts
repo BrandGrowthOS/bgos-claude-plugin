@@ -114,7 +114,10 @@ test('Data\'s review (M1): every lane hands recordInbound the same actor it hand
   }
   const actors = SRC.split('\n').filter((line) => line.includes('content: privateTurns.deliver(')).map(actorOf)
   assert.equal(actors.length, 3, 'the poll, the stream and the socket')
-  const calls = [...SRC.matchAll(/\n\s*recordInbound\(([\s\S]*?)\)\n/g)].map((m) => m[1].replace(/\s+/g, ' ').trim())
+  // The tracker's last argument is whether the message addressed this agent
+  // (board row 59a6d097); the actor is the argument before it.
+  const calls = [...SRC.matchAll(/\n\s*recordInbound\(([\s\S]*?)\)\n/g)]
+    .map((m) => m[1].replace(/\s+/g, ' ').trim().replace(/,? inboundAddressesAgent\(\{[^}]*\}\),?$/, ''))
   assert.equal(calls.length, 3, 'one recordInbound per lane')
   for (const [index, actor] of actors.entries()) {
     assert.ok(actor, `lane ${index}: its deliver names an actor`)

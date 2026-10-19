@@ -2,6 +2,12 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.71.9 (2026-10-19)
+
+**The deaf session check no longer fires on a group message the agent was right to ignore: a group or shared chat message that does not address the agent arms no reply reminder, one pending message is probed at most once, the probe says "after a restart" only after one, and the not answering warning goes only to the owner's own chat, never into a chat other people read (HOAI board row 59a6d097: Voxor, chat 3821, 23 probes for one message on 2026-10-17 and the launch guidance posted into a group of four).**
+
+Guards: `test/deaf-probe-group-silence.test.ts` (the socket, stream and poll lanes run out of server.ts with the real tracker and ladder on a fake clock: a person's follow-up in a group, an addressed group message, an owner chat message, the escalation target), red on fdd9c0b, with mutation proofs.
+
 ## 0.71.8 (2026-10-19)
 
 **A Claude Code agent is now told it can send a card it composes (ui_card): the daemon declares `ui_card` on every host and connection, so the BGOS canon serves it the Cards you compose section, the ui_card catalog line and the told show_component paragraph (mission 168 follow up).**

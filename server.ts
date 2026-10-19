@@ -361,7 +361,9 @@ import {
   unansweredProbe,
   deafSessionChatMessage,
   deafFixCommand,
+  deafNoticeChat,
   inboundOwesReply,
+  inboundAddressesAgent,
 } from './lib/channel-liveness.js'
 import {
   buildAuthRejectionNotification,
@@ -7950,6 +7952,9 @@ interface ChatMessage {
     peer_conversation_id?: string | number | null
     turnState?: string | null
     turn_state?: string | null
+    // A shared chat row's @mentions as the server parsed them (BGOS MessageDto.mentions), read by
+    // inboundAddressesAgent: there the agent is addressed only by a mention of it or a slash command.
+    mentions?: unknown
   }
   messageFiles?: MessageFileInfo[]
   messageOptions?: MessageOptionInfo[]
@@ -8162,6 +8167,8 @@ interface PendingInbound {
   // The message was the owner's own (its lane's privateActor): only then is its reminder marked owner_inbound, the
   // one reminder the private turn tracker carries through an owner's turn (Data's review of #261, M1).
   ownerInbound: boolean
+  // A liveness probe went out for THIS message: the ladder asks once per pending message (deafSessionAction).
+  probed: boolean
 }
 const pendingInbounds = new Map<string, PendingInbound>()
 const meetingChatIds = new Set<string>()
@@ -8306,6 +8313,7 @@ function recordInbound(
   turnState?: string,
   senderKind?: string | null,
   actingUserId?: string | null,
+  addressed: boolean = true,
 ): void {
   if (!chatId) return
   // Authorize the chat for outbound dispatch even before the overdue-tracker
@@ -8327,6 +8335,12 @@ function recordInbound(
   // just told it not to. An hourly cron would produce 24 false nudges a day.
   // See inboundOwesReply in lib/channel-liveness.ts.
   if (!inboundOwesReply(senderKind)) return
+  // Nor does a group message that did not name this agent: BGOS hands it over
+  // as a follow-up and tells the agent to stay silent unless it is meant for
+  // it. Tracking it nudged, probed and finally named a healthy agent deaf in a
+  // group of four (901, chat 3821, 2026-10-17). Each lane reads it with
+  // inboundAddressesAgent in lib/channel-liveness.ts.
+  if (!addressed) return
   // A final-turn peer message IS the close: it owes no reply, and tracking it
   // would fire the false-positive overdue ~2 min later. Mark the thread closed
   // instead of arming a tracker.
@@ -8337,7 +8351,7 @@ function recordInbound(
   const existing = pendingInbounds.get(chatId)
   if (existing && existing.messageId >= messageId) return
   const ownerInbound = typeof actingUserId === 'string' && actingUserId !== '' && actingUserId === USER_ID
-  pendingInbounds.set(chatId, { messageId, ts: Date.now(), reminded: false, ownerInbound })
+  pendingInbounds.set(chatId, { messageId, ts: Date.now(), reminded: false, ownerInbound, probed: false })
 }
 
 function clearInbound(chatId: string | undefined): void {
@@ -8521,8 +8535,11 @@ function checkReplyOverdue(): void {
       // to stand down quietly, answers this and never reaches the warning;
       // only a session that cannot hear the channel stays silent through a
       // direct question. The ack is a tool call, so it refreshes recency and
-      // one reply ends this (the probe is sent once, the latch is per boot).
+      // one reply ends this. Once per pending message (p.probed): an answered
+      // probe is spent, and without the latch every lapse of recency asked
+      // again, every 12.5 minutes for hours (901, 2026-10-17).
       deafProbeSentAt = now
+      p.probed = true
       log(
         `deaf session suspected: nudge for chat ${chatId} message ${p.messageId} ` +
           `went unacted (${lastToolCallPhrase(channelLiveness.lastToolCallAt, now)}); ` +
@@ -8539,11 +8556,23 @@ function checkReplyOverdue(): void {
       deafEscalationDone = true
       deafEscalatedAt = now
       sweepUnresponsiveReport()
+      // The owner's own chat only, never the chat the message came from when
+      // other people read it: the guidance is about the owner's machine, and
+      // on 2026-10-17T20:00Z it was posted into a group of four (901, chat
+      // 3821). No owner chat known: nothing is posted, the heartbeat still
+      // carries the verdict. See deafNoticeChat in lib/channel-liveness.ts.
+      const noticeChat = deafNoticeChat({ pendingChatId: chatId, mainChatIds, ownership: chatOwnership })
       log(
         `WARN deaf session confirmed: chat ${chatId} message ${p.messageId} unacted, ` +
           `${lastToolCallPhrase(channelLiveness.lastToolCallAt, now)}, and the ` +
-          'channel_ack probe went unanswered; posting launch guidance into the chat',
+          'channel_ack probe went unanswered; ' +
+          (noticeChat
+            ? `posting launch guidance into the owner's chat ${noticeChat}`
+            : 'no owner chat is known, so the launch guidance is posted nowhere'),
       )
+      // Nothing below is owed for this chat either: an escalation means its
+      // reminder already fired.
+      if (noticeChat === null) continue
       // The fix line must never carry a GUESSED channel spec: this message
       // goes to a user whose agent is already deaf, and a wrong spec would
       // send them round the same loop. When detection cannot name the install
@@ -8575,7 +8604,7 @@ function checkReplyOverdue(): void {
       } catch {
         fixCommand = 'hoai'
       }
-      void sendConnectionNotice(chatId, deafSessionChatMessage(fixCommand)).catch(
+      void sendConnectionNotice(noticeChat, deafSessionChatMessage(fixCommand)).catch(
         (err) => log(`Failed to post deaf-session warning: ${err}`),
       )
     }
@@ -9110,6 +9139,12 @@ let monitoredChatIds: string[] = []
  * held email_send card can carry the owner's Allow in (emailSendCardChat).
  */
 let mainChatIds: string[] = []
+/**
+ * The agent's shared chats (inbox kind 'group'): several people read them and
+ * the agent is addressed there only by a mention or a slash command, which the
+ * poll's history rows say only in `mentions` (inboundAddressesAgent).
+ */
+let sharedChatIds = new Set<string>()
 
 // ── Chat membership authority ────────────────────────────────────────────────
 // Defense-in-depth: the backend is the sole authority for chat resolution +
@@ -10138,7 +10173,7 @@ async function discoverChats(): Promise<void> {
       chats: {
         id: number
         assistantId: number
-        kind?: 'main' | 'a2a' | 'meeting'
+        kind?: 'main' | 'a2a' | 'meeting' | 'group'
         userId?: string
         user_id?: string
       }[]
@@ -10169,6 +10204,11 @@ async function discoverChats(): Promise<void> {
     mainChatIds = data.chats
       .filter((c) => c.assistantId === Number(ASSISTANT_ID) && c.kind === 'main')
       .map((c) => String(c.id))
+    sharedChatIds = new Set(
+      data.chats
+        .filter((c) => c.assistantId === Number(ASSISTANT_ID) && c.kind === 'group')
+        .map((c) => String(c.id)),
+    )
     const meetingChatSet = new Set(
       data.chats
         .filter((c) => c.kind === 'meeting')
@@ -10998,6 +11038,7 @@ async function pollChat(chatId: string): Promise<void> {
           pollTurnState ?? undefined,
           pollIsEmail ? pollSenderType : msg.message.sender,
           privateActor({ senderType: pollSenderType, senderUserId: privateSenderUserId(msg.message), agentOrigin: pollAgentOrigin, eventMeta: msg.message.eventMeta }),
+          inboundAddressesAgent({ text: msg.message.text, sharedChat: sharedChatIds.has(chatId), mentions: msg.message.mentions, messageType: msg.message.messageType, assistantId: ASSISTANT_ID }),
         )
       }
     }
@@ -13301,7 +13342,7 @@ async function forwardStreamInbound(
     forwardedMessageIds.delete(view.messageId)
     throw err
   }
-  recordInbound(chatId, view.messageId, view.turnState, view.senderKind, privateActor({ senderType: isSystem ? 'system' : view.senderKind, senderUserId: privateSenderUserId(view.raw), agentOrigin: view.agentOrigin, eventMeta: view.eventMetaRaw }))
+  recordInbound(chatId, view.messageId, view.turnState, view.senderKind, privateActor({ senderType: isSystem ? 'system' : view.senderKind, senderUserId: privateSenderUserId(view.raw), agentOrigin: view.agentOrigin, eventMeta: view.eventMetaRaw }), inboundAddressesAgent({ text: view.text }))
 }
 
 /**
@@ -14654,7 +14695,7 @@ function connectWebsocket(): void {
       // Track AFTER recording the conv↔chat association and turn_state so a
       // final inbound is recognized as a close (recordInbound short-circuits
       // it) and the closed-guard is consulted with the latest mapping.
-      recordInbound(chatId, messageId, wsTurnState, wsSenderType, privateActor({ senderType: wsSenderType, senderUserId: privateSenderUserId(payload), agentOrigin: wsAgentOrigin, eventMeta: payload?.eventMeta ?? payload?.event_meta }))
+      recordInbound(chatId, messageId, wsTurnState, wsSenderType, privateActor({ senderType: wsSenderType, senderUserId: privateSenderUserId(payload), agentOrigin: wsAgentOrigin, eventMeta: payload?.eventMeta ?? payload?.event_meta }), inboundAddressesAgent({ text }))
     } catch (err) {
       log(`WS inbound_message handler error: ${err}`)
     }
@@ -16388,7 +16429,7 @@ async function main(): Promise<void> {
           // Already gone or unremovable: the rate limit still bounds us.
         }
         lastLivenessProbeAt = Date.now()
-        const probe = buildLivenessProbeNotification({ chatId: monitoredChatIds[0] })
+        const probe = buildLivenessProbeNotification({ chatId: monitoredChatIds[0], afterRestart: true })
         log('liveness probe: probe-requested.json seen, asking the session to call channel_ack')
         void trackMessageOperation(() =>
           mcp.notification({
