@@ -37,7 +37,7 @@ import * as messageText from '../lib/message-text.ts'
 import { LoginController } from '../lib/auth-login.ts'
 import type { StreamUpdate } from '../lib/update-stream.ts'
 import { ownerAnnounceRefused, ownerLaneVerdict } from '../lib/lane-core.mjs'
-import { createPrivateTurnTracker, privateTapCard } from '../lib/private-turn.mjs'
+import { createPostedButtons, createPrivateTurnTracker, privateTapCard } from '../lib/private-turn.mjs'
 
 // Normalized to LF: the working tree is CRLF on a Windows checkout.
 const SERVER = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(
@@ -320,6 +320,8 @@ function streamHarness(record: { requesterUserId?: string } = { requesterUserId:
     privateTurns: createPrivateTurnTracker({ ownerUserId: OWNER }),
     // Every tap site announces through it (4bf28148): only the owner's own stream tap in its window opens a turn.
     privateTapCard,
+    // The cards this daemon life posted (server.ts): none here, so no tap of this rig opens a private turn.
+    postedButtons: createPostedButtons(),
     streamAuthority: {},
     announcedClickIds,
     rememberAnnouncedClick: (id: number) => announcedClickIds.add(id),
