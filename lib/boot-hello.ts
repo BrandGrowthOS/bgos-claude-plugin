@@ -231,18 +231,24 @@ export function shouldSendLivenessProbe(input: {
  * The silent probe notification. It names the tool, forbids any user-facing
  * message, and tells the session to resume what it was doing; the meta
  * event_type lets a CLAUDE.md or a future filter recognise it.
+ *
+ * "after a restart" only when one happened (`afterRestart`, the watcher's
+ * probe-requested.json). The deaf-session ladder sends the same card about a
+ * message waiting in a session that was never restarted, and the restart
+ * wording told 901 something false 23 times on 2026-10-17. The default claims
+ * nothing.
  */
 export function buildLivenessProbeNotification(
-  input: { chatId?: string | null } = {},
+  input: { chatId?: string | null; afterRestart?: boolean } = {},
 ): { content: string; meta: Record<string, string> } {
   const meta: Record<string, string> = { event_type: 'liveness_probe' }
   const chatId = String(input.chatId ?? '').trim()
   if (chatId) meta.chat_id = chatId
   return {
     content:
-      '[hoai] Liveness check after a restart. Call the channel_ack tool now, ' +
-      'then continue whatever you were doing. Do NOT send any message to the ' +
-      'user for this.',
+      `[hoai] Liveness check${input.afterRestart ? ' after a restart' : ''}. ` +
+      'Call the channel_ack tool now, then continue whatever you were doing. ' +
+      'Do NOT send any message to the user for this.',
     meta,
   }
 }

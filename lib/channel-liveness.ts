@@ -54,8 +54,8 @@
  * The redelivery CAP is structural rather than a counter: within one
  * process the in-memory cursor dedups every poll (no notification loops),
  * so a permanently-deaf session redelivers at most once per RESTART, and
- * each restart also re-arms exactly one probe and at most one in-chat
- * escalation naming the fix.
+ * each restart also re-arms at most one probe per pending message and at most
+ * one escalation naming the fix, posted in the owner's own chat.
  */
 
 /**
@@ -255,10 +255,19 @@ export type DeafSessionAction = 'wait' | 'probe' | 'escalate'
  *
  * What is new is that reaching that moment now buys a QUESTION rather than an
  * accusation, and only an unanswered question earns the accusation.
+ *
+ * ONE QUESTION PER PENDING MESSAGE (`pending.probed`, set by the caller when it
+ * probes). An answered probe is spent (unansweredProbe), and the ack is a tool
+ * call that refreshes recency, so without this latch a session that hears us
+ * but rightly leaves a message unanswered was asked again every time recency
+ * lapsed: 901 was probed 23 times in four and a half hours for one group
+ * message on 2026-10-17, every probe answered. A session that answered once
+ * for this message has proved it hears the channel; a NEWER pending message
+ * starts unprobed.
  */
 export function deafSessionAction(input: {
   live: boolean
-  pending: { ts: number; reminded: boolean } | null
+  pending: { ts: number; reminded: boolean; probed?: boolean } | null
   now: number
   alreadyEscalated: boolean
   probeSentAt: number | null
@@ -269,7 +278,7 @@ export function deafSessionAction(input: {
   if (!input.pending.reminded) return 'wait'
   if (input.alreadyEscalated) return 'wait'
   if (input.now - input.pending.ts < 2 * input.windowMs) return 'wait'
-  if (input.probeSentAt === null) return 'probe'
+  if (input.probeSentAt === null) return input.pending.probed ? 'wait' : 'probe'
   if (input.now - input.probeSentAt < DEAF_PROBE_GRACE_WINDOWS * input.windowMs) {
     return 'wait'
   }
@@ -328,6 +337,32 @@ export function deafFixCommand(input: {
 }
 
 /**
+ * Where the deaf-session notice may be posted: the owner's own main chat, and
+ * nowhere else.
+ *
+ * It used to go into the chat the unanswered message came from. On
+ * 2026-10-17T20:00Z that was group 3821 (901's), so four people read launch
+ * guidance meant for the owner's machine. A group, room, meeting or channel is
+ * not a main chat, and a share recipient's main chat is somebody else's
+ * (ownership.isOthers), so neither is ever picked. The message's own chat
+ * comes first when it is known to be the owner's, then the chats the owner
+ * was seen in, then the message's own chat or any main chat not known to be
+ * somebody else's (the rule a held email_send card follows,
+ * emailSendCardChat). Null means no such chat is known: the caller posts
+ * nothing, and the heartbeat still reports the verdict.
+ */
+export function deafNoticeChat(input: {
+  pendingChatId: string
+  mainChatIds: readonly string[]
+  ownership: { ownerChats(): string[]; isOwners(chatId: string): boolean; isOthers(chatId: string): boolean }
+}): string | null {
+  const ownersOnly = (chatId: string) => input.mainChatIds.includes(chatId) && !input.ownership.isOthers(chatId)
+  const pending = input.pendingChatId
+  const known = input.ownership.isOwners(pending) ? [pending] : []
+  return [...known, ...input.ownership.ownerChats(), pending, ...input.mainChatIds].find(ownersOnly) ?? null
+}
+
+/**
  * Does an inbound message OWE the agent's owner a reply?
  *
  * The reply-overdue tracker exists for messages a person is waiting on. A
@@ -377,6 +412,100 @@ export function inboundOwesReply(senderKind: string | null | undefined): boolean
 }
 
 /**
+ * The sentence BGOS's framing block writes on a follow-up, on a line of its
+ * own (backend group-context.ts renderPreamble, the one door every transport
+ * frames through), and the words the served canon tells the agent to look for.
+ */
+export const FOLLOW_UP_NOT_NAMED = 'You were not named in this message.'
+/** How that line ends, which no other line of the block can: the speaker line always ends "wrote the message below." */
+const FOLLOW_UP_LINE_END = 'stay silent and send nothing.'
+
+/** The chat kinds several people read, as BGOS's groupContext and stream rows name them (a meeting has its own lane). */
+const GROUP_CHAT_KINDS = new Set(['group', 'room', 'channel'])
+
+/**
+ * Was this delivery handed over as a group, room or channel message? Read off
+ * the server's own fields: the socket's `groupContext.chatKind`, the stream
+ * row's `chatKind`. The poll's history rows carry neither, so the daemon
+ * remembers the chat when another lane delivers into it (server.ts
+ * groupChatIds) and inboundAddressesAgent applies the group rule there.
+ */
+export function isGroupChatDelivery(...records: unknown[]): boolean {
+  return records.some((record) => {
+    const r = (record && typeof record === 'object' ? record : {}) as Record<string, unknown>
+    const context = (r.groupContext ?? r.group_context) as Record<string, unknown> | null | undefined
+    const kinds = [r.chatKind, r.chat_kind, context?.chatKind, context?.chat_kind]
+    return kinds.some((kind) => typeof kind === 'string' && GROUP_CHAT_KINDS.has(kind.toLowerCase()))
+  })
+}
+
+/**
+ * Is the message ADDRESSED to this agent? The sender kind (inboundOwesReply)
+ * cannot say: a person's message in a group is a person's message whether or
+ * not it named the agent.
+ *
+ * A GROUP OR CHANNEL MESSAGE THAT DID NOT NAME THE AGENT OWES IT NO REPLY.
+ * BGOS wakes an agent there only when a person names it or replies to one of
+ * its messages, and then hands it the next two messages as a FOLLOW-UP, framed
+ * "You were not named in this message ... if it is not, stay silent and send
+ * nothing". Arming the tracker on one is the same mistake as the system card
+ * above: on 2026-10-17 901 stayed silent on a follow-up between two people in
+ * group 3821, as told, and was nudged, probed 23 times and finally named deaf
+ * in that group. The framing is the server's verdict, read on the two lanes
+ * that carry it (the socket and the update stream; BGOS frames its own
+ * integrations poll too, which this plugin does not read). It counts only as a
+ * whole line of the framing block (the text up to the first blank line,
+ * starting `[BGOS `) that starts with that sentence and ends as BGOS ends it:
+ * backlog lines are indented and the speaker line ends "wrote the message
+ * below.", so no member's text or display name can produce it. A person can
+ * still type the whole block into a chat that is not framed, which silences
+ * only the reminder for their own message.
+ *
+ * A GROUP ROW ON THE HISTORY POLL carries no framing (the history route serves
+ * rows as stored), but it carries the server's parsed `mentions`. The poll
+ * reads a shared chat (inbox kind 'group') and, after the agent posts buttons
+ * there, a room; it never re-delivers what the socket or the stream already
+ * did, so a row it delivers is one BGOS did not hand the agent. BGOS
+ * dispatches to a shared chat's agent only on a mention of it or a slash
+ * command (send-message.service.ts `addressed: agentMentioned ||
+ * isSlashCommand`), so that is the rule there; in a room a reply to the
+ * agent's message also wakes it, which the poll cannot see, so such a row goes
+ * untracked (one reminder fewer, never a false one). `groupChat` is the
+ * caller's knowledge of the chat (server.ts groupChatIds); everything else,
+ * the owner's own chats included, is addressed, which is today's behaviour.
+ *
+ * This suppresses the TRACKER, not the message: it is still delivered.
+ */
+export function inboundAddressesAgent(input: {
+  text?: string | null
+  groupChat?: boolean
+  mentions?: unknown
+  messageType?: unknown
+  assistantId?: string | number | null
+}): boolean {
+  if (isFollowUpFraming(input.text)) return false
+  if (!input.groupChat) return true
+  if (input.messageType === 'slash_command') return true
+  const own = String(input.assistantId ?? '').trim()
+  if (own === '' || !Array.isArray(input.mentions)) return false
+  return input.mentions.some((m) => {
+    const mention = (m ?? {}) as { kind?: unknown; id?: unknown }
+    return mention.kind === 'agent' && String(mention.id ?? '').trim() === own
+  })
+}
+
+function isFollowUpFraming(text: string | null | undefined): boolean {
+  const body = String(text ?? '')
+  if (!body.startsWith('[BGOS ')) return false
+  const end = body.indexOf('\n\n')
+  if (end < 0) return false
+  return body
+    .slice(0, end)
+    .split('\n')
+    .some((line) => line.startsWith(FOLLOW_UP_NOT_NAMED) && line.endsWith(FOLLOW_UP_LINE_END))
+}
+
+/**
  * The deaf verdict, projected onto the HEARTBEAT so the fleet can see it.
  *
  * THE GAP THIS CLOSES. Backend #1278 added a third presence tier: a session
@@ -389,7 +518,7 @@ export function inboundOwesReply(senderKind: string | null | undefined): boolean
  *
  * This is the daemon half. It sends nothing new: it projects the verdict the
  * daemon has already reached and already acted on, the same one that posts the
- * launch guidance into the chat.
+ * launch guidance into the owner's chat (deafNoticeChat).
  *
  * DERIVED, NOT RECORDED, following heartbeatLastError next door. Two pieces of
  * state the daemon already keeps decide it, so there is no third state to fall

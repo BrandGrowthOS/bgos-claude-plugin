@@ -53,10 +53,17 @@ test('shouldSendLivenessProbe: only when the file exists, at most once per 30s',
 })
 
 test('buildLivenessProbeNotification: names the tool, forbids user-facing output, carries the event type', () => {
-  const probe = buildLivenessProbeNotification()
+  // The watcher's probe follows a real restart and says so; the default claims
+  // none (the deaf-session ladder's probe, board row 59a6d097).
+  const probe = buildLivenessProbeNotification({ afterRestart: true })
   assert.equal(
     probe.content,
     '[hoai] Liveness check after a restart. Call the channel_ack tool now, ' +
+      'then continue whatever you were doing. Do NOT send any message to the user for this.',
+  )
+  assert.equal(
+    buildLivenessProbeNotification().content,
+    '[hoai] Liveness check. Call the channel_ack tool now, ' +
       'then continue whatever you were doing. Do NOT send any message to the user for this.',
   )
   assert.deepEqual(probe.meta, { event_type: 'liveness_probe' })
