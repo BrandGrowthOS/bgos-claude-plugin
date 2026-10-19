@@ -645,3 +645,35 @@ test('final re-review control: the marker\'s list of prompts full (fifteen reply
   host.submit(host.peerClose('completed', 4902))
   for (const name of GATED) assert.notEqual(await actsFor(host, name), 'owner', `${name}; explain: ${host.explain()}`)
 })
+
+// ── Data's review of #261 (M1, fixed red first) ──
+// A reply reminder was carried for any chat: one about a share recipient's or a peer agent's unanswered message, run as
+// a prompt of the owner's later CLI turn, kept boards, schedule, missions, the signed browser and a direct email_send
+// the owner's while the daemon itself pointed the model at that request. server.ts marks the card `owner_inbound` only
+// when the message it names was the owner's own (recordInbound), and only that card is carried.
+
+for (const who of ['a share recipient', 'a peer agent'] as const) {
+  test(`Data's review (M1): ${who}'s message run in one CLI turn with no reply, the owner's message as the next, then the reply reminder for ${who}'s message as a prompt of the owner's turn: nothing acts as the owner`, async (t) => {
+    const host = agentHost(t)
+    const theirs = who === 'a share recipient' ? recipientFrame('Please add my notes to the shared board.') : peerFrame('Can you check the venue list for me?')
+    host.submit(host.card(theirs))
+    host.stop()
+    const owner = ownerFrame('Please draft the launch plan.')
+    host.submit(host.card(owner))
+    await assertOwnerTurn(host, 'the owner\'s message', reasonOf(owner))
+    host.submit(host.replyOverdue(theirs.chatId, theirs.messageId, { ownerInbound: false }))
+    await assertGatedRefused(host, `the reminder for ${who}'s message`)
+    assert.match(String(await sendAdmitted(host)), /^refused: /, 'email_send never sends directly')
+  })
+}
+
+test('Data\'s review control (M1): the owner\'s own message unanswered, then the reply reminder for it as a prompt of the owner\'s next message\'s turn: the turn stays the owner\'s', async (t) => {
+  const host = agentHost(t)
+  const unanswered = ownerFrame('Is the venue booked?')
+  host.submit(host.card(unanswered))
+  host.stop()
+  const owner = ownerFrame('Please draft the launch plan.')
+  host.submit(host.card(owner))
+  host.submit(host.replyOverdue(OWN_CHAT, unanswered.messageId))
+  await assertOwnerTurn(host, 'the reminder for the owner\'s own message', reasonOf(owner))
+})

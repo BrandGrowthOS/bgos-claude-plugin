@@ -313,12 +313,19 @@ export function agentHost(t: any) {
         { event_type: 'peer_conversation_closed', conversation_id: String(conversationId), reason, user_id: OWNER, assistant_id: AGENT, transport: 'ws' },
       )
     },
-    /** server.ts's reply-overdue card (server.ts:8567): the daemon's own words. */
-    replyOverdue(chatId = OWN_CHAT, repliedTo = messageId): string {
+    /**
+     * server.ts's reply-overdue card (checkReplyOverdue): the daemon's own words. `owner_inbound` when the unanswered
+     * message it names was the owner's own (recordInbound, Data's review of #261 M1); `ownerInbound: false` for anyone
+     * else's (a share recipient, a peer agent).
+     */
+    replyOverdue(chatId = OWN_CHAT, repliedTo = messageId, { ownerInbound = true }: { ownerInbound?: boolean } = {}): string {
       return host.raw(
         `[reply-overdue] Message in chat_id=${chatId} (message_id=${repliedTo}) arrived 241s ago and no reply has been sent yet. ` +
           'If you intended to respond, call the `reply` tool now. If you intended to stay silent, ignore this notification.',
-        { event_type: 'reply_overdue', chat_id: String(chatId), message_id: String(repliedTo), age_seconds: '241', ts: new Date().toISOString() },
+        {
+          event_type: 'reply_overdue', chat_id: String(chatId), message_id: String(repliedTo), age_seconds: '241', ts: new Date().toISOString(),
+          ...(ownerInbound ? { owner_inbound: 'true' } : {}),
+        },
       )
     },
     /** A meeting line, noted with the tracker first, as server.ts serves one. */
