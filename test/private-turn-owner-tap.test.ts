@@ -894,5 +894,42 @@ test('re-verify (Medium): server.ts checks every lane\'s tap against the cards t
   assert.match(source, /\n {6}const postedButton = postedButtons\.posted\(row\.id, callbackData, buttonText, mm\.text\)\n/, 'the boot sweep')
   assert.match(source, /\n {6}const postedButton = postedButtons\.posted\(mm\.id, callbackData, buttonText, mm\.text\)\n/, 'the poll')
   assert.match(source, /await bgosPatch\(`messages\/\$\{payload\.supersedes\}`, retireBody\)\n {10}postedButtons\.forget\(payload\.supersedes\)\n/, 'the retired plan card')
-  assert.match(source, /label: 'POST webhook\/edited_message',[\s\S]{0,400}?\n {8}postedButtons\.edited\(message_id, safeText\)\n {8}return \{ content: \[\{ type: 'text', text: 'Edited' \}\] \}/, 'the agent\'s own edit')
+})
+
+// ── Its re-verify (a Low the fix introduced, fixed red first): the backend refuses edit_message (chat_id '0'), and the
+// record followed the edit anyway, so the owner's later tap on that card was not as posted and ended a live owner turn.
+
+test('re-verify (Low): server.ts\'s edit_message tells the record only an edit the backend accepted', async () => {
+  const ts = (await import('typescript')).default
+  const source = readFileSync('server.ts', 'utf8').replace(/\r\n/g, '\n')
+  const start = source.indexOf("    case 'edit_message': {")
+  const stop = source.indexOf("    case 'rename_chat': {", start)
+  assert.ok(start > 0 && stop > start, 'the edit_message case in server.ts')
+  const js = ts.transpileModule(`async function editMessage(rawArgs) {\n  switch ('edit_message') {\n${source.slice(start, stop)}  }\n}`,
+    { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText
+  for (const [status, recorded] of [[200, true], [204, true], [401, false], [500, false]] as const) {
+    const postedButtons = (privateTurn as any).createPostedButtons()
+    postedButtons.note(901, [{ text: 'Yes, book it', callbackData: 'u:yes' }], 'Shall I book Berlin?')
+    const scope: Record<string, unknown> = {
+      BACKEND_URL: 'https://backend.invalid/api/v1', HTTP_TIMEOUT_MS: 1000, USER_ID: OWNER, postedButtons,
+      protectBackslashesForMarkdown: (text: string) => text,
+      bgosCall: async (_call: unknown, consume: (response: Response) => Promise<unknown>) => consume(new Response(null, { status })),
+    }
+    // eslint-disable-next-line no-new-func
+    const editMessage = new Function('scope', `with (scope) {\n${js}\nreturn editMessage\n}`)(scope) as (args: Record<string, unknown>) => Promise<unknown>
+    await editMessage({ message_id: '901', text: 'Shall I book Berlin and Paris?' })
+    assert.equal(postedButtons.posted(901, 'u:yes', 'Yes, book it', 'Shall I book Berlin and Paris?'), recorded, `${status}: the edited text`)
+    assert.equal(postedButtons.posted(901, 'u:yes', 'Yes, book it', 'Shall I book Berlin?'), !recorded, `${status}: the text as it stands`)
+  }
+})
+
+// The CLI escapes a quote in a meta value, not a newline, so the channel wrapper is read attribute by attribute
+// (cardBody). Since a Custom reply is never carried (above), the owner's plain tap on a button whose label the agent
+// wrote on two lines is what keeps that reading honest.
+test('re-verify control: the owner\'s poll tap on a card as posted whose label is two lines, its own prompt in the owner\'s message turn: the turn stays the owner\'s, and the reason to send stays the message\'s', async (t) => {
+  const host = agentHost(t)
+  const owner = ownerFrame('Email Dana the venue confirmation once I say yes.')
+  host.submit(host.card(owner))
+  host.submit(host.laneTap({ lane: 'poll', tapperUserId: OWNER, text: 'Yes, send it\nto Dana only' }))
+  await assertOwnerTurn(host, 'a two line label', { kind: 'owner_message', id: String(owner.messageId) })
 })
