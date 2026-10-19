@@ -55,10 +55,11 @@ test('the texts the daemon posts unprompted are marked', () => {
     )
   }
   // The deaf warning and both goal notices go out through the marked sender.
-  assert.match(server, /void sendConnectionNotice\(chatId, deafSessionChatMessage\(fixCommand\)\)/)
+  // The deaf warning goes to the owner's own chat (deafNoticeChat, board row 59a6d097).
+  assert.match(server, /void sendConnectionNotice\(noticeChat, deafSessionChatMessage\(fixCommand\)\)/)
   assert.match(server, /await sendConnectionNotice\(chatId, GOAL_ARM_REFUSED_TEXT\)/)
   assert.match(server, /await sendConnectionNotice\(chatId, GOAL_ARM_UNCONFIRMED_TEXT\)/)
-  assert.doesNotMatch(server, /sendDaemonText\(chatId, (deafSessionChatMessage|GOAL_ARM_)/)
+  assert.doesNotMatch(server, /sendDaemonText\((chatId|noticeChat), (deafSessionChatMessage|GOAL_ARM_)/)
 })
 
 test('an answer to the owner own command stays unmarked (review finding 2)', () => {

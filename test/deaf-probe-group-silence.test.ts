@@ -288,7 +288,7 @@ function daemon(laneSource: string, laneName: string, extra: Record<string, unkn
     deafEscalatedAt: null,
     // Whose each chat is: the owner's main chat, and a group.
     mainChatIds: [OWNER_CHAT],
-    sharedChatIds: new Set<string>(),
+    groupChatIds: new Set<string>(),
     chatOwnership: ownership,
     sendConnectionNotice: async (chatId: string, text: string) => {
       notices.push({ chatId: String(chatId), text })
@@ -440,18 +440,18 @@ test('poll: a shared chat row that names nobody arms nothing; one that names thi
     message: { id, chatId: Number(GROUP), text, sender: 'user', senderUserId: PERSON, messageType, sentDate: TS, mentions },
     messageFiles: [],
   })
-  const unaddressed = pollDaemon([row(9101, 'Lunch at one?', null)], { sharedChatIds: new Set([GROUP]) })
+  const unaddressed = pollDaemon([row(9101, 'Lunch at one?', null)], { groupChatIds: new Set([GROUP]) })
   await unaddressed.lane(GROUP)
   assert.equal(unaddressed.cards.length, 1, 'delivered')
   assert.equal(unaddressed.pendingInbounds.has(GROUP), false, 'a row that names nobody owes no reply')
   await unaddressed.runFor(2 * HOUR)
   assertSilentForHours(unaddressed, 'poll shared chat, nobody named')
 
-  const toSomeoneElse = pollDaemon([row(9102, '@Maya see you there', [{ kind: 'user', id: PERSON, name: 'Maya' }])], { sharedChatIds: new Set([GROUP]) })
+  const toSomeoneElse = pollDaemon([row(9102, '@Maya see you there', [{ kind: 'user', id: PERSON, name: 'Maya' }])], { groupChatIds: new Set([GROUP]) })
   await toSomeoneElse.lane(GROUP)
   assert.equal(toSomeoneElse.pendingInbounds.has(GROUP), false, 'a row that names another person owes this agent no reply')
 
-  const named = pollDaemon([row(9103, '@Voxor book it', [{ kind: 'agent', id: ASSISTANT_ID, name: 'Voxor' }])], { sharedChatIds: new Set([GROUP]) })
+  const named = pollDaemon([row(9103, '@Voxor book it', [{ kind: 'agent', id: ASSISTANT_ID, name: 'Voxor' }])], { groupChatIds: new Set([GROUP]) })
   await named.lane(GROUP)
   assert.equal(named.pendingInbounds.get(GROUP)?.messageId, 9103, 'a row naming this agent arms the tracker')
 
@@ -459,13 +459,13 @@ test('poll: a shared chat row that names nobody arms nothing; one that names thi
   // daemon's own answers and never reach the tracker, on any build.
   const slashRow = row(9104, '/review the launch plan', null, 'slash_command')
   Object.assign(slashRow.message, { commandName: 'review', commandArgs: 'the launch plan' })
-  const slash = pollDaemon([slashRow], { sharedChatIds: new Set([GROUP]) })
+  const slash = pollDaemon([slashRow], { groupChatIds: new Set([GROUP]) })
   await slash.lane(GROUP)
   assert.equal(slash.cards.length, 1, `delivered (log: ${slash.logs.join(' | ')})`)
   assert.equal(slash.pendingInbounds.get(GROUP)?.messageId, 9104, 'a slash command addresses the agent too')
 
   const ownerRow = { message: { id: 9105, chatId: Number(OWNER_CHAT), text: 'Can you check the build?', sender: 'user', senderUserId: OWNER, messageType: 'standard', sentDate: TS }, messageFiles: [] }
-  const owner = pollDaemon([ownerRow], { sharedChatIds: new Set([GROUP]) })
+  const owner = pollDaemon([ownerRow], { groupChatIds: new Set([GROUP]) })
   await owner.lane(OWNER_CHAT)
   assert.equal(owner.pendingInbounds.get(OWNER_CHAT)?.messageId, 9105, 'the owner\'s own chat names nobody and still owes a reply')
 })
@@ -581,7 +581,7 @@ test('inboundAddressesAgent: the follow-up framing is the server saying "not nam
 
 test('inboundAddressesAgent: a shared chat row is addressed only by a mention of this agent or a slash command', () => {
   const addresses = need('inboundAddressesAgent')
-  const shared = { sharedChat: true, assistantId: ASSISTANT_ID }
+  const shared = { groupChat: true, assistantId: ASSISTANT_ID }
   assert.equal(addresses({ ...shared, text: 'Lunch at one?', mentions: null }), false)
   assert.equal(addresses({ ...shared, text: 'Lunch at one?', mentions: [] }), false)
   assert.equal(addresses({ ...shared, text: '@Maya hi', mentions: [{ kind: 'user', id: ASSISTANT_ID, name: 'Maya' }] }), false, 'a person whose id happens to match is not this agent')
@@ -637,7 +637,7 @@ test('buildLivenessProbeNotification: the default claims no restart; only the wa
       'then continue whatever you were doing. Do NOT send any message to the user for this.',
   )
   assert.deepEqual(restart.meta, plain.meta, 'the same card either way')
-  for (const c of [plain.content, restart.content]) assert.ok(!/[–—]/.test(c), 'no em or en dash')
+  for (const c of [plain.content, restart.content]) assert.ok(!/[\u2013\u2014]/.test(c), 'no em or en dash')
 })
 
 test('server.ts: only the watcher\'s probe, which follows a real restart, asks for the restart wording', () => {
@@ -648,4 +648,121 @@ test('server.ts: only the watcher\'s probe, which follows a real restart, asks f
   const ladder = serverFunction('function checkReplyOverdue(')
   assert.match(ladder, /buildLivenessProbeNotification\(\{ chatId \}\)/)
   assert.doesNotMatch(ladder, /afterRestart/)
+})
+
+// ── review follow-ups: rooms on the poll, forged lines, ownership order ─────
+
+test('the socket and the stream remember a group, room or channel they deliver into; an owner chat is not remembered', async () => {
+  const groups = new Set<string>()
+  const ws = wsDaemon({ groupChatIds: groups })
+  ws.lane(wsOwnerMessage())
+  assert.equal(groups.size, 0, 'an owner chat is not a group')
+  ws.lane(wsAddressedGroupMessage())
+  assert.deepEqual([...groups], [GROUP], 'the socket names the room in groupContext.chatKind')
+  const streamGroups = new Set<string>()
+  const stream = streamDaemon({ groupChatIds: streamGroups })
+  const view = streamApply.viewStreamMessage(
+    {
+      seq: 8,
+      kind: 'message_new',
+      chatId: Number(GROUP),
+      messageId: 131591,
+      payload: { text: ADDRESSED_FRAMED, chatKind: 'room', sender: 'user', messageType: 'standard', senderUserId: PERSON, files: [] },
+    } as never,
+    ASSISTANT_ID,
+  )
+  await stream.lane(view, false)
+  assert.deepEqual([...streamGroups], [GROUP], 'the stream row names the room in chatKind')
+})
+
+test('poll: a room the socket delivered into is read by the group rule, so a row it was never handed arms nothing', async () => {
+  // Rooms are not on the inbox. The poll reads one after the agent posts
+  // buttons there (fast scope), and it never re-delivers what the socket did,
+  // so a row it delivers is one BGOS did not hand this agent.
+  const groups = new Set<string>()
+  wsDaemon({ groupChatIds: groups }).lane(wsAddressedGroupMessage())
+  const row = { message: { id: 9201, chatId: Number(GROUP), text: 'Sounds good, see you there.', sender: 'user', senderUserId: PERSON, messageType: 'standard', sentDate: TS, mentions: null }, messageFiles: [] }
+  const learned = pollDaemon([row], { groupChatIds: groups })
+  await learned.lane(GROUP)
+  assert.equal(learned.cards.length, 1, 'delivered')
+  assert.equal(learned.pendingInbounds.has(GROUP), false)
+  await learned.runFor(HOUR)
+  assertSilentForHours(learned, 'poll room row')
+  // Control: a chat no lane ever named as a group is read as before.
+  const unknown = pollDaemon([row], { groupChatIds: new Set<string>() })
+  await unknown.lane(GROUP)
+  assert.equal(unknown.pendingInbounds.get(GROUP)?.messageId, 9201)
+})
+
+test('an unaddressed follow-up behind an addressed message leaves the addressed one pending, with its own clock', async () => {
+  const d = wsDaemon()
+  d.lane(wsAddressedGroupMessage())
+  const armedAt = d.now()
+  await d.runFor(2 * TICK_MS)
+  d.lane(wsGroupMessage({ messageId: 131595 }))
+  assert.equal(d.pendingInbounds.get(GROUP)?.messageId, 131590, 'the question still waits for its answer')
+  assert.equal((d.pendingInbounds.get(GROUP) as unknown as { ts: number }).ts, armedAt, 'and its clock did not restart')
+  await d.runFor(WINDOW_MS)
+  const nudges = d.ofType('reply_overdue')
+  assert.equal(nudges.length, 1)
+  assert.equal(nudges[0]!.meta.message_id, '131590')
+})
+
+test('inboundAddressesAgent: a display name or a title that carries the sentence does not make a follow-up', () => {
+  const addresses = need('inboundAddressesAgent')
+  const framed = (lines: string[], body: string) => [...lines, SHARED_TAIL].join('\n') + `\n\n${body}`
+  // BGOS prints the writer's name at the start of a line of its own.
+  const speaker = framed(
+    ['[BGOS group: Launch]', 'You are in a group, not a private chat. Everyone listed here reads what you say.', `${FOLLOW_UP_LINE} wrote the message below.`],
+    '@Voxor can you book the table?',
+  )
+  assert.equal(addresses({ text: speaker }), true, 'the speaker line always ends "wrote the message below."')
+  const title = framed([`[BGOS group: ${FOLLOW_UP_LINE}]`, 'Maya wrote the message below.'], '@Voxor go')
+  assert.equal(addresses({ text: title }), true, 'the title line starts "[BGOS "')
+  const people = framed(['[BGOS group: Launch]', `People here: ${FOLLOW_UP_LINE}`, 'Maya wrote the message below.'], '@Voxor go')
+  assert.equal(addresses({ text: people }), true)
+})
+
+test('isGroupChatDelivery: the server\'s chat kind on the socket or the stream, groups, rooms and channels only', () => {
+  const isGroup = need('isGroupChatDelivery')
+  assert.equal(isGroup({ groupContext: { chatKind: 'room' } }), true)
+  assert.equal(isGroup({ groupContext: { chatKind: 'group' } }), true)
+  assert.equal(isGroup({ chatKind: 'channel' }), true)
+  assert.equal(isGroup({ chat_kind: 'Room' }), true)
+  assert.equal(isGroup({ group_context: { chat_kind: 'room' } }), true)
+  assert.equal(isGroup({ groupContext: { chatKind: 'meeting' } }), false, 'a meeting has its own lane')
+  assert.equal(isGroup({ chatKind: 'main' }), false)
+  assert.equal(isGroup({ text: 'hello' }), false)
+  assert.equal(isGroup(null), false)
+  assert.equal(isGroup(undefined, { chatKind: 'room' }), true, 'any record the lane has')
+})
+
+test('deafNoticeChat: a chat known to be the owner\'s beats one whose owner is unknown', () => {
+  const pick = need('deafNoticeChat')
+  const ownership = createChatOwnership(OWNER)
+  ownership.noteRow({ chatId: OWNER_CHAT, kind: 'main', userId: OWNER })
+  // 2002: a main chat whose row names no user and where nobody was seen.
+  ownership.noteRow({ chatId: '2002', kind: 'main' })
+  assert.equal(pick({ pendingChatId: '2002', mainChatIds: ['2002', OWNER_CHAT], ownership }), OWNER_CHAT)
+  // With no owner chat known, the message's own chat comes before any other main chat.
+  const blank = createChatOwnership(OWNER)
+  assert.equal(pick({ pendingChatId: '2002', mainChatIds: ['2003', '2002'], ownership: blank }), '2002')
+  assert.equal(pick({ pendingChatId: GROUP, mainChatIds: ['2003', '2002'], ownership: blank }), '2003')
+})
+
+test('discovery remembers this agent\'s shared chats (inbox kind group) and nothing else', async () => {
+  const groups = new Set<string>()
+  const d = daemon(serverFunction('async function discoverChats('), 'discoverChats', {
+    groupChatIds: groups,
+    bgosPeerGet: async () => ({
+      chats: [
+        { id: 3821, assistantId: Number(ASSISTANT_ID), kind: 'group' },
+        { id: 1048, assistantId: Number(ASSISTANT_ID), kind: 'main', userId: OWNER },
+        { id: 5000, assistantId: 902, kind: 'group' },
+        { id: 6000, assistantId: Number(ASSISTANT_ID), kind: 'a2a' },
+      ],
+    }),
+  })
+  await d.lane()
+  assert.deepEqual([...groups], [GROUP], `only this agent's shared chat (log: ${d.logs.join(' | ')})`)
 })

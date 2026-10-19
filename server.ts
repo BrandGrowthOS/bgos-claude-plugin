@@ -364,6 +364,7 @@ import {
   deafNoticeChat,
   inboundOwesReply,
   inboundAddressesAgent,
+  isGroupChatDelivery,
 } from './lib/channel-liveness.js'
 import {
   buildAuthRejectionNotification,
@@ -9140,11 +9141,14 @@ let monitoredChatIds: string[] = []
  */
 let mainChatIds: string[] = []
 /**
- * The agent's shared chats (inbox kind 'group'): several people read them and
- * the agent is addressed there only by a mention or a slash command, which the
- * poll's history rows say only in `mentions` (inboundAddressesAgent).
+ * Chats several people read: the inbox's shared chats (kind 'group') and every
+ * chat the socket or the stream handed over as a group, room or channel
+ * (isGroupChatDelivery; rooms and channels are not on the inbox). There the
+ * agent is addressed only by a mention or a slash command as far as the poll's
+ * history rows can say (inboundAddressesAgent). Add only: a chat's kind does
+ * not change.
  */
-let sharedChatIds = new Set<string>()
+const groupChatIds = new Set<string>()
 
 // ── Chat membership authority ────────────────────────────────────────────────
 // Defense-in-depth: the backend is the sole authority for chat resolution +
@@ -10204,11 +10208,9 @@ async function discoverChats(): Promise<void> {
     mainChatIds = data.chats
       .filter((c) => c.assistantId === Number(ASSISTANT_ID) && c.kind === 'main')
       .map((c) => String(c.id))
-    sharedChatIds = new Set(
-      data.chats
-        .filter((c) => c.assistantId === Number(ASSISTANT_ID) && c.kind === 'group')
-        .map((c) => String(c.id)),
-    )
+    for (const c of data.chats) {
+      if (c.assistantId === Number(ASSISTANT_ID) && c.kind === 'group') groupChatIds.add(String(c.id))
+    }
     const meetingChatSet = new Set(
       data.chats
         .filter((c) => c.kind === 'meeting')
@@ -11038,7 +11040,7 @@ async function pollChat(chatId: string): Promise<void> {
           pollTurnState ?? undefined,
           pollIsEmail ? pollSenderType : msg.message.sender,
           privateActor({ senderType: pollSenderType, senderUserId: privateSenderUserId(msg.message), agentOrigin: pollAgentOrigin, eventMeta: msg.message.eventMeta }),
-          inboundAddressesAgent({ text: msg.message.text, sharedChat: sharedChatIds.has(chatId), mentions: msg.message.mentions, messageType: msg.message.messageType, assistantId: ASSISTANT_ID }),
+          inboundAddressesAgent({ text: msg.message.text, groupChat: groupChatIds.has(chatId), mentions: msg.message.mentions, messageType: msg.message.messageType, assistantId: ASSISTANT_ID }),
         )
       }
     }
@@ -13342,6 +13344,8 @@ async function forwardStreamInbound(
     forwardedMessageIds.delete(view.messageId)
     throw err
   }
+  // A group, room or channel row: the poll reads this chat by the group rule from now on (groupChatIds).
+  if (isGroupChatDelivery(view.raw)) groupChatIds.add(chatId)
   recordInbound(chatId, view.messageId, view.turnState, view.senderKind, privateActor({ senderType: isSystem ? 'system' : view.senderKind, senderUserId: privateSenderUserId(view.raw), agentOrigin: view.agentOrigin, eventMeta: view.eventMetaRaw }), inboundAddressesAgent({ text: view.text }))
 }
 
@@ -14694,7 +14698,10 @@ function connectWebsocket(): void {
       }
       // Track AFTER recording the conv↔chat association and turn_state so a
       // final inbound is recognized as a close (recordInbound short-circuits
-      // it) and the closed-guard is consulted with the latest mapping.
+      // it) and the closed-guard is consulted with the latest mapping. A
+      // group, room or channel delivery also tells the poll to read this chat
+      // by the group rule (groupChatIds).
+      if (chatId && isGroupChatDelivery(payload)) groupChatIds.add(chatId)
       recordInbound(chatId, messageId, wsTurnState, wsSenderType, privateActor({ senderType: wsSenderType, senderUserId: privateSenderUserId(payload), agentOrigin: wsAgentOrigin, eventMeta: payload?.eventMeta ?? payload?.event_meta }), inboundAddressesAgent({ text }))
     } catch (err) {
       log(`WS inbound_message handler error: ${err}`)
