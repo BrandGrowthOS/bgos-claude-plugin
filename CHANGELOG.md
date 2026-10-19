@@ -2,6 +2,15 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.71.8 (2026-10-19)
+
+**A Claude Code agent is now told it can send a card it composes (ui_card): the daemon declares `ui_card` on every host and connection, so the BGOS canon serves it the Cards you compose section, the ui_card catalog line and the told show_component paragraph (mission 168 follow up).**
+
+- **Why.** show_component already sends kind ui_card through the live renderables catalog, but the BGOS canon tells an agent about cards only when its daemon declares the `ui_card` token (backend `capability-canon.ts`, `UI_CARD_TOKEN` and `uiCardTold`), never by version, and this plugin never declared it. So a Claude Code agent had the tool and was never told about the card.
+- **The declaration (`lib/declared-capabilities.ts`).** `ui_card` joins `DECLARED_CAPABILITIES_BASE`, after `skills_receive`, with its promise written beside the other tokens. Every host (Mac, Linux, Windows) and every connection (pairing and API key), with or without the floor hook: show_component is a plain HTTP send with no platform limit. It rides every heartbeat and the capabilities fetch, which both read the same function. The bundled fallback canon is unchanged and says nothing about cards, so an agent whose fetch fails is told no more than before.
+
+Guards: `test/declared-capabilities.test.ts` (ui_card declared once on the Mac, Linux and Windows host shapes, on either connection and floor hook state, and only from the base; a control that mission_goal_loop and person_lanes stay where they were), red before the change, with a mutation proof (ui_card moved into the injector group goes red on the Linux shape). The whole list pins in `test/declared-capabilities.test.ts`, `test/capabilities.test.ts` and `test/version-heartbeat.test.ts` name the new token.
+
 ## 0.71.7 (2026-10-18)
 
 **A verified owner turn now keeps its private turn authority to the end of its CLI turn (boards, schedule, missions and the Agent Browser no longer refuse with "sender could not be verified" when a second owner wake, a peer conversation close, a reply reminder or the owner's own button tap arrives mid turn); the owner's own tap on the stream opens a private turn (a button, never a Custom reply); a card that names nobody, delivered after the owner's message, ends its authority on every gated tool through one rule; and #254's four lows are closed.**
