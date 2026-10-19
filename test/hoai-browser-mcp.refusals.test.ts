@@ -50,15 +50,15 @@ const SENTENCES: Record<string, string> = {
   browser_profile_active_elsewhere: 'Your browser is open on another computer right now, so it can only be used there until it is closed.',
   browser_profile_stopped_local_only: 'Your browser closed but HOAI has not confirmed its last save yet, so your owner needs to open HOAI on that computer before you can use it.',
   browser_profile_closing: 'Your browser is closing and saving right now, so try again in a minute.',
-  browser_profile_authority_required: 'Your browser is now a managed Agent Browser and this call came through an older route, so nothing ran; try once more, and if it repeats ask your owner to open your browser in HOAI.',
-  browser_profile_managed: 'Your browser is now a managed Agent Browser and this call came through an older route, so nothing ran; try once more, and if it repeats ask your owner to open your browser in HOAI.',
+  browser_profile_authority_required: "Your browser's managed profile refused this call on the route it came by, and it may still have run; check the page with browser_snapshot before you repeat it, and ask your owner to open your browser in HOAI if this keeps happening.",
+  browser_profile_managed: "Your browser's managed profile refused this call on the route it came by, and it may still have run; check the page with browser_snapshot before you repeat it, and ask your owner to open your browser in HOAI if this keeps happening.",
   browser_profile_unavailable: 'Your browser could not be reached through HOAI just now, so nothing ran; try again in a moment, and if it repeats ask your owner to open your browser in HOAI.',
   browser_profile_unconfirmed: 'Your browser did not confirm this action, so it may have run; check the page with browser_snapshot before you repeat it.',
   browser_profile_storage_full: "Your browser's storage in HOAI is full, so nothing new was saved or opened; ask your owner to free space for it in HOAI.",
   browser_profile_close_blocked: 'Your browser could not close cleanly yet, so it is still open; try closing it again in a moment.',
   browser_profile_transition_absent: "HOAI could not find your browser's move between computers, so your owner needs to open your browser in HOAI to finish it.",
 }
-const UNKNOWN_SENTENCE = 'Your browser is not ready in HOAI, so nothing ran; ask your owner to open your browser in HOAI.'
+const UNKNOWN_SENTENCE = 'Your browser could not take this call in HOAI; check the page with browser_snapshot before you repeat it, and ask your owner to open your browser in HOAI if this keeps happening.'
 const line = (code: string) => `${code}: ${SENTENCES[code] ?? UNKNOWN_SENTENCE}`
 
 // The 5.21 desktop's session tools (frontend/electron-app/agent-browser/local-mcp.js SESSION_TOOLS and its managed
@@ -72,7 +72,7 @@ const DESKTOP_OPEN = {
       purpose: { type: 'string', description: "One line the owner will read, e.g. 'Check the seat map on emirates.com'. Max 200 characters." },
       profile: { type: 'string', enum: ['preview', 'signed-in'], description: "Defaults to the owner's default profile (preview). signed-in needs a stable agent id; without one the session opens as a preview and says so." },
       caps: { type: 'array', items: { type: 'string', enum: ['vision', 'pdf'] }, description: 'Optional extra tool sets. vision only works when the owner enabled it.' },
-      verify: { type: 'boolean', description: 'Check your UI change.' },
+      verify: { type: 'boolean', description: 'true when this session checks your own UI change before you say done. Always opens a Preview session.' },
     },
     required: ['purpose'],
   },
@@ -109,6 +109,8 @@ interface Backend {
   call: (message: Json) => Answer | null
   /** The answer to the shim's own initialize, when it is not the ordinary one. */
   init: ((message: Json) => Answer) | null
+  /** The answer to a legacy relay collect (GET .../mcp/<rpcId>) of a call that went pending. */
+  collect: ((rpcId: string) => Answer) | null
 }
 
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
@@ -125,7 +127,7 @@ async function rig(t: TestContext, options: { actor?: string; profileSync?: bool
   const home = mkdtempSync(join(tmpdir(), 'hoai-refusals-'))
   const contextFile = join(home, 'context.json'), markerFile = join(home, 'marker.json')
   const frames: Frame[] = []
-  const backend: Backend = { resolve: 'unmanaged', online: true, instructions: DESKTOP_INSTRUCTIONS, tools: [DESKTOP_OPEN, DESKTOP_CLOSE, DESKTOP_STATUS, CLICK], call: message => done(message, { content: [{ type: 'text', text: 'Browser ready.' }] }), init: null }
+  const backend: Backend = { resolve: 'unmanaged', online: true, instructions: DESKTOP_INSTRUCTIONS, tools: [DESKTOP_OPEN, DESKTOP_CLOSE, DESKTOP_STATUS, CLICK], call: message => done(message, { content: [{ type: 'text', text: 'Browser ready.' }] }), init: null, collect: null }
   setup?.(backend)
   const authority = (who: string) => ({ profileId: '6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b', actingUserId: who, assistantId: 42, endpointId: '1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d', bootId: 'fixture-boot', runtimeId: 'fixture-runtime', sessionId: 'fixture-session', writerEpoch: 1, revision: 0, contentKeyEpoch: 1, grantVersion: 1, keyFingerprint: 'a'.repeat(64) })
   const answerTo = (message: Json): Answer => {
@@ -151,6 +153,7 @@ async function rig(t: TestContext, options: { actor?: string; profileSync?: bool
     if (path === '/api/v1/browser/profile-sync/rpc/call') return answer(answerTo(body?.message ?? {}))
     if (path.startsWith('/api/v1/integrations/browser/host')) return answer({ status: 200, body: { online: backend.online, hostLabel: 'Fixture desktop' } })
     if (path === '/api/v1/integrations/browser/mcp') return answer(answerTo(body?.message ?? {}))
+    if (path.startsWith('/api/v1/integrations/browser/mcp/') && backend.collect) return answer(backend.collect(decodeURIComponent(path.split('/').at(-1) ?? '')))
     if (path === '/local') {
       const message = body ?? {}
       const result = answerTo(message).body.message?.result ?? {}
@@ -377,10 +380,26 @@ test('a connected desktop answering 409 is never told to the agent as host_offli
   const g = await rig(t, { setup: backend => { backend.init = () => ({ status: 409, body: fenced }) } })
   const init = await g.request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'refusal-fixture', version: '1' } })
   assert.doesNotMatch(init.result.instructions, FALSE_OFFLINE)
-  assert.match(init.result.instructions, /browser_profile_authority_required: /)
-  assert.deepEqual((await g.request('tools/list')).result.tools.map((tool: Json) => tool.name), ['hoai_browser_status'])
+  assert.equal(init.result.instructions, `HOAI Agent Browser: your default browser. ${line('browser_profile_authority_required')}`, 'not "once the desktop app is reachable"')
+  const only = (await g.request('tools/list')).result.tools
+  assert.deepEqual(only.map((tool: Json) => tool.name), ['hoai_browser_status'])
+  assert.doesNotMatch(only[0].description, /not reachable|not running/)
   assert.equal(textOf(await g.call('hoai_browser_status')), line('browser_profile_authority_required'))
   assert.equal(textOf(await g.call()), line('browser_profile_authority_required'))
+})
+
+test('a call the relay already sent and the fence then withholds is never told "nothing ran" (409, and the bridge\'s 423)', async t => {
+  for (const status of [409, 423]) {
+    const f = await rig(t)
+    const rpcId = randomUUID()
+    f.backend.call = () => ({ status: 201, body: { status: 'pending', rpcId, pollAfterMs: 250 } })
+    f.backend.collect = () => ({ status, body: { statusCode: status, code: 'browser_profile_authority_required', message: 'This agent\'s browser profile changed in Home of Agents after this call was sent, so its result was withheld.' } })
+    const said = textOf(await f.call('browser_click', { target: 'e12', element: 'Buy' }))
+    assert.equal(said, line('browser_profile_authority_required'), `${status}`)
+    assert.doesNotMatch(said, /nothing ran|try once more/, `${status}: the click may have happened`)
+    assert.match(said, /may still have run; check the page with browser_snapshot before you repeat it/)
+    assert.ok(f.frames.some(frame => frame.path === `/api/v1/integrations/browser/mcp/${rpcId}`), `${status}: the result was collected`)
+  }
 })
 
 test('the control: a relay that says host_offline is still told as the desktop being offline', async t => {
@@ -432,6 +451,7 @@ test('the tool schema served through the relay offers no preview default and no 
   assert.match(open.description, /there is no profile to choose\.$/)
   assert.match(open.description, /verify: true/, "the owner's verify ask is kept")
   assert.ok(open.inputSchema.properties.verify && open.inputSchema.properties.caps, 'every other argument is kept')
+  assert.equal(open.inputSchema.properties.verify.description, 'true when this session checks your own UI change before you say done.', "the verify argument's own preview sentence is dropped")
   assert.equal(tools.find((tool: Json) => tool.name === 'hoai_browser_close_session').description, 'Close the browser session. Call it when you are done.')
   assert.deepEqual(tools.find((tool: Json) => tool.name === 'browser_click'), CLICK, 'a page tool is served exactly as the host sent it')
   // The managed desktop's variant required profile: signed-in.
@@ -488,4 +508,15 @@ test('the signed turn context still gates the open call: no verified sender, not
   assert.equal(result.isError, true)
   assert.match(textOf(result), /current sender could not be verified/)
   assert.deepEqual(f.frames, [], 'no request left the shim')
+})
+
+test("on this computer's loopback door the words say the browser is temporary, never that it is remembered", async t => {
+  const f = await rig(t, { local: true })
+  const said = (await f.request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'refusal-fixture', version: '1' } })).result.instructions as string
+  assert.doesNotMatch(said, /preview/i)
+  assert.doesNotMatch(said, /your own and remembered|still signed in/)
+  assert.match(said, /On this computer's direct connection your browser is temporary: nothing is remembered after it closes\. If you skip this, your first browser tool opens it for you\. A verify session remains temporary\./)
+  const tools = (await f.request('tools/list')).result.tools
+  assertNoProfileChoice(tools, 'loopback door')
+  assert.match(tools.find((tool: Json) => tool.name === 'hoai_browser_open_session').description, /This opens a temporary browser on this computer; there is no profile to choose\.$/)
 })
