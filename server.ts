@@ -6223,6 +6223,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
             : buildPlanRetireBody()
         try {
           await bgosPatch(`messages/${payload.supersedes}`, retireBody)
+          postedButtons.forget(payload.supersedes)
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err)
           return {
@@ -6376,6 +6377,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
           // request to leave. Keep that, but bounded.
           async () => undefined,
         )
+        postedButtons.edited(message_id, safeText)
         return { content: [{ type: 'text', text: 'Edited' }] }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err)
@@ -9043,6 +9045,9 @@ async function announceMissedPlanAnswers(): Promise<void> {
       // Asked above already, so this cannot be true today; kept so the drop is
       // written wherever applyPlanAnswer is called.
       if (planAnswer.refused) continue
+      // A card of an earlier daemon life is never in this life's record, so the owner's late tap on it is noted as
+      // someone else's words (privateTapCard), as every tap on a card not as this daemon posted it is.
+      const postedButton = postedButtons.posted(row.id, callbackData, buttonText, mm.text)
       const contentLines = [
         `[button_clicked] ${planAnswer.summary ?? `Clicked: ${buttonText || callbackData}`}`,
         `(in reply to message_id=${row.id})`,
@@ -9060,7 +9065,7 @@ async function announceMissedPlanAnswers(): Promise<void> {
           params: {
             // 70f1898b: a tap by anyone but the owner is someone else's words in the turn it reaches. A late announce
             // opens no private turn (4bf28148: only the stream's, in its window).
-            content: privateTapCard({ tracker: privateTurns, lane: 'boot', ownerUserId: USER_ID, chatId: String(chatId), messageId: row.id, tapperUserId: readTapperUserId(payload), answeredAt: mm.answeredAt, receivedAt: Date.now(), callbackData: callbackData, customText: customText, posted: false, content: contentLines.join('\n') }),
+            content: privateTapCard({ tracker: privateTurns, lane: 'boot', ownerUserId: USER_ID, chatId: String(chatId), messageId: row.id, tapperUserId: readTapperUserId(payload), answeredAt: mm.answeredAt, receivedAt: Date.now(), callbackData: callbackData, customText: customText, posted: postedButton, content: contentLines.join('\n') }),
             meta: buildButtonClickedMeta({
               chatId,
               messageId: row.id,
@@ -10604,6 +10609,8 @@ async function pollChat(chatId: string): Promise<void> {
       // it authored. Reserved sentinels (__skip__/__custom__) are never escaped
       // and pass through untouched.
       const agentCallbackData = unescapeAgentButtonValue(callbackData)
+      // The raw value and label, as posted: the owner's tap is the owner's words only on a card as this daemon posted it.
+      const postedButton = postedButtons.posted(mm.id, callbackData, buttonText, mm.text)
 
       const kind =
         agentCallbackData === '__skip__'
@@ -10643,7 +10650,7 @@ async function pollChat(chatId: string): Promise<void> {
         params: {
           // 70f1898b: a tap by anyone but the owner is someone else's words in the turn it reaches. The poll opens no
           // private turn, however fresh the tap (4bf28148: only the stream's, in its window).
-          content: privateTapCard({ tracker: privateTurns, lane: 'poll', ownerUserId: USER_ID, chatId: String(chatId), messageId: mm.id, tapperUserId: readTapperUserId(payload), answeredAt: mm.answeredAt, receivedAt: Date.now(), callbackData: agentCallbackData, customText: customText, posted: false, content: contentLines.join('\n') }),
+          content: privateTapCard({ tracker: privateTurns, lane: 'poll', ownerUserId: USER_ID, chatId: String(chatId), messageId: mm.id, tapperUserId: readTapperUserId(payload), answeredAt: mm.answeredAt, receivedAt: Date.now(), callbackData: agentCallbackData, customText: customText, posted: postedButton, content: contentLines.join('\n') }),
           // `user_id` is the tapper the server stamped on the answer, or
           // absent. It was this daemon's own USER_ID, so every tap read as
           // the owner's whoever made it.
