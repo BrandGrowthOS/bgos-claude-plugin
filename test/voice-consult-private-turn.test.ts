@@ -225,15 +225,28 @@ test('a consult delivery that names an actor with no usable deadline names nobod
 
 test('a replayed consult_id opens nothing, before or after the first was answered', (t) => {
   const f = fixture(t)
+  f.submit(f.consultCard(stamped()))
+  assert.equal(f.gate().actingUserId, OWNER)
+  const replay = f.consultCard(stamped())
+  assert.throws(() => f.gate(), /did not start/, 'the second delivery of one consult id names nobody, and ends the turn it reached')
+  f.submit(replay)
+  assert.throws(() => f.gate(), /did not start/, 'its own prompt opens nothing')
+  f.tracker.endConsult(RPC)
+  f.submit(f.consultCard(stamped()))
+  assert.throws(() => f.gate(), /did not start/, 'nor after it was answered')
+})
+
+test('e7166041: a consult replay delivered after the consult\'s own card, run before it as its own prompt: the consult\'s turn opens with no authority (a delivery naming nobody came after the turn\'s own)', (t) => {
+  // Before 0.71.3 the first card's prompt opened its turn here. The daemon cannot trust the order prompts ran in (their
+  // forwarder lines are late and in any order), only the order it delivered them: the replay came after the consult's
+  // own delivery, so it may have reached the consult's turn, and the turn fails closed until the next prompt.
+  const f = fixture(t)
   const first = f.consultCard(stamped())
   const replay = f.consultCard(stamped())
   f.submit(replay)
   assert.throws(() => f.gate(), /did not start/, 'the second delivery of one consult id names nobody')
   f.submit(first)
-  assert.equal(f.gate().actingUserId, OWNER)
-  f.tracker.endConsult(RPC)
-  f.submit(f.consultCard(stamped()))
-  assert.throws(() => f.gate(), /did not start/, 'nor after it was answered')
+  assert.throws(() => f.gate(), /did not start/)
 })
 
 test('scope: another consult, an owner message or an unattributed card mid-turn revokes the consult turn', (t) => {

@@ -154,7 +154,7 @@ import {
 } from './lib/boards-tools.js'
 import { createActingUserTracker } from './lib/acting-user.js'
 import { createPrivateTurnTracker, emailSendBasis, PRIVATE_TURN_REFUSAL, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requireEmailSendTurn, requirePrivateTurn, turnAwarePrivateTurn } from './lib/private-turn.mjs'
-import { createFireLedger, privateFireKey, privateFiresPath, privateReplayLine, privateUnrecordedLine } from './lib/private-turn.mjs'
+import { createFireLedger, createPostedButtons, privateFireKey, privateFiresPath, privateEndedLine, privateReplayLine, privateTapCard, privateUnrecordedLine } from './lib/private-turn.mjs'
 import {
   AGENT_EMAIL_SEND_APPROVALS_PATH,
   EMAIL_SEND_NO_OWNER_CHAT,
@@ -472,6 +472,7 @@ import {
 import {
   clearFloorAttached,
   daemonFloorFolders,
+  floorEntrySession,
   floorKey,
   floorStateRoot,
   markFloorAttached,
@@ -3807,6 +3808,8 @@ const FLOOR_FOLDERS: string[] = daemonFloorFolders({
 })
 const FLOOR_KEYS = [...new Set(FLOOR_FOLDERS.map((folder) => floorKey(folder)).filter(Boolean))]
 let floorMarkerKeys: string[] = []
+/** The session the attached entry was last written naming (lib/floor-state.mjs floorEntrySession), null before. */
+let floorEntrySessionWritten: string | null = null
 
 /**
  * Say to the floor hook that a HOAI daemon is attached to this project folder,
@@ -3816,15 +3819,16 @@ let floorMarkerKeys: string[] = []
  * transcripts live in, and the folder a relative transcript path is read
  * against (the intake's own two), so the private turn hook writes its marker
  * only under its own daemon's key, never another agent's (lib/floor-state.mjs
- * findOwnAttachedKey).
+ * findOwnAttachedKey), and the session the intake is bound to once it is, so
+ * never another claude session's of the same folder either; none again once
+ * that session's SessionEnd is consumed (floorEntrySession).
  */
 function markFloorAttachedIfHolder(): void {
   if (!lockHeld) return
   try {
-    floorMarkerKeys = markFloorAttached({ root: FLOOR_STATE_ROOT, folders: FLOOR_FOLDERS, projectDir: sessionBinder.projectDirectory, baseDir: LAUNCH_CWD })
-    if (floorMarkerKeys.length === 0) {
-      log('floor: could not write the attached marker; the floor hook stays silent in this session')
-    }
+    floorMarkerKeys = markFloorAttached({ root: FLOOR_STATE_ROOT, folders: FLOOR_FOLDERS, projectDir: sessionBinder.projectDirectory, baseDir: LAUNCH_CWD, sessionId: floorEntrySession(liveSessionId, hookEndedSessionId) })
+    if (floorMarkerKeys.length === 0) log('floor: could not write the attached marker; the floor hook stays silent in this session')
+    else floorEntrySessionWritten = floorEntrySession(liveSessionId, hookEndedSessionId)
   } catch (err) {
     log(`floor: could not write the attached marker (${err})`)
   }
@@ -6079,6 +6083,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         // (Ares, reviewing #129).
         if (options.length > 0 && typeof msgId === 'number') {
           recentButtonPrompts.set(String(resolvedChatId), { messageId: msgId, sentAtMs: Date.now() })
+          postedButtons.note(msgId, options, safeText)
         } else if (
           reply_to_id !== undefined &&
           Number(reply_to_id) === recentButtonPrompts.get(String(resolvedChatId))?.messageId
@@ -6218,6 +6223,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
             : buildPlanRetireBody()
         try {
           await bgosPatch(`messages/${payload.supersedes}`, retireBody)
+          postedButtons.forget(payload.supersedes)
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err)
           return {
@@ -6258,6 +6264,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
             // foreignPlanTap.
             requesterUserId: lastInboundUserByChat.get(planChatId) ?? USER_ID,
           })
+          postedButtons.note(cardMessageId, bodyBuild.body.options, bodyBuild.body.text)
           // The CLI writes this tool result verbatim into the transcript, so
           // the minted id is proof of which transcript is ours, exactly as a
           // reply's is.
@@ -6367,8 +6374,12 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
             label: 'POST webhook/edited_message',
           },
           // The original code never inspected the response; it only needed the
-          // request to leave. Keep that, but bounded.
-          async () => undefined,
+          // request to leave. Keep that, but bounded. The posted buttons record
+          // follows only an edit the backend took: a refused one leaves the card
+          // as it stands, and the owner's tap on it is the owner's.
+          async (response) => {
+            if (response.ok) postedButtons.edited(message_id, safeText)
+          },
         )
         return { content: [{ type: 'text', text: 'Edited' }] }
       } catch (err) {
@@ -7830,6 +7841,11 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         approve: (args) => emailSendApproval(args),
         // A too long email the server kept as a draft: the very same one again saves no second.
         answered: (args, answer) => emailSendApprovals.noteSendAnswer(args, answer),
+        // A draft kept for the owner (words not theirs reached the turn): the very same one again saves no second.
+        ownerDraft: {
+          keep: (args, basis) => emailSendApprovals.keepOwnerDraft(args, basis),
+          forget: (args, basis) => emailSendApprovals.forgetOwnerDraft(args, basis),
+        },
       })
 
     default:
@@ -8143,6 +8159,9 @@ interface PendingInbound {
   messageId: number
   ts: number
   reminded: boolean
+  // The message was the owner's own (its lane's privateActor): only then is its reminder marked owner_inbound, the
+  // one reminder the private turn tracker carries through an owner's turn (Data's review of #261, M1).
+  ownerInbound: boolean
 }
 const pendingInbounds = new Map<string, PendingInbound>()
 const meetingChatIds = new Set<string>()
@@ -8286,6 +8305,7 @@ function recordInbound(
   messageId: number,
   turnState?: string,
   senderKind?: string | null,
+  actingUserId?: string | null,
 ): void {
   if (!chatId) return
   // Authorize the chat for outbound dispatch even before the overdue-tracker
@@ -8316,7 +8336,8 @@ function recordInbound(
   }
   const existing = pendingInbounds.get(chatId)
   if (existing && existing.messageId >= messageId) return
-  pendingInbounds.set(chatId, { messageId, ts: Date.now(), reminded: false })
+  const ownerInbound = typeof actingUserId === 'string' && actingUserId !== '' && actingUserId === USER_ID
+  pendingInbounds.set(chatId, { messageId, ts: Date.now(), reminded: false, ownerInbound })
 }
 
 function clearInbound(chatId: string | undefined): void {
@@ -8577,6 +8598,7 @@ function checkReplyOverdue(): void {
           message_id: String(p.messageId),
           age_seconds: String(ageSec),
           ts: new Date(now).toISOString(),
+          ...(p.ownerInbound ? { owner_inbound: 'true' } : {}),
         },
       },
     })).catch((err) => log(`Failed to deliver reply-overdue: ${err}`))
@@ -8596,6 +8618,12 @@ const chatUnansweredButtons = new Map<string, Set<number>>()
  * anything else there. See activeButtonPromptChatIds in lib/poll-core.ts.
  */
 const recentButtonPrompts = new Map<string, ButtonPromptRecord>()
+/**
+ * The buttons and text of the button cards this daemon life posted (the reply tool's, the plan card's), so the owner's
+ * stream tap opens a private turn only on a card as posted: a card rewritten after it was posted opens none
+ * (ownerTapOpens, the re-verify of Data's review of #261).
+ */
+const postedButtons = createPostedButtons()
 
 // ── The plan card's state, all of it in memory and all of it per process ─────
 //
@@ -9020,6 +9048,9 @@ async function announceMissedPlanAnswers(): Promise<void> {
       // Asked above already, so this cannot be true today; kept so the drop is
       // written wherever applyPlanAnswer is called.
       if (planAnswer.refused) continue
+      // A card of an earlier daemon life is never in this life's record, so the owner's late tap on it is noted as
+      // someone else's words (privateTapCard), as every tap on a card not as this daemon posted it is.
+      const postedButton = postedButtons.posted(row.id, callbackData, buttonText, mm.text)
       const contentLines = [
         `[button_clicked] ${planAnswer.summary ?? `Clicked: ${buttonText || callbackData}`}`,
         `(in reply to message_id=${row.id})`,
@@ -9035,8 +9066,9 @@ async function announceMissedPlanAnswers(): Promise<void> {
         mcp.notification({
           method: 'notifications/claude/channel',
           params: {
-            // 70f1898b: a tap by anyone but the owner is someone else's words in the turn it reaches.
-            content: contentLines.join('\n') + privateTurns.noteTap({ chatId: String(chatId), tapperUserId: readTapperUserId(payload) }),
+            // 70f1898b: a tap by anyone but the owner is someone else's words in the turn it reaches. A late announce
+            // opens no private turn (4bf28148: only the stream's, in its window).
+            content: privateTapCard({ tracker: privateTurns, lane: 'boot', ownerUserId: USER_ID, chatId: String(chatId), messageId: row.id, tapperUserId: readTapperUserId(payload), answeredAt: mm.answeredAt, receivedAt: Date.now(), callbackData: callbackData, customText: customText, posted: postedButton, content: contentLines.join('\n') }),
             meta: buildButtonClickedMeta({
               chatId,
               messageId: row.id,
@@ -9143,14 +9175,17 @@ const turnChat = createTurnChatTracker()
 // message the same way, as owner:<message id>.
 const privateFires = createFireLedger({ path: privateFiresPath(FLOOR_STATE_ROOT, ASSISTANT_ID) })
 const PRIVATE_MARKER_PATHS = FLOOR_KEYS.map((key) => privateMarkerPath(FLOOR_STATE_ROOT, key))
-const privateTurns = createPrivateTurnTracker({ ownerUserId: USER_ID, markerPaths: PRIVATE_MARKER_PATHS, fires: privateFires, onRevoke: (info) => { log(privateRevokeLine(info)); publishBrowserPrivateTurn() }, onRepeat: (repeat) => log(privateRepeatLine(repeat)), onReplay: (replay) => log(privateReplayLine(replay)), onUnrecorded: (info) => log(privateUnrecordedLine(info)) })
+const privateTurns = createPrivateTurnTracker({ ownerUserId: USER_ID, markerPaths: PRIVATE_MARKER_PATHS, fires: privateFires, onRevoke: (info) => { log(privateRevokeLine(info)); publishBrowserPrivateTurn() }, onRepeat: (repeat) => log(privateRepeatLine(repeat)), onReplay: (replay) => log(privateReplayLine(replay)), onUnrecorded: (info) => log(privateUnrecordedLine(info)), onEnded: (info) => log(privateEndedLine(info)) })
 // Every channel card passes here. One that skipped privateTurns.deliver (a meeting line, a button tap, a voice
 // dispatch or stop) names nobody, so it ends a voice consult's private turn, whose authority is that consult's
-// alone. Chat and scheduler turns keep today's rules (privateTurns.rawCard).
+// alone. Chat and scheduler turns keep today's rules (privateTurns.rawCard). Its meta says which card it is: one that
+// names nobody but the owner (the owner's tap, a peer conversation close, a reply reminder) may run as a prompt of
+// the owner's turn without ending it (c09e214e).
 const sendMcpNotification = mcp.notification.bind(mcp)
 mcp.notification = ((notification: Parameters<typeof mcp.notification>[0]) => {
   if (notification?.method === 'notifications/claude/channel') {
-    privateTurns.rawCard(String((notification.params as { content?: unknown } | undefined)?.content ?? ''))
+    const params = notification.params as { content?: unknown; meta?: unknown } | undefined
+    privateTurns.rawCard(String(params?.content ?? ''), params?.meta)
   }
   return sendMcpNotification(notification)
 }) as typeof mcp.notification
@@ -9695,7 +9730,9 @@ function endHookTurn(keepCard: boolean): void {
   hookStepsTurnId = null
   stopHookStepsHeartbeat()
   turnChat.end(Date.now())
-  privateTurns.end()
+  // The Stop line's stamp, when a hook line ended the turn: a live marker written before it is the turn that stopped,
+  // and a prompt submitted before its forwarder's start ran in that turn (startedAt).
+  privateTurns.end(hookLineAt === null ? {} : { at: hookLineAt, startedAt: hookLineStartedAt })
   publishBrowserPrivateTurn()
 }
 
@@ -9777,10 +9814,19 @@ function runHookEffects(effects: Effect[]): void {
  * up to a minute, so a card built on it can report minutes that are wrong by
  * more than the turn was long.
  */
+/** The time of the hook line whose effects run now (onHookPayload's lineAt), for privateTurns.end(); null otherwise. */
+let hookLineAt: number | null = null
+/** That line's own forwarder start when it carried one (startedAt alone, never receivedAt), for privateTurns.end(). */
+let hookLineStartedAt: number | undefined
+
 function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void {
   const event = parseHookEvent(payload)
   if (event === null) return
   const receivedAt = line?.receivedAt ?? Date.now()
+  // When the CLI got to this event, for privateTurns.end(): the forwarder's own process start, which claude spawns
+  // with the Stop hook at the Stop, before the next prompt's hook can run. Its receivedAt comes after the forwarder's
+  // cold start and stdin read, which can be after the next prompt's marker (the re-review of c09e214e).
+  const lineAt = line?.startedAt ?? receivedAt
   // The payload carries the CLI's own transcript_path, which is the strongest
   // binding evidence there is (lib/session-binding.ts). Feeding it here is what
   // lets the context gauge stop guessing.
@@ -9798,10 +9844,16 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
     liveSessionId = hookSessionId
     liveSessionSeenAtMs = Date.now()
   }
-  if (event.name === 'SessionEnd') privateTurns.end()
+  // The attached entry names the session this intake is bound to, so another claude session of the folder never
+  // writes the agent's private turn marker (lib/floor-state.mjs findOwnAttachedKey, the third review of c69224fe), and
+  // none once that session ended, so the first prompt of the session a /clear starts writes its own (the fourth).
+  if (floorEntrySession(liveSessionId, hookEndedSessionId) !== floorEntrySessionWritten) markFloorAttachedIfHolder()
+  if (event.name === 'SessionEnd') privateTurns.end({ at: lineAt, startedAt: line?.startedAt })
   if (event.name === 'UserPromptSubmit') {
     // A prompt past the forwarder's clip arrives as its token(s) plus the full prompt's hash.
-    const began = privateTurns.begin({ prompt: payload.prompt, promptHash: payload.hoai_clipped === true ? payload.prompt_sha256 : undefined, sessionId: hookSessionId, promptId: payload.prompt_id })
+    // startedAt: when claude submitted it (the forwarder's own start), so a Stop line places it by that, wherever the
+    // two lines land (lib/private-turn.mjs ranSinceStop, the final review of e7166041).
+    const began = privateTurns.begin({ prompt: payload.prompt, promptHash: payload.hoai_clipped === true ? payload.prompt_sha256 : undefined, sessionId: hookSessionId, promptId: payload.prompt_id, startedAt: line?.startedAt })
     hookTurnLive = true
     // The turn's chat is decided HERE and held until Stop. The prompt carries
     // the message we delivered, so the delivery it matches names the chat; with
@@ -9815,7 +9867,14 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
   }
   const { next, effects } = applyHookEventToTurn(hookTurn, event, receivedAt)
   hookTurn = next
-  runHookEffects(effects)
+  hookLineAt = lineAt
+  hookLineStartedAt = line?.startedAt
+  try {
+    runHookEffects(effects)
+  } finally {
+    hookLineAt = null
+    hookLineStartedAt = undefined
+  }
   // A turn starting or ending is exactly what the watcher's safe moment reads,
   // so it is published now rather than on the next tick.
   agentStatePublisher.tick()
@@ -10553,6 +10612,8 @@ async function pollChat(chatId: string): Promise<void> {
       // it authored. Reserved sentinels (__skip__/__custom__) are never escaped
       // and pass through untouched.
       const agentCallbackData = unescapeAgentButtonValue(callbackData)
+      // The raw value and label, as posted: the owner's tap is the owner's words only on a card as this daemon posted it.
+      const postedButton = postedButtons.posted(mm.id, callbackData, buttonText, mm.text)
 
       const kind =
         agentCallbackData === '__skip__'
@@ -10590,8 +10651,9 @@ async function pollChat(chatId: string): Promise<void> {
       void trackMessageOperation(() => mcp.notification({
         method: 'notifications/claude/channel',
         params: {
-          // 70f1898b: a tap by anyone but the owner is someone else's words in the turn it reaches.
-          content: contentLines.join('\n') + privateTurns.noteTap({ chatId: String(chatId), tapperUserId: readTapperUserId(payload) }),
+          // 70f1898b: a tap by anyone but the owner is someone else's words in the turn it reaches. The poll opens no
+          // private turn, however fresh the tap (4bf28148: only the stream's, in its window).
+          content: privateTapCard({ tracker: privateTurns, lane: 'poll', ownerUserId: USER_ID, chatId: String(chatId), messageId: mm.id, tapperUserId: readTapperUserId(payload), answeredAt: mm.answeredAt, receivedAt: Date.now(), callbackData: agentCallbackData, customText: customText, posted: postedButton, content: contentLines.join('\n') }),
           // `user_id` is the tapper the server stamped on the answer, or
           // absent. It was this daemon's own USER_ID, so every tap read as
           // the owner's whoever made it.
@@ -10935,6 +10997,7 @@ async function pollChat(chatId: string): Promise<void> {
           msg.message.id,
           pollTurnState ?? undefined,
           pollIsEmail ? pollSenderType : msg.message.sender,
+          privateActor({ senderType: pollSenderType, senderUserId: privateSenderUserId(msg.message), agentOrigin: pollAgentOrigin, eventMeta: msg.message.eventMeta }),
         )
       }
     }
@@ -13238,7 +13301,7 @@ async function forwardStreamInbound(
     forwardedMessageIds.delete(view.messageId)
     throw err
   }
-  recordInbound(chatId, view.messageId, view.turnState, view.senderKind)
+  recordInbound(chatId, view.messageId, view.turnState, view.senderKind, privateActor({ senderType: isSystem ? 'system' : view.senderKind, senderUserId: privateSenderUserId(view.raw), agentOrigin: view.agentOrigin, eventMeta: view.eventMetaRaw }))
 }
 
 /**
@@ -13446,12 +13509,16 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
       view.text.length > 200 ? view.text.slice(0, 197) + '...' : view.text
     contentLines.push(`Original question: ${quoted}`)
   }
+  // The raw value and label, as posted: the owner's tap opens a private turn only on a card as this daemon posted it.
+  const postedButton = postedButtons.posted(view.messageId, answer.callbackData, answer.buttonText, view.text)
   void trackMessageOperation(() =>
     mcp.notification({
       method: 'notifications/claude/channel',
       params: {
-        // 70f1898b: a tap by anyone but the owner is someone else's words in the turn it reaches.
-        content: contentLines.join('\n') + privateTurns.noteTap({ chatId: String(chatId), tapperUserId: answer.tapperUserId }),
+        // 70f1898b: a tap by anyone but the owner is someone else's words in the turn it reaches. The owner's own tap,
+        // as the backend stamped it, within PRIVATE_TAP_WINDOW_MS of its answeredAt, opens a private turn as the owner
+        // (4bf28148), and the fire ledger makes a second announce of it a replay.
+        content: privateTapCard({ tracker: privateTurns, lane: 'stream', ownerUserId: USER_ID, chatId: String(chatId), messageId: view.messageId, tapperUserId: answer.tapperUserId, answeredAt: update.payload.answeredAt ?? update.payload.answered_at, receivedAt: receivedAtMs, callbackData: agentCallbackData, customText: answer.customText, posted: postedButton, content: contentLines.join('\n') }),
         meta: buildStreamClickMeta({
           chatId,
           messageId: view.messageId,
@@ -14587,7 +14654,7 @@ function connectWebsocket(): void {
       // Track AFTER recording the conv↔chat association and turn_state so a
       // final inbound is recognized as a close (recordInbound short-circuits
       // it) and the closed-guard is consulted with the latest mapping.
-      recordInbound(chatId, messageId, wsTurnState, wsSenderType)
+      recordInbound(chatId, messageId, wsTurnState, wsSenderType, privateActor({ senderType: wsSenderType, senderUserId: privateSenderUserId(payload), agentOrigin: wsAgentOrigin, eventMeta: payload?.eventMeta ?? payload?.event_meta }))
     } catch (err) {
       log(`WS inbound_message handler error: ${err}`)
     }

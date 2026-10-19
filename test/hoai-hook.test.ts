@@ -145,10 +145,12 @@ test('one payload becomes one JSON line carrying a MINTED id, never a measured o
   const lines = written.trim().split('\n')
   assert.equal(lines.length, 2)
   const parsed = JSON.parse(lines[0]!)
-  assert.deepEqual(Object.keys(parsed).sort(), ['event', 'id', 'payload', 'receivedAt'])
+  assert.deepEqual(Object.keys(parsed).sort(), ['event', 'id', 'payload', 'receivedAt', 'startedAt'])
   assert.equal(parsed.id, first, 'the id on the line is the id the caller got back')
   assert.equal(parsed.event, 'PreToolUse')
   assert.equal(parsed.receivedAt, 1000)
+  // The forwarder's own process start, never later than receivedAt (here the test's clock is long before it).
+  assert.equal(parsed.startedAt, 1000)
   assert.equal(parsed.payload.tool_use_id, 'tu-1')
   assert.ok(written.endsWith('\n'), 'every line is newline terminated')
 })
@@ -619,3 +621,15 @@ test('the forwarder is import safe: importing it writes nothing and exits nothin
 function readSource(): string {
   return readFileSync(new URL('../bin/hoai-hook.mjs', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
 }
+
+test('the line carries the forwarder\'s process start (startedAt), the moment claude spawned it, never after receivedAt', () => {
+  const spool = memSpool()
+  const path = spoolPath('sess-start', ENV, HOME)
+  appendEvent(payloadOf({ session_id: 'sess-start' }), { fs: spool.fs, env: ENV, home: HOME, now: 5000, startedAt: 4200 })
+  appendEvent(payloadOf({ session_id: 'sess-start' }), { fs: spool.fs, env: ENV, home: HOME, now: 5000, startedAt: 6000 })
+  appendEvent(payloadOf({ session_id: 'sess-start' }), { fs: spool.fs, env: ENV, home: HOME })
+  const [early, late, real] = (spool.files.get(path) ?? '').trim().split('\n').map((line) => JSON.parse(line))
+  assert.equal(early.startedAt, 4200)
+  assert.equal(late.startedAt, 5000, 'a clock set back since the start: no later than receivedAt')
+  assert.equal(real.startedAt, Math.floor(performance.timeOrigin), 'by default this process\'s own start')
+})

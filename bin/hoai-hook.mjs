@@ -7,7 +7,7 @@
  * That is the whole job:
  *
  *   <state>/hooks/<session_id>/events.jsonl
- *   { "id": "<line id>", "receivedAt": <ms>, "event": "<name>", "payload": { ... } }
+ *   { "id": "<line id>", "receivedAt": <ms>, "startedAt": <ms>, "event": "<name>", "payload": { ... } }
  *
  * The daemon (server.ts, through lib/hook-intake.ts) watches that directory and
  * drains it. See lib/hook-intake.ts for why the transport is a file rather than
@@ -73,6 +73,8 @@ export const PAYLOAD_MAX_BYTES = 256 * 1024
 
 /** The private turn token lib/private-turn.mjs appends to a delivered card. */
 const PRIVATE_TURN_TOKEN = /<hoai-private-turn id="[a-f0-9-]{36}"\/>/g
+/** The tag lib/private-turn.mjs (PRIVATE_UNTRACKED_TAG) puts on a card with no delivery behind it. */
+const PRIVATE_UNTRACKED_TAG = '<hoai-untracked/>'
 /** Per field clip inside a reduced tool_input. */
 export const REDUCED_FIELD_MAX = 200
 
@@ -308,8 +310,12 @@ export function clipPayload(payload, maxBytes = PAYLOAD_MAX_BYTES) {
   if (payload.hook_event_name === 'UserPromptSubmit' && typeof payload.prompt === 'string') {
     // The private turn needs only its opaque delivery token(s) and the full
     // prompt's hash, never the prompt text. Two tokens are kept so an
-    // ambiguous prompt stays ambiguous.
-    reduced.prompt = (payload.prompt.match(PRIVATE_TURN_TOKEN) ?? []).slice(0, 2).join('\n')
+    // ambiguous prompt stays ambiguous, and the untracked tag, which the
+    // daemon reads in place of the hook's own flag when an older hook beside
+    // this plugin's drops it (the re-review of c69224fe).
+    const kept = (payload.prompt.match(PRIVATE_TURN_TOKEN) ?? []).slice(0, 2)
+    if (payload.prompt.includes(PRIVATE_UNTRACKED_TAG)) kept.push(PRIVATE_UNTRACKED_TAG)
+    reduced.prompt = kept.join('\n')
     reduced.prompt_sha256 = createHash('sha256').update(payload.prompt).digest('hex')
   }
   reduced.hoai_clipped = true
@@ -341,9 +347,12 @@ export function rotateIfFull(path, fs, maxBytes = SPOOL_MAX_BYTES) {
   }
 }
 
-/** The one line the forwarder writes. Pure, so the shape is testable. */
-export function buildSpoolLine({ id, receivedAt, event, payload }) {
-  return `${JSON.stringify({ id, receivedAt, event, payload })}\n`
+/**
+ * The one line the forwarder writes. Pure, so the shape is testable.
+ * @param {{ id: string, receivedAt: number, startedAt?: number, event: string, payload: unknown }} line
+ */
+export function buildSpoolLine({ id, receivedAt, startedAt, event, payload }) {
+  return `${JSON.stringify({ id, receivedAt, startedAt, event, payload })}\n`
 }
 
 function defaultSpoolFs() {
@@ -382,6 +391,10 @@ export function appendEvent(payload, opts = {}) {
   const env = opts.env ?? process.env
   const home = opts.home ?? homedir()
   const now = opts.now ?? Date.now()
+  // This process's own start: claude spawns the forwarder at the event, so it is the moment the event happened, before
+  // the cold start and the stdin read that receivedAt comes after (seconds on a slow Windows start). The private turn
+  // places a Stop by it (lib/private-turn.mjs end, the re-review of c09e214e). Never later than receivedAt.
+  const startedAt = Math.min(opts.startedAt ?? Math.floor(performance.timeOrigin), now)
   if (!isRecord(payload)) return null
   const sessionId = String(payload.session_id ?? '').trim()
   if (!sessionId) return null
@@ -397,6 +410,7 @@ export function appendEvent(payload, opts = {}) {
   const line = buildSpoolLine({
     id,
     receivedAt: now,
+    startedAt,
     event: String(payload.hook_event_name ?? ''),
     payload: clipPayload(payload, opts.payloadMaxBytes ?? PAYLOAD_MAX_BYTES),
   })

@@ -537,6 +537,16 @@ export interface EmailSendApprovals {
   keptTooLong(args: unknown): boolean
   /** What the send route answered for this call: a `too_long_to_approve` draft is remembered (keptTooLong). */
   noteSendAnswer(args: unknown, answer: unknown): void
+  /**
+   * c69224fe: email_send is about to keep this very email (its recipient, subject or email, and text) as a draft for
+   * the owner, because words that are not the owner's reached the turn its reason `basis` opened (70f1898b). True the
+   * first time for that email and reason's fire, which is remembered; false for a retry of it, which saves nothing more.
+   * A recurring task's next fire is its own (Data's review of #261, M3); a reason that names no fire keys by its kind
+   * and id alone.
+   */
+  keepOwnerDraft(args: unknown, basis: unknown): boolean
+  /** The drafts route answered that it saved nothing: forget it, so a retry keeps it (keepOwnerDraft). */
+  forgetOwnerDraft(args: unknown, basis: unknown): void
 }
 
 /** How many approval ids the store remembers handing out. */
@@ -553,10 +563,19 @@ export function createEmailSendApprovals(
   let waiting: Array<{ at: number; email: EmailSendPreview; grant: EmailSendGrant }> = []
   const spent = new Set<string>()
   const keptTooLong = new Set<string>()
+  const ownerDrafts = new Set<string>()
   // One email: where it goes (the address as the server compares it, the subject, or the email) and its text.
   const emailKey = (args: unknown): string | null => {
     const b = emailSendBinding(EMAIL_SEND_FLOOR_TOOL, args) as Record<string, string> | null
     return b ? JSON.stringify([b.to?.toLowerCase() ?? null, b.subject ?? null, b.email_id?.toLowerCase() ?? null, b.body_sha256]) : null
+  }
+  // The same email kept for the owner for the same fire: the reason's kind, id and fire, then emailKey.
+  const ownerDraftKey = (args: unknown, basis: unknown): string | null => {
+    const key = emailKey(args)
+    const b = basis as { kind?: unknown; id?: unknown; fire?: unknown } | null
+    return key !== null && typeof b?.kind === 'string' && typeof b.id === 'string'
+      ? JSON.stringify([b.kind, b.id, typeof b.fire === 'string' ? b.fire : null, key])
+      : null
   }
   const dropStale = () => {
     const at = now()
@@ -634,6 +653,18 @@ export function createEmailSendApprovals(
       if (key === null) return
       keptTooLong.add(key)
       while (keptTooLong.size > MAX_SPENT) keptTooLong.delete(keptTooLong.values().next().value as string)
+    },
+    keepOwnerDraft(args, basis) {
+      const key = ownerDraftKey(args, basis)
+      if (key === null) return true
+      if (ownerDrafts.has(key)) return false
+      ownerDrafts.add(key)
+      while (ownerDrafts.size > MAX_SPENT) ownerDrafts.delete(ownerDrafts.values().next().value as string)
+      return true
+    },
+    forgetOwnerDraft(args, basis) {
+      const key = ownerDraftKey(args, basis)
+      if (key !== null) ownerDrafts.delete(key)
     },
   }
 }

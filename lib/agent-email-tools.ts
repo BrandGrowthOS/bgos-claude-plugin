@@ -111,6 +111,12 @@ export interface EmailSendBasis {
    * approval of exactly this email, from their tap on its card; without one it is kept as a draft for the owner.
    */
   askOwner?: boolean
+  /**
+   * The fire this reason came from (lib/private-turn.mjs emailSend: its delivery's fire key, `native:<fire id>` for a
+   * scheduled wake, `owner:<message id>` for a message). Kept in the daemon and never posted: the drafts kept for the
+   * owner are remembered per fire, so a recurring task's next fire keeps its own (Data's review of #261, M3).
+   */
+  fire?: string
 }
 
 export interface EmailToolDeps {
@@ -136,6 +142,12 @@ export interface EmailToolDeps {
   approve?: (rawArgs: unknown) => Promise<string | null | EmailSendGo>
   /** Told what the send route answered for this call (server.ts: a too long email the server kept). */
   answered?: (rawArgs: unknown, answer: unknown) => void
+  /**
+   * c69224fe: the drafts an askOwner send keeps for the owner (server.ts: the approval store's keepOwnerDraft and
+   * forgetOwnerDraft). `keep` is false for the very same email retried for the same reason, which then saves nothing
+   * more; `forget` is told when the drafts route answered that it saved nothing, so a retry keeps it.
+   */
+  ownerDraft?: { keep: (rawArgs: unknown, basis: EmailSendBasis) => boolean; forget: (rawArgs: unknown, basis: EmailSendBasis) => void }
 }
 
 /** What the approval step lets a send go with (see `approve`). */
@@ -193,6 +205,13 @@ export function emailSendWithoutCardDraftText(line: string): string {
 export function emailSendAskOwnerDraftText(line: string): string {
   return `Not sent: the email was kept as a draft for your owner, because words that are not your owner's reached this turn (an email, another agent's message or a meeting card), so only your owner can send it. Your owner can read all of it and send it from the Email chat (${line}). Do not try again; tell your owner it is waiting as a draft in the Email chat, and why.`
 }
+
+/**
+ * c69224fe: the very same email again, for the same reason, which this daemon already kept as a draft for the owner
+ * (emailSendAskOwnerDraftText), or whose keeping got no answer: nothing more is saved.
+ */
+export const EMAIL_SEND_ASK_OWNER_AGAIN =
+  'Not sent: this email is already waiting as a draft for your owner in the Email chat (words that are not your owner\'s reached this turn, so only your owner can send it), and nothing more was saved. Do not try again; tell your owner it is waiting as a draft in the Email chat, and why.'
 
 /** A uuid as the server's IsUUID() reads one (version 1 to 8, variant 8 to b, or the nil and max ids). */
 const APPROVAL_UUID =
@@ -527,10 +546,13 @@ export async function handleEmailTool(name: string, rawArgs: unknown, deps: Emai
     const draft = target.kind === 'reply'
       ? { assistantId, emailId: target.emailId, text }
       : { assistantId, kind: 'new', to: target.to, subject: target.subject, text }
+    // c69224fe: once per email and reason; remembered before the post, so a retry while it runs saves none either.
+    if (deps.ownerDraft && !deps.ownerDraft.keep(rawArgs, basis)) return fail(EMAIL_SEND_ASK_OWNER_AGAIN)
     try {
       const answer = await deps.post(AGENT_EMAIL_DRAFT_PATH, draft, caller)
       return { content: [{ type: 'text', text: `${emailSendAskOwnerDraftText(draftLine(answer as Record<string, unknown>))}\n${JSON.stringify(answer)}` }] }
     } catch (err) {
+      if (serverAnswered(err)) deps.ownerDraft?.forget(rawArgs, basis)
       return fail(serverAnswered(err)
         ? `email_send did not send it, because words that are not your owner's reached this turn, and could not keep it as a draft: ${errorText(err)}. Save it with email_draft and tell your owner.`
         : `email_send did not send it, because words that are not your owner's reached this turn, and the draft for your owner may have been saved: do not save it again; tell your owner to look in the Email chat. ${errorText(err)}`)

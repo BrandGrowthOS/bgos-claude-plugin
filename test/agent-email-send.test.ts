@@ -2796,7 +2796,153 @@ test('server.ts notes a meeting invitation with the tracker too: it carries the 
 
 test('server.ts notes every button tap announced to the session with its tapper (70f1898b, review): someone else\'s tap asks the owner before email_send sends', () => {
   const announced = SRC.match(/`\[button_clicked\] /g) ?? []
-  const tagged = SRC.match(/content: contentLines\.join\('\\n'\) \+ privateTurns\.noteTap\(\{ chatId: String\(chatId\), tapperUserId: [^\n]+ \}\),\n/g) ?? []
+  // Through privateTapCard since 0.71.3 (4bf28148), which notes a tap with noteTap unless it is the owner's own on the
+  // stream, in its window (test/private-turn-owner-tap.test.ts).
+  const tagged = SRC.match(/content: privateTapCard\(\{ tracker: privateTurns, lane: '(?:boot|poll|stream)', ownerUserId: USER_ID, chatId: String\(chatId\), [^\n]+, content: contentLines\.join\('\\n'\) \}\),\n/g) ?? []
   assert.equal(announced.length, 3, 'the boot sweep, the poll and the stream')
   assert.equal(tagged.length, announced.length)
+})
+
+// ── c69224fe (#254's lows): a retried askOwner draft is kept once ──────────────────────────────────────────────────
+// The agent is told "Do not try again", yet a model can call email_send again with the very same email in the same turn.
+// The plugin keeps the draft for the owner once per email (its target and text) and reason; a retry posts nothing and
+// is told it already waits. A draft the server answered it did not save is not remembered, so a retry keeps it; one
+// that got no answer may have been saved, so a retry saves nothing more. The held reason itself cannot ride on the
+// draft: the drafts route takes no such field (BGOS backend/src/agent-email/dto/agent-email-reply.dto.ts
+// AgentReplyDraftDto, and the whitelist of backend/src/main.ts), so the agent's words and the daemon's log say why.
+
+test('server.ts, run, c69224fe: the same email retried in one askOwner turn is kept as a draft once; the retry posts nothing and the agent hears it already waits', async (t) => {
+  const f = fixture(t, { wired: true })
+  const { backend, call } = await serverCallTool(t, f, {}, { floor: { hold: false } })
+  f.start(TURNS.email)
+  f.start(TURNS.ownerMessage)
+  assertKeptForTheOwner(await call('email_send', SEND_ARGS), 'the first call')
+  for (const again of [SEND_ARGS, { ...SEND_ARGS, to: SEND_ARGS.to.toUpperCase() }]) {
+    const retry = await call('email_send', again)
+    assert.equal(retry.isError, true, textOf(retry))
+    assert.match(textOf(retry), /^Not sent: this email is already waiting as a draft for your owner in the Email chat/)
+    assert.match(textOf(retry), /nothing more was saved/)
+  }
+  assert.deepEqual(backend.requests.map((r) => r.path), [DRAFTS_ROUTE], 'one draft, never the send route')
+  // Another email in the same turn is its own draft.
+  assertKeptForTheOwner(await call('email_send', { ...SEND_ARGS, text: `${SEND_ARGS.text} Thanks.` }), 'another email')
+  assert.deepEqual(backend.requests.map((r) => r.path), [DRAFTS_ROUTE, DRAFTS_ROUTE])
+  const m = await tools()
+  assert.match(m.EMAIL_SEND_ASK_OWNER_AGAIN, /words that are not your owner's reached this turn/)
+})
+
+test('server.ts, run, c69224fe: a reply retried in one askOwner turn is kept once too', async (t) => {
+  const f = fixture(t, { wired: true })
+  const { backend, call } = await serverCallTool(t, f, {}, { floor: { hold: false } })
+  f.start(TURNS.email)
+  f.start(TURNS.ownerMessage)
+  const reply = { email_id: EMAIL_ID, text: 'Hi Dana, Kc picks the Harbor room.' }
+  assertKeptForTheOwner(await call('email_send', reply), 'the reply')
+  const retry = await call('email_send', { ...reply, email_id: EMAIL_ID.toUpperCase() })
+  assert.match(textOf(retry), /^Not sent: this email is already waiting as a draft for your owner in the Email chat/)
+  assert.deepEqual(backend.requests.map((r) => r.path), [DRAFTS_ROUTE])
+})
+
+test('server.ts, run, control, c69224fe: a draft the server answered it did not save is not remembered: the retry keeps it', async (t) => {
+  const f = fixture(t, { wired: true })
+  const { backend, call } = await serverCallTool(t, f, {}, { floor: { hold: false }, status: 503 })
+  f.start(TURNS.email)
+  f.start(TURNS.ownerMessage)
+  for (const label of ['the first call', 'the retry']) {
+    const result = await call('email_send', SEND_ARGS)
+    assert.equal(result.isError, true, label)
+    assert.match(textOf(result), /could not keep it as a draft/, label)
+  }
+  assert.deepEqual(backend.requests.map((r) => r.path), [DRAFTS_ROUTE, DRAFTS_ROUTE])
+})
+
+test('c69224fe: an askOwner draft that got no answer may have been saved, so the retry saves nothing more; the owner\'s Allow of exactly that email still sends it', async () => {
+  const store = (await approval()).createEmailSendApprovals()
+  const posts: string[] = []
+  let answer: () => unknown = () => { throw new Error('This operation was aborted') }
+  const post = async (path: string) => { posts.push(path); return answer() }
+  const deps = {
+    post, basis: { ...OWNER_BASIS, askOwner: true },
+    ownerDraft: { keep: (args: unknown, basis: unknown) => store.keepOwnerDraft(args, basis), forget: (args: unknown, basis: unknown) => store.forgetOwnerDraft(args, basis) },
+  }
+  const first = await callTool('email_send', SEND_ARGS, deps)
+  assert.match(textOf(first), /may have been saved: do not save it again/)
+  answer = () => ({ id: DRAFT_ID, state: 'draft' })
+  const retry = await callTool('email_send', SEND_ARGS, deps)
+  assert.match(textOf(retry), /^Not sent: this email is already waiting as a draft/)
+  assert.deepEqual(posts, ['integrations/agent-email/reply-drafts'])
+  // Another reason (the owner's next message names the email again): a draft of its own.
+  const next = await callTool('email_send', SEND_ARGS, { ...deps, basis: { kind: 'owner_message', id: '777', askOwner: true } })
+  assert.match(textOf(next), /^Not sent: the email was kept as a draft for your owner, because /)
+  assert.equal(posts.length, 2)
+  // With the owner's approval of exactly this email, the send goes as before (never a draft, never refused as a retry).
+  answer = () => ({ outcome: 'sent', draft: { id: DRAFT_ID, state: 'sent' } })
+  const approved = await callTool('email_send', SEND_ARGS, { ...deps, approve: async () => ({ approval: { id: randomUUID() } }) })
+  assert.match(textOf(approved), /^Sent/)
+  assert.deepEqual(posts.slice(2), ['integrations/agent-email/send'])
+})
+
+test('server.ts hands email_send the owner draft record of its approval store (c69224fe)', () => {
+  assert.match(SRC, /\n {8}ownerDraft: \{\n {10}keep: \(args, basis\) => emailSendApprovals\.keepOwnerDraft\(args, basis\),\n {10}forget: \(args, basis\) => emailSendApprovals\.forgetOwnerDraft\(args, basis\),\n {8}\},\n/)
+})
+
+// ── Data's review of #261 (M3): the owner drafts are kept once per FIRE ──────────────────────────────────────────────
+// keepOwnerDraft keyed a scheduled wake by its task id, so the next askOwner fire of a recurring task saved nothing and
+// the agent was told the email already waited, though the owner had handled the first. The turn's reason now carries
+// the fire it came from (lib/private-turn.mjs emailSend: the delivery's fire key), kept in the daemon and never posted,
+// and the draft is remembered per fire.
+
+/** A scheduled wake of OWNER_TASK_ID delivered as the three lanes deliver it, with its fire key, then its prompt. */
+function startFire(f: ReturnType<typeof fixture>, fireId: string, messageId: number): void {
+  const eventMeta = wakeMeta(OWNER_TASK_ID, { fireId })
+  const prompt = f.tracker.deliver({
+    content: `turn text for message ${messageId}`,
+    chatId: OWN_CHAT,
+    peerSourceAssistantId: null,
+    actingUserId: privateActor({ senderType: 'system', senderUserId: null, agentOrigin: null, eventMeta }),
+    emailBasis: pt.emailSendBasis({ senderType: 'system', agentOrigin: null, eventMeta, messageId }),
+    fireKey: pt.privateFireKey({ senderType: 'system', eventMeta, messageId }),
+  } as never)
+  f.begin(prompt)
+}
+
+test('server.ts, run, Data\'s review of #261 (M3): a recurring task\'s next fire keeps its own askOwner draft; a retry within one fire keeps none', async (t) => {
+  const f = fixture(t, { wired: true })
+  const { backend, call } = await serverCallTool(t, f, {}, { floor: { hold: false } })
+  f.start(TURNS.email)
+  startFire(f, 'wake-551-fire-1', 90510)
+  assertKeptForTheOwner(await call('email_send', SEND_ARGS), 'the first fire')
+  assert.match(textOf(await call('email_send', SEND_ARGS)), /^Not sent: this email is already waiting as a draft/, 'the same fire retried')
+  f.stop()
+  f.start({ ...TURNS.email, messageId: 90610 })
+  startFire(f, 'wake-551-fire-2', 90511)
+  assertKeptForTheOwner(await call('email_send', SEND_ARGS), 'the next fire of the same task')
+  assert.deepEqual(backend.requests.map((r) => r.path), [DRAFTS_ROUTE, DRAFTS_ROUTE])
+})
+
+test('Data\'s review of #261 (M3): the reason names the fire of the turn it came from, and the send route is told only its kind and id', async (t) => {
+  const f = fixture(t, { wired: true })
+  startFire(f, 'wake-551-fire-1', 90510)
+  const first = sendTurn(f).basis as Record<string, unknown>
+  assert.deepEqual(first, { kind: 'owner_task', id: String(OWNER_TASK_ID), fire: 'native:wake-551-fire-1' })
+  f.stop()
+  startFire(f, 'wake-551-fire-2', 90511)
+  assert.equal((sendTurn(f).basis as Record<string, unknown>).fire, 'native:wake-551-fire-2')
+  const bodies: Array<Record<string, unknown>> = []
+  const post = async (_path: string, body: Record<string, unknown>) => { bodies.push(body); return { outcome: 'sent', draft: { id: DRAFT_ID, state: 'sent' } } }
+  await callTool('email_send', SEND_ARGS, { post, basis: first, approve: async () => ({ alwaysAskOff: true }) })
+  assert.deepEqual(bodies.map((body) => body.basis), [{ kind: 'owner_task', id: String(OWNER_TASK_ID) }])
+})
+
+test('Data\'s review of #261 (M3): keepOwnerDraft remembers an email per fire; with no fire named, per reason as before', async () => {
+  const store = (await approval()).createEmailSendApprovals()
+  const fire = (name: string) => ({ kind: 'owner_task', id: String(OWNER_TASK_ID), askOwner: true, fire: name })
+  assert.equal(store.keepOwnerDraft(SEND_ARGS, fire('native:a')), true)
+  assert.equal(store.keepOwnerDraft(SEND_ARGS, fire('native:a')), false, 'the same fire retried')
+  assert.equal(store.keepOwnerDraft(SEND_ARGS, fire('native:b')), true, 'the next fire of the same task')
+  store.forgetOwnerDraft(SEND_ARGS, fire('native:b'))
+  assert.equal(store.keepOwnerDraft(SEND_ARGS, fire('native:b')), true, 'forgotten for that fire only')
+  assert.equal(store.keepOwnerDraft(SEND_ARGS, fire('native:a')), false, 'the first fire still remembered')
+  assert.equal(store.keepOwnerDraft(SEND_ARGS, OWNER_BASIS), true, 'control: no fire')
+  assert.equal(store.keepOwnerDraft(SEND_ARGS, OWNER_BASIS), false, 'control: no fire, retried')
 })
