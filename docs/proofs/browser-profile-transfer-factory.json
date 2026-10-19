@@ -1,0 +1,405 @@
+{
+  "kind": "Companion native transfer safety factory repair",
+  "productCommit": "7ecc3fb4cd3f48d6586133616d4eb7236418cf00",
+  "source": [
+    {
+      "path": "lib/browser-profile-companion.mjs",
+      "sha256": "5fc60744e495d89eb6fca78f5473b66e1f2c4701a9c5dbb12d25debb4dfe3e28",
+      "gitBlobEqual": true
+    },
+    {
+      "path": "test/browser-profile-companion-transfer.test.ts",
+      "sha256": "60550c9ac9db69e0511819a9940ad3cdab4a5293a00a1843f42ce8914f91958e",
+      "gitBlobEqual": true
+    },
+    {
+      "path": "scripts/probe-browser-profile-transfer-factory.mjs",
+      "sha256": "6b8454f685a03063e18c81774a1fdd72422bb382b4fd9126b44d3e6015da9686",
+      "gitBlobEqual": true
+    }
+  ],
+  "failureBoundary": {
+    "integrationCommit": "9e84e2373233f8297fafe27639c4122edf3c2394",
+    "wholeCoordinator": {
+      "passed": 72,
+      "failed": 1,
+      "skipped": 0,
+      "total": 73,
+      "sourceCount": 3875,
+      "sourceUnchanged": true
+    },
+    "reason": "agent_automatic_first_backup_timeout:state=skipped,reason=profile_live_busy_or_invalid,upload=none",
+    "actualCause": "Companion runtime factory did not supply assertTransferAllowed; native reader correctly required that function",
+    "noSealJournalUploadClaimed": true
+  },
+  "focusedTests": {
+    "files": 10,
+    "tests": 173,
+    "passed": 173,
+    "skipped": 0,
+    "typescriptExit": 0
+  },
+  "mutationProof": {
+    "sourceSha256": "5fc60744e495d89eb6fca78f5473b66e1f2c4701a9c5dbb12d25debb4dfe3e28",
+    "workspaceUnchanged": true,
+    "unit": [
+      {
+        "name": "factory-callback",
+        "line": 287,
+        "loadedChangedLine": "        assertTransferAllowed:undefined,",
+        "redExit": 1,
+        "directAssertion": true,
+        "exactOriginalWorkspaceBytes": true,
+        "restoredExit": 0
+      },
+      {
+        "name": "original-native-context",
+        "line": 269,
+        "loadedChangedLine": "      if(!physicalRuntime||record.runtime!==physicalRuntime||false||input?.context!==physicalContext||!shared.sameAuthority(input?.authority,authority)||record.endpoint!==originalEndpoint||record.identity!==originalIdentity||originalEndpoint.identity!==originalEndpointIdentity||codec.identityFingerprint(originalIdentity)!==authority.keyFingerprint||codec.identityFingerprint(originalEndpointIdentity)!==authority.keyFingerprint||Object.keys(originalScope).some(key=>record.scope[key]!==originalScope[key])||!record.entry||!this._activeMatches(record,record.entry,authority))throw fail('profile_companion_transfer_changed')",
+        "redExit": 1,
+        "directAssertion": true,
+        "exactOriginalWorkspaceBytes": true,
+        "restoredExit": 0
+      },
+      {
+        "name": "input-context",
+        "line": 269,
+        "loadedChangedLine": "      if(!physicalRuntime||record.runtime!==physicalRuntime||physicalRuntime.context!==physicalContext||false||!shared.sameAuthority(input?.authority,authority)||record.endpoint!==originalEndpoint||record.identity!==originalIdentity||originalEndpoint.identity!==originalEndpointIdentity||codec.identityFingerprint(originalIdentity)!==authority.keyFingerprint||codec.identityFingerprint(originalEndpointIdentity)!==authority.keyFingerprint||Object.keys(originalScope).some(key=>record.scope[key]!==originalScope[key])||!record.entry||!this._activeMatches(record,record.entry,authority))throw fail('profile_companion_transfer_changed')",
+        "redExit": 1,
+        "directAssertion": true,
+        "exactOriginalWorkspaceBytes": true,
+        "restoredExit": 0
+      },
+      {
+        "name": "input-full-authority",
+        "line": 269,
+        "loadedChangedLine": "      if(!physicalRuntime||record.runtime!==physicalRuntime||physicalRuntime.context!==physicalContext||input?.context!==physicalContext||false||record.endpoint!==originalEndpoint||record.identity!==originalIdentity||originalEndpoint.identity!==originalEndpointIdentity||codec.identityFingerprint(originalIdentity)!==authority.keyFingerprint||codec.identityFingerprint(originalEndpointIdentity)!==authority.keyFingerprint||Object.keys(originalScope).some(key=>record.scope[key]!==originalScope[key])||!record.entry||!this._activeMatches(record,record.entry,authority))throw fail('profile_companion_transfer_changed')",
+        "redExit": 1,
+        "directAssertion": true,
+        "exactOriginalWorkspaceBytes": true,
+        "restoredExit": 0
+      },
+      {
+        "name": "original-endpoint",
+        "line": 269,
+        "loadedChangedLine": "      if(!physicalRuntime||record.runtime!==physicalRuntime||physicalRuntime.context!==physicalContext||input?.context!==physicalContext||!shared.sameAuthority(input?.authority,authority)||false||record.identity!==originalIdentity||originalEndpoint.identity!==originalEndpointIdentity||codec.identityFingerprint(originalIdentity)!==authority.keyFingerprint||codec.identityFingerprint(originalEndpointIdentity)!==authority.keyFingerprint||Object.keys(originalScope).some(key=>record.scope[key]!==originalScope[key])||!record.entry||!this._activeMatches(record,record.entry,authority))throw fail('profile_companion_transfer_changed')",
+        "redExit": 1,
+        "directAssertion": true,
+        "exactOriginalWorkspaceBytes": true,
+        "restoredExit": 0
+      },
+      {
+        "name": "original-public-identity",
+        "line": 269,
+        "loadedChangedLine": "      if(!physicalRuntime||record.runtime!==physicalRuntime||physicalRuntime.context!==physicalContext||input?.context!==physicalContext||!shared.sameAuthority(input?.authority,authority)||record.endpoint!==originalEndpoint||false||originalEndpoint.identity!==originalEndpointIdentity||codec.identityFingerprint(originalIdentity)!==authority.keyFingerprint||codec.identityFingerprint(originalEndpointIdentity)!==authority.keyFingerprint||Object.keys(originalScope).some(key=>record.scope[key]!==originalScope[key])||!record.entry||!this._activeMatches(record,record.entry,authority))throw fail('profile_companion_transfer_changed')",
+        "redExit": 1,
+        "directAssertion": true,
+        "exactOriginalWorkspaceBytes": true,
+        "restoredExit": 0
+      },
+      {
+        "name": "original-pairing-scope",
+        "line": 269,
+        "loadedChangedLine": "      if(!physicalRuntime||record.runtime!==physicalRuntime||physicalRuntime.context!==physicalContext||input?.context!==physicalContext||!shared.sameAuthority(input?.authority,authority)||record.endpoint!==originalEndpoint||record.identity!==originalIdentity||originalEndpoint.identity!==originalEndpointIdentity||codec.identityFingerprint(originalIdentity)!==authority.keyFingerprint||codec.identityFingerprint(originalEndpointIdentity)!==authority.keyFingerprint||false||!record.entry||!this._activeMatches(record,record.entry,authority))throw fail('profile_companion_transfer_changed')",
+        "redExit": 1,
+        "directAssertion": true,
+        "exactOriginalWorkspaceBytes": true,
+        "restoredExit": 0
+      },
+      {
+        "name": "current-source-grant",
+        "line": 269,
+        "loadedChangedLine": "      if(!physicalRuntime||record.runtime!==physicalRuntime||physicalRuntime.context!==physicalContext||input?.context!==physicalContext||!shared.sameAuthority(input?.authority,authority)||record.endpoint!==originalEndpoint||record.identity!==originalIdentity||originalEndpoint.identity!==originalEndpointIdentity||codec.identityFingerprint(originalIdentity)!==authority.keyFingerprint||codec.identityFingerprint(originalEndpointIdentity)!==authority.keyFingerprint||Object.keys(originalScope).some(key=>record.scope[key]!==originalScope[key])||!record.entry||false)throw fail('profile_companion_transfer_changed')",
+        "redExit": 1,
+        "directAssertion": true,
+        "exactOriginalWorkspaceBytes": true,
+        "restoredExit": 0
+      },
+      {
+        "name": "private-retirement-permit",
+        "line": 271,
+        "loadedChangedLine": "      if(false)throw fail('profile_companion_transfer_changed')",
+        "redExit": 1,
+        "directAssertion": true,
+        "exactOriginalWorkspaceBytes": true,
+        "restoredExit": 0
+      },
+      {
+        "name": "pending-engine-work",
+        "line": 272,
+        "loadedChangedLine": "      if(!['active','stopping'].includes(record.admission)||record.uncertain||record.permissionAbort||this.#permissionCleanupUnknown.has(record)||false||physicalRuntime.state!=='active'||physicalRuntime.network!=='active')throw fail('profile_companion_transfer_busy')",
+        "redExit": 1,
+        "directAssertion": true,
+        "exactOriginalWorkspaceBytes": true,
+        "restoredExit": 0
+      },
+      {
+        "name": "live-permission",
+        "line": 272,
+        "loadedChangedLine": "      if(!['active','stopping'].includes(record.admission)||record.uncertain||false||this.#permissionCleanupUnknown.has(record)||record.engineTasks.size!==0||physicalRuntime.state!=='active'||physicalRuntime.network!=='active')throw fail('profile_companion_transfer_busy')",
+        "redExit": 1,
+        "directAssertion": true,
+        "exactOriginalWorkspaceBytes": true,
+        "restoredExit": 0
+      },
+      {
+        "name": "unknown-runner-activity",
+        "line": 273,
+        "loadedChangedLine": "      for(const map of [this.#fileRunners,this.#fieldRunners]){const runner=map.get(record)?.runner;if(runner){const value=runner.activity();if(false)throw fail('profile_companion_transfer_busy')}}",
+        "redExit": 1,
+        "directAssertion": true,
+        "exactOriginalWorkspaceBytes": true,
+        "restoredExit": 0
+      }
+    ],
+    "native": [
+      {
+        "kind": "baseline",
+        "exit": 0,
+        "containerAbsent": true,
+        "forcedStop": false,
+        "receiptSha256": "b7c0b2aeb78ec654bb780d4200319c1bdd7338c389eee702f28b665b9c263370",
+        "sourceSha256": "5fc60744e495d89eb6fca78f5473b66e1f2c4701a9c5dbb12d25debb4dfe3e28"
+      },
+      {
+        "kind": "omitted-callback",
+        "name": "native-omitted-callback",
+        "line": 287,
+        "loadedChangedLine": "        assertTransferAllowed:undefined,",
+        "exit": 1,
+        "containerAbsent": true,
+        "forcedStop": false,
+        "receiptSha256": "c5dc262c15d13a68ff7be2fc368ef45e369ebfabd129a0469482b8c99a661e5f",
+        "sourceSha256": "6053f06f4b2c87dc78d4a4fc00d1af38b27547a940ab31b25d00004d62ec65a9"
+      },
+      {
+        "kind": "restored",
+        "exit": 0,
+        "containerAbsent": true,
+        "forcedStop": false,
+        "receiptSha256": "b7c0b2aeb78ec654bb780d4200319c1bdd7338c389eee702f28b665b9c263370",
+        "sourceSha256": "5fc60744e495d89eb6fca78f5473b66e1f2c4701a9c5dbb12d25debb4dfe3e28"
+      }
+    ]
+  },
+  "nativeBoundary": {
+    "browser": "156.0.8078.4",
+    "image": "hoai-profile-fresh:418aa6dc",
+    "imageId": "sha256:d40b71cc8a302b1c3661f7003bc3b485cae01f5373f21bf445e84707f0d7dc78",
+    "actualCompanionFactory": true,
+    "actualRuntime": true,
+    "restrictedLoopbackTransport": true,
+    "syntheticAuthority": true,
+    "realHOAI": false,
+    "automatic60s": false,
+    "nativePrivateDownloads": false,
+    "cleanOriginalDocumentAndIdleQualified": true,
+    "baselineRestoredNormalCleanup": true,
+    "nativeMutantNormalCleanupClaimed": false,
+    "allContainersAbsent": true,
+    "forcedStop": false
+  },
+  "independentReviews": [
+    "root: final Companion5fc60744 plus7unitcases closed",
+    "plugin_fresh_delivery: final Companion5fc60744 plus7unitcases andnativeprobe closed"
+  ],
+  "raw": [
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\current-source-grant-red.log",
+      "sha256": "71fa4fd95daede0999f2d308c1bb52d82c93c42995b8019ec6deee13ff38f5be"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\current-source-grant-restored.log",
+      "sha256": "ca60778cae20e2cd7be27a7676ffa587dce97302e8aa9aff33d7234989382f94"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\current-source-grant.input.json",
+      "sha256": "be0ab455cc2c0728f83fe6fc284680ac018ca91e6930a45c1424549fb8b2eb8c"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\factory-callback-red.log",
+      "sha256": "c9b82e77ba18921d116e12fc716c74c04790a22b76691d9af44cd2b23cbb7c15"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\factory-callback-restored.log",
+      "sha256": "60161dfbee0b74765cbca4f63adf3aea702ab4d32ed0edbbc17d6d73b0931b7e"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\factory-callback.input.json",
+      "sha256": "4b779152ad1199f10414d41b0ecdd7dd31a445d213de1b8faf460a55fe28fb08"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\input-context-red.log",
+      "sha256": "9c022702884aef4ae9c67411212da61251506d6769039b9e3f506dbab294bc01"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\input-context-restored.log",
+      "sha256": "aff611e08e599589fe43bae8132a423a76441fd3a42ec937177914328e904a0f"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\input-context.input.json",
+      "sha256": "0cc7ee33b0d998b579b642d46e1852fa3ab5ee7e6d616ecb382dc408ed3f05f0"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\input-full-authority-red.log",
+      "sha256": "51f440c9024fb847325f28cd99dd64402e6a1fffe585d9a282b1768fcf2731bb"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\input-full-authority-restored.log",
+      "sha256": "560e0c7b7477f0b2362e3bc6decd2f618b46f6d1198155ad3728592fe17c546a"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\input-full-authority.input.json",
+      "sha256": "60c1472a1bad4a6581e02ac454be615a0b9f8b2cb38ee149e81060846fcf3eb5"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\live-permission-red.log",
+      "sha256": "5752858a3864b3a627f7594b3635d2b5f1fe5cd70fe67778b3d66bb4693c37bf"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\live-permission-restored.log",
+      "sha256": "b0292d13ab0f154d2db009c18875ed469c7b31450811de052eeb02b64b78bf57"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\live-permission.input.json",
+      "sha256": "3fc7895531fee72d99ad12c2dcb3701a1194d48993687bbb29d585084bb0b069"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\loader.mjs",
+      "sha256": "5fd07888ce4a2a31933345d64c049a5b24add610e12e2bf33351254794ba2468"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\native-baseline.json",
+      "sha256": "b7c0b2aeb78ec654bb780d4200319c1bdd7338c389eee702f28b665b9c263370"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\native-baseline.transport.log",
+      "sha256": "a51d7b9af122d44212fcd0d3c6cd1ebb0ad2ad362254c5ed98e7e80a96210471"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\native-omitted-callback.json",
+      "sha256": "c5dc262c15d13a68ff7be2fc368ef45e369ebfabd129a0469482b8c99a661e5f"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\native-omitted-callback.transport.log",
+      "sha256": "a51d7b9af122d44212fcd0d3c6cd1ebb0ad2ad362254c5ed98e7e80a96210471"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\native-restored.json",
+      "sha256": "b7c0b2aeb78ec654bb780d4200319c1bdd7338c389eee702f28b665b9c263370"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\native-restored.transport.log",
+      "sha256": "a51d7b9af122d44212fcd0d3c6cd1ebb0ad2ad362254c5ed98e7e80a96210471"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\original-endpoint-red.log",
+      "sha256": "03a5fcc56a1274123ff128695a18f40c906e2df0864a1cc5890427afca96a786"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\original-endpoint-restored.log",
+      "sha256": "a60a9d7557f5476fb41b5addb22250eda87e472d8ad1e27f2ce53b3335aaf0fb"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\original-endpoint.input.json",
+      "sha256": "89db804705a194c424fc6bc99b998aff2a6a29f26d6597e9b30d7764fcc0aaa0"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\original-native-context-red.log",
+      "sha256": "c707bd2c15c615efc78fa087c06269cdc563224a6fc8871bd29cd5594ec0ff42"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\original-native-context-restored.log",
+      "sha256": "c88e51873aa340d877062fd313b0c9c359062151d0a9446dbbf14c0abe8a91d2"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\original-native-context.input.json",
+      "sha256": "dae92499eecd33175c8413349258b26c48e027fdc898bf4da24fb1197125c3b0"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\original-pairing-scope-red.log",
+      "sha256": "7d56eaa6140d32e81202d4c572ac90924b7ac60df6911813dde968146cb715fb"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\original-pairing-scope-restored.log",
+      "sha256": "54c29b2a814dd3305cc72186999594dd2b613343cf94462260f7b3deb5e71028"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\original-pairing-scope.input.json",
+      "sha256": "e0a0dfc7617f9dbb83095bfc198fe2bda5a751570e1d0a3c8408601b579001d9"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\original-public-identity-red.log",
+      "sha256": "9add584a792f8394956dcfba448f943d861c7bb6d477bdc6ff600e50cea63574"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\original-public-identity-restored.log",
+      "sha256": "3f0a2031162d317e6d73ad98820fbff40e326f6405575c6a4d0adc26ed16d0db"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\original-public-identity.input.json",
+      "sha256": "891505e1df112917c8da61f234af4ebf9b97a17b3287029c9887e929b6e58ece"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\pending-engine-work-red.log",
+      "sha256": "f3043b6230d9eb687699feb3a1805761536ca2aecadbf601fb9799dfe2702e24"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\pending-engine-work-restored.log",
+      "sha256": "3b3c20b1567646148e4d47e2ef8eddffee62eaaa6f913708227ff16761c07b88"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\pending-engine-work.input.json",
+      "sha256": "e082e3a34cf3c997bd17039a1f6f7406b5e7e74e8fbd213f8fb402c27ca81c65"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\private-retirement-permit-red.log",
+      "sha256": "6f434b647038f72cabf419836b53d66474f2683589ce17ee1f4ebf2d5d2fc366"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\private-retirement-permit-restored.log",
+      "sha256": "e283c4c5d635fdaaf2da6fa1b8cfda6ac7c4a34a01a8f2b1e48056a1ff7cc353"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\private-retirement-permit.input.json",
+      "sha256": "63026ea2706d6722280f618eedd55f70159dc586498f2b80413b9b7e792cce38"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\results.json",
+      "sha256": "110cf9060b7be2ac53d35deb975e84e11c127e0f74634d835619d29399057af8"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\unit-baseline.log",
+      "sha256": "057e3662f08e4b4ebcd87ac1834d2655507655d5883399cf9613ead0d5d2deda"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\unknown-runner-activity-red.log",
+      "sha256": "168399dbbb504f546b29e82cb38ddfdeca9e96df44c992a1a56e58590ada4699"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\unknown-runner-activity-restored.log",
+      "sha256": "e4642a82fe5e10ed6c127d4a251f488744d094e5415f18748597a78be64b9e1c"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-2f26d33b\\unknown-runner-activity.input.json",
+      "sha256": "652d406cc23cbc6c984c776c00d8d010faf700d96467b55ddab2db87f9fbb11d"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-focused.txt",
+      "sha256": "64c34cb9235e290c737ff8f05a2c957182f8310b6862aee764655a1078bcecd0"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\transfer-factory-tsc.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "uncompletedAcceptance": [
+    "Real HOAI automatic60s source-active backup and storage-only later snapshot",
+    "Whole73 with all fresh flags on new coherent integration/common image",
+    "Final Codex package refreshed to the new common source"
+  ],
+  "excludedTrials": [
+    "Initial Docker bind and file-path copy attempts failed before the native probe because the Docker CLI could not read that host temporary path; final qualification uses streamed tar copy.",
+    "An early native probe capture returned a conservative skipped result before the fixture explicitly qualified original native document safety and idle. It is excluded; no production guard or timer was weakened."
+  ]
+}

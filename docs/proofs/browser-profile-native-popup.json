@@ -1,0 +1,1036 @@
+{
+  "kind": "browser-profile-native-popup-qualification-v1",
+  "sourceHeadBeforeChange": "c0ed7e6dfad24248c6ba24bb009e76985ba2e1f8",
+  "sourceHashes": {
+    "lib/browser-profile-cdp-targets.mjs": "b882fe1be85894aef1a2ab171350c39eba9811cb98e88b8d20cd0636b81a9e0b",
+    "lib/browser-profile-runtime.mjs": "aebf8dfd0ef573c9bfb30bab0e1a2dd919ca1ae07d68a46a9867c3521f08c758",
+    "scripts/probe-browser-profile-resume.mjs": "50a6ad3aaf0ae09ab261147f4427a2046850591395eb72b2d337190e57d64216",
+    "test/browser-profile-cdp-targets.test.ts": "6d72be7c798f5f6317f627faa466c11c51e14cfb524a1f673c694a3cd7f4e653",
+    "test/browser-profile-runtime-bootstrap.test.ts": "896a661d27eceb5a9677402a7ba08ffe07edc580f705f025825ae0bc557775cf",
+    "test/helpers/browser-profile-flat-native.ts": "7cf67d90b818a7f1abc4d6051792dc90035b166d2a2404660bc5e29913550280"
+  },
+  "playwrightPin": {
+    "playwrightVersion": "1.63.0",
+    "bundleExport": "playwright-core/lib/coreBundle",
+    "bundleSha256": "549070af3acabb3efcc4f55bfe6210f9f7c2fcf633cf7eaa59bfe60719969171",
+    "upstreamSource": "https://github.com/microsoft/playwright/blob/v1.63.0/packages/playwright-core/src/server/chromium/chromiumSwitches.ts",
+    "uiFeatureSource": "https://chromium.googlesource.com/chromium/src/+/bf3cc6d2d1098c5addd00a916373e6fa62d3dc6b",
+    "uiFeaturesDisabled": [
+      "WebUIOmniboxPopup",
+      "WebUIOmniboxAimPopup"
+    ]
+  },
+  "nativeBase": {
+    "commit": "ec984a647d2dd9a05f3eb12fef8d3d367426f6c1",
+    "image": "hoai-profile-fresh:ec984a6",
+    "imageId": "sha256:febedcce3de30aeeeaa4f1b9f60dd95c7d2323b05ce51e73804a2f615af2e27f",
+    "overlays": [
+      "lib/browser-profile-cdp-targets.mjs",
+      "lib/browser-profile-runtime.mjs",
+      "scripts/probe-browser-profile-resume.mjs"
+    ],
+    "boundary": "Exact final LF observer/runtime/probe bytes over immutable ec984 dependencies. Synthetic coordinator/CAS/review/extras; actual nonroot sandboxed Chromium153, private pipe, site GET/POST, encrypted checkpoint and physical cleanup. This is separate from the two-machine HOAI and updated shared KDF qualification."
+  },
+  "tests": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "--test",
+      "test/browser-profile-cdp-targets.test.ts",
+      "test/browser-profile-runtime-bootstrap.test.ts",
+      "test/browser-profile-runtime.test.ts",
+      "test/browser-profile-resume-ledger.test.ts",
+      "test/browser-profile-resume-runtime.test.ts"
+    ],
+    "passed": 103,
+    "failed": 0,
+    "skipped": 0,
+    "typescriptNoEmitExit": 0
+  },
+  "nativeFinal": [
+    {
+      "rawReceipt": ".tmp/fresh-plugin-proof/popup-final-5b0c7b5e.json",
+      "rawSha256": "fc37b6992dad212de10f945613a7a6bc0818debf3b0ada89f3b65ef58dcc7398",
+      "exit": 0,
+      "sourceHashes": {
+        "lib/browser-profile-cdp-targets.mjs": "b882fe1be85894aef1a2ab171350c39eba9811cb98e88b8d20cd0636b81a9e0b",
+        "lib/browser-profile-runtime.mjs": "aebf8dfd0ef573c9bfb30bab0e1a2dd919ca1ae07d68a46a9867c3521f08c758",
+        "scripts/probe-browser-profile-resume.mjs": "50a6ad3aaf0ae09ab261147f4427a2046850591395eb72b2d337190e57d64216"
+      },
+      "browserVersion": "153.0.8010.12",
+      "uid": 1000,
+      "sandboxEnabled": true,
+      "privatePipe": true,
+      "checks": [
+        {
+          "name": "actual-completed-native-GET-order-selected-and-encrypted-schema2-capture",
+          "ok": true,
+          "tabCount": 3,
+          "selectedIndex": 0
+        },
+        {
+          "name": "zero-site-traffic-before-fresh-CAS-then-one-exact-reviewed-GET-and-imported-HTTPOnly-cookie-delivery",
+          "ok": true,
+          "review": "Synthetic constructor fixture proof, not real human approval or Companion role qualification"
+        },
+        {
+          "name": "actual-lazy-MCP-backend-selects-exact-restored-page-without-new-page-or-navigation",
+          "ok": true,
+          "tabCount": 3,
+          "selectedIndex": 0
+        },
+        {
+          "name": "actual-original-popup-POST-303-GET-response-finish-with-native-observers-and-exact-opener",
+          "ok": true,
+          "postCount": 1,
+          "observerCommands": [
+            {
+              "sequence": 10,
+              "timeMs": 3713.111337,
+              "sessionId": "AD0337C702C182EC29D9EAB78E610C95",
+              "method": "Network.enable",
+              "phase": "sent"
+            },
+            {
+              "sequence": 11,
+              "timeMs": 3713.164711,
+              "sessionId": "AD0337C702C182EC29D9EAB78E610C95",
+              "method": "Debugger.enable",
+              "phase": "sent"
+            },
+            {
+              "sequence": 12,
+              "timeMs": 3713.190015,
+              "sessionId": "AD0337C702C182EC29D9EAB78E610C95",
+              "method": "Target.setAutoAttach",
+              "phase": "sent"
+            },
+            {
+              "sequence": 13,
+              "timeMs": 3713.204313,
+              "sessionId": "AD0337C702C182EC29D9EAB78E610C95",
+              "method": "Runtime.runIfWaitingForDebugger",
+              "phase": "sent"
+            },
+            {
+              "sequence": 14,
+              "timeMs": 3718.530006,
+              "sessionId": "AD0337C702C182EC29D9EAB78E610C95",
+              "method": "Target.setAutoAttach",
+              "phase": "answered"
+            },
+            {
+              "sequence": 22,
+              "timeMs": 3728.512789,
+              "sessionId": "AD0337C702C182EC29D9EAB78E610C95",
+              "method": "Network.enable",
+              "phase": "answered"
+            },
+            {
+              "sequence": 23,
+              "timeMs": 3728.695603,
+              "sessionId": "AD0337C702C182EC29D9EAB78E610C95",
+              "method": "Debugger.enable",
+              "phase": "answered"
+            },
+            {
+              "sequence": 24,
+              "timeMs": 3728.706178,
+              "sessionId": "AD0337C702C182EC29D9EAB78E610C95",
+              "method": "Runtime.runIfWaitingForDebugger",
+              "phase": "answered"
+            }
+          ],
+          "events": [
+            {
+              "sequence": 15,
+              "timeMs": 3718.925263,
+              "sessionId": "AD0337C702C182EC29D9EAB78E610C95",
+              "targetId": "B184BB8B0E244CE7912D46A126CF3C81",
+              "method": "Network.requestWillBeSent",
+              "requestId": "CD59142FB8EA8BDCC1A19B72E37564A1",
+              "type": "Document",
+              "requestMethod": "POST",
+              "path": "/submitted",
+              "redirect": false
+            },
+            {
+              "sequence": 16,
+              "timeMs": 3722.837445,
+              "sessionId": "AD0337C702C182EC29D9EAB78E610C95",
+              "targetId": "B184BB8B0E244CE7912D46A126CF3C81",
+              "method": "Network.requestWillBeSentExtraInfo",
+              "requestId": "CD59142FB8EA8BDCC1A19B72E37564A1",
+              "redirect": false
+            },
+            {
+              "sequence": 17,
+              "timeMs": 3723.031069,
+              "sessionId": "AD0337C702C182EC29D9EAB78E610C95",
+              "targetId": "B184BB8B0E244CE7912D46A126CF3C81",
+              "method": "Network.responseReceivedExtraInfo",
+              "requestId": "CD59142FB8EA8BDCC1A19B72E37564A1",
+              "redirect": false
+            },
+            {
+              "sequence": 18,
+              "timeMs": 3723.389857,
+              "sessionId": "AD0337C702C182EC29D9EAB78E610C95",
+              "targetId": "B184BB8B0E244CE7912D46A126CF3C81",
+              "method": "Network.requestWillBeSent",
+              "requestId": "CD59142FB8EA8BDCC1A19B72E37564A1",
+              "type": "Document",
+              "requestMethod": "GET",
+              "path": "/normal-result",
+              "redirect": true
+            },
+            {
+              "sequence": 19,
+              "timeMs": 3724.559033,
+              "sessionId": "AD0337C702C182EC29D9EAB78E610C95",
+              "targetId": "B184BB8B0E244CE7912D46A126CF3C81",
+              "method": "Network.requestWillBeSentExtraInfo",
+              "requestId": "CD59142FB8EA8BDCC1A19B72E37564A1",
+              "redirect": false
+            },
+            {
+              "sequence": 20,
+              "timeMs": 3724.60506,
+              "sessionId": "AD0337C702C182EC29D9EAB78E610C95",
+              "targetId": "B184BB8B0E244CE7912D46A126CF3C81",
+              "method": "Network.responseReceivedExtraInfo",
+              "requestId": "CD59142FB8EA8BDCC1A19B72E37564A1",
+              "redirect": false
+            },
+            {
+              "sequence": 21,
+              "timeMs": 3725.293698,
+              "sessionId": "AD0337C702C182EC29D9EAB78E610C95",
+              "targetId": "B184BB8B0E244CE7912D46A126CF3C81",
+              "method": "Network.responseReceived",
+              "requestId": "CD59142FB8EA8BDCC1A19B72E37564A1",
+              "type": "Document",
+              "status": 200,
+              "redirect": false
+            },
+            {
+              "sequence": 26,
+              "timeMs": 3733.209117,
+              "sessionId": "AD0337C702C182EC29D9EAB78E610C95",
+              "targetId": "B184BB8B0E244CE7912D46A126CF3C81",
+              "method": "Network.dataReceived",
+              "requestId": "CD59142FB8EA8BDCC1A19B72E37564A1",
+              "redirect": false
+            },
+            {
+              "sequence": 27,
+              "timeMs": 3733.695788,
+              "sessionId": "AD0337C702C182EC29D9EAB78E610C95",
+              "targetId": "B184BB8B0E244CE7912D46A126CF3C81",
+              "method": "Network.loadingFinished",
+              "requestId": "CD59142FB8EA8BDCC1A19B72E37564A1",
+              "redirect": false
+            }
+          ]
+        },
+        {
+          "name": "actual-popup-POST-303-GET-refuses-before-admission-and-retains-both-original-pages",
+          "ok": true
+        },
+        {
+          "name": "closed-popup-history-remains-qualified-for-encrypted-data-only-checkpoint-and-positive-native-exit",
+          "ok": true
+        }
+      ],
+      "cleanup": {
+        "runtimes": [
+          {
+            "disconnected": true,
+            "ownedProcessGone": true,
+            "error": null
+          },
+          {
+            "disconnected": true,
+            "ownedProcessGone": true,
+            "error": null
+          },
+          {
+            "disconnected": true,
+            "ownedProcessGone": true,
+            "error": null
+          }
+        ],
+        "serverClosed": true
+      },
+      "containerAbsent": true,
+      "forcedStop": false
+    },
+    {
+      "rawReceipt": ".tmp/fresh-plugin-proof/popup-final-02ba8a9d.json",
+      "rawSha256": "21bf0c7a42b8393dc3db3985d5d44b70bb7315d44d9142375b4d15205cf010eb",
+      "exit": 0,
+      "sourceHashes": {
+        "lib/browser-profile-cdp-targets.mjs": "b882fe1be85894aef1a2ab171350c39eba9811cb98e88b8d20cd0636b81a9e0b",
+        "lib/browser-profile-runtime.mjs": "aebf8dfd0ef573c9bfb30bab0e1a2dd919ca1ae07d68a46a9867c3521f08c758",
+        "scripts/probe-browser-profile-resume.mjs": "50a6ad3aaf0ae09ab261147f4427a2046850591395eb72b2d337190e57d64216"
+      },
+      "browserVersion": "153.0.8010.12",
+      "uid": 1000,
+      "sandboxEnabled": true,
+      "privatePipe": true,
+      "checks": [
+        {
+          "name": "actual-completed-native-GET-order-selected-and-encrypted-schema2-capture",
+          "ok": true,
+          "tabCount": 3,
+          "selectedIndex": 0
+        },
+        {
+          "name": "zero-site-traffic-before-fresh-CAS-then-one-exact-reviewed-GET-and-imported-HTTPOnly-cookie-delivery",
+          "ok": true,
+          "review": "Synthetic constructor fixture proof, not real human approval or Companion role qualification"
+        },
+        {
+          "name": "actual-lazy-MCP-backend-selects-exact-restored-page-without-new-page-or-navigation",
+          "ok": true,
+          "tabCount": 3,
+          "selectedIndex": 0
+        },
+        {
+          "name": "actual-original-popup-POST-303-GET-response-finish-with-native-observers-and-exact-opener",
+          "ok": true,
+          "postCount": 1,
+          "observerCommands": [
+            {
+              "sequence": 10,
+              "timeMs": 3726.291673,
+              "sessionId": "88ED1365BF8565DBF20FDEF4C607CBEF",
+              "method": "Network.enable",
+              "phase": "sent"
+            },
+            {
+              "sequence": 11,
+              "timeMs": 3726.353223,
+              "sessionId": "88ED1365BF8565DBF20FDEF4C607CBEF",
+              "method": "Debugger.enable",
+              "phase": "sent"
+            },
+            {
+              "sequence": 12,
+              "timeMs": 3726.371944,
+              "sessionId": "88ED1365BF8565DBF20FDEF4C607CBEF",
+              "method": "Target.setAutoAttach",
+              "phase": "sent"
+            },
+            {
+              "sequence": 13,
+              "timeMs": 3726.38626,
+              "sessionId": "88ED1365BF8565DBF20FDEF4C607CBEF",
+              "method": "Runtime.runIfWaitingForDebugger",
+              "phase": "sent"
+            },
+            {
+              "sequence": 14,
+              "timeMs": 3730.473884,
+              "sessionId": "88ED1365BF8565DBF20FDEF4C607CBEF",
+              "method": "Target.setAutoAttach",
+              "phase": "answered"
+            },
+            {
+              "sequence": 22,
+              "timeMs": 3741.849207,
+              "sessionId": "88ED1365BF8565DBF20FDEF4C607CBEF",
+              "method": "Network.enable",
+              "phase": "answered"
+            },
+            {
+              "sequence": 23,
+              "timeMs": 3741.987141,
+              "sessionId": "88ED1365BF8565DBF20FDEF4C607CBEF",
+              "method": "Debugger.enable",
+              "phase": "answered"
+            },
+            {
+              "sequence": 24,
+              "timeMs": 3742.004801,
+              "sessionId": "88ED1365BF8565DBF20FDEF4C607CBEF",
+              "method": "Runtime.runIfWaitingForDebugger",
+              "phase": "answered"
+            }
+          ],
+          "events": [
+            {
+              "sequence": 15,
+              "timeMs": 3730.989714,
+              "sessionId": "88ED1365BF8565DBF20FDEF4C607CBEF",
+              "targetId": "13CDF526A725180E076AD62A71B2A942",
+              "method": "Network.requestWillBeSent",
+              "requestId": "610935F5E6D73F45759A480B936A5AEC",
+              "type": "Document",
+              "requestMethod": "POST",
+              "path": "/submitted",
+              "redirect": false
+            },
+            {
+              "sequence": 16,
+              "timeMs": 3736.512651,
+              "sessionId": "88ED1365BF8565DBF20FDEF4C607CBEF",
+              "targetId": "13CDF526A725180E076AD62A71B2A942",
+              "method": "Network.requestWillBeSentExtraInfo",
+              "requestId": "610935F5E6D73F45759A480B936A5AEC",
+              "redirect": false
+            },
+            {
+              "sequence": 17,
+              "timeMs": 3736.789741,
+              "sessionId": "88ED1365BF8565DBF20FDEF4C607CBEF",
+              "targetId": "13CDF526A725180E076AD62A71B2A942",
+              "method": "Network.responseReceivedExtraInfo",
+              "requestId": "610935F5E6D73F45759A480B936A5AEC",
+              "redirect": false
+            },
+            {
+              "sequence": 18,
+              "timeMs": 3737.107821,
+              "sessionId": "88ED1365BF8565DBF20FDEF4C607CBEF",
+              "targetId": "13CDF526A725180E076AD62A71B2A942",
+              "method": "Network.requestWillBeSent",
+              "requestId": "610935F5E6D73F45759A480B936A5AEC",
+              "type": "Document",
+              "requestMethod": "GET",
+              "path": "/normal-result",
+              "redirect": true
+            },
+            {
+              "sequence": 19,
+              "timeMs": 3738.821286,
+              "sessionId": "88ED1365BF8565DBF20FDEF4C607CBEF",
+              "targetId": "13CDF526A725180E076AD62A71B2A942",
+              "method": "Network.requestWillBeSentExtraInfo",
+              "requestId": "610935F5E6D73F45759A480B936A5AEC",
+              "redirect": false
+            },
+            {
+              "sequence": 20,
+              "timeMs": 3738.867827,
+              "sessionId": "88ED1365BF8565DBF20FDEF4C607CBEF",
+              "targetId": "13CDF526A725180E076AD62A71B2A942",
+              "method": "Network.responseReceivedExtraInfo",
+              "requestId": "610935F5E6D73F45759A480B936A5AEC",
+              "redirect": false
+            },
+            {
+              "sequence": 21,
+              "timeMs": 3739.612551,
+              "sessionId": "88ED1365BF8565DBF20FDEF4C607CBEF",
+              "targetId": "13CDF526A725180E076AD62A71B2A942",
+              "method": "Network.responseReceived",
+              "requestId": "610935F5E6D73F45759A480B936A5AEC",
+              "type": "Document",
+              "status": 200,
+              "redirect": false
+            },
+            {
+              "sequence": 26,
+              "timeMs": 3745.287375,
+              "sessionId": "88ED1365BF8565DBF20FDEF4C607CBEF",
+              "targetId": "13CDF526A725180E076AD62A71B2A942",
+              "method": "Network.dataReceived",
+              "requestId": "610935F5E6D73F45759A480B936A5AEC",
+              "redirect": false
+            },
+            {
+              "sequence": 27,
+              "timeMs": 3745.582497,
+              "sessionId": "88ED1365BF8565DBF20FDEF4C607CBEF",
+              "targetId": "13CDF526A725180E076AD62A71B2A942",
+              "method": "Network.loadingFinished",
+              "requestId": "610935F5E6D73F45759A480B936A5AEC",
+              "redirect": false
+            }
+          ]
+        },
+        {
+          "name": "actual-popup-POST-303-GET-refuses-before-admission-and-retains-both-original-pages",
+          "ok": true
+        },
+        {
+          "name": "closed-popup-history-remains-qualified-for-encrypted-data-only-checkpoint-and-positive-native-exit",
+          "ok": true
+        }
+      ],
+      "cleanup": {
+        "runtimes": [
+          {
+            "disconnected": true,
+            "ownedProcessGone": true,
+            "error": null
+          },
+          {
+            "disconnected": true,
+            "ownedProcessGone": true,
+            "error": null
+          },
+          {
+            "disconnected": true,
+            "ownedProcessGone": true,
+            "error": null
+          }
+        ],
+        "serverClosed": true
+      },
+      "containerAbsent": true,
+      "forcedStop": false
+    },
+    {
+      "rawReceipt": ".tmp/fresh-plugin-proof/popup-final-df03e437.json",
+      "rawSha256": "67ba1ac1400b4f4780d3d5cf8890fcc89c4aac8c2fe03c3667597f97dba14fa5",
+      "exit": 0,
+      "sourceHashes": {
+        "lib/browser-profile-cdp-targets.mjs": "b882fe1be85894aef1a2ab171350c39eba9811cb98e88b8d20cd0636b81a9e0b",
+        "lib/browser-profile-runtime.mjs": "aebf8dfd0ef573c9bfb30bab0e1a2dd919ca1ae07d68a46a9867c3521f08c758",
+        "scripts/probe-browser-profile-resume.mjs": "50a6ad3aaf0ae09ab261147f4427a2046850591395eb72b2d337190e57d64216"
+      },
+      "browserVersion": "153.0.8010.12",
+      "uid": 1000,
+      "sandboxEnabled": true,
+      "privatePipe": true,
+      "checks": [
+        {
+          "name": "actual-completed-native-GET-order-selected-and-encrypted-schema2-capture",
+          "ok": true,
+          "tabCount": 3,
+          "selectedIndex": 0
+        },
+        {
+          "name": "zero-site-traffic-before-fresh-CAS-then-one-exact-reviewed-GET-and-imported-HTTPOnly-cookie-delivery",
+          "ok": true,
+          "review": "Synthetic constructor fixture proof, not real human approval or Companion role qualification"
+        },
+        {
+          "name": "actual-lazy-MCP-backend-selects-exact-restored-page-without-new-page-or-navigation",
+          "ok": true,
+          "tabCount": 3,
+          "selectedIndex": 0
+        },
+        {
+          "name": "actual-original-popup-POST-303-GET-response-finish-with-native-observers-and-exact-opener",
+          "ok": true,
+          "postCount": 1,
+          "observerCommands": [
+            {
+              "sequence": 10,
+              "timeMs": 3877.139567,
+              "sessionId": "0AE3D31FBFEC30E2B46F720D270B80C5",
+              "method": "Network.enable",
+              "phase": "sent"
+            },
+            {
+              "sequence": 11,
+              "timeMs": 3877.26256,
+              "sessionId": "0AE3D31FBFEC30E2B46F720D270B80C5",
+              "method": "Debugger.enable",
+              "phase": "sent"
+            },
+            {
+              "sequence": 12,
+              "timeMs": 3877.308755,
+              "sessionId": "0AE3D31FBFEC30E2B46F720D270B80C5",
+              "method": "Target.setAutoAttach",
+              "phase": "sent"
+            },
+            {
+              "sequence": 13,
+              "timeMs": 3877.344411,
+              "sessionId": "0AE3D31FBFEC30E2B46F720D270B80C5",
+              "method": "Runtime.runIfWaitingForDebugger",
+              "phase": "sent"
+            },
+            {
+              "sequence": 14,
+              "timeMs": 3881.612714,
+              "sessionId": "0AE3D31FBFEC30E2B46F720D270B80C5",
+              "method": "Target.setAutoAttach",
+              "phase": "answered"
+            },
+            {
+              "sequence": 22,
+              "timeMs": 3895.546101,
+              "sessionId": "0AE3D31FBFEC30E2B46F720D270B80C5",
+              "method": "Network.enable",
+              "phase": "answered"
+            },
+            {
+              "sequence": 23,
+              "timeMs": 3896.028036,
+              "sessionId": "0AE3D31FBFEC30E2B46F720D270B80C5",
+              "method": "Debugger.enable",
+              "phase": "answered"
+            },
+            {
+              "sequence": 24,
+              "timeMs": 3896.043803,
+              "sessionId": "0AE3D31FBFEC30E2B46F720D270B80C5",
+              "method": "Runtime.runIfWaitingForDebugger",
+              "phase": "answered"
+            }
+          ],
+          "events": [
+            {
+              "sequence": 15,
+              "timeMs": 3881.872662,
+              "sessionId": "0AE3D31FBFEC30E2B46F720D270B80C5",
+              "targetId": "9D989237514B7525A26CF63EFE4305DB",
+              "method": "Network.requestWillBeSent",
+              "requestId": "6F31DEF0EE635F6C8878D90612042683",
+              "type": "Document",
+              "requestMethod": "POST",
+              "path": "/submitted",
+              "redirect": false
+            },
+            {
+              "sequence": 16,
+              "timeMs": 3887.810311,
+              "sessionId": "0AE3D31FBFEC30E2B46F720D270B80C5",
+              "targetId": "9D989237514B7525A26CF63EFE4305DB",
+              "method": "Network.requestWillBeSentExtraInfo",
+              "requestId": "6F31DEF0EE635F6C8878D90612042683",
+              "redirect": false
+            },
+            {
+              "sequence": 17,
+              "timeMs": 3888.361373,
+              "sessionId": "0AE3D31FBFEC30E2B46F720D270B80C5",
+              "targetId": "9D989237514B7525A26CF63EFE4305DB",
+              "method": "Network.responseReceivedExtraInfo",
+              "requestId": "6F31DEF0EE635F6C8878D90612042683",
+              "redirect": false
+            },
+            {
+              "sequence": 18,
+              "timeMs": 3889.050926,
+              "sessionId": "0AE3D31FBFEC30E2B46F720D270B80C5",
+              "targetId": "9D989237514B7525A26CF63EFE4305DB",
+              "method": "Network.requestWillBeSent",
+              "requestId": "6F31DEF0EE635F6C8878D90612042683",
+              "type": "Document",
+              "requestMethod": "GET",
+              "path": "/normal-result",
+              "redirect": true
+            },
+            {
+              "sequence": 19,
+              "timeMs": 3890.746915,
+              "sessionId": "0AE3D31FBFEC30E2B46F720D270B80C5",
+              "targetId": "9D989237514B7525A26CF63EFE4305DB",
+              "method": "Network.requestWillBeSentExtraInfo",
+              "requestId": "6F31DEF0EE635F6C8878D90612042683",
+              "redirect": false
+            },
+            {
+              "sequence": 20,
+              "timeMs": 3890.817735,
+              "sessionId": "0AE3D31FBFEC30E2B46F720D270B80C5",
+              "targetId": "9D989237514B7525A26CF63EFE4305DB",
+              "method": "Network.responseReceivedExtraInfo",
+              "requestId": "6F31DEF0EE635F6C8878D90612042683",
+              "redirect": false
+            },
+            {
+              "sequence": 21,
+              "timeMs": 3891.839231,
+              "sessionId": "0AE3D31FBFEC30E2B46F720D270B80C5",
+              "targetId": "9D989237514B7525A26CF63EFE4305DB",
+              "method": "Network.responseReceived",
+              "requestId": "6F31DEF0EE635F6C8878D90612042683",
+              "type": "Document",
+              "status": 200,
+              "redirect": false
+            },
+            {
+              "sequence": 26,
+              "timeMs": 3900.11893,
+              "sessionId": "0AE3D31FBFEC30E2B46F720D270B80C5",
+              "targetId": "9D989237514B7525A26CF63EFE4305DB",
+              "method": "Network.dataReceived",
+              "requestId": "6F31DEF0EE635F6C8878D90612042683",
+              "redirect": false
+            },
+            {
+              "sequence": 27,
+              "timeMs": 3903.817625,
+              "sessionId": "0AE3D31FBFEC30E2B46F720D270B80C5",
+              "targetId": "9D989237514B7525A26CF63EFE4305DB",
+              "method": "Network.loadingFinished",
+              "requestId": "6F31DEF0EE635F6C8878D90612042683",
+              "redirect": false
+            }
+          ]
+        },
+        {
+          "name": "actual-popup-POST-303-GET-refuses-before-admission-and-retains-both-original-pages",
+          "ok": true
+        },
+        {
+          "name": "closed-popup-history-remains-qualified-for-encrypted-data-only-checkpoint-and-positive-native-exit",
+          "ok": true
+        }
+      ],
+      "cleanup": {
+        "runtimes": [
+          {
+            "disconnected": true,
+            "ownedProcessGone": true,
+            "error": null
+          },
+          {
+            "disconnected": true,
+            "ownedProcessGone": true,
+            "error": null
+          },
+          {
+            "disconnected": true,
+            "ownedProcessGone": true,
+            "error": null
+          }
+        ],
+        "serverClosed": true
+      },
+      "containerAbsent": true,
+      "forcedStop": false
+    }
+  ],
+  "copiedExecutableMutations": [
+    {
+      "name": "canonical-instance",
+      "path": "lib/browser-profile-cdp-targets.mjs",
+      "line": 14,
+      "changedLine": "  if(!client||browser._connection!==client||typeof toImpl!=='function'||!(client._objects instanceof Map))throw fail('profile_target_native_binding_invalid')",
+      "beforeSha256": "b882fe1be85894aef1a2ab171350c39eba9811cb98e88b8d20cd0636b81a9e0b",
+      "mutantSha256": "c4330f5a35656b4e46b365da8345e9915c09dbc5e4bb4620c2c72df5786a67f5",
+      "restoredSha256": "b882fe1be85894aef1a2ab171350c39eba9811cb98e88b8d20cd0636b81a9e0b",
+      "redExit": 1,
+      "greenExit": 0,
+      "assertionFailure": true,
+      "testFailure": true,
+      "selectedPattern": "foreign package connection"
+    },
+    {
+      "name": "original-receipt",
+      "path": "lib/browser-profile-cdp-targets.mjs",
+      "line": 56,
+      "changedLine": "    if(owned.size>=MAX_SESSIONS||wire._sessions.has(receipt.sessionId)){poison();throw fail('profile_target_native_attachment_invalid')}",
+      "beforeSha256": "b882fe1be85894aef1a2ab171350c39eba9811cb98e88b8d20cd0636b81a9e0b",
+      "mutantSha256": "c29051fc8fe7095e64dacab54bef7933a9ad8baee25f5aa2f76ac0985b695f7d",
+      "restoredSha256": "b882fe1be85894aef1a2ab171350c39eba9811cb98e88b8d20cd0636b81a9e0b",
+      "redExit": 1,
+      "greenExit": 0,
+      "assertionFailure": true,
+      "testFailure": true,
+      "selectedPattern": "serialized copy"
+    },
+    {
+      "name": "foreign-session-collision",
+      "path": "lib/browser-profile-cdp-targets.mjs",
+      "line": 56,
+      "changedLine": "    if(pending.get(receipt?.sessionId)!==receipt||owned.size>=MAX_SESSIONS){poison();throw fail('profile_target_native_attachment_invalid')}",
+      "beforeSha256": "b882fe1be85894aef1a2ab171350c39eba9811cb98e88b8d20cd0636b81a9e0b",
+      "mutantSha256": "493182726f0166f0e28751a7a55eecebae5664664b3fb013ec1274ecf7d81f22",
+      "restoredSha256": "b882fe1be85894aef1a2ab171350c39eba9811cb98e88b8d20cd0636b81a9e0b",
+      "redExit": 1,
+      "greenExit": 0,
+      "assertionFailure": true,
+      "testFailure": true,
+      "selectedPattern": "serialized copy"
+    },
+    {
+      "name": "nested-parent-registration",
+      "path": "lib/browser-profile-cdp-targets.mjs",
+      "line": 58,
+      "changedLine": "    if(false)recordCurrent(parentRecord)",
+      "beforeSha256": "b882fe1be85894aef1a2ab171350c39eba9811cb98e88b8d20cd0636b81a9e0b",
+      "mutantSha256": "0601e03c644afe39b3673e8276ca8ea1daaef84ee9752ded80b4abbe5e1d215c",
+      "restoredSha256": "b882fe1be85894aef1a2ab171350c39eba9811cb98e88b8d20cd0636b81a9e0b",
+      "redExit": 1,
+      "greenExit": 0,
+      "assertionFailure": true,
+      "testFailure": true,
+      "selectedPattern": "nested registration refuses"
+    },
+    {
+      "name": "original-native-event-callback",
+      "path": "lib/browser-profile-cdp-targets.mjs",
+      "line": 29,
+      "changedLine": "    if(record.detached||owned.get(record.sessionId)!==record||wire._sessions.get(record.sessionId)!==record.native||record.native._connection!==wire||record.native._parentSession!==record.parent||record.native._sessionId!==record.sessionId||record.native._closed!==false||record.native.send!==rootSend||record.native.createChildSession!==childFactory||record.native.dispose!==sessionDispose||record.native._rejectPendingCallbacks!==rejectCallbacks||record.native._callbacks!==record.callbacks) {poison();throw fail('profile_target_native_unproved')}",
+      "beforeSha256": "b882fe1be85894aef1a2ab171350c39eba9811cb98e88b8d20cd0636b81a9e0b",
+      "mutantSha256": "f061569181315fb763e30e9b4aa6e136d6f91873c0142f96b3ba06cda044a691",
+      "restoredSha256": "b882fe1be85894aef1a2ab171350c39eba9811cb98e88b8d20cd0636b81a9e0b",
+      "redExit": 1,
+      "greenExit": 0,
+      "assertionFailure": true,
+      "testFailure": true,
+      "selectedPattern": "child parent connection"
+    },
+    {
+      "name": "original-native-callback-map",
+      "path": "lib/browser-profile-cdp-targets.mjs",
+      "line": 29,
+      "changedLine": "    if(record.detached||owned.get(record.sessionId)!==record||wire._sessions.get(record.sessionId)!==record.native||record.native._connection!==wire||record.native._parentSession!==record.parent||record.native._sessionId!==record.sessionId||record.native._closed!==false||record.native.send!==rootSend||record.native.createChildSession!==childFactory||record.native._eventListener!==record.event||record.native.dispose!==sessionDispose||record.native._rejectPendingCallbacks!==rejectCallbacks ) {poison();throw fail('profile_target_native_unproved')}",
+      "beforeSha256": "b882fe1be85894aef1a2ab171350c39eba9811cb98e88b8d20cd0636b81a9e0b",
+      "mutantSha256": "14119c78aefcde7bad490774485bcaea90e4e6278ab1ffac4b8958303713a519",
+      "restoredSha256": "b882fe1be85894aef1a2ab171350c39eba9811cb98e88b8d20cd0636b81a9e0b",
+      "redExit": 1,
+      "greenExit": 0,
+      "assertionFailure": true,
+      "testFailure": true,
+      "selectedPattern": "child parent connection"
+    },
+    {
+      "name": "owned-cleanup-function",
+      "path": "lib/browser-profile-cdp-targets.mjs",
+      "line": 31,
+      "changedLine": "  const safeDispose=record=>{if(wire._sessions.get(record.sessionId)!==record.native||record.native._connection!==wire||record.native._sessionId!==record.sessionId||record.native._rejectPendingCallbacks!==rejectCallbacks||record.native._callbacks!==record.callbacks){poison();return false}try{sessionDispose.call(record.native);return true}catch{poison();return false}}",
+      "beforeSha256": "b882fe1be85894aef1a2ab171350c39eba9811cb98e88b8d20cd0636b81a9e0b",
+      "mutantSha256": "8fcd352d6ea0463b595638dc6864f87ef2157f9d5e07f8aed3a2fb501b6358f3",
+      "restoredSha256": "b882fe1be85894aef1a2ab171350c39eba9811cb98e88b8d20cd0636b81a9e0b",
+      "redExit": 1,
+      "greenExit": 0,
+      "assertionFailure": true,
+      "testFailure": true,
+      "selectedPattern": "failed owned-session cleanup"
+    },
+    {
+      "name": "logical-timeout-physical-retention",
+      "path": "lib/browser-profile-cdp-targets.mjs",
+      "line": 83,
+      "changedLine": "    const deadline=new Promise((_resolve,reject)=>{timer=setTimeout(()=>{physical.delete(token);poison();reject(fail('profile_target_native_command_timeout'))},timeoutMs)})",
+      "beforeSha256": "b882fe1be85894aef1a2ab171350c39eba9811cb98e88b8d20cd0636b81a9e0b",
+      "mutantSha256": "5dff67e19dbf80aa150f5eca363d0b76c79d70d02d21d6a377c8386901528728",
+      "restoredSha256": "b882fe1be85894aef1a2ab171350c39eba9811cb98e88b8d20cd0636b81a9e0b",
+      "redExit": 1,
+      "greenExit": 0,
+      "assertionFailure": true,
+      "testFailure": true,
+      "selectedPattern": "timed-out native command"
+    },
+    {
+      "name": "actual-settlement-release",
+      "path": "lib/browser-profile-cdp-targets.mjs",
+      "line": 81,
+      "changedLine": "    void actual.finally(()=>{record.commands.delete(token)}).catch(()=>{})",
+      "beforeSha256": "b882fe1be85894aef1a2ab171350c39eba9811cb98e88b8d20cd0636b81a9e0b",
+      "mutantSha256": "70cffe2b6991d1ace7897f3c47d9c910ef3a739ad08991bff03cb2db09afd143",
+      "restoredSha256": "b882fe1be85894aef1a2ab171350c39eba9811cb98e88b8d20cd0636b81a9e0b",
+      "redExit": 1,
+      "greenExit": 0,
+      "assertionFailure": true,
+      "testFailure": true,
+      "selectedPattern": "native command capacity"
+    },
+    {
+      "name": "disconnect-callback-settlement",
+      "path": "lib/browser-profile-cdp-targets.mjs",
+      "line": 51,
+      "changedLine": "  const disconnected=()=>{closed=true;physical.clear();for(const token of physical)token.terminal=true;for(const record of [...owned.values()])terminal(record,false);browser.removeListener('disconnected',disconnected)}",
+      "beforeSha256": "b882fe1be85894aef1a2ab171350c39eba9811cb98e88b8d20cd0636b81a9e0b",
+      "mutantSha256": "7b6f40d5179196fd7794179f1d41066ac5dd0c78821c4043794f3fbe107bde6b",
+      "restoredSha256": "b882fe1be85894aef1a2ab171350c39eba9811cb98e88b8d20cd0636b81a9e0b",
+      "redExit": 1,
+      "greenExit": 0,
+      "assertionFailure": true,
+      "testFailure": true,
+      "selectedPattern": "disconnect retains reservations"
+    },
+    {
+      "name": "per-session-command-bound",
+      "path": "lib/browser-profile-cdp-targets.mjs",
+      "line": 74,
+      "changedLine": "    try{record=capabilities.get(capability);if(!record)throw fail('profile_target_native_attachment_invalid');recordCurrent(record);if(physical.size>=MAX_COMMANDS)throw fail('profile_inventory_limit');if(typeof method!=='string'||!/^[A-Za-z][A-Za-z0-9]*\\.[A-Za-z][A-Za-z0-9]*$/.test(method)||JSON.stringify(params).length>1024*1024)throw fail('profile_target_native_command_invalid')}catch(error){return Promise.reject(error)}",
+      "beforeSha256": "b882fe1be85894aef1a2ab171350c39eba9811cb98e88b8d20cd0636b81a9e0b",
+      "mutantSha256": "79354f5be672bbc888f5792b5604d5f2eb224815a237874edc70f7978cc5c111",
+      "restoredSha256": "b882fe1be85894aef1a2ab171350c39eba9811cb98e88b8d20cd0636b81a9e0b",
+      "redExit": 1,
+      "greenExit": 0,
+      "assertionFailure": false,
+      "testFailure": true,
+      "selectedPattern": "native command capacity"
+    },
+    {
+      "name": "global-command-bound",
+      "path": "lib/browser-profile-cdp-targets.mjs",
+      "line": 74,
+      "changedLine": "    try{record=capabilities.get(capability);if(!record)throw fail('profile_target_native_attachment_invalid');recordCurrent(record);if(record.commands.size>=MAX_PER_SESSION)throw fail('profile_inventory_limit');if(typeof method!=='string'||!/^[A-Za-z][A-Za-z0-9]*\\.[A-Za-z][A-Za-z0-9]*$/.test(method)||JSON.stringify(params).length>1024*1024)throw fail('profile_target_native_command_invalid')}catch(error){return Promise.reject(error)}",
+      "beforeSha256": "b882fe1be85894aef1a2ab171350c39eba9811cb98e88b8d20cd0636b81a9e0b",
+      "mutantSha256": "3a41998894a9c90e8f56a749eb7e855a880a57620089f63d2e16ed4cd4b12d3e",
+      "restoredSha256": "b882fe1be85894aef1a2ab171350c39eba9811cb98e88b8d20cd0636b81a9e0b",
+      "redExit": 1,
+      "greenExit": 0,
+      "assertionFailure": false,
+      "testFailure": true,
+      "selectedPattern": "native global command capacity"
+    },
+    {
+      "name": "pending-registration-bound",
+      "path": "lib/browser-profile-cdp-targets.mjs",
+      "line": 6,
+      "changedLine": "const MAX_SESSIONS=4096,MAX_HISTORY=8192,MAX_COMMANDS=4096,MAX_PER_SESSION=128",
+      "beforeSha256": "b882fe1be85894aef1a2ab171350c39eba9811cb98e88b8d20cd0636b81a9e0b",
+      "mutantSha256": "48d188ad3d22eca40f4a35e7fcd2d0873ef9b91bf53030db426f9a7868bc0659",
+      "restoredSha256": "b882fe1be85894aef1a2ab171350c39eba9811cb98e88b8d20cd0636b81a9e0b",
+      "redExit": 1,
+      "greenExit": 0,
+      "assertionFailure": true,
+      "testFailure": true,
+      "selectedPattern": "pending attachment"
+    },
+    {
+      "name": "registration-history-bound",
+      "path": "lib/browser-profile-cdp-targets.mjs",
+      "line": 6,
+      "changedLine": "const MAX_SESSIONS=2048,MAX_HISTORY=16384,MAX_COMMANDS=4096,MAX_PER_SESSION=128",
+      "beforeSha256": "b882fe1be85894aef1a2ab171350c39eba9811cb98e88b8d20cd0636b81a9e0b",
+      "mutantSha256": "170d497286ab37c426c4f0799c33a558e66a0f081232d8aeee553c9c97c97008",
+      "restoredSha256": "b882fe1be85894aef1a2ab171350c39eba9811cb98e88b8d20cd0636b81a9e0b",
+      "redExit": 1,
+      "greenExit": 0,
+      "assertionFailure": true,
+      "testFailure": true,
+      "selectedPattern": "pending attachment"
+    },
+    {
+      "name": "private-wire-raw-send-identity",
+      "path": "lib/browser-profile-cdp-targets.mjs",
+      "line": 22,
+      "changedLine": "    if(root._connection!==client||browser._connection!==client||client.toImpl!==toImpl||client._objects.get(root._guid)!==root||client._objects.get(browser._guid)!==browser||toImpl.call(client,root)!==serverRoot||toImpl.call(client,browser)!==serverBrowser||toImpl.call(client,client)!==dispatcher||dispatcher?._dispatcherByGuid?.get(root._guid)?._object!==serverRoot||dispatcher?._dispatcherByGuid?.get(browser._guid)?._object!==serverBrowser||serverRoot?._session!==nativeRoot||serverBrowser?._connection!==wire||!(wire?._sessions instanceof Map)||wire._transport!==transport||typeof rawSend!=='function'||typeof transportSend!=='function'||transport.send!==transportSend||nativeRoot?._connection!==wire||!id(rootId)||nativeRoot._sessionId!==rootId||nativeRoot._parentSession!==wire.rootSession||wire.rootSession?._sessionId!==''||wire.rootSession?._parentSession!==null||wire.rootSession?._connection!==wire||wire._sessions.get('')!==wire.rootSession||wire._sessions.get(rootId)!==nativeRoot||nativeRoot.createChildSession!==childFactory||typeof childFactory!=='function'||nativeRoot.send!==rootSend||typeof rootSend!=='function'||nativeRoot._callbacks!==rootCallbacks||!(rootCallbacks instanceof Map)||nativeRoot.dispose!==sessionDispose||typeof sessionDispose!=='function'||nativeRoot._rejectPendingCallbacks!==rejectCallbacks||typeof rejectCallbacks!=='function'||nativeRoot._closed!==false||wire._closed!==false||!browser.isConnected())throw fail('profile_target_native_binding_invalid')",
+      "beforeSha256": "b882fe1be85894aef1a2ab171350c39eba9811cb98e88b8d20cd0636b81a9e0b",
+      "mutantSha256": "2ac5c11e2e7ab67dbe3f311f30e9294c51cfd8376f3e38926621576e1a3374ac",
+      "restoredSha256": "b882fe1be85894aef1a2ab171350c39eba9811cb98e88b8d20cd0636b81a9e0b",
+      "redExit": 1,
+      "greenExit": 0,
+      "assertionFailure": true,
+      "testFailure": true,
+      "selectedPattern": "root browser dispatcher"
+    },
+    {
+      "name": "owned-listener-removal",
+      "path": "lib/browser-profile-cdp-targets.mjs",
+      "line": 92,
+      "changedLine": "    disposed=true;root.removeListener('Target.detachedFromTarget',rootDetached);root.removeListener('close',rootClosed);pending.clear();subscriber=null",
+      "beforeSha256": "b882fe1be85894aef1a2ab171350c39eba9811cb98e88b8d20cd0636b81a9e0b",
+      "mutantSha256": "9cefd63a936a96a0a20d136a9ace233466052563439b50670574d725c031ffd9",
+      "restoredSha256": "b882fe1be85894aef1a2ab171350c39eba9811cb98e88b8d20cd0636b81a9e0b",
+      "redExit": 1,
+      "greenExit": 0,
+      "assertionFailure": false,
+      "testFailure": true,
+      "selectedPattern": "disposal removes only"
+    },
+    {
+      "name": "positive-observer-answers",
+      "path": "lib/browser-profile-runtime.mjs",
+      "line": 105,
+      "changedLine": "        void Promise.all(observers).catch(()=>{})",
+      "beforeSha256": "aebf8dfd0ef573c9bfb30bab0e1a2dd919ca1ae07d68a46a9867c3521f08c758",
+      "mutantSha256": "0e896436b75a8d8963fa91dd6231f9954f9ae6aa8623085f07d9e5e9afa7e7d2",
+      "restoredSha256": "aebf8dfd0ef573c9bfb30bab0e1a2dd919ca1ae07d68a46a9867c3521f08c758",
+      "redExit": 1,
+      "greenExit": 0,
+      "assertionFailure": true,
+      "testFailure": true,
+      "selectedPattern": "flat target initialization"
+    },
+    {
+      "name": "frozen-birth-pause",
+      "path": "lib/browser-profile-runtime.mjs",
+      "line": 104,
+      "changedLine": "        observers.push(this.send(sessionId,'Runtime.runIfWaitingForDebugger'))",
+      "beforeSha256": "aebf8dfd0ef573c9bfb30bab0e1a2dd919ca1ae07d68a46a9867c3521f08c758",
+      "mutantSha256": "606f3d8f5f1549f1cfc154cee690057a66445fe08328088a56258d0cbdef7942",
+      "restoredSha256": "aebf8dfd0ef573c9bfb30bab0e1a2dd919ca1ae07d68a46a9867c3521f08c758",
+      "redExit": 1,
+      "greenExit": 0,
+      "assertionFailure": true,
+      "testFailure": true,
+      "selectedPattern": "frozen births"
+    },
+    {
+      "name": "factory-no-legacy-fallback",
+      "path": "lib/browser-profile-runtime.mjs",
+      "line": 325,
+      "changedLine": "      const root = await browser.newBrowserCDPSession(); ledger = new ProfileTargetLedger(root, { timeoutMs, targetSessions:null }); await ledger.start()",
+      "beforeSha256": "aebf8dfd0ef573c9bfb30bab0e1a2dd919ca1ae07d68a46a9867c3521f08c758",
+      "mutantSha256": "9bceb973d21801d1d4a4fd69f793847df161001ced8770affe65a756742eff3e",
+      "restoredSha256": "aebf8dfd0ef573c9bfb30bab0e1a2dd919ca1ae07d68a46a9867c3521f08c758",
+      "redExit": 1,
+      "greenExit": 0,
+      "assertionFailure": true,
+      "testFailure": true,
+      "selectedPattern": "noncanonical native package binding"
+    },
+    {
+      "name": "observer-failure-no-legacy-fallback",
+      "path": "lib/browser-profile-runtime.mjs",
+      "line": 124,
+      "changedLine": "      if (!this.frozen && !this.disposed) {",
+      "beforeSha256": "aebf8dfd0ef573c9bfb30bab0e1a2dd919ca1ae07d68a46a9867c3521f08c758",
+      "mutantSha256": "5966b1fbe6e2d3c6a0994e7307c6a8927b00e3d4e211ae85cdf4bf66ffe8f233",
+      "restoredSha256": "aebf8dfd0ef573c9bfb30bab0e1a2dd919ca1ae07d68a46a9867c3521f08c758",
+      "redExit": 1,
+      "greenExit": 0,
+      "assertionFailure": true,
+      "testFailure": true,
+      "selectedPattern": "frozen births"
+    }
+  ],
+  "nativeExecutableMutation": {
+    "path": "lib/browser-profile-runtime.mjs",
+    "changedLine": "if (!this.frozen && !targetInfo.openerId) observers.push(this.send(sessionId,'Runtime.runIfWaitingForDebugger'))",
+    "originalSha256": "aebf8dfd0ef573c9bfb30bab0e1a2dd919ca1ae07d68a46a9867c3521f08c758",
+    "mutantSha256": "cc5298f06a796178b930b95fa29b88bcbfaaaa7d941b330357d5fe5bbb233e73",
+    "rawReceipt": ".tmp/fresh-plugin-proof/popup-final-66367162.json",
+    "rawSha256": "f5ee079fe269f89abae635542eee96644483beb5ecdc7afe51776e9277d8e712",
+    "redExit": 1,
+    "observedFailure": "popup page event deadline exceeded after the three ordinary-tab checks passed",
+    "cleanup": {
+      "runtimes": [
+        {
+          "disconnected": true,
+          "ownedProcessGone": true,
+          "error": null
+        },
+        {
+          "disconnected": true,
+          "ownedProcessGone": true,
+          "error": null
+        },
+        {
+          "disconnected": true,
+          "ownedProcessGone": true,
+          "error": null
+        }
+      ],
+      "serverClosed": true
+    },
+    "containerAbsent": true,
+    "forcedStop": false,
+    "restoredReceipt": ".tmp/fresh-plugin-proof/popup-final-df03e437.json",
+    "restoredExit": 0
+  },
+  "excludedHistory": {
+    "legacyControllerDraft": "Superseded, never committed. Some trials completed the page but missed the main loadingFinished event; requests_in_flight remained refused. No DOM-loaded or close-based idle override was shipped.",
+    "privateFlatPrototype": {
+      "overlaySha256": "7976e58cea066958e9e474b7f49f9468b6599d21e69e63128774dc7b6bf9630d",
+      "consecutivePositiveRuns": 8,
+      "boundary": "Private prototype on ec984 image, not final product qualification. Earlier raw wrapper labels productQualification:true and baseCommit:3d660 are incorrect metadata; preserved raw receipts were not rewritten."
+    },
+    "preLfAndCallbackCleanupTrials": "Earlier native receipts remain diagnostics. Final qualification claims only the three exact LF source receipts above."
+  },
+  "notProven": [
+    "Real Google or other user login flow",
+    "Physical human approval",
+    "HOAI relay or two-machine role qualification in this single-machine probe",
+    "Live popup opener relationship transfer",
+    "Automatic backup or file transfer by this probe"
+  ]
+}

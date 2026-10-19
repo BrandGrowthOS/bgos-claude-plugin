@@ -421,7 +421,7 @@ cmd_install() {
     # The supervisor runs hoai (bin/hoai-core.mjs), which is Node.js. Checked
     # here, before anything is written, so a refused install leaves nothing.
     command -v node >/dev/null 2>&1 \
-      || die "supervisor:node-not-found the always-on supervisor runs hoai on Node.js and no node is on PATH. Install Node.js 18 or newer, then run this again."
+      || die "supervisor:node-not-found the always-on supervisor runs hoai on Node.js and no node is on PATH. Install a current patched Node.js 22 or 24 LTS release (minimum 22.12.0), then run this again."
     # WHICH claude gets baked. `command -v claude` under the watcher's service PATH
     # returned a stale /usr/local/bin/claude 2.1.22 that does not know the launch flag
     # and exited rc=1 on every launch (board row 84296679, kc-server, 2026-10-12: five
@@ -482,7 +482,7 @@ cmd_install() {
     # channel never does: deaf again. So node is resolved NOW, before anything is
     # written, and its directory goes on the service PATH.
     paired_node_bin="$(command -v node || true)"
-    [ -n "$paired_node_bin" ] || die "paired-topology:node-not-found the HOAI marketplace plugin runs on Node.js and no node is on PATH, so the background agent would start and never hear anything. Install Node.js 18 or newer, then run this again."
+    [ -n "$paired_node_bin" ] || die "paired-topology:node-not-found the HOAI marketplace plugin runs on Node.js and no node is on PATH, so the background agent would start and never hear anything. Install a current patched Node.js 22 or 24 LTS release (minimum 22.12.0), then run this again."
     ok "paired folder proven for agent $ASSISTANT_ID (folder pin, agent credentials, plugin install record): channel $channel"
   else
     info "using existing $mcp (pass --key/--user to regenerate)"
@@ -1002,7 +1002,7 @@ if [ "$node_missing" = 1 ]; then
   rc=2
   how="node missing"
   note_status "outcome=node-missing baked=\"$node_bin\""
-  echo "[$(ts)] cannot launch agent $id: no node at $node_bin (baked at install) and none on the service PATH. Install Node.js 18 or newer, then: hoai-agent install --assistant $id --always-on"
+  echo "[$(ts)] cannot launch agent $id: no node at $node_bin (baked at install) and none on the service PATH. Install a current patched Node.js 22 or 24 LTS release (minimum 22.12.0), then: hoai-agent install --assistant $id --always-on"
 elif [ -z "$root" ] || [ ! -f "$root/bin/hoai-core.mjs" ]; then
   rc=2
   how="plugin root missing"

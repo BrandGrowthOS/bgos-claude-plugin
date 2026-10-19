@@ -52,6 +52,8 @@ function setup() {
     readGate: async () => ({ state: 'answered', choice: 'allow_once' }),
     randomBytes: (k: number) => Buffer.from(`${cards.length + 1}`.padStart(k, 'w')),
     sleep: (ms: number) => new Promise((r) => setTimeout(r, ms)),
+    // This in-process backend has no socket to keep its pending poll alive.
+    backgroundSleep: (ms: number) => new Promise((r) => setTimeout(r, ms)),
     pollMs: 5,
   })
   const pool = new BrowserPool({

@@ -361,9 +361,15 @@ invalid value is ignored, with a warning.
 
 ### Agent browser and saved logins (0.60.5)
 
-The paired daemon starts its browser host automatically. On the first browser task, HOAI uses an installed Chrome or Chromium when available. Otherwise it downloads the Chromium revision pinned by the plugin's Playwright dependency into the machine user's browser cache. The initial download needs network access and a writable cache. Later starts reuse that revision. No separate browser-host command or executable wrapper is needed.
+Use a current patched Node.js 22 or 24 LTS release. The package minimum is 22.12.0; the browser refuses an older runtime before loading Playwright, including imported managed-host paths. The minimum is a compatibility floor, not a recommendation to install an old Node patch.
+
+The paired daemon starts its browser host automatically. Managed agent-machine profiles use the exact sandboxed Chromium revision pinned by the plugin's Playwright dependency. Legacy sessions prefer an installed Chrome or Chromium. When the required bundled browser is absent, the plugin downloads it into the machine user's browser cache. The initial download needs network access and a writable cache. Later starts reuse that revision. No separate browser-host command or executable wrapper is needed.
 
 Chromium keeps its normal sandbox. Linux still needs the browser's operating-system libraries and sandbox support. A missing prerequisite or failed download returns an installation error; HOAI does not install system packages or disable the sandbox. An explicitly configured `HOAI_BROWSER_EXECUTABLE` must name a working installed browser. Unset an invalid override to use automatic provisioning.
+
+First-use installation retains its pending work and private cache marker until physical completion is proved. A logical timeout or stop request does not permit another installer to start. `--check` is a read-only observation and returns nonzero for pending or recovery-required installation, including when a separate installed Chrome is discovered. Without that recovery condition, ordinary installed-browser selection is unchanged.
+
+For `browser_install_recovery_required`, do not retry automatically or delete the marker because its owner PID is dead or the CLI later exits successfully. The machine operator must verify that the original installer and downloader have ended and their original output pipes have closed before explicitly recovering the cache. Normal acceptance requires the pinned installer sources, original successful exit and close, pipe EOF and complete installation marker; it is not proof about every OS descendant. After an installer starts, abnormal cleanup is automatically accepted only with the supported Linux process-group absence proof. Other unknown outcomes retain recovery-required state.
 
 On Linux, inspect missing dependencies from the installed plugin directory with its pinned CLI:
 
@@ -378,6 +384,18 @@ node node_modules/playwright-core/cli.js install-deps chromium
 ```
 
 That installation can request sudo privileges and change system packages. HOAI never runs it automatically. Run the browser host as a non-root user, with an operating-system or container policy that permits Chromium's user namespaces and sandbox operations. If the sandbox is unavailable, have the administrator configure a supported host or container policy. Do not add `--no-sandbox` or broadly disable security protections. See the official [system dependency instructions](https://playwright.dev/docs/browsers#install-system-dependencies) and [sandbox guidance](https://playwright.dev/docs/docker#crawling-and-scraping).
+
+#### Managed browser profiles
+
+Use the exact profile and acting person selected through HOAI. A managed profile can run in the person's HOAI desktop or on an explicitly approved agent machine. Device fingerprint review, background access and session confirmation are separate approvals. Installation does not grant them. A refused or unavailable managed profile never permits a different browser, identity or legacy fallback.
+
+On the approved agent machine, managed open/status report the already authorized runtime and advisory encrypted backup metadata. Supported writes wait for a fresh original recipient approval for at most 60 seconds; the agent-machine Companion does not use legacy parked chat gates. For the native HOAI desktop, follow its actual returned schemas, rich control and tab state, local permissions and any reported parked request. On the agent machine, ordinary supported text fields need fresh Enter page text approval. Credentials, codes and unsupported actions require the person to use the original browser directly. The managed key store uses OS-protected encrypted profile state and requires an available persistent unlocked Linux Secret Service on the agent machine.
+
+Collapse and hand back retain the live page. Close retires the runtime and commits its encrypted stopped checkpoint; an unconfirmed result remains recovery work. Moving machines transfers supported saved state after stopping the source. Live JavaScript, POST actions, popup openers, unfinished sign-ins and device-bound sessions are not portable. Files use opaque tokens and separate recipient consent. See the [managed browser skill](skills/hoai-browser/SKILL.md) for the current workflow and supported actions.
+
+#### Legacy browser sessions
+
+The following passphrase, pane and login-storage behavior applies to the separate legacy browser mode.
 
 Each agent and acting person have separate login storage. New browser sessions start locked and use a nonpersistent context. Browsing while locked is discarded when the browser closes. In the HOAI browser pane, the owner opens **Logins** to configure or unlock the encrypted vault with a passphrase entered in trusted HOAI UI. Do not send passwords or passphrases through chat or browser tool arguments.
 

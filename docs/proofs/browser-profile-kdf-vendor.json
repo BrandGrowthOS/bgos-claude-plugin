@@ -1,0 +1,89 @@
+{
+  "kind": "unpublished-shared-kdf-vendor-alignment",
+  "date": "2026-10-15",
+  "ok": true,
+  "sourceCommit": "27dd066da874a093cc9f4fb08ebf69693b985abb",
+  "modules": 16,
+  "sourceHashes": {
+    "crypto.js": "5c11e3361bbb62be9a8aca69f92e88d38b343a1e642ea604b46fa6f2a6d5945e",
+    "profile-file-crypto.js": "7e9203c4b9c10a2266fc5a1b554df6eb27d9d224e98b7db494be4cd503ce4139"
+  },
+  "testSha256": "3ae75f6ac98d0116164bf25f3eb4771cdc1f0af16fe360924e6dc9414b35c0b5",
+  "tests": {
+    "files": [
+      "test/browser-profile-core.vendor.test.ts",
+      "test/browser-profile-kdf.test.ts",
+      "test/browser-profile-files.test.ts",
+      "test/browser-profile-artifacts.test.ts",
+      "test/browser-profile-file-area.test.ts",
+      "test/browser-profile-companion-files.test.ts",
+      "test/browser-profile-companion.test.ts",
+      "test/browser-profile-companion-state.test.ts",
+      "test/browser-profile-companion-client.test.ts"
+    ],
+    "passed": 106,
+    "failed": 0,
+    "skipped": 0,
+    "rawSha256": "a89467cec636c9cf5a6e951daa6cf7174dca5d3ee46f2f351baa449f7ca23e68"
+  },
+  "typescript": {
+    "command": "node node_modules/typescript/bin/tsc --noEmit",
+    "exit": 0
+  },
+  "mutations": [
+    {
+      "name": "checkpoint-raw",
+      "file": "lib/browser-profile-core/crypto.js",
+      "line": "try { return Buffer.from(crypto.hkdfSync(\"sha256\", shared, salt, aad(context, \"key-derivation\"), 32)); }",
+      "originalSha256": "5c11e3361bbb62be9a8aca69f92e88d38b343a1e642ea604b46fa6f2a6d5945e",
+      "mutatedSha256": "0ec713a6021b383fe62a253edf7a542459b7146001d92f4d90f052db6799c8cc",
+      "restoredSha256": "5c11e3361bbb62be9a8aca69f92e88d38b343a1e642ea604b46fa6f2a6d5945e",
+      "red": 1,
+      "green": 0,
+      "redSha256": "13895dfe22c7bdf37638e46964299c52b74ffa8776cb5ac10c65d9f142364da5",
+      "greenSha256": "1be654eb4ee1add25e9930f74c4b88ca1d32102ccbf932ccf4613198838a85e3"
+    },
+    {
+      "name": "checkpoint-domain-only",
+      "file": "lib/browser-profile-core/crypto.js",
+      "line": "try { return Buffer.from(crypto.hkdfSync(\"sha256\", shared, salt, crypto.createHash(\"sha256\").update(Buffer.from(\"HOAI-PROFILE-SYNC-v1:key-derivation\\0\")).digest(), 32)); }",
+      "originalSha256": "5c11e3361bbb62be9a8aca69f92e88d38b343a1e642ea604b46fa6f2a6d5945e",
+      "mutatedSha256": "6d0e3a8a0adae90e8ad8ef4b533c3ff687f2cce0ad901fb9c8e337513e4f3c89",
+      "restoredSha256": "5c11e3361bbb62be9a8aca69f92e88d38b343a1e642ea604b46fa6f2a6d5945e",
+      "red": 1,
+      "green": 0,
+      "redSha256": "f7ea94d21ed74cd61735e4f64b15ce182fea707abc70609e90babd870254cb7e",
+      "greenSha256": "ce6441f467a844599a815a421e8449810c2b7dbca17956d22ae8730e59089c56"
+    },
+    {
+      "name": "file-raw",
+      "file": "lib/browser-profile-core/profile-file-crypto.js",
+      "line": "try { return Buffer.from(crypto.hkdfSync(\"sha256\", shared, salt, associated(base, \"key-derivation\"), 32)); } finally { shared.fill(0); }",
+      "originalSha256": "7e9203c4b9c10a2266fc5a1b554df6eb27d9d224e98b7db494be4cd503ce4139",
+      "mutatedSha256": "5874c0b81e8f7a265af5db5ab7988635621fd28003ab901b5795c1a92d2700f1",
+      "restoredSha256": "7e9203c4b9c10a2266fc5a1b554df6eb27d9d224e98b7db494be4cd503ce4139",
+      "red": 1,
+      "green": 0,
+      "redSha256": "0b83a0532bbf8d267a7c7c66f734d264c7c1c3a005069cd92d0e75f58c537ffb",
+      "greenSha256": "0aa34761b702d41c1e500a86c7f5b5752002565fccba4d0faeb7d73f420536ac"
+    },
+    {
+      "name": "file-domain-only",
+      "file": "lib/browser-profile-core/profile-file-crypto.js",
+      "line": "try { return Buffer.from(crypto.hkdfSync(\"sha256\", shared, salt, crypto.createHash(\"sha256\").update(Buffer.from(\"HOAI-BROWSER-FILE-v1\\0key-derivation\\0\")).digest(), 32)); } finally { shared.fill(0); }",
+      "originalSha256": "7e9203c4b9c10a2266fc5a1b554df6eb27d9d224e98b7db494be4cd503ce4139",
+      "mutatedSha256": "d5c675aaceb282f6ae043fcbe5f2d32959a671b60d18fdead57d66dcdefaaa36",
+      "restoredSha256": "7e9203c4b9c10a2266fc5a1b554df6eb27d9d224e98b7db494be4cd503ce4139",
+      "red": 1,
+      "green": 0,
+      "redSha256": "d21f0ce02b867d5f48bd3463d9602050d057f535c494c272e96111a18017ffd7",
+      "greenSha256": "fc5fb8bc048ceb5431c48041c3e49a199e03e0ef05bb5a8bfb39273467cc529c"
+    }
+  ],
+  "sharedSourceUnchanged": true,
+  "excluded": [
+    "First raw-info copied drill failed with a plain caught codec error; fixture strengthened with assert.doesNotThrow and all four drills rerun.",
+    "Initial test baseline used the wrong opened filename property and expected two instead of three file derivations; both corrected before qualified drills."
+  ],
+  "boundary": "Synthetic Node keys; no browser, profile, production or cross-machine transfer. Actual Node/Electron interoperability is separately proved in BGOS. All unpublished consumers update together; older development packets refuse without fallback or resend."
+}

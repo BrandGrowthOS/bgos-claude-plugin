@@ -1,0 +1,8 @@
+{
+  "mutation": "distributed-file-client-wire-tamper",
+  "line": 117,
+  "changedCode": "const document = { version: reviewedPeers ? 3 : 1, kind: \"agent-browser-file-pending\", authority, endpointId: context.endpoint.identity.endpointId, keyFingerprint: require(\"./crypto\").identityFingerprint(context.endpoint.identity), queryNonce: crypto.randomBytes(32).toString(\"base64url\"), expiresAt: this.#clock() + 30_000, ...(reviewedPeers ? { reviewedPeers } : {}) };",
+  "redExit": 1,
+  "greenExit": 0,
+  "restoredSha256": "2e9627acfb1622cf1df6d3c730ea7fa61801c8e2bf874f28fe38926374391d24"
+}

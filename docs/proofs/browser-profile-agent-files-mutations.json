@@ -1,0 +1,489 @@
+[
+  {
+    "mutation": "area-linux-only",
+    "path": "lib/browser-profile-file-area.mjs",
+    "changes": [
+      {
+        "line": 10,
+        "changedCode": "if (!Number.isSafeInteger(uid) || uid < 0 || typeof assertCurrent !== 'function' || typeof directory !== 'string' || !path.isAbsolute(directory) || path.normalize(directory) !== directory || directory.includes('\\0')) throw fail()"
+      }
+    ],
+    "redExit": 1,
+    "greenExit": 0,
+    "restoredSha256": "b4eca8bf5da6eb5f567324554ec47f74555cd8c2cd419decea73c90f7e7e0255",
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "--test",
+      "--test-name-pattern=non-Linux",
+      "test/browser-profile-file-area.test.ts"
+    ]
+  },
+  {
+    "mutation": "area-private-owner",
+    "path": "lib/browser-profile-file-area.mjs",
+    "changes": [
+      {
+        "line": 11,
+        "changedCode": "const owned = stat => stat.isDirectory() && !stat.isSymbolicLink() && (stat.mode & 0o077) === 0"
+      }
+    ],
+    "redExit": 1,
+    "greenExit": 0,
+    "restoredSha256": "b4eca8bf5da6eb5f567324554ec47f74555cd8c2cd419decea73c90f7e7e0255",
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "--test",
+      "--test-name-pattern=permissive owner",
+      "test/browser-profile-file-area.test.ts"
+    ]
+  },
+  {
+    "mutation": "area-private-mode",
+    "path": "lib/browser-profile-file-area.mjs",
+    "changes": [
+      {
+        "line": 11,
+        "changedCode": "const owned = stat => stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === uid && true"
+      }
+    ],
+    "redExit": 1,
+    "greenExit": 0,
+    "restoredSha256": "b4eca8bf5da6eb5f567324554ec47f74555cd8c2cd419decea73c90f7e7e0255",
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "--test",
+      "--test-name-pattern=permissive owner",
+      "test/browser-profile-file-area.test.ts"
+    ]
+  },
+  {
+    "mutation": "area-ancestor-link",
+    "path": "lib/browser-profile-file-area.mjs",
+    "changes": [
+      {
+        "line": 20,
+        "changedCode": "current(check); if (!stat.isDirectory()) throw fail()"
+      }
+    ],
+    "redExit": 1,
+    "greenExit": 0,
+    "restoredSha256": "b4eca8bf5da6eb5f567324554ec47f74555cd8c2cd419decea73c90f7e7e0255",
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "--test",
+      "--test-name-pattern=linked ancestor",
+      "test/browser-profile-file-area.test.ts"
+    ]
+  },
+  {
+    "mutation": "area-realpath",
+    "path": "lib/browser-profile-file-area.mjs",
+    "changes": [
+      {
+        "line": 24,
+        "changedCode": "const real = await filesystem.realpath(target); current(check); if (false) throw fail()"
+      }
+    ],
+    "redExit": 1,
+    "greenExit": 0,
+    "restoredSha256": "b4eca8bf5da6eb5f567324554ec47f74555cd8c2cd419decea73c90f7e7e0255",
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "--test",
+      "--test-name-pattern=linked ancestor",
+      "test/browser-profile-file-area.test.ts"
+    ]
+  },
+  {
+    "mutation": "area-original-inode",
+    "path": "lib/browser-profile-file-area.mjs",
+    "changes": [
+      {
+        "line": 31,
+        "changedCode": "for (const before of original) { const after = rows.find(row => row.path === before.path); if (!after || false) throw fail() }"
+      }
+    ],
+    "redExit": 1,
+    "greenExit": 0,
+    "restoredSha256": "b4eca8bf5da6eb5f567324554ec47f74555cd8c2cd419decea73c90f7e7e0255",
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "--test",
+      "--test-name-pattern=replaced original",
+      "test/browser-profile-file-area.test.ts"
+    ]
+  },
+  {
+    "mutation": "area-postawait-current",
+    "path": "lib/browser-profile-file-area.mjs",
+    "changes": [
+      {
+        "line": 18,
+        "changedCode": "await filesystem.mkdir(item, { mode: 0o700 }); stat = await filesystem.lstat(item)"
+      }
+    ],
+    "redExit": 1,
+    "greenExit": 0,
+    "restoredSha256": "b4eca8bf5da6eb5f567324554ec47f74555cd8c2cd419decea73c90f7e7e0255",
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "--test",
+      "--test-name-pattern=context loss",
+      "test/browser-profile-file-area.test.ts"
+    ]
+  },
+  {
+    "mutation": "artifact-basename-only",
+    "path": "lib/browser-profile-artifacts.mjs",
+    "changes": [
+      {
+        "line": 37,
+        "changedCode": "const input = structuredClone(args), extension = name === 'browser_pdf_save' ? 'pdf' : input.type === 'jpeg' || input.type === undefined && /\\.jpe?g$/i.test(input.filename || '') ? 'jpeg' : 'png', fileName = input.filename === undefined ? 'browser.' + extension : String(input.filename)"
+      }
+    ],
+    "redExit": 1,
+    "greenExit": 0,
+    "restoredSha256": "8938b78062cc148836fa1c68d75610c1d11a5a53c191c4f73b60b1e6d15312ed",
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "--test",
+      "--test-name-pattern=only a successful owned",
+      "test/browser-profile-files.test.ts"
+    ]
+  },
+  {
+    "mutation": "artifact-actual-success",
+    "path": "lib/browser-profile-artifacts.mjs",
+    "changes": [
+      {
+        "line": 51,
+        "changedCode": "if (!result || !Array.isArray(result.content)) throw fail('profile_file_artifact_unconfirmed')"
+      }
+    ],
+    "redExit": 1,
+    "greenExit": 0,
+    "restoredSha256": "8938b78062cc148836fa1c68d75610c1d11a5a53c191c4f73b60b1e6d15312ed",
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "--test",
+      "--test-name-pattern=failed engine artifact",
+      "test/browser-profile-files.test.ts"
+    ]
+  },
+  {
+    "mutation": "artifact-per-runtime-bound",
+    "path": "lib/browser-profile-artifacts.mjs",
+    "changes": [
+      {
+        "line": 41,
+        "changedCode": "this.#check(assertCurrent); if (this.#records.size >= 5 || globalRecords.size >= 16) throw fail('profile_file_artifact_capacity')"
+      }
+    ],
+    "redExit": 1,
+    "greenExit": 0,
+    "restoredSha256": "8938b78062cc148836fa1c68d75610c1d11a5a53c191c4f73b60b1e6d15312ed",
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "--test",
+      "--test-name-pattern=artifact inventory is bounded",
+      "test/browser-profile-files.test.ts"
+    ]
+  },
+  {
+    "mutation": "artifact-physical-bound",
+    "path": "lib/browser-profile-artifacts.mjs",
+    "changes": [
+      {
+        "line": 20,
+        "changedCode": "this.#check(check); if (physical.size >= 3) return Promise.reject(fail('profile_file_io_capacity'))"
+      }
+    ],
+    "redExit": 1,
+    "greenExit": 0,
+    "restoredSha256": "8938b78062cc148836fa1c68d75610c1d11a5a53c191c4f73b60b1e6d15312ed",
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "--test",
+      "--test-name-pattern=global busy admission",
+      "test/browser-profile-artifacts.test.ts"
+    ]
+  },
+  {
+    "mutation": "artifact-busy-unspent",
+    "path": "lib/browser-profile-artifacts.mjs",
+    "changes": [
+      {
+        "line": 62,
+        "changedCode": "record.state = 'spent'; return this.#run(assertCurrent, async () => {"
+      },
+      {
+        "line": 63,
+        "changedCode": "this.#check(assertCurrent); if (false) throw fail('profile_file_artifact_required')"
+      }
+    ],
+    "redExit": 1,
+    "greenExit": 0,
+    "restoredSha256": "8938b78062cc148836fa1c68d75610c1d11a5a53c191c4f73b60b1e6d15312ed",
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "--test",
+      "--test-name-pattern=global busy admission",
+      "test/browser-profile-artifacts.test.ts"
+    ]
+  },
+  {
+    "mutation": "file-original-offer-retention",
+    "path": "lib/browser-profile-files.mjs",
+    "changes": [
+      {
+        "line": 108,
+        "changedCode": "row = { handle, offer: sealed.offer, pins, peer: recipient.pin, recipientToken: recipient.token, artifactToken: input.artifactToken, payload: sealed.payload, unknown: false, uploadAttempted: false }; void row;"
+      }
+    ],
+    "redExit": 1,
+    "greenExit": 0,
+    "restoredSha256": "34436c753963c68096921970f8dd5321e38d815f79527c26d91f6c0ca603f66b",
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "--test",
+      "--test-name-pattern=epoch loss after initial",
+      "test/browser-profile-files.test.ts"
+    ]
+  },
+  {
+    "mutation": "file-unknown-readonly",
+    "path": "lib/browser-profile-files.mjs",
+    "changes": [
+      {
+        "line": 93,
+        "changedCode": "if (row.uploadAttempted) return result({ state: 'read-only', observedState: status.state })"
+      }
+    ],
+    "redExit": 1,
+    "greenExit": 0,
+    "restoredSha256": "34436c753963c68096921970f8dd5321e38d815f79527c26d91f6c0ca603f66b",
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "--test",
+      "--test-name-pattern=lost initial creation acknowledgement",
+      "test/browser-profile-files.test.ts"
+    ]
+  },
+  {
+    "mutation": "file-original-permission-args",
+    "path": "lib/browser-profile-files.mjs",
+    "changes": [
+      {
+        "line": 125,
+        "changedCode": "check(); if (tool !== 'browser_file_upload' || false || originalSignal !== signal) throw fail('profile_file_original_page_changed')"
+      }
+    ],
+    "redExit": 1,
+    "greenExit": 0,
+    "restoredSha256": "34436c753963c68096921970f8dd5321e38d815f79527c26d91f6c0ca603f66b",
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "--test",
+      "--test-name-pattern=changed original request",
+      "test/browser-profile-files.test.ts"
+    ]
+  },
+  {
+    "mutation": "file-navigation-history",
+    "path": "lib/browser-profile-files.mjs",
+    "changes": [
+      {
+        "line": 120,
+        "changedCode": "let changed = false; const attempted = [], altered = () => { changed = true }, check = () => { baseCheck(); if (false || page.isClosed() || engine.selectedPage() !== page || page.url() !== url || new URL(page.url()).origin !== origin) throw fail('profile_file_original_page_changed') }"
+      }
+    ],
+    "redExit": 1,
+    "greenExit": 0,
+    "restoredSha256": "34436c753963c68096921970f8dd5321e38d815f79527c26d91f6c0ca603f66b",
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "--test",
+      "--test-name-pattern=navigation away and back",
+      "test/browser-profile-files.test.ts"
+    ]
+  },
+  {
+    "mutation": "file-full-original-url",
+    "path": "lib/browser-profile-files.mjs",
+    "changes": [
+      {
+        "line": 120,
+        "changedCode": "let changed = false; const attempted = [], altered = () => { changed = true }, check = () => { baseCheck(); if (changed || page.isClosed() || engine.selectedPage() !== page || false || new URL(page.url()).origin !== origin) throw fail('profile_file_original_page_changed') }"
+      }
+    ],
+    "redExit": 1,
+    "greenExit": 0,
+    "restoredSha256": "34436c753963c68096921970f8dd5321e38d815f79527c26d91f6c0ca603f66b",
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "--test",
+      "--test-name-pattern=changed full URL",
+      "test/browser-profile-files.test.ts"
+    ]
+  },
+  {
+    "mutation": "file-token-spent-before-permission",
+    "path": "lib/browser-profile-files.mjs",
+    "changes": [
+      {
+        "line": 126,
+        "changedCode": "if (row.spent) throw fail('profile_file_attempt_spent'); row.spent = false"
+      }
+    ],
+    "redExit": 1,
+    "greenExit": 0,
+    "restoredSha256": "34436c753963c68096921970f8dd5321e38d815f79527c26d91f6c0ca603f66b",
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "--test",
+      "--test-name-pattern=incoming upload preserves",
+      "test/browser-profile-files.test.ts"
+    ]
+  },
+  {
+    "mutation": "file-global-original-work",
+    "path": "lib/browser-profile-files.mjs",
+    "changes": [
+      {
+        "line": 28,
+        "changedCode": "this.#check(check, signal); if (this.#work.size || jobs.size >= 5) return Promise.reject(fail('profile_file_busy'))"
+      }
+    ],
+    "redExit": 1,
+    "greenExit": 0,
+    "restoredSha256": "34436c753963c68096921970f8dd5321e38d815f79527c26d91f6c0ca603f66b",
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "--test",
+      "--test-name-pattern=four held original peer",
+      "test/browser-profile-files.test.ts"
+    ]
+  },
+  {
+    "mutation": "file-independent-drains",
+    "path": "lib/browser-profile-files.mjs",
+    "changes": [
+      {
+        "line": 36,
+        "changedCode": "try { await this.client.whenDrained(); await this.staging?.whenDrained(); await this.artifacts?.whenDrained() } catch { this.#unknown = true }"
+      }
+    ],
+    "redExit": 1,
+    "greenExit": 0,
+    "restoredSha256": "34436c753963c68096921970f8dd5321e38d815f79527c26d91f6c0ca603f66b",
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "--test",
+      "--test-name-pattern=failed first drain",
+      "test/browser-profile-files.test.ts"
+    ]
+  },
+  {
+    "mutation": "file-independent-sync-dispose",
+    "path": "lib/browser-profile-files.mjs",
+    "changes": [
+      {
+        "line": 144,
+        "changedCode": "const work = Promise.allSettled([...this.#work]); return Promise.allSettled([this.client.dispose(), this.staging?.dispose(), this.artifacts?.dispose()]).then(async results => { await work; if (this.#unknown || results.some(value => value.status === 'rejected')) { this.#unknown = true; throw fail('profile_file_cleanup_unconfirmed') } })"
+      }
+    ],
+    "redExit": 1,
+    "greenExit": 0,
+    "restoredSha256": "34436c753963c68096921970f8dd5321e38d815f79527c26d91f6c0ca603f66b",
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "--test",
+      "--test-name-pattern=synchronous first disposer",
+      "test/browser-profile-files.test.ts"
+    ]
+  },
+  {
+    "mutation": "file-original-work-disposal",
+    "path": "lib/browser-profile-files.mjs",
+    "changes": [
+      {
+        "line": 144,
+        "changedCode": "const work = Promise.allSettled([...this.#work]); return Promise.allSettled([() => this.client.dispose(), () => this.staging?.dispose(), () => this.artifacts?.dispose()].map(cleanup => Promise.resolve().then(cleanup))).then(async results => { void work; if (this.#unknown || results.some(value => value.status === 'rejected')) { this.#unknown = true; throw fail('profile_file_cleanup_unconfirmed') } })"
+      }
+    ],
+    "redExit": 1,
+    "greenExit": 0,
+    "restoredSha256": "34436c753963c68096921970f8dd5321e38d815f79527c26d91f6c0ca603f66b",
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "--test",
+      "--test-name-pattern=original held peer lookup",
+      "test/browser-profile-files.test.ts"
+    ]
+  },
+  {
+    "mutation": "file-cleanup-held-reservation",
+    "path": "lib/browser-profile-files.mjs",
+    "changes": [
+      {
+        "line": 40,
+        "changedCode": "}).finally(() => { if (true) { this.#work.delete(task); jobs.delete(lease) } })"
+      }
+    ],
+    "redExit": 1,
+    "greenExit": 0,
+    "restoredSha256": "34436c753963c68096921970f8dd5321e38d815f79527c26d91f6c0ca603f66b",
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "--test",
+      "--test-name-pattern=transactional page listener",
+      "test/browser-profile-files.test.ts"
+    ]
+  }
+]

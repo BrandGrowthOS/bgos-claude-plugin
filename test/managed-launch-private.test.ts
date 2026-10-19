@@ -18,7 +18,13 @@ test('real launcher and shim force attached operator credentials through verifie
   const server = createServer(async (req, res) => {
     let raw = ''; for await (const chunk of req) raw += chunk
     const body = raw ? JSON.parse(raw) : null
-    seen.push({ actor: req.headers['x-bgos-acting-user'] || null, body })
+    seen.push({ path: req.url, actor: req.headers['x-bgos-acting-user'] || null, body })
+    // This identity fixture has no managed profile. The launcher now discovers
+    // that explicitly before it can use the legacy relay.
+    if (req.url === '/api/v1/browser/profile-sync/rpc/resolve') {
+      res.setHeader('Content-Type', 'application/json')
+      return void res.end(JSON.stringify({ managed: false, actingUserId: req.headers['x-bgos-acting-user'] || 'user_owner', assistantId: body.assistantId }))
+    }
     const message = body?.message
     const answer = req.url?.includes('/host') ? { online: true } : { status: 'done', message: { jsonrpc: '2.0', id: message?.id,
       result: message?.method === 'initialize' ? { protocolVersion: '2024-11-05', capabilities: {} } : { content: [{ type: 'text', text: 'synthetic result' }] } } }
@@ -67,6 +73,7 @@ test('real launcher and shim force attached operator credentials through verifie
   assert.equal(seen.length, 0, 'no owner RPC while the managed daemon is still starting')
   publish()
   assert.notEqual((await earlyRequest()).result.isError, true, 'same MCP process becomes usable after signed context publication')
+  assert.ok(seen.some(row => row.path === '/api/v1/browser/profile-sync/rpc/resolve' && row.body.assistantId === 901), 'managed discovery precedes the legacy identity fixture')
   assert.ok(seen.every(row => row.actor === 'user_recipient'))
   markFloorAttached({ root, folders: [cwd] })
   const recipientRequest = start(true)

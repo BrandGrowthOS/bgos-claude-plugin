@@ -1,0 +1,176 @@
+{
+  "status": "source reviewed; focused MCP tests and copied executable counterfactuals qualified; final coherent Linux/HOAI image evidence separate",
+  "sourcePins": {
+    "bin/hoai-browser-host.mjs": "a40e218f31e18f6d559fcafd4cf3d853a64ef7bc396984a2811cdad3f0d788d4",
+    "lib/browser-profile-companion.mjs": "01aa9d1fb5ff68b2241c5b362791938824d928efd7bfa9ed6b5087f4b1122c29",
+    "server.ts": "61765c4c1ba1c87b193d68009ff5211da868e2eb5e49a4b72afe6107c8b0386f",
+    "README.md": "a8721632b68a5976f593fe7e463e5f3c5cc6396546475b77164c8569283be8be",
+    "test/browser-profile-managed-instructions.test.ts": "3c61a0e58f33138dd32313333338cba50287677c0df763b1b142756ec1137963"
+  },
+  "legacyHostInstructionsSourceSha256": "80d27caae8df87b7da50f59c45e18e18de98b6d663b445adda9dce9be372f055",
+  "changes": [
+    "Dedicated managedHostInstructions and shared createManagedProfileRelay for approved agent-machine Companion",
+    "Actual managed tools/list clones cached tool metadata and omits unsupported hoai_browser_wait_gate",
+    "Agent-machine60second original-request approval scoped separately from native desktop local policy, trust and parked request handling",
+    "Actual close uncertainty requires reconciliation and does not prove server commit",
+    "Primary plugin guidance and README distinguish managed and legacy modes"
+  ],
+  "scope": [
+    "No tool execution, policy, runner, engine, bridge, authorization or lifecycle behavior change",
+    "Legacy hostInstructions function bytes and SESSION_TOOLS source are retained; managed roster types and bounds remain intact",
+    "MCP initialize, notifications/initialized and tools/list run through the actual SDK relay and actual Companion typed endpoint with synthetic authority and native doubles"
+  ],
+  "verification": {
+    "focusedTests": 110,
+    "focusedFiles": 8,
+    "skips": 0,
+    "typescriptExit": 0,
+    "nodeVersion": "v24.16.0",
+    "mutations": [
+      {
+        "name": "factory_to_legacy",
+        "path": "bin/hoai-browser-host.mjs",
+        "line": 379,
+        "loadedLine": "  return new RelaySessions({ core, serverInfo, instructions: hostInstructions(deviceLabel), log })",
+        "redExit": 1,
+        "directAssertion": true,
+        "restoredExit": 0,
+        "restoredSourceSha256": "a40e218f31e18f6d559fcafd4cf3d853a64ef7bc396984a2811cdad3f0d788d4"
+      },
+      {
+        "name": "wait_gate_filter",
+        "path": "lib/browser-profile-companion.mjs",
+        "line": 39,
+        "loadedLine": "const managedToolRoster=tools=>managedFileRoster(tools).map(tool=>{",
+        "redExit": 1,
+        "directAssertion": true,
+        "restoredExit": 0,
+        "restoredSourceSha256": "01aa9d1fb5ff68b2241c5b362791938824d928efd7bfa9ed6b5087f4b1122c29"
+      },
+      {
+        "name": "legacy_schema_clone",
+        "path": "lib/browser-profile-companion.mjs",
+        "line": 45,
+        "loadedLine": "  const next=properties;let changed=false",
+        "redExit": 1,
+        "directAssertion": true,
+        "restoredExit": 0,
+        "restoredSourceSha256": "01aa9d1fb5ff68b2241c5b362791938824d928efd7bfa9ed6b5087f4b1122c29"
+      },
+      {
+        "name": "managed_session_metadata",
+        "path": "lib/browser-profile-companion.mjs",
+        "line": 40,
+        "loadedLine": "  const result={...tool};if(false)result.description=managedSessionDescriptions[tool.name]",
+        "redExit": 1,
+        "directAssertion": true,
+        "restoredExit": 0,
+        "restoredSourceSha256": "01aa9d1fb5ff68b2241c5b362791938824d928efd7bfa9ed6b5087f4b1122c29"
+      },
+      {
+        "name": "managed_deadline_metadata",
+        "path": "lib/browser-profile-companion.mjs",
+        "line": 46,
+        "loadedLine": "  if(false&&next.wait_seconds){next.wait_seconds={...next.wait_seconds,description:'Legacy compatibility hint only. Managed approval remains bound to the original request and exact page for at most 60 seconds; this value never creates a parked gate or extends that deadline.'};changed=true}",
+        "redExit": 1,
+        "directAssertion": true,
+        "restoredExit": 0,
+        "restoredSourceSha256": "01aa9d1fb5ff68b2241c5b362791938824d928efd7bfa9ed6b5087f4b1122c29"
+      },
+      {
+        "name": "production_managed_roster",
+        "path": "lib/browser-profile-companion.mjs",
+        "line": 370,
+        "loadedLine": "    record.relay=this.createRelay({roster:()=>{currentExecution();return [...managedFileRoster(record.engine.roster()),...AGENT_PROFILE_FILE_TOOLS]},callTool:(_context,name,args,signal)=>{currentExecution();return this._tool(record,name,args,signal)}})",
+        "redExit": 1,
+        "directAssertion": true,
+        "restoredExit": 0,
+        "restoredSourceSha256": "01aa9d1fb5ff68b2241c5b362791938824d928efd7bfa9ed6b5087f4b1122c29"
+      }
+    ],
+    "workingSourceUnchanged": true
+  },
+  "exclusions": [
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\managed-instructions-xbirfwd8",
+      "reason": "First matrix found real direct red assertions but one generic replacement string caused its printed line to point at earlier text. Corrected to the original target offset and reran all six cases; only final matrix counted."
+    }
+  ],
+  "pending": [
+    "Exact committed common archive coherent selected52 Linux suite and noEmit",
+    "Final actual HOAI initialize/tools list and complete73case physical acceptance",
+    "Final Codex shared-factory caller/vendor/package qualification"
+  ],
+  "raw": [
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\managed-instructions-mba1a6w9\\baseline.log",
+      "sha256": "a25d0107193157cbeed89c233ff22f744c7b1475e2cacc1f5baec2d035dd6f80"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\managed-instructions-mba1a6w9\\factory_to_legacy-red.log",
+      "sha256": "fe3d068363bb453740eddbff003453e9dcc12c26c54986631425254ac086090a"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\managed-instructions-mba1a6w9\\factory_to_legacy-restored.log",
+      "sha256": "271a0e304e23df23bd9870b696604229d746450a6cd801481ca6bc2581889e0b"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\managed-instructions-mba1a6w9\\legacy_schema_clone-red.log",
+      "sha256": "85943070ca20dcbe72a11d77f080fe075c3e47696e6a93f0f0190ffb92718b9e"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\managed-instructions-mba1a6w9\\legacy_schema_clone-restored.log",
+      "sha256": "8bb3b68c3a6ddcee8a908c66e3c63dfade5979fc1f3a5c836df9c7ca2410fb90"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\managed-instructions-mba1a6w9\\managed_deadline_metadata-red.log",
+      "sha256": "fb96d1709d4953cbce8af8b273f6000c060adaa3a42dc0b12bc015d91553f618"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\managed-instructions-mba1a6w9\\managed_deadline_metadata-restored.log",
+      "sha256": "47945dfee00513c9e0e3deaa892a7a8b0433d64efbb342d64ad95fd2d24afc4f"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\managed-instructions-mba1a6w9\\managed_session_metadata-red.log",
+      "sha256": "b0b7d713e0b0a925a062347e343ccb27a177b1f226f7a994406461fb4868a399"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\managed-instructions-mba1a6w9\\managed_session_metadata-restored.log",
+      "sha256": "27196addec99d9418ddf506907634e41f25a59a056e5f55a2c26f725d912231d"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\managed-instructions-mba1a6w9\\production_managed_roster-red.log",
+      "sha256": "edd836b1a1eb39871c3f960810c9d0f5f0d626e25d6b3f5afd30034eaa60cde2"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\managed-instructions-mba1a6w9\\production_managed_roster-restored.log",
+      "sha256": "883a192cff3ed46afd000539e0669f41dc424ea743efdd86b59b91e4f66fb1d7"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\managed-instructions-mba1a6w9\\wait_gate_filter-red.log",
+      "sha256": "924618eac74d2794b6cb67dfdaccbf4853a1b82c3ddfa934ceff1f03073811ab"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\managed-instructions-mba1a6w9\\wait_gate_filter-restored.log",
+      "sha256": "53e0adea541ca21af2cdbb13c9e999043f4d8aa0d9e0d00d10c3944d0a6d49f7"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\managed-instructions-mba1a6w9\\results.json",
+      "sha256": "7f283a0f580596e8f8b6feecf53462b5618ba7e9875dbaccbc91ee6c4e69b8c4"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\managed-guidance-final-91dedaee\\focused.log",
+      "sha256": "6b4b4a226defa5a12458919ecc6b0d9ecde34ae3b111ceb612a84cd3cc367791"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\managed-guidance-final-91dedaee\\typescript.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\managed-guidance-final-91dedaee\\results.json",
+      "sha256": "b7fad26b55f1b1d239c8da0f162cc7ef51b41947e29150f56cda721379394484"
+    }
+  ],
+  "productCommit": "7106437b6ed128a2fd2f9f5fd7339cd756588e1a",
+  "committedGitBlobPinsMatch": true
+}

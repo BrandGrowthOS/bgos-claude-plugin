@@ -1,0 +1,78 @@
+{
+  "scope": "Exact current-main host policy copies and native gate wording parity; no classification, relay or consent-policy redesign",
+  "sourceCommit": "d1bcd4e2b7cfc14df3e37dc367fd6a0184f75cba",
+  "files": {
+    "policy.js": "8219e9b39276b9ef90fb6288c80872b1b8c4f968fd21bde6fa79a0fe4cbc0048",
+    "settings.js": "49317db663958dd3441b7bbfc85d3e4961a9d097799b3d0703df0cf7bad5dd72",
+    "profiles.js": "336225827578f3f66849d5d946aebacd6cea877c20cd793fd6c7080d8cd3119a"
+  },
+  "mutatedSha256": "66d6a9f955d1b08bce681d31a8923381d1d8467f233197c005b5e3718e3165ad",
+  "restoredSha256": "8219e9b39276b9ef90fb6288c80872b1b8c4f968fd21bde6fa79a0fe4cbc0048",
+  "changedExecutableLines": [
+    {
+      "number": 852,
+      "text": "      return \"BROKEN close wording\";"
+    }
+  ],
+  "runs": [
+    {
+      "name": "baseline",
+      "exitCode": 0,
+      "log": ".tmp/host-core-parity-3a1b6751/baseline.txt",
+      "sha256": "3d8b35c293bf2b54464395a30b5c90b30fa8a317aabd36faf68e471943aa32fb"
+    },
+    {
+      "name": "mutated-intent",
+      "exitCode": 1,
+      "log": ".tmp/host-core-parity-3a1b6751/mutated-intent.txt",
+      "sha256": "f3accf7bf1df6fbb3efee6218330c50c2b81963dc42555580f8403bbaa94c810"
+    },
+    {
+      "name": "mutated-pin",
+      "exitCode": 1,
+      "log": ".tmp/host-core-parity-3a1b6751/mutated-pin.txt",
+      "sha256": "2cf2bf8ab4d3f3665991a275566d29b5cadc53b0eb5d3e409a69e3c0e0b0f825"
+    },
+    {
+      "name": "restored",
+      "exitCode": 0,
+      "log": ".tmp/host-core-parity-3a1b6751/restored.txt",
+      "sha256": "0c1ddb88c68fad3ff28338b41fb8ba56196e00d2a1b1bd99adb8cb89a351b953"
+    },
+    {
+      "name": "restored-intent",
+      "exitCode": 0,
+      "log": ".tmp/host-core-parity-3a1b6751/restored-intent.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "sharedSourceUnchanged": true,
+  "baseline": {
+    "tests": 8,
+    "passed": 8,
+    "skipped": 0
+  },
+  "restored": {
+    "tests": 8,
+    "passed": 8,
+    "skipped": 0
+  },
+  "mutatedPin": {
+    "tests": 8,
+    "failed": 2,
+    "passed": 6,
+    "skipped": 0
+  },
+  "mutatedIntent": {
+    "assertions": 1,
+    "exitCode": 1
+  },
+  "restoredIntent": {
+    "assertions": 1,
+    "exitCode": 0
+  },
+  "rawReceipt": {
+    "path": ".tmp/host-core-parity-3a1b6751/receipt.json",
+    "sha256": "781ac6ff0dc252e772df07c2d12c4b876e0737a9ba30f846e4c64e9264f57106"
+  }
+}

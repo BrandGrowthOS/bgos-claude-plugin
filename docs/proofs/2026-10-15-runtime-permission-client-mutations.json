@@ -1,0 +1,324 @@
+{
+  "cases": [
+    {
+      "name": "original-wire-hash",
+      "file": "lib/browser-profile-permission-client.mjs",
+      "line": 123,
+      "changedLine": "      rpcId: frame.rpcId, rpcNonce: frame.rpcNonce, actionHash: createHash('sha256').update(shared.canonical(frame.message)).digest('hex'), kind, origin: canonicalOrigin, expiresAt: Math.min(started + 60000, deadline) })",
+      "original": "createHash('sha256').update(JSON.stringify(frame.message))",
+      "changed": "createHash('sha256').update(shared.canonical(frame.message))",
+      "sourceSha256": "f7f4de506ed33aa7f5473c0d4e64f7ac03fdb5268c5f30ee7585717b726f0aa7",
+      "mutantSha256": "3550c17640e28517224f04165b73b301de3f73c4769dedc6850c3e986692524e",
+      "restoredSha256": "f7f4de506ed33aa7f5473c0d4e64f7ac03fdb5268c5f30ee7585717b726f0aa7",
+      "redExit": 1,
+      "greenExit": 0,
+      "command": [
+        "node",
+        "--experimental-strip-types",
+        "--test",
+        "--test-name-pattern=paired request and one consume",
+        "test/browser-profile-permission-client.test.ts"
+      ]
+    },
+    {
+      "name": "endpoint-binding",
+      "file": "lib/browser-profile-permission-client.mjs",
+      "line": 113,
+      "changedLine": "    if (frame.event_type !== 'browser_profile_rpc' || frame.version !== 1 || !UUID.test(frame.rpcId) || !NONCE.test(frame.rpcNonce) || !UUID.test(binding?.bindingId) || typeof binding.socketId !== 'string' || !ID.test(binding.socketId) || !shared.sameAuthority(binding.authority, authority) || frame.assistantId !== authority.assistantId || frame.message?.method !== 'tools/call') throw fail('profile_permission_invalid')",
+      "original": "frame.bindingId !== binding.bindingId || ",
+      "changed": "",
+      "sourceSha256": "f7f4de506ed33aa7f5473c0d4e64f7ac03fdb5268c5f30ee7585717b726f0aa7",
+      "mutantSha256": "83318f1ba053e17c80704bb36adc50822e8bce888f627ec224ce7e7cf7da2618",
+      "restoredSha256": "f7f4de506ed33aa7f5473c0d4e64f7ac03fdb5268c5f30ee7585717b726f0aa7",
+      "redExit": 1,
+      "greenExit": 0,
+      "command": [
+        "node",
+        "--experimental-strip-types",
+        "--test",
+        "--test-name-pattern=an endpoint cannot borrow",
+        "test/browser-profile-permission-client.test.ts"
+      ]
+    },
+    {
+      "name": "duplicate-original-rpc",
+      "file": "lib/browser-profile-permission-client.mjs",
+      "line": 120,
+      "changedLine": "    if (false) throw fail('profile_permission_duplicate')",
+      "original": "if ([...this.#records.values()].some(record => record.request.rpcId === frame.rpcId && shared.sameAuthority(record.request.authority, authority)))",
+      "changed": "if (false)",
+      "sourceSha256": "f7f4de506ed33aa7f5473c0d4e64f7ac03fdb5268c5f30ee7585717b726f0aa7",
+      "mutantSha256": "b4112f12a210ec55b7a19ee879bdd638def25f10d5af9a39a4d7039f602d1d6e",
+      "restoredSha256": "f7f4de506ed33aa7f5473c0d4e64f7ac03fdb5268c5f30ee7585717b726f0aa7",
+      "redExit": 1,
+      "greenExit": 0,
+      "command": [
+        "node",
+        "--experimental-strip-types",
+        "--test",
+        "--test-name-pattern=unchanged original RPC",
+        "test/browser-profile-permission-client.test.ts"
+      ]
+    },
+    {
+      "name": "supported-method-only",
+      "file": "lib/browser-profile-permission-client.mjs",
+      "line": 10,
+      "changedLine": "const METHODS = Object.freeze({ browser_navigate: 'navigate', browser_click: 'sensitive', browser_handle_dialog: 'sensitive', browser_type: 'write', browser_select_option: 'write', browser_file_upload: 'upload', browser_pdf_save: 'download' })",
+      "original": "browser_select_option: 'write',",
+      "changed": "browser_type: 'write', browser_select_option: 'write',",
+      "sourceSha256": "f7f4de506ed33aa7f5473c0d4e64f7ac03fdb5268c5f30ee7585717b726f0aa7",
+      "mutantSha256": "46476b4d4278b352db150237177e461fbac21adeb59d9dc08cb37831f1a9824d",
+      "restoredSha256": "f7f4de506ed33aa7f5473c0d4e64f7ac03fdb5268c5f30ee7585717b726f0aa7",
+      "redExit": 1,
+      "greenExit": 0,
+      "command": [
+        "node",
+        "--experimental-strip-types",
+        "--test",
+        "--test-name-pattern=text, credentials",
+        "test/browser-profile-permission-client.test.ts"
+      ]
+    },
+    {
+      "name": "response-authority",
+      "file": "lib/browser-profile-permission-client.mjs",
+      "line": 40,
+      "changedLine": "  if (!REQUEST.every(key => key === 'authority' || raw[key] === record.request[key]) || raw.label !== LABELS[record.request.kind] || raw.originSource !== (record.request.kind === 'navigate' ? 'request-url' : 'agent-reported') ||",
+      "original": "!shared.sameAuthority(authority, record.request.authority) || ",
+      "changed": "",
+      "sourceSha256": "f7f4de506ed33aa7f5473c0d4e64f7ac03fdb5268c5f30ee7585717b726f0aa7",
+      "mutantSha256": "171be61eaa72988c06935109caa253393fc8f8f3d7cb0770c9a66c22d4299bf7",
+      "restoredSha256": "f7f4de506ed33aa7f5473c0d4e64f7ac03fdb5268c5f30ee7585717b726f0aa7",
+      "redExit": 1,
+      "greenExit": 0,
+      "command": [
+        "node",
+        "--experimental-strip-types",
+        "--test",
+        "--test-name-pattern=crossed response scope",
+        "test/browser-profile-permission-client.test.ts"
+      ]
+    },
+    {
+      "name": "response-label",
+      "file": "lib/browser-profile-permission-client.mjs",
+      "line": 40,
+      "changedLine": "  if (!shared.sameAuthority(authority, record.request.authority) || !REQUEST.every(key => key === 'authority' || raw[key] === record.request[key]) || raw.originSource !== (record.request.kind === 'navigate' ? 'request-url' : 'agent-reported') ||",
+      "original": "raw.label !== LABELS[record.request.kind] || ",
+      "changed": "",
+      "sourceSha256": "f7f4de506ed33aa7f5473c0d4e64f7ac03fdb5268c5f30ee7585717b726f0aa7",
+      "mutantSha256": "cac8dc54eed83a41f24dcf718778ab39a64d0676b7e34f0d725db433391c5929",
+      "restoredSha256": "f7f4de506ed33aa7f5473c0d4e64f7ac03fdb5268c5f30ee7585717b726f0aa7",
+      "redExit": 1,
+      "greenExit": 0,
+      "command": [
+        "node",
+        "--experimental-strip-types",
+        "--test",
+        "--test-name-pattern=crossed response scope",
+        "test/browser-profile-permission-client.test.ts"
+      ]
+    },
+    {
+      "name": "response-read-nonce",
+      "file": "lib/browser-profile-permission-client.mjs",
+      "line": 43,
+      "changedLine": "      query && (raw.readExpiresAt !== query.readExpiresAt) || consumed && (raw.consumed !== true || raw.state !== 'consumed' || raw.choice !== 'allow_once') ||",
+      "original": "raw.readNonce !== query.readNonce || ",
+      "changed": "",
+      "sourceSha256": "f7f4de506ed33aa7f5473c0d4e64f7ac03fdb5268c5f30ee7585717b726f0aa7",
+      "mutantSha256": "06574cea1d0a7898bc7442bf46a9fcc779f445581a79345fd45be026b04b4ce6",
+      "restoredSha256": "f7f4de506ed33aa7f5473c0d4e64f7ac03fdb5268c5f30ee7585717b726f0aa7",
+      "redExit": 1,
+      "greenExit": 0,
+      "command": [
+        "node",
+        "--experimental-strip-types",
+        "--test",
+        "--test-name-pattern=crossed response scope",
+        "test/browser-profile-permission-client.test.ts"
+      ]
+    },
+    {
+      "name": "scalar-response-parser",
+      "file": "lib/browser-profile-permission-client.mjs",
+      "line": 36,
+      "changedLine": "  shared.canonical(raw.authority)",
+      "original": "  let authority\n",
+      "changed": "  let authority\n  shared.canonical(raw.authority)\n",
+      "sourceSha256": "f7f4de506ed33aa7f5473c0d4e64f7ac03fdb5268c5f30ee7585717b726f0aa7",
+      "mutantSha256": "90dabb23e0c483f5fe5dbd807c5a2a11cc9f81412519e8b131fb6b950da192cd",
+      "restoredSha256": "f7f4de506ed33aa7f5473c0d4e64f7ac03fdb5268c5f30ee7585717b726f0aa7",
+      "redExit": 1,
+      "greenExit": 0,
+      "command": [
+        "node",
+        "--experimental-strip-types",
+        "--test",
+        "--test-name-pattern=deeply nested response",
+        "test/browser-profile-permission-client.test.ts"
+      ]
+    },
+    {
+      "name": "consume-requires-answer",
+      "file": "lib/browser-profile-permission-client.mjs",
+      "line": 141,
+      "changedLine": "    if (false) throw fail('profile_permission_answer_required')",
+      "original": "if (consume && (record.status?.state !== 'answered' || record.status.choice !== 'allow_once'))",
+      "changed": "if (false)",
+      "sourceSha256": "f7f4de506ed33aa7f5473c0d4e64f7ac03fdb5268c5f30ee7585717b726f0aa7",
+      "mutantSha256": "abaa2255641133f367cf25c0077bfaaf18727ad213a4d99744c68d878e004f8a",
+      "restoredSha256": "f7f4de506ed33aa7f5473c0d4e64f7ac03fdb5268c5f30ee7585717b726f0aa7",
+      "redExit": 1,
+      "greenExit": 0,
+      "command": [
+        "node",
+        "--experimental-strip-types",
+        "--test",
+        "--test-name-pattern=paired request and one consume",
+        "test/browser-profile-permission-client.test.ts"
+      ]
+    },
+    {
+      "name": "consume-one-attempt",
+      "file": "lib/browser-profile-permission-client.mjs",
+      "line": 140,
+      "changedLine": "    if (false) throw fail('profile_permission_consumed')",
+      "original": "if (consume && record.consumeAttempted)",
+      "changed": "if (false)",
+      "sourceSha256": "f7f4de506ed33aa7f5473c0d4e64f7ac03fdb5268c5f30ee7585717b726f0aa7",
+      "mutantSha256": "1b382a265f727a6160d8fd8361a3b3a542e9986dc63081f3100c4cd213630c82",
+      "restoredSha256": "f7f4de506ed33aa7f5473c0d4e64f7ac03fdb5268c5f30ee7585717b726f0aa7",
+      "redExit": 1,
+      "greenExit": 0,
+      "command": [
+        "node",
+        "--experimental-strip-types",
+        "--test",
+        "--test-name-pattern=unknown consume acknowledgement",
+        "test/browser-profile-permission-client.test.ts"
+      ]
+    },
+    {
+      "name": "query-use-time-expiry",
+      "file": "lib/browser-profile-permission-client.mjs",
+      "line": 146,
+      "changedLine": "    if (false) throw fail('profile_permission_response_invalid')",
+      "original": "if (query.readExpiresAt <= this.now())",
+      "changed": "if (false)",
+      "sourceSha256": "f7f4de506ed33aa7f5473c0d4e64f7ac03fdb5268c5f30ee7585717b726f0aa7",
+      "mutantSha256": "76506f3540fc9c1214284720d47769b8235ec2defc1d2896fd3df4cf048f8cab",
+      "restoredSha256": "f7f4de506ed33aa7f5473c0d4e64f7ac03fdb5268c5f30ee7585717b726f0aa7",
+      "redExit": 1,
+      "greenExit": 0,
+      "command": [
+        "node",
+        "--experimental-strip-types",
+        "--test",
+        "--test-name-pattern=query that expires",
+        "test/browser-profile-permission-client.test.ts"
+      ]
+    },
+    {
+      "name": "captured-pairing-proof",
+      "file": "lib/browser-profile-permission-client.mjs",
+      "line": 77,
+      "changedLine": "        const admitted = () => { check(); if (false) throw fail('profile_permission_context_changed'); synchronous(() => current.call(proof)) }",
+      "original": "if (Object.keys(snapshot).some(key => snapshot[key] !== proof[key]) || proof.assertCurrent !== current)",
+      "changed": "if (false)",
+      "sourceSha256": "f7f4de506ed33aa7f5473c0d4e64f7ac03fdb5268c5f30ee7585717b726f0aa7",
+      "mutantSha256": "8af52275d1080c370ad076e99e251149951b9666adf9d0240f730f99c722de34",
+      "restoredSha256": "f7f4de506ed33aa7f5473c0d4e64f7ac03fdb5268c5f30ee7585717b726f0aa7",
+      "redExit": 1,
+      "greenExit": 0,
+      "command": [
+        "node",
+        "--experimental-strip-types",
+        "--test",
+        "--test-name-pattern=expiry, backward clock",
+        "test/browser-profile-permission-client.test.ts"
+      ]
+    },
+    {
+      "name": "cleanup-drain-latch",
+      "file": "lib/browser-profile-permission-client.mjs",
+      "line": 151,
+      "changedLine": "  async whenDrained() { if (this.#pending) await Promise.allSettled([this.#pending]); if (false) throw fail('profile_permission_cleanup_unconfirmed') }",
+      "original": "if (this.#cleanupUnconfirmed) throw fail('profile_permission_cleanup_unconfirmed')",
+      "changed": "if (false) throw fail('profile_permission_cleanup_unconfirmed')",
+      "sourceSha256": "f7f4de506ed33aa7f5473c0d4e64f7ac03fdb5268c5f30ee7585717b726f0aa7",
+      "mutantSha256": "a649169ae29d7ca113fbeb53fa9288a7ea20cea629be05eb01e3cc852ca28f4b",
+      "restoredSha256": "f7f4de506ed33aa7f5473c0d4e64f7ac03fdb5268c5f30ee7585717b726f0aa7",
+      "redExit": 1,
+      "greenExit": 0,
+      "command": [
+        "node",
+        "--experimental-strip-types",
+        "--test",
+        "--test-name-pattern=reader cleanup failure",
+        "test/browser-profile-permission-client.test.ts"
+      ]
+    },
+    {
+      "name": "cleanup-retains-capacity",
+      "file": "lib/browser-profile-permission-client.mjs",
+      "line": 103,
+      "changedLine": "    void work.finally(() => { if (this.#pending === work) this.#pending = null }).catch(() => {})",
+      "original": "this.#pending === work && !this.#cleanupUnconfirmed",
+      "changed": "this.#pending === work",
+      "sourceSha256": "f7f4de506ed33aa7f5473c0d4e64f7ac03fdb5268c5f30ee7585717b726f0aa7",
+      "mutantSha256": "9a3f2b6180e5889210ef92a60934d5dd626138d280e208515108ecc71648dfe9",
+      "restoredSha256": "f7f4de506ed33aa7f5473c0d4e64f7ac03fdb5268c5f30ee7585717b726f0aa7",
+      "redExit": 1,
+      "greenExit": 0,
+      "command": [
+        "node",
+        "--experimental-strip-types",
+        "--test",
+        "--test-name-pattern=reader cleanup failure",
+        "test/browser-profile-permission-client.test.ts"
+      ]
+    },
+    {
+      "name": "late-body-owned",
+      "file": "lib/browser-profile-permission-client.mjs",
+      "line": 85,
+      "changedLine": "        admitted(); responseBody = response?.body; if (typeof responseBody?.getReader === 'function') reader = responseBody.getReader()",
+      "original": "responseBody = response?.body; if",
+      "changed": "admitted(); responseBody = response?.body; if",
+      "sourceSha256": "f7f4de506ed33aa7f5473c0d4e64f7ac03fdb5268c5f30ee7585717b726f0aa7",
+      "mutantSha256": "a0e662b38f81bf63d9144fc9458086520187ed04720952b318062f4da88dac9d",
+      "restoredSha256": "f7f4de506ed33aa7f5473c0d4e64f7ac03fdb5268c5f30ee7585717b726f0aa7",
+      "redExit": 1,
+      "greenExit": 0,
+      "command": [
+        "node",
+        "--experimental-strip-types",
+        "--test",
+        "--test-name-pattern=response arriving after timeout",
+        "test/browser-profile-permission-client.test.ts"
+      ]
+    },
+    {
+      "name": "unknown-creation-handle",
+      "file": "lib/browser-profile-permission-client.mjs",
+      "line": 132,
+      "changedLine": "      if (true) throw error",
+      "original": "if (!['profile_permission_outcome_unknown', 'profile_permission_response_invalid', 'profile_permission_cleanup_unconfirmed'].includes(error?.code))",
+      "changed": "if (true)",
+      "sourceSha256": "f7f4de506ed33aa7f5473c0d4e64f7ac03fdb5268c5f30ee7585717b726f0aa7",
+      "mutantSha256": "c061d51374c057d8636f0922282911f6cde0837745220f2022bced2656870149",
+      "restoredSha256": "f7f4de506ed33aa7f5473c0d4e64f7ac03fdb5268c5f30ee7585717b726f0aa7",
+      "redExit": 1,
+      "greenExit": 0,
+      "command": [
+        "node",
+        "--experimental-strip-types",
+        "--test",
+        "--test-name-pattern=lost creation acknowledgement",
+        "test/browser-profile-permission-client.test.ts"
+      ]
+    }
+  ]
+}

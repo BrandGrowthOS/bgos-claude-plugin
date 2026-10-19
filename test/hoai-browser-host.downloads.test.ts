@@ -5,7 +5,17 @@
  * and the real download store in a temp folder. The real Chrome end to end
  * is hoai-browser-host.downloads.chromium.test.ts.
  */
-import test from 'node:test'
+import { test as nativeTest, type TestContext } from 'node:test'
+
+// Production background timers are unreferenced. A synthetic test has no
+// browser socket to keep Node alive while those original timers settle.
+function test(name: string, body: (context: TestContext) => void | Promise<void>) {
+  return nativeTest(name, { timeout: 15_000 }, async context => {
+    const fixtureKeeper = setInterval(() => {}, 1000)
+    context.after(() => clearInterval(fixtureKeeper))
+    try { await body(context) } finally { clearInterval(fixtureKeeper) }
+  })
+}
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'

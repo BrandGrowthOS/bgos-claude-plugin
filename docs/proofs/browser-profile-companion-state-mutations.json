@@ -1,0 +1,56 @@
+[
+  {
+    "name": "pairing-origin",
+    "file": "lib/browser-profile-peer-review.mjs",
+    "line": 17,
+    "changedLine": "    const check=()=>{if(!pairings.includes(pairing)||pairing.token!==token||pairing.pairingId!==pairingId||pairing.ownerUserId!==ownerUserId||JSON.stringify(pairing.assistantIds)!==assistantIds||!pairing.assistantIds.includes(document.assistantId))throw fail();const current=assertPairingCurrent(pairing);if(current?.then){void Promise.resolve(current).catch(()=>{});throw fail()}if(current!==true)throw fail();return true}",
+    "red": 1,
+    "restored": 0,
+    "sha256": "b9e4322ef1cbbc7c289cba1b7889d20417f5ad24ca6d8501de478f67804acb79"
+  },
+  {
+    "name": "late-pin-publication",
+    "file": "lib/browser-profile-peer-pins.mjs",
+    "line": 32,
+    "changedLine": "    catch{if(linked)publicationFailed=false;throw fail()}finally{await handle?.close();if(!linked)await fs.unlink(temporary).catch(error=>{if(error.code!=='ENOENT')throw error})}",
+    "red": 1,
+    "restored": 0,
+    "sha256": "834b482cb3809714994721e96bc3e32620ee092a16ac925363cbf1363f1754cd"
+  },
+  {
+    "name": "pin-recipient",
+    "file": "lib/browser-profile-peer-pins.mjs",
+    "line": 14,
+    "changedLine": "function documentOf(raw,scope){const document=peerReviewDocument(raw);if(document.profileId!==scope.profileId||document.assistantId!==scope.assistantId||document.agentEndpointId!==scope.endpointId||document.agentKeyFingerprint!==scope.keyFingerprint)throw fail();return document}",
+    "red": 1,
+    "restored": 0,
+    "sha256": "834b482cb3809714994721e96bc3e32620ee092a16ac925363cbf1363f1754cd"
+  },
+  {
+    "name": "pin-quota",
+    "file": "lib/browser-profile-peer-pins.mjs",
+    "line": 30,
+    "changedLine": "    if(names.length>=5)throw fail();const bytes=canonical(record);if(bytes.length>8192)throw fail();const temporary=path.join(this.directory,`${randomUUID()}.tmp`);let handle,linked=false",
+    "red": 1,
+    "restored": 0,
+    "sha256": "834b482cb3809714994721e96bc3e32620ee092a16ac925363cbf1363f1754cd"
+  },
+  {
+    "name": "catalog-current",
+    "file": "lib/browser-profile-companion-state.mjs",
+    "line": 19,
+    "changedLine": "function check(callback){if(typeof callback!=='function')throw fail('profile_companion_context_changed');const value=callback();if(value?.then){void Promise.resolve(value).catch(()=>{});throw fail('profile_companion_context_changed')}if(value===false)void 0}",
+    "red": 1,
+    "restored": 0,
+    "sha256": "6a1f21a07b9a5153a13fd1f581de643eb9aa4f5da9f854819f1a36e13d0fcd11"
+  },
+  {
+    "name": "catalog-immutable",
+    "file": "lib/browser-profile-companion-state.mjs",
+    "line": 36,
+    "changedLine": "      try{const prior=await this._read(file);check(assertCurrent);return prior}catch(error){if(error.code!=='ENOENT')throw error}",
+    "red": 1,
+    "restored": 0,
+    "sha256": "6a1f21a07b9a5153a13fd1f581de643eb9aa4f5da9f854819f1a36e13d0fcd11"
+  }
+]

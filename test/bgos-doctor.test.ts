@@ -251,6 +251,23 @@ test('buildDoctorRows: posix platform swaps the claude install one-liner', () =>
   assert.ok(rowById(rows, 'claude').fix.includes('curl -fsSL https://claude.ai/install.sh | bash'))
 })
 
+test('buildDoctorRows: found Node must meet the browser minimum and failures name supported patched releases', () => {
+  for (const version of ['v18.20.8', 'v20.20.1', 'v22.11.9', 'v22.12.0-rc.1', 'unknown', undefined]) {
+    const row = rowById(buildDoctorRows(healthyProbes({ node: { found: true, version } })), 'node')
+    assert.equal(row.ok, false, String(version))
+    assert.match(row.fix, /current patched Node\.js 22 or 24 LTS/)
+    assert.match(row.fix, /minimum 22\.12\.0/)
+  }
+  for (const version of ['v22.12.0', 'v22.23.3', 'v24.16.0']) {
+    const row = rowById(buildDoctorRows(healthyProbes({ node: { found: true, version } })), 'node')
+    assert.equal(row.ok, true, version)
+    assert.equal(row.fix, '')
+  }
+  const missing = rowById(buildDoctorRows(healthyProbes({ node: { found: false } })), 'node')
+  assert.equal(missing.ok, false)
+  assert.match(missing.fix, /current patched Node\.js 22 or 24 LTS/)
+})
+
 // Superseded 2026-09-21 (defect F5). This used to assert ok:null and the
 // detail 'skipped' for both rows. "Render a never-run check as UNPROVEN
 // rather than SKIP" reached the liveness row and stopped there, and these two

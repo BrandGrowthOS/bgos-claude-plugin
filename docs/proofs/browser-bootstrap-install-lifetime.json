@@ -1,0 +1,1661 @@
+{
+  "schemaVersion": 1,
+  "status": "Committed source and bounded qualification complete; not a packaged runtime or full coordinator acceptance claim",
+  "sourceCommit": "8d499c244ea2233c855eab9bcb06e78809934d82",
+  "all7CurrentPinsEqualCommittedGitBlobs": true,
+  "baseCommit": "e9db85361fd6dec6bc05c2fa5800b2167645722a",
+  "sourceConstruction": "Exact tracked Git export of base plus seven executed frozen overlays. Subsequent root commit preflight normalized only the provenance JSON CRLF to LF; parsed JSON is identical. Current sourcePins and executedSourcePins distinguish these bytes. Two guidance edits were excluded from executed 862-input archives. Immutable preparation manifests retain PREPARED ONLY wording; separate completed receipts establish execution.",
+  "sourcePins": {
+    "lib/browser-bootstrap.mjs": "76467e8feaca93098fdf270f85a3dea12f9dffad2c4e976c268ba2ff299c3965",
+    "test/browser-bootstrap.test.ts": "676cc2f3cac75baae2a29eae83e7c0f1c420338075c29b0f8fa3e9f7b01d61ef",
+    "lib/browser-install-lifetime.mjs": "5bc9de8690f7c3c0a066adebceb063eac93910ede9814f5e58b1870782a03219",
+    "test/browser-install-lifetime.test.ts": "9f3dd100c80559b86d11a5a2e9ca564b00d92101d4da1e02c706730c658db2d1",
+    "bin/hoai-browser-host.mjs": "de4a28a28e38a6449ff0c9642203ce86d03b96e3fa1f38fdc147606b039912b9",
+    "test/hoai-browser-host.test.ts": "d675f5cd76b1af6b5e7880560de74dabfd517fa2d97f6eabdbd895928b13aac9",
+    "lib/browser-bootstrap.pin.json": "21057fbfe0993ccace1bc9f5ff977039af41cd9b790c6eed473dd58a73cb13ae"
+  },
+  "executedSourcePins": {
+    "lib/browser-bootstrap.mjs": "76467e8feaca93098fdf270f85a3dea12f9dffad2c4e976c268ba2ff299c3965",
+    "test/browser-bootstrap.test.ts": "676cc2f3cac75baae2a29eae83e7c0f1c420338075c29b0f8fa3e9f7b01d61ef",
+    "lib/browser-install-lifetime.mjs": "5bc9de8690f7c3c0a066adebceb063eac93910ede9814f5e58b1870782a03219",
+    "test/browser-install-lifetime.test.ts": "9f3dd100c80559b86d11a5a2e9ca564b00d92101d4da1e02c706730c658db2d1",
+    "bin/hoai-browser-host.mjs": "de4a28a28e38a6449ff0c9642203ce86d03b96e3fa1f38fdc147606b039912b9",
+    "test/hoai-browser-host.test.ts": "d675f5cd76b1af6b5e7880560de74dabfd517fa2d97f6eabdbd895928b13aac9",
+    "lib/browser-bootstrap.pin.json": "19fa11a3b51096a996e1a082ad18d09d838536135db71963e7f427f42dfe1f2e"
+  },
+  "newlineNormalization": {
+    "scope": "Newline-only provenance JSON normalization after executed full3/cold proofs; no semantic mutation, installer or browser launch. Original executed receipts/manifests stay unchanged.",
+    "path": "lib/browser-bootstrap.pin.json",
+    "executedOriginalSha256": "19fa11a3b51096a996e1a082ad18d09d838536135db71963e7f427f42dfe1f2e",
+    "currentNormalizedSha256": "21057fbfe0993ccace1bc9f5ff977039af41cd9b790c6eed473dd58a73cb13ae",
+    "exactCRLFtoLFTransformation": true,
+    "parsedJSONEqual": true,
+    "originalCRLFCount": 13,
+    "normalizedCRLFCount": 0,
+    "other6Unchanged": true,
+    "originalRetainedPath": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\pin-lf-normalization-16b14f52\\browser-bootstrap.pin.executed-crlf.json",
+    "wholeSelectedTests": {
+      "tests": 30,
+      "pass": 30,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    "testCommand": [
+      "node",
+      "--import",
+      "tsx",
+      "--test",
+      "--test-reporter=tap",
+      "test/browser-bootstrap.test.ts",
+      "test/browser-install-lifetime.test.ts"
+    ],
+    "testProcessExit": 0,
+    "testDeadlineUnknown": false,
+    "actualResolverCommand": [
+      "node",
+      "--input-type=module",
+      "-e",
+      "import { bundledChromium } from './lib/browser-bootstrap.mjs'; const value=bundledChromium(); console.log(JSON.stringify({actualBundledResolver:true,version:value.version,executable:value.executable,cli:value.cli,marker:value.marker,cache:value.cache}))"
+    ],
+    "actualResolverExit": 0,
+    "sourcePinsBeforeAfterMatch": true,
+    "currentSourcePins": {
+      "lib/browser-bootstrap.mjs": "76467e8feaca93098fdf270f85a3dea12f9dffad2c4e976c268ba2ff299c3965",
+      "test/browser-bootstrap.test.ts": "676cc2f3cac75baae2a29eae83e7c0f1c420338075c29b0f8fa3e9f7b01d61ef",
+      "lib/browser-install-lifetime.mjs": "5bc9de8690f7c3c0a066adebceb063eac93910ede9814f5e58b1870782a03219",
+      "test/browser-install-lifetime.test.ts": "9f3dd100c80559b86d11a5a2e9ca564b00d92101d4da1e02c706730c658db2d1",
+      "bin/hoai-browser-host.mjs": "de4a28a28e38a6449ff0c9642203ce86d03b96e3fa1f38fdc147606b039912b9",
+      "test/hoai-browser-host.test.ts": "d675f5cd76b1af6b5e7880560de74dabfd517fa2d97f6eabdbd895928b13aac9",
+      "lib/browser-bootstrap.pin.json": "21057fbfe0993ccace1bc9f5ff977039af41cd9b790c6eed473dd58a73cb13ae"
+    },
+    "raw": [
+      {
+        "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\pin-lf-normalization-16b14f52\\browser-bootstrap.pin.executed-crlf.json",
+        "sha256": "19fa11a3b51096a996e1a082ad18d09d838536135db71963e7f427f42dfe1f2e"
+      },
+      {
+        "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\pin-lf-normalization-16b14f52\\current-source-pins.json",
+        "sha256": "4e96febf35994ffd3c46d5ae7cf0723158d3e0d8fd678d203bbbc70401dad10c"
+      },
+      {
+        "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\pin-lf-normalization-16b14f52\\focused.txt",
+        "sha256": "f4c964bc03f62cae8862f258fe2f5e3363ffbd5cc6b6357fb61c82bb71c4e463"
+      },
+      {
+        "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\pin-lf-normalization-16b14f52\\focused-stderr.txt",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\pin-lf-normalization-16b14f52\\actual-resolver.txt",
+        "sha256": "3a9af60025225499ba061f4ec007c72c166ac8d6b5c842dd57c8f8bde608fc98"
+      },
+      {
+        "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\pin-lf-normalization-16b14f52\\actual-resolver-stderr.txt",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ]
+  },
+  "guidancePins": {
+    "README.md": "fca861a20deabdb1dd46ebccf1035abab4d5de2566623383baf7385550632061",
+    "docs/browser-profile-companion.md": "eaf837223656c043cf5a8d03bab5cbb632937632c4abed2fe13ca6ad6d444450"
+  },
+  "behavior": [
+    "Publish original installer logical and physical reservations before logger/spawn callbacks; same-executable reentry joins the original work.",
+    "Hold an exclusive durable per-cache marker before spawn and before cached executable admission. Recheck source/complete marker while claimed; never reclaim dead-owner or replaced/malformed marker automatically.",
+    "A logical deadline/cancellation does not release physical work, pending admission or durable recovery state. No effectful process signals are sent.",
+    "Normal trusted pinned CLI completion requires exact provenance, original exit0 and close0, both pipe EOF and the verified installed marker. This is not a general OS descendant-empty proof.",
+    "After an installer starts, abnormal cleanup is only positively releasable on Linux through original PID/start/session/group checks, bounded inventory, strict kernel signal0 ESRCH and a fresh original-absence recheck. Windows/Darwin abnormal or uncertain cleanup remains recovery-required.",
+    "Host stop fences new admission and waits original physical installer drain; unknown cannot produce a clean-stop claim.",
+    "Read-only readiness and --check refuse a discovered pending/unknown bundled marker even if another Chrome executable exists; unrelated installed browser admission remains available when no marker/unknown exists."
+  ],
+  "qualification": {
+    "affected-2aa3f56c": {
+      "manifest": {
+        "path": ".tmp/bootstrap-lifetime-repair/affected-2aa3f56c/manifest.json",
+        "sha256": "bfd6a7dec74213f8b284dc76a83fc784c59283e4ed6f8602375f1e27325e5af4"
+      },
+      "receipt": {
+        "path": ".tmp/bootstrap-lifetime-repair/affected-2aa3f56c/receipt.json",
+        "sha256": "7df1089ec60a55f013b1434ce8e8f1b8412c75cffd9c07fe4cb5cc03e271f061"
+      },
+      "archivePinnedInputs": 862,
+      "archiveFileMembers": 863,
+      "archiveAllPinsVerified": true,
+      "receiptSummary": {
+        "exitCode": 0,
+        "transportDeadlineUnknown": false,
+        "originalDockerCloseObserved": true,
+        "containerAbsent": true,
+        "forcedStop": false,
+        "durationSeconds": 77.7753176689148,
+        "originalSshExitCode": 0,
+        "originalSshCloseObserved": true,
+        "localTransportDeadlineUnknown": false,
+        "liveSourcePinsBeforeAfterMatch": true,
+        "core": {
+          "mode": "affected",
+          "uid": 1000,
+          "node": "22.23.3",
+          "tests": {
+            "code": 0,
+            "signal": null
+          },
+          "typescript": {
+            "code": 0,
+            "signal": null
+          },
+          "preinstalledBrowserSha256": "377a9fc07b495c3b8d0ab8ec1fdfd153641759f9756fea34d8dfce4de82f5025",
+          "sourceInputsBeforeAfterMatch": true,
+          "sourceCount": 862
+        },
+        "testSummary": {
+          "tests": 66,
+          "pass": 66,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0
+        },
+        "positiveQualification": true
+      }
+    },
+    "normal-first-use-e8510033": {
+      "manifest": {
+        "path": ".tmp/bootstrap-lifetime-repair/normal-first-use-e8510033/manifest.json",
+        "sha256": "e6898ec5cea9474fa9452a0ba8d0530f07d608b3e7271a0955d0192686406c1b"
+      },
+      "receipt": {
+        "path": ".tmp/bootstrap-lifetime-repair/normal-first-use-e8510033/receipt.json",
+        "sha256": "0066757875a5c12ac4cf04a139296a113c96f4c7508b8324e32b23f9fc8cb05f"
+      },
+      "archivePinnedInputs": 862,
+      "archiveFileMembers": 863,
+      "archiveAllPinsVerified": true,
+      "receiptSummary": {
+        "exitCode": 0,
+        "transportDeadlineUnknown": false,
+        "originalDockerCloseObserved": true,
+        "containerAbsent": true,
+        "forcedStop": false,
+        "durationSeconds": 16.788018703460693,
+        "originalSshExitCode": 0,
+        "originalSshCloseObserved": true,
+        "localTransportDeadlineUnknown": false,
+        "liveSourcePinsBeforeAfterMatch": true,
+        "core": {
+          "mode": "normal-first-use",
+          "uid": 1000,
+          "node": "22.23.3",
+          "executableSha256": "377a9fc07b495c3b8d0ab8ec1fdfd153641759f9756fea34d8dfce4de82f5025",
+          "cacheReuse": true,
+          "defaultCache": "/work/home/.cache/ms-playwright",
+          "cli": {
+            "pid": 24,
+            "exit": {
+              "code": 0,
+              "signal": null
+            },
+            "close": {
+              "code": 0,
+              "signal": null
+            },
+            "stdoutEOF": true,
+            "stderrEOF": true
+          },
+          "spawnCount": 1,
+          "normalPinnedCompletion": true,
+          "activity": {
+            "pendingPhysicalOperations": 0,
+            "cleanupUnknown": false
+          },
+          "markerRetained": false,
+          "sourceInputsBeforeAfterMatch": true,
+          "sourceCount": 862
+        },
+        "positiveQualification": true
+      }
+    },
+    "linux-process-proof": {
+      "manifest": {
+        "path": ".tmp/bootstrap-lifetime-repair/linux-process-proof/source-manifest.json",
+        "sha256": "1622e45d9a4f239183d57f7e47adb135349327a1b750a8216804ac34621d1993"
+      },
+      "receipt": {
+        "path": ".tmp/bootstrap-lifetime-repair/linux-process-proof/receipt.json",
+        "sha256": "3d56488da4771b6c0bf6a0055436f6c39a79ea8e97a4832a3798831bc902171e"
+      },
+      "archivePinnedInputs": 11,
+      "archiveFileMembers": 12,
+      "archiveAllPinsVerified": true,
+      "receiptSummary": {
+        "exitCode": 0,
+        "error": null,
+        "originalDockerTransportCloseObserved": true,
+        "containerAbsent": true,
+        "forcedStop": false,
+        "durationSeconds": 1.9509661197662354,
+        "originalSshTransportExitCode": 0,
+        "originalSshTransportCloseObserved": true,
+        "localTransportDeadlineUnknown": false,
+        "liveSourcePinsBeforeAfterMatch": true,
+        "coreProof": {
+          "kind": "synthetic_cli_pipe_lifetime",
+          "scope": "Actual Node CLI/grandchild and imported bootstrap; injected synthetic resolver is NOT pinned Playwright completion or browser/install acceptance",
+          "phase": "complete",
+          "node": "22.23.3",
+          "uid": 1000,
+          "checks": [
+            "original_exit_does_not_release_close_or_pipes",
+            "appearing_executable_does_not_bypass_held_physical_reservation",
+            "logical_deadline_preserves_physical_work_and_durable_marker",
+            "actual_close_and_real_pipe_EOF_precede_any_cleanup_resolution",
+            "original_pid_start_identities_absent_and_separate_later_kernel_ESRCH"
+          ],
+          "cleanup": {
+            "originalChildClosed": true,
+            "stdoutEOF": true,
+            "stderrEOF": true,
+            "spawnCount": 1,
+            "effectfulSignalsSent": 0,
+            "forcedStop": false
+          },
+          "cliExit": 0,
+          "identities": [
+            {
+              "pid": 23,
+              "group": 23,
+              "session": 23,
+              "start": "675843175"
+            },
+            {
+              "pid": 30,
+              "group": 23,
+              "session": 23,
+              "start": "675843178"
+            }
+          ],
+          "cliClose": 0,
+          "physicalDrain": {
+            "known": true,
+            "error": null,
+            "activity": {
+              "pendingPhysicalOperations": 0,
+              "cleanupUnknown": false
+            },
+            "markerRetained": false
+          },
+          "laterIndependentKernelGroupAbsent": true,
+          "lateUnknownNotRelabelled": true,
+          "sourcesUnchanged": true
+        },
+        "coreSafetyConditionsObserved": true,
+        "coreKnownPhysicalDrain": true,
+        "conservativeUnknownRetained": false
+      }
+    }
+  },
+  "mutationScope": {
+    "count": 20,
+    "allDirectAssertionReds": true,
+    "allExactWholeFileRestores": true,
+    "rows": [
+      {
+        "name": "physical_retention",
+        "target": "lib/browser-install-lifetime.mjs",
+        "line": 60,
+        "baselineSha256": "5bc9de8690f7c3c0a066adebceb063eac93910ede9814f5e58b1870782a03219",
+        "mutantSha256": "f5dd985e4680e14474a0ce821a2182f10e7bc4ab48c57aacea1a57fbc9ead248",
+        "loadedLines": [
+          "    rejectResult(installRecoveryRequired()); resolvePhysical()"
+        ],
+        "redExitCode": 1,
+        "directAssertion": true,
+        "restoreExitCode": 0,
+        "exactRestore": true,
+        "red": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\physical_retention\\red.txt",
+          "sha256": "236d868ff6db6f409d58e0c96b5b22205f8795c3f36e550cdc9f2a6d63dd76ac"
+        },
+        "restore": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\physical_retention\\restore.txt",
+          "sha256": "d1b4147045ba67ce2c43ca1efd2cce880b673459930331610857643019183507"
+        },
+        "change": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\physical_retention\\changed-lines.json",
+          "sha256": "4d40f0223f96887805fb7ab79ed9e3313f2d36052df3d6691dae0b7912916309"
+        },
+        "command": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "--test-name-pattern=error and cancellation",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\physical_retention\\test\\browser-install-lifetime.test.ts"
+        ],
+        "restoreCommand": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\physical_retention\\test\\browser-install-lifetime.test.ts"
+        ]
+      },
+      {
+        "name": "pipe_eof",
+        "target": "lib/browser-install-lifetime.mjs",
+        "line": 55,
+        "baselineSha256": "5bc9de8690f7c3c0a066adebceb063eac93910ede9814f5e58b1870782a03219",
+        "mutantSha256": "0ddaa8739419fa599fa8248c5d71d653f2bcd3ae7b52175de2e2baa13204ef79",
+        "loadedLines": [
+          "  let stdoutEnd = true, stderrEnd = true, pipeFailure = false"
+        ],
+        "redExitCode": 1,
+        "directAssertion": true,
+        "restoreExitCode": 0,
+        "exactRestore": true,
+        "red": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\pipe_eof\\red.txt",
+          "sha256": "9157daf76cd23ebae1d33e50be986ff237ca904ea722f644b18b9c419e2afc6a"
+        },
+        "restore": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\pipe_eof\\restore.txt",
+          "sha256": "cb047675bcafc57dc8863ab5033ec413461ee0b52f590f9f4dda0707f94f333c"
+        },
+        "change": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\pipe_eof\\changed-lines.json",
+          "sha256": "0159a9bc903414635eaa932a3752dacfd7123bf7def314e6b826eecc5fb58e44"
+        },
+        "command": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "--test-name-pattern=missing EOF",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\pipe_eof\\test\\browser-install-lifetime.test.ts"
+        ],
+        "restoreCommand": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\pipe_eof\\test\\browser-install-lifetime.test.ts"
+        ]
+      },
+      {
+        "name": "dead_owner_marker",
+        "target": "lib/browser-bootstrap.mjs",
+        "line": 87,
+        "baselineSha256": "76467e8feaca93098fdf270f85a3dea12f9dffad2c4e976c268ba2ff299c3965",
+        "mutantSha256": "55034b252c83901565f4e118ee57d26e5655acb58637290331ca70e2b445b84c",
+        "loadedLines": [
+          "    if (lockExists(resolved.cache) || blocked.has(resolved.cache)) { return resolved.executable }"
+        ],
+        "redExitCode": 1,
+        "directAssertion": true,
+        "restoreExitCode": 0,
+        "exactRestore": true,
+        "red": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\dead_owner_marker\\red.txt",
+          "sha256": "073092b8be7cb44e6d96bd67fb11c54ffc054e16ba12078a3806202cb184c328"
+        },
+        "restore": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\dead_owner_marker\\restore.txt",
+          "sha256": "474b21e4ace0e1a563b8f3743385d1daa3a6b6f824ecdf1c72a87ba6c8a0ee5f"
+        },
+        "change": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\dead_owner_marker\\changed-lines.json",
+          "sha256": "a0ba5408e36eec81dbd9837cc6e466b7a373d3c537e069a5f0c48f074dd1ae32"
+        },
+        "command": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "--test-name-pattern=stale/dead owner",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\dead_owner_marker\\test\\browser-bootstrap.test.ts"
+        ],
+        "restoreCommand": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\dead_owner_marker\\test\\browser-bootstrap.test.ts"
+        ]
+      },
+      {
+        "name": "replacement_nonce",
+        "target": "lib/browser-bootstrap.mjs",
+        "line": 63,
+        "baselineSha256": "76467e8feaca93098fdf270f85a3dea12f9dffad2c4e976c268ba2ff299c3965",
+        "mutantSha256": "19f74ad8832cb0112f3ea8bcfc24c00680a778ba8487f276f0376fab007f9123",
+        "loadedLines": [
+          "    markUnknown() { if (open) { try { write('recovery-required') } catch {} } },"
+        ],
+        "redExitCode": 1,
+        "directAssertion": true,
+        "restoreExitCode": 0,
+        "exactRestore": true,
+        "red": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\replacement_nonce\\red.txt",
+          "sha256": "a1c5572a91b92e91c1ec5286838425689674648ea69f32915bbb7d2c72ffb08d"
+        },
+        "restore": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\replacement_nonce\\restore.txt",
+          "sha256": "c33cb102f9b2154249a5430a8a827884a7d477d0b09e0aed2add4acb830dfa8c"
+        },
+        "change": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\replacement_nonce\\changed-lines.json",
+          "sha256": "ff8998ff5faa5b80f74e11dc78c548a75808f728b040bb1bd1649849cb06a491"
+        },
+        "command": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "--test-name-pattern=cache requires complete marker",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\replacement_nonce\\test\\browser-bootstrap.test.ts"
+        ],
+        "restoreCommand": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\replacement_nonce\\test\\browser-bootstrap.test.ts"
+        ]
+      },
+      {
+        "name": "timeout_late_zero",
+        "target": "lib/browser-install-lifetime.mjs",
+        "line": 81,
+        "baselineSha256": "5bc9de8690f7c3c0a066adebceb063eac93910ede9814f5e58b1870782a03219",
+        "mutantSha256": "c5f95d8baa3530c120af39a22e6bd29eb8273f77b0103d4cd470438f2e9a4ddf",
+        "loadedLines": [
+          "    if (spawned && code === 0 && exitCode === 0 && stdoutEnd && stderrEnd) {"
+        ],
+        "redExitCode": 1,
+        "directAssertion": true,
+        "restoreExitCode": 0,
+        "exactRestore": true,
+        "red": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\timeout_late_zero\\red.txt",
+          "sha256": "4ef396ca2f1b35c83b1b240252364088587f9a896da5d0c726dd5ceb2d796ecf"
+        },
+        "restore": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\timeout_late_zero\\restore.txt",
+          "sha256": "830e7b5e57fae860f90687d2b6634df676a6046ac516981525cc720c26ddede2"
+        },
+        "change": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\timeout_late_zero\\changed-lines.json",
+          "sha256": "33d58282e6f65cd54a5a3ce5818ff169aaba675ffcf338b87011055c018ff363"
+        },
+        "command": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "--test-name-pattern=deadline rejects logically",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\timeout_late_zero\\test\\browser-install-lifetime.test.ts"
+        ],
+        "restoreCommand": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\timeout_late_zero\\test\\browser-install-lifetime.test.ts"
+        ]
+      },
+      {
+        "name": "nonlinux_unknown",
+        "target": "lib/browser-install-lifetime.mjs",
+        "line": 87,
+        "baselineSha256": "5bc9de8690f7c3c0a066adebceb063eac93910ede9814f5e58b1870782a03219",
+        "mutantSha256": "9efce1191ae22824c40c3c18eeeee08f092d943429eb43ee59207d5350ee5603",
+        "loadedLines": [
+          "      try { known = true } catch {}"
+        ],
+        "redExitCode": 1,
+        "directAssertion": true,
+        "restoreExitCode": 0,
+        "exactRestore": true,
+        "red": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\nonlinux_unknown\\red.txt",
+          "sha256": "85e55ea3b635a75d5d2d93636c2cf4875d31e8f64432b1fcfa4ab501ccf9e474"
+        },
+        "restore": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\nonlinux_unknown\\restore.txt",
+          "sha256": "7d8c71b0dd0afe0f6ceb626ac789017b207db0996436b1e5da8006c371fe3811"
+        },
+        "change": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\nonlinux_unknown\\changed-lines.json",
+          "sha256": "a20222255ae32a9bf93fa52c5e47410eda1fe4d9f7caa784582d9fb8113d5b5b"
+        },
+        "command": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "--test-name-pattern=deadline rejects logically",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\nonlinux_unknown\\test\\browser-install-lifetime.test.ts"
+        ],
+        "restoreCommand": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\nonlinux_unknown\\test\\browser-install-lifetime.test.ts"
+        ]
+      },
+      {
+        "name": "new_executable_fastpath",
+        "target": "lib/browser-bootstrap.mjs",
+        "line": 84,
+        "baselineSha256": "76467e8feaca93098fdf270f85a3dea12f9dffad2c4e976c268ba2ff299c3965",
+        "mutantSha256": "c0fce88eadeb9dfb69e785bb70ca660679a1551787993f494cc071c311aff019",
+        "loadedLines": [
+          "    if (found?.path) return found.path",
+          "    const current = records.get(resolved.executable)"
+        ],
+        "redExitCode": 1,
+        "directAssertion": true,
+        "restoreExitCode": 0,
+        "exactRestore": true,
+        "red": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\new_executable_fastpath\\red.txt",
+          "sha256": "7edaebe62e692c081de5949ca91a861bc31afd66b6650edec45baaaa16871c3a"
+        },
+        "restore": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\new_executable_fastpath\\restore.txt",
+          "sha256": "327517909a74e9e4208a4db78e63ecc8dc327d171d5a7f2c02e478802382413f"
+        },
+        "change": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\new_executable_fastpath\\changed-lines.json",
+          "sha256": "dc51af86ee7ebebaa6c99fe8b7a444daf99c4cba3a7785025868183659891dea"
+        },
+        "command": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "--test-name-pattern=newly appearing executable",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\new_executable_fastpath\\test\\browser-bootstrap.test.ts"
+        ],
+        "restoreCommand": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\new_executable_fastpath\\test\\browser-bootstrap.test.ts"
+        ]
+      },
+      {
+        "name": "pending_map",
+        "target": "lib/browser-bootstrap.mjs",
+        "line": 108,
+        "baselineSha256": "76467e8feaca93098fdf270f85a3dea12f9dffad2c4e976c268ba2ff299c3965",
+        "mutantSha256": "360af8730d11edb2ecea31d9e92b78767145c754a6fad8e37bb5584f72df2dc4",
+        "loadedLines": [
+          "    records.set(resolved.executable, record)",
+          "    result.catch(() => records.delete(resolved.executable))"
+        ],
+        "redExitCode": 1,
+        "directAssertion": true,
+        "restoreExitCode": 0,
+        "exactRestore": true,
+        "red": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\pending_map\\red.txt",
+          "sha256": "1330a8a0199773d32d7675d154122785e1d3d7d8c1fcf2efdfcf96405ce53f97"
+        },
+        "restore": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\pending_map\\restore.txt",
+          "sha256": "7ec8562f95d7e414a5f7f2ee7ef4065255b4b948095081128f601fc75cf9dd90"
+        },
+        "change": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\pending_map\\changed-lines.json",
+          "sha256": "d539e188b6b63ef9c7f17e5b42a03950fcdd4dbe6f750dea7725280d5c08f67e"
+        },
+        "command": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "--test-name-pattern=host cancellation refuses",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\pending_map\\test\\browser-bootstrap.test.ts"
+        ],
+        "restoreCommand": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\pending_map\\test\\browser-bootstrap.test.ts"
+        ]
+      },
+      {
+        "name": "host_stop_wait",
+        "target": "bin/hoai-browser-host.mjs",
+        "line": 2577,
+        "baselineSha256": "de4a28a28e38a6449ff0c9642203ce86d03b96e3fa1f38fdc147606b039912b9",
+        "mutantSha256": "f2b289dbffa5539b6257358fb27712bf721adaeeed08f77d5ae267f4a7290b0f",
+        "loadedLines": [
+          "    // mutation: omit physical installation drain",
+          "  }"
+        ],
+        "redExitCode": 1,
+        "directAssertion": true,
+        "restoreExitCode": 0,
+        "exactRestore": true,
+        "red": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\host_stop_wait\\red.txt",
+          "sha256": "c38426f9a91ecd78d5c877eeab5a8738212643338096599e0b2ab80bdfea19a7"
+        },
+        "restore": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\host_stop_wait\\restore.txt",
+          "sha256": "bbc12f1d5cad98a2d50daf4257a6ce327fda1713b8718c1ea154dcd801c73aaf"
+        },
+        "change": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\host_stop_wait\\changed-lines.json",
+          "sha256": "09655e349d3aac4b5f7f7396e53415e295f742dd4908d3da96d9e02d6b68039d"
+        },
+        "command": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "--test-name-pattern=host stop fences installer",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\host_stop_wait\\test\\hoai-browser-host.test.ts"
+        ],
+        "restoreCommand": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "--test-name-pattern=host (stop fences installer|normal and emergency stop)",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\host_stop_wait\\test\\hoai-browser-host.test.ts"
+        ]
+      },
+      {
+        "name": "complete_marker",
+        "target": "lib/browser-bootstrap.mjs",
+        "line": 40,
+        "baselineSha256": "76467e8feaca93098fdf270f85a3dea12f9dffad2c4e976c268ba2ff299c3965",
+        "mutantSha256": "df547ecbc1e3f5e20e94ac28dcfc06c8443d5635442e3f0b2057368ecf371cec",
+        "loadedLines": [
+          "  try { regular(resolved.executable, 1000000000); /* mutation: omitted complete marker */ return true } catch { return false }"
+        ],
+        "redExitCode": 1,
+        "directAssertion": true,
+        "restoreExitCode": 0,
+        "exactRestore": true,
+        "red": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\complete_marker\\red.txt",
+          "sha256": "3c4a88db0c0574426369b3d46fd64bb2e1065b17162d70f2c20571252645062b"
+        },
+        "restore": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\complete_marker\\restore.txt",
+          "sha256": "3614ed6dbf5ddc11445a406fd2c28ff6b984767ef2206c9a09692f12623ad755"
+        },
+        "change": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\complete_marker\\changed-lines.json",
+          "sha256": "c3795af1313cb9e1e102e1a50f6ed7521034651b1334f8398809f404e983ba13"
+        },
+        "command": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "--test-name-pattern=cache requires complete marker",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\complete_marker\\test\\browser-bootstrap.test.ts"
+        ],
+        "restoreCommand": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\complete_marker\\test\\browser-bootstrap.test.ts"
+        ]
+      },
+      {
+        "name": "source_hash",
+        "target": "lib/browser-bootstrap.mjs",
+        "line": 22,
+        "baselineSha256": "76467e8feaca93098fdf270f85a3dea12f9dffad2c4e976c268ba2ff299c3965",
+        "mutantSha256": "508b87283678d1c79edd13974e3633bdf32a0fb1ae391c6c4cf40cb9d7364bfa",
+        "loadedLines": [
+          "    if (false) throw failure()"
+        ],
+        "redExitCode": 1,
+        "directAssertion": true,
+        "restoreExitCode": 0,
+        "exactRestore": true,
+        "red": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\source_hash\\red.txt",
+          "sha256": "be5512668528f4fe8c020faa22528f1b1b4c70e83d093277a744fb0a78635cfa"
+        },
+        "restore": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\source_hash\\restore.txt",
+          "sha256": "f8c62ae53b0e21ef17248ce6124262a71942e42bc0df251548d37e8251362671"
+        },
+        "change": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\source_hash\\changed-lines.json",
+          "sha256": "87be868b29ac547c248bf1a12f189dc61932f2dac6792170786d1580235ebe30"
+        },
+        "command": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "--test-name-pattern=copied actual resolver",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\source_hash\\test\\browser-bootstrap.test.ts"
+        ],
+        "restoreCommand": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\source_hash\\test\\browser-bootstrap.test.ts"
+        ]
+      },
+      {
+        "name": "original_close",
+        "target": "lib/browser-install-lifetime.mjs",
+        "line": 76,
+        "baselineSha256": "5bc9de8690f7c3c0a066adebceb063eac93910ede9814f5e58b1870782a03219",
+        "mutantSha256": "9ecdcb5ddd5548ba3055ecba506ba8e50f2951ef2f8081b5aada86a9a4c29f46",
+        "loadedLines": [
+          "  child.once('exit', (code, signal) => {"
+        ],
+        "redExitCode": 1,
+        "directAssertion": true,
+        "restoreExitCode": 0,
+        "exactRestore": true,
+        "red": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\original_close\\red.txt",
+          "sha256": "a271cd8fb83c48cf5712b88856d77d80eb1233e3c0a766968cd0938395eab9a0"
+        },
+        "restore": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\original_close\\restore.txt",
+          "sha256": "74f8c0e62d9e0c8db33f6c05c5a0c90f470a26917d3c7fe3668e25676e025bbd"
+        },
+        "change": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\original_close\\changed-lines.json",
+          "sha256": "eaac716c782755f274c8501b7dfd52cdb34e69639b87a1bddc4be3e8ef135700"
+        },
+        "command": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "--test-name-pattern=normal success waits original close",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\original_close\\test\\browser-install-lifetime.test.ts"
+        ],
+        "restoreCommand": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\original_close\\test\\browser-install-lifetime.test.ts"
+        ]
+      },
+      {
+        "name": "kernel_group_absence",
+        "target": "lib/browser-install-lifetime.mjs",
+        "line": 37,
+        "baselineSha256": "5bc9de8690f7c3c0a066adebceb063eac93910ede9814f5e58b1870782a03219",
+        "mutantSha256": "b38aa5e47916bd23970e9a32d6eeaa65c25ee78a5ad3ff183bf9c569abba2587",
+        "loadedLines": [
+          "        /* mutation: omitted kernel group absence */"
+        ],
+        "redExitCode": 1,
+        "directAssertion": true,
+        "restoreExitCode": 0,
+        "exactRestore": true,
+        "red": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\kernel_group_absence\\red.txt",
+          "sha256": "cd127773bebb9738d947a250c69c63664334ede22ab987e0a7e7fd8ef25e097e"
+        },
+        "restore": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\kernel_group_absence\\restore.txt",
+          "sha256": "ffb4a4ce8a3254d8a08f1e6576bcd4653671bc2e49d9684df48bd8292f0786dc"
+        },
+        "change": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\kernel_group_absence\\changed-lines.json",
+          "sha256": "fb0f6a06ab54f8cccbc5b19a486c615a2f7f97d8ec2573377385485bb1607b29"
+        },
+        "command": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "--test-name-pattern=group inventory race",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\kernel_group_absence\\test\\browser-install-lifetime.test.ts"
+        ],
+        "restoreCommand": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\kernel_group_absence\\test\\browser-install-lifetime.test.ts"
+        ]
+      },
+      {
+        "name": "kernel_error_unknown",
+        "target": "lib/browser-install-lifetime.mjs",
+        "line": 37,
+        "baselineSha256": "5bc9de8690f7c3c0a066adebceb063eac93910ede9814f5e58b1870782a03219",
+        "mutantSha256": "c9a14907d3c678ad031103721e73a7fb5b51ef7d84d196bdced191f283d4e0c7",
+        "loadedLines": [
+          "        try { probe(original.group); return false } catch (error) { if (false) return false }"
+        ],
+        "redExitCode": 1,
+        "directAssertion": true,
+        "restoreExitCode": 0,
+        "exactRestore": true,
+        "red": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\kernel_error_unknown\\red.txt",
+          "sha256": "5b55d6814bf6d9dc2f10f908bca9311e172e6d70671e0a0e7c4596ce7ceed942"
+        },
+        "restore": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\kernel_error_unknown\\restore.txt",
+          "sha256": "7df89445cd70c6a0e6e616f26b4820b2df166018b7f42b235cb7c65597485c9c"
+        },
+        "change": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\kernel_error_unknown\\changed-lines.json",
+          "sha256": "d66dff0dbcefc62867053e12cfa0a5ecac7b24629d4a15b07105fe0be2f60289"
+        },
+        "command": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "--test-name-pattern=only ESRCH",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\kernel_error_unknown\\test\\browser-install-lifetime.test.ts"
+        ],
+        "restoreCommand": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\kernel_error_unknown\\test\\browser-install-lifetime.test.ts"
+        ]
+      },
+      {
+        "name": "leader_reuse",
+        "target": "lib/browser-install-lifetime.mjs",
+        "line": 39,
+        "baselineSha256": "5bc9de8690f7c3c0a066adebceb063eac93910ede9814f5e58b1870782a03219",
+        "mutantSha256": "348407e2e76d86ffcb49cfaa7f3705c342152d811886aeb2d76cdc038c37c4e7",
+        "loadedLines": [
+          "        return true"
+        ],
+        "redExitCode": 1,
+        "directAssertion": true,
+        "restoreExitCode": 0,
+        "exactRestore": true,
+        "red": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\leader_reuse\\red.txt",
+          "sha256": "ef840c941af7684760d3b584b2827ca24125d26bdd95ce260e1b5f66d688c1c2"
+        },
+        "restore": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\leader_reuse\\restore.txt",
+          "sha256": "4483cfeddf8dfda5b923c8e3a1e593499057e6e74aedb6a51fe375e22c4f59ff"
+        },
+        "change": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\leader_reuse\\changed-lines.json",
+          "sha256": "0ee4c3e5c3fa0c79c839d782045379de9d5e83ce8a9b62a7f8f0404939ef152d"
+        },
+        "command": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "--test-name-pattern=reused leader",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\leader_reuse\\test\\browser-install-lifetime.test.ts"
+        ],
+        "restoreCommand": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\leader_reuse\\test\\browser-install-lifetime.test.ts"
+        ]
+      },
+      {
+        "name": "deferred_publication",
+        "target": "lib/browser-bootstrap.mjs",
+        "line": 108,
+        "baselineSha256": "76467e8feaca93098fdf270f85a3dea12f9dffad2c4e976c268ba2ff299c3965",
+        "mutantSha256": "b2e37fbc2cf9eaed19abf00d6e1b037d36c857ffe802c1f57927e3ccf03fa7cb",
+        "loadedLines": [
+          "    if (false) records.set(resolved.executable, record)"
+        ],
+        "redExitCode": 1,
+        "directAssertion": true,
+        "restoreExitCode": 0,
+        "exactRestore": true,
+        "red": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\deferred_publication\\red.txt",
+          "sha256": "04c83a279be14a38812730a6431ac0722ffc51bccb4cf6695391d0c3411bde52"
+        },
+        "restore": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\deferred_publication\\restore.txt",
+          "sha256": "96bb32bb969947c5c9acff83df1db83b65727dfb790e6854ec4e2d991f27ce79"
+        },
+        "change": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\deferred_publication\\changed-lines.json",
+          "sha256": "1eb87fbdb6293ad71487badab5ad1679895f6010c009e39bad1adc2495763f4f"
+        },
+        "command": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "--test-name-pattern=logger",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\deferred_publication\\test\\browser-bootstrap.test.ts"
+        ],
+        "restoreCommand": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\deferred_publication\\test\\browser-bootstrap.test.ts"
+        ]
+      },
+      {
+        "name": "safe_nochild_release",
+        "target": "lib/browser-bootstrap.mjs",
+        "line": 72,
+        "baselineSha256": "76467e8feaca93098fdf270f85a3dea12f9dffad2c4e976c268ba2ff299c3965",
+        "mutantSha256": "e71f27d2c0ef152d6ee1e19977ad3e0bce6663856d6db1b981909e785d83813d",
+        "loadedLines": [
+          "function safeRelease(lock) { return lock.release() }"
+        ],
+        "redExitCode": 1,
+        "directAssertion": true,
+        "restoreExitCode": 0,
+        "exactRestore": true,
+        "red": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\safe_nochild_release\\red.txt",
+          "sha256": "842f777f88e7019205a54bd14f9e84891e54283d838661a1d005cec39f025a74"
+        },
+        "restore": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\safe_nochild_release\\restore.txt",
+          "sha256": "5ef0a4f79a164253c6104e37c301449bdf4dacf7ddadb3d70abc9052a30ec7ca"
+        },
+        "change": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\safe_nochild_release\\changed-lines.json",
+          "sha256": "9b7c33a310ed218e420aecced2bbbe8b49cfe51d0e1b4f277a2d2e9e975ad4b2"
+        },
+        "command": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "--test-name-pattern=no-child cancellation",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\safe_nochild_release\\test\\browser-bootstrap.test.ts"
+        ],
+        "restoreCommand": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\safe_nochild_release\\test\\browser-bootstrap.test.ts"
+        ]
+      },
+      {
+        "name": "cache_claim_interleaving",
+        "target": "lib/browser-bootstrap.mjs",
+        "line": 89,
+        "baselineSha256": "76467e8feaca93098fdf270f85a3dea12f9dffad2c4e976c268ba2ff299c3965",
+        "mutantSha256": "1d75f482c4995e2a1d289618734264bbd05e1c56ab8f95f6cac7825de9051531",
+        "loadedLines": [
+          "    if (installed(resolved)) return resolved.executable",
+          "    let lock",
+          "    try { lock = claim(resolved.cache) } catch (error) { if (error.code === 'browser_install_recovery_required') blocked.add(resolved.cache); throw error }"
+        ],
+        "redExitCode": 1,
+        "directAssertion": true,
+        "restoreExitCode": 0,
+        "exactRestore": true,
+        "red": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\cache_claim_interleaving\\red.txt",
+          "sha256": "0e18acefa415ae51716deaa7a3ca13dbda1f89887e1dbe96d1f5b234cda501bb"
+        },
+        "restore": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\cache_claim_interleaving\\restore.txt",
+          "sha256": "603fc634723ba03d6b1105c80e078ac0f5138f0b648e06967c35e511ee3bed08"
+        },
+        "change": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\cache_claim_interleaving\\changed-lines.json",
+          "sha256": "a4528ca0a8ea2ed2519a1e0fdfb5747825df9aebaa37f871464869028710f7c1"
+        },
+        "command": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "--test-name-pattern=unclaimed cached",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\cache_claim_interleaving\\test\\browser-bootstrap.test.ts"
+        ],
+        "restoreCommand": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\cache_claim_interleaving\\test\\browser-bootstrap.test.ts"
+        ]
+      },
+      {
+        "name": "readonly_recovery",
+        "target": "lib/browser-bootstrap.mjs",
+        "line": 143,
+        "baselineSha256": "76467e8feaca93098fdf270f85a3dea12f9dffad2c4e976c268ba2ff299c3965",
+        "mutantSha256": "4113a421571a55308850c4720767c35065cdb08869541c04a13f5cedccb1134a",
+        "loadedLines": [
+          "      const resolved = resolvedPaths(bundle()), current = records.get(resolved.executable)",
+          "      if (installed(resolved)) return { state: 'installed', executable: resolved.executable }"
+        ],
+        "redExitCode": 1,
+        "directAssertion": true,
+        "restoreExitCode": 0,
+        "exactRestore": true,
+        "red": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\readonly_recovery\\red.txt",
+          "sha256": "7e2692f634cc581f6778fd31d940bdd72c5a24e4642bbc9eac1248321a726f9e"
+        },
+        "restore": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\readonly_recovery\\restore.txt",
+          "sha256": "f225bc3cf9318d369c4dfd4fdb7f85ffa4ddfe4f57ff114c15341373739aeb78"
+        },
+        "change": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\readonly_recovery\\changed-lines.json",
+          "sha256": "6c72e4ec74614575b0957a5afd4a5a436ad6e0aa0bb5a0521e1f20d5cff97bf4"
+        },
+        "command": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "--test-name-pattern=read-only readiness reports",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\readonly_recovery\\test\\browser-bootstrap.test.ts"
+        ],
+        "restoreCommand": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\readonly_recovery\\test\\browser-bootstrap.test.ts"
+        ]
+      },
+      {
+        "name": "main_check_recovery",
+        "target": "bin/hoai-browser-host.mjs",
+        "line": 2685,
+        "baselineSha256": "de4a28a28e38a6449ff0c9642203ce86d03b96e3fa1f38fdc147606b039912b9",
+        "mutantSha256": "adb4783db0d52c7bbb3bcb5abc6f643020c14e5f1eaa932b2e251195a6f18445",
+        "loadedLines": [
+          "        if (false) {"
+        ],
+        "redExitCode": 1,
+        "directAssertion": true,
+        "restoreExitCode": 0,
+        "exactRestore": true,
+        "red": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\main_check_recovery\\red.txt",
+          "sha256": "63534a6d6efba036378e43269e8751a3a3f4c7751c7436e6053757e217ab6a83"
+        },
+        "restore": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\main_check_recovery\\restore.txt",
+          "sha256": "2c61f622b53731406c3848e7cea10a43cbbd8d7edac998e1ece2f95cc19d68d8"
+        },
+        "change": {
+          "path": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\main_check_recovery\\changed-lines.json",
+          "sha256": "d5f2e14ab008e1cd480bad5ccf43303de28f003e0072bd0fb48f39ab928983a3"
+        },
+        "command": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "--test-name-pattern=actual CLI check",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\main_check_recovery\\test\\check-readiness.test.mjs"
+        ],
+        "restoreCommand": [
+          "node",
+          "--import",
+          "tsx",
+          "--test",
+          "--test-reporter=tap",
+          "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\bootstrap-lifetime-repair\\mutations-d6747c1a\\main_check_recovery\\test\\check-readiness.test.mjs"
+        ]
+      }
+    ],
+    "restoredFullFileCounts": {
+      "physical_retention": 12,
+      "pipe_eof": 12,
+      "dead_owner_marker": 18,
+      "replacement_nonce": 18,
+      "timeout_late_zero": 12,
+      "nonlinux_unknown": 12,
+      "new_executable_fastpath": 18,
+      "pending_map": 18,
+      "host_stop_wait": 2,
+      "complete_marker": 18,
+      "source_hash": 18,
+      "original_close": 12,
+      "kernel_group_absence": 12,
+      "kernel_error_unknown": 12,
+      "leader_reuse": 12,
+      "deferred_publication": 18,
+      "safe_nochild_release": 18,
+      "cache_claim_interleaving": 18,
+      "readonly_recovery": 18,
+      "main_check_recovery": 1
+    },
+    "precision": "deferred_publication has two failed selected cases: one direct ERR_ASSERTION and one secondary unhandledRejection. Direct assertion count is one; it is not described as a single failing test. Host stop restores select the two installer cases; the separate affected gate runs the entire Host file."
+  },
+  "actualWindowsReadiness": "Real Node --check and real pinned package with private synthetic cache/candidate files; no synthetic executable, installer or browser was run. Pending/incomplete pre-fix false-ready results and fixed recovery results are retained separately.",
+  "normalFirstUseBoundary": "Actual bundled resolver and exact pinned CLI; fixture findInstalled returns no installed candidate. spawnImpl observes then delegates the exact production native command/options. Fresh private HOME default cache, no browser/cache executable override. One external browser download, no browser launch, no npm/OS package install. Exact156 binary SHA377a9fc07b495c3b8d0ab8ec1fdfd153641759f9756fea34d8dfce4de82f5025.",
+  "syntheticLinuxBoundary": "Actual Node CLI and grandchild with inherited pipes exercise imported production lifetime handling through an injected synthetic bundle. It is not Playwright normal-completion or browser-install acceptance. This execution reached known original group absence; conservative unknown would fail its wrapper and retain the marker.",
+  "limits": [
+    "No all-platform abnormal descendant-termination guarantee, Windows Job helper, automatic marker deletion or dead-parent reclaim.",
+    "Ordinary Windows/Darwin normal completion is unit-qualified under the pinned trusted contract; the actual cold installer proof here is Linux only.",
+    "The actual Host Chromium flow uses the qualified existing156 executable, no network; it is separate from the cold installer proof.",
+    "No managed-profile enrollment, grant, key-provider, encryption, full73, provider-account or custom Electron acceptance is inferred.",
+    "Private c5 image supplies existing OS/dependency prerequisites. This is not zero-setup fresh OS evidence.",
+    "SSH/Docker originals are retained through logical transport deadlines; known failures propagate nonzero. Accepted executions observed physical closes and container absence without forced stop."
+  ],
+  "excludedPredecessors": [
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-44a439c7/results.json",
+      "scope": "timeout late0 omission initially survived a fixture lacking genuine exit0; final fixture emits real exit0/EOF/close0 and final20 kills the omission."
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-3ff49844",
+      "scope": "One copied restore collector hit its 30s bound. It is excluded; final matrix used bounded90s and retained completed red/restore logs. No native process cleanup claim from command-line absence."
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/excluded-successor-typing",
+      "scope": "Predecessor test typing error, corrected before final source freeze."
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/cache-and-release-beforefix",
+      "scope": "Copied actual-module cache interleaving and malformed-marker no-child cancellation asserted red; combined pre-fix test stopped at its first cancellation assertion, so no separate pre-fix spawn-throw red is claimed."
+    },
+    {
+      "scope": "Early mutable preliminary collector receipt was overwritten; no claim of a retained initial baseline. Authoritative later receipts are uniquely named and hashed."
+    }
+  ],
+  "reproduction": [
+    "node --import tsx --test --test-reporter=tap test/browser-bootstrap.test.ts test/browser-install-lifetime.test.ts test/hoai-browser-host.test.ts",
+    "npx tsc --noEmit",
+    "python .tmp/bootstrap-lifetime-mutations.py",
+    "python .tmp/bootstrap-lifetime-repair/linux-process-proof/run.py",
+    "python .tmp/bootstrap-lifetime-repair/affected-2aa3f56c/run.py",
+    "python .tmp/bootstrap-lifetime-repair/normal-first-use-e8510033/run.py"
+  ],
+  "reproductionBoundary": "Private proof harnesses/images/transport access are retained by SHA; Docker/browser/download commands require the same exclusive physical lane and disposable fixture. The three selected source test files are the portable checked-in gate. No automatic launch is authorized by this document.",
+  "rawReferences": [
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/pin-lf-normalization-16b14f52/receipt.json",
+      "sha256": "9d5bdbc69b175f403d30f2217fab0761bbaeef2a882af247e10e816d9ea33171"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/pin-lf-normalization-16b14f52/current-source-pins.json",
+      "sha256": "4e96febf35994ffd3c46d5ae7cf0723158d3e0d8fd678d203bbbc70401dad10c"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/pin-lf-normalization-16b14f52/browser-bootstrap.pin.executed-crlf.json",
+      "sha256": "19fa11a3b51096a996e1a082ad18d09d838536135db71963e7f427f42dfe1f2e"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/pin-lf-normalization-16b14f52/focused.txt",
+      "sha256": "f4c964bc03f62cae8862f258fe2f5e3363ffbd5cc6b6357fb61c82bb71c4e463"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/pin-lf-normalization-16b14f52/focused-stderr.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/pin-lf-normalization-16b14f52/actual-resolver.txt",
+      "sha256": "3a9af60025225499ba061f4ec007c72c166ac8d6b5c842dd57c8f8bde608fc98"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/pin-lf-normalization-16b14f52/actual-resolver-stderr.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/physical_retention/red.txt",
+      "sha256": "236d868ff6db6f409d58e0c96b5b22205f8795c3f36e550cdc9f2a6d63dd76ac"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/physical_retention/restore.txt",
+      "sha256": "d1b4147045ba67ce2c43ca1efd2cce880b673459930331610857643019183507"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/physical_retention/changed-lines.json",
+      "sha256": "4d40f0223f96887805fb7ab79ed9e3313f2d36052df3d6691dae0b7912916309"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/pipe_eof/red.txt",
+      "sha256": "9157daf76cd23ebae1d33e50be986ff237ca904ea722f644b18b9c419e2afc6a"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/pipe_eof/restore.txt",
+      "sha256": "cb047675bcafc57dc8863ab5033ec413461ee0b52f590f9f4dda0707f94f333c"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/pipe_eof/changed-lines.json",
+      "sha256": "0159a9bc903414635eaa932a3752dacfd7123bf7def314e6b826eecc5fb58e44"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/dead_owner_marker/red.txt",
+      "sha256": "073092b8be7cb44e6d96bd67fb11c54ffc054e16ba12078a3806202cb184c328"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/dead_owner_marker/restore.txt",
+      "sha256": "474b21e4ace0e1a563b8f3743385d1daa3a6b6f824ecdf1c72a87ba6c8a0ee5f"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/dead_owner_marker/changed-lines.json",
+      "sha256": "a0ba5408e36eec81dbd9837cc6e466b7a373d3c537e069a5f0c48f074dd1ae32"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/replacement_nonce/red.txt",
+      "sha256": "a1c5572a91b92e91c1ec5286838425689674648ea69f32915bbb7d2c72ffb08d"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/replacement_nonce/restore.txt",
+      "sha256": "c33cb102f9b2154249a5430a8a827884a7d477d0b09e0aed2add4acb830dfa8c"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/replacement_nonce/changed-lines.json",
+      "sha256": "ff8998ff5faa5b80f74e11dc78c548a75808f728b040bb1bd1649849cb06a491"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/timeout_late_zero/red.txt",
+      "sha256": "4ef396ca2f1b35c83b1b240252364088587f9a896da5d0c726dd5ceb2d796ecf"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/timeout_late_zero/restore.txt",
+      "sha256": "830e7b5e57fae860f90687d2b6634df676a6046ac516981525cc720c26ddede2"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/timeout_late_zero/changed-lines.json",
+      "sha256": "33d58282e6f65cd54a5a3ce5818ff169aaba675ffcf338b87011055c018ff363"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/nonlinux_unknown/red.txt",
+      "sha256": "85e55ea3b635a75d5d2d93636c2cf4875d31e8f64432b1fcfa4ab501ccf9e474"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/nonlinux_unknown/restore.txt",
+      "sha256": "7d8c71b0dd0afe0f6ceb626ac789017b207db0996436b1e5da8006c371fe3811"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/nonlinux_unknown/changed-lines.json",
+      "sha256": "a20222255ae32a9bf93fa52c5e47410eda1fe4d9f7caa784582d9fb8113d5b5b"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/new_executable_fastpath/red.txt",
+      "sha256": "7edaebe62e692c081de5949ca91a861bc31afd66b6650edec45baaaa16871c3a"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/new_executable_fastpath/restore.txt",
+      "sha256": "327517909a74e9e4208a4db78e63ecc8dc327d171d5a7f2c02e478802382413f"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/new_executable_fastpath/changed-lines.json",
+      "sha256": "dc51af86ee7ebebaa6c99fe8b7a444daf99c4cba3a7785025868183659891dea"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/pending_map/red.txt",
+      "sha256": "1330a8a0199773d32d7675d154122785e1d3d7d8c1fcf2efdfcf96405ce53f97"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/pending_map/restore.txt",
+      "sha256": "7ec8562f95d7e414a5f7f2ee7ef4065255b4b948095081128f601fc75cf9dd90"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/pending_map/changed-lines.json",
+      "sha256": "d539e188b6b63ef9c7f17e5b42a03950fcdd4dbe6f750dea7725280d5c08f67e"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/host_stop_wait/red.txt",
+      "sha256": "c38426f9a91ecd78d5c877eeab5a8738212643338096599e0b2ab80bdfea19a7"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/host_stop_wait/restore.txt",
+      "sha256": "bbc12f1d5cad98a2d50daf4257a6ce327fda1713b8718c1ea154dcd801c73aaf"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/host_stop_wait/changed-lines.json",
+      "sha256": "09655e349d3aac4b5f7f7396e53415e295f742dd4908d3da96d9e02d6b68039d"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/complete_marker/red.txt",
+      "sha256": "3c4a88db0c0574426369b3d46fd64bb2e1065b17162d70f2c20571252645062b"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/complete_marker/restore.txt",
+      "sha256": "3614ed6dbf5ddc11445a406fd2c28ff6b984767ef2206c9a09692f12623ad755"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/complete_marker/changed-lines.json",
+      "sha256": "c3795af1313cb9e1e102e1a50f6ed7521034651b1334f8398809f404e983ba13"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/source_hash/red.txt",
+      "sha256": "be5512668528f4fe8c020faa22528f1b1b4c70e83d093277a744fb0a78635cfa"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/source_hash/restore.txt",
+      "sha256": "f8c62ae53b0e21ef17248ce6124262a71942e42bc0df251548d37e8251362671"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/source_hash/changed-lines.json",
+      "sha256": "87be868b29ac547c248bf1a12f189dc61932f2dac6792170786d1580235ebe30"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/original_close/red.txt",
+      "sha256": "a271cd8fb83c48cf5712b88856d77d80eb1233e3c0a766968cd0938395eab9a0"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/original_close/restore.txt",
+      "sha256": "74f8c0e62d9e0c8db33f6c05c5a0c90f470a26917d3c7fe3668e25676e025bbd"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/original_close/changed-lines.json",
+      "sha256": "eaac716c782755f274c8501b7dfd52cdb34e69639b87a1bddc4be3e8ef135700"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/kernel_group_absence/red.txt",
+      "sha256": "cd127773bebb9738d947a250c69c63664334ede22ab987e0a7e7fd8ef25e097e"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/kernel_group_absence/restore.txt",
+      "sha256": "ffb4a4ce8a3254d8a08f1e6576bcd4653671bc2e49d9684df48bd8292f0786dc"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/kernel_group_absence/changed-lines.json",
+      "sha256": "fb0f6a06ab54f8cccbc5b19a486c615a2f7f97d8ec2573377385485bb1607b29"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/kernel_error_unknown/red.txt",
+      "sha256": "5b55d6814bf6d9dc2f10f908bca9311e172e6d70671e0a0e7c4596ce7ceed942"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/kernel_error_unknown/restore.txt",
+      "sha256": "7df89445cd70c6a0e6e616f26b4820b2df166018b7f42b235cb7c65597485c9c"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/kernel_error_unknown/changed-lines.json",
+      "sha256": "d66dff0dbcefc62867053e12cfa0a5ecac7b24629d4a15b07105fe0be2f60289"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/leader_reuse/red.txt",
+      "sha256": "ef840c941af7684760d3b584b2827ca24125d26bdd95ce260e1b5f66d688c1c2"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/leader_reuse/restore.txt",
+      "sha256": "4483cfeddf8dfda5b923c8e3a1e593499057e6e74aedb6a51fe375e22c4f59ff"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/leader_reuse/changed-lines.json",
+      "sha256": "0ee4c3e5c3fa0c79c839d782045379de9d5e83ce8a9b62a7f8f0404939ef152d"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/deferred_publication/red.txt",
+      "sha256": "04c83a279be14a38812730a6431ac0722ffc51bccb4cf6695391d0c3411bde52"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/deferred_publication/restore.txt",
+      "sha256": "96bb32bb969947c5c9acff83df1db83b65727dfb790e6854ec4e2d991f27ce79"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/deferred_publication/changed-lines.json",
+      "sha256": "1eb87fbdb6293ad71487badab5ad1679895f6010c009e39bad1adc2495763f4f"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/safe_nochild_release/red.txt",
+      "sha256": "842f777f88e7019205a54bd14f9e84891e54283d838661a1d005cec39f025a74"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/safe_nochild_release/restore.txt",
+      "sha256": "5ef0a4f79a164253c6104e37c301449bdf4dacf7ddadb3d70abc9052a30ec7ca"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/safe_nochild_release/changed-lines.json",
+      "sha256": "9b7c33a310ed218e420aecced2bbbe8b49cfe51d0e1b4f277a2d2e9e975ad4b2"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/cache_claim_interleaving/red.txt",
+      "sha256": "0e18acefa415ae51716deaa7a3ca13dbda1f89887e1dbe96d1f5b234cda501bb"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/cache_claim_interleaving/restore.txt",
+      "sha256": "603fc634723ba03d6b1105c80e078ac0f5138f0b648e06967c35e511ee3bed08"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/cache_claim_interleaving/changed-lines.json",
+      "sha256": "a4528ca0a8ea2ed2519a1e0fdfb5747825df9aebaa37f871464869028710f7c1"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/readonly_recovery/red.txt",
+      "sha256": "7e2692f634cc581f6778fd31d940bdd72c5a24e4642bbc9eac1248321a726f9e"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/readonly_recovery/restore.txt",
+      "sha256": "f225bc3cf9318d369c4dfd4fdb7f85ffa4ddfe4f57ff114c15341373739aeb78"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/readonly_recovery/changed-lines.json",
+      "sha256": "6c72e4ec74614575b0957a5afd4a5a436ad6e0aa0bb5a0521e1f20d5cff97bf4"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/main_check_recovery/red.txt",
+      "sha256": "63534a6d6efba036378e43269e8751a3a3f4c7751c7436e6053757e217ab6a83"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/main_check_recovery/restore.txt",
+      "sha256": "2c61f622b53731406c3848e7cea10a43cbbd8d7edac998e1ece2f95cc19d68d8"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/main_check_recovery/changed-lines.json",
+      "sha256": "d5f2e14ab008e1cd480bad5ccf43303de28f003e0072bd0fb48f39ab928983a3"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/printed-loaded-lines.txt",
+      "sha256": "5ed282733e23cf32383cf8d9ad53daab83b53f2567c037751562910a974b450c"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/successor-da4426b4/receipt.json",
+      "sha256": "c95ffcca0e9e397816213e53b12cccec725f4e397dd78b9d7ec9af5c5cb18e48"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/check-beforefix-494eaa40/receipt.json",
+      "sha256": "a1d659ad9044cff3abaa12c3eaad659e59a288f7d7890dfe14b628ed85d31aa1"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/check-afterfix-bf02da29/receipt.json",
+      "sha256": "a50db2631eb8e053201c3aae3573e2c0058eaf357dd7767b561fe79797485142"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/check-consistent-9c854faf/receipt.json",
+      "sha256": "6c7d10012f7b46f5b1205707abf5db59c2c8fc42ecd4c9f9acb4906498610dd2"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/author-closure-final.json",
+      "sha256": "bf83d94e39d10940262d2cd641d83a7111f89814a7e5b55d65eeb34265456abc"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/root-final20-review.json",
+      "sha256": "8852163275264b56223f6879a6be62c96910940101f2dca436deffae57ebc3a7"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/independent-da4426b4-mutation-review.json",
+      "sha256": "ba93314a9d679b0694e629e975da32075b544ffc061bb780b95fd43c2badcaa7"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/independent-plugin-delivery-review.json",
+      "sha256": "fcbcf337cf7b563810067c4a9927fb684246865a76ad2cd5a1d87b85a00b4c37"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/successor-da4426b4/source-pins.json",
+      "sha256": "f726e84d95883b7df58552f50f57de130ffe15f440d329a224b538d20ecd8621"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/mutations-d6747c1a/results.json",
+      "sha256": "3547923920f2eb0b3e21b14060100cdb77e5bf4c4ec1462f687dc3cfeeb6fbae"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/independent-linux-process-review.json",
+      "sha256": "7a2644836dcf7cdef8ae1fe0b2726c32392be2d80a6a368d1ad4e72b750bcbd4"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-mutations.py",
+      "sha256": "6931834652f92149f6f39722f80c97df2d6e695f01132b131f59d9667a3c1c01"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/affected-2aa3f56c/source.tar",
+      "sha256": "664511fd50f7b78ea5ae5445eb7257ed1d75693f379b7345ec9c7895a43bc30a"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/affected-2aa3f56c/qualification.mjs",
+      "sha256": "ad6bdffc0b0b4d44c314eabf24cec6b30631281a25087075b40fff9b9abf4c52"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/affected-2aa3f56c/remote.py",
+      "sha256": "2831f1a267a37b3a5257cade69afcb537274f3d66d24eb5853d2ccb2a6fcbd23"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/affected-2aa3f56c/run.py",
+      "sha256": "0afd1bd28b0bae174e41f3b69dcc35806e5cb2444acca7db516bdb5cff109674"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/affected-2aa3f56c/manifest.json",
+      "sha256": "bfd6a7dec74213f8b284dc76a83fc784c59283e4ed6f8602375f1e27325e5af4"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/affected-2aa3f56c/receipt.json",
+      "sha256": "7df1089ec60a55f013b1434ce8e8f1b8412c75cffd9c07fe4cb5cc03e271f061"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/affected-2aa3f56c/transport-stdout.txt",
+      "sha256": "6cd00a3fcc56ad47f7d197bfdfcd11b40cb59b0127b408129ba6d22c1e754219"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/affected-2aa3f56c/transport-stderr.txt",
+      "sha256": "a51d7b9af122d44212fcd0d3c6cd1ebb0ad2ad362254c5ed98e7e80a96210471"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/normal-first-use-e8510033/source.tar",
+      "sha256": "df6ce1b584203de7a1b2bceac69f137bff422d7049cc4d418f283f076653b4fe"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/normal-first-use-e8510033/qualification.mjs",
+      "sha256": "4108812b9c19e5ec15799e1086533c29b0e22b18816138858c5f363b9a685da4"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/normal-first-use-e8510033/remote.py",
+      "sha256": "c3c49d56c09769e816eab3a44939af46a8b4e1e9b57af8c23efe797d7080942a"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/normal-first-use-e8510033/run.py",
+      "sha256": "0afd1bd28b0bae174e41f3b69dcc35806e5cb2444acca7db516bdb5cff109674"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/normal-first-use-e8510033/manifest.json",
+      "sha256": "e6898ec5cea9474fa9452a0ba8d0530f07d608b3e7271a0955d0192686406c1b"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/normal-first-use-e8510033/receipt.json",
+      "sha256": "0066757875a5c12ac4cf04a139296a113c96f4c7508b8324e32b23f9fc8cb05f"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/normal-first-use-e8510033/transport-stdout.txt",
+      "sha256": "2f6ec2c80b31939415a6b771ad9267e863cefc655e6baa4d28c6e8330fd75a00"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/normal-first-use-e8510033/transport-stderr.txt",
+      "sha256": "a51d7b9af122d44212fcd0d3c6cd1ebb0ad2ad362254c5ed98e7e80a96210471"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/linux-process-proof/synthetic-cli.mjs",
+      "sha256": "dcfbac4bab006b9476c2c96c330ce4bd774f7386619a4547019802e9938aa668"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/linux-process-proof/synthetic-descendant.mjs",
+      "sha256": "5092894177ed406a16c36909603fc332ce0c91634b2f41658ced3dc0d69beb23"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/linux-process-proof/probe.mjs",
+      "sha256": "f735f341b1616d574c95d88091560d034dd7818da1d907480ae223603a3972c5"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/linux-process-proof/source.tar",
+      "sha256": "8050423a66cb2e86bfd24a99dec1662ff236a13bdde68eec8597990db28401a2"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/linux-process-proof/remote.py",
+      "sha256": "84da0b92c937078512064488f1f7e8659a82fc16293dff70fa02c0ea646c193d"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/linux-process-proof/run.py",
+      "sha256": "f2e511fd7e6ae0763628fadfb4bae71174bf400ddcd9186a65502fce08150a05"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/linux-process-proof/source-manifest.json",
+      "sha256": "1622e45d9a4f239183d57f7e47adb135349327a1b750a8216804ac34621d1993"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/linux-process-proof/receipt.json",
+      "sha256": "3d56488da4771b6c0bf6a0055436f6c39a79ea8e97a4832a3798831bc902171e"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/linux-process-proof/transport-stdout.txt",
+      "sha256": "f2cff501c51a070d300c673dc4db3a4f4b36875068531127e5cc7a735e5f6b50"
+    },
+    {
+      "path": ".tmp/bootstrap-lifetime-repair/linux-process-proof/transport-stderr.txt",
+      "sha256": "a51d7b9af122d44212fcd0d3c6cd1ebb0ad2ad362254c5ed98e7e80a96210471"
+    }
+  ]
+}

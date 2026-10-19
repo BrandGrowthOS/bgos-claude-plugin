@@ -1,0 +1,12 @@
+// No website or live account is contacted. This uses an empty sandboxed jar.
+import {createRequire}from'node:module'
+import assert from'node:assert/strict'
+import fs from'node:fs'
+import crypto from'node:crypto'
+import {ensureBrowser}from'../lib/browser-bootstrap.mjs'
+const require=createRequire(import.meta.url),{chromium}=require(process.env.HOAI_PROBE_PLAYWRIGHT||'playwright-core'),corePath=require.resolve('../lib/browser-profile-core/native-runtime.js'),{cookies,cookieParams}=require(corePath)
+const report={kind:'Actual sandboxed Linux CDP cookie import compatibility with synthetic values only',ok:false,uid:process.getuid(),version:null,coreSha256:crypto.createHash('sha256').update(fs.readFileSync(corePath)).digest('hex'),cases:[]};let browser
+try{assert.equal(process.platform,'linux');assert.notEqual(process.getuid(),0);browser=await chromium.launch({headless:true,chromiumSandbox:true,executablePath:await ensureBrowser({findInstalled:()=>({path:null})})});report.version=browser.version();const context=await browser.newContext(),page=await context.newPage(),cdp=await context.newCDPSession(page)
+for(const domain of ['fixture.invalid','.fixture.invalid'])for(const secure of [false,true])for(const sourceScheme of ['NonSecure','Secure']){const expected={name:'synthetic',value:'DUMMY_ONLY',domain,path:'/',expires:-1,httpOnly:true,secure,session:true,priority:'Medium',sourceScheme,sourcePort:62443,sameSite:'Lax'};await cdp.send('Network.clearBrowserCookies');if(secure&&sourceScheme==='NonSecure'){await assert.rejects(cdp.send('Network.setCookies',{cookies:[cookieParams(expected)]}),/Invalid cookie fields/);report.cases.push({domainCookie:domain.startsWith('.'),secure,sourceScheme,nativeInvalidRefused:true});continue;}await cdp.send('Network.setCookies',{cookies:[cookieParams(expected)]});assert.deepEqual(cookies((await cdp.send('Network.getAllCookies')).cookies),cookies([expected]));report.cases.push({domainCookie:domain.startsWith('.'),secure,sourceScheme,exact:true});}
+await context.clearCookies();await browser.close();assert.equal(browser.isConnected(),false);report.browserDisconnected=true;report.ok=true
+}catch(error){report.error=String(error.stack||error);process.exitCode=1}finally{await browser?.close();if(process.env.HOAI_PROBE_REPORT)fs.writeFileSync(process.env.HOAI_PROBE_REPORT,JSON.stringify(report,null,2));process.stdout.write(JSON.stringify(report)+'\n')}

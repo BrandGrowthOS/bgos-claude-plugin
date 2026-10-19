@@ -1,0 +1,531 @@
+{
+  "sourceSha256": "3e893c69d16456cd16f8a42a1d4b51255d20abecf9664ccd1cb1596dca2bb71f",
+  "workspaceUnchanged": true,
+  "baselineTests": 15,
+  "mutations": [
+    {
+      "mutation": "activation-hook",
+      "file": "lib/browser-profile-companion.mjs",
+      "line": 353,
+      "loadedChangedLine": "    record.admission='active';record.state='active';await this._prove(record);check();void 0;check();this._status(record,'active')",
+      "changedExecutableLines": [
+        {
+          "line": 353,
+          "loadedChangedLine": "    record.admission='active';record.state='active';await this._prove(record);check();void 0;check();this._status(record,'active')"
+        }
+      ],
+      "redExit": 1,
+      "directAssertion": true,
+      "exactRestore": true,
+      "restoredExit": 0
+    },
+    {
+      "mutation": "original-owner",
+      "file": "lib/browser-profile-companion.mjs",
+      "line": 109,
+      "loadedChangedLine": "      base();const runner=await this._trackPhysical(record,'backup-create',Promise.resolve().then(()=>this.createBackups({origin:this.connection.pairing.backendUrl,directory:path.join(this.directory,'active-backups',createHash('sha256').update(shared.canonical(pick(binding.scope,['profileId','actingUserId','assistantId','endpointId','keyFingerprint']))).digest('hex')),endpoint:binding.endpoint,authority:binding.authority,ownerUserId:binding.scope.actingUserId,pairingId:binding.scope.pairingId,runtime:binding.runtime,assertCurrent:current,authorizePairing:this.authorizeBackups,peerIdentities:async check=>{check();current();const peers=await new AgentProfilePeerPins({directory:path.join(this.directory,'peer-pins',binding.scope.endpointId)}).list({scope:binding.scope,ownIdentity:binding.endpoint.identity,assertCurrent:()=>{check();current()}});check();current();return peers},readExtras:()=>{current();return binding.extras.preflightExtras({authority:binding.authority})},currentContentKey:()=>{current();return record.contentKeyEpoch||binding.runtime.contentKeyEpoch}})))",
+      "changedExecutableLines": [
+        {
+          "line": 109,
+          "loadedChangedLine": "      base();const runner=await this._trackPhysical(record,'backup-create',Promise.resolve().then(()=>this.createBackups({origin:this.connection.pairing.backendUrl,directory:path.join(this.directory,'active-backups',createHash('sha256').update(shared.canonical(pick(binding.scope,['profileId','actingUserId','assistantId','endpointId','keyFingerprint']))).digest('hex')),endpoint:binding.endpoint,authority:binding.authority,ownerUserId:binding.scope.actingUserId,pairingId:binding.scope.pairingId,runtime:binding.runtime,assertCurrent:current,authorizePairing:this.authorizeBackups,peerIdentities:async check=>{check();current();const peers=await new AgentProfilePeerPins({directory:path.join(this.directory,'peer-pins',binding.scope.endpointId)}).list({scope:binding.scope,ownIdentity:binding.endpoint.identity,assertCurrent:()=>{check();current()}});check();current();return peers},readExtras:()=>{current();return binding.extras.preflightExtras({authority:binding.authority})},currentContentKey:()=>{current();return record.contentKeyEpoch||binding.runtime.contentKeyEpoch}})))"
+        }
+      ],
+      "redExit": 1,
+      "directAssertion": true,
+      "exactRestore": true,
+      "restoredExit": 0
+    },
+    {
+      "mutation": "original-context",
+      "file": "lib/browser-profile-companion.mjs",
+      "line": 100,
+      "loadedChangedLine": "    if(this.#backups.get(record)!==binding||binding.stopped||record.runtime!==binding.runtime||false||record.engine!==binding.engine||record.endpoint!==binding.endpoint||record.extras!==binding.extras||!shared.sameAuthority(record.runtime.authority,binding.authority)||Object.keys(binding.scope).some(key=>record.scope[key]!==binding.scope[key]))throw fail('profile_backup_context_changed')",
+      "changedExecutableLines": [
+        {
+          "line": 100,
+          "loadedChangedLine": "    if(this.#backups.get(record)!==binding||binding.stopped||record.runtime!==binding.runtime||false||record.engine!==binding.engine||record.endpoint!==binding.endpoint||record.extras!==binding.extras||!shared.sameAuthority(record.runtime.authority,binding.authority)||Object.keys(binding.scope).some(key=>record.scope[key]!==binding.scope[key]))throw fail('profile_backup_context_changed')"
+        }
+      ],
+      "redExit": 1,
+      "directAssertion": true,
+      "exactRestore": true,
+      "restoredExit": 0
+    },
+    {
+      "mutation": "original-engine",
+      "file": "lib/browser-profile-companion.mjs",
+      "line": 100,
+      "loadedChangedLine": "    if(this.#backups.get(record)!==binding||binding.stopped||record.runtime!==binding.runtime||record.runtime.context!==binding.context||false||record.endpoint!==binding.endpoint||record.extras!==binding.extras||!shared.sameAuthority(record.runtime.authority,binding.authority)||Object.keys(binding.scope).some(key=>record.scope[key]!==binding.scope[key]))throw fail('profile_backup_context_changed')",
+      "changedExecutableLines": [
+        {
+          "line": 100,
+          "loadedChangedLine": "    if(this.#backups.get(record)!==binding||binding.stopped||record.runtime!==binding.runtime||record.runtime.context!==binding.context||false||record.endpoint!==binding.endpoint||record.extras!==binding.extras||!shared.sameAuthority(record.runtime.authority,binding.authority)||Object.keys(binding.scope).some(key=>record.scope[key]!==binding.scope[key]))throw fail('profile_backup_context_changed')"
+        }
+      ],
+      "redExit": 1,
+      "directAssertion": true,
+      "exactRestore": true,
+      "restoredExit": 0
+    },
+    {
+      "mutation": "original-endpoint",
+      "file": "lib/browser-profile-companion.mjs",
+      "line": 100,
+      "loadedChangedLine": "    if(this.#backups.get(record)!==binding||binding.stopped||record.runtime!==binding.runtime||record.runtime.context!==binding.context||record.engine!==binding.engine||false||record.extras!==binding.extras||!shared.sameAuthority(record.runtime.authority,binding.authority)||Object.keys(binding.scope).some(key=>record.scope[key]!==binding.scope[key]))throw fail('profile_backup_context_changed')",
+      "changedExecutableLines": [
+        {
+          "line": 100,
+          "loadedChangedLine": "    if(this.#backups.get(record)!==binding||binding.stopped||record.runtime!==binding.runtime||record.runtime.context!==binding.context||record.engine!==binding.engine||false||record.extras!==binding.extras||!shared.sameAuthority(record.runtime.authority,binding.authority)||Object.keys(binding.scope).some(key=>record.scope[key]!==binding.scope[key]))throw fail('profile_backup_context_changed')"
+        }
+      ],
+      "redExit": 1,
+      "directAssertion": true,
+      "exactRestore": true,
+      "restoredExit": 0
+    },
+    {
+      "mutation": "full-authority",
+      "file": "lib/browser-profile-companion.mjs",
+      "line": 100,
+      "loadedChangedLine": "    if(this.#backups.get(record)!==binding||binding.stopped||record.runtime!==binding.runtime||record.runtime.context!==binding.context||record.engine!==binding.engine||record.endpoint!==binding.endpoint||record.extras!==binding.extras||false||Object.keys(binding.scope).some(key=>record.scope[key]!==binding.scope[key]))throw fail('profile_backup_context_changed')",
+      "changedExecutableLines": [
+        {
+          "line": 100,
+          "loadedChangedLine": "    if(this.#backups.get(record)!==binding||binding.stopped||record.runtime!==binding.runtime||record.runtime.context!==binding.context||record.engine!==binding.engine||record.endpoint!==binding.endpoint||record.extras!==binding.extras||false||Object.keys(binding.scope).some(key=>record.scope[key]!==binding.scope[key]))throw fail('profile_backup_context_changed')"
+        }
+      ],
+      "redExit": 1,
+      "directAssertion": true,
+      "exactRestore": true,
+      "restoredExit": 0
+    },
+    {
+      "mutation": "original-account-scope",
+      "file": "lib/browser-profile-companion.mjs",
+      "line": 100,
+      "loadedChangedLine": "    if(this.#backups.get(record)!==binding||binding.stopped||record.runtime!==binding.runtime||record.runtime.context!==binding.context||record.engine!==binding.engine||record.endpoint!==binding.endpoint||record.extras!==binding.extras||!shared.sameAuthority(record.runtime.authority,binding.authority)||false)throw fail('profile_backup_context_changed')",
+      "changedExecutableLines": [
+        {
+          "line": 100,
+          "loadedChangedLine": "    if(this.#backups.get(record)!==binding||binding.stopped||record.runtime!==binding.runtime||record.runtime.context!==binding.context||record.engine!==binding.engine||record.endpoint!==binding.endpoint||record.extras!==binding.extras||!shared.sameAuthority(record.runtime.authority,binding.authority)||false)throw fail('profile_backup_context_changed')"
+        }
+      ],
+      "redExit": 1,
+      "directAssertion": true,
+      "exactRestore": true,
+      "restoredExit": 0
+    },
+    {
+      "mutation": "pause-before-command",
+      "file": "lib/browser-profile-companion.mjs",
+      "line": 385,
+      "loadedChangedLine": "      void this._pauseBackups(record);check()",
+      "changedExecutableLines": [
+        {
+          "line": 385,
+          "loadedChangedLine": "      void this._pauseBackups(record);check()"
+        }
+      ],
+      "redExit": 1,
+      "directAssertion": true,
+      "exactRestore": true,
+      "restoredExit": 0
+    },
+    {
+      "mutation": "resume-after-command",
+      "file": "lib/browser-profile-companion.mjs",
+      "line": 408,
+      "loadedChangedLine": "    try{return await work}finally{try{const results=await Promise.allSettled([()=>this.#fileRunners.get(record)?.runner.whenDrained(),()=>this.#fieldRunners.get(record)?.runner.whenDrained()].map(callback=>Promise.resolve().then(callback)));if(results.some(result=>result.status==='rejected'))throw fail('profile_companion_command_drain_unconfirmed')}catch(error){physicalClean=false;this.#permissionCleanupUnknown.add(record);throw error}finally{for(const source of signals)source.removeEventListener('abort',abort);if(physicalClean){record.engineTasks.delete(work);try{void 0}catch{}}}}",
+      "changedExecutableLines": [
+        {
+          "line": 408,
+          "loadedChangedLine": "    try{return await work}finally{try{const results=await Promise.allSettled([()=>this.#fileRunners.get(record)?.runner.whenDrained(),()=>this.#fieldRunners.get(record)?.runner.whenDrained()].map(callback=>Promise.resolve().then(callback)));if(results.some(result=>result.status==='rejected'))throw fail('profile_companion_command_drain_unconfirmed')}catch(error){physicalClean=false;this.#permissionCleanupUnknown.add(record);throw error}finally{for(const source of signals)source.removeEventListener('abort',abort);if(physicalClean){record.engineTasks.delete(work);try{void 0}catch{}}}}"
+        }
+      ],
+      "redExit": 1,
+      "directAssertion": true,
+      "exactRestore": true,
+      "restoredExit": 0
+    },
+    {
+      "mutation": "retirement-drain",
+      "file": "lib/browser-profile-companion.mjs",
+      "line": 420,
+      "loadedChangedLine": "    let stopped;try{void this._pauseBackups(record);stopped=await record.runtime.finalize({context,source:record.endpoint,destinationIdentity:record.identity,contentKeyEpoch:record.contentKeyEpoch||record.runtime.contentKeyEpoch});this._cached(record);record.state='local_stopped';const result=await this.client.retire(authority,record.endpoint,stopped);this._cached(record);if(result.profile?.writerState!=='stopped'||result.profile.headManifestHash!==codec.manifestHash(stopped.checkpoint.manifest)||result.transition?.id!==context.transitionId||result.transition.phase!=='checkpoint_committed')throw fail('profile_companion_retirement_unconfirmed');record.state='closed';await this._dispose(record);this._status(record,'server_committed_stopped')}",
+      "changedExecutableLines": [
+        {
+          "line": 420,
+          "loadedChangedLine": "    let stopped;try{void this._pauseBackups(record);stopped=await record.runtime.finalize({context,source:record.endpoint,destinationIdentity:record.identity,contentKeyEpoch:record.contentKeyEpoch||record.runtime.contentKeyEpoch});this._cached(record);record.state='local_stopped';const result=await this.client.retire(authority,record.endpoint,stopped);this._cached(record);if(result.profile?.writerState!=='stopped'||result.profile.headManifestHash!==codec.manifestHash(stopped.checkpoint.manifest)||result.transition?.id!==context.transitionId||result.transition.phase!=='checkpoint_committed')throw fail('profile_companion_retirement_unconfirmed');record.state='closed';await this._dispose(record);this._status(record,'server_committed_stopped')}"
+        }
+      ],
+      "redExit": 1,
+      "directAssertion": true,
+      "exactRestore": true,
+      "restoredExit": 0
+    },
+    {
+      "mutation": "disconnect-fence",
+      "file": "lib/browser-profile-companion.mjs",
+      "line": 411,
+      "loadedChangedLine": "  disconnected(){for(const record of this.records.values()){record.admission='unknown';record.permissionAbort?.abort();record.rpc?.disconnect();this._status(record,'connection_unknown: new agent actions paused; live page retained')}}",
+      "changedExecutableLines": [
+        {
+          "line": 411,
+          "loadedChangedLine": "  disconnected(){for(const record of this.records.values()){record.admission='unknown';record.permissionAbort?.abort();record.rpc?.disconnect();this._status(record,'connection_unknown: new agent actions paused; live page retained')}}"
+        }
+      ],
+      "redExit": 1,
+      "directAssertion": true,
+      "exactRestore": true,
+      "restoredExit": 0
+    },
+    {
+      "mutation": "native-stop-independent",
+      "file": "lib/browser-profile-companion.mjs",
+      "line": 439,
+      "loadedChangedLine": "    const task=Promise.resolve().then(async()=>{const failures=[];await record.downloadsCreating?.catch(()=>{});await record.runtimeCreating?.catch(()=>{});const native=Promise.resolve().then(async()=>{await this._stopBackups(record);return record.runtime?.dispose()}),commands=Promise.resolve().then(()=>this._drainCommands(record)),files=Promise.resolve().then(()=>this.#fileRunners.get(record)?.runner.dispose()),fields=Promise.resolve().then(()=>this.#fieldRunners.get(record)?.runner.dispose()),downloads=Promise.resolve().then(()=>this.#downloads.get(record)?.binding.dispose());for(const result of await Promise.allSettled([native,commands,files,fields,downloads,this._stopBackups(record)]))if(result.status==='rejected')failures.push(result.reason);for(const cleanup of [async()=>{await record.engineCreating?.catch(()=>{});await record.engine?.stop()},async()=>{await record.extrasCreating?.catch(()=>{});record.extras?.dispose()}])try{await cleanup()}catch(error){failures.push(error)}await Promise.allSettled([activation?.task,proof?.task].filter(Boolean));if(this.#activations.get(record)===activation)this.#activations.delete(record);record.contentKeyEpoch?.key.fill(0);record.contentKeyEpoch=null;if(failures.length)throw fail('profile_companion_stop_unconfirmed');record.relay?.close();this.#fileRunners.delete(record);this.#fieldRunners.delete(record);this.#downloads.delete(record);this.#backups.delete(record);record.runtime=null;record.engine=null;record.extras=null;if(record.rpc){const rpc=record.rpc;this._trackPhysical(record,'rpc-close',Promise.resolve().then(()=>rpc.close()));record.rpc=null}})",
+      "changedExecutableLines": [
+        {
+          "line": 439,
+          "loadedChangedLine": "    const task=Promise.resolve().then(async()=>{const failures=[];await record.downloadsCreating?.catch(()=>{});await record.runtimeCreating?.catch(()=>{});const native=Promise.resolve().then(async()=>{await this._stopBackups(record);return record.runtime?.dispose()}),commands=Promise.resolve().then(()=>this._drainCommands(record)),files=Promise.resolve().then(()=>this.#fileRunners.get(record)?.runner.dispose()),fields=Promise.resolve().then(()=>this.#fieldRunners.get(record)?.runner.dispose()),downloads=Promise.resolve().then(()=>this.#downloads.get(record)?.binding.dispose());for(const result of await Promise.allSettled([native,commands,files,fields,downloads,this._stopBackups(record)]))if(result.status==='rejected')failures.push(result.reason);for(const cleanup of [async()=>{await record.engineCreating?.catch(()=>{});await record.engine?.stop()},async()=>{await record.extrasCreating?.catch(()=>{});record.extras?.dispose()}])try{await cleanup()}catch(error){failures.push(error)}await Promise.allSettled([activation?.task,proof?.task].filter(Boolean));if(this.#activations.get(record)===activation)this.#activations.delete(record);record.contentKeyEpoch?.key.fill(0);record.contentKeyEpoch=null;if(failures.length)throw fail('profile_companion_stop_unconfirmed');record.relay?.close();this.#fileRunners.delete(record);this.#fieldRunners.delete(record);this.#downloads.delete(record);this.#backups.delete(record);record.runtime=null;record.engine=null;record.extras=null;if(record.rpc){const rpc=record.rpc;this._trackPhysical(record,'rpc-close',Promise.resolve().then(()=>rpc.close()));record.rpc=null}})"
+        }
+      ],
+      "redExit": 1,
+      "directAssertion": true,
+      "exactRestore": true,
+      "restoredExit": 0
+    },
+    {
+      "mutation": "late-created-disposer",
+      "file": "lib/browser-profile-companion.mjs",
+      "line": 123,
+      "loadedChangedLine": "    const task=Promise.resolve().then(async()=>{await binding.creating.catch(()=>{});const cleanup=[()=>stopping,...binding.listeners.splice(0).map(({target,event,callback})=>()=>target.removeListener(event,callback))];const results=await Promise.allSettled(cleanup.map(callback=>Promise.resolve().then(callback)));if(results.some(result=>result.status==='rejected')||binding.cleanupUnknown){binding.cleanupUnknown=true;throw fail('profile_backup_cleanup_unknown')}});binding.stopWork=this._trackPhysical(record,'backup-stop',task);return binding.stopWork",
+      "changedExecutableLines": [
+        {
+          "line": 123,
+          "loadedChangedLine": "    const task=Promise.resolve().then(async()=>{await binding.creating.catch(()=>{});const cleanup=[()=>stopping,...binding.listeners.splice(0).map(({target,event,callback})=>()=>target.removeListener(event,callback))];const results=await Promise.allSettled(cleanup.map(callback=>Promise.resolve().then(callback)));if(results.some(result=>result.status==='rejected')||binding.cleanupUnknown){binding.cleanupUnknown=true;throw fail('profile_backup_cleanup_unknown')}});binding.stopWork=this._trackPhysical(record,'backup-stop',task);return binding.stopWork"
+        }
+      ],
+      "redExit": 1,
+      "directAssertion": true,
+      "exactRestore": true,
+      "restoredExit": 0
+    },
+    {
+      "mutation": "attempted-listener-rollback",
+      "file": "lib/browser-profile-companion.mjs",
+      "line": 107,
+      "loadedChangedLine": "    const current=()=>this._backupCurrent(record,binding,true),base=()=>this._backupCurrent(record,binding),hint=()=>{try{current();binding.runner?.notify()}catch{}},listen=(target,event,callback)=>{target.on(event,callback);binding.listeners.push({target,event,callback})},watch=page=>{if(binding.watched.has(page)||binding.watched.size>=32)return;binding.watched.add(page);listen(page,'framenavigated',hint)}",
+      "changedExecutableLines": [
+        {
+          "line": 107,
+          "loadedChangedLine": "    const current=()=>this._backupCurrent(record,binding,true),base=()=>this._backupCurrent(record,binding),hint=()=>{try{current();binding.runner?.notify()}catch{}},listen=(target,event,callback)=>{target.on(event,callback);binding.listeners.push({target,event,callback})},watch=page=>{if(binding.watched.has(page)||binding.watched.size>=32)return;binding.watched.add(page);listen(page,'framenavigated',hint)}"
+        }
+      ],
+      "redExit": 1,
+      "directAssertion": true,
+      "exactRestore": true,
+      "restoredExit": 0
+    },
+    {
+      "mutation": "independent-listener-cleanup",
+      "file": "lib/browser-profile-companion.mjs",
+      "line": 123,
+      "loadedChangedLine": "    const task=Promise.resolve().then(async()=>{await binding.creating.catch(()=>{});const cleanup=[()=>stopping??binding.runner?.dispose(),...binding.listeners.splice(0,1).map(({target,event,callback})=>()=>target.removeListener(event,callback))];const results=await Promise.allSettled(cleanup.map(callback=>Promise.resolve().then(callback)));if(results.some(result=>result.status==='rejected')||binding.cleanupUnknown){binding.cleanupUnknown=true;throw fail('profile_backup_cleanup_unknown')}});binding.stopWork=this._trackPhysical(record,'backup-stop',task);return binding.stopWork",
+      "changedExecutableLines": [
+        {
+          "line": 123,
+          "loadedChangedLine": "    const task=Promise.resolve().then(async()=>{await binding.creating.catch(()=>{});const cleanup=[()=>stopping??binding.runner?.dispose(),...binding.listeners.splice(0,1).map(({target,event,callback})=>()=>target.removeListener(event,callback))];const results=await Promise.allSettled(cleanup.map(callback=>Promise.resolve().then(callback)));if(results.some(result=>result.status==='rejected')||binding.cleanupUnknown){binding.cleanupUnknown=true;throw fail('profile_backup_cleanup_unknown')}});binding.stopWork=this._trackPhysical(record,'backup-stop',task);return binding.stopWork"
+        }
+      ],
+      "redExit": 1,
+      "directAssertion": true,
+      "exactRestore": true,
+      "restoredExit": 0
+    },
+    {
+      "mutation": "cleanup-admission",
+      "file": "lib/browser-profile-companion.mjs",
+      "line": 125,
+      "loadedChangedLine": "  _admit(record){this._cached(record);const backup=this.#backups.get(record);if(this.closing||record.admission!=='active'||record.uncertain||this.#permissionCleanupUnknown.has(record)||backup?.cleanupUnknown||false)throw fail('profile_companion_authority_unknown');this.#downloads.get(record)?.binding.assertAvailable();record.runtime.assertCurrent();return true}",
+      "changedExecutableLines": [
+        {
+          "line": 125,
+          "loadedChangedLine": "  _admit(record){this._cached(record);const backup=this.#backups.get(record);if(this.closing||record.admission!=='active'||record.uncertain||this.#permissionCleanupUnknown.has(record)||backup?.cleanupUnknown||false)throw fail('profile_companion_authority_unknown');this.#downloads.get(record)?.binding.assertAvailable();record.runtime.assertCurrent();return true}"
+        }
+      ],
+      "redExit": 1,
+      "directAssertion": true,
+      "exactRestore": true,
+      "restoredExit": 0
+    },
+    {
+      "mutation": "cleanup-activity",
+      "file": "lib/browser-profile-companion.mjs",
+      "line": 85,
+      "loadedChangedLine": "      const backup=this.#backups.get(record);if(backup){try{const value=backup.runner?.activity();if(value){if(!Number.isSafeInteger(value.pendingPhysicalOperations)||value.pendingPhysicalOperations<0||typeof value.cleanupUnknown!=='boolean')throw fail('profile_backup_cleanup_unknown');pendingPhysicalOperations+=value.pendingPhysicalOperations;cleanupUnknown||=false}cleanupUnknown||=backup.cleanupUnknown}catch{pendingPhysicalOperations++;cleanupUnknown=true}}",
+      "changedExecutableLines": [
+        {
+          "line": 85,
+          "loadedChangedLine": "      const backup=this.#backups.get(record);if(backup){try{const value=backup.runner?.activity();if(value){if(!Number.isSafeInteger(value.pendingPhysicalOperations)||value.pendingPhysicalOperations<0||typeof value.cleanupUnknown!=='boolean')throw fail('profile_backup_cleanup_unknown');pendingPhysicalOperations+=value.pendingPhysicalOperations;cleanupUnknown||=false}cleanupUnknown||=backup.cleanupUnknown}catch{pendingPhysicalOperations++;cleanupUnknown=true}}"
+        }
+      ],
+      "redExit": 1,
+      "directAssertion": true,
+      "exactRestore": true,
+      "restoredExit": 0
+    },
+    {
+      "mutation": "monitor-preserves-cadence",
+      "file": "lib/browser-profile-companion.mjs",
+      "line": 370,
+      "loadedChangedLine": "    if(!binding||binding.socketId!==this.connection.socketId){const entry=await this._discover(record);if(!unchanged())return;if(!this._activeMatches(record,entry,record.runtime.authority))throw fail('profile_companion_authority_changed');record.admission='active';await this._prove(record);if(this.#backups.get(record)){await this._pauseBackups(record);if(unchanged())this._resumeBackups(record)};return}",
+      "changedExecutableLines": [
+        {
+          "line": 370,
+          "loadedChangedLine": "    if(!binding||binding.socketId!==this.connection.socketId){const entry=await this._discover(record);if(!unchanged())return;if(!this._activeMatches(record,entry,record.runtime.authority))throw fail('profile_companion_authority_changed');record.admission='active';await this._prove(record);if(this.#backups.get(record)){await this._pauseBackups(record);if(unchanged())this._resumeBackups(record)};return}"
+        },
+        {
+          "line": 373,
+          "loadedChangedLine": "    this._cached(record);if(!unchanged())return;if(result.current===false){record.revoked=true;record.admission='revoked';await this._dispose(record);this._status(record,'revoked');return}record.admission='active';if(this.#backups.get(record)){await this._pauseBackups(record);if(unchanged())this._resumeBackups(record)};this._status(record,'active')"
+        }
+      ],
+      "redExit": 1,
+      "directAssertion": true,
+      "exactRestore": true,
+      "restoredExit": 0
+    },
+    {
+      "mutation": "explicit-read-only-reconcile",
+      "file": "lib/browser-profile-companion.mjs",
+      "line": 379,
+      "loadedChangedLine": "    if(name==='hoai_browser_open_session'||name==='hoai_browser_status'){const original=this.#backups.get(record),backup=original?.runner;let state=backup?.status();if(state?.state==='unknown'){void 0;this._backupCurrent(record,original,true);execution?.check();state=backup.status()}return{content:[{type:'text',text:JSON.stringify({state:'active',backup:state?pick(state,['state','busy','captureKind','uploadOutcome','reason','paused','cleanupUnknown','localDurable','lastConfirmed']):null})}]}}",
+      "changedExecutableLines": [
+        {
+          "line": 379,
+          "loadedChangedLine": "    if(name==='hoai_browser_open_session'||name==='hoai_browser_status'){const original=this.#backups.get(record),backup=original?.runner;let state=backup?.status();if(state?.state==='unknown'){void 0;this._backupCurrent(record,original,true);execution?.check();state=backup.status()}return{content:[{type:'text',text:JSON.stringify({state:'active',backup:state?pick(state,['state','busy','captureKind','uploadOutcome','reason','paused','cleanupUnknown','localDurable','lastConfirmed']):null})}]}}"
+        }
+      ],
+      "redExit": 1,
+      "directAssertion": true,
+      "exactRestore": true,
+      "restoredExit": 0
+    },
+    {
+      "mutation": "shutdown-sync-fence",
+      "file": "lib/browser-profile-companion.mjs",
+      "line": 444,
+      "loadedChangedLine": "    const activating=[...this.records.values()].filter(record=>this.#activations.get(record)?.pending),activationStops=activating.map(record=>this._dispose(record))",
+      "changedExecutableLines": [
+        {
+          "line": 444,
+          "loadedChangedLine": "    const activating=[...this.records.values()].filter(record=>this.#activations.get(record)?.pending),activationStops=activating.map(record=>this._dispose(record))"
+        }
+      ],
+      "redExit": 1,
+      "directAssertion": true,
+      "exactRestore": true,
+      "restoredExit": 0
+    }
+  ],
+  "tests": {
+    "newIntegration": 15,
+    "touchedSevenSuites": 101,
+    "skipped": 0,
+    "tscExit": 0,
+    "allSyntheticAuthority": true
+  },
+  "sourceHashes": {
+    "lib/browser-profile-companion.mjs": "3e893c69d16456cd16f8a42a1d4b51255d20abecf9664ccd1cb1596dca2bb71f",
+    "test/browser-profile-companion-backups.test.ts": "84bb81823976b519115694f12177bdf20a575e5f241d5320818efb307753fc72",
+    "docs/browser-profile-active-backup.md": "e43b663ae7de0790642ac15607da4606bdc2a505565027e1a04dd4cb8a9357e0"
+  },
+  "privateRawEvidence": [
+    {
+      "path": ".tmp/backup-hooks/final-lf-touched.log",
+      "sha256": "49cbfcacaf75854c76ca65224cb3634e0e68dd979299dbbca2c1e01a8be8e2da"
+    },
+    {
+      "path": ".tmp/backup-hooks/final-lf-tsc.log",
+      "sha256": "317105606dc7d3a0a5c85cba517f8cdaab4debf707c6f57223da251da1c984ce"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/baseline.log",
+      "sha256": "6976855982851d0cf142e0b74b074b7bc431492aa71467fa96de27c61c8b37eb"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/final.log",
+      "sha256": "ee6f8e5b0a563555cbcdb7ba9239f3ee75c78dd55e32f5702afa9e9c4b61bf91"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/results.json",
+      "sha256": "0b183740fbb1ed74224ca759dd568d062c1f683c8854f138dc0da8079261ea92"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/activation-hook-red.log",
+      "sha256": "66a26802cda7e131d50895daeb3d4af865c874d900b74f79340c491b5d2021da"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/attempted-listener-rollback-red.log",
+      "sha256": "a2af1f17e8b10eefd2d66d97b3c5a7283394d4afb69f45bda93b6350265a2ff5"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/cleanup-activity-red.log",
+      "sha256": "42857c5763786b8cbd3ffb84837d3f4c1a8c7c3b1cd4c6eb465e60e420b290a5"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/cleanup-admission-red.log",
+      "sha256": "e63ad918c5093f85d55ab3fe2c90087716dfe6f502f8572cd34c3c20024703be"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/disconnect-fence-red.log",
+      "sha256": "88e600ce84ebcd75f8be835cb66d7ae65eb5453959dc4e0723c6c6a0484c7bfd"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/explicit-read-only-reconcile-red.log",
+      "sha256": "f0fdee47316816d41c69e7931afeb70f6351b1a175b9346f3b7d239771f4932e"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/full-authority-red.log",
+      "sha256": "eed45b2c830872c3f6c4fc47371462b6152467daf341fed836a346163b71a0c7"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/independent-listener-cleanup-red.log",
+      "sha256": "a1216068d354c1ced7a6689140e1c6a5b57bb254a84f677fd5fcbf30cbec792c"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/late-created-disposer-red.log",
+      "sha256": "d3dd71fd1ad9648efa248ff715cfbe147e7fe904bf4d60ffda1ea1cddc90179b"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/monitor-preserves-cadence-red.log",
+      "sha256": "aaf568dbd99807744ee7e9917568ba3aa5db08d0eb8007b8741f6b10ae521b66"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/native-stop-independent-red.log",
+      "sha256": "fc70b4f73ae744d4e00713b7ca7eab922b55a701415a5db31a8474987fdcb4da"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/original-account-scope-red.log",
+      "sha256": "677ab8b72c23ff3738d1f231c6525a06be46be780a7c8e5566787a253fa14dc9"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/original-context-red.log",
+      "sha256": "8545193d4b8de3ea96383f99293b5439b301f649548e0b54a75d89f7c999f92e"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/original-endpoint-red.log",
+      "sha256": "551e536ad67a16fc031f9c2352eb11e625a8c2f7837f8fde4afb43312b91c4f7"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/original-engine-red.log",
+      "sha256": "f7f507c276c1788c24d68b246861f767924daede469cbabcdb30645669a0221b"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/original-owner-red.log",
+      "sha256": "f3369ce1a97be73da4f3069c1f7d03f7b38ea8258d039c3532eacc7bc01373cd"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/pause-before-command-red.log",
+      "sha256": "94b0ceced1a2db16867b8eac6eb9bddba0cb1bb3a232c20a7c5508820082c86a"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/resume-after-command-red.log",
+      "sha256": "ca8f39d1ce7e7d9549f334a7095c1b22c17e2a137e3131131e69777e114f7e23"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/retirement-drain-red.log",
+      "sha256": "a3279f89ad8295f09c538281b9478a7121ec6de304423ed99c9bc7b0725f24cd"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/shutdown-sync-fence-red.log",
+      "sha256": "33a6f9d01fc8629795b0b926d36406b204c03af7a7e959979bbbe4f2e031f0bc"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/activation-hook-restored.log",
+      "sha256": "ed8dd3878031c604ee33e40094ad72857818cd78276660f1c315429960e5b7e4"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/attempted-listener-rollback-restored.log",
+      "sha256": "f60b858c2adb2bda48d9a89c2d496c5ccb438b57addde96770b29b28dcf61aa2"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/cleanup-activity-restored.log",
+      "sha256": "11431d400d9af3e6d9680605e7e979c011d881f7d4cc0c0165e4e17bc7887648"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/cleanup-admission-restored.log",
+      "sha256": "06a4660c119c15dcf52246b6f5ee8be629f8eb23b13527205bcd83bcacd7c301"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/disconnect-fence-restored.log",
+      "sha256": "94fc6f56ebd092502463e2ab9e71e021c80c9dc6deb2e78a3f8b1f969e1403a1"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/explicit-read-only-reconcile-restored.log",
+      "sha256": "f1823701442d1d79c75f1abdfee4da7bc1edd59316ad9b02474489acfb4c980b"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/full-authority-restored.log",
+      "sha256": "3a593c9b2ebf17b69ad0470adfa28b1fbaf986ed909b75f2857ff3d6e5aeb27d"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/independent-listener-cleanup-restored.log",
+      "sha256": "73844f06ef1db9b3c75c21d46a6a2014dcc18e240b2da3b20f51b3f4228a1bc9"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/late-created-disposer-restored.log",
+      "sha256": "03cb5e7f53be5368a0504db7a990c24fd291f26bcff48965184e43818eeb7552"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/monitor-preserves-cadence-restored.log",
+      "sha256": "590a4ec928eefb981093760d6ffb3a57985384d57068da9da79f7e2839b38357"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/native-stop-independent-restored.log",
+      "sha256": "2d78df63e7ea40e2870ef3624aec5ad52d93ee8b1680492005090f3ce0ad0b87"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/original-account-scope-restored.log",
+      "sha256": "9b72d66d7cfc9afd010a3f6fc3ab6577505884288e121b5ecf4643d39ca5b349"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/original-context-restored.log",
+      "sha256": "359249b46d91134d4f332efd584e7c94339fc6b2b7f58e96a81dca82664c9f0c"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/original-endpoint-restored.log",
+      "sha256": "903a14beb67a28b003eff965e48e444a4ffaea76a7ff329a303131df2ab20758"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/original-engine-restored.log",
+      "sha256": "3a160edd41653074a87bb8e84e3ba2328531f0214a6f19c5fe80ba429c743048"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/original-owner-restored.log",
+      "sha256": "d333e454e10a21c3559f4bba96b1f8fadfd1232d6a9cc1299b02bd0864a6fcd3"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/pause-before-command-restored.log",
+      "sha256": "91d1e92c29bb95cedf4058d39487a64c31334cd6bdf544713af9d90399324c7b"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/resume-after-command-restored.log",
+      "sha256": "1881ec4d950f3640d46f08b3c404dea899f43bc2a2e051300e035635fe057439"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/retirement-drain-restored.log",
+      "sha256": "abaf728848f21f313eb4c4c7f1fe70f872e6c56127d03c49b34b9cceda1a1971"
+    },
+    {
+      "path": ".tmp/backup-hook-mutations-7b7fe9a7/shutdown-sync-fence-restored.log",
+      "sha256": "f58c8e9d3b3f0a0e1aa629f6a0707b101a6a18c6eb60bd295b2dc58c4396af0a"
+    }
+  ],
+  "limits": [
+    "The default helper is enabled for actual BrowserProfileRuntime after activation and HOAI proof; injected helper fixtures prove lifecycle composition.",
+    "Real automatic 60-second active agent backup through HOAI on final Chromium156 remains a separate acceptance gate.",
+    "No production or installed agent records were used."
+  ],
+  "lineEndings": "All6 scoped files normalizedLF before final20drills,101touchedcases and tsc0. Source hashes match staged Git blob bytes."
+}
