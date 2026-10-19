@@ -31,5 +31,5 @@ fi
 if command -v bun >/dev/null 2>&1; then
   exec bun "$CORE" "$@"
 fi
-echo "hoai: neither node nor bun was found; install Node 18+ (nodejs.org) or bun (bun.sh)" >&2
+echo "hoai: neither node nor bun was found; install a current Node.js 22 or 24 LTS release (minimum 22.12.0, nodejs.org) or bun (bun.sh)" >&2
 exit 127

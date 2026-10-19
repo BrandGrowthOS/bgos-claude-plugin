@@ -191,7 +191,7 @@ compute_home_id() {
 }
 need_home_id() {
   compute_home_id && return 0
-  die "service-name:home-id-unavailable this agent's service is named after the HOME it is installed from, and the HOME id could not be computed ($AGENT_SERVICE_JS runs on bun or node, and neither answered). Install bun or Node.js 18 or newer, then run this again."
+  die "service-name:home-id-unavailable this agent's service is named after the HOME it is installed from, and the HOME id could not be computed ($AGENT_SERVICE_JS runs on bun or node, and neither answered). Install bun or a current Node.js 22 or 24 LTS release (minimum 22.12.0), then run this again."
 }
 # Read one of this agent's registrations back (read only): sets PROBE_STATE
 # (own, absent, foreign or unknown), PROBE_HOME, PROBE_ACTIVE (1/0) and
@@ -2054,7 +2054,7 @@ cmd_uninstall() {
   local own_state="unknown" old_state="unknown"
   [ "$OS" = Linux ] && export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
   if ! compute_home_id; then
-    die "refused: agent $ASSISTANT_ID's service could not be named (no bun or node runs $AGENT_SERVICE_JS), so it could not be stopped; nothing was removed. Install bun or Node.js 18 or newer, then run this again."
+    die "refused: agent $ASSISTANT_ID's service could not be named (no bun or node runs $AGENT_SERVICE_JS), so it could not be stopped; nothing was removed. Install bun or a current Node.js 22 or 24 LTS release (minimum 22.12.0), then run this again."
   fi
   probe_service "$ASSISTANT_ID" own
   own_state="$PROBE_STATE"
