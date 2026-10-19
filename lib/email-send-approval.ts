@@ -540,7 +540,9 @@ export interface EmailSendApprovals {
   /**
    * c69224fe: email_send is about to keep this very email (its recipient, subject or email, and text) as a draft for
    * the owner, because words that are not the owner's reached the turn its reason `basis` opened (70f1898b). True the
-   * first time for that email and reason, which is remembered; false for a retry of it, which saves nothing more.
+   * first time for that email and reason's fire, which is remembered; false for a retry of it, which saves nothing more.
+   * A recurring task's next fire is its own (Data's review of #261, M3); a reason that names no fire keys by its kind
+   * and id alone.
    */
   keepOwnerDraft(args: unknown, basis: unknown): boolean
   /** The drafts route answered that it saved nothing: forget it, so a retry keeps it (keepOwnerDraft). */
@@ -567,11 +569,13 @@ export function createEmailSendApprovals(
     const b = emailSendBinding(EMAIL_SEND_FLOOR_TOOL, args) as Record<string, string> | null
     return b ? JSON.stringify([b.to?.toLowerCase() ?? null, b.subject ?? null, b.email_id?.toLowerCase() ?? null, b.body_sha256]) : null
   }
-  // The same email kept for the owner for the same reason: the reason's kind and id, then emailKey.
+  // The same email kept for the owner for the same fire: the reason's kind, id and fire, then emailKey.
   const ownerDraftKey = (args: unknown, basis: unknown): string | null => {
     const key = emailKey(args)
-    const b = basis as { kind?: unknown; id?: unknown } | null
-    return key !== null && typeof b?.kind === 'string' && typeof b.id === 'string' ? JSON.stringify([b.kind, b.id, key]) : null
+    const b = basis as { kind?: unknown; id?: unknown; fire?: unknown } | null
+    return key !== null && typeof b?.kind === 'string' && typeof b.id === 'string'
+      ? JSON.stringify([b.kind, b.id, typeof b.fire === 'string' ? b.fire : null, key])
+      : null
   }
   const dropStale = () => {
     const at = now()

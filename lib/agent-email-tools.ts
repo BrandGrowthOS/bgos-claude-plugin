@@ -111,6 +111,12 @@ export interface EmailSendBasis {
    * approval of exactly this email, from their tap on its card; without one it is kept as a draft for the owner.
    */
   askOwner?: boolean
+  /**
+   * The fire this reason came from (lib/private-turn.mjs emailSend: its delivery's fire key, `native:<fire id>` for a
+   * scheduled wake, `owner:<message id>` for a message). Kept in the daemon and never posted: the drafts kept for the
+   * owner are remembered per fire, so a recurring task's next fire keeps its own (Data's review of #261, M3).
+   */
+  fire?: string
 }
 
 export interface EmailToolDeps {
