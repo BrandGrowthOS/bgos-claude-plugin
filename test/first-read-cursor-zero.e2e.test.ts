@@ -18,6 +18,11 @@
  *   3. The agent's answer to that live message, written before the chat's
  *      next scheduled read (five minutes away with a healthy socket), ends the
  *      first read's walk back, so the rows under it were never forwarded.
+ *      Reading the chat at once narrows that; the chat's live floor (every row
+ *      from the first live message up is owed) closes it, for a read that
+ *      fails and for a chat the inbox does not list yet as well.
+ *   4. In any chat, a live message moved the cursor over an empty wake card
+ *      (body not landed yet) that a read had returned and parked under.
  *
  * The rule every case here checks: each row a chat read reaches is forwarded
  * exactly once, whether the chat was empty at boot or primed, after a live
@@ -117,6 +122,8 @@ interface Backend {
   /** The daemon's poll reads (the ones that name the caller agent), as answered. */
   reads: Read[]
   readsOf: (chatId: number) => Read[]
+  /** How many poll reads of a chat have ARRIVED (answered or not). */
+  readsStarted: (chatId: number) => number
   /** Hold the NEXT poll read of a chat and run `during` before answering it. */
   holdNextRead: (chatId: number, during: () => Promise<void>) => void
   /** Answer the NEXT poll read of a chat with a 500. */
@@ -135,6 +142,7 @@ async function startBackend(): Promise<Backend> {
   const inbox: Array<Record<string, unknown>> = [{ id: MAIN, assistantId: ASSISTANT_ID, kind: 'main', userId: USER_ID }]
   const meetings: Array<Record<string, unknown>> = []
   const reads: Read[] = []
+  const started = new Map<number, number>()
   const holds = new Map<number, () => Promise<void>>()
   const failures = new Set<number>()
   let refuse = false
@@ -155,6 +163,7 @@ async function startBackend(): Promise<Backend> {
       // The poll names its agent; the boot sweeps for permission and plan
       // cards read the same route without it.
       const isPoll = req.headers['x-caller-assistant-id'] !== undefined
+      if (isPoll) started.set(chatId, (started.get(chatId) ?? 0) + 1)
       const hold = isPoll ? holds.get(chatId) : undefined
       if (hold) {
         holds.delete(chatId)
@@ -189,6 +198,7 @@ async function startBackend(): Promise<Backend> {
     meetings,
     reads,
     readsOf: (chatId) => reads.filter((r) => r.chatId === chatId),
+    readsStarted: (chatId) => started.get(chatId) ?? 0,
     holdNextRead: (chatId, during) => {
       holds.set(chatId, during)
     },
@@ -448,6 +458,31 @@ describe('a chat first read at cursor 0 forwards every row it reaches, once', { 
       w.backend.cutSocket()
       await settle(() => d.cards, MAIN, [...ids(101, 114), 200])
       assert.deepEqual(delivered(d.cards, MAIN), [...ids(101, 114), 200])
+    } finally {
+      await w.end()
+    }
+  })
+
+  test('a chat empty at boot: a burst of live messages starts one read, and every row arrives once', OPTS, async () => {
+    const w = await world()
+    try {
+      const d = await w.boot()
+      await quietAfterBoot(w.backend, MAIN)
+      for (const id of ids(101, 114)) w.backend.rows.push(ownerRow(MAIN, id))
+      let readsStartedDuringBurst = -1
+      // The first live message starts a read, held here while five more
+      // arrive: they must not start a read each.
+      w.backend.holdNextRead(MAIN, async () => {
+        const before = w.backend.readsStarted(MAIN)
+        for (const id of ids(200, 204)) w.backend.pushLive(ownerRow(MAIN, id))
+        await waitFor(() => hasAll(d.cards, MAIN, ids(200, 204)), 'the burst of live cards')
+        await sleep(500)
+        readsStartedDuringBurst = w.backend.readsStarted(MAIN) - before
+      })
+      w.backend.pushLive(ownerRow(MAIN, 199))
+      await settle(() => d.cards, MAIN, [...ids(101, 114), ...ids(199, 204)])
+      assert.deepEqual(delivered(d.cards, MAIN), [...ids(101, 114), ...ids(199, 204)])
+      assert.equal(readsStartedDuringBurst, 0, 'one read in flight per chat, not one per live message')
     } finally {
       await w.end()
     }
