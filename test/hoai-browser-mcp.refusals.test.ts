@@ -31,7 +31,7 @@ import { createServer, type IncomingHttpHeaders } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { SESSION_TOOLS } from '../bin/hoai-browser-host.mjs'
+import { SESSION_TOOLS, hostInstructions, managedHostInstructions } from '../bin/hoai-browser-host.mjs'
 
 const SHIM = join(process.cwd(), 'bin', 'hoai-browser-mcp.mjs')
 const SECRET = 'refusal-fixture-pairing'
@@ -461,8 +461,12 @@ test('the tool schema served through the relay offers no preview default and no 
   assertNoProfileChoice((await g.request('tools/list')).result.tools, 'managed desktop')
 })
 
-test("this agent's own browser host lists no profile choice either", () => {
+test("this agent's own browser host lists no profile choice either, in its tools or its instructions", () => {
   assertNoProfileChoice(SESSION_TOOLS as Json[], 'plugin browser host')
+  for (const [label, said] of [['legacy host', hostInstructions('fixture-box')], ['managed host', managedHostInstructions('fixture-box')]]) {
+    assert.doesNotMatch(said, /preview/i, `${label} instructions offer no preview`)
+    assert.doesNotMatch(said, /\bprofile\s*:?\s*"?(?:preview|signed-in)\b/i, `${label} instructions offer no profile choice`)
+  }
 })
 
 test('the instructions the desktop serves are passed on without the choice, keeping everything else', async t => {
