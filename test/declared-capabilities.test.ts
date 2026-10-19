@@ -18,6 +18,7 @@ import { join } from 'node:path'
 
 import {
   DECLARED_CAPABILITIES_BASE,
+  DECLARED_CAPABILITIES_INJECTOR,
   DECLARED_CAPABILITIES_PAIRING,
   declaredCapabilities,
 } from '../lib/declared-capabilities.ts'
@@ -101,7 +102,7 @@ test('a host that cannot type declares the READ half only', () => {
   // the honest answer, and still sees every Last check.
   assert.deepEqual(
     [...declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode: 'pairing' })],
-    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'boards_download', 'sessions_library', 'changes_rpc', 'skills_list', 'skills_receive', 'email_label', 'email_send', 'hard_floor', 'hard_floor_rules_2'],
+    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'boards_download', 'sessions_library', 'changes_rpc', 'skills_list', 'skills_receive', 'ui_card', 'email_label', 'email_send', 'hard_floor', 'hard_floor_rules_2'],
   )
 })
 
@@ -139,6 +140,7 @@ test('boards_playbook is declared on every host, because the tool is typed and h
       'changes_rpc',
       'skills_list',
       'skills_receive',
+      'ui_card',
       'email_label',
       'email_send',
       'hard_floor',
@@ -242,6 +244,7 @@ test('permission_card is declared on every host, because the relay has no platfo
       'changes_rpc',
       'skills_list',
       'skills_receive',
+      'ui_card',
       'email_label',
       'email_send',
       'hard_floor',
@@ -361,6 +364,68 @@ test('skills_receive is declared on every host, once, beside skills_list', () =>
     }
   }
   assert.ok(DECLARED_CAPABILITIES_BASE.includes('skills_receive'))
+})
+
+/**
+ * ui_card (mission 168, the cards an agent composes). The BGOS canon tells an
+ * agent about cards (its Cards you compose section, the Claude Code catalog
+ * line and the told show_component paragraph) only when the declared union
+ * holds this exact token (backend capability-canon.ts UI_CARD_TOKEN and
+ * uiCardTold), never by version. show_component already sends kind ui_card
+ * through the live renderables catalog, and it is a plain HTTP send, so every
+ * host declares it: Mac, Linux and Windows, on either connection, with or
+ * without the floor hook.
+ *
+ * declaredCapabilities never reads the platform, so each host is the inputs
+ * its daemon really passes: a Mac in tmux whose lane probe passed, a Linux
+ * clone whose CLI is not in tmux yet (lib/compact-capability.ts can find the
+ * pane up to thirty minutes after boot), and Windows, which has neither tmux
+ * nor a locked lane (lib/lane-cli-probe.mjs).
+ *
+ * MUTATION PROOF (applied to lib/declared-capabilities.ts, confirmed red,
+ * restored): moved 'ui_card' from DECLARED_CAPABILITIES_BASE into
+ * DECLARED_CAPABILITIES_INJECTOR -> the first test below red ("once on Linux,
+ * pairing, floorHook true"), and so are the four whole list pins above, five
+ * of 36 in this file; the control stays green.
+ */
+const HOSTS = [
+  { host: 'Mac', canInjectGoal: true, personLanes: true },
+  { host: 'Linux', canInjectGoal: false, personLanes: true },
+  { host: 'Windows', canInjectGoal: false, personLanes: false },
+] as const
+
+test('ui_card is declared on every host, Mac, Linux and Windows, once, on either connection', () => {
+  for (const { host, canInjectGoal, personLanes } of HOSTS) {
+    for (const authMode of ['pairing', 'apikey'] as const) {
+      for (const floorHook of [true, false]) {
+        const declared = declaredCapabilities({ canInjectGoal, floorHook, personLanes, authMode })
+        assert.equal(
+          declared.filter((t) => t === 'ui_card').length,
+          1,
+          `once on ${host}, ${authMode}, floorHook ${floorHook}`,
+        )
+      }
+    }
+  }
+  // In the base, not in a host or connection shaped group.
+  assert.ok(DECLARED_CAPABILITIES_BASE.includes('ui_card'))
+  assert.ok(!DECLARED_CAPABILITIES_INJECTOR.includes('ui_card'))
+  assert.ok(!DECLARED_CAPABILITIES_PAIRING.includes('ui_card'))
+})
+
+test('ui_card leaves an unrelated, host shaped token where it was: mission_goal_loop follows the injector alone', () => {
+  // The control. mission_goal_loop is declared exactly where the daemon can
+  // type into its composer, and declaring ui_card on every host must not move
+  // it: the Mac shape declares it, the Linux and Windows shapes do not.
+  for (const { host, canInjectGoal, personLanes } of HOSTS) {
+    for (const authMode of ['pairing', 'apikey'] as const) {
+      for (const floorHook of [true, false]) {
+        const declared = declaredCapabilities({ canInjectGoal, floorHook, personLanes, authMode })
+        assert.equal(declared.includes('mission_goal_loop'), canInjectGoal, `${host}, ${authMode}, floorHook ${floorHook}`)
+        assert.equal(declared.includes('person_lanes'), authMode === 'pairing' && personLanes, `${host}, ${authMode}`)
+      }
+    }
+  }
 })
 
 /**
@@ -645,6 +710,7 @@ test('the stop pause token rides with mission_pause and nothing else, the gate t
       'changes_rpc',
       'skills_list',
       'skills_receive',
+      'ui_card',
       'email_label',
       'email_send',
       'hard_floor',
