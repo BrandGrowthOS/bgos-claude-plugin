@@ -8152,6 +8152,9 @@ interface PendingInbound {
   messageId: number
   ts: number
   reminded: boolean
+  // The message was the owner's own (its lane's privateActor): only then is its reminder marked owner_inbound, the
+  // one reminder the private turn tracker carries through an owner's turn (Data's review of #261, M1).
+  ownerInbound: boolean
 }
 const pendingInbounds = new Map<string, PendingInbound>()
 const meetingChatIds = new Set<string>()
@@ -8295,6 +8298,7 @@ function recordInbound(
   messageId: number,
   turnState?: string,
   senderKind?: string | null,
+  actingUserId?: string | null,
 ): void {
   if (!chatId) return
   // Authorize the chat for outbound dispatch even before the overdue-tracker
@@ -8325,7 +8329,8 @@ function recordInbound(
   }
   const existing = pendingInbounds.get(chatId)
   if (existing && existing.messageId >= messageId) return
-  pendingInbounds.set(chatId, { messageId, ts: Date.now(), reminded: false })
+  const ownerInbound = typeof actingUserId === 'string' && actingUserId !== '' && actingUserId === USER_ID
+  pendingInbounds.set(chatId, { messageId, ts: Date.now(), reminded: false, ownerInbound })
 }
 
 function clearInbound(chatId: string | undefined): void {
@@ -8586,6 +8591,7 @@ function checkReplyOverdue(): void {
           message_id: String(p.messageId),
           age_seconds: String(ageSec),
           ts: new Date(now).toISOString(),
+          ...(p.ownerInbound ? { owner_inbound: 'true' } : {}),
         },
       },
     })).catch((err) => log(`Failed to deliver reply-overdue: ${err}`))
@@ -10973,6 +10979,7 @@ async function pollChat(chatId: string): Promise<void> {
           msg.message.id,
           pollTurnState ?? undefined,
           pollIsEmail ? pollSenderType : msg.message.sender,
+          privateActor({ senderType: pollSenderType, senderUserId: privateSenderUserId(msg.message), agentOrigin: pollAgentOrigin, eventMeta: msg.message.eventMeta }),
         )
       }
     }
@@ -13276,7 +13283,7 @@ async function forwardStreamInbound(
     forwardedMessageIds.delete(view.messageId)
     throw err
   }
-  recordInbound(chatId, view.messageId, view.turnState, view.senderKind)
+  recordInbound(chatId, view.messageId, view.turnState, view.senderKind, privateActor({ senderType: isSystem ? 'system' : view.senderKind, senderUserId: privateSenderUserId(view.raw), agentOrigin: view.agentOrigin, eventMeta: view.eventMetaRaw }))
 }
 
 /**
@@ -14627,7 +14634,7 @@ function connectWebsocket(): void {
       // Track AFTER recording the conv↔chat association and turn_state so a
       // final inbound is recognized as a close (recordInbound short-circuits
       // it) and the closed-guard is consulted with the latest mapping.
-      recordInbound(chatId, messageId, wsTurnState, wsSenderType)
+      recordInbound(chatId, messageId, wsTurnState, wsSenderType, privateActor({ senderType: wsSenderType, senderUserId: privateSenderUserId(payload), agentOrigin: wsAgentOrigin, eventMeta: payload?.eventMeta ?? payload?.event_meta }))
     } catch (err) {
       log(`WS inbound_message handler error: ${err}`)
     }
