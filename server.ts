@@ -8096,9 +8096,12 @@ const FIRST_POLL_RECENT_CUTOFF_MS: number | null = cursorBoot.fileExisted
   : DAEMON_START_MS - FIRST_RUN_RECENT_WINDOW_MS
 
 // How many messages the BOOT poll may bring back per chat for the previous
-// session's unanswered work (board row 294a571a). The same figure as the
-// first-poll cap, for the same reason: the agent's context is the scarce thing,
-// and a chat where nothing was ever answered must not be able to fill it.
+// session's unanswered work (board row 294a571a): the agent's context is the
+// scarce thing, and a chat where nothing was ever answered must not be able to
+// fill it on every boot. It is meant for rows the previous session was handed.
+// It no longer has to rescue a cursor-less chat's rows (0.71.10): the live bump
+// no longer moves such a chat over rows no read returned, and its first poll is
+// not capped.
 const MAX_RESTART_RECOVERY_FORWARD = 10
 
 // Chats fully processed by pollChat at least once since THIS process started.
@@ -10332,10 +10335,19 @@ async function pollChat(chatId: string): Promise<void> {
   // lost on restart, and a delta window cannot contain the older assistant
   // rows that still have open buttons (see buildChatPollRequest).
   const isBootPoll = !chatsPolledSinceBoot.has(chatId)
+  // Read ONCE, before the fetch, and used for everything this poll decides
+  // about the rows that fetch returns. It used to be read again after the
+  // fetch, so a live message that landed while the read was in flight moved
+  // the cursor under it (deliverWsInbound) and this poll then dropped every
+  // row it had just fetched below that live id: 14 of 14 in a primed chat,
+  // and a cursor-0 chat fell off the first-poll branch into a recovery capped
+  // at 10. Never a rewind: advanceChatCursor below only moves forward, and
+  // the forwarded-id dedupe skips the live message itself.
+  const lastSeen = chatLastSeen.get(chatId) ?? 0
   const req = buildChatPollRequest({
     chatId,
     userId: USER_ID,
-    lastSeen: chatLastSeen.get(chatId) ?? 0,
+    lastSeen,
     unansweredButtonCount: chatUnansweredButtons.get(chatId)?.size ?? 0,
     forceFull: isBootPoll,
   })
@@ -10349,7 +10361,6 @@ async function pollChat(chatId: string): Promise<void> {
     const data = raw as ChatHistoryResponse
     if (!data.messages?.length) return
 
-    const lastSeen = chatLastSeen.get(chatId) ?? 0
     const maxId = Math.max(...data.messages.map((m) => m.message.id))
 
     // Messages are returned oldest → newest by message id. Make sure we
@@ -10373,8 +10384,12 @@ async function pollChat(chatId: string): Promise<void> {
       // trailing user/system messages, stopping only at a real
       // user->assistant REPLY (an assistant message whose immediately
       // preceding message is a user message). Proactive assistant messages
-      // (cron check-in, external trigger) do NOT terminate the scan. Capped
-      // to the last 10 to avoid dumping half the chat on first boot.
+      // (cron check-in, external trigger) do NOT terminate the scan. NOT
+      // capped (0.71.10): the cursor advance below moves this chat to the
+      // newest row of the read, so a row the selection leaves out is never
+      // read again. The old cap of 10 dropped the rest of the unanswered tail
+      // silently (Data's D04 probes: 10 of 14 forwarded in a chat that was
+      // empty at boot).
       // System messages (capability #14) are inbound machine traffic the
       // agent must process exactly like a user message, but a wake card
       // whose body has not landed yet (empty write-1 state) is skipped, the
@@ -10386,7 +10401,6 @@ async function pollChat(chatId: string): Promise<void> {
       // delivered then, so only messages sent within the recent window
       // qualify. The cursor advance below still initializes the chat to its
       // tip either way.
-      const MAX_FIRST_POLL_FORWARD = 10
       const firstPollRows = pollForwardableRows.map((m) => ({
         id: m.message.id,
         sender: m.message.sender,
@@ -10396,7 +10410,6 @@ async function pollChat(chatId: string): Promise<void> {
       const backlogIds = new Set(
         selectFirstPollBacklogIds({
           rows: firstPollRows,
-          maxForward: MAX_FIRST_POLL_FORWARD,
           recentCutoffMs: FIRST_POLL_RECENT_CUTOFF_MS,
         }),
       )
@@ -10406,7 +10419,6 @@ async function pollChat(chatId: string): Promise<void> {
       if (FIRST_POLL_RECENT_CUTOFF_MS !== null) {
         const ungated = selectFirstPollBacklogIds({
           rows: firstPollRows,
-          maxForward: MAX_FIRST_POLL_FORWARD,
           recentCutoffMs: null,
         })
         const withheld = ungated.length - backlogIds.size
@@ -14423,12 +14435,23 @@ function connectWebsocket(): void {
       // not completed: messages that arrived while the daemon was down sit
       // between the persisted cursor and this id, and advancing past them
       // here would skip them forever (persistence removed the old accidental
-      // recovery where a restart replayed the tail). A cursor-less chat
-      // keeps the bump, which is what stops the first-poll heuristic from
-      // re-delivering this very message. Worst case of deferring the bump:
-      // the boot poll redelivers this one ordinary text message with backlog
-      // framing, a duplicate, never a loss. Slash actions use the forwarded id
-      // guard in pollChat and never execute twice. Keep in lockstep with
+      // recovery where a restart replayed the tail).
+      //
+      // A cursor-less chat is no exception (0.71.10). It used to keep the
+      // bump, so one live message moved a chat that was empty at boot, or one
+      // discoverChats had just added, from 0 straight over every row no read
+      // had returned yet; the next read then took the delta branch and could
+      // only re-offer 10 of them through restart recovery, or none once the
+      // agent had answered (Data's D04 probes, 9 of 14). The bump was there to
+      // stop the first poll handing this very message over again; the
+      // forwarded-id dedupe in pollChat does that now, for every kind of row.
+      //
+      // When the bump is not safe, READ the chat now instead of waiting for
+      // its next scheduled read (five minutes away on a healthy socket). By
+      // then the agent may have answered this message, and the first poll's
+      // walk-back stops at that answer, so the rows under it would never be
+      // forwarded. Only a chat the poll covers: a chat the inbox does not list
+      // is the socket's alone, as before. Keep in lockstep with
       // test/first-poll-gate.test.ts (wsCursorSafe mirror).
       const chatId = String(payload?.chatId ?? payload?.chat_id ?? '')
       if (chatId) {
@@ -14437,9 +14460,9 @@ function connectWebsocket(): void {
         // per-chat cursors; streamCoveredChats is empty with the flag off).
         const wsCursorSafe =
           chatsPolledSinceBoot.has(chatId) ||
-          streamCoveredChats.has(chatId) ||
-          (chatLastSeen.get(chatId) ?? 0) === 0
+          streamCoveredChats.has(chatId)
         if (wsCursorSafe) advanceChatCursor(chatId, messageId)
+        else if (monitoredChatIds.includes(chatId)) void pollChat(chatId)
         noteMonitoredChat(chatId)
       }
       // Capture any opaque session handle the backend minted for this inbound

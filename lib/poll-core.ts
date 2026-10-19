@@ -257,8 +257,14 @@ export interface FirstPollRow {
  * preceding row is a user row). Proactive assistant rows (preceded by
  * another assistant row, or by nothing) do not terminate the scan, and
  * pending-empty system rows are skipped (the cursor parks under them so a
- * later poll re-reads them once the body fills). Capped to the newest
- * `maxForward` rows so a busy chat cannot dump half its history.
+ * later poll re-reads them once the body fills).
+ *
+ * NO CAP (0.71.10). This used to stop after the newest 10 rows, and the
+ * cursor then moved to the newest row of the read, so every older unanswered
+ * row in the same read was skipped for good, without a word: 4 of 14 in a
+ * chat that was empty at boot (Data's D04 probes, 2026-10-19). Everything the
+ * walk-back collects from the read is returned; the reply stop above and the
+ * first-run gate below are what keep answered and dormant history out.
  *
  * The gate: with `recentCutoffMs` set (genuine first run, no cursor file),
  * only collected rows sent at or after the cutoff qualify. Rows with an
@@ -270,17 +276,15 @@ export interface FirstPollRow {
  */
 export function selectFirstPollBacklogIds(opts: {
   rows: FirstPollRow[]
-  maxForward: number
   recentCutoffMs: number | null
 }): number[] {
-  const { rows, maxForward, recentCutoffMs } = opts
+  const { rows, recentCutoffMs } = opts
   const collected: FirstPollRow[] = []
   for (let i = rows.length - 1; i >= 0; i--) {
     const m = rows[i]!
     if (m.pendingEmptySystem) continue
     if (m.sender === 'user' || m.sender === 'system') {
       collected.push(m)
-      if (collected.length >= maxForward) break
       continue
     }
     if (m.sender === 'assistant') {

@@ -2,6 +2,12 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.71.10 (2026-10-20)
+
+**No message is lost any more in a chat the daemon first reads at cursor 0 (empty at boot, or an agent-to-agent or meeting chat that discoverChats adds): the first read forwards every unanswered row it returns instead of the newest 10, a live message no longer moves such a chat's cursor over rows no read has returned (the chat is read at once instead), and a live message that lands while a read is in flight no longer makes that read drop the rows it fetched (Data's review of architecture packet D04, round 2, 2026-10-19: 10 of 14 rows forwarded with no live message, 9 of 14 with one, 0 of 14 in a primed chat whose read a live message overtook).**
+
+Guards: `test/first-read-cursor-zero.e2e.test.ts` (the real daemon against a stand in backend and socket: a chat empty at boot with 14 waiting rows and no live message, a live message mid read, a live message before any read, the agent's answer before the next scheduled read, a restart with more than 10 missed, an agent-to-agent and a meeting chat added by discoverChats, the primed control at 14 of 14, and a primed chat whose read a live message overtook), `test/first-poll-gate.test.ts` (no cap), red on 0375387, with mutation proofs.
+
 ## 0.71.9 (2026-10-19)
 
 **The deaf session check no longer fires on a group message the agent was right to ignore: a group or shared chat message that does not address the agent arms no reply reminder, one pending message is probed at most once, the probe says "after a restart" only after one, and the not answering warning goes only to the owner's own chat, never into a chat other people read (HOAI board row 59a6d097: Voxor, chat 3821, 23 probes for one message on 2026-10-17 and the launch guidance posted into a group of four).**
