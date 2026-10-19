@@ -441,6 +441,16 @@ export function agentHost(t: any) {
 export type Host = ReturnType<typeof agentHost>
 
 /**
+ * An email_send reason as the server is told it (lib/agent-email-tools.ts posts its kind and id): its `fire` stays in
+ * the daemon, for the drafts kept for the owner (Data's review of #261, M3), and the M3 tests read it themselves.
+ */
+export function toldTheServer(reason: unknown): unknown {
+  if (!reason || typeof reason !== 'object') return reason
+  const { fire: _fire, ...told } = reason as Record<string, unknown>
+  return told
+}
+
+/**
  * The model calls a private tool: server.ts's admission block, run as it is, with this daemon's tracker. A refusal
  * comes back as Promise.resolve({ isError }), an admitted call as the frozen privateCall and email_send reason.
  */
@@ -459,9 +469,9 @@ export async function admit(host: Host, name: string): Promise<{ refused: string
     assert.equal(settled?.isError, true, `${name}: a refusal`)
     return { refused: String(settled.content[0].text) }
   }
-  if (result.privateCall) return { actsFor: result.privateCall.headers?.['X-BGOS-Acting-User'] ?? 'owner', reason: result.emailSendReason }
+  if (result.privateCall) return { actsFor: result.privateCall.headers?.['X-BGOS-Acting-User'] ?? 'owner', reason: toldTheServer(result.emailSendReason) }
   assert.ok(result.emailSendReason, `${name}: admitted with a reason`)
-  return { actsFor: 'owner', reason: result.emailSendReason }
+  return { actsFor: 'owner', reason: toldTheServer(result.emailSendReason) }
 }
 
 /** Who a private tool acts for: 'owner' (no acting user header), the header's person, or 'refused: <text>'. */

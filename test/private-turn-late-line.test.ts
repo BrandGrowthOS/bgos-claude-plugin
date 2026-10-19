@@ -269,9 +269,11 @@ async function admit(host: ReturnType<typeof agentHost>, name: string): Promise<
     assert.equal(settled?.isError, true, `${name}: a refusal`)
     return { refused: String(settled.content[0].text) }
   }
-  if (result.privateCall) return { actsFor: result.privateCall.headers?.['X-BGOS-Acting-User'] ?? 'owner', reason: result.emailSendReason }
+  // The reason as the server is told it: its `fire` stays in the daemon (Data's review of #261, M3).
+  const { fire: _fire, ...told } = result.emailSendReason ?? {}
+  if (result.privateCall) return { actsFor: result.privateCall.headers?.['X-BGOS-Acting-User'] ?? 'owner', reason: result.emailSendReason ? told : result.emailSendReason }
   assert.ok(result.emailSendReason, `${name}: admitted with a reason`)
-  return { actsFor: 'owner', reason: result.emailSendReason }
+  return { actsFor: 'owner', reason: told }
 }
 
 /** Who a private tool acts for: 'owner' (no acting user header), the header's person, or 'refused: <text>'. */

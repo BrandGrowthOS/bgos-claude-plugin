@@ -2885,3 +2885,64 @@ test('c69224fe: an askOwner draft that got no answer may have been saved, so the
 test('server.ts hands email_send the owner draft record of its approval store (c69224fe)', () => {
   assert.match(SRC, /\n {8}ownerDraft: \{\n {10}keep: \(args, basis\) => emailSendApprovals\.keepOwnerDraft\(args, basis\),\n {10}forget: \(args, basis\) => emailSendApprovals\.forgetOwnerDraft\(args, basis\),\n {8}\},\n/)
 })
+
+// ── Data's review of #261 (M3): the owner drafts are kept once per FIRE ──────────────────────────────────────────────
+// keepOwnerDraft keyed a scheduled wake by its task id, so the next askOwner fire of a recurring task saved nothing and
+// the agent was told the email already waited, though the owner had handled the first. The turn's reason now carries
+// the fire it came from (lib/private-turn.mjs emailSend: the delivery's fire key), kept in the daemon and never posted,
+// and the draft is remembered per fire.
+
+/** A scheduled wake of OWNER_TASK_ID delivered as the three lanes deliver it, with its fire key, then its prompt. */
+function startFire(f: ReturnType<typeof fixture>, fireId: string, messageId: number): void {
+  const eventMeta = wakeMeta(OWNER_TASK_ID, { fireId })
+  const prompt = f.tracker.deliver({
+    content: `turn text for message ${messageId}`,
+    chatId: OWN_CHAT,
+    peerSourceAssistantId: null,
+    actingUserId: privateActor({ senderType: 'system', senderUserId: null, agentOrigin: null, eventMeta }),
+    emailBasis: pt.emailSendBasis({ senderType: 'system', agentOrigin: null, eventMeta, messageId }),
+    fireKey: pt.privateFireKey({ senderType: 'system', eventMeta, messageId }),
+  } as never)
+  f.begin(prompt)
+}
+
+test('server.ts, run, Data\'s review of #261 (M3): a recurring task\'s next fire keeps its own askOwner draft; a retry within one fire keeps none', async (t) => {
+  const f = fixture(t, { wired: true })
+  const { backend, call } = await serverCallTool(t, f, {}, { floor: { hold: false } })
+  f.start(TURNS.email)
+  startFire(f, 'wake-551-fire-1', 90510)
+  assertKeptForTheOwner(await call('email_send', SEND_ARGS), 'the first fire')
+  assert.match(textOf(await call('email_send', SEND_ARGS)), /^Not sent: this email is already waiting as a draft/, 'the same fire retried')
+  f.stop()
+  f.start({ ...TURNS.email, messageId: 90610 })
+  startFire(f, 'wake-551-fire-2', 90511)
+  assertKeptForTheOwner(await call('email_send', SEND_ARGS), 'the next fire of the same task')
+  assert.deepEqual(backend.requests.map((r) => r.path), [DRAFTS_ROUTE, DRAFTS_ROUTE])
+})
+
+test('Data\'s review of #261 (M3): the reason names the fire of the turn it came from, and the send route is told only its kind and id', async (t) => {
+  const f = fixture(t, { wired: true })
+  startFire(f, 'wake-551-fire-1', 90510)
+  const first = sendTurn(f).basis as Record<string, unknown>
+  assert.deepEqual(first, { kind: 'owner_task', id: String(OWNER_TASK_ID), fire: 'native:wake-551-fire-1' })
+  f.stop()
+  startFire(f, 'wake-551-fire-2', 90511)
+  assert.equal((sendTurn(f).basis as Record<string, unknown>).fire, 'native:wake-551-fire-2')
+  const bodies: Array<Record<string, unknown>> = []
+  const post = async (_path: string, body: Record<string, unknown>) => { bodies.push(body); return { outcome: 'sent', draft: { id: DRAFT_ID, state: 'sent' } } }
+  await callTool('email_send', SEND_ARGS, { post, basis: first, approve: async () => ({ alwaysAskOff: true }) })
+  assert.deepEqual(bodies.map((body) => body.basis), [{ kind: 'owner_task', id: String(OWNER_TASK_ID) }])
+})
+
+test('Data\'s review of #261 (M3): keepOwnerDraft remembers an email per fire; with no fire named, per reason as before', async () => {
+  const store = (await approval()).createEmailSendApprovals()
+  const fire = (name: string) => ({ kind: 'owner_task', id: String(OWNER_TASK_ID), askOwner: true, fire: name })
+  assert.equal(store.keepOwnerDraft(SEND_ARGS, fire('native:a')), true)
+  assert.equal(store.keepOwnerDraft(SEND_ARGS, fire('native:a')), false, 'the same fire retried')
+  assert.equal(store.keepOwnerDraft(SEND_ARGS, fire('native:b')), true, 'the next fire of the same task')
+  store.forgetOwnerDraft(SEND_ARGS, fire('native:b'))
+  assert.equal(store.keepOwnerDraft(SEND_ARGS, fire('native:b')), true, 'forgotten for that fire only')
+  assert.equal(store.keepOwnerDraft(SEND_ARGS, fire('native:a')), false, 'the first fire still remembered')
+  assert.equal(store.keepOwnerDraft(SEND_ARGS, OWNER_BASIS), true, 'control: no fire')
+  assert.equal(store.keepOwnerDraft(SEND_ARGS, OWNER_BASIS), false, 'control: no fire, retried')
+})
