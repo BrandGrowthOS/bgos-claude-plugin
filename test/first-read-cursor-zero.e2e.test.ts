@@ -43,7 +43,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { Server as SocketServer } from 'socket.io'
 
 const ROOT = join(import.meta.dirname, '..')
-const BUN = spawnSync('sh', ['-c', 'command -v bun'], { encoding: 'utf8' }).stdout.trim()
+const BUN = spawnSync('bun', ['-e', 'process.stdout.write(process.execPath)'], { encoding: 'utf8' }).stdout ?? ''
 const SKIP = process.platform === 'win32' ? 'posix only' : BUN ? false : 'needs bun'
 const OPTS = { skip: SKIP, timeout: 150_000 }
 
@@ -119,6 +119,8 @@ interface Backend {
   readsOf: (chatId: number) => Read[]
   /** Hold the NEXT poll read of a chat and run `during` before answering it. */
   holdNextRead: (chatId: number, during: () => Promise<void>) => void
+  /** Answer the NEXT poll read of a chat with a 500. */
+  failNextRead: (chatId: number) => void
   refuseSocket: (refuse: boolean) => void
   connected: () => number
   /** Store a row and push it live, as the backend does for a new message. */
@@ -134,6 +136,7 @@ async function startBackend(): Promise<Backend> {
   const meetings: Array<Record<string, unknown>> = []
   const reads: Read[] = []
   const holds = new Map<number, () => Promise<void>>()
+  const failures = new Set<number>()
   let refuse = false
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -157,6 +160,7 @@ async function startBackend(): Promise<Backend> {
         holds.delete(chatId)
         await hold()
       }
+      if (isPoll && failures.delete(chatId)) return json({ message: 'stand in failure' }, 500)
       const afterParam = url.searchParams.get('afterId')
       const afterId = afterParam === null ? null : Number(afterParam)
       // The real route: the NEWEST 50 rows above the cursor, oldest first.
@@ -173,8 +177,10 @@ async function startBackend(): Promise<Backend> {
   const http = createServer((req, res) => {
     void handle(req, res)
   })
-  const io = new SocketServer(http)
-  io.use((_socket, next) => (refuse ? next(new Error('refused')) : next()))
+  // A refused handshake, which the client retries with backoff, like a
+  // backend that is down. Not a namespace middleware error: the socket.io
+  // client never retries one of those on its own.
+  const io = new SocketServer(http, { allowRequest: (_req, callback) => callback(null, !refuse) })
   await new Promise<void>((resolve) => http.listen(0, '127.0.0.1', resolve))
   return {
     url: `http://127.0.0.1:${(http.address() as AddressInfo).port}/api/v1`,
@@ -186,13 +192,19 @@ async function startBackend(): Promise<Backend> {
     holdNextRead: (chatId, during) => {
       holds.set(chatId, during)
     },
+    failNextRead: (chatId) => {
+      failures.add(chatId)
+    },
     refuseSocket: (value) => {
       refuse = value
     },
     connected: () => io.of('/').sockets.size,
     pushLive: (row) => {
       rows.push(row)
-      io.emit('inbound_message', { assistantId: ASSISTANT_ID, userId: USER_ID, chatId: row.chatId, messageId: row.id, text: row.text, files: [], messageType: 'standard' })
+      // A peer agent's message carries its origin on the socket as well.
+      const { senderType, agentOrigin, peerConversationId, turnState } = row
+      const peer = agentOrigin ? { senderType, agentOrigin, peerConversationId, turnState } : {}
+      io.emit('inbound_message', { assistantId: ASSISTANT_ID, userId: USER_ID, chatId: row.chatId, messageId: row.id, text: row.text, files: [], messageType: 'standard', ...peer })
     },
     // A transport close, as a network drop or a proxy reload looks to the
     // daemon. Not io.disconnectSockets(): a server side disconnect is one the
@@ -278,9 +290,15 @@ async function startDaemon(rig: Rig): Promise<Daemon> {
     const meta = ((n.params as { meta?: Record<string, string> } | undefined)?.meta ?? {})
     cards.push({ chatId: Number(meta.chat_id), messageId: Number(meta.message_id), transport: String(meta.transport) })
   }
-  await client.connect(transport)
-  await client.listTools()
-  await waitFor(() => stderr.some((l) => l.includes('startup complete: polling armed')), 'the daemon to arm', 60_000)
+  try {
+    await client.connect(transport)
+    await client.listTools()
+    await waitFor(() => stderr.some((l) => l.includes('startup complete: polling armed')), 'the daemon to arm', 60_000)
+  } catch (err) {
+    // Never leave a daemon behind: it would keep the test file running.
+    await client.close().catch(() => {})
+    throw new Error(`${String(err)}; daemon stderr tail:\n${stderr.slice(-20).join('\n')}`)
+  }
   return { cards, stderr, client, stop: () => client.close() }
 }
 
@@ -416,6 +434,50 @@ describe('a chat first read at cursor 0 forwards every row it reaches, once', { 
     }
   })
 
+  test('a chat empty at boot: the read the live message starts fails, the agent answers, the next read still forwards all 14', OPTS, async () => {
+    const w = await world()
+    try {
+      const d = await w.boot()
+      await quietAfterBoot(w.backend, MAIN)
+      for (const id of ids(101, 114)) w.backend.rows.push(ownerRow(MAIN, id))
+      w.backend.failNextRead(MAIN)
+      w.backend.pushLive(ownerRow(MAIN, 200))
+      await waitFor(() => d.cards.some((c) => c.messageId === 200), 'the live card')
+      await sleep(1_000)
+      w.backend.rows.push(replyRow(MAIN, 201))
+      w.backend.cutSocket()
+      await settle(() => d.cards, MAIN, [...ids(101, 114), 200])
+      assert.deepEqual(delivered(d.cards, MAIN), [...ids(101, 114), 200])
+    } finally {
+      await w.end()
+    }
+  })
+
+  test('a chat empty at boot: two reads overlap, the slower one still forwards a row that landed after the faster one', OPTS, async () => {
+    const w = await world()
+    try {
+      const d = await w.boot()
+      await quietAfterBoot(w.backend, MAIN)
+      for (const id of ids(101, 114)) w.backend.rows.push(ownerRow(MAIN, id))
+      // Read A is the socket-down cycle's read, held here. Meanwhile the
+      // socket comes back and its catch-up read B forwards the 14. Then a row
+      // the socket misses lands, and the agent's answer to 114 right after
+      // it, before A is answered.
+      w.backend.holdNextRead(MAIN, async () => {
+        w.backend.refuseSocket(false)
+        await waitFor(() => hasAll(d.cards, MAIN, ids(101, 114)), 'the overlapping read to forward the 14', 60_000)
+        w.backend.rows.push(ownerRow(MAIN, 115))
+        w.backend.rows.push(replyRow(MAIN, 116))
+      })
+      w.backend.refuseSocket(true)
+      w.backend.cutSocket()
+      await settle(() => d.cards, MAIN, ids(101, 115))
+      assert.deepEqual(delivered(d.cards, MAIN), ids(101, 115))
+    } finally {
+      await w.end()
+    }
+  })
+
   test('restart: a chat that had no cursor gets more than 10 rows while the daemon is down, the boot read forwards all of them', OPTS, async () => {
     const w = await world()
     try {
@@ -485,6 +547,35 @@ describe('a chat first read at cursor 0 forwards every row it reaches, once', { 
     }
   })
 
+  test('an agent-to-agent chat the inbox does not list yet: the rows the socket missed around its answered live messages arrive once discoverChats lists it', OPTS, async () => {
+    const w = await world()
+    try {
+      const d = await w.boot()
+      await quietAfterBoot(w.backend, MAIN)
+      // The peer writes five messages the socket misses, then one it pushes;
+      // the agent answers that one. Then one more the socket misses, one it
+      // pushes, and the answer to it. The daemon polls none of this yet.
+      for (const id of ids(101, 105)) w.backend.rows.push(peerRow(id))
+      w.backend.pushLive(peerRow(200))
+      await waitFor(() => d.cards.some((c) => c.messageId === 200), 'the first live card')
+      w.backend.rows.push(replyRow(A2A, 201))
+      w.backend.rows.push(peerRow(202))
+      w.backend.pushLive(peerRow(203))
+      await waitFor(() => d.cards.some((c) => c.messageId === 203), 'the second live card')
+      w.backend.rows.push(replyRow(A2A, 204))
+      assert.equal(w.backend.readsOf(A2A).length, 0, 'nothing has read the chat yet')
+      // Now the inbox lists it. With the socket down the daemon runs a full
+      // cycle (discoverChats, then every chat) every 10 s.
+      w.backend.inbox.push({ id: A2A, assistantId: ASSISTANT_ID, kind: 'a2a' })
+      w.backend.refuseSocket(true)
+      w.backend.cutSocket()
+      await settle(() => d.cards, A2A, [...ids(101, 105), 200, 202, 203])
+      assert.deepEqual(delivered(d.cards, A2A), [...ids(101, 105), 200, 202, 203])
+    } finally {
+      await w.end()
+    }
+  })
+
   /** A chat with a cursor: ten rows of answered history up to 100. */
   function primedHistory(w: World): void {
     for (const id of ids(91, 100)) w.backend.rows.push(id % 2 === 1 ? ownerRow(MAIN, id) : replyRow(MAIN, id))
@@ -500,6 +591,31 @@ describe('a chat first read at cursor 0 forwards every row it reaches, once', { 
       w.backend.cutSocket()
       await settle(() => d.cards, MAIN, ids(101, 114))
       assert.deepEqual(delivered(d.cards, MAIN), ids(101, 114))
+    } finally {
+      await w.end()
+    }
+  })
+
+  test('a primed chat: a read returned a wake card whose body had not landed, a live message does not move the cursor over it', OPTS, async () => {
+    const w = await world({ '999': 5, [MAIN]: 100 })
+    try {
+      primedHistory(w)
+      const d = await w.boot()
+      await quietAfterBoot(w.backend, MAIN)
+      // A scheduler wake card in its first write: the row exists, its body
+      // does not yet. The read returns it and parks the cursor under it.
+      const wake: Row = { id: 101, chatId: MAIN, sender: 'system', text: '', messageType: 'event', sentDate: new Date().toISOString() }
+      w.backend.rows.push(wake)
+      w.backend.cutSocket()
+      await waitFor(() => w.backend.readsOf(MAIN).some((r) => r.ids.includes(101)), 'a read that returns the empty wake card')
+      await sleep(300)
+      w.backend.pushLive(ownerRow(MAIN, 102))
+      await waitFor(() => d.cards.some((c) => c.messageId === 102), 'the live card')
+      // The body lands (same row id), and the next read must pick it up.
+      wake.text = 'wake: check the build'
+      w.backend.cutSocket()
+      await settle(() => d.cards, MAIN, [101, 102])
+      assert.deepEqual(delivered(d.cards, MAIN), [101, 102])
     } finally {
       await w.end()
     }
