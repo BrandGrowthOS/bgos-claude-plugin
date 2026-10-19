@@ -241,7 +241,7 @@ export const DEFAULT_CAPS = ['pdf']
 // contract whichever host answers. These declarations are copies of
 // frontend/electron-app/agent-browser/local-mcp.js and policy.js.
 
-/** Session tools, byte for byte the desktop's schemas (local-mcp.js). */
+/** Session tools, the desktop's schemas (local-mcp.js) without its profile choice: an agent never picks one (BGOS mission 173). */
 export const SESSION_TOOLS = [
   {
     name: 'hoai_browser_open_session',
@@ -251,12 +251,6 @@ export const SESSION_TOOLS = [
       type: 'object',
       properties: {
         purpose: { type: 'string', description: "One line the owner will read, e.g. 'Check the seat map on emirates.com'. Max 200 characters." },
-        profile: {
-          type: 'string',
-          enum: ['preview', 'signed-in'],
-          description:
-            'Compatibility hint only. Login storage remains locked until the owner explicitly unlocks it in the browser pane.',
-        },
         caps: {
           type: 'array',
           items: { type: 'string', enum: ['vision', 'pdf'] },
@@ -2257,13 +2251,11 @@ export class BrowserHostCore {
       const slot = await this.pool.acquire(ctx)
       const purpose = typeof args.purpose === 'string' ? args.purpose.trim().slice(0, 200) : ''
       if (purpose) slot.purpose = purpose
-      const lines = [
-        `Browser session is open on ${this.deviceLabel}, the machine you run on: your own browser, headless, with login storage locked until the owner unlocks it in the pane. Navigate with browser_navigate, then browser_snapshot.`,
-      ]
-      if (args.profile === 'preview') {
-        lines.push('Browsing state is discarded at close unless the owner unlocks encrypted storage.')
-      }
-      return text(lines.join(' '))
+      // One browser per agent (BGOS mission 173): the agent never chooses a profile, so an older
+      // client's profile argument changes nothing here.
+      return text(
+        `Browser session is open on ${this.deviceLabel}, the machine you run on: your own browser, headless, with login storage locked until the owner unlocks it in the pane. Browsing state is discarded at close unless the owner unlocks encrypted storage. Navigate with browser_navigate, then browser_snapshot.`,
+      )
     }
     if (name === 'hoai_browser_close_session') {
       if (this.pool.peek(ctx)?.ownerInputLease) return errorResult('owner_control', OWNER_CONTROL_MESSAGE)
