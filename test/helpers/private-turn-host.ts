@@ -289,9 +289,10 @@ export function agentHost(t: any) {
      * A button tap as one of server.ts's three tap sites announces it (the boot sweep, the poll, the stream): the card's
      * content through the lane's private tap rule (privateTapCard, 4bf28148; on a build without it, noteTap's tag as
      * every site did), then the notification wrapper's rawCard with its meta. The card the CLI gets. With `customText`, a
-     * Custom reply: the `__custom__` sentinel and the words typed with it, as every site passes them.
+     * Custom reply: the `__custom__` sentinel and the words typed with it, as every site passes them. `posted` is whether
+     * the button and its label are the ones this daemon posted on that card (server.ts postedButtons); by default they are.
      */
-    laneTap(opts: { lane: 'boot' | 'poll' | 'stream', tapperUserId: string | null, answeredAt?: unknown, receivedAt?: number, messageId?: number, chatId?: number, text?: string, customText?: string }): string {
+    laneTap(opts: { lane: 'boot' | 'poll' | 'stream', tapperUserId: string | null, answeredAt?: unknown, receivedAt?: number, messageId?: number, chatId?: number, text?: string, customText?: string, posted?: boolean }): string {
       const chatId = opts.chatId ?? OWN_CHAT
       const tapped = opts.messageId ?? ++messageId
       const custom = typeof opts.customText === 'string'
@@ -302,7 +303,7 @@ export function agentHost(t: any) {
       const card = tapCard({
         tracker: life.tracker, lane: opts.lane, ownerUserId: OWNER, chatId: String(chatId), messageId: tapped,
         tapperUserId: opts.tapperUserId, answeredAt: 'answeredAt' in opts ? opts.answeredAt : new Date().toISOString(), receivedAt: opts.receivedAt ?? Date.now(),
-        callbackData, customText: opts.customText, content,
+        callbackData, customText: opts.customText, posted: opts.posted ?? true, content,
       })
       const meta: Record<string, string> = {
         chat_id: String(chatId), message_id: String(tapped), event_type: 'button_clicked', callback_data: callbackData,
