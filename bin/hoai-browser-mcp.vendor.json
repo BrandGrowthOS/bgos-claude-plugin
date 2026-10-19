@@ -1,7 +1,7 @@
 {
   "file": "bin/hoai-browser-mcp.mjs",
   "source": "BGOS: frontend/electron-app/agent-browser/shim/hoai-browser-mcp.mjs",
-  "sha256": "ba4e6a6b37841412df2d03ceca1030d291c7174e1fa4914bee75e6d8058a46eb",
+  "sha256": "c8d9b7a938c09fffb56fa6cb303a71bdfb932976da5d354bf17d0de19c5e2b83",
   "vendoredAt": "2026-10-19",
   "sourceCommit": "62193f7a500a6405fdfaddb7a0557c2a08a0cf75",
   "why": "Plugin 0.72.0 copy, ahead of BGOS (mission 173). It starts from the shim reviewed in BGOS PR #2625 (sha256 a55d97ae, BGOS 62193f7a, the bytes #253 and #260 vendored) and adds: every browser_profile_* refusal answered with its code and one plain sentence; a 409 is host_offline only when the relay says host_offline; profile requests carry the pairing header only; no tool text, schema or served instruction offers a profile choice, and the open call opens the agent's own browser.",
