@@ -6374,10 +6374,13 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
             label: 'POST webhook/edited_message',
           },
           // The original code never inspected the response; it only needed the
-          // request to leave. Keep that, but bounded.
-          async () => undefined,
+          // request to leave. Keep that, but bounded. The posted buttons record
+          // follows only an edit the backend took: a refused one leaves the card
+          // as it stands, and the owner's tap on it is the owner's.
+          async (response) => {
+            if (response.ok) postedButtons.edited(message_id, safeText)
+          },
         )
-        postedButtons.edited(message_id, safeText)
         return { content: [{ type: 'text', text: 'Edited' }] }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err)
