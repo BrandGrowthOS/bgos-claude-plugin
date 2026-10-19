@@ -2186,7 +2186,7 @@ USAGE
 # X-BGOS-Pairing. This is the recommended auth path; --key/--user is legacy.
 # =============================================================================
 cmd_pair() {
-  command -v node >/dev/null 2>&1 || die "node not found, install Node 18+ to pair"
+  command -v node >/dev/null 2>&1 || die "node not found, install a current Node.js 22 or 24 LTS release (minimum 22.12.0) to pair"
   exec node "$BIN_DIR/bgos-pair.mjs" "$@"
 }
 
@@ -2199,7 +2199,7 @@ cmd_doctor() {
   if command -v node >/dev/null 2>&1; then
     exec node "$BIN_DIR/bgos-doctor.mjs" "$@"
   fi
-  command -v bun >/dev/null 2>&1 || die "node (or bun) not found, install Node 18+ to run the doctor"
+  command -v bun >/dev/null 2>&1 || die "node (or bun) not found, install a current Node.js 22 or 24 LTS release (minimum 22.12.0) to run the doctor"
   exec bun "$BIN_DIR/bgos-doctor.mjs" "$@"
 }
 

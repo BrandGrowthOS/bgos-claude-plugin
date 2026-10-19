@@ -334,6 +334,22 @@ test('main: managed paired launches always enable fresh profile discovery while 
   }
 })
 
+// The Agent Browser's Node floor (0.72.0): the launcher says so plainly on an older Node, and the shim still starts
+// (its relay to the desktop app needs nothing newer).
+test('main: on a Node older than 22.12.0 the launcher says so in one plain line and still spawns the shim', async () => {
+  for (const [nodeVersion, expectLine] of [['18.20.8', true], ['22.11.9', true], ['22.12.0', false], ['24.16.0', false]] as const) {
+    const { calls, impl } = spawnRecorder()
+    const errs: string[] = []
+    const pending = main([], { env: { PATH: '/usr/bin' }, home: '/home/kc', platform: 'linux', exists: existsAll, dir: BIN, nodePath: '/usr/bin/node', spawnImpl: impl, writeErr: (t: string) => errs.push(t), onSignal: () => {}, nodeVersion,
+      spawnSyncImpl: resolverPrinting({ backendUrl: 'https://api.brandgrowthos.ai', pairingToken: 'pair-abc', apiKey: '', assistantId: '7', mode: 'pairing', complete: true }) })
+    assert.equal(calls.length, 1, `${nodeVersion}: the shim starts either way`)
+    if (expectLine) assert.deepEqual(errs, [`[hoai-browser] This machine runs Node.js ${nodeVersion}, and the HOAI Agent Browser needs Node.js 22.12.0 or newer: install a current Node.js 22 or 24 LTS release from https://nodejs.org, then restart this agent.\n`])
+    else assert.deepEqual(errs, [], nodeVersion)
+    calls[0].child.emit('exit', 0, null)
+    assert.equal(await pending, 0)
+  }
+})
+
 test('main: an incomplete agent still gets the shim, with no relay env and one stderr line', async () => {
   const { calls, impl } = spawnRecorder()
   const errs: string[] = []

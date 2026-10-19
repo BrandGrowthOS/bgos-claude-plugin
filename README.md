@@ -29,9 +29,12 @@ You **must** have all of the following installed before setting up the plugin:
 | Requirement | Minimum Version | Check Command | Install |
 |-------------|----------------|---------------|---------|
 | **Bun** | 1.0+ | `bun --version` | [bun.sh](https://bun.sh) — `curl -fsSL https://bun.sh/install \| bash` |
+| **Node.js** | 22.12.0 (a current 22 or 24 LTS release) | `node --version` | [nodejs.org](https://nodejs.org) |
 | **Claude Code CLI** | Any | `claude --version` | [claude.ai/code](https://claude.ai/code) |
 | **Git** | Any | `git --version` | Pre-installed on most systems |
 | **A BGOS account** | — | — | Contact your BGOS admin |
+
+> **Node.js 22.12.0 or newer** (since 0.72.0): the Agent Browser (Playwright 1.64.1 and the managed browser profile runtime) is qualified on Node.js 22 and 24 only, and 18 and 20 are end of life. On an older Node the plugin's launchers say so in one plain line, the agent's own browser host refuses browser work with the same advice, and `hoai doctor` marks the Node.js row; chat itself runs on Bun and keeps working.
 
 > **Why Bun?** The plugin requires Bun as its runtime (not Node.js). Bun handles the stdio MCP transport reliably across all platforms. Node.js/tsx may cause connection drops on Windows.
 
@@ -361,7 +364,9 @@ invalid value is ignored, with a warning.
 
 ### Agent browser and saved logins (0.60.5)
 
-Use a current patched Node.js 22 or 24 LTS release. The package minimum is 22.12.0; the browser refuses an older runtime before loading Playwright, including imported managed-host paths. The minimum is a compatibility floor, not a recommendation to install an old Node patch.
+Use a current patched Node.js 22 or 24 LTS release. The package minimum is 22.12.0; the browser refuses an older runtime before loading Playwright, including imported managed-host paths, and the plugin's launchers (`bin/bgos-launch.mjs`, `bin/hoai-browser-launch.mjs`) say so in one plain line when they start on an older Node. The minimum is a compatibility floor, not a recommendation to install an old Node patch.
+
+One browser per agent (0.72.0): an agent opens its own browser and is never offered a profile choice. The browser tool no longer lists `profile` (preview or signed-in); on a HOAI route the open call opens the agent's own persistent browser, and on a desktop on the same machine the owner's default applies. When the browser cannot be used, the agent is told the `browser_profile_*` code and one plain sentence, for example `browser_profile_setup_required: Your owner has not set up your browser yet; a Set up card is in your chat.` A 409 from the relay means the desktop is offline only when the relay says `host_offline`.
 
 The paired daemon starts its browser host automatically. Managed agent-machine profiles use the exact sandboxed Chromium revision pinned by the plugin's Playwright dependency. Legacy sessions prefer an installed Chrome or Chromium. When the required bundled browser is absent, the plugin downloads it into the machine user's browser cache. The initial download needs network access and a writable cache. Later starts reuse that revision. No separate browser-host command or executable wrapper is needed.
 

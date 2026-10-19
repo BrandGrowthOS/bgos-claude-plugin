@@ -21,7 +21,9 @@
  * exit 127. A raw ENOENT stack is never the user-visible error.
  *
  * Self-contained plain JavaScript: node >= 18 builtins only, no imports from
- * the TS plugin sources. Import-safe: every helper is exported and main() only
+ * the TS plugin sources (lib/browser-profile-node-runtime.mjs is plain and
+ * pure: on a Node older than the Agent Browser's floor, 22.12.0, this launcher
+ * says so in one plain line and still starts bun). Import-safe: every helper is exported and main() only
  * runs when the file is executed directly, so tests can import the pure pieces.
  */
 
@@ -30,6 +32,8 @@ import { existsSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { win32 as win32Path, posix as posixPath } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
+
+import { nodeFloorNotice } from '../lib/browser-profile-node-runtime.mjs'
 
 /** POSIX convention for "command not found"; scripts and humans both read it. */
 export const LAUNCH_EXIT_NOT_FOUND = 127
@@ -171,6 +175,7 @@ export function exitCodeForChild(code, signal) {
  *   spawnImpl?: typeof spawn,
  *   writeErr?: (text: string) => void,
  *   onSignal?: (signal: string, handler: () => void) => void,
+ *   nodeVersion?: string,
  * }} [opts]
  * @returns {Promise<number>}
  */
@@ -182,6 +187,8 @@ export function main(argv = process.argv.slice(2), opts = {}) {
   const spawnImpl = opts.spawnImpl ?? spawn
   const writeErr = opts.writeErr ?? ((text) => process.stderr.write(text))
   const onSignal = opts.onSignal ?? ((signal, handler) => process.on(signal, handler))
+  const floor = nodeFloorNotice(opts.nodeVersion ?? process.versions.node)
+  if (floor) writeErr(`[bgos-launch] ${floor}\n`)
 
   return new Promise((resolve) => {
     const resolved = resolveBunPath({ env, home, platform, exists })

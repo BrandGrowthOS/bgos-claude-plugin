@@ -25,7 +25,9 @@
  * No credential is ever logged.
  *
  * Self-contained plain JavaScript: node >= 18 builtins only, plus the pure
- * helpers of bin/bgos-launch.mjs (bun probing, exit-code mapping). Import-safe:
+ * helpers of bin/bgos-launch.mjs (bun probing, exit-code mapping). On a Node
+ * older than the Agent Browser's floor (22.12.0) it says so in one plain line
+ * and still starts the shim. Import-safe:
  * every helper is exported and main() only runs when the file is executed
  * directly, so tests exercise the pure pieces.
  */
@@ -36,6 +38,7 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
+import { nodeFloorNotice } from '../lib/browser-profile-node-runtime.mjs'
 import { findAttachedKey, floorStateRoot, sessionFolders } from '../lib/floor-state.mjs'
 import { privateContextPath } from '../lib/private-turn.mjs'
 
@@ -261,6 +264,7 @@ export function relayOffMessage(reason) {
  *   writeErr?: (text: string) => void,
  *   onSignal?: (signal: string, handler: () => void) => void,
  *   nodePath?: string,
+ *   nodeVersion?: string,
  *   timeoutMs?: number,
  * }} [opts]
  * @returns {Promise<number>}
@@ -275,6 +279,9 @@ export function main(argv = process.argv.slice(2), opts = {}) {
   const writeErr = opts.writeErr ?? ((text) => process.stderr.write(text))
   const onSignal = opts.onSignal ?? ((signal, handler) => process.on(signal, handler))
   const nodePath = opts.nodePath ?? process.execPath
+  // The Agent Browser's Node floor (22.12.0), said plainly; the shim itself still starts.
+  const floor = nodeFloorNotice(opts.nodeVersion ?? process.versions.node)
+  if (floor) writeErr(`${LOG_PREFIX} ${floor}\n`)
 
   return new Promise((resolve) => {
     const relay = resolveRelayEnv({

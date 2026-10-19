@@ -40,3 +40,11 @@ for (const mode of ['lazy', 'engine', 'cached']) for (const version of ['18.20.8
     assert.deepEqual(JSON.parse(result.stdout.trim()), { minimumRefusal: true, playwrightLoads: 0, browserAccesses: 0 })
   })
 }
+
+test('nodeFloorNotice: one plain line naming this Node and the floor for an older Node, nothing for a qualified one', async () => {
+  const { nodeFloorNotice } = await import('../lib/browser-profile-node-runtime.mjs')
+  assert.equal(nodeFloorNotice('20.11.1'), 'This machine runs Node.js 20.11.1, and the HOAI Agent Browser needs Node.js 22.12.0 or newer: install a current Node.js 22 or 24 LTS release from https://nodejs.org, then restart this agent.')
+  assert.match(nodeFloorNotice('') ?? '', /^This machine runs Node\.js an unknown version, /)
+  for (const version of ['22.12.0', '24.16.0']) assert.equal(nodeFloorNotice(version), null)
+  assert.equal(nodeFloorNotice(), null, 'the actual test host meets the floor')
+})
