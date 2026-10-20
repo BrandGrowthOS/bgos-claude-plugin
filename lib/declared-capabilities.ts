@@ -223,6 +223,21 @@
  *                       tools are plain code. Declared only while
  *                       shipsEmailTools(), the tools' own check, holds (the
  *                       email_label precedent).
+ *   ui_card             this daemon's show_component sends a card the agent
+ *                       composes (kind ui_card, mission 168): the tool
+ *                       fetches the live renderables catalog on every call
+ *                       (GET /api/v1/renderables), checks the payload against
+ *                       the ui_card entry's schema and posts the event the
+ *                       app draws, and the server checks the whole card again
+ *                       before storing it. Every host and connection:
+ *                       show_component is a plain HTTP send with no platform
+ *                       limit. The backend tells the canon's Cards you compose
+ *                       section, the Claude Code catalog line and the told
+ *                       show_component paragraph only to a connection that
+ *                       declares this token (capability-canon.ts
+ *                       UI_CARD_TOKEN and uiCardTold), never by version, so
+ *                       before 0.71.8 a Claude Code agent could send a card
+ *                       it was never told about.
  *
  * Token grammar is the backend's: /^[a-z][a-z0-9_]{0,63}$/, at most 32
  * entries (backend/src/dto/integrations/pair-exchange.dto.ts). The base is
@@ -262,6 +277,7 @@ export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   'changes_rpc',
   'skills_list',
   'skills_receive',
+  'ui_card',
 ])
 
 /**

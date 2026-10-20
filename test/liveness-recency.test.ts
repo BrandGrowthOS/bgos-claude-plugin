@@ -161,7 +161,7 @@ test('answering the probe is a tool call, so it ends the ladder', () => {
 function tick(
   liveness: ChannelLiveness,
   now: number,
-  pending: { ts: number; reminded: boolean },
+  pending: { ts: number; reminded: boolean; probed?: boolean },
   state: { probeSentAt: number | null; escalated: boolean },
 ) {
   state.probeSentAt = unansweredProbe(state.probeSentAt, liveness.lastToolCallAt)
@@ -173,7 +173,11 @@ function tick(
     probeSentAt: state.probeSentAt,
     windowMs: WINDOW_MS,
   })
-  if (action === 'probe') state.probeSentAt = now
+  if (action === 'probe') {
+    state.probeSentAt = now
+    // server.ts latches the probe on the pending message (board row 59a6d097).
+    pending.probed = true
+  }
   if (action === 'escalate') state.escalated = true
   return action
 }
@@ -201,15 +205,26 @@ test('an answered probe never becomes the evidence for a later escalation', () =
   const ack = firstProbe + 60_000
   liveness.markToolCall(ack)
   assert.equal(tick(liveness, firstProbe + grace, pending, state), 'wait', 'recent ack: wait')
-  // Recency lapses again. This tick must ASK again, not accuse.
+  // Recency lapses again. This tick must neither accuse nor, since 0.71.9, ask
+  // again about the same message: the session answered for it once, and
+  // asking at every lapse was a probe every 12.5 minutes for hours (901,
+  // 2026-10-17, board row 59a6d097).
   const lapsed = ack + LIVE_RECENCY_WINDOWS * WINDOW_MS
-  assert.equal(tick(liveness, lapsed, pending, state), 'probe', 'a spent probe is re-armed, not escalated')
-  assert.equal(state.probeSentAt, lapsed)
-  // And only THAT probe, unanswered for the full grace, earns the warning.
-  assert.equal(tick(liveness, lapsed + grace - 1, pending, state), 'wait')
-  assert.equal(tick(liveness, lapsed + grace, pending, state), 'escalate')
+  assert.equal(tick(liveness, lapsed, pending, state), 'wait', 'a spent probe is neither re-armed nor escalated')
+  assert.equal(state.probeSentAt, null)
+  for (const at of [lapsed + grace, lapsed + 6 * HOUR]) {
+    assert.equal(tick(liveness, at, pending, state), 'wait')
+  }
+  assert.equal(state.escalated, false)
+  // A NEWER pending message is asked about once, and only that probe,
+  // unanswered for the full grace, earns the warning.
+  const next = { ts: lapsed + HOUR, reminded: true }
+  const probeAt = next.ts + 2 * WINDOW_MS
+  assert.equal(tick(liveness, probeAt, next, state), 'probe')
+  assert.equal(tick(liveness, probeAt + grace - 1, next, state), 'wait')
+  assert.equal(tick(liveness, probeAt + grace, next, state), 'escalate')
   assert.equal(state.escalated, true)
-  assert.equal(tick(liveness, lapsed + grace + HOUR, pending, state), 'wait', 'once per boot')
+  assert.equal(tick(liveness, probeAt + grace + HOUR, next, state), 'wait', 'once per boot')
 })
 
 test('a session with no tool call since boot walks the same ladder as before', () => {
