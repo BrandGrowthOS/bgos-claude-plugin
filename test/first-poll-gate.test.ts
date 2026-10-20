@@ -120,15 +120,19 @@ test('first run: the cursor still initializes to the chat tip', () => {
 // on a gated first poll, a pending-empty system row affirmatively older than
 // the cutoff is an abandoned write-1 (its body-fill never came) and does not
 // park the cursor; unknown age still parks (could be a live scheduler race).
+// On ANY poll (0.71.10) a row older than the same window at poll time is
+// abandoned too and does not park (server.ts pollChat, pollNowMs).
 
 function parkedPendingIds(
   rows: FirstPollRow[],
   gatedFirstPoll: boolean,
   cutoffMs: number,
+  nowMs: number = DAEMON_START_MS,
 ): number[] {
   return rows
     .filter((r) => r.pendingEmptySystem)
     .filter((r) => {
+      if (r.sentDateMs !== null && nowMs - r.sentDateMs > FIRST_RUN_RECENT_WINDOW_MS) return false
       if (!gatedFirstPoll) return true
       return r.sentDateMs === null || r.sentDateMs >= cutoffMs
     })
@@ -164,9 +168,14 @@ test('a recent or unknown-age pending-empty row still parks the gated cursor', (
     [201],
   )
   assert.deepEqual(
-    parkedPendingIds([row(202, 'system', { pendingEmpty: true, sentMs: ANCIENT })], false, CUTOFF),
+    parkedPendingIds([row(202, 'system', { pendingEmpty: true, sentMs: RECENT })], false, CUTOFF),
     [202],
-    'ungated polls always park, the live deferral is untouched',
+    'an ungated poll parks under a recent row, the live deferral is untouched',
+  )
+  assert.deepEqual(
+    parkedPendingIds([row(203, 'system', { pendingEmpty: true, sentMs: ANCIENT })], false, CUTOFF),
+    [],
+    'on any poll a first write older than the window is abandoned and does not park (0.71.10)',
   )
 })
 
@@ -176,9 +185,8 @@ test('a recent or unknown-age pending-empty row still parks the gated cursor', (
 // would be skipped forever. This used to be checked against a copy of the
 // rule, which became a tautology once the rule was just "boot poll done". The
 // real inbound_message handler is driven end to end in
-// test/first-read-cursor-zero.e2e.test.ts, and the source pin below
-// ('server.ts guards the WS cursor bump behind boot-poll completion') keeps
-// the guard in place.
+// test/first-read-cursor-zero.e2e.test.ts, which is what guards it; the
+// source pin below only checks the expression is still written that way.
 
 // ── Ungated behavior (cursor file existed, chat genuinely new) ───────────────
 
@@ -350,8 +358,10 @@ test('server.ts frames boot-poll delta backlog with the lockstep predicate', () 
 })
 
 test('server.ts guards the WS cursor bump behind boot-poll completion', () => {
-  assert.ok(serverSource.includes('wsCursorSafe'))
-  assert.ok(serverSource.includes('chatsPolledSinceBoot.has(chatId)'))
+  assert.match(
+    serverSource,
+    /const wsCursorSafe =\s*chatsPolledSinceBoot\.has\(chatId\) \|\|\s*streamCoveredChats\.has\(chatId\)\s*\n\s*if \(wsCursorSafe\)/,
+  )
 })
 
 test('server.ts excludes abandoned pending-empty rows from gated first-poll parking', () => {

@@ -8126,10 +8126,10 @@ const chatLiveFloor = new Map<string, number>()
 // parked its cursor under, with their sent dates. The socket's cursor bump
 // parks under them too, so a live message cannot move the cursor over a row a
 // read returned but could not forward yet (0.71.10). Not under one older than
-// FIRST_RUN_RECENT_WINDOW_MS: that is a first write whose body never came (the
-// gated first poll's own name for it), and parking the bump under it pinned
-// the cursor there, so every restart handed the answered messages above it to
-// the agent again.
+// FIRST_RUN_RECENT_WINDOW_MS: that is a first write whose body never came, and
+// the poll stops parking under it as well (the pending rows in pollChat's
+// cursor advance), since parking under it pinned the cursor there and every
+// restart handed the answered messages above it to the agent again.
 const chatParkedPendingIds = new Map<string, Array<{ id: number; sentMs: number | null }>>()
 
 // Chats with a read in flight that a live message started (deliverWsInbound):
@@ -11124,13 +11124,23 @@ async function pollChat(chatId: string): Promise<void> {
     // below the chat's dormant tail and route that tail through the ungated
     // delta branch one poll later, defeating the gate. Abandoned rows do not
     // park; rows of unknown age still do (could be a live scheduler race).
-    // Keep in lockstep with test/first-poll-gate.test.ts (parkedPendingIds).
+    //
+    // And on EVERY poll (0.71.10), a pending-empty row affirmatively older
+    // than that same window NOW is abandoned too, and stops holding the
+    // cursor. The live bump parks under these rows as well (see
+    // chatParkedPendingIds), so without this rule a first write whose body
+    // never came kept the cursor under every live message that arrived while
+    // it was fresh, and each restart handed those, answered, to the agent
+    // again. Keep in lockstep with test/first-poll-gate.test.ts
+    // (parkedPendingIds).
     const gatedFirstPoll = lastSeen === 0 && FIRST_POLL_RECENT_CUTOFF_MS !== null
+    const pollNowMs = Date.now()
     const pendingIds = ordered
       .filter(isPendingEmptySystem)
       .filter((m) => {
-        if (!gatedFirstPoll) return true
         const t = sentDateToMs(m.message.sentDate)
+        if (t !== null && pollNowMs - t > FIRST_RUN_RECENT_WINDOW_MS) return false
+        if (!gatedFirstPoll) return true
         return t === null || t >= FIRST_POLL_RECENT_CUTOFF_MS
       })
       .map((m) => m.message.id)
@@ -11181,7 +11191,8 @@ async function pollAllChats(): Promise<void> {
 // Existing `pollChat` flow stays in place; it's the cold-start backfill +
 // reliability fallback. A WS-pushed message moves `chatLastSeen` only once
 // the chat's boot poll has completed (deliverWsInbound, wsCursorSafe), and
-// parks under any empty wake row that poll parked under; before that the
+// parks under any empty wake row that poll parked under unless it is older
+// than FIRST_RUN_RECENT_WINDOW_MS (see chatParkedPendingIds); before that the
 // chat is read instead (0.71.10). Meeting WS events do not move
 // `chatLastSeen` at all. What keeps a later poll from handing a pushed
 // message over again is the bounded forwarded-id Set below, which both
@@ -14538,8 +14549,8 @@ function connectWebsocket(): void {
       // message cannot hide the rows under it), and READ the chat now rather
       // than at its next scheduled read, five minutes away on a healthy
       // socket. Only a chat the poll covers is read: a chat the inbox does not
-      // list is the socket's alone until discoverChats lists it. Keep in
-      // lockstep with test/first-poll-gate.test.ts (wsCursorSafe mirror).
+      // list is the socket's alone until discoverChats lists it. Driven end to
+      // end in test/first-read-cursor-zero.e2e.test.ts.
       const chatId = String(payload?.chatId ?? payload?.chat_id ?? '')
       if (chatId) {
         // A chat the update stream has fed since boot counts as covered
