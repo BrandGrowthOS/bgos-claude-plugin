@@ -244,6 +244,14 @@ test('history cap: rows sent from the listing on are all kept, beside the newest
   )
 })
 
+test('history cap: fewer history rows than the cap are all kept', () => {
+  const rows = Array.from({ length: 6 }, (_, i) => row(i + 1, 'user', { sentMs: RECENT - 10 + i }))
+  assert.deepEqual(
+    selectFirstPollBacklogIds({ rows, recentCutoffMs: null, historyCap: { beforeMs: RECENT, max: 10 } }),
+    [1, 2, 3, 4, 5, 6],
+  )
+})
+
 test('history cap: none (every chat but a group) leaves the uncapped selection alone', () => {
   const rows = Array.from({ length: 14 }, (_, i) => row(i + 1, 'user', { sentMs: ANCIENT }))
   assert.deepEqual(

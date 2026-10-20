@@ -247,6 +247,13 @@ export interface FirstPollRow {
 }
 
 /**
+ * How many rows of a group's history the first read of a group chat hands
+ * over: the newest this many of the rows sent before this daemon first listed
+ * the group (see `historyCap` on selectFirstPollBacklogIds, and pollChat).
+ */
+export const MAX_GROUP_HISTORY_FORWARD = 10
+
+/**
  * Decide which messages the FIRST poll for a chat (no cursor yet) forwards
  * as [backlog]. Extracted verbatim from pollChat so it is testable and so
  * the first-run gate has one home.
@@ -259,12 +266,15 @@ export interface FirstPollRow {
  * pending-empty system rows are skipped (the cursor parks under them so a
  * later poll re-reads them once the body fills).
  *
- * NO CAP (0.71.10). This used to stop after the newest 10 rows, and the
- * cursor then moved to the newest row of the read, so every older unanswered
- * row in the same read was skipped for good, without a word: 4 of 14 in a
- * chat that was empty at boot (Data's D04 probes, 2026-10-19). Everything the
- * walk-back collects from the read is returned; the reply stop above and the
- * first-run gate below are what keep answered and dormant history out.
+ * NO CAP (0.71.10), except `historyCap`. This used to stop after the newest
+ * 10 rows, and the cursor then moved to the newest row of the read, so every
+ * older unanswered row in the same read was skipped for good, without a word:
+ * 4 of 14 in a chat that was empty at boot (Data's D04 probes, 2026-10-19).
+ * Everything the walk-back collects from the read is returned; the reply stop
+ * above and the first-run gate below are what keep answered and dormant
+ * history out. The one cap left is `historyCap`, which pollChat passes for a
+ * group chat only: of the rows sent before `beforeMs` (or of unknown age),
+ * only the newest `max` are returned (Data's gate of #265).
  *
  * The gate: with `recentCutoffMs` set (genuine first run, no cursor file),
  * only collected rows sent at or after the cutoff qualify. Rows with an
@@ -274,13 +284,6 @@ export interface FirstPollRow {
  *
  * Rows must be ordered oldest -> newest by id; returned ids keep that order.
  */
-/**
- * How many rows of a group's history the first read of a group chat hands
- * over: the newest this many of the rows sent before this daemon first listed
- * the group (see `historyCap` below and pollChat).
- */
-export const MAX_GROUP_HISTORY_FORWARD = 10
-
 export function selectFirstPollBacklogIds(opts: {
   rows: FirstPollRow[]
   recentCutoffMs: number | null

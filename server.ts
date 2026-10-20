@@ -10463,6 +10463,19 @@ async function pollChat(chatId: string): Promise<void> {
           historyCap: groupHistoryCap,
         }),
       )
+      // The group history cap drops rows for good too, so say how many.
+      if (groupHistoryCap) {
+        const uncapped = selectFirstPollBacklogIds({
+          rows: firstPollRows,
+          recentCutoffMs: FIRST_POLL_RECENT_CUTOFF_MS,
+        })
+        const dropped = uncapped.length - backlogIds.size
+        if (dropped > 0) {
+          log(
+            `Group history cap: ${dropped} row(s) of chat ${chatId} sent before this daemon first listed it not handed over (newest ${MAX_GROUP_HISTORY_FORWARD} kept)`,
+          )
+        }
+      }
       // Observability for the gate: a dormant message withheld on first
       // install is invisible by design, so count what the ungated selection
       // WOULD have delivered and log the difference.

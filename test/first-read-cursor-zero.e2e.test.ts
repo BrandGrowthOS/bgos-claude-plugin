@@ -778,6 +778,10 @@ describe('a chat first read at cursor 0 forwards every row it reaches, once', { 
       await settle(() => d.cards, GROUP, ids(3031, 3040))
       assert.deepEqual(delivered(d.cards, GROUP), ids(3031, 3040), 'history the agent was never part of: the newest 10, as before 0.71.10')
       assert.ok(d.cards.filter((c) => c.chatId === GROUP).every((c) => c.backlog), 'handed over as offline backlog')
+      assert.ok(
+        d.stderr.some((l) => l.includes(`Group history cap: 30 row(s) of chat ${GROUP} sent before this daemon first listed it not handed over`)),
+        'the 30 rows left out are logged',
+      )
     } finally {
       await w.end()
     }
