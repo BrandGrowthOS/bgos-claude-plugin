@@ -6,7 +6,7 @@
  * (empty at boot, or an agent-to-agent or meeting chat that discoverChats adds
  * later) took the FIRST POLL branch of pollChat. That branch forwarded at most
  * 10 rows and then moved the cursor to the newest row, so every older row was
- * skipped without a word. A live message made it worse in three ways:
+ * skipped without a word. A live message made it worse in four ways:
  *
  *   1. The socket treated a cursor of 0 as safe to jump, so one live message
  *      moved the cursor over rows no read had returned, and the next read
@@ -313,6 +313,9 @@ async function startDaemon(rig: Rig): Promise<Daemon> {
       HOAI_BROWSER_HOST: 'off',
       BGOS_BOOT_HELLO: 'off',
       BGOS_AUTO_UPDATE: 'disabled',
+      // A held read must not hit the daemon's own HTTP deadline (30 s by
+      // default) while a case waits on a reconnect backoff.
+      BGOS_HTTP_TIMEOUT_MS: '120000',
     },
     stderr: 'pipe',
   })
@@ -412,7 +415,13 @@ interface World {
 
 async function world(cursors: Record<string, number> = { '999': 5 }): Promise<World> {
   const backend = await startBackend()
-  const rig = makeRig(backend.url, cursors)
+  let rig: Rig
+  try {
+    rig = makeRig(backend.url, cursors)
+  } catch (err) {
+    await backend.close()
+    throw err
+  }
   const daemons: Daemon[] = []
   return {
     backend,
@@ -476,6 +485,7 @@ describe('a chat first read at cursor 0 forwards every row it reaches, once', { 
       // must not start a read of a chat the inbox does not list.
       w.backend.pushLive(ownerRow(ELSEWHERE, 300))
       await waitFor(() => d.cards.some((c) => c.messageId === 200) && d.cards.some((c) => c.messageId === 300), 'the live cards')
+      assert.equal(cardOf(d.cards, 200)?.transport, 'ws', 'the live message came over the socket')
       await forceRead(w.backend, MAIN)
       await settle(() => d.cards, MAIN, [...ids(101, 114), 200])
       assert.deepEqual(delivered(d.cards, MAIN), [...ids(101, 114), 200])
@@ -494,6 +504,7 @@ describe('a chat first read at cursor 0 forwards every row it reaches, once', { 
       for (const id of ids(101, 114)) w.backend.rows.push(ownerRow(MAIN, id))
       w.backend.pushLive(ownerRow(MAIN, 200))
       await waitFor(() => d.cards.some((c) => c.messageId === 200), 'the live card')
+      assert.equal(cardOf(d.cards, 200)?.transport, 'ws', 'the live message came over the socket')
       // A model turn takes at least a second; the answer lands then.
       await sleep(1_000)
       w.backend.rows.push(replyRow(MAIN, 201))
@@ -520,6 +531,29 @@ describe('a chat first read at cursor 0 forwards every row it reaches, once', { 
       await forceRead(w.backend, MAIN)
       await settle(() => d.cards, MAIN, [...ids(101, 114), 200])
       assert.deepEqual(delivered(d.cards, MAIN), [...ids(101, 114), 200])
+      assertHarnessRan(w.backend)
+    } finally {
+      await w.end()
+    }
+  })
+
+  test('a chat empty at boot: after the read a live message starts fails, the next live message starts another', OPTS, async () => {
+    const w = await world()
+    try {
+      const d = await w.boot()
+      await quietAfterBoot(w.backend, MAIN)
+      for (const id of ids(101, 114)) w.backend.rows.push(ownerRow(MAIN, id))
+      w.backend.failNextRead(MAIN)
+      w.backend.pushLive(ownerRow(MAIN, 200))
+      await waitFor(() => d.cards.some((c) => c.messageId === 200) && w.backend.pending().failures === 0, 'the live card and the failed read')
+      await sleep(500)
+      // The failed read is over; a second live message must be able to
+      // start a read of its own (no scheduled read is due for 5 minutes).
+      const before = w.backend.readsStarted(MAIN)
+      w.backend.pushLive(ownerRow(MAIN, 201))
+      await settle(() => d.cards, MAIN, [...ids(101, 114), 200, 201])
+      assert.ok(w.backend.readsStarted(MAIN) > before, 'the second live message started a read')
+      assert.deepEqual(delivered(d.cards, MAIN), [...ids(101, 114), 200, 201])
       assertHarnessRan(w.backend)
     } finally {
       await w.end()

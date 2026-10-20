@@ -8111,12 +8111,13 @@ const MAX_RESTART_RECOVERY_FORWARD = 10
 // branch.
 const chatsPolledSinceBoot = new Set<string>()
 
-// Per chat, the lowest message id the socket handed to Claude while it could
-// not move the chat's cursor (the boot poll had not completed). From that id
-// on this daemon was live in the chat, so a row there the socket did not
-// deliver is one it missed: a first read of a cursor-less chat forwards every
-// such row (the forwarded-id dedupe skips the ones it did deliver) and walks
-// back only over the rows below the floor. Without it the agent's answer to a
+// Per chat, the lowest message id the socket received while it could not move
+// the chat's cursor (the boot poll had not completed). From that id on this
+// daemon was live in the chat, so a row there the socket did not deliver is
+// one it missed: a first read of a cursor-less chat forwards every such row
+// (the forwarded-id dedupe skips the ones it did deliver) and walks back only
+// over the rows below the floor. A frame the socket then drops (the agent's
+// own echo, a consumed sign-in code) sets it too. Without it the agent's answer to a
 // live message ended that walk-back, and every row under it the socket had
 // missed was never forwarded (0.71.10). In memory only, so a restart before
 // any read of the chat succeeds still loses it.
@@ -10357,7 +10358,9 @@ async function pollChat(chatId: string): Promise<void> {
   // row it had just fetched below that live id: 14 of 14 in a primed chat,
   // and a cursor-0 chat fell off the first-poll branch into a recovery capped
   // at 10. Never a rewind: advanceChatCursor below only moves forward, and
-  // the forwarded-id dedupe skips the live message itself.
+  // the forwarded-id dedupe skips the live message itself. (The first-poll
+  // branch also looks at the cursor as it stands after the fetch, for
+  // owedFrom only.)
   const lastSeen = chatLastSeen.get(chatId) ?? 0
   const req = buildChatPollRequest({
     chatId,
@@ -11164,8 +11167,8 @@ async function pollAllChats(): Promise<void> {
 // Existing `pollChat` flow stays in place; it's the cold-start backfill +
 // reliability fallback. A WS-pushed message moves `chatLastSeen` only once
 // the chat's boot poll has completed (deliverWsInbound, wsCursorSafe);
-// before that the chat is read instead (0.71.10). Meeting WS events do not move
-// `chatLastSeen` at all. What keeps a later poll from handing a pushed
+// before that a chat the poll covers is read instead (0.71.10). The
+// meeting_message event does not move `chatLastSeen`. What keeps a later poll from handing a pushed
 // message over again is the bounded forwarded-id Set below, which both
 // transports read and write (slash deliveries included, so a delayed WS frame
 // cannot execute a command a second time).
@@ -13162,8 +13165,8 @@ function advanceStreamChatCursor(chatId: string, messageId: number): void {
 }
 
 /**
- * A live delivery into a chat whose cursor the socket could not move (the
- * chat's boot poll had not completed): lower the chat's live floor to it (see
+ * A live frame into a chat whose cursor the socket could not move (the chat's
+ * boot poll had not completed): lower the chat's live floor to it (see
  * chatLiveFloor). Both socket lanes call this, inbound_message and
  * meeting_message (0.71.10).
  */
