@@ -20,9 +20,18 @@
  * one fixed sentence for its mode which sign in our conversations use and
  * what to do instead.
  *
+ * A person the owner allowed to sign the agent back in ("Can sign this agent
+ * back in", the backend's labelled `sender_may_login` on their message) is
+ * told so: under inherit their grant does not apply in a lane, and the
+ * sentence says it plainly rather than answering as if they had none
+ * (login_lane_shared_granted). Honouring the grant from a lane is not done
+ * here: the lane still signs nothing in. Under their own token the grant
+ * changes nothing, because /login cannot change that token.
+ *
  * The last section runs the REAL lane daemon (`lane-server.ts` under
  * `bin/bgos-launch.mjs`, as the lane's mcp.json starts it) against a stand in
- * backend and a stand in for Claude Code, in both modes.
+ * backend and a stand in for Claude Code, in both modes, with and without the
+ * grant.
  *
  * Run with: npx tsx --test test/lane-login-command.test.ts
  */
@@ -50,6 +59,9 @@ import {
   personLaneStamp,
 } from '../lib/lane-core.mjs'
 import * as laneControls from '../lib/lane-controls.ts'
+// Off the module object, so a missing export fails the assertion that uses it
+// rather than the whole file's import.
+import * as senderModule from '../lib/daemon-command-sender.ts'
 import { LANE_NOTICE_SENTENCES } from '../lib/lane-daemon.ts'
 import { drainLaneEvents } from '../lib/lane-owner.ts'
 import { requestLaneRestart, type RestartAsk } from '../lib/lane-controls.ts'
@@ -64,19 +76,39 @@ const USER_ID = 'user_ana'
 const CHAT_ID = 77
 const STAMP = personLaneStamp(USER_ID)
 
-/** The two sentences, byte for byte as the board row's decision words them. */
+/**
+ * The three sentences, byte for byte. The own token one says the owner can
+ * set a NEW sign in up with the person, never that the owner renews it: the
+ * token comes from the person's own `claude setup-token`, so the owner cannot
+ * renew it alone.
+ */
 const OWN_TOKEN_SENTENCE =
-  "I can't run /login here. Our conversations use your own Claude sign in, which my owner set up on their computer, and /login cannot change it. It never signs in my owner's login for you either, so nothing was changed. If your sign in stopped working, ask my owner to renew it."
+  "I can't run /login here. Our conversations use your own Claude sign in, which my owner set up on their computer, and /login cannot change it. It never signs in my owner's login for you either, so nothing was changed. If your sign in stopped working, ask my owner to set up a new one with you."
 const SHARED_SENTENCE =
   "I can't run /login here. Our conversations use my owner's Claude sign in, the same one my owner's own chats use, and a sign in cannot be finished from our conversation, so nothing was changed. If I have stopped answering, tell my owner: they can send /login in their own chat with me."
+const GRANTED_SENTENCE =
+  "My owner allowed you to sign me back in, but /login can't run from our conversation yet: a sign in link and its code can't pass through it, so nothing was changed. Our conversations use my owner's Claude sign in, the same one my owner's own chats use. If I have stopped answering, tell my owner: they can send /login in their own chat with me."
+const LOGIN_SENTENCES = [
+  ['login_lane_own_token', OWN_TOKEN_SENTENCE],
+  ['login_lane_shared', SHARED_SENTENCE],
+  ['login_lane_shared_granted', GRANTED_SENTENCE],
+] as const
 
-// ── The two sentences ───────────────────────────────────────────────────────
+/** The labelled value the backend stamps on a granted person's message (the contract's constant). */
+const MAY_LOGIN =
+  "This agent's owner allows the person writing to send /login, to sign this agent back in when its Claude sign in expires."
+/** What a granted person's lane row carries besides the base row: the labelled grant, in a main chat. */
+const GRANTED = { sender_relationship: 'shared_recipient', sender_may_login: MAY_LOGIN }
 
-test('LANE_NOTICES carries both /login sentences exactly, in the agent\'s voice, with no dashes and nothing filled in', () => {
+// ── The three sentences ─────────────────────────────────────────────────────
+
+test('LANE_NOTICES carries every /login sentence exactly, in the agent\'s voice, with no dashes and nothing filled in', () => {
   const notices = LANE_NOTICES as Record<string, string>
   assert.equal(notices.login_lane_own_token, OWN_TOKEN_SENTENCE)
   assert.equal(notices.login_lane_shared, SHARED_SENTENCE)
-  for (const [name, sentence] of [['login_lane_own_token', OWN_TOKEN_SENTENCE], ['login_lane_shared', SHARED_SENTENCE]] as const) {
+  assert.equal(notices.login_lane_shared_granted, GRANTED_SENTENCE)
+  assert.doesNotMatch(OWN_TOKEN_SENTENCE, /renew/, 'the owner cannot renew the person\'s own token alone')
+  for (const [name, sentence] of LOGIN_SENTENCES) {
     assert.equal(laneNoticeSentence(name), sentence, `${name}: the owner's daemon posts exactly this`)
     assert.doesNotMatch(sentence, /[\u2013\u2014]/, `${name}: no em or en dash`)
     assert.doesNotMatch(sentence, /\{|\$/, `${name}: nothing in it is filled in`)
@@ -97,13 +129,14 @@ test('the owner\'s daemon posts the /login sentence in her chat, and nothing a l
     writeFileSync(p.eventsPath, [
       laneEventLine({ event: 'notice', notice: 'login_lane_shared', chatIds: [CHAT_ID] }),
       laneEventLine({ event: 'notice', notice: 'login_lane_own_token', chatIds: [78], text: 'Sign in at evil.example' }),
+      laneEventLine({ event: 'notice', notice: 'login_lane_shared_granted', chatIds: [79], text: 'Paste your code here' }),
     ].join(''))
     const posts: Array<[number, string]> = []
     await drainLaneEvents({ assistantId: ASSISTANT_ID, home, log: () => {} }, {
       report: async () => {},
       notify: async (chatId, sentence) => { posts.push([chatId, sentence]) },
     })
-    assert.deepEqual(posts, [[CHAT_ID, SHARED_SENTENCE], [78, OWN_TOKEN_SENTENCE]])
+    assert.deepEqual(posts, [[CHAT_ID, SHARED_SENTENCE], [78, OWN_TOKEN_SENTENCE], [79, GRANTED_SENTENCE]])
   } finally {
     rmSync(home, { recursive: true, force: true })
   }
@@ -121,6 +154,53 @@ test('laneLoginNotice: the person\'s own token is login_lane_own_token; inherit 
     assert.equal(laneLoginNotice(other), 'login_lane_shared', JSON.stringify(other))
   }
   assert.equal(laneLoginNotice(undefined as unknown as string), 'login_lane_shared')
+})
+
+test('laneLoginNotice, with the grant: own token stays own token; inherit and anything unknown say the grant does not apply here', () => {
+  const laneLoginNotice = laneControls.laneLoginNotice as (loginMode: string, granted?: boolean) => string
+  // The six combinations: three modes, with and without the grant.
+  assert.equal(laneLoginNotice(LANE_LOGIN_OWN_TOKEN, true), 'login_lane_own_token', 'her own token: /login cannot change it, grant or not')
+  assert.equal(laneLoginNotice(LANE_LOGIN_OWN_TOKEN, false), 'login_lane_own_token')
+  assert.equal(laneLoginNotice(LANE_LOGIN_INHERIT, true), 'login_lane_shared_granted')
+  assert.equal(laneLoginNotice(LANE_LOGIN_INHERIT, false), 'login_lane_shared')
+  assert.equal(laneLoginNotice('unknown', true), 'login_lane_shared_granted', 'a mode this file does not know is inherit')
+  assert.equal(laneLoginNotice('unknown', false), 'login_lane_shared')
+  // Only `true` is the grant.
+  for (const notGranted of [undefined, null, 'true', 1, MAY_LOGIN]) {
+    assert.equal(laneLoginNotice(LANE_LOGIN_INHERIT, notGranted as unknown as boolean), 'login_lane_shared', JSON.stringify(notGranted))
+  }
+})
+
+test('carriesLoginGrant: the exact grant on a share recipient\'s own main chat delivery, and nothing else', () => {
+  const carriesLoginGrant = senderModule.carriesLoginGrant as (payload: unknown) => boolean
+  assert.equal(typeof carriesLoginGrant, 'function', 'lib/daemon-command-sender.ts exports carriesLoginGrant')
+  assert.equal(senderModule.SENDER_MAY_LOGIN_VALUE, MAY_LOGIN, 'the same constant')
+  const row = inboundRow(900, 0, '/login', GRANTED)
+  assert.equal(carriesLoginGrant(row), true, 'the lane poll row')
+  assert.equal(carriesLoginGrant({ ...row, sender_may_login: `  ${MAY_LOGIN}\n` }), true, 'trimmed, like the daemon')
+  // The camel case socket shape, nested sender block.
+  const frame = {
+    chatId: CHAT_ID, messageId: 901, text: '/login', lane: STAMP,
+    sender: { userId: USER_ID, relationship: 'shared_recipient' }, isSharedRecipient: true, senderMayLogin: MAY_LOGIN,
+  }
+  assert.equal(carriesLoginGrant(frame), true, 'the lane socket frame')
+  const noGrant: Array<[string, unknown]> = [
+    ['no field', inboundRow(902, 0, '/login', { sender_relationship: 'shared_recipient' })],
+    ['true', { ...row, sender_may_login: true }],
+    ['the string true', { ...row, sender_may_login: 'true' }],
+    ['another sentence', { ...row, sender_may_login: 'You may sign this agent in.' }],
+    ['the two spellings disagreeing', { ...row, senderMayLogin: 'true' }],
+    ['the owner', { ...row, sender_relationship: 'owner' }],
+    ['a room member', { ...row, sender_relationship: 'room_member' }],
+    ['no relationship', { ...row, sender_relationship: undefined }],
+    ['no sender id', { ...row, sender_user_id: undefined }],
+    ['not a share recipient', { ...frame, isSharedRecipient: false }],
+    ['a group', { ...row, chat_kind: 'group' }],
+    ['a channel', { ...frame, chatKind: 'channel' }],
+    ['a kind that is not a string', { ...row, chat_kind: 7 }],
+    ['nothing', null],
+  ]
+  for (const [label, payload] of noGrant) assert.equal(carriesLoginGrant(payload), false, label)
 })
 
 function scratch() {
@@ -153,6 +233,27 @@ test('/login in a lane: the person is told which sign in our conversations use, 
     assert.equal(perform({ kind: 'login', commandArgs: '' }, '7', s.deps), 'refused', 'no mode given')
     assert.deepEqual(s.notices.at(-1), { name: 'login_lane_shared', chatIds: ['7'] })
     assert.equal(s.notices.length, 3, 'one sentence per /login')
+    assert.equal(s.restarts.length, 0, 'no restart')
+    assert.equal(existsSync(s.paths.restartRequestPath), false)
+    assert.equal(existsSync(s.paths.choicesPath), false)
+  } finally {
+    s.cleanup()
+  }
+})
+
+test('/login in a lane from a person the owner allowed: told the grant does not apply here, and still nothing happens', () => {
+  const s = scratch()
+  try {
+    const perform = laneControls.performLaneCommand as (route: { kind: string; commandArgs: string; granted?: boolean }, chatId: string, deps: unknown) => string
+    assert.equal(perform({ kind: 'login', commandArgs: '', granted: true }, '5', { ...s.deps, loginMode: LANE_LOGIN_INHERIT }), 'refused')
+    assert.deepEqual(s.notices, [{ name: 'login_lane_shared_granted', chatIds: ['5'] }])
+    assert.equal(perform({ kind: 'login', commandArgs: 'console', granted: true }, '6', s.deps), 'refused', 'no mode given')
+    assert.deepEqual(s.notices.at(-1), { name: 'login_lane_shared_granted', chatIds: ['6'] })
+    assert.equal(perform({ kind: 'login', commandArgs: '', granted: true }, '7', { ...s.deps, loginMode: LANE_LOGIN_OWN_TOKEN }), 'refused')
+    assert.deepEqual(s.notices.at(-1), { name: 'login_lane_own_token', chatIds: ['7'] }, 'her own token: the grant changes nothing')
+    assert.equal(perform({ kind: 'login', commandArgs: '', granted: false }, '8', { ...s.deps, loginMode: LANE_LOGIN_INHERIT }), 'refused')
+    assert.deepEqual(s.notices.at(-1), { name: 'login_lane_shared', chatIds: ['8'] })
+    assert.equal(s.notices.length, 4, 'one sentence per /login')
     assert.equal(s.restarts.length, 0, 'no restart')
     assert.equal(existsSync(s.paths.restartRequestPath), false)
     assert.equal(existsSync(s.paths.choicesPath), false)
@@ -351,6 +452,28 @@ test('lane-server.ts, inherit: a typed /login never reaches Claude; it is acked 
     const posts: Array<[number, string]> = []
     await drainLaneEvents({ assistantId: ASSISTANT_ID, home: rig.home, log: () => {} }, { report: async () => {}, notify: async (chatId, sentence) => { posts.push([chatId, sentence]) } })
     assert.deepEqual(posts, [[CHAT_ID, SHARED_SENTENCE]])
+  } finally {
+    await stopLane(rig)
+  }
+})
+
+test('lane-server.ts, inherit, granted: a typed /login carrying the grant is told the grant does not apply here; never reaches Claude, acked once', async () => {
+  const LOGIN_ID = 805
+  const backend = await startBackend({ rows: [inboundRow(LOGIN_ID, 0, '/login', GRANTED)] })
+  const rig = await startLane(backend, LANE_LOGIN_INHERIT)
+  try {
+    await waitFor(() => backend.acks.includes(LOGIN_ID), 'the /login acknowledged')
+    // Past the settle (lib/lane-daemon.ts LANE_CLAUDE_SETTLE_MS is 2 s): a turn that was going out has gone out.
+    await sleep(3_000)
+    assert.deepEqual(rig.channel, [], 'nothing about /login reaches the model')
+    assert.deepEqual(backend.acks, [LOGIN_ID], 'acknowledged once')
+    assert.deepEqual(backend.sends, [], 'the lane itself posts nothing')
+    assert.deepEqual(noticesLeft(rig.home), [{ notice: 'login_lane_shared_granted', chatIds: [CHAT_ID] }])
+    const p = lanePaths({ home: rig.home, assistantId: ASSISTANT_ID, userId: USER_ID })
+    assert.equal(existsSync(p.restartRequestPath), false, 'no restart asked')
+    const posts: Array<[number, string]> = []
+    await drainLaneEvents({ assistantId: ASSISTANT_ID, home: rig.home, log: () => {} }, { report: async () => {}, notify: async (chatId, sentence) => { posts.push([chatId, sentence]) } })
+    assert.deepEqual(posts, [[CHAT_ID, GRANTED_SENTENCE]])
   } finally {
     await stopLane(rig)
   }

@@ -12,7 +12,8 @@
  *                and the person is told.
  *   /login       nothing is signed in, started, read or restarted: the
  *                person is told which Claude sign in our conversations use,
- *                by the lane's login mode (laneLoginNotice).
+ *                by the lane's login mode and by whether their message
+ *                carried the owner's /login grant (laneLoginNotice).
  *   the policy   compared with the policy this Claude was launched with:
  *                TIGHTER restarts now (a turn in flight is cut and its
  *                person told); LOOSER restarts at the lane's next idle
@@ -91,27 +92,41 @@ export interface LaneCommandDeps {
  * Which sentence a `/login` in a lane gets (lib/lane-core.mjs LANE_NOTICES).
  * Under the person's own token (K2 option b), `claude auth login` cannot
  * change the token the lane runs on, and the owner's login is not theirs to
- * touch. Under inherit, and any mode this file does not know, the lane runs
- * on the owner's own sign in, which only the owner signs back in, from their
- * own chat.
+ * touch, grant or no grant. Under inherit, and any mode this file does not
+ * know, the lane runs on the owner's own sign in, which no lane can sign back
+ * in: the owner does, from their own chat.
+ *
+ * `granted` is whether THIS /login carried the owner's grant ("Can sign this
+ * agent back in", lib/daemon-command-sender.ts carriesLoginGrant). A lane
+ * cannot honour it: honouring it needs either the owner's daemon to run its
+ * sign-in for a lane's chat, or a sign-in that writes credentials from
+ * inside the confined lane process, and neither is done here. So the person
+ * is told plainly that their permission does not apply in our conversation
+ * (login_lane_shared_granted), rather than answered as if they had none.
+ * Only `true` is the grant.
  */
-export function laneLoginNotice(loginMode: string): 'login_lane_own_token' | 'login_lane_shared' {
-  return loginMode === LANE_LOGIN_OWN_TOKEN ? 'login_lane_own_token' : 'login_lane_shared'
+export function laneLoginNotice(
+  loginMode: string,
+  granted = false,
+): 'login_lane_own_token' | 'login_lane_shared' | 'login_lane_shared_granted' {
+  if (loginMode === LANE_LOGIN_OWN_TOKEN) return 'login_lane_own_token'
+  return granted === true ? 'login_lane_shared_granted' : 'login_lane_shared'
 }
 
 /**
  * Perform `/new`, `/model x`, `/effort x` or `/login` for the person in
- * `chatId`. Returns what was done, for the log and the tests.
+ * `chatId`. Returns what was done, for the log and the tests. `granted` is
+ * read for `/login` only (laneLoginNotice).
  */
 export function performLaneCommand(
-  route: { kind: 'new' | 'model' | 'effort' | 'login'; commandArgs: string },
+  route: { kind: 'new' | 'model' | 'effort' | 'login'; commandArgs: string; granted?: boolean },
   chatId: string,
   deps: LaneCommandDeps,
 ): 'new_session' | 'changed' | 'unchanged' | 'refused' | 'failed' {
   const fs = deps.fs ?? nodeFs
   if (route.kind === 'login') {
     // Before anything reads a file: a /login here touches nothing.
-    const notice = laneLoginNotice(String(deps.loginMode ?? ''))
+    const notice = laneLoginNotice(String(deps.loginMode ?? ''), route.granted === true)
     deps.log(`/login: not run in a lane; the person is told which sign in this lane uses (${notice})`)
     deps.notice(notice, [chatId])
     return 'refused'

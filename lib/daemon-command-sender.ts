@@ -264,17 +264,45 @@ export function isLoginGrantedRecipient(sender: SlashSender, ownerUserId: string
 }
 
 /**
- * Does this payload name a chat kind that is not a main chat (`chat_kind ??
- * chatKind` present and not 'main')? The backend stamps the may login field on
- * main chats only; this keeps that true whatever a payload says. A kind that is
- * not a string is not 'main' either.
+ * Does this payload name a chat kind that is not a main chat? Two places can
+ * name it: the top level (`chat_kind ?? chatKind`, which the stream's rows
+ * and the integrations inbound rows carry, and the owner daemon's chat page
+ * poll rows do not) and the group block (`groupContext ?? group_context`, its
+ * `chatKind ?? chat_kind`), which is the only place the socket's
+ * inbound_message names a group, a room or a channel. A kind stated in either
+ * that is not 'main' counts, and a kind that is not a string is not 'main'
+ * either; a payload that states no kind at all does not. The backend stamps
+ * the may login field on main chats only; this keeps that true whatever a
+ * payload says, and lib/auth-login.ts isRoomContext refuses to START a
+ * sign-in on it, for the owner too.
  */
 export function statesNonMainChat(payload: unknown): boolean {
   if (!payload || typeof payload !== 'object') return false
   const p = payload as Record<string, unknown>
-  const kind = p.chat_kind ?? p.chatKind
-  if (kind == null) return false
-  return typeof kind !== 'string' || kind.trim().toLowerCase() !== 'main'
+  const block = p.groupContext ?? p.group_context
+  const group = (block && typeof block === 'object' ? block : {}) as Record<string, unknown>
+  return [p.chat_kind ?? p.chatKind, group.chatKind ?? group.chat_kind].some(
+    (kind) => kind != null && (typeof kind !== 'string' || kind.trim().toLowerCase() !== 'main'),
+  )
+}
+
+/**
+ * Does this ONE delivery carry the /login grant, read the way a person's lane
+ * can read it? A readable sender with an id, whom the backend labels a share
+ * recipient (and, where the socket says so, still one), whose message carried
+ * SENDER_MAY_LOGIN_VALUE, in a payload that names no chat kind but main. It is
+ * isLoginGrantedRecipient without the owner checks, because a lane does not
+ * know the owner's id; that is safe only because of what it is used for:
+ * choosing which fixed sentence a lane's /login gets (lib/lane-controls.ts
+ * laneLoginNotice). It allows nothing and signs no one in. Every field can
+ * only take it away.
+ */
+export function carriesLoginGrant(payload: unknown): boolean {
+  const sender = readSlashSender(payload)
+  if (sender.malformed || sender.userId === null) return false
+  if (sender.relationship !== 'shared_recipient') return false
+  if (sender.isSharedRecipient === false) return false
+  return sender.mayLogin && !statesNonMainChat(payload)
 }
 
 /**
@@ -328,8 +356,10 @@ export function judgeDaemonCommand(input: {
   }
   if (input.command === 'login' && mayLoginFromPayload(input.payload, input.ownerUserId)) {
     // A person the owner allowed to sign the agent back in. Still not the
-    // owner: lib/auth-login.ts binds the sign-in to them, and refuses to start
-    // one in a room or a meeting, exactly as it does for the owner.
+    // owner: lib/auth-login.ts binds the sign-in to them. This arm is reached
+    // only from a main chat (mayLoginFromPayload refuses any other stated
+    // kind), and lib/auth-login.ts isRoomContext refuses a start in a room or a
+    // meeting on top, exactly as it does for the owner.
     return { kind: 'allow', audience: 'non_owner', sender, grant: 'login_recipient' }
   }
   const reason: DaemonCommandRefusal = sender.malformed
@@ -374,6 +404,10 @@ let actingVerdict: DaemonCommandAllowed | null = null
  * set immediately before `act` is called and cleared the moment `act` returns
  * its promise, before that promise is awaited, so no code that runs later
  * (another command's act, a timer, a reply) can ever read a stale verdict.
+ * The other side of that bargain is that server.ts's act must call
+ * loginController.command as its synchronous first step: an await or a
+ * `.then` in front of it would find this already cleared, and the sign-in
+ * would bind to the owner. test/login-starter-binding.pin.test.ts pins it.
  */
 export function currentDaemonCommandVerdict(): DaemonCommandAllowed | null {
   return actingVerdict

@@ -21,10 +21,13 @@
  *   /login    signs nothing in: a lane can neither post the sign in link
  *             nor take the code back (the person hears it only through the
  *             fixed notices), so the person is told, in the sentence for the
- *             lane's login mode, which Claude sign in our conversations use
- *             (lib/lane-controls.ts laneLoginNotice). It is not in the lane
- *             catalog: listing it would offer a command that does nothing
- *             here. It arrives anyway, from the owner's picker or typed.
+ *             lane's login mode, which Claude sign in our conversations use,
+ *             and, when their message carried the owner's /login grant, that
+ *             the grant does not apply here (lib/lane-controls.ts
+ *             laneLoginNotice; lane-server.ts reads the grant off that one
+ *             delivery). It is not in the lane catalog: listing it would
+ *             offer a command that does nothing here. It arrives anyway,
+ *             from the owner's picker or typed.
  * `/model` and `/effort` with nothing after them are a question, which the
  * model answers from the facts the daemon hands it.
  *

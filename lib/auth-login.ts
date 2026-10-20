@@ -83,8 +83,19 @@
  *     and the sender is told why. Its gap: after a daemon restart the old
  *     states are gone, so a code from before the restart is caught only when
  *     it is pasted on its own.
- *   - A sign-in is never started from a room or a meeting, where the link
- *     would be posted to every member (isRoomContext).
+ *   - A sign-in is never started from a room, a channel, a meeting or any
+ *     chat whose payload names a kind other than main, where the card and the
+ *     link would be posted to every member, by the owner or by a person the
+ *     owner allowed alike (isRoomContext). A person the owner allowed never
+ *     gets that far outside a main chat: the seam refuses them first. The
+ *     owner's cancel is still taken there: it only takes something away. Its
+ *     gap: a Type 1 Shared chat (a group) is known only by the kind its
+ *     payload states, and the owner daemon's chat page poll rows state none
+ *     (nor does a socket message whose group block the backend could not
+ *     build), so the OWNER's /login from a group on those rails still starts.
+ *     Nobody else can finish it: the code is taken only from the owner's own
+ *     message. Closing it needs server.ts, which knows its group chats, to
+ *     pass that in, after PR #262 releases it.
  *   - One login in flight PER DAEMON. Several agents on one machine can share
  *     one credential store, so a sign-in here signs those in as well, and two
  *     daemons could run two at once; nothing here can see the others.
@@ -104,6 +115,7 @@ import {
   isOwnerSender,
   mayLoginFromPayload,
   readSlashSender,
+  statesNonMainChat,
   type SlashSender,
 } from './daemon-command-sender.js'
 
@@ -316,11 +328,20 @@ export function carriesSignInCode(
 }
 
 /**
- * Is this /login from a room or a meeting? A sign-in started there would post
- * the link where every member sees it. Three signals, any one enough, because
+ * Is this /login from anywhere but a person's own main chat with the agent: a
+ * room, a group (a Type 1 Shared chat), a channel, a meeting, or any kind of
+ * chat added later? A sign-in started there would post the card and the link
+ * into a transcript other people read. Three signals, any one enough, because
  * no single one is on every rail: the sender's relationship (`room_member`,
- * stamped on live messages), the row's `chat_kind` (poll and stream rows), and
- * whether this daemon knows the chat as a meeting's.
+ * stamped on live messages in a room), any chat kind the payload states that
+ * is not 'main' (statesNonMainChat: the stream's `chatKind`, the inbound
+ * rows' `chat_kind`, the socket's group block), and whether this daemon
+ * knows the chat as a meeting's. The relationship alone is not enough: a
+ * Type 1 Shared chat stamps the owner `owner`, never `room_member`, so the
+ * chat kind is the only sign of the group there, and the owner daemon's chat
+ * page poll rows state none (the gap in the header). A payload that states
+ * 'main', or no kind at all, is not a room. The same rule holds for the owner
+ * and for a person the owner allowed.
  */
 export function isRoomContext(input: {
   relationship: string | null
@@ -329,9 +350,7 @@ export function isRoomContext(input: {
 }): boolean {
   if (input.isMeetingChat) return true
   if (input.relationship === 'room_member') return true
-  const p = (input.payload && typeof input.payload === 'object' ? input.payload : {}) as Record<string, unknown>
-  const kind = p.chat_kind ?? p.chatKind
-  return typeof kind === 'string' && kind.toLowerCase() === 'room'
+  return statesNonMainChat(input.payload)
 }
 
 /** How long a used state is remembered, to keep a late re-paste out of the log. */
@@ -874,12 +893,15 @@ export class LoginController {
    * anyone else binds to the owner, which is what every sign-in was bound to
    * before, so nothing here is ever wider than it was.
    *
-   * `inRoom` is the sender's relationship read off the same message
-   * (`room_member`, which a persistent group stamps on everyone, the owner
-   * included). A sign-in is never STARTED from a room: the link would be posted
-   * where every member sees it, and a tap on the method card, which today's
-   * backend does not attribute, could come from any of them. Cancelling is
-   * still allowed there, because it only ever takes something away.
+   * `inRoom` is isRoomContext read off the same message: the sender's
+   * relationship (`room_member`, which a room stamps on everyone, the owner
+   * included), any chat kind the payload names other than main (a Type 1
+   * Shared chat stamps the owner `owner`, so there the kind is the only
+   * sign), or a meeting chat. A sign-in is never STARTED from any of them:
+   * the card and the link would be posted where every member sees them, and
+   * a tap on the method card, which today's backend does not attribute,
+   * could come from any of them. Cancelling is still allowed there, because
+   * it only ever takes something away.
    */
   async command(
     chatId: string,

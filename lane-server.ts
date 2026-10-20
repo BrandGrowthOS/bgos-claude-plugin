@@ -29,8 +29,9 @@
  *      in its handshake, the echo on every answer, a write at most once per
  *      rpcId across processes); performs `/new`, `/model x` and `/effort x`
  *      itself (a restart request for the supervisor), answers `/login`
- *      itself with the fixed sentence for its login mode (it signs nothing
- *      in: it can neither post a sign in link nor take a code), and hands
+ *      itself with the fixed sentence for its login mode and for whether
+ *      that message carried the owner's /login grant (it signs nothing in:
+ *      it can neither post a sign in link nor take a code), and hands
  *      every other command to the model from the LANE catalog only, never
  *      the owner's command folders; reports its model and effort with its
  *      lane session;
@@ -120,6 +121,7 @@ import {
   type StoredLaneSession,
 } from './lib/lane-daemon.ts'
 import { ClaudeLoginWatcher } from './lib/claude-login.ts'
+import { carriesLoginGrant } from './lib/daemon-command-sender.ts'
 import { getFileCategory, guessOutboundMime, unsupportedFileMessage } from './lib/message-text.ts'
 import { mcpServerInfo } from './lib/mcp-server-info.ts'
 import { readOwnVersion } from './lib/version-heartbeat.ts'
@@ -522,6 +524,8 @@ async function deliverRaw(raw: unknown, transport: 'lane-socket' | 'lane-poll', 
   // P5: the lane's own commands. Only the LANE catalog is consulted, never a
   // command folder on this computer. `/login` is the daemon's as well: the
   // person is told which sign in this lane uses, and nothing is signed in.
+  // Whether THIS delivery carried the owner's /login grant chooses only the
+  // sentence (a person the owner allowed is told it does not apply here).
   const route = routeLaneSlash(d.raw as Record<string, unknown>)
   if ((route.kind === 'new') || (route.kind === 'login') || ((route.kind === 'model' || route.kind === 'effort') && route.commandArgs !== '')) {
     inbox = inboxNoteHandled(inbox, d)
@@ -538,7 +542,11 @@ async function deliverRaw(raw: unknown, transport: 'lane-socket' | 'lane-poll', 
     saveInbox()
     deliveredChats.add(d.chatId)
     await ackDelivery(d.messageId)
-    performLaneCommand({ kind: route.kind, commandArgs: route.commandArgs }, d.chatId, CONTROL_DEPS)
+    performLaneCommand(
+      { kind: route.kind, commandArgs: route.commandArgs, granted: route.kind === 'login' && carriesLoginGrant(d.raw) },
+      d.chatId,
+      CONTROL_DEPS,
+    )
     return
   }
   inbox = inboxNoteDelivered(inbox, d)

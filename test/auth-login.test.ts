@@ -889,6 +889,34 @@ test('room context: relationship, chat kind, or a meeting chat', () => {
   assert.equal(isRoomContext({ relationship: null, payload: null, isMeetingChat: false }), false)
 })
 
+test('room context: a payload that states any chat kind but main is one, in either spelling, the owner\'s included', () => {
+  // A Type 1 Shared chat (chats.kind 'group') stamps the OWNER as 'owner', not
+  // 'room_member', so the relationship alone let the owner's /login start
+  // there and post the card and the link into a transcript others read.
+  for (const kind of ['group', 'channel', 'shared', 'room', 'meeting', 'Group', ' channel ', 'a_kind_added_later']) {
+    for (const relationship of ['owner', 'shared_recipient', null]) {
+      for (const payload of [{ chat_kind: kind }, { chatKind: kind }]) {
+        assert.equal(
+          isRoomContext({ relationship, payload, isMeetingChat: false }),
+          true,
+          `${JSON.stringify(payload)} from ${relationship}`,
+        )
+      }
+    }
+  }
+  for (const kind of [7, true, {}, []]) {
+    assert.equal(isRoomContext({ relationship: 'owner', payload: { chatKind: kind }, isMeetingChat: false }), true, `a kind that is not a string (${JSON.stringify(kind)}) is not main`)
+  }
+  // The socket names a group's kind only inside its groupContext block
+  // (backend groupContextToCamelWire); its top level carries none.
+  assert.equal(isRoomContext({ relationship: 'owner', payload: { groupContext: { chatKind: 'group' } }, isMeetingChat: false }), true, 'the socket\'s group block')
+  assert.equal(isRoomContext({ relationship: 'owner', payload: { group_context: { chat_kind: 'channel' } }, isMeetingChat: false }), true, 'snake spelling')
+  // Main, or no kind stated at all: exactly as before.
+  for (const payload of [{ chat_kind: 'main' }, { chatKind: 'Main' }, { chatKind: ' main ' }, {}, { chat_kind: null }, null, 'not an object']) {
+    assert.equal(isRoomContext({ relationship: 'owner', payload, isMeetingChat: false }), false, JSON.stringify(payload))
+  }
+})
+
 test('the code half alone is redacted too, if the CLI ever echoes it', async () => {
   const h = harness()
   await toAwaitingCode(h)
@@ -1096,6 +1124,116 @@ test('an allowed recipient still cannot START a sign-in from a meeting or a room
     assert.equal(h.statusReads(), 0)
     assert.equal(h.children.length, 0)
   }
+})
+
+// The owner's /login on each shape that can state a chat kind. In a Type 1
+// Shared chat the backend stamps the owner `owner` (never `room_member`), so
+// the only sign of the group is the chat kind the payload states. The snake
+// case shape is the integrations inbound row's; the owner daemon's own chat
+// page poll rows state no kind at all (the gap in lib/auth-login.ts's header).
+const POLL_OWNER_LOGIN = {
+  id: 45,
+  text: '/login',
+  sender: 'user',
+  message_type: 'slash_command',
+  command_name: 'login',
+  user_id: OWNER,
+  chat_kind: 'main',
+  sender_user_id: OWNER,
+  sender_relationship: 'owner',
+}
+const STREAM_OWNER_LOGIN = {
+  id: 46,
+  text: '/login',
+  sender: 'user',
+  messageType: 'slash_command',
+  commandName: 'login',
+  chatKind: 'main',
+  senderUserId: OWNER,
+  senderRelationship: 'owner',
+}
+const GROUP_CHAT = '8001'
+
+test('the owner\'s /login in a chat that states a kind other than main is refused with the room reply, and reads nothing', async () => {
+  const cases: Array<[string, unknown]> = []
+  for (const kind of ['group', 'channel', 'shared']) {
+    cases.push([`snake case chat_kind ${kind}`, { ...POLL_OWNER_LOGIN, chat_kind: kind }])
+    cases.push([`stream chatKind ${kind}`, { ...STREAM_OWNER_LOGIN, chatKind: kind }])
+    cases.push([`ws chatKind ${kind}`, { ...WS_OWNER_LOGIN, chatKind: kind }])
+  }
+  // The socket's own shape for a Type 1 Shared chat: no top level kind, the
+  // group block names it.
+  const wsGroup = { ...WS_OWNER_LOGIN, groupContext: { chatKind: 'group', chatTitle: 'Launch', mentionedBy: 'Ava Chen', participants: [], messages: [] } }
+  delete (wsGroup as Record<string, unknown>).isSharedRecipient
+  delete (wsGroup as Record<string, unknown>).shareOwnerUserId
+  cases.push(['ws groupContext group', wsGroup])
+  for (const [label, payload] of cases) {
+    for (const args of ['', 'subscription', 'console']) {
+      const h = harness()
+      const r = await loginVia(h, GROUP_CHAT, payload, args)
+      assert.equal(r.outcome, 'acted', `${label} /login ${args}: the owner passes the seam; the room rule is the controller`)
+      assert.equal(h.statusReads(), 0, `${label} /login ${args}: the sign-in state is never read`)
+      assert.equal(h.children.length, 0, `${label} /login ${args}: nothing is spawned`)
+      assert.equal(h.sent.length, 1, `${label} /login ${args}: one reply`)
+      assert.equal(h.sent[0]!.chatId, GROUP_CHAT, label)
+      assert.equal(h.sent[0]!.buttons, undefined, `${label} /login ${args}: no method card`)
+      assert.equal(
+        h.sent[0]!.text,
+        'Send /login from your own chat with this agent, not from a room: the sign-in link would be visible to everyone here.',
+        `${label} /login ${args}: the room reply`,
+      )
+      assert.equal(h.controller.phase, 'idle', label)
+    }
+  }
+})
+
+test('the owner\'s /login that states main, or no kind at all, still starts', async () => {
+  const noKind = { ...POLL_OWNER_LOGIN } as Record<string, unknown>
+  delete noKind.chat_kind
+  for (const [label, payload] of [
+    ['poll main', POLL_OWNER_LOGIN],
+    ['stream main', STREAM_OWNER_LOGIN],
+    ['ws, no kind', WS_OWNER_LOGIN],
+    ['poll, no kind', noKind],
+  ] as const) {
+    const h = harness()
+    const r = await loginVia(h, CHAT, payload)
+    assert.equal(r.outcome, 'acted', label)
+    assert.equal(h.statusReads(), 1, `${label}: the offer read the sign-in state`)
+    assert.equal(h.sent[0]?.buttons?.length, 2, `${label}: the method card`)
+    assert.equal(h.controller.phase, 'awaiting_method', label)
+  }
+})
+
+test('a granted recipient whose /login states a group is refused too, at the seam and at the controller', async () => {
+  const group = { ...WS_GRANTED_LOGIN, chatKind: 'group' }
+  const viaSeam = harness()
+  const r = await loginVia(viaSeam, RECIP_CHAT, group)
+  assert.equal(r.outcome, 'refused', 'a payload naming a group never carries the grant')
+  assert.equal(viaSeam.statusReads(), 0)
+  assert.equal(viaSeam.children.length, 0)
+  // And the controller's own rule, were the starter handed over explicitly
+  // (the follow up after #262): no start, the room reply.
+  const h = harness()
+  await h.controller.command(RECIP_CHAT, '', {
+    starter: senderModule.readSlashSender(WS_GRANTED_LOGIN),
+    inRoom: isRoomContext({ relationship: 'shared_recipient', payload: group, isMeetingChat: false }),
+  })
+  await settle()
+  assert.equal(h.statusReads(), 0)
+  assert.equal(h.children.length, 0)
+  assert.equal(h.sent[0]?.buttons, undefined)
+  assert.match(h.sent[0]!.text, /not from a room/)
+})
+
+test('/login cancel from a chat that states a group still stops the owner\'s running sign-in', async () => {
+  const h = harness()
+  await toAwaitingCode(h)
+  const r = await loginVia(h, GROUP_CHAT, { ...WS_OWNER_LOGIN, chatKind: 'group' }, 'cancel')
+  assert.equal(r.outcome, 'acted')
+  assert.equal(h.child.killed, true, 'cancelling only takes something away, so it is allowed there')
+  assert.equal(h.controller.phase, 'idle')
+  assert.ok(h.sent.some((m) => m.chatId === GROUP_CHAT && m.text === 'Sign-in cancelled. Nothing was changed.'))
 })
 
 test('owner started: an allowed recipient\'s code is never taken, and is withheld', async () => {

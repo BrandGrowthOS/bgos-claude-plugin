@@ -601,11 +601,19 @@ test('the grant never applies in a room, a group or a channel, even with the fie
     ['chatKind channel', { ...LOGIN_WS_RECIPIENT, chatKind: 'channel' }],
     ['chat_kind meeting', { ...LOGIN_WS_RECIPIENT, chat_kind: 'meeting' }],
     ['a chat kind that is not a string', { ...LOGIN_WS_RECIPIENT, chatKind: 7 }],
+    // The socket names a group only inside its group block, never at the top level.
+    ['groupContext group (ws)', { ...LOGIN_WS_RECIPIENT, groupContext: { chatKind: 'group', chatTitle: 'Launch' } }],
+    ['group_context channel', { ...LOGIN_POLL_RECIPIENT, group_context: { chat_kind: 'channel' } }],
   ]
   for (const [label, payload] of cases) {
     const v = judge('login', payload)
     assert.equal(v.kind, 'refuse', `${label}: refused`)
   }
+  assert.equal(
+    judge('login', { ...LOGIN_WS_RECIPIENT, groupContext: { chatKind: 'main' } }).kind,
+    'allow',
+    'a group block that states main takes nothing away',
+  )
   // A main chat, stated or not, is where the grant lives.
   for (const kind of ['main', null, undefined]) {
     assert.equal(judge('login', { ...LOGIN_STREAM_RECIPIENT, chatKind: kind }).kind, 'allow', `chatKind ${kind}`)
