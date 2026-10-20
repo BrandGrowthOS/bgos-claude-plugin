@@ -41,9 +41,20 @@ import {
   type DaemonCommand,
   type DaemonCommandAllowed,
 } from '../lib/daemon-command-sender.ts'
+// The /login grant's names, read off the module object so a missing export
+// fails the assertion that names it rather than the whole file's import.
+import * as senderModule from '../lib/daemon-command-sender.ts'
 
 const OWNER = 'user_2owner000000000000000000000'
 const RECIPIENT = 'user_2recip000000000000000000000'
+/**
+ * The labelled value the backend stamps on a share recipient's message when
+ * the owner turned on "Can sign this agent back in" (BGOS
+ * common/share-login.ts SENDER_MAY_LOGIN_VALUE), copied byte for byte from the
+ * contract: an ASCII apostrophe, no em or en dash.
+ */
+const MAY_LOGIN =
+  "This agent's owner allows the person writing to send /login, to sign this agent back in when its Claude sign in expires."
 const COMMANDS: DaemonCommand[] = ['compact', 'status', 'login']
 /** The commands that MUTATE the owner's session or machine: a stranger is refused. */
 const MUTATING: DaemonCommand[] = ['compact', 'login']
@@ -170,13 +181,13 @@ test('a room member who is not the owner is treated like a recipient', () => {
   }
 })
 
-test('a share recipient is refused /login on both transports, with a reply that names it', () => {
+test('a share recipient WITHOUT the may login field is refused /login on both transports, with a reply that names it', () => {
   for (const [transport, payload] of [['ws', WS_RECIPIENT], ['poll', POLL_RECIPIENT]] as const) {
     const v = judge('login', { ...payload, commandName: 'login', command_name: 'login' })
-    assert.equal(v.kind, 'refuse', `${transport}: a recipient must not sign the owner's agent in`)
+    assert.equal(v.kind, 'refuse', `${transport}: a recipient the owner did not allow must not sign the agent in`)
     if (v.kind !== 'refuse') continue
     assert.equal(v.reason, 'not_owner')
-    assert.match(v.reply, /^\/login was not run: only this agent's owner can sign it in\./)
+    assert.match(v.reply, /^\/login was not run: only this agent's owner, or a person the owner allowed, can sign it in\./)
     assert.doesNotMatch(v.reply, /[\u2013\u2014]/)
   }
 })
@@ -463,6 +474,255 @@ test('the action is awaited: the seam resolves only after act has resolved', asy
     },
   })
   assert.equal(settled, true)
+})
+
+// ── /login for a person the owner allowed (BEHAVIOURAL) ──────────────────────
+//
+// The owner can turn on "Can sign this agent back in" on a share. The backend
+// then stamps a labelled string on that person's messages in the agent's main
+// chat with them, and only there, computed per message (so a revoke takes
+// effect on the very next one): `senderMayLogin` on the socket, the chat page
+// poll row and the update stream, `sender_may_login` on the snake case rails.
+// The grant is the string itself, compared byte for byte after a trim: any
+// other value, a boolean included, grants nothing. It only ever ADDS /login
+// for a provable share recipient of this owner; it never makes anyone the
+// owner, and it never opens /compact.
+
+const LOGIN_WS_RECIPIENT = { ...WS_RECIPIENT, commandName: 'login', text: '/login', senderMayLogin: MAY_LOGIN }
+// The integrations inbound poll row (snake case beside sender_guardrail).
+const LOGIN_POLL_RECIPIENT = { ...POLL_RECIPIENT, command_name: 'login', text: '/login', sender_may_login: MAY_LOGIN }
+// The chat page poll row (MessageDto, machine read): camel case, flat, and no
+// share keys at all.
+const LOGIN_PAGE_RECIPIENT = {
+  id: 43,
+  chatId: 7001,
+  text: '/login',
+  sender: 'user',
+  messageType: 'slash_command',
+  commandName: 'login',
+  senderUserId: RECIPIENT,
+  senderDisplayName: 'Ben Ruiz',
+  senderRelationship: 'shared_recipient',
+  senderMayLogin: MAY_LOGIN,
+}
+// The update stream's hydrated message (view.raw): flat camel case, chatKind.
+const LOGIN_STREAM_RECIPIENT = {
+  id: 44,
+  text: '/login',
+  sender: 'user',
+  messageType: 'slash_command',
+  commandName: 'login',
+  chatKind: 'main',
+  senderUserId: RECIPIENT,
+  senderDisplayName: 'Ben Ruiz',
+  senderRelationship: 'shared_recipient',
+  senderMayLogin: MAY_LOGIN,
+}
+const GRANTED_SHAPES = [
+  ['ws', LOGIN_WS_RECIPIENT],
+  ['poll (integrations row)', LOGIN_POLL_RECIPIENT],
+  ['poll (chat page row)', LOGIN_PAGE_RECIPIENT],
+  ['stream', LOGIN_STREAM_RECIPIENT],
+] as const
+
+test('the may login value is exported byte identical to the contract, ASCII only', () => {
+  assert.equal(senderModule.SENDER_MAY_LOGIN_VALUE, MAY_LOGIN)
+  assert.doesNotMatch(MAY_LOGIN, /[\u2013\u2014\u2018\u2019]/, 'no em or en dash, no curly apostrophe')
+  assert.match(MAY_LOGIN, /^[\x20-\x7e]+$/, 'printable ASCII only')
+})
+
+test('a recipient carrying the may login field is allowed /login on the ws, poll and stream shapes', () => {
+  for (const [transport, payload] of GRANTED_SHAPES) {
+    const s = readSlashSender(payload)
+    assert.equal(s.mayLogin, true, `${transport}: the field is read`)
+    assert.equal(s.malformed, false, transport)
+    assert.equal(senderModule.isLoginGrantedRecipient(s, OWNER), true, transport)
+    const v = judge('login', payload)
+    assert.equal(v.kind, 'allow', `${transport}: the owner allowed this person to sign the agent in`)
+    if (v.kind !== 'allow') continue
+    assert.equal(v.audience, 'non_owner', `${transport}: a granted recipient is still not the owner`)
+    assert.equal(v.grant, 'login_recipient', transport)
+    assert.equal(v.sender.userId, RECIPIENT, transport)
+  }
+})
+
+test('the grant survives surrounding whitespace, and the snake spelling grants alone', () => {
+  assert.equal(judge('login', { ...WS_RECIPIENT, senderMayLogin: `  ${MAY_LOGIN}\n` }).kind, 'allow')
+  assert.equal(judge('login', { ...WS_RECIPIENT, sender_may_login: MAY_LOGIN }).kind, 'allow')
+  assert.equal(judge('login', { ...LOGIN_WS_RECIPIENT, sender_may_login: MAY_LOGIN }).kind, 'allow', 'both spellings, agreeing')
+})
+
+test('without the field, or with any value that is not the labelled string, a recipient is refused /login', () => {
+  const wrong: unknown[] = [
+    undefined,
+    null,
+    true,
+    'true',
+    1,
+    '',
+    'yes',
+    MAY_LOGIN.toLowerCase(),
+    MAY_LOGIN.replace("agent's", 'agent\u2019s'),
+    `${MAY_LOGIN} And /compact too.`,
+    { value: MAY_LOGIN },
+    [MAY_LOGIN],
+  ]
+  for (const value of wrong) {
+    const payload = { ...WS_RECIPIENT, commandName: 'login', senderMayLogin: value }
+    assert.equal(readSlashSender(payload).mayLogin, false, `${JSON.stringify(value)} grants nothing`)
+    const v = judge('login', payload)
+    assert.equal(v.kind, 'refuse', `${JSON.stringify(value)}: refused`)
+    if (v.kind === 'refuse') assert.equal(v.reason, 'not_owner', `${JSON.stringify(value)}: not a malformed sender, just not allowed`)
+  }
+})
+
+test('both spellings present and disagreeing is a malformed sender, refused', () => {
+  const cases: unknown[] = [
+    { ...WS_RECIPIENT, senderMayLogin: MAY_LOGIN, sender_may_login: 'no' },
+    { ...WS_RECIPIENT, senderMayLogin: 'no', sender_may_login: MAY_LOGIN },
+    { ...POLL_RECIPIENT, senderMayLogin: MAY_LOGIN, sender_may_login: true },
+  ]
+  for (const payload of cases) {
+    const s = readSlashSender(payload)
+    assert.equal(s.malformed, true, JSON.stringify(payload))
+    assert.equal(senderModule.isLoginGrantedRecipient(s, OWNER), false)
+    const v = judge('login', payload)
+    assert.equal(v.kind, 'refuse')
+    if (v.kind === 'refuse') assert.equal(v.reason, 'sender_malformed')
+  }
+})
+
+test('the grant never applies in a room, a group or a channel, even with the field', () => {
+  const cases: Array<[string, unknown]> = [
+    ['relationship room_member (ws)', { ...LOGIN_WS_RECIPIENT, sender: { userId: RECIPIENT, relationship: 'room_member' } }],
+    ['relationship room_member (poll)', { ...LOGIN_POLL_RECIPIENT, sender_relationship: 'room_member' }],
+    ['chat_kind room', { ...LOGIN_POLL_RECIPIENT, chat_kind: 'room' }],
+    ['chatKind group', { ...LOGIN_STREAM_RECIPIENT, chatKind: 'group' }],
+    ['chatKind channel', { ...LOGIN_WS_RECIPIENT, chatKind: 'channel' }],
+    ['chat_kind meeting', { ...LOGIN_WS_RECIPIENT, chat_kind: 'meeting' }],
+    ['a chat kind that is not a string', { ...LOGIN_WS_RECIPIENT, chatKind: 7 }],
+  ]
+  for (const [label, payload] of cases) {
+    const v = judge('login', payload)
+    assert.equal(v.kind, 'refuse', `${label}: refused`)
+  }
+  // A main chat, stated or not, is where the grant lives.
+  for (const kind of ['main', null, undefined]) {
+    assert.equal(judge('login', { ...LOGIN_STREAM_RECIPIENT, chatKind: kind }).kind, 'allow', `chatKind ${kind}`)
+    assert.equal(judge('login', { ...LOGIN_POLL_RECIPIENT, chat_kind: kind }).kind, 'allow', `chat_kind ${kind}`)
+  }
+})
+
+test('the grant needs a provable share recipient of THIS owner', () => {
+  const cases: Array<[string, unknown]> = [
+    ['isSharedRecipient false', { ...LOGIN_WS_RECIPIENT, isSharedRecipient: false }],
+    ['a share from another owner', { ...LOGIN_WS_RECIPIENT, shareOwnerUserId: 'user_2someoneelse0000000000000' }],
+    ['no relationship at all', { ...LOGIN_STREAM_RECIPIENT, senderRelationship: undefined }],
+    ['a relationship the backend does not use', { ...LOGIN_STREAM_RECIPIENT, senderRelationship: 'org_member' }],
+    ['no sender id', { ...LOGIN_STREAM_RECIPIENT, senderUserId: undefined }],
+  ]
+  for (const [label, payload] of cases) {
+    assert.equal(judge('login', payload).kind, 'refuse', label)
+  }
+  const s = readSlashSender(LOGIN_WS_RECIPIENT)
+  assert.equal(senderModule.isLoginGrantedRecipient(s, ''), false, 'an empty owner id grants nobody')
+  assert.equal(senderModule.isLoginGrantedRecipient(s, RECIPIENT), false, 'the owner is never a recipient of their own share')
+})
+
+test('a granted recipient is still refused /compact, and /status is unchanged', () => {
+  for (const [transport, payload] of GRANTED_SHAPES) {
+    const c = judge('compact', payload)
+    assert.equal(c.kind, 'refuse', `${transport}: the grant is /login only`)
+    if (c.kind === 'refuse') assert.equal(c.reason, 'not_owner')
+    const s = judge('status', payload)
+    assert.equal(s.kind, 'allow', transport)
+    if (s.kind === 'allow') {
+      assert.equal(s.audience, 'non_owner', `${transport}: the reduced answer`)
+      assert.equal(s.grant, undefined, `${transport}: no grant on /status`)
+    }
+  }
+})
+
+test('the owner carrying the field is the owner path, unchanged', () => {
+  const owner = { ...WS_OWNER, commandName: 'login', senderMayLogin: MAY_LOGIN }
+  for (const command of COMMANDS) {
+    const v = judge(command, owner)
+    assert.equal(v.kind, 'allow', command)
+    if (v.kind !== 'allow') continue
+    assert.equal(v.audience, 'owner', command)
+    assert.equal(v.grant, undefined, `${command}: the owner needs no grant`)
+  }
+})
+
+test('runDaemonCommand: a granted recipient reaches the /login action once, with the grant', async () => {
+  for (const [transport, payload] of GRANTED_SHAPES) {
+    const r = await drive('login', payload)
+    assert.equal(r.outcome, 'acted', transport)
+    assert.equal(r.act.calls.length, 1, transport)
+    assert.equal(r.act.calls[0]?.[0].grant, 'login_recipient', transport)
+    assert.equal(r.send.calls.length, 0, `${transport}: no refusal`)
+  }
+  const refused = await drive('login', { ...WS_RECIPIENT, commandName: 'login' })
+  assert.equal(refused.outcome, 'refused', 'the same person without the field')
+  assert.equal(refused.act.calls.length, 0)
+  const compact = await drive('compact', LOGIN_WS_RECIPIENT)
+  assert.equal(compact.outcome, 'refused', 'and never /compact')
+  assert.equal(compact.act.calls.length, 0)
+})
+
+test('the allowed verdict is readable only while act runs synchronously', async () => {
+  const current = senderModule.currentDaemonCommandVerdict
+  assert.equal(typeof current, 'function', 'currentDaemonCommandVerdict is exported')
+  assert.equal(current(), null, 'null before any command')
+  const seenSync: Array<DaemonCommandAllowed | null> = []
+  const seenAfterAwait: Array<DaemonCommandAllowed | null> = []
+  let handed: DaemonCommandAllowed | null = null
+  const outcome = await runDaemonCommand({
+    command: 'login',
+    payload: LOGIN_WS_RECIPIENT,
+    ownerUserId: OWNER,
+    chatId: '7001',
+    send: async () => {},
+    act: async (verdict) => {
+      handed = verdict
+      seenSync.push(current())
+      await Promise.resolve()
+      seenAfterAwait.push(current())
+    },
+  })
+  assert.equal(outcome, 'acted')
+  assert.equal(seenSync[0], handed, 'the same verdict act was handed, while act runs synchronously')
+  assert.equal(seenAfterAwait[0], null, 'cleared once act has returned its promise')
+  assert.equal(current(), null, 'null afterwards')
+  // A refusal never sets it.
+  let seenOnRefusal: unknown = 'unset'
+  await runDaemonCommand({
+    command: 'login',
+    payload: WS_RECIPIENT,
+    ownerUserId: OWNER,
+    chatId: '7001',
+    send: async () => {
+      seenOnRefusal = current()
+    },
+    act: async () => {},
+  })
+  assert.equal(seenOnRefusal, null, 'a refused sender has no verdict to read')
+  // An act that throws synchronously still clears it, and the throw propagates.
+  await assert.rejects(
+    () =>
+      runDaemonCommand({
+        command: 'login',
+        payload: WS_OWNER,
+        ownerUserId: OWNER,
+        chatId: '1',
+        send: async () => {},
+        act: (() => {
+          throw new Error('sync throw')
+        }) as unknown as (v: DaemonCommandAllowed) => Promise<void>,
+      }),
+    /sync throw/,
+  )
+  assert.equal(current(), null, 'cleared after a synchronous throw')
 })
 
 // ── server.ts wiring: SHAPE PINS ─────────────────────────────────────────────

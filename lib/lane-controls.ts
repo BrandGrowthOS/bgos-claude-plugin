@@ -10,6 +10,9 @@
  *   /effort x    `choices.json` (outside `work/`, out of the model's reach)
  *                and applied by a restart now. Off the list: nothing changes
  *                and the person is told.
+ *   /login       nothing is signed in, started, read or restarted: the
+ *                person is told which Claude sign in our conversations use,
+ *                by the lane's login mode (laneLoginNotice).
  *   the policy   compared with the policy this Claude was launched with:
  *                TIGHTER restarts now (a turn in flight is cut and its
  *                person told); LOOSER restarts at the lane's next idle
@@ -35,6 +38,7 @@ import {
   readLaneRestartRequest,
   readToolPolicy,
 } from './lane-policy.mjs'
+import { LANE_LOGIN_OWN_TOKEN } from './lane-core.mjs'
 import { laneChoiceQuestion } from './lane-slash.ts'
 
 export type ToolPolicy = ReturnType<typeof readToolPolicy>
@@ -77,20 +81,41 @@ export interface LaneCommandDeps {
   notice: (name: string, chatIds: string[]) => void
   requestRestart: (next: RestartAsk) => void
   log: (line: string) => void
+  /** The lane's login mode, from its own environment (HOAI_LANE_LOGIN_MODE). */
+  loginMode?: string
   fs?: typeof nodeFs
   now?: () => number
 }
 
 /**
- * Perform `/new`, `/model x` or `/effort x` for the person in `chatId`.
- * Returns what was done, for the log and the tests.
+ * Which sentence a `/login` in a lane gets (lib/lane-core.mjs LANE_NOTICES).
+ * Under the person's own token (K2 option b), `claude auth login` cannot
+ * change the token the lane runs on, and the owner's login is not theirs to
+ * touch. Under inherit, and any mode this file does not know, the lane runs
+ * on the owner's own sign in, which only the owner signs back in, from their
+ * own chat.
+ */
+export function laneLoginNotice(loginMode: string): 'login_lane_own_token' | 'login_lane_shared' {
+  return loginMode === LANE_LOGIN_OWN_TOKEN ? 'login_lane_own_token' : 'login_lane_shared'
+}
+
+/**
+ * Perform `/new`, `/model x`, `/effort x` or `/login` for the person in
+ * `chatId`. Returns what was done, for the log and the tests.
  */
 export function performLaneCommand(
-  route: { kind: 'new' | 'model' | 'effort'; commandArgs: string },
+  route: { kind: 'new' | 'model' | 'effort' | 'login'; commandArgs: string },
   chatId: string,
   deps: LaneCommandDeps,
 ): 'new_session' | 'changed' | 'unchanged' | 'refused' | 'failed' {
   const fs = deps.fs ?? nodeFs
+  if (route.kind === 'login') {
+    // Before anything reads a file: a /login here touches nothing.
+    const notice = laneLoginNotice(String(deps.loginMode ?? ''))
+    deps.log(`/login: not run in a lane; the person is told which sign in this lane uses (${notice})`)
+    deps.notice(notice, [chatId])
+    return 'refused'
+  }
   if (route.kind === 'new') {
     deps.log('/new: a new conversation for this person; the memory folder stays')
     deps.notice('new_session', [chatId])

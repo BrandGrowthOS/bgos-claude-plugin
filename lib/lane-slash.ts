@@ -12,12 +12,19 @@
  * reach a recipient's turn. A command the lane does not have is answered as
  * unavailable, with no body.
  *
- * Three commands the lane daemon performs itself, never the model:
+ * Four commands the lane daemon performs itself, never the model:
  *   /new      a new conversation for this person: the lane's session is
  *             repinned and its Claude restarted; the memory folder stays;
  *   /model    `/model <name>` switches to a model on the owner's list for
  *             this agent (K7), `/model default` back to the agent's own;
- *   /effort   the same for the effort level.
+ *   /effort   the same for the effort level;
+ *   /login    signs nothing in: a lane can neither post the sign in link
+ *             nor take the code back (the person hears it only through the
+ *             fixed notices), so the person is told, in the sentence for the
+ *             lane's login mode, which Claude sign in our conversations use
+ *             (lib/lane-controls.ts laneLoginNotice). It is not in the lane
+ *             catalog: listing it would offer a command that does nothing
+ *             here. It arrives anyway, from the owner's picker or typed.
  * `/model` and `/effort` with nothing after them are a question, which the
  * model answers from the facts the daemon hands it.
  *
@@ -33,11 +40,12 @@ import {
 } from './slash-catalog.ts'
 
 /** The commands the lane daemon performs itself. */
-export const LANE_HANDLED_COMMANDS = Object.freeze(['new', 'model', 'effort'])
+export const LANE_HANDLED_COMMANDS = Object.freeze(['new', 'model', 'effort', 'login'])
 
 /**
- * The lane's catalog. The handled three carry no prompt (nothing about them
- * reaches a model); the rest are the owner's built ins reworded for a lane:
+ * The lane's catalog. The three handled commands in it carry no prompt
+ * (nothing about them reaches a model; `/login` is handled but not listed);
+ * the rest are the owner's built ins reworded for a lane:
  * none of them reads or edits a settings file, a CLAUDE.md or anything
  * outside the lane's working folder.
  */
@@ -117,6 +125,7 @@ export type LaneSlashRoute =
   | { kind: 'new'; commandArgs: string }
   | { kind: 'model'; commandArgs: string }
   | { kind: 'effort'; commandArgs: string }
+  | { kind: 'login'; commandArgs: string }
   | { kind: 'directive'; delivery: SlashCommandDelivery }
 
 function token(raw: unknown): string {
@@ -125,9 +134,10 @@ function token(raw: unknown): string {
 
 /**
  * Route one delivery of a person's lane. A `slash_command` message, or a
- * plain message that is exactly `/new`, `/model ...` or `/effort ...` (the
- * app sends a typed command the picker does not list as plain text), goes to
- * the daemon or to a lane catalog directive; everything else is a turn.
+ * plain message that is exactly `/new`, `/model ...`, `/effort ...` or
+ * `/login ...` (the app sends a typed command the picker does not list as
+ * plain text), goes to the daemon or to a lane catalog directive; everything
+ * else is a turn.
  */
 export function routeLaneSlash(payload: SlashCommandPayload & Record<string, unknown>): LaneSlashRoute {
   const text = typeof payload.text === 'string' ? payload.text.trim() : ''
@@ -148,6 +158,7 @@ export function routeLaneSlash(payload: SlashCommandPayload & Record<string, unk
   if (name === 'new') return { kind: 'new', commandArgs: args }
   if (name === 'model') return { kind: 'model', commandArgs: args }
   if (name === 'effort') return { kind: 'effort', commandArgs: args }
+  if (name === 'login') return { kind: 'login', commandArgs: args }
   return {
     kind: 'directive',
     delivery: buildSlashCommandDelivery({

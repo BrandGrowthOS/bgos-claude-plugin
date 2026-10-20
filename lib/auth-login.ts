@@ -33,35 +33,56 @@
  *     AUTOMATIC flow, whose localhost callback completes the login without any
  *     code. On an unattended desktop that tab would let whoever sits there sign
  *     the agent into THEIR account. With it suppressed, the only way to finish
- *     is the code the owner pastes into the owner's own chat.
+ *     is the code that whoever started the sign-in pastes into their own chat.
  *
  * NOT tmux injection. lib/compact-inject.ts forbids a second free-string
  * parameter and the auth code is a free string. The child-process path needs
  * none of that and works on Windows and where there is no tmux.
  *
  * SECURITY, all enforced here and pinned by test/auth-login.test.ts:
- *   - Owner only. The /login command goes through runDaemonCommand
- *     (lib/daemon-command-sender.ts), which refuses before `act`, so a
- *     stranger never reaches spawn. A code message is taken only from a sender
- *     isOwnerSender proves is the owner. A method tap is refused when it names
- *     someone else (null aware, like the plan card: today's backend stamps no
- *     clicker id on a tap).
+ *   - The owner, or a person the owner allowed. The /login command goes
+ *     through runDaemonCommand (lib/daemon-command-sender.ts), which refuses
+ *     before `act` everyone but the owner and a share recipient whose message
+ *     carries the backend's labelled may login field (the owner turned on
+ *     "Can sign this agent back in" on that share), so anyone else never
+ *     reaches spawn.
+ *   - Bound to the STARTER, not to "the owner". Each sign-in belongs to the
+ *     person whose /login opened it (LoginState.starterUserId). A code message
+ *     is taken only from that person, in that chat: when the owner started
+ *     it, from a sender isOwnerSender proves is the owner; otherwise from the
+ *     same user id whose message ITSELF still carries the grant
+ *     (mayLoginFromPayload), so a revoke between /login and the paste blocks
+ *     the code. A method tap is refused when it names someone other than the
+ *     starter (null aware, like the plan card: today's backend stamps no
+ *     clicker id that this daemon reads; see button()). A direct method or a
+ *     second /login from anyone else gets the busy reply. /login cancel stops
+ *     a sign-in only for its starter or for the owner, whose machine it is. A
+ *     starter the controller cannot prove to be either binds to the owner,
+ *     exactly as before, never wider.
+ *   - A starter who is not the owner is told only WHETHER the agent is signed
+ *     in, never as whom: their offer card names no account and no plan. It
+ *     says plainly which login they would change (RECIPIENT_LOGIN_SCOPE: the
+ *     one the owner runs this agent on), and so does the link when a direct
+ *     method skipped the card. The success reply names the account they have
+ *     just signed in and says the owner's agent now runs on it.
  *   - The code is never logged, echoed or replied. Log lines about the URL
  *     carry its origin and path only, never the query (state, challenge).
  *     Child stderr is passed through redactLoginText before it is logged or
  *     replied.
  *   - One login in flight per daemon (there is one credential store).
  *   - awaiting_code times out at LOGIN_CODE_WINDOW_MS and kills the child.
- *   - A message that is not a plausible code is not consumed: the owner is
+ *   - A message that is not a plausible code is not consumed: the starter is
  *     told, the message goes on its normal way, the window stays open.
  *   - A message that CARRIES a code is never passed on, in any phase: a
  *     re-paste after a failure, a second send, a paste after the window
- *     closed, a code with text around it. carriesSignInCode decides, from the
- *     states of this process's recent attempts (anywhere in the text) and,
- *     for the owner, from a message that is nothing but a code, so the rails
- *     drop it before anything logs or forwards it, and the sender is told
- *     why. Its gap: after a daemon restart the old states are gone, so a code
- *     from before the restart is caught only when it is pasted on its own.
+ *     closed, a code with text around it, a code from someone who did not
+ *     start the sign-in. carriesSignInCode decides, from the states of this
+ *     process's recent attempts (anywhere in the text, from anyone) and, for
+ *     the owner or a person the owner allowed, from a message that is nothing
+ *     but a code, so the rails drop it before anything logs or forwards it,
+ *     and the sender is told why. Its gap: after a daemon restart the old
+ *     states are gone, so a code from before the restart is caught only when
+ *     it is pasted on its own.
  *   - A sign-in is never started from a room or a meeting, where the link
  *     would be posted to every member (isRoomContext).
  *   - One login in flight PER DAEMON. Several agents on one machine can share
@@ -77,11 +98,18 @@
  * a test with fakes rather than read off source text.
  */
 
-import { isOwnerSender, readSlashSender } from './daemon-command-sender.js'
+import {
+  currentDaemonCommandVerdict,
+  isLoginGrantedRecipient,
+  isOwnerSender,
+  mayLoginFromPayload,
+  readSlashSender,
+  type SlashSender,
+} from './daemon-command-sender.js'
 
 // ── timing ───────────────────────────────────────────────────────────────────
 
-/** How long the owner has to paste the code once the URL is out. */
+/** How long whoever started the sign-in has to paste the code once the URL is out. */
 export const LOGIN_CODE_WINDOW_MS = 10 * 60_000
 /** How long the method buttons stay live. Same window: nothing is running yet. */
 export const LOGIN_METHOD_WINDOW_MS = 10 * 60_000
@@ -234,7 +262,7 @@ export function validateAuthCode(raw: unknown, opts: { expectedState?: string | 
   return { ok: true, code: text }
 }
 
-/** What the owner is told about a rejected message. Never quotes the message. */
+/** What the starter is told about a rejected message. Never quotes the message. */
 export function describeCodeRejection(reason: CodeRejection): string {
   const tail =
     'I did not use it, and I am still waiting for the code: paste just the code from the sign-in ' +
@@ -269,19 +297,22 @@ const BARE_CODE = /^[A-Za-z0-9_-]{16,}#[A-Za-z0-9_-]{43}$/
  *
  * Two rules. A state from one of this process's recent attempts, ANYWHERE in
  * the text and from anyone: a code's second half IS that state, and 43 random
- * characters do not occur by accident. And, from the owner only, a message
- * that is a bare code token, which is what covers a paste after a restart,
- * when no state is remembered any more.
+ * characters do not occur by accident. And, from the owner or from a person
+ * the owner allowed to sign the agent in (`fromLoginRecipient`, the grant read
+ * off that same message), a message that is a bare code token, which is what
+ * covers a paste after a restart, when no state is remembered any more. Both
+ * may start a sign-in, so both may hold a code; widening the second rule to
+ * them withholds more, never less.
  */
 export function carriesSignInCode(
   text: unknown,
-  opts: { knownStates?: readonly string[]; fromOwner?: boolean } = {},
+  opts: { knownStates?: readonly string[]; fromOwner?: boolean; fromLoginRecipient?: boolean } = {},
 ): boolean {
   if (typeof text !== 'string' || !text) return false
   for (const state of opts.knownStates ?? []) {
     if (state && state.length >= 16 && text.includes(state)) return true
   }
-  return opts.fromOwner === true && BARE_CODE.test(text.trim())
+  return (opts.fromOwner === true || opts.fromLoginRecipient === true) && BARE_CODE.test(text.trim())
 }
 
 /**
@@ -426,6 +457,20 @@ export function describeAccount(status: AuthStatus): string {
   return status.email ? `${status.email} (${plan})` : plan
 }
 
+/**
+ * Which Claude login a sign-in started by a person the owner allowed changes,
+ * told to them before it starts: on the method card, or with the link when a
+ * direct method skipped the card. The child inherits this daemon's own
+ * environment (buildLoginEnv), so it signs in the credential store the
+ * agent's Claude reads, which is the login the owner runs the agent on, and
+ * every other agent on that computer that reads the same store. A person's
+ * lane never reaches this: lib/lane-slash.ts answers /login there.
+ */
+export const RECIPIENT_LOGIN_SCOPE =
+  "This signs in the Claude login that this agent's owner runs it on: the owner's own chats with this agent, " +
+  'and any other agent on that computer that shares the login, will use the account you sign in with. ' +
+  'The owner allowed you to do this.'
+
 // ── the command's arguments ──────────────────────────────────────────────────
 
 export type LoginArgs =
@@ -479,14 +524,14 @@ export function loginMethodFromCallback(callbackData: string): LoginMethod | nul
 /**
  * idle: nothing running. awaiting_method: the buttons are out. starting: the
  * child is spawned and has not printed its URL yet. awaiting_code: the URL is
- * out and the owner's next message in that chat is the code. verifying: the
+ * out and the starter's next message in that chat is the code. verifying: the
  * code was written and the child is exchanging it. done / failed: the last
  * attempt's outcome, which a new /login may replace.
  *
  * starting and verifying are the two moments a child is running but no
- * message may be taken as the code: before the owner has a URL, and after the
- * one code was used. They are states, rather than flags on awaiting_code, so
- * that "ONLY while awaiting_code" is one comparison.
+ * message may be taken as the code: before the starter has a URL, and after
+ * the one code was used. They are states, rather than flags on awaiting_code,
+ * so that "ONLY while awaiting_code" is one comparison.
  */
 export type LoginPhase =
   | 'idle'
@@ -501,6 +546,12 @@ export interface LoginState {
   phase: LoginPhase
   /** The chat the login belongs to. */
   chatId: string | null
+  /**
+   * The user whose /login opened this sign-in: the owner, or a person the
+   * owner allowed. The card tap, the code and the cancel are bound to them.
+   * Kept after the attempt ends, like chatId; a new /login replaces it.
+   */
+  starterUserId: string | null
   method: LoginMethod | null
   /** When the current phase gives up, or null when it never does. */
   deadlineMs: number | null
@@ -515,6 +566,7 @@ export interface LoginState {
 export const INITIAL_LOGIN_STATE: LoginState = {
   phase: 'idle',
   chatId: null,
+  starterUserId: null,
   method: null,
   deadlineMs: null,
   attempt: 0,
@@ -522,19 +574,27 @@ export const INITIAL_LOGIN_STATE: LoginState = {
   cardMessageId: null,
 }
 
+/**
+ * `starterUserId` and `byUserId` are who is asking, as the controller resolved
+ * it (the owner's id for the owner); `byOwner` says whether that is the owner,
+ * which the reducer cannot tell on its own. `fromStarter` is the controller's
+ * answer for one message: the person who started this sign-in, proven off
+ * that message's own sender fields.
+ */
 export type LoginEvent =
-  | { type: 'open'; chatId: string; nowMs: number }
+  | { type: 'open'; chatId: string; starterUserId: string; byOwner: boolean; nowMs: number }
   | { type: 'card_posted'; messageId: number }
   | { type: 'choose'; chatId: string; method: LoginMethod; nowMs: number }
   | { type: 'url'; attempt: number; url: string; nowMs: number }
-  | { type: 'message'; chatId: string; text: unknown; fromOwner: boolean; isSlash: boolean; nowMs: number }
+  | { type: 'message'; chatId: string; text: unknown; fromStarter: boolean; isSlash: boolean; nowMs: number }
   | { type: 'exit'; attempt: number; code: number | null; stderr: string; nowMs: number }
   | { type: 'tick'; nowMs: number }
-  | { type: 'cancel'; chatId: string }
+  | { type: 'cancel'; chatId: string; byUserId: string | null; byOwner: boolean }
 
 export type LoginEffect =
   | { kind: 'offer'; chatId: string }
-  | { kind: 'busy'; chatId: string; phase: LoginPhase }
+  /** `canCancel`: the asker started the running sign-in, or is the owner. */
+  | { kind: 'busy'; chatId: string; phase: LoginPhase; canCancel: boolean }
   | { kind: 'spawn'; attempt: number; method: LoginMethod }
   | { kind: 'send_url'; chatId: string; url: string }
   | { kind: 'write_code'; attempt: number; code: string }
@@ -545,12 +605,14 @@ export type LoginEffect =
   | { kind: 'timed_out'; chatId: string; phase: LoginPhase }
   | { kind: 'cancelled'; chatId: string }
   | { kind: 'nothing_to_cancel'; chatId: string }
+  /** A cancel from someone who neither started the running sign-in nor owns the agent. */
+  | { kind: 'not_yours'; chatId: string }
 
 /**
  * What a message event meant, for the rail that asked. 'consumed' and
  * 'withheld' both mean the rail must DROP the message: the first was the code,
  * the second carried one and was not used. 'rejected' means it was not a code
- * and goes on its normal way, with the owner told.
+ * and goes on its normal way, with the starter told.
  */
 export type MessageOutcome = 'consumed' | 'withheld' | 'rejected' | 'not_mine'
 
@@ -598,7 +660,10 @@ export function reduceLogin(state: LoginState, event: LoginEvent): LoginTransiti
   switch (event.type) {
     case 'open': {
       if (isLoginInFlight(state.phase)) {
-        return stay([{ kind: 'busy', chatId: event.chatId, phase: state.phase }])
+        // Never rebinds the running sign-in. Whether the asker may stop it
+        // decides only what the busy reply suggests.
+        const canCancel = event.byOwner || event.starterUserId === state.starterUserId
+        return stay([{ kind: 'busy', chatId: event.chatId, phase: state.phase, canCancel }])
       }
       return {
         state: {
@@ -606,6 +671,7 @@ export function reduceLogin(state: LoginState, event: LoginEvent): LoginTransiti
           attempt: state.attempt,
           phase: 'awaiting_method',
           chatId: event.chatId,
+          starterUserId: event.starterUserId,
           deadlineMs: event.nowMs + LOGIN_METHOD_WINDOW_MS,
         },
         effects: [{ kind: 'offer', chatId: event.chatId }],
@@ -648,8 +714,8 @@ export function reduceLogin(state: LoginState, event: LoginEvent): LoginTransiti
     }
 
     case 'message': {
-      // ONLY while awaiting_code, ONLY in that chat, ONLY from the owner.
-      if (state.phase !== 'awaiting_code' || state.chatId !== event.chatId || !event.fromOwner) {
+      // ONLY while awaiting_code, ONLY in that chat, ONLY from the starter.
+      if (state.phase !== 'awaiting_code' || state.chatId !== event.chatId || !event.fromStarter) {
         return stay([], 'not_mine')
       }
       // A slash command is a command, not a code: it goes on to its own route
@@ -706,6 +772,10 @@ export function reduceLogin(state: LoginState, event: LoginEvent): LoginTransiti
 
     case 'cancel': {
       if (!isLoginInFlight(state.phase)) return stay([{ kind: 'nothing_to_cancel', chatId: event.chatId }])
+      // Only whoever started this sign-in may stop it, and the owner, whose
+      // machine it is. Anyone else stops nothing, and is told so.
+      const theirs = event.byUserId !== null && event.byUserId === state.starterUserId
+      if (!theirs && !event.byOwner) return stay([{ kind: 'not_yours', chatId: event.chatId }])
       const effects: LoginEffect[] = []
       if (childRunning(state.phase)) effects.push({ kind: 'kill', attempt: state.attempt })
       effects.push({ kind: 'cancelled', chatId: event.chatId })
@@ -787,8 +857,22 @@ export class LoginController {
     return this.state.chatId
   }
 
+  /** Who the current (or last) sign-in is bound to; null before the first /login. */
+  get starterUserId(): string | null {
+    return this.state.starterUserId
+  }
+
   /**
-   * The owner's /login. Reached only through runDaemonCommand's allow arm.
+   * A /login from the owner or from a person the owner allowed. Reached only
+   * through runDaemonCommand's allow arm.
+   *
+   * WHO is asking is resolved FIRST, before any await, from `opts.starter`
+   * when the caller passes it, else from the verdict runDaemonCommand makes
+   * readable while `act` runs synchronously (currentDaemonCommandVerdict:
+   * server.ts's act does not hand the sender on yet). The owner binds as the
+   * owner, a share recipient carrying the grant binds as themselves, and
+   * anyone else binds to the owner, which is what every sign-in was bound to
+   * before, so nothing here is ever wider than it was.
    *
    * `inRoom` is the sender's relationship read off the same message
    * (`room_member`, which a persistent group stamps on everyone, the owner
@@ -797,10 +881,16 @@ export class LoginController {
    * backend does not attribute, could come from any of them. Cancelling is
    * still allowed there, because it only ever takes something away.
    */
-  async command(chatId: string, rawArgs: string, opts: { inRoom?: boolean } = {}): Promise<void> {
+  async command(
+    chatId: string,
+    rawArgs: string,
+    opts: { inRoom?: boolean; starter?: SlashSender } = {},
+  ): Promise<void> {
+    const by = this.resolveStarter(opts.starter ?? this.ambientStarter())
+    const byOwner = by === this.deps.ownerUserId
     const args = parseLoginArgs(rawArgs)
     if (args.kind === 'cancel') {
-      this.dispatch({ type: 'cancel', chatId })
+      this.dispatch({ type: 'cancel', chatId, byUserId: by, byOwner })
       return
     }
     if (opts.inRoom) {
@@ -827,16 +917,62 @@ export class LoginController {
       )
       return
     }
-    if (args.kind === 'method' && this.state.phase === 'awaiting_method' && this.state.chatId === chatId) {
+    // A direct method picks for the open offer only when its starter sends it,
+    // from the chat the offer went to. Anyone else falls through to 'open',
+    // which is the busy reply, and starts nothing.
+    if (
+      args.kind === 'method' &&
+      this.state.phase === 'awaiting_method' &&
+      this.state.chatId === chatId &&
+      this.state.starterUserId === by
+    ) {
       this.dispatch({ type: 'choose', chatId, method: args.method, nowMs: this.deps.now() })
       return
     }
-    this.dispatch({ type: 'open', chatId, nowMs: this.deps.now() }, args.kind === 'method' ? args.method : null)
+    this.dispatch(
+      { type: 'open', chatId, starterUserId: by, byOwner, nowMs: this.deps.now() },
+      args.kind === 'method' ? args.method : null,
+    )
+  }
+
+  /**
+   * The sender of the /login whose act is running now, off the seam's verdict.
+   * A non owner is taken only from a verdict that carries the login grant,
+   * which only a /login judged by lib/daemon-command-sender.ts can carry, so a
+   * verdict for some other command can never stand in for one.
+   */
+  private ambientStarter(): SlashSender | null {
+    const verdict = currentDaemonCommandVerdict()
+    if (verdict === null) return null
+    if (verdict.audience === 'owner' || verdict.grant === 'login_recipient') return verdict.sender
+    return null
+  }
+
+  /** The id a sign-in is bound to: the owner's, or an allowed recipient's own. */
+  private resolveStarter(sender: SlashSender | null): string {
+    const owner = this.deps.ownerUserId
+    if (sender === null || isOwnerSender(sender, owner)) return owner
+    if (isLoginGrantedRecipient(sender, owner) && sender.userId !== null) return sender.userId
+    return owner
   }
 
   /**
    * A button tap. 'consumed' means it was this daemon's login card (or a login
    * chip) and the rail must not forward it to the model.
+   *
+   * Bound to the starter, null aware, the plan card's rule: a tap that NAMES
+   * someone other than the person who started this sign-in is refused, logged
+   * and consumed; an unstamped tap is taken, because the card went only to the
+   * starter's own chat.
+   *
+   * The gap, stated: server.ts passes senderUserIdCandidate of the answer
+   * payload, not the tapper the backend stamps as `answeredByUserId`
+   * (readTapperUserId in lib/inbound-channel.ts), so nearly every tap arrives
+   * unstamped and a stamped tapper id is not seen here until the follow up
+   * after PR #262 releases server.ts. That cannot complete a sign-in for
+   * anyone else: a tap only picks the method and starts the child, whose link
+   * goes to the starter's chat, and the one code the child needs is taken only
+   * from a message whose OWN sender fields name the starter (message()).
    */
   button(input: {
     chatId: string
@@ -848,16 +984,18 @@ export class LoginController {
     const method = loginMethodFromCallback(input.callbackData)
     const onCard = this.state.cardMessageId !== null && this.state.cardMessageId === input.messageId
     if (method === null && !onCard) return 'not_mine'
-    // Null aware, the plan card's rule: a tap that NAMES someone else is
-    // refused; an unstamped tap, which is every tap on today's backend, is
-    // taken, because the card went only to the owner's chat.
-    if (input.clickerUserId !== null && input.clickerUserId !== this.deps.ownerUserId) {
-      this.deps.log(`/login: ignoring a tap on message ${input.messageId} from someone other than the owner`)
+    const starter = this.state.starterUserId ?? this.deps.ownerUserId
+    if (input.clickerUserId !== null && input.clickerUserId !== starter) {
+      this.deps.log(
+        `/login: ignoring a tap on message ${input.messageId} from someone other than whoever started this sign-in`,
+      )
       return 'consumed'
     }
     if (method === null) {
-      // Skip or a custom reply on the login card: the owner backed out.
-      if (this.state.phase === 'awaiting_method') this.dispatch({ type: 'cancel', chatId: input.chatId })
+      // Skip or a custom reply on the login card: whoever started it backed out.
+      if (this.state.phase === 'awaiting_method') {
+        this.dispatch({ type: 'cancel', chatId: input.chatId, byUserId: starter, byOwner: false })
+      }
       return 'consumed'
     }
     // The tap must be on THE card of the open offer, once its id is known: a
@@ -889,16 +1027,25 @@ export class LoginController {
     // matched: one such id would otherwise stand for every later one.
     const trackable = Number.isFinite(Number(input.messageId)) && id !== ''
     if (trackable && this.consumedIds.has(id)) return 'consumed'
-    const fromOwner =
-      input.fromHuman && isOwnerSender(readSlashSender(input.payload), this.deps.ownerUserId)
+    const owner = this.deps.ownerUserId
+    const sender = readSlashSender(input.payload)
+    const fromOwner = input.fromHuman && isOwnerSender(sender, owner)
+    // A person the owner allowed, read off THIS message: the backend stamps
+    // the grant per message, so a revoke between /login and the paste leaves
+    // it off the paste, and the code is not taken.
+    const fromLoginRecipient = input.fromHuman && !fromOwner && mayLoginFromPayload(input.payload, owner)
+    const starter = this.state.starterUserId
+    const fromStarter =
+      starter === null ? false : starter === owner ? fromOwner : fromLoginRecipient && sender.userId === starter
     const carries =
-      input.fromHuman && carriesSignInCode(input.text, { knownStates: this.knownStates(), fromOwner })
+      input.fromHuman &&
+      carriesSignInCode(input.text, { knownStates: this.knownStates(), fromOwner, fromLoginRecipient })
     if (this.state.phase === 'awaiting_code') {
       const t = reduceLogin(this.state, {
         type: 'message',
         chatId: input.chatId,
         text: input.text,
-        fromOwner,
+        fromStarter,
         isSlash: input.isSlash,
         nowMs: this.deps.now(),
       })
@@ -912,8 +1059,8 @@ export class LoginController {
           this.apply(t)
           return 'rejected'
         }
-        // The owner's message carries the code but is not just the code (text
-        // around it, a stray space). Not used, and NOT passed on.
+        // The starter's message carries the code but is not just the code
+        // (text around it, a stray space). Not used, and NOT passed on.
         const reason = t.effects.find((e) => e.kind === 'reject_code')
         this.deps.log(`/login: a message in chat ${input.chatId} carried a code with other text; withheld`)
         void this.reply(
@@ -929,29 +1076,33 @@ export class LoginController {
     }
     if (!carries) return 'not_mine'
     // A code outside its window: a re-paste after a failure, a second send, a
-    // paste after the timeout, or from someone who is not the owner. Never
+    // paste after the timeout, or from someone who did not start the sign-in
+    // (the owner included, when a person the owner allowed started it). Never
     // passed on.
     this.deps.log(`/login: a message in chat ${input.chatId} looked like a sign-in code outside a sign-in; withheld`)
     const phase = this.state.phase
     const elsewhere = this.state.chatId !== null && this.state.chatId !== input.chatId
     if (trackable) this.remember(id)
-    if (!fromOwner) {
-      // Only a remembered state gets here for a non-owner. They cannot run
-      // /login, so they are told only why their message went nowhere.
+    if (!fromOwner && !fromLoginRecipient) {
+      // Only a remembered state gets here for them. They cannot run /login,
+      // so they are told only why their message went nowhere.
       void this.reply(input.chatId, 'That message was not passed on to the agent: it contains a sign-in code.')
       return 'withheld'
     }
     void this.reply(
       input.chatId,
-      phase === 'verifying' && !elsewhere
+      phase === 'verifying' && !elsewhere && fromStarter
         ? 'That looks like a sign-in code. I am already checking the one you sent, so I did not use this one and did not pass it on.'
-        : phase === 'awaiting_code' && elsewhere
-          ? 'That looks like a sign-in code, so I did not pass it on. The sign-in waiting for a code was started in ' +
-              'another chat with this agent: paste it there.'
-          : phase === 'awaiting_code'
-            ? 'That looks like a sign-in code, so I did not pass it on.'
-            : 'That looks like a sign-in code, so I did not pass it on to the agent. No sign-in is waiting for a code ' +
-                'right now: send /login to start one. A code only works with the link it came from.',
+        : isLoginInFlight(phase) && !fromStarter
+          ? 'That looks like a sign-in code, so I did not pass it on. The sign-in running on this agent was started ' +
+              'by someone else, and only a code from them is used.'
+          : phase === 'awaiting_code' && elsewhere
+            ? 'That looks like a sign-in code, so I did not pass it on. The sign-in waiting for a code was started in ' +
+                'another chat with this agent: paste it there.'
+            : phase === 'awaiting_code'
+              ? 'That looks like a sign-in code, so I did not pass it on.'
+              : 'That looks like a sign-in code, so I did not pass it on to the agent. No sign-in is waiting for a code ' +
+                  'right now: send /login to start one. A code only works with the link it came from.',
     )
     return 'withheld'
   }
@@ -1016,7 +1167,7 @@ export class LoginController {
     switch (effect.kind) {
       case 'offer':
         if (directMethod) {
-          // `/login console`: the owner already chose, so there is no card.
+          // `/login console`: whoever asked already chose, so there is no card.
           log(`/login: ${directMethod} sign-in requested directly (chat ${effect.chatId})`)
           this.dispatch({ type: 'choose', chatId: effect.chatId, method: directMethod, nowMs: this.deps.now() })
           return
@@ -1026,8 +1177,11 @@ export class LoginController {
       case 'busy':
         void this.reply(
           effect.chatId,
-          `A sign-in is already running (${describePhase(effect.phase)}). Only one can run at a time. ` +
-            'Send /login cancel to stop it, then /login to start again.',
+          effect.canCancel
+            ? `A sign-in is already running (${describePhase(effect.phase)}). Only one can run at a time. ` +
+                'Send /login cancel to stop it, then /login to start again.'
+            : `A sign-in is already running (${describePhase(effect.phase)}). Only one can run at a time, and ` +
+                "only the person who started it, or this agent's owner, can stop it. Send /login again once it has finished.",
         )
         return
       case 'spawn':
@@ -1037,9 +1191,17 @@ export class LoginController {
         const state = loginUrlState(effect.url)
         if (state) this.recentStates.set(state, this.deps.now() + RECENT_STATE_TTL_MS)
         log(`/login: sign-in URL relayed to chat ${effect.chatId}: ${describeUrlForLog(effect.url)}`)
+        // A person the owner allowed who picked the method directly saw no
+        // card, so the link says which login it signs in; after a card it
+        // does not repeat it.
+        const scope =
+          this.state.starterUserId !== this.deps.ownerUserId && this.state.cardMessageId === null
+            ? [RECIPIENT_LOGIN_SCOPE, '']
+            : []
         void this.reply(
           effect.chatId,
           [
+            ...scope,
             'Open this link, sign in, and paste the code the page shows back here as your next message:',
             '',
             effect.url,
@@ -1054,7 +1216,9 @@ export class LoginController {
         // The ONE place the code goes: the child's stdin. Not logged, not echoed.
         const hash = effect.code.indexOf('#')
         this.secrets.push(effect.code, effect.code.slice(0, hash), effect.code.slice(hash + 1))
-        log(`/login: a code was received from the owner and written to the sign-in process (attempt ${effect.attempt})`)
+        log(
+          `/login: a code was received from whoever started this sign-in and written to the sign-in process (attempt ${effect.attempt})`,
+        )
         try {
           this.child?.write(`${effect.code}\n`)
         } catch (err) {
@@ -1112,21 +1276,29 @@ export class LoginController {
         return
       }
       case 'cancelled':
-        log(`/login: cancelled by the owner (chat ${effect.chatId})`)
+        log(`/login: cancelled from chat ${effect.chatId}, by whoever started it or the owner`)
         this.secrets = []
         void this.reply(effect.chatId, 'Sign-in cancelled. Nothing was changed.')
         return
       case 'nothing_to_cancel':
         void this.reply(effect.chatId, 'No sign-in is running.')
         return
+      case 'not_yours':
+        log(`/login: a cancel from chat ${effect.chatId} stopped nothing: someone else started the running sign-in`)
+        void this.reply(effect.chatId, 'No sign-in that you started is running, so nothing was stopped.')
+        return
     }
   }
 
   private async offer(chatId: string): Promise<void> {
     const seq = ++this.offerSeq
+    // Whose offer this is, read with the offer, before the await. The account
+    // the agent runs on is the owner's business: a starter who is not the
+    // owner is told only WHETHER the agent is signed in, never as whom.
+    const forOwner = this.state.starterUserId === this.deps.ownerUserId
     const status = await this.deps.readAuthStatus().catch(() => null)
-    // The owner may have cancelled, or the offer expired, while the status was
-    // read; or cancelled and asked again, which started a NEWER offer that
+    // The starter may have cancelled, or the offer expired, while the status
+    // was read; or cancelled and asked again, which started a NEWER offer that
     // posts its own card. Only the latest offer may post.
     if (seq !== this.offerSeq) return
     if (this.state.phase !== 'awaiting_method' || this.state.chatId !== chatId) return
@@ -1135,9 +1307,11 @@ export class LoginController {
     const lead = !status
       ? 'I could not read whether this agent is signed in. Pick how to sign in.'
       : status.loggedIn
-        ? `This agent is already signed in as ${describeAccount(status)}. Sign in again anyway? Pick a method.`
+        ? forOwner
+          ? `This agent is already signed in as ${describeAccount(status)}. Sign in again anyway? Pick a method.`
+          : 'This agent is already signed in. Sign in again anyway? Pick a method.'
         : 'This agent is not signed in. Pick how to sign in.'
-    const text = `${lead}\n\n${consoleNote}`
+    const text = forOwner ? `${lead}\n\n${consoleNote}` : `${lead}\n\n${RECIPIENT_LOGIN_SCOPE}\n\n${consoleNote}`
     const messageId = await this.reply(chatId, text, LOGIN_METHOD_BUTTONS)
     if (messageId !== null) this.dispatch({ type: 'card_posted', messageId })
   }
@@ -1185,6 +1359,8 @@ export class LoginController {
 
   private async reportSuccess(chatId: string): Promise<void> {
     this.secrets = []
+    // Who signed in, read before the await: a new /login may rebind it meanwhile.
+    const forOwner = this.state.starterUserId === this.deps.ownerUserId
     const status = await this.deps.readAuthStatus().catch(() => null)
     this.deps.log(`/login: sign-in succeeded (chat ${chatId}, method ${status?.authMethod ?? 'unknown'})`)
     if (!status?.loggedIn) {
@@ -1197,9 +1373,14 @@ export class LoginController {
     const warn = isSubscriptionAuthMethod(status.authMethod)
       ? ''
       : '\n\nThis is not a Claude subscription sign-in, so HOAI chat messages may not reach the agent. Send /login and pick Claude subscription to switch.'
+    // A person the owner allowed is told the account they just signed in, and
+    // that the owner's agent now runs on it; only the owner can restart it.
     await this.reply(
       chatId,
-      `Signed in as ${describeAccount(status)}. If the agent still says it is logged out, restart it.${warn}`,
+      forOwner
+        ? `Signed in as ${describeAccount(status)}. If the agent still says it is logged out, restart it.${warn}`
+        : `Signed in as ${describeAccount(status)}. This agent's owner now runs it on that account too. ` +
+            `If the agent still says it is logged out, ask its owner to restart it.${warn}`,
     )
   }
 
