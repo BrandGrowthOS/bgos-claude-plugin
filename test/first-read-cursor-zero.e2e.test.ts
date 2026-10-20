@@ -21,11 +21,7 @@
  *      Reading the chat at once narrows that; the chat's live floor (every row
  *      from the first live message up is owed) closes it, for a read that
  *      fails and for a chat the inbox does not list yet as well.
- *   4. In any chat, a live message moved the cursor over an empty wake card
- *      (body not landed yet) that a read had returned and parked under. The
- *      live bump parks under it now, but not under one older than 10 minutes
- *      (a first write whose body never came), or it would pin the cursor.
- *   5. A meeting message the socket delivered as meeting_message noted no live
+ *   4. A meeting message the socket delivered as meeting_message noted no live
  *      floor, so the agent's meeting reply still ended the first read's walk
  *      back.
  *
@@ -738,116 +734,6 @@ describe('a chat first read at cursor 0 forwards every row it reaches, once', { 
       await forceRead(w.backend, MAIN)
       await settle(() => d.cards, MAIN, ids(101, 114))
       assert.deepEqual(delivered(d.cards, MAIN), ids(101, 114))
-    } finally {
-      await w.end()
-    }
-  })
-
-  for (const variant of [
-    { name: 'sent just now', sentDate: () => new Date().toISOString() as string | undefined },
-    { name: 'with no sent date', sentDate: () => undefined },
-  ]) {
-    test(`a primed chat: a read returned a wake card whose body had not landed (${variant.name}), a live message does not move the cursor over it`, OPTS, async () => {
-      const w = await world({ '999': 5, [MAIN]: 100 })
-      try {
-        primedHistory(w)
-        const d = await w.boot()
-        await quietAfterBoot(w.backend, MAIN)
-        // A scheduler wake card in its first write: the row exists, its body
-        // does not yet. The read returns it and parks the cursor under it.
-        const wake: Row = { id: 101, chatId: MAIN, sender: 'system', text: '', messageType: 'event' }
-        const sentDate = variant.sentDate()
-        if (sentDate) wake.sentDate = sentDate
-        w.backend.rows.push(wake)
-        await forceRead(w.backend, MAIN)
-        assert.ok(w.backend.readsOf(MAIN).some((r) => r.ids.includes(101)), 'a read returned the empty wake card')
-        await sleep(500)
-        await waitFor(() => w.backend.connected() > 0, 'the socket to be back')
-        w.backend.pushLive(ownerRow(MAIN, 102))
-        await waitFor(() => d.cards.some((c) => c.messageId === 102), 'the live card')
-        assert.equal(cardOf(d.cards, 102)?.transport, 'ws', 'the live message came over the socket, so it bumped the cursor')
-        // The body lands (same row id), and the next read must pick it up.
-        wake.text = 'wake: check the build'
-        await forceRead(w.backend, MAIN)
-        await settle(() => d.cards, MAIN, [101, 102])
-        assert.deepEqual(delivered(d.cards, MAIN), [101, 102])
-        assert.match(cardOf(d.cards, 101)?.content ?? '', /wake: check the build/)
-      } finally {
-        await w.end()
-      }
-    })
-  }
-
-  test('a primed chat: a wake card that turns 10 minutes old while still empty stops holding the cursor, so a restart hands no answered message over again', OPTS, async () => {
-    const w = await world({ '999': 5, [MAIN]: 100 })
-    try {
-      primedHistory(w)
-      const first = await w.boot()
-      await quietAfterBoot(w.backend, MAIN)
-      // A first write 9 min 15 s old whose body never lands: the read
-      // returns it and parks under it, and live messages that arrive while it
-      // is under 10 minutes old park under it too.
-      const sentMs = Date.now() - (9 * 60_000 + 15_000)
-      w.backend.rows.push({ id: 101, chatId: MAIN, sender: 'system', text: '', messageType: 'event', sentDate: new Date(sentMs).toISOString() })
-      await forceRead(w.backend, MAIN)
-      assert.ok(w.backend.readsOf(MAIN).some((r) => r.ids.includes(101)), 'a read returned the empty wake card')
-      await sleep(500)
-      await waitFor(() => w.backend.connected() > 0, 'the socket to be back')
-      w.backend.pushLive(ownerRow(MAIN, 102))
-      await waitFor(() => first.cards.some((c) => c.messageId === 102), 'the first live card')
-      w.backend.rows.push(replyRow(MAIN, 103))
-      w.backend.pushLive(ownerRow(MAIN, 104))
-      await waitFor(() => first.cards.some((c) => c.messageId === 104), 'the second live card')
-      w.backend.rows.push(replyRow(MAIN, 105))
-      assert.ok(Date.now() - sentMs < 10 * 60_000, 'both live messages arrived while the card was under 10 minutes old')
-      // The card turns 10 minutes old, still empty, and the chat is read
-      // again. Then the restart.
-      await sleep(Math.max(0, sentMs + 10 * 60_000 + 2_000 - Date.now()))
-      await forceRead(w.backend, MAIN)
-      await first.client.callTool({ name: 'channel_ack', arguments: {} })
-      await first.stop()
-      const before = w.backend.readsOf(MAIN).length
-      const second = await w.boot()
-      await waitQuietly(() => w.backend.readsOf(MAIN).length > before, 30_000)
-      const both = () => [...first.cards, ...second.cards]
-      await settle(both, MAIN, [102, 104])
-      assert.deepEqual(delivered(both(), MAIN), [102, 104])
-    } finally {
-      await w.end()
-    }
-  })
-
-  test('a primed chat: a wake card whose body never came does not pin the cursor, so a restart hands no answered message over again', OPTS, async () => {
-    const w = await world({ '999': 5, [MAIN]: 100 })
-    try {
-      primedHistory(w)
-      const first = await w.boot()
-      await quietAfterBoot(w.backend, MAIN)
-      // A first write eleven minutes old whose body never landed. The read
-      // returns it and the poll parks under it, as it always has.
-      const elevenMinutesAgo = new Date(Date.now() - 11 * 60_000).toISOString()
-      w.backend.rows.push({ id: 101, chatId: MAIN, sender: 'system', text: '', messageType: 'event', sentDate: elevenMinutesAgo })
-      await forceRead(w.backend, MAIN)
-      assert.ok(w.backend.readsOf(MAIN).some((r) => r.ids.includes(101)), 'a read returned the abandoned wake card')
-      await sleep(500)
-      // Two live messages, each answered.
-      await waitFor(() => w.backend.connected() > 0, 'the socket to be back')
-      w.backend.pushLive(ownerRow(MAIN, 102))
-      await waitFor(() => first.cards.some((c) => c.messageId === 102), 'the first live card')
-      w.backend.rows.push(replyRow(MAIN, 103))
-      w.backend.pushLive(ownerRow(MAIN, 104))
-      await waitFor(() => first.cards.some((c) => c.messageId === 104), 'the second live card')
-      w.backend.rows.push(replyRow(MAIN, 105))
-      assert.equal(cardOf(first.cards, 102)?.transport, 'ws')
-      assert.equal(cardOf(first.cards, 104)?.transport, 'ws')
-      await first.client.callTool({ name: 'channel_ack', arguments: {} })
-      await first.stop()
-      const before = w.backend.readsOf(MAIN).length
-      const second = await w.boot()
-      await waitQuietly(() => w.backend.readsOf(MAIN).length > before, 30_000)
-      const both = () => [...first.cards, ...second.cards]
-      await settle(both, MAIN, [102, 104])
-      assert.deepEqual(delivered(both(), MAIN), [102, 104])
     } finally {
       await w.end()
     }

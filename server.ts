@@ -8122,16 +8122,6 @@ const chatsPolledSinceBoot = new Set<string>()
 // any read of the chat succeeds still loses it.
 const chatLiveFloor = new Map<string, number>()
 
-// Per chat, the empty wake rows (body not landed yet) the chat's last poll
-// parked its cursor under, with their sent dates. The socket's cursor bump
-// parks under them too, so a live message cannot move the cursor over a row a
-// read returned but could not forward yet (0.71.10). Not under one older than
-// FIRST_RUN_RECENT_WINDOW_MS: that is a first write whose body never came, and
-// the poll stops parking under it as well (the pending rows in pollChat's
-// cursor advance), since parking under it pinned the cursor there and every
-// restart handed the answered messages above it to the agent again.
-const chatParkedPendingIds = new Map<string, Array<{ id: number; sentMs: number | null }>>()
-
 // Chats with a read in flight that a live message started (deliverWsInbound):
 // a burst of live messages into a chat nobody has read yet starts one read.
 const liveReadsInFlight = new Set<string>()
@@ -11124,23 +11114,13 @@ async function pollChat(chatId: string): Promise<void> {
     // below the chat's dormant tail and route that tail through the ungated
     // delta branch one poll later, defeating the gate. Abandoned rows do not
     // park; rows of unknown age still do (could be a live scheduler race).
-    //
-    // And on EVERY poll (0.71.10), a pending-empty row affirmatively older
-    // than that same window NOW is abandoned too, and stops holding the
-    // cursor. The live bump parks under these rows as well (see
-    // chatParkedPendingIds), so without this rule a first write whose body
-    // never came kept the cursor under every live message that arrived while
-    // it was fresh, and each restart handed those, answered, to the agent
-    // again. Keep in lockstep with test/first-poll-gate.test.ts
-    // (parkedPendingIds).
+    // Keep in lockstep with test/first-poll-gate.test.ts (parkedPendingIds).
     const gatedFirstPoll = lastSeen === 0 && FIRST_POLL_RECENT_CUTOFF_MS !== null
-    const pollNowMs = Date.now()
     const pendingIds = ordered
       .filter(isPendingEmptySystem)
       .filter((m) => {
-        const t = sentDateToMs(m.message.sentDate)
-        if (t !== null && pollNowMs - t > FIRST_RUN_RECENT_WINDOW_MS) return false
         if (!gatedFirstPoll) return true
+        const t = sentDateToMs(m.message.sentDate)
         return t === null || t >= FIRST_POLL_RECENT_CUTOFF_MS
       })
       .map((m) => m.message.id)
@@ -11148,13 +11128,6 @@ async function pollChat(chatId: string): Promise<void> {
       chatId,
       advanceCursor({ lastSeen, maxId, pendingEmptyIds: pendingIds }),
     )
-    // What the socket's cursor bump must park under as well (0.71.10). Only
-    // rows above the old cursor: a delta read never returns the ones below.
-    const parked = ordered
-      .filter((m) => m.message.id > lastSeen && pendingIds.includes(m.message.id))
-      .map((m) => ({ id: m.message.id, sentMs: sentDateToMs(m.message.sentDate) }))
-    if (parked.length) chatParkedPendingIds.set(chatId, parked)
-    else chatParkedPendingIds.delete(chatId)
 
     // Only now (everything processed without throwing) does this chat's boot
     // poll count as done; an error path retries as a boot poll so offline
@@ -11190,10 +11163,8 @@ async function pollAllChats(): Promise<void> {
 //
 // Existing `pollChat` flow stays in place; it's the cold-start backfill +
 // reliability fallback. A WS-pushed message moves `chatLastSeen` only once
-// the chat's boot poll has completed (deliverWsInbound, wsCursorSafe), and
-// parks under any empty wake row that poll parked under unless it is older
-// than FIRST_RUN_RECENT_WINDOW_MS (see chatParkedPendingIds); before that the
-// chat is read instead (0.71.10). Meeting WS events do not move
+// the chat's boot poll has completed (deliverWsInbound, wsCursorSafe);
+// before that the chat is read instead (0.71.10). Meeting WS events do not move
 // `chatLastSeen` at all. What keeps a later poll from handing a pushed
 // message over again is the bounded forwarded-id Set below, which both
 // transports read and write (slash deliveries included, so a delayed WS frame
@@ -13191,28 +13162,6 @@ function advanceStreamChatCursor(chatId: string, messageId: number): void {
 }
 
 /**
- * The socket's per-chat cursor bump (deliverWsInbound), for a chat whose boot
- * poll has completed: parks under the empty wake rows that poll parked under,
- * as the poll and the stream do, so a live message cannot move the cursor
- * over a row a read returned but could not forward yet. Abandoned ones (see
- * chatParkedPendingIds) do not hold it (0.71.10).
- */
-function advanceLiveChatCursor(chatId: string, messageId: number): void {
-  const nowMs = Date.now()
-  const parked = (chatParkedPendingIds.get(chatId) ?? [])
-    .filter((row) => row.sentMs === null || nowMs - row.sentMs <= FIRST_RUN_RECENT_WINDOW_MS)
-    .map((row) => row.id)
-  advanceChatCursor(
-    chatId,
-    advanceCursor({
-      lastSeen: chatLastSeen.get(chatId) ?? 0,
-      maxId: messageId,
-      pendingEmptyIds: parked,
-    }),
-  )
-}
-
-/**
  * A live delivery into a chat whose cursor the socket could not move (the
  * chat's boot poll had not completed): lower the chat's live floor to it (see
  * chatLiveFloor). Both socket lanes call this, inbound_message and
@@ -14560,7 +14509,7 @@ function connectWebsocket(): void {
           chatsPolledSinceBoot.has(chatId) ||
           streamCoveredChats.has(chatId)
         if (wsCursorSafe) {
-          advanceLiveChatCursor(chatId, messageId)
+          advanceChatCursor(chatId, messageId)
         } else {
           noteLiveFloor(chatId, messageId)
           if (monitoredChatIds.includes(chatId) && !liveReadsInFlight.has(chatId)) {

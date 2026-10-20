@@ -675,7 +675,6 @@ function compile(source: string, name: string, extra: Record<string, unknown> = 
     chatsPolledSinceBoot: new Set([CHAT]),
     streamCoveredChats: new Set<string>(),
     chatLiveFloor: new Map<string, number>(),
-    chatParkedPendingIds: new Map<string, Array<{ id: number; sentMs: number | null }>>(),
     liveReadsInFlight: new Set<string>(),
     chatLastSeen: new Map([[CHAT, 9000]]),
     chatUnansweredButtons: new Map(),
