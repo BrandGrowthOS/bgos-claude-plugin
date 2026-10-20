@@ -22,7 +22,12 @@
  *      from the first live message up is owed) closes it, for a read that
  *      fails and for a chat the inbox does not list yet as well.
  *   4. In any chat, a live message moved the cursor over an empty wake card
- *      (body not landed yet) that a read had returned and parked under.
+ *      (body not landed yet) that a read had returned and parked under. The
+ *      live bump parks under it now, but not under one older than 10 minutes
+ *      (a first write whose body never came), or it would pin the cursor.
+ *   5. A meeting message the socket delivered as meeting_message noted no live
+ *      floor, so the agent's meeting reply still ended the first read's walk
+ *      back.
  *
  * The rule every case here checks: each row a chat read reaches is forwarded
  * exactly once, whether the chat was empty at boot or primed, after a live
@@ -128,6 +133,10 @@ interface Backend {
   holdNextRead: (chatId: number, during: () => Promise<void>) => void
   /** Answer the NEXT poll read of a chat with a 500. */
   failNextRead: (chatId: number) => void
+  /** Holds not used yet, failures not served yet, and errors thrown inside a hold. */
+  pending: () => { holds: number; failures: number; holdErrors: string[] }
+  /** Emit any socket event to the daemon. */
+  emit: (event: string, payload: Record<string, unknown>) => void
   refuseSocket: (refuse: boolean) => void
   connected: () => number
   /** Store a row and push it live, as the backend does for a new message. */
@@ -145,6 +154,7 @@ async function startBackend(): Promise<Backend> {
   const started = new Map<number, number>()
   const holds = new Map<number, () => Promise<void>>()
   const failures = new Set<number>()
+  const holdErrors: string[] = []
   let refuse = false
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -167,7 +177,12 @@ async function startBackend(): Promise<Backend> {
       const hold = isPoll ? holds.get(chatId) : undefined
       if (hold) {
         holds.delete(chatId)
-        await hold()
+        // A hold that throws must still let the read be answered, or the
+        // daemon waits on it and the file never ends; the test then fails on
+        // the recorded error.
+        await hold().catch((err: unknown) => {
+          holdErrors.push(String(err))
+        })
       }
       if (isPoll && failures.delete(chatId)) return json({ message: 'stand in failure' }, 500)
       const afterParam = url.searchParams.get('afterId')
@@ -204,6 +219,10 @@ async function startBackend(): Promise<Backend> {
     },
     failNextRead: (chatId) => {
       failures.add(chatId)
+    },
+    pending: () => ({ holds: holds.size, failures: failures.size, holdErrors: [...holdErrors] }),
+    emit: (event, payload) => {
+      io.emit(event, payload)
     },
     refuseSocket: (value) => {
       refuse = value
@@ -261,6 +280,7 @@ interface Card {
   chatId: number
   messageId: number
   transport: string
+  content: string
 }
 
 interface Daemon {
@@ -297,8 +317,9 @@ async function startDaemon(rig: Rig): Promise<Daemon> {
   const client = new Client({ name: 'claude-code-stand-in', version: '0.0.0' }, { capabilities: {} })
   client.fallbackNotificationHandler = async (n) => {
     if (n.method !== 'notifications/claude/channel') return
-    const meta = ((n.params as { meta?: Record<string, string> } | undefined)?.meta ?? {})
-    cards.push({ chatId: Number(meta.chat_id), messageId: Number(meta.message_id), transport: String(meta.transport) })
+    const params = (n.params ?? {}) as { meta?: Record<string, string>; content?: unknown }
+    const meta = params.meta ?? {}
+    cards.push({ chatId: Number(meta.chat_id), messageId: Number(meta.message_id), transport: String(meta.transport), content: String(params.content ?? '') })
   }
   try {
     await client.connect(transport)
@@ -343,6 +364,27 @@ async function quietAfterBoot(backend: Backend, chatId: number): Promise<void> {
   await sleep(300)
 }
 
+/**
+ * Make the daemon read: drop its socket, and wait (quietly) until a read of
+ * the chat has been answered after that, so an exactly-once check below also
+ * covers whatever that read hands over.
+ */
+async function forceRead(backend: Backend, chatId: number, ms = 30_000): Promise<void> {
+  const before = backend.readsOf(chatId).length
+  backend.cutSocket()
+  await waitQuietly(() => backend.readsOf(chatId).length > before, ms)
+}
+
+/** Every hold and planned failure was used, and no hold threw. */
+function assertHarnessRan(backend: Backend): void {
+  assert.deepEqual(backend.pending(), { holds: 0, failures: 0, holdErrors: [] }, 'the read hooks of this case all ran')
+}
+
+/** The card a message was handed over in (the first, if a bug sent two). */
+function cardOf(cards: Card[], messageId: number): Card | undefined {
+  return cards.find((c) => c.messageId === messageId)
+}
+
 interface World {
   backend: Backend
   rig: Rig
@@ -377,7 +419,7 @@ describe('a chat first read at cursor 0 forwards every row it reaches, once', { 
       const d = await w.boot()
       await quietAfterBoot(w.backend, MAIN)
       for (const id of ids(101, 114)) w.backend.rows.push(ownerRow(MAIN, id))
-      w.backend.cutSocket()
+      await forceRead(w.backend, MAIN)
       await settle(() => d.cards, MAIN, ids(101, 114))
       assert.deepEqual(delivered(d.cards, MAIN), ids(101, 114))
     } finally {
@@ -396,9 +438,10 @@ describe('a chat first read at cursor 0 forwards every row it reaches, once', { 
         await waitFor(() => d.cards.some((c) => c.messageId === 200), 'the live card')
       })
       for (const id of ids(101, 114)) w.backend.rows.push(ownerRow(MAIN, id))
-      w.backend.cutSocket()
+      await forceRead(w.backend, MAIN)
       await settle(() => d.cards, MAIN, [...ids(101, 114), 200])
       assert.deepEqual(delivered(d.cards, MAIN), [...ids(101, 114), 200])
+      assertHarnessRan(w.backend)
     } finally {
       await w.end()
     }
@@ -415,7 +458,7 @@ describe('a chat first read at cursor 0 forwards every row it reaches, once', { 
       // must not start a read of a chat the inbox does not list.
       w.backend.pushLive(ownerRow(ELSEWHERE, 300))
       await waitFor(() => d.cards.some((c) => c.messageId === 200) && d.cards.some((c) => c.messageId === 300), 'the live cards')
-      w.backend.cutSocket()
+      await forceRead(w.backend, MAIN)
       await settle(() => d.cards, MAIN, [...ids(101, 114), 200])
       assert.deepEqual(delivered(d.cards, MAIN), [...ids(101, 114), 200])
       assert.deepEqual(delivered(d.cards, ELSEWHERE), [300])
@@ -436,9 +479,10 @@ describe('a chat first read at cursor 0 forwards every row it reaches, once', { 
       // A model turn takes at least a second; the answer lands then.
       await sleep(1_000)
       w.backend.rows.push(replyRow(MAIN, 201))
-      w.backend.cutSocket()
+      await forceRead(w.backend, MAIN)
       await settle(() => d.cards, MAIN, [...ids(101, 114), 200])
       assert.deepEqual(delivered(d.cards, MAIN), [...ids(101, 114), 200])
+      assertHarnessRan(w.backend)
     } finally {
       await w.end()
     }
@@ -455,9 +499,10 @@ describe('a chat first read at cursor 0 forwards every row it reaches, once', { 
       await waitFor(() => d.cards.some((c) => c.messageId === 200), 'the live card')
       await sleep(1_000)
       w.backend.rows.push(replyRow(MAIN, 201))
-      w.backend.cutSocket()
+      await forceRead(w.backend, MAIN)
       await settle(() => d.cards, MAIN, [...ids(101, 114), 200])
       assert.deepEqual(delivered(d.cards, MAIN), [...ids(101, 114), 200])
+      assertHarnessRan(w.backend)
     } finally {
       await w.end()
     }
@@ -483,6 +528,7 @@ describe('a chat first read at cursor 0 forwards every row it reaches, once', { 
       await settle(() => d.cards, MAIN, [...ids(101, 114), ...ids(199, 204)])
       assert.deepEqual(delivered(d.cards, MAIN), [...ids(101, 114), ...ids(199, 204)])
       assert.equal(readsStartedDuringBurst, 0, 'one read in flight per chat, not one per live message')
+      assertHarnessRan(w.backend)
     } finally {
       await w.end()
     }
@@ -498,16 +544,25 @@ describe('a chat first read at cursor 0 forwards every row it reaches, once', { 
       // socket comes back and its catch-up read B forwards the 14. Then a row
       // the socket misses lands, and the agent's answer to 114 right after
       // it, before A is answered.
+      let released = false
       w.backend.holdNextRead(MAIN, async () => {
-        w.backend.refuseSocket(false)
-        await waitFor(() => hasAll(d.cards, MAIN, ids(101, 114)), 'the overlapping read to forward the 14', 60_000)
-        w.backend.rows.push(ownerRow(MAIN, 115))
-        w.backend.rows.push(replyRow(MAIN, 116))
+        try {
+          w.backend.refuseSocket(false)
+          await waitFor(() => hasAll(d.cards, MAIN, ids(101, 114)), 'the overlapping read to forward the 14', 60_000)
+          w.backend.rows.push(ownerRow(MAIN, 115))
+          w.backend.rows.push(replyRow(MAIN, 116))
+        } finally {
+          released = true
+        }
       })
       w.backend.refuseSocket(true)
       w.backend.cutSocket()
+      // The socket's reconnect backoff after refused handshakes can take most
+      // of a minute, so wait for read A itself rather than a fixed window.
+      await waitFor(() => released, 'the held read to be released', 90_000)
       await settle(() => d.cards, MAIN, ids(101, 115))
       assert.deepEqual(delivered(d.cards, MAIN), ids(101, 115))
+      assertHarnessRan(w.backend)
     } finally {
       await w.end()
     }
@@ -603,9 +658,44 @@ describe('a chat first read at cursor 0 forwards every row it reaches, once', { 
       // cycle (discoverChats, then every chat) every 10 s.
       w.backend.inbox.push({ id: A2A, assistantId: ASSISTANT_ID, kind: 'a2a' })
       w.backend.refuseSocket(true)
-      w.backend.cutSocket()
+      await forceRead(w.backend, A2A)
       await settle(() => d.cards, A2A, [...ids(101, 105), 200, 202, 203])
       assert.deepEqual(delivered(d.cards, A2A), [...ids(101, 105), 200, 202, 203])
+    } finally {
+      await w.end()
+    }
+  })
+
+  test('a meeting chat the socket delivers into as meeting_message: the rows it missed under the agent\'s reply still arrive', OPTS, async () => {
+    const w = await world()
+    try {
+      const d = await w.boot()
+      await quietAfterBoot(w.backend, MAIN)
+      // Five owner turns the socket misses, then one it delivers as a
+      // meeting_message only (no inbound_message twin), and the agent's reply
+      // to it, written before the daemon's first read of the meeting chat.
+      for (const id of ids(2001, 2005)) w.backend.rows.push(ownerRow(MEETING, id))
+      w.backend.holdNextRead(MEETING, async () => {
+        await waitFor(() => d.cards.some((c) => c.messageId === 2100), 'the meeting card')
+        w.backend.rows.push(replyRow(MEETING, 2101))
+      })
+      w.backend.rows.push(ownerRow(MEETING, 2100))
+      w.backend.emit('meeting_message', {
+        meetingId: 55,
+        chatId: MEETING,
+        messageId: 2100,
+        text: 'owner 2100',
+        senderName: 'Kc',
+        senderType: 'user',
+        senderAssistantId: null,
+        yourTurnFor: [ASSISTANT_ID],
+        currentSpeakerId: null,
+      })
+      // A meeting chat the socket names is read on the daemon's 2 s tick.
+      await waitQuietly(() => w.backend.readsOf(MEETING).length > 0, 30_000)
+      await settle(() => d.cards, MEETING, [...ids(2001, 2005), 2100])
+      assert.deepEqual(delivered(d.cards, MEETING), [...ids(2001, 2005), 2100])
+      assertHarnessRan(w.backend)
     } finally {
       await w.end()
     }
@@ -623,7 +713,7 @@ describe('a chat first read at cursor 0 forwards every row it reaches, once', { 
       const d = await w.boot()
       await quietAfterBoot(w.backend, MAIN)
       for (const id of ids(101, 114)) w.backend.rows.push(ownerRow(MAIN, id))
-      w.backend.cutSocket()
+      await forceRead(w.backend, MAIN)
       await settle(() => d.cards, MAIN, ids(101, 114))
       assert.deepEqual(delivered(d.cards, MAIN), ids(101, 114))
     } finally {
@@ -648,9 +738,71 @@ describe('a chat first read at cursor 0 forwards every row it reaches, once', { 
       await waitFor(() => d.cards.some((c) => c.messageId === 102), 'the live card')
       // The body lands (same row id), and the next read must pick it up.
       wake.text = 'wake: check the build'
-      w.backend.cutSocket()
+      await forceRead(w.backend, MAIN)
       await settle(() => d.cards, MAIN, [101, 102])
       assert.deepEqual(delivered(d.cards, MAIN), [101, 102])
+      assert.match(cardOf(d.cards, 101)?.content ?? '', /wake: check the build/)
+    } finally {
+      await w.end()
+    }
+  })
+
+  test('a primed chat: a wake card whose body never came does not pin the cursor, so a restart hands no answered message over again', OPTS, async () => {
+    const w = await world({ '999': 5, [MAIN]: 100 })
+    try {
+      primedHistory(w)
+      const first = await w.boot()
+      await quietAfterBoot(w.backend, MAIN)
+      // A first write eleven minutes old whose body never landed. The read
+      // returns it and the poll parks under it, as it always has.
+      const elevenMinutesAgo = new Date(Date.now() - 11 * 60_000).toISOString()
+      w.backend.rows.push({ id: 101, chatId: MAIN, sender: 'system', text: '', messageType: 'event', sentDate: elevenMinutesAgo })
+      w.backend.cutSocket()
+      await waitFor(() => w.backend.readsOf(MAIN).some((r) => r.ids.includes(101)), 'a read that returns the abandoned wake card')
+      await sleep(300)
+      // Two live messages, each answered.
+      w.backend.pushLive(ownerRow(MAIN, 102))
+      await waitFor(() => first.cards.some((c) => c.messageId === 102), 'the first live card')
+      w.backend.rows.push(replyRow(MAIN, 103))
+      w.backend.pushLive(ownerRow(MAIN, 104))
+      await waitFor(() => first.cards.some((c) => c.messageId === 104), 'the second live card')
+      w.backend.rows.push(replyRow(MAIN, 105))
+      await first.client.callTool({ name: 'channel_ack', arguments: {} })
+      await first.stop()
+      const before = w.backend.readsOf(MAIN).length
+      const second = await w.boot()
+      await waitQuietly(() => w.backend.readsOf(MAIN).length > before, 30_000)
+      const both = () => [...first.cards, ...second.cards]
+      await settle(both, MAIN, [102, 104])
+      assert.deepEqual(delivered(both(), MAIN), [102, 104])
+    } finally {
+      await w.end()
+    }
+  })
+
+  test('a chat empty at boot: an empty wake card above the live floor waits for its body, then arrives once with it', OPTS, async () => {
+    const w = await world()
+    try {
+      const d = await w.boot()
+      await quietAfterBoot(w.backend, MAIN)
+      for (const id of ids(101, 114)) w.backend.rows.push(ownerRow(MAIN, id))
+      // The read the live message starts fails, so the chat's first read is a
+      // later one, and it finds a wake card above the live floor whose body
+      // has not landed yet.
+      w.backend.failNextRead(MAIN)
+      w.backend.pushLive(ownerRow(MAIN, 200))
+      await waitFor(() => d.cards.some((c) => c.messageId === 200) && w.backend.pending().failures === 0, 'the live card and the failed read')
+      const wake: Row = { id: 201, chatId: MAIN, sender: 'system', text: '', messageType: 'event', sentDate: new Date().toISOString() }
+      w.backend.rows.push(wake)
+      await forceRead(w.backend, MAIN)
+      await settle(() => d.cards, MAIN, ids(101, 114))
+      assert.equal(cardOf(d.cards, 201), undefined, 'an empty wake card is not handed over')
+      wake.text = 'wake: rotate the keys'
+      await forceRead(w.backend, MAIN)
+      await settle(() => d.cards, MAIN, [...ids(101, 114), 200, 201])
+      assert.deepEqual(delivered(d.cards, MAIN), [...ids(101, 114), 200, 201])
+      assert.match(cardOf(d.cards, 201)?.content ?? '', /wake: rotate the keys/)
+      assertHarnessRan(w.backend)
     } finally {
       await w.end()
     }
@@ -668,9 +820,10 @@ describe('a chat first read at cursor 0 forwards every row it reaches, once', { 
         await waitFor(() => d.cards.some((c) => c.messageId === 200), 'the live card')
       })
       for (const id of ids(101, 114)) w.backend.rows.push(ownerRow(MAIN, id))
-      w.backend.cutSocket()
+      await forceRead(w.backend, MAIN)
       await settle(() => d.cards, MAIN, [...ids(101, 114), 200])
       assert.deepEqual(delivered(d.cards, MAIN), [...ids(101, 114), 200])
+      assertHarnessRan(w.backend)
     } finally {
       await w.end()
     }

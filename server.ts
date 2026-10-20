@@ -8123,10 +8123,14 @@ const chatsPolledSinceBoot = new Set<string>()
 const chatLiveFloor = new Map<string, number>()
 
 // Per chat, the empty wake rows (body not landed yet) the chat's last poll
-// parked its cursor under. The socket's cursor bump parks under them too, so
-// a live message cannot move the cursor over a row a read returned but could
-// not forward yet (0.71.10).
-const chatParkedPendingIds = new Map<string, number[]>()
+// parked its cursor under, with their sent dates. The socket's cursor bump
+// parks under them too, so a live message cannot move the cursor over a row a
+// read returned but could not forward yet (0.71.10). Not under one older than
+// FIRST_RUN_RECENT_WINDOW_MS: that is a first write whose body never came (the
+// gated first poll's own name for it), and parking the bump under it pinned
+// the cursor there, so every restart handed the answered messages above it to
+// the agent again.
+const chatParkedPendingIds = new Map<string, Array<{ id: number; sentMs: number | null }>>()
 
 // Chats with a read in flight that a live message started (deliverWsInbound):
 // a burst of live messages into a chat nobody has read yet starts one read.
@@ -11136,7 +11140,9 @@ async function pollChat(chatId: string): Promise<void> {
     )
     // What the socket's cursor bump must park under as well (0.71.10). Only
     // rows above the old cursor: a delta read never returns the ones below.
-    const parked = pendingIds.filter((id) => id > lastSeen)
+    const parked = ordered
+      .filter((m) => m.message.id > lastSeen && pendingIds.includes(m.message.id))
+      .map((m) => ({ id: m.message.id, sentMs: sentDateToMs(m.message.sentDate) }))
     if (parked.length) chatParkedPendingIds.set(chatId, parked)
     else chatParkedPendingIds.delete(chatId)
 
@@ -13177,17 +13183,33 @@ function advanceStreamChatCursor(chatId: string, messageId: number): void {
  * The socket's per-chat cursor bump (deliverWsInbound), for a chat whose boot
  * poll has completed: parks under the empty wake rows that poll parked under,
  * as the poll and the stream do, so a live message cannot move the cursor
- * over a row a read returned but could not forward yet (0.71.10).
+ * over a row a read returned but could not forward yet. Abandoned ones (see
+ * chatParkedPendingIds) do not hold it (0.71.10).
  */
 function advanceLiveChatCursor(chatId: string, messageId: number): void {
+  const nowMs = Date.now()
+  const parked = (chatParkedPendingIds.get(chatId) ?? [])
+    .filter((row) => row.sentMs === null || nowMs - row.sentMs <= FIRST_RUN_RECENT_WINDOW_MS)
+    .map((row) => row.id)
   advanceChatCursor(
     chatId,
     advanceCursor({
       lastSeen: chatLastSeen.get(chatId) ?? 0,
       maxId: messageId,
-      pendingEmptyIds: chatParkedPendingIds.get(chatId) ?? [],
+      pendingEmptyIds: parked,
     }),
   )
+}
+
+/**
+ * A live delivery into a chat whose cursor the socket could not move (the
+ * chat's boot poll had not completed): lower the chat's live floor to it (see
+ * chatLiveFloor). Both socket lanes call this, inbound_message and
+ * meeting_message (0.71.10).
+ */
+function noteLiveFloor(chatId: string, messageId: number): void {
+  const floor = chatLiveFloor.get(chatId)
+  if (floor === undefined || messageId < floor) chatLiveFloor.set(chatId, messageId)
 }
 
 /**
@@ -14529,8 +14551,7 @@ function connectWebsocket(): void {
         if (wsCursorSafe) {
           advanceLiveChatCursor(chatId, messageId)
         } else {
-          const floor = chatLiveFloor.get(chatId)
-          if (floor === undefined || messageId < floor) chatLiveFloor.set(chatId, messageId)
+          noteLiveFloor(chatId, messageId)
           if (monitoredChatIds.includes(chatId) && !liveReadsInFlight.has(chatId)) {
             liveReadsInFlight.add(chatId)
             void pollChat(chatId).finally(() => liveReadsInFlight.delete(chatId))
@@ -15001,6 +15022,15 @@ function connectWebsocket(): void {
         // stale and does not re-fire a turn notification.
         if (ctx && messageId > ctx.lastSeenMessageId) {
           ctx.lastSeenMessageId = messageId
+        }
+        // A meeting turn delivered here before the chat's boot poll completed
+        // sets the chat's live floor, as an inbound_message does (its twin,
+        // when it comes second, returns at its own dedupe before it could).
+        // Otherwise the agent's meeting reply ended the chat's first read's
+        // walk-back above the turns the socket missed (0.71.10). No immediate
+        // read: a meeting chat the socket names is polled on every 2 s tick.
+        if (chatId && !(chatsPolledSinceBoot.has(chatId) || streamCoveredChats.has(chatId))) {
+          noteLiveFloor(chatId, messageId)
         }
         if (forwardedMessageIds.has(messageId)) return
         rememberForwarded(messageId)

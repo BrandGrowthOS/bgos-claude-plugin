@@ -170,24 +170,15 @@ test('a recent or unknown-age pending-empty row still parks the gated cursor', (
   )
 })
 
-// ── WS cursor bump guard (mirror of the inbound_message handler rule) ────────
-// A cursor must not jump over a chat whose boot poll has not finished:
-// messages between the cursor and the WS id would be skipped forever. That
-// holds for a cursor-less chat too (0.71.10): a jump from 0 skipped every row
-// no read had returned yet. Keep in lockstep with server.ts (wsCursorSafe);
-// the real handler is driven end to end in
-// test/first-read-cursor-zero.e2e.test.ts.
-
-function wsCursorSafeMirror(bootPolled: boolean, _lastSeen: number): boolean {
-  return bootPolled
-}
-
-test('WS bump is deferred until the chat boot poll completes, at any cursor', () => {
-  assert.equal(wsCursorSafeMirror(false, 150), false, 'gap 151..199 still undelivered')
-  assert.equal(wsCursorSafeMirror(true, 150), true)
-  assert.equal(wsCursorSafeMirror(false, 0), false, 'a cursor-less chat is read instead, its rows were never returned')
-  assert.equal(wsCursorSafeMirror(true, 0), true)
-})
+// ── WS cursor bump guard ─────────────────────────────────────────────────────
+// A cursor must not jump over a chat whose boot poll has not finished, at any
+// cursor, 0 included (0.71.10): messages between the cursor and the WS id
+// would be skipped forever. This used to be checked against a copy of the
+// rule, which became a tautology once the rule was just "boot poll done". The
+// real inbound_message handler is driven end to end in
+// test/first-read-cursor-zero.e2e.test.ts, and the source pin below
+// ('server.ts guards the WS cursor bump behind boot-poll completion') keeps
+// the guard in place.
 
 // ── Ungated behavior (cursor file existed, chat genuinely new) ───────────────
 
