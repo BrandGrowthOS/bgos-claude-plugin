@@ -252,6 +252,7 @@ function daemon(laneSource: string, laneName: string, extra: Record<string, unkn
     streamCoveredChats: new Set<string>(),
     chatLiveFloor: new Map<string, number>(),
     liveReadsInFlight: new Set<string>(),
+    chatFirstListedAtMs: new Map<string, number>(),
     streamHeldEmptyChatByMessageId: new Map<number, string>(),
     chatLastSeen: new Map([[GROUP, 9000], [OWNER_CHAT, 9000]]),
     chatUnansweredButtons: new Map(),

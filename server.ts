@@ -338,6 +338,7 @@ import {
   type ButtonPromptRecord,
   planPollCycle,
   selectFirstPollBacklogIds,
+  MAX_GROUP_HISTORY_FORWARD,
   selectRestartRecoveryIds,
   sentBeforeStart,
   sentDateToMs,
@@ -8127,6 +8128,13 @@ const chatLiveFloor = new Map<string, number>()
 // a burst of live messages into a chat nobody has read yet starts one read.
 const liveReadsInFlight = new Set<string>()
 
+// Per group chat, when this daemon first saw it listed (discoverChats). Rows
+// sent before then, below the chat's live floor, are history the agent may
+// never have been part of (it was just added to the group): the group's first
+// read hands over only the newest MAX_GROUP_HISTORY_FORWARD of them, as every
+// first read did before 0.71.10. Rows from the listing on are owed in full.
+const chatFirstListedAtMs = new Map<string, number>()
+
 /**
  * The single write path for chatLastSeen: monotonic (never rewinds) and
  * marks the persistent store dirty so the flush timer picks the advance up.
@@ -10228,7 +10236,10 @@ async function discoverChats(): Promise<void> {
       .filter((c) => c.assistantId === Number(ASSISTANT_ID) && c.kind === 'main')
       .map((c) => String(c.id))
     for (const c of data.chats) {
-      if (c.assistantId === Number(ASSISTANT_ID) && c.kind === 'group') groupChatIds.add(String(c.id))
+      if (c.assistantId === Number(ASSISTANT_ID) && c.kind === 'group') {
+        groupChatIds.add(String(c.id))
+        if (!chatFirstListedAtMs.has(String(c.id))) chatFirstListedAtMs.set(String(c.id), Date.now())
+      }
     }
     const meetingChatSet = new Set(
       data.chats
@@ -10432,6 +10443,11 @@ async function pollChat(chatId: string): Promise<void> {
         chatLiveFloor.get(chatId) ?? Number.POSITIVE_INFINITY,
         cursorNow > 0 ? cursorNow + 1 : Number.POSITIVE_INFINITY,
       )
+      // A group chat's history (see chatFirstListedAtMs) is capped; every
+      // other chat, and a group's rows from its listing on, are not.
+      const groupHistoryCap = groupChatIds.has(chatId)
+        ? { beforeMs: chatFirstListedAtMs.get(chatId) ?? DAEMON_START_MS, max: MAX_GROUP_HISTORY_FORWARD }
+        : null
       const firstPollRows = pollForwardableRows
         .filter((m) => m.message.id < owedFrom)
         .map((m) => ({
@@ -10444,6 +10460,7 @@ async function pollChat(chatId: string): Promise<void> {
         selectFirstPollBacklogIds({
           rows: firstPollRows,
           recentCutoffMs: FIRST_POLL_RECENT_CUTOFF_MS,
+          historyCap: groupHistoryCap,
         }),
       )
       // Observability for the gate: a dormant message withheld on first
@@ -10453,6 +10470,7 @@ async function pollChat(chatId: string): Promise<void> {
         const ungated = selectFirstPollBacklogIds({
           rows: firstPollRows,
           recentCutoffMs: null,
+          historyCap: groupHistoryCap,
         })
         const withheld = ungated.length - backlogIds.size
         if (withheld > 0) {

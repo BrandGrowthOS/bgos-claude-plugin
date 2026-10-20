@@ -59,6 +59,7 @@ const USER_ID = 'u1'
 const MAIN = 501
 const A2A = 601
 const MEETING = 701
+const GROUP = 801
 /** A chat the inbox never lists: the socket can still deliver into it. */
 const ELSEWHERE = 888
 
@@ -84,6 +85,11 @@ type Row = Record<string, unknown> & { id: number; chatId: number; sender: 'user
 
 function ownerRow(chatId: number, id: number): Row {
   return { id, chatId, sender: 'user', text: `owner ${id}`, senderUserId: USER_ID, senderAssistantId: null, messageType: 'standard', sentDate: new Date().toISOString() }
+}
+
+/** Another person in a group chat, not the owner. */
+function otherPersonRow(chatId: number, id: number, userId: string): Row {
+  return { id, chatId, sender: 'user', text: `${userId} says ${id}`, senderUserId: userId, senderAssistantId: null, messageType: 'standard', sentDate: new Date().toISOString() }
 }
 
 /** This agent's own answer, as the backend stores it. */
@@ -289,6 +295,8 @@ interface Card {
   messageId: number
   transport: string
   content: string
+  /** Framed as offline backlog (meta backlog 'true'). */
+  backlog: boolean
 }
 
 interface Daemon {
@@ -330,7 +338,7 @@ async function startDaemon(rig: Rig): Promise<Daemon> {
     if (n.method !== 'notifications/claude/channel') return
     const params = (n.params ?? {}) as { meta?: Record<string, string>; content?: unknown }
     const meta = params.meta ?? {}
-    cards.push({ chatId: Number(meta.chat_id), messageId: Number(meta.message_id), transport: String(meta.transport), content: String(params.content ?? '') })
+    cards.push({ chatId: Number(meta.chat_id), messageId: Number(meta.message_id), transport: String(meta.transport), content: String(params.content ?? ''), backlog: meta.backlog === 'true' })
   }
   try {
     await client.connect(transport)
@@ -748,6 +756,48 @@ describe('a chat first read at cursor 0 forwards every row it reaches, once', { 
       await settle(() => d.cards, MEETING, [...ids(2001, 2005), 2100])
       assert.deepEqual(delivered(d.cards, MEETING), [...ids(2001, 2005), 2100])
       assertHarnessRan(w.backend)
+    } finally {
+      await w.end()
+    }
+  })
+
+  test('a group chat this agent is added to mid run, with 40 rows of other people talking, hands over only the newest 10 of that history', OPTS, async () => {
+    const w = await world()
+    try {
+      const d = await w.boot()
+      await quietAfterBoot(w.backend, MAIN)
+      // The group has been going for a while (while this daemon was already
+      // running): 40 rows from two other people, none from this agent, which
+      // was not in the group. Then the owner adds it: from now on the inbox
+      // lists the group. With the socket down, the next full cycle (10 s)
+      // runs discoverChats and reads the group for the first time.
+      for (const id of ids(3001, 3040)) w.backend.rows.push(otherPersonRow(GROUP, id, id % 2 ? 'u7' : 'u8'))
+      w.backend.inbox.push({ id: GROUP, assistantId: ASSISTANT_ID, kind: 'group', userId: USER_ID })
+      w.backend.refuseSocket(true)
+      await forceRead(w.backend, GROUP)
+      await settle(() => d.cards, GROUP, ids(3031, 3040))
+      assert.deepEqual(delivered(d.cards, GROUP), ids(3031, 3040), 'history the agent was never part of: the newest 10, as before 0.71.10')
+      assert.ok(d.cards.filter((c) => c.chatId === GROUP).every((c) => c.backlog), 'handed over as offline backlog')
+    } finally {
+      await w.end()
+    }
+  })
+
+  test('a group chat empty at boot: 14 rows from other people land unpushed, the next read forwards all 14', OPTS, async () => {
+    const w = await world()
+    try {
+      // The agent is in the group from the start; the rows come while this
+      // daemon reads it, so every one is owed, whoever wrote it.
+      w.backend.inbox.push({ id: GROUP, assistantId: ASSISTANT_ID, kind: 'group', userId: USER_ID })
+      const d = await w.boot()
+      await quietAfterBoot(w.backend, GROUP)
+      for (const id of ids(3101, 3114)) w.backend.rows.push(otherPersonRow(GROUP, id, id % 2 ? 'u7' : 'u8'))
+      // Read by a socket-down full cycle, which lists the chats again first:
+      // listing a group again must not make its rows history.
+      w.backend.refuseSocket(true)
+      await forceRead(w.backend, GROUP)
+      await settle(() => d.cards, GROUP, ids(3101, 3114))
+      assert.deepEqual(delivered(d.cards, GROUP), ids(3101, 3114))
     } finally {
       await w.end()
     }

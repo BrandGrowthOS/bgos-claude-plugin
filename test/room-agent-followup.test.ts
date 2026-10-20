@@ -251,6 +251,7 @@ function compile(source: string, name: string, extra: Record<string, unknown> = 
     streamCoveredChats: new Set<string>(),
     chatLiveFloor: new Map<string, number>(),
     liveReadsInFlight: new Set<string>(),
+    chatFirstListedAtMs: new Map<string, number>(),
     streamHeldEmptyChatByMessageId: new Map<number, string>(),
     chatLastSeen: new Map([[CHAT, 9000]]),
     chatUnansweredButtons: new Map(),

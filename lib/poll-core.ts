@@ -274,9 +274,22 @@ export interface FirstPollRow {
  *
  * Rows must be ordered oldest -> newest by id; returned ids keep that order.
  */
+/**
+ * How many rows of a group's history the first read of a group chat hands
+ * over: the newest this many of the rows sent before this daemon first listed
+ * the group (see `historyCap` below and pollChat).
+ */
+export const MAX_GROUP_HISTORY_FORWARD = 10
+
 export function selectFirstPollBacklogIds(opts: {
   rows: FirstPollRow[]
   recentCutoffMs: number | null
+  /**
+   * Rows sent before `beforeMs` (or of unknown age) are history the agent may
+   * never have been part of: only the newest `max` of them are returned.
+   * Rows sent from `beforeMs` on are not touched. Null or absent: no cap.
+   */
+  historyCap?: { beforeMs: number; max: number } | null
 }): number[] {
   const { rows, recentCutoffMs } = opts
   const collected: FirstPollRow[] = []
@@ -301,7 +314,11 @@ export function selectFirstPollBacklogIds(opts: {
     recentCutoffMs === null
       ? collected
       : collected.filter((m) => m.sentDateMs !== null && m.sentDateMs >= recentCutoffMs)
-  return qualified.map((m) => m.id)
+  if (!opts.historyCap) return qualified.map((m) => m.id)
+  const { beforeMs, max } = opts.historyCap
+  const history = qualified.filter((m) => m.sentDateMs === null || m.sentDateMs < beforeMs)
+  const dropped = new Set(history.slice(0, Math.max(0, history.length - max)).map((m) => m.id))
+  return qualified.filter((m) => !dropped.has(m.id)).map((m) => m.id)
 }
 
 // ── Restart recovery for a message nobody answered ───────────────────────────
