@@ -60,7 +60,7 @@ test('first run: an ancient dormant tail is NOT delivered', () => {
     row(11, 'user', { sentMs: ANCIENT }),
     row(12, 'system', { sentMs: ANCIENT }),
   ]
-  const ids = selectFirstPollBacklogIds({ rows, maxForward: 10, recentCutoffMs: CUTOFF })
+  const ids = selectFirstPollBacklogIds({ rows, recentCutoffMs: CUTOFF })
   assert.deepEqual(ids, [], 'June-era messages must not replay on first install')
 })
 
@@ -70,14 +70,14 @@ test('first run: only messages inside the recent window qualify', () => {
     row(11, 'user', { sentMs: ANCIENT }),
     row(12, 'user', { sentMs: RECENT }),
   ]
-  const ids = selectFirstPollBacklogIds({ rows, maxForward: 10, recentCutoffMs: CUTOFF })
+  const ids = selectFirstPollBacklogIds({ rows, recentCutoffMs: CUTOFF })
   assert.deepEqual(ids, [12], 'the fresh message keeps its backlog delivery')
 })
 
 test('first run: a message with an unparseable sent date is not delivered', () => {
   const rows = [row(10, 'user', { sentMs: null })]
   assert.deepEqual(
-    selectFirstPollBacklogIds({ rows, maxForward: 10, recentCutoffMs: CUTOFF }),
+    selectFirstPollBacklogIds({ rows, recentCutoffMs: CUTOFF }),
     [],
     'unknown age must not qualify as recent',
   )
@@ -90,7 +90,6 @@ test('first run: the recent window is 10 minutes', () => {
   assert.deepEqual(
     selectFirstPollBacklogIds({
       rows: [justOutside, justInside],
-      maxForward: 10,
       recentCutoffMs: CUTOFF,
     }),
     [10],
@@ -106,7 +105,7 @@ test('first run: the cursor still initializes to the chat tip', () => {
     row(102, 'user', { sentMs: ANCIENT }),
   ]
   assert.deepEqual(
-    selectFirstPollBacklogIds({ rows, maxForward: 10, recentCutoffMs: CUTOFF }),
+    selectFirstPollBacklogIds({ rows, recentCutoffMs: CUTOFF }),
     [],
   )
   assert.equal(
@@ -142,7 +141,7 @@ test('first run: an abandoned pending-empty row does not hold the cursor below a
     ...Array.from({ length: 30 }, (_, i) => row(101 + i, 'user', { sentMs: ANCIENT })),
   ]
   assert.deepEqual(
-    selectFirstPollBacklogIds({ rows, maxForward: 10, recentCutoffMs: CUTOFF }),
+    selectFirstPollBacklogIds({ rows, recentCutoffMs: CUTOFF }),
     [],
     'the gate withholds the dormant tail',
   )
@@ -171,20 +170,14 @@ test('a recent or unknown-age pending-empty row still parks the gated cursor', (
   )
 })
 
-// ── WS cursor bump guard (mirror of the inbound_message handler rule) ────────
-// A persisted cursor must not jump over a chat whose boot poll has not
-// finished: offline messages between the cursor and the WS id would be
-// skipped forever. Keep in lockstep with server.ts (wsCursorSafe).
-
-function wsCursorSafeMirror(bootPolled: boolean, lastSeen: number): boolean {
-  return bootPolled || lastSeen === 0
-}
-
-test('WS bump is deferred for a persisted-cursor chat until its boot poll completes', () => {
-  assert.equal(wsCursorSafeMirror(false, 150), false, 'gap 151..199 still undelivered')
-  assert.equal(wsCursorSafeMirror(true, 150), true)
-  assert.equal(wsCursorSafeMirror(false, 0), true, 'cursor-less chat keeps the bump (dup guard)')
-})
+// ── WS cursor bump guard ─────────────────────────────────────────────────────
+// A cursor must not jump over a chat whose boot poll has not finished, at any
+// cursor, 0 included (0.71.10): messages between the cursor and the WS id
+// would be skipped forever. This used to be checked against a copy of the
+// rule, which became a tautology once the rule was just "boot poll done". The
+// real inbound_message handler is driven end to end in
+// test/first-read-cursor-zero.e2e.test.ts, which is what guards it; the
+// source pin below only checks the expression is still written that way.
 
 // ── Ungated behavior (cursor file existed, chat genuinely new) ───────────────
 
@@ -196,7 +189,7 @@ test('ungated: trailing unanswered messages collect until a real reply boundary'
     row(4, 'user', { sentMs: ANCIENT }),
   ]
   assert.deepEqual(
-    selectFirstPollBacklogIds({ rows, maxForward: 10, recentCutoffMs: null }),
+    selectFirstPollBacklogIds({ rows, recentCutoffMs: null }),
     [3, 4],
     'assistant(2) answers user(1); the unanswered tail is 3,4 however old',
   )
@@ -210,17 +203,60 @@ test('ungated: a proactive assistant message does not stop the scan', () => {
     row(4, 'user'),
   ]
   assert.deepEqual(
-    selectFirstPollBacklogIds({ rows, maxForward: 10, recentCutoffMs: null }),
+    selectFirstPollBacklogIds({ rows, recentCutoffMs: null }),
     [4],
     'assistant(3) is proactive (preceded by assistant), the scan continues to the reply at 2',
   )
 })
 
-test('ungated: collection caps at maxForward newest messages', () => {
-  const rows = Array.from({ length: 12 }, (_, i) => row(i + 1, 'user'))
+test('ungated: no cap, every unanswered row of the read is returned (0.71.10)', () => {
+  // The cursor moves to the newest row of the read right after, so a row the
+  // selection leaves out is never read again. It used to stop at the newest
+  // 10, and rows 1 to 4 here were lost (Data's D04 probes).
+  const rows = Array.from({ length: 14 }, (_, i) => row(i + 1, 'user'))
   assert.deepEqual(
-    selectFirstPollBacklogIds({ rows, maxForward: 10, recentCutoffMs: null }),
-    [3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+    selectFirstPollBacklogIds({ rows, recentCutoffMs: null }),
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+  )
+})
+
+test('history cap: a group read keeps only the newest 10 rows sent before the group was first listed', () => {
+  // 40 rows another person wrote before this daemon listed the group.
+  const listedAt = RECENT + 1
+  const rows = Array.from({ length: 40 }, (_, i) => row(i + 1, 'user', { sentMs: RECENT - 40 + i }))
+  assert.deepEqual(
+    selectFirstPollBacklogIds({ rows, recentCutoffMs: null, historyCap: { beforeMs: listedAt, max: 10 } }),
+    [31, 32, 33, 34, 35, 36, 37, 38, 39, 40],
+  )
+})
+
+test('history cap: rows sent from the listing on are all kept, beside the newest history', () => {
+  const listedAt = RECENT
+  const rows = [
+    ...Array.from({ length: 12 }, (_, i) => row(i + 1, 'user', { sentMs: RECENT - 100 + i })),
+    row(13, 'user', { sentMs: null }),
+    ...Array.from({ length: 14 }, (_, i) => row(14 + i, 'user', { sentMs: RECENT + i })),
+  ]
+  assert.deepEqual(
+    selectFirstPollBacklogIds({ rows, recentCutoffMs: null, historyCap: { beforeMs: listedAt, max: 3 } }),
+    [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27],
+    'unknown age counts as history; 11, 12, 13 are its newest three; 14 to 27 are all after the listing',
+  )
+})
+
+test('history cap: fewer history rows than the cap are all kept', () => {
+  const rows = Array.from({ length: 6 }, (_, i) => row(i + 1, 'user', { sentMs: RECENT - 10 + i }))
+  assert.deepEqual(
+    selectFirstPollBacklogIds({ rows, recentCutoffMs: null, historyCap: { beforeMs: RECENT, max: 10 } }),
+    [1, 2, 3, 4, 5, 6],
+  )
+})
+
+test('history cap: none (every chat but a group) leaves the uncapped selection alone', () => {
+  const rows = Array.from({ length: 14 }, (_, i) => row(i + 1, 'user', { sentMs: ANCIENT }))
+  assert.deepEqual(
+    selectFirstPollBacklogIds({ rows, recentCutoffMs: null, historyCap: null }),
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
   )
 })
 
@@ -231,7 +267,7 @@ test('ungated: pending-empty system rows are skipped, filled ones forwarded', ()
     row(7, 'system'),
   ]
   assert.deepEqual(
-    selectFirstPollBacklogIds({ rows, maxForward: 10, recentCutoffMs: null }),
+    selectFirstPollBacklogIds({ rows, recentCutoffMs: null }),
     [5, 7],
   )
 })
@@ -239,17 +275,15 @@ test('ungated: pending-empty system rows are skipped, filled ones forwarded', ()
 test('ungated: unknown senders are ignored and the scan continues past them', () => {
   const rows = [row(1, 'user'), row(2, null), row(3, 'user')]
   assert.deepEqual(
-    selectFirstPollBacklogIds({ rows, maxForward: 10, recentCutoffMs: null }),
+    selectFirstPollBacklogIds({ rows, recentCutoffMs: null }),
     [1, 3],
   )
 })
 
 test('ids return oldest to newest regardless of gating', () => {
-  const rows = [row(1, 'user'), row(2, 'user'), row(3, 'user')]
-  assert.deepEqual(
-    selectFirstPollBacklogIds({ rows, maxForward: 2, recentCutoffMs: null }),
-    [2, 3],
-  )
+  const rows = [row(1, 'user', { sentMs: ANCIENT }), row(2, 'user'), row(3, 'user')]
+  assert.deepEqual(selectFirstPollBacklogIds({ rows, recentCutoffMs: null }), [1, 2, 3])
+  assert.deepEqual(selectFirstPollBacklogIds({ rows, recentCutoffMs: CUTOFF }), [2, 3])
 })
 
 // ── sentDateToMs ─────────────────────────────────────────────────────────────
@@ -355,8 +389,10 @@ test('server.ts frames boot-poll delta backlog with the lockstep predicate', () 
 })
 
 test('server.ts guards the WS cursor bump behind boot-poll completion', () => {
-  assert.ok(serverSource.includes('wsCursorSafe'))
-  assert.ok(serverSource.includes('chatsPolledSinceBoot.has(chatId)'))
+  assert.match(
+    serverSource,
+    /const wsCursorSafe =\s*chatsPolledSinceBoot\.has\(chatId\) \|\|\s*streamCoveredChats\.has\(chatId\)\s*\n\s*if \(wsCursorSafe\)/,
+  )
 })
 
 test('server.ts excludes abandoned pending-empty rows from gated first-poll parking', () => {
