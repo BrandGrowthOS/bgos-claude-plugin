@@ -1,10 +1,10 @@
 {
   "file": "bin/hoai-browser-mcp.mjs",
   "source": "BGOS: frontend/electron-app/agent-browser/shim/hoai-browser-mcp.mjs",
-  "sha256": "c8d9b7a938c09fffb56fa6cb303a71bdfb932976da5d354bf17d0de19c5e2b83",
-  "vendoredAt": "2026-10-19",
+  "sha256": "2fd50404ff330d65f5f38017ffb7dd0a5df2f1c560b694c1f329b1bbe88f71ef",
+  "vendoredAt": "2026-10-21",
   "sourceCommit": "62193f7a500a6405fdfaddb7a0557c2a08a0cf75",
-  "why": "Plugin 0.72.0 copy, ahead of BGOS (mission 173). It starts from the shim reviewed in BGOS PR #2625 (sha256 a55d97ae, BGOS 62193f7a, the bytes #253 and #260 vendored) and adds: every browser_profile_* refusal answered with its code and one plain sentence; a 409 is host_offline only when the relay says host_offline; profile requests carry the pairing header only; no tool text, schema or served instruction offers a profile choice, and the open call opens the agent's own browser.",
+  "why": "Plugin 0.72.0 copy, ahead of BGOS (mission 173). It starts from the shim reviewed in BGOS PR #2625 (sha256 a55d97ae, BGOS 62193f7a, the bytes #253 and #260 vendored) and adds: every browser_profile_* refusal answered with its code and one plain sentence; a 409 is host_offline only when the relay says host_offline; profile requests carry the pairing header only; no tool text, schema or served instruction offers a profile choice, and the open call opens the agent's own browser; a desktop app the owner quit (the backend's browser_profile_writer_offline before dispatch, or a managed profile that is not active while the host probe says offline) reads as offline mode, exactly as before the app ever ran, once the host probe says no desktop app is online (an online or failed probe, as after a relaunch that cannot take an earlier launch's browser, gets the code's own sentence: nothing ran); that probe is bounded.",
   "howToUpdate": "docs/vendoring-the-hoai-browser-shim.md",
   "crossTreeCheck": "HOAI_BROWSER_SHIM_SOURCE=<path to the BGOS shim> npx tsx --test test/hoai-browser-mcp.vendor.test.ts",
   "aheadOfSource": "BGOS must take this copy back byte for byte (frontend/electron-app/agent-browser/shim/, its pin and the codex-channel-bgos copy). Until it does, the armed cross-tree check fails by design and says which side is behind."

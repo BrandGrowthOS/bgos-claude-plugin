@@ -15,6 +15,10 @@
  *     managed profile route), one test per code;
  *   - a 409 is host_offline only when the relay says host_offline; a connected desktop's 409 never says the app is
  *     not running;
+ *   - the one code that is not a profile refusal, browser_profile_writer_offline (the backend refusing a managed call
+ *     before dispatch because the owner quit the desktop app that writes the profile), and a profile that is not
+ *     active while the host probe says offline, both read exactly as before the app ever ran: the offline words and
+ *     the one offline tool, never "may have run" and never a connection that could not be set up;
  *   - profile requests carry the pairing header and nothing else that authenticates;
  *   - no tool text, schema or served instruction offers a preview default or a profile choice, and the open call
  *     opens the agent's own browser;
@@ -57,6 +61,9 @@ const SENTENCES: Record<string, string> = {
   browser_profile_storage_full: "Your browser's storage in HOAI is full, so nothing new was saved or opened; ask your owner to free space for it in HOAI.",
   browser_profile_close_blocked: 'Your browser could not close cleanly yet, so it is still open; try closing it again in a moment.',
   browser_profile_transition_absent: "HOAI could not find your browser's move between computers, so your owner needs to open your browser in HOAI to finish it.",
+  // Said only while the host probe says a desktop app is online: a relaunch after a crash, or another computer, holds
+  // the browser. With no desktop online the agent hears the offline words instead (the tests below).
+  browser_profile_writer_offline: "Your browser's HOAI session is not connected right now (the app may be closed, or your browser is held by an earlier launch of the app or by another computer), so nothing ran; ask your owner to open your browser in HOAI on the computer they use, then try again.",
 }
 const UNKNOWN_SENTENCE = 'Your browser could not take this call in HOAI; check the page with browser_snapshot before you repeat it, and ask your owner to open your browser in HOAI if this keeps happening.'
 const line = (code: string) => `${code}: ${SENTENCES[code] ?? UNKNOWN_SENTENCE}`
@@ -111,23 +118,27 @@ interface Backend {
   init: ((message: Json) => Answer) | null
   /** The answer to a legacy relay collect (GET .../mcp/<rpcId>) of a call that went pending. */
   collect: ((rpcId: string) => Answer) | null
+  /** The answer to a managed profile poll (POST .../rpc/<rpcId>/poll) of a call that went pending. */
+  poll: ((rpcId: string) => Answer) | null
+  /** The answer to the host probe (GET .../browser/host), when it is not the ordinary 200 { online }. */
+  host: { status: number; body: Json | null; hang?: boolean } | null
 }
 
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
-async function until(check: () => boolean, what: string) {
-  for (let n = 0; n < 500; n++) { if (check()) return; await wait(10) }
+async function until(check: () => boolean, what: string, ms = 5000) {
+  for (let n = 0; n < ms / 10; n++) { if (check()) return; await wait(10) }
   assert.fail(`the shim fixture did not settle: ${what}`)
 }
 const done = (message: Json, result: Json): Answer => ({ status: 201, body: { status: 'done', message: { jsonrpc: '2.0', id: message.id, result } } })
 const toolError = (text: string) => (message: Json) => done(message, { content: [{ type: 'text', text }], isError: true })
 const refuse = (status: number, body: Json) => () => ({ status, body })
 
-async function rig(t: TestContext, options: { actor?: string; profileSync?: boolean; apiKey?: boolean; managedContext?: boolean; local?: boolean; setup?: (backend: Backend) => void } = {}) {
-  const { actor = OWNER, profileSync = true, apiKey = false, managedContext = true, local = false, setup } = options
+async function rig(t: TestContext, options: { actor?: string; profileSync?: boolean; apiKey?: boolean; managedContext?: boolean; local?: boolean; probeMs?: number; probeTimeoutMs?: number; setup?: (backend: Backend) => void } = {}) {
+  const { actor = OWNER, profileSync = true, apiKey = false, managedContext = true, local = false, probeMs = 600000, probeTimeoutMs, setup } = options
   const home = mkdtempSync(join(tmpdir(), 'hoai-refusals-'))
   const contextFile = join(home, 'context.json'), markerFile = join(home, 'marker.json')
   const frames: Frame[] = []
-  const backend: Backend = { resolve: 'unmanaged', online: true, instructions: DESKTOP_INSTRUCTIONS, tools: [DESKTOP_OPEN, DESKTOP_CLOSE, DESKTOP_STATUS, CLICK], call: message => done(message, { content: [{ type: 'text', text: 'Browser ready.' }] }), init: null, collect: null }
+  const backend: Backend = { resolve: 'unmanaged', online: true, instructions: DESKTOP_INSTRUCTIONS, tools: [DESKTOP_OPEN, DESKTOP_CLOSE, DESKTOP_STATUS, CLICK], call: message => done(message, { content: [{ type: 'text', text: 'Browser ready.' }] }), init: null, collect: null, poll: null, host: null }
   setup?.(backend)
   const authority = (who: string) => ({ profileId: '6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b', actingUserId: who, assistantId: 42, endpointId: '1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d', bootId: 'fixture-boot', runtimeId: 'fixture-runtime', sessionId: 'fixture-session', writerEpoch: 1, revision: 0, contentKeyEpoch: 1, grantVersion: 1, keyFingerprint: 'a'.repeat(64) })
   const answerTo = (message: Json): Answer => {
@@ -151,7 +162,11 @@ async function rig(t: TestContext, options: { actor?: string; profileSync?: bool
       return answer({ status: 201, body: { managed: true, actingUserId: who, assistantId: 42, profileId: authority(who).profileId, state: r, ...(r === 'active' ? { authority: authority(who) } : {}) } })
     }
     if (path === '/api/v1/browser/profile-sync/rpc/call') return answer(answerTo(body?.message ?? {}))
-    if (path.startsWith('/api/v1/integrations/browser/host')) return answer({ status: 200, body: { online: backend.online, hostLabel: 'Fixture desktop' } })
+    if (/^\/api\/v1\/browser\/profile-sync\/rpc\/[^/]+\/poll$/.test(path) && backend.poll) return answer(backend.poll(path.split('/').at(-2) ?? ''))
+    if (path.startsWith('/api/v1/integrations/browser/host')) {
+      if (backend.host?.hang) return // never answered: the shim's own probe timeout has to end it
+      return answer((backend.host ?? { status: 200, body: { online: backend.online, hostLabel: 'Fixture desktop' } }) as Answer)
+    }
     if (path === '/api/v1/integrations/browser/mcp') return answer(answerTo(body?.message ?? {}))
     if (path.startsWith('/api/v1/integrations/browser/mcp/') && backend.collect) return answer(backend.collect(decodeURIComponent(path.split('/').at(-1) ?? '')))
     if (path === '/local') {
@@ -178,7 +193,8 @@ async function rig(t: TestContext, options: { actor?: string; profileSync?: bool
   // Nothing HOAI shaped is inherited from the shell: only what this rig sets.
   const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('HOAI_')))
   const env: Record<string, string> = {
-    ...inherited as Record<string, string>, HOAI_HOME: home, HOAI_RELAY_PROBE_MS: '600000',
+    ...inherited as Record<string, string>, HOAI_HOME: home, HOAI_RELAY_PROBE_MS: String(probeMs),
+    ...(probeTimeoutMs ? { HOAI_RELAY_PROBE_TIMEOUT_MS: String(probeTimeoutMs) } : {}),
     ...(local ? {} : { HOAI_RELAY_BACKEND_URL: origin, HOAI_RELAY_ASSISTANT_ID: '42', HOAI_RELAY_PAIRING_TOKEN: SECRET, HOAI_RELAY_API_KEY: apiKey ? API_KEY : '' }),
     ...(apiKey ? { BGOS_API_KEY: API_KEY } : {}),
     ...(profileSync && !local ? { HOAI_RELAY_PROFILE_SYNC: '1' } : {}),
@@ -207,7 +223,7 @@ async function rig(t: TestContext, options: { actor?: string; profileSync?: bool
     rmSync(home, { recursive: true, force: true })
   })
   await request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'refusal-fixture', version: '1' } })
-  return { backend, frames, request, call, publish }
+  return { backend, frames, responses, request, call, publish }
 }
 
 const textOf = (result: Json) => (result?.content ?? []).filter((item: Json) => item.type === 'text').map((item: Json) => item.text).join('\n')
@@ -239,7 +255,8 @@ test('browser_profile_setup_required: a managed profile that was never set up, a
   const result = await f.call()
   assert.equal(result.isError, true)
   assert.equal(textOf(result), line('browser_profile_setup_required'))
-  assert.ok(!f.frames.some(frame => frame.path.includes('/integrations/') || frame.path.endsWith('/call')), 'nothing was sent to any browser')
+  // The host probe (a status check, asked once because the profile is not active) is the only other request.
+  assert.ok(!f.frames.some(frame => frame.path.startsWith('/api/v1/integrations/browser/mcp') || frame.path.endsWith('/call')), 'nothing was sent to any browser')
   // The 5.21 desktop's admission, through the legacy relay, as the plain tool_error it sends today (RC4, "Moss").
   const g = await rig(t)
   g.backend.call = toolError('### Error\ntool_error: browser_profile_setup_required')
@@ -406,6 +423,206 @@ test('the control: a relay that says host_offline is still told as the desktop b
   const f = await rig(t)
   f.backend.call = refuse(409, { statusCode: 409, code: 'host_offline', message: 'no desktop app online for this account' })
   assert.match(textOf(await f.call()), FALSE_OFFLINE)
+})
+
+// ─── The desktop app quit after it ran: the words from before it ever ran ─────
+//
+// Before the owner's desktop app ever ran, discovery finds no managed profile and the probe says offline, so the agent
+// is told the app is not running. After it ran and the owner quit it, the profile row stays active (by design) and the
+// backend refuses the managed call before dispatch with 409 browser_profile_writer_offline. Both are the same fact,
+// so the agent hears the same words, on the same one tool.
+
+const OFFLINE_TEXT_RELAY = "The HOAI Agent Browser is not available: your owner's Home of Agents desktop app is not running or not signed in, and there is no desktop app on this machine. Ask them to open Home of Agents on their computer (Cmd or Ctrl+Shift+B opens the Agent Browser); the browser tools appear here as soon as it is online."
+const OFFLINE_TEXT_RELAY_RECIPIENT = "The HOAI Agent Browser is not available for this turn: you act for a person this agent is shared with, so their browser runs on this agent's own host or on their own Home of Agents desktop app, never on the owner's desktop app, and neither is online. Ask them to open Home of Agents on their computer (Cmd or Ctrl+Shift+B opens the Agent Browser); the browser tools appear here as soon as it is online."
+const OFFLINE_DESCRIPTION = 'Status of the HOAI Agent Browser (the browser pane in the Home of Agents desktop app). When the app is not reachable this is the only tool; it tells you so.'
+const OFFLINE_INSTRUCTIONS = (text: string) => `HOAI Agent Browser: your default browser once the Home of Agents desktop app is reachable. ${text}`
+const CONNECT_LEAD = 'could not set up its connection'
+const writerOffline = refuse(409, { statusCode: 409, code: 'browser_profile_writer_offline', message: "This agent's browser lives in its owner's Home of Agents desktop app, which is not connected." })
+const listChanges = (f: { responses: Json[] }) => f.responses.filter(value => value.method === 'notifications/tools/list_changed').length
+const initialize = (f: { request: (method: string, params?: Json) => Promise<Json> }) => f.request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'refusal-fixture', version: '1' } })
+function assertOfflineWords(said: string, expected: string, label: string) {
+  assert.equal(said, expected, label)
+  assert.doesNotMatch(said, /may have run|browser_profile_/, `${label}: not a sent call, not a profile refusal`)
+  assert.ok(!said.includes(CONNECT_LEAD), `${label}: not a connection that could not be set up`)
+}
+
+for (const who of [{ actor: OWNER, words: OFFLINE_TEXT_RELAY, label: 'owner' }, { actor: RECIPIENT, words: OFFLINE_TEXT_RELAY_RECIPIENT, label: "share recipient's turn" }]) {
+  test(`browser_profile_writer_offline on a call and on the next connect reads as the desktop app not running, the tools go offline (${who.label})`, async t => {
+    const f = await rig(t, { actor: who.actor, setup: backend => { backend.resolve = 'active' } })
+    assert.equal(textOf(await f.call()), 'Browser ready.', 'the managed browser was up')
+    // The owner quits the app: the row stays active, the backend refuses every managed /call before dispatch, and the
+    // host probe finds no desktop app online.
+    f.backend.call = writerOffline
+    f.backend.init = writerOffline
+    f.backend.online = false
+    const before = listChanges(f)
+    const refused = await f.call('browser_click', { target: 'e12' })
+    assert.equal(refused.isError, true)
+    assertOfflineWords(textOf(refused), who.words, 'the call the backend refused')
+    await until(() => listChanges(f) > before, 'notifications/tools/list_changed')
+    const tools = (await f.request('tools/list')).result.tools
+    assert.deepEqual(tools.map((tool: Json) => tool.name), ['hoai_browser_status'])
+    assert.equal(tools[0].description, OFFLINE_DESCRIPTION, 'the offline tool, not the profile refused one')
+    // The next call meets the same refusal on the shim's own initialize.
+    assertOfflineWords(textOf(await f.call()), who.words, 'the next call, refused while connecting')
+    const status = await f.call('hoai_browser_status')
+    assert.equal(status.isError, false, 'the status tool answers, as in offline mode')
+    assertOfflineWords(textOf(status), who.words, 'the status tool')
+    assert.equal((await initialize(f)).result.instructions, OFFLINE_INSTRUCTIONS(who.words))
+    // The host probe (a status check, asked because the backend's refusal says no socket holds the browser) is the only
+    // /integrations/ request; nothing goes to the legacy relay.
+    assert.ok(!f.frames.some(frame => frame.path.startsWith('/api/v1/integrations/browser/mcp')), 'a managed profile never reaches the legacy relay')
+    assert.ok(f.frames.some(frame => frame.path.startsWith('/api/v1/integrations/browser/host')), 'the host probe was asked')
+  })
+}
+
+test("browser_profile_writer_offline on the shim's own initialize, from a fresh connect, is offline mode, never a connection that could not be set up", async t => {
+  // The owner quit the app before this shim first connected: the row is active, the backend refuses the initialize.
+  const f = await rig(t, { setup: backend => { backend.resolve = 'active'; backend.init = writerOffline; backend.call = writerOffline; backend.online = false } })
+  assert.equal((await initialize(f)).result.instructions, OFFLINE_INSTRUCTIONS(OFFLINE_TEXT_RELAY))
+  assert.deepEqual((await f.request('tools/list')).result.tools.map((tool: Json) => tool.description), [OFFLINE_DESCRIPTION])
+  const refused = await f.call()
+  assert.equal(refused.isError, true)
+  assertOfflineWords(textOf(refused), OFFLINE_TEXT_RELAY, 'a call while the initialize is refused')
+  assert.ok(!f.frames.some(frame => frame.body?.message?.method === 'tools/call'), "the agent's call never left the shim")
+})
+
+test('the 20 s re-probe brings the browser tools back once the desktop app answers again', async t => {
+  const f = await rig(t, { probeMs: 1500, setup: backend => { backend.resolve = 'active' } })
+  const ready = f.backend.call
+  f.backend.call = writerOffline
+  f.backend.init = writerOffline
+  f.backend.online = false
+  assertOfflineWords(textOf(await f.call()), OFFLINE_TEXT_RELAY, 'the refused call')
+  assert.deepEqual((await f.request('tools/list')).result.tools.map((tool: Json) => tool.description), [OFFLINE_DESCRIPTION])
+  const offline = listChanges(f)
+  // The owner opens the app again; nobody calls a tool.
+  f.backend.call = ready
+  f.backend.init = null
+  f.backend.online = true
+  await until(() => listChanges(f) > offline, 'the re-probe announcing the tools', 20000)
+  const tools = (await f.request('tools/list')).result.tools.map((tool: Json) => tool.name)
+  assert.ok(tools.includes('browser_click') && tools.includes('hoai_browser_open_session'), `the browser tools are back: ${tools}`)
+  assert.equal(textOf(await f.call()), 'Browser ready.')
+})
+
+test('the control: a managed call the backend did not confirm still says it may have run, and a writer_offline after the call was sent is not "nothing ran"', async t => {
+  const f = await rig(t, { setup: backend => { backend.resolve = 'active' } })
+  for (const status of [500, 403]) {
+    f.backend.call = refuse(status, { statusCode: status, message: 'Internal server error' })
+    assert.equal(textOf(await f.call()), line('browser_profile_unconfirmed'), `a code-less ${status}`)
+  }
+  // The same rig, the same call: only the code changes the words.
+  f.backend.call = writerOffline
+  f.backend.online = false
+  assertOfflineWords(textOf(await f.call()), OFFLINE_TEXT_RELAY, 'writer_offline before dispatch')
+  f.backend.online = true
+  f.backend.resolve = 'active'
+  // A call that went pending WAS sent, so the code on its poll cannot say nothing ran.
+  const rpcId = randomUUID()
+  f.backend.call = () => ({ status: 201, body: { status: 'pending', rpcId, pollAfterMs: 25 } })
+  f.backend.poll = writerOffline
+  const sent = textOf(await f.call('browser_click', { target: 'e12', element: 'Buy' }))
+  assert.equal(sent, line('browser_profile_unconfirmed'))
+  assert.ok(f.frames.some(frame => frame.path === `/api/v1/browser/profile-sync/rpc/${rpcId}/poll`), 'the call was polled')
+})
+
+const STATE_CODE: Record<string, string> = { idle: 'browser_profile_setup_required', stopped: 'browser_profile_restart_review_required', staged: 'browser_profile_restart_review_required', quiescing: 'browser_profile_closing', fenced: 'browser_profile_recovery_required' }
+
+test('a managed profile that is not active asks the host probe once: a closed desktop reads as not running, an online or failed probe keeps its sentence', async t => {
+  const f = await rig(t, { setup: backend => { backend.resolve = 'stopped'; backend.online = false } })
+  const probes = () => f.frames.filter(frame => frame.path.startsWith('/api/v1/integrations/browser/host')).length
+  assert.equal((await initialize(f)).result.instructions, OFFLINE_INSTRUCTIONS(OFFLINE_TEXT_RELAY))
+  for (const state of Object.keys(STATE_CODE)) {
+    f.backend.resolve = state as Backend['resolve']
+    f.backend.online = false
+    const asked = probes()
+    const closed = await f.call()
+    assert.equal(closed.isError, true)
+    assertOfflineWords(textOf(closed), OFFLINE_TEXT_RELAY, `${state}, probe online false`)
+    assert.equal(probes(), asked + 1, `${state}: the probe is asked once`)
+    assert.deepEqual((await f.request('tools/list')).result.tools.map((tool: Json) => tool.description), [OFFLINE_DESCRIPTION], `${state}: the offline tool`)
+    f.backend.online = true
+    assert.equal(textOf(await f.call()), line(STATE_CODE[state]), `${state}, probe online: the state's sentence as before`)
+  }
+  f.backend.resolve = 'stopped'
+  f.backend.host = { status: 200, body: null }
+  assertOfflineWords(textOf(await f.call()), OFFLINE_TEXT_RELAY, 'a probe that answers 200 with no payload')
+  for (const status of [500, 429]) {
+    f.backend.host = { status, body: { statusCode: status, message: 'probe refused' } }
+    assert.equal(textOf(await f.call()), line('browser_profile_restart_review_required'), `a probe answered ${status} keeps the sentence`)
+  }
+  f.backend.host = null
+  f.backend.resolve = 'idle'
+  f.backend.online = true
+  assert.equal(textOf(await f.call()), line('browser_profile_setup_required'), 'idle with the desktop online: setup_required as today')
+  assert.ok(!f.frames.some(frame => frame.path.startsWith('/api/v1/integrations/browser/mcp') || frame.path.endsWith('/call')), 'nothing was sent to any browser')
+})
+
+test("a managed profile that is not active with the recipient's host offline reads as the recipient's offline words", async t => {
+  const f = await rig(t, { actor: RECIPIENT, setup: backend => { backend.resolve = 'stopped'; backend.online = false } })
+  assertOfflineWords(textOf(await f.call()), OFFLINE_TEXT_RELAY_RECIPIENT, 'stopped, recipient, probe online false')
+  const probe = f.frames.find(frame => frame.path.startsWith('/api/v1/integrations/browser/host'))
+  assert.equal(probe?.headers['x-bgos-acting-user'], RECIPIENT, "the probe asks for the recipient's own host")
+})
+
+test('browser_profile_writer_offline while a desktop app IS online (a relaunch after a crash, another computer) is the code and its sentence: nothing ran, never not running, never may have run', async t => {
+  const f = await rig(t, { setup: backend => { backend.resolve = 'active' } })
+  assert.equal(textOf(await f.call()), 'Browser ready.', 'the managed browser was up')
+  f.backend.call = writerOffline
+  f.backend.init = writerOffline
+  const probes = () => f.frames.filter(frame => frame.path.startsWith('/api/v1/integrations/browser/host')).length
+  for (const [label, host] of [['probe online', null], ['probe 500', { status: 500, body: { statusCode: 500, message: 'probe refused' } }], ['probe 429', { status: 429, body: { statusCode: 429, message: 'Too Many Requests' } }]] as const) {
+    f.backend.host = host
+    const asked = probes()
+    const said = textOf(await f.call('browser_click', { target: 'e12' }))
+    assert.equal(said, line('browser_profile_writer_offline'), `${label}: on a call`)
+    assert.doesNotMatch(said, FALSE_OFFLINE, `${label}: a desktop app may be open, so never not running`)
+    assert.doesNotMatch(said, /may have run/, `${label}: refused before dispatch, so nothing ran`)
+    assert.ok(probes() > asked, `${label}: the probe was asked`)
+    const tools = (await f.request('tools/list')).result.tools.map((tool: Json) => tool.description)
+    assert.ok(!tools.includes(OFFLINE_DESCRIPTION), `${label}: not the offline tool`)
+  }
+  // The next connect meets the same refusal on its own initialize: the same words, never a connection not set up.
+  f.backend.host = null
+  const next = textOf(await f.call())
+  assert.equal(next, line('browser_profile_writer_offline'), 'refused while connecting')
+  assert.ok(!next.includes(CONNECT_LEAD), 'not a connection that could not be set up')
+})
+
+test('hoai_browser_status as the first call to meet browser_profile_writer_offline answers the offline words without an error, and other tools do error', async t => {
+  const f = await rig(t, { setup: backend => { backend.resolve = 'active' } })
+  assert.equal(textOf(await f.call()), 'Browser ready.', 'the relay is connected')
+  f.backend.call = writerOffline
+  f.backend.init = writerOffline
+  f.backend.online = false
+  const status = await f.call('hoai_browser_status')
+  assert.equal(status.isError, false, 'the status tool answers in offline mode')
+  assertOfflineWords(textOf(status), OFFLINE_TEXT_RELAY, 'the status tool met the refusal on its own call')
+  const other = await f.call('browser_click', { target: 'e12' })
+  assert.equal(other.isError, true)
+  assertOfflineWords(textOf(other), OFFLINE_TEXT_RELAY, 'a browser tool after it')
+})
+
+test('browser_profile_writer_offline counts only as the 409 the backend sends before dispatch, and only on the managed route', async t => {
+  const f = await rig(t, { setup: backend => { backend.resolve = 'active'; backend.online = false } })
+  for (const status of [403, 500, 200]) {
+    f.backend.call = refuse(status, { statusCode: status, code: 'browser_profile_writer_offline', message: 'not connected' })
+    assert.equal(textOf(await f.call()), line('browser_profile_unconfirmed'), `the code on a ${status} is not the backend's pre-dispatch refusal`)
+  }
+  // The legacy relay never sends it; if a host's answer carries it there, it is a profile refusal, not offline mode.
+  const g = await rig(t, { setup: backend => { backend.resolve = 'unmanaged'; backend.online = true } })
+  g.backend.call = writerOffline
+  const said = textOf(await g.call())
+  assert.equal(said, line('browser_profile_writer_offline'))
+  assert.ok(!(await g.request('tools/list')).result.tools.map((tool: Json) => tool.description).includes(OFFLINE_DESCRIPTION), 'the legacy route stays online')
+})
+
+test('a host probe that never answers is ended by its own timeout: a managed profile that is not active keeps its sentence', async t => {
+  const f = await rig(t, { probeTimeoutMs: 400, setup: backend => { backend.resolve = 'stopped'; backend.host = { status: 0, body: null, hang: true } } })
+  const started = Date.now()
+  assert.equal(textOf(await f.call()), line('browser_profile_restart_review_required'))
+  assert.ok(Date.now() - started < 4000, `the probe was bounded (${Date.now() - started} ms)`)
 })
 
 // ─── Profile requests carry the pairing header and nothing else that authenticates ───

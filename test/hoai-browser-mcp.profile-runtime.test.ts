@@ -64,6 +64,7 @@ interface FixtureState {
   redirect: boolean
   oversized: boolean
   failed: boolean
+  online: boolean
 }
 
 const wait = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
@@ -76,7 +77,7 @@ async function rig(t: TestContext) {
   const home = mkdtempSync(join(tmpdir(), 'hoai-profile-shim-'))
   const contextFile = join(home, 'context.json'), markerPath = join(home, 'marker.json')
   const frames: Frame[] = [], profiles = new Map<string, Authority>(), pending = new Map<RpcId | undefined, string>()
-  const state: FixtureState = { managed: true, writer: 'active', invalid: null, redirect: false, oversized: false, failed: false }
+  const state: FixtureState = { managed: true, writer: 'active', invalid: null, redirect: false, oversized: false, failed: false, online: true }
   const endpointId = randomUUID()
   function authority(actor: string): Authority {
     let value = profiles.get(actor)
@@ -104,7 +105,7 @@ async function rig(t: TestContext) {
       if (state.oversized) { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(value) + ' '.repeat(65 * 1024)); return }
       return answer(value)
     }
-    if (pathname.startsWith('/api/v1/integrations/browser/host')) return answer({ online: true, hostLabel: 'Unmanaged fixture' })
+    if (pathname.startsWith('/api/v1/integrations/browser/host')) return answer({ online: state.online, hostLabel: 'Unmanaged fixture' })
     if (pathname.endsWith('/cancel')) return answer({ requested: true, rpcId: pathname.split('/').at(-2) })
     if (pathname.endsWith('/poll')) return answer({ status: 'pending', rpcId: pathname.split('/').at(-2), pollAfterMs: 25 })
     if (pathname === '/local') return answer({ jsonrpc: '2.0', id: body?.id, result: { tools: [{ name: 'local_trap' }] } })
@@ -157,7 +158,19 @@ test('idle and every stopped or fenced managed state refuses without command, lo
   // test/hoai-browser-mcp.refusals.test.ts.
   const codes: Record<string, string> = { idle: 'setup_required', stopped: 'restart_review_required', staged: 'restart_review_required', quiescing: 'closing', fenced: 'recovery_required' }
   for (const writer of ['idle', 'stopped', 'staged', 'quiescing', 'fenced']) { f.state.writer = writer; const result = await f.request(); assert.equal(result.result.isError, true); assert.match(result.result.content[0].text, new RegExp(`^browser_profile_${codes[writer]}: `)) }
-  assert.ok(f.frames.every(frame => frame.path.endsWith('/resolve')))
+  // Besides discovery, only the host probe is asked (once per call, a GET status check): it said online, so each state keeps its sentence.
+  const probes = f.frames.filter(frame => frame.path.startsWith('/api/v1/integrations/browser/host?'))
+  assert.equal(probes.length, 5); assert.ok(probes.every(frame => frame.method === 'GET'))
+  assert.ok(f.frames.every(frame => frame.path.endsWith('/resolve') || probes.includes(frame)))
+})
+
+test('every managed state that is not active, with the host probe offline, reads as the app not running, without command or fallback', async t => {
+  const f = await rig(t); f.state.online = false
+  // The rig acts for a share recipient, so the words are the recipient's offline words (the shim's offlineText).
+  const offline = "The HOAI Agent Browser is not available for this turn: you act for a person this agent is shared with, so their browser runs on this agent's own host or on their own Home of Agents desktop app, never on the owner's desktop app, and neither is online. Ask them to open Home of Agents on their computer (Cmd or Ctrl+Shift+B opens the Agent Browser); the browser tools appear here as soon as it is online."
+  for (const writer of ['idle', 'stopped', 'staged', 'quiescing', 'fenced']) { f.state.writer = writer; const result = await f.request(); assert.equal(result.result.isError, true); assert.equal(result.result.content[0].text, offline, writer) }
+  assert.ok(f.frames.every(frame => frame.path.endsWith('/resolve') || frame.path.startsWith('/api/v1/integrations/browser/host?')))
+  f.state.managed = false; await f.request(); assert.ok(!f.frames.some(frame => frame.path === '/api/v1/integrations/browser/mcp' || frame.path === '/local'), 'a known namespace never downgrades')
 })
 
 test('only explicit fresh unmanaged resolution allows legacy and a known namespace never downgrades', async t => {
