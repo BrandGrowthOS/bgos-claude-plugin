@@ -1,0 +1,775 @@
+{
+  "kind": "reviewed-managed-download-hooks-with-native-cancellation-acceptance-open",
+  "source": [
+    {
+      "path": "lib/browser-profile-downloads.mjs",
+      "workingSha256": "2ea88be1c60d76eba57398dd57b0e6f744de94fc94dce76f8769a4e1fc8594ab",
+      "normalizedGitSha256": "2ea88be1c60d76eba57398dd57b0e6f744de94fc94dce76f8769a4e1fc8594ab"
+    },
+    {
+      "path": "lib/browser-profile-downloads-runtime.mjs",
+      "workingSha256": "28fa481916e904370b106c05f91dfadf189b845e17161ec1f41f6581016b6716",
+      "normalizedGitSha256": "28fa481916e904370b106c05f91dfadf189b845e17161ec1f41f6581016b6716"
+    },
+    {
+      "path": "lib/browser-profile-runtime.mjs",
+      "workingSha256": "f87d76ab2d683a08674d0056db33449f90f8b58aaea3ba7d15a75b7eb387b021",
+      "normalizedGitSha256": "f87d76ab2d683a08674d0056db33449f90f8b58aaea3ba7d15a75b7eb387b021"
+    },
+    {
+      "path": "lib/browser-profile-companion.mjs",
+      "workingSha256": "406b5e1bd6fbe7217aa787464c358d68c766360070b3800cb39fdca0782e5edc",
+      "normalizedGitSha256": "406b5e1bd6fbe7217aa787464c358d68c766360070b3800cb39fdca0782e5edc"
+    },
+    {
+      "path": "bin/hoai-browser-host.mjs",
+      "workingSha256": "4357c358a22ef1d423e25d3131a69a15edf21253d9c2c4b8a88d19b9abc96f2d",
+      "normalizedGitSha256": "4357c358a22ef1d423e25d3131a69a15edf21253d9c2c4b8a88d19b9abc96f2d"
+    },
+    {
+      "path": "test/browser-profile-downloads-runtime.test.ts",
+      "workingSha256": "020b66e8134f8e6aa9960b5c61d4a703fc53eaa2403445f45e084164244703fa",
+      "normalizedGitSha256": "020b66e8134f8e6aa9960b5c61d4a703fc53eaa2403445f45e084164244703fa"
+    },
+    {
+      "path": "test/browser-profile-companion-downloads.test.ts",
+      "workingSha256": "ac6f702b41b0710bb5353ff5a85b2589100daf3b29c2a700982881e797819a9c",
+      "normalizedGitSha256": "ac6f702b41b0710bb5353ff5a85b2589100daf3b29c2a700982881e797819a9c"
+    },
+    {
+      "path": "docs/browser-profile-downloads-runtime.md",
+      "workingSha256": "e477101600fd62bc6d6020668cbf582862d793cf80eea17907dd6287363e4be8",
+      "normalizedGitSha256": "e477101600fd62bc6d6020668cbf582862d793cf80eea17907dd6287363e4be8"
+    }
+  ],
+  "tests": {
+    "command": "node --import tsx --test test/browser-profile-downloads-runtime.test.ts test/browser-profile-companion-downloads.test.ts test/browser-profile-runtime.test.ts test/browser-profile-companion.test.ts test/browser-profile-companion-files.test.ts test/browser-profile-companion-fields.test.ts test/browser-profile-engine-selection.test.ts test/browser-profile-downloads.test.ts",
+    "pass": 157,
+    "fail": 0,
+    "skipped": 0,
+    "sha256": "405844298b656ab9181c8dac5d6b3389b0ee4c37bc88389abf07bfc3d5d121a8",
+    "typescript": {
+      "command": "npx tsc --noEmit",
+      "exit": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "mutations": {
+    "cases": [
+      {
+        "name": "real-private-brand",
+        "file": "lib/browser-profile-downloads-runtime.mjs",
+        "changedLines": [
+          {
+            "number": 10,
+            "text": "  "
+          }
+        ],
+        "test": "test/browser-profile-downloads-runtime.test.ts",
+        "pattern": "^only an original private",
+        "originalSha256": "28fa481916e904370b106c05f91dfadf189b845e17161ec1f41f6581016b6716",
+        "mutatedSha256": "3a91c75f66b606c59bf4f1934b41cc031fc38f3516c132e87e7950b93e824fca",
+        "restoredSha256": "28fa481916e904370b106c05f91dfadf189b845e17161ec1f41f6581016b6716",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "e01f08fd73739256382ec31a5758a404585760560e7724d39a9dc9377f3a809b",
+        "greenOutputSha256": "73ed0908f26022a9336069d8faadf540cbec75f76adc5bd16ab9ed624334f3a4",
+        "additionalPrintedLines": 0,
+        "before": "try { AgentProfileDownloads.prototype.assertIdle.call(manager) } catch { throw fail() }",
+        "after": ""
+      },
+      {
+        "name": "exact-full-authority",
+        "file": "lib/browser-profile-downloads-runtime.mjs",
+        "changedLines": [
+          {
+            "number": 11,
+            "text": "  const check = () => { if (!sameAuthority(manager.authority, authority)) throw fail() }"
+          },
+          {
+            "number": 12,
+            "text": "  const binding = Object.freeze({"
+          },
+          {
+            "number": 13,
+            "text": "    async launchOptions() { check(); const result = await AgentProfileDownloads.prototype.launchOptions.call(manager); check(); return result },"
+          }
+        ],
+        "test": "test/browser-profile-downloads-runtime.test.ts",
+        "pattern": "^only an original private",
+        "originalSha256": "28fa481916e904370b106c05f91dfadf189b845e17161ec1f41f6581016b6716",
+        "mutatedSha256": "b37c04efd903471f6b6eabdf1fbc27cb025c148f415c0556e80b8e8b5a3c4aca",
+        "restoredSha256": "28fa481916e904370b106c05f91dfadf189b845e17161ec1f41f6581016b6716",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "42adaf325a976bc2d99ec2f2722623b3572b431f2078b18f2ac4163a8a99e007",
+        "greenOutputSha256": "e079ad67f8f4fec171449fca151ae023bd58fba24438f147e642a42babf0419a",
+        "additionalPrintedLines": 11,
+        "before": "if (!sameAuthority(manager.authority, authority)) throw fail()\n  const check",
+        "after": "const check"
+      },
+      {
+        "name": "opaque-binding-capability",
+        "file": "lib/browser-profile-downloads-runtime.mjs",
+        "changedLines": [
+          {
+            "number": 25,
+            "text": "export function assertRuntimeDownloadBinding(binding) { return binding }"
+          }
+        ],
+        "test": "test/browser-profile-downloads-runtime.test.ts",
+        "pattern": "^only an original private",
+        "originalSha256": "28fa481916e904370b106c05f91dfadf189b845e17161ec1f41f6581016b6716",
+        "mutatedSha256": "96aa040e1e7dc66083bfcfcb195d8633743cf82200f85118a16d0aeaf2ffc083",
+        "restoredSha256": "28fa481916e904370b106c05f91dfadf189b845e17161ec1f41f6581016b6716",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "d1289bb0f19f9445463b27ecd0cb4ba87dcc61506fbd978d609d6e30e29fc16d",
+        "greenOutputSha256": "85db70958fd114a2e3869b9da3a2a9d108bcedecb412cbf9f0781d22991d57dc",
+        "additionalPrintedLines": 0,
+        "before": "if (!bindings.has(binding)) throw fail(); return binding",
+        "after": "return binding"
+      },
+      {
+        "name": "original-manager-check",
+        "file": "lib/browser-profile-downloads-runtime.mjs",
+        "changedLines": [
+          {
+            "number": 16,
+            "text": "    assertAvailable() { check(); return manager.assertCurrent() },"
+          }
+        ],
+        "test": "test/browser-profile-downloads-runtime.test.ts",
+        "pattern": "^private binding calls original",
+        "originalSha256": "28fa481916e904370b106c05f91dfadf189b845e17161ec1f41f6581016b6716",
+        "mutatedSha256": "88721cce3f6bd311bebfa92839861c6abee6971f2e4580ed0e5db871aa536efc",
+        "restoredSha256": "28fa481916e904370b106c05f91dfadf189b845e17161ec1f41f6581016b6716",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "7eed7904f364c68009437693aba080d9e0c26ff821f0fd98881c3fda1c2d9157",
+        "greenOutputSha256": "14e4d9ac06c12c6bcf133d588b1f413d3cd1ff5cd5067af5de7d02246a3d2bd2",
+        "additionalPrintedLines": 0,
+        "before": "AgentProfileDownloads.prototype.assertCurrent.call(manager)",
+        "after": "manager.assertCurrent()"
+      },
+      {
+        "name": "private-health-not-public",
+        "file": "lib/browser-profile-downloads.mjs",
+        "changedLines": [
+          {
+            "number": 40,
+            "text": "  #assertCurrent() { this.assertHealthy(); current(this.#active) }"
+          }
+        ],
+        "test": "test/browser-profile-downloads-runtime.test.ts",
+        "pattern": "^private binding calls original",
+        "originalSha256": "2ea88be1c60d76eba57398dd57b0e6f744de94fc94dce76f8769a4e1fc8594ab",
+        "mutatedSha256": "6ba2aa6377e67db0ecc3b7b8771b467d48bc6374ef46fdb332112f9946248ce8",
+        "restoredSha256": "2ea88be1c60d76eba57398dd57b0e6f744de94fc94dce76f8769a4e1fc8594ab",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "8a6ff69383183eeeba1a5d209e6c68419c7eee7fcfb9a17d9cdb0ff80dc28305",
+        "greenOutputSha256": "745a2345deb3c3ff6d56ae20ef1ec3006f1149f6239428ef173bd56290c467a8",
+        "additionalPrintedLines": 0,
+        "before": "#assertCurrent() { this.#assertHealthy(); current(this.#active) }",
+        "after": "#assertCurrent() { this.assertHealthy(); current(this.#active) }"
+      },
+      {
+        "name": "runtime-health-separate-from-admission",
+        "file": "lib/browser-profile-runtime.mjs",
+        "changedLines": [
+          {
+            "number": 485,
+            "text": "  assertCurrent() { if (this.state !== 'active' || this.network !== 'active' || !this.activeProof) throw fail('profile_runtime_authority_inactive'); this.activeProof(); this.downloadBinding?.assertAvailable(); return this.authority }"
+          }
+        ],
+        "test": "test/browser-profile-downloads-runtime.test.ts",
+        "pattern": "^Runtime health permits",
+        "originalSha256": "f87d76ab2d683a08674d0056db33449f90f8b58aaea3ba7d15a75b7eb387b021",
+        "mutatedSha256": "a8e877b4005b4e7cb4c993a301e38c657c53c7665ae9eaf9f77fa52b12c34a87",
+        "restoredSha256": "f87d76ab2d683a08674d0056db33449f90f8b58aaea3ba7d15a75b7eb387b021",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "d27b2ddb44959467d5371e78fd1842f6add47950670c5319aecbc561c38ee4ae",
+        "greenOutputSha256": "74d0b58d38355ad3c2d7195b5c739aa03d8f0d2c560ce9d3002901a6d6ac6646",
+        "additionalPrintedLines": 0,
+        "before": "this.downloadBinding?.assertHealthy(); return this.authority",
+        "after": "this.downloadBinding?.assertAvailable(); return this.authority"
+      },
+      {
+        "name": "factory-download-callback",
+        "file": "bin/hoai-browser-host.mjs",
+        "changedLines": [
+          {
+            "number": 1121,
+            "text": "  return new PlaywrightEngine({ endpoint: null, managedRuntime: runtime, caps: DEFAULT_CAPS, outputDir: directory, clientName: 'hoai-profile-companion', clientVersion: readPackageVersion(), log }).start()"
+          }
+        ],
+        "test": "test/browser-profile-downloads-runtime.test.ts",
+        "pattern": "^the actual shipped managed Engine factory",
+        "originalSha256": "4357c358a22ef1d423e25d3131a69a15edf21253d9c2c4b8a88d19b9abc96f2d",
+        "mutatedSha256": "e004d0c0cce6d95a5cd17a99ebc8e4b56d05e371f30295cb41b729fad3a6ce5b",
+        "restoredSha256": "4357c358a22ef1d423e25d3131a69a15edf21253d9c2c4b8a88d19b9abc96f2d",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "6cfbe38a335d032a25c40ea6a6768612c1bb7cd6efe7b877929587c0b988f14f",
+        "greenOutputSha256": "602441baf6b9804e5cd4b1b93221546f5c730ede70617f717586990f6e366f2c",
+        "additionalPrintedLines": 0,
+        "before": "outputDir: directory, onDownload, clientName:",
+        "after": "outputDir: directory, clientName:"
+      },
+      {
+        "name": "runtime-branded-download-option",
+        "file": "lib/browser-profile-runtime.mjs",
+        "changedLines": [
+          {
+            "number": 320,
+            "text": "    const downloadBinding = null, downloadOptions = downloadBinding ? await downloadBinding.launchOptions() : {}"
+          }
+        ],
+        "test": "test/browser-profile-downloads-runtime.test.ts",
+        "pattern": "^a forged optional download",
+        "originalSha256": "f87d76ab2d683a08674d0056db33449f90f8b58aaea3ba7d15a75b7eb387b021",
+        "mutatedSha256": "90a8c96629ce7725c652d5d9e5cb89259c0b607b987a056ba2d982952adfc52c",
+        "restoredSha256": "f87d76ab2d683a08674d0056db33449f90f8b58aaea3ba7d15a75b7eb387b021",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "5aa2cd020196d04083d68e5cacce019693f58fa5abea0823ef0f36a5a1a77d3f",
+        "greenOutputSha256": "33a87173ebd4918deccf95b755c980c34555c557bb49d785fbad345687e8edb4",
+        "additionalPrintedLines": 0,
+        "before": "downloads === undefined ? null : createRuntimeDownloadBinding(downloads, binding)",
+        "after": "null"
+      },
+      {
+        "name": "companion-runtime-manager",
+        "file": "lib/browser-profile-companion.mjs",
+        "changedLines": [
+          {
+            "number": 244,
+            "text": "        ...{},"
+          }
+        ],
+        "test": "test/browser-profile-companion-downloads.test.ts",
+        "pattern": "^the exact prepared private",
+        "originalSha256": "406b5e1bd6fbe7217aa787464c358d68c766360070b3800cb39fdca0782e5edc",
+        "mutatedSha256": "cc82457496bee3a92caaf78ed8bd6f92cbc6b51a6d7e34b00cbd57282344530d",
+        "restoredSha256": "406b5e1bd6fbe7217aa787464c358d68c766360070b3800cb39fdca0782e5edc",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "6e04f03adbb6538e2b2a8074a6490f6aa9716016e1635c78ed3c5b79b298efef",
+        "greenOutputSha256": "e874424bf58f93ca9a219ceb33c9cc285ae8c495d07d1d4fb89cf71212364776",
+        "additionalPrintedLines": 0,
+        "before": "...(this.#downloads.has(record)?{downloads:this.#downloads.get(record).manager}:{})",
+        "after": "...{}"
+      },
+      {
+        "name": "companion-original-engine-callback",
+        "file": "lib/browser-profile-companion.mjs",
+        "changedLines": [
+          {
+            "number": 308,
+            "text": "    record.engineCreating=this._trackPhysical(record,'engine-create',Promise.resolve().then(()=>this.createEngine({runtime,directory:path.join(this.directory,'artifacts',authority.runtimeId),})).then(engine=>{record.engine=engine;return engine}));await record.engineCreating;check()"
+          }
+        ],
+        "test": "test/browser-profile-companion-downloads.test.ts",
+        "pattern": "^the exact prepared private",
+        "originalSha256": "406b5e1bd6fbe7217aa787464c358d68c766360070b3800cb39fdca0782e5edc",
+        "mutatedSha256": "8f1a5137f664c3e7082a09a71215e3356ca8324de3022af32ea229e52a7797f6",
+        "restoredSha256": "406b5e1bd6fbe7217aa787464c358d68c766360070b3800cb39fdca0782e5edc",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "37b1a1cefd2bb57f0b699f99e05ca5d3a6c570c1f11716d71186ea9f849ee8c4",
+        "greenOutputSha256": "926ff81e5b5525006106f80cee5371744cb16587587c7a40b27a3bd7c1b946b2",
+        "additionalPrintedLines": 0,
+        "before": "...(onDownload?{onDownload}:{})",
+        "after": ""
+      },
+      {
+        "name": "companion-file-conversion-manager",
+        "file": "lib/browser-profile-companion.mjs",
+        "changedLines": [
+          {
+            "number": 107,
+            "text": "    const runner=this.createFiles({client:this.fileClientFactory(),authority,endpoint,directory:path.join(this.directory,'artifacts',authority.runtimeId,'file-exchanges',createHash('sha256').update(shared.canonical(authority)).digest('hex')),peerIdentities:async current=>{current();check();const identities=await new AgentProfilePeerPins({directory:path.join(this.directory,'peer-pins',record.scope.endpointId)}).list({scope:record.scope,ownIdentity:record.identity,assertCurrent:()=>{current();check()}});current();check();return identities},assertCurrent:check})"
+          }
+        ],
+        "test": "test/browser-profile-companion-downloads.test.ts",
+        "pattern": "^the exact prepared private",
+        "originalSha256": "406b5e1bd6fbe7217aa787464c358d68c766360070b3800cb39fdca0782e5edc",
+        "mutatedSha256": "99eb6902a0a8dc32aee6e3525bc762eef245e2f849040784f470422ecd7bbfdc",
+        "restoredSha256": "406b5e1bd6fbe7217aa787464c358d68c766360070b3800cb39fdca0782e5edc",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "69929d957148b7e97b0601871ddcab8f7825cbaa0c50e6c7c1d1ed6868ca69d7",
+        "greenOutputSha256": "51847f71f20101a6cc9892a996f793a76db53cc1740ac2882e10e48e5aa01097",
+        "additionalPrintedLines": 0,
+        "before": "downloads:this.#downloads.get(record)?.manager,",
+        "after": ""
+      },
+      {
+        "name": "active-recipient-admission",
+        "file": "lib/browser-profile-companion.mjs",
+        "changedLines": [
+          {
+            "number": 240,
+            "text": "      record.downloadsCreating=this._trackPhysical(record,'downloads-create',Promise.resolve().then(()=>{creatingCurrent();return this.createDownloads({directory:path.join(this.directory,'quarantine',createHash('sha256').update(shared.canonical(authority)).digest('hex')),authority,assertCurrent:extrasCurrent,isActive:()=>!this.closing&&!record.revoked&&!record.uncertain&&this.connection.socket?.connected===true&&physicalRuntime?.state==='active'&&physicalRuntime.network==='active'})}).then(manager=>{if(manager!==null){const binding=createRuntimeDownloadBinding(manager,authority);this.#downloads.set(record,{manager,binding,authority,preparation})}else this._status(record,'managed_downloads_unavailable: agent platform has no qualified private download folder');return manager}))"
+          }
+        ],
+        "test": "test/browser-profile-companion-downloads.test.ts",
+        "pattern": "^suspension, unknown",
+        "originalSha256": "406b5e1bd6fbe7217aa787464c358d68c766360070b3800cb39fdca0782e5edc",
+        "mutatedSha256": "d8f4c074488454845f2941ec7dc481ffc0db84adbcc87128db21517ea23eb87b",
+        "restoredSha256": "406b5e1bd6fbe7217aa787464c358d68c766360070b3800cb39fdca0782e5edc",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "228209fa853a3f371f76ecf395f8a3232abefbde71d43f74f22a0a3af1fe7a5e",
+        "greenOutputSha256": "87eb5937173986adf3bd0a6ec77a6ca295f510ba3d7549c7c27ef2070e5cc391",
+        "additionalPrintedLines": 0,
+        "before": "record.admission==='active'&&",
+        "after": ""
+      },
+      {
+        "name": "connected-native-event-admission",
+        "file": "lib/browser-profile-companion.mjs",
+        "changedLines": [
+          {
+            "number": 240,
+            "text": "      record.downloadsCreating=this._trackPhysical(record,'downloads-create',Promise.resolve().then(()=>{creatingCurrent();return this.createDownloads({directory:path.join(this.directory,'quarantine',createHash('sha256').update(shared.canonical(authority)).digest('hex')),authority,assertCurrent:extrasCurrent,isActive:()=>!this.closing&&!record.revoked&&!record.uncertain&&record.admission==='active'&&physicalRuntime?.state==='active'&&physicalRuntime.network==='active'})}).then(manager=>{if(manager!==null){const binding=createRuntimeDownloadBinding(manager,authority);this.#downloads.set(record,{manager,binding,authority,preparation})}else this._status(record,'managed_downloads_unavailable: agent platform has no qualified private download folder');return manager}))"
+          }
+        ],
+        "test": "test/browser-profile-companion-downloads.test.ts",
+        "pattern": "^suspension, unknown",
+        "originalSha256": "406b5e1bd6fbe7217aa787464c358d68c766360070b3800cb39fdca0782e5edc",
+        "mutatedSha256": "c30c1cb080cfeab6059d24247250b8655ee8db6fef8a4ae59c1bff51724ef8fd",
+        "restoredSha256": "406b5e1bd6fbe7217aa787464c358d68c766360070b3800cb39fdca0782e5edc",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "e60aa56c699a1c2cd8ed92556074819672e8bf05a7d106ab8487d99ba5144752",
+        "greenOutputSha256": "2ecc765025afd419d6e3303e0393217b77826caf74825e9d6a9de209a3613eb6",
+        "additionalPrintedLines": 0,
+        "before": "this.connection.socket?.connected===true&&",
+        "after": ""
+      },
+      {
+        "name": "uncertain-native-event-admission",
+        "file": "lib/browser-profile-companion.mjs",
+        "changedLines": [
+          {
+            "number": 240,
+            "text": "      record.downloadsCreating=this._trackPhysical(record,'downloads-create',Promise.resolve().then(()=>{creatingCurrent();return this.createDownloads({directory:path.join(this.directory,'quarantine',createHash('sha256').update(shared.canonical(authority)).digest('hex')),authority,assertCurrent:extrasCurrent,isActive:()=>!this.closing&&!record.revoked&&this.connection.socket?.connected===true&&record.admission==='active'&&physicalRuntime?.state==='active'&&physicalRuntime.network==='active'})}).then(manager=>{if(manager!==null){const binding=createRuntimeDownloadBinding(manager,authority);this.#downloads.set(record,{manager,binding,authority,preparation})}else this._status(record,'managed_downloads_unavailable: agent platform has no qualified private download folder');return manager}))"
+          }
+        ],
+        "test": "test/browser-profile-companion-downloads.test.ts",
+        "pattern": "^suspension, unknown",
+        "originalSha256": "406b5e1bd6fbe7217aa787464c358d68c766360070b3800cb39fdca0782e5edc",
+        "mutatedSha256": "81cdb25b1d7000e9ccf03cdec72d0c404603c2a5a219c4ee0db10d4a7e764870",
+        "restoredSha256": "406b5e1bd6fbe7217aa787464c358d68c766360070b3800cb39fdca0782e5edc",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "39de48bffc2871a858bc0e40148057b756431190bcfa38cc509455171853d0bf",
+        "greenOutputSha256": "99587b3072c71d0d9ec47cd1357e3987a8ec5ef9b484ed062f01c9c6b1458c64",
+        "additionalPrintedLines": 0,
+        "before": "!record.uncertain&&",
+        "after": ""
+      },
+      {
+        "name": "closing-native-event-admission",
+        "file": "lib/browser-profile-companion.mjs",
+        "changedLines": [
+          {
+            "number": 240,
+            "text": "      record.downloadsCreating=this._trackPhysical(record,'downloads-create',Promise.resolve().then(()=>{creatingCurrent();return this.createDownloads({directory:path.join(this.directory,'quarantine',createHash('sha256').update(shared.canonical(authority)).digest('hex')),authority,assertCurrent:extrasCurrent,isActive:()=>!record.revoked&&!record.uncertain&&this.connection.socket?.connected===true&&record.admission==='active'&&physicalRuntime?.state==='active'&&physicalRuntime.network==='active'})}).then(manager=>{if(manager!==null){const binding=createRuntimeDownloadBinding(manager,authority);this.#downloads.set(record,{manager,binding,authority,preparation})}else this._status(record,'managed_downloads_unavailable: agent platform has no qualified private download folder');return manager}))"
+          }
+        ],
+        "test": "test/browser-profile-companion-downloads.test.ts",
+        "pattern": "^suspension, unknown",
+        "originalSha256": "406b5e1bd6fbe7217aa787464c358d68c766360070b3800cb39fdca0782e5edc",
+        "mutatedSha256": "3b113e37f45179e5bbf6386f09c6e6fc8e66d3c46c602b6faa2a656c69b23ac5",
+        "restoredSha256": "406b5e1bd6fbe7217aa787464c358d68c766360070b3800cb39fdca0782e5edc",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "4282e7005edf84f1c776e9803bea58986b8ea6b8de9876367a214302c1e930d8",
+        "greenOutputSha256": "6a90cf798a0f3fc48ceb07bccd98442e6214f44ec448dc750b42ae4d6d55f121",
+        "additionalPrintedLines": 0,
+        "before": "isActive:()=>!this.closing&&",
+        "after": "isActive:()=>"
+      },
+      {
+        "name": "private-original-activity",
+        "file": "lib/browser-profile-companion.mjs",
+        "changedLines": [
+          {
+            "number": 82,
+            "text": "      const downloads=this.#downloads.get(record);if(downloads){const value=downloads.manager.activity();pendingPhysicalOperations+=value.pendingPhysicalOperations;cleanupUnknown||=value.cleanupUnknown}"
+          }
+        ],
+        "test": "test/browser-profile-companion-downloads.test.ts",
+        "pattern": "^unknown native download cleanup",
+        "originalSha256": "406b5e1bd6fbe7217aa787464c358d68c766360070b3800cb39fdca0782e5edc",
+        "mutatedSha256": "741969c3a2e4aa49beb848fad3128134e8e2d3c7b3db0696c14956490178e789",
+        "restoredSha256": "406b5e1bd6fbe7217aa787464c358d68c766360070b3800cb39fdca0782e5edc",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "187844bc3b6feb0f61961cc9459d5053c04de3ac8a79154cd670bb4c533e1c5d",
+        "greenOutputSha256": "a3da36535938786bfa228a69bc3ee4d20aa7de0c6953b26b265530374b2d6f34",
+        "additionalPrintedLines": 0,
+        "before": "const value=downloads.binding.activity()",
+        "after": "const value=downloads.manager.activity()"
+      },
+      {
+        "name": "private-command-availability",
+        "file": "lib/browser-profile-companion.mjs",
+        "changedLines": [
+          {
+            "number": 95,
+            "text": "  _admit(record){this._cached(record);if(this.closing||record.admission!=='active'||record.uncertain||this.#permissionCleanupUnknown.has(record))throw fail('profile_companion_authority_unknown');record.runtime.assertCurrent();return true}"
+          }
+        ],
+        "test": "test/browser-profile-companion-downloads.test.ts",
+        "pattern": "^unknown native download cleanup",
+        "originalSha256": "406b5e1bd6fbe7217aa787464c358d68c766360070b3800cb39fdca0782e5edc",
+        "mutatedSha256": "4e8c22b1a6483a39f1a867f9a22ced70e4a2698ad4fa9af2b14745c0ddf010b5",
+        "restoredSha256": "406b5e1bd6fbe7217aa787464c358d68c766360070b3800cb39fdca0782e5edc",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "dfd41a09d3ecee0edef2c9e2b9740aa1e77550ed466b2516575af40c2618b70d",
+        "greenOutputSha256": "9ecda85f0087ad266874fdef2e9d0568cb92e4d11289ee684de605f24d86d912",
+        "additionalPrintedLines": 0,
+        "before": "this.#downloads.get(record)?.binding.assertAvailable();",
+        "after": ""
+      },
+      {
+        "name": "original-download-drain",
+        "file": "lib/browser-profile-companion.mjs",
+        "changedLines": [
+          {
+            "number": 96,
+            "text": "  async _drainCommands(record){await Promise.allSettled([...record.engineTasks]);const results=await Promise.allSettled([()=>this.#fileRunners.get(record)?.runner.whenDrained(),()=>this.#fieldRunners.get(record)?.runner.whenDrained()].map(callback=>Promise.resolve().then(callback)));if(results.some(result=>result.status==='rejected')||record.engineTasks.size||this.#permissionCleanupUnknown.has(record))throw fail('profile_companion_command_drain_unconfirmed')}"
+          }
+        ],
+        "test": "test/browser-profile-companion-downloads.test.ts",
+        "pattern": "^unknown native download cleanup",
+        "originalSha256": "406b5e1bd6fbe7217aa787464c358d68c766360070b3800cb39fdca0782e5edc",
+        "mutatedSha256": "ecb8f9eb26e6e590eecc6fe87f442e76dbc67dacbe8585b53aeba3a8eb898dff",
+        "restoredSha256": "406b5e1bd6fbe7217aa787464c358d68c766360070b3800cb39fdca0782e5edc",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "1ed67e5804ef9ab7bacf9dd1867036f717e632411a5ea7f1117fb299e83760ca",
+        "greenOutputSha256": "0242d661ffcb2154314163b430e030727aa4e94cd3de63e13f37c04306920c88",
+        "additionalPrintedLines": 0,
+        "before": ",()=>this.#downloads.get(record)?.binding.whenDrained()",
+        "after": ""
+      },
+      {
+        "name": "ordinary-private-disposal",
+        "file": "lib/browser-profile-companion.mjs",
+        "changedLines": [
+          {
+            "number": 409,
+            "text": "    const task=Promise.resolve().then(async()=>{const failures=[];await record.downloadsCreating?.catch(()=>{});await record.runtimeCreating?.catch(()=>{});const native=Promise.resolve().then(()=>record.runtime?.dispose()),commands=Promise.resolve().then(()=>this._drainCommands(record)),files=Promise.resolve().then(()=>this.#fileRunners.get(record)?.runner.dispose()),fields=Promise.resolve().then(()=>this.#fieldRunners.get(record)?.runner.dispose()),downloads=Promise.resolve();for(const result of await Promise.allSettled([native,commands,files,fields,downloads]))if(result.status==='rejected')failures.push(result.reason);for(const cleanup of [async()=>{await record.engineCreating?.catch(()=>{});await record.engine?.stop()},async()=>{await record.extrasCreating?.catch(()=>{});record.extras?.dispose()}])try{await cleanup()}catch(error){failures.push(error)}await Promise.allSettled([activation?.task,proof?.task].filter(Boolean));if(this.#activations.get(record)===activation)this.#activations.delete(record);record.contentKeyEpoch?.key.fill(0);record.contentKeyEpoch=null;if(failures.length)throw fail('profile_companion_stop_unconfirmed');record.relay?.close();this.#fileRunners.delete(record);this.#fieldRunners.delete(record);this.#downloads.delete(record);record.runtime=null;record.engine=null;record.extras=null;if(record.rpc){const rpc=record.rpc;this._trackPhysical(record,'rpc-close',Promise.resolve().then(()=>rpc.close()));record.rpc=null}})"
+          }
+        ],
+        "test": "test/browser-profile-companion-downloads.test.ts",
+        "pattern": "^ordinary disposal starts",
+        "originalSha256": "406b5e1bd6fbe7217aa787464c358d68c766360070b3800cb39fdca0782e5edc",
+        "mutatedSha256": "d73bbaf8b866b092b19906ae2a8edfb355b9a227acdcdc2908ecdde08a4d4331",
+        "restoredSha256": "406b5e1bd6fbe7217aa787464c358d68c766360070b3800cb39fdca0782e5edc",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "eed7c69fa57a75bb7c83676b71097f4b9ea534a820f979e95095524c0567dff0",
+        "greenOutputSha256": "a78b5e8ed524e735d7ee8ea94e64a58ccdbf1b1f6b7b8c4f684dd9c40313385e",
+        "additionalPrintedLines": 0,
+        "before": "downloads=Promise.resolve().then(()=>this.#downloads.get(record)?.binding.dispose())",
+        "after": "downloads=Promise.resolve()"
+      },
+      {
+        "name": "emergency-private-disposal",
+        "file": "lib/browser-profile-companion.mjs",
+        "changedLines": [
+          {
+            "number": 430,
+            "text": "      const files=Promise.resolve().then(()=>this.#fileRunners.get(record)?.runner.dispose()),fields=Promise.resolve().then(()=>this.#fieldRunners.get(record)?.runner.dispose()),downloads=Promise.resolve();void files.catch(()=>{});void fields.catch(()=>{});void downloads.catch(()=>{});let physicalFailure"
+          }
+        ],
+        "test": "test/browser-profile-companion-downloads.test.ts",
+        "pattern": "^explicit emergency termination",
+        "originalSha256": "406b5e1bd6fbe7217aa787464c358d68c766360070b3800cb39fdca0782e5edc",
+        "mutatedSha256": "deb2907567cef787233d17cdc880e472f00c06fec65101eaef6775fc984a8539",
+        "restoredSha256": "406b5e1bd6fbe7217aa787464c358d68c766360070b3800cb39fdca0782e5edc",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "160a52dfc72af3f1720013b47e24f5880e48a44b5dfa3d32edbb7e4ba7ac00c0",
+        "greenOutputSha256": "d0f134162ec6307ee013ca4cf5b9056f86d37feca89d86fe3dd7c5276c107186",
+        "additionalPrintedLines": 0,
+        "before": "downloads=Promise.resolve().then(async()=>{await record.downloadsCreating?.catch(()=>{});return this.#downloads.get(record)?.binding.dispose()})",
+        "after": "downloads=Promise.resolve()"
+      },
+      {
+        "name": "late-manager-creation-drain",
+        "file": "lib/browser-profile-companion.mjs",
+        "changedLines": [
+          {
+            "number": 409,
+            "text": "    const task=Promise.resolve().then(async()=>{const failures=[];await record.runtimeCreating?.catch(()=>{});const native=Promise.resolve().then(()=>record.runtime?.dispose()),commands=Promise.resolve().then(()=>this._drainCommands(record)),files=Promise.resolve().then(()=>this.#fileRunners.get(record)?.runner.dispose()),fields=Promise.resolve().then(()=>this.#fieldRunners.get(record)?.runner.dispose()),downloads=Promise.resolve().then(()=>this.#downloads.get(record)?.binding.dispose());for(const result of await Promise.allSettled([native,commands,files,fields,downloads]))if(result.status==='rejected')failures.push(result.reason);for(const cleanup of [async()=>{await record.engineCreating?.catch(()=>{});await record.engine?.stop()},async()=>{await record.extrasCreating?.catch(()=>{});record.extras?.dispose()}])try{await cleanup()}catch(error){failures.push(error)}await Promise.allSettled([activation?.task,proof?.task].filter(Boolean));if(this.#activations.get(record)===activation)this.#activations.delete(record);record.contentKeyEpoch?.key.fill(0);record.contentKeyEpoch=null;if(failures.length)throw fail('profile_companion_stop_unconfirmed');record.relay?.close();this.#fileRunners.delete(record);this.#fieldRunners.delete(record);this.#downloads.delete(record);record.runtime=null;record.engine=null;record.extras=null;if(record.rpc){const rpc=record.rpc;this._trackPhysical(record,'rpc-close',Promise.resolve().then(()=>rpc.close()));record.rpc=null}})"
+          }
+        ],
+        "test": "test/browser-profile-companion-downloads.test.ts",
+        "pattern": "^account loss during manager",
+        "originalSha256": "406b5e1bd6fbe7217aa787464c358d68c766360070b3800cb39fdca0782e5edc",
+        "mutatedSha256": "a9453b1df3889cc6cf453e3474cff74796c10d0cd3d24c052992b2cfabef823c",
+        "restoredSha256": "406b5e1bd6fbe7217aa787464c358d68c766360070b3800cb39fdca0782e5edc",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "73773c7bc6d556d376b4882f527e9e0d41ea3a921457b1a369c686c79296c24e",
+        "greenOutputSha256": "e64f4e991c48fb8f3fdce77b0e2cdebc1712ced07c353adda824156a0277dd30",
+        "additionalPrintedLines": 0,
+        "before": "const failures=[];await record.downloadsCreating?.catch(()=>{});await record.runtimeCreating?.catch(()=>{});",
+        "after": "const failures=[];await record.runtimeCreating?.catch(()=>{});"
+      },
+      {
+        "name": "native-disposal-independent",
+        "file": "lib/browser-profile-companion.mjs",
+        "changedLines": [
+          {
+            "number": 409,
+            "text": "    const task=Promise.resolve().then(async()=>{const failures=[];await record.downloadsCreating?.catch(()=>{});await record.runtimeCreating?.catch(()=>{});const native=Promise.resolve().then(async()=>{await this.#downloads.get(record)?.binding.dispose();return record.runtime?.dispose()}),commands=Promise.resolve().then(()=>this._drainCommands(record)),files=Promise.resolve().then(()=>this.#fileRunners.get(record)?.runner.dispose()),fields=Promise.resolve().then(()=>this.#fieldRunners.get(record)?.runner.dispose()),downloads=Promise.resolve().then(()=>this.#downloads.get(record)?.binding.dispose());for(const result of await Promise.allSettled([native,commands,files,fields,downloads]))if(result.status==='rejected')failures.push(result.reason);for(const cleanup of [async()=>{await record.engineCreating?.catch(()=>{});await record.engine?.stop()},async()=>{await record.extrasCreating?.catch(()=>{});record.extras?.dispose()}])try{await cleanup()}catch(error){failures.push(error)}await Promise.allSettled([activation?.task,proof?.task].filter(Boolean));if(this.#activations.get(record)===activation)this.#activations.delete(record);record.contentKeyEpoch?.key.fill(0);record.contentKeyEpoch=null;if(failures.length)throw fail('profile_companion_stop_unconfirmed');record.relay?.close();this.#fileRunners.delete(record);this.#fieldRunners.delete(record);this.#downloads.delete(record);record.runtime=null;record.engine=null;record.extras=null;if(record.rpc){const rpc=record.rpc;this._trackPhysical(record,'rpc-close',Promise.resolve().then(()=>rpc.close()));record.rpc=null}})"
+          }
+        ],
+        "test": "test/browser-profile-companion-downloads.test.ts",
+        "pattern": "^ordinary disposal starts",
+        "originalSha256": "406b5e1bd6fbe7217aa787464c358d68c766360070b3800cb39fdca0782e5edc",
+        "mutatedSha256": "c89ef2765a66eb8d9281d553bae927d6ccac433c15582e1d0b4ed605b411921e",
+        "restoredSha256": "406b5e1bd6fbe7217aa787464c358d68c766360070b3800cb39fdca0782e5edc",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "4520a10fff4f6c19503460bb785dfab973e1e305daa98dfd594d4b7adf520ce8",
+        "greenOutputSha256": "578e82c3eddccee4d49ce7c92c22b901f832feef7890ddc9b2f896785f0c276b",
+        "additionalPrintedLines": 0,
+        "before": "native=Promise.resolve().then(()=>record.runtime?.dispose())",
+        "after": "native=Promise.resolve().then(async()=>{await this.#downloads.get(record)?.binding.dispose();return record.runtime?.dispose()})"
+      },
+      {
+        "name": "idle-preflightResumeTabs",
+        "file": "lib/browser-profile-runtime.mjs",
+        "changedLines": [
+          {
+            "number": 393,
+            "text": "    this.assertCurrent()"
+          },
+          {
+            "number": 394,
+            "text": "    return this._captureResumeTabs()"
+          },
+          {
+            "number": 395,
+            "text": "  }"
+          }
+        ],
+        "test": "test/browser-profile-downloads-runtime.test.ts",
+        "pattern": "^the Runtime refuses transfer",
+        "originalSha256": "f87d76ab2d683a08674d0056db33449f90f8b58aaea3ba7d15a75b7eb387b021",
+        "mutatedSha256": "91e79cfcfaed96072130de80e8f88c199f580ed715d58905bb3d666fed452ede",
+        "restoredSha256": "f87d76ab2d683a08674d0056db33449f90f8b58aaea3ba7d15a75b7eb387b021",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "5f9408d491712aace8f054e4198177cb64af0449616612992e6d00a6d4dd71a1",
+        "greenOutputSha256": "132960dcb0f5d89a48146a9db6a8571f9f815fcb2d4eafc81d48c5021dde56e9",
+        "additionalPrintedLines": 257,
+        "before": "async preflightResumeTabs() {\n    this.downloadBinding?.assertIdle()",
+        "after": "async preflightResumeTabs() {"
+      },
+      {
+        "name": "idle-assertMovable",
+        "file": "lib/browser-profile-runtime.mjs",
+        "changedLines": [
+          {
+            "number": 436,
+            "text": "    await Promise.all([...this.frameJobs]); if (this.inventoryFailure) throw fail(this.inventoryFailure)"
+          },
+          {
+            "number": 437,
+            "text": "    await this.ledger.inventory(this.contextId); this.ledger.assertIdle(this.contextId)"
+          },
+          {
+            "number": 438,
+            "text": "    for (const page of this.context.pages()) if (!this.pages.has(page)) throw fail('profile_page_untracked')"
+          }
+        ],
+        "test": "test/browser-profile-downloads-runtime.test.ts",
+        "pattern": "^the Runtime refuses transfer",
+        "originalSha256": "f87d76ab2d683a08674d0056db33449f90f8b58aaea3ba7d15a75b7eb387b021",
+        "mutatedSha256": "35500209012a6cd68e8b65044e7044cd4c28dfa97a118f0e996f45d42aba3f89",
+        "restoredSha256": "f87d76ab2d683a08674d0056db33449f90f8b58aaea3ba7d15a75b7eb387b021",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "23add9a0ddcdc2fa97333eeaf04127311909035ec5f8f8f3c5d4c67fd2b59f4b",
+        "greenOutputSha256": "afe869d9afdffa2a0718a21edb6f1eac387cd9430380a1ab182001e56ecc7ea1",
+        "additionalPrintedLines": 214,
+        "before": "async assertMovable() {\n    this.downloadBinding?.assertIdle()",
+        "after": "async assertMovable() {"
+      },
+      {
+        "name": "idle-_assertDocumentSafety",
+        "file": "lib/browser-profile-runtime.mjs",
+        "changedLines": [
+          {
+            "number": 446,
+            "text": "    await this.assertTransferAllowed?.({ authority: this.authority, context: this.context })"
+          },
+          {
+            "number": 447,
+            "text": "    const expression = DOCUMENT_SAFETY_EXPRESSION"
+          },
+          {
+            "number": 448,
+            "text": "    for (const page of this.context.pages()) if (!this.privatePages.has(page)) {"
+          }
+        ],
+        "test": "test/browser-profile-downloads-runtime.test.ts",
+        "pattern": "^the Runtime refuses transfer",
+        "originalSha256": "f87d76ab2d683a08674d0056db33449f90f8b58aaea3ba7d15a75b7eb387b021",
+        "mutatedSha256": "bb6fe59162ca4cd8fea3349ce36e0067cbb159acf24206ac36ebe4e9450a9a0a",
+        "restoredSha256": "f87d76ab2d683a08674d0056db33449f90f8b58aaea3ba7d15a75b7eb387b021",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "1f390d45c5f7257dcf25b2f24a9918694f7de295a4b05afc9e9a50f765ac0252",
+        "greenOutputSha256": "514390ad55f9a2a6ec6852c22abbecb2fc88ef11796ced77d4a756ee1924b424",
+        "additionalPrintedLines": 204,
+        "before": "async _assertDocumentSafety() {\n    this.downloadBinding?.assertIdle()",
+        "after": "async _assertDocumentSafety() {"
+      },
+      {
+        "name": "idle-finalize",
+        "file": "lib/browser-profile-runtime.mjs",
+        "changedLines": [
+          {
+            "number": 539,
+            "text": "    context = structuredClone(context); this._context(context, 'source')"
+          },
+          {
+            "number": 540,
+            "text": "    source = { identity: structuredClone(source?.identity), signingPrivateKey: source?.signingPrivateKey, encryptionPrivateKey: source?.encryptionPrivateKey }; destinationIdentity = structuredClone(destinationIdentity)"
+          },
+          {
+            "number": 541,
+            "text": "    if (profileCrypto.identityFingerprint(source.identity) !== this.authority.keyFingerprint || contentKeyEpoch?.epoch !== this.authority.contentKeyEpoch || !Buffer.isBuffer(contentKeyEpoch.key) || contentKeyEpoch.key.length !== 32) throw fail('profile_runtime_identity_mismatch')"
+          }
+        ],
+        "test": "test/browser-profile-downloads-runtime.test.ts",
+        "pattern": "^the Runtime refuses transfer",
+        "originalSha256": "f87d76ab2d683a08674d0056db33449f90f8b58aaea3ba7d15a75b7eb387b021",
+        "mutatedSha256": "bd8acaaf6352397214fe20bd9d462d1851260f7a51a5b56b975ff21340dbe807",
+        "restoredSha256": "f87d76ab2d683a08674d0056db33449f90f8b58aaea3ba7d15a75b7eb387b021",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "674adefef399cc85c4d3b4bd55e222a0ca085c3ac351be2bb9fcae2c3296bbdb",
+        "greenOutputSha256": "cb4c61c23dcf24307f25b441e345ae65f18132726e613bd038adc8bed781e805",
+        "additionalPrintedLines": 111,
+        "before": "async finalize({ context, source, destinationIdentity, contentKeyEpoch }) {\n    this.downloadBinding?.assertIdle()",
+        "after": "async finalize({ context, source, destinationIdentity, contentKeyEpoch }) {"
+      }
+    ],
+    "sharedSourceUnchanged": true,
+    "rawIncludesEveryPrintedChangedLine": true
+  },
+  "native": {
+    "completeAcceptance": false,
+    "image": {
+      "kind": "private immutable exact overlay for native download qualification",
+      "baseCommit": "abf9500546a51d013e1a1a7501670ae34b729507",
+      "archiveSha256": "bdf9c8d44d7c7dacd94fbb73991df3a2f300a87fb538fee84d68361df2a9b07c",
+      "archiveBytes": 15861760,
+      "image": "hoai-download-native:bdf9c8d44d7c",
+      "imageId": "sha256:665b10862023169262939bdf137e401a87d02103025192a7ea4ff124a4650500",
+      "remote": "/tmp/hoai-download-native.GINhbB",
+      "overlays": [
+        {
+          "path": "lib/browser-profile-downloads.mjs",
+          "sha256": "2ea88be1c60d76eba57398dd57b0e6f744de94fc94dce76f8769a4e1fc8594ab"
+        },
+        {
+          "path": "lib/browser-profile-downloads-runtime.mjs",
+          "sha256": "28fa481916e904370b106c05f91dfadf189b845e17161ec1f41f6581016b6716"
+        },
+        {
+          "path": "lib/browser-profile-runtime.mjs",
+          "sha256": "f87d76ab2d683a08674d0056db33449f90f8b58aaea3ba7d15a75b7eb387b021"
+        },
+        {
+          "path": "lib/browser-profile-companion.mjs",
+          "sha256": "406b5e1bd6fbe7217aa787464c358d68c766360070b3800cb39fdca0782e5edc"
+        },
+        {
+          "path": "bin/hoai-browser-host.mjs",
+          "sha256": "4357c358a22ef1d423e25d3131a69a15edf21253d9c2c4b8a88d19b9abc96f2d"
+        },
+        {
+          "path": "scripts/probe-browser-profile-downloads.mjs",
+          "sha256": "bc19a7ed2eb0a1a053476fcd2e9ade52818bfba8b19035b25d2ed542b3161c69"
+        }
+      ]
+    },
+    "normal": {
+      "mode": "normal",
+      "browserVersion": "153.0.8010.12",
+      "actualUid": 1000,
+      "quarantineMode": "0700",
+      "defaultSandbox": true,
+      "privatePipe": true,
+      "explicitPrivateDownloadPath": true,
+      "earlyContextAndEngineHandlers": true,
+      "engineDownloadEvents": 1,
+      "accepted": 1,
+      "scheduledServerBytes": 7936,
+      "contentHash": "b63398023edb9682673e2410370d4d648360ee54ff79ccc4ee95e420e05e3cbf",
+      "deadlineMs": 10000,
+      "observationMs": 5,
+      "boundedProbeConfiguration": true,
+      "originalBrowserGroupMembers": 11,
+      "allOriginalAndLaterGroupMembersGone": true,
+      "ownedBrowserGone": true,
+      "rawDirectoryAbsent": true,
+      "physicalOperations": 0,
+      "cleanupUnknown": false
+    },
+    "slow": {
+      "state": "failed-open-acceptance",
+      "reason": "PW failure() returned canceled and cancel() fulfilled, but Download.delete rejected download.delete: canceled while both original GUID paths were already absent. No error was suppressed; manager conservatively retained uncertainty and owned stop."
+    },
+    "overflow": "not reached",
+    "containerCleanup": {
+      "kind": "container-cleanup",
+      "exactName": "hoai-download-native-b79b1f2e-5bb8-42bb-8bd4-3bd0908f6c37",
+      "removed": true,
+      "positiveInventoryAbsent": true,
+      "forcedStop": false
+    },
+    "receiptSha256": "b90aaea5e60dfb993f057106b1b6c633fea667014143475578e9dda7c9caaa0a",
+    "diagnosticSha256": "9830bd230a68ba16162c42f71dca3f7c2f5dff7a0e2ce7e140dd1a5255e48379",
+    "productChangedDuringProbe": false
+  },
+  "excludedDiagnostics": [
+    "An initial copied Runtime-manager omission left a dangling comma and produced a parse error. It is excluded; the final valid empty-spread mutation produced a direct assertion failure and all twenty-six final drills passed.",
+    "An initial Docker default-seccomp run refused before native startup; a second attempted seccomp path under /tmp was invisible to the Docker client namespace. Both are excluded and positively cleaned. The actual normal case and slow failure use the established qualified profile under an owned /home/karim directory with drop ALL/add SYS_CHROOT and no sandbox-disable flag.",
+    "Initial synthetic TypeScript fixture shapes were corrected without changing product authorization."
+  ],
+  "scope": {
+    "explicitRecipientFileConsentUnchanged": true,
+    "hoaiTransportUnchanged": true,
+    "peerToPeer": false,
+    "newWebsitePermission": false,
+    "newDownloadByteReleasePermission": false,
+    "syntheticUnitUidMode": true,
+    "nativeAuthorityIsSynthetic": true,
+    "nativeLiteralLoopbackOnly": true,
+    "crossMachineDownloadRelease": false,
+    "production": false,
+    "acceptanceStillOpen": true
+  },
+  "raw": {
+    "report.json": "09852359bc60c7ea0b9b48fd01bd6320f44304349ff3a0875706b64272a241a0",
+    "run.txt": "be3e61224ad78f9862426a18e3f6d54e03eed20e39a0f5fce2abc4d8c3099ab1",
+    "final-tests.txt": "405844298b656ab9181c8dac5d6b3389b0ee4c37bc88389abf07bfc3d5d121a8",
+    "tsc.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

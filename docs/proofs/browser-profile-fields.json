@@ -1,0 +1,639 @@
+{
+  "scope": "Managed plaintext fields foundation; actual HOAI composition remains a separate acceptance gate",
+  "sourceSHA256": {
+    "lib/browser-profile-field-input.mjs": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+    "lib/browser-profile-companion.mjs": "a0445e427a5a1d722b82f19465e25f3b960d6d2ef6434a192be2aa11a735044c",
+    "lib/browser-profile-permission-client.mjs": "3e70a642ee1bcab3662ea2abf4bfee32aa3fd846831f896a628fc3f1a83b3f64",
+    "lib/browser-profile-permission-runner.mjs": "3a9ecfbd7586a211394914f8b10939eb85abd2bebbfd88c1aa66eb6858e86d65",
+    "scripts/probe-browser-profile-fields.mjs": "945d44c4717b2975c1c63188fbb57b71e35b7a215a6d69a27fdf206046363a44"
+  },
+  "unitTests": {
+    "pluginTouched": 62,
+    "mainTouched": 29,
+    "backendTouched": 20,
+    "skipped": 0,
+    "pluginTypecheckExit": 0,
+    "backendTypecheckExit": 0,
+    "frontendTypecheckExit": 0
+  },
+  "nativeQualification": {
+    "baseline": {
+      "rawSHA256": "4d54e07d2b59b2334c78ef12001e8fafce7208c714ce6287bded071d47f15b52",
+      "probeSHA256": "945d44c4717b2975c1c63188fbb57b71e35b7a215a6d69a27fdf206046363a44",
+      "helperSHA256": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+      "imageId": "sha256:a281d5412a5b0763f8ed5e9bd643b8ecaca8bc0ebdee8a055489169c5ad95829",
+      "sshExit": 0,
+      "exit": 0,
+      "containerAbsent": true,
+      "forcedStop": false,
+      "result": {
+        "kind": "actual product field helper over pinned native MCP and utility adapter",
+        "qualified": true,
+        "version": "153.0.8010.12",
+        "uid": 1000,
+        "bundleSha256": "549070af3acabb3efcc4f55bfe6210f9f7c2fcf633cf7eaa59bfe60719969171",
+        "cases": [
+          {
+            "case": "normal input and textarea through actual snapshot refs and isolated exact handles",
+            "passed": true
+          },
+          {
+            "case": "native associated labels and aria purposes admit generated identifiers",
+            "passed": true
+          },
+          {
+            "case": "credential signals in the native owning form refuse an ordinary field label",
+            "passed": true
+          },
+          {
+            "case": "credential labels on another native form control refuse an ordinary field",
+            "passed": true
+          },
+          {
+            "case": "password and OTP native classifications refuse before any batch write",
+            "passed": true
+          },
+          {
+            "case": "unknown plaintext semantics refuse",
+            "passed": true
+          },
+          {
+            "case": "same selector replacement cannot retarget the original handle",
+            "passed": true
+          },
+          {
+            "case": "type and autocomplete races refuse all fields before writes",
+            "passed": true
+          },
+          {
+            "case": "page prototype overrides cannot disguise credential fields or intercept native setters",
+            "passed": true
+          },
+          {
+            "case": "page focus-changing handlers cannot redirect value assignment to a password",
+            "passed": true
+          },
+          {
+            "case": "navigation away and back invalidates original document despite equal URL",
+            "passed": true
+          },
+          {
+            "case": "revoked one-use native authority refuses",
+            "passed": true
+          },
+          {
+            "case": "snapshot refs that resolve to a real subframe refuse without changing a main field",
+            "passed": true
+          },
+          {
+            "case": "page event mutation after native batch writes is uncertain and never retried",
+            "passed": true
+          }
+        ],
+        "syntheticPermission": true,
+        "noProductEnablement": true,
+        "noAgentTextInReceipt": true,
+        "ownedBrowserGone": true,
+        "unsupported": [
+          "global keyboard",
+          "slowly and submit flags",
+          "contenteditable or unknown semantics",
+          "subframes",
+          "non-textbox fill_form fields"
+        ],
+        "notClaimed": "Companion enablement, HOAI permission composition, native trusted keyboard semantics or production rollout"
+      }
+    },
+    "mutation": {
+      "rawSHA256": "8ce7d52af337aae02fea089f81f821c45ab02352e758fedb544a6e213280075e",
+      "probeSHA256": "945d44c4717b2975c1c63188fbb57b71e35b7a215a6d69a27fdf206046363a44",
+      "helperSHA256": "ec64daa5fefc09f5ae07ff0575d8248275441eb05bb41e4304c44bb09f764fb9",
+      "imageId": "sha256:37119413c4bcd22ccd7035e2ec75a9b2556e324a9bb431395d923c2bd35c956b",
+      "sshExit": 1,
+      "exit": 1,
+      "containerAbsent": true,
+      "forcedStop": false,
+      "result": {
+        "kind": "isolated field prototype failed",
+        "phase": "same selector replacement cannot retarget the original handle",
+        "errorKind": "AssertionError"
+      }
+    },
+    "restored": {
+      "rawSHA256": "4d54e07d2b59b2334c78ef12001e8fafce7208c714ce6287bded071d47f15b52",
+      "probeSHA256": "945d44c4717b2975c1c63188fbb57b71e35b7a215a6d69a27fdf206046363a44",
+      "helperSHA256": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+      "imageId": "sha256:a281d5412a5b0763f8ed5e9bd643b8ecaca8bc0ebdee8a055489169c5ad95829",
+      "sshExit": 0,
+      "exit": 0,
+      "containerAbsent": true,
+      "forcedStop": false,
+      "result": {
+        "kind": "actual product field helper over pinned native MCP and utility adapter",
+        "qualified": true,
+        "version": "153.0.8010.12",
+        "uid": 1000,
+        "bundleSha256": "549070af3acabb3efcc4f55bfe6210f9f7c2fcf633cf7eaa59bfe60719969171",
+        "cases": [
+          {
+            "case": "normal input and textarea through actual snapshot refs and isolated exact handles",
+            "passed": true
+          },
+          {
+            "case": "native associated labels and aria purposes admit generated identifiers",
+            "passed": true
+          },
+          {
+            "case": "credential signals in the native owning form refuse an ordinary field label",
+            "passed": true
+          },
+          {
+            "case": "credential labels on another native form control refuse an ordinary field",
+            "passed": true
+          },
+          {
+            "case": "password and OTP native classifications refuse before any batch write",
+            "passed": true
+          },
+          {
+            "case": "unknown plaintext semantics refuse",
+            "passed": true
+          },
+          {
+            "case": "same selector replacement cannot retarget the original handle",
+            "passed": true
+          },
+          {
+            "case": "type and autocomplete races refuse all fields before writes",
+            "passed": true
+          },
+          {
+            "case": "page prototype overrides cannot disguise credential fields or intercept native setters",
+            "passed": true
+          },
+          {
+            "case": "page focus-changing handlers cannot redirect value assignment to a password",
+            "passed": true
+          },
+          {
+            "case": "navigation away and back invalidates original document despite equal URL",
+            "passed": true
+          },
+          {
+            "case": "revoked one-use native authority refuses",
+            "passed": true
+          },
+          {
+            "case": "snapshot refs that resolve to a real subframe refuse without changing a main field",
+            "passed": true
+          },
+          {
+            "case": "page event mutation after native batch writes is uncertain and never retried",
+            "passed": true
+          }
+        ],
+        "syntheticPermission": true,
+        "noProductEnablement": true,
+        "noAgentTextInReceipt": true,
+        "ownedBrowserGone": true,
+        "unsupported": [
+          "global keyboard",
+          "slowly and submit flags",
+          "contenteditable or unknown semantics",
+          "subframes",
+          "non-textbox fill_form fields"
+        ],
+        "notClaimed": "Companion enablement, HOAI permission composition, native trusted keyboard semantics or production rollout"
+      }
+    },
+    "changedExecutableLine": "    const check=()=>ticket.native.now()>=ticket.started&&ticket.native.now()<ticket.expiresAt&&ticket.document===document&&location.href===ticket.documentURL&&ticket.rows.every(row=>row.form===ticket.formOf(row.node)&&true)",
+    "line": 84,
+    "permission": "synthetic exact main authority; no real account or HOAI permission decision",
+    "network": "none",
+    "uid": 1000,
+    "sandboxed": true
+  },
+  "mutations": [
+    {
+      "id": "unsupported-entry-modes",
+      "file": "lib/browser-profile-field-input.mjs",
+      "line": 22,
+      "changedExecutableLine": "    if(false)throw fail('profile_field_handover_required')",
+      "sourceSHA256": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+      "mutantSHA256": "b32599a77defa60f59a3f6416d4db2bb04cf2b74fcb8383c5647c6013eaad9f3",
+      "restoredSHA256": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+      "redExit": 1,
+      "restoredExit": 0,
+      "test": "test/browser-profile-field-input.test.ts",
+      "pattern": "unsupported mode flags",
+      "loaderExecuted": true,
+      "workspaceUnchanged": true
+    },
+    {
+      "id": "duplicate-batch-target",
+      "file": "lib/browser-profile-field-input.mjs",
+      "line": 36,
+      "changedExecutableLine": "  if(fields.some(field=>typeof field.target!=='string'||!/^(?:f[0-9]{1,8})?e[0-9]{1,8}$/.test(field.target)||field.element!==undefined&&(typeof field.element!=='string'||field.element.length>512)||typeof field.value!=='string'||Buffer.byteLength(field.value)>MAX_VALUE||field.value.includes('\\0'))||false||fields.reduce((sum,field)=>sum+Buffer.byteLength(field.value),0)>MAX_TOTAL)throw fail('profile_field_arguments_invalid')",
+      "sourceSHA256": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+      "mutantSHA256": "a13629c8b14117854188d7b8b3e3788efa62b1eeab87d21398ed1c335859e950",
+      "restoredSHA256": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+      "redExit": 1,
+      "restoredExit": 0,
+      "test": "test/browser-profile-field-input.test.ts",
+      "pattern": "bounded textbox batches",
+      "loaderExecuted": true,
+      "workspaceUnchanged": true
+    },
+    {
+      "id": "original-signed-values",
+      "file": "lib/browser-profile-field-input.mjs",
+      "line": 163,
+      "changedExecutableLine": "    try{if(false)throw fail('profile_field_context_changed')}catch{await this.cancel(capability);throw fail('profile_field_context_changed')}",
+      "sourceSHA256": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+      "mutantSHA256": "71e79047fea52166ffc4686f92c677faa693a5ba1fa3ce3f464d42f5cde6134b",
+      "restoredSHA256": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+      "redExit": 1,
+      "restoredExit": 0,
+      "test": "test/browser-profile-field-input.test.ts",
+      "pattern": "another helper, forged capability",
+      "loaderExecuted": true,
+      "workspaceUnchanged": true
+    },
+    {
+      "id": "original-abort-signal",
+      "file": "lib/browser-profile-field-input.mjs",
+      "line": 161,
+      "changedExecutableLine": "    if(!record||record.used||record.name!==name||false)throw fail('profile_field_context_changed')",
+      "sourceSHA256": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+      "mutantSHA256": "033e72c16315d1acb0eee45fc67833ffeac83b801c08798dca4e3417f7fd938c",
+      "restoredSHA256": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+      "redExit": 1,
+      "restoredExit": 0,
+      "test": "test/browser-profile-field-input.test.ts",
+      "pattern": "another helper, forged capability",
+      "loaderExecuted": true,
+      "workspaceUnchanged": true
+    },
+    {
+      "id": "fresh-native-authority",
+      "file": "lib/browser-profile-field-input.mjs",
+      "line": 116,
+      "changedExecutableLine": "    record.signal.throwIfAborted();const now=this.now()",
+      "sourceSHA256": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+      "mutantSHA256": "5aafe5c8246507bdbeb974d0c9bc69c78dc7b5d1ea08ba013cbc18d86ddd05e7",
+      "restoredSHA256": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+      "redExit": 1,
+      "restoredExit": 0,
+      "test": "test/browser-profile-field-input.test.ts",
+      "pattern": "page, URL, navigation history",
+      "loaderExecuted": true,
+      "workspaceUnchanged": true
+    },
+    {
+      "id": "original-selected-page",
+      "file": "lib/browser-profile-field-input.mjs",
+      "line": 117,
+      "changedExecutableLine": "    if(this.#disposed||this.#cleanupUnknown||this.#writeUnknown||record.cancelled||!Number.isSafeInteger(now)||now<record.started||now>=record.deadline||record.changed||this.runtime!==record.runtime||this.engine!==record.engine||false||record.page.isClosed()||record.page.url()!==record.url||this.engine._backend!==record.backend||record.backend._context!==record.context||record.context.currentTab()!==record.tab||record.tab.page!==record.page)throw fail('profile_field_context_changed')",
+      "sourceSHA256": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+      "mutantSHA256": "a52e54909d2628968ca365694d0e7feef44d4a9932bd13a0f64aaaf3c0159b8b",
+      "restoredSHA256": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+      "redExit": 1,
+      "restoredExit": 0,
+      "test": "test/browser-profile-field-input.test.ts",
+      "pattern": "page, URL, navigation history",
+      "loaderExecuted": true,
+      "workspaceUnchanged": true
+    },
+    {
+      "id": "native-main-frame",
+      "file": "lib/browser-profile-field-input.mjs",
+      "line": 150,
+      "changedExecutableLine": "        const fields=record.handles.map(handle=>{if(handle._connection!==connection)throw fail('profile_field_native_unqualified');const native=connection.toImpl(handle);if(native?._page!==nativePage||false)throw fail('profile_field_native_unqualified');return native})",
+      "sourceSHA256": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+      "mutantSHA256": "9a1fbafb6135391034c96566bfcb451dfcdb05a117ccc7c405486579afea9f17",
+      "restoredSHA256": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+      "redExit": 1,
+      "restoredExit": 0,
+      "test": "test/browser-profile-field-input.test.ts",
+      "pattern": "different native page, subframe",
+      "loaderExecuted": true,
+      "workspaceUnchanged": true
+    },
+    {
+      "id": "native-handle-connection",
+      "file": "lib/browser-profile-field-input.mjs",
+      "line": 150,
+      "changedExecutableLine": "        const fields=record.handles.map(handle=>{if(false)throw fail('profile_field_native_unqualified');const native=connection.toImpl(handle);if(native?._page!==nativePage||native?._frame!==nativeFrame)throw fail('profile_field_native_unqualified');return native})",
+      "sourceSHA256": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+      "mutantSHA256": "94b39f018d34618bcf9d60e53df1c991612ffec7c2869b9b87b70e8a71eb8be3",
+      "restoredSHA256": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+      "redExit": 1,
+      "restoredExit": 0,
+      "test": "test/browser-profile-field-input.test.ts",
+      "pattern": "different native page, subframe",
+      "loaderExecuted": true,
+      "workspaceUnchanged": true
+    },
+    {
+      "id": "clean-utility-world",
+      "file": "lib/browser-profile-field-input.mjs",
+      "line": 152,
+      "changedExecutableLine": "        if(false||typeof utility.evaluateHandle!=='function')throw fail('profile_field_native_unqualified')",
+      "sourceSHA256": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+      "mutantSHA256": "41f0d04b30b797878bad47db74ee1bdc1b6f2d82cbf9bc92df67cd764db3c08e",
+      "restoredSHA256": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+      "redExit": 1,
+      "restoredExit": 0,
+      "test": "test/browser-profile-field-input.test.ts",
+      "pattern": "different native page, subframe",
+      "loaderExecuted": true,
+      "workspaceUnchanged": true
+    },
+    {
+      "id": "ticket-capture-cleanup",
+      "file": "lib/browser-profile-field-input.mjs",
+      "line": 124,
+      "changedExecutableLine": "      if(false)work.push(()=>record.ticket.dispose())",
+      "sourceSHA256": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+      "mutantSHA256": "decb437d91f6d3418a553522471bc67c1051a324ea2b13b1cd82e8bbe707b779",
+      "restoredSHA256": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+      "redExit": 1,
+      "restoredExit": 0,
+      "test": "test/browser-profile-field-input.test.ts",
+      "pattern": "native refusal and capture readback",
+      "loaderExecuted": true,
+      "workspaceUnchanged": true
+    },
+    {
+      "id": "independent-handle-cleanup",
+      "file": "lib/browser-profile-field-input.mjs",
+      "line": 125,
+      "changedExecutableLine": "      for(const handle of [])work.push(()=>handle.dispose())",
+      "sourceSHA256": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+      "mutantSHA256": "5acb748075aad27378403de978b3ea8850e811327df24dca1f35beba8536a0f3",
+      "restoredSHA256": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+      "redExit": 1,
+      "restoredExit": 0,
+      "test": "test/browser-profile-field-input.test.ts",
+      "pattern": "exact original MCP field handles",
+      "loaderExecuted": true,
+      "workspaceUnchanged": true
+    },
+    {
+      "id": "physical-cleanup-latch",
+      "file": "lib/browser-profile-field-input.mjs",
+      "line": 180,
+      "changedExecutableLine": "    while(this.#physical.size)await Promise.allSettled([...this.#physical]);if(false)throw fail('profile_field_cleanup_unconfirmed')",
+      "sourceSHA256": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+      "mutantSHA256": "7e74c00a46e7cfe354e674936de394cc859fe63d79dce14df94ab0f4ee72ed92",
+      "restoredSHA256": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+      "redExit": 1,
+      "restoredExit": 0,
+      "test": "test/browser-profile-field-input.test.ts",
+      "pattern": "independent ticket and handle cleanup failure",
+      "loaderExecuted": true,
+      "workspaceUnchanged": true
+    },
+    {
+      "id": "unknown-native-write-latch",
+      "file": "lib/browser-profile-field-input.mjs",
+      "line": 169,
+      "changedExecutableLine": "        if(result?.state==='outcome-unknown'||!['applied','refused'].includes(result?.state)){this.#writeUnknown=false;throw fail('profile_field_outcome_unknown')}",
+      "sourceSHA256": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+      "mutantSHA256": "3c4cd5bbdc0d0b6d6932743f3bea7f122f8fcaeca29858cb7930b71d6c355525",
+      "restoredSHA256": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+      "redExit": 1,
+      "restoredExit": 0,
+      "test": "test/browser-profile-field-input.test.ts",
+      "pattern": "native exception, partial event outcome",
+      "loaderExecuted": true,
+      "workspaceUnchanged": true
+    },
+    {
+      "id": "concurrent-one-use-capability",
+      "file": "lib/browser-profile-field-input.mjs",
+      "line": 162,
+      "changedExecutableLine": "    record.used=false",
+      "sourceSHA256": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+      "mutantSHA256": "9ce1845e2f44814d4155df04db2464a68a51b2235a2c81713ae02c597ccca3ad",
+      "restoredSHA256": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+      "redExit": 1,
+      "restoredExit": 0,
+      "test": "test/browser-profile-field-input.test.ts",
+      "pattern": "one native capability cannot",
+      "loaderExecuted": true,
+      "workspaceUnchanged": true
+    },
+    {
+      "id": "native-all-fields-before-write",
+      "file": "lib/browser-profile-field-input.mjs",
+      "line": 84,
+      "changedExecutableLine": "    const check=()=>ticket.native.now()>=ticket.started&&ticket.native.now()<ticket.expiresAt&&ticket.document===document&&location.href===ticket.documentURL&&ticket.rows.every(row=>row.form===ticket.formOf(row.node)&&true)",
+      "sourceSHA256": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+      "mutantSHA256": "ec64daa5fefc09f5ae07ff0575d8248275441eb05bb41e4304c44bb09f764fb9",
+      "restoredSHA256": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+      "redExit": 1,
+      "restoredExit": 0,
+      "test": "test/browser-profile-field-input.test.ts",
+      "pattern": "native synchronous batch validation",
+      "loaderExecuted": true,
+      "workspaceUnchanged": true
+    },
+    {
+      "id": "native-ticket-single-use",
+      "file": "lib/browser-profile-field-input.mjs",
+      "line": 81,
+      "changedExecutableLine": "  ticket.consumed=false",
+      "sourceSHA256": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+      "mutantSHA256": "e02047c809484ae0f79da96b4f5408de706744ef926cdbd72494243351fe98f1",
+      "restoredSHA256": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+      "redExit": 1,
+      "restoredExit": 0,
+      "test": "test/browser-profile-field-input.test.ts",
+      "pattern": "native synchronous batch validation",
+      "loaderExecuted": true,
+      "workspaceUnchanged": true
+    },
+    {
+      "id": "native-partial-write-unknown",
+      "file": "lib/browser-profile-field-input.mjs",
+      "line": 98,
+      "changedExecutableLine": "  }catch{return{state:'refused'}}",
+      "sourceSHA256": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+      "mutantSHA256": "6a05d9d156dd85394a90fa87ef26cbe4b9b9562dd955adcbb60308b611251620",
+      "restoredSHA256": "75395383568ba787d0d0b3864a579a4a17f29a53991b1c4f7fbe8668b8233507",
+      "redExit": 1,
+      "restoredExit": 0,
+      "test": "test/browser-profile-field-input.test.ts",
+      "pattern": "native setter or dispatch interruption",
+      "loaderExecuted": true,
+      "workspaceUnchanged": true
+    },
+    {
+      "id": "companion-exact-executor",
+      "file": "lib/browser-profile-companion.mjs",
+      "line": 360,
+      "changedExecutableLine": "        try{capability=await fields.prepare({name,args,signal:controller.signal,deadlineAt:execution.frame.deadlineAt});check();return await this.permissionRunner.run({frame:execution.frame,binding:execution.binding,endpoint:record.endpoint,engine,assertCurrent:check,signal:controller.signal,execute:(tool,originalArgs,originalSignal)=>engine.callTool(tool,originalArgs,originalSignal)})}",
+      "sourceSHA256": "a0445e427a5a1d722b82f19465e25f3b960d6d2ef6434a192be2aa11a735044c",
+      "mutantSHA256": "e366280db3760471764536e724ac333e2a858b63a1199286bc74e4ca394ab2a9",
+      "restoredSHA256": "a0445e427a5a1d722b82f19465e25f3b960d6d2ef6434a192be2aa11a735044c",
+      "redExit": 1,
+      "restoredExit": 0,
+      "test": "test/browser-profile-companion-fields.test.ts",
+      "pattern": "actual endpoint and unchanged MCP relay",
+      "loaderExecuted": true,
+      "workspaceUnchanged": true
+    },
+    {
+      "id": "companion-unknown-admission",
+      "file": "lib/browser-profile-companion.mjs",
+      "line": 361,
+      "changedExecutableLine": "        finally{const results=await Promise.allSettled([()=>capability&&fields.cancel(capability),()=>this.permissionClient.whenDrained(),()=>this.permissionRunner.assertCleanupConfirmed()].map(callback=>Promise.resolve().then(callback)));if(record.permissionAbort===controller)record.permissionAbort=null;const activity=fields.activity();if(false){record.uncertain=true;record.admission='blocked';record.state='field_outcome_unknown';this._status(record,'field_outcome_unknown: explicit recovery required; the action is not retried')}if(results.some(result=>result.status==='rejected')){physicalClean=false;this.#permissionCleanupUnknown.add(record);throw fail('profile_field_cleanup_unconfirmed')}}",
+      "sourceSHA256": "a0445e427a5a1d722b82f19465e25f3b960d6d2ef6434a192be2aa11a735044c",
+      "mutantSHA256": "60fb482c39fecd5a9517952c9cac7796523afb6e937e9a47f23d39fd63a8e57a",
+      "restoredSHA256": "a0445e427a5a1d722b82f19465e25f3b960d6d2ef6434a192be2aa11a735044c",
+      "redExit": 1,
+      "restoredExit": 0,
+      "test": "test/browser-profile-companion-fields.test.ts",
+      "pattern": "an unknown native field write",
+      "loaderExecuted": true,
+      "workspaceUnchanged": true
+    },
+    {
+      "id": "native-stop-independent",
+      "file": "lib/browser-profile-companion.mjs",
+      "line": 401,
+      "changedExecutableLine": "    const task=Promise.resolve().then(async()=>{const failures=[];await record.runtimeCreating?.catch(()=>{});const native=Promise.resolve().then(async()=>{await this.#fieldRunners.get(record)?.runner.dispose();return record.runtime?.dispose()}),commands=Promise.resolve().then(()=>this._drainCommands(record)),files=Promise.resolve().then(()=>this.#fileRunners.get(record)?.runner.dispose()),fields=Promise.resolve().then(()=>this.#fieldRunners.get(record)?.runner.dispose());for(const result of await Promise.allSettled([native,commands,files,fields]))if(result.status==='rejected')failures.push(result.reason);for(const cleanup of [async()=>{await record.engineCreating?.catch(()=>{});await record.engine?.stop()},async()=>{await record.extrasCreating?.catch(()=>{});record.extras?.dispose()}])try{await cleanup()}catch(error){failures.push(error)}await Promise.allSettled([activation?.task,proof?.task].filter(Boolean));if(this.#activations.get(record)===activation)this.#activations.delete(record);record.contentKeyEpoch?.key.fill(0);record.contentKeyEpoch=null;if(failures.length)throw fail('profile_companion_stop_unconfirmed');record.relay?.close();this.#fileRunners.delete(record);this.#fieldRunners.delete(record);record.runtime=null;record.engine=null;record.extras=null;if(record.rpc){const rpc=record.rpc;this._trackPhysical(record,'rpc-close',Promise.resolve().then(()=>rpc.close()));record.rpc=null}})",
+      "sourceSHA256": "a0445e427a5a1d722b82f19465e25f3b960d6d2ef6434a192be2aa11a735044c",
+      "mutantSHA256": "85c71ede26c0e543bad885239a2c2fd5ff2618f30242cc05418412386f758457",
+      "restoredSHA256": "a0445e427a5a1d722b82f19465e25f3b960d6d2ef6434a192be2aa11a735044c",
+      "redExit": 1,
+      "restoredExit": 0,
+      "test": "test/browser-profile-companion-fields.test.ts",
+      "pattern": "runtime revocation starts physical shutdown",
+      "loaderExecuted": true,
+      "workspaceUnchanged": true
+    },
+    {
+      "id": "text-runner-method",
+      "file": "lib/browser-profile-permission-runner.mjs",
+      "line": 5,
+      "changedExecutableLine": "const METHODS = new Set(['browser_navigate', 'browser_click', 'browser_handle_dialog', 'browser_select_option', 'browser_file_upload', 'browser_pdf_save'])",
+      "sourceSHA256": "3a9ecfbd7586a211394914f8b10939eb85abd2bebbfd88c1aa66eb6858e86d65",
+      "mutantSHA256": "5965858cda603f60e4c74346fecd0be85a9322dea51511f8437e68919cffb487",
+      "restoredSHA256": "3a9ecfbd7586a211394914f8b10939eb85abd2bebbfd88c1aa66eb6858e86d65",
+      "redExit": 1,
+      "restoredExit": 0,
+      "test": "test/browser-profile-companion-fields.test.ts",
+      "pattern": "actual endpoint and unchanged MCP relay",
+      "loaderExecuted": true,
+      "workspaceUnchanged": true
+    },
+    {
+      "id": "fixed-text-kind",
+      "file": "lib/browser-profile-permission-client.mjs",
+      "line": 10,
+      "changedExecutableLine": "const METHODS = Object.freeze({ browser_navigate: 'navigate', browser_click: 'sensitive', browser_handle_dialog: 'sensitive', browser_select_option: 'write', browser_type: 'write', browser_fill_form: 'text', browser_file_upload: 'upload', browser_pdf_save: 'download' })",
+      "sourceSHA256": "3e70a642ee1bcab3662ea2abf4bfee32aa3fd846831f896a628fc3f1a83b3f64",
+      "mutantSHA256": "5da7ab69f495e9b1a42020b0b11ac48f3373435432403232c9ada86c31c54599",
+      "restoredSHA256": "3e70a642ee1bcab3662ea2abf4bfee32aa3fd846831f896a628fc3f1a83b3f64",
+      "redExit": 1,
+      "restoredExit": 0,
+      "test": "test/browser-profile-permission-client.test.ts",
+      "pattern": "supported text methods",
+      "loaderExecuted": true,
+      "workspaceUnchanged": true
+    },
+    {
+      "id": "native-review-label",
+      "file": "frontend/electron-app/agent-browser/profile-sync/runtime-permission-wire.js",
+      "line": 7,
+      "changedExecutableLine": "const LABELS = Object.freeze({ navigate: \"Open a website\", write: \"Change a page selection\", text: \"Change a page selection\", sensitive: \"Perform a page action\", upload: \"Upload a file\", download: \"Save a page as PDF\" });",
+      "sourceSHA256": "14658f0a8d937a4aad6f91c5f622c09a8de126beec97de9767e949cadaa4aecd",
+      "mutantSHA256": "e16cac2199631d72a982b3af3bbbf7e61399cca61b2e39768acecbd3b2614cba",
+      "restoredSHA256": "14658f0a8d937a4aad6f91c5f622c09a8de126beec97de9767e949cadaa4aecd",
+      "redExit": 1,
+      "restoredExit": 0,
+      "test": "frontend/electron-app/agent-browser/__tests__/profile-sync-native-runtime-permission-review.test.js",
+      "pattern": "text field permission",
+      "loaderExecuted": true,
+      "workspaceUnchanged": true
+    },
+    {
+      "id": "backend-stored-text-kind",
+      "file": "backend/src/agent-browser/profile-runtime-rpc.service.ts",
+      "line": 39,
+      "changedExecutableLine": "    const mapping:Record<string,PermissionKind>={browser_navigate:'navigate',browser_click:'sensitive',browser_handle_dialog:'sensitive',browser_select_option:'write',browser_type:'write',browser_fill_form:'text',browser_file_upload:'upload',browser_pdf_save:'download'};",
+      "sourceSHA256": "a96b00dae62e0f60ec134a7d2eb68851ec1dad2ec391450232bfb8e0c2c6fca1",
+      "mutantSHA256": "ceb00180fef187168d45610e480e22947d092c9bf42defda7cd5b003cb7ae0ea",
+      "restoredSHA256": "a96b00dae62e0f60ec134a7d2eb68851ec1dad2ec391450232bfb8e0c2c6fca1",
+      "redExit": 1,
+      "restoredExit": 0,
+      "test": "src/agent-browser/profile-runtime-permission.service.spec.ts",
+      "pattern": "text approval cannot",
+      "loaderExecuted": true,
+      "workspaceUnchanged": true
+    },
+    {
+      "id": "backend-fixed-text-label",
+      "file": "backend/src/agent-browser/profile-runtime-permission.dto.ts",
+      "line": 5,
+      "changedExecutableLine": "export const PERMISSION_LABELS = { navigate: 'Open a website', write: 'Change a page selection', text: 'Change a page selection', sensitive: 'Perform a page action', upload: 'Upload a file', download: 'Save a page as PDF' } as const;",
+      "sourceSHA256": "f01ab60da345e747fc8ce373d26437321ec42b2ee8fca37da85978806707aead",
+      "mutantSHA256": "0a8dc0e984846f68e2c41725dae116fb6a96990763ab1e9180a21996e72a8442",
+      "restoredSHA256": "f01ab60da345e747fc8ce373d26437321ec42b2ee8fca37da85978806707aead",
+      "redExit": 1,
+      "restoredExit": 0,
+      "test": "src/agent-browser/profile-runtime-permission.service.spec.ts",
+      "pattern": "text approval cannot",
+      "loaderExecuted": true,
+      "workspaceUnchanged": true
+    }
+  ],
+  "excludedTrials": [
+    "Native e-only snapshot syntax refusal before the bounded prefixed-main repair",
+    "Private runner encoding and Windows preload URL setup failures before any qualifying drill",
+    "Private mutation target-count mismatch before that mutation was loaded"
+  ],
+  "notClaimed": [
+    "Actual shipped Companion through HOAI permission",
+    "Physical keyboard semantics or arbitrary site compatibility",
+    "Production rollout",
+    "Credential entry automation"
+  ],
+  "checks": [
+    {
+      "cwd": "plugin",
+      "command": "node --import tsx --test test/browser-profile-field-input.test.ts test/browser-profile-companion-fields.test.ts test/browser-profile-permission-client.test.ts test/browser-profile-companion-permission.test.ts",
+      "passed": 62,
+      "skipped": 0
+    },
+    {
+      "cwd": "plugin",
+      "command": "node node_modules/typescript/bin/tsc --noEmit",
+      "exit": 0
+    },
+    {
+      "cwd": "BGOS/backend",
+      "command": "node node_modules/jest/bin/jest.js --runInBand --runTestsByPath src/agent-browser/profile-runtime-permission.service.spec.ts src/agent-browser/profile-runtime-permission.http.spec.ts",
+      "passed": 20,
+      "skipped": 0
+    },
+    {
+      "cwd": "BGOS/backend",
+      "command": "node node_modules/typescript/bin/tsc --noEmit",
+      "exit": 0
+    },
+    {
+      "cwd": "BGOS/frontend/electron-app",
+      "command": "node --test agent-browser/__tests__/profile-sync-native-runtime-permission-review.test.js agent-browser/__tests__/profile-sync-coordinator-client.test.js",
+      "passed": 29,
+      "skipped": 0
+    },
+    {
+      "cwd": "BGOS/frontend/expo-app",
+      "command": "node --max-old-space-size=8192 ../node_modules/typescript/bin/tsc --noEmit --incremental false",
+      "exit": 0
+    }
+  ]
+}

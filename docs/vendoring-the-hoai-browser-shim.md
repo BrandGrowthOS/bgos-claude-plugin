@@ -65,6 +65,26 @@ BGOS, then bring the copy across with this list.
    shim as `vendor/hoai-browser-mcp.mjs`; re-vendor it in the same round or say
    plainly that it is behind.
 
+## When this copy leads (0.72.0)
+
+Plugin 0.72.0 (BGOS mission 173) changed this copy before BGOS could: the
+desktop tree was being changed by other work at the time, and the agent side had
+to stop telling agents "the desktop app is not running" first. The change is in
+this repo's history (the 0.72.0 PR) and is recorded in the pin: `why` says what
+was added on top of the BGOS bytes it started from (`sourceCommit`), and
+`aheadOfSource` says that BGOS is now the side that must copy.
+
+1. **BGOS copies this file, byte for byte**, into
+   `frontend/electron-app/agent-browser/shim/hoai-browser-mcp.mjs`, bumps its own
+   pin (`hoai-browser-mcp.pin.json`) and ports `test/hoai-browser-mcp.refusals.test.ts`
+   to its shim suite.
+2. **Then this pin goes back to normal**: `sourceCommit` names the BGOS commit
+   that holds these bytes and `aheadOfSource` is removed.
+3. **Until then the armed cross-tree check fails, by design.** Run without
+   `HOAI_BROWSER_SHIM_SOURCE`, the guard still holds this copy to its pin.
+4. `codex-channel-bgos` ships its own copy (`vendor/hoai-browser-mcp.mjs`) and is
+   behind until it takes the same bytes.
+
 ## What none of this catches
 
 Nothing in THIS repo fires when the BGOS shim changes and this copy does not

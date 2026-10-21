@@ -1,0 +1,256 @@
+{
+  "feature": "exact restored-page selection through lazy actual Playwright MCP backend",
+  "source": {
+    "path": "bin/hoai-browser-host.mjs",
+    "sha256": "a5444ba3ef24d16a86474a83e313b34b6b5742233acd8d488f385b37c6351f5e"
+  },
+  "tests": {
+    "command": "node --import tsx --test test/browser-profile-engine-selection.test.ts test/browser-profile-companion-host.test.ts",
+    "passed": 13,
+    "skipped": 0,
+    "typecheck": "node node_modules/typescript/bin/tsc --noEmit: exit0"
+  },
+  "unitMutationProof": {
+    "baselineExit": 0,
+    "sourceSha256": "a5444ba3ef24d16a86474a83e313b34b6b5742233acd8d488f385b37c6351f5e",
+    "mutations": [
+      {
+        "name": "lazy-inventory",
+        "lineNumber": 1071,
+        "printedExecutableLine": "    void context",
+        "before": "await context.ensureBrowserContext()",
+        "after": "void context",
+        "mutantSha256": "9cfad940fefb385c3a8df84fbff05359024557cd68bcc694fd3b755b71d8140c",
+        "redExit": 1,
+        "restoredExit": 0,
+        "restoredSha256": "a5444ba3ef24d16a86474a83e313b34b6b5742233acd8d488f385b37c6351f5e"
+      },
+      {
+        "name": "initial-authority",
+        "lineNumber": 1067,
+        "printedExecutableLine": "    void this._managedRuntime",
+        "before": "this._managedRuntime?.assertCurrent()",
+        "after": "void this._managedRuntime",
+        "mutantSha256": "1e662f1c3b8c61fbf42659f23b41ab87c0e7f28f3bfa312982fa8115fc707285",
+        "redExit": 1,
+        "restoredExit": 0,
+        "restoredSha256": "a5444ba3ef24d16a86474a83e313b34b6b5742233acd8d488f385b37c6351f5e"
+      },
+      {
+        "name": "post-initialization-authority",
+        "lineNumber": 1072,
+        "printedExecutableLine": "    void this._managedRuntime",
+        "before": "this._managedRuntime?.assertCurrent()",
+        "after": "void this._managedRuntime",
+        "mutantSha256": "e4d38f1dac62ef9a4f778ff00b08b15fd9c3b5c224abe1cfc88bd987f7247917",
+        "redExit": 1,
+        "restoredExit": 0,
+        "restoredSha256": "a5444ba3ef24d16a86474a83e313b34b6b5742233acd8d488f385b37c6351f5e"
+      },
+      {
+        "name": "post-selection-authority",
+        "lineNumber": 1077,
+        "printedExecutableLine": "    void this._managedRuntime",
+        "before": "this._managedRuntime?.assertCurrent()",
+        "after": "void this._managedRuntime",
+        "mutantSha256": "398c5abeed30ce33b6a18c5f7232a6eb1c9ea72f777cf8ad09e1de3dd38a268f",
+        "redExit": 1,
+        "restoredExit": 0,
+        "restoredSha256": "a5444ba3ef24d16a86474a83e313b34b6b5742233acd8d488f385b37c6351f5e"
+      },
+      {
+        "name": "backend-continuity",
+        "lineNumber": 1073,
+        "printedExecutableLine": "    void backend",
+        "before": "if (this._backend !== backend || backend._context !== context) throw new Error('Browser tab is unavailable')",
+        "after": "void backend",
+        "mutantSha256": "071080c3d52f936614655fcd1315381a44c7b90fb1c5379b78d09fd8af1e4b2b",
+        "redExit": 1,
+        "restoredExit": 0,
+        "restoredSha256": "a5444ba3ef24d16a86474a83e313b34b6b5742233acd8d488f385b37c6351f5e"
+      },
+      {
+        "name": "exact-native-page",
+        "lineNumber": 1074,
+        "printedExecutableLine": "    const index = context.tabs().findIndex(tab => true)",
+        "before": "findIndex(tab => tab.page === page)",
+        "after": "findIndex(tab => true)",
+        "mutantSha256": "86774cf84ccbde09295ec08f00f3cc7d67c8de974a3e527955e05bb15c7316e3",
+        "redExit": 1,
+        "restoredExit": 0,
+        "restoredSha256": "a5444ba3ef24d16a86474a83e313b34b6b5742233acd8d488f385b37c6351f5e"
+      },
+      {
+        "name": "exact-selected-page",
+        "lineNumber": 1078,
+        "printedExecutableLine": "    if (this._backend !== backend || backend._context !== context) throw new Error('Browser tab is unavailable')",
+        "before": " || context.currentTab()?.page !== page",
+        "after": "",
+        "mutantSha256": "37606d242882a28f0f8074136a3a28a807613c4b8ae7057cc17e4bc3ff6420e9",
+        "redExit": 1,
+        "restoredExit": 0,
+        "restoredSha256": "a5444ba3ef24d16a86474a83e313b34b6b5742233acd8d488f385b37c6351f5e"
+      }
+    ],
+    "finalExit": 0,
+    "sharedSourceUnchanged": true
+  },
+  "nativeProof": {
+    "baseCommit": "8a33e9e4f2b4c016a8cc4c0128f868fa9639a05f",
+    "overlayImage": "hoai-profile-selection:draft-99f1f45b",
+    "overlayPaths": {
+      "bin/hoai-browser-host.mjs": "a5444ba3ef24d16a86474a83e313b34b6b5742233acd8d488f385b37c6351f5e",
+      "scripts/probe-browser-profile-resume.mjs": "ed0a4750e13274287520f723b6a021bc6a1a77ea2b87b198b096ccb202ee1560"
+    },
+    "uid": 1000,
+    "rows": [
+      {
+        "name": "baseline",
+        "exit": 0,
+        "sourceSha256": "a5444ba3ef24d16a86474a83e313b34b6b5742233acd8d488f385b37c6351f5e",
+        "report": {
+          "ok": true,
+          "browserVersion": "153.0.8010.12",
+          "uid": 1000,
+          "sandboxEnabled": true,
+          "privatePipe": true,
+          "checks": [
+            {
+              "name": "actual-completed-native-GET-order-selected-and-encrypted-schema2-capture",
+              "ok": true,
+              "tabCount": 3,
+              "selectedIndex": 0
+            },
+            {
+              "name": "zero-site-traffic-before-fresh-CAS-then-one-exact-reviewed-GET-and-imported-HTTPOnly-cookie-delivery",
+              "ok": true,
+              "review": "Synthetic constructor fixture proof, not real human approval or Companion role qualification"
+            },
+            {
+              "name": "actual-lazy-MCP-backend-selects-exact-restored-page-without-new-page-or-navigation",
+              "ok": true,
+              "tabCount": 3,
+              "selectedIndex": 0
+            }
+          ],
+          "reason": null,
+          "cleanup": {
+            "runtimes": [
+              {
+                "disconnected": true,
+                "ownedProcessGone": true,
+                "error": null
+              },
+              {
+                "disconnected": true,
+                "ownedProcessGone": true,
+                "error": null
+              }
+            ],
+            "serverClosed": true
+          },
+          "evidenceBoundary": "Actual disposable single-Linux runtime and site traffic; synthetic coordinator/CAS/review/extras. Full HOAI and two-machine role proof is separate."
+        }
+      },
+      {
+        "name": "omit-lazy-initialization",
+        "exit": 1,
+        "sourceSha256": "9cfad940fefb385c3a8df84fbff05359024557cd68bcc694fd3b755b71d8140c",
+        "report": {
+          "ok": false,
+          "browserVersion": null,
+          "uid": null,
+          "sandboxEnabled": null,
+          "privatePipe": null,
+          "checks": [
+            {
+              "name": "actual-completed-native-GET-order-selected-and-encrypted-schema2-capture",
+              "ok": true,
+              "tabCount": 3,
+              "selectedIndex": 0
+            },
+            {
+              "name": "zero-site-traffic-before-fresh-CAS-then-one-exact-reviewed-GET-and-imported-HTTPOnly-cookie-delivery",
+              "ok": true,
+              "review": "Synthetic constructor fixture proof, not real human approval or Companion role qualification"
+            }
+          ],
+          "reason": "Browser tab is unavailable",
+          "cleanup": {
+            "runtimes": [
+              {
+                "disconnected": true,
+                "ownedProcessGone": true,
+                "error": null
+              },
+              {
+                "disconnected": true,
+                "ownedProcessGone": true,
+                "error": null
+              }
+            ],
+            "serverClosed": true
+          },
+          "evidenceBoundary": null
+        },
+        "printedExecutableLine": "1071:     void context"
+      },
+      {
+        "name": "restored",
+        "exit": 0,
+        "sourceSha256": "a5444ba3ef24d16a86474a83e313b34b6b5742233acd8d488f385b37c6351f5e",
+        "report": {
+          "ok": true,
+          "browserVersion": "153.0.8010.12",
+          "uid": 1000,
+          "sandboxEnabled": true,
+          "privatePipe": true,
+          "checks": [
+            {
+              "name": "actual-completed-native-GET-order-selected-and-encrypted-schema2-capture",
+              "ok": true,
+              "tabCount": 3,
+              "selectedIndex": 0
+            },
+            {
+              "name": "zero-site-traffic-before-fresh-CAS-then-one-exact-reviewed-GET-and-imported-HTTPOnly-cookie-delivery",
+              "ok": true,
+              "review": "Synthetic constructor fixture proof, not real human approval or Companion role qualification"
+            },
+            {
+              "name": "actual-lazy-MCP-backend-selects-exact-restored-page-without-new-page-or-navigation",
+              "ok": true,
+              "tabCount": 3,
+              "selectedIndex": 0
+            }
+          ],
+          "reason": null,
+          "cleanup": {
+            "runtimes": [
+              {
+                "disconnected": true,
+                "ownedProcessGone": true,
+                "error": null
+              },
+              {
+                "disconnected": true,
+                "ownedProcessGone": true,
+                "error": null
+              }
+            ],
+            "serverClosed": true
+          },
+          "evidenceBoundary": "Actual disposable single-Linux runtime and site traffic; synthetic coordinator/CAS/review/extras. Full HOAI and two-machine role proof is separate."
+        }
+      }
+    ],
+    "exactRestored": true,
+    "containerAbsent": true,
+    "forcedStop": false
+  },
+  "evidenceBoundary": "Native Chromium153.0.8010.12 uses real CDP, sandbox, restored pages, actual pinned MCP backend and exact page object. Coordinator/CAS/review are synthetic in this native probe. Full two-machine HOAI roundtrip remains separate. Probe overlay bytes include working-copy line endings; an immutable committed archive must be separately qualified.",
+  "excludedDiagnostics": {
+    "codexWrapper": "Two observer-only private14b runs over unchanged installed29b package. Engine starts, exact page selection fails before RPC construction; later prove lacks RPC. No acceptance claim.",
+    "previousUnitDrill": "First7-drill run overlapped test-only clientName/clientVersion type-shape repair, so final shared-source guard failed. Excluded and all7drills rerun exact final bytes."
+  }
+}

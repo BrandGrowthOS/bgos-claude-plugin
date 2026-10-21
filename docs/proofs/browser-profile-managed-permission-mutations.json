@@ -1,0 +1,782 @@
+{
+  "sourceSha256": {
+    "companion": "1a1da6b535f0524c7c77adc593d66d31b957eb0a3b0e59cf4133719d921de033",
+    "runner": "5965858cda603f60e4c74346fecd0be85a9322dea51511f8437e68919cffb487"
+  },
+  "mutations": [
+    {
+      "name": "navigation-generation",
+      "file": "lib/browser-profile-permission-runner.mjs",
+      "test": "test/browser-profile-companion-permission.test.ts",
+      "testNamePattern": "original page selection",
+      "changedExecutableLines": [
+        {
+          "line": 40,
+          "before": "      if (changed || JSON.stringify(snapshot.message) !== messageBytes || page.isClosed() || engine.selectedPage() !== page || page.url() !== url || !Number.isSafeInteger(clock) || clock < started || clock >= deadline) throw fail('profile_permission_context_changed')",
+          "after": "      if (false || JSON.stringify(snapshot.message) !== messageBytes || page.isClosed() || engine.selectedPage() !== page || page.url() !== url || !Number.isSafeInteger(clock) || clock < started || clock >= deadline) throw fail('profile_permission_context_changed')"
+        }
+      ],
+      "proven": true,
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "exactRestoration": true,
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "name": "original-message-bytes",
+      "file": "lib/browser-profile-permission-runner.mjs",
+      "test": "test/browser-profile-companion-permission.test.ts",
+      "testNamePattern": "changed original frame",
+      "changedExecutableLines": [
+        {
+          "line": 40,
+          "before": "      if (changed || JSON.stringify(snapshot.message) !== messageBytes || page.isClosed() || engine.selectedPage() !== page || page.url() !== url || !Number.isSafeInteger(clock) || clock < started || clock >= deadline) throw fail('profile_permission_context_changed')",
+          "after": "      if (changed || page.isClosed() || engine.selectedPage() !== page || page.url() !== url || !Number.isSafeInteger(clock) || clock < started || clock >= deadline) throw fail('profile_permission_context_changed')"
+        }
+      ],
+      "proven": true,
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "exactRestoration": true,
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "name": "original-page-closure",
+      "file": "lib/browser-profile-permission-runner.mjs",
+      "test": "test/browser-profile-companion-permission.test.ts",
+      "testNamePattern": "original page selection",
+      "changedExecutableLines": [
+        {
+          "line": 40,
+          "before": "      if (changed || JSON.stringify(snapshot.message) !== messageBytes || page.isClosed() || engine.selectedPage() !== page || page.url() !== url || !Number.isSafeInteger(clock) || clock < started || clock >= deadline) throw fail('profile_permission_context_changed')",
+          "after": "      if (changed || JSON.stringify(snapshot.message) !== messageBytes || engine.selectedPage() !== page || page.url() !== url || !Number.isSafeInteger(clock) || clock < started || clock >= deadline) throw fail('profile_permission_context_changed')"
+        }
+      ],
+      "proven": true,
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "exactRestoration": true,
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "name": "original-page-selection",
+      "file": "lib/browser-profile-permission-runner.mjs",
+      "test": "test/browser-profile-companion-permission.test.ts",
+      "testNamePattern": "original page selection",
+      "changedExecutableLines": [
+        {
+          "line": 40,
+          "before": "      if (changed || JSON.stringify(snapshot.message) !== messageBytes || page.isClosed() || engine.selectedPage() !== page || page.url() !== url || !Number.isSafeInteger(clock) || clock < started || clock >= deadline) throw fail('profile_permission_context_changed')",
+          "after": "      if (changed || JSON.stringify(snapshot.message) !== messageBytes || page.isClosed() || page.url() !== url || !Number.isSafeInteger(clock) || clock < started || clock >= deadline) throw fail('profile_permission_context_changed')"
+        }
+      ],
+      "proven": true,
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "exactRestoration": true,
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "name": "original-page-url",
+      "file": "lib/browser-profile-permission-runner.mjs",
+      "test": "test/browser-profile-companion-permission.test.ts",
+      "testNamePattern": "original page selection",
+      "changedExecutableLines": [
+        {
+          "line": 40,
+          "before": "      if (changed || JSON.stringify(snapshot.message) !== messageBytes || page.isClosed() || engine.selectedPage() !== page || page.url() !== url || !Number.isSafeInteger(clock) || clock < started || clock >= deadline) throw fail('profile_permission_context_changed')",
+          "after": "      if (changed || JSON.stringify(snapshot.message) !== messageBytes || page.isClosed() || engine.selectedPage() !== page || !Number.isSafeInteger(clock) || clock < started || clock >= deadline) throw fail('profile_permission_context_changed')"
+        }
+      ],
+      "proven": true,
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "exactRestoration": true,
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "name": "answered-not-historical-consumed",
+      "file": "lib/browser-profile-permission-runner.mjs",
+      "test": "test/browser-profile-companion-permission.test.ts",
+      "testNamePattern": "deny, expired",
+      "changedExecutableLines": [
+        {
+          "line": 58,
+          "before": "      if (status?.state !== 'answered' || status.choice !== 'allow_once') return refused(status?.choice === 'deny' ? 'recipient_permission_denied' : 'recipient_permission_unconfirmed')",
+          "after": "      if (!['answered', 'consumed'].includes(status?.state) || status.choice !== 'allow_once') return refused(status?.choice === 'deny' ? 'recipient_permission_denied' : 'recipient_permission_unconfirmed')"
+        }
+      ],
+      "proven": true,
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "exactRestoration": true,
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "name": "one-consume-required",
+      "file": "lib/browser-profile-permission-runner.mjs",
+      "test": "test/browser-profile-companion-permission.test.ts",
+      "testNamePattern": "actual endpoint and unchanged",
+      "changedExecutableLines": [
+        {
+          "line": 61,
+          "before": "      try { consumed = await this.client.consume(requested.handle) }",
+          "after": "      try { consumed = { state: 'consumed', choice: 'allow_once' } }"
+        }
+      ],
+      "proven": true,
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "exactRestoration": true,
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "name": "unknown-consume-refuses",
+      "file": "lib/browser-profile-permission-runner.mjs",
+      "test": "test/browser-profile-companion-permission.test.ts",
+      "testNamePattern": "deny, expired",
+      "changedExecutableLines": [
+        {
+          "line": 62,
+          "before": "      catch { return refused('recipient_permission_unconfirmed') }",
+          "after": "      catch { consumed = { state: 'consumed', choice: 'allow_once' } }"
+        }
+      ],
+      "proven": true,
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "exactRestoration": true,
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "name": "page-recheck-after-consume",
+      "file": "lib/browser-profile-permission-runner.mjs",
+      "test": "test/browser-profile-companion-permission.test.ts",
+      "testNamePattern": "page change during consumption",
+      "changedExecutableLines": [
+        {
+          "line": 62,
+          "before": "      catch { return refused('recipient_permission_unconfirmed') }",
+          "after": "      catch { return refused('recipient_permission_unconfirmed') }"
+        },
+        {
+          "line": 63,
+          "before": "      check()",
+          "after": "      if (consumed?.state !== 'consumed' || consumed.choice !== 'allow_once') return refused('recipient_permission_unconfirmed')"
+        },
+        {
+          "line": 64,
+          "before": "      if (consumed?.state !== 'consumed' || consumed.choice !== 'allow_once') return refused('recipient_permission_unconfirmed')",
+          "after": "      return await execute(name, args, signal)"
+        }
+      ],
+      "proven": true,
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "exactRestoration": true,
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "name": "transactional-listener-registration",
+      "file": "lib/browser-profile-permission-runner.mjs",
+      "test": "test/browser-profile-companion-permission.test.ts",
+      "testNamePattern": "partial listener registration",
+      "changedExecutableLines": [
+        {
+          "line": 45,
+          "before": "      for (const event of ['framenavigated', 'close', 'crash']) { attempted.push(event); synchronous(() => page.on(event, onChanged)) }",
+          "after": "      for (const event of ['framenavigated', 'close', 'crash']) { synchronous(() => page.on(event, onChanged)); attempted.push(event) }"
+        }
+      ],
+      "proven": true,
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "exactRestoration": true,
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "name": "independent-listener-removal",
+      "file": "lib/browser-profile-permission-runner.mjs",
+      "test": "test/browser-profile-companion-permission.test.ts",
+      "testNamePattern": "failed listener cleanup",
+      "changedExecutableLines": [
+        {
+          "line": 68,
+          "before": "      for (const event of attempted) { try { synchronous(() => page.removeListener(event, onChanged)) } catch { this.#cleanupUnknown = true } }",
+          "after": "      for (const event of attempted) { try { synchronous(() => page.removeListener(event, onChanged)) } catch { this.#cleanupUnknown = true; break } }"
+        }
+      ],
+      "proven": true,
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "exactRestoration": true,
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "name": "listener-cleanup-private-receipt",
+      "file": "lib/browser-profile-permission-runner.mjs",
+      "test": "test/browser-profile-companion-permission.test.ts",
+      "testNamePattern": "failed listener cleanup",
+      "changedExecutableLines": [
+        {
+          "line": 68,
+          "before": "      for (const event of attempted) { try { synchronous(() => page.removeListener(event, onChanged)) } catch { this.#cleanupUnknown = true } }",
+          "after": "      for (const event of attempted) { try { synchronous(() => page.removeListener(event, onChanged)) } catch {} }"
+        }
+      ],
+      "proven": true,
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "exactRestoration": true,
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "name": "runner-refuses-prior-uncertain-cleanup",
+      "file": "lib/browser-profile-permission-runner.mjs",
+      "test": "test/browser-profile-companion-permission.test.ts",
+      "testNamePattern": "failed listener cleanup",
+      "changedExecutableLines": [
+        {
+          "line": 25,
+          "before": "    this.assertCleanupConfirmed()",
+          "after": "    if (typeof assertCurrent !== 'function' || typeof execute !== 'function' || typeof signal?.throwIfAborted !== 'function') throw fail('profile_permission_context_changed')"
+        },
+        {
+          "line": 26,
+          "before": "    if (typeof assertCurrent !== 'function' || typeof execute !== 'function' || typeof signal?.throwIfAborted !== 'function') throw fail('profile_permission_context_changed')",
+          "after": "    synchronous(assertCurrent); signal.throwIfAborted()"
+        }
+      ],
+      "proven": true,
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "exactRestoration": true,
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "name": "one-original-sdk-callback",
+      "file": "lib/browser-profile-companion.mjs",
+      "test": "test/browser-profile-companion-permission.test.ts",
+      "testNamePattern": "duplicate SDK callback",
+      "changedExecutableLines": [
+        {
+          "line": 192,
+          "before": "    if(execution){execution.check();if(execution.record!==record||execution.claimed||execution.frame.message.method!=='tools/call'||execution.frame.message.params?.name!==name||!same(execution.frame.message.params.arguments??{},args))throw fail('profile_companion_command_changed');execution.claimed=true;args=JSON.parse(JSON.stringify(execution.frame.message.params.arguments??{}))}",
+          "after": "    if(execution){execution.check();if(execution.record!==record||false||execution.frame.message.method!=='tools/call'||execution.frame.message.params?.name!==name||!same(execution.frame.message.params.arguments??{},args))throw fail('profile_companion_command_changed');execution.claimed=true;args=JSON.parse(JSON.stringify(execution.frame.message.params.arguments??{}))}"
+        }
+      ],
+      "proven": true,
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "exactRestoration": true,
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "name": "original-sdk-arguments",
+      "file": "lib/browser-profile-companion.mjs",
+      "test": "test/browser-profile-companion-permission.test.ts",
+      "testNamePattern": "changed original frame",
+      "changedExecutableLines": [
+        {
+          "line": 192,
+          "before": "    if(execution){execution.check();if(execution.record!==record||execution.claimed||execution.frame.message.method!=='tools/call'||execution.frame.message.params?.name!==name||!same(execution.frame.message.params.arguments??{},args))throw fail('profile_companion_command_changed');execution.claimed=true;args=JSON.parse(JSON.stringify(execution.frame.message.params.arguments??{}))}",
+          "after": "    if(execution){execution.check();if(execution.record!==record||execution.claimed||execution.frame.message.method!=='tools/call'||execution.frame.message.params?.name!==name||false)throw fail('profile_companion_command_changed');execution.claimed=true;args=JSON.parse(JSON.stringify(execution.frame.message.params.arguments??{}))}"
+        }
+      ],
+      "proven": true,
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "exactRestoration": true,
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "name": "original-runtime-object",
+      "file": "lib/browser-profile-companion.mjs",
+      "test": "test/browser-profile-companion-permission.test.ts",
+      "testNamePattern": "runtime engine endpoint binding",
+      "changedExecutableLines": [
+        {
+          "line": 174,
+          "before": "        if(record.execution!==execution||record.runtime!==runtime||record.engine!==engine||record.relay!==relay||record.endpoint!==endpoint||record.rpc!==rpc||rpc.binding!==binding||!binding||this.connection.socketId!==binding.socketId||this.connection.socket?.connected!==true||JSON.stringify(snapshot.message)!==messageBytes||!shared.sameAuthority(runtime.authority,originalAuthority)||!shared.sameAuthority(rpc.authority,originalAuthority)||!shared.sameAuthority(binding.authority,originalAuthority)||['profileId','actingUserId','assistantId','endpointId','keyFingerprint'].some(key=>record.scope[key]!==originalAuthority[key]))throw fail('profile_companion_context_changed')",
+          "after": "        if(record.execution!==execution||false||record.engine!==engine||record.relay!==relay||record.endpoint!==endpoint||record.rpc!==rpc||rpc.binding!==binding||!binding||this.connection.socketId!==binding.socketId||this.connection.socket?.connected!==true||JSON.stringify(snapshot.message)!==messageBytes||!shared.sameAuthority(runtime.authority,originalAuthority)||!shared.sameAuthority(rpc.authority,originalAuthority)||!shared.sameAuthority(binding.authority,originalAuthority)||['profileId','actingUserId','assistantId','endpointId','keyFingerprint'].some(key=>record.scope[key]!==originalAuthority[key]))throw fail('profile_companion_context_changed')"
+        }
+      ],
+      "proven": true,
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "exactRestoration": true,
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "name": "original-endpoint-object",
+      "file": "lib/browser-profile-companion.mjs",
+      "test": "test/browser-profile-companion-permission.test.ts",
+      "testNamePattern": "runtime engine endpoint binding",
+      "changedExecutableLines": [
+        {
+          "line": 174,
+          "before": "        if(record.execution!==execution||record.runtime!==runtime||record.engine!==engine||record.relay!==relay||record.endpoint!==endpoint||record.rpc!==rpc||rpc.binding!==binding||!binding||this.connection.socketId!==binding.socketId||this.connection.socket?.connected!==true||JSON.stringify(snapshot.message)!==messageBytes||!shared.sameAuthority(runtime.authority,originalAuthority)||!shared.sameAuthority(rpc.authority,originalAuthority)||!shared.sameAuthority(binding.authority,originalAuthority)||['profileId','actingUserId','assistantId','endpointId','keyFingerprint'].some(key=>record.scope[key]!==originalAuthority[key]))throw fail('profile_companion_context_changed')",
+          "after": "        if(record.execution!==execution||record.runtime!==runtime||record.engine!==engine||record.relay!==relay||false||record.rpc!==rpc||rpc.binding!==binding||!binding||this.connection.socketId!==binding.socketId||this.connection.socket?.connected!==true||JSON.stringify(snapshot.message)!==messageBytes||!shared.sameAuthority(runtime.authority,originalAuthority)||!shared.sameAuthority(rpc.authority,originalAuthority)||!shared.sameAuthority(binding.authority,originalAuthority)||['profileId','actingUserId','assistantId','endpointId','keyFingerprint'].some(key=>record.scope[key]!==originalAuthority[key]))throw fail('profile_companion_context_changed')"
+        }
+      ],
+      "proven": true,
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "exactRestoration": true,
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "name": "original-binding-object",
+      "file": "lib/browser-profile-companion.mjs",
+      "test": "test/browser-profile-companion-permission.test.ts",
+      "testNamePattern": "runtime engine endpoint binding",
+      "changedExecutableLines": [
+        {
+          "line": 174,
+          "before": "        if(record.execution!==execution||record.runtime!==runtime||record.engine!==engine||record.relay!==relay||record.endpoint!==endpoint||record.rpc!==rpc||rpc.binding!==binding||!binding||this.connection.socketId!==binding.socketId||this.connection.socket?.connected!==true||JSON.stringify(snapshot.message)!==messageBytes||!shared.sameAuthority(runtime.authority,originalAuthority)||!shared.sameAuthority(rpc.authority,originalAuthority)||!shared.sameAuthority(binding.authority,originalAuthority)||['profileId','actingUserId','assistantId','endpointId','keyFingerprint'].some(key=>record.scope[key]!==originalAuthority[key]))throw fail('profile_companion_context_changed')",
+          "after": "        if(record.execution!==execution||record.runtime!==runtime||record.engine!==engine||record.relay!==relay||record.endpoint!==endpoint||record.rpc!==rpc||false||!binding||this.connection.socketId!==binding.socketId||this.connection.socket?.connected!==true||JSON.stringify(snapshot.message)!==messageBytes||!shared.sameAuthority(runtime.authority,originalAuthority)||!shared.sameAuthority(rpc.authority,originalAuthority)||!shared.sameAuthority(binding.authority,originalAuthority)||['profileId','actingUserId','assistantId','endpointId','keyFingerprint'].some(key=>record.scope[key]!==originalAuthority[key]))throw fail('profile_companion_context_changed')"
+        }
+      ],
+      "proven": true,
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "exactRestoration": true,
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "name": "original-recipient-scope",
+      "file": "lib/browser-profile-companion.mjs",
+      "test": "test/browser-profile-companion-permission.test.ts",
+      "testNamePattern": "runtime engine endpoint binding",
+      "changedExecutableLines": [
+        {
+          "line": 174,
+          "before": "        if(record.execution!==execution||record.runtime!==runtime||record.engine!==engine||record.relay!==relay||record.endpoint!==endpoint||record.rpc!==rpc||rpc.binding!==binding||!binding||this.connection.socketId!==binding.socketId||this.connection.socket?.connected!==true||JSON.stringify(snapshot.message)!==messageBytes||!shared.sameAuthority(runtime.authority,originalAuthority)||!shared.sameAuthority(rpc.authority,originalAuthority)||!shared.sameAuthority(binding.authority,originalAuthority)||['profileId','actingUserId','assistantId','endpointId','keyFingerprint'].some(key=>record.scope[key]!==originalAuthority[key]))throw fail('profile_companion_context_changed')",
+          "after": "        if(record.execution!==execution||record.runtime!==runtime||record.engine!==engine||record.relay!==relay||record.endpoint!==endpoint||record.rpc!==rpc||rpc.binding!==binding||!binding||this.connection.socketId!==binding.socketId||this.connection.socket?.connected!==true||JSON.stringify(snapshot.message)!==messageBytes||!shared.sameAuthority(runtime.authority,originalAuthority)||!shared.sameAuthority(rpc.authority,originalAuthority)||!shared.sameAuthority(binding.authority,originalAuthority)||['profileId','assistantId','endpointId','keyFingerprint'].some(key=>record.scope[key]!==originalAuthority[key]))throw fail('profile_companion_context_changed')"
+        }
+      ],
+      "proven": true,
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "exactRestoration": true,
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "name": "originating-async-rpc-context",
+      "file": "lib/browser-profile-companion.mjs",
+      "test": "test/browser-profile-companion-permission.test.ts",
+      "testNamePattern": "late SDK read write",
+      "changedExecutableLines": [
+        {
+          "line": 167,
+          "before": "    const currentExecution=()=>{const execution=this.#executions.getStore();if(!execution||execution.record!==record)throw fail('profile_companion_context_changed');execution.check();return execution}",
+          "after": "    const currentExecution=()=>{const execution=record.execution;if(!execution||execution.record!==record)throw fail('profile_companion_context_changed');execution.check();return execution}"
+        },
+        {
+          "line": 191,
+          "before": "    this._admit(record);signal?.throwIfAborted();const execution=this.#executions.getStore()",
+          "after": "    this._admit(record);signal?.throwIfAborted();const execution=record.execution"
+        }
+      ],
+      "proven": true,
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "exactRestoration": true,
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "name": "rpc-cancellation-reaches-native",
+      "file": "lib/browser-profile-companion.mjs",
+      "test": "test/browser-profile-companion-permission.test.ts",
+      "testNamePattern": "original endpoint cancellation reaches",
+      "changedExecutableLines": [
+        {
+          "line": 195,
+          "before": "    const controller=new AbortController(),signals=[signal,execution?.signal].filter(Boolean),abort=()=>controller.abort()",
+          "after": "    const controller=new AbortController(),signals=[signal].filter(Boolean),abort=()=>controller.abort()"
+        }
+      ],
+      "proven": true,
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "exactRestoration": true,
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "name": "disposal-awaits-physical-command-drain",
+      "file": "lib/browser-profile-companion.mjs",
+      "test": "test/browser-profile-companion-permission.test.ts",
+      "testNamePattern": "native revocation starts before",
+      "changedExecutableLines": [
+        {
+          "line": 234,
+          "before": "    const task=Promise.resolve().then(async()=>{const failures=[];await record.runtimeCreating?.catch(()=>{});const native=Promise.resolve().then(()=>record.runtime?.dispose()),commands=Promise.resolve().then(()=>this._drainCommands(record));for(const result of await Promise.allSettled([native,commands]))if(result.status==='rejected')failures.push(result.reason);for(const cleanup of [async()=>{await record.engineCreating?.catch(()=>{});await record.engine?.stop()},async()=>{await record.extrasCreating?.catch(()=>{});record.extras?.dispose()}])try{await cleanup()}catch(error){failures.push(error)}record.contentKeyEpoch?.key.fill(0);record.contentKeyEpoch=null;if(failures.length)throw fail('profile_companion_stop_unconfirmed');record.relay?.close();record.runtime=null;record.engine=null;record.extras=null;if(record.rpc){void record.rpc.close().catch(()=>{});record.rpc=null}})",
+          "after": "    const task=Promise.resolve().then(async()=>{const failures=[];await record.runtimeCreating?.catch(()=>{});const native=Promise.resolve().then(()=>record.runtime?.dispose()),commands=Promise.resolve().then(()=>this._drainCommands(record));for(const result of await Promise.allSettled([native]))if(result.status==='rejected')failures.push(result.reason);for(const cleanup of [async()=>{await record.engineCreating?.catch(()=>{});await record.engine?.stop()},async()=>{await record.extrasCreating?.catch(()=>{});record.extras?.dispose()}])try{await cleanup()}catch(error){failures.push(error)}record.contentKeyEpoch?.key.fill(0);record.contentKeyEpoch=null;if(failures.length)throw fail('profile_companion_stop_unconfirmed');record.relay?.close();record.runtime=null;record.engine=null;record.extras=null;if(record.rpc){void record.rpc.close().catch(()=>{});record.rpc=null}})"
+        }
+      ],
+      "proven": true,
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "exactRestoration": true,
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "name": "private-cleanup-admission-fence",
+      "file": "lib/browser-profile-companion.mjs",
+      "test": "test/browser-profile-companion-permission.test.ts",
+      "testNamePattern": "failed permission cleanup",
+      "changedExecutableLines": [
+        {
+          "line": 50,
+          "before": "  _admit(record){this._cached(record);if(this.closing||record.admission!=='active'||record.uncertain||this.#permissionCleanupUnknown.has(record))throw fail('profile_companion_authority_unknown');record.runtime.assertCurrent();return true}",
+          "after": "  _admit(record){this._cached(record);if(this.closing||record.admission!=='active'||record.uncertain||false)throw fail('profile_companion_authority_unknown');record.runtime.assertCurrent();return true}"
+        }
+      ],
+      "proven": true,
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "exactRestoration": true,
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "name": "failed-cleanup-keeps-task-reserved",
+      "file": "lib/browser-profile-companion.mjs",
+      "test": "test/browser-profile-companion-permission.test.ts",
+      "testNamePattern": "failed permission cleanup",
+      "changedExecutableLines": [
+        {
+          "line": 211,
+          "before": "    try{return await work}finally{for(const source of signals)source.removeEventListener('abort',abort);if(physicalClean)record.engineTasks.delete(work)}",
+          "after": "    try{return await work}finally{for(const source of signals)source.removeEventListener('abort',abort);record.engineTasks.delete(work)}"
+        }
+      ],
+      "proven": true,
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "exactRestoration": true,
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "name": "persistent-extras-not-creation-proof",
+      "file": "lib/browser-profile-companion.mjs",
+      "test": "test/browser-profile-companion.test.ts",
+      "testNamePattern": "persistent extras proofs",
+      "changedExecutableLines": [
+        {
+          "line": 129,
+          "before": "      record.extrasCreating=Promise.resolve().then(()=>{creatingCurrent();return this.preloadExtras({directory:path.join(this.directory,'runtime-extras',authority.runtimeId,authority.sessionId),binding,pinnedIdentity:record.identity,keyStore:this.keyStore,assertCurrent:extrasCurrent,createNew:true})}).then(extras=>{record.extras=extras;return extras})",
+          "after": "      record.extrasCreating=Promise.resolve().then(()=>{creatingCurrent();return this.preloadExtras({directory:path.join(this.directory,'runtime-extras',authority.runtimeId,authority.sessionId),binding,pinnedIdentity:record.identity,keyStore:this.keyStore,assertCurrent:creatingCurrent,createNew:true})}).then(extras=>{record.extras=extras;return extras})"
+        }
+      ],
+      "proven": true,
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "exactRestoration": true,
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "name": "persistent-extras-runtime-identity",
+      "file": "lib/browser-profile-companion.mjs",
+      "test": "test/browser-profile-companion.test.ts",
+      "testNamePattern": "persistent extras proofs",
+      "changedExecutableLines": [
+        {
+          "line": 126,
+          "before": "    const extrasCurrent=()=>{this._cached(record);if(this.#preparations.get(record)!==preparation||(physicalRuntime?record.runtime!==physicalRuntime:record.runtime!=null)||record.runtime&&!shared.sameAuthority(record.runtime.authority,authority)||['profileId','actingUserId','assistantId','endpointId','keyFingerprint'].some(key=>record.scope[key]!==authority[key]))throw fail('profile_companion_context_changed')}",
+          "after": "    const extrasCurrent=()=>{this._cached(record);if(this.#preparations.get(record)!==preparation||false||record.runtime&&!shared.sameAuthority(record.runtime.authority,authority)||['profileId','actingUserId','assistantId','endpointId','keyFingerprint'].some(key=>record.scope[key]!==authority[key]))throw fail('profile_companion_context_changed')}"
+        }
+      ],
+      "proven": true,
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "exactRestoration": true,
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "name": "persistent-extras-full-authority",
+      "file": "lib/browser-profile-companion.mjs",
+      "test": "test/browser-profile-companion.test.ts",
+      "testNamePattern": "persistent extras proofs",
+      "changedExecutableLines": [
+        {
+          "line": 126,
+          "before": "    const extrasCurrent=()=>{this._cached(record);if(this.#preparations.get(record)!==preparation||(physicalRuntime?record.runtime!==physicalRuntime:record.runtime!=null)||record.runtime&&!shared.sameAuthority(record.runtime.authority,authority)||['profileId','actingUserId','assistantId','endpointId','keyFingerprint'].some(key=>record.scope[key]!==authority[key]))throw fail('profile_companion_context_changed')}",
+          "after": "    const extrasCurrent=()=>{this._cached(record);if(this.#preparations.get(record)!==preparation||(physicalRuntime?record.runtime!==physicalRuntime:record.runtime!=null)||false||['profileId','actingUserId','assistantId','endpointId','keyFingerprint'].some(key=>record.scope[key]!==authority[key]))throw fail('profile_companion_context_changed')}"
+        }
+      ],
+      "proven": true,
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "exactRestoration": true,
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "name": "disposal-revokes-private-preparation",
+      "file": "lib/browser-profile-companion.mjs",
+      "test": "test/browser-profile-companion.test.ts",
+      "testNamePattern": "persistent extras proofs",
+      "changedExecutableLines": [
+        {
+          "line": 233,
+          "before": "    record.admission='blocked';this.#preparations.delete(record);record.permissionAbort?.abort();record.rpc?.disconnect?.();if(record.stopTask)return record.stopTask",
+          "after": "    record.admission='blocked';record.permissionAbort?.abort();record.rpc?.disconnect?.();if(record.stopTask)return record.stopTask"
+        }
+      ],
+      "proven": true,
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "exactRestoration": true,
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "name": "persistent-extras-recipient",
+      "file": "lib/browser-profile-companion.mjs",
+      "test": "test/browser-profile-companion.test.ts",
+      "testNamePattern": "persistent extras proofs",
+      "changedExecutableLines": [
+        {
+          "line": 126,
+          "before": "    const extrasCurrent=()=>{this._cached(record);if(this.#preparations.get(record)!==preparation||(physicalRuntime?record.runtime!==physicalRuntime:record.runtime!=null)||record.runtime&&!shared.sameAuthority(record.runtime.authority,authority)||['profileId','actingUserId','assistantId','endpointId','keyFingerprint'].some(key=>record.scope[key]!==authority[key]))throw fail('profile_companion_context_changed')}",
+          "after": "    const extrasCurrent=()=>{this._cached(record);if(this.#preparations.get(record)!==preparation||(physicalRuntime?record.runtime!==physicalRuntime:record.runtime!=null)||record.runtime&&!shared.sameAuthority(record.runtime.authority,authority)||['profileId','assistantId','endpointId','keyFingerprint'].some(key=>record.scope[key]!==authority[key]))throw fail('profile_companion_context_changed')}"
+        }
+      ],
+      "proven": true,
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "exactRestoration": true,
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    {
+      "name": "creation-still-refuses-closing",
+      "file": "lib/browser-profile-companion.mjs",
+      "test": "test/browser-profile-companion.test.ts",
+      "testNamePattern": "normal closing during extras creation",
+      "changedExecutableLines": [
+        {
+          "line": 124,
+          "before": "    const creatingCurrent=()=>{this._cached(record);if(this.closing||this.#preparations.get(record)!==preparation)throw fail('profile_companion_context_changed')}",
+          "after": "    const creatingCurrent=()=>{this._cached(record);if(this.#preparations.get(record)!==preparation)throw fail('profile_companion_context_changed')}"
+        }
+      ],
+      "proven": true,
+      "red": {
+        "exit": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "exactRestoration": true,
+      "green": {
+        "exit": 0,
+        "pass": 1,
+        "fail": 0
+      }
+    }
+  ],
+  "gitNormalizedSha256": {
+    "companion": "31a3a541a4739355173b7b559f3bfc48f29be0d35967a357dce5f5bfba8807f6",
+    "runner": "5965858cda603f60e4c74346fecd0be85a9322dea51511f8437e68919cffb487"
+  }
+}

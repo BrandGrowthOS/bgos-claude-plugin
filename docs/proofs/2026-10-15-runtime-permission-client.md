@@ -1,0 +1,15 @@
+# Paired managed runtime permission client
+
+Local standalone client proof, 15 October 2026. This is a foundation for Companion composition. It does not claim an agent action was approved or executed through a real mounted server.
+
+`AgentRuntimePermissionClient` sends only fixed HOAI request/read/consume routes with the original paired endpoint signature. It binds the complete runtime authority, socket binding, RPC ID and nonce, original JSON wire hash, safe action kind and canonical origin. Navigation origins come from the actual request URL. Other origins remain explicitly agent reported. It keeps no site trust or background grant. Passwords, security codes, arbitrary typing, evaluation and vision are excluded from this approval contract and require handover.
+
+The client retains an opaque handle when creation may have succeeded without a confirmed response. Only signed read-only reconciliation of that original gate is possible. One confirmed Allow once answer permits one consume attempt; a lost consume response never becomes execution permission and is never retried. Companion must independently recheck the original page and all authority before any engine action.
+
+Requests and responses are bounded. A timeout does not release an unresolved physical HTTP slot. Late responses are owned before checking cancellation, then their bodies are cancelled and locks released. Failed cleanup retains a private failure latch, rejects `whenDrained`, and closes capacity. Untrusted fixed scalar response fields are compared without recursively canonicalizing them. A nested malformed response returns a fixed error, never raw parser or private network details.
+
+Validation: the exact touched Node suite passed 14 tests, no skips; plugin `tsc --noEmit` passed. Independent delegated review closed the signing/hash, unknown creation, late body, cleanup and nested parser findings on restored source SHA256 `f7f4de506ed33aa7f5473c0d4e64f7ac03fdb5268c5f30ee7585717b726f0aa7`.
+
+The accompanying [mutation receipt](2026-10-15-runtime-permission-client-mutations.json) records 16 executable changed lines, focused red exit 1, exact source restoration and green exit 0. Cases cover original wire hashing, endpoint binding, duplicate creation, supported methods, response authority/label/nonce, nested parsing, answer and consume uniqueness, query expiry, captured pairing proof, cleanup drain/capacity, late response ownership and unknown creation reconciliation. An initial recursive-parser mutation placed inside the normalizing catch stayed green and is excluded; the final drill restores the actual unguarded recursive path outside that catch.
+
+Security boundary: the HOAI server is trusted to record the human answer. This is not end-to-end protection against a malicious HOAI server. Request metadata excludes command arguments, full URL paths/queries, passwords and endpoint private keys. Once an approved endpoint decrypts a profile, its operator can read and use that profile; encryption cannot protect against that endpoint's compromised OS or process.

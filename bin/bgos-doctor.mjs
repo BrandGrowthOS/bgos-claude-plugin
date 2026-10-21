@@ -67,6 +67,7 @@ import {
 import { alternateSlashSpelling, claudeConfigFilePath } from '../lib/claude-preseed.mjs'
 import { observeMarketplaceInstall } from '../lib/plugin-cli.mjs'
 import { mcpEnvValues, MCP_CONFIG_FILE_NAME } from '../lib/service-supervision.mjs'
+import { assertBrowserNodeVersion } from '../lib/browser-profile-node-runtime.mjs'
 import {
   normalizeApiBase,
   FOLDER_PIN_FILE_NAME,
@@ -387,12 +388,14 @@ export function buildDoctorRows(probes) {
 
   // node
   const node = p.node ?? { found: false }
+  let nodeQualified = false
+  try { nodeQualified = Boolean(node.found) && typeof node.version === 'string' && assertBrowserNodeVersion(node.version.replace(/^v/, '')) } catch {}
   row(
     'node',
     'Node.js',
-    Boolean(node.found),
+    nodeQualified,
     node.found ? node.version ?? '' : 'not found',
-    node.found ? '' : 'install Node.js 18 or newer from https://nodejs.org',
+    nodeQualified ? '' : 'install a current patched Node.js 22 or 24 LTS release (minimum 22.12.0) from https://nodejs.org',
   )
 
   // bun / bunx

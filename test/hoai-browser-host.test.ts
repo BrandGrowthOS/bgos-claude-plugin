@@ -73,6 +73,28 @@ import { processesMatching } from './helpers/processes.ts'
 const HOST_BIN = join(process.cwd(), 'bin', 'hoai-browser-host.mjs')
 const ROOT = join(sep, 'home', 'kc', '.bgos-agent')
 
+test('host stop fences installer admission immediately and waits its original physical drain', async () => {
+  let cancelCalls = 0, resolveDrain: (() => void) | undefined, stopped = false
+  const drain = new Promise<void>(resolve => { resolveDrain = resolve })
+  const installations = { activity: () => ({ pendingPhysicalOperations: 1, cleanupUnknown: false }), cancel() { cancelCalls++ }, whenDrained: () => drain }
+  const host = new BrowserHost({ env: {}, browserTools: [], createEngine: async () => { throw new Error('not launched') }, browserInstallations: installations })
+  assert.deepEqual(host.installationActivity(), { pendingPhysicalOperations: 1, cleanupUnknown: false })
+  const stop = host.stop().then(() => { stopped = true })
+  assert.equal(cancelCalls, 1)
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(stopped, false)
+  resolveDrain!(); await stop; assert.equal(stopped, true)
+})
+
+test('host normal and emergency stop cannot claim clean while installer cleanup is unknown', async () => {
+  for (const emergency of [false, true]) {
+    let cancelled = false
+    const installations = { activity: () => ({ pendingPhysicalOperations: 0, cleanupUnknown: true }), cancel() { cancelled = true }, async whenDrained() { throw Object.assign(new Error('fixed recovery required'), { code: 'browser_install_recovery_required' }) } }
+    const host = new BrowserHost({ env: {}, browserTools: [], createEngine: async () => { throw new Error('not launched') }, browserInstallations: installations })
+    await assert.rejects(emergency ? host.emergencyStopOwnedProfiles() : host.stop())
+    assert.equal(cancelled, true); assert.equal(host.installationActivity().cleanupUnknown, true)
+  }
+})
+
 /** The profile directory a frame lands in, exactly as the host derives it. */
 function profileDirForFrame(frame: Record<string, unknown>, assistantId = 900): string {
   const principal = readFramePrincipal(frame)
@@ -355,8 +377,10 @@ test('the host opens one socket per pairing, each listing only its own agents, a
     const sockB = await relayB.waitForHost()
     assert.equal(relayA.handshakes.length, 1)
     assert.equal(relayB.handshakes.length, 1)
-    assert.deepEqual(relayA.handshakes[0].auth, { role: 'browser_host', agents: [900, 905], deviceLabel: 'kc-server', features: ['saved_sites'] })
-    assert.deepEqual(relayB.handshakes[0].auth, { role: 'browser_host', agents: [901], deviceLabel: 'kc-server', features: ['saved_sites'] })
+    assert.match(String(relayA.handshakes[0].auth.deviceBootId), /^[a-f0-9-]{36}$/)
+    assert.match(String(relayB.handshakes[0].auth.deviceBootId), /^[a-f0-9-]{36}$/)
+    assert.deepEqual(relayA.handshakes[0].auth, { role: 'browser_host', agents: [900, 905], deviceLabel: 'kc-server', features: ['saved_sites'], deviceBootId: relayA.handshakes[0].auth.deviceBootId })
+    assert.deepEqual(relayB.handshakes[0].auth, { role: 'browser_host', agents: [901], deviceLabel: 'kc-server', features: ['saved_sites'], deviceBootId: relayB.handshakes[0].auth.deviceBootId })
     assert.equal(relayA.handshakes[0].query.pairingToken, 'tokA')
     assert.equal(relayB.handshakes[0].query.pairingToken, 'tokB')
 
@@ -812,7 +836,8 @@ test(
     let bodyPassed = false
     try {
       const sock = await relay.waitForHost(30_000)
-      assert.deepEqual(relay.handshakes[0].auth, { role: 'browser_host', agents: [900], deviceLabel: relay.handshakes[0].auth.deviceLabel, features: ['saved_sites'] })
+      assert.match(String(relay.handshakes[0].auth.deviceBootId), /^[a-f0-9-]{36}$/)
+      assert.deepEqual(relay.handshakes[0].auth, { role: 'browser_host', agents: [900], deviceLabel: relay.handshakes[0].auth.deviceLabel, features: ['saved_sites'], deviceBootId: relay.handshakes[0].auth.deviceBootId })
       assert.equal(relay.handshakes[0].query.pairingToken, 'tok-e2e')
       let id = 0
       const rpc = async (principal: string | undefined, message: Record<string, unknown>) => {
@@ -839,7 +864,8 @@ test(
       const init = await rpc('user-user_2Alice', { jsonrpc: '2.0', id: ++id, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'hoai-browser-mcp', version: '0.44.0' } } })
       assert.equal(init.result.serverInfo.name, 'hoai-agent-browser')
       const list = await rpc('user-user_2Alice', { jsonrpc: '2.0', id: ++id, method: 'tools/list' })
-      assert.equal(list.result.tools.length, 28, 'the desktop roster: 4 session tools and 24 browser_ tools')
+      assert.equal(list.result.tools.length, 29, 'the pinned roster: 4 session tools and 25 browser_ tools')
+      assert.equal(list.result.tools.some((entry: { name: string }) => entry.name === 'browser_emulate_media'), true)
 
       // THE PERMISSION GATE, END TO END, on the real host process.
       //

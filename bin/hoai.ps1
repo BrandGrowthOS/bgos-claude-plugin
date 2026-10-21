@@ -30,5 +30,5 @@ if ($bun) {
   exit $LASTEXITCODE
 }
 
-[Console]::Error.WriteLine('hoai: neither node nor bun was found; install Node 18+ (nodejs.org) or bun (bun.sh)')
+[Console]::Error.WriteLine('hoai: neither node nor bun was found; install a current Node.js 22 or 24 LTS release (minimum 22.12.0, nodejs.org) or bun (bun.sh)')
 exit 127

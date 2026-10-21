@@ -1,0 +1,41 @@
+{
+  "kind": "actual Linux POSIX file foundation smoke",
+  "commonCommit": "ec984a647d2dd9a05f3eb12fef8d3d367426f6c1",
+  "image": "hoai-profile-fresh:ec984a6",
+  "imageId": "sha256:febedcce3de30aeeeaa4f1b9f60dd95c7d2323b05ce51e73804a2f615af2e27f",
+  "script": "test/probes/browser-profile-file-posix.mjs",
+  "scriptSha256": "85b957ab1870437d45dd792fee93bad6c6d6e5c5975ea8f2641fdf8321fcd208",
+  "execution": {
+    "platform": "linux",
+    "uid": 1000,
+    "network": "none",
+    "allCapabilitiesDropped": true,
+    "addedCapability": "SYS_CHROOT",
+    "chromiumLaunched": false,
+    "exitCode": 0,
+    "oomKilled": false,
+    "pidAfterExit": 0,
+    "containerAbsentAfterNormalRemoval": true,
+    "forcedStop": false
+  },
+  "checks": {
+    "privateMode0700": true,
+    "permissiveDirectoryRefusedWithoutChmod": true,
+    "symlinkRefused": true,
+    "replacedOriginalInodeRefused": true,
+    "opaqueArtifactOneUse": true,
+    "borrowedPlaintextZeroed": true,
+    "materializedMode0600": true,
+    "materializedFileRemoved": true,
+    "hardlinkRefused": true,
+    "artifactPhysicalOperationsAfterDrain": 0,
+    "artifactCleanupUnknown": false,
+    "stagingDrainConfirmed": true,
+    "privateAreaEmpty": true
+  },
+  "scope": "Actual filesystem and committed module behavior. Synthetic engine file write, no browser automation, HOAI relay or cross-machine file delivery.",
+  "excludedTrials": [
+    "Two initial fixture launches could not see a script placed under the SSH host /tmp because the Snap Docker client has a separate temporary namespace. Neither executed the probe. Both exited normally and their container was removed.",
+    "Before execution, the private script was corrected to use the actual staging whenDrained API instead of a nonexistent activity method. No product source changed."
+  ]
+}

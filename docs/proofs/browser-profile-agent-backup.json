@@ -1,0 +1,313 @@
+{
+  "baselineTests": 30,
+  "baselineExit": 0,
+  "finalTests": 30,
+  "finalExit": 0,
+  "sourceHashes": {
+    "lib/browser-profile-live-read.mjs": "cd58ddbf110a495a503934d2062dbbaee1586f79190c7edc81fb7ec3cef1bc09",
+    "lib/browser-profile-live-capture.mjs": "bc42aa8ea849c0fc09d570ea77591671bec4f854bd49655d106db6ae018303d6",
+    "lib/browser-profile-active-backup.mjs": "8dba6a5095cba6baa9a08b9af65ba217492a421d1c3137f8ebbc2427aba1bb04"
+  },
+  "workspaceUnchanged": true,
+  "mutations": [
+    {
+      "mutation": "read-global-bound",
+      "file": "lib/browser-profile-live-read.mjs",
+      "line": 13,
+      "loadedChangedLine": " if(!runtime||[assertCurrent,protection,runtime.assertCurrent,runtime.assertMovable,runtime.assertTransferAllowed,runtime._assertTransportQualified].some(value=>typeof value!=='function')||reservations.has(runtime)||false||!Number.isSafeInteger(timeoutMs)||timeoutMs<1||timeoutMs>10000)throw fail('profile_live_busy_or_invalid')",
+      "redExit": 1,
+      "redAssertion": true,
+      "exactRestored": true,
+      "greenExit": 0
+    },
+    {
+      "mutation": "read-original-context",
+      "file": "lib/browser-profile-live-read.mjs",
+      "line": 20,
+      "loadedChangedLine": "  if(released||changed||Date.now()>deadline||false||runtime.browser!==browser||runtime.root!==root||runtime.ledger!==ledger||runtime.contextId!==contextId||runtime.assertCurrent!==originalRuntimeCheck||runtime.assertMovable!==originalMovable||runtime.assertTransferAllowed!==originalSafety||runtime._assertTransportQualified!==originalQualified||runtime.operation!==null||runtime.state!=='active'||runtime.network!=='active'||!sameAuthority(sync(()=>originalRuntimeCheck.call(runtime)),authority)||!guard||guard.blocked!==false||guard.version!==version)throw fail('profile_live_context_changed')",
+      "redExit": 1,
+      "redAssertion": true,
+      "exactRestored": true,
+      "greenExit": 0
+    },
+    {
+      "mutation": "read-generation",
+      "file": "lib/browser-profile-live-read.mjs",
+      "line": 22,
+      "loadedChangedLine": "  if(false)throw fail('profile_live_inventory_changed');ledger.assertIdle(contextId)",
+      "redExit": 1,
+      "redAssertion": true,
+      "exactRestored": true,
+      "greenExit": 0
+    },
+    {
+      "mutation": "read-full-authority",
+      "file": "lib/browser-profile-live-read.mjs",
+      "line": 20,
+      "loadedChangedLine": "  if(released||changed||Date.now()>deadline||runtime.context!==context||runtime.browser!==browser||runtime.root!==root||runtime.ledger!==ledger||runtime.contextId!==contextId||runtime.assertCurrent!==originalRuntimeCheck||runtime.assertMovable!==originalMovable||runtime.assertTransferAllowed!==originalSafety||runtime._assertTransportQualified!==originalQualified||runtime.operation!==null||runtime.state!=='active'||runtime.network!=='active'||false||!guard||guard.blocked!==false||guard.version!==version)throw fail('profile_live_context_changed')",
+      "redExit": 1,
+      "redAssertion": true,
+      "exactRestored": true,
+      "greenExit": 0
+    },
+    {
+      "mutation": "read-storage-partition",
+      "file": "lib/browser-profile-live-read.mjs",
+      "line": 33,
+      "loadedChangedLine": " const bind=async record=>{const info=(await command(record,'Target.getTargetInfo')).targetInfo,frame=(await command(record,'Page.getFrameTree')).frameTree?.frame;if(info?.browserContextId!==contextId||info.type!=='page'||!id(info.targetId)||record.targetId&&record.targetId!==info.targetId||!frame||frame.parentId||!id(frame.id)||!id(frame.loaderId)||frameURL(frame)!==record.url||record.frameId&&record.frameId!==frame.id||record.loaderId&&record.loaderId!==frame.loaderId)throw fail('profile_live_document_changed');record.targetId=info.targetId;record.frameId=frame.id;record.loaderId=frame.loaderId;const{storageKey}=await command(record,'Storage.getStorageKeyForFrame',{frameId:frame.id});if(false)throw fail('profile_live_partition_unsupported');record.storageKey=storageKey}",
+      "redExit": 1,
+      "redAssertion": true,
+      "exactRestored": true,
+      "greenExit": 0
+    },
+    {
+      "mutation": "read-credential-safety",
+      "file": "lib/browser-profile-live-read.mjs",
+      "line": 38,
+      "loadedChangedLine": "   for(const frame of frames){if(!id(frame.id)||!id(frame.loaderId))throw fail('profile_live_document_changed');const world=await command(record,'Page.createIsolatedWorld',{frameId:frame.id,worldName:'hoai-private-live-safety',grantUniveralAccess:false});if(!Number.isSafeInteger(world.executionContextId)||world.executionContextId<1)throw fail('profile_live_document_changed');const result=await command(record,'Runtime.evaluate',{expression:DOCUMENT_SAFETY_EXPRESSION,contextId:world.executionContextId,returnByValue:true});if(result.exceptionDetails||result.result?.value?.ready!==true||false||result.result.value.unsaved!==false)throw fail('profile_live_credentials_protected')}",
+      "redExit": 1,
+      "redAssertion": true,
+      "exactRestored": true,
+      "greenExit": 0
+    },
+    {
+      "mutation": "read-sync-qualification",
+      "file": "lib/browser-profile-live-read.mjs",
+      "line": 67,
+      "loadedChangedLine": "   check();const movable=await originalMovable.call(runtime);check();originalQualified.call(runtime,movable.origins);check();if(!Array.isArray(movable.origins)||movable.origins.length<1||movable.origins.length>100||new Set(movable.origins).size!==movable.origins.length)throw fail('profile_live_origin_unavailable');origins=Object.freeze([...movable.origins].sort())",
+      "redExit": 1,
+      "redAssertion": true,
+      "exactRestored": true,
+      "greenExit": 0
+    },
+    {
+      "mutation": "read-final-safety",
+      "file": "lib/browser-profile-live-read.mjs",
+      "line": 58,
+      "loadedChangedLine": "  verify:()=>run(async()=>{}),",
+      "redExit": 1,
+      "redAssertion": true,
+      "exactRestored": true,
+      "greenExit": 0
+    },
+    {
+      "mutation": "read-cleanup-reservation",
+      "file": "lib/browser-profile-live-read.mjs",
+      "line": 28,
+      "loadedChangedLine": "  const work=(async()=>{const callbacks=[...listeners.map(([target,event])=>()=>sync(()=>target.removeListener(event,changedListener))),...sessions.map(session=>()=>session.detach())],results=await Promise.allSettled(callbacks.map(callback=>Promise.resolve().then(callback)));if(false){cleanupUnknown=true;throw fail('profile_live_cleanup_unknown')}reservations.delete(runtime);leases.delete(token)})();cleanupWork=work;void work.catch(()=>{});return work",
+      "redExit": 1,
+      "redAssertion": true,
+      "exactRestored": true,
+      "greenExit": 0
+    },
+    {
+      "mutation": "read-listener-rollback",
+      "file": "lib/browser-profile-live-read.mjs",
+      "line": 65,
+      "loadedChangedLine": "  for(const [target,events]of [[context,['page']],...pages.map(page=>[page,['framenavigated','close','crash']])])for(const event of events){sync(()=>target.on(event,changedListener));listeners.push([target,event])}",
+      "redExit": 1,
+      "redAssertion": true,
+      "exactRestored": true,
+      "greenExit": 0
+    },
+    {
+      "mutation": "capture-request-snapshot",
+      "file": "lib/browser-profile-live-capture.mjs",
+      "line": 20,
+      "loadedChangedLine": "  try{validateSealRequest(request);this.#check();request=request}catch{return Promise.resolve(Object.freeze({state:'skipped',reason:'profile_live_input_invalid'}))}",
+      "redExit": 1,
+      "redAssertion": true,
+      "exactRestored": true,
+      "greenExit": 0
+    },
+    {
+      "mutation": "capture-one-physical-admission",
+      "file": "lib/browser-profile-live-capture.mjs",
+      "line": 19,
+      "loadedChangedLine": "  if(this.#closed||this.#cleanupUnknown)return Promise.resolve(Object.freeze({state:'skipped',reason:this.#cleanupUnknown?'profile_live_cleanup_unknown':'profile_live_busy_or_closed'}))",
+      "redExit": 1,
+      "redAssertion": true,
+      "exactRestored": true,
+      "greenExit": 0
+    },
+    {
+      "mutation": "capture-dispose-fence",
+      "file": "lib/browser-profile-live-capture.mjs",
+      "line": 35,
+      "loadedChangedLine": " async dispose(){this.#closed=false;const results=await Promise.allSettled([()=>this.#scope?.release(),()=>this.whenDrained()].map(callback=>Promise.resolve().then(callback)));if(results.some(result=>result.status==='rejected')){this.#cleanupUnknown=true;throw fail('profile_live_cleanup_unknown')}}",
+      "redExit": 1,
+      "redAssertion": true,
+      "exactRestored": true,
+      "greenExit": 0
+    },
+    {
+      "mutation": "capture-private-cleanup",
+      "file": "lib/browser-profile-live-capture.mjs",
+      "line": 28,
+      "loadedChangedLine": "   if(false){this.#cleanupUnknown=true;throw fail('profile_live_cleanup_unknown')}",
+      "redExit": 1,
+      "redAssertion": true,
+      "exactRestored": true,
+      "greenExit": 0
+    },
+    {
+      "mutation": "backup-complete-peer-review",
+      "file": "lib/browser-profile-active-backup.mjs",
+      "line": 45,
+      "loadedChangedLine": "   else{const pin=reviewed.get(row.identity.endpointId);if(false)throw fail('profile_backup_peer_review_required')}",
+      "redExit": 1,
+      "redAssertion": true,
+      "exactRestored": true,
+      "greenExit": 0
+    },
+    {
+      "mutation": "backup-original-pairing",
+      "file": "lib/browser-profile-active-backup.mjs",
+      "line": 44,
+      "loadedChangedLine": "   if(source){if(own||!same(row.identity,this.endpoint.identity)||row.kind!=='agent'||row.ownerUserId!==this.ownerUserId||false||row.grantVersion!==this.authority.grantVersion)throw fail('profile_backup_source_pairing_changed');own=true}",
+      "redExit": 1,
+      "redAssertion": true,
+      "exactRestored": true,
+      "greenExit": 0
+    },
+    {
+      "mutation": "backup-own-source-required",
+      "file": "lib/browser-profile-active-backup.mjs",
+      "line": 48,
+      "loadedChangedLine": "  if(false)throw fail('profile_backup_source_pairing_changed')",
+      "redExit": 1,
+      "redAssertion": true,
+      "exactRestored": true,
+      "greenExit": 0
+    },
+    {
+      "mutation": "backup-key-object-proof",
+      "file": "lib/browser-profile-active-backup.mjs",
+      "line": 52,
+      "loadedChangedLine": "  const bytes=key.key,hash=digest(bytes),check=()=>{this.checkCurrent();const current=sync(this.currentContentKey);if(context.request.expiresAt<=Date.now()||current.key!==bytes||current.epoch!==this.authority.contentKeyEpoch||digest(bytes)!==hash)throw fail('profile_backup_context_changed')};check()",
+      "redExit": 1,
+      "redAssertion": true,
+      "exactRestored": true,
+      "greenExit": 0
+    },
+    {
+      "mutation": "backup-cleanup-reservation",
+      "file": "lib/browser-profile-active-backup.mjs",
+      "line": 70,
+      "loadedChangedLine": " dispose(){this.#clearHints();this.#closed=true;this.#paused=true;this.#pausedDrained=false;this.#stop();return Promise.resolve().then(async()=>{const results=await Promise.allSettled([()=>this.capture.dispose(),()=>this.whenDrained()].map(callback=>Promise.resolve().then(callback)));if(false){this.#cleanupUnknown=true;throw fail('profile_backup_cleanup_unknown')}if(sources.get(this.runtime)===this.#lease)sources.delete(this.runtime);leases.delete(this.#lease)})}",
+      "redExit": 1,
+      "redAssertion": true,
+      "exactRestored": true,
+      "greenExit": 0
+    },
+    {
+      "mutation": "backup-absolute-cadence",
+      "file": "lib/browser-profile-active-backup.mjs",
+      "line": 60,
+      "loadedChangedLine": " start(){if(this.#closed||this.#cleanupUnknown||!this.#pausedDrained)throw fail('profile_backup_cleanup_unknown');const wasPaused=this.#paused;this.#paused=false;try{this.checkCurrent()}catch(error){this.#paused=true;throw error}if(wasPaused){this.scheduler.start();this.#nextDue=Date.now()+60000;this.#dueHint();this.#clearHints();this.#armHint()}return this.status()}",
+      "redExit": 1,
+      "redAssertion": true,
+      "exactRestored": true,
+      "greenExit": 0
+    },
+    {
+      "mutation": "backup-automatic-cooldown",
+      "file": "lib/browser-profile-active-backup.mjs",
+      "line": 58,
+      "loadedChangedLine": " #dueHint(){const now=Date.now();if(this.#nextDue!==null&&now>=this.#nextDue){this.#automaticAfter=now+60000;void this.scheduler.captureNow().catch(()=>{})}else this.scheduler.notify()}",
+      "redExit": 1,
+      "redAssertion": true,
+      "exactRestored": true,
+      "greenExit": 0
+    },
+    {
+      "mutation": "backup-periodic-hint",
+      "file": "lib/browser-profile-active-backup.mjs",
+      "line": 60,
+      "loadedChangedLine": " start(){if(this.#closed||this.#cleanupUnknown||!this.#pausedDrained)throw fail('profile_backup_cleanup_unknown');const wasPaused=this.#paused;this.#paused=false;try{this.checkCurrent()}catch(error){this.#paused=true;throw error}if(wasPaused){this.scheduler.start();this.#nextDue??=Date.now()+60000;this.#dueHint();this.#clearHints()}return this.status()}",
+      "redExit": 1,
+      "redAssertion": true,
+      "exactRestored": true,
+      "greenExit": 0
+    }
+  ],
+  "scope": "Unwired main-only native agent active backup foundation. Synthetic native/CDP/coordinator unit fixtures, actual worker execution, separately qualified real native browser.",
+  "nodeVersion": "v24.16.0",
+  "independentReview": "Parent independently ran29tests zero skips and closed exact cd58/bc42/8dba source. Added final test-only safety regression brings final touched suites to30.",
+  "native": [
+    {
+      "rawReceiptSha256": "0cce1ea7a77baff0b2889fd4e758330b2c863d7ad9ea5475037a68d7dd47f9bb",
+      "exit": 0,
+      "stdout": "{\"kind\":\"actual native readonly agent backup qualification\",\"qualified\":true,\"uid\":1000,\"browserVersion\":\"153.0.8010.12\",\"cases\":[{\"name\":\"actual original main-frame full query/fragment, HttpOnly cookie, readonly localStorage and structured IDB capture\",\"passed\":true},{\"name\":\"actual encrypted journal file and directory fsync while source stays active\",\"passed\":true},{\"name\":\"two same-origin exact original page sessions independently safety-checked and detached\",\"passed\":true},{\"name\":\"real credential field refuses without stopping original source\",\"passed\":true},{\"name\":\"real original page navigation invalidates a held read scope before cookie read\",\"passed\":true}],\"normalCleanup\":true,\"ownedBrowserGone\":true,\"syntheticAuthority\":true,\"transportQualification\":\"restricted disposable loopback only\",\"notClaimed\":\"HOAI recipient context, automatic60s or shipped Companion enablement\"}\n",
+      "stderr": "",
+      "containerAbsent": true,
+      "forcedStop": false,
+      "sourceCommit": "24e86ca36063250d435a6046e45579c7116ffa9a",
+      "archiveSha256": "f283f017e1f3a432c100fe2485ca615da1029f9d6b2bbfc10baabe90165e066c",
+      "image": "hoai-agent-backup-native:b502b4186f4d",
+      "overlays": {
+        "lib/browser-profile-live-read.mjs": "cd58ddbf110a495a503934d2062dbbaee1586f79190c7edc81fb7ec3cef1bc09",
+        "lib/browser-profile-live-capture.mjs": "bc42aa8ea849c0fc09d570ea77591671bec4f854bd49655d106db6ae018303d6",
+        "scripts/probe-browser-profile-backup.mjs": "159907c80d71bb8f4e3832e9751c243e8fa9ec223bea4d1003f5f9255c9b8f38"
+      },
+      "remoteOwnedDirectory": "/tmp/hoai-agent-backup-probe.QdU2yv"
+    },
+    {
+      "rawReceiptSha256": "d4b31f4147d80403af37f6e51023bb4268977af3c716a1c5f040f0661e39cbd5",
+      "exit": 1,
+      "stdout": "{\"kind\":\"agent-backup-native-failure\",\"phase\":\"password\",\"errorKind\":\"AssertionError\",\"code\":\"qualification_failed\"}\n{\"kind\":\"actual native readonly agent backup qualification\",\"qualified\":false,\"uid\":1000,\"browserVersion\":\"153.0.8010.12\",\"cases\":[{\"name\":\"actual original main-frame full query/fragment, HttpOnly cookie, readonly localStorage and structured IDB capture\",\"passed\":true},{\"name\":\"actual encrypted journal file and directory fsync while source stays active\",\"passed\":true},{\"name\":\"two same-origin exact original page sessions independently safety-checked and detached\",\"passed\":true}],\"normalCleanup\":false,\"ownedBrowserGone\":false,\"syntheticAuthority\":true,\"transportQualification\":\"restricted disposable loopback only\",\"notClaimed\":\"HOAI recipient context, automatic60s or shipped Companion enablement\"}\n",
+      "stderr": "",
+      "containerAbsent": true,
+      "forcedStop": false,
+      "sourceCommit": "24e86ca36063250d435a6046e45579c7116ffa9a",
+      "archiveSha256": "7aff2dbd05cb9a72788b63b7d65ebb49c7070e51df9017e74626a7661dafb482",
+      "image": "hoai-agent-backup-native:99567d565965",
+      "overlays": {
+        "lib/browser-profile-live-read.mjs": "c04aa0758e639930cb328ddce4cf7d2d9deefecd478321731f9b502073c2a076",
+        "lib/browser-profile-live-capture.mjs": "bc42aa8ea849c0fc09d570ea77591671bec4f854bd49655d106db6ae018303d6",
+        "scripts/probe-browser-profile-backup.mjs": "159907c80d71bb8f4e3832e9751c243e8fa9ec223bea4d1003f5f9255c9b8f38"
+      },
+      "remoteOwnedDirectory": "/tmp/hoai-agent-backup-probe.jsa1Vp"
+    },
+    {
+      "rawReceiptSha256": "63ddb17c7e7ba6fa2247143d95832965a890d2763a8ee4eb68484cf0c8b9ff3a",
+      "exit": 0,
+      "stdout": "{\"kind\":\"actual native readonly agent backup qualification\",\"qualified\":true,\"uid\":1000,\"browserVersion\":\"153.0.8010.12\",\"cases\":[{\"name\":\"actual original main-frame full query/fragment, HttpOnly cookie, readonly localStorage and structured IDB capture\",\"passed\":true},{\"name\":\"actual encrypted journal file and directory fsync while source stays active\",\"passed\":true},{\"name\":\"two same-origin exact original page sessions independently safety-checked and detached\",\"passed\":true},{\"name\":\"real credential field refuses without stopping original source\",\"passed\":true},{\"name\":\"real original page navigation invalidates a held read scope before cookie read\",\"passed\":true}],\"normalCleanup\":true,\"ownedBrowserGone\":true,\"syntheticAuthority\":true,\"transportQualification\":\"restricted disposable loopback only\",\"notClaimed\":\"HOAI recipient context, automatic60s or shipped Companion enablement\"}\n",
+      "stderr": "",
+      "containerAbsent": true,
+      "forcedStop": false,
+      "sourceCommit": "24e86ca36063250d435a6046e45579c7116ffa9a",
+      "archiveSha256": "f283f017e1f3a432c100fe2485ca615da1029f9d6b2bbfc10baabe90165e066c",
+      "image": "hoai-agent-backup-native:68330674e663",
+      "overlays": {
+        "lib/browser-profile-live-read.mjs": "cd58ddbf110a495a503934d2062dbbaee1586f79190c7edc81fb7ec3cef1bc09",
+        "lib/browser-profile-live-capture.mjs": "bc42aa8ea849c0fc09d570ea77591671bec4f854bd49655d106db6ae018303d6",
+        "scripts/probe-browser-profile-backup.mjs": "159907c80d71bb8f4e3832e9751c243e8fa9ec223bea4d1003f5f9255c9b8f38"
+      },
+      "remoteOwnedDirectory": "/tmp/hoai-agent-backup-probe.ThIaqP"
+    }
+  ],
+  "nativeMutation": {
+    "file": "lib/browser-profile-live-read.mjs",
+    "line": 38,
+    "before": "result.result.value.credentials!==false",
+    "after": "false",
+    "loadedChangedLine": "   for(const frame of frames){if(!id(frame.id)||!id(frame.loaderId))throw fail('profile_live_document_changed');const world=await command(record,'Page.createIsolatedWorld',{frameId:frame.id,worldName:'hoai-private-live-safety',grantUniveralAccess:false});if(!Number.isSafeInteger(world.executionContextId)||world.executionContextId<1)throw fail('profile_live_document_changed');const result=await command(record,'Runtime.evaluate',{expression:DOCUMENT_SAFETY_EXPRESSION,contextId:world.executionContextId,returnByValue:true});if(result.exceptionDetails||result.result?.value?.ready!==true||false||result.result.value.unsaved!==false)throw fail('profile_live_credentials_protected')}",
+    "baselineExit": 0,
+    "redExit": 1,
+    "redAssertionPhase": "password",
+    "restoredExit": 0,
+    "sourceWorkspaceUnchanged": true
+  },
+  "excludedTrials": [
+    "First native fixture observer expected historical records array instead of the existing IDB graph codec, corrected only the observer decode.",
+    "One SSH connection closed before private native run began. No product or remote browser run occurred."
+  ],
+  "notClaimed": [
+    "Shipped Companion behavior",
+    "Actual HOAI recipient discovery/upload",
+    "Real60s automatic agent backup",
+    "Supported final156browser tuple",
+    "Final npm/Bun package and Codex activation"
+  ]
+}

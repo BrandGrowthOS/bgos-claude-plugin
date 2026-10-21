@@ -1,0 +1,15 @@
+{
+  "kind": "isolated executable loader mutation",
+  "changedLine": "const CLIENT_ID = \"mutation-fixed-client\";",
+  "originalLine": "const CLIENT_ID = crypto.randomUUID();",
+  "sourceSha256": "a55d97ae441d157cd26c50c25aa63f4d4d2dbe9094278e00f3b0550001f06fa9",
+  "red": {
+    "exit": 1,
+    "output": "MUTATION_LOADED: const CLIENT_ID = \"mutation-fixed-client\";\n✖ THE GUARD. the vendored shim hashes to the pinned sha256 (2.0968ms)\nℹ tests 1\nℹ suites 0\nℹ pass 0\nℹ fail 1\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 152.895\n\n✖ failing tests:\n\ntest at test\\hoai-browser-mcp.vendor.test.ts:70:1\n✖ THE GUARD. the vendored shim hashes to the pinned sha256 (2.0968ms)\n  AssertionError [ERR_ASSERTION]: bin/hoai-browser-mcp.mjs is 211d07b8623421df5a4e364a8404f2c44ca0750442521000427700a779082d19, the pin says a55d97ae441d157cd26c50c25aa63f4d4d2dbe9094278e00f3b0550001f06fa9. If you re-vendored the shim on purpose, follow docs/vendoring-the-hoai-browser-shim.md: put the new hash in bin/hoai-browser-mcp.vendor.json and run the relay suite. If you did not, this file has drifted from the BGOS source of truth.\n  + actual - expected\n  \n  + '211d07b8623421df5a4e364a8404f2c44ca0750442521000427700a779082d19'\n  - 'a55d97ae441d157cd26c50c25aa63f4d4d2dbe9094278e00f3b0550001f06fa9'\n  \n      at TestContext.<anonymous> (file:///E:/bgos-worktrees/browser-profile-sync-plugin/test/hoai-browser-mcp.vendor.test.ts:73:10)\n      at Test.runInAsyncScope (node:async_hooks:227:14)\n      at Test.run (node:internal/test_runner/test:1306:25)\n      at Test.start (node:internal/test_runner/test:1177:17)\n      at startSubtestAfterBootstrap (node:internal/test_runner/harness:385:17) {\n    generatedMessage: false,\n    code: 'ERR_ASSERTION',\n    actual: '211d07b8623421df5a4e364a8404f2c44ca0750442521000427700a779082d19',\n    expected: 'a55d97ae441d157cd26c50c25aa63f4d4d2dbe9094278e00f3b0550001f06fa9',\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n"
+  },
+  "restored": {
+    "exit": 0,
+    "output": "✔ THE GUARD. the vendored shim hashes to the pinned sha256 (1.7372ms)\nℹ tests 1\nℹ suites 0\nℹ pass 1\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 135.4483\n"
+  },
+  "sourceUnchanged": true
+}

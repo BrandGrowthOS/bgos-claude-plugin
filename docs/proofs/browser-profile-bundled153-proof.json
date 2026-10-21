@@ -1,0 +1,829 @@
+{
+  "kind": "Bundled Chromium153 native qualification and runtime default resolver",
+  "image": {
+    "path": "/tmp/hoai-profile-image.4HQs4r",
+    "archiveSha256": "715034004089446824d68d7d4baed9cd81433d7e893f6542fb34516745197e96",
+    "archiveBytes": 606229758,
+    "baseDigest": "sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392",
+    "pluginCommit": "6beef48"
+  },
+  "container": {
+    "uid": 1000,
+    "network": "none",
+    "capabilities": "drop ALL, add SYS_CHROOT",
+    "seccompSource": "https://raw.githubusercontent.com/microsoft/playwright/v1.63.0/utils/docker/seccomp_profile.json",
+    "hostChanges": false
+  },
+  "nativeObserver": {
+    "ok": true,
+    "root": "/proof/rtc153.V1iFCK",
+    "fixture": "exact copied module153 pin, actual sandboxed bundled browser, exact final product source hashes",
+    "receipts": [
+      {
+        "name": "positive",
+        "exit": 0,
+        "signal": null,
+        "changedLines": null,
+        "evidence": {
+          "kind": "Actual disposable sandboxed Chromium private native RTC qualification",
+          "checks": [
+            {
+              "name": "real-exclusive-startup-marker-bound-context-and-clean-target-zero-qualify",
+              "ok": true
+            },
+            {
+              "name": "actual-main-first-closed-RTC-refuses-capture-with-normal-local-new-tab-intact",
+              "ok": true
+            },
+            {
+              "name": "actual-same-frame-closed-RTC-refuses-capture-with-normal-local-new-tab-intact",
+              "ok": true
+            },
+            {
+              "name": "actual-cross-frame-closed-RTC-refuses-capture-with-normal-local-new-tab-intact",
+              "ok": true
+            },
+            {
+              "name": "actual-navigation-closed-RTC-refuses-capture-with-normal-local-new-tab-intact",
+              "ok": true
+            },
+            {
+              "name": "actual-popup-closed-RTC-refuses-capture-with-normal-local-new-tab-intact",
+              "ok": true
+            },
+            {
+              "name": "actual-last-pause-closed-RTC-refuses-capture-with-normal-local-new-tab-intact",
+              "ok": true
+            },
+            {
+              "name": "a-concurrent-unknown-browser-context-never-becomes-owned-authority",
+              "ok": true
+            }
+          ],
+          "browserVersion": "153.0.8010.12",
+          "executable": "/opt/playwright/chromium-1243/chrome-linux64/chrome",
+          "ok": true
+        },
+        "error": ""
+      },
+      {
+        "name": "ignore-native-rtc-used",
+        "exit": 1,
+        "signal": null,
+        "changedLines": [
+          {
+            "line": 91,
+            "text": "  assertQualified(value){this._scope(value);if(false)throw fail('profile_rtc_history_unqualified');return true}"
+          }
+        ],
+        "evidence": {
+          "kind": "Actual disposable sandboxed Chromium private native RTC qualification",
+          "checks": [
+            {
+              "name": "real-exclusive-startup-marker-bound-context-and-clean-target-zero-qualify",
+              "ok": true
+            }
+          ],
+          "browserVersion": "153.0.8010.12",
+          "executable": "/opt/playwright/chromium-1243/chrome-linux64/chrome",
+          "ok": false,
+          "failure": "AssertionError [ERR_ASSERTION]: Missing expected rejection.\n    at async file:///proof/rtc153.V1iFCK/scripts/probe-browser-profile-rtc.mjs:43:5"
+        },
+        "error": "",
+        "restoredExit": 0,
+        "restoredHash": "fe0766b84edc3d17baadb96be2b7cda827b7ab3af2ad9a2010f8f5884f9e8677"
+      },
+      {
+        "name": "final-native-marker",
+        "exit": 1,
+        "signal": null,
+        "changedLines": [
+          {
+            "line": 95,
+            "text": "    await zero();this._status(await this._bounded(()=>this.privatePage.evaluate(()=>globalThis.__hoaiPrivateRtc.status())));await zero();return this.assertQualified(value)"
+          }
+        ],
+        "evidence": {
+          "kind": "Actual disposable sandboxed Chromium private native RTC qualification",
+          "checks": [
+            {
+              "name": "real-exclusive-startup-marker-bound-context-and-clean-target-zero-qualify",
+              "ok": true
+            }
+          ],
+          "browserVersion": "153.0.8010.12",
+          "executable": "/opt/playwright/chromium-1243/chrome-linux64/chrome",
+          "ok": false,
+          "failure": "AssertionError [ERR_ASSERTION]: Missing expected rejection.\n    at async file:///proof/rtc153.V1iFCK/scripts/probe-browser-profile-rtc.mjs:43:5"
+        },
+        "error": "",
+        "restoredExit": 0,
+        "restoredHash": "fe0766b84edc3d17baadb96be2b7cda827b7ab3af2ad9a2010f8f5884f9e8677"
+      }
+    ]
+  },
+  "nativeRuntime": {
+    "exit": 0,
+    "uid": 1000,
+    "sourceHashes": {
+      "lib/browser-profile-rtc-activity.mjs": "fe0766b84edc3d17baadb96be2b7cda827b7ab3af2ad9a2010f8f5884f9e8677",
+      "lib/browser-profile-runtime.mjs": "2d51c03b9e7cc25d0ae98340caa3e9902f48173ab598a01e05a1a03cfa0c6c8b",
+      "scripts/probe-browser-profile-runtime.mjs": "1e171cd806dfd737434f6650543addaecf0d1785826c6d437dda514c74c2239d"
+    },
+    "report": {
+      "kind": "Actual disposable Linux plugin runtime, injected coordinator and command lease, synthetic AES extras store only",
+      "transportQualification": "Actual exact-version native RTC observer plus raw Network/target ledger",
+      "checks": [
+        {
+          "name": "missing-native-transport-proof-refuses-before-drain-and-preserves-original-live-page",
+          "ok": true
+        },
+        {
+          "name": "complete-target-ledger-qualified-before-navigation",
+          "ok": true,
+          "targets": 2
+        },
+        {
+          "name": "only-encrypted-capsule-atomically-fsynced-after-terminal-exit",
+          "ok": true,
+          "bytes": 4535,
+          "permissions": "0600"
+        },
+        {
+          "name": "owned-source-process-exited-before-signed-receipt",
+          "ok": true
+        },
+        {
+          "name": "destination-stage-is-inactive-and-makes-zero-site-requests",
+          "ok": true
+        },
+        {
+          "name": "full-saved-login-Never-and-search-bundle-publishes-once-only-after-exact-grant",
+          "ok": true,
+          "fixture": "Synthetic AES encrypted native store, OS key-store bootstrap remains separate"
+        },
+        {
+          "name": "matching-grant-restores-HTTPOnly-cookie-localStorage-rich-IndexedDB",
+          "ok": true
+        },
+        {
+          "name": "unfinished-password-refuses-with-source-left-running",
+          "ok": true
+        },
+        {
+          "name": "persistent-EventSource-refuses-with-source-left-running",
+          "ok": true
+        },
+        {
+          "name": "closed-owned-RTC-native-history-refuses-before-drain-with-original-page-alive",
+          "ok": true
+        },
+        {
+          "name": "pending-worker-POST-refuses-with-source-left-running",
+          "ok": true,
+          "reason": "profile_network_untracked",
+          "rawTargets": [
+            {
+              "type": "page",
+              "ready": true
+            },
+            {
+              "type": "page",
+              "ready": true
+            },
+            {
+              "type": "shared_worker",
+              "ready": true
+            },
+            {
+              "type": "worker",
+              "ready": true
+            }
+          ]
+        },
+        {
+          "name": "authority-withdrawal-during-drain-physically-disposes-source",
+          "ok": true,
+          "authority": "injected fixture proof"
+        },
+        {
+          "name": "resolving-close-with-live-owned-PID-refuses-cleanup-and-zeroes-key",
+          "ok": true
+        }
+      ],
+      "browserVersion": "153.0.8010.12",
+      "launch": {
+        "sandboxEnabled": true,
+        "privatePipe": true,
+        "executable": "/opt/playwright/chromium-1243/chrome-linux64/chrome",
+        "selection": "companion-bundled-default",
+        "featureSwitch": "--disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,BlockOriginHeaderModificationOnRedirect,Translate,AutoDeElevate,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion,WebUIOmniboxPopup,WebUIOmniboxAimPopup",
+        "source": "https://github.com/microsoft/playwright/blob/v1.63.0/packages/playwright-core/src/server/chromium/chromiumSwitches.ts",
+        "omniboxSource": "https://chromium.googlesource.com/chromium/src/+/bf3cc6d2d1098c5addd00a916373e6fa62d3dc6b"
+      },
+      "ok": true,
+      "encryptedCapsuleDirectory": "/tmp/hoai-profile-capsules.CxnzRp"
+    },
+    "error": ""
+  },
+  "nativeRuntimeMutation": {
+    "name": "actual-native-155-only-runtime-gate",
+    "changedLines": [
+      {
+        "line": 308,
+        "text": "      }else if(!/^155\\.[0-9]+\\.[0-9]+\\.[0-9]+$/.test(qualification.browserVersion)||typeof qualification.confirmStopped!=='function')throw fail('profile_transport_qualification_required')"
+      }
+    ],
+    "red": {
+      "exit": 1,
+      "uid": 1000,
+      "sourceHashes": {
+        "lib/browser-profile-rtc-activity.mjs": "fe0766b84edc3d17baadb96be2b7cda827b7ab3af2ad9a2010f8f5884f9e8677",
+        "lib/browser-profile-runtime.mjs": "081862e021ecc73519763bfec3da3e2e71ba917224ff83bb45082331a0165578",
+        "scripts/probe-browser-profile-runtime.mjs": "1e171cd806dfd737434f6650543addaecf0d1785826c6d437dda514c74c2239d"
+      },
+      "report": {
+        "kind": "Actual disposable Linux plugin runtime, injected coordinator and command lease, synthetic AES extras store only",
+        "transportQualification": "Actual exact-version native RTC observer plus raw Network/target ledger",
+        "checks": [],
+        "ok": false,
+        "failure": "Error: profile_transport_qualification_required\n    at fail (file:///proof/factory153.IR78Tb/lib/browser-profile-runtime.mjs:15:38)\n    at new BrowserProfileRuntime (file:///proof/factory153.IR78Tb/lib/browser-profile-runtime.mjs:308:140)\n    at BrowserProfileRuntime.create (file:///proof/factory153.IR78Tb/lib/browser-profile-runtime.mjs:285:17)\n    at async make (file:///proof/factory153.IR78Tb/scripts/probe-browser-profile-runtime.mjs:29:19)\n    at async file:///proof/factory153.IR78Tb/scripts/probe-browser-profile-runtime.mjs:66:19",
+        "encryptedCapsuleDirectory": "/tmp/hoai-profile-capsules.YY1Sgd"
+      },
+      "error": ""
+    },
+    "restored": {
+      "exit": 0,
+      "uid": 1000,
+      "sourceHashes": {
+        "lib/browser-profile-rtc-activity.mjs": "fe0766b84edc3d17baadb96be2b7cda827b7ab3af2ad9a2010f8f5884f9e8677",
+        "lib/browser-profile-runtime.mjs": "2d51c03b9e7cc25d0ae98340caa3e9902f48173ab598a01e05a1a03cfa0c6c8b",
+        "scripts/probe-browser-profile-runtime.mjs": "1e171cd806dfd737434f6650543addaecf0d1785826c6d437dda514c74c2239d"
+      },
+      "report": {
+        "kind": "Actual disposable Linux plugin runtime, injected coordinator and command lease, synthetic AES extras store only",
+        "transportQualification": "Actual exact-version native RTC observer plus raw Network/target ledger",
+        "checks": [
+          {
+            "name": "missing-native-transport-proof-refuses-before-drain-and-preserves-original-live-page",
+            "ok": true
+          },
+          {
+            "name": "complete-target-ledger-qualified-before-navigation",
+            "ok": true,
+            "targets": 2
+          },
+          {
+            "name": "only-encrypted-capsule-atomically-fsynced-after-terminal-exit",
+            "ok": true,
+            "bytes": 4535,
+            "permissions": "0600"
+          },
+          {
+            "name": "owned-source-process-exited-before-signed-receipt",
+            "ok": true
+          },
+          {
+            "name": "destination-stage-is-inactive-and-makes-zero-site-requests",
+            "ok": true
+          },
+          {
+            "name": "full-saved-login-Never-and-search-bundle-publishes-once-only-after-exact-grant",
+            "ok": true,
+            "fixture": "Synthetic AES encrypted native store, OS key-store bootstrap remains separate"
+          },
+          {
+            "name": "matching-grant-restores-HTTPOnly-cookie-localStorage-rich-IndexedDB",
+            "ok": true
+          },
+          {
+            "name": "unfinished-password-refuses-with-source-left-running",
+            "ok": true
+          },
+          {
+            "name": "persistent-EventSource-refuses-with-source-left-running",
+            "ok": true
+          },
+          {
+            "name": "closed-owned-RTC-native-history-refuses-before-drain-with-original-page-alive",
+            "ok": true
+          },
+          {
+            "name": "pending-worker-POST-refuses-with-source-left-running",
+            "ok": true,
+            "reason": "profile_network_untracked",
+            "rawTargets": [
+              {
+                "type": "page",
+                "ready": true
+              },
+              {
+                "type": "page",
+                "ready": true
+              },
+              {
+                "type": "shared_worker",
+                "ready": true
+              },
+              {
+                "type": "worker",
+                "ready": true
+              }
+            ]
+          },
+          {
+            "name": "authority-withdrawal-during-drain-physically-disposes-source",
+            "ok": true,
+            "authority": "injected fixture proof"
+          },
+          {
+            "name": "resolving-close-with-live-owned-PID-refuses-cleanup-and-zeroes-key",
+            "ok": true
+          }
+        ],
+        "browserVersion": "153.0.8010.12",
+        "launch": {
+          "sandboxEnabled": true,
+          "privatePipe": true,
+          "executable": "/opt/playwright/chromium-1243/chrome-linux64/chrome",
+          "selection": "companion-bundled-default",
+          "featureSwitch": "--disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,BlockOriginHeaderModificationOnRedirect,Translate,AutoDeElevate,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion,WebUIOmniboxPopup,WebUIOmniboxAimPopup",
+          "source": "https://github.com/microsoft/playwright/blob/v1.63.0/packages/playwright-core/src/server/chromium/chromiumSwitches.ts",
+          "omniboxSource": "https://chromium.googlesource.com/chromium/src/+/bf3cc6d2d1098c5addd00a916373e6fa62d3dc6b"
+        },
+        "ok": true,
+        "encryptedCapsuleDirectory": "/tmp/hoai-profile-capsules.CxnzRp"
+      },
+      "error": ""
+    },
+    "exactSourceRestored": true
+  },
+  "unitMutations": [
+    {
+      "name": "bundled-pin-removed",
+      "changedLines": [
+        {
+          "line": 5,
+          "text": "export const RTC_BROWSER_VERSIONS = Object.freeze([RTC_BROWSER_VERSION])"
+        }
+      ],
+      "red": 1,
+      "restored": 0,
+      "sourceSha256": "fe0766b84edc3d17baadb96be2b7cda827b7ab3af2ad9a2010f8f5884f9e8677",
+      "failure": "\n",
+      "restoredExactly": true
+    },
+    {
+      "name": "unknown-version-admitted",
+      "changedLines": [
+        {
+          "line": 43,
+          "text": "    if (!browser?.newContext||!browser.contexts||!browser.isConnected||!root?.send||!root.on||!root.removeListener||false||!Number.isSafeInteger(timeoutMs)||timeoutMs<1||timeoutMs>10000 ||"
+        }
+      ],
+      "red": 1,
+      "restored": 0,
+      "sourceSha256": "fe0766b84edc3d17baadb96be2b7cda827b7ab3af2ad9a2010f8f5884f9e8677",
+      "failure": "AssertionError [ERR_ASSERTION]: The input did not match the regular expression /version_unqualified/. Input:\n  \n  'Error: profile_rtc_exclusive_browser_required'\n  \n      at async TestContext.<anonymous> (E:\\bgos-worktrees\\browser-profile-sync-plugin\\test\\browser-profile-rtc-activity.test.ts:43:99)\n      at async Test.run (node:internal/test_runner/test:1313:7)\n      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: Error: profile_rtc_exclusive_browser_required\n        at fail (file:///E:/bgos-worktrees/browser-profile-sync-plugin/lib/browser-profile-rtc-activity.mjs:8:36)\n        at ChromiumRtcActivity.start (file:///E:/bgos-worktrees/browser-profile-sync-plugin/lib/browser-profile-rtc-activity.mjs:77:233),\n    expected: /version_unqualified/,\n    operator: 'rejects',\n    diff: 'simple'\n",
+      "restoredExactly": true
+    },
+    {
+      "name": "changed-native-version-admitted",
+      "changedLines": [
+        {
+          "line": 77,
+          "text": "      if(!RTC_BROWSER_VERSIONS.includes(await this.browser.version())||this.browser.contexts().length||(await this._send('Target.getBrowserContexts')).browserContextIds.length||(await this._send('Target.getTargets')).targetInfos.length)throw fail('profile_rtc_exclusive_browser_required')"
+        }
+      ],
+      "red": 1,
+      "restored": 0,
+      "sourceSha256": "fe0766b84edc3d17baadb96be2b7cda827b7ab3af2ad9a2010f8f5884f9e8677",
+      "failure": "AssertionError [ERR_ASSERTION]: Missing expected rejection.\n      at async TestContext.<anonymous> (E:\\bgos-worktrees\\browser-profile-sync-plugin\\test\\browser-profile-rtc-activity.test.ts:49:48)\n      at async Test.run (node:internal/test_runner/test:1313:7)\n      at async Test.processPendingSubtests (node:internal/test_runner/test:897:7) {\n    generatedMessage: false,\n    code: 'ERR_ASSERTION',\n    actual: undefined,\n    expected: /exclusive_browser_required/,\n    operator: 'rejects',\n    diff: 'simple'\n",
+      "restoredExactly": true
+    },
+    {
+      "name": "cross-version-scope-admitted",
+      "changedLines": [
+        {
+          "line": 90,
+          "text": "  _scope({authority,context,browserVersion}){this._alive();const current=authorityOf(authority);if(!this.ready||!this.ownedContext||context!==this.ownedContext||false||FIELDS.some(key=>current[key]!==this.authority[key]))throw fail('profile_rtc_scope_unqualified')}"
+        }
+      ],
+      "red": 1,
+      "restored": 0,
+      "sourceSha256": "fe0766b84edc3d17baadb96be2b7cda827b7ab3af2ad9a2010f8f5884f9e8677",
+      "failure": "AssertionError [ERR_ASSERTION]: Missing expected exception.\n      at TestContext.<anonymous> (E:\\bgos-worktrees\\browser-profile-sync-plugin\\test\\browser-profile-rtc-activity.test.ts:48:154)\n      at async Test.run (node:internal/test_runner/test:1313:7)\n      at async Test.processPendingSubtests (node:internal/test_runner/test:897:7) {\n    generatedMessage: false,\n    code: 'ERR_ASSERTION',\n    actual: undefined,\n    expected: /scope_unqualified/,\n    operator: 'throws',\n    diff: 'simple'\n",
+      "restoredExactly": true
+    },
+    {
+      "name": "bundled-runtime-gate-restored-to-155-only",
+      "changedLines": [
+        {
+          "line": 308,
+          "text": "      }else if(!/^155\\.[0-9]+\\.[0-9]+\\.[0-9]+$/.test(qualification.browserVersion)||typeof qualification.confirmStopped!=='function')throw fail('profile_transport_qualification_required')"
+        }
+      ],
+      "red": 1,
+      "restored": 0,
+      "sourceSha256": "2d51c03b9e7cc25d0ae98340caa3e9902f48173ab598a01e05a1a03cfa0c6c8b",
+      "failure": "AssertionError [ERR_ASSERTION]: Missing expected exception.\n      at TestContext.<anonymous> (E:\\bgos-worktrees\\browser-profile-sync-plugin\\test\\browser-profile-runtime.test.ts:192:84)\n      at async Test.run (node:internal/test_runner/test:1313:7)\n      at async Test.processPendingSubtests (node:internal/test_runner/test:897:7) {\n    generatedMessage: false,\n    code: 'ERR_ASSERTION',\n    actual: undefined,\n    expected: { reason: 'profile_transport_qualification_required' },\n    operator: 'throws',\n    diff: 'simple'\n",
+      "restoredExactly": true
+    },
+    {
+      "name": "unknown-runtime-version-admitted",
+      "changedLines": [
+        {
+          "line": 308,
+          "text": "      }else if(false||typeof qualification.confirmStopped!=='function')throw fail('profile_transport_qualification_required')"
+        }
+      ],
+      "red": 1,
+      "restored": 0,
+      "sourceSha256": "2d51c03b9e7cc25d0ae98340caa3e9902f48173ab598a01e05a1a03cfa0c6c8b",
+      "failure": "AssertionError [ERR_ASSERTION]: Missing expected exception.\n      at TestContext.<anonymous> (E:\\bgos-worktrees\\browser-profile-sync-plugin\\test\\browser-profile-runtime.test.ts:192:84)\n      at async Test.run (node:internal/test_runner/test:1313:7)\n      at async Test.processPendingSubtests (node:internal/test_runner/test:897:7) {\n    generatedMessage: false,\n    code: 'ERR_ASSERTION',\n    actual: undefined,\n    expected: { reason: 'profile_transport_qualification_required' },\n    operator: 'throws',\n    diff: 'simple'\n",
+      "restoredExactly": true
+    }
+  ],
+  "limits": [
+    "Runtime coordinator, activation and command lease are fixtures.",
+    "Runtime extras use synthetic AES encryption, not the OS keyring.",
+    "The real bin, keyring, HOAI server and desktop lifecycle are not yet one composed proof."
+  ],
+  "committedArchiveNativeProof": {
+    "pluginCommit": "a9d75fb0c5f4baa83e635a6da5f2180245d10a0b",
+    "pluginArchiveSha256": "cad872da5b153786742f4afd84d4cf0c4863554f9b73c0f55eb476d4c985d720",
+    "lineEndings": "git archive committed LF; earlier copied-worktree receipts retain their exact original CRLF source hash",
+    "exit": 0,
+    "uid": 1000,
+    "sourceHashes": {
+      "lib/browser-profile-rtc-activity.mjs": "06acfca53ebc57f35bee6b048b07c63e33555dab380a3ebce1f32d00c240a476",
+      "lib/browser-profile-runtime.mjs": "2d51c03b9e7cc25d0ae98340caa3e9902f48173ab598a01e05a1a03cfa0c6c8b"
+    },
+    "reports": [
+      {
+        "name": "rtc",
+        "exit": 0,
+        "report": {
+          "kind": "Actual disposable sandboxed Chromium private native RTC qualification",
+          "checks": [
+            {
+              "name": "real-exclusive-startup-marker-bound-context-and-clean-target-zero-qualify",
+              "ok": true
+            },
+            {
+              "name": "actual-main-first-closed-RTC-refuses-capture-with-normal-local-new-tab-intact",
+              "ok": true
+            },
+            {
+              "name": "actual-same-frame-closed-RTC-refuses-capture-with-normal-local-new-tab-intact",
+              "ok": true
+            },
+            {
+              "name": "actual-cross-frame-closed-RTC-refuses-capture-with-normal-local-new-tab-intact",
+              "ok": true
+            },
+            {
+              "name": "actual-navigation-closed-RTC-refuses-capture-with-normal-local-new-tab-intact",
+              "ok": true
+            },
+            {
+              "name": "actual-popup-closed-RTC-refuses-capture-with-normal-local-new-tab-intact",
+              "ok": true
+            },
+            {
+              "name": "actual-last-pause-closed-RTC-refuses-capture-with-normal-local-new-tab-intact",
+              "ok": true
+            },
+            {
+              "name": "a-concurrent-unknown-browser-context-never-becomes-owned-authority",
+              "ok": true
+            }
+          ],
+          "browserVersion": "153.0.8010.12",
+          "executable": "/opt/playwright/chromium-1243/chrome-linux64/chrome",
+          "ok": true
+        },
+        "error": ""
+      },
+      {
+        "name": "runtime",
+        "exit": 0,
+        "report": {
+          "kind": "Actual disposable Linux plugin runtime, injected coordinator and command lease, synthetic AES extras store only",
+          "transportQualification": "Actual exact-version native RTC observer plus raw Network/target ledger",
+          "checks": [
+            {
+              "name": "missing-native-transport-proof-refuses-before-drain-and-preserves-original-live-page",
+              "ok": true
+            },
+            {
+              "name": "complete-target-ledger-qualified-before-navigation",
+              "ok": true,
+              "targets": 2
+            },
+            {
+              "name": "only-encrypted-capsule-atomically-fsynced-after-terminal-exit",
+              "ok": true,
+              "bytes": 4535,
+              "permissions": "0600"
+            },
+            {
+              "name": "owned-source-process-exited-before-signed-receipt",
+              "ok": true
+            },
+            {
+              "name": "destination-stage-is-inactive-and-makes-zero-site-requests",
+              "ok": true
+            },
+            {
+              "name": "full-saved-login-Never-and-search-bundle-publishes-once-only-after-exact-grant",
+              "ok": true,
+              "fixture": "Synthetic AES encrypted native store, OS key-store bootstrap remains separate"
+            },
+            {
+              "name": "matching-grant-restores-HTTPOnly-cookie-localStorage-rich-IndexedDB",
+              "ok": true
+            },
+            {
+              "name": "unfinished-password-refuses-with-source-left-running",
+              "ok": true
+            },
+            {
+              "name": "persistent-EventSource-refuses-with-source-left-running",
+              "ok": true
+            },
+            {
+              "name": "closed-owned-RTC-native-history-refuses-before-drain-with-original-page-alive",
+              "ok": true
+            },
+            {
+              "name": "pending-worker-POST-refuses-with-source-left-running",
+              "ok": true,
+              "reason": "profile_network_untracked",
+              "rawTargets": [
+                {
+                  "type": "page",
+                  "ready": true
+                },
+                {
+                  "type": "page",
+                  "ready": true
+                },
+                {
+                  "type": "shared_worker",
+                  "ready": true
+                },
+                {
+                  "type": "worker",
+                  "ready": true
+                }
+              ]
+            },
+            {
+              "name": "authority-withdrawal-during-drain-physically-disposes-source",
+              "ok": true,
+              "authority": "injected fixture proof"
+            },
+            {
+              "name": "resolving-close-with-live-owned-PID-refuses-cleanup-and-zeroes-key",
+              "ok": true
+            }
+          ],
+          "browserVersion": "153.0.8010.12",
+          "launch": {
+            "sandboxEnabled": true,
+            "privatePipe": true,
+            "executable": "/opt/playwright/chromium-1243/chrome-linux64/chrome",
+            "selection": "companion-bundled-default",
+            "featureSwitch": "--disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,BlockOriginHeaderModificationOnRedirect,Translate,AutoDeElevate,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion,WebUIOmniboxPopup,WebUIOmniboxAimPopup",
+            "source": "https://github.com/microsoft/playwright/blob/v1.63.0/packages/playwright-core/src/server/chromium/chromiumSwitches.ts",
+            "omniboxSource": "https://chromium.googlesource.com/chromium/src/+/bf3cc6d2d1098c5addd00a916373e6fa62d3dc6b"
+          },
+          "ok": true,
+          "encryptedCapsuleDirectory": "/tmp/hoai-profile-capsules.2YTiZg"
+        },
+        "error": ""
+      }
+    ]
+  },
+  "currentArchiveAfterCookieFix": {
+    "path": "/tmp/hoai-profile-archive.hSX2ZC",
+    "pluginCommit": "62b6b0973fd45e71e1913a6528d795d8706e9467",
+    "pluginArchiveSha256": "2da5f7a6d17a4a2c207217caaf19baee601ad8a5d89eb389862bb707ade24e5d",
+    "image": "hoai-profile-fresh:62b6b09",
+    "receipt": "Fresh UID1000 sandboxed container, exact committed git archive bytes, actual bundled default, no executable override",
+    "sourceHashes": {
+      "lib/browser-profile-rtc-activity.mjs": "06acfca53ebc57f35bee6b048b07c63e33555dab380a3ebce1f32d00c240a476",
+      "lib/browser-profile-runtime.mjs": "2d51c03b9e7cc25d0ae98340caa3e9902f48173ab598a01e05a1a03cfa0c6c8b"
+    },
+    "reports": [
+      {
+        "name": "rtc",
+        "exit": 0,
+        "report": {
+          "kind": "Actual disposable sandboxed Chromium private native RTC qualification",
+          "checks": [
+            {
+              "name": "real-exclusive-startup-marker-bound-context-and-clean-target-zero-qualify",
+              "ok": true
+            },
+            {
+              "name": "actual-main-first-closed-RTC-refuses-capture-with-normal-local-new-tab-intact",
+              "ok": true
+            },
+            {
+              "name": "actual-same-frame-closed-RTC-refuses-capture-with-normal-local-new-tab-intact",
+              "ok": true
+            },
+            {
+              "name": "actual-cross-frame-closed-RTC-refuses-capture-with-normal-local-new-tab-intact",
+              "ok": true
+            },
+            {
+              "name": "actual-navigation-closed-RTC-refuses-capture-with-normal-local-new-tab-intact",
+              "ok": true
+            },
+            {
+              "name": "actual-popup-closed-RTC-refuses-capture-with-normal-local-new-tab-intact",
+              "ok": true
+            },
+            {
+              "name": "actual-last-pause-closed-RTC-refuses-capture-with-normal-local-new-tab-intact",
+              "ok": true
+            },
+            {
+              "name": "a-concurrent-unknown-browser-context-never-becomes-owned-authority",
+              "ok": true
+            }
+          ],
+          "browserVersion": "153.0.8010.12",
+          "executable": "/opt/playwright/chromium-1243/chrome-linux64/chrome",
+          "ok": true
+        },
+        "error": ""
+      },
+      {
+        "name": "runtime",
+        "exit": 0,
+        "report": {
+          "kind": "Actual disposable Linux plugin runtime, injected coordinator and command lease, synthetic AES extras store only",
+          "transportQualification": "Actual exact-version native RTC observer plus raw Network/target ledger",
+          "checks": [
+            {
+              "name": "missing-native-transport-proof-refuses-before-drain-and-preserves-original-live-page",
+              "ok": true
+            },
+            {
+              "name": "complete-target-ledger-qualified-before-navigation",
+              "ok": true,
+              "targets": 2
+            },
+            {
+              "name": "only-encrypted-capsule-atomically-fsynced-after-terminal-exit",
+              "ok": true,
+              "bytes": 4535,
+              "permissions": "0600"
+            },
+            {
+              "name": "owned-source-process-exited-before-signed-receipt",
+              "ok": true
+            },
+            {
+              "name": "destination-stage-is-inactive-and-makes-zero-site-requests",
+              "ok": true
+            },
+            {
+              "name": "full-saved-login-Never-and-search-bundle-publishes-once-only-after-exact-grant",
+              "ok": true,
+              "fixture": "Synthetic AES encrypted native store, OS key-store bootstrap remains separate"
+            },
+            {
+              "name": "matching-grant-restores-HTTPOnly-cookie-localStorage-rich-IndexedDB",
+              "ok": true
+            },
+            {
+              "name": "unfinished-password-refuses-with-source-left-running",
+              "ok": true
+            },
+            {
+              "name": "persistent-EventSource-refuses-with-source-left-running",
+              "ok": true
+            },
+            {
+              "name": "closed-owned-RTC-native-history-refuses-before-drain-with-original-page-alive",
+              "ok": true
+            },
+            {
+              "name": "pending-worker-POST-refuses-with-source-left-running",
+              "ok": true,
+              "reason": "profile_network_untracked",
+              "rawTargets": [
+                {
+                  "type": "page",
+                  "ready": true
+                },
+                {
+                  "type": "page",
+                  "ready": true
+                },
+                {
+                  "type": "shared_worker",
+                  "ready": true
+                },
+                {
+                  "type": "worker",
+                  "ready": true
+                }
+              ]
+            },
+            {
+              "name": "authority-withdrawal-during-drain-physically-disposes-source",
+              "ok": true,
+              "authority": "injected fixture proof"
+            },
+            {
+              "name": "resolving-close-with-live-owned-PID-refuses-cleanup-and-zeroes-key",
+              "ok": true
+            }
+          ],
+          "browserVersion": "153.0.8010.12",
+          "launch": {
+            "sandboxEnabled": true,
+            "privatePipe": true,
+            "executable": "/opt/playwright/chromium-1243/chrome-linux64/chrome",
+            "selection": "companion-bundled-default",
+            "featureSwitch": "--disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,BlockOriginHeaderModificationOnRedirect,Translate,AutoDeElevate,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion,WebUIOmniboxPopup,WebUIOmniboxAimPopup",
+            "source": "https://github.com/microsoft/playwright/blob/v1.63.0/packages/playwright-core/src/server/chromium/chromiumSwitches.ts",
+            "omniboxSource": "https://chromium.googlesource.com/chromium/src/+/bf3cc6d2d1098c5addd00a916373e6fa62d3dc6b"
+          },
+          "ok": true,
+          "encryptedCapsuleDirectory": "/tmp/hoai-profile-capsules.bDparf"
+        },
+        "error": ""
+      },
+      {
+        "name": "cookies",
+        "exit": 0,
+        "report": {
+          "kind": "Actual sandboxed Linux CDP cookie import compatibility with synthetic values only",
+          "ok": true,
+          "uid": 1000,
+          "version": "153.0.8010.12",
+          "coreSha256": "2cfdbb6f8e207c81061af5830a28cc940d3410a7471558e9a05f06874edae40e",
+          "cases": [
+            {
+              "domainCookie": false,
+              "secure": false,
+              "sourceScheme": "NonSecure",
+              "exact": true
+            },
+            {
+              "domainCookie": false,
+              "secure": false,
+              "sourceScheme": "Secure",
+              "exact": true
+            },
+            {
+              "domainCookie": false,
+              "secure": true,
+              "sourceScheme": "NonSecure",
+              "nativeInvalidRefused": true
+            },
+            {
+              "domainCookie": false,
+              "secure": true,
+              "sourceScheme": "Secure",
+              "exact": true
+            },
+            {
+              "domainCookie": true,
+              "secure": false,
+              "sourceScheme": "NonSecure",
+              "exact": true
+            },
+            {
+              "domainCookie": true,
+              "secure": false,
+              "sourceScheme": "Secure",
+              "exact": true
+            },
+            {
+              "domainCookie": true,
+              "secure": true,
+              "sourceScheme": "NonSecure",
+              "nativeInvalidRefused": true
+            },
+            {
+              "domainCookie": true,
+              "secure": true,
+              "sourceScheme": "Secure",
+              "exact": true
+            }
+          ],
+          "browserDisconnected": true
+        },
+        "error": ""
+      }
+    ]
+  }
+}

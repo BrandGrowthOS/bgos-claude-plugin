@@ -1,0 +1,173 @@
+[
+  {
+    "name": "recipient-candidate-keys",
+    "file": "lib/browser-profile-companion.mjs",
+    "line": 62,
+    "changedLine": "    for(const intent of result.intents){if(intent.offer!==null||this.candidates.has(intent.intentId)||this.candidates.size>=16)continue;const endpoint=[...this.candidates.values()][0]?.endpoint||codec.createEndpointIdentity(randomUUID()),candidate={intent,endpoint,scope:{profileId:intent.profileId,actingUserId:intent.actingUserId,assistantId:intent.assistantId,endpointId:endpoint.identity.endpointId,keyFingerprint:codec.identityFingerprint(endpoint.identity),pairingId:intent.pairingId,ownerUserId:intent.ownerUserId},published:false,uncertain:false};this.candidates.set(intent.intentId,candidate);break}",
+    "red": 1,
+    "restored": 0,
+    "sha256": "0438f9d4765e0cf9a44c28160ac5787a45698227868b83740bb1a8ce75832b91"
+  },
+  {
+    "name": "status-unknown-preserve",
+    "file": "lib/browser-profile-companion.mjs",
+    "line": 164,
+    "changedLine": "    let result;try{result=await statusClient.status({authority:runtime.authority,endpoint:record.endpoint,bindingId:binding.bindingId,socketId:binding.socketId,assertCurrent:()=>{this._cached(record);if(!unchanged())throw fail('profile_companion_context_changed')}})}catch{if(!unchanged())return;await this._dispose(record);record.admission='unknown';this._status(record,'authority_unknown: new agent actions paused; live page retained');return}",
+    "red": 1,
+    "restored": 0,
+    "sha256": "0438f9d4765e0cf9a44c28160ac5787a45698227868b83740bb1a8ce75832b91"
+  },
+  {
+    "name": "site-consent",
+    "file": "lib/browser-profile-companion.mjs",
+    "line": 171,
+    "changedLine": "    if(false)return toolError('recipient_permission_required','This action requires a recipient-scoped permission. It did not run. Ask the person using this agent to review the browser in HOAI.')",
+    "red": 1,
+    "restored": 0,
+    "sha256": "0438f9d4765e0cf9a44c28160ac5787a45698227868b83740bb1a8ce75832b91"
+  },
+  {
+    "name": "status-coalescing",
+    "file": "lib/browser-profile-companion.mjs",
+    "line": 51,
+    "changedLine": "      if(true){const task=this._active(record).catch(error=>{if(!record.revoked)record.admission='unknown';this._status(record,genericError(error))});record.monitorTask=task;void task.finally(()=>{if(record.monitorTask===task)record.monitorTask=null}).catch(()=>{})}",
+    "red": 1,
+    "restored": 0,
+    "sha256": "0438f9d4765e0cf9a44c28160ac5787a45698227868b83740bb1a8ce75832b91"
+  },
+  {
+    "name": "stale-status",
+    "file": "lib/browser-profile-companion.mjs",
+    "line": 165,
+    "changedLine": "    this._cached(record);if(false)return;if(result.current===false){record.revoked=true;record.admission='revoked';await this._dispose(record);this._status(record,'revoked');return}record.admission='active';this._status(record,'active')",
+    "red": 1,
+    "restored": 0,
+    "sha256": "0438f9d4765e0cf9a44c28160ac5787a45698227868b83740bb1a8ce75832b91"
+  },
+  {
+    "name": "physical-create-drain",
+    "file": "lib/browser-profile-companion.mjs",
+    "line": 195,
+    "changedLine": "    const task=Promise.resolve().then(async()=>{const failures=[];void record.runtimeCreating;for(const cleanup of [()=>record.runtime?.dispose(),async()=>{await record.engineCreating?.catch(()=>{});await record.engine?.stop()},async()=>{await record.extrasCreating?.catch(()=>{});record.extras?.dispose()}])try{await cleanup()}catch(error){failures.push(error)}record.contentKeyEpoch?.key.fill(0);record.contentKeyEpoch=null;if(failures.length)throw fail('profile_companion_stop_unconfirmed');record.relay?.close();record.runtime=null;record.engine=null;record.extras=null;if(record.rpc){void record.rpc.close().catch(()=>{});record.rpc=null}})",
+    "red": 1,
+    "restored": 0,
+    "sha256": "0438f9d4765e0cf9a44c28160ac5787a45698227868b83740bb1a8ce75832b91"
+  },
+  {
+    "name": "owned-readiness-wait",
+    "file": "lib/browser-profile-companion.mjs",
+    "line": 203,
+    "changedLine": "      if(record.runtime||record.runtimeCreating){void record.processOwned;if(!record.processStop||typeof record.processStop.stop!=='function')throw fail('profile_companion_stop_unconfirmed');const result=await record.processStop.stop();if(result?.stopped!==true)throw fail('profile_companion_stop_unconfirmed');await record.runtime?.emergencyStopOwnedProcess()}",
+    "red": 1,
+    "restored": 0,
+    "sha256": "0438f9d4765e0cf9a44c28160ac5787a45698227868b83740bb1a8ce75832b91"
+  },
+  {
+    "name": "queued-create-admission",
+    "file": "lib/browser-profile-companion.mjs",
+    "line": 113,
+    "changedLine": "    const creatingCurrent=()=>{}",
+    "red": 1,
+    "restored": 0,
+    "sha256": "0438f9d4765e0cf9a44c28160ac5787a45698227868b83740bb1a8ce75832b91"
+  },
+  {
+    "name": "fresh-source-pin",
+    "file": "lib/browser-profile-companion.mjs",
+    "line": 141,
+    "changedLine": "    if(transition?.id!==pending.transitionId||transition.profileId!==record.scope.profileId||transition.kind!=='transfer'||transition.phase!=='checkpoint_committed'||read.profile?.writerState!=='stopped'||read.profile.headManifestHash!==transition.manifestHash||read.profile.revision!==authority.revision||read.profile.contentKeyEpoch!==authority.contentKeyEpoch||transition.source.writerEpoch+1!==authority.writerEpoch||!same(transition.source,record.expectedSource)||!same(transition.destination,destination(authority))||!read.admission?.source?.admitted||!read.admission?.destination?.admitted||!read.admission.destination.backgroundUse||read.admission.destination.grantVersion!==authority.grantVersion||read.admission.destination.keyFingerprint!==authority.keyFingerprint)throw fail('profile_companion_transfer_changed')",
+    "red": 1,
+    "restored": 0,
+    "sha256": "0438f9d4765e0cf9a44c28160ac5787a45698227868b83740bb1a8ce75832b91"
+  },
+  {
+    "name": "stage-journal-readback",
+    "file": "lib/browser-profile-companion.mjs",
+    "line": 146,
+    "changedLine": "    try{const staged=await runtime.stage({checkpoint,expectedContext:context,sourceIdentity:record.sourcePin,destination:record.endpoint});check();const saved=await record.journal.write({scope:record.journalScope,checkpoint,manifestHash:transition.manifestHash,receipt:staged.receipt,receiptSignature:staged.signature,assertCurrent:check});check();if(!saved.durability.fileSynced||!saved.durability.directorySynced)throw fail('profile_companion_journal_unproved');const loaded={checkpoint,receipt:staged.receipt};check();if(!loaded||!same(loaded.checkpoint,checkpoint)||!same(loaded.receipt,staged.receipt))throw fail('profile_companion_journal_unproved');const acknowledged=await this.client.staged(record.scope,record.endpoint,transition.id,staged);check();if(acknowledged.writerState!=='staged'||acknowledged.headManifestHash!==transition.manifestHash||acknowledged.revision!==authority.revision)throw fail('profile_companion_stage_uncertain');this._status(record,'staged_inactive: waiting for human activation on HOAI')}",
+    "red": 1,
+    "restored": 0,
+    "sha256": "0438f9d4765e0cf9a44c28160ac5787a45698227868b83740bb1a8ce75832b91"
+  },
+  {
+    "name": "typed-hint-lane",
+    "file": "bin/hoai-browser-host.mjs",
+    "line": 2198,
+    "changedLine": "    if (false) {",
+    "red": 1,
+    "restored": 0,
+    "sha256": "e379c3205fb1efae29c0c7a05be3819e19539a52d064f4d412c6ed678fe8264f"
+  },
+  {
+    "name": "managed-mcp-namespace",
+    "file": "bin/hoai-browser-host.mjs",
+    "line": 2214,
+    "changedLine": "    const answer = false",
+    "red": 1,
+    "restored": 0,
+    "sha256": "e379c3205fb1efae29c0c7a05be3819e19539a52d064f4d412c6ed678fe8264f"
+  },
+  {
+    "name": "managed-view-namespace",
+    "file": "bin/hoai-browser-host.mjs",
+    "line": 2173,
+    "changedLine": "      if (false) { socket.emit('browser_view_close', { viewId: input.viewId, reason: 'profile_namespace_managed' }); return }",
+    "red": 1,
+    "restored": 0,
+    "sha256": "e379c3205fb1efae29c0c7a05be3819e19539a52d064f4d412c6ed678fe8264f"
+  },
+  {
+    "name": "retiring-replacement",
+    "file": "bin/hoai-browser-host.mjs",
+    "line": 2492,
+    "changedLine": "      if (this.connections.has(key)) continue",
+    "red": 1,
+    "restored": 0,
+    "sha256": "e379c3205fb1efae29c0c7a05be3819e19539a52d064f4d412c6ed678fe8264f"
+  },
+  {
+    "name": "retiring-reservation",
+    "file": "bin/hoai-browser-host.mjs",
+    "line": 2486,
+    "changedLine": "      void conn",
+    "red": 1,
+    "restored": 0,
+    "sha256": "e379c3205fb1efae29c0c7a05be3819e19539a52d064f4d412c6ed678fe8264f"
+  },
+  {
+    "name": "retired-emergency",
+    "file": "bin/hoai-browser-host.mjs",
+    "line": 2533,
+    "changedLine": "    const retained=[...new Set([...this.connections.values()])]",
+    "red": 1,
+    "restored": 0,
+    "sha256": "e379c3205fb1efae29c0c7a05be3819e19539a52d064f4d412c6ed678fe8264f"
+  },
+  {
+    "name": "shutdown-exit-status",
+    "file": "lib/browser-profile-daemon-stop.mjs",
+    "line": 12,
+    "changedLine": "  return 0",
+    "red": 1,
+    "restored": 0,
+    "sha256": "a3698e356b6bb96752f0c38ba4a6b1c5646f6a08ea1655ece62857c99d9bee05"
+  },
+  {
+    "name": "source-dirty-refusal",
+    "file": "lib/browser-profile-runtime.mjs",
+    "line": 369,
+    "changedLine": "          if (false) throw fail('profile_unsaved_form_state')",
+    "red": 1,
+    "restored": 0,
+    "sha256": "cbdb2a170706a36c4d900175a33b059f5f3a48581d67f775857777fdae705eea"
+  },
+  {
+    "name": "post-pause-dirty-check",
+    "file": "lib/browser-profile-runtime.mjs",
+    "line": 446,
+    "changedLine": "      void 0; this._current(token); this.activeProof()",
+    "red": 1,
+    "restored": 0,
+    "sha256": "cbdb2a170706a36c4d900175a33b059f5f3a48581d67f775857777fdae705eea"
+  }
+]

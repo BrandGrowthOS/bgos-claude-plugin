@@ -405,3 +405,29 @@ test('main: a wrapper argv keeps the inherited cwd and needs no override', async
   assert.equal(calls[0].opts.cwd, undefined)
   assert.equal(calls[0].opts.env, undefined)
 })
+
+// The Agent Browser's Node floor (0.72.0): an older Node gets one plain line naming the floor, and bun still starts.
+test('main: on a Node older than 22.12.0 it says so in one plain line and still starts bun; a current Node says nothing', async () => {
+  for (const [nodeVersion, expectLine] of [['20.11.1', true], ['22.11.9', true], ['22.12.0', false], ['24.16.0', false]] as const) {
+    const child = new FakeChild()
+    const errs: string[] = []
+    let spawned = 0
+    const done = main(['/opt/plugin/server.ts'], {
+      env: { PATH: '/usr/bin' },
+      home: '/home/kc',
+      platform: 'linux',
+      exists: existsIn(['/usr/bin/bun']),
+      spawnImpl: (() => { spawned++; return child }) as never,
+      writeErr: (text: string) => errs.push(text),
+      onSignal: () => {},
+      nodeVersion,
+    })
+    child.emit('exit', 0, null)
+    assert.equal(await done, 0)
+    assert.equal(spawned, 1, `${nodeVersion}: bun starts either way`)
+    if (expectLine) {
+      assert.equal(errs.length, 1, nodeVersion)
+      assert.equal(errs[0], `[bgos-launch] This machine runs Node.js ${nodeVersion}, and the HOAI Agent Browser needs Node.js 22.12.0 or newer: install a current Node.js 22 or 24 LTS release from https://nodejs.org, then restart this agent.\n`)
+    } else assert.deepEqual(errs, [], nodeVersion)
+  }
+})

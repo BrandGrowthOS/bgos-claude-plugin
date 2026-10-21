@@ -1,0 +1,681 @@
+{
+  "kind": "Agent schema2 ordinary-tab implementation qualification",
+  "baseCommit": "1c3870eeeadde7e6a33d82bfe9f48c11895c3623",
+  "sourceHashes": {
+    "lib/browser-profile-runtime.mjs": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+    "lib/browser-profile-companion.mjs": "666e2357a1c8db25ac578cdd540500b919869c2342dc9127c7c0222386737464",
+    "lib/browser-profile-companion-client.mjs": "1044a71f78bd1b509863d9be0fab3bd7491ae04139cbf7235d16c2c714894559",
+    "lib/browser-profile-return-handover.mjs": "4cbec4732ff052e306a6ba449c0d01e89d24f8ecb5d26600d916a579a2df3da4",
+    "scripts/probe-browser-profile-resume.mjs": "4b3db1c5dd26c4bb428d14dc70c28a1ecbe8ba37c1d9677d879c9afe2739a473"
+  },
+  "touchedSuites": {
+    "count": 6,
+    "tests": 144,
+    "passed": 144,
+    "skipped": 0,
+    "exit": 0
+  },
+  "typescriptNoEmitExit": 0,
+  "mutations": [
+    {
+      "name": "native_GET_method",
+      "path": "lib/browser-profile-runtime.mjs",
+      "lineNumber": 134,
+      "printedExecutableLine": "        const valid = [params.requestId, params.frameId, params.loaderId].every(resumeId) && typeof request?.url === 'string' && request.url.length <= 8192 && true && request.hasPostData !== true && request.postData === undefined && request.postDataEntries === undefined",
+      "before": "request.method === 'GET'",
+      "after": "true",
+      "originalSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "mutatedSha256": "9add468e77573565c521ad177cfe5a755c5f0717e0bc2d1093ae58296cc5f0dd",
+      "restoredSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "native_GET_body",
+      "path": "lib/browser-profile-runtime.mjs",
+      "lineNumber": 134,
+      "printedExecutableLine": "        const valid = [params.requestId, params.frameId, params.loaderId].every(resumeId) && typeof request?.url === 'string' && request.url.length <= 8192 && request.method === 'GET' && true && request.postData === undefined && request.postDataEntries === undefined",
+      "before": "request.hasPostData !== true",
+      "after": "true",
+      "originalSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "mutatedSha256": "5df17193262246dd7b6000d887fb30f717ab32dabc0934dc7c1150aebd5f1926",
+      "restoredSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "native_redirect_original_GET",
+      "path": "lib/browser-profile-runtime.mjs",
+      "lineNumber": 135,
+      "printedExecutableLine": "        const safe = valid && (params.redirectResponse ? prior.frameId === params.frameId && prior.loaderId === params.loaderId && params.redirectResponse.status >= 300 && params.redirectResponse.status < 400 && resumeURLBase(params.redirectResponse.url) === resumeURLBase(prior.url) : !prior)",
+      "before": "prior?.safe === true && ",
+      "after": "",
+      "originalSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "mutatedSha256": "2ffc3266edcc4ede970d3455516cbe98f1e4dc72719fd014db991d3898d48dd1",
+      "restoredSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "native_redirect_frame",
+      "path": "lib/browser-profile-runtime.mjs",
+      "lineNumber": 135,
+      "printedExecutableLine": "        const safe = valid && (params.redirectResponse ? prior?.safe === true && prior.loaderId === params.loaderId && params.redirectResponse.status >= 300 && params.redirectResponse.status < 400 && resumeURLBase(params.redirectResponse.url) === resumeURLBase(prior.url) : !prior)",
+      "before": "prior.frameId === params.frameId && ",
+      "after": "",
+      "originalSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "mutatedSha256": "ea6819fb0b62fe19e3089979d5085427912b64736501f43329a7b4fcafa48c3e",
+      "restoredSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "native_redirect_loader",
+      "path": "lib/browser-profile-runtime.mjs",
+      "lineNumber": 135,
+      "printedExecutableLine": "        const safe = valid && (params.redirectResponse ? prior?.safe === true && prior.frameId === params.frameId && params.redirectResponse.status >= 300 && params.redirectResponse.status < 400 && resumeURLBase(params.redirectResponse.url) === resumeURLBase(prior.url) : !prior)",
+      "before": "prior.loaderId === params.loaderId && ",
+      "after": "",
+      "originalSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "mutatedSha256": "173204c8b0942e33cb7961e648a8d7845beb5e41f163b0c39f1f4dbc5ad608a5",
+      "restoredSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "native_success_HTTP",
+      "path": "lib/browser-profile-runtime.mjs",
+      "lineNumber": 141,
+      "printedExecutableLine": "    if (method === 'Network.responseReceived' && params.type === 'Document' && resumeRequest) resumeRequest.response = params.frameId === resumeRequest.frameId && params.loaderId === resumeRequest.loaderId && params.response?.status >= 100 && ![204,205].includes(params.response.status) && params.response.fromServiceWorker !== true && resumeURLBase(params.response.url) === resumeURLBase(resumeRequest.url)",
+      "before": "params.response?.status >= 200 && params.response.status < 300",
+      "after": "params.response?.status >= 100",
+      "originalSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "mutatedSha256": "850c16c8c9de9448b62790bec9972452e70f66c0a7df7e82da9c6fd8014739e4",
+      "restoredSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "native_completed_GET",
+      "path": "lib/browser-profile-runtime.mjs",
+      "lineNumber": 158,
+      "printedExecutableLine": "    if (matches.length !== 1 || matches[0].safe !== true || matches[0].response !== true || matches[0].failed) throw fail('profile_resume_document_unproved')",
+      "before": "matches[0].finished !== true || ",
+      "after": "",
+      "originalSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "mutatedSha256": "ec705f7e50c63b832ae4ff98cef05b963e2ca86f06d1ae985ae17f61af46e4e9",
+      "restoredSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "native_current_loader",
+      "path": "lib/browser-profile-runtime.mjs",
+      "lineNumber": 157,
+      "printedExecutableLine": "    const matches = [...(target.resumeRequests?.values() || [])].filter(value => value.frameId === frame.id && resumeURLBase(value.url) === resumeURLBase(frame.url))",
+      "before": "value.loaderId === frame.loaderId && ",
+      "after": "",
+      "originalSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "mutatedSha256": "ddc7e8a0085a7ea16d8d27735cf8b6e4e01aa1a37a3a91dc344b2eec0480e772",
+      "restoredSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "native_detached_target",
+      "path": "lib/browser-profile-runtime.mjs",
+      "lineNumber": 152,
+      "printedExecutableLine": "    if (!target?.ready || target.type !== 'page' || hasResumeOpener(target) || target.interrupted || target.unqualified || target.missedRequest || !frame || frame.parentId || !resumeId(frame.id) || !resumeId(frame.loaderId) || typeof frame.url !== 'string' || frame.unreachableUrl) throw fail('profile_resume_document_unproved')",
+      "before": "target.detached || ",
+      "after": "",
+      "originalSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "mutatedSha256": "15dbb3abae11cfae22c3e5b5d8c61e1a072403915aeadfab2cc0030599c726bb",
+      "restoredSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "native_history_bound",
+      "path": "lib/browser-profile-runtime.mjs",
+      "lineNumber": 136,
+      "printedExecutableLine": "        if (target.resumeRequests.size >= 256 && !target.resumeRequests.has(params.requestId)) target.resumeRequests.delete(target.resumeRequests.keys().next().value)",
+      "before": "target.resumeRequests.size >= 128",
+      "after": "target.resumeRequests.size >= 256",
+      "originalSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "mutatedSha256": "e37ab0231e3f24bad39d68d1bd67483ad0f8264d0b41efb82aef9dfa82bf6966",
+      "restoredSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "native_popup_relationship",
+      "path": "lib/browser-profile-runtime.mjs",
+      "lineNumber": 152,
+      "printedExecutableLine": "    if (!target?.ready || target.type !== 'page' || target.detached || target.interrupted || target.unqualified || target.missedRequest || !frame || frame.parentId || !resumeId(frame.id) || !resumeId(frame.loaderId) || typeof frame.url !== 'string' || frame.unreachableUrl) throw fail('profile_resume_document_unproved')",
+      "before": "hasResumeOpener(target) || ",
+      "after": "",
+      "originalSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "mutatedSha256": "eccacb4d4ec36e1889e23cc02056bbb0c026d40a350f2b0f1c0b765c6a6ebaa3",
+      "restoredSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "native_opaque_blank",
+      "path": "lib/browser-profile-runtime.mjs",
+      "lineNumber": 154,
+      "printedExecutableLine": "      if (target.url !== 'about:blank' || target.resumeRequests?.size || frame.secureContextType !== 'InsecureScheme' || frame.urlFragment) throw fail('profile_resume_document_unproved')",
+      "before": "frame.securityOrigin !== '://' || ",
+      "after": "",
+      "originalSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "mutatedSha256": "33e2b2acb20268eec67a8deaa1ade3633126323a7edb1fe28368a68db28765cb",
+      "restoredSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "native_inherited_blank_context",
+      "path": "lib/browser-profile-runtime.mjs",
+      "lineNumber": 154,
+      "printedExecutableLine": "      if (target.url !== 'about:blank' || target.resumeRequests?.size || frame.securityOrigin !== '://' || frame.urlFragment) throw fail('profile_resume_document_unproved')",
+      "before": "frame.secureContextType !== 'InsecureScheme' || ",
+      "after": "",
+      "originalSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "mutatedSha256": "210104886d0c3073e347ecec029a3c5994c0774910d7b0262d1bce8fbf4a153e",
+      "restoredSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "native_blank_history",
+      "path": "lib/browser-profile-runtime.mjs",
+      "lineNumber": 154,
+      "printedExecutableLine": "      if (target.url !== 'about:blank' || frame.securityOrigin !== '://' || frame.secureContextType !== 'InsecureScheme' || frame.urlFragment) throw fail('profile_resume_document_unproved')",
+      "before": "target.resumeRequests?.size || ",
+      "after": "",
+      "originalSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "mutatedSha256": "96a78c4f6611c0eccd4321f6dc107926391ff83c74341e3caf0a9cb10afc115c",
+      "restoredSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "native_fragment_preserved",
+      "path": "lib/browser-profile-runtime.mjs",
+      "lineNumber": 38,
+      "printedExecutableLine": "  return typeof frame.urlFragment === 'string' && frame.urlFragment.startsWith('#') && !frame.url.includes('#') ? frame.url : null",
+      "before": "? frame.url + frame.urlFragment : null",
+      "after": "? frame.url : null",
+      "originalSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "mutatedSha256": "4993dc3d315440c5b2d0d77e68e06a16cc956af9a0886688578f9d3af03b6683",
+      "restoredSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "native_selected_page",
+      "path": "lib/browser-profile-runtime.mjs",
+      "lineNumber": 375,
+      "printedExecutableLine": "    const selected = syncCall(this.selectedPage, undefined), selectedIndex = pages.length ? pages.length - 1 : -1",
+      "before": "pages.indexOf(selected)",
+      "after": "pages.length - 1",
+      "originalSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "mutatedSha256": "744c5c1f65499c3eab9643b9a2ef1c533013815f4fc582744766da22fc979711",
+      "restoredSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "native_frozen_snapshot",
+      "path": "lib/browser-profile-runtime.mjs",
+      "lineNumber": 532,
+      "printedExecutableLine": "      const resumeTabs = initialResume",
+      "before": "const resumeTabs = context.schemaVersion === 2 ? await this._captureResumeTabs() : null",
+      "after": "const resumeTabs = initialResume",
+      "originalSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "mutatedSha256": "7448637238e826a19d8f86f11b588a6050d7b36d32febb0d46befed8dc064e6a",
+      "restoredSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "native_explicit_encoding",
+      "path": "lib/browser-profile-runtime.mjs",
+      "lineNumber": 549,
+      "printedExecutableLine": "      plaintext = portableState.encodePortableState({ schema: portableState.schemaForVersion(context.schemaVersion), cookies: capturedCookies, origins: storage, ...extras, ...(context.schemaVersion === 2 ? { resumeTabs } : {}) }, 1)",
+      "before": "}, context.schemaVersion)",
+      "after": "}, 1)",
+      "originalSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "mutatedSha256": "ba155467b3c47165c73cf6cefc8321aa4dd8d9ca10233c27d9b72e89ebc94967",
+      "restoredSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "native_explicit_decoding",
+      "path": "lib/browser-profile-runtime.mjs",
+      "lineNumber": 579,
+      "printedExecutableLine": "      opened = profileCrypto.openCheckpoint({ checkpoint, expectedContext, sourceIdentity, destination }); const payload = portableState.decodePortableState(opened.plaintext), restoredCookies = cookies(payload.cookies)",
+      "before": "portableState.decodePortableState(opened.plaintext, expectedContext.schemaVersion)",
+      "after": "portableState.decodePortableState(opened.plaintext)",
+      "originalSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "mutatedSha256": "19815fee704ede3d756319a7f55701f0068f750be6c1e9967e01c1a54efb2047",
+      "restoredSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "native_review_required",
+      "path": "lib/browser-profile-runtime.mjs",
+      "lineNumber": 580,
+      "printedExecutableLine": "      if (false) {",
+      "before": "expectedContext.schemaVersion === 2 && payload.resumeTabs.tabs.some(tab => classifyResumeURL(tab.url) === 'review')",
+      "after": "false",
+      "originalSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "mutatedSha256": "32c8dd847057272d5e4503fe3ed49a7f74ce22149081cf35768db4929bb03b35",
+      "restoredSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "native_review_recheck",
+      "path": "lib/browser-profile-runtime.mjs",
+      "lineNumber": 483,
+      "printedExecutableLine": "      const resumeCurrent = () => { assertCurrent(); this._current(token); void resume }",
+      "before": "if (resume?.assertCurrent) syncCall(resume.assertCurrent, undefined)",
+      "after": "void resume",
+      "originalSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "mutatedSha256": "13175e8b1d120bec71c8717a1330869ad7ce96c9d7aa7add5ea1fb8d30316315",
+      "restoredSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "native_inert_stage",
+      "path": "lib/browser-profile-runtime.mjs",
+      "lineNumber": 594,
+      "printedExecutableLine": "      this.ledger.frozen = false; current(); this.network = 'blocked'; this.knownOrigins = origins; this.contentKeyEpoch = opened.contentKeyEpoch; opened.plaintext.fill(0); opened = null; this.state = 'active'",
+      "before": "this.state = 'staged'",
+      "after": "this.state = 'active'",
+      "originalSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "mutatedSha256": "d5ca17d36bda44732f208bdd479676da905c3a7a81a1e4c94482b07d65d47ad4",
+      "restoredSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "native_restore_selected",
+      "path": "lib/browser-profile-runtime.mjs",
+      "lineNumber": 494,
+      "printedExecutableLine": "        resumeCurrent(); resumedPages.set(this, pages.at(-1) || null)",
+      "before": "pages[resume.tabs.selectedIndex]",
+      "after": "pages.at(-1)",
+      "originalSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "mutatedSha256": "e2974c85dcbdb3442d29b1ae1d472265075c0cc73d12f28a855dd047160c93b8",
+      "restoredSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "native_partial_stop",
+      "path": "lib/browser-profile-runtime.mjs",
+      "lineNumber": 498,
+      "printedExecutableLine": "    } catch (error) { void restoring; throw error }",
+      "before": "if (restoring) await this.dispose()",
+      "after": "void restoring",
+      "originalSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "mutatedSha256": "3f63e77348b65d6549f3a60367e256975443cdfc54ee89d19d271732ba66eca3",
+      "restoredSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "native_fresh_CAS",
+      "path": "lib/browser-profile-runtime.mjs",
+      "lineNumber": 472,
+      "printedExecutableLine": "      const proof = {authority:this.authority,assertCurrent(){}}; this._current(token)",
+      "before": "const proof = await this.authorizeActivation({ authority: this.authority, receipt: this.stagedReceipt || null, grant });",
+      "after": "const proof = {authority:this.authority,assertCurrent(){}};",
+      "originalSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "mutatedSha256": "0b6055596812dcf20af764c0b17b06b183d2fb22f66128788b7b006771fb110f",
+      "restoredSha256": "646989a4291e54e4ec4fbc704a85b9c14d80218ce1a3862deeeb231366b664c4",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "agent_role_pin_before_ready",
+      "path": "lib/browser-profile-companion.mjs",
+      "lineNumber": 138,
+      "printedExecutableLine": "      if(false)request=this._validateReceiveStatus(record,status,entry).request",
+      "before": "if(request.schemaVersion===2)request=this._validateReceiveStatus(record,status,entry).request",
+      "after": "if(false)request=this._validateReceiveStatus(record,status,entry).request",
+      "originalSha256": "666e2357a1c8db25ac578cdd540500b919869c2342dc9127c7c0222386737464",
+      "mutatedSha256": "b2f71f191d63cdd39bb320052a96a3fe21f93f945aa5f4e855758b856bc1ca03",
+      "restoredSha256": "666e2357a1c8db25ac578cdd540500b919869c2342dc9127c7c0222386737464",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "agent_private_checkpoint_hash",
+      "path": "lib/browser-profile-companion.mjs",
+      "lineNumber": 234,
+      "printedExecutableLine": "    if(!permit||permit.consumed||record.runtime!==runtime||!same(input.expectedContext,permit.context)||!same(input.sourceIdentity,permit.sourcePin))throw fail('profile_resume_review_required')",
+      "before": "codec.manifestHash(input.checkpoint.manifest)!==permit.manifestHash||",
+      "after": "",
+      "originalSha256": "666e2357a1c8db25ac578cdd540500b919869c2342dc9127c7c0222386737464",
+      "mutatedSha256": "5763c967f605d6fc74ba2de13e7012bc3c3aa502ba004e6bd7574987f9f31d8a",
+      "restoredSha256": "666e2357a1c8db25ac578cdd540500b919869c2342dc9127c7c0222386737464",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "agent_private_context",
+      "path": "lib/browser-profile-companion.mjs",
+      "lineNumber": 234,
+      "printedExecutableLine": "    if(!permit||permit.consumed||record.runtime!==runtime||codec.manifestHash(input.checkpoint.manifest)!==permit.manifestHash||!same(input.sourceIdentity,permit.sourcePin))throw fail('profile_resume_review_required')",
+      "before": "!same(input.expectedContext,permit.context)||",
+      "after": "",
+      "originalSha256": "666e2357a1c8db25ac578cdd540500b919869c2342dc9127c7c0222386737464",
+      "mutatedSha256": "6ce4cb5b863f6c18fa425e0480985a6211009ec20ffba1fe055933141119b1ed",
+      "restoredSha256": "666e2357a1c8db25ac578cdd540500b919869c2342dc9127c7c0222386737464",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "agent_private_source_pin",
+      "path": "lib/browser-profile-companion.mjs",
+      "lineNumber": 234,
+      "printedExecutableLine": "    if(!permit||permit.consumed||record.runtime!==runtime||codec.manifestHash(input.checkpoint.manifest)!==permit.manifestHash||!same(input.expectedContext,permit.context)||false)throw fail('profile_resume_review_required')",
+      "before": "!same(input.sourceIdentity,permit.sourcePin)",
+      "after": "false",
+      "originalSha256": "666e2357a1c8db25ac578cdd540500b919869c2342dc9127c7c0222386737464",
+      "mutatedSha256": "5e370f9a0ed58e866f20d17e831c17715065c1a4eff55f3ed78e11fb1e332e73",
+      "restoredSha256": "666e2357a1c8db25ac578cdd540500b919869c2342dc9127c7c0222386737464",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "agent_one_use_private_permit",
+      "path": "lib/browser-profile-companion.mjs",
+      "lineNumber": 234,
+      "printedExecutableLine": "    if(!permit||record.runtime!==runtime||codec.manifestHash(input.checkpoint.manifest)!==permit.manifestHash||!same(input.expectedContext,permit.context)||!same(input.sourceIdentity,permit.sourcePin))throw fail('profile_resume_review_required')",
+      "before": "permit.consumed||",
+      "after": "",
+      "originalSha256": "666e2357a1c8db25ac578cdd540500b919869c2342dc9127c7c0222386737464",
+      "mutatedSha256": "d9f2e137b3e0ef66bd2bd237269ef38a70f5866b1f6b7f0ccd81e96f072485bd",
+      "restoredSha256": "666e2357a1c8db25ac578cdd540500b919869c2342dc9127c7c0222386737464",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "agent_private_live_pin",
+      "path": "lib/browser-profile-companion.mjs",
+      "lineNumber": 235,
+      "printedExecutableLine": "    const assertCurrent=()=>{this._cached(record);if(this.closing||this.#resumePermits.get(runtime)!==permit||record.runtime!==runtime||!shared.sameAuthority(runtime.authority,permit.authority)||!same(record.request,permit.request)||false)throw fail('profile_resume_review_required')}",
+      "before": "!same(record.sourcePin,permit.sourcePin)",
+      "after": "false",
+      "originalSha256": "666e2357a1c8db25ac578cdd540500b919869c2342dc9127c7c0222386737464",
+      "mutatedSha256": "71cbd1c95f2fb000065c2bc6da991cc492f941571b432f7352296a58751d81c3",
+      "restoredSha256": "666e2357a1c8db25ac578cdd540500b919869c2342dc9127c7c0222386737464",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "agent_fresh_source_grant",
+      "path": "lib/browser-profile-companion.mjs",
+      "lineNumber": 254,
+      "printedExecutableLine": "    if(false){const fresh=await this.client.runtimeRequest(record.scope,record.endpoint,record.request.requestId);check();this._validateReceiveStatus(record,fresh,entry);if(fresh.state!=='confirmed'||!same(fresh.confirmation?.destination,destination(authority)))throw fail('profile_companion_readiness_invalid')}",
+      "before": "if(record.request.schemaVersion===2){const fresh=await this.client.runtimeRequest",
+      "after": "if(false){const fresh=await this.client.runtimeRequest",
+      "originalSha256": "666e2357a1c8db25ac578cdd540500b919869c2342dc9127c7c0222386737464",
+      "mutatedSha256": "47205e96ba7e7c9fc2827ac53ca9978ad1df281ed860c884931c7d01e6023040",
+      "restoredSha256": "666e2357a1c8db25ac578cdd540500b919869c2342dc9127c7c0222386737464",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "agent_no_duplicate_blank",
+      "path": "lib/browser-profile-companion.mjs",
+      "lineNumber": 264,
+      "printedExecutableLine": "    await runtime.activate(authority);check();const selected=runtime.restoredSelectedPage?.();await runtime.newPage();check()",
+      "before": "if(!selected)await runtime.newPage()",
+      "after": "await runtime.newPage()",
+      "originalSha256": "666e2357a1c8db25ac578cdd540500b919869c2342dc9127c7c0222386737464",
+      "mutatedSha256": "314122a08a93483daf63928b8e6b02475adeae5f9f10f2b353a326f30560d6de",
+      "restoredSha256": "666e2357a1c8db25ac578cdd540500b919869c2342dc9127c7c0222386737464",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "agent_actual_engine_selection",
+      "path": "lib/browser-profile-companion.mjs",
+      "lineNumber": 266,
+      "printedExecutableLine": "    if(selected){if(typeof record.engine.selectPage!=='function')throw fail('profile_resume_selection_unproved');void selected;check();if(record.engine.selectedPage()!==selected)throw fail('profile_resume_selection_unproved')}",
+      "before": "await record.engine.selectPage(selected)",
+      "after": "void selected",
+      "originalSha256": "666e2357a1c8db25ac578cdd540500b919869c2342dc9127c7c0222386737464",
+      "mutatedSha256": "7179fddf88cc636e68d530a56f5b1418a15375525aba22ee939ff8a53b1b2598",
+      "restoredSha256": "666e2357a1c8db25ac578cdd540500b919869c2342dc9127c7c0222386737464",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "paired_v2_format",
+      "path": "lib/browser-profile-companion-client.mjs",
+      "lineNumber": 36,
+      "printedExecutableLine": "  if (raw.version !== 1 || format && (raw.schemaVersion !== 2 || raw.purpose !== 'receive-transfer') || raw.kind !== 'agent-runtime-request' || !['start','receive-transfer'].includes(raw.purpose) ||",
+      "before": "raw.version !== (format ? 2 : 1)",
+      "after": "raw.version !== 1",
+      "originalSha256": "1044a71f78bd1b509863d9be0fab3bd7491ae04139cbf7235d16c2c714894559",
+      "mutatedSha256": "cb218a698e7e5c2107241fd2a43a59f253546910469b599a39ae0cffc0e0b85b",
+      "restoredSha256": "1044a71f78bd1b509863d9be0fab3bd7491ae04139cbf7235d16c2c714894559",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "paired_desktop_role_before_dispatch",
+      "path": "lib/browser-profile-companion-client.mjs",
+      "lineNumber": 43,
+      "printedExecutableLine": "    if (value.ownerUserId !== scope.actingUserId || value.pairingId !== null || value.identity.endpointId === scope.endpointId || !UUID.test(value.identity.endpointId) || !Number.isSafeInteger(value.grantVersion) || value.grantVersion < 1 || codec.identityFingerprint(value.identity) !== value.keyFingerprint) throw fail('profile_companion_readiness_invalid')",
+      "before": "value.kind !== 'desktop' || ",
+      "after": "",
+      "originalSha256": "1044a71f78bd1b509863d9be0fab3bd7491ae04139cbf7235d16c2c714894559",
+      "mutatedSha256": "69986e49cc200b67f744d9ea9ad2bb501f1a755742c4d70f6462d219451934a4",
+      "restoredSha256": "1044a71f78bd1b509863d9be0fab3bd7491ae04139cbf7235d16c2c714894559",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "return_negotiated_format",
+      "path": "lib/browser-profile-return-handover.mjs",
+      "lineNumber": 13,
+      "printedExecutableLine": "  return { version: 1, schemaVersion: 1, profileId: authority.profileId, actingUserId: authority.actingUserId, assistantId: authority.assistantId, transitionId: request.requestId,",
+      "before": "schemaVersion: request.schemaVersion ?? 1",
+      "after": "schemaVersion: 1",
+      "originalSha256": "4cbec4732ff052e306a6ba449c0d01e89d24f8ecb5d26600d916a579a2df3da4",
+      "mutatedSha256": "21f41cb7baffd92343ed72e897f53173aeb4d4d150b5e8299e6b4624c79d7513",
+      "restoredSha256": "4cbec4732ff052e306a6ba449c0d01e89d24f8ecb5d26600d916a579a2df3da4",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "return_preflight_before_close",
+      "path": "lib/browser-profile-return-handover.mjs",
+      "lineNumber": 70,
+      "printedExecutableLine": "      if (false) {",
+      "before": "if (request.schemaVersion === 2) {",
+      "after": "if (false) {",
+      "originalSha256": "4cbec4732ff052e306a6ba449c0d01e89d24f8ecb5d26600d916a579a2df3da4",
+      "mutatedSha256": "3f875728187047f5650505b1681ef0d052bae37140e1fa493c19d0e31fad02e3",
+      "restoredSha256": "4cbec4732ff052e306a6ba449c0d01e89d24f8ecb5d26600d916a579a2df3da4",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "return_preflight_physical_wait",
+      "path": "lib/browser-profile-return-handover.mjs",
+      "lineNumber": 72,
+      "printedExecutableLine": "        runtime.preflightResumeTabs(); check()",
+      "before": "await runtime.preflightResumeTabs(); check()",
+      "after": "runtime.preflightResumeTabs(); check()",
+      "originalSha256": "4cbec4732ff052e306a6ba449c0d01e89d24f8ecb5d26600d916a579a2df3da4",
+      "mutatedSha256": "e45f2e2eac570ef2ea26df87f834ac82cf751b6074e5b53026e51a58bf9b1e32",
+      "restoredSha256": "4cbec4732ff052e306a6ba449c0d01e89d24f8ecb5d26600d916a579a2df3da4",
+      "redExit": 1,
+      "restoredExit": 0
+    },
+    {
+      "name": "return_preflight_current",
+      "path": "lib/browser-profile-return-handover.mjs",
+      "lineNumber": 72,
+      "printedExecutableLine": "        await runtime.preflightResumeTabs()",
+      "before": "await runtime.preflightResumeTabs(); check()",
+      "after": "await runtime.preflightResumeTabs()",
+      "originalSha256": "4cbec4732ff052e306a6ba449c0d01e89d24f8ecb5d26600d916a579a2df3da4",
+      "mutatedSha256": "f966483ed95ac2c0ce04c6688c9ab9d7bd6c4147582f5f7647dea2ba1fde4d75",
+      "restoredSha256": "4cbec4732ff052e306a6ba449c0d01e89d24f8ecb5d26600d916a579a2df3da4",
+      "redExit": 1,
+      "restoredExit": 0
+    }
+  ],
+  "mutatedCopiesOnly": true,
+  "sharedSourceUnchanged": true,
+  "nativeOrdinary": {
+    "image": "hoai-profile-resume:draft-5c79ca15",
+    "archiveSha256": "b2da7bcd5af4f61bf1ef351d0e5292426455e1b169faec8a0be527e7d22a7da5",
+    "archiveKind": "committed base plus exact runtime and probe overlays",
+    "result": {
+      "exit": 0,
+      "error": "",
+      "containerAbsent": true,
+      "forcedStop": false,
+      "report": {
+        "ok": true,
+        "browserVersion": "153.0.8010.12",
+        "uid": 1000,
+        "sandboxEnabled": true,
+        "privatePipe": true,
+        "checks": [
+          {
+            "name": "actual-completed-native-GET-order-selected-and-encrypted-schema2-capture",
+            "ok": true,
+            "tabCount": 3,
+            "selectedIndex": 0
+          },
+          {
+            "name": "zero-site-traffic-before-fresh-CAS-then-one-exact-reviewed-GET-and-imported-HTTPOnly-cookie-delivery",
+            "ok": true,
+            "review": "Synthetic constructor fixture proof, not real human approval or Companion role qualification"
+          }
+        ],
+        "evidenceBoundary": "Actual disposable single-Linux runtime and site traffic; synthetic coordinator/CAS/review/extras. Full HOAI and two-machine role proof is separate.",
+        "cleanup": {
+          "runtimes": [
+            {
+              "disconnected": true,
+              "ownedProcessGone": true,
+              "error": null
+            },
+            {
+              "disconnected": true,
+              "ownedProcessGone": true,
+              "error": null
+            }
+          ],
+          "serverClosed": true
+        }
+      }
+    }
+  },
+  "nativeBlankMetadata": {
+    "exit": 0,
+    "error": "",
+    "containerAbsent": true,
+    "reports": [
+      {
+        "uid": 1000,
+        "version": "153.0.8010.12",
+        "ordinary": {
+          "target": {
+            "targetId": "7EBB555EDD4D940B4BA893A60F20BC41",
+            "type": "page",
+            "title": "about:blank",
+            "url": "about:blank",
+            "attached": true,
+            "canAccessOpener": false,
+            "browserContextId": "9685BE6143D13ACBE3242AEE3D718FB7"
+          },
+          "frame": {
+            "id": "7EBB555EDD4D940B4BA893A60F20BC41",
+            "loaderId": "8F4CA9202A4C9C8BCEAD3C7822202007",
+            "url": "about:blank",
+            "domainAndRegistry": "",
+            "securityOrigin": "://",
+            "securityOriginDetails": {
+              "isLocalhost": false
+            },
+            "mimeType": "text/html",
+            "adFrameStatus": {
+              "adFrameType": "none"
+            },
+            "secureContextType": "InsecureScheme",
+            "crossOriginIsolatedContextType": "NotIsolated",
+            "gatedAPIFeatures": []
+          }
+        },
+        "inherited": {
+          "target": {
+            "targetId": "38246CE24B666A43709FA7BE77F50650",
+            "type": "page",
+            "title": "about:blank",
+            "url": "about:blank",
+            "attached": true,
+            "openerId": "7EBB555EDD4D940B4BA893A60F20BC41",
+            "canAccessOpener": true,
+            "openerFrameId": "7EBB555EDD4D940B4BA893A60F20BC41",
+            "browserContextId": "9685BE6143D13ACBE3242AEE3D718FB7"
+          },
+          "frame": {
+            "id": "38246CE24B666A43709FA7BE77F50650",
+            "loaderId": "AEA72E94506E41D275C549EAA0986D69",
+            "url": "about:blank",
+            "domainAndRegistry": "",
+            "securityOrigin": "://",
+            "securityOriginDetails": {
+              "isLocalhost": false
+            },
+            "mimeType": "text/html",
+            "adFrameStatus": {
+              "adFrameType": "none"
+            },
+            "secureContextType": "SecureLocalhost",
+            "crossOriginIsolatedContextType": "NotIsolated",
+            "gatedAPIFeatures": []
+          }
+        }
+      },
+      {
+        "browserGone": true,
+        "serverClosed": true
+      }
+    ]
+  },
+  "excludedPopupDiagnostics": {
+    "currentStatus": "Unresolved separate native target initialization deadlock. No successful popup or two-machine claim.",
+    "lastReceipt": ".tmp/fresh-plugin-proof/resume-draft-2537d612.txt",
+    "reason": "Network.enable times out before the first popup POST or page event. Immediate duplicate detach hypothesis was reverted.",
+    "positiveCleanup": {
+      "ownedBrowsersGone": 3,
+      "serverClosed": true,
+      "containerAbsent": true,
+      "forcedStop": false
+    }
+  },
+  "review": "Root independently read four-source delta, reproduced and closed blank/opener issue, ran144 touched cases and closed safe ordinary-tab review.",
+  "limits": [
+    "Synthetic coordinator/CAS and constructor URL review in native primitive probe.",
+    "Synthetic portable extras in native primitive probe; real OS key store separately qualified.",
+    "Full mounted HOAI and two-machine schema2 transfer remains separate acceptance.",
+    "No live DOM, history, popup relationship or POST replay transfer."
+  ]
+}

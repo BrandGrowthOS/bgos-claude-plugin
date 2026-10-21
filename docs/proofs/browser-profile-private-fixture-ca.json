@@ -1,0 +1,22 @@
+{
+  "exit": 0,
+  "receipt": {
+    "ok": true,
+    "uid": 1000,
+    "version": "153.0.8010.12",
+    "exactPrivateCaAccepted": true,
+    "foreignCaRefused": true,
+    "privateNssOnly": true,
+    "sandboxEnabled": true,
+    "certificateBypassAbsent": true,
+    "network": "none; container loopback only",
+    "claim": "Chromium private HOME NSS trust qualification only; no product control or reverse-transfer claim",
+    "ownedBrowserGone": true,
+    "tlsServersClosed": true
+  },
+  "image": "hoai-profile-ca:fixture153",
+  "containerAbsent": true,
+  "dockerInventoryConfirmed": true,
+  "forcedStop": false,
+  "scriptSha256": "0a64fd9192e3d38ae8415491e101f102820ba01c32f2db620194d12bc0af4f22"
+}

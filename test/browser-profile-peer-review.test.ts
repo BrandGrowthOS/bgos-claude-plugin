@@ -1,0 +1,27 @@
+import {test} from 'node:test'
+import assert from 'node:assert/strict'
+import path from 'node:path'
+import os from 'node:os'
+import * as fs from 'node:fs/promises'
+import {createRequire} from 'node:module'
+import {randomUUID} from 'node:crypto'
+import {reviewAgentProfilePeer} from '../lib/browser-profile-peer-review.mjs'
+const require=createRequire(import.meta.url),codec=require('../lib/browser-profile-core/crypto.js')
+async function fixture(t:{after:(callback:()=>unknown)=>void}){const root=await fs.mkdtemp(path.join(os.tmpdir(),'hoai-peer-review-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));const endpoint=codec.createEndpointIdentity(randomUUID()),peer=codec.createEndpointIdentity(randomUUID()),scope={profileId:randomUUID(),actingUserId:'recipient',assistantId:42,endpointId:endpoint.identity.endpointId,keyFingerprint:codec.identityFingerprint(endpoint.identity),pairingId:7,ownerUserId:'owner'},document={version:1,kind:'agent-peer-pin-review',profileId:scope.profileId,actingUserId:scope.actingUserId,assistantId:42,agentEndpointId:scope.endpointId,agentKeyFingerprint:scope.keyFingerprint,peerIdentity:peer.identity,peerKeyFingerprint:codec.identityFingerprint(peer.identity)},record={version:1,provider:'libsecret-v1',recordId:randomUUID(),binding:{profileId:scope.profileId,actingUserId:scope.actingUserId,assistantId:42,endpointId:scope.endpointId,keyFingerprint:scope.keyFingerprint,grantVersion:1,keyEpoch:1,backgroundUse:true},keys:{version:1,identityFingerprint:scope.keyFingerprint,ciphertext:'synthetic-fixture'}},calls:string[]=[],pairing={backendUrl:'https://hoai.test',token:'synthetic',pairingId:7,assistantIds:[42]},options:any={agentRoot:root,pairings:[pairing],document,confirmation:document.peerKeyFingerprint,keyStore:{restore:async()=>{calls.push('os-restore');return endpoint}},stateFactory:()=>({loadAll:async()=>[{version:1,scope,identity:endpoint.identity,keyRecord:record}]}),clientFactory:()=>({enrollment:async()=>{calls.push('enrollment');return{purpose:'enrollment-identity',...scope,pinnedIdentity:endpoint.identity}},discover:async()=>{calls.push('signed-discovery');return{profiles:[{grant:{backgroundUse:true}}]}}})};return{root,endpoint,peer,scope,document,record,options,calls,pairing}}
+test('explicit review uses fresh exact enrollment and current background consent before signing the local peer pin',async t=>{const f=await fixture(t),result=await reviewAgentProfilePeer(f.options);assert.deepEqual(f.calls,['enrollment','os-restore','signed-discovery']);assert.deepEqual(result,{reviewed:true,peerKeyFingerprint:f.document.peerKeyFingerprint});assert.equal(JSON.stringify(result).includes('authority'),false)})
+test('missing or stale own endpoint metadata refuses instead of repinning or selecting the sharer',async t=>{for(const changed of ['missing','foreign-actor','wrong-pin','wrong-owner']){const f=await fixture(t);if(changed==='missing')f.options.stateFactory=()=>({loadAll:async()=>[]});else f.options.clientFactory=()=>({enrollment:async()=>({purpose:'enrollment-identity',...f.scope,pinnedIdentity:f.endpoint.identity,...(changed==='foreign-actor'?{actingUserId:'sharer'}:changed==='wrong-pin'?{keyFingerprint:'a'.repeat(64)}:{ownerUserId:'other-owner'})})});await assert.rejects(reviewAgentProfilePeer(f.options));assert.equal(f.calls.includes('os-restore'),false)}})
+test('grant withdrawal and a wrong or unknown public review field never persist trust',async t=>{const f=await fixture(t);f.options.clientFactory=()=>({enrollment:async()=>({purpose:'enrollment-identity',...f.scope,pinnedIdentity:f.endpoint.identity}),discover:async()=>({profiles:[]})});await assert.rejects(reviewAgentProfilePeer(f.options));for(const change of [{confirmation:'a'.repeat(64)},{document:{...f.document,unknown:true}}])await assert.rejects(reviewAgentProfilePeer({...f.options,...change}));await assert.rejects(fs.stat(path.join(f.root,'.browser-profile-sync')),{code:'ENOENT'})})
+
+test('local unpair, origin, pairing owner and assistant removal during asynchronous reads never publish a review',async t=>{
+  for(const boundary of ['catalog','restore','discovery'])for(const changed of ['unpair','origin','pairing','owner','assistant','disk']){
+    const f=await fixture(t);let current=true,published=0
+    const mutate=()=>{const pairing:any=f.pairing;if(changed==='unpair')f.options.pairings=[];else if(changed==='origin')pairing.backendUrl='https://other.test';else if(changed==='pairing')pairing.pairingId=8;else if(changed==='owner')pairing.ownerUserId='other';else if(changed==='assistant')pairing.assistantIds=[];else current=false}
+    f.options.assertPairingCurrent=()=>current
+    f.options.pinsFactory=()=>({review:async()=>{published++;return{reviewed:true}}})
+    const original=f.options.stateFactory
+    if(boundary==='catalog')f.options.stateFactory=()=>({loadAll:async()=>{const rows=await original().loadAll();if(changed==='unpair')f.options.pairings.splice(0);else mutate();return rows}})
+    else if(boundary==='restore')f.options.keyStore.restore=async()=>{if(changed==='unpair')f.options.pairings.splice(0);else mutate();return f.endpoint}
+    else f.options.clientFactory=()=>({enrollment:async()=>({purpose:'enrollment-identity',...f.scope,pinnedIdentity:f.endpoint.identity}),discover:async()=>{if(changed==='unpair')f.options.pairings.splice(0);else mutate();return{profiles:[{grant:{backgroundUse:true}}]}}})
+    await assert.rejects(reviewAgentProfilePeer(f.options));assert.equal(published,0)
+  }
+})

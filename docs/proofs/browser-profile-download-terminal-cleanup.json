@@ -1,0 +1,785 @@
+{
+  "kind": "managed download positive terminal and bounded physical cleanup repair",
+  "date": "2026-10-15",
+  "sources": [
+    {
+      "path": "lib/browser-profile-downloads.mjs",
+      "workingSha256": "81f3835fed626a550fe163ffadf2d8c56005a24e2756bdb7278366dfa84de928",
+      "gitLfSha256": "81f3835fed626a550fe163ffadf2d8c56005a24e2756bdb7278366dfa84de928"
+    },
+    {
+      "path": "test/helpers/browser-profile-downloads-fixture.mjs",
+      "workingSha256": "e82055967b06a588baac014121d9b3d33b6c816813ee8fa7a2835c6b7b9109d6",
+      "gitLfSha256": "e82055967b06a588baac014121d9b3d33b6c816813ee8fa7a2835c6b7b9109d6"
+    },
+    {
+      "path": "test/browser-profile-downloads.test.ts",
+      "workingSha256": "c46181334dc4ba02bd9c26c816571dbc42895010a0150705df4e4e8f8da1c9ef",
+      "gitLfSha256": "c46181334dc4ba02bd9c26c816571dbc42895010a0150705df4e4e8f8da1c9ef"
+    },
+    {
+      "path": "test/browser-profile-downloads-runtime.test.ts",
+      "workingSha256": "6c77a3f305adf04229c2b8cc359429b89e5c846591c44c55030db2e47e4b40a6",
+      "gitLfSha256": "6c77a3f305adf04229c2b8cc359429b89e5c846591c44c55030db2e47e4b40a6"
+    },
+    {
+      "path": "test/browser-profile-companion-downloads.test.ts",
+      "workingSha256": "7650feedcb124335fc42ad2cf2bf13f9e7827a286585dcd84a110b2d968ba1f7",
+      "gitLfSha256": "7650feedcb124335fc42ad2cf2bf13f9e7827a286585dcd84a110b2d968ba1f7"
+    },
+    {
+      "path": "test/browser-profile-downloads-failure.test.ts",
+      "workingSha256": "2cfdba0514f4aac20a449b113d3736817ea418f41b25f6681cd7e900c943d2b2",
+      "gitLfSha256": "2cfdba0514f4aac20a449b113d3736817ea418f41b25f6681cd7e900c943d2b2"
+    },
+    {
+      "path": "scripts/probe-browser-profile-downloads.mjs",
+      "workingSha256": "bc19a7ed2eb0a1a053476fcd2e9ade52818bfba8b19035b25d2ed542b3161c69",
+      "gitLfSha256": "bc19a7ed2eb0a1a053476fcd2e9ade52818bfba8b19035b25d2ed542b3161c69"
+    },
+    {
+      "path": "docs/browser-profile-downloads.md",
+      "workingSha256": "cff68e2da42ec644d2eb079cdd9c7b03607d5b6cff498a677670fdbe8830318a",
+      "gitLfSha256": "cff68e2da42ec644d2eb079cdd9c7b03607d5b6cff498a677670fdbe8830318a"
+    }
+  ],
+  "tests": {
+    "exactPaths": [
+      "test/browser-profile-downloads.test.ts",
+      "test/browser-profile-downloads-failure.test.ts",
+      "test/browser-profile-downloads-runtime.test.ts",
+      "test/browser-profile-companion-downloads.test.ts",
+      "test/browser-profile-artifacts.test.ts",
+      "test/browser-profile-files.test.ts",
+      "test/browser-profile-artifact-inventory.test.ts",
+      "test/browser-profile-file-area.test.ts"
+    ],
+    "passed": 80,
+    "failed": 0,
+    "skipped": 0,
+    "tscNoEmitExit": 0
+  },
+  "mutation": {
+    "count": 17,
+    "sharedSourceUnchanged": true,
+    "cases": [
+      {
+        "name": "single-original-terminal",
+        "file": "lib/browser-profile-downloads.mjs",
+        "test": "test/browser-profile-downloads-failure.test.ts",
+        "pattern": "^a positively failed native",
+        "originalSha256": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+        "mutatedSha256": "abdd4cc00a4bbb02f886c7178b87b78caf7711e43428645a4fb820e37761b7c5",
+        "restoredSha256": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "45301270edc43bca470b52733096f53c32b9ede12784eb7acb0b53fdb3f1dbc8",
+        "greenOutputSha256": "bce7c9e23543d7683c16cadeddfacaca59003f4bd0cd2aa610e2864feeb65601",
+        "printedChangedLineCount": 1,
+        "printedChangedLines": [
+          {
+            "number": 72,
+            "text": "      row.terminalWork = this.#track(async () => { await download.failure(); const value = await download.failure(); if (value !== null && (typeof value !== 'string' || !value.length)) throw fail('profile_download_terminal_unconfirmed'); row.terminal = value === null ? 'success' : 'failed'; if (row.terminal === 'failed') this.#cleanupGrace(row); row.finished = true; clearTimeout(row.deadlineTimer); return row.terminal })"
+          }
+        ]
+      },
+      {
+        "name": "positive-terminal-only",
+        "file": "lib/browser-profile-downloads.mjs",
+        "test": "test/browser-profile-downloads-failure.test.ts",
+        "pattern": "^missing, invalid",
+        "originalSha256": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+        "mutatedSha256": "8f2fb4fcfdbc710584f93fb75305ca695b600cd99e90ac2f83fa7d0488a81bff",
+        "restoredSha256": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "ec7866ca32b80a6c2c53469062b8c79a5abbcfd96049328c6c18b131e5378726",
+        "greenOutputSha256": "6136ca27b402f7507b52003dd9af8429485eb6d2d459433a02ca8facc192886a",
+        "printedChangedLineCount": 1,
+        "printedChangedLines": [
+          {
+            "number": 72,
+            "text": "      row.terminalWork = this.#track(async () => { const value = await download.failure(); row.terminal = value === null ? 'success' : 'failed'; if (row.terminal === 'failed') this.#cleanupGrace(row); row.finished = true; clearTimeout(row.deadlineTimer); return row.terminal })"
+          }
+        ]
+      },
+      {
+        "name": "failed-not-success-delete",
+        "file": "lib/browser-profile-downloads.mjs",
+        "test": "test/browser-profile-downloads-failure.test.ts",
+        "pattern": "^a positively failed native",
+        "originalSha256": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+        "mutatedSha256": "1a05fde7d47b11a56ae0eeab3a7076e5b3cde551e888f667d17d67ff0af59fb3",
+        "restoredSha256": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "9abcc37ef6dea6540dba9d87a2da00d645749dca5d8c262ba6e60d35885aacd8",
+        "greenOutputSha256": "168fa1017224ab3326f1ff1c7a2d9b6e6375f355bd43e302580e77341816219b",
+        "printedChangedLineCount": 1,
+        "printedChangedLines": [
+          {
+            "number": 135,
+            "text": "        await row.download.delete()"
+          }
+        ]
+      },
+      {
+        "name": "original-final-absence",
+        "file": "lib/browser-profile-downloads.mjs",
+        "test": "test/browser-profile-downloads-failure.test.ts",
+        "pattern": "^a failed stream with either",
+        "originalSha256": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+        "mutatedSha256": "0645c066853ceea9e0d0e5079911dd357863ec06da6f84b9a566d6e4109da67a",
+        "restoredSha256": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "3e9721b3cf2dede19d90bd233990f50cd1471880c8fe0ce3debe0df39bb3f5dd",
+        "greenOutputSha256": "43864054a95b7d6b196525e917f21fd9308782732005fa22c512c72a69ae77e5",
+        "printedChangedLineCount": 1,
+        "printedChangedLines": [
+          {
+            "number": 113,
+            "text": "      for (const file of [row.file + '.crdownload']) {"
+          }
+        ]
+      },
+      {
+        "name": "original-partial-absence",
+        "file": "lib/browser-profile-downloads.mjs",
+        "test": "test/browser-profile-downloads-failure.test.ts",
+        "pattern": "^a failed stream with either",
+        "originalSha256": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+        "mutatedSha256": "c05b4bbac7027b8871cbc9af89334d9f54b3ba50d95ff000c583b232cf8547e5",
+        "restoredSha256": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "b4550cd687b957632555443731ef2a8ea47c91001af7e1c3517e1c1b7918b008",
+        "greenOutputSha256": "8a3449a1d719a4391a2e797ee831135f1c3a902f1b02ec3325767aa386800f20",
+        "printedChangedLineCount": 1,
+        "printedChangedLines": [
+          {
+            "number": 113,
+            "text": "      for (const file of [row.file]) {"
+          }
+        ]
+      },
+      {
+        "name": "positive-both-absence",
+        "file": "lib/browser-profile-downloads.mjs",
+        "test": "test/browser-profile-downloads-failure.test.ts",
+        "pattern": "^a failed stream with either",
+        "originalSha256": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+        "mutatedSha256": "ff21babae5fa1ddd3033306ed1822801ece3eea1d9ff8d859739b190f7c370e7",
+        "restoredSha256": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "7961f2719926f56397927844062277518add74c9e18b9d1285fcdb177016decb",
+        "greenOutputSha256": "6c90642c915081055da462a9178abdf1dab66a9d7239fe619dcff1374d9692ba",
+        "printedChangedLineCount": 1,
+        "printedChangedLines": [
+          {
+            "number": 121,
+            "text": "      return"
+          }
+        ]
+      },
+      {
+        "name": "stable-original-inode",
+        "file": "lib/browser-profile-downloads.mjs",
+        "test": "test/browser-profile-downloads-failure.test.ts",
+        "pattern": "^a replaced original partial",
+        "originalSha256": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+        "mutatedSha256": "7bbf5de0f67a9885722ef88513c76a4e7641a18277f8dd5ee0334cc10ddcacec",
+        "restoredSha256": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "8dae902f44b2a7848cf348b3f0aeaafdca83bb98dcd279994d90b856f4b014b0",
+        "greenOutputSha256": "8be6103d6feb4e3587acade14f65c4615ab5c615a18e4df78d0a6767be5fc3be",
+        "printedChangedLineCount": 1,
+        "printedChangedLines": [
+          {
+            "number": 116,
+            "text": "        if (!ownedFile(stat, this.uid)) throw fail('profile_download_path_changed')"
+          }
+        ]
+      },
+      {
+        "name": "exact-owned-uid",
+        "file": "lib/browser-profile-downloads.mjs",
+        "test": "test/browser-profile-downloads-failure.test.ts",
+        "pattern": "^an extant failed partial",
+        "originalSha256": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+        "mutatedSha256": "e4092cf672e6f73221aa46beec5f03f385bb92c4aafd2c6360a64b279e44da62",
+        "restoredSha256": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "f88b649024257b9cba075aab8580f5ae1100c89ad378dc59c005aa43ad0ce306",
+        "greenOutputSha256": "bc7528e81177b4a24cb4b87abbc2e1d0b9af128d89d4987fd6c885073177c504",
+        "printedChangedLineCount": 1,
+        "printedChangedLines": [
+          {
+            "number": 13,
+            "text": "const ownedFile = (stat, uid) => stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1 &&  Number.isSafeInteger(stat.size) && stat.size >= 0"
+          }
+        ]
+      },
+      {
+        "name": "single-owned-link",
+        "file": "lib/browser-profile-downloads.mjs",
+        "test": "test/browser-profile-downloads-failure.test.ts",
+        "pattern": "^an extant failed partial",
+        "originalSha256": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+        "mutatedSha256": "1ffe721f7f046bd08858a8739b8b8868bf57dffbda5200e2f93cb7723ca8297f",
+        "restoredSha256": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "d3e0d0d35d36e0cecd2a068b2c3d38a779417dfaae62cc35658d6abfebd41360",
+        "greenOutputSha256": "a4deabaa7a7c69ce1997f4fc92b18755631c17254383496d10c8861b0cfc0301",
+        "printedChangedLineCount": 1,
+        "printedChangedLines": [
+          {
+            "number": 13,
+            "text": "const ownedFile = (stat, uid) => stat.isFile() && !stat.isSymbolicLink() &&  stat.uid === uid && Number.isSafeInteger(stat.size) && stat.size >= 0"
+          }
+        ]
+      },
+      {
+        "name": "regular-owned-file",
+        "file": "lib/browser-profile-downloads.mjs",
+        "test": "test/browser-profile-downloads-failure.test.ts",
+        "pattern": "^an extant failed partial",
+        "originalSha256": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+        "mutatedSha256": "3a53d58de876134047b810cf593f6d63913cd681bc74ae4f4a7d69ef39fc9608",
+        "restoredSha256": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "0ab929885dde676fd57b61f17392518875d7579961e61d3b1bacf4c62a7d6196",
+        "greenOutputSha256": "9184c1edacf0140a507cba31b87fff00a8447b856ad768ee08718fa0b4e0d0cd",
+        "printedChangedLineCount": 1,
+        "printedChangedLines": [
+          {
+            "number": 13,
+            "text": "const ownedFile = (stat, uid) =>  !stat.isSymbolicLink() && stat.nlink === 1 && stat.uid === uid && Number.isSafeInteger(stat.size) && stat.size >= 0"
+          }
+        ]
+      },
+      {
+        "name": "not-symlink",
+        "file": "lib/browser-profile-downloads.mjs",
+        "test": "test/browser-profile-downloads-failure.test.ts",
+        "pattern": "^an extant failed partial",
+        "originalSha256": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+        "mutatedSha256": "fbe322ffe258229145c467ad2bbdb6ab690392cf5fee4b60c811fd8a8f1b1bec",
+        "restoredSha256": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "dbf988347d978a9e53a50329c247ca7f6fbcd8e4f0669da0b48104dd511b06ab",
+        "greenOutputSha256": "a05f3120733ecbb7f17db21596c445e12c5fdd1ac0498aa1352513c67da56d1b",
+        "printedChangedLineCount": 1,
+        "printedChangedLines": [
+          {
+            "number": 13,
+            "text": "const ownedFile = (stat, uid) => stat.isFile() &&  stat.nlink === 1 && stat.uid === uid && Number.isSafeInteger(stat.size) && stat.size >= 0"
+          }
+        ]
+      },
+      {
+        "name": "original-no-reset-budget",
+        "file": "lib/browser-profile-downloads.mjs",
+        "test": "test/browser-profile-downloads-failure.test.ts",
+        "pattern": "^terminal settlement cannot",
+        "originalSha256": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+        "mutatedSha256": "2a558850870805d24dd7093b37c2e428d3091efb223febd1fc68ea521fb5eeac",
+        "restoredSha256": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "a400a92e657b824b4ad98d8af40a8d88d23b4381ca66e05de7b44494407243a7",
+        "greenOutputSha256": "6f1bb72eeb4da7a6eef53ec3eddbf4dacb67a1045487deb33dfbdcbbd83ecd4c",
+        "printedChangedLineCount": 1,
+        "printedChangedLines": [
+          {
+            "number": 77,
+            "text": "    clearTimeout(row.grace)"
+          }
+        ]
+      },
+      {
+        "name": "independent-wall-stop",
+        "file": "lib/browser-profile-downloads.mjs",
+        "test": "test/browser-profile-downloads-failure.test.ts",
+        "pattern": "^the original real wall grace",
+        "originalSha256": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+        "mutatedSha256": "50b80126e00172db7712f21a54dfec36cbe40764c69b102c10155029f81eea2c",
+        "restoredSha256": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "a16e4f96aa33ad0198848e0ef2c6bd87e1b349bfe5e21385b58965170d6cf1cd",
+        "greenOutputSha256": "6cfd9775d299691bf3d8246ab7999deded21ca7bd86908bddbaf6bd21d6da958",
+        "printedChangedLineCount": 1,
+        "printedChangedLines": [
+          {
+            "number": 79,
+            "text": "    row.grace = setTimeout(() => { if (false) void this.#fatal() }, this.cancellationGraceMs); row.grace.unref?.()"
+          }
+        ]
+      },
+      {
+        "name": "terminal-cannot-clear-before-cancel",
+        "file": "lib/browser-profile-downloads.mjs",
+        "test": "test/browser-profile-downloads.test.ts",
+        "pattern": "^an acknowledged stream still",
+        "originalSha256": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+        "mutatedSha256": "09df96d1be3c17fe5ba7ae079e0af4e046ed9896390f75bcb0ac3f0ee92cd0ba",
+        "restoredSha256": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "d46e25349c81f78a781b7273b998b7d1e941152ffbb300d20cf86fd9e220babc",
+        "greenOutputSha256": "92d4e7bfaf5b836be87a293269c28158006d9601c51465d86e3a8c394f29d829",
+        "printedChangedLineCount": 1,
+        "printedChangedLines": [
+          {
+            "number": 72,
+            "text": "      row.terminalWork = this.#track(async () => { const value = await download.failure(); if (value !== null && (typeof value !== 'string' || !value.length)) throw fail('profile_download_terminal_unconfirmed'); row.terminal = value === null ? 'success' : 'failed'; if (row.terminal === 'failed') this.#cleanupGrace(row); clearTimeout(row.grace); row.finished = true; clearTimeout(row.deadlineTimer); return row.terminal })"
+          }
+        ]
+      },
+      {
+        "name": "cancel-cannot-clear-before-terminal",
+        "file": "lib/browser-profile-downloads.mjs",
+        "test": "test/browser-profile-downloads-failure.test.ts",
+        "pattern": "^a settled cancel without",
+        "originalSha256": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+        "mutatedSha256": "976b5681bd1936ddcbb0b2edaf0fea55f9e8dad0f1b0d814d8349f0437e9e284",
+        "restoredSha256": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "85cf1d8f574452ad6102610b98b031ee62c18ff54e5dcb8588b9390f2111217e",
+        "greenOutputSha256": "151405aa4d8a8f694ee9ff557a613bff3224ba744483fe96139950989fd48094",
+        "printedChangedLineCount": 1,
+        "printedChangedLines": [
+          {
+            "number": 83,
+            "text": "    if (!row.cancel) { row.cancel = this.#track(() => row.download.cancel()); void row.cancel.finally(() => { row.cancelSettled = true; clearTimeout(row.grace) }).catch(() => { void this.#fatal() }) }"
+          }
+        ]
+      },
+      {
+        "name": "await-original-cancel",
+        "file": "lib/browser-profile-downloads.mjs",
+        "test": "test/browser-profile-downloads.test.ts",
+        "pattern": "^a native failure acknowledgement",
+        "originalSha256": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+        "mutatedSha256": "fdd8539cab7675945c85b8ac5c82ff3605609b126e52fca91a8c83990dcedc65",
+        "restoredSha256": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "d6840a61f497adc9eb381ef945dcedbfcf0ed6639faedf8c6e8b402ba8230845",
+        "greenOutputSha256": "8765c4ce07fc596d21357ac593eeacf0a85f9c8baeb659e48e140efbafd91302",
+        "printedChangedLineCount": 1,
+        "printedChangedLines": [
+          {
+            "number": 130,
+            "text": "      try { if (!row.finished) this.#cancel(row); terminal = await row.terminalWork } catch { failed = true }"
+          }
+        ]
+      },
+      {
+        "name": "original-directory-every-pass",
+        "file": "lib/browser-profile-downloads.mjs",
+        "test": "test/browser-profile-downloads-failure.test.ts",
+        "pattern": "^directory replacement during",
+        "originalSha256": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+        "mutatedSha256": "a2cdefb531bdc0ffb7b815806986dbb9d95014337152dca87da56d2d82269c96",
+        "restoredSha256": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+        "redExit": 1,
+        "greenExit": 0,
+        "redOutputSha256": "d4c88e634ccdc87c2e081c6a5105d03bc426c3a14a70e132754e221ea3539a8e",
+        "greenOutputSha256": "30bf6a57a6bcfd9d54cc1dc81166ddee2fd21499cba656e032f098e5cac93594",
+        "printedChangedLineCount": 66,
+        "printedChangedLines": [
+          {
+            "number": 112,
+            "text": "      let absent = true"
+          },
+          {
+            "number": 119,
+            "text": "      if (this.#unknown || row.cleanupDeadline !== null && performance.now() >= row.cleanupDeadline) throw fail('profile_download_cleanup_unconfirmed')"
+          },
+          {
+            "number": 120,
+            "text": "      if (absent) return"
+          }
+        ]
+      }
+    ],
+    "excluded": "Removing only the no-reset guard survived because the independent original wall timer still enforced the original budget. The final executable mutation clears that original timer and resets the budget; its selected test asserts red1 then exact restore green0. No timeout or parse-only result counted."
+  },
+  "native153": {
+    "imageId": "sha256:b65f29d0675092203407aba4c5954608311b6dbd494bb4586c84da17d0d13706",
+    "baseImage": {
+      "kind": "private immutable exact overlay for native download qualification",
+      "baseCommit": "abf9500546a51d013e1a1a7501670ae34b729507",
+      "archiveSha256": "bdf9c8d44d7c7dacd94fbb73991df3a2f300a87fb538fee84d68361df2a9b07c",
+      "archiveBytes": 15861760,
+      "image": "hoai-download-native:bdf9c8d44d7c",
+      "imageId": "sha256:665b10862023169262939bdf137e401a87d02103025192a7ea4ff124a4650500",
+      "remote": "/tmp/hoai-download-native.GINhbB",
+      "overlays": [
+        {
+          "path": "lib/browser-profile-downloads.mjs",
+          "sha256": "2ea88be1c60d76eba57398dd57b0e6f744de94fc94dce76f8769a4e1fc8594ab"
+        },
+        {
+          "path": "lib/browser-profile-downloads-runtime.mjs",
+          "sha256": "28fa481916e904370b106c05f91dfadf189b845e17161ec1f41f6581016b6716"
+        },
+        {
+          "path": "lib/browser-profile-runtime.mjs",
+          "sha256": "f87d76ab2d683a08674d0056db33449f90f8b58aaea3ba7d15a75b7eb387b021"
+        },
+        {
+          "path": "lib/browser-profile-companion.mjs",
+          "sha256": "406b5e1bd6fbe7217aa787464c358d68c766360070b3800cb39fdca0782e5edc"
+        },
+        {
+          "path": "bin/hoai-browser-host.mjs",
+          "sha256": "4357c358a22ef1d423e25d3131a69a15edf21253d9c2c4b8a88d19b9abc96f2d"
+        },
+        {
+          "path": "scripts/probe-browser-profile-downloads.mjs",
+          "sha256": "bc19a7ed2eb0a1a053476fcd2e9ade52818bfba8b19035b25d2ed542b3161c69"
+        }
+      ]
+    },
+    "report": {
+      "kind": "actual sandboxed managed download hooks",
+      "scope": "Synthetic exact authority and explicit fixture clicks on disposable loopback HTTP. Actual shipped Runtime, Engine, manager and private artifact conversion. No HOAI server, recipient consent or cross-machine release claim.",
+      "executable": "/opt/playwright/chromium-1243/chrome-linux64/chrome",
+      "cases": [
+        {
+          "mode": "normal",
+          "browserVersion": "153.0.8010.12",
+          "actualUid": 1000,
+          "quarantineMode": "0700",
+          "defaultSandbox": true,
+          "privatePipe": true,
+          "explicitPrivateDownloadPath": true,
+          "earlyContextAndEngineHandlers": true,
+          "engineDownloadEvents": 1,
+          "accepted": 1,
+          "scheduledServerBytes": 7936,
+          "contentHash": "b63398023edb9682673e2410370d4d648360ee54ff79ccc4ee95e420e05e3cbf",
+          "deadlineMs": 10000,
+          "observationMs": 5,
+          "boundedProbeConfiguration": true,
+          "originalBrowserGroupMembers": 11,
+          "allOriginalAndLaterGroupMembersGone": true,
+          "ownedBrowserGone": true,
+          "rawDirectoryAbsent": true,
+          "physicalOperations": 0,
+          "cleanupUnknown": false
+        },
+        {
+          "mode": "slow",
+          "browserVersion": "153.0.8010.12",
+          "actualUid": 1000,
+          "quarantineMode": "0700",
+          "defaultSandbox": true,
+          "privatePipe": true,
+          "explicitPrivateDownloadPath": true,
+          "earlyContextAndEngineHandlers": true,
+          "engineDownloadEvents": 1,
+          "accepted": 0,
+          "scheduledServerBytes": 3584,
+          "contentHash": null,
+          "deadlineMs": 150,
+          "observationMs": 5,
+          "boundedProbeConfiguration": true,
+          "originalBrowserGroupMembers": 11,
+          "allOriginalAndLaterGroupMembersGone": true,
+          "ownedBrowserGone": true,
+          "rawDirectoryAbsent": true,
+          "physicalOperations": 0,
+          "cleanupUnknown": false
+        },
+        {
+          "mode": "overflow",
+          "browserVersion": "153.0.8010.12",
+          "actualUid": 1000,
+          "quarantineMode": "0700",
+          "defaultSandbox": true,
+          "privatePipe": true,
+          "explicitPrivateDownloadPath": true,
+          "earlyContextAndEngineHandlers": true,
+          "engineDownloadEvents": 1,
+          "accepted": 0,
+          "scheduledServerBytes": 26411008,
+          "contentHash": null,
+          "deadlineMs": 10000,
+          "observationMs": 5,
+          "boundedProbeConfiguration": true,
+          "originalBrowserGroupMembers": 11,
+          "allOriginalAndLaterGroupMembersGone": true,
+          "ownedBrowserGone": true,
+          "rawDirectoryAbsent": true,
+          "physicalOperations": 0,
+          "cleanupUnknown": false
+        }
+      ],
+      "cleanup": {
+        "originallyOwnedBrowserRoots": 3,
+        "allGone": true,
+        "allGroupsEmpty": true,
+        "literalLoopbackFixture": true,
+        "externalNetworkIsolationIsRunnerRequirement": true
+      }
+    },
+    "containerCleanup": {
+      "kind": "container-cleanup",
+      "exactName": "hoai-download-native-4e026d37-0fdd-495b-bcfd-41fcd572a231",
+      "removed": true,
+      "positiveInventoryAbsent": true,
+      "forcedStop": false
+    }
+  },
+  "native156": {
+    "image": {
+      "baseImage": "hoai-browser-pw-final:8bd318d3",
+      "baseImageId": "sha256:113225186b3a8021fdc684579d20d2886f10bc3b33d1f49cae112d3f717ec41c",
+      "image": "hoai-browser-download156:def5ff75",
+      "imageId": "sha256:58c635054e1d4e0a4068b3ac31f79aa04294fcacee0013861c5a4c3b039d1be5",
+      "exactOverlays": {
+        "lib/browser-profile-downloads.mjs": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+        "scripts/probe-browser-profile-downloads.mjs": "bc19a7ed2eb0a1a053476fcd2e9ade52818bfba8b19035b25d2ed542b3161c69"
+      },
+      "contextSha256": "fa35b14af95df23c24a0a1b6c704523d57fa4f8da2ddaebc0b6fee70e90f14e5",
+      "buildExit": 0
+    },
+    "report": {
+      "kind": "actual sandboxed managed download hooks",
+      "scope": "Synthetic exact authority and explicit fixture clicks on disposable loopback HTTP. Actual shipped Runtime, Engine, manager and private artifact conversion. No HOAI server, recipient consent or cross-machine release claim.",
+      "executable": "/opt/hoai-playwright164-browsers/chromium-1248/chrome-linux64/chrome",
+      "cases": [
+        {
+          "mode": "normal",
+          "browserVersion": "156.0.8078.4",
+          "actualUid": 1000,
+          "quarantineMode": "0700",
+          "defaultSandbox": true,
+          "privatePipe": true,
+          "explicitPrivateDownloadPath": true,
+          "earlyContextAndEngineHandlers": true,
+          "engineDownloadEvents": 1,
+          "accepted": 1,
+          "scheduledServerBytes": 7936,
+          "contentHash": "b63398023edb9682673e2410370d4d648360ee54ff79ccc4ee95e420e05e3cbf",
+          "deadlineMs": 10000,
+          "observationMs": 5,
+          "boundedProbeConfiguration": true,
+          "originalBrowserGroupMembers": 11,
+          "allOriginalAndLaterGroupMembersGone": true,
+          "ownedBrowserGone": true,
+          "rawDirectoryAbsent": true,
+          "physicalOperations": 0,
+          "cleanupUnknown": false
+        },
+        {
+          "mode": "slow",
+          "browserVersion": "156.0.8078.4",
+          "actualUid": 1000,
+          "quarantineMode": "0700",
+          "defaultSandbox": true,
+          "privatePipe": true,
+          "explicitPrivateDownloadPath": true,
+          "earlyContextAndEngineHandlers": true,
+          "engineDownloadEvents": 1,
+          "accepted": 0,
+          "scheduledServerBytes": 3584,
+          "contentHash": null,
+          "deadlineMs": 150,
+          "observationMs": 5,
+          "boundedProbeConfiguration": true,
+          "originalBrowserGroupMembers": 11,
+          "allOriginalAndLaterGroupMembersGone": true,
+          "ownedBrowserGone": true,
+          "rawDirectoryAbsent": true,
+          "physicalOperations": 0,
+          "cleanupUnknown": false
+        },
+        {
+          "mode": "overflow",
+          "browserVersion": "156.0.8078.4",
+          "actualUid": 1000,
+          "quarantineMode": "0700",
+          "defaultSandbox": true,
+          "privatePipe": true,
+          "explicitPrivateDownloadPath": true,
+          "earlyContextAndEngineHandlers": true,
+          "engineDownloadEvents": 1,
+          "accepted": 0,
+          "scheduledServerBytes": 26411008,
+          "contentHash": null,
+          "deadlineMs": 10000,
+          "observationMs": 5,
+          "boundedProbeConfiguration": true,
+          "originalBrowserGroupMembers": 11,
+          "allOriginalAndLaterGroupMembersGone": true,
+          "ownedBrowserGone": true,
+          "rawDirectoryAbsent": true,
+          "physicalOperations": 0,
+          "cleanupUnknown": false
+        }
+      ],
+      "cleanup": {
+        "originallyOwnedBrowserRoots": 3,
+        "allGone": true,
+        "allGroupsEmpty": true,
+        "literalLoopbackFixture": true,
+        "externalNetworkIsolationIsRunnerRequirement": true
+      }
+    },
+    "containerAbsent": true,
+    "forcedStop": false
+  },
+  "boundaries": [
+    "Synthetic exact authority and explicit fixture clicks on literal loopback HTTP inside network:none Docker, actual shipped Runtime/Engine/download manager.",
+    "Production120s stream deadline,100ms observations and <=2s cancellation grace remain unchanged. Native probes explicitly use150ms slow/10000ms other deadline and5ms observations.",
+    "No HOAI server, real recipient consent, cross-machine release, production records or real credentials used.",
+    "Quarantine is private plaintext.25MiB acceptance is not a disk quota; transient Chrome overshoot and bounded copy duplication remain separate.",
+    "Chromium153 receipt preserves prior38ad hooks. Chromium156 receipt layers only these exact manager/probe bytes onto worker security image. Final combined committed tuple still requires its own acceptance.",
+    "All original pending operations remain reserved across uncertainty; persistent or replaced bytes never confer a completed artifact."
+  ],
+  "rawReceipts": [
+    {
+      "path": ".tmp/profile-download-repair-mutations/report.json",
+      "sha256": "15f9aa5276cdebbabda29adbc5b976b3936228a5975eed13b5cba8cfae04b634",
+      "bytes": 27253
+    },
+    {
+      "path": ".tmp/profile-download-repair-mutations/run.txt",
+      "sha256": "6598654758b950c0494d7a0984a7cf9cb455b979dce584617226dd940cdbca3e",
+      "bytes": 22486
+    },
+    {
+      "path": ".tmp/profile-download-repair-mutations/final-tests.txt",
+      "sha256": "1dbdb59d4290d4d87bbf4e4306ddf5b95e32ba02bf211e711899198104d05ddc",
+      "bytes": 8478
+    },
+    {
+      "path": ".tmp/profile-download-repair-mutations/tsc.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": ".tmp/profile-download-native/image.json",
+      "sha256": "a66837c7e26c3d2f1f7a5a723b6e18fc0a5a4d426165108f005a16846b420a60",
+      "bytes": 2190
+    },
+    {
+      "path": ".tmp/profile-download-native/receipt.json",
+      "sha256": "efbf5dda9a8faafae86371002524278ec58d52cd89558be64ab5f11f712ae465",
+      "bytes": 17096
+    },
+    {
+      "path": ".tmp/profile-download-native/run.txt",
+      "sha256": "5d9426c4d94d56e46743baa8e92a00b908c2863b4134c6ace97d1618f2828254",
+      "bytes": 14586
+    },
+    {
+      "path": ".tmp/profile-download-native/slow-refused-receipt.json",
+      "sha256": "b90aaea5e60dfb993f057106b1b6c633fea667014143475578e9dda7c9caaa0a",
+      "bytes": 15734
+    },
+    {
+      "path": ".tmp/profile-download-native/terminal-first-refused-receipt.json",
+      "sha256": "f3a7241abe8c2956c27cad13f1ffb56dde8deb9bbebe1f05462035b85db2e59a",
+      "bytes": 16574
+    },
+    {
+      "path": ".tmp/profile-download-native/terminal-unlink-diagnostic.txt",
+      "sha256": "0c708a0042e5f441bfd8e8956bc22aee6c76c625f22d134db34de706c68800de",
+      "bytes": 14849
+    },
+    {
+      "path": ".tmp/profile-download-native/fixture-diagnostic.txt",
+      "sha256": "d9501c74460b0c91c7ce501f92a8033e1c782b4ec1c425139828553776840d88",
+      "bytes": 17981
+    },
+    {
+      "path": ".tmp/browser-runtime-audit/pw-security-download156-native.json",
+      "sha256": "76496caf2304974d1e46471d294c3e0260c0d81ffa475c8182c026501ed45caa",
+      "bytes": 3333
+    },
+    {
+      "path": ".tmp/browser-runtime-audit/pw-security-download156-image.json",
+      "sha256": "eb099b2b27bfdcfe93fd968c44cac4aa68463132a04ddea9176cdf2cae16120f",
+      "bytes": 648
+    },
+    {
+      "path": ".tmp/profile-download-repair-mutations/excluded-guard-only-no-reset-survived.txt",
+      "sha256": "c79525dbf1503b953c751ddd4112f1b6215b1ac3fa5e15559b90b35d740d86da",
+      "bytes": 214
+    },
+    {
+      "path": ".tmp/profile-download-repair-mutations/historical-crlf-final-tests.txt",
+      "sha256": "e273fef90773e77b794607d4b8b283214b5335880d6cf0bae20ec8b02d47125e",
+      "bytes": 8485
+    },
+    {
+      "path": ".tmp/profile-download-repair-mutations/historical-crlf-tsc.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    }
+  ],
+  "historicalNativeAndMutationSourcesBeforeLfNormalization": [
+    {
+      "path": "lib/browser-profile-downloads.mjs",
+      "workingSha256": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+      "gitLfSha256": "81f3835fed626a550fe163ffadf2d8c56005a24e2756bdb7278366dfa84de928"
+    },
+    {
+      "path": "test/helpers/browser-profile-downloads-fixture.mjs",
+      "workingSha256": "72ef73dc2f43e66900d6bd492ea0a633be216538595910cf1fa629c6d7710717",
+      "gitLfSha256": "e82055967b06a588baac014121d9b3d33b6c816813ee8fa7a2835c6b7b9109d6"
+    },
+    {
+      "path": "test/browser-profile-downloads.test.ts",
+      "workingSha256": "4802197a7ef3b61eb36839a83c0bd828a808df9885d7971e8e4697f4a94c421b",
+      "gitLfSha256": "c46181334dc4ba02bd9c26c816571dbc42895010a0150705df4e4e8f8da1c9ef"
+    },
+    {
+      "path": "test/browser-profile-downloads-runtime.test.ts",
+      "workingSha256": "ba990b72216b3d9a876644f18fdf79983282b5cb2d7d461d3e37f6f02f982a74",
+      "gitLfSha256": "6c77a3f305adf04229c2b8cc359429b89e5c846591c44c55030db2e47e4b40a6"
+    },
+    {
+      "path": "test/browser-profile-companion-downloads.test.ts",
+      "workingSha256": "c37c3d97fd2781a55a786e1821f2c04ffc1e1f28162a21184ee1ea3e5acc30d2",
+      "gitLfSha256": "7650feedcb124335fc42ad2cf2bf13f9e7827a286585dcd84a110b2d968ba1f7"
+    },
+    {
+      "path": "test/browser-profile-downloads-failure.test.ts",
+      "workingSha256": "cbefa8c00f905e066c8106754a06a70e17629c7b966e06fdf74ad7446f7db4c6",
+      "gitLfSha256": "2cfdba0514f4aac20a449b113d3736817ea418f41b25f6681cd7e900c943d2b2"
+    },
+    {
+      "path": "scripts/probe-browser-profile-downloads.mjs",
+      "workingSha256": "bc19a7ed2eb0a1a053476fcd2e9ade52818bfba8b19035b25d2ed542b3161c69",
+      "gitLfSha256": "bc19a7ed2eb0a1a053476fcd2e9ade52818bfba8b19035b25d2ed542b3161c69"
+    },
+    {
+      "path": "docs/browser-profile-downloads.md",
+      "workingSha256": "2bc4d10185b5939ebbe40dbe0bfcc69ac28c115550019e0d2687a3dcf014323e",
+      "gitLfSha256": "cff68e2da42ec644d2eb079cdd9c7b03607d5b6cff498a677670fdbe8830318a"
+    }
+  ],
+  "sourceNormalization": {
+    "kind": "newline-only normalization after reviewed native and copied mutation runs",
+    "nativeAndMutationManagerCrLfSha256": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+    "currentAndShippedManagerLfSha256": "81f3835fed626a550fe163ffadf2d8c56005a24e2756bdb7278366dfa84de928",
+    "allEightFilesEqualTheirHistoricalGitLfBytes": true,
+    "final80TestsRerunOnCurrentLfSource": true,
+    "tscNoEmitRerunOnCurrentLfSource": true,
+    "finalCoherentCommitted156HoaiAcceptanceRequired": true
+  }
+}

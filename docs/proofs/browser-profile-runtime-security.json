@@ -1,0 +1,506 @@
+{
+  "date": "2026-10-15",
+  "scope": "Agent runtime security upgrade on immutable 38ad8c1 plus 24 explicit overlays. Separate reviewed manager/probe overlay only for download acceptance. No current HOAI or production acceptance claim.",
+  "baseRef": "38ad8c17ab825934c9e0c836e8e819010e78fa79",
+  "baseArchiveSha256": "e1b966c4b4dfae0c3884995e5c797124dcb8ddbc0b55d647e9756cef32bed0b7",
+  "sourceHashes": {
+    "README.md": "ecb3d2b22144c99c75201e6d187453b7112aa0730d5875f90e9b06da9a3ed48b",
+    "bin/bgos-agent": "f54af004a21df7a1e0bb455b2acecb71da505846109ae2169e702da27ed681c9",
+    "bin/bgos-doctor.mjs": "21627030a581d3f8e34d848379d8e3e620253d6957e0c374d0115a1d4f56eee8",
+    "bin/hoai-browser-host.mjs": "b262092aeb3e129da009f3281bdaff4e25d172fe339fd125a26acd4da9de846c",
+    "bun.lock": "943c7609ad022dbb7d119112f96140b15ccbac94b931a18537aa2726bd955dbc",
+    "lib/browser-profile-field-input.mjs": "9fd789c3760117f1cfebbef6a54cef2e2f7f803113072f5944afd9ebcd6531a7",
+    "lib/browser-profile-launch.pin.json": "d492ff52dfc4abc5be0c1a16f1d368f604788a58e7369dd0640c265b1e498094",
+    "lib/browser-profile-node-runtime.mjs": "9a1185ae3447ac338e64170640f0c982a46dc266b12db6bfb0389ac609c6c807",
+    "lib/browser-profile-rtc-activity.mjs": "bee380d0cd806277fd6f0d5a9278329d542797d8229529aabc07048f848cdfd8",
+    "package-lock.json": "c7ef4ce58ca0de0b861b734341310a7f186a312356548189dc10e0b6dbc7c24e",
+    "package.json": "853fd9480324f444068107bc1d13c0d358ffcffeeddd36ae38f67c3f06e9d36a",
+    "scripts/probe-browser-profile-fields.mjs": "b90270fd34c72de2856da127ce5a9d520d3587243b7179eaecd970ef0bb9f201",
+    "scripts/probe-browser-profile-runtime.mjs": "b42bb8793ac5b89b91f0b962a2f36ab42a6df9851eaeacabc1da161190718044",
+    "scripts/probe-browser-profile-webmcp.mjs": "c502dcfaaba8aabb003e38ba97f2535f4d78bff4bf42f936e14e91d4d954b51a",
+    "test/bgos-doctor.test.ts": "99d236679be88fdb3cf8c5a83eb5675c4ba4af01184d494312a5a471dbbf09a7",
+    "test/browser-profile-companion-permission.test.ts": "09a8d55351a917be2007a0ee0d8481c591daf5796476ef47fd6911d1fca80986",
+    "test/browser-profile-engine-selection.test.ts": "c8512683b5ad2db9e5d04e7d18b85ef2c844785ce5d74ccbcddc8afa50d4c984",
+    "test/browser-profile-node-runtime.test.ts": "7d6ee9e5f8ece6a20d4579f068aef29f78ce47e098534591ffb2278a4381adb9",
+    "test/browser-profile-resume-runtime.test.ts": "16ced88e5d920341f321902d60d7c8c3970ca9aa794a44a9fa06162e9bc9b0c5",
+    "test/browser-profile-rtc-activity.test.ts": "3e6f83f3366d67c8401b6521fe4938f9686f133f22c1daa3769473fb2e8cd2c9",
+    "test/browser-profile-runtime-bootstrap.test.ts": "7131752a4662083776747de0b2ea5e9ad49338cdd45da046e0f2f83b0e1ad396",
+    "test/browser-profile-runtime-security.test.ts": "4a3ea08437eb56c94c49faca3188f3e477d81f6f37d4c00affb5779113f4c834",
+    "test/browser-profile-runtime.test.ts": "77a7e6bedb081e8ca2ccf602a22ba8752e182b39ee5051f91cd22f2f56529b04",
+    "test/hoai-browser-host.test.ts": "66c79da62127cca461b7e6f89b8b8bb1cc35ae44069b5edf716bbc553e1ad917"
+  },
+  "dependencies": {
+    "nodeVersion": "22.23.3",
+    "uid": 1000,
+    "installedPackagePath": "/opt/hoai-fresh/node_modules/playwright-core/package.json",
+    "playwrightVersion": "1.64.1",
+    "bundleSha256": "829521b67ed7be90c7d6d6098ff39f2241562d47e4ad7ccab13710924a56001d",
+    "executable": "/opt/hoai-playwright164-browsers/chromium-1248/chrome-linux64/chrome",
+    "executableSha256": "377a9fc07b495c3b8d0ab8ec1fdfd153641759f9756fea34d8dfce4de82f5025",
+    "nativeVersion": "Google Chrome for Testing 156.0.8078.4",
+    "nodePathOverride": null
+  },
+  "nativeImage": {
+    "tag": "hoai-browser-pw-final:8bd318d3",
+    "id": "sha256:113225186b3a8021fdc684579d20d2886f10bc3b33d1f49cae112d3f717ec41c",
+    "contextSha256": "757eaaf6842924b435fdd61c00ab002c6cdb9bc99ee8216995c592c87b65cb58"
+  },
+  "nativeProbes": [
+    {
+      "kind": "rtc",
+      "exit": 0,
+      "checks": 8,
+      "containerAbsent": true,
+      "forcedStop": false,
+      "cleanup": null
+    },
+    {
+      "kind": "runtime",
+      "exit": 0,
+      "checks": 13,
+      "containerAbsent": true,
+      "forcedStop": false,
+      "cleanup": null
+    },
+    {
+      "kind": "cookies",
+      "exit": 0,
+      "checks": 8,
+      "containerAbsent": true,
+      "forcedStop": false,
+      "cleanup": null
+    },
+    {
+      "kind": "resume",
+      "exit": 0,
+      "checks": 6,
+      "containerAbsent": true,
+      "forcedStop": false,
+      "cleanup": {
+        "runtimes": [
+          {
+            "disconnected": true,
+            "ownedProcessGone": true,
+            "error": null
+          },
+          {
+            "disconnected": true,
+            "ownedProcessGone": true,
+            "error": null
+          },
+          {
+            "disconnected": true,
+            "ownedProcessGone": true,
+            "error": null
+          }
+        ],
+        "serverClosed": true
+      }
+    },
+    {
+      "kind": "fields",
+      "exit": 0,
+      "checks": 14,
+      "containerAbsent": true,
+      "forcedStop": false,
+      "cleanup": null
+    },
+    {
+      "kind": "webmcp",
+      "exit": 0,
+      "checks": 2,
+      "containerAbsent": true,
+      "forcedStop": false,
+      "cleanup": {
+        "originalProcessCount": 7,
+        "ownedBrowserGroupGone": true,
+        "serverClosed": true,
+        "privateDirectoryRemoved": true,
+        "forcedStop": false
+      }
+    },
+    {
+      "kind": "backup",
+      "exit": 0,
+      "checks": 5,
+      "containerAbsent": true,
+      "forcedStop": false,
+      "cleanup": null
+    }
+  ],
+  "unitQualification": {
+    "privateFreshBunWorkspace": "E:\\bgos-worktrees\\browser-profile-sync-plugin\\.tmp\\browser-runtime-audit\\pw-final-source-4620b435",
+    "bunFrozenLockInstallExit": 0,
+    "tests": 438,
+    "files": 24,
+    "failures": 0,
+    "skipped": 0,
+    "tscExit": 0,
+    "bunAuditExit": 0,
+    "bunAuditAdvisories": 0,
+    "npmProductionAuditAdvisories": 0,
+    "npmAllAuditAdvisories": 0,
+    "actualWindowsNode": "24.16.0",
+    "actualLinuxNode": "22.23.3",
+    "nodePathOverride": false,
+    "testFiles": [
+      "test/bgos-doctor.test.ts",
+      "test/browser-profile-node-runtime.test.ts",
+      "test/browser-profile-runtime-security.test.ts",
+      "test/browser-profile-rtc-activity.test.ts",
+      "test/browser-profile-runtime.test.ts",
+      "test/browser-profile-runtime-bootstrap.test.ts",
+      "test/browser-profile-resume-runtime.test.ts",
+      "test/browser-profile-resume-ledger.test.ts",
+      "test/browser-profile-engine-selection.test.ts",
+      "test/browser-profile-cdp-targets.test.ts",
+      "test/browser-profile-field-input.test.ts",
+      "test/browser-profile-companion-permission.test.ts",
+      "test/browser-profile-companion-fields.test.ts",
+      "test/browser-profile-companion-downloads.test.ts",
+      "test/browser-profile-companion-host.test.ts",
+      "test/browser-profile-companion.test.ts",
+      "test/browser-profile-sdk-pin.test.ts",
+      "test/hoai-browser-host.test.ts",
+      "test/hoai-browser-host.downloads.test.ts",
+      "test/hoai-browser-host.trust-persist.test.ts",
+      "test/browser-profile-downloads-runtime.test.ts",
+      "test/browser-profile-live-read.test.ts",
+      "test/browser-profile-live-capture.test.ts",
+      "test/browser-profile-active-backup.test.ts"
+    ],
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "--test",
+      "test/bgos-doctor.test.ts",
+      "test/browser-profile-node-runtime.test.ts",
+      "test/browser-profile-runtime-security.test.ts",
+      "test/browser-profile-rtc-activity.test.ts",
+      "test/browser-profile-runtime.test.ts",
+      "test/browser-profile-runtime-bootstrap.test.ts",
+      "test/browser-profile-resume-runtime.test.ts",
+      "test/browser-profile-resume-ledger.test.ts",
+      "test/browser-profile-engine-selection.test.ts",
+      "test/browser-profile-cdp-targets.test.ts",
+      "test/browser-profile-field-input.test.ts",
+      "test/browser-profile-companion-permission.test.ts",
+      "test/browser-profile-companion-fields.test.ts",
+      "test/browser-profile-companion-downloads.test.ts",
+      "test/browser-profile-companion-host.test.ts",
+      "test/browser-profile-companion.test.ts",
+      "test/browser-profile-sdk-pin.test.ts",
+      "test/hoai-browser-host.test.ts",
+      "test/hoai-browser-host.downloads.test.ts",
+      "test/hoai-browser-host.trust-persist.test.ts",
+      "test/browser-profile-downloads-runtime.test.ts",
+      "test/browser-profile-live-read.test.ts",
+      "test/browser-profile-live-capture.test.ts",
+      "test/browser-profile-active-backup.test.ts"
+    ],
+    "npmFocusedTests": 234,
+    "npmFocusedFiles": 9,
+    "npmFailures": 0,
+    "npmSkipped": 0
+  },
+  "copiedDrills": [
+    {
+      "mutation": "shared-node-admission",
+      "path": "bin/hoai-browser-host.mjs",
+      "changedExecutableLines": [
+        {
+          "number": 922,
+          "text": "  void assertBrowserNodeVersion"
+        }
+      ],
+      "redExit": 1,
+      "redLogSha256": "57595782f4c378ff583927719a122eab616f1235b4bc109c7de73b87d4cc9376",
+      "restoredExit": 0,
+      "restoredLogSha256": "46d7ca073378ed80e40988bd21a0810e348a5fb5151e5b43046315d23cabd9f7",
+      "exactSourceRestored": true
+    },
+    {
+      "mutation": "node-minimum",
+      "path": "lib/browser-profile-node-runtime.mjs",
+      "changedExecutableLines": [
+        {
+          "number": 7,
+          "text": "  if (!match || Number(match[1]) < 18 || Number(match[1]) === 22 && Number(match[2]) < 12) {"
+        }
+      ],
+      "redExit": 1,
+      "redLogSha256": "5bde8eec02fd5e098b2108e4d3b0e321ce65dee9419bf10a94692edf3623572e",
+      "restoredExit": 0,
+      "restoredLogSha256": "394a3877eabe4c46c1b7216d6e24a760a5da1c591ef1007943c53aa50ea28b66",
+      "exactSourceRestored": true
+    },
+    {
+      "mutation": "doctor-found-old-node",
+      "path": "bin/bgos-doctor.mjs",
+      "changedExecutableLines": [
+        {
+          "number": 396,
+          "text": "    Boolean(node.found),"
+        }
+      ],
+      "redExit": 1,
+      "redLogSha256": "870fdc055c846309b3b7712e09a018c99205bb921ba6f9ffac7028071a1a75fb",
+      "restoredExit": 0,
+      "restoredLogSha256": "697461b1ff61ecc9b74f592657373325185ec596831a6163751f964295cbb01e",
+      "exactSourceRestored": true
+    },
+    {
+      "mutation": "webmcp-config",
+      "path": "bin/hoai-browser-host.mjs",
+      "changedExecutableLines": [
+        {
+          "number": 963,
+          "text": "  const config = await tools.resolveCLIConfigForMCP({ webmcp: true, caps: caps.join(','), imageResponses: 'allow', outputDir }, {})"
+        }
+      ],
+      "redExit": 1,
+      "redLogSha256": "78211db57be9df9ecae2f5399dd5a522e1a7d5bbbcfaf2e6944434c4e432e177",
+      "restoredExit": 0,
+      "restoredLogSha256": "cc7231af126137fd713052351018fb909eedbfe6f147635b37e425b62ecf1907",
+      "exactSourceRestored": true
+    },
+    {
+      "mutation": "retired-native-version",
+      "path": "lib/browser-profile-rtc-activity.mjs",
+      "changedExecutableLines": [
+        {
+          "number": 5,
+          "text": "export const RTC_BROWSER_VERSIONS = Object.freeze(['153.0.8010.12', RTC_BROWSER_VERSION])"
+        }
+      ],
+      "redExit": 1,
+      "redLogSha256": "3d7343152a68bb06c2ae6c86609001a13793ca3f462fcf8fdda53da1c9f250c3",
+      "restoredExit": 0,
+      "restoredLogSha256": "a60da6e5f8cef2f87c82ffff5114fbd0b4b276229bb6831f3be1c854a10a0611",
+      "exactSourceRestored": true
+    },
+    {
+      "mutation": "bundle-hash-admission",
+      "path": "lib/browser-profile-launch.mjs",
+      "changedExecutableLines": [
+        {
+          "number": 11,
+          "text": "  if (version !== pin.playwrightVersion) throw fail()"
+        }
+      ],
+      "redExit": 1,
+      "redLogSha256": "e4cdd6892a6e197c06f37785768ac046797cf4f0722cf4d9c57879822e6c1b38",
+      "restoredExit": 0,
+      "restoredLogSha256": "f99dfee8df0109fc83f9c9042d8075fa0c78754ecb5a7d44f571985d0212797b",
+      "exactSourceRestored": true
+    },
+    {
+      "mutation": "dependency-exact-version",
+      "path": "package.json",
+      "changedExecutableLines": [
+        {
+          "number": 26,
+          "text": "    \"playwright-core\": \"^1.64.1\","
+        }
+      ],
+      "redExit": 1,
+      "redLogSha256": "1a46058a184893adb7bc3ccc3682a8e72ba0af7200d64a3cdc83fad9bfa4605e",
+      "restoredExit": 0,
+      "restoredLogSha256": "534768bb5be1c9430bfbf3a97eca84a9b34fe6d5d693e762b4c4beeeecf12186",
+      "exactSourceRestored": true
+    }
+  ],
+  "nativeDrills": {
+    "webmcp": {
+      "mutation": "shipped config webmcp:false becomes true",
+      "changedExecutableLine": "  const config = await tools.resolveCLIConfigForMCP({ webmcp: true, caps: caps.join(','), imageResponses: 'allow', outputDir }, {})",
+      "redExit": 1,
+      "restoredExit": 0,
+      "redBehavior": "real native page-defined tool is exposed and negative collection assertion fails after positive control",
+      "positivePhysicalCleanup": true
+    },
+    "fieldDigest": {
+      "mutation": "exact qualified bundle digest becomes64f characters",
+      "changedExecutableLine": "const BUNDLE='ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'",
+      "redExit": 1,
+      "redReason": "profile_field_native_unqualified at normal field preparation",
+      "restoredExit": 0,
+      "restoredCases": 14,
+      "all11SampledOriginalProcessesGoneBothRuns": true
+    }
+  },
+  "downloadQualification": {
+    "scope": "Three local synthetic-authority native cases, not HOAI consent or cross-machine release. Production 120 s/100 ms/deadline and 2 s grace remain source/unit qualified. Probe uses 150 ms slow,10 s other deadlines and 5 ms observation.",
+    "image": "hoai-browser-download156:def5ff75",
+    "imageId": "sha256:58c635054e1d4e0a4068b3ac31f79aa04294fcacee0013861c5a4c3b039d1be5",
+    "exactAdditionalOverlays": {
+      "lib/browser-profile-downloads.mjs": "2e3057aa692792f08855019a5ae7396e4f679656bf9068b6c1521bfbf4e3c819",
+      "scripts/probe-browser-profile-downloads.mjs": "bc19a7ed2eb0a1a053476fcd2e9ade52818bfba8b19035b25d2ed542b3161c69"
+    },
+    "cases": [
+      {
+        "mode": "normal",
+        "browserVersion": "156.0.8078.4",
+        "actualUid": 1000,
+        "quarantineMode": "0700",
+        "defaultSandbox": true,
+        "privatePipe": true,
+        "explicitPrivateDownloadPath": true,
+        "earlyContextAndEngineHandlers": true,
+        "engineDownloadEvents": 1,
+        "accepted": 1,
+        "scheduledServerBytes": 7936,
+        "contentHash": "b63398023edb9682673e2410370d4d648360ee54ff79ccc4ee95e420e05e3cbf",
+        "deadlineMs": 10000,
+        "observationMs": 5,
+        "boundedProbeConfiguration": true,
+        "originalBrowserGroupMembers": 11,
+        "allOriginalAndLaterGroupMembersGone": true,
+        "ownedBrowserGone": true,
+        "rawDirectoryAbsent": true,
+        "physicalOperations": 0,
+        "cleanupUnknown": false
+      },
+      {
+        "mode": "slow",
+        "browserVersion": "156.0.8078.4",
+        "actualUid": 1000,
+        "quarantineMode": "0700",
+        "defaultSandbox": true,
+        "privatePipe": true,
+        "explicitPrivateDownloadPath": true,
+        "earlyContextAndEngineHandlers": true,
+        "engineDownloadEvents": 1,
+        "accepted": 0,
+        "scheduledServerBytes": 3584,
+        "contentHash": null,
+        "deadlineMs": 150,
+        "observationMs": 5,
+        "boundedProbeConfiguration": true,
+        "originalBrowserGroupMembers": 11,
+        "allOriginalAndLaterGroupMembersGone": true,
+        "ownedBrowserGone": true,
+        "rawDirectoryAbsent": true,
+        "physicalOperations": 0,
+        "cleanupUnknown": false
+      },
+      {
+        "mode": "overflow",
+        "browserVersion": "156.0.8078.4",
+        "actualUid": 1000,
+        "quarantineMode": "0700",
+        "defaultSandbox": true,
+        "privatePipe": true,
+        "explicitPrivateDownloadPath": true,
+        "earlyContextAndEngineHandlers": true,
+        "engineDownloadEvents": 1,
+        "accepted": 0,
+        "scheduledServerBytes": 26411008,
+        "contentHash": null,
+        "deadlineMs": 10000,
+        "observationMs": 5,
+        "boundedProbeConfiguration": true,
+        "originalBrowserGroupMembers": 11,
+        "allOriginalAndLaterGroupMembersGone": true,
+        "ownedBrowserGone": true,
+        "rawDirectoryAbsent": true,
+        "physicalOperations": 0,
+        "cleanupUnknown": false
+      }
+    ],
+    "containerAbsent": true,
+    "forcedStop": false
+  },
+  "independentReview": {
+    "reviewer": "root",
+    "sourceClosed": true,
+    "fourPrivateSuitesTests": 144,
+    "failures": 0,
+    "skipped": 0
+  },
+  "boundaries": [
+    "No engine.js or bridge.js change.",
+    "No host package, system Node, installed agent or production write.",
+    "The plugin worktree node_modules is private/nonjunction and was updated to 1.64.1 only after bin ownership release. Final proofs use a separate actual fresh Bun graph.",
+    "No browser-CVE absence claim from npm or Bun audit. Chromium156 here is the Playwright-pinned testing build, not an assertion about stable-channel or every CVE backport.",
+    "No final43/156 HOAI composition, automatic60s agent backup, physical human approval or real account login claim from these standalone probes.",
+    "The 1.63/153/155 receipts remain historical; managed qualification now permits only exact 156.0.8078.4.",
+    "Initial old selection fixture and28-tool roster expectations were updated to actual shipped configuration and 25 browser tools; final 438 all passed. An earlier field drill runner demanded AssertionError for an intentional native admission refusal; only the later red/restored receipt with positive PID/start sampling is used.",
+    "Older-version negative tests inject process version values in isolated children, not actual EOL Node binaries. Actual positive hosts are Windows24.16.0 and Linux22.23.3."
+  ],
+  "rawEvidence": [
+    {
+      "path": ".tmp/browser-runtime-audit/pw-security-final-source.json",
+      "sha256": "77ed22694c5f1a3317e2a1ee9379abedc7cf486a652e0924b3b507c018353419"
+    },
+    {
+      "path": ".tmp/browser-runtime-audit/pw-security-final-image.json",
+      "sha256": "21181caf7f3405150f83d6d082fff33a538d6c0fd7c6950401362c2a6e948681"
+    },
+    {
+      "path": ".tmp/browser-runtime-audit/pw-security-final-native.json",
+      "sha256": "adbd181ccd22fb0e08e7e279ca98470dd972465965465c8f8e65e539152f31d3"
+    },
+    {
+      "path": ".tmp/browser-runtime-audit/pw-security-native-metadata.json",
+      "sha256": "f56c593e1cb64ac0258ac812deef04667bd48ae9df809fc27e364b5c17ad1967"
+    },
+    {
+      "path": ".tmp/browser-runtime-audit/pw-security-bun-install.txt",
+      "sha256": "8c97dbe1f4ebcb77efea848966884f6e31ad34ca84395046a36390642d6c8ff1"
+    },
+    {
+      "path": ".tmp/browser-runtime-audit/pw-security-bun-touched.txt",
+      "sha256": "c36d8d548d254401d36156e2ac21226159497915796437c7ea011b30cce31781"
+    },
+    {
+      "path": ".tmp/browser-runtime-audit/pw-security-bun-tsc.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": ".tmp/browser-runtime-audit/pw-security-bun-audit.txt",
+      "sha256": "0aea5e1e386b8220f4f35047775eaa223239ac388b47059c342e4ed22680a5bb"
+    },
+    {
+      "path": ".tmp/browser-runtime-audit/pw-security-npm-production-audit.json",
+      "sha256": "beac168c52c6dff5e1ce65b7c91887b47e178676fa184c88697ff26c64161f28"
+    },
+    {
+      "path": ".tmp/browser-runtime-audit/pw-security-npm-all-audit.json",
+      "sha256": "beac168c52c6dff5e1ce65b7c91887b47e178676fa184c88697ff26c64161f28"
+    },
+    {
+      "path": ".tmp/browser-runtime-audit/pw-security-dependency-metadata.json",
+      "sha256": "aabfd708b32532a7958054f05830f673499f8ac0ad0ddaa1d64e56d70cd60981"
+    },
+    {
+      "path": ".tmp/browser-runtime-audit/pw-security-native-drills.json",
+      "sha256": "0274c3feab798a944169219d9fee4990a46fe8ac8e591af8d2264434dcb35bd8"
+    },
+    {
+      "path": ".tmp/browser-runtime-audit/pw-security-fields-drill.json",
+      "sha256": "7eb30385a524e47ba17bd440faa2c9221965950136f54b761a79cdff3d6f4fce"
+    },
+    {
+      "path": ".tmp/browser-runtime-audit/pw-security-download156-image.json",
+      "sha256": "eb099b2b27bfdcfe93fd968c44cac4aa68463132a04ddea9176cdf2cae16120f"
+    },
+    {
+      "path": ".tmp/browser-runtime-audit/pw-security-download156-native.json",
+      "sha256": "76496caf2304974d1e46471d294c3e0260c0d81ffa475c8182c026501ed45caa"
+    },
+    {
+      "path": ".tmp/browser-runtime-audit/root-security-independent.txt",
+      "sha256": "ea70c40a416fdc3a9fc66e367298a29160c60d351b91e1ee114f7d5d0acb333d"
+    },
+    {
+      "path": ".tmp/browser-runtime-audit/pw-security-drills-b4a55399/receipt.json",
+      "sha256": "5436cc5a1a39cb6f00ee6a9d91021e47fa7414785422221add97fa2f66b0dcb6"
+    },
+    {
+      "path": ".tmp/browser-runtime-audit/pw-security-npm-touched.txt",
+      "sha256": "0fe7ff68eb3e45a8917271977a97b02d411a139ceb788899f1983f979c74d62a"
+    }
+  ]
+}

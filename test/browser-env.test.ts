@@ -87,7 +87,7 @@ const FIXTURE: Record<string, string> = {
 }
 
 const CHROME_ALLOWED = new Set(['PATH', 'HOME', 'TMPDIR', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TZ'])
-const HOST_ALLOWED = new Set([...CHROME_ALLOWED, 'HOAI_BROWSER_EXECUTABLE', 'HOAI_BROWSER_HOST_AGENTS', 'NODE_EXTRA_CA_CERTS'])
+const HOST_ALLOWED = new Set([...CHROME_ALLOWED, 'HOAI_BROWSER_EXECUTABLE', 'HOAI_BROWSER_HOST_AGENTS', 'NODE_EXTRA_CA_CERTS', 'DBUS_SESSION_BUS_ADDRESS', 'XDG_RUNTIME_DIR'])
 
 function assertOnly(out: Record<string, string>, allowed: Set<string>, what: string) {
   for (const name of Object.keys(FIXTURE)) {
@@ -115,8 +115,13 @@ test('a shown Chrome on linux also gets the display and the session, a headless 
   assertOnly(chromeEnv(FIXTURE, { platform: 'linux', headed: true }), new Set([...CHROME_ALLOWED, ...display]), 'a shown Chrome on linux')
   const headless = chromeEnv(FIXTURE, { platform: 'linux', headed: false })
   for (const name of display) assert.ok(!(name in headless), `headless Chrome on linux must not receive ${name}`)
-  // The host passes the display on only when it will show the browser.
-  assert.ok(!('DBUS_SESSION_BUS_ADDRESS' in hostEnv(FIXTURE, { platform: 'linux' })))
+  // Key-service capability belongs to the privileged Node host even headless.
+  // It is stripped again when that host constructs Chromium's environment.
+  const host = hostEnv(FIXTURE, { platform: 'linux' })
+  assert.equal(host.DBUS_SESSION_BUS_ADDRESS, FIXTURE.DBUS_SESSION_BUS_ADDRESS)
+  assert.equal(host.XDG_RUNTIME_DIR, FIXTURE.XDG_RUNTIME_DIR)
+  for (const name of ['DBUS_SESSION_BUS_ADDRESS', 'XDG_RUNTIME_DIR', 'SSH_AUTH_SOCK', 'NODE_EXTRA_CA_CERTS']) assert.ok(!(name in chromeEnv(host, { platform: 'linux', headed: false })))
+  assert.ok(!('SSH_AUTH_SOCK' in host)); assert.ok(!('DISPLAY' in host))
   assert.equal(hostEnv({ ...FIXTURE, HOAI_BROWSER_HEADED: '1' }, { platform: 'linux' }).DISPLAY, ':0')
 })
 
