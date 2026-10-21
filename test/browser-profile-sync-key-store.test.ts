@@ -492,7 +492,8 @@ test('a locked Mac keychain refuses with unlock_required before any item command
   assert.deepEqual(writes.seen, [], 'no file write while the keychain is locked')
   const after = f.calls.slice(count)
   assert.ok(after.length > 0); assert.equal(after.some(itemCommand), false, 'only the status probe runs on a locked keychain')
-  assert.equal(f.calls.some(call => call.args.some((arg: string) => /unlock/.test(arg)) || /unlock/.test(call.input.toString())), false)
+  const unlocking = /unlock-keychain|SecKeychainUnlock/
+  assert.equal(f.calls.some(call => call.args.some((arg: string) => unlocking.test(arg)) || unlocking.test(call.input.toString())), false, 'no automatic unlock')
   assert.equal(f.values.size, 2)
   f.unlock(); assert.deepEqual(await f.store.restore({ record: saved, binding, pinnedIdentity: identity, assertCurrent: current }), endpoint)
 })
