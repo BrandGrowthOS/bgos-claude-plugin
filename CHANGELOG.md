@@ -2,6 +2,10 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.73.0 (2026-10-21)
+
+**A share recipient the owner allowed may send `/login` from a main chat, and the login is bound to whoever started it (PR #266).**
+
 ## 0.72.0 (2026-10-20)
 
 **Agents use the owner's managed Agent Browser (BGOS mission 173, proposal item 15): a paired agent finds its person's managed browser profile through HOAI before every browser call and drives it over the typed profile route; every browser refusal reaches the agent as its `browser_profile_*` code and one plain sentence, never as "the desktop app is not running" while the desktop is connected; and an agent is never offered a profile choice: it opens its own browser. The Agent Browser's Node floor is now 22.12.0.**
