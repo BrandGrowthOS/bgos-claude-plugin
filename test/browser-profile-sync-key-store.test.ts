@@ -404,8 +404,9 @@ for (const mode of ['endpoint-timeout', 'endpoint-abort', 'portable-timeout', 'h
 
 // macOS Keychain (S13). The fake below answers as /usr/bin/security and the
 // osascript status probe do on a real Mac: exit 44 for a missing item, exit 0
-// with the password and a newline for find -w, and on a locked keychain an
-// item command waits on an unlock dialog until the helper timeout.
+// with the password and a newline for find -w. On a locked keychain an add, or
+// a read of an existing item, waits on an unlock dialog until the helper
+// timeout, while a delete, or a read of a missing item, needs no unlock.
 const loginKeychain = '/Users/synthetic-agent/Library/Keychains/login.keychain-db'
 const darwinEnvironment = { PATH: '/usr/bin:/bin', LANG: 'C', LC_ALL: 'C' }
 const itemCommand = (call: any) => call.executable === '/usr/bin/security' && call.args[0] !== 'login-keychain'
@@ -420,7 +421,8 @@ function keychainFixture(options: Record<string, any> = {}) {
     if (executable === '/usr/bin/osascript') return { code: 0, output: Buffer.from(options.statusOutput ?? `${state}\n`) }
     assert.equal(executable, '/usr/bin/security')
     if (args[0] === 'login-keychain') return { code: options.loginCode ?? 0, output: Buffer.from(options.loginOutput ?? `    "${loginKeychain}"\n`) }
-    if (state === 'locked') {
+    const named = args[0] === '-i' ? '' : `${args[args.indexOf('-a') + 1]}|${args[args.indexOf('-s') + 1]}`
+    if (state === 'locked' && (args[0] === '-i' || args[0] === 'find-generic-password' && values.has(named))) {
       if (options.lockedExit !== undefined) return { code: options.lockedExit, output: Buffer.alloc(0) }
       throw Object.assign(new Error('synthetic helper timeout'), { code: 'profile_key_unlock_required' })
     }
@@ -432,10 +434,9 @@ function keychainFixture(options: Record<string, any> = {}) {
       values.set(key, Buffer.from(match[4])); return { code: 0, output: Buffer.alloc(0) }
     }
     assert.equal(args.at(-1), keychain)
-    const key = `${args[args.indexOf('-a') + 1]}|${args[args.indexOf('-s') + 1]}`
-    if (args[0] === 'find-generic-password') { assert.ok(args.includes('-w')); return values.has(key) ? { code: 0, output: Buffer.from(`${values.get(key)}\n`) } : { code: 44, output: Buffer.alloc(0) } }
+    if (args[0] === 'find-generic-password') { assert.ok(args.includes('-w')); return values.has(named) ? { code: 0, output: Buffer.from(`${values.get(named)}\n`) } : { code: 44, output: Buffer.alloc(0) } }
     assert.equal(args[0], 'delete-generic-password')
-    return values.delete(key) ? { code: 0, output: Buffer.from('keychain: synthetic attributes\n') } : { code: 44, output: Buffer.alloc(0) }
+    return values.delete(named) ? { code: 0, output: Buffer.from('keychain: synthetic attributes\n') } : { code: 44, output: Buffer.alloc(0) }
   }
   const store = new BrowserProfileSyncKeyStore({ endpointCrypto: options.codec || codec, environment, platform: 'darwin', run, hasHelper: () => true, ...options })
   return { store, calls, values, inputs, lock: () => { state = 'locked' }, unlock: () => { state = 'unlocked' }, remove: () => { state = 'absent' } }
@@ -501,10 +502,27 @@ test('a locked Mac keychain refuses with unlock_required before any item command
 for (const lockedExit of [undefined, 36]) test(`a Mac keychain that locks after its status probe still refuses with unlock_required (${lockedExit === undefined ? 'helper timeout' : 'exit 36, no user interaction'})`, async () => {
   let armed = false
   const f = keychainFixture({ lockedExit, onCall: (executable: string, args: string[]) => { if (armed && executable === '/usr/bin/security' && args[0] !== 'login-keychain') f.lock() } })
-  const record = await f.store.protect({ binding, endpoint, assertCurrent: current }); armed = true
+  const record = await f.store.protect({ binding, endpoint, assertCurrent: current })
+  const extras = await f.store.preloadPortableExtrasProtector({ binding, pinnedIdentity: identity, createNew: true, assertCurrent: current }), metadata = extras.record
+  extras.dispose(); armed = true
   await assert.rejects(() => f.store.restore({ record, binding, pinnedIdentity: identity, assertCurrent: current }), { code: 'profile_key_unlock_required' })
+  f.unlock(); await assert.rejects(() => f.store.preloadPortableExtrasProtector({ binding, pinnedIdentity: identity, record: metadata, assertCurrent: current }), { code: 'profile_key_unlock_required' })
   f.unlock(); await assert.rejects(() => f.store.protect({ binding, endpoint, assertCurrent: current }), { code: 'profile_key_unlock_required' })
-  assert.equal(f.values.size, 1)
+  f.unlock(); await assert.rejects(() => f.store.preloadPortableExtrasProtector({ binding, pinnedIdentity: identity, createNew: true, assertCurrent: current }), { code: 'profile_key_unlock_required' })
+  assert.equal(f.values.size, 2)
+})
+
+for (const kind of ['endpoint', 'extras'] as const) test(`a darwin ${kind} key whose authority ends after security stored it deletes exactly that new item from the named keychain`, async () => {
+  let valid = true
+  const f = keychainFixture({ onCall: (_executable: string, args: string[]) => { if (args[0] === '-i' && f.values.size === 1) valid = false } })
+  const assertCurrent = () => { if (!valid) throw new Error('revoked synthetic proof') }
+  const kept = await f.store.protect({ binding, endpoint, assertCurrent }), count = f.calls.length
+  await assert.rejects(() => kind === 'endpoint' ? f.store.protect({ binding, endpoint, assertCurrent }) : f.store.preloadPortableExtrasProtector({ binding, pinnedIdentity: identity, createNew: true, assertCurrent }), { code: 'profile_key_context_changed' })
+  const added = f.calls.slice(count).find(call => call.args[0] === '-i'), account = /-a (\S+) -s (\S+) /.exec(added.input.toString())!
+  assert.deepEqual(f.calls.at(-1).args, ['delete-generic-password', '-a', account[1], '-s', account[2], loginKeychain])
+  assert.equal(account[2], kind === 'endpoint' ? 'hoai-browser-profile-sync-v1' : 'hoai-browser-portable-extras-v1')
+  assert.equal(f.values.size, 1); valid = true
+  assert.deepEqual(await f.store.restore({ record: kept, binding, pinnedIdentity: identity, assertCurrent }), endpoint)
 })
 
 test('a missing Mac keychain item, keychain, helper or login keychain path is setup_required', async () => {
