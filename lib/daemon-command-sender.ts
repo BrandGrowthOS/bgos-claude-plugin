@@ -56,6 +56,25 @@
  *     an Anthropic account (lib/auth-login.ts). A stranger is refused like
  *     /compact, before the sign-in child is ever spawned and before the
  *     agent's sign-in state is read, so the refusal says nothing about it.
+ *     The one exception is a person the OWNER allowed: the owner can turn on
+ *     "Can sign this agent back in" on a share, because a cloud session logs
+ *     out on its own and the person using the agent is the one who notices.
+ *     The backend then stamps `senderMayLogin` (`sender_may_login` on the
+ *     snake case rails) on that person's messages, as the labelled string
+ *     SENDER_MAY_LOGIN_VALUE, and only in the agent's main chat with them,
+ *     only while the share is active and the permission is on, computed per
+ *     message, so a revoke takes effect on the very next message. Such a
+ *     sender is allowed /login (isLoginGrantedRecipient), as `non_owner` with
+ *     `grant: 'login_recipient'`, and nothing else: /compact stays refused,
+ *     /status stays the reduced answer. The field never makes anyone the
+ *     owner, and an owner's message that carries it is the owner path.
+ *
+ * The /login grant is the string itself, compared byte for byte after a trim.
+ * Any other value (true, 'true', another sentence) grants nothing, and the two
+ * spellings disagreeing on one payload is a malformed sender, refused like any
+ * other. As defence in depth the grant also needs the sender to be a provable
+ * share recipient of THIS owner, and a payload that names a chat kind other
+ * than a main chat never carries it, whatever the field says.
  */
 
 export type DaemonCommand = 'compact' | 'status' | 'login'
@@ -74,14 +93,37 @@ export interface SlashSender {
   shareOwnerUserId: string | null
   /** A sender field was present but not in a shape this reader trusts. */
   malformed: boolean
+  /**
+   * The message carried SENDER_MAY_LOGIN_VALUE (`senderMayLogin ??
+   * sender_may_login`). On its own this proves nothing: isLoginGrantedRecipient
+   * decides whether it applies to this sender.
+   */
+  mayLogin: boolean
 }
+
+/**
+ * The labelled value the backend stamps on a message whose writer the owner
+ * allowed to sign the agent back in (BGOS backend/src/common/share-login.ts,
+ * SENDER_MAY_LOGIN_VALUE). A byte identical copy: the grant is this exact
+ * string after a trim, so the two copies must never drift.
+ */
+export const SENDER_MAY_LOGIN_VALUE =
+  "This agent's owner allows the person writing to send /login, to sign this agent back in when its Claude sign in expires."
 
 export type DaemonCommandAudience = 'owner' | 'non_owner'
 
 export type DaemonCommandRefusal = 'not_owner' | 'sender_unknown' | 'sender_malformed'
 
+/**
+ * Why a non owner was allowed a command they would otherwise be refused. Only
+ * one exists: a share recipient the owner allowed to send /login. The audience
+ * stays 'non_owner', so every reader of the audience (lib/slash-status.ts)
+ * keeps treating them as what they are.
+ */
+export type DaemonCommandGrant = 'login_recipient'
+
 export type DaemonCommandVerdict =
-  | { kind: 'allow'; audience: DaemonCommandAudience; sender: SlashSender }
+  | { kind: 'allow'; audience: DaemonCommandAudience; sender: SlashSender; grant?: DaemonCommandGrant }
   | { kind: 'refuse'; reason: DaemonCommandRefusal; reply: string; sender: SlashSender }
 
 function nonEmptyString(value: unknown): string | null {
@@ -112,6 +154,24 @@ function readShareFlag(value: unknown): { value: boolean | null; malformed: bool
   return { value: null, malformed: true }
 }
 
+function grantsLogin(value: unknown): boolean {
+  return typeof value === 'string' && value.trim() === SENDER_MAY_LOGIN_VALUE
+}
+
+/**
+ * The may login field in either spelling. Both present must agree (the same
+ * value, a string compared after a trim), or the sender cannot be trusted at
+ * all: two answers from the server settle nothing.
+ */
+function readMayLogin(camel: unknown, snake: unknown): { value: boolean; malformed: boolean } {
+  if (camel != null && snake != null) {
+    const same =
+      typeof camel === 'string' && typeof snake === 'string' ? camel.trim() === snake.trim() : camel === snake
+    if (!same) return { value: false, malformed: true }
+  }
+  return { value: grantsLogin(camel ?? snake), malformed: false }
+}
+
 /**
  * Normalise the sender fields of an inbound payload in any of the three
  * transport shapes. Never throws; never reads the owner-id fields.
@@ -123,6 +183,7 @@ export function readSlashSender(payload: unknown): SlashSender {
     isSharedRecipient: null,
     shareOwnerUserId: null,
     malformed: false,
+    mayLogin: false,
   }
   if (!payload || typeof payload !== 'object') return none
   const p = payload as Record<string, unknown>
@@ -156,13 +217,15 @@ export function readSlashSender(payload: unknown): SlashSender {
     nestedRelationship ?? p.sender_relationship ?? p.senderRelationship,
   )
   const share = readShareFlag(p.isSharedRecipient ?? p.is_shared_recipient)
+  const mayLogin = readMayLogin(p.senderMayLogin, p.sender_may_login)
 
   return {
     userId: nestedUserId ?? flatUserId,
     relationship: relationship.value,
     isSharedRecipient: share.value,
     shareOwnerUserId: nonEmptyString(p.shareOwnerUserId ?? p.share_owner_user_id),
-    malformed: malformed || relationship.malformed || share.malformed,
+    malformed: malformed || relationship.malformed || share.malformed || mayLogin.malformed,
+    mayLogin: mayLogin.value,
   }
 }
 
@@ -182,10 +245,79 @@ export function isOwnerSender(sender: SlashSender, ownerUserId: string): boolean
   return true
 }
 
+/**
+ * True only when the sender is a share recipient the owner allowed to send
+ * /login: a readable sender who is NOT the owner, whom the backend labels a
+ * share recipient (and, where the socket says so, of this owner's share), and
+ * whose message carried SENDER_MAY_LOGIN_VALUE. Every field can only take the
+ * grant away. A room member is never one: a group carries no share.
+ */
+export function isLoginGrantedRecipient(sender: SlashSender, ownerUserId: string): boolean {
+  const owner = nonEmptyString(ownerUserId)
+  if (owner === null) return false
+  if (sender.malformed) return false
+  if (sender.userId === null || sender.userId === owner) return false
+  if (sender.relationship !== 'shared_recipient') return false
+  if (sender.isSharedRecipient === false) return false
+  if (sender.shareOwnerUserId !== null && sender.shareOwnerUserId !== owner) return false
+  return sender.mayLogin
+}
+
+/**
+ * Does this payload name a chat kind that is not a main chat? Two places can
+ * name it: the top level (`chat_kind ?? chatKind`, which the stream's rows
+ * and the integrations inbound rows carry, and the owner daemon's chat page
+ * poll rows do not) and the group block (`groupContext ?? group_context`, its
+ * `chatKind ?? chat_kind`), which is the only place the socket's
+ * inbound_message names a group, a room or a channel. A kind stated in either
+ * that is not 'main' counts, and a kind that is not a string is not 'main'
+ * either; a payload that states no kind at all does not. The backend stamps
+ * the may login field on main chats only; this keeps that true whatever a
+ * payload says, and lib/auth-login.ts isRoomContext refuses to START a
+ * sign-in on it, for the owner too.
+ */
+export function statesNonMainChat(payload: unknown): boolean {
+  if (!payload || typeof payload !== 'object') return false
+  const p = payload as Record<string, unknown>
+  const block = p.groupContext ?? p.group_context
+  const group = (block && typeof block === 'object' ? block : {}) as Record<string, unknown>
+  return [p.chat_kind ?? p.chatKind, group.chatKind ?? group.chat_kind].some(
+    (kind) => kind != null && (typeof kind !== 'string' || kind.trim().toLowerCase() !== 'main'),
+  )
+}
+
+/**
+ * Does this ONE delivery carry the /login grant, read the way a person's lane
+ * can read it? A readable sender with an id, whom the backend labels a share
+ * recipient (and, where the socket says so, still one), whose message carried
+ * SENDER_MAY_LOGIN_VALUE, in a payload that names no chat kind but main. It is
+ * isLoginGrantedRecipient without the owner checks, because a lane does not
+ * know the owner's id; that is safe only because of what it is used for:
+ * choosing which fixed sentence a lane's /login gets (lib/lane-controls.ts
+ * laneLoginNotice). It allows nothing and signs no one in. Every field can
+ * only take it away.
+ */
+export function carriesLoginGrant(payload: unknown): boolean {
+  const sender = readSlashSender(payload)
+  if (sender.malformed || sender.userId === null) return false
+  if (sender.relationship !== 'shared_recipient') return false
+  if (sender.isSharedRecipient === false) return false
+  return sender.mayLogin && !statesNonMainChat(payload)
+}
+
+/**
+ * The /login grant for one message: an allowed share recipient, writing in a
+ * main chat. What judgeDaemonCommand allows a /login on, and what
+ * lib/auth-login.ts asks of every message it would take a code from.
+ */
+export function mayLoginFromPayload(payload: unknown, ownerUserId: string): boolean {
+  return isLoginGrantedRecipient(readSlashSender(payload), ownerUserId) && !statesNonMainChat(payload)
+}
+
 function refusalReply(command: DaemonCommand, reason: DaemonCommandRefusal): string {
   const rule =
     command === 'login'
-      ? "only this agent's owner can sign it in."
+      ? "only this agent's owner, or a person the owner allowed, can sign it in."
       : `only this agent's owner can ${command} its session.`
   switch (reason) {
     case 'sender_unknown':
@@ -222,6 +354,14 @@ export function judgeDaemonCommand(input: {
     // Mutates nothing; the reduced answer is what any stranger may see.
     return { kind: 'allow', audience: 'non_owner', sender }
   }
+  if (input.command === 'login' && mayLoginFromPayload(input.payload, input.ownerUserId)) {
+    // A person the owner allowed to sign the agent back in. Still not the
+    // owner: lib/auth-login.ts binds the sign-in to them. This arm is reached
+    // only from a main chat (mayLoginFromPayload refuses any other stated
+    // kind), and lib/auth-login.ts isRoomContext refuses a start in a room or a
+    // meeting on top, exactly as it does for the owner.
+    return { kind: 'allow', audience: 'non_owner', sender, grant: 'login_recipient' }
+  }
   const reason: DaemonCommandRefusal = sender.malformed
     ? 'sender_malformed'
     : sender.userId === null
@@ -244,6 +384,33 @@ export interface DaemonCommandRun {
   /** The command's own work. Reached only on an allow verdict, and handed it. */
   act: (verdict: DaemonCommandAllowed) => Promise<void>
   log?: (line: string) => void
+}
+
+/** The verdict `act` is running under, while it runs synchronously. */
+let actingVerdict: DaemonCommandAllowed | null = null
+
+/**
+ * The allowed verdict of the runDaemonCommand whose `act` is running RIGHT
+ * NOW, synchronously, or null. lib/auth-login.ts reads it at the very top of
+ * LoginController.command, before its first await, to learn WHO started a
+ * sign-in, which the sign-in is then bound to.
+ *
+ * Why ambient, and why only synchronously: server.ts's act for /login is
+ * `(verdict) => loginController.command(chatId, commandArgs, { inRoom })`, and
+ * it does not hand the verdict's sender on. server.ts is owned by PR #262
+ * until 0.72.0, so it cannot change here. The follow up after that release is
+ * to pass the starter explicitly, as `opts.starter: verdict.sender`, which the
+ * controller already accepts and prefers; this function can then go. It is
+ * set immediately before `act` is called and cleared the moment `act` returns
+ * its promise, before that promise is awaited, so no code that runs later
+ * (another command's act, a timer, a reply) can ever read a stale verdict.
+ * The other side of that bargain is that server.ts's act must call
+ * loginController.command as its synchronous first step: an await or a
+ * `.then` in front of it would find this already cleared, and the sign-in
+ * would bind to the owner. test/login-starter-binding.pin.test.ts pins it.
+ */
+export function currentDaemonCommandVerdict(): DaemonCommandAllowed | null {
+  return actingVerdict
 }
 
 /**
@@ -272,6 +439,17 @@ export async function runDaemonCommand(run: DaemonCommandRun): Promise<'acted' |
     }
     return 'refused'
   }
-  await run.act(verdict)
+  // Readable through currentDaemonCommandVerdict only for the synchronous part
+  // of act. The previous value is put back rather than null, so a nested call
+  // (none exists today) would not blank its caller's verdict either.
+  const outer = actingVerdict
+  actingVerdict = verdict
+  let acting: Promise<void>
+  try {
+    acting = run.act(verdict)
+  } finally {
+    actingVerdict = outer
+  }
+  await acting
   return 'acted'
 }

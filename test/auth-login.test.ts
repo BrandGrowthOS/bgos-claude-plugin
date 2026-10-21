@@ -9,8 +9,15 @@
  *   - code validation: empty, multiline, control characters, a leading slash;
  *   - the 10 minute timeout, which kills the child;
  *   - single flight;
- *   - owner only, refused before the child is spawned or the sign-in state is
- *     read, driven through the real runDaemonCommand seam;
+ *   - the owner, or a share recipient the owner allowed (the backend's
+ *     labelled senderMayLogin); anyone else refused before the child is
+ *     spawned or the sign-in state is read, driven through the real
+ *     runDaemonCommand seam;
+ *   - each sign-in bound to the person who STARTED it: the tap, the code and
+ *     the cancel, so nobody else (the owner included, for a recipient's) can
+ *     complete it, and a revoke between /login and the paste blocks the code;
+ *   - a recipient told plainly which Claude login their sign-in changes (the
+ *     one the owner runs the agent on), with the owner's own texts unchanged;
  *   - the non-zero exit reply.
  * Plus the properties that make it safe: the code and the URL's query never
  * reach a log line, the code is written to stdin once and only once, a
@@ -50,6 +57,9 @@ import {
   type LoginChildHandlers,
 } from '../lib/auth-login.ts'
 import { runDaemonCommand } from '../lib/daemon-command-sender.ts'
+// The grant's new names, off the module object so a missing one fails the
+// assertion that uses it rather than the whole file's import.
+import * as senderModule from '../lib/daemon-command-sender.ts'
 import {
   BUILTIN_COMMANDS,
   catalogForCapabilities,
@@ -120,6 +130,49 @@ const WS_RECIPIENT_LOGIN = {
   sender: { userId: RECIPIENT, relationship: 'shared_recipient' },
   isSharedRecipient: true,
   shareOwnerUserId: OWNER,
+}
+
+/**
+ * The labelled value the backend stamps on a share recipient's message when
+ * the owner allowed them to sign the agent back in (the contract's constant,
+ * byte for byte; test/daemon-command-sender.test.ts pins the export to it).
+ */
+const MAY_LOGIN =
+  "This agent's owner allows the person writing to send /login, to sign this agent back in when its Claude sign in expires."
+const RECIP_CHAT = '7001'
+/** A second share recipient, also allowed, in their own chat. */
+const OTHER = 'user_2other000000000000000000000'
+const OTHER_CHAT = '7002'
+
+// The /login of a person the owner allowed, on each rail's shape.
+const WS_GRANTED_LOGIN = { ...WS_RECIPIENT_LOGIN, senderMayLogin: MAY_LOGIN }
+const POLL_GRANTED_LOGIN = {
+  id: 43,
+  text: '/login',
+  sender: 'user',
+  message_type: 'slash_command',
+  command_name: 'login',
+  user_id: OWNER,
+  chat_kind: 'main',
+  sender_user_id: RECIPIENT,
+  sender_relationship: 'shared_recipient',
+  sender_may_login: MAY_LOGIN,
+}
+const STREAM_GRANTED_LOGIN = {
+  id: 44,
+  text: '/login',
+  sender: 'user',
+  messageType: 'slash_command',
+  commandName: 'login',
+  chatKind: 'main',
+  senderUserId: RECIPIENT,
+  senderRelationship: 'shared_recipient',
+  senderMayLogin: MAY_LOGIN,
+}
+const WS_OTHER_GRANTED_LOGIN = {
+  ...WS_GRANTED_LOGIN,
+  chatId: 7002,
+  sender: { userId: OTHER, relationship: 'shared_recipient' },
 }
 
 // ── fakes ────────────────────────────────────────────────────────────────────
@@ -537,13 +590,20 @@ test('a second /login while one is running says so and starts nothing', async ()
 
 test('single flight holds in the reducer itself, from every in-flight phase', () => {
   for (const phase of ['awaiting_method', 'starting', 'awaiting_code', 'verifying'] as const) {
-    const t = reduceLogin({ ...INITIAL_LOGIN_STATE, phase, chatId: CHAT }, { type: 'open', chatId: CHAT, nowMs: 0 })
+    const t = reduceLogin(
+      { ...INITIAL_LOGIN_STATE, phase, chatId: CHAT, starterUserId: OWNER },
+      { type: 'open', chatId: CHAT, starterUserId: OWNER, byOwner: true, nowMs: 0 },
+    )
     assert.equal(t.state.phase, phase, phase)
     assert.deepEqual(t.effects.map((e) => e.kind), ['busy'], phase)
   }
   for (const phase of ['idle', 'done', 'failed'] as const) {
-    const t = reduceLogin({ ...INITIAL_LOGIN_STATE, phase }, { type: 'open', chatId: CHAT, nowMs: 0 })
+    const t = reduceLogin(
+      { ...INITIAL_LOGIN_STATE, phase },
+      { type: 'open', chatId: CHAT, starterUserId: OWNER, byOwner: true, nowMs: 0 },
+    )
     assert.equal(t.state.phase, 'awaiting_method', phase)
+    assert.equal(t.state.starterUserId, OWNER, `${phase}: the offer is bound to who opened it`)
   }
 })
 
@@ -559,10 +619,13 @@ test('/login cancel kills a running child and frees the slot', async () => {
 
 // ── owner only ───────────────────────────────────────────────────────────────
 
-test('a non-owner /login is refused before the child spawns or the sign-in state is read', async () => {
+test('a non-owner /login WITHOUT the may login field is refused before the child spawns or the sign-in state is read', async () => {
   for (const payload of [
     WS_RECIPIENT_LOGIN,
+    { ...WS_RECIPIENT_LOGIN, senderMayLogin: 'true' },
+    { ...WS_RECIPIENT_LOGIN, senderMayLogin: true },
     { ...WS_OWNER_LOGIN, sender: undefined },
+    { ...WS_OWNER_LOGIN, sender: undefined, senderMayLogin: MAY_LOGIN },
     { ...WS_OWNER_LOGIN, sender: { userId: 42 } },
   ]) {
     const h = harness()
@@ -826,6 +889,34 @@ test('room context: relationship, chat kind, or a meeting chat', () => {
   assert.equal(isRoomContext({ relationship: null, payload: null, isMeetingChat: false }), false)
 })
 
+test('room context: a payload that states any chat kind but main is one, in either spelling, the owner\'s included', () => {
+  // A Type 1 Shared chat (chats.kind 'group') stamps the OWNER as 'owner', not
+  // 'room_member', so the relationship alone let the owner's /login start
+  // there and post the card and the link into a transcript others read.
+  for (const kind of ['group', 'channel', 'shared', 'room', 'meeting', 'Group', ' channel ', 'a_kind_added_later']) {
+    for (const relationship of ['owner', 'shared_recipient', null]) {
+      for (const payload of [{ chat_kind: kind }, { chatKind: kind }]) {
+        assert.equal(
+          isRoomContext({ relationship, payload, isMeetingChat: false }),
+          true,
+          `${JSON.stringify(payload)} from ${relationship}`,
+        )
+      }
+    }
+  }
+  for (const kind of [7, true, {}, []]) {
+    assert.equal(isRoomContext({ relationship: 'owner', payload: { chatKind: kind }, isMeetingChat: false }), true, `a kind that is not a string (${JSON.stringify(kind)}) is not main`)
+  }
+  // The socket names a group's kind only inside its groupContext block
+  // (backend groupContextToCamelWire); its top level carries none.
+  assert.equal(isRoomContext({ relationship: 'owner', payload: { groupContext: { chatKind: 'group' } }, isMeetingChat: false }), true, 'the socket\'s group block')
+  assert.equal(isRoomContext({ relationship: 'owner', payload: { group_context: { chat_kind: 'channel' } }, isMeetingChat: false }), true, 'snake spelling')
+  // Main, or no kind stated at all: exactly as before.
+  for (const payload of [{ chat_kind: 'main' }, { chatKind: 'Main' }, { chatKind: ' main ' }, {}, { chat_kind: null }, null, 'not an object']) {
+    assert.equal(isRoomContext({ relationship: 'owner', payload, isMeetingChat: false }), false, JSON.stringify(payload))
+  }
+})
+
 test('the code half alone is redacted too, if the CLI ever echoes it', async () => {
   const h = harness()
   await toAwaitingCode(h)
@@ -873,6 +964,545 @@ test('a second delivery of the consumed code message is still dropped, never for
   assert.equal(ownerCode(h, CODE, 77), 'consumed')
   assert.equal(ownerCode(h, CODE, 77), 'consumed', 'the same id again, now in verifying')
   assert.equal(h.child.writes.length, 1, 'and written once')
+})
+
+// ── a person the owner allowed (the may login grant) ─────────────────────────
+//
+// The owner can let a share recipient sign the agent back in when its Claude
+// sign in expires (a cloud session logs out, and the person using the agent is
+// the one who notices). The seam lets their /login through when their message
+// carries the backend's labelled `senderMayLogin`; from then on that sign-in
+// belongs to the person who STARTED it: the card tap, the pasted code and the
+// cancel are bound to them, not to "the owner", so nobody else can complete
+// it. The owner can still cancel any sign-in, because it is their machine.
+//
+// Every /login below goes through the real runDaemonCommand with an act that
+// is server.ts's act EXACTLY (no starter in opts): server.ts cannot pass the
+// verdict to the controller until PR #262 releases it, so the controller must
+// learn who started from the verdict the seam makes readable while act runs.
+
+async function loginVia(
+  h: ReturnType<typeof harness>,
+  chatId: string,
+  payload: unknown,
+  commandArgs = '',
+  opts: { isMeetingChat?: boolean } = {},
+) {
+  const refusals: string[] = []
+  const outcome = await runDaemonCommand({
+    command: 'login',
+    payload,
+    ownerUserId: OWNER,
+    chatId,
+    send: async (_chatId, text) => {
+      refusals.push(text)
+    },
+    log: () => {},
+    // Exactly what server.ts passes as act.
+    act: (verdict) =>
+      h.controller.command(chatId, commandArgs, {
+        inRoom: isRoomContext({
+          relationship: verdict.sender.relationship,
+          payload,
+          isMeetingChat: opts.isMeetingChat ?? false,
+        }),
+      }),
+  })
+  await settle()
+  return { outcome, refusals }
+}
+
+/** A message from the allowed recipient, carrying the grant unless `over` says otherwise. */
+function recipientSays(
+  h: ReturnType<typeof harness>,
+  text: unknown,
+  messageId: number,
+  over: Record<string, unknown> = {},
+  chatId = RECIP_CHAT,
+) {
+  return h.controller.message({
+    chatId,
+    messageId,
+    payload: { ...WS_RECIPIENT_MSG, chatId: Number(chatId), messageId, text, senderMayLogin: MAY_LOGIN, ...over },
+    text,
+    isSlash: false,
+    fromHuman: true,
+  })
+}
+
+/** A second allowed recipient. */
+function otherSays(h: ReturnType<typeof harness>, text: unknown, messageId: number, chatId = RECIP_CHAT) {
+  return recipientSays(h, text, messageId, { sender: { userId: OTHER, relationship: 'shared_recipient' } }, chatId)
+}
+
+/** The owner, in any chat (the owner can write into a recipient's chat). */
+function ownerSaysIn(h: ReturnType<typeof harness>, chatId: string, text: unknown, messageId: number) {
+  return h.controller.message({
+    chatId,
+    messageId,
+    payload: { ...POLL_OWNER_MSG, id: messageId, text },
+    text,
+    isSlash: false,
+    fromHuman: true,
+  })
+}
+
+/** The allowed recipient's /login, a tap, the URL: awaiting_code in their chat. */
+async function recipientToAwaitingCode(h: ReturnType<typeof harness>, payload: unknown = WS_GRANTED_LOGIN) {
+  const r = await loginVia(h, RECIP_CHAT, payload)
+  assert.equal(r.outcome, 'acted', 'the seam lets an allowed recipient through')
+  const card = h.sent[h.sent.length - 1]!
+  assert.equal(card.chatId, RECIP_CHAT, 'the card goes to their own chat')
+  assert.ok(card.buttons, 'the offer carries buttons')
+  assert.equal(
+    h.controller.button({ chatId: RECIP_CHAT, messageId: 500, callbackData: 'login:claudeai', clickerUserId: null }),
+    'consumed',
+  )
+  h.child.handlers.onStdout(MEASURED_STDOUT)
+  await settle()
+  assert.equal(h.controller.phase, 'awaiting_code')
+}
+
+test('an allowed recipient starts /login through the seam on the ws, poll and stream shapes, bound as its starter', async () => {
+  for (const [rail, payload] of [
+    ['ws', WS_GRANTED_LOGIN],
+    ['poll', POLL_GRANTED_LOGIN],
+    ['stream', STREAM_GRANTED_LOGIN],
+  ] as const) {
+    const h = harness()
+    const r = await loginVia(h, RECIP_CHAT, payload)
+    assert.equal(r.outcome, 'acted', rail)
+    assert.equal(r.refusals.length, 0, `${rail}: no refusal`)
+    assert.equal(h.statusReads(), 1, `${rail}: the offer read the sign-in state`)
+    assert.equal(h.sent[0]?.chatId, RECIP_CHAT, rail)
+    assert.equal(h.sent[0]?.buttons?.length, 2, `${rail}: the method card`)
+    assert.equal(h.controller.starterUserId, RECIPIENT, `${rail}: the sign-in is bound to the person who started it`)
+    assert.equal(senderModule.currentDaemonCommandVerdict(), null, `${rail}: the verdict is not readable after act`)
+  }
+  // The same person with the field taken away (revoked) is refused by the seam.
+  const h = harness()
+  const r = await loginVia(h, RECIP_CHAT, WS_RECIPIENT_LOGIN)
+  assert.equal(r.outcome, 'refused')
+  assert.equal(h.statusReads(), 0)
+  assert.equal(h.sent.length, 0)
+  assert.match(r.refusals[0]!, /^\/login was not run: only this agent's owner, or a person the owner allowed, can sign it in\./)
+})
+
+test('the owner is bound as the starter, and a call with no verdict binds to the owner, never wider', async () => {
+  const viaSeam = harness()
+  await loginVia(viaSeam, CHAT, WS_OWNER_LOGIN)
+  assert.equal(viaSeam.controller.starterUserId, OWNER)
+  const direct = harness()
+  await direct.controller.command(CHAT, '')
+  assert.equal(direct.controller.starterUserId, OWNER, 'no verdict, no starter: the owner, as before')
+  // The follow up after #262 passes the starter explicitly; the controller already takes it.
+  const explicit = harness()
+  await explicit.controller.command(RECIP_CHAT, '', { starter: senderModule.readSlashSender(WS_GRANTED_LOGIN) })
+  assert.equal(explicit.controller.starterUserId, RECIPIENT)
+  const notAllowed = harness()
+  await notAllowed.controller.command(RECIP_CHAT, '', { starter: senderModule.readSlashSender(WS_RECIPIENT_LOGIN) })
+  assert.equal(notAllowed.controller.starterUserId, OWNER, 'a starter without the grant binds to the owner')
+})
+
+test('an allowed recipient still cannot START a sign-in from a meeting or a room', async () => {
+  const meeting = harness()
+  const m = await loginVia(meeting, RECIP_CHAT, WS_GRANTED_LOGIN, '', { isMeetingChat: true })
+  assert.equal(m.outcome, 'acted', 'the seam allows them; the room rule is the controller')
+  assert.equal(meeting.statusReads(), 0)
+  assert.equal(meeting.children.length, 0)
+  assert.equal(meeting.sent[0]?.buttons, undefined)
+  assert.match(meeting.sent[0]!.text, /not from a room/)
+  await loginVia(meeting, RECIP_CHAT, WS_GRANTED_LOGIN, 'console', { isMeetingChat: true })
+  assert.equal(meeting.children.length, 0, 'nor a direct method')
+  for (const payload of [
+    { ...WS_GRANTED_LOGIN, sender: { userId: RECIPIENT, relationship: 'room_member' } },
+    { ...POLL_GRANTED_LOGIN, chat_kind: 'room' },
+  ]) {
+    const h = harness()
+    const r = await loginVia(h, RECIP_CHAT, payload)
+    assert.equal(r.outcome, 'refused', 'a room payload never carries the grant through the seam')
+    assert.equal(h.statusReads(), 0)
+    assert.equal(h.children.length, 0)
+  }
+})
+
+// The owner's /login on each shape that can state a chat kind. In a Type 1
+// Shared chat the backend stamps the owner `owner` (never `room_member`), so
+// the only sign of the group is the chat kind the payload states. The snake
+// case shape is the integrations inbound row's; the owner daemon's own chat
+// page poll rows state no kind at all (the gap in lib/auth-login.ts's header).
+const POLL_OWNER_LOGIN = {
+  id: 45,
+  text: '/login',
+  sender: 'user',
+  message_type: 'slash_command',
+  command_name: 'login',
+  user_id: OWNER,
+  chat_kind: 'main',
+  sender_user_id: OWNER,
+  sender_relationship: 'owner',
+}
+const STREAM_OWNER_LOGIN = {
+  id: 46,
+  text: '/login',
+  sender: 'user',
+  messageType: 'slash_command',
+  commandName: 'login',
+  chatKind: 'main',
+  senderUserId: OWNER,
+  senderRelationship: 'owner',
+}
+const GROUP_CHAT = '8001'
+
+test('the owner\'s /login in a chat that states a kind other than main is refused with the room reply, and reads nothing', async () => {
+  const cases: Array<[string, unknown]> = []
+  for (const kind of ['group', 'channel', 'shared']) {
+    cases.push([`snake case chat_kind ${kind}`, { ...POLL_OWNER_LOGIN, chat_kind: kind }])
+    cases.push([`stream chatKind ${kind}`, { ...STREAM_OWNER_LOGIN, chatKind: kind }])
+    cases.push([`ws chatKind ${kind}`, { ...WS_OWNER_LOGIN, chatKind: kind }])
+  }
+  // The socket's own shape for a Type 1 Shared chat: no top level kind, the
+  // group block names it.
+  const wsGroup = { ...WS_OWNER_LOGIN, groupContext: { chatKind: 'group', chatTitle: 'Launch', mentionedBy: 'Ava Chen', participants: [], messages: [] } }
+  delete (wsGroup as Record<string, unknown>).isSharedRecipient
+  delete (wsGroup as Record<string, unknown>).shareOwnerUserId
+  cases.push(['ws groupContext group', wsGroup])
+  for (const [label, payload] of cases) {
+    for (const args of ['', 'subscription', 'console']) {
+      const h = harness()
+      const r = await loginVia(h, GROUP_CHAT, payload, args)
+      assert.equal(r.outcome, 'acted', `${label} /login ${args}: the owner passes the seam; the room rule is the controller`)
+      assert.equal(h.statusReads(), 0, `${label} /login ${args}: the sign-in state is never read`)
+      assert.equal(h.children.length, 0, `${label} /login ${args}: nothing is spawned`)
+      assert.equal(h.sent.length, 1, `${label} /login ${args}: one reply`)
+      assert.equal(h.sent[0]!.chatId, GROUP_CHAT, label)
+      assert.equal(h.sent[0]!.buttons, undefined, `${label} /login ${args}: no method card`)
+      assert.equal(
+        h.sent[0]!.text,
+        'Send /login from your own chat with this agent, not from a room: the sign-in link would be visible to everyone here.',
+        `${label} /login ${args}: the room reply`,
+      )
+      assert.equal(h.controller.phase, 'idle', label)
+    }
+  }
+})
+
+test('the owner\'s /login that states main, or no kind at all, still starts', async () => {
+  const noKind = { ...POLL_OWNER_LOGIN } as Record<string, unknown>
+  delete noKind.chat_kind
+  for (const [label, payload] of [
+    ['poll main', POLL_OWNER_LOGIN],
+    ['stream main', STREAM_OWNER_LOGIN],
+    ['ws, no kind', WS_OWNER_LOGIN],
+    ['poll, no kind', noKind],
+  ] as const) {
+    const h = harness()
+    const r = await loginVia(h, CHAT, payload)
+    assert.equal(r.outcome, 'acted', label)
+    assert.equal(h.statusReads(), 1, `${label}: the offer read the sign-in state`)
+    assert.equal(h.sent[0]?.buttons?.length, 2, `${label}: the method card`)
+    assert.equal(h.controller.phase, 'awaiting_method', label)
+  }
+})
+
+test('a granted recipient whose /login states a group is refused too, at the seam and at the controller', async () => {
+  const group = { ...WS_GRANTED_LOGIN, chatKind: 'group' }
+  const viaSeam = harness()
+  const r = await loginVia(viaSeam, RECIP_CHAT, group)
+  assert.equal(r.outcome, 'refused', 'a payload naming a group never carries the grant')
+  assert.equal(viaSeam.statusReads(), 0)
+  assert.equal(viaSeam.children.length, 0)
+  // And the controller's own rule, were the starter handed over explicitly
+  // (the follow up after #262): no start, the room reply.
+  const h = harness()
+  await h.controller.command(RECIP_CHAT, '', {
+    starter: senderModule.readSlashSender(WS_GRANTED_LOGIN),
+    inRoom: isRoomContext({ relationship: 'shared_recipient', payload: group, isMeetingChat: false }),
+  })
+  await settle()
+  assert.equal(h.statusReads(), 0)
+  assert.equal(h.children.length, 0)
+  assert.equal(h.sent[0]?.buttons, undefined)
+  assert.match(h.sent[0]!.text, /not from a room/)
+})
+
+test('/login cancel from a chat that states a group still stops the owner\'s running sign-in', async () => {
+  const h = harness()
+  await toAwaitingCode(h)
+  const r = await loginVia(h, GROUP_CHAT, { ...WS_OWNER_LOGIN, chatKind: 'group' }, 'cancel')
+  assert.equal(r.outcome, 'acted')
+  assert.equal(h.child.killed, true, 'cancelling only takes something away, so it is allowed there')
+  assert.equal(h.controller.phase, 'idle')
+  assert.ok(h.sent.some((m) => m.chatId === GROUP_CHAT && m.text === 'Sign-in cancelled. Nothing was changed.'))
+})
+
+test('owner started: an allowed recipient\'s code is never taken, and is withheld', async () => {
+  const h = harness()
+  await toAwaitingCode(h)
+  assert.equal(recipientSays(h, CODE, 120), 'withheld', 'in their own chat')
+  assert.equal(recipientSays(h, CODE, 121, {}, CHAT), 'withheld', "in the owner's chat")
+  assert.deepEqual(h.child.writes, [], 'nothing reached stdin')
+  assert.equal(h.controller.phase, 'awaiting_code', 'the owner\'s window stays open')
+  assert.equal(ownerCode(h, CODE, 122), 'consumed', 'the owner, who started it')
+  assert.deepEqual(h.child.writes, [`${CODE}\n`])
+})
+
+test('recipient started: only the starter\'s code is written, exactly once; nobody else\'s, the owner\'s included', async () => {
+  const h = harness({ status: { loggedIn: true, authMethod: 'claude.ai', email: 'owner@example.com', subscriptionType: 'max' } })
+  await recipientToAwaitingCode(h)
+  assert.equal(ownerSaysIn(h, RECIP_CHAT, CODE, 130), 'withheld', "the owner, in the starter's chat")
+  assert.equal(ownerSaysIn(h, CHAT, CODE, 131), 'withheld', "the owner, in the owner's chat")
+  assert.equal(otherSays(h, CODE, 132), 'withheld', 'another allowed recipient')
+  assert.equal(recipientSays(h, CODE, 133, { senderMayLogin: undefined }), 'withheld', 'the starter, revoked since /login')
+  assert.equal(
+    recipientSays(h, CODE, 134, { sender: { userId: RECIPIENT, relationship: 'room_member' } }),
+    'withheld',
+    'the starter, from a room',
+  )
+  assert.equal(recipientSays(h, CODE, 135, { chatKind: 'group' }), 'withheld', 'a payload naming a group')
+  assert.deepEqual(h.child.writes, [], 'nothing reached stdin')
+  assert.equal(h.controller.phase, 'awaiting_code')
+  await settle()
+  const ownerTold = h.sent.filter((m) => m.chatId === CHAT).map((m) => m.text)
+  assert.ok(ownerTold.length > 0, 'the owner was told why')
+  for (const t of ownerTold) assert.doesNotMatch(t, /paste it there/, 'the owner is not sent to paste a code that would not be taken')
+
+  assert.equal(recipientSays(h, CODE, 136), 'consumed', 'the starter, still allowed')
+  assert.equal(recipientSays(h, CODE, 136), 'consumed', 'the same delivery again')
+  assert.deepEqual(h.child.writes, [`${CODE}\n`], 'written to stdin once, as one line')
+  assert.equal(h.controller.phase, 'verifying')
+  h.child.handlers.onExit(0)
+  await settle()
+  assert.equal(h.controller.phase, 'done')
+  const last = h.sent[h.sent.length - 1]!
+  assert.equal(last.chatId, RECIP_CHAT)
+  assert.match(last.text, /^Signed in as owner@example\.com \(Claude Max\)\./, 'the success reply names the account just signed in')
+  assertNoSecrets(h.sent.map((m) => m.text), 'replies')
+  assertNoSecrets(h.logs, 'logs')
+  assert.ok(!h.logs.some((l) => /from the owner|by the owner/.test(l)), `no log line calls the starter the owner: ${h.logs.join(' | ')}`)
+})
+
+test('recipient started, then revoked: their next code is not consumed', async () => {
+  const h = harness()
+  await recipientToAwaitingCode(h)
+  // The owner turned the permission off between /login and the paste: the
+  // backend stops stamping the field on the very next message.
+  assert.equal(recipientSays(h, CODE, 140, { senderMayLogin: undefined }), 'withheld')
+  assert.equal(recipientSays(h, CODE, 141, { senderMayLogin: 'true' }), 'withheld', 'a boolean-ish value is not the grant')
+  assert.deepEqual(h.child.writes, [])
+  assert.equal(h.controller.phase, 'awaiting_code')
+})
+
+test('a tap on the card that names someone other than the starter is ignored', async () => {
+  const h = harness()
+  await loginVia(h, RECIP_CHAT, WS_GRANTED_LOGIN)
+  for (const clicker of [OWNER, OTHER]) {
+    assert.equal(
+      h.controller.button({ chatId: RECIP_CHAT, messageId: 500, callbackData: 'login:claudeai', clickerUserId: clicker }),
+      'consumed',
+      `${clicker}: consumed, never forwarded`,
+    )
+    assert.equal(h.children.length, 0, `${clicker}: starts nothing`)
+    assert.equal(h.controller.phase, 'awaiting_method')
+  }
+  assert.ok(h.logs.some((l) => /someone other than whoever started this sign-in/.test(l)), h.logs.join(' | '))
+  assert.equal(
+    h.controller.button({ chatId: RECIP_CHAT, messageId: 500, callbackData: 'login:claudeai', clickerUserId: RECIPIENT }),
+    'consumed',
+  )
+  assert.equal(h.children.length, 1, 'the starter\'s own stamped tap starts it')
+})
+
+test('a direct method from anyone but the starter starts nothing; the starter\'s does', async () => {
+  const h = harness()
+  await loginVia(h, RECIP_CHAT, WS_GRANTED_LOGIN)
+  await loginVia(h, CHAT, WS_OWNER_LOGIN, 'console')
+  assert.equal(h.children.length, 0, 'the owner')
+  assert.match(h.sent[h.sent.length - 1]!.text, /^A sign-in is already running/)
+  await loginVia(h, OTHER_CHAT, WS_OTHER_GRANTED_LOGIN, 'subscription')
+  assert.equal(h.children.length, 0, 'another allowed recipient')
+  const busy = h.sent[h.sent.length - 1]!
+  assert.equal(busy.chatId, OTHER_CHAT)
+  assert.match(busy.text, /^A sign-in is already running/)
+  assert.doesNotMatch(busy.text, /Send \/login cancel to stop it/, 'they cannot stop a sign-in they did not start')
+  await loginVia(h, RECIP_CHAT, WS_GRANTED_LOGIN, 'subscription')
+  assert.equal(h.children.length, 1, 'the starter')
+  assert.deepEqual(h.child.cmd.args, ['auth', 'login', '--claudeai'])
+})
+
+test('cancel: a different person cannot stop the starter\'s sign-in; the owner can, and so can the starter', async () => {
+  const h = harness()
+  await recipientToAwaitingCode(h)
+  const r = await loginVia(h, OTHER_CHAT, WS_OTHER_GRANTED_LOGIN, 'cancel')
+  assert.equal(r.outcome, 'acted')
+  assert.equal(h.child.killed, false, 'nothing is killed')
+  assert.equal(h.controller.phase, 'awaiting_code', 'the starter\'s sign-in is untouched')
+  const told = h.sent[h.sent.length - 1]!
+  assert.equal(told.chatId, OTHER_CHAT)
+  assert.match(told.text, /No sign-in that you started is running/)
+  await loginVia(h, CHAT, WS_OWNER_LOGIN, 'cancel')
+  assert.equal(h.child.killed, true, 'the owner can always cancel: it is their machine')
+  assert.equal(h.controller.phase, 'idle')
+
+  const own = harness()
+  await recipientToAwaitingCode(own)
+  await loginVia(own, RECIP_CHAT, WS_GRANTED_LOGIN, 'cancel')
+  assert.equal(own.child.killed, true, 'the starter can cancel their own')
+  assert.equal(own.controller.phase, 'idle')
+})
+
+test('privacy: an offer to a recipient never names the account the agent is signed in as', async () => {
+  const h = harness({ status: { loggedIn: true, authMethod: 'claude.ai', email: 'owner@example.com', subscriptionType: 'max' } })
+  await loginVia(h, RECIP_CHAT, WS_GRANTED_LOGIN)
+  const card = h.sent[0]!
+  assert.ok(card.buttons, 'the card is still offered')
+  assert.ok(!card.text.includes('owner@example.com'), `no email: ${card.text}`)
+  assert.doesNotMatch(card.text, /Max|Claude Max/, 'no plan')
+  assert.match(card.text, /already signed in/, 'only whether it is signed in')
+  // The owner's own offer still names it.
+  const own = harness({ status: { loggedIn: true, authMethod: 'claude.ai', email: 'owner@example.com', subscriptionType: 'max' } })
+  await loginVia(own, CHAT, WS_OWNER_LOGIN)
+  assert.match(own.sent[0]!.text, /already signed in as owner@example\.com \(Claude Max\)/)
+})
+
+// Which Claude login a recipient's /login changes (board row 01a15904, with
+// d8dd64b4 and decision K2). Here, on the owner's daemon (no person lanes for
+// the agent), it is the login the owner runs the agent on: the child inherits
+// the daemon's own environment and so writes the credential store the agent's
+// Claude reads, which the owner's own chats, and any other agent on that
+// computer that shares it, read too. A recipient is told so before anything
+// starts and again once it is done; the owner's texts do not change.
+const RECIPIENT_SCOPE =
+  "This signs in the Claude login that this agent's owner runs it on: the owner's own chats with this agent, and any other agent on that computer that shares the login, will use the account you sign in with. The owner allowed you to do this."
+const CONSOLE_NOTE =
+  'A Claude subscription is what HOAI chat needs: with an Anthropic Console sign-in, chat messages may not reach the agent.'
+const LINK_TEXT = [
+  'Open this link, sign in, and paste the code the page shows back here as your next message:',
+  '',
+  URL_,
+  '',
+  'The code goes straight to the sign-in process on this machine and is never shown back. This closes in 10 minutes. Send /login cancel to stop.',
+].join('\n')
+const SIGNED_IN_MAX: AuthStatus = { loggedIn: true, authMethod: 'claude.ai', email: 'owner@example.com', subscriptionType: 'max' }
+
+test('a recipient\'s offer says plainly which Claude login it signs in, never naming the account; the owner\'s offer is unchanged', async () => {
+  const cases: Array<[AuthStatus | null, string]> = [
+    [SIGNED_IN_MAX, 'This agent is already signed in. Sign in again anyway? Pick a method.'],
+    [{ loggedIn: false, authMethod: 'none', email: null, subscriptionType: null }, 'This agent is not signed in. Pick how to sign in.'],
+    [null, 'I could not read whether this agent is signed in. Pick how to sign in.'],
+  ]
+  for (const [status, lead] of cases) {
+    const h = harness({ status })
+    await loginVia(h, RECIP_CHAT, WS_GRANTED_LOGIN)
+    assert.equal(h.sent.length, 1)
+    assert.equal(h.sent[0]!.text, `${lead}\n\n${RECIPIENT_SCOPE}\n\n${CONSOLE_NOTE}`)
+    assert.equal(h.sent[0]!.buttons?.length, 2, 'the method card')
+    assert.ok(!h.sent[0]!.text.includes('owner@example.com'), 'the account is still not named to a recipient')
+    assert.doesNotMatch(h.sent[0]!.text, /[\u2013\u2014]/)
+  }
+  // The owner's own offer, byte for byte as before.
+  const own = harness({ status: SIGNED_IN_MAX })
+  await loginVia(own, CHAT, WS_OWNER_LOGIN)
+  assert.equal(
+    own.sent[0]!.text,
+    `This agent is already signed in as owner@example.com (Claude Max). Sign in again anyway? Pick a method.\n\n${CONSOLE_NOTE}`,
+  )
+  const ownOut = harness()
+  await loginVia(ownOut, CHAT, WS_OWNER_LOGIN)
+  assert.equal(ownOut.sent[0]!.text, `This agent is not signed in. Pick how to sign in.\n\n${CONSOLE_NOTE}`)
+})
+
+test('a recipient\'s direct method, which posts no card, says it with the link; after a card the link is the owner\'s own text', async () => {
+  const direct = harness()
+  await loginVia(direct, RECIP_CHAT, WS_GRANTED_LOGIN, 'console')
+  assert.equal(direct.sent.length, 0, 'no card for a direct method')
+  direct.child.handlers.onStdout(MEASURED_STDOUT)
+  await settle()
+  assert.equal(direct.sent.length, 1)
+  assert.equal(direct.sent[0]!.chatId, RECIP_CHAT)
+  assert.equal(direct.sent[0]!.text, `${RECIPIENT_SCOPE}\n\n${LINK_TEXT}`)
+  // After the card, which already said it, the link is not wordier.
+  const carded = harness()
+  await recipientToAwaitingCode(carded)
+  assert.equal(carded.sent[carded.sent.length - 1]!.text, LINK_TEXT)
+  // The owner, directly or after the card: as before.
+  const ownDirect = harness()
+  await loginVia(ownDirect, CHAT, WS_OWNER_LOGIN, 'console')
+  ownDirect.child.handlers.onStdout(MEASURED_STDOUT)
+  await settle()
+  assert.equal(ownDirect.sent[ownDirect.sent.length - 1]!.text, LINK_TEXT)
+  const own = harness()
+  await toAwaitingCode(own)
+  assert.equal(own.sent[own.sent.length - 1]!.text, LINK_TEXT)
+})
+
+test('a recipient\'s success reply names the account they signed in and says the owner\'s agent now runs on it; the owner\'s is unchanged', async () => {
+  const h = harness({ status: SIGNED_IN_MAX })
+  await recipientToAwaitingCode(h)
+  assert.equal(recipientSays(h, CODE, 160), 'consumed')
+  h.child.handlers.onExit(0)
+  await settle()
+  const last = h.sent[h.sent.length - 1]!
+  assert.equal(last.chatId, RECIP_CHAT)
+  assert.equal(
+    last.text,
+    "Signed in as owner@example.com (Claude Max). This agent's owner now runs it on that account too. If the agent still says it is logged out, ask its owner to restart it.",
+  )
+  // A Console sign-in by a recipient keeps the subscription warning.
+  const consoleIn = harness({ status: { loggedIn: true, authMethod: 'console', email: 'r@example.com', subscriptionType: null } })
+  await recipientToAwaitingCode(consoleIn)
+  recipientSays(consoleIn, CODE, 161)
+  consoleIn.child.handlers.onExit(0)
+  await settle()
+  assert.match(consoleIn.sent[consoleIn.sent.length - 1]!.text, /^Signed in as r@example\.com[\s\S]*now runs it on that account too[\s\S]*not a Claude subscription sign-in/)
+  // The owner's reply, byte for byte as before.
+  const own = harness({ status: SIGNED_IN_MAX })
+  await toAwaitingCode(own)
+  ownerCode(own)
+  own.child.handlers.onExit(0)
+  await settle()
+  assert.equal(
+    own.sent[own.sent.length - 1]!.text,
+    'Signed in as owner@example.com (Claude Max). If the agent still says it is logged out, restart it.',
+  )
+})
+
+test('the bare code rule covers an allowed recipient too, never a recipient without the grant', async () => {
+  assert.equal(carriesSignInCode(CODE, { fromLoginRecipient: true }), true, 'withhold more, never less')
+  assert.equal(carriesSignInCode(CODE, {}), false)
+  const fresh = harness()
+  assert.equal(recipientSays(fresh, CODE, 150), 'withheld', 'no sign-in at all: a bare code from an allowed recipient')
+  assert.equal(recipientSays(fresh, CODE, 151, { senderMayLogin: undefined }), 'not_mine', 'a stranger is still not sieved on shape')
+})
+
+test('the reducer binds the code and the cancel to the starter, purely', () => {
+  const awaiting = {
+    ...INITIAL_LOGIN_STATE,
+    phase: 'awaiting_code' as const,
+    chatId: RECIP_CHAT,
+    starterUserId: RECIPIENT,
+    attempt: 1,
+    expectedState: STATE,
+  }
+  const notStarter = reduceLogin(awaiting, { type: 'message', chatId: RECIP_CHAT, text: CODE, fromStarter: false, isSlash: false, nowMs: 0 })
+  assert.equal(notStarter.message, 'not_mine')
+  assert.deepEqual(notStarter.effects, [])
+  const starter = reduceLogin(awaiting, { type: 'message', chatId: RECIP_CHAT, text: CODE, fromStarter: true, isSlash: false, nowMs: 0 })
+  assert.equal(starter.message, 'consumed')
+  assert.deepEqual(starter.effects.map((e) => e.kind), ['write_code'])
+  const stranger = reduceLogin(awaiting, { type: 'cancel', chatId: OTHER_CHAT, byUserId: OTHER, byOwner: false })
+  assert.equal(stranger.state.phase, 'awaiting_code', 'a stranger cancels nothing')
+  assert.ok(!stranger.effects.some((e) => e.kind === 'kill' || e.kind === 'cancelled'))
+  for (const [label, event] of [
+    ['the starter', { type: 'cancel', chatId: RECIP_CHAT, byUserId: RECIPIENT, byOwner: false }],
+    ['the owner', { type: 'cancel', chatId: CHAT, byUserId: OWNER, byOwner: true }],
+  ] as const) {
+    const t = reduceLogin(awaiting, event)
+    assert.equal(t.state.phase, 'idle', label)
+    assert.deepEqual(t.effects.map((e) => e.kind), ['kill', 'cancelled'], label)
+  }
+  const busy = reduceLogin(awaiting, { type: 'open', chatId: OTHER_CHAT, starterUserId: OTHER, byOwner: false, nowMs: 0 })
+  assert.equal(busy.state.starterUserId, RECIPIENT, 'a second /login never rebinds the running one')
 })
 
 // ── routing: never the model ─────────────────────────────────────────────────
@@ -1136,4 +1766,29 @@ test('the stream rail, run: the owner code goes to the sign-in child and is NOT 
   assert.equal(rail.notifications.length, 1, 'the re-pasted code must not reach the model')
   assert.equal(rail.privateDeliveries.length, 1, 'the re-pasted code must not create a model delivery')
   assertNoSecrets(rail.logs, 'stream rail logs after the re-paste')
+})
+
+test('the stream rail, run: an allowed recipient\'s code goes to the child they started and is NOT forwarded; the owner\'s is withheld', async () => {
+  const h = harness()
+  await recipientToAwaitingCode(h)
+  const rail = streamRail(h.controller)
+  // The hydrated row of a share recipient's message, carrying the grant.
+  const recipientRaw = { sender_user_id: RECIPIENT, sender_relationship: 'shared_recipient', senderMayLogin: MAY_LOGIN }
+  // The owner pasting the code into the recipient's chat: not theirs to complete.
+  await rail.forward({ ...streamView(CODE, 401), chatId: RECIP_CHAT }, false)
+  assert.equal(rail.notifications.length, 0, "the owner's paste is not forwarded")
+  assert.deepEqual(h.child.writes, [], 'and not written: the sign-in belongs to whoever started it')
+  // The recipient, revoked: the row no longer carries the field.
+  await rail.forward(
+    { ...streamView(CODE, 402, { sender_user_id: RECIPIENT, sender_relationship: 'shared_recipient' }), chatId: RECIP_CHAT },
+    false,
+  )
+  assert.equal(rail.notifications.length, 0)
+  assert.deepEqual(h.child.writes, [])
+  // The starter, still allowed.
+  await rail.forward({ ...streamView(CODE, 403, recipientRaw), chatId: RECIP_CHAT }, false)
+  assert.equal(rail.notifications.length, 0, 'the code must not reach the model')
+  assert.equal(rail.privateDeliveries.length, 0)
+  assert.deepEqual(h.child.writes, [`${CODE}\n`], 'it went to the child instead, once')
+  assertNoSecrets(rail.logs, 'stream rail logs')
 })

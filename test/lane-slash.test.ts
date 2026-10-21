@@ -7,6 +7,9 @@
  *     (the memory folder is not touched) and tells the person; `/model x`
  *     only for a model on the owner's list (K7), else nothing changes and
  *     the person is told.
+ *   - `/login`, picked or typed, is the lane daemon's too and never the
+ *     model's, and the lane catalog does not list it (what the daemon does
+ *     with it: test/lane-login-command.test.ts).
  *   - Every other command resolves against the LANE catalog only: the
  *     owner's `~/.claude/commands` are never read for a lane, so a name only
  *     the owner has is answered as unavailable, with no body.
@@ -68,8 +71,28 @@ test('/new, /model x and /effort x are the daemon\'s; /model and /effort alone a
   assert.deepEqual(routeLaneSlash({ text: '/new' }), { kind: 'new', commandArgs: '' })
   assert.deepEqual(routeLaneSlash({ text: '  /model opus ' }), { kind: 'model', commandArgs: 'opus' })
   assert.deepEqual(routeLaneSlash({ text: 'please /new' }), { kind: 'not_slash' })
-  assert.deepEqual(routeLaneSlash({ text: '/help' }), { kind: 'not_slash' }, 'plain text other than the three is a turn')
+  assert.deepEqual(routeLaneSlash({ text: '/help' }), { kind: 'not_slash' }, 'plain text other than the daemon\'s own is a turn')
   assert.deepEqual(routeLaneSlash({ text: 'hello' }), { kind: 'not_slash' })
+})
+
+test('/login is the daemon\'s too, picked or typed, never the model\'s, and is not in the lane catalog', () => {
+  // Picked: the app's picker shows the owner's catalog, which lists /login.
+  assert.deepEqual(routeLaneSlash(slash('login')), { kind: 'login', commandArgs: '' })
+  assert.deepEqual(routeLaneSlash(slash('login', 'console')), { kind: 'login', commandArgs: 'console' })
+  assert.deepEqual(routeLaneSlash({ message_type: 'slash_command', command_name: 'Login', command_args: ' cancel ', text: '/login cancel' }), { kind: 'login', commandArgs: 'cancel' })
+  // Typed as plain text.
+  assert.deepEqual(routeLaneSlash({ text: '/login' }), { kind: 'login', commandArgs: '' })
+  assert.deepEqual(routeLaneSlash({ text: '  /login console ' }), { kind: 'login', commandArgs: 'console' })
+  // Anything else stays what it was.
+  assert.deepEqual(routeLaneSlash({ text: '/loginx' }), { kind: 'not_slash' })
+  assert.deepEqual(routeLaneSlash({ text: 'please /login' }), { kind: 'not_slash' })
+  assert.deepEqual(routeLaneSlash({ text: 'how do I /login?' }), { kind: 'not_slash' })
+  const near = routeLaneSlash(slash('loginx'))
+  assert.equal(near.kind, 'directive')
+  if (near.kind === 'directive') assert.equal(near.delivery.registeredCommand, null, '/loginx is unavailable, not /login')
+  // Not advertised: a lane cannot sign anyone in, so the catalog never offers it.
+  assert.equal(LANE_COMMAND_REGISTRY.has('login'), false)
+  assert.ok(!LANE_COMMANDS.some((c) => c.command === '/login'))
 })
 
 test('the owner\'s commands never reach a lane: a name only the owner has is unavailable, with no body', () => {
@@ -79,7 +102,8 @@ test('the owner\'s commands never reach a lane: a name only the owner has is una
   assert.equal(route.delivery.registeredCommand, null)
   assert.match(route.delivery.content, /No matching command is registered/)
   assert.doesNotMatch(route.delivery.content, /registered_command_instructions/)
-  for (const owner of ['init', 'mcp', 'agents', 'doctor', 'plan', 'compact', 'login', 'status']) {
+  // /login is not among them: the lane daemon answers it itself (test below).
+  for (const owner of ['init', 'mcp', 'agents', 'doctor', 'plan', 'compact', 'status']) {
     const r = routeLaneSlash(slash(owner))
     assert.equal(r.kind === 'directive' && r.delivery.registeredCommand, null, `/${owner} is not a lane command`)
   }

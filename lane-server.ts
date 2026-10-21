@@ -28,9 +28,13 @@
  *      folder (`memory_rpc` stamped for this lane, `lane_memory_rpc` declared
  *      in its handshake, the echo on every answer, a write at most once per
  *      rpcId across processes); performs `/new`, `/model x` and `/effort x`
- *      itself (a restart request for the supervisor) and hands every other
- *      command to the model from the LANE catalog only, never the owner's
- *      command folders; reports its model and effort with its lane session;
+ *      itself (a restart request for the supervisor), answers `/login`
+ *      itself with the fixed sentence for its login mode and for whether
+ *      that message carried the owner's /login grant (it signs nothing in:
+ *      it can neither post a sign in link nor take a code), and hands
+ *      every other command to the model from the LANE catalog only, never
+ *      the owner's command folders; reports its model and effort with its
+ *      lane session;
  *   7. (P7) watches the share's policy (`lane_policy_changed`, every heartbeat
  *      answer, and `lanes/me` at boot) against the policy its Claude was
  *      launched with: tighter restarts the lane at once (a turn in flight is
@@ -117,6 +121,7 @@ import {
   type StoredLaneSession,
 } from './lib/lane-daemon.ts'
 import { ClaudeLoginWatcher } from './lib/claude-login.ts'
+import { carriesLoginGrant } from './lib/daemon-command-sender.ts'
 import { getFileCategory, guessOutboundMime, unsupportedFileMessage } from './lib/message-text.ts'
 import { mcpServerInfo } from './lib/mcp-server-info.ts'
 import { readOwnVersion } from './lib/version-heartbeat.ts'
@@ -517,9 +522,12 @@ async function deliverRaw(raw: unknown, transport: 'lane-socket' | 'lane-poll', 
   // can never both hand it over (0.71.2).
   if (!claims.take(inbox, d.messageId, { reoffer: opts.reoffer === true })) return
   // P5: the lane's own commands. Only the LANE catalog is consulted, never a
-  // command folder on this computer.
+  // command folder on this computer. `/login` is the daemon's as well: the
+  // person is told which sign in this lane uses, and nothing is signed in.
+  // Whether THIS delivery carried the owner's /login grant chooses only the
+  // sentence (a person the owner allowed is told it does not apply here).
   const route = routeLaneSlash(d.raw as Record<string, unknown>)
-  if ((route.kind === 'new') || ((route.kind === 'model' || route.kind === 'effort') && route.commandArgs !== '')) {
+  if ((route.kind === 'new') || (route.kind === 'login') || ((route.kind === 'model' || route.kind === 'effort') && route.commandArgs !== '')) {
     inbox = inboxNoteHandled(inbox, d)
     if (route.kind === 'new') {
       // The new conversation starts empty: no turn of the old one is re-offered.
@@ -534,7 +542,11 @@ async function deliverRaw(raw: unknown, transport: 'lane-socket' | 'lane-poll', 
     saveInbox()
     deliveredChats.add(d.chatId)
     await ackDelivery(d.messageId)
-    performLaneCommand({ kind: route.kind, commandArgs: route.commandArgs }, d.chatId, CONTROL_DEPS)
+    performLaneCommand(
+      { kind: route.kind, commandArgs: route.commandArgs, granted: route.kind === 'login' && carriesLoginGrant(d.raw) },
+      d.chatId,
+      CONTROL_DEPS,
+    )
     return
   }
   inbox = inboxNoteDelivered(inbox, d)
@@ -581,7 +593,7 @@ function requestRestart(next: RestartAsk): void {
   }
 }
 
-const CONTROL_DEPS = { paths: PATHS, notice, requestRestart, log }
+const CONTROL_DEPS = { paths: PATHS, notice, requestRestart, log, loginMode: CFG.loginMode }
 
 /**
  * The lane's model and effort, reported with its lane session on the chat
@@ -736,12 +748,12 @@ async function readHistory(path: string, messageId: number): Promise<unknown> {
  * answered when the server shows it acknowledged (an agent picked it up) AND
  * either an agent answered it after (an agent row that is not one of the
  * lane's fixed notices: the backend's reply hook acks for those too) or it is
- * a command the lane performs itself (`/new`, `/model x`, `/effort x`), so an
- * acknowledged one is not performed twice. A row whose state the server
- * cannot give is offered as before; an acknowledged row whose answer it
- * cannot give is kept out, never re-answered. Two reads per row at most,
- * rows in parallel: at most 30 s in all, only when the route fails or hangs,
- * and a refusal here never ends the lane.
+ * a command the lane performs itself (`/new`, `/model x`, `/effort x`,
+ * `/login`), so an acknowledged one is not performed twice. A row whose
+ * state the server cannot give is offered as before; an acknowledged row
+ * whose answer it cannot give is kept out, never re-answered. Two reads per
+ * row at most, rows in parallel: at most 30 s in all, only when the route
+ * fails or hangs, and a refusal here never ends the lane.
  */
 async function answeredAtServer(backlog: LaneDelivery[]): Promise<{ answered: Set<number>; unsure: Set<number>; newFrom: number }> {
   const answered = new Set<number>()
@@ -753,7 +765,7 @@ async function answeredAtServer(backlog: LaneDelivery[]): Promise<{ answered: Se
     if (page === undefined) return
     if (laneHistoryDeliveryState(page, d.messageId) !== LANE_SERVER_ACKNOWLEDGED) return
     const route = routeLaneSlash(d.raw as Record<string, unknown>)
-    if (route.kind === 'new' || ((route.kind === 'model' || route.kind === 'effort') && route.commandArgs !== '')) {
+    if (route.kind === 'new' || route.kind === 'login' || ((route.kind === 'model' || route.kind === 'effort') && route.commandArgs !== '')) {
       answered.add(d.messageId)
       if (route.kind === 'new') newFrom = Math.max(newFrom, d.messageId)
       return
