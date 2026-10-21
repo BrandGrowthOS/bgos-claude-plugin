@@ -10,7 +10,7 @@ Use the operating system's supported keyring setup and unlock flow. A fresh head
 
 Secret Service defines a D-Bus interface, not a guarantee about an implementation's disk encryption. The configured provider and machine operator remain trusted. The isolated qualification uses GNOME Keyring 48 with a nonempty synthetic unlock passphrase and verifies persistence across actual daemon restarts. It does not provision the installed agent's service. See the [Secret Service specification](https://specifications.freedesktop.org/secret-service/latest/) and [GNOME Keyring 48 daemon manual](https://github.com/GNOME/gnome-keyring/blob/48.0/docs/gnome-keyring-daemon.xml).
 
-The companion provider currently supports Linux. Other platforms report manual unlock required. This does not describe the separate desktop application's native OS key storage support.
+The companion key provider supports Linux Secret Service and the macOS login Keychain (a generic password item written by `security -i` with the key on stdin, after an `osascript` status probe that cannot prompt; a locked keychain reports unlock required). Other platforms report manual unlock required. The managed runtime itself still needs Linux: its process exit proof reads `/proc`. This does not describe the separate desktop application's native OS key storage support.
 
 ## Host integration contract
 

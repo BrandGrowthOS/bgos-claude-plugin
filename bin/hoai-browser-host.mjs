@@ -3100,7 +3100,7 @@ export async function main({
   const loadBrowserTools = async () => servedBrowserTools(await listTools({ caps: DEFAULT_CAPS, outputDir: join(agentRoot, 'browser-host') }))
   if (check) {
     log('managed profiles: explicit recipient device review, separate background grant and session confirmation are required; no profile is invented by installation')
-    log(process.platform === 'linux' ? 'managed profile keys: require an unlocked persistent Secret Service collection, /usr/bin/gdbus and /usr/bin/secret-tool; this read-only check does not unlock it' : 'managed profiles: Linux Secret Service setup is required on the agent machine; no plaintext or alternate key-store fallback is used')
+    log(process.platform === 'linux' ? 'managed profile keys: require an unlocked persistent Secret Service collection, /usr/bin/gdbus and /usr/bin/secret-tool; this read-only check does not unlock it' : process.platform === 'darwin' ? 'managed profile keys: require an unlocked login keychain, /usr/bin/security and /usr/bin/osascript; this read-only check does not unlock it. The managed runtime itself still needs Linux (its process exit proof reads /proc)' : 'managed profiles: Linux Secret Service setup is required on the agent machine; no plaintext or alternate key-store fallback is used')
     log(`tools: ${SESSION_TOOLS.length} session tools and ${(await loadBrowserTools()).length} browser_ tools`)
     try {
         const readiness = browserBootstrapReadiness()
