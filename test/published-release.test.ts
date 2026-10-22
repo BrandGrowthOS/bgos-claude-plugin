@@ -145,3 +145,19 @@ test('the watcher refuses a published tag whose package.json carries another ver
   assert.equal(observed.latestVersion, null)
   assert.ok(logs.some((line) => line.includes('v0.28.0 carries package.json version 0.27.0')), logs.join('\n'))
 })
+
+test('the watcher fetches nothing when the published release is not newer than the clone', async () => {
+  const o = releaseOrigin('watcher-ahead-')
+  o.tag('v0.27.0', o.commit('0.27.0', 'release 0.27.0'))
+  o.commit('0.27.0', 'merged after the release')
+  const clone = o.clone({ shallow: true })
+  const objectsBefore = git(clone, 'count-objects', '-v')
+  const observed = await observeCloneInstall({ pluginRoot: clone, exec: nodeExec(), fs: nodeFs(), readPublishedTag: async () => 'v0.27.0' })
+  assert.equal(observed.latestVersion, '0.27.0')
+  assert.equal(observed.currentVersion, '0.27.0')
+  assert.equal(observed.targetCommit, null)
+  assert.equal(observed.canFastForward, false)
+  // The tag sits behind the shallow boundary; fetching it would have pulled its whole history for a not-newer.
+  assert.equal(git(clone, 'tag', '--list', 'v0.27.0'), '')
+  assert.equal(git(clone, 'count-objects', '-v'), objectsBefore)
+})

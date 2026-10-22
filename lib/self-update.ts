@@ -790,6 +790,8 @@ export type GitUpdateInspection =
   | {
       kind: 'checked'
       currentCommit: string
+      /** The published release tag's commit, or currentCommit when no update
+       *  is due (nothing is fetched then, and nothing acts on it). */
       targetCommit: string
       /** The published release tag the target commit was resolved from. */
       releaseTag: string
@@ -838,16 +840,28 @@ export async function inspectGitUpdate(opts: {
   const releaseTag = await (opts.readPublishedTag ?? (() => readPublishedReleaseTag()))()
   const releaseVersion = releaseTagVersion(releaseTag)
   if (releaseVersion === null) throw new Error(`the published release is not a release tag: ${String(releaseTag)}`)
+  const currentCommit = await git(runner, opts.rootDir, ['rev-parse', 'HEAD'])
+  if (!SHA_RE.test(currentCommit)) throw new Error('git returned an invalid commit id')
+  const releaseDecision = decideVersionUpdate(opts.runningVersion, releaseVersion)
+  if (releaseDecision.kind !== 'update') {
+    // Nothing to move to, so nothing to fetch. A depth 1 clone already at or
+    // past the release (the fleet, after following main) would otherwise pull
+    // the tag's whole history beyond its shallow boundary for a not-newer.
+    return {
+      kind: 'checked',
+      currentCommit,
+      targetCommit: currentCommit,
+      releaseTag,
+      latestVersion: releaseVersion,
+      versionDecision: releaseDecision,
+      canFastForward: false,
+    }
+  }
   // Only that one tag, and no tag auto-following: a depth 1 clone that fetched
   // every tag would pull the history of all of them.
   await git(runner, opts.rootDir, ['fetch', '--quiet', '--no-tags', 'origin', releaseTagRefspec(releaseTag)])
-  const [currentCommit, targetCommit] = await Promise.all([
-    git(runner, opts.rootDir, ['rev-parse', 'HEAD']),
-    git(runner, opts.rootDir, ['rev-parse', `refs/tags/${releaseTag}^{commit}`]),
-  ])
-  if (!SHA_RE.test(currentCommit) || !SHA_RE.test(targetCommit)) {
-    throw new Error('git returned an invalid commit id')
-  }
+  const targetCommit = await git(runner, opts.rootDir, ['rev-parse', `refs/tags/${releaseTag}^{commit}`])
+  if (!SHA_RE.test(targetCommit)) throw new Error('git returned an invalid commit id')
   const rawPackage = await git(runner, opts.rootDir, ['show', `${targetCommit}:package.json`])
   const latestVersion = packageVersion(rawPackage)
   if (latestVersion !== releaseVersion) {

@@ -18,6 +18,7 @@ import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
+import { buildRunPlan } from '../bin/hoai-core.mjs'
 import { ensureHookEntries } from '../lib/claude-preseed.mjs'
 import * as cloneHooks from '../lib/clone-hooks.mjs'
 import { privateHookPresence } from '../lib/private-hook-presence'
@@ -205,4 +206,39 @@ test('a folder `hoai run` wrote through another spelling of this checkout is alr
     .map((hook) => hook.args?.[0] ?? '')
     .filter((arg) => arg.endsWith('hoai-hook.mjs'))
   assert.ok(forwarders.length > 0 && forwarders.every((arg) => arg === FORWARDER), forwarders.join(', '))
+})
+
+test('a workspace that starts the daemon through the stable wrapper (bgos-claim, bgos-agent) is this checkout\'s clone too', () => {
+  assert.equal(typeof atBoot, 'function', NO_BOOT)
+  // bin/bgos-claim.mjs buildMcpJson and bin/bgos-agent write_mcp_json: no server.ts in the args, the checkout is --plugin-dir.
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'clone-hooks-boot-wrapper-')))
+  const wrapper = { mcpServers: { bgos: { command: 'bun', args: ['/home/kc/.bgos-agent/runtime/bgos-daemon-wrapper.mjs', '--plugin-dir', repoRoot], env: { BGOS_ASSISTANT_ID: '7' } } } }
+  writeFileSync(join(dir, '.mcp.json'), JSON.stringify(wrapper))
+  assert.equal(cloneHooks.workspaceNamesThisClone({ workdir: dir, pluginDir: repoRoot }), true)
+  const boot = atBoot({ folders: [dir], pluginDir: repoRoot, installMethod: 'clone', privateHookRegistered: false })
+  assert.deepEqual(boot.results.map((r: { outcome: string }) => r.outcome), ['registered'])
+  assert.match(JSON.stringify(hooksOf(dir).UserPromptSubmit), /hoai-private-turn-hook\.mjs/)
+  // Another checkout as --plugin-dir is not ours.
+  const other = realpathSync(mkdtempSync(join(tmpdir(), 'clone-hooks-boot-wrapper-other-')))
+  writeFileSync(join(other, '.mcp.json'), JSON.stringify({ mcpServers: { bgos: { command: 'bun', args: ['/w.mjs', '--plugin-dir', other] } } }))
+  assert.equal(cloneHooks.workspaceNamesThisClone({ workdir: other, pluginDir: repoRoot }), false)
+})
+
+test('`hoai run` from ANOTHER checkout registers the hooks of the checkout the folder serves, so a boot finds them current', () => {
+  assert.equal(typeof atBoot, 'function', NO_BOOT)
+  // hoai's own checkout (its bin, with a forwarder) differs from the one the folder's .mcp.json starts (this repo).
+  const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), 'clone-hooks-boot-hoai-elsewhere-')))
+  mkdirSync(join(elsewhere, 'bin'))
+  copyFileSync(FORWARDER, join(elsewhere, 'bin', 'hoai-hook.mjs'))
+  const dir = workspace()
+  // The folder publishes its channel and identity, as a real agent folder does.
+  writeFileSync(join(dir, '.mcp.json'), JSON.stringify({ mcpServers: { bgos: { command: 'bun', args: [join(repoRoot, 'server.ts')], env: { BGOS_ASSISTANT_ID: '7' } } } }))
+  const plan = buildRunPlan({ cwd: dir, env: {}, home: realpathSync(mkdtempSync(join(tmpdir(), 'clone-hooks-boot-home-'))), scriptDir: join(elsewhere, 'bin') })
+  assert.ok(plan.ok, JSON.stringify(plan))
+  assert.equal(plan.hooks?.forwarderPath, FORWARDER, 'the forwarder of the checkout this folder serves, not hoai\'s own')
+  ensureHookEntries(plan.hooks!)
+  const launched = settingsText(dir)
+  const boot = atBoot({ folders: [dir], pluginDir: repoRoot, installMethod: 'clone', privateHookRegistered: true })
+  assert.deepEqual(boot.results.map((r: { outcome: string }) => r.outcome), ['already'])
+  assert.equal(settingsText(dir), launched)
 })

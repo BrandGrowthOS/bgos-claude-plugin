@@ -13,7 +13,7 @@
  *
  * Run: bun test test/self-update.published-release.test.ts
  */
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, setDefaultTimeout, test } from 'bun:test'
 import { mkdtempSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -22,6 +22,9 @@ import { initializeSelfUpdater, runCommand, type CommandRunner } from '../lib/se
 import { git, releaseOrigin } from './helpers/release-origin'
 
 const IDLE = { activeOperations: 0, pendingMessages: 0, pendingPermissions: 0 }
+
+// Real git: dozens of git processes per test, several times slower on the Windows runner than bun's 5 s default.
+setDefaultTimeout(120_000)
 
 /** A daemon's updater on `clone`, running `running`, with the marketplace publishing whatever `published` says. */
 async function updaterFor(clone: string, opts: { running: string; published: () => string; logs?: string[] }) {
@@ -117,6 +120,23 @@ describe('a clone updates to exactly the published release (board row 84c23fab)'
     expect(head(clone)).toBe(ahead)
     await updater.checkNow()
     expect(head(clone)).toBe(ahead)
+  })
+
+  test('a depth 1 clone already past the release fetches nothing for its not-newer answer', async () => {
+    const o = releaseOrigin()
+    o.tag('v0.27.0', o.commit('0.27.0', 'release 0.27.0'))
+    o.commit('0.27.0', 'merged after the release')
+    const ahead = o.commit('0.27.0', 'merged after the release, again')
+    const clone = o.clone({ shallow: true })
+    const objectsBefore = git(clone, 'count-objects', '-v')
+
+    const updater = await updaterFor(clone, { running: '0.27.0', published: () => 'v0.27.0' })
+    expect(await updater.updateNow(noStages)).toEqual({ kind: 'no-update', latestVersion: '0.27.0', reason: 'not-newer' })
+    expect(updater.latestKnownVersion).toBe('0.27.0')
+    expect(head(clone)).toBe(ahead)
+    // The release tag sits behind the shallow boundary; fetching it would have pulled its whole history.
+    expect(git(clone, 'tag', '--list', 'v0.27.0')).toBe('')
+    expect(git(clone, 'count-objects', '-v')).toBe(objectsBefore)
   })
 
   test('a developer checkout with its own commits past the release is never moved, forward or back', async () => {

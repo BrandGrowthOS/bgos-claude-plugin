@@ -177,11 +177,11 @@ export function floorBootLine(presence: FloorHookPresence, authMode: 'pairing' |
       'is not held for the owner, and the agent is not told a hook stops one. ' +
       (presence.registered
         ? 'Pair the agent to get the floor'
-        : 'The floor needs a pairing and the hook: pair the agent, then relaunch through a launcher or run bgos-agent update')
+        : 'The floor needs a pairing and the hook: pair the agent, then relaunch through a launcher')
     )
   }
   return (
     `${hook}; the floor capability (${HARD_FLOOR_TOKEN}) is NOT declared, so the agent is not told ` +
-    'a hook stops a listed action. Relaunch through a launcher or run bgos-agent update to write it'
+    'a hook stops a listed action. Relaunch through a launcher to write it'
   )
 }

@@ -111,7 +111,14 @@ test('the daemon registers at EVERY boot of a clone, and the self-updater runs t
   assert.match(server, /registerCloneHooksAtBoot\(\{\n\s*folders: FLOOR_FOLDERS,\n\s*pluginDir: import\.meta\.dir,/)
   assert.match(server, /workspaceDirs: FLOOR_FOLDERS/)
   const updater = readFileSync(join(repoRoot, 'lib', 'self-update.ts'), 'utf8')
-  const install = updater.indexOf('await this.registerWorkspaceHooks()')
-  const triggered = updater.indexOf("if (mode === 'triggered') {", install)
-  assert.ok(install > 0 && triggered > install, 'registration sits after the install and before the restart branches')
+  // Every path that leaves the new checkout on disk registers before its restart branches: the installing daemon
+  // (anchored on its last log line, after the pull or the already-installed case) and the lock loser (board row
+  // f83db4b7). Each anchor is searched on its own, so one path's call cannot stand in for another's.
+  for (const anchor of ["this.opts.log('Auto-update was already installed by another daemon.')", 'this.recordInstalled(inspection.targetCommit, inspection.latestVersion!)\n        // The winner registered']) {
+    const at = updater.indexOf(anchor)
+    assert.ok(at > 0, `anchor moved: ${anchor}`)
+    const install = updater.indexOf('await this.registerWorkspaceHooks()', at)
+    const triggered = updater.indexOf("if (mode === 'triggered') {", at)
+    assert.ok(install > at && triggered > install, `registration sits after the install and before the restart branches (${anchor})`)
+  }
 })

@@ -62,11 +62,13 @@ const tempDirs: string[] = []
 // served by a fetch stub so no test here reaches the network. gitRunner below publishes the
 // version its fake origin's tag carries, so the two agree unless a test says otherwise.
 let publishedTag = 'v0.27.0'
+let manifestReads = 0
 const realFetch = globalThis.fetch
 beforeAll(() => {
   globalThis.fetch = (async (input: unknown) => {
     const url = String(input instanceof Request ? input.url : input)
     if (url !== PUBLISHED_MANIFEST_URL) throw new Error(`unexpected fetch in the self-update tests: ${url}`)
+    manifestReads += 1
     const manifest = {
       name: 'hoai',
       plugins: [{ name: 'hoai', source: { source: 'url', url: 'https://github.com/BrandGrowthOS/bgos-claude-plugin.git', ref: publishedTag } }],
@@ -822,6 +824,7 @@ describe('real git check in dry-run mode', () => {
 
   test('dirty inspection stops before fetching remote metadata', async () => {
     const calls: Array<{ file: string; args: readonly string[] }> = []
+    const readsBefore = manifestReads
     const result = await inspectGitUpdate({
       rootDir: tempDir('self-update-dirty-'),
       runningVersion: '0.26.0',
@@ -829,6 +832,21 @@ describe('real git check in dry-run mode', () => {
     })
     expect(result).toEqual({ kind: 'dirty-tree' })
     expect(calls).toHaveLength(1)
+    // Nothing over the network either: the published release is not even read.
+    expect(manifestReads).toBe(readsBefore)
+  })
+
+  test('a release that is not newer is read but nothing is fetched', async () => {
+    const calls: Array<{ file: string; args: readonly string[] }> = []
+    const readsBefore = manifestReads
+    const result = await inspectGitUpdate({
+      rootDir: tempDir('self-update-not-newer-'),
+      runningVersion: '0.27.0',
+      runner: gitRunner({ calls }),
+    })
+    expect(result).toMatchObject({ kind: 'checked', latestVersion: '0.27.0', versionDecision: { kind: 'skip', reason: 'not-newer' } })
+    expect(manifestReads).toBe(readsBefore + 1)
+    expect(calls.map((call) => call.args[0])).toEqual(['status', 'rev-parse'])
   })
 
   test('an untracked-only checkout is NOT dirty and the inspection proceeds', async () => {
@@ -2379,6 +2397,31 @@ describe('self-update registers the clone workspace hooks before the restart', (
     await updater!.checkNow()
     expect(events).toEqual(['exit'])
     expect(logs.some((line) => /could not register the agent hooks/.test(line))).toBe(true)
+  })
+
+  test('a one-click (triggered) install registers the workspace hooks after the merge and before it returns', async () => {
+    const { rootDir, stateFilePath, events, calls } = setup()
+    const base = gitRunner({ calls })
+    const runner: CommandRunner = async (file, args, opts) => {
+      if (file === 'node') {
+        events.push('register')
+        calls.push({ file, args: [...args] })
+        return { stdout: 'registered /work/agent\n', stderr: '' }
+      }
+      if (args[0] === 'merge') events.push('merge')
+      return base(file, args, opts)
+    }
+    const updater = await initializeSelfUpdater({
+      ...common,
+      rootDir,
+      stateFilePath,
+      env: { BGOS_AUTO_UPDATE: 'on' },
+      exit: () => events.push('exit'),
+      runner,
+      workspaceDirs: ['/work/agent'],
+    })
+    expect(await updater!.updateNow(async () => {})).toEqual({ kind: 'installed', targetVersion: '0.27.0' })
+    expect(events).toEqual(['merge', 'register'])
   })
 
   // Board row f83db4b7: N agents share one clone. When another daemon held the update lock and installed the
