@@ -14,9 +14,12 @@
  *                there the open follows a link), must be a regular single
  *                link file, and its fstat identity must be what a NO-FOLLOW
  *                lstat of the path finds after the open (a regular file, not
- *                a link), so a link swapped in is refused on every platform;
- *                the lexical <skill>/SKILL.md must be that file or a link
- *                that still resolves to it. It is read up to
+ *                a link), so a FILE link swapped in at SKILL.md is refused
+ *                on every platform; the lexical <skill>/SKILL.md must be
+ *                that file or a link that still resolves to it. A skill
+ *                FOLDER swapped for a folder link or junction after the
+ *                realpath check is still followed, but only to another
+ *                folder's SKILL.md; closing that needs openat. It is read up to
  *                SKILL_READ_MAX_BYTES. A file past that, binary or holding a
  *                secret is WITHHELD, never cut: no credential, whole or cut,
  *                leaves this computer (the export rule). `editable` is
@@ -379,9 +382,10 @@ export function readSkillFile(input: ReadSkillInput): ReadSkillAnswer {
   // the cap: a file past it is withheld whole and carries no hash. Where the
   // platform has O_NOFOLLOW (not win32) the open itself follows no link;
   // everywhere, the open file's identity must be what a NO-FOLLOW lstat finds
-  // at mdReal after the open, a regular file and not a link, so a link
-  // swapped in after the realpath check is refused on Windows too: a link's
-  // own identity is never its target's (finding H7). The lexical
+  // at mdReal after the open, a regular file and not a link, so a FILE link
+  // swapped in at SKILL.md after the realpath check is refused on Windows
+  // too: a link's own identity is never its target's (finding H7). A swapped
+  // FOLDER link is still followed (see the header). The lexical
   // <skill>/SKILL.md the list names must still be that file, or a link that
   // still resolves to it (a SKILL.md linked inside its folder reads, preview
   // only).
