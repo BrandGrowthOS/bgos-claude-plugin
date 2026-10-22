@@ -10,8 +10,13 @@
  *                an agent root that is the computer's) holds here too. Only
  *                the root and entry the path names are read for that
  *                (listedSkillAt), never the whole list. The file is opened
- *                without following a link, must be a regular single link file
- *                whose fstat identity is the path's, and is read up to
+ *                with O_NOFOLLOW where the platform has it (win32 has not, so
+ *                there the open follows a link), must be a regular single
+ *                link file, and its fstat identity must be what a NO-FOLLOW
+ *                lstat of the path finds after the open (a regular file, not
+ *                a link), so a link swapped in is refused on every platform;
+ *                the lexical <skill>/SKILL.md must be that file or a link
+ *                that still resolves to it. It is read up to
  *                SKILL_READ_MAX_BYTES. A file past that, binary or holding a
  *                secret is WITHHELD, never cut: no credential, whole or cut,
  *                leaves this computer (the export rule). `editable` is
@@ -113,7 +118,14 @@ export type SkillEditCode =
 
 export type SkillEditRefusal = { ok: false; code: SkillEditCode; message: string }
 
-export type ReadSkillInput = ListSkillsInput & { payload: Record<string, unknown> }
+export type ReadSkillInput = ListSkillsInput & {
+  payload: Record<string, unknown>
+  /**
+   * Where a test steps in to swap SKILL.md or what it leads to: after the
+   * realpath and inside checks, right before the open.
+   */
+  step?: (at: 'open') => void
+}
 export type ReadSkillAnswer =
   | {
       ok: true
@@ -211,7 +223,7 @@ type EditTargetRefusal = SkillEditRefusal & { block: 'scope' | 'linked' }
  * a real folder where the agent folder says it is, and SKILL.md a regular,
  * single link file that is not a link.
  */
-function editTarget(input: Omit<WriteSkillInput, 'trashDir' | 'now' | 'payload' | 'platform'>, rawPath: unknown): EditTarget | EditTargetRefusal {
+function editTarget(input: Omit<WriteSkillInput, 'trashDir' | 'now' | 'payload' | 'platform' | 'step' | 'rename'>, rawPath: unknown): EditTarget | EditTargetRefusal {
   const no = (code: SkillEditCode, message: string, block: 'scope' | 'linked' = 'scope'): EditTargetRefusal => ({
     ok: false,
     code,
@@ -359,16 +371,26 @@ export function readSkillFile(input: ReadSkillInput): ReadSkillAnswer {
   } catch {
     return refuse('not_found', 'that skill is not in the skills list')
   }
-  const mdReal = realOrNull(join(skillReal, 'SKILL.md'))
+  const mdLexical = join(resolve(expandHome(row.path, home)), 'SKILL.md')
+  const mdReal = realOrNull(mdLexical)
   if (!mdReal || !inside(mdReal, skillReal)) return refuse('not_found', 'that skill is not in the skills list')
 
-  // No link followed, a regular single link file, and the very file the path names.
-  // Never past the cap: a file past it is withheld whole and carries no hash.
+  // A regular single link file, and the very file the path names. Never past
+  // the cap: a file past it is withheld whole and carries no hash. Where the
+  // platform has O_NOFOLLOW (not win32) the open itself follows no link;
+  // everywhere, the open file's identity must be what a NO-FOLLOW lstat finds
+  // at mdReal after the open, a regular file and not a link, so a link
+  // swapped in after the realpath check is refused on Windows too: a link's
+  // own identity is never its target's (finding H7). The lexical
+  // <skill>/SKILL.md the list names must still be that file, or a link that
+  // still resolves to it (a SKILL.md linked inside its folder reads, preview
+  // only).
   const opened: { st?: Stats; id?: string } = {}
+  input.step?.('open')
   const head = readHead(mdReal, SKILL_READ_MAX_BYTES + 1, { stat: (st, id) => Object.assign(opened, { st, id }) })
   const st = opened.st
   const readId = opened.id
-  if (!head || !st || !readId || readId !== identOf(mdReal)) {
+  if (!head || !st || !readId || !namesOpenedFile(mdReal, mdLexical, readId)) {
     log(`skills: preview of ${rawPath} refused, its SKILL.md could not be read as the listed file`)
     return refuse('read_failed', 'the skill file could not be read')
   }
@@ -408,6 +430,31 @@ export function readSkillFile(input: ReadSkillInput): ReadSkillAnswer {
       ...(editBlock ? { editBlock } : {}),
     },
   }
+}
+
+/**
+ * Whether the file opened as `readId` is still what `mdReal` names with no
+ * link followed (a regular file, not a link, the same bigint identity), and
+ * the lexical SKILL.md is that same file or a link that still resolves to
+ * mdReal. Taken after the open, so a swap before it cannot pass.
+ */
+function namesOpenedFile(mdReal: string, mdLexical: string, readId: string): boolean {
+  const regularWithId = (path: string): string | null => {
+    try {
+      const st = lstatSync(path, { bigint: true })
+      return st.isSymbolicLink() || !st.isFile() ? null : idOf(st)
+    } catch {
+      return null
+    }
+  }
+  if (regularWithId(mdReal) !== readId) return false
+  if (mdLexical === mdReal) return true
+  try {
+    if (lstatSync(mdLexical, { bigint: true }).isSymbolicLink()) return realOrNull(mdLexical) === mdReal
+  } catch {
+    return false
+  }
+  return regularWithId(mdLexical) === readId
 }
 
 /** Why Edit is not offered for this file, or null when a write would take it. Computed live. */

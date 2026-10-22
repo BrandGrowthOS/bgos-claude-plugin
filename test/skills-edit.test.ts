@@ -28,6 +28,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
+import { createRequire, syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -101,9 +102,12 @@ function list(f: Fixture, agentDir: string | null = f.agent) {
   return listSkills({ agentDir, configDir: f.config, home: f.home, managedDir: f.managed })
 }
 
-function read(f: Fixture, payload: Record<string, unknown>, agentDir: string | null = f.agent) {
-  return readSkillFile({ agentDir, configDir: f.config, home: f.home, managedDir: f.managed, payload })
+function read(f: Fixture, payload: Record<string, unknown>, agentDir: string | null = f.agent, step?: (at: 'open') => void) {
+  return readSkillFile({ agentDir, configDir: f.config, home: f.home, managedDir: f.managed, payload, ...(step ? { step } : {}) })
 }
+
+/** node:fs as the lib sees it, so a test can stand in for one call (syncBuiltinESMExports). */
+const nodeFs = createRequire(import.meta.url)('node:fs') as typeof import('node:fs')
 
 function write(
   f: Fixture,
@@ -248,6 +252,71 @@ test('a SKILL.md link that leaves its skill folder is never read', { skip: fileS
     assert.equal(codeOf(answer), 'not_found')
     assert.ok(!JSON.stringify(answer).includes(LEAK))
   }
+})
+
+test('a SKILL.md swapped for a file link between the checks and the open is never read', { skip: fileSymlinkRefused }, () => {
+  const f = fixture()
+  const md = join(f.skills, 'agent-skill', 'SKILL.md')
+  const steps: string[] = []
+  const answer = read(f, { name: 'agent-skill', scope: 'agent', path: AGENT_PATH }, f.agent, (at) => {
+    steps.push(at)
+    renameSync(md, join(f.home, 'moved-aside.md'))
+    symlinkSync(join(f.home, 'secret.txt'), md, 'file')
+  })
+  assert.deepEqual(steps, ['open'])
+  assert.equal(codeOf(answer), 'read_failed')
+  assert.ok(!JSON.stringify(answer).includes(LEAK))
+})
+
+test('a SKILL.md opened through a link where no O_NOFOLLOW exists (win32) is never read', (t) => {
+  // Windows has no O_NOFOLLOW, so the open and a following stat both reach a
+  // link's target. Simulated on every platform through the fs the lib
+  // imports: from the open on, SKILL.md opens and stats as the secret file,
+  // while lstat still sees what sits at the path itself, as a link's own
+  // lstat would. A check against a following stat matches and leaks.
+  const f = fixture()
+  const md = join(f.skills, 'agent-skill', 'SKILL.md')
+  const secret = join(f.home, 'secret.txt')
+  const real = { openSync: nodeFs.openSync, statSync: nodeFs.statSync }
+  const restore = () => {
+    ;(nodeFs as any).openSync = real.openSync
+    ;(nodeFs as any).statSync = real.statSync
+    syncBuiltinESMExports()
+  }
+  t.after(restore)
+  const steps: string[] = []
+  const answer = read(f, { name: 'agent-skill', scope: 'agent', path: AGENT_PATH }, f.agent, (at) => {
+    steps.push(at)
+    ;(nodeFs as any).openSync = (path: any, ...rest: any[]) => (real.openSync as any)(path === md ? secret : path, ...rest)
+    ;(nodeFs as any).statSync = (path: any, ...rest: any[]) => (real.statSync as any)(path === md ? secret : path, ...rest)
+    syncBuiltinESMExports()
+  })
+  restore()
+  assert.deepEqual(steps, ['open'])
+  assert.equal(codeOf(answer), 'read_failed')
+  assert.ok(!JSON.stringify(answer).includes(LEAK))
+  // and with nothing standing in, the same read answers the file
+  const plain = read(f, { name: 'agent-skill', scope: 'agent', path: AGENT_PATH })
+  assert.ok(plain.ok)
+  assert.equal(plain.payload.content, AGENT_SKILL)
+})
+
+test('a SKILL.md link repointed between the checks and the open is never read', { skip: fileSymlinkRefused }, () => {
+  // The path the list names is the lexical <skill>/SKILL.md; once it no
+  // longer leads to the file opened, the read is not of the listed file.
+  const f = fixture()
+  const dir = join(f.skills, 'md-link')
+  mkdirSync(dir)
+  writeFileSync(join(dir, 'real.md'), '---\nname: md-link\ndescription: Linked file.\n---\n')
+  symlinkSync(join(dir, 'real.md'), join(dir, 'SKILL.md'), 'file')
+  const payload = { name: 'md-link', scope: 'agent', path: '~/repo/agent/.claude/skills/md-link' }
+  assert.ok(read(f, payload).ok, 'a link inside its folder reads, preview only')
+  const answer = read(f, payload, f.agent, () => {
+    rmSync(join(dir, 'SKILL.md'))
+    symlinkSync(join(f.home, 'secret.txt'), join(dir, 'SKILL.md'), 'file')
+  })
+  assert.equal(codeOf(answer), 'read_failed')
+  assert.ok(!JSON.stringify(answer).includes(LEAK))
 })
 
 test('a file too large, binary or holding a secret is withheld whole, never cut', () => {
