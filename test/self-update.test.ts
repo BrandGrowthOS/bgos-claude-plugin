@@ -2350,6 +2350,60 @@ describe('self-update registers the clone workspace hooks before the restart', (
     expect(logs.some((line) => /could not register the agent hooks/.test(line))).toBe(true)
   })
 
+  // Board row f83db4b7: N agents share one clone. When another daemon held the update lock and installed the
+  // release, the WINNER registered its own folders only, and this daemon asked for its restart with nothing written
+  // for its own. Red at main: the loser path never ran the registrar.
+  for (const mode of ['scheduled', 'triggered'] as const) {
+    test(`a lock LOSER (${mode}) registers its own workspace folders before its restart`, async () => {
+      const { rootDir, stateFilePath, events, calls } = setup()
+      const lockPath = join(rootDir, '.git', 'bgos-auto-update.lock')
+      const sharedLock = tryAcquireUpdateLock(lockPath, 1_000)
+      expect(sharedLock.kind).toBe('acquired')
+      const base = gitRunner({ calls })
+      let revParseCalls = 0
+      const runner: CommandRunner = async (file, args, opts) => {
+        if (file === 'node') {
+          events.push('register')
+          calls.push({ file, args: [...args] })
+          return { stdout: 'registered /work/agent-2\n', stderr: '' }
+        }
+        if (args.join(' ') === 'rev-parse HEAD') {
+          revParseCalls += 1
+          // The inspection reads the old commit; once the holder is done, HEAD is the inspected target.
+          return { stdout: `${revParseCalls === 1 ? COMMIT_A : COMMIT_B}\n`, stderr: '' }
+        }
+        if (args[0] === 'merge') events.push('merge')
+        return base(file, args, opts)
+      }
+      const updater = await initializeSelfUpdater({
+        ...common,
+        rootDir,
+        stateFilePath,
+        env: { BGOS_AUTO_UPDATE: 'on' },
+        exit: () => events.push('exit'),
+        runner,
+        delay: async () => {
+          if (sharedLock.kind === 'acquired') sharedLock.release()
+        },
+        now: () => 1_001,
+        requestRestart: async () => {
+          events.push('restart')
+          return true
+        },
+        workspaceDirs: ['/work/agent-2'],
+      })
+      if (mode === 'scheduled') {
+        await updater!.checkNow()
+        expect(events).toEqual(['register', 'restart'])
+      } else {
+        expect(await updater!.updateNow(async () => {})).toEqual({ kind: 'installed', targetVersion: '0.27.0' })
+        expect(events).toEqual(['register'])
+      }
+      const register = calls.find((call) => call.file === 'node')!
+      expect(register.args.slice(1)).toEqual(['--plugin-dir', rootDir, '--workdir', '/work/agent-2'])
+    })
+  }
+
   test('a daemon with no workspace folders, or an update that did not land, runs no registration', async () => {
     const none = setup()
     const noneCalls: string[] = []

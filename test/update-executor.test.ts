@@ -1370,6 +1370,20 @@ test('clone: a failed merge rolls back with git checkout --detach <previous sha>
   assert.equal(result.installedVersion, '0.38.1')
 })
 
+test('clone: with no published release commit observed, the fast-forward refuses and never merges origin/main', async () => {
+  for (const targetCommit of [undefined, null, '', 'origin/main', 'v0.38.3']) {
+    const c = cloneWorld()
+    const plan = planMachine(c.state)
+    const { deps } = memDeps(c.world, {}, { git: c.git, pluginRoot: c.pluginRoot, clone: { targetCommit } })
+    const result = await executePlan(plan, deps)
+    assert.equal(stepView(result.steps)[1], 's02-git_fast_forward:failed:no_published_release', String(targetCommit))
+    assert.deepEqual(result.failedStep, { id: 's02-git_fast_forward', kind: 'git_fast_forward', message: 'fast_forward_failed:no_published_release' })
+    assert.ok(c.gitCalls.every((args) => args[0] !== 'merge' && args[0] !== 'fetch'), JSON.stringify(c.gitCalls))
+    assert.equal(c.currentHead(), 'a'.repeat(40))
+    assert.equal(result.installedVersion, '0.38.1')
+  }
+})
+
 // -- Observe, plan, execute, re-observe ---------------------------------------
 
 /** An observer over the in-memory world, the way the watcher would build one. */
