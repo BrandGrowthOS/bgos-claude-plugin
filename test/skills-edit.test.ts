@@ -301,6 +301,41 @@ test('a SKILL.md opened through a link where no O_NOFOLLOW exists (win32) is nev
   assert.equal(plain.payload.content, AGENT_SKILL)
 })
 
+test('a link followed at the open (win32) and a hard link put at SKILL.md after the fstat is never read', (t) => {
+  // The open follows a link to the secret file, readHead's fstat sees a
+  // single link file, and only then is a hard link to that file put at
+  // SKILL.md, so the no-follow lstat after the open finds a regular file
+  // with the opened identity. Its link count is what gives it away.
+  const f = fixture()
+  const md = join(f.skills, 'agent-skill', 'SKILL.md')
+  const secret = join(f.home, 'secret.txt')
+  const real = { openSync: nodeFs.openSync, fstatSync: nodeFs.fstatSync }
+  const restore = () => {
+    ;(nodeFs as any).openSync = real.openSync
+    ;(nodeFs as any).fstatSync = real.fstatSync
+    syncBuiltinESMExports()
+  }
+  t.after(restore)
+  let swapped = false
+  const answer = read(f, { name: 'agent-skill', scope: 'agent', path: AGENT_PATH }, f.agent, () => {
+    ;(nodeFs as any).openSync = (path: any, ...rest: any[]) => (real.openSync as any)(path === md ? secret : path, ...rest)
+    ;(nodeFs as any).fstatSync = (fd: any, ...rest: any[]) => {
+      const st = (real.fstatSync as any)(fd, ...rest)
+      if (!swapped) {
+        swapped = true
+        renameSync(md, join(f.home, 'moved-aside.md'))
+        linkSync(secret, md)
+      }
+      return st
+    }
+    syncBuiltinESMExports()
+  })
+  restore()
+  assert.ok(swapped)
+  assert.equal(codeOf(answer), 'read_failed')
+  assert.ok(!JSON.stringify(answer).includes(LEAK))
+})
+
 test('a SKILL.md link repointed between the checks and the open is never read', { skip: fileSymlinkRefused }, () => {
   // The path the list names is the lexical <skill>/SKILL.md; once it no
   // longer leads to the file opened, the read is not of the listed file.

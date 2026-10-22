@@ -440,13 +440,16 @@ export function readSkillFile(input: ReadSkillInput): ReadSkillAnswer {
  * Whether the file opened as `readId` is still what `mdReal` names with no
  * link followed (a regular file, not a link, the same bigint identity), and
  * the lexical SKILL.md is that same file or a link that still resolves to
- * mdReal. Taken after the open, so a swap before it cannot pass.
+ * mdReal. Taken after the open, so a swap before it cannot pass. Single
+ * link here too: on win32 an open that followed a link, then a hard link to
+ * its target put at the path after readHead's fstat, shows the opened
+ * identity on a regular file, but with two links.
  */
 function namesOpenedFile(mdReal: string, mdLexical: string, readId: string): boolean {
   const regularWithId = (path: string): string | null => {
     try {
       const st = lstatSync(path, { bigint: true })
-      return st.isSymbolicLink() || !st.isFile() ? null : idOf(st)
+      return st.isSymbolicLink() || !st.isFile() || st.nlink !== 1n ? null : idOf(st)
     } catch {
       return null
     }
