@@ -79,6 +79,7 @@ import { MemoryRpcHandler, memoryRpcFailure } from './lib/memory-rpc.js'
 import { SkillsRpcHandler, normalizeSkillsRpc } from './lib/skills-rpc.js'
 import { listSkills, managedSkillsDir, removeAgentSkill } from './lib/skills-inventory.js'
 import { exportSkill, installBundle } from './lib/skills-share.js'
+import { readSkillFile, writeAgentSkill } from './lib/skills-edit.js'
 import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
 import { collectChanges, createNodeRunGit, nodeChangesFs } from './lib/git-changes.js'
 import { defaultPidAlive, pluginStateDirFor, readBootClock } from './lib/agent-inventory.mjs'
@@ -13000,6 +13001,9 @@ const memoryRpc = new MemoryRpcHandler({
 // computer skill for the owner's Share sheet; install_bundle writes an
 // approved bundle into <agent folder>/.claude/skills/<name> and nowhere else,
 // so it too needs BGOS_LAUNCH_CWD and refuses without it.
+// Preview and edit (decision 8, lib/skills-edit.ts): read_skill answers one
+// listed SKILL.md whole for the owner's preview sheet; write_skill saves one
+// agent scope SKILL.md in place, the old bytes kept in the same trash.
 const SKILLS_AGENT_DIR: string | null = process.env.BGOS_LAUNCH_CWD?.trim() ? LAUNCH_CWD : null
 const SKILLS_MANAGED_DIR = managedSkillsDir(process.platform, process.env)
 const skillsTrashDir = (): string =>
@@ -13053,6 +13057,27 @@ const skillsRpc = new SkillsRpcHandler({
         now: () => Date.now(),
         payload,
         progress,
+        log,
+      }),
+    readSkill: (payload) =>
+      readSkillFile({
+        agentDir: SKILLS_AGENT_DIR,
+        configDir: CLAUDE_CONFIG_DIR,
+        home: homedir(),
+        managedDir: SKILLS_MANAGED_DIR,
+        payload,
+        log,
+      }),
+    writeSkill: (payload) =>
+      writeAgentSkill({
+        agentDir: SKILLS_AGENT_DIR,
+        configDir: CLAUDE_CONFIG_DIR,
+        home: homedir(),
+        managedDir: SKILLS_MANAGED_DIR,
+        trashDir: skillsTrashDir(),
+        platform: process.platform,
+        now: () => Date.now(),
+        payload,
         log,
       }),
   },

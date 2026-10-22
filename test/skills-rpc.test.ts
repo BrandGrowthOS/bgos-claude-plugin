@@ -317,3 +317,151 @@ test('an install that throws answers write_failed and frees its offerId', async 
   const codes = h.posts.filter((p) => p.kind === 'result').map((p) => (p.body.ok ? 'ok' : p.body.error.code))
   assert.deepEqual(codes, ['write_failed', 'ok'])
 })
+
+// ── Preview and edit (decision 8) ───────────────────────────────────────────
+
+function editHarness(opts: {
+  confirmed?: boolean
+  readSkill?: ((payload: Record<string, unknown>) => any) | null
+  writeSkill?: ((payload: Record<string, unknown>) => any) | null
+} = {}) {
+  const posts: Array<{ kind: string; rpcId: string; body?: any }> = []
+  const calls: Array<[string, Record<string, unknown>]> = []
+  const inventory: any = {
+    list: () => ({ skills: [] }),
+    remove: () => ({ ok: false, code: 'bad_request', message: 'no' }),
+  }
+  if (opts.readSkill !== null) {
+    inventory.readSkill = (payload: Record<string, unknown>) => {
+      calls.push(['readSkill', payload])
+      return opts.readSkill
+        ? opts.readSkill(payload)
+        : {
+            ok: true,
+            payload: {
+              scope: 'agent',
+              path: ROW.path,
+              name: 'agent-skill',
+              sha256: 'a'.repeat(64),
+              bytes: 5,
+              modifiedAt: '2026-10-21T00:00:00.000Z',
+              content: 'hello',
+              withheld: undefined,
+              editable: true,
+              editBlock: undefined,
+            },
+          }
+    }
+  }
+  if (opts.writeSkill !== null) {
+    inventory.writeSkill = (payload: Record<string, unknown>) => {
+      calls.push(['writeSkill', payload])
+      return opts.writeSkill
+        ? opts.writeSkill(payload)
+        : {
+            ok: true,
+            payload: {
+              scope: 'agent',
+              path: ROW.path,
+              name: 'agent-skill',
+              sha256: 'b'.repeat(64),
+              bytes: 6,
+              modifiedAt: '2026-10-21T00:00:01.000Z',
+            },
+          }
+    }
+  }
+  const handler = new SkillsRpcHandler({
+    inventory,
+    assistantId: () => '701',
+    homeConfirmed: () => opts.confirmed ?? true,
+    postAck: async (rpcId) => {
+      posts.push({ kind: 'ack', rpcId })
+    },
+    postResult: async (rpcId, body) => {
+      posts.push({ kind: 'result', rpcId, body })
+    },
+    log: () => {},
+  })
+  const result = () => posts.find((p) => p.kind === 'result')!.body
+  return { handler, posts, calls, result }
+}
+
+test('read_skill hands the payload to the reader and answers its payload, no null or undefined in it', async () => {
+  const h = editHarness()
+  const payload = { name: 'agent-skill', scope: 'agent', path: ROW.path }
+  await h.handler.handle(frame('read_skill', payload))
+  assert.deepEqual(h.calls, [['readSkill', payload]])
+  assert.deepEqual(h.result(), {
+    ok: true,
+    payload: {
+      scope: 'agent',
+      path: ROW.path,
+      name: 'agent-skill',
+      sha256: 'a'.repeat(64),
+      bytes: 5,
+      modifiedAt: '2026-10-21T00:00:00.000Z',
+      content: 'hello',
+      editable: true,
+    },
+  })
+})
+
+test('write_skill hands the payload to the writer and answers its payload', async () => {
+  const h = editHarness()
+  const payload = { name: 'agent-skill', scope: 'agent', path: ROW.path, content: 'x', expectSha256: 'a'.repeat(64) }
+  await h.handler.handle(frame('write_skill', payload))
+  assert.deepEqual(h.calls, [['writeSkill', payload]])
+  assert.equal(h.result().ok, true)
+  assert.equal(h.result().payload.sha256, 'b'.repeat(64))
+  const u = editHarness({
+    writeSkill: () => ({ ok: true, payload: { scope: 'agent', path: ROW.path, name: 'agent-skill', sha256: 'b'.repeat(64), bytes: 6, modifiedAt: 'x', unchanged: true } }),
+  })
+  await u.handler.handle(frame('write_skill', payload))
+  assert.equal(u.result().payload.unchanged, true)
+})
+
+test('a refused read or write keeps its code, changed_since_preview included', async () => {
+  const w = editHarness({ writeSkill: () => ({ ok: false, code: 'changed_since_preview', message: 'the skill changed on the computer since you opened it' }) })
+  await w.handler.handle(frame('write_skill', {}))
+  assert.deepEqual(w.result(), {
+    ok: false,
+    error: { code: 'changed_since_preview', message: 'the skill changed on the computer since you opened it' },
+  })
+  const r = editHarness({ readSkill: () => ({ ok: false, code: 'not_found', message: 'that skill is not in the list' }) })
+  await r.handler.handle(frame('read_skill', {}))
+  assert.equal(r.result().error.code, 'not_found')
+})
+
+test('a handler built without the edit ops answers them unsupported, never a timeout', async () => {
+  for (const op of ['read_skill', 'write_skill']) {
+    const h = editHarness({ readSkill: null, writeSkill: null })
+    await h.handler.handle(frame(op))
+    assert.equal(h.result().error.code, 'unsupported', op)
+    assert.deepEqual(h.calls, [])
+  }
+})
+
+test('nothing is previewed or saved before the home folder is confirmed', async () => {
+  for (const op of ['read_skill', 'write_skill']) {
+    const h = editHarness({ confirmed: false })
+    await h.handler.handle(frame(op, { name: 'agent-skill', scope: 'agent', path: ROW.path }))
+    assert.equal(h.result().error.code, 'unavailable', op)
+    assert.deepEqual(h.calls, [])
+  }
+})
+
+test('a throw from write_skill answers write_failed with the save message; from read_skill read_failed', async () => {
+  const w = editHarness({ writeSkill: () => { throw new Error(`EIO at /home/someone/.claude, boom`) } })
+  await w.handler.handle(frame('write_skill', {}))
+  assert.deepEqual(w.result(), {
+    ok: false,
+    error: { code: 'write_failed', message: 'the skill could not be saved on the agent host' },
+  })
+  const r = editHarness({ readSkill: () => { throw new Error('EIO') } })
+  await r.handler.handle(frame('read_skill', {}))
+  assert.deepEqual(r.result(), {
+    ok: false,
+    error: { code: 'read_failed', message: 'the skills could not be read on the agent host' },
+  })
+})

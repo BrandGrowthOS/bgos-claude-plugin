@@ -28,10 +28,16 @@
  *     which a re emit or a second Install tap carries under a NEW rpcId: a
  *     run in flight is joined, never started twice, and an installed offer
  *     is answered again from memory (after a restart, from disk).
+ *  9. Preview and edit (decision 8, lib/skills-edit.ts): read_skill answers
+ *     one listed SKILL.md whole, or says why it is withheld, with `editable`
+ *     computed live; write_skill saves one agent scope SKILL.md and answers
+ *     its new sha256, or `unchanged`. A handler built without them answers
+ *     unsupported, and a throw from write_skill answers write_failed.
  */
 
 import type { SkillRemoveAnswer, SkillsList } from './skills-inventory.ts'
 import type { ExportAnswer, InstallAnswer } from './skills-share.ts'
+import type { ReadSkillAnswer, WriteSkillAnswer } from './skills-edit.ts'
 
 export type SkillsRpcFrame = {
   rpcId: string
@@ -52,6 +58,8 @@ export type SkillsRpcInventory = {
     payload: Record<string, unknown>,
     progress: (stage: 'verifying' | 'writing') => Promise<void>,
   ) => InstallAnswer | Promise<InstallAnswer>
+  readSkill?: (payload: Record<string, unknown>) => ReadSkillAnswer | Promise<ReadSkillAnswer>
+  writeSkill?: (payload: Record<string, unknown>) => WriteSkillAnswer | Promise<WriteSkillAnswer>
 }
 
 export type SkillsRpcDeps = {
@@ -76,9 +84,10 @@ const MSG = {
   readFailed: 'the skills could not be read on the agent host',
   writeFailed: 'the skill could not be removed on the agent host',
   installFailed: 'the skill could not be installed on the agent host',
+  editFailed: 'the skill could not be saved on the agent host',
 } as const
 
-const OPS = new Set(['list_installed', 'remove', 'export_skill', 'install_bundle'])
+const OPS = new Set(['list_installed', 'remove', 'export_skill', 'install_bundle', 'read_skill', 'write_skill'])
 
 export function normalizeSkillsRpc(raw: unknown): SkillsRpcFrame | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
@@ -168,7 +177,9 @@ export class SkillsRpcHandler {
           ? failure('write_failed', MSG.writeFailed, MSG.writeFailed)
           : frame.op === 'install_bundle'
             ? failure('write_failed', MSG.installFailed, MSG.installFailed)
-            : failure('read_failed', MSG.readFailed, MSG.readFailed)
+            : frame.op === 'write_skill'
+              ? failure('write_failed', MSG.editFailed, MSG.editFailed)
+              : failure('read_failed', MSG.readFailed, MSG.readFailed)
     }
     this.remember(frame.rpcId, { state: 'done', result })
     await this.post(frame.rpcId, result)
@@ -178,6 +189,8 @@ export class SkillsRpcHandler {
     const { inventory } = this.deps
     if (!OPS.has(frame.op)) return failure('unsupported', MSG.unsupported, MSG.unsupported)
     if (frame.op === 'export_skill' && !inventory.exportSkill) return failure('unsupported', MSG.unsupported, MSG.unsupported)
+    if (frame.op === 'read_skill' && !inventory.readSkill) return failure('unsupported', MSG.unsupported, MSG.unsupported)
+    if (frame.op === 'write_skill' && !inventory.writeSkill) return failure('unsupported', MSG.unsupported, MSG.unsupported)
     if (frame.op === 'install_bundle' && !inventory.installBundle) {
       return failure('not_supported', MSG.unsupported, MSG.unsupported)
     }
@@ -191,6 +204,18 @@ export class SkillsRpcHandler {
       return failure('read_failed', MSG.readFailed, MSG.readFailed)
     }
     if (frame.op === 'install_bundle') return this.install(frame)
+    if (frame.op === 'read_skill') {
+      const answer = await inventory.readSkill!(frame.payload)
+      if (answer && answer.ok === true) return { ok: true, payload: present(answer.payload) }
+      if (answer && answer.ok === false) return failure(answer.code, answer.message, MSG.readFailed)
+      return failure('read_failed', MSG.readFailed, MSG.readFailed)
+    }
+    if (frame.op === 'write_skill') {
+      const answer = await inventory.writeSkill!(frame.payload)
+      if (answer && answer.ok === true) return { ok: true, payload: present(answer.payload) }
+      if (answer && answer.ok === false) return failure(answer.code, answer.message, MSG.editFailed)
+      return failure('write_failed', MSG.editFailed, MSG.editFailed)
+    }
     if (frame.op === 'list_installed') {
       const listed = await inventory.list()
       const skills = (listed?.skills ?? []).map((s) => present(s))

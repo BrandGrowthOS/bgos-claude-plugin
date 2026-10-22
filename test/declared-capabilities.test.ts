@@ -102,7 +102,7 @@ test('a host that cannot type declares the READ half only', () => {
   // the honest answer, and still sees every Last check.
   assert.deepEqual(
     [...declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode: 'pairing' })],
-    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'boards_download', 'sessions_library', 'changes_rpc', 'skills_list', 'skills_receive', 'ui_card', 'email_label', 'email_send', 'hard_floor', 'hard_floor_rules_2'],
+    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'boards_download', 'sessions_library', 'changes_rpc', 'skills_list', 'skills_receive', 'skills_preview', 'skills_edit', 'ui_card', 'email_label', 'email_send', 'hard_floor', 'hard_floor_rules_2'],
   )
 })
 
@@ -140,6 +140,8 @@ test('boards_playbook is declared on every host, because the tool is typed and h
       'changes_rpc',
       'skills_list',
       'skills_receive',
+      'skills_preview',
+      'skills_edit',
       'ui_card',
       'email_label',
       'email_send',
@@ -244,6 +246,8 @@ test('permission_card is declared on every host, because the relay has no platfo
       'changes_rpc',
       'skills_list',
       'skills_receive',
+      'skills_preview',
+      'skills_edit',
       'ui_card',
       'email_label',
       'email_send',
@@ -364,6 +368,31 @@ test('skills_receive is declared on every host, once, beside skills_list', () =>
     }
   }
   assert.ok(DECLARED_CAPABILITIES_BASE.includes('skills_receive'))
+})
+
+/**
+ * skills_preview and skills_edit (skills view plan, decision 8): the backend
+ * reads a listed skill's whole SKILL.md (read_skill) only while the pairing
+ * declares skills_preview, and saves an agent scope SKILL.md (write_skill)
+ * only while it declares skills_edit. Both handlers are plain file reads and
+ * writes in folders this daemon already lists, with no tmux and no pairing
+ * only route, so both are in the base: every host, every connection, once,
+ * right after skills_receive, preview first.
+ */
+test('skills_preview and skills_edit are declared on every host, once, right after skills_receive', () => {
+  for (const canInjectGoal of SHAPES) {
+    for (const authMode of ['pairing', 'apikey'] as const) {
+      for (const floorHook of [true, false]) {
+        const declared = [...declaredCapabilities({ canInjectGoal, floorHook, authMode })]
+        assert.equal(declared.filter((t) => t === 'skills_preview').length, 1)
+        assert.equal(declared.filter((t) => t === 'skills_edit').length, 1)
+        assert.equal(declared.indexOf('skills_preview'), declared.indexOf('skills_receive') + 1)
+        assert.equal(declared.indexOf('skills_edit'), declared.indexOf('skills_preview') + 1)
+      }
+    }
+  }
+  assert.ok(DECLARED_CAPABILITIES_BASE.includes('skills_preview'))
+  assert.ok(DECLARED_CAPABILITIES_BASE.includes('skills_edit'))
 })
 
 /**
@@ -710,6 +739,8 @@ test('the stop pause token rides with mission_pause and nothing else, the gate t
       'changes_rpc',
       'skills_list',
       'skills_receive',
+      'skills_preview',
+      'skills_edit',
       'ui_card',
       'email_label',
       'email_send',

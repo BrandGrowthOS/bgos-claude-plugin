@@ -193,6 +193,37 @@
  *                       so in the answer. The backend sends a changes frame to
  *                       a Claude Code pairing only while this is declared, and
  *                       only while the owner's switch is on (P7 stage 3).
+ *   skills_list         this daemon answers the owner's Abilities screen: the
+ *                       skills its agent loads, read from the roots the CLI
+ *                       reads, and the one Remove of an agent skill
+ *                       (lib/skills-rpc.ts over lib/skills-inventory.ts,
+ *                       skills view design section 7 row 3). Every host and
+ *                       connection: it is a read of folders on disk. The
+ *                       backend lists a Claude Code agent's skills only while
+ *                       its pairing declares this (a token, not a version
+ *                       floor) and shows the greyed card otherwise.
+ *   skills_receive      this daemon answers export_skill and install_bundle:
+ *                       it shares one of its skills and writes an approved
+ *                       shared skill into its OWN skills folder and nowhere
+ *                       else (lib/skills-share.ts, section 7 row 6). Every
+ *                       host and connection. The backend sends a shared skill
+ *                       to a Claude Code agent only while it is declared, and
+ *                       offers "Ask the agent to add it" otherwise.
+ *   skills_preview      this daemon answers read_skill: one listed SKILL.md
+ *                       whole for the owner's preview sheet, or why it is
+ *                       withheld (too large, binary, a secret), with whether
+ *                       it may be edited computed live (lib/skills-edit.ts,
+ *                       decision 8). Every host and connection: a plain file
+ *                       read of a row the list already shows. The backend
+ *                       serves skills/read only while it is declared, and the
+ *                       app keeps the description only preview otherwise.
+ *   skills_edit         this daemon answers write_skill: it saves one agent
+ *                       scope SKILL.md in place, after the content rules, a
+ *                       hash check against the copy the owner opened, the old
+ *                       bytes kept in the plugin state trash and one rename
+ *                       (lib/skills-edit.ts, decision 8). Every host and
+ *                       connection, beside skills_preview: the app offers
+ *                       Edit only to a daemon that declares both.
  *   email_label         this daemon labels an email (senderType
  *                       external_email) as a stranger's words on every lane:
  *                       a fixed first line and end line around everything the
@@ -277,6 +308,8 @@ export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   'changes_rpc',
   'skills_list',
   'skills_receive',
+  'skills_preview',
+  'skills_edit',
   'ui_card',
 ])
 

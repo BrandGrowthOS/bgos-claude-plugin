@@ -51,6 +51,7 @@ import {
   statSync,
   writeFileSync,
   constants as fsConstants,
+  type Stats,
 } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 
@@ -76,14 +77,17 @@ import {
   agentParentsSafe,
   computerRoots,
   displayPath,
+  entryPathRefused,
   identOf,
   inside,
+  listedEntryName,
   listedNameOf,
   nameKey,
   overlaps,
   realOrNull,
   removeAgentSkill,
   repoLevels,
+  statIdentity,
   wouldBeUnder,
 } from './skills-inventory.ts'
 
@@ -153,8 +157,22 @@ export type FolderRead = {
   unreadable: boolean
 }
 
-/** At most `max` bytes of a regular file, opened without following a link. */
-function readHead(path: string, max: number): Buffer | null {
+/** What a reader may ask of readHead beyond the bytes (lib/skills-edit.ts). */
+export type ReadHeadOptions = {
+  /**
+   * Handed the open file's fstat (Numbers, for its size, mode and mtime) and
+   * its exact identity, so a caller can check it is the file it meant. The
+   * identity comes from a bigint fstat of the same fd (statIdentity): a
+   * Number stat rounds an NTFS id past 2^53.
+   */
+  stat?: (st: Stats, id: string) => void
+}
+
+/**
+ * At most `max` bytes of a regular file, opened without following a link.
+ * Nothing past `max` is ever read: a multi GB file costs no more than the cap.
+ */
+export function readHead(path: string, max: number, opts: ReadHeadOptions = {}): Buffer | null {
   let fd: number
   try {
     fd = openSync(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0))
@@ -164,8 +182,9 @@ function readHead(path: string, max: number): Buffer | null {
   try {
     // a FIFO or device would block or never end, and a hard link swapped in
     // after the walk's lstat could be any file: regular, single link files only
-    const st = fstatSync(fd)
-    if (!st.isFile() || st.nlink > 1) return null
+    const st = fstatSync(fd, { bigint: true })
+    if (!st.isFile() || st.nlink > 1n) return null
+    if (opts.stat) opts.stat(fstatSync(fd), statIdentity(st))
     const buf = Buffer.alloc(max)
     let got = 0
     while (got < max) {
@@ -181,7 +200,7 @@ function readHead(path: string, max: number): Buffer | null {
   }
 }
 
-const UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
+export const UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
 
 /**
  * The files of one skill folder, keyed by their path relative to it (`/`
@@ -323,11 +342,11 @@ function listable(folder: string): boolean {
 
 /**
  * The skill folder whose list row is named `name`, resolved the way the list
- * names a row (its frontmatter name, else its folder name), so a share never
+ * names a row (its frontmatter name, else its folder name cleaned), so a share never
  * reads a different skill than the row the owner tapped (security review 5).
  * Null when none matches, 'ambiguous' when more than one does.
  */
-function findSkillFolder(root: string, name: string, skip?: string): string | null | 'ambiguous' {
+function findSkillFolder(root: string, name: string, home: string, skip?: string): string | null | 'ambiguous' {
   let names: string[]
   try {
     names = readdirSync(root).sort()
@@ -337,7 +356,11 @@ function findSkillFolder(root: string, name: string, skip?: string): string | nu
   const matches = names
     .filter((n) => !n.startsWith('.') && n !== skip)
     .slice(0, SKILLS_ROOT_MAX)
-    .filter((n) => listable(join(root, n)) && (listedNameOf(join(root, n)) ?? n) === name)
+    // a folder with no frontmatter name is listed under its entry cleaned
+    // (listedEntryName); one whose path the app could not send back is not
+    // listed (entryPathRefused, the list's own predicate)
+    .filter((n) => !entryPathRefused(root, n, home))
+    .filter((n) => listable(join(root, n)) && (listedNameOf(join(root, n)) ?? listedEntryName(n)) === name)
   if (matches.length > 1) return 'ambiguous'
   return matches.length === 1 ? join(root, matches[0]!) : null
 }
@@ -370,7 +393,7 @@ export function exportSkill(input: ExportSkillInput): ExportAnswer {
   }
 
   // the computer root lists synced as its own read only scope
-  const found = findSkillFolder(root, name, scope === 'computer' ? 'synced' : undefined)
+  const found = findSkillFolder(root, name, home, scope === 'computer' ? 'synced' : undefined)
   if (found === 'ambiguous') return fail('bad_request', 'more than one skill in this folder has that name')
   const folder = found
   const skillReal = folder ? realOrNull(folder) : null

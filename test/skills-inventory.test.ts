@@ -25,6 +25,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
@@ -36,7 +37,9 @@ import {
   SKILLS_ROOT_MAX,
   SKILL_NAME_RE,
   displayPath,
+  identOf,
   listSkills,
+  statIdentity,
   managedSkillsDir,
   parseFrontmatter,
   readSkillHead,
@@ -643,6 +646,33 @@ test('a linked skill can be removed by the name the list showed, and its target 
   const { answer } = remove(f, { name: row.name, scope: 'agent', path: row.path })
   assert.equal(answer.ok, true, JSON.stringify(answer))
   assert.ok(existsSync(join(f.home, 'elsewhere', 'pretty', 'SKILL.md')))
+})
+
+test('an identity string keeps every digit of a dev and ino past 2^53', () => {
+  // the ids NTFS hands out on this kind of volume: a Number would round both to even
+  assert.equal(statIdentity({ dev: 3363816321n, ino: 10977524096772063n }), '3363816321:10977524096772063')
+  assert.equal(statIdentity({ dev: 2n ** 53n + 1n, ino: 2n ** 63n - 1n }), '9007199254740993:9223372036854775807')
+  assert.notEqual(statIdentity({ dev: 1n, ino: 2n ** 53n + 1n }), statIdentity({ dev: 1n, ino: 2n ** 53n + 2n }))
+})
+
+test('an identity is the exact bigint dev and ino, never a rounded Number', () => {
+  // NTFS file ids pass 2^53: as Numbers two live folders can compare equal
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'skills-inv-ident-')))
+  // many files and folders: above 2^53 a Number keeps only even ids, so an odd one shows the loss
+  const paths = [dir]
+  for (let i = 0; i < 100; i++) {
+    const file = join(dir, `f${i}.md`)
+    writeFileSync(file, 'x')
+    mkdirSync(join(dir, `d${i}`))
+    paths.push(file, join(dir, `d${i}`))
+  }
+  for (const p of paths) {
+    const big = statSync(p, { bigint: true })
+    assert.equal(identOf(p), `${big.dev.toString()}:${big.ino.toString()}`, p)
+    const lbig = lstatSync(p, { bigint: true })
+    assert.equal(identOf(p, false), `${lbig.dev.toString()}:${lbig.ino.toString()}`, p)
+  }
+  assert.equal(identOf(join(dir, 'missing')), null)
 })
 
 test.after(() => {
