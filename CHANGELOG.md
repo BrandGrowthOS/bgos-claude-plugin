@@ -2,7 +2,7 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
-## Unreleased
+## 0.74.0 (2026-10-22)
 
 **A clone install's updaters (the daemon's self-update and the watcher) update to exactly the published release, never the head of origin/main (board row 84c23fab); and every daemon boot of a clone writes the current hook set into its workspace, however the agent was launched (board row f83db4b7).**
 
@@ -17,7 +17,7 @@ Notable changes to the HOAI Claude Code plugin.
 
 Not changed here, and still on the head of main: `bgos-agent update` itself (an operator command, `git reset --hard origin/<branch>`) and install time clones (`git clone --depth 1` of main in the bootstraps and `bgos-claim`, and `bgos-claim`'s `git pull --ff-only`).
 
-Guards: `test/self-update.published-release.test.ts` (9 cases on a real git origin and clone, depth 1 included; 7 of the first 8 red at 7b579b4, the developer checkout case green there), `test/published-release.test.ts` (7 cases: the manifest reader, and the watcher's observation on real git), `test/clone-hooks.boot.test.ts` (9 cases), lock loser and one-click winner cases in `test/self-update.test.ts`, the no-release case in `test/update-executor.test.ts`. Not versioned here: Data does the version and the release.
+Guards: `test/self-update.published-release.test.ts` (9 cases on a real git origin and clone, depth 1 included; 7 of the first 8 red at 7b579b4, the developer checkout case green there), `test/published-release.test.ts` (7 cases: the manifest reader, and the watcher's observation on real git), `test/clone-hooks.boot.test.ts` (9 cases), lock loser and one-click winner cases in `test/self-update.test.ts`, the no-release case in `test/update-executor.test.ts`. Bumped to 0.74.0 on this branch at the owner's request so the version gate passes; publishing (the tag, the marketplace ref, the app's pin) stays with Data.
 
 ## 0.73.0 (2026-10-21)
 
