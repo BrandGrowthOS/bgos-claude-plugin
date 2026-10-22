@@ -82,3 +82,25 @@ test('the share ops (row 6) get the same agent folder and post progress on the s
   assert.ok(install.includes('progress,'))
   assert.match(built, /postProgress: \(rpcId, body\) =>\n\s*bgosPost\(`integrations\/skills-rpc\/\$\{encodeURIComponent\(rpcId\)\}\/progress`, body\)/)
 })
+
+test('the edit ops (decision 8) get the same agent folder, and the write the plugin state trash', () => {
+  assert.match(server, /\nimport \{ readSkillFile, writeAgentSkill \} from '\.\/lib\/skills-edit\.js'\n/)
+  const built = constructionSlice()
+  for (const op of ['readSkill: (payload) =>', 'writeSkill: (payload) =>']) {
+    const at = built.indexOf(op)
+    assert.ok(at > 0, `${op} is not wired`)
+    const slice = built.slice(at, built.indexOf('}),', at))
+    assert.ok(slice.includes('agentDir: SKILLS_AGENT_DIR'), op)
+    assert.ok(slice.includes('configDir: CLAUDE_CONFIG_DIR'), op)
+    assert.ok(slice.includes('managedDir: SKILLS_MANAGED_DIR'), op)
+    assert.ok(slice.includes('home: homedir()'), op)
+    assert.ok(slice.includes('payload,'), op)
+  }
+  assert.match(built, /readSkill: \(payload\) =>\n\s*readSkillFile\(\{/)
+  assert.match(built, /writeSkill: \(payload\) =>\n\s*writeAgentSkill\(\{/)
+  const write = built.slice(built.indexOf('writeSkill: (payload) =>'))
+  const writeSlice = write.slice(0, write.indexOf('}),'))
+  assert.ok(writeSlice.includes('trashDir: skillsTrashDir()'))
+  assert.ok(writeSlice.includes('platform: process.platform'))
+  assert.ok(writeSlice.includes('now: () => Date.now()'))
+})

@@ -53,6 +53,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs'
+import type { Stats } from 'node:fs'
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import { scanText } from './secret-scan.ts'
@@ -122,13 +123,41 @@ export function managedSkillsDir(platform: NodeJS.Platform, env: Record<string, 
 /**
  * A path for the app: the home folder as `~`, never a raw username. Under the
  * home it is `~/a/b` on every OS (Windows separators turned to `/`), the form
- * the contract shows and remove takes back.
+ * the contract shows and remove takes back. On Windows the home prefix is
+ * compared without case (NTFS folds it, and a shell can pass `c:\` for the
+ * `C:\` homedir() gives), the rest kept as written.
  */
 export function displayPath(path: string, home: string, pathSep: string = sep): string {
-  if (home && path === home) return '~'
-  if (home && path.startsWith(home + pathSep)) {
+  if (!home) return path
+  const same = pathSep === '\\' ? (a: string, b: string) => a.toLowerCase() === b.toLowerCase() : (a: string, b: string) => a === b
+  if (same(path, home)) return '~'
+  if (path.length > home.length && path[home.length] === pathSep && same(path.slice(0, home.length), home)) {
     const rest = path.slice(home.length)
     return '~' + (pathSep === '/' ? rest : rest.split(pathSep).join('/'))
+  }
+  return path
+}
+
+/**
+ * The backend's fold of a path, twin of redactHomePath in
+ * backend/src/skills/skills-installed-items.ts (the prefixes are copied byte
+ * for byte; test/skills-backend-twins.test.ts runs the case table its spec
+ * runs). It folds ANY user's home, not only this daemon's, so a row this
+ * daemon left absolute (an agent folder in /Users/Shared, a root daemon's
+ * project under /home/ubuntu, a drive letter in another case) reaches the app,
+ * and comes back from it, as `~...`. Read, write and Remove match that form.
+ */
+const BACKEND_HOME_PREFIXES: readonly RegExp[] = [
+  /^\/+Users\/[^/]+(?=\/|$)/,
+  /^\/(?:var\/)?home\/[^/]+(?=\/|$)/,
+  /^\/root(?=\/|$)/,
+  // Any case (NTFS is case insensitive), with or without the \\?\ prefix.
+  /^(?:\\\\\?\\)?[A-Za-z]:[\\/]Users[\\/][^\\/]+(?=[\\/]|$)/i,
+]
+
+export function backendFoldedPath(path: string): string {
+  for (const prefix of BACKEND_HOME_PREFIXES) {
+    if (prefix.test(path)) return path.replace(prefix, '~')
   }
   return path
 }
@@ -146,11 +175,22 @@ export function inside(child: string, parent: string): boolean {
   return child.startsWith(parent.endsWith(sep) ? parent : parent + sep)
 }
 
-/** A folder's identity on disk, so no spelling (case, NFD, a link) can hide it. */
+/**
+ * The identity string of a stat taken with `{ bigint: true }`. Every identity
+ * built or compared for safety goes through it: NTFS file ids pass 2^53 (the
+ * sequence number sits in the top 16 bits), and as Numbers two live folders
+ * can round to the same id, so an overlap or a same file check could pass for
+ * a different folder. The bigint type is required, so a Number stat cannot
+ * reach it.
+ */
+export function statIdentity(st: { dev: bigint; ino: bigint }): string {
+  return `${st.dev.toString()}:${st.ino.toString()}`
+}
+
+/** A folder's identity on disk, so no spelling (case, NFD, a link) can hide it. Exact: bigint stats. */
 export function identOf(path: string, follow = true): string | null {
   try {
-    const st = follow ? statSync(path) : lstatSync(path)
-    return `${st.dev}:${st.ino}`
+    return statIdentity(follow ? statSync(path, { bigint: true }) : lstatSync(path, { bigint: true }))
   } catch {
     return null
   }
@@ -274,6 +314,13 @@ export function repoLevels(agentDir: string): string[] {
 // ── Frontmatter ─────────────────────────────────────────────────────────────
 
 /** At most FRONTMATTER_READ_MAX bytes from the start of a file, never the rest. */
+/** The frontmatter of a SKILL.md file, read from its head. */
+function frontmatterOf(path: string): Frontmatter | null {
+  const head = readSkillHead(path)
+  // UTF-8 decoding never shortens: under the cap in bytes, the head is the whole file
+  return parseFrontmatter(head, Buffer.byteLength(head) < FRONTMATTER_READ_MAX)
+}
+
 export function readSkillHead(path: string): string {
   const fd = openSync(path, 'r')
   try {
@@ -307,13 +354,16 @@ function unquote(value: string): string {
  * with `---` or the block does not close inside it. Top level scalar keys
  * only: plain, quoted, `|` and `>` blocks, and indented continuations. A key
  * whose value is a nested list or map is recorded in `keys` with no field.
+ * A closing `---` on the very last line, no newline after it, closes the
+ * block when the head is the `whole` file, as the backend's frontmatter
+ * readers take it; in a head cut at the read cap that line may be cut too.
  */
-export function parseFrontmatter(head: string): Frontmatter | null {
+export function parseFrontmatter(head: string, whole = true): Frontmatter | null {
   const text = head.replace(/^\uFEFF/, '')
   const open = /^---[ \t]*\r?\n/.exec(text)
   if (!open) return null
   const lines = text.slice(open[0].length).split(/\r?\n/)
-  const close = lines.findIndex((line, i) => /^---[ \t]*$/.test(line) && i < lines.length - 1)
+  const close = lines.findIndex((line, i) => /^---[ \t]*$/.test(line) && (whole || i < lines.length - 1))
   if (close < 0) return null
   const block = lines.slice(0, close)
 
@@ -346,10 +396,73 @@ export function parseFrontmatter(head: string): Frontmatter | null {
   return { fields, keys }
 }
 
+/**
+ * The characters no listed name or description carries: C0, DEL, C1, and the
+ * bidi marks, embeddings, overrides and isolates (U+061C, U+200E, U+200F,
+ * U+202A to U+202E, U+2066 to U+2069). The backend's read DTO refuses a name
+ * holding any of them (SKILL_LISTED_NAME_PATTERN), so the list replaces them
+ * and read_skill refuses them, and no row is listed that cannot be read. That
+ * holds for a name taken from a folder too (listedEntryName): a SKILL.md with
+ * no `name:` is listed under its folder name cleaned the same way. A row's
+ * PATH is never cleaned (it must name the folder): see entryPathRefused.
+ */
+export const LISTED_TEXT_CONTROL = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/
+const LISTED_TEXT_CONTROLS = new RegExp(LISTED_TEXT_CONTROL.source + '+', 'g')
+
 function clean(text: string, max: number): string {
-  const one = text.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim()
+  const one = text.replace(LISTED_TEXT_CONTROLS, ' ').replace(/\s+/g, ' ').trim()
   return one.length > max ? one.slice(0, max - 3).trimEnd() + '...' : one
 }
+
+/**
+ * The name the list shows for a skill folder whose SKILL.md has no `name:`:
+ * the folder entry, cleaned as every listed name is ('' when nothing is left).
+ * Every place that matches a listed name back to a folder (share's lookup,
+ * Remove and write's name check) compares against this same form.
+ */
+export function listedEntryName(entry: string): string {
+  return clean(entry, SKILL_DISPLAY_NAME_MAX)
+}
+
+/**
+ * Twin of SKILL_DISPLAY_PATH_PATTERN in the bgos backend,
+ * backend/src/dto/skills-store.dto.ts, copied byte for byte (its case table
+ * is test/skills-backend-twins.test.ts DISPLAY_PATH_CASES). It is the path
+ * the app sends back to read, write or Remove a row: `~` for home, no NUL or
+ * other C0 control or DEL, no drive relative start (`C:x`), no segment that
+ * ends in a dot or a space, at most 1024 characters. Change both or neither.
+ */
+export const SKILL_DISPLAY_PATH_PATTERN =
+  // The control character class IS the rule: a path may carry none.
+  // eslint-disable-next-line no-control-regex
+  /^(?![A-Za-z]:(?![\\/]))(?!(?:.*[\\/])?[^\\/]*[. ](?:[\\/]|$))[^\u0000-\u001f\u007f]{1,1024}$/;
+
+/**
+ * Whether the list skips the entry `entry` of the root folder `dir` on its
+ * name alone: the row's path could never come back from the app. A row's
+ * path carries the entry as it is on disk (it must name the folder), and the
+ * backend refuses a path past 1024 characters as the daemon sent it and one
+ * whose fold (backendFoldedPath, what the app sees and sends back) fails
+ * SKILL_DISPLAY_PATH_PATTERN: a C0 control or DEL anywhere, or a name ending
+ * in a dot or a space (`tidy.`, `notes `, both legal on macOS and Linux).
+ * Such a row could never be read, edited or removed, so it is not listed.
+ * This ONE predicate is the list's (readSkill), rowAt's (an entry it skips
+ * claims no folder) and share's (findSkillFolder). A bidi mark in an entry
+ * stays in the path: the backend accepts it there and the app sanitizes the
+ * path for display; only the row's name is cleaned of it.
+ */
+export function entryPathRefused(dir: string, entry: string, home: string): boolean {
+  const shown = displayPath(join(dir, entry), home)
+  return shown.length > PATH_MAX || !SKILL_DISPLAY_PATH_PATTERN.test(backendFoldedPath(shown))
+}
+
+/**
+ * The name Claude Code loads a skill under: the frontmatter name as written,
+ * else the folder entry, neither cleaned (listSkills keys hiddenBy on it,
+ * through nameKey). The row's `name` is the cleaned form, for display and
+ * for matching a request back to its folder.
+ */
+const loadedNames = new WeakMap<SkillItem, string>()
 
 function hasSecret(label: string, text: string): boolean {
   return text !== '' && scanText(label, text).length > 0
@@ -426,7 +539,17 @@ type Root = {
   removable?: boolean
 }
 
-function readSkill(root: Root, entry: string, home: string, seen: Set<string>, log: (m: string) => void): SkillItem | null {
+/** A skill folder that passed the realpath, SKILL.md and nlink checks, its frontmatter head read. */
+type Probe = { lexical: string; skillReal: string; mdStat: Stats; front: Frontmatter | null }
+
+/**
+ * The checks every entry gets on its realpath, listed or not: a folder whose
+ * realpath this root has not given yet, holding a SKILL.md inside it that is
+ * a regular file and not hard linked. Only then is the head of that SKILL.md
+ * read (frontmatterOf), never more. `log` is the list's, or a no-op for an
+ * entry refused on its path (its path may hold the control character itself).
+ */
+function probeSkill(root: Root, entry: string, home: string, seen: Set<string>, log: (m: string) => void): Probe | null {
   const lexical = join(root.dir, entry)
   const skillReal = realOrNull(lexical)
   if (!skillReal || seen.has(skillReal)) return null
@@ -458,17 +581,68 @@ function readSkill(root: Root, entry: string, home: string, seen: Set<string>, l
     log(`skills: ${displayPath(lexical, home)} skipped, its SKILL.md is a hard link`)
     return null
   }
-  seen.add(skillReal)
-
   let front: Frontmatter | null = null
   try {
-    front = parseFrontmatter(readSkillHead(mdReal))
+    front = frontmatterOf(mdReal)
   } catch {
     front = null
   }
-  const rawName = clean(front?.fields.name ?? '', SKILL_DISPLAY_NAME_MAX) || entry
+  return { lexical, skillReal, mdStat, front }
+}
+
+/** The name Claude Code loads a skill folder under: the frontmatter name as written, else the raw entry. */
+function loadedNameOf(front: Frontmatter | null, entry: string): string {
+  return (front?.fields.name ?? '').trim() || entry
+}
+
+/**
+ * The name Claude Code loads the entry `entry` under when the list skips it
+ * on its path alone (entryPathRefused): Claude Code still loads that folder,
+ * so it still wins its name over a lower scope (listSkills' hiddenBy). It is
+ * found under the same checks a listed entry gets (probeSkill: realpath,
+ * SKILL.md inside, not hard linked, the frontmatter head only), and the entry
+ * is never listed, read or shared. It does not claim its realpath in `seen`,
+ * as it never did (rowAt's earlier-entry rule rests on that). Null for an
+ * entry the list does not skip on its path, or one that names no skill.
+ */
+function refusedLoadedName(root: Root, entry: string, home: string, seen: Set<string>): string | null {
+  if (!entryPathRefused(root.dir, entry, home)) return null
+  const probe = probeSkill(root, entry, home, seen, () => {})
+  return probe ? loadedNameOf(probe.front, entry) : null
+}
+
+function readSkill(
+  root: Root,
+  entry: string,
+  home: string,
+  seen: Set<string>,
+  log: (m: string) => void,
+  // the loaded name of a folder Claude Code loads that is not listed (its name looks like a secret): hiddenBy only
+  unlisted: (loaded: string) => void = () => {},
+): SkillItem | null {
+  if (entryPathRefused(root.dir, entry, home)) {
+    // never the raw entry or path in a log line: it may hold the control character itself
+    log(`skills: a skill in ${root.scope} skipped, its path is not one the app can send back`)
+    return null
+  }
+  const probe = probeSkill(root, entry, home, seen, log)
+  if (!probe) return null
+  const { lexical, skillReal, mdStat, front } = probe
+  seen.add(skillReal)
+
+  // A folder name is cleaned like a frontmatter one for the row's NAME, so the
+  // row stays readable by its name. Its path keeps the raw entry, a bidi mark
+  // included (the backend accepts it in a path, and the app sanitizes the path
+  // for display); an entry whose path the app could not send back was skipped
+  // above (entryPathRefused).
+  const rawName = clean(front?.fields.name ?? '', SKILL_DISPLAY_NAME_MAX) || listedEntryName(entry)
   if (hasSecret('name', rawName) || hasSecret('name', entry)) {
     log(`skills: a skill in ${root.scope} skipped, its name looks like a secret`)
+    unlisted(loadedNameOf(front, entry))
+    return null
+  }
+  if (!rawName) {
+    log(`skills: a skill in ${root.scope} skipped, its folder name is only control or bidi marks`)
     return null
   }
   let description = clean(front?.fields.description ?? '', SKILL_DESCRIPTION_MAX)
@@ -490,7 +664,7 @@ function readSkill(root: Root, entry: string, home: string, seen: Set<string>, l
           ? 'too_large'
           : undefined
 
-  return {
+  const row: SkillItem = {
     ...(root.plugin ? { identifier: root.plugin.id } : {}),
     name: root.plugin ? `${root.plugin.name}:${rawName}` : rawName,
     description,
@@ -504,9 +678,12 @@ function readSkill(root: Root, entry: string, home: string, seen: Set<string>, l
     shareable: shareBlock === undefined,
     ...(shareBlock ? { shareBlock } : {}),
   }
+  loadedNames.set(row, loadedNameOf(front, entry))
+  return row
 }
 
-function listRoot(root: Root, home: string, log: (m: string) => void): SkillItem[] {
+/** The entries of a root the list reads, in its order: no dot entry, not `skip`, sorted, at most SKILLS_ROOT_MAX. */
+function rootEntries(root: Root, home: string, log: (m: string) => void): string[] {
   const real = realOrNull(root.dir)
   if (!real) return []
   let names: string[]
@@ -515,17 +692,56 @@ function listRoot(root: Root, home: string, log: (m: string) => void): SkillItem
   } catch {
     return []
   }
-  const seen = new Set<string>()
-  const out: SkillItem[] = []
   const candidates = names.filter((name) => !name.startsWith('.') && name !== root.skip)
   if (candidates.length > SKILLS_ROOT_MAX) {
     log(`skills: ${displayPath(root.dir, home)} holds ${candidates.length} entries, only the first ${SKILLS_ROOT_MAX} are read`)
   }
-  for (const name of candidates.slice(0, SKILLS_ROOT_MAX)) {
-    const row = readSkill(root, name, home, seen, log)
-    if (row) out.push(row)
+  return candidates.slice(0, SKILLS_ROOT_MAX)
+}
+
+/**
+ * The rows of one root, and the names Claude Code loads from the entries of
+ * it the list skips on their path (refusedLoadedName) or because their name
+ * looks like a secret: those enter hiddenBy's winner map only, never the list.
+ */
+function listRoot(root: Root, home: string, log: (m: string) => void): { rows: SkillItem[]; refusedNames: string[] } {
+  const seen = new Set<string>()
+  const rows: SkillItem[] = []
+  const refusedNames: string[] = []
+  for (const name of rootEntries(root, home, log)) {
+    const row = readSkill(root, name, home, seen, log, (loaded) => refusedNames.push(loaded))
+    if (row) {
+      rows.push(row)
+      continue
+    }
+    const loaded = refusedLoadedName(root, name, home, seen)
+    if (loaded !== null) refusedNames.push(loaded)
   }
-  return out
+  return { rows, refusedNames }
+}
+
+/**
+ * The row listRoot gives for ONE entry of a root, or null when it gives
+ * none, with no other entry read: the entry must be one rootEntries keeps,
+ * and an earlier entry with the same realpath claims the folder first, as
+ * listRoot's `seen` does. An earlier entry readSkill skips on its name
+ * (entryPathRefused, the one check before `seen` that is not on the
+ * realpath) claims nothing, as it never reaches `seen` in listRoot either.
+ * readSkill's other checks before it adds to `seen` depend on the realpath
+ * alone, so any other earlier entry passed them whenever this one would.
+ */
+function rowAt(root: Root, entry: string, home: string, log: (m: string) => void): SkillItem | null {
+  const names = rootEntries(root, home, () => {})
+  const at = names.indexOf(entry)
+  if (at < 0) return null
+  const skillReal = realOrNull(join(root.dir, entry))
+  if (!skillReal) return null
+  const seen = new Set<string>()
+  const claimed = names
+    .slice(0, at)
+    .some((earlier) => !entryPathRefused(root.dir, earlier, home) && realOrNull(join(root.dir, earlier)) === skillReal)
+  if (claimed) seen.add(skillReal)
+  return readSkill(root, entry, home, seen, log)
 }
 
 // ── Plugins ─────────────────────────────────────────────────────────────────
@@ -562,7 +778,8 @@ function pluginRoots(configDir: string, agentDir: string | null): Root[] {
         (typeof r.projectPath === 'string' && agentDir !== null && resolve(r.projectPath) === resolve(agentDir)),
     )
     if (!entry || typeof entry.installPath !== 'string' || !isAbsolute(entry.installPath)) continue
-    const name = id.split('@')[0] || id
+    // The plugin half of a row's name: no control or bidi mark either (clean), never cut.
+    const name = clean(id.split('@')[0] || id, Infinity) || clean(id, Infinity)
     roots.push({ scope: 'plugin', dir: join(entry.installPath, 'skills'), plugin: { name, id } })
   }
   return roots
@@ -583,8 +800,8 @@ export function nameKey(name: string): string {
   return name.normalize('NFC').toLowerCase()
 }
 
-export function listSkills(input: ListSkillsInput): SkillsList {
-  const log = input.log ?? (() => {})
+/** The roots the list walks, in its order, and the scopes it leaves out and why. */
+function skillRoots(input: ListSkillsInput): { roots: Root[]; omitted: SkillsOmitted[] } {
   const { home } = input
   const computerDir = join(input.configDir, 'skills')
   const omitted: SkillsOmitted[] = []
@@ -620,22 +837,68 @@ export function listSkills(input: ListSkillsInput): SkillsList {
     ...pluginRoots(input.configDir, input.agentDir),
     { scope: 'managed', dir: input.managedDir },
   ]
-  const skills = roots.flatMap((root) => listRoot(root, home, log))
+  return { roots, omitted }
+}
 
-  // hiddenBy: the first scope in precedence order wins a name.
+export function listSkills(input: ListSkillsInput): SkillsList {
+  const log = input.log ?? (() => {})
+  const { home } = input
+  const { roots, omitted } = skillRoots(input)
+  const walked = roots.map((root) => ({ scope: root.scope, ...listRoot(root, home, log) }))
+  const skills = walked.flatMap((w) => w.rows)
+
+  // hiddenBy: the first scope in precedence order wins a name, the name
+  // Claude Code loads (never the cleaned one the row shows: 'tidy' plus U+200F
+  // and 'tidy' are two skills to Claude Code, though both are listed 'tidy').
+  // A folder the list skips on its path (`notes ` with name: notes) is still
+  // loaded by Claude Code, so its loaded name wins here too, with no row.
+  const keyOf = (s: SkillItem) => nameKey(loadedNames.get(s) ?? s.name)
   const winner = new Map<string, SkillScope>()
   for (const scope of PRECEDENCE) {
-    for (const s of skills) {
-      if (s.scope === scope && !winner.has(nameKey(s.name))) winner.set(nameKey(s.name), scope)
+    for (const w of walked) {
+      if (w.scope !== scope) continue
+      for (const key of [...w.rows.map(keyOf), ...w.refusedNames.map(nameKey)]) {
+        if (!winner.has(key)) winner.set(key, scope)
+      }
     }
   }
   for (const s of skills) {
     if (s.scope === 'plugin') continue
-    const win = winner.get(nameKey(s.name))
+    const win = winner.get(keyOf(s))
     if (win && win !== s.scope) s.hiddenBy = win
   }
 
   return omitted.length ? { skills, omitted } : { skills }
+}
+
+/**
+ * The one row listSkills would show under `scope` at `rawPath`, found with
+ * no list walk: only the roots of that scope whose entry the path names are
+ * looked at, and in each only that entry (rowAt), under the same row rules.
+ * The match is listSkills' own: the first row whose path is `rawPath`
+ * exactly, else the one row whose backend fold (backendFoldedPath) is, and
+ * none when two rows fold alike. `hiddenBy` is not set, as no other row is read.
+ */
+export function listedSkillAt(input: ListSkillsInput, scope: SkillScope, rawPath: string): SkillItem | null {
+  const log = input.log ?? (() => {})
+  const { home } = input
+  // The entry is the last segment: a POSIX name may hold a backslash, a Windows one neither separator.
+  const entries = new Set([rawPath.slice(rawPath.lastIndexOf('/') + 1), rawPath.split(/[\\/]/).pop() ?? ''])
+  const folded: SkillItem[] = []
+  for (const root of skillRoots(input).roots) {
+    if (root.scope !== scope) continue
+    for (const entry of entries) {
+      if (!entry) continue
+      const shown = displayPath(join(root.dir, entry), home)
+      const exact = shown === rawPath
+      if (!exact && backendFoldedPath(shown) !== rawPath) continue
+      const row = rowAt(root, entry, home, log)
+      if (!row) continue
+      if (exact) return row
+      folded.push(row)
+    }
+  }
+  return folded.length === 1 ? folded[0]! : null
 }
 
 // ── Remove ──────────────────────────────────────────────────────────────────
@@ -658,7 +921,8 @@ function refuse(code: SkillRemoveCode, message: string): SkillRemoveAnswer {
   return { ok: false, code, message }
 }
 
-const PATH_MAX = 1024
+/** The longest path a skills frame may carry. */
+export const PATH_MAX = 1024
 
 /**
  * The frontmatter name of a skill folder (a link followed, as the list does),
@@ -673,11 +937,93 @@ export function listedNameOf(folder: string): string | null {
     if (!md || !inside(md, real)) return null
     const mdSt = statSync(md)
     if (!mdSt.isFile() || mdSt.nlink > 1) return null
-    const name = clean(parseFrontmatter(readSkillHead(md))?.fields.name ?? '', SKILL_DISPLAY_NAME_MAX)
+    const name = clean(frontmatterOf(md)?.fields.name ?? '', SKILL_DISPLAY_NAME_MAX)
     return name || null
   } catch {
     return null
   }
+}
+
+/** A path as the list shows it, `~` turned back into the home folder. */
+export function expandHome(path: string, home: string): string {
+  return path === '~' || path.startsWith('~/') || path.startsWith('~\\') ? home + path.slice(1) : path
+}
+
+/**
+ * The absolute path a request for an agent skill names. When it is the path
+ * the list showed for an entry directly in the agent skills folder, or the
+ * backend's fold of it (backendFoldedPath), it is that entry: a folder
+ * outside this home, or spelled with another drive letter case, comes back
+ * as `~...` and no `~` expansion would find it. Otherwise `~` is expanded
+ * against this home. Every other check runs on the result unchanged.
+ */
+function requestedAgentPath(rawPath: string, agentSkills: string, home: string): string {
+  const entry = rawPath.split(/[\\/]/).pop() ?? ''
+  if (entry !== '' && entry !== '.' && entry !== '..') {
+    const candidate = join(agentSkills, entry)
+    const shown = displayPath(candidate, home)
+    if (rawPath === shown || rawPath === backendFoldedPath(shown)) return candidate
+  }
+  return expandHome(rawPath, home)
+}
+
+export type AgentSkillTarget = {
+  ok: true
+  agentDir: string
+  agentSkills: string
+  /** <agent>/.claude/skills/<folder>, lexical, not yet lstat'ed. */
+  target: string
+  folder: string
+  /** The computer roots (computerRoots), which the agent skills folder overlaps none of. */
+  foreign: string[]
+}
+
+export type SkillTargetRefusal = { ok: false; code: SkillRemoveCode; message: string }
+
+/**
+ * The one agent skill folder a path names, the rule Remove and an edit share:
+ * the path the list showed or the backend's fold of it (requestedAgentPath),
+ * absolute, no `.` or `..` segment, exactly <agent>/.claude/skills/<name>
+ * with a name Claude Code takes, the `.claude` and `.claude/skills` parents
+ * real folders and not links, and the agent skills folder none of the
+ * computer's. Nothing is lstat'ed below it.
+ */
+export function agentSkillTarget(
+  input: { agentDir: string | null; configDir: string; home: string; managedDir?: string },
+  rawPath: unknown,
+): AgentSkillTarget | SkillTargetRefusal {
+  const no = (code: SkillRemoveCode, message: string): SkillTargetRefusal => ({ ok: false, code, message })
+  if (typeof rawPath !== 'string' || !rawPath || rawPath.length > PATH_MAX || rawPath.includes('\0')) {
+    return no('bad_request', 'the path is missing or not a path')
+  }
+  if (input.agentDir === null) {
+    return no('unavailable', 'this agent was started without its launch folder, so it has no agent skills')
+  }
+
+  // The path must be exactly <agent>/.claude/skills/<name>, as the list showed it.
+  const agentDir = resolve(input.agentDir)
+  const agentSkills = join(agentDir, '.claude', 'skills')
+  const expanded = requestedAgentPath(rawPath, agentSkills, input.home)
+  if (!isAbsolute(expanded)) return no('scope_refused', 'the path must be the one the skills list showed')
+  if (expanded.split(/[\\/]+/).some((seg) => seg === '..' || seg === '.')) {
+    return no('scope_refused', 'the path may not contain . or .. segments')
+  }
+  const target = resolve(expanded)
+  const folder = basename(target)
+  if (dirname(target) !== agentSkills || !SKILL_NAME_RE.test(folder)) {
+    return no('scope_refused', 'the path is not a skill in this agent folder')
+  }
+
+  // No symlinked parent: .claude and .claude/skills must be real folders.
+  if (!existsSync(agentSkills)) return no('not_found', 'this agent has no skills folder')
+  if (!agentParentsSafe(agentDir)) {
+    return no('scope_refused', 'the skills folder of this agent is a link, so nothing in it is changed')
+  }
+  const foreign = computerRoots(input.configDir, input.home, input.managedDir)
+  if (foreign.some((f) => overlaps(agentSkills, f))) {
+    return no('scope_refused', 'the skills folder of this agent is the computer skills folder')
+  }
+  return { ok: true, agentDir, agentSkills, target, folder, foreign }
 }
 
 export function removeAgentSkill(input: RemoveSkillInput): SkillRemoveAnswer {
@@ -695,43 +1041,13 @@ export function removeAgentSkill(input: RemoveSkillInput): SkillRemoveAnswer {
   ) {
     return refuse('bad_request', 'the skill name is not a valid skill name')
   }
-  const rawPath = payload.path
-  if (typeof rawPath !== 'string' || !rawPath || rawPath.length > PATH_MAX || rawPath.includes('\0')) {
-    return refuse('bad_request', 'the path is missing or not a path')
-  }
-  if (input.agentDir === null) {
-    return refuse('unavailable', 'this agent was started without its launch folder, so it has no agent skills')
-  }
-
-  // The path must be exactly <agent>/.claude/skills/<name>, as the list showed it.
-  const expanded =
-    rawPath === '~' || rawPath.startsWith('~/') || rawPath.startsWith('~\\') ? home + rawPath.slice(1) : rawPath
-  if (!isAbsolute(expanded)) return refuse('scope_refused', 'the path must be the one the skills list showed')
-  if (expanded.split(/[\\/]+/).some((seg) => seg === '..' || seg === '.')) {
-    return refuse('scope_refused', 'the path may not contain . or .. segments')
-  }
-  const agentDir = resolve(input.agentDir)
-  const claudeDir = join(agentDir, '.claude')
-  const agentSkills = join(claudeDir, 'skills')
-  const target = resolve(expanded)
-  const folder = basename(target)
-  if (dirname(target) !== agentSkills || !SKILL_NAME_RE.test(folder)) {
-    return refuse('scope_refused', 'the path is not a skill in this agent folder')
-  }
-
-  // No symlinked parent: .claude and .claude/skills must be real folders.
-  if (!existsSync(agentSkills)) return refuse('not_found', 'this agent has no skills folder')
-  if (!agentParentsSafe(agentDir)) {
-    return refuse('scope_refused', 'the skills folder of this agent is a link, so nothing in it is removed')
-  }
-  const foreign = computerRoots(input.configDir, home, input.managedDir)
-  if (foreign.some((f) => overlaps(agentSkills, f))) {
-    return refuse('scope_refused', 'the skills folder of this agent is the computer skills folder')
-  }
+  const at = agentSkillTarget(input, payload.path)
+  if (!at.ok) return at
+  const { agentDir, agentSkills, target, folder, foreign } = at
 
   let st
   try {
-    st = lstatSync(target)
+    st = lstatSync(target, { bigint: true })
   } catch {
     return refuse('not_found', 'that skill is not in this agent folder')
   }
@@ -744,7 +1060,7 @@ export function removeAgentSkill(input: RemoveSkillInput): SkillRemoveAnswer {
     }
   }
   // The name is the folder's, or the name the list showed for it.
-  if (payload.name !== folder && payload.name !== listedNameOf(target)) {
+  if (payload.name !== listedEntryName(folder) && payload.name !== listedNameOf(target)) {
     return refuse('bad_request', 'the skill name does not match the folder the path names')
   }
 
@@ -756,7 +1072,7 @@ export function removeAgentSkill(input: RemoveSkillInput): SkillRemoveAnswer {
   }
 
   const shown = displayPath(target, home)
-  const targetId = `${st.dev}:${st.ino}`
+  const targetId = statIdentity(st)
   const skillsId = identOf(agentSkills, false)
   let dest: string
   try {
