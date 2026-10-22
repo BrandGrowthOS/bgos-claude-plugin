@@ -269,7 +269,7 @@ import {
 } from './lib/stop-pause.js'
 import { floorBootLine, floorHookPresence, type FloorHookPresence } from './lib/floor-hook-presence.js'
 import { PRIVATE_HOOK_MISSING_REFUSAL, privateHookBootLine, privateHookPresence, type PrivateHookPresence } from './lib/private-hook-presence.js'
-import { registerCloneHooks } from './lib/clone-hooks.mjs'
+import { registerCloneHooksAtBoot } from './lib/clone-hooks.mjs'
 import { recordPeerRefusal } from './lib/peer-refusal-counter.mjs'
 import { pinChannelProtocolRevision } from './lib/channel-transport.js'
 import {
@@ -15959,19 +15959,25 @@ async function main(): Promise<void> {
   // hook (lib/floor-hook-presence.ts floorBootLine).
   log(floorBootLine(FLOOR_HOOK, AUTH.mode))
   log(privateHookBootLine(PRIVATE_HOOK))
-  // A clone workspace that lost or never had the hook gets it written now, so the NEXT
-  // launch of this agent has it. It does not reach this session: the CLI read its hooks
-  // at launch, so a registration made here asks for ONE restart below (lib/hook-restart.mjs).
-  // Marketplace installs and folders that are not this checkout's are left alone.
-  const hookOutcomes: string[] = []
-  if (!PRIVATE_HOOK.registered && INSTALL_METHOD !== 'marketplace') {
-    for (const folder of new Set(FLOOR_FOLDERS)) {
-      const result = registerCloneHooks({ workdir: folder, pluginDir: import.meta.dir })
-      hookOutcomes.push(result.outcome)
-      if (result.outcome === 'registered') log(`private turn: registered the agent hooks in ${folder}; they load at this agent's next launch`)
-      else if (result.outcome === 'failed') log(`private turn: could not register the agent hooks in ${folder}: ${result.detail ?? 'unknown'}`)
-    }
+  // Every boot of a clone writes the CURRENT hook set into its workspace, whoever launched
+  // it (board row f83db4b7): `hoai run` does this before each launch, and an agent started
+  // any other way (KC's Windows hoai-switch.ps1) had only this, which used to run only while
+  // the private turn hook was missing. Idempotent: hooks that hold are left untouched. It
+  // does not reach this session (the CLI read its hooks at launch), so it serves the next
+  // launch; only a boot that found the private turn hook MISSING hands its outcomes to the
+  // ONE restart below (lib/hook-restart.mjs). Marketplace installs and folders that are not
+  // this checkout's are left alone.
+  const bootHooks = registerCloneHooksAtBoot({
+    folders: FLOOR_FOLDERS,
+    pluginDir: import.meta.dir,
+    installMethod: INSTALL_METHOD,
+    privateHookRegistered: PRIVATE_HOOK.registered,
+  })
+  for (const result of bootHooks.results) {
+    if (result.outcome === 'registered') log(`hooks: registered the current agent hooks in ${result.folder}; they load at this agent's next launch`)
+    else if (result.outcome === 'failed') log(`hooks: could not register the agent hooks in ${result.folder}: ${result.detail ?? 'unknown'}`)
   }
+  const hookOutcomes: string[] = bootHooks.restartOutcomes
   void phase('capability-canon warm-up', () => loadServedCapabilities()).catch(
     // loadServedCapabilities does not throw (it falls back), but a background
     // phase must never become an unhandled rejection if that ever changes.

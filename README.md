@@ -1191,7 +1191,12 @@ checks at boot, then after each 24 hour interval
 plus a random zero to six hour jitter. It updates only to a newer version in
 the same major release line.
 
-The updater fetches `origin/main` and uses a fast-forward-only checkout update.
+The updater takes exactly the published release: the tag the hoai marketplace
+names (its `ref`), read from the public marketplace manifest. It fetches only
+that tag and fast-forwards to the tag's commit, never to the head of
+`origin/main` and never to a version that was tagged but not published. A
+checkout already ahead of the release is left alone, and a manifest that cannot
+be read means no update until the next check.
 It skips any checkout with local changes. On a machine with several daemons
 using the same clone, a shared lock lets one daemon update while the others
 exit cleanly for their supervisors to restart them. An update waits for current

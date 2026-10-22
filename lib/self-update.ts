@@ -13,6 +13,8 @@ import {
 } from 'node:fs'
 import { dirname, join } from 'node:path'
 
+import { readPublishedReleaseTag, releaseTagRefspec, releaseTagVersion } from './published-release.mjs'
+
 export const AUTO_UPDATE_STATE_FILE = 'auto-update.json'
 export const AUTO_UPDATE_LOCK_FILE = 'bgos-auto-update.lock'
 export const AUTO_UPDATE_SAFETY_FILE = 'bgos-auto-update-disabled.json'
@@ -46,7 +48,6 @@ export const UPDATE_BUSY_RETRY_MS = 30 * 60 * 1000
  *  longest legitimate wait is an owner's approval card, 30 min. */
 export const UPDATE_STALE_WORK_MS = 30 * 60 * 1000
 
-const REMOTE_REF = 'refs/remotes/origin/main'
 const SHA_RE = /^[0-9a-f]{40}$/i
 
 export interface Semver {
@@ -790,15 +791,42 @@ export type GitUpdateInspection =
       kind: 'checked'
       currentCommit: string
       targetCommit: string
+      /** The published release tag the target commit was resolved from. */
+      releaseTag: string
       latestVersion: string | null
       versionDecision: VersionDecision
       canFastForward: boolean
     }
 
+/** Which release tag is published right now (lib/published-release.mjs). Throws when it cannot say. */
+export type PublishedTagReader = () => Promise<string>
+
+/**
+ * Where a clone may update to: EXACTLY the release the marketplace publishes,
+ * never the head of origin/main (board row 84c23fab). This used to fetch
+ * origin main and take its head as the target the moment main's package.json
+ * carried a newer version, so a clone landed on every commit merged after the
+ * bump, and on versions that were tagged but never published. Now the target
+ * is the commit of the published tag (lib/published-release.mjs says why the
+ * marketplace ref and not the newest tag), fetched on its own, and that tag's
+ * own package.json must carry the tag's version.
+ *
+ * Every safety downstream is unchanged: the dirty tree check comes first and
+ * reads nothing over the network, the version decision still only moves
+ * forward within a major, and the fast-forward check still refuses anything
+ * that is not a descendant of HEAD. So a checkout already AHEAD of the release
+ * (a developer's, or a clone that followed origin/main before this) is
+ * left where it is: its version is not older, and nothing moves it back.
+ *
+ * A published release that cannot be read, or a tag whose package.json says
+ * otherwise, throws: every caller already treats a failed inspection as "no
+ * update this round, keep serving".
+ */
 export async function inspectGitUpdate(opts: {
   rootDir: string
   runningVersion: string | null
   runner?: CommandRunner
+  readPublishedTag?: PublishedTagReader
 }): Promise<GitUpdateInspection> {
   const runner = opts.runner ?? runCommand
   const status = await git(runner, opts.rootDir, [
@@ -807,20 +835,31 @@ export async function inspectGitUpdate(opts: {
     '--untracked-files=normal',
   ])
   if (porcelainIndicatesDirtyTree(status)) return { kind: 'dirty-tree' }
-  await git(runner, opts.rootDir, ['fetch', '--quiet', 'origin', 'main'])
+  const releaseTag = await (opts.readPublishedTag ?? (() => readPublishedReleaseTag()))()
+  const releaseVersion = releaseTagVersion(releaseTag)
+  if (releaseVersion === null) throw new Error(`the published release is not a release tag: ${String(releaseTag)}`)
+  // Only that one tag, and no tag auto-following: a depth 1 clone that fetched
+  // every tag would pull the history of all of them.
+  await git(runner, opts.rootDir, ['fetch', '--quiet', '--no-tags', 'origin', releaseTagRefspec(releaseTag)])
   const [currentCommit, targetCommit] = await Promise.all([
     git(runner, opts.rootDir, ['rev-parse', 'HEAD']),
-    git(runner, opts.rootDir, ['rev-parse', REMOTE_REF]),
+    git(runner, opts.rootDir, ['rev-parse', `refs/tags/${releaseTag}^{commit}`]),
   ])
   if (!SHA_RE.test(currentCommit) || !SHA_RE.test(targetCommit)) {
     throw new Error('git returned an invalid commit id')
   }
   const rawPackage = await git(runner, opts.rootDir, ['show', `${targetCommit}:package.json`])
   const latestVersion = packageVersion(rawPackage)
+  if (latestVersion !== releaseVersion) {
+    throw new Error(
+      `the published release ${releaseTag} carries package.json version ${latestVersion ?? 'none'}`,
+    )
+  }
   return {
     kind: 'checked',
     currentCommit,
     targetCommit,
+    releaseTag,
     latestVersion,
     versionDecision: decideVersionUpdate(opts.runningVersion, latestVersion),
     canFastForward: await canFastForward(runner, opts.rootDir, targetCommit),
@@ -832,6 +871,7 @@ export async function runSelfUpdateDryRun(opts: {
   runningVersion: string | null
   log: (message: string) => void
   runner?: CommandRunner
+  readPublishedTag?: PublishedTagReader
 }): Promise<GitUpdateInspection> {
   const result = await inspectGitUpdate(opts)
   if (result.kind === 'dirty-tree') {
@@ -954,6 +994,9 @@ export interface SelfUpdaterOptions {
   setDrainMode: (enabled: boolean) => void
   exit: (code: number) => void
   runner?: CommandRunner
+  /** Which release is published (default: the marketplace manifest over the
+   *  network, lib/published-release.mjs). Injected by the tests. */
+  readPublishedTag?: PublishedTagReader
   random?: () => number
   now?: () => number
   schedule?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>
@@ -1018,7 +1061,7 @@ export class SelfUpdater {
     this.safetyPath = join(opts.rootDir, '.git', AUTO_UPDATE_SAFETY_FILE)
   }
 
-  /** The newest version the last origin/main inspection found (heartbeat
+  /** The published release version the last inspection found (heartbeat
    *  telemetry, wire contract v1 latestKnownVersion). Null before the first
    *  successful check; non-git installs never construct an updater at all. */
   get latestKnownVersion(): string | null {
@@ -1110,12 +1153,12 @@ export class SelfUpdater {
    *
    * The distinction the early return was missing is between ACTING and
    * OBSERVING. Declining to install is right. Declining to look is not: the
-   * newest version on origin is a perfectly coherent answer mid-validation,
+   * newest published version is a perfectly coherent answer mid-validation,
    * and it is the one fact that makes a stuck daemon legible as stuck. This
    * does not unstick anything by itself, it makes the stuck state visible,
    * which is the precondition for anyone fixing it.
    *
-   * Read only (a fetch and a rev-parse), never latches, and swallows its own
+   * Read only (a manifest read, a tag fetch, rev-parses), never latches, and swallows its own
    * failure: an observation that cannot be taken must not change the caller's
    * outcome, because the caller's job is the restart ladder.
    */
@@ -1125,6 +1168,7 @@ export class SelfUpdater {
         rootDir: this.opts.rootDir,
         runningVersion: this.opts.runningVersion,
         runner: this.runner,
+        readPublishedTag: this.opts.readPublishedTag,
       })
       if (inspection.kind === 'dirty-tree') return
       this.lastInspectedVersion = inspection.latestVersion
@@ -1150,7 +1194,7 @@ export class SelfUpdater {
         await this.observeLatestVersion()
         this.opts.log(
           'Auto-update check deferred while the new code is validating; ' +
-            `latest on origin is ${this.lastInspectedVersion ?? 'unknown'}.`,
+            `latest published is ${this.lastInspectedVersion ?? 'unknown'}.`,
         )
         return
       }
@@ -1158,6 +1202,7 @@ export class SelfUpdater {
         rootDir: this.opts.rootDir,
         runningVersion: this.opts.runningVersion,
         runner: this.runner,
+        readPublishedTag: this.opts.readPublishedTag,
       })
       if (inspection.kind === 'dirty-tree') {
         this.opts.log('Auto-update skipped because the checkout has local changes.')
@@ -1173,7 +1218,9 @@ export class SelfUpdater {
         return
       }
       if (!inspection.canFastForward && inspection.currentCommit !== inspection.targetCommit) {
-        this.opts.log('Auto-update skipped because the checkout cannot fast-forward to origin/main.')
+        this.opts.log(
+          `Auto-update skipped because the checkout cannot fast-forward to the published release ${inspection.releaseTag}.`,
+        )
         return
       }
       const applied = await this.applyUpdate(inspection)
@@ -1225,6 +1272,7 @@ export class SelfUpdater {
         rootDir: this.opts.rootDir,
         runningVersion: this.opts.runningVersion,
         runner: this.runner,
+        readPublishedTag: this.opts.readPublishedTag,
       })
       if (inspection.kind === 'dirty-tree') return { kind: 'dirty-tree' }
       this.lastInspectedVersion = inspection.latestVersion
@@ -1463,6 +1511,11 @@ export class SelfUpdater {
           return 'skipped-target-mismatch'
         }
         this.recordInstalled(inspection.targetCommit, inspection.latestVersion!)
+        // The winner registered ITS workspace folders, not this daemon's: N
+        // agents share one clone, and each needs its own folders written
+        // before its own restart (board row f83db4b7), exactly as the winner
+        // and the already-updated path do below.
+        await this.registerWorkspaceHooks()
         if (mode === 'triggered') {
           // The rpc caller owns the restart ladder; report installed, never
           // exit (kc-server invariant).
@@ -1514,7 +1567,7 @@ export class SelfUpdater {
         this.opts.log(
           action.reason === 'dirty-tree'
             ? 'Auto-update skipped because the checkout became dirty before the pull.'
-            : 'Auto-update skipped because the checkout cannot fast-forward to origin/main.',
+            : `Auto-update skipped because the checkout cannot fast-forward to the published release ${inspection.releaseTag}.`,
         )
         this.opts.setDrainMode(false)
         return action.reason === 'dirty-tree' ? 'skipped-dirty' : 'skipped-not-ff'

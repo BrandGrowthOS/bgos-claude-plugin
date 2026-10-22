@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from 'bun:test'
+import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test'
 import {
   chmodSync,
   existsSync,
@@ -52,10 +52,31 @@ import {
   type AutoUpdateState,
   type CommandRunner,
 } from '../lib/self-update'
+import { PUBLISHED_MANIFEST_URL } from '../lib/published-release.mjs'
 
 const COMMIT_A = 'a'.repeat(40)
 const COMMIT_B = 'b'.repeat(40)
 const tempDirs: string[] = []
+
+// The marketplace the updater reads its published release from (lib/published-release.mjs),
+// served by a fetch stub so no test here reaches the network. gitRunner below publishes the
+// version its fake origin's tag carries, so the two agree unless a test says otherwise.
+let publishedTag = 'v0.27.0'
+const realFetch = globalThis.fetch
+beforeAll(() => {
+  globalThis.fetch = (async (input: unknown) => {
+    const url = String(input instanceof Request ? input.url : input)
+    if (url !== PUBLISHED_MANIFEST_URL) throw new Error(`unexpected fetch in the self-update tests: ${url}`)
+    const manifest = {
+      name: 'hoai',
+      plugins: [{ name: 'hoai', source: { source: 'url', url: 'https://github.com/BrandGrowthOS/bgos-claude-plugin.git', ref: publishedTag } }],
+    }
+    return new Response(JSON.stringify(manifest), { status: 200 })
+  }) as unknown as typeof fetch
+})
+afterAll(() => {
+  globalThis.fetch = realFetch
+})
 
 function tempDir(prefix: string): string {
   const dir = mkdtempSync(join(tmpdir(), prefix))
@@ -65,6 +86,7 @@ function tempDir(prefix: string): string {
 
 afterEach(() => {
   tempDirs.length = 0
+  publishedTag = 'v0.27.0'
 })
 
 function installedState(): AutoUpdateState {
@@ -86,6 +108,9 @@ function gitRunner(opts: {
   dependencyChanges?: string
   calls?: Array<{ file: string; args: readonly string[] }>
 } = {}): CommandRunner {
+  // The published release is this fake origin's tag: v<latestVersion>, at COMMIT_B.
+  const tag = `v${opts.latestVersion ?? '0.27.0'}`
+  publishedTag = tag
   return async (file, args) => {
     opts.calls?.push({ file, args: [...args] })
     const key = args.join(' ')
@@ -93,9 +118,9 @@ function gitRunner(opts: {
     if (key === 'status --porcelain --untracked-files=normal') {
       return { stdout: opts.status ?? '', stderr: '' }
     }
-    if (key === 'fetch --quiet origin main') return { stdout: '', stderr: '' }
+    if (key === `fetch --quiet --no-tags origin +refs/tags/${tag}:refs/tags/${tag}`) return { stdout: '', stderr: '' }
     if (key === 'rev-parse HEAD') return { stdout: `${COMMIT_A}\n`, stderr: '' }
-    if (key === 'rev-parse refs/remotes/origin/main') {
+    if (key === `rev-parse refs/tags/${tag}^{commit}`) {
       return { stdout: `${COMMIT_B}\n`, stderr: '' }
     }
     if (key === `show ${COMMIT_B}:package.json`) {
@@ -768,7 +793,7 @@ describe('porcelainIndicatesDirtyTree (untracked files never block an update)', 
 })
 
 describe('real git check in dry-run mode', () => {
-  test('uses fixed argv, fetches metadata, and never invokes merge or checkout', async () => {
+  test('uses fixed argv, fetches only the published tag, and never invokes merge or checkout', async () => {
     const calls: Array<{ file: string; args: readonly string[] }> = []
     const result = await inspectGitUpdate({
       rootDir: tempDir('self-update-inspect-'),
@@ -778,12 +803,18 @@ describe('real git check in dry-run mode', () => {
     expect(result.kind).toBe('checked')
     expect(calls).toContainEqual({
       file: 'git',
-      args: ['fetch', '--quiet', 'origin', 'main'],
+      args: ['fetch', '--quiet', '--no-tags', 'origin', '+refs/tags/v0.27.0:refs/tags/v0.27.0'],
+    })
+    expect(calls).toContainEqual({
+      file: 'git',
+      args: ['rev-parse', 'refs/tags/v0.27.0^{commit}'],
     })
     expect(calls).toContainEqual({
       file: 'git',
       args: ['show', `${COMMIT_B}:package.json`],
     })
+    // Never the head of origin/main (board row 84c23fab).
+    expect(calls.some((call) => call.args.includes('main') || call.args.some((arg) => arg.includes('origin/main')))).toBe(false)
     expect(calls.every((call) => call.file === 'git')).toBe(true)
     expect(calls.some((call) => call.args.includes('merge'))).toBe(false)
     expect(calls.some((call) => call.args.includes('checkout'))).toBe(false)
@@ -811,7 +842,7 @@ describe('real git check in dry-run mode', () => {
     // It moved past the status check and fetched remote metadata.
     expect(calls).toContainEqual({
       file: 'git',
-      args: ['fetch', '--quiet', 'origin', 'main'],
+      args: ['fetch', '--quiet', '--no-tags', 'origin', '+refs/tags/v0.27.0:refs/tags/v0.27.0'],
     })
   })
 
@@ -1345,7 +1376,7 @@ describe('real git check in dry-run mode', () => {
       if (key === 'status --porcelain --untracked-files=normal') {
         return { stdout: '', stderr: '' }
       }
-      if (key === 'fetch --quiet origin main') throw new Error('network unavailable')
+      if (key.startsWith('fetch ')) throw new Error('network unavailable')
       throw new Error(`unexpected command: ${key}`)
     }
     const updater = await initializeSelfUpdater({
@@ -2164,8 +2195,8 @@ describe('a staged daemon keeps observing what the latest version is', () => {
     const logs: string[] = []
     const exits: number[] = []
     const drainModes: boolean[] = []
-    // The version origin/main reports changes between the two checks, which is
-    // the whole point: the first run stages 0.27.0, then a later release lands.
+    // The published release changes between the two checks, which is the
+    // whole point: the first run stages 0.27.0, then a later release lands.
     let latest = '0.27.0'
     const runner: CommandRunner = async (file, args, opts) =>
       gitRunner({ calls, latestVersion: latest })(file, args, opts)
@@ -2216,7 +2247,7 @@ describe('a staged daemon keeps observing what the latest version is', () => {
     expect(logs.some((line) => line.includes('deferred while the new code is validating'))).toBe(
       true,
     )
-    expect(logs.some((line) => line.includes('latest on origin is 0.61.0'))).toBe(true)
+    expect(logs.some((line) => line.includes('latest published is 0.61.0'))).toBe(true)
   })
 
   test('an observation that fails leaves the previous reading rather than reporting null', async () => {

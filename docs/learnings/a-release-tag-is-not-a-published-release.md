@@ -1,0 +1,11 @@
+# A release tag is not a published release, so a clone follows the marketplace ref
+
+**Date:** 2026-10-22
+
+**Context:** Board row 84c23fab, "plugin updates reach some hosts unreleased". A clone install's self-updater (`lib/self-update.ts`) fetched `origin main` and fast-forwarded to its head as soon as main's package.json carried a newer version; the watcher (`lib/watcher-core.mjs` observeCloneInstall) did the same through `@{u}`. Marketplace installs only ever got the version the marketplace ref names.
+
+**Gotcha / Pattern:** `.github/workflows/release-tag.yml` creates `v<version>` on EVERY push to main whose package.json version has no tag yet. So a tag says "this version reached main", not "this version was published". Publishing is a separate act: the marketplace ref (`BrandGrowthOS/hoai-marketplace`, `.claude-plugin/marketplace.json`, `plugins[hoai].source.ref`), then the app's pin. From v0.65.0 to v0.73.0, twelve tags were never named by the marketplace (v0.65.0, v0.65.1, v0.65.3, v0.65.4, v0.67.3, v0.67.4, v0.68.0, v0.68.1, v0.68.2, v0.69.7, v0.70.0, v0.71.0); a clone following the newest tag would have taken each of them.
+
+**How to apply next time:** The release a clone may update to is read from the marketplace manifest (`lib/published-release.mjs`, one bounded GET of the public raw file), and only that tag is fetched (`git fetch --no-tags origin +refs/tags/<tag>:refs/tags/<tag>`; never `--tags` on a depth 1 field clone, which pulls the history of every tag). The target is that tag's commit, its own package.json must carry the tag's version, and every existing safety still applies (dirty tree, fast-forward only, newer version within a major, the drain). A read that fails means no update this round; it never falls back to main or to the newest tag.
+
+**Regression guard:** `test/self-update.published-release.test.ts` (real git: a commit after the release, a tagged but unpublished bump, a newly published release, a clone ahead of the release, a depth 1 clone, an unreadable manifest, a mis-tagged release), `test/published-release.test.ts` (the manifest reader and the watcher's observation), `test/update-executor.test.ts` (`no published release commit observed`).

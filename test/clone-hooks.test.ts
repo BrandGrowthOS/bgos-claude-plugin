@@ -1,8 +1,8 @@
 /**
  * lib/clone-hooks.mjs and bin/hoai-register-hooks.mjs (board bbbf3438 follow-up).
  *
- * A daemon that updates itself, or that boots without the private turn hook, registers the hooks of its CLONE
- * workspace itself: the CLI reads them once at launch and `bgos-agent update` was the only writer. These run the
+ * A daemon that updates itself, and every daemon boot of a clone (board row f83db4b7), registers the hooks of its
+ * CLONE workspace itself: the CLI reads them once at launch and `bgos-agent update` was the only writer. These run the
  * real functions and the real CLI on temp workspaces.
  *
  * Run: npx tsx --test test/clone-hooks.test.ts
@@ -103,10 +103,12 @@ test('the registrar CLI refuses a call with no workdir', () => {
   assert.equal(res.status, 1)
 })
 
-test('the daemon registers at boot only when the hook is missing, and the self-updater runs the registrar before it asks for a restart', () => {
+test('the daemon registers at EVERY boot of a clone, and the self-updater runs the registrar before it asks for a restart', () => {
   const server = readFileSync(join(repoRoot, 'server.ts'), 'utf8')
-  assert.match(server, /if \(!PRIVATE_HOOK\.registered && INSTALL_METHOD !== 'marketplace'\) \{/)
-  assert.match(server, /registerCloneHooks\(\{ workdir: folder, pluginDir: import\.meta\.dir \}\)/)
+  // Board row f83db4b7: the registration is no longer gated on the private turn hook being missing
+  // (test/clone-hooks.boot.test.ts has the behaviour).
+  assert.doesNotMatch(server, /if \(!PRIVATE_HOOK\.registered && INSTALL_METHOD !== 'marketplace'\) \{/)
+  assert.match(server, /registerCloneHooksAtBoot\(\{\n\s*folders: FLOOR_FOLDERS,\n\s*pluginDir: import\.meta\.dir,/)
   assert.match(server, /workspaceDirs: FLOOR_FOLDERS/)
   const updater = readFileSync(join(repoRoot, 'lib', 'self-update.ts'), 'utf8')
   const install = updater.indexOf('await this.registerWorkspaceHooks()')
