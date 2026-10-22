@@ -106,6 +106,7 @@ import {
   ensureMarketplaceAutoUpdate,
   preseedClaudeTrust,
 } from '../lib/claude-preseed.mjs'
+import { declaredCheckout } from '../lib/clone-hooks.mjs'
 import {
   MCP_CONFIG_FILE_NAME,
   parseMcpChannelServerName,
@@ -678,6 +679,26 @@ export function hookRegistrationFor({ cwd, scriptDir, method }) {
 }
 
 /**
+ * The bin folder whose hooks a launch from `cwd` should register: that of the
+ * checkout the folder's own .mcp.json starts (lib/clone-hooks.mjs
+ * declaredCheckout: its server.ts, or the wrapper's --plugin-dir), when that is
+ * an absolute path holding a forwarder; else this launcher's own bin. The hooks
+ * talk to the daemon that checkout runs, and the daemon's own boot
+ * registration (board row f83db4b7) writes that checkout's hooks too: a launch
+ * that wrote its OWN checkout's instead had the two rewriting each other's
+ * block on every launch whenever `hoai` came from another checkout.
+ * @param {{ cwd: string, scriptDir: string, serverName: string,
+ *   readFile: (path: string) => string | null, exists: (path: string) => boolean }} input
+ */
+export function hookScriptDirFor({ cwd, scriptDir, serverName, readFile, exists }) {
+  if (!serverName) return scriptDir
+  const served = declaredCheckout(readFile(joinDir(cwd, MCP_CONFIG_FILE_NAME)), serverName)
+  if (!/^([A-Za-z]:[\\/]|[\\/])/.test(served)) return scriptDir
+  const bin = joinDir(served.replace(/[\\/]+$/, ''), 'bin')
+  return exists(joinDir(bin, 'hoai-hook.mjs')) ? bin : scriptDir
+}
+
+/**
  * Decide HOW a bare `hoai` launches the agent from this folder.
  *
  * The channel flag comes from install-method detection (the sibling
@@ -722,7 +743,7 @@ export function buildRunPlan({
   listDir = defaultListDir,
   scriptDir = '',
 } = {}) {
-  void exists // reserved for future probes; kept so callers can inject it now
+
   // The channel: what this FOLDER publishes if it publishes anything, else
   // install-method detection. See resolveChannelSpec for why that order.
   //
@@ -766,7 +787,11 @@ export function buildRunPlan({
   // What the launch needs BESIDES the argv: the task tools flag, and (for a
   // clone) the hook entries that carry the activity rail into the session.
   const launchEnv = { ...LAUNCH_ENV }
-  const hooks = hookRegistrationFor({ cwd, scriptDir, method: resolution.method })
+  const hooks = hookRegistrationFor({
+    cwd,
+    scriptDir: hookScriptDirFor({ cwd, scriptDir, serverName: resolution.serverName, readFile, exists }),
+    method: resolution.method,
+  })
 
   const declared = folderIdentity(cwd, readFile)
   if (declared.conflict) {

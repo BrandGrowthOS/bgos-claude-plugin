@@ -1,8 +1,8 @@
 /**
  * lib/clone-hooks.mjs and bin/hoai-register-hooks.mjs (board bbbf3438 follow-up).
  *
- * A daemon that updates itself, or that boots without the private turn hook, registers the hooks of its CLONE
- * workspace itself: the CLI reads them once at launch and `bgos-agent update` was the only writer. These run the
+ * A daemon that updates itself, and every daemon boot of a clone (board row f83db4b7), registers the hooks of its
+ * CLONE workspace itself: the CLI reads them once at launch and `bgos-agent update` was the only writer. These run the
  * real functions and the real CLI on temp workspaces.
  *
  * Run: npx tsx --test test/clone-hooks.test.ts
@@ -103,13 +103,22 @@ test('the registrar CLI refuses a call with no workdir', () => {
   assert.equal(res.status, 1)
 })
 
-test('the daemon registers at boot only when the hook is missing, and the self-updater runs the registrar before it asks for a restart', () => {
+test('the daemon registers at EVERY boot of a clone, and the self-updater runs the registrar before it asks for a restart', () => {
   const server = readFileSync(join(repoRoot, 'server.ts'), 'utf8')
-  assert.match(server, /if \(!PRIVATE_HOOK\.registered && INSTALL_METHOD !== 'marketplace'\) \{/)
-  assert.match(server, /registerCloneHooks\(\{ workdir: folder, pluginDir: import\.meta\.dir \}\)/)
+  // Board row f83db4b7: the registration is no longer gated on the private turn hook being missing
+  // (test/clone-hooks.boot.test.ts has the behaviour).
+  assert.doesNotMatch(server, /if \(!PRIVATE_HOOK\.registered && INSTALL_METHOD !== 'marketplace'\) \{/)
+  assert.match(server, /registerCloneHooksAtBoot\(\{\n\s*folders: FLOOR_FOLDERS,\n\s*pluginDir: import\.meta\.dir,/)
   assert.match(server, /workspaceDirs: FLOOR_FOLDERS/)
   const updater = readFileSync(join(repoRoot, 'lib', 'self-update.ts'), 'utf8')
-  const install = updater.indexOf('await this.registerWorkspaceHooks()')
-  const triggered = updater.indexOf("if (mode === 'triggered') {", install)
-  assert.ok(install > 0 && triggered > install, 'registration sits after the install and before the restart branches')
+  // Every path that leaves the new checkout on disk registers before its restart branches: the installing daemon
+  // (anchored on its last log line, after the pull or the already-installed case) and the lock loser (board row
+  // f83db4b7). Each anchor is searched on its own, so one path's call cannot stand in for another's.
+  for (const anchor of ["this.opts.log('Auto-update was already installed by another daemon.')", 'this.recordInstalled(inspection.targetCommit, inspection.latestVersion!)\n        // The winner registered']) {
+    const at = updater.indexOf(anchor)
+    assert.ok(at > 0, `anchor moved: ${anchor}`)
+    const install = updater.indexOf('await this.registerWorkspaceHooks()', at)
+    const triggered = updater.indexOf("if (mode === 'triggered') {", at)
+    assert.ok(install > at && triggered > install, `registration sits after the install and before the restart branches (${anchor})`)
+  }
 })

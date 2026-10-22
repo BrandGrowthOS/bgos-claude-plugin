@@ -17,14 +17,13 @@ const NO_WIRING =
   'server.ts never asks for a restart after it registered the private turn hook at boot: ' +
   'it only logs "restart this agent to load them" (server.ts:14783 at main), so every private call refuses until a person restarts the agent'
 
-/** The boot registration block, from its gate to the end of its folder loop. */
+/** The boot registration, from its call to the outcomes it hands the restart. */
 function registration(): string {
-  const gate = "if (!PRIVATE_HOOK.registered && INSTALL_METHOD !== 'marketplace') {"
-  const at = server.indexOf(gate)
-  assert.ok(at >= 0, 'the boot registration gate moved')
-  const end = server.indexOf('\n  }\n', at)
-  // From the line above the gate, where the outcomes are declared.
-  return server.slice(server.lastIndexOf('\n', server.lastIndexOf('\n', at) - 1), end)
+  const at = server.indexOf('const bootHooks = registerCloneHooksAtBoot({')
+  assert.ok(at >= 0, 'the boot registration call moved')
+  const end = server.indexOf('const hookOutcomes: string[] = bootHooks.restartOutcomes', at)
+  assert.ok(end > at, 'the restart outcomes no longer come from the boot registration')
+  return server.slice(at, end + 'const hookOutcomes: string[] = bootHooks.restartOutcomes'.length)
 }
 
 /** The hook restart block in main(), from its state folder to hookRestart.start(). */
@@ -37,12 +36,15 @@ function block(): string {
   return server.slice(from, to + 'hookRestart.start()'.length)
 }
 
-test('the boot registration collects its outcomes only when the hook was NOT registered, never on a marketplace install', () => {
+test('the boot registration hands on its outcomes only when the hook was NOT registered, never on a marketplace install', () => {
   assert.ok(server.includes('createHookRestart({'), NO_WIRING)
   const r = registration()
-  assert.match(r, /const hookOutcomes: string\[\] = \[\]\n\s*if \(!PRIVATE_HOOK\.registered && INSTALL_METHOD !== 'marketplace'\) \{/)
-  assert.match(r, /hookOutcomes\.push\(result\.outcome\)/)
-  assert.equal(server.split('hookOutcomes.push(').length - 1, 1, 'nothing else adds an outcome')
+  // The decision itself is lib/clone-hooks.mjs registerCloneHooksAtBoot (test/clone-hooks.boot.test.ts runs it):
+  // restartOutcomes is empty when the private turn hook was found, and there is nothing at all on a marketplace install.
+  assert.match(r, /installMethod: INSTALL_METHOD,/)
+  assert.match(r, /privateHookRegistered: PRIVATE_HOOK\.registered,/)
+  assert.equal(server.split('const hookOutcomes').length - 1, 1, 'nothing else declares the outcomes')
+  assert.equal(server.split('hookOutcomes.push(').length - 1, 0, 'nothing else adds an outcome')
 })
 
 test('ONE restart through the daemon\'s own ladder, asked by the pairing lock holder only, on the daemon\'s own clock', () => {

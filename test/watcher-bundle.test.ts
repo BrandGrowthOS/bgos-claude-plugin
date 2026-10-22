@@ -48,6 +48,9 @@ test('WATCHER_BUNDLE_FILES is exactly the design 7.5 list (order and names)', ()
     'bin/hoai-watcher.mjs',
     'bin/bgos-install-method.mjs',
     'lib/plugin-cli.mjs',
+    // Which release a clone may update to (board row 84c23fab): watcher-core's clone
+    // observation imports it, so a bundle without it is an import error at the first update.
+    'lib/published-release.mjs',
     'lib/update-planner.mjs',
     'lib/update-executor.mjs',
     // Added 2026-10-05 with the file itself: update-executor imports it, the

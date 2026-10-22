@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from 'bun:test'
+import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test'
 import {
   chmodSync,
   existsSync,
@@ -52,10 +52,33 @@ import {
   type AutoUpdateState,
   type CommandRunner,
 } from '../lib/self-update'
+import { PUBLISHED_MANIFEST_URL } from '../lib/published-release.mjs'
 
 const COMMIT_A = 'a'.repeat(40)
 const COMMIT_B = 'b'.repeat(40)
 const tempDirs: string[] = []
+
+// The marketplace the updater reads its published release from (lib/published-release.mjs),
+// served by a fetch stub so no test here reaches the network. gitRunner below publishes the
+// version its fake origin's tag carries, so the two agree unless a test says otherwise.
+let publishedTag = 'v0.27.0'
+let manifestReads = 0
+const realFetch = globalThis.fetch
+beforeAll(() => {
+  globalThis.fetch = (async (input: unknown) => {
+    const url = String(input instanceof Request ? input.url : input)
+    if (url !== PUBLISHED_MANIFEST_URL) throw new Error(`unexpected fetch in the self-update tests: ${url}`)
+    manifestReads += 1
+    const manifest = {
+      name: 'hoai',
+      plugins: [{ name: 'hoai', source: { source: 'url', url: 'https://github.com/BrandGrowthOS/bgos-claude-plugin.git', ref: publishedTag } }],
+    }
+    return new Response(JSON.stringify(manifest), { status: 200 })
+  }) as unknown as typeof fetch
+})
+afterAll(() => {
+  globalThis.fetch = realFetch
+})
 
 function tempDir(prefix: string): string {
   const dir = mkdtempSync(join(tmpdir(), prefix))
@@ -65,6 +88,7 @@ function tempDir(prefix: string): string {
 
 afterEach(() => {
   tempDirs.length = 0
+  publishedTag = 'v0.27.0'
 })
 
 function installedState(): AutoUpdateState {
@@ -86,6 +110,9 @@ function gitRunner(opts: {
   dependencyChanges?: string
   calls?: Array<{ file: string; args: readonly string[] }>
 } = {}): CommandRunner {
+  // The published release is this fake origin's tag: v<latestVersion>, at COMMIT_B.
+  const tag = `v${opts.latestVersion ?? '0.27.0'}`
+  publishedTag = tag
   return async (file, args) => {
     opts.calls?.push({ file, args: [...args] })
     const key = args.join(' ')
@@ -93,9 +120,9 @@ function gitRunner(opts: {
     if (key === 'status --porcelain --untracked-files=normal') {
       return { stdout: opts.status ?? '', stderr: '' }
     }
-    if (key === 'fetch --quiet origin main') return { stdout: '', stderr: '' }
+    if (key === `fetch --quiet --no-tags origin +refs/tags/${tag}:refs/tags/${tag}`) return { stdout: '', stderr: '' }
     if (key === 'rev-parse HEAD') return { stdout: `${COMMIT_A}\n`, stderr: '' }
-    if (key === 'rev-parse refs/remotes/origin/main') {
+    if (key === `rev-parse refs/tags/${tag}^{commit}`) {
       return { stdout: `${COMMIT_B}\n`, stderr: '' }
     }
     if (key === `show ${COMMIT_B}:package.json`) {
@@ -768,7 +795,7 @@ describe('porcelainIndicatesDirtyTree (untracked files never block an update)', 
 })
 
 describe('real git check in dry-run mode', () => {
-  test('uses fixed argv, fetches metadata, and never invokes merge or checkout', async () => {
+  test('uses fixed argv, fetches only the published tag, and never invokes merge or checkout', async () => {
     const calls: Array<{ file: string; args: readonly string[] }> = []
     const result = await inspectGitUpdate({
       rootDir: tempDir('self-update-inspect-'),
@@ -778,12 +805,18 @@ describe('real git check in dry-run mode', () => {
     expect(result.kind).toBe('checked')
     expect(calls).toContainEqual({
       file: 'git',
-      args: ['fetch', '--quiet', 'origin', 'main'],
+      args: ['fetch', '--quiet', '--no-tags', 'origin', '+refs/tags/v0.27.0:refs/tags/v0.27.0'],
+    })
+    expect(calls).toContainEqual({
+      file: 'git',
+      args: ['rev-parse', 'refs/tags/v0.27.0^{commit}'],
     })
     expect(calls).toContainEqual({
       file: 'git',
       args: ['show', `${COMMIT_B}:package.json`],
     })
+    // Never the head of origin/main (board row 84c23fab).
+    expect(calls.some((call) => call.args.includes('main') || call.args.some((arg) => arg.includes('origin/main')))).toBe(false)
     expect(calls.every((call) => call.file === 'git')).toBe(true)
     expect(calls.some((call) => call.args.includes('merge'))).toBe(false)
     expect(calls.some((call) => call.args.includes('checkout'))).toBe(false)
@@ -791,6 +824,7 @@ describe('real git check in dry-run mode', () => {
 
   test('dirty inspection stops before fetching remote metadata', async () => {
     const calls: Array<{ file: string; args: readonly string[] }> = []
+    const readsBefore = manifestReads
     const result = await inspectGitUpdate({
       rootDir: tempDir('self-update-dirty-'),
       runningVersion: '0.26.0',
@@ -798,6 +832,21 @@ describe('real git check in dry-run mode', () => {
     })
     expect(result).toEqual({ kind: 'dirty-tree' })
     expect(calls).toHaveLength(1)
+    // Nothing over the network either: the published release is not even read.
+    expect(manifestReads).toBe(readsBefore)
+  })
+
+  test('a release that is not newer is read but nothing is fetched', async () => {
+    const calls: Array<{ file: string; args: readonly string[] }> = []
+    const readsBefore = manifestReads
+    const result = await inspectGitUpdate({
+      rootDir: tempDir('self-update-not-newer-'),
+      runningVersion: '0.27.0',
+      runner: gitRunner({ calls }),
+    })
+    expect(result).toMatchObject({ kind: 'checked', latestVersion: '0.27.0', versionDecision: { kind: 'skip', reason: 'not-newer' } })
+    expect(manifestReads).toBe(readsBefore + 1)
+    expect(calls.map((call) => call.args[0])).toEqual(['status', 'rev-parse'])
   })
 
   test('an untracked-only checkout is NOT dirty and the inspection proceeds', async () => {
@@ -811,7 +860,7 @@ describe('real git check in dry-run mode', () => {
     // It moved past the status check and fetched remote metadata.
     expect(calls).toContainEqual({
       file: 'git',
-      args: ['fetch', '--quiet', 'origin', 'main'],
+      args: ['fetch', '--quiet', '--no-tags', 'origin', '+refs/tags/v0.27.0:refs/tags/v0.27.0'],
     })
   })
 
@@ -1345,7 +1394,7 @@ describe('real git check in dry-run mode', () => {
       if (key === 'status --porcelain --untracked-files=normal') {
         return { stdout: '', stderr: '' }
       }
-      if (key === 'fetch --quiet origin main') throw new Error('network unavailable')
+      if (key.startsWith('fetch ')) throw new Error('network unavailable')
       throw new Error(`unexpected command: ${key}`)
     }
     const updater = await initializeSelfUpdater({
@@ -2164,8 +2213,8 @@ describe('a staged daemon keeps observing what the latest version is', () => {
     const logs: string[] = []
     const exits: number[] = []
     const drainModes: boolean[] = []
-    // The version origin/main reports changes between the two checks, which is
-    // the whole point: the first run stages 0.27.0, then a later release lands.
+    // The published release changes between the two checks, which is the
+    // whole point: the first run stages 0.27.0, then a later release lands.
     let latest = '0.27.0'
     const runner: CommandRunner = async (file, args, opts) =>
       gitRunner({ calls, latestVersion: latest })(file, args, opts)
@@ -2216,7 +2265,7 @@ describe('a staged daemon keeps observing what the latest version is', () => {
     expect(logs.some((line) => line.includes('deferred while the new code is validating'))).toBe(
       true,
     )
-    expect(logs.some((line) => line.includes('latest on origin is 0.61.0'))).toBe(true)
+    expect(logs.some((line) => line.includes('latest published is 0.61.0'))).toBe(true)
   })
 
   test('an observation that fails leaves the previous reading rather than reporting null', async () => {
@@ -2349,6 +2398,85 @@ describe('self-update registers the clone workspace hooks before the restart', (
     expect(events).toEqual(['exit'])
     expect(logs.some((line) => /could not register the agent hooks/.test(line))).toBe(true)
   })
+
+  test('a one-click (triggered) install registers the workspace hooks after the merge and before it returns', async () => {
+    const { rootDir, stateFilePath, events, calls } = setup()
+    const base = gitRunner({ calls })
+    const runner: CommandRunner = async (file, args, opts) => {
+      if (file === 'node') {
+        events.push('register')
+        calls.push({ file, args: [...args] })
+        return { stdout: 'registered /work/agent\n', stderr: '' }
+      }
+      if (args[0] === 'merge') events.push('merge')
+      return base(file, args, opts)
+    }
+    const updater = await initializeSelfUpdater({
+      ...common,
+      rootDir,
+      stateFilePath,
+      env: { BGOS_AUTO_UPDATE: 'on' },
+      exit: () => events.push('exit'),
+      runner,
+      workspaceDirs: ['/work/agent'],
+    })
+    expect(await updater!.updateNow(async () => {})).toEqual({ kind: 'installed', targetVersion: '0.27.0' })
+    expect(events).toEqual(['merge', 'register'])
+  })
+
+  // Board row f83db4b7: N agents share one clone. When another daemon held the update lock and installed the
+  // release, the WINNER registered its own folders only, and this daemon asked for its restart with nothing written
+  // for its own. Red at main: the loser path never ran the registrar.
+  for (const mode of ['scheduled', 'triggered'] as const) {
+    test(`a lock LOSER (${mode}) registers its own workspace folders before its restart`, async () => {
+      const { rootDir, stateFilePath, events, calls } = setup()
+      const lockPath = join(rootDir, '.git', 'bgos-auto-update.lock')
+      const sharedLock = tryAcquireUpdateLock(lockPath, 1_000)
+      expect(sharedLock.kind).toBe('acquired')
+      const base = gitRunner({ calls })
+      let revParseCalls = 0
+      const runner: CommandRunner = async (file, args, opts) => {
+        if (file === 'node') {
+          events.push('register')
+          calls.push({ file, args: [...args] })
+          return { stdout: 'registered /work/agent-2\n', stderr: '' }
+        }
+        if (args.join(' ') === 'rev-parse HEAD') {
+          revParseCalls += 1
+          // The inspection reads the old commit; once the holder is done, HEAD is the inspected target.
+          return { stdout: `${revParseCalls === 1 ? COMMIT_A : COMMIT_B}\n`, stderr: '' }
+        }
+        if (args[0] === 'merge') events.push('merge')
+        return base(file, args, opts)
+      }
+      const updater = await initializeSelfUpdater({
+        ...common,
+        rootDir,
+        stateFilePath,
+        env: { BGOS_AUTO_UPDATE: 'on' },
+        exit: () => events.push('exit'),
+        runner,
+        delay: async () => {
+          if (sharedLock.kind === 'acquired') sharedLock.release()
+        },
+        now: () => 1_001,
+        requestRestart: async () => {
+          events.push('restart')
+          return true
+        },
+        workspaceDirs: ['/work/agent-2'],
+      })
+      if (mode === 'scheduled') {
+        await updater!.checkNow()
+        expect(events).toEqual(['register', 'restart'])
+      } else {
+        expect(await updater!.updateNow(async () => {})).toEqual({ kind: 'installed', targetVersion: '0.27.0' })
+        expect(events).toEqual(['register'])
+      }
+      const register = calls.find((call) => call.file === 'node')!
+      expect(register.args.slice(1)).toEqual(['--plugin-dir', rootDir, '--workdir', '/work/agent-2'])
+    })
+  }
 
   test('a daemon with no workspace folders, or an update that did not land, runs no registration', async () => {
     const none = setup()

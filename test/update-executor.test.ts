@@ -1322,7 +1322,7 @@ function cloneWorld() {
   return { world, pluginRoot, pkg, git, gitCalls, state, currentHead: () => head }
 }
 
-test('clone: snapshot records HEAD, fast-forward runs fetch + merge --ff-only <target> in the plugin root, verify reads package.json', async () => {
+test('clone: snapshot records HEAD, fast-forward runs merge --ff-only <published release commit> in the plugin root, verify reads package.json', async () => {
   const c = cloneWorld()
   const plan = planMachine(c.state)
   assert.deepEqual(
@@ -1338,9 +1338,9 @@ test('clone: snapshot records HEAD, fast-forward runs fetch + merge --ff-only <t
     's04-restart_agent-912:ok:restarted',
     's05-verify_agent-912:ok:live',
   ])
+  // The observation already fetched the published release tag; nothing here reads origin/main (board row 84c23fab).
   assert.deepEqual(c.gitCalls, [
     ['rev-parse', 'HEAD'],
-    ['fetch', '--quiet', 'origin', 'main'],
     ['merge', '--ff-only', 'b'.repeat(40)],
     ['rev-parse', 'HEAD'],
   ])
@@ -1355,7 +1355,7 @@ test('clone: a failed merge rolls back with git checkout --detach <previous sha>
   const c = cloneWorld()
   c.git.failMerge = true
   const plan = planMachine(c.state)
-  const { deps } = memDeps(c.world, {}, { git: c.git, pluginRoot: c.pluginRoot })
+  const { deps } = memDeps(c.world, {}, { git: c.git, pluginRoot: c.pluginRoot, clone: { targetCommit: 'b'.repeat(40) } })
   const result = await executePlan(plan, deps)
   assert.deepEqual(stepView(result.steps).slice(0, 3), [
     's01-snapshot:ok:recorded',
@@ -1368,6 +1368,20 @@ test('clone: a failed merge rolls back with git checkout --detach <previous sha>
   assert.ok(c.gitCalls.every((args) => args[0] !== 'clean'))
   assert.equal(c.currentHead(), 'a'.repeat(40))
   assert.equal(result.installedVersion, '0.38.1')
+})
+
+test('clone: with no published release commit observed, the fast-forward refuses and never merges origin/main', async () => {
+  for (const targetCommit of [undefined, null, '', 'origin/main', 'v0.38.3']) {
+    const c = cloneWorld()
+    const plan = planMachine(c.state)
+    const { deps } = memDeps(c.world, {}, { git: c.git, pluginRoot: c.pluginRoot, clone: { targetCommit } })
+    const result = await executePlan(plan, deps)
+    assert.equal(stepView(result.steps)[1], 's02-git_fast_forward:failed:no_published_release', String(targetCommit))
+    assert.deepEqual(result.failedStep, { id: 's02-git_fast_forward', kind: 'git_fast_forward', message: 'fast_forward_failed:no_published_release' })
+    assert.ok(c.gitCalls.every((args) => args[0] !== 'merge' && args[0] !== 'fetch'), JSON.stringify(c.gitCalls))
+    assert.equal(c.currentHead(), 'a'.repeat(40))
+    assert.equal(result.installedVersion, '0.38.1')
+  }
 })
 
 // -- Observe, plan, execute, re-observe ---------------------------------------
