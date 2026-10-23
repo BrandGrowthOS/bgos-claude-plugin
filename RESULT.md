@@ -102,6 +102,12 @@ End to end on a REAL tmux server with a FAKE agent (`test/model-effort-tmux-rig.
 - `npx tsc --noEmit`: clean.
 - Full suite (`npm test`, node:test family; bun is not installed on this laptop, so the bun:test files could not run): 7161 tests, 7049 pass, 49 fail, 63 skipped on the first full run. 4 of the 49 were this branch's and are fixed (the frame name must be a literal for the stand down guard, `changes_rpc` must stay right after `memory_rpc`, and the steer and stop pause pins named the old expressions); those files now pass (253 tests across every new and touched file: 252 pass, 0 fail, 1 skipped). The other 45 are in 12 browser profile files, and two of those files (`browser-profile-active-backup`, `browser-profile-companion-backups`) hang with no timeout. Each of the 12 files was run on main `457210c` and on this branch with a 120 s cap: the same pass and fail counts and the same failing test names on both, hangs included. They fail on this machine without this change.
 
+### Whole suite, after the last fixes
+
+Every node:test file except the 12 browser profile files below (which fail or hang identically on main) and the bun:test and real Chromium files: 349 files, 7005 tests, 6941 pass, 63 skipped, 1 fail. The one failure is `browser-profile-runtime.test.ts` "target discovery pauses births and installs raw Network tracking before any first resume", a timing case that fails only under the full parallel load: run alone it passes 92 of 92, twice on main and twice on this branch, and it was not among the first full run's failures. No file of the browser profile family imports anything this branch changed.
+
+That run found two of this branch's own defects, fixed in the last commit: `test/pairing-lock-standdown.test.ts` classifies every socket frame and now lists `model_effort_rpc` as a lock holder frame; and the rig's draft case raced its own simulated keystrokes (the control read the pane before the fake agent had drawn them, and typed), so the case now waits until the draft is on screen. That race is real in production too, see "Not done".
+
 ### Red first, then green (rerun on the final commits)
 
 | Test file | At `078fe83` (tests only) | At `493d837` (HEAD) |
@@ -162,6 +168,7 @@ None of this was run against a real Claude Code session (the brief forbids it). 
 - **Both at once**: a frame carries one operation, so there is no partial state and no rollback path. A picker that changes both sends set_model, waits for its answer, then set_effort, and each answer carries the true report.
 - **Report push without a request**: the pill is refreshed with every answer (describe included). A change made by hand in the terminal reaches the pill on the next describe, not on its own; a watcher that PATCHes on every observation change would need to know which chats to report to.
 - **Model ids with brackets** (`[1m]`) are refused by the BGOS route's pattern, so they are not reported on the rail (they are in the RPC answer).
+- **A key in flight**: the composer is read from the screen, so a key the owner presses in the few milliseconds between the screen read and the typed literal is not seen; the literal would then land after it and the session would not confirm (`not_confirmed`, and the answer says when the literal is still in the message box). No screen read can close that window; the turn and dialog checks are repeated right before typing to keep it as short as possible.
 - **Windows**: no tmux, so no terminal, so the capability is never declared there.
 - **The `availableModels` user setting** of Claude Code (an allowlist an admin can set) is not read; the catalog is the CLI's own help.
 - **A project level `statusLine`** overrides the user level one, so the bridge never runs for that project: no observations, the capability is not declared there (fails closed). `hoai-model-control status` does not detect it.

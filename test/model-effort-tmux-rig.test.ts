@@ -121,7 +121,12 @@ test('a real draft in the pane is refused and left exactly as the owner typed it
   const { control, socket } = await startRig('draft')
   // The owner's own typing, simulated in this test's own pane.
   await exec(['tmux', '-S', socket, 'send-keys', '-t', 'rig', '-l', '--', 'half a thought'])
-  await new Promise((r) => setTimeout(r, 200))
+  // Wait until the draft is on screen: a key still in flight when the control
+  // reads the pane is the one race no screen read can close (RESULT.md).
+  for (let i = 0; i < 100 && !/❯ half a thought/.test(await capture(socket)); i++) {
+    await new Promise((r) => setTimeout(r, 50))
+  }
+  assert.match(await capture(socket), /❯ half a thought/, 'the owner\'s draft is drawn before the request')
   const out = await control.handle({ op: 'set_model', value: 'sonnet' })
   assert.equal(out.ok, false)
   if (!out.ok) assert.equal(out.code, 'composer_not_empty')
