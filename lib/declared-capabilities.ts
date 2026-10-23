@@ -193,6 +193,13 @@
  *                       so in the answer. The backend sends a changes frame to
  *                       a Claude Code pairing only while this is declared, and
  *                       only while the owner's switch is on (P7 stage 3).
+ *   doctor_rpc          this daemon answers the owner's agent check up (the
+ *                       Agent health card's Run checkup) with rows read from
+ *                       its own state: login, usage limit, versions, home
+ *                       check (lib/doctor-rpc.ts, 0.75.0, BGOS board row
+ *                       01a16795). Every host and every connection. Up to
+ *                       0.74.0 nothing answered the frame; the backend can
+ *                       tell the two apart by this token.
  *   email_label         this daemon labels an email (senderType
  *                       external_email) as a stranger's words on every lane:
  *                       a fixed first line and end line around everything the
@@ -275,6 +282,7 @@ export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   'boards_download',
   SESSIONS_LIBRARY,
   'changes_rpc',
+  'doctor_rpc',
   'skills_list',
   'skills_receive',
   'ui_card',
