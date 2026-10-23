@@ -3,7 +3,7 @@
  * (PLAN-doctor.md section 4.2, packet P2). One table per cause C3 to C9, then
  * the two invariants that must never break:
  *
- *   never a restart or a start for C8 (signed out) or C9 (usage limit)
+ *   never a restart or a start for C8 (signed out) or C9 (usage limit); only the C3 connector restart (P3)
  *   never a restart or a start when the safe table says unsafe, or a gate says no
  *
  * Every observation is a fixture; nothing here reads a disk, a process or the
@@ -410,7 +410,6 @@ test('C8 and C9 are reported FIRST, before any other action, in the same pass', 
 test('never a restart or a start for C8: even when every other gate is open', () => {
   for (const over of [
     {},
-    { daemonAlive: false },
     { claudeAlive: false, daemonAlive: false },
     { messagesDeliveredAtMs: NOW - 30 * MIN, lastTranscriptActivityAtMs: NOW - 40 * MIN },
     { runningVersion: '0.73.0', installedVersion: '0.74.0' },
@@ -427,7 +426,6 @@ test('never a restart or a start for C8: even when every other gate is open', ()
 test('never a restart or a start for C9: even when every other gate is open', () => {
   for (const over of [
     {},
-    { daemonAlive: false },
     { claudeAlive: false, daemonAlive: false },
     { messagesDeliveredAtMs: NOW - 30 * MIN, lastTranscriptActivityAtMs: NOW - 40 * MIN },
     { runningVersion: '0.73.0', installedVersion: '0.74.0' },
@@ -439,6 +437,38 @@ test('never a restart or a start for C9: even when every other gate is open', ()
       if (MUTATING.has(a.action)) assert.equal(a.reason, 'blocked_by_usage_limit', JSON.stringify(over))
     }
   }
+})
+
+// P3 (brief decision): the connector is not the model. Restarting a dead daemon needs no login and
+// no quota, and the daemon is what carries the login or limit report, so C3 is fixed in the same pass
+// that reports C8 or C9. Nothing else is restarted or started for them.
+test('C3 under C8 or C9: the dead connector is restarted and verified, the login or limit still reported first', () => {
+  for (const [kind, code] of [['authentication_failed', 'login_expired'], ['rate_limit', 'usage_limit']] as const) {
+    for (const over of [{ daemonAlive: false }, { beaconHeartbeatAtMs: NOW - 10 * MIN }]) {
+      const pass = checkupPass(obs({ ...over, transcriptError: { kind, resetAt: null } }))
+      assert.deepEqual(steps(pass.actions), ['report:planned', 'restart:planned', 'verify:planned'], `${kind} ${JSON.stringify(over)}`)
+      assert.equal(pass.actions[0].code, code)
+      assert.deepEqual(pass.actions[1].causes, ['C3'])
+    }
+  }
+})
+
+test('C3 under C8 still goes through the safe table and the restart budget', () => {
+  const login = { transcriptError: { kind: 'authentication_failed', resetAt: null } }
+  const busy = checkupPass(obs({ ...login, daemonAlive: false, stateFresh: true, agentState: freshState({ turnInFlight: true }) }))
+  assert.deepEqual(steps(busy.actions), ['report:planned', 'restart:skipped'])
+  assert.equal(busy.actions[1].reason, 'turn_in_flight')
+  const spent = checkupPass(obs({ ...login, daemonAlive: false, lastRestartAtMs: NOW - MIN }))
+  assert.deepEqual(steps(spent.actions), ['report:planned', 'restart:skipped'])
+  assert.equal(spent.actions[1].reason, 'restart_rate_limited')
+})
+
+test('C3 under C8 with a stale plugin: the restart that fixes the connector applies the staged update too', () => {
+  const pass = checkupPass(
+    obs({ daemonAlive: false, runningVersion: '0.73.0', installedVersion: '0.74.0', transcriptError: { kind: 'authentication_failed', resetAt: null } }),
+  )
+  assert.deepEqual(steps(pass.actions), ['report:planned', 'update:planned', 'restart:planned', 'verify:planned'])
+  assert.deepEqual(pass.actions[2].causes, ['C3', 'C6'])
 })
 
 test('C8 with a stale plugin: the update is still staged, nothing is restarted', () => {
@@ -544,7 +574,7 @@ test('verify is planned only when something was actually changed', () => {
 
 // -- The invariants, over the whole cross product ----------------------------------------------
 
-test('invariant: no planned restart or start under C8, C9, an unsafe moment or a closed gate (every combination)', () => {
+test('invariant: no planned restart or start under C8 or C9 (but the C3 connector restart), an unsafe moment or a closed gate (every combination)', () => {
   const flags: Array<[string, Record<string, any>]> = [
     ['login', { transcriptError: { kind: 'authentication_failed', resetAt: null } }],
     ['limit', { transcriptError: { kind: 'rate_limit', resetAt: null } }],
@@ -581,8 +611,11 @@ test('invariant: no planned restart or start under C8, C9, an unsafe moment or a
         cases++
         for (const a of pass.actions) {
           if (!MUTATING.has(a.action) || a.outcome !== 'planned') continue
-          assert.equal(on.has('login'), false, `restart under C8: ${label}`)
-          assert.equal(on.has('limit'), false, `restart under C9: ${label}`)
+          // Under C8 or C9 only the connector (C3: claude alive, daemon dead) is ever restarted, never started.
+          if (on.has('login') || on.has('limit')) {
+            assert.equal(a.action, 'restart', `start under C8 or C9: ${label}`)
+            assert.equal(pass.findings.some((f: { cause: string }) => f.cause === 'C3'), true, `restart under C8 or C9 without C3: ${label}`)
+          }
           assert.equal(open, true, `restart through a closed gate: ${label}`)
           // A start of a session that is not running is no kill; every other restart needs the safe table.
           if (a.action === 'restart') assert.equal(safe, true, `kill when unsafe: ${label}`)
