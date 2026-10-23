@@ -100,13 +100,19 @@ End to end on a REAL tmux server with a FAKE agent (`test/model-effort-tmux-rig.
 - New files, all green: `model-effort-literals` 7, `model-effort-pane` 9, `model-control-store` 12, `model-effort-catalog` 8, `model-effort-control` 25, `model-effort-rpc` 10, `model-effort-wiring` 8, `model-effort-tmux-rig` 4.
 - Red first: commit `078fe83` holds the tests before any implementation (every new file failed on its missing module or export). Two corrections came after it, both before their implementation existed: the pane identity rule was tightened (the shell in front of a suspended CLI) and the rig moved to private socket files; both are in the implementation commit.
 - `npx tsc --noEmit`: clean.
-- Full suite (`npm test`, node:test family; bun is not installed on this laptop, so the bun:test files could not run): 7161 tests, 7049 pass, 49 fail, 63 skipped on the first full run. 4 of the 49 were this branch's and are fixed (the frame name must be a literal for the stand down guard, `changes_rpc` must stay right after `memory_rpc`, and the steer and stop pause pins named the old expressions); those files now pass (253 tests across every new and touched file: 252 pass, 0 fail, 1 skipped). The other 45 are in 12 browser profile files, and two of those files (`browser-profile-active-backup`, `browser-profile-companion-backups`) hang with no timeout. Each of the 12 files was run on main `457210c` and on this branch with a 120 s cap: the same pass and fail counts and the same failing test names on both, hangs included. They fail on this machine without this change.
+- First full run (`npm test`, default temp folder): 7161 tests, 7049 pass, 49 fail. 4 were this branch's (a literal frame name for the stand down guard, `changes_rpc` right after `memory_rpc`, and the steer and stop pause pins on the old expressions) and are fixed; the other 45 were the browser profile files and the `/var` symlink, explained below. The final whole suite run is green (next section).
 
-### Whole suite, after the last fixes
+### Whole suite: green at `d29fc86`
 
-Every node:test file except the 12 browser profile files below (which fail or hang identically on main) and the bun:test and real Chromium files: 349 files, 7005 tests, 6941 pass, 63 skipped, 1 fail. The one failure is `browser-profile-runtime.test.ts` "target discovery pauses births and installs raw Network tracking before any first resume", a timing case that fails only under the full parallel load: run alone it passes 92 of 92, twice on main and twice on this branch, and it was not among the first full run's failures. No file of the browser profile family imports anything this branch changed.
+Every node:test file (361, nothing excluded) and every real Chromium file (7, one at a time, as `scripts/run-tests.mjs` runs them), with `TMPDIR=/private/tmp/claude-501/mec`:
 
-That run found two of this branch's own defects, fixed in the last commit: `test/pairing-lock-standdown.test.ts` classifies every socket frame and now lists `model_effort_rpc` as a lock holder frame; and the rig's draft case raced its own simulated keystrokes (the control read the pane before the fake agent had drawn them, and typed), so the case now waits until the draft is on screen. That race is real in production too, see "Not done".
+- node:test: 7175 tests, **7112 pass, 0 fail**, 0 cancelled, 63 skipped (exit 0).
+- Chromium: all 7 files exit 0 (2, 1, 7 and 1 pass; the other three skip on this host), 0 fail.
+- bun:test (14 files): not run, bun is not installed on this laptop.
+
+Why `TMPDIR`: the earlier runs used macOS's default `os.tmpdir()`, under `/var/folders/...`, and `/var` is a symlink to `/private/var`. The browser profile state code refuses any symlink on the path to its own folder (`lib/browser-profile-companion-state.mjs` `_directory`), so its 12 test files failed or hung there, on main `457210c` exactly as on this branch (the per file comparison below). With a temp folder whose path has no symlink they pass. The folder must also be outside a git checkout: inside this worktree, the bootstrap tests saw the repository and failed, which is why it is under the session's temp root. No code was changed for this.
+
+The whole suite runs also found two of this branch's own defects, fixed in `d29fc86`: `test/pairing-lock-standdown.test.ts` classifies every socket frame and now lists `model_effort_rpc` as a lock holder frame; and the rig's draft case raced its own simulated keystrokes (the control read the pane before the fake agent had drawn them, and typed), so the case now waits until the draft is on screen. That race is real in production too, see "Not done". A load sensitive timing case in `browser-profile-runtime.test.ts` failed once under the default temp folder and passed alone on main and on the branch; it passed in the green run above.
 
 ### Red first, then green (rerun on the final commits)
 
@@ -123,9 +129,9 @@ That run found two of this branch's own defects, fixed in the last commit: `test
 
 Existing files this branch touched, at HEAD: `compact-inject` 16, `steer` 39, `stop-pause-wiring` 5, `changes-wiring` 4, `mission-ws-wiring` 22, `declared-capabilities` 36, `pairing-lock` 40, all pass, 0 fail.
 
-### The browser profile failures are main's (same counts, same failing test names)
+### Under the default temp folder the browser profile files fail identically on main
 
-Each file run alone with a 120 s cap that kills its whole process group, on a detached worktree of main `457210c` and on this branch:
+Kept for the record (the cause is the `/var` symlink above). Each file run alone with a 120 s cap that kills its whole process group, on a detached worktree of main `457210c` and on this branch, with the default `TMPDIR`:
 
 | File | main | branch |
 | --- | --- | --- |
@@ -142,7 +148,7 @@ Each file run alone with a 120 s cap that kills its whole process group, on a de
 | browser-profile-peer-review | 3 pass, 1 fail | 3 pass, 1 fail |
 | browser-profile-portable-extras | 0 pass, 10 fail | 0 pass, 10 fail |
 
-None of these files imports anything this branch changed; one sample failure on main is `ENOENT ... hoai-peer-pins-*/pins`, an environment fault on this laptop. They are reported, not fixed: they are outside this brief.
+None of these files imports anything this branch changed. With the symlink free `TMPDIR` they all pass (the green run above).
 
 ### On the wire and #3060
 
