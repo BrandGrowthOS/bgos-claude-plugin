@@ -2,6 +2,14 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.74.2 (2026-10-24)
+
+**A mission holds up to 20 mini goals (was 12), matching the BGOS backend (KC, 1048 msg 149968: "remove that 12 goals limit ... up to at least 20").** The connector checked the count itself before sending, so the backend's new limit could not reach an agent until this release.
+
+- `lib/missions.ts`: `MISSION_MAX_GOALS` 12 to 20; the create, set and add doors all read it.
+- `server.ts`: the `create_mission`, `set_mission_goals` and `add_mission_goals` tool descriptions say 2 to 20 and 1 to 20.
+- Test: `test/missions.test.ts` pins the literal 20 on all three doors (red on 0.74.1: actual 12).
+
 ## 0.74.1 (2026-10-23)
 
 **The agent check up is answered (BGOS board row 01a16795).** The HOAI app's Agent health card offers "Run checkup" for every paired agent, and the BGOS backend sends it as a `doctor_rpc` frame to the pairing room, then waits 10 s for an ack. The lane was built for Hermes (BGOS #747) and this daemon never listened for it, so every check up of a Claude Code agent read "We could not reach your computer. It may be asleep or offline." while the agent was online and chatting. Measured on Cho (pairing 144, 0.74.0) on 2026-10-23: the start route answered 200 and no ack or result ever arrived.

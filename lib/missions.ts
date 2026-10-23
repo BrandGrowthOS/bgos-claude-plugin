@@ -39,7 +39,7 @@
  *
  * Create body: { title, miniGoals: [{ name, doneWhen }], chatId? }.
  * Complete body: { summary? }, where summary is at most 500 chars. The backend
- * accepts 2..12 goals (the trained flow targets 4 to 10), assigns goal ids
+ * accepts 2..20 goals (the trained flow targets 4 to 10), assigns goal ids
  * 1..n, auto-completes on the last tick, and treats a tick of an already-done
  * goal as an idempotent no-op. All write responses embed the full mission
  * snapshot as { ok, mission }; the active read returns { mission | null }.
@@ -60,7 +60,7 @@
  */
 
 export const MISSION_MIN_GOALS = 2
-export const MISSION_MAX_GOALS = 12
+export const MISSION_MAX_GOALS = 20
 export const MISSION_TITLE_MAX = 200
 export const MISSION_GOAL_NAME_MAX = 120
 export const MISSION_DONE_WHEN_MAX = 200
@@ -79,7 +79,7 @@ export const MISSION_TURN_CAP_MAX = 200
 /** MissionRunReportInputDto.workingMs, one day. */
 export const MISSION_WORKING_MS_MAX = 86_400_000
 
-/** What the trained flow should aim for (the hard caps are 2..12). */
+/** What the trained flow should aim for (the hard caps are 2..20). */
 export const MISSION_TARGET_RANGE = '4 to 10'
 
 export interface MissionGoalBody {
@@ -233,7 +233,7 @@ const GOALS_HELP =
   'observable check that proves the goal, e.g. "the URL returns 200".'
 
 /**
- * The 2..12 { name, done_when } goals a create and a set-goals write share,
+ * The 2..20 { name, done_when } goals a create and a set-goals write share,
  * validated once so the two tools can never disagree about what a goal is.
  */
 function parseMissionGoals(
@@ -329,7 +329,7 @@ export interface MissionAddGoalsBody {
  * Build the add_mission_goals body: goals to APPEND to a mission that already
  * has some.
  *
- * ONE to twelve, not two: the set-goals door writes a whole plan and a plan of
+ * ONE to twenty, not two: the set-goals door writes a whole plan and a plan of
  * one goal is a plan that was not made, but adding a single goal to a plan that
  * exists is the normal case and the reason this door exists at all.
  *
