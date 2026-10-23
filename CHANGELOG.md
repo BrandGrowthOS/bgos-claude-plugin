@@ -2,7 +2,7 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
-## Unreleased
+## 0.74.1 (2026-10-23)
 
 **The agent check up is answered (BGOS board row 01a16795).** The HOAI app's Agent health card offers "Run checkup" for every paired agent, and the BGOS backend sends it as a `doctor_rpc` frame to the pairing room, then waits 10 s for an ack. The lane was built for Hermes (BGOS #747) and this daemon never listened for it, so every check up of a Claude Code agent read "We could not reach your computer. It may be asleep or offline." while the agent was online and chatting. Measured on Cho (pairing 144, 0.74.0) on 2026-10-23: the start route answered 200 and no ack or result ever arrived.
 
