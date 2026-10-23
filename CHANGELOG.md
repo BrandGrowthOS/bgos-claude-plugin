@@ -2,6 +2,10 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.74.2 (2026-10-23)
+
+**The check up's classifier and planner (packet P2 of the check up plan), not wired yet.** `lib/agent-checkup.mjs` is a pure function from what the watcher observes to the cause of an offline agent (C3 daemon down, C4 dead session, C5 wedged, C6 stale plugin, C7 stuck update, C8 expired login, C9 usage limit) and the safe action for each: a restart or update only when the safe moment table allows, never a restart for an expired login or a usage limit, never a kill when unsafe. Nothing calls it yet; the watcher job that uses it is packet P3.
+
 ## 0.74.0 (2026-10-22)
 
 **A clone install's updaters (the daemon's self-update and the watcher) update to exactly the published release, never the head of origin/main (board row 84c23fab); and every daemon boot of a clone writes the current hook set into its workspace, however the agent was launched (board row f83db4b7).**
