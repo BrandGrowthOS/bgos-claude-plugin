@@ -509,3 +509,110 @@ test('the pass deadline bounds the verify: a deaf agent is not_fixed inside 75 s
   assert.ok(clock.now() - T0 <= 75_000, `the pass took ${clock.now() - T0} ms`)
   assert.equal(keepAliveRecord(fs).state, 'failed')
 })
+
+// -- C6 and C7: file level first, then the gated restart ------------------------------------------
+
+/** A planner that answers like the real one for one agent, and an executor that records what it was handed. */
+function updateModules(opts: { latest?: string; verdict?: string; reason?: string; onPlan?: (state: any) => void; ran?: any[][] } = {}) {
+  return {
+    ...stubModules({ latest: opts.latest }),
+    planMachine: (state: any) => {
+      opts.onPlan?.(state)
+      if (opts.verdict === 'blocked') return { verdict: 'blocked', reason: opts.reason ?? 'rollback_latched', targetVersion: null, steps: [] }
+      const install = state.intent === 'repair' ? 'reinstall_plugin' : 'update_plugin'
+      return {
+        verdict: 'plan',
+        targetVersion: opts.latest ?? '0.38.4',
+        steps: [
+          { id: 's01-refresh_marketplace', kind: 'refresh_marketplace', onFailure: 'stop', why: 'x' },
+          { id: 's02-snapshot', kind: 'snapshot', onFailure: 'stop', why: 'x' },
+          { id: `s03-${install}`, kind: install, onFailure: 'escalate', why: 'x' },
+          { id: 's04-verify_installed', kind: 'verify_installed', onFailure: 'rollback', why: 'x' },
+          ...state.agents.flatMap((a: any) => [
+            { id: `s05-restart_agent:${a.assistantId}`, kind: 'restart_agent', target: a.assistantId, via: 'marker', onFailure: 'continue', why: 'x' },
+            { id: `s06-verify_agent:${a.assistantId}`, kind: 'verify_agent', target: a.assistantId, onFailure: 'rollback', why: 'x' },
+          ]),
+        ],
+      }
+    },
+    executePlan: async (plan: any, deps: any, report: any) => {
+      opts.ran?.push(plan.steps.map((s: any) => s.kind))
+      for (const step of plan.steps) {
+        if (step.kind === 'restart_agent' || step.kind === 'verify_agent') throw new Error('the checkup restarts through its own gate, never the executor')
+        await report(step.id, { state: 'running' })
+        await report(step.id, { state: 'ok', message: step.kind })
+      }
+      return { ok: true, verdict: 'done', failedStep: null, rolledBack: false, targetVersion: plan.targetVersion, installedVersion: plan.targetVersion, steps: plan.steps.map((s: any) => ({ ...s, state: 'ok', message: s.kind })) }
+    },
+  }
+}
+
+const IDLE_PS = [psLine(1, 0, '/sbin/init'), psLine(3000, 4242, `node ${ROOT}/bin/hoai-core.mjs`), psLine(5912, 3000, `claude --resume ${SID}`), psLine(4912, 5912, `node ${ROOT}/server.ts`)].join('\n')
+
+test('C6 stale plugin: the update runs FILE steps only (no executor restart), then the one gated restart applies it, verified', async () => {
+  const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState({ runningVersion: '0.38.3', lastActivityAt: new Date(T0 - 40 * MIN).toISOString() }) })
+  writeTranscript(fs, [ownerMessage(T0 - 41 * MIN), assistantTurn(T0 - 40 * MIN)], T0 - 40 * MIN)
+  const ran: any[][] = []
+  const planned: any[] = []
+  const backend = fakeBackend(checkupJob())
+  const clock = fakeClock()
+  daemonAnswersProbe(fs, clock)
+  const run = rig(fs, backend, clock, IDLE_PS, { alive: [3000, 5912, 4912], modules: updateModules({ ran, onPlan: (s) => planned.push(s) }) })
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.equal(terminal.state, 'done')
+  assert.deepEqual(terminal.findings.map((f: any) => [f.cause, f.status]), [['stale_plugin', 'WARN']])
+  assert.match(terminal.findings[0].detail, /0\.38\.3/)
+  assert.deepEqual(terminal.actions.map((a: any) => [a.cause, a.did, a.outcome]), [
+    ['stale_plugin', 'update', 'fixed'],
+    ['stale_plugin', 'restart_agent', 'fixed'],
+  ])
+  assert.deepEqual(ran, [['refresh_marketplace', 'snapshot', 'update_plugin', 'verify_installed']])
+  assert.deepEqual(planned.map((s) => [s.intent, s.agents.map((a: any) => a.assistantId)]), [['update', ['912']]], 'planned for this agent alone')
+  assert.equal(restartRequested(fs), true)
+  assertDtoShape(backend.progress('chk-1'))
+})
+
+test('C6 with updates latched: the update is not_fixed by name and the restart it needed is skipped, nothing touched', async () => {
+  const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState({ runningVersion: '0.38.3', lastActivityAt: new Date(T0 - 40 * MIN).toISOString() }) })
+  writeTranscript(fs, [ownerMessage(T0 - 41 * MIN), assistantTurn(T0 - 40 * MIN)], T0 - 40 * MIN)
+  const backend = fakeBackend(checkupJob())
+  const clock = fakeClock()
+  const run = rig(fs, backend, clock, IDLE_PS, { alive: [3000, 5912, 4912], modules: updateModules({ verdict: 'blocked', reason: 'rollback_latched' }) })
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.equal(terminal.state, 'failed')
+  assert.deepEqual(terminal.actions.map((a: any) => [a.cause, a.did, a.outcome]), [
+    ['stale_plugin', 'update', 'not_fixed'],
+    ['stale_plugin', 'restart_agent', 'skipped'],
+  ])
+  assert.match(terminal.actions[0].detail, /rollback_latched/)
+  assert.match(terminal.actions[1].detail, /update_not_applied/)
+  assert.equal(restartRequested(fs), false)
+  assert.equal(keepAliveRecord(fs), null)
+})
+
+test('C7 stuck update (validation stalled): ONE repair, file steps only, then the gated restart and verify', async () => {
+  const fs = agentFs({
+    [`${PLUGIN_STATE}/agent-state.json`]: agentState({ lastActivityAt: new Date(T0 - 40 * MIN).toISOString() }),
+    [`${PLUGIN_STATE}/auto-update.json`]: JSON.stringify({ schemaVersion: 1, disabled: false, validationPending: true, validationBootStartedAt: T0 - 30 * MIN }),
+  })
+  writeTranscript(fs, [ownerMessage(T0 - 41 * MIN), assistantTurn(T0 - 40 * MIN)], T0 - 40 * MIN)
+  const ran: any[][] = []
+  const planned: any[] = []
+  const backend = fakeBackend(checkupJob())
+  const clock = fakeClock()
+  daemonAnswersProbe(fs, clock)
+  const run = rig(fs, backend, clock, IDLE_PS, { alive: [3000, 5912, 4912], modules: updateModules({ ran, onPlan: (s) => planned.push(s) }) })
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.equal(terminal.state, 'done')
+  assert.deepEqual(terminal.findings.map((f: any) => f.cause), ['stuck_update'])
+  assert.deepEqual(terminal.actions.map((a: any) => [a.cause, a.did, a.outcome]), [
+    ['stuck_update', 'repair', 'fixed'],
+    ['stuck_update', 'restart_agent', 'fixed'],
+  ])
+  assert.deepEqual(planned.map((s) => s.intent), ['repair'])
+  assert.deepEqual(ran, [['refresh_marketplace', 'snapshot', 'reinstall_plugin', 'verify_installed']])
+  assertDtoShape(backend.progress('chk-1'))
+})
