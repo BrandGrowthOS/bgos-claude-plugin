@@ -80,6 +80,7 @@ import { SkillsRpcHandler, normalizeSkillsRpc } from './lib/skills-rpc.js'
 import { listSkills, managedSkillsDir, removeAgentSkill } from './lib/skills-inventory.js'
 import { exportSkill, installBundle } from './lib/skills-share.js'
 import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
+import { DoctorRpcHandler, buildDoctorChecks, normalizeDoctorRpc } from './lib/doctor-rpc.ts'
 import { collectChanges, createNodeRunGit, nodeChangesFs } from './lib/git-changes.js'
 import { defaultPidAlive, pluginStateDirFor, readBootClock } from './lib/agent-inventory.mjs'
 import { createMarkerTakeover, currentPluginRootFor, handoffEnv, mcpEnvKeys, nodeTakeoverFs } from './lib/marker-takeover.mjs'
@@ -13100,6 +13101,36 @@ const changesRpc = new ChangesRpcHandler({
   log,
 })
 
+// ── Check up (doctor_rpc, BGOS board row 01a16795) ────────────────────────────
+// The owner's Agent health card runs a check up on this agent. Up to 0.74.0
+// nothing here listened for the frame, so every Claude Code check up read "the
+// agent host did not respond" while the agent was online. The rows are read
+// from what this daemon already tracks for its heartbeat (the Claude login and
+// usage watchers, the versions, the home check): no child process, no
+// network. `hoai doctor` on the computer stays the deep check.
+const doctorRpc = new DoctorRpcHandler({
+  assistantId: () => String(ASSISTANT_ID ?? ''),
+  runChecks: async () =>
+    buildDoctorChecks({
+      now: Date.now(),
+      runningVersion: RUNNING_VERSION,
+      pendingRestartVersion: daemonPendingRestartVersion(),
+      updateDraining: updateDrainMode,
+      assistantId: String(ASSISTANT_ID ?? ''),
+      homeConfirmed: HOME_CONFIRMED,
+      login: claudeLoginState,
+      resting: observedResting,
+    }),
+  postAck: (rpcId) =>
+    bgosPost(`integrations/doctor-rpc/${encodeURIComponent(rpcId)}/ack`, {}),
+  postResult: (rpcId, body) =>
+    bgosPost(
+      `integrations/doctor-rpc/${encodeURIComponent(rpcId)}/result`,
+      body as unknown as Record<string, unknown>,
+    ),
+  log,
+})
+
 function rememberForwarded(id: number): void {
   if (forwardedMessageIds.has(id)) return
   forwardedMessageIds.add(id)
@@ -14319,6 +14350,26 @@ function connectWebsocket(): void {
   // drops; anything with one is answered, and a re sent frame is answered
   // again from memory, never run twice (lib/skills-rpc.ts). Only the lock
   // holder answers (whenArmed).
+  // Check up (BGOS board row 01a16795): the owner's Agent health card asks how
+  // this agent is. A frame without an rpcId drops; anything with one is
+  // answered, and a re sent frame is answered again, never run twice
+  // (lib/doctor-rpc.ts). Only the lock holder answers (whenArmed). Unlike the
+  // lanes around it a draining daemon STILL answers: the check up is read only
+  // and "an update is being applied" is what the owner should read, not
+  // silence.
+  realtimeSocket.on('doctor_rpc', whenArmed('doctor_rpc', (payload: any) => {
+    try {
+      const frame = normalizeDoctorRpc(payload)
+      if (!frame) return
+      log(`doctor_rpc received (op=${frame.op}, rpc=${frame.rpcId})`)
+      void trackMessageOperation(() => doctorRpc.handle(frame)).catch((err) => {
+        log(`doctor_rpc handler error: ${err}`)
+      })
+    } catch (err) {
+      log(`doctor_rpc handler error: ${err}`)
+    }
+  }))
+
   realtimeSocket.on('skills_rpc', whenArmed('skills_rpc', (payload: any) => {
     if (updateDrainMode) return
     try {

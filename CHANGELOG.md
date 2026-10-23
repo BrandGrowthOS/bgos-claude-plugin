@@ -2,6 +2,15 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## Unreleased
+
+**The agent check up is answered (BGOS board row 01a16795).** The HOAI app's Agent health card offers "Run checkup" for every paired agent, and the BGOS backend sends it as a `doctor_rpc` frame to the pairing room, then waits 10 s for an ack. The lane was built for Hermes (BGOS #747) and this daemon never listened for it, so every check up of a Claude Code agent read "We could not reach your computer. It may be asleep or offline." while the agent was online and chatting. Measured on Cho (pairing 144, 0.74.0) on 2026-10-23: the start route answered 200 and no ack or result ever arrived.
+
+- **`lib/doctor-rpc.ts`** answers the frame on `integrations/doctor-rpc/:rpcId/ack` and `/result`, the lock holder only (`whenArmed`), a re sent frame never run twice, a frame naming another agent left alone, an unknown op answered `unsupported`, a throw answered `doctor_failed`, and every body cut to the backend's `DoctorRpcResultDto` (a 400 there is the same silence). A draining daemon still answers: the check up is read only and "an update is being applied" is the answer.
+- **The rows come from what the daemon already tracks for its heartbeat**, no child process and no network: Connection, Connector (running version, an update staged for restart, a drain), Agent folder (the home check), Claude login (the login watcher: FAIL with the `/login` fix when Claude Code says the login expired) and Claude usage (the usage cap episode and when it resets). `hoai doctor` on the computer stays the deep check; it starts a second daemon for its handshake row, which must never happen from inside the daemon.
+- **Declares `doctor_rpc`** on every host and connection, so the backend can tell a connector that answers from one that predates the lane.
+- Tests: `test/doctor-rpc.test.ts` (the contract), `test/doctor-wiring.test.ts` (the registration, the lane, the state read, the drain, the declaration) and `test/doctor-rpc.e2e.test.ts` (the real daemon under bun against a stand in backend; red on 0.74.0 with "no ack arrived").
+
 ## 0.74.0 (2026-10-22)
 
 **A clone install's updaters (the daemon's self-update and the watcher) update to exactly the published release, never the head of origin/main (board row 84c23fab); and every daemon boot of a clone writes the current hook set into its workspace, however the agent was launched (board row f83db4b7).**
