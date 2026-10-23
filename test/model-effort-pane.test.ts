@@ -45,24 +45,40 @@ test('pane state: alive, dead, in a mode, and garbage', () => {
   }
 })
 
-test('the agent owns the pane only when one of its own processes is the foreground group on that tty', () => {
+test('the agent owns the pane only when the pane\'s root is its ancestor and its own job is in front', () => {
   const pane = '/dev/ttys012'
-  // The daemon, then its parent the CLI: same tty, same group, foreground.
-  assert.equal(agentOwnsPane(pane, [
+  // The pane runs the CLI directly: the daemon (900) is the CLI's (800) child,
+  // same group, in front.
+  assert.equal(agentOwnsPane(pane, 800, [
     { pid: 900, tty: 'ttys012', pgid: 800, tpgid: 800 },
     { pid: 800, tty: 'ttys012', pgid: 800, tpgid: 800 },
   ]), true)
-  // The CLI was suspended and the shell is in front.
-  assert.equal(agentOwnsPane(pane, [
-    { pid: 900, tty: 'ttys012', pgid: 800, tpgid: 700 },
-    { pid: 800, tty: 'ttys012', pgid: 800, tpgid: 700 },
-  ]), false)
+  // The pane runs a shell (700) that started the CLI: the CLI's job in front.
+  const viaShell = (tpgid: number) => [
+    { pid: 900, tty: 'ttys012', pgid: 800, tpgid },
+    { pid: 800, tty: 'ttys012', pgid: 800, tpgid },
+    { pid: 700, tty: 'ttys012', pgid: 700, tpgid },
+  ]
+  assert.equal(agentOwnsPane(pane, 700, viaShell(800)), true)
+  // The CLI was suspended and the shell is in front: the shell is our
+  // ancestor, but it is the pane's root, not our job.
+  assert.equal(agentOwnsPane(pane, 700, viaShell(700)), false)
+  // Another program the CLI started is in front (its own group).
+  assert.equal(agentOwnsPane(pane, 700, viaShell(950)), false)
+  // The pane the target names is not one of our ancestors at all.
+  assert.equal(agentOwnsPane(pane, 4242, viaShell(800)), false)
   // The CLI runs in ANOTHER terminal than the pane the target names.
-  assert.equal(agentOwnsPane(pane, [{ pid: 800, tty: 'ttys004', pgid: 800, tpgid: 800 }]), false)
+  assert.equal(agentOwnsPane(pane, 800, [
+    { pid: 900, tty: 'ttys004', pgid: 800, tpgid: 800 },
+    { pid: 800, tty: 'ttys004', pgid: 800, tpgid: 800 },
+  ]), false)
   // No terminal at all, and nothing known.
-  assert.equal(agentOwnsPane(pane, [{ pid: 800, tty: '??', pgid: 800, tpgid: -1 }]), false)
-  assert.equal(agentOwnsPane(pane, []), false)
-  assert.equal(agentOwnsPane('', [{ pid: 800, tty: '', pgid: 800, tpgid: 800 }]), false)
+  assert.equal(agentOwnsPane(pane, 800, [
+    { pid: 900, tty: '??', pgid: 800, tpgid: -1 },
+    { pid: 800, tty: '??', pgid: 800, tpgid: -1 },
+  ]), false)
+  assert.equal(agentOwnsPane(pane, 800, []), false)
+  assert.equal(agentOwnsPane('', 800, [{ pid: 900, tty: '', pgid: 800, tpgid: 800 }, { pid: 800, tty: '', pgid: 800, tpgid: 800 }]), false)
 })
 
 test('an empty rule framed composer is empty', () => {

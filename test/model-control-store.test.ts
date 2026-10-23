@@ -32,13 +32,16 @@ import { fileURLToPath } from 'node:url'
 
 import {
   BRIDGE_REFRESH_SECONDS,
+  bridgeCopyPath,
   installBridge,
   modelControlDir,
   parseStatusLineInput,
   readObservation,
   readOptIn,
   recordObservation,
+  refreshBridgeCopy,
   uninstallBridge,
+  writeBridgeCopy,
   writeOptIn,
 } from '../lib/model-control-store.mjs'
 
@@ -177,8 +180,8 @@ test('installing on a settings file with no status line adds one and removal tak
   const home = tmp()
   const settingsPath = join(home, 'settings.json')
   const dir = join(home, 'model-control')
-  installBridge({ settingsPath, dir, bridgeCommand: 'node /b.mjs' })
-  assert.equal(JSON.parse(readFileSync(settingsPath, 'utf8')).statusLine.command, 'node /b.mjs')
+  installBridge({ settingsPath, dir, bridgeCommand: 'node /b/hoai-statusline-bridge.mjs' })
+  assert.equal(JSON.parse(readFileSync(settingsPath, 'utf8')).statusLine.command, 'node /b/hoai-statusline-bridge.mjs')
   uninstallBridge({ settingsPath, dir })
   assert.equal('statusLine' in JSON.parse(readFileSync(settingsPath, 'utf8')), false)
 })
@@ -187,7 +190,7 @@ test('a settings file that is not valid JSON is never overwritten', () => {
   const home = tmp()
   const settingsPath = join(home, 'settings.json')
   writeFileSync(settingsPath, '{ "theme": "dark", // a comment\n }')
-  const out = installBridge({ settingsPath, dir: join(home, 'mc'), bridgeCommand: 'node /b.mjs' })
+  const out = installBridge({ settingsPath, dir: join(home, 'mc'), bridgeCommand: 'node /b/hoai-statusline-bridge.mjs' })
   assert.equal(out.installed, false)
   assert.equal(readFileSync(settingsPath, 'utf8'), '{ "theme": "dark", // a comment\n }')
 })
@@ -207,6 +210,19 @@ test('the bridge records the observation and prints the wrapped status line', ()
   assert.equal(run.status, 0, run.stderr)
   assert.equal(run.stdout, `mine:${Buffer.byteLength(input)}`, 'the owner\'s own line, fed the same JSON')
   assert.equal(readObservation(dir, SID)!.seq, 1)
+})
+
+test('the daemon refreshes an existing copy only while an agent is opted in, and never creates one', () => {
+  const dir = join(tmp(), 'model-control')
+  assert.equal(refreshBridgeCopy(dir, ROOT), false, 'nobody opted in, nothing written')
+  assert.equal(existsSync(bridgeCopyPath(dir)), false)
+  writeOptIn(dir, '42', true, 1)
+  assert.equal(refreshBridgeCopy(dir, ROOT), false, 'no copy yet: the owner\'s own `on` makes it')
+  writeBridgeCopy(dir, ROOT)
+  writeFileSync(bridgeCopyPath(dir), 'old', { mode: 0o600 })
+  assert.equal(refreshBridgeCopy(dir, ROOT), true)
+  assert.equal(readFileSync(bridgeCopyPath(dir), 'utf8'), readFileSync(BRIDGE, 'utf8'))
+  assert.equal(statSync(bridgeCopyPath(dir)).mode & 0o777, 0o600)
 })
 
 test('the bridge never fails the status line, even on garbage', () => {
@@ -229,6 +245,18 @@ test('the owner CLI turns control on for one agent, installing the bridge, and o
   assert.equal(readOptIn(dir, '42'), true)
   const settings = JSON.parse(readFileSync(join(config, 'settings.json'), 'utf8'))
   assert.match(settings.statusLine.command, /hoai-statusline-bridge\.mjs/)
+  // The status line runs the stable copy in the owner only folder, never the
+  // plugin's own file, whose folder a marketplace update moves.
+  assert.ok(settings.statusLine.command.includes(join(dir, 'bridge', 'bin', 'hoai-statusline-bridge.mjs')))
+  assert.ok(!settings.statusLine.command.includes(join(ROOT, 'bin')))
+  // And the copy really works as a status line.
+  const sid = '99999999-8888-4777-8666-555555555555'
+  const copy = spawnSync(process.execPath, [join(dir, 'bridge', 'bin', 'hoai-statusline-bridge.mjs')], {
+    input: JSON.stringify({ session_id: sid, model: { id: 'claude-fable-5-1' } }), env, encoding: 'utf8',
+  })
+  assert.equal(copy.status, 0, copy.stderr)
+  assert.equal(copy.stdout, 'hi\n', 'the owner\'s own line still prints')
+  assert.equal(readObservation(dir, sid)!.modelId, 'claude-fable-5-1')
   const status = spawnSync(process.execPath, [CLI, 'status', '--assistant', '42'], { env, encoding: 'utf8' })
   assert.equal(status.status, 0)
   assert.match(status.stdout, /on for agent 42/)

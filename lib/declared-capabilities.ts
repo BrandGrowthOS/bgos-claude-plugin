@@ -239,6 +239,23 @@
  *                       before 0.71.8 a Claude Code agent could send a card
  *                       it was never told about.
  *
+ *   owner_model_effort_control
+ *                       this daemon answers the owner's model and effort
+ *                       picker over model_effort_rpc: it REPORTS the model and
+ *                       effort the session really runs and the models and
+ *                       efforts the installed CLI offers, and it CHANGES them
+ *                       with set_model and set_effort, typed into its own
+ *                       pane only when every precondition holds and confirmed
+ *                       from the session's own status line before it reports
+ *                       success (lib/model-effort-control.ts, Route A). ONLY
+ *                       while the owner opted this agent in on its machine,
+ *                       the injector answers, and the status line bridge has
+ *                       a fresh observation with a non empty catalog, so
+ *                       losing any one withdraws it on the next beat. PAIRING
+ *                       CONNECTIONS ONLY: the session settings report route is
+ *                       pairing scoped. Deliberately NOT session_model_control,
+ *                       whose words promise Codex's semantics.
+ *
  * Token grammar is the backend's: /^[a-z][a-z0-9_]{0,63}$/, at most 32
  * entries (backend/src/dto/integrations/pair-exchange.dto.ts). The base is
  * frozen so no call site can push onto it at runtime, and the answer is a
@@ -305,6 +322,9 @@ export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
  */
 export const DECLARED_CAPABILITIES_PAIRING: readonly string[] = Object.freeze([HARD_FLOOR_TOKEN, HARD_FLOOR_RULES_2_TOKEN])
 
+/** Owner model and effort control (Route A), declared only while it can act. */
+export const OWNER_MODEL_EFFORT_TOKEN = 'owner_model_effort_control'
+
 /** Declared only while this daemon can type into its own CLI's composer. */
 export const DECLARED_CAPABILITIES_INJECTOR: readonly string[] = Object.freeze([
   'mission_goal_loop',
@@ -349,6 +369,12 @@ export function declaredCapabilities(input: {
    * the panel opens a person's lane only when the pairing declares both.
    */
   personLanes?: boolean
+  /**
+   * Can this daemon change its session's model and effort for the owner right
+   * now (server.ts modelEffortDeclared: opted in, injector, fresh status line
+   * observation, non empty catalog)? Absent reads as no.
+   */
+  ownerModelEffort?: boolean
   authMode: 'pairing' | 'apikey'
 }): readonly string[] {
   return [
@@ -358,5 +384,6 @@ export function declaredCapabilities(input: {
     ...(input.authMode === 'pairing' && input.floorHook === true ? DECLARED_CAPABILITIES_PAIRING : []),
     ...(input.canInjectGoal === true ? DECLARED_CAPABILITIES_INJECTOR : []),
     ...(input.authMode === 'pairing' && input.personLanes === true ? [PERSON_LANES_TOKEN, LANE_MEMORY_RPC_TOKEN] : []),
+    ...(input.authMode === 'pairing' && input.ownerModelEffort === true ? [OWNER_MODEL_EFFORT_TOKEN] : []),
   ]
 }

@@ -23,7 +23,10 @@
 // composer, and a native goal is the only thing on this channel that makes an
 // agent keep working until a condition holds. Every other injected string is
 // still a fixed literal looked up by a TypeScript-narrowed key, and no second
-// parameter may be added. buildGoalSetInjectionSteps refuses (returns null,
+// parameter may be added. The owner's model and effort control (Route A) adds
+// none: set_model and set_effort type only entries of the frozen MODEL_LITERALS
+// and EFFORT_LITERALS tables, looked up by an exact own key, and anything else
+// builds no argv at all. buildGoalSetInjectionSteps refuses (returns null,
 // never throws) a condition that is empty, is more than one line, carries any
 // control character, is longer than the runtime's own 4000 character cap, or
 // begins with '/', because a condition beginning with a slash would type a
@@ -60,6 +63,53 @@ export const INJECTABLE_LITERALS = Object.freeze({
 } as const)
 
 export type InjectableCommand = keyof typeof INJECTABLE_LITERALS
+
+// ── Owner model and effort control (Route A, KC 2026-10-23) ──────────────────
+//
+// Two typed operations only, set_model and set_effort, and each can type
+// nothing but one of the fixed literals below. The value on the wire is a
+// LOOKUP KEY into a frozen table, never text: an own key of the table builds
+// its literal, anything else builds no argv at all. So these add no chat
+// derived parameter to the one this file allows (the goal condition), and no
+// slash command or free text can reach the composer through them.
+//
+// The model table is the four approved family aliases; another family is a
+// deliberate change here, after the host's own help names it. The effort table
+// is the five ordinary levels. Ultra Code has no literal: no session native
+// report this daemon can read tells it apart from xhigh, so it cannot be
+// confirmed, and a setting that cannot be confirmed is not typed.
+
+export const MODEL_LITERALS = Object.freeze({
+  opus: '/model opus',
+  sonnet: '/model sonnet',
+  haiku: '/model haiku',
+  fable: '/model fable',
+} as const)
+
+export const EFFORT_LITERALS = Object.freeze({
+  low: '/effort low',
+  medium: '/effort medium',
+  high: '/effort high',
+  xhigh: '/effort xhigh',
+  max: '/effort max',
+} as const)
+
+export type ModelFamily = keyof typeof MODEL_LITERALS
+export type EffortLevel = keyof typeof EFFORT_LITERALS
+
+/** An own key of the table, compared exactly: no trim, no case folding, and
+ *  never a prototype name such as toString or __proto__. */
+function ownKey(table: object, value: unknown): boolean {
+  return typeof value === 'string' && Object.prototype.hasOwnProperty.call(table, value)
+}
+
+export function isModelFamily(value: unknown): value is ModelFamily {
+  return ownKey(MODEL_LITERALS, value)
+}
+
+export function isEffortLevel(value: unknown): value is EffortLevel {
+  return ownKey(EFFORT_LITERALS, value)
+}
 
 // tmux target specs: session names, window/pane ids (%5, @2, sess:1.0).
 // No whitespace, no shell metacharacters.
@@ -185,6 +235,47 @@ export function buildInterruptSteps(t: TmuxTarget): InjectionStep[] {
       delayMsBefore: 0,
     },
   ]
+}
+
+/**
+ * set_model and set_effort: the fixed literal, then ONE Enter.
+ *
+ * One, not the two the compact and goal sequences send: the proposal's own
+ * warning is that a second Enter can accept a different item of an
+ * interactive model menu, and the confirmation transaction reports a literal
+ * that was typed and never submitted rather than pressing again. Null for any
+ * value outside the frozen table, before an argv exists.
+ */
+export function buildSetModelInjectionSteps(t: TmuxTarget, family: unknown): InjectionStep[] | null {
+  if (!isModelFamily(family)) return null
+  return settingSteps(t, MODEL_LITERALS[family])
+}
+
+export function buildSetEffortInjectionSteps(t: TmuxTarget, level: unknown): InjectionStep[] | null {
+  if (!isEffortLevel(level)) return null
+  return settingSteps(t, EFFORT_LITERALS[level])
+}
+
+function settingSteps(t: TmuxTarget, literal: string): InjectionStep[] {
+  const base = ['tmux', ...t.socketArgs, 'send-keys', '-t', t.target]
+  return [
+    { argv: [...base, '-l', '--', literal], delayMsBefore: 0 },
+    { argv: [...base, 'Enter'], delayMsBefore: 400 },
+  ]
+}
+
+/** The pane format lib/model-effort-pane.ts parsePaneState reads, tab separated. */
+export const PANE_STATE_FORMAT = '#{pane_id}\t#{pane_tty}\t#{pane_dead}\t#{pane_in_mode}\t#{pane_pid}'
+
+/** Read only: the pane's id, terminal, liveness, tmux mode and process. */
+export function buildPaneStateArgs(t: TmuxTarget): string[] {
+  return ['tmux', ...t.socketArgs, 'display-message', '-p', '-t', t.target, PANE_STATE_FORMAT]
+}
+
+/** Read only: the visible screen with its styling (-e), so a dimmed
+ *  placeholder can be told from a typed draft. */
+export function buildPaneCaptureArgs(t: TmuxTarget): string[] {
+  return ['tmux', ...t.socketArgs, 'capture-pane', '-p', '-e', '-t', t.target]
 }
 
 // Any C0 or C1 control character, DEL included. A composer line is one line of

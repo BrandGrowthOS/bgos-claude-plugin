@@ -12,11 +12,16 @@
  * so the observations the daemon confirms from are written by the production
  * bridge.
  *
+ * It also starts one idle child, a stand in for the daemon (an MCP child of
+ * the CLI), and writes its pid to daemon.pid in the state folder.
+ *
  * Environment: FAKE_TUI_SESSION_ID, FAKE_TUI_BRIDGE (the bridge's path), and
  * BGOS_PLUGIN_STATE_DIR (where the bridge writes), FAKE_TUI_APPLY=0 to make it
  * echo commands without applying them.
  */
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
+import { writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 const sessionId = process.env.FAKE_TUI_SESSION_ID
 const bridge = process.env.FAKE_TUI_BRIDGE
@@ -68,6 +73,11 @@ process.stdin.on('data', (chunk) => {
   }
   render()
 })
+// A stand in for the daemon: the agent's own child, in the agent's process
+// group, as an MCP server is. It exits on its own once its parent is gone, so
+// killing this test's tmux server leaves nothing behind.
+const daemon = spawn(process.execPath, ['-e', 'const p = process.ppid; setInterval(() => { if (process.ppid !== p) process.exit(0) }, 200)'], { stdio: 'ignore' })
+writeFileSync(join(process.env.BGOS_PLUGIN_STATE_DIR, 'daemon.pid'), String(daemon.pid))
 setInterval(statusLine, 500)
 statusLine()
 render()

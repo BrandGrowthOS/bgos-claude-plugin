@@ -38,6 +38,8 @@ class FakePane {
   inMode = false
   tty = '/dev/ttys012'
   foregroundPgid = 800
+  /** The pane's root process: the CLI, the daemon's parent. */
+  rootPid = 800
   model = 'claude-opus-5-5'
   effort: string | null = 'high'
   sessionId = SID
@@ -69,7 +71,7 @@ class FakePane {
     const verb = argv.find((a) => a === 'display-message' || a === 'capture-pane' || a === 'send-keys')
     if (verb === 'display-message') {
       if (this.failDisplay) throw new Error('no such pane')
-      return `%7\t${this.tty}\t${this.dead ? 1 : 0}\t${this.inMode ? 1 : 0}\t4242\n`
+      return `%7\t${this.tty}\t${this.dead ? 1 : 0}\t${this.inMode ? 1 : 0}\t${this.rootPid}\n`
     }
     if (verb === 'capture-pane') return this.screen()
     if (verb === 'send-keys') {
@@ -309,6 +311,7 @@ test('a lost pane, a dead pane, a pane in a tmux mode', async () => {
 test('a pane whose foreground is not the agent (a shell, a suspended CLI) is refused', async () => {
   await refused((r) => { r.pane.foregroundPgid = 700 }, { op: 'set_model', value: 'sonnet' }, 'pane_not_agent')
   await refused((r) => { r.pane.tty = '/dev/ttys099' }, { op: 'set_model', value: 'sonnet' }, 'pane_not_agent')
+  await refused((r) => { r.pane.rootPid = 4242 }, { op: 'set_model', value: 'sonnet' }, 'pane_not_agent')
 })
 
 test('an occupied composer is refused and the owner\'s draft is left exactly as it was', async () => {
@@ -333,7 +336,10 @@ test('a turn that starts while the pane is being checked stops the typing', asyn
     ...(r.control as unknown as { deps: ControlDeps }).deps,
     ancestry: async () => {
       r.state.turn = 'live'
-      return [{ pid: 800, tty: 'ttys012', pgid: 800, tpgid: 800 }]
+      return [
+        { pid: 900, tty: 'ttys012', pgid: 800, tpgid: 800 },
+        { pid: 800, tty: 'ttys012', pgid: 800, tpgid: 800 },
+      ]
     },
   }, { confirmTimeoutMs: 10_000, pollMs: 250, staleMs: 15_000 })
   const out = await r.control.handle({ op: 'set_model', value: 'sonnet' })

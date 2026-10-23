@@ -7,16 +7,17 @@
  * real tmux send-keys, the real pane probes, the real `ps` ancestry, and
  * confirmation from observations written by the real status line bridge.
  *
- * The tmux server is this test's own, on a private socket named for this
- * process (-L hoai-mec-rig-<pid>, -f /dev/null), and it is killed with
- * kill-server on that socket only. No other tmux server, session or agent on
- * the machine is touched. Skipped where tmux is absent (Windows).
+ * Each tmux server is this test's own, on a socket FILE inside the test's own
+ * temp folder (-S <tmp>/tmux.sock, -f /dev/null), killed with kill-server on
+ * that socket only and the folder removed. No other tmux server, session or
+ * agent on the machine is touched, and nothing is left in the shared tmux
+ * socket folder. Skipped where tmux is absent (Windows).
  */
 
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile, spawnSync } from 'node:child_process'
-import { mkdtempSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -31,11 +32,13 @@ const execFileAsync = promisify(execFile)
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const HELP = spawnSync('cat', [join(ROOT, 'test', 'fixtures', 'claude-help-2.1.309.txt')], { encoding: 'utf8' }).stdout
 const hasTmux = spawnSync('tmux', ['-V']).status === 0
-const SOCKET = `hoai-mec-rig-${process.pid}`
-const started: string[] = []
+const started: Array<{ socket: string; folder: string }> = []
 
 after(() => {
-  for (const socket of started) spawnSync('tmux', ['-L', socket, 'kill-server'])
+  for (const { socket, folder } of started) {
+    spawnSync('tmux', ['-S', socket, 'kill-server'])
+    rmSync(folder, { recursive: true, force: true })
+  }
 })
 
 async function exec(argv: string[]): Promise<string> {
@@ -46,7 +49,7 @@ async function exec(argv: string[]): Promise<string> {
 async function startRig(name: string, env: Record<string, string> = {}) {
   const state = mkdtempSync(join(tmpdir(), 'hoai-mec-rig-'))
   const sessionId = `rig-${name}-${process.pid}`
-  const socket = `${SOCKET}-${name}`
+  const socket = join(state, 'tmux.sock')
   const command = [
     `BGOS_PLUGIN_STATE_DIR='${state}'`,
     `FAKE_TUI_SESSION_ID='${sessionId}'`,
@@ -54,14 +57,19 @@ async function startRig(name: string, env: Record<string, string> = {}) {
     ...Object.entries(env).map(([k, v]) => `${k}='${v}'`),
     `exec '${process.execPath}' '${join(ROOT, 'test', 'fixtures', 'fake-claude-tui.mjs')}'`,
   ].join(' ')
-  const run = spawnSync('tmux', ['-L', socket, '-f', '/dev/null', 'new-session', '-d', '-s', 'rig', '-x', '120', '-y', '30', command])
+  const run = spawnSync('tmux', ['-S', socket, '-f', '/dev/null', 'new-session', '-d', '-s', 'rig', '-x', '120', '-y', '30', command])
   assert.equal(run.status, 0, String(run.stderr))
-  started.push(socket)
-  const target: TmuxTarget = { target: 'rig', socketArgs: ['-L', socket], source: 'env-session' }
-  const panePid = Number((await exec(['tmux', '-L', socket, 'display-message', '-p', '-t', 'rig', '#{pane_pid}'])).trim())
+  started.push({ socket, folder: state })
+  const target: TmuxTarget = { target: 'rig', socketArgs: ['-S', socket], source: 'tmux-pane' }
+  const panePid = Number((await exec(['tmux', '-S', socket, 'display-message', '-p', '-t', 'rig', '#{pane_pid}'])).trim())
   const dir = modelControlDir({ env: { BGOS_PLUGIN_STATE_DIR: state }, home: state })
-  // Wait for the first status line observation.
-  for (let i = 0; i < 50 && !readObservation(dir, sessionId); i++) await new Promise((r) => setTimeout(r, 100))
+  // Wait for the first status line observation and the stand in daemon, the
+  // fake agent's own child, whose ancestry a real daemon would walk.
+  const pidFile = join(state, 'daemon.pid')
+  for (let i = 0; i < 50 && !(readObservation(dir, sessionId) && existsSync(pidFile)); i++) {
+    await new Promise((r) => setTimeout(r, 100))
+  }
+  const daemonPid = Number(readFileSync(pidFile, 'utf8').trim())
   const control = new ModelEffortControl({
     optedIn: () => true,
     target: () => target,
@@ -69,8 +77,8 @@ async function startRig(name: string, env: Record<string, string> = {}) {
     turnState: () => 'idle',
     dialogOpen: () => false,
     otherInjectionBusy: () => false,
-    // The fake agent IS the pane's process; a daemon walks up from itself.
-    ancestry: () => processAncestry(panePid, exec),
+    // A daemon walks up from itself to the pane's root, the fake agent.
+    ancestry: () => processAncestry(daemonPid, exec),
     readObservation: (sid) => readObservation(dir, sid),
     helpText: async () => HELP,
     exec,
@@ -78,20 +86,21 @@ async function startRig(name: string, env: Record<string, string> = {}) {
     now: () => Date.now(),
     log: () => {},
   }, { confirmTimeoutMs: 8_000, pollMs: 100, staleMs: 15_000 })
-  return { control, socket, target, panePid }
+  return { control, socket, target, panePid, daemonPid }
 }
 
 async function capture(socket: string): Promise<string> {
-  return exec(['tmux', '-L', socket, 'capture-pane', '-p', '-t', 'rig'])
+  return exec(['tmux', '-S', socket, 'capture-pane', '-p', '-t', 'rig'])
 }
 
 test('the ancestry of a real process names its own tty and foreground group', { skip: !hasTmux }, async () => {
-  const { panePid } = await startRig('ps')
-  const chain = await processAncestry(panePid, exec)
-  assert.ok(chain.length >= 1)
-  assert.equal(chain[0]!.pid, panePid)
+  const { panePid, daemonPid } = await startRig('ps')
+  const chain = await processAncestry(daemonPid, exec)
+  assert.ok(chain.length >= 2)
+  assert.equal(chain[0]!.pid, daemonPid)
+  assert.equal(chain[1]!.pid, panePid, 'the stand in daemon is the fake agent\'s child')
   assert.match(chain[0]!.tty, /^ttys?\d+|^pts\//)
-  assert.equal(chain[0]!.pgid, chain[0]!.tpgid, 'the fake agent is the foreground of its pane')
+  assert.equal(chain[0]!.pgid, chain[0]!.tpgid, 'the agent\'s job is the foreground of its pane')
 })
 
 test('set_model and set_effort are typed by real tmux and confirmed by the real bridge', { skip: !hasTmux }, async () => {
@@ -111,7 +120,7 @@ test('set_model and set_effort are typed by real tmux and confirmed by the real 
 test('a real draft in the pane is refused and left exactly as the owner typed it', { skip: !hasTmux }, async () => {
   const { control, socket } = await startRig('draft')
   // The owner's own typing, simulated in this test's own pane.
-  await exec(['tmux', '-L', socket, 'send-keys', '-t', 'rig', '-l', '--', 'half a thought'])
+  await exec(['tmux', '-S', socket, 'send-keys', '-t', 'rig', '-l', '--', 'half a thought'])
   await new Promise((r) => setTimeout(r, 200))
   const out = await control.handle({ op: 'set_model', value: 'sonnet' })
   assert.equal(out.ok, false)

@@ -60,7 +60,7 @@ test('the stop reads the goal lane as it is at that moment, gated on the heartbe
   // The SAME expression the version heartbeat declares from (main 0.53.0
   // made floorHook and authMode required, for hard_floor).
   const declaration =
-    'declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, authMode: AUTH.mode })'
+    'declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, ownerModelEffort: modelEffortDeclared(), authMode: AUTH.mode })'
   assert.match(
     server,
     new RegExp(`capabilities: \\(\\) => \\[\\s*\\.\\.\\.${declaration.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')},?\\s*\\]`),

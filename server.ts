@@ -137,6 +137,11 @@ import {
   type TmuxTarget,
 } from './lib/compact-inject.js'
 import { evaluateCompactionOutcome } from './lib/compact-confirm.js'
+import { ModelEffortControl } from './lib/model-effort-control.js'
+import { ModelEffortRpcHandler, normalizeModelEffortRpc } from './lib/model-effort-rpc.js'
+import { parseHelpCatalog } from './lib/model-effort-catalog.js'
+import { processAncestry } from './lib/model-effort-pane.js'
+import { modelControlDir, readObservation, readOptIn, refreshBridgeCopy } from './lib/model-control-store.mjs'
 import {
   buildHealthLogEventBody,
   buildHealthLogListPath,
@@ -2227,7 +2232,7 @@ const steerGate = new SteerGate({
   now: Date.now,
   // compactInFlight stays true until the compaction is confirmed: an Escape
   // during a compaction cancels it.
-  injectionBusy: () => compactInFlight || goalInjectionsInFlight > 0,
+  injectionBusy: (): boolean => compactInFlight || goalInjectionsInFlight > 0 || modelEffortControl.busy,
   targetAlive: () => (compactTarget ? tmuxTargetAlive(compactTarget) : Promise.resolve(false)),
   interrupt: pressSteerEscape,
   sleep: sleepMs,
@@ -2245,9 +2250,120 @@ function deliverInbound(
   steer: ArrivingSteer | null,
   deliver: (interrupted: boolean) => Promise<void>,
 ): Promise<void> {
+  // A model or effort command being typed and confirmed holds every delivery
+  // until it ends: a message arriving between the checks and the Enter would
+  // open a turn under the typed command (lib/model-effort-control.ts).
+  if (modelEffortControl.busy) return modelEffortControl.whenIdle().then(() => deliverInbound(steer, deliver))
   if (!steer) return steerGate.ordinary(() => deliver(false))
   return steerGate.steer({ messageId: steer.messageId, plan: steer.plan, deliver }).then(() => {})
 }
+
+// ── Owner model and effort control (Route A, KC 2026-10-23) ──────────────────
+// The owner's picker asks over model_effort_rpc (lib/model-effort-rpc.ts) what
+// this session runs and may run, and changes it with set_model and set_effort
+// only. lib/model-effort-control.ts checks every precondition before it types
+// one fixed literal from lib/compact-inject.ts into this agent's own pane, and
+// confirms from the session's own status line (the bridge of
+// lib/model-control-store.mjs) before it reports success. Off unless the
+// owner ran `hoai-model-control on --assistant <id>` on this machine; the
+// compact permission does not count.
+const MODEL_CONTROL_DIR = modelControlDir()
+const MODEL_EFFORT_STALE_MS = 15_000
+let modelEffortHelp: { version: string | null; text: string | null } | null = null
+let modelEffortHelpInFlight: Promise<string | null> | null = null
+
+/** `claude --help` of the installed CLI, read again when its version changes. */
+function claudeHelpText(version: string | null): Promise<string | null> {
+  if (modelEffortHelp && modelEffortHelp.version === version) return Promise.resolve(modelEffortHelp.text)
+  if (modelEffortHelpInFlight) return modelEffortHelpInFlight
+  modelEffortHelpInFlight = (async () => {
+    const exe = resolveClaude()
+    let text: string | null = null
+    if (exe) {
+      try {
+        text = (await execFileAsync(exe, ['--help'], { timeout: 10_000, maxBuffer: 1024 * 1024 })).stdout
+      } catch {
+        text = null
+      }
+    }
+    modelEffortHelp = { version, text }
+    return text
+  })().finally(() => {
+    modelEffortHelpInFlight = null
+  })
+  return modelEffortHelpInFlight
+}
+
+/** The session id this daemon has POSITIVELY proven it serves, or null. */
+function provenSessionId(): string | null {
+  const path = sessionBinder.provenTranscriptPath()
+  if (!path) return null
+  const name = path.split(/[\\/]/).pop() ?? ''
+  return name.endsWith('.jsonl') ? name.slice(0, -'.jsonl'.length) : null
+}
+
+const modelEffortControl: ModelEffortControl = new ModelEffortControl({
+  optedIn: () => readOptIn(MODEL_CONTROL_DIR, String(ASSISTANT_ID ?? '')),
+  target: () => compactTarget,
+  sessionId: () => provenSessionId(),
+  turnState: () =>
+    steerTurnState({
+      signal: hookTurnSignal({ lastEventAtMs: lastHookEventAtMs, endedSessionId: hookEndedSessionId }),
+      live: hookTurnLive || hookTurn.carried.size > 0,
+    }),
+  dialogOpen: () => pendingPermissions.size > 0,
+  otherInjectionBusy: (): boolean => compactInFlight || goalInjectionsInFlight > 0 || steerGate.busy,
+  ancestry: () =>
+    processAncestry(process.pid, async (argv) => (await execFileAsync(argv[0]!, argv.slice(1), { timeout: 5_000 })).stdout),
+  readObservation: (sessionId) => readObservation(MODEL_CONTROL_DIR, sessionId),
+  helpText: claudeHelpText,
+  exec: async (argv) => (await execFileAsync(argv[0]!, argv.slice(1), { timeout: 5_000 })).stdout,
+  sleep: (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+  now: Date.now,
+  log,
+}, { staleMs: MODEL_EFFORT_STALE_MS })
+
+/**
+ * Declare owner_model_effort_control on this beat? Opted in, the injector
+ * answers, the bridge has a fresh observation of the proven session, and the
+ * installed CLI's help offers something. The help is read in the background
+ * the first time, so the token appears on the beat after.
+ */
+function modelEffortDeclared(): boolean {
+  try {
+    if (compactTarget === null) return false
+    if (!readOptIn(MODEL_CONTROL_DIR, String(ASSISTANT_ID ?? ''))) return false
+    const sessionId = provenSessionId()
+    const observation = sessionId ? readObservation(MODEL_CONTROL_DIR, sessionId) : null
+    if (!observation || Date.now() - observation.observedAtMs > MODEL_EFFORT_STALE_MS) return false
+    if (!modelEffortHelp || modelEffortHelp.version !== observation.version) {
+      void claudeHelpText(observation.version).catch(() => {})
+      return false
+    }
+    const catalog = parseHelpCatalog(modelEffortHelp.text)
+    return catalog.models.length > 0 || catalog.efforts.length > 0
+  } catch {
+    return false
+  }
+}
+
+const modelEffortRpc = new ModelEffortRpcHandler({
+  assistantId: () => String(ASSISTANT_ID ?? ''),
+  ownerUserId: () => USER_ID,
+  control: modelEffortControl,
+  postResult: (rpcId, body) =>
+    bgosPost(
+      `integrations/model-effort-rpc/${encodeURIComponent(rpcId)}/result`,
+      body as unknown as Record<string, unknown>,
+    ),
+  reportSettings: (chatId, body) =>
+    bgosPatch(
+      `integrations/assistants/${encodeURIComponent(String(ASSISTANT_ID ?? ''))}/chats/${encodeURIComponent(chatId)}/session-settings`,
+      body as unknown as Record<string, unknown>,
+    ),
+  log,
+  now: Date.now,
+})
 
 async function handleRemoteCompact(chatId: string, payload: unknown): Promise<void> {
   // Only the owner may compact: one session serves every chat of this agent,
@@ -2283,10 +2399,12 @@ async function compactAsOwner(chatId: string): Promise<void> {
     ).catch((err) => log(`remote compact: reply failed: ${err}`))
     return
   }
-  if (compactInFlight) {
+  if (compactInFlight || modelEffortControl.busy) {
     await sendDaemonText(
       chatId,
-      'A compaction is already in progress, hold on.',
+      compactInFlight
+        ? 'A compaction is already in progress, hold on.'
+        : 'A model or effort change is being made right now, hold on.',
     ).catch((err) => log(`remote compact: reply failed: ${err}`))
     return
   }
@@ -11433,6 +11551,8 @@ async function runGoalInjection(steps: InjectionStep[], label: string): Promise<
   // Enter (lib/steer.ts SteerGate).
   goalInjectionsInFlight++
   try {
+    // A model or effort change holds the composer until it is confirmed.
+    if (modelEffortControl.busy) await modelEffortControl.whenIdle()
     // A steer that already decided to press goes first (see handleRemoteCompact).
     await steerGate.pressDone()
     for (const step of steps) {
@@ -12020,7 +12140,7 @@ const stopPauseLane = new StopPauseLane({
  *  this daemon never pauses on a host whose owner was never offered Pause. */
 function stopGoalView(): StopGoalView {
   return {
-    pauseDeclared: declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, authMode: AUTH.mode }).includes('mission_pause'),
+    pauseDeclared: declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, ownerModelEffort: modelEffortDeclared(), authMode: AUTH.mode }).includes('mission_pause'),
     held: goalHeld,
     attachedMissionId: goalMissionId,
     pending: goalPendingArm,
@@ -12543,6 +12663,12 @@ const INSTALL_METHOD: 'marketplace' | 'clone' =
   INSTALL_DETECTION?.method === 'marketplace' ? 'marketplace' : 'clone'
 const PLUGIN_ROOT =
   (INSTALL_DETECTION?.pluginRoot ?? '') || (INSTALL_DETECTION?.executionRoot ?? '') || import.meta.dir
+
+// Owner model and effort control: bring the status line bridge's stable copy
+// up to this version, only where an agent is opted in and the owner's own
+// `hoai-model-control on` already made it. Never creates one, never touches a
+// settings file, never throws (lib/model-control-store.mjs).
+if (refreshBridgeCopy(MODEL_CONTROL_DIR, PLUGIN_ROOT)) log('model control: status line bridge copy refreshed')
 
 // Is this daemon's channel loaded in its session (0.63.2, assistant 873)? Read
 // once, off the claude command line above us (lib/channel-presence.ts says why
@@ -14311,6 +14437,24 @@ function connectWebsocket(): void {
       })
     } catch (err) {
       log(`changes_rpc handler error: ${err}`)
+    }
+  }))
+
+  // Owner model and effort control (Route A): the owner's picker asks what
+  // this session runs and changes it with set_model or set_effort. A frame
+  // without an rpcId drops; a re sent frame never types twice; only the owner,
+  // in a main chat (lib/model-effort-rpc.ts). Only the lock holder answers.
+  realtimeSocket.on('model_effort_rpc', whenArmed('model_effort_rpc', (payload: any) => {
+    if (updateDrainMode) return
+    try {
+      const frame = normalizeModelEffortRpc(payload)
+      if (!frame) return
+      log(`model_effort_rpc received (rpc=${frame.rpcId})`)
+      void trackMessageOperation(() => modelEffortRpc.handle(frame)).catch((err) => {
+        log(`model_effort_rpc handler error: ${err}`)
+      })
+    } catch (err) {
+      log(`model_effort_rpc handler error: ${err}`)
     }
   }))
 
@@ -16992,7 +17136,7 @@ async function main(): Promise<void> {
       // CLI's composer, and lib/compact-capability.ts can discover that up to
       // thirty minutes after boot. See lib/declared-capabilities.ts.
       capabilities: () => [
-        ...declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, authMode: AUTH.mode }),
+        ...declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, ownerModelEffort: modelEffortDeclared(), authMode: AUTH.mode }),
       ],
       // One-click update telemetry (wire contract v1): the newest version this
       // daemon found at its own pinned source (origin/main for a clone, the
