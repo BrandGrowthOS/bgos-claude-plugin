@@ -102,6 +102,46 @@ End to end on a REAL tmux server with a FAKE agent (`test/model-effort-tmux-rig.
 - `npx tsc --noEmit`: clean.
 - Full suite (`npm test`, node:test family; bun is not installed on this laptop, so the bun:test files could not run): 7161 tests, 7049 pass, 49 fail, 63 skipped on the first full run. 4 of the 49 were this branch's and are fixed (the frame name must be a literal for the stand down guard, `changes_rpc` must stay right after `memory_rpc`, and the steer and stop pause pins named the old expressions); those files now pass (253 tests across every new and touched file: 252 pass, 0 fail, 1 skipped). The other 45 are in 12 browser profile files, and two of those files (`browser-profile-active-backup`, `browser-profile-companion-backups`) hang with no timeout. Each of the 12 files was run on main `457210c` and on this branch with a 120 s cap: the same pass and fail counts and the same failing test names on both, hangs included. They fail on this machine without this change.
 
+### Red first, then green (rerun on the final commits)
+
+| Test file | At `078fe83` (tests only) | At `493d837` (HEAD) |
+| --- | --- | --- |
+| `model-effort-literals` | fails: no export `EFFORT_LITERALS` | 7 pass, 0 fail |
+| `model-effort-pane` | fails: no module `lib/model-effort-pane.ts` | 9 pass, 0 fail |
+| `model-control-store` | fails: no module `lib/model-control-store.mjs` | 12 pass, 0 fail |
+| `model-effort-catalog` | fails: no module `lib/model-effort-catalog.ts` | 8 pass, 0 fail |
+| `model-effort-control` | fails: no module `lib/model-effort-control.ts` | 25 pass, 0 fail |
+| `model-effort-rpc` | fails: no module `lib/model-effort-rpc.ts` | 10 pass, 0 fail |
+| `model-effort-wiring` | fails: no export `OWNER_MODEL_EFFORT_TOKEN` | 8 pass, 0 fail |
+| `model-effort-tmux-rig` | fails: no module `lib/model-effort-control.ts` | 4 pass, 0 fail |
+
+Existing files this branch touched, at HEAD: `compact-inject` 16, `steer` 39, `stop-pause-wiring` 5, `changes-wiring` 4, `mission-ws-wiring` 22, `declared-capabilities` 36, `pairing-lock` 40, all pass, 0 fail.
+
+### The browser profile failures are main's (same counts, same failing test names)
+
+Each file run alone with a 120 s cap that kills its whole process group, on a detached worktree of main `457210c` and on this branch:
+
+| File | main | branch |
+| --- | --- | --- |
+| browser-bootstrap | 19 pass, 1 fail | 19 pass, 1 fail |
+| browser-profile-active-backup | hangs (killed at 120 s) | hangs (killed at 120 s) |
+| browser-profile-artifacts | 0 pass, 2 fail | 0 pass, 2 fail |
+| browser-profile-backup-workers | 1 pass, 1 fail | 1 pass, 1 fail |
+| browser-profile-companion-backups | hangs (killed at 120 s) | hangs (killed at 120 s) |
+| browser-profile-companion-state | 1 pass, 4 fail | 1 pass, 4 fail |
+| browser-profile-companion | 35 pass, 8 fail | 35 pass, 8 fail |
+| browser-profile-downloads | 21 pass, 1 fail | 21 pass, 1 fail |
+| browser-profile-files | 16 pass, 7 fail | 16 pass, 7 fail |
+| browser-profile-peer-pins | 1 pass, 4 fail | 1 pass, 4 fail |
+| browser-profile-peer-review | 3 pass, 1 fail | 3 pass, 1 fail |
+| browser-profile-portable-extras | 0 pass, 10 fail | 0 pass, 10 fail |
+
+None of these files imports anything this branch changed; one sample failure on main is `ENOENT ... hoai-peer-pins-*/pins`, an environment fault on this laptop. They are reported, not fixed: they are outside this brief.
+
+### On the wire and #3060
+
+The brief says: read `backend/src/integrations/model-effort-picker.*` on `~/hoai-work/BGOS.git` main "if present, else describe the wire you assume". It is not present on main (`765196150`) or on any local branch, and `git fetch` is not possible here, so the wire above is the described assumption. The parts that ARE on BGOS main were matched exactly: the session settings route's path, five fields and patterns (pinned in `test/model-effort-rpc.test.ts`), the pairing token grammar, and the backend's chat kind rule.
+
 ## What a live check on a real agent must still show
 
 None of this was run against a real Claude Code session (the brief forbids it). Before the app is allowed to send a frame, a live check on the supported CLI version (2.1.309 here) must show:
