@@ -5184,7 +5184,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           mini_goals: {
             type: 'array',
             description:
-              '4 to 10 binary mini-goals (hard caps 2..12). Outcomes, not ' +
+              '4 to 10 binary mini-goals (hard caps 2..20). Outcomes, not ' +
               'keystrokes.',
             items: {
               type: 'object',
@@ -5261,7 +5261,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'Write the mini-goals of an OPEN mission that has NONE yet, keeping ' +
         'the same mission (a /goal mission, or one your owner started, begins ' +
         'with none). A Keep working card asks for this on a goal-less mission. ' +
-        'Pass 2 to 12 binary goals (aim for 4 to 10), each { name, done_when } ' +
+        'Pass 2 to 20 binary goals (aim for 4 to 10), each { name, done_when } ' +
         'where done_when is the observable check that proves it. Refused on a ' +
         'mission that already has goals: tick those, or ADD to them with ' +
         'add_mission_goals. Never use create_mission for either, it would ' +
@@ -5273,7 +5273,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           mini_goals: {
             type: 'array',
-            description: '2 to 12 binary goals, each { name, done_when }.',
+            description: '2 to 20 binary goals, each { name, done_when }.',
             items: {
               type: 'object',
               properties: {
@@ -5323,7 +5323,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           mini_goals: {
             type: 'array',
             description:
-              'The goals to ADD, 1 to 12, each { name, done_when }. Only the ' +
+              'The goals to ADD, 1 to 20, each { name, done_when }. Only the ' +
               'new ones.',
             items: {
               type: 'object',

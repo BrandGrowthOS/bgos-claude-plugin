@@ -10,7 +10,7 @@
  *   PATCH assistants/:assistantId/missions/:missionId/tick      { goalId, evidence? }
  *   PATCH assistants/:assistantId/missions/:missionId/complete  { summary? }
  *
- * Create body: { title, miniGoals: [{ name, doneWhen }] }, 2..12 goals
+ * Create body: { title, miniGoals: [{ name, doneWhen }] }, 2..20 goals
  * (trained flow targets 4 to 10), title <= 200, name <= 120, doneWhen <= 200,
  * evidence <= 200, summary <= 500. Responses embed the full mission snapshot with
  * server-assigned goal ids 1..n.
@@ -523,7 +523,7 @@ test('add goals body: ONE goal is enough, unlike the fill door', () => {
   })
 })
 
-test('add goals body: trims, accepts the doneWhen alias, and keeps the twelve ceiling', () => {
+test('add goals body: trims, accepts the doneWhen alias, and keeps the ceiling', () => {
   assert.deepEqual(buildMissionAddGoalsBody({
     mini_goals: [
       { name: ' Draft ', done_when: ' a draft exists ' },
@@ -591,4 +591,19 @@ test('cancel goal path: the goal id is in the path and validated before the netw
   }
   assert.equal(buildMissionCancelGoalPath('873', 0, 3).ok, false)
   assert.equal(buildMissionCancelGoalPath('x', 42, 3).ok, false)
+})
+
+// ── the cap matches the backend (BGOS feat/mission-goals-20 raised it to 20, KC 1048 msg 149968) ──
+// The literal 20 on purpose: a test that read MISSION_MAX_GOALS would follow
+// any value, and the point is that this connector and the backend agree.
+test('the mini goal cap is 20 on create, set and add, the same as the backend', () => {
+  const twenty = goals(20)
+  const twentyOne = goals(21)
+  assert.equal(MISSION_MAX_GOALS, 20)
+  assert.equal(buildMissionCreateBody({ title: 'T', mini_goals: twenty }).ok, true)
+  assert.equal(buildMissionCreateBody({ title: 'T', mini_goals: twentyOne }).ok, false)
+  assert.equal(buildMissionSetGoalsBody({ mini_goals: twenty }).ok, true)
+  assert.equal(buildMissionSetGoalsBody({ mini_goals: twentyOne }).ok, false)
+  assert.equal(buildMissionAddGoalsBody({ mini_goals: twenty }).ok, true)
+  assert.equal(buildMissionAddGoalsBody({ mini_goals: twentyOne }).ok, false)
 })
