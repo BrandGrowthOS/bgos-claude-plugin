@@ -26,6 +26,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { runWatcher } from '../lib/watcher-core.mjs'
+import { checkupTarget, isOwnerChannelText, parseTranscriptTail } from '../lib/watcher-checkup.mjs'
 import { buildLaunchRecipe } from '../lib/agent-inventory.mjs'
 import { bundleFingerprint } from '../lib/watcher-bundle.mjs'
 import { supervisorFileBody } from '../bin/hoai-core.mjs'
@@ -281,9 +282,15 @@ test('one pass fixes a dead daemon AND reports a signed out login: the login fir
   const ps = [psLine(1, 0, '/sbin/init'), psLine(3000, 4242, `node ${ROOT}/bin/hoai-core.mjs`), psLine(5912, 3000, `claude --resume ${SID}`)].join('\n')
   const backend = fakeBackend(checkupJob())
   const clock = fakeClock()
+  // What the keep-alive record says WHILE the verify runs: the attempt is on disk before the act, so
+  // a watcher killed mid restart still counts it (the sweep's F8 rule).
+  const duringVerify: any[] = []
+  clock.onSleep(() => duringVerify.push(keepAliveRecord(fs)))
   daemonAnswersProbe(fs, clock)
   const run = rig(fs, backend, clock, ps, { alive: [3000, 5912] })
   assert.equal(await runWatcher(run.deps as any), 0)
+  assert.equal(duringVerify[0]?.attempts, 1, 'spent before the act')
+  assert.equal(duringVerify[0]?.reason, 'checkup_restarting')
 
   const terminal = terminalOf(backend)
   assert.equal(terminal.state, 'done')
@@ -446,7 +453,7 @@ test('a checkup with no agent, or with several, is refused by name and touches n
     [[{ pairingId: 9, assistantId: 999 }], /agent_not_on_this_machine/],
   ] as const) {
     const fs = agentFs()
-    const backend = fakeBackend(checkupJob('chk-1', targets as any[]))
+    const backend = fakeBackend(checkupJob('chk-1', [...targets]))
     const clock = fakeClock()
     const run = rig(fs, backend, clock, psLine(1, 0, '/sbin/init'))
     await runWatcher(run.deps as any)
@@ -615,4 +622,43 @@ test('C7 stuck update (validation stalled): ONE repair, file steps only, then th
   assert.deepEqual(planned.map((s) => s.intent), ['repair'])
   assert.deepEqual(ran, [['refresh_marketplace', 'snapshot', 'reinstall_plugin', 'verify_installed']])
   assertDtoShape(backend.progress('chk-1'))
+})
+
+// -- the transcript tail and the target, pure ------------------------------------------------------
+
+test('parseTranscriptTail: a real turn after an error ends it (the login works again, the cap lifted)', () => {
+  const login = parseTranscriptTail([apiError(T0 - 30 * MIN, 'authentication_failed', 'Not logged in · Please run /login'), assistantTurn(T0 - 10 * MIN)].join('\n'), T0)
+  assert.equal(login.error, null)
+  assert.equal(login.lastActivityAtMs, T0 - 10 * MIN)
+  const still = parseTranscriptTail([assistantTurn(T0 - 40 * MIN), apiError(T0 - 30 * MIN, 'authentication_failed', 'Login expired · Please run /login')].join('\n'), T0)
+  assert.deepEqual(still.error, { kind: 'authentication_failed', resetAt: null, atMs: T0 - 30 * MIN })
+})
+
+test('parseTranscriptTail: a session cap older than its 5 h window says nothing; a weekly one holds for days', () => {
+  const old = parseTranscriptTail(apiError(T0 - 6 * 60 * MIN, 'rate_limit', "You've hit your session limit · resets 4am (Asia/Dubai)"), T0)
+  assert.equal(old.error, null)
+  const weekly = parseTranscriptTail(apiError(T0 - 3 * 24 * 60 * MIN, 'rate_limit', "You've hit your weekly limit · resets Jul 10 at 10pm (Asia/Dubai)"), T0)
+  assert.equal(weekly.error?.kind, 'rate_limit')
+  assert.equal(weekly.error?.resetAt, 'Jul 10 at 10pm (Asia/Dubai)')
+})
+
+test('parseTranscriptTail: only an OWNER channel message is a delivery; events, peers, the system, sidechains and synthetic turns are not', () => {
+  const event = JSON.stringify({ type: 'user', timestamp: new Date(T0 - 5 * MIN).toISOString(), message: { content: '<channel source="bgos" event_type="reaction">x</channel>' } })
+  const peer = JSON.stringify({ type: 'user', timestamp: new Date(T0 - 4 * MIN).toISOString(), message: { content: '<channel source="bgos" sender_type="agent">x</channel>' } })
+  const system = JSON.stringify({ type: 'user', timestamp: new Date(T0 - 3 * MIN).toISOString(), message: { content: '<channel source="bgos">\n[System message from BGOS] wake</channel>' } })
+  const side = JSON.stringify({ type: 'assistant', isSidechain: true, timestamp: new Date(T0 - 2 * MIN).toISOString(), message: { model: 'claude-opus-5-5', content: [] } })
+  const synthetic = JSON.stringify({ type: 'assistant', timestamp: new Date(T0 - 1 * MIN).toISOString(), message: { model: '<synthetic>', content: [] } })
+  const tail = parseTranscriptTail([ownerMessage(T0 - 20 * MIN), assistantTurn(T0 - 19 * MIN), event, peer, system, side, synthetic, 'not json'].join('\n'), T0)
+  assert.equal(tail.ownerDeliveredAtMs, T0 - 20 * MIN)
+  assert.equal(tail.lastActivityAtMs, T0 - 19 * MIN)
+  assert.equal(isOwnerChannelText('<channel source="bgos" chat_id="1">hi</channel>'), true)
+  assert.equal(isOwnerChannelText('hello from the terminal'), false)
+})
+
+test('checkupTarget: exactly one agent, by number or by digits string', () => {
+  assert.deepEqual(checkupTarget({ targets: [{ assistantId: 912 }] }), { ok: true, assistantId: '912' })
+  assert.deepEqual(checkupTarget({ targets: [{ assistantId: '912' }, { assistantId: 912 }] }), { ok: true, assistantId: '912' })
+  assert.equal(checkupTarget({ targets: [] }).ok, false)
+  assert.equal(checkupTarget({}).ok, false)
+  assert.equal(checkupTarget({ targets: [{ assistantId: '../x' }] }).ok, false)
 })

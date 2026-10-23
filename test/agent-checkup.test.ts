@@ -562,7 +562,8 @@ test('the order is: reports, then update or repair, then restart or start, then 
       transcriptError: { kind: 'rate_limit', resetAt: null },
     }),
   )
-  assert.deepEqual(pass.actions.map((a: any) => a.action), ['report', 'update', 'restart'])
+  // The dead connector (C3) is restarted under the usage limit too (P3), so the verify follows it.
+  assert.deepEqual(pass.actions.map((a: any) => a.action), ['report', 'update', 'restart', 'verify'])
   const clean = checkupPass(obs({ daemonAlive: false, runningVersion: '0.73.0', installedVersion: '0.74.0' }))
   assert.deepEqual(clean.actions.map((a: any) => a.action), ['update', 'restart', 'verify'])
 })

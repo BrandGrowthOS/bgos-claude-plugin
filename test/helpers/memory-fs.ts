@@ -16,6 +16,8 @@ export type MemoryFs = {
   // to read-then-write; both paths need a home somewhere, so one test strips these off again.
   appendFile: (path: string, text: string) => void
   size: (path: string) => number | null
+  /** The last maxBytes of a file from its first whole line, like the production adapter. */
+  readTail: (path: string, maxBytes: number) => string | null
   mkdir: (path: string) => void
   listDir: (path: string) => string[]
   stat: (path: string) => { mtimeMs: number; isDirectory: boolean } | null
@@ -65,6 +67,15 @@ export function memoryFs(initial: Record<string, string> = {}, dirs: string[] = 
     size: (p) => {
       const text = files.get(norm(p))
       return text === undefined ? null : Buffer.byteLength(text, 'utf8')
+    },
+    readTail: (p, maxBytes) => {
+      const text = files.get(norm(p))
+      if (text === undefined) return null
+      const bytes = Buffer.from(text, 'utf8')
+      if (bytes.length <= maxBytes) return text
+      const tail = bytes.subarray(bytes.length - Math.max(0, maxBytes)).toString('utf8')
+      const nl = tail.indexOf('\n')
+      return nl >= 0 ? tail.slice(nl + 1) : ''
     },
     mkdir: (p) => {
       dirSet.add(norm(p))

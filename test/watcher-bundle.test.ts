@@ -77,6 +77,8 @@ test('WATCHER_BUNDLE_FILES is exactly the design 7.5 list (order and names)', ()
     // The keep-alive sweep (design 5) and its imports.
     'lib/watcher-keepalive.mjs',
     'lib/keepalive-plan.mjs',
+    'lib/watcher-checkup.mjs',
+    'lib/agent-checkup.mjs',
     'lib/process-tree.mjs',
     'lib/agent-task-win32.mjs',
     // The read-back of an agent's own service before the sweep or a restart acts on it
