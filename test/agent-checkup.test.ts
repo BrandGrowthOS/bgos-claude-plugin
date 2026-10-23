@@ -179,7 +179,7 @@ test('C4: a named launch failure is reported, never retried in a loop', () => {
     assert.match(findings[0].evidence, new RegExp(outcome), outcome)
     const pass = checkupPass(obs(over))
     assert.deepEqual(steps(pass.actions), ['report:planned'], outcome)
-    assert.equal(pass.actions[0].ownerAction.kind, 'fix_launch', outcome)
+    assert.equal(pass.actions[0].ownerAction?.kind, 'fix_launch', outcome)
   }
 })
 
@@ -239,7 +239,7 @@ test('C5 plan: a wedged idle session is restarted and verified', () => {
   const pass = checkupPass(
     obs({
       messagesDeliveredAtMs: NOW - 30 * MIN,
-      lastTranscriptActivityAtMs: NOW - 25 * MIN,
+      lastTranscriptActivityAtMs: NOW - 40 * MIN,
       stateFresh: true,
       agentState: freshState({ turnSignal: 'hooks' }),
       activityMs: [NOW - 25 * MIN],
@@ -252,7 +252,7 @@ test('C5 plan: it looks busy, so it is not interrupted (waiting_idle, reason nam
   const pass = checkupPass(
     obs({
       messagesDeliveredAtMs: NOW - 30 * MIN,
-      lastTranscriptActivityAtMs: NOW - 25 * MIN,
+      lastTranscriptActivityAtMs: NOW - 40 * MIN,
       stateFresh: true,
       agentState: freshState({ turnInFlight: true, lastActivityAtMs: NOW - 3 * MIN }),
       activityMs: [NOW - 3 * MIN],
@@ -264,7 +264,7 @@ test('C5 plan: it looks busy, so it is not interrupted (waiting_idle, reason nam
 })
 
 test('C5: a silence that the login or the usage limit explains is not also called a wedge', () => {
-  const wedged = { messagesDeliveredAtMs: NOW - 30 * MIN, lastTranscriptActivityAtMs: NOW - 25 * MIN }
+  const wedged = { messagesDeliveredAtMs: NOW - 30 * MIN, lastTranscriptActivityAtMs: NOW - 40 * MIN }
   assert.deepEqual(causes(diagnoseAgent(obs({ ...wedged, transcriptError: { kind: 'authentication_failed', resetAt: null } }))), ['C8'])
   assert.deepEqual(causes(diagnoseAgent(obs({ ...wedged, transcriptError: { kind: 'rate_limit', resetAt: '2026-10-23T15:00:00Z' } }))), ['C9'])
 })
@@ -372,8 +372,8 @@ test('C8: authentication_failed in the transcript is login_expired, not fixable'
 test('C8 plan: report only, the owner types /login', () => {
   const pass = checkupPass(obs({ transcriptError: { kind: 'authentication_failed', resetAt: null } }))
   assert.deepEqual(steps(pass.actions), ['report:planned'])
-  assert.equal(pass.actions[0].ownerAction.kind, 'login')
-  assert.match(pass.actions[0].ownerAction.text, /\/login/)
+  assert.equal(pass.actions[0].ownerAction?.kind, 'login')
+  assert.match(pass.actions[0].ownerAction?.text, /\/login/)
 })
 
 test('C9: rate_limit in the transcript is usage_limit, with the reset time', () => {
@@ -387,14 +387,14 @@ test('C9: rate_limit in the transcript is usage_limit, with the reset time', () 
 test('C9 plan: report only, the reset time is in the words', () => {
   const pass = checkupPass(obs({ transcriptError: { kind: 'rate_limit', resetAt: '2026-10-23T15:00:00Z' } }))
   assert.deepEqual(steps(pass.actions), ['report:planned'])
-  assert.equal(pass.actions[0].ownerAction.kind, 'wait')
-  assert.match(pass.actions[0].ownerAction.text, /2026-10-23T15:00:00Z/)
+  assert.equal(pass.actions[0].ownerAction?.kind, 'wait')
+  assert.match(pass.actions[0].ownerAction?.text, /2026-10-23T15:00:00Z/)
 })
 
 test('C9: a limit with no known reset time still reports', () => {
   const pass = checkupPass(obs({ transcriptError: { kind: 'rate_limit', resetAt: null } }))
   assert.deepEqual(steps(pass.actions), ['report:planned'])
-  assert.equal(pass.actions[0].ownerAction.kind, 'wait')
+  assert.equal(pass.actions[0].ownerAction?.kind, 'wait')
 })
 
 test('C8 and C9 are reported FIRST, before any other action, in the same pass', () => {
@@ -412,7 +412,7 @@ test('never a restart or a start for C8: even when every other gate is open', ()
     {},
     { daemonAlive: false },
     { claudeAlive: false, daemonAlive: false },
-    { messagesDeliveredAtMs: NOW - 30 * MIN, lastTranscriptActivityAtMs: NOW - 25 * MIN },
+    { messagesDeliveredAtMs: NOW - 30 * MIN, lastTranscriptActivityAtMs: NOW - 40 * MIN },
     { runningVersion: '0.73.0', installedVersion: '0.74.0' },
     { update: { ...healthy().update, stagedNeverApplied: true } },
   ]) {
@@ -429,7 +429,7 @@ test('never a restart or a start for C9: even when every other gate is open', ()
     {},
     { daemonAlive: false },
     { claudeAlive: false, daemonAlive: false },
-    { messagesDeliveredAtMs: NOW - 30 * MIN, lastTranscriptActivityAtMs: NOW - 25 * MIN },
+    { messagesDeliveredAtMs: NOW - 30 * MIN, lastTranscriptActivityAtMs: NOW - 40 * MIN },
     { runningVersion: '0.73.0', installedVersion: '0.74.0' },
     { update: { ...healthy().update, stagedNeverApplied: true } },
   ]) {
@@ -446,6 +446,21 @@ test('C8 with a stale plugin: the update is still staged, nothing is restarted',
     obs({ runningVersion: '0.73.0', installedVersion: '0.74.0', transcriptError: { kind: 'authentication_failed', resetAt: null } }),
   )
   assert.deepEqual(steps(pass.actions), ['report:planned', 'update:planned', 'restart:skipped'])
+})
+
+test('a named launch failure with a stale plugin: the update is staged, the agent is not restarted into the same failure', () => {
+  for (const [outcome, code] of [['exited-during-startup', 'launch_failed']]) {
+    const pass = checkupPass(
+      obs({ claudeAlive: false, daemonAlive: false, launchStatus: { outcome }, runningVersion: '0.73.0', installedVersion: '0.74.0' }),
+    )
+    assert.deepEqual(steps(pass.actions), ['report:planned', 'update:planned', 'restart:skipped'])
+    assert.equal(pass.actions[2].reason, code)
+  }
+  const first = checkupPass(
+    obs({ claudeAlive: false, daemonAlive: false, hasSupervisor: false, runningVersion: '0.73.0', installedVersion: '0.74.0' }),
+  )
+  assert.equal(plannedRestart(first.actions), false)
+  assert.equal(first.actions.find((a) => MUTATING.has(a.action))?.reason, 'needs_first_launch')
 })
 
 test('a signed out launch is C8 and starts nothing, even with a supervisor', () => {
@@ -496,7 +511,7 @@ test('one restart per pass, however many causes want one', () => {
     obs({
       daemonAlive: false,
       messagesDeliveredAtMs: NOW - 30 * MIN,
-      lastTranscriptActivityAtMs: NOW - 25 * MIN,
+      lastTranscriptActivityAtMs: NOW - 40 * MIN,
       runningVersion: '0.73.0',
       installedVersion: '0.74.0',
       update: { ...healthy().update, stagedNeverApplied: true },
@@ -504,8 +519,8 @@ test('one restart per pass, however many causes want one', () => {
   )
   assert.equal(pass.actions.filter((a: any) => MUTATING.has(a.action)).length, 1)
   assert.equal(pass.actions.filter((a: any) => a.action === 'verify').length, 1)
-  const restart = pass.actions.find((a: any) => a.action === 'restart')
-  assert.deepEqual(restart.causes, ['C3', 'C5', 'C6', 'C7'])
+  const restart = pass.actions.find((a) => a.action === 'restart')
+  assert.deepEqual(restart?.causes, ['C3', 'C5', 'C6', 'C7'])
 })
 
 test('the order is: reports, then update or repair, then restart or start, then verify', () => {
@@ -535,7 +550,7 @@ test('invariant: no planned restart or start under C8, C9, an unsafe moment or a
     ['limit', { transcriptError: { kind: 'rate_limit', resetAt: null } }],
     ['daemon', { daemonAlive: false }],
     ['dead', { claudeAlive: false, daemonAlive: false }],
-    ['wedged', { messagesDeliveredAtMs: NOW - 30 * MIN, lastTranscriptActivityAtMs: NOW - 25 * MIN }],
+    ['wedged', { messagesDeliveredAtMs: NOW - 30 * MIN, lastTranscriptActivityAtMs: NOW - 40 * MIN }],
     ['stale', { runningVersion: '0.73.0', installedVersion: '0.74.0' }],
     ['stuck', { update: { ...healthy().update, stagedNeverApplied: true } }],
   ]
@@ -607,7 +622,7 @@ test('purity: the module imports nothing but the pure keepalive plan, and uses n
 test('house style: no em or en dashes anywhere in the module or this test', () => {
   for (const path of ['../lib/agent-checkup.mjs', './agent-checkup.test.ts']) {
     const source = readFileSync(fileURLToPath(new URL(path, import.meta.url)), 'utf8')
-    assert.doesNotMatch(source, /[–—]/, path)
+    assert.doesNotMatch(source, new RegExp('[\\u2013\\u2014]'), path)
   }
 })
 
