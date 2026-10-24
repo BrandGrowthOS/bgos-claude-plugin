@@ -2,6 +2,15 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.74.2 (2026-10-24)
+
+**After a session restart the agent's browser tools appear within seconds of the turn going live, not up to a minute later (board row 94c6a3fb).** A managed browser shim (`HOAI_RELAY_CONTEXT_FILE` set) refuses a turn context whose `live` is not true, a refused context is offline mode, and offline lists `hoai_browser_status` alone. A restarted session's shim starts between turns, so the tools came back only when the 20 s host probe happened to resolve a live context, and `notifications/tools/list_changed` fired only on that mode change. Measured on 10-22 (worker stopbrowse) with the shim and fakes: app connected at 3.15 s, list_changed at 60.24 s.
+
+- **`bin/hoai-browser-mcp.mjs`** now, while its last resolve met a refused context, reads the context file every second (`HOAI_RELAY_CONTEXT_WATCH_MS`, a local read with no request) and resolves the moment it turns valid, so list_changed follows the live turn. The backend hears from the watch once per refused context that turns valid: a context that stays refused never reaches it, and a live turn with no host online costs one host probe. Every refusal is unchanged (a context that is not live, stale, unsigned or for another actor is still refused, and the call after a turn ends still says the sender could not be verified).
+- **Why a watch and not every tool listed from the start**: the browser's tools come from its host through the relay, and a refused context never reaches the backend (that is the guard), so before a live turn the shim has no tool list it could truthfully serve; a list written into the shim would drift from the host's.
+- New pin: sha256 `c8b0f0dc` (was `2fd50404`). This copy still leads BGOS: the app vendors it byte for byte at `frontend/electron-app/agent-browser/shim/hoai-browser-mcp.mjs` with a pin, so the app needs a follow up copy.
+- Tests: `test/hoai-browser-mcp.live-context.test.ts` (3 cases, the probe at its default; red at a13bed6 with "it took 17018 ms", about 1 s now), the refusals, relay, managed context and vendor suites unchanged and green.
+
 ## 0.74.1 (2026-10-23)
 
 **The agent check up is answered (BGOS board row 01a16795).** The HOAI app's Agent health card offers "Run checkup" for every paired agent, and the BGOS backend sends it as a `doctor_rpc` frame to the pairing room, then waits 10 s for an ack. The lane was built for Hermes (BGOS #747) and this daemon never listened for it, so every check up of a Claude Code agent read "We could not reach your computer. It may be asleep or offline." while the agent was online and chatting. Measured on Cho (pairing 144, 0.74.0) on 2026-10-23: the start route answered 200 and no ack or result ever arrived.

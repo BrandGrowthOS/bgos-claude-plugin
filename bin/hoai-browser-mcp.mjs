@@ -20,7 +20,10 @@
 // Whenever the mode changes the shim sends notifications/tools/list_changed,
 // so clients that honour it refresh the tool list; while relay credentials
 // exist and the host is offline it probes the backend every 20 s so the tools
-// appear the moment the owner opens the app.
+// appear the moment the owner opens the app. A managed shim whose turn context
+// was refused (a restarted session starts between turns) reads that file every
+// second and resolves the moment it turns live, so the tools appear with the
+// turn, not up to a minute later.
 //
 // The app installs a copy at ~/.hoai/bin/hoai-browser-mcp.mjs; plugins ship
 // their own copy. Source of truth: frontend/electron-app/agent-browser/shim/.
@@ -45,6 +48,9 @@ const RELAY_WAIT_MS = 45_000;
 // Longer than any engine timeout (navigation 30 s, browser_wait_for 30 s).
 const RELAY_TOTAL_MS = Number(process.env.HOAI_RELAY_TOTAL_MS) || 180_000;
 const RELAY_PROBE_MS = Number(process.env.HOAI_RELAY_PROBE_MS) || 20_000;
+// While a managed context is refused, the context file is read this often (a local read, no request), so the tools
+// appear the moment the turn goes live instead of on a probe that happens to land inside a turn.
+const CONTEXT_WATCH_MS = Number(process.env.HOAI_RELAY_CONTEXT_WATCH_MS) || 1_000;
 // One status probe may hold back a refusal the agent is waiting for (a profile that is not active, the backend's
 // browser_profile_writer_offline), so it is bounded; a probe that times out is a failed probe, never "offline".
 const RELAY_PROBE_TIMEOUT_MS = Number(process.env.HOAI_RELAY_PROBE_TIMEOUT_MS) || 10_000;
@@ -802,7 +808,9 @@ function withProfileRefusal(message, context) {
 // ─── Mode resolution: local, then relay, then offline ────────────────────────
 
 const resolving = new Map();
+let contextRefused = false; // the last resolve met a refused managed context, so the watch below looks for a live one
 function resolveMode(context = readManagedContext()) {
+  contextRefused = context?.valid === false;
   if (context?.valid === false) { setMode("offline"); return Promise.resolve({ mode: "offline", refusal: context }); }
   const key = relayClientId(context);
   if (!resolving.has(key)) resolving.set(key, doResolveMode(context).finally(() => resolving.delete(key)));
@@ -840,6 +848,19 @@ const probe = setInterval(() => {
   resolveMode().catch(() => {});
 }, RELAY_PROBE_MS);
 probe.unref();
+
+// A refused context turns valid when the daemon publishes a live turn, which the backend probe cannot see. Measured
+// 10-22 (board row 94c6a3fb): after a session restart the app connected at 3.15 s and list_changed came at 60.24 s,
+// because the shim had started between turns and only a 20 s probe that landed inside a turn found it live. Each
+// tick is a local read; the backend hears from the watch once per refused context that turns valid, never more.
+if (MANAGED_CONTEXT_REQUIRED && RELAY) {
+  const watch = setInterval(() => {
+    if (!contextRefused || mode !== "offline" || !clientInfo) return;
+    const context = readManagedContext();
+    if (context.valid) resolveMode(context).catch(() => {});
+  }, CONTEXT_WATCH_MS);
+  watch.unref();
+}
 
 // ─── The stdio side ──────────────────────────────────────────────────────────
 

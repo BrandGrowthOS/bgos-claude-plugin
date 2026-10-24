@@ -84,6 +84,10 @@ was added on top of the BGOS bytes it started from (`sourceCommit`), and
    `HOAI_BROWSER_SHIM_SOURCE`, the guard still holds this copy to its pin.
 4. `codex-channel-bgos` ships its own copy (`vendor/hoai-browser-mcp.mjs`) and is
    behind until it takes the same bytes.
+5. Plugin 0.74.2 (board row 94c6a3fb) changed this copy again: the managed
+   context watch, so the tools follow a live turn within seconds. BGOS takes
+   these bytes (sha256 `c8b0f0dc`) and ports
+   `test/hoai-browser-mcp.live-context.test.ts` in the same copy.
 
 ## What none of this catches
 
