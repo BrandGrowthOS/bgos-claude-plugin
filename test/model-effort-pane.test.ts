@@ -10,8 +10,10 @@
  *     and a screen this reader does not recognise is "unknown", refused).
  *
  * The composer fixtures are the CLI's two known layouts (the rule framed
- * prompt and the older box) as tmux capture-pane -e prints them. A live
- * check on the supported CLI version must still confirm them (RESULT.md).
+ * prompt and the older box) as tmux capture-pane -e prints them. The real
+ * CLI's own screens (2.1.310, light and dark) are replayed in
+ * test/model-effort-pane-live.test.ts; they draw the cursor as an inverse
+ * cell and the placeholder in SGR 2, which is all these fixtures assume.
  */
 
 import { test } from 'node:test'
@@ -21,6 +23,7 @@ import {
   agentOwnsPane,
   composerHolds,
   composerText,
+  cursorFollows,
   parsePaneState,
   readComposer,
 } from '../lib/model-effort-pane.ts'
@@ -82,16 +85,16 @@ test('the agent owns the pane only when the pane\'s root is its ancestor and its
   assert.equal(agentOwnsPane('', 800, [{ pid: 900, tty: '', pgid: 800, tpgid: 800 }, { pid: 800, tty: '', pgid: 800, tpgid: 800 }]), false)
 })
 
-test('an empty rule framed composer is empty', () => {
-  assert.equal(readComposer(screen(RULE, '❯ ', RULE)), 'empty')
-  assert.equal(readComposer(screen(RULE, '❯', RULE)), 'empty')
-  // The cursor drawn as an inverse space.
+test('an empty rule framed composer is empty: the cursor drawn as an inverse cell right after the prompt', () => {
   assert.equal(readComposer(screen(RULE, `❯ ${INV} ${UNINV}`, RULE)), 'empty')
+  // The real CLI separates the glyph with a no-break space.
+  assert.equal(readComposer(screen(RULE, `❯\u00a0${INV} \u001b[0m`, RULE)), 'empty')
 })
 
-test('a dimmed placeholder is not a draft, with or without the cursor on its first letter', () => {
-  assert.equal(readComposer(screen(RULE, `❯ ${DIM}Try "how does compact work"${UNDIM}`, RULE)), 'empty')
+test('a dimmed placeholder with the cursor on its first letter is not a draft', () => {
   assert.equal(readComposer(screen(RULE, `❯ ${INV}T${UNINV}${DIM}ry "fix lint errors"${UNDIM}`, RULE)), 'empty')
+  // As 2.1.310 writes it: the inverse letter, then a reset that sets dim.
+  assert.equal(readComposer(screen(RULE, `❯\u00a0\u001b[7mT\u001b[0;2mry "how do I log an error?"\u001b[0m`, RULE)), 'empty')
 })
 
 test('a typed draft is a draft, on the prompt line or a continuation line', () => {
@@ -106,8 +109,9 @@ test('a typed draft is a draft, on the prompt line or a continuation line', () =
 test('the older box composer reads the same way', () => {
   const top = '╭' + '─'.repeat(58) + '╮'
   const bottom = '╰' + '─'.repeat(58) + '╯'
-  assert.equal(readComposer(screen(top, '│ >' + ' '.repeat(55) + '│', bottom)), 'empty')
+  assert.equal(readComposer(screen(top, `│ > ${INV} ${UNINV}` + ' '.repeat(53) + '│', bottom)), 'empty')
   assert.equal(readComposer(screen(top, '│ > hello' + ' '.repeat(49) + '│', bottom)), 'draft')
+  assert.equal(readComposer(screen(top, '│ >' + ' '.repeat(55) + '│', bottom)), 'unknown', 'no cursor drawn')
 })
 
 test('a screen with no recognisable composer is unknown, never empty', () => {
@@ -120,8 +124,8 @@ test('a screen with no recognisable composer is unknown, never empty', () => {
 
 test('the composer reader looks at the LAST composer on screen, not an old one in scrollback', () => {
   const old = [RULE, '❯ an old prompt that scrolled up', RULE, '● answer']
-  assert.equal(readComposer(screen(...old, RULE, '❯ ', RULE)), 'empty')
-  assert.equal(readComposer(screen(RULE, '❯ ', RULE, '● answer', RULE, '❯ new draft', RULE)), 'draft')
+  assert.equal(readComposer(screen(...old, RULE, `❯ ${INV} ${UNINV}`, RULE)), 'empty')
+  assert.equal(readComposer(screen(RULE, `❯ ${INV} ${UNINV}`, RULE, '● answer', RULE, '❯ new draft', RULE)), 'draft')
 })
 
 test('composerHolds sees the literal still sitting in the composer', () => {
@@ -173,7 +177,10 @@ test('H1: spaces typed before the drawn cursor are a draft; a faint continuation
 test('H1: composerText reads the typed text exactly, prompt glyph and frame removed', () => {
   assert.equal(composerText(screen(RULE, '❯ /model sonnet', RULE)), '/model sonnet')
   assert.equal(composerText(screen(RULE, `❯ /model sonnet${INV} ${UNINV}`, RULE)), '/model sonnet')
-  assert.equal(composerText(screen(RULE, `❯ /model sonnet${DIM} a faint hint${UNDIM}`, RULE)), '/model sonnet')
+  // Dim text is kept: only a placeholder is dim, and a placeholder is never
+  // there once something is typed (round 2, a dim tag before the command).
+  assert.equal(composerText(screen(RULE, `❯ /model sonnet${DIM} a faint hint${UNDIM}`, RULE)), '/model sonnet a faint hint')
+  assert.equal(composerText(screen(RULE, `❯ ${DIM}[Pasted text #1 +40 lines]${UNDIM}/model sonnet${INV} ${UNINV}`, RULE)), '[Pasted text #1 +40 lines]/model sonnet')
   assert.equal(composerText(screen(RULE, '❯ x/model sonnet', RULE)), 'x/model sonnet')
   assert.equal(composerText(screen(RULE, '❯  /model sonnet', RULE)), ' /model sonnet')
   assert.equal(composerText(screen(RULE, '❯ /model sonnet', '  ', RULE)), '/model sonnet\n')
@@ -182,4 +189,75 @@ test('H1: composerText reads the typed text exactly, prompt glyph and frame remo
   const bottom = '╰' + '─'.repeat(58) + '╯'
   assert.equal(composerText(screen(top, '│ > /model sonnet'.padEnd(59) + '│', bottom)), '/model sonnet')
   assert.equal(composerText('Do you want to proceed?\n❯ 1. Yes'), null)
+})
+
+// Round 2 on PR #275, the Medium: "faint" was any grey or black true colour,
+// bright black and a 256 grey, and both the empty check and the re-read
+// before the Enter skipped faint text. The light themes' text colour is
+// rgb(0,0,0), so a draft drawn in it read as empty. Faint is now only what the
+// CLI draws its placeholder with, SGR 2, and empty must be proven: the drawn
+// cursor at the very start, then nothing or an SGR 2 placeholder.
+test('round 2: faint is SGR 2 only; text in black, grey or bright black is typed', () => {
+  for (const sgr of ['38;2;0;0;0', '38;2;102;102;102', '38;2;175;175;175', '38;2;80;80;80', '90', '38;5;241', '38;5;16', '38;5;8', '30']) {
+    const colour = `\u001b[${sgr}m`
+    assert.equal(readComposer(screen(RULE, `❯ ${colour}hello draft\u001b[39m${INV} ${UNINV}`, RULE)), 'draft', sgr)
+    assert.equal(readComposer(screen(RULE, `❯ ${colour}hello draft\u001b[39m`, RULE)), 'draft', `${sgr} without a cursor`)
+    assert.equal(readComposer(screen(RULE, `❯ ${INV}${colour}h${UNINV}ello draft\u001b[39m`, RULE)), 'draft', `${sgr} cursor at the start`)
+    assert.equal(composerText(screen(RULE, `❯ ${colour}x\u001b[39m/model sonnet${INV} ${UNINV}`, RULE)), 'x/model sonnet', sgr)
+  }
+})
+
+test('round 2: something drawn dim with no space after it, the cursor at its end, is a draft', () => {
+  assert.equal(readComposer(screen(RULE, `❯ ${DIM}[Pasted text #1 +40 lines]${UNDIM}${INV} ${UNINV}`, RULE)), 'draft')
+  assert.equal(readComposer(screen(RULE, `❯ ${DIM}x${UNDIM}${INV} ${UNINV}`, RULE)), 'draft')
+  // Spaces, dim or not, before the cursor.
+  assert.equal(readComposer(screen(RULE, `❯ ${DIM}   ${UNDIM}${INV} ${UNINV}`, RULE)), 'draft')
+})
+
+test('round 2: the cursor parked on a dim tag the CLI draws for pasted text or an image is a draft, not a placeholder', () => {
+  for (const tag of ['[Pasted text #1 +40 lines]', '[Pasted text #2]', '[Image #1]', '[...Truncated text #3 +120 lines...]']) {
+    assert.equal(readComposer(screen(RULE, `❯ ${INV}${tag[0]}${UNINV}${DIM}${tag.slice(1)}${UNDIM}`, RULE)), 'draft', tag)
+    assert.equal(readComposer(screen(RULE, `❯ ${INV}${tag[0]}${UNINV}${DIM}${tag.slice(1)} more${UNDIM}`, RULE)), 'draft', `${tag} more`)
+  }
+})
+
+test('round 2: with no cursor drawn the composer is not known to be empty', () => {
+  assert.equal(readComposer(screen(RULE, '❯ ', RULE)), 'unknown')
+  assert.equal(readComposer(screen(RULE, '❯', RULE)), 'unknown')
+  assert.equal(readComposer(screen(RULE, `❯ ${DIM}Try "how does compact work"${UNDIM}`, RULE)), 'unknown')
+  assert.equal(readComposer(screen(RULE, `❯ ${DIM}[Pasted text #1 +40 lines]${UNDIM}`, RULE)), 'unknown')
+  // Text that is not dim is still a draft, cursor or not.
+  assert.equal(readComposer(screen(RULE, '❯ hello', RULE)), 'draft')
+})
+
+test('round 2: only the CLI\'s own placeholder form is empty', () => {
+  // The cursor's letter itself dim: not how the CLI draws its placeholder.
+  assert.equal(readComposer(screen(RULE, `❯ ${DIM}${INV}T${UNINV}ry "x"${UNDIM}`, RULE)), 'unknown')
+  // A second inverse cell: not the CLI's.
+  assert.equal(readComposer(screen(RULE, `❯ ${INV}T${UNINV}${DIM}ry${UNDIM}${INV} ${UNINV}`, RULE)), 'unknown')
+  // A blank cursor followed by dim text: not the CLI's either.
+  assert.equal(readComposer(screen(RULE, `❯ ${INV} ${UNINV}${DIM}hint${UNDIM}`, RULE)), 'unknown')
+  // One typed letter with the cursor on it.
+  assert.equal(readComposer(screen(RULE, `❯ ${INV}x${UNINV}`, RULE)), 'draft')
+})
+
+// Round 2, Low 1: the typed command is cleared one BSpace per character only
+// when the screen shows the cursor right after it, at the very end of the
+// composer. An arrow key the owner pressed moves the cursor, and the BSpaces
+// would then delete the owner's characters.
+test('round 2 L1: cursorFollows is true only with the cursor right after the command at the end of the composer', () => {
+  const cmd = '/model sonnet'
+  assert.equal(cursorFollows(screen(RULE, `❯ ${cmd}${INV} ${UNINV}`, RULE), cmd), true)
+  assert.equal(cursorFollows(screen(RULE, `❯ q${cmd}${INV} ${UNINV}`, RULE), cmd), true)
+  assert.equal(cursorFollows(screen(RULE, `❯\u00a0q\u001b[38;5;105m/model\u001b[39m sonnet\u001b[7m \u001b[0m`, RULE), cmd), true)
+  // The cursor moved onto the command, or before it.
+  assert.equal(cursorFollows(screen(RULE, `❯ q/model sonne${INV}t${UNINV}`, RULE), cmd), false)
+  assert.equal(cursorFollows(screen(RULE, `❯ q${INV}/${UNINV}model sonnet`, RULE), cmd), false)
+  // No cursor, text after the cursor, a line after it, another composer state.
+  assert.equal(cursorFollows(screen(RULE, `❯ q${cmd}`, RULE), cmd), false)
+  assert.equal(cursorFollows(screen(RULE, `❯ q${cmd}${INV} ${UNINV}k`, RULE), cmd), false)
+  assert.equal(cursorFollows(screen(RULE, `❯ q${cmd}${INV} ${UNINV}`, '  more', RULE), cmd), false)
+  assert.equal(cursorFollows(screen(RULE, `❯ q`, `  ${cmd}${INV} ${UNINV}`, RULE), cmd), true)
+  assert.equal(cursorFollows(screen(RULE, `❯ q${cmd.slice(0, 4)}`, `  ${cmd.slice(4)}${INV} ${UNINV}`, RULE), cmd), false, 'wrapped: not provable')
+  assert.equal(cursorFollows('Do you want to proceed?\n❯ 1. Yes', cmd), false)
 })

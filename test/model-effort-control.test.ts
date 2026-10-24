@@ -36,6 +36,8 @@ const SESSION_NAME = 'agent-session'
 /** The tmux server and the Claude Code session behind one pane. */
 class FakePane {
   composer = ''
+  /** Where the CLI's cursor sits in the composer: null is at the end. */
+  cursor: number | null = null
   dead = false
   inMode = false
   tty = '/dev/ttys012'
@@ -77,7 +79,28 @@ class FakePane {
 
   screen(): string {
     if (this.dialog) return ['● ready', 'Do you want to proceed?', '❯ 1. Yes', '  2. No'].join('\n')
-    return ['● ready', RULE, `❯ ${this.composer}`, RULE, '  ? for shortcuts'].join('\n')
+    return ['● ready', RULE, `❯\u00a0${this.drawComposer()}`, RULE, '  ? for shortcuts'].join('\n')
+  }
+
+  /** As Claude Code 2.1.310 draws it (test/fixtures/claude-2.1.310-composer):
+   *  the cursor an inverse cell, an empty composer's placeholder dim with the
+   *  cursor on its first letter. */
+  private drawComposer(): string {
+    if (this.composer === '') return '\u001b[7mT\u001b[0;2mry "fix lint errors"\u001b[0m'
+    const at = this.at()
+    const under = this.composer[at] ?? ' '
+    return `${this.composer.slice(0, at)}\u001b[7m${under}\u001b[0m${this.composer.slice(at + 1)}`
+  }
+
+  private at(): number {
+    return this.cursor === null ? this.composer.length : Math.max(0, Math.min(this.cursor, this.composer.length))
+  }
+
+  /** What the owner's or the daemon's keys do, at the cursor. */
+  private insert(text: string): void {
+    const at = this.at()
+    this.composer = this.composer.slice(0, at) + text + this.composer.slice(at)
+    if (this.cursor !== null) this.cursor = at + text.length
   }
 
   async exec(argv: string[]): Promise<string> {
@@ -103,14 +126,18 @@ class FakePane {
       if (this.failSendKeys) throw new Error('send-keys failed')
       const key = argv.at(-1)!
       if (argv.includes('-l')) {
-        this.composer += key
+        this.insert(key)
         this.after?.('literal')
       } else if (key === 'BSpace') {
         const n = argv.filter((a) => a === 'BSpace').length
-        this.composer = this.composer.slice(0, Math.max(0, this.composer.length - n))
+        const at = this.at()
+        const from = Math.max(0, at - n)
+        this.composer = this.composer.slice(0, from) + this.composer.slice(at)
+        if (this.cursor !== null) this.cursor = from
       } else if (key === 'Enter' && this.submits) {
         const line = this.composer
         this.composer = ''
+        this.cursor = null
         let model = this.model
         let effort = this.effort
         const m = /^\/model (\w+)$/.exec(line)
@@ -550,4 +577,55 @@ test('L5: a dialog that opens in the gap gets no Enter and no other key', async 
   assert.deepEqual(typed(r.pane), ['/effort max'])
   assert.doesNotMatch(out.message, /[\u2013\u2014]/u)
   assert.ok(out.message.length <= 300)
+})
+
+// Round 2 on PR #275, Low 1: the clear sent one BSpace per character of the
+// command wherever the cursor was. An arrow key the owner pressed in the
+// 400 ms gap moved it, and the BSpaces deleted the owner's characters. Now the
+// screen is read again and the BSpaces go only when the cursor is drawn right
+// after the command at the end of the composer; otherwise nothing is sent.
+test('L1: an arrow key in the gap: nothing of the owner\'s is deleted, no BSpace, no Enter', async () => {
+  const r = rig()
+  r.pane.after = (what) => {
+    if (what !== 'literal') return
+    // The owner's key lands before the command, then they press Left twice.
+    r.pane.composer = 'q' + r.pane.composer
+    r.pane.cursor = r.pane.composer.length - 2
+  }
+  const out = await r.control.handle({ op: 'set_model', value: 'sonnet' })
+  assert.equal(out.ok, false, JSON.stringify(out))
+  if (out.ok) return
+  assert.equal(out.code, 'composer_changed')
+  assert.equal(r.pane.composer, 'q/model sonnet', 'the owner\'s key and the command are left as they are')
+  assert.deepEqual(typed(r.pane), ['/model sonnet'], 'no BSpace and no Enter')
+  assert.match(out.message, /still in the agent's message box/)
+  assertNoEscape(r.pane)
+})
+
+test('L1: the cursor moved to the start: nothing is deleted', async () => {
+  const r = rig()
+  r.pane.after = (what) => {
+    if (what !== 'literal') return
+    r.pane.composer = 'q' + r.pane.composer
+    r.pane.cursor = 1
+  }
+  const out = await r.control.handle({ op: 'set_effort', value: 'max' })
+  assert.equal(out.ok, false, JSON.stringify(out))
+  assert.equal(r.pane.composer, 'q/effort max')
+  assert.deepEqual(typed(r.pane), ['/effort max'])
+})
+
+test('L1: the cursor moved between the check and the clear is caught by a fresh read right before it', async () => {
+  const r = rig()
+  let reads = 0
+  r.pane.after = (what) => {
+    if (what === 'literal') r.pane.composer = 'q' + r.pane.composer
+    // The read between the literal and the Enter sees the cursor at the end;
+    // the owner presses Left right after it.
+    if (what === 'capture-pane' && ++reads === 2) r.pane.cursor = r.pane.composer.length - 1
+  }
+  const out = await r.control.handle({ op: 'set_model', value: 'sonnet' })
+  assert.equal(out.ok, false, JSON.stringify(out))
+  assert.equal(r.pane.composer, 'q/model sonnet')
+  assert.deepEqual(typed(r.pane), ['/model sonnet'])
 })

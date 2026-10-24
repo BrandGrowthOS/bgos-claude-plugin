@@ -145,14 +145,14 @@ test('a real draft in the pane is refused and left exactly as the owner typed it
   await exec(['tmux', '-S', socket, 'send-keys', '-t', 'rig', '-l', '--', 'half a thought'])
   // Wait until the draft is on screen: a key still in flight when the control
   // reads the pane is the one race no screen read can close (RESULT.md).
-  for (let i = 0; i < 100 && !/❯ half a thought/.test(await capture(socket)); i++) {
+  for (let i = 0; i < 100 && !/❯\shalf a thought/.test(await capture(socket)); i++) {
     await new Promise((r) => setTimeout(r, 50))
   }
-  assert.match(await capture(socket), /❯ half a thought/, 'the owner\'s draft is drawn before the request')
+  assert.match(await capture(socket), /❯\shalf a thought/, 'the owner\'s draft is drawn before the request')
   const out = await control.handle({ op: 'set_model', value: 'sonnet' })
   assert.equal(out.ok, false)
   if (!out.ok) assert.equal(out.code, 'composer_not_empty')
-  assert.match(await capture(socket), /❯ half a thought/)
+  assert.match(await capture(socket), /❯\shalf a thought/)
 })
 
 test('echoed input that never applies is not confirmed', { skip: !hasTmux }, async () => {
@@ -170,10 +170,10 @@ async function typeAsOwner(socket: string, text: string): Promise<void> {
   // The owner's own typing, simulated in this test's own pane; then wait until
   // it is drawn (a key still in flight is the race no screen read can close).
   await exec(['tmux', '-S', socket, 'send-keys', '-t', 'rig', '-l', '--', text])
-  for (let i = 0; i < 100 && !(await capture(socket)).includes(`❯ ${text}`); i++) {
+  for (let i = 0; i < 100 && !(await capture(socket)).includes(`❯\u00a0${text}`); i++) {
     await new Promise((r) => setTimeout(r, 50))
   }
-  assert.ok((await capture(socket)).includes(`❯ ${text}`), 'the owner\'s draft is drawn before the request')
+  assert.ok((await capture(socket)).includes(`❯\u00a0${text}`), 'the owner\'s draft is drawn before the request')
 }
 
 // Security review H1, the reviewer's own end to end case: before the fix the
@@ -187,7 +187,7 @@ test('H1: a real draft ending with > is refused and left exactly as the owner ty
   assert.doesNotMatch(screen, /Unknown:|\/model sonnet/, screen)
   assert.equal(out.ok, false, JSON.stringify(out))
   if (!out.ok) assert.equal(out.code, 'composer_not_empty')
-  assert.match(screen, /❯ const f = \(\) =>/)
+  assert.match(screen, /❯\sconst f = \(\) =>/)
 })
 
 // Security review M2 on a real tmux server: the target is a session NAME, and
@@ -210,4 +210,58 @@ test('M2: a window opened mid request does not receive the keys; the proven pane
   assert.doesNotMatch(other, /\/model/, `the new window received keys: ${other}`)
   assert.equal(out.ok, true, JSON.stringify(out))
   if (out.ok) assert.equal(out.report.model, 'claude-sonnet-5-5')
+})
+
+// Round 2 on PR #275, the Medium, on a real tmux server. Faint used to be any
+// grey or black colour, and both the empty check and the re-read before the
+// Enter skipped faint text: a draft drawn in the light themes' text colour,
+// rgb(0,0,0), read as empty, and so did a tag drawn dim with no space after
+// it (the reviewer's probe sent the owner's draft with /model sonnet added).
+test('round 2: a real draft drawn in the light theme\'s black is refused and left as typed', { skip: !hasTmux }, async () => {
+  const { control, socket } = await startRig('black', { FAKE_TUI_TEXT_SGR: '38;2;0;0;0' })
+  await typeAsOwner(socket, 'half a thought')
+  const out = await control.handle({ op: 'set_model', value: 'sonnet' })
+  const screen = await capture(socket)
+  assert.doesNotMatch(screen, /Unknown:|\/model sonnet/, screen)
+  assert.equal(out.ok, false, JSON.stringify(out))
+  if (!out.ok) assert.equal(out.code, 'composer_not_empty')
+  assert.match(screen, /❯\shalf a thought/)
+})
+
+test('round 2: a real pasted text tag drawn dim is refused and left as it was', { skip: !hasTmux }, async () => {
+  const { control, socket } = await startRig('dimtag', { FAKE_TUI_DIM_TAGS: '1' })
+  await typeAsOwner(socket, '[Pasted text #1 +40 lines]')
+  const out = await control.handle({ op: 'set_model', value: 'sonnet' })
+  const screen = await capture(socket)
+  assert.doesNotMatch(screen, /Unknown:|\/model sonnet/, screen)
+  assert.equal(out.ok, false, JSON.stringify(out))
+  if (!out.ok) assert.equal(out.code, 'composer_not_empty')
+  assert.match(screen, /❯\s\[Pasted text #1 \+40 lines\]/)
+})
+
+// Round 2, Low 1, on a real tmux server: the owner's key lands in front of the
+// typed command and the cursor stays after it (they pressed Left to get
+// there). One BSpace per character from that cursor deleted the owner's key.
+test('round 2 L1: an arrow key in the gap: the owner\'s key is never deleted', { skip: !hasTmux }, async () => {
+  let owner = false
+  const { control, socket } = await startRig('cursor', {}, (sock, run) => async (argv) => {
+    const out = await run(argv)
+    if (!owner && argv.includes('-l') && argv.at(-1) === '/model sonnet') {
+      owner = true
+      const keys = ['tmux', '-S', sock, 'send-keys', '-t', 'rig']
+      await run([...keys, ...Array.from('/model sonnet', () => 'Left')])
+      await run([...keys, '-l', '--', 'q'])
+      for (let i = 0; i < 100 && !(await capture(sock)).includes('❯\u00a0q/model sonnet'); i++) {
+        await new Promise((r) => setTimeout(r, 20))
+      }
+    }
+    return out
+  })
+  const out = await control.handle({ op: 'set_model', value: 'sonnet' })
+  assert.ok(owner)
+  const screen = await capture(socket)
+  assert.equal(out.ok, false, JSON.stringify(out))
+  if (!out.ok) assert.equal(out.code, 'composer_changed')
+  assert.match(screen, /❯\sq\/model sonnet/, screen)
+  assert.doesNotMatch(screen, /Unknown:|Set model/, screen)
 })

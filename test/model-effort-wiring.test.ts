@@ -17,7 +17,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { OWNER_MODEL_EFFORT_TOKEN, declaredCapabilities } from '../lib/declared-capabilities.ts'
-import { MODEL_EFFORT_RPC_EVENT } from '../lib/model-effort-rpc.ts'
+import { MODEL_EFFORT_RPC_EVENT, rpcLogOp, rpcLogTag } from '../lib/model-effort-rpc.ts'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const server = readFileSync(join(ROOT, 'server.ts'), 'utf8')
@@ -101,4 +101,35 @@ test('L6: the daemon logs a received rpcId as its short hash, never raw', () => 
   const body = server.slice(at, at + 800)
   assert.doesNotMatch(body, /\$\{frame\.rpcId\}/, 'the raw rpcId is the sender\'s text')
   assert.match(body, /model_effort_rpc received \(rpc=\$\{rpcLogTag\(frame\.rpcId\)\}\)/)
+})
+
+// Round 2 on PR #275, Low 2: the other handlers (voice, memory and its person
+// lanes, changes, skills, export pack and its manifest, update, watcher
+// install) logged the rpcId raw, the sender's text, so a newline in it forged
+// daemon log lines exactly as L6 found for model_effort_rpc. The handoff id
+// of an export pack and the op of a frame whose op is not checked before it
+// is logged are the sender's text too.
+test('L2: no daemon log line carries a raw rpcId, handoff id or op; ids are hashed like L6', () => {
+  const ids = [...server.matchAll(/\$\{([^{}]*\b(?:rpcId|handoffId)\b[^{}]*)\}/g)].map((m) => m[1]!.trim())
+  assert.ok(ids.length > 10, 'the scan sees the interpolations')
+  for (const expr of ids) {
+    assert.match(expr, /^(?:encodeURIComponent|rpcLogTag)\(/, `raw in a log line: \${${expr}}`)
+  }
+  const ops = [...server.matchAll(/\$\{([^{}]*\b(?:frame|laneFrame)\.op\b[^{}]*)\}/g)].map((m) => m[1]!.trim())
+  assert.ok(ops.length >= 7, 'the scan sees the received lines')
+  for (const expr of ops) assert.match(expr, /^rpcLogOp\(/, `raw op in a log line: \${${expr}}`)
+  for (const event of ['voice_rpc', 'memory_rpc', 'changes_rpc', 'skills_rpc', 'export_pack', 'export_pack_manifest', 'update_rpc', 'watcher_install_rpc']) {
+    assert.match(server, new RegExp(`${event} received \\([^\\n]*rpc=\\$\\{rpcLogTag\\(frame\\.rpcId\\)\\}`), event)
+  }
+})
+
+test('L2: rpcLogOp keeps a plain op word and never a forged line', () => {
+  assert.equal(rpcLogOp('list'), 'list')
+  assert.equal(rpcLogOp('install_bundle'), 'install_bundle')
+  for (const bad of ['list\n[2026-10-24T00:00:00Z] forged', '', 'x'.repeat(65), 'a b', 'op\u001b[2J', null, undefined, 7, { op: 'list' }]) {
+    const out = rpcLogOp(bad)
+    assert.doesNotMatch(out, /[\s\u0000-\u001f\u007f]/u, JSON.stringify(bad))
+    assert.notEqual(out, bad)
+  }
+  assert.equal(rpcLogTag('rpc-7\nforged').length, 12)
 })
