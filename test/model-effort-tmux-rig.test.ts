@@ -259,6 +259,9 @@ test('round 2 L1: an arrow key in the gap: the owner\'s key is never deleted', {
   })
   const out = await control.handle({ op: 'set_model', value: 'sonnet' })
   assert.ok(owner)
+  // Any key the control sent is given time to land and be drawn: read too
+  // early, a screen would still show the owner's key a BSpace is about to take.
+  await new Promise((r) => setTimeout(r, 500))
   const screen = await capture(socket)
   assert.equal(out.ok, false, JSON.stringify(out))
   if (!out.ok) assert.equal(out.code, 'composer_changed')
