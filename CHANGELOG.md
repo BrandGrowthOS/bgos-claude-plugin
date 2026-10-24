@@ -2,6 +2,16 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.75.2 (2026-10-24)
+
+**Round 2 on owner model and effort control (draft #275): a draft drawn in black, grey or dim is never read as an empty message box, the typed command is cleared only with the cursor proven right after it, and every received rail logs its rpcId as a hash.**
+
+- **Medium, "faint" was any grey or black colour**, bright black and a 256 grey, and both the empty check and the re-read before the Enter skipped faint text: a draft in the light themes' text colour (`rgb(0,0,0)`) read as empty, and a tag drawn dim with no space after it slipped through both (the reviewer's probe sent the owner's draft with `/model sonnet` added). Faint is now only SGR 2, what Claude Code 2.1.310 draws its placeholder with (read from its own placeholder code and measured live in its light and dark themes, 256 and true colour). The composer is empty only when the drawn cursor sits at its very start, followed by nothing or by an SGR 2 placeholder that is not one of the CLI's reference tags; no cursor drawn is unknown and refused. The re-read before the Enter keeps dim text (`lib/model-effort-pane.ts`).
+- **L1, clearing the typed command one BSpace per character assumed the cursor was right after it**; an arrow key in the 400 ms gap turned the BSpaces on the owner's characters. The clear now reads the pane again right before the keys and sends them only when the cursor is drawn right after the command at the composer's end (`cursorFollows`); otherwise no key, and the answer says the command is still in the box (`lib/model-effort-control.ts`).
+- **L2, the other received rails logged rpcIds raw** (voice, memory and its person lanes, changes, skills, export pack and its manifest, update, watcher install). They now log `rpcLogTag`, the export pack's handoff id too, and the op through the new `rpcLogOp` (`server.ts`, `lib/model-effort-rpc.ts`).
+
+Guards, red first at `bf43b9f`, each failing again with its fix reverted alone: `test/model-effort-pane-live.test.ts` (new, 5: the real CLI's screens as fixtures in `test/fixtures/claude-2.1.310-composer/`, and each real draft recoloured black, grey and dim), `test/model-effort-pane.test.ts` (6 new), `test/model-effort-control.test.ts` (3 new), `test/model-effort-wiring.test.ts` (2 new), `test/model-effort-tmux-rig.test.ts` (3 new). The fake pane and the rig's fake agent now draw the cursor and the placeholder the way the real CLI does. See `docs/model-effort/RESULT.md`, "Round 2", for the live check table.
+
 ## 0.75.1 (2026-10-24)
 
 **Security review fixes for owner model and effort control (draft #275, `REVIEW-275.md`): an owner's draft containing `>` is never submitted, the keys go to the exact pane that was proven, the composer is read again before the Enter, and rpcIds are logged as a hash.**
