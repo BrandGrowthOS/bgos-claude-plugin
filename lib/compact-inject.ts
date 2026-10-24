@@ -264,6 +264,16 @@ function settingSteps(t: TmuxTarget, literal: string): InjectionStep[] {
   ]
 }
 
+/**
+ * One BSpace per character of `literal`: removes exactly what settingSteps
+ * typed, and nothing else, when the cursor sits right after it. Only key
+ * names, never text; the control sends it only after reading the composer
+ * end with the literal (lib/model-effort-control.ts, REVIEW-275 L5).
+ */
+export function buildClearTypedArgs(t: TmuxTarget, literal: string): string[] {
+  return ['tmux', ...t.socketArgs, 'send-keys', '-t', t.target, ...Array.from(literal, () => 'BSpace')]
+}
+
 /** The pane format lib/model-effort-pane.ts parsePaneState reads, tab separated. */
 export const PANE_STATE_FORMAT = '#{pane_id}\t#{pane_tty}\t#{pane_dead}\t#{pane_in_mode}\t#{pane_pid}'
 

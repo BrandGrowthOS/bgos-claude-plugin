@@ -24,11 +24,18 @@
  *      permission question is open, no other injection is running;
  *   7. the pane is alive and not in a tmux mode, the agent's own CLI is in
  *      front in it, and its composer is EMPTY (a draft is never discarded,
- *      and a screen with no recognisable composer is refused);
+ *      and a screen with no recognisable composer is refused). The proof
+ *      reads the pane's own id (%N), and every later read and key names that
+ *      id, never the configured target: a session name resolves to whatever
+ *      pane is active at each call (REVIEW-275 M2);
  *   8. the turn, dialog and session are checked again right before typing,
  *      and the baseline observation is taken.
  *
- * Then the fixed literal and one Enter are typed, ONCE. Confirmation is a
+ * Then the fixed literal is typed, ONCE, and the composer read again: only
+ * when it holds exactly the literal is the one Enter pressed. Anything else
+ * (a key the owner pressed meanwhile, a dialog) is refused with no Enter, and
+ * the literal is cleared off the composer only where it certainly sits at its
+ * end (REVIEW-275 L5). Confirmation is a
  * NEWER observation (a higher sequence number) from the SAME session that
  * reports the requested value; echoed input, a refresh that still reports the
  * old value, the request itself or a success exit code never confirm. A
@@ -42,6 +49,7 @@
  */
 
 import {
+  buildClearTypedArgs,
   buildPaneCaptureArgs,
   buildPaneStateArgs,
   buildSetEffortInjectionSteps,
@@ -50,6 +58,7 @@ import {
   isEffortLevel,
   isModelFamily,
   MODEL_LITERALS,
+  type InjectionStep,
   type TmuxTarget,
 } from './compact-inject.ts'
 import {
@@ -62,7 +71,7 @@ import {
   type ModelEffortReport,
 } from './model-effort-catalog.ts'
 import type { ModelObservation } from './model-control-store.mjs'
-import { agentOwnsPane, composerHolds, parsePaneState, readComposer, type ProcessEntry } from './model-effort-pane.ts'
+import { agentOwnsPane, composerHolds, composerText, parsePaneState, readComposer, type ProcessEntry } from './model-effort-pane.ts'
 
 export type ControlOp = 'describe' | 'set_model' | 'set_effort'
 
@@ -92,6 +101,7 @@ export type RefusalCode =
   | 'composer_not_empty'
   | 'composer_unknown'
   | 'session_changed'
+  | 'composer_changed'
   | 'inject_failed'
   | 'not_confirmed'
 
@@ -118,6 +128,7 @@ export const REFUSAL_MESSAGES: Readonly<Record<RefusalCode, string>> = Object.fr
   composer_not_empty: 'The agent\'s message box has a draft in it. It was left as it is; send or clear it first.',
   composer_unknown: 'The agent\'s screen does not show its message box (a menu or a question may be open).',
   session_changed: 'The agent\'s session changed while the change was being confirmed, so its state is not known.',
+  composer_changed: 'Something reached the agent\'s message box while the command was being typed, so it was not sent.',
   inject_failed: 'Typing into the agent\'s terminal failed part way. Nothing was retried; check the terminal.',
   not_confirmed: 'The command was typed but the session did not report the change in time.',
 })
@@ -309,7 +320,7 @@ export class ModelEffortControl {
       return { ok: true, op, applied: false, report: this.report(catalog, sessionId)! }
     }
 
-    await this.checkPane(target)
+    const pane = await this.checkPane(target)
 
     // Again, right before typing: the pane reads above took time.
     const late = this.checkIdle()
@@ -319,17 +330,14 @@ export class ModelEffortControl {
     if (!baseline) throw new Refusal('no_status_source')
     if (matches(baseline)) return { ok: true, op, applied: false, report: this.report(catalog, sessionId)! }
 
-    const steps = op === 'set_model' ? buildSetModelInjectionSteps(target, value) : buildSetEffortInjectionSteps(target, value)
+    const steps = op === 'set_model' ? buildSetModelInjectionSteps(pane, value) : buildSetEffortInjectionSteps(pane, value)
     if (!steps) throw new Refusal('unsupported_value')
     const literal = op === 'set_model' ? MODEL_LITERALS[value as keyof typeof MODEL_LITERALS] : EFFORT_LITERALS[value as keyof typeof EFFORT_LITERALS]
-    for (const step of steps) {
-      if (step.delayMsBefore > 0) await this.deps.sleep(step.delayMsBefore)
-      try {
-        await this.deps.exec(step.argv)
-      } catch {
-        throw new Refusal('inject_failed')
-      }
-    }
+    const [typeLiteral, enter] = steps as [InjectionStep, InjectionStep]
+    await this.run(typeLiteral)
+    if (enter.delayMsBefore > 0) await this.deps.sleep(enter.delayMsBefore)
+    await this.checkTyped(pane, literal)
+    await this.run({ ...enter, delayMsBefore: 0 })
 
     const deadline = this.deps.now() + this.opts.confirmTimeoutMs
     while (this.deps.now() < deadline) {
@@ -342,7 +350,7 @@ export class ModelEffortControl {
     }
     let still = false
     try {
-      still = composerHolds(await this.deps.exec(buildPaneCaptureArgs(target)), literal)
+      still = composerHolds(await this.deps.exec(buildPaneCaptureArgs(pane)), literal)
     } catch {
       still = false
     }
@@ -354,8 +362,52 @@ export class ModelEffortControl {
     )
   }
 
-  /** Step 7: alive, not in a mode, the agent's own CLI in front, composer empty. */
-  private async checkPane(target: TmuxTarget): Promise<void> {
+  private async run(step: InjectionStep): Promise<void> {
+    if (step.delayMsBefore > 0) await this.deps.sleep(step.delayMsBefore)
+    try {
+      await this.deps.exec(step.argv)
+    } catch {
+      throw new Refusal('inject_failed')
+    }
+  }
+
+  /**
+   * Between the literal and the Enter: the composer must hold exactly the
+   * literal. Otherwise no Enter. The literal is cleared only when the composer
+   * ends with it (the cursor right after it), so a BSpace can only remove what
+   * this daemon typed; a key typed after it, or a screen with no composer,
+   * gets no key at all, and the answer says where the literal was left.
+   */
+  private async checkTyped(pane: TmuxTarget, literal: string): Promise<void> {
+    let text: string | null
+    try {
+      text = composerText(await this.deps.exec(buildPaneCaptureArgs(pane)))
+    } catch {
+      text = null
+    }
+    if (text === literal) return
+    let where = ' The agent\'s screen no longer shows its message box; check the terminal.'
+    if (text !== null) {
+      where = ' It is still in the agent\'s message box; check the terminal.'
+      if (text.endsWith(literal)) {
+        try {
+          await this.deps.exec(buildClearTypedArgs(pane, literal))
+          const left = composerText(await this.deps.exec(buildPaneCaptureArgs(pane)))
+          if (left === text.slice(0, -literal.length).replace(/\s+$/u, '')) where = ' What was typed was cleared.'
+        } catch {
+          // The message box is unknown now: said as is.
+        }
+      }
+    }
+    throw new Refusal('composer_changed', `${REFUSAL_MESSAGES.composer_changed}${where}`)
+  }
+
+  /**
+   * Step 7: alive, not in a mode, the agent's own CLI in front, composer
+   * empty. Resolves the PROVEN pane, by its own id, for every later read and
+   * key (REVIEW-275 M2).
+   */
+  private async checkPane(target: TmuxTarget): Promise<TmuxTarget> {
     let stateOut: string
     try {
       stateOut = await this.deps.exec(buildPaneStateArgs(target))
@@ -372,15 +424,17 @@ export class ModelEffortControl {
       chain = []
     }
     if (!agentOwnsPane(pane.tty, pane.pid, chain)) throw new Refusal('pane_not_agent')
+    const proven: TmuxTarget = { ...target, target: pane.paneId }
     let capture: string
     try {
-      capture = await this.deps.exec(buildPaneCaptureArgs(target))
+      capture = await this.deps.exec(buildPaneCaptureArgs(proven))
     } catch {
       throw new Refusal('pane_lost')
     }
     const composer = readComposer(capture)
     if (composer === 'draft') throw new Refusal('composer_not_empty')
     if (composer !== 'empty') throw new Refusal('composer_unknown')
+    return proven
   }
 
   private refused(op: ControlOp | null, r: Refusal, report: ModelEffortReport | null): ControlOutcome {
