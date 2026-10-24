@@ -18,8 +18,10 @@
  *                (Mark's draft was in one), but only a fence with no tag or a
  *                prose tag, and only bare unindented `To:` lines that do not
  *                read as code: a nodemailer sendMail, an EmailDraftDto or a
- *                send mail CI step SENDS email, it is not a draft. A keyvalue
- *                block.
+ *                send mail CI step SENDS email, it is not a draft. Outside
+ *                code a value may carry merge fields ({company}, {{name}})
+ *                and a To line may end in a comma before the next address.
+ *                A keyvalue block.
  *   table        a markdown table, outside code, of 3 or more body rows. A
  *                table block.
  *   status_list  5 or more list items each LED by a status word or emoji
@@ -30,12 +32,12 @@
  *                status: the app renders a checklist as task boxes (5.9.0).
  *                A list block, the status as each item's meta.
  *   comparison   2 or more options that are CHOICES: headed Option A, Plan 2
- *                and the like, or under a line that names them ("A vs B", a
- *                heading "Self hosted or managed"), sharing labelled fields
- *                that read as attributes of a choice (cost, risk, effort,
- *                setup). Review findings, install steps per platform, before
- *                and after, per PR status share fields too and are reports.
- *                A compare block.
+ *                and the like, or directly under a line that names them
+ *                ("A vs B", a heading "Self hosted or managed"; not every
+ *                section after it), sharing labelled fields that read as
+ *                attributes of a choice (cost, risk, effort, setup). Review
+ *                findings, install steps per platform, before and after, per
+ *                PR status share fields too and are reports. A compare block.
  *
  * Everything else is null, and so is any text under 300 characters: a small
  * reply is never worth a card. Conservative on purpose: when unsure, null. A
@@ -109,17 +111,46 @@ const FENCED_EMAIL_HEADER = /^(To|TO|Cc|CC|Bcc|BCC|Subject|SUBJECT):[ \t]*\S/
 const PROSE_FENCE_TAGS = new Set(['', 'text', 'txt', 'plain', 'plaintext', 'email', 'eml', 'mail', 'markdown', 'md'])
 
 /**
- * A header shaped line that is code: braces, a quote before the colon, or a
+ * A mail merge field in a header's value, `{company}`, `{{name}}` or
+ * `{{ first_name }}`: one name in braces. `{ name, address }` is an object.
+ */
+const MERGE_FIELD = /\{\{[ \t]*[A-Za-z_][\w.-]*[ \t]*\}\}|\{[A-Za-z_][\w.-]*\}/g
+
+/** A value that is nothing but code punctuation: `{`, `};`, `[]`. */
+const ONLY_PUNCTUATION = /^[{}[\]();,]+$/
+
+/** `sarah@x.com` or `Sarah Lee <sarah@x.com>`, alone on its line, a comma or semicolon after it. */
+const ADDRESS_LINE =
+  /^[ \t]*(?:>[ \t]*)?(?:[^\s<>@,;:][^<>@,;:]{0,60}<)?[^\s<>@,;:]+@[^\s<>@,;:.]+(?:\.[^\s<>@,;:.]+)+>?[ \t]*[,;]?[ \t]*$/
+
+/**
+ * A header shaped line that is code: braces or a quote before the colon, or a
  * trailing comma or semicolon (`to: user.email,`, `to: string[];`). A
  * semicolon BETWEEN recipients is how Outlook writes them, so only a trailing
  * one counts.
+ *
+ * In a fence any brace is code. Outside one a draft may carry merge fields
+ * (`Subject: Quick question for {company}`, `To: {{email}}`), so only braces
+ * that are not one: `${user.email}`, `{ name, address }`, a value that is only
+ * `{`. And a To or Cc line may end in a comma when the next line is the next
+ * recipient's address.
  */
-function readsAsCode(line: string): boolean {
+function readsAsCode(line: string, next: string | undefined, fenced: boolean, recipient: boolean): boolean {
   const head = headOf(line)
-  if (head.includes('{') || head.includes('}')) return true
-  if (/["'`]/.test(head.slice(0, head.indexOf(':')))) return true
+  const colon = head.indexOf(':')
+  if (/["'`{}]/.test(head.slice(0, colon))) return true
+  if (fenced) {
+    if (head.includes('{') || head.includes('}')) return true
+  } else {
+    const value = head.slice(colon + 1).replace(/^(?:\*\*|__)/, '').replace(/[ \t]+/g, '')
+    if (head.includes('${') || ONLY_PUNCTUATION.test(value)) return true
+    const rest = head.replace(MERGE_FIELD, '')
+    if (rest.includes('{') || rest.includes('}')) return true
+  }
   const end = line.trimEnd()
-  return end.endsWith(',') || end.endsWith(';')
+  if (end.endsWith(';')) return true
+  if (!end.endsWith(',')) return false
+  return fenced || !recipient || next === undefined || !ADDRESS_LINE.test(headOf(next))
 }
 
 /** A Subject and a To or Cc within this many lines of each other. */
@@ -148,8 +179,10 @@ function isEmailDraft(lines: readonly string[]): boolean {
     if ((fence !== null && !proseFence) || !hasLabelColon(line)) continue
     // A prose `To: be fair` is a header only if a Subject sits right by it.
     const m = (fence === null ? EMAIL_HEADER : FENCED_EMAIL_HEADER).exec(headOf(line))
-    if (!m || readsAsCode(line)) continue
-    if (m[1].toLowerCase() === 'subject') {
+    if (!m) continue
+    const subject = m[1].toLowerCase() === 'subject'
+    if (readsAsCode(line, lines[i + 1], fence !== null, !subject)) continue
+    if (subject) {
       if (i - lastRecipient <= EMAIL_HEADER_SPAN) return true
       lastSubject = i
     } else {
@@ -222,7 +255,8 @@ function isStatusList(lines: readonly string[]): boolean {
 
 // ── comparison ───────────────────────────────────────────────────────────────
 
-const HEADING = /^[ \t]*#{1,6}[ \t]+\S/
+/** A markdown heading, and its level in the `#`s. */
+const HEADING = /^[ \t]*(#{1,6})[ \t]+\S/
 /** A line that is all bold, `**Option A: Bundle deal**` or `**Option B**:`. */
 const BOLD_LINE = /^[ \t]*(?:[-*+][ \t]+)?(\*\*|__)[^*_]+\1[ \t]*(?::[ \t]*)?$/
 /**
@@ -271,8 +305,11 @@ interface Option {
   fields: Set<string>
   /** Headed by its label: Option A, Plan 2. */
   labelled: boolean
-  /** Under a line that named the choice (A vs B, a heading with "or"). */
-  named: boolean
+  /**
+   * The naming line (A vs B, a heading with "or") this option sits directly
+   * under, counted from 1, or 0. Options compare by name only under the same one.
+   */
+  scope: number
 }
 
 function isChoiceAttribute(label: string): boolean {
@@ -287,27 +324,60 @@ function namesAChoice(head: string, isHeader: boolean): boolean {
 function isComparison(lines: readonly string[]): boolean {
   const options: Option[] = []
   let current: Option | null = null
-  let named = false
+  // The naming line in force (0 for none), how many there have been, and its
+  // heading level when it was a markdown heading (0 when it was not).
+  let scope = 0
+  let scopes = 0
+  let scopeLevel = 0
+  let blockStart = true
   for (const line of lines) {
+    if (line.trim() === '') {
+      blockStart = true
+      continue
+    }
     const head = headOf(line)
     const labelled = OPTION_LABEL.test(head)
-    const isHeader = labelled || HEADING.test(head) || BOLD_LINE.test(head)
+    const heading = HEADING.exec(head)
+    const level = heading ? heading[1].length : 0
+    const isHeader = labelled || heading !== null || BOLD_LINE.test(head)
+    const inScope = scope !== 0 && current !== null && current.scope === scope
+    // A naming line counts only for the options directly under it. It ends at
+    // a header that was not an option (it had no fields: a "## Findings" over
+    // other sections), at a heading as high as the naming heading (beside it,
+    // not under it), and at a block of prose that is not part of an option
+    // (the review's "We measured p95 vs p50", then findings).
+    if (scope !== 0) {
+      if (isHeader) {
+        if ((inScope && current!.fields.size === 0) || (level > 0 && level <= scopeLevel)) scope = 0
+      } else if (blockStart && !inScope) {
+        scope = 0
+      }
+    }
+    blockStart = false
     if (isHeader) {
-      current = { fields: new Set(), labelled, named }
+      current = { fields: new Set(), labelled, scope }
       options.push(current)
     }
-    // A naming line counts for the options AFTER it, not for itself.
-    if (!named && namesAChoice(head, isHeader)) named = true
-    if (isHeader || !current || !hasLabelColon(line)) continue
-    const field = FIELD.exec(head)
-    if (field && field[1].length <= MAX_LABEL_CHARS) current.fields.add(field[1].toLowerCase())
+    const field = !isHeader && current !== null && hasLabelColon(line) ? FIELD.exec(head) : null
+    const isField = field !== null && field[1].length <= MAX_LABEL_CHARS
+    // A header, or prose before any option's fields, may name a choice; a
+    // field, or a note among an option's fields ("p95 vs p50 doubled"), is
+    // that option's, not a name for the ones after it.
+    const mayName = isHeader || (!isField && (current === null || current.fields.size === 0))
+    if (mayName && namesAChoice(head, isHeader)) {
+      scope = ++scopes
+      scopeLevel = level
+      // The naming header is the name of the options under it, not one of them.
+      if (isHeader) current!.scope = 0
+    }
+    if (isField) current!.fields.add(field![1].toLowerCase())
   }
   const fielded = options.filter((o) => o.fields.size >= MIN_SHARED_FIELDS).slice(0, MAX_OPTIONS_COMPARED)
   for (let a = 0; a < fielded.length; a++) {
     for (let b = a + 1; b < fielded.length; b++) {
       const x = fielded[a]
       const y = fielded[b]
-      if (!((x.labelled && y.labelled) || (x.named && y.named))) continue
+      if (!((x.labelled && y.labelled) || (x.scope !== 0 && x.scope === y.scope))) continue
       const shared = [...x.fields].filter((label) => y.fields.has(label))
       const larger = Math.max(x.fields.size, y.fields.size)
       if (shared.length < MIN_SHARED_FIELDS || shared.length / larger < MIN_FIELD_OVERLAP) continue

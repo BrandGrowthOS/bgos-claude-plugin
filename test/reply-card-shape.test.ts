@@ -506,6 +506,165 @@ test('classify: a checklist with a status word after the box is still not a stat
   assert.equal(classify(CHECKLIST.replace(/\] /g, '] Done: ')), null)
 })
 
+// Review of round 2 (PR #277): a line that names a choice names only the
+// options directly under it, not every section after it.
+
+/** The review's input: one prose "p95 vs p50" line, then findings sharing Impact and Risk. */
+const MEASURED_FINDINGS = [
+  'We measured p95 vs p50',
+  '',
+  'Two findings from the review of the reply path, most severe first:',
+  '',
+  '**1. The label regex backtracks on a run of spaces**',
+  '- File: lib/reply-card-shape.ts:185',
+  '- Impact: one long line holds the daemon for seconds',
+  '- Risk: every reply the agent sends goes through it',
+  '',
+  '**2. The email check compares every pair of headers**',
+  '- File: lib/reply-card-shape.ts:231',
+  '- Impact: a pasted log of headers costs a few seconds',
+  '- Risk: rare, it needs thousands of header lines',
+  '',
+  '**3. The cost tests time a cold regex**',
+  '- File: test/reply-card-shape.test.ts:541',
+  '- Impact: a slow CI runner could fail the bound',
+  '- Risk: low, each input is warmed once first',
+].join('\n')
+
+test('classify: a "p95 vs p50" line does not make the findings after it options (measured)', () => {
+  assert.ok(MEASURED_FINDINGS.length >= MIN_CARD_SHAPED_CHARS)
+  assert.equal(classify(MEASURED_FINDINGS), null)
+})
+
+test('classify: a naming line inside a finding does not name the findings after it', () => {
+  // In a field of the first finding, and in a prose note under it.
+  const inField = MEASURED_FINDINGS.replace('We measured p95 vs p50\n\n', '').replace(
+    '- Risk: every reply',
+    '- Note: p95 vs p50 doubled\n- Risk: every reply',
+  )
+  assert.equal(classify(inField), null, 'a field line')
+  const inBody = MEASURED_FINDINGS.replace('We measured p95 vs p50\n\n', '').replace(
+    '- Risk: every reply the agent sends goes through it',
+    '- Risk: every reply the agent sends goes through it\nWe measured p95 vs p50 on staging.',
+  )
+  assert.equal(classify(inBody), null, 'a prose note in the body')
+})
+
+test('classify: a heading that is not an option ends the naming line before it', () => {
+  const underFindings = MEASURED_FINDINGS.replace(
+    'We measured p95 vs p50\n\nTwo findings from the review of the reply path, most severe first:',
+    'We measured p95 vs p50\n\n## Findings',
+  )
+  assert.equal(classify(underFindings), null, 'a heading with no fields of its own')
+  const sibling = [
+    '## Postgres on the existing server vs a managed database',
+    '',
+    '### Postgres on the existing server',
+    'Cost: nothing extra, it shares the box',
+    'Setup: one migration, an hour of work',
+    '',
+    '## Review findings',
+    '',
+    '### The backup job',
+    'Cost: an hour a week of someone checking it',
+    'Setup: a cron line nobody owns',
+    '',
+    '### The restore drill',
+    'Cost: half a day each quarter',
+    'Setup: a staging box we do not have yet',
+  ].join('\n')
+  assert.equal(classify(sibling), null, 'a heading as high as the naming heading is beside it')
+})
+
+test('classify: options directly under the naming line still compare', () => {
+  // A prose naming line, then the options, with a note in an option's body.
+  const prose = UNNAMED_HEADINGS.replace(
+    '### Postgres on the existing server',
+    'Postgres on the existing server vs a managed database:\n\n### Postgres on the existing server\nThe one we run today.',
+  )
+  assert.equal(classify(prose), 'comparison')
+  assert.equal(classify(COMPARISON_HEADINGS), 'comparison')
+})
+
+// Review of round 2 (PR #277): a real draft may carry merge fields and a
+// recipient list over two lines.
+
+const TEMPLATE_DRAFT = [
+  'Here is the outreach template for the franchise prospects, the merge fields in braces:',
+  '',
+  'To: {{email}}',
+  'Subject: Quick question for {company}',
+  '',
+  'Hi {{first_name}},',
+  '',
+  'I run marketing for 38 Papa Johns stores in the UAE and saw that {company} is opening',
+  'in Dubai Hills next spring. We have a co-branded launch offer that has worked well for',
+  'neighbours in Marina and JLT. Would a 15 minute call next week be useful?',
+  '',
+  'Best,',
+  'Kc',
+].join('\n')
+
+const TWO_LINE_RECIPIENTS = [
+  'Draft below, Sarah and Ahmad both on the To line as you asked:',
+  '',
+  'To: sarah.lee@pjprestaurants.com,',
+  '    Ahmad Khan <ahmad@pjprestaurants.com>',
+  'Subject: November LTO, the price point to settle on Tuesday',
+  '',
+  'Hi both,',
+  '',
+  'Before Tuesday, can you each send me the number you would hold the bundle at for',
+  'November and the delivery mix you are assuming behind it? I would like us to walk in',
+  'with one table rather than two opinions.',
+  '',
+  'Thanks,',
+  'Kc',
+].join('\n')
+
+test('classify: a draft with template braces in its header values counts', () => {
+  assert.equal(classify(TEMPLATE_DRAFT), 'email_draft')
+  assert.equal(classify(TEMPLATE_DRAFT.replace('To: {{email}}', 'To: {{ email }}')), 'email_draft', 'padded')
+  assert.equal(
+    classify(TEMPLATE_DRAFT.replace('To: {{email}}', 'To: prospects@example.com').replace('{company}', '{{name}}')),
+    'email_draft',
+    'a {{name}} subject',
+  )
+  assert.equal(classify(TEMPLATE_DRAFT.replace(/^(To|Subject)/gm, '**$1:**').replace(/\*\*:/g, '**')), 'email_draft', 'bold headers')
+})
+
+test('classify: a To line ending in a comma before the next address counts', () => {
+  assert.equal(classify(TWO_LINE_RECIPIENTS), 'email_draft')
+  assert.equal(
+    classify(TWO_LINE_RECIPIENTS.replace('    Ahmad Khan <ahmad@pjprestaurants.com>', 'ahmad@pjprestaurants.com')),
+    'email_draft',
+    'a bare address',
+  )
+})
+
+test('classify: code shaped headers outside a fence stay null', () => {
+  // The round 2 code, pasted with no fence at all.
+  for (const text of [NODEMAILER, EMAIL_DTO, SEND_MAIL_STEP]) {
+    const unfenced = text.replace(/^```\w*$/gm, '')
+    assert.notEqual(unfenced, text)
+    assert.equal(classify(unfenced), null, unfenced.slice(0, 60))
+  }
+  const lines = (to: string, subject: string) =>
+    ['The payload, as the worker logs it before the send:', '', to, subject, 'html: body,', '', 'x'.repeat(300)].join('\n')
+  assert.equal(classify(lines('to: user.email,', "subject: 'Welcome',")), null, 'key: value, shapes')
+  assert.equal(classify(lines('"To": "ops@example.com",', '"Subject": "Deploy"')), null, 'quotes before the colon')
+  assert.equal(classify(lines('To: string[];', 'Subject: string;')), null, 'semicolons')
+  assert.equal(classify(lines('To: { name, address }', 'Subject: { text }')), null, 'an object, not a merge field')
+  assert.equal(classify(lines('{to}: ops@example.com', 'Subject: Deploy finished')), null, 'braces before the colon')
+  assert.equal(classify(lines('To: {', 'Subject: Deploy finished')), null, 'a value that is only a brace')
+  assert.equal(classify(lines('To: ${user.email}', 'Subject: Deploy finished')), null, 'interpolation, not a merge field')
+  assert.equal(classify(lines('To: ops@example.com,', 'Subject: Deploy finished')), null, 'a trailing comma with no address after it')
+  assert.equal(classify(lines('To: ops@example.com', 'Subject: Deploy finished,')), null, 'a Subject never ends in a comma')
+  // And inside a fence a brace is still code, merge field or not.
+  const fenced = ['Paste this:', '', '```', 'To: {{email}}', 'Subject: Hi {company}', '```', '', 'x'.repeat(300)].join('\n')
+  assert.equal(classify(fenced), null, 'braces in a fence')
+})
+
 // ── cost: the inputs the review measured, each under 50 ms ───────────────────
 
 const PREFIX = 'Here is the summary you asked for, with the details below. '.repeat(6) + '\n'
@@ -535,6 +694,13 @@ const COSTLY: Array<{ name: string; text: string }> = [
   { name: '500 table separators and 1,000 spaces', text: PREFIX + Array.from({ length: 500 }, () => '| --- |' + ' '.repeat(1000) + 'x').join('\n') },
   // Lines that name a choice but say before and after, again and again.
   { name: '20,000 lines of before vs before', text: Array.from({ length: 20_000 }, () => 'before vs before '.repeat(10)).join('\n') },
+  // Round 3: the merge field and next address checks, and the naming scope.
+  { name: '500 To lines of open braces and 1,000 spaces', text: PREFIX + Array.from({ length: 500 }, () => 'To: {{' + ' '.repeat(1000) + 'x}},').join('\n') },
+  {
+    name: '500 To lines with a comma, each before a long name line',
+    text: PREFIX + Array.from({ length: 500 }, () => 'To: a@b.co,\n' + 'Sarah' + ' '.repeat(1000) + 'x@y').join('\n'),
+  },
+  { name: '20,000 naming lines and headings', text: Array.from({ length: 20_000 }, (_, i) => (i % 2 ? '### A vs B' : 'X vs Y\n\nCost: 1')).join('\n') },
 ]
 
 for (const c of COSTLY) {
