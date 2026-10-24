@@ -34,8 +34,9 @@
  * Then the fixed literal is typed, ONCE, and the composer read again: only
  * when it holds exactly the literal is the one Enter pressed. Anything else
  * (a key the owner pressed meanwhile, a dialog) is refused with no Enter, and
- * the literal is cleared off the composer only where it certainly sits at its
- * end (REVIEW-275 L5). Confirmation is a
+ * the literal is cleared off the composer only where a fresh read shows it
+ * right before the cursor at the composer's end (REVIEW-275 L5, round 2 L1).
+ * Confirmation is a
  * NEWER observation (a higher sequence number) from the SAME session that
  * reports the requested value; echoed input, a refresh that still reports the
  * old value, the request itself or a success exit code never confirm. A
@@ -71,7 +72,15 @@ import {
   type ModelEffortReport,
 } from './model-effort-catalog.ts'
 import type { ModelObservation } from './model-control-store.mjs'
-import { agentOwnsPane, composerHolds, composerText, parsePaneState, readComposer, type ProcessEntry } from './model-effort-pane.ts'
+import {
+  agentOwnsPane,
+  composerHolds,
+  composerText,
+  cursorFollows,
+  parsePaneState,
+  readComposer,
+  type ProcessEntry,
+} from './model-effort-pane.ts'
 
 export type ControlOp = 'describe' | 'set_model' | 'set_effort'
 
@@ -374,9 +383,13 @@ export class ModelEffortControl {
   /**
    * Between the literal and the Enter: the composer must hold exactly the
    * literal. Otherwise no Enter. The literal is cleared only when the composer
-   * ends with it (the cursor right after it), so a BSpace can only remove what
-   * this daemon typed; a key typed after it, or a screen with no composer,
-   * gets no key at all, and the answer says where the literal was left.
+   * ends with it AND a fresh read, right before the keys, shows the cursor
+   * right after it at the composer's end (cursorFollows): a BSpace deletes
+   * before the cursor, so an arrow key the owner pressed would turn them on the
+   * owner's characters (round 2 L1). A key typed after it, a moved cursor, or a
+   * screen with no composer gets no key at all, and the answer says where the
+   * literal was left. A key pressed in the milliseconds between that read and
+   * the BSpaces is the gap no screen read closes (RESULT.md).
    */
   private async checkTyped(pane: TmuxTarget, literal: string): Promise<void> {
     let text: string | null
@@ -391,9 +404,12 @@ export class ModelEffortControl {
       where = ' It is still in the agent\'s message box; check the terminal.'
       if (text.endsWith(literal)) {
         try {
-          await this.deps.exec(buildClearTypedArgs(pane, literal))
-          const left = composerText(await this.deps.exec(buildPaneCaptureArgs(pane)))
-          if (left === text.slice(0, -literal.length).replace(/\s+$/u, '')) where = ' What was typed was cleared.'
+          const now = await this.deps.exec(buildPaneCaptureArgs(pane))
+          if (composerText(now) === text && cursorFollows(now, literal)) {
+            await this.deps.exec(buildClearTypedArgs(pane, literal))
+            const left = composerText(await this.deps.exec(buildPaneCaptureArgs(pane)))
+            if (left === text.slice(0, -literal.length).replace(/\s+$/u, '')) where = ' What was typed was cleared.'
+          }
         } catch {
           // The message box is unknown now: said as is.
         }

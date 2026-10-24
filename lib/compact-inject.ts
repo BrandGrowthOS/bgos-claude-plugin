@@ -267,8 +267,9 @@ function settingSteps(t: TmuxTarget, literal: string): InjectionStep[] {
 /**
  * One BSpace per character of `literal`: removes exactly what settingSteps
  * typed, and nothing else, when the cursor sits right after it. Only key
- * names, never text; the control sends it only after reading the composer
- * end with the literal (lib/model-effort-control.ts, REVIEW-275 L5).
+ * names, never text; the control sends it only after a fresh read shows the
+ * cursor right after the literal at the composer's end
+ * (lib/model-effort-control.ts, REVIEW-275 L5, round 2 L1).
  */
 export function buildClearTypedArgs(t: TmuxTarget, literal: string): string[] {
   return ['tmux', ...t.socketArgs, 'send-keys', '-t', t.target, ...Array.from(literal, () => 'BSpace')]
