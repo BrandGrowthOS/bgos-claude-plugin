@@ -95,3 +95,10 @@ test('the boot refreshes the bridge copy after the plugin root is known, and onl
   assert.ok(server.indexOf('const MODEL_CONTROL_DIR') < refresh)
   assert.doesNotMatch(server, /installBridge\(|uninstallBridge\(|writeOptIn\(/, 'the daemon never turns the opt in on or edits settings')
 })
+
+test('L6: the daemon logs a received rpcId as its short hash, never raw', () => {
+  const at = server.indexOf("realtimeSocket.on('model_effort_rpc', whenArmed('model_effort_rpc'")
+  const body = server.slice(at, at + 800)
+  assert.doesNotMatch(body, /\$\{frame\.rpcId\}/, 'the raw rpcId is the sender\'s text')
+  assert.match(body, /model_effort_rpc received \(rpc=\$\{rpcLogTag\(frame\.rpcId\)\}\)/)
+})

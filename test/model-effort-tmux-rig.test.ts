@@ -46,7 +46,9 @@ async function exec(argv: string[]): Promise<string> {
   return stdout
 }
 
-async function startRig(name: string, env: Record<string, string> = {}) {
+type Exec = (argv: string[]) => Promise<string>
+
+async function startRig(name: string, env: Record<string, string> = {}, wrapExec?: (socket: string, run: Exec) => Exec) {
   const state = mkdtempSync(join(tmpdir(), 'hoai-mec-rig-'))
   const sessionId = `rig-${name}-${process.pid}`
   const socket = join(state, 'tmux.sock')
@@ -81,7 +83,7 @@ async function startRig(name: string, env: Record<string, string> = {}) {
     ancestry: () => processAncestry(daemonPid, exec),
     readObservation: (sid) => readObservation(dir, sid),
     helpText: async () => HELP,
-    exec,
+    exec: wrapExec ? wrapExec(socket, exec) : exec,
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     now: () => Date.now(),
     log: () => {},
@@ -142,4 +144,50 @@ test('echoed input that never applies is not confirmed', { skip: !hasTmux }, asy
     assert.equal(out.report!.effort, 'high')
     assert.match(out.message, /still in the agent's message box/)
   }
+})
+
+async function typeAsOwner(socket: string, text: string): Promise<void> {
+  // The owner's own typing, simulated in this test's own pane; then wait until
+  // it is drawn (a key still in flight is the race no screen read can close).
+  await exec(['tmux', '-S', socket, 'send-keys', '-t', 'rig', '-l', '--', text])
+  for (let i = 0; i < 100 && !(await capture(socket)).includes(`❯ ${text}`); i++) {
+    await new Promise((r) => setTimeout(r, 50))
+  }
+  assert.ok((await capture(socket)).includes(`❯ ${text}`), 'the owner\'s draft is drawn before the request')
+}
+
+// Security review H1, the reviewer's own end to end case: before the fix the
+// control typed `/model sonnet` and Enter after this draft and the screen
+// showed `● Unknown: const f = () =>/model sonnet`.
+test('H1: a real draft ending with > is refused and left exactly as the owner typed it', { skip: !hasTmux }, async () => {
+  const { control, socket } = await startRig('arrow')
+  await typeAsOwner(socket, 'const f = () =>')
+  const out = await control.handle({ op: 'set_model', value: 'sonnet' })
+  const screen = await capture(socket)
+  assert.doesNotMatch(screen, /Unknown:|\/model sonnet/, screen)
+  assert.equal(out.ok, false, JSON.stringify(out))
+  if (!out.ok) assert.equal(out.code, 'composer_not_empty')
+  assert.match(screen, /❯ const f = \(\) =>/)
+})
+
+// Security review M2 on a real tmux server: the target is a session NAME, and
+// a window opened in that session right after the control read the agent's
+// screen becomes what the name resolves to. The keys must still reach the
+// proven pane, and nothing the window's program (cat, which echoes) receives.
+test('M2: a window opened mid request does not receive the keys; the proven pane does', { skip: !hasTmux }, async () => {
+  let opened = false
+  const { control, socket } = await startRig('window', {}, (sock, run) => async (argv) => {
+    const out = await run(argv)
+    if (!opened && argv.includes('capture-pane')) {
+      opened = true
+      await run(['tmux', '-S', sock, 'new-window', '-t', 'rig', 'cat'])
+    }
+    return out
+  })
+  const out = await control.handle({ op: 'set_model', value: 'sonnet' })
+  assert.ok(opened)
+  const other = await capture(socket)
+  assert.doesNotMatch(other, /\/model/, `the new window received keys: ${other}`)
+  assert.equal(out.ok, true, JSON.stringify(out))
+  if (out.ok) assert.equal(out.report.model, 'claude-sonnet-5-5')
 })

@@ -30,6 +30,8 @@ const HELP = readFileSync(
 const SID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
 const TARGET: TmuxTarget = { target: '%7', socketArgs: ['-L', 'fake'], source: 'env-session' }
 const RULE = '─'.repeat(50)
+/** A tmux session name, as a supervised agent's BGOS_TMUX_SESSION gives it. */
+const SESSION_NAME = 'agent-session'
 
 /** The tmux server and the Claude Code session behind one pane. */
 class FakePane {
@@ -54,6 +56,16 @@ class FakePane {
   /** Reads before the next status line tick writes. */
   private pending: { model: string; effort: string | null; ticksLeft: number } | null = null
   sendKeys: string[][] = []
+  /** Every tmux call, in order: its verb and the target it named. */
+  calls: Array<{ verb: string; target: string }> = []
+  /** The pane SESSION_NAME resolves to right now. */
+  activePane = '%7'
+  /** Keys that reached a pane other than the agent's. */
+  otherPaneKeys: string[][] = []
+  /** Something the owner, a human or the CLI does right after a tmux call. */
+  after: ((what: 'display-message' | 'capture-pane' | 'literal') => void) | null = null
+  /** The screen shows a menu or a question instead of the composer. */
+  dialog = false
   failSendKeys = false
   failDisplay = false
   clock: { now: number }
@@ -64,22 +76,38 @@ class FakePane {
   }
 
   screen(): string {
+    if (this.dialog) return ['● ready', 'Do you want to proceed?', '❯ 1. Yes', '  2. No'].join('\n')
     return ['● ready', RULE, `❯ ${this.composer}`, RULE, '  ? for shortcuts'].join('\n')
   }
 
   async exec(argv: string[]): Promise<string> {
     const verb = argv.find((a) => a === 'display-message' || a === 'capture-pane' || a === 'send-keys')
+    const named = argv[argv.indexOf('-t') + 1]!
+    this.calls.push({ verb: verb ?? '', target: named })
+    // tmux resolves a session name to its active pane on EVERY call.
+    const paneId = named === SESSION_NAME ? this.activePane : named
+    if (paneId !== '%7') return this.otherPane(verb, argv, paneId)
     if (verb === 'display-message') {
       if (this.failDisplay) throw new Error('no such pane')
-      return `%7\t${this.tty}\t${this.dead ? 1 : 0}\t${this.inMode ? 1 : 0}\t${this.rootPid}\n`
+      const out = `%7\t${this.tty}\t${this.dead ? 1 : 0}\t${this.inMode ? 1 : 0}\t${this.rootPid}\n`
+      this.after?.('display-message')
+      return out
     }
-    if (verb === 'capture-pane') return this.screen()
+    if (verb === 'capture-pane') {
+      const out = this.screen()
+      this.after?.('capture-pane')
+      return out
+    }
     if (verb === 'send-keys') {
       this.sendKeys.push(argv)
       if (this.failSendKeys) throw new Error('send-keys failed')
       const key = argv.at(-1)!
       if (argv.includes('-l')) {
         this.composer += key
+        this.after?.('literal')
+      } else if (key === 'BSpace') {
+        const n = argv.filter((a) => a === 'BSpace').length
+        this.composer = this.composer.slice(0, Math.max(0, this.composer.length - n))
       } else if (key === 'Enter' && this.submits) {
         const line = this.composer
         this.composer = ''
@@ -91,6 +119,17 @@ class FakePane {
         if (e && this.applies) effort = e[1]!
         this.pending = { model, effort, ticksLeft: this.staleTicks }
       }
+      return ''
+    }
+    throw new Error(`unexpected argv ${argv.join(' ')}`)
+  }
+
+  /** Another pane of the same tmux session: a shell the agent never ran in. */
+  private otherPane(verb: string | undefined, argv: string[], paneId: string): string {
+    if (verb === 'display-message') return `${paneId}\t/dev/ttys013\t0\t0\t5555\n`
+    if (verb === 'capture-pane') return 'kc@mac ~ % '
+    if (verb === 'send-keys') {
+      this.otherPaneKeys.push(argv)
       return ''
     }
     throw new Error(`unexpected argv ${argv.join(' ')}`)
@@ -421,4 +460,94 @@ test('the outcome logs carry the code, never the screen', async () => {
   await r.control.handle({ op: 'set_model', value: 'sonnet' })
   assert.ok(r.logs.some((l) => l.includes('composer_not_empty')))
   assert.ok(!r.logs.some((l) => l.includes('my secret draft')))
+})
+
+// Security review M2 (REVIEW-275.md): a session name resolves to that
+// session's active pane on every tmux call, so a pane proven through the name
+// is not the pane a later call through the name reaches. The proof reads the
+// pane's own id (%N) and every later read and key names that id.
+test('M2: a session name target is proven once, then every read and key goes to the proven pane id', async () => {
+  const r = rig()
+  r.state.target = { target: SESSION_NAME, socketArgs: ['-L', 'fake'], source: 'env-session' }
+  // A human attached to the session opens another window right after the
+  // control read the agent's screen: the name now resolves to a shell.
+  r.pane.after = (what) => {
+    if (what === 'capture-pane') r.pane.activePane = '%9'
+  }
+  const out = await r.control.handle({ op: 'set_model', value: 'sonnet' })
+  assert.deepEqual(r.pane.otherPaneKeys, [], 'keys typed into a pane that was never proven')
+  assert.equal(out.ok, true, JSON.stringify(out))
+  assert.deepEqual(typed(r.pane), ['/model sonnet', 'Enter'])
+  const [proof, ...later] = r.pane.calls
+  assert.deepEqual(proof, { verb: 'display-message', target: SESSION_NAME }, 'the id is read through the configured target')
+  assert.ok(later.length > 0)
+  for (const call of later) assert.equal(call.target, '%7', `${call.verb} named ${call.target}`)
+})
+
+test('M2: the window switching before the screen read reads and types the proven pane only', async () => {
+  const r = rig()
+  r.state.target = { target: SESSION_NAME, socketArgs: ['-L', 'fake'], source: 'env-session' }
+  r.pane.after = (what) => {
+    if (what === 'display-message') r.pane.activePane = '%9'
+  }
+  const out = await r.control.handle({ op: 'set_model', value: 'sonnet' })
+  assert.deepEqual(r.pane.otherPaneKeys, [])
+  assert.equal(out.ok, true, JSON.stringify(out))
+})
+
+// Security review L5 (REVIEW-275.md): the Enter used to follow the literal
+// 400 ms later with nothing read in between, so a key pressed or a dialog
+// opened in that gap was submitted with it. Now the composer is read again and
+// must hold EXACTLY the literal, else what was typed is cleared (only where
+// that is certain) and the request refused, with no Enter.
+test('L5: the composer is read again between the literal and the Enter', async () => {
+  const r = rig()
+  const out = await r.control.handle({ op: 'set_model', value: 'sonnet' })
+  assert.equal(out.ok, true, JSON.stringify(out))
+  const at = r.pane.calls.findIndex((c) => c.verb === 'send-keys')
+  const order = r.pane.calls.slice(at).map((c) => c.verb)
+  assert.deepEqual(order.slice(0, 3), ['send-keys', 'capture-pane', 'send-keys'], JSON.stringify(order))
+})
+
+test('L5: an owner key that lands before the literal is cleared off it, never submitted', async () => {
+  const r = rig()
+  r.pane.after = (what) => {
+    if (what === 'literal') r.pane.composer = 'q' + r.pane.composer
+  }
+  const out = await r.control.handle({ op: 'set_model', value: 'sonnet' })
+  assert.equal(out.ok, false, JSON.stringify(out))
+  if (out.ok) return
+  assert.equal(out.code, 'composer_changed')
+  assert.match(out.message, /cleared/)
+  assert.ok(!typed(r.pane).includes('Enter'), 'no Enter after a composer that changed')
+  assert.equal(r.pane.composer, 'q', 'the owner\'s key is left, the literal is gone')
+  assertNoEscape(r.pane)
+})
+
+test('L5: an owner key that lands after the literal is left as it is, never submitted', async () => {
+  const r = rig()
+  r.pane.after = (what) => {
+    if (what === 'literal') r.pane.composer += 'k'
+  }
+  const out = await r.control.handle({ op: 'set_model', value: 'sonnet' })
+  assert.equal(out.ok, false, JSON.stringify(out))
+  if (out.ok) return
+  assert.equal(out.code, 'composer_changed')
+  assert.match(out.message, /still in the agent's message box/)
+  assert.deepEqual(typed(r.pane), ['/model sonnet'], 'no Enter, and no key that would eat the owner\'s')
+  assert.equal(r.pane.composer, '/model sonnetk')
+})
+
+test('L5: a dialog that opens in the gap gets no Enter and no other key', async () => {
+  const r = rig()
+  r.pane.after = (what) => {
+    if (what === 'literal') r.pane.dialog = true
+  }
+  const out = await r.control.handle({ op: 'set_effort', value: 'max' })
+  assert.equal(out.ok, false, JSON.stringify(out))
+  if (out.ok) return
+  assert.equal(out.code, 'composer_changed')
+  assert.deepEqual(typed(r.pane), ['/effort max'])
+  assert.doesNotMatch(out.message, /[–—]/)
+  assert.ok(out.message.length <= 300)
 })

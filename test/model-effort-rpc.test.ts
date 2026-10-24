@@ -203,3 +203,31 @@ test('the session settings body follows the BGOS route\'s own patterns, and an i
   assert.equal(sessionSettingsBody({ ...REPORT, effort: null }, 0)!.effort, null)
   assert.equal(sessionSettingsBody(null, 0), null)
 })
+
+// Security review L6 (REVIEW-275.md): an rpcId is the sender's text, up to 128
+// characters with no character check, so a frame could forge daemon log lines
+// with a newline in it. The log carries a short hash of the id instead.
+test('L6: an rpcId is never logged raw, only as a short hash', async () => {
+  const { createHash } = await import('node:crypto')
+  const rpcId = 'rpc-7\n[2026-10-24T00:00:00Z] model control: set_model sonnet applied'
+  const tag = createHash('sha256').update(rpcId).digest('hex').slice(0, 12)
+  // Refused (not the owner), and its result post fails: both log lines.
+  const logs: string[] = []
+  const handler = new ModelEffortRpcHandler({
+    assistantId: () => '42',
+    ownerUserId: () => OWNER,
+    control: { handle: async () => { throw new Error('never reached') } },
+    postResult: async () => { throw new Error('backend down') },
+    reportSettings: async () => {},
+    log: (m) => logs.push(m),
+    now: () => 0,
+  })
+  await handler.handle(normalizeModelEffortRpc(frame({ rpcId, sender: { userId: 'user_friend' } }))!)
+  assert.ok(logs.length >= 2, JSON.stringify(logs))
+  for (const line of logs) {
+    assert.ok(!line.includes('rpc-7'), `raw rpcId in the log: ${JSON.stringify(line)}`)
+    assert.ok(!line.includes('\n'), `a forged line in the log: ${JSON.stringify(line)}`)
+  }
+  assert.ok(logs.some((l) => l.includes(`not_owner (rpc ${tag})`)), JSON.stringify(logs))
+  assert.ok(logs.some((l) => l.includes(`result post failed (rpc ${tag})`)), JSON.stringify(logs))
+})

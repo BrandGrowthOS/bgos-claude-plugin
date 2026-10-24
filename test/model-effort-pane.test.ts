@@ -20,6 +20,7 @@ import assert from 'node:assert/strict'
 import {
   agentOwnsPane,
   composerHolds,
+  composerText,
   parsePaneState,
   readComposer,
 } from '../lib/model-effort-pane.ts'
@@ -127,4 +128,58 @@ test('composerHolds sees the literal still sitting in the composer', () => {
   assert.equal(composerHolds(screen(RULE, '❯ /model opus', RULE), '/model opus'), true)
   assert.equal(composerHolds(screen(RULE, '❯ ', RULE), '/model opus'), false)
   assert.equal(composerHolds('', '/model opus'), false)
+})
+
+// Security review H1 (REVIEW-275.md): the prompt glyph is the one at the START
+// of the prompt line, never a `>` found anywhere in it. Before the fix a draft
+// whose first `>` ended the line read as empty, and the owner's draft was
+// submitted with the command appended.
+test('H1: a draft containing, starting or ending with > is a draft, in both layouts', () => {
+  const drafts = ['const f = () =>', '<div>', 'compare a->', 'foo > ', 'x >', '>', '> quoted', '>>', 'a ❯', '❯', '❯ b']
+  for (const d of drafts) {
+    assert.equal(readComposer(screen(RULE, `❯ ${d}`, RULE)), 'draft', `ruled: ${JSON.stringify(d)}`)
+    assert.equal(readComposer(screen(RULE, `> ${d}`, RULE)), 'draft', `ruled with >: ${JSON.stringify(d)}`)
+    const top = '╭' + '─'.repeat(58) + '╮'
+    const bottom = '╰' + '─'.repeat(58) + '╯'
+    assert.equal(readComposer(screen(top, `│ > ${d}`.padEnd(59) + '│', bottom)), 'draft', `boxed: ${JSON.stringify(d)}`)
+  }
+  // Styled: the glyph and the draft each in their own colour.
+  assert.equal(readComposer(screen(RULE, `\u001b[1m❯\u001b[0m \u001b[36mconst f = () =>\u001b[0m`, RULE)), 'draft')
+})
+
+test('H1: a multi line draft whose lines start or end with > is a draft', () => {
+  assert.equal(readComposer(screen(RULE, '❯ if (a) =>', '  > b', RULE)), 'draft')
+  assert.equal(readComposer(screen(RULE, '❯ >', '  >', RULE)), 'draft')
+  // A blank line the owner typed (a newline) is content too.
+  assert.equal(readComposer(screen(RULE, '❯ ', '  ', RULE)), 'draft')
+})
+
+test('H1: a draft that wraps is a draft, wherever the wrap falls', () => {
+  const long = 'x'.repeat(56)
+  // The draft fills the line exactly, ending with >: the cursor wraps onto an
+  // otherwise empty next line.
+  assert.equal(readComposer(screen(RULE, `❯ ${long}=>`, `  ${INV} ${UNINV}`, RULE)), 'draft')
+  assert.equal(readComposer(screen(RULE, `❯ ${long}=>`, '  ', RULE)), 'draft')
+  assert.equal(readComposer(screen(RULE, `❯ ${long} =>`, '  rest of the line', RULE)), 'draft')
+  assert.equal(readComposer(screen(RULE, `❯ ${long}`, '  => () => {}', RULE)), 'draft')
+  assert.equal(readComposer(screen(RULE, `❯ ${long} >`, '  >', RULE)), 'draft')
+})
+
+test('H1: spaces typed before the drawn cursor are a draft; a faint continuation is not certain', () => {
+  assert.equal(readComposer(screen(RULE, `❯    ${INV} ${UNINV}`, RULE)), 'draft')
+  assert.equal(readComposer(screen(RULE, `❯ ${DIM}Try "x"${UNDIM}`, `  ${DIM}more of a hint${UNDIM}`, RULE)), 'unknown')
+})
+
+test('H1: composerText reads the typed text exactly, prompt glyph and frame removed', () => {
+  assert.equal(composerText(screen(RULE, '❯ /model sonnet', RULE)), '/model sonnet')
+  assert.equal(composerText(screen(RULE, `❯ /model sonnet${INV} ${UNINV}`, RULE)), '/model sonnet')
+  assert.equal(composerText(screen(RULE, `❯ /model sonnet${DIM} a faint hint${UNDIM}`, RULE)), '/model sonnet')
+  assert.equal(composerText(screen(RULE, '❯ x/model sonnet', RULE)), 'x/model sonnet')
+  assert.equal(composerText(screen(RULE, '❯  /model sonnet', RULE)), ' /model sonnet')
+  assert.equal(composerText(screen(RULE, '❯ /model sonnet', '  ', RULE)), '/model sonnet\n')
+  assert.equal(composerText(screen(RULE, '❯ a >', RULE)), 'a >')
+  const top = '╭' + '─'.repeat(58) + '╮'
+  const bottom = '╰' + '─'.repeat(58) + '╯'
+  assert.equal(composerText(screen(top, '│ > /model sonnet'.padEnd(59) + '│', bottom)), '/model sonnet')
+  assert.equal(composerText('Do you want to proceed?\n❯ 1. Yes'), null)
 })
