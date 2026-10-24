@@ -32,12 +32,25 @@ const execFileAsync = promisify(execFile)
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const HELP = spawnSync('cat', [join(ROOT, 'test', 'fixtures', 'claude-help-2.1.309.txt')], { encoding: 'utf8' }).stdout
 const hasTmux = spawnSync('tmux', ['-V']).status === 0
-const started: Array<{ socket: string; folder: string }> = []
+const started: Array<{ socket: string; folder: string; panePid: number }> = []
 
-after(() => {
-  for (const { socket, folder } of started) {
+function alive(pid: number): boolean {
+  try { process.kill(pid, 0); return true } catch { return false }
+}
+
+after(async () => {
+  // Every server is killed before any folder goes, so one folder that will
+  // not go never leaves the other servers running. The fake agent is its
+  // pane's process and leads its own process group, with its stand in daemon
+  // and any status line bridge still in flight: that group (and only it) is
+  // killed first, or a late bridge writes into a folder already removed.
+  for (const { socket, panePid } of started) {
+    if (panePid > 0) try { process.kill(-panePid, 'SIGKILL') } catch {}
     spawnSync('tmux', ['-S', socket, 'kill-server'])
-    rmSync(folder, { recursive: true, force: true })
+  }
+  for (const { folder, panePid } of started) {
+    for (let i = 0; i < 50 && panePid > 0 && alive(panePid); i++) await new Promise((r) => setTimeout(r, 100))
+    rmSync(folder, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   }
 })
 
@@ -61,9 +74,11 @@ async function startRig(name: string, env: Record<string, string> = {}, wrapExec
   ].join(' ')
   const run = spawnSync('tmux', ['-S', socket, '-f', '/dev/null', 'new-session', '-d', '-s', 'rig', '-x', '120', '-y', '30', command])
   assert.equal(run.status, 0, String(run.stderr))
-  started.push({ socket, folder: state })
+  const rig = { socket, folder: state, panePid: 0 }
+  started.push(rig)
   const target: TmuxTarget = { target: 'rig', socketArgs: ['-S', socket], source: 'tmux-pane' }
   const panePid = Number((await exec(['tmux', '-S', socket, 'display-message', '-p', '-t', 'rig', '#{pane_pid}'])).trim())
+  rig.panePid = panePid
   const dir = modelControlDir({ env: { BGOS_PLUGIN_STATE_DIR: state }, home: state })
   // Wait for the first status line observation and the stand in daemon, the
   // fake agent's own child, whose ancestry a real daemon would walk.
