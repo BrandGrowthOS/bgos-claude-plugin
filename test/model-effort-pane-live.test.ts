@@ -39,6 +39,12 @@ function live(mode: string, name: string): string {
   return readFileSync(join(DIR, `${mode}-${name}.ansi`), 'utf8')
 }
 
+/** The last line holding `text` (the live composer is the last one drawn). */
+function lastLineWith(lines: string[], text: string): number {
+  for (let i = lines.length - 1; i >= 0; i--) if (lines[i]!.includes(text)) return i
+  return -1
+}
+
 test('round 2 live: the real CLI\'s empty composer with its placeholder is empty, in both themes', () => {
   for (const mode of MODES) {
     assert.equal(readComposer(live(mode, '1-empty-placeholder')), 'empty', mode)
@@ -64,7 +70,7 @@ test('round 2 live: the typed command reads back exactly, so the one Enter can f
 /** The real capture with the draft's text drawn in `sgr` (the prompt glyph kept). */
 function recolour(capture: string, draft: string, sgr: string): string {
   const lines = capture.split('\n')
-  const at = lines.findLastIndex((l) => l.includes(`${PROMPT}${draft}`))
+  const at = lastLineWith(lines, `${PROMPT}${draft}`)
   assert.ok(at >= 0, `the draft ${JSON.stringify(draft)} is on the real screen`)
   lines[at] = lines[at]!.replace(`${PROMPT}${draft}`, `${PROMPT}\u001b[${sgr}m${draft}\u001b[0m`)
   return lines.join('\n')
@@ -101,7 +107,7 @@ test('round 2: the re-read before the Enter keeps dim text, so a dim tag before 
     // The real screen after the command was typed, with a dim tag drawn in
     // front of it on the prompt line (the reviewer's probe on the fake).
     const lines = live(mode, '5-literal-model').split('\n')
-    const at = lines.findLastIndex((l) => l.includes(PROMPT))
+    const at = lastLineWith(lines, PROMPT)
     lines[at] = lines[at]!.replace(PROMPT, `${PROMPT}\u001b[2m[Pasted text #1 +40 lines]\u001b[22m`)
     const screen = lines.join('\n')
     assert.notEqual(composerText(screen), '/model sonnet', mode)

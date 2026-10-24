@@ -19,12 +19,24 @@
  *   ❯ <draft>                     │ > <draft>        │
  *   ────────────────────          ╰──────────────────╯
  *
- * The LAST such composer on screen is the live one. A placeholder is text
- * drawn faint (SGR 2, bright black, or a grey of the 256 or true colour
- * ranges); the cursor may sit on its first letter in inverse video. Anything
- * else visible between the prompt and the closing frame is the owner's draft.
- * These layouts are the CLI's today; a live check on the supported version
- * must confirm them before the capability is advertised to anyone (RESULT.md).
+ * The LAST such composer on screen is the live one. Empty must be PROVEN,
+ * from what the CLI itself draws (Claude Code 2.1.310, measured in its light
+ * and dark themes, 256 and true colour, and read from its own placeholder
+ * code: test/fixtures/claude-2.1.310-composer, RESULT.md "Round 2"):
+ *
+ *   - the cursor is an inverse cell; in an empty composer it sits right
+ *     after the prompt (the glyph, then a no-break space);
+ *   - the placeholder is SGR 2 (dim) text with the cursor's inverse cell on
+ *     its first letter, which itself is not dim;
+ *   - typed text is drawn in whatever colour the theme or a highlight gives
+ *     it, black and grey included, so colour never makes text "faint".
+ *
+ * So the composer is empty only when the cursor is drawn at its very start
+ * and is followed by nothing, or by an SGR 2 placeholder that is not one of
+ * the CLI's own reference tags ([Pasted text #1], [Image #1]). Anything
+ * before the cursor, anything not dim after it, or any line between the
+ * prompt and the closing frame is the owner's draft; no cursor drawn, or a
+ * shape the CLI does not draw, is unknown. When in doubt, never empty.
  */
 
 export interface PaneState {
@@ -139,15 +151,15 @@ function plain(line: string): string {
   return line.replace(ANSI_RE, '')
 }
 
-function isGreyIndex(n: number): boolean {
-  return n === 8 || (n >= 236 && n <= 250)
-}
-
-/** The visible characters of a raw line, with whether each is drawn faint. */
+/**
+ * The visible characters of a raw line, with whether each is drawn faint.
+ * Faint is SGR 2 and nothing else: the CLI draws its placeholder with it
+ * (chalk dim). No colour is faint, grey and black included: the light themes
+ * draw text in rgb(0,0,0) (round 2 on PR #275).
+ */
 function glyphs(raw: string): Glyph[] {
   const out: Glyph[] = []
   let dim = false
-  let greyFg = false
   let inverse = false
   for (const m of raw.matchAll(TOKEN_RE)) {
     if (m[1] !== undefined) {
@@ -156,29 +168,20 @@ function glyphs(raw: string): Glyph[] {
         const p = params[i]!
         if (p === 0) {
           dim = false
-          greyFg = false
           inverse = false
         } else if (p === 2) dim = true
         else if (p === 22) dim = false
         else if (p === 7) inverse = true
         else if (p === 27) inverse = false
-        else if (p === 90) greyFg = true
-        else if (p === 39 || (p >= 30 && p <= 37) || (p >= 91 && p <= 97)) greyFg = false
-        else if (p === 38 && params[i + 1] === 5) {
-          greyFg = isGreyIndex(params[i + 2] ?? -1)
-          i += 2
-        } else if (p === 38 && params[i + 1] === 2) {
-          const [r, g, b] = [params[i + 2] ?? 0, params[i + 3] ?? 0, params[i + 4] ?? 0]
-          greyFg = Math.abs(r - g) < 12 && Math.abs(g - b) < 12 && r <= 180
-          i += 4
-        } else if (p === 48 && (params[i + 1] === 5 || params[i + 1] === 2)) {
+        else if ((p === 38 || p === 48 || p === 58) && (params[i + 1] === 5 || params[i + 1] === 2)) {
+          // A colour's own numbers are never attributes: 38;5;2 is not dim.
           i += params[i + 1] === 5 ? 2 : 4
         }
       }
       continue
     }
     if (m[2] === undefined) continue
-    out.push({ ch: m[2], faint: dim || greyFg, inverse })
+    out.push({ ch: m[2], faint: dim, inverse })
   }
   return out
 }
@@ -187,25 +190,33 @@ function isBlank(g: Glyph): boolean {
   return g.ch.trim() === ''
 }
 
-/** Does this run of visible characters hold anything the owner typed? */
-function holdsDraft(chars: readonly Glyph[]): boolean {
-  const visible = chars.filter((g) => !isBlank(g))
-  if (visible.length === 0) return false
-  if (visible.every((g) => g.faint)) return false
-  // The cursor, drawn inverse on the first letter of a faint placeholder.
-  const [head, ...rest] = visible
-  if (head!.inverse && rest.length > 0 && rest.every((g) => g.faint)) return false
-  return true
-}
+// The CLI's own references to content it holds for the owner: pasted text,
+// an image, a truncated paste. Never a placeholder, dim or not.
+const REFERENCE_TAG_RE = /^\[(?:Pasted text #\d+|Image #\d+|\.\.\.Truncated text #\d+|\u2726 Team setup guide #\d+)/u
 
 /**
- * Anything drawn before the cursor is typed, spaces included: the cursor sits
- * right after the prompt in an empty composer, so spaces the owner typed show
- * only as the distance to it.
+ * The prompt line, after the prompt: empty only in the CLI's two empty
+ * shapes, the cursor alone or the cursor on the first letter of its
+ * placeholder. Anything drawn before the cursor is typed, spaces and dim text
+ * included: the cursor sits right after the prompt in an empty composer.
  */
-function typedBeforeCursor(chars: readonly Glyph[]): boolean {
+function readPromptLine(chars: readonly Glyph[]): ComposerState {
   const at = chars.findIndex((g) => g.inverse)
-  return at > 0 && chars.slice(0, at).some((g) => !g.faint)
+  if (at > 0) return 'draft'
+  const cursor = at === 0 ? chars[0]! : null
+  const rest = at === 0 ? chars.slice(1) : chars
+  if (rest.some((g) => !isBlank(g) && !g.faint)) return 'draft'
+  // No cursor drawn: typed spaces and a dim draft cannot be told from nothing.
+  if (!cursor) return 'unknown'
+  if (rest.some((g) => g.inverse)) return 'unknown'
+  const after = rest.filter((g) => !isBlank(g))
+  if (isBlank(cursor)) return after.length === 0 ? 'empty' : 'unknown'
+  // The cursor on a letter: one typed letter, or the placeholder's first.
+  if (after.length === 0) return 'draft'
+  if (cursor.faint) return 'unknown'
+  const text = chars.map((g) => g.ch).join('')
+  if (REFERENCE_TAG_RE.test(text)) return 'draft'
+  return 'empty'
 }
 
 const RULE_RE = /^\s*[─━]{8,}\s*$/
@@ -287,24 +298,48 @@ function locateComposer(capture: string): Composer | null {
 export function readComposer(capture: string): ComposerState {
   const composer = locateComposer(capture)
   if (!composer) return 'unknown'
-  if (holdsDraft(composer.first) || typedBeforeCursor(composer.first)) return 'draft'
+  const first = readPromptLine(composer.first)
+  if (first === 'draft') return 'draft'
   for (const line of composer.more) {
     const visible = line.filter((g) => !isBlank(g))
     if (visible.length === 0 || visible.some((g) => !g.faint)) return 'draft'
   }
-  return composer.more.length > 0 ? 'unknown' : 'empty'
+  return composer.more.length > 0 ? 'unknown' : first
 }
 
 /**
- * The text typed into the composer, exactly: faint text (a placeholder or a
- * hint) left out, trailing blanks and the drawn cursor trimmed from each line,
- * lines joined with a newline. Null when no composer is recognisable.
+ * Everything drawn in the composer, dim text included (a placeholder is only
+ * there while nothing is typed, so after typing anything dim is the owner's,
+ * or not known to be anything else), each line's trailing blanks and the
+ * drawn cursor trimmed, lines joined with a newline. Null when no composer is
+ * recognisable.
  */
 export function composerText(capture: string): string | null {
   const composer = locateComposer(capture)
   if (!composer) return null
-  const typed = (chars: Glyph[]) => chars.filter((g) => !g.faint).map((g) => g.ch).join('').replace(/\s+$/u, '')
-  return [composer.first, ...composer.more].map(typed).join('\n')
+  const drawn = (chars: Glyph[]) => chars.map((g) => g.ch).join('').replace(/\s+$/u, '')
+  return [composer.first, ...composer.more].map(drawn).join('\n')
+}
+
+/**
+ * Is `literal` provably what sits right before the cursor, at the very end of
+ * the composer? The cursor must be drawn, once, as a blank inverse cell on the
+ * composer's LAST line with nothing after it, and that line must end with the
+ * whole literal right before it. One BSpace per character then removes the
+ * literal and nothing else. False for anything else, a literal that wrapped
+ * included (round 2 on PR #275, L1: an arrow key moves the cursor).
+ */
+export function cursorFollows(capture: string, literal: string): boolean {
+  const composer = locateComposer(capture)
+  if (!composer || literal === '') return false
+  const lines = [composer.first, ...composer.more]
+  const cursors = lines.flatMap((line, row) => line.flatMap((g, col) => (g.inverse ? [{ row, col }] : [])))
+  if (cursors.length !== 1) return false
+  const { row, col } = cursors[0]!
+  if (row !== lines.length - 1) return false
+  const line = lines[row]!
+  if (!isBlank(line[col]!) || line.slice(col + 1).some((g) => !isBlank(g))) return false
+  return line.slice(0, col).map((g) => g.ch).join('').endsWith(literal)
 }
 
 /** Is `literal` sitting in the composer (typed and never submitted)? */
