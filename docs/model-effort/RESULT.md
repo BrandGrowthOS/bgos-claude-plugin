@@ -184,13 +184,127 @@ An independent reviewer read the branch at `a15f7e7` (`REVIEW-275.md`, kept outs
 
 **Still open after these fixes:** a key the owner presses in the milliseconds between the L5 read and the Enter is still not seen (no screen read closes that); typed spaces with no drawn cursor are invisible to a screen read; L1, L2, L3, L4 and L7 are untouched (the brief named H1, M2, L5, L6). The stricter composer read (a blank or faint continuation line refuses) must be confirmed on the real CLI's empty composer in the live check below (item 3).
 
+## Round 2 (0.75.2)
+
+An independent check confirmed H1, M2, L5 and L6 fixed and guarded, and found one Medium that ships with this feature and two Lows. Each is fixed here on top of `d764672`, red first, not rewritten and not pushed. Commits: `bf43b9f` (the red first tests and the real CLI fixtures), `fddefa7` (Medium), `262543d` (L1), `a530310` (L2), `f397a7a` (the rig's L1 case waits for keys in flight), `53f350c` (the 0.75.2 bump and CHANGELOG), and this file.
+
+### The Medium: what the real CLI draws
+
+Read first from the installed CLI (`~/.local/bin/claude`, Claude Code 2.1.310, its own bundled source), then measured:
+
+- **The placeholder** is drawn by the CLI's text input as `chalk.dim(placeholder)`, and with the cursor showing as `inverse(placeholder[0]) + chalk.dim(placeholder.slice(1))`. Measured on screen: `❯ \e[7mT\e[0;2mry "how do I log an error?"\e[0m`. SGR 2 only, in every theme and colour mode; no grey or black colour.
+- **The light themes' `text` colour is `rgb(0,0,0)`** (the theme tables in the binary: light and light daltonized both carry `text:"rgb(0,0,0)"`, `inactive:"rgb(102,102,102)"`, `subtle:"rgb(175,175,175)"`). The old faint rule (any grey or black true colour with each channel at most 180, bright black, 256 greys 8 and 236 to 250) called all three faint.
+- **What the brief asked to check, "typed text in rgb(0,0,0)"**: not so for the prompt itself on 2.1.310. Typed text, a draft starting with `>`, and the `[Pasted text #1 +40 lines]` tag are drawn in the DEFAULT colour (`\e[39m`) in both themes and both colour modes; the slash command of `/model sonnet` is drawn in the theme's suggestion colour (`38;5;105` or `38;2;87;105;247`). So the old reader happened to decide the real 2.1.310 screens right (the first live run below, at the unfixed `d764672` reader: the same decisions), but only because nothing the prompt drew today fell inside its grey rule: any text the CLI colours with its `text`, `inactive` or `subtle` colour, or a theme that draws input in them, would have read as empty. The fix stops guessing from colour altogether.
+- **Inside tmux the CLI clamps itself to 256 colours** unless `CLAUDE_CODE_TMUX_TRUECOLOR` is set (its own colour setup: `if (TMUX && level > 2) level = 2`), so both were measured.
+- **The prompt glyph is followed by a no-break space** (U+00A0), not a plain one. The reader's patterns use `\s`, which matches it; the fixtures and the fake agent now draw it.
+
+**The fix** (`lib/model-effort-pane.ts`, `fddefa7`):
+
+- Faint is SGR 2 and nothing else. No colour is ever faint.
+- The composer is EMPTY only when it is proven: on the prompt line the drawn cursor (an inverse cell) sits at the very start, and is followed by nothing, or by an SGR 2 placeholder whose first letter (under the cursor) is not dim, and whose text is not one of the CLI's own reference tags (`[Pasted text #N`, `[Image #N`, `[...Truncated text #N`, the team setup guide tag; the CLI's own pattern for them, found in the binary). Anything before the cursor (dim or not, spaces included), any visible text after it that is not dim, or any line between the prompt and the closing frame is a DRAFT. No cursor drawn, a second inverse cell, a dim cursor letter, or a blank cursor followed by dim text is UNKNOWN (refused as `composer_unknown`).
+- `composerText` (the L5 re-read before the Enter) keeps dim text: a placeholder is only there while nothing is typed, so after typing anything dim is the owner's. A dim tag in front of the command can no longer be dropped from the comparison.
+- New `cursorFollows` (for L1, below).
+
+Four existing pane expectations changed with it, all toward refusing: a prompt line with no cursor drawn (`❯ `, `❯`, the older box's `│ >`) and a dim placeholder with no cursor were `empty` and are now `unknown`; `composerText` keeps a dim hint after the command instead of dropping it. Every real 2.1.310 screen draws the cursor.
+
+### The live check
+
+A real Claude Code CLI (the installed 2.1.310), in a throwaway private tmux server (`tmux -S <socket file> -f /dev/null`, 120 by 40) in a scratch folder, `~/hoai-work/meswitch-live/work`. Its own config folder per theme (`CLAUDE_CONFIG_DIR=~/hoai-work/meswitch-live/cfg-light` or `cfg-dark`, each a `.claude.json` with that `theme`, onboarding done and the scratch folder trusted), so KC's own config, login and sessions were never read or written. A dummy `ANTHROPIC_API_KEY` (no login exists in that config, so nothing could reach a model; the CLI's managed settings fetch was refused with a 401 and it said so on screen), telemetry, error reporting, auto update and non essential traffic off, and `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=1` so a fresh session shows its `Try "..."` placeholder. Each theme ran twice: with the CLI's default inside tmux (256 colours) and with `CLAUDE_CODE_TMUX_TRUECOLOR=1` (true colour). Keys sent: literal text, `C-u` to clear, `Home`, `End`, and a 40 line paste through `tmux paste-buffer -p` (bracketed). **Enter was never pressed**; nothing was sent. Each screen was captured with `capture-pane -p -e` and read by the switch's own `readComposer`, `composerText` and `cursorFollows` from this worktree.
+
+Decisions of the FIXED reader (`fddefa7`), second live run, 06:19 to 06:22 UTC. The four colour columns agreed on every row, so each row is one decision for 256 and true colour alike:
+
+| Theme | Case | Decision (`readComposer`) | Re-read and clear (`composerText`, `cursorFollows`) |
+| --- | --- | --- | --- |
+| light | empty box with placeholder (`Try "how does <filepath> work?"`, cursor on the T) | **empty** | |
+| light | typed draft `hello draft` | **draft** | |
+| light | draft starting with `>` (`> quoted line`) | **draft** | |
+| light | pasted 40 line draft (`[Pasted text #1 +40 lines]`) | **draft** | |
+| light | the same, cursor moved to its start (`Home`) | **draft** | |
+| light | box cleared again (`C-u`) | **empty** | |
+| light | `/model sonnet` typed into the empty box | draft | `"/model sonnet"`, follows: **true** (the Enter would go) |
+| light | then `Home`, `q`: the owner's key in front, the cursor moved | draft | `"q/model sonnet"`, follows: **false** (no Enter, no BSpace) |
+| light | then `End` | draft | `"q/model sonnet"`, follows: **true** (the clear would go) |
+| light | `/effort high` typed into the empty box | draft | `"/effort high"`, follows: **true** |
+| dark | empty box with placeholder (`Try "create a util logging.py that..."`) | **empty** | |
+| dark | typed draft `hello draft` | **draft** | |
+| dark | draft starting with `>` (`> quoted line`) | **draft** | |
+| dark | pasted 40 line draft (`[Pasted text #1 +40 lines]`) | **draft** | |
+| dark | the same, cursor moved to its start (`Home`) | **draft** | |
+| dark | box cleared again (`C-u`) | **empty** | |
+| dark | `/model sonnet` typed into the empty box | draft | `"/model sonnet"`, follows: **true** |
+| dark | then `Home`, `q` | draft | `"q/model sonnet"`, follows: **false** |
+| dark | then `End` | draft | `"q/model sonnet"`, follows: **true** |
+| dark | `/effort high` typed into the empty box | draft | `"/effort high"`, follows: **true** |
+
+(The placeholder text is the CLI's random pick per session; 256 and true colour drew different picks, all read as empty.) The first live run (05:55 to 05:58 UTC) read the same screens with the UNFIXED reader at `d764672`: the same decisions on every row, for the reason above. Its captures, 32 of them (both themes, both colour modes, eight cases each), are now fixtures (`test/fixtures/claude-2.1.310-composer/`), replayed by `test/model-effort-pane-live.test.ts`, which also redraws each real draft in the light theme's `rgb(0,0,0)`, its `rgb(102,102,102)`, the dark theme's `rgb(80,80,80)`, bright black, two 256 greys and SGR 2: none may read as empty. All screens of both runs are kept in `~/hoai-work/meswitch-live/caps` and `caps-r1`, with the scripts that made them (`start.sh`, `matrix.sh`).
+
+Not measured live: an empty box after a real turn (the prompt suggestion feature shows its suggestion there) and the box while a turn runs or a permission question is open, since the dummy key allows no turn. If the suggestion is drawn as the placeholder is (SGR 2, cursor on its first letter) it reads as empty; if it is drawn any other way it reads as a draft or unknown and the change is refused, never typed.
+
+### L1: the clear, only with the cursor proven after the command
+
+`lib/model-effort-control.ts` `checkTyped` (`262543d`): when the re-read shows the composer ending with the command but not equal to it, the pane is read AGAIN right before any key, and the BSpaces go only when that read shows the same text and `cursorFollows` holds: the cursor drawn once, as a blank inverse cell on the composer's last line with nothing after it, right after the whole command (a command that wrapped is not provable). Otherwise no key at all, and the answer says the command is still in the agent's message box. The live check above shows the rule on the real CLI (`Home`, `q`: false; `End`: true).
+
+### L2: every received rail logs a hash
+
+`server.ts` (`a530310`): the received lines of voice, memory (and a person's stopped lane), changes, skills, export pack and its manifest, update and watcher install, and the person lane refusal, log `rpcLogTag(rpcId)` (as L6), the export pack's handoff id through `rpcLogTag` too, and the op through the new `rpcLogOp` (the op when it is one plain word, else `?`; several rails log the op before checking it). The wiring test scans every `${...}` in `server.ts` that names an rpcId or handoff id (only `encodeURIComponent(...)` for a request path or `rpcLogTag(...)` may) and every logged `frame.op`.
+
+**Found and left, outside this brief's scope**: the handler modules themselves still log rpcIds raw, 45 lines in `lib/changes-rpc.ts`, `lib/export-pack.ts`, `lib/memory-rpc.ts`, `lib/lane-memory-rpc.ts`, `lib/skills-rpc.ts`, `lib/update-rpc.ts`, `lib/voice-rpc.ts`, `lib/watcher-install.mjs` and `lib/watcher-core.mjs` (`grep -n 'log(.*\${[a-zA-Z.]*rpcId}' lib/*`). They predate this feature; the same `rpcLogTag` fixes them.
+
+### Red first, then green
+
+The tests are at `bf43b9f`, before any fix. Each red line is the first failing assertion of that case against the unfixed code. The pane file failed to load at `bf43b9f` (`does not provide an export named 'cursorFollows'`), so its cases were also run against the unfixed reader with only a throwing stub for that export; the wiring file likewise (`rpcLogOp`), so its scan was run against `server.ts` at `bf43b9f` (and is the same line in the L2 mutation run).
+
+| Finding | Test | Red line (first failure, unfixed) |
+| --- | --- | --- |
+| Medium | `model-effort-pane-live`: "a real draft drawn in black, grey or dim is still a draft" | `AssertionError [ERR_ASSERTION]: light-256 2-typed-draft in light theme text, rgb(0,0,0)`, actual `'empty'`, expected `'draft'` |
+| Medium | `model-effort-pane-live`: "the re-read before the Enter keeps dim text" | `AssertionError [ERR_ASSERTION]: light-256`, actual `'/model sonnet'` (the dim `[Pasted text #1 +40 lines]` before it dropped) |
+| Medium | `model-effort-pane`: "faint is SGR 2 only; text in black, grey or bright black is typed" | `AssertionError [ERR_ASSERTION]: 38;2;0;0;0`, actual `'empty'`, expected `'draft'` |
+| Medium | `model-effort-pane`: "something drawn dim with no space after it, the cursor at its end, is a draft" | actual `'empty'`, expected `'draft'` |
+| Medium | `model-effort-pane`: "the cursor parked on a dim tag ... is a draft, not a placeholder" | `AssertionError [ERR_ASSERTION]: [Pasted text #1 +40 lines]`, actual `'empty'` |
+| Medium | `model-effort-pane`: "with no cursor drawn the composer is not known to be empty", "only the CLI's own placeholder form is empty", the box case | actual `'empty'`, expected `'unknown'` |
+| Medium | `model-effort-pane`: "composerText reads the typed text exactly" | actual `'/model sonnet'`, expected `'/model sonnet a faint hint'` |
+| Medium | rig: "a real draft drawn in the light theme's black is refused and left as typed" | `AssertionError [ERR_ASSERTION]: ● ready ... ❯ half a thought/model sonnet` (the command typed onto the owner's draft and left there: the L5 re-read dropped the black text too, so it refused without an Enter, as the brief predicted) |
+| Medium | rig: "a real pasted text tag drawn dim is refused and left as it was" | `AssertionError [ERR_ASSERTION]: ● Unknown: [Pasted text #1 +40 lines]/model sonnet` (the reviewer's probe: the owner's draft SUBMITTED with the command) |
+| L1 | `model-effort-control`: "an arrow key in the gap: nothing of the owner's is deleted, no BSpace, no Enter" (and the two other L1 cases) | `AssertionError [ERR_ASSERTION]: the owner's key and the command are left as they are`, actual `'et'`, expected `'q/model sonnet'` |
+| L1 | rig: "an arrow key in the gap: the owner's key is never deleted" | the screen `❯ /model sonnet`: the owner's `q` deleted |
+| L2 | `model-effort-wiring`: "no daemon log line carries a raw rpcId, handoff id or op" | `AssertionError [ERR_ASSERTION]: raw in a log line: ${frame.rpcId}` (11 raw id interpolations and 7 raw ops at `bf43b9f`) |
+
+**Mutation, each fix reverted alone** (output in the session scratchpad; each file restored with `git checkout` afterwards):
+
+- Medium reverted (the reader at `bf43b9f`, plus only the new `cursorFollows` so the imports resolve): pane, pane live, control and rig 57 pass, 11 fail: every round 2 pane case, the box case, the composerText case, and both rig Medium cases.
+- L1 reverted (the clear without `cursorFollows`): control 3 fail, the three L1 cases. The rig's L1 case passed once in four runs with the fix reverted (it read the screen before the fake agent had drawn the BSpaces); `f397a7a` waits 500 ms before reading, after which five mutant runs all failed it and three runs on the fix passed 9 of 9.
+- L2 reverted (`server.ts` at `bf43b9f`): wiring 10 pass, 1 fail, `raw in a log line: ${frame.rpcId}`.
+
+### Tests and the whole suite
+
+New or changed, all green at `53f350c`: `model-effort-pane-live` 5 (new), `model-effort-pane` 20 (6 new), `model-effort-control` 34 (3 new), `model-effort-wiring` 11 (2 new), `model-effort-tmux-rig` 9 (3 new), and unchanged `model-effort-literals` 7, `model-effort-rpc` 11, `compact-inject` 16, all 0 fail. `npx tsc --noEmit`: exit 0, no output.
+
+**Whole suite: green at `53f350c`**, first run (`TMPDIR=/private/tmp/claude-501/mec3 node scripts/run-tests.mjs`, bun 1.3.14 on PATH, 06:28 to 06:44 UTC, on a machine other sessions loaded to a 1 minute average of about 276 to 290 on 18 CPUs): node:test 362 files, 7209 tests, **7170 pass, 0 fail**, 0 cancelled, 39 skipped; real Chromium 7 files, 15 tests, 11 pass, 0 fail, 4 skipped; bun:test 14 files, 374 pass, 1 skip, 0 fail; `[run-tests] both families green`, exit 0. Its 9 rig tmux server PIDs are in `pids.log`; none was alive at the end.
+
+### Still open after round 2
+
+- With the cursor parked on the first letter of a draft the CLI draws ENTIRELY in SGR 2 that is not one of its reference tags, the draft looks exactly like a placeholder and reads as empty. On 2.1.310 nothing typed into the prompt is drawn dim (measured above), and the reference tags are refused by name.
+- A key the owner presses in the milliseconds between the last read and the BSpaces or the Enter is not seen (no screen read closes that gap).
+- A terminal that hides the drawn cursor (for example tmux with `focus-events on` and the agent's window not focused, if the CLI then stops drawing it) reads as unknown: the change is refused, never typed.
+- The 45 raw rpcId log lines in the handler modules (L2, above).
+
+### Processes for round 2
+
+Every one recorded in `pids.log` (worktree root, git excluded), and only those stopped:
+
+- The real CLI sessions of the live check, each a private tmux server on a socket file in `~/hoai-work/meswitch-live`, stopped with `kill-server` on that socket and checked gone. Probes: server 32253 with CLI 32257 (stopped at the CLI's API key question, which the config then answered), 32461 with 32462, 53499 with 53501. First run: 67598 with 67599, 68613 with 68614, 71956 with 71957, 73612 with 73613. Second run: 25865 with 25866, 26606 with 26607, 27313 with 27314, 28188 with 28189. One mis-started batch (my loop passed the theme and colour as one word, so the script typed to a socket path that did not exist and sent no key at all): 63066, 63982, 65035, 66324 with CLIs 63067, 63984, 65036, 66325, stopped on their own sockets.
+- One tmux server to test the PID watcher, 23807, and three rig servers of a probe run, 23190, 23310, 23436.
+- The test runners and the rig's private tmux servers (socket files under `TMPDIR=/private/tmp/claude-501/mec3`), each server PID logged by the wrapper that ran them; after every run none was left alive.
+
+No other tmux server, session or agent was touched, nothing was sent from the live sessions, and nothing was written outside `~/hoai-work`, this worktree and the session's temp folders.
+
 ## What a live check on a real agent must still show
 
 None of this was run against a real Claude Code session (the brief forbids it). Before the app is allowed to send a frame, a live check on the supported CLI version (2.1.309 here) must show:
 
 1. **The status line reports a change while idle.** With the bridge installed (`refreshInterval` 2), `/model sonnet` and `/effort max` typed by hand produce an observation with the new `model.id` and `effort.level` within a few seconds and with no new turn. The docs list no status line trigger for `/model` or `/effort`, which is why the refresh interval is there; confirm it fires while idle.
 2. **`/model <family>` and `/effort <level>` apply directly on one Enter**, with no menu, confirmation or second prompt on this version. If either opens a menu, the one Enter may pick an item: stop and change the submission before enabling.
-3. **The composer layouts.** Capture the pane (`tmux capture-pane -p -e`) of an idle session with an empty composer, with the placeholder showing, with the cursor on the placeholder, with a typed draft, with a multi line draft, during a turn, and with a permission dialog open, and run `readComposer` on each: empty, empty, empty, draft, draft, (empty composer while busy is refused by the turn check), unknown or draft. If the CLI draws the composer differently, the fixtures in `test/model-effort-pane.test.ts` change first.
+3. **The composer layouts.** (Idle states done in round 2, both themes, the table above; still to do: during a turn, a permission dialog, and the empty box after a real turn.) Capture the pane (`tmux capture-pane -p -e`) of an idle session with an empty composer, with the placeholder showing, with the cursor on the placeholder, with a typed draft, with a multi line draft, during a turn, and with a permission dialog open, and run `readComposer` on each: empty, empty, empty, draft, draft, (empty composer while busy is refused by the turn check), unknown or draft. If the CLI draws the composer differently, the fixtures in `test/model-effort-pane.test.ts` change first.
 4. **The pane identity holds for the real process tree**: the MCP daemon's `ps` ancestry reaches the pane's root, and the CLI's job is the foreground group (`pgid == tpgid`), both when tmux runs `claude` directly and when it runs a shell that runs `claude` (bgos-agent, hoai run). If Claude Code starts MCP servers in their own process group, the rule still holds through the CLI's own entry; confirm.
 5. **The alias resolves to the family**: after `/model fable` the status line `model.id` contains `fable` as a token (the `modelFamilyOf` rule).
 6. **A model without effort support** (haiku, if offered) omits `effort` from the status line, so efforts are offered as none.
