@@ -74,10 +74,31 @@ function liftReplyCase(): string {
   return `async function replyTool(rawArgs) {\n  switch ('reply') {\n${SERVER.slice(start + 1, end)}\n  }\n}\n`
 }
 
+/** The send_to_peer case, wrapped the same way. */
+function liftSendToPeerCase(): string {
+  const start = SERVER.indexOf("\n    case 'send_to_peer': {")
+  const end = SERVER.indexOf("\n    case 'complete_peer_thread': {", start)
+  assert.ok(start > 0 && end > start, 'the send_to_peer case exists')
+  return `async function sendToPeerTool(rawArgs) {\n  switch ('send_to_peer') {\n${SERVER.slice(start + 1, end)}\n  }\n}\n`
+}
+
+/** A top level function through its closing brace on a line of its own, or
+ *  nothing when server.ts has none (a helper the fix adds; the red run has none). */
+function liftIfPresent(header: string): string {
+  const start = SERVER.indexOf(`\n${header}`)
+  if (start < 0) return ''
+  const end = SERVER.indexOf('\n}\n', start)
+  assert.ok(end > start, `${header} ends on a bare closing brace`)
+  return SERVER.slice(start + 1, end + 3)
+}
+
 type ToolResult = { content: Array<{ type: string; text: string }>; isError?: boolean }
 
 interface Harness {
   reply(chatId: string, text: string): Promise<ToolResult>
+  /** send_to_peer, the backend answering with this side thread and conversation. */
+  sendToPeer(sideThreadChatId: string, conversationId: number, turnState?: string): Promise<ToolResult>
+  closedPeerChats: Set<string>
   advance(ms: number): void
   /** Exact bytes of every send-message body, in order. */
   sent: string[]
@@ -88,8 +109,15 @@ function harness(opts: {
   declared: () => readonly string[]
   failSend?: boolean
   peerChats?: string[]
+  closedChats?: string[]
 }): Harness {
-  const js = ts.transpileModule(liftReplyCase(), {
+  const source = [
+    liftIfPresent('function rememberPeerConvChat('),
+    liftIfPresent('function notePeerConversationOpened('),
+    liftReplyCase(),
+    liftSendToPeerCase(),
+  ].join('\n')
+  const js = ts.transpileModule(source, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
   }).outputText
 
@@ -106,6 +134,8 @@ function harness(opts: {
 
   const sent: string[] = []
   const logs: string[] = []
+  const closedPeerChats = new Set<string>(opts.closedChats ?? [])
+  let peerSendResult: unknown = null
   const recorder: unknown = new Proxy(function () {}, {
     get: (_t, key) => (key === Symbol.toPrimitive ? () => '' : recorder),
     apply: () => undefined,
@@ -120,7 +150,10 @@ function harness(opts: {
     peerReplyRefusedChats: new Set<string>(),
     pendingInbounds: new Map<string, unknown>(),
     meetingIdByChatId: new Map<string, number>(),
-    peerConvByChat: new Map((opts.peerChats ?? []).map((c) => [c, 'conv-77'])),
+    peerConvByChat: new Map((opts.peerChats ?? []).map((c) => [c, '76'])),
+    peerConvChats: new Map((opts.peerChats ?? []).map((c) => ['76', c])),
+    closedPeerChats,
+    bgosPeerPost: async () => peerSendResult,
     protectBackslashesForMarkdown: (text: string) => text,
     recentButtonPrompts: new Map<string, unknown>(),
     usageTracker: { collect: () => null },
@@ -148,11 +181,24 @@ function harness(opts: {
     },
   })
   // eslint-disable-next-line no-new-func
-  const factory = new Function('scope', `with (scope) {\n${js}\nreturn { replyTool }\n}`)
-  const lifted = factory(scope) as { replyTool(args: Record<string, unknown>): Promise<ToolResult> }
+  const factory = new Function('scope', `with (scope) {\n${js}\nreturn { replyTool, sendToPeerTool }\n}`)
+  const lifted = factory(scope) as {
+    replyTool(args: Record<string, unknown>): Promise<ToolResult>
+    sendToPeerTool(args: Record<string, unknown>): Promise<ToolResult>
+  }
 
   return {
     reply: (chatId, text) => lifted.replyTool({ chat_id: chatId, text }),
+    sendToPeer: (sideThreadChatId, conversationId, turnState) => {
+      peerSendResult = { sideThreadChatId: Number(sideThreadChatId), conversationId, message: { id: 9100 } }
+      return lifted.sendToPeerTool({
+        target_assistant_id: 950,
+        parent_message_id: 501,
+        text: 'Can you pull the October numbers for the Marina store?',
+        ...(turnState ? { turn_state: turnState } : {}),
+      })
+    },
+    closedPeerChats,
     advance: (ms) => {
       clock += ms
     },
@@ -249,4 +295,27 @@ test('an error deciding the nudge is swallowed and logged, the send result stand
   assert.equal(textOf(await h.reply('33001', TABLE)), 'Sent (message_id: 9002)')
   assert.equal(h.sent.length, 1)
   assert.ok(h.logs.some((line) => /declared list unreadable/.test(line)), h.logs.join('\n'))
+})
+
+test('a side thread this agent opened with send_to_peer is not nudged before the peer answers', async () => {
+  const h = harness({ declared: DECLARED })
+  const opened = await h.sendToPeer('33017', 77)
+  assert.ok(!opened.isError, textOf(opened))
+  // The peer has not answered yet: no inbound has named the conversation.
+  assert.equal(textOf(await h.reply('33017', TABLE)), 'Sent (message_id: 9002)')
+  // And the side thread spent nothing: the owner's chat is still nudged.
+  assert.ok(textOf(await h.reply('33001', TABLE)).includes(LINE_START))
+})
+
+test('send_to_peer into a closed side thread: a new conversation lifts the closed guard, the same one keeps it', async () => {
+  // Recording the conversation at send time must not hide a reopen from the
+  // inbound handlers, which lift the guard only for a conversation id the
+  // chat did not already hold.
+  const reopened = harness({ declared: DECLARED, peerChats: ['33017'], closedChats: ['33017'] })
+  await reopened.sendToPeer('33017', 77)
+  assert.equal(reopened.closedPeerChats.has('33017'), false, 'conversation 77 is a new one, the thread is live again')
+
+  const same = harness({ declared: DECLARED, peerChats: ['33017'], closedChats: ['33017'] })
+  await same.sendToPeer('33017', 76)
+  assert.equal(same.closedPeerChats.has('33017'), true, 'the closed conversation 76 stays closed')
 })

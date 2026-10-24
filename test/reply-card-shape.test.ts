@@ -121,7 +121,39 @@ const COMPARISON = [
   'I lean to A because it is cheaper and easier to explain in store.',
 ].join('\n')
 
+/** Options under plain headings, named as a choice by the heading above them. */
 const COMPARISON_HEADINGS = [
+  '## Postgres on the existing server vs a managed database',
+  '',
+  '### Postgres on the existing server',
+  'Cost: nothing extra, it shares the box',
+  'Setup: one migration, an hour of work',
+  'Backups: the nightly dump we already run',
+  '',
+  '### Managed database',
+  'Cost: about 40 dollars a month',
+  'Setup: a new connection string and a data copy',
+  'Backups: point in time restore, built in',
+  '',
+  'Either works; the managed one buys peace of mind for the price of a lunch.',
+].join('\n')
+
+const COMPARISON_PLANS = [
+  'Two plans for the Ramadan push, same budget either way:',
+  '',
+  '**Plan 1**',
+  '- Cost: AED 40,000 over four weeks',
+  '- Reach: about 600,000 on Instagram and TikTok',
+  '- Risk: creative fatigue by week three',
+  '',
+  '**Plan 2**',
+  '- Cost: AED 40,000 over four weeks',
+  '- Reach: about 350,000 on radio and outdoor',
+  '- Risk: hard to measure, no click data',
+].join('\n')
+
+/** The same two headings and fields, with nothing that names them as a choice. */
+const UNNAMED_HEADINGS = [
   '### Postgres on the existing server',
   'Cost: nothing extra, it shares the box',
   'Setup: one migration, an hour of work',
@@ -235,6 +267,148 @@ const UNLIKE_OPTIONS = [
   'These are two different ideas, not two versions of one.',
 ].join('\n')
 
+// Review 2026-10-25 (PR #277): code that SENDS email is not an email draft.
+
+const NODEMAILER = [
+  'This is the send in the signup handler, after the account row is written:',
+  '',
+  '```ts',
+  "import nodemailer from 'nodemailer'",
+  '',
+  'const transporter = nodemailer.createTransport({ host: SMTP_HOST, port: 587 })',
+  '',
+  'await transporter.sendMail({',
+  '  from: SUPPORT_ADDRESS,',
+  '  to: user.email,',
+  "  subject: 'Welcome to HOAI, confirm your address',",
+  '  html: renderWelcome(user),',
+  '})',
+  '```',
+  '',
+  'It runs after the commit, so a failed send never rolls back the signup.',
+].join('\n')
+
+const EMAIL_DTO = [
+  'The draft endpoint takes this body; the backend validates it with class-validator:',
+  '',
+  '```ts',
+  'export interface EmailDraftDto {',
+  '  to: string[];',
+  '  cc?: string[];',
+  '  subject: string;',
+  '  body: string;',
+  '  sendAt?: string;',
+  '}',
+  '```',
+  '',
+  'An empty `to` array is a 400, and so is a subject over 200 characters, so the client',
+  'must check both before it posts the draft.',
+].join('\n')
+
+const SEND_MAIL_STEP = [
+  'Add this step at the end of the release job so the team hears about a failed build:',
+  '',
+  '```yaml',
+  '- name: Send mail',
+  '  if: failure()',
+  '  uses: dawidd6/action-send-mail@v3',
+  '  with:',
+  '    server_address: smtp.gmail.com',
+  '    to: ops@example.com',
+  '    subject: Release ${{ github.ref_name }} failed',
+  '    body: See ${{ github.server_url }}/${{ github.repository }}/actions',
+  '```',
+].join('\n')
+
+// Review 2026-10-25 (PR #277): ordinary structured reports are not comparisons.
+
+const REVIEW_FINDINGS = [
+  'Three findings from the review, most severe first:',
+  '',
+  '**1. The pager skips the last page**',
+  '- File: lib/pager.ts:88',
+  '- Scenario: 41 items at a page size of 20 never show item 41',
+  '- Confidence: high',
+  '',
+  '**2. The retry loop never backs off**',
+  '- File: lib/retry.ts:23',
+  '- Scenario: a 503 storm retries every 10 ms until the socket dies',
+  '- Confidence: medium',
+].join('\n')
+
+const INSTALL_STEPS = [
+  'Install it the same way on both machines, only the package manager differs:',
+  '',
+  '### macOS',
+  '- Install: brew install hoai',
+  '- Configure: hoai init --token $HOAI_TOKEN',
+  '- Verify: hoai doctor, every row should read OK',
+  '',
+  '### Windows',
+  '- Install: winget install hoai',
+  '- Configure: hoai init --token %HOAI_TOKEN%',
+  '- Verify: hoai doctor, every row should read OK',
+].join('\n')
+
+const BEFORE_AFTER = [
+  'The cache change, before and after, measured on the same staging box:',
+  '',
+  '**Before**',
+  '- Load time: 4.1 s on a cold cache',
+  '- Bundle: 2.3 MB of JavaScript',
+  '- Requests: 48 on the first paint',
+  '',
+  '**After**',
+  '- Load time: 1.6 s on a cold cache',
+  '- Bundle: 1.1 MB of JavaScript',
+  '- Requests: 19 on the first paint',
+  '',
+  'Most of the win is the vendor chunk, which now loads after the first paint.',
+].join('\n')
+
+const PR_STATUS = [
+  'Where the open pull requests stand this morning:',
+  '',
+  '### #271 doctor RPC answers',
+  '- Status: merged',
+  '- CI: green on Linux and Windows',
+  '- Reviewer: Ares',
+  '',
+  '### #268 clone follows the release',
+  '- Status: open, one change requested',
+  '- CI: red, the Windows watcher test',
+  '- Reviewer: Data',
+  '',
+  'Only #268 needs you: the Windows watcher test has failed on the last three runs.',
+].join('\n')
+
+/** "Plan a" is a verb and an article, not Plan A. */
+const PLAN_A_VERB = [
+  'Two things to set up before the launch week:',
+  '',
+  'Plan a site visit to every Dubai store',
+  '- Cost: AED 2,000 in fuel and parking',
+  '- Effort: two days for one area manager',
+  '- Risk: the Marina manager is on leave',
+  '',
+  'Plan a training session for the new delivery staff',
+  '- Cost: AED 1,500 for the room and lunch',
+  '- Effort: half a day for the trainer',
+  '- Risk: the night shift cannot attend',
+].join('\n')
+
+/** Task boxes render as task boxes since app 5.9.0; a checklist is not a status list. */
+const CHECKLIST = [
+  'The launch checklist as it stands this morning:',
+  '',
+  '- [x] Menu boards printed and delivered to all 38 stores',
+  '- [x] POS buttons configured and tested in the Marina store',
+  '- [ ] Delivery app listings, waiting on the Talabat account manager',
+  '- [ ] Radio spot, the agency missed the Friday deadline',
+  '- [x] Staff briefing pack sent to every store manager',
+  '- [ ] Social calendar, two of the six posts still in design',
+].join('\n')
+
 const CASES: Array<{ name: string; text: string; shape: string | null }> = [
   { name: 'an email draft in a code block (Mark, 2026-10-25)', text: EMAIL_IN_CODE_BLOCK, shape: 'email_draft' },
   { name: 'an email draft in prose with bold headers', text: EMAIL_IN_PROSE, shape: 'email_draft' },
@@ -242,7 +416,8 @@ const CASES: Array<{ name: string; text: string; shape: string | null }> = [
   { name: 'a status list led by emoji', text: STATUS_LIST, shape: 'status_list' },
   { name: 'a status list led by bold status words', text: STATUS_LIST_WORDS, shape: 'status_list' },
   { name: 'two options with the same labelled fields', text: COMPARISON, shape: 'comparison' },
-  { name: 'two options under headings with the same fields', text: COMPARISON_HEADINGS, shape: 'comparison' },
+  { name: 'two options under headings named as a choice (A vs B)', text: COMPARISON_HEADINGS, shape: 'comparison' },
+  { name: 'Plan 1 and Plan 2 with the same fields', text: COMPARISON_PLANS, shape: 'comparison' },
   { name: 'a short reply', text: SHORT_REPLY, shape: null },
   { name: 'a card shaped table under 300 characters', text: SHORT_TABLE, shape: null },
   { name: 'a code block of shell commands', text: SHELL_COMMANDS, shape: null },
@@ -254,6 +429,16 @@ const CASES: Array<{ name: string; text: string; shape: string | null }> = [
   { name: 'a markdown table inside a code block', text: TABLE_IN_CODE, shape: null },
   { name: 'two options with different fields', text: UNLIKE_OPTIONS, shape: null },
   { name: 'empty text', text: '', shape: null },
+  { name: 'nodemailer sendMail code in a ts fence', text: NODEMAILER, shape: null },
+  { name: 'a TypeScript EmailDraftDto interface', text: EMAIL_DTO, shape: null },
+  { name: 'a GitHub Actions send mail step', text: SEND_MAIL_STEP, shape: null },
+  { name: 'review findings (File, Scenario, Confidence)', text: REVIEW_FINDINGS, shape: null },
+  { name: 'install steps per platform', text: INSTALL_STEPS, shape: null },
+  { name: 'a before and after summary', text: BEFORE_AFTER, shape: null },
+  { name: 'per pull request status (Status, CI)', text: PR_STATUS, shape: null },
+  { name: 'two headings with the same fields and no choice named', text: UNNAMED_HEADINGS, shape: null },
+  { name: '"Plan a ..." is not Plan A', text: PLAN_A_VERB, shape: null },
+  { name: 'a task box checklist', text: CHECKLIST, shape: null },
 ]
 
 for (const c of CASES) {
@@ -267,12 +452,98 @@ for (const c of CASES) {
 
 test('classify: the near misses that are long enough are long enough', () => {
   // So a null above is the classifier's judgement, not the length floor.
-  for (const text of [SHELL_COMMANDS, TWO_ROW_TABLE, LONG_STEPS, PROSE_WITH_SUBJECT, MIXED_LIST, TABLE_IN_CODE, UNLIKE_OPTIONS]) {
+  for (const text of [
+    SHELL_COMMANDS,
+    TWO_ROW_TABLE,
+    LONG_STEPS,
+    PROSE_WITH_SUBJECT,
+    MIXED_LIST,
+    TABLE_IN_CODE,
+    UNLIKE_OPTIONS,
+    NODEMAILER,
+    EMAIL_DTO,
+    SEND_MAIL_STEP,
+    REVIEW_FINDINGS,
+    INSTALL_STEPS,
+    BEFORE_AFTER,
+    PR_STATUS,
+    UNNAMED_HEADINGS,
+    PLAN_A_VERB,
+    CHECKLIST,
+  ]) {
     assert.ok(text.length >= MIN_CARD_SHAPED_CHARS, text.slice(0, 40))
   }
   assert.ok(SHORT_STEPS.length < MIN_CARD_SHAPED_CHARS)
   assert.ok(SHORT_TABLE.length < MIN_CARD_SHAPED_CHARS)
 })
+
+test('classify: email code stays null without its language tag too', () => {
+  // The line rule holds on its own: indented, lower case, braces, a trailing
+  // comma or semicolon. A fence with no tag is where Mark's draft was.
+  for (const text of [NODEMAILER, EMAIL_DTO, SEND_MAIL_STEP]) {
+    const untagged = text.replace(/^```\w+$/m, '```')
+    assert.notEqual(untagged, text)
+    assert.equal(classify(untagged), null, untagged.slice(0, 60))
+  }
+})
+
+test('classify: unindented code key lines in an untagged fence are not headers', () => {
+  const lines = (to: string, subject: string) =>
+    ['The payload, as the worker logs it before the send:', '', '```', to, subject, 'html: body,', '```', '', 'x'.repeat(300)].join('\n')
+  assert.equal(classify(lines('to: user.email,', "subject: 'Welcome',")), null, 'key: value, shapes')
+  assert.equal(classify(lines('"To": "ops@example.com",', '"Subject": "Deploy"')), null, 'quotes before the colon')
+  assert.equal(classify(lines('To: string[];', 'Subject: string;')), null, 'semicolons')
+  assert.equal(classify(lines('To: { name, address }', 'Subject: { text }')), null, 'braces')
+  // And the real draft shape in that fence still counts.
+  assert.equal(classify(lines('To: ops@example.com', 'Subject: Deploy finished')), 'email_draft')
+})
+
+test('classify: an email draft in a text fence still counts', () => {
+  assert.equal(classify(EMAIL_IN_CODE_BLOCK.replace('```\nTo:', '```text\nTo:')), 'email_draft')
+})
+
+test('classify: a checklist with a status word after the box is still not a status list', () => {
+  assert.equal(classify(CHECKLIST.replace(/\] /g, '] Done: ')), null)
+})
+
+// ── cost: the inputs the review measured, each under 50 ms ───────────────────
+
+const PREFIX = 'Here is the summary you asked for, with the details below. '.repeat(6) + '\n'
+
+function costOf(text: string): number {
+  const started = performance.now()
+  classify(text)
+  return performance.now() - started
+}
+
+const COSTLY: Array<{ name: string; text: string }> = [
+  // 9.5 s in the review, 6.1 s here on 619746f (the label regex).
+  { name: 'one line of done and 20,000 spaces', text: PREFIX + 'done' + ' '.repeat(20_000) },
+  // 6.9 s in the review, 8.8 s here on 619746f.
+  { name: '500 lines with 1,000 trailing spaces', text: Array.from({ length: 500 }, () => 'done' + ' '.repeat(1000)).join('\n') },
+  // Every Subject compared with every recipient: 1.7 s here on 619746f.
+  {
+    name: '20,000 Subject lines and 20,000 recipient lines',
+    text: [...Array(20_000).fill('Subject: x'), ...Array(8).fill(''), ...Array(20_000).fill('To: y')].join('\n'),
+  },
+  // The email header regex with no colon after the word: 8.8 s here on 619746f.
+  { name: '500 lines of Subject and 1,000 spaces', text: PREFIX + Array.from({ length: 500 }, () => 'Subject' + ' '.repeat(1000)).join('\n') },
+  { name: '500 lines of Subject: and 1,000 spaces', text: PREFIX + Array.from({ length: 500 }, () => 'Subject:' + ' '.repeat(1000)).join('\n') },
+  { name: '500 lines of 1,000 leading spaces', text: PREFIX + Array.from({ length: 500 }, () => ' '.repeat(1000) + 'x').join('\n') },
+  { name: '500 list items of a bracket and 1,000 spaces', text: PREFIX + Array.from({ length: 500 }, () => '- [' + ' '.repeat(1000) + 'x').join('\n') },
+  { name: '500 bold lines and 1,000 spaces', text: PREFIX + Array.from({ length: 500 }, () => '**Option A**' + ' '.repeat(1000) + 'x').join('\n') },
+  { name: '500 table separators and 1,000 spaces', text: PREFIX + Array.from({ length: 500 }, () => '| --- |' + ' '.repeat(1000) + 'x').join('\n') },
+  // Lines that name a choice but say before and after, again and again.
+  { name: '20,000 lines of before vs before', text: Array.from({ length: 20_000 }, () => 'before vs before '.repeat(10)).join('\n') },
+]
+
+for (const c of COSTLY) {
+  test(`classify: ${c.name} costs under 50 ms`, () => {
+    classify(c.text) // warm the regexes, so the bound is the scan, not the compile
+    const ms = costOf(c.text)
+    assert.ok(ms < 50, `took ${ms.toFixed(1)} ms`)
+  })
+}
 
 test('classify: thousands of unlike options stay cheap', () => {
   // Options are compared pair by pair; uncapped, this text took about 290 ms

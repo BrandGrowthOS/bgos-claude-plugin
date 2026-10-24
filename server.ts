@@ -6896,6 +6896,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
             chatId: sideThreadChatId != null ? String(sideThreadChatId) : undefined,
           })
         } else if (sideThreadChatId != null) {
+          notePeerConversationOpened(resultConvId != null ? String(resultConvId) : undefined, String(sideThreadChatId))
           clearInbound(String(sideThreadChatId))
         }
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
@@ -8358,6 +8359,18 @@ function rememberPeerConvChat(convId: string | undefined, chatId: string | undef
   if (!convId || !chatId) return
   peerConvChats.set(convId, chatId)
   peerConvByChat.set(chatId, convId)
+}
+
+// A side-thread this agent opened (or wrote into) with send_to_peer is known
+// from the send's answer, not only from the peer's first inbound: until the
+// peer answered, a reply there read as an owner chat and got the card nudge
+// (review of PR #277). The inbound handlers' reopen rule holds here too: a
+// conversation id the chat did not hold lifts the closed guard, so recording
+// it now cannot hide a reopen from the peer's answer.
+function notePeerConversationOpened(convId: string | undefined, chatId: string): void {
+  if (!convId) return
+  if (closedPeerChats.has(chatId) && peerConvByChat.get(chatId) !== convId) closedPeerChats.delete(chatId)
+  rememberPeerConvChat(convId, chatId)
 }
 
 function recordInbound(
