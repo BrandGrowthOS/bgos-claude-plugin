@@ -548,6 +548,6 @@ test('L5: a dialog that opens in the gap gets no Enter and no other key', async 
   if (out.ok) return
   assert.equal(out.code, 'composer_changed')
   assert.deepEqual(typed(r.pane), ['/effort max'])
-  assert.doesNotMatch(out.message, /[–—]/)
+  assert.doesNotMatch(out.message, /[\u2013\u2014]/u)
   assert.ok(out.message.length <= 300)
 })

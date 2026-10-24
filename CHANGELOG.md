@@ -2,6 +2,18 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.75.1 (2026-10-24)
+
+**Security review fixes for owner model and effort control (draft #275, `REVIEW-275.md`): an owner's draft containing `>` is never submitted, the keys go to the exact pane that was proven, the composer is read again before the Enter, and rpcIds are logged as a hash.**
+
+- **H1, a draft whose first `>` ended the line read as an empty composer** (`const f = () =>`, `<div>`, `x >`), so the owner's draft was submitted with `/model ...` appended (proven by the reviewer on the rig). `lib/model-effort-pane.ts` now takes the prompt glyph as the first visible character of the prompt line, never a `>` found further along; any line between the prompt and the closing frame (text, a blank line, a wrapped cursor) is a draft; spaces typed before the drawn cursor are a draft; a faint only continuation line is unknown and refused.
+- **M2, the pane was proven on one pane and typed into another** when the target is a session name (tmux resolves a name to the active pane on every call). The proof now reads the pane's own id (`%N`) and every later read and key names that id (`lib/model-effort-control.ts`).
+- **L5, the Enter followed the literal 400 ms later with nothing read in between.** The composer is read again and must hold exactly the literal; otherwise no Enter, the literal is cleared (one BSpace per character, `buildClearTypedArgs` in `lib/compact-inject.ts`) only when the composer ends with it, and the answer is the new refusal `composer_changed`, saying whether it was cleared or left.
+- **L6, rpcIds were logged raw** (the sender's text, a newline in it forged log lines). `rpcLogTag` logs a 12 hex sha256 instead (`lib/model-effort-rpc.ts`, `server.ts`).
+- M1 (the owner rule rests on the backend's sender fields) stays as the review wrote it; RESULT.md now says so, and that #3060 must stamp `sender.relationship` from the server.
+
+Guards, each red first at `d9f06fe` and each failing again with its fix reverted alone: `test/model-effort-pane.test.ts` (5 new), `test/model-effort-control.test.ts` (6 new), `test/model-effort-rpc.test.ts` and `test/model-effort-wiring.test.ts` (1 each), `test/model-effort-tmux-rig.test.ts` (2 new, the reviewer's own H1 case and a window opened mid request). The rig's fake agent now draws before it reports (a harness race seen under load). See `docs/model-effort/RESULT.md`, "Security review fixes".
+
 ## 0.75.0 (2026-10-24)
 
 **The owner can change a RUNNING Claude Code session's model and effort from the app, behind a separate owner opt in (Route A, approved by KC 2026-10-23, board row c0cc7944).** Two typed operations only, set_model and set_effort, each typing one fixed literal from a frozen table into the agent's own tmux pane only when every precondition holds, and reporting success only after the session's own status line reports the change. The daemon also reports the model and effort that really run and the models and efforts the installed CLI offers, so the picker fills itself.
