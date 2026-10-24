@@ -72,6 +72,11 @@ async function startRig(name: string, env: Record<string, string> = {}, wrapExec
     await new Promise((r) => setTimeout(r, 100))
   }
   const daemonPid = Number(readFileSync(pidFile, 'utf8').trim())
+  // And for the composer to be drawn: an observation can land before the
+  // first frame, and a screen read then finds no composer.
+  for (let i = 0; i < 50 && !/❯/.test(await capture(socket)); i++) {
+    await new Promise((r) => setTimeout(r, 100))
+  }
   const control = new ModelEffortControl({
     optedIn: () => true,
     target: () => target,

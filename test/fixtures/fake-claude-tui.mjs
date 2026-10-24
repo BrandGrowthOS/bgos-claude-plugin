@@ -53,6 +53,9 @@ function submit(line) {
   if (m && applies) model = `claude-${m[1]}-5-5`
   if (e && applies) effort = e[1]
   last = m || e ? `Set ${line.slice(1)}` : `Unknown: ${line}`
+  // Drawn BEFORE it is reported, so a daemon that reads the screen right after
+  // the confirming observation sees the submitted composer, never the old one.
+  render()
   statusLine()
 }
 
@@ -79,5 +82,5 @@ process.stdin.on('data', (chunk) => {
 const daemon = spawn(process.execPath, ['-e', 'const p = process.ppid; setInterval(() => { if (process.ppid !== p) process.exit(0) }, 200)'], { stdio: 'ignore' })
 writeFileSync(join(process.env.BGOS_PLUGIN_STATE_DIR, 'daemon.pid'), String(daemon.pid))
 setInterval(statusLine, 500)
-statusLine()
 render()
+statusLine()
