@@ -45,6 +45,8 @@
  *  6. A result is ALWAYS posted; a throw answers control_failed.
  */
 
+import { createHash } from 'node:crypto'
+
 import { isOwnerSender, readSlashSender } from './daemon-command-sender.ts'
 import type { ControlOutcome, ControlRequest } from './model-effort-control.ts'
 import type { ModelEffortReport } from './model-effort-catalog.ts'
@@ -54,6 +56,15 @@ export const MODEL_EFFORT_RPC_EVENT = 'model_effort_rpc'
 /** The BGOS report route's own patterns (backend report-session-settings.dto.ts). */
 export const SESSION_REPORT_MODEL_PATTERN = /^[\w./:-]{1,160}$/
 export const SESSION_REPORT_EFFORT_PATTERN = /^[a-z]{1,20}$/
+
+/**
+ * An rpcId as the daemon log carries it: a short hash, never the id itself.
+ * The id is the sender's text (up to 128 characters, no character check), so
+ * logged raw a newline in it would forge log lines (REVIEW-275 L6).
+ */
+export function rpcLogTag(rpcId: string): string {
+  return createHash('sha256').update(rpcId).digest('hex').slice(0, 12)
+}
 
 const REMEMBERED_IDS = 256
 const RESULT_HOLD_MS = 60_000
@@ -152,7 +163,7 @@ export class ModelEffortRpcHandler {
 
   private async answer(frame: ModelEffortRpcFrame): Promise<ModelEffortRpcResult> {
     if (!isOwnerSender(readSlashSender(frame.senderPayload), this.deps.ownerUserId())) {
-      this.deps.log(`model_effort_rpc: refused not_owner (rpc ${frame.rpcId})`)
+      this.deps.log(`model_effort_rpc: refused not_owner (rpc ${rpcLogTag(frame.rpcId)})`)
       return refusal('not_owner', 'Only the agent\'s owner can change its model and effort.')
     }
     if (frame.chatKind !== null && frame.chatKind !== 'main') {
@@ -182,7 +193,10 @@ export class ModelEffortRpcHandler {
     try {
       await this.deps.postResult(rpcId, body)
     } catch (err) {
-      this.deps.log(`model_effort_rpc: result post failed (rpc ${rpcId}): ${err}`)
+      // Not the error's text: a timeout's names the request path, the id in it.
+      const status = (err as { status?: unknown } | null)?.status
+      const why = typeof status === 'number' ? `HTTP ${status}` : err instanceof Error ? err.name : 'error'
+      this.deps.log(`model_effort_rpc: result post failed (rpc ${rpcLogTag(rpcId)}): ${why}`)
     }
   }
 }

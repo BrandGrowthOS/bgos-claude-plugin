@@ -138,7 +138,7 @@ import {
 } from './lib/compact-inject.js'
 import { evaluateCompactionOutcome } from './lib/compact-confirm.js'
 import { ModelEffortControl } from './lib/model-effort-control.js'
-import { ModelEffortRpcHandler, normalizeModelEffortRpc } from './lib/model-effort-rpc.js'
+import { ModelEffortRpcHandler, normalizeModelEffortRpc, rpcLogTag } from './lib/model-effort-rpc.js'
 import { parseHelpCatalog } from './lib/model-effort-catalog.js'
 import { processAncestry } from './lib/model-effort-pane.js'
 import { modelControlDir, readObservation, readOptIn, refreshBridgeCopy } from './lib/model-control-store.mjs'
@@ -14449,7 +14449,7 @@ function connectWebsocket(): void {
     try {
       const frame = normalizeModelEffortRpc(payload)
       if (!frame) return
-      log(`model_effort_rpc received (rpc=${frame.rpcId})`)
+      log(`model_effort_rpc received (rpc=${rpcLogTag(frame.rpcId)})`)
       void trackMessageOperation(() => modelEffortRpc.handle(frame)).catch((err) => {
         log(`model_effort_rpc handler error: ${err}`)
       })
