@@ -183,15 +183,29 @@ function glyphs(raw: string): Glyph[] {
   return out
 }
 
+function isBlank(g: Glyph): boolean {
+  return g.ch.trim() === ''
+}
+
 /** Does this run of visible characters hold anything the owner typed? */
 function holdsDraft(chars: readonly Glyph[]): boolean {
-  const visible = chars.filter((g) => g.ch.trim() !== '')
+  const visible = chars.filter((g) => !isBlank(g))
   if (visible.length === 0) return false
   if (visible.every((g) => g.faint)) return false
   // The cursor, drawn inverse on the first letter of a faint placeholder.
   const [head, ...rest] = visible
   if (head!.inverse && rest.length > 0 && rest.every((g) => g.faint)) return false
   return true
+}
+
+/**
+ * Anything drawn before the cursor is typed, spaces included: the cursor sits
+ * right after the prompt in an empty composer, so spaces the owner typed show
+ * only as the distance to it.
+ */
+function typedBeforeCursor(chars: readonly Glyph[]): boolean {
+  const at = chars.findIndex((g) => g.inverse)
+  return at > 0 && chars.slice(0, at).some((g) => !g.faint)
 }
 
 const RULE_RE = /^\s*[─━]{8,}\s*$/
@@ -201,10 +215,38 @@ const RULE_PROMPT_RE = /^\s*[❯>](?:\s|$)/
 const BOX_PROMPT_RE = /^\s*│\s*[❯>](?:\s|$)/
 
 interface Composer {
-  /** The raw text after the prompt glyph on the prompt line. */
-  first: string
-  /** The raw continuation lines, frame characters removed. */
-  more: string[]
+  /** What follows the prompt glyph on the prompt line, its one separating space removed. */
+  first: Glyph[]
+  /** The continuation lines, frame characters removed. */
+  more: Glyph[][]
+}
+
+/** A line of the older box without its left and right frame characters. */
+function unframe(chars: Glyph[]): Glyph[] {
+  let start = 0
+  while (start < chars.length && isBlank(chars[start]!)) start++
+  let end = chars.length
+  while (end > start && isBlank(chars[end - 1]!)) end--
+  const out = chars.slice()
+  if (end - start >= 2 && out[end - 1]!.ch === '│') out.splice(end - 1, 1)
+  if (end > start && out[start]!.ch === '│') out.splice(start, 1)
+  return out
+}
+
+/**
+ * The prompt line after its glyph. The glyph is the FIRST visible character
+ * of the line (after the box's frame), the one the prompt patterns matched,
+ * never a `❯` or `>` found further along: those are the owner's draft
+ * (REVIEW-275 H1, a draft such as `const f = () =>` read as empty).
+ */
+function afterPrompt(chars: Glyph[]): Glyph[] | null {
+  let at = 0
+  while (at < chars.length && isBlank(chars[at]!)) at++
+  const glyph = chars[at]
+  if (!glyph || (glyph.ch !== '❯' && glyph.ch !== '>')) return null
+  const rest = chars.slice(at + 1)
+  if (rest.length > 0 && isBlank(rest[0]!) && !rest[0]!.inverse) rest.shift()
+  return rest
 }
 
 function locateComposer(capture: string): Composer | null {
@@ -224,31 +266,51 @@ function locateComposer(capture: string): Composer | null {
       }
     }
     if (end < 0) return null
-    const unframe = (raw: string) => (boxed ? raw.replace(/│\s*$/, '').replace(/^(\s*)│/, '$1') : raw)
-    const raw = unframe(raws[i]!)
-    const glyphAt = Math.max(raw.indexOf('❯'), raw.indexOf('>'))
-    const first = raw.slice(glyphAt + 1)
-    const more = raws.slice(i + 1, end).map(unframe)
+    const read = (raw: string) => (boxed ? unframe(glyphs(raw)) : glyphs(raw))
+    const first = afterPrompt(read(raws[i]!))
+    if (!first) return null
+    const more = raws.slice(i + 1, end).map(read)
     return { first, more }
   }
   return null
 }
 
-/** Is the agent's composer empty, holding a draft, or not recognisable? */
+/**
+ * Is the agent's composer empty, holding a draft, or not recognisable?
+ *
+ * Empty means exactly one prompt line with nothing typed on it. Any line
+ * between the prompt and the closing frame is the owner's: text, or a blank
+ * line (a newline they typed, or a draft that filled the line and wrapped the
+ * cursor). A continuation line drawn only faint is not known to be anything,
+ * so it is unknown, refused like a missing composer.
+ */
 export function readComposer(capture: string): ComposerState {
   const composer = locateComposer(capture)
   if (!composer) return 'unknown'
-  if (holdsDraft(glyphs(composer.first))) return 'draft'
+  if (holdsDraft(composer.first) || typedBeforeCursor(composer.first)) return 'draft'
   for (const line of composer.more) {
-    if (glyphs(line).some((g) => g.ch.trim() !== '' && !g.faint)) return 'draft'
+    const visible = line.filter((g) => !isBlank(g))
+    if (visible.length === 0 || visible.some((g) => !g.faint)) return 'draft'
   }
-  return 'empty'
+  return composer.more.length > 0 ? 'unknown' : 'empty'
+}
+
+/**
+ * The text typed into the composer, exactly: faint text (a placeholder or a
+ * hint) left out, trailing blanks and the drawn cursor trimmed from each line,
+ * lines joined with a newline. Null when no composer is recognisable.
+ */
+export function composerText(capture: string): string | null {
+  const composer = locateComposer(capture)
+  if (!composer) return null
+  const typed = (chars: Glyph[]) => chars.filter((g) => !g.faint).map((g) => g.ch).join('').replace(/\s+$/u, '')
+  return [composer.first, ...composer.more].map(typed).join('\n')
 }
 
 /** Is `literal` sitting in the composer (typed and never submitted)? */
 export function composerHolds(capture: string, literal: string): boolean {
   const composer = locateComposer(capture)
   if (!composer) return false
-  const text = [composer.first, ...composer.more].map(plain).join(' ')
+  const text = [composer.first, ...composer.more].map((chars) => chars.map((g) => g.ch).join('')).join(' ')
   return text.includes(literal)
 }
