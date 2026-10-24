@@ -138,7 +138,7 @@ import {
 } from './lib/compact-inject.js'
 import { evaluateCompactionOutcome } from './lib/compact-confirm.js'
 import { ModelEffortControl } from './lib/model-effort-control.js'
-import { ModelEffortRpcHandler, normalizeModelEffortRpc, rpcLogTag } from './lib/model-effort-rpc.js'
+import { ModelEffortRpcHandler, normalizeModelEffortRpc, rpcLogOp, rpcLogTag } from './lib/model-effort-rpc.js'
 import { parseHelpCatalog } from './lib/model-effort-catalog.js'
 import { processAncestry } from './lib/model-effort-pane.js'
 import { modelControlDir, readObservation, readOptIn, refreshBridgeCopy } from './lib/model-control-store.mjs'
@@ -14218,7 +14218,7 @@ async function answerStoppedLaneMemory(frame: Parameters<LaneMemoryRpcHandler['h
     }
   }
   if (!lanesOnForThisAgent) {
-    log(`person lanes: memory frame ${frame.rpcId} refused: lanes are not on for this agent`)
+    log(`person lanes: memory frame ${rpcLogTag(frame.rpcId)} refused: lanes are not on for this agent`)
     await bgosPost(
       `integrations/memory-rpc/${encodeURIComponent(frame.rpcId)}/result`,
       laneMemoryAnswer(memoryRpcFailure('unavailable', 'person lanes are not on for this agent'), frame.actorUserId),
@@ -14378,7 +14378,7 @@ function connectWebsocket(): void {
     try {
       const frame = normalizeVoiceRpc(payload)
       if (!frame) return
-      log(`voice_rpc received (op=${frame.op}, rpc=${frame.rpcId})`)
+      log(`voice_rpc received (op=${rpcLogOp(frame.op)}, rpc=${rpcLogTag(frame.rpcId)})`)
       void trackMessageOperation(() => voiceRpc.handle(frame)).catch((err) => {
         log(`voice_rpc handler error: ${err}`)
       })
@@ -14405,14 +14405,14 @@ function connectWebsocket(): void {
       }
       if (sorted.kind === 'person') {
         const laneFrame = sorted.frame
-        log(`memory_rpc for a person's stopped lane received (op=${laneFrame.op}, rpc=${laneFrame.rpcId})`)
+        log(`memory_rpc for a person's stopped lane received (op=${rpcLogOp(laneFrame.op)}, rpc=${rpcLogTag(laneFrame.rpcId)})`)
         void trackMessageOperation(() => answerStoppedLaneMemory(laneFrame)).catch((err) => {
           log(`memory_rpc (lane) handler error: ${err}`)
         })
         return
       }
       const frame = sorted.frame
-      log(`memory_rpc received (op=${frame.op}, rpc=${frame.rpcId})`)
+      log(`memory_rpc received (op=${rpcLogOp(frame.op)}, rpc=${rpcLogTag(frame.rpcId)})`)
       void trackMessageOperation(() => memoryRpc.handle(frame)).catch((err) => {
         log(`memory_rpc handler error: ${err}`)
       })
@@ -14431,7 +14431,7 @@ function connectWebsocket(): void {
     try {
       const frame = normalizeChangesRpc(payload)
       if (!frame) return
-      log(`changes_rpc received (op=${frame.op}, rpc=${frame.rpcId})`)
+      log(`changes_rpc received (op=${rpcLogOp(frame.op)}, rpc=${rpcLogTag(frame.rpcId)})`)
       void trackMessageOperation(() => changesRpc.handle(frame)).catch((err) => {
         log(`changes_rpc handler error: ${err}`)
       })
@@ -14468,7 +14468,7 @@ function connectWebsocket(): void {
     try {
       const frame = normalizeSkillsRpc(payload)
       if (!frame) return
-      log(`skills_rpc received (op=${frame.op}, rpc=${frame.rpcId})`)
+      log(`skills_rpc received (op=${rpcLogOp(frame.op)}, rpc=${rpcLogTag(frame.rpcId)})`)
       void trackMessageOperation(() => skillsRpc.handle(frame)).catch((err) => {
         log(`skills_rpc handler error: ${err}`)
       })
@@ -14488,7 +14488,7 @@ function connectWebsocket(): void {
       const frame = normalizeExportPack(payload)
       if (!frame) return
       log(
-        `export_pack received (rpc=${frame.rpcId}, handoff=${frame.handoffId}, ` +
+        `export_pack received (rpc=${rpcLogTag(frame.rpcId)}, handoff=${rpcLogTag(frame.handoffId)}, ` +
           `tier=${frame.tier})`,
       )
       void trackMessageOperation(() => exportPack.handleExport(frame)).catch((err) => {
@@ -14506,7 +14506,7 @@ function connectWebsocket(): void {
     try {
       const frame = normalizeExportPackManifest(payload)
       if (!frame) return
-      log(`export_pack_manifest received (rpc=${frame.rpcId})`)
+      log(`export_pack_manifest received (rpc=${rpcLogTag(frame.rpcId)})`)
       void trackMessageOperation(() => exportPack.handleManifest(frame)).catch((err) => {
         log(`export_pack_manifest handler error: ${err}`)
       })
@@ -14576,7 +14576,7 @@ function connectWebsocket(): void {
     try {
       const frame = normalizeUpdateRpc(payload)
       if (!frame) return
-      log(`update_rpc received (op=${frame.op}, rpc=${frame.rpcId})`)
+      log(`update_rpc received (op=${rpcLogOp(frame.op)}, rpc=${rpcLogTag(frame.rpcId)})`)
       void updateRpc.handle(frame).catch((err) => {
         log(`update_rpc handler error: ${err}`)
       })
@@ -14593,7 +14593,7 @@ function connectWebsocket(): void {
     try {
       const frame = normalizeWatcherInstallRpc(payload)
       if (!frame) return
-      log(`watcher_install_rpc received (op=${frame.op}, rpc=${frame.rpcId})`)
+      log(`watcher_install_rpc received (op=${rpcLogOp(frame.op)}, rpc=${rpcLogTag(frame.rpcId)})`)
       void watcherInstallRpc.handle(frame).catch((err) => {
         log(`watcher_install_rpc handler error: ${err}`)
       })

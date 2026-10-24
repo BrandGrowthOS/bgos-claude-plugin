@@ -66,6 +66,15 @@ export function rpcLogTag(rpcId: string): string {
   return createHash('sha256').update(rpcId).digest('hex').slice(0, 12)
 }
 
+/**
+ * A frame's op as the daemon log carries it: the op itself when it is one
+ * plain word, else `?`. Several rails log the op before checking it, and it
+ * is the sender's text as much as the rpcId is (round 2 on PR #275, L2).
+ */
+export function rpcLogOp(op: unknown): string {
+  return typeof op === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(op) ? op : '?'
+}
+
 const REMEMBERED_IDS = 256
 const RESULT_HOLD_MS = 60_000
 
