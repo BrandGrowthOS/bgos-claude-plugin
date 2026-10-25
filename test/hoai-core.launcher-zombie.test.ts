@@ -229,6 +229,34 @@ test('control: a holder that is only between two children (its claude comes back
 
 // -- never a double launch --------------------------------------------------------
 
+test('never another agent\'s launcher: an idle hoai holder that runs in another folder (a reused pid) is never signalled', async () => {
+  const sb = sandbox()
+  try {
+    writeFileSync(sb.claim, supervisorFileBody(HOLDER, STAMP))
+    const r = await launch(sb, fakeHolder(), { holderInFolder: () => false })
+    assert.equal(r.code, EXIT_ALREADY_SUPERVISED)
+    assert.deepEqual(r.signals, [])
+    assert.equal(r.spawns.length, 0)
+  } finally {
+    sb.cleanup()
+  }
+})
+
+test('where the folder cannot be read, only a holder that started before its own stamp is taken over', () => {
+  const idle = (startedAtMs: number) =>
+    decideSupervisorArming({
+      existingRaw: supervisorFileBody(HOLDER, STAMP),
+      ownPid: 1,
+      pidAlive: () => true,
+      pidProcess: () => ({ command: HOAI_CMD, startedAtMs }),
+      holderChildren: () => [],
+      holderInFolder: () => null,
+      now: STAMP_MS + 86_400_000,
+    } as never) as { takeover?: boolean }
+  assert.equal(idle(STAMP_MS - 5_000).takeover, true, 'the writer itself')
+  assert.equal(idle(STAMP_MS + 20_000).takeover, undefined, 'inside the writer slack: maybe a reused pid, left alone')
+})
+
 test('never a double launch: a holder that survives KILL keeps the agent (named outcome, exit 3, nothing spawned)', async () => {
   const sb = sandbox()
   try {
@@ -373,16 +401,14 @@ function transcriptOf(sb: ReturnType<typeof sandbox>, id: string) {
 }
 
 async function runFreshRetryThenDie(sb: ReturnType<typeof sandbox>, at: number) {
-  // A: resumes the pin S0, which is rejected at once; the fresh retry S1 starts; A is
-  // then stopped long before S1 reaches the health window (the wedge, a KILL, a power cut
-  // would leave it there too).
+  // A: resumes the pin S0, which is rejected at once; the fresh retry S1 starts and
+  // stays up, and A never gets any further (its loop stopped, a KILL, a power cut):
+  // its promise is simply left pending here, its timers unref'd, its claim behind it.
   const fresh = '11111111-1111-4111-8111-111111111111'
   const spawns: string[][] = []
-  const controller = new AbortController()
-  const code = await superviseClaude(ARGS, {
+  void superviseClaude(ARGS, {
     platform: 'linux',
     env: SUPERVISED,
-    signal: controller.signal,
     home: sb.home,
     cwd: sb.cwd,
     scriptDir: '/home/kc/bgos-claude-plugin/bin',
@@ -399,13 +425,17 @@ async function runFreshRetryThenDie(sb: ReturnType<typeof sandbox>, at: number) 
       spawns.push([...args])
       const child = new EventEmitter() as EventEmitter & { kill: () => void; pid: number }
       child.pid = 9000 + spawns.length
-      child.kill = () => setImmediate(() => child.emit('exit', null, 'SIGTERM'))
+      child.kill = () => {}
       if (spawns.length === 1) setImmediate(() => child.emit('exit', 1, null))
-      else setImmediate(() => controller.abort())
       return child
     }) as never,
   } as never)
-  return { code, spawns, fresh }
+  const deadline = Date.now() + 3_000
+  while (spawns.length < 2) {
+    if (Date.now() > deadline) assert.fail('the fresh retry never started')
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+  return { spawns, fresh }
 }
 
 async function nextLaunchArgs(sb: ReturnType<typeof sandbox>, at: number) {

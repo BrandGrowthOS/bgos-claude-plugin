@@ -58,7 +58,7 @@ function fakeClaude(bin: string, seconds: number) {
  * wires SIGTERM the way main() does, optionally arms the real watchdog, then
  * blocks its own event loop for a minute.
  */
-function fakeLauncher(s: ReturnType<typeof scratch>, watchdog: boolean) {
+function fakeLauncher(s: ReturnType<typeof scratch>, watchdog: boolean, folder = s.cwd) {
   const path = join(s.bin, 'hoai-core.mjs')
   const core = pathToFileURL(join(REPO, 'bin', 'hoai-core.mjs')).href
   const inventory = pathToFileURL(join(REPO, 'lib', 'agent-inventory.mjs')).href
@@ -77,7 +77,8 @@ function fakeLauncher(s: ReturnType<typeof scratch>, watchdog: boolean) {
       `setTimeout(() => { process.stdout.write('child ' + child.pid + '\\n'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60000) }, 100)`,
     ].join('\n'),
   )
-  const proc = spawn(process.execPath, [path], { stdio: ['ignore', 'pipe', 'inherit'] })
+  // In the agent's folder, as hoai always runs: the takeover proves the holder is THIS agent's by it.
+  const proc = spawn(process.execPath, [path], { cwd: folder, stdio: ['ignore', 'pipe', 'inherit'] })
   let out = ''
   proc.stdout!.on('data', (d) => (out += String(d)))
   const childPid = async () => {
@@ -186,6 +187,23 @@ test('real processes, control: a wedged launcher whose claude is ALIVE stays the
   } finally {
     holder.proc.kill('SIGKILL')
     endPid(claudePid)
+    s.cleanup()
+  }
+})
+
+test('real processes, control: the same wedged idle holder running in ANOTHER folder (a reused pid) is never signalled', { skip: !LINUX }, async () => {
+  const s = scratch()
+  fakeClaude(s.bin, 1)
+  const holder = fakeLauncher(s, false, s.root)
+  try {
+    const childPid = await holder.childPid()
+    await until(() => stateOf(childPid) === 'Z', 'the fake claude to become a zombie')
+    const r = await launchAgainst(s)
+    assert.equal(r.code, EXIT_ALREADY_SUPERVISED, r.prints.join('\n'))
+    assert.equal(r.spawns.length, 0)
+    assert.ok(alive(holder.proc), 'never signalled')
+  } finally {
+    holder.proc.kill('SIGKILL')
     s.cleanup()
   }
 })
