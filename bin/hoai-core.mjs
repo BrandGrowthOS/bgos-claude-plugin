@@ -1249,13 +1249,29 @@ export function decideSupervisorArming({
   // Ended only when it is provably THIS agent's launcher, not merely a hoai:
   // the writer check allows a minute of slack, and inside it a dead writer's
   // pid can be another agent's launcher in its own incumbent wait (no child
-  // either). Its working folder is this agent's (linux, darwin); where that
-  // cannot be read, it started no later than its own stamp, to the ms.
+  // either), even one in the same folder. It started no later than its own
+  // stamp, and its working folder is not another one: in this agent's folder
+  // (linux, darwin) within HOLDER_START_TOLERANCE_MS, and where the folder
+  // cannot be read (win32), to the ms.
   const inFolder = holderInFolder(pid)
-  const stampMs = record?.startedAtMs
-  const startedBeforeStamp = typeof proc.startedAtMs === 'number' && typeof stampMs === 'number' && proc.startedAtMs <= stampMs
-  if (!(inFolder === true || (inFolder === null && startedBeforeStamp))) return { arm: false, ownerPid: pid }
+  if (inFolder === false || !startedByStamp(record, proc, inFolder === true ? HOLDER_START_TOLERANCE_MS : 0)) {
+    return { arm: false, ownerPid: pid }
+  }
   return { arm: false, ownerPid: pid, takeover: true, reason: children.some((child) => child?.zombie === true) ? 'claude-zombie' : 'no-child' }
+}
+
+/** ps reads a start time in whole seconds (etime), so a writer read that way
+ *  can look up to a second younger than it is. */
+const HOLDER_START_TOLERANCE_MS = 2_000
+
+/** Did `proc` start no later than `record`'s stamp, plus `toleranceMs`? On the
+ *  boot clock when both carry it (a wall clock step moves neither), else on
+ *  the wall clock. Unreadable is no. */
+function startedByStamp(record, proc, toleranceMs) {
+  if (record?.boot && proc?.boot) {
+    return record.boot.id === proc.boot.id && proc.boot.startedUptimeMs <= record.boot.uptimeMs + toleranceMs
+  }
+  return typeof proc?.startedAtMs === 'number' && typeof record?.startedAtMs === 'number' && proc.startedAtMs <= record.startedAtMs + toleranceMs
 }
 
 /**
@@ -1326,7 +1342,9 @@ export function holderActivity({ relaunchBy, holderStartedAtMs = null, children,
  * 867 lost two days of context to the older pin), 'drop' it when it died
  * inside the window (zaid 2026-09-02: a fast death must never take the pin),
  * has no transcript, is already the pin, or the file is junk; 'none' when
- * there is no file.
+ * there is no file. It is also dropped when the pin is no longer the one it
+ * was written beside (pinAtWrite): a pin rewritten meanwhile (the daemon pins
+ * the live session, a /clear moved it on) names the live session and wins.
  * @param {{ pendingRaw: string | null | undefined, pinnedId: string, healthyMs: number,
  *   transcriptMtimeMs: (sessionId: string) => number | null }} input
  * @returns {{ action: 'promote', sessionId: string } | { action: 'drop' | 'none' }}
@@ -1342,6 +1360,7 @@ export function decidePendingPin({ pendingRaw, pinnedId, healthyMs, transcriptMt
   const sessionId = String(parsed?.sessionId ?? '').trim()
   const startedAtMs = typeof parsed?.startedAt === 'string' ? Date.parse(parsed.startedAt) : Number.NaN
   if (!isSessionIdLike(sessionId) || !Number.isFinite(startedAtMs) || sessionId === pinnedId) return { action: 'drop' }
+  if (typeof parsed?.pinAtWrite !== 'string' || parsed.pinAtWrite.trim() !== pinnedId) return { action: 'drop' }
   const lastWrite = transcriptMtimeMs(sessionId)
   if (typeof lastWrite !== 'number' || lastWrite < startedAtMs + healthyMs) return { action: 'drop' }
   return { action: 'promote', sessionId }
@@ -2796,8 +2815,12 @@ export async function superviseClaude(args, opts = {}) {
   // lock, judged again under it, so of two launchers only one ever arms.
   const takeoverLockPath = `${supervisorPath}${TAKEOVER_LOCK_SUFFIX}`
   const armBody = () => supervisorFileBody(process.pid, new Date(now()).toISOString(), bootClock())
-  const decideArmingNow = () =>
-    decideSupervisorArming({ existingRaw: readFile(supervisorPath), ownPid: process.pid, pidAlive, pidProcess, holderChildren, holderInFolder, now: now() })
+  // The claim as the last judgement read it: it is replaced only while it still says that.
+  let judgedRaw = null
+  const decideArmingNow = () => {
+    judgedRaw = readFile(supervisorPath)
+    return decideSupervisorArming({ existingRaw: judgedRaw, ownPid: process.pid, pidAlive, pidProcess, holderChildren, holderInFolder, now: now() })
+  }
   const refuseOwned = (ownerPid) => {
     noteStatus('already-supervised', { owner: ownerPid })
     print(
@@ -2806,6 +2829,11 @@ export async function superviseClaude(args, opts = {}) {
         `${supervisorPath} and re-run hoai; only stop pid ${ownerPid} after confirming ` +
         'it really is this agent (a reused pid could be an unrelated process).',
     )
+    return EXIT_ALREADY_SUPERVISED
+  }
+  const standDown = (ownerPid) => {
+    noteStatus('takeover-in-progress', { owner: ownerPid ?? 'none' })
+    print(`[hoai] another launcher is taking assistant ${id} over right now (${takeoverLockPath}); not starting a second session`)
     return EXIT_ALREADY_SUPERVISED
   }
   // The takeover lock: {pid, startedAt}. One left empty, unreadable, by a
@@ -2821,20 +2849,35 @@ export async function superviseClaude(args, opts = {}) {
     if (!Number.isInteger(lock?.pid) || lock.pid <= 0 || lock.pid === process.pid || !Number.isFinite(at)) return true
     return !pidAlive(lock.pid) || Math.abs(now() - at) > TAKEOVER_LOCK_STALE_MS
   }
+  const lockIsOurs = () => {
+    try {
+      return JSON.parse(String(readFile(takeoverLockPath) ?? ''))?.pid === process.pid
+    } catch {
+      return false
+    }
+  }
+  // 'ours', 'held' (another launcher's), or 'failed' (it cannot be made here:
+  // no folder, a read-only or full disk).
   const takeTakeoverLock = () => {
     const body = JSON.stringify({ pid: process.pid, startedAt: new Date(now()).toISOString() })
     for (let attempt = 0; attempt < 2; attempt++) {
       const made = createExclusive(takeoverLockPath, body)
-      if (made !== 'exists') return made === 'created'
-      if (!takeoverLockIsStale(readFile(takeoverLockPath))) return false
+      if (made === 'failed') return 'failed'
+      // Two launchers that both removed a stale lock: only the one named in it
+      // goes on (the lib/restart-handoff.mjs pattern).
+      if (made === 'created') return lockIsOurs() ? 'ours' : 'held'
+      if (!takeoverLockIsStale(readFile(takeoverLockPath))) return 'held'
       removeFile(takeoverLockPath)
     }
-    return false
+    return 'held'
   }
-  // Gone, or no longer that launcher (a zombie's command line is not hoai's), or the claim released.
+  // true: gone, or no longer that launcher (a zombie's command line is not
+  // hoai's), or the claim released. false: still there after `ms`. null: this
+  // launcher was told to stop meanwhile.
   const waitReleased = async (owner, ms) => {
     const until = now() + ms
     while (true) {
+      if (stopSignal?.aborted) return null
       if (!pidAlive(owner) || decideArmingNow().arm) return true
       if (now() >= until) return false
       await sleep(Math.min(250, ms))
@@ -2846,12 +2889,14 @@ export async function superviseClaude(args, opts = {}) {
     const why = reason === 'claude-zombie' ? 'its claude has exited and was never reaped' : 'it has no claude'
     print(`[hoai] launcher pid ${owner} holds assistant ${id} but supervises nothing (${why}); ending it with SIGTERM`)
     signalPid(owner, 'SIGTERM')
-    if (await waitReleased(owner, takeoverTermWaitMs)) return 'SIGTERM'
+    const afterTerm = await waitReleased(owner, takeoverTermWaitMs)
+    if (afterTerm !== false) return afterTerm ? 'SIGTERM' : 'stopped'
     const still = decideArmingNow()
     if (!(still.takeover && still.ownerPid === owner)) return still.arm ? 'SIGTERM' : 'refused'
     print(`[hoai] launcher pid ${owner} ignored SIGTERM; ending it with SIGKILL`)
     signalPid(owner, 'SIGKILL')
-    if (await waitReleased(owner, takeoverKillWaitMs)) return 'SIGKILL'
+    const afterKill = await waitReleased(owner, takeoverKillWaitMs)
+    if (afterKill !== false) return afterKill ? 'SIGKILL' : 'stopped'
     return 'unkillable'
   }
   const claimSupervision = async () => {
@@ -2862,11 +2907,14 @@ export async function superviseClaude(args, opts = {}) {
     } else if (!verdict.takeover) {
       return refuseOwned(verdict.ownerPid)
     }
-    if (!takeTakeoverLock()) {
-      noteStatus('takeover-in-progress', { owner: verdict.ownerPid ?? 'none' })
-      print(`[hoai] another launcher is taking assistant ${id} over right now (${takeoverLockPath}); not starting a second session`)
-      return EXIT_ALREADY_SUPERVISED
+    const lock = takeTakeoverLock()
+    if (lock === 'failed') {
+      // No lock can be made here: no live holder is ended without one, and a
+      // stale claim is replaced as it always was.
+      if (!verdict.arm) return refuseOwned(verdict.ownerPid)
+      return writeFile(supervisorPath, armBody()) ? 'armed' : 'unarmed'
     }
+    if (lock === 'held') return standDown(verdict.ownerPid)
     try {
       let again = decideArmingNow()
       if (again.takeover) {
@@ -2881,6 +2929,7 @@ export async function superviseClaude(args, opts = {}) {
         }
         if (again.takeover && again.ownerPid === owner) {
           const ended = await endIdleHolder(owner, again.reason)
+          if (ended === 'stopped') return exitCodeForChild(null, 'SIGTERM')
           if (ended === 'unkillable') {
             noteStatus('stale-launcher-unkillable', { owner })
             print(
@@ -2897,15 +2946,20 @@ export async function superviseClaude(args, opts = {}) {
         }
       }
       if (!again.arm) return refuseOwned(again.ownerPid)
+      const ownerNow = () => parseSupervisorRecord(readFile(supervisorPath))?.pid ?? 'unknown'
       // Released meanwhile: created exclusively, as for no claim at all.
-      if (readFile(supervisorPath) === null) {
+      if (judgedRaw === null) {
         const made = createExclusive(supervisorPath, armBody())
-        if (made === 'exists') return refuseOwned(parseSupervisorRecord(readFile(supervisorPath))?.pid ?? 'unknown')
+        if (made === 'exists') return refuseOwned(ownerNow())
         return made === 'created' ? 'armed' : 'unarmed'
       }
+      // Replaced only while the lock is still ours and the claim still says
+      // what was judged stale: a launcher that armed meanwhile keeps its claim.
+      if (!lockIsOurs()) return standDown(again.ownerPid)
+      if (readFile(supervisorPath) !== judgedRaw) return refuseOwned(ownerNow())
       return writeFile(supervisorPath, armBody()) ? 'armed' : 'unarmed'
     } finally {
-      removeFile(takeoverLockPath)
+      if (lockIsOurs()) removeFile(takeoverLockPath)
     }
   }
   // Singleton guard: never start a second session behind a live supervisor,
@@ -3167,7 +3221,7 @@ export async function superviseClaude(args, opts = {}) {
         windowPin = candidate
         // On disk from now on, so a launcher that dies or stops ticking inside
         // the window does not take the fresh session with it (agent 867).
-        writeFile(pendingPinPath, JSON.stringify({ sessionId: candidate, startedAt: new Date(startedAt).toISOString() }))
+        writeFile(pendingPinPath, JSON.stringify({ sessionId: candidate, startedAt: new Date(startedAt).toISOString(), pinAtWrite: pinnedId }))
         pinTimer = setTimer(() => {
           pinTimer = null
           windowPin = null

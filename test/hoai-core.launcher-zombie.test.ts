@@ -33,6 +33,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import * as core from '../bin/hoai-core.mjs'
+import * as liveness from '../lib/launcher-liveness.mjs'
 
 const {
   EXIT_ALREADY_SUPERVISED,
@@ -539,6 +540,177 @@ test('superviseClaude arms the watchdog once it holds the claim, and stops it on
     assert.equal(r.spawns.length, 1)
     assert.deepEqual(calls, [{ claimPath: sb.claim, pid: process.pid }])
     assert.equal(stopped, 1)
+  } finally {
+    sb.cleanup()
+  }
+})
+
+// -- review 1 (before the push) ---------------------------------------------------
+
+test('the ps or PowerShell that lists the children is never counted as one of them (a watchdog asking about its own launcher)', () => {
+  const darwin = liveness.readChildProcesses({
+    platform: 'darwin',
+    pid: 100,
+    run: (() => ({ status: 0, pid: 555, stdout: '  555   100 R    ps\n  556   100 Z    claude\n    1     0 Ss   launchd\n' })) as never,
+  })
+  assert.deepEqual(darwin?.map((child) => child.pid), [556], 'the ps itself is a child of the caller, not of the launcher it asks about')
+  const win32 = liveness.readChildProcesses({
+    platform: 'win32',
+    pid: 100,
+    run: (() => ({ status: 0, pid: 777, stdout: JSON.stringify([{ ProcessId: 777, Name: 'powershell.exe', StartedAtMs: 1 }, { ProcessId: 778, Name: 'cmd.exe', StartedAtMs: 1 }]) })) as never,
+  })
+  assert.deepEqual(win32?.map((child) => child.pid), [778])
+})
+
+test('a pending pin loses to a pin rewritten after it (the daemon pinned the live session, a /clear): the next launch resumes that newer pin', async () => {
+  const sb = sandbox()
+  try {
+    const old = '00000000-0000-4000-8000-000000000010'
+    const newer = '22222222-2222-4222-8222-222222222222'
+    writeFileSync(join(sb.stateDir, SESSION_ID_FILE_NAME), `${old}\n`)
+    const t0 = transcriptOf(sb, old)
+    mkdirSync(join(t0, '..'), { recursive: true })
+    writeFileSync(t0, '{}\n')
+    const at = STAMP_MS
+    const a = await runFreshRetryThenDie(sb, at)
+    const t1 = transcriptOf(sb, a.fresh)
+    writeFileSync(t1, '{}\n')
+    const lastWrite = new Date(at + 3_600_000)
+    utimesSync(t1, lastWrite, lastWrite)
+    // Meanwhile the pin moved on to a session the launcher never started.
+    writeFileSync(join(sb.stateDir, SESSION_ID_FILE_NAME), `${newer}\n`)
+    writeFileSync(transcriptOf(sb, newer), '{}\n')
+    const next = await nextLaunchArgs(sb, at + 86_400_000)
+    assert.match(next, new RegExp(`--resume\\} \\{${newer}`), next)
+    assert.equal(readFileSync(join(sb.stateDir, SESSION_ID_FILE_NAME), 'utf8').trim(), newer)
+  } finally {
+    sb.cleanup()
+  }
+})
+
+test('never a double launch: a takeover lock that another launcher replaced right after this one made it is not ours, and is left alone', async () => {
+  const sb = sandbox()
+  try {
+    writeFileSync(sb.claim, supervisorFileBody(HOLDER, STAMP))
+    const lock = `${sb.claim}.takeover`
+    const theirs = JSON.stringify({ pid: OTHER, startedAt: new Date(STAMP_MS + 2 * 86_400_000).toISOString() })
+    const r = await launch(sb, fakeHolder(), {
+      pidAlive: (pid: number) => pid === HOLDER || pid === OTHER,
+      createExclusive: (path: string, content: string) => {
+        if (existsSync(path)) return 'exists'
+        // Made, then at once removed as stale and made again by a launcher that read it before this one wrote it.
+        writeFileSync(path, path === lock ? theirs : content)
+        return 'created'
+      },
+    })
+    assert.equal(r.code, EXIT_ALREADY_SUPERVISED)
+    assert.deepEqual(r.signals, [])
+    assert.equal(r.spawns.length, 0)
+    assert.equal(readFileSync(lock, 'utf8'), theirs, 'their lock is not ours to remove')
+  } finally {
+    sb.cleanup()
+  }
+})
+
+test('never a double launch: a claim another launcher armed after this one judged it stale is never overwritten', async () => {
+  const sb = sandbox()
+  try {
+    writeFileSync(sb.claim, supervisorFileBody(HOLDER, STAMP))
+    const lock = `${sb.claim}.takeover`
+    const theirs = supervisorFileBody(OTHER, new Date(STAMP_MS + 2 * 86_400_000).toISOString())
+    let swapped = false
+    const r = await launch(sb, fakeHolder({ alive: false }), {
+      pidAlive: (pid: number) => pid === OTHER,
+      pidProcess: (pid: number) => (pid === OTHER ? { command: HOAI_CMD, startedAtMs: STAMP_MS + 2 * 86_400_000 - 1_000 } : null),
+      holderChildren: (pid: number) => (pid === OTHER ? [{ pid: 6000, zombie: false, name: 'claude', startedAtMs: null }] : null),
+      readFile: (path: string) => {
+        const text = existsSync(path) ? readFileSync(path, 'utf8') : null
+        // The read under the lock still sees the dead holder; right after it, another launcher arms.
+        if (path === sb.claim && existsSync(lock) && !swapped) {
+          swapped = true
+          writeFileSync(sb.claim, theirs)
+        }
+        return text
+      },
+    })
+    assert.equal(r.code, EXIT_ALREADY_SUPERVISED, r.prints.join('\n'))
+    assert.equal(r.spawns.length, 0)
+    assert.equal(readFileSync(sb.claim, 'utf8'), theirs)
+  } finally {
+    sb.cleanup()
+  }
+})
+
+test('a stop that comes while a holder is being ended stops there: no SIGKILL, no claude', async () => {
+  const sb = sandbox()
+  try {
+    writeFileSync(sb.claim, supervisorFileBody(HOLDER, STAMP))
+    const controller = new AbortController()
+    const sent: string[] = []
+    const r = await launch(sb, fakeHolder({ diesOn: [] }), {
+      signal: controller.signal,
+      signalPid: (_pid: number, signal: string) => {
+        sent.push(signal)
+        controller.abort()
+        return true
+      },
+    })
+    assert.deepEqual(sent, ['SIGTERM'])
+    assert.equal(r.spawns.length, 0)
+    assert.equal(r.code, 143)
+  } finally {
+    sb.cleanup()
+  }
+})
+
+test('the watchdog acts on two stale looks in a row, never one (a VM resumed, a host woke up)', () => {
+  const released: number[] = []
+  let age = 120_000
+  let children: Array<{ zombie: boolean }> | null = []
+  const check = liveness.createWatchdogCheck({ wedgeMs: 60_000, beatAgeMs: () => age, readChildren: () => children, release: (ms: number) => released.push(ms) })
+  assert.equal(check(), 'wait', 'one stale look is not enough')
+  age = 500
+  assert.equal(check(), 'none', 'the loop ticked again: the count starts over')
+  age = 125_000
+  assert.equal(check(), 'wait')
+  children = [{ zombie: false }]
+  assert.equal(check(), 'none', 'a live claude: the count starts over')
+  children = [{ zombie: true }]
+  assert.equal(check(), 'wait')
+  assert.equal(check(), 'release')
+  assert.deepEqual(released, [125_000])
+})
+
+test('in this agent\'s folder is not proof enough on its own: a holder that started after its stamp (another agent\'s launcher in a shared folder) is left alone', () => {
+  const idle = (startedAtMs: number) =>
+    decideSupervisorArming({
+      existingRaw: supervisorFileBody(HOLDER, STAMP),
+      ownPid: 1,
+      pidAlive: () => true,
+      pidProcess: () => ({ command: HOAI_CMD, startedAtMs }),
+      holderChildren: () => [],
+      holderInFolder: () => true,
+      now: STAMP_MS + 86_400_000,
+    } as never) as { takeover?: boolean }
+  assert.equal(idle(STAMP_MS - 5_000).takeover, true, 'the writer itself')
+  assert.equal(idle(STAMP_MS + 1_000).takeover, true, 'start times read in whole seconds: inside the tolerance')
+  assert.equal(idle(STAMP_MS + 20_000).takeover, undefined, 'started after its own stamp: not the writer')
+})
+
+test('a takeover lock that cannot be made (a read-only or full disk) is not someone else\'s takeover: a dead holder\'s claim is replaced as before', async () => {
+  const sb = sandbox()
+  try {
+    writeFileSync(sb.claim, supervisorFileBody(HOLDER, STAMP))
+    const r = await launch(sb, fakeHolder({ alive: false }), {
+      createExclusive: (path: string, content: string) => {
+        if (path.endsWith('.takeover')) return 'failed'
+        if (existsSync(path)) return 'exists'
+        writeFileSync(path, content)
+        return 'created'
+      },
+    })
+    assert.equal(r.spawns.length, 1, r.prints.join('\n'))
+    assert.doesNotMatch(sb.status(), /takeover-in-progress/)
   } finally {
     sb.cleanup()
   }

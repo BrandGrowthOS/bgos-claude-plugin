@@ -28,6 +28,7 @@ import assert from 'node:assert/strict'
 import { EXIT_ALREADY_SUPERVISED, SUPERVISOR_FILE_NAME, superviseClaude } from '../bin/hoai-core.mjs'
 
 const LINUX = process.platform === 'linux'
+const WIN32 = process.platform === 'win32'
 const REPO = join(import.meta.dirname, '..')
 const ID = '999'
 
@@ -41,7 +42,8 @@ function scratch() {
   mkdirSync(bin, { recursive: true })
   writeFileSync(join(cwd, '.bgos-agent-id'), `${ID}\n`)
   const claim = join(home, '.bgos-agent', ID, SUPERVISOR_FILE_NAME)
-  return { root, home, cwd, bin, claim, cleanup: () => rmSync(root, { recursive: true, force: true }) }
+  // Windows keeps a folder busy for a moment after the process that ran in it is gone.
+  return { root, home, cwd, bin, claim, cleanup: () => rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }) }
 }
 
 /** A fake claude that lives `seconds`, then exits. Its name is what ps shows. */
@@ -187,6 +189,7 @@ test('real processes, control: a wedged launcher whose claude is ALIVE stays the
   } finally {
     holder.proc.kill('SIGKILL')
     endPid(claudePid)
+    await holder.exited
     s.cleanup()
   }
 })
@@ -237,6 +240,71 @@ test('real processes, watchdog control: a wedged launcher whose claude is alive 
   } finally {
     holder.proc.kill('SIGKILL')
     endPid(claudePid)
+    await holder.exited
+    s.cleanup()
+  }
+})
+
+/**
+ * Windows: the same wedged launcher, with a node child as its fake claude (no
+ * zombie there: a child that exited is gone from the CIM table) and the real
+ * watchdog asking CIM about its own launcher.
+ */
+function fakeWin32Launcher(s: ReturnType<typeof scratch>, claudeMs: number) {
+  const path = join(s.bin, 'hoai-core.mjs')
+  const core = pathToFileURL(join(REPO, 'bin', 'hoai-core.mjs')).href
+  writeFileSync(
+    path,
+    [
+      `import { spawn } from 'node:child_process'`,
+      `import { writeFileSync } from 'node:fs'`,
+      `const core = await import(${JSON.stringify(core)})`,
+      `const claim = ${JSON.stringify(s.claim)}`,
+      `writeFileSync(claim, core.supervisorFileBody(process.pid, new Date().toISOString()))`,
+      `const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, ${claudeMs})'], { stdio: 'ignore', windowsHide: true })`,
+      `core.startLauncherWatchdog({ claimPath: claim, pid: process.pid, platform: 'win32', wedgeMs: 1500, checkMs: 500 })`,
+      `setTimeout(() => { process.stdout.write('child ' + child.pid + '\\n'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 90000) }, 100)`,
+    ].join('\n'),
+  )
+  const proc = spawn(process.execPath, [path], { cwd: s.cwd, stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true })
+  let out = ''
+  proc.stdout!.on('data', (d) => (out += String(d)))
+  const childPid = async () => {
+    await until(() => /child (\d+)/.test(out), 'the fake launcher to start its claude', 20_000)
+    return Number(/child (\d+)/.exec(out)![1])
+  }
+  const exited = new Promise<{ code: number | null; signal: string | null }>((resolve) => proc.on('exit', (code, signal) => resolve({ code, signal })))
+  return { proc, childPid, exited }
+}
+
+test('real processes, Windows watchdog: a wedged launcher whose claude has exited releases its own claim and ends itself', { skip: !WIN32 }, async () => {
+  const s = scratch()
+  const holder = fakeWin32Launcher(s, 500)
+  try {
+    await holder.childPid()
+    const ended = await Promise.race([holder.exited, new Promise((resolve) => setTimeout(() => resolve('still running'), 40_000))])
+    assert.notEqual(ended, 'still running')
+    assert.equal(existsSync(s.claim), false, 'the claim is released')
+    assert.match(readFileSync(join(s.home, '.bgos-agent', ID, 'launch-status'), 'utf8'), /outcome=launcher-wedged/)
+  } finally {
+    if (alive(holder.proc)) holder.proc.kill('SIGKILL')
+    s.cleanup()
+  }
+})
+
+test('real processes, Windows watchdog control: a wedged launcher whose claude is alive is left running with its claim', { skip: !WIN32 }, async () => {
+  const s = scratch()
+  const holder = fakeWin32Launcher(s, 60_000)
+  let claudePid: number | null = null
+  try {
+    claudePid = await holder.childPid()
+    await new Promise((resolve) => setTimeout(resolve, 15_000))
+    assert.ok(alive(holder.proc), 'a stuck loop over a live claude is not ended')
+    assert.ok(existsSync(s.claim))
+  } finally {
+    holder.proc.kill('SIGKILL')
+    endPid(claudePid)
+    await holder.exited
     s.cleanup()
   }
 })
