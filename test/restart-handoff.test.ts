@@ -18,6 +18,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
+import { supervisorFileBody } from '../bin/hoai-core.mjs'
 import { restartAgent } from '../lib/agent-restart.mjs'
 import { fakeAgentTasks } from './helpers/fake-agent-tasks.ts'
 
@@ -62,7 +63,7 @@ const HELPER = 90001
 type Proc = { pid: number; ppid: number; startedAtMs: number; command: string }
 
 /** One agent, its launcher, claude and daemon, on a Windows machine. */
-function world(opts: { keepAlive?: boolean; task?: boolean; recipe?: boolean; wrapper?: boolean; launcherCommand?: string; abrupt?: boolean; launcherLingers?: boolean } = {}) {
+function world(opts: { keepAlive?: boolean; task?: boolean; recipe?: boolean; wrapper?: boolean; launcherCommand?: string; abrupt?: boolean; launcherLingers?: boolean; exitsInBackoff?: boolean } = {}) {
   const clock = { now: T0 }
   const files = new Map<string, { text: string; mtimeMs: number }>()
   const put = (p: string, text: string, mtimeMs = clock.now) => files.set(p, { text, mtimeMs })
@@ -101,11 +102,19 @@ function world(opts: { keepAlive?: boolean; task?: boolean; recipe?: boolean; wr
       files.delete(AGENT_STATE)
     }
     if (opts.keepAlive) {
-      // decideKeepAliveBackoff, then supervisor.json is re-stamped and claude relaunched with --resume <pin>.
-      later(5_000, () => {
-        put(SUPERVISOR, supRaw(clock.now))
-        procs.push({ pid: 70500, ppid: LAUNCHER, startedAtMs: clock.now, command: `claude --resume ${PIN}` })
-      })
+      // As bin/hoai-core.mjs does: the moment claude has exited, the claim names the relaunch deadline of
+      // the backoff (decideKeepAliveBackoff); after it, supervisor.json is re-stamped and claude relaunched
+      // with --resume <pin>.
+      later(100, () => put(SUPERVISOR, supervisorFileBody(LAUNCHER, new Date(clock.now).toISOString(), null, { relaunchBy: new Date(clock.now + 5_000).toISOString() })))
+      if (opts.exitsInBackoff) {
+        // ...but it is gone before that relaunch (a stop, a crash, a kill): no new claude, ever.
+        later(2_000, () => remove(LAUNCHER))
+      } else {
+        later(5_000, () => {
+          put(SUPERVISOR, supRaw(clock.now))
+          procs.push({ pid: 70500, ppid: LAUNCHER, startedAtMs: clock.now, command: `claude --resume ${PIN}` })
+        })
+      }
     } else {
       later(300, () => {
         files.delete(SUPERVISOR)
@@ -287,6 +296,16 @@ test('keep-alive launcher: it relaunches the pinned session by itself; the helpe
   assert.equal(out.outcome, 'relaunched_by_launcher', w.logs.join('\n'))
   assert.deepEqual(w.kills, [[CLAUDE, 'SIGTERM']])
   assert.equal(w.restarts.length, 0)
+})
+
+test('keep-alive launcher that names its relaunch deadline and then exits in its backoff: no relaunch, so the fallback brings the agent back', async () => {
+  const w = world({ keepAlive: true, exitsInBackoff: true })
+  const out = await run(w)
+  assert.equal(out.outcome, 'restarted', w.logs.join('\n'))
+  assert.deepEqual(w.kills, [[CLAUDE, 'SIGTERM']])
+  assert.equal(w.restarts.length, 1, 'exactly one restart, through the planned fallback')
+  assert.equal(w.restarts[0].row.supervisor, 'none', 'the hidden recipe row')
+  assert.ok(w.procs.some((p) => p.command === `claude --resume ${PIN}`), 'the agent is back on its pinned session')
 })
 
 test('a live helper already holds restart-handoff.lock: nothing is killed', async () => {
