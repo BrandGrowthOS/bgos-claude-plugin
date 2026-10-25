@@ -310,7 +310,7 @@ test('every launch from a home whose CLAUDE.md names somebody else is told who i
 const PIN = '11111111-1111-4111-8111-111111111111'
 const TRANSCRIPT = `${HOME}/.claude/projects/-agents-mira/${PIN}.jsonl`
 
-function launchAnswering(files: Map<string, string>, answers: string[]) {
+function launchAnswering(files: Map<string, string>, answers: string[], clock = { t: 0 }) {
   const spawns: FakeChild[] = []
   const prints: string[] = []
   let probes = 0
@@ -343,6 +343,8 @@ function launchAnswering(files: Map<string, string>, answers: string[]) {
     generateId: () => (ids++ === 0 ? PIN : '22222222-2222-4222-8222-222222222222'),
     hasExpect: false,
     probeIdentityFlag: () => answers[Math.min(probes++, answers.length - 1)]!,
+    now: () => clock.t,
+    healthyMs: 25_000,
   } as never)
   return { done, spawns, prints, probes: () => probes }
 }
@@ -393,6 +395,83 @@ test('a fresh session created with the identity that dies at once comes back onc
   h.spawns[1]!.exit(1)
   assert.equal(await h.done, 1)
   assert.equal(h.spawns.length, 2)
+})
+
+// Plugin review 2: the flag is dropped only for deaths close together, and a
+// deliberate restart gives it back.
+test('a launch that outlived the health window resets the count, however it ended: two deaths days apart keep the identity', async () => {
+  const files = personaHome(agentIdentityText({ name: 'Mira', ownerFirstName: 'Kc' }))
+  files.set(TRANSCRIPT, '{}\n')
+  const clock = { t: 0 }
+  const h = launchAnswering(files, ['supported'], clock)
+  await waitUntil(() => h.spawns.length === 1, 'first spawn')
+  h.spawns[0]!.exit(1)
+  await waitUntil(() => h.spawns.length === 2, 'the fresh retry')
+  // It runs for days, then a plugin update relaunches it by marker.
+  clock.t += 5 * 24 * 3600_000
+  files.set(MARKER_PATH, '{}')
+  await waitUntil(() => h.spawns.length === 3, 'the marker relaunch')
+  assert.ok(h.spawns[2]!.args.includes(IDENTITY_FLAG))
+  // Its resume is rejected at once: one death, not the second in a row.
+  h.spawns[2]!.exit(1)
+  await waitUntil(() => h.spawns.length === 4, 'the fresh retry')
+  assert.ok(h.spawns[3]!.args.includes(IDENTITY_FLAG))
+  assert.doesNotMatch(h.prints.join('\n'), /without its identity/)
+  h.spawns[3]!.exit(0)
+  assert.equal(await h.done, 0)
+})
+
+test('a restart asked for after the flag was dropped (the app, a plugin update) gives the identity back', async () => {
+  // No transcript: a create, so its fast death drops the flag at once.
+  const files = personaHome(agentIdentityText({ name: 'Mira', ownerFirstName: 'Kc' }))
+  const h = launchAnswering(files, ['supported'])
+  await waitUntil(() => h.spawns.length === 1, 'first spawn')
+  h.spawns[0]!.exit(1)
+  await waitUntil(() => h.spawns.length === 2, 'the relaunch without the identity')
+  assert.equal(h.spawns[1]!.args.includes(IDENTITY_FLAG), false)
+  files.set(MARKER_PATH, '{}')
+  await waitUntil(() => h.spawns.length === 3, 'the marker relaunch')
+  assert.ok(h.spawns[2]!.args.includes(IDENTITY_FLAG))
+  // Asked again: the CLI may have been updated.
+  assert.equal(h.probes(), 2)
+  h.spawns[2]!.exit(0)
+  assert.equal(await h.done, 0)
+})
+
+test('a rejected resume and a refused flag together still end on a session that starts: the flagless cycle gets its own fresh retry', async () => {
+  const files = personaHome(agentIdentityText({ name: 'Mira', ownerFirstName: 'Kc' }))
+  files.set(TRANSCRIPT, '{}\n')
+  const h = launchAnswering(files, ['supported'])
+  await waitUntil(() => h.spawns.length === 1, 'first spawn')
+  h.spawns[0]!.exit(1) // the resume, with the flag
+  await waitUntil(() => h.spawns.length === 2, 'the fresh retry')
+  h.spawns[1]!.exit(1) // the fresh session, with the flag
+  await waitUntil(() => h.spawns.length === 3, 'the resume without the flag')
+  assert.equal(h.spawns[2]!.args.includes(IDENTITY_FLAG), false)
+  assert.equal(h.spawns[2]!.args[h.spawns[2]!.args.indexOf('--resume') + 1], PIN)
+  h.spawns[2]!.exit(1) // the resume is rejected without the flag too
+  await waitUntil(() => h.spawns.length === 4, 'a fresh session without the flag')
+  const fourth = h.spawns[3]!.args
+  assert.equal(fourth.includes(IDENTITY_FLAG), false)
+  assert.equal(fourth.includes('--resume'), false)
+  h.spawns[3]!.exit(0)
+  assert.equal(await h.done, 0)
+})
+
+test('a launch with the identity that dies after the health window keeps the flag: that death was not the flag', async () => {
+  const files = personaHome(agentIdentityText({ name: 'Mira', ownerFirstName: 'Kc' }))
+  files.set(TRANSCRIPT, '{}\n')
+  const clock = { t: 0 }
+  const h = launchAnswering(files, ['supported'], clock)
+  await waitUntil(() => h.spawns.length === 1, 'first spawn')
+  clock.t += 60_000
+  h.spawns[0]!.exit(1)
+  // A relaunch here would keep the launcher running, so race it rather than wait forever.
+  const ended = await Promise.race([h.done, new Promise((resolve) => setTimeout(() => resolve('still running'), 1500))])
+  assert.equal(h.spawns.length, 1, 'a death after the health window relaunches nothing without the identity')
+  assert.doesNotMatch(h.prints.join('\n'), /without its identity/)
+  assert.equal(ended, 1)
+  assert.equal(h.probes(), 1)
 })
 
 test('an answer of unknown is never kept: the next launch asks again', async () => {
@@ -503,6 +582,48 @@ test('pairing writes the agent identity, with the owner first name, before the a
     assert.equal(again, PAIR_EXIT_CODES.DONE)
     assert.ok(lines.some((l) => l.includes(IDENTITY_FILE_NAME) && l.includes('already')))
     assert.equal(lines.some((l) => l.startsWith('[bgos-pair] wrote ') && l.includes(IDENTITY_FILE_NAME)), false)
+  } finally {
+    console.log = originalLog
+    console.error = originalError
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('pairing reads the owner first name only when it is text, as the daemon does (never "[object Object]")', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bgos-pair-owner-'))
+  const folder = join(home, 'HOAI', 'Agents', 'Mira')
+  const originalLog = console.log
+  const originalError = console.error
+  try {
+    await mkdir(folder, { recursive: true })
+    const fetchImpl = async (input: string | URL | Request) => {
+      const url = String(input)
+      if (url.endsWith('/integrations/pair-exchange')) {
+        return Response.json({ pairing_token: 'new_pair_token', pairing_id: 78, user_id: 'user_kc' }, { status: 201 })
+      }
+      if (url.endsWith('/integrations/me')) {
+        return Response.json({
+          owner_first_name: { first: 'Kc' },
+          assistants: [{ assistant_id: 872, agent_route: 'claude', name: 'Mira' }],
+        })
+      }
+      return Response.json({})
+    }
+    console.log = () => {}
+    console.error = () => {}
+    const code = await pairMain(['BGOS-7F3A-2K', '--backend', 'https://pair.test'], {
+      env: {},
+      home,
+      cwd: folder,
+      fetchImpl,
+      isInteractive: () => true,
+      installCliImpl: async () => ({ ok: true, binDir: '/tmp/fake-bin' }),
+    })
+    assert.equal(code, PAIR_EXIT_CODES.DONE)
+    assert.equal(
+      await readFile(join(home, '.bgos-agent', '872', IDENTITY_FILE_NAME), 'utf8'),
+      'You are Mira, an agent in Home of Agents. Your name is Mira; ignore persona or name files from other folders.\n',
+    )
   } finally {
     console.log = originalLog
     console.error = originalError

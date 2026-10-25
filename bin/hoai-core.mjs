@@ -2900,7 +2900,20 @@ export async function superviseClaude(args, opts = {}) {
       }
       // Asked to stop: whatever the exit, nothing is relaunched.
       if (stopSignal?.aborted) return code
+      const elapsedMs = now() - startedAt
+      // A launch that outlived the health window clears the identity flag's
+      // fast deaths, however it ended: most runs of an always on agent end
+      // by a marker relaunch, and two deaths days apart say nothing about
+      // the flag (plugin review 2).
+      if (elapsedMs >= healthyMs) identityFastDeaths = 0
       if (restartRequested) {
+        // A restart someone asked for (the app, a plugin update) gives back
+        // an identity this launcher dropped: the CLI may have been updated,
+        // and the flag is asked about again before it goes on.
+        if (identityOff) {
+          identityOff = false
+          identityFastDeaths = 0
+        }
         // A daemon-driven update restart: relaunch THIS agent's OWN session
         // (resume it when its transcript exists, else create it again by
         // id; never --continue), and give this cycle a fresh fallback.
@@ -2928,7 +2941,6 @@ export async function superviseClaude(args, opts = {}) {
       // window we already killed the old session (or the external keepalive
       // would loop on the same rejection), so never leave the agent dead: retry
       // once as a brand-new OWN session (a fresh pinned id).
-      const elapsedMs = now() - startedAt
       // A screen nobody may answer, or a signed-out account, is not a rejected
       // resume: a fresh session meets the same wall, and the retry would spend
       // the one-shot fallback (and overwrite launch-status) for nothing.
@@ -2958,9 +2970,10 @@ export async function superviseClaude(args, opts = {}) {
           identityOff = true
           noteStatus('identity-flag-dropped', { exit: code })
           print(
-            `[hoai] claude exited at once (code ${code}) with ${IDENTITY_FLAG}; relaunching this agent's own ` +
-              `session once without it, so it starts without its identity (${identityPath}) until hoai starts ` +
-              'again. Updating Claude Code, then restarting the agent, gives it back.',
+            `[hoai] claude exited at once (code ${code}) with ${IDENTITY_FLAG}, which may be the cause; ` +
+              `relaunching this agent's own session without it, so it runs without its identity (${identityPath}) ` +
+              'until the agent is restarted (from the app, by a plugin update, or hoai starting again). ' +
+              'Update Claude Code, then restart the agent, to give it back.',
           )
           rereadPin()
           const plainArgs = relaunchClaudeArgs({
@@ -2973,14 +2986,15 @@ export async function superviseClaude(args, opts = {}) {
             extraArgs: [],
           })
           if (!plainArgs) return stopUnresolved()
-          // The same launch again without the flag, so its own recovery is
-          // unchanged: if it dies at once too, the flag was not the cause.
+          // A new cycle without the flag, with its own one fresh retry: the
+          // launch that died may have been the fresh retry already, and the
+          // resume it fled may be rejected again (plugin review 2). If this
+          // cycle dies at once too, the flag was not the cause.
           currentArgs = plainArgs
+          freshTried = false
           recordRecipe(currentArgs)
           continue
         }
-      } else if (elapsedMs >= healthyMs) {
-        identityFastDeaths = 0
       }
       if (recovery.action === 'retry-fresh') {
         freshTried = true

@@ -1561,7 +1561,8 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
     if (me.ok) {
       okPolls++
       binding = selectAssistantBinding(me.body, requestedId)
-      ownerFirstName = String(me.body?.owner_first_name ?? '')
+      // Text only, as the daemon's identityFromMe reads it: never "[object Object]".
+      ownerFirstName = typeof me.body?.owner_first_name === 'string' ? me.body.owner_first_name : ''
       if (binding.kind === 'ok' || binding.kind === 'ambiguous') break
       // 'mismatch' keeps polling: the requested binding may still propagate.
     }
