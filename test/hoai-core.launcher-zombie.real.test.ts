@@ -43,7 +43,7 @@ function scratch() {
   writeFileSync(join(cwd, '.bgos-agent-id'), `${ID}\n`)
   const claim = join(home, '.bgos-agent', ID, SUPERVISOR_FILE_NAME)
   // Windows keeps a folder busy for a moment after the process that ran in it is gone.
-  return { root, home, cwd, bin, claim, cleanup: () => rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }) }
+  return { root, home, cwd, bin, claim, cleanup: () => rmSync(root, { recursive: true, force: true, maxRetries: 40, retryDelay: 250 }) }
 }
 
 /** A fake claude that lives `seconds`, then exits. Its name is what ps shows. */
@@ -266,7 +266,9 @@ function fakeWin32Launcher(s: ReturnType<typeof scratch>, claudeMs: number) {
       `setTimeout(() => { process.stdout.write('child ' + child.pid + '\\n'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 90000) }, 100)`,
     ].join('\n'),
   )
-  const proc = spawn(process.execPath, [path], { cwd: s.cwd, stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true })
+  // Not in the scratch folder: Windows cannot remove a folder that is any process's working folder,
+  // and a PowerShell the watchdog started can outlive the launcher this test kills.
+  const proc = spawn(process.execPath, [path], { cwd: tmpdir(), stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true })
   let out = ''
   proc.stdout!.on('data', (d) => (out += String(d)))
   const childPid = async () => {
