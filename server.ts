@@ -83,6 +83,7 @@ import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
 import { DoctorRpcHandler, buildDoctorChecks, normalizeDoctorRpc } from './lib/doctor-rpc.ts'
 import { collectChanges, createNodeRunGit, nodeChangesFs } from './lib/git-changes.js'
 import { defaultPidAlive, pluginStateDirFor, readBootClock } from './lib/agent-inventory.mjs'
+import { identityFilePath, identityFromMe, writeAgentIdentity } from './lib/agent-identity.mjs'
 import { createMarkerTakeover, currentPluginRootFor, handoffEnv, mcpEnvKeys, nodeTakeoverFs } from './lib/marker-takeover.mjs'
 import { HOOK_RESTART_FILE_NAME, createHookRestart, nodeHookRestartFs } from './lib/hook-restart.mjs'
 import { buildCallOwnerBody, CALL_OWNER_OTHER_CHAT_REFUSAL } from './lib/call-owner.js'
@@ -12108,6 +12109,40 @@ async function getVoiceIdentity(
   }
 }
 
+/** How long the boot hello waits for the agent's name before it greets
+ *  without one. */
+const BOOT_IDENTITY_TIMEOUT_MS = 5_000
+
+/**
+ * The agent's own name, for the boot hello, and a refresh of its identity
+ * file (lib/agent-identity.mjs; Kc's PC test, 2026-10-24: agent 1129 read the
+ * owner's global CLAUDE.md and said "Ares here"). Pairing writes the file
+ * before the first launch; this keeps it right after a rename in the app and
+ * gives an agent paired before it its file, which the launcher passes from
+ * the next launch (and the CLI uses from the next new conversation or
+ * compaction). Only an integrations/me answer writes it, so a failed read
+ * never rewrites the file with less in it; an API key daemon (no pairing)
+ * still gets its name for the hello from the assistants list. '' when
+ * unknown. Never throws.
+ */
+async function refreshAgentIdentity(timeoutMs: number): Promise<string> {
+  let name = ''
+  try {
+    const me = identityFromMe(await bgosGetCachedOn304('integrations/me'), ASSISTANT_ID)
+    name = me.name
+    const dir = agentStateDir(homedir(), ASSISTANT_ID)
+    if (dir && name) {
+      const outcome = writeAgentIdentity({ stateDir: dir, name, ownerFirstName: me.ownerFirstName })
+      if (outcome === 'written') log(`identity: wrote ${identityFilePath(dir)}`)
+      if (outcome === 'failed') log(`identity: could not write ${identityFilePath(dir)}`)
+    }
+  } catch (err) {
+    log(`identity: integrations/me unavailable (${err}); the identity file stays as it is`)
+  }
+  if (!name) name = (await getVoiceIdentity(timeoutMs))?.name ?? ''
+  return name
+}
+
 // The Sessions sheet (P6 stage 3, spec 5.7): the sessions in this agent's own
 // folder, read from the SAME project dir the context gauge reads, with the
 // binder's resolved binding flagged Current, so the list and the gauge can
@@ -16516,6 +16551,9 @@ async function main(): Promise<void> {
     // for such agents and backfill the marker silently so the doctor reports them
     // live and no later boot re-evaluates them. A genuinely-new pairing (no cursor
     // file) still greets, which is the onboarding channel proof.
+    // Every boot refreshes the identity file; the hello below waits for the
+    // name it reads.
+    const agentNameAtBoot = refreshAgentIdentity(BOOT_IDENTITY_TIMEOUT_MS)
     const bootHelloMarkerExists = readLiveMarker(LIVE_MARKER_PATH) != null
     const bootHelloExistingPairing = cursorBoot.fileExisted
     if (
@@ -16541,17 +16579,29 @@ async function main(): Promise<void> {
       const helloChat = monitoredChatIds[0]
       if (helloChat) {
         bootHelloSent = true
-        const hello = buildBootHelloNotification({ chatId: helloChat })
         log(
           `boot hello: first-ever boot for this pairing, asking the session to ` +
             `greet the user in chat ${helloChat} (the reply is the channel proof)`,
         )
-        void trackMessageOperation(() =>
-          mcp.notification({
-            method: 'notifications/claude/channel',
-            params: { content: hello.content, meta: hello.meta },
-          }),
-        ).catch((err) => log(`boot hello delivery failed: ${err}`))
+        // Named, so the first thing the owner reads is the agent's own name.
+        // The hello is the channel proof the bootstrap waits on, so a slow
+        // name read never holds it past BOOT_IDENTITY_TIMEOUT_MS.
+        const nameOrNothing = new Promise<string>((resolve) => {
+          const t = setTimeout(() => resolve(''), BOOT_IDENTITY_TIMEOUT_MS)
+          if (typeof t.unref === 'function') t.unref()
+          void agentNameAtBoot.then(resolve, () => resolve(''))
+        })
+        void nameOrNothing
+          .then((name) =>
+            trackMessageOperation(() => {
+              const hello = buildBootHelloNotification({ assistantName: name, chatId: helloChat })
+              return mcp.notification({
+                method: 'notifications/claude/channel',
+                params: { content: hello.content, meta: hello.meta },
+              })
+            }),
+          )
+          .catch((err) => log(`boot hello delivery failed: ${err}`))
       }
     }
 

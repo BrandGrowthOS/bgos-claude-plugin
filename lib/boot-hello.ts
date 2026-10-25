@@ -27,6 +27,7 @@
 import { readFileSync, writeFileSync, mkdirSync, statSync, renameSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
+import { cleanIdentityName } from './agent-identity.mjs'
 import { agentStateDir } from './update-readiness.js'
 
 /** File name inside the per-assistant state dir (next to chat-cursors.json). */
@@ -130,19 +131,24 @@ export function shouldBackfillLiveMarker(input: {
  * The hello channel notification. The instruction names the reply tool and
  * the chat explicitly so even a bare session with no CLAUDE.md acts on it,
  * and the greeting doubles as the user-visible "your agent is alive" moment.
+ * With a name it also tells the session that name and to introduce itself by
+ * it: the owner's global memory may name somebody else (Kc's PC test,
+ * 2026-10-24: agent 1129 said "Ares here"), and this hello is the first thing
+ * the owner reads from the agent.
  */
 export function buildBootHelloNotification(input: {
   assistantName?: string | null
   chatId: string
 }): { content: string; meta: Record<string, string> } {
-  const who = String(input.assistantName ?? '').trim()
+  const who = cleanIdentityName(input.assistantName)
   const name = who ? ` as ${who}` : ''
+  const yourName = who ? `Your name is ${who}. ` : ''
   return {
     content:
-      `[hoai] This session just came online${name} for the first time. ` +
+      `[hoai] This session just came online${name} for the first time. ${yourName}` +
       `To confirm the channel works end to end, call the \`reply\` tool NOW ` +
       `with chat_id=${input.chatId} and a one-line friendly hello introducing ` +
-      `yourself to your user. This first reply is what proves the connection, ` +
+      `yourself${name} to your user. This first reply is what proves the connection, ` +
       `so do it before anything else.`,
     meta: {
       event_type: 'boot_hello',

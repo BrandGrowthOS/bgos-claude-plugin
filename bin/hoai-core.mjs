@@ -113,6 +113,8 @@ import {
   readFolderIdentity,
 } from '../lib/service-supervision.mjs'
 import { WIN_PATH_HELPER_FILE, installWrapper } from '../lib/hoai-wrapper-install.mjs'
+import { IDENTITY_FLAG, identityFilePath, identityLaunchArgs } from '../lib/agent-identity.mjs'
+import { PROBE_TIMEOUT_MS, classifyFlagProbe } from '../lib/claude-binary.mjs'
 
 /** Mirror of bgos-pair.mjs FOLDER_PIN_FILE_NAME / agent-credentials.ts
  *  FOLDER_PIN_FILE: the launch-folder pin whose number IS the assistant id. */
@@ -1676,9 +1678,11 @@ export function tclQuote(value) {
  * UNATTENDED, so this is the one place where "carry on with something" would
  * cost the most: it would bring the agent back on an empty channel flag and
  * nobody would be watching. The caller stops and prints instead.
+ * `extraArgs` (the agent's identity flag, lib/agent-identity.mjs) go between
+ * the two, so a relaunch is told who it is exactly like the first launch.
  * @param {{ scriptDir?: string, env?: Record<string, string | undefined>,
  *   home?: string, cwd?: string, readFile?: (path: string) => string | null,
- *   sessionArgs?: readonly string[] }} [opts]
+ *   sessionArgs?: readonly string[], extraArgs?: readonly string[] }} [opts]
  * @returns {string[] | null}
  */
 export function relaunchClaudeArgs({
@@ -1688,6 +1692,7 @@ export function relaunchClaudeArgs({
   cwd = process.cwd(),
   readFile = defaultReadText,
   sessionArgs = [],
+  extraArgs = [],
 } = {}) {
   // Resolved the SAME way as the first launch (workspace .mcp.json first, then
   // detection). A relaunch that resolved the channel differently from the
@@ -1695,7 +1700,7 @@ export function relaunchClaudeArgs({
   // and the marker relaunch path is unattended, so nobody would see it happen.
   const resolution = resolveChannelSpec({ cwd, env, home, readFile, scriptDir })
   if (!isResolvedChannel(resolution)) return null
-  return [...launchArgsFor(resolution), ...sessionArgs]
+  return [...launchArgsFor(resolution), ...extraArgs, ...sessionArgs]
 }
 
 /** The install method for a relaunch (fresh detection), used to decide whether
@@ -2298,6 +2303,7 @@ export async function superviseClaude(args, opts = {}) {
   const listProcesses = opts.listProcesses ?? (() => defaultListProcesses(platform))
   const force = opts.force === true
   const incumbentTimeoutMs = opts.incumbentTimeoutMs ?? INCUMBENT_WAIT_TIMEOUT_MS
+  const probeIdentityFlag = opts.probeIdentityFlag ?? (() => defaultProbeIdentityFlag({ platform, env }))
   const keepAlive = opts.keepAlive === true
   const stopSignal = opts.signal ?? null
   // Has the Claude login every agent of this credential store shares failed? Asked only for a launch
@@ -2582,6 +2588,41 @@ export async function superviseClaude(args, opts = {}) {
   // read). It never carries a session id (buildLaunchRecipe strips the
   // session args; hoai resumes its own pin itself) nor a token. Best effort:
   // a failed write changes nothing about this launch.
+  // Who this agent is (lib/agent-identity.mjs): the identity file pairing and
+  // the daemon write in the state folder rides every launch and relaunch as
+  // --append-system-prompt-file, so the owner's global CLAUDE.md cannot make
+  // it somebody else. Only when the file has text and this claude knows the
+  // flag (asked once per launcher); a person's own flag wins. Each note is
+  // printed once, so a relaunch loop does not repeat it.
+  const identityPath = identityFilePath(stateDir)
+  const personChoseIdentity = args.includes(IDENTITY_FLAG)
+  let identityAnswer = null
+  let identityNote = null
+  const identityArgsNow = () => {
+    if (personChoseIdentity) return []
+    const out = identityLaunchArgs({
+      path: identityPath,
+      exists: (path) => String(readFile(path) ?? '').trim() !== '',
+      probe: () => (identityAnswer ??= probeIdentityFlag()),
+      platform,
+    })
+    if (out.note && out.note !== identityNote) print(out.note)
+    identityNote = out.note
+    return out.args
+  }
+  // The recipe never carries the launcher's own identity args: a watcher
+  // relaunch goes through hoai, which adds them again from the file.
+  const withoutOwnIdentity = (launchArgs) => {
+    const out = []
+    for (let i = 0; i < launchArgs.length; i++) {
+      if (!personChoseIdentity && launchArgs[i] === IDENTITY_FLAG && launchArgs[i + 1] === identityPath) {
+        i += 1
+        continue
+      }
+      out.push(launchArgs[i])
+    }
+    return out
+  }
   const recordRecipe = (launchArgs) => {
     const detection = detectInstallMethod({
       scriptPath: joinDir(scriptDir, 'bgos-install-method.mjs'),
@@ -2595,7 +2636,7 @@ export async function superviseClaude(args, opts = {}) {
       recipe: buildLaunchRecipe({
         assistantId: id,
         cwd,
-        argv: launchArgs,
+        argv: withoutOwnIdentity(launchArgs),
         installMethod: detection.method,
         pluginRoot: detection.pluginRoot,
         node: process.execPath,
@@ -2643,7 +2684,7 @@ export async function superviseClaude(args, opts = {}) {
   let relaunchesAt = []
   let healthRelaunchesAt = []
   let exhausted = false
-  let currentArgs = [...args, ...sessionArgsFor(pinnedId, sessionExistsNow())]
+  let currentArgs = [...args, ...identityArgsNow(), ...sessionArgsFor(pinnedId, sessionExistsNow())]
   // The never-leave-dead fresh fallback is one-shot per relaunch cycle; a
   // marker relaunch (a genuine update) resets it below. Recovery keys on whether
   // the exited child was RESUMING a session (--resume present), which covers a
@@ -2863,7 +2904,7 @@ export async function superviseClaude(args, opts = {}) {
         const sessionArgs = carried
           ? sessionArgsFor(carried, exists(sessionTranscriptPath(home, cwd, carried, env.CLAUDE_CONFIG_DIR)))
           : sessionArgsFor(pinnedId, sessionExistsNow())
-        const relaunchArgs = relaunchClaudeArgs({ scriptDir, env, home, cwd, readFile, sessionArgs })
+        const relaunchArgs = relaunchClaudeArgs({ scriptDir, env, home, cwd, readFile, sessionArgs, extraArgs: identityArgsNow() })
         if (!relaunchArgs) return stopUnresolved()
         if (carried) pendingPin = carried
         currentArgs = relaunchArgs
@@ -2906,7 +2947,15 @@ export async function superviseClaude(args, opts = {}) {
         } else {
           freshSessionArgs = []
         }
-        const freshArgs = relaunchClaudeArgs({ scriptDir, env, home, cwd, readFile, sessionArgs: freshSessionArgs })
+        const freshArgs = relaunchClaudeArgs({
+          scriptDir,
+          env,
+          home,
+          cwd,
+          readFile,
+          sessionArgs: freshSessionArgs,
+          extraArgs: identityArgsNow(),
+        })
         if (!freshArgs) return stopUnresolved()
         currentArgs = freshArgs
         recordRecipe(currentArgs)
@@ -2961,6 +3010,7 @@ export async function superviseClaude(args, opts = {}) {
         cwd,
         readFile,
         sessionArgs: sessionArgsFor(pinnedId, sessionExistsNow()),
+        extraArgs: identityArgsNow(),
       })
       if (!keepArgs) return stopUnresolved()
       currentArgs = keepArgs
@@ -3021,7 +3071,9 @@ export function lastLines(text, count = 60) {
  * node refuses to spawn without a shell (the EINVAL .cmd injection guard). So
  * the claude.cmd attempt goes through ComSpec (/c) explicitly; the args are
  * fixed constants with no user input, so the cmd.exe hop has no injection
- * surface. cmd.exe exits 9009 when claude.cmd does not exist, which the
+ * surface. The one exception is the identity file path, which comes from the
+ * home folder: identityLaunchArgs never passes one holding a character cmd.exe
+ * re-reads. cmd.exe exits 9009 when claude.cmd does not exist, which the
  * runner treats as "not found, try the next candidate".
  * @param {readonly string[]} args
  * @param {string} platform
@@ -3036,6 +3088,37 @@ export function claudeSpawnCandidates(args, platform, env = {}) {
     { file: comspec, args: ['/c', 'claude.cmd', ...args], notFoundExitCodes: [9009] },
     { file: 'claude.exe', args: [...args], notFoundExitCodes: [] },
   ]
+}
+
+/**
+ * Whether the claude this launcher starts knows --append-system-prompt-file. A
+ * bare use answers "argument missing" when it does and "unknown option" when
+ * it does not (classifyFlagProbe, the same reading as the channels flag). The
+ * same candidates as the launch, in the same order, hidden and killed after
+ * PROBE_TIMEOUT_MS; 'unknown' when none of them ran.
+ * @param {{ platform?: string, env?: Record<string, string | undefined>, run?: typeof spawnSync }} [opts]
+ * @returns {'supported' | 'unsupported' | 'unknown'}
+ */
+export function defaultProbeIdentityFlag({ platform = process.platform, env = process.env, run = spawnSync } = {}) {
+  for (const candidate of claudeSpawnCandidates([IDENTITY_FLAG], platform, env)) {
+    let out
+    try {
+      out = run(candidate.file, candidate.args, {
+        encoding: 'utf8',
+        timeout: PROBE_TIMEOUT_MS,
+        env,
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+    } catch (error) {
+      if (spawnErrorMeansNotFound(error)) continue
+      return 'unknown'
+    }
+    if (spawnErrorMeansNotFound(out?.error)) continue
+    if (candidate.notFoundExitCodes.includes(out?.status)) continue
+    return classifyFlagProbe(out)
+  }
+  return 'unknown'
 }
 
 /** Map a child's (code, signal) exit to this process's exit code. */
