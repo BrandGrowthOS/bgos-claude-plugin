@@ -750,3 +750,25 @@ test('never a double launch: where no takeover lock can be made, a claim another
     sb.cleanup()
   }
 })
+
+test('control: a holder that ignores TERM but has a live claude again by the end of the TERM wait is never sent KILL', async () => {
+  const sb = sandbox()
+  try {
+    writeFileSync(sb.claim, supervisorFileBody(HOLDER, STAMP))
+    const holder = fakeHolder({ diesOn: [] })
+    const sent: string[] = []
+    const r = await launch(sb, holder, {
+      signalPid: (_pid: number, signal: string) => {
+        sent.push(signal)
+        // Its loop was only slow: it relaunches its claude while the TERM wait runs.
+        if (signal === 'SIGTERM') holder.children = [{ pid: 4400, zombie: false, name: 'claude', startedAtMs: STAMP_MS + 60_000 }]
+        return true
+      },
+    })
+    assert.deepEqual(sent, ['SIGTERM'], 'judged again before KILL: it supervises a claude now')
+    assert.equal(r.code, EXIT_ALREADY_SUPERVISED)
+    assert.equal(r.spawns.length, 0)
+  } finally {
+    sb.cleanup()
+  }
+})
