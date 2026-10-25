@@ -544,8 +544,10 @@ test('server.ts passes the live AUTH.mode and the boot time floor hook lookup at
   const server = readFileSync(join(import.meta.dirname, '..', 'server.ts'), 'utf8').replace(/\r\n/g, '\n')
   const calls = server.match(/declaredCapabilities\(\{[^}]*\}\)/g) ?? []
   // Three since P6 stage 3: the Stop pause gate (stopGoalView) reads the
-  // heartbeat's own declaration, so it carries the same live values.
-  assert.equal(calls.length, 3, 'the canon fetch, the heartbeat and the Stop pause gate, and nothing else')
+  // heartbeat's own declaration, so it carries the same live values. Four
+  // since 0.74.2: the reply tool's card nudge asks whether THIS daemon
+  // declares ui_card (lib/reply-card-shape.ts), with the same live values.
+  assert.equal(calls.length, 4, 'the canon fetch, the heartbeat, the Stop pause gate and the reply card nudge, and nothing else')
   for (const call of calls) {
     assert.match(call, /authMode: AUTH\.mode \}\)$/)
     assert.match(call, /floorHook: FLOOR_HOOK\.registered,/)
