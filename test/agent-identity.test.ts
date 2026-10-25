@@ -222,6 +222,7 @@ async function waitUntil(check: () => boolean, what: string): Promise<void> {
 const HOME = '/home/kc'
 const BASE_ARGS = ['--dangerously-skip-permissions', '--dangerously-load-development-channels', 'server:bgos']
 const MARKER_PATH = `${HOME}/.bgos-agent/871/restart-requested.json`
+const STATUS_PATH = `${HOME}/.bgos-agent/871/launch-status`
 
 function personaHome(identity: string | null) {
   const files = new Map<string, string>([
@@ -311,9 +312,10 @@ const PIN = '11111111-1111-4111-8111-111111111111'
 const TRANSCRIPT = `${HOME}/.claude/projects/-agents-mira/${PIN}.jsonl`
 
 // The Windows task's launcher runs --keep-alive; a person may pass their own
-// args; the timers a launch arms are kept, so a test can fire the heartbeat check.
+// args; the timers a launch arms are kept, so a test can fire the heartbeat check;
+// a supervised launch (run.sh) sets its env and runs under expect.
 type Timer = { fn: () => void; ms: number }
-type More = { args?: readonly string[]; keepAlive?: boolean; timers?: Timer[] }
+type More = { args?: readonly string[]; keepAlive?: boolean; timers?: Timer[]; env?: Record<string, string>; hasExpect?: boolean }
 
 function launchAnswering(files: Map<string, string>, answers: string[], clock = { t: 0 }, more: More = {}) {
   const spawns: FakeChild[] = []
@@ -323,7 +325,7 @@ function launchAnswering(files: Map<string, string>, answers: string[], clock = 
   let ids = 0
   const done = superviseClaude(more.args ?? BASE_ARGS, {
     platform: 'linux',
-    env: {},
+    env: more.env ?? {},
     home: HOME,
     cwd: '/agents/mira',
     scriptDir: '/home/kc/bgos-claude-plugin/bin',
@@ -350,7 +352,7 @@ function launchAnswering(files: Map<string, string>, answers: string[], clock = 
     clearTimer: () => {},
     // The pin first, then the fresh retry's own id.
     generateId: () => (ids++ === 0 ? PIN : '22222222-2222-4222-8222-222222222222'),
-    hasExpect: false,
+    hasExpect: more.hasExpect === true,
     probeIdentityFlag: () => answers[Math.min(probes++, answers.length - 1)]!,
     now: () => clock.t,
     healthyMs: 25_000,
@@ -450,6 +452,41 @@ test('a restart asked for after the flag was dropped (the app, a plugin update) 
   assert.equal(h.probes(), 2)
   // And said once, so the launcher's own log does not end on the drop.
   assert.equal(h.prints.filter((l) => /identity is back/.test(l)).length, 1)
+  h.spawns[2]!.exit(0)
+  assert.equal(await h.done, 0)
+})
+
+// Plugin review 4, minor 1: unattended, the drop and the give back are what
+// launch-status says, since nobody reads the launcher's lines.
+test('under keep-alive the drop and the give back both reach launch-status', async () => {
+  // No transcript: a create, so two fast deaths drop the flag.
+  const files = personaHome(agentIdentityText({ name: 'Mira', ownerFirstName: 'Kc' }))
+  const h = launchAnswering(files, ['supported'], { t: 0 }, { keepAlive: true })
+  await waitUntil(() => h.spawns.length === 1, 'first spawn')
+  h.spawns[0]!.exit(1)
+  await waitUntil(() => h.spawns.length === 2, 'the keep-alive relaunch')
+  h.spawns[1]!.exit(1)
+  await waitUntil(() => h.spawns.length === 3, 'the relaunch without the identity')
+  assert.match(files.get(STATUS_PATH) ?? '', /identity-flag-dropped/)
+  files.set(MARKER_PATH, '{}')
+  await waitUntil(() => h.spawns.length === 4, 'the marker relaunch')
+  assert.ok(h.spawns[3]!.args.includes(IDENTITY_FLAG))
+  assert.match(files.get(STATUS_PATH) ?? '', /identity-flag-restored/)
+  h.stop.abort()
+  await h.done
+})
+
+test('a restart after the drop whose CLI now refuses the flag says nothing about the identity being back', async () => {
+  const files = personaHome(agentIdentityText({ name: 'Mira', ownerFirstName: 'Kc' }))
+  const h = launchAnswering(files, ['supported', 'unsupported'])
+  await waitUntil(() => h.spawns.length === 1, 'first spawn')
+  h.spawns[0]!.exit(1)
+  await waitUntil(() => h.spawns.length === 2, 'the relaunch without the identity')
+  files.set(MARKER_PATH, '{}')
+  await waitUntil(() => h.spawns.length === 3, 'the marker relaunch')
+  assert.equal(h.probes(), 2)
+  assert.equal(h.spawns[2]!.args.includes(IDENTITY_FLAG), false)
+  assert.doesNotMatch(h.prints.join('\n'), /identity is back/)
   h.spawns[2]!.exit(0)
   assert.equal(await h.done, 0)
 })
@@ -560,6 +597,29 @@ test('under keep-alive a fast exit 0 with the identity counts too: two in a row 
   await h.done
 })
 
+// Plugin review 4, minor 2: a supervised launch is restarted by its service on
+// any exit (systemd Restart=always, launchd KeepAlive), and every new launcher
+// asks the CLI again, so a CLI that refused the flag with exit 0 would loop with it.
+test('supervised, a fast exit 0 with the identity brings the session back without it', async () => {
+  const files = personaHome(agentIdentityText({ name: 'Mira', ownerFirstName: 'Kc' }))
+  files.set(TRANSCRIPT, '{}\n')
+  const h = launchAnswering(files, ['supported'], { t: 0 }, {
+    env: { HOAI_SUPERVISED: '1', HOAI_SUPERVISED_ASSISTANT_ID: '871' },
+    hasExpect: true,
+  })
+  await waitUntil(() => h.spawns.length === 1, 'first spawn')
+  // Under expect: claude's argv is inside the script.
+  const script = (c: FakeChild) => c.args.join(' ')
+  assert.ok(script(h.spawns[0]!).includes(IDENTITY_FLAG))
+  h.spawns[0]!.exit(0)
+  await waitUntil(() => h.spawns.length === 2, 'the relaunch without the identity')
+  assert.equal(script(h.spawns[1]!).includes(IDENTITY_FLAG), false)
+  assert.ok(script(h.spawns[1]!).includes(PIN))
+  assert.match(files.get(STATUS_PATH) ?? '', /identity-flag-dropped/)
+  h.spawns[1]!.exit(0)
+  assert.equal(await h.done, 0)
+})
+
 // Plugin review 3, minor 7: the reset of the count after a long run is pinned
 // on the Windows path (keep-alive), not only on the marker relaunch.
 test('under keep-alive a slow exit resets the count: a fast death after it is the first, and the flag stays', async () => {
@@ -645,6 +705,8 @@ test('a CLI that does not know the flag still starts the agent, and the launcher
   await waitUntil(() => h.spawns.length === 1, 'first spawn')
   assert.equal(h.spawns[0]!.args.includes(IDENTITY_FLAG), false)
   assert.match(h.prints.join('\n'), /does not know --append-system-prompt-file/)
+  // Plugin review 4, minor 3: an update alone does not reach a launcher that is already running.
+  assert.match(h.prints.join('\n'), /Update Claude Code, then restart the agent, to give it back\./)
   h.spawns[0]!.exit(0)
   assert.equal(await h.done, 0)
 })

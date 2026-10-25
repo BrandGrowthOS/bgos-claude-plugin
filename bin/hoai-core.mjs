@@ -2989,8 +2989,9 @@ export async function superviseClaude(args, opts = {}) {
       // would otherwise end the launcher, this agent's own session comes back
       // once without it (plugin review I1). Without the flag the agent is
       // only missing its name; with it, it would not start at all.
-      // Under --keep-alive an exit 0 is relaunched like any other, so it counts too.
-      const identityDeath = code !== 0 || keepAlive
+      // Under --keep-alive an exit 0 is relaunched like any other, so it counts
+      // too; supervised, the service restarts any exit (plugin review 4).
+      const identityDeath = code !== 0 || keepAlive || supervised
       if (!personChoseIdentity && currentArgs.includes(IDENTITY_FLAG) && identityDeath && !namedSupervisedExit && elapsedMs < healthyMs) {
         identityAnswer = null
         identityFastDeaths += 1
