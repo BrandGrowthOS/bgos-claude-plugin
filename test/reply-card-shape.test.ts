@@ -747,6 +747,98 @@ test('classify: the same lines in a code fence, or code shaped in a prose fence,
   assert.equal(classify(fenceOf('', ['To: ops@example.com', 'Subject: Deploy finished,'])), null, 'a Subject never ends in a comma')
 })
 
+// Review of round 4 (PR #277 at 98ffb31): two false positives, and tests
+// that fail when a rule they guard is taken out.
+
+test('classify: a comma in one side of a prose "vs" line is not a side of its own', () => {
+  // The review's exact input: the line names p95 and p50; "the label regex, and
+  // the email check" are what was measured, not two more choices.
+  const listed = MEASURED_FINDINGS.replace('We measured p95 vs p50', 'We measured p95 vs p50 for the label regex, and the email check.')
+  assert.notEqual(listed, MEASURED_FINDINGS)
+  assert.equal(classify(listed), null)
+  assert.equal(classify(listed.replace(', and', ' and')), null, 'and without the comma')
+})
+
+/** A three way choice named "A, B or C", every option with the same fields. */
+const THREE_WAY = [
+  '## Self hosted, managed or serverless?',
+  '',
+  '### Self hosted',
+  '- Cost: nothing extra, it shares the box we already pay for',
+  '- Setup: one migration and an hour of work',
+  '- Backups: the nightly dump we already run',
+  '',
+  '### Managed',
+  '- Cost: about 40 dollars a month for the small tier',
+  '- Setup: a new connection string and a data copy',
+  '- Backups: point in time restore, built in',
+  '',
+  '### Serverless',
+  '- Cost: pay per request, near zero at our volume',
+  '- Setup: a new driver and a pooled connection string',
+  '- Backups: built in, seven days of history',
+].join('\n')
+
+test('classify: a real "A, B or C" choice still compares, and its comma makes the sides', () => {
+  assert.equal(classify(THREE_WAY), 'comparison')
+  // Only Self hosted and Managed share fields, and only the comma puts them on
+  // different sides: without it they are one side, "self hosted managed".
+  const twoComparable = THREE_WAY.replace(
+    '- Cost: pay per request, near zero at our volume\n- Setup: a new driver and a pooled connection string\n- Backups: built in, seven days of history',
+    '- Cold starts: a second on the first request of the day\n- Vendor: one more account and its own dashboard',
+  )
+  assert.notEqual(twoComparable, THREE_WAY)
+  assert.equal(classify(twoComparable), 'comparison', 'the pair the comma separates')
+})
+
+/** Review findings, the first one's bold title saying "vs", each with its own fields. */
+const VS_IN_A_FINDING_TITLE = [
+  '**1. p95 vs p50 gap on the reply path**',
+  '- Impact: the slowest replies take four times the median, all of it in the classifier',
+  '- Risk: grows with reply length, so the long drafts suffer most',
+  '',
+  '**2. The reply path drops commas**',
+  '- Impact: a To line over two lines loses its second recipient',
+  '- Risk: only drafts with more than one recipient',
+  '',
+  '**3. p95 tail on staging**',
+  '- Impact: staging runs a cold cache, so its tail is not production',
+  '- Risk: low, a measurement problem rather than a bug',
+].join('\n')
+
+test('classify: a finding title saying "vs" does not name the findings after it', () => {
+  assert.ok(VS_IN_A_FINDING_TITLE.length >= MIN_CARD_SHAPED_CHARS)
+  assert.equal(classify(VS_IN_A_FINDING_TITLE), null, 'bold titles')
+  assert.equal(classify(VS_IN_A_FINDING_TITLE.replace(/^\*\*(.*)\*\*$/gm, '### $1')), null, '### titles')
+})
+
+test('classify: the stop words name no side', () => {
+  // Without the stop words "the" is on the p95 side and "a" on the p50 side,
+  // so finding 1 ("The ...") and finding 2 ("A ...") would be the two choices.
+  const articles = MEASURED_FINDINGS.replace('We measured p95 vs p50', 'The p95 vs a p50.')
+    .replace('**1. The label regex backtracks on a run of spaces**', '**1. The label regex backtracks on long space runs**')
+    .replace('**2. The email check compares every pair of headers**', '**2. A loop over every pair of headers**')
+  assert.notEqual(articles, MEASURED_FINDINGS)
+  assert.equal(classify(articles), null, 'articles name nothing')
+})
+
+test('classify: a title as much on one side as on the other is on neither', () => {
+  // "path" is on both sides: a title whose words are as much on one side as
+  // on the other is on neither, so it is not the reply path choice.
+  const tie = MEASURED_FINDINGS.replace('We measured p95 vs p50', 'We measured the reply path vs the email path.').replace(
+    '**1. The label regex backtracks on a run of spaces**',
+    '**1. The path cache is cold**',
+  )
+  assert.notEqual(tie, MEASURED_FINDINGS)
+  assert.equal(classify(tie), null, 'a tie is on no side')
+})
+
+test('classify: a To line ending in a comma before a padded address still counts', () => {
+  for (const next of ['ahmad@pjprestaurants.com   ', 'ahmad@pjprestaurants.com ,  ', 'Ahmad Khan <ahmad@pjprestaurants.com>;']) {
+    assert.equal(classify(TWO_LINE_RECIPIENTS.replace('    Ahmad Khan <ahmad@pjprestaurants.com>', next)), 'email_draft', JSON.stringify(next))
+  }
+})
+
 // ── cost: the inputs the review measured, each under 50 ms ───────────────────
 
 const PREFIX = 'Here is the summary you asked for, with the details below. '.repeat(6) + '\n'
@@ -781,6 +873,12 @@ const COSTLY: Array<{ name: string; text: string }> = [
   {
     name: '500 To lines with a comma, each before a long name line',
     text: PREFIX + Array.from({ length: 500 }, () => 'To: a@b.co,\n' + 'Sarah' + ' '.repeat(1000) + 'x@y').join('\n'),
+  },
+  // Round 5: the next address check had two space runs around its optional
+  // comma (514 ms here on 98ffb31 for this text).
+  {
+    name: '20,000 To lines with a comma, each before an address, 150 spaces and x',
+    text: 'Draft:\n' + Array.from({ length: 20_000 }, () => 'To: x,\n' + 'a@b.co' + ' '.repeat(150) + 'x').join('\n'),
   },
   { name: '20,000 naming lines and headings', text: Array.from({ length: 20_000 }, (_, i) => (i % 2 ? '### A vs B' : 'X vs Y\n\nCost: 1')).join('\n') },
   // Round 4: a naming line of 80 choices over 10,000 options of 50 words each

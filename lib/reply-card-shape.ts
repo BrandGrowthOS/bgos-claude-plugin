@@ -36,8 +36,10 @@
  *                ("A vs B", a heading "Self hosted or managed"; not every
  *                section after it, and only options whose heading words are
  *                on different sides of the "vs": under "We measured p95 vs
- *                p50" a finding is neither), sharing labelled fields that read
- *                as attributes of a choice (cost, risk, effort, setup). Review
+ *                p50" a finding is neither; a comma splits only an "A, B or
+ *                C" list, and a bold title saying "vs" ends at the next bold
+ *                line), sharing labelled fields that read as attributes of a
+ *                choice (cost, risk, effort, setup). Review
  *                findings, install steps per platform, before and after, per
  *                PR status share fields too and are reports. A compare block.
  *
@@ -123,7 +125,7 @@ const ONLY_PUNCTUATION = /^[{}[\]();,]+$/
 
 /** `sarah@x.com` or `Sarah Lee <sarah@x.com>`, alone on its line, a comma or semicolon after it. */
 const ADDRESS_LINE =
-  /^[ \t]*(?:>[ \t]*)?(?:[^\s<>@,;:][^<>@,;:]{0,60}<)?[^\s<>@,;:]+@[^\s<>@,;:.]+(?:\.[^\s<>@,;:.]+)+>?[ \t]*[,;]?[ \t]*$/
+  /^[ \t]*(?:>[ \t]*)?(?:[^\s<>@,;:][^<>@,;:]{0,60}<)?[^\s<>@,;:]+@[^\s<>@,;:.]+(?:\.[^\s<>@,;:.]+)+>?[ \t]*(?:[,;][ \t]*)?$/
 
 /**
  * A header shaped line that is code: braces or a quote before the colon, or a
@@ -269,8 +271,14 @@ const OPTION_LABEL =
 const NAMES_A_VS_B = /\s(?:vs\.?|versus)\s/i
 /** A heading or bold line naming two choices with "or": "Self hosted or managed?" */
 const NAMES_A_OR_B = /\sor\s/i
-/** Where a naming line splits into the choices it names: "A vs B", "A, B or C". */
-const CHOICE_SEPARATOR = /\s(?:vs\.?|versus|or)\s|,/i
+/**
+ * Where a naming line splits into the choices it names. A "vs" line splits at
+ * its "vs" only: in "We measured p95 vs p50 for the label regex, and the email
+ * check" the comma lists what was measured, not more choices. An "or" line
+ * with no "vs" is a list, "A, B or C", so its commas split it too.
+ */
+const VS_SEPARATOR = /\s(?:vs\.?|versus)\s/i
+const OR_LIST_SEPARATOR = /\sor\s|,/i
 /** Words that name nothing: "We measured p95 vs p50" names p95 and p50, not "we". */
 const NAMING_STOP_WORDS = new Set([
   'a', 'an', 'the', 'of', 'on', 'in', 'at', 'to', 'for', 'by', 'with', 'from', 'and', 'or', 'vs', 'versus', 'is',
@@ -348,7 +356,7 @@ function namingWords(text: string): string[] {
 function choiceSides(head: string): Array<Set<string>> {
   const named = head.split(':').find((part) => NAMES_A_VS_B.test(part) || NAMES_A_OR_B.test(part)) ?? head
   return named
-    .split(CHOICE_SEPARATOR)
+    .split(NAMES_A_VS_B.test(named) ? VS_SEPARATOR : OR_LIST_SEPARATOR)
     .map((part) => new Set(namingWords(part)))
     .filter((side) => side.size > 0)
 }
@@ -375,11 +383,13 @@ function sideOf(head: string, sides: ReadonlyArray<Set<string>>): number {
 function isComparison(lines: readonly string[]): boolean {
   const options: Option[] = []
   let current: Option | null = null
-  // The naming line in force (0 for none), how many there have been, and its
-  // heading level when it was a markdown heading (0 when it was not).
+  // The naming line in force (0 for none), how many there have been, its
+  // heading level when it was a markdown heading (0 when it was not), and
+  // whether it was a bold line (`**A vs B**`, a header with no level).
   let scope = 0
   let scopes = 0
   let scopeLevel = 0
+  let scopeBold = false
   // Each naming line, by its scope number.
   const namingLines: string[] = ['']
   let blockStart = true
@@ -396,12 +406,15 @@ function isComparison(lines: readonly string[]): boolean {
     const inScope = scope !== 0 && current !== null && current.scope === scope
     // A naming line counts only for the options directly under it. It ends at
     // a header that was not an option (it had no fields: a "## Findings" over
-    // other sections), at a heading as high as the naming heading (beside it,
-    // not under it), and at a block of prose that is not part of an option
-    // (a "We measured p95 vs p50" line, then a paragraph, then findings).
+    // other sections), at the naming header's next sibling (a heading as high
+    // as the naming heading, or a bold line after a bold naming line: beside
+    // it, not under it, as "**2. ...**" after "**1. p95 vs p50 gap**"), and at
+    // a block of prose that is not part of an option (a "We measured p95 vs
+    // p50" line, then a paragraph, then findings).
     if (scope !== 0) {
       if (isHeader) {
-        if ((inScope && current!.fields.size === 0) || (level > 0 && level <= scopeLevel)) scope = 0
+        const sibling = (level > 0 && level <= scopeLevel) || (scopeBold && level === 0)
+        if ((inScope && current!.fields.size === 0) || sibling) scope = 0
       } else if (blockStart && !inScope) {
         scope = 0
       }
@@ -420,6 +433,7 @@ function isComparison(lines: readonly string[]): boolean {
     if (mayName && namesAChoice(head, isHeader)) {
       scope = ++scopes
       scopeLevel = level
+      scopeBold = isHeader && level === 0
       namingLines.push(head)
       // The naming header is the name of the options under it, not one of them.
       if (isHeader) current!.scope = 0
