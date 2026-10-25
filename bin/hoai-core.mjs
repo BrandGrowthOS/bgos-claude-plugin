@@ -2594,9 +2594,21 @@ export async function superviseClaude(args, opts = {}) {
   // it somebody else. Only when the file has text and this claude knows the
   // flag; a person's own flag wins. Each note is printed once, so a relaunch
   // loop does not repeat it. The answer is kept until a launch that carried
-  // the flag dies at once (see the exit below), and 'unknown' is never kept.
+  // the flag dies at once (see the exit below), or a restart someone asked
+  // for after a CLI that did not know it, and 'unknown' is never kept.
   const identityPath = identityFilePath(stateDir)
-  const personChoseIdentity = args.includes(IDENTITY_FLAG)
+  // The person's own flag as they gave it, the pair or the one `=` token.
+  // Every relaunch rebuilds its arguments from the channel and so drops the
+  // person's; theirs is carried over there (relaunchIdentityArgs below), or
+  // the agent would run with no identity at all after its first relaunch.
+  const personIdentity = (() => {
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === IDENTITY_FLAG) return args.slice(i, i + 2)
+      if (String(args[i]).startsWith(`${IDENTITY_FLAG}=`)) return [args[i]]
+    }
+    return null
+  })()
+  const personChoseIdentity = personIdentity !== null
   let identityAnswer = null
   let identityNote = null
   // Launches with the flag that died inside the health window, and whether
@@ -2620,6 +2632,7 @@ export async function superviseClaude(args, opts = {}) {
     identityNote = out.note
     return out.args
   }
+  const relaunchIdentityArgs = () => personIdentity ?? identityArgsNow()
   // The recipe never carries the launcher's own identity args: a watcher
   // relaunch goes through hoai, which adds them again from the file.
   const withoutOwnIdentity = (launchArgs) => {
@@ -2719,6 +2732,9 @@ export async function superviseClaude(args, opts = {}) {
       /** @type {import('node:child_process').ChildProcess | null} */
       let childRef = null
       let restartRequested = false
+      // Set only by the restart marker (the app, a plugin update): hoai's own
+      // health relaunch is no sign that the CLI underneath changed.
+      let markerRestart = false
       // False once this launch's claude has exited: a late helper exit or check is not about it.
       let live = true
       const startedAt = now()
@@ -2873,6 +2889,7 @@ export async function superviseClaude(args, opts = {}) {
         }
         relaunchesAt.push(now())
         restartRequested = true
+        markerRestart = true
         print('[hoai] restart requested by the daemon; restarting claude to pick up the update...')
         try {
           endClaude(childRef)
@@ -2908,11 +2925,16 @@ export async function superviseClaude(args, opts = {}) {
       if (elapsedMs >= healthyMs) identityFastDeaths = 0
       if (restartRequested) {
         // A restart someone asked for (the app, a plugin update) gives back
-        // an identity this launcher dropped: the CLI may have been updated,
-        // and the flag is asked about again before it goes on.
-        if (identityOff) {
-          identityOff = false
-          identityFastDeaths = 0
+        // an identity this launcher dropped, and asks again a CLI that did
+        // not know the flag: either may have been updated since. Only the
+        // marker: a health relaunch hoai makes itself keeps both as they are.
+        const identityWasOff = markerRestart && identityOff
+        if (markerRestart) {
+          if (identityOff) {
+            identityOff = false
+            identityFastDeaths = 0
+          }
+          if (identityAnswer === 'unsupported') identityAnswer = null
         }
         // A daemon-driven update restart: relaunch THIS agent's OWN session
         // (resume it when its transcript exists, else create it again by
@@ -2927,8 +2949,13 @@ export async function superviseClaude(args, opts = {}) {
         const sessionArgs = carried
           ? sessionArgsFor(carried, exists(sessionTranscriptPath(home, cwd, carried, env.CLAUDE_CONFIG_DIR)))
           : sessionArgsFor(pinnedId, sessionExistsNow())
-        const relaunchArgs = relaunchClaudeArgs({ scriptDir, env, home, cwd, readFile, sessionArgs, extraArgs: identityArgsNow() })
+        const identityArgs = relaunchIdentityArgs()
+        const relaunchArgs = relaunchClaudeArgs({ scriptDir, env, home, cwd, readFile, sessionArgs, extraArgs: identityArgs })
         if (!relaunchArgs) return stopUnresolved()
+        if (identityWasOff && identityArgs.includes(IDENTITY_FLAG)) {
+          noteStatus('identity-flag-restored')
+          print(`[hoai] this agent's identity is back: the relaunch passes ${IDENTITY_FLAG} ${identityPath} again`)
+        }
         if (carried) pendingPin = carried
         currentArgs = relaunchArgs
         freshTried = false
@@ -2962,7 +2989,9 @@ export async function superviseClaude(args, opts = {}) {
       // would otherwise end the launcher, this agent's own session comes back
       // once without it (plugin review I1). Without the flag the agent is
       // only missing its name; with it, it would not start at all.
-      if (!personChoseIdentity && currentArgs.includes(IDENTITY_FLAG) && code !== 0 && !namedSupervisedExit && elapsedMs < healthyMs) {
+      // Under --keep-alive an exit 0 is relaunched like any other, so it counts too.
+      const identityDeath = code !== 0 || keepAlive
+      if (!personChoseIdentity && currentArgs.includes(IDENTITY_FLAG) && identityDeath && !namedSupervisedExit && elapsedMs < healthyMs) {
         identityAnswer = null
         identityFastDeaths += 1
         const lastChance = recovery.action !== 'retry-fresh' && !keepAlive
@@ -2989,8 +3018,12 @@ export async function superviseClaude(args, opts = {}) {
           // A new cycle without the flag, with its own one fresh retry: the
           // launch that died may have been the fresh retry already, and the
           // resume it fled may be rejected again (plugin review 2). If this
-          // cycle dies at once too, the flag was not the cause.
+          // cycle dies at once too, the flag was not the cause. A fresh retry
+          // only ever follows a resume or a relaunch, so after one this launch
+          // of the pin counts as a relaunch: with no transcript it is
+          // --session-id <pin>, which is not a --resume (plugin review 3).
           currentArgs = plainArgs
+          if (freshTried) lastLaunchWasRelaunch = true
           freshTried = false
           recordRecipe(currentArgs)
           continue
@@ -3018,7 +3051,7 @@ export async function superviseClaude(args, opts = {}) {
           cwd,
           readFile,
           sessionArgs: freshSessionArgs,
-          extraArgs: identityArgsNow(),
+          extraArgs: relaunchIdentityArgs(),
         })
         if (!freshArgs) return stopUnresolved()
         currentArgs = freshArgs
@@ -3074,7 +3107,7 @@ export async function superviseClaude(args, opts = {}) {
         cwd,
         readFile,
         sessionArgs: sessionArgsFor(pinnedId, sessionExistsNow()),
-        extraArgs: identityArgsNow(),
+        extraArgs: relaunchIdentityArgs(),
       })
       if (!keepArgs) return stopUnresolved()
       currentArgs = keepArgs

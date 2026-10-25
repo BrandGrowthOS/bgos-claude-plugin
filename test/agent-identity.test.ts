@@ -34,7 +34,7 @@ import {
   identityLaunchArgs,
   writeAgentIdentity,
 } from '../lib/agent-identity.mjs'
-import { defaultProbeIdentityFlag, superviseClaude } from '../bin/hoai-core.mjs'
+import { CHANNEL_HEARTBEAT_WAIT_MS, defaultProbeIdentityFlag, superviseClaude } from '../bin/hoai-core.mjs'
 import { main as pairMain, PAIR_EXIT_CODES } from '../bin/bgos-pair.mjs'
 import { buildBootHelloNotification, buildIdentityNotice, shouldSendIdentityNotice } from '../lib/boot-hello.ts'
 
@@ -310,12 +310,18 @@ test('every launch from a home whose CLAUDE.md names somebody else is told who i
 const PIN = '11111111-1111-4111-8111-111111111111'
 const TRANSCRIPT = `${HOME}/.claude/projects/-agents-mira/${PIN}.jsonl`
 
-function launchAnswering(files: Map<string, string>, answers: string[], clock = { t: 0 }) {
+// The Windows task's launcher runs --keep-alive; a person may pass their own
+// args; the timers a launch arms are kept, so a test can fire the heartbeat check.
+type Timer = { fn: () => void; ms: number }
+type More = { args?: readonly string[]; keepAlive?: boolean; timers?: Timer[] }
+
+function launchAnswering(files: Map<string, string>, answers: string[], clock = { t: 0 }, more: More = {}) {
   const spawns: FakeChild[] = []
   const prints: string[] = []
+  const stop = new AbortController()
   let probes = 0
   let ids = 0
-  const done = superviseClaude(BASE_ARGS, {
+  const done = superviseClaude(more.args ?? BASE_ARGS, {
     platform: 'linux',
     env: {},
     home: HOME,
@@ -337,7 +343,10 @@ function launchAnswering(files: Map<string, string>, answers: string[], clock = 
     removeFile: (p: string) => files.delete(p),
     pollMs: 5,
     print: (line: string) => prints.push(line),
-    setTimer: (() => 0) as never,
+    setTimer: ((fn: () => void, ms: number) => {
+      more.timers?.push({ fn, ms })
+      return 0
+    }) as never,
     clearTimer: () => {},
     // The pin first, then the fresh retry's own id.
     generateId: () => (ids++ === 0 ? PIN : '22222222-2222-4222-8222-222222222222'),
@@ -345,8 +354,13 @@ function launchAnswering(files: Map<string, string>, answers: string[], clock = 
     probeIdentityFlag: () => answers[Math.min(probes++, answers.length - 1)]!,
     now: () => clock.t,
     healthyMs: 25_000,
+    listProcesses: () => [],
+    sleep: async () => {},
+    claudeLoginFailure: () => null,
+    keepAlive: more.keepAlive === true,
+    signal: stop.signal,
   } as never)
-  return { done, spawns, prints, probes: () => probes }
+  return { done, spawns, prints, stop, probes: () => probes }
 }
 
 test('a launch with the identity that dies at once asks the CLI again before the next launch', async () => {
@@ -434,6 +448,8 @@ test('a restart asked for after the flag was dropped (the app, a plugin update) 
   assert.ok(h.spawns[2]!.args.includes(IDENTITY_FLAG))
   // Asked again: the CLI may have been updated.
   assert.equal(h.probes(), 2)
+  // And said once, so the launcher's own log does not end on the drop.
+  assert.equal(h.prints.filter((l) => /identity is back/.test(l)).length, 1)
   h.spawns[2]!.exit(0)
   assert.equal(await h.done, 0)
 })
@@ -455,6 +471,134 @@ test('a rejected resume and a refused flag together still end on a session that 
   assert.equal(fourth.includes(IDENTITY_FLAG), false)
   assert.equal(fourth.includes('--resume'), false)
   h.spawns[3]!.exit(0)
+  assert.equal(await h.done, 0)
+})
+
+// Plugin review 3, I1: with no transcript, --session-id <pin> is the normal
+// relaunch shape, and the drop after a fresh retry must still leave the
+// flagless cycle its own fresh retry, as it does for a --resume.
+test('a relaunch with no transcript whose fresh retry dies with the flag: its own session without it still gets a fresh retry', async () => {
+  const files = personaHome(agentIdentityText({ name: 'Mira', ownerFirstName: 'Kc' }))
+  const h = launchAnswering(files, ['supported'])
+  await waitUntil(() => h.spawns.length === 1, 'first spawn')
+  files.set(MARKER_PATH, '{}')
+  await waitUntil(() => h.spawns.length === 2, 'the marker relaunch')
+  const relaunch = h.spawns[1]!.args
+  assert.equal(relaunch[relaunch.indexOf('--session-id') + 1], PIN)
+  h.spawns[1]!.exit(1) // the relaunch, with the flag
+  await waitUntil(() => h.spawns.length === 3, 'the fresh retry')
+  h.spawns[2]!.exit(1) // the fresh session, with the flag
+  await waitUntil(() => h.spawns.length === 4, 'its own session without the flag')
+  const plain = h.spawns[3]!.args
+  assert.equal(plain.includes(IDENTITY_FLAG), false)
+  assert.equal(plain[plain.indexOf('--session-id') + 1], PIN)
+  h.spawns[3]!.exit(1) // it dies without the flag too: that was not the flag
+  await waitUntil(() => h.spawns.length === 5, 'a fresh session without the flag')
+  const fifth = h.spawns[4]!.args
+  assert.equal(fifth.includes(IDENTITY_FLAG), false)
+  assert.notEqual(fifth[fifth.indexOf('--session-id') + 1], PIN)
+  h.spawns[4]!.exit(0)
+  assert.equal(await h.done, 0)
+})
+
+// Plugin review 3, I2: "unsupported" was kept for the life of the launcher,
+// which on Windows lasts until sign out, so updating Claude Code never gave
+// the name back at a restart from the app.
+test('a CLI that did not know the flag is asked again at a restart someone asked for: an updated Claude Code gives the identity', async () => {
+  const files = personaHome(agentIdentityText({ name: 'Mira', ownerFirstName: 'Kc' }))
+  const h = launchAnswering(files, ['unsupported', 'supported'])
+  await waitUntil(() => h.spawns.length === 1, 'first spawn')
+  assert.equal(h.spawns[0]!.args.includes(IDENTITY_FLAG), false)
+  files.set(MARKER_PATH, '{}')
+  await waitUntil(() => h.spawns.length === 2, 'the marker relaunch')
+  assert.equal(h.probes(), 2)
+  assert.ok(h.spawns[1]!.args.includes(IDENTITY_FLAG))
+  h.spawns[1]!.exit(0)
+  assert.equal(await h.done, 0)
+})
+
+// Plugin review 3, minor 5: hoai's own health relaunch is no sign the CLI
+// changed, so it does not turn a dropped flag back on (each one would cost two
+// more fast deaths, up to three an hour).
+test('a health relaunch hoai makes itself keeps a dropped flag off: only a restart someone asked for gives it back', async () => {
+  const files = personaHome(agentIdentityText({ name: 'Mira', ownerFirstName: 'Kc' }))
+  const timers: Timer[] = []
+  const h = launchAnswering(files, ['supported'], { t: 0 }, { keepAlive: true, timers })
+  await waitUntil(() => h.spawns.length === 1, 'first spawn')
+  h.spawns[0]!.exit(1)
+  await waitUntil(() => h.spawns.length === 2, 'the keep-alive relaunch')
+  h.spawns[1]!.exit(1)
+  await waitUntil(() => h.spawns.length === 3, 'the relaunch without the identity')
+  assert.equal(h.spawns[2]!.args.includes(IDENTITY_FLAG), false)
+  // Its channel sends no heartbeat: hoai relaunches it once for that.
+  const before = h.spawns.length
+  const probesBefore = h.probes()
+  timers.filter((t) => t.ms === CHANNEL_HEARTBEAT_WAIT_MS).at(-1)!.fn()
+  await waitUntil(() => h.spawns.length === before + 1, 'the health relaunch')
+  assert.equal(h.spawns.at(-1)!.args.includes(IDENTITY_FLAG), false)
+  assert.equal(h.probes(), probesBefore)
+  h.stop.abort()
+  await h.done
+})
+
+// Plugin review 3, minor 6: under --keep-alive an exit 0 is relaunched like
+// any other, so a CLI that refused the flag with exit 0 would loop with it.
+test('under keep-alive a fast exit 0 with the identity counts too: two in a row bring the session back without it', async () => {
+  const files = personaHome(agentIdentityText({ name: 'Mira', ownerFirstName: 'Kc' }))
+  files.set(TRANSCRIPT, '{}\n')
+  const h = launchAnswering(files, ['supported'], { t: 0 }, { keepAlive: true })
+  await waitUntil(() => h.spawns.length === 1, 'first spawn')
+  h.spawns[0]!.exit(0)
+  await waitUntil(() => h.spawns.length === 2, 'the keep-alive relaunch')
+  assert.ok(h.spawns[1]!.args.includes(IDENTITY_FLAG))
+  h.spawns[1]!.exit(0)
+  await waitUntil(() => h.spawns.length === 3, 'the relaunch without the identity')
+  const third = h.spawns[2]!.args
+  assert.equal(third.includes(IDENTITY_FLAG), false)
+  assert.equal(third[third.indexOf('--resume') + 1], PIN)
+  h.stop.abort()
+  await h.done
+})
+
+// Plugin review 3, minor 7: the reset of the count after a long run is pinned
+// on the Windows path (keep-alive), not only on the marker relaunch.
+test('under keep-alive a slow exit resets the count: a fast death after it is the first, and the flag stays', async () => {
+  const files = personaHome(agentIdentityText({ name: 'Mira', ownerFirstName: 'Kc' }))
+  files.set(TRANSCRIPT, '{}\n')
+  const clock = { t: 0 }
+  const h = launchAnswering(files, ['supported'], clock, { keepAlive: true })
+  await waitUntil(() => h.spawns.length === 1, 'first spawn')
+  h.spawns[0]!.exit(1) // the resume, fast
+  await waitUntil(() => h.spawns.length === 2, 'the fresh retry')
+  clock.t += 60_000
+  h.spawns[1]!.exit(1) // after a minute: not the flag
+  await waitUntil(() => h.spawns.length === 3, 'the keep-alive relaunch')
+  h.spawns[2]!.exit(1) // fast again, but only the first since the long run
+  await waitUntil(() => h.spawns.length === 4, 'the fresh retry')
+  assert.ok(h.spawns[3]!.args.includes(IDENTITY_FLAG))
+  assert.doesNotMatch(h.prints.join('\n'), /without its identity/)
+  h.stop.abort()
+  await h.done
+})
+
+// Plugin review 3, minor 7: a restart that gives the flag back starts the
+// count again, so one fast death after it is not the drop.
+test('a restart that gives the identity back starts the count again: one fast death after it keeps the flag', async () => {
+  const files = personaHome(agentIdentityText({ name: 'Mira', ownerFirstName: 'Kc' }))
+  files.set(TRANSCRIPT, '{}\n')
+  const h = launchAnswering(files, ['supported'])
+  await waitUntil(() => h.spawns.length === 1, 'first spawn')
+  h.spawns[0]!.exit(1)
+  await waitUntil(() => h.spawns.length === 2, 'the fresh retry')
+  h.spawns[1]!.exit(1)
+  await waitUntil(() => h.spawns.length === 3, 'the resume without the identity')
+  files.set(MARKER_PATH, '{}')
+  await waitUntil(() => h.spawns.length === 4, 'the marker relaunch')
+  assert.ok(h.spawns[3]!.args.includes(IDENTITY_FLAG))
+  h.spawns[3]!.exit(1)
+  await waitUntil(() => h.spawns.length === 5, 'the fresh retry')
+  assert.ok(h.spawns[4]!.args.includes(IDENTITY_FLAG))
+  h.spawns[4]!.exit(0)
   assert.equal(await h.done, 0)
 })
 
@@ -524,8 +668,34 @@ test('a person who passed their own --append-system-prompt-file keeps theirs, wi
   assert.equal(first.filter((a) => a === IDENTITY_FLAG).length, 1)
   assert.equal(first[first.indexOf(IDENTITY_FLAG) + 1], '/home/kc/mine.md')
   assert.equal(h.probes(), 0)
-  h.spawns[0]!.exit(0)
+  // Plugin review 3, I3: a relaunch rebuilds its arguments, and still keeps theirs.
+  files.set(MARKER_PATH, '{}')
+  await waitUntil(() => h.spawns.length === 2, 'relaunch')
+  const again = h.spawns[1]!.args
+  assert.equal(again.filter((a) => a === IDENTITY_FLAG).length, 1)
+  assert.equal(again[again.indexOf(IDENTITY_FLAG) + 1], '/home/kc/mine.md')
+  assert.equal(again.includes(PATH_871), false)
+  h.spawns[1]!.exit(0)
   assert.equal(await h.done, 0)
+})
+
+test('a person own flag rides the fresh retry and a keep-alive relaunch too, and its = form counts as theirs', async () => {
+  const files = personaHome(agentIdentityText({ name: 'Mira', ownerFirstName: 'Kc' }))
+  files.set(TRANSCRIPT, '{}\n')
+  const mine = `${IDENTITY_FLAG}=/home/kc/mine.md`
+  const h = launchAnswering(files, ['supported'], { t: 0 }, { args: [...BASE_ARGS, mine], keepAlive: true })
+  await waitUntil(() => h.spawns.length === 1, 'first spawn')
+  h.spawns[0]!.exit(1) // the resume
+  await waitUntil(() => h.spawns.length === 2, 'the fresh retry')
+  h.spawns[1]!.exit(1) // the fresh session
+  await waitUntil(() => h.spawns.length === 3, 'the keep-alive relaunch')
+  for (const child of h.spawns) {
+    assert.equal(child.args.filter((a) => a === mine).length, 1, child.args.join(' '))
+    assert.equal(child.args.includes(IDENTITY_FLAG), false, child.args.join(' '))
+  }
+  assert.equal(h.probes(), 0)
+  h.stop.abort()
+  await h.done
 })
 
 // -- Pairing writes it before the first launch ---------------------------------
