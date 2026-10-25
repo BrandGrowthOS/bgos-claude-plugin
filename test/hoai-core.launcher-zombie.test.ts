@@ -33,7 +33,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import * as core from '../bin/hoai-core.mjs'
-import * as liveness from '../lib/launcher-liveness.mjs'
+// Loaded so that this file still runs on main (which has no such module) and shows each test red or green there.
+const liveness = (await import('../lib/launcher-liveness.mjs').catch(() => ({}))) as typeof import('../lib/launcher-liveness.mjs')
 
 const {
   EXIT_ALREADY_SUPERVISED,
