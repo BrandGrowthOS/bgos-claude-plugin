@@ -496,6 +496,11 @@ test('sessionChain, planHandoffRoute and decideLauncherStep are exported for rev
   assert.equal(typeof sessionChain, 'function')
   assert.equal(typeof planHandoffRoute, 'function')
   assert.equal(typeof decideLauncherStep, 'function')
+  // The same live launcher's stamp for its backoff (relaunchBy) is no relaunch yet; its plain re-stamp is.
+  const step = (rawNow: string) => decideLauncherStep({ launcherPid: LAUNCHER, rawAtKill: '{}', rawNow, launcherAlive: true, otherAlive: false, waitedMs: 1_000, maxMs: 300_000 })
+  const at = new Date(T0).toISOString()
+  assert.equal(step(supervisorFileBody(LAUNCHER, at, null, { relaunchBy: new Date(T0 + 5_000).toISOString() })), 'wait')
+  assert.equal(step(supervisorFileBody(LAUNCHER, at, null)), 'relaunched')
   assert.equal(sameFolder('C:\\Agents\\Vera\\', 'c:/agents/vera'), true)
   assert.equal(sameFolder('C:\\agents\\vera', 'C:\\hoai-agents\\vera'), false)
   assert.equal(taskFolderIs(`x\r\nshell.CurrentDirectory = "${CWD}"\r\n`, 'c:\\agents\\vera\\'), true)

@@ -761,7 +761,7 @@ test('control: a holder that ignores TERM but has a live claude again by the end
       signalPid: (_pid: number, signal: string) => {
         sent.push(signal)
         // Its loop was only slow: it relaunches its claude while the TERM wait runs.
-        if (signal === 'SIGTERM') holder.children = [{ pid: 4400, zombie: false, name: 'claude', startedAtMs: STAMP_MS + 60_000 }]
+        if (signal === 'SIGTERM') holder.children = [{ pid: 4400, zombie: false, name: 'claude', startedAtMs: STAMP_MS + 2 * 86_400_000 }]
         return true
       },
     })
