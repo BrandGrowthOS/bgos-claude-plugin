@@ -263,6 +263,7 @@ import {
   type MissionEventWire,
 } from './lib/mission-events.js'
 import { declaredCapabilities } from './lib/declared-capabilities.js'
+import { ReplyCardNudges, UI_CARD } from './lib/reply-card-shape.ts'
 import {
   StopPauseLane,
   isOwnerAuthoredInbound,
@@ -6111,7 +6112,23 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         // successful reply (fire-and-forget, never blocks the reply).
         reportContextPct()
         clearInbound(resolvedChatId)
-        return { content: [{ type: 'text', text: `Sent (${parts.join(', ')})` }] }
+        // The card nudge (0.74.2): AFTER the send, so the message went out
+        // exactly as written, and only in the tool result. A card shaped reply
+        // (an email draft, a table, a status list, a comparison) on a daemon
+        // that declares ui_card gets ONE line naming the card, at most once per
+        // chat per 30 minutes. A peer side thread is read by an agent, not the
+        // owner, so it never gets one. forReply never throws.
+        const cardNudge = peerConvByChat.has(String(resolvedChatId))
+          ? null
+          : replyCardNudges.forReply({
+              chatId: String(resolvedChatId),
+              text,
+              declared: () =>
+                declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, authMode: AUTH.mode }).includes(UI_CARD),
+              log,
+            })
+        if (cardNudge) log(`reply to chat ${resolvedChatId}: card nudge given`)
+        return { content: [{ type: 'text', text: `Sent (${parts.join(', ')})${cardNudge ? `\n${cardNudge}` : ''}` }] }
       } catch (err) {
         if (peerRefusalOf(err) === PEER_NOT_PARTICIPANT) {
           // HOAI refuses this reply every time (lib/peer-refusal.ts). Say so in
@@ -6879,6 +6896,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
             chatId: sideThreadChatId != null ? String(sideThreadChatId) : undefined,
           })
         } else if (sideThreadChatId != null) {
+          notePeerConversationOpened(resultConvId != null ? String(resultConvId) : undefined, String(sideThreadChatId))
           clearInbound(String(sideThreadChatId))
         }
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
@@ -8343,6 +8361,18 @@ function rememberPeerConvChat(convId: string | undefined, chatId: string | undef
   peerConvByChat.set(chatId, convId)
 }
 
+// A side-thread this agent opened (or wrote into) with send_to_peer is known
+// from the send's answer, not only from the peer's first inbound: until the
+// peer answered, a reply there read as an owner chat and got the card nudge
+// (review of PR #277). The inbound handlers' reopen rule holds here too: a
+// conversation id the chat did not hold lifts the closed guard, so recording
+// it now cannot hide a reopen from the peer's answer.
+function notePeerConversationOpened(convId: string | undefined, chatId: string): void {
+  if (!convId) return
+  if (closedPeerChats.has(chatId) && peerConvByChat.get(chatId) !== convId) closedPeerChats.delete(chatId)
+  rememberPeerConvChat(convId, chatId)
+}
+
 function recordInbound(
   chatId: string,
   messageId: number,
@@ -8683,6 +8713,12 @@ const chatUnansweredButtons = new Map<string, Set<number>>()
  * anything else there. See activeButtonPromptChatIds in lib/poll-core.ts.
  */
 const recentButtonPrompts = new Map<string, ButtonPromptRecord>()
+/**
+ * When this daemon last told the agent, in a reply tool result, that the reply
+ * it just sent would read better as a card (lib/reply-card-shape.ts): at most
+ * once per chat per 30 minutes, kept in memory only.
+ */
+const replyCardNudges = new ReplyCardNudges()
 /**
  * The buttons and text of the button cards this daemon life posted (the reply tool's, the plan card's), so the owner's
  * stream tap opens a private turn only on a card as posted: a card rewritten after it was posted opens none
