@@ -2592,18 +2592,28 @@ export async function superviseClaude(args, opts = {}) {
   // the daemon write in the state folder rides every launch and relaunch as
   // --append-system-prompt-file, so the owner's global CLAUDE.md cannot make
   // it somebody else. Only when the file has text and this claude knows the
-  // flag (asked once per launcher); a person's own flag wins. Each note is
-  // printed once, so a relaunch loop does not repeat it.
+  // flag; a person's own flag wins. Each note is printed once, so a relaunch
+  // loop does not repeat it. The answer is kept until a launch that carried
+  // the flag dies at once (see the exit below), and 'unknown' is never kept.
   const identityPath = identityFilePath(stateDir)
   const personChoseIdentity = args.includes(IDENTITY_FLAG)
   let identityAnswer = null
   let identityNote = null
+  // Launches with the flag that died inside the health window, and whether
+  // this launcher has dropped the flag for the rest of its life.
+  let identityFastDeaths = 0
+  let identityOff = false
   const identityArgsNow = () => {
-    if (personChoseIdentity) return []
+    if (personChoseIdentity || identityOff) return []
     const out = identityLaunchArgs({
       path: identityPath,
       exists: (path) => String(readFile(path) ?? '').trim() !== '',
-      probe: () => (identityAnswer ??= probeIdentityFlag()),
+      probe: () => {
+        if (identityAnswer) return identityAnswer
+        const answer = probeIdentityFlag()
+        if (answer === 'supported' || answer === 'unsupported') identityAnswer = answer
+        return answer
+      },
       platform,
     })
     if (out.note && out.note !== identityNote) print(out.note)
@@ -2922,16 +2932,56 @@ export async function superviseClaude(args, opts = {}) {
       // A screen nobody may answer, or a signed-out account, is not a rejected
       // resume: a fresh session meets the same wall, and the retry would spend
       // the one-shot fallback (and overwrite launch-status) for nothing.
-      const recovery =
-        supervised && SUPERVISED_NO_FRESH_RETRY.has(code)
-          ? { action: 'return' }
-          : decideRelaunchRecovery({
-              isResumeAttempt: currentArgs.includes('--resume') || lastLaunchWasRelaunch,
-              exitCode: code,
-              elapsedMs,
-              freshTried,
-              healthyMs,
-            })
+      const namedSupervisedExit = supervised && SUPERVISED_NO_FRESH_RETRY.has(code)
+      const recovery = namedSupervisedExit
+        ? { action: 'return' }
+        : decideRelaunchRecovery({
+            isResumeAttempt: currentArgs.includes('--resume') || lastLaunchWasRelaunch,
+            exitCode: code,
+            elapsedMs,
+            freshTried,
+            healthyMs,
+          })
+      // A launch that carried the identity flag and died at once may have
+      // died OF it: the CLI under a long lived launcher can change (a
+      // reinstall, an old binary back on PATH), and one can parse the flag and
+      // still refuse the session. So the answer is asked again before the next
+      // launch, and when a second launch with it dies at once, or this one
+      // would otherwise end the launcher, this agent's own session comes back
+      // once without it (plugin review I1). Without the flag the agent is
+      // only missing its name; with it, it would not start at all.
+      if (!personChoseIdentity && currentArgs.includes(IDENTITY_FLAG) && code !== 0 && !namedSupervisedExit && elapsedMs < healthyMs) {
+        identityAnswer = null
+        identityFastDeaths += 1
+        const lastChance = recovery.action !== 'retry-fresh' && !keepAlive
+        if (!identityOff && (identityFastDeaths >= 2 || lastChance)) {
+          identityOff = true
+          noteStatus('identity-flag-dropped', { exit: code })
+          print(
+            `[hoai] claude exited at once (code ${code}) with ${IDENTITY_FLAG}; relaunching this agent's own ` +
+              `session once without it, so it starts without its identity (${identityPath}) until hoai starts ` +
+              'again. Updating Claude Code, then restarting the agent, gives it back.',
+          )
+          rereadPin()
+          const plainArgs = relaunchClaudeArgs({
+            scriptDir,
+            env,
+            home,
+            cwd,
+            readFile,
+            sessionArgs: sessionArgsFor(pinnedId, sessionExistsNow()),
+            extraArgs: [],
+          })
+          if (!plainArgs) return stopUnresolved()
+          // The same launch again without the flag, so its own recovery is
+          // unchanged: if it dies at once too, the flag was not the cause.
+          currentArgs = plainArgs
+          recordRecipe(currentArgs)
+          continue
+        }
+      } else if (elapsedMs >= healthyMs) {
+        identityFastDeaths = 0
+      }
       if (recovery.action === 'retry-fresh') {
         freshTried = true
         lastLaunchWasRelaunch = false

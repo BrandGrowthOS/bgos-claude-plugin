@@ -60,6 +60,7 @@ import {
 import { installHoaiCli } from './hoai-core.mjs'
 import { preseedClaudeTrust } from '../lib/claude-preseed.mjs'
 import { identityFilePath, writeAgentIdentity } from '../lib/agent-identity.mjs'
+import { agentStateDir } from '../lib/agent-inventory.mjs'
 
 export const DEFAULT_API_BASE = 'https://api.brandgrowthos.ai/api/v1'
 export const CLAUDE_INTEGRATION = 'claude-code'
@@ -281,6 +282,12 @@ export function resolveRequestedAssistantId({ argAssistantId, env } = {}) {
  *                                  the operator must rerun with --assistant-id)
  *   - nothing bound             -> { kind:'none' }
  */
+/** An assistant row's name when it is text, else '' (the rule identityFromMe
+ *  in lib/agent-identity.mjs reads the daemon's copy with). */
+function textName(row) {
+  return typeof row?.name === 'string' ? row.name : ''
+}
+
 export function selectAssistantBinding(meResponse, requestedId = '') {
   const list = Array.isArray(meResponse?.assistants) ? meResponse.assistants : []
   const candidates = list.filter((a) => a && a.assistant_id != null)
@@ -288,7 +295,7 @@ export function selectAssistantBinding(meResponse, requestedId = '') {
   const requested = String(requestedId ?? '').trim()
   if (requested) {
     const match = candidates.find((a) => String(a.assistant_id) === requested)
-    if (match) return { kind: 'ok', assistantId: match.assistant_id, name: String(match.name ?? '') }
+    if (match) return { kind: 'ok', assistantId: match.assistant_id, name: textName(match) }
     return {
       kind: 'mismatch',
       requestedId: requested,
@@ -296,7 +303,7 @@ export function selectAssistantBinding(meResponse, requestedId = '') {
     }
   }
   if (candidates.length === 1) {
-    return { kind: 'ok', assistantId: candidates[0].assistant_id, name: String(candidates[0].name ?? '') }
+    return { kind: 'ok', assistantId: candidates[0].assistant_id, name: textName(candidates[0]) }
   }
   return {
     kind: 'ambiguous',
@@ -1755,10 +1762,12 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
     // prompt on its first request, and the launcher hands this file to every
     // session as --append-system-prompt-file. Never in the agent's own folder,
     // and never fatal: without it the agent starts exactly as before.
-    const identityDir = join(home, '.bgos-agent', String(assistantId))
+    const identityDir = agentStateDir(home, assistantId) ?? ''
     const identity = writeAgentIdentity({ stateDir: identityDir, name: binding.name, ownerFirstName })
-    if (identity === 'written' || identity === 'unchanged') {
+    if (identity === 'written') {
       console.log(`[bgos-pair] wrote ${identityFilePath(identityDir)} (every session this agent starts is told its own name)`)
+    } else if (identity === 'unchanged') {
+      console.log(`[bgos-pair] ${identityFilePath(identityDir)} already says who this agent is; left as it is`)
     } else if (identity === 'skipped') {
       console.log('[bgos-pair] note: the app sent no name for this agent, so it starts without an identity file.')
     } else {

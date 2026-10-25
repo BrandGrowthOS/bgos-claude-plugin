@@ -27,7 +27,7 @@
 import { readFileSync, writeFileSync, mkdirSync, statSync, renameSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
-import { cleanIdentityName } from './agent-identity.mjs'
+import { agentIdentityText, cleanIdentityName } from './agent-identity.mjs'
 import { agentStateDir } from './update-readiness.js'
 
 /** File name inside the per-assistant state dir (next to chat-cursors.json). */
@@ -154,6 +154,36 @@ export function buildBootHelloNotification(input: {
       event_type: 'boot_hello',
       chat_id: String(input.chatId),
     },
+  }
+}
+
+/**
+ * Whether to tell the live conversation its name (plugin review I2,
+ * 2026-10-25). An agent that was running before its identity file existed
+ * (agent 1129, paired before 0.75.0), or renamed since, is in a conversation
+ * whose recorded system prompt has no name: a resume keeps it until the
+ * conversation is compacted, and a launcher started before the update passes
+ * no identity flag. Only when the daemon's boot refresh just wrote a new
+ * identity, and never beside the first hello, which already names the agent.
+ */
+export function shouldSendIdentityNotice(input: {
+  outcome: string
+  name: string | null | undefined
+  helloSent: boolean
+}): boolean {
+  return input.outcome === 'written' && cleanIdentityName(input.name) !== '' && !input.helloSent
+}
+
+/** That notice: the identity in the same words as the file, and no reply asked for. */
+export function buildIdentityNotice(input: {
+  assistantName: string
+  ownerFirstName?: string | null
+}): { content: string; meta: Record<string, string> } {
+  const who = cleanIdentityName(input.assistantName)
+  const identity = agentIdentityText({ name: who, ownerFirstName: input.ownerFirstName }) ?? ''
+  return {
+    content: `[hoai] ${identity} From now on introduce yourself as ${who}. No reply is needed.`,
+    meta: { event_type: 'agent_identity' },
   }
 }
 

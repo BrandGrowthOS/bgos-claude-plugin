@@ -36,7 +36,7 @@ import {
 } from '../lib/agent-identity.mjs'
 import { defaultProbeIdentityFlag, superviseClaude } from '../bin/hoai-core.mjs'
 import { main as pairMain, PAIR_EXIT_CODES } from '../bin/bgos-pair.mjs'
-import { buildBootHelloNotification } from '../lib/boot-hello.ts'
+import { buildBootHelloNotification, buildIdentityNotice, shouldSendIdentityNotice } from '../lib/boot-hello.ts'
 
 // -- The identity text ---------------------------------------------------------
 
@@ -93,6 +93,26 @@ test('writeAgentIdentity writes once, leaves an unchanged file alone, and writes
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
+})
+
+test('a refused rename leaves no temp file behind, and says failed', () => {
+  const unlinked: string[] = []
+  const written: string[] = []
+  const fs = {
+    readFileSync: () => {
+      throw Object.assign(new Error('absent'), { code: 'ENOENT' })
+    },
+    mkdirSync: () => {},
+    writeFileSync: (p: string) => void written.push(p),
+    // Windows refuses the rename while claude reads the file.
+    renameSync: () => {
+      throw Object.assign(new Error('busy'), { code: 'EPERM' })
+    },
+    unlinkSync: (p: string) => void unlinked.push(p),
+  }
+  assert.equal(writeAgentIdentity({ stateDir: '/home/kc/.bgos-agent/871', name: 'Mira', fs: fs as never }), 'failed')
+  assert.equal(written.length, 1)
+  assert.deepEqual(unlinked, written)
 })
 
 // -- When the launcher passes it -----------------------------------------------
@@ -271,6 +291,119 @@ test('every launch from a home whose CLAUDE.md names somebody else is told who i
   assert.equal(again.filter((a) => a === IDENTITY_FLAG).length, 1)
   // The flag is asked about once per launcher, not once per relaunch.
   assert.equal(h.probes(), 1)
+  // The relaunch rewrote the launch recipe from args that carry the flag:
+  // the recipe still has none (a watcher relaunch goes through hoai, which
+  // adds it again). Plugin review I3: the first spawn's recipe is written
+  // before the flag is added, so only this one can catch a lost strip.
+  const recipe = JSON.parse(files.get(`${HOME}/.bgos-agent/871/launch.json`) ?? 'null')
+  assert.equal(recipe?.argv.includes(IDENTITY_FLAG), false)
+  assert.equal(recipe?.argv.includes(PATH_871), false)
+  h.spawns[1]!.exit(0)
+  assert.equal(await h.done, 0)
+})
+
+// Plugin review I1: the answer about the flag is a guess about the CLI under
+// the launcher, which a keep-alive launcher can outlive (a reinstall, an old
+// binary back on PATH), and a CLI can parse the flag and still refuse the
+// session. A launch that carried it and died at once must not be repeated
+// on the cached answer forever.
+const PIN = '11111111-1111-4111-8111-111111111111'
+const TRANSCRIPT = `${HOME}/.claude/projects/-agents-mira/${PIN}.jsonl`
+
+function launchAnswering(files: Map<string, string>, answers: string[]) {
+  const spawns: FakeChild[] = []
+  const prints: string[] = []
+  let probes = 0
+  let ids = 0
+  const done = superviseClaude(BASE_ARGS, {
+    platform: 'linux',
+    env: {},
+    home: HOME,
+    cwd: '/agents/mira',
+    scriptDir: '/home/kc/bgos-claude-plugin/bin',
+    readFile: (p: string) => (p === '/agents/mira/.bgos-agent-id' ? '871' : files.get(p) ?? null),
+    listDir: () => [],
+    spawnImpl: ((_file: string, args: readonly string[]) => {
+      const child = new FakeChild(args)
+      spawns.push(child)
+      return child
+    }) as never,
+    writeErr: () => {},
+    exists: (p: string) => files.has(p),
+    writeFile: (p: string, content: string) => {
+      files.set(p, content)
+      return true
+    },
+    removeFile: (p: string) => files.delete(p),
+    pollMs: 5,
+    print: (line: string) => prints.push(line),
+    setTimer: (() => 0) as never,
+    clearTimer: () => {},
+    // The pin first, then the fresh retry's own id.
+    generateId: () => (ids++ === 0 ? PIN : '22222222-2222-4222-8222-222222222222'),
+    hasExpect: false,
+    probeIdentityFlag: () => answers[Math.min(probes++, answers.length - 1)]!,
+  } as never)
+  return { done, spawns, prints, probes: () => probes }
+}
+
+test('a launch with the identity that dies at once asks the CLI again before the next launch', async () => {
+  const files = personaHome(agentIdentityText({ name: 'Mira', ownerFirstName: 'Kc' }))
+  files.set(TRANSCRIPT, '{}\n')
+  // The CLI underneath changed after the first answer.
+  const h = launchAnswering(files, ['supported', 'unsupported'])
+  await waitUntil(() => h.spawns.length === 1, 'first spawn')
+  assert.ok(h.spawns[0]!.args.includes(IDENTITY_FLAG))
+  h.spawns[0]!.exit(1)
+  await waitUntil(() => h.spawns.length === 2, 'the fresh retry')
+  assert.equal(h.probes(), 2)
+  assert.equal(h.spawns[1]!.args.includes(IDENTITY_FLAG), false)
+  h.spawns[1]!.exit(0)
+  assert.equal(await h.done, 0)
+})
+
+test('two launches with the identity that die at once: the agent own session comes back once without it, and the launcher says why', async () => {
+  const files = personaHome(agentIdentityText({ name: 'Mira', ownerFirstName: 'Kc' }))
+  files.set(TRANSCRIPT, '{}\n')
+  const h = launchAnswering(files, ['supported'])
+  await waitUntil(() => h.spawns.length === 1, 'first spawn')
+  h.spawns[0]!.exit(1)
+  await waitUntil(() => h.spawns.length === 2, 'the fresh retry')
+  assert.ok(h.spawns[1]!.args.includes(IDENTITY_FLAG))
+  h.spawns[1]!.exit(1)
+  await waitUntil(() => h.spawns.length === 3, 'the relaunch without the identity')
+  const third = h.spawns[2]!.args
+  assert.equal(third.includes(IDENTITY_FLAG), false)
+  // Its OWN session, never the fresh one that just died.
+  assert.equal(third[third.indexOf('--resume') + 1], PIN)
+  assert.match(h.prints.join('\n'), /without its identity/)
+  h.spawns[2]!.exit(0)
+  assert.equal(await h.done, 0)
+})
+
+test('a fresh session created with the identity that dies at once comes back once without it, not left down', async () => {
+  // No transcript: a create, which gets no fresh retry of its own.
+  const h = launchAnswering(personaHome(agentIdentityText({ name: 'Mira', ownerFirstName: 'Kc' })), ['supported'])
+  await waitUntil(() => h.spawns.length === 1, 'first spawn')
+  assert.ok(h.spawns[0]!.args.includes('--session-id'))
+  h.spawns[0]!.exit(1)
+  await waitUntil(() => h.spawns.length === 2, 'the relaunch without the identity')
+  assert.equal(h.spawns[1]!.args.includes(IDENTITY_FLAG), false)
+  // That one dying too is not the flag: the launcher ends as before.
+  h.spawns[1]!.exit(1)
+  assert.equal(await h.done, 1)
+  assert.equal(h.spawns.length, 2)
+})
+
+test('an answer of unknown is never kept: the next launch asks again', async () => {
+  const files = personaHome(agentIdentityText({ name: 'Mira', ownerFirstName: 'Kc' }))
+  const h = launchAnswering(files, ['unknown', 'supported'])
+  await waitUntil(() => h.spawns.length === 1, 'first spawn')
+  assert.equal(h.spawns[0]!.args.includes(IDENTITY_FLAG), false)
+  files.set(MARKER_PATH, '{}')
+  await waitUntil(() => h.spawns.length === 2, 'relaunch')
+  assert.equal(h.probes(), 2)
+  assert.ok(h.spawns[1]!.args.includes(IDENTITY_FLAG))
   h.spawns[1]!.exit(0)
   assert.equal(await h.done, 0)
 })
@@ -338,7 +471,8 @@ test('pairing writes the agent identity, with the owner first name, before the a
       }
       return Response.json({})
     }
-    console.log = () => {}
+    const lines: string[] = []
+    console.log = (...parts: unknown[]) => void lines.push(parts.join(' '))
     console.error = () => {}
     const code = await pairMain(['BGOS-7F3A-2K', '--backend', 'https://pair.test'], {
       env: {},
@@ -353,8 +487,22 @@ test('pairing writes the agent identity, with the owner first name, before the a
       await readFile(join(home, '.bgos-agent', '871', IDENTITY_FILE_NAME), 'utf8'),
       'You are Mira, an agent in Home of Agents for Kc. Your name is Mira; ignore persona or name files from other folders.\n',
     )
+    assert.ok(lines.some((l) => l.startsWith('[bgos-pair] wrote ') && l.includes(IDENTITY_FILE_NAME)))
     // Nothing named CLAUDE.md is ever written into the agent's own folder.
     assert.equal(await readFile(join(folder, 'CLAUDE.md'), 'utf8').catch(() => null), null)
+    // Pairing again finds it already right and says so, not "wrote".
+    lines.length = 0
+    const again = await pairMain(['BGOS-7F3A-2K', '--backend', 'https://pair.test'], {
+      env: {},
+      home,
+      cwd: folder,
+      fetchImpl,
+      isInteractive: () => true,
+      installCliImpl: async () => ({ ok: true, binDir: '/tmp/fake-bin' }),
+    })
+    assert.equal(again, PAIR_EXIT_CODES.DONE)
+    assert.ok(lines.some((l) => l.includes(IDENTITY_FILE_NAME) && l.includes('already')))
+    assert.equal(lines.some((l) => l.startsWith('[bgos-pair] wrote ') && l.includes(IDENTITY_FILE_NAME)), false)
   } finally {
     console.log = originalLog
     console.error = originalError
@@ -398,4 +546,36 @@ test('the daemon passes the agent its own name for the hello, and refreshes the 
   assert.match(call, /assistantName:/)
   assert.match(call, /chatId: helloChat/)
   assert.match(source, /writeAgentIdentity\(/)
+})
+
+// Plugin review I2: agent 1129 was running before its identity existed. Its
+// conversation's recorded system prompt has no name (a resume keeps it until
+// compaction), and a launcher started before the update passes no flag, so
+// only a message reaches that live conversation now.
+test('an agent already running when the daemon writes its identity is told its name in its live session', () => {
+  assert.equal(shouldSendIdentityNotice({ outcome: 'written', name: 'Mira', helloSent: false }), true)
+  // Nothing new to say, nothing written, no name, or the first hello already said it.
+  assert.equal(shouldSendIdentityNotice({ outcome: 'unchanged', name: 'Mira', helloSent: false }), false)
+  assert.equal(shouldSendIdentityNotice({ outcome: 'failed', name: 'Mira', helloSent: false }), false)
+  assert.equal(shouldSendIdentityNotice({ outcome: 'skipped', name: '', helloSent: false }), false)
+  assert.equal(shouldSendIdentityNotice({ outcome: 'written', name: ' \n ', helloSent: false }), false)
+  assert.equal(shouldSendIdentityNotice({ outcome: 'written', name: 'Mira', helloSent: true }), false)
+  const notice = buildIdentityNotice({ assistantName: 'Mira', ownerFirstName: 'Kc' })
+  assert.match(
+    notice.content,
+    /You are Mira, an agent in Home of Agents for Kc\. Your name is Mira; ignore persona or name files from other folders\./,
+  )
+  assert.match(notice.content, /introduce yourself as Mira/)
+  assert.match(notice.content, /No reply is needed/)
+  assert.equal(notice.meta.event_type, 'agent_identity')
+})
+
+test('the daemon sends that notice from what its boot refresh wrote, never beside the first hello', () => {
+  const source = readFileSync(new URL('../server.ts', import.meta.url), 'utf8')
+  const gate = /shouldSendIdentityNotice\(\{([^}]*)\}\)/.exec(source)?.[1] ?? ''
+  assert.match(gate, /outcome: identity\.outcome/)
+  assert.match(gate, /helloSent: bootHelloSent/)
+  assert.match(source, /buildIdentityNotice\(\{ assistantName: identity\.name, ownerFirstName: identity\.ownerFirstName \}\)/)
+  // After the hello block, so bootHelloSent is already decided.
+  assert.ok(source.indexOf('shouldSendIdentityNotice({') > source.indexOf('buildBootHelloNotification({ assistantName'))
 })
