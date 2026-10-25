@@ -839,7 +839,12 @@ test('classify: a To line ending in a comma before a padded address still counts
   }
 })
 
-// ── cost: the inputs the review measured, each under 50 ms ───────────────────
+// ── cost: the inputs the review measured, each under the bound ───────────────
+// The pathologies cost 89 ms to 9.5 s on a Mac; a linear scan costs about 14 ms.
+// The Windows CI runner runs this suite about four times slower (one bound case
+// read 52.8 ms there against 50), so its bound is scaled, and each case takes the
+// fastest of three runs so a GC pause or a busy runner is not read as a regression.
+const COST_BOUND_MS = process.platform === 'win32' ? 150 : 50
 
 const PREFIX = 'Here is the summary you asked for, with the details below. '.repeat(6) + '\n'
 
@@ -893,10 +898,10 @@ const COSTLY: Array<{ name: string; text: string }> = [
 ]
 
 for (const c of COSTLY) {
-  test(`classify: ${c.name} costs under 50 ms`, () => {
+  test(`classify: ${c.name} costs under the bound`, () => {
     classify(c.text) // warm the regexes, so the bound is the scan, not the compile
-    const ms = costOf(c.text)
-    assert.ok(ms < 50, `took ${ms.toFixed(1)} ms`)
+    const ms = Math.min(costOf(c.text), costOf(c.text), costOf(c.text))
+    assert.ok(ms < COST_BOUND_MS, `took ${ms.toFixed(1)} ms (bound ${COST_BOUND_MS} ms)`)
   })
 }
 
