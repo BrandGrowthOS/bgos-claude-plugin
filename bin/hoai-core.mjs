@@ -2831,6 +2831,7 @@ export async function superviseClaude(args, opts = {}) {
     )
     return EXIT_ALREADY_SUPERVISED
   }
+  const ownerNow = () => parseSupervisorRecord(readFile(supervisorPath))?.pid ?? 'unknown'
   const standDown = (ownerPid) => {
     noteStatus('takeover-in-progress', { owner: ownerPid ?? 'none' })
     print(`[hoai] another launcher is taking assistant ${id} over right now (${takeoverLockPath}); not starting a second session`)
@@ -2910,8 +2911,10 @@ export async function superviseClaude(args, opts = {}) {
     const lock = takeTakeoverLock()
     if (lock === 'failed') {
       // No lock can be made here: no live holder is ended without one, and a
-      // stale claim is replaced as it always was.
+      // stale claim is replaced as it always was, while it still says what was
+      // judged (one another launcher armed meanwhile is theirs).
       if (!verdict.arm) return refuseOwned(verdict.ownerPid)
+      if (judgedRaw === null || readFile(supervisorPath) !== judgedRaw) return refuseOwned(ownerNow())
       return writeFile(supervisorPath, armBody()) ? 'armed' : 'unarmed'
     }
     if (lock === 'held') return standDown(verdict.ownerPid)
@@ -2946,7 +2949,6 @@ export async function superviseClaude(args, opts = {}) {
         }
       }
       if (!again.arm) return refuseOwned(again.ownerPid)
-      const ownerNow = () => parseSupervisorRecord(readFile(supervisorPath))?.pid ?? 'unknown'
       // Released meanwhile: created exclusively, as for no claim at all.
       if (judgedRaw === null) {
         const made = createExclusive(supervisorPath, armBody())

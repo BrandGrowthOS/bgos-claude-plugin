@@ -716,3 +716,37 @@ test('a takeover lock that cannot be made (a read-only or full disk) is not some
     sb.cleanup()
   }
 })
+
+test('never a double launch: where no takeover lock can be made, a claim another launcher armed after this one judged it is never overwritten', async () => {
+  const sb = sandbox()
+  try {
+    writeFileSync(sb.claim, supervisorFileBody(HOLDER, STAMP))
+    const theirs = supervisorFileBody(OTHER, new Date(STAMP_MS + 2 * 86_400_000).toISOString())
+    let swapped = false
+    const r = await launch(sb, fakeHolder({ alive: false }), {
+      pidAlive: (pid: number) => pid === OTHER,
+      pidProcess: (pid: number) => (pid === OTHER ? { command: HOAI_CMD, startedAtMs: STAMP_MS + 2 * 86_400_000 - 1_000 } : null),
+      holderChildren: (pid: number) => (pid === OTHER ? [{ pid: 6000, zombie: false, name: 'claude', startedAtMs: null }] : null),
+      createExclusive: (path: string, content: string) => {
+        if (path.endsWith('.takeover')) return 'failed'
+        if (existsSync(path)) return 'exists'
+        writeFileSync(path, content)
+        return 'created'
+      },
+      readFile: (path: string) => {
+        const text = existsSync(path) ? readFileSync(path, 'utf8') : null
+        // The first judgement still sees the dead holder; right after it, another launcher arms.
+        if (path === sb.claim && !swapped) {
+          swapped = true
+          writeFileSync(sb.claim, theirs)
+        }
+        return text
+      },
+    })
+    assert.equal(r.code, EXIT_ALREADY_SUPERVISED, r.prints.join('\n'))
+    assert.equal(r.spawns.length, 0)
+    assert.equal(readFileSync(sb.claim, 'utf8'), theirs)
+  } finally {
+    sb.cleanup()
+  }
+})
