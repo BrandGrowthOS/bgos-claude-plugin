@@ -18,10 +18,10 @@
  *                (Mark's draft was in one), but only a fence with no tag or a
  *                prose tag, and only bare unindented `To:` lines that do not
  *                read as code: a nodemailer sendMail, an EmailDraftDto or a
- *                send mail CI step SENDS email, it is not a draft. Outside
- *                code a value may carry merge fields ({company}, {{name}})
- *                and a To line may end in a comma before the next address.
- *                A keyvalue block.
+ *                send mail CI step SENDS email, it is not a draft. A value
+ *                may carry merge fields ({company}, {{name}}) and a To line
+ *                may end in a comma before the next address, in prose and in
+ *                such a fence alike. A keyvalue block.
  *   table        a markdown table, outside code, of 3 or more body rows. A
  *                table block.
  *   status_list  5 or more list items each LED by a status word or emoji
@@ -34,8 +34,10 @@
  *   comparison   2 or more options that are CHOICES: headed Option A, Plan 2
  *                and the like, or directly under a line that names them
  *                ("A vs B", a heading "Self hosted or managed"; not every
- *                section after it), sharing labelled fields that read as
- *                attributes of a choice (cost, risk, effort, setup). Review
+ *                section after it, and only options whose heading words are
+ *                on different sides of the "vs": under "We measured p95 vs
+ *                p50" a finding is neither), sharing labelled fields that read
+ *                as attributes of a choice (cost, risk, effort, setup). Review
  *                findings, install steps per platform, before and after, per
  *                PR status share fields too and are reports. A compare block.
  *
@@ -129,28 +131,25 @@ const ADDRESS_LINE =
  * semicolon BETWEEN recipients is how Outlook writes them, so only a trailing
  * one counts.
  *
- * In a fence any brace is code. Outside one a draft may carry merge fields
- * (`Subject: Quick question for {company}`, `To: {{email}}`), so only braces
- * that are not one: `${user.email}`, `{ name, address }`, a value that is only
- * `{`. And a To or Cc line may end in a comma when the next line is the next
- * recipient's address.
+ * A draft may carry merge fields (`Subject: Quick question for {company}`,
+ * `To: {{email}}`), so only braces that are not one are code: `${user.email}`,
+ * `{ name, address }`, a value that is only `{`. And a To or Cc line may end
+ * in a comma when the next line is the next recipient's address. The same
+ * rule outside code and in a fence with no tag or a prose tag (a fence tagged
+ * as code is never read for a draft at all).
  */
-function readsAsCode(line: string, next: string | undefined, fenced: boolean, recipient: boolean): boolean {
+function readsAsCode(line: string, next: string | undefined, recipient: boolean): boolean {
   const head = headOf(line)
   const colon = head.indexOf(':')
   if (/["'`{}]/.test(head.slice(0, colon))) return true
-  if (fenced) {
-    if (head.includes('{') || head.includes('}')) return true
-  } else {
-    const value = head.slice(colon + 1).replace(/^(?:\*\*|__)/, '').replace(/[ \t]+/g, '')
-    if (head.includes('${') || ONLY_PUNCTUATION.test(value)) return true
-    const rest = head.replace(MERGE_FIELD, '')
-    if (rest.includes('{') || rest.includes('}')) return true
-  }
+  const value = head.slice(colon + 1).replace(/^(?:\*\*|__)/, '').replace(/[ \t]+/g, '')
+  if (head.includes('${') || ONLY_PUNCTUATION.test(value)) return true
+  const rest = head.replace(MERGE_FIELD, '')
+  if (rest.includes('{') || rest.includes('}')) return true
   const end = line.trimEnd()
   if (end.endsWith(';')) return true
   if (!end.endsWith(',')) return false
-  return fenced || !recipient || next === undefined || !ADDRESS_LINE.test(headOf(next))
+  return !recipient || next === undefined || !ADDRESS_LINE.test(headOf(next))
 }
 
 /** A Subject and a To or Cc within this many lines of each other. */
@@ -181,7 +180,7 @@ function isEmailDraft(lines: readonly string[]): boolean {
     const m = (fence === null ? EMAIL_HEADER : FENCED_EMAIL_HEADER).exec(headOf(line))
     if (!m) continue
     const subject = m[1].toLowerCase() === 'subject'
-    if (readsAsCode(line, lines[i + 1], fence !== null, !subject)) continue
+    if (readsAsCode(line, lines[i + 1], !subject)) continue
     if (subject) {
       if (i - lastRecipient <= EMAIL_HEADER_SPAN) return true
       lastSubject = i
@@ -270,6 +269,14 @@ const OPTION_LABEL =
 const NAMES_A_VS_B = /\s(?:vs\.?|versus)\s/i
 /** A heading or bold line naming two choices with "or": "Self hosted or managed?" */
 const NAMES_A_OR_B = /\sor\s/i
+/** Where a naming line splits into the choices it names: "A vs B", "A, B or C". */
+const CHOICE_SEPARATOR = /\s(?:vs\.?|versus|or)\s|,/i
+/** Words that name nothing: "We measured p95 vs p50" names p95 and p50, not "we". */
+const NAMING_STOP_WORDS = new Set([
+  'a', 'an', 'the', 'of', 'on', 'in', 'at', 'to', 'for', 'by', 'with', 'from', 'and', 'or', 'vs', 'versus', 'is',
+  'are', 'be', 'it', 'its', 'this', 'that', 'we', 'our', 'us', 'i', 'you', 'your', 'which', 'what', 'should',
+  'between', 'choose', 'choosing', 'pick', 'use', 'using', 'go', 'option', 'options',
+])
 /** Before and after is one thing at two times, not two choices (two tests, so nothing backtracks between the words). */
 const BEFORE = /\bbefore\b/i
 const AFTER = /\bafter\b/i
@@ -310,6 +317,8 @@ interface Option {
    * under, counted from 1, or 0. Options compare by name only under the same one.
    */
   scope: number
+  /** Its header line, read for its words only if it is compared. */
+  head: string
 }
 
 function isChoiceAttribute(label: string): boolean {
@@ -321,6 +330,48 @@ function namesAChoice(head: string, isHeader: boolean): boolean {
   return !(BEFORE.test(head) && AFTER.test(head))
 }
 
+/**
+ * The words of a line that may name a choice, lower case, without the stop
+ * words; all of them when that leaves none ("A vs B" over "### A", "### B").
+ */
+function namingWords(text: string): string[] {
+  const words = text.toLowerCase().match(/[a-z0-9]+/g) ?? []
+  const named = words.filter((word) => !NAMING_STOP_WORDS.has(word))
+  return named.length > 0 ? named : words
+}
+
+/**
+ * The choices a naming line names, each as its words: "p95 vs p50" is
+ * [{p95}, {p50}]. Only the part between colons that holds the "vs" or "or", so
+ * the lead in of "Choosing a database: Postgres vs a managed one" is on no side.
+ */
+function choiceSides(head: string): Array<Set<string>> {
+  const named = head.split(':').find((part) => NAMES_A_VS_B.test(part) || NAMES_A_OR_B.test(part)) ?? head
+  return named
+    .split(CHOICE_SEPARATOR)
+    .map((part) => new Set(namingWords(part)))
+    .filter((side) => side.size > 0)
+}
+
+/** The side a heading's words are on most, or -1 when on none or a tie. */
+function sideOf(head: string, sides: ReadonlyArray<Set<string>>): number {
+  const words = [...new Set(namingWords(head))]
+  let best = -1
+  let bestCount = 0
+  let tied = false
+  for (let s = 0; s < sides.length; s++) {
+    const count = words.filter((word) => sides[s].has(word)).length
+    if (count > bestCount) {
+      best = s
+      bestCount = count
+      tied = false
+    } else if (count > 0 && count === bestCount) {
+      tied = true
+    }
+  }
+  return tied ? -1 : best
+}
+
 function isComparison(lines: readonly string[]): boolean {
   const options: Option[] = []
   let current: Option | null = null
@@ -329,6 +380,8 @@ function isComparison(lines: readonly string[]): boolean {
   let scope = 0
   let scopes = 0
   let scopeLevel = 0
+  // Each naming line, by its scope number.
+  const namingLines: string[] = ['']
   let blockStart = true
   for (const line of lines) {
     if (line.trim() === '') {
@@ -345,7 +398,7 @@ function isComparison(lines: readonly string[]): boolean {
     // a header that was not an option (it had no fields: a "## Findings" over
     // other sections), at a heading as high as the naming heading (beside it,
     // not under it), and at a block of prose that is not part of an option
-    // (the review's "We measured p95 vs p50", then findings).
+    // (a "We measured p95 vs p50" line, then a paragraph, then findings).
     if (scope !== 0) {
       if (isHeader) {
         if ((inScope && current!.fields.size === 0) || (level > 0 && level <= scopeLevel)) scope = 0
@@ -355,7 +408,7 @@ function isComparison(lines: readonly string[]): boolean {
     }
     blockStart = false
     if (isHeader) {
-      current = { fields: new Set(), labelled, scope }
+      current = { fields: new Set(), labelled, scope, head }
       options.push(current)
     }
     const field = !isHeader && current !== null && hasLabelColon(line) ? FIELD.exec(head) : null
@@ -367,17 +420,24 @@ function isComparison(lines: readonly string[]): boolean {
     if (mayName && namesAChoice(head, isHeader)) {
       scope = ++scopes
       scopeLevel = level
+      namingLines.push(head)
       // The naming header is the name of the options under it, not one of them.
       if (isHeader) current!.scope = 0
     }
     if (isField) current!.fields.add(field![1].toLowerCase())
   }
   const fielded = options.filter((o) => o.fields.size >= MIN_SHARED_FIELDS).slice(0, MAX_OPTIONS_COMPARED)
+  // Which side of its naming line each one's heading words are on ("Postgres"
+  // under "Postgres vs a managed database" is 0), or -1: a naming line names
+  // only those options, and options compare by name only from different sides
+  // (the findings under "We measured p95 vs p50" are neither p95 nor p50).
+  const sides = fielded.map((o) => (o.scope === 0 ? -1 : sideOf(o.head, choiceSides(namingLines[o.scope]))))
   for (let a = 0; a < fielded.length; a++) {
     for (let b = a + 1; b < fielded.length; b++) {
       const x = fielded[a]
       const y = fielded[b]
-      if (!((x.labelled && y.labelled) || (x.scope !== 0 && x.scope === y.scope))) continue
+      const named = x.scope !== 0 && x.scope === y.scope && sides[a] >= 0 && sides[b] >= 0 && sides[a] !== sides[b]
+      if (!((x.labelled && y.labelled) || named)) continue
       const shared = [...x.fields].filter((label) => y.fields.has(label))
       const larger = Math.max(x.fields.size, y.fields.size)
       if (shared.length < MIN_SHARED_FIELDS || shared.length / larger < MIN_FIELD_OVERLAP) continue

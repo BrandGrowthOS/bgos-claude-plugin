@@ -509,11 +509,13 @@ test('classify: a checklist with a status word after the box is still not a stat
 // Review of round 2 (PR #277): a line that names a choice names only the
 // options directly under it, not every section after it.
 
-/** The review's input: one prose "p95 vs p50" line, then findings sharing Impact and Risk. */
+/**
+ * The review's input: one prose "p95 vs p50" line, then DIRECTLY findings
+ * sharing Impact and Risk, no intro line between (round 3's fixture had one,
+ * and passed only because of it).
+ */
 const MEASURED_FINDINGS = [
   'We measured p95 vs p50',
-  '',
-  'Two findings from the review of the reply path, most severe first:',
   '',
   '**1. The label regex backtracks on a run of spaces**',
   '- File: lib/reply-card-shape.ts:185',
@@ -552,8 +554,8 @@ test('classify: a naming line inside a finding does not name the findings after 
 
 test('classify: a heading that is not an option ends the naming line before it', () => {
   const underFindings = MEASURED_FINDINGS.replace(
-    'We measured p95 vs p50\n\nTwo findings from the review of the reply path, most severe first:',
-    'We measured p95 vs p50\n\n## Findings',
+    'We measured p95 vs p50\n\n',
+    'We measured p95 vs p50\n\n## Findings\n\n',
   )
   assert.equal(classify(underFindings), null, 'a heading with no fields of its own')
   const sibling = [
@@ -660,9 +662,89 @@ test('classify: code shaped headers outside a fence stay null', () => {
   assert.equal(classify(lines('To: ${user.email}', 'Subject: Deploy finished')), null, 'interpolation, not a merge field')
   assert.equal(classify(lines('To: ops@example.com,', 'Subject: Deploy finished')), null, 'a trailing comma with no address after it')
   assert.equal(classify(lines('To: ops@example.com', 'Subject: Deploy finished,')), null, 'a Subject never ends in a comma')
-  // And inside a fence a brace is still code, merge field or not.
-  const fenced = ['Paste this:', '', '```', 'To: {{email}}', 'Subject: Hi {company}', '```', '', 'x'.repeat(300)].join('\n')
-  assert.equal(classify(fenced), null, 'braces in a fence')
+})
+
+// Review of round 3 (PR #277): the same naming line, with the findings
+// directly under it, and the same header rules inside a prose fence.
+
+test('classify: a naming line names only options whose heading words are on one side of it', () => {
+  // The p95 and p50 findings share Impact and Risk, but no finding is p95 or p50.
+  assert.equal(classify(MEASURED_FINDINGS), null)
+  assert.equal(classify(MEASURED_FINDINGS.replace('We measured p95 vs p50', 'p95 or p50?')), null, 'an "or" line')
+  assert.equal(classify(MEASURED_FINDINGS.replace('We measured p95 vs p50', '## p95 vs p50')), null, 'a naming heading')
+  // Two findings both about p95 are on the same side: one choice, not two.
+  const bothP95 = MEASURED_FINDINGS.replace('**1. The label', '**1. p95: the label').replace('**2. The email', '**2. p95: the email')
+  assert.notEqual(bothP95, MEASURED_FINDINGS)
+  assert.equal(classify(bothP95), null, 'two options on one side')
+  // And one on each side do compare: that is the choice the line names.
+  const eachSide = MEASURED_FINDINGS.replace('**1. The label', '**1. p95: the label').replace('**2. The email', '**2. p50: the email')
+  assert.equal(classify(eachSide), 'comparison', 'one option on each side')
+})
+
+/** Pros and cons of two choices, under a heading naming them with "or". */
+const PROS_CONS = [
+  '## React Native or Flutter for the driver app?',
+  '',
+  '### React Native',
+  '- Pros: the team already writes TypeScript, and we share the API client',
+  '- Cons: the map view needs a native module we would maintain',
+  '- Effort: about six weeks for the first release',
+  '',
+  '### Flutter',
+  '- Pros: one rendering engine, the map and charts look the same everywhere',
+  '- Cons: nobody here writes Dart yet',
+  '- Effort: about nine weeks, with the ramp up',
+].join('\n')
+
+test('classify: real choices under a naming line still compare', () => {
+  assert.equal(classify(COMPARISON_HEADINGS), 'comparison', 'an "A vs B" heading')
+  assert.equal(classify(PROS_CONS), 'comparison', 'pros and cons under an "or" heading')
+  assert.equal(
+    classify(PROS_CONS.replace('## React Native or Flutter for the driver app?', 'React Native vs Flutter for the driver app:')),
+    'comparison',
+    'a prose "vs" line',
+  )
+  assert.equal(
+    classify(COMPARISON_HEADINGS.replace('## Postgres', '## Choosing a database: Postgres').replace('a managed database', 'a managed one')),
+    'comparison',
+    'a lead in before the colon names neither side',
+  )
+  const letters = COMPARISON_HEADINGS.replace('## Postgres on the existing server vs a managed database', '## A vs B')
+    .replace('### Postgres on the existing server', '### A')
+    .replace('### Managed database', '### B')
+  assert.ok(letters.length >= MIN_CARD_SHAPED_CHARS)
+  assert.equal(classify(letters), 'comparison', 'a literal "A vs B" heading over A and B')
+  assert.equal(classify(COMPARISON), 'comparison', 'Option A and Option B')
+  assert.equal(classify(COMPARISON_PLANS), 'comparison', 'Plan 1 and Plan 2')
+})
+
+const fenceOf = (tag: string, body: string[]) =>
+  ['Here is the draft, ready to paste into Outlook:', '', '```' + tag, ...body, '```', '', 'x'.repeat(300)].join('\n')
+
+const FENCED_TEMPLATE = ['To: prospects@example.com', 'Subject: Quick question for {company}', '', 'Hi {{first_name}},']
+const FENCED_TWO_LINE_TO = ['To: Sarah Lee <sarah@x.com>,', 'Ahmad Khan <ahmad@x.com>', 'Subject: November LTO', '', 'Hi both,']
+
+test('classify: a draft in an untagged or prose fence may carry merge fields and a two line To', () => {
+  assert.equal(classify(fenceOf('', FENCED_TEMPLATE)), 'email_draft', 'merge field, untagged fence')
+  assert.equal(classify(fenceOf('', FENCED_TWO_LINE_TO)), 'email_draft', 'two line To, untagged fence')
+  assert.equal(classify(fenceOf('text', FENCED_TEMPLATE)), 'email_draft', 'merge field, text fence')
+  assert.equal(classify(fenceOf('text', FENCED_TWO_LINE_TO)), 'email_draft', 'two line To, text fence')
+  assert.equal(classify(fenceOf('', ['To: {{email}}', 'Subject: Hi {company}'])), 'email_draft', 'merge fields in both')
+})
+
+test('classify: the same lines in a code fence, or code shaped in a prose fence, stay null', () => {
+  for (const tag of ['ts', 'js', 'yaml']) {
+    assert.equal(classify(fenceOf(tag, FENCED_TEMPLATE)), null, `merge field, ${tag} fence`)
+    assert.equal(classify(fenceOf(tag, FENCED_TWO_LINE_TO)), null, `two line To, ${tag} fence`)
+  }
+  const subject = 'Subject: Deploy finished'
+  assert.equal(classify(fenceOf('', ['To: ${user.email}', subject])), null, 'interpolation')
+  assert.equal(classify(fenceOf('', ['To: { name, address }', subject])), null, 'an object')
+  assert.equal(classify(fenceOf('', ['To: {', subject])), null, 'a value that is only a brace')
+  assert.equal(classify(fenceOf('', ['{to}: ops@example.com', subject])), null, 'braces before the colon')
+  assert.equal(classify(fenceOf('', ['To: ops@example.com,', subject])), null, 'a trailing comma with no address after it')
+  assert.equal(classify(fenceOf('', ['To: ops@example.com,', 'html: body,', subject])), null, 'a comma before a code line')
+  assert.equal(classify(fenceOf('', ['To: ops@example.com', 'Subject: Deploy finished,'])), null, 'a Subject never ends in a comma')
 })
 
 // ── cost: the inputs the review measured, each under 50 ms ───────────────────
@@ -701,6 +783,15 @@ const COSTLY: Array<{ name: string; text: string }> = [
     text: PREFIX + Array.from({ length: 500 }, () => 'To: a@b.co,\n' + 'Sarah' + ' '.repeat(1000) + 'x@y').join('\n'),
   },
   { name: '20,000 naming lines and headings', text: Array.from({ length: 20_000 }, (_, i) => (i % 2 ? '### A vs B' : 'X vs Y\n\nCost: 1')).join('\n') },
+  // Round 4: a naming line of 80 choices over 10,000 options of 50 words each
+  // (89 ms here when every heading was matched to the sides as it was read).
+  {
+    name: 'a naming line of 80 choices over 10,000 long headings',
+    text: [
+      '## z or ' + Array.from({ length: 80 }, (_, i) => `w${i}`).join(', '),
+      ...Array.from({ length: 10_000 }, () => `### ${Array.from({ length: 50 }, (_, i) => `w${i}`).join(' ')}\nCost: 1\nRisk: 2`),
+    ].join('\n'),
+  },
 ]
 
 for (const c of COSTLY) {
