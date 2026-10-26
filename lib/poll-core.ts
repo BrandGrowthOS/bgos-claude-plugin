@@ -459,15 +459,28 @@ export interface ClickRow {
  *
  * `ask_user_input` rows are excluded: that tool owns its own polling, so
  * announcing here would be a second delivery of the same answer.
+ *
+ * A card in `prevUnanswered` NEWER than every row this read returned is kept
+ * open: the read began before the card was posted, so it says nothing about
+ * it (see noteOwnUnansweredCard). An open card older than the read's newest
+ * row and missing from it left the window or was deleted, and is dropped as
+ * before.
+ *
+ * `alreadyAnnounced` is the set both transports mark a tap in. A tap in it is
+ * never announced here: the stream can announce a tap before the post that
+ * noted its card open returns, and the note then puts the id back.
  */
 export function selectClickTransitions(opts: {
   rows: ClickRow[]
   prevUnanswered: ReadonlySet<number>
   isFirstPoll: boolean
+  alreadyAnnounced?: ReadonlySet<number>
 }): { announce: number[]; nextUnanswered: Set<number> } {
   const announce: number[] = []
   const nextUnanswered = new Set<number>()
+  let newestRead = -Infinity
   for (const row of opts.rows) {
+    if (row.id > newestRead) newestRead = row.id
     if (row.sender !== 'assistant') continue
     if (row.messageType === 'ask_user_input') continue
     if (!row.hasOptions) continue
@@ -477,9 +490,44 @@ export function selectClickTransitions(opts: {
     }
     if (opts.isFirstPoll) continue
     if (!opts.prevUnanswered.has(row.id)) continue
+    if (opts.alreadyAnnounced?.has(row.id)) continue
     announce.push(row.id)
   }
+  for (const id of opts.prevUnanswered) if (id > newestRead) nextUnanswered.add(id)
   return { announce, nextUnanswered }
+}
+
+/**
+ * Record a card THIS daemon has just posted with buttons as unanswered in the
+ * chat's open set, the set a read fills with what it saw.
+ *
+ * WHY (feedback 0984e340, 2026-10-26). A tap is announced only as a
+ * transition from a card some earlier read saw unanswered, and nothing told
+ * the reads about a card the daemon posted itself. The owner tapped the
+ * sign-in card 1.77 s after it was posted; the first read of that chat after
+ * posting came 0.19 s later, found the card already answered and announced
+ * nothing, so the sign-in waited for a pick that had already been made. The
+ * daemon knows its own card is open the moment the post returns.
+ *
+ * It also gives the chat a baseline (pollChat treats a chat with no entry and
+ * no cursor as a first read, which announces nothing), and a chat with an open
+ * card is read in full, so a cursor that moved past the card cannot hide it.
+ * Single announce still holds: a read's announce consumes the entry, and a tap
+ * the stream announced first (it can, before the post returns and the note
+ * re-opens the id) is in `alreadyAnnounced`, which the read skips.
+ *
+ * Called for the sign-in card, the reply tool's buttons and the plan card.
+ * Not for the permission card (its own watch reads the card row) nor
+ * ask_user_input (that tool polls for itself).
+ */
+export function noteOwnUnansweredCard(
+  unanswered: Map<string, Set<number>>,
+  chatId: string,
+  messageId: number,
+): void {
+  const open = unanswered.get(chatId)
+  if (open) open.add(messageId)
+  else unanswered.set(chatId, new Set([messageId]))
 }
 
 // ── Cadence planning (P6d/P6e) ───────────────────────────────────────────────
