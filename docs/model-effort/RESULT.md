@@ -2,6 +2,8 @@
 
 Branch `feat/owner-model-effort-control`, off the plugin's main at `457210c`. Board row c0cc7944. Not pushed (no GitHub access here); Data fetches the branch over ssh. Plugin bumped to 0.75.0 with a CHANGELOG entry. Commits: `078fe83` (red first tests), `81bae66` (implementation), `33469f8` (release bump), and this file.
 
+**Round 3 (0.74.4) replaced the wire.** BGOS #3060 merged and is authoritative: the picker speaks `model_effort_picker` and voice_rpc `list_model_effort` / `apply_model_effort`, and the assumed `model_effort_rpc` wire with `owner_model_effort_control`, `set_model`, `set_effort` and `describe` described in the sections up to "Round 2" is gone. See "Round 3".
+
 Built exactly as KC approved it: "Route A exactly as this proposal writes it, and nothing wider. Two typed operations only, set_model and set_effort, built from the frozen literal tables in compact-inject.ts. No slash command or free text on the wire. A separate owner opt-in for remote model and effort control (the compact permission does not count). Every precondition you listed before typing."
 
 ## What was built
@@ -298,6 +300,139 @@ Every one recorded in `pids.log` (worktree root, git excluded), and only those s
 
 No other tmux server, session or agent was touched, nothing was sent from the live sessions, and nothing was written outside `~/hoai-work`, this worktree and the session's temp folders.
 
+## Round 3 (0.74.4): the BGOS wire, merged with main
+
+BGOS #3060 merged and is live, so it is AUTHORITATIVE and the wire assumed above ("The wire", and the server wiring row of "What was built") is replaced. Read at BGOS main `1ec6bbf4`: `backend/src/integrations/model-effort-picker.model.ts`, `assistant-sessions.service.ts` (modelEffort and its gate), `voice/voice-rpc.service.ts`, `dto/integrations/model-effort-picker.dto.ts`, and the app's `queries/modelEffortQuery.ts` and `components/chat/model-picker/`. A `git grep` of that tree finds no sender of `set_model`, `set_effort`, `model_effort_rpc` or `owner_model_effort_control` outside a review document, so the old wire is removed rather than kept as a dead second wire. The Codex connector's `src/model-effort-picker.ts` and its `adapter.ts` branch (codex-channel-bgos `codex/model-effort-picker`) were the reference for shapes and refusal codes.
+
+### The wire now
+
+| | BGOS sends (voice_rpc, the Sessions rail) | The daemon answers |
+| --- | --- | --- |
+| list | `list_model_effort`, payload `{}` | `{ ok: true, payload: { runtime: 'claude-code', sessionId, current: { model, effort } or null, models: [{ id, label, description: '', enabled, defaultEffort, efforts: [{ id, label, enabled, reason }] }] } }`, read back through a vendored `readModelEffortCatalog` before it leaves |
+| apply | `apply_model_effort`, payload `{ sessionId, model, effort }` | `{ ok: true, payload: { current: { model, effort }, sessionId } }` only when the session's own latest report holds both |
+| refusal | | `{ ok: false, error: { code, message } }`, code `busy`, `not_allowed` or `failed` (BGOS passes the first two and its own `timeout`; anything else becomes `switch_failed`) |
+
+Model ids are the frozen table's families (`opus`, `sonnet`, `haiku`, `fable`, kept only where the CLI's own help names them), plus the running model by its own id when the table has no literal for it, so its effort can still be changed. Efforts are the CLI's `--effort` choices; Ultra Code is listed disabled with "This host cannot confirm Ultra Code remotely."; a running model that reports no effort lists its efforts disabled. No fresh report of the proven session, or a session id BGOS's DTO refuses, and the list is refused, never sent empty.
+
+Capability `model_effort_picker`: a pairing, opted in on this machine, the injector answers, a fresh observation and a non empty catalog, and never on Windows. One selection is the model step then the effort step under one hold of the lock and one 15 s deadline from the frame's arrival (confirmation stops 1.5 s before it; a step needs 4 s to start). A confirmed switch is reported on the session settings rail and noted in the chat ("Switched to Sonnet, effort Extra high."), neither awaited before the result.
+
+### Independent security review
+
+A separate reviewer, which did not write the code, read c1c71d2 against the eight properties of the brief and the BGOS side, and ran the six relevant files in a private copy (124 of 124). No High.
+
+| Finding | Verdict | Fix |
+| --- | --- | --- |
+| M1: the result could land after BGOS's 20 s timer (budget started after an awaited ack; result waited on the PATCH and the note). Verified by the reviewer with a virtual clock. | Real | Deadline from arrival, 15 s; a picker op does not await its ack; PATCH and note sent, not awaited. |
+| M2: the control lock held back message deliveries only; consult, dispatch, meeting, mission, button and nudge cards called `mcp.notification` directly. | Real | `holdChannelCardsWhileBusy` wraps `mcp.notification` once, outermost; plus the turn, dialog and other injections checked again right before the Enter, the literal cleared under the round 2 rule on a refusal. |
+| L1: a model switched before the effort step was refused read as `not_allowed`. | Real | Answered `failed`, says the model changed, noted in the chat. |
+| L2: `handle()` had no production caller; this file described the old wire. | Real | `handle()` removed; its per step cases drive `apply` (unit file and tmux rig); this section. |
+| Info: the owner rule on an agent with one main chat rests on BGOS's gate (the frame names no sender). | Kept | Nothing more is knowable from the frame; listed as an open risk. |
+| Info: the status line store's sequence number is read then written without a lock. | Kept | Every interleaving the reviewer worked fails closed (`not_confirmed`). |
+| Info: the once per rpcId set is in memory, so a re sent frame after a restart could run again. | Kept | The second run reads "already" or types the same idempotent literal into an empty composer. |
+| Info: a picker frame is answered even where the token is not declared (apikey, Windows). | Kept | The control refuses (`no_terminal`, `not_opted_in`); harmless. |
+
+Properties the reviewer found no issue with: owner and main chat only, the pane proof, the composer empty and confirmation reads, confirmation only from a newer observation, Ultra Code, the project level statusLine. The lock (M2) and the wire (M1) are fixed above.
+
+### Second review, of the fixes
+
+A second reviewer, again not the author, read `c1c71d2..b59b583` (184 of 184 tests in a private copy, the tmux rig and live pane files skipped). M1, M2, L1 and L2 fixed; no deadlock (nothing the change waits on needs a channel card), no unhandled rejection, no path that deletes owner text. Fixed in `a54d93c`:
+
+| Finding | Verdict | Fix |
+| --- | --- | --- |
+| Important: a voice dispatch waits for its card before answering accepted and BGOS waits 10 s (`voice-task.service.ts` `DISPATCH_ACCEPT_TIMEOUT_MS`); held behind a change it read as staged and could run twice. Verified by the reviewer. | Real | While cards are held the dispatch is accepted at once; its card goes out when the change ends (`cardsHeld`). |
+| Minor: confirmation ran to the deadline, leaving the last screen read and the result POST past it. | Real | Confirmation stops 1.5 s early; a step needs 4 s to start. |
+| Minor: a card sent just before the lock can open a turn the hooks have not reported. | Real | For 2 s after any channel card the turn is unknown and nothing is typed (`lastCardAtMs`). |
+| Minor: an effort step unconfirmed after its Enter was noted as "not changed". | Real | Noted as "could not be confirmed". |
+| Minor: a voice consult or a tap card is recorded by the private turn tracker when it is called, before the hold; an untracked card when it is sent. | Kept, open risk | The reviewer traced it as only making the tracker more cautious; not reproduced. |
+| Minor: a voice consult's 38 s timer starts before a hold. | Kept, open risk | A long hold ends in the existing "will follow up in chat" answer. |
+| Minor: a `dialog_open` refusal before the Enter may send BSpace while a dialog is drawn; no end to end test of a held direct card. | Kept, open risk | The clear needs the composer to read as exactly the literal with the cursor after it, which a drawn dialog hides; the hold is unit tested and its install pinned. |
+
+### Mutations
+
+Every new test of round 3, and each test the review fixes added, was MUTATION PROVEN in an isolated copy of `a54d93c`'s tree (`git archive`, never this worktree): the one line it guards was broken, the named test run alone (`npx tsx --test --test-name-pattern`), required RED, the line restored, and the test required GREEN again. Line numbers are at `a54d93c`. All 72 proven, 0 timed out (each run is capped at 120 s and only its own process group is killed). The first pass found three weak tests, each fixed before this table: C7 and R11 stayed green under their mutation (a session id case that was refused for another reason, and an agent id check exercised only with a non empty id), and V5 hung instead of failing; three more cases now race a 500 ms timer so a broken guard fails instead of hanging.
+
+| # | Test (file :: name) | Mutated line at `a54d93c` (after the mutation) | Result |
+| --- | --- | --- | --- |
+| C1 | `model-effort-picker-contract.test.ts` :: the capability token and both op names | `lib/model-effort-rpc.ts:58` `export const MODEL_EFFORT_PICKER = 'model_effort_pickers'` | PROVEN, red: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal: |
+| C1b | `model-effort-picker-contract.test.ts` :: the capability token and both op names | `lib/model-effort-rpc.ts:61` `export const APPLY_MODEL_EFFORT = 'apply_model_efforts'` | PROVEN, red: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal: |
+| C2 | `model-effort-picker-contract.test.ts` :: the catalog carries exactly BGOS | `lib/model-effort-catalog.ts:291` `note: 'x',` | PROVEN, red: AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal: |
+| C3 | `model-effort-picker-contract.test.ts` :: BGOS's reader accepts what the daemon builds | `lib/model-effort-catalog.ts:291` `current: running ? { model: o.modelId, effort: runningEffort } : null,` | PROVEN, red: AssertionError [ERR_ASSERTION]: current names the picker row, so the app highlights it |
+| C4 | `model-effort-picker-contract.test.ts` :: every effort the CLI offers is enabled | `lib/model-effort-catalog.ts:284` `{ id: 'ultracode', label: effortLabel('ultracode'), enabled: true, reason: ULTRACODE_UNCONFIRMA` | PROVEN, red: AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal: |
+| C5 | `model-effort-picker-contract.test.ts` :: a running model that reports no effort lists | `lib/model-effort-catalog.ts:281` `enabled: true,` | PROVEN, red: AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value: |
+| C6 | `model-effort-picker-contract.test.ts` :: a running model outside the frozen table | `lib/model-effort-catalog.ts:263` `(deleted) if (running && !ids.includes(running)) ids.push(running)` | PROVEN, red: AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal: |
+| C7 | `model-effort-picker-contract.test.ts` :: nothing to offer, no proven session | `lib/model-effort-catalog.ts:256` `if (!sessionId) return null` | PROVEN, red: AssertionError [ERR_ASSERTION]: ../x |
+| C8 | `model-effort-picker-contract.test.ts` :: a model id that would carry text | `lib/model-effort-catalog.ts:230` `(deleted) if (!isModelId(modelId)) return null` | PROVEN, red: AssertionError [ERR_ASSERTION]: opus;whoami |
+| C9 | `model-effort-picker-contract.test.ts` :: the vendored reader is BGOS | `lib/model-effort-catalog.ts:192` `if (!isRecord(e) \|\| !isId(e.id) \|\| !isText(e.label, 80) \|\| typeof e.enabled !== 'boolean' \|\| !(` | PROVEN, red: AssertionError [ERR_ASSERTION]: a disabled effort must say why |
+| C10 | `model-effort-picker-contract.test.ts` :: every refusal maps to a code the app understands | `lib/model-effort-rpc.ts:100` `if (BUSY.has(code) && code !== 'busy_turn') return 'busy'` | PROVEN, red: AssertionError [ERR_ASSERTION]: busy_turn |
+| R1 | `model-effort-rpc.test.ts` :: list answers a catalog BGOS's reader accepts | `lib/model-effort-rpc.ts:230` `return { ok: true, payload: { ...catalog, sessionId: '' } }` | PROVEN, red: AssertionError [ERR_ASSERTION]: readModelEffortCatalog accepts it |
+| R2 | `model-effort-rpc.test.ts` :: list while not opted in | `lib/model-effort-rpc.ts:221` `if (false) {` | PROVEN, red: AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal: |
+| R3 | `model-effort-rpc.test.ts` :: apply hands the control exactly the selection | `lib/model-effort-rpc.ts:75` `export const APPLY_BUDGET_MS = 18_000` | PROVEN, red: AssertionError [ERR_ASSERTION]: BGOS waits 20 000 ms from its emit (assistant-sessions.service.ts:13 |
+| R4 | `model-effort-rpc.test.ts` :: apply answers what the session REPORTS | `lib/model-effort-rpc.ts:264` `if (false) {` | PROVEN, red: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal: |
+| R5 | `model-effort-rpc.test.ts` :: a confirmed switch is reported on the session settings rail | `lib/model-effort-rpc.ts:245` `if (false) {` | PROVEN, red: AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal: |
+| R6 | `model-effort-rpc.test.ts` :: a selection that was already running is answered without a note | `lib/model-effort-rpc.ts:267` `if (true) this.note(chatId, `Switched to ${name}, effort ${effortLabel(effort)}.`)` | PROVEN, red: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal: |
+| R7 | `model-effort-rpc.test.ts` :: a refusal is answered with the app's code | `lib/model-effort-rpc.ts:252` `if (!outcome.modelSwitched) return { ok: false, code: outcome.code as never, message: outcome.m` | PROVEN, red: AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal: |
+| R8 | `model-effort-rpc.test.ts` :: owner only, main chat only: a chat the daemon cannot place | `lib/model-effort-rpc.ts:206` `if (false) {` | PROVEN, red: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal: |
+| R9 | `model-effort-rpc.test.ts` :: pickerChatAllowed | `lib/model-effort-rpc.ts:158` `return true` | PROVEN, red: AssertionError [ERR_ASSERTION]: shared agent: a main chat not proven the owner's |
+| R9b | `model-effort-rpc.test.ts` :: pickerChatAllowed | `lib/model-effort-rpc.ts:157` `(deleted) if (input.isOthers(chatId)) return false` | PROVEN, red: AssertionError [ERR_ASSERTION]: a share recipient's chat, even when it is the only one listed |
+| R10 | `model-effort-rpc.test.ts` :: a malformed selection is refused | `lib/model-effort-rpc.ts:236` `typeof sessionId !== 'string' \|\| sessionId === '' \|\| false \|\|` | PROVEN, red: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal: |
+| R11 | `model-effort-rpc.test.ts` :: a frame for another agent is not this daemon | `lib/model-effort-rpc.ts:200` `return (typeof frame.assistantId === 'string' \|\| typeof frame.assistantId === 'number') && Stri` | PROVEN, red: AssertionError [ERR_ASSERTION]: a daemon with no agent id answers nothing |
+| R12 | `model-effort-rpc.test.ts` :: a control that throws is answered failed | `lib/model-effort-rpc.ts:215` `throw err` | PROVEN, red: Error: boom |
+| V1 | `voice-rpc-model-effort.test.ts` :: both picker ops pass the normalizer | `lib/voice-rpc.ts:127` `isSessionOp(r.op)` | PROVEN, red: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal: |
+| V2 | `voice-rpc-model-effort.test.ts` :: a list is acked, answered by the picker | `lib/voice-rpc.ts:871` `payload = {}` | PROVEN, red: AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal: |
+| V3 | `voice-rpc-model-effort.test.ts` :: a refusal is posted with the picker's code | `lib/voice-rpc.ts:870` `if (!answer.ok) throw new VoiceRpcError('PLUGIN_ERROR', answer.message)` | PROVEN, red: AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal: |
+| V4 | `voice-rpc-model-effort.test.ts` :: a picker that throws is answered failed | `lib/voice-rpc.ts:897` `: isSessionOp(frame.op)` | PROVEN, red: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal: |
+| V5 | `voice-rpc-model-effort.test.ts` :: a re sent apply never types twice | `lib/voice-rpc.ts:815` `if (isSessionOp(frame.op)) {` | PROVEN, red: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal: |
+| V6 | `voice-rpc-model-effort.test.ts` :: another agent's frame gets no ack | `lib/voice-rpc.ts:808` `? true` | PROVEN, red: AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal: |
+| V7 | `voice-rpc-model-effort.test.ts` :: with no picker wired | `lib/voice-rpc.ts:861` `throw new VoiceRpcError('unsupported', 'This agent does not change its model and effort from th` | PROVEN, red: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal: |
+| V8 | `voice-rpc-model-effort.test.ts` :: logs a picker rpcId as its short hash | `lib/voice-rpc.ts:835` `this.deps.log(`voice_rpc ack failed (non-fatal, rpc=${frame.rpcId}): ${err instanceof Error ? e` | PROVEN, red: AssertionError [ERR_ASSERTION]: raw rpcId in the log: "voice_rpc ack failed (non-fatal, rpc=rpc-7\n[ |
+| W1 | `model-effort-wiring.test.ts` :: model_effort_picker is declared only on a pairing | `lib/declared-capabilities.ts:399` `...(input.authMode === 'pairing' && input.modelEffortPicker === true && true` | PROVEN, red: AssertionError [ERR_ASSERTION]: a Windows host cannot prove or type into a tmux pane |
+| W2 | `model-effort-wiring.test.ts` :: the heartbeat declares from the live answer | `server.ts:17233` `...declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.register` | PROVEN, red: AssertionError [ERR_ASSERTION]: The input did not match the regular expression /modelEffortPicker: m |
+| W3 | `model-effort-wiring.test.ts` :: the picker rides voice_rpc | `server.ts:12370` `(deleted) modelEffort: modelEffortPicker,` | PROVEN, red: AssertionError [ERR_ASSERTION]: The input did not match the regular expression /modelEffort: modelEf |
+| W4 | `model-effort-wiring.test.ts` :: the picker answers only the owner's main chat | `server.ts:2362` `pickerChatAllowed({ chatId, mainChatIds, isOwners: (c) => chatOwnership.isOwners(c), isOthers: ` | PROVEN, red: AssertionError [ERR_ASSERTION]: The input did not match the regular expression /chatAllowed: \(chatI |
+| W5 | `model-effort-wiring.test.ts` :: L2: no daemon log line carries a raw rpcId | `server.ts:14546` `log(`doctor_rpc received (op=${frame.op}, rpc=${frame.rpcId})`)` | PROVEN, red: AssertionError [ERR_ASSERTION]: raw in a log line: ${frame.rpcId} |
+| S1 | `stop-pause-wiring.test.ts` :: the stop reads the goal lane as it is at that moment | `server.ts:17233` `...declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.register` | PROVEN, red: AssertionError [ERR_ASSERTION]: the heartbeat declaration moved; keep the stop gate on the same expr |
+| P1 | `pairing-lock-standdown.test.ts` :: the wrapped set is exactly the handlers minus the transport ones | `server.ts:14521` `realtimeSocket.on('model_effort_rpc', () => {})` | PROVEN, red: AssertionError [ERR_ASSERTION]: server.ts registers a socket handler this test does not classify; wr |
+| K1 | `model-effort-control.test.ts` :: snapshot reports the proven session | `lib/model-effort-control.ts:317` `return { optedIn, sessionId, observation, catalog: parseHelpCatalog(null) }` | PROVEN, red: AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal: |
+| K2 | `model-effort-control.test.ts` :: snapshot while not opted in | `lib/model-effort-control.ts:307` `const optedIn = true` | PROVEN, red: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal: |
+| K3 | `model-effort-control.test.ts` :: apply switches the model, then the effort, each confirmed, under one lock | `lib/model-effort-control.ts:282` `this.inFlight = false` | PROVEN, red: AssertionError [ERR_ASSERTION]: the lock is held through both steps |
+| K4 | `model-effort-control.test.ts` :: apply with the model already running types only the effort | `lib/model-effort-control.ts:289` `const step = await this.change('set_effort', 'max', pre, opts.deadlineAtMs)` | PROVEN, red: AssertionError [ERR_ASSERTION]: {"ok":false,"op":"apply","code":"not_confirmed","message":"The comma |
+| K5 | `model-effort-control.test.ts` :: apply with the effort already running types only the model | `lib/model-effort-control.ts:280` `const step = await this.change('set_model', 'fable', pre, opts.deadlineAtMs)` | PROVEN, red: AssertionError [ERR_ASSERTION]: {"ok":false,"op":"apply","code":"not_confirmed","message":"The comma |
+| K6 | `model-effort-control.test.ts` :: apply of what already runs types nothing | `lib/model-effort-control.ts:277` `let applied = true` | PROVEN, red: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal: |
+| K7 | `model-effort-control.test.ts` :: apply for a session the picker read before a restart | `lib/model-effort-control.ts:275` `(deleted) if (wanted !== pre.sessionId) throw new Refusal('session_mismatch')` | PROVEN, red: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal: |
+| K8 | `model-effort-control.test.ts` :: apply refuses Ultra Code | `lib/model-effort-control.ts:257` `(deleted) if (effort === 'ultracode') return this.refused('apply', new Refusal('ultracode_uncon` | PROVEN, red: AssertionError [ERR_ASSERTION]: {"sessionId":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","model":"sonnet" |
+| K9 | `model-effort-control.test.ts` :: apply on a model outside the frozen table | `lib/model-effort-control.ts:260` `if (!isEffortLevel(effort) \|\| !isModelFamily(model)) {` | PROVEN, red: AssertionError [ERR_ASSERTION]: {"ok":false,"op":"apply","code":"unsupported_value","message":"That  |
+| K10 | `model-effort-control.test.ts` :: apply checks every precondition again before the effort step | `lib/model-effort-control.ts:351` `if (turn === 'live') return null` | PROVEN, red: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal: |
+| K11 | `model-effort-control.test.ts` :: apply onto a model that reports no effort | `lib/model-effort-control.ts:284` `(deleted) pre = await this.preflight()` | PROVEN, red: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal: |
+| K12 | `model-effort-control.test.ts` :: apply waits for confirmation no longer than its deadline | `lib/model-effort-control.ts:429` `const deadline = Math.min(this.deps.now() + this.opts.confirmTimeoutMs, deadlineAtMs)` | PROVEN, red: AssertionError [ERR_ASSERTION]: waited 5150 ms |
+| K13 | `model-effort-control.test.ts` :: apply does not start the effort step without the time | `lib/model-effort-control.ts:328` `(deleted) if (deadlineAtMs - this.deps.now() < this.opts.minStepMs) throw new Refusal('out_of_t` | PROVEN, red: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal: |
+| K14 | `model-effort-control.test.ts` :: apply is refused while another change holds the lock | `lib/model-effort-control.ts:263` `if (this.deps.otherInjectionBusy()) {` | PROVEN, red: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal: |
+| R13 | `model-effort-rpc.test.ts` :: apply hands the control exactly the selection | `lib/model-effort-rpc.ts:241` `const outcome = await this.deps.control.apply({ sessionId, model, effort }, { deadlineAtMs: thi` | PROVEN, red: AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal: |
+| R14 | `model-effort-rpc.test.ts` :: the answer never waits on the session settings report | `lib/model-effort-rpc.ts:246` `await this.deps.reportSettings(chatId, settings).catch((err) => {` | PROVEN, red: AssertionError [ERR_ASSERTION]: the answer was held behind the report or the note |
+| R15 | `model-effort-rpc.test.ts` :: a model switched before the effort was refused | `lib/model-effort-rpc.ts:252` `if (true) return refuse(outcome.code, outcome.message)` | PROVEN, red: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal: |
+| R16 | `model-effort-rpc.test.ts` :: a refusal with nothing switched sends no note | `lib/model-effort-rpc.ts:252` `if (false) return refuse(outcome.code, outcome.message)` | PROVEN, red: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal: |
+| V9 | `voice-rpc-model-effort.test.ts` :: a picker result is not held behind a slow ack | `lib/voice-rpc.ts:833` `if (false) {` | PROVEN, red: AssertionError [ERR_ASSERTION]: the result waited for the ack |
+| V10 | `voice-rpc-model-effort.test.ts` :: a picker result is not held behind a slow ack | `lib/voice-rpc.ts:868` `(deleted) receivedAtMs,` | PROVEN, red: AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value: |
+| H1 | `model-effort-card-hold.test.ts` :: the method held is the channel card | `lib/model-effort-control.ts:552` `export const CHANNEL_CARD_METHOD = 'notifications/claude/channel/x'` | PROVEN, red: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal: |
+| H2 | `model-effort-card-hold.test.ts` :: a channel card waits while a change is in flight | `lib/model-effort-control.ts:573` `(deleted) while (lock.busy) await lock.whenIdle()` | PROVEN, red: AssertionError [ERR_ASSERTION]: held while busy |
+| H3 | `model-effort-card-hold.test.ts` :: a card waits again when a second change takes the lock first | `lib/model-effort-control.ts:573` `if (lock.busy) await lock.whenIdle()` | PROVEN, red: AssertionError [ERR_ASSERTION]: still held by the second change |
+| H4 | `model-effort-card-hold.test.ts` :: with no change in flight a card is sent at once | `lib/model-effort-control.ts:571` `if (true) {` | PROVEN, red: AssertionError [ERR_ASSERTION]: a permission answer is never held |
+| H5 | `model-effort-card-hold.test.ts` :: server.ts installs the hold OUTERMOST | `server.ts:9438` `(deleted) mcp.notification = holdChannelCardsWhileBusy(modelEffortControl, mcp.notification.bin` | PROVEN, red: AssertionError [ERR_ASSERTION]: the private turn record and the hold, never stacked twice |
+| K15 | `model-effort-control.test.ts` :: a turn that starts between the literal and the Enter | `lib/model-effort-control.ts:482` `return` | PROVEN, red: AssertionError [ERR_ASSERTION]: busy_turn: never an Enter into a turn |
+| K16 | `model-effort-control.test.ts` :: apply checks every precondition again before the effort step | `lib/model-effort-control.ts:282` `(deleted) modelSwitched = applied` | PROVEN, red: AssertionError [ERR_ASSERTION]: the answer knows the model did change |
+| K17 | `model-effort-control.test.ts` :: a channel card sent in the last 2 s makes the turn unknown | `lib/model-effort-control.ts:349` `(deleted) if (lastCard !== null && this.deps.now() - lastCard < this.opts.cardSettleMs) return ` | PROVEN, red: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal: |
+| H6 | `model-effort-card-hold.test.ts` :: the hold reports when a channel card really goes out | `lib/model-effort-control.ts:574` `(deleted) onSent?.()` | PROVEN, red: AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal: |
+| H7 | `model-effort-card-hold.test.ts` :: server.ts notes each card it sends and the control reads it | `server.ts:2320` `(deleted) lastCardAtMs: () => lastChannelCardAtMs,` | PROVEN, red: AssertionError [ERR_ASSERTION]: The input did not match the regular expression /lastCardAtMs: \(\) = |
+| V11 | `voice-rpc-model-effort.test.ts` :: a voice dispatch during a change is accepted at once | `lib/voice-rpc.ts:1224` `if (false) {` | PROVEN, red: AssertionError [ERR_ASSERTION]: held: accepted without waiting for the card |
+| V12 | `voice-rpc-model-effort.test.ts` :: server.ts tells the voice handler when cards are held | `server.ts:12372` `(deleted) cardsHeld: () => modelEffortControl.busy,` | PROVEN, red: AssertionError [ERR_ASSERTION]: The input did not match the regular expression /cardsHeld: \(\) => m |
+| R17 | `model-effort-rpc.test.ts` :: an effort step that ended unconfirmed is noted as not confirmed | `lib/model-effort-rpc.ts:257` `const unconfirmed = false` | PROVEN, red: AssertionError [ERR_ASSERTION]: not_confirmed |
+
+
+### Suite
+
+**Whole suite: green at `a54d93c`**, first run of that commit (`TMPDIR=/private/tmp/claude-501/mecr3 node scripts/run-tests.mjs`, bun 1.3 on PATH, 06:30 to 06:39 UTC, 1 minute load average about 10 then 6): node:test 372 files, 7402 tests, **7356 pass, 0 fail**, 0 cancelled, 46 skipped; real Chromium 7 files, 15 tests, 11 pass, 0 fail, 4 skipped; bun:test 14 files, 374 pass, 1 skip, 0 fail; `[run-tests] both families green`, exit 0. `npx tsc --noEmit` clean. The commit after it changes only BGOS line citations in a comment and two assertion messages (`model-effort-picker.spec.ts:69` and `:59-83`, `assistant-sessions.service.ts:128-134` and `:135`) and these docs; its two test files were run again, 10 and 17 pass, 0 fail.
+
+Two earlier attempts were stopped by me, not failed: the first under macOS's default temp folder, where the browser profile files hang on the `/var` symlink exactly as on main (round 1's table), and the second, already at 0 fail after 564 tests, because the second review's fixes needed a final run anyway.
+
 ## What a live check on a real agent must still show
 
 None of this was run against a real Claude Code session (the brief forbids it). Before the app is allowed to send a frame, a live check on the supported CLI version (2.1.309 here) must show:
@@ -309,7 +444,7 @@ None of this was run against a real Claude Code session (the brief forbids it). 
 5. **The alias resolves to the family**: after `/model fable` the status line `model.id` contains `fable` as a token (the `modelFamilyOf` rule).
 6. **A model without effort support** (haiku, if offered) omits `effort` from the status line, so efforts are offered as none.
 7. **The owner's own status line is unchanged** in look while the bridge is in front of it, and `hoai-model-control off` restores it byte for byte.
-8. **The app side**: #3060 sends exactly the frame above (or this file's wire is changed to match), stamps the sender per frame, reads `owner_model_effort_control`, and draws the pill from the session settings report.
+8. **The app side** (round 3): on a real pairing, the picker appears once `model_effort_picker` is declared, the list fills it, and an apply reaches the pane and answers inside BGOS's 20 s.
 
 ## Not done, and why
 

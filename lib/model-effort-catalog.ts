@@ -123,7 +123,7 @@ export function buildModelEffortReport(input: {
 // read back through it before it leaves) and test/model-effort-picker-contract
 // pins it to BGOS's own spec cases.
 
-/** The runtime name BGOS's own spec gives Claude Code (model-effort-picker.spec.ts:62). */
+/** The runtime name BGOS's own spec gives Claude Code (model-effort-picker.spec.ts:69). */
 export const PICKER_RUNTIME = 'claude-code'
 
 /** BGOS's selection session id pattern (dto/integrations/model-effort-picker.dto.ts ModelEffortApplyDto). */

@@ -106,7 +106,7 @@ test('apply hands the control exactly the selection, under a deadline from the f
   const r = rig()
   const out = await r.handler.answer({ ...APPLY, receivedAtMs: NOW - 2_000 })
   assert.deepEqual(r.applies, [{ selection: { sessionId: SID, model: 'sonnet', effort: 'xhigh' }, deadlineAtMs: NOW - 2_000 + APPLY_BUDGET_MS }])
-  assert.ok(APPLY_BUDGET_MS <= 15_000, 'BGOS waits 20 000 ms from its emit (assistant-sessions.service.ts:134); the socket hop and the result POST need room')
+  assert.ok(APPLY_BUDGET_MS <= 15_000, 'BGOS waits 20 000 ms from its emit (assistant-sessions.service.ts:135); the socket hop and the result POST need room')
   assert.deepEqual(out, { ok: true, payload: { current: { model: 'sonnet', effort: 'xhigh' }, sessionId: SID } })
 })
 

@@ -14,7 +14,7 @@
  *     46-120 readModelEffortCatalog, vendored in lib/model-effort-catalog.ts
  *   backend/src/integrations/assistant-sessions.service.ts
  *     126   op: selection ? 'apply_model_effort' : 'list_model_effort'
- *     127-133 the apply payload { sessionId, model, effort }
+ *     128-134 the apply payload { sessionId, model, effort }
  *     138-144 the apply answer must carry sessionId and current.model and
  *           current.effort equal to the selection, else invalid_answer
  *     155-158 only busy, not_allowed and timeout pass through; anything else
@@ -71,7 +71,7 @@ test('the catalog carries exactly BGOS\'s keys (model-effort-picker.model.ts:3-2
   assert.ok(catalog)
   assert.deepEqual(Object.keys(catalog).sort(), ['current', 'models', 'runtime', 'sessionId'])
   assert.equal(catalog.runtime, PICKER_RUNTIME)
-  assert.equal(PICKER_RUNTIME, 'claude-code', 'the runtime name BGOS\'s own spec uses for Claude (model-effort-picker.spec.ts:62)')
+  assert.equal(PICKER_RUNTIME, 'claude-code', 'the runtime name BGOS\'s own spec uses for Claude (model-effort-picker.spec.ts:69)')
   assert.deepEqual(Object.keys(catalog.current!).sort(), ['effort', 'model'])
   for (const m of catalog.models) {
     assert.deepEqual(Object.keys(m).sort(), ['defaultEffort', 'description', 'efforts', 'enabled', 'id', 'label'])
@@ -133,7 +133,7 @@ test('a model id that would carry text is never the current model (model-effort-
   }
 })
 
-test('the vendored reader is BGOS\'s: its own spec cases (model-effort-picker.spec.ts:56-75)', () => {
+test('the vendored reader is BGOS\'s: its own spec cases (model-effort-picker.spec.ts:59-83)', () => {
   const base = {
     runtime: 'claude-code',
     sessionId: 'thread-1',
