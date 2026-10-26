@@ -2,6 +2,16 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.74.4 (2026-10-26)
+
+**A tap on a card this agent just posted is heard, even when it beats the agent's next read of the chat (feedback 0984e340).** An owner whose agent's Claude login had expired sent /login and tapped "Claude subscription" 1.77 s after the sign-in card appeared. The daemon hears a tap only through its read of the chat, and only as a change from a card an earlier read saw unanswered; its first read after posting came 0.19 s after the tap, found the card already answered and announced nothing. The sign-in then waited for a pick that had already been made, the app showed "✓ Claude subscription", and a second /login answered "A sign-in is already running". The same race hit `reply` buttons and plan cards.
+
+- **A card the daemon posts is open from the moment the post returns** (`lib/poll-core.ts` noteOwnUnansweredCard, called for the sign-in card, the reply tool's buttons and the plan card). The permission card (its own watch reads the card row) and ask_user_input (that tool polls for itself) are left as they were.
+- **A read that began before the post no longer erases it.** A card newer than every row a read returned is kept open (`selectClickTransitions`); an older one missing from the read is dropped as before.
+- **Still one announce per tap.** The read skips every tap either transport already announced (`alreadyAnnounced`), so with the update stream on, a tap the stream took before the post returned is not announced again.
+- **A sign-in stuck on its card says how to finish.** A second /login from whoever started it, in that chat, while it waits for the method now answers "Send /login subscription or /login console to pick one now, or /login cancel to stop it." Anyone else is still told to cancel.
+- Tests: `test/own-card-fast-tap.e2e.test.ts` drives the real daemon against a stand in backend that stamps each card answered before it answers the post: both sign-in chips start their method and relay the link, a reply tap and a plan answer reach the session once however often the chat is read after, and a read held in flight across the post does not lose the tap (the first four red on 0.74.3). Unit cases in `test/poll-core.test.ts` and `test/auth-login.test.ts`.
+
 ## 0.74.3 (2026-10-25)
 
 **An agent whose claude died under a hung launcher now comes back on its own (BGOS board row fabeef45).** Agent 867 on kc-server was down for 2 days through 5,393 restarts. Its claude had exited and was never reaped (a zombie), but its hoai launcher was still running and ignored SIGTERM, so every new launch read "already supervised" and exited. When the service did get a claude up, it resumed an old pinned session. Now a launch checks for a live claude under the launcher, not only for the launcher; a launcher with none is ended and the agent starts, on the session it was really in. An agent whose claude is alive is never touched and never gets a second claude.
