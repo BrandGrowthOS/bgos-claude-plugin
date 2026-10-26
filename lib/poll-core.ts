@@ -465,11 +465,16 @@ export interface ClickRow {
  * it (see noteOwnUnansweredCard). An open card older than the read's newest
  * row and missing from it left the window or was deleted, and is dropped as
  * before.
+ *
+ * `alreadyAnnounced` is the set both transports mark a tap in. A tap in it is
+ * never announced here: the stream can announce a tap before the post that
+ * noted its card open returns, and the note then puts the id back.
  */
 export function selectClickTransitions(opts: {
   rows: ClickRow[]
   prevUnanswered: ReadonlySet<number>
   isFirstPoll: boolean
+  alreadyAnnounced?: ReadonlySet<number>
 }): { announce: number[]; nextUnanswered: Set<number> } {
   const announce: number[] = []
   const nextUnanswered = new Set<number>()
@@ -485,6 +490,7 @@ export function selectClickTransitions(opts: {
     }
     if (opts.isFirstPoll) continue
     if (!opts.prevUnanswered.has(row.id)) continue
+    if (opts.alreadyAnnounced?.has(row.id)) continue
     announce.push(row.id)
   }
   for (const id of opts.prevUnanswered) if (id > newestRead) nextUnanswered.add(id)
@@ -506,8 +512,13 @@ export function selectClickTransitions(opts: {
  * It also gives the chat a baseline (pollChat treats a chat with no entry and
  * no cursor as a first read, which announces nothing), and a chat with an open
  * card is read in full, so a cursor that moved past the card cannot hide it.
- * Single announce still holds: the announce consumes the entry, and the
- * stream's tap consumes it too.
+ * Single announce still holds: a read's announce consumes the entry, and a tap
+ * the stream announced first (it can, before the post returns and the note
+ * re-opens the id) is in `alreadyAnnounced`, which the read skips.
+ *
+ * Called for the sign-in card, the reply tool's buttons and the plan card.
+ * Not for the permission card (its own watch reads the card row) nor
+ * ask_user_input (that tool polls for itself).
  */
 export function noteOwnUnansweredCard(
   unanswered: Map<string, Set<number>>,

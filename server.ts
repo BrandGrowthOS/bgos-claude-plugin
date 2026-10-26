@@ -6100,8 +6100,8 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         // (Ares, reviewing #129).
         if (options.length > 0 && typeof msgId === 'number') {
           recentButtonPrompts.set(String(resolvedChatId), { messageId: msgId, sentAtMs: Date.now() })
-          noteOwnUnansweredCard(chatUnansweredButtons, String(resolvedChatId), msgId)
           postedButtons.note(msgId, options, safeText)
+          noteOwnUnansweredCard(chatUnansweredButtons, String(resolvedChatId), msgId)
         } else if (
           reply_to_id !== undefined &&
           Number(reply_to_id) === recentButtonPrompts.get(String(resolvedChatId))?.messageId
@@ -6298,9 +6298,11 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
             // foreignPlanTap.
             requesterUserId: lastInboundUserByChat.get(planChatId) ?? USER_ID,
           })
-          // Open from the moment it is posted, like every card with buttons.
-          noteOwnUnansweredCard(chatUnansweredButtons, planChatId, cardMessageId)
           postedButtons.note(cardMessageId, bodyBuild.body.options, bodyBuild.body.text)
+          // Open from the moment it is posted, like the reply tool's and the
+          // sign-in card. Not the permission card (its own watch reads the
+          // card row) nor ask_user_input (that tool polls for itself).
+          noteOwnUnansweredCard(chatUnansweredButtons, planChatId, cardMessageId)
           // The CLI writes this tool result verbatim into the transcript, so
           // the minted id is proof of which transcript is ours, exactly as a
           // reply's is.
@@ -10667,6 +10669,9 @@ async function pollChat(chatId: string): Promise<void> {
       })),
       prevUnanswered,
       isFirstPoll,
+      // A tap the stream announced first stays announced once, even when a
+      // card this daemon noted open came back into prevUnanswered after it.
+      alreadyAnnounced: announcedClickIds,
     })
     const announced = new Set(announce)
     // The second lock (person lanes) for taps: once lanes run for this agent,

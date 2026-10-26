@@ -796,6 +796,22 @@ test('a card posted while a read was in flight survives that read, and its tap i
   assert.deepEqual(next.announce, [159575])
 })
 
+test('a tap the stream already announced is never announced by a read, even after the card was noted open again', () => {
+  // With BGOS_UPDATE_STREAM on, the stream can announce the tap (and consume
+  // the open entry) before the post that noted the card returns; the note
+  // then puts the id back. The read must ask the shared announced set.
+  const unanswered = new Map<string, Set<number>>([['1146', new Set()]])
+  noteOwnCard()(unanswered, '1146', 159575)
+  const r = selectClickTransitions({
+    rows: [ownerSlashRow(159574), clickRow({ id: 159575, answered: true })],
+    prevUnanswered: unanswered.get('1146')!,
+    isFirstPoll: false,
+    alreadyAnnounced: new Set([159575]),
+  } as Parameters<typeof selectClickTransitions>[0])
+  assert.deepEqual(r.announce, [], 'announced once, by the stream')
+  assert.deepEqual([...r.nextUnanswered], [], 'and it leaves the open set')
+})
+
 test('an open card older than everything a read returned is still dropped, as before', () => {
   // Out of the newest-50 window (or deleted): only a card NEWER than the read
   // can be one the read had no chance to see.
@@ -926,6 +942,14 @@ test('server.ts detects clicks through selectClickTransitions', () => {
     serverSource.includes('selectClickTransitions({'),
     'the click detector must be the tested pure function, not a re-inlined loop',
   )
+})
+
+test('server.ts reads clicks against the ids either transport already announced', () => {
+  // The stream announces a tap into announcedClickIds; a card this daemon
+  // noted open after that (noteOwnUnansweredCard) must not be announced by
+  // the poll again, so the poll's selection is handed the same set.
+  const call = serverSource.slice(serverSource.indexOf('selectClickTransitions({'))
+  assert.match(call.slice(0, 600), /alreadyAnnounced: announcedClickIds,/)
 })
 
 test('server.ts registers NO inbound_click WS listener (single click path)', () => {

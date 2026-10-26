@@ -655,6 +655,17 @@ test('stuck waiting for a pick: the typed pick is offered only to whoever can ma
     [{ kind: 'busy', chatId: CHAT, phase: 'awaiting_method', canCancel: true, canPick: false }],
     'only the starter can make the pick, so only the starter is offered it',
   )
+  // The starter asking from another chat cannot pick there either: command()
+  // takes a typed method only in the chat the card went to.
+  const otherChat = reduceLogin(
+    { ...INITIAL_LOGIN_STATE, phase: 'awaiting_method', chatId: CHAT, starterUserId: OWNER },
+    { type: 'open', chatId: OTHER_CHAT, starterUserId: OWNER, byOwner: true, nowMs: 0 },
+  )
+  assert.deepEqual(
+    otherChat.effects,
+    [{ kind: 'busy', chatId: OTHER_CHAT, phase: 'awaiting_method', canCancel: true, canPick: false }],
+    'the pick is offered only in the chat the card went to',
+  )
   // And once the sign-in is past the pick, nobody is offered one.
   const later = harness()
   await toAwaitingCode(later)

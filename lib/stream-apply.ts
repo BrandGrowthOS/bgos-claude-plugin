@@ -389,8 +389,10 @@ export type ButtonsAnsweredDecision = 'forward' | 'permission' | 'skip'
  * announced by selectClickTransitions either (it only announces ids seen
  * unanswered on a PREVIOUS poll). Single-announce holds in both race
  * orders: poll-first, the shared set blocks the stream replay; stream
- * first, the caller consumes the tracked baseline entry so the poll's
- * prevUnanswered can never contain the id again.
+ * first, the caller consumes the tracked baseline entry, and the poll skips
+ * every id in the shared set (selectClickTransitions' alreadyAnnounced), so
+ * a card the daemon notes open after the stream took its tap
+ * (noteOwnUnansweredCard) is not announced again.
  */
 export function decideButtonsAnswered(opts: {
   messageType: string | null | undefined
