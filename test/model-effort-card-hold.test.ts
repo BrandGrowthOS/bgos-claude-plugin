@@ -88,7 +88,8 @@ test('with no change in flight a card is sent at once; other methods are never h
   const send = holdChannelCardsWhileBusy(l, async (n: { method: string }) => { sent.push(n.method) })
   await send(card())
   l.busy = true
-  await send({ method: 'notifications/claude/channel/permission' })
+  const done = await Promise.race([send({ method: 'notifications/claude/channel/permission' }).then(() => 'sent'), new Promise((r) => setTimeout(() => r('held'), 500))])
+  assert.equal(done, 'sent', 'a permission answer is never held')
   assert.deepEqual(sent, [CHANNEL_CARD_METHOD, 'notifications/claude/channel/permission'])
 })
 

@@ -247,8 +247,9 @@ test('the answer never waits on the session settings report or the switched note
     log: () => {},
     now: () => NOW,
   })
-  const out = await handler.answer(APPLY)
-  assert.equal(out.ok, true)
+  const out = await Promise.race([handler.answer(APPLY), new Promise<'held'>((r) => setTimeout(() => r('held'), 500))])
+  assert.notEqual(out, 'held', 'the answer was held behind the report or the note')
+  if (out !== 'held') assert.equal(out.ok, true)
   assert.deepEqual(reports, ['9'], 'still sent')
   assert.equal(notes.length, 1, 'still sent')
 })

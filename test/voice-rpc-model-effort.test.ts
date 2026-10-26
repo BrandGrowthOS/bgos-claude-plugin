@@ -126,7 +126,8 @@ test('a picker result is not held behind a slow ack, and the frame carries its a
   const d = (r.handler as unknown as { deps: VoiceRpcDeps }).deps
   d.postAck = () => new Promise(() => {})
   const before = Date.now()
-  await r.handler.handle(frame(APPLY_MODEL_EFFORT))
+  const done = await Promise.race([r.handler.handle(frame(APPLY_MODEL_EFFORT)).then(() => 'done'), new Promise((res) => setTimeout(() => res('held'), 500))])
+  assert.equal(done, 'done', 'the result waited for the ack')
   assert.deepEqual(r.results, [{ rpcId: 'rpc-1', body: { ok: true, payload: { done: true } } }])
   const at = r.asked[0]!.receivedAtMs!
   assert.ok(typeof at === 'number' && at >= before && at <= Date.now())
