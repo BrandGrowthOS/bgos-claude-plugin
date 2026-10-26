@@ -102,6 +102,7 @@ test('the derived tool-case scan can actually see the cases (control for every d
     'set_mission_goals',
     'add_mission_goals',
     'cancel_mission_goal',
+    'set_goal_waiting',
   ]) {
     assert.ok(mission.includes(known), `${known} missing from the derived mission set`)
   }

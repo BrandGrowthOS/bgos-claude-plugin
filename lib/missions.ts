@@ -59,6 +59,8 @@
  * as the tool result.
  */
 
+import { describeGoalCheck } from './mission-turn.mjs'
+
 export const MISSION_MIN_GOALS = 2
 export const MISSION_MAX_GOALS = 12
 export const MISSION_TITLE_MAX = 200
@@ -85,6 +87,21 @@ export const MISSION_TARGET_RANGE = '4 to 10'
 export interface MissionGoalBody {
   name: string
   doneWhen: string
+  /**
+   * The goal's machine check (missions that stay true, 2026-10-26), passed
+   * through UNCHANGED: the server's grammar refuses an unknown kind or an
+   * extra key with one sentence, so the tool never trims or drops a key that
+   * would turn that refusal into a silent rewrite. Absent when none.
+   */
+  check?: Record<string, unknown>
+}
+
+/** Who a goal waits on, as the server stores it. */
+export interface MissionGoalWaiting {
+  on: 'owner' | 'agent'
+  who: string
+  why: string
+  since?: string
 }
 
 export interface MissionCreateBody {
@@ -201,6 +218,12 @@ export interface MissionSnapshot {
     done: boolean
     doneAt: string | null
     evidence: string | null
+    /** The server's machine check of this goal, when it has one. */
+    check?: Record<string, unknown>
+    /** 'check' when the SERVER ticked it on its check. */
+    doneBy?: 'check'
+    /** Set while the next step is the owner's or another agent's. */
+    waiting?: MissionGoalWaiting | null
   }>
   /** The chat this mission belongs to; null (or absent) means the main chat. */
   chatId?: number | null
@@ -297,7 +320,20 @@ function parseMissionGoals(
           `max ${MISSION_DONE_WHEN_MAX}).`,
       }
     }
-    miniGoals.push({ name: trimmedName, doneWhen: trimmedDoneWhen })
+    const check = raw.check
+    if (check !== undefined && check !== null && !isPlainObject(check)) {
+      return {
+        ok: false,
+        error:
+          `Mini-goal ${i + 1} check must be an object such as ` +
+          '{ "kind": "pr_merged", "repo": "owner/name", "number": 12 }, or left out.',
+      }
+    }
+    miniGoals.push({
+      name: trimmedName,
+      doneWhen: trimmedDoneWhen,
+      ...(isPlainObject(check) ? { check } : {}),
+    })
   }
   return { ok: true, body: miniGoals }
 }
@@ -807,6 +843,55 @@ export function buildMissionCancelGoalPath(
   }
 }
 
+/** PATCH integrations/assistants/:id/missions/:missionId/goals/:goalId/waiting body. */
+export interface MissionWaitingBody {
+  waiting: { on: 'owner' | 'agent'; who: string; why: string } | null
+}
+
+/**
+ * The set_goal_waiting body (missions that stay true, 2026-10-26): who the
+ * next step on a goal belongs to and why, or null to clear it. Checked here
+ * so a malformed call is a sentence, not a 400; the server checks it again
+ * and stamps `since` itself.
+ */
+export function buildMissionWaitingBody(input: { waiting?: unknown }): MissionBuildResult<MissionWaitingBody> {
+  const { waiting } = input
+  if (waiting === null) return { ok: true, body: { waiting: null } }
+  const help =
+    'waiting must be null to clear it, or { on: "owner" or "agent", who: their name (up to 80 chars), ' +
+    'why: one short reason (up to 200 chars) }.'
+  if (!isPlainObject(waiting)) return { ok: false, error: help }
+  const on = waiting.on
+  const who = typeof waiting.who === 'string' ? waiting.who.trim() : ''
+  const why = typeof waiting.why === 'string' ? waiting.why.trim() : ''
+  if ((on !== 'owner' && on !== 'agent') || !who || who.length > 80 || !why || why.length > 200) {
+    return { ok: false, error: help }
+  }
+  return { ok: true, body: { waiting: { on, who, why } } }
+}
+
+/** The set_goal_waiting write, the PAIRING family like the goal doors. */
+export function buildMissionWaitingPath(
+  assistantId: unknown,
+  missionId: unknown,
+  goalId: unknown,
+): MissionPathResult {
+  const goalPath = buildMissionCancelGoalPath(assistantId, missionId, goalId)
+  if (!goalPath.ok) return goalPath
+  return { ok: true, path: `${goalPath.path}/waiting` }
+}
+
+/**
+ * The goal checks read (missions that stay true, 2026-10-26): what each open
+ * goal's server check answers now. Read only, PAIRING family. The daemon asks
+ * it when a turn starts and when the Stop hook asks at turn end.
+ */
+export function buildMissionGoalChecksPath(assistantId: unknown, missionId: unknown): MissionPathResult {
+  const goals = buildMissionSetGoalsPath(assistantId, missionId)
+  if (!goals.ok) return goals
+  return { ok: true, path: goals.path.replace(/\/goals$/, '/goal-checks') }
+}
+
 /** The goal lane's check write. */
 export function buildMissionProgressPath(assistantId: unknown, missionId: unknown): MissionPathResult {
   if (!isPositiveIntLike(assistantId)) return { ok: false, error: BAD_ASSISTANT }
@@ -860,10 +945,19 @@ export function formatMissionSummary(mission: MissionSnapshot): string {
     `Mission #${mission.id}: "${mission.title}" (${mission.status}), ${done} of ${total} mini-goals done.`,
   ]
   for (const g of mission.miniGoals) {
-    lines.push(`  [${g.done ? 'x' : ' '}] ${g.id}. ${g.name} (done when ${g.doneWhen})`)
+    const check = describeGoalCheck(g.check)
+    const extras = [
+      check ? ` [server check: ${check}]` : '',
+      g.done && g.doneBy === 'check' ? ' [ticked by the server]' : '',
+      !g.done && g.waiting
+        ? ` [waiting on ${g.waiting.on === 'owner' ? 'your owner' : 'agent'} ${g.waiting.who}: ${g.waiting.why}]`
+        : '',
+    ].join('')
+    lines.push(`  [${g.done ? 'x' : ' '}] ${g.id}. ${g.name} (done when ${g.doneWhen})${extras}`)
   }
   if (mission.status === 'active') {
-    const next = mission.miniGoals.find((g) => !g.done)
+    // The next goal is the agent's own: one that waits on somebody is not.
+    const next = mission.miniGoals.find((g) => !g.done && !g.waiting)
     if (next) lines.push(`Next: ${next.id}. ${next.name}`)
   }
   return lines.join('\n')

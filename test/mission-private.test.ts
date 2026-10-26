@@ -40,7 +40,7 @@ import { markFloorAttached } from '../lib/floor-state.mjs'
 import { recordPrivateBoundary } from '../bin/hoai-private-turn-hook.mjs'
 import * as missions from '../lib/missions.ts'
 
-const MISSION_TOOLS = ['create_mission', 'tick_mini_goal', 'set_mission_goals', 'add_mission_goals', 'cancel_mission_goal', 'complete_mission']
+const MISSION_TOOLS = ['create_mission', 'tick_mini_goal', 'set_mission_goals', 'add_mission_goals', 'cancel_mission_goal', 'set_goal_waiting', 'complete_mission']
 const OWNER = 'user_owner'
 const RECIPIENT = 'user_recipient'
 const OWNER_CHAT = '4403'
@@ -199,6 +199,7 @@ const ARGS: Record<string, Record<string, unknown>> = {
   set_mission_goals: { mini_goals: [{ name: 'Draft', done_when: 'a draft exists' }, { name: 'Review', done_when: 'it was reviewed' }] },
   add_mission_goals: { mini_goals: [{ name: 'Ship', done_when: 'it shipped' }] },
   cancel_mission_goal: { goal_id: 3 },
+  set_goal_waiting: { goal_id: 3, waiting: { on: 'owner', who: 'KC', why: 'his merge' } },
   complete_mission: { summary: 'All done' },
 }
 

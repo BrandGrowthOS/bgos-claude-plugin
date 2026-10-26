@@ -48,10 +48,13 @@ const FORWARDER = '${CLAUDE_PLUGIN_ROOT}/bin/hoai-hook.mjs'
 const FLOOR = '${CLAUDE_PLUGIN_ROOT}/bin/hoai-floor-hook.mjs'
 const PRIVATE = '${CLAUDE_PLUGIN_ROOT}/bin/hoai-private-turn-hook.mjs'
 const PRIVATE_EVENTS = ['UserPromptSubmit', 'Stop', 'SessionEnd']
+/** The mission turn check (missions that stay true): blocking, on a prompt and at Stop only. */
+const MISSION = '${CLAUDE_PLUGIN_ROOT}/bin/hoai-mission-turn-hook.mjs'
+const MISSION_EVENTS = ['UserPromptSubmit', 'Stop']
 /** Registered for the private hook alone: it records which turn started each helper. */
 const PRIVATE_ONLY_EVENTS = ['SubagentStart']
 /** The private hook's PreToolUse guard: a helper's private call outside its own turn is refused. */
-const PRIVATE_TOOL_MATCHER = '^mcp__(.*_)?(hoai-browser__.+|bgos__(schedule|list_schedules|cancel_schedule|boards_.+|email_send|call_owner|create_mission|tick_mini_goal|set_mission_goals|add_mission_goals|cancel_mission_goal|complete_mission|list_chats))$'
+const PRIVATE_TOOL_MATCHER = '^mcp__(.*_)?(hoai-browser__.+|bgos__(schedule|list_schedules|cancel_schedule|boards_.+|email_send|call_owner|create_mission|tick_mini_goal|set_mission_goals|add_mission_goals|cancel_mission_goal|set_goal_waiting|complete_mission|list_chats))$'
 /** Anchored: the CLI tests a matcher that is not a plain word list as a
  *  regex, so an unanchored `Write` would also fire for `TodoWrite`. */
 const FLOOR_MATCHER = '^(Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit|mcp__.*)$'
@@ -141,7 +144,7 @@ test('every FORWARDER entry is the exec form, async, with the plugin root placeh
     assert.equal('asyncRewake' in entry, false, 'waking the model is not this lane job')
   }
   // Private turn boundaries are separate synchronous handlers.
-  assert.equal(entries().length, HOOK_EVENT_NAMES.length + 6, 'forwarders, one floor, three private boundaries, one helper start, one helper guard')
+  assert.equal(entries().length, HOOK_EVENT_NAMES.length + 8, 'forwarders, one floor, three private boundaries, one helper start, one helper guard, two mission turn checks')
 })
 
 test('the floor hook remains a separate blocking entry', () => {
@@ -186,7 +189,7 @@ test('only the floor and private turn boundaries add a matcher', () => {
     }
     if (PRIVATE_ONLY_EVENTS.includes(event)) continue
     if (PRIVATE_EVENTS.includes(event)) {
-      assert.equal(matchers.length, 2)
+      assert.equal(matchers.length, MISSION_EVENTS.includes(event) ? 3 : 2)
       const entry = matchers.flatMap(m => m.hooks ?? []).find(h => h.args?.[0] === PRIVATE)
       assert.deepEqual(entry, { type: 'command', command: 'node', args: [PRIVATE], timeout: 5, async: false })
       continue
@@ -210,4 +213,22 @@ test('the floor matcher covers the shell, edit and MCP tools and nothing else', 
 
 test('plugin.json declares no hooks key: the standard file is loaded automatically', () => {
   assert.equal('hooks' in plugin, false)
+})
+
+test('the mission turn check is a blocking entry on a prompt and at Stop, and nowhere else', () => {
+  for (const [event, matchers] of Object.entries(manifest.hooks)) {
+    const mine = matchers.flatMap((m) => m.hooks ?? []).filter((h) => (h.args ?? []).includes(MISSION))
+    if (!MISSION_EVENTS.includes(event)) {
+      assert.equal(mine.length, 0, `${event} must not run the mission turn check`)
+      continue
+    }
+    // Its own matcher object, un-narrowed, after the private turn boundary.
+    assert.deepEqual(mine, [{ type: 'command', command: 'node', args: [MISSION], timeout: 8, async: false }])
+    const holder = matchers.find((m) => (m.hooks ?? []).some((h) => (h.args ?? []).includes(MISSION)))!
+    assert.equal('matcher' in holder, false)
+    assert.ok(
+      matchers.findIndex((m) => m === holder) > matchers.findIndex((m) => (m.hooks ?? []).some((h) => h.args?.[0] === PRIVATE)),
+      `${event}: the private turn boundary runs first`,
+    )
+  }
 })

@@ -902,7 +902,8 @@ test('a corrupt settings file is replaced rather than failing the install', () =
     fs,
   })
   assert.equal(result.reason, 'set')
-  assert.equal(settingsOf(fs).hooks.Stop.length, 2)
+  // The private boundary, the mission turn check, the forwarder.
+  assert.equal(settingsOf(fs).hooks.Stop.length, 3)
 })
 
 test('no forwarder path means no entries, never a half written hooks block', () => {

@@ -1,5 +1,5 @@
 {
-  "description": "HOAI: forwards this session's tool activity, task list and turn boundaries to the HOAI daemon so the owner sees live progress in the app; that forwarder is async, always exits 0 and never blocks a tool call. The hard floor hook blocks on purpose, which, only in a session a HOAI agent's daemon is attached to, asks the owner before a short list of risky actions (a recursive delete, a force push, a change inside .git, to an .env file or to a settings file in the home folder, a tool that sends, posts, pays or deletes), never denies, and fails open inside 2 seconds. A separate synchronous private-turn hook invalidates browser and schedule identity before each prompt and on turn end; if that boundary cannot be written it blocks the prompt to prevent reuse of another person's profile. The same hook records which turn started each helper agent and refuses a helper's browser, schedule, boards, email_send, call_owner, mission or list_chats call outside that turn.",
+  "description": "HOAI: forwards this session's tool activity, task list and turn boundaries to the HOAI daemon so the owner sees live progress in the app; that forwarder is async, always exits 0 and never blocks a tool call. The hard floor hook blocks on purpose, which, only in a session a HOAI agent's daemon is attached to, asks the owner before a short list of risky actions (a recursive delete, a force push, a change inside .git, to an .env file or to a settings file in the home folder, a tool that sends, posts, pays or deletes), never denies, and fails open inside 2 seconds. A separate synchronous private-turn hook invalidates browser and schedule identity before each prompt and on turn end; if that boundary cannot be written it blocks the prompt to prevent reuse of another person's profile. The same hook records which turn started each helper agent and refuses a helper's browser, schedule, boards, email_send, call_owner, mission or list_chats call outside that turn. A synchronous mission turn hook, on a prompt and at turn end, puts the chat's open mission goals in front of the agent and refuses the end of a turn once while a goal whose server check passes is unticked; it reads no credentials, talks only to its own daemon through local files, and lets the turn end on any error.",
   "hooks": {
     "SessionStart": [
       {
@@ -22,6 +22,17 @@
             "command": "node",
             "args": ["${CLAUDE_PLUGIN_ROOT}/bin/hoai-private-turn-hook.mjs"],
             "timeout": 5,
+            "async": false
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/bin/hoai-mission-turn-hook.mjs"],
+            "timeout": 8,
             "async": false
           }
         ]
@@ -63,7 +74,7 @@
         ]
       },
       {
-        "matcher": "^mcp__(.*_)?(hoai-browser__.+|bgos__(schedule|list_schedules|cancel_schedule|boards_.+|email_send|call_owner|create_mission|tick_mini_goal|set_mission_goals|add_mission_goals|cancel_mission_goal|complete_mission|list_chats))$",
+        "matcher": "^mcp__(.*_)?(hoai-browser__.+|bgos__(schedule|list_schedules|cancel_schedule|boards_.+|email_send|call_owner|create_mission|tick_mini_goal|set_mission_goals|add_mission_goals|cancel_mission_goal|set_goal_waiting|complete_mission|list_chats))$",
         "hooks": [
           {
             "type": "command",
@@ -109,6 +120,17 @@
             "command": "node",
             "args": ["${CLAUDE_PLUGIN_ROOT}/bin/hoai-private-turn-hook.mjs"],
             "timeout": 5,
+            "async": false
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/bin/hoai-mission-turn-hook.mjs"],
+            "timeout": 8,
             "async": false
           }
         ]
