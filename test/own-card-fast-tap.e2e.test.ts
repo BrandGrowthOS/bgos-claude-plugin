@@ -120,6 +120,8 @@ interface Backend {
   holdNextRead: (chatId: number, during: () => Promise<void>) => void
   /** Errors thrown inside a hold; the read is answered anyway. */
   holdErrors: string[]
+  /** The next message id, from the same sequence the stored posts use. */
+  allocateId: () => number
   connected: () => number
   emit: (event: string, payload: Record<string, unknown>) => void
   close: () => Promise<void>
@@ -177,6 +179,7 @@ async function startBackend(): Promise<Backend> {
       holds.set(chatId, during)
     },
     holdErrors,
+    allocateId: () => nextMessageId++,
     connected: () => 0,
     emit: () => {},
     close: async () => {},
@@ -473,8 +476,13 @@ function claudeCalls(rig: Rig): string[] {
   return existsSync(rig.claudeCalls) ? readFileSync(rig.claudeCalls, 'utf8').split('\n').filter(Boolean) : []
 }
 
-/** The owner's /login, as the backend pushes a slash command on the socket. */
-function ownerSendsLogin(backend: Backend, messageId: number): void {
+/**
+ * The owner's /login, as the backend pushes a slash command on the socket. Its
+ * id comes from the backend's own sequence, so it sorts after every row before
+ * it and before the card the daemon posts in answer, as in production.
+ */
+function ownerSendsLogin(backend: Backend): void {
+  const messageId = backend.allocateId()
   backend.rows.push({ ...historyRow(messageId, 'user', '/login'), messageType: 'slash_command' })
   backend.emit('inbound_message', {
     assistantId: ASSISTANT_ID,
@@ -543,7 +551,7 @@ describe('a tap on a card this daemon posted is heard when it lands before the n
       try {
         // The owner taps this chip the moment the card exists.
         w.backend.tapOnPost = (body) => (String(body.text ?? '').startsWith(SIGNED_OUT_LEAD) ? index : null)
-        ownerSendsLogin(w.backend, 300)
+        ownerSendsLogin(w.backend)
         await waitFor(() => loginCardOf(w.backend) !== undefined, 'the sign-in card')
 
         // The card exactly as production received it: same words, both chips,
@@ -665,9 +673,16 @@ describe('a tap on a card this daemon posted is heard when it lands before the n
       // as it was before the card: the card is not in it.
       let heldReadAnswered = false
       w.backend.holdNextRead(MAIN, async () => {
-        ownerSendsLogin(w.backend, 300)
+        ownerSendsLogin(w.backend)
         await waitFor(() => loginCardOf(w.backend) !== undefined, 'the sign-in card, posted during the held read')
-        await sleep(300)
+        // Released only once the daemon has taken the post's answer and noted
+        // the card open (its log line follows the note), so this read is
+        // certain to land after the note: the order the keep rule exists for,
+        // however slow the machine.
+        await waitFor(
+          () => w.daemon.stderr.some((l) => /\/login: sign-in card \d+ posted to chat 501/.test(l)),
+          'the daemon to note the card it posted',
+        )
         heldReadAnswered = true
       })
       await waitQuietly(() => claudeCalls(w.rig).includes('auth login --claudeai'), 25_000)

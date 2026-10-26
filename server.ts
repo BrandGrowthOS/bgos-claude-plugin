@@ -2056,6 +2056,8 @@ async function sendLoginText(
   if (options.length > 0 && typeof msgId === 'number') {
     recentButtonPrompts.set(chatId, { messageId: msgId, sentAtMs: Date.now() })
     noteOwnUnansweredCard(chatUnansweredButtons, chatId, msgId)
+    // When the card went out, so a tap's timing can be read against it.
+    log(`/login: sign-in card ${msgId} posted to chat ${chatId}, open for a tap`)
   }
   return typeof msgId === 'number' ? msgId : null
 }
