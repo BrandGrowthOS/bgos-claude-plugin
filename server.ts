@@ -14541,7 +14541,7 @@ function connectWebsocket(): void {
     try {
       const frame = normalizeDoctorRpc(payload)
       if (!frame) return
-      log(`doctor_rpc received (op=${frame.op}, rpc=${frame.rpcId})`)
+      log(`doctor_rpc received (op=${rpcLogOp(frame.op)}, rpc=${rpcLogTag(frame.rpcId)})`)
       void trackMessageOperation(() => doctorRpc.handle(frame)).catch((err) => {
         log(`doctor_rpc handler error: ${err}`)
       })
