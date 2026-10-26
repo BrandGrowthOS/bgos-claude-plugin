@@ -753,17 +753,19 @@ test('apply waits for confirmation no longer than its deadline', async () => {
   const { control, pane, clock } = rig()
   pane.applies = false
   const start = clock.now
-  const out = await control.apply(SELECT, { deadlineAtMs: start + 3_000 })
+  const out = await control.apply(SELECT, { deadlineAtMs: start + 5_000 })
   assert.equal(out.ok, false)
   if (!out.ok) assert.equal(out.code, 'not_confirmed')
-  assert.ok(clock.now - start <= 3_000 + 1_000, `waited ${clock.now - start} ms`)
+  // It stops 1.5 s before the deadline: the last screen read and the result
+  // POST still have to land inside BGOS's wait (second round 3 review, item 2).
+  assert.ok(clock.now - start <= 5_000 - 1_500 + 250, `waited ${clock.now - start} ms`)
   assert.deepEqual(typed(pane), ['/model sonnet', 'Enter'], 'nothing typed after an unconfirmed step')
 })
 
 test('apply does not start the effort step without the time to confirm it', async () => {
   const { control, pane, clock } = rig()
   pane.staleTicks = 8
-  const out = await control.apply(SELECT, { deadlineAtMs: clock.now + 3_500 })
+  const out = await control.apply(SELECT, { deadlineAtMs: clock.now + 5_500 })
   assert.equal(out.ok, false, JSON.stringify(out))
   if (out.ok) return
   assert.equal(out.code, 'out_of_time')
@@ -806,4 +808,20 @@ test('a turn that starts between the literal and the Enter gets no Enter, and th
     assert.match(out.message, /What was typed was cleared\./)
     assert.equal(r.control.busy, false)
   }
+})
+
+// Second round 3 review, item 3: a card that went out just before the lock was
+// taken may have opened a turn the hook signal has not reported yet. For 2 s
+// after any channel card the agent's state is unknown, and nothing is typed.
+test('a channel card sent in the last 2 s makes the turn unknown: nothing is typed', async () => {
+  const r = rig()
+  r.control.deps.lastCardAtMs = () => r.clock.now - 500
+  const out = await step(r.control, 'set_model', 'sonnet')
+  assert.equal(out.ok, false)
+  if (!out.ok) assert.equal(out.code, 'turn_unknown')
+  assert.equal(r.pane.sendKeys.length, 0)
+  const later = rig()
+  later.control.deps.lastCardAtMs = () => later.clock.now - 2_500
+  const ok = await step(later.control, 'set_model', 'sonnet')
+  assert.equal(ok.ok, true, JSON.stringify(ok))
 })

@@ -2271,6 +2271,8 @@ function deliverInbound(
 // compact permission does not count.
 const MODEL_CONTROL_DIR = modelControlDir()
 const MODEL_EFFORT_STALE_MS = 15_000
+/** When the last channel card went out (the hold's onSent), for the control's turn check. */
+let lastChannelCardAtMs: number | null = null
 let modelEffortHelp: { version: string | null; text: string | null } | null = null
 let modelEffortHelpInFlight: Promise<string | null> | null = null
 
@@ -2315,6 +2317,7 @@ const modelEffortControl: ModelEffortControl = new ModelEffortControl({
     }),
   dialogOpen: () => pendingPermissions.size > 0,
   otherInjectionBusy: (): boolean => compactInFlight || goalInjectionsInFlight > 0 || steerGate.busy,
+  lastCardAtMs: () => lastChannelCardAtMs,
   ancestry: () =>
     processAncestry(process.pid, async (argv) => (await execFileAsync(argv[0]!, argv.slice(1), { timeout: 5_000 })).stdout),
   readObservation: (sessionId) => readObservation(MODEL_CONTROL_DIR, sessionId),
@@ -9432,7 +9435,9 @@ mcp.notification = ((notification: Parameters<typeof mcp.notification>[0]) => {
 // a turn (lib/model-effort-control.ts holdChannelCardsWhileBusy, round 3 review
 // M2). A channel card waits while a change is being typed and confirmed, and
 // is then sent unchanged.
-mcp.notification = holdChannelCardsWhileBusy(modelEffortControl, mcp.notification.bind(mcp))
+mcp.notification = holdChannelCardsWhileBusy(modelEffortControl, mcp.notification.bind(mcp), () => {
+  lastChannelCardAtMs = Date.now()
+})
 function publishBrowserPrivateTurn(): void {
   if (!lockHeld) return
   try {
@@ -12363,6 +12368,8 @@ const voiceRpc = new VoiceRpcHandler({
   listSessions: (input) => sessionLibrary.list(input),
   // The owner's model and effort picker (lib/model-effort-rpc.ts).
   modelEffort: modelEffortPicker,
+  // A dispatch card queued behind a change is accepted at once.
+  cardsHeld: () => modelEffortControl.busy,
   log,
 })
 

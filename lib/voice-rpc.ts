@@ -411,6 +411,10 @@ export interface VoiceRpcDeps {
     query?: string
     limit: number
   }): { sessions: SessionRow[]; truncated: boolean }
+  /** True while a model or effort change holds every channel card
+   *  (lib/model-effort-control.ts holdChannelCardsWhileBusy): a card sent now
+   *  is queued and goes out when the change ends. */
+  cardsHeld?(): boolean
   /** The owner's model and effort picker (lib/model-effort-rpc.ts
    *  ModelEffortPickerHandler). Absent, both ops answer not_allowed. */
   modelEffort?: {
@@ -1204,7 +1208,7 @@ export class VoiceRpcHandler {
     })
     if (!parsed.ok) throw new VoiceRpcError('BAD_DISPATCH', parsed.reason)
     const { taskId, question, context } = parsed.task
-    await this.deps.notify(
+    const card = this.deps.notify(
       buildVoiceTaskDispatchText({ taskId, question, context }),
       channelMeta(
         {
@@ -1217,6 +1221,17 @@ export class VoiceRpcHandler {
         { task_id: taskId },
       ),
     )
+    if (this.deps.cardsHeld?.()) {
+      // Queued behind a model or effort change, which sends it when it ends.
+      // BGOS waits 10 s for this accept (voice-task.service.ts
+      // DISPATCH_ACCEPT_TIMEOUT_MS) and a change can hold longer, so a late
+      // answer would read as staged and the task could run twice.
+      void Promise.resolve(card).catch((err) => {
+        this.deps.log(`voice dispatch card failed after the hold: ${err instanceof Error ? err.name : 'error'}`)
+      })
+    } else {
+      await card
+    }
     return { accepted: true, taskId }
   }
 

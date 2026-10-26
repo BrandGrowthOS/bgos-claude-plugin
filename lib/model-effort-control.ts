@@ -171,6 +171,11 @@ export interface ControlDeps {
   dialogOpen: () => boolean
   /** Compact, goal typing or a steer is running. */
   otherInjectionBusy: () => boolean
+  /**
+   * When the last channel card went out (holdChannelCardsWhileBusy's onSent),
+   * or null. A card may open a turn the hook signal has not reported yet.
+   */
+  lastCardAtMs?: () => number | null
   /** The daemon's own process chain, itself first (lib/model-effort-pane.ts processAncestry). */
   ancestry: () => Promise<ProcessEntry[]>
   readObservation: (sessionId: string) => ModelObservation | null
@@ -204,12 +209,16 @@ export interface ControlOptions {
   confirmTimeoutMs?: number
   /** A step of `apply` is not started with less time than this left. */
   minStepMs?: number
+  /** Confirmation stops this long before the deadline: the last screen read and the result POST need it. */
+  confirmTailMs?: number
+  /** For this long after a channel card went out, the agent's turn state is unknown. */
+  cardSettleMs?: number
   pollMs?: number
   /** An observation older than this is not a live status source. */
   staleMs?: number
 }
 
-const DEFAULTS = { confirmTimeoutMs: 20_000, minStepMs: 3_000, pollMs: 250, staleMs: 15_000 }
+const DEFAULTS = { confirmTimeoutMs: 20_000, minStepMs: 4_000, confirmTailMs: 1_500, cardSettleMs: 2_000, pollMs: 250, staleMs: 15_000 }
 
 class Refusal {
   constructor(readonly code: RefusalCode, readonly message: string = REFUSAL_MESSAGES[code]) {}
@@ -334,6 +343,10 @@ export class ModelEffortControl {
 
   private checkIdle(): Refusal | null {
     if (this.deps.otherInjectionBusy()) return new Refusal('control_busy')
+    // A card that went out just before the lock may have opened a turn the
+    // hooks have not reported yet (second round 3 review, item 3).
+    const lastCard = this.deps.lastCardAtMs?.() ?? null
+    if (lastCard !== null && this.deps.now() - lastCard < this.opts.cardSettleMs) return new Refusal('turn_unknown')
     const turn = this.deps.turnState()
     if (turn === 'live') return new Refusal('busy_turn')
     if (turn !== 'idle') return new Refusal('turn_unknown')
@@ -413,7 +426,7 @@ export class ModelEffortControl {
     await this.checkTyped(pane, literal)
     await this.run({ ...enter, delayMsBefore: 0 })
 
-    const deadline = Math.min(this.deps.now() + this.opts.confirmTimeoutMs, deadlineAtMs)
+    const deadline = Math.min(this.deps.now() + this.opts.confirmTimeoutMs, deadlineAtMs - this.opts.confirmTailMs)
     while (this.deps.now() < deadline) {
       await this.deps.sleep(this.opts.pollMs)
       if (this.deps.sessionId() !== sessionId) throw new Refusal('session_changed')
@@ -551,11 +564,14 @@ export const CHANNEL_CARD_METHOD = 'notifications/claude/channel'
 export function holdChannelCardsWhileBusy<N extends { method: string }, R>(
   lock: { readonly busy: boolean; whenIdle(): Promise<void> },
   send: (notification: N) => Promise<R>,
+  /** Told as each channel card really goes out (the control's lastCardAtMs). */
+  onSent?: () => void,
 ): (notification: N) => Promise<R> {
   return async (notification) => {
     if (notification.method === CHANNEL_CARD_METHOD) {
       // A second change may take the lock before this card's turn comes.
       while (lock.busy) await lock.whenIdle()
+      onSent?.()
     }
     return send(notification)
   }

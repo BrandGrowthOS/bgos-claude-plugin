@@ -97,6 +97,27 @@ test('server.ts installs the hold OUTERMOST, after the private turn record, with
   const assignments = [...server.matchAll(/^mcp\.notification = (.*)$/gm)]
   assert.equal(assignments.length, 2, 'the private turn record and the hold, never stacked twice')
   assert.match(assignments[0]![1]!, /^\(\(notification/, 'the private turn record first')
-  assert.equal(assignments[1]![1], 'holdChannelCardsWhileBusy(modelEffortControl, mcp.notification.bind(mcp))', 'the hold last, so it runs first')
+  assert.match(assignments[1]![1]!, /^holdChannelCardsWhileBusy\(modelEffortControl, mcp\.notification\.bind\(mcp\)/, 'the hold last, so it runs first')
   assert.ok(server.indexOf('const modelEffortControl: ModelEffortControl = new ModelEffortControl(') < assignments[1]!.index!, 'the lock exists first')
+})
+
+test('the hold reports when a channel card really goes out, not when it is queued', async () => {
+  const l = lock()
+  const sentAt: string[] = []
+  const send = holdChannelCardsWhileBusy(l, async (n: { method: string }) => { sentAt.push(`send ${n.method}`) }, () => sentAt.push('noted'))
+  l.busy = true
+  const pending = send(card())
+  await tick()
+  assert.deepEqual(sentAt, [], 'nothing noted while held')
+  l.release()
+  await pending
+  assert.deepEqual(sentAt, ['noted', `send ${CHANNEL_CARD_METHOD}`])
+  await send({ method: 'notifications/claude/channel/permission' })
+  assert.equal(sentAt.filter((x) => x === 'noted').length, 1, 'a permission answer opens no turn')
+})
+
+test('server.ts notes each card it sends and the control reads it', () => {
+  assert.match(server, /holdChannelCardsWhileBusy\(modelEffortControl, mcp\.notification\.bind\(mcp\), \(\) => \{\s*lastChannelCardAtMs = Date\.now\(\)\s*\}\)/)
+  const at = server.indexOf('const modelEffortControl: ModelEffortControl = new ModelEffortControl(')
+  assert.match(server.slice(at, at + 2500), /lastCardAtMs: \(\) => lastChannelCardAtMs,/)
 })

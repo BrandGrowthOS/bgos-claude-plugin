@@ -253,8 +253,11 @@ export class ModelEffortPickerHandler {
       // The model DID change before the effort step was refused: said in the
       // chat and answered failed ("could not be confirmed, open the picker
       // again"), never not_allowed, which would read as nothing happened.
-      this.note(chatId, `Switched to ${name}. The effort was not changed: ${outcome.message}`)
-      return { ok: false, code: 'failed', message: `The model was switched to ${name}, but the effort was not changed. ${outcome.message}` }
+      // An effort step that ended unconfirmed after its Enter may have applied.
+      const unconfirmed = outcome.code === 'not_confirmed' || outcome.code === 'session_changed'
+      const effort = unconfirmed ? 'The effort change could not be confirmed' : 'The effort was not changed'
+      this.note(chatId, `Switched to ${name}. ${effort}: ${outcome.message}`)
+      return { ok: false, code: 'failed', message: `The model was switched to ${name}. ${effort}. ${outcome.message}` }
     }
     // The answer is the session's own report, never the selection echoed.
     const current = { model: pickerModelOf(outcome.report.model), effort: outcome.report.effort }

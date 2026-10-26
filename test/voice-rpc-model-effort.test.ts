@@ -8,6 +8,9 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { VoiceRpcHandler, normalizeVoiceRpc, type VoiceRpcDeps, type VoiceRpcResultBody } from '../lib/voice-rpc.ts'
 import { APPLY_MODEL_EFFORT, LIST_MODEL_EFFORT, type PickerAnswer, type PickerFrame } from '../lib/model-effort-rpc.ts'
@@ -131,4 +134,42 @@ test('a picker result is not held behind a slow ack, and the frame carries its a
   assert.deepEqual(r.results, [{ rpcId: 'rpc-1', body: { ok: true, payload: { done: true } } }])
   const at = r.asked[0]!.receivedAtMs!
   assert.ok(typeof at === 'number' && at >= before && at <= Date.now())
+})
+
+// Second round 3 review, item 1: BGOS waits 10 s for a dispatch's accept
+// (voice-task.service.ts DISPATCH_ACCEPT_TIMEOUT_MS). While a model or effort
+// change holds the channel cards, the dispatch card is queued behind the hold,
+// which sends it when the change ends, so the accept is answered at once.
+test('a voice dispatch during a change is accepted at once, its card queued behind the hold', async () => {
+  for (const held of [true, false]) {
+    const results: Array<{ rpcId: string; body: VoiceRpcResultBody }> = []
+    let release: () => void = () => {}
+    const handler = new VoiceRpcHandler({
+      config: { openaiApiKey: '', model: 'm', voice: 'v', persona: '', assistantId: '42', userId: 'u' },
+      postAck: async () => {},
+      postResult: async (rpcId, body) => { results.push({ rpcId, body }) },
+      notify: () => new Promise((r) => { release = () => r(undefined) }),
+      getIdentity: async () => null,
+      cardsHeld: () => held,
+      log: () => {},
+    })
+    const run = handler.handle(normalizeVoiceRpc({ rpcId: 'd1', op: 'dispatch', assistantId: '42', chatId: '9', payload: { taskId: 't1', question: 'do it' } })!)
+    const done = await Promise.race([run.then(() => 'answered'), new Promise((r) => setTimeout(() => r('waiting'), 300))])
+    if (held) {
+      assert.equal(done, 'answered', 'held: accepted without waiting for the card')
+      assert.deepEqual(results[0]!.body, { ok: true, payload: { accepted: true, taskId: 't1' } })
+    } else {
+      assert.equal(done, 'waiting', 'not held: the accept still waits for the card, as before')
+      release()
+      await run
+      assert.equal(results[0]!.body.ok, true)
+    }
+    release()
+  }
+})
+
+test('server.ts tells the voice handler when cards are held', () => {
+  const server = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'server.ts'), 'utf8')
+  const at = server.indexOf('const voiceRpc = new VoiceRpcHandler(')
+  assert.match(server.slice(at, server.indexOf('\n})\n', at)), /cardsHeld: \(\) => modelEffortControl\.busy,/)
 })

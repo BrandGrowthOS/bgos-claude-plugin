@@ -262,7 +262,7 @@ test('a model switched before the effort was refused is noted and answered faile
   assert.equal(out.ok, false)
   if (out.ok) return
   assert.equal(out.code, 'failed')
-  assert.match(out.message, /switched to Sonnet, but the effort was not changed/)
+  assert.match(out.message, /^The model was switched to Sonnet\. The effort was not changed\./)
   assert.deepEqual(r.notes, [{ chatId: '9', text: 'Switched to Sonnet. The effort was not changed: The model this agent runs reports no effort setting.' }])
   assert.equal(r.reports.length, 1, 'the pill shows the new model')
 })
@@ -272,4 +272,17 @@ test('a refusal with nothing switched sends no note', async () => {
   const out = await r.handler.answer(APPLY)
   if (!out.ok) assert.equal(out.code, 'not_allowed')
   assert.equal(r.notes.length, 0)
+})
+
+// Second round 3 review, item 4: an effort step that ended unconfirmed after
+// its Enter may have applied; the note says it could not be confirmed.
+test('an effort step that ended unconfirmed is noted as not confirmed, never as not changed', async () => {
+  for (const code of ['not_confirmed', 'session_changed'] as const) {
+    const r = rig({ outcome: { ok: false, op: 'apply', code, message: 'm.', report: REPORT, modelSwitched: true } })
+    const out = await r.handler.answer(APPLY)
+    assert.equal(out.ok, false)
+    assert.equal(r.notes.length, 1, code)
+    assert.match(r.notes[0]!.text, /^Switched to Sonnet\. The effort change could not be confirmed: m\.$/, code)
+    assert.doesNotMatch(r.notes[0]!.text, /not changed/)
+  }
 })
