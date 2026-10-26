@@ -1,233 +1,223 @@
 /**
- * Owner model and effort control (Route A): the wire around the transaction
- * (lib/model-effort-rpc.ts).
+ * The owner's model and effort picker on the BGOS wire (lib/model-effort-rpc.ts).
  *
- * The app's picker sends ONE typed frame, never a slash command or text:
+ * BGOS main (#3060) asks over voice_rpc, never a slash command or text:
  *
- *   model_effort_rpc { rpcId, op: 'describe' | 'set_model' | 'set_effort',
- *                      assistantId, chatId, chatKind, value,
- *                      sender: { userId, relationship }, isSharedRecipient,
- *                      shareOwnerUserId }
+ *   list_model_effort  payload {}
+ *     -> { ok: true, payload: <catalog readModelEffortCatalog accepts> }
+ *   apply_model_effort payload { sessionId, model, effort }
+ *     -> { ok: true, payload: { current: { model, effort }, sessionId } }
+ *   a refusal -> { ok: false, error: { code, message } } with code busy,
+ *     not_allowed or failed (the app maps busy and not_allowed; BGOS turns
+ *     anything else into switch_failed)
  *
- * and the daemon answers POST integrations/model-effort-rpc/:rpcId/result
- * with { ok: true, payload: { applied, report } } or
- * { ok: false, error: { code, message }, payload: { report } }, and reports
- * the model and effort it CONFIRMED through the existing session settings
- * rail, so the pill shows the truth.
- *
- * The owner rule is the daemon command rule (lib/daemon-command-sender.ts):
- * the sender must be provably the owner, in a main chat; a share recipient
- * and an unreadable sender are refused before the control is consulted.
+ * The frame carries no sender: BGOS's gate (assistant-sessions.service.ts
+ * gate, steps 1 to 3) admits only the signed in owner in this agent's own
+ * main chat. The daemon checks again from what it knows: the chat must be one
+ * of this agent's main chats and never one known to be a share recipient's.
  */
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
-  MODEL_EFFORT_RPC_EVENT,
-  ModelEffortRpcHandler,
+  APPLY_BUDGET_MS,
+  ModelEffortPickerHandler,
   SESSION_REPORT_EFFORT_PATTERN,
   SESSION_REPORT_MODEL_PATTERN,
-  normalizeModelEffortRpc,
+  pickerChatAllowed,
   sessionSettingsBody,
+  type PickerSnapshot,
 } from '../lib/model-effort-rpc.ts'
-import type { ControlOutcome, ControlRequest } from '../lib/model-effort-control.ts'
-import type { ModelEffortReport } from '../lib/model-effort-catalog.ts'
+import type { ControlOutcome } from '../lib/model-effort-control.ts'
+import { readModelEffortCatalog, type ModelEffortReport } from '../lib/model-effort-catalog.ts'
 
-const OWNER = 'user_owner'
+const SID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+const NOW = Date.parse('2026-10-26T00:00:05.000Z')
 const REPORT: ModelEffortReport = {
   model: 'claude-sonnet-5-5',
   modelFamily: 'sonnet',
   modelDisplayName: 'Sonnet',
-  effort: 'high',
-  runtimeVersion: '2.1.309',
+  effort: 'xhigh',
+  runtimeVersion: '2.1.310',
   availableModels: ['fable', 'opus', 'sonnet'],
   availableEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
   ultracode: { available: false, reason: 'This host cannot confirm Ultra Code remotely.' },
   canChange: true,
   cannotChangeCode: null,
   cannotChangeReason: null,
-  observedAt: '2026-10-24T00:00:00.000Z',
+  observedAt: '2026-10-26T00:00:04.000Z',
+}
+const SNAPSHOT: PickerSnapshot = {
+  optedIn: true,
+  sessionId: SID,
+  observation: { sessionId: SID, modelId: 'claude-opus-5-5', modelDisplayName: 'Opus', effort: 'high', version: '2.1.310', seq: 3, observedAtMs: NOW - 1000 },
+  catalog: { models: ['fable', 'opus', 'sonnet'], efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
 }
 
-function frame(over: Record<string, unknown> = {}) {
-  return {
-    rpcId: 'rpc-1',
-    op: 'set_model',
-    assistantId: '42',
-    chatId: 'chat-9',
-    chatKind: 'main',
-    value: 'sonnet',
-    sender: { userId: OWNER, relationship: 'owner' },
-    ...over,
-  }
-}
-
-function rig(outcome: ControlOutcome = { ok: true, op: 'set_model', applied: true, report: REPORT }) {
-  const calls: ControlRequest[] = []
-  const results: Array<{ rpcId: string; body: unknown }> = []
+function rig(over: { outcome?: ControlOutcome; snapshot?: PickerSnapshot; chatAllowed?: boolean } = {}) {
+  const applies: Array<{ selection: unknown; deadlineAtMs: number }> = []
   const reports: Array<{ chatId: string; body: unknown }> = []
+  const notes: Array<{ chatId: string; text: string }> = []
   const logs: string[] = []
-  let release: (() => void) | null = null
-  let hold = false
-  const handler = new ModelEffortRpcHandler({
+  const handler = new ModelEffortPickerHandler({
     assistantId: () => '42',
-    ownerUserId: () => OWNER,
+    chatAllowed: () => over.chatAllowed ?? true,
     control: {
-      handle: async (req) => {
-        calls.push(req)
-        if (hold) await new Promise<void>((r) => { release = r })
-        return outcome
+      snapshot: async () => over.snapshot ?? SNAPSHOT,
+      apply: async (selection, opts) => {
+        applies.push({ selection, deadlineAtMs: opts.deadlineAtMs })
+        return over.outcome ?? { ok: true, op: 'apply', applied: true, report: REPORT }
       },
     },
-    postResult: async (rpcId, body) => { results.push({ rpcId, body }) },
     reportSettings: async (chatId, body) => { reports.push({ chatId, body }) },
+    sendNote: async (chatId, text) => { notes.push({ chatId, text }) },
     log: (m) => logs.push(m),
-    now: () => Date.parse('2026-10-24T00:00:05.000Z'),
+    now: () => NOW,
   })
-  return {
-    handler, calls, results, reports, logs,
-    holdNext: () => { hold = true },
-    releaseHeld: () => release?.(),
-  }
+  return { handler, applies, reports, notes, logs }
 }
 
-test('the event name is the typed rail, not a slash command', () => {
-  assert.equal(MODEL_EFFORT_RPC_EVENT, 'model_effort_rpc')
-})
+const APPLY = { op: 'apply_model_effort', assistantId: '42', chatId: '9', payload: { sessionId: SID, model: 'sonnet', effort: 'xhigh' } }
+const LIST = { op: 'list_model_effort', assistantId: '42', chatId: '9', payload: {} }
 
-test('a frame without an rpcId cannot be answered and is dropped', () => {
-  assert.equal(normalizeModelEffortRpc(frame({ rpcId: undefined })), null)
-  assert.equal(normalizeModelEffortRpc(frame({ rpcId: '' })), null)
-  assert.equal(normalizeModelEffortRpc(null), null)
-  assert.equal(normalizeModelEffortRpc('set_model sonnet'), null)
-})
-
-test('the owner\'s set_model reaches the control, is answered, and is reported on the rail', async () => {
+test('list answers a catalog BGOS\'s reader accepts, for the proven session', async () => {
   const r = rig()
-  await r.handler.handle(normalizeModelEffortRpc(frame())!)
-  assert.deepEqual(r.calls, [{ op: 'set_model', value: 'sonnet' }])
-  assert.deepEqual(r.results, [{ rpcId: 'rpc-1', body: { ok: true, payload: { applied: true, report: REPORT } } }])
-  assert.deepEqual(r.reports, [{
-    chatId: 'chat-9',
-    body: { model: 'claude-sonnet-5-5', effort: 'high', serviceTier: null, rerouted: false, reportedAt: '2026-10-24T00:00:05.000Z' },
-  }])
+  const out = await r.handler.answer(LIST)
+  assert.equal(out.ok, true, JSON.stringify(out))
+  if (!out.ok) return
+  const read = readModelEffortCatalog(out.payload)
+  assert.ok(read, 'readModelEffortCatalog accepts it')
+  assert.equal(read.sessionId, SID)
+  assert.deepEqual(read.current, { model: 'opus', effort: 'high' })
+  assert.equal(r.applies.length, 0, 'a list types nothing')
 })
 
-test('a share recipient is refused before the control is consulted', async () => {
-  for (const sender of [
-    { sender: { userId: 'user_friend', relationship: 'shared_recipient' }, isSharedRecipient: true, shareOwnerUserId: OWNER },
-    { sender: { userId: OWNER, relationship: 'shared_recipient' } },
-    { sender: { userId: OWNER }, isSharedRecipient: true },
-    { sender: undefined },
-    { sender: { userId: '' } },
-    { sender: { userId: OWNER }, sender_user_id: 'someone_else' },
+test('list while not opted in, or with nothing to report, is refused, never an empty catalog', async () => {
+  const off = await rig({ snapshot: { ...SNAPSHOT, optedIn: false } }).handler.answer(LIST)
+  assert.deepEqual(off.ok ? null : off.code, 'not_allowed')
+  const none = await rig({ snapshot: { ...SNAPSHOT, observation: null } }).handler.answer(LIST)
+  assert.deepEqual(none.ok ? null : none.code, 'failed')
+  const noSession = await rig({ snapshot: { ...SNAPSHOT, sessionId: null } }).handler.answer(LIST)
+  assert.deepEqual(noSession.ok ? null : noSession.code, 'failed')
+})
+
+test('apply hands the control exactly the selection, under a deadline inside BGOS\'s 20 s', async () => {
+  const r = rig()
+  const out = await r.handler.answer(APPLY)
+  assert.deepEqual(r.applies, [{ selection: { sessionId: SID, model: 'sonnet', effort: 'xhigh' }, deadlineAtMs: NOW + APPLY_BUDGET_MS }])
+  assert.ok(APPLY_BUDGET_MS <= 17_000, 'BGOS waits 20 000 ms (assistant-sessions.service.ts:134); the answer must beat it')
+  assert.deepEqual(out, { ok: true, payload: { current: { model: 'sonnet', effort: 'xhigh' }, sessionId: SID } })
+})
+
+test('apply answers what the session REPORTS, never the selection echoed', async () => {
+  // The control said ok but its report does not hold the selection: never claimed.
+  const r = rig({ outcome: { ok: true, op: 'apply', applied: true, report: { ...REPORT, effort: 'high' } } })
+  const out = await r.handler.answer(APPLY)
+  assert.equal(out.ok, false)
+  if (!out.ok) assert.equal(out.code, 'failed')
+  assert.equal(r.notes.length, 0, 'no switched note for an unconfirmed switch')
+})
+
+test('a confirmed switch is reported on the session settings rail and noted in the chat', async () => {
+  const r = rig()
+  await r.handler.answer(APPLY)
+  assert.deepEqual(r.reports, [{
+    chatId: '9',
+    body: { model: 'claude-sonnet-5-5', effort: 'xhigh', serviceTier: null, rerouted: false, reportedAt: '2026-10-26T00:00:05.000Z' },
+  }])
+  assert.deepEqual(r.notes, [{ chatId: '9', text: 'Switched to Sonnet, effort Extra high.' }])
+})
+
+test('a selection that was already running is answered without a note', async () => {
+  const r = rig({ outcome: { ok: true, op: 'apply', applied: false, report: REPORT } })
+  const out = await r.handler.answer(APPLY)
+  assert.equal(out.ok, true)
+  assert.equal(r.notes.length, 0)
+})
+
+test('a refusal is answered with the app\'s code and refreshes the pill with what really runs', async () => {
+  const r = rig({ outcome: { ok: false, op: 'apply', code: 'busy_turn', message: 'The agent is working on a turn. Try again when it is idle.', report: REPORT } })
+  const out = await r.handler.answer(APPLY)
+  assert.deepEqual(out, { ok: false, code: 'busy', message: 'The agent is working on a turn. Try again when it is idle.' })
+  assert.equal(r.reports.length, 1)
+  assert.equal(r.notes.length, 0)
+})
+
+test('owner only, main chat only: a chat the daemon cannot place as the owner\'s main chat is refused first', async () => {
+  const r = rig({ chatAllowed: false })
+  for (const frame of [APPLY, LIST]) {
+    const out = await r.handler.answer(frame)
+    assert.equal(out.ok, false)
+    if (!out.ok) assert.equal(out.code, 'not_allowed')
+  }
+  assert.equal(r.applies.length, 0)
+  assert.equal(r.reports.length, 0)
+})
+
+test('pickerChatAllowed: one of this agent\'s main chats, never a recipient\'s, proven on a shared agent', () => {
+  const owners = new Set(['9'])
+  const others = new Set(['11'])
+  const verdict = (chatId: string, mains: string[]) =>
+    pickerChatAllowed({ chatId, mainChatIds: mains, isOwners: (c) => owners.has(c), isOthers: (c) => others.has(c) })
+  assert.equal(verdict('9', ['9']), true, 'the only main chat')
+  assert.equal(verdict('10', ['10']), true, 'an only main chat nobody spoke in yet')
+  assert.equal(verdict('12', ['9']), false, 'not a main chat of this agent (a room, a group, another agent\'s)')
+  assert.equal(verdict('11', ['11']), false, 'a share recipient\'s chat, even when it is the only one listed')
+  assert.equal(verdict('9', ['9', '11']), true, 'shared agent: the chat proven the owner\'s')
+  assert.equal(verdict('10', ['10', '11']), false, 'shared agent: a main chat not proven the owner\'s')
+  assert.equal(verdict('', ['9']), false)
+})
+
+test('a malformed selection is refused without reaching the control', async () => {
+  for (const payload of [
+    {},
+    { sessionId: SID, model: 'sonnet' },
+    { sessionId: SID, model: 'sonnet', effort: 7 },
+    { sessionId: '', model: 'sonnet', effort: 'high' },
+    { sessionId: SID, model: ['sonnet'], effort: 'high' },
+    { sessionId: 'x'.repeat(201), model: 'sonnet', effort: 'high' },
   ]) {
     const r = rig()
-    await r.handler.handle(normalizeModelEffortRpc(frame(sender))!)
-    assert.equal(r.calls.length, 0, JSON.stringify(sender))
-    assert.equal(r.reports.length, 0)
-    const body = r.results[0]!.body as { ok: boolean; error: { code: string } }
-    assert.equal(body.ok, false)
-    assert.equal(body.error.code, 'not_owner')
+    const out = await r.handler.answer({ ...APPLY, payload })
+    assert.equal(out.ok, false, JSON.stringify(payload))
+    if (!out.ok) assert.equal(out.code, 'not_allowed')
+    assert.equal(r.applies.length, 0)
   }
 })
 
-test('a side chat, a group or a room is refused; an absent kind is a main chat', async () => {
-  for (const chatKind of ['side', 'group', 'room', 'channel']) {
-    const r = rig()
-    await r.handler.handle(normalizeModelEffortRpc(frame({ chatKind }))!)
-    assert.equal(r.calls.length, 0, chatKind)
-    assert.equal((r.results[0]!.body as { error: { code: string } }).error.code, 'not_main_chat')
-  }
+test('a frame for another agent is not this daemon\'s to answer', () => {
   const r = rig()
-  await r.handler.handle(normalizeModelEffortRpc(frame({ chatKind: undefined }))!)
-  assert.equal(r.calls.length, 1)
+  assert.equal(r.handler.mine({ ...APPLY, assistantId: '42' }), true)
+  assert.equal(r.handler.mine({ ...APPLY, assistantId: 42 }), true)
+  assert.equal(r.handler.mine({ ...APPLY, assistantId: '43' }), false)
+  assert.equal(r.handler.mine({ ...APPLY, assistantId: '' }), false)
 })
 
-test('a frame for another agent gets nothing at all', async () => {
-  const r = rig()
-  await r.handler.handle(normalizeModelEffortRpc(frame({ assistantId: '43' }))!)
-  assert.equal(r.calls.length, 0)
-  assert.equal(r.results.length, 0)
-})
-
-test('a refusal is answered with its code, its sentence and the true report', async () => {
-  const r = rig({ ok: false, op: 'set_model', code: 'composer_not_empty', message: 'The agent has a draft.', report: REPORT })
-  await r.handler.handle(normalizeModelEffortRpc(frame())!)
-  assert.deepEqual(r.results[0]!.body, {
-    ok: false,
-    error: { code: 'composer_not_empty', message: 'The agent has a draft.' },
-    payload: { report: REPORT },
-  })
-  assert.equal(r.reports.length, 1, 'the pill is refreshed with what really runs')
-})
-
-test('a re sent frame never types twice: a running id is ignored, an answered one is answered again', async () => {
-  const r = rig()
-  r.holdNext()
-  const first = r.handler.handle(normalizeModelEffortRpc(frame())!)
-  await r.handler.handle(normalizeModelEffortRpc(frame())!)
-  assert.equal(r.calls.length, 1)
-  assert.equal(r.results.length, 0, 'still running')
-  r.releaseHeld()
-  await first
-  await r.handler.handle(normalizeModelEffortRpc(frame())!)
-  assert.equal(r.calls.length, 1)
-  assert.equal(r.results.length, 2)
-  assert.deepEqual(r.results[0], r.results[1])
-})
-
-test('a control that throws is answered, never left to time out', async () => {
-  const r = rig()
-  const handler = new ModelEffortRpcHandler({
+test('a control that throws is answered failed, never left to time out', async () => {
+  const handler = new ModelEffortPickerHandler({
     assistantId: () => '42',
-    ownerUserId: () => OWNER,
-    control: { handle: async () => { throw new Error('boom') } },
-    postResult: async (rpcId, body) => { r.results.push({ rpcId, body }) },
+    chatAllowed: () => true,
+    control: { snapshot: async () => { throw new Error('boom') }, apply: async () => { throw new Error('boom') } },
     reportSettings: async () => {},
+    sendNote: async () => {},
     log: () => {},
-    now: () => 0,
+    now: () => NOW,
   })
-  await handler.handle(normalizeModelEffortRpc(frame())!)
-  assert.equal((r.results[0]!.body as { error: { code: string } }).error.code, 'control_failed')
+  for (const frame of [LIST, APPLY]) {
+    const out = await handler.answer(frame)
+    assert.equal(out.ok, false)
+    if (!out.ok) assert.equal(out.code, 'failed')
+  }
 })
 
 test('the session settings body follows the BGOS route\'s own patterns, and an id they refuse is not sent', () => {
   assert.equal(SESSION_REPORT_MODEL_PATTERN.source, '^[\\w./:-]{1,160}$')
   assert.equal(SESSION_REPORT_EFFORT_PATTERN.source, '^[a-z]{1,20}$')
   assert.deepEqual(sessionSettingsBody(REPORT, 0), {
-    model: 'claude-sonnet-5-5', effort: 'high', serviceTier: null, rerouted: false, reportedAt: '1970-01-01T00:00:00.000Z',
+    model: 'claude-sonnet-5-5', effort: 'xhigh', serviceTier: null, rerouted: false, reportedAt: '1970-01-01T00:00:00.000Z',
   })
   assert.equal(sessionSettingsBody({ ...REPORT, model: 'claude-opus-5-5[1m]' }, 0), null)
   assert.equal(sessionSettingsBody({ ...REPORT, effort: null }, 0)!.effort, null)
   assert.equal(sessionSettingsBody(null, 0), null)
-})
-
-// Security review L6 (REVIEW-275.md): an rpcId is the sender's text, up to 128
-// characters with no character check, so a frame could forge daemon log lines
-// with a newline in it. The log carries a short hash of the id instead.
-test('L6: an rpcId is never logged raw, only as a short hash', async () => {
-  const { createHash } = await import('node:crypto')
-  const rpcId = 'rpc-7\n[2026-10-24T00:00:00Z] model control: set_model sonnet applied'
-  const tag = createHash('sha256').update(rpcId).digest('hex').slice(0, 12)
-  // Refused (not the owner), and its result post fails: both log lines.
-  const logs: string[] = []
-  const handler = new ModelEffortRpcHandler({
-    assistantId: () => '42',
-    ownerUserId: () => OWNER,
-    control: { handle: async () => { throw new Error('never reached') } },
-    postResult: async () => { throw new Error('backend down') },
-    reportSettings: async () => {},
-    log: (m) => logs.push(m),
-    now: () => 0,
-  })
-  await handler.handle(normalizeModelEffortRpc(frame({ rpcId, sender: { userId: 'user_friend' } }))!)
-  assert.ok(logs.length >= 2, JSON.stringify(logs))
-  for (const line of logs) {
-    assert.ok(!line.includes('rpc-7'), `raw rpcId in the log: ${JSON.stringify(line)}`)
-    assert.ok(!line.includes('\n'), `a forged line in the log: ${JSON.stringify(line)}`)
-  }
-  assert.ok(logs.some((l) => l.includes(`not_owner (rpc ${tag})`)), JSON.stringify(logs))
-  assert.ok(logs.some((l) => l.includes(`result post failed (rpc ${tag})`)), JSON.stringify(logs))
 })

@@ -5,13 +5,14 @@
  * from the frozen literal tables in compact-inject.ts ... Every precondition
  * you listed before typing").
  *
- * The wire (lib/model-effort-rpc.ts) has already proven the sender is the
- * owner in a main chat. This file decides everything else, in this order, and
+ * The wire (lib/model-effort-rpc.ts, BGOS's list_model_effort and
+ * apply_model_effort over voice_rpc) has already checked the chat is the
+ * owner's main chat. This file decides everything else, in this order, and
  * types NOTHING unless every step passes:
  *
- *   1. the op is set_model, set_effort or describe, and the value is an own
- *      key of the frozen table (Ultra Code: "This host cannot confirm Ultra
- *      Code remotely.");
+ *   1. the step is set_model or set_effort, and the value is an own key of
+ *      the frozen table (Ultra Code: "This host cannot confirm Ultra Code
+ *      remotely.");
  *   2. the control lock is free (one change at a time; the lock is also held
  *      against compact, goal typing, steer and incoming deliveries by
  *      server.ts, through `busy` and `whenIdle`);
@@ -44,9 +45,13 @@
  * says whether the literal is still sitting in the composer. Nothing is ever
  * retried into a terminal in an uncertain state.
  *
- * Each frame carries ONE operation, so there is no partial state to roll
- * back: a picker that changes both sends set_model, waits for its answer,
- * then sends set_effort, and every answer carries the true report.
+ * The picker's one selection, { sessionId, model, effort }, is `apply`: the
+ * model step, then the effort step, each the transaction above with every
+ * check run again, under ONE hold of the lock (nothing is typed or delivered
+ * between them) and ONE deadline for the whole answer, so it beats BGOS's own
+ * 20 s wait. A step is never started without the time to confirm it. There is
+ * no rollback: a model confirmed before the effort step is refused is what
+ * runs, and the answer's report says so.
  */
 
 import {
@@ -66,6 +71,7 @@ import {
   buildModelEffortReport,
   modelFamilyOf,
   parseHelpCatalog,
+  pickerModelOf,
   ULTRACODE_UNCONFIRMABLE,
   type CanChange,
   type HostCatalog,
@@ -82,7 +88,7 @@ import {
   type ProcessEntry,
 } from './model-effort-pane.ts'
 
-export type ControlOp = 'describe' | 'set_model' | 'set_effort'
+export type ControlOp = 'set_model' | 'set_effort' | 'apply'
 
 export interface ControlRequest {
   op: unknown
@@ -113,10 +119,13 @@ export type RefusalCode =
   | 'composer_changed'
   | 'inject_failed'
   | 'not_confirmed'
+  | 'session_mismatch'
+  | 'not_owner_main_chat'
+  | 'out_of_time'
 
 /** One plain sentence per refusal, at most 300 characters, dash free. */
 export const REFUSAL_MESSAGES: Readonly<Record<RefusalCode, string>> = Object.freeze({
-  unsupported_op: 'Only set_model and set_effort can change this agent\'s session.',
+  unsupported_op: 'Only the model or the effort of this agent\'s session can be changed.',
   unsupported_value: 'That is not a model or effort this agent can be switched to.',
   ultracode_unconfirmable: ULTRACODE_UNCONFIRMABLE,
   control_busy: 'Another command is being typed into the agent\'s terminal. Try again in a moment.',
@@ -140,6 +149,9 @@ export const REFUSAL_MESSAGES: Readonly<Record<RefusalCode, string>> = Object.fr
   composer_changed: 'Something reached the agent\'s message box while the command was being typed, so it was not sent.',
   inject_failed: 'Typing into the agent\'s terminal failed part way. Nothing was retried; check the terminal.',
   not_confirmed: 'The command was typed but the session did not report the change in time.',
+  session_mismatch: 'The agent\'s session is not the one the picker read. Open the picker again.',
+  not_owner_main_chat: 'The model and effort are changed by the agent\'s owner, from the agent\'s main chat only.',
+  out_of_time: 'There was not enough time left to change and confirm the effort. Open the picker again.',
 })
 
 export type ControlOutcome =
@@ -168,15 +180,33 @@ export interface ControlDeps {
   log: (msg: string) => void
 }
 
+/** The picker's selection, as BGOS sends it (ModelEffortSelection). */
+export interface ApplySelection {
+  sessionId: unknown
+  model: unknown
+  effort: unknown
+}
+
+/** What a list reads: types nothing and reads no pane. */
+export interface ControlSnapshot {
+  optedIn: boolean
+  sessionId: string | null
+  /** The proven session's latest observation, or null when none is fresh. */
+  observation: ModelObservation | null
+  catalog: HostCatalog
+}
+
 export interface ControlOptions {
   /** How long to wait for the session to report the change. */
   confirmTimeoutMs?: number
+  /** A step of `apply` is not started with less time than this left. */
+  minStepMs?: number
   pollMs?: number
   /** An observation older than this is not a live status source. */
   staleMs?: number
 }
 
-const DEFAULTS = { confirmTimeoutMs: 20_000, pollMs: 250, staleMs: 15_000 }
+const DEFAULTS = { confirmTimeoutMs: 20_000, minStepMs: 3_000, pollMs: 250, staleMs: 15_000 }
 
 class Refusal {
   constructor(readonly code: RefusalCode, readonly message: string = REFUSAL_MESSAGES[code]) {}
@@ -204,10 +234,9 @@ export class ModelEffortControl {
 
   async handle(request: ControlRequest): Promise<ControlOutcome> {
     const op = request.op
-    if (op !== 'describe' && op !== 'set_model' && op !== 'set_effort') {
+    if (op !== 'set_model' && op !== 'set_effort') {
       return this.refused(null, new Refusal('unsupported_op'), null)
     }
-    if (op === 'describe') return this.describe()
     const value = request.value
     if (op === 'set_effort' && value === 'ultracode') {
       return this.refused(op, new Refusal('ultracode_unconfirmable'), null)
@@ -227,7 +256,7 @@ export class ModelEffortControl {
       const pre = await this.preflight()
       sessionId = pre.sessionId
       catalog = pre.catalog
-      const outcome = await this.change(op, value as string, pre)
+      const outcome = await this.change(op, value as string, pre, Number.POSITIVE_INFINITY)
       this.deps.log(`model control: ${op} ${String(value)} ${outcome.ok ? (outcome.applied ? 'applied' : 'already') : outcome.code}`)
       return outcome
     } catch (err) {
@@ -235,24 +264,90 @@ export class ModelEffortControl {
       this.deps.log(`model control: ${op} ${String(value)} ${err.code}`)
       return { ok: false, op, code: err.code, message: err.message, report: this.report(catalog, sessionId) }
     } finally {
-      this.inFlight = false
-      const waiters = this.idleWaiters
-      this.idleWaiters = []
-      for (const w of waiters) w()
+      this.release()
     }
   }
 
-  /** What runs now and what may be chosen. Types nothing. */
-  private async describe(): Promise<ControlOutcome> {
-    const sessionId = this.deps.sessionId()
-    const observation = sessionId ? this.deps.readObservation(sessionId) : null
-    const catalog = parseHelpCatalog(await this.deps.helpText(observation?.version ?? null))
-    const report = buildModelEffortReport({ catalog, observation, canChange: this.canChange(catalog) })
-    if (!report) {
-      const blocked = this.canChange(catalog)
-      return this.refused('describe', new Refusal(blocked.ok ? 'no_status_source' : (blocked.code as RefusalCode)), null)
+  /**
+   * The picker's selection: the model, then the effort, under one hold of
+   * the lock and one deadline. The answer is ok only when the session's own
+   * latest report holds BOTH requested values.
+   */
+  async apply(selection: ApplySelection, opts: { deadlineAtMs: number }): Promise<ControlOutcome> {
+    const { sessionId: wanted, model, effort } = selection
+    if (typeof wanted !== 'string' || typeof model !== 'string' || typeof effort !== 'string') {
+      return this.refused('apply', new Refusal('unsupported_value'), null)
     }
-    return { ok: true, op: 'describe', applied: false, report }
+    if (effort === 'ultracode') return this.refused('apply', new Refusal('ultracode_unconfirmable'), null)
+    // A model is a table family, or the running model's own id (checked
+    // against the session below); nothing else is ever looked at again.
+    if (!isEffortLevel(effort) || (!isModelFamily(model) && pickerModelOf(model) !== model)) {
+      return this.refused('apply', new Refusal('unsupported_value'), null)
+    }
+    if (this.inFlight || this.deps.otherInjectionBusy()) {
+      return this.refused('apply', new Refusal('control_busy'), null)
+    }
+    // Held from here, synchronously, through BOTH steps.
+    this.inFlight = true
+    let sessionId: string | null = null
+    let catalog: HostCatalog = { efforts: [], models: [] }
+    try {
+      let pre = await this.preflight()
+      sessionId = pre.sessionId
+      catalog = pre.catalog
+      if (wanted !== pre.sessionId) throw new Refusal('session_mismatch')
+      if (!isModelFamily(model) && model !== pickerModelOf(pre.observation.modelId)) throw new Refusal('unsupported_value')
+      let applied = false
+      if (model !== pickerModelOf(pre.observation.modelId)) {
+        this.checkTime(opts.deadlineAtMs)
+        const step = await this.change('set_model', model, pre, opts.deadlineAtMs)
+        applied = step.ok && step.applied
+        // Every check again before the effort: the model step took time.
+        pre = await this.preflight()
+        if (pre.sessionId !== sessionId) throw new Refusal('session_changed')
+      }
+      if (pre.observation.effort !== effort) {
+        this.checkTime(opts.deadlineAtMs)
+        const step = await this.change('set_effort', effort, pre, opts.deadlineAtMs)
+        applied = applied || (step.ok && step.applied)
+      }
+      const final = this.deps.readObservation(sessionId)
+      if (!final || pickerModelOf(final.modelId) !== model || final.effort !== effort) throw new Refusal('not_confirmed')
+      this.deps.log(`model control: apply ${model} ${effort} ${applied ? 'applied' : 'already'}`)
+      return { ok: true, op: 'apply', applied, report: this.report(catalog, sessionId)! }
+    } catch (err) {
+      if (!(err instanceof Refusal)) throw err
+      this.deps.log(`model control: apply ${model} ${effort} ${err.code}`)
+      return { ok: false, op: 'apply', code: err.code, message: err.message, report: this.report(catalog, sessionId) }
+    } finally {
+      this.release()
+    }
+  }
+
+  /** What a list reads: the opt in, the proven session, its fresh observation, the CLI's catalog. Types nothing. */
+  async snapshot(): Promise<ControlSnapshot> {
+    const optedIn = this.deps.optedIn()
+    const sessionId = this.deps.sessionId()
+    const seen = sessionId ? this.deps.readObservation(sessionId) : null
+    const observation = seen && this.deps.now() - seen.observedAtMs <= this.opts.staleMs ? seen : null
+    let help: string | null = null
+    try {
+      help = await this.deps.helpText(observation?.version ?? null)
+    } catch {
+      help = null
+    }
+    return { optedIn, sessionId, observation, catalog: parseHelpCatalog(help) }
+  }
+
+  private release(): void {
+    this.inFlight = false
+    const waiters = this.idleWaiters
+    this.idleWaiters = []
+    for (const w of waiters) w()
+  }
+
+  private checkTime(deadlineAtMs: number): void {
+    if (deadlineAtMs - this.deps.now() < this.opts.minStepMs) throw new Refusal('out_of_time')
   }
 
   /** The checks that need no pane read, in the order a refusal names them. */
@@ -316,6 +411,7 @@ export class ModelEffortControl {
     op: 'set_model' | 'set_effort',
     value: string,
     pre: { sessionId: string; target: TmuxTarget; observation: ModelObservation; catalog: HostCatalog },
+    deadlineAtMs: number,
   ): Promise<ControlOutcome> {
     const { sessionId, target, catalog } = pre
     if (op === 'set_model' && !catalog.models.includes(value as keyof typeof MODEL_LITERALS)) throw new Refusal('not_in_catalog')
@@ -348,7 +444,7 @@ export class ModelEffortControl {
     await this.checkTyped(pane, literal)
     await this.run({ ...enter, delayMsBefore: 0 })
 
-    const deadline = this.deps.now() + this.opts.confirmTimeoutMs
+    const deadline = Math.min(this.deps.now() + this.opts.confirmTimeoutMs, deadlineAtMs)
     while (this.deps.now() < deadline) {
       await this.deps.sleep(this.opts.pollMs)
       if (this.deps.sessionId() !== sessionId) throw new Refusal('session_changed')

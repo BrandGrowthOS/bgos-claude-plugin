@@ -246,22 +246,24 @@
  *                       before 0.71.8 a Claude Code agent could send a card
  *                       it was never told about.
  *
- *   owner_model_effort_control
- *                       this daemon answers the owner's model and effort
- *                       picker over model_effort_rpc: it REPORTS the model and
- *                       effort the session really runs and the models and
- *                       efforts the installed CLI offers, and it CHANGES them
- *                       with set_model and set_effort, typed into its own
- *                       pane only when every precondition holds and confirmed
- *                       from the session's own status line before it reports
- *                       success (lib/model-effort-control.ts, Route A). ONLY
- *                       while the owner opted this agent in on its machine,
- *                       the injector answers, and the status line bridge has
- *                       a fresh observation with a non empty catalog, so
- *                       losing any one withdraws it on the next beat. PAIRING
- *                       CONNECTIONS ONLY: the session settings report route is
- *                       pairing scoped. Deliberately NOT session_model_control,
- *                       whose words promise Codex's semantics.
+ *   model_effort_picker
+ *                       BGOS's own token (#3060, model-effort-picker.model.ts
+ *                       MODEL_EFFORT_PICKER): its gate shows the owner's model
+ *                       and effort picker only for a pairing that declares it.
+ *                       This daemon answers list_model_effort and
+ *                       apply_model_effort over voice_rpc (lib/model-effort-rpc.ts):
+ *                       it LISTS the model and effort the session really runs
+ *                       and what the installed CLI offers, and it APPLIES a
+ *                       selection by typing a frozen literal into its own pane
+ *                       only when every precondition holds, confirmed from the
+ *                       session's own status line (lib/model-effort-control.ts,
+ *                       Route A). ONLY while the owner opted this agent in on
+ *                       its machine, the injector answers, and the status line
+ *                       bridge has a fresh observation with a non empty
+ *                       catalog, so losing any one withdraws it on the next
+ *                       beat. PAIRING CONNECTIONS ONLY (BGOS's gate requires a
+ *                       pairing) and NEVER ON WINDOWS: the pane proof reads the
+ *                       process tree and tmux, which a Windows host has not.
  *
  * Token grammar is the backend's: /^[a-z][a-z0-9_]{0,63}$/, at most 32
  * entries (backend/src/dto/integrations/pair-exchange.dto.ts). The base is
@@ -330,8 +332,8 @@ export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
  */
 export const DECLARED_CAPABILITIES_PAIRING: readonly string[] = Object.freeze([HARD_FLOOR_TOKEN, HARD_FLOOR_RULES_2_TOKEN])
 
-/** Owner model and effort control (Route A), declared only while it can act. */
-export const OWNER_MODEL_EFFORT_TOKEN = 'owner_model_effort_control'
+/** The owner's model and effort picker (BGOS #3060), declared only while it can act. */
+export const MODEL_EFFORT_PICKER_TOKEN = 'model_effort_picker'
 
 /** Declared only while this daemon can type into its own CLI's composer. */
 export const DECLARED_CAPABILITIES_INJECTOR: readonly string[] = Object.freeze([
@@ -382,8 +384,10 @@ export function declaredCapabilities(input: {
    * now (server.ts modelEffortDeclared: opted in, injector, fresh status line
    * observation, non empty catalog)? Absent reads as no.
    */
-  ownerModelEffort?: boolean
+  modelEffortPicker?: boolean
   authMode: 'pairing' | 'apikey'
+  /** The host platform; process.platform when absent. The picker is never declared on win32. */
+  platform?: NodeJS.Platform
 }): readonly string[] {
   return [
     ...DECLARED_CAPABILITIES_BASE,
@@ -392,6 +396,8 @@ export function declaredCapabilities(input: {
     ...(input.authMode === 'pairing' && input.floorHook === true ? DECLARED_CAPABILITIES_PAIRING : []),
     ...(input.canInjectGoal === true ? DECLARED_CAPABILITIES_INJECTOR : []),
     ...(input.authMode === 'pairing' && input.personLanes === true ? [PERSON_LANES_TOKEN, LANE_MEMORY_RPC_TOKEN] : []),
-    ...(input.authMode === 'pairing' && input.ownerModelEffort === true ? [OWNER_MODEL_EFFORT_TOKEN] : []),
+    ...(input.authMode === 'pairing' && input.modelEffortPicker === true && (input.platform ?? process.platform) !== 'win32'
+      ? [MODEL_EFFORT_PICKER_TOKEN]
+      : []),
   ]
 }

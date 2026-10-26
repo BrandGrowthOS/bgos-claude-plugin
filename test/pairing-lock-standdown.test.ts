@@ -78,9 +78,6 @@ const PAIRING_FRAMES = [
   // Changes (P7 stage 3): the owner's Changes panel reads this agent's
   // uncommitted changes. The same race: only the lock holder answers.
   'changes_rpc',
-  // Owner model and effort control (Route A): typing into the pane is the
-  // lock holder's alone.
-  'model_effort_rpc',
   // Skills (skills view row 3): the owner's Abilities screen lists this
   // agent's skills and removes one. The same race: only the lock holder answers.
   'skills_rpc',

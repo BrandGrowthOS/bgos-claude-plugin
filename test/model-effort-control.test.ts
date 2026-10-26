@@ -272,26 +272,24 @@ test('a request for what already runs types nothing and reports it', async () =>
   assert.equal(pane.sendKeys.length, 0)
 })
 
-test('describe reports the current model and the host catalog without typing', async () => {
+test('snapshot reports the proven session, its observation and the host catalog without typing', async () => {
   const { control, pane } = rig()
-  const out = await control.handle({ op: 'describe' })
-  assert.equal(out.ok, true)
-  if (!out.ok) return
-  assert.equal(out.report.model, 'claude-opus-5-5')
-  assert.deepEqual(out.report.availableModels, ['fable', 'opus', 'sonnet'])
-  assert.deepEqual(out.report.availableEfforts, ['low', 'medium', 'high', 'xhigh', 'max'])
-  assert.equal(out.report.canChange, true)
+  const snap = await control.snapshot()
+  assert.equal(snap.optedIn, true)
+  assert.equal(snap.sessionId, SID)
+  assert.equal(snap.observation?.modelId, 'claude-opus-5-5')
+  assert.deepEqual(snap.catalog.models, ['fable', 'opus', 'sonnet'])
+  assert.deepEqual(snap.catalog.efforts, ['low', 'medium', 'high', 'xhigh', 'max'])
   assert.equal(pane.sendKeys.length, 0)
+  assert.equal(pane.calls.length, 0, 'not even a pane read')
 })
 
-test('describe while not opted in still reports the truth, and says it cannot change it', async () => {
-  const { control, state } = rig()
+test('snapshot while not opted in says so, and still types nothing', async () => {
+  const { control, state, pane } = rig()
   state.optedIn = false
-  const out = await control.handle({ op: 'describe' })
-  assert.equal(out.ok, true)
-  if (!out.ok) return
-  assert.equal(out.report.canChange, false)
-  assert.equal(out.report.cannotChangeCode, 'not_opted_in')
+  const snap = await control.snapshot()
+  assert.equal(snap.optedIn, false)
+  assert.equal(pane.sendKeys.length, 0)
 })
 
 async function refused(
@@ -628,4 +626,150 @@ test('L1: the cursor moved between the check and the clear is caught by a fresh 
   assert.equal(out.ok, false, JSON.stringify(out))
   assert.equal(r.pane.composer, 'q/model sonnet')
   assert.deepEqual(typed(r.pane), ['/model sonnet'])
+})
+
+// ── apply: the BGOS picker's one selection, { sessionId, model, effort } ─────
+// One lock across both steps (a delivery, compact, goal typing or a steer
+// never lands between the model and the effort), each step the same checked
+// transaction as above, and one deadline for the whole answer.
+
+const SELECT = { sessionId: SID, model: 'sonnet', effort: 'xhigh' }
+
+test('apply switches the model, then the effort, each confirmed, under one lock', async () => {
+  const { control, pane, clock } = rig()
+  const busyAt: boolean[] = []
+  pane.after = () => busyAt.push(control.busy)
+  const out = await control.apply(SELECT, { deadlineAtMs: clock.now + 15_000 })
+  assert.equal(out.ok, true, JSON.stringify(out))
+  if (!out.ok) return
+  assert.equal(out.applied, true)
+  assert.deepEqual(typed(pane), ['/model sonnet', 'Enter', '/effort xhigh', 'Enter'])
+  assert.equal(out.report.model, 'claude-sonnet-5-5')
+  assert.equal(out.report.effort, 'xhigh')
+  assert.ok(busyAt.length > 4 && busyAt.every(Boolean), 'the lock is held through both steps')
+  assert.equal(control.busy, false, 'and released after')
+  assertNoEscape(pane)
+})
+
+test('apply with the model already running types only the effort', async () => {
+  const { control, pane, clock } = rig()
+  const out = await control.apply({ ...SELECT, model: 'opus' }, { deadlineAtMs: clock.now + 15_000 })
+  assert.equal(out.ok, true, JSON.stringify(out))
+  assert.deepEqual(typed(pane), ['/effort xhigh', 'Enter'])
+})
+
+test('apply with the effort already running types only the model', async () => {
+  const { control, pane, clock } = rig()
+  const out = await control.apply({ ...SELECT, effort: 'high' }, { deadlineAtMs: clock.now + 15_000 })
+  assert.equal(out.ok, true, JSON.stringify(out))
+  assert.deepEqual(typed(pane), ['/model sonnet', 'Enter'])
+})
+
+test('apply of what already runs types nothing and says it applied nothing', async () => {
+  const { control, pane, clock } = rig()
+  const out = await control.apply({ ...SELECT, model: 'opus', effort: 'high' }, { deadlineAtMs: clock.now + 15_000 })
+  assert.equal(out.ok, true)
+  if (out.ok) assert.equal(out.applied, false)
+  assert.equal(pane.sendKeys.length, 0)
+})
+
+test('apply for a session the picker read before a restart is refused: open the picker again', async () => {
+  const { control, pane, clock } = rig()
+  const out = await control.apply({ ...SELECT, sessionId: 'ffffffff-bbbb-4ccc-8ddd-eeeeeeeeeeee' }, { deadlineAtMs: clock.now + 15_000 })
+  assert.equal(out.ok, false)
+  if (!out.ok) assert.equal(out.code, 'session_mismatch')
+  assert.equal(pane.sendKeys.length, 0)
+  assert.equal(pane.calls.length, 0)
+})
+
+test('apply refuses Ultra Code, a value off the frozen tables and a model it cannot type', async () => {
+  for (const [selection, code] of [
+    [{ ...SELECT, effort: 'ultracode' }, 'ultracode_unconfirmable'],
+    [{ ...SELECT, effort: '/effort max' }, 'unsupported_value'],
+    [{ ...SELECT, effort: 'constructor' }, 'unsupported_value'],
+    [{ ...SELECT, model: 'claude-sonnet-5-5' }, 'unsupported_value'],
+    [{ ...SELECT, model: 'sonnet; /goal x' }, 'unsupported_value'],
+    [{ ...SELECT, model: '__proto__' }, 'unsupported_value'],
+  ] as const) {
+    const { control, pane, clock } = rig()
+    const out = await control.apply(selection, { deadlineAtMs: clock.now + 15_000 })
+    assert.equal(out.ok, false, JSON.stringify(selection))
+    if (!out.ok) assert.equal(out.code, code, JSON.stringify(selection))
+    assert.equal(pane.sendKeys.length, 0, JSON.stringify(selection))
+    assert.equal(control.busy, false)
+  }
+})
+
+test('apply on a model outside the frozen table may change the effort by naming that model', async () => {
+  const { control, pane, clock } = rig()
+  pane.model = 'claude-mythic-9'
+  const out = await control.apply({ ...SELECT, model: 'claude-mythic-9' }, { deadlineAtMs: clock.now + 15_000 })
+  assert.equal(out.ok, true, JSON.stringify(out))
+  assert.deepEqual(typed(pane), ['/effort xhigh', 'Enter'])
+})
+
+test('apply checks every precondition again before the effort step: a turn that starts after the model is refused', async () => {
+  const { control, pane, state, clock } = rig({})
+  const read = pane.observation.bind(pane)
+  control.deps.readObservation = (sid) => {
+    const o = read(sid)
+    if (o?.modelId === 'claude-sonnet-5-5') state.turn = 'live'
+    return o
+  }
+  const out = await control.apply(SELECT, { deadlineAtMs: clock.now + 15_000 })
+  assert.equal(out.ok, false)
+  if (out.ok) return
+  assert.equal(out.code, 'busy_turn')
+  assert.deepEqual(typed(pane), ['/model sonnet', 'Enter'], 'no effort typed into a live turn')
+  assert.equal(out.report?.model, 'claude-sonnet-5-5', 'the answer carries what really runs now')
+})
+
+test('apply onto a model that reports no effort stops after the model and says so', async () => {
+  const { control, pane, clock } = rig()
+  const read = pane.observation.bind(pane)
+  control.deps.readObservation = (sid) => {
+    const o = read(sid)
+    return o && o.modelId === 'claude-sonnet-5-5' ? { ...o, effort: null } : o
+  }
+  const out = await control.apply(SELECT, { deadlineAtMs: clock.now + 15_000 })
+  assert.equal(out.ok, false)
+  if (!out.ok) assert.equal(out.code, 'effort_unsupported')
+  assert.deepEqual(typed(pane), ['/model sonnet', 'Enter'])
+})
+
+test('apply waits for confirmation no longer than its deadline', async () => {
+  const { control, pane, clock } = rig()
+  pane.applies = false
+  const start = clock.now
+  const out = await control.apply(SELECT, { deadlineAtMs: start + 3_000 })
+  assert.equal(out.ok, false)
+  if (!out.ok) assert.equal(out.code, 'not_confirmed')
+  assert.ok(clock.now - start <= 3_000 + 1_000, `waited ${clock.now - start} ms`)
+  assert.deepEqual(typed(pane), ['/model sonnet', 'Enter'], 'nothing typed after an unconfirmed step')
+})
+
+test('apply does not start the effort step without the time to confirm it', async () => {
+  const { control, pane, clock } = rig()
+  pane.staleTicks = 8
+  const out = await control.apply(SELECT, { deadlineAtMs: clock.now + 3_500 })
+  assert.equal(out.ok, false, JSON.stringify(out))
+  if (out.ok) return
+  assert.equal(out.code, 'out_of_time')
+  assert.deepEqual(typed(pane), ['/model sonnet', 'Enter'])
+  assert.equal(out.report?.model, 'claude-sonnet-5-5')
+})
+
+test('apply is refused while another change holds the lock, and while compact or a steer types', async () => {
+  const { control, state, pane, clock } = rig()
+  state.otherBusy = true
+  const out = await control.apply(SELECT, { deadlineAtMs: clock.now + 15_000 })
+  assert.equal(out.ok, false)
+  if (!out.ok) assert.equal(out.code, 'control_busy')
+  state.otherBusy = false
+  pane.staleTicks = 3
+  const first = control.apply(SELECT, { deadlineAtMs: clock.now + 15_000 })
+  const second = await control.apply({ ...SELECT, effort: 'low' }, { deadlineAtMs: clock.now + 15_000 })
+  assert.equal(second.ok, false)
+  if (!second.ok) assert.equal(second.code, 'control_busy')
+  assert.equal((await first).ok, true)
 })

@@ -139,7 +139,7 @@ import {
 } from './lib/compact-inject.js'
 import { evaluateCompactionOutcome } from './lib/compact-confirm.js'
 import { ModelEffortControl } from './lib/model-effort-control.js'
-import { ModelEffortRpcHandler, normalizeModelEffortRpc, rpcLogOp, rpcLogTag } from './lib/model-effort-rpc.js'
+import { ModelEffortPickerHandler, pickerChatAllowed, rpcLogOp, rpcLogTag } from './lib/model-effort-rpc.js'
 import { parseHelpCatalog } from './lib/model-effort-catalog.js'
 import { processAncestry } from './lib/model-effort-pane.js'
 import { modelControlDir, readObservation, readOptIn, refreshBridgeCopy } from './lib/model-control-store.mjs'
@@ -2261,9 +2261,9 @@ function deliverInbound(
 }
 
 // ── Owner model and effort control (Route A, KC 2026-10-23) ──────────────────
-// The owner's picker asks over model_effort_rpc (lib/model-effort-rpc.ts) what
-// this session runs and may run, and changes it with set_model and set_effort
-// only. lib/model-effort-control.ts checks every precondition before it types
+// The owner's picker (BGOS #3060) asks over voice_rpc, list_model_effort and
+// apply_model_effort (lib/model-effort-rpc.ts), what this session runs and may
+// run, and changes it with the model and effort steps only. lib/model-effort-control.ts checks every precondition before it types
 // one fixed literal from lib/compact-inject.ts into this agent's own pane, and
 // confirms from the session's own status line (the bridge of
 // lib/model-control-store.mjs) before it reports success. Off unless the
@@ -2326,7 +2326,8 @@ const modelEffortControl: ModelEffortControl = new ModelEffortControl({
 }, { staleMs: MODEL_EFFORT_STALE_MS })
 
 /**
- * Declare owner_model_effort_control on this beat? Opted in, the injector
+ * Declare model_effort_picker on this beat (never on Windows:
+ * lib/declared-capabilities.ts)? Opted in, the injector
  * answers, the bridge has a fresh observation of the proven session, and the
  * installed CLI's help offers something. The help is read in the background
  * the first time, so the token appears on the beat after.
@@ -2349,20 +2350,29 @@ function modelEffortDeclared(): boolean {
   }
 }
 
-const modelEffortRpc = new ModelEffortRpcHandler({
+// The picker's answers. Owner only and main chat only from the daemon's own
+// records (pickerChatAllowed), on top of BGOS's gate; voiceRpc below routes
+// the two ops here.
+const modelEffortPicker = new ModelEffortPickerHandler({
   assistantId: () => String(ASSISTANT_ID ?? ''),
-  ownerUserId: () => USER_ID,
+  chatAllowed: (chatId) =>
+    pickerChatAllowed({ chatId, mainChatIds, isOwners: (c) => chatOwnership.isOwners(c), isOthers: (c) => chatOwnership.isOthers(c) }),
   control: modelEffortControl,
-  postResult: (rpcId, body) =>
-    bgosPost(
-      `integrations/model-effort-rpc/${encodeURIComponent(rpcId)}/result`,
-      body as unknown as Record<string, unknown>,
-    ),
   reportSettings: (chatId, body) =>
     bgosPatch(
       `integrations/assistants/${encodeURIComponent(String(ASSISTANT_ID ?? ''))}/chats/${encodeURIComponent(chatId)}/session-settings`,
       body as unknown as Record<string, unknown>,
     ),
+  sendNote: (chatId, text) =>
+    bgosPost('send-message', {
+      chatId: Number(chatId),
+      assistantId: Number(ASSISTANT_ID),
+      text,
+      sender: 'assistant',
+      sentDate: new Date().toISOString(),
+      hasAttachment: false,
+      files: [],
+    }),
   log,
   now: Date.now,
 })
@@ -12177,7 +12187,7 @@ const stopPauseLane = new StopPauseLane({
  *  this daemon never pauses on a host whose owner was never offered Pause. */
 function stopGoalView(): StopGoalView {
   return {
-    pauseDeclared: declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, ownerModelEffort: modelEffortDeclared(), authMode: AUTH.mode }).includes('mission_pause'),
+    pauseDeclared: declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, modelEffortPicker: modelEffortDeclared(), authMode: AUTH.mode }).includes('mission_pause'),
     held: goalHeld,
     attachedMissionId: goalMissionId,
     pending: goalPendingArm,
@@ -12345,6 +12355,8 @@ const voiceRpc = new VoiceRpcHandler({
   // list_sessions reads the agent folder; titles and previews that hold a
   // secret are withheld here, before anything leaves this machine.
   listSessions: (input) => sessionLibrary.list(input),
+  // The owner's model and effort picker (lib/model-effort-rpc.ts).
+  modelEffort: modelEffortPicker,
   log,
 })
 
@@ -14507,29 +14519,6 @@ function connectWebsocket(): void {
     }
   }))
 
-  // Owner model and effort control (Route A): the owner's picker asks what
-  // this session runs and changes it with set_model or set_effort. A frame
-  // without an rpcId drops; a re sent frame never types twice; only the owner,
-  // in a main chat (lib/model-effort-rpc.ts). Only the lock holder answers.
-  realtimeSocket.on('model_effort_rpc', whenArmed('model_effort_rpc', (payload: any) => {
-    if (updateDrainMode) return
-    try {
-      const frame = normalizeModelEffortRpc(payload)
-      if (!frame) return
-      log(`model_effort_rpc received (rpc=${rpcLogTag(frame.rpcId)})`)
-      void trackMessageOperation(() => modelEffortRpc.handle(frame)).catch((err) => {
-        log(`model_effort_rpc handler error: ${err}`)
-      })
-    } catch (err) {
-      log(`model_effort_rpc handler error: ${err}`)
-    }
-  }))
-
-  // Skills (skills view row 3): the owner's Abilities screen lists this
-  // agent's skills and removes one of its own. A frame without an rpcId
-  // drops; anything with one is answered, and a re sent frame is answered
-  // again from memory, never run twice (lib/skills-rpc.ts). Only the lock
-  // holder answers (whenArmed).
   // Check up (BGOS board row 01a16795): the owner's Agent health card asks how
   // this agent is. A frame without an rpcId drops; anything with one is
   // answered, and a re sent frame is answered again, never run twice
@@ -14550,6 +14539,11 @@ function connectWebsocket(): void {
     }
   }))
 
+  // Skills (skills view row 3): the owner's Abilities screen lists this
+  // agent's skills and removes one of its own. A frame without an rpcId
+  // drops; anything with one is answered, and a re sent frame is answered
+  // again from memory, never run twice (lib/skills-rpc.ts). Only the lock
+  // holder answers (whenArmed).
   realtimeSocket.on('skills_rpc', whenArmed('skills_rpc', (payload: any) => {
     if (updateDrainMode) return
     try {
@@ -17223,7 +17217,7 @@ async function main(): Promise<void> {
       // CLI's composer, and lib/compact-capability.ts can discover that up to
       // thirty minutes after boot. See lib/declared-capabilities.ts.
       capabilities: () => [
-        ...declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, ownerModelEffort: modelEffortDeclared(), authMode: AUTH.mode }),
+        ...declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, modelEffortPicker: modelEffortDeclared(), authMode: AUTH.mode }),
       ],
       // One-click update telemetry (wire contract v1): the newest version this
       // daemon found at its own pinned source (origin/main for a clone, the

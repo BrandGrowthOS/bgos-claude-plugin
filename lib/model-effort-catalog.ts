@@ -115,3 +115,180 @@ export function buildModelEffortReport(input: {
     observedAt: new Date(o.observedAtMs).toISOString(),
   }
 }
+
+// ── The BGOS picker catalog (model_effort_picker, BGOS #3060) ────────────────
+// BGOS main is authoritative: backend/src/integrations/model-effort-picker.model.ts
+// at 1ec6bbf4. Its reader is vendored below, verbatim but for the house style,
+// so the daemon never sends a catalog BGOS would refuse (the list answer is
+// read back through it before it leaves) and test/model-effort-picker-contract
+// pins it to BGOS's own spec cases.
+
+/** The runtime name BGOS's own spec gives Claude Code (model-effort-picker.spec.ts:62). */
+export const PICKER_RUNTIME = 'claude-code'
+
+/** BGOS's selection session id pattern (dto/integrations/model-effort-picker.dto.ts ModelEffortApplyDto). */
+export const PICKER_SESSION_ID_PATTERN = /^[\w.:-]{1,200}$/
+
+export interface PickerEffortOption {
+  id: string
+  label: string
+  enabled: boolean
+  reason: string | null
+}
+
+export interface PickerModelOption {
+  id: string
+  label: string
+  description: string
+  enabled: boolean
+  defaultEffort: string
+  efforts: PickerEffortOption[]
+  fastModeAvailable?: boolean
+}
+
+export interface PickerCatalog {
+  runtime: string
+  sessionId: string
+  current: { model: string; effort: string | null } | null
+  models: PickerModelOption[]
+}
+
+const isRecord = (x: unknown): x is Record<string, unknown> => !!x && typeof x === 'object' && !Array.isArray(x)
+const isText = (x: unknown, max: number): x is string =>
+  typeof x === 'string' &&
+  x.length > 0 &&
+  x.length <= max &&
+  !Array.from(x).some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127 || /[‎‏‪-‮⁦-⁩]/.test(c))
+const isId = (x: unknown): x is string => typeof x === 'string' && /^[\w./:-]{1,160}$/.test(x)
+/** model-effort-picker.model.ts:43. */
+export const MODEL_EFFORT_MODEL_PATTERN = /^[\w./:-]+(?:\[[a-zA-Z0-9_-]{1,20}\])?$/
+const isModelId = (x: unknown): x is string => typeof x === 'string' && x.length <= 160 && MODEL_EFFORT_MODEL_PATTERN.test(x)
+
+/** BGOS's readModelEffortCatalog (model-effort-picker.model.ts:46-120). */
+export function readModelEffortCatalog(raw: unknown): PickerCatalog | null {
+  if (!isRecord(raw) || !isText(raw.runtime, 40) || !isText(raw.sessionId, 200) || !Array.isArray(raw.models) || !raw.models.length || raw.models.length > 100) return null
+  let current: PickerCatalog['current'] = null
+  if (raw.current !== null) {
+    if (!isRecord(raw.current) || !isModelId(raw.current.model) || !(raw.current.effort === null || isId(raw.current.effort))) return null
+    current = { model: raw.current.model, effort: raw.current.effort }
+  }
+  const models: PickerModelOption[] = []
+  for (const m of raw.models) {
+    if (
+      !isRecord(m) ||
+      !isModelId(m.id) ||
+      !isText(m.label, 100) ||
+      typeof m.description !== 'string' ||
+      (m.description !== '' && !isText(m.description, 500)) ||
+      typeof m.enabled !== 'boolean' ||
+      (m.fastModeAvailable !== undefined && typeof m.fastModeAvailable !== 'boolean') ||
+      !isId(m.defaultEffort) ||
+      !Array.isArray(m.efforts) ||
+      !m.efforts.length ||
+      m.efforts.length > 20
+    ) return null
+    const efforts: PickerEffortOption[] = []
+    for (const e of m.efforts) {
+      if (!isRecord(e) || !isId(e.id) || !isText(e.label, 80) || typeof e.enabled !== 'boolean' || !(e.reason === null || isText(e.reason, 200)) || (!e.enabled && !e.reason)) return null
+      efforts.push({ id: e.id, label: e.label, enabled: e.enabled, reason: e.reason as string | null })
+    }
+    if (new Set(efforts.map((e) => e.id)).size !== efforts.length) return null
+    models.push({
+      id: m.id,
+      label: m.label,
+      description: m.description,
+      enabled: m.enabled,
+      defaultEffort: m.defaultEffort,
+      efforts,
+      ...(m.fastModeAvailable === undefined ? {} : { fastModeAvailable: m.fastModeAvailable as boolean }),
+    })
+  }
+  if (new Set(models.map((m) => m.id)).size !== models.length) return null
+  return { runtime: raw.runtime, sessionId: raw.sessionId, current, models }
+}
+
+/** The app's own effort words (ModelEffortPicker.tsx effortLabel). */
+export function effortLabel(id: string): string {
+  if (id === 'ultracode') return 'Ultra Code'
+  if (id === 'xhigh') return 'Extra high'
+  return id.charAt(0).toUpperCase() + id.slice(1)
+}
+
+/** A family's display word: `opus` is Opus. */
+export function familyLabel(id: string): string {
+  return id.charAt(0).toUpperCase() + id.slice(1)
+}
+
+/**
+ * The picker id of a running model: null when BGOS's pattern refuses the
+ * session's own id (a report is never reinterpreted), else its table family
+ * when it names exactly one, else that id.
+ * A family is what the picker offers and what a switch types, so the row the
+ * app highlights is the one that would be chosen again.
+ */
+export function pickerModelOf(modelId: string): string | null {
+  if (!isModelId(modelId)) return null
+  return modelFamilyOf(modelId) ?? modelId
+}
+
+/** Why the efforts of a model that reports none are offered disabled. */
+export const NO_EFFORT_REASON = 'The model this agent runs reports no effort setting, so a change could not be confirmed.'
+
+/**
+ * The catalog the app's picker reads, from the installed CLI's own catalog
+ * and the session's own report. Null when there is nothing honest to offer:
+ * no proven session, a session id BGOS would refuse, no fresh report of that
+ * session, or no model or effort at all.
+ *
+ * Every model offers the CLI's efforts, and Ultra Code disabled with the
+ * host's reason. The RUNNING model is always listed (by its family, or by its
+ * own id when the table has no literal for it, so the effort can still be
+ * changed by naming it), and when it reports no effort its efforts are
+ * disabled: a change to it could never be confirmed. The default effort is
+ * the session's own, else high, else the first offered.
+ */
+export function buildPickerCatalog(input: {
+  catalog: HostCatalog
+  observation: ModelObservation | null
+  sessionId: string | null
+}): PickerCatalog | null {
+  const { catalog, observation: o, sessionId } = input
+  if (!sessionId || !PICKER_SESSION_ID_PATTERN.test(sessionId)) return null
+  // No fresh report of THIS session: the current model and which efforts it
+  // takes are unknown, so nothing is offered.
+  if (!o || o.sessionId !== sessionId) return null
+  const running = pickerModelOf(o.modelId)
+  const runningEffort = o.effort !== null && isId(o.effort) ? o.effort : null
+  const ids: string[] = [...catalog.models]
+  if (running && !ids.includes(running)) ids.push(running)
+  if (ids.length === 0 || catalog.efforts.length === 0) return null
+  const defaultEffort = runningEffort && (catalog.efforts as string[]).includes(runningEffort)
+    ? runningEffort
+    : (catalog.efforts as string[]).includes('high') ? 'high' : catalog.efforts[0]!
+  const runningLabel = isText(o.modelDisplayName, 100) ? o.modelDisplayName : running
+  const models = ids.map((id): PickerModelOption => {
+    const noEffort = id === running && o.effort === null
+    return {
+      id,
+      label: isModelFamily(id) ? familyLabel(id) : (runningLabel ?? id),
+      description: '',
+      enabled: true,
+      defaultEffort,
+      efforts: [
+        ...catalog.efforts.map((e) => ({
+          id: e,
+          label: effortLabel(e),
+          enabled: !noEffort,
+          reason: noEffort ? NO_EFFORT_REASON : null,
+        })),
+        { id: 'ultracode', label: effortLabel('ultracode'), enabled: false, reason: ULTRACODE_UNCONFIRMABLE },
+      ],
+    }
+  })
+  return {
+    runtime: PICKER_RUNTIME,
+    sessionId,
+    current: running ? { model: running, effort: runningEffort } : null,
+    models,
+  }
+}

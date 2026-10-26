@@ -16,30 +16,32 @@ import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { OWNER_MODEL_EFFORT_TOKEN, declaredCapabilities } from '../lib/declared-capabilities.ts'
-import { MODEL_EFFORT_RPC_EVENT, rpcLogOp, rpcLogTag } from '../lib/model-effort-rpc.ts'
+import { MODEL_EFFORT_PICKER_TOKEN, declaredCapabilities } from '../lib/declared-capabilities.ts'
+import { rpcLogOp, rpcLogTag } from '../lib/model-effort-rpc.ts'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const server = readFileSync(join(ROOT, 'server.ts'), 'utf8')
 
-test('the token is declared only on a pairing, and only when the daemon says it can control', () => {
-  assert.equal(OWNER_MODEL_EFFORT_TOKEN, 'owner_model_effort_control')
-  assert.match(OWNER_MODEL_EFFORT_TOKEN, /^[a-z][a-z0-9_]{0,63}$/)
-  const base = { canInjectGoal: true, floorHook: true, authMode: 'pairing' as const }
-  assert.ok(declaredCapabilities({ ...base, ownerModelEffort: true }).includes(OWNER_MODEL_EFFORT_TOKEN))
-  assert.ok(!declaredCapabilities({ ...base, ownerModelEffort: false }).includes(OWNER_MODEL_EFFORT_TOKEN))
-  assert.ok(!declaredCapabilities(base).includes(OWNER_MODEL_EFFORT_TOKEN), 'absent means not declared')
-  assert.ok(!declaredCapabilities({ ...base, authMode: 'apikey', ownerModelEffort: true }).includes(OWNER_MODEL_EFFORT_TOKEN))
-  assert.ok(!declaredCapabilities({ ...base, ownerModelEffort: true }).includes('session_model_control'), 'never the Codex token: its words promise Codex semantics')
+test('model_effort_picker is declared only on a pairing, only when the daemon can control, and never on Windows', () => {
+  assert.equal(MODEL_EFFORT_PICKER_TOKEN, 'model_effort_picker')
+  const base = { canInjectGoal: true, floorHook: true, authMode: 'pairing' as const, platform: 'darwin' as const }
+  assert.ok(declaredCapabilities({ ...base, modelEffortPicker: true }).includes(MODEL_EFFORT_PICKER_TOKEN))
+  assert.ok(declaredCapabilities({ ...base, platform: 'linux', modelEffortPicker: true }).includes(MODEL_EFFORT_PICKER_TOKEN))
+  assert.ok(!declaredCapabilities({ ...base, modelEffortPicker: false }).includes(MODEL_EFFORT_PICKER_TOKEN))
+  assert.ok(!declaredCapabilities(base).includes(MODEL_EFFORT_PICKER_TOKEN), 'absent means not declared')
+  assert.ok(!declaredCapabilities({ ...base, authMode: 'apikey', modelEffortPicker: true }).includes(MODEL_EFFORT_PICKER_TOKEN))
+  assert.ok(!declaredCapabilities({ ...base, platform: 'win32', modelEffortPicker: true }).includes(MODEL_EFFORT_PICKER_TOKEN), 'a Windows host cannot prove or type into a tmux pane')
+  for (const old of ['owner_model_effort_control', 'session_model_control']) {
+    assert.ok(!declaredCapabilities({ ...base, modelEffortPicker: true }).includes(old), old)
+  }
 })
 
 test('the heartbeat declares from the live answer, so a lost precondition withdraws the token', () => {
   // The heartbeat is the declaration the backend stores (replaced wholesale on
-  // every beat). The canon fetch and the mission pause read do not ask about
-  // this token, and no site may claim it unconditionally.
+  // every beat). No site may claim the token unconditionally.
   const beat = server.slice(server.indexOf('capabilities: () => ['))
-  assert.match(beat.slice(0, 400), /ownerModelEffort: modelEffortDeclared\(\)/)
-  assert.doesNotMatch(server, /ownerModelEffort: true/)
+  assert.match(beat.slice(0, 400), /modelEffortPicker: modelEffortDeclared\(\)/)
+  assert.doesNotMatch(server, /modelEffortPicker: true/)
   const declared = server.slice(server.indexOf('function modelEffortDeclared(): boolean'))
   const body = declared.slice(0, 1200)
   assert.match(body, /if \(compactTarget === null\) return false/)
@@ -47,16 +49,21 @@ test('the heartbeat declares from the live answer, so a lost precondition withdr
   assert.match(body, /MODEL_EFFORT_STALE_MS\) return false/)
 })
 
-test('the typed rail is answered by the lock holder only, and never during a drain', () => {
-  // A literal frame name, the stand down counting guard's rule
-  // (mission-ws-wiring.test.ts), and the same name lib/model-effort-rpc.ts exports.
-  assert.equal(MODEL_EFFORT_RPC_EVENT, 'model_effort_rpc')
-  const at = server.indexOf("realtimeSocket.on('model_effort_rpc', whenArmed('model_effort_rpc'")
-  assert.ok(at > 0, 'registered through whenArmed')
-  const body = server.slice(at, at + 800)
-  assert.match(body, /if \(updateDrainMode\) return/)
-  assert.match(body, /normalizeModelEffortRpc\(payload\)/)
-  assert.match(body, /trackMessageOperation\(\(\) => modelEffortRpc\.handle\(frame\)\)/)
+test('the picker rides voice_rpc: the old model_effort_rpc wire and its ops are gone', () => {
+  assert.doesNotMatch(server, /model_effort_rpc|owner_model_effort_control|ownerModelEffort/)
+  assert.doesNotMatch(server, /integrations\/model-effort-rpc/)
+  const at = server.indexOf('const voiceRpc = new VoiceRpcHandler(')
+  assert.ok(at > 0)
+  const deps = server.slice(at, server.indexOf('\n})\n', at))
+  assert.match(deps, /modelEffort: modelEffortPicker,/)
+})
+
+test('the picker answers only the owner\'s main chat, from the daemon\'s own chat records', () => {
+  const at = server.indexOf('const modelEffortPicker = new ModelEffortPickerHandler(')
+  assert.ok(at > 0)
+  const body = server.slice(at, at + 1500)
+  assert.match(body, /chatAllowed: \(chatId\) =>\s*pickerChatAllowed\(\{ chatId, mainChatIds, isOwners: \(c\) => chatOwnership\.isOwners\(c\), isOthers: \(c\) => chatOwnership\.isOthers\(c\) \}\)/)
+  assert.match(body, /control: modelEffortControl,/)
 })
 
 test('the control lock is part of every other injection\'s busy check', () => {
@@ -96,13 +103,6 @@ test('the boot refreshes the bridge copy after the plugin root is known, and onl
   assert.doesNotMatch(server, /installBridge\(|uninstallBridge\(|writeOptIn\(/, 'the daemon never turns the opt in on or edits settings')
 })
 
-test('L6: the daemon logs a received rpcId as its short hash, never raw', () => {
-  const at = server.indexOf("realtimeSocket.on('model_effort_rpc', whenArmed('model_effort_rpc'")
-  const body = server.slice(at, at + 800)
-  assert.doesNotMatch(body, /\$\{frame\.rpcId\}/, 'the raw rpcId is the sender\'s text')
-  assert.match(body, /model_effort_rpc received \(rpc=\$\{rpcLogTag\(frame\.rpcId\)\}\)/)
-})
-
 // Round 2 on PR #275, Low 2: the other handlers (voice, memory and its person
 // lanes, changes, skills, export pack and its manifest, update, watcher
 // install) logged the rpcId raw, the sender's text, so a newline in it forged
@@ -118,7 +118,7 @@ test('L2: no daemon log line carries a raw rpcId, handoff id or op; ids are hash
   const ops = [...server.matchAll(/\$\{([^{}]*\b(?:frame|laneFrame)\.op\b[^{}]*)\}/g)].map((m) => m[1]!.trim())
   assert.ok(ops.length >= 7, 'the scan sees the received lines')
   for (const expr of ops) assert.match(expr, /^rpcLogOp\(/, `raw op in a log line: \${${expr}}`)
-  for (const event of ['voice_rpc', 'memory_rpc', 'changes_rpc', 'skills_rpc', 'export_pack', 'export_pack_manifest', 'update_rpc', 'watcher_install_rpc']) {
+  for (const event of ['voice_rpc', 'memory_rpc', 'changes_rpc', 'skills_rpc', 'doctor_rpc', 'export_pack', 'export_pack_manifest', 'update_rpc', 'watcher_install_rpc']) {
     assert.match(server, new RegExp(`${event} received \\([^\\n]*rpc=\\$\\{rpcLogTag\\(frame\\.rpcId\\)\\}`), event)
   }
 })

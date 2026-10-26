@@ -1,57 +1,103 @@
 /**
- * model_effort_rpc: the owner's model and effort picker asks this daemon what
- * its session runs and changes it (Route A). The transaction is
- * lib/model-effort-control.ts; this file is the wire contract around it, the
- * lib/changes-rpc.ts shape with the owner rule of lib/daemon-command-sender.ts.
+ * The owner's model and effort picker on the BGOS wire (BGOS #3060, merged and
+ * live, AUTHORITATIVE). The transaction is lib/model-effort-control.ts; this
+ * file is the contract around it.
  *
- * THE WIRE (assumed for BGOS #3060; its DTO was not readable from this
- * worktree, see RESULT.md). The backend emits to the pairing room
+ * THE WIRE (BGOS main, backend/src/integrations/assistant-sessions.service.ts
+ * modelEffort and model-effort-picker.model.ts). The backend sends voice_rpc
+ * frames, the rail the Sessions ops ride (lib/voice-rpc.ts routes them here):
  *
- *   model_effort_rpc {
- *     rpcId, op: 'describe' | 'set_model' | 'set_effort', assistantId,
- *     chatId, chatKind, value,
- *     sender: { userId, relationship }, isSharedRecipient, shareOwnerUserId
- *   }
- *
- * where `value` is a family alias for set_model (opus, sonnet, haiku, fable)
- * or a level for set_effort (low, medium, high, xhigh, max). Never a slash
- * command and never text: the control looks the value up in a frozen table
- * and refuses anything else. The answer goes to
- * POST integrations/model-effort-rpc/:rpcId/result as
- *
- *   { ok: true, payload: { applied, report } }
- *   { ok: false, error: { code, message }, payload: { report } }
- *
- * with `report` the true state now (lib/model-effort-catalog.ts
- * ModelEffortReport, or null when the session has reported nothing), and the
- * confirmed model and effort are also written through the EXISTING session
- * settings rail, PATCH integrations/assistants/:assistantId/chats/:chatId/
- * session-settings, so the app's pill shows what really runs.
+ *   list_model_effort  payload {}
+ *     answered { ok: true, payload: <catalog> }, the catalog BGOS's
+ *     readModelEffortCatalog accepts (lib/model-effort-catalog.ts
+ *     buildPickerCatalog, read back through the vendored reader first);
+ *   apply_model_effort payload { sessionId, model, effort }
+ *     answered { ok: true, payload: { current: { model, effort }, sessionId } }
+ *     only when the session's OWN latest report holds both values; BGOS
+ *     refuses any other answer as invalid_answer;
+ *   a refusal { ok: false, error: { code, message } }, code busy, not_allowed
+ *     or failed: BGOS passes busy and not_allowed (and its own timeout) to the
+ *     app, which words them, and turns anything else into switch_failed.
  *
  * The rules, in order:
- *  1. A frame with no rpcId cannot be answered, so it is dropped.
- *  2. A frame for another agent gets nothing: several daemons can share one
- *     pairing room, and the first result wins.
- *  3. A re sent frame never types twice. The ids of the last 256 frames are
- *     remembered: an id still running is ignored, an id already answered is
- *     answered again from memory for RESULT_HOLD_MS.
- *  4. The sender must be provably the OWNER (readSlashSender and
- *     isOwnerSender, the daemon command rule): a share recipient, a malformed
- *     sender and a frame naming nobody are refused before the control runs.
- *     One session serves every chat of the agent, so a recipient changing the
- *     model would change the owner's.
- *  5. Only a main chat (an absent kind reads as main, the backend's own
- *     rule): the session settings rail admits nothing else.
- *  6. A result is ALWAYS posted; a throw answers control_failed.
+ *  1. A frame for another agent gets nothing (`mine`): several daemons can
+ *     share a pairing room, and the first result wins.
+ *  2. Owner only, main chat only. The frame names no sender: BGOS's gate
+ *     admits only the signed in owner in this agent's own main chat (gate
+ *     steps 1 to 3). The daemon checks again from its own records
+ *     (pickerChatAllowed): the chat is one of this agent's main chats, never
+ *     one known to be a share recipient's, and on a shared agent one PROVEN
+ *     the owner's. One session serves every chat of the agent, so a
+ *     recipient's change would change the owner's.
+ *  3. A list types nothing. It is refused while the owner has not opted in on
+ *     this machine, and when there is nothing honest to offer.
+ *  4. An apply is a typed selection of three strings, handed to the control
+ *     as is, under a deadline that beats BGOS's 20 s wait. The confirmed
+ *     state, or the true state after a refusal, is reported on the session
+ *     settings rail for the pill, and a confirmed switch is noted in the chat
+ *     (the canon's "post a switched-to note").
+ *  5. Always an answer: a throw is answered failed.
  */
 
 import { createHash } from 'node:crypto'
 
-import { isOwnerSender, readSlashSender } from './daemon-command-sender.ts'
-import type { ControlOutcome, ControlRequest } from './model-effort-control.ts'
-import type { ModelEffortReport } from './model-effort-catalog.ts'
+import type { ApplySelection, ControlOutcome, ControlSnapshot, RefusalCode } from './model-effort-control.ts'
+import {
+  buildPickerCatalog,
+  effortLabel,
+  familyLabel,
+  pickerModelOf,
+  readModelEffortCatalog,
+  type ModelEffortReport,
+} from './model-effort-catalog.ts'
+import { isModelFamily } from './compact-inject.ts'
 
-export const MODEL_EFFORT_RPC_EVENT = 'model_effort_rpc'
+/** model-effort-picker.model.ts:1, the token BGOS's gate reads. */
+export const MODEL_EFFORT_PICKER = 'model_effort_picker'
+/** model-effort-picker.model.ts:2. */
+export const LIST_MODEL_EFFORT = 'list_model_effort'
+export const APPLY_MODEL_EFFORT = 'apply_model_effort'
+export const MODEL_EFFORT_OPS = Object.freeze([LIST_MODEL_EFFORT, APPLY_MODEL_EFFORT] as const)
+export type ModelEffortOp = (typeof MODEL_EFFORT_OPS)[number]
+
+export function isModelEffortOp(op: unknown): op is ModelEffortOp {
+  return op === LIST_MODEL_EFFORT || op === APPLY_MODEL_EFFORT
+}
+
+/**
+ * The whole apply answer's budget. BGOS waits 20 000 ms
+ * (assistant-sessions.service.ts modelEffort), and a result that lands after
+ * its timeout is dropped, so the daemon stops well inside it.
+ */
+export const APPLY_BUDGET_MS = 17_000
+
+/** The codes the app maps (modelEffortQuery.ts pickerError), and failed for the rest. */
+export const PICKER_REFUSAL_CODES = Object.freeze(['busy', 'not_allowed', 'failed'] as const)
+export type PickerRefusalCode = (typeof PICKER_REFUSAL_CODES)[number]
+
+const BUSY: ReadonlySet<RefusalCode> = new Set<RefusalCode>(['control_busy', 'busy_turn', 'turn_unknown', 'dialog_open'])
+const NOT_ALLOWED: ReadonlySet<RefusalCode> = new Set<RefusalCode>([
+  'unsupported_op',
+  'unsupported_value',
+  'ultracode_unconfirmable',
+  'not_opted_in',
+  'no_terminal',
+  'not_in_catalog',
+  'effort_unsupported',
+  'session_mismatch',
+  'not_owner_main_chat',
+])
+
+/**
+ * A control refusal as the app hears it: busy ("Wait for this response to
+ * finish"), not_allowed ("That model or effort is not allowed. Open the
+ * picker again."), or failed ("The switch could not be confirmed").
+ */
+export function pickerRefusalCode(code: RefusalCode): PickerRefusalCode {
+  if (BUSY.has(code)) return 'busy'
+  if (NOT_ALLOWED.has(code)) return 'not_allowed'
+  return 'failed'
+}
 
 /** The BGOS report route's own patterns (backend report-session-settings.dto.ts). */
 export const SESSION_REPORT_MODEL_PATTERN = /^[\w./:-]{1,160}$/
@@ -59,11 +105,11 @@ export const SESSION_REPORT_EFFORT_PATTERN = /^[a-z]{1,20}$/
 
 /**
  * An rpcId as the daemon log carries it: a short hash, never the id itself.
- * The id is the sender's text (up to 128 characters, no character check), so
- * logged raw a newline in it would forge log lines (REVIEW-275 L6).
+ * The id is the sender's text (no character check), so logged raw a newline
+ * in it would forge log lines (REVIEW-275 L6).
  */
 export function rpcLogTag(rpcId: string): string {
-  return createHash('sha256').update(rpcId).digest('hex').slice(0, 12)
+  return createHash('sha256').update(String(rpcId)).digest('hex').slice(0, 12)
 }
 
 /**
@@ -75,46 +121,12 @@ export function rpcLogOp(op: unknown): string {
   return typeof op === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(op) ? op : '?'
 }
 
-const REMEMBERED_IDS = 256
-const RESULT_HOLD_MS = 60_000
-
-export type ModelEffortRpcFrame = {
-  rpcId: string
-  op: unknown
-  assistantId: string
-  chatId: string
-  chatKind: string | null
-  value: unknown
-  /** The frame itself, read for the sender fields only. */
-  senderPayload: Record<string, unknown>
-}
-
-export type ModelEffortRpcResult =
-  | { ok: true; payload: { applied: boolean; report: ModelEffortReport } }
-  | { ok: false; error: { code: string; message: string }; payload?: { report: ModelEffortReport | null } }
-
 export type SessionSettingsBody = {
   model: string
   effort: string | null
   serviceTier: null
   rerouted: false
   reportedAt: string
-}
-
-export function normalizeModelEffortRpc(payload: unknown): ModelEffortRpcFrame | null {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null
-  const p = payload as Record<string, unknown>
-  const rpcId = typeof p.rpcId === 'string' ? p.rpcId.trim() : ''
-  if (rpcId === '' || rpcId.length > 128) return null
-  return {
-    rpcId,
-    op: p.op,
-    assistantId: p.assistantId == null ? '' : String(p.assistantId),
-    chatId: p.chatId == null ? '' : String(p.chatId),
-    chatKind: typeof p.chatKind === 'string' ? p.chatKind : null,
-    value: p.value,
-    senderPayload: p,
-  }
 }
 
 /** The session settings body for a report, or null when the route would refuse it. */
@@ -124,88 +136,123 @@ export function sessionSettingsBody(report: ModelEffortReport | null, nowMs: num
   return { model: report.model, effort, serviceTier: null, rerouted: false, reportedAt: new Date(nowMs).toISOString() }
 }
 
-export type ModelEffortRpcDeps = {
+/**
+ * Owner only, main chat only, from the daemon's own records: one of this
+ * agent's main chats (the inbox's kinds), never one known to be a share
+ * recipient's (lib/chat-ownership.ts), and, when the agent has more than one
+ * main chat (a shared agent: each recipient has her own), one proven the
+ * owner's. An unproven chat on a shared agent is refused: fail closed.
+ */
+export function pickerChatAllowed(input: {
+  chatId: string
+  mainChatIds: readonly string[]
+  isOwners: (chatId: string) => boolean
+  isOthers: (chatId: string) => boolean
+}): boolean {
+  const { chatId, mainChatIds } = input
+  if (chatId === '' || !mainChatIds.includes(chatId)) return false
+  if (input.isOthers(chatId)) return false
+  return mainChatIds.length === 1 || input.isOwners(chatId)
+}
+
+export type PickerSnapshot = ControlSnapshot
+
+export type PickerAnswer =
+  | { ok: true; payload: Record<string, unknown> }
+  | { ok: false; code: PickerRefusalCode; message: string }
+
+export interface PickerFrame {
+  op: unknown
+  assistantId: unknown
+  chatId: unknown
+  payload: Record<string, unknown>
+}
+
+export interface ModelEffortPickerDeps {
   assistantId: () => string
-  ownerUserId: () => string
-  control: { handle: (request: ControlRequest) => Promise<ControlOutcome> }
-  postResult: (rpcId: string, body: ModelEffortRpcResult) => Promise<unknown>
+  /** Is this chat the owner's own main chat (pickerChatAllowed)? */
+  chatAllowed: (chatId: string) => boolean
+  control: {
+    snapshot: () => Promise<ControlSnapshot>
+    apply: (selection: ApplySelection, opts: { deadlineAtMs: number }) => Promise<ControlOutcome>
+  }
   reportSettings: (chatId: string, body: SessionSettingsBody) => Promise<unknown>
+  sendNote: (chatId: string, text: string) => Promise<unknown>
   log: (msg: string) => void
   now: () => number
 }
 
-function refusal(code: string, message: string): ModelEffortRpcResult {
-  return { ok: false, error: { code, message } }
-}
+const refuse = (code: RefusalCode, message: string): PickerAnswer => ({ ok: false, code: pickerRefusalCode(code), message })
 
-export class ModelEffortRpcHandler {
-  private readonly running = new Set<string>()
-  private readonly answered = new Map<string, { body: ModelEffortRpcResult; atMs: number }>()
-  private readonly seen: string[] = []
+const SELECTION_SESSION_MAX = 200
 
-  constructor(private readonly deps: ModelEffortRpcDeps) {}
+export class ModelEffortPickerHandler {
+  constructor(private readonly deps: ModelEffortPickerDeps) {}
 
-  async handle(frame: ModelEffortRpcFrame): Promise<void> {
+  /** Is this frame this daemon's to answer at all? */
+  mine(frame: Pick<PickerFrame, 'assistantId'>): boolean {
     const own = this.deps.assistantId()
-    if (own === '' || frame.assistantId !== own) return
-    if (this.running.has(frame.rpcId)) return
-    const held = this.answered.get(frame.rpcId)
-    if (held) {
-      if (this.deps.now() - held.atMs <= RESULT_HOLD_MS) await this.post(frame.rpcId, held.body)
-      return
-    }
-    if (this.seen.includes(frame.rpcId)) return
-    this.remember(frame.rpcId)
-    this.running.add(frame.rpcId)
-    let body: ModelEffortRpcResult
-    try {
-      body = await this.answer(frame)
-    } catch (err) {
-      this.deps.log(`model_effort_rpc: control failed (${err instanceof Error ? err.name : 'error'})`)
-      body = refusal('control_failed', 'The daemon could not run that request.')
-    } finally {
-      this.running.delete(frame.rpcId)
-    }
-    this.answered.set(frame.rpcId, { body, atMs: this.deps.now() })
-    await this.post(frame.rpcId, body)
+    return own !== '' && (typeof frame.assistantId === 'string' || typeof frame.assistantId === 'number') && String(frame.assistantId) === own
   }
 
-  private async answer(frame: ModelEffortRpcFrame): Promise<ModelEffortRpcResult> {
-    if (!isOwnerSender(readSlashSender(frame.senderPayload), this.deps.ownerUserId())) {
-      this.deps.log(`model_effort_rpc: refused not_owner (rpc ${rpcLogTag(frame.rpcId)})`)
-      return refusal('not_owner', 'Only the agent\'s owner can change its model and effort.')
+  async answer(frame: PickerFrame): Promise<PickerAnswer> {
+    try {
+      const chatId = typeof frame.chatId === 'string' || typeof frame.chatId === 'number' ? String(frame.chatId) : ''
+      if (!this.deps.chatAllowed(chatId)) {
+        this.deps.log(`model effort picker: refused not_owner_main_chat (${rpcLogOp(frame.op)})`)
+        return refuse('not_owner_main_chat', 'The model and effort are changed by the agent\'s owner, from the agent\'s main chat only.')
+      }
+      if (frame.op === LIST_MODEL_EFFORT) return await this.list()
+      if (frame.op === APPLY_MODEL_EFFORT) return await this.apply(chatId, frame.payload)
+      return refuse('unsupported_op', 'Only the model or the effort of this agent\'s session can be changed.')
+    } catch (err) {
+      this.deps.log(`model effort picker: ${rpcLogOp(frame.op)} failed (${err instanceof Error ? err.name : 'error'})`)
+      return { ok: false, code: 'failed', message: 'The daemon could not run that request.' }
     }
-    if (frame.chatKind !== null && frame.chatKind !== 'main') {
-      return refusal('not_main_chat', 'The model and effort are changed from the agent\'s main chat only.')
+  }
+
+  private async list(): Promise<PickerAnswer> {
+    const snap = await this.deps.control.snapshot()
+    if (!snap.optedIn) {
+      return refuse('not_opted_in', 'Remote model and effort control is off for this agent. Its owner can turn it on on the agent\'s machine with hoai-model-control on.')
     }
-    const outcome = await this.deps.control.handle({ op: frame.op, value: frame.value })
-    const report = outcome.report
-    const settings = sessionSettingsBody(report, this.deps.now())
-    if (settings && frame.chatId !== '') {
-      await this.deps.reportSettings(frame.chatId, settings).catch((err) => {
-        this.deps.log(`model_effort_rpc: session settings report failed: ${err}`)
+    const built = buildPickerCatalog({ catalog: snap.catalog, observation: snap.observation, sessionId: snap.sessionId })
+    // Read back through BGOS's own reader: never send what it would refuse.
+    const catalog = built ? readModelEffortCatalog(JSON.parse(JSON.stringify(built))) : null
+    if (!catalog) {
+      return refuse('no_status_source', 'This agent\'s session has not reported its model and effort yet, so the picker cannot be filled.')
+    }
+    return { ok: true, payload: { ...catalog } }
+  }
+
+  private async apply(chatId: string, payload: Record<string, unknown>): Promise<PickerAnswer> {
+    const { sessionId, model, effort } = payload
+    if (
+      typeof sessionId !== 'string' || sessionId === '' || sessionId.length > SELECTION_SESSION_MAX ||
+      typeof model !== 'string' || typeof effort !== 'string'
+    ) {
+      return refuse('unsupported_value', 'Choose a model and effort from this session\'s picker.')
+    }
+    const outcome = await this.deps.control.apply({ sessionId, model, effort }, { deadlineAtMs: this.deps.now() + APPLY_BUDGET_MS })
+    const settings = sessionSettingsBody(outcome.report, this.deps.now())
+    if (settings) {
+      await this.deps.reportSettings(chatId, settings).catch((err) => {
+        this.deps.log(`model effort picker: session settings report failed (${err instanceof Error ? err.name : 'error'})`)
       })
     }
-    if (outcome.ok) return { ok: true, payload: { applied: outcome.applied, report: outcome.report } }
-    return { ok: false, error: { code: outcome.code, message: outcome.message }, payload: { report } }
-  }
-
-  private remember(rpcId: string): void {
-    this.seen.push(rpcId)
-    while (this.seen.length > REMEMBERED_IDS) {
-      const old = this.seen.shift()!
-      this.answered.delete(old)
+    if (!outcome.ok) return refuse(outcome.code, outcome.message)
+    // The answer is the session's own report, never the selection echoed.
+    const current = { model: pickerModelOf(outcome.report.model), effort: outcome.report.effort }
+    if (current.model !== model || current.effort !== effort) {
+      return refuse('not_confirmed', 'The command was typed but the session did not report the change in time.')
     }
-  }
-
-  private async post(rpcId: string, body: ModelEffortRpcResult): Promise<void> {
-    try {
-      await this.deps.postResult(rpcId, body)
-    } catch (err) {
-      // Not the error's text: a timeout's names the request path, the id in it.
-      const status = (err as { status?: unknown } | null)?.status
-      const why = typeof status === 'number' ? `HTTP ${status}` : err instanceof Error ? err.name : 'error'
-      this.deps.log(`model_effort_rpc: result post failed (rpc ${rpcLogTag(rpcId)}): ${why}`)
+    if (outcome.applied) {
+      const name = isModelFamily(model) ? familyLabel(model) : model
+      await this.deps.sendNote(chatId, `Switched to ${name}, effort ${effortLabel(effort)}.`).catch((err) => {
+        // A failed note cannot undo a confirmed switch.
+        this.deps.log(`model effort picker: switched note failed (${err instanceof Error ? err.name : 'error'})`)
+      })
     }
+    return { ok: true, payload: { current: { model: current.model, effort: current.effort }, sessionId } }
   }
 }
