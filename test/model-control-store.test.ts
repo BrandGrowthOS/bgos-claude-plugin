@@ -55,6 +55,20 @@ function tmp(): string {
 
 const SID = '6f1c2b8e-3d4a-4f5b-9c0d-1e2f3a4b5c6d'
 
+/**
+ * Seven cases assert POSIX behaviour: forward slash paths, owner only file
+ * modes (the store skips its mode check on win32 by design, see
+ * lib/model-control-store.mjs) and the owner's status line run through a
+ * POSIX shell. model_effort_picker is never declared on Windows (server.ts),
+ * so the store never runs there; these skip on win32 rather than assert
+ * something the code deliberately does not do (CI test (windows), 7 failures
+ * on ce62db1).
+ */
+const POSIX_ONLY =
+  process.platform === 'win32'
+    ? 'POSIX paths, modes and status line shell; the picker is never declared on Windows'
+    : false
+
 function statusJson(over: Record<string, unknown> = {}): string {
   return JSON.stringify({
     session_id: SID,
@@ -67,7 +81,7 @@ function statusJson(over: Record<string, unknown> = {}): string {
   })
 }
 
-test('the folder is the plugin state root, overridable for tests', () => {
+test('the folder is the plugin state root, overridable for tests', { skip: POSIX_ONLY }, () => {
   assert.equal(modelControlDir({ env: {}, home: '/h' }), '/h/.bgos-plugin-state/model-control')
   assert.equal(modelControlDir({ env: { BGOS_PLUGIN_STATE_DIR: '/s' }, home: '/h' }), '/s/model-control')
 })
@@ -97,7 +111,7 @@ test('the status line input is read for the few facts it needs and nothing else'
   assert.equal(parseStatusLineInput(statusJson({ effort: { level: 'high; rm' } }))!.effort, null)
 })
 
-test('each observation gets the next sequence number, in an owner only file', () => {
+test('each observation gets the next sequence number, in an owner only file', { skip: POSIX_ONLY }, () => {
   const dir = join(tmp(), 'model-control')
   const a = recordObservation(dir, parseStatusLineInput(statusJson())!, 1000)
   const b = recordObservation(dir, parseStatusLineInput(statusJson({ effort: { level: 'max' } }))!, 2000)
@@ -115,7 +129,7 @@ test('each observation gets the next sequence number, in an owner only file', ()
   assert.equal(readObservation(dir, '../x'), null)
 })
 
-test('a symlinked or group readable observation is refused', () => {
+test('a symlinked or group readable observation is refused', { skip: POSIX_ONLY }, () => {
   const dir = join(tmp(), 'model-control')
   recordObservation(dir, parseStatusLineInput(statusJson())!, 1000)
   const file = join(dir, 'observations', `${SID}.json`)
@@ -129,7 +143,7 @@ test('a symlinked or group readable observation is refused', () => {
   assert.equal(readObservation(dir, linkSid), null, 'a symlink is never followed')
 })
 
-test('the opt in is per agent, off by default, and refuses a planted file', () => {
+test('the opt in is per agent, off by default, and refuses a planted file', { skip: POSIX_ONLY }, () => {
   const dir = join(tmp(), 'model-control')
   assert.equal(readOptIn(dir, '42'), false)
   writeOptIn(dir, '42', true, 5)
@@ -195,7 +209,7 @@ test('a settings file that is not valid JSON is never overwritten', () => {
   assert.equal(readFileSync(settingsPath, 'utf8'), '{ "theme": "dark", // a comment\n }')
 })
 
-test('the bridge records the observation and prints the wrapped status line', () => {
+test('the bridge records the observation and prints the wrapped status line', { skip: POSIX_ONLY }, () => {
   const state = tmp()
   const dir = join(state, 'model-control')
   mkdirSync(dir, { recursive: true, mode: 0o700 })
@@ -212,7 +226,7 @@ test('the bridge records the observation and prints the wrapped status line', ()
   assert.equal(readObservation(dir, SID)!.seq, 1)
 })
 
-test('the daemon refreshes an existing copy only while an agent is opted in, and never creates one', () => {
+test('the daemon refreshes an existing copy only while an agent is opted in, and never creates one', { skip: POSIX_ONLY }, () => {
   const dir = join(tmp(), 'model-control')
   assert.equal(refreshBridgeCopy(dir, ROOT), false, 'nobody opted in, nothing written')
   assert.equal(existsSync(bridgeCopyPath(dir)), false)
@@ -234,7 +248,7 @@ test('the bridge never fails the status line, even on garbage', () => {
   assert.equal(existsSync(join(state, 'model-control', 'observations')), false)
 })
 
-test('the owner CLI turns control on for one agent, installing the bridge, and off again', () => {
+test('the owner CLI turns control on for one agent, installing the bridge, and off again', { skip: POSIX_ONLY }, () => {
   const state = tmp()
   const config = tmp()
   writeFileSync(join(config, 'settings.json'), JSON.stringify({ statusLine: { type: 'command', command: 'echo hi' } }))
