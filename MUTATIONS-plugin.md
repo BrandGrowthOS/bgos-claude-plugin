@@ -103,3 +103,18 @@ Each entry broke ONE line of the shipped code, ran the named test file with `npx
 - red tests:
   - a check that is not an object is refused before the network, naming the goal
 
+
+### C1 every host declares mission_server_checks
+- file: `lib/declared-capabilities.ts`
+- mutated line: `'mission_set_goals',
+  'mission_server_checks',
+  PERMISSION_CARD,` -> `'mission_set_goals',
+  PERMISSION_CARD,`
+- result: {'pass': '32', 'fail': '5'}
+- red tests:
+  - a host that cannot type declares the READ half only
+  - boards_playbook is declared on every host, because the tool is typed and has no platform limit
+  - mission_server_checks is declared on every host, beside and distinct from mission_goal_checks
+  - permission_card is declared on every host, because the relay has no platform limit
+  - the stop pause token rides with mission_pause and nothing else, the gate the stop pause runs behind
+
