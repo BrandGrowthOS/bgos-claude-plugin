@@ -112,6 +112,14 @@ interface Backend {
    */
   tapOnPost: ((body: Record<string, unknown>) => number | null) | null
   readsOf: (chatId: number) => number
+  /**
+   * Hold the NEXT poll read of a chat: its page is taken when the read
+   * arrives, `during` runs, and only then is that page answered, so the daemon
+   * gets a read that began before whatever `during` did.
+   */
+  holdNextRead: (chatId: number, during: () => Promise<void>) => void
+  /** Errors thrown inside a hold; the read is answered anyway. */
+  holdErrors: string[]
   connected: () => number
   emit: (event: string, payload: Record<string, unknown>) => void
   close: () => Promise<void>
@@ -154,6 +162,8 @@ async function startBackend(): Promise<Backend> {
   const rows: StoredRow[] = [historyRow(101, 'user', 'morning'), historyRow(102, 'assistant', 'morning to you')]
   const posts: Post[] = []
   const reads = new Map<number, number>()
+  const holds = new Map<number, () => Promise<void>>()
+  const holdErrors: string[] = []
   let nextMessageId = 1000
   let nextOptionId = 15537
 
@@ -163,6 +173,10 @@ async function startBackend(): Promise<Backend> {
     posts,
     tapOnPost: null,
     readsOf: (chatId) => reads.get(chatId) ?? 0,
+    holdNextRead: (chatId, during) => {
+      holds.set(chatId, during)
+    },
+    holdErrors,
     connected: () => 0,
     emit: () => {},
     close: async () => {},
@@ -227,14 +241,28 @@ async function startBackend(): Promise<Backend> {
     const history = /^chats\/(\d+)\/messages$/.exec(path)
     if (req.method === 'GET' && history) {
       const chatId = Number(history[1])
-      if (req.headers['x-caller-assistant-id'] !== undefined) reads.set(chatId, (reads.get(chatId) ?? 0) + 1)
+      const isPoll = req.headers['x-caller-assistant-id'] !== undefined
+      if (isPoll) reads.set(chatId, (reads.get(chatId) ?? 0) + 1)
       const afterParam = url.searchParams.get('afterId')
       const afterId = afterParam === null ? 0 : Number(afterParam)
       // The real route: the NEWEST 50 rows above the cursor, oldest first.
-      const page = rows
-        .filter((r) => r.chatId === chatId && r.id > afterId)
-        .sort((a, b) => a.id - b.id)
-        .slice(-50)
+      // Taken NOW, as the read arrives, and copied, so a held read answers
+      // with the chat as it was when the read began.
+      const page = JSON.parse(
+        JSON.stringify(
+          rows
+            .filter((r) => r.chatId === chatId && r.id > afterId)
+            .sort((a, b) => a.id - b.id)
+            .slice(-50),
+        ),
+      ) as StoredRow[]
+      const hold = isPoll ? holds.get(chatId) : undefined
+      if (hold) {
+        holds.delete(chatId)
+        await hold().catch((err: unknown) => {
+          holdErrors.push(String(err))
+        })
+      }
       return json({
         messages: page.map((r) => ({
           message: {
@@ -466,6 +494,36 @@ function loginCardOf(backend: Backend): Post | undefined {
   return backend.posts.find((p) => String(p.body.text ?? '').startsWith(SIGNED_OUT_LEAD))
 }
 
+/** An open card of the agent's own (nobody taps it): it keeps the chat on the fast read. */
+const OPEN_CARD_TEXT = 'Anything else before I start?'
+
+async function postOpenCard(w: World): Promise<void> {
+  const result = await w.daemon.client.callTool({
+    name: 'reply',
+    arguments: {
+      chat_id: String(MAIN),
+      text: OPEN_CARD_TEXT,
+      buttons: [
+        { label: 'No', value: 'no' },
+        { label: 'Yes', value: 'yes' },
+      ],
+    },
+  })
+  assert.notEqual(result.isError, true, `the open card was sent: ${JSON.stringify(result.content)}`)
+}
+
+/**
+ * Make the daemon read the chat `count` more times: an announced tap must stay
+ * announced once however often the chat is read after it. Without this, a tap
+ * announced once takes the chat off the fast read, nothing reads it again, and
+ * "never twice" holds whatever the code does.
+ */
+async function forceReads(w: World, count: number): Promise<void> {
+  const before = w.backend.readsOf(MAIN)
+  await postOpenCard(w)
+  await waitFor(() => w.backend.readsOf(MAIN) >= before + count, `${count} more reads of the chat`, 30_000)
+}
+
 function evidence(w: World): string {
   return [
     `claude calls: ${JSON.stringify(claudeCalls(w.rig))}`,
@@ -522,6 +580,14 @@ describe('a tap on a card this daemon posted is heard when it lands before the n
         const link = w.backend.posts.find((p) => String(p.body.text ?? '').startsWith('Open this link'))
         assert.ok(link, `the sign-in link was relayed to the chat\n${evidence(w)}`)
         assert.match(String(link.body.text), new RegExp(`state=standinstate${flag}`), 'the link of the method tapped')
+        // Read the chat again and again: the tap is heard once, so no second
+        // sign-in and no "no longer open" for a tap already taken.
+        await forceReads(w, 2)
+        assert.equal(claudeCalls(w.rig).filter((c) => c.startsWith('auth login')).length, 1, `still one sign-in\n${evidence(w)}`)
+        assert.ok(
+          !w.backend.posts.some((p) => /no longer open/.test(String(p.body.text ?? ''))),
+          `the tap was never taken twice\n${evidence(w)}`,
+        )
       } finally {
         await w.end()
       }
@@ -550,8 +616,8 @@ describe('a tap on a card this daemon posted is heard when it lands before the n
       const clicks = w.daemon.cards.filter((c) => c.messageId === posted.id)
       assert.equal(clicks.length, 1, `the click reached the session once\n${evidence(w)}`)
       assert.match(clicks[0]!.content, /Ship it/, 'the click names the button tapped')
-      // A later read must not announce it a second time.
-      await sleep(4_500)
+      // Later reads must not announce it a second time.
+      await forceReads(w, 2)
       assert.equal(w.daemon.cards.filter((c) => c.messageId === posted.id).length, 1, 'never twice')
     } finally {
       await w.end()
@@ -580,8 +646,37 @@ describe('a tap on a card this daemon posted is heard when it lands before the n
       await waitQuietly(() => w.daemon.cards.some((c) => c.messageId === posted.id), 20_000)
       const answers = w.daemon.cards.filter((c) => c.messageId === posted.id)
       assert.equal(answers.length, 1, `the plan answer reached the session once\n${evidence(w)}`)
-      await sleep(4_500)
+      await forceReads(w, 2)
       assert.equal(w.daemon.cards.filter((c) => c.messageId === posted.id).length, 1, 'never twice')
+    } finally {
+      await w.end()
+    }
+  })
+
+  test('a read already in flight when the sign-in card is posted does not erase it: the tap is heard on the next read', OPTS, async () => {
+    const w = await world()
+    try {
+      // The chat is on the fast read (an open card of the agent's own), and
+      // the owner taps the sign-in card the moment it exists.
+      w.backend.tapOnPost = (body) => (String(body.text ?? '').startsWith(SIGNED_OUT_LEAD) ? 0 : null)
+      await postOpenCard(w)
+      // The next read begins, and while it is in flight the owner sends /login
+      // and the card is posted and tapped. That read then answers with the chat
+      // as it was before the card: the card is not in it.
+      let heldReadAnswered = false
+      w.backend.holdNextRead(MAIN, async () => {
+        ownerSendsLogin(w.backend, 300)
+        await waitFor(() => loginCardOf(w.backend) !== undefined, 'the sign-in card, posted during the held read')
+        await sleep(300)
+        heldReadAnswered = true
+      })
+      await waitQuietly(() => claudeCalls(w.rig).includes('auth login --claudeai'), 25_000)
+      assert.equal(heldReadAnswered, true, `the held read ran\n${evidence(w)}`)
+      assert.deepEqual(w.backend.holdErrors, [], 'the hold itself did not fail')
+      assert.ok(
+        claudeCalls(w.rig).includes('auth login --claudeai'),
+        `the tap on the card posted during a read in flight started the sign-in\n${evidence(w)}`,
+      )
     } finally {
       await w.end()
     }
