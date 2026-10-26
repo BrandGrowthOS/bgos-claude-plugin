@@ -347,6 +347,7 @@ import {
   globalIntervalMs,
   RECONCILE_ALWAYS_ON_INTERVAL_MS,
   selectClickTransitions,
+  noteOwnUnansweredCard,
   FIRST_RUN_RECENT_WINDOW_MS,
 } from './lib/poll-core.js'
 import {
@@ -2050,8 +2051,11 @@ async function sendLoginText(
   const msgId = (result as { message?: { id?: unknown } } | null)?.message?.id
   // The reply tool's fast-poll scope, for the same reason: without the update
   // stream a tap otherwise reaches this daemon only on the slow chat sweep.
+  // And the card is open from the moment it is posted, or a tap that beats the
+  // chat's next read is never announced (feedback 0984e340).
   if (options.length > 0 && typeof msgId === 'number') {
     recentButtonPrompts.set(chatId, { messageId: msgId, sentAtMs: Date.now() })
+    noteOwnUnansweredCard(chatUnansweredButtons, chatId, msgId)
   }
   return typeof msgId === 'number' ? msgId : null
 }
@@ -6096,6 +6100,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         // (Ares, reviewing #129).
         if (options.length > 0 && typeof msgId === 'number') {
           recentButtonPrompts.set(String(resolvedChatId), { messageId: msgId, sentAtMs: Date.now() })
+          noteOwnUnansweredCard(chatUnansweredButtons, String(resolvedChatId), msgId)
           postedButtons.note(msgId, options, safeText)
         } else if (
           reply_to_id !== undefined &&
@@ -6293,6 +6298,8 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
             // foreignPlanTap.
             requesterUserId: lastInboundUserByChat.get(planChatId) ?? USER_ID,
           })
+          // Open from the moment it is posted, like every card with buttons.
+          noteOwnUnansweredCard(chatUnansweredButtons, planChatId, cardMessageId)
           postedButtons.note(cardMessageId, bodyBuild.body.options, bodyBuild.body.text)
           // The CLI writes this tool result verbatim into the transcript, so
           // the minted id is proof of which transcript is ours, exactly as a

@@ -50,6 +50,9 @@ import {
   RECONCILE_ALWAYS_ON_INTERVAL_MS,
   selectClickTransitions,
 } from '../lib/poll-core.ts'
+// Off the module object, so a missing helper fails the assertion that uses it
+// rather than the whole file's import.
+import * as pollCore from '../lib/poll-core.ts'
 
 // ── P1c: NOT_MODIFIED sentinel ───────────────────────────────────────────────
 
@@ -726,6 +729,82 @@ test('ask_user_input rows are excluded (that tool owns its own polling)', () => 
   })
   assert.deepEqual(r.announce, [], 'no second delivery of a modal answer')
   assert.deepEqual([...r.nextUnanswered], [])
+})
+
+// ── A card this daemon posted is open before any read has seen it ────────────
+// Feedback 0984e340 (2026-10-26, chat 1146): the sign-in card was answered
+// 1.77 s after the daemon posted it, 0.19 s BEFORE the first read of that chat
+// after posting. No read had seen it unanswered, so the tap was never a
+// transition and the sign-in waited for a pick that had already been made.
+
+type NoteOwnCard = (unanswered: Map<string, Set<number>>, chatId: string, messageId: number) => void
+
+function noteOwnCard(): NoteOwnCard {
+  const note = (pollCore as Record<string, unknown>).noteOwnUnansweredCard
+  assert.equal(typeof note, 'function', 'poll-core records a card this daemon has just posted as unanswered')
+  return note as NoteOwnCard
+}
+
+const ownerSlashRow = (id: number) => clickRow({ id, sender: 'user', messageType: 'slash_command', hasOptions: false })
+
+test('a tap on a card this daemon just posted is announced when it beats the next read', () => {
+  // The chat as the boot reads left it: baselined, nothing open in it.
+  const unanswered = new Map<string, Set<number>>([['1146', new Set()]])
+  noteOwnCard()(unanswered, '1146', 159575)
+  const r = selectClickTransitions({
+    // The first read after the post already finds the card answered.
+    rows: [ownerSlashRow(159574), clickRow({ id: 159575, messageType: 'standard', answered: true })],
+    prevUnanswered: unanswered.get('1146')!,
+    isFirstPoll: false,
+  })
+  assert.deepEqual(r.announce, [159575])
+  assert.deepEqual([...r.nextUnanswered], [], 'announced once, so it leaves the open set')
+})
+
+test('noting a card baselines a chat no read has baselined yet', () => {
+  // server.ts treats a chat with no entry here and no cursor as a FIRST read,
+  // which announces nothing at all; a card this daemon posted is not history.
+  const unanswered = new Map<string, Set<number>>()
+  noteOwnCard()(unanswered, '777', 9001)
+  assert.deepEqual([...(unanswered.get('777') ?? [])], [9001])
+})
+
+test('noting a card keeps every card the chat already had open', () => {
+  const unanswered = new Map<string, Set<number>>([['1146', new Set([159000])]])
+  noteOwnCard()(unanswered, '1146', 159575)
+  assert.deepEqual([...unanswered.get('1146')!].sort((a, b) => a - b), [159000, 159575])
+})
+
+test('a card posted while a read was in flight survives that read, and its tap is announced on the next', () => {
+  // The read began before the post: it returns the rows up to the owner's
+  // /login and no card. Taking what that read saw as the whole open set must
+  // not forget a card it could not have seen.
+  const unanswered = new Map<string, Set<number>>([['1146', new Set()]])
+  noteOwnCard()(unanswered, '1146', 159575)
+  const stale = selectClickTransitions({
+    rows: [ownerSlashRow(159574)],
+    prevUnanswered: unanswered.get('1146')!,
+    isFirstPoll: false,
+  })
+  assert.deepEqual(stale.announce, [])
+  assert.deepEqual([...stale.nextUnanswered], [159575], 'newer than every row the read returned, so kept')
+  const next = selectClickTransitions({
+    rows: [ownerSlashRow(159574), clickRow({ id: 159575, answered: true })],
+    prevUnanswered: stale.nextUnanswered,
+    isFirstPoll: false,
+  })
+  assert.deepEqual(next.announce, [159575])
+})
+
+test('an open card older than everything a read returned is still dropped, as before', () => {
+  // Out of the newest-50 window (or deleted): only a card NEWER than the read
+  // can be one the read had no chance to see.
+  const r = selectClickTransitions({
+    rows: [ownerSlashRow(500), clickRow({ id: 501, answered: false })],
+    prevUnanswered: new Set([12, 501]),
+    isFirstPoll: false,
+  })
+  assert.deepEqual([...r.nextUnanswered], [501])
 })
 
 test('user rows and option-less rows are ignored', () => {

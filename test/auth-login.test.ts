@@ -607,6 +607,77 @@ test('single flight holds in the reducer itself, from every in-flight phase', ()
   }
 })
 
+// ── stuck waiting for a pick (feedback 0984e340) ─────────────────────────────
+// Production, 2026-10-26: the tap on the card never reached the daemon, and a
+// second /login from the person who started it answered "A sign-in is already
+// running (waiting for a sign-in method to be picked)". Whatever loses a tap,
+// that person must be able to finish or clear the sign-in from the chat.
+
+test('stuck waiting for a pick: a second /login from its starter says how to pick by typing, and a typed pick starts it', async () => {
+  const h = harness()
+  await h.controller.command(CHAT, '')
+  await settle()
+  assert.deepEqual(
+    h.sent[0]!.buttons?.map((b) => b.callbackData),
+    ['login:claudeai', 'login:console'],
+    'the card offered both methods',
+  )
+  // No tap arrives. The starter asks again.
+  await h.controller.command(CHAT, '')
+  const busy = h.sent[h.sent.length - 1]!.text
+  assert.match(busy, /^A sign-in is already running \(waiting for a sign-in method to be picked\)/)
+  assert.match(busy, /Send \/login subscription or \/login console to pick one now, or \/login cancel to stop it\./)
+  assert.equal(h.children.length, 0, 'asking again starts nothing')
+  await h.controller.command(CHAT, 'console')
+  assert.equal(h.children.length, 1, 'the typed pick starts the sign-in')
+  assert.deepEqual(h.child.cmd.args, ['auth', 'login', '--console'])
+})
+
+test('stuck waiting for a pick: the typed pick is offered only to whoever can make it', async () => {
+  // The owner asking about a sign-in a person they allowed started cannot pick
+  // it (command() takes a direct method only from the starter), so they are
+  // told to cancel, not to pick.
+  const h = harness()
+  await loginVia(h, RECIP_CHAT, WS_GRANTED_LOGIN)
+  await loginVia(h, CHAT, WS_OWNER_LOGIN)
+  const toOwner = h.sent[h.sent.length - 1]!
+  assert.equal(toOwner.chatId, CHAT)
+  assert.match(toOwner.text, /Send \/login cancel to stop it/)
+  assert.doesNotMatch(toOwner.text, /\/login subscription/)
+  // The reducer's own rule, in the one case the controller does not reach
+  // above: someone other than the starter asking in the starter's own chat.
+  const sameChat = reduceLogin(
+    { ...INITIAL_LOGIN_STATE, phase: 'awaiting_method', chatId: CHAT, starterUserId: RECIPIENT },
+    { type: 'open', chatId: CHAT, starterUserId: OWNER, byOwner: true, nowMs: 0 },
+  )
+  assert.deepEqual(
+    sameChat.effects,
+    [{ kind: 'busy', chatId: CHAT, phase: 'awaiting_method', canCancel: true, canPick: false }],
+    'only the starter can make the pick, so only the starter is offered it',
+  )
+  // And once the sign-in is past the pick, nobody is offered one.
+  const later = harness()
+  await toAwaitingCode(later)
+  await later.controller.command(CHAT, '')
+  assert.doesNotMatch(later.sent[later.sent.length - 1]!.text, /\/login subscription/)
+})
+
+test('stuck waiting for a pick: /login cancel clears it, and the next /login offers both methods again', async () => {
+  const h = harness()
+  await h.controller.command(CHAT, '')
+  await settle()
+  await h.controller.command(CHAT, '')
+  await h.controller.command(CHAT, 'cancel')
+  assert.equal(h.controller.phase, 'idle')
+  assert.equal(h.sent[h.sent.length - 1]!.text, 'Sign-in cancelled. Nothing was changed.')
+  await h.controller.command(CHAT, '')
+  await settle()
+  const card = h.sent[h.sent.length - 1]!
+  assert.deepEqual(card.buttons?.map((b) => b.callbackData), ['login:claudeai', 'login:console'])
+  assert.equal(h.controller.phase, 'awaiting_method')
+  assert.equal(h.children.length, 0, 'nothing ran before the pick')
+})
+
 test('/login cancel kills a running child and frees the slot', async () => {
   const h = harness()
   await toAwaitingCode(h)
