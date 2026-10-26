@@ -245,6 +245,8 @@ test('keep-alive: an exit on its own relaunches after 5 s RESUMING the pinned se
   const sup = JSON.parse(h.files.get(SUPERVISOR_PATH) ?? 'null')
   assert.equal(sup?.pid, process.pid)
   assert.deepEqual(sup?.capabilities, ['relaunch'])
+  // The stamp before a relaunch names no deadline: lib/restart-handoff.mjs counts only such a stamp as a relaunch.
+  assert.equal(sup?.relaunchBy, undefined)
   assert.equal(h.files.get(SESSION_ID_PATH), PINNED, 'the pin is untouched')
   // Stopping the launcher stops the agent and does NOT relaunch it.
   h.stop.abort()

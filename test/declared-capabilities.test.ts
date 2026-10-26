@@ -102,7 +102,7 @@ test('a host that cannot type declares the READ half only', () => {
   // the honest answer, and still sees every Last check.
   assert.deepEqual(
     [...declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode: 'pairing' })],
-    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'boards_download', 'sessions_library', 'changes_rpc', 'skills_list', 'skills_receive', 'ui_card', 'email_label', 'email_send', 'hard_floor', 'hard_floor_rules_2'],
+    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'boards_download', 'sessions_library', 'changes_rpc', 'doctor_rpc', 'skills_list', 'skills_receive', 'ui_card', 'email_label', 'email_send', 'hard_floor', 'hard_floor_rules_2'],
   )
 })
 
@@ -138,6 +138,7 @@ test('boards_playbook is declared on every host, because the tool is typed and h
       'boards_download',
       'sessions_library',
       'changes_rpc',
+      'doctor_rpc',
       'skills_list',
       'skills_receive',
       'ui_card',
@@ -242,6 +243,7 @@ test('permission_card is declared on every host, because the relay has no platfo
       'boards_download',
       'sessions_library',
       'changes_rpc',
+      'doctor_rpc',
       'skills_list',
       'skills_receive',
       'ui_card',
@@ -542,8 +544,10 @@ test('server.ts passes the live AUTH.mode and the boot time floor hook lookup at
   const server = readFileSync(join(import.meta.dirname, '..', 'server.ts'), 'utf8').replace(/\r\n/g, '\n')
   const calls = server.match(/declaredCapabilities\(\{[^}]*\}\)/g) ?? []
   // Three since P6 stage 3: the Stop pause gate (stopGoalView) reads the
-  // heartbeat's own declaration, so it carries the same live values.
-  assert.equal(calls.length, 3, 'the canon fetch, the heartbeat and the Stop pause gate, and nothing else')
+  // heartbeat's own declaration, so it carries the same live values. Four
+  // since 0.74.2: the reply tool's card nudge asks whether THIS daemon
+  // declares ui_card (lib/reply-card-shape.ts), with the same live values.
+  assert.equal(calls.length, 4, 'the canon fetch, the heartbeat, the Stop pause gate and the reply card nudge, and nothing else')
   for (const call of calls) {
     assert.match(call, /authMode: AUTH\.mode \}\)$/)
     assert.match(call, /floorHook: FLOOR_HOOK\.registered,/)
@@ -708,6 +712,7 @@ test('the stop pause token rides with mission_pause and nothing else, the gate t
       'boards_download',
       'sessions_library',
       'changes_rpc',
+      'doctor_rpc',
       'skills_list',
       'skills_receive',
       'ui_card',

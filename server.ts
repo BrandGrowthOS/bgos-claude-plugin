@@ -80,6 +80,7 @@ import { SkillsRpcHandler, normalizeSkillsRpc } from './lib/skills-rpc.js'
 import { listSkills, managedSkillsDir, removeAgentSkill } from './lib/skills-inventory.js'
 import { exportSkill, installBundle } from './lib/skills-share.js'
 import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
+import { DoctorRpcHandler, buildDoctorChecks, normalizeDoctorRpc } from './lib/doctor-rpc.ts'
 import { collectChanges, createNodeRunGit, nodeChangesFs } from './lib/git-changes.js'
 import { defaultPidAlive, pluginStateDirFor, readBootClock } from './lib/agent-inventory.mjs'
 import { createMarkerTakeover, currentPluginRootFor, handoffEnv, mcpEnvKeys, nodeTakeoverFs } from './lib/marker-takeover.mjs'
@@ -267,6 +268,7 @@ import {
   type MissionEventWire,
 } from './lib/mission-events.js'
 import { declaredCapabilities } from './lib/declared-capabilities.js'
+import { ReplyCardNudges, UI_CARD } from './lib/reply-card-shape.ts'
 import {
   StopPauseLane,
   isOwnerAuthoredInbound,
@@ -6228,7 +6230,23 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         // successful reply (fire-and-forget, never blocks the reply).
         reportContextPct()
         clearInbound(resolvedChatId)
-        return { content: [{ type: 'text', text: `Sent (${parts.join(', ')})` }] }
+        // The card nudge (0.74.2): AFTER the send, so the message went out
+        // exactly as written, and only in the tool result. A card shaped reply
+        // (an email draft, a table, a status list, a comparison) on a daemon
+        // that declares ui_card gets ONE line naming the card, at most once per
+        // chat per 30 minutes. A peer side thread is read by an agent, not the
+        // owner, so it never gets one. forReply never throws.
+        const cardNudge = peerConvByChat.has(String(resolvedChatId))
+          ? null
+          : replyCardNudges.forReply({
+              chatId: String(resolvedChatId),
+              text,
+              declared: () =>
+                declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, authMode: AUTH.mode }).includes(UI_CARD),
+              log,
+            })
+        if (cardNudge) log(`reply to chat ${resolvedChatId}: card nudge given`)
+        return { content: [{ type: 'text', text: `Sent (${parts.join(', ')})${cardNudge ? `\n${cardNudge}` : ''}` }] }
       } catch (err) {
         if (peerRefusalOf(err) === PEER_NOT_PARTICIPANT) {
           // HOAI refuses this reply every time (lib/peer-refusal.ts). Say so in
@@ -6996,6 +7014,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
             chatId: sideThreadChatId != null ? String(sideThreadChatId) : undefined,
           })
         } else if (sideThreadChatId != null) {
+          notePeerConversationOpened(resultConvId != null ? String(resultConvId) : undefined, String(sideThreadChatId))
           clearInbound(String(sideThreadChatId))
         }
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
@@ -8460,6 +8479,18 @@ function rememberPeerConvChat(convId: string | undefined, chatId: string | undef
   peerConvByChat.set(chatId, convId)
 }
 
+// A side-thread this agent opened (or wrote into) with send_to_peer is known
+// from the send's answer, not only from the peer's first inbound: until the
+// peer answered, a reply there read as an owner chat and got the card nudge
+// (review of PR #277). The inbound handlers' reopen rule holds here too: a
+// conversation id the chat did not hold lifts the closed guard, so recording
+// it now cannot hide a reopen from the peer's answer.
+function notePeerConversationOpened(convId: string | undefined, chatId: string): void {
+  if (!convId) return
+  if (closedPeerChats.has(chatId) && peerConvByChat.get(chatId) !== convId) closedPeerChats.delete(chatId)
+  rememberPeerConvChat(convId, chatId)
+}
+
 function recordInbound(
   chatId: string,
   messageId: number,
@@ -8800,6 +8831,12 @@ const chatUnansweredButtons = new Map<string, Set<number>>()
  * anything else there. See activeButtonPromptChatIds in lib/poll-core.ts.
  */
 const recentButtonPrompts = new Map<string, ButtonPromptRecord>()
+/**
+ * When this daemon last told the agent, in a reply tool result, that the reply
+ * it just sent would read better as a card (lib/reply-card-shape.ts): at most
+ * once per chat per 30 minutes, kept in memory only.
+ */
+const replyCardNudges = new ReplyCardNudges()
 /**
  * The buttons and text of the button cards this daemon life posted (the reply tool's, the plan card's), so the owner's
  * stream tap opens a private turn only on a card as posted: a card rewritten after it was posted opens none
@@ -13226,6 +13263,36 @@ const changesRpc = new ChangesRpcHandler({
   log,
 })
 
+// ── Check up (doctor_rpc, BGOS board row 01a16795) ────────────────────────────
+// The owner's Agent health card runs a check up on this agent. Up to 0.74.0
+// nothing here listened for the frame, so every Claude Code check up read "the
+// agent host did not respond" while the agent was online. The rows are read
+// from what this daemon already tracks for its heartbeat (the Claude login and
+// usage watchers, the versions, the home check): no child process, no
+// network. `hoai doctor` on the computer stays the deep check.
+const doctorRpc = new DoctorRpcHandler({
+  assistantId: () => String(ASSISTANT_ID ?? ''),
+  runChecks: async () =>
+    buildDoctorChecks({
+      now: Date.now(),
+      runningVersion: RUNNING_VERSION,
+      pendingRestartVersion: daemonPendingRestartVersion(),
+      updateDraining: updateDrainMode,
+      assistantId: String(ASSISTANT_ID ?? ''),
+      homeConfirmed: HOME_CONFIRMED,
+      login: claudeLoginState,
+      resting: observedResting,
+    }),
+  postAck: (rpcId) =>
+    bgosPost(`integrations/doctor-rpc/${encodeURIComponent(rpcId)}/ack`, {}),
+  postResult: (rpcId, body) =>
+    bgosPost(
+      `integrations/doctor-rpc/${encodeURIComponent(rpcId)}/result`,
+      body as unknown as Record<string, unknown>,
+    ),
+  log,
+})
+
 function rememberForwarded(id: number): void {
   if (forwardedMessageIds.has(id)) return
   forwardedMessageIds.add(id)
@@ -14463,6 +14530,26 @@ function connectWebsocket(): void {
   // drops; anything with one is answered, and a re sent frame is answered
   // again from memory, never run twice (lib/skills-rpc.ts). Only the lock
   // holder answers (whenArmed).
+  // Check up (BGOS board row 01a16795): the owner's Agent health card asks how
+  // this agent is. A frame without an rpcId drops; anything with one is
+  // answered, and a re sent frame is answered again, never run twice
+  // (lib/doctor-rpc.ts). Only the lock holder answers (whenArmed). Unlike the
+  // lanes around it a draining daemon STILL answers: the check up is read only
+  // and "an update is being applied" is what the owner should read, not
+  // silence.
+  realtimeSocket.on('doctor_rpc', whenArmed('doctor_rpc', (payload: any) => {
+    try {
+      const frame = normalizeDoctorRpc(payload)
+      if (!frame) return
+      log(`doctor_rpc received (op=${frame.op}, rpc=${frame.rpcId})`)
+      void trackMessageOperation(() => doctorRpc.handle(frame)).catch((err) => {
+        log(`doctor_rpc handler error: ${err}`)
+      })
+    } catch (err) {
+      log(`doctor_rpc handler error: ${err}`)
+    }
+  }))
+
   realtimeSocket.on('skills_rpc', whenArmed('skills_rpc', (payload: any) => {
     if (updateDrainMode) return
     try {
