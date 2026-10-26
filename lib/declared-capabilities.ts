@@ -59,6 +59,15 @@
  *                       for a daemon declaring this, because that wake asks
  *                       the agent to write its goals. Every host: it is a
  *                       plain HTTP write the model makes itself.
+ *   mission_server_checks
+ *                       this daemon's model is told the canon paragraph on a
+ *                       goal's machine check (the server ticks it on proof),
+ *                       waiting goals and the stale wake (missions that stay
+ *                       true, BGOS board row 01a177c7). Every host: the check
+ *                       rides the goal tools and set_goal_waiting is a plain
+ *                       tool call. Distinct from mission_goal_checks, which
+ *                       promises the /goal checker's verdict and is declared
+ *                       by other runtimes for their own judge.
  *   mission_pause       a pause truly stops the work. ONLY where the injector
  *                       answers, because the pause this daemon can enforce IS
  *                       clearing the native goal. It is honest about its
@@ -273,6 +282,7 @@ export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   'mission_events',
   'mission_goal_checks',
   'mission_set_goals',
+  'mission_server_checks',
   PERMISSION_CARD,
   PLAN_CARD,
   'memory_rpc',

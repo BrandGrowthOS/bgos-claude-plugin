@@ -41,7 +41,7 @@ import { recordPrivateBoundary } from '../bin/hoai-private-turn-hook.mjs'
 
 const OWNER = 'user_owner'
 const RECIPIENT = 'user_recipient'
-const TURN_AWARE = ['call_owner', 'list_chats', 'create_mission', 'tick_mini_goal', 'set_mission_goals', 'add_mission_goals', 'cancel_mission_goal', 'complete_mission']
+const TURN_AWARE = ['call_owner', 'list_chats', 'create_mission', 'tick_mini_goal', 'set_mission_goals', 'add_mission_goals', 'cancel_mission_goal', 'set_goal_waiting', 'complete_mission']
 const source = readFileSync('server.ts', 'utf8')
 const admissionStart = source.indexOf('  // Freeze private authority at request admission')
 const admissionSource = source.slice(admissionStart, source.indexOf('  return trackMessageOperation(async () => {', admissionStart))

@@ -79,6 +79,28 @@ test('mission_goal_checks is declared on every host, because the checker is the 
   }
 })
 
+/**
+ * mission_server_checks (missions that stay true, BGOS board row 01a177c7).
+ *
+ * The BGOS canon tells the paragraph on a goal's machine check, waiting goals
+ * and the stale wake ONLY to a daemon declaring this token. Every Claude Code
+ * host gets it: the check rides create_mission, set_mission_goals and
+ * add_mission_goals, and set_goal_waiting is a plain tool call, none of which
+ * needs tmux. It is NOT mission_goal_checks, which already promises the
+ * /goal checker's verdict and which other runtimes declare for their own judge.
+ * Mutation proven: MUTATIONS-plugin.md, entry C1.
+ */
+test('mission_server_checks is declared on every host, beside and distinct from mission_goal_checks', () => {
+  for (const canInjectGoal of SHAPES) {
+    for (const authMode of ['pairing', 'apikey'] as const) {
+      const declared = declaredCapabilities({ canInjectGoal, floorHook: true, authMode })
+      assert.ok(declared.includes('mission_server_checks'), `${authMode} canInjectGoal=${canInjectGoal}`)
+      assert.ok(declared.includes('mission_goal_checks'))
+    }
+  }
+  assert.ok(DECLARED_CAPABILITIES_BASE.includes('mission_server_checks'))
+})
+
 test('the goal loop and the pause are declared ONLY where the daemon can type', () => {
   const canType = declaredCapabilities({ canInjectGoal: true, floorHook: true, authMode: 'pairing' })
   assert.ok(canType.includes('mission_goal_loop'))
@@ -102,7 +124,7 @@ test('a host that cannot type declares the READ half only', () => {
   // the honest answer, and still sees every Last check.
   assert.deepEqual(
     [...declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode: 'pairing' })],
-    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'boards_download', 'sessions_library', 'changes_rpc', 'doctor_rpc', 'skills_list', 'skills_receive', 'ui_card', 'email_label', 'email_send', 'hard_floor', 'hard_floor_rules_2'],
+    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'mission_server_checks', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'boards_download', 'sessions_library', 'changes_rpc', 'doctor_rpc', 'skills_list', 'skills_receive', 'ui_card', 'email_label', 'email_send', 'hard_floor', 'hard_floor_rules_2'],
   )
 })
 
@@ -129,6 +151,7 @@ test('boards_playbook is declared on every host, because the tool is typed and h
       'mission_events',
       'mission_goal_checks',
       'mission_set_goals',
+      'mission_server_checks',
       'permission_card',
       'plan_card',
       'memory_rpc',
@@ -234,6 +257,7 @@ test('permission_card is declared on every host, because the relay has no platfo
       'mission_events',
       'mission_goal_checks',
       'mission_set_goals',
+      'mission_server_checks',
       'permission_card',
       'plan_card',
       'memory_rpc',
@@ -703,6 +727,7 @@ test('the stop pause token rides with mission_pause and nothing else, the gate t
       'mission_events',
       'mission_goal_checks',
       'mission_set_goals',
+      'mission_server_checks',
       'permission_card',
       'plan_card',
       'memory_rpc',
