@@ -15,9 +15,12 @@ import {
   MISSION_TURN_POLL_MS,
   missionTurnAnswerPath,
   missionTurnAskPath,
+  missionTurnChatFor,
   missionTurnContext,
   missionTurnNeedsAsk,
+  missionTurnRecord,
   missionTurnStatePath,
+  missionTurnTurnPath,
   missionTurnStopDecision,
   promptChatId,
   readMissionTurnJson,
@@ -52,10 +55,10 @@ export function ownMissionTurnKey(payload, env = process.env) {
 
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(0, ms))
 
-/** Ask the daemon and wait for ITS answer to THIS ask, until the deadline. Null when none came. */
-function askDaemon(root, key) {
+/** Ask the daemon about THIS turn's chat and wait for ITS answer to THIS ask, until the deadline. Null when none came. */
+function askDaemon(root, key, chatId) {
   const askId = randomUUID()
-  writeMissionTurnJson(missionTurnAskPath(root, key), { askId, at: Date.now() })
+  writeMissionTurnJson(missionTurnAskPath(root, key), { askId, chatId, at: Date.now() })
   const answerPath = missionTurnAnswerPath(root, key)
   const deadline = STARTED_AT + MISSION_TURN_ASK_WAIT_MS
   while (Date.now() < deadline) {
@@ -75,14 +78,25 @@ export function missionTurnHookOutput(payload, env = process.env) {
     const own = ownMissionTurnKey(payload, env)
     if (!own) return ''
     const state = readMissionTurnJson(missionTurnStatePath(own.root, own.key))
+    const sessionId = String(payload?.session_id ?? '').trim()
     if (event === 'UserPromptSubmit') {
+      // Only the channel tag that OPENS the prompt names the turn's chat (promptChatId): a tag inside a person's
+      // message is theirs to forge. The chat is recorded for this session, so its Stop asks about this turn's chat
+      // rather than whatever the daemon last bound, which can lag a turn.
       const chatId = promptChatId(payload?.prompt)
+      try {
+        writeMissionTurnJson(missionTurnTurnPath(own.root, own.key), missionTurnRecord({ sessionId, chatId, now: Date.now() }))
+      } catch {
+        /* no record: this turn's Stop simply asks nothing */
+      }
       if (!chatId || !state?.chats) return ''
       return missionTurnContext(state.chats[chatId]) ?? ''
     }
-    if (!missionTurnNeedsAsk(state)) return ''
-    const answer = askDaemon(own.root, own.key)
-    const decision = missionTurnStopDecision({ stopHookActive: false, answer, state, now: Date.now() })
+    const chatId = missionTurnChatFor(readMissionTurnJson(missionTurnTurnPath(own.root, own.key)), sessionId)
+    if (!missionTurnNeedsAsk(state, chatId)) return ''
+    const answer = askDaemon(own.root, own.key, chatId)
+    // From the answer to THIS ask only: no answer in time allows (the state on disk is never a reason to block).
+    const decision = missionTurnStopDecision({ stopHookActive: false, answer })
     return decision.block ? JSON.stringify({ decision: 'block', reason: decision.reason }) : ''
   } catch {
     return ''

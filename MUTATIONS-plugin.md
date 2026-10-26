@@ -118,3 +118,69 @@ Each entry broke ONE line of the shipped code, ran the named test file with `npx
   - permission_card is declared on every host, because the relay has no platform limit
   - the stop pause token rides with mission_pause and nothing else, the gate the stop pause runs behind
 
+
+## Review fixes (independent review of the plugin range)
+
+M4 above (the state file fallback while fresh) is SUPERSEDED: review fix 3 removed that fallback, so a missing or late answer always allows; R3 below proves the new rule.
+
+### R1 only the tag that OPENS the prompt names the chat
+- file: `lib/mission-turn.mjs`
+- mutated line: `const match = /^\s*<channel\b[^>]*?\bchat_id="(\d+)"[^>]*>/.exec(prompt)
+  return match ? match[1] : null` -> `let match = null
+  for (const m of prompt.matchAll(/<channel\b[^>]*?\bchat_id="(\d+)"/g)) match = m
+  return match ? match[1] : null`
+- result: {'pass': '19', 'fail': '1'}
+- red tests:
+  - promptChatId reads ONLY the channel tag that opens the prompt (review fix 1)
+
+### R3 a missing answer allows, the state on disk never blocks
+- file: `bin/hoai-mission-turn-hook.mjs`
+- mutated line: `const decision = missionTurnStopDecision({ stopHookActive: false, answer })` -> `const decision = missionTurnStopDecision({ stopHookActive: false, answer: answer ?? state?.chats?.[chatId] })`
+- result: {'pass': '9', 'fail': '1'}
+- red tests:
+  - Stop with no daemon answer ALLOWS, even with a fresh passing list on disk (review fix 3)
+
+### R4a the Stop reads only its OWN session's turn record
+- file: `lib/mission-turn.mjs`
+- mutated line: `if (!isObject(record) || !String(sessionId ?? '') || record.sessionId !== String(sessionId)) return null` -> `if (!isObject(record)) return null`
+- result: {'pass': '9', 'fail': '1'}
+- red tests:
+  - Stop with nothing to ask ends at once, writing no ask
+
+### R4b the daemon answers only for a chat it delivered to
+- file: `server.ts`
+- mutated line: `if (!chatId || !turnChat.deliveredRecently(chatId, Date.now())) return { passing: [] }` -> `if (!chatId) return { passing: [] }`
+- result: {'pass': '5', 'fail': '1'}
+- red tests:
+  - the answer is for the ASK's chat, only one this daemon delivered to recently, from a fresh entry when it has one (review fixes 4 and 6)
+
+### R4c deliveredRecently says no to a chat never delivered to
+- file: `lib/turn-chat.ts`
+- mutated line: `return ring.some((entry) => entry.record.chatId === id && fresh(entry.record, now) !== null)` -> `return true`
+- result: {'pass': '14', 'fail': '1'}
+- red tests:
+  - deliveredRecently answers only for a chat this daemon delivered to, or whose turn it ran, recently (missions that stay true, review fix 4)
+
+### R5a an ask older than the hook's wait is never answered
+- file: `lib/mission-turn.mjs`
+- mutated line: `if (!Number.isFinite(ask.at) || now() - ask.at > MISSION_TURN_ASK_MAX_AGE_MS) {` -> `if (false) {`
+- result: {'pass': '19', 'fail': '1'}
+- red tests:
+  - answerMissionTurnAsk ignores an ask older than the hook can wait for, and removes it (review fix 5)
+
+### R5b an answered ask is removed
+- file: `lib/mission-turn.mjs`
+- mutated line: `removeQuietly(askPath)
+  return ask.askId` -> `return ask.askId`
+- result: {'pass': '18', 'fail': '2'}
+- red tests:
+  - answerMissionTurnAsk answers a new ask once, with what compute found
+  - answerMissionTurnAsk removes an ask once it is answered, and hands compute the ask
+
+### R6 only an entry checked under 30 s ago answers from memory
+- file: `lib/mission-turn.mjs`
+- mutated line: `return now - entry.checkedAt < MISSION_TURN_REUSE_MS ? entry : null` -> `return entry`
+- result: {'pass': '19', 'fail': '1'}
+- red tests:
+  - freshMissionTurnEntry answers from a chat entry checked under 30 s ago, and only then (review fix 6)
+

@@ -107,6 +107,12 @@ export interface TurnChatTracker {
   matchDelivered(promptText: unknown): TurnChatRecord | null
   /** Called on Stop: the turn is over, its chat is kept as the last one. */
   end(now: number): void
+  /**
+   * Did this daemon deliver to this chat, or run a turn in it, recently? The
+   * mission turn check (missions that stay true) answers a Stop hook's ask
+   * only for such a chat, so an ask naming any other chat gets nothing.
+   */
+  deliveredRecently(chatId: string, now: number): boolean
 }
 
 export function createTurnChatTracker(): TurnChatTracker {
@@ -178,6 +184,13 @@ export function createTurnChatTracker(): TurnChatTracker {
         if (promptCarriesDelivered(promptText, entry.needle)) return entry.record
       }
       return null
+    },
+    deliveredRecently(chatId, now) {
+      const id = String(chatId ?? '').trim()
+      if (!id) return false
+      if (turn !== null && turn.chatId === id && (live || fresh(turn, now) !== null)) return true
+      if (pending !== null && pending.chatId === id && fresh(pending, now) !== null) return true
+      return ring.some((entry) => entry.record.chatId === id && fresh(entry.record, now) !== null)
     },
     end(now) {
       live = false

@@ -491,6 +491,7 @@ import {
   MISSION_TURN_ANSWER_BUDGET_MS,
   answerMissionTurnAsk,
   entryFromMission,
+  freshMissionTurnEntry,
   entryFromReport,
   mergeMissionTurnEntry,
   missionTurnAnswerPath,
@@ -11551,10 +11552,16 @@ function noteMissionTurnStart(chatId: string | null): void {
   void refreshMissionTurnChat(chatId).catch((err) => log(`mission turn: refresh of chat ${chatId} failed (${err})`))
 }
 
-async function missionTurnPassingNow(): Promise<{ chatId?: string; missionId?: number; passing: unknown[] }> {
-  const chatId = (missionTurnState?.turnChatId as string | null | undefined) ?? turnChat.current(Date.now())?.chatId ?? null
-  if (!chatId) return { passing: [] }
-  const entry = await refreshMissionTurnChat(chatId)
+/**
+ * What passes now in the chat the Stop hook's ask names: the chat its own prompt run recorded for this session, never
+ * this daemon's idea of the turn chat, which is bound when the async prompt line drains and can lag a turn. Answered
+ * only for a chat this daemon delivered to (or ran a turn in) recently, so an ask naming any other chat gets nothing.
+ * An entry checked under 30 s ago answers without two fresh reads.
+ */
+async function missionTurnAnswerFor(ask: { chatId?: unknown }): Promise<{ chatId?: string; missionId?: number; passing: unknown[] }> {
+  const chatId = typeof ask?.chatId === 'string' ? ask.chatId : null
+  if (!chatId || !turnChat.deliveredRecently(chatId, Date.now())) return { passing: [] }
+  const entry = freshMissionTurnEntry(missionTurnState, chatId, Date.now()) ?? (await refreshMissionTurnChat(chatId))
   return { chatId, ...(entry ? { missionId: entry.missionId } : {}), passing: entry ? openPassing(entry) : [] }
 }
 
@@ -11567,9 +11574,9 @@ async function answerMissionTurnAsks(): Promise<void> {
     for (const key of FLOOR_KEYS) {
       const askPath = missionTurnAskPath(FLOOR_STATE_ROOT, key)
       if (!existsSync(askPath)) continue
-      const compute = () =>
+      const compute = (ask: { chatId?: unknown }) =>
         Promise.race([
-          missionTurnPassingNow(),
+          missionTurnAnswerFor(ask),
           new Promise<never>((_, reject) =>
             setTimeout(() => reject(new Error('the goal checks read took too long')), MISSION_TURN_ANSWER_BUDGET_MS).unref(),
           ),

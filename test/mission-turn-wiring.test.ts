@@ -53,3 +53,14 @@ test('the state is written only by the lock holder', () => {
   const write = between('function writeMissionTurnState(', '\n}\n')
   assert.match(write, /if \(!lockHeld\) return/)
 })
+
+test("the answer is for the ASK's chat, only one this daemon delivered to recently, from a fresh entry when it has one (review fixes 4 and 6)", () => {
+  const answerFor = between('async function missionTurnAnswerFor(', '\n}\n')
+  assert.match(answerFor, /ask\?\.chatId/)
+  assert.match(answerFor, /turnChat\.deliveredRecently\(/)
+  assert.match(answerFor, /freshMissionTurnEntry\(/)
+  // The daemon's own idea of the turn chat, which can lag a turn, is not read here.
+  assert.doesNotMatch(answerFor, /turnChatId|turnChat\.current\(/)
+  const answer = between('async function answerMissionTurnAsks(', '\n}\n')
+  assert.match(answer, /missionTurnAnswerFor\(ask\)/)
+})
