@@ -184,3 +184,13 @@ M4 above (the state file fallback while fresh) is SUPERSEDED: review fix 3 remov
 - red tests:
   - freshMissionTurnEntry answers from a chat entry checked under 30 s ago, and only then (review fix 6)
 
+
+## Review confirmation pass
+
+### A1 an answered ask is removed only while it is still that ask
+- file: `lib/mission-turn.mjs`
+- mutated line: `if (readMissionTurnJson(askPath)?.askId === ask.askId) removeQuietly(askPath)` -> `removeQuietly(askPath)`
+- result: {'pass': '20', 'fail': '1'}
+- red tests:
+  - answerMissionTurnAsk never removes a NEWER ask written while it answered the old one (review confirmation A)
+

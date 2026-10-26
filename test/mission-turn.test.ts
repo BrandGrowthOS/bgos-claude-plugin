@@ -306,3 +306,22 @@ test('the turn record: written for a session at its prompt, read back only by th
   assert.equal(missionTurnChatFor(readMissionTurnJson(path), 's1'), null)
   assert.equal(missionTurnChatFor(null, 's1'), null)
 })
+
+test('answerMissionTurnAsk never removes a NEWER ask written while it answered the old one (review confirmation A)', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'hoai-mission-turn-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const ask = missionTurnAskPath(root, 'k')
+  const answerPath = missionTurnAnswerPath(root, 'k')
+  writeMissionTurnJson(ask, { askId: 'first', chatId: '12', at: NOW })
+  const compute = async () => {
+    // The first hook gave up; the next turn's Stop writes its own ask meanwhile.
+    writeMissionTurnJson(ask, { askId: 'second', chatId: '12', at: NOW })
+    return { passing: [] }
+  }
+  assert.equal(await answerMissionTurnAsk({ askPath: ask, answerPath, lastAnswered: null, compute, now: () => NOW }), 'first')
+  assert.equal(readMissionTurnJson(answerPath)?.askId, 'first')
+  assert.equal(readMissionTurnJson(ask)?.askId, 'second', 'the newer ask is still there to be answered')
+  // And it is answered on the next look.
+  assert.equal(await answerMissionTurnAsk({ askPath: ask, answerPath, lastAnswered: 'first', compute: async () => ({ passing: [] }), now: () => NOW }), 'second')
+  assert.equal(existsSync(ask), false)
+})
