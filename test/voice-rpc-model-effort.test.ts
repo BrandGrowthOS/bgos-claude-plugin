@@ -70,7 +70,9 @@ test('a picker that throws is answered failed, never left to time out', async ()
 
 test('a re sent apply never types twice: the same rpcId runs once, even after it answered', async () => {
   let release: () => void = () => {}
-  const r = rig(() => new Promise<PickerAnswer>((resolve) => { release = () => resolve({ ok: true, payload: {} }) }))
+  let calls = 0
+  // Only the first answer is held: a second run, if one ever happened, answers at once.
+  const r = rig(() => calls++ === 0 ? new Promise<PickerAnswer>((resolve) => { release = () => resolve({ ok: true, payload: {} }) }) : Promise.resolve({ ok: true, payload: {} }))
   const first = r.handler.handle(frame(APPLY_MODEL_EFFORT))
   await r.handler.handle(frame(APPLY_MODEL_EFFORT))
   release()
@@ -115,4 +117,17 @@ test('the handler logs a picker rpcId as its short hash, never raw', async () =>
     assert.ok(!line.includes('rpc-7'), `raw rpcId in the log: ${JSON.stringify(line)}`)
     assert.ok(!line.includes('\n'), `a forged line: ${JSON.stringify(line)}`)
   }
+})
+
+// Round 3 review M1: a picker answer races BGOS's 20 s timer from its emit, so
+// it never waits for the ack POST, and its deadline counts from arrival.
+test('a picker result is not held behind a slow ack, and the frame carries its arrival time', async () => {
+  const r = rig(async () => ({ ok: true, payload: { done: true } }))
+  const d = (r.handler as unknown as { deps: VoiceRpcDeps }).deps
+  d.postAck = () => new Promise(() => {})
+  const before = Date.now()
+  await r.handler.handle(frame(APPLY_MODEL_EFFORT))
+  assert.deepEqual(r.results, [{ rpcId: 'rpc-1', body: { ok: true, payload: { done: true } } }])
+  const at = r.asked[0]!.receivedAtMs!
+  assert.ok(typeof at === 'number' && at >= before && at <= Date.now())
 })

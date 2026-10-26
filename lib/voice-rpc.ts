@@ -795,6 +795,7 @@ export class VoiceRpcHandler {
 
   async handle(frame: VoiceRpcFrame): Promise<void> {
     if (!frame?.rpcId) return
+    const receivedAtMs = Date.now()
     // Another agent's picker frame (several daemons can share a pairing
     // room) is not acked and not answered: the right daemon's result wins.
     if (
@@ -821,9 +822,17 @@ export class VoiceRpcHandler {
     this.inFlight.add(frame.rpcId)
     try {
       // ACK is best-effort: a failed ACK only costs one retry-emit (which
-      // the inFlight guard absorbs); it must not abort the op itself.
+      // the inFlight guard absorbs); it must not abort the op itself. A
+      // picker op does not wait for it: its answer races BGOS's 20 s timer.
       try {
-        await this.deps.postAck(frame.rpcId)
+        const ack = this.deps.postAck(frame.rpcId)
+        if (isModelEffortOp(frame.op)) {
+          void Promise.resolve(ack).catch((err) => {
+            this.deps.log(`voice_rpc ack failed (non-fatal, rpc=${rpcLogTag(frame.rpcId)}): ${err instanceof Error ? err.name : 'error'}`)
+          })
+        } else {
+          await ack
+        }
       } catch (err) {
         this.deps.log(
           // Not the error's text: a failed request names its path, the id in it.
@@ -852,6 +861,7 @@ export class VoiceRpcHandler {
           assistantId: frame.assistantId,
           chatId: frame.chatId,
           payload: frame.payload,
+          receivedAtMs,
         })
         if (!answer.ok) throw new VoiceRpcError(answer.code, answer.message)
         payload = answer.payload

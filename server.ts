@@ -138,7 +138,7 @@ import {
   type TmuxTarget,
 } from './lib/compact-inject.js'
 import { evaluateCompactionOutcome } from './lib/compact-confirm.js'
-import { ModelEffortControl } from './lib/model-effort-control.js'
+import { holdChannelCardsWhileBusy, ModelEffortControl } from './lib/model-effort-control.js'
 import { ModelEffortPickerHandler, pickerChatAllowed, rpcLogOp, rpcLogTag } from './lib/model-effort-rpc.js'
 import { parseHelpCatalog } from './lib/model-effort-catalog.js'
 import { processAncestry } from './lib/model-effort-pane.js'
@@ -9427,6 +9427,12 @@ mcp.notification = ((notification: Parameters<typeof mcp.notification>[0]) => {
   }
   return sendMcpNotification(notification)
 }) as typeof mcp.notification
+// OUTERMOST, so the private turn record above runs when a held card really
+// goes out: the model and effort control's lock over every card that can open
+// a turn (lib/model-effort-control.ts holdChannelCardsWhileBusy, round 3 review
+// M2). A channel card waits while a change is being typed and confirmed, and
+// is then sent unchanged.
+mcp.notification = holdChannelCardsWhileBusy(modelEffortControl, mcp.notification.bind(mcp))
 function publishBrowserPrivateTurn(): void {
   if (!lockHeld) return
   try {

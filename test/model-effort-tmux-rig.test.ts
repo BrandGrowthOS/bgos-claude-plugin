@@ -27,6 +27,17 @@ import type { TmuxTarget } from '../lib/compact-inject.ts'
 import { ModelEffortControl } from '../lib/model-effort-control.ts'
 import { processAncestry } from '../lib/model-effort-pane.ts'
 import { modelControlDir, readObservation } from '../lib/model-control-store.mjs'
+import { pickerModelOf } from '../lib/model-effort-catalog.ts'
+
+/** One step through the production path, `apply` (round 3 review L2). */
+async function step(control: ModelEffortControl, op: 'set_model' | 'set_effort', value: string) {
+  const snap = await control.snapshot()
+  const o = snap.observation
+  const selection = op === 'set_model'
+    ? { sessionId: snap.sessionId, model: value, effort: o?.effort ?? 'high' }
+    : { sessionId: snap.sessionId, model: (o && pickerModelOf(o.modelId)) ?? 'opus', effort: value }
+  return control.apply(selection, { deadlineAtMs: Number.POSITIVE_INFINITY })
+}
 
 const execFileAsync = promisify(execFile)
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -127,10 +138,10 @@ test('the ancestry of a real process names its own tty and foreground group', { 
 
 test('set_model and set_effort are typed by real tmux and confirmed by the real bridge', { skip: !hasTmux }, async () => {
   const { control, socket } = await startRig('apply')
-  const model = await control.handle({ op: 'set_model', value: 'sonnet' })
+  const model = await step(control, 'set_model', 'sonnet')
   assert.equal(model.ok, true, JSON.stringify(model))
   if (model.ok) assert.equal(model.report.model, 'claude-sonnet-5-5')
-  const effort = await control.handle({ op: 'set_effort', value: 'max' })
+  const effort = await step(control, 'set_effort', 'max')
   assert.equal(effort.ok, true, JSON.stringify(effort))
   if (effort.ok) {
     assert.equal(effort.report.effort, 'max')
@@ -149,7 +160,7 @@ test('a real draft in the pane is refused and left exactly as the owner typed it
     await new Promise((r) => setTimeout(r, 50))
   }
   assert.match(await capture(socket), /❯\shalf a thought/, 'the owner\'s draft is drawn before the request')
-  const out = await control.handle({ op: 'set_model', value: 'sonnet' })
+  const out = await step(control, 'set_model', 'sonnet')
   assert.equal(out.ok, false)
   if (!out.ok) assert.equal(out.code, 'composer_not_empty')
   assert.match(await capture(socket), /❯\shalf a thought/)
@@ -157,7 +168,7 @@ test('a real draft in the pane is refused and left exactly as the owner typed it
 
 test('echoed input that never applies is not confirmed', { skip: !hasTmux }, async () => {
   const { control } = await startRig('echo', { FAKE_TUI_APPLY: '0' })
-  const out = await control.handle({ op: 'set_effort', value: 'low' })
+  const out = await step(control, 'set_effort', 'low')
   assert.equal(out.ok, false)
   if (!out.ok) {
     assert.equal(out.code, 'not_confirmed')
@@ -182,7 +193,7 @@ async function typeAsOwner(socket: string, text: string): Promise<void> {
 test('H1: a real draft ending with > is refused and left exactly as the owner typed it', { skip: !hasTmux }, async () => {
   const { control, socket } = await startRig('arrow')
   await typeAsOwner(socket, 'const f = () =>')
-  const out = await control.handle({ op: 'set_model', value: 'sonnet' })
+  const out = await step(control, 'set_model', 'sonnet')
   const screen = await capture(socket)
   assert.doesNotMatch(screen, /Unknown:|\/model sonnet/, screen)
   assert.equal(out.ok, false, JSON.stringify(out))
@@ -204,7 +215,7 @@ test('M2: a window opened mid request does not receive the keys; the proven pane
     }
     return out
   })
-  const out = await control.handle({ op: 'set_model', value: 'sonnet' })
+  const out = await step(control, 'set_model', 'sonnet')
   assert.ok(opened)
   const other = await capture(socket)
   assert.doesNotMatch(other, /\/model/, `the new window received keys: ${other}`)
@@ -220,7 +231,7 @@ test('M2: a window opened mid request does not receive the keys; the proven pane
 test('round 2: a real draft drawn in the light theme\'s black is refused and left as typed', { skip: !hasTmux }, async () => {
   const { control, socket } = await startRig('black', { FAKE_TUI_TEXT_SGR: '38;2;0;0;0' })
   await typeAsOwner(socket, 'half a thought')
-  const out = await control.handle({ op: 'set_model', value: 'sonnet' })
+  const out = await step(control, 'set_model', 'sonnet')
   const screen = await capture(socket)
   assert.doesNotMatch(screen, /Unknown:|\/model sonnet/, screen)
   assert.equal(out.ok, false, JSON.stringify(out))
@@ -231,7 +242,7 @@ test('round 2: a real draft drawn in the light theme\'s black is refused and lef
 test('round 2: a real pasted text tag drawn dim is refused and left as it was', { skip: !hasTmux }, async () => {
   const { control, socket } = await startRig('dimtag', { FAKE_TUI_DIM_TAGS: '1' })
   await typeAsOwner(socket, '[Pasted text #1 +40 lines]')
-  const out = await control.handle({ op: 'set_model', value: 'sonnet' })
+  const out = await step(control, 'set_model', 'sonnet')
   const screen = await capture(socket)
   assert.doesNotMatch(screen, /Unknown:|\/model sonnet/, screen)
   assert.equal(out.ok, false, JSON.stringify(out))
@@ -257,7 +268,7 @@ test('round 2 L1: an arrow key in the gap: the owner\'s key is never deleted', {
     }
     return out
   })
-  const out = await control.handle({ op: 'set_model', value: 'sonnet' })
+  const out = await step(control, 'set_model', 'sonnet')
   assert.ok(owner)
   // Any key the control sent is given time to land and be drawn: read too
   // early, a screen would still show the owner's key a BSpace is about to take.

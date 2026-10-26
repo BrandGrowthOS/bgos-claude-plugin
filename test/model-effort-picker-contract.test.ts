@@ -118,7 +118,10 @@ test('a running model outside the frozen table is listed by its own id, so an ef
 test('nothing to offer, no proven session or a session id BGOS refuses: no catalog at all', () => {
   assert.equal(buildPickerCatalog({ catalog: { models: [], efforts: [] }, observation: null, sessionId: SID }), null)
   assert.equal(buildPickerCatalog({ catalog: { models: [...HOST.models], efforts: [...HOST.efforts] }, observation: observation(), sessionId: null }), null)
-  assert.equal(buildPickerCatalog({ catalog: { models: [...HOST.models], efforts: [...HOST.efforts] }, observation: observation(), sessionId: '../x\n' }), null)
+  for (const bad of ['../x\n', 'a b', 'x'.repeat(201)]) {
+    assert.equal(buildPickerCatalog({ catalog: { models: [...HOST.models], efforts: [...HOST.efforts] }, observation: observation({ sessionId: bad }), sessionId: bad }), null, bad)
+  }
+  assert.equal(buildPickerCatalog({ catalog: { models: [...HOST.models], efforts: [...HOST.efforts] }, observation: observation({ sessionId: 'other' }), sessionId: SID }), null, 'a report of another session')
 })
 
 test('a model id that would carry text is never the current model (model-effort-picker.model.ts:43)', () => {

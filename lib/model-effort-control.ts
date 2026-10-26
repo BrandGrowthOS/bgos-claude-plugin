@@ -90,11 +90,6 @@ import {
 
 export type ControlOp = 'set_model' | 'set_effort' | 'apply'
 
-export interface ControlRequest {
-  op: unknown
-  value?: unknown
-}
-
 export type RefusalCode =
   | 'unsupported_op'
   | 'unsupported_value'
@@ -156,7 +151,15 @@ export const REFUSAL_MESSAGES: Readonly<Record<RefusalCode, string>> = Object.fr
 
 export type ControlOutcome =
   | { ok: true; op: ControlOp; applied: boolean; report: ModelEffortReport }
-  | { ok: false; op: ControlOp | null; code: RefusalCode; message: string; report: ModelEffortReport | null }
+  | {
+      ok: false
+      op: ControlOp | null
+      code: RefusalCode
+      message: string
+      report: ModelEffortReport | null
+      /** apply only: the model step was applied and confirmed before this refusal. */
+      modelSwitched?: boolean
+    }
 
 export interface ControlDeps {
   /** The owner's opt in for THIS agent, read per call. */
@@ -232,42 +235,6 @@ export class ModelEffortControl {
     return new Promise((resolve) => this.idleWaiters.push(resolve))
   }
 
-  async handle(request: ControlRequest): Promise<ControlOutcome> {
-    const op = request.op
-    if (op !== 'set_model' && op !== 'set_effort') {
-      return this.refused(null, new Refusal('unsupported_op'), null)
-    }
-    const value = request.value
-    if (op === 'set_effort' && value === 'ultracode') {
-      return this.refused(op, new Refusal('ultracode_unconfirmable'), null)
-    }
-    if (op === 'set_model' ? !isModelFamily(value) : !isEffortLevel(value)) {
-      return this.refused(op, new Refusal('unsupported_value'), null)
-    }
-    if (this.inFlight || this.deps.otherInjectionBusy()) {
-      return this.refused(op, new Refusal('control_busy'), null)
-    }
-    // Held from here, synchronously, so a second request is refused before
-    // this one's first await.
-    this.inFlight = true
-    let sessionId: string | null = null
-    let catalog: HostCatalog = { efforts: [], models: [] }
-    try {
-      const pre = await this.preflight()
-      sessionId = pre.sessionId
-      catalog = pre.catalog
-      const outcome = await this.change(op, value as string, pre, Number.POSITIVE_INFINITY)
-      this.deps.log(`model control: ${op} ${String(value)} ${outcome.ok ? (outcome.applied ? 'applied' : 'already') : outcome.code}`)
-      return outcome
-    } catch (err) {
-      if (!(err instanceof Refusal)) throw err
-      this.deps.log(`model control: ${op} ${String(value)} ${err.code}`)
-      return { ok: false, op, code: err.code, message: err.message, report: this.report(catalog, sessionId) }
-    } finally {
-      this.release()
-    }
-  }
-
   /**
    * The picker's selection: the model, then the effort, under one hold of
    * the lock and one deadline. The answer is ok only when the session's own
@@ -291,6 +258,7 @@ export class ModelEffortControl {
     this.inFlight = true
     let sessionId: string | null = null
     let catalog: HostCatalog = { efforts: [], models: [] }
+    let modelSwitched = false
     try {
       let pre = await this.preflight()
       sessionId = pre.sessionId
@@ -302,6 +270,7 @@ export class ModelEffortControl {
         this.checkTime(opts.deadlineAtMs)
         const step = await this.change('set_model', model, pre, opts.deadlineAtMs)
         applied = step.ok && step.applied
+        modelSwitched = applied
         // Every check again before the effort: the model step took time.
         pre = await this.preflight()
         if (pre.sessionId !== sessionId) throw new Refusal('session_changed')
@@ -318,7 +287,7 @@ export class ModelEffortControl {
     } catch (err) {
       if (!(err instanceof Refusal)) throw err
       this.deps.log(`model control: apply ${model} ${effort} ${err.code}`)
-      return { ok: false, op: 'apply', code: err.code, message: err.message, report: this.report(catalog, sessionId) }
+      return { ok: false, op: 'apply', code: err.code, message: err.message, report: this.report(catalog, sessionId), modelSwitched }
     } finally {
       this.release()
     }
@@ -478,7 +447,9 @@ export class ModelEffortControl {
 
   /**
    * Between the literal and the Enter: the composer must hold exactly the
-   * literal. Otherwise no Enter. The literal is cleared only when the composer
+   * literal, and the agent must still be idle with no dialog and no other
+   * injection (review M2 of round 3: a card delivered in that gap opens a
+   * turn the composer read alone cannot see). Otherwise no Enter. The literal is cleared only when the composer
    * ends with it AND a fresh read, right before the keys, shows the cursor
    * right after it at the composer's end (cursorFollows): a BSpace deletes
    * before the cursor, so an arrow key the owner pressed would turn them on the
@@ -494,24 +465,33 @@ export class ModelEffortControl {
     } catch {
       text = null
     }
-    if (text === literal) return
-    let where = ' The agent\'s screen no longer shows its message box; check the terminal.'
-    if (text !== null) {
-      where = ' It is still in the agent\'s message box; check the terminal.'
-      if (text.endsWith(literal)) {
-        try {
-          const now = await this.deps.exec(buildPaneCaptureArgs(pane))
-          if (composerText(now) === text && cursorFollows(now, literal)) {
-            await this.deps.exec(buildClearTypedArgs(pane, literal))
-            const left = composerText(await this.deps.exec(buildPaneCaptureArgs(pane)))
-            if (left === text.slice(0, -literal.length).replace(/\s+$/u, '')) where = ' What was typed was cleared.'
-          }
-        } catch {
-          // The message box is unknown now: said as is.
+    if (text === literal) {
+      const late = this.checkIdle()
+      if (!late) return
+      throw new Refusal(late.code, `${late.message}${await this.clearTyped(pane, literal, text)}`)
+    }
+    throw new Refusal('composer_changed', `${REFUSAL_MESSAGES.composer_changed}${await this.clearTyped(pane, literal, text)}`)
+  }
+
+  /** Clears the literal only where checkTyped's rule allows, and says where it was left. */
+  private async clearTyped(pane: TmuxTarget, literal: string, text: string | null): Promise<string> {
+    if (text === null) return ' The agent\'s screen no longer shows its message box; check the terminal.'
+    let where = ' It is still in the agent\'s message box; check the terminal.'
+    if (text.endsWith(literal)) {
+      try {
+        const now = await this.deps.exec(buildPaneCaptureArgs(pane))
+        if (composerText(now) === text && cursorFollows(now, literal)) {
+          await this.deps.exec(buildClearTypedArgs(pane, literal))
+          const after = await this.deps.exec(buildPaneCaptureArgs(pane))
+          const expected = text.slice(0, -literal.length).replace(/\s+$/u, '')
+          // Cleared to nothing, the box draws its placeholder again.
+          if (expected === '' ? readComposer(after) === 'empty' : composerText(after) === expected) where = ' What was typed was cleared.'
         }
+      } catch {
+        // The message box is unknown now: said as is.
       }
     }
-    throw new Refusal('composer_changed', `${REFUSAL_MESSAGES.composer_changed}${where}`)
+    return where
   }
 
   /**
@@ -552,5 +532,31 @@ export class ModelEffortControl {
   private refused(op: ControlOp | null, r: Refusal, report: ModelEffortReport | null): ControlOutcome {
     this.deps.log(`model control: ${op ?? 'unknown op'} refused ${r.code}`)
     return { ok: false, op, code: r.code, message: r.message, report }
+  }
+}
+
+/** The MCP method of every card that can open a turn of the agent. */
+export const CHANNEL_CARD_METHOD = 'notifications/claude/channel'
+
+/**
+ * The control lock over EVERY card that can open a turn (review M2 of round
+ * 3): deliverInbound waited for it, but a voice consult, a voice dispatch, a
+ * meeting card, a mission notice, a button click or a nudge reached the CLI
+ * through mcp.notification directly, and a turn opened between the typed
+ * literal and the Enter. server.ts wraps mcp.notification with this once, so
+ * a channel card waits until no change is in flight, and is then sent as it
+ * is: the same object, its meta untouched (the wake card contract). Other
+ * methods (a permission answer) are never held.
+ */
+export function holdChannelCardsWhileBusy<N extends { method: string }, R>(
+  lock: { readonly busy: boolean; whenIdle(): Promise<void> },
+  send: (notification: N) => Promise<R>,
+): (notification: N) => Promise<R> {
+  return async (notification) => {
+    if (notification.method === CHANNEL_CARD_METHOD) {
+      // A second change may take the lock before this card's turn comes.
+      while (lock.busy) await lock.whenIdle()
+    }
+    return send(notification)
   }
 }

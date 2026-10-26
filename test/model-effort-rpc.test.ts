@@ -102,11 +102,11 @@ test('list while not opted in, or with nothing to report, is refused, never an e
   assert.deepEqual(noSession.ok ? null : noSession.code, 'failed')
 })
 
-test('apply hands the control exactly the selection, under a deadline inside BGOS\'s 20 s', async () => {
+test('apply hands the control exactly the selection, under a deadline from the frame\'s arrival inside BGOS\'s 20 s', async () => {
   const r = rig()
-  const out = await r.handler.answer(APPLY)
-  assert.deepEqual(r.applies, [{ selection: { sessionId: SID, model: 'sonnet', effort: 'xhigh' }, deadlineAtMs: NOW + APPLY_BUDGET_MS }])
-  assert.ok(APPLY_BUDGET_MS <= 17_000, 'BGOS waits 20 000 ms (assistant-sessions.service.ts:134); the answer must beat it')
+  const out = await r.handler.answer({ ...APPLY, receivedAtMs: NOW - 2_000 })
+  assert.deepEqual(r.applies, [{ selection: { sessionId: SID, model: 'sonnet', effort: 'xhigh' }, deadlineAtMs: NOW - 2_000 + APPLY_BUDGET_MS }])
+  assert.ok(APPLY_BUDGET_MS <= 15_000, 'BGOS waits 20 000 ms from its emit (assistant-sessions.service.ts:134); the socket hop and the result POST need room')
   assert.deepEqual(out, { ok: true, payload: { current: { model: 'sonnet', effort: 'xhigh' }, sessionId: SID } })
 })
 
@@ -187,6 +187,16 @@ test('a malformed selection is refused without reaching the control', async () =
 })
 
 test('a frame for another agent is not this daemon\'s to answer', () => {
+  const unnamed = new ModelEffortPickerHandler({
+    assistantId: () => '',
+    chatAllowed: () => true,
+    control: { snapshot: async () => SNAPSHOT, apply: async () => { throw new Error('never') } },
+    reportSettings: async () => {},
+    sendNote: async () => {},
+    log: () => {},
+    now: () => NOW,
+  })
+  assert.equal(unnamed.mine({ assistantId: '' }), false, 'a daemon with no agent id answers nothing')
   const r = rig()
   assert.equal(r.handler.mine({ ...APPLY, assistantId: '42' }), true)
   assert.equal(r.handler.mine({ ...APPLY, assistantId: 42 }), true)
@@ -220,4 +230,45 @@ test('the session settings body follows the BGOS route\'s own patterns, and an i
   assert.equal(sessionSettingsBody({ ...REPORT, model: 'claude-opus-5-5[1m]' }, 0), null)
   assert.equal(sessionSettingsBody({ ...REPORT, effort: null }, 0)!.effort, null)
   assert.equal(sessionSettingsBody(null, 0), null)
+})
+
+// Round 3 review M1: the result is posted at once; the pill and the note are
+// sent, never awaited, so a slow PATCH cannot push the answer past BGOS's 20 s.
+test('the answer never waits on the session settings report or the switched note', async () => {
+  const never = () => new Promise<never>(() => {})
+  const reports: string[] = []
+  const notes: string[] = []
+  const handler = new ModelEffortPickerHandler({
+    assistantId: () => '42',
+    chatAllowed: () => true,
+    control: { snapshot: async () => SNAPSHOT, apply: async () => ({ ok: true, op: 'apply', applied: true, report: REPORT }) },
+    reportSettings: (chatId) => { reports.push(chatId); return never() },
+    sendNote: (_chatId, text) => { notes.push(text); return never() },
+    log: () => {},
+    now: () => NOW,
+  })
+  const out = await handler.answer(APPLY)
+  assert.equal(out.ok, true)
+  assert.deepEqual(reports, ['9'], 'still sent')
+  assert.equal(notes.length, 1, 'still sent')
+})
+
+// Round 3 review L1: a model confirmed before the effort step was refused is
+// said, in the chat and in the answer, never answered "not allowed".
+test('a model switched before the effort was refused is noted and answered failed', async () => {
+  const r = rig({ outcome: { ok: false, op: 'apply', code: 'effort_unsupported', message: 'The model this agent runs reports no effort setting.', report: { ...REPORT, effort: null }, modelSwitched: true } })
+  const out = await r.handler.answer(APPLY)
+  assert.equal(out.ok, false)
+  if (out.ok) return
+  assert.equal(out.code, 'failed')
+  assert.match(out.message, /switched to Sonnet, but the effort was not changed/)
+  assert.deepEqual(r.notes, [{ chatId: '9', text: 'Switched to Sonnet. The effort was not changed: The model this agent runs reports no effort setting.' }])
+  assert.equal(r.reports.length, 1, 'the pill shows the new model')
+})
+
+test('a refusal with nothing switched sends no note', async () => {
+  const r = rig({ outcome: { ok: false, op: 'apply', code: 'effort_unsupported', message: 'x', report: REPORT, modelSwitched: false } })
+  const out = await r.handler.answer(APPLY)
+  if (!out.ok) assert.equal(out.code, 'not_allowed')
+  assert.equal(r.notes.length, 0)
 })

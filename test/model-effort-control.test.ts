@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url'
 
 import type { TmuxTarget } from '../lib/compact-inject.ts'
 import { ModelEffortControl, type ControlDeps } from '../lib/model-effort-control.ts'
+import { pickerModelOf } from '../lib/model-effort-catalog.ts'
 import type { ModelObservation } from '../lib/model-control-store.mjs'
 
 const HELP = readFileSync(
@@ -229,6 +230,21 @@ function rig(over: Partial<ControlDeps> = {}) {
   return { control, pane, state, clock, logs }
 }
 
+
+/**
+ * One step through the production path, `apply`: a model step keeps the
+ * running effort, an effort step keeps the running model. (The single step
+ * `handle` this file once drove is gone; round 3 review L2.)
+ */
+async function step(control: ModelEffortControl, op: 'set_model' | 'set_effort', value: unknown) {
+  const snap = await control.snapshot()
+  const o = snap.observation
+  const selection = op === 'set_model'
+    ? { sessionId: snap.sessionId ?? SID, model: value, effort: o?.effort ?? 'high' }
+    : { sessionId: snap.sessionId ?? SID, model: (o && pickerModelOf(o.modelId)) ?? 'opus', effort: value }
+  return control.apply(selection, { deadlineAtMs: Number.POSITIVE_INFINITY })
+}
+
 function typed(pane: FakePane): string[] {
   return pane.sendKeys.map((argv) => argv.at(-1)!)
 }
@@ -242,7 +258,7 @@ function assertNoEscape(pane: FakePane): void {
 
 test('set_model types the fixed literal, confirms from a NEWER observation and reports the applied model', async () => {
   const { control, pane } = rig()
-  const out = await control.handle({ op: 'set_model', value: 'sonnet' })
+  const out = await step(control, 'set_model', 'sonnet')
   assert.equal(out.ok, true, JSON.stringify(out))
   if (!out.ok) return
   assert.equal(out.applied, true)
@@ -256,7 +272,7 @@ test('set_model types the fixed literal, confirms from a NEWER observation and r
 
 test('set_effort types the fixed literal and confirms the live effort', async () => {
   const { control, pane } = rig()
-  const out = await control.handle({ op: 'set_effort', value: 'xhigh' })
+  const out = await step(control, 'set_effort', 'xhigh')
   assert.equal(out.ok, true, JSON.stringify(out))
   if (!out.ok) return
   assert.deepEqual(typed(pane), ['/effort xhigh', 'Enter'])
@@ -266,7 +282,7 @@ test('set_effort types the fixed literal and confirms the live effort', async ()
 
 test('a request for what already runs types nothing and reports it', async () => {
   const { control, pane } = rig()
-  const out = await control.handle({ op: 'set_model', value: 'opus' })
+  const out = await step(control, 'set_model', 'opus')
   assert.equal(out.ok, true)
   if (out.ok) assert.equal(out.applied, false)
   assert.equal(pane.sendKeys.length, 0)
@@ -299,7 +315,7 @@ async function refused(
 ) {
   const r = rig()
   setup(r)
-  const out = await r.control.handle(request)
+  const out = await step(r.control, request.op as 'set_model' | 'set_effort', request.value)
   assert.equal(out.ok, false, `${code}: ${JSON.stringify(out)}`)
   if (out.ok) return r
   assert.equal(out.code, code)
@@ -315,12 +331,6 @@ test('no owner opt in: refused before the terminal is even looked at', async () 
   assert.equal(r.state.ancestryCalls, 0)
 })
 
-test('an op outside the two typed operations is refused', async () => {
-  for (const op of ['set_permissions', 'slash_command', 'type', 'SET_MODEL', '', null, 7]) {
-    await refused(() => {}, { op, value: 'sonnet' }, 'unsupported_op')
-  }
-})
-
 test('every value outside the frozen tables is refused, injection attempts included', async () => {
   for (const value of ['Sonnet', 'sonnet ', 'sonnet\n', '/model sonnet', 'sonnet; /effort max', 'claude-sonnet-5-5', '__proto__', 'toString', '', null, 1, ['sonnet']]) {
     await refused(() => {}, { op: 'set_model', value }, 'unsupported_value')
@@ -332,7 +342,7 @@ test('every value outside the frozen tables is refused, injection attempts inclu
 
 test('Ultra Code is refused with the proposal\'s own sentence', async () => {
   const r = rig()
-  const out = await r.control.handle({ op: 'set_effort', value: 'ultracode' })
+  const out = await step(r.control, 'set_effort', 'ultracode')
   assert.equal(out.ok, false)
   if (out.ok) return
   assert.equal(out.code, 'ultracode_unconfirmable')
@@ -350,7 +360,7 @@ test('no terminal, no bound session, no status source, a stale status source', a
 test('a family the installed CLI does not name is not offered', async () => {
   await refused(() => {}, { op: 'set_model', value: 'haiku' }, 'not_in_catalog')
   const r = rig({ helpText: async () => null })
-  const out = await r.control.handle({ op: 'set_model', value: 'sonnet' })
+  const out = await step(r.control, 'set_model', 'sonnet')
   assert.equal(out.ok, false)
   if (!out.ok) assert.equal(out.code, 'not_in_catalog')
 })
@@ -388,7 +398,7 @@ test('a screen with no recognisable composer is refused', async () => {
   const r = rig({
     exec: async (argv) => (argv.includes('capture-pane') ? 'Do you want to proceed?\n❯ 1. Yes\n  2. No' : r.pane.exec(argv)),
   })
-  const out = await r.control.handle({ op: 'set_model', value: 'sonnet' })
+  const out = await step(r.control, 'set_model', 'sonnet')
   assert.equal(out.ok, false)
   if (!out.ok) assert.equal(out.code, 'composer_unknown')
   assert.equal(r.pane.sendKeys.length, 0)
@@ -406,7 +416,7 @@ test('a turn that starts while the pane is being checked stops the typing', asyn
       ]
     },
   }, { confirmTimeoutMs: 10_000, pollMs: 250, staleMs: 15_000 })
-  const out = await r.control.handle({ op: 'set_model', value: 'sonnet' })
+  const out = await step(r.control, 'set_model', 'sonnet')
   assert.equal(out.ok, false)
   if (!out.ok) assert.equal(out.code, 'busy_turn')
   assert.equal(r.pane.sendKeys.length, 0)
@@ -415,7 +425,7 @@ test('a turn that starts while the pane is being checked stops the typing', asyn
 test('FALSE SUCCESS: echoed input is not confirmation; the literal left in the composer is said', async () => {
   const r = rig()
   r.pane.submits = false
-  const out = await r.control.handle({ op: 'set_model', value: 'sonnet' })
+  const out = await step(r.control, 'set_model', 'sonnet')
   assert.equal(out.ok, false)
   if (out.ok) return
   assert.equal(out.code, 'not_confirmed')
@@ -428,7 +438,7 @@ test('FALSE SUCCESS: status ticks that advance without the change do not confirm
   const r = rig()
   r.pane.applies = false
   r.pane.staleTicks = 0
-  const out = await r.control.handle({ op: 'set_effort', value: 'max' })
+  const out = await step(r.control, 'set_effort', 'max')
   assert.equal(out.ok, false)
   if (out.ok) return
   assert.equal(out.code, 'not_confirmed')
@@ -439,7 +449,7 @@ test('FALSE SUCCESS: status ticks that advance without the change do not confirm
 test('a slow status line still confirms within the window', async () => {
   const r = rig()
   r.pane.staleTicks = 5
-  const out = await r.control.handle({ op: 'set_model', value: 'fable' })
+  const out = await step(r.control, 'set_model', 'fable')
   assert.equal(out.ok, true, JSON.stringify(out))
 })
 
@@ -451,7 +461,7 @@ test('a session that changes during confirmation is reported, never claimed', as
     sessionId: () => (reads++ > 3 ? 'a-new-session' : SID),
   }, { confirmTimeoutMs: 10_000, pollMs: 250, staleMs: 15_000 })
   r.pane.staleTicks = 50
-  const out = await r.control.handle({ op: 'set_model', value: 'sonnet' })
+  const out = await step(r.control, 'set_model', 'sonnet')
   assert.equal(out.ok, false)
   if (!out.ok) assert.equal(out.code, 'session_changed')
 })
@@ -459,7 +469,7 @@ test('a session that changes during confirmation is reported, never claimed', as
 test('a failed keystroke is reported once and never retried into an uncertain terminal', async () => {
   const r = rig()
   r.pane.failSendKeys = true
-  const out = await r.control.handle({ op: 'set_model', value: 'sonnet' })
+  const out = await step(r.control, 'set_model', 'sonnet')
   assert.equal(out.ok, false)
   if (!out.ok) assert.equal(out.code, 'inject_failed')
   assert.equal(r.pane.sendKeys.length, 1)
@@ -469,9 +479,9 @@ test('a failed keystroke is reported once and never retried into an uncertain te
 test('the control lock is exclusive: a second request while one is in flight is refused', async () => {
   const r = rig()
   r.pane.staleTicks = 3
-  const first = r.control.handle({ op: 'set_model', value: 'sonnet' })
+  const first = r.control.apply({ sessionId: SID, model: 'sonnet', effort: 'high' }, { deadlineAtMs: Number.POSITIVE_INFINITY })
   assert.equal(r.control.busy, true, 'held from the first await')
-  const second = await r.control.handle({ op: 'set_effort', value: 'max' })
+  const second = await step(r.control, 'set_effort', 'max')
   assert.equal(second.ok, false)
   if (!second.ok) assert.equal(second.code, 'control_busy')
   const done = await first
@@ -482,7 +492,7 @@ test('the control lock is exclusive: a second request while one is in flight is 
 test('the outcome logs carry the code, never the screen', async () => {
   const r = rig()
   r.pane.composer = 'my secret draft'
-  await r.control.handle({ op: 'set_model', value: 'sonnet' })
+  await step(r.control, 'set_model', 'sonnet')
   assert.ok(r.logs.some((l) => l.includes('composer_not_empty')))
   assert.ok(!r.logs.some((l) => l.includes('my secret draft')))
 })
@@ -499,7 +509,7 @@ test('M2: a session name target is proven once, then every read and key goes to 
   r.pane.after = (what) => {
     if (what === 'capture-pane') r.pane.activePane = '%9'
   }
-  const out = await r.control.handle({ op: 'set_model', value: 'sonnet' })
+  const out = await step(r.control, 'set_model', 'sonnet')
   assert.deepEqual(r.pane.otherPaneKeys, [], 'keys typed into a pane that was never proven')
   assert.equal(out.ok, true, JSON.stringify(out))
   assert.deepEqual(typed(r.pane), ['/model sonnet', 'Enter'])
@@ -515,7 +525,7 @@ test('M2: the window switching before the screen read reads and types the proven
   r.pane.after = (what) => {
     if (what === 'display-message') r.pane.activePane = '%9'
   }
-  const out = await r.control.handle({ op: 'set_model', value: 'sonnet' })
+  const out = await step(r.control, 'set_model', 'sonnet')
   assert.deepEqual(r.pane.otherPaneKeys, [])
   assert.equal(out.ok, true, JSON.stringify(out))
 })
@@ -527,7 +537,7 @@ test('M2: the window switching before the screen read reads and types the proven
 // that is certain) and the request refused, with no Enter.
 test('L5: the composer is read again between the literal and the Enter', async () => {
   const r = rig()
-  const out = await r.control.handle({ op: 'set_model', value: 'sonnet' })
+  const out = await step(r.control, 'set_model', 'sonnet')
   assert.equal(out.ok, true, JSON.stringify(out))
   const at = r.pane.calls.findIndex((c) => c.verb === 'send-keys')
   const order = r.pane.calls.slice(at).map((c) => c.verb)
@@ -539,7 +549,7 @@ test('L5: an owner key that lands before the literal is cleared off it, never su
   r.pane.after = (what) => {
     if (what === 'literal') r.pane.composer = 'q' + r.pane.composer
   }
-  const out = await r.control.handle({ op: 'set_model', value: 'sonnet' })
+  const out = await step(r.control, 'set_model', 'sonnet')
   assert.equal(out.ok, false, JSON.stringify(out))
   if (out.ok) return
   assert.equal(out.code, 'composer_changed')
@@ -554,7 +564,7 @@ test('L5: an owner key that lands after the literal is left as it is, never subm
   r.pane.after = (what) => {
     if (what === 'literal') r.pane.composer += 'k'
   }
-  const out = await r.control.handle({ op: 'set_model', value: 'sonnet' })
+  const out = await step(r.control, 'set_model', 'sonnet')
   assert.equal(out.ok, false, JSON.stringify(out))
   if (out.ok) return
   assert.equal(out.code, 'composer_changed')
@@ -568,7 +578,7 @@ test('L5: a dialog that opens in the gap gets no Enter and no other key', async 
   r.pane.after = (what) => {
     if (what === 'literal') r.pane.dialog = true
   }
-  const out = await r.control.handle({ op: 'set_effort', value: 'max' })
+  const out = await step(r.control, 'set_effort', 'max')
   assert.equal(out.ok, false, JSON.stringify(out))
   if (out.ok) return
   assert.equal(out.code, 'composer_changed')
@@ -590,7 +600,7 @@ test('L1: an arrow key in the gap: nothing of the owner\'s is deleted, no BSpace
     r.pane.composer = 'q' + r.pane.composer
     r.pane.cursor = r.pane.composer.length - 2
   }
-  const out = await r.control.handle({ op: 'set_model', value: 'sonnet' })
+  const out = await step(r.control, 'set_model', 'sonnet')
   assert.equal(out.ok, false, JSON.stringify(out))
   if (out.ok) return
   assert.equal(out.code, 'composer_changed')
@@ -607,7 +617,7 @@ test('L1: the cursor moved to the start: nothing is deleted', async () => {
     r.pane.composer = 'q' + r.pane.composer
     r.pane.cursor = 1
   }
-  const out = await r.control.handle({ op: 'set_effort', value: 'max' })
+  const out = await step(r.control, 'set_effort', 'max')
   assert.equal(out.ok, false, JSON.stringify(out))
   assert.equal(r.pane.composer, 'q/effort max')
   assert.deepEqual(typed(r.pane), ['/effort max'])
@@ -622,7 +632,7 @@ test('L1: the cursor moved between the check and the clear is caught by a fresh 
     // the owner presses Left right after it.
     if (what === 'capture-pane' && ++reads === 2) r.pane.cursor = r.pane.composer.length - 1
   }
-  const out = await r.control.handle({ op: 'set_model', value: 'sonnet' })
+  const out = await step(r.control, 'set_model', 'sonnet')
   assert.equal(out.ok, false, JSON.stringify(out))
   assert.equal(r.pane.composer, 'q/model sonnet')
   assert.deepEqual(typed(r.pane), ['/model sonnet'])
@@ -678,6 +688,7 @@ test('apply for a session the picker read before a restart is refused: open the 
   const out = await control.apply({ ...SELECT, sessionId: 'ffffffff-bbbb-4ccc-8ddd-eeeeeeeeeeee' }, { deadlineAtMs: clock.now + 15_000 })
   assert.equal(out.ok, false)
   if (!out.ok) assert.equal(out.code, 'session_mismatch')
+  if (!out.ok) assert.equal(out.modelSwitched, false)
   assert.equal(pane.sendKeys.length, 0)
   assert.equal(pane.calls.length, 0)
 })
@@ -720,6 +731,7 @@ test('apply checks every precondition again before the effort step: a turn that 
   assert.equal(out.ok, false)
   if (out.ok) return
   assert.equal(out.code, 'busy_turn')
+  assert.equal(out.modelSwitched, true, 'the answer knows the model did change')
   assert.deepEqual(typed(pane), ['/model sonnet', 'Enter'], 'no effort typed into a live turn')
   assert.equal(out.report?.model, 'claude-sonnet-5-5', 'the answer carries what really runs now')
 })
@@ -772,4 +784,26 @@ test('apply is refused while another change holds the lock, and while compact or
   assert.equal(second.ok, false)
   if (!second.ok) assert.equal(second.code, 'control_busy')
   assert.equal((await first).ok, true)
+})
+
+// Round 3 review M2: a card delivered between the typed literal and the Enter
+// opens a turn the composer read alone cannot see. The turn, the dialog and
+// the other injections are checked again right before the Enter.
+test('a turn that starts between the literal and the Enter gets no Enter, and the literal is cleared', async () => {
+  for (const [code, open] of [
+    ['busy_turn', (r: ReturnType<typeof rig>) => { r.state.turn = 'live' }],
+    ['dialog_open', (r: ReturnType<typeof rig>) => { r.state.dialogOpen = true }],
+    ['control_busy', (r: ReturnType<typeof rig>) => { r.state.otherBusy = true }],
+  ] as const) {
+    const r = rig()
+    r.pane.after = (what) => { if (what === 'literal') open(r) }
+    const out = await step(r.control, 'set_model', 'sonnet')
+    assert.equal(out.ok, false, code)
+    if (out.ok) continue
+    assert.equal(out.code, code)
+    assert.ok(!typed(r.pane).includes('Enter'), `${code}: never an Enter into a turn`)
+    assert.equal(r.pane.composer, '', `${code}: the literal it typed is cleared`)
+    assert.match(out.message, /What was typed was cleared\./)
+    assert.equal(r.control.busy, false)
+  }
 })

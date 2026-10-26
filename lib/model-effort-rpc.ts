@@ -32,10 +32,12 @@
  *  3. A list types nothing. It is refused while the owner has not opted in on
  *     this machine, and when there is nothing honest to offer.
  *  4. An apply is a typed selection of three strings, handed to the control
- *     as is, under a deadline that beats BGOS's 20 s wait. The confirmed
- *     state, or the true state after a refusal, is reported on the session
- *     settings rail for the pill, and a confirmed switch is noted in the chat
- *     (the canon's "post a switched-to note").
+ *     as is, under a deadline counted from the frame's arrival that beats
+ *     BGOS's 20 s wait. The confirmed state, or the true state after a
+ *     refusal, is reported on the session settings rail for the pill, and a
+ *     confirmed switch (or a model switched before the effort was refused) is
+ *     noted in the chat (the canon's "post a switched-to note"); neither holds
+ *     the answer back.
  *  5. Always an answer: a throw is answered failed.
  */
 
@@ -65,11 +67,12 @@ export function isModelEffortOp(op: unknown): op is ModelEffortOp {
 }
 
 /**
- * The whole apply answer's budget. BGOS waits 20 000 ms
- * (assistant-sessions.service.ts modelEffort), and a result that lands after
- * its timeout is dropped, so the daemon stops well inside it.
+ * The whole apply answer's budget, counted from the frame's ARRIVAL. BGOS
+ * waits 20 000 ms from its emit (assistant-sessions.service.ts modelEffort)
+ * and drops a result that lands later, so the daemon stops well inside it,
+ * leaving room for the socket hop and the result POST (review M1 of round 3).
  */
-export const APPLY_BUDGET_MS = 17_000
+export const APPLY_BUDGET_MS = 15_000
 
 /** The codes the app maps (modelEffortQuery.ts pickerError), and failed for the rest. */
 export const PICKER_REFUSAL_CODES = Object.freeze(['busy', 'not_allowed', 'failed'] as const)
@@ -166,6 +169,8 @@ export interface PickerFrame {
   assistantId: unknown
   chatId: unknown
   payload: Record<string, unknown>
+  /** When the frame reached this daemon (lib/voice-rpc.ts), the apply deadline's start. */
+  receivedAtMs?: number
 }
 
 export interface ModelEffortPickerDeps {
@@ -203,7 +208,7 @@ export class ModelEffortPickerHandler {
         return refuse('not_owner_main_chat', 'The model and effort are changed by the agent\'s owner, from the agent\'s main chat only.')
       }
       if (frame.op === LIST_MODEL_EFFORT) return await this.list()
-      if (frame.op === APPLY_MODEL_EFFORT) return await this.apply(chatId, frame.payload)
+      if (frame.op === APPLY_MODEL_EFFORT) return await this.apply(chatId, frame.payload, frame.receivedAtMs ?? this.deps.now())
       return refuse('unsupported_op', 'Only the model or the effort of this agent\'s session can be changed.')
     } catch (err) {
       this.deps.log(`model effort picker: ${rpcLogOp(frame.op)} failed (${err instanceof Error ? err.name : 'error'})`)
@@ -225,7 +230,7 @@ export class ModelEffortPickerHandler {
     return { ok: true, payload: { ...catalog } }
   }
 
-  private async apply(chatId: string, payload: Record<string, unknown>): Promise<PickerAnswer> {
+  private async apply(chatId: string, payload: Record<string, unknown>, receivedAtMs: number): Promise<PickerAnswer> {
     const { sessionId, model, effort } = payload
     if (
       typeof sessionId !== 'string' || sessionId === '' || sessionId.length > SELECTION_SESSION_MAX ||
@@ -233,26 +238,37 @@ export class ModelEffortPickerHandler {
     ) {
       return refuse('unsupported_value', 'Choose a model and effort from this session\'s picker.')
     }
-    const outcome = await this.deps.control.apply({ sessionId, model, effort }, { deadlineAtMs: this.deps.now() + APPLY_BUDGET_MS })
+    const outcome = await this.deps.control.apply({ sessionId, model, effort }, { deadlineAtMs: receivedAtMs + APPLY_BUDGET_MS })
+    // The pill and the note never hold the answer back: they are sent, not
+    // awaited, and the result is posted at once (review M1 of round 3).
     const settings = sessionSettingsBody(outcome.report, this.deps.now())
     if (settings) {
-      await this.deps.reportSettings(chatId, settings).catch((err) => {
+      void this.deps.reportSettings(chatId, settings).catch((err) => {
         this.deps.log(`model effort picker: session settings report failed (${err instanceof Error ? err.name : 'error'})`)
       })
     }
-    if (!outcome.ok) return refuse(outcome.code, outcome.message)
+    const name = isModelFamily(model) ? familyLabel(model) : model
+    if (!outcome.ok) {
+      if (!outcome.modelSwitched) return refuse(outcome.code, outcome.message)
+      // The model DID change before the effort step was refused: said in the
+      // chat and answered failed ("could not be confirmed, open the picker
+      // again"), never not_allowed, which would read as nothing happened.
+      this.note(chatId, `Switched to ${name}. The effort was not changed: ${outcome.message}`)
+      return { ok: false, code: 'failed', message: `The model was switched to ${name}, but the effort was not changed. ${outcome.message}` }
+    }
     // The answer is the session's own report, never the selection echoed.
     const current = { model: pickerModelOf(outcome.report.model), effort: outcome.report.effort }
     if (current.model !== model || current.effort !== effort) {
       return refuse('not_confirmed', 'The command was typed but the session did not report the change in time.')
     }
-    if (outcome.applied) {
-      const name = isModelFamily(model) ? familyLabel(model) : model
-      await this.deps.sendNote(chatId, `Switched to ${name}, effort ${effortLabel(effort)}.`).catch((err) => {
-        // A failed note cannot undo a confirmed switch.
-        this.deps.log(`model effort picker: switched note failed (${err instanceof Error ? err.name : 'error'})`)
-      })
-    }
+    if (outcome.applied) this.note(chatId, `Switched to ${name}, effort ${effortLabel(effort)}.`)
     return { ok: true, payload: { current: { model: current.model, effort: current.effort }, sessionId } }
+  }
+
+  /** A chat note, sent and not awaited: a failed note cannot undo a confirmed switch. */
+  private note(chatId: string, text: string): void {
+    void this.deps.sendNote(chatId, text).catch((err) => {
+      this.deps.log(`model effort picker: switched note failed (${err instanceof Error ? err.name : 'error'})`)
+    })
   }
 }
