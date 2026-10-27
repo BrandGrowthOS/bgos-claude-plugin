@@ -863,7 +863,7 @@ test('fourth fresh review of the recheck, Minor 1: a blocking wait holds its car
 })
 
 /** The lease follow-up of #282: the retire's record for a live asker, read through the instance. */
-type RetiredOwn = { takeRetiredOwn?: () => Array<{ ask: PendingAsk; withdrawn: number }>; retire?: (askId: string, opts: { withdrawn: number }) => PendingAsk | null }
+type RetiredOwn = { takeRetiredOwn?: () => Array<{ ask: PendingAsk; withdrawn: number }>; retire?: (askId: string, opts: { withdrawn: number; tellAsker?: boolean }) => PendingAsk | null }
 
 function withAskFile(fn: (filePath: string) => Promise<void>): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), 'askcard-lease-'))
@@ -894,6 +894,27 @@ test('lease follow-up, item 2: the retire of a live asker\'s card leaves it on f
     )
   }))
 
+test('lease follow-up review, Important 2: a card in a share recipient\'s chat is retired, but kept for nobody: the asker\'s stale lane state never decides', () =>
+  withAskFile(async (filePath) => {
+    const r = rig({ live: [2018], filePath })
+    const asker = { pid: 2018, startedAt: START - 60 * MIN }
+    r.foreignGroup('recipients', [795, 796], asker, START - MIN)
+    r.answer(795)
+    // Lanes are on and the chat is a share recipient's: the connected daemon tells no owner session.
+    r.known.ownerAnnounceRefused = () => true
+    for (let i = 0; i < 3; i++) {
+      await r.retireOrphanedAsks?.('timer')
+      r.advance(15_000)
+    }
+    await r.retireOrphanedAsks?.('timer')
+    await r.settle()
+    assert.deepEqual(r.patches.map((p) => p.path), ['messages/796'], 'retired as before')
+    assert.equal(r.notes.length, 0, 'this session is not told')
+    const theAsker = new AskTracker({ filePath, now: () => r.now(), ...({ self: asker, isAlive: () => true } as object) })
+    theAsker.refresh()
+    assert.deepEqual((theAsker as unknown as RetiredOwn).takeRetiredOwn?.() ?? 'missing', [], 'nor is the asker, whatever lanes it last saw')
+  }))
+
 test('lease follow-up, item 2: the asker\'s own daemon, passive, tells its session once on its tick that its card was retired', () =>
   withAskFile(async (filePath) => {
     const r = rig({ filePath })
@@ -908,7 +929,7 @@ test('lease follow-up, item 2: the asker\'s own daemon, passive, tells its sessi
     holder.refresh()
     holder.record(r.tracker.pending()[0].questions[0].messageId, { skipped: true })
     holder.beginWithdraw(askId)
-    assert.notEqual((holder as unknown as RetiredOwn).retire?.(askId, { withdrawn: 1 }) ?? 'missing', 'missing')
+    assert.notEqual((holder as unknown as RetiredOwn).retire?.(askId, { withdrawn: 1, tellAsker: true }) ?? 'missing', 'missing')
     for (let i = 0; i < 3; i++) {
       r.advance(5_000)
       r.heartbeatAskTracker()

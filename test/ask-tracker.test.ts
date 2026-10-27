@@ -1205,7 +1205,7 @@ test('third fresh review of the recheck, Minor 2: after a sleep the connected da
  * instance so each case fails on its own before it exists.
  */
 type LeaseFollowUp = {
-  retire?: (askId: string, opts: { withdrawn: number }) => PendingAsk | null
+  retire?: (askId: string, opts: { withdrawn: number; tellAsker?: boolean }) => PendingAsk | null
   takeRetiredOwn?: () => Array<{ ask: PendingAsk; withdrawn: number }>
 }
 const leaseOf = (t: AskTracker) => t as unknown as LeaseFollowUp
@@ -1271,7 +1271,7 @@ test('lease follow-up, item 2: a card retired while its asker still runs is hand
     // B holds the connection: it read one answer, retired the open question and withdraws the group.
     b.record(1421, { skipped: true })
     b.beginWithdraw('g')
-    const retired = leaseOf(b).retire?.('g', { withdrawn: 1 }) ?? 'missing'
+    const retired = leaseOf(b).retire?.('g', { withdrawn: 1, tellAsker: true }) ?? 'missing'
     assert.notEqual(retired, 'missing')
     runUntil(clock, at('10:01:45'), a, b, c)
     const toA = leaseOf(a).takeRetiredOwn?.() ?? 'missing'
@@ -1306,7 +1306,7 @@ test('lease follow-up, item 2: a card whose asker has ended leaves no record whe
     live.splice(live.indexOf(1), 1)
     runUntil(clock, at('10:05:30'), b)
     b.beginWithdraw('ended')
-    assert.notEqual(leaseOf(b).retire?.('ended', { withdrawn: 1 }) ?? 'missing', 'missing')
+    assert.notEqual(leaseOf(b).retire?.('ended', { withdrawn: 1, tellAsker: true }) ?? 'missing', 'missing')
     assert.deepEqual(fileOf(filePath).retired ?? [], [], 'nobody left to tell')
   })
 })
@@ -1350,5 +1350,71 @@ test('lease follow-up, item 3: a clock stepped back a minute never stalls the le
       ages.every((ms) => ms >= 0 && ms <= 15_000 + 5_000),
       `the lease on file stays within a refresh of the clock: ${JSON.stringify(ages)}`,
     )
+  })
+})
+
+test('lease follow-up review, Important 1: a clock stepped back before the post refreshes the lease at its usual rate, never on every tick', () => {
+  sharedFile(({ filePath, clock, live, at }) => {
+    const now = () => clock.at
+    const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
+    a.register(group({ askId: 'g', ids: [1451] }))
+    live.push(1)
+    runUntil(clock, at('10:00:20'), a)
+    // Back a minute: the card now reads as posted 40 s in the future.
+    clock.at = at('09:59:20')
+    const leases = new Set<number>()
+    stepUntil(clock, at('10:00:20'), () => {
+      beat(a)
+      leases.add(fileOf(filePath).pending.find((g) => g.askId === 'g')?.owner?.aliveAt ?? Number.NaN)
+    })
+    // 60 s at one lease every 15 s on the 5 s tick: 4 writes, never one a tick (12).
+    assert.ok(leases.size <= 5, `the asker wrote ${leases.size} leases in 60 s: ${[...leases].map((t) => (t - at('09:59:20')) / 1000)}`)
+  })
+})
+
+test('lease follow-up review, Important 1: after a clock steps back, another daemon takes the asker\'s corrected lease and never writes the future one back', () => {
+  sharedFile(({ filePath, clock, live, at }) => {
+    const now = () => clock.at
+    const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
+    a.register(group({ askId: 'g', ids: [1461] }))
+    live.push(1)
+    const d = trackerAs({ pid: 2, startedAt: at('09:30:00') }, live, { filePath, now })
+    live.push(2)
+    runUntil(clock, at('10:00:05'), a, d)
+    // D asks too, so it saves on its own lease every 15 s.
+    d.register(group({ askId: 'h', ids: [1462] }))
+    runUntil(clock, at('10:00:20'), a, d)
+    clock.at = at('09:59:20')
+    const seenByD: number[] = []
+    const leases = new Set<number>()
+    stepUntil(clock, at('10:00:20'), () => {
+      beat(a)
+      beat(d)
+      seenByD.push(clock.at - ((d.get('g') as PendingAsk | null)?.owner?.aliveAt ?? Number.NaN))
+      leases.add(fileOf(filePath).pending.find((g) => g.askId === 'g')?.owner?.aliveAt ?? Number.NaN)
+    })
+    assert.ok(
+      seenByD.every((ms) => ms >= 0 && ms <= 15_000 + 5_000),
+      `D reads A's lease within a refresh of the clock: ${JSON.stringify(seenByD)}`,
+    )
+    assert.ok(leases.size <= 5, `A's lease was written ${leases.size} times in 60 s`)
+  })
+})
+
+test('lease follow-up review, Important 2: a retire the connected daemon may not tell (a share recipient\'s chat) leaves no record for the asker either', () => {
+  sharedFile(({ filePath, clock, live, at }) => {
+    const now = () => clock.at
+    const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
+    a.register(group({ askId: 'theirs', ids: [1471] }))
+    live.push(1)
+    const b = trackerAs({ pid: 2, startedAt: at('09:30:00') }, live, { filePath, now })
+    live.push(2)
+    runUntil(clock, at('10:01:00'), a, b)
+    b.record(1471, { freeText: 'typed by a share recipient' })
+    b.beginWithdraw('theirs')
+    assert.notEqual(leaseOf(b).retire?.('theirs', { withdrawn: 0, tellAsker: false }) ?? 'missing', 'missing')
+    assert.deepEqual(fileOf(filePath).retired ?? [], [], 'nothing kept for the asker')
+    beat(a)
+    assert.deepEqual(leaseOf(a).takeRetiredOwn?.() ?? [], [])
   })
 })
