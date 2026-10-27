@@ -13,6 +13,7 @@
     "hoai": "./bin/hoai-core.mjs",
     "hoai-agent": "./bin/bgos-agent",
     "hoai-lane": "./bin/hoai-lane.mjs",
+    "hoai-model-control": "./bin/hoai-model-control.mjs",
     "hoai-pair": "./bin/bgos-pair.mjs",
     "bgos-agent": "./bin/bgos-agent",
     "bgos-pair": "./bin/bgos-pair.mjs"

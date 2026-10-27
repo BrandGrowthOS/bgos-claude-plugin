@@ -54,6 +54,12 @@
  *   resume_session, rename_session → a later slice (spec D20): refused with
  *             the contract's `unsupported`, and the list already says so.
  *             A Sessions frame is run once per rpcId, even after it answered.
+ *   list_model_effort, apply_model_effort → the owner's model and effort
+ *             picker (BGOS #3060), answered by lib/model-effort-rpc.ts: the
+ *             catalog, or the confirmed { current, sessionId }, or a refusal
+ *             whose code BGOS passes to the app (busy, not_allowed, failed).
+ *             Run once per rpcId like the Sessions ops (an apply types), and
+ *             another agent's frame gets no ack and no result at all.
  *
  * Deadline discipline (ported from openclaw-channel-bgos/voice-rpc-handler):
  * the daemon's inner cap must stay UNDER the backend's, because the backend
@@ -75,8 +81,9 @@ import {
   type SessionRow,
 } from './session-controls-contract.ts'
 import { voiceConsultActor } from './private-turn.mjs'
+import { isModelEffortOp, rpcLogTag, type ModelEffortOp, type PickerAnswer, type PickerFrame } from './model-effort-rpc.ts'
 
-export type VoiceRpcOp = 'mint' | 'consult' | 'dispatch' | 'stop_turn' | SessionOp
+export type VoiceRpcOp = 'mint' | 'consult' | 'dispatch' | 'stop_turn' | SessionOp | ModelEffortOp
 
 /** True for the three Sessions ops the contract file names. */
 function isSessionOp(op: unknown): op is SessionOp {
@@ -117,7 +124,8 @@ export function normalizeVoiceRpc(raw: unknown): VoiceRpcFrame | null {
     r.op === 'consult' ||
     r.op === 'dispatch' ||
     r.op === 'stop_turn' ||
-    isSessionOp(r.op)
+    isSessionOp(r.op) ||
+    isModelEffortOp(r.op)
       ? r.op
       : null
   if (!rpcId || !op) return null
@@ -403,6 +411,16 @@ export interface VoiceRpcDeps {
     query?: string
     limit: number
   }): { sessions: SessionRow[]; truncated: boolean }
+  /** True while a model or effort change holds every channel card
+   *  (lib/model-effort-control.ts holdChannelCardsWhileBusy): a card sent now
+   *  is queued and goes out when the change ends. */
+  cardsHeld?(): boolean
+  /** The owner's model and effort picker (lib/model-effort-rpc.ts
+   *  ModelEffortPickerHandler). Absent, both ops answer not_allowed. */
+  modelEffort?: {
+    mine(frame: Pick<PickerFrame, 'assistantId'>): boolean
+    answer(frame: PickerFrame): Promise<PickerAnswer>
+  }
   log(msg: string): void
   /** Injectable for tests; defaults to global fetch. */
   fetchImpl?: typeof fetch
@@ -781,13 +799,22 @@ export class VoiceRpcHandler {
 
   async handle(frame: VoiceRpcFrame): Promise<void> {
     if (!frame?.rpcId) return
+    const receivedAtMs = Date.now()
+    // Another agent's picker frame (several daemons can share a pairing
+    // room) is not acked and not answered: the right daemon's result wins.
+    if (
+      isModelEffortOp(frame.op) &&
+      !(this.deps.modelEffort
+        ? this.deps.modelEffort.mine(frame)
+        : String(frame.assistantId) === String(this.deps.config.assistantId))
+    ) return
     if (this.inFlight.has(frame.rpcId)) {
-      this.deps.log(`voice_rpc duplicate frame ignored (rpc=${frame.rpcId})`)
+      this.deps.log(`voice_rpc duplicate frame ignored (rpc=${rpcLogTag(frame.rpcId)})`)
       return
     }
-    if (isSessionOp(frame.op)) {
+    if (isSessionOp(frame.op) || isModelEffortOp(frame.op)) {
       if (this.sessionRpcsSeen.has(frame.rpcId)) {
-        this.deps.log(`voice_rpc duplicate sessions frame ignored (rpc=${frame.rpcId})`)
+        this.deps.log(`voice_rpc duplicate sessions frame ignored (rpc=${rpcLogTag(frame.rpcId)})`)
         return
       }
       this.sessionRpcsSeen.add(frame.rpcId)
@@ -799,13 +826,22 @@ export class VoiceRpcHandler {
     this.inFlight.add(frame.rpcId)
     try {
       // ACK is best-effort: a failed ACK only costs one retry-emit (which
-      // the inFlight guard absorbs); it must not abort the op itself.
+      // the inFlight guard absorbs); it must not abort the op itself. A
+      // picker op does not wait for it: its answer races BGOS's 20 s timer.
       try {
-        await this.deps.postAck(frame.rpcId)
+        const ack = this.deps.postAck(frame.rpcId)
+        if (isModelEffortOp(frame.op)) {
+          void Promise.resolve(ack).catch((err) => {
+            this.deps.log(`voice_rpc ack failed (non-fatal, rpc=${rpcLogTag(frame.rpcId)}): ${err instanceof Error ? err.name : 'error'}`)
+          })
+        } else {
+          await ack
+        }
       } catch (err) {
         this.deps.log(
-          `voice_rpc ack failed (non-fatal, rpc=${frame.rpcId}): ${
-            err instanceof Error ? err.message : String(err)
+          // Not the error's text: a failed request names its path, the id in it.
+          `voice_rpc ack failed (non-fatal, rpc=${rpcLogTag(frame.rpcId)}): ${
+            err instanceof Error ? err.name : 'error'
           }`,
         )
       }
@@ -820,6 +856,19 @@ export class VoiceRpcHandler {
         payload = await this.dispatch(frame)
       } else if (frame.op === LIST_SESSIONS) {
         payload = { ...this.listSessions(frame) }
+      } else if (isModelEffortOp(frame.op)) {
+        if (!this.deps.modelEffort) {
+          throw new VoiceRpcError('not_allowed', 'This agent does not change its model and effort from the app.')
+        }
+        const answer = await this.deps.modelEffort.answer({
+          op: frame.op,
+          assistantId: frame.assistantId,
+          chatId: frame.chatId,
+          payload: frame.payload,
+          receivedAtMs,
+        })
+        if (!answer.ok) throw new VoiceRpcError(answer.code, answer.message)
+        payload = answer.payload
       } else if (isSessionOp(frame.op)) {
         // resume_session and rename_session: a later slice (spec D20). The
         // per agent supervisor reads its pinned session once at start and
@@ -845,7 +894,7 @@ export class VoiceRpcHandler {
       const code =
         err instanceof VoiceRpcError
           ? err.code
-          : isSessionOp(frame.op)
+          : isSessionOp(frame.op) || isModelEffortOp(frame.op)
             ? 'failed'
             : 'PLUGIN_ERROR'
       await this.postResult(frame.rpcId, {
@@ -1027,7 +1076,7 @@ export class VoiceRpcHandler {
     if (!chatId) {
       this.deps.log(
         `stop_turn without a chatId cannot be scoped, answering unsupported ` +
-          `(rpc=${frame.rpcId})`,
+          `(rpc=${rpcLogTag(frame.rpcId)})`,
       )
       return { stopped: false, supported: false }
     }
@@ -1045,7 +1094,7 @@ export class VoiceRpcHandler {
       // The live session is unreachable, so a cooperative stop can never
       // land. Be honest: this daemon cannot cancel right now.
       this.deps.log(
-        `stop_turn delivery failed (rpc=${frame.rpcId}): ${
+        `stop_turn delivery failed (rpc=${rpcLogTag(frame.rpcId)}): ${
           err instanceof Error ? err.message : String(err)
         }`,
       )
@@ -1159,7 +1208,7 @@ export class VoiceRpcHandler {
     })
     if (!parsed.ok) throw new VoiceRpcError('BAD_DISPATCH', parsed.reason)
     const { taskId, question, context } = parsed.task
-    await this.deps.notify(
+    const card = this.deps.notify(
       buildVoiceTaskDispatchText({ taskId, question, context }),
       channelMeta(
         {
@@ -1172,6 +1221,17 @@ export class VoiceRpcHandler {
         { task_id: taskId },
       ),
     )
+    if (this.deps.cardsHeld?.()) {
+      // Queued behind a model or effort change, which sends it when it ends.
+      // BGOS waits 10 s for this accept (voice-task.service.ts
+      // DISPATCH_ACCEPT_TIMEOUT_MS) and a change can hold longer, so a late
+      // answer would read as staged and the task could run twice.
+      void Promise.resolve(card).catch((err) => {
+        this.deps.log(`voice dispatch card failed after the hold: ${err instanceof Error ? err.name : 'error'}`)
+      })
+    } else {
+      await card
+    }
     return { accepted: true, taskId }
   }
 
@@ -1406,8 +1466,8 @@ export class VoiceRpcHandler {
       // Nothing else we can do — the backend's own timeout surfaces the
       // failure to the app.
       this.deps.log(
-        `voice_rpc result post failed (rpc=${rpcId}): ${
-          err instanceof Error ? err.message : String(err)
+        `voice_rpc result post failed (rpc=${rpcLogTag(rpcId)}): ${
+          err instanceof Error ? err.name : 'error'
         }`,
       )
     }

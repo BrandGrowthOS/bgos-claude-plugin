@@ -451,7 +451,8 @@ test('server.ts routes poll, stream and ws delivery through the steer gate', () 
   assert.equal(count(/slashRoute\.kind === 'directive' \|\| slashRoute\.kind === 'steer'/g), 3)
   assert.match(server, /messageId: msg\.message\.id,\n\s*payload: msg\.message,\n\s*sentDate: msg\.message\.sentDate,\n\s*backlog: isBacklog,/)
   assert.match(server, /steer: compactTarget !== null,\n  \}\)/, 'boot catalog advertises steer with the tmux target')
-  assert.match(server, /injectionBusy: \(\) => compactInFlight \|\| goalInjectionsInFlight > 0,/)
+  // The owner model and effort control's lock is part of it (lib/model-effort-control.ts).
+  assert.match(server, /injectionBusy: \(\): boolean => compactInFlight \|\| goalInjectionsInFlight > 0 \|\| modelEffortControl\.busy,/)
   assert.match(server, /dialogOpen: pendingPermissions\.size > 0,/)
   assert.match(
     server,
