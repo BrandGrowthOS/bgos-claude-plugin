@@ -20,7 +20,7 @@ import { EventEmitter } from 'node:events'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises'
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -62,6 +62,7 @@ const followUp = identityLib as unknown as {
   fetchAgentIdentity?: (input: { apiBase: string; token: string; assistantId: string; fetchImpl: typeof fetch; timeoutMs: number }) => Promise<{ name: string; ownerFirstName: string } | null>
   readIdentityNotice?: (text: unknown) => { name: string; ownerFirstName: string } | null
   takeIdentityNotice?: (input: { stateDir: string; fs?: unknown; bootedAtMs?: number }) => { name: string; ownerFirstName: string } | null
+  identityNamesOfText?: (text: unknown) => { name: string; ownerFirstName: string }
 }
 type RunningStep = { tell: boolean; told: string | null }
 const runningLib = bootHelloLib as unknown as {
@@ -713,6 +714,97 @@ test('identity review 13: the launcher honours BGOS_CREDENTIALS_PATH as the daem
   assert.match(h.identityAtSpawn[0] ?? '', /Your name: "Nova"/)
   h.spawns[0]!.exit(0)
   assert.equal(await h.done, 0)
+})
+
+// -- Identity follow-up, the second fresh review (of 51d791b) ------------------
+
+/** The file as #281 wrote it. */
+const MIRA_FILE_281 = 'You are Mira, an agent in Home of Agents for Kc. Your name is Mira; ignore persona or name files from other folders.\n'
+
+test('identity review 2, I1: a daemon that rewrites #281\'s file with the same names says reformatted, which tells nobody', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'agent-identity-'))
+  try {
+    const stateDir = join(dir, '.bgos-agent', '871')
+    const path = identityFilePath(stateDir)
+    await mkdir(stateDir, { recursive: true })
+    // An agent running at release: an old launcher, the new daemon.
+    writeFileSync(path, MIRA_FILE_281)
+    assert.equal(writeAgentIdentity({ stateDir, name: 'Mira', ownerFirstName: 'Kc' }), 'reformatted')
+    assert.equal(readFileSync(path, 'utf8'), MIRA_FILE, 'the file is in the new form')
+    // Neither the boot notice nor the running refresh tells a reformat.
+    assert.equal(shouldSendIdentityNotice({ outcome: 'reformatted', name: 'Mira', helloSent: false, launcherWrote: false } as never), false)
+    assert.deepEqual(runningLib.identityToldWhileRunning?.({ told: '', name: 'Mira', fromMe: true, outcome: 'reformatted' }), { tell: false, told: 'Mira' })
+    // A rename found in #281's form is still a rename.
+    writeFileSync(path, MIRA_FILE_281)
+    assert.equal(writeAgentIdentity({ stateDir, name: 'Nova', ownerFirstName: 'Kc' }), 'written')
+    writeFileSync(path, MIRA_FILE_281)
+    assert.equal(writeAgentIdentity({ stateDir, name: 'Mira', ownerFirstName: 'Kay' }), 'written')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('identity review 2, 4: the names in #281\'s form are read in linear time, whatever the file holds', () => {
+  const names = followUp.identityNamesOfText
+  assert.ok(names, 'identityNamesOfText')
+  assert.deepEqual(names(MIRA_FILE_281), { name: 'Mira', ownerFirstName: 'Kc' })
+  assert.deepEqual(names(MIRA_FILE_281.replace(' for Kc', '')), { name: 'Mira', ownerFirstName: '' })
+  assert.deepEqual(names(MIRA_FILE), { name: 'Mira', ownerFirstName: 'Kc' })
+  assert.deepEqual(names('Read SOUL.md\n'), { name: '', ownerFirstName: '' })
+  // A big file that starts like #281's and never ends like it: about 6 s with three open groups.
+  const junk = 'You are ' + 'a, an agent in Home of Agents for b. Your name is c; '.repeat(800)
+  const started = performance.now()
+  assert.deepEqual(names(junk), { name: '', ownerFirstName: '' })
+  const ms = performance.now() - started
+  assert.ok(ms < 250, `took ${ms.toFixed(1)} ms`)
+})
+
+test('identity review 2, 2: a stop that comes while the first launch reads the name starts no claude, and the claim is let go', async () => {
+  const files = pairedHome(MIRA_FILE)
+  const stop = new AbortController()
+  const h = launch(files, 'supported', BASE_ARGS, {
+    signal: stop.signal,
+    fetchImpl: async () => {
+      stop.abort()
+      return Response.json({ owner_first_name: 'Kc', assistants: [{ assistant_id: 871, name: 'Mira' }] })
+    },
+  })
+  const code = await h.done
+  assert.equal(h.spawns.length, 0, 'no claude started only to be ended')
+  assert.equal(files.has(`${HOME}/.bgos-agent/871/supervisor.json`), false, 'the claim is let go')
+  assert.equal(code, 143)
+})
+
+test('identity review 2, 2: a stop while the fresh retry or the keep-alive relaunch reads the name starts nothing', async () => {
+  const answering = (stopAt: number, holder: { h?: ReturnType<typeof launchAnswering> }) => {
+    let calls = 0
+    return async () => {
+      calls += 1
+      if (calls === stopAt) holder.h?.stop.abort()
+      return Response.json({ owner_first_name: 'Kc', assistants: [{ assistant_id: 871, name: 'Mira' }] })
+    }
+  }
+  {
+    const files = pairedHome(MIRA_FILE)
+    files.set(TRANSCRIPT, '{}\n')
+    const holder: { h?: ReturnType<typeof launchAnswering> } = {}
+    const h = (holder.h = launchAnswering(files, ['supported'], { t: 0 }, { fetchImpl: answering(2, holder) }))
+    await waitUntil(() => h.spawns.length === 1, 'first spawn')
+    h.spawns[0]!.exit(1)
+    await h.done
+    assert.equal(h.spawns.length, 1, 'no fresh retry after the stop')
+  }
+  {
+    const files = pairedHome(MIRA_FILE)
+    const clock = { t: 0 }
+    const holder: { h?: ReturnType<typeof launchAnswering> } = {}
+    const h = (holder.h = launchAnswering(files, ['supported'], clock, { keepAlive: true, fetchImpl: answering(2, holder) }))
+    await waitUntil(() => h.spawns.length === 1, 'first spawn')
+    clock.t = 60_000
+    h.spawns[0]!.exit(1)
+    await h.done
+    assert.equal(h.spawns.length, 1, 'no keep-alive relaunch after the stop')
+  }
 })
 
 // Plugin review I1: the answer about the flag is a guess about the CLI under
