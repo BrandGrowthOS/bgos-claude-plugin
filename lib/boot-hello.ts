@@ -27,7 +27,7 @@
 import { readFileSync, writeFileSync, mkdirSync, statSync, renameSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
-import { agentIdentityText, cleanIdentityName } from './agent-identity.mjs'
+import { agentIdentityText, cleanIdentityName, identityNameLine } from './agent-identity.mjs'
 import { agentStateDir } from './update-readiness.js'
 
 /** File name inside the per-assistant state dir (next to chat-cursors.json). */
@@ -141,15 +141,15 @@ export function buildBootHelloNotification(input: {
   chatId: string
 }): { content: string; meta: Record<string, string> } {
   const who = cleanIdentityName(input.assistantName)
-  const name = who ? ` as ${who}` : ''
-  const yourName = who ? `Your name is ${who}. ` : ''
+  // The name as data, last on its own line (Data's review of #281, Low 1).
   return {
     content:
-      `[hoai] This session just came online${name} for the first time. ${yourName}` +
+      `[hoai] This session just came online for the first time. ` +
       `To confirm the channel works end to end, call the \`reply\` tool NOW ` +
       `with chat_id=${input.chatId} and a one-line friendly hello introducing ` +
-      `yourself${name} to your user. This first reply is what proves the connection, ` +
-      `so do it before anything else.`,
+      `yourself${who ? ' by your name' : ''} to your user. This first reply is what proves the connection, ` +
+      `so do it before anything else.` +
+      (who ? `\n${identityNameLine(who)}` : ''),
     meta: {
       event_type: 'boot_hello',
       chat_id: String(input.chatId),
@@ -170,8 +170,26 @@ export function shouldSendIdentityNotice(input: {
   outcome: string
   name: string | null | undefined
   helloSent: boolean
+  /** The launcher wrote a new identity just before this launch (its
+   *  identity-notice.json), so the daemon's own refresh finds it unchanged,
+   *  but a resumed conversation still has the old name (Data's review of
+   *  #281, the Medium). */
+  launcherWrote?: boolean
 }): boolean {
-  return input.outcome === 'written' && cleanIdentityName(input.name) !== '' && !input.helloSent
+  return (input.outcome === 'written' || input.launcherWrote === true) && cleanIdentityName(input.name) !== '' && !input.helloSent
+}
+
+/**
+ * Whether a refresh while the daemon runs found a name its session was not
+ * told yet (a rename in the app while the agent runs): told once per name,
+ * and a failed read (no name) never says anything.
+ */
+export function identityNoticeDueWhileRunning(input: {
+  name: string | null | undefined
+  told: string | null | undefined
+}): boolean {
+  const name = cleanIdentityName(input.name)
+  return name !== '' && name !== cleanIdentityName(input.told)
 }
 
 /** That notice: the identity in the same words as the file, and no reply asked for. */
@@ -182,7 +200,7 @@ export function buildIdentityNotice(input: {
   const who = cleanIdentityName(input.assistantName)
   const identity = agentIdentityText({ name: who, ownerFirstName: input.ownerFirstName }) ?? ''
   return {
-    content: `[hoai] ${identity} From now on introduce yourself as ${who}. No reply is needed.`,
+    content: `[hoai] Your identity in Home of Agents, from now on. No reply is needed.\n${identity}`,
     meta: { event_type: 'agent_identity' },
   }
 }

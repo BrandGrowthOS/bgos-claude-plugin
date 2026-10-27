@@ -99,7 +99,7 @@ import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
 import { DoctorRpcHandler, buildDoctorChecks, normalizeDoctorRpc } from './lib/doctor-rpc.ts'
 import { collectChanges, createNodeRunGit, nodeChangesFs } from './lib/git-changes.js'
 import { defaultPidAlive, pluginStateDirFor, readBootClock } from './lib/agent-inventory.mjs'
-import { identityFilePath, identityFromMe, writeAgentIdentity } from './lib/agent-identity.mjs'
+import { identityFilePath, identityFromMe, takeIdentityNotice, writeAgentIdentity } from './lib/agent-identity.mjs'
 import { createMarkerTakeover, currentPluginRootFor, handoffEnv, mcpEnvKeys, nodeTakeoverFs } from './lib/marker-takeover.mjs'
 import { HOOK_RESTART_FILE_NAME, createHookRestart, nodeHookRestartFs } from './lib/hook-restart.mjs'
 import { buildCallOwnerBody, CALL_OWNER_OTHER_CHAT_REFUSAL } from './lib/call-owner.js'
@@ -423,6 +423,7 @@ import {
   shouldBackfillLiveMarker,
   buildBootHelloNotification,
   buildIdentityNotice,
+  identityNoticeDueWhileRunning,
   shouldSendIdentityNotice,
   buildLivenessProbeNotification,
   shouldSendLivenessProbe,
@@ -13048,6 +13049,13 @@ async function getVoiceIdentity(
 /** How long the boot hello waits for the agent's name before it greets
  *  without one. */
 const BOOT_IDENTITY_TIMEOUT_MS = 5_000
+/** How often a running daemon reads its name again: a rename in the app while
+ *  the agent runs reaches its live conversation, once (Data's review of #281,
+ *  the Medium). integrations/me answers 304 while nothing changed. */
+const IDENTITY_REFRESH_MS = 5 * 60_000
+/** The name this daemon's session was last told (the boot refresh, a notice);
+ *  null until the boot refresh settles. */
+let identityToldName: string | null = null
 
 /**
  * The agent's own name, for the boot hello, and a refresh of its identity
@@ -13084,6 +13092,32 @@ async function refreshAgentIdentity(
   }
   if (!name) name = (await getVoiceIdentity(timeoutMs))?.name ?? ''
   return { name, ownerFirstName, outcome }
+}
+
+/**
+ * The refresh on a timer while the daemon runs: the identity file follows a
+ * rename (so the next new conversation or compaction reads it), and this
+ * session is told the new name once. Each daemon tells its own session, so
+ * with two sessions of one agent both hear it, whichever wrote the file.
+ * Pairing only: an API key daemon has no integrations/me. Never throws.
+ */
+async function refreshIdentityWhileRunning(): Promise<void> {
+  if (identityToldName === null || AUTH.mode !== 'pairing') return
+  try {
+    const identity = await refreshAgentIdentity(BOOT_IDENTITY_TIMEOUT_MS)
+    if (!identityNoticeDueWhileRunning({ name: identity.name, told: identityToldName })) return
+    identityToldName = identity.name
+    log(`identity: renamed while running; telling the live session its name (${identity.name})`)
+    await trackMessageOperation(() => {
+      const notice = buildIdentityNotice({ assistantName: identity.name, ownerFirstName: identity.ownerFirstName })
+      return mcp.notification({
+        method: 'notifications/claude/channel',
+        params: { content: notice.content, meta: notice.meta },
+      })
+    })
+  } catch (err) {
+    log(`identity: the refresh while running failed (${err})`)
+  }
 }
 
 // The Sessions sheet (P6 stage 3, spec 5.7): the sessions in this agent's own
@@ -17740,7 +17774,19 @@ async function main(): Promise<void> {
     // file) still greets, which is the onboarding channel proof.
     // Every boot refreshes the identity file; the hello below waits for the
     // name it reads.
-    const agentIdentityAtBoot = refreshAgentIdentity(BOOT_IDENTITY_TIMEOUT_MS)
+    // The launcher refreshed the file just before this launch (lib/agent-
+    // identity.mjs): its notice says it wrote a new name, which this refresh
+    // then finds unchanged, while a resumed conversation still has the old one.
+    const agentIdentityAtBoot = refreshAgentIdentity(BOOT_IDENTITY_TIMEOUT_MS).then((identity) => {
+      const dir = agentStateDir(homedir(), ASSISTANT_ID)
+      const launcher = dir ? takeIdentityNotice({ stateDir: dir }) : null
+      return {
+        ...identity,
+        name: identity.name || launcher?.name || '',
+        ownerFirstName: identity.ownerFirstName || launcher?.ownerFirstName || '',
+        launcherWrote: launcher !== null,
+      }
+    })
     const bootHelloMarkerExists = readLiveMarker(LIVE_MARKER_PATH) != null
     const bootHelloExistingPairing = cursorBoot.fileExisted
     if (
@@ -17800,7 +17846,16 @@ async function main(): Promise<void> {
     // hello above, which already names it. Not awaited: nothing waits on it.
     void agentIdentityAtBoot
       .then((identity) => {
-        if (!shouldSendIdentityNotice({ outcome: identity.outcome, name: identity.name, helloSent: bootHelloSent })) return
+        identityToldName = identity.name
+        if (
+          !shouldSendIdentityNotice({
+            outcome: identity.outcome,
+            name: identity.name,
+            helloSent: bootHelloSent,
+            launcherWrote: identity.launcherWrote,
+          })
+        )
+          return
         log(`identity: telling the live session its name (${identity.name})`)
         return trackMessageOperation(() => {
           const notice = buildIdentityNotice({ assistantName: identity.name, ownerFirstName: identity.ownerFirstName })
@@ -17811,6 +17866,7 @@ async function main(): Promise<void> {
         })
       })
       .catch((err) => log(`identity notice delivery failed: ${err}`))
+    setInterval(() => void refreshIdentityWhileRunning(), IDENTITY_REFRESH_MS).unref()
 
     // Step 2.5: Cursor persistence flush loop + exit hooks (restart-replay
     // fix). The store was loaded synchronously at module init, before any

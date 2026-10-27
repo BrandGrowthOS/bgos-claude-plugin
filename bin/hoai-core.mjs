@@ -118,7 +118,18 @@ import {
   readFolderIdentity,
 } from '../lib/service-supervision.mjs'
 import { WIN_PATH_HELPER_FILE, installWrapper } from '../lib/hoai-wrapper-install.mjs'
-import { IDENTITY_FLAG, identityFilePath, identityLaunchArgs } from '../lib/agent-identity.mjs'
+import {
+  IDENTITY_FLAG,
+  IDENTITY_REFRESH_TIMEOUT_MS,
+  agentIdentityText,
+  cleanIdentityName,
+  fetchAgentIdentity,
+  identityFilePath,
+  identityLaunchArgs,
+  identityNoticePath,
+  pairingFromCredentials,
+  writePrivateText,
+} from '../lib/agent-identity.mjs'
 import { PROBE_TIMEOUT_MS, classifyFlagProbe } from '../lib/claude-binary.mjs'
 
 /** Mirror of bgos-pair.mjs FOLDER_PIN_FILE_NAME / agent-credentials.ts
@@ -3041,6 +3052,33 @@ export async function superviseClaude(args, opts = {}) {
     return out.args
   }
   const relaunchIdentityArgs = () => personIdentity ?? identityArgsNow()
+  // Before every launch and relaunch, the identity file is read again from
+  // integrations/me (Data's review of #281, the Medium): a rename in the app
+  // otherwise reached only the daemon's boot refresh, after claude had read
+  // the old name. With this agent's own pairing and a short timeout; any
+  // failure launches on the file as it is. A change also leaves the daemon a
+  // notice (lib/agent-identity.mjs takeIdentityNotice), so a resumed
+  // conversation, whose recorded system prompt has the old name, is told.
+  // The token goes in the one request header, never into a print.
+  const fetchImpl = opts.fetchImpl ?? globalThis.fetch
+  const identityRefreshTimeoutMs = opts.identityRefreshTimeoutMs ?? IDENTITY_REFRESH_TIMEOUT_MS
+  const writePrivate = opts.writeFile ? writeFile : (path, content) => writePrivateText(path, content)
+  const refreshIdentityFile = async () => {
+    if (personChoseIdentity || identityOff) return
+    const pairing =
+      pairingFromCredentials(readFile(joinDir(agentDir(home), `credentials-${id}.json`)), id, env) ??
+      pairingFromCredentials(readFile(joinDir(agentDir(home), 'credentials.json')), id, env)
+    if (!pairing) return
+    const me = await fetchAgentIdentity({ ...pairing, assistantId: id, fetchImpl, timeoutMs: identityRefreshTimeoutMs })
+    const text = me ? agentIdentityText(me) : null
+    if (!me || !text || String(readFile(identityPath) ?? '') === `${text}\n`) return
+    if (!writePrivate(identityPath, `${text}\n`)) return
+    writePrivate(
+      identityNoticePath(stateDir),
+      `${JSON.stringify({ name: me.name, ownerFirstName: me.ownerFirstName, at: new Date(now()).toISOString() })}\n`,
+    )
+    print(`[hoai] identity: this agent's name is now ${JSON.stringify(cleanIdentityName(me.name))}`)
+  }
   // The recipe never carries the launcher's own identity args: a watcher
   // relaunch goes through hoai, which adds them again from the file.
   const withoutOwnIdentity = (launchArgs) => {
@@ -3135,6 +3173,7 @@ export async function superviseClaude(args, opts = {}) {
   let relaunchesAt = []
   let healthRelaunchesAt = []
   let exhausted = false
+  await refreshIdentityFile()
   let currentArgs = [...args, ...identityArgsNow(), ...sessionArgsFor(pinnedId, sessionExistsNow())]
   // The never-leave-dead fresh fallback is one-shot per relaunch cycle; a
   // marker relaunch (a genuine update) resets it below. Recovery keys on whether
@@ -3386,6 +3425,7 @@ export async function superviseClaude(args, opts = {}) {
         const sessionArgs = carried
           ? sessionArgsFor(carried, exists(sessionTranscriptPath(home, cwd, carried, env.CLAUDE_CONFIG_DIR)))
           : sessionArgsFor(pinnedId, sessionExistsNow())
+        await refreshIdentityFile()
         const identityArgs = relaunchIdentityArgs()
         const relaunchArgs = relaunchClaudeArgs({ scriptDir, env, home, cwd, readFile, sessionArgs, extraArgs: identityArgs })
         if (!relaunchArgs) return stopUnresolved()
@@ -3482,6 +3522,7 @@ export async function superviseClaude(args, opts = {}) {
         } else {
           freshSessionArgs = []
         }
+        await refreshIdentityFile()
         const freshArgs = relaunchClaudeArgs({
           scriptDir,
           env,
@@ -3546,6 +3587,7 @@ export async function superviseClaude(args, opts = {}) {
       // The channel is re-resolved, and the session args are the identity-safe
       // pair: --resume <pin> when its transcript exists, else --session-id <pin>.
       rereadPin()
+      await refreshIdentityFile()
       const keepArgs = relaunchClaudeArgs({
         scriptDir,
         env,

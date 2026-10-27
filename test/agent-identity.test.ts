@@ -463,7 +463,8 @@ test('identity follow-up, Medium: the pairing the launcher reads, and the notice
   for (const bad of [null, '', 'not json', JSON.stringify({ backendUrl: 'http://x', assistantId: 871 }), JSON.stringify({ pairingToken: 'pt', assistantId: 871 }), JSON.stringify({ backendUrl: 'http://x', pairingToken: 'pt', assistantId: 870 })]) {
     assert.equal(read(bad, '871'), null, String(bad))
   }
-  assert.equal(followUp.readIdentityNotice?.('junk') ?? 'missing', null)
+  assert.ok(followUp.readIdentityNotice, 'readIdentityNotice')
+  assert.equal(followUp.readIdentityNotice('junk'), null)
   assert.equal(followUp.identityNoticePath?.('/home/kc/.bgos-agent/871'), NOTICE_871)
 })
 
