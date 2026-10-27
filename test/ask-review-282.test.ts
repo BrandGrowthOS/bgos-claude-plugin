@@ -792,7 +792,7 @@ test('second fresh review of the recheck, Minor 5: the retire reads the file aga
 })
 
 test('third fresh review of the recheck, Minor 1: a rival that takes the lock while the retire reads the card (a slow backend) stops the PATCH', async () => {
-  const r = rig({ live: [2013] })
+  const r = rig()
   const ask = r.foreignGroup('theirs', [796], { pid: 2014, startedAt: START - 60 * MIN }, START - 30 * MIN)
   ask.askerEndedBeside = START - MIN
   r.onGet(() => r.lockFileTakenBy())
@@ -801,6 +801,8 @@ test('third fresh review of the recheck, Minor 1: a rival that takes the lock wh
   assert.deepEqual(r.patches, [], 'the lock changed hands during the read')
   assert.equal(r.notes.length, 0)
   assert.deepEqual(r.tracker.pending().map((g) => g.askId), ['theirs'], 'kept for the daemon that holds the lock now')
+  // Fourth fresh review, Minor 2: and let go, so a later pass here may retire it once the lock is back.
+  assert.deepEqual(r.tracker.retirable(START - 60 * MIN).map((g) => g.askId), ['theirs'], 'not left withdrawing')
 })
 
 test('third fresh review of the recheck, Minor 4: a passive wait holds its card through a retire as long as the HTTP timeout allows (a read and a PATCH per question)', async () => {
@@ -837,4 +839,19 @@ test('third fresh review of the recheck, Minor 5: the lock file names this daemo
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test('fourth fresh review of the recheck, Minor 1: a blocking wait holds its card through a last read as long as the HTTP timeout allows', async () => {
+  const r = rig({ lockHeld: false, httpTimeoutMs: 120_000 })
+  const deadline = r.now() + 5_000
+  const heldThroughLastRead: boolean[] = []
+  r.onGet(() => {
+    if (r.now() < deadline || heldThroughLastRead.length > 0) return
+    // The last read takes 100 s of a 120 s timeout (a slow backend).
+    r.advance(100_000)
+    const ask = r.tracker.pending()[0]
+    heldThroughLastRead.push(ask?.heldUntil !== undefined && ask.heldUntil > r.now())
+  })
+  await r.askTool({ chat_id: '77', questions: QUESTIONS, wait_seconds: 5 })
+  assert.deepEqual(heldThroughLastRead, [true], 'held on disk until the last read ends')
 })

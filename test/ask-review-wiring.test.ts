@@ -33,7 +33,7 @@ test('Important 4: a blocking wait the client cancelled hands its group to the e
 })
 
 test('Important 1: the hold is on disk with its deadline, so another daemon never announces a group this wait owns', () => {
-  assert.match(caseBody('ask_user_input'), /askTracker\.hold\(askKey, deadline \+ ASK_HOLD_MARGIN_MS\)/)
+  assert.match(caseBody('ask_user_input'), /askTracker\.hold\(askKey, deadline \+ HTTP_TIMEOUT_MS \+ ASK_HOLD_MARGIN_MS\)/)
 })
 
 test('Important 1: only the armed daemon holding the pairing announces, from the file as it stands now', () => {
