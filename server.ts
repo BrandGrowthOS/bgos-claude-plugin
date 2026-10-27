@@ -281,6 +281,7 @@ import {
   askWaitSeconds,
   askWithdrawnText,
   buildAskAnsweredEvent,
+  buildAskWithdrawnEvent,
   type AskRow,
   type PendingAsk,
 } from './lib/ask-tracker.ts'
@@ -11700,16 +11701,22 @@ function rememberAnnouncedClick(id: number): void {
 const ASK_READ_PAGE = 20
 /** How often the timer looks for a group due a read; each group's own cadence is askReadIntervalMs. */
 const ASK_TICK_MS = 5_000
-// A daemon not armed for delivery (a passive session's, or one still arming)
-// or draining for an update reads the file on the same tick: a card's owner is
-// decided the first time a daemon sees its asker gone, so every daemon has to
-// be looking when that happens, not only at its own calls or its promotion
-// (fourth review of #282, Important 2). Nothing is fetched or announced; the
-// tick writes the file only to keep such a decision (or to set a corrupt file
-// aside).
-setInterval(() => {
-  if (!channelArmed || updateDrainMode) refreshAskTracker('tick')
-}, ASK_TICK_MS).unref()
+// Every daemon, armed, passive or draining for an update, says on this tick
+// that it runs: the lease on its own groups (lib/ask-tracker.ts heartbeat),
+// written at most every ASK_LEASE_REFRESH_MS. Another daemon takes a group's
+// asker for ended only when its lease lapses, never from its pid alone, which
+// Windows hands to the next process at once (Data's recheck of #282). Nothing
+// is fetched or announced here.
+setInterval(() => heartbeatAskTracker(), ASK_TICK_MS).unref()
+
+/** askTracker.heartbeat() on the tick, where a throw must not end the daemon (fifth review of #282, Minor 2). */
+function heartbeatAskTracker(): void {
+  try {
+    askTracker.heartbeat()
+  } catch (err) {
+    log(`ask tracker: could not write the lease (tick): ${err}`)
+  }
+}
 
 /** askTracker.refresh() where a throw must not end the daemon or stop an arm (fifth review of #282, Minor 2). */
 function refreshAskTracker(via: string): void {
@@ -11717,6 +11724,24 @@ function refreshAskTracker(via: string): void {
     askTracker.refresh()
   } catch (err) {
     log(`ask tracker: could not read the file (${via}): ${err}`)
+  }
+}
+
+/**
+ * This daemon took the connection from a live holder (a channel or route
+ * takeover): that holder stays alive and passive, so no daemon could ever
+ * hand its cards' answers to its session. Its groups are marked for the
+ * retire (retireOrphanedAsks, on the next reconcile pass), never lost (Data's
+ * recheck of #282, item 1). A lock taken from a dead or stale holder marks
+ * nothing: that holder's restart may still take its cards.
+ */
+function takeOverAsks(reason: string | undefined, holderPid: number | undefined): void {
+  if (reason !== 'channel-takeover' && reason !== 'route-takeover') return
+  if (!holderPid || holderPid <= 0) return
+  try {
+    askTracker.markTakenOver(holderPid)
+  } catch (err) {
+    log(`ask tracker: could not mark the cards of pid ${holderPid} after the takeover: ${err}`)
   }
 }
 /** A blocking wait's hold on disk outlives its deadline by this much (the last read, the release). */
@@ -11841,8 +11866,68 @@ async function reconcilePendingAsks(via: string, opts: { dueOnly?: boolean } = {
     }
     for (const askId of askLastReadAt.keys()) if (!askTracker.get(askId)) askLastReadAt.delete(askId)
     announceCompleteAsks(via)
+    await retireOrphanedAsks(via)
   } finally {
     askReconcileRunning = false
+  }
+}
+
+/**
+ * Retire every card no daemon may announce (askTracker.retirable): its asker
+ * ended beside another session, lost this agent's connection in a takeover,
+ * or ended with no restart taking it. Its open questions are retired as
+ * withdraw_ask retires them, so the card closes for the owner instead of
+ * taking answers nobody receives, and this session is told in ONE
+ * ask_withdrawn event what was answered and what was withdrawn. A question
+ * that could not be retired keeps the group for the next pass, and nothing is
+ * said yet (Data's recheck of #282, item 1). Inside a reconcile pass, so two
+ * passes never retire one card at once.
+ */
+async function retireOrphanedAsks(via: string): Promise<void> {
+  if (!channelArmed || !lockHeld || updateDrainMode) return
+  for (const ask of askTracker.retirable()) {
+    if (askDelivering.has(ask.askId)) continue
+    // From here no door announces it, as in withdraw_ask.
+    askTracker.beginWithdraw(ask.askId)
+    let retired = false
+    let withdrawn = 0
+    try {
+      try {
+        await readAskGroup(ask)
+      } catch (err) {
+        log(`ask: could not read ${ask.askId} before retiring it, retiring every question not known answered: ${err}`)
+      }
+      const open = ask.questions.filter((q) => ask.answers[String(q.messageId)] === undefined).map((q) => q.messageId)
+      const done = await retireOrphanAskRows(open, `card ${ask.askId}, which no session can receive (${via})`)
+      if (done.length < open.length) continue
+      withdrawn = done.length
+      retired = true
+    } finally {
+      if (!retired) askTracker.endWithdraw(ask.askId)
+    }
+    askTracker.withdraw(ask.askId)
+    // A late answer that raced the PATCH is never announced.
+    for (const q of ask.questions) rememberAnnouncedClick(q.messageId)
+    // The second lock (person lanes): a card in a share recipient's chat is
+    // retired, but never told to the owner's session.
+    if (ownerAnnounceRefused({ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership.isOthers(ask.chatId) })) {
+      noteLaneMisroute('ask withdrawn', ask.questions.map((q) => q.messageId).join(','), 'a recipient chat')
+      continue
+    }
+    const event = buildAskWithdrawnEvent(ask, { assistantId: String(ASSISTANT_ID), withdrawn })
+    void trackMessageOperation(() =>
+      mcp.notification({
+        method: 'notifications/claude/channel',
+        params: {
+          // Typed answers ride in it, as in an ask_answered event: never shown
+          // to be the owner's own words, and it opens no private turn.
+          content: privateTapCard({ tracker: privateTurns, lane: 'ask', ownerUserId: USER_ID, chatId: ask.chatId, messageId: ask.questions[0]?.messageId, tapperUserId: null, answeredAt: null, receivedAt: Date.now(), callbackData: '', customText: null, posted: false, content: event.content }),
+          meta: event.meta,
+        },
+      }),
+    )
+      .then(() => log(`ask_withdrawn: retired group ${ask.askId} in chat ${ask.chatId} and told this session, via ${via}`))
+      .catch((err) => log(`ask_withdrawn: group ${ask.askId} was retired, but telling this session failed: ${err}`))
   }
 }
 
@@ -17945,6 +18030,9 @@ async function main(): Promise<void> {
         // Who the pending cards belong to, seen now: the arm below can take a
         // while (fourth review of #282, Important 2).
         refreshAskTracker('promotion')
+        // The cards of a live holder this daemon took the connection from are
+        // retired by this one, never lost (Data's recheck of #282, item 1).
+        takeOverAsks(res.reason, res.holderPid)
         if (res.reason === 'channel-takeover') {
           log(
             `${formatChannelTakeoverLine({ selfPid: process.pid, holderPid: res.holderPid, selfReason: channelPresence().reason })}; ` +
@@ -18008,6 +18096,8 @@ async function main(): Promise<void> {
     // tick's heartbeat is gated on lockHeld precisely so the lock stays fresh
     // while the (slow) arm runs.
     lockHeld = true
+    // A live holder's cards, retired by this daemon once armed (Data's recheck of #282, item 1).
+    takeOverAsks(lockAtBoot.reason, lockAtBoot.holderPid)
     log(
       lockAtBoot.reason === 'channel-takeover'
         ? `${formatChannelTakeoverLine({ selfPid: process.pid, holderPid: lockAtBoot.holderPid, selfReason: bootPresence.reason })}; ` +

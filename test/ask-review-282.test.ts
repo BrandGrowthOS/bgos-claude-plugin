@@ -208,7 +208,7 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean } 
     withdrawTool(args: Record<string, unknown>): Promise<ToolResult>
     announceCompleteAsks(via: string): void
     retireOrphanedAsks?: (via: string) => Promise<void>
-    takeOverAsks?: (reason: string, holderPid: number | undefined) => void
+    takeOverAsks?: (reason: string | undefined, holderPid: number | undefined) => void
   }
 
   return {

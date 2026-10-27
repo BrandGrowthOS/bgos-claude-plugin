@@ -90,7 +90,7 @@ test('recheck of #282, takeover: a passive daemon that takes the connection mark
   const boot = fnBody('if (lockAtBoot.acquired) {', 1800)
   const mark = boot.indexOf('takeOverAsks(lockAtBoot.reason, lockAtBoot.holderPid)')
   assert.ok(mark > 0 && mark < boot.indexOf('await armDelivery()'), 'marked before the arm reads the file')
-  const fn = fnBody('function takeOverAsks(reason: string, holderPid: number | undefined): void {', 1200)
+  const fn = fnBody('function takeOverAsks(reason: string | undefined, holderPid: number | undefined): void {', 1200)
   assert.match(fn, /reason !== 'channel-takeover' && reason !== 'route-takeover'/)
   assert.match(fn, /askTracker\.markTakenOver\(holderPid\)/)
 })
