@@ -6732,9 +6732,10 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
               type: 'text',
               text:
                 'Error: this session is not the one connected to BGOS for this agent (another session of it ' +
-                'holds the connection), so the answers to a card that returns pending could never come back ' +
-                'here. Nothing was posted. Leave wait_seconds out (or pass up to 600) to wait for the answers ' +
-                'in this call, ask in a plain reply, or ask from the connected session.',
+                'holds the connection), so the answers to a card that returns pending (wait_seconds or ' +
+                'timeout_seconds 0) could never come back here. Nothing was posted. Ask from the connected ' +
+                'session; or, if this session can post to this chat, leave wait_seconds out (or pass up to 600) ' +
+                'to wait for the answers in this call.',
             },
           ],
           isError: true,
@@ -6742,7 +6743,26 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       }
       // Membership check before forwarding the agent-supplied chat_id.
       const askAuth = resolveAuthorizedChat(chat_id)
-      if (!askAuth.ok) return askAuth.error
+      if (!askAuth.ok) {
+        // A passive daemon is told why, not only that the chat is unknown: one
+        // passive since boot has had no event from any chat (third review of
+        // #282, Minor 3).
+        if (!lockHeld) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text:
+                  'Error: this session is not the one connected to BGOS for this agent (another session of it ' +
+                  `holds the connection), and it has had no event from chat ${chat_id}, so it cannot ask there. ` +
+                  'Nothing was posted. Ask from the connected session.',
+              },
+            ],
+            isError: true,
+          }
+        }
+        return askAuth.error
+      }
       const askChatId = askAuth.chatId
       if (!questions?.length) {
         return {
@@ -6872,14 +6892,31 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
             return { content: [{ type: 'text', text: JSON.stringify(askResultRows(ask), null, 2) }] }
           }
           askTracker.beginWithdraw(askKey)
-          const open = ask.questions.filter((q) => ask.answers[String(q.messageId)] === undefined).map((q) => q.messageId)
-          const retired = await retireOrphanAskRows(open, 'a card whose wait ended in a passive session')
+          const unanswered = () => ask.questions.filter((q) => ask.answers[String(q.messageId)] === undefined).map((q) => q.messageId)
+          const retired = await retireOrphanAskRows(unanswered(), 'a card whose wait ended in a passive session')
+          // An answer that landed while the rows were retired is read now, so the
+          // result holds every answer given (third review of #282, Minor 4).
+          try {
+            await readAskGroup(ask)
+          } catch (err) {
+            log(`ask_user_input: could not read ${askKey} again after retiring it: ${err}`)
+          }
+          const open = unanswered()
+          if (open.length === 0 && !extra.signal.aborted) {
+            for (const q of ask.questions) rememberAnnouncedClick(q.messageId)
+            askTracker.delivered(askKey)
+            return { content: [{ type: 'text', text: JSON.stringify(askResultRows(ask), null, 2) }] }
+          }
           askTracker.withdraw(askKey)
           return {
             content: [
               {
                 type: 'text',
-                text: askWithdrawnText({ ask, waitedSeconds: extra.signal.aborted ? null : waitSeconds, notRetired: open.length - retired }),
+                text: askWithdrawnText({
+                  ask,
+                  waitedSeconds: extra.signal.aborted ? null : waitSeconds,
+                  withdrawn: open.filter((id) => retired.includes(id)).length,
+                }),
               },
             ],
           }
@@ -11791,17 +11828,17 @@ async function reconcilePendingAsks(via: string, opts: { dueOnly?: boolean } = {
 }
 
 /** Retire the questions of a card whose post failed half way (best effort; nothing tracks them). */
-async function retireOrphanAskRows(messageIds: number[], why = 'a card that failed to post'): Promise<number> {
-  let retired = 0
+async function retireOrphanAskRows(messageIds: number[], why = 'a card that failed to post'): Promise<number[]> {
+  const retired: number[] = []
   for (const id of messageIds) {
     try {
       await bgosPatch(`messages/${id}`, askRetireBody())
-      retired += 1
+      retired.push(id)
     } catch (err) {
       log(`ask_user_input: could not retire question ${id} of ${why}: ${err}`)
     }
   }
-  log(`ask_user_input: retired ${retired} of ${messageIds.length} question(s) of ${why}`)
+  log(`ask_user_input: retired ${retired.length} of ${messageIds.length} question(s) of ${why}`)
   return retired
 }
 

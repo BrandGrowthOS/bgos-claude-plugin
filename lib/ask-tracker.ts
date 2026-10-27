@@ -20,12 +20,18 @@
  * wait returns the answers as the tool result instead. Either way delivered()
  * forgets the group for good.
  *
- * WHOSE. A group belongs to the session that asked it. ask_user_input runs
- * only in the daemon holding this agent's connection (a passive session's
- * daemon refuses: it could never hand the answers back), each group carries
- * the process that posted it, and an announce offers a group only to that
- * process, or to one that started after it was posted once that process has
- * ended (the asker restarted). Another live session's card stays its own.
+ * WHOSE. A group belongs to the session that asked it. A pending card is
+ * posted only by the daemon holding this agent's connection: a passive
+ * session's daemon refuses wait_seconds 0, and its blocking wait retires what
+ * is not answered in time, since it could never hand later answers back. Each
+ * group carries the process that posted it, and an announce offers a group
+ * only to that process, or, once that process has ended, to one that started
+ * after the post and did not run beside it (the asker restarted). A daemon
+ * decides that the first time it sees the asker gone: one that had seen the
+ * asker alive for longer than ASK_OWNER_OVERLAP_MS ran beside it, and marks
+ * the group askerEndedBeside in the file, so no daemon ever announces it.
+ * Another live session's card stays its own. Review of #282, item 1, and its
+ * second and third reviews.
  *
  * EXACTLY ONCE. Within a daemon life the shared announced-click set guards
  * the transports (server.ts rememberAnnouncedClick on every question id of a
@@ -38,9 +44,11 @@
  * rename, a virus scanner, a lock on Windows) is tried again and then
  * skipped, and the save that would have followed is skipped too: nothing is
  * written over a file this daemon could not read. Only a file that read in
- * full and does not parse is kept aside. A file of another version is left
- * alone (an old and a new plugin side by side in a staged update); this
- * daemon then keeps its groups in memory. A rename onto a file another
+ * full and does not parse, or has no version or one that is not a number, is
+ * kept aside; if it cannot be kept aside it is left as it is. A file of a
+ * newer numbered version is left alone (an old and a new plugin side by side
+ * in a staged update); this daemon then keeps its groups in memory. While a
+ * read keeps failing, each pass tries once. A rename onto a file another
  * process holds open (EPERM on Windows) is tried again before a save is
  * dropped. Review of #282, item 4.
  *
@@ -100,8 +108,8 @@ export function askWaitSeconds(args: Record<string, unknown>): { seconds: number
   if (wait === 'refused') {
     return {
       error:
-        `Error: wait_seconds must be a number of seconds from 0 to ${MAX_ASK_WAIT_SECONDS}, and more waits ` +
-        `${MAX_ASK_WAIT_SECONDS} (got ${shown(args.wait_seconds)}). Nothing was posted.`,
+        `Error: wait_seconds must be a number of seconds from 0 to ${MAX_ASK_WAIT_SECONDS} (a larger number ` +
+        `waits ${MAX_ASK_WAIT_SECONDS}); got ${shown(args.wait_seconds)}. Nothing was posted.`,
     }
   }
   if (wait !== null) return { seconds: Math.min(wait, MAX_ASK_WAIT_SECONDS) }
@@ -306,7 +314,7 @@ export function askPendingText(opts: {
  * are the whole result (second review of #282, Important 3). Never pending,
  * never a skip the owner did not give.
  */
-export function askWithdrawnText(opts: { ask: PendingAsk; waitedSeconds: number | null; notRetired: number }): string {
+export function askWithdrawnText(opts: { ask: PendingAsk; waitedSeconds: number | null; withdrawn: number }): string {
   const { ask } = opts
   const rows = askResultRows(ask).filter((_, i) => ask.answers[String(ask.questions[i].messageId)] !== undefined)
   const open = ask.questions.length - rows.length
@@ -315,16 +323,16 @@ export function askWithdrawnText(opts: { ask: PendingAsk; waitedSeconds: number 
     opts.waitedSeconds !== null
       ? `Not every question was answered within the ${opts.waitedSeconds} s wait.`
       : 'The wait was cancelled before every question was answered.'
-  const stuck =
-    opts.notRetired > 0
-      ? ` ${opts.notRetired} of them could not be withdrawn and may still show in the chat; an answer to it will not reach you.`
-      : ''
+  const withdrawn =
+    opts.withdrawn >= open
+      ? `the ${open} question(s) not answered were withdrawn from the chat.`
+      : `${opts.withdrawn} of the ${open} question(s) not answered were withdrawn from the chat; the other ` +
+        `${open - opts.withdrawn} may still show there, and an answer to them will not reach you.`
   return [
     JSON.stringify(status, null, 2),
     `${lead} This session is not the one connected to BGOS for this agent, so later answers could never ` +
-      `come back here: the ${open} question(s) not answered were withdrawn from the chat.${stuck} The answers ` +
-      `above are all your owner gave; nothing was skipped for your owner. If you still need the rest, ask ` +
-      `again, in a plain reply or from the connected session.`,
+      `come back here: ${withdrawn} The answers above are all your owner gave; nothing was skipped for your ` +
+      `owner. If you still need the rest, ask again from the connected session.`,
   ].join('\n')
 }
 
@@ -771,9 +779,10 @@ export class AskTracker {
 
   /**
    * The file as it stands. A read that fails is tried again and then skipped
-   * (never kept aside: the next pass reads it); a file of another version is
-   * left alone. Only a file that read in full and does not parse is said and
-   * kept aside (`.corrupt-<time>`), never silently overwritten.
+   * (never kept aside: the next pass reads it); a file of a newer numbered
+   * version is left alone. Only a file that read in full and does not parse,
+   * or has no usable version, is said and kept aside (`.corrupt-<time>`); one
+   * that cannot be kept aside is skipped, never silently overwritten.
    */
   private readFile(): FileRead {
     if (!this.filePath || !existsSync(this.filePath)) return this.readOk({ kind: 'none' })
