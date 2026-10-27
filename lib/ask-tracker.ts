@@ -479,7 +479,9 @@ export function buildAskWithdrawnEvent(
  * (second review of #282, Important 2). The overlap is measured to the end of
  * the asker's last lease (ASK_LEASE_SPAN_MS), which errs long: a session that
  * really ran beside the asker for about 40 s or more may already count as
- * another session.
+ * another session. A session already up when the card was posted measures
+ * from the post, so once the asker ran on that long after posting, the card
+ * is marked for every daemon and the asker's restart does not take it either.
  */
 export const ASK_OWNER_OVERLAP_MS = 60_000
 
