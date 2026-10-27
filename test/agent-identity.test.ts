@@ -791,7 +791,8 @@ test('identity review 2, 2: a stop while the fresh retry or the keep-alive relau
     const h = (holder.h = launchAnswering(files, ['supported'], { t: 0 }, { fetchImpl: answering(2, holder) }))
     await waitUntil(() => h.spawns.length === 1, 'first spawn')
     h.spawns[0]!.exit(1)
-    await h.done
+    // The exit code of the claude that ran, as a stop in the keep-alive backoff returns it.
+    assert.equal(await h.done, 1)
     assert.equal(h.spawns.length, 1, 'no fresh retry after the stop')
   }
   {
@@ -802,7 +803,7 @@ test('identity review 2, 2: a stop while the fresh retry or the keep-alive relau
     await waitUntil(() => h.spawns.length === 1, 'first spawn')
     clock.t = 60_000
     h.spawns[0]!.exit(1)
-    await h.done
+    assert.equal(await h.done, 1)
     assert.equal(h.spawns.length, 1, 'no keep-alive relaunch after the stop')
   }
 })
