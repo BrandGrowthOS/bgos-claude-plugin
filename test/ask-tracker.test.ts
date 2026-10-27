@@ -1728,6 +1728,8 @@ test('gaps after #284, gap 2: a card whose asker runs on without the connection 
     assert.equal(because, 'asker_disconnected', 'A runs on, passive')
     const event = buildWithdrawn(ask, { assistantId: '9', withdrawn: 1, retiredBecause: because })
     assert.match(event.content, /the session that asked it runs on without this agent's connection/)
+    // Its tell can still miss it (it ends before its next tick, an older plugin): second fresh review of the gaps, Minor 1.
+    assert.match(event.content, /that session is told too while it still runs\./)
     assert.equal(event.meta.retired_because, 'asker_disconnected')
   })
 })
@@ -1765,7 +1767,7 @@ test('gaps after #284 review, Important 1: an asker that ended with no restart t
   })
 })
 
-test('gaps after #284 review, Important 1: the reason follows what the retire keeps, so an asker whose pid runs but whose lease lapsed is told as running on, and gets its record', () => {
+test('gaps after #284, second review, Important 1: an asker past its lease whose pid reads alive (Windows hands a dead pid to the next process at once) is told as ended, never as running on; the retire still keeps its record, which only that same process can take', () => {
   sharedFile(({ filePath, clock, live, at }) => {
     const now = () => clock.at
     const b = trackerAs({ pid: 2, startedAt: at('09:30:00') }, live, { filePath, now })
@@ -1774,13 +1776,44 @@ test('gaps after #284 review, Important 1: the reason follows what the retire ke
     a.register(group({ askId: 'g', ids: [1541] }))
     live.push(1)
     runUntil(clock, at('10:00:30'), a, b)
-    // A's process is still there (its pid reads alive) but stops writing its lease, past the grace.
+    // A stops writing its lease, past the grace, and its pid still reads alive: A hung, or A ended and its pid is another process's now.
     runUntil(clock, at('10:11:00'), b)
     assert.deepEqual(retirableIds(b), ['g'])
     const because = (b as unknown as Gap2).retiredBecause?.(b.get('g')!)
-    assert.equal(because, 'asker_disconnected', 'the retire keeps a record for it, so it is told as running on')
+    assert.equal(because, 'asker_ended', 'the lease, never the pid alone, says whether the asker runs')
+    const event = buildWithdrawn(b.get('g')!, { assistantId: '9', withdrawn: 1, retiredBecause: because })
+    assert.doesNotMatch(event.content, /runs on|told too/, 'never tells a session its asker runs on and is told, when that may be another process')
     b.beginWithdraw('g')
     assert.notEqual(leaseOf(b).retire?.('g', { withdrawn: 1, tellAsker: true }) ?? null, null)
-    assert.equal((fileOf(filePath).retired ?? []).length, 1, 'and the record is kept')
+    assert.equal((fileOf(filePath).retired ?? []).length, 1, 'the record is kept on the pid, for A if it only hung')
+    const samePid = trackerAs({ pid: 1, startedAt: at('10:05:00') }, live, { filePath, now })
+    assert.deepEqual(leaseOf(samePid).takeRetiredOwn?.() ?? [], [], 'another process on the same pid takes nothing')
+  })
+})
+
+test('gaps after #284, second review, Important 1: a restart that overlapped its asker by 50 s is told its asker ended beside it, also when the asker\'s pid was handed to another process at once', () => {
+  sharedFile(({ filePath, clock, live, at }) => {
+    const now = () => clock.at
+    const b = trackerAs({ pid: 2, startedAt: at('09:30:00') }, live, { filePath, now })
+    live.push(2)
+    const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
+    a.register(group({ askId: 'g', ids: [1551] }))
+    live.push(1)
+    runUntil(clock, at('10:00:10'), a, b)
+    const a2 = trackerAs({ pid: 3, startedAt: clock.at }, live, { filePath, now })
+    live.push(3)
+    runUntil(clock, at('10:01:00'), a, a2, b)
+    // A ends at 10:01:00; pid 1 stays alive, another process's now.
+    runUntil(clock, at('10:01:40'), a2, b)
+    a2.record(1551, { skipped: true })
+    assert.deepEqual(a2.completeUndelivered().map((g) => g.askId), [], 'still never the restart\'s')
+    assert.deepEqual(retirableIds(b), ['g'])
+    const ask = b.get('g')!
+    assert.notEqual(ask.askerEndedBeside, undefined)
+    const because = (b as unknown as Gap2).retiredBecause?.(ask)
+    assert.equal(because, 'asker_ended_beside')
+    const event = buildWithdrawn(ask, { assistantId: '9', withdrawn: 0, retiredBecause: because })
+    assert.match(event.content, /ended after running beside another session of this agent/)
+    assert.doesNotMatch(event.content, /runs on|told too/)
   })
 })

@@ -676,12 +676,27 @@ test('recheck, item 1: a group marked askerEndedBeside has its open questions re
   assert.equal(r.notes.length, 1)
   assert.equal(r.notes[0].params.meta.event_type, 'ask_withdrawn')
   assert.equal(r.notes[0].params.meta.ask_id, 'theirs')
+  assert.equal(r.notes[0].params.meta.retired_because, 'asker_ended_beside')
   assert.equal(r.tracker.get('theirs'), null)
   assert.equal(r.tracker.wasDelivered('theirs'), true, 'gone for every daemon')
   await r.retireOrphanedAsks?.('test')
   await r.settle()
   assert.equal(r.notes.length, 1, 'once')
   assert.equal(r.patches.length, 1)
+})
+
+test('second fresh review of the gaps after #284, Important 1, on the daemon\'s own code: a card whose asker ended beside another session is told as that, also when the asker\'s pid reads alive again (a dead pid handed on)', async () => {
+  const r = rig({ live: [2003] })
+  const ask = r.foreignGroup('theirs', [744, 745], { pid: 2003, startedAt: START - 60 * MIN }, START - 30 * MIN)
+  ask.askerEndedBeside = START - MIN
+  r.answer(744)
+  assert.equal(typeof r.retireOrphanedAsks, 'function')
+  await r.retireOrphanedAsks?.('test')
+  await r.settle()
+  assert.deepEqual(r.patches, [{ path: 'messages/745', body: RETIRE }])
+  assert.equal(r.notes.length, 1)
+  assert.equal(r.notes[0].params.meta.retired_because, 'asker_ended_beside', 'the lease, never the pid alone, says whether the asker runs')
+  assert.doesNotMatch(r.notes[0].params.content, /runs on without this agent's connection|told too/)
 })
 
 test('recheck, item 1: a retire whose PATCH fails keeps the group and says nothing yet; the next pass retires it', async () => {

@@ -179,7 +179,7 @@ test('gaps after #284, gap 1: every tool result of this daemon carries the ask_w
   assert.match(fnBody('function sendAskWithdrawn(ask: PendingAsk, withdrawn: number, opts: AskWithdrawnOpts): Promise<void> {', 2500), /askWithdrawnContent\(ask, withdrawn, opts\)/)
 })
 
-test('gaps after #284, gap 2: the connected session is told why the card was retired (its asker ended, or runs on without the connection)', () => {
+test('gaps after #284, gap 2: the connected session is told why the card was retired (its asker ended beside another session, ended with no restart taking the connection, or runs on without it)', () => {
   const retire = fnBody('async function retireOrphanedAsks(via: string): Promise<void> {', 4000)
   const at = retire.indexOf('const retiredBecause = askTracker.retiredBecause(ask)')
   assert.ok(at > 0, 'read before the retire forgets the group')
