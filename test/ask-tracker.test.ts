@@ -1814,6 +1814,27 @@ test('gaps after #284, third review, Important 1: after a look gap (a sleep) the
   })
 })
 
+test('gaps after #284, fourth review: a card past the grace whose asker\'s pid reads alive, picked before a sleep in the retire, is still told as ended (the strict lease; mutant T1 lived)', () => {
+  sharedFile(({ filePath, clock, live, at }) => {
+    const now = () => clock.at
+    const b = trackerAs({ pid: 2, startedAt: at('09:30:00') }, live, { filePath, now })
+    live.push(2)
+    const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
+    a.register(group({ askId: 'g', ids: [1601] }))
+    live.push(1)
+    runUntil(clock, at('10:00:30'), a, b)
+    // A writes no more lease and pid 1 still reads alive (A hung, or its pid is another process's).
+    runUntil(clock, at('10:11:00'), b)
+    assert.deepEqual(retirableIds(b), ['g'], 'past the grace')
+    assert.equal(b.get('g')!.askerEndedBeside, undefined)
+    // B sleeps during the retire's read and PATCH; its refresh after the PATCH sees the gap.
+    clock.at += 60_000
+    beat(b)
+    const because = (b as unknown as Gap2).retiredBecause?.(b.get('g')!)
+    assert.equal(because, 'asker_ended', 'a lease B cannot judge yet is no proof the asker runs')
+  })
+})
+
 test('gaps after #284, fourth review, Important 1: a card marked beside when its asker\'s pid read dead is told as beside, also when that pid is handed on while the dead asker\'s last lease is fresh', () => {
   sharedFile(({ filePath, clock, live, at }) => {
     const now = () => clock.at
