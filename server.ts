@@ -6889,39 +6889,62 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
           isError: true,
         }
       }
-      // Each question still open, as Codex retires a card (lib/ask-tracker.ts
-      // askRetireBody). An answered one is left as it is: retired to inline it
-      // would no longer show the owner's answer. So read the group first; a
-      // failed read retires what the tracker knows is open. Forget the group
-      // only when all of them are retired: a failed row keeps it tracked, so
-      // calling again retries.
-      try {
-        await readAskGroup(ask)
-      } catch (err) {
-        log(`withdraw_ask: could not read ${askId} first, retiring every question not known answered: ${err}`)
-      }
-      const open = ask.questions.filter((q) => ask.answers[String(q.messageId)] === undefined)
-      const failed: string[] = []
-      for (const q of open) {
-        try {
-          await bgosPatch(`messages/${q.messageId}`, askRetireBody())
-        } catch (err) {
-          failed.push(`message ${q.messageId}: ${err instanceof Error ? err.message : String(err)}`)
-        }
-      }
-      if (failed.length > 0) {
-        log(`withdraw_ask: ${failed.length}/${open.length} open row(s) of ${askId} not retired: ${failed.join('; ')}`)
+      // Its ask_answered already went out (a delivery in flight cannot be
+      // recalled): say so, instead of promising that no event will come.
+      if (askDelivering.has(askId)) {
         return {
           content: [
             {
               type: 'text',
-              text:
-                `Could not retire ${failed.length} of ${open.length} open question(s) of card ${askId}; ` +
-                `it stays tracked, so call withdraw_ask again. ${failed.join('; ')}`,
+              text: `Card ${askId} was already answered and its ask_answered event is on its way; nothing was withdrawn.`,
             },
           ],
-          isError: true,
         }
+      }
+      // Before the first await: from here no door announces the card, so an
+      // answer that lands while its rows are retired is never delivered after
+      // this tool said none would be (review of #282, item 2).
+      askTracker.beginWithdraw(askId)
+      let retired = false
+      let open: typeof ask.questions = []
+      try {
+        // Each question still open, as Codex retires a card (lib/ask-tracker.ts
+        // askRetireBody). An answered one is left as it is: retired to inline it
+        // would no longer show the owner's answer. So read the group first; a
+        // failed read retires what the tracker knows is open. Forget the group
+        // only when all of them are retired: a failed row keeps it tracked (and
+        // live again), so calling again retries.
+        try {
+          await readAskGroup(ask)
+        } catch (err) {
+          log(`withdraw_ask: could not read ${askId} first, retiring every question not known answered: ${err}`)
+        }
+        open = ask.questions.filter((q) => ask.answers[String(q.messageId)] === undefined)
+        const failed: string[] = []
+        for (const q of open) {
+          try {
+            await bgosPatch(`messages/${q.messageId}`, askRetireBody())
+          } catch (err) {
+            failed.push(`message ${q.messageId}: ${err instanceof Error ? err.message : String(err)}`)
+          }
+        }
+        if (failed.length > 0) {
+          log(`withdraw_ask: ${failed.length}/${open.length} open row(s) of ${askId} not retired: ${failed.join('; ')}`)
+          return {
+            content: [
+              {
+                type: 'text',
+                text:
+                  `Could not retire ${failed.length} of ${open.length} open question(s) of card ${askId}; ` +
+                  `it stays tracked, so call withdraw_ask again. ${failed.join('; ')}`,
+              },
+            ],
+            isError: true,
+          }
+        }
+        retired = true
+      } finally {
+        if (!retired) askTracker.endWithdraw(askId)
       }
       askTracker.withdraw(askId)
       // A late answer that raced the PATCH is never announced.

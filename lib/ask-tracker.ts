@@ -335,6 +335,8 @@ export class AskTracker {
   private readonly asks = new Map<string, PendingAsk>()
   private readonly byMessage = new Map<number, string>()
   private readonly held = new Set<string>()
+  /** Groups withdraw_ask is retiring right now: no announce offers them (review of #282, item 2). */
+  private readonly withdrawing = new Set<string>()
   private delivered_: string[] = []
 
   constructor(opts: {
@@ -463,7 +465,23 @@ export class AskTracker {
 
   /** Complete groups of this session nobody holds and nobody delivered yet: what an announce pass offers. */
   completeUndelivered(): PendingAsk[] {
-    return this.pending().filter((a) => isComplete(a) && !this.isHeld(a.askId) && this.isOurs(a))
+    return this.pending().filter(
+      (a) => isComplete(a) && !this.isHeld(a.askId) && !this.withdrawing.has(a.askId) && this.isOurs(a),
+    )
+  }
+
+  /**
+   * withdraw_ask has begun retiring this group: from now no announce offers it,
+   * so an answer that lands while the rows are being retired is never
+   * delivered after the tool said none would be. endWithdraw lets it go again
+   * when a row could not be retired (the card stays live and tracked).
+   */
+  beginWithdraw(askId: string): void {
+    this.withdrawing.add(askId)
+  }
+
+  endWithdraw(askId: string): void {
+    this.withdrawing.delete(askId)
   }
 
   /** Handed to the agent (event or tool result): forget the group for good, across restarts and daemons too. */
@@ -538,6 +556,7 @@ export class AskTracker {
     if (!ask) return
     this.asks.delete(askId)
     this.held.delete(askId)
+    this.withdrawing.delete(askId)
     for (const q of ask.questions) {
       if (this.byMessage.get(q.messageId) === askId) this.byMessage.delete(q.messageId)
     }
