@@ -509,6 +509,44 @@ test('second review, Important 2: a restart whose old daemon ends seconds after 
   })
 })
 
+test('third review, Critical 1: a restart whose old daemon ends seconds after the new one starts gets the answers however late they come', () => {
+  sharedFile(({ filePath, clock, live, at }) => {
+    const now = () => clock.at
+    const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
+    a.register(group({ askId: 'g', ids: [951] }))
+    live.push(1)
+    clock.at = at('10:10:00')
+    const a2 = trackerAs({ pid: 3, startedAt: clock.at }, live, { filePath, now })
+    live.splice(live.indexOf(1), 1)
+    clock.at = at('10:10:03')
+    a2.refresh()
+    clock.at = at('11:00:00')
+    a2.refresh()
+    a2.record(951, { skipped: true })
+    assert.deepEqual(a2.completeUndelivered().map((g) => g.askId), ['g'], 'answered 50 minutes after the restart')
+  })
+})
+
+test('third review, Important 2: once a session that ran beside the asker has seen it end, no daemon ever takes the answers, its own restart included', () => {
+  sharedFile(({ filePath, clock, live, at }) => {
+    const now = () => clock.at
+    const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
+    a.register(group({ askId: 'g', ids: [961] }))
+    live.push(1)
+    clock.at = at('10:30:00')
+    const b = trackerAs({ pid: 2, startedAt: clock.at }, live, { filePath, now })
+    live.splice(live.indexOf(1), 1)
+    clock.at = at('11:00:00')
+    b.refresh()
+    assert.equal((JSON.parse(readFileSync(filePath, 'utf8')).pending[0] as { askerEndedBeside?: number }).askerEndedBeside !== undefined, true, 'the decision is in the file')
+    // B's daemon restarts: it never saw A alive and started after the post.
+    clock.at = at('11:30:00')
+    const b2 = trackerAs({ pid: 4, startedAt: clock.at }, live, { filePath, now })
+    b2.record(961, { skipped: true })
+    assert.deepEqual(b2.completeUndelivered().map((g) => g.askId), [])
+  })
+})
+
 test('second review, Minor 12: a group with no owner (a file from before the owner was written) goes by the post time alone', () => {
   sharedFile(({ filePath, at }) => {
     const ask = { askId: 'old', chatId: '7', postedAt: at('10:00:00'), questions: [{ messageId: 921, text: 'Q?', options: [{ label: 'A', value: 'a' }] }], answers: { '921': { skipped: true } } }
