@@ -13,7 +13,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -21,6 +21,7 @@ import {
   AskTracker,
   askAnswerFromRow,
   askPendingText,
+  askReadIntervalMs,
   askRetireBody,
   askWaitSeconds,
   buildAskAnsweredEvent,
@@ -161,7 +162,7 @@ test('the file carries no partial write: it is valid JSON after every change', (
 test('a held group (a blocking wait) is the waiter\'s, never announced', () => {
   const tracker = new AskTracker({ filePath: null })
   tracker.register(group({ ids: [41] }))
-  tracker.hold('ask-1')
+  tracker.hold('ask-1', Date.now() + 60_000)
   tracker.record(41, { skipped: true })
   assert.equal(tracker.isHeld('ask-1'), true)
   assert.deepEqual(tracker.completeUndelivered(), [], 'a held group is not offered for delivery')
@@ -262,4 +263,140 @@ test('a withdrawn card is retired the way Codex retires one: no options, inline'
   // Inline also retires a free-text-only question: removing options alone would
   // leave its answer input active.
   assert.deepEqual(askRetireBody(), { options: [], renderMode: 'inline' })
+})
+
+// ── Review of PR 1 (Important 1): two daemons of one assistant share the file ──
+// A passive session's daemon serves ask_user_input too, so the file is the
+// source of truth: every save merges what is on disk first, a delivered or
+// withdrawn group is a tombstone every reader honours, and a blocking wait's
+// hold is on disk with its deadline so the armed daemon never announces a
+// group another process is still waiting on.
+
+test('two trackers on one file lose no group: each save merges the other\'s', () => {
+  withDir((dir) => {
+    const filePath = join(dir, 'pending-asks.json')
+    const a = new AskTracker({ filePath })
+    const b = new AskTracker({ filePath })
+    a.register(group({ askId: 'g1', ids: [301] }))
+    b.register(group({ askId: 'g2', ids: [302] }))
+    const onDisk = new AskTracker({ filePath })
+    assert.deepEqual(onDisk.pending().map((g) => g.askId).sort(), ['g1', 'g2'])
+    a.refresh()
+    assert.equal(a.owns(302), true, 'a adopts the group b posted')
+  })
+})
+
+test('a group one tracker delivered is never brought back by the other', () => {
+  withDir((dir) => {
+    const filePath = join(dir, 'pending-asks.json')
+    const a = new AskTracker({ filePath })
+    a.register(group({ askId: 'g1', ids: [311] }))
+    const b = new AskTracker({ filePath })
+    a.record(311, { skipped: true })
+    a.delivered('g1')
+    b.register(group({ askId: 'g2', ids: [312] }))
+    assert.equal(b.owns(311), false, 'b dropped it on its own save')
+    assert.deepEqual(new AskTracker({ filePath }).pending().map((g) => g.askId), ['g2'])
+    assert.deepEqual(b.completeUndelivered(), [])
+  })
+})
+
+test('a withdrawn group is a tombstone too', () => {
+  withDir((dir) => {
+    const filePath = join(dir, 'pending-asks.json')
+    const a = new AskTracker({ filePath })
+    a.register(group({ askId: 'g1', ids: [321] }))
+    const b = new AskTracker({ filePath })
+    a.withdraw('g1')
+    b.refresh()
+    assert.equal(b.owns(321), false)
+    assert.equal(b.get('g1'), null)
+  })
+})
+
+test('answers read by either tracker are merged, the first kept', () => {
+  withDir((dir) => {
+    const filePath = join(dir, 'pending-asks.json')
+    const a = new AskTracker({ filePath })
+    a.register(group({ askId: 'g1', ids: [331, 332] }))
+    const b = new AskTracker({ filePath })
+    a.record(331, { optionValue: 'a1', optionLabel: 'A1' })
+    b.record(332, { skipped: true })
+    a.refresh()
+    assert.equal(a.isComplete('g1'), true)
+    assert.deepEqual(a.get('g1')?.answers['331'], { optionValue: 'a1', optionLabel: 'A1' })
+  })
+})
+
+test('another process\'s blocking wait holds the group until its deadline', () => {
+  withDir((dir) => {
+    const filePath = join(dir, 'pending-asks.json')
+    const c = clock()
+    const waiter = new AskTracker({ filePath, now: c.now })
+    waiter.register(group({ askId: 'g1', ids: [341] }))
+    waiter.hold('g1', c.now() + 60_000)
+    waiter.record(341, { skipped: true })
+    const armed = new AskTracker({ filePath, now: c.now })
+    assert.equal(armed.isHeld('g1'), true)
+    assert.deepEqual(armed.completeUndelivered(), [], 'the waiter\'s result, never an event')
+    waiter.release('g1')
+    armed.refresh()
+    assert.deepEqual(armed.completeUndelivered().map((g) => g.askId), ['g1'])
+  })
+})
+
+test('a hold whose process died ends at its deadline', () => {
+  withDir((dir) => {
+    const filePath = join(dir, 'pending-asks.json')
+    const c = clock()
+    const waiter = new AskTracker({ filePath, now: c.now })
+    waiter.register(group({ askId: 'g1', ids: [351] }))
+    waiter.hold('g1', c.now() + 60_000)
+    waiter.record(351, { skipped: true })
+    const armed = new AskTracker({ filePath, now: c.now })
+    c.advance(61_000)
+    assert.equal(armed.isHeld('g1'), false)
+    assert.deepEqual(armed.completeUndelivered().map((g) => g.askId), ['g1'])
+  })
+})
+
+// ── Review of PR 1 (Minor 11): a file that cannot be read is kept, and said ──
+
+test('an unreadable file is logged and kept aside, never silently overwritten', () => {
+  withDir((dir) => {
+    const filePath = join(dir, 'pending-asks.json')
+    writeFileSync(filePath, '{ not json')
+    const lines: string[] = []
+    const tracker = new AskTracker({ filePath, log: (l) => lines.push(l) })
+    assert.ok(lines.some((l) => /could not read/.test(l) && /corrupt/.test(l)), lines.join('\n'))
+    assert.ok(readdirSync(dir).some((f) => f.startsWith('pending-asks.json.corrupt')), 'a copy is kept')
+    tracker.register(group({ askId: 'g1', ids: [361] }))
+    assert.deepEqual(new AskTracker({ filePath }).pending().map((g) => g.askId), ['g1'])
+  })
+})
+
+// ── Review of PR 1 (Important 2): with the stream off, a delta poll never shows an answer ──
+// (answering updates an old row), so the reads are the delivery path: often while the owner is
+// likely at the card (just posted, or just answered a question of it), then rarely.
+
+test('a young or just answered group is read every 5 s, then every 20 s, then every 2 minutes', () => {
+  const c = clock()
+  const tracker = new AskTracker({ filePath: null, now: c.now })
+  const ask = tracker.register(group({ ids: [371, 372] }))
+  assert.equal(askReadIntervalMs(ask, c.now()), 5_000)
+  c.advance(3 * MIN)
+  assert.equal(askReadIntervalMs(ask, c.now()), 20_000)
+  c.advance(13 * MIN)
+  assert.equal(askReadIntervalMs(ask, c.now()), 2 * MIN)
+  tracker.record(371, { skipped: true })
+  assert.equal(askReadIntervalMs(tracker.get('ask-1')!, c.now()), 5_000, 'an answer means the owner is at the card now')
+})
+
+// ── Review of PR 1 (Important 3): the ask_answered turn is not the owner's own message ──
+
+test('the pending text says private tools refuse in the ask_answered turn, and when to wait instead', () => {
+  const text = askPendingText({ askId: 'ask-9', total: 2, answered: 0 })
+  assert.match(text, /not your owner's own message/)
+  assert.match(text, /schedule/)
+  assert.match(text, /wait_seconds/)
 })

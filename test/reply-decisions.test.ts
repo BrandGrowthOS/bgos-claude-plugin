@@ -69,3 +69,8 @@ test('the reply tool warns after the send, only for a reply with buttons, never 
   assert.match(body.slice(warn - 200, warn + 200), /peerConvByChat\.has\(String\(resolvedChatId\)\)/)
   assert.match(body, /multiDecisionLine\(decisions\)/)
 })
+
+test('an Arabic or full width question mark ends a question too (review of PR 1, Minor 12)', () => {
+  assert.equal(decisionCount('هل أنشر الليلة؟\nأي منطقة؟'), 2)
+  assert.equal(decisionCount('今晚部署吗？\n哪个区域？'), 2)
+})
