@@ -187,3 +187,29 @@ test('the reply description says buttons ask exactly one thing and names the car
   assert.match(d, /asks? exactly one thing/)
   assert.match(d, /2 or more decisions is ONE ask_user_input card/)
 })
+
+// Review of #282, item 3: a call with neither wait_seconds nor timeout_seconds
+// keeps its old contract (it blocks up to 600 s and returns the answers), so
+// "returns at once as pending" is true only with wait_seconds 0, and every
+// place that carries section 6 says so right after it.
+const PASS_ZERO =
+  'For that, pass wait_seconds: 0. A call with neither wait_seconds nor timeout_seconds keeps its old behaviour: ' +
+  'it waits up to 600 s and returns the answers.'
+
+test('item 3 of #282: right after section 6, the instructions, the tool and the fallback say to pass wait_seconds 0', async () => {
+  const { BGOS_CAPABILITIES_FALLBACK } = await import('../lib/capabilities.ts')
+  for (const [where, text] of [
+    ['the bundled instructions', bundledInstructions()],
+    ['the ask_user_input description', toolDescription('ask_user_input')],
+    ['the capabilities fallback', BGOS_CAPABILITIES_FALLBACK.replace(/\s+/g, ' ')],
+  ] as const) {
+    assert.ok(text.includes(`${SECTION_6} ${PASS_ZERO}`), `${where} does not follow section 6 with the wait_seconds 0 sentence`)
+  }
+})
+
+test('item 3 of #282: the wait_seconds field says what leaving it out does', () => {
+  const d = propertyDescription('ask_user_input', 'wait_seconds')
+  assert.match(d, /Leave it out/)
+  assert.match(d, /600 s/)
+  assert.doesNotMatch(d, /Default 0/)
+})

@@ -87,6 +87,8 @@ function rig(opts: { lockHeld?: boolean; live?: number[] } = {}) {
   const logs: string[] = []
   const announced = new Set<number>()
   const askDelivering = new Set<string>()
+  // Answers the owner gives at a time on this clock, by the order the questions were posted.
+  const scheduled: Array<{ at: number; index: number }> = []
 
   const known: Record<string, unknown> = {
     ...askLib,
@@ -111,6 +113,13 @@ function rig(opts: { lockHeld?: boolean; live?: number[] } = {}) {
       return { id, askId: (body.askId as string | undefined) ?? 'grp-1' }
     },
     bgosGet: async (path: string) => {
+      const ids = [...rows.keys()]
+      for (const s of scheduled) {
+        const id = ids[s.index]
+        if (id !== undefined && clock >= s.at && !rows.get(id)!.answer) {
+          rows.set(id, { id, answer: { optionId: id * 10 + 1, skipped: false } })
+        }
+      }
       const before = Number(/beforeId=(\d+)/.exec(path)?.[1] ?? Infinity)
       return {
         messages: [...rows.values()]
@@ -193,6 +202,10 @@ function rig(opts: { lockHeld?: boolean; live?: number[] } = {}) {
     },
     onPatch: (fn: (path: string) => void | Promise<void>) => {
       onPatch = fn
+    },
+    /** The owner answers the n-th posted question (Yes) once the clock reaches `at`. */
+    answerAt: (index: number, at: number) => {
+      scheduled.push({ at, index })
     },
     holdNotifications: () => {
       let release!: () => void
@@ -355,4 +368,78 @@ test('item 2: a withdraw that could not retire a row lets a later answer through
   r.announceCompleteAsks('stream')
   await r.settle()
   assert.equal(r.notes.length, 1, 'the card is live again, as the result said')
+})
+
+// ── Item 3 (Medium): existing callers keep the old contract ──────────────────
+
+test('item 3: with neither wait_seconds nor timeout_seconds the call blocks, as before, and returns the answers array', async () => {
+  const r = rig()
+  r.answerAt(0, START + 40_000)
+  r.answerAt(1, START + 90_000)
+  const res = await r.askTool({ chat_id: '77', questions: QUESTIONS })
+  const rows = rowsOf(res)
+  assert.ok(rows, `the answers array, not: ${res.content[0].text.slice(0, 80)}`)
+  assert.deepEqual(rows, [
+    { question: 'Ship it?', picked_option_value: 'yes', picked_option_label: 'Yes' },
+    { question: 'Tonight?', picked_option_value: 'yes', picked_option_label: 'Yes' },
+  ])
+  assert.ok(r.now() - START >= 90_000, 'it waited for the last answer')
+  assert.equal(r.notes.length, 0, 'and no event follows the result')
+})
+
+test('item 3: that default wait is the old 600 s; when it runs out the result is pending, never invented skips', async () => {
+  const r = rig()
+  const res = await r.askTool({ chat_id: '77', questions: QUESTIONS })
+  assert.ok(r.now() - START >= 600_000, 'it waited 600 s')
+  assert.ok(r.now() - START < 610_000)
+  assert.match(res.content[0].text, /"status": "pending"/)
+  assert.match(res.content[0].text, /600 s wait/)
+  assert.doesNotMatch(res.content[0].text, /"skipped"/)
+})
+
+test('item 3: wait_seconds given as a string is read as that many seconds, never as 0', async () => {
+  const r = rig()
+  r.answerAt(0, START + 10_000)
+  r.answerAt(1, START + 30_000)
+  const rows = rowsOf(await r.askTool({ chat_id: '77', questions: QUESTIONS, wait_seconds: '60' }))
+  assert.ok(rows, 'it waited and returned the answers')
+  assert.equal(rows.length, 2)
+})
+
+test('item 3: timeout_seconds given as a string is read the same way', async () => {
+  const r = rig()
+  r.answerAt(0, START + 5_000)
+  r.answerAt(1, START + 6_000)
+  assert.ok(rowsOf(await r.askTool({ chat_id: '77', questions: QUESTIONS, timeout_seconds: ' 90 ' })))
+})
+
+for (const bad of ['soon', '', -5, Number.NaN, '1e999', true]) {
+  test(`item 3: wait_seconds ${typeof bad === 'number' ? String(bad) : JSON.stringify(bad)} is refused with a clear error before anything is posted`, async () => {
+    const r = rig()
+    const res = await r.askTool({ chat_id: '77', questions: QUESTIONS, wait_seconds: bad })
+    assert.equal(res.isError, true)
+    assert.match(res.content[0].text, /wait_seconds/)
+    assert.match(res.content[0].text, /0 to 600/)
+    assert.equal(r.posts.length, 0)
+  })
+}
+
+test('item 3: wait_seconds 0 still returns pending at once', async () => {
+  const r = rig()
+  const res = await r.askTool({ chat_id: '77', questions: QUESTIONS, wait_seconds: 0 })
+  assert.equal(r.now(), START)
+  assert.match(res.content[0].text, /"status": "pending"/)
+})
+
+test('item 3: a pending result says in plain words that the answers come later, in a turn where owner-only tools refuse, and what to do', async () => {
+  const r = rig()
+  const now = (await r.askTool({ chat_id: '77', questions: QUESTIONS, wait_seconds: 0 })).content[0].text
+  const late = (await rig().askTool({ chat_id: '77', questions: QUESTIONS, wait_seconds: 5 })).content[0].text
+  for (const text of [now, late]) {
+    assert.match(text, /arrive later/)
+    assert.match(text, /refuse/)
+    assert.match(text, /schedule, boards, the browser, email_send and call_owner/)
+    assert.match(text, /ask again with wait_seconds while your owner is in the chat/)
+    assert.match(text, /your owner's next message/)
+  }
 })

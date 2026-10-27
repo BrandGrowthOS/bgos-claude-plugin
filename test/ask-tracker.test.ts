@@ -224,23 +224,36 @@ test('ask_answered is one event with every answer in question order and all-stri
   ])
 })
 
-test('the wait is 0 unless asked for: post, return pending, end the turn', () => {
-  assert.equal(askWaitSeconds({}), 0)
-  assert.equal(askWaitSeconds({ wait_seconds: 0 }), 0)
-  assert.equal(askWaitSeconds({ wait_seconds: -5 }), 0)
-  assert.equal(askWaitSeconds({ wait_seconds: 'soon' }), 0)
-})
-
-test('wait_seconds blocks up to its value, capped at the old 600 s default', () => {
-  assert.equal(askWaitSeconds({ wait_seconds: 90 }), 90)
-  assert.equal(askWaitSeconds({ wait_seconds: 5000 }), MAX_ASK_WAIT_SECONDS)
+test('item 3 of #282: with neither field the call blocks up to the old 600 s; 0 returns pending at once', () => {
+  assert.deepEqual(askWaitSeconds({}), { seconds: 600 })
+  assert.deepEqual(askWaitSeconds({ wait_seconds: null }), { seconds: 600 }, 'null is not given')
+  assert.deepEqual(askWaitSeconds({ wait_seconds: 0 }), { seconds: 0 })
   assert.equal(MAX_ASK_WAIT_SECONDS, 600)
 })
 
+test('item 3 of #282: wait_seconds blocks up to its value, capped at 600, and a number written as a string is read', () => {
+  assert.deepEqual(askWaitSeconds({ wait_seconds: 90 }), { seconds: 90 })
+  assert.deepEqual(askWaitSeconds({ wait_seconds: 5000 }), { seconds: MAX_ASK_WAIT_SECONDS })
+  assert.deepEqual(askWaitSeconds({ wait_seconds: '60' }), { seconds: 60 })
+  assert.deepEqual(askWaitSeconds({ wait_seconds: ' 45 ' }), { seconds: 45 })
+})
+
+test('item 3 of #282: a wait that is not a number of seconds is refused, never read as 0', () => {
+  for (const bad of ['soon', '', -5, Number.NaN, Number.POSITIVE_INFINITY, '1e999', true, {}]) {
+    const r = askWaitSeconds({ wait_seconds: bad })
+    assert.ok('error' in r, `wait_seconds ${String(bad)} is refused`)
+    assert.match((r as { error: string }).error, /wait_seconds must be a number of seconds from 0 to 600/)
+  }
+  const t = askWaitSeconds({ timeout_seconds: 'x' })
+  assert.ok('error' in t)
+  assert.match((t as { error: string }).error, /timeout_seconds/)
+})
+
 test('timeout_seconds keeps its meaning: the upper bound of a blocking wait, uncapped as before', () => {
-  assert.equal(askWaitSeconds({ timeout_seconds: 600 }), 600)
-  assert.equal(askWaitSeconds({ timeout_seconds: 1200 }), 1200)
-  assert.equal(askWaitSeconds({ timeout_seconds: 30, wait_seconds: 10 }), 10, 'wait_seconds wins when both are given')
+  assert.deepEqual(askWaitSeconds({ timeout_seconds: 600 }), { seconds: 600 })
+  assert.deepEqual(askWaitSeconds({ timeout_seconds: 1200 }), { seconds: 1200 })
+  assert.deepEqual(askWaitSeconds({ timeout_seconds: '90' }), { seconds: 90 })
+  assert.deepEqual(askWaitSeconds({ timeout_seconds: 30, wait_seconds: 10 }), { seconds: 10 }, 'wait_seconds wins when both are given')
 })
 
 test('a pending result names the ask id and the event, and never reports a skip', () => {
