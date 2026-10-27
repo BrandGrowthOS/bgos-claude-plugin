@@ -58,7 +58,7 @@ test('a blocking question to the owner counts as a question for as long as it wa
   const at = server.indexOf("case 'ask_user_input': {")
   const ask = server.slice(at, server.indexOf("case 'complete_voice_task': {", at))
   const up = ask.indexOf('asksWaiting += 1')
-  const loop = ask.indexOf('while (Date.now() < deadline && answers.size < targetIds.size)')
+  const loop = ask.indexOf('while (Date.now() < deadline && !askTracker.isComplete(askKey))')
   const down = ask.indexOf('asksWaiting -= 1')
   assert.ok(up >= 0 && loop > up && down > loop, 'counted around the wait loop')
   assert.match(ask.slice(loop, down + 40), /\} finally \{\s*asksWaiting -= 1/)

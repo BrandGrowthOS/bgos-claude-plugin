@@ -20,7 +20,10 @@ import { tmpdir } from 'node:os'
 import {
   AskTracker,
   askAnswerFromRow,
+  askPendingText,
+  askWaitSeconds,
   buildAskAnsweredEvent,
+  MAX_ASK_WAIT_SECONDS,
   type AskRow,
 } from '../lib/ask-tracker.ts'
 
@@ -217,4 +220,38 @@ test('ask_answered is one event with every answer in question order and all-stri
     { question: 'Question 1?', picked_option_value: 'b1', picked_option_label: 'B1' },
     { question: 'Question 2?', skipped: true },
   ])
+})
+
+test('the wait is 0 unless asked for: post, return pending, end the turn', () => {
+  assert.equal(askWaitSeconds({}), 0)
+  assert.equal(askWaitSeconds({ wait_seconds: 0 }), 0)
+  assert.equal(askWaitSeconds({ wait_seconds: -5 }), 0)
+  assert.equal(askWaitSeconds({ wait_seconds: 'soon' }), 0)
+})
+
+test('wait_seconds blocks up to its value, capped at the old 600 s default', () => {
+  assert.equal(askWaitSeconds({ wait_seconds: 90 }), 90)
+  assert.equal(askWaitSeconds({ wait_seconds: 5000 }), MAX_ASK_WAIT_SECONDS)
+  assert.equal(MAX_ASK_WAIT_SECONDS, 600)
+})
+
+test('timeout_seconds keeps its meaning: the upper bound of a blocking wait, uncapped as before', () => {
+  assert.equal(askWaitSeconds({ timeout_seconds: 600 }), 600)
+  assert.equal(askWaitSeconds({ timeout_seconds: 1200 }), 1200)
+  assert.equal(askWaitSeconds({ timeout_seconds: 30, wait_seconds: 10 }), 10, 'wait_seconds wins when both are given')
+})
+
+test('a pending result names the ask id and the event, and never reports a skip', () => {
+  const now = askPendingText({ askId: 'ask-9', total: 3, answered: 0 })
+  assert.match(now, /"status": ?"pending"/)
+  assert.match(now, /ask-9/)
+  assert.match(now, /ask_answered/)
+  assert.match(now, /End your turn/)
+  assert.doesNotMatch(now, /"skipped"/)
+
+  const late = askPendingText({ askId: 'ask-9', total: 3, answered: 1, waitedSeconds: 600 })
+  assert.match(late, /600/)
+  assert.match(late, /"answered_so_far": ?1/)
+  assert.match(late, /Nothing was skipped/)
+  assert.doesNotMatch(late, /"skipped"/)
 })

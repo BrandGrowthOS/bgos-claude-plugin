@@ -323,6 +323,8 @@ function streamHarness(record: { requesterUserId?: string } = { requesterUserId:
     // The cards this daemon life posted (server.ts): none here, so no tap of this rig opens a private turn.
     postedButtons: createPostedButtons(),
     streamAuthority: {},
+    // The pending question groups (lib/ask-tracker.ts): none here, so every tap of this rig is a button tap.
+    askTracker: { askIdOf: () => null },
     announcedClickIds,
     rememberAnnouncedClick: (id: number) => announcedClickIds.add(id),
     chatUnansweredButtons: new Map(),

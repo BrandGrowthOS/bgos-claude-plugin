@@ -270,6 +270,17 @@ import {
 import { declaredCapabilities } from './lib/declared-capabilities.js'
 import { ReplyCardNudges, UI_CARD } from './lib/reply-card-shape.ts'
 import {
+  AskTracker,
+  ASK_TRACKER_FILE_NAME,
+  askAnswerFromRow,
+  askPendingText,
+  askResultRows,
+  askWaitSeconds,
+  buildAskAnsweredEvent,
+  type AskRow,
+  type PendingAsk,
+} from './lib/ask-tracker.ts'
+import {
   StopPauseLane,
   isOwnerAuthoredInbound,
   type StopGoalView,
@@ -3107,9 +3118,18 @@ const mcp = new Server(
       'conversation (they just sent you a message and you need their answer to',
       'continue). The BGOS app shows a polished modal/sheet that pops over the',
       'chat with numbered choices, optional free-text fallback, and per-question',
-      'Skip. The tool BLOCKS until every question is answered (option picked,',
-      'free text typed, or skipped), when it returns you have structured',
-      'answers.',
+      'Skip. The tool returns at once as pending with an `ask_id`. When every',
+      'question is answered (option picked, free text typed, or skipped) the',
+      'answers arrive together as ONE channel event, however late, and it starts',
+      'a new turn:',
+      '  <channel source="bgos" event_type="ask_answered">',
+      '    [ask_answered] ... (ask_id=...)',
+      '  </channel>',
+      'with `meta.ask_id` and `meta.answers` (JSON, one entry per question in',
+      'order: `picked_option_value` and `picked_option_label`, `free_text`, or',
+      '`skipped: true`). `wait_seconds` (up to 600) blocks instead and returns',
+      'the answers if they all come in time; if not it returns pending, never',
+      'invented skips, and the answers still arrive as ask_answered.',
       '',
       'Use it for: choosing an approach, picking a destination, ranking',
       'priorities, confirming intent before a destructive action, multi-step',
@@ -4762,9 +4782,11 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: 'ask_user_input',
       description:
         'Ask the user one or more multiple-choice questions through a polished ' +
-        'modal/sheet in the BGOS app. BLOCKS until every question is answered ' +
-        '(option picked, free text typed, or skipped) and returns structured ' +
-        'answers. Use ONLY when (a) you need the user to pick from a clear ' +
+        'modal/sheet in the BGOS app. Returns at once as pending with an ask_id; ' +
+        'when every question is answered (option picked, free text typed, or ' +
+        'skipped) ONE ask_answered channel event carries every answer and starts ' +
+        'a new turn, however late. wait_seconds blocks up to that long instead ' +
+        'and returns the answers if they all come in time. Use ONLY when (a) you need the user to pick from a clear ' +
         'set of options AND (b) the user is actively in this conversation. ' +
         'For open-ended questions use `reply`. For async/unprompted scenarios ' +
         '(scheduled check-ins, proactive nudges) DO NOT use this, a blocking ' +
@@ -4829,11 +4851,25 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             minItems: 1,
             maxItems: 4,
           },
+          wait_seconds: {
+            type: 'number',
+            minimum: 0,
+            maximum: 600,
+            description:
+              'How long this call may wait for the answers. Default 0: post the ' +
+              'card, return pending at once, and receive every answer later as ONE ' +
+              'ask_answered event. Above 0 the call blocks up to that many seconds ' +
+              'and returns the answers if they all come in time; otherwise it returns ' +
+              'pending (never invented skips) and the answers still arrive as ' +
+              'ask_answered.',
+          },
           timeout_seconds: {
             type: 'number',
             description:
-              'Hard upper bound to wait for answers. Default 600 (10 minutes). ' +
-              'On timeout, any unanswered questions return as { skipped: true }.',
+              'Older name for a blocking wait: the upper bound in seconds to wait for ' +
+              'the answers. If they do not all come in time the call returns pending, ' +
+              'never invented skips, and the answers arrive later as ask_answered. ' +
+              'Prefer wait_seconds; wait_seconds wins when both are given.',
           },
         },
         required: ['chat_id', 'questions'],
@@ -6623,7 +6659,9 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
             allow_skip?: boolean
           }>
         | undefined
-      const timeoutSeconds = (rawArgs.timeout_seconds as number | undefined) ?? 600
+      // 0 unless asked for: post, return pending, the answers come back as
+      // ONE ask_answered event however late (lib/ask-tracker.ts askWaitSeconds).
+      const waitSeconds = askWaitSeconds(rawArgs)
 
       if (!chat_id) {
         return { content: [{ type: 'text', text: 'Error: chat_id is required' }] }
@@ -6680,119 +6718,71 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
           postedIds.push(result.id)
           if (!askId && result.askId) askId = result.askId
         }
+        // A backend that names no group still gets one key per card.
+        const askKey = askId ?? `local-${postedIds[0]}`
         log(
-          `ask_user_input: posted ${questions.length} question(s) to chat ${askChatId} (askId=${askId})`,
+          `ask_user_input: posted ${questions.length} question(s) to chat ${askChatId} (askId=${askKey}, wait ${waitSeconds}s)`,
         )
+        askTracker.register({
+          askId: askKey,
+          chatId: String(askChatId),
+          questions: questions.map((q, i) => ({
+            messageId: postedIds[i],
+            text: q.text,
+            options: q.options.map((o) => ({ label: o.label, value: o.value })),
+          })),
+        })
 
-        // Poll until every posted message has answeredAt set, or timeout.
-        const targetIds = new Set(postedIds)
-        const answers = new Map<
-          number,
-          {
-            freeText?: string
-            skipped?: boolean
-            optionLabel?: string
-            optionValue?: string
-          }
-        >()
-        const startTime = Date.now()
-        const deadline = startTime + timeoutSeconds * 1000
+        if (waitSeconds <= 0) {
+          return { content: [{ type: 'text', text: askPendingText({ askId: askKey, total: questions.length, answered: 0 }) }] }
+        }
 
+        // A blocking wait holds the group: answered in time, the answers are
+        // this call's result and never an event as well; out of time, the
+        // hold is released and the group is announced when it completes.
+        askTracker.hold(askKey)
+        const deadline = Date.now() + waitSeconds * 1000
         // Needs you, for as long as the owner has not answered (session
         // status, board row 9c3d6b2c); the finally holds on any exit.
         asksWaiting += 1
         try {
-          while (Date.now() < deadline && answers.size < targetIds.size) {
+          while (Date.now() < deadline && !askTracker.isComplete(askKey)) {
             await new Promise((r) => setTimeout(r, 1500))
+            const ask = askTracker.get(askKey)
+            if (!ask) break
             try {
-              const rawAsk = await bgosGet(
-                `chats/${askChatId}/messages?userId=${USER_ID}`,
-              )
-              // 304: no message changed, so no answeredAt flipped either.
-              if (isNotModified(rawAsk)) continue
-              const data = rawAsk as {
-                messages: Array<{
-                  message: {
-                    id: number
-                    text: string | null
-                    answeredAt: string | null
-                    answerPayload: {
-                      optionId?: number
-                      freeText?: string
-                      skipped?: boolean
-                    } | null
-                  }
-                  messageOptions: Array<{
-                    id: number
-                    text: string
-                    callbackData: string
-                  }>
-                }>
-              }
-              for (const entry of data.messages ?? []) {
-                if (!targetIds.has(entry.message.id)) continue
-                if (answers.has(entry.message.id)) continue
-                if (!entry.message.answeredAt || !entry.message.answerPayload) continue
-                const payload = entry.message.answerPayload
-                const matched = payload.optionId
-                  ? entry.messageOptions.find((o) => o.id === payload.optionId)
-                  : undefined
-                answers.set(entry.message.id, {
-                  ...(payload.freeText !== undefined && { freeText: payload.freeText }),
-                  ...(payload.skipped === true && { skipped: true }),
-                  ...(matched && {
-                    optionLabel: matched.text,
-                    // Strip the `u:` sentinel so the agent gets its original value.
-                    optionValue: unescapeAgentButtonValue(matched.callbackData),
-                  }),
-                })
-              }
+              await readAskGroup(ask)
             } catch (err) {
               log(`ask_user_input poll error: ${err}`)
             }
           }
-
         } finally {
           asksWaiting -= 1
+          askTracker.release(askKey)
         }
 
-        // Timeout fallback: any still-unanswered question is reported as skipped.
-        const timedOut = answers.size < targetIds.size
-        if (timedOut) {
-          for (const id of targetIds) {
-            if (!answers.has(id)) {
-              answers.set(id, { skipped: true })
-            }
-          }
+        // No await from here to the return: no other door can announce this
+        // group between the release above and the delivery below.
+        const ask = askTracker.get(askKey)
+        if (!ask) {
+          return { content: [{ type: 'text', text: `The question card ${askKey} was withdrawn before every question was answered.` }] }
         }
-
-        // Build the structured response in question order.
-        const result = postedIds.map((id, i) => {
-          const a = answers.get(id) ?? { skipped: true }
-          return {
-            question: questions[i].text,
-            ...(a.optionValue !== undefined && {
-              picked_option_value: a.optionValue,
-              picked_option_label: a.optionLabel,
-            }),
-            ...(a.freeText !== undefined && { free_text: a.freeText }),
-            ...(a.skipped === true && { skipped: true }),
-          }
-        })
-
+        if (askTracker.isComplete(askKey)) {
+          for (const q of ask.questions) rememberAnnouncedClick(q.messageId)
+          askTracker.delivered(askKey)
+          log(`ask_user_input: ${ask.questions.length}/${ask.questions.length} answered within the wait (askId=${askKey})`)
+          return { content: [{ type: 'text', text: JSON.stringify(askResultRows(ask), null, 2) }] }
+        }
+        const answered = Object.keys(ask.answers).length
         log(
-          `ask_user_input: ${answers.size}/${targetIds.size} answered${timedOut ? ' (some timed out → skipped)' : ''}`,
+          `ask_user_input: ${answered}/${ask.questions.length} answered when the ${waitSeconds}s wait ran out; ` +
+            `pending, the rest arrive as ask_answered (askId=${askKey})`,
         )
-
         return {
           content: [
             {
               type: 'text',
-              text:
-                (timedOut
-                  ? `Some questions timed out (${timeoutSeconds}s), those are reported as skipped.\n\n`
-                  : '') +
-                JSON.stringify(result, null, 2),
+              text: askPendingText({ askId: askKey, total: ask.questions.length, answered, waitedSeconds: waitSeconds }),
             },
           ],
         }
@@ -8153,6 +8143,15 @@ const CURSOR_FILE_PATH = resolveCursorFilePath({
 // triggers the one-time boot hello below and what the bootstrap's final
 // wait watches for.
 const LIVE_MARKER_PATH = liveMarkerPath(pathDirname(CURSOR_FILE_PATH))
+// Every question group ask_user_input posted that the owner has not finished
+// answering, beside the cursor file so a restart reads it back
+// (lib/ask-tracker.ts). Answers reach it from the stream, the poll, a
+// blocking wait and the reconcile on connect; a complete group is announced
+// ONCE as an ask_answered event (announceCompleteAsks).
+const askTracker = new AskTracker({
+  filePath: pathJoin(pathDirname(CURSOR_FILE_PATH), ASK_TRACKER_FILE_NAME),
+  log,
+})
 // Single-instance pairing lock (0.38.6, board 01a05185): a reclaimable
 // heartbeat lock keyed to the RESOLVED credentials file. Exactly one daemon
 // per pairing holds it and connects the pairing WebSocket; the rest stay
@@ -10789,7 +10788,7 @@ async function pollChat(chatId: string): Promise<void> {
     // set becomes) is the pure `selectClickTransitions` in lib/poll-core.ts:
     // it is the single-announce contract and is unit-tested there. This loop
     // only renders the announcements it returns.
-    const { announce, nextUnanswered } = selectClickTransitions({
+    const { announce, nextUnanswered, askAnswered } = selectClickTransitions({
       rows: data.messages.map((m) => ({
         id: m.message.id,
         sender: m.message.sender,
@@ -10799,6 +10798,7 @@ async function pollChat(chatId: string): Promise<void> {
       })),
       prevUnanswered,
       isFirstPoll,
+      trackedAsks: askTracker.trackedMessageIds(),
     })
     const announced = new Set(announce)
     // The second lock (person lanes) for taps: once lanes run for this agent,
@@ -10816,6 +10816,20 @@ async function pollChat(chatId: string): Promise<void> {
     // chat from the 2s scope (both lanes do this; see applyStreamButtonsAnswered).
     const promptHere = recentButtonPrompts.get(chatId)
     if (promptHere && announced.has(promptHere.messageId)) recentButtonPrompts.delete(chatId)
+    // Answers to a pending ask group on this page (lib/ask-tracker.ts): the
+    // row itself names the option, so it is recorded straight off it, and a
+    // group it completes is announced once (announceCompleteAsks). The same
+    // second lock as a tap.
+    if (askAnswered.length > 0 && ownerAnnounceRefused({ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership.isOthers(chatId) })) {
+      noteLaneMisroute('poll ask answer', askAnswered.join(','), 'a recipient chat')
+    } else if (askAnswered.length > 0) {
+      for (const id of askAnswered) {
+        const entry = data.messages.find((m) => m.message.id === id)
+        const answer = entry ? askAnswerFromRow(entry as unknown as AskRow) : null
+        if (answer) askTracker.record(id, answer)
+      }
+      announceCompleteAsks('poll')
+    }
     for (const m of data.messages) {
       const mm = m.message
       if (!announced.has(mm.id)) continue
@@ -11411,6 +11425,122 @@ function rememberAnnouncedClick(id: number): void {
   if (announcedClickIds.size > FORWARD_CACHE_MAX) {
     const first = announcedClickIds.values().next().value
     if (first !== undefined) announcedClickIds.delete(first)
+  }
+}
+
+// ── Late ask answers (lib/ask-tracker.ts) ────────────────────────────────────
+//
+// A question group the owner answers however late reaches the agent as ONE
+// ask_answered channel event that starts a turn. Four doors feed the tracker:
+// the stream's buttons_answered entry for a question it owns
+// (applyStreamButtonsAnswered), the poll's row of one (pollChat), a blocking
+// wait's own reads (the ask_user_input tool), and reconcilePendingAsks on
+// connect and on a timer. Every door ends in announceCompleteAsks, which
+// announces a complete, unheld group once: the in flight set covers the two
+// transports racing inside one pass, the shared announced-click set every
+// later replay of its question ids, and the tracker's file every later life.
+
+/** Rows read per group: its own questions sit at the top of this page whatever came after them. */
+const ASK_READ_PAGE = 20
+/** How often pending groups are read again while any exist (a 304 when nothing moved). */
+const ASK_RECONCILE_INTERVAL_MS = 2 * 60_000
+/** A failed read of a group the stream said was answered is tried again this many times. */
+const ASK_READ_RETRIES = 4
+const ASK_READ_RETRY_MS = 15_000
+const askDelivering = new Set<string>()
+let askReconcileRunning = false
+
+/**
+ * Read every question row of a pending group and record what is answered.
+ * The page ends at the group's newest question (beforeId), so however many
+ * messages followed the card, its rows are in it.
+ */
+async function readAskGroup(ask: PendingAsk): Promise<void> {
+  const ids = new Set(ask.questions.map((q) => q.messageId))
+  const beforeId = Math.max(...ids) + 1
+  const raw = await bgosGet(
+    `chats/${ask.chatId}/messages?userId=${USER_ID}&beforeId=${beforeId}&limit=${ASK_READ_PAGE}`,
+  )
+  // 304: nothing on this page moved since it was last read and recorded.
+  if (isNotModified(raw)) return
+  const data = raw as { messages?: AskRow[] }
+  for (const entry of data.messages ?? []) {
+    if (!ids.has(entry.message.id)) continue
+    const answer = askAnswerFromRow(entry)
+    if (answer) askTracker.record(entry.message.id, answer)
+  }
+}
+
+/** Announce every complete group nobody holds as ONE ask_answered event, exactly once. */
+function announceCompleteAsks(via: string): void {
+  for (const ask of askTracker.completeUndelivered()) {
+    if (askDelivering.has(ask.askId)) continue
+    askDelivering.add(ask.askId)
+    // Every question id joins the shared set first, so a stream or poll
+    // replay of any of its answers stays silent from here on.
+    for (const q of ask.questions) rememberAnnouncedClick(q.messageId)
+    const event = buildAskAnsweredEvent(ask, { assistantId: String(ASSISTANT_ID) })
+    const ageMin = Math.round((Date.now() - ask.postedAt) / 60_000)
+    void trackMessageOperation(() =>
+      mcp.notification({
+        method: 'notifications/claude/channel',
+        params: {
+          // The backend stamps no tapper on an ask answer, and typed words
+          // ride in it, so it is never shown to be the owner's own words: it
+          // opens no private turn and is noted like any other untracked card.
+          content: privateTapCard({ tracker: privateTurns, lane: 'ask', ownerUserId: USER_ID, chatId: ask.chatId, messageId: ask.questions[0]?.messageId, tapperUserId: null, answeredAt: null, receivedAt: Date.now(), callbackData: '', customText: null, posted: false, content: event.content }),
+          meta: event.meta,
+        },
+      }),
+    )
+      .then(() => {
+        askTracker.delivered(ask.askId)
+        log(
+          `ask_answered: delivered group ${ask.askId} (${ask.questions.length} question(s)) in chat ${ask.chatId}, ` +
+            `${ageMin} min after it was posted, via ${via}`,
+        )
+      })
+      .catch((err) => {
+        // Kept: the next pass (an answer replay, the timer, a reconnect) offers it again.
+        log(`ask_answered: delivery of group ${ask.askId} failed, kept for the next pass: ${err}`)
+      })
+      .finally(() => askDelivering.delete(ask.askId))
+  }
+}
+
+/** Read one group (the stream said a question of it was answered), then announce it if complete. */
+async function settleAskGroup(askId: string, via: string, attempt = 0): Promise<void> {
+  const ask = askTracker.get(askId)
+  if (!ask) return
+  try {
+    await readAskGroup(ask)
+  } catch (err) {
+    log(`ask: reading group ${askId} failed (${via}, attempt ${attempt + 1}): ${err}`)
+    if (attempt < ASK_READ_RETRIES) {
+      setTimeout(() => void settleAskGroup(askId, via, attempt + 1), ASK_READ_RETRY_MS * (attempt + 1)).unref()
+    }
+    return
+  }
+  announceCompleteAsks(via)
+}
+
+/** Read every pending group nobody is blocking on, then announce what is complete (connect, timer). */
+async function reconcilePendingAsks(via: string): Promise<void> {
+  if (askReconcileRunning) return
+  askReconcileRunning = true
+  try {
+    for (const ask of askTracker.pending()) {
+      // A blocking wait reads its own group every 1.5 s.
+      if (askTracker.isHeld(ask.askId)) continue
+      try {
+        await readAskGroup(ask)
+      } catch (err) {
+        log(`ask: reconcile read of group ${ask.askId} failed (${via}): ${err}`)
+      }
+    }
+    announceCompleteAsks(via)
+  } finally {
+    askReconcileRunning = false
   }
 }
 
@@ -13727,6 +13857,35 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
     noteLaneMisroute('stream tap', view.messageId, tapLaneVerdict.deliver ? 'a recipient chat' : tapLaneVerdict.stamp)
     return
   }
+  // A question of a pending ask group (lib/ask-tracker.ts), answered however
+  // late. Routed BEFORE the button payload check below: an ask answer is
+  // { optionId, freeText, skipped } with no button fields, so it used to die
+  // there (and at decideButtonsAnswered's ask_user_input skip). The entry only
+  // says WHICH question moved; settleAskGroup reads the group's rows, which
+  // name the option the owner picked.
+  const askId = askTracker.askIdOf(view.messageId)
+  if (askId !== null) {
+    const askDecision = decideButtonsAnswered({
+      messageType: view.messageType,
+      callbackData: view.answerPayload?.callbackData ?? '',
+      alreadyAnnounced: announcedClickIds.has(view.messageId),
+      permissionRe: PERMISSION_CLICK_RE,
+      askTracked: true,
+    })
+    if (askDecision !== 'ask') {
+      log(
+        `button_clicked SKIPPED: ask answer on message ${view.messageId} of group ${askId} in chat ${chatId} ` +
+          `already announced (streamAuthority=${authorityAtReceipt})`,
+      )
+      return
+    }
+    log(
+      `button_clicked RECEIVED on the stream as an ask answer: message ${view.messageId} of group ${askId} ` +
+        `in chat ${chatId} (streamAuthority=${authorityAtReceipt})`,
+    )
+    void settleAskGroup(askId, 'stream')
+    return
+  }
   const answer = view.answerPayload
   if (!answer) {
     // answerPayloadOf() returned null: neither callbackData nor buttonText nor
@@ -14406,6 +14565,14 @@ function connectWebsocket(): void {
 
   realtimeSocket.on('connect', () => {
     log(`WS connected (id=${realtimeSocket?.id}), polling will throttle`)
+    // Pending ask groups are read again on every connect: an answer given
+    // while this daemon was down or disconnected is due now, and a stream
+    // entry for it may be behind a cursor this life never reads.
+    if (askTracker.pending().length > 0) {
+      setTimeout(() => {
+        void reconcilePendingAsks('ws connect').catch((err) => log(`ask reconcile on connect failed: ${err}`))
+      }, drawCatchupDelayMs(Math.random()))
+    }
     // Stream authority is per connection (spec 8): a beacon must be seen on
     // THIS connection before sweeps demote again.
     if (UPDATE_STREAM_ENABLED && streamAuthority) {
@@ -17113,6 +17280,19 @@ async function main(): Promise<void> {
     // failure mode.
     setInterval(checkReplyOverdue, 30_000)
     log(`Reply-overdue enforcement enabled (threshold ${REPLY_OVERDUE_MS / 1000}s)`)
+
+    // Step 5b: pending ask groups (lib/ask-tracker.ts). Read once now, so a
+    // group answered while this daemon was down is announced at boot even
+    // with no socket, and again on a timer while any is pending: under delta
+    // polling an answer UPDATES an old row and never shows on a poll page.
+    if (askTracker.pending().length > 0) {
+      log(`ask tracker: ${askTracker.pending().length} pending question group(s) read back from disk`)
+      void reconcilePendingAsks('boot').catch((err) => log(`ask reconcile at boot failed: ${err}`))
+    }
+    setInterval(() => {
+      if (!channelArmed || updateDrainMode || askTracker.pending().length === 0) return
+      void reconcilePendingAsks('timer').catch((err) => log(`ask reconcile failed: ${err}`))
+    }, ASK_RECONCILE_INTERVAL_MS).unref()
 
     // Step 6: Refresh and publish every 5 minutes to catch newly installed
     // plugins and added or edited command files. Initial discovery and publish
