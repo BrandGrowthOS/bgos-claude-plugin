@@ -298,9 +298,11 @@ import {
   askWithdrawnText,
   buildAskAnsweredEvent,
   buildAskWithdrawnEvent,
+  type AskRetiredBecause,
   type AskRow,
   type PendingAsk,
 } from './lib/ask-tracker.ts'
+import { retiredOwnNotes, tellRetiredOwnOnTick } from './lib/ask-retired-tell.ts'
 import {
   StopPauseLane,
   isOwnerAuthoredInbound,
@@ -8405,7 +8407,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
     default:
       throw new Error(`Unknown tool: ${req.params.name}`)
   }
-  })
+  }).then((result) => withRetiredOwnAskNotes(result, extra.signal))
 })
 
 // ── Chat Polling ─────────────────────────────────────────────────────────────
@@ -12141,8 +12143,14 @@ async function retireOrphanedAsks(via: string): Promise<void> {
     // This daemon's lane verdict, fresh while it holds the connection, also
     // decides whether the asker is told (fresh review of the follow-up, Important 2).
     const refused = ownerAnnounceRefused({ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership.isOthers(ask.chatId) })
+    // Why, for this session's event, read before the retire forgets the
+    // group, from the asker's lease (Data's gaps after #284, gap 2, and its
+    // fresh reviews, Important 1).
+    const retiredBecause = askTracker.retiredBecause(ask)
     if (!askTracker.retire(ask.askId, { withdrawn, tellAsker: !refused })) continue
-    sendAskWithdrawn(ask, withdrawn, { toAsker: false, via })
+    sendAskWithdrawn(ask, withdrawn, { toAsker: false, via, retiredBecause }).catch(() => {
+      // Logged in sendAskWithdrawn; this session's own tell has no record to try again from.
+    })
   }
 }
 
@@ -12156,34 +12164,95 @@ async function retireOrphanedAsks(via: string): Promise<void> {
  */
 function tellRetiredOwnAsks(): void {
   try {
-    for (const { ask, withdrawn } of askTracker.takeRetiredOwn()) sendAskWithdrawn(ask, withdrawn, { toAsker: true, via: 'the ask tick' })
+    // Marked told only once the event is out; a session whose channel is not
+    // loaded hears it on its next tool result instead (withRetiredOwnAskNotes;
+    // Data's gaps after #284, gap 1).
+    tellRetiredOwnOnTick({
+      tracker: askTracker,
+      channelLoaded: channelPresence().loaded,
+      send: (ask, withdrawn) => sendAskWithdrawn(ask, withdrawn, { toAsker: true, via: 'the ask tick' }),
+      log,
+    })
   } catch (err) {
     log(`ask_withdrawn: could not tell this session of its retired cards: ${err}`)
   }
 }
 
-/** One ask_withdrawn channel event to this session (retireOrphanedAsks, tellRetiredOwnAsks). */
-function sendAskWithdrawn(ask: PendingAsk, withdrawn: number, opts: { toAsker: boolean; via: string }): void {
-  // The second lock (person lanes): a card in a share recipient's chat is
-  // retired, but never told to the owner's session.
+/**
+ * Every tool result of this daemon (the dispatch of the CallTool handler): a
+ * session whose channel is not loaded, the holder a channel takeover moved
+ * aside, drops every channel event unseen, so the ask_withdrawn of its own
+ * retired cards rides here, once (lib/ask-retired-tell.ts; Data's gaps after
+ * #284, gap 1). Never throws: a tool's own result is never lost to it. A
+ * subagent's call carries it too (it shares this server), and that counts as
+ * told: nothing here tells the two apart.
+ */
+function withRetiredOwnAskNotes<T>(result: T, signal?: AbortSignal): T {
+  // The SDK drops a cancelled call's result (Esc, the client's timeout), so a
+  // note on it would be marked told unseen: the next call carries it (fresh
+  // review of the gaps, Important 2). A client that gives up after the result
+  // was written drops the note all the same: nothing acknowledges a result.
+  if (signal?.aborted || !result || typeof result !== 'object') return result
+  try {
+    const notes = retiredOwnNotes({
+      tracker: askTracker,
+      channelLoaded: channelPresence().loaded,
+      text: (ask, withdrawn) => askWithdrawnContent(ask, withdrawn, { toAsker: true })?.content ?? null,
+    })
+    if (notes.length === 0) return result
+    log(`ask_withdrawn: told this session of ${notes.length} retired card(s) on a tool result (its channel is not loaded)`)
+    const content = (result as { content?: unknown }).content
+    return { ...result, content: [...(Array.isArray(content) ? content : []), ...notes.map((text) => ({ type: 'text' as const, text }))] }
+  } catch (err) {
+    log(`ask_withdrawn: could not add this session's retired cards to a tool result: ${err}`)
+    return result
+  }
+}
+
+type AskWithdrawnOpts = { toAsker: boolean; via: string; retiredBecause?: AskRetiredBecause }
+
+/**
+ * The ask_withdrawn of a card for this session, for its channel event or a
+ * tool result; null in a share recipient's chat (the second lock, person
+ * lanes): retired, but never told to the owner's session.
+ */
+function askWithdrawnContent(
+  ask: PendingAsk,
+  withdrawn: number,
+  opts: { toAsker: boolean; retiredBecause?: AskRetiredBecause },
+): { content: string; meta: Record<string, string> } | null {
   if (ownerAnnounceRefused({ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership.isOthers(ask.chatId) })) {
     noteLaneMisroute('ask withdrawn', ask.questions.map((q) => q.messageId).join(','), 'a recipient chat')
-    return
+    return null
   }
-  const event = buildAskWithdrawnEvent(ask, { assistantId: String(ASSISTANT_ID), withdrawn, toAsker: opts.toAsker })
-  void trackMessageOperation(() =>
+  const event = buildAskWithdrawnEvent(ask, { assistantId: String(ASSISTANT_ID), withdrawn, toAsker: opts.toAsker, retiredBecause: opts.retiredBecause })
+  return {
+    // Typed answers ride in it, as in an ask_answered event: never shown
+    // to be the owner's own words, and it opens no private turn.
+    content: privateTapCard({ tracker: privateTurns, lane: 'ask', ownerUserId: USER_ID, chatId: ask.chatId, messageId: ask.questions[0]?.messageId, tapperUserId: null, answeredAt: null, receivedAt: Date.now(), callbackData: '', customText: null, posted: false, content: event.content }),
+    meta: event.meta,
+  }
+}
+
+/**
+ * One ask_withdrawn channel event to this session (retireOrphanedAsks,
+ * tellRetiredOwnAsks). Resolves once it is out, or at once for a card it may
+ * never tell; rejects when the send failed, so the asker's tick sends it again.
+ */
+function sendAskWithdrawn(ask: PendingAsk, withdrawn: number, opts: AskWithdrawnOpts): Promise<void> {
+  const event = askWithdrawnContent(ask, withdrawn, opts)
+  if (!event) return Promise.resolve()
+  return trackMessageOperation(() =>
     mcp.notification({
       method: 'notifications/claude/channel',
-      params: {
-        // Typed answers ride in it, as in an ask_answered event: never shown
-        // to be the owner's own words, and it opens no private turn.
-        content: privateTapCard({ tracker: privateTurns, lane: 'ask', ownerUserId: USER_ID, chatId: ask.chatId, messageId: ask.questions[0]?.messageId, tapperUserId: null, answeredAt: null, receivedAt: Date.now(), callbackData: '', customText: null, posted: false, content: event.content }),
-        meta: event.meta,
-      },
+      params: { content: event.content, meta: event.meta },
     }),
   )
     .then(() => log(`ask_withdrawn: retired group ${ask.askId} in chat ${ask.chatId} and told this session${opts.toAsker ? ', which asked it' : ''}, via ${opts.via}`))
-    .catch((err) => log(`ask_withdrawn: group ${ask.askId} was retired, but telling this session failed: ${err}`))
+    .catch((err) => {
+      log(`ask_withdrawn: group ${ask.askId} was retired, but telling this session failed: ${err}`)
+      throw err
+    })
 }
 
 /** Retire the questions of a card whose post failed half way (best effort; nothing tracks them). */

@@ -589,9 +589,12 @@ rules before replying so messages don't get lost.
   session, it lost the connection to another session and runs on, or it
   ended and no restart took the card within 10 minutes) is retired by the
   connected session, as `withdraw_ask` does, and that session gets one
-  `ask_withdrawn` channel event naming what was answered and what was
-  withdrawn. When the session that asked still runs (it lost the
-  connection), it gets one `ask_withdrawn` event too, on its next tick.
+  `ask_withdrawn` channel event naming what was answered (for the record)
+  and what was withdrawn, and why (`meta.retired_because`: `asker_ended_beside`,
+  `asker_ended` or `asker_disconnected`). When the session that asked still
+  runs (it lost the connection), it gets one `ask_withdrawn` too: on its
+  next tick, sent again until it lands or the record ages out after 10
+  minutes, or, when its channel is not loaded, on its next tool result.
   Nothing in either needs a reply.
 - `withdraw_ask`: retire a card you no longer need, by its `ask_id`.
 - `list_peers` — list other assistants on this BGOS account that you
