@@ -644,6 +644,14 @@ export class AskTracker {
   /** Cards retired while their asker ran, on file (RetiredAsk); and those of this process already handed to its session. */
   private retired_: RetiredAsk[] = []
   private readonly toldRetired = new Set<string>()
+  /**
+   * The latest lease this process has seen on each group, for its asker as
+   * named there: the merge gives way to a lease corrected after a clock
+   * stepped back, but how long that asker ran beside this process is
+   * measured to the latest it ever said (second fresh review of the
+   * follow-up, Important 1).
+   */
+  private readonly leaseHigh = new Map<string, { pid: number; startedAt: number; at: number }>()
   /** Groups dropped for age, said once; and why saves fail, said once while it lasts (fifth review of #282, Minor 3). */
   private readonly droppedForAge = new Set<string>()
   private saveFailing: string | null = null
@@ -821,13 +829,24 @@ export class AskTracker {
   private markIfBeside(ask: PendingAsk): boolean {
     if (!ask.owner || ask.askerEndedBeside !== undefined || sameProcess(ask.owner, this.self)) return false
     if (this.askerRunsNow(ask)) return false
-    if (askerLastSaid(ask) + ASK_LEASE_SPAN_MS - Math.max(this.self.startedAt, ask.postedAt) <= ASK_OWNER_OVERLAP_MS) return false
+    if (this.latestLease(ask) + ASK_LEASE_SPAN_MS - Math.max(this.self.startedAt, ask.postedAt) <= ASK_OWNER_OVERLAP_MS) return false
     ask.askerEndedBeside = this.now()
     this.log(
       `ask tracker: group ${ask.askId} was posted by another session of this agent that ran beside this one ` +
         'and has ended; its answers are announced by no daemon, and the connected daemon retires the card',
     )
     return true
+  }
+
+  /** askerLastSaid, never below the latest this process has seen on the group (leaseHigh). */
+  private latestLease(ask: PendingAsk): number {
+    const said = askerLastSaid(ask)
+    const owner = ask.owner
+    if (!owner) return said
+    const seen = this.leaseHigh.get(ask.askId)
+    const at = seen && seen.pid === owner.pid && seen.startedAt === owner.startedAt ? Math.max(seen.at, said) : said
+    this.leaseHigh.set(ask.askId, { pid: owner.pid, startedAt: owner.startedAt, at })
+    return at
   }
 
   /** On every read of the file: mark the groups whose asker has ended beside this process. True when one was marked. */
@@ -949,7 +968,8 @@ export class AskTracker {
   retire(askId: string, opts: { withdrawn: number; tellAsker: boolean }): PendingAsk | null {
     const ask = this.asks.get(askId)
     if (!ask) return null
-    if (opts.tellAsker && ask.owner && !sameProcess(ask.owner, this.self) && this.isAlive(ask.owner.pid)) {
+    // This process's own pid on another process's group is an earlier process's, ended (as askerRuns reads it).
+    if (opts.tellAsker && ask.owner && ask.owner.pid !== this.self.pid && this.isAlive(ask.owner.pid)) {
       this.retired_ = this.retired_.filter((r) => r.ask.askId !== askId)
       this.retired_.push({ ask: { ...ask, answers: { ...ask.answers } }, withdrawn: opts.withdrawn, at: this.now() })
     }
@@ -1030,6 +1050,7 @@ export class AskTracker {
       if (raw.owner && mine.owner && raw.owner.pid === mine.owner.pid && raw.owner.startedAt === mine.owner.startedAt) {
         const theirs = raw.owner.aliveAt
         const held = mine.owner.aliveAt ?? 0
+        this.latestLease(mine)
         if (theirs !== undefined && (theirs > held || held > this.now())) mine.owner = { ...mine.owner, aliveAt: theirs }
       }
       if (raw.askerEndedBeside !== undefined && mine.askerEndedBeside === undefined) mine.askerEndedBeside = raw.askerEndedBeside
@@ -1079,6 +1100,7 @@ export class AskTracker {
     this.held.delete(askId)
     this.withdrawing.delete(askId)
     this.askerAsideSince.delete(askId)
+    this.leaseHigh.delete(askId)
     for (const q of ask.questions) {
       if (this.byMessage.get(q.messageId) === askId) this.byMessage.delete(q.messageId)
     }
