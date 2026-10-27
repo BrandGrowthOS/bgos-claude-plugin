@@ -1062,15 +1062,20 @@ export class AskTracker {
    * gets (Data's gaps after #284, gap 2, and its fresh reviews, Important 1).
    * Whether the asker runs is its lease, never its pid alone (askerRuns): a
    * dead asker's pid may already be another process's, and that session
-   * must not be told its asker runs on (asker_disconnected) when it ended,
-   * beside another session or with no restart taking the connection within
-   * the orphan grace. retire keeps its record on the pid, a wider net: only
-   * that same process can take it, and a hung asker past its lease still
-   * gets it (second fresh review of the gaps, Important 1).
+   * must not be told its asker runs on (asker_disconnected) when it ended.
+   * Judged strictly, also in the wait after a look gap (leaseJudged), when a
+   * card marked beside is retired all the same: in doubt the words say ended.
+   * An asker silent for less than the orphan grace ran beside this session
+   * (it was marked so, or picked while it ran and ended during the retire);
+   * only past the grace did no restart take the connection in time. retire
+   * keeps its record on the pid, a wider net: only that same process can
+   * take it, and a hung asker past its lease still gets it (second and third
+   * fresh reviews of the gaps, Important 1 and Minor 1).
    */
   retiredBecause(ask: PendingAsk): AskRetiredBecause {
-    if (this.askerRunsNow(ask)) return 'asker_disconnected'
-    return ask.askerEndedBeside !== undefined ? 'asker_ended_beside' : 'asker_ended'
+    if (askerRuns(ask, this.self, this.now(), this.isAlive)) return 'asker_disconnected'
+    if (ask.askerEndedBeside !== undefined) return 'asker_ended_beside'
+    return this.now() - askerLastSaid(ask) > ASK_ORPHAN_GRACE_MS ? 'asker_ended' : 'asker_ended_beside'
   }
 
   /** The group's asker is another process whose pid runs (maybe past its lease): retire keeps a record for it, which only that process takes. */
