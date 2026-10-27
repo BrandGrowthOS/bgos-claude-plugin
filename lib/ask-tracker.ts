@@ -100,8 +100,8 @@ export function askWaitSeconds(args: Record<string, unknown>): { seconds: number
   if (wait === 'refused') {
     return {
       error:
-        `Error: wait_seconds must be a number of seconds from 0 to ${MAX_ASK_WAIT_SECONDS} ` +
-        `(got ${shown(args.wait_seconds)}). Nothing was posted.`,
+        `Error: wait_seconds must be a number of seconds from 0 to ${MAX_ASK_WAIT_SECONDS}, and more waits ` +
+        `${MAX_ASK_WAIT_SECONDS} (got ${shown(args.wait_seconds)}). Nothing was posted.`,
     }
   }
   if (wait !== null) return { seconds: Math.min(wait, MAX_ASK_WAIT_SECONDS) }
@@ -112,11 +112,20 @@ export function askWaitSeconds(args: Record<string, unknown>): { seconds: number
   return { seconds: legacy ?? MAX_ASK_WAIT_SECONDS }
 }
 
-/** A wait field as seconds: null when not given, 'refused' when it is not a number of seconds. */
+/**
+ * A wait field as seconds: null when not given, 'refused' when it is not a
+ * number of seconds. A string is read only when it is plain digits ("60",
+ * "1.5"), so "0x10" or "1e2" is refused rather than read as something the
+ * agent did not write.
+ */
 function readSeconds(value: unknown): number | null | 'refused' {
   if (value === undefined || value === null) return null
   const n =
-    typeof value === 'number' ? value : typeof value === 'string' && value.trim() !== '' ? Number(value.trim()) : Number.NaN
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' && /^\s*\d+(\.\d+)?\s*$/.test(value)
+        ? Number(value.trim())
+        : Number.NaN
   return Number.isFinite(n) && n >= 0 ? n : 'refused'
 }
 
@@ -373,6 +382,8 @@ export const ASK_OWNER_OVERLAP_MS = 60_000
 
 /** Whether a process with this pid runs now (EPERM: it runs, as another user). */
 export function pidIsAlive(pid: number): boolean {
+  // 0 and below name a process group, not a process (and read as alive on Windows).
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false
   try {
     process.kill(pid, 0)
     return true
@@ -723,12 +734,16 @@ export class AskTracker {
   private readFile(): FileRead {
     if (!this.filePath || !existsSync(this.filePath)) return this.readOk({ kind: 'none' })
     let text: string | null = null
+    // While a read keeps failing, each pass tries once: the pauses are for a
+    // moment's contention, not for a problem that lasts (every save, announce
+    // and reconcile pass reads the file).
+    const retries = this.skipReason === null ? FS_RETRY_PAUSES_MS.length : 0
     for (let attempt = 0; text === null; attempt++) {
       try {
         text = readFileSync(this.filePath, 'utf8')
       } catch (err) {
         const code = fsCode(err)
-        if (TRANSIENT_FS_CODES.has(code) && attempt < FS_RETRY_PAUSES_MS.length) {
+        if (TRANSIENT_FS_CODES.has(code) && attempt < retries) {
           pauseSync(FS_RETRY_PAUSES_MS[attempt])
           continue
         }
@@ -745,13 +760,23 @@ export class AskTracker {
       body = null
       why = String(err)
     }
+    // Another plugin build's file says a newer version, as a number: left
+    // alone below. Anything else that is not this version is not a file this
+    // plugin or a newer one wrote, so it is kept aside like a parse failure.
+    if (body && typeof body === 'object' && !Array.isArray(body) && body.v !== FILE_VERSION) {
+      if (!(typeof body.v === 'number' && body.v > FILE_VERSION)) {
+        why = `its version is ${JSON.stringify(body.v)}`
+        body = null
+      }
+    }
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
       const aside = `${this.filePath}.corrupt-${this.now()}`
       try {
         renameSync(this.filePath, aside)
         this.log(`ask tracker: could not read ${this.filePath} (${why}); kept aside as ${aside}, starting empty`)
       } catch (err) {
-        this.log(`ask tracker: could not read ${this.filePath} (${why}) and could not keep it aside as corrupt: ${err}`)
+        // Not kept aside: left as it is, and never written over (read again on the next pass).
+        return this.skip(`could not read ${this.filePath} (${why}) and could not keep it aside as corrupt (${fsCode(err) || err}); left as it is`)
       }
       return this.readOk({ kind: 'none' })
     }
