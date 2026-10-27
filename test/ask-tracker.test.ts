@@ -1401,6 +1401,37 @@ test('lease follow-up review, Important 1: after a clock steps back, another dae
   })
 })
 
+test('lease follow-up review, Minor 5: a restart that drew the asker\'s pid again is never handed the asker\'s retired card', () => {
+  sharedFile(({ filePath, clock, live, at }) => {
+    const now = () => clock.at
+    const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
+    a.register(group({ askId: 'g', ids: [1481] }))
+    live.push(1)
+    const b = trackerAs({ pid: 2, startedAt: at('09:30:00') }, live, { filePath, now })
+    live.push(2)
+    runUntil(clock, at('10:01:00'), a, b)
+    b.beginWithdraw('g')
+    leaseOf(b).retire?.('g', { withdrawn: 1, tellAsker: true })
+    assert.equal((fileOf(filePath).retired ?? []).length, 1, 'kept for the asker')
+    // The asker ends before its tick; its restart draws the same pid.
+    clock.at = at('10:01:05')
+    const a2 = trackerAs({ pid: 1, startedAt: clock.at }, live, { filePath, now })
+    beat(a2)
+    assert.deepEqual(leaseOf(a2).takeRetiredOwn?.() ?? 'missing', [], 'the record names the asker\'s start, not just its pid')
+  })
+})
+
+test('lease follow-up review, Minor 9: the asker is told how to ask again from a session without the connection (a blocking ask), never to post a card that returns pending', () => {
+  const build = recheckLib.buildAskWithdrawnEvent as unknown as (ask: PendingAsk, opts: { assistantId: string; withdrawn: number; toAsker?: boolean }) => { content: string }
+  const tracker = new AskTracker({ filePath: null })
+  const ask = tracker.register(group({ askId: 'g', ids: [1491] }))
+  const toAsker = build(ask, { assistantId: '9', withdrawn: 1, toAsker: true }).content
+  assert.match(toAsker, /leave wait_seconds out/)
+  assert.doesNotMatch(toAsker, /ask again with ask_user_input\.$/m)
+  const toConnected = build(ask, { assistantId: '9', withdrawn: 1 }).content
+  assert.match(toConnected, /ask again with ask_user_input\.$/m, 'the connected session asks as it always does')
+})
+
 test('lease follow-up review, Important 2: a retire the connected daemon may not tell (a share recipient\'s chat) leaves no record for the asker either', () => {
   sharedFile(({ filePath, clock, live, at }) => {
     const now = () => clock.at
