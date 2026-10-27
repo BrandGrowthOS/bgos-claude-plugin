@@ -1046,3 +1046,34 @@ test('recheck: the withdrawn event names what was answered and what was withdraw
   assert.match(event.content, /ask_user_input/)
   assert.doesNotMatch(event.content, /[–—]/)
 })
+
+test('recheck: a passive restart of the asker claims its card on the ask tick, so the connected daemon, another session, never retires it while the restart runs', () => {
+  sharedFile(({ filePath, clock, live, at }) => {
+    const now = () => clock.at
+    clock.at = at('09:30:00')
+    const c = trackerAs({ pid: 2, startedAt: clock.at }, live, { filePath, now })
+    clock.at = at('10:00:00')
+    const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
+    a.register(group({ askId: 'g', ids: [1171] }))
+    live.push(1)
+    runUntil(clock, at('10:00:30'), a)
+    live.splice(live.indexOf(1), 1)
+    // A restarts; C holds the connection now, so A2 is passive behind it.
+    clock.at = at('10:00:40')
+    const a2 = trackerAs({ pid: 3, startedAt: clock.at }, live, { filePath, now })
+    live.push(3)
+    runUntil(clock, at('10:20:00'), a2)
+    c.refresh()
+    assert.deepEqual(retirableIds(c), [], 'A2 runs and will deliver it once it holds the connection')
+    a2.record(1171, { skipped: true })
+    assert.deepEqual(a2.completeUndelivered().map((g) => g.askId), ['g'])
+    // A2 ends too, and nobody claims the card any more.
+    live.splice(live.indexOf(3), 1)
+    // Its last claim was at 10:19:55 (every 15 s from its start).
+    clock.at = at('10:29:50')
+    c.refresh()
+    assert.deepEqual(retirableIds(c), [], 'within the grace of the last claim')
+    clock.at = at('10:30:01')
+    assert.deepEqual(retirableIds(c), ['g'])
+  })
+})
