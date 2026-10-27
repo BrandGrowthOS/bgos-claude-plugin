@@ -34,6 +34,16 @@
  * answers is untracked. The file is written after every change by a temp file
  * and a rename, so a crash never leaves half a file.
  *
+ * THE FILE IS SHARED, so a read that fails for a moment (another daemon's
+ * rename, a virus scanner, a lock on Windows) is tried again and then
+ * skipped, and the save that would have followed is skipped too: nothing is
+ * written over a file this daemon could not read. Only a file that read in
+ * full and does not parse is kept aside. A file of another version is left
+ * alone (an old and a new plugin side by side in a staged update); this
+ * daemon then keeps its groups in memory. A rename onto a file another
+ * process holds open (EPERM on Windows) is tried again before a save is
+ * dropped. Review of #282, item 4.
+ *
  * BOUNDS. At most MAX_PENDING_ASKS groups are kept (the oldest goes first,
  * with a log line), since a reconcile on connect reads one page per pending
  * group; and a group older than MAX_PENDING_AGE_MS is dropped when the file is
@@ -50,6 +60,25 @@ export const MAX_PENDING_ASKS = 50
 export const MAX_PENDING_AGE_MS = 30 * 24 * 60 * 60_000
 const MAX_DELIVERED_REMEMBERED = 200
 const FILE_VERSION = 1
+/** A read or a rename that fails with one of these is tried again: it passes. */
+const TRANSIENT_FS_CODES = new Set(['EBUSY', 'EPERM', 'EACCES', 'EMFILE', 'ENFILE', 'EAGAIN', 'ENOENT'])
+/** Pauses between tries, ms: about a third of a second in all, before a read is skipped or a save dropped. */
+const FS_RETRY_PAUSES_MS = [20, 40, 80, 160]
+
+/** Wait without giving up the thread (the tracker is synchronous, and a pause is a few ms). */
+function pauseSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+function fsCode(err: unknown): string {
+  return String((err as NodeJS.ErrnoException)?.code ?? '')
+}
+
+type FileRead =
+  | { kind: 'none' }
+  | { kind: 'read'; pending: PendingAsk[]; done: string[] }
+  /** Not read this time (a read that kept failing, or another version's file): leave it, write nothing over it. */
+  | { kind: 'skip' }
 
 /** The longest wait_seconds may hold a turn, and the wait of a call with no wait field: the tool's old default. */
 export const MAX_ASK_WAIT_SECONDS = 600
@@ -365,6 +394,8 @@ export class AskTracker {
   /** Groups withdraw_ask is retiring right now: no announce offers them (review of #282, item 2). */
   private readonly withdrawing = new Set<string>()
   private delivered_: string[] = []
+  /** The last reason a read was skipped, so a problem that lasts is said once, not every pass. */
+  private skipReason: string | null = null
 
   constructor(opts: {
     filePath: string | null
@@ -541,9 +572,10 @@ export class AskTracker {
    * answers merged (the first kept), its tombstones honoured, and its holds
    * taken as written. Called before every save and every announce pass.
    */
-  refresh(): void {
+  refresh(): boolean {
     const disk = this.readFile()
-    if (!disk) return
+    if (disk.kind === 'skip') return false
+    if (disk.kind === 'none') return true
     for (const id of disk.done) this.tombstone(id)
     for (const id of this.delivered_) if (this.asks.has(id)) this.forget(id)
     const cutoff = this.now() - MAX_PENDING_AGE_MS
@@ -569,6 +601,7 @@ export class AskTracker {
         else mine.heldUntil = raw.heldUntil
       }
     }
+    return true
   }
 
   private tombstone(askId: string): void {
@@ -590,20 +623,37 @@ export class AskTracker {
   }
 
   /**
-   * The file as it stands, or null when there is none. One that cannot be read
-   * is said and kept aside (`.corrupt-<time>`), never silently overwritten.
+   * The file as it stands. A read that fails is tried again and then skipped
+   * (never kept aside: the next pass reads it); a file of another version is
+   * left alone. Only a file that read in full and does not parse is said and
+   * kept aside (`.corrupt-<time>`), never silently overwritten.
    */
-  private readFile(): { pending: PendingAsk[]; done: string[] } | null {
-    if (!this.filePath || !existsSync(this.filePath)) return null
+  private readFile(): FileRead {
+    if (!this.filePath || !existsSync(this.filePath)) return this.readOk({ kind: 'none' })
+    let text: string | null = null
+    for (let attempt = 0; text === null; attempt++) {
+      try {
+        text = readFileSync(this.filePath, 'utf8')
+      } catch (err) {
+        const code = fsCode(err)
+        if (TRANSIENT_FS_CODES.has(code) && attempt < FS_RETRY_PAUSES_MS.length) {
+          pauseSync(FS_RETRY_PAUSES_MS[attempt])
+          continue
+        }
+        // Gone for good between the check and the read: there is no file.
+        if (code === 'ENOENT') return this.readOk({ kind: 'none' })
+        return this.skip(`could not read ${this.filePath} (${code || err}); left as it is, read again on the next pass`)
+      }
+    }
     let body: { v?: unknown; pending?: unknown; delivered?: unknown } | null = null
-    let why = `it is not a version ${FILE_VERSION} file`
+    let why = 'it is not a JSON object'
     try {
-      body = JSON.parse(readFileSync(this.filePath, 'utf8'))
+      body = JSON.parse(text)
     } catch (err) {
       body = null
       why = String(err)
     }
-    if (!body || typeof body !== 'object' || body.v !== FILE_VERSION) {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
       const aside = `${this.filePath}.corrupt-${this.now()}`
       try {
         renameSync(this.filePath, aside)
@@ -611,18 +661,38 @@ export class AskTracker {
       } catch (err) {
         this.log(`ask tracker: could not read ${this.filePath} (${why}) and could not keep it aside as corrupt: ${err}`)
       }
-      return null
+      return this.readOk({ kind: 'none' })
     }
-    return {
+    if (body.v !== FILE_VERSION) {
+      return this.skip(
+        `${this.filePath} is a version ${JSON.stringify(body.v)} file (this plugin writes version ${FILE_VERSION}), ` +
+          'from another plugin build; left alone, and this daemon keeps its cards in memory',
+      )
+    }
+    return this.readOk({
+      kind: 'read',
       pending: (Array.isArray(body.pending) ? body.pending : []).filter(validAsk),
       done: (Array.isArray(body.delivered) ? body.delivered : []).filter((d): d is string => typeof d === 'string'),
-    }
+    })
+  }
+
+  private readOk(result: FileRead): FileRead {
+    if (this.skipReason !== null) this.log('ask tracker: the file reads again')
+    this.skipReason = null
+    return result
+  }
+
+  private skip(reason: string): FileRead {
+    if (reason !== this.skipReason) this.log(`ask tracker: ${reason}`)
+    this.skipReason = reason
+    return { kind: 'skip' }
   }
 
   private save(opts: { merge?: boolean } = {}): void {
     if (!this.filePath) return
     // Merge first: another daemon of this assistant may have written since.
-    if (opts.merge !== false) this.refresh()
+    // A file that could not be read this time is not written over.
+    if (opts.merge !== false ? !this.refresh() : this.skipReason !== null) return
     const tmp = `${this.filePath}.${process.pid}.tmp`
     try {
       mkdirSync(dirname(this.filePath), { recursive: true })
@@ -631,7 +701,16 @@ export class AskTracker {
         JSON.stringify({ v: FILE_VERSION, pending: this.pending(), delivered: this.delivered_ }),
         { mode: 0o600 },
       )
-      renameSync(tmp, this.filePath)
+      for (let attempt = 0; ; attempt++) {
+        try {
+          renameSync(tmp, this.filePath)
+          break
+        } catch (err) {
+          // Windows: the target held open by another process (a reader, a scanner) passes.
+          if (!TRANSIENT_FS_CODES.has(fsCode(err)) || attempt >= FS_RETRY_PAUSES_MS.length) throw err
+          pauseSync(FS_RETRY_PAUSES_MS[attempt])
+        }
+      }
     } catch (err) {
       try {
         unlinkSync(tmp)
