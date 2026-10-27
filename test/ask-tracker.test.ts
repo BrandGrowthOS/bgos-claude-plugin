@@ -744,7 +744,8 @@ test('second review, Minor 8: a wait written in another number form ("0x10", "1e
 test('second review, Minor 8: the refusal says a larger wait is read as 600, which it is', () => {
   const r = askWaitSeconds({ wait_seconds: 'soon' })
   assert.ok('error' in r)
-  assert.match(r.error, /more waits 600/)
+  // Third review, Minor 6: in plain words.
+  assert.match(r.error, /a larger number waits 600/)
   assert.deepEqual(askWaitSeconds({ wait_seconds: 900 }), { seconds: MAX_ASK_WAIT_SECONDS })
 })
 

@@ -89,6 +89,8 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean } 
   const askDelivering = new Set<string>()
   // Answers the owner gives at a time on this clock, by the order the questions were posted.
   const scheduled: Array<{ at: number; index: number }> = []
+  /** The pairing lock changing hands during a wait: applied on the first read at or after `at`. */
+  const lockChanges: Array<{ at: number; held: boolean }> = []
 
   const known: Record<string, unknown> = {
     ...askLib,
@@ -116,6 +118,9 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean } 
       return { id, askId: (body.askId as string | undefined) ?? 'grp-1' }
     },
     bgosGet: async (path: string) => {
+      for (const change of lockChanges.splice(0).filter((c) => clock >= c.at || (lockChanges.push(c), false))) {
+        known.lockHeld = change.held
+      }
       const ids = [...rows.keys()]
       for (const s of scheduled) {
         const id = ids[s.index]
@@ -207,6 +212,10 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean } 
       onPatch = fn
     },
     /** The owner answers the n-th posted question (Yes) once the clock reaches `at`. */
+    /** The pairing lock is held (or not) from `at` on, as a promotion or a stand-down would. */
+    lockAt: (at: number, held: boolean) => {
+      lockChanges.push({ at, held })
+    },
     answerAt: (index: number, at: number) => {
       scheduled.push({ at, index })
     },
@@ -522,5 +531,67 @@ test('second review, Important 3: in a passive daemon a wait the client cancelle
   )
   assert.doesNotMatch(res.content[0].text, /"status": "pending"/)
   assert.equal(r.patches.length, 2, 'both questions retired')
+  assert.equal(r.tracker.pending().length, 0)
+})
+
+// ── Third review of #282: Minors 3 to 6, and the lock changing during a wait (Minor 8) ──
+
+test('third review, Minor 3: a passive daemon that has no event from the chat says why, not only that the chat is unknown', async () => {
+  const r = rig({ lockHeld: false, chatKnown: false })
+  const res = await r.askTool({ chat_id: '77', questions: QUESTIONS })
+  assert.equal(res.isError, true)
+  assert.match(res.content[0].text, /not the one connected to BGOS/)
+  assert.match(res.content[0].text, /Ask from the connected session/)
+  assert.equal(r.posts.length, 0)
+})
+
+test('third review, Minor 4: an answer that lands while a passive wait retires the rest is in the result', async () => {
+  const r = rig({ lockHeld: false })
+  r.answerAt(0, START + 10_000)
+  r.onPatch((path) => {
+    const id = Number(path.split('/')[1])
+    r.rows.set(id, { id, answer: { optionId: id * 10 + 1, skipped: false } })
+  })
+  const res = await r.askTool({ chat_id: '77', questions: QUESTIONS, wait_seconds: 60 })
+  assert.deepEqual(rowsOf(res), [
+    { question: 'Ship it?', picked_option_value: 'yes', picked_option_label: 'Yes' },
+    { question: 'Tonight?', picked_option_value: 'yes', picked_option_label: 'Yes' },
+  ], res.content[0].text.slice(0, 200))
+})
+
+test('third review, Minor 5: a passive wait whose retire fails says how many were withdrawn, and which may still show', async () => {
+  const r = rig({ lockHeld: false })
+  r.onPatch(() => {
+    throw new Error('backend down')
+  })
+  const res = await r.askTool({ chat_id: '77', questions: QUESTIONS, wait_seconds: 30 })
+  assert.match(res.content[0].text, /0 of the 2 question\(s\) not answered were withdrawn from the chat; the other 2 may still show there/)
+})
+
+test('third review, Minor 6: the refusals read plainly and name timeout_seconds 0 too', async () => {
+  const r = rig({ lockHeld: false })
+  const res = await r.askTool({ chat_id: '77', questions: QUESTIONS, timeout_seconds: 0 })
+  assert.equal(res.isError, true)
+  assert.match(res.content[0].text, /timeout_seconds 0/)
+  assert.equal(r.posts.length, 0)
+})
+
+test('third review, Minor 8: a passive daemon promoted during its wait returns pending, and the card stays live', async () => {
+  const r = rig({ lockHeld: false })
+  r.lockAt(START + 5_000, true)
+  r.answerAt(0, START + 10_000)
+  const res = await r.askTool({ chat_id: '77', questions: QUESTIONS, wait_seconds: 30 })
+  assert.match(res.content[0].text, /"status": "pending"/)
+  assert.equal(r.patches.length, 0)
+  assert.equal(r.tracker.pending().length, 1)
+})
+
+test('third review, Minor 8: an armed daemon that stands down during its wait retires what is not answered', async () => {
+  const r = rig()
+  r.lockAt(START + 5_000, false)
+  r.answerAt(0, START + 10_000)
+  const res = await r.askTool({ chat_id: '77', questions: QUESTIONS, wait_seconds: 30 })
+  assert.match(res.content[0].text, /"status": "withdrawn"/)
+  assert.equal(r.patches.length, 1)
   assert.equal(r.tracker.pending().length, 0)
 })
