@@ -1814,6 +1814,56 @@ test('gaps after #284, third review, Important 1: after a look gap (a sleep) the
   })
 })
 
+test('gaps after #284, fourth review, Important 1: a card marked beside when its asker\'s pid read dead is told as beside, also when that pid is handed on while the dead asker\'s last lease is fresh', () => {
+  sharedFile(({ filePath, clock, live, at }) => {
+    const now = () => clock.at
+    const b = trackerAs({ pid: 2, startedAt: at('09:30:00') }, live, { filePath, now })
+    live.push(2)
+    const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
+    a.register(group({ askId: 'g', ids: [1581] }))
+    live.push(1)
+    runUntil(clock, at('10:00:10'), a, b)
+    const a2 = trackerAs({ pid: 3, startedAt: clock.at }, live, { filePath, now })
+    live.push(3)
+    // A writes its lease at 10:01:00 and ends then; A2, its restart, and B look and mark the card beside.
+    runUntil(clock, at('10:01:00'), a, a2, b)
+    live.splice(live.indexOf(1), 1)
+    beat(a2)
+    beat(b)
+    // Pid 1 is another process's 3 s later, while A's last lease is still fresh.
+    live.push(1)
+    clock.at += 3_000
+    beat(b)
+    assert.deepEqual(retirableIds(b), ['g'])
+    const ask = b.get('g')!
+    assert.notEqual(ask.askerEndedBeside, undefined, 'marked beside')
+    const because = (b as unknown as Gap2).retiredBecause?.(ask)
+    assert.equal(because, 'asker_ended_beside', 'a mark with no lease after it stands, whatever the pid reads now')
+  })
+})
+
+test('gaps after #284, fourth review, Minor 1: an asker marked beside while it hung, that writes its lease again, is told as running on', () => {
+  sharedFile(({ filePath, clock, live, at }) => {
+    const now = () => clock.at
+    const b = trackerAs({ pid: 2, startedAt: at('09:30:00') }, live, { filePath, now })
+    live.push(2)
+    const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
+    a.register(group({ askId: 'g', ids: [1591] }))
+    live.push(1)
+    runUntil(clock, at('10:01:00'), a, b)
+    // A hangs: its pid runs, its lease lapses, and B marks the card beside.
+    runUntil(clock, at('10:01:50'), b)
+    assert.notEqual(b.get('g')?.askerEndedBeside, undefined, 'marked beside')
+    // A comes back and writes its lease, and B reads it.
+    clock.at += 1_000
+    beat(a)
+    beat(b)
+    assert.deepEqual(retirableIds(b), ['g'])
+    const because = (b as unknown as Gap2).retiredBecause?.(b.get('g')!)
+    assert.equal(because, 'asker_disconnected', 'a lease after the mark: it runs on')
+  })
+})
+
 test('gaps after #284, third review, Minor 1: a card retired while its asker ran, whose asker ends before the retire is done, is told the asker ended beside another session, never that a 10 minute grace passed', () => {
   sharedFile(({ filePath, clock, live, at }) => {
     const now = () => clock.at

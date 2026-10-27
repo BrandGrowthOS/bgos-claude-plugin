@@ -256,6 +256,10 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; handedOn?: number[]; c
     answer: (id: number, yes = true) => {
       rows.set(id, { id, answer: { optionId: id * 10 + (yes ? 1 : 2), skipped: false } })
     },
+    /** A live asker's process ends: its pid reads dead and it writes no more lease. */
+    end: (pid: number) => {
+      live.delete(pid)
+    },
     onPatch: (fn: (path: string) => void | Promise<void>) => {
       onPatch = fn
     },
@@ -715,6 +719,35 @@ test('third fresh review of the gaps after #284, Important 1, on the daemon\'s o
   assert.deepEqual(r.patches, [{ path: 'messages/747', body: RETIRE }])
   assert.equal(r.notes.length, 1)
   assert.equal(r.notes[0].params.meta.retired_because, 'asker_ended_beside', 'the words lean to ended when the lease cannot be judged')
+})
+
+test('fourth fresh review of the gaps after #284, Important 1, on the daemon\'s own code: a card marked beside, whose asker\'s pid is another process\'s while its last lease is fresh, is told as beside', async () => {
+  const r = rig({ handedOn: [2015] })
+  const ask = r.foreignGroup('theirs', [748], { pid: 2015, startedAt: START - 60 * MIN }, START - MIN)
+  ;(ask.owner as PendingAsk['owner'] & { aliveAt?: number }).aliveAt = START - 3_000
+  ask.askerEndedBeside = START - 2_000
+  assert.equal(typeof r.retireOrphanedAsks, 'function')
+  await r.retireOrphanedAsks?.('test')
+  await r.settle()
+  assert.equal(r.notes.length, 1)
+  assert.equal(r.notes[0].params.meta.retired_because, 'asker_ended_beside', 'a mark with no lease after it stands, whatever the pid reads now')
+})
+
+test('fourth fresh review of the gaps after #284, Minor 2, on the daemon\'s own code: a card retired while its asker ran, whose asker ends during the PATCH, is never told a 10 minute grace passed', async () => {
+  const r = rig({ live: [2016] })
+  r.foreignGroup('theirs', [749], { pid: 2016, startedAt: START - 60 * MIN }, START - MIN)
+  r.onPatch(() => r.end(2016))
+  assert.equal(typeof r.retireOrphanedAsks, 'function')
+  for (let i = 0; i < 3; i++) {
+    await r.retireOrphanedAsks?.('timer')
+    r.advance(15_000)
+  }
+  await r.retireOrphanedAsks?.('timer')
+  await r.settle()
+  assert.deepEqual(r.patches.map((p) => p.path), ['messages/749'], 'picked while its asker ran')
+  assert.equal(r.notes.length, 1)
+  assert.equal(r.notes[0].params.meta.retired_because, 'asker_ended_beside')
+  assert.doesNotMatch(r.notes[0].params.content, /within 10 minutes/)
 })
 
 test('recheck, item 1: a retire whose PATCH fails keeps the group and says nothing yet; the next pass retires it', async () => {
