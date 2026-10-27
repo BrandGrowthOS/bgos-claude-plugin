@@ -451,7 +451,10 @@ export function buildAskWithdrawnEvent(
     `(in chat_id=${ask.chatId}, first question message_id=${first})`,
     `Answered before it was retired: ${JSON.stringify(answered, null, 2)}`,
     `Withdrawn: ${JSON.stringify(open)}`,
-    'Nothing here needs a reply. If you still need an answer that was withdrawn, ask again with ask_user_input.',
+    opts.toAsker
+      ? 'Nothing here needs a reply. If you still need an answer that was withdrawn, ask again with ask_user_input ' +
+        'and leave wait_seconds out, so this call waits for the answers: a card that returns pending cannot come back to this session.'
+      : 'Nothing here needs a reply. If you still need an answer that was withdrawn, ask again with ask_user_input.',
   ].join('\n')
   return {
     content,
@@ -473,7 +476,10 @@ export function buildAskWithdrawnEvent(
  * take the group as that session restarted. A restart's new daemon can start
  * a moment before the old one has exited (the CLI respawning its MCP server);
  * a session that ran beside the asker for longer than this is another session
- * (second review of #282, Important 2).
+ * (second review of #282, Important 2). The overlap is measured to the end of
+ * the asker's last lease (ASK_LEASE_SPAN_MS), which errs long: a session that
+ * really ran beside the asker for about 40 s or more may already count as
+ * another session.
  */
 export const ASK_OWNER_OVERLAP_MS = 60_000
 
@@ -482,8 +488,8 @@ export const ASK_LEASE_REFRESH_MS = 15_000
 /** An asker that has not said it runs for this long has ended, whatever process has its pid now: two refreshes and a slow tick. */
 export const ASK_LEASE_MS = 2 * ASK_LEASE_REFRESH_MS + 5_000
 /**
- * The longest a running asker goes without writing its lease again: a refresh
- * and one 5 s ask tick. A lease says the asker ran until at least this long
+ * How long a running asker goes without writing its lease again: a refresh
+ * and one 5 s ask tick (a tick whose read is skipped can stretch it). A lease says the asker ran until at least this long
  * after it, so how long it ran beside a session is measured to there, never
  * to the lease itself, which can be that much older than the asker's end
  * (Data's gate notes on #282, item 1).
