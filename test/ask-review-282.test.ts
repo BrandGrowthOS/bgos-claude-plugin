@@ -443,3 +443,14 @@ test('item 3: a pending result says in plain words that the answers come later, 
     assert.match(text, /your owner's next message/)
   }
 })
+
+// ── Item 5 (Low), the cheap part: only the daemon holding the pairing announces ──
+
+test('item 5: a daemon that does not hold the pairing lock announces nothing, even with delivery still armed', async () => {
+  const r = rig({ lockHeld: false })
+  r.foreignGroup('mine', [730], SELF, START)
+  r.tracker.record(730, { skipped: true })
+  r.announceCompleteAsks('test')
+  await r.settle()
+  assert.equal(r.notes.length, 0)
+})

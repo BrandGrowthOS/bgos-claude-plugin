@@ -582,3 +582,24 @@ test('item 4: a save whose rename keeps failing is dropped with a line in the lo
     assert.deepEqual(readdirSync(dir).filter((f) => f.endsWith('.tmp')), [])
   })
 })
+
+// ── Data's review of #282, item 6 (Low): the cap holds with a file ──
+
+test('item 6: at most 50 groups are kept, in memory and on disk, even though every save merges the file', () => {
+  withDir((dir) => {
+    const filePath = join(dir, 'pending-asks.json')
+    const c = clock()
+    const tracker = new AskTracker({ filePath, now: c.now })
+    for (let i = 0; i < 55; i++) {
+      c.advance(1000)
+      tracker.register(group({ askId: `g${i}`, ids: [10_000 + i] }))
+    }
+    assert.equal(tracker.pending().length, 50)
+    const onDisk = JSON.parse(readFileSync(filePath, 'utf8'))
+    assert.equal(onDisk.pending.length, 50)
+    assert.equal(tracker.get('g0'), null, 'the oldest went first')
+    assert.ok(tracker.get('g54'))
+    // And a second daemon reading that file never brings the dropped ones back.
+    assert.equal(new AskTracker({ filePath, now: c.now }).pending().length, 50)
+  })
+})
