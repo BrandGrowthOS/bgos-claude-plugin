@@ -878,3 +878,34 @@ test('a budget says how much is left, so an email started late in a batch gets o
   budget.spend(9_000)
   assert.equal(budget.leftMs(), 0)
 })
+
+// ── third review round ───────────────────────────────────────────────────────
+
+test('holds: an email let go undelivered as the last hold stays owed until a poll settles it or it is delivered', () => {
+  const holds = ef.createEmailCursorHolds()
+  holds.hold('c', 100)
+  assert.equal(holds.release('c', 100, false), null, 'nothing was asked')
+  assert.equal(holds.owes('c'), true)
+  assert.equal(holds.clamp('c', 110), 99, 'the last hold going does not lift the ceiling')
+  assert.equal(holds.clamp('c', 99), 99)
+  // A poll that read the chat from below it settles it (delivered, claimed, or gone).
+  holds.settle('c', 110)
+  assert.equal(holds.owes('c'), false)
+  assert.equal(holds.clamp('c', 110), 110)
+  // A settle only drops what it read through.
+  holds.hold('d', 100)
+  holds.hold('d', 120)
+  holds.release('d', 100, false)
+  holds.release('d', 120, false)
+  holds.settle('d', 110)
+  assert.equal(holds.clamp('d', 130), 119, '120 is still owed')
+  holds.settle('d', 120)
+  assert.equal(holds.clamp('d', 130), 130)
+  // A later delivery of the email clears it too.
+  holds.hold('e', 100)
+  holds.release('e', 100, false)
+  holds.hold('e', 100)
+  holds.release('e', 100, true)
+  assert.equal(holds.owes('e'), false)
+  assert.equal(holds.clamp('e', 110), 110)
+})

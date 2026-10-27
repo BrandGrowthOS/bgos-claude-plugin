@@ -1522,9 +1522,10 @@ test('read attachments, wired: the tick and the download keepalive share one loc
   const poll = serverFunction('async function pollChat(')
   assert.ok(poll.includes('const pollEmailBudget = createEmailBatchBudget()'))
   assert.ok(/await emailFileSavesFor\(msg\.message, msg\.messageFiles \?\? \[\], \{ budget: pollEmailBudget, chatId, messageId: msg\.message\.id \}\)/.test(poll))
-  const catchup = serverFunction('async function streamWsDownCatchup(')
+  const catchup = serverFunction('async function runStreamCatchup(')
   assert.ok(catchup.includes('streamEmailBudget = createEmailBatchBudget()'))
-  assert.ok(/finally \{\s*streamEmailBudget = null/.test(catchup))
+  assert.ok(/finally \{\s*if \(owner\) streamEmailBudget = null/.test(catchup))
+  assert.ok(serverFunction('async function streamWsDownCatchup(').includes("runStreamCatchup(consumer, 'ws_down_poll')"))
   assert.ok(serverFunction('async function forwardStreamInbound(').includes('budget: streamEmailBudget'))
   assert.ok(serverFunction('function advanceChatCursor(').includes('emailCursorHolds.clamp(chatId, id)'))
   assert.ok(/void emailFilesRootLinkProblem\(EMAIL_FILES_ROOT\)/.test(SRC), 'a linked root is named at boot')
@@ -1673,4 +1674,125 @@ test('read attachments, wired: no lock recheck promotes while the first arm runs
   assert.ok(/streamEmail\?\.release\(forwardedMessageIds\.has\(view\.messageId\)\)/.test(serverFunction('async function forwardStreamInbound(')))
   assert.ok(/for \(const release of pollEmailReleases\) release\(\)/.test(serverFunction('async function pollChat(')))
   assert.ok(/meetingEmail\?\.release\(channelArmed\)/.test(SRC))
+})
+
+// ── third review round ───────────────────────────────────────────────────────
+
+test('read attachments, re-armed: an email nobody delivered keeps the cursor below it against a later socket message, which reads the chat now', async () => {
+  await withLaneState({ slow: true }, async (h) => {
+    const forwarded = new Set<number>()
+    const kicked: string[] = []
+    const ws = compile([serverConst('EMAIL_NEVER_SLASH'), WS_SRC(), CURSOR_SRC()].join('\n'), 'deliverWsInbound', {
+      ...h.shared,
+      emailFileSavesFor: h.saver,
+      emailFilesWanted: emailFiles.emailFilesWanted,
+      forwardedMessageIds: forwarded,
+      rememberForwarded: (id: number) => forwarded.add(id),
+      monitoredChatIds: [CHAT],
+      liveReadsInFlight: new Set<string>(),
+      pollChat: async (chatId: string) => void kicked.push(chatId),
+    })
+    ws.fn(wsEmail(ON))
+    await sleep(20)
+    // The keepalive finds a rival: stood down while the file downloads, so the socket refuses the email.
+    ws.scope.channelArmed = false
+    h.saverScope.lockHeld = false
+    h.open()
+    await sleep(60)
+    assert.equal(forwarded.has(9001), false)
+    // The rival dies before reading the chat; this daemon re-arms by the short path (no poll).
+    ws.scope.channelArmed = true
+    h.saverScope.lockHeld = true
+    ws.fn(OWNER_WS(9010))
+    assert.equal(ws.run.notifications.length, 1, 'the later message is delivered')
+    assert.equal(h.chatLastSeen.get(CHAT), 9000, 'but the cursor stays below the email nobody delivered')
+    assert.deepEqual(kicked, [CHAT], 'and the chat is read now, not at the 5 minute sweep')
+    // That read delivers the email and the cursor moves on.
+    const poll = compile(POLL_SRC(), 'pollChat', {
+      ...h.shared,
+      bgosGet: async () => ({ messages: [EMAIL_ROW(9001, EMAIL_ID, PDF_URL), OWNER_ROW(9010)] }),
+      emailFileSavesFor: h.saver,
+      createEmailBatchBudget: ef.createEmailBatchBudget,
+      forwardedMessageIds: forwarded,
+      rememberForwarded: (id: number) => forwarded.add(id),
+      lockHeld: true,
+    })
+    await poll.fn(CHAT)
+    assert.equal(poll.run.notifications.length, 1, 'the email, once; 9010 was the socket\'s')
+    assert.ok(poll.run.notifications[0]!.content.startsWith(inboundChannel.EXTERNAL_EMAIL_FILES_MARKER))
+    assert.equal(h.chatLastSeen.get(CHAT), 9010)
+  })
+})
+
+test('read attachments: an owed email whose row is gone never freezes its chat: the poll that reads past it settles it', async () => {
+  await withLaneState({}, async (h) => {
+    const holds = h.shared.emailCursorHolds as ReturnType<typeof emailFiles.createEmailCursorHolds>
+    holds.hold(CHAT, 9001)
+    holds.release(CHAT, 9001, false)
+    const poll = compile(POLL_SRC(), 'pollChat', {
+      ...h.shared,
+      bgosGet: async () => ({ messages: [OWNER_ROW(9010)] }),
+      emailFileSavesFor: h.saver,
+      createEmailBatchBudget: ef.createEmailBatchBudget,
+      lockHeld: true,
+    })
+    await poll.fn(CHAT)
+    assert.equal(h.chatLastSeen.get(CHAT), 9010)
+    assert.equal(holds.owes(CHAT), false)
+  })
+})
+
+test('read attachments, the meeting lane: stood down while the files downloaded, the id is un-claimed so a re-armed poll can deliver it', async () => {
+  await withLaneState({ slow: true }, async (h) => {
+    const forwarded = new Set<number>()
+    const box: { handler?: (p: unknown) => void } = {}
+    const start = SRC.indexOf("  realtimeSocket.on('meeting_message', whenArmed('meeting_message', (payload: any) => {")
+    assert.ok(start > 0)
+    const source = SRC.slice(start, SRC.indexOf('\n  }))\n', start) + '\n  }))\n'.length)
+    const meeting = compile(source, 'undefined', {
+      ...h.shared,
+      realtimeSocket: { on: (_name: string, fn: (p: unknown) => void) => (box.handler = fn) },
+      whenArmed: (_frame: string, fn: unknown) => fn,
+      emailFileSavesFor: h.saver,
+      emailFilesWanted: emailFiles.emailFilesWanted,
+      forwardedMessageIds: forwarded,
+      rememberForwarded: (id: number) => forwarded.add(id),
+      meetingContexts: new Map(),
+      meetingChatIds: new Set<string>(),
+      meetingIdByChatId: new Map(),
+      buildMeetingCard: meetingCard.buildMeetingCard,
+    })
+    box.handler!({ ...wsEmail(ON), meetingId: 31, senderAssistantId: null })
+    await sleep(20)
+    assert.equal(forwarded.has(9001), true, 'claimed while it downloads')
+    meeting.scope.channelArmed = false
+    h.saverScope.lockHeld = false
+    h.open()
+    await sleep(60)
+    assert.equal(meeting.run.notifications.length, 0)
+    assert.equal(forwarded.has(9001), false, 'un-claimed: the holder, or this daemon re-armed, delivers it')
+  })
+})
+
+test('read attachments: every stream catch up (boot, reconnect, WS down) gives its email downloads one batch budget', async () => {
+  assert.equal((SRC.match(/\.runCatchup\(/g) ?? []).length, 1, 'one place starts a catch up chain from the daemon')
+  const helper = serverFunction('async function runStreamCatchup(')
+  for (const reason of ["'boot'", "'reconnect'", "'ws_down_poll'"]) {
+    assert.ok(new RegExp(`runStreamCatchup\\([^)]*${reason}\\)`).test(SRC), `the ${reason} catch up goes through it`)
+  }
+  const seen: unknown[] = []
+  const { fn, scope } = compile(helper, 'runStreamCatchup', {
+    streamEmailBudget: null,
+    createEmailBatchBudget: ef.createEmailBatchBudget,
+  })
+  const consumer = { runCatchup: async () => (seen.push(scope.streamEmailBudget), 'caught_up') }
+  assert.equal(await (fn as (c: unknown, r: string) => Promise<string>)(consumer, 'boot'), 'caught_up')
+  assert.equal(typeof (seen[0] as { mayStart?: unknown })?.mayStart, 'function', 'a budget while the chain runs')
+  assert.equal(scope.streamEmailBudget, null, 'and none after')
+  // A chain started while another catch up's budget is set shares it and leaves it to its owner.
+  const outer = ef.createEmailBatchBudget()
+  scope.streamEmailBudget = outer
+  await (fn as (c: unknown, r: string) => Promise<string>)(consumer, 'reconnect')
+  assert.equal(seen[1], outer)
+  assert.equal(scope.streamEmailBudget, outer)
 })

@@ -445,6 +445,7 @@ import {
   beaconWatchdog,
   sweepMode,
   CATCHUP_FETCH_LIMIT,
+  type CatchupOutcome,
   type StreamAuthority,
   type StreamUpdate,
 } from './lib/update-stream.js'
@@ -11525,6 +11526,12 @@ async function pollChat(chatId: string): Promise<void> {
         return t === null || t >= FIRST_POLL_RECENT_CUTOFF_MS
       })
       .map((m) => m.message.id)
+    // This batch read the chat from below any email owed in it (the cursor is
+    // clamped there) and finished without throwing: every owed id through
+    // maxId was delivered, claimed, or is gone, so none holds the cursor any
+    // longer (lib/email-files.ts createEmailCursorHolds). Exactly the rows
+    // this advance treats as handled.
+    emailCursorHolds.settle(chatId, maxId)
     advanceChatCursor(
       chatId,
       advanceCursor({ lastSeen, maxId, pendingEmptyIds: pendingIds }),
@@ -14424,21 +14431,34 @@ function streamSchedulerTick(nowMs: number): void {
   }
 }
 
+/**
+ * Run one stream catch up chain (boot, reconnect, WS down) with one batch
+ * budget for its email downloads (see emailFileSavesFor), so no chain can hold
+ * its caller long: the WS down one runs inside the tick, the boot one inside
+ * startup. A chain started while another's budget is set shares it (the
+ * consumer joins a running chain anyway) and leaves it to its owner.
+ */
+async function runStreamCatchup(
+  consumer: { runCatchup(reason: string, nowMs: number): Promise<CatchupOutcome> },
+  reason: string,
+): Promise<CatchupOutcome> {
+  const owner = streamEmailBudget === null
+  if (owner) streamEmailBudget = createEmailBatchBudget()
+  try {
+    return await consumer.runCatchup(reason, Date.now())
+  } finally {
+    if (owner) streamEmailBudget = null
+  }
+}
+
 /** WS-down 10s cadence: one getDifference chain instead of the full sweep. */
 async function streamWsDownCatchup(): Promise<void> {
   if (updateDrainMode) return
   const consumer = streamConsumer
   if (!consumer) return
   await trackMessageOperation(async () => {
-    // This catch up runs inside the tick: its email downloads share one
-    // budget (see emailFileSavesFor), so a long chain cannot hold the tick.
-    streamEmailBudget = createEmailBatchBudget()
-    try {
-      const outcome = await consumer.runCatchup('ws_down_poll', Date.now())
-      if (outcome === 'feature_absent') deactivateStream('updates endpoint 404')
-    } finally {
-      streamEmailBudget = null
-    }
+    const outcome = await runStreamCatchup(consumer, 'ws_down_poll')
+    if (outcome === 'feature_absent') deactivateStream('updates endpoint 404')
   })
 }
 
@@ -14507,7 +14527,7 @@ async function initUpdateStream(): Promise<void> {
         `${resumed ? 'resumed' : 'adopted'})`,
     )
     if (resumed && initial.seq < mine.seq) {
-      const outcome = await streamConsumer.runCatchup('boot', Date.now())
+      const outcome = await runStreamCatchup(streamConsumer, 'boot')
       log(`update stream: boot catch-up ${outcome}`)
       if (outcome === 'feature_absent') deactivateStream('updates endpoint 404')
     }
@@ -14690,7 +14710,7 @@ function connectWebsocket(): void {
         await new Promise((resolve) =>
           setTimeout(resolve, Math.floor(Math.random() * 5000)),
         )
-        const outcome = await consumer.runCatchup('reconnect', Date.now())
+        const outcome = await runStreamCatchup(consumer, 'reconnect')
         if (outcome === 'feature_absent') deactivateStream('updates endpoint 404')
       }).catch((err) => log(`Post-reconnect stream catch-up failed: ${err}`))
       return
@@ -15068,6 +15088,19 @@ function connectWebsocket(): void {
           streamCoveredChats.has(chatId)
         if (wsCursorSafe) {
           advanceChatCursor(chatId, messageId)
+          // Cut short below an email this daemon let go undelivered (it stood
+          // down while its files downloaded, then re-armed): read the chat now,
+          // so that email is delivered and settled at once, not at the next
+          // full sweep up to 5 minutes away. One read at a time per chat.
+          if (
+            emailCursorHolds.owes(chatId) &&
+            (chatLastSeen.get(chatId) ?? 0) < messageId &&
+            monitoredChatIds.includes(chatId) &&
+            !liveReadsInFlight.has(chatId)
+          ) {
+            liveReadsInFlight.add(chatId)
+            void pollChat(chatId).finally(() => liveReadsInFlight.delete(chatId))
+          }
         } else {
           noteLiveFloor(chatId, messageId)
           if (monitoredChatIds.includes(chatId) && !liveReadsInFlight.has(chatId)) {
@@ -15639,6 +15672,9 @@ function connectWebsocket(): void {
           try {
             if (channelArmed) sendMeetingCard(meetingEmail?.saves ?? [])
           } finally {
+            // Not sent: un-claim it, so the holder (or this daemon, re-armed)
+            // delivers it through the poll.
+            if (!channelArmed && Number.isFinite(messageId)) forwardedMessageIds.delete(messageId)
             meetingEmail?.release(channelArmed)
           }
         }).catch((err) => log(`meeting_message handler error: ${err}`))

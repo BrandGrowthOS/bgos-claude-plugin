@@ -774,10 +774,16 @@ export function createEmailBatchBudget(budgetMs: number = EMAIL_FILES_BATCH_BUDG
  * let go before it is free.
  *
  * An email let go WITHOUT being delivered (the daemon stood down, or the lane
- * refused it) stays a ceiling for its chat until every hold there is gone:
- * no ask, and no catch up, passes it, however the other holds end. Its own
- * later delivery (held again and let go delivered) lifts it. So a stood-down
- * daemon's cursor, and so its flush, never passes an email nobody delivered.
+ * refused it) is OWED: a ceiling for its chat that no ask and no catch up
+ * passes, however the other holds end, and that outlives the last hold (a
+ * daemon that stood down and re-armed by the short path must not let a later
+ * socket message move the cursor past it). It goes when the email is
+ * delivered after all (held again and let go delivered), or when a poll that
+ * read the chat from below it finishes its batch (settle): that poll saw the
+ * row and delivered or claimed it, or the row no longer exists. A poll always
+ * reads from below an owed id (the cursor is clamped there), so an owed id can
+ * never freeze its chat. So a stood-down daemon's cursor, and so its flush,
+ * never passes an email nobody delivered.
  */
 export function createEmailCursorHolds() {
   const held = new Map<string, Map<number, number>>()
@@ -821,14 +827,29 @@ export function createEmailCursorHolds() {
       else undelivered.delete(chatId)
       const target = asked.get(chatId)
       const ceiling = ceilingOf(chatId)
-      if (!held.has(chatId)) {
-        // The last hold in the chat: what is still owed is a ceiling this one
-        // last time, then the chat is free again.
-        asked.delete(chatId)
-        undelivered.delete(chatId)
-      }
+      // The last hold in the chat: this catch up answers what was asked. What
+      // is still owed stays owed (see settle).
+      if (!held.has(chatId)) asked.delete(chatId)
       if (target === undefined) return null
       return ceiling === null ? target : Math.min(target, ceiling)
+    },
+    /** Is an email in this chat owed (let go undelivered, not settled yet)? */
+    owes(chatId: string): boolean {
+      return (undelivered.get(chatId)?.size ?? 0) > 0
+    },
+    /**
+     * A poll read this chat from below and finished its batch through
+     * `throughId` without throwing: every owed id up to there was seen by it
+     * (delivered, claimed, or no longer there), so it is owed no more.
+     */
+    settle(chatId: string, throughId: number): void {
+      const owed = undelivered.get(chatId)
+      if (!owed || !Number.isFinite(throughId)) return
+      for (const id of [...owed]) if (id <= throughId) owed.delete(id)
+      if (owed.size === 0) {
+        undelivered.delete(chatId)
+        if (!held.has(chatId)) asked.delete(chatId)
+      }
     },
     held(chatId: string): number[] {
       return [...(held.get(chatId)?.keys() ?? [])].sort((a, b) => a - b)
