@@ -128,3 +128,21 @@ test('fourth review, Important 2: a passive daemon that takes the connection rea
   assert.ok(taken > 0)
   assert.match(server.slice(taken, at), /lockHeld = true\n\s*connectedSince = Date\.now\(\)\n(\s*\/\/[^\n]*\n)*\s*refreshAskTracker\('promotion'\)\n/)
 })
+
+test('lease follow-up of #282, item 2: the retire keeps a live asker\'s card on file for it, and every daemon\'s ask tick tells its own session of its retired cards', () => {
+  const retire = fnBody('async function retireOrphanedAsks(via: string): Promise<void> {', 4000)
+  // The connected daemon's own lane verdict decides whether the asker is told (fresh review of the follow-up, Important 2).
+  assert.match(retire, /const refused = ownerAnnounceRefused\(\{ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership\.isOthers\(ask\.chatId\) \}\)/)
+  assert.match(retire, /if \(!askTracker\.retire\(ask\.askId, \{ withdrawn, tellAsker: !refused \}\)\) continue/)
+  assert.match(retire, /sendAskWithdrawn\(ask, withdrawn, \{ toAsker: false, via \}\)/)
+  const tick = fnBody('function heartbeatAskTracker(): void {', 600)
+  assert.match(tick, /\n\s*tellRetiredOwnAsks\(\)\n\}/)
+  const tell = fnBody('function tellRetiredOwnAsks(): void {', 600)
+  assert.match(tell, /askTracker\.takeRetiredOwn\(\)\) sendAskWithdrawn\(ask, withdrawn, \{ toAsker: true, via: 'the ask tick' \}\)/)
+  assert.doesNotMatch(tell, /channelArmed|lockHeld/, 'the asker is passive by then')
+})
+
+test('lease follow-up of #282, rig: the retire still logs the line it always did (the rig and anyone reading the log match it)', () => {
+  const send = fnBody('function sendAskWithdrawn(ask: PendingAsk, withdrawn: number, opts: { toAsker: boolean; via: string }): void {', 2500)
+  assert.match(send, /log\(`ask_withdrawn: retired group \$\{ask\.askId\} in chat \$\{ask\.chatId\} and told this session/)
+})

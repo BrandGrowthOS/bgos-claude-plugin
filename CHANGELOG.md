@@ -2,6 +2,14 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.78.1 (2026-10-27)
+
+**The question card's lease, after Data's gate on #282.**
+
+- **A session that ran beside the asker is told apart from its restart by when the asker could last have run**, not by its last lease, which can be up to 20 s older than its end. A session that ran beside the asker for 61 to 75 s before it ended no longer takes its answers; a real restart still does, unless another session of the agent was already up when the card was posted and the asker ran on for about 40 s or more after posting (that session marks the card for every daemon, as it did at about 75 s before). A clock stepped back never shortens the measure below what a session has seen: it runs to the latest lease that session has seen (the time after the step still counts short by the step, as before).
+- **The session that asked is told when its card is retired.** When the connected session retires a card whose asker still runs without the connection (after a takeover), the asker's own session gets one `ask_withdrawn` event too, with what was answered and how to ask again from there (a blocking ask), on its next tick. A card handed over to a restart is never retired, so nobody is told it was withdrawn. A card the connected session may not tell its own session (a share recipient's chat, with lanes on) is told to no session: the connected session decides, since the asker's lane state is as it was when it lost the connection; the asker's own lane check stays, and can only hold a tell back.
+- **A clock stepped back never stalls the lease.** The asker writes it again at once, at its usual rate after that, and every other daemon takes the corrected lease instead of keeping and writing back the one the clock has not reached.
+
 ## 0.78.0 (2026-10-27)
 
 **A late answer to a question card now reaches the agent (#282, Kc's ask, Data approved option A, msg 161859).** The card stays answerable in the app and the backend accepts a late answer, but the plugin dropped it on both transports (`lib/stream-apply.ts`, `lib/poll-core.ts`), and `ask_user_input` blocked up to 600 s and then reported every unanswered question as skipped.
