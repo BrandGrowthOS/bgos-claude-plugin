@@ -358,9 +358,9 @@ export function readExternalEmailId(record: unknown): string | null {
  * Does the owner let the agent read this email's files? Only the server's
  * boolean `readAttachments: true` (or `read_attachments`), on the record or on
  * the `message` of a poll or stream row envelope, says yes, and a `false`
- * anywhere on it says no. The backend sends it per row from the agent's
- * current switch, only while it is on and the email has files; an old backend
- * never sends it, and then nothing about the turn changes.
+ * anywhere on it says no. The backend (from BGOS #3387) sends it per row from
+ * the agent's current switch, only while it is on and the email has files; an
+ * old backend never sends it, and then nothing about the turn changes.
  */
 export function readsEmailFiles(record: unknown): boolean {
   const r = plainObject(record)

@@ -494,6 +494,7 @@ test('emailFilesWanted: an older email after the owner turned the switch off is 
   assert.equal(ef.emailFilesWanted({ message: { ...RECORD_ON, readAttachments: false } }, f), false, 'a history row that says false')
   assert.equal(ef.emailFilesWanted({ readAttachments: false, message: RECORD_ON }, f), false, 'an envelope that says false wins')
   assert.equal(ef.emailFilesWanted({ ...RECORD_ON, read_attachments: false }, f), false, 'the snake case false wins too')
+  assert.equal(ef.emailFilesWanted({ ...RECORD_ON, readAttachments: null }, f), false, 'null is not a yes')
 })
 
 // ── the sweep ────────────────────────────────────────────────────────────────
