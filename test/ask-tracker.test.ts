@@ -486,7 +486,7 @@ function sharedFile(fn: (t: { filePath: string; clock: { at: number }; live: num
  */
 type Recheck = {
   heartbeat?: () => void
-  retirable?: () => PendingAsk[]
+  retirable?: (connectedSince?: number) => PendingAsk[]
 }
 const recheckLib = askLib as unknown as {
   ASK_LEASE_REFRESH_MS?: number
@@ -496,7 +496,8 @@ const recheckLib = askLib as unknown as {
 }
 /** The asker says it still runs, as the ask tick does (a no op before the lease exists). */
 const beat = (t: AskTracker) => (t as unknown as Recheck).heartbeat?.()
-const retirableIds = (t: AskTracker) => ((t as unknown as Recheck).retirable?.() ?? []).map((g) => g.askId)
+const retirableIds = (t: AskTracker, connectedSince?: number) =>
+  ((t as unknown as Recheck).retirable?.(connectedSince) ?? []).map((g) => g.askId)
 /** The clock moves to `to` 5 s at a time (the ask tick), each step running `each`. */
 function stepUntil(clock: { at: number }, to: number, each: () => void) {
   while (clock.at < to) {
@@ -1120,4 +1121,50 @@ test('fresh review of the recheck, Minor 3: the withdrawn event never says anoth
   assert.doesNotMatch(event.content, /another session/)
   assert.doesNotMatch(event.content, /did not ask/)
   assert.match(event.content, /can no longer receive/)
+})
+
+test('second fresh review of the recheck, Minor 2: retire passes 25 s apart (slow reads before them) still retire a live asker\'s card 35 s after it was first seen', () => {
+  sharedFile(({ filePath, clock, live, at }) => {
+    const now = () => clock.at
+    const h1 = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
+    h1.register(group({ askId: 'open', ids: [1211] }))
+    live.push(1)
+    clock.at = at('10:01:00')
+    const h2 = trackerAs({ pid: 2, startedAt: clock.at }, live, { filePath, now })
+    live.push(2)
+    const looks: Array<[number, string[]]> = [[0, retirableIds(h2)]]
+    stepUntil(clock, at('10:01:50'), () => {
+      beat(h1)
+      beat(h2)
+      const since = (clock.at - at('10:01:00')) / 1000
+      if (since % 25 === 0) looks.push([since, retirableIds(h2)])
+    })
+    assert.deepEqual(looks, [[0, []], [25, []], [50, ['open']]])
+  })
+})
+
+test('second fresh review of the recheck, Minor 2: a daemon that takes the connection again starts the clock again (connectedSince)', () => {
+  sharedFile(({ filePath, clock, live, at }) => {
+    const now = () => clock.at
+    const h1 = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
+    h1.register(group({ askId: 'open', ids: [1221] }))
+    live.push(1)
+    clock.at = at('10:01:00')
+    const h2 = trackerAs({ pid: 2, startedAt: clock.at }, live, { filePath, now })
+    live.push(2)
+    assert.deepEqual(retirableIds(h2, at('10:01:00')), [])
+    // H2 stands down: no retire pass while it is passive (both still tick).
+    runUntil(clock, at('10:20:00'), h1, h2)
+    stepUntil(clock, at('10:20:05'), () => {
+      beat(h1)
+      beat(h2)
+    })
+    assert.deepEqual(retirableIds(h2, at('10:20:00')), [], 'connected again 5 s ago')
+    stepUntil(clock, at('10:20:40'), () => {
+      beat(h1)
+      beat(h2)
+      retirableIds(h2, at('10:20:00'))
+    })
+    assert.deepEqual(retirableIds(h2, at('10:20:00')), ['open'])
+  })
 })

@@ -9,7 +9,9 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import ts from 'typescript'
 
 import * as askLib from '../lib/ask-tracker.ts'
@@ -51,7 +53,7 @@ interface Row {
   answer?: { optionId?: number; freeText?: string; skipped?: boolean }
 }
 
-function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean } = {}) {
+function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean; filePath?: string } = {}) {
   const source = [
     lift('async function readAskGroup('),
     lift('function announceCompleteAsks('),
@@ -86,7 +88,7 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean } 
   }
   const live = new Set(opts.live ?? [])
   const tracker = new AskTracker({
-    filePath: null,
+    filePath: opts.filePath ?? null,
     now: () => clock,
     // Read by the fix (who posted a group, and is that process still running).
     ...({ self: SELF, isAlive: (pid: number) => pid === SELF.pid || live.has(pid) } as object),
@@ -107,6 +109,7 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean } 
   const scheduled: Array<{ at: number; index: number }> = []
   /** The pairing lock changing hands during a wait: applied on the first read at or after `at`. */
   const lockChanges: Array<{ at: number; held: boolean }> = []
+  let lockFileNamesUs = opts.lockHeld ?? true
 
   const known: Record<string, unknown> = {
     ...askLib,
@@ -172,6 +175,9 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean } 
     rememberAnnouncedClick: (id: number) => announced.add(id),
     channelArmed: true,
     lockHeld: opts.lockHeld ?? true,
+    lockHeldSince: START - 60 * MIN,
+    // What the pairing lock file says, read apart from lockHeld (second fresh review of the recheck, Minor 1).
+    pairingLockNamesThisDaemon: () => lockFileNamesUs,
     updateDrainMode: false,
     ownerAnnounceRefused: () => false,
     lanesOnForThisAgent: false,
@@ -237,6 +243,10 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean } 
     /** The owner answers the n-th posted question (Yes) once the clock reaches `at`. */
     answerAt: (index: number, at: number) => {
       scheduled.push({ at, index })
+    },
+    /** The lock file names another daemon, whatever this one's lockHeld says. */
+    lockFileTakenBy: () => {
+      lockFileNamesUs = false
     },
     holdNotifications: () => {
       let release!: () => void
@@ -678,12 +688,14 @@ test('fresh review of the recheck, Critical 1: whatever took the connection (cha
   r.foreignGroup('older-holder', [753], { pid: 2005, startedAt: START - 90 * MIN }, START - 30 * MIN)
   r.answer(751)
   assert.equal(typeof r.retireOrphanedAsks, 'function')
-  await r.retireOrphanedAsks?.('timer')
-  r.advance(20_000)
+  for (let i = 0; i < 2; i++) {
+    await r.retireOrphanedAsks?.('timer')
+    r.advance(15_000)
+  }
   await r.retireOrphanedAsks?.('timer')
   await r.settle()
-  assert.equal(r.patches.length, 0, 'not within ASK_LEASE_MS of the first look')
-  r.advance(20_000)
+  assert.equal(r.patches.length, 0, 'not within ASK_LEASE_MS of the first look (30 s)')
+  r.advance(15_000)
   await r.retireOrphanedAsks?.('timer')
   await r.settle()
   assert.deepEqual(r.patches.map((p) => p.path).sort(), ['messages/750', 'messages/752', 'messages/753'])
@@ -716,4 +728,56 @@ test('fresh review of the recheck, Minor 2: a group another daemon delivers or r
   await r.settle()
   assert.equal(r.patches.length, 1)
   assert.equal(r.notes.length, 0, 'its session already has the answers, or was told')
+})
+
+test('second fresh review of the recheck, Minor 1: a daemon whose lockHeld is stale (its poll tick stalled while a rival took the lock) retires nothing: it asks the lock file first', async () => {
+  const r = rig({ live: [2009] })
+  r.foreignGroup('real-holders', [790], { pid: 2009, startedAt: START - 60 * MIN }, START)
+  const marked = r.foreignGroup('marked', [791], { pid: 2010, startedAt: START - 60 * MIN }, START - 30 * MIN)
+  marked.askerEndedBeside = START - MIN
+  r.lockFileTakenBy()
+  for (let i = 0; i < 5; i++) {
+    await r.retireOrphanedAsks?.('timer')
+    r.advance(15_000)
+  }
+  await r.settle()
+  assert.deepEqual(r.patches, [], 'pid 2009 holds the connection: its card is its own to deliver')
+  assert.equal(r.notes.length, 0)
+})
+
+test('second fresh review of the recheck, Minor 3: a passive wait retires its card under a hold on disk, so the connected daemon never retires it too', async () => {
+  const r = rig({ lockHeld: false })
+  const heldDuringPatch: boolean[] = []
+  r.onPatch(() => {
+    const ask = r.tracker.pending()[0]
+    heldDuringPatch.push(ask?.heldUntil !== undefined && ask.heldUntil > r.now())
+  })
+  await r.askTool({ chat_id: '77', questions: QUESTIONS, wait_seconds: 5 })
+  assert.equal(heldDuringPatch.length, 2)
+  assert.ok(heldDuringPatch.every(Boolean), `held through its own retire: ${JSON.stringify(heldDuringPatch)}`)
+  assert.equal(r.tracker.pending().length, 0)
+})
+
+test('second fresh review of the recheck, Minor 5: the retire reads the file again after its PATCH, so a tombstone another daemon wrote meanwhile stops the event', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'askcard-retire-'))
+  try {
+    const filePath = join(dir, 'pending-asks.json')
+    const r = rig({ filePath })
+    const ask = r.foreignGroup('theirs', [795], { pid: 2011, startedAt: START - 60 * MIN }, START - 30 * MIN)
+    ask.askerEndedBeside = START - MIN
+    r.tracker.hold('theirs', START - 1)
+    r.tracker.release('theirs')
+    // Another daemon, on the same file, delivers it while this one PATCHes.
+    const other = new AskTracker({ filePath, now: () => r.now(), ...({ self: { pid: 2012, startedAt: START - MIN }, isAlive: () => true } as object) })
+    r.onPatch(() => {
+      other.refresh()
+      other.delivered('theirs')
+    })
+    await r.retireOrphanedAsks?.('test')
+    await r.settle()
+    assert.equal(r.patches.length, 1)
+    assert.equal(r.notes.length, 0, 'the other daemon handed it out: nothing to tell here')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
