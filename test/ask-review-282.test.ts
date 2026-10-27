@@ -28,6 +28,11 @@ function lift(header: string): string {
   return SERVER.slice(start + 1, end + 3)
 }
 
+/** A declaration the recheck of #282 adds: empty until it exists, so its cases fail on an assertion. */
+function liftIf(header: string): string {
+  return SERVER.includes(`\n${header}`) ? lift(header) : ''
+}
+
 /** One case of the tool switch, wrapped in a function of its own. */
 function liftCase(name: string, next: string, fn: string): string {
   const start = SERVER.indexOf(`\n    case '${name}': {`)
@@ -51,14 +56,25 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean } 
     lift('async function readAskGroup('),
     lift('function announceCompleteAsks('),
     lift('async function retireOrphanAskRows('),
+    liftIf('async function retireOrphanedAsks('),
+    liftIf('function takeOverAsks('),
     liftCase('ask_user_input', 'withdraw_ask', 'askTool'),
     liftCase('withdraw_ask', 'complete_voice_task', 'withdrawTool'),
   ].join('\n')
+  const exported = ['askTool', 'withdrawTool', 'announceCompleteAsks']
+  for (const name of ['retireOrphanedAsks', 'takeOverAsks']) if (source.includes(`function ${name}(`)) exported.push(name)
   const js = ts.transpileModule(source, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
   }).outputText
 
   let clock = START
+  /** Groups another live process posted: their asker says it runs, as its ask tick would. */
+  const beatLive = () => {
+    for (const ask of tracker.pending()) {
+      const owner = ask.owner as (PendingAsk['owner'] & { aliveAt?: number }) | undefined
+      if (owner && owner.pid !== SELF.pid && live.has(owner.pid)) owner.aliveAt = clock
+    }
+  }
   class FakeDate extends Date {
     constructor(...args: unknown[]) {
       if (args.length === 0) super(clock)
@@ -98,6 +114,7 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean } 
     // The only waits are the blocking wait's ticks: each moves the clock.
     setTimeout: (fn: () => void, ms: number) => {
       clock += ms
+      beatLive()
       queueMicrotask(fn)
       return { unref() {} }
     },
@@ -184,12 +201,14 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean } 
     },
   })
   // eslint-disable-next-line no-new-func
-  const lifted = new Function('scope', `with (scope) {\n${js}\nreturn { askTool, withdrawTool, announceCompleteAsks }\n}`)(
+  const lifted = new Function('scope', `with (scope) {\n${js}\nreturn { ${exported.join(', ')} }\n}`)(
     scope,
   ) as {
     askTool(args: Record<string, unknown>): Promise<ToolResult>
     withdrawTool(args: Record<string, unknown>): Promise<ToolResult>
     announceCompleteAsks(via: string): void
+    retireOrphanedAsks?: (via: string) => Promise<void>
+    takeOverAsks?: (reason: string, holderPid: number | undefined) => void
   }
 
   return {
@@ -203,6 +222,7 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean } 
     ...lifted,
     advance: (ms: number) => {
       clock += ms
+      beatLive()
     },
     now: () => clock,
     answer: (id: number, yes = true) => {
@@ -242,8 +262,9 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean } 
           ],
         })),
       })
-      ;(ask as PendingAsk & { owner?: unknown }).owner = owner
+      ;(ask as PendingAsk & { owner?: unknown }).owner = { ...owner }
       clock = at
+      beatLive()
       return ask
     },
     settle: () => new Promise((r) => setImmediate(r)),
@@ -594,4 +615,84 @@ test('third review, Minor 8: an armed daemon that stands down during its wait re
   assert.match(res.content[0].text, /"status": "withdrawn"/)
   assert.equal(r.patches.length, 1)
   assert.equal(r.tracker.pending().length, 0)
+})
+
+// ── Data's recheck of #282 at 4d9ee89: a card no daemon may announce is retired, never left live ──
+
+const RETIRE = askLib.askRetireBody()
+
+test('recheck, item 1: a group marked askerEndedBeside has its open questions retired as withdraw_ask does, and this session gets ONE ask_withdrawn event', async () => {
+  const r = rig()
+  const ask = r.foreignGroup('theirs', [740, 741], { pid: 2003, startedAt: START - 60 * MIN }, START - 30 * MIN)
+  ask.askerEndedBeside = START - MIN
+  r.answer(740)
+  assert.equal(typeof r.retireOrphanedAsks, 'function', 'server.ts retires what no daemon may announce')
+  await r.retireOrphanedAsks?.('test')
+  await r.settle()
+  assert.deepEqual(r.patches, [{ path: 'messages/741', body: RETIRE }], 'the answered question keeps its answer; the open one closes for the owner')
+  assert.equal(r.notes.length, 1)
+  assert.equal(r.notes[0].params.meta.event_type, 'ask_withdrawn')
+  assert.equal(r.notes[0].params.meta.ask_id, 'theirs')
+  assert.equal(r.tracker.get('theirs'), null)
+  assert.equal(r.tracker.wasDelivered('theirs'), true, 'gone for every daemon')
+  await r.retireOrphanedAsks?.('test')
+  await r.settle()
+  assert.equal(r.notes.length, 1, 'once')
+  assert.equal(r.patches.length, 1)
+})
+
+test('recheck, item 1: a retire whose PATCH fails keeps the group and says nothing yet; the next pass retires it', async () => {
+  const r = rig()
+  const ask = r.foreignGroup('theirs', [742], { pid: 2003, startedAt: START - 60 * MIN }, START - 30 * MIN)
+  ask.askerEndedBeside = START - MIN
+  let fail = true
+  r.onPatch(() => {
+    if (fail) throw new Error('HTTP 503')
+  })
+  assert.equal(typeof r.retireOrphanedAsks, 'function')
+  await r.retireOrphanedAsks?.('test')
+  await r.settle()
+  assert.equal(r.notes.length, 0)
+  assert.ok(r.tracker.get('theirs'), 'still tracked')
+  fail = false
+  await r.retireOrphanedAsks?.('test')
+  await r.settle()
+  assert.equal(r.notes.length, 1)
+  assert.equal(r.tracker.get('theirs'), null)
+})
+
+test('recheck, item 1: only the armed daemon holding the connection retires; a passive one leaves the card for it', async () => {
+  const r = rig({ lockHeld: false })
+  const ask = r.foreignGroup('theirs', [743], { pid: 2003, startedAt: START - 60 * MIN }, START - 30 * MIN)
+  ask.askerEndedBeside = START - MIN
+  assert.equal(typeof r.retireOrphanedAsks, 'function')
+  await r.retireOrphanedAsks?.('test')
+  await r.settle()
+  assert.deepEqual(r.patches, [])
+  assert.ok(r.tracker.get('theirs'))
+})
+
+test('recheck, takeover: after a channel takeover every open group of the old holder is retired with one event each, and none is left', async () => {
+  const r = rig({ live: [2004] })
+  r.foreignGroup('first', [750], { pid: 2004, startedAt: START - 60 * MIN }, START - 2 * MIN)
+  r.foreignGroup('second', [751, 752], { pid: 2004, startedAt: START - 60 * MIN }, START - MIN)
+  r.foreignGroup('another-session', [753], { pid: 2005, startedAt: START - 60 * MIN }, START - MIN)
+  r.answer(751)
+  assert.equal(typeof r.takeOverAsks, 'function', 'server.ts marks the old holder\'s groups when it takes the connection')
+  r.takeOverAsks?.('channel-takeover', 2004)
+  await r.retireOrphanedAsks?.('takeover')
+  await r.settle()
+  assert.deepEqual(r.patches.map((p) => p.path).sort(), ['messages/750', 'messages/752'])
+  assert.deepEqual(r.notes.map((n) => n.params.meta.ask_id).sort(), ['first', 'second'])
+  assert.ok(r.notes.every((n) => n.params.meta.event_type === 'ask_withdrawn'))
+  assert.deepEqual(r.tracker.pending().map((g) => g.askId), ['another-session'], "a group whose asker did not hold the connection is that asker's, untouched")
+})
+
+test('recheck, takeover: a lock taken from a dead or stale holder marks nothing (its restart may still claim the card)', () => {
+  const r = rig({ live: [2006] })
+  r.foreignGroup('g', [760], { pid: 2006, startedAt: START - 60 * MIN }, START - MIN)
+  assert.equal(typeof r.takeOverAsks, 'function')
+  for (const reason of ['holder-dead', 'stale', 'unlocked', 'own']) r.takeOverAsks?.(reason, 2006)
+  r.takeOverAsks?.('channel-takeover', undefined)
+  assert.equal(r.tracker.get('g')?.askerEndedBeside, undefined)
 })

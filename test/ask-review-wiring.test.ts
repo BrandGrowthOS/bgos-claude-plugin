@@ -74,11 +74,35 @@ test('Minor 9: a card whose post failed half way retires the questions it did po
   assert.match(body.slice(failed, failed + 1200), /retireOrphanAskRows\(postedIds\)/)
 })
 
-test('fourth review, Important 2: a daemon not armed for delivery (passive, or still arming) reads the file on the ask tick, so it sees the asker end when it does', () => {
-  // Fifth review, Minors 1 and 2: an armed daemon draining for an update reads too, and a throw is caught.
-  assert.match(server, /setInterval\(\(\) => \{\n\s*if \(!channelArmed \|\| updateDrainMode\) refreshAskTracker\('tick'\)\n\s*\}, ASK_TICK_MS\)\.unref\(\)/)
-  const fn = fnBody('function refreshAskTracker(via: string): void {', 600)
-  assert.match(fn, /try \{\n\s*askTracker\.refresh\(\)\n\s*\} catch \(err\) \{\n\s*log\(/)
+test('recheck of #282, pid reuse: every daemon, armed, passive or draining, says on the ask tick that it runs (its lease), and a throw is caught', () => {
+  assert.match(server, /setInterval\(\(\) => heartbeatAskTracker\(\), ASK_TICK_MS\)\.unref\(\)/)
+  const fn = fnBody('function heartbeatAskTracker(): void {', 600)
+  assert.match(fn, /try \{\n\s*askTracker\.heartbeat\(\)\n\s*\} catch \(err\) \{\n\s*log\(/)
+  // Fifth review, Minor 2: the promotion's read is caught too.
+  const refresh = fnBody('function refreshAskTracker(via: string): void {', 600)
+  assert.match(refresh, /try \{\n\s*askTracker\.refresh\(\)\n\s*\} catch \(err\) \{\n\s*log\(/)
+})
+
+test('recheck of #282, takeover: a passive daemon that takes the connection marks the old holder\'s groups, at promotion and at boot', () => {
+  const at = server.indexOf('promoting from passive to active and arming delivery')
+  const taken = server.lastIndexOf('        lockHeld = true\n', at)
+  assert.match(server.slice(taken, at), /refreshAskTracker\('promotion'\)\n(\s*\/\/[^\n]*\n)*\s*takeOverAsks\(res\.reason, res\.holderPid\)\n/)
+  const boot = fnBody('if (lockAtBoot.acquired) {', 1800)
+  const mark = boot.indexOf('takeOverAsks(lockAtBoot.reason, lockAtBoot.holderPid)')
+  assert.ok(mark > 0 && mark < boot.indexOf('await armDelivery()'), 'marked before the arm reads the file')
+  const fn = fnBody('function takeOverAsks(reason: string, holderPid: number | undefined): void {', 1200)
+  assert.match(fn, /reason !== 'channel-takeover' && reason !== 'route-takeover'/)
+  assert.match(fn, /askTracker\.markTakenOver\(holderPid\)/)
+})
+
+test('recheck of #282, item 1: every reconcile pass (boot, connect, the timer) retires the cards no daemon may announce', () => {
+  const reconcile = fnBody('async function reconcilePendingAsks(via: string, opts: { dueOnly?: boolean } = {}): Promise<void> {', 2400)
+  const announce = reconcile.indexOf('announceCompleteAsks(via)')
+  const retire = reconcile.indexOf('await retireOrphanedAsks(via)')
+  assert.ok(announce > 0 && retire > announce, 'after the announce, inside the pass')
+  assert.ok(retire < reconcile.indexOf('askReconcileRunning = false'))
+  const fn = fnBody('async function retireOrphanedAsks(via: string): Promise<void> {', 600)
+  assert.match(fn, /if \(!channelArmed \|\| !lockHeld \|\| updateDrainMode\) return/)
 })
 
 test('fourth review, Important 2: a passive daemon that takes the connection reads the file at once, before the slow arm', () => {

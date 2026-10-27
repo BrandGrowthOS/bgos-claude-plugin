@@ -30,7 +30,9 @@ import {
   MAX_ASK_WAIT_SECONDS,
   pidIsAlive,
   type AskRow,
+  type PendingAsk,
 } from '../lib/ask-tracker.ts'
+import * as askLib from '../lib/ask-tracker.ts'
 
 const MIN = 60_000
 
@@ -429,7 +431,7 @@ function trackerAs(self: { pid: number; startedAt: number }, live: number[], ext
   })
 }
 
-function completeGroupOf(tracker: AskTracker, askId: string, ids: number[], owner?: { pid: number; startedAt: number }, postedAt?: number) {
+function completeGroupOf(tracker: AskTracker, askId: string, ids: number[], owner?: { pid: number; startedAt: number; aliveAt?: number }, postedAt?: number) {
   const ask = tracker.register(group({ askId, ids }))
   if (owner) (ask as unknown as { owner: unknown }).owner = owner
   if (postedAt !== undefined) ask.postedAt = postedAt
@@ -440,7 +442,8 @@ function completeGroupOf(tracker: AskTracker, askId: string, ids: number[], owne
 test('item 1: a complete group another live daemon posted is never offered for an announce here', () => {
   const self = { pid: 10, startedAt: Date.parse('2026-10-27T09:00:00Z') }
   const tracker = trackerAs(self, [20])
-  completeGroupOf(tracker, 'theirs', [801], { pid: 20, startedAt: self.startedAt - MIN }, self.startedAt + MIN)
+  // Pid 20 runs and said so on its last ask tick (the lease, recheck of #282).
+  completeGroupOf(tracker, 'theirs', [801], { pid: 20, startedAt: self.startedAt - MIN, aliveAt: self.startedAt + 30 * MIN }, self.startedAt + MIN)
   completeGroupOf(tracker, 'mine', [802])
   assert.deepEqual(tracker.completeUndelivered().map((a) => a.askId), ['mine'])
 })
@@ -459,9 +462,11 @@ test('item 1: the process that posted a group is written with it, and read back'
     const self = { pid: 4242, startedAt: Date.parse('2026-10-27T09:00:00Z') }
     trackerAs(self, [], { filePath }).register(group({ askId: 'g', ids: [821] }))
     const onDisk = JSON.parse(readFileSync(filePath, 'utf8'))
-    assert.deepEqual(onDisk.pending[0].owner, self)
+    const { pid, startedAt } = onDisk.pending[0].owner
+    assert.deepEqual({ pid, startedAt }, self)
     const other = trackerAs({ pid: 7, startedAt: self.startedAt + MIN }, [4242], { filePath })
-    assert.deepEqual((other.get('g') as unknown as { owner: unknown }).owner, self)
+    const read = (other.get('g') as unknown as { owner: { pid: number; startedAt: number } }).owner
+    assert.deepEqual({ pid: read.pid, startedAt: read.startedAt }, self)
   })
 })
 
@@ -475,14 +480,42 @@ function sharedFile(fn: (t: { filePath: string; clock: { at: number }; live: num
   })
 }
 
+/**
+ * What the recheck adds to the tracker, read through the module and the
+ * instance so each case fails on its own before it exists.
+ */
+type Recheck = {
+  heartbeat?: () => void
+  retirable?: () => PendingAsk[]
+  markTakenOver?: (pid: number) => number
+}
+const recheckLib = askLib as unknown as {
+  ASK_LEASE_REFRESH_MS?: number
+  ASK_LEASE_MS?: number
+  ASK_ORPHAN_GRACE_MS?: number
+  buildAskWithdrawnEvent?: (ask: PendingAsk, opts: { assistantId: string; withdrawn: number }) => { content: string; meta: Record<string, string> }
+}
+/** The asker says it still runs, as the ask tick does (a no op before the lease exists). */
+const beat = (t: AskTracker) => (t as unknown as Recheck).heartbeat?.()
+const retirableIds = (t: AskTracker) => ((t as unknown as Recheck).retirable?.() ?? []).map((g) => g.askId)
+/** The clock moves to `to` 15 s at a time, each tracker saying on its ask tick that it runs. */
+function runUntil(clock: { at: number }, to: number, ...trackers: AskTracker[]) {
+  while (clock.at < to) {
+    clock.at = Math.min(to, clock.at + 15_000)
+    for (const t of trackers) beat(t)
+  }
+}
+
 test('second review, Important 2: a session started after the card, beside its live asker, never takes the answers once the asker ends', () => {
   sharedFile(({ filePath, clock, live, at }) => {
     const now = () => clock.at
     const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
     a.register(group({ askId: 'g', ids: [901, 902] }))
     live.push(1)
-    clock.at = at('10:30:00')
+    runUntil(clock, at('10:30:00'), a)
     const b = trackerAs({ pid: 2, startedAt: clock.at }, live, { filePath, now })
+    // A runs beside B for a quarter of an hour, then ends.
+    runUntil(clock, at('10:45:00'), a)
     live.splice(live.indexOf(1), 1)
     clock.at = at('11:00:00')
     b.refresh()
@@ -499,7 +532,7 @@ test('second review, Important 2: a restart whose old daemon ends seconds after 
     const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
     a.register(group({ askId: 'g', ids: [911] }))
     live.push(1)
-    clock.at = at('10:10:00')
+    runUntil(clock, at('10:10:00'), a)
     const a2 = trackerAs({ pid: 3, startedAt: clock.at }, live, { filePath, now })
     live.splice(live.indexOf(1), 1)
     clock.at = at('10:10:03')
@@ -515,7 +548,7 @@ test('third review, Critical 1: a restart whose old daemon ends seconds after th
     const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
     a.register(group({ askId: 'g', ids: [951] }))
     live.push(1)
-    clock.at = at('10:10:00')
+    runUntil(clock, at('10:10:00'), a)
     const a2 = trackerAs({ pid: 3, startedAt: clock.at }, live, { filePath, now })
     live.splice(live.indexOf(1), 1)
     clock.at = at('10:10:03')
@@ -533,8 +566,10 @@ test('third review, Important 2: once a session that ran beside the asker has se
     const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
     a.register(group({ askId: 'g', ids: [961] }))
     live.push(1)
-    clock.at = at('10:30:00')
+    runUntil(clock, at('10:30:00'), a)
     const b = trackerAs({ pid: 2, startedAt: clock.at }, live, { filePath, now })
+    // A runs beside B for a quarter of an hour, then ends.
+    runUntil(clock, at('10:45:00'), a)
     live.splice(live.indexOf(1), 1)
     clock.at = at('11:00:00')
     b.refresh()
@@ -555,6 +590,10 @@ test('fourth review, Important 1: a session already running when the card was po
     clock.at = at('10:00:00')
     const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
     a.register(group({ askId: 'g', ids: [971] }))
+    // A runs an hour beside C, which does not look until A has ended.
+    live.push(1)
+    runUntil(clock, at('11:00:00'), a)
+    live.splice(live.indexOf(1), 1)
     clock.at = at('11:00:05')
     c.refresh()
     assert.notEqual((JSON.parse(readFileSync(filePath, 'utf8')).pending[0] as { askerEndedBeside?: number }).askerEndedBeside, undefined)
@@ -571,8 +610,10 @@ test('fourth review, Minor 3: a mark that another daemon wrote over is written a
     const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
     a.register(group({ askId: 'g', ids: [981] }))
     live.push(1)
-    clock.at = at('10:30:00')
+    runUntil(clock, at('10:30:00'), a)
     const b = trackerAs({ pid: 2, startedAt: clock.at }, live, { filePath, now })
+    // A runs beside B for a quarter of an hour, then ends.
+    runUntil(clock, at('10:45:00'), a)
     live.splice(live.indexOf(1), 1)
     clock.at = at('11:00:00')
     b.refresh()
@@ -851,4 +892,157 @@ test('fifth review, Minor 4: a session older than the card that sees the asker e
     a2.record(1021, { skipped: true })
     assert.deepEqual(a2.completeUndelivered().map((g) => g.askId), ['g'])
   })
+})
+
+// ── Data's recheck of #282 at 4d9ee89: a pid that is reused, and cards nobody retires ──
+
+test('recheck, pid reuse: a dead asker whose pid now belongs to an unrelated process never keeps its card from the restarted asker', () => {
+  sharedFile(({ filePath, clock, live, at }) => {
+    const now = () => clock.at
+    const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
+    a.register(group({ askId: 'g', ids: [1101] }))
+    live.push(1)
+    // A runs ten more minutes, saying so on the ask tick, then ends.
+    for (let t = at('10:00:15'); t <= at('10:10:00'); t += 15_000) {
+      clock.at = t
+      beat(a)
+    }
+    live.splice(live.indexOf(1), 1)
+    // Windows hands pid 1 to an unrelated process at once.
+    clock.at = at('10:10:02')
+    live.push(1)
+    clock.at = at('10:10:05')
+    const a2 = trackerAs({ pid: 3, startedAt: clock.at }, live, { filePath, now })
+    clock.at = at('10:40:00')
+    a2.refresh()
+    a2.record(1101, { skipped: true })
+    assert.deepEqual(a2.completeUndelivered().map((g) => g.askId), ['g'], 'the restart is accepted whatever pid 1 is now')
+  })
+})
+
+test('recheck, lease: the asker writes on its own groups that it runs, at most every ASK_LEASE_REFRESH_MS, never on another daemon\'s', () => {
+  sharedFile(({ filePath, clock, live, at }) => {
+    const now = () => clock.at
+    assert.equal(recheckLib.ASK_LEASE_REFRESH_MS, 15_000)
+    assert.equal(recheckLib.ASK_LEASE_MS, 35_000, 'two refreshes and 5 s for a slow tick')
+    const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
+    const b = trackerAs({ pid: 2, startedAt: at('09:00:00') }, live, { filePath, now })
+    a.register(group({ askId: 'a-card', ids: [1111] }))
+    b.register(group({ askId: 'b-card', ids: [1112] }))
+    const aliveAt = (id: string) =>
+      (JSON.parse(readFileSync(filePath, 'utf8')).pending as Array<{ askId: string; owner: { aliveAt?: number } }>).find((g) => g.askId === id)!.owner.aliveAt
+    assert.equal(aliveAt('a-card'), at('10:00:00'), 'written with the post')
+    clock.at = at('10:00:10')
+    beat(a)
+    assert.equal(aliveAt('a-card'), at('10:00:00'), 'not again within 15 s')
+    clock.at = at('10:00:16')
+    beat(a)
+    assert.equal(aliveAt('a-card'), at('10:00:16'))
+    assert.equal(aliveAt('b-card'), at('10:00:00'), "A never writes B's lease")
+  })
+})
+
+test('recheck, lease: an asker whose pid reads alive but who stopped saying so for longer than ASK_LEASE_MS has ended', () => {
+  sharedFile(({ filePath, clock, live, at }) => {
+    const now = () => clock.at
+    const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
+    a.register(group({ askId: 'g', ids: [1121] }))
+    live.push(1)
+    clock.at = at('10:00:05')
+    const a2 = trackerAs({ pid: 3, startedAt: clock.at }, live, { filePath, now })
+    a2.record(1121, { skipped: true })
+    clock.at = at('10:00:30')
+    assert.deepEqual(a2.completeUndelivered().map((g) => g.askId), [], 'inside the lease the asker runs')
+    clock.at = at('10:00:36')
+    assert.deepEqual(a2.completeUndelivered().map((g) => g.askId), ['g'], 'past it, pid 1 is somebody else')
+  })
+})
+
+test('recheck, item 1: a group marked askerEndedBeside is handed to the connected daemon to retire, never announced', () => {
+  sharedFile(({ filePath, clock, live, at }) => {
+    const now = () => clock.at
+    const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
+    a.register(group({ askId: 'g', ids: [1131, 1132] }))
+    live.push(1)
+    clock.at = at('10:00:30')
+    const b = trackerAs({ pid: 2, startedAt: clock.at }, live, { filePath, now })
+    for (let t = at('10:00:45'); t <= at('10:30:00'); t += 15_000) {
+      clock.at = t
+      beat(a)
+      b.refresh()
+    }
+    live.splice(live.indexOf(1), 1)
+    clock.at = at('10:30:20')
+    b.refresh()
+    b.record(1131, { skipped: true })
+    assert.notEqual(b.get('g')?.askerEndedBeside, undefined, 'B ran beside A for half an hour')
+    assert.deepEqual(b.completeUndelivered().map((g) => g.askId), [])
+    assert.deepEqual(retirableIds(b), ['g'])
+    b.withdraw('g')
+    assert.deepEqual(retirableIds(b), [], 'retired once')
+  })
+})
+
+test('recheck, takeover: the new holder marks every group of the live holder it took the connection from, never its own, and retires a held one once its wait ends', () => {
+  sharedFile(({ filePath, clock, live, at }) => {
+    const now = () => clock.at
+    const h1 = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
+    h1.register(group({ askId: 'open', ids: [1141] }))
+    h1.register(group({ askId: 'held', ids: [1142] }))
+    h1.hold('held', at('10:10:00'))
+    live.push(1)
+    clock.at = at('10:01:00')
+    const h2 = trackerAs({ pid: 2, startedAt: clock.at }, live, { filePath, now })
+    h2.register(group({ askId: 'mine', ids: [1143] }))
+    beat(h1)
+    const marked = (h2 as unknown as Recheck).markTakenOver?.(1) ?? 0
+    assert.equal(marked, 2)
+    assert.deepEqual(retirableIds(h2), ['open'], 'the old holder still runs, and its open card is retired, not lost')
+    const onDisk = JSON.parse(readFileSync(filePath, 'utf8')).pending as Array<{ askId: string; askerEndedBeside?: number }>
+    assert.notEqual(onDisk.find((g) => g.askId === 'open')!.askerEndedBeside, undefined, 'on disk')
+    assert.equal(onDisk.find((g) => g.askId === 'mine')!.askerEndedBeside, undefined)
+    assert.equal((h2 as unknown as Recheck).markTakenOver?.(1), 0, 'marked once')
+    clock.at = at('10:10:01')
+    beat(h1)
+    assert.deepEqual(retirableIds(h2).sort(), ['held', 'open'], "the old holder's wait returned pending, and no event can reach its session now")
+  })
+})
+
+test('recheck: a group whose asker ended with no restart taking it is retired after ASK_ORPHAN_GRACE_MS, never left live', () => {
+  sharedFile(({ filePath, clock, live, at }) => {
+    const now = () => clock.at
+    assert.equal(recheckLib.ASK_ORPHAN_GRACE_MS, 10 * MIN)
+    clock.at = at('09:30:00')
+    const c = trackerAs({ pid: 2, startedAt: clock.at }, live, { filePath, now })
+    clock.at = at('10:00:00')
+    const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
+    a.register(group({ askId: 'g', ids: [1151] }))
+    // A ends 20 s after the post: too short to say C ran beside it, so nothing is marked.
+    clock.at = at('10:05:00')
+    c.refresh()
+    assert.equal(c.get('g')?.askerEndedBeside, undefined)
+    assert.deepEqual(retirableIds(c), [], 'its restart may still come')
+    clock.at = at('10:10:01')
+    assert.deepEqual(retirableIds(c), ['g'], 'none came')
+  })
+})
+
+test('recheck: the withdrawn event names what was answered and what was withdrawn, every meta value a string', () => {
+  const build = recheckLib.buildAskWithdrawnEvent
+  assert.equal(typeof build, 'function')
+  const c = clock()
+  const tracker = new AskTracker({ filePath: null, now: c.now })
+  const ask = tracker.register(group({ askId: 'g', ids: [1161, 1162] }))
+  tracker.record(1161, { optionValue: 'a1', optionLabel: 'A1' })
+  const event = build!(tracker.get('g') ?? ask, { assistantId: '947', withdrawn: 1 })
+  assert.equal(event.meta.event_type, 'ask_withdrawn')
+  assert.equal(event.meta.ask_id, 'g')
+  assert.equal(event.meta.chat_id, '77')
+  for (const value of Object.values(event.meta)) assert.equal(typeof value, 'string')
+  assert.match(event.content, /Question 1\?/)
+  assert.match(event.content, /A1/)
+  assert.match(event.content, /Question 2\?/)
+  assert.match(event.content, /withdrawn/)
+  assert.match(event.content, /ask_user_input/)
+  assert.doesNotMatch(event.content, /[–—]/)
 })
