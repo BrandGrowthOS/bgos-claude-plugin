@@ -547,6 +547,51 @@ test('third review, Important 2: once a session that ran beside the asker has se
   })
 })
 
+test('fourth review, Important 1: a session already running when the card was posted, which first looks after the asker ended, marks it, so its own restart never takes the answers', () => {
+  sharedFile(({ filePath, clock, live, at }) => {
+    const now = () => clock.at
+    clock.at = at('09:30:00')
+    const c = trackerAs({ pid: 2, startedAt: clock.at }, live, { filePath, now })
+    clock.at = at('10:00:00')
+    const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
+    a.register(group({ askId: 'g', ids: [971] }))
+    clock.at = at('11:00:05')
+    c.refresh()
+    assert.notEqual((JSON.parse(readFileSync(filePath, 'utf8')).pending[0] as { askerEndedBeside?: number }).askerEndedBeside, undefined)
+    clock.at = at('12:00:00')
+    const c2 = trackerAs({ pid: 4, startedAt: clock.at }, live, { filePath, now })
+    c2.record(971, { skipped: true })
+    assert.deepEqual(c2.completeUndelivered().map((g) => g.askId), [])
+  })
+})
+
+test('fourth review, Minor 3: a mark that another daemon wrote over is written again at the next read', () => {
+  sharedFile(({ filePath, clock, live, at }) => {
+    const now = () => clock.at
+    const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
+    a.register(group({ askId: 'g', ids: [981] }))
+    live.push(1)
+    clock.at = at('10:30:00')
+    const b = trackerAs({ pid: 2, startedAt: clock.at }, live, { filePath, now })
+    live.splice(live.indexOf(1), 1)
+    clock.at = at('11:00:00')
+    b.refresh()
+    const file = JSON.parse(readFileSync(filePath, 'utf8'))
+    delete file.pending[0].askerEndedBeside
+    writeFileSync(filePath, JSON.stringify(file))
+    b.refresh()
+    assert.notEqual(JSON.parse(readFileSync(filePath, 'utf8')).pending[0].askerEndedBeside, undefined)
+  })
+})
+
+test('fourth review, Minor 5: the live asker still delivers its own card if another daemon marked it by mistake', () => {
+  const self = { pid: 10, startedAt: Date.parse('2026-10-27T09:00:00Z') }
+  const tracker = trackerAs(self, [])
+  const ask = completeGroupOf(tracker, 'mine', [991])
+  ;(ask as unknown as { askerEndedBeside: number }).askerEndedBeside = self.startedAt + MIN
+  assert.deepEqual(tracker.completeUndelivered().map((g) => g.askId), ['mine'])
+})
+
 test('second review, Minor 12: a group with no owner (a file from before the owner was written) goes by the post time alone', () => {
   sharedFile(({ filePath, at }) => {
     const ask = { askId: 'old', chatId: '7', postedAt: at('10:00:00'), questions: [{ messageId: 921, text: 'Q?', options: [{ label: 'A', value: 'a' }] }], answers: { '921': { skipped: true } } }

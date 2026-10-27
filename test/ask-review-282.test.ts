@@ -211,11 +211,11 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean } 
     onPatch: (fn: (path: string) => void | Promise<void>) => {
       onPatch = fn
     },
-    /** The owner answers the n-th posted question (Yes) once the clock reaches `at`. */
     /** The pairing lock is held (or not) from `at` on, as a promotion or a stand-down would. */
     lockAt: (at: number, held: boolean) => {
       lockChanges.push({ at, held })
     },
+    /** The owner answers the n-th posted question (Yes) once the clock reaches `at`. */
     answerAt: (index: number, at: number) => {
       scheduled.push({ at, index })
     },

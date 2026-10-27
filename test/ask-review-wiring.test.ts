@@ -73,3 +73,15 @@ test('Minor 9: a card whose post failed half way retires the questions it did po
   assert.ok(failed > 0)
   assert.match(body.slice(failed, failed + 1200), /retireOrphanAskRows\(postedIds\)/)
 })
+
+test('fourth review, Important 2: a daemon not armed for delivery (passive, or still arming) reads the file on the ask tick, so it sees the asker end when it does', () => {
+  assert.match(server, /setInterval\(\(\) => \{\n\s*if \(!channelArmed\) askTracker\.refresh\(\)\n\s*\}, ASK_TICK_MS\)\.unref\(\)/)
+})
+
+test('fourth review, Important 2: a passive daemon that takes the connection reads the file at once, before the slow arm', () => {
+  const at = server.indexOf('promoting from passive to active and arming delivery')
+  assert.ok(at > 0)
+  const taken = server.lastIndexOf('        lockHeld = true\n', at)
+  assert.ok(taken > 0)
+  assert.match(server.slice(taken, at), /lockHeld = true\n(\s*\/\/[^\n]*\n)*\s*askTracker\.refresh\(\)\n/)
+})
