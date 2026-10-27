@@ -272,7 +272,7 @@
  * poison the next beat; test/declared-capabilities.test.ts holds all of it in
  * place.
  *
- * The canon gated tokens (permission_card, plan_card and hard_floor) are NOT spelled
+ * The canon gated tokens (permission_card, plan_card, hard_floor and ask_answered) are NOT spelled
  * here. They come from lib/claude-capability-tokens.ts, a byte-for-byte copy
  * of the BGOS file the canon gates on
  * (backend/src/integrations/claude-capability-tokens.ts), whose sha256 both
@@ -281,7 +281,7 @@
  * agent silently untold.
  */
 
-import { HARD_FLOOR_RULES_2_TOKEN, HARD_FLOOR_TOKEN, PERMISSION_CARD, PLAN_CARD } from './claude-capability-tokens.js'
+import { ASK_ANSWERED_TOKEN, HARD_FLOOR_RULES_2_TOKEN, HARD_FLOOR_TOKEN, PERMISSION_CARD, PLAN_CARD } from './claude-capability-tokens.js'
 import { SESSIONS_LIBRARY, STOP_PAUSES_MISSION } from './session-controls-contract.ts'
 import { EMAIL_LABEL, labelsExternalEmail } from './inbound-channel.ts'
 import { EMAIL_SEND, shipsEmailTools } from './agent-email-tools.ts'
@@ -305,6 +305,11 @@ export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   'skills_list',
   'skills_receive',
   'ui_card',
+  // The async question card (lib/ask-tracker.ts): ask_user_input returns
+  // pending, one ask_answered event carries every answer however late, and
+  // withdraw_ask retires a card. Typed tools on any host, over pairing or an
+  // API key (the poll and the reconcile timer deliver without the stream).
+  ASK_ANSWERED_TOKEN,
 ])
 
 /**
