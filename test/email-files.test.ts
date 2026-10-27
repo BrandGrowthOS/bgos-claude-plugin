@@ -484,6 +484,18 @@ test('emailFilesWanted: only an email, with the switch on, with at least one fil
   assert.equal(ef.emailFilesWanted({ readAttachments: true, sender: 'user' }, f), false, 'not an email')
 })
 
+test('emailFilesWanted: an older email after the owner turned the switch off is never fetched (history and poll rows)', () => {
+  // The backend computes the flag per row from the agent's CURRENT switch
+  // (Data's review of #3387, item 2); a row that says false or nothing,
+  // anywhere on it, means no fetch, whatever the files.
+  const f = [{ id: 1, filename: 'attachment-1.pdf', mime: 'application/pdf', url: URL_OK }]
+  const { readAttachments: _drop, ...noFlag } = RECORD_ON
+  assert.equal(ef.emailFilesWanted({ message: noFlag }, f), false, 'a history row with no flag')
+  assert.equal(ef.emailFilesWanted({ message: { ...RECORD_ON, readAttachments: false } }, f), false, 'a history row that says false')
+  assert.equal(ef.emailFilesWanted({ readAttachments: false, message: RECORD_ON }, f), false, 'an envelope that says false wins')
+  assert.equal(ef.emailFilesWanted({ ...RECORD_ON, read_attachments: false }, f), false, 'the snake case false wins too')
+})
+
 // ── the sweep ────────────────────────────────────────────────────────────────
 
 test('the sweep removes files older than 7 days and the folders they leave, and nothing it did not make', async () => {
