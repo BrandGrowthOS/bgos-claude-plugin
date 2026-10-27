@@ -189,7 +189,8 @@ function liftAskCase(): string {
   const start = SERVER.indexOf("\n    case 'ask_user_input': {")
   const end = SERVER.indexOf("\n    case 'complete_voice_task': {", start)
   assert.ok(start > 0 && end > start, 'the ask_user_input case exists')
-  return `async function askTool(rawArgs) {\n  switch ('ask_user_input') {\n${SERVER.slice(start + 1, end)}\n  }\n}\n`
+  // The handler's `extra` (the SDK's request context): a live, never cancelled signal here.
+  return `async function askTool(rawArgs, extra = { signal: new AbortController().signal }) {\n  switch ('ask_user_input') {\n${SERVER.slice(start + 1, end)}\n  }\n}\n`
 }
 
 /** The propose_plan case, wrapped the same way. */

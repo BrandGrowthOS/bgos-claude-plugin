@@ -32,7 +32,7 @@
  * read. Neither is reached by an agent that follows the guidance.
  */
 
-import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 
 import { unescapeAgentButtonValue } from './message-text.ts'
@@ -92,6 +92,14 @@ export interface PendingAsk {
   questions: AskQuestion[]
   /** By message id (a string key, so the file round-trips). */
   answers: Record<string, AskAnswer>
+  /** When an answer to it was last recorded, ms since the epoch (askReadIntervalMs). */
+  lastAnsweredAt?: number
+  /**
+   * A blocking wait owns the group until then, ms since the epoch: on disk, so
+   * another daemon of the same assistant never announces it while the waiter
+   * may still return it, and a waiter that died lets go at its deadline.
+   */
+  heldUntil?: number
 }
 
 export type AskRecordOutcome =
@@ -193,8 +201,27 @@ export function askPendingText(opts: {
     `${lead} End your turn now and do nothing that depends on these answers. ` +
       `When every question is answered or skipped they arrive together as ONE ask_answered ` +
       `channel event (meta.ask_id = ${opts.askId}), however late, and that starts a new turn. ` +
+      `That turn is not your owner's own message, so tools that act for your owner (schedule, ` +
+      `boards, the browser, email_send, call_owner) refuse in it: to run one after the answers, ` +
+      `reply asking your owner to confirm, and act in the turn their message starts (with your ` +
+      `owner in the chat, wait_seconds keeps the answers inside their own turn). ` +
       `If you no longer need the answers, call withdraw_ask with this ask_id.`,
   ].join('\n')
+}
+
+/**
+ * How long a pending group may go unread when nothing pushed that it moved.
+ * With the stream off (the default) a delta poll never shows an answer, which
+ * UPDATES an old row, so these reads are how an answer arrives: every 5 s
+ * while the owner is likely at the card (posted, or a question of it answered,
+ * in the last 2 minutes), every 20 s up to 15 minutes, then every 2 minutes.
+ * A read is one history page, a 304 when nothing on it moved.
+ */
+export function askReadIntervalMs(ask: PendingAsk, now: number): number {
+  const since = now - Math.max(ask.postedAt, ask.lastAnsweredAt ?? 0)
+  if (since < 2 * 60_000) return 5_000
+  if (since < 15 * 60_000) return 20_000
+  return 2 * 60_000
 }
 
 /**
@@ -272,7 +299,7 @@ export class AskTracker {
     this.filePath = opts.filePath
     this.now = opts.now ?? Date.now
     this.log = opts.log ?? (() => {})
-    this.load()
+    this.refresh()
   }
 
   /** Track a group ask_user_input just posted. */
@@ -340,36 +367,52 @@ export class AskTracker {
     const key = String(messageId)
     if (ask.answers[key] !== undefined) return { kind: 'duplicate', askId }
     ask.answers[key] = { ...answer }
+    ask.lastAnsweredAt = this.now()
     this.save()
     if (isComplete(ask)) return { kind: 'complete', ask }
     return { kind: 'partial', askId, answered: answeredCount(ask), total: ask.questions.length }
   }
 
-  /** A blocking wait owns this group: a complete group is its result, never an event. */
-  hold(askId: string): void {
+  /**
+   * A blocking wait owns this group until `untilMs`: a complete group is its
+   * result, never an event. Saved, so another daemon of this assistant holds
+   * off too; the deadline frees it if this process dies waiting.
+   */
+  hold(askId: string, untilMs: number): void {
+    const ask = this.asks.get(askId)
+    if (!ask) return
     this.held.add(askId)
+    ask.heldUntil = untilMs
+    this.save()
   }
 
   release(askId: string): void {
+    // Merge BEFORE letting go: a merge after would read this hold back off the disk.
+    this.refresh()
     this.held.delete(askId)
+    const ask = this.asks.get(askId)
+    if (ask && ask.heldUntil !== undefined) {
+      delete ask.heldUntil
+      this.save({ merge: false })
+    }
   }
 
+  /** Held by a wait in this process, or by another process's wait that has not reached its deadline. */
   isHeld(askId: string): boolean {
-    return this.held.has(askId)
+    if (this.held.has(askId)) return true
+    const until = this.asks.get(askId)?.heldUntil
+    return until !== undefined && until > this.now()
   }
 
   /** Complete groups nobody holds and nobody delivered yet: what an announce pass offers. */
   completeUndelivered(): PendingAsk[] {
-    return this.pending().filter((a) => isComplete(a) && !this.held.has(a.askId))
+    return this.pending().filter((a) => isComplete(a) && !this.isHeld(a.askId))
   }
 
-  /** Handed to the agent (event or tool result): forget the group for good, across restarts too. */
+  /** Handed to the agent (event or tool result): forget the group for good, across restarts and daemons too. */
   delivered(askId: string): void {
     this.forget(askId)
-    if (!this.delivered_.includes(askId)) this.delivered_.push(askId)
-    if (this.delivered_.length > MAX_DELIVERED_REMEMBERED) {
-      this.delivered_ = this.delivered_.slice(-MAX_DELIVERED_REMEMBERED)
-    }
+    this.tombstone(askId)
     this.save()
   }
 
@@ -377,13 +420,60 @@ export class AskTracker {
     return this.delivered_.includes(askId)
   }
 
-  /** The agent retired the card: forget it, and hand back its rows so they can be retired too. */
+  /**
+   * The agent retired the card (or it may not be announced here): forget it,
+   * a tombstone like a delivery, and hand back its rows so they can be retired too.
+   */
   withdraw(askId: string): PendingAsk | null {
     const ask = this.asks.get(askId)
     if (!ask) return null
     this.forget(askId)
+    this.tombstone(askId)
     this.save()
     return ask
+  }
+
+  /**
+   * Read the file again and merge what another daemon of this assistant wrote
+   * (a passive session serves ask_user_input too): its groups are adopted, its
+   * answers merged (the first kept), its tombstones honoured, and its holds
+   * taken as written. Called before every save and every announce pass.
+   */
+  refresh(): void {
+    const disk = this.readFile()
+    if (!disk) return
+    for (const id of disk.done) this.tombstone(id)
+    for (const id of this.delivered_) if (this.asks.has(id)) this.forget(id)
+    const cutoff = this.now() - MAX_PENDING_AGE_MS
+    for (const raw of disk.pending) {
+      if (this.delivered_.includes(raw.askId)) continue
+      const mine = this.asks.get(raw.askId)
+      if (!mine) {
+        if (raw.postedAt < cutoff) {
+          this.log(`ask tracker: dropping pending group ${raw.askId}, posted more than 30 days ago`)
+          continue
+        }
+        this.asks.set(raw.askId, raw)
+        for (const q of raw.questions) this.byMessage.set(q.messageId, raw.askId)
+        continue
+      }
+      for (const [key, answer] of Object.entries(raw.answers)) {
+        if (mine.answers[key] === undefined) mine.answers[key] = answer
+      }
+      if ((raw.lastAnsweredAt ?? 0) > (mine.lastAnsweredAt ?? 0)) mine.lastAnsweredAt = raw.lastAnsweredAt
+      // Another process's hold is as it wrote it; this process's own stands.
+      if (!this.held.has(raw.askId)) {
+        if (raw.heldUntil === undefined) delete mine.heldUntil
+        else mine.heldUntil = raw.heldUntil
+      }
+    }
+  }
+
+  private tombstone(askId: string): void {
+    if (!this.delivered_.includes(askId)) this.delivered_.push(askId)
+    if (this.delivered_.length > MAX_DELIVERED_REMEMBERED) {
+      this.delivered_ = this.delivered_.slice(-MAX_DELIVERED_REMEMBERED)
+    }
   }
 
   private forget(askId: string): void {
@@ -396,33 +486,40 @@ export class AskTracker {
     }
   }
 
-  private load(): void {
-    if (!this.filePath) return
-    let parsed: unknown
+  /**
+   * The file as it stands, or null when there is none. One that cannot be read
+   * is said and kept aside (`.corrupt-<time>`), never silently overwritten.
+   */
+  private readFile(): { pending: PendingAsk[]; done: string[] } | null {
+    if (!this.filePath || !existsSync(this.filePath)) return null
+    let body: { v?: unknown; pending?: unknown; delivered?: unknown } | null = null
+    let why = `it is not a version ${FILE_VERSION} file`
     try {
-      parsed = JSON.parse(readFileSync(this.filePath, 'utf8'))
-    } catch {
-      return
+      body = JSON.parse(readFileSync(this.filePath, 'utf8'))
+    } catch (err) {
+      body = null
+      why = String(err)
     }
-    const body = parsed as { v?: unknown; pending?: unknown; delivered?: unknown }
-    if (!body || body.v !== FILE_VERSION) return
-    const cutoff = this.now() - MAX_PENDING_AGE_MS
-    for (const raw of Array.isArray(body.pending) ? body.pending : []) {
-      if (!validAsk(raw)) continue
-      if (raw.postedAt < cutoff) {
-        this.log(`ask tracker: dropping pending group ${raw.askId}, posted more than 30 days ago`)
-        continue
+    if (!body || typeof body !== 'object' || body.v !== FILE_VERSION) {
+      const aside = `${this.filePath}.corrupt-${this.now()}`
+      try {
+        renameSync(this.filePath, aside)
+        this.log(`ask tracker: could not read ${this.filePath} (${why}); kept aside as ${aside}, starting empty`)
+      } catch (err) {
+        this.log(`ask tracker: could not read ${this.filePath} (${why}) and could not keep it aside as corrupt: ${err}`)
       }
-      this.asks.set(raw.askId, raw)
-      for (const q of raw.questions) this.byMessage.set(q.messageId, raw.askId)
+      return null
     }
-    if (Array.isArray(body.delivered)) {
-      this.delivered_ = body.delivered.filter((d): d is string => typeof d === 'string').slice(-MAX_DELIVERED_REMEMBERED)
+    return {
+      pending: (Array.isArray(body.pending) ? body.pending : []).filter(validAsk),
+      done: (Array.isArray(body.delivered) ? body.delivered : []).filter((d): d is string => typeof d === 'string'),
     }
   }
 
-  private save(): void {
+  private save(opts: { merge?: boolean } = {}): void {
     if (!this.filePath) return
+    // Merge first: another daemon of this assistant may have written since.
+    if (opts.merge !== false) this.refresh()
     const tmp = `${this.filePath}.${process.pid}.tmp`
     try {
       mkdirSync(dirname(this.filePath), { recursive: true })

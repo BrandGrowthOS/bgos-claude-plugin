@@ -55,7 +55,7 @@ test('the line names the card, says the reply went as written, and has no dashes
   assert.match(line, /ask_user_input/)
   assert.match(line, /exactly one/)
   assert.match(line, /sent as you wrote it/i)
-  assert.doesNotMatch(line, /[–—]/)
+  assert.doesNotMatch(line, /[\u2013\u2014]/)
 })
 
 test('the reply tool warns after the send, only for a reply with buttons, never in a peer thread', () => {

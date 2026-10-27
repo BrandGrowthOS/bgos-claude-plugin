@@ -68,7 +68,7 @@ test('Minor 6: withdraw_ask reads the group first and retires only the questions
 
 test('Minor 9: a card whose post failed half way retires the questions it did post', () => {
   const body = caseBody('ask_user_input')
-  const failed = body.indexOf('} catch (err) {\n        if (refuseA2aToolPost(')
+  const failed = body.lastIndexOf('} catch (err) {', body.indexOf('ask_user_input failed:'))
   assert.ok(failed > 0)
   assert.match(body.slice(failed, failed + 1200), /retireOrphanAskRows\(postedIds\)/)
 })

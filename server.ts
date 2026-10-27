@@ -274,6 +274,7 @@ import {
   ASK_TRACKER_FILE_NAME,
   askAnswerFromRow,
   askPendingText,
+  askReadIntervalMs,
   askResultRows,
   askRetireBody,
   askWaitSeconds,
@@ -4792,7 +4793,11 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'The pending result carries the ask_id; the ask_answered event (meta.ask_id, meta.answers) ' +
         'carries every answer and starts a new turn. With wait_seconds above 0 the call returns the ' +
         'answers if they all come in time, otherwise pending, never invented skips. withdraw_ask ' +
-        'retires a card you no longer need. For open-ended questions use `reply`.',
+        'retires a card you no longer need. The ask_answered turn is not your owner\'s own ' +
+        'message, so tools that act for your owner (schedule, boards, the browser, email_send, ' +
+        'call_owner) refuse in it: when one of them must follow the answers and your owner is ' +
+        'in the chat, use wait_seconds, and the answers come back inside their own turn. ' +
+        'For open-ended questions use `reply`.',
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -5963,7 +5968,7 @@ async function handleShowComponent(opts: {
   }
 }
 
-mcp.setRequestHandler(CallToolRequestSchema, (req) => {
+mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
   // Every bgos tool call flows through this one handler, making it the
   // liveness chokepoint: a session that calls ANY tool can hear us, so mark
   // before the drain check (a call during an update drain proves liveness
@@ -6723,11 +6728,13 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
       if (a2aRouteRefusedChats.has(String(askChatId))) {
         return a2aRouteRequiredResult(String(askChatId), 'these questions')
       }
+      // Hoisted for the catch: a card whose post failed half way retires what it posted.
+      const postedIds: number[] = []
+      let registered = false
       try {
         // Post each question. The first one returns an ask_id we reuse for
         // the rest so they group into one carousel.
         let askId: string | null = null
-        const postedIds: number[] = []
         for (let i = 0; i < questions.length; i++) {
           const q = questions[i]
           const result = (await bgosPost('messages', {
@@ -6762,6 +6769,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
             options: q.options.map((o) => ({ label: o.label, value: o.value })),
           })),
         })
+        registered = true
 
         if (waitSeconds <= 0) {
           return { content: [{ type: 'text', text: askPendingText({ askId: askKey, total: questions.length, answered: 0 }) }] }
@@ -6769,14 +6777,16 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
 
         // A blocking wait holds the group: answered in time, the answers are
         // this call's result and never an event as well; out of time, the
-        // hold is released and the group is announced when it completes.
-        askTracker.hold(askKey)
+        // hold is released and the group is announced when it completes. The
+        // hold is on disk with its deadline, so another daemon of this
+        // assistant holds off too, and lets go if this process dies waiting.
         const deadline = Date.now() + waitSeconds * 1000
+        askTracker.hold(askKey, deadline + ASK_HOLD_MARGIN_MS)
         // Needs you, for as long as the owner has not answered (session
         // status, board row 9c3d6b2c); the finally holds on any exit.
         asksWaiting += 1
         try {
-          while (Date.now() < deadline && !askTracker.isComplete(askKey)) {
+          while (Date.now() < deadline && !askTracker.isComplete(askKey) && !extra.signal.aborted) {
             await new Promise((r) => setTimeout(r, 1500))
             const ask = askTracker.get(askKey)
             if (!ask) break
@@ -6789,6 +6799,16 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         } finally {
           asksWaiting -= 1
           askTracker.release(askKey)
+        }
+
+        // The client cancelled the call (the user pressed Esc): it throws this
+        // result away, so a group answered by now is never marked delivered
+        // here. It goes out as the ask_answered event instead, now if
+        // complete, else when the rest is answered.
+        if (extra.signal.aborted) {
+          log(`ask_user_input: the wait for ${askKey} was cancelled; its answers arrive as ask_answered`)
+          announceCompleteAsks('wait cancelled')
+          return { content: [{ type: 'text', text: askPendingText({ askId: askKey, total: questions.length, answered: 0 }) }] }
         }
 
         // No await from here to the return: no other door can announce this
@@ -6817,6 +6837,9 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
           ],
         }
       } catch (err) {
+        // A card whose post failed half way would leave questions nobody
+        // tracks, their answers dropped: retire them (the agent may retry).
+        if (!registered && postedIds.length > 0) void retireOrphanAskRows(postedIds)
         if (refuseA2aToolPost(String(askChatId), err)) {
           return a2aRouteRequiredResult(String(askChatId), 'these questions')
         }
@@ -6847,11 +6870,20 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
           isError: true,
         }
       }
-      // Every row, answered or not, as Codex retires a card (lib/ask-tracker.ts
-      // askRetireBody). Forget the group only when all of them are retired:
-      // a failed row keeps it tracked, so calling again retries.
+      // Each question still open, as Codex retires a card (lib/ask-tracker.ts
+      // askRetireBody). An answered one is left as it is: retired to inline it
+      // would no longer show the owner's answer. So read the group first; a
+      // failed read retires what the tracker knows is open. Forget the group
+      // only when all of them are retired: a failed row keeps it tracked, so
+      // calling again retries.
+      try {
+        await readAskGroup(ask)
+      } catch (err) {
+        log(`withdraw_ask: could not read ${askId} first, retiring every question not known answered: ${err}`)
+      }
+      const open = ask.questions.filter((q) => ask.answers[String(q.messageId)] === undefined)
       const failed: string[] = []
-      for (const q of ask.questions) {
+      for (const q of open) {
         try {
           await bgosPatch(`messages/${q.messageId}`, askRetireBody())
         } catch (err) {
@@ -6859,13 +6891,13 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         }
       }
       if (failed.length > 0) {
-        log(`withdraw_ask: ${failed.length}/${ask.questions.length} row(s) of ${askId} not retired: ${failed.join('; ')}`)
+        log(`withdraw_ask: ${failed.length}/${open.length} open row(s) of ${askId} not retired: ${failed.join('; ')}`)
         return {
           content: [
             {
               type: 'text',
               text:
-                `Could not retire ${failed.length} of ${ask.questions.length} question(s) of card ${askId}; ` +
+                `Could not retire ${failed.length} of ${open.length} open question(s) of card ${askId}; ` +
                 `it stays tracked, so call withdraw_ask again. ${failed.join('; ')}`,
             },
           ],
@@ -6875,12 +6907,14 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
       askTracker.withdraw(askId)
       // A late answer that raced the PATCH is never announced.
       for (const q of ask.questions) rememberAnnouncedClick(q.messageId)
-      log(`withdraw_ask: retired card ${askId} (${ask.questions.length} question(s)) in chat ${ask.chatId}`)
+      log(`withdraw_ask: retired card ${askId} (${open.length} of ${ask.questions.length} question(s) still open) in chat ${ask.chatId}`)
       return {
         content: [
           {
             type: 'text',
-            text: `Card ${askId} withdrawn: its ${ask.questions.length} question(s) no longer take answers, and no ask_answered event will come for it.`,
+            text:
+              `Card ${askId} withdrawn: its ${open.length} open question(s) no longer take answers ` +
+              `(answers already given stay in the chat), and no ask_answered event will come for it.`,
           },
         ],
       }
@@ -11530,12 +11564,16 @@ function rememberAnnouncedClick(id: number): void {
 
 /** Rows read per group: its own questions sit at the top of this page whatever came after them. */
 const ASK_READ_PAGE = 20
-/** How often pending groups are read again while any exist (a 304 when nothing moved). */
-const ASK_RECONCILE_INTERVAL_MS = 2 * 60_000
+/** How often the timer looks for a group due a read; each group's own cadence is askReadIntervalMs. */
+const ASK_TICK_MS = 5_000
+/** A blocking wait's hold on disk outlives its deadline by this much (the last read, the release). */
+const ASK_HOLD_MARGIN_MS = 30_000
 /** A failed read of a group the stream said was answered is tried again this many times. */
 const ASK_READ_RETRIES = 4
 const ASK_READ_RETRY_MS = 15_000
 const askDelivering = new Set<string>()
+/** When each pending group was last read, by ask id (the timer's due check). */
+const askLastReadAt = new Map<string, number>()
 let askReconcileRunning = false
 
 /**
@@ -11561,8 +11599,20 @@ async function readAskGroup(ask: PendingAsk): Promise<void> {
 
 /** Announce every complete group nobody holds as ONE ask_answered event, exactly once. */
 function announceCompleteAsks(via: string): void {
+  // Only the daemon that delivers announces, from the file as it stands now:
+  // a passive session's daemon posts and records into the same file, and the
+  // armed one adopts its groups (askTracker.refresh).
+  if (!channelArmed || updateDrainMode) return
+  askTracker.refresh()
   for (const ask of askTracker.completeUndelivered()) {
     if (askDelivering.has(ask.askId)) continue
+    // The second lock (person lanes), on every door: once lanes run, a card
+    // in a share recipient's chat is that person's, never the owner's session.
+    if (ownerAnnounceRefused({ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership.isOthers(ask.chatId) })) {
+      noteLaneMisroute('ask answer', ask.questions.map((q) => q.messageId).join(','), 'a recipient chat')
+      askTracker.withdraw(ask.askId)
+      continue
+    }
     askDelivering.add(ask.askId)
     // Every question id joins the shared set first, so a stream or poll
     // replay of any of its answers stays silent from here on.
@@ -11612,24 +11662,46 @@ async function settleAskGroup(askId: string, via: string, attempt = 0): Promise<
   announceCompleteAsks(via)
 }
 
-/** Read every pending group nobody is blocking on, then announce what is complete (connect, timer). */
-async function reconcilePendingAsks(via: string): Promise<void> {
+/**
+ * Read every pending group nobody is blocking on, then announce what is
+ * complete (boot, connect, the timer). The timer passes dueOnly: a group is
+ * read only when its own cadence (askReadIntervalMs) says it is due.
+ */
+async function reconcilePendingAsks(via: string, opts: { dueOnly?: boolean } = {}): Promise<void> {
   if (askReconcileRunning) return
   askReconcileRunning = true
   try {
+    // Groups a passive session's daemon posted are on disk, not in memory.
+    askTracker.refresh()
     for (const ask of askTracker.pending()) {
       // A blocking wait reads its own group every 1.5 s.
       if (askTracker.isHeld(ask.askId)) continue
+      const now = Date.now()
+      if (opts.dueOnly && now - (askLastReadAt.get(ask.askId) ?? 0) < askReadIntervalMs(ask, now)) continue
+      askLastReadAt.set(ask.askId, now)
       try {
         await readAskGroup(ask)
       } catch (err) {
         log(`ask: reconcile read of group ${ask.askId} failed (${via}): ${err}`)
       }
     }
+    for (const askId of askLastReadAt.keys()) if (!askTracker.get(askId)) askLastReadAt.delete(askId)
     announceCompleteAsks(via)
   } finally {
     askReconcileRunning = false
   }
+}
+
+/** Retire the questions of a card whose post failed half way (best effort; nothing tracks them). */
+async function retireOrphanAskRows(messageIds: number[]): Promise<void> {
+  for (const id of messageIds) {
+    try {
+      await bgosPatch(`messages/${id}`, askRetireBody())
+    } catch (err) {
+      log(`ask_user_input: could not retire question ${id} of a card that failed to post: ${err}`)
+    }
+  }
+  log(`ask_user_input: retired ${messageIds.length} question(s) of a card that failed to post`)
 }
 
 // ── Mission events from the owner's app ──────────────────────────────────────
@@ -17373,14 +17445,19 @@ async function main(): Promise<void> {
     // group answered while this daemon was down is announced at boot even
     // with no socket, and again on a timer while any is pending: under delta
     // polling an answer UPDATES an old row and never shows on a poll page.
+    // The file again at arm: a passive session's daemon may have written it.
+    askTracker.refresh()
     if (askTracker.pending().length > 0) {
       log(`ask tracker: ${askTracker.pending().length} pending question group(s) read back from disk`)
       void reconcilePendingAsks('boot').catch((err) => log(`ask reconcile at boot failed: ${err}`))
     }
+    // Each group at its own cadence (askReadIntervalMs): every 5 s while the
+    // owner is likely at the card, rarely after. reconcilePendingAsks reads
+    // the file first, so a group another daemon posted is found here too.
     setInterval(() => {
-      if (!channelArmed || updateDrainMode || askTracker.pending().length === 0) return
-      void reconcilePendingAsks('timer').catch((err) => log(`ask reconcile failed: ${err}`))
-    }, ASK_RECONCILE_INTERVAL_MS).unref()
+      if (!channelArmed || updateDrainMode) return
+      void reconcilePendingAsks('timer', { dueOnly: true }).catch((err) => log(`ask reconcile failed: ${err}`))
+    }, ASK_TICK_MS).unref()
 
     // Step 6: Refresh and publish every 5 minutes to catch newly installed
     // plugins and added or edited command files. Initial discovery and publish

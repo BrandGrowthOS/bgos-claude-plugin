@@ -573,6 +573,14 @@ function withoutLeadingEmphasis(token: string): string {
   return token.slice(start)
 }
 
+/** A question mark in the scripts owners write in: Latin, Arabic (U+061F) and full width (U+FF1F). */
+const QUESTION_MARKS = new Set(['?', '\u061F', '\uFF1F'])
+
+function endsAQuestion(token: string): boolean {
+  const bare = withoutTrailingMarks(token)
+  return bare !== '' && QUESTION_MARKS.has(bare[bare.length - 1])
+}
+
 /** The line with every `inline code` span removed, by a walk, never a regex. */
 function withoutInlineCode(line: string): string {
   let out = ''
@@ -609,8 +617,8 @@ export function decisionCount(text: string): number {
     const words = LIST_MARKER_TOKEN.test(tokens[0]) ? tokens.slice(1) : tokens
     if (words.length === 0) continue
     if (withoutLeadingEmphasis(words[0]).toLowerCase() === 'or') continue
-    if (!withoutTrailingMarks(words[words.length - 1]).endsWith('?')) continue
-    const marks = words.filter((t) => withoutTrailingMarks(t).endsWith('?')).length
+    if (!endsAQuestion(words[words.length - 1])) continue
+    const marks = words.filter(endsAQuestion).length
     count += enumerators >= 2 ? Math.max(1, Math.min(marks, enumerators)) : 1
   }
   return count

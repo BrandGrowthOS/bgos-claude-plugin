@@ -562,7 +562,7 @@ rules before replying so messages don't get lost.
   inline option buttons.
 - `edit_message` — patch one of your previous messages.
 - `rename_chat` — set a descriptive title on the current chat.
-- `ask_user_input` — post ONE card of 1 to 4 multiple-choice questions.
+- `ask_user_input`: post ONE card of 1 to 4 multiple-choice questions.
   Any message asking the owner 2 or more decisions is one card, online or
   not; a reply with buttons asks exactly one thing. It returns at once as
   pending with an `ask_id`; when every question is answered or skipped,
@@ -571,7 +571,7 @@ rules before replying so messages don't get lost.
   the answers if they all come in time, otherwise pending, never invented
   skips. Pending cards survive a restart (`pending-asks.json` beside the
   cursor file).
-- `withdraw_ask` — retire a card you no longer need, by its `ask_id`.
+- `withdraw_ask`: retire a card you no longer need, by its `ask_id`.
 - `list_peers` — list other assistants on this BGOS account that you
   may message. Returns each peer's `assistantId` (the integer to pass
   to `send_to_peer`) and an `introduced` flag — true ONLY if the user
