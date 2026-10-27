@@ -1791,7 +1791,57 @@ test('gaps after #284, second review, Important 1: an asker past its lease whose
   })
 })
 
-test('gaps after #284, second review, Important 1: a restart that overlapped its asker by 50 s is told its asker ended beside it, also when the asker\'s pid was handed to another process at once', () => {
+test('gaps after #284, third review, Important 1: after a look gap (a sleep) the reason still reads the lease, so a beside card whose asker\'s pid was handed on is never told as running on', () => {
+  sharedFile(({ filePath, clock, live, at }) => {
+    const now = () => clock.at
+    const b = trackerAs({ pid: 2, startedAt: at('09:30:00') }, live, { filePath, now })
+    live.push(2)
+    const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
+    a.register(group({ askId: 'g', ids: [1561] }))
+    live.push(1)
+    runUntil(clock, at('10:00:10'), a, b)
+    const a2 = trackerAs({ pid: 3, startedAt: clock.at }, live, { filePath, now })
+    live.push(3)
+    runUntil(clock, at('10:01:00'), a, a2, b)
+    // A ends at 10:01:00; pid 1 stays alive, another process's now.
+    runUntil(clock, at('10:01:40'), a2, b)
+    assert.notEqual(b.get('g')?.askerEndedBeside, undefined)
+    // B sleeps for a minute: on waking it cannot judge a lease for ASK_LEASE_MS.
+    clock.at += 60_000
+    assert.deepEqual(retirableIds(b), ['g'], 'a beside card is retired whatever the leases say')
+    const because = (b as unknown as Gap2).retiredBecause?.(b.get('g')!)
+    assert.equal(because, 'asker_ended_beside', 'the words lean to ended when the lease cannot be judged')
+  })
+})
+
+test('gaps after #284, third review, Minor 1: a card retired while its asker ran, whose asker ends before the retire is done, is told the asker ended beside another session, never that a 10 minute grace passed', () => {
+  sharedFile(({ filePath, clock, live, at }) => {
+    const now = () => clock.at
+    const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
+    a.register(group({ askId: 'g', ids: [1571] }))
+    live.push(1)
+    runUntil(clock, at('10:01:00'), a)
+    const b = trackerAs({ pid: 2, startedAt: clock.at }, live, { filePath, now })
+    live.push(2)
+    stepUntil(clock, at('10:01:40'), () => {
+      beat(a)
+      beat(b)
+      retirableIds(b, at('10:01:00'))
+    })
+    assert.deepEqual(retirableIds(b, at('10:01:00')), ['g'], 'picked while A runs on without the connection')
+    // A ends during the retire's read and PATCH.
+    live.splice(live.indexOf(1), 1)
+    clock.at += 2_000
+    const ask = b.get('g')!
+    assert.equal(ask.askerEndedBeside, undefined)
+    const because = (b as unknown as Gap2).retiredBecause?.(ask)
+    assert.equal(because, 'asker_ended_beside', 'A ran beside B and went silent seconds ago')
+    const event = buildWithdrawn(ask, { assistantId: '9', withdrawn: 1, retiredBecause: because })
+    assert.doesNotMatch(event.content, /within 10 minutes/)
+  })
+})
+
+test('gaps after #284, second review, Important 1: a restart that overlapped its asker by 50 s never takes its answers, and the connected session is told the asker ended beside another session, also when the asker\'s pid was handed to another process at once', () => {
   sharedFile(({ filePath, clock, live, at }) => {
     const now = () => clock.at
     const b = trackerAs({ pid: 2, startedAt: at('09:30:00') }, live, { filePath, now })

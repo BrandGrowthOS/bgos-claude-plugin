@@ -701,6 +701,22 @@ test('second fresh review of the gaps after #284, Important 1, on the daemon\'s 
   assert.doesNotMatch(r.notes[0].params.content, /runs on without this agent's connection|told too/)
 })
 
+test('third fresh review of the gaps after #284, Important 1, on the daemon\'s own code: after a look gap (a sleep) a beside card whose asker\'s pid was handed on is still told as beside, never as running on', async () => {
+  const r = rig({ handedOn: [2003] })
+  const ask = r.foreignGroup('theirs', [746, 747], { pid: 2003, startedAt: START - 60 * MIN }, START - 30 * MIN)
+  ask.askerEndedBeside = START - MIN
+  r.answer(746)
+  r.tracker.retirable()
+  // This daemon sleeps: on waking it cannot judge a lease for ASK_LEASE_MS.
+  r.advance(30_000)
+  assert.equal(typeof r.retireOrphanedAsks, 'function')
+  await r.retireOrphanedAsks?.('test')
+  await r.settle()
+  assert.deepEqual(r.patches, [{ path: 'messages/747', body: RETIRE }])
+  assert.equal(r.notes.length, 1)
+  assert.equal(r.notes[0].params.meta.retired_because, 'asker_ended_beside', 'the words lean to ended when the lease cannot be judged')
+})
+
 test('recheck, item 1: a retire whose PATCH fails keeps the group and says nothing yet; the next pass retires it', async () => {
   const r = rig()
   const ask = r.foreignGroup('theirs', [742], { pid: 2003, startedAt: START - 60 * MIN }, START - 30 * MIN)
