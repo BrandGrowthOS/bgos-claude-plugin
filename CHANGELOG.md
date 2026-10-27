@@ -2,7 +2,7 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
-## 0.79.0 (2026-10-27)
+## 0.80.0 (2026-10-27)
 
 **A question on the card can take several answers (askcard PR 3, Kc: "when there are multiple answers, you need to be able to multi-select").** The app draws such a question as checkboxes with one Submit (BrandGrowthOS/BGOS, the same PR 3), and the backend stores every pick.
 
