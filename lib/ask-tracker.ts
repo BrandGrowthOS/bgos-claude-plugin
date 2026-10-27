@@ -29,9 +29,12 @@
  * after the post and did not run beside it (the asker restarted). A daemon
  * decides that the first time it sees the asker gone: one that had seen the
  * asker alive for longer than ASK_OWNER_OVERLAP_MS ran beside it, and marks
- * the group askerEndedBeside in the file, so no daemon ever announces it.
- * Another live session's card stays its own. Review of #282, item 1, and its
- * second and third reviews.
+ * the group askerEndedBeside in the file, so no daemon ever announces it. A
+ * daemon that started before the post counts as having seen the asker alive
+ * from the post, and every daemon, passive ones included, reads the file on
+ * the ask tick (server.ts), so it is looking when the asker ends. The asker
+ * itself always delivers its own card. Another live session's card stays its
+ * own. Review of #282, item 1, and its second, third and fourth reviews.
  *
  * EXACTLY ONCE. Within a daemon life the shared announced-click set guards
  * the transports (server.ts rememberAnnouncedClick on every question id of a
@@ -594,9 +597,10 @@ export class AskTracker {
    * the asker runs, the group is the asker's.
    */
   isOurs(ask: PendingAsk): boolean {
-    if (ask.askerEndedBeside !== undefined) return false
     const owner = ask.owner
+    // The asker itself, alive, delivers its own card whatever another daemon marked.
     if (owner && owner.pid === this.self.pid && owner.startedAt === this.self.startedAt) return true
+    if (ask.askerEndedBeside !== undefined) return false
     if (owner && owner.pid !== this.self.pid && !this.askerGoneSeen.has(ask.askId)) {
       if (this.isAlive(owner.pid)) {
         if (!this.ownerSeenAlive.has(ask.askId)) this.ownerSeenAlive.set(ask.askId, this.now())
@@ -620,7 +624,9 @@ export class AskTracker {
    * (third review of #282, Critical 1). True when it marked the group.
    */
   private seeAskerGone(ask: PendingAsk): boolean {
-    const since = this.ownerSeenAlive.get(ask.askId)
+    // A process that started before the post ran beside the asker from the
+    // post on, seen or not (fourth review of #282, Important 1).
+    const since = this.ownerSeenAlive.get(ask.askId) ?? (this.self.startedAt < ask.postedAt ? ask.postedAt : undefined)
     this.ownerSeenAlive.delete(ask.askId)
     this.askerGoneSeen.add(ask.askId)
     if (since === undefined || ask.askerEndedBeside !== undefined) return false
@@ -708,6 +714,7 @@ export class AskTracker {
     const disk = this.readFile()
     if (disk.kind === 'skip') return false
     if (disk.kind === 'none') return true
+    let rewrite = false
     for (const id of disk.done) this.tombstone(id)
     for (const id of this.delivered_) if (this.asks.has(id)) this.forget(id)
     const cutoff = this.now() - MAX_PENDING_AGE_MS
@@ -728,6 +735,9 @@ export class AskTracker {
       }
       if ((raw.lastAnsweredAt ?? 0) > (mine.lastAnsweredAt ?? 0)) mine.lastAnsweredAt = raw.lastAnsweredAt
       if (raw.askerEndedBeside !== undefined && mine.askerEndedBeside === undefined) mine.askerEndedBeside = raw.askerEndedBeside
+      // Another daemon's save wrote over the mark: it cannot be read back from
+      // the backend, so it is written again (fourth review of #282, Minor 3).
+      if (mine.askerEndedBeside !== undefined && raw.askerEndedBeside === undefined) rewrite = true
       // Another process's hold is as it wrote it; this process's own stands.
       if (!this.held.has(raw.askId)) {
         if (raw.heldUntil === undefined) delete mine.heldUntil
@@ -737,7 +747,7 @@ export class AskTracker {
     const marked = this.noteOwners()
     this.enforceCap()
     // The decision outlives this daemon: written now, not at some later save.
-    if (marked) this.save({ merge: false })
+    if (marked || rewrite) this.save({ merge: false })
     return true
   }
 

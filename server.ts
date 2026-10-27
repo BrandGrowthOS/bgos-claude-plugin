@@ -11700,6 +11700,14 @@ function rememberAnnouncedClick(id: number): void {
 const ASK_READ_PAGE = 20
 /** How often the timer looks for a group due a read; each group's own cadence is askReadIntervalMs. */
 const ASK_TICK_MS = 5_000
+// A daemon not armed for delivery (a passive session's, or one still arming)
+// reads the file on the same tick: whose a card is gets decided the first time
+// a daemon sees its asker gone, so every daemon has to be looking when that
+// happens, not only at its own calls or its promotion (fourth review of #282,
+// Important 2). A local file read; nothing is fetched or announced.
+setInterval(() => {
+  if (!channelArmed) askTracker.refresh()
+}, ASK_TICK_MS).unref()
 /** A blocking wait's hold on disk outlives its deadline by this much (the last read, the release). */
 const ASK_HOLD_MARGIN_MS = 30_000
 /** A failed read of a group the stream said was answered is tried again this many times. */
@@ -17923,6 +17931,9 @@ async function main(): Promise<void> {
         // Same rule as the boot path: we own the lock now, so the heartbeat has
         // to start refreshing it immediately, not when the arm finishes.
         lockHeld = true
+        // Who the pending cards belong to, seen now: the arm below can take a
+        // while (fourth review of #282, Important 2).
+        askTracker.refresh()
         if (res.reason === 'channel-takeover') {
           log(
             `${formatChannelTakeoverLine({ selfPid: process.pid, holderPid: res.holderPid, selfReason: channelPresence().reason })}; ` +
