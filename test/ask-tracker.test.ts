@@ -1510,3 +1510,217 @@ test('lease follow-up review, Important 2: a retire the connected daemon may not
     assert.deepEqual(leaseOf(a).takeRetiredOwn?.() ?? [], [])
   })
 })
+
+// ── Data's two gaps after #284 ──
+
+/**
+ * lib/ask-retired-tell.ts, read through a dynamic import so each case fails
+ * on its own before it exists: how a session hears of its own cards that the
+ * daemon holding the connection retired.
+ */
+type RetiredTell = {
+  tellRetiredOwnOnTick: (opts: {
+    tracker: AskTracker
+    channelLoaded: boolean | null
+    send: (ask: PendingAsk, withdrawn: number) => Promise<void>
+    log: (line: string) => void
+  }) => void
+  retiredOwnNotes: (opts: {
+    tracker: AskTracker
+    channelLoaded: boolean | null
+    text: (ask: PendingAsk, withdrawn: number) => string | null
+  }) => string[]
+}
+async function retiredTell(): Promise<RetiredTell> {
+  const mod = (await import('../lib/ask-retired-tell.ts').catch(() => null)) as RetiredTell | null
+  assert.ok(mod, 'lib/ask-retired-tell.ts')
+  return mod
+}
+/** Every send's then and catch has run. */
+const settle = () => new Promise<void>((resolve) => setImmediate(resolve))
+type Gap2 = { askerEnded?: (ask: PendingAsk) => boolean }
+const buildWithdrawn = recheckLib.buildAskWithdrawnEvent as unknown as (
+  ask: PendingAsk,
+  opts: { assistantId: string; withdrawn: number; toAsker?: boolean; askerEnded?: boolean },
+) => { content: string; meta: Record<string, string> }
+
+/**
+ * A, the holder, posts a card at 10:00:00. At 10:01:00 B takes the connection
+ * (a channel takeover: B's channel is loaded, A's is not) and at 10:01:40
+ * retires A's card with one answer read, keeping it for A, which runs on
+ * passive. C is a third session. `tick` is the next 5 s ask tick for all three.
+ */
+async function retiredByTakeover(fn: (t: { a: AskTracker; b: AskTracker; c: AskTracker; tick: () => void }) => Promise<void>) {
+  const dir = mkdtempSync(join(tmpdir(), 'ask-tracker-'))
+  try {
+    const at = (hhmmss: string) => Date.parse(`2026-10-27T${hhmmss}Z`)
+    const filePath = join(dir, 'pending-asks.json')
+    const clock = { at: at('10:00:00') }
+    const live: number[] = []
+    const now = () => clock.at
+    const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
+    a.register(group({ askId: 'g', ids: [1501, 1502] }))
+    live.push(1)
+    runUntil(clock, at('10:01:00'), a)
+    const b = trackerAs({ pid: 2, startedAt: clock.at }, live, { filePath, now })
+    const c = trackerAs({ pid: 3, startedAt: clock.at }, live, { filePath, now })
+    live.push(2, 3)
+    runUntil(clock, at('10:01:40'), a, b, c)
+    b.record(1501, { skipped: true })
+    b.beginWithdraw('g')
+    assert.notEqual(leaseOf(b).retire?.('g', { withdrawn: 1, tellAsker: true }) ?? null, null)
+    runUntil(clock, at('10:01:45'), a, b, c)
+    await fn({ a, b, c, tick: () => runUntil(clock, clock.at + 5_000, a, b, c) })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+test('gaps after #284, gap 1: a tell whose send failed is sent again on the next tick, and never again once one landed', async () => {
+  const { tellRetiredOwnOnTick } = await retiredTell()
+  await retiredByTakeover(async ({ a, b, c, tick }) => {
+    const sent: string[] = []
+    let fail = true
+    const send = async (ask: PendingAsk, withdrawn: number) => {
+      sent.push(`${ask.askId} ${withdrawn} ${Object.keys(ask.answers).join(',')}`)
+      if (fail) throw new Error('the transport is closed')
+    }
+    const logs: string[] = []
+    const onTick = (t: AskTracker) => tellRetiredOwnOnTick({ tracker: t, channelLoaded: null, send, log: (line) => logs.push(line) })
+    onTick(a)
+    // The same tick again while that send is out: nothing more.
+    onTick(a)
+    await settle()
+    assert.deepEqual(sent, ['g 1 1501'], 'one send while it is out')
+    assert.match(logs.join('\n'), /g[\s\S]*failed/, 'the failed send is logged')
+    tick()
+    onTick(a)
+    await settle()
+    assert.deepEqual(sent, ['g 1 1501', 'g 1 1501'], 'the next tick sends it again')
+    fail = false
+    tick()
+    onTick(a)
+    await settle()
+    assert.equal(sent.length, 3)
+    for (let i = 0; i < 4; i++) {
+      tick()
+      for (const t of [a, b, c]) onTick(t)
+      await settle()
+    }
+    assert.equal(sent.length, 3, 'once one landed, never again, and never from another session')
+    assert.equal(a.get('g'), null, 'the asker forgets the group')
+  })
+})
+
+test('gaps after #284, gap 1: the holder a channel takeover moved aside, whose channel is not loaded, gets its one ask_withdrawn on its next tool result', async () => {
+  const { tellRetiredOwnOnTick, retiredOwnNotes } = await retiredTell()
+  await retiredByTakeover(async ({ a, b, c, tick }) => {
+    const sent: string[] = []
+    const send = async (ask: PendingAsk) => {
+      sent.push(ask.askId)
+    }
+    const text = (ask: PendingAsk, withdrawn: number) => buildWithdrawn(ask, { assistantId: '9', withdrawn, toAsker: true }).content
+    tellRetiredOwnOnTick({ tracker: a, channelLoaded: false, send, log: () => {} })
+    await settle()
+    assert.deepEqual(sent, [], 'no channel event: a session whose channel is not loaded drops it unseen')
+    const notes = retiredOwnNotes({ tracker: a, channelLoaded: false, text })
+    assert.equal(notes.length, 1, 'one ask_withdrawn on the next tool result')
+    assert.match(notes[0], /^\[ask_withdrawn\] A question card this session posted was retired \(ask_id=g\)/)
+    assert.match(notes[0], /Question 1\?/, 'with the answer read before it was retired')
+    tick()
+    assert.deepEqual(retiredOwnNotes({ tracker: a, channelLoaded: false, text }), [], 'once')
+    tellRetiredOwnOnTick({ tracker: a, channelLoaded: false, send, log: () => {} })
+    await settle()
+    assert.deepEqual(sent, [], 'and never by the channel after it')
+    assert.deepEqual(retiredOwnNotes({ tracker: b, channelLoaded: false, text }), [], 'never the daemon that retired it')
+    assert.deepEqual(retiredOwnNotes({ tracker: c, channelLoaded: false, text }), [], 'never another session')
+  })
+})
+
+test('gaps after #284, gap 1: a session whose channel is loaded, or that cannot tell, hears it on the tick, never on a tool result', async () => {
+  const { tellRetiredOwnOnTick, retiredOwnNotes } = await retiredTell()
+  for (const channelLoaded of [true, null]) {
+    await retiredByTakeover(async ({ a, tick }) => {
+      const text = (ask: PendingAsk, withdrawn: number) => buildWithdrawn(ask, { assistantId: '9', withdrawn, toAsker: true }).content
+      assert.deepEqual(retiredOwnNotes({ tracker: a, channelLoaded, text }), [], `channel loaded: ${channelLoaded}`)
+      const sent: string[] = []
+      tellRetiredOwnOnTick({ tracker: a, channelLoaded, send: async (ask) => void sent.push(ask.askId), log: () => {} })
+      await settle()
+      tick()
+      tellRetiredOwnOnTick({ tracker: a, channelLoaded, send: async (ask) => void sent.push(ask.askId), log: () => {} })
+      await settle()
+      assert.deepEqual(sent, ['g'], `channel loaded: ${channelLoaded}`)
+      assert.deepEqual(retiredOwnNotes({ tracker: a, channelLoaded: false, text }), [], 'told: the tool result carries nothing')
+    })
+  }
+})
+
+test('gaps after #284, gap 1: a card a tool result may not carry (a share recipient\'s chat) is dropped, never carried later', async () => {
+  const { retiredOwnNotes } = await retiredTell()
+  await retiredByTakeover(async ({ a, tick }) => {
+    assert.deepEqual(retiredOwnNotes({ tracker: a, channelLoaded: false, text: () => null }), [])
+    tick()
+    const text = (ask: PendingAsk, withdrawn: number) => buildWithdrawn(ask, { assistantId: '9', withdrawn, toAsker: true }).content
+    assert.deepEqual(retiredOwnNotes({ tracker: a, channelLoaded: false, text }), [])
+  })
+})
+
+for (const startS of [5, 10, 15]) {
+  test(`gaps after #284, gap 2: a restart that overlapped its asker by ${60 - startS} s never takes its answers, and the connected session is told the card was retired because its asker ended`, () => {
+    sharedFile(({ filePath, clock, live, at }) => {
+      const now = () => clock.at
+      // B, another session, holds the connection all along.
+      const b = trackerAs({ pid: 2, startedAt: at('09:30:00') }, live, { filePath, now })
+      live.push(2)
+      const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
+      a.register(group({ askId: 'g', ids: [1511, 1512] }))
+      live.push(1)
+      runUntil(clock, at('10:00:00') + startS * 1000, a, b)
+      // A2, A's restart, starts; A writes its lease at 10:01:00 and ends then.
+      const a2 = trackerAs({ pid: 3, startedAt: clock.at }, live, { filePath, now })
+      live.push(3)
+      runUntil(clock, at('10:01:00'), a, a2, b)
+      live.splice(live.indexOf(1), 1)
+      runUntil(clock, at('10:01:40'), a2, b)
+      a2.record(1511, { skipped: true })
+      a2.record(1512, { freeText: 'typed late' })
+      assert.deepEqual(a2.completeUndelivered().map((g) => g.askId), [], 'a restart cannot be told from a session beside the asker: it never takes the answers')
+      assert.deepEqual(retirableIds(b), ['g'], 'the connected session retires it')
+      const ask = b.get('g')!
+      const ended = (b as unknown as Gap2).askerEnded?.(ask)
+      assert.equal(ended, true, 'the connected session knows the asker ended')
+      const event = buildWithdrawn(ask, { assistantId: '9', withdrawn: 0, askerEnded: ended })
+      assert.match(event.content, /^\[ask_withdrawn\] A question card this agent posted was retired \(ask_id=g\): the session that asked it has ended/)
+      assert.equal(event.meta.retired_because, 'asker_ended')
+      b.beginWithdraw('g')
+      assert.notEqual(leaseOf(b).retire?.('g', { withdrawn: 0, tellAsker: true }) ?? null, null)
+      runUntil(clock, at('10:01:45'), a2, b)
+      assert.deepEqual(leaseOf(a2).takeRetiredOwn?.() ?? [], [], 'the restart is handed nothing')
+      assert.deepEqual(fileOf(filePath).retired ?? [], [], 'no record for a session nobody can identify')
+    })
+  })
+}
+
+test('gaps after #284, gap 2: a card whose asker runs on without the connection is told as that, never as ended', () => {
+  sharedFile(({ filePath, clock, live, at }) => {
+    const now = () => clock.at
+    const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
+    a.register(group({ askId: 'g', ids: [1521] }))
+    live.push(1)
+    runUntil(clock, at('10:01:00'), a)
+    const b = trackerAs({ pid: 2, startedAt: clock.at }, live, { filePath, now })
+    live.push(2)
+    stepUntil(clock, at('10:01:40'), () => {
+      beat(a)
+      beat(b)
+      retirableIds(b, at('10:01:00'))
+    })
+    assert.deepEqual(retirableIds(b, at('10:01:00')), ['g'])
+    const ask = b.get('g')!
+    const ended = (b as unknown as Gap2).askerEnded?.(ask)
+    assert.equal(ended, false, 'A runs on, passive')
+    const event = buildWithdrawn(ask, { assistantId: '9', withdrawn: 1, askerEnded: ended })
+    assert.match(event.content, /the session that asked it runs on without this agent's connection/)
+    assert.equal(event.meta.retired_because, 'asker_disconnected')
+  })
+})
