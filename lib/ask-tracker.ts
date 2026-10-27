@@ -180,6 +180,15 @@ export interface PendingAsk {
   heldUntil?: number
   /** Who posted it (askIsOurs). Absent only on a group an earlier build of this branch wrote. */
   owner?: AskOwner
+  /**
+   * When a daemon that had seen the asker alive for longer than
+   * ASK_OWNER_OVERLAP_MS first saw it gone, ms since the epoch: that daemon's
+   * session ran beside the asker, and no daemon ever announces the group,
+   * that session's own restart included (it cannot be told apart from the
+   * asker's). On disk, so the decision outlives the daemon that made it
+   * (third review of #282, Important 2).
+   */
+  askerEndedBeside?: number
 }
 
 export type AskRecordOutcome =
@@ -428,7 +437,8 @@ function validAsk(raw: unknown): raw is PendingAsk {
     !!a.answers &&
     typeof a.answers === 'object' &&
     (a.owner === undefined ||
-      (!!a.owner && Number.isSafeInteger(a.owner.pid) && typeof a.owner.startedAt === 'number'))
+      (!!a.owner && Number.isSafeInteger(a.owner.pid) && typeof a.owner.startedAt === 'number')) &&
+    (a.askerEndedBeside === undefined || typeof a.askerEndedBeside === 'number')
   )
 }
 
@@ -444,12 +454,12 @@ export class AskTracker {
   /** Groups withdraw_ask is retiring right now: no announce offers them (review of #282, item 2). */
   private readonly withdrawing = new Set<string>()
   /**
-   * When this process first saw a group's asker, another process, alive; and
-   * the groups it has decided belong to a session that ran beside it, for the
-   * life of this process (second review of #282, Important 2).
+   * When this process first saw a group's asker, another process, alive, and
+   * the groups whose asker it has seen gone, decided once at that sighting
+   * (second review of #282, Important 2; third review, Critical 1).
    */
   private readonly ownerSeenAlive = new Map<string, number>()
-  private readonly ranBeside = new Set<string>()
+  private readonly askerGoneSeen = new Set<string>()
   private delivered_: string[] = []
   /** The last reason a read was skipped, so a problem that lasts is said once, not every pass. */
   private skipReason: string | null = null
@@ -571,38 +581,68 @@ export class AskTracker {
 
   /**
    * Whether this daemon may hand this group's answers to its session
-   * (askIsOurs), decided from what this process has seen: once it has seen
-   * the asker alive for longer than ASK_OWNER_OVERLAP_MS, it ran beside the
-   * asker, and the group is never its own, even after the asker ends and
-   * this daemon takes over (second review of #282, Important 2).
+   * (askIsOurs), with what the daemons have seen: a group whose asker ended
+   * beside another session (askerEndedBeside) is never anyone's, and while
+   * the asker runs, the group is the asker's.
    */
   isOurs(ask: PendingAsk): boolean {
-    if (this.ranBeside.has(ask.askId)) return false
+    if (ask.askerEndedBeside !== undefined) return false
     const owner = ask.owner
-    const other = !!owner && !(owner.pid === this.self.pid && owner.startedAt === this.self.startedAt)
-    if (other && owner.pid !== this.self.pid && this.isAlive(owner.pid)) {
-      if (!this.ownerSeenAlive.has(ask.askId)) this.ownerSeenAlive.set(ask.askId, this.now())
-      return false
-    }
-    const since = this.ownerSeenAlive.get(ask.askId)
-    if (other && since !== undefined && this.now() - since > ASK_OWNER_OVERLAP_MS) {
-      this.ranBeside.add(ask.askId)
-      this.log(
-        `ask tracker: group ${ask.askId} was posted by another session of this agent that ran beside this one; ` +
-          'its answers stay with that session and are not announced here',
-      )
-      return false
+    if (owner && owner.pid === this.self.pid && owner.startedAt === this.self.startedAt) return true
+    if (owner && owner.pid !== this.self.pid && !this.askerGoneSeen.has(ask.askId)) {
+      if (this.isAlive(owner.pid)) {
+        if (!this.ownerSeenAlive.has(ask.askId)) this.ownerSeenAlive.set(ask.askId, this.now())
+        return false
+      }
+      if (this.seeAskerGone(ask)) {
+        this.save()
+        return false
+      }
     }
     return askIsOurs(ask, this.self, this.isAlive)
   }
 
-  /** Note every group whose asker is another live process, from the first time this process sees it. */
-  private noteLiveOwners(): void {
+  /**
+   * The first time this process sees a group's asker gone, decide once: it
+   * had seen the asker alive for longer than ASK_OWNER_OVERLAP_MS, so its own
+   * session ran beside the asker, and the group is marked for every daemon
+   * (askerEndedBeside). A shorter overlap is the asker's restart starting a
+   * moment before the old daemon exits. Measured to this sighting, never to a
+   * later check, so a restart keeps its card however late the answers come
+   * (third review of #282, Critical 1). True when it marked the group.
+   */
+  private seeAskerGone(ask: PendingAsk): boolean {
+    const since = this.ownerSeenAlive.get(ask.askId)
+    this.ownerSeenAlive.delete(ask.askId)
+    this.askerGoneSeen.add(ask.askId)
+    if (since === undefined || ask.askerEndedBeside !== undefined) return false
+    if (this.now() - since <= ASK_OWNER_OVERLAP_MS) return false
+    ask.askerEndedBeside = this.now()
+    this.log(
+      `ask tracker: group ${ask.askId} was posted by another session of this agent that ran beside this one ` +
+        'and has ended; its answers are announced by no daemon',
+    )
+    return true
+  }
+
+  /**
+   * On every read of the file: note the groups whose asker is another live
+   * process, from the first time this process sees them, and decide the ones
+   * whose asker it now sees gone. True when a group was marked.
+   */
+  private noteOwners(): boolean {
+    let marked = false
     for (const ask of this.asks.values()) {
-      if (this.ownerSeenAlive.has(ask.askId) || !ask.owner) continue
-      if (ask.owner.pid === this.self.pid) continue
-      if (this.isAlive(ask.owner.pid)) this.ownerSeenAlive.set(ask.askId, this.now())
+      const owner = ask.owner
+      if (!owner || owner.pid === this.self.pid) continue
+      if (ask.askerEndedBeside !== undefined || this.askerGoneSeen.has(ask.askId)) continue
+      if (this.isAlive(owner.pid)) {
+        if (!this.ownerSeenAlive.has(ask.askId)) this.ownerSeenAlive.set(ask.askId, this.now())
+      } else if (this.seeAskerGone(ask)) {
+        marked = true
+      }
     }
+    return marked
   }
 
   /** Complete groups of this session nobody holds and nobody delivered yet: what an announce pass offers. */
@@ -679,14 +719,17 @@ export class AskTracker {
         if (mine.answers[key] === undefined) mine.answers[key] = answer
       }
       if ((raw.lastAnsweredAt ?? 0) > (mine.lastAnsweredAt ?? 0)) mine.lastAnsweredAt = raw.lastAnsweredAt
+      if (raw.askerEndedBeside !== undefined && mine.askerEndedBeside === undefined) mine.askerEndedBeside = raw.askerEndedBeside
       // Another process's hold is as it wrote it; this process's own stands.
       if (!this.held.has(raw.askId)) {
         if (raw.heldUntil === undefined) delete mine.heldUntil
         else mine.heldUntil = raw.heldUntil
       }
     }
-    this.noteLiveOwners()
+    const marked = this.noteOwners()
     this.enforceCap()
+    // The decision outlives this daemon: written now, not at some later save.
+    if (marked) this.save({ merge: false })
     return true
   }
 
@@ -720,6 +763,7 @@ export class AskTracker {
     this.held.delete(askId)
     this.withdrawing.delete(askId)
     this.ownerSeenAlive.delete(askId)
+    this.askerGoneSeen.delete(askId)
     for (const q of ask.questions) {
       if (this.byMessage.get(q.messageId) === askId) this.byMessage.delete(q.messageId)
     }
