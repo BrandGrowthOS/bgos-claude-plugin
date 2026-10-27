@@ -3112,14 +3112,13 @@ const mcp = new Server(
       '- Documents show as download cards.',
       '- You can send text + files + buttons in a single reply.',
       '',
-      '## Asking the User to Choose (ask_user_input)',
+      '## Asking Your Owner Questions (ask_user_input)',
       '',
-      'Use `ask_user_input` ONLY when you need the user to pick from a clear set',
-      'of mutually exclusive options AND the user is actively in this',
-      'conversation (they just sent you a message and you need their answer to',
-      'continue). The BGOS app shows a polished modal/sheet that pops over the',
-      'chat with numbered choices, optional free-text fallback, and per-question',
-      'Skip. The tool returns at once as pending with an `ask_id`. When every',
+      'Any message asking your owner 2 or more decisions is ONE ask_user_input card (up to 4 questions), online or not. A reply with buttons asks exactly one thing. The card returns at once as pending: end your turn and do nothing that depends on the answers; they arrive together as one ask_answered event, however late. Use wait_seconds only if your owner wrote in the last few minutes and you cannot continue without the answer.',
+      '',
+      'The BGOS app shows the card as a sheet over the chat with numbered',
+      'choices, optional free-text fallback, and per-question Skip. The tool',
+      'returns at once as pending with an `ask_id`. When every',
       'question is answered (option picked, free text typed, or skipped) the',
       'answers arrive together as ONE channel event, however late, and it starts',
       'a new turn:',
@@ -3137,11 +3136,12 @@ const mcp = new Server(
       'wizards (e.g. setting up a feature, onboarding, surveys).',
       '',
       'Do NOT use it for: open-ended questions ("what should I do?"), pure',
-      'confirmations (use the permission-request flow), questions you can',
-      'answer yourself, anything you would normally just send as a `reply`,',
-      'OR situations where the user is not actively waiting on you (scheduled',
-      'check-ins, background notifications, unsolicited suggestions). Modals',
-      'demand immediate attention, they are inappropriate for async work.',
+      'confirmations (use the permission-request flow), or questions you can',
+      'answer yourself.',
+      '',
+      'If you no longer need the answers (you found them yourself, or your owner',
+      'answered in chat), call `withdraw_ask` with the ask_id: the card stops',
+      'taking answers and no ask_answered event comes for it.',
       '',
       'Each question: `{ text, options?: [{ label, value }], allow_free_text?,',
       'allow_skip? }`. If `options` is omitted or empty, send it as a regular',
@@ -3149,20 +3149,21 @@ const mcp = new Server(
       'to wrap every question.',
       '',
       'Keep questions short and option labels under ~30 chars. Limit a single',
-      'ask group to 1, 4 questions; longer flows feel like an interrogation.',
+      'ask group to 1 to 4 questions; longer flows feel like an interrogation.',
       '',
       '## Inline Buttons (Telegram-style, Async)',
       '',
       'The BGOS app renders a second button style: "inline buttons", a small',
       'card with tappable chips that sits in the chat thread, never blocks the',
-      'session, and stays clickable indefinitely. This is the correct affordance',
-      'for scheduled check-ins, proactive nudges, and any situation where the',
-      'user is NOT actively waiting on you.',
+      'session, and stays clickable indefinitely. A reply with buttons asks',
+      'exactly ONE thing: one decision, its options as chips. Any message',
+      'asking your owner 2 or more decisions is ONE ask_user_input card',
+      'instead, online or not, never several button messages.',
       '',
       'Send inline buttons by passing a `buttons: [{ label, value }]` array to',
-      '`reply`. Default render mode is "inline", use `render_mode: "modal"`',
-      'ONLY when the user is actively in conversation and you want their',
-      'immediate choice. Max 6 buttons. Labels ≤ 24 chars render cleanly.',
+      '`reply`. Default render mode is "inline"; use `render_mode: "modal"`',
+      'only if your owner wrote in the last few minutes and you want their',
+      'choice now. Max 6 buttons. Labels ≤ 24 chars render cleanly.',
       '',
       'When the user taps a button, you receive a channel event:',
       '  <channel source="bgos" event_type="button_clicked">',
@@ -3172,8 +3173,8 @@ const mcp = new Server(
       'with `meta.callback_data` = the button\'s `value`, `meta.button_text` =',
       'the label, and `meta.message_id` = the original reply. React to it as',
       'you would any user message, send a follow-up `reply`, kick off work,',
-      'etc. NEVER call `ask_user_input` as a substitute just because you want',
-      'buttons, a blocking modal is wrong for anything async.',
+      'etc. One decision is buttons on a reply; 2 or more are one',
+      '`ask_user_input` card.',
       '',
       'Sentinels on `callback_data`:',
       '  - "__skip__", user tapped Skip. Acknowledge briefly or move on.',
@@ -4515,8 +4516,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'When buttons are sent, clicks arrive back as a channel event with ' +
         'callback_data (= the button\'s `value`) and message_id. Skip sentinel ' +
         'is "__skip__", Custom-reply sentinel is "__custom__" (with free text). ' +
-        'Use `ask_user_input` instead only when you need blocking multi-question ' +
-        'flow + free-text + skip semantics.',
+        'Buttons ask exactly one thing: any message asking your owner 2 or more ' +
+        'decisions is ONE ask_user_input card instead, online or not.',
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -4582,8 +4583,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             description:
               'Only meaningful when `buttons` is non-empty. "inline" (DEFAULT), Telegram-style chips in the chat thread; ' +
               'never interrupts; stays clickable indefinitely. Use for async/scheduled/proactive sends. ' +
-              '"modal", pops over the chat demanding attention; use only when the user is actively in conversation ' +
-              'and you want their immediate choice. When in doubt, omit (defaults to inline).',
+              '"modal", pops over the chat; use it only if your owner wrote in the last few minutes ' +
+              'and you want their choice now. When in doubt, omit (defaults to inline).',
           },
           reply_to_id: {
             type: 'number',
@@ -4782,17 +4783,16 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'ask_user_input',
       description:
-        'Ask the user one or more multiple-choice questions through a polished ' +
-        'modal/sheet in the BGOS app. Returns at once as pending with an ask_id; ' +
-        'when every question is answered (option picked, free text typed, or ' +
-        'skipped) ONE ask_answered channel event carries every answer and starts ' +
-        'a new turn, however late. wait_seconds blocks up to that long instead ' +
-        'and returns the answers if they all come in time. Use ONLY when (a) you need the user to pick from a clear ' +
-        'set of options AND (b) the user is actively in this conversation. ' +
-        'For open-ended questions use `reply`. For async/unprompted scenarios ' +
-        '(scheduled check-ins, proactive nudges) DO NOT use this, a blocking ' +
-        'modal is inappropriate when the user is not waiting on you. See the ' +
-        'top-level instructions for full guidance on when this fits.',
+        'Ask your owner 1 to 4 multiple-choice questions as ONE card in the BGOS ' +
+        'app. Any message asking your owner 2 or more decisions is ONE ask_user_input card (up to 4 questions), online or not. ' +
+        'A reply with buttons asks exactly one thing. ' +
+        'The card returns at once as pending: end your turn and do nothing that depends on the answers; ' +
+        'they arrive together as one ask_answered event, however late. ' +
+        'Use wait_seconds only if your owner wrote in the last few minutes and you cannot continue without the answer. ' +
+        'The pending result carries the ask_id; the ask_answered event (meta.ask_id, meta.answers) ' +
+        'carries every answer and starts a new turn. With wait_seconds above 0 the call returns the ' +
+        'answers if they all come in time, otherwise pending, never invented skips. withdraw_ask ' +
+        'retires a card you no longer need. For open-ended questions use `reply`.',
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -4806,7 +4806,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           questions: {
             type: 'array',
             description:
-              '1, 4 questions to ask, in order. Each must have at least one option ' +
+              '1 to 4 questions to ask, in order. Each must have at least one option ' +
               '(if you have no options, just send a regular reply instead).',
             items: {
               type: 'object',
@@ -4818,7 +4818,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
                 options: {
                   type: 'array',
                   description:
-                    'Selectable choices. 2, 6 items. Each label under ~30 chars.',
+                    'Selectable choices. 2 to 6 items. Each label under ~30 chars.',
                   items: {
                     type: 'object',
                     properties: {

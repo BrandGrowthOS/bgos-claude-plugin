@@ -562,9 +562,16 @@ rules before replying so messages don't get lost.
   inline option buttons.
 - `edit_message` — patch one of your previous messages.
 - `rename_chat` — set a descriptive title on the current chat.
-- `ask_user_input` — open a polished modal/sheet with 1–4 multiple-
-  choice questions. Blocks until the user answers (or 600s timeout).
-  Use this when you need a structured choice, not free-form text.
+- `ask_user_input` — post ONE card of 1 to 4 multiple-choice questions.
+  Any message asking the owner 2 or more decisions is one card, online or
+  not; a reply with buttons asks exactly one thing. It returns at once as
+  pending with an `ask_id`; when every question is answered or skipped,
+  one `ask_answered` channel event carries every answer and starts a new
+  turn, however late. `wait_seconds` (up to 600) blocks instead and returns
+  the answers if they all come in time, otherwise pending, never invented
+  skips. Pending cards survive a restart (`pending-asks.json` beside the
+  cursor file).
+- `withdraw_ask` — retire a card you no longer need, by its `ask_id`.
 - `list_peers` — list other assistants on this BGOS account that you
   may message. Returns each peer's `assistantId` (the integer to pass
   to `send_to_peer`) and an `introduced` flag — true ONLY if the user
@@ -681,7 +688,8 @@ All share the same plugin installation at `~/bgos-claude-plugin/`.
 | `reply` | Send a message with optional file attachments and interactive buttons |
 | `edit_message` | Edit a previously sent message |
 | `rename_chat` | Set a descriptive title on a chat |
-| `ask_user_input` | Blocking modal/sheet with 1–4 multiple-choice questions |
+| `ask_user_input` | One card of 1 to 4 multiple-choice questions; returns pending, every answer arrives as one `ask_answered` event |
+| `withdraw_ask` | Retire a question card you no longer need |
 | `list_peers` | List the user's other assistants you can message as peers |
 | `send_to_peer` | Send a message to another assistant (peer agent) — supports `turn_state` and `wait_for_reply` |
 | `complete_peer_thread` | Close the active peer conversation with a one-line summary (collapses the SideConversationCard) |
@@ -1066,9 +1074,9 @@ deliveries and its own polls are left out on purpose (agent-state.json keeps
 counting them for the watcher), because a frozen session's daemon keeps doing
 all of them. `running` comes from the hook rail's open rows (a command between
 its start and its result, a helper agent still working, also one that outlived
-its parent's turn), not from the daemon's own operations counter. A blocking
-`ask_user_input`, a permission card and an unanswered plan card count as
-questions waiting.
+its parent's turn), not from the daemon's own operations counter. An
+`ask_user_input` blocking on `wait_seconds`, a permission card and an
+unanswered plan card count as questions waiting.
 
 **When it is sent.** On every heartbeat, and on its own small beat
 (`{ sessionStatus }`) within a minute of a change and every 2
