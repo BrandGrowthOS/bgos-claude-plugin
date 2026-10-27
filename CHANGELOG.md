@@ -2,6 +2,18 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.76.0 (2026-10-27)
+
+**A late answer to a question card now reaches the agent (#282, Kc's ask, Data approved option A, msg 161859).** The card stays answerable in the app and the backend accepts a late answer, but the plugin dropped it on both transports (`lib/stream-apply.ts`, `lib/poll-core.ts`), and `ask_user_input` blocked up to 600 s and then reported every unanswered question as skipped.
+
+- **`ask_user_input` can go async.** `wait_seconds: 0` posts the card and returns pending with its `ask_id`. When every question is answered or skipped, ONE `ask_answered` channel event carries every answer and starts a turn, however late, also after a restart. The pending result says in plain words that the answers come in a turn that is not the owner's own message, where owner-only tools refuse.
+- **Old callers keep their contract.** A call with neither `wait_seconds` nor `timeout_seconds` waits up to 600 s and returns the answers array, as before; `timeout_seconds` keeps its meaning. A wait that runs out returns pending, never invented skips. A wait written as plain digits in a string is read as those seconds; anything else is refused before anything is posted, never read as 0.
+- **Pending cards persist** in `pending-asks.json` beside the cursor file (`lib/ask-tracker.ts`), reconciled at boot, on connect, at a promotion and on a timer, delivered exactly once through the shared dedup set plus tombstones in the file. Only the session that posted a card announces it, or the same agent restarted after its asker ended; another session that ran beside the asker never does. A session not connected to BGOS refuses `wait_seconds: 0`, and its blocking wait withdraws the questions not answered when it runs out. A file that read in full and failed to parse is kept aside; a transient read error is retried and then skipped, never renamed, and a file of another version is left alone.
+- **`withdraw_ask`** retires a card (`PATCH messages/{id} {options: [], renderMode: "inline"}` for each of its rows, as the Codex bridge does); an answer that lands meanwhile is never announced.
+- **The reply tool warns, never blocks,** when a reply with buttons asks 2 or more decisions: it goes out as written and its result names the card.
+- **Scope section 6** replaces every "only when actively in the conversation" line in the instructions, the tool descriptions and `lib/capabilities.ts`, and the daemon declares `ask_answered`.
+- Tests: `test/ask-tracker.test.ts`, `test/ask-review-282.test.ts`, `test/ask-review-wiring.test.ts`, the stream and poll cases and `test/bundled-instructions.test.ts`, red first; a rig under a scratch HOME against a stub backend (an answer 15 minutes late on a fake clock, a restart between post and answer, a partial answer, skip all, the same answer twice, old blocking callers, withdraw, a cancelled wait, two daemons, a takeover, the reply warning).
+
 ## 0.75.0 (2026-10-25)
 
 **Every agent knows its own name (mission #192, from Kc's PC test, 4465 msg 154112).** Agent 1129 paired as itself and then said "Ares here". It runs under the owner's own Windows account, so Claude Code loaded the owner's global `~/.claude/CLAUDE.md`, which sends every session to a persona file naming somebody else. A folder of its own cannot stop that: global memory loads in every folder.
