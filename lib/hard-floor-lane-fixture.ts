@@ -110,6 +110,14 @@ export const HARD_FLOOR_LANE_FIXTURE: readonly HardFloorLaneCase[] = [
     expected: 'reads_a_secret',
   },
   {
+    name: "the owner's saved email files",
+    toolName: 'Read',
+    inputPreview:
+      '{"file_path":"/Users/kc/.bgos-agent/email-files/1076/0f8e2c1a-5b6d-4e7f-9a0b-1c2d3e4f5a6b/attachment-1.pdf"}',
+    actorUserId: ME,
+    expected: 'reads_a_secret',
+  },
+  {
     name: 'the plugin state',
     toolName: 'Read',
     inputPreview:
