@@ -274,8 +274,9 @@ export function askPendingText(opts: {
       `ask_answered channel event (meta.ask_id = ${opts.askId}), however late, and that event ` +
       `starts a new turn. That turn is not your owner's own message, so the tools that act for ` +
       `your owner refuse in it: schedule, boards, the browser, email_send and call_owner. ` +
-      `If you will need one of them after these answers, ask again with wait_seconds while your ` +
-      `owner is in the chat, or wait for your owner's next message and use the tool in that turn. ` +
+      `If you will need one of them after these answers, call withdraw_ask with this ask_id, then ask ` +
+      `again with wait_seconds while your owner is in the chat; or wait for your owner's next message ` +
+      `and use the tool in that turn. ` +
       `If you no longer need the answers, call withdraw_ask with this ask_id.`,
   ].join('\n')
 }

@@ -3119,7 +3119,7 @@ const mcp = new Server(
       '## Asking Your Owner Questions (ask_user_input)',
       '',
       'Any message asking your owner 2 or more decisions is ONE ask_user_input card (up to 4 questions), online or not. A reply with buttons asks exactly one thing. The card returns at once as pending: end your turn and do nothing that depends on the answers; they arrive together as one ask_answered event, however late. Use wait_seconds only if your owner wrote in the last few minutes and you cannot continue without the answer.',
-      'For that, pass wait_seconds: 0. A call with neither wait_seconds nor timeout_seconds keeps its old behaviour: it waits up to 600 s and returns the answers.',
+      'The pending return above needs wait_seconds: 0; to wait for the answers, pass wait_seconds from 1 to 600. A call with neither wait_seconds nor timeout_seconds keeps its old behaviour: it waits up to 600 s and returns the answers, or pending if they do not all come in time.',
       '',
       'The BGOS app shows the card as a sheet over the chat with numbered',
       'choices, optional free-text fallback, and per-question Skip. With',
@@ -4795,8 +4795,9 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'The card returns at once as pending: end your turn and do nothing that depends on the answers; ' +
         'they arrive together as one ask_answered event, however late. ' +
         'Use wait_seconds only if your owner wrote in the last few minutes and you cannot continue without the answer. ' +
-        'For that, pass wait_seconds: 0. A call with neither wait_seconds nor timeout_seconds keeps its old behaviour: ' +
-        'it waits up to 600 s and returns the answers. ' +
+        'The pending return above needs wait_seconds: 0; to wait for the answers, pass wait_seconds from 1 to 600. ' +
+        'A call with neither wait_seconds nor timeout_seconds keeps its old behaviour: it waits up to 600 s and returns ' +
+        'the answers, or pending if they do not all come in time. ' +
         'The pending result carries the ask_id; the ask_answered event (meta.ask_id, meta.answers) ' +
         'carries every answer and starts a new turn. With wait_seconds above 0 the call returns the ' +
         'answers if they all come in time, otherwise pending, never invented skips. withdraw_ask ' +
