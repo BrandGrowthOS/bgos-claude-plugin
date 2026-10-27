@@ -457,18 +457,29 @@ export interface ClickRow {
  * announce. Historic clicks from before the daemon started are not replayed
  * (they once were, which flooded Claude Code's context on every restart).
  *
- * `ask_user_input` rows are excluded: that tool owns its own polling, so
- * announcing here would be a second delivery of the same answer.
+ * `ask_user_input` rows are never clicks. One that belongs to a group the ask
+ * tracker holds (`trackedAsks`, lib/ask-tracker.ts) and is answered goes to
+ * `askAnswered` instead, on ANY poll, a first poll after a restart included:
+ * unlike a historic tap, a tracked question is a promise this daemon made and
+ * its answer is due however late. The tracker keeps the first answer per
+ * question, so handing the same row over on every poll is harmless.
  */
 export function selectClickTransitions(opts: {
   rows: ClickRow[]
   prevUnanswered: ReadonlySet<number>
   isFirstPoll: boolean
-}): { announce: number[]; nextUnanswered: Set<number> } {
+  /** Message ids of every question in a pending ask group. */
+  trackedAsks?: ReadonlySet<number>
+}): { announce: number[]; nextUnanswered: Set<number>; askAnswered: number[] } {
   const announce: number[] = []
   const nextUnanswered = new Set<number>()
+  const askAnswered: number[] = []
   for (const row of opts.rows) {
     if (row.sender !== 'assistant') continue
+    if (opts.trackedAsks?.has(row.id)) {
+      if (row.answered) askAnswered.push(row.id)
+      continue
+    }
     if (row.messageType === 'ask_user_input') continue
     if (!row.hasOptions) continue
     if (!row.answered) {
@@ -479,7 +490,7 @@ export function selectClickTransitions(opts: {
     if (!opts.prevUnanswered.has(row.id)) continue
     announce.push(row.id)
   }
-  return { announce, nextUnanswered }
+  return { announce, nextUnanswered, askAnswered }
 }
 
 // ── Cadence planning (P6d/P6e) ───────────────────────────────────────────────

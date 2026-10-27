@@ -411,16 +411,71 @@ test('an already-announced answer is skipped (single announce, both orders)', ()
   )
 })
 
-test('ask_user_input rows never announce (that tool owns its own polling)', () => {
+test('an ask_user_input row this daemon does not track is skipped', () => {
+  // A card an older daemon posted, or one already delivered and forgotten:
+  // nothing here is waiting for it.
   assert.equal(
     decideButtonsAnswered({
       messageType: 'ask_user_input',
       callbackData: 'pick_a',
       alreadyAnnounced: false,
       permissionRe: PERM_RE,
+      askTracked: false,
     }),
     'skip',
   )
+})
+
+test('a late answer to a tracked ask question goes to the ask tracker, not the floor', () => {
+  // The hydrated buttons_answered entry for an ask row carries no messageType
+  // and an answer of { optionId, freeText, skipped }: no callbackData at all.
+  // It used to die here; it now reaches the tracker.
+  assert.equal(
+    decideButtonsAnswered({
+      messageType: '',
+      callbackData: '',
+      alreadyAnnounced: false,
+      permissionRe: PERM_RE,
+      askTracked: true,
+    }),
+    'ask',
+  )
+  assert.equal(
+    decideButtonsAnswered({
+      messageType: 'ask_user_input',
+      callbackData: '',
+      alreadyAnnounced: false,
+      permissionRe: PERM_RE,
+      askTracked: true,
+    }),
+    'ask',
+  )
+})
+
+test('an ask answer the other transport already announced stays silent', () => {
+  assert.equal(
+    decideButtonsAnswered({
+      messageType: '',
+      callbackData: '',
+      alreadyAnnounced: true,
+      permissionRe: PERM_RE,
+      askTracked: true,
+    }),
+    'skip',
+  )
+})
+
+test('the hydrated stream entry of a late ask answer resolves its message and chat', () => {
+  const view = viewStreamMessage(
+    upd(
+      { answeredAt: '2026-10-27T09:15:00Z', answerPayload: { optionId: 7, skipped: false } },
+      { kind: 'buttons_answered', chatId: 77, messageId: 101 },
+    ),
+  )
+  assert.ok(view)
+  assert.equal(view.messageId, 101)
+  assert.equal(view.chatId, '77')
+  assert.equal(view.answerPayload, null, 'an ask answer has no button fields: the tracker, not the click lane, reads it')
 })
 
 test('a permission callback resolves the pending verdict instead of forwarding', () => {
