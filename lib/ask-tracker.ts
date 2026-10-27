@@ -33,22 +33,26 @@
  * ended. How long it ran beside a daemon is then read off the file, the same
  * for every daemon whenever it looks: from that daemon's start (or the post)
  * to the asker's last lease. Longer than ASK_OWNER_OVERLAP_MS, and the group
- * is marked askerEndedBeside in the file, so no daemon ever announces it. The
- * asker itself always delivers its own card. Another live session's card
- * stays its own. Review of #282, item 1, its second to fourth reviews, and
- * Data's recheck.
+ * is marked askerEndedBeside in the file, so no daemon ever announces it. A
+ * daemon that was not looking (a sleep, a stalled process) reads no lease as
+ * lapsed until the asker has had time to write it again (ASK_TICK_GAP_MS). The
+ * asker itself always delivers its own card; another live session's card is
+ * never announced as answers here. Review of #282, item 1, its second to
+ * fourth reviews, and Data's recheck.
  *
- * RETIRED, NEVER LEFT LIVE. A group no daemon may announce is retired by the
- * daemon holding the connection, as withdraw_ask retires a card (server.ts
- * retireOrphanedAsks, from retirable()), and its session is told in one
- * ask_withdrawn event: a group marked askerEndedBeside; every group of a live
- * holder whose connection another daemon took (markTakenOver), since that
- * holder stays passive and can never hand an answer to its session again; and
- * a group whose asker ended ASK_ORPHAN_GRACE_MS ago with no restart taking it.
- * A restart that may take a card but does not hold the connection yet (it is
- * passive behind another session) claims it on the same tick, so the card
- * waits for it instead. Otherwise the card stays live and the owner answers
- * into nothing (Data's recheck of #282, item 1).
+ * RETIRED, NEVER LEFT LIVE. Only the daemon holding the connection can hand
+ * answers to a session. A group it may not announce is retired by it, as
+ * withdraw_ask retires a card (server.ts retireOrphanedAsks, from
+ * retirable()), and its session is told in one ask_withdrawn event:
+ *   - a group marked askerEndedBeside;
+ *   - an unheld group of a live asker other than this daemon, once seen so for
+ *     ASK_LEASE_MS: that asker lost the connection (a channel or route
+ *     takeover, or a stale lock after a sleep), runs on passive, and can never
+ *     hand an answer to its session;
+ *   - a group whose asker ended ASK_ORPHAN_GRACE_MS ago with no restart taking
+ *     the connection and the card.
+ * Otherwise the card stays live and the owner answers into nothing (Data's
+ * recheck of #282, item 1, and its fresh review).
  *
  * EXACTLY ONCE. Within a daemon life the shared announced-click set guards
  * the transports (server.ts rememberAnnouncedClick on every question id of a
@@ -212,21 +216,13 @@ export interface PendingAsk {
   owner?: AskOwner
   /**
    * When a daemon found that the asker ran beside its session for longer than
-   * ASK_OWNER_OVERLAP_MS and has ended, or took the connection from the live
-   * asker (markTakenOver), ms since the epoch. No daemon ever announces the
-   * group, that session's own restart included (it cannot be told apart from
-   * the asker's); the connected daemon retires it. On disk, so the decision
-   * outlives the daemon that made it (third review of #282, Important 2).
+   * ASK_OWNER_OVERLAP_MS and has ended, ms since the epoch. No daemon ever
+   * announces the group, that session's own restart included (it cannot be
+   * told apart from the asker's); the connected daemon retires it. On disk, so
+   * the decision outlives the daemon that made it (third review of #282,
+   * Important 2).
    */
   askerEndedBeside?: number
-  /**
-   * A process that may announce the group (isOurs: the asker restarted) and
-   * says on the ask tick that it runs, with aliveAt as its lease. While that
-   * lease holds, the connected daemon, another session, never retires the
-   * card as an orphan: the restart takes it once it holds the connection
-   * (Data's recheck of #282).
-   */
-  claim?: AskOwner
 }
 
 export type AskRecordOutcome =
@@ -423,8 +419,9 @@ export function buildAskAnsweredEvent(
  * because no daemon may hand its answers to the session that asked
  * (retirable): what the owner answered before it was retired, and which
  * questions were withdrawn from the chat. It starts a turn in this session,
- * which did not ask, so it says so and asks for nothing. Every meta value is
- * a string (Data's recheck of #282, item 1).
+ * which may or may not be the one that asked (the asker restarted, or a
+ * session beside it), so it says neither and asks for nothing. Every meta
+ * value is a string (Data's recheck of #282, item 1; its fresh review, Minor 3).
  */
 export function buildAskWithdrawnEvent(
   ask: PendingAsk,
@@ -441,13 +438,12 @@ export function buildAskWithdrawnEvent(
         ? `Its ${open.length} open question(s) were withdrawn from the chat, so your owner can no longer answer them.`
         : `${opts.withdrawn} of its ${open.length} open question(s) were withdrawn from the chat.`
   const content = [
-    `[ask_withdrawn] A question card that another session of this agent posted was retired (ask_id=${ask.askId}): ` +
-      `that session ended or lost this agent's connection, so the answers could never reach it. ${closed}`,
+    `[ask_withdrawn] A question card this agent posted was retired (ask_id=${ask.askId}): the session that asked ` +
+      `it can no longer receive the answers (it ended, or it no longer holds this agent's connection). ${closed}`,
     `(in chat_id=${ask.chatId}, first question message_id=${first})`,
     `Answered before it was retired: ${JSON.stringify(answered, null, 2)}`,
     `Withdrawn: ${JSON.stringify(open)}`,
-    'You did not ask these questions in this session, and nothing here needs a reply. If you still need an ' +
-      'answer that was withdrawn, ask again with ask_user_input.',
+    'Nothing here needs a reply. If you still need an answer that was withdrawn, ask again with ask_user_input.',
   ].join('\n')
   return {
     content,
@@ -479,10 +475,18 @@ export const ASK_LEASE_REFRESH_MS = 15_000
 export const ASK_LEASE_MS = 2 * ASK_LEASE_REFRESH_MS + 5_000
 /**
  * A group whose asker ended, ran beside no daemon and was taken by no restart
- * for this long is retired by the connected daemon: its restart, if one
- * comes, takes it well before (Data's recheck of #282, item 1).
+ * for this long is retired by the connected daemon: a restart that takes the
+ * connection in that time takes the card too (Data's recheck of #282, item 1).
  */
 export const ASK_ORPHAN_GRACE_MS = 10 * 60_000
+/**
+ * A daemon looks at the file at least every 5 s (the ask tick). A longer gap
+ * between two looks means this process was not running (a sleep, a stalled
+ * process), and so were others, maybe: until it has looked without such a gap
+ * for ASK_LEASE_MS, it reads no live pid's lease as lapsed (fresh review of
+ * Data's recheck of #282, Important 2).
+ */
+export const ASK_TICK_GAP_MS = 20_000
 
 /** Whether a process with this pid runs now (EPERM: it runs, as another user). */
 export function pidIsAlive(pid: number): boolean {
@@ -508,18 +512,23 @@ function sameProcess(owner: AskOwner | undefined, self: AskOwner): boolean {
 /**
  * Whether a group's asker, another process, runs now: its pid is alive and it
  * said so within ASK_LEASE_MS. The pid alone is not enough: a dead asker's pid
- * may already be an unrelated process's (Data's recheck of #282).
+ * may already be an unrelated process's (Data's recheck of #282). An observer
+ * that cannot judge a lease (leaseJudged false: it was not running for a
+ * while) takes a live pid's lease as fresh.
  */
-export function askerRuns(ask: PendingAsk, self: AskOwner, now: number, isAlive: (pid: number) => boolean): boolean {
-  return runsBeside(ask.owner, self, askerLastSaid(ask), now, isAlive)
-}
-
-/** Another process, alive by its pid AND by a lease written within ASK_LEASE_MS. */
-function runsBeside(proc: AskOwner | undefined, self: AskOwner, lastSaid: number, now: number, isAlive: (pid: number) => boolean): boolean {
-  if (!proc || sameProcess(proc, self)) return false
+export function askerRuns(
+  ask: PendingAsk,
+  self: AskOwner,
+  now: number,
+  isAlive: (pid: number) => boolean,
+  leaseJudged = true,
+): boolean {
+  const owner = ask.owner
+  if (!owner || sameProcess(owner, self)) return false
   // This process's own pid on a group is an earlier process's, ended.
-  if (proc.pid === self.pid) return false
-  return isAlive(proc.pid) && now - lastSaid <= ASK_LEASE_MS
+  if (owner.pid === self.pid) return false
+  if (!isAlive(owner.pid)) return false
+  return !leaseJudged || now - askerLastSaid(ask) <= ASK_LEASE_MS
 }
 
 /**
@@ -528,9 +537,15 @@ function runsBeside(proc: AskOwner | undefined, self: AskOwner, lastSaid: number
  * the post, so it is that session restarted. A live asker's group is the
  * asker's; one that ran beside this daemon is told by AskTracker.isOurs.
  */
-export function askIsOurs(ask: PendingAsk, self: AskOwner, now: number, isAlive: (pid: number) => boolean): boolean {
+export function askIsOurs(
+  ask: PendingAsk,
+  self: AskOwner,
+  now: number,
+  isAlive: (pid: number) => boolean,
+  leaseJudged = true,
+): boolean {
   if (sameProcess(ask.owner, self)) return true
-  if (askerRuns(ask, self, now, isAlive)) return false
+  if (askerRuns(ask, self, now, isAlive, leaseJudged)) return false
   return self.startedAt > ask.postedAt
 }
 
@@ -561,11 +576,6 @@ function validAsk(raw: unknown): raw is PendingAsk {
         Number.isSafeInteger(a.owner.pid) &&
         typeof a.owner.startedAt === 'number' &&
         (a.owner.aliveAt === undefined || typeof a.owner.aliveAt === 'number'))) &&
-    (a.claim === undefined ||
-      (!!a.claim &&
-        Number.isSafeInteger(a.claim.pid) &&
-        typeof a.claim.startedAt === 'number' &&
-        typeof a.claim.aliveAt === 'number')) &&
     (a.askerEndedBeside === undefined || typeof a.askerEndedBeside === 'number')
   )
 }
@@ -581,6 +591,16 @@ export class AskTracker {
   private readonly held = new Set<string>()
   /** Groups withdraw_ask (or the retire of an orphan) is retiring right now: no announce offers them (review of #282, item 2). */
   private readonly withdrawing = new Set<string>()
+  /** When this process last looked at the file, and since when without a gap (ASK_TICK_GAP_MS). */
+  private lastLookAt: number | null = null
+  private lookingSince = Number.NEGATIVE_INFINITY
+  /**
+   * In the connected daemon: since when each unheld group of a live asker
+   * other than this process has been seen so, on retire passes no more than
+   * ASK_TICK_GAP_MS apart (retirable).
+   */
+  private readonly askerAsideSince = new Map<string, number>()
+  private lastRetireLook: number | null = null
   /** Groups dropped for age, said once; and why saves fail, said once while it lasts (fifth review of #282, Minor 3). */
   private readonly droppedForAge = new Set<string>()
   private saveFailing: string | null = null
@@ -717,7 +737,33 @@ export class AskTracker {
       this.save()
       return false
     }
-    return askIsOurs(ask, this.self, this.now(), this.isAlive)
+    return askIsOurs(ask, this.self, this.now(), this.isAlive, this.leaseJudged())
+  }
+
+  /** askerRuns as this process can judge it now. */
+  private askerRunsNow(ask: PendingAsk): boolean {
+    return askerRuns(ask, this.self, this.now(), this.isAlive, this.leaseJudged())
+  }
+
+  /** Note a look at the file: a gap longer than ASK_TICK_GAP_MS since the last one starts the wait again. */
+  private look(): void {
+    const now = this.now()
+    if (this.lastLookAt !== null && now - this.lastLookAt > ASK_TICK_GAP_MS) {
+      this.lookingSince = now
+      this.log(`ask tracker: no look at the file for ${Math.round((now - this.lastLookAt) / 1000)} s (a sleep?); no lease is read as lapsed for ${ASK_LEASE_MS / 1000} s`)
+    }
+    this.lastLookAt = now
+  }
+
+  /**
+   * Whether this process may read a lapsed lease as an ended asker: it has
+   * looked without a gap for ASK_LEASE_MS, so a live asker has had time to
+   * write its lease since. After a sleep every process wakes with a stale
+   * lease, and the first to look would otherwise take the others for ended
+   * (fresh review of Data's recheck of #282, Important 2).
+   */
+  private leaseJudged(): boolean {
+    return this.now() - this.lookingSince >= ASK_LEASE_MS
   }
 
   /**
@@ -730,7 +776,7 @@ export class AskTracker {
    */
   private markIfBeside(ask: PendingAsk): boolean {
     if (!ask.owner || ask.askerEndedBeside !== undefined || sameProcess(ask.owner, this.self)) return false
-    if (askerRuns(ask, this.self, this.now(), this.isAlive)) return false
+    if (this.askerRunsNow(ask)) return false
     if (askerLastSaid(ask) - Math.max(this.self.startedAt, ask.postedAt) <= ASK_OWNER_OVERLAP_MS) return false
     ask.askerEndedBeside = this.now()
     this.log(
@@ -748,78 +794,61 @@ export class AskTracker {
   }
 
   /**
-   * Say on this process's own groups that it runs (the lease), and claim the
-   * groups of an ended asker it may announce (it is that asker restarted), at
-   * most every ASK_LEASE_REFRESH_MS each, after reading the file. Every daemon
-   * calls it on the ask tick, armed, passive or draining (server.ts
-   * heartbeatAskTracker), so a live asker is never taken for ended, a dead one
-   * is, whoever has its pid, and a passive restart keeps its card from the
-   * orphan retire (Data's recheck of #282).
+   * Say on this process's own groups that it runs (the lease), at most every
+   * ASK_LEASE_REFRESH_MS, after reading the file. Every daemon calls it on the
+   * ask tick, armed, passive or draining (server.ts heartbeatAskTracker), so a
+   * live asker is never taken for ended, and a dead one is, whoever has its
+   * pid (Data's recheck of #282). Nothing else is written: a group another
+   * process posted is never written on here.
    */
   heartbeat(): void {
     if (!this.refresh()) return
     const now = this.now()
     let said = false
-    for (const ask of this.pending()) {
-      if (ask.owner && sameProcess(ask.owner, this.self)) {
-        if (now - askerLastSaid(ask) < ASK_LEASE_REFRESH_MS) continue
-        ask.owner = { ...ask.owner, aliveAt: now }
-        said = true
-        continue
-      }
-      if (!this.isOurs(ask)) continue
-      if (sameProcess(ask.claim, this.self) && now - (ask.claim?.aliveAt ?? 0) < ASK_LEASE_REFRESH_MS) continue
-      ask.claim = { pid: this.self.pid, startedAt: this.self.startedAt, aliveAt: now }
+    for (const ask of this.asks.values()) {
+      if (!ask.owner || !sameProcess(ask.owner, this.self)) continue
+      if (now - askerLastSaid(ask) < ASK_LEASE_REFRESH_MS) continue
+      ask.owner = { ...ask.owner, aliveAt: now }
       said = true
     }
     if (said) this.save({ merge: false })
   }
 
   /**
-   * This daemon took the connection from `holderPid`, a live process (a
-   * channel or route takeover). That process stays alive, passive, and can
-   * never hand an answer to its session again, so each of its groups is
-   * marked as a group whose asker ended beside this one, for retirable(): a
-   * held one once its wait lets go. Never a group of this process. Returns
-   * how many it marked (Data's recheck of #282, item 1).
-   */
-  markTakenOver(holderPid: number): number {
-    this.refresh()
-    let marked = 0
-    for (const ask of this.asks.values()) {
-      const owner = ask.owner
-      if (!owner || owner.pid !== holderPid || sameProcess(owner, this.self) || ask.askerEndedBeside !== undefined) continue
-      ask.askerEndedBeside = this.now()
-      marked++
-    }
-    if (marked > 0) {
-      this.log(
-        `ask tracker: ${marked} pending group(s) of pid ${holderPid}, which lost this agent's connection to this ` +
-          'daemon, are retired by it: their session can no longer receive the answers',
-      )
-      this.save({ merge: false })
-    }
-    return marked
-  }
-
-  /**
    * The groups no daemon may announce, for the daemon holding the connection
-   * to retire as withdraw_ask does (server.ts retireOrphanedAsks): marked
-   * askerEndedBeside, or whose asker ended, and whose last claim (a restart,
-   * heartbeat) lapsed, ASK_ORPHAN_GRACE_MS ago. Never this process's own, a
-   * held one, one being withdrawn, or one this daemon may announce (Data's
-   * recheck of #282).
+   * to retire as withdraw_ask does (server.ts retireOrphanedAsks, its only
+   * caller, which runs only there):
+   *   - marked askerEndedBeside;
+   *   - of a live asker other than this process, unheld, seen so on passes no
+   *     more than ASK_TICK_GAP_MS apart for ASK_LEASE_MS: that asker lost the
+   *     connection, whatever took it (a channel or route takeover, a stale lock
+   *     after a sleep), and runs on passive; the wait lets a lock that changes
+   *     hands for a moment, or a passive wait retiring its own card, settle;
+   *   - of an ended asker, ASK_ORPHAN_GRACE_MS after its last lease.
+   * Never this process's own, a held one, one being withdrawn, or one this
+   * daemon may announce (Data's recheck of #282, and its fresh review).
    */
   retirable(): PendingAsk[] {
+    this.look()
     const now = this.now()
-    return this.pending().filter((a) => {
-      if (sameProcess(a.owner, this.self) || this.isHeld(a.askId) || this.withdrawing.has(a.askId)) return false
-      if (this.isOurs(a)) return false
-      if (a.askerEndedBeside !== undefined) return true
-      if (askerRuns(a, this.self, now, this.isAlive)) return false
-      if (runsBeside(a.claim, this.self, a.claim?.aliveAt ?? 0, now, this.isAlive)) return false
-      return now - Math.max(askerLastSaid(a), a.claim?.aliveAt ?? 0) > ASK_ORPHAN_GRACE_MS
-    })
+    if (this.lastRetireLook !== null && now - this.lastRetireLook > ASK_TICK_GAP_MS) this.askerAsideSince.clear()
+    this.lastRetireLook = now
+    const out: PendingAsk[] = []
+    for (const a of this.pending()) {
+      const aside = this.askerAsideSince.get(a.askId)
+      this.askerAsideSince.delete(a.askId)
+      if (sameProcess(a.owner, this.self) || this.isHeld(a.askId) || this.withdrawing.has(a.askId)) continue
+      if (this.isOurs(a)) continue
+      if (a.askerEndedBeside !== undefined) {
+        out.push(a)
+      } else if (this.askerRunsNow(a)) {
+        this.askerAsideSince.set(a.askId, aside ?? now)
+        if (now - (aside ?? now) >= ASK_LEASE_MS) out.push(a)
+      } else if (now - askerLastSaid(a) > ASK_ORPHAN_GRACE_MS) {
+        out.push(a)
+      }
+    }
+    return out
   }
 
   /** Complete groups of this session nobody holds and nobody delivered yet: what an announce pass offers. */
@@ -874,6 +903,7 @@ export class AskTracker {
    * taken as written. Called before every save and every announce pass.
    */
   refresh(): boolean {
+    this.look()
     const disk = this.readFile()
     if (disk.kind === 'skip') return false
     if (disk.kind === 'none') return true
@@ -900,11 +930,10 @@ export class AskTracker {
         if (mine.answers[key] === undefined) mine.answers[key] = answer
       }
       if ((raw.lastAnsweredAt ?? 0) > (mine.lastAnsweredAt ?? 0)) mine.lastAnsweredAt = raw.lastAnsweredAt
-      // The asker's latest lease, never an older one read back over it; and the latest claim.
+      // The asker's latest lease, never an older one read back over it.
       if (raw.owner && mine.owner && raw.owner.pid === mine.owner.pid && raw.owner.startedAt === mine.owner.startedAt) {
         if ((raw.owner.aliveAt ?? 0) > (mine.owner.aliveAt ?? 0)) mine.owner = { ...mine.owner, aliveAt: raw.owner.aliveAt }
       }
-      if (raw.claim && (raw.claim.aliveAt ?? 0) > (mine.claim?.aliveAt ?? 0)) mine.claim = { ...raw.claim }
       if (raw.askerEndedBeside !== undefined && mine.askerEndedBeside === undefined) mine.askerEndedBeside = raw.askerEndedBeside
       // Another daemon's save wrote over the mark: it cannot be read back from
       // the backend, so it is written again (fourth review of #282, Minor 3).
@@ -951,6 +980,7 @@ export class AskTracker {
     this.asks.delete(askId)
     this.held.delete(askId)
     this.withdrawing.delete(askId)
+    this.askerAsideSince.delete(askId)
     for (const q of ask.questions) {
       if (this.byMessage.get(q.messageId) === askId) this.byMessage.delete(q.messageId)
     }

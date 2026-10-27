@@ -56,13 +56,13 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean } 
     lift('async function readAskGroup('),
     lift('function announceCompleteAsks('),
     lift('async function retireOrphanAskRows('),
+    lift('function refreshAskTracker('),
     liftIf('async function retireOrphanedAsks('),
-    liftIf('function takeOverAsks('),
     liftCase('ask_user_input', 'withdraw_ask', 'askTool'),
     liftCase('withdraw_ask', 'complete_voice_task', 'withdrawTool'),
   ].join('\n')
   const exported = ['askTool', 'withdrawTool', 'announceCompleteAsks']
-  for (const name of ['retireOrphanedAsks', 'takeOverAsks']) if (source.includes(`function ${name}(`)) exported.push(name)
+  if (source.includes('function retireOrphanedAsks(')) exported.push('retireOrphanedAsks')
   const js = ts.transpileModule(source, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
   }).outputText
@@ -208,7 +208,6 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean } 
     withdrawTool(args: Record<string, unknown>): Promise<ToolResult>
     announceCompleteAsks(via: string): void
     retireOrphanedAsks?: (via: string) => Promise<void>
-    takeOverAsks?: (reason: string | undefined, holderPid: number | undefined) => void
   }
 
   return {
@@ -683,7 +682,7 @@ test('fresh review of the recheck, Critical 1: whatever took the connection (cha
   r.advance(20_000)
   await r.retireOrphanedAsks?.('timer')
   await r.settle()
-  assert.deepEqual(r.patches, [], 'not within ASK_LEASE_MS of the first look')
+  assert.equal(r.patches.length, 0, 'not within ASK_LEASE_MS of the first look')
   r.advance(20_000)
   await r.retireOrphanedAsks?.('timer')
   await r.settle()

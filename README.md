@@ -584,7 +584,13 @@ rules before replying so messages don't get lost.
   the session that asked gets the answers. In a session that is not the
   one connected to BGOS for this agent, `wait_seconds: 0` is refused (its
   answers could never come back there), and a wait that runs out withdraws
-  the questions not yet answered and returns the answers given.
+  the questions not yet answered and returns the answers given. A card whose
+  session can no longer receive its answers (it ended beside another
+  session, it lost the connection to another session and runs on, or it
+  ended and no restart took the card within 10 minutes) is retired by the
+  connected session, as `withdraw_ask` does, and that session gets one
+  `ask_withdrawn` channel event naming what was answered and what was
+  withdrawn. Nothing in it needs a reply.
 - `withdraw_ask`: retire a card you no longer need, by its `ask_id`.
 - `list_peers` — list other assistants on this BGOS account that you
   may message. Returns each peer's `assistantId` (the integer to pass
