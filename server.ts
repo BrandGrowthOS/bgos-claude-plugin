@@ -275,6 +275,7 @@ import {
   askAnswerFromRow,
   askPendingText,
   askResultRows,
+  askRetireBody,
   askWaitSeconds,
   buildAskAnsweredEvent,
   type AskRow,
@@ -4876,6 +4877,26 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'withdraw_ask',
+      description:
+        'Retire a question card you posted with ask_user_input and no longer need ' +
+        '(you found the answer yourself, the owner answered in chat, or the plan ' +
+        'changed). Pass the ask_id from the pending result. Every question of that ' +
+        'card stops taking answers in the app; answers already given stay in the ' +
+        'chat, and no ask_answered event comes for it afterwards. If a row could ' +
+        'not be retired the card stays tracked and you can call this again.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          ask_id: {
+            type: 'string',
+            description: 'The ask_id ask_user_input returned with the pending result.',
+          },
+        },
+        required: ['ask_id'],
+      },
+    },
+    {
       name: 'complete_voice_task',
       description:
         'Report the outcome of a VOICE-DISPATCHED background task. When your ' +
@@ -6795,6 +6816,64 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
           content: [{ type: 'text', text: `ask_user_input failed: ${errMsg}` }],
           isError: true,
         }
+      }
+    }
+
+    case 'withdraw_ask': {
+      const askId = String(rawArgs.ask_id ?? '').trim()
+      if (!askId) {
+        return { content: [{ type: 'text', text: 'Error: ask_id is required' }], isError: true }
+      }
+      const ask = askTracker.get(askId)
+      if (!ask) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                `No open question card ${askId} here: it was already answered and delivered, ` +
+                'already withdrawn, or posted before this plugin tracked cards.',
+            },
+          ],
+          isError: true,
+        }
+      }
+      // Every row, answered or not, as Codex retires a card (lib/ask-tracker.ts
+      // askRetireBody). Forget the group only when all of them are retired:
+      // a failed row keeps it tracked, so calling again retries.
+      const failed: string[] = []
+      for (const q of ask.questions) {
+        try {
+          await bgosPatch(`messages/${q.messageId}`, askRetireBody())
+        } catch (err) {
+          failed.push(`message ${q.messageId}: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
+      if (failed.length > 0) {
+        log(`withdraw_ask: ${failed.length}/${ask.questions.length} row(s) of ${askId} not retired: ${failed.join('; ')}`)
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                `Could not retire ${failed.length} of ${ask.questions.length} question(s) of card ${askId}; ` +
+                `it stays tracked, so call withdraw_ask again. ${failed.join('; ')}`,
+            },
+          ],
+          isError: true,
+        }
+      }
+      askTracker.withdraw(askId)
+      // A late answer that raced the PATCH is never announced.
+      for (const q of ask.questions) rememberAnnouncedClick(q.messageId)
+      log(`withdraw_ask: retired card ${askId} (${ask.questions.length} question(s)) in chat ${ask.chatId}`)
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Card ${askId} withdrawn: its ${ask.questions.length} question(s) no longer take answers, and no ask_answered event will come for it.`,
+          },
+        ],
       }
     }
 

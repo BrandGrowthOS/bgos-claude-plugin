@@ -21,6 +21,7 @@ import {
   AskTracker,
   askAnswerFromRow,
   askPendingText,
+  askRetireBody,
   askWaitSeconds,
   buildAskAnsweredEvent,
   MAX_ASK_WAIT_SECONDS,
@@ -254,4 +255,11 @@ test('a pending result names the ask id and the event, and never reports a skip'
   assert.match(late, /"answered_so_far": ?1/)
   assert.match(late, /Nothing was skipped/)
   assert.doesNotMatch(late, /"skipped"/)
+})
+
+test('a withdrawn card is retired the way Codex retires one: no options, inline', () => {
+  // codex-channel-bgos interactions.ts: PATCH messages/{id} { options: [], renderMode: "inline" }.
+  // Inline also retires a free-text-only question: removing options alone would
+  // leave its answer input active.
+  assert.deepEqual(askRetireBody(), { options: [], renderMode: 'inline' })
 })

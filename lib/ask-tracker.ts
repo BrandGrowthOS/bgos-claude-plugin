@@ -140,6 +140,17 @@ export function askAnswerFromRow(row: AskRow): AskAnswer | null {
   return answer
 }
 
+/**
+ * The PATCH body that retires one question row when the agent withdraws its
+ * card (the withdraw_ask tool), exactly as codex-channel-bgos retires one
+ * (interactions.ts): no options, and inline, which also retires a question
+ * that takes only free text (removing options alone would leave its answer
+ * input live). The row and any answer already given stay in the chat.
+ */
+export function askRetireBody(): { options: []; renderMode: 'inline' } {
+  return { options: [], renderMode: 'inline' }
+}
+
 /** The answers of a group in question order, in the shape the blocking tool has always returned. */
 export function askResultRows(ask: PendingAsk): Array<Record<string, unknown>> {
   return ask.questions.map((q) => {
@@ -181,7 +192,8 @@ export function askPendingText(opts: {
     JSON.stringify(status, null, 2),
     `${lead} End your turn now and do nothing that depends on these answers. ` +
       `When every question is answered or skipped they arrive together as ONE ask_answered ` +
-      `channel event (meta.ask_id = ${opts.askId}), however late, and that starts a new turn.`,
+      `channel event (meta.ask_id = ${opts.askId}), however late, and that starts a new turn. ` +
+      `If you no longer need the answers, call withdraw_ask with this ask_id.`,
   ].join('\n')
 }
 
