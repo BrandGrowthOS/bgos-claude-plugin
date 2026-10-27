@@ -55,7 +55,7 @@ interface Row {
   answer?: { optionId?: number; freeText?: string; skipped?: boolean }
 }
 
-function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean; filePath?: string; httpTimeoutMs?: number; channelLoaded?: boolean | null } = {}) {
+function rig(opts: { lockHeld?: boolean; live?: number[]; handedOn?: number[]; chatKnown?: boolean; filePath?: string; httpTimeoutMs?: number; channelLoaded?: boolean | null } = {}) {
   const source = [
     lift('async function readAskGroup('),
     lift('function announceCompleteAsks('),
@@ -97,11 +97,13 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean; f
     }
   }
   const live = new Set(opts.live ?? [])
+  // A dead asker's pid that another process has taken: it reads alive, and writes no lease.
+  const handedOn = new Set(opts.handedOn ?? [])
   const tracker = new AskTracker({
     filePath: opts.filePath ?? null,
     now: () => clock,
     // Read by the fix (who posted a group, and is that process still running).
-    ...({ self: SELF, isAlive: (pid: number) => pid === SELF.pid || live.has(pid) } as object),
+    ...({ self: SELF, isAlive: (pid: number) => pid === SELF.pid || live.has(pid) || handedOn.has(pid) } as object),
   })
 
   // The backend: question rows by id, answered or not, and what was sent.
@@ -686,7 +688,7 @@ test('recheck, item 1: a group marked askerEndedBeside has its open questions re
 })
 
 test('second fresh review of the gaps after #284, Important 1, on the daemon\'s own code: a card whose asker ended beside another session is told as that, also when the asker\'s pid reads alive again (a dead pid handed on)', async () => {
-  const r = rig({ live: [2003] })
+  const r = rig({ handedOn: [2003] })
   const ask = r.foreignGroup('theirs', [744, 745], { pid: 2003, startedAt: START - 60 * MIN }, START - 30 * MIN)
   ask.askerEndedBeside = START - MIN
   r.answer(744)
