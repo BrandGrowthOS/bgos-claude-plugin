@@ -1791,7 +1791,7 @@ test('gaps after #284, second review, Important 1: an asker past its lease whose
   })
 })
 
-test('gaps after #284, third review, Important 1: after a look gap (a sleep) the reason still reads the lease, so a beside card whose asker\'s pid was handed on is never told as running on', () => {
+test('gaps after #284, third review, Important 1: after a look gap (a sleep) a beside card whose asker\'s pid was handed on is never told as running on', () => {
   sharedFile(({ filePath, clock, live, at }) => {
     const now = () => clock.at
     const b = trackerAs({ pid: 2, startedAt: at('09:30:00') }, live, { filePath, now })
@@ -1810,7 +1810,7 @@ test('gaps after #284, third review, Important 1: after a look gap (a sleep) the
     clock.at += 60_000
     assert.deepEqual(retirableIds(b), ['g'], 'a beside card is retired whatever the leases say')
     const because = (b as unknown as Gap2).retiredBecause?.(b.get('g')!)
-    assert.equal(because, 'asker_ended_beside', 'the words lean to ended when the lease cannot be judged')
+    assert.equal(because, 'asker_ended_beside', 'the mark stands: no lease after it')
   })
 })
 

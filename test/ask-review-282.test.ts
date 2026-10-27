@@ -718,7 +718,7 @@ test('third fresh review of the gaps after #284, Important 1, on the daemon\'s o
   await r.settle()
   assert.deepEqual(r.patches, [{ path: 'messages/747', body: RETIRE }])
   assert.equal(r.notes.length, 1)
-  assert.equal(r.notes[0].params.meta.retired_because, 'asker_ended_beside', 'the words lean to ended when the lease cannot be judged')
+  assert.equal(r.notes[0].params.meta.retired_because, 'asker_ended_beside', 'the mark stands: no lease after it')
 })
 
 test('fourth fresh review of the gaps after #284, Important 1, on the daemon\'s own code: a card marked beside, whose asker\'s pid is another process\'s while its last lease is fresh, is told as beside', async () => {
