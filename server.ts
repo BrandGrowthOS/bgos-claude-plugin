@@ -6898,7 +6898,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
           // asker after ASK_LEASE_MS, and a slow retire here must not race it
           // (second fresh review of Data's recheck of #282, Minor 3). The
           // deadline frees it should this process die retiring it.
-          askTracker.hold(askKey, Date.now() + ASK_PASSIVE_RETIRE_HOLD_MS)
+          askTracker.hold(askKey, Date.now() + askPassiveRetireHoldMs(ask.questions.length))
           askTracker.beginWithdraw(askKey)
           const unanswered = () => ask.questions.filter((q) => ask.answers[String(q.messageId)] === undefined).map((q) => q.messageId)
           const retired = await retireOrphanAskRows(unanswered(), 'a card whose wait ended in a passive session')
@@ -11742,8 +11742,14 @@ function refreshAskTracker(via: string): void {
 
 /** A blocking wait's hold on disk outlives its deadline by this much (the last read, the release). */
 const ASK_HOLD_MARGIN_MS = 30_000
-/** How long a passive wait's own retire holds its card: a PATCH per row and a read. */
-const ASK_PASSIVE_RETIRE_HOLD_MS = 5 * 60_000
+/**
+ * How long a passive wait's own retire holds its card: a PATCH per question
+ * and a read, each bounded by HTTP_TIMEOUT_MS (raised for a slow network), and
+ * the margin (third fresh review of Data's recheck of #282, Minor 4).
+ */
+function askPassiveRetireHoldMs(questions: number): number {
+  return (questions + 1) * HTTP_TIMEOUT_MS + ASK_HOLD_MARGIN_MS
+}
 /** A failed read of a group the stream said was answered is tried again this many times. */
 const ASK_READ_RETRIES = 4
 const ASK_READ_RETRY_MS = 15_000
@@ -11871,18 +11877,6 @@ async function reconcilePendingAsks(via: string, opts: { dueOnly?: boolean } = {
 }
 
 /**
- * Retire every card no daemon may announce (askTracker.retirable): its asker
- * ended beside another session, runs on without this agent's connection
- * (whatever took it: a channel or route takeover, a stale lock after a sleep),
- * or ended with no restart taking it. Its open questions are retired as
- * withdraw_ask retires them, so the card closes for the owner instead of
- * taking answers nobody receives, and this session is told in ONE
- * ask_withdrawn event what was answered and what was withdrawn. A question
- * that could not be retired keeps the group for the next pass, and nothing is
- * said yet (Data's recheck of #282, item 1). Inside a reconcile pass, so two
- * passes never retire one card at once.
- */
-/**
  * Whether the pairing lock file names this process, read now. lockHeld is
  * cleared only by the poll tick, which slow reads can stall while a rival
  * takes the lock, so a retire asks the file itself, as the arm gate does
@@ -11896,11 +11890,28 @@ function pairingLockNamesThisDaemon(): boolean {
   }
 }
 
+/** Whether this daemon may retire a card now: armed, holding the lock (the file says so too), not draining. */
+function orphanRetireMayRun(): boolean {
+  return channelArmed && lockHeld && !updateDrainMode && pairingLockNamesThisDaemon()
+}
+
+/**
+ * Retire every card no daemon may announce (askTracker.retirable): its asker
+ * ended beside another session, runs on without this agent's connection
+ * (whatever took it: a channel or route takeover, a stale lock after a sleep),
+ * or ended with no restart taking it. Its open questions are retired as
+ * withdraw_ask retires them, so the card closes for the owner instead of
+ * taking answers nobody receives, and this session is told in ONE
+ * ask_withdrawn event what was answered and what was withdrawn. A question
+ * that could not be retired keeps the group for the next pass, and nothing is
+ * said yet (Data's recheck of #282, item 1). Inside a reconcile pass, so two
+ * passes never retire one card at once.
+ */
 async function retireOrphanedAsks(via: string): Promise<void> {
   if (!channelArmed || !lockHeld || updateDrainMode) return
   for (const ask of askTracker.retirable(connectedSince)) {
     // Asked again per card: each retire awaits the backend.
-    if (!channelArmed || !lockHeld || updateDrainMode || !pairingLockNamesThisDaemon()) return
+    if (!orphanRetireMayRun()) return
     if (askDelivering.has(ask.askId)) continue
     // From here no door announces it, as in withdraw_ask.
     askTracker.beginWithdraw(ask.askId)
@@ -11912,6 +11923,10 @@ async function retireOrphanedAsks(via: string): Promise<void> {
       } catch (err) {
         log(`ask: could not read ${ask.askId} before retiring it, retiring every question not known answered: ${err}`)
       }
+      // And again after the read: the slow backend that stalls the poll tick
+      // stalls this read too, and a rival may have taken the lock meanwhile
+      // (third fresh review of Data's recheck of #282, Minor 1).
+      if (!orphanRetireMayRun()) return
       const open = ask.questions.filter((q) => ask.answers[String(q.messageId)] === undefined).map((q) => q.messageId)
       const done = await retireOrphanAskRows(open, `card ${ask.askId}, which no session can receive (${via})`)
       if (done.length < open.length) continue

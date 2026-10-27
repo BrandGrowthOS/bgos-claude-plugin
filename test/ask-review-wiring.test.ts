@@ -94,8 +94,14 @@ test('recheck of #282, item 1: every reconcile pass (boot, connect, the timer) r
 })
 
 test('second fresh review of the recheck, Minors 1 and 2: a retire counts from the last taking of the connection, and asks the lock file before each card', () => {
-  const fn = fnBody('async function retireOrphanedAsks(via: string): Promise<void> {', 900)
-  assert.match(fn, /for \(const ask of askTracker\.retirable\(connectedSince\)\) \{\n(\s*\/\/[^\n]*\n)*\s*if \(!channelArmed \|\| !lockHeld \|\| updateDrainMode \|\| !pairingLockNamesThisDaemon\(\)\) return\n/)
+  const fn = fnBody('async function retireOrphanedAsks(via: string): Promise<void> {', 1600)
+  assert.match(fn, /for \(const ask of askTracker\.retirable\(connectedSince\)\) \{\n(\s*\/\/[^\n]*\n)*\s*if \(!orphanRetireMayRun\(\)\) return\n/)
+  // Third fresh review, Minor 1: and again after the read, before the PATCH.
+  assert.match(fn, /await readAskGroup\(ask\)[\s\S]*?if \(!orphanRetireMayRun\(\)\) return\n\s*const open = /)
+  assert.match(
+    fnBody('function orphanRetireMayRun(): boolean {', 300),
+    /return channelArmed && lockHeld && !updateDrainMode && pairingLockNamesThisDaemon\(\)/,
+  )
   assert.match(fnBody('function pairingLockNamesThisDaemon(): boolean {', 300), /parseLockRecord\(readFileSync\(PAIRING_LOCK_PATH, 'utf8'\)\)\?\.pid === process\.pid/)
   // Every place this daemon takes the connection stamps it.
   for (const taken of ['lockHeld = true\n', 'channelArmed = true\n']) {
@@ -112,7 +118,7 @@ test('second fresh review of the recheck, Minors 1 and 2: a retire counts from t
 
 test('second fresh review of the recheck, Minor 3: a passive wait holds its card again before it retires it', () => {
   const body = caseBody('ask_user_input')
-  assert.match(body, /askTracker\.hold\(askKey, Date\.now\(\) \+ ASK_PASSIVE_RETIRE_HOLD_MS\)\n\s*askTracker\.beginWithdraw\(askKey\)/)
+  assert.match(body, /askTracker\.hold\(askKey, Date\.now\(\) \+ askPassiveRetireHoldMs\(ask\.questions\.length\)\)\n\s*askTracker\.beginWithdraw\(askKey\)/)
 })
 
 test('fourth review, Important 2: a passive daemon that takes the connection reads the file at once, before the slow arm', () => {
