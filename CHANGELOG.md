@@ -12,6 +12,10 @@ Notable changes to the HOAI Claude Code plugin.
 - **BGOS serves the flag to the apps only once `ASK_MULTI_SELECT` is on** (client release first: an app installed before multi select refuses the key). Until then the app draws the question as single choice and the answer comes back as an array of one.
 - Tests: `test/ask-tracker.test.ts` and `test/ask-multi-select-wiring.test.ts` (which runs the lifted `ask_user_input` case against a fake backend and a real tracker), red first, and the `test/peer-403-loop.test.ts` harness now runs the real question checks; a local rig (outside this repo) ran the real daemon under a scratch HOME against a stub backend: the stream and the poll after a restart, an old app's single pick and a bare `optionId` on a multi select question, and a blocking wait answered in time.
 
+## 0.79.0 (2026-10-27)
+
+**The agent's name follows a rename, and is read as a name (Data's review of #281).** The launcher reads the agent's name from the app before every launch and relaunch, so a rename reaches the next launch and the next new conversation; a resumed conversation and a running one are told the new name once, only from the app's answer, never from a cached name. Names lose invisible format and default ignorable characters (bidi overrides, zero width characters, variation selectors) and are given to the agent as quoted values, never inside a sentence, capped at the app's 60 characters. The launcher refuses a redirect for that read and honours `BGOS_CREDENTIALS_PATH`. Tests: the reply card cost bounds are also relative to a plain pass timed in the same run, so a busy CI runner no longer fails them.
+
 ## 0.78.1 (2026-10-27)
 
 **The question card's lease, after Data's gate on #282.**

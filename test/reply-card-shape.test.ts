@@ -841,16 +841,36 @@ test('classify: a To line ending in a comma before a padded address still counts
 
 // ── cost: the inputs the review measured, each under the bound ───────────────
 // The pathologies cost 89 ms to 9.5 s on a Mac; a linear scan costs about 14 ms.
-// The Windows CI runner runs this suite about four times slower (one bound case
-// read 52.8 ms there against 50), so its bound is scaled, and each case takes the
-// fastest of three runs so a GC pause or a busy runner is not read as a regression.
-const COST_BOUND_MS = process.platform === 'win32' ? 150 : 50
+// A bound in ms alone reads a slow or busy runner as a regression: the Linux CI
+// runner read 52.8 ms against 50 on the fastest of three runs (#284's first
+// run), for a text that costs 18 ms on a quiet Windows machine. So the bound is
+// also relative: a plain pass over the same text (its lines cut to 160
+// characters, each matched with one anchored regex), made eight times so it
+// runs about as long as classify and a busy runner slows both alike, timed in
+// the same test and in turn with classify. A linear classify costs 0.2 to 1.3
+// times the eight passes on the large texts, quiet or loaded; round 5's address
+// regex put back costs about 20 times, more on a busy machine. Under 50 ms
+// passes outright, as before, since no pathology was that cheap and the passes
+// over a short text are too quick to time.
+const COST_FLOOR_MS = 50
+const COST_RATIO = 5
+const PLAIN_PASSES = 8
 
 const PREFIX = 'Here is the summary you asked for, with the details below. '.repeat(6) + '\n'
 
 function costOf(text: string): number {
   const started = performance.now()
   classify(text)
+  return performance.now() - started
+}
+
+const PLAIN_LINE = /^[ \t]*([A-Za-z][\w -]{0,40}):[ \t]*(\S.*)?$/
+
+function plainPassesCost(text: string): number {
+  const started = performance.now()
+  for (let pass = 0; pass < PLAIN_PASSES; pass++) {
+    for (const line of text.split('\n')) PLAIN_LINE.test(line.slice(0, 160))
+  }
   return performance.now() - started
 }
 
@@ -898,10 +918,20 @@ const COSTLY: Array<{ name: string; text: string }> = [
 ]
 
 for (const c of COSTLY) {
-  test(`classify: ${c.name} costs under the bound`, () => {
+  test(`classify: ${c.name} costs under the bound`, (t) => {
     classify(c.text) // warm the regexes, so the bound is the scan, not the compile
-    const ms = Math.min(costOf(c.text), costOf(c.text), costOf(c.text))
-    assert.ok(ms < COST_BOUND_MS, `took ${ms.toFixed(1)} ms (bound ${COST_BOUND_MS} ms)`)
+    plainPassesCost(c.text)
+    // The fastest of three of each, taken in turn, so a GC pause is not read as a regression.
+    let ms = Infinity
+    let plain = Infinity
+    for (let run = 0; run < 3; run++) {
+      plain = Math.min(plain, plainPassesCost(c.text))
+      ms = Math.min(ms, costOf(c.text))
+    }
+    const bound = Math.max(COST_FLOOR_MS, COST_RATIO * plain)
+    const ratio = `${(ms / plain).toFixed(2)} times the plain passes (${plain.toFixed(1)} ms)`
+    t.diagnostic(`${ms.toFixed(1)} ms, ${ratio}, bound ${bound.toFixed(1)} ms`)
+    assert.ok(ms < bound, `took ${ms.toFixed(1)} ms, ${ratio}; bound ${COST_FLOOR_MS} ms or ${COST_RATIO} times the passes`)
   })
 }
 
