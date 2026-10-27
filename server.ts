@@ -12144,8 +12144,8 @@ async function retireOrphanedAsks(via: string): Promise<void> {
     // decides whether the asker is told (fresh review of the follow-up, Important 2).
     const refused = ownerAnnounceRefused({ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership.isOthers(ask.chatId) })
     // Why, for this session's event, read before the retire forgets the
-    // group, the way the retire keeps its record (Data's gaps after #284,
-    // gap 2, and its fresh review, Important 1).
+    // group, from the asker's lease (Data's gaps after #284, gap 2, and its
+    // fresh reviews, Important 1).
     const retiredBecause = askTracker.retiredBecause(ask)
     if (!askTracker.retire(ask.askId, { withdrawn, tellAsker: !refused })) continue
     sendAskWithdrawn(ask, withdrawn, { toAsker: false, via, retiredBecause }).catch(() => {
@@ -12190,8 +12190,8 @@ function tellRetiredOwnAsks(): void {
 function withRetiredOwnAskNotes<T>(result: T, signal?: AbortSignal): T {
   // The SDK drops a cancelled call's result (Esc, the client's timeout), so a
   // note on it would be marked told unseen: the next call carries it (fresh
-  // review of the gaps, Important 2). A cancel in the few microtasks after
-  // this check is not caught.
+  // review of the gaps, Important 2). A client that gives up after the result
+  // was written drops the note all the same: nothing acknowledges a result.
   if (signal?.aborted || !result || typeof result !== 'object') return result
   try {
     const notes = retiredOwnNotes({

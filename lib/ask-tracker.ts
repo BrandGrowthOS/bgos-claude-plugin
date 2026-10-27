@@ -443,10 +443,14 @@ function retiredWhy(because: AskRetiredBecause | undefined): string {
     )
   }
   if (because === 'asker_ended') {
-    return "the session that asked it has ended, and no restart of it took this agent's connection within 10 minutes to receive its answers." + record
+    return (
+      `the session that asked it has ended, and no restart of it took this agent's connection within ${ASK_ORPHAN_GRACE_MS / 60_000} minutes ` +
+      'to receive its answers.' +
+      record
+    )
   }
   if (because === 'asker_disconnected') {
-    return "the session that asked it runs on without this agent's connection, so its answers could not come back to it; that session is told too." + record
+    return "the session that asked it runs on without this agent's connection, so its answers could not come back to it; that session is told too while it still runs." + record
   }
   return "the session that asked it can no longer receive the answers (it ended, or it no longer holds this agent's connection)."
 }
@@ -1055,18 +1059,21 @@ export class AskTracker {
 
   /**
    * Why the connected daemon retires this group, for the event its session
-   * gets (Data's gaps after #284, gap 2, and its fresh review, Important 1).
-   * Read the way retire keeps its record, so the words and the record agree:
-   * an asker whose pid runs is told on its own (asker_disconnected), also
-   * when its lease lapsed; else it ended beside another session, or ended
-   * with no restart taking the connection within the orphan grace.
+   * gets (Data's gaps after #284, gap 2, and its fresh reviews, Important 1).
+   * Whether the asker runs is its lease, never its pid alone (askerRuns): a
+   * dead asker's pid may already be another process's, and that session
+   * must not be told its asker runs on (asker_disconnected) when it ended,
+   * beside another session or with no restart taking the connection within
+   * the orphan grace. retire keeps its record on the pid, a wider net: only
+   * that same process can take it, and a hung asker past its lease still
+   * gets it (second fresh review of the gaps, Important 1).
    */
   retiredBecause(ask: PendingAsk): AskRetiredBecause {
-    if (this.askerAliveElsewhere(ask)) return 'asker_disconnected'
+    if (this.askerRunsNow(ask)) return 'asker_disconnected'
     return ask.askerEndedBeside !== undefined ? 'asker_ended_beside' : 'asker_ended'
   }
 
-  /** The group's asker is another process whose pid runs: retire keeps a record for it. */
+  /** The group's asker is another process whose pid runs (maybe past its lease): retire keeps a record for it, which only that process takes. */
   private askerAliveElsewhere(ask: PendingAsk): boolean {
     // This process's own pid on another process's group is an earlier process's, ended (as askerRuns reads it).
     return !!ask.owner && ask.owner.pid !== this.self.pid && this.isAlive(ask.owner.pid)

@@ -593,8 +593,9 @@ rules before replying so messages don't get lost.
   and what was withdrawn, and why (`meta.retired_because`: `asker_ended_beside`,
   `asker_ended` or `asker_disconnected`). When the session that asked still
   runs (it lost the connection), it gets one `ask_withdrawn` too: on its
-  next tick, sent again until it lands, or, when its channel is not loaded,
-  on its next tool result. Nothing in either needs a reply.
+  next tick, sent again until it lands or the record ages out after 10
+  minutes, or, when its channel is not loaded, on its next tool result.
+  Nothing in either needs a reply.
 - `withdraw_ask`: retire a card you no longer need, by its `ask_id`.
 - `list_peers` — list other assistants on this BGOS account that you
   may message. Returns each peer's `assistantId` (the integer to pass
