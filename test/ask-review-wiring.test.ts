@@ -93,10 +93,32 @@ test('recheck of #282, item 1: every reconcile pass (boot, connect, the timer) r
   assert.match(fn, /if \(!channelArmed \|\| !lockHeld \|\| updateDrainMode\) return/)
 })
 
+test('second fresh review of the recheck, Minors 1 and 2: a retire counts from the last taking of the connection, and asks the lock file before each card', () => {
+  const fn = fnBody('async function retireOrphanedAsks(via: string): Promise<void> {', 900)
+  assert.match(fn, /for \(const ask of askTracker\.retirable\(connectedSince\)\) \{\n(\s*\/\/[^\n]*\n)*\s*if \(!channelArmed \|\| !lockHeld \|\| updateDrainMode \|\| !pairingLockNamesThisDaemon\(\)\) return\n/)
+  assert.match(fnBody('function pairingLockNamesThisDaemon(): boolean {', 300), /parseLockRecord\(readFileSync\(PAIRING_LOCK_PATH, 'utf8'\)\)\?\.pid === process\.pid/)
+  // Every place this daemon takes the connection stamps it.
+  for (const taken of ['lockHeld = true\n', 'channelArmed = true\n']) {
+    let at = server.indexOf(taken)
+    let seen = 0
+    while (at >= 0) {
+      assert.match(server.slice(at + taken.length, at + taken.length + 80), /^\s*connectedSince = Date\.now\(\)\n/, `${taken.trim()} at ${at}`)
+      seen++
+      at = server.indexOf(taken, at + 1)
+    }
+    assert.ok(seen >= 2, `${taken.trim()} sites: ${seen}`)
+  }
+})
+
+test('second fresh review of the recheck, Minor 3: a passive wait holds its card again before it retires it', () => {
+  const body = caseBody('ask_user_input')
+  assert.match(body, /askTracker\.hold\(askKey, Date\.now\(\) \+ ASK_PASSIVE_RETIRE_HOLD_MS\)\n\s*askTracker\.beginWithdraw\(askKey\)/)
+})
+
 test('fourth review, Important 2: a passive daemon that takes the connection reads the file at once, before the slow arm', () => {
   const at = server.indexOf('promoting from passive to active and arming delivery')
   assert.ok(at > 0)
   const taken = server.lastIndexOf('        lockHeld = true\n', at)
   assert.ok(taken > 0)
-  assert.match(server.slice(taken, at), /lockHeld = true\n(\s*\/\/[^\n]*\n)*\s*refreshAskTracker\('promotion'\)\n/)
+  assert.match(server.slice(taken, at), /lockHeld = true\n\s*connectedSince = Date\.now\(\)\n(\s*\/\/[^\n]*\n)*\s*refreshAskTracker\('promotion'\)\n/)
 })

@@ -1129,7 +1129,7 @@ test('second fresh review of the recheck, Minor 2: retire passes 25 s apart (slo
     const h1 = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
     h1.register(group({ askId: 'open', ids: [1211] }))
     live.push(1)
-    clock.at = at('10:01:00')
+    runUntil(clock, at('10:01:00'), h1)
     const h2 = trackerAs({ pid: 2, startedAt: clock.at }, live, { filePath, now })
     live.push(2)
     const looks: Array<[number, string[]]> = [[0, retirableIds(h2)]]
@@ -1149,10 +1149,10 @@ test('second fresh review of the recheck, Minor 2: a daemon that takes the conne
     const h1 = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
     h1.register(group({ askId: 'open', ids: [1221] }))
     live.push(1)
-    clock.at = at('10:01:00')
+    runUntil(clock, at('10:01:00'), h1)
     const h2 = trackerAs({ pid: 2, startedAt: clock.at }, live, { filePath, now })
     live.push(2)
-    assert.deepEqual(retirableIds(h2, at('10:01:00')), [])
+    assert.deepEqual(retirableIds(h2, at('10:01:00')), [], 'seen aside from 10:01:00')
     // H2 stands down: no retire pass while it is passive (both still tick).
     runUntil(clock, at('10:20:00'), h1, h2)
     stepUntil(clock, at('10:20:05'), () => {
