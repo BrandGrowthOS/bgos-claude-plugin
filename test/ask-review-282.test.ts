@@ -46,7 +46,7 @@ interface Row {
   answer?: { optionId?: number; freeText?: string; skipped?: boolean }
 }
 
-function rig(opts: { lockHeld?: boolean; live?: number[] } = {}) {
+function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean } = {}) {
   const source = [
     lift('async function readAskGroup('),
     lift('function announceCompleteAsks('),
@@ -102,7 +102,10 @@ function rig(opts: { lockHeld?: boolean; live?: number[] } = {}) {
     log: (line: string) => logs.push(line),
     askTracker: tracker,
     escapeAgentButtonValue: (v: string) => `u:${v}`,
-    resolveAuthorizedChat: (id: string) => ({ ok: true, chatId: id }),
+    resolveAuthorizedChat: (id: string) =>
+      opts.chatKnown === false
+        ? { ok: false, error: { content: [{ type: 'text', text: `Error: chat ${id} is not a chat you received an inbound event for` }], isError: true } }
+        : { ok: true, chatId: id },
     a2aRouteRefusedChats: new Set<string>(),
     refuseA2aToolPost: () => false,
     a2aRouteRequiredResult: () => ({ content: [{ type: 'text', text: 'a2a' }], isError: true }),
@@ -453,4 +456,14 @@ test('item 5: a daemon that does not hold the pairing lock announces nothing, ev
   r.announceCompleteAsks('test')
   await r.settle()
   assert.equal(r.notes.length, 0)
+})
+
+test('item 1: a passive daemon says why before the chat check, which would otherwise name only the chat', async () => {
+  // A passive daemon never discovered its agent's chats, so the membership
+  // check would answer first with a reason that hides the real one.
+  const r = rig({ lockHeld: false, chatKnown: false })
+  const res = await r.askTool({ chat_id: '77', questions: QUESTIONS, wait_seconds: 0 })
+  assert.equal(res.isError, true)
+  assert.match(res.content[0].text, /not the one connected to BGOS/)
+  assert.equal(r.posts.length, 0)
 })
