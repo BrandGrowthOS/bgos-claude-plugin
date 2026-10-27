@@ -285,7 +285,22 @@ import {
   type MissionEventWire,
 } from './lib/mission-events.js'
 import { declaredCapabilities } from './lib/declared-capabilities.js'
-import { ReplyCardNudges, UI_CARD } from './lib/reply-card-shape.ts'
+import { ReplyCardNudges, UI_CARD, decisionCount, multiDecisionLine } from './lib/reply-card-shape.ts'
+import {
+  AskTracker,
+  ASK_TRACKER_FILE_NAME,
+  askAnswerFromRow,
+  askPendingText,
+  askReadIntervalMs,
+  askResultRows,
+  askRetireBody,
+  askWaitSeconds,
+  askWithdrawnText,
+  buildAskAnsweredEvent,
+  buildAskWithdrawnEvent,
+  type AskRow,
+  type PendingAsk,
+} from './lib/ask-tracker.ts'
 import {
   StopPauseLane,
   isOwnerAuthoredInbound,
@@ -427,6 +442,7 @@ import {
   formatChannelTakeoverLine,
   formatLockYieldReason,
   formatRouteTakeoverLine,
+  parseLockRecord,
   BEACON_HEARTBEAT_FILE,
 } from './lib/pairing-lock.js'
 import { probeChannelLoaded, probeSessionChannelSpecs, specMatches, type ChannelPresence } from './lib/channel-presence.js'
@@ -3224,27 +3240,38 @@ const mcp = new Server(
       '- Documents show as download cards.',
       '- You can send text + files + buttons in a single reply.',
       '',
-      '## Asking the User to Choose (ask_user_input)',
+      '## Asking Your Owner Questions (ask_user_input)',
       '',
-      'Use `ask_user_input` ONLY when you need the user to pick from a clear set',
-      'of mutually exclusive options AND the user is actively in this',
-      'conversation (they just sent you a message and you need their answer to',
-      'continue). The BGOS app shows a polished modal/sheet that pops over the',
-      'chat with numbered choices, optional free-text fallback, and per-question',
-      'Skip. The tool BLOCKS until every question is answered (option picked,',
-      'free text typed, or skipped), when it returns you have structured',
-      'answers.',
+      'Any message asking your owner 2 or more decisions is ONE ask_user_input card (up to 4 questions), online or not. A reply with buttons asks exactly one thing. The card returns at once as pending: end your turn and do nothing that depends on the answers; they arrive together as one ask_answered event, however late. Use wait_seconds only if your owner wrote in the last few minutes and you cannot continue without the answer.',
+      'The pending return above needs wait_seconds: 0; to wait for the answers, pass wait_seconds from 1 to 600. A call with neither wait_seconds nor timeout_seconds keeps its old behaviour: it waits up to 600 s and returns the answers, or pending if they do not all come in time.',
+      '',
+      'The BGOS app shows the card as a sheet over the chat with numbered',
+      'choices, optional free-text fallback, and per-question Skip. With',
+      '`wait_seconds: 0` the tool returns at once as pending with an `ask_id`. When every',
+      'question is answered (option picked, free text typed, or skipped) the',
+      'answers arrive together as ONE channel event, however late, and it starts',
+      'a new turn:',
+      '  <channel source="bgos" event_type="ask_answered">',
+      '    [ask_answered] ... (ask_id=...)',
+      '  </channel>',
+      'with `meta.ask_id` and `meta.answers` (JSON, one entry per question in',
+      'order: `picked_option_value` and `picked_option_label`, `free_text`, or',
+      '`skipped: true`). `wait_seconds` above 0 (up to 600), or no wait field',
+      'at all (the old 600 s), blocks instead and returns the answers if they',
+      'all come in time; if not it returns pending, never invented skips, and',
+      'the answers still arrive as ask_answered.',
       '',
       'Use it for: choosing an approach, picking a destination, ranking',
       'priorities, confirming intent before a destructive action, multi-step',
       'wizards (e.g. setting up a feature, onboarding, surveys).',
       '',
       'Do NOT use it for: open-ended questions ("what should I do?"), pure',
-      'confirmations (use the permission-request flow), questions you can',
-      'answer yourself, anything you would normally just send as a `reply`,',
-      'OR situations where the user is not actively waiting on you (scheduled',
-      'check-ins, background notifications, unsolicited suggestions). Modals',
-      'demand immediate attention, they are inappropriate for async work.',
+      'confirmations (use the permission-request flow), or questions you can',
+      'answer yourself.',
+      '',
+      'If you no longer need the answers (you found them yourself, or your owner',
+      'answered in chat), call `withdraw_ask` with the ask_id: the card stops',
+      'taking answers and no ask_answered event comes for it.',
       '',
       'Each question: `{ text, options?: [{ label, value }], allow_free_text?,',
       'allow_skip? }`. If `options` is omitted or empty, send it as a regular',
@@ -3252,20 +3279,21 @@ const mcp = new Server(
       'to wrap every question.',
       '',
       'Keep questions short and option labels under ~30 chars. Limit a single',
-      'ask group to 1, 4 questions; longer flows feel like an interrogation.',
+      'ask group to 1 to 4 questions; longer flows feel like an interrogation.',
       '',
       '## Inline Buttons (Telegram-style, Async)',
       '',
       'The BGOS app renders a second button style: "inline buttons", a small',
       'card with tappable chips that sits in the chat thread, never blocks the',
-      'session, and stays clickable indefinitely. This is the correct affordance',
-      'for scheduled check-ins, proactive nudges, and any situation where the',
-      'user is NOT actively waiting on you.',
+      'session, and stays clickable indefinitely. A reply with buttons asks',
+      'exactly ONE thing: one decision, its options as chips. Any message',
+      'asking your owner 2 or more decisions is ONE ask_user_input card',
+      'instead, online or not, never several button messages.',
       '',
       'Send inline buttons by passing a `buttons: [{ label, value }]` array to',
-      '`reply`. Default render mode is "inline", use `render_mode: "modal"`',
-      'ONLY when the user is actively in conversation and you want their',
-      'immediate choice. Max 6 buttons. Labels ≤ 24 chars render cleanly.',
+      '`reply`. Default render mode is "inline"; use `render_mode: "modal"`',
+      'only if your owner wrote in the last few minutes and you want their',
+      'choice now. Max 6 buttons. Labels ≤ 24 chars render cleanly.',
       '',
       'When the user taps a button, you receive a channel event:',
       '  <channel source="bgos" event_type="button_clicked">',
@@ -3275,8 +3303,8 @@ const mcp = new Server(
       'with `meta.callback_data` = the button\'s `value`, `meta.button_text` =',
       'the label, and `meta.message_id` = the original reply. React to it as',
       'you would any user message, send a follow-up `reply`, kick off work,',
-      'etc. NEVER call `ask_user_input` as a substitute just because you want',
-      'buttons, a blocking modal is wrong for anything async.',
+      'etc. One decision is buttons on a reply; 2 or more are one',
+      '`ask_user_input` card.',
       '',
       'Sentinels on `callback_data`:',
       '  - "__skip__", user tapped Skip. Acknowledge briefly or move on.',
@@ -4632,8 +4660,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'When buttons are sent, clicks arrive back as a channel event with ' +
         'callback_data (= the button\'s `value`) and message_id. Skip sentinel ' +
         'is "__skip__", Custom-reply sentinel is "__custom__" (with free text). ' +
-        'Use `ask_user_input` instead only when you need blocking multi-question ' +
-        'flow + free-text + skip semantics.',
+        'Buttons ask exactly one thing: any message asking your owner 2 or more ' +
+        'decisions is ONE ask_user_input card instead, online or not.',
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -4699,8 +4727,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             description:
               'Only meaningful when `buttons` is non-empty. "inline" (DEFAULT), Telegram-style chips in the chat thread; ' +
               'never interrupts; stays clickable indefinitely. Use for async/scheduled/proactive sends. ' +
-              '"modal", pops over the chat demanding attention; use only when the user is actively in conversation ' +
-              'and you want their immediate choice. When in doubt, omit (defaults to inline).',
+              '"modal", pops over the chat; use it only if your owner wrote in the last few minutes ' +
+              'and you want their choice now. When in doubt, omit (defaults to inline).',
           },
           reply_to_id: {
             type: 'number',
@@ -4899,15 +4927,25 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'ask_user_input',
       description:
-        'Ask the user one or more multiple-choice questions through a polished ' +
-        'modal/sheet in the BGOS app. BLOCKS until every question is answered ' +
-        '(option picked, free text typed, or skipped) and returns structured ' +
-        'answers. Use ONLY when (a) you need the user to pick from a clear ' +
-        'set of options AND (b) the user is actively in this conversation. ' +
-        'For open-ended questions use `reply`. For async/unprompted scenarios ' +
-        '(scheduled check-ins, proactive nudges) DO NOT use this, a blocking ' +
-        'modal is inappropriate when the user is not waiting on you. See the ' +
-        'top-level instructions for full guidance on when this fits.',
+        'Ask your owner 1 to 4 multiple-choice questions as ONE card in the BGOS ' +
+        'app. Any message asking your owner 2 or more decisions is ONE ask_user_input card (up to 4 questions), online or not. ' +
+        'A reply with buttons asks exactly one thing. ' +
+        'The card returns at once as pending: end your turn and do nothing that depends on the answers; ' +
+        'they arrive together as one ask_answered event, however late. ' +
+        'Use wait_seconds only if your owner wrote in the last few minutes and you cannot continue without the answer. ' +
+        'The pending return above needs wait_seconds: 0; to wait for the answers, pass wait_seconds from 1 to 600. ' +
+        'A call with neither wait_seconds nor timeout_seconds keeps its old behaviour: it waits up to 600 s and returns ' +
+        'the answers, or pending if they do not all come in time. ' +
+        'The pending result carries the ask_id; the ask_answered event (meta.ask_id, meta.answers) ' +
+        'carries every answer and starts a new turn. With wait_seconds above 0 the call returns the ' +
+        'answers if they all come in time, otherwise pending, never invented skips. withdraw_ask ' +
+        'retires a card you no longer need. The ask_answered turn is not your owner\'s own ' +
+        'message, so tools that act for your owner (schedule, boards, the browser, email_send, ' +
+        'call_owner) refuse in it: when one of them must follow the answers and your owner is ' +
+        'in the chat, use wait_seconds, and the answers come back inside their own turn. ' +
+        'In a session that is not the one connected to BGOS for this agent, wait_seconds 0 is ' +
+        'refused, and a wait that runs out withdraws the questions not yet answered. ' +
+        'For open-ended questions use `reply`.',
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -4921,7 +4959,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           questions: {
             type: 'array',
             description:
-              '1, 4 questions to ask, in order. Each must have at least one option ' +
+              '1 to 4 questions to ask, in order. Each must have at least one option ' +
               '(if you have no options, just send a regular reply instead).',
             items: {
               type: 'object',
@@ -4933,7 +4971,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
                 options: {
                   type: 'array',
                   description:
-                    'Selectable choices. 2, 6 items. Each label under ~30 chars.',
+                    'Selectable choices. 2 to 6 items. Each label under ~30 chars.',
                   items: {
                     type: 'object',
                     properties: {
@@ -4967,14 +5005,49 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             minItems: 1,
             maxItems: 4,
           },
+          wait_seconds: {
+            type: 'number',
+            minimum: 0,
+            maximum: 600,
+            description:
+              'How long this call may wait for the answers, 0 to 600. 0: post the ' +
+              'card, return pending at once, and receive every answer later as ONE ' +
+              'ask_answered event. Above 0 the call blocks up to that many seconds ' +
+              'and returns the answers if they all come in time; otherwise it returns ' +
+              'pending (never invented skips) and the answers still arrive as ' +
+              'ask_answered. Leave it out (and timeout_seconds) and the call keeps ' +
+              'its old behaviour: it blocks up to 600 s.',
+          },
           timeout_seconds: {
             type: 'number',
             description:
-              'Hard upper bound to wait for answers. Default 600 (10 minutes). ' +
-              'On timeout, any unanswered questions return as { skipped: true }.',
+              'Older name for a blocking wait: the upper bound in seconds to wait for ' +
+              'the answers. If they do not all come in time the call returns pending, ' +
+              'never invented skips, and the answers arrive later as ask_answered. ' +
+              'Prefer wait_seconds; wait_seconds wins when both are given.',
           },
         },
         required: ['chat_id', 'questions'],
+      },
+    },
+    {
+      name: 'withdraw_ask',
+      description:
+        'Retire a question card you posted with ask_user_input and no longer need ' +
+        '(you found the answer yourself, the owner answered in chat, or the plan ' +
+        'changed). Pass the ask_id from the pending result. Every question of that ' +
+        'card stops taking answers in the app; answers already given stay in the ' +
+        'chat, and no ask_answered event comes for it afterwards. If a row could ' +
+        'not be retired the card stays tracked and you can call this again.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          ask_id: {
+            type: 'string',
+            description: 'The ask_id ask_user_input returned with the pending result.',
+          },
+        },
+        required: ['ask_id'],
       },
     },
     {
@@ -6044,7 +6117,7 @@ async function handleShowComponent(opts: {
   }
 }
 
-mcp.setRequestHandler(CallToolRequestSchema, (req) => {
+mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
   // Every bgos tool call flows through this one handler, making it the
   // liveness chokepoint: a session that calls ANY tool can hear us, so mark
   // before the drain check (a call during an update drain proves liveness
@@ -6397,7 +6470,16 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
               log,
             })
         if (cardNudge) log(`reply to chat ${resolvedChatId}: card nudge given`)
-        return { content: [{ type: 'text', text: `Sent (${parts.join(', ')})${cardNudge ? `\n${cardNudge}` : ''}` }] }
+        // Buttons answer exactly one decision (scope section 6). A reply with
+        // buttons that asks 2 or more still went out as written; its result
+        // names the ask_user_input card instead, every time, never blocking.
+        // Not in a peer side thread, which an agent reads, as the nudge above.
+        const decisions =
+          options.length > 0 && !peerConvByChat.has(String(resolvedChatId)) ? decisionCount(text ?? '') : 0
+        const decisionWarning = decisions >= 2 ? multiDecisionLine(decisions) : null
+        if (decisionWarning) log(`reply to chat ${resolvedChatId}: ${decisions} decisions with buttons, card named`)
+        const notes = [cardNudge, decisionWarning].filter((n): n is string => n !== null)
+        return { content: [{ type: 'text', text: `Sent (${parts.join(', ')})${notes.map((n) => `\n${n}`).join('')}` }] }
       } catch (err) {
         if (peerRefusalOf(err) === PEER_NOT_PARTICIPANT) {
           // HOAI refuses this reply every time (lib/peer-refusal.ts). Say so in
@@ -6761,14 +6843,63 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
             allow_skip?: boolean
           }>
         | undefined
-      const timeoutSeconds = (rawArgs.timeout_seconds as number | undefined) ?? 600
+      // wait_seconds 0: post, return pending, the answers come back as ONE
+      // ask_answered event however late. No wait field: the old 600 s block.
+      // A wait that is not a number of seconds is refused before anything is
+      // posted (lib/ask-tracker.ts askWaitSeconds, review of #282, item 3).
+      const askWait = askWaitSeconds(rawArgs)
 
       if (!chat_id) {
         return { content: [{ type: 'text', text: 'Error: chat_id is required' }] }
       }
+      // Only the daemon holding this agent's connection delivers answers, and a
+      // card's answers go only to the session that asked it (lib/ask-tracker.ts
+      // askIsOurs). A passive session's daemon could never hand a pending
+      // card's answers back, so it refuses wait_seconds 0 before it posts
+      // anything (review of #282, item 1), and before the chat check, which in
+      // a daemon that never discovered this agent's chats would name only the
+      // chat. A blocking wait still works there, as before #282: it reads the
+      // card itself, and what is not answered in time is retired below
+      // (second review of #282, Important 3).
+      if (!lockHeld && !('error' in askWait) && askWait.seconds <= 0) {
+        log('ask_user_input: wait_seconds 0 refused in a passive daemon (another session holds this agent\'s connection)')
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                'Error: this session is not the one connected to BGOS for this agent (another session of it ' +
+                'holds the connection), so the answers to a card that returns pending (wait_seconds or ' +
+                'timeout_seconds 0) could never come back here. Nothing was posted. Ask from the connected ' +
+                'session; or, if this session can post to this chat, leave wait_seconds out (or pass up to 600) ' +
+                'to wait for the answers in this call.',
+            },
+          ],
+          isError: true,
+        }
+      }
       // Membership check before forwarding the agent-supplied chat_id.
       const askAuth = resolveAuthorizedChat(chat_id)
-      if (!askAuth.ok) return askAuth.error
+      if (!askAuth.ok) {
+        // A passive daemon is told why, not only that the chat is unknown: one
+        // passive since boot has had no event from any chat (third review of
+        // #282, Minor 3).
+        if (!lockHeld) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text:
+                  'Error: this session is not the one connected to BGOS for this agent (another session of it ' +
+                  `holds the connection), and it has had no event from chat ${chat_id}, so it cannot ask there. ` +
+                  'Nothing was posted. Ask from the connected session.',
+              },
+            ],
+            isError: true,
+          }
+        }
+        return askAuth.error
+      }
       const askChatId = askAuth.chatId
       if (!questions?.length) {
         return {
@@ -6789,15 +6920,21 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         }
       }
 
+      if ('error' in askWait) {
+        return { content: [{ type: 'text', text: askWait.error }], isError: true }
+      }
+      const waitSeconds = askWait.seconds
       // A peer side-thread already refused a post for good: answer here, no POST.
       if (a2aRouteRefusedChats.has(String(askChatId))) {
         return a2aRouteRequiredResult(String(askChatId), 'these questions')
       }
+      // Hoisted for the catch: a card whose post failed half way retires what it posted.
+      const postedIds: number[] = []
+      let registered = false
       try {
         // Post each question. The first one returns an ask_id we reuse for
         // the rest so they group into one carousel.
         let askId: string | null = null
-        const postedIds: number[] = []
         for (let i = 0; i < questions.length; i++) {
           const q = questions[i]
           const result = (await bgosPost('messages', {
@@ -6818,123 +6955,148 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
           postedIds.push(result.id)
           if (!askId && result.askId) askId = result.askId
         }
+        // A backend that names no group still gets one key per card.
+        const askKey = askId ?? `local-${postedIds[0]}`
         log(
-          `ask_user_input: posted ${questions.length} question(s) to chat ${askChatId} (askId=${askId})`,
+          `ask_user_input: posted ${questions.length} question(s) to chat ${askChatId} (askId=${askKey}, wait ${waitSeconds}s)`,
         )
+        askTracker.register({
+          askId: askKey,
+          chatId: String(askChatId),
+          questions: questions.map((q, i) => ({
+            messageId: postedIds[i],
+            text: q.text,
+            options: q.options.map((o) => ({ label: o.label, value: o.value })),
+          })),
+        })
+        registered = true
 
-        // Poll until every posted message has answeredAt set, or timeout.
-        const targetIds = new Set(postedIds)
-        const answers = new Map<
-          number,
-          {
-            freeText?: string
-            skipped?: boolean
-            optionLabel?: string
-            optionValue?: string
-          }
-        >()
-        const startTime = Date.now()
-        const deadline = startTime + timeoutSeconds * 1000
+        if (waitSeconds <= 0) {
+          return { content: [{ type: 'text', text: askPendingText({ askId: askKey, total: questions.length, answered: 0 }) }] }
+        }
 
+        // A blocking wait holds the group: answered in time, the answers are
+        // this call's result and never an event as well; out of time, the
+        // hold is released and the group is announced when it completes. The
+        // hold is on disk with its deadline, so another daemon of this
+        // assistant holds off too, and lets go if this process dies waiting.
+        // It outlasts the last read, which may start at the deadline and take
+        // up to HTTP_TIMEOUT_MS (fourth fresh review of Data's recheck of
+        // #282, Minor 1).
+        const deadline = Date.now() + waitSeconds * 1000
+        askTracker.hold(askKey, deadline + HTTP_TIMEOUT_MS + ASK_HOLD_MARGIN_MS)
         // Needs you, for as long as the owner has not answered (session
         // status, board row 9c3d6b2c); the finally holds on any exit.
         asksWaiting += 1
         try {
-          while (Date.now() < deadline && answers.size < targetIds.size) {
+          while (Date.now() < deadline && !askTracker.isComplete(askKey) && !extra.signal.aborted) {
             await new Promise((r) => setTimeout(r, 1500))
+            const ask = askTracker.get(askKey)
+            if (!ask) break
             try {
-              const rawAsk = await bgosGet(
-                `chats/${askChatId}/messages?userId=${USER_ID}`,
-              )
-              // 304: no message changed, so no answeredAt flipped either.
-              if (isNotModified(rawAsk)) continue
-              const data = rawAsk as {
-                messages: Array<{
-                  message: {
-                    id: number
-                    text: string | null
-                    answeredAt: string | null
-                    answerPayload: {
-                      optionId?: number
-                      freeText?: string
-                      skipped?: boolean
-                    } | null
-                  }
-                  messageOptions: Array<{
-                    id: number
-                    text: string
-                    callbackData: string
-                  }>
-                }>
-              }
-              for (const entry of data.messages ?? []) {
-                if (!targetIds.has(entry.message.id)) continue
-                if (answers.has(entry.message.id)) continue
-                if (!entry.message.answeredAt || !entry.message.answerPayload) continue
-                const payload = entry.message.answerPayload
-                const matched = payload.optionId
-                  ? entry.messageOptions.find((o) => o.id === payload.optionId)
-                  : undefined
-                answers.set(entry.message.id, {
-                  ...(payload.freeText !== undefined && { freeText: payload.freeText }),
-                  ...(payload.skipped === true && { skipped: true }),
-                  ...(matched && {
-                    optionLabel: matched.text,
-                    // Strip the `u:` sentinel so the agent gets its original value.
-                    optionValue: unescapeAgentButtonValue(matched.callbackData),
-                  }),
-                })
-              }
+              await readAskGroup(ask)
             } catch (err) {
               log(`ask_user_input poll error: ${err}`)
             }
           }
-
         } finally {
           asksWaiting -= 1
+          askTracker.release(askKey)
         }
 
-        // Timeout fallback: any still-unanswered question is reported as skipped.
-        const timedOut = answers.size < targetIds.size
-        if (timedOut) {
-          for (const id of targetIds) {
-            if (!answers.has(id)) {
-              answers.set(id, { skipped: true })
-            }
+        // The client cancelled the call (the user pressed Esc) in the daemon
+        // holding the connection: it throws this result away, so a group
+        // answered by now is never marked delivered here. It goes out as the
+        // ask_answered event instead, now if complete, else when the rest is
+        // answered.
+        if (extra.signal.aborted && lockHeld) {
+          log(`ask_user_input: the wait for ${askKey} was cancelled; its answers arrive as ask_answered`)
+          announceCompleteAsks('wait cancelled')
+          return { content: [{ type: 'text', text: askPendingText({ askId: askKey, total: questions.length, answered: 0 }) }] }
+        }
+
+        // A passive session's daemon (the lock as it stands now, so a daemon
+        // that lost it during the wait too): no daemon would ever hand this
+        // card's later answers back here, so whatever is not answered by now
+        // is retired and the answers given are the result. Never pending, never
+        // an invented skip (second review of #282, Important 3).
+        if (!lockHeld) {
+          const ask = askTracker.get(askKey)
+          if (!ask) {
+            return { content: [{ type: 'text', text: `The question card ${askKey} was withdrawn before every question was answered.` }] }
           }
-        }
-
-        // Build the structured response in question order.
-        const result = postedIds.map((id, i) => {
-          const a = answers.get(id) ?? { skipped: true }
+          if (!extra.signal.aborted && askTracker.isComplete(askKey)) {
+            for (const q of ask.questions) rememberAnnouncedClick(q.messageId)
+            askTracker.delivered(askKey)
+            log(`ask_user_input: ${ask.questions.length}/${ask.questions.length} answered within the wait (askId=${askKey}, passive)`)
+            return { content: [{ type: 'text', text: JSON.stringify(askResultRows(ask), null, 2) }] }
+          }
+          // Held again on disk (no await since the release above) until this
+          // retire ends: the connected daemon retires an unheld card of a live
+          // asker after ASK_LEASE_MS, and a slow retire here must not race it
+          // (second fresh review of Data's recheck of #282, Minor 3). The
+          // deadline frees it should this process die retiring it.
+          askTracker.hold(askKey, Date.now() + askPassiveRetireHoldMs(ask.questions.length))
+          askTracker.beginWithdraw(askKey)
+          const unanswered = () => ask.questions.filter((q) => ask.answers[String(q.messageId)] === undefined).map((q) => q.messageId)
+          const retired = await retireOrphanAskRows(unanswered(), 'a card whose wait ended in a passive session')
+          // An answer that landed while the rows were retired is read now, so the
+          // result holds every answer given (third review of #282, Minor 4).
+          try {
+            await readAskGroup(ask)
+          } catch (err) {
+            log(`ask_user_input: could not read ${askKey} again after retiring it: ${err}`)
+          }
+          const open = unanswered()
+          if (open.length === 0 && !extra.signal.aborted) {
+            for (const q of ask.questions) rememberAnnouncedClick(q.messageId)
+            askTracker.delivered(askKey)
+            return { content: [{ type: 'text', text: JSON.stringify(askResultRows(ask), null, 2) }] }
+          }
+          askTracker.withdraw(askKey)
           return {
-            question: questions[i].text,
-            ...(a.optionValue !== undefined && {
-              picked_option_value: a.optionValue,
-              picked_option_label: a.optionLabel,
-            }),
-            ...(a.freeText !== undefined && { free_text: a.freeText }),
-            ...(a.skipped === true && { skipped: true }),
+            content: [
+              {
+                type: 'text',
+                text: askWithdrawnText({
+                  ask,
+                  waitedSeconds: extra.signal.aborted ? null : waitSeconds,
+                  withdrawn: open.filter((id) => retired.includes(id)).length,
+                }),
+              },
+            ],
           }
-        })
+        }
 
+        // No await from here to the return: no other door can announce this
+        // group between the release above and the delivery below.
+        const ask = askTracker.get(askKey)
+        if (!ask) {
+          return { content: [{ type: 'text', text: `The question card ${askKey} was withdrawn before every question was answered.` }] }
+        }
+        if (askTracker.isComplete(askKey)) {
+          for (const q of ask.questions) rememberAnnouncedClick(q.messageId)
+          askTracker.delivered(askKey)
+          log(`ask_user_input: ${ask.questions.length}/${ask.questions.length} answered within the wait (askId=${askKey})`)
+          return { content: [{ type: 'text', text: JSON.stringify(askResultRows(ask), null, 2) }] }
+        }
+        const answered = Object.keys(ask.answers).length
         log(
-          `ask_user_input: ${answers.size}/${targetIds.size} answered${timedOut ? ' (some timed out → skipped)' : ''}`,
+          `ask_user_input: ${answered}/${ask.questions.length} answered when the ${waitSeconds}s wait ran out; ` +
+            `pending, the rest arrive as ask_answered (askId=${askKey})`,
         )
-
         return {
           content: [
             {
               type: 'text',
-              text:
-                (timedOut
-                  ? `Some questions timed out (${timeoutSeconds}s), those are reported as skipped.\n\n`
-                  : '') +
-                JSON.stringify(result, null, 2),
+              text: askPendingText({ askId: askKey, total: ask.questions.length, answered, waitedSeconds: waitSeconds }),
             },
           ],
         }
       } catch (err) {
+        // A card whose post failed half way would leave questions nobody
+        // tracks, their answers dropped: retire them (the agent may retry).
+        if (!registered && postedIds.length > 0) void retireOrphanAskRows(postedIds)
         if (refuseA2aToolPost(String(askChatId), err)) {
           return a2aRouteRequiredResult(String(askChatId), 'these questions')
         }
@@ -6943,6 +7105,98 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
           content: [{ type: 'text', text: `ask_user_input failed: ${errMsg}` }],
           isError: true,
         }
+      }
+    }
+
+    case 'withdraw_ask': {
+      const askId = String(rawArgs.ask_id ?? '').trim()
+      if (!askId) {
+        return { content: [{ type: 'text', text: 'Error: ask_id is required' }], isError: true }
+      }
+      const ask = askTracker.get(askId)
+      if (!ask) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                `No open question card ${askId} here: it was already answered and delivered, ` +
+                'already withdrawn, or posted before this plugin tracked cards.',
+            },
+          ],
+          isError: true,
+        }
+      }
+      // Its ask_answered already went out (a delivery in flight cannot be
+      // recalled): say so, instead of promising that no event will come.
+      if (askDelivering.has(askId)) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Card ${askId} was already answered and its ask_answered event is on its way; nothing was withdrawn.`,
+            },
+          ],
+        }
+      }
+      // Before the first await: from here no door announces the card, so an
+      // answer that lands while its rows are retired is never delivered after
+      // this tool said none would be (review of #282, item 2).
+      askTracker.beginWithdraw(askId)
+      let retired = false
+      let open: typeof ask.questions = []
+      try {
+        // Each question still open, as Codex retires a card (lib/ask-tracker.ts
+        // askRetireBody). An answered one is left as it is: retired to inline it
+        // would no longer show the owner's answer. So read the group first; a
+        // failed read retires what the tracker knows is open. Forget the group
+        // only when all of them are retired: a failed row keeps it tracked (and
+        // live again), so calling again retries.
+        try {
+          await readAskGroup(ask)
+        } catch (err) {
+          log(`withdraw_ask: could not read ${askId} first, retiring every question not known answered: ${err}`)
+        }
+        open = ask.questions.filter((q) => ask.answers[String(q.messageId)] === undefined)
+        const failed: string[] = []
+        for (const q of open) {
+          try {
+            await bgosPatch(`messages/${q.messageId}`, askRetireBody())
+          } catch (err) {
+            failed.push(`message ${q.messageId}: ${err instanceof Error ? err.message : String(err)}`)
+          }
+        }
+        if (failed.length > 0) {
+          log(`withdraw_ask: ${failed.length}/${open.length} open row(s) of ${askId} not retired: ${failed.join('; ')}`)
+          return {
+            content: [
+              {
+                type: 'text',
+                text:
+                  `Could not retire ${failed.length} of ${open.length} open question(s) of card ${askId}; ` +
+                  `it stays tracked, so call withdraw_ask again. ${failed.join('; ')}`,
+              },
+            ],
+            isError: true,
+          }
+        }
+        retired = true
+      } finally {
+        if (!retired) askTracker.endWithdraw(askId)
+      }
+      askTracker.withdraw(askId)
+      // A late answer that raced the PATCH is never announced.
+      for (const q of ask.questions) rememberAnnouncedClick(q.messageId)
+      log(`withdraw_ask: retired card ${askId} (${open.length} of ${ask.questions.length} question(s) still open) in chat ${ask.chatId}`)
+      return {
+        content: [
+          {
+            type: 'text',
+            text:
+              `Card ${askId} withdrawn: its ${open.length} open question(s) no longer take answers ` +
+              `(answers already given stay in the chat), and no ask_answered event will come for it.`,
+          },
+        ],
       }
     }
 
@@ -8291,6 +8545,15 @@ const CURSOR_FILE_PATH = resolveCursorFilePath({
 // triggers the one-time boot hello below and what the bootstrap's final
 // wait watches for.
 const LIVE_MARKER_PATH = liveMarkerPath(pathDirname(CURSOR_FILE_PATH))
+// Every question group ask_user_input posted that the owner has not finished
+// answering, beside the cursor file so a restart reads it back
+// (lib/ask-tracker.ts). Answers reach it from the stream, the poll, a
+// blocking wait and the reconcile on connect; a complete group is announced
+// ONCE as an ask_answered event (announceCompleteAsks).
+const askTracker = new AskTracker({
+  filePath: pathJoin(pathDirname(CURSOR_FILE_PATH), ASK_TRACKER_FILE_NAME),
+  log,
+})
 // Single-instance pairing lock (0.38.6, board 01a05185): a reclaimable
 // heartbeat lock keyed to the RESOLVED credentials file. Exactly one daemon
 // per pairing holds it and connects the pairing WebSocket; the rest stay
@@ -8339,6 +8602,12 @@ function reportStandDownBeforeExit(reason: StandDownReason): void {
 // until the next tick's refresh noticed. Heartbeat on lockHeld, delivery on
 // channelArmed: the lock stays fresh from the moment it is ours.
 let lockHeld = false
+/**
+ * When this daemon last took the connection (lockHeld or channelArmed turned
+ * on): a retire counts how long a card has been seen aside from no earlier
+ * than this (second fresh review of Data's recheck of #282, Minor 2).
+ */
+let connectedSince = 0
 // Frame kinds already reported as ignored during the CURRENT stand-down.
 // Cleared when the daemon stands down, so each passive spell says each kind
 // once instead of once every few seconds for hours.
@@ -10948,7 +11217,7 @@ async function pollChat(chatId: string): Promise<void> {
     // set becomes) is the pure `selectClickTransitions` in lib/poll-core.ts:
     // it is the single-announce contract and is unit-tested there. This loop
     // only renders the announcements it returns.
-    const { announce, nextUnanswered } = selectClickTransitions({
+    const { announce, nextUnanswered, askAnswered } = selectClickTransitions({
       rows: data.messages.map((m) => ({
         id: m.message.id,
         sender: m.message.sender,
@@ -10958,6 +11227,7 @@ async function pollChat(chatId: string): Promise<void> {
       })),
       prevUnanswered,
       isFirstPoll,
+      trackedAsks: askTracker.trackedMessageIds(),
     })
     const announced = new Set(announce)
     // The second lock (person lanes) for taps: once lanes run for this agent,
@@ -10975,6 +11245,20 @@ async function pollChat(chatId: string): Promise<void> {
     // chat from the 2s scope (both lanes do this; see applyStreamButtonsAnswered).
     const promptHere = recentButtonPrompts.get(chatId)
     if (promptHere && announced.has(promptHere.messageId)) recentButtonPrompts.delete(chatId)
+    // Answers to a pending ask group on this page (lib/ask-tracker.ts): the
+    // row itself names the option, so it is recorded straight off it, and a
+    // group it completes is announced once (announceCompleteAsks). The same
+    // second lock as a tap.
+    if (askAnswered.length > 0 && ownerAnnounceRefused({ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership.isOthers(chatId) })) {
+      noteLaneMisroute('poll ask answer', askAnswered.join(','), 'a recipient chat')
+    } else if (askAnswered.length > 0) {
+      for (const id of askAnswered) {
+        const entry = data.messages.find((m) => m.message.id === id)
+        const answer = entry ? askAnswerFromRow(entry as unknown as AskRow) : null
+        if (answer) askTracker.record(id, answer)
+      }
+      announceCompleteAsks('poll')
+    }
     for (const m of data.messages) {
       const mm = m.message
       if (!announced.has(mm.id)) continue
@@ -11605,6 +11889,289 @@ function rememberAnnouncedClick(id: number): void {
     const first = announcedClickIds.values().next().value
     if (first !== undefined) announcedClickIds.delete(first)
   }
+}
+
+// ── Late ask answers (lib/ask-tracker.ts) ────────────────────────────────────
+//
+// A question group the owner answers however late reaches the agent as ONE
+// ask_answered channel event that starts a turn. Four doors feed the tracker:
+// the stream's buttons_answered entry for a question it owns
+// (applyStreamButtonsAnswered), the poll's row of one (pollChat), a blocking
+// wait's own reads (the ask_user_input tool), and reconcilePendingAsks on
+// connect and on a timer. Every door ends in announceCompleteAsks, which
+// announces a complete, unheld group once: the in flight set covers the two
+// transports racing inside one pass, the shared announced-click set every
+// later replay of its question ids, and the tracker's file every later life.
+
+/** Rows read per group: its own questions sit at the top of this page whatever came after them. */
+const ASK_READ_PAGE = 20
+/** How often the timer looks for a group due a read; each group's own cadence is askReadIntervalMs. */
+const ASK_TICK_MS = 5_000
+// Every daemon, armed, passive or draining for an update, says on this tick
+// that it runs: the lease on its own groups (lib/ask-tracker.ts heartbeat),
+// written at most every ASK_LEASE_REFRESH_MS. Another daemon takes a group's
+// asker for ended only when its lease lapses, never from its pid alone, which
+// Windows hands to the next process at once (Data's recheck of #282). Nothing
+// is fetched or announced here.
+setInterval(() => heartbeatAskTracker(), ASK_TICK_MS).unref()
+
+/** askTracker.heartbeat() on the tick, where a throw must not end the daemon (fifth review of #282, Minor 2). */
+function heartbeatAskTracker(): void {
+  try {
+    askTracker.heartbeat()
+  } catch (err) {
+    log(`ask tracker: could not write the lease (tick): ${err}`)
+  }
+}
+
+/** askTracker.refresh() where a throw must not end the daemon or stop an arm (fifth review of #282, Minor 2). */
+function refreshAskTracker(via: string): void {
+  try {
+    askTracker.refresh()
+  } catch (err) {
+    log(`ask tracker: could not read the file (${via}): ${err}`)
+  }
+}
+
+/** A blocking wait's hold on disk outlives its deadline and its last read (HTTP_TIMEOUT_MS) by this much (the tick, the release). */
+const ASK_HOLD_MARGIN_MS = 30_000
+/**
+ * How long a passive wait's own retire holds its card: a PATCH per question
+ * and a read, each bounded by HTTP_TIMEOUT_MS (raised for a slow network), and
+ * the margin (third fresh review of Data's recheck of #282, Minor 4).
+ */
+function askPassiveRetireHoldMs(questions: number): number {
+  return (questions + 1) * HTTP_TIMEOUT_MS + ASK_HOLD_MARGIN_MS
+}
+/** A failed read of a group the stream said was answered is tried again this many times. */
+const ASK_READ_RETRIES = 4
+const ASK_READ_RETRY_MS = 15_000
+const askDelivering = new Set<string>()
+/** When each pending group was last read, by ask id (the timer's due check). */
+const askLastReadAt = new Map<string, number>()
+let askReconcileRunning = false
+
+/**
+ * Read every question row of a pending group and record what is answered.
+ * The page ends at the group's newest question (beforeId), so however many
+ * messages followed the card, its rows are in it.
+ */
+async function readAskGroup(ask: PendingAsk): Promise<void> {
+  const ids = new Set(ask.questions.map((q) => q.messageId))
+  const beforeId = Math.max(...ids) + 1
+  const raw = await bgosGet(
+    `chats/${ask.chatId}/messages?userId=${USER_ID}&beforeId=${beforeId}&limit=${ASK_READ_PAGE}`,
+  )
+  // 304: nothing on this page moved since it was last read and recorded.
+  if (isNotModified(raw)) return
+  const data = raw as { messages?: AskRow[] }
+  for (const entry of data.messages ?? []) {
+    if (!ids.has(entry.message.id)) continue
+    const answer = askAnswerFromRow(entry)
+    if (answer) askTracker.record(entry.message.id, answer)
+  }
+}
+
+/** Announce every complete group nobody holds as ONE ask_answered event, exactly once. */
+function announceCompleteAsks(via: string): void {
+  // Only the daemon that holds this agent's pairing and delivers announces,
+  // from the file as it stands now, and only its own session's groups
+  // (askTracker.completeUndelivered, askIsOurs).
+  if (!channelArmed || !lockHeld || updateDrainMode) return
+  askTracker.refresh()
+  for (const ask of askTracker.completeUndelivered()) {
+    if (askDelivering.has(ask.askId)) continue
+    // The second lock (person lanes), on every door: once lanes run, a card
+    // in a share recipient's chat is that person's, never the owner's session.
+    if (ownerAnnounceRefused({ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership.isOthers(ask.chatId) })) {
+      noteLaneMisroute('ask answer', ask.questions.map((q) => q.messageId).join(','), 'a recipient chat')
+      askTracker.withdraw(ask.askId)
+      continue
+    }
+    askDelivering.add(ask.askId)
+    // Every question id joins the shared set first, so a stream or poll
+    // replay of any of its answers stays silent from here on.
+    for (const q of ask.questions) rememberAnnouncedClick(q.messageId)
+    const event = buildAskAnsweredEvent(ask, { assistantId: String(ASSISTANT_ID) })
+    const ageMin = Math.round((Date.now() - ask.postedAt) / 60_000)
+    void trackMessageOperation(() =>
+      mcp.notification({
+        method: 'notifications/claude/channel',
+        params: {
+          // The backend stamps no tapper on an ask answer, and typed words
+          // ride in it, so it is never shown to be the owner's own words: it
+          // opens no private turn and is noted like any other untracked card.
+          content: privateTapCard({ tracker: privateTurns, lane: 'ask', ownerUserId: USER_ID, chatId: ask.chatId, messageId: ask.questions[0]?.messageId, tapperUserId: null, answeredAt: null, receivedAt: Date.now(), callbackData: '', customText: null, posted: false, content: event.content }),
+          meta: event.meta,
+        },
+      }),
+    )
+      .then(() => {
+        askTracker.delivered(ask.askId)
+        log(
+          `ask_answered: delivered group ${ask.askId} (${ask.questions.length} question(s)) in chat ${ask.chatId}, ` +
+            `${ageMin} min after it was posted, via ${via}`,
+        )
+      })
+      .catch((err) => {
+        // Kept: the next pass (an answer replay, the timer, a reconnect) offers it again.
+        log(`ask_answered: delivery of group ${ask.askId} failed, kept for the next pass: ${err}`)
+      })
+      .finally(() => askDelivering.delete(ask.askId))
+  }
+}
+
+/** Read one group (the stream said a question of it was answered), then announce it if complete. */
+async function settleAskGroup(askId: string, via: string, attempt = 0): Promise<void> {
+  const ask = askTracker.get(askId)
+  if (!ask) return
+  try {
+    await readAskGroup(ask)
+  } catch (err) {
+    log(`ask: reading group ${askId} failed (${via}, attempt ${attempt + 1}): ${err}`)
+    if (attempt < ASK_READ_RETRIES) {
+      setTimeout(() => void settleAskGroup(askId, via, attempt + 1), ASK_READ_RETRY_MS * (attempt + 1)).unref()
+    }
+    return
+  }
+  announceCompleteAsks(via)
+}
+
+/**
+ * Read every pending group nobody is blocking on, then announce what is
+ * complete (boot, connect, the timer). The timer passes dueOnly: a group is
+ * read only when its own cadence (askReadIntervalMs) says it is due.
+ */
+async function reconcilePendingAsks(via: string, opts: { dueOnly?: boolean } = {}): Promise<void> {
+  if (askReconcileRunning) return
+  askReconcileRunning = true
+  try {
+    // Groups a passive session's daemon posted are on disk, not in memory.
+    askTracker.refresh()
+    for (const ask of askTracker.pending()) {
+      // A blocking wait reads its own group every 1.5 s, and another live
+      // session's group is that session's to read and announce.
+      if (askTracker.isHeld(ask.askId) || !askTracker.isOurs(ask)) continue
+      const now = Date.now()
+      if (opts.dueOnly && now - (askLastReadAt.get(ask.askId) ?? 0) < askReadIntervalMs(ask, now)) continue
+      askLastReadAt.set(ask.askId, now)
+      try {
+        await readAskGroup(ask)
+      } catch (err) {
+        log(`ask: reconcile read of group ${ask.askId} failed (${via}): ${err}`)
+      }
+    }
+    for (const askId of askLastReadAt.keys()) if (!askTracker.get(askId)) askLastReadAt.delete(askId)
+    announceCompleteAsks(via)
+    await retireOrphanedAsks(via)
+  } finally {
+    askReconcileRunning = false
+  }
+}
+
+/**
+ * Whether the pairing lock file names this process, read now. lockHeld is
+ * cleared only by the poll tick, which slow reads can stall while a rival
+ * takes the lock, so a retire asks the file itself, as the arm gate does
+ * (second fresh review of Data's recheck of #282, Minor 1).
+ */
+function pairingLockNamesThisDaemon(): boolean {
+  try {
+    return parseLockRecord(readFileSync(PAIRING_LOCK_PATH, 'utf8'))?.pid === process.pid
+  } catch {
+    return false
+  }
+}
+
+/** Whether this daemon may retire a card now: armed, holding the lock (the file says so too), not draining. */
+function orphanRetireMayRun(): boolean {
+  return channelArmed && lockHeld && !updateDrainMode && pairingLockNamesThisDaemon()
+}
+
+/**
+ * Retire every card no daemon may announce (askTracker.retirable): its asker
+ * ended beside another session, runs on without this agent's connection
+ * (whatever took it: a channel or route takeover, a stale lock after a sleep),
+ * or ended with no restart taking it. Its open questions are retired as
+ * withdraw_ask retires them, so the card closes for the owner instead of
+ * taking answers nobody receives, and this session is told in ONE
+ * ask_withdrawn event what was answered and what was withdrawn. A question
+ * that could not be retired keeps the group for the next pass, and nothing is
+ * said yet (Data's recheck of #282, item 1). Inside a reconcile pass, so two
+ * passes never retire one card at once.
+ */
+async function retireOrphanedAsks(via: string): Promise<void> {
+  if (!channelArmed || !lockHeld || updateDrainMode) return
+  for (const ask of askTracker.retirable(connectedSince)) {
+    // Asked again per card: each retire awaits the backend.
+    if (!orphanRetireMayRun()) return
+    if (askDelivering.has(ask.askId)) continue
+    // From here no door announces it, as in withdraw_ask.
+    askTracker.beginWithdraw(ask.askId)
+    let retired = false
+    let withdrawn = 0
+    try {
+      try {
+        await readAskGroup(ask)
+      } catch (err) {
+        log(`ask: could not read ${ask.askId} before retiring it, retiring every question not known answered: ${err}`)
+      }
+      // And again after the read: the slow backend that stalls the poll tick
+      // stalls this read too, and a rival may have taken the lock meanwhile
+      // (third fresh review of Data's recheck of #282, Minor 1).
+      if (!orphanRetireMayRun()) return
+      const open = ask.questions.filter((q) => ask.answers[String(q.messageId)] === undefined).map((q) => q.messageId)
+      const done = await retireOrphanAskRows(open, `card ${ask.askId}, which no session can receive (${via})`)
+      if (done.length < open.length) continue
+      withdrawn = done.length
+      retired = true
+    } finally {
+      if (!retired) askTracker.endWithdraw(ask.askId)
+    }
+    // A late answer that raced the PATCH is never announced.
+    for (const q of ask.questions) rememberAnnouncedClick(q.messageId)
+    // Another daemon may have delivered or retired it during the PATCH (a
+    // passive asker's own wait retires its card, its result carrying the
+    // answers): then there is nothing to tell here (fresh review of Data's
+    // recheck of #282, Minor 2).
+    refreshAskTracker('retire')
+    if (!askTracker.withdraw(ask.askId)) continue
+    // The second lock (person lanes): a card in a share recipient's chat is
+    // retired, but never told to the owner's session.
+    if (ownerAnnounceRefused({ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership.isOthers(ask.chatId) })) {
+      noteLaneMisroute('ask withdrawn', ask.questions.map((q) => q.messageId).join(','), 'a recipient chat')
+      continue
+    }
+    const event = buildAskWithdrawnEvent(ask, { assistantId: String(ASSISTANT_ID), withdrawn })
+    void trackMessageOperation(() =>
+      mcp.notification({
+        method: 'notifications/claude/channel',
+        params: {
+          // Typed answers ride in it, as in an ask_answered event: never shown
+          // to be the owner's own words, and it opens no private turn.
+          content: privateTapCard({ tracker: privateTurns, lane: 'ask', ownerUserId: USER_ID, chatId: ask.chatId, messageId: ask.questions[0]?.messageId, tapperUserId: null, answeredAt: null, receivedAt: Date.now(), callbackData: '', customText: null, posted: false, content: event.content }),
+          meta: event.meta,
+        },
+      }),
+    )
+      .then(() => log(`ask_withdrawn: retired group ${ask.askId} in chat ${ask.chatId} and told this session, via ${via}`))
+      .catch((err) => log(`ask_withdrawn: group ${ask.askId} was retired, but telling this session failed: ${err}`))
+  }
+}
+
+/** Retire the questions of a card whose post failed half way (best effort; nothing tracks them). */
+async function retireOrphanAskRows(messageIds: number[], why = 'a card that failed to post'): Promise<number[]> {
+  const retired: number[] = []
+  for (const id of messageIds) {
+    try {
+      await bgosPatch(`messages/${id}`, askRetireBody())
+      retired.push(id)
+    } catch (err) {
+      log(`ask_user_input: could not retire question ${id} of ${why}: ${err}`)
+    }
+  }
+  log(`ask_user_input: retired ${retired.length} of ${messageIds.length} question(s) of ${why}`)
+  return retired
 }
 
 // ── Mission events from the owner's app ──────────────────────────────────────
@@ -13983,6 +14550,35 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
     noteLaneMisroute('stream tap', view.messageId, tapLaneVerdict.deliver ? 'a recipient chat' : tapLaneVerdict.stamp)
     return
   }
+  // A question of a pending ask group (lib/ask-tracker.ts), answered however
+  // late. Routed BEFORE the button payload check below: an ask answer is
+  // { optionId, freeText, skipped } with no button fields, so it used to die
+  // there (and at decideButtonsAnswered's ask_user_input skip). The entry only
+  // says WHICH question moved; settleAskGroup reads the group's rows, which
+  // name the option the owner picked.
+  const askId = askTracker.askIdOf(view.messageId)
+  if (askId !== null) {
+    const askDecision = decideButtonsAnswered({
+      messageType: view.messageType,
+      callbackData: view.answerPayload?.callbackData ?? '',
+      alreadyAnnounced: announcedClickIds.has(view.messageId),
+      permissionRe: PERMISSION_CLICK_RE,
+      askTracked: true,
+    })
+    if (askDecision !== 'ask') {
+      log(
+        `button_clicked SKIPPED: ask answer on message ${view.messageId} of group ${askId} in chat ${chatId} ` +
+          `already announced (streamAuthority=${authorityAtReceipt})`,
+      )
+      return
+    }
+    log(
+      `button_clicked RECEIVED on the stream as an ask answer: message ${view.messageId} of group ${askId} ` +
+        `in chat ${chatId} (streamAuthority=${authorityAtReceipt})`,
+    )
+    void settleAskGroup(askId, 'stream')
+    return
+  }
   const answer = view.answerPayload
   if (!answer) {
     // answerPayloadOf() returned null: neither callbackData nor buttonText nor
@@ -14682,6 +15278,14 @@ function connectWebsocket(): void {
 
   realtimeSocket.on('connect', () => {
     log(`WS connected (id=${realtimeSocket?.id}), polling will throttle`)
+    // Pending ask groups are read again on every connect: an answer given
+    // while this daemon was down or disconnected is due now, and a stream
+    // entry for it may be behind a cursor this life never reads.
+    if (askTracker.pending().length > 0) {
+      setTimeout(() => {
+        void reconcilePendingAsks('ws connect').catch((err) => log(`ask reconcile on connect failed: ${err}`))
+      }, drawCatchupDelayMs(Math.random()))
+    }
     // Stream authority is per connection (spec 8): a beacon must be seen on
     // THIS connection before sweeps demote again.
     if (UPDATE_STREAM_ENABLED && streamAuthority) {
@@ -16986,6 +17590,7 @@ async function main(): Promise<void> {
       // a reconnect to chase it would cost the cheap re-arm this design is
       // built on.
       channelArmed = true
+      connectedSince = Date.now()
       channelEverArmed = true
       startHookIntakeIfHolder()
       log(
@@ -17520,6 +18125,24 @@ async function main(): Promise<void> {
     setInterval(checkReplyOverdue, 30_000)
     log(`Reply-overdue enforcement enabled (threshold ${REPLY_OVERDUE_MS / 1000}s)`)
 
+    // Step 5b: pending ask groups (lib/ask-tracker.ts). Read once now, so a
+    // group answered while this daemon was down is announced at boot even
+    // with no socket, and again on a timer while any is pending: under delta
+    // polling an answer UPDATES an old row and never shows on a poll page.
+    // The file again at arm: a passive session's daemon may have written it.
+    askTracker.refresh()
+    if (askTracker.pending().length > 0) {
+      log(`ask tracker: ${askTracker.pending().length} pending question group(s) read back from disk`)
+      void reconcilePendingAsks('boot').catch((err) => log(`ask reconcile at boot failed: ${err}`))
+    }
+    // Each group at its own cadence (askReadIntervalMs): every 5 s while the
+    // owner is likely at the card, rarely after. reconcilePendingAsks reads
+    // the file first, so a group another daemon posted is found here too.
+    setInterval(() => {
+      if (!channelArmed || updateDrainMode) return
+      void reconcilePendingAsks('timer', { dueOnly: true }).catch((err) => log(`ask reconcile failed: ${err}`))
+    }, ASK_TICK_MS).unref()
+
     // Step 6: Refresh and publish every 5 minutes to catch newly installed
     // plugins and added or edited command files. Initial discovery and publish
     // were started before the boot poll above.
@@ -17740,6 +18363,7 @@ async function main(): Promise<void> {
       return
     }
     channelArmed = true
+    connectedSince = Date.now()
     channelEverArmed = true
     // Last, with the lock proven ours one line above: start draining this
     // session's hook spool. Only the holder consumes (see the guard inside).
@@ -17775,6 +18399,10 @@ async function main(): Promise<void> {
         // Same rule as the boot path: we own the lock now, so the heartbeat has
         // to start refreshing it immediately, not when the arm finishes.
         lockHeld = true
+        connectedSince = Date.now()
+        // Who the pending cards belong to, seen now: the arm below can take a
+        // while (fourth review of #282, Important 2).
+        refreshAskTracker('promotion')
         if (res.reason === 'channel-takeover') {
           log(
             `${formatChannelTakeoverLine({ selfPid: process.pid, holderPid: res.holderPid, selfReason: channelPresence().reason })}; ` +
@@ -17840,6 +18468,7 @@ async function main(): Promise<void> {
     // tick's heartbeat is gated on lockHeld precisely so the lock stays fresh
     // while the (slow) arm runs.
     lockHeld = true
+    connectedSince = Date.now()
     log(
       lockAtBoot.reason === 'channel-takeover'
         ? `${formatChannelTakeoverLine({ selfPid: process.pid, holderPid: lockAtBoot.holderPid, selfReason: bootPresence.reason })}; ` +

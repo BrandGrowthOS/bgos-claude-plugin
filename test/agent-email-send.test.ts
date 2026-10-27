@@ -973,8 +973,8 @@ async function serverCallTool(
   const m = await tools()
   const a = await approval()
   const b = await binding()
-  const handler = serverSlice('mcp.setRequestHandler(CallToolRequestSchema, (req) => {', '\n  })\n})\n')
-    .replace('mcp.setRequestHandler(CallToolRequestSchema, (req) => {', 'const callTool = (req) => {')
+  const handler = serverSlice('mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {', '\n  })\n})\n')
+    .replace('mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {', 'const callTool = (req, extra) => {')
     .replace(/\n {2}\}\)\n\}\)\n$/, '\n  })\n}\n')
   const source = [
     serverSlice('class HttpError extends Error {', '\n}\n'),

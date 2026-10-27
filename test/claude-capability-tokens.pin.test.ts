@@ -81,6 +81,12 @@
  *     among them "this release declares permission_card, plan_card and
  *     hard_floor, from the file, on every host".
  *
+ * ADDED FOR `ask_answered` (askcard, 2026-10-27, both copies changed in one
+ * step, both digests moved to the same literal 6bf6854e...d2fb): this release
+ * carries the async question card (ask_user_input returns pending, one
+ * ask_answered event, withdraw_ask), so it declares the token on every host,
+ * and the canon tells the pending card only to a daemon that declares it.
+ *
  * Run: npm test, or npx tsx --test test/claude-capability-tokens.pin.test.ts
  */
 
@@ -91,6 +97,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import {
+  ASK_ANSWERED_TOKEN,
   CLAUDE_CAPABILITY_TOKENS,
   HARD_FLOOR_RULES_2_TOKEN,
   HARD_FLOOR_TOKEN,
@@ -104,13 +111,13 @@ import {
 } from '../lib/declared-capabilities.ts'
 
 /** The digest BGOS's claude-capability-tokens.pin.spec.ts pins too. */
-const SHA256 = '3dcaaecff2f108b4e76a150cfa87255d7ac68813f27fbdb9575d5b3ae1114428'
+const SHA256 = '6bf6854ee55b16191e3c6bb34980efd68205471f128cb0696f04141996f6d2fb'
 
 const ROOT = join(import.meta.dirname, '..')
 const FILE = join(ROOT, 'lib', 'claude-capability-tokens.ts')
 
 /** The tokens this release carries the code for, and so declares. */
-const DECLARED_BY_THIS_RELEASE: readonly string[] = [PERMISSION_CARD, PLAN_CARD, HARD_FLOOR_TOKEN, HARD_FLOOR_RULES_2_TOKEN]
+const DECLARED_BY_THIS_RELEASE: readonly string[] = [PERMISSION_CARD, PLAN_CARD, HARD_FLOOR_TOKEN, HARD_FLOOR_RULES_2_TOKEN, ASK_ANSWERED_TOKEN]
 
 /**
  * Named in the file, NOT declared by this release, and who declares them.
@@ -135,9 +142,10 @@ test('the token file still has the bytes BGOS pins for its copy', () => {
   )
 })
 
-test('the file names exactly permission_card, plan_card, hard_floor and hard_floor_rules_2, in that order', () => {
-  assert.deepEqual([...CLAUDE_CAPABILITY_TOKENS], ['permission_card', 'plan_card', 'hard_floor', 'hard_floor_rules_2'])
+test('the file names exactly permission_card, plan_card, hard_floor, hard_floor_rules_2 and ask_answered, in that order', () => {
+  assert.deepEqual([...CLAUDE_CAPABILITY_TOKENS], ['permission_card', 'plan_card', 'hard_floor', 'hard_floor_rules_2', 'ask_answered'])
   assert.equal(HARD_FLOOR_RULES_2_TOKEN, 'hard_floor_rules_2')
+  assert.equal(ASK_ANSWERED_TOKEN, 'ask_answered')
   assert.equal(PERMISSION_CARD, 'permission_card')
   assert.equal(PLAN_CARD, 'plan_card')
   assert.equal(HARD_FLOOR_TOKEN, 'hard_floor')

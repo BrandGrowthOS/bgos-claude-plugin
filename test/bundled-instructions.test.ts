@@ -112,3 +112,109 @@ test('the stop paragraph stays as Wave C wrote it', () => {
 test('the bundled instructions stay free of dashes, because they are a prompt', () => {
   assert.equal(/[\u2013\u2014]/.test(bundledInstructions()), false)
 })
+
+// ── The question card guidance (scope section 6, Data's option A) ────────────
+//
+// Agents used to be told to use ask_user_input ONLY while the owner was
+// actively in the conversation, so with an owner away they sent several button
+// messages instead, each answerable alone and none of them grouped. The rule
+// is now one card for 2 or more decisions, online or not, and it is said in
+// the same words everywhere a Claude Code agent reads it: the bundled
+// instructions, the tool descriptions and the capabilities fallback. The BGOS
+// canon serves the same sentences to a daemon that declares ask_answered.
+
+const SECTION_6 =
+  'Any message asking your owner 2 or more decisions is ONE ask_user_input card (up to 4 questions), online or not. ' +
+  'A reply with buttons asks exactly one thing. ' +
+  'The card returns at once as pending: end your turn and do nothing that depends on the answers; ' +
+  'they arrive together as one ask_answered event, however late. ' +
+  'Use wait_seconds only if your owner wrote in the last few minutes and you cannot continue without the answer.'
+
+/** Every plain string literal of one tool's description, unescaped and joined, as the tool list sends it. */
+function toolDescription(name: string): string {
+  const at = server.indexOf(`      name: '${name}',\n      description:`)
+  assert.ok(at >= 0, `the ${name} tool moved`)
+  const end = server.indexOf('inputSchema:', at)
+  const literals = server.slice(at, end).match(/'(?:[^'\\]|\\.)*'/g) ?? []
+  return literals.slice(1).map((l) => l.slice(1, -1).replace(/\\(.)/g, '$1')).join('')
+}
+
+/** One schema property's description, the same way. */
+function propertyDescription(tool: string, property: string): string {
+  const at = server.indexOf(`      name: '${tool}',\n      description:`)
+  const prop = server.indexOf(`          ${property}: {`, at)
+  assert.ok(at >= 0 && prop > at, `${tool}.${property} moved`)
+  const start = server.indexOf('description:', prop)
+  const end = server.indexOf('\n          },', start)
+  const literals = server.slice(start, end).match(/'(?:[^'\\]|\\.)*'/g) ?? []
+  return literals.map((l) => l.slice(1, -1).replace(/\\(.)/g, '$1')).join('')
+}
+
+const ONLY_WHILE_PRESENT = /actively|not waiting on you|blocking modal|blocking multi|demand(?:s|ing)? (?:immediate )?attention|inappropriate for async/i
+
+test('the bundled instructions carry section 6 word for word, on its own line', () => {
+  assert.ok(
+    bundledInstructions().split('\n').includes(SECTION_6),
+    'the question card rule is not one line of the bundled instructions, word for word',
+  )
+})
+
+test('the ask_user_input description carries section 6, and withdraw_ask', () => {
+  const d = toolDescription('ask_user_input')
+  assert.ok(d.includes(SECTION_6), d)
+  assert.match(d, /withdraw_ask/)
+})
+
+test('the bundled capabilities fallback carries section 6', async () => {
+  const { BGOS_CAPABILITIES_FALLBACK } = await import('../lib/capabilities.ts')
+  assert.ok(BGOS_CAPABILITIES_FALLBACK.replace(/\s+/g, ' ').includes(SECTION_6))
+  assert.doesNotMatch(BGOS_CAPABILITIES_FALLBACK, ONLY_WHILE_PRESENT)
+})
+
+test('nothing tells the agent to ask only an owner who is actively in the conversation', () => {
+  assert.doesNotMatch(bundledInstructions(), ONLY_WHILE_PRESENT)
+  for (const text of [
+    toolDescription('ask_user_input'),
+    toolDescription('reply'),
+    propertyDescription('reply', 'render_mode'),
+  ]) {
+    assert.doesNotMatch(text, ONLY_WHILE_PRESENT, text)
+  }
+})
+
+test('the reply description says buttons ask exactly one thing and names the card for more', () => {
+  const d = toolDescription('reply')
+  assert.match(d, /asks? exactly one thing/)
+  assert.match(d, /2 or more decisions is ONE ask_user_input card/)
+})
+
+// Review of #282, item 3: a call with neither wait_seconds nor timeout_seconds
+// keeps its old contract (it blocks up to 600 s and returns the answers), so
+// "returns at once as pending" is true only with wait_seconds 0, and every
+// place that carries section 6 says so right after it. It names the pending
+// return it qualifies: "For that, pass wait_seconds: 0" read as the way to
+// wait for the answer, the sentence just before it (second review of #282,
+// Important 1).
+const PASS_ZERO =
+  'The pending return above needs wait_seconds: 0; to wait for the answers, pass wait_seconds from 1 to 600. ' +
+  'A call with neither wait_seconds nor timeout_seconds keeps its old behaviour: it waits up to 600 s and returns ' +
+  'the answers, or pending if they do not all come in time.'
+
+test('item 3 of #282: right after section 6, the instructions, the tool and the fallback say to pass wait_seconds 0', async () => {
+  const { BGOS_CAPABILITIES_FALLBACK } = await import('../lib/capabilities.ts')
+  const lines = bundledInstructions().split('\n')
+  assert.equal(lines[lines.indexOf(SECTION_6) + 1], PASS_ZERO, 'the bundled instructions do not follow section 6 with the wait_seconds 0 line')
+  for (const [where, text] of [
+    ['the ask_user_input description', toolDescription('ask_user_input')],
+    ['the capabilities fallback', BGOS_CAPABILITIES_FALLBACK.replace(/\s+/g, ' ')],
+  ] as const) {
+    assert.ok(text.includes(`${SECTION_6} ${PASS_ZERO}`), `${where} does not follow section 6 with the wait_seconds 0 sentence`)
+  }
+})
+
+test('item 3 of #282: the wait_seconds field says what leaving it out does', () => {
+  const d = propertyDescription('ask_user_input', 'wait_seconds')
+  assert.match(d, /Leave it out/)
+  assert.match(d, /600 s/)
+  assert.doesNotMatch(d, /Default 0/)
+})
