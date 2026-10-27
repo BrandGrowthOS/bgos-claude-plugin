@@ -6708,6 +6708,27 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       if (!chat_id) {
         return { content: [{ type: 'text', text: 'Error: chat_id is required' }] }
       }
+      // Only the daemon holding this agent's connection delivers answers, and a
+      // card's answers go only to the session that asked it (lib/ask-tracker.ts
+      // askIsOurs). A passive session's daemon could never hand them back, so
+      // it refuses before it posts anything (review of #282, item 1), and
+      // before the chat check, which in a daemon that never discovered this
+      // agent's chats would name only the chat.
+      if (!lockHeld) {
+        log('ask_user_input: refused in a passive daemon (another session holds this agent\'s connection)')
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                'Error: this session is not the one connected to BGOS for this agent (another session of it ' +
+                'holds the connection), so the answers to a question card could never come back here. Nothing ' +
+                'was posted. Ask in a plain reply instead, or ask from the connected session.',
+            },
+          ],
+          isError: true,
+        }
+      }
       // Membership check before forwarding the agent-supplied chat_id.
       const askAuth = resolveAuthorizedChat(chat_id)
       if (!askAuth.ok) return askAuth.error
@@ -6735,25 +6756,6 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
         return { content: [{ type: 'text', text: askWait.error }], isError: true }
       }
       const waitSeconds = askWait.seconds
-      // Only the daemon holding this agent's connection delivers answers, and a
-      // card's answers go only to the session that asked it (lib/ask-tracker.ts
-      // askIsOurs). A passive session's daemon could never hand them back, so
-      // it refuses before it posts anything (review of #282, item 1).
-      if (!lockHeld) {
-        log('ask_user_input: refused in a passive daemon (another session holds this agent\'s connection)')
-        return {
-          content: [
-            {
-              type: 'text',
-              text:
-                'Error: this session is not the one connected to BGOS for this agent (another session of it ' +
-                'holds the connection), so the answers to a question card could never come back here. Nothing ' +
-                'was posted. Ask in a plain reply instead, or ask from the connected session.',
-            },
-          ],
-          isError: true,
-        }
-      }
       // A peer side-thread already refused a post for good: answer here, no POST.
       if (a2aRouteRefusedChats.has(String(askChatId))) {
         return a2aRouteRequiredResult(String(askChatId), 'these questions')
