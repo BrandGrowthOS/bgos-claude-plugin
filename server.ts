@@ -13127,11 +13127,12 @@ async function refreshAgentIdentity(
  * The refresh on a timer while the daemon runs: the identity file follows a
  * rename (so the next new conversation or compaction reads it), and this
  * session is told the new name once, only from an integrations/me answer
- * (identityToldWhileRunning). It runs where the boot notice does, in the
- * daemon that holds the pairing lock, so with two sessions of one agent the
- * passive one hears a rename at its next new conversation or compaction, or
- * once it takes the lock. Pairing only: an API key daemon has no
- * integrations/me. Never throws.
+ * (identityToldWhileRunning). It starts where the boot notice is sent, in a
+ * daemon when it first holds the pairing lock, and goes on if that daemon
+ * later stands down (it tells only its own session). So with two sessions of
+ * one agent, one passive since its start hears a rename at its next new
+ * conversation or compaction, or once it takes the lock. Pairing only: an API
+ * key daemon has no integrations/me. Never throws.
  */
 async function refreshIdentityWhileRunning(): Promise<void> {
   if (identityToldName === null || AUTH.mode !== 'pairing') return

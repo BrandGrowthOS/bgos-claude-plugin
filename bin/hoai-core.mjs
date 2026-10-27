@@ -3216,6 +3216,9 @@ export async function superviseClaude(args, opts = {}) {
   let exitTimes = []
   try {
     while (true) {
+      // A stop that came while this launch was prepared (the identity read
+      // waits up to 3 s): nothing to start, and the finally lets go of the claim.
+      if (stopSignal?.aborted) return exitCodeForChild(null, 'SIGTERM')
       /** @type {import('node:child_process').ChildProcess | null} */
       let childRef = null
       let restartRequested = false
