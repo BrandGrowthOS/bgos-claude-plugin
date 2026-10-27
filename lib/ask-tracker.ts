@@ -32,7 +32,9 @@
  * runs, on the ask tick (heartbeat), and an asker silent for ASK_LEASE_MS has
  * ended. How long it ran beside a daemon is then read off the file, the same
  * for every daemon whenever it looks: from that daemon's start (or the post)
- * to the asker's last lease. Longer than ASK_OWNER_OVERLAP_MS, and the group
+ * to the end of the asker's last lease (ASK_LEASE_SPAN_MS after it, the
+ * longest a running asker goes without writing again). Longer than
+ * ASK_OWNER_OVERLAP_MS, and the group
  * is marked askerEndedBeside in the file, so no daemon ever announces it. A
  * daemon that was not looking (a sleep, a stalled process) reads no lease as
  * lapsed until the asker has had time to write it again (ASK_TICK_GAP_MS). The
@@ -105,7 +107,7 @@ function fsCode(err: unknown): string {
 
 type FileRead =
   | { kind: 'none' }
-  | { kind: 'read'; pending: PendingAsk[]; done: string[] }
+  | { kind: 'read'; pending: PendingAsk[]; done: string[]; retired: RetiredAsk[] }
   /** Not read this time (a read that kept failing, or another version's file): leave it, write nothing over it. */
   | { kind: 'skip' }
 
@@ -422,10 +424,12 @@ export function buildAskAnsweredEvent(
  * which may or may not be the one that asked (the asker restarted, or a
  * session beside it), so it says neither and asks for nothing. Every meta
  * value is a string (Data's recheck of #282, item 1; its fresh review, Minor 3).
+ * `toAsker`: the same event for the session that asked, still running without
+ * the connection when its card was retired (Data's gate notes on #282, item 2).
  */
 export function buildAskWithdrawnEvent(
   ask: PendingAsk,
-  opts: { assistantId: string; withdrawn: number; ts?: string },
+  opts: { assistantId: string; withdrawn: number; ts?: string; toAsker?: boolean },
 ): { content: string; meta: Record<string, string> } {
   const rows = askResultRows(ask)
   const answered = rows.filter((_, i) => ask.answers[String(ask.questions[i].messageId)] !== undefined)
@@ -437,9 +441,13 @@ export function buildAskWithdrawnEvent(
       : opts.withdrawn >= open.length
         ? `Its ${open.length} open question(s) were withdrawn from the chat, so your owner can no longer answer them.`
         : `${opts.withdrawn} of its ${open.length} open question(s) were withdrawn from the chat.`
+  const lead = opts.toAsker
+    ? `[ask_withdrawn] A question card this session posted was retired (ask_id=${ask.askId}): this session no longer ` +
+      `holds this agent's connection, so its answers could not come back here, and the session that holds it retired it. ${closed}`
+    : `[ask_withdrawn] A question card this agent posted was retired (ask_id=${ask.askId}): the session that asked ` +
+      `it can no longer receive the answers (it ended, or it no longer holds this agent's connection). ${closed}`
   const content = [
-    `[ask_withdrawn] A question card this agent posted was retired (ask_id=${ask.askId}): the session that asked ` +
-      `it can no longer receive the answers (it ended, or it no longer holds this agent's connection). ${closed}`,
+    lead,
     `(in chat_id=${ask.chatId}, first question message_id=${first})`,
     `Answered before it was retired: ${JSON.stringify(answered, null, 2)}`,
     `Withdrawn: ${JSON.stringify(open)}`,
@@ -473,6 +481,14 @@ export const ASK_OWNER_OVERLAP_MS = 60_000
 export const ASK_LEASE_REFRESH_MS = 15_000
 /** An asker that has not said it runs for this long has ended, whatever process has its pid now: two refreshes and a slow tick. */
 export const ASK_LEASE_MS = 2 * ASK_LEASE_REFRESH_MS + 5_000
+/**
+ * The longest a running asker goes without writing its lease again: a refresh
+ * and one 5 s ask tick. A lease says the asker ran until at least this long
+ * after it, so how long it ran beside a session is measured to there, never
+ * to the lease itself, which can be that much older than the asker's end
+ * (Data's gate notes on #282, item 1).
+ */
+export const ASK_LEASE_SPAN_MS = ASK_LEASE_REFRESH_MS + 5_000
 /**
  * A group whose asker ended, ran beside no daemon and was taken by no restart
  * for this long is retired by the connected daemon: a restart that takes the
@@ -557,6 +573,24 @@ function answeredCount(ask: PendingAsk): number {
   return ask.questions.filter((q) => ask.answers[String(q.messageId)] !== undefined).length
 }
 
+/**
+ * A card the connected daemon retired while its asker still ran (on passive,
+ * without the connection), kept on file for that asker to tell its own
+ * session (takeRetiredOwn): the group as retired, with what was answered, and
+ * how many open questions were withdrawn. Dropped ASK_ORPHAN_GRACE_MS after
+ * (Data's gate notes on #282, item 2).
+ */
+export interface RetiredAsk {
+  ask: PendingAsk
+  withdrawn: number
+  at: number
+}
+
+function validRetired(raw: unknown): raw is RetiredAsk {
+  const r = raw as Partial<RetiredAsk> | null
+  return !!r && typeof r === 'object' && validAsk(r.ask) && typeof r.withdrawn === 'number' && typeof r.at === 'number'
+}
+
 function validAsk(raw: unknown): raw is PendingAsk {
   const a = raw as PendingAsk
   return (
@@ -601,6 +635,9 @@ export class AskTracker {
    * the connection (retirable).
    */
   private readonly askerAsideSince = new Map<string, number>()
+  /** Cards retired while their asker ran, on file (RetiredAsk); and those of this process already handed to its session. */
+  private retired_: RetiredAsk[] = []
+  private readonly toldRetired = new Set<string>()
   /** Groups dropped for age, said once; and why saves fail, said once while it lasts (fifth review of #282, Minor 3). */
   private readonly droppedForAge = new Set<string>()
   private saveFailing: string | null = null
@@ -769,7 +806,8 @@ export class AskTracker {
   /**
    * A group whose asker, another process, has ended and ran beside this
    * process for longer than ASK_OWNER_OVERLAP_MS: from this process's start
-   * (or the post, if later) to the asker's last lease. Read off the file, so
+   * (or the post, if later) to the end of the asker's last lease
+   * (ASK_LEASE_SPAN_MS after it; Data's gate notes on #282, item 1). Read off the file, so
    * every daemon decides it the same whenever it looks, and a restart keeps
    * its card however late the answers come (third review of #282, Critical 1).
    * Marked for every daemon (askerEndedBeside); true when it marked the group.
@@ -777,7 +815,7 @@ export class AskTracker {
   private markIfBeside(ask: PendingAsk): boolean {
     if (!ask.owner || ask.askerEndedBeside !== undefined || sameProcess(ask.owner, this.self)) return false
     if (this.askerRunsNow(ask)) return false
-    if (askerLastSaid(ask) - Math.max(this.self.startedAt, ask.postedAt) <= ASK_OWNER_OVERLAP_MS) return false
+    if (askerLastSaid(ask) + ASK_LEASE_SPAN_MS - Math.max(this.self.startedAt, ask.postedAt) <= ASK_OWNER_OVERLAP_MS) return false
     ask.askerEndedBeside = this.now()
     this.log(
       `ask tracker: group ${ask.askId} was posted by another session of this agent that ran beside this one ` +
@@ -807,7 +845,11 @@ export class AskTracker {
     let said = false
     for (const ask of this.asks.values()) {
       if (!ask.owner || !sameProcess(ask.owner, this.self)) continue
-      if (now - askerLastSaid(ask) < ASK_LEASE_REFRESH_MS) continue
+      // A clock stepped back reads the lease as written in the future: it is
+      // written again now, never left until the clock catches up (Data's gate
+      // notes on #282, item 3).
+      const age = now - askerLastSaid(ask)
+      if (age >= 0 && age < ASK_LEASE_REFRESH_MS) continue
       ask.owner = { ...ask.owner, aliveAt: now }
       said = true
     }
@@ -886,6 +928,40 @@ export class AskTracker {
   }
 
   /**
+   * The connected daemon retired a card no daemon may announce (server.ts
+   * retireOrphanedAsks): withdrawn as withdraw does, and, when its asker is
+   * another process still running, kept on file for that asker to tell its
+   * own session once (takeRetiredOwn). A dead asker leaves nothing (Data's
+   * gate notes on #282, item 2).
+   */
+  retire(askId: string, opts: { withdrawn: number }): PendingAsk | null {
+    const ask = this.asks.get(askId)
+    if (!ask) return null
+    if (ask.owner && !sameProcess(ask.owner, this.self) && this.isAlive(ask.owner.pid)) {
+      this.retired_ = this.retired_.filter((r) => r.ask.askId !== askId)
+      this.retired_.push({ ask: { ...ask, answers: { ...ask.answers } }, withdrawn: opts.withdrawn, at: this.now() })
+    }
+    return this.withdraw(askId)
+  }
+
+  /**
+   * The cards this process posted that the connected daemon retired while it
+   * ran on without the connection, each handed out once: for this session's
+   * own ask_withdrawn event (server.ts tellRetiredOwnAsks, on the ask tick).
+   * Read from the file as last merged; never another process's.
+   */
+  takeRetiredOwn(): Array<{ ask: PendingAsk; withdrawn: number }> {
+    const out: Array<{ ask: PendingAsk; withdrawn: number }> = []
+    for (const r of this.retired_) {
+      if (!sameProcess(r.ask.owner, this.self) || this.toldRetired.has(r.ask.askId)) continue
+      this.toldRetired.add(r.ask.askId)
+      this.forget(r.ask.askId)
+      out.push({ ask: r.ask, withdrawn: r.withdrawn })
+    }
+    return out
+  }
+
+  /**
    * The agent retired the card (or it may not be announced here): forget it,
    * a tombstone like a delivery, and hand back its rows so they can be retired too.
    */
@@ -910,6 +986,8 @@ export class AskTracker {
     if (disk.kind === 'skip') return false
     if (disk.kind === 'none') return true
     let rewrite = false
+    for (const r of disk.retired) if (!this.retired_.some((m) => m.ask.askId === r.ask.askId)) this.retired_.push(r)
+    this.retired_ = this.retired_.filter((r) => this.now() - r.at <= ASK_ORPHAN_GRACE_MS).slice(-MAX_PENDING_ASKS)
     for (const id of disk.done) this.tombstone(id)
     for (const id of this.delivered_) if (this.asks.has(id)) this.forget(id)
     const cutoff = this.now() - MAX_PENDING_AGE_MS
@@ -1016,7 +1094,7 @@ export class AskTracker {
         return this.skip(`could not read ${this.filePath} (${code || err}); left as it is, read again on the next pass`)
       }
     }
-    let body: { v?: unknown; pending?: unknown; delivered?: unknown } | null = null
+    let body: { v?: unknown; pending?: unknown; delivered?: unknown; retired?: unknown } | null = null
     let why = 'it is not a JSON object'
     try {
       body = JSON.parse(text)
@@ -1054,6 +1132,7 @@ export class AskTracker {
       kind: 'read',
       pending: (Array.isArray(body.pending) ? body.pending : []).filter(validAsk),
       done: (Array.isArray(body.delivered) ? body.delivered : []).filter((d): d is string => typeof d === 'string'),
+      retired: (Array.isArray(body.retired) ? body.retired : []).filter(validRetired),
     })
   }
 
@@ -1079,7 +1158,12 @@ export class AskTracker {
       mkdirSync(dirname(this.filePath), { recursive: true })
       writeFileSync(
         tmp,
-        JSON.stringify({ v: FILE_VERSION, pending: this.pending(), delivered: this.delivered_ }),
+        JSON.stringify({
+          v: FILE_VERSION,
+          pending: this.pending(),
+          delivered: this.delivered_,
+          ...(this.retired_.length > 0 ? { retired: this.retired_ } : {}),
+        }),
         { mode: 0o600 },
       )
       // While saves keep failing, each pass tries once, as reads do.
