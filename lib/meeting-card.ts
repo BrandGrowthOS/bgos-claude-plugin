@@ -25,6 +25,7 @@ import {
   buildInboundChannel,
   isExternalEmailInbound,
   readServerSenderMeta,
+  type EmailFileSave,
 } from './inbound-channel.ts'
 import {
   buildInboundContent,
@@ -138,6 +139,13 @@ export interface MeetingCardInput {
    * the person attached something. Emitted as `files_unknown: 'true'`.
    */
   filesUnknown?: boolean
+  /**
+   * An email's files as this daemon saved them before the turn (read
+   * attachments), passed to the email builder unchanged. Ignored for a
+   * person's or an agent's meeting turn, and by the builder unless the
+   * server's record says the owner lets the agent read the files.
+   */
+  emailFileSaves?: ReadonlyArray<EmailFileSave | null>
 }
 
 // A type alias, not an interface: the MCP notification params type carries a
@@ -169,6 +177,7 @@ export function buildMeetingCard(input: MeetingCardInput): MeetingCard {
       serverSender: input.serverSender,
       backlog: input.backlog,
       backlogPrefix: input.backlog ? 'backlog' : undefined,
+      emailFileSaves: input.emailFileSaves,
     })
   }
   const me = Number(input.assistantId)

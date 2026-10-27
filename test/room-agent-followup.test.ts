@@ -313,7 +313,7 @@ function compile(source: string, name: string, extra: Record<string, unknown> = 
 function wsLane(extra: Record<string, unknown> = {}) {
   const source = [
     serverConst('EMAIL_NEVER_SLASH'),
-    serverFunction('  function deliverWsInbound(payload: any): void {', '\n  }\n'),
+    serverFunction('  function deliverWsInbound(payload: any, emailSaves?: Array<EmailFileSave | null>): void {', '\n  }\n'),
   ].join('\n')
   return compile(source, 'deliverWsInbound', extra)
 }
