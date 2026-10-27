@@ -17,6 +17,7 @@ import ts from 'typescript'
 import * as askLib from '../lib/ask-tracker.ts'
 import { AskTracker, type PendingAsk } from '../lib/ask-tracker.ts'
 import { parseLockRecord } from '../lib/pairing-lock.ts'
+import { retiredOwnNotes, tellRetiredOwnOnTick } from '../lib/ask-retired-tell.ts'
 
 const SERVER = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
 const START = Date.parse('2026-10-27T09:00:00Z')
@@ -54,7 +55,7 @@ interface Row {
   answer?: { optionId?: number; freeText?: string; skipped?: boolean }
 }
 
-function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean; filePath?: string; httpTimeoutMs?: number } = {}) {
+function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean; filePath?: string; httpTimeoutMs?: number; channelLoaded?: boolean | null } = {}) {
   const source = [
     lift('async function readAskGroup('),
     lift('function announceCompleteAsks('),
@@ -64,13 +65,16 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean; f
     liftIf('function orphanRetireMayRun('),
     liftIf('async function retireOrphanedAsks('),
     liftIf('function tellRetiredOwnAsks('),
+    liftIf('function askWithdrawnContent('),
     liftIf('function sendAskWithdrawn('),
+    liftIf('function withRetiredOwnAskNotes<'),
     lift('function heartbeatAskTracker('),
     liftCase('ask_user_input', 'withdraw_ask', 'askTool'),
     liftCase('withdraw_ask', 'complete_voice_task', 'withdrawTool'),
   ].join('\n')
   const exported = ['askTool', 'withdrawTool', 'announceCompleteAsks', 'heartbeatAskTracker']
   if (source.includes('function retireOrphanedAsks(')) exported.push('retireOrphanedAsks')
+  if (source.includes('function withRetiredOwnAskNotes<')) exported.push('withRetiredOwnAskNotes')
   const js = ts.transpileModule(source, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
   }).outputText
@@ -202,6 +206,10 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean; f
     },
     privateTapCard: (o: { content: string }) => o.content,
     privateTurns: {},
+    tellRetiredOwnOnTick,
+    retiredOwnNotes,
+    // This session's channel, as lib/channel-presence.ts reads it off the claude command line.
+    channelPresence: () => ({ loaded: opts.channelLoaded ?? null, reason: 'the harness' }),
   }
   const scope = new Proxy(known, {
     has: (target, key) => key in target || !(key in globalThis),
@@ -224,6 +232,7 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean; f
     announceCompleteAsks(via: string): void
     heartbeatAskTracker(): void
     retireOrphanedAsks?: (via: string) => Promise<void>
+    withRetiredOwnAskNotes?: <T>(result: T) => T
   }
 
   return {
@@ -262,6 +271,16 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean; f
     /** The lock file names another daemon, whatever this one's lockHeld says. */
     lockFileTakenBy: () => {
       lockFileNamesUs = false
+    },
+    /** The next `n` channel sends fail, as a closed transport does. */
+    failNotifications: (n: number) => {
+      let left = n
+      notify = async () => {
+        if (left > 0) {
+          left--
+          throw new Error('the transport is closed')
+        }
+      }
     },
     holdNotifications: () => {
       let release!: () => void
@@ -957,3 +976,57 @@ test('lease follow-up, item 2: a group handed over to the asker\'s restart is an
   }
   assert.deepEqual(r.notes.map((n) => n.params.meta.event_type), ['ask_answered'])
 })
+
+/** The asker posts and stands down; the daemon that took the connection reads one answer and retires the rest, keeping the card for the asker. */
+async function retiredForThePassiveAsker(r: ReturnType<typeof rig>, filePath: string): Promise<string> {
+  const pending = await r.askTool({ chat_id: '77', questions: QUESTIONS, wait_seconds: 0 })
+  assert.ok(!pending.isError)
+  const askId = r.tracker.pending()[0].askId
+  r.answer(r.tracker.pending()[0].questions[0].messageId)
+  r.known.lockHeld = false
+  r.known.channelArmed = false
+  const holder = new AskTracker({ filePath, now: () => r.now(), ...({ self: { pid: 2016, startedAt: START - MIN }, isAlive: () => true } as object) })
+  holder.refresh()
+  holder.record(r.tracker.pending()[0].questions[0].messageId, { skipped: true })
+  holder.beginWithdraw(askId)
+  assert.notEqual((holder as unknown as RetiredOwn).retire?.(askId, { withdrawn: 1, tellAsker: true }) ?? 'missing', 'missing')
+  return askId
+}
+
+test('gaps after #284, gap 1, on the daemon\'s own code: a tell whose send failed on the tick is sent again on the next, then never again', () =>
+  withAskFile(async (filePath) => {
+    const r = rig({ filePath })
+    const askId = await retiredForThePassiveAsker(r, filePath)
+    r.failNotifications(1)
+    for (let i = 0; i < 4; i++) {
+      r.advance(5_000)
+      r.heartbeatAskTracker()
+      await r.settle()
+    }
+    const tries = r.notes.filter((n) => n.params.meta.event_type === 'ask_withdrawn')
+    assert.equal(tries.length, 2, 'the failed send, then the one that landed')
+    assert.ok(tries.every((n) => n.params.meta.ask_id === askId))
+    assert.match(r.logs.join('\n'), /telling this session failed/)
+  }))
+
+test('gaps after #284, gap 1, on the daemon\'s own code: the passive asker whose channel is not loaded sends nothing on its tick, and its next tool result carries its one ask_withdrawn', () =>
+  withAskFile(async (filePath) => {
+    const r = rig({ filePath, channelLoaded: false })
+    const askId = await retiredForThePassiveAsker(r, filePath)
+    for (let i = 0; i < 3; i++) {
+      r.advance(5_000)
+      r.heartbeatAskTracker()
+      await r.settle()
+    }
+    assert.deepEqual(r.notes.filter((n) => n.params.meta.event_type === 'ask_withdrawn'), [], 'no channel event: it would be dropped unseen')
+    assert.ok(r.withRetiredOwnAskNotes, 'withRetiredOwnAskNotes exists')
+    const result = r.withRetiredOwnAskNotes({ content: [{ type: 'text', text: 'sent' }] })
+    assert.equal(result.content.length, 2)
+    assert.equal(result.content[0].text, 'sent', 'the tool\'s own result first, as it was')
+    assert.match(result.content[1].text, new RegExp(`^\\[ask_withdrawn\\] A question card this session posted was retired \\(ask_id=${askId}\\)`))
+    r.advance(5_000)
+    r.heartbeatAskTracker()
+    await r.settle()
+    assert.deepEqual(r.withRetiredOwnAskNotes({ content: [{ type: 'text', text: 'again' }] }).content.length, 1, 'once')
+    assert.deepEqual(r.notes.filter((n) => n.params.meta.event_type === 'ask_withdrawn'), [])
+  }))

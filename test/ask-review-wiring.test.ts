@@ -134,7 +134,7 @@ test('lease follow-up of #282, item 2: the retire keeps a live asker\'s card on 
   // The connected daemon's own lane verdict decides whether the asker is told (fresh review of the follow-up, Important 2).
   assert.match(retire, /const refused = ownerAnnounceRefused\(\{ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership\.isOthers\(ask\.chatId\) \}\)/)
   assert.match(retire, /if \(!askTracker\.retire\(ask\.askId, \{ withdrawn, tellAsker: !refused \}\)\) continue/)
-  assert.match(retire, /sendAskWithdrawn\(ask, withdrawn, \{ toAsker: false, via \}\)/)
+  assert.match(retire, /sendAskWithdrawn\(ask, withdrawn, \{ toAsker: false, via, askerEnded \}\)/)
   const tick = fnBody('function heartbeatAskTracker(): void {', 600)
   assert.match(tick, /\n\s*tellRetiredOwnAsks\(\)\n\}/)
   const tell = fnBody('function tellRetiredOwnAsks(): void {', 900)
@@ -164,7 +164,8 @@ test('gaps after #284, gap 1: every tool result of this daemon carries the ask_w
   assert.ok(handlerAt > 0 && dispatch > handlerAt, 'the dispatch of every tool')
   const end = server.indexOf('\n  }).then(withRetiredOwnAskNotes)\n})\n', dispatch)
   assert.ok(end > dispatch, 'the dispatch result goes through withRetiredOwnAskNotes')
-  assert.equal(server.indexOf('\nmcp.setRequestHandler(', dispatch) > end, true, 'inside the same handler')
+  // The first top level close after the dispatch is the handler's own, right after the then.
+  assert.equal(server.indexOf('\n})\n', dispatch), end + '\n  }).then(withRetiredOwnAskNotes)'.length, 'inside the same handler')
   const notes = fnBody('function withRetiredOwnAskNotes<', 2000)
   assert.match(notes, /retiredOwnNotes\(\{\s*tracker: askTracker,\s*channelLoaded: channelPresence\(\)\.loaded,/)
   assert.match(notes, /askWithdrawnContent\(ask, withdrawn, \{ toAsker: true \}\)/)
