@@ -9,13 +9,14 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import ts from 'typescript'
 
 import * as askLib from '../lib/ask-tracker.ts'
 import { AskTracker, type PendingAsk } from '../lib/ask-tracker.ts'
+import { parseLockRecord } from '../lib/pairing-lock.ts'
 
 const SERVER = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
 const START = Date.parse('2026-10-27T09:00:00Z')
@@ -53,7 +54,7 @@ interface Row {
   answer?: { optionId?: number; freeText?: string; skipped?: boolean }
 }
 
-function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean; filePath?: string } = {}) {
+function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean; filePath?: string; httpTimeoutMs?: number } = {}) {
   const source = [
     lift('async function readAskGroup('),
     lift('function announceCompleteAsks('),
@@ -100,6 +101,7 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean; f
   const patches: Array<{ path: string; body: unknown }> = []
   let nextId = 500
   let onPatch: ((path: string) => void | Promise<void>) | null = null
+  let onGet: ((path: string) => void) | null = null
   const notes: Array<{ params: { content: string; meta: Record<string, string> } }> = []
   let notify: () => Promise<void> = async () => {}
   const logs: string[] = []
@@ -138,6 +140,7 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean; f
       return { id, askId: (body.askId as string | undefined) ?? 'grp-1' }
     },
     bgosGet: async (path: string) => {
+      onGet?.(path)
       for (const change of lockChanges.splice(0).filter((c) => clock >= c.at || (lockChanges.push(c), false))) {
         known.lockHeld = change.held
       }
@@ -171,6 +174,7 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean; f
     ASSISTANT_ID: '947',
     ASK_HOLD_MARGIN_MS: 30_000,
     ASK_PASSIVE_RETIRE_HOLD_MS: 5 * MIN,
+    HTTP_TIMEOUT_MS: opts.httpTimeoutMs ?? 30_000,
     ASK_READ_PAGE: 20,
     asksWaiting: 0,
     rememberAnnouncedClick: (id: number) => announced.add(id),
@@ -236,6 +240,9 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean; f
     },
     onPatch: (fn: (path: string) => void | Promise<void>) => {
       onPatch = fn
+    },
+    onGet: (fn: (path: string) => void) => {
+      onGet = fn
     },
     /** The pairing lock is held (or not) from `at` on, as a promotion or a stand-down would. */
     lockAt: (at: number, held: boolean) => {
@@ -778,6 +785,54 @@ test('second fresh review of the recheck, Minor 5: the retire reads the file aga
     await r.settle()
     assert.equal(r.patches.length, 1)
     assert.equal(r.notes.length, 0, 'the other daemon handed it out: nothing to tell here')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('third fresh review of the recheck, Minor 1: a rival that takes the lock while the retire reads the card (a slow backend) stops the PATCH', async () => {
+  const r = rig({ live: [2013] })
+  const ask = r.foreignGroup('theirs', [796], { pid: 2014, startedAt: START - 60 * MIN }, START - 30 * MIN)
+  ask.askerEndedBeside = START - MIN
+  r.onGet(() => r.lockFileTakenBy())
+  await r.retireOrphanedAsks?.('timer')
+  await r.settle()
+  assert.deepEqual(r.patches, [], 'the lock changed hands during the read')
+  assert.equal(r.notes.length, 0)
+  assert.deepEqual(r.tracker.pending().map((g) => g.askId), ['theirs'], 'kept for the daemon that holds the lock now')
+})
+
+test('third fresh review of the recheck, Minor 4: a passive wait holds its card through a retire as long as the HTTP timeout allows (a read and a PATCH per question)', async () => {
+  const r = rig({ lockHeld: false, httpTimeoutMs: 120_000 })
+  const heldFor: number[] = []
+  r.onPatch(() => {
+    const ask = r.tracker.pending()[0]
+    heldFor.push((ask?.heldUntil ?? 0) - r.now())
+  })
+  await r.askTool({ chat_id: '77', questions: QUESTIONS, wait_seconds: 5 })
+  assert.equal(heldFor.length, 2)
+  assert.ok(heldFor.every((ms) => ms >= (2 + 1) * 120_000), `held for ${JSON.stringify(heldFor)} ms`)
+})
+
+test('third fresh review of the recheck, Minor 5: the lock file names this daemon only when it parses and carries this pid; anything else is no', () => {
+  const src = lift('function pairingLockNamesThisDaemon(')
+  const js = ts.transpileModule(src, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText
+  const dir = mkdtempSync(join(tmpdir(), 'askcard-lock-'))
+  try {
+    const lockPath = join(dir, 'pairing.lock')
+    const names = new Function('scope', `with (scope) {\n${js}\nreturn pairingLockNamesThisDaemon\n}`)({
+      PAIRING_LOCK_PATH: lockPath,
+      readFileSync,
+      parseLockRecord,
+      process: { pid: 4321 },
+    }) as () => boolean
+    assert.equal(names(), false, 'no lock file')
+    writeFileSync(lockPath, '{"pid": 43')
+    assert.equal(names(), false, 'half written')
+    writeFileSync(lockPath, JSON.stringify({ pid: 1234, heartbeatAt: START }))
+    assert.equal(names(), false, 'another daemon')
+    writeFileSync(lockPath, JSON.stringify({ pid: 4321, heartbeatAt: START }))
+    assert.equal(names(), true, 'this daemon')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

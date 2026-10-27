@@ -1168,3 +1168,34 @@ test('second fresh review of the recheck, Minor 2: a daemon that takes the conne
     assert.deepEqual(retirableIds(h2, at('10:20:00')), ['open'])
   })
 })
+
+test('third fresh review of the recheck, Minor 2: after a sleep the connected daemon waits ASK_LEASE_MS again before it retires a live asker\'s card it saw aside before', () => {
+  sharedFile(({ filePath, clock, live, at }) => {
+    const now = () => clock.at
+    const h1 = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
+    h1.register(group({ askId: 'open', ids: [1231] }))
+    live.push(1)
+    runUntil(clock, at('10:01:00'), h1)
+    const h2 = trackerAs({ pid: 2, startedAt: clock.at }, live, { filePath, now })
+    live.push(2)
+    stepUntil(clock, at('10:01:20'), () => {
+      beat(h1)
+      beat(h2)
+      retirableIds(h2, at('10:01:00'))
+    })
+    // Both sleep an hour: nobody looks.
+    clock.at = at('11:01:20')
+    // The first look after it (11:01:25) is the wake.
+    const seen: Array<[number, string[]]> = []
+    stepUntil(clock, at('11:02:00'), () => {
+      beat(h1)
+      beat(h2)
+      seen.push([(clock.at - at('11:01:25')) / 1000, retirableIds(h2, at('10:01:00'))])
+    })
+    assert.deepEqual(
+      seen.filter(([, ids]) => ids.length > 0).map(([s]) => s),
+      [35],
+      `nothing before 35 s after the wake: ${JSON.stringify(seen)}`,
+    )
+  })
+})
