@@ -83,6 +83,7 @@ import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
 import { DoctorRpcHandler, buildDoctorChecks, normalizeDoctorRpc } from './lib/doctor-rpc.ts'
 import { collectChanges, createNodeRunGit, nodeChangesFs } from './lib/git-changes.js'
 import { defaultPidAlive, pluginStateDirFor, readBootClock } from './lib/agent-inventory.mjs'
+import { identityFilePath, identityFromMe, writeAgentIdentity } from './lib/agent-identity.mjs'
 import { createMarkerTakeover, currentPluginRootFor, handoffEnv, mcpEnvKeys, nodeTakeoverFs } from './lib/marker-takeover.mjs'
 import { HOOK_RESTART_FILE_NAME, createHookRestart, nodeHookRestartFs } from './lib/hook-restart.mjs'
 import { buildCallOwnerBody, CALL_OWNER_OTHER_CHAT_REFUSAL } from './lib/call-owner.js'
@@ -403,6 +404,8 @@ import {
   shouldSendBootHello,
   shouldBackfillLiveMarker,
   buildBootHelloNotification,
+  buildIdentityNotice,
+  shouldSendIdentityNotice,
   buildLivenessProbeNotification,
   shouldSendLivenessProbe,
   probeRequestPath,
@@ -12631,6 +12634,47 @@ async function getVoiceIdentity(
   }
 }
 
+/** How long the boot hello waits for the agent's name before it greets
+ *  without one. */
+const BOOT_IDENTITY_TIMEOUT_MS = 5_000
+
+/**
+ * The agent's own name, for the boot hello, and a refresh of its identity
+ * file (lib/agent-identity.mjs; Kc's PC test, 2026-10-24: agent 1129 read the
+ * owner's global CLAUDE.md and said "Ares here"). Pairing writes the file
+ * before the first launch; this keeps it right after a rename in the app and
+ * gives an agent paired before it its file. The launcher passes the file from
+ * its own next start (one started before the update is old code), and the CLI
+ * uses it from the next new conversation or compaction, so a 'written' here
+ * also tells the live conversation its name (shouldSendIdentityNotice, at
+ * boot). Only an integrations/me answer writes it, so a failed read never
+ * rewrites the file with less in it; an API key daemon (no pairing) still
+ * gets its name for the hello from the assistants list. name '' when
+ * unknown. Never throws.
+ */
+async function refreshAgentIdentity(
+  timeoutMs: number,
+): Promise<{ name: string; ownerFirstName: string; outcome: string }> {
+  let name = ''
+  let ownerFirstName = ''
+  let outcome = 'skipped'
+  try {
+    const me = identityFromMe(await bgosGetCachedOn304('integrations/me'), ASSISTANT_ID)
+    name = me.name
+    ownerFirstName = me.ownerFirstName
+    const dir = agentStateDir(homedir(), ASSISTANT_ID)
+    if (dir && name) {
+      outcome = writeAgentIdentity({ stateDir: dir, name, ownerFirstName })
+      if (outcome === 'written') log(`identity: wrote ${identityFilePath(dir)}`)
+      if (outcome === 'failed') log(`identity: could not write ${identityFilePath(dir)}`)
+    }
+  } catch (err) {
+    log(`identity: integrations/me unavailable (${err}); the identity file stays as it is`)
+  }
+  if (!name) name = (await getVoiceIdentity(timeoutMs))?.name ?? ''
+  return { name, ownerFirstName, outcome }
+}
+
 // The Sessions sheet (P6 stage 3, spec 5.7): the sessions in this agent's own
 // folder, read from the SAME project dir the context gauge reads, with the
 // binder's resolved binding flagged Current, so the list and the gauge can
@@ -17086,6 +17130,9 @@ async function main(): Promise<void> {
     // for such agents and backfill the marker silently so the doctor reports them
     // live and no later boot re-evaluates them. A genuinely-new pairing (no cursor
     // file) still greets, which is the onboarding channel proof.
+    // Every boot refreshes the identity file; the hello below waits for the
+    // name it reads.
+    const agentIdentityAtBoot = refreshAgentIdentity(BOOT_IDENTITY_TIMEOUT_MS)
     const bootHelloMarkerExists = readLiveMarker(LIVE_MARKER_PATH) != null
     const bootHelloExistingPairing = cursorBoot.fileExisted
     if (
@@ -17111,19 +17158,51 @@ async function main(): Promise<void> {
       const helloChat = monitoredChatIds[0]
       if (helloChat) {
         bootHelloSent = true
-        const hello = buildBootHelloNotification({ chatId: helloChat })
         log(
           `boot hello: first-ever boot for this pairing, asking the session to ` +
             `greet the user in chat ${helloChat} (the reply is the channel proof)`,
         )
-        void trackMessageOperation(() =>
-          mcp.notification({
-            method: 'notifications/claude/channel',
-            params: { content: hello.content, meta: hello.meta },
-          }),
-        ).catch((err) => log(`boot hello delivery failed: ${err}`))
+        // Named, so the first thing the owner reads is the agent's own name.
+        // The hello is the channel proof the bootstrap waits on, so a slow
+        // name read never holds it past BOOT_IDENTITY_TIMEOUT_MS.
+        const nameOrNothing = new Promise<string>((resolve) => {
+          const t = setTimeout(() => resolve(''), BOOT_IDENTITY_TIMEOUT_MS)
+          if (typeof t.unref === 'function') t.unref()
+          void agentIdentityAtBoot.then((identity) => resolve(identity.name), () => resolve(''))
+        })
+        void nameOrNothing
+          .then((name) =>
+            trackMessageOperation(() => {
+              const hello = buildBootHelloNotification({ assistantName: name, chatId: helloChat })
+              return mcp.notification({
+                method: 'notifications/claude/channel',
+                params: { content: hello.content, meta: hello.meta },
+              })
+            }),
+          )
+          .catch((err) => log(`boot hello delivery failed: ${err}`))
       }
     }
+
+    // The live conversation learns its name when the boot refresh just wrote a
+    // new identity (plugin review I2): an agent that was running before its
+    // file existed (agent 1129) or was renamed since is in a conversation
+    // whose recorded system prompt has no name, and its launcher may be one
+    // started before the update, which passes no flag. Never beside the first
+    // hello above, which already names it. Not awaited: nothing waits on it.
+    void agentIdentityAtBoot
+      .then((identity) => {
+        if (!shouldSendIdentityNotice({ outcome: identity.outcome, name: identity.name, helloSent: bootHelloSent })) return
+        log(`identity: telling the live session its name (${identity.name})`)
+        return trackMessageOperation(() => {
+          const notice = buildIdentityNotice({ assistantName: identity.name, ownerFirstName: identity.ownerFirstName })
+          return mcp.notification({
+            method: 'notifications/claude/channel',
+            params: { content: notice.content, meta: notice.meta },
+          })
+        })
+      })
+      .catch((err) => log(`identity notice delivery failed: ${err}`))
 
     // Step 2.5: Cursor persistence flush loop + exit hooks (restart-replay
     // fix). The store was loaded synchronously at module init, before any
