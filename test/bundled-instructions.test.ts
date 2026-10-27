@@ -191,10 +191,14 @@ test('the reply description says buttons ask exactly one thing and names the car
 // Review of #282, item 3: a call with neither wait_seconds nor timeout_seconds
 // keeps its old contract (it blocks up to 600 s and returns the answers), so
 // "returns at once as pending" is true only with wait_seconds 0, and every
-// place that carries section 6 says so right after it.
+// place that carries section 6 says so right after it. It names the pending
+// return it qualifies: "For that, pass wait_seconds: 0" read as the way to
+// wait for the answer, the sentence just before it (second review of #282,
+// Important 1).
 const PASS_ZERO =
-  'For that, pass wait_seconds: 0. A call with neither wait_seconds nor timeout_seconds keeps its old behaviour: ' +
-  'it waits up to 600 s and returns the answers.'
+  'The pending return above needs wait_seconds: 0; to wait for the answers, pass wait_seconds from 1 to 600. ' +
+  'A call with neither wait_seconds nor timeout_seconds keeps its old behaviour: it waits up to 600 s and returns ' +
+  'the answers, or pending if they do not all come in time.'
 
 test('item 3 of #282: right after section 6, the instructions, the tool and the fallback say to pass wait_seconds 0', async () => {
   const { BGOS_CAPABILITIES_FALLBACK } = await import('../lib/capabilities.ts')

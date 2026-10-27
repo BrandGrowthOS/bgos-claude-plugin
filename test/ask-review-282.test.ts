@@ -443,6 +443,9 @@ test('item 3: a pending result says in plain words that the answers come later, 
     assert.match(text, /refuse/)
     assert.match(text, /schedule, boards, the browser, email_send and call_owner/)
     assert.match(text, /ask again with wait_seconds while your owner is in the chat/)
+    // A second card beside the first leaves two open cards and a stale late answer
+    // (second review of #282, Minor 7): withdraw the first, then ask again.
+    assert.match(text, /call withdraw_ask with this ask_id, then ask again with wait_seconds while your owner is in the chat/)
     assert.match(text, /your owner's next message/)
   }
 })
