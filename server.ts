@@ -6845,8 +6845,11 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
         // hold is released and the group is announced when it completes. The
         // hold is on disk with its deadline, so another daemon of this
         // assistant holds off too, and lets go if this process dies waiting.
+        // It outlasts the last read, which may start at the deadline and take
+        // up to HTTP_TIMEOUT_MS (fourth fresh review of Data's recheck of
+        // #282, Minor 1).
         const deadline = Date.now() + waitSeconds * 1000
-        askTracker.hold(askKey, deadline + ASK_HOLD_MARGIN_MS)
+        askTracker.hold(askKey, deadline + HTTP_TIMEOUT_MS + ASK_HOLD_MARGIN_MS)
         // Needs you, for as long as the owner has not answered (session
         // status, board row 9c3d6b2c); the finally holds on any exit.
         asksWaiting += 1
@@ -11740,7 +11743,7 @@ function refreshAskTracker(via: string): void {
   }
 }
 
-/** A blocking wait's hold on disk outlives its deadline by this much (the last read, the release). */
+/** A blocking wait's hold on disk outlives its deadline and its last read (HTTP_TIMEOUT_MS) by this much (the tick, the release). */
 const ASK_HOLD_MARGIN_MS = 30_000
 /**
  * How long a passive wait's own retire holds its card: a PATCH per question
