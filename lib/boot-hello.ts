@@ -180,16 +180,31 @@ export function shouldSendIdentityNotice(input: {
 }
 
 /**
- * Whether a refresh while the daemon runs found a name its session was not
- * told yet (a rename in the app while the agent runs): told once per name,
- * and a failed read (no name) never says anything.
+ * What a refresh while the daemon runs does with the name it read: tell the
+ * session a name it was not told yet (a rename in the app while the agent
+ * runs), once per name, and the name it now knows it was told.
+ * - Only an integrations/me answer counts (`fromMe`). The assistants list the
+ *   daemon falls back to is read once and cached for its life, so after a
+ *   rename it still says the old name: acting on it told the agent its old
+ *   name at the first backend error, and the new one again after (the fresh
+ *   review of 944aa43, I1).
+ * - A daemon that read no name at boot (`told` empty) does not know what its
+ *   session was told, so a first good read is recorded quietly unless it
+ *   changed the identity file: an unchanged file is what the session started
+ *   on (review 2).
  */
-export function identityNoticeDueWhileRunning(input: {
+export function identityToldWhileRunning(input: {
+  told: string | null
   name: string | null | undefined
-  told: string | null | undefined
-}): boolean {
+  fromMe: boolean
+  outcome: string
+}): { tell: boolean; told: string | null } {
   const name = cleanIdentityName(input.name)
-  return name !== '' && name !== cleanIdentityName(input.told)
+  if (!input.fromMe || name === '') return { tell: false, told: input.told }
+  const told = cleanIdentityName(input.told)
+  if (name === told) return { tell: false, told: name }
+  if (told === '' && input.outcome !== 'written') return { tell: false, told: name }
+  return { tell: true, told: name }
 }
 
 /** That notice: the identity in the same words as the file, and no reply asked for. */

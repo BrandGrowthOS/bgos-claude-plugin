@@ -99,7 +99,7 @@ import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
 import { DoctorRpcHandler, buildDoctorChecks, normalizeDoctorRpc } from './lib/doctor-rpc.ts'
 import { collectChanges, createNodeRunGit, nodeChangesFs } from './lib/git-changes.js'
 import { defaultPidAlive, pluginStateDirFor, readBootClock } from './lib/agent-inventory.mjs'
-import { identityFilePath, identityFromMe, takeIdentityNotice, writeAgentIdentity } from './lib/agent-identity.mjs'
+import { cleanIdentityName, identityFilePath, identityFromMe, takeIdentityNotice, writeAgentIdentity } from './lib/agent-identity.mjs'
 import { createMarkerTakeover, currentPluginRootFor, handoffEnv, mcpEnvKeys, nodeTakeoverFs } from './lib/marker-takeover.mjs'
 import { HOOK_RESTART_FILE_NAME, createHookRestart, nodeHookRestartFs } from './lib/hook-restart.mjs'
 import { buildCallOwnerBody, CALL_OWNER_OTHER_CHAT_REFUSAL } from './lib/call-owner.js'
@@ -423,7 +423,7 @@ import {
   shouldBackfillLiveMarker,
   buildBootHelloNotification,
   buildIdentityNotice,
-  identityNoticeDueWhileRunning,
+  identityToldWhileRunning,
   shouldSendIdentityNotice,
   buildLivenessProbeNotification,
   shouldSendLivenessProbe,
@@ -13095,18 +13095,21 @@ let identityToldName: string | null = null
  * boot). Only an integrations/me answer writes it, so a failed read never
  * rewrites the file with less in it; an API key daemon (no pairing) still
  * gets its name for the hello from the assistants list. name '' when
- * unknown. Never throws.
+ * unknown; fromMe when integrations/me named it, never the fallback, which
+ * is cached for the daemon's life. Never throws.
  */
 async function refreshAgentIdentity(
   timeoutMs: number,
-): Promise<{ name: string; ownerFirstName: string; outcome: string }> {
+): Promise<{ name: string; ownerFirstName: string; outcome: string; fromMe: boolean }> {
   let name = ''
   let ownerFirstName = ''
   let outcome = 'skipped'
+  let fromMe = false
   try {
     const me = identityFromMe(await bgosGetCachedOn304('integrations/me'), ASSISTANT_ID)
     name = me.name
     ownerFirstName = me.ownerFirstName
+    fromMe = name !== ''
     const dir = agentStateDir(homedir(), ASSISTANT_ID)
     if (dir && name) {
       outcome = writeAgentIdentity({ stateDir: dir, name, ownerFirstName })
@@ -13117,23 +13120,34 @@ async function refreshAgentIdentity(
     log(`identity: integrations/me unavailable (${err}); the identity file stays as it is`)
   }
   if (!name) name = (await getVoiceIdentity(timeoutMs))?.name ?? ''
-  return { name, ownerFirstName, outcome }
+  return { name, ownerFirstName, outcome, fromMe }
 }
 
 /**
  * The refresh on a timer while the daemon runs: the identity file follows a
  * rename (so the next new conversation or compaction reads it), and this
- * session is told the new name once. Each daemon tells its own session, so
- * with two sessions of one agent both hear it, whichever wrote the file.
- * Pairing only: an API key daemon has no integrations/me. Never throws.
+ * session is told the new name once, only from an integrations/me answer
+ * (identityToldWhileRunning). It runs where the boot notice does, in the
+ * daemon that holds the pairing lock, so with two sessions of one agent the
+ * passive one hears a rename at its next new conversation or compaction, or
+ * once it takes the lock. Pairing only: an API key daemon has no
+ * integrations/me. Never throws.
  */
 async function refreshIdentityWhileRunning(): Promise<void> {
   if (identityToldName === null || AUTH.mode !== 'pairing') return
   try {
     const identity = await refreshAgentIdentity(BOOT_IDENTITY_TIMEOUT_MS)
-    if (!identityNoticeDueWhileRunning({ name: identity.name, told: identityToldName })) return
-    identityToldName = identity.name
-    log(`identity: renamed while running; telling the live session its name (${identity.name})`)
+    const step = identityToldWhileRunning({
+      told: identityToldName,
+      name: identity.name,
+      fromMe: identity.fromMe,
+      outcome: identity.outcome,
+    })
+    identityToldName = step.told
+    if (!step.tell) return
+    // The voice persona's cached name is the old one now.
+    voiceIdentityCache = null
+    log(`identity: renamed while running; telling the live session its name (${JSON.stringify(cleanIdentityName(identity.name))})`)
     await trackMessageOperation(() => {
       const notice = buildIdentityNotice({ assistantName: identity.name, ownerFirstName: identity.ownerFirstName })
       return mcp.notification({
@@ -17805,7 +17819,7 @@ async function main(): Promise<void> {
     // then finds unchanged, while a resumed conversation still has the old one.
     const agentIdentityAtBoot = refreshAgentIdentity(BOOT_IDENTITY_TIMEOUT_MS).then((identity) => {
       const dir = agentStateDir(homedir(), ASSISTANT_ID)
-      const launcher = dir ? takeIdentityNotice({ stateDir: dir }) : null
+      const launcher = dir ? takeIdentityNotice({ stateDir: dir, bootedAtMs: DAEMON_START_MS }) : null
       return {
         ...identity,
         name: identity.name || launcher?.name || '',
@@ -17882,7 +17896,7 @@ async function main(): Promise<void> {
           })
         )
           return
-        log(`identity: telling the live session its name (${identity.name})`)
+        log(`identity: telling the live session its name (${JSON.stringify(cleanIdentityName(identity.name))})`)
         return trackMessageOperation(() => {
           const notice = buildIdentityNotice({ assistantName: identity.name, ownerFirstName: identity.ownerFirstName })
           return mcp.notification({

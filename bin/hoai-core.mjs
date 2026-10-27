@@ -126,6 +126,7 @@ import {
   fetchAgentIdentity,
   identityFilePath,
   identityLaunchArgs,
+  identityNamesOfText,
   identityNoticePath,
   pairingFromCredentials,
   writePrivateText,
@@ -3058,26 +3059,45 @@ export async function superviseClaude(args, opts = {}) {
   // the old name. With this agent's own pairing and a short timeout; any
   // failure launches on the file as it is. A change also leaves the daemon a
   // notice (lib/agent-identity.mjs takeIdentityNotice), so a resumed
-  // conversation, whose recorded system prompt has the old name, is told.
-  // The token goes in the one request header, never into a print.
+  // conversation, whose recorded system prompt has the old name, is told;
+  // only a change of a name does, never the same names in a new form. The
+  // pairing is the daemon's: BGOS_CREDENTIALS_PATH outright when set, else
+  // this agent's own file, else the legacy one when it is this agent's. The
+  // token goes in the one request header, never into a print. It never
+  // stands in the way of a launch: a throw launches on the file as it is.
   const fetchImpl = opts.fetchImpl ?? globalThis.fetch
   const identityRefreshTimeoutMs = opts.identityRefreshTimeoutMs ?? IDENTITY_REFRESH_TIMEOUT_MS
   const writePrivate = opts.writeFile ? writeFile : (path, content) => writePrivateText(path, content)
   const refreshIdentityFile = async () => {
     if (personChoseIdentity || identityOff) return
-    const pairing =
-      pairingFromCredentials(readFile(joinDir(agentDir(home), `credentials-${id}.json`)), id, env) ??
-      pairingFromCredentials(readFile(joinDir(agentDir(home), 'credentials.json')), id, env)
-    if (!pairing) return
-    const me = await fetchAgentIdentity({ ...pairing, assistantId: id, fetchImpl, timeoutMs: identityRefreshTimeoutMs })
-    const text = me ? agentIdentityText(me) : null
-    if (!me || !text || String(readFile(identityPath) ?? '') === `${text}\n`) return
-    if (!writePrivate(identityPath, `${text}\n`)) return
-    writePrivate(
-      identityNoticePath(stateDir),
-      `${JSON.stringify({ name: me.name, ownerFirstName: me.ownerFirstName, at: new Date(now()).toISOString() })}\n`,
-    )
-    print(`[hoai] identity: this agent's name is now ${JSON.stringify(cleanIdentityName(me.name))}`)
+    try {
+      const credentialsPath = String(env.BGOS_CREDENTIALS_PATH ?? '').trim()
+      const pairing = credentialsPath
+        ? pairingFromCredentials(readFile(credentialsPath), id, env)
+        : (pairingFromCredentials(readFile(joinDir(agentDir(home), `credentials-${id}.json`)), id, env) ??
+          pairingFromCredentials(readFile(joinDir(agentDir(home), 'credentials.json')), id, env))
+      if (!pairing) return
+      const me = await fetchAgentIdentity({ ...pairing, assistantId: id, fetchImpl, timeoutMs: identityRefreshTimeoutMs })
+      const text = me ? agentIdentityText(me) : null
+      const before = String(readFile(identityPath) ?? '')
+      if (!me || !text || before === `${text}\n`) return
+      if (!writePrivate(identityPath, `${text}\n`)) return
+      const was = identityNamesOfText(before)
+      const who = cleanIdentityName(me.name)
+      const owner = cleanIdentityName(me.ownerFirstName)
+      if (was.name === who && was.ownerFirstName === owner) return
+      writePrivate(
+        identityNoticePath(stateDir),
+        `${JSON.stringify({ name: me.name, ownerFirstName: me.ownerFirstName, at: new Date(now()).toISOString() })}\n`,
+      )
+      print(
+        was.name === who
+          ? `[hoai] identity: the owner's first name is now ${JSON.stringify(owner)}`
+          : `[hoai] identity: this agent's name is now ${JSON.stringify(who)}`,
+      )
+    } catch (err) {
+      print(`[hoai] identity: could not refresh the identity file (${err?.message ?? err}); launching on it as it is`)
+    }
   }
   // The recipe never carries the launcher's own identity args: a watcher
   // relaunch goes through hoai, which adds them again from the file.
@@ -3426,6 +3446,7 @@ export async function superviseClaude(args, opts = {}) {
           ? sessionArgsFor(carried, exists(sessionTranscriptPath(home, cwd, carried, env.CLAUDE_CONFIG_DIR)))
           : sessionArgsFor(pinnedId, sessionExistsNow())
         await refreshIdentityFile()
+        if (stopSignal?.aborted) return code
         const identityArgs = relaunchIdentityArgs()
         const relaunchArgs = relaunchClaudeArgs({ scriptDir, env, home, cwd, readFile, sessionArgs, extraArgs: identityArgs })
         if (!relaunchArgs) return stopUnresolved()
@@ -3523,6 +3544,7 @@ export async function superviseClaude(args, opts = {}) {
           freshSessionArgs = []
         }
         await refreshIdentityFile()
+        if (stopSignal?.aborted) return code
         const freshArgs = relaunchClaudeArgs({
           scriptDir,
           env,
@@ -3588,6 +3610,7 @@ export async function superviseClaude(args, opts = {}) {
       // pair: --resume <pin> when its transcript exists, else --session-id <pin>.
       rereadPin()
       await refreshIdentityFile()
+      if (stopSignal?.aborted) return code
       const keepArgs = relaunchClaudeArgs({
         scriptDir,
         env,
