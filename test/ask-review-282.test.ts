@@ -63,10 +63,13 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean; f
     liftIf('function askPassiveRetireHoldMs('),
     liftIf('function orphanRetireMayRun('),
     liftIf('async function retireOrphanedAsks('),
+    liftIf('function tellRetiredOwnAsks('),
+    liftIf('function sendAskWithdrawn('),
+    lift('function heartbeatAskTracker('),
     liftCase('ask_user_input', 'withdraw_ask', 'askTool'),
     liftCase('withdraw_ask', 'complete_voice_task', 'withdrawTool'),
   ].join('\n')
-  const exported = ['askTool', 'withdrawTool', 'announceCompleteAsks']
+  const exported = ['askTool', 'withdrawTool', 'announceCompleteAsks', 'heartbeatAskTracker']
   if (source.includes('function retireOrphanedAsks(')) exported.push('retireOrphanedAsks')
   const js = ts.transpileModule(source, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
@@ -219,6 +222,7 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean; f
     askTool(args: Record<string, unknown>): Promise<ToolResult>
     withdrawTool(args: Record<string, unknown>): Promise<ToolResult>
     announceCompleteAsks(via: string): void
+    heartbeatAskTracker(): void
     retireOrphanedAsks?: (via: string) => Promise<void>
   }
 
@@ -231,6 +235,8 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean; f
     logs,
     askDelivering,
     ...lifted,
+    /** The daemon's own state the lifted code reads (lockHeld, channelArmed), to change mid test. */
+    known,
     advance: (ms: number) => {
       clock += ms
       beatLive()
@@ -854,4 +860,100 @@ test('fourth fresh review of the recheck, Minor 1: a blocking wait holds its car
   })
   await r.askTool({ chat_id: '77', questions: QUESTIONS, wait_seconds: 5 })
   assert.deepEqual(heldThroughLastRead, [true], 'held on disk until the last read ends')
+})
+
+/** The lease follow-up of #282: the retire's record for a live asker, read through the instance. */
+type RetiredOwn = { takeRetiredOwn?: () => Array<{ ask: PendingAsk; withdrawn: number }>; retire?: (askId: string, opts: { withdrawn: number; tellAsker?: boolean }) => PendingAsk | null }
+
+function withAskFile(fn: (filePath: string) => Promise<void>): Promise<void> {
+  const dir = mkdtempSync(join(tmpdir(), 'askcard-lease-'))
+  return fn(join(dir, 'pending-asks.json')).finally(() => rmSync(dir, { recursive: true, force: true }))
+}
+
+test('lease follow-up, item 2: the retire of a live asker\'s card leaves it on file for that asker, with what was answered', () =>
+  withAskFile(async (filePath) => {
+    const r = rig({ live: [2015], filePath })
+    const asker = { pid: 2015, startedAt: START - 60 * MIN }
+    r.foreignGroup('theirs', [797, 798], asker, START - MIN)
+    r.answer(797)
+    for (let i = 0; i < 3; i++) {
+      await r.retireOrphanedAsks?.('timer')
+      r.advance(15_000)
+    }
+    await r.retireOrphanedAsks?.('timer')
+    await r.settle()
+    assert.deepEqual(r.patches.map((p) => p.path), ['messages/798'])
+    assert.equal(r.notes.length, 1, 'this session is told, as before')
+    const theAsker = new AskTracker({ filePath, now: () => r.now(), ...({ self: asker, isAlive: () => true } as object) })
+    theAsker.refresh()
+    const told = (theAsker as unknown as RetiredOwn).takeRetiredOwn?.() ?? 'missing'
+    assert.notEqual(told, 'missing')
+    assert.deepEqual(
+      (told as Array<{ ask: PendingAsk; withdrawn: number }>).map((t) => [t.ask.askId, t.withdrawn, Object.keys(t.ask.answers)]),
+      [['theirs', 1, ['797']]],
+    )
+  }))
+
+test('lease follow-up review, Important 2: a card in a share recipient\'s chat is retired, but kept for nobody: the asker\'s stale lane state never decides', () =>
+  withAskFile(async (filePath) => {
+    const r = rig({ live: [2018], filePath })
+    const asker = { pid: 2018, startedAt: START - 60 * MIN }
+    r.foreignGroup('recipients', [795, 796], asker, START - MIN)
+    r.answer(795)
+    // Lanes are on and the chat is a share recipient's: the connected daemon tells no owner session.
+    r.known.ownerAnnounceRefused = () => true
+    for (let i = 0; i < 3; i++) {
+      await r.retireOrphanedAsks?.('timer')
+      r.advance(15_000)
+    }
+    await r.retireOrphanedAsks?.('timer')
+    await r.settle()
+    assert.deepEqual(r.patches.map((p) => p.path), ['messages/796'], 'retired as before')
+    assert.equal(r.notes.length, 0, 'this session is not told')
+    const theAsker = new AskTracker({ filePath, now: () => r.now(), ...({ self: asker, isAlive: () => true } as object) })
+    theAsker.refresh()
+    assert.deepEqual((theAsker as unknown as RetiredOwn).takeRetiredOwn?.() ?? 'missing', [], 'nor is the asker, whatever lanes it last saw')
+  }))
+
+test('lease follow-up, item 2: the asker\'s own daemon, passive, tells its session once on its tick that its card was retired', () =>
+  withAskFile(async (filePath) => {
+    const r = rig({ filePath })
+    const pending = await r.askTool({ chat_id: '77', questions: QUESTIONS, wait_seconds: 0 })
+    assert.ok(!pending.isError)
+    const askId = r.tracker.pending()[0].askId
+    r.answer(r.tracker.pending()[0].questions[0].messageId)
+    r.known.lockHeld = false
+    r.known.channelArmed = false
+    // The daemon that took the connection reads one answer and retires the rest.
+    const holder = new AskTracker({ filePath, now: () => r.now(), ...({ self: { pid: 2016, startedAt: START - MIN }, isAlive: () => true } as object) })
+    holder.refresh()
+    holder.record(r.tracker.pending()[0].questions[0].messageId, { skipped: true })
+    holder.beginWithdraw(askId)
+    assert.notEqual((holder as unknown as RetiredOwn).retire?.(askId, { withdrawn: 1, tellAsker: true }) ?? 'missing', 'missing')
+    for (let i = 0; i < 3; i++) {
+      r.advance(5_000)
+      r.heartbeatAskTracker()
+      await r.settle()
+    }
+    const told = r.notes.filter((n) => n.params.meta.event_type === 'ask_withdrawn')
+    assert.equal(told.length, 1, 'once')
+    assert.equal(told[0].params.meta.ask_id, askId)
+    assert.equal(told[0].params.meta.withdrawn, '1')
+    assert.ok(Object.values(told[0].params.meta).every((v) => typeof v === 'string'))
+    assert.match(told[0].params.content, /this session posted/)
+    assert.equal(r.tracker.get(askId), null)
+  }))
+
+test('lease follow-up, item 2: a group handed over to the asker\'s restart is announced there once, and no ask_withdrawn goes anywhere', async () => {
+  const r = rig()
+  r.foreignGroup('handed', [799], { pid: 2017, startedAt: START - 60 * MIN }, START - 30 * MIN)
+  r.tracker.record(799, { skipped: true })
+  r.announceCompleteAsks('test')
+  for (let i = 0; i < 4; i++) {
+    await r.retireOrphanedAsks?.('timer')
+    r.heartbeatAskTracker()
+    r.advance(15_000)
+    await r.settle()
+  }
+  assert.deepEqual(r.notes.map((n) => n.params.meta.event_type), ['ask_answered'])
 })

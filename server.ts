@@ -11922,6 +11922,8 @@ function heartbeatAskTracker(): void {
   } catch (err) {
     log(`ask tracker: could not write the lease (tick): ${err}`)
   }
+  // The file as just read: a card of this session's that the connected daemon retired.
+  tellRetiredOwnAsks()
 }
 
 /** askTracker.refresh() where a throw must not end the daemon or stop an arm (fifth review of #282, Minor 2). */
@@ -12135,28 +12137,52 @@ async function retireOrphanedAsks(via: string): Promise<void> {
     // answers): then there is nothing to tell here (fresh review of Data's
     // recheck of #282, Minor 2).
     refreshAskTracker('retire')
-    if (!askTracker.withdraw(ask.askId)) continue
-    // The second lock (person lanes): a card in a share recipient's chat is
-    // retired, but never told to the owner's session.
-    if (ownerAnnounceRefused({ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership.isOthers(ask.chatId) })) {
-      noteLaneMisroute('ask withdrawn', ask.questions.map((q) => q.messageId).join(','), 'a recipient chat')
-      continue
-    }
-    const event = buildAskWithdrawnEvent(ask, { assistantId: String(ASSISTANT_ID), withdrawn })
-    void trackMessageOperation(() =>
-      mcp.notification({
-        method: 'notifications/claude/channel',
-        params: {
-          // Typed answers ride in it, as in an ask_answered event: never shown
-          // to be the owner's own words, and it opens no private turn.
-          content: privateTapCard({ tracker: privateTurns, lane: 'ask', ownerUserId: USER_ID, chatId: ask.chatId, messageId: ask.questions[0]?.messageId, tapperUserId: null, answeredAt: null, receivedAt: Date.now(), callbackData: '', customText: null, posted: false, content: event.content }),
-          meta: event.meta,
-        },
-      }),
-    )
-      .then(() => log(`ask_withdrawn: retired group ${ask.askId} in chat ${ask.chatId} and told this session, via ${via}`))
-      .catch((err) => log(`ask_withdrawn: group ${ask.askId} was retired, but telling this session failed: ${err}`))
+    // This daemon's lane verdict, fresh while it holds the connection, also
+    // decides whether the asker is told (fresh review of the follow-up, Important 2).
+    const refused = ownerAnnounceRefused({ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership.isOthers(ask.chatId) })
+    if (!askTracker.retire(ask.askId, { withdrawn, tellAsker: !refused })) continue
+    sendAskWithdrawn(ask, withdrawn, { toAsker: false, via })
   }
+}
+
+/**
+ * Tell this session, once, of each card it posted that the daemon holding the
+ * connection retired while this one ran on without it (askTracker.retire):
+ * the ask_withdrawn event that daemon's own session got, worded for the
+ * asker. On the ask tick in every daemon, armed or passive: the asker is
+ * passive by then. A group handed over to a restart is never retired, so its
+ * new owner is never told (Data's gate notes on #282, item 2).
+ */
+function tellRetiredOwnAsks(): void {
+  try {
+    for (const { ask, withdrawn } of askTracker.takeRetiredOwn()) sendAskWithdrawn(ask, withdrawn, { toAsker: true, via: 'the ask tick' })
+  } catch (err) {
+    log(`ask_withdrawn: could not tell this session of its retired cards: ${err}`)
+  }
+}
+
+/** One ask_withdrawn channel event to this session (retireOrphanedAsks, tellRetiredOwnAsks). */
+function sendAskWithdrawn(ask: PendingAsk, withdrawn: number, opts: { toAsker: boolean; via: string }): void {
+  // The second lock (person lanes): a card in a share recipient's chat is
+  // retired, but never told to the owner's session.
+  if (ownerAnnounceRefused({ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership.isOthers(ask.chatId) })) {
+    noteLaneMisroute('ask withdrawn', ask.questions.map((q) => q.messageId).join(','), 'a recipient chat')
+    return
+  }
+  const event = buildAskWithdrawnEvent(ask, { assistantId: String(ASSISTANT_ID), withdrawn, toAsker: opts.toAsker })
+  void trackMessageOperation(() =>
+    mcp.notification({
+      method: 'notifications/claude/channel',
+      params: {
+        // Typed answers ride in it, as in an ask_answered event: never shown
+        // to be the owner's own words, and it opens no private turn.
+        content: privateTapCard({ tracker: privateTurns, lane: 'ask', ownerUserId: USER_ID, chatId: ask.chatId, messageId: ask.questions[0]?.messageId, tapperUserId: null, answeredAt: null, receivedAt: Date.now(), callbackData: '', customText: null, posted: false, content: event.content }),
+        meta: event.meta,
+      },
+    }),
+  )
+    .then(() => log(`ask_withdrawn: retired group ${ask.askId} in chat ${ask.chatId} and told this session${opts.toAsker ? ', which asked it' : ''}, via ${opts.via}`))
+    .catch((err) => log(`ask_withdrawn: group ${ask.askId} was retired, but telling this session failed: ${err}`))
 }
 
 /** Retire the questions of a card whose post failed half way (best effort; nothing tracks them). */
