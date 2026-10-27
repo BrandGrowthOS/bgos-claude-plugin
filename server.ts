@@ -292,12 +292,14 @@ import {
   askAnswerFromRow,
   askPendingText,
   askReadIntervalMs,
+  askQuestionsError,
   askResultRows,
   askRetireBody,
   askWaitSeconds,
   askWithdrawnText,
   buildAskAnsweredEvent,
   buildAskWithdrawnEvent,
+  type AskQuestionInput,
   type AskRow,
   type PendingAsk,
 } from './lib/ask-tracker.ts'
@@ -4945,7 +4947,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'in the chat, use wait_seconds, and the answers come back inside their own turn. ' +
         'In a session that is not the one connected to BGOS for this agent, wait_seconds 0 is ' +
         'refused, and a wait that runs out withdraws the questions not yet answered. ' +
-        'For open-ended questions use `reply`.',
+        'Set multi_select: true on a question when more than one option can be right; it ' +
+        'answers with arrays. For open-ended questions use `reply`.',
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -4998,6 +5001,14 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
                   type: 'boolean',
                   description:
                     'Show a Skip button so the user can move past without answering. Default true.',
+                },
+                multi_select: {
+                  type: 'boolean',
+                  description:
+                    'true when more than one option can be right: your owner ticks every ' +
+                    'option that applies and submits once, and this question answers with ' +
+                    'picked_option_values and picked_option_labels arrays (an array even ' +
+                    'for one pick). Needs 2 or more options. Default false: one pick.',
                 },
               },
               required: ['text', 'options'],
@@ -6835,14 +6846,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
 
     case 'ask_user_input': {
       const chat_id = rawArgs.chat_id as string | undefined
-      const questions = rawArgs.questions as
-        | Array<{
-            text: string
-            options: Array<{ label: string; value: string }>
-            allow_free_text?: boolean
-            allow_skip?: boolean
-          }>
-        | undefined
+      const questions = rawArgs.questions as AskQuestionInput[] | undefined
       // wait_seconds 0: post, return pending, the answers come back as ONE
       // ask_answered event however late. No wait field: the old 600 s block.
       // A wait that is not a number of seconds is refused before anything is
@@ -6906,18 +6910,9 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
           content: [{ type: 'text', text: 'Error: at least one question is required' }],
         }
       }
-      for (const q of questions) {
-        if (!q.text || !q.options?.length) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: 'Error: every question needs `text` and at least one option (use `reply` for open-ended questions).',
-              },
-            ],
-            isError: true,
-          }
-        }
+      const questionsError = askQuestionsError(questions)
+      if (questionsError) {
+        return { content: [{ type: 'text', text: questionsError }], isError: true }
       }
 
       if ('error' in askWait) {
@@ -6946,6 +6941,8 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
             askOrder: i + 1,
             allowFreeText: q.allow_free_text ?? true,
             allowSkip: q.allow_skip ?? true,
+            // Sent only when asked for, so a backend that predates it never sees the field.
+            ...(q.multi_select === true && { multiSelect: true }),
             // Namespace-escape agent option values (same isolation as `reply`).
             options: q.options.map((o) => ({
               text: o.label,
@@ -6967,6 +6964,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
             messageId: postedIds[i],
             text: q.text,
             options: q.options.map((o) => ({ label: o.label, value: o.value })),
+            ...(q.multi_select === true && { multiSelect: true as const }),
           })),
         })
         registered = true

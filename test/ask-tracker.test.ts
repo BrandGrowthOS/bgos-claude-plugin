@@ -24,6 +24,8 @@ import {
   askAnswerFromRow,
   askPendingText,
   askReadIntervalMs,
+  askQuestionsError,
+  askResultRows,
   askRetireBody,
   askWaitSeconds,
   buildAskAnsweredEvent,
@@ -1198,4 +1200,107 @@ test('third fresh review of the recheck, Minor 2: after a sleep the connected da
       `nothing before 35 s after the wake: ${JSON.stringify(seen)}`,
     )
   })
+})
+
+// ── Multi-select (askcard PR 3): "when there are multiple answers, you need to be able to multi-select" (Kc) ──
+// The backend stores a multi-select answer as { optionIds: [...], optionId: optionIds[0], skipped: false }; a
+// question posted with multi_select: true comes back as arrays, every pick in the card's own order.
+
+function multiRow(payload: Record<string, unknown>): AskRow {
+  return {
+    message: { id: 201, answeredAt: '2026-10-27T09:15:00Z', answerPayload: payload as AskRow['message']['answerPayload'] },
+    messageOptions: [
+      { id: 71, text: 'Postgres', callbackData: 'u:pg' },
+      { id: 72, text: 'Redis', callbackData: 'u:redis' },
+      { id: 73, text: 'S3', callbackData: 'u:s3' },
+    ],
+  }
+}
+
+test('several picked options read back as arrays of the agent\'s own values and labels, in the card\'s order', () => {
+  assert.deepEqual(askAnswerFromRow(multiRow({ optionIds: [71, 73], optionId: 71, skipped: false })), {
+    optionValues: ['pg', 's3'],
+    optionLabels: ['Postgres', 'S3'],
+  })
+})
+
+test('an option id the row no longer carries is dropped; none left reads as a skip', () => {
+  assert.deepEqual(askAnswerFromRow(multiRow({ optionIds: [72, 99], optionId: 72, skipped: false })), {
+    optionValues: ['redis'],
+    optionLabels: ['Redis'],
+  })
+  assert.deepEqual(askAnswerFromRow(multiRow({ optionIds: [98, 99], optionId: 98, skipped: false })), { skipped: true })
+})
+
+function multiGroup() {
+  return {
+    askId: 'ask-m',
+    chatId: '77',
+    questions: [
+      {
+        messageId: 201,
+        text: 'Which stores?',
+        multiSelect: true as const,
+        options: [
+          { label: 'Postgres', value: 'pg' },
+          { label: 'Redis', value: 'redis' },
+          { label: 'S3', value: 's3' },
+        ],
+      },
+      { messageId: 202, text: 'Ship it?', options: [{ label: 'Yes', value: 'yes' }, { label: 'No', value: 'no' }] },
+    ],
+  }
+}
+
+test('a multi-select question answers with arrays; a single-select one keeps its single fields', () => {
+  const tracker = new AskTracker({ filePath: null })
+  tracker.register(multiGroup())
+  tracker.record(201, { optionValues: ['pg', 's3'], optionLabels: ['Postgres', 'S3'] })
+  const done = tracker.record(202, { optionValue: 'yes', optionLabel: 'Yes' })
+  assert.ok(done.kind === 'complete')
+  const ev = buildAskAnsweredEvent(done.ask, { assistantId: '9', ts: '2026-10-27T09:15:00Z' })
+  assert.deepEqual(JSON.parse(ev.meta.answers), [
+    { question: 'Which stores?', picked_option_values: ['pg', 's3'], picked_option_labels: ['Postgres', 'S3'] },
+    { question: 'Ship it?', picked_option_value: 'yes', picked_option_label: 'Yes' },
+  ])
+})
+
+test('a multi-select question answered with one pick (an old app, or an older backend) is still an array', () => {
+  const tracker = new AskTracker({ filePath: null })
+  tracker.register(multiGroup())
+  tracker.record(201, askAnswerFromRow(multiRow({ optionId: 72, skipped: false }))!)
+  const done = tracker.record(202, { skipped: true })
+  assert.ok(done.kind === 'complete')
+  assert.deepEqual(askResultRows(done.ask)[0], {
+    question: 'Which stores?',
+    picked_option_values: ['redis'],
+    picked_option_labels: ['Redis'],
+  })
+})
+
+test('a skipped or typed multi-select answer carries no empty arrays', () => {
+  const tracker = new AskTracker({ filePath: null })
+  tracker.register(multiGroup())
+  tracker.record(201, { freeText: 'all of them' })
+  const done = tracker.record(202, { skipped: true })
+  assert.ok(done.kind === 'complete')
+  assert.deepEqual(askResultRows(done.ask)[0], { question: 'Which stores?', free_text: 'all of them' })
+})
+
+test('the multi-select flag survives a restart', () => {
+  withDir((dir) => {
+    const filePath = join(dir, 'pending-asks.json')
+    new AskTracker({ filePath }).register(multiGroup())
+    const after = new AskTracker({ filePath })
+    assert.equal(after.get('ask-m')?.questions[0].multiSelect, true)
+    assert.equal(after.get('ask-m')?.questions[1].multiSelect, undefined)
+  })
+})
+
+test('question checks: text and an option each, and multi_select needs 2 or more options', () => {
+  assert.equal(askQuestionsError([{ text: 'Pick', options: [{ label: 'A', value: 'a' }] }]), null)
+  assert.match(askQuestionsError([{ text: '', options: [{ label: 'A', value: 'a' }] }]) ?? '', /needs `text` and at least one option/)
+  assert.match(askQuestionsError([{ text: 'Pick', options: [] }]) ?? '', /needs `text` and at least one option/)
+  assert.match(askQuestionsError([{ text: 'Pick', multi_select: true, options: [{ label: 'A', value: 'a' }] }]) ?? '', /multi_select needs 2 or more options/)
+  assert.equal(askQuestionsError([{ text: 'Pick', multi_select: true, options: [{ label: 'A', value: 'a' }, { label: 'B', value: 'b' }] }]), null)
 })
