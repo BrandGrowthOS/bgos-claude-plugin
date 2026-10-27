@@ -28,6 +28,7 @@ import {
   askWaitSeconds,
   buildAskAnsweredEvent,
   MAX_ASK_WAIT_SECONDS,
+  pidIsAlive,
   type AskRow,
 } from '../lib/ask-tracker.ts'
 
@@ -656,5 +657,66 @@ test('item 6: at most 50 groups are kept, in memory and on disk, even though eve
     assert.ok(tracker.get('g54'))
     // And a second daemon reading that file never brings the dropped ones back.
     assert.equal(new AskTracker({ filePath, now: c.now }).pending().length, 50)
+  })
+})
+
+// ── Second review of #282, Minors 4, 5, 6, 8 and 10 ──
+
+test('second review, Minor 4: a pid that is not a real process (0, negative) is never alive', () => {
+  assert.equal(pidIsAlive(0), false)
+  assert.equal(pidIsAlive(-1), false)
+  assert.equal(pidIsAlive(Number.NaN), false)
+})
+
+test('second review, Minor 5: a JSON object with no version, or a version that is not a number, is kept aside like any file that does not parse', () => {
+  for (const body of [{}, { v: '1', pending: [] }, { v: 0, pending: [] }]) {
+    withDir((dir) => {
+      const filePath = fileWith(dir, body)
+      const tracker = new AskTracker({ filePath })
+      assert.equal(asideIn(dir).length, 1, `${JSON.stringify(body)} kept aside`)
+      tracker.register(group({ askId: 'mine', ids: [931] }))
+      assert.deepEqual(JSON.parse(readFileSync(filePath, 'utf8')).pending.map((a: { askId: string }) => a.askId), ['mine'], 'and this daemon saves again')
+    })
+  }
+})
+
+test('second review, Minor 6: while a read keeps failing, each later pass tries it once, not with every pause again', () => {
+  withDir((dir) => {
+    const filePath = fileWith(dir, OTHER)
+    let reads = 0
+    withFsFault({ read: (p) => (p.endsWith('pending-asks.json') ? (reads++, 'EACCES') : null) }, () => {
+      const t = new AskTracker({ filePath })
+      const first = reads
+      t.refresh()
+      t.refresh()
+      assert.equal(reads - first, 2, `two more passes read ${reads - first} times`)
+    })
+  })
+})
+
+test('second review, Minor 8: a wait written in another number form ("0x10", "1e2") is refused, not read', () => {
+  for (const wait_seconds of ['0x10', '1e2', '0b11']) {
+    const r = askWaitSeconds({ wait_seconds })
+    assert.ok('error' in r, `${wait_seconds} was read as ${JSON.stringify(r)}`)
+  }
+  assert.deepEqual(askWaitSeconds({ wait_seconds: ' 60 ' }), { seconds: 60 })
+  assert.deepEqual(askWaitSeconds({ wait_seconds: '1.5' }), { seconds: 1.5 })
+})
+
+test('second review, Minor 8: the refusal says a larger wait is read as 600, which it is', () => {
+  const r = askWaitSeconds({ wait_seconds: 'soon' })
+  assert.ok('error' in r)
+  assert.match(r.error, /more waits 600/)
+  assert.deepEqual(askWaitSeconds({ wait_seconds: 900 }), { seconds: MAX_ASK_WAIT_SECONDS })
+})
+
+test('second review, Minor 10: a file that does not parse and cannot be kept aside is left alone, never written over', () => {
+  withDir((dir) => {
+    const filePath = fileWith(dir, '{ not json')
+    withFsFault({ rename: (to) => (to.includes('.corrupt-') ? 'EPERM' : null) }, () => {
+      const t = new AskTracker({ filePath })
+      t.register(group({ askId: 'mine', ids: [941] }))
+    })
+    assert.equal(readFileSync(filePath, 'utf8'), '{ not json')
   })
 })
