@@ -271,6 +271,11 @@ export function askAnswerFromRow(row: AskRow): AskAnswer | null {
     if (picked.length > 0) {
       answer.optionValues = picked.map((o) => unescapeAgentButtonValue(o.callbackData))
       answer.optionLabels = picked.map((o) => o.text)
+      // The first pick in the single fields too, as the backend copies it into optionId: a 0.78 daemon that
+      // adopts this group from pending-asks.json reads only these, and names one real pick, not a skip.
+      // askResultRows still hands a multi-select question back as arrays only.
+      answer.optionValue = answer.optionValues[0]
+      answer.optionLabel = answer.optionLabels[0]
     }
   } else if (payload.optionId != null) {
     const matched = (row.messageOptions ?? []).find((o) => o.id === payload.optionId)
@@ -301,6 +306,9 @@ export function askQuestionsError(questions: readonly AskQuestionInput[]): strin
   for (const q of questions) {
     if (!q.text || !q.options?.length) {
       return 'Error: every question needs `text` and at least one option (use `reply` for open-ended questions).'
+    }
+    if (q.multi_select !== undefined && typeof q.multi_select !== 'boolean') {
+      return `Error: multi_select must be true or false ("${q.text}" has ${JSON.stringify(q.multi_select)}).`
     }
     if (q.multi_select === true && q.options.length < 2) {
       return `Error: multi_select needs 2 or more options ("${q.text}" has ${q.options.length}).`

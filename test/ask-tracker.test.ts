@@ -1221,6 +1221,28 @@ test('several picked options read back as arrays of the agent\'s own values and 
   assert.deepEqual(askAnswerFromRow(multiRow({ optionIds: [71, 73], optionId: 71, skipped: false })), {
     optionValues: ['pg', 's3'],
     optionLabels: ['Postgres', 'S3'],
+    optionValue: 'pg',
+    optionLabel: 'Postgres',
+  })
+})
+
+// pending-asks.json is shared by every daemon of this plugin folder, and a 0.78 daemon that adopts the group
+// (a restart onto an older copy) reads only optionValue and optionLabel. The first pick sits there too, as the
+// backend copies it into optionId, so that daemon still names one real pick instead of a skip.
+test('a multi-select answer also carries its first pick in the single fields, for a 0.78 daemon reading the same file', () => {
+  const a = askAnswerFromRow(multiRow({ optionIds: [72, 73], optionId: 72, skipped: false }))!
+  assert.equal(a.optionValue, 'redis')
+  assert.equal(a.optionLabel, 'Redis')
+  // The rows this daemon returns are still arrays only.
+  const tracker = new AskTracker({ filePath: null })
+  tracker.register(multiGroup())
+  tracker.record(201, a)
+  const done = tracker.record(202, { skipped: true })
+  assert.ok(done.kind === 'complete')
+  assert.deepEqual(askResultRows(done.ask)[0], {
+    question: 'Which stores?',
+    picked_option_values: ['redis', 's3'],
+    picked_option_labels: ['Redis', 'S3'],
   })
 })
 
@@ -1228,6 +1250,8 @@ test('an option id the row no longer carries is dropped; none left reads as a sk
   assert.deepEqual(askAnswerFromRow(multiRow({ optionIds: [72, 99], optionId: 72, skipped: false })), {
     optionValues: ['redis'],
     optionLabels: ['Redis'],
+    optionValue: 'redis',
+    optionLabel: 'Redis',
   })
   assert.deepEqual(askAnswerFromRow(multiRow({ optionIds: [98, 99], optionId: 98, skipped: false })), { skipped: true })
 })
@@ -1303,4 +1327,17 @@ test('question checks: text and an option each, and multi_select needs 2 or more
   assert.match(askQuestionsError([{ text: 'Pick', options: [] }]) ?? '', /needs `text` and at least one option/)
   assert.match(askQuestionsError([{ text: 'Pick', multi_select: true, options: [{ label: 'A', value: 'a' }] }]) ?? '', /multi_select needs 2 or more options/)
   assert.equal(askQuestionsError([{ text: 'Pick', multi_select: true, options: [{ label: 'A', value: 'a' }, { label: 'B', value: 'b' }] }]), null)
+})
+
+// A model that writes multi_select: "true" (or 1) meant several answers; posting it as single choice would
+// quietly hand back one. Refused before anything is posted, like the other question checks.
+test('multi_select that is not true or false is refused before anything is posted', () => {
+  const two = [{ label: 'A', value: 'a' }, { label: 'B', value: 'b' }]
+  for (const bad of ['true', 1, null]) {
+    assert.match(
+      askQuestionsError([{ text: 'Pick', multi_select: bad as unknown as boolean, options: two }]) ?? '',
+      /multi_select must be true or false/,
+    )
+  }
+  assert.equal(askQuestionsError([{ text: 'Pick', multi_select: false, options: two }]), null)
 })

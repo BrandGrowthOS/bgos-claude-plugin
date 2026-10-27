@@ -3248,7 +3248,8 @@ const mcp = new Server(
       'The pending return above needs wait_seconds: 0; to wait for the answers, pass wait_seconds from 1 to 600. A call with neither wait_seconds nor timeout_seconds keeps its old behaviour: it waits up to 600 s and returns the answers, or pending if they do not all come in time.',
       '',
       'The BGOS app shows the card as a sheet over the chat with numbered',
-      'choices, optional free-text fallback, and per-question Skip. With',
+      'choices (checkboxes and one Submit on a `multi_select` question),',
+      'optional free-text fallback, and per-question Skip. With',
       '`wait_seconds: 0` the tool returns at once as pending with an `ask_id`. When every',
       'question is answered (option picked, free text typed, or skipped) the',
       'answers arrive together as ONE channel event, however late, and it starts',
@@ -3278,7 +3279,7 @@ const mcp = new Server(
       'taking answers and no ask_answered event comes for it.',
       '',
       'Each question: `{ text, options?: [{ label, value }], allow_free_text?,',
-      'allow_skip? }`. If `options` is omitted or empty, send it as a regular',
+      'allow_skip?, multi_select? }`. If `options` is omitted or empty, send it as a regular',
       '`reply` message instead, the modal exists to make CHOOSING easier, not',
       'to wrap every question.',
       '',
@@ -6943,7 +6944,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
             askOrder: i + 1,
             allowFreeText: q.allow_free_text ?? true,
             allowSkip: q.allow_skip ?? true,
-            // Sent only when asked for, so a backend that predates it never sees the field.
+            // Sent only when asked for: only a flagged row carries the field.
             ...(q.multi_select === true && { multiSelect: true }),
             // Namespace-escape agent option values (same isolation as `reply`).
             options: q.options.map((o) => ({
