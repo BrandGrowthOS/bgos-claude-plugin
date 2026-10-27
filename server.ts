@@ -6724,6 +6724,25 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
         }
       }
 
+      // Only the daemon holding this agent's connection delivers answers, and a
+      // card's answers go only to the session that asked it (lib/ask-tracker.ts
+      // askIsOurs). A passive session's daemon could never hand them back, so
+      // it refuses before it posts anything (review of #282, item 1).
+      if (!lockHeld) {
+        log('ask_user_input: refused in a passive daemon (another session holds this agent\'s connection)')
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                'Error: this session is not the one connected to BGOS for this agent (another session of it ' +
+                'holds the connection), so the answers to a question card could never come back here. Nothing ' +
+                'was posted. Ask in a plain reply instead, or ask from the connected session.',
+            },
+          ],
+          isError: true,
+        }
+      }
       // A peer side-thread already refused a post for good: answer here, no POST.
       if (a2aRouteRefusedChats.has(String(askChatId))) {
         return a2aRouteRequiredResult(String(askChatId), 'these questions')
@@ -11674,8 +11693,9 @@ async function reconcilePendingAsks(via: string, opts: { dueOnly?: boolean } = {
     // Groups a passive session's daemon posted are on disk, not in memory.
     askTracker.refresh()
     for (const ask of askTracker.pending()) {
-      // A blocking wait reads its own group every 1.5 s.
-      if (askTracker.isHeld(ask.askId)) continue
+      // A blocking wait reads its own group every 1.5 s, and another live
+      // session's group is that session's to read and announce.
+      if (askTracker.isHeld(ask.askId) || !askTracker.isOurs(ask)) continue
       const now = Date.now()
       if (opts.dueOnly && now - (askLastReadAt.get(ask.askId) ?? 0) < askReadIntervalMs(ask, now)) continue
       askLastReadAt.set(ask.askId, now)

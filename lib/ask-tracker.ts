@@ -19,6 +19,13 @@
  * wait returns the answers as the tool result instead. Either way delivered()
  * forgets the group for good.
  *
+ * WHOSE. A group belongs to the session that asked it. ask_user_input runs
+ * only in the daemon holding this agent's connection (a passive session's
+ * daemon refuses: it could never hand the answers back), each group carries
+ * the process that posted it, and an announce offers a group only to that
+ * process, or to one that started after it was posted once that process has
+ * ended (the asker restarted). Another live session's card stays its own.
+ *
  * EXACTLY ONCE. Within a daemon life the shared announced-click set guards
  * the transports (server.ts rememberAnnouncedClick on every question id of a
  * delivered group); across lives the file does: a delivered group is gone
@@ -84,6 +91,12 @@ export interface AskAnswer {
   freeText?: string
 }
 
+/** The daemon process that posted a group: its pid and when it started, ms since the epoch. */
+export interface AskOwner {
+  pid: number
+  startedAt: number
+}
+
 export interface PendingAsk {
   askId: string
   chatId: string
@@ -100,6 +113,8 @@ export interface PendingAsk {
    * may still return it, and a waiter that died lets go at its deadline.
    */
   heldUntil?: number
+  /** Who posted it (askIsOurs). Absent only on a group an earlier build of this branch wrote. */
+  owner?: AskOwner
 }
 
 export type AskRecordOutcome =
@@ -261,6 +276,29 @@ export function buildAskAnsweredEvent(
   }
 }
 
+/** Whether a process with this pid runs now (EPERM: it runs, as another user). */
+export function pidIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+/**
+ * Whether this daemon may hand a group's answers to its session: it posted
+ * the group, or the process that did has ended and this one started after
+ * the post, so it is that session restarted. A daemon that ran beside the
+ * asker is another session, and a live asker's group is the asker's.
+ */
+export function askIsOurs(ask: PendingAsk, self: AskOwner, isAlive: (pid: number) => boolean): boolean {
+  const owner = ask.owner
+  if (owner && owner.pid === self.pid && owner.startedAt === self.startedAt) return true
+  if (owner && owner.pid !== self.pid && isAlive(owner.pid)) return false
+  return self.startedAt > ask.postedAt
+}
+
 function isComplete(ask: PendingAsk): boolean {
   return ask.questions.every((q) => ask.answers[String(q.messageId)] !== undefined)
 }
@@ -282,7 +320,9 @@ function validAsk(raw: unknown): raw is PendingAsk {
     a.questions.length > 0 &&
     a.questions.every((q) => q && Number.isSafeInteger(q.messageId) && typeof q.text === 'string') &&
     !!a.answers &&
-    typeof a.answers === 'object'
+    typeof a.answers === 'object' &&
+    (a.owner === undefined ||
+      (!!a.owner && Number.isSafeInteger(a.owner.pid) && typeof a.owner.startedAt === 'number'))
   )
 }
 
@@ -290,15 +330,26 @@ export class AskTracker {
   private readonly filePath: string | null
   private readonly now: () => number
   private readonly log: (line: string) => void
+  private readonly self: AskOwner
+  private readonly isAlive: (pid: number) => boolean
   private readonly asks = new Map<string, PendingAsk>()
   private readonly byMessage = new Map<number, string>()
   private readonly held = new Set<string>()
   private delivered_: string[] = []
 
-  constructor(opts: { filePath: string | null; now?: () => number; log?: (line: string) => void }) {
+  constructor(opts: {
+    filePath: string | null
+    now?: () => number
+    log?: (line: string) => void
+    /** This daemon process (default: this pid, started now). */
+    self?: AskOwner
+    isAlive?: (pid: number) => boolean
+  }) {
     this.filePath = opts.filePath
     this.now = opts.now ?? Date.now
     this.log = opts.log ?? (() => {})
+    this.self = opts.self ?? { pid: process.pid, startedAt: this.now() }
+    this.isAlive = opts.isAlive ?? pidIsAlive
     this.refresh()
   }
 
@@ -314,6 +365,7 @@ export class AskTracker {
         options: q.options.map((o) => ({ label: o.label, value: o.value })),
       })),
       answers: {},
+      owner: { ...this.self },
     }
     this.forget(ask.askId)
     this.asks.set(ask.askId, ask)
@@ -404,9 +456,14 @@ export class AskTracker {
     return until !== undefined && until > this.now()
   }
 
-  /** Complete groups nobody holds and nobody delivered yet: what an announce pass offers. */
+  /** Whether this daemon may hand this group's answers to its session (askIsOurs). */
+  isOurs(ask: PendingAsk): boolean {
+    return askIsOurs(ask, this.self, this.isAlive)
+  }
+
+  /** Complete groups of this session nobody holds and nobody delivered yet: what an announce pass offers. */
   completeUndelivered(): PendingAsk[] {
-    return this.pending().filter((a) => isComplete(a) && !this.isHeld(a.askId))
+    return this.pending().filter((a) => isComplete(a) && !this.isHeld(a.askId) && this.isOurs(a))
   }
 
   /** Handed to the agent (event or tool result): forget the group for good, across restarts and daemons too. */
