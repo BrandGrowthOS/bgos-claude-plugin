@@ -298,3 +298,61 @@ test('item 1: this session\'s own card is announced once when its last answer co
   await r.settle()
   assert.equal(r.notes.length, 1)
 })
+
+// ── Item 2 (Medium): a withdrawn card never delivers ─────────────────────────
+
+test('item 2: an answer that lands while withdraw_ask is retiring the rows is never announced', async () => {
+  const r = rig()
+  await r.askTool({ chat_id: '77', questions: QUESTIONS, wait_seconds: 0 })
+  const askId = r.tracker.pending()[0].askId
+  const [first, last] = [...r.rows.keys()]
+  r.answer(first)
+  // The owner answers the last open question while its row is being retired,
+  // and the stream's door runs the announce pass at once.
+  r.onPatch(() => {
+    r.answer(last)
+    r.tracker.record(last, { optionValue: 'yes', optionLabel: 'Yes' })
+    r.announceCompleteAsks('stream')
+  })
+  const res = await r.withdrawTool({ ask_id: askId })
+  await r.settle()
+  assert.equal(r.notes.length, 0, 'no ask_answered after the tool said none would come')
+  assert.match(res.content[0].text, /withdrawn/)
+  assert.equal(r.tracker.get(askId), null)
+  r.announceCompleteAsks('later pass')
+  await r.settle()
+  assert.equal(r.notes.length, 0)
+})
+
+test('item 2: a card whose ask_answered is already on its way is not reported withdrawn', async () => {
+  const r = rig()
+  await r.askTool({ chat_id: '77', questions: QUESTIONS, wait_seconds: 0 })
+  const askId = r.tracker.pending()[0].askId
+  for (const id of r.rows.keys()) r.tracker.record(id, { skipped: true })
+  const release = r.holdNotifications()
+  r.announceCompleteAsks('stream')
+  assert.equal(r.notes.length, 1, 'the delivery started')
+  const res = await r.withdrawTool({ ask_id: askId })
+  assert.doesNotMatch(res.content[0].text, /no ask_answered event will come/)
+  assert.match(res.content[0].text, /on its way/)
+  assert.equal(r.patches.length, 0, 'nothing retired under an answer already delivered')
+  release()
+  await r.settle()
+  assert.equal(r.tracker.get(askId), null, 'delivered')
+})
+
+test('item 2: a withdraw that could not retire a row lets a later answer through again', async () => {
+  const r = rig()
+  await r.askTool({ chat_id: '77', questions: QUESTIONS, wait_seconds: 0 })
+  const askId = r.tracker.pending()[0].askId
+  r.onPatch(() => {
+    throw new Error('503')
+  })
+  const res = await r.withdrawTool({ ask_id: askId })
+  assert.equal(res.isError, true)
+  assert.match(res.content[0].text, /stays tracked/)
+  for (const id of r.rows.keys()) r.tracker.record(id, { skipped: true })
+  r.announceCompleteAsks('stream')
+  await r.settle()
+  assert.equal(r.notes.length, 1, 'the card is live again, as the result said')
+})
