@@ -33,3 +33,12 @@ test('the questions are checked before any post', () => {
   assert.ok(check > 0)
   assert.ok(check < body.indexOf("bgosPost('messages'"))
 })
+
+test('the instructions say a multi_select question answers ask_answered with arrays', () => {
+  const at = server.indexOf('with `meta.ask_id` and `meta.answers`')
+  assert.ok(at > 0)
+  const para = server.slice(at, server.indexOf('the answers still arrive as ask_answered.', at))
+  assert.match(para, /`multi_select` question/)
+  assert.match(para, /`picked_option_values`/)
+  assert.match(para, /`picked_option_labels`/)
+})
