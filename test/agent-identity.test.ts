@@ -61,9 +61,11 @@ const followUp = identityLib as unknown as {
   pairingFromCredentials?: (text: unknown, assistantId: string, env?: Record<string, string>) => { apiBase: string; token: string } | null
   fetchAgentIdentity?: (input: { apiBase: string; token: string; assistantId: string; fetchImpl: typeof fetch; timeoutMs: number }) => Promise<{ name: string; ownerFirstName: string } | null>
   readIdentityNotice?: (text: unknown) => { name: string; ownerFirstName: string } | null
+  takeIdentityNotice?: (input: { stateDir: string; fs?: unknown; bootedAtMs?: number }) => { name: string; ownerFirstName: string } | null
 }
+type RunningStep = { tell: boolean; told: string | null }
 const runningLib = bootHelloLib as unknown as {
-  identityNoticeDueWhileRunning?: (input: { name: string | null | undefined; told: string | null | undefined }) => boolean
+  identityToldWhileRunning?: (input: { told: string | null; name: string; fromMe: boolean; outcome: string }) => RunningStep
 }
 
 test('the identity says who the agent is, whose it is, and to ignore persona files from other folders', () => {
@@ -473,14 +475,14 @@ test('identity follow-up, Medium: the daemon tells a resumed conversation the na
   assert.equal(shouldSendIdentityNotice({ outcome: 'unchanged', name: 'Nova', helloSent: false, launcherWrote: true } as never), true)
   assert.equal(shouldSendIdentityNotice({ outcome: 'unchanged', name: 'Nova', helloSent: false, launcherWrote: false } as never), false)
   assert.equal(shouldSendIdentityNotice({ outcome: 'unchanged', name: 'Nova', helloSent: true, launcherWrote: true } as never), false)
-  const due = runningLib.identityNoticeDueWhileRunning
-  assert.ok(due, 'identityNoticeDueWhileRunning')
-  assert.equal(due({ name: 'Nova', told: 'Mira' }), true)
-  assert.equal(due({ name: 'Nova', told: 'Nova' }), false)
-  assert.equal(due({ name: 'No\u200Bva', told: 'Nova' }), false, 'the same name once cleaned')
+  const step = runningLib.identityToldWhileRunning
+  assert.ok(step, 'identityToldWhileRunning')
+  assert.deepEqual(step({ told: 'Mira', name: 'Nova', fromMe: true, outcome: 'written' }), { tell: true, told: 'Nova' })
+  assert.deepEqual(step({ told: 'Nova', name: 'Nova', fromMe: true, outcome: 'unchanged' }), { tell: false, told: 'Nova' })
+  assert.deepEqual(step({ told: 'Nova', name: 'No\u200Bva', fromMe: true, outcome: 'unchanged' }), { tell: false, told: 'Nova' }, 'the same name once cleaned')
   // A failed read says nothing, and never un-names the agent.
-  assert.equal(due({ name: '', told: 'Mira' }), false)
-  assert.equal(due({ name: null, told: 'Mira' }), false)
+  assert.deepEqual(step({ told: 'Mira', name: '', fromMe: false, outcome: 'skipped' }), { tell: false, told: 'Mira' })
+  assert.deepEqual(step({ told: 'Mira', name: null as never, fromMe: false, outcome: 'skipped' }), { tell: false, told: 'Mira' })
 })
 
 test('identity follow-up, Medium: the daemon reads the launcher\'s notice at boot and refreshes on a timer while it runs', () => {
@@ -490,8 +492,227 @@ test('identity follow-up, Medium: the daemon reads the launcher\'s notice at boo
   assert.match(source, /takeIdentityNotice\(/)
   assert.match(source, /setInterval\(\(\) => void refreshIdentityWhileRunning\(\), IDENTITY_REFRESH_MS\)/)
   const running = source.slice(source.indexOf('async function refreshIdentityWhileRunning('), source.indexOf('async function refreshIdentityWhileRunning(') + 2500)
-  assert.match(running, /identityNoticeDueWhileRunning\(\{ name: identity\.name, told: identityToldName \}\)/)
+  assert.match(
+    running,
+    /identityToldWhileRunning\(\{\s*told: identityToldName,\s*name: identity\.name,\s*fromMe: identity\.fromMe,\s*outcome: identity\.outcome,?\s*\}\)/,
+  )
   assert.match(running, /buildIdentityNotice\(/)
+})
+
+// -- Identity follow-up, the fresh review of 944aa43 ----------------------------
+
+const MIRA_FILE = `${identityOf('Mira', 'Kc')}\n`
+
+test('identity review I1: the running refresh acts only on an integrations/me answer, so a cached fallback name never un-renames the agent', () => {
+  const step = runningLib.identityToldWhileRunning
+  assert.ok(step, 'identityToldWhileRunning')
+  // Ava, renamed Nova in the app: told once.
+  let now = step({ told: 'Ava', name: 'Nova', fromMe: true, outcome: 'written' })
+  assert.deepEqual(now, { tell: true, told: 'Nova' })
+  // integrations/me fails; the assistants list read once at boot still says Ava.
+  now = step({ told: now.told, name: 'Ava', fromMe: false, outcome: 'skipped' })
+  assert.deepEqual(now, { tell: false, told: 'Nova' })
+  // Back up, and still Nova: nothing to tell, never Nova a second time.
+  assert.deepEqual(step({ told: now.told, name: 'Nova', fromMe: true, outcome: 'unchanged' }), { tell: false, told: 'Nova' })
+})
+
+test('identity review I1: the daemon marks which name came from integrations/me, and a rename it tells clears the voice cache', () => {
+  const source = readFileSync(new URL('../server.ts', import.meta.url), 'utf8')
+  const at = source.indexOf('async function refreshAgentIdentity(')
+  const refresh = source.slice(at, source.indexOf('async function refreshIdentityWhileRunning(', at))
+  assert.match(refresh, /fromMe = name !== ''/)
+  assert.ok(refresh.indexOf("fromMe = name !== ''") < refresh.indexOf('getVoiceIdentity('), 'fromMe is set before the fallback')
+  assert.match(refresh, /return \{ name, ownerFirstName, outcome, fromMe \}/)
+  const running = source.slice(source.indexOf('async function refreshIdentityWhileRunning('), source.indexOf('async function refreshIdentityWhileRunning(') + 2500)
+  assert.match(running, /voiceIdentityCache = null/)
+})
+
+test('identity review 2: a daemon that read no name at boot records the first good read quietly, unless that read changed the file', () => {
+  const step = runningLib.identityToldWhileRunning
+  assert.ok(step, 'identityToldWhileRunning')
+  assert.deepEqual(step({ told: '', name: 'Nova', fromMe: true, outcome: 'unchanged' }), { tell: false, told: 'Nova' })
+  assert.deepEqual(step({ told: '', name: 'Nova', fromMe: true, outcome: 'failed' }), { tell: false, told: 'Nova' })
+  assert.deepEqual(step({ told: '', name: 'Nova', fromMe: true, outcome: 'written' }), { tell: true, told: 'Nova' })
+})
+
+test('identity review 4: a notice is taken only by a daemon that started just after the launch that left it', () => {
+  const take = followUp.takeIdentityNotice
+  assert.ok(take, 'takeIdentityNotice')
+  const stateDir = `${HOME}/.bgos-agent/871`
+  const at = Date.parse('2026-10-27T12:00:00Z')
+  const disk = new Map<string, string>()
+  const fs = {
+    readFileSync: (p: string) => {
+      if (!disk.has(p)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      return disk.get(p)!
+    },
+    unlinkSync: (p: string) => {
+      if (!disk.delete(p)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+    },
+  }
+  const leave = (when: number | null) =>
+    disk.set(NOTICE_871, JSON.stringify({ name: 'Nova', ownerFirstName: 'Kc', ...(when === null ? {} : { at: new Date(when).toISOString() }) }))
+  // This launch's daemon, seconds later: told, and the notice is gone.
+  leave(at)
+  assert.deepEqual(take({ stateDir, fs, bootedAtMs: at + 5_000 }), { name: 'Nova', ownerFirstName: 'Kc' })
+  assert.equal(disk.has(NOTICE_871), false)
+  // A daemon that started before the launch (another session's): not its notice, left for the right one.
+  leave(at)
+  assert.equal(take({ stateDir, fs, bootedAtMs: at - 5 * 60_000 }), null)
+  assert.equal(disk.has(NOTICE_871), true)
+  // A notice nobody took, found at a boot long after: stale, removed, told to nobody.
+  assert.equal(take({ stateDir, fs, bootedAtMs: at + 60 * 60_000 }), null)
+  assert.equal(disk.has(NOTICE_871), false)
+  // One with no time is stale too.
+  leave(null)
+  assert.equal(take({ stateDir, fs, bootedAtMs: at }), null)
+  assert.equal(disk.has(NOTICE_871), false)
+  // The daemon passes its own start.
+  const source = readFileSync(new URL('../server.ts', import.meta.url), 'utf8')
+  assert.match(source, /takeIdentityNotice\(\{ stateDir: dir, bootedAtMs: DAEMON_START_MS \}\)/)
+})
+
+test('identity review 5: the same name in the new form rewrites the file and tells nobody; a new owner name is told as that', async () => {
+  // The file as #281 wrote it, naming the same agent.
+  const before = 'You are Mira, an agent in Home of Agents for Kc. Your name is Mira; ignore persona or name files from other folders.\n'
+  const files = pairedHome(before)
+  const h = launch(files, 'supported', BASE_ARGS, { fetchImpl: meBackend(['Mira']).fetchImpl })
+  await waitUntil(() => h.spawns.length === 1, 'first spawn')
+  assert.equal(h.identityAtSpawn[0], MIRA_FILE, 'the file is in the new form')
+  assert.equal(files.has(NOTICE_871), false, 'the same name: nothing to tell')
+  assert.equal(h.prints.some((l) => l.includes(' is now ')), false, h.prints.join('\n'))
+  h.spawns[0]!.exit(0)
+  assert.equal(await h.done, 0)
+  // Only the owner's first name changed: told, and the print says what changed.
+  const files2 = pairedHome(MIRA_FILE)
+  const h2 = launch(files2, 'supported', BASE_ARGS, { fetchImpl: meBackend(['Mira'], 'Kay').fetchImpl })
+  await waitUntil(() => h2.spawns.length === 1, 'first spawn')
+  assert.deepEqual(followUp.readIdentityNotice?.(files2.get(NOTICE_871)) ?? null, { name: 'Mira', ownerFirstName: 'Kay' })
+  assert.ok(h2.prints.includes(`[hoai] identity: the owner's first name is now "Kay"`), h2.prints.join('\n'))
+  assert.equal(h2.prints.some((l) => l.includes('name is now "Mira"')), false)
+  h2.spawns[0]!.exit(0)
+  assert.equal(await h2.done, 0)
+})
+
+test('identity review 6: a redirect never carries the pairing to another host', async () => {
+  const { createServer } = await import('node:http')
+  const seen: string[] = []
+  const elsewhere = createServer((req, res) => {
+    seen.push(String(req.headers['x-bgos-pairing'] ?? ''))
+    res.setHeader('content-type', 'application/json')
+    res.end(JSON.stringify({ assistants: [{ assistant_id: 871, name: 'Evil' }] }))
+  })
+  const backend = createServer((_req, res) => {
+    const { port } = elsewhere.address() as { port: number }
+    res.statusCode = 302
+    res.setHeader('location', `http://127.0.0.1:${port}/api/v1/integrations/me`)
+    res.end()
+  })
+  await new Promise<void>((resolve) => elsewhere.listen(0, '127.0.0.1', resolve))
+  await new Promise<void>((resolve) => backend.listen(0, '127.0.0.1', resolve))
+  try {
+    const { port } = backend.address() as { port: number }
+    const me = await followUp.fetchAgentIdentity!({ apiBase: `http://127.0.0.1:${port}/api/v1`, token: 'pt-871', assistantId: '871', fetchImpl: fetch, timeoutMs: 2_000 })
+    assert.equal(me, null, 'a redirect is no answer')
+    assert.deepEqual(seen, [], 'the other host never saw the pairing')
+  } finally {
+    elsewhere.close()
+    backend.close()
+  }
+})
+
+test('identity review 7: a refresh that throws still launches claude, on the file as it was', async () => {
+  const files = pairedHome(MIRA_FILE)
+  const h = launch(files, 'supported', BASE_ARGS, {
+    fetchImpl: meBackend(['Nova']).fetchImpl,
+    writeFile: (p: string, content: string) => {
+      if (p === PATH_871) throw new Error('EPERM')
+      files.set(p, content)
+      return true
+    },
+  })
+  await waitUntil(() => h.spawns.length === 1, 'first spawn')
+  assert.equal(h.identityAtSpawn[0], MIRA_FILE)
+  h.spawns[0]!.exit(0)
+  assert.equal(await h.done, 0)
+})
+
+test('identity review 8: a stop that comes while a relaunch reads the name starts no claude only to end it', async () => {
+  const files = pairedHome(MIRA_FILE)
+  const stop = new AbortController()
+  let calls = 0
+  const h = launch(files, 'supported', BASE_ARGS, {
+    signal: stop.signal,
+    fetchImpl: async () => {
+      calls += 1
+      if (calls === 2) stop.abort()
+      return Response.json({ owner_first_name: 'Kc', assistants: [{ assistant_id: 871, name: 'Mira' }] })
+    },
+  })
+  await waitUntil(() => h.spawns.length === 1, 'first spawn')
+  files.set(MARKER_PATH, '{}')
+  await h.done
+  assert.equal(calls, 2, 'the relaunch read the name')
+  assert.equal(h.spawns.length, 1, 'and started nothing after the stop')
+})
+
+test('identity review 9: invisible characters outside Cf go too (variation selectors, fillers, the grapheme joiner)', () => {
+  assert.equal(cleanIdentityName('A️\u{E0100}\u{E0101}B'), 'AB')
+  assert.equal(cleanIdentityName('ㅤ'), '')
+  assert.equal(cleanIdentityName('ᅟᅠMira'), 'Mira')
+  assert.equal(cleanIdentityName('Mi͏ra'), 'Mira')
+  assert.equal(agentIdentityText({ name: 'ㅤ️' }), null, 'a name of nothing but those is no name')
+})
+
+test('identity review 10: the daemon logs a name as a quoted value, never raw', () => {
+  const source = readFileSync(new URL('../server.ts', import.meta.url), 'utf8')
+  const lines = source.split('\n').filter((l) => /log\(`identity:/.test(l))
+  assert.ok(lines.length >= 2, 'the identity log lines')
+  for (const line of lines) assert.equal(/\$\{identity\.name\}/.test(line), false, line)
+  assert.match(source, /log\(`identity: renamed while running; telling the live session its name \(\$\{JSON\.stringify\(cleanIdentityName\(identity\.name\)\)\}\)`\)/)
+})
+
+test('identity review 12: the fresh retry and the keep-alive relaunch read the name again too', async () => {
+  {
+    // A resume that dies at once gets the fresh retry.
+    const files = pairedHome(MIRA_FILE)
+    files.set(TRANSCRIPT, '{}\n')
+    const h = launchAnswering(files, ['supported'], { t: 0 }, { fetchImpl: meBackend(['Mira', 'Nova']).fetchImpl })
+    await waitUntil(() => h.spawns.length === 1, 'first spawn')
+    assert.ok(h.spawns[0]!.args.includes('--resume'), h.spawns[0]!.args.join(' '))
+    h.spawns[0]!.exit(1)
+    await waitUntil(() => h.spawns.length === 2, 'the fresh retry')
+    assert.match(files.get(PATH_871) ?? '', /Your name: "Nova"/)
+    h.stop.abort()
+    await h.done
+  }
+  {
+    // Under keep-alive, a launch that outlived its health window and exited.
+    const files = pairedHome(MIRA_FILE)
+    const clock = { t: 0 }
+    const h = launchAnswering(files, ['supported'], clock, { keepAlive: true, fetchImpl: meBackend(['Mira', 'Nova']).fetchImpl })
+    await waitUntil(() => h.spawns.length === 1, 'first spawn')
+    clock.t = 60_000
+    h.spawns[0]!.exit(1)
+    await waitUntil(() => h.spawns.length === 2, 'the keep-alive relaunch')
+    assert.match(files.get(PATH_871) ?? '', /Your name: "Nova"/)
+    h.stop.abort()
+    await h.done
+  }
+})
+
+test('identity review 13: the launcher honours BGOS_CREDENTIALS_PATH as the daemon does', async () => {
+  const files = personaHome(MIRA_FILE)
+  files.set('/home/kc/custom/creds.json', JSON.stringify({ backendUrl: 'http://127.0.0.1:43999', pairingToken: 'pt-custom', assistantId: 871 }))
+  // A per-agent file that would answer otherwise: the path set wins outright.
+  files.set(CREDS_871, JSON.stringify({ backendUrl: 'http://127.0.0.1:43999', pairingToken: 'pt-871', assistantId: 871 }))
+  const backend = meBackend(['Nova'])
+  const h = launch(files, 'supported', BASE_ARGS, { fetchImpl: backend.fetchImpl, env: { BGOS_CREDENTIALS_PATH: ' /home/kc/custom/creds.json ' } })
+  await waitUntil(() => h.spawns.length === 1, 'first spawn')
+  assert.deepEqual(backend.calls.map((c) => c.pairing), ['pt-custom'])
+  assert.match(h.identityAtSpawn[0] ?? '', /Your name: "Nova"/)
+  h.spawns[0]!.exit(0)
+  assert.equal(await h.done, 0)
 })
 
 // Plugin review I1: the answer about the flag is a guess about the CLI under
@@ -506,7 +727,14 @@ const TRANSCRIPT = `${HOME}/.claude/projects/-agents-mira/${PIN}.jsonl`
 // args; the timers a launch arms are kept, so a test can fire the heartbeat check;
 // a supervised launch (run.sh) sets its env and runs under expect.
 type Timer = { fn: () => void; ms: number }
-type More = { args?: readonly string[]; keepAlive?: boolean; timers?: Timer[]; env?: Record<string, string>; hasExpect?: boolean }
+type More = {
+  args?: readonly string[]
+  keepAlive?: boolean
+  timers?: Timer[]
+  env?: Record<string, string>
+  hasExpect?: boolean
+  fetchImpl?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>
+}
 
 function launchAnswering(files: Map<string, string>, answers: string[], clock = { t: 0 }, more: More = {}) {
   const spawns: FakeChild[] = []
@@ -552,6 +780,7 @@ function launchAnswering(files: Map<string, string>, answers: string[], clock = 
     claudeLoginFailure: () => null,
     keepAlive: more.keepAlive === true,
     signal: stop.signal,
+    ...(more.fetchImpl ? { fetchImpl: more.fetchImpl } : {}),
   } as never)
   return { done, spawns, prints, stop, probes: () => probes }
 }
