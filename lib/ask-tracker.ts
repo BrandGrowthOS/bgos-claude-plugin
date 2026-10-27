@@ -333,6 +333,15 @@ export function buildAskAnsweredEvent(
   }
 }
 
+/**
+ * How long a daemon may have seen a group's asker alive and still take the
+ * group as that session restarted. A restart's new daemon can start a moment
+ * before the old one has exited (the CLI respawning its MCP server); a
+ * session that ran beside the asker for longer than this is another session
+ * (second review of #282, Important 2).
+ */
+export const ASK_OWNER_OVERLAP_MS = 60_000
+
 /** Whether a process with this pid runs now (EPERM: it runs, as another user). */
 export function pidIsAlive(pid: number): boolean {
   try {
@@ -394,6 +403,13 @@ export class AskTracker {
   private readonly held = new Set<string>()
   /** Groups withdraw_ask is retiring right now: no announce offers them (review of #282, item 2). */
   private readonly withdrawing = new Set<string>()
+  /**
+   * When this process first saw a group's asker, another process, alive; and
+   * the groups it has decided belong to a session that ran beside it, for the
+   * life of this process (second review of #282, Important 2).
+   */
+  private readonly ownerSeenAlive = new Map<string, number>()
+  private readonly ranBeside = new Set<string>()
   private delivered_: string[] = []
   /** The last reason a read was skipped, so a problem that lasts is said once, not every pass. */
   private skipReason: string | null = null
@@ -513,9 +529,40 @@ export class AskTracker {
     return until !== undefined && until > this.now()
   }
 
-  /** Whether this daemon may hand this group's answers to its session (askIsOurs). */
+  /**
+   * Whether this daemon may hand this group's answers to its session
+   * (askIsOurs), decided from what this process has seen: once it has seen
+   * the asker alive for longer than ASK_OWNER_OVERLAP_MS, it ran beside the
+   * asker, and the group is never its own, even after the asker ends and
+   * this daemon takes over (second review of #282, Important 2).
+   */
   isOurs(ask: PendingAsk): boolean {
+    if (this.ranBeside.has(ask.askId)) return false
+    const owner = ask.owner
+    const other = !!owner && !(owner.pid === this.self.pid && owner.startedAt === this.self.startedAt)
+    if (other && owner.pid !== this.self.pid && this.isAlive(owner.pid)) {
+      if (!this.ownerSeenAlive.has(ask.askId)) this.ownerSeenAlive.set(ask.askId, this.now())
+      return false
+    }
+    const since = this.ownerSeenAlive.get(ask.askId)
+    if (other && since !== undefined && this.now() - since > ASK_OWNER_OVERLAP_MS) {
+      this.ranBeside.add(ask.askId)
+      this.log(
+        `ask tracker: group ${ask.askId} was posted by another session of this agent that ran beside this one; ` +
+          'its answers stay with that session and are not announced here',
+      )
+      return false
+    }
     return askIsOurs(ask, this.self, this.isAlive)
+  }
+
+  /** Note every group whose asker is another live process, from the first time this process sees it. */
+  private noteLiveOwners(): void {
+    for (const ask of this.asks.values()) {
+      if (this.ownerSeenAlive.has(ask.askId) || !ask.owner) continue
+      if (ask.owner.pid === this.self.pid) continue
+      if (this.isAlive(ask.owner.pid)) this.ownerSeenAlive.set(ask.askId, this.now())
+    }
   }
 
   /** Complete groups of this session nobody holds and nobody delivered yet: what an announce pass offers. */
@@ -598,6 +645,7 @@ export class AskTracker {
         else mine.heldUntil = raw.heldUntil
       }
     }
+    this.noteLiveOwners()
     this.enforceCap()
     return true
   }
@@ -631,6 +679,7 @@ export class AskTracker {
     this.asks.delete(askId)
     this.held.delete(askId)
     this.withdrawing.delete(askId)
+    this.ownerSeenAlive.delete(askId)
     for (const q of ask.questions) {
       if (this.byMessage.get(q.messageId) === askId) this.byMessage.delete(q.messageId)
     }
