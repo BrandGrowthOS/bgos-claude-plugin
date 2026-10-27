@@ -976,9 +976,10 @@ async function serverCallTool(
   // The dispatch ends by passing its result through withRetiredOwnAskNotes (an
   // asker's retired card, lib/ask-retired-tell.ts, with its own tests): here it
   // hands the result back as it is.
-  const handler = serverSlice('mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {', '\n  }).then(withRetiredOwnAskNotes)\n})\n')
+  const handlerEnd = '\n  }).then((result) => withRetiredOwnAskNotes(result, extra.signal))\n'
+  const handler = serverSlice('mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {', `${handlerEnd}})\n`)
     .replace('mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {', 'const callTool = (req, extra) => {')
-    .replace(/\n {2}\}\)\.then\(withRetiredOwnAskNotes\)\n\}\)\n$/, '\n  }).then(withRetiredOwnAskNotes)\n}\n')
+    .replace(`${handlerEnd}})\n`, `${handlerEnd}}\n`)
   const source = [
     serverSlice('class HttpError extends Error {', '\n}\n'),
     serverSlice('function bgosCall<T>(', '\n}\n'),
@@ -1020,8 +1021,9 @@ async function serverCallTool(
     log: (line: string) => logs.push(String(line)),
     ...extra,
   }
-  const callTool = compileServer(source, 'callTool', known) as (req: unknown) => Promise<{ content: Array<{ text: string }>; isError?: boolean }>
-  const call = (name: string, args: Record<string, unknown>) => callTool({ params: { name, arguments: args } })
+  const callTool = compileServer(source, 'callTool', known) as (req: unknown, extra: { signal: AbortSignal }) => Promise<{ content: Array<{ text: string }>; isError?: boolean }>
+  // The SDK hands every call its own signal, as here.
+  const call = (name: string, args: Record<string, unknown>) => callTool({ params: { name, arguments: args } }, { signal: new AbortController().signal })
   return { backend, call, logs }
 }
 

@@ -298,6 +298,7 @@ import {
   askWithdrawnText,
   buildAskAnsweredEvent,
   buildAskWithdrawnEvent,
+  type AskRetiredBecause,
   type AskRow,
   type PendingAsk,
 } from './lib/ask-tracker.ts'
@@ -8406,7 +8407,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
     default:
       throw new Error(`Unknown tool: ${req.params.name}`)
   }
-  }).then(withRetiredOwnAskNotes)
+  }).then((result) => withRetiredOwnAskNotes(result, extra.signal))
 })
 
 // ── Chat Polling ─────────────────────────────────────────────────────────────
@@ -12143,11 +12144,11 @@ async function retireOrphanedAsks(via: string): Promise<void> {
     // decides whether the asker is told (fresh review of the follow-up, Important 2).
     const refused = ownerAnnounceRefused({ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership.isOthers(ask.chatId) })
     // Why, for this session's event, read before the retire forgets the
-    // group: its asker ended, or runs on without the connection (Data's gaps
-    // after #284, gap 2).
-    const askerEnded = askTracker.askerEnded(ask)
+    // group, the way the retire keeps its record (Data's gaps after #284,
+    // gap 2, and its fresh review, Important 1).
+    const retiredBecause = askTracker.retiredBecause(ask)
     if (!askTracker.retire(ask.askId, { withdrawn, tellAsker: !refused })) continue
-    sendAskWithdrawn(ask, withdrawn, { toAsker: false, via, askerEnded }).catch(() => {
+    sendAskWithdrawn(ask, withdrawn, { toAsker: false, via, retiredBecause }).catch(() => {
       // Logged in sendAskWithdrawn; this session's own tell has no record to try again from.
     })
   }
@@ -12182,10 +12183,16 @@ function tellRetiredOwnAsks(): void {
  * session whose channel is not loaded, the holder a channel takeover moved
  * aside, drops every channel event unseen, so the ask_withdrawn of its own
  * retired cards rides here, once (lib/ask-retired-tell.ts; Data's gaps after
- * #284, gap 1). Never throws: a tool's own result is never lost to it.
+ * #284, gap 1). Never throws: a tool's own result is never lost to it. A
+ * subagent's call carries it too (it shares this server), and that counts as
+ * told: nothing here tells the two apart.
  */
-function withRetiredOwnAskNotes<T>(result: T): T {
-  if (!result || typeof result !== 'object') return result
+function withRetiredOwnAskNotes<T>(result: T, signal?: AbortSignal): T {
+  // The SDK drops a cancelled call's result (Esc, the client's timeout), so a
+  // note on it would be marked told unseen: the next call carries it (fresh
+  // review of the gaps, Important 2). A cancel in the few microtasks after
+  // this check is not caught.
+  if (signal?.aborted || !result || typeof result !== 'object') return result
   try {
     const notes = retiredOwnNotes({
       tracker: askTracker,
@@ -12202,7 +12209,7 @@ function withRetiredOwnAskNotes<T>(result: T): T {
   }
 }
 
-type AskWithdrawnOpts = { toAsker: boolean; via: string; askerEnded?: boolean }
+type AskWithdrawnOpts = { toAsker: boolean; via: string; retiredBecause?: AskRetiredBecause }
 
 /**
  * The ask_withdrawn of a card for this session, for its channel event or a
@@ -12212,13 +12219,13 @@ type AskWithdrawnOpts = { toAsker: boolean; via: string; askerEnded?: boolean }
 function askWithdrawnContent(
   ask: PendingAsk,
   withdrawn: number,
-  opts: { toAsker: boolean; askerEnded?: boolean },
+  opts: { toAsker: boolean; retiredBecause?: AskRetiredBecause },
 ): { content: string; meta: Record<string, string> } | null {
   if (ownerAnnounceRefused({ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership.isOthers(ask.chatId) })) {
     noteLaneMisroute('ask withdrawn', ask.questions.map((q) => q.messageId).join(','), 'a recipient chat')
     return null
   }
-  const event = buildAskWithdrawnEvent(ask, { assistantId: String(ASSISTANT_ID), withdrawn, toAsker: opts.toAsker, askerEnded: opts.askerEnded })
+  const event = buildAskWithdrawnEvent(ask, { assistantId: String(ASSISTANT_ID), withdrawn, toAsker: opts.toAsker, retiredBecause: opts.retiredBecause })
   return {
     // Typed answers ride in it, as in an ask_answered event: never shown
     // to be the owner's own words, and it opens no private turn.
