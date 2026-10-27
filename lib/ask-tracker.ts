@@ -847,8 +847,10 @@ export class AskTracker {
       if (!ask.owner || !sameProcess(ask.owner, this.self)) continue
       // A clock stepped back reads the lease as written in the future: it is
       // written again now, never left until the clock catches up (Data's gate
-      // notes on #282, item 3).
-      const age = now - askerLastSaid(ask)
+      // notes on #282, item 3). Measured from the lease itself, not the post:
+      // a post the step left in the future would rewrite it every tick
+      // (fresh review of the follow-up, Important 1).
+      const age = now - (ask.owner.aliveAt ?? ask.postedAt)
       if (age >= 0 && age < ASK_LEASE_REFRESH_MS) continue
       ask.owner = { ...ask.owner, aliveAt: now }
       said = true
@@ -932,12 +934,16 @@ export class AskTracker {
    * retireOrphanedAsks): withdrawn as withdraw does, and, when its asker is
    * another process still running, kept on file for that asker to tell its
    * own session once (takeRetiredOwn). A dead asker leaves nothing (Data's
-   * gate notes on #282, item 2).
+   * gate notes on #282, item 2). `tellAsker` is the connected daemon's own
+   * lane verdict: a card it may not tell its session (a share recipient's
+   * chat) is kept for no session, since a passive asker's lane state is as
+   * it was when it lost the connection (fresh review of the follow-up,
+   * Important 2).
    */
-  retire(askId: string, opts: { withdrawn: number }): PendingAsk | null {
+  retire(askId: string, opts: { withdrawn: number; tellAsker: boolean }): PendingAsk | null {
     const ask = this.asks.get(askId)
     if (!ask) return null
-    if (ask.owner && !sameProcess(ask.owner, this.self) && this.isAlive(ask.owner.pid)) {
+    if (opts.tellAsker && ask.owner && !sameProcess(ask.owner, this.self) && this.isAlive(ask.owner.pid)) {
       this.retired_ = this.retired_.filter((r) => r.ask.askId !== askId)
       this.retired_.push({ ask: { ...ask, answers: { ...ask.answers } }, withdrawn: opts.withdrawn, at: this.now() })
     }
@@ -1010,9 +1016,15 @@ export class AskTracker {
         if (mine.answers[key] === undefined) mine.answers[key] = answer
       }
       if ((raw.lastAnsweredAt ?? 0) > (mine.lastAnsweredAt ?? 0)) mine.lastAnsweredAt = raw.lastAnsweredAt
-      // The asker's latest lease, never an older one read back over it.
+      // The asker's latest lease, never an older one read back over it; but
+      // one held here that the clock has not reached yet (a clock stepped
+      // back) gives way to the file, so the asker's corrected lease spreads
+      // and is never written back over (fresh review of the follow-up,
+      // Important 1).
       if (raw.owner && mine.owner && raw.owner.pid === mine.owner.pid && raw.owner.startedAt === mine.owner.startedAt) {
-        if ((raw.owner.aliveAt ?? 0) > (mine.owner.aliveAt ?? 0)) mine.owner = { ...mine.owner, aliveAt: raw.owner.aliveAt }
+        const theirs = raw.owner.aliveAt
+        const held = mine.owner.aliveAt ?? 0
+        if (theirs !== undefined && (theirs > held || held > this.now())) mine.owner = { ...mine.owner, aliveAt: theirs }
       }
       if (raw.askerEndedBeside !== undefined && mine.askerEndedBeside === undefined) mine.askerEndedBeside = raw.askerEndedBeside
       // Another daemon's save wrote over the mark: it cannot be read back from

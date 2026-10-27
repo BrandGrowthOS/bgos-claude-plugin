@@ -12137,7 +12137,10 @@ async function retireOrphanedAsks(via: string): Promise<void> {
     // answers): then there is nothing to tell here (fresh review of Data's
     // recheck of #282, Minor 2).
     refreshAskTracker('retire')
-    if (!askTracker.retire(ask.askId, { withdrawn })) continue
+    // This daemon's lane verdict, fresh while it holds the connection, also
+    // decides whether the asker is told (fresh review of the follow-up, Important 2).
+    const refused = ownerAnnounceRefused({ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership.isOthers(ask.chatId) })
+    if (!askTracker.retire(ask.askId, { withdrawn, tellAsker: !refused })) continue
     sendAskWithdrawn(ask, withdrawn, { toAsker: false, via })
   }
 }
