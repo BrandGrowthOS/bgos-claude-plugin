@@ -11701,13 +11701,24 @@ const ASK_READ_PAGE = 20
 /** How often the timer looks for a group due a read; each group's own cadence is askReadIntervalMs. */
 const ASK_TICK_MS = 5_000
 // A daemon not armed for delivery (a passive session's, or one still arming)
-// reads the file on the same tick: whose a card is gets decided the first time
-// a daemon sees its asker gone, so every daemon has to be looking when that
-// happens, not only at its own calls or its promotion (fourth review of #282,
-// Important 2). A local file read; nothing is fetched or announced.
+// or draining for an update reads the file on the same tick: a card's owner is
+// decided the first time a daemon sees its asker gone, so every daemon has to
+// be looking when that happens, not only at its own calls or its promotion
+// (fourth review of #282, Important 2). Nothing is fetched or announced; the
+// tick writes the file only to keep such a decision (or to set a corrupt file
+// aside).
 setInterval(() => {
-  if (!channelArmed) askTracker.refresh()
+  if (!channelArmed || updateDrainMode) refreshAskTracker('tick')
 }, ASK_TICK_MS).unref()
+
+/** askTracker.refresh() where a throw must not end the daemon or stop an arm (fifth review of #282, Minor 2). */
+function refreshAskTracker(via: string): void {
+  try {
+    askTracker.refresh()
+  } catch (err) {
+    log(`ask tracker: could not read the file (${via}): ${err}`)
+  }
+}
 /** A blocking wait's hold on disk outlives its deadline by this much (the last read, the release). */
 const ASK_HOLD_MARGIN_MS = 30_000
 /** A failed read of a group the stream said was answered is tried again this many times. */
@@ -17933,7 +17944,7 @@ async function main(): Promise<void> {
         lockHeld = true
         // Who the pending cards belong to, seen now: the arm below can take a
         // while (fourth review of #282, Important 2).
-        askTracker.refresh()
+        refreshAskTracker('promotion')
         if (res.reason === 'channel-takeover') {
           log(
             `${formatChannelTakeoverLine({ selfPid: process.pid, holderPid: res.holderPid, selfReason: channelPresence().reason })}; ` +

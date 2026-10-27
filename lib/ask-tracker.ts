@@ -471,6 +471,9 @@ export class AskTracker {
    */
   private readonly ownerSeenAlive = new Map<string, number>()
   private readonly askerGoneSeen = new Set<string>()
+  /** Groups dropped for age, said once; and why saves fail, said once while it lasts (fifth review of #282, Minor 3). */
+  private readonly droppedForAge = new Set<string>()
+  private saveFailing: string | null = null
   private delivered_: string[] = []
   /** The last reason a read was skipped, so a problem that lasts is said once, not every pass. */
   private skipReason: string | null = null
@@ -723,7 +726,10 @@ export class AskTracker {
       const mine = this.asks.get(raw.askId)
       if (!mine) {
         if (raw.postedAt < cutoff) {
-          this.log(`ask tracker: dropping pending group ${raw.askId}, posted more than 30 days ago`)
+          if (!this.droppedForAge.has(raw.askId)) {
+            this.droppedForAge.add(raw.askId)
+            this.log(`ask tracker: dropping pending group ${raw.askId}, posted more than 30 days ago`)
+          }
           continue
         }
         this.asks.set(raw.askId, raw)
@@ -881,23 +887,29 @@ export class AskTracker {
         JSON.stringify({ v: FILE_VERSION, pending: this.pending(), delivered: this.delivered_ }),
         { mode: 0o600 },
       )
+      // While saves keep failing, each pass tries once, as reads do.
+      const retries = this.saveFailing === null ? FS_RETRY_PAUSES_MS.length : 0
       for (let attempt = 0; ; attempt++) {
         try {
           renameSync(tmp, this.filePath)
           break
         } catch (err) {
           // Windows: the target held open by another process (a reader, a scanner) passes.
-          if (!TRANSIENT_FS_CODES.has(fsCode(err)) || attempt >= FS_RETRY_PAUSES_MS.length) throw err
+          if (!TRANSIENT_FS_CODES.has(fsCode(err)) || attempt >= retries) throw err
           pauseSync(FS_RETRY_PAUSES_MS[attempt])
         }
       }
+      if (this.saveFailing !== null) this.log('ask tracker: the file saves again')
+      this.saveFailing = null
     } catch (err) {
       try {
         unlinkSync(tmp)
       } catch {
         /* never existed */
       }
-      this.log(`ask tracker: could not save ${this.filePath}: ${err}`)
+      const why = fsCode(err) || String(err)
+      if (why !== this.saveFailing) this.log(`ask tracker: could not save ${this.filePath}: ${err}`)
+      this.saveFailing = why
     }
   }
 }
