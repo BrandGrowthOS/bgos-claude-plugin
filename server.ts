@@ -11652,10 +11652,10 @@ async function readAskGroup(ask: PendingAsk): Promise<void> {
 
 /** Announce every complete group nobody holds as ONE ask_answered event, exactly once. */
 function announceCompleteAsks(via: string): void {
-  // Only the daemon that delivers announces, from the file as it stands now:
-  // a passive session's daemon posts and records into the same file, and the
-  // armed one adopts its groups (askTracker.refresh).
-  if (!channelArmed || updateDrainMode) return
+  // Only the daemon that holds this agent's pairing and delivers announces,
+  // from the file as it stands now, and only its own session's groups
+  // (askTracker.completeUndelivered, askIsOurs).
+  if (!channelArmed || !lockHeld || updateDrainMode) return
   askTracker.refresh()
   for (const ask of askTracker.completeUndelivered()) {
     if (askDelivering.has(ask.askId)) continue

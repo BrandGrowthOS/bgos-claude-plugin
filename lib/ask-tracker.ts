@@ -430,11 +430,7 @@ export class AskTracker {
     this.forget(ask.askId)
     this.asks.set(ask.askId, ask)
     for (const q of ask.questions) this.byMessage.set(q.messageId, ask.askId)
-    while (this.asks.size > MAX_PENDING_ASKS) {
-      const oldest = this.asks.keys().next().value as string
-      this.log(`ask tracker: dropping the oldest pending group ${oldest} (more than ${MAX_PENDING_ASKS} pending)`)
-      this.forget(oldest)
-    }
+    this.enforceCap()
     this.save()
     return ask
   }
@@ -601,7 +597,24 @@ export class AskTracker {
         else mine.heldUntil = raw.heldUntil
       }
     }
+    this.enforceCap()
     return true
+  }
+
+  /**
+   * At most MAX_PENDING_ASKS groups, the oldest posted going first. A dropped
+   * group is a tombstone, so the next merge of the file never brings it back
+   * (review of #282, item 6); a later answer to it is not delivered.
+   */
+  private enforceCap(): void {
+    while (this.asks.size > MAX_PENDING_ASKS) {
+      let oldest: PendingAsk | null = null
+      for (const a of this.asks.values()) if (!oldest || a.postedAt < oldest.postedAt) oldest = a
+      if (!oldest) return
+      this.log(`ask tracker: dropping the oldest pending group ${oldest.askId} (more than ${MAX_PENDING_ASKS} pending)`)
+      this.forget(oldest.askId)
+      this.tombstone(oldest.askId)
+    }
   }
 
   private tombstone(askId: string): void {

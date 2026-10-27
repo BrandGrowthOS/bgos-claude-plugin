@@ -35,9 +35,9 @@ test('Important 1: the hold is on disk with its deadline, so another daemon neve
   assert.match(caseBody('ask_user_input'), /askTracker\.hold\(askKey, deadline \+ ASK_HOLD_MARGIN_MS\)/)
 })
 
-test('Important 1: only the armed daemon announces, from the file as it stands now', () => {
+test('Important 1: only the armed daemon holding the pairing announces, from the file as it stands now', () => {
   const body = fnBody('function announceCompleteAsks(via: string): void {')
-  assert.match(body, /^function announceCompleteAsks\(via: string\): void \{\n(\s*\/\/[^\n]*\n)*\s*if \(!channelArmed \|\| updateDrainMode\) return\n\s*askTracker\.refresh\(\)\n/)
+  assert.match(body, /^function announceCompleteAsks\(via: string\): void \{\n(\s*\/\/[^\n]*\n)*\s*if \(!channelArmed \|\| !lockHeld \|\| updateDrainMode\) return\n\s*askTracker\.refresh\(\)\n/)
 })
 
 test('Important 1: every reconcile pass starts from the file, and the arm reads it again', () => {
