@@ -2,6 +2,15 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.79.0 (2026-10-27)
+
+**A question on the card can take several answers (askcard PR 3, Kc: "when there are multiple answers, you need to be able to multi-select").** The app draws such a question as checkboxes with one Submit (BrandGrowthOS/BGOS, the same PR 3), and the backend stores every pick.
+
+- **`multi_select: true` per question** in `ask_user_input`, with 2 or more options (`askQuestionsError` refuses fewer before anything is posted). The daemon posts `multiSelect: true` on that row only, so a backend before multi select never sees the field, and the tracker keeps the flag in `pending-asks.json` across restarts.
+- **The answer comes back as arrays.** A multi select question answers with `picked_option_values` and `picked_option_labels`, every pick in the card's order, an array even for one pick (an app before multi select sends one, and a backend before it stores a bare `optionId`). A single choice question keeps `picked_option_value` and `picked_option_label`, and a skipped or typed multi select answer carries no empty arrays. The same rows serve the blocking result, `ask_answered` and `ask_withdrawn`. The backend stores `{ optionIds, optionId: first pick, skipped: false }`; `askAnswerFromRow` reads `optionIds` and drops an id the row no longer carries.
+- The tool description, the schema and the MCP instructions name the arrays.
+- Tests: `test/ask-tracker.test.ts` and `test/ask-multi-select-wiring.test.ts`, red first; a local rig (outside this repo) ran the real daemon under a scratch HOME against a stub backend: the stream and the poll after a restart, an old app's single pick and a bare `optionId` on a multi select question, and a blocking wait answered in time.
+
 ## 0.78.0 (2026-10-27)
 
 **A late answer to a question card now reaches the agent (#282, Kc's ask, Data approved option A, msg 161859).** The card stays answerable in the app and the backend accepts a late answer, but the plugin dropped it on both transports (`lib/stream-apply.ts`, `lib/poll-core.ts`), and `ask_user_input` blocked up to 600 s and then reported every unanswered question as skipped.
