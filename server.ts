@@ -3116,10 +3116,11 @@ const mcp = new Server(
       '## Asking Your Owner Questions (ask_user_input)',
       '',
       'Any message asking your owner 2 or more decisions is ONE ask_user_input card (up to 4 questions), online or not. A reply with buttons asks exactly one thing. The card returns at once as pending: end your turn and do nothing that depends on the answers; they arrive together as one ask_answered event, however late. Use wait_seconds only if your owner wrote in the last few minutes and you cannot continue without the answer.',
+      'For that, pass wait_seconds: 0. A call with neither wait_seconds nor timeout_seconds keeps its old behaviour: it waits up to 600 s and returns the answers.',
       '',
       'The BGOS app shows the card as a sheet over the chat with numbered',
-      'choices, optional free-text fallback, and per-question Skip. The tool',
-      'returns at once as pending with an `ask_id`. When every',
+      'choices, optional free-text fallback, and per-question Skip. With',
+      '`wait_seconds: 0` the tool returns at once as pending with an `ask_id`. When every',
       'question is answered (option picked, free text typed, or skipped) the',
       'answers arrive together as ONE channel event, however late, and it starts',
       'a new turn:',
@@ -3128,9 +3129,10 @@ const mcp = new Server(
       '  </channel>',
       'with `meta.ask_id` and `meta.answers` (JSON, one entry per question in',
       'order: `picked_option_value` and `picked_option_label`, `free_text`, or',
-      '`skipped: true`). `wait_seconds` (up to 600) blocks instead and returns',
-      'the answers if they all come in time; if not it returns pending, never',
-      'invented skips, and the answers still arrive as ask_answered.',
+      '`skipped: true`). `wait_seconds` above 0 (up to 600), or no wait field',
+      'at all (the old 600 s), blocks instead and returns the answers if they',
+      'all come in time; if not it returns pending, never invented skips, and',
+      'the answers still arrive as ask_answered.',
       '',
       'Use it for: choosing an approach, picking a destination, ranking',
       'priorities, confirming intent before a destructive action, multi-step',
@@ -4790,6 +4792,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'The card returns at once as pending: end your turn and do nothing that depends on the answers; ' +
         'they arrive together as one ask_answered event, however late. ' +
         'Use wait_seconds only if your owner wrote in the last few minutes and you cannot continue without the answer. ' +
+        'For that, pass wait_seconds: 0. A call with neither wait_seconds nor timeout_seconds keeps its old behaviour: ' +
+        'it waits up to 600 s and returns the answers. ' +
         'The pending result carries the ask_id; the ask_answered event (meta.ask_id, meta.answers) ' +
         'carries every answer and starts a new turn. With wait_seconds above 0 the call returns the ' +
         'answers if they all come in time, otherwise pending, never invented skips. withdraw_ask ' +
@@ -4862,12 +4866,13 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             minimum: 0,
             maximum: 600,
             description:
-              'How long this call may wait for the answers. Default 0: post the ' +
+              'How long this call may wait for the answers, 0 to 600. 0: post the ' +
               'card, return pending at once, and receive every answer later as ONE ' +
               'ask_answered event. Above 0 the call blocks up to that many seconds ' +
               'and returns the answers if they all come in time; otherwise it returns ' +
               'pending (never invented skips) and the answers still arrive as ' +
-              'ask_answered.',
+              'ask_answered. Leave it out (and timeout_seconds) and the call keeps ' +
+              'its old behaviour: it blocks up to 600 s.',
           },
           timeout_seconds: {
             type: 'number',
@@ -6694,9 +6699,11 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
             allow_skip?: boolean
           }>
         | undefined
-      // 0 unless asked for: post, return pending, the answers come back as
-      // ONE ask_answered event however late (lib/ask-tracker.ts askWaitSeconds).
-      const waitSeconds = askWaitSeconds(rawArgs)
+      // wait_seconds 0: post, return pending, the answers come back as ONE
+      // ask_answered event however late. No wait field: the old 600 s block.
+      // A wait that is not a number of seconds is refused before anything is
+      // posted (lib/ask-tracker.ts askWaitSeconds, review of #282, item 3).
+      const askWait = askWaitSeconds(rawArgs)
 
       if (!chat_id) {
         return { content: [{ type: 'text', text: 'Error: chat_id is required' }] }
@@ -6724,6 +6731,10 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
         }
       }
 
+      if ('error' in askWait) {
+        return { content: [{ type: 'text', text: askWait.error }], isError: true }
+      }
+      const waitSeconds = askWait.seconds
       // Only the daemon holding this agent's connection delivers answers, and a
       // card's answers go only to the session that asked it (lib/ask-tracker.ts
       // askIsOurs). A passive session's daemon could never hand them back, so

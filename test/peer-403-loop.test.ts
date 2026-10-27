@@ -38,6 +38,8 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import ts from 'typescript'
 
+import { askPendingText, askWaitSeconds } from '../lib/ask-tracker.ts'
+
 import { boundedFetch } from '../lib/bounded-fetch.ts'
 import { authHeaders } from '../lib/agent-credentials.ts'
 import { PendingCards } from '../lib/hook-card-pending.ts'
@@ -341,8 +343,11 @@ function harness(apiBase: string, turnChat: string): Harness {
     isHostPostedKind: () => false,
     validateComponentPayload: () => ({ ok: true }),
     deriveComponentTitle: () => 'Status card',
-    // ask_user_input.
+    // ask_user_input: the real wait parser (it refuses a wait that is not a
+    // number) and the real pending text, the result a posted card returns.
     escapeAgentButtonValue: (value: string) => `u:${value}`,
+    askWaitSeconds,
+    askPendingText,
     // propose_plan: the real card builders, a fresh process (no open plan, and
     // peerConvByChat above is empty, as it is after a restart).
     ...planCard,

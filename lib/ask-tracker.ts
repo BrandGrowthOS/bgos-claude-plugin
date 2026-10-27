@@ -9,8 +9,9 @@
  * the agent's update stream. The plugin then dropped it on both transports,
  * so an owner who answered fifteen minutes later was answering nobody.
  *
- * NOW. ask_user_input posts, registers the group here and returns pending
- * (wait_seconds 0, the default). Both transports feed answers in through
+ * NOW. ask_user_input with wait_seconds 0 posts, registers the group here and
+ * returns pending (a call with no wait field keeps the old blocking contract,
+ * askWaitSeconds). Both transports feed answers in through
  * record(): the stream's buttons_answered entry for a message this tracker
  * owns, the poll's row of one, the blocking wait's own reads, and a reconcile
  * of every pending group on connect. When the last question is answered the
@@ -50,26 +51,52 @@ export const MAX_PENDING_AGE_MS = 30 * 24 * 60 * 60_000
 const MAX_DELIVERED_REMEMBERED = 200
 const FILE_VERSION = 1
 
-/** The longest wait_seconds may hold a turn: the blocking default the tool had before. */
+/** The longest wait_seconds may hold a turn, and the wait of a call with no wait field: the tool's old default. */
 export const MAX_ASK_WAIT_SECONDS = 600
 
 /**
- * How long one ask_user_input call holds the turn. wait_seconds, default 0:
- * post, return pending, and the answers arrive later as one ask_answered
- * event. timeout_seconds is the older name for a blocking wait and keeps its
- * meaning, the upper bound of the wait, uncapped as it always was; only its
- * tail changed (a wait that runs out returns pending, never invented skips).
- * When both are given, wait_seconds wins.
+ * How long one ask_user_input call holds the turn (review of #282, item 3).
+ * A call with neither field keeps the contract it always had: it waits up to
+ * 600 s and returns the answers. wait_seconds 0 posts and returns pending at
+ * once, the answers arriving later as one ask_answered event; above 0 it
+ * waits up to that long, capped at 600. timeout_seconds is the older name and
+ * keeps its meaning, the upper bound of the wait, uncapped as it always was.
+ * When both are given, wait_seconds wins. A number written as a string is
+ * read; anything else that is not a number of seconds is refused, never read
+ * as 0. Only the tail of a wait changed: one that runs out returns pending,
+ * never invented skips.
  */
-export function askWaitSeconds(args: Record<string, unknown>): number {
-  const wait = args.wait_seconds
-  if (wait !== undefined) {
-    return typeof wait === 'number' && Number.isFinite(wait) && wait > 0
-      ? Math.min(wait, MAX_ASK_WAIT_SECONDS)
-      : 0
+export function askWaitSeconds(args: Record<string, unknown>): { seconds: number } | { error: string } {
+  const wait = readSeconds(args.wait_seconds)
+  if (wait === 'refused') {
+    return {
+      error:
+        `Error: wait_seconds must be a number of seconds from 0 to ${MAX_ASK_WAIT_SECONDS} ` +
+        `(got ${shown(args.wait_seconds)}). Nothing was posted.`,
+    }
   }
-  const legacy = args.timeout_seconds
-  return typeof legacy === 'number' && Number.isFinite(legacy) && legacy > 0 ? legacy : 0
+  if (wait !== null) return { seconds: Math.min(wait, MAX_ASK_WAIT_SECONDS) }
+  const legacy = readSeconds(args.timeout_seconds)
+  if (legacy === 'refused') {
+    return { error: `Error: timeout_seconds must be a number of seconds (got ${shown(args.timeout_seconds)}). Nothing was posted.` }
+  }
+  return { seconds: legacy ?? MAX_ASK_WAIT_SECONDS }
+}
+
+/** A wait field as seconds: null when not given, 'refused' when it is not a number of seconds. */
+function readSeconds(value: unknown): number | null | 'refused' {
+  if (value === undefined || value === null) return null
+  const n =
+    typeof value === 'number' ? value : typeof value === 'string' && value.trim() !== '' ? Number(value.trim()) : Number.NaN
+  return Number.isFinite(n) && n >= 0 ? n : 'refused'
+}
+
+function shown(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? String(value)
+  } catch {
+    return String(value)
+  }
 }
 
 export interface AskOption {
@@ -214,12 +241,12 @@ export function askPendingText(opts: {
   return [
     JSON.stringify(status, null, 2),
     `${lead} End your turn now and do nothing that depends on these answers. ` +
-      `When every question is answered or skipped they arrive together as ONE ask_answered ` +
-      `channel event (meta.ask_id = ${opts.askId}), however late, and that starts a new turn. ` +
-      `That turn is not your owner's own message, so tools that act for your owner (schedule, ` +
-      `boards, the browser, email_send, call_owner) refuse in it: to run one after the answers, ` +
-      `reply asking your owner to confirm, and act in the turn their message starts (with your ` +
-      `owner in the chat, wait_seconds keeps the answers inside their own turn). ` +
+      `When every question is answered or skipped, the answers arrive later, together, as ONE ` +
+      `ask_answered channel event (meta.ask_id = ${opts.askId}), however late, and that event ` +
+      `starts a new turn. That turn is not your owner's own message, so the tools that act for ` +
+      `your owner refuse in it: schedule, boards, the browser, email_send and call_owner. ` +
+      `If you will need one of them after these answers, ask again with wait_seconds while your ` +
+      `owner is in the chat, or wait for your owner's next message and use the tool in that turn. ` +
       `If you no longer need the answers, call withdraw_ask with this ask_id.`,
   ].join('\n')
 }

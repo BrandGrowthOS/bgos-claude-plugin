@@ -564,12 +564,13 @@ rules before replying so messages don't get lost.
 - `rename_chat` — set a descriptive title on the current chat.
 - `ask_user_input`: post ONE card of 1 to 4 multiple-choice questions.
   Any message asking the owner 2 or more decisions is one card, online or
-  not; a reply with buttons asks exactly one thing. It returns at once as
-  pending with an `ask_id`; when every question is answered or skipped,
-  one `ask_answered` channel event carries every answer and starts a new
-  turn, however late. `wait_seconds` (up to 600) blocks instead and returns
+  not; a reply with buttons asks exactly one thing. With `wait_seconds: 0`
+  it returns at once as pending with an `ask_id`; when every question is
+  answered or skipped, one `ask_answered` channel event carries every
+  answer and starts a new turn, however late. `wait_seconds` above 0 (up to
+  600), or no wait field at all (the old 600 s), blocks instead and returns
   the answers if they all come in time, otherwise pending, never invented
-  skips. Pending cards survive a restart (`pending-asks.json` beside the
+  skips. A wait that is not a number of seconds is refused. Pending cards survive a restart (`pending-asks.json` beside the
   cursor file).
 - `withdraw_ask`: retire a card you no longer need, by its `ask_id`.
 - `list_peers` — list other assistants on this BGOS account that you

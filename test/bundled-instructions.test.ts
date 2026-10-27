@@ -198,8 +198,9 @@ const PASS_ZERO =
 
 test('item 3 of #282: right after section 6, the instructions, the tool and the fallback say to pass wait_seconds 0', async () => {
   const { BGOS_CAPABILITIES_FALLBACK } = await import('../lib/capabilities.ts')
+  const lines = bundledInstructions().split('\n')
+  assert.equal(lines[lines.indexOf(SECTION_6) + 1], PASS_ZERO, 'the bundled instructions do not follow section 6 with the wait_seconds 0 line')
   for (const [where, text] of [
-    ['the bundled instructions', bundledInstructions()],
     ['the ask_user_input description', toolDescription('ask_user_input')],
     ['the capabilities fallback', BGOS_CAPABILITIES_FALLBACK.replace(/\s+/g, ' ')],
   ] as const) {
