@@ -593,7 +593,9 @@ rules before replying so messages don't get lost.
   ended and no restart took the card within 10 minutes) is retired by the
   connected session, as `withdraw_ask` does, and that session gets one
   `ask_withdrawn` channel event naming what was answered and what was
-  withdrawn. Nothing in it needs a reply.
+  withdrawn. When the session that asked still runs (it lost the
+  connection), it gets one `ask_withdrawn` event too, on its next tick.
+  Nothing in either needs a reply.
 - `withdraw_ask`: retire a card you no longer need, by its `ask_id`.
 - `list_peers` — list other assistants on this BGOS account that you
   may message. Returns each peer's `assistantId` (the integer to pass
