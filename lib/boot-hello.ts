@@ -27,6 +27,7 @@
 import { readFileSync, writeFileSync, mkdirSync, statSync, renameSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
+import { agentIdentityText, cleanIdentityName } from './agent-identity.mjs'
 import { agentStateDir } from './update-readiness.js'
 
 /** File name inside the per-assistant state dir (next to chat-cursors.json). */
@@ -130,24 +131,59 @@ export function shouldBackfillLiveMarker(input: {
  * The hello channel notification. The instruction names the reply tool and
  * the chat explicitly so even a bare session with no CLAUDE.md acts on it,
  * and the greeting doubles as the user-visible "your agent is alive" moment.
+ * With a name it also tells the session that name and to introduce itself by
+ * it: the owner's global memory may name somebody else (Kc's PC test,
+ * 2026-10-24: agent 1129 said "Ares here"), and this hello is the first thing
+ * the owner reads from the agent.
  */
 export function buildBootHelloNotification(input: {
   assistantName?: string | null
   chatId: string
 }): { content: string; meta: Record<string, string> } {
-  const who = String(input.assistantName ?? '').trim()
+  const who = cleanIdentityName(input.assistantName)
   const name = who ? ` as ${who}` : ''
+  const yourName = who ? `Your name is ${who}. ` : ''
   return {
     content:
-      `[hoai] This session just came online${name} for the first time. ` +
+      `[hoai] This session just came online${name} for the first time. ${yourName}` +
       `To confirm the channel works end to end, call the \`reply\` tool NOW ` +
       `with chat_id=${input.chatId} and a one-line friendly hello introducing ` +
-      `yourself to your user. This first reply is what proves the connection, ` +
+      `yourself${name} to your user. This first reply is what proves the connection, ` +
       `so do it before anything else.`,
     meta: {
       event_type: 'boot_hello',
       chat_id: String(input.chatId),
     },
+  }
+}
+
+/**
+ * Whether to tell the live conversation its name (plugin review I2,
+ * 2026-10-25). An agent that was running before its identity file existed
+ * (agent 1129, paired before 0.75.0), or renamed since, is in a conversation
+ * whose recorded system prompt has no name: a resume keeps it until the
+ * conversation is compacted, and a launcher started before the update passes
+ * no identity flag. Only when the daemon's boot refresh just wrote a new
+ * identity, and never beside the first hello, which already names the agent.
+ */
+export function shouldSendIdentityNotice(input: {
+  outcome: string
+  name: string | null | undefined
+  helloSent: boolean
+}): boolean {
+  return input.outcome === 'written' && cleanIdentityName(input.name) !== '' && !input.helloSent
+}
+
+/** That notice: the identity in the same words as the file, and no reply asked for. */
+export function buildIdentityNotice(input: {
+  assistantName: string
+  ownerFirstName?: string | null
+}): { content: string; meta: Record<string, string> } {
+  const who = cleanIdentityName(input.assistantName)
+  const identity = agentIdentityText({ name: who, ownerFirstName: input.ownerFirstName }) ?? ''
+  return {
+    content: `[hoai] ${identity} From now on introduce yourself as ${who}. No reply is needed.`,
+    meta: { event_type: 'agent_identity' },
   }
 }
 
