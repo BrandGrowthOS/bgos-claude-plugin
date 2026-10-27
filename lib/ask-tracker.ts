@@ -30,10 +30,12 @@
  * asker runs is its LEASE, never its pid alone (Windows hands a dead process's
  * pid to the next one at once): every daemon writes on its own groups that it
  * runs, on the ask tick (heartbeat), and an asker silent for ASK_LEASE_MS has
- * ended. How long it ran beside a daemon is then read off the file, the same
- * for every daemon whenever it looks: from that daemon's start (or the post)
- * to the end of the asker's last lease (ASK_LEASE_SPAN_MS after it, the
- * longest a running asker goes without writing again). Longer than
+ * ended. How long it ran beside a daemon is then read off the file, so a
+ * daemon decides the same whenever it looks: from that daemon's start (or the
+ * post) to the end of the latest lease of the asker it has seen
+ * (ASK_LEASE_SPAN_MS after it, about the longest a running asker goes without
+ * writing again; the latest it has seen, since a lease corrected after a
+ * clock stepped back is lower, and a lease seen is kept in memory only). Longer than
  * ASK_OWNER_OVERLAP_MS, and the group
  * is marked askerEndedBeside in the file, so no daemon ever announces it. A
  * daemon that was not looking (a sleep, a stalled process) reads no lease as
@@ -823,9 +825,10 @@ export class AskTracker {
    * A group whose asker, another process, has ended and ran beside this
    * process for longer than ASK_OWNER_OVERLAP_MS: from this process's start
    * (or the post, if later) to the end of the asker's last lease
-   * (ASK_LEASE_SPAN_MS after it; Data's gate notes on #282, item 1). Read off the file, so
-   * every daemon decides it the same whenever it looks, and a restart keeps
-   * its card however late the answers come (third review of #282, Critical 1).
+   * (ASK_LEASE_SPAN_MS after it; Data's gate notes on #282, item 1), the
+   * latest lease this process has seen (latestLease). Read off the file, so
+   * a daemon decides it the same whenever it looks, and a restart keeps its
+   * card however late the answers come (third review of #282, Critical 1).
    * Marked for every daemon (askerEndedBeside); true when it marked the group.
    */
   private markIfBeside(ask: PendingAsk): boolean {
