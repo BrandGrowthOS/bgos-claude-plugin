@@ -83,18 +83,6 @@ test('recheck of #282, pid reuse: every daemon, armed, passive or draining, says
   assert.match(refresh, /try \{\n\s*askTracker\.refresh\(\)\n\s*\} catch \(err\) \{\n\s*log\(/)
 })
 
-test('recheck of #282, takeover: a passive daemon that takes the connection marks the old holder\'s groups, at promotion and at boot', () => {
-  const at = server.indexOf('promoting from passive to active and arming delivery')
-  const taken = server.lastIndexOf('        lockHeld = true\n', at)
-  assert.match(server.slice(taken, at), /refreshAskTracker\('promotion'\)\n(\s*\/\/[^\n]*\n)*\s*takeOverAsks\(res\.reason, res\.holderPid\)\n/)
-  const boot = fnBody('if (lockAtBoot.acquired) {', 1800)
-  const mark = boot.indexOf('takeOverAsks(lockAtBoot.reason, lockAtBoot.holderPid)')
-  assert.ok(mark > 0 && mark < boot.indexOf('await armDelivery()'), 'marked before the arm reads the file')
-  const fn = fnBody('function takeOverAsks(reason: string | undefined, holderPid: number | undefined): void {', 1200)
-  assert.match(fn, /reason !== 'channel-takeover' && reason !== 'route-takeover'/)
-  assert.match(fn, /askTracker\.markTakenOver\(holderPid\)/)
-})
-
 test('recheck of #282, item 1: every reconcile pass (boot, connect, the timer) retires the cards no daemon may announce', () => {
   const reconcile = fnBody('async function reconcilePendingAsks(via: string, opts: { dueOnly?: boolean } = {}): Promise<void> {', 2400)
   const announce = reconcile.indexOf('announceCompleteAsks(via)')

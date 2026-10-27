@@ -672,27 +672,49 @@ test('recheck, item 1: only the armed daemon holding the connection retires; a p
   assert.ok(r.tracker.get('theirs'))
 })
 
-test('recheck, takeover: after a channel takeover every open group of the old holder is retired with one event each, and none is left', async () => {
-  const r = rig({ live: [2004] })
+test('fresh review of the recheck, Critical 1: whatever took the connection (channel, route, a stale lock after a sleep), every unheld group of a live asker other than this daemon is retired once seen so for ASK_LEASE_MS, one event each, none left', async () => {
+  const r = rig({ live: [2004, 2005] })
   r.foreignGroup('first', [750], { pid: 2004, startedAt: START - 60 * MIN }, START - 2 * MIN)
   r.foreignGroup('second', [751, 752], { pid: 2004, startedAt: START - 60 * MIN }, START - MIN)
-  r.foreignGroup('another-session', [753], { pid: 2005, startedAt: START - 60 * MIN }, START - MIN)
+  r.foreignGroup('older-holder', [753], { pid: 2005, startedAt: START - 90 * MIN }, START - 30 * MIN)
   r.answer(751)
-  assert.equal(typeof r.takeOverAsks, 'function', 'server.ts marks the old holder\'s groups when it takes the connection')
-  r.takeOverAsks?.('channel-takeover', 2004)
-  await r.retireOrphanedAsks?.('takeover')
+  assert.equal(typeof r.retireOrphanedAsks, 'function')
+  await r.retireOrphanedAsks?.('timer')
+  r.advance(20_000)
+  await r.retireOrphanedAsks?.('timer')
   await r.settle()
-  assert.deepEqual(r.patches.map((p) => p.path).sort(), ['messages/750', 'messages/752'])
-  assert.deepEqual(r.notes.map((n) => n.params.meta.ask_id).sort(), ['first', 'second'])
+  assert.deepEqual(r.patches, [], 'not within ASK_LEASE_MS of the first look')
+  r.advance(20_000)
+  await r.retireOrphanedAsks?.('timer')
+  await r.settle()
+  assert.deepEqual(r.patches.map((p) => p.path).sort(), ['messages/750', 'messages/752', 'messages/753'])
+  assert.deepEqual(r.notes.map((n) => n.params.meta.ask_id).sort(), ['first', 'older-holder', 'second'])
   assert.ok(r.notes.every((n) => n.params.meta.event_type === 'ask_withdrawn'))
-  assert.deepEqual(r.tracker.pending().map((g) => g.askId), ['another-session'], "a group whose asker did not hold the connection is that asker's, untouched")
+  assert.deepEqual(r.tracker.pending(), [], 'none left')
 })
 
-test('recheck, takeover: a lock taken from a dead or stale holder marks nothing (its restart may still claim the card)', () => {
-  const r = rig({ live: [2006] })
-  r.foreignGroup('g', [760], { pid: 2006, startedAt: START - 60 * MIN }, START - MIN)
-  assert.equal(typeof r.takeOverAsks, 'function')
-  for (const reason of ['holder-dead', 'stale', 'unlocked', 'own']) r.takeOverAsks?.(reason, 2006)
-  r.takeOverAsks?.('channel-takeover', undefined)
-  assert.equal(r.tracker.get('g')?.askerEndedBeside, undefined)
+test('fresh review of the recheck, Critical 1: a passive session\'s blocking wait keeps its card from the retire while it holds it', async () => {
+  const r = rig({ live: [2007] })
+  const ask = r.foreignGroup('waiting', [770], { pid: 2007, startedAt: START - 60 * MIN }, START)
+  ask.heldUntil = START + 2 * MIN
+  for (let i = 0; i < 5; i++) {
+    await r.retireOrphanedAsks?.('timer')
+    r.advance(20_000)
+  }
+  await r.settle()
+  assert.deepEqual(r.patches, [])
+  assert.ok(r.tracker.get('waiting'))
+})
+
+test('fresh review of the recheck, Minor 2: a group another daemon delivers or retires while this one retires its rows is never told here', async () => {
+  const r = rig()
+  const ask = r.foreignGroup('theirs', [780], { pid: 2008, startedAt: START - 60 * MIN }, START - 30 * MIN)
+  ask.askerEndedBeside = START - MIN
+  // The passive asker's own wait retired it (or its restart delivered it) during the PATCH.
+  r.onPatch(() => r.tracker.delivered('theirs'))
+  assert.equal(typeof r.retireOrphanedAsks, 'function')
+  await r.retireOrphanedAsks?.('test')
+  await r.settle()
+  assert.equal(r.patches.length, 1)
+  assert.equal(r.notes.length, 0, 'its session already has the answers, or was told')
 })
