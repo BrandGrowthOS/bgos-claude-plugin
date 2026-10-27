@@ -973,9 +973,12 @@ async function serverCallTool(
   const m = await tools()
   const a = await approval()
   const b = await binding()
-  const handler = serverSlice('mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {', '\n  })\n})\n')
+  // The dispatch ends by passing its result through withRetiredOwnAskNotes (an
+  // asker's retired card, lib/ask-retired-tell.ts, with its own tests): here it
+  // hands the result back as it is.
+  const handler = serverSlice('mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {', '\n  }).then(withRetiredOwnAskNotes)\n})\n')
     .replace('mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {', 'const callTool = (req, extra) => {')
-    .replace(/\n {2}\}\)\n\}\)\n$/, '\n  })\n}\n')
+    .replace(/\n {2}\}\)\.then\(withRetiredOwnAskNotes\)\n\}\)\n$/, '\n  }).then(withRetiredOwnAskNotes)\n}\n')
   const source = [
     serverSlice('class HttpError extends Error {', '\n}\n'),
     serverSlice('function bgosCall<T>(', '\n}\n'),
@@ -1000,6 +1003,8 @@ async function serverCallTool(
     AUTH: { mode: 'pairing', pairingToken: PAIRING_TOKEN },
     authHeaders: (auth: { pairingToken: string }) => ({ 'X-BGOS-Pairing': auth.pairingToken }),
     messagesCallerHeaders: () => ({}),
+    // The asker's retired card notes are not this test's: the result as it is.
+    withRetiredOwnAskNotes: (result: unknown) => result,
     classifyPeerRefusal: () => null,
     noteAuthOutcome: () => undefined,
     HTTP_TIMEOUT_MS: 10_000,
