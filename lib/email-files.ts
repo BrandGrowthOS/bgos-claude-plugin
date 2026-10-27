@@ -423,20 +423,27 @@ export async function saveEmailFile(
  * The bytes the saved email files take, every agent's: only the files this
  * code writes (`<root>/<digits>/<email id>/attachment-N.ext` and `.part`
  * files), never through a link. A bounded walk: past EMAIL_FILES_ROOT_WALK_MAX
- * entries it answers Infinity, so a folder too big to count counts as full.
+ * entries, or past `until`, it answers Infinity, so a folder too big (or too
+ * slow) to count counts as full.
  */
-export async function emailFilesRootBytes(root: string, walkMax: number = EMAIL_FILES_ROOT_WALK_MAX): Promise<number> {
+export async function emailFilesRootBytes(
+  root: string,
+  walkMax: number = EMAIL_FILES_ROOT_WALK_MAX,
+  until: number = Infinity,
+): Promise<number> {
   let total = 0
   let seen = 0
+  const over = () => ++seen > walkMax || Date.now() > until
+  if (Date.now() > until) return Infinity
   for (const assistant of await entriesOf(root)) {
-    if (++seen > walkMax) return Infinity
+    if (over()) return Infinity
     if (!assistant.isDirectory() || !ASSISTANT_SEGMENT.test(assistant.name)) continue
     for (const email of await entriesOf(join(root, assistant.name))) {
-      if (++seen > walkMax) return Infinity
+      if (over()) return Infinity
       if (!email.isDirectory() || !EMAIL_SEGMENT.test(email.name)) continue
       const folder = join(root, assistant.name, email.name)
       for (const entry of await entriesOf(folder)) {
-        if (++seen > walkMax) return Infinity
+        if (over()) return Infinity
         if (!entry.isFile() || !(EMAIL_FILE_NAME.test(entry.name) || PART_FILE.test(entry.name))) continue
         try {
           total += (await lstat(join(folder, entry.name))).size
@@ -481,7 +488,13 @@ export function emailFilesWanted(record: unknown, files: unknown): boolean {
  * the same email's files (the socket and the poll can both meet it) waits for
  * the first instead of fetching again. Only while it runs; nothing is cached.
  */
-const emailFilesInFlight = new Map<string, Promise<Array<EmailFileSave | null>>>()
+const emailFilesInFlight = new Map<string, Promise<Map<string, string>>>()
+
+/** Is this agent's download of this email's files running now? A lane over its budget still joins it. */
+export function emailFilesDownloading(assistantId: string | number, record: unknown): boolean {
+  const emailId = readExternalEmailId(record)
+  return !!emailId && emailFilesInFlight.has(`${String(assistantId)}/${emailId}`)
+}
 
 /**
  * Fetch and save every file of one email, in order, and answer one entry per
@@ -502,6 +515,8 @@ export async function prepareEmailFiles(opts: {
   deadlineMs?: number
   /** The cap for the whole folder; EMAIL_FILES_ROOT_MAX_BYTES unless a test says less. */
   rootMaxBytes?: number
+  /** How the folder is counted (emailFilesRootBytes); a test may watch it. */
+  rootBytes?: (root: string, walkMax: number, until: number) => Promise<number>
   log?: (line: string) => void
 }): Promise<Array<EmailFileSave | null>> {
   const log = opts.log ?? (() => {})
@@ -519,30 +534,39 @@ export async function prepareEmailFiles(opts: {
     return saves
   }
   const key = `${assistantId}/${emailId}`
+  // Shared by NAME, the server's own attachment-N.ext: two lanes can list one
+  // email's files in a different order or number, so each caller pairs its
+  // own entries with the paths, never the first caller's positions.
+  const byName = (saved: Map<string, string>) =>
+    entries.map((f, i) => (i < EMAIL_FILES_PER_EMAIL && saved.has(f.name) ? { path: saved.get(f.name)! } : null))
   const running = emailFilesInFlight.get(key)
   if (running) {
     log('email files: this email\'s files are already downloading; waiting for that download')
-    return (await running).slice()
+    return byName(await running)
   }
-  const work = fetchAndSave(opts, entries, saves, assistantId, emailId, log)
+  const work = fetchAndSave(opts, entries, assistantId, emailId, log)
   emailFilesInFlight.set(key, work)
   try {
-    return (await work).slice()
+    return byName(await work)
   } finally {
     if (emailFilesInFlight.get(key) === work) emailFilesInFlight.delete(key)
   }
 }
 
+/** Fetch and save one email's files; answers each saved file's server name and path. */
 async function fetchAndSave(
   opts: Parameters<typeof prepareEmailFiles>[0],
   entries: ReturnType<typeof emailFileEntries>,
-  saves: Array<EmailFileSave | null>,
   assistantId: string,
   emailId: string,
   log: (line: string) => void,
-): Promise<Array<EmailFileSave | null>> {
+): Promise<Map<string, string>> {
+  const saved = new Map<string, string>()
   const rootMax = opts.rootMaxBytes ?? EMAIL_FILES_ROOT_MAX_BYTES
+  const countRoot = opts.rootBytes ?? emailFilesRootBytes
   const until = Date.now() + (opts.deadlineMs ?? EMAIL_FILES_DEADLINE_MS)
+  // The folder is counted once per email, inside its deadline, then kept as a running total.
+  let used: number | null = null
   let budget = EMAIL_FILES_TOTAL_BYTES
   for (let i = 0; i < entries.length && i < EMAIL_FILES_PER_EMAIL; i++) {
     const f = entries[i]!
@@ -570,7 +594,7 @@ async function fetchAndSave(
         continue
       }
       budget -= bytes.byteLength
-      const used = await emailFilesRootBytes(opts.root)
+      if (used === null) used = await countRoot(opts.root, EMAIL_FILES_ROOT_WALK_MAX, until)
       if (used + bytes.byteLength > rootMax) {
         log(
           `email files: ${f.name} not saved: the email files folder is full ` +
@@ -579,12 +603,13 @@ async function fetchAndSave(
         )
         continue
       }
-      saves[i] = { path: await saveEmailFile(opts.root, assistantId, emailId, f.name, bytes) }
+      saved.set(f.name, await saveEmailFile(opts.root, assistantId, emailId, f.name, bytes))
+      used += bytes.byteLength
     } catch (err) {
       log(`email files: ${f.name} not saved: ${withoutLinks(err, f.ref)}`)
     }
   }
-  return saves
+  return saved
 }
 
 // ── the sweep ────────────────────────────────────────────────────────────────
@@ -723,6 +748,8 @@ export function createEmailFilesKeepalive(opts: {
 export interface EmailBatchBudget {
   /** May one more email's downloads start? The first always may. */
   mayStart(): boolean
+  /** What is left, the most an email started now may take (its deadline). */
+  leftMs(): number
   spend(ms: number): void
 }
 
@@ -730,6 +757,7 @@ export function createEmailBatchBudget(budgetMs: number = EMAIL_FILES_BATCH_BUDG
   let spent = 0
   return {
     mayStart: () => spent < budgetMs,
+    leftMs: () => Math.max(0, budgetMs - spent),
     spend: (ms) => {
       if (Number.isFinite(ms) && ms > 0) spent += ms
     },
@@ -743,15 +771,26 @@ export function createEmailBatchBudget(budgetMs: number = EMAIL_FILES_BATCH_BUDG
  * release catches the cursor up. Without this a later message delivered
  * while an email's files download moves the cursor past the email, and a
  * crash then loses it. A hold is counted, so two lanes holding one email both
- * let go before it is free. An email released without being delivered (the
- * daemon stood down) never lets the catch up pass it.
+ * let go before it is free.
+ *
+ * An email let go WITHOUT being delivered (the daemon stood down, or the lane
+ * refused it) stays a ceiling for its chat until every hold there is gone:
+ * no ask, and no catch up, passes it, however the other holds end. Its own
+ * later delivery (held again and let go delivered) lifts it. So a stood-down
+ * daemon's cursor, and so its flush, never passes an email nobody delivered.
  */
 export function createEmailCursorHolds() {
   const held = new Map<string, Map<number, number>>()
   const asked = new Map<string, number>()
-  const lowest = (chatId: string): number | null => {
-    const ids = held.get(chatId)
-    return ids && ids.size > 0 ? Math.min(...ids.keys()) : null
+  const undelivered = new Map<string, Set<number>>()
+  /** The highest id the cursor may reach in this chat now, or null for no limit. */
+  const capOf = (chatId: string): number | null => {
+    const ids = [...(held.get(chatId)?.keys() ?? []), ...(undelivered.get(chatId) ?? [])]
+    return ids.length > 0 ? Math.min(...ids) - 1 : null
+  }
+  const ceilingOf = (chatId: string): number | null => {
+    const ids = undelivered.get(chatId)
+    return ids && ids.size > 0 ? Math.min(...ids) - 1 : null
   }
   return {
     hold(chatId: string, id: number): void {
@@ -762,10 +801,10 @@ export function createEmailCursorHolds() {
     },
     /** Where the cursor may go when asked to `id`. */
     clamp(chatId: string, id: number): number {
-      const low = lowest(chatId)
-      if (low === null || id < low) return id
+      const cap = capOf(chatId)
+      if (cap === null || id <= cap) return id
       asked.set(chatId, Math.max(asked.get(chatId) ?? id, id))
-      return low - 1
+      return cap
     },
     /** Let go of one hold; answers where the cursor should catch up to, or null when nothing was asked. */
     release(chatId: string, id: number, delivered: boolean): number | null {
@@ -775,10 +814,21 @@ export function createEmailCursorHolds() {
       if (count > 1) ids.set(id, count - 1)
       else ids.delete(id)
       if (ids.size === 0) held.delete(chatId)
+      const owed = undelivered.get(chatId) ?? new Set<number>()
+      if (delivered) owed.delete(id)
+      else owed.add(id)
+      if (owed.size > 0) undelivered.set(chatId, owed)
+      else undelivered.delete(chatId)
       const target = asked.get(chatId)
+      const ceiling = ceilingOf(chatId)
+      if (!held.has(chatId)) {
+        // The last hold in the chat: what is still owed is a ceiling this one
+        // last time, then the chat is free again.
+        asked.delete(chatId)
+        undelivered.delete(chatId)
+      }
       if (target === undefined) return null
-      if (!held.has(chatId)) asked.delete(chatId)
-      return delivered ? target : Math.min(target, id - 1)
+      return ceiling === null ? target : Math.min(target, ceiling)
     },
     held(chatId: string): number[] {
       return [...(held.get(chatId)?.keys() ?? [])].sort((a, b) => a - b)

@@ -769,3 +769,112 @@ test('a held email keeps the chat cursor one below it, and its release catches t
   holds.hold('7001', 9030)
   assert.equal(holds.release('7001', 9030, true), null)
 })
+
+// ── second review round ──────────────────────────────────────────────────────
+
+test('holds: two emails downloading, the daemon stands down, the lower id is let go first: the cursor never passes either', () => {
+  const holds = ef.createEmailCursorHolds()
+  holds.hold('C', 10)
+  holds.hold('C', 20)
+  // Message 25 delivered meanwhile: asked for, clamped one below the lowest email.
+  assert.equal(holds.clamp('C', 25), 9)
+  assert.equal(holds.release('C', 10, false), 9)
+  assert.equal(holds.clamp('C', 25), 9, 'the undelivered email is a ceiling while any hold stays')
+  assert.equal(holds.release('C', 20, false), 9, 'the last release keeps the first one\'s ceiling, never its own id - 1')
+  // Same with the second email delivered after the first was not.
+  holds.hold('D', 10)
+  holds.hold('D', 20)
+  holds.clamp('D', 25)
+  assert.equal(holds.release('D', 10, false), 9)
+  assert.equal(holds.release('D', 20, true), 9)
+  // And an undelivered email delivered later after all (re-held, then delivered) lifts its ceiling.
+  holds.hold('E', 10)
+  holds.hold('E', 20)
+  holds.clamp('E', 25)
+  holds.release('E', 10, false)
+  holds.hold('E', 10)
+  assert.equal(holds.release('E', 10, true), 25, 'its ceiling is gone')
+  assert.equal(holds.clamp('E', 25), 19, 'only 20 still holds')
+  assert.equal(holds.release('E', 20, true), 25)
+})
+
+test('the in flight share pairs each caller\'s files by name, whatever order or length its own list has', async () => {
+  await withDir(async (home) => {
+    const root = ef.emailFilesRoot(home)
+    let open!: () => void
+    const gate = new Promise<void>((r) => (open = r))
+    const seen: string[] = []
+    const fetchImpl = async (url: string) => {
+      seen.push(url)
+      await gate
+      return response([PDF], { length: PDF.length }).res
+    }
+    const a = { id: 1, filename: 'attachment-1.pdf', mime: 'application/pdf', url: 'https://s3.example.com/a' }
+    const b = { id: 2, filename: 'attachment-2.pdf', mime: 'application/pdf', url: 'https://s3.example.com/b' }
+    const path = (n: string) => ({ path: join(root, '900', EMAIL_ID, n) })
+    const first = ef.prepareEmailFiles({ root, assistantId: '900', record: RECORD_ON, files: [a, b], fetchImpl })
+    const reversed = ef.prepareEmailFiles({ root, assistantId: '900', record: RECORD_ON, files: [b, a], fetchImpl })
+    const shorter = ef.prepareEmailFiles({ root, assistantId: '900', record: RECORD_ON, files: [b], fetchImpl })
+    open()
+    assert.deepEqual(await first, [path('attachment-1.pdf'), path('attachment-2.pdf')])
+    assert.deepEqual(await reversed, [path('attachment-2.pdf'), path('attachment-1.pdf')], 'each file gets its own path')
+    assert.deepEqual(await shorter, [path('attachment-2.pdf')])
+    assert.equal(seen.length, 2, 'still one download')
+  })
+})
+
+test('a lane can ask whether an email\'s files are downloading now, to join that download whatever its budget', async () => {
+  await withDir(async (home) => {
+    const root = ef.emailFilesRoot(home)
+    let open!: () => void
+    const gate = new Promise<void>((r) => (open = r))
+    const fetchImpl = async () => {
+      await gate
+      return response([PDF], { length: PDF.length }).res
+    }
+    const files = [{ id: 1, filename: 'attachment-1.pdf', mime: 'application/pdf', url: 'https://s3.example.com/a' }]
+    assert.equal(ef.emailFilesDownloading('900', RECORD_ON), false)
+    const running = ef.prepareEmailFiles({ root, assistantId: '900', record: RECORD_ON, files, fetchImpl })
+    assert.equal(ef.emailFilesDownloading('900', RECORD_ON), true)
+    assert.equal(ef.emailFilesDownloading(900, RECORD_ON), true)
+    assert.equal(ef.emailFilesDownloading('901', RECORD_ON), false, 'another agent')
+    open()
+    await running
+    assert.equal(ef.emailFilesDownloading('900', RECORD_ON), false)
+  })
+})
+
+test('one email counts the folder once (a running total after), and the count keeps to the email\'s deadline', async () => {
+  await withDir(async (home) => {
+    const root = ef.emailFilesRoot(home)
+    const net = fetchServing({ 'https://s3.example.com/a': PDF, 'https://s3.example.com/b': PDF, 'https://s3.example.com/c': PDF })
+    const files = ['a', 'b', 'c'].map((x, i) => ({ id: i, filename: `attachment-${i + 1}.pdf`, mime: 'application/pdf', url: `https://s3.example.com/${x}` }))
+    let walks = 0
+    const logs: string[] = []
+    const saves = await ef.prepareEmailFiles({
+      root, assistantId: '900', record: RECORD_ON, files, fetchImpl: net.fetchImpl,
+      rootMaxBytes: 2 * PDF.length,
+      rootBytes: async (r: string, w: number, until: number) => {
+        walks++
+        assert.ok(Number.isFinite(until), 'the walk is handed the email\'s deadline')
+        return ef.emailFilesRootBytes(r, w, until)
+      },
+      log: (l: string) => logs.push(l),
+    })
+    assert.equal(walks, 1, 'one walk for the whole email')
+    assert.deepEqual(saves.map((s: unknown) => s !== null), [true, true, false], 'the running total stops the third')
+    assert.ok(logs.some((l) => /attachment-3\.pdf not saved: the email files folder is full/.test(l)))
+    // A walk past its deadline counts the folder as full.
+    assert.equal(await ef.emailFilesRootBytes(root, ef.EMAIL_FILES_ROOT_WALK_MAX, Date.now() - 1), Infinity)
+    assert.equal(await ef.emailFilesRootBytes(root, ef.EMAIL_FILES_ROOT_WALK_MAX, Date.now() + 60_000), 2 * PDF.length)
+  })
+})
+
+test('a budget says how much is left, so an email started late in a batch gets only that as its deadline', () => {
+  const budget = ef.createEmailBatchBudget(20_000)
+  assert.equal(budget.leftMs(), 20_000)
+  budget.spend(15_000)
+  assert.equal(budget.leftMs(), 5_000)
+  budget.spend(9_000)
+  assert.equal(budget.leftMs(), 0)
+})

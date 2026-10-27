@@ -69,11 +69,13 @@ import {
 } from './lib/meeting-card.js'
 import {
   EMAIL_FILES_BATCH_BUDGET_MS,
+  EMAIL_FILES_DEADLINE_MS,
   EMAIL_FILES_SWEEP_MS,
   createEmailBatchBudget,
   createEmailCursorHolds,
   createEmailFilesKeepalive,
   emailFilesRoot,
+  emailFilesDownloading,
   emailFilesRootLinkProblem,
   emailFilesWanted,
   prepareEmailFiles,
@@ -1435,51 +1437,64 @@ let streamEmailBudget: EmailBatchBudget | null = null
  *  - the lock and the beacon: kept fresh by emailFilesKeepalive while it runs;
  *  - its lane's batch: past `budget` (EMAIL_FILES_BATCH_BUDGET_MS spent on
  *    downloads in this batch) no download starts and every file reads not
- *    saved, so a poll batch holds its tick for at most the budget plus one
- *    email's deadline. Not saved rather than left for the next tick: the
- *    batch keeps its order and its cursor, and nothing parks across ticks;
+ *    saved, and one started late gets only what is left as its deadline, so
+ *    a batch waits at most the budget on downloads it starts. Not saved
+ *    rather than left for the next tick: the batch keeps its order and its
+ *    cursor, and nothing parks across ticks. A download another lane already
+ *    runs for the same email is joined whatever the budget (it is bounded by
+ *    its own deadline), so the files that land are the ones the turn names;
  *  - its chat's cursor: held one below this email (`chatId`, `messageId`)
- *    until the download is over, so a later message delivered meanwhile
- *    cannot move the cursor past it. The lane hands the email over in the
- *    same turn of the event loop the hold ends in, before any cursor flush (a
- *    timer) can run; an email this daemon stood down from never lets the
- *    cursor pass it.
+ *    until the lane lets go with what it really did, `release(delivered)`,
+ *    right after its handoff. Every caller must call it exactly once; an
+ *    email let go undelivered never lets the cursor pass it.
  */
+interface EmailFilesPrepared {
+  saves: Array<EmailFileSave | null>
+  release(delivered: boolean): void
+}
+
 async function emailFileSavesFor(
   record: unknown,
   files: unknown,
   opts: { budget?: EmailBatchBudget | null; chatId?: string; messageId?: number } = {},
-): Promise<Array<EmailFileSave | null> | undefined> {
+): Promise<EmailFilesPrepared | undefined> {
   if (!emailFilesWanted(record, files)) return undefined
-  if (opts.budget && !opts.budget.mayStart()) {
+  const joining = emailFilesDownloading(ASSISTANT_ID, record)
+  if (opts.budget && !opts.budget.mayStart() && !joining) {
     log(
       `email files: none saved: this batch already spent ${EMAIL_FILES_BATCH_BUDGET_MS} ms on downloads, ` +
         'so this email\'s files read not saved',
     )
-    return []
+    return { saves: [], release: () => {} }
   }
   const hold = opts.chatId && Number.isFinite(opts.messageId) ? { chatId: opts.chatId, id: Number(opts.messageId) } : null
   if (hold) emailCursorHolds.hold(hold.chatId, hold.id)
+  let released = false
+  const release = (delivered: boolean): void => {
+    if (!hold || released) return
+    released = true
+    const catchUp = emailCursorHolds.release(hold.chatId, hold.id, delivered)
+    if (catchUp !== null) advanceChatCursor(hold.chatId, catchUp)
+  }
   const startedAt = Date.now()
   try {
-    return await emailFilesKeepalive.during(() =>
+    const saves = await emailFilesKeepalive.during(() =>
       prepareEmailFiles({
         root: EMAIL_FILES_ROOT,
         assistantId: ASSISTANT_ID,
         record,
         files: files as never[],
+        // Late in a batch, only what the batch has left (a joined download keeps its own).
+        deadlineMs: opts.budget ? Math.min(EMAIL_FILES_DEADLINE_MS, Math.max(1, opts.budget.leftMs())) : undefined,
         log,
       }),
     )
+    return { saves, release }
   } catch (err) {
     log(`email files: none saved: ${err instanceof Error ? err.name : 'error'}`)
-    return []
+    return { saves: [], release }
   } finally {
     opts.budget?.spend(Date.now() - startedAt)
-    if (hold) {
-      const catchUp = emailCursorHolds.release(hold.chatId, hold.id, lockHeld)
-      if (catchUp !== null) advanceChatCursor(hold.chatId, catchUp)
-    }
   }
 }
 
@@ -8418,14 +8433,26 @@ const chatFirstListedAtMs = new Map<string, number>()
  * The single write path for chatLastSeen: monotonic (never rewinds) and
  * marks the persistent store dirty so the flush timer picks the advance up.
  */
-function advanceChatCursor(chatId: string, id: number): void {
+function advanceChatCursor(chatId: string, id: number, adopt = false): void {
   if (!Number.isFinite(id)) return
-  // Never to or past an email whose files are still downloading (emailFileSavesFor).
-  id = emailCursorHolds.clamp(chatId, id)
+  // This daemon's own advance never goes to or past an email whose files are
+  // still downloading, or one it let go undelivered (emailFileSavesFor). An
+  // adopted value (the shared file, see adoptChatCursor) is never clamped.
+  if (!adopt) id = emailCursorHolds.clamp(chatId, id)
   const seen = chatLastSeen.get(chatId) ?? 0
   if (id <= seen) return
   chatLastSeen.set(chatId, id)
   cursorStore.markDirty()
+}
+
+/**
+ * Take a cursor value from the shared cursor file as it is (the flush and the
+ * re-arm merge): the file holds what this daemon or the holder already wrote,
+ * and clamping it to this daemon's email holds would rewind it on the next
+ * write. Monotonic like every advance.
+ */
+function adoptChatCursor(chatId: string, id: number): void {
+  advanceChatCursor(chatId, id, true)
 }
 
 /**
@@ -8455,7 +8482,7 @@ function flushChatCursors(): void {
   // values. Making the flush itself idempotent covers every caller for free,
   // including the exit hooks, which stay ungated on purpose: a clean shutdown
   // must still persist the advances it really made.
-  mergeCursorMaps(chatLastSeen, loadCursorFile(cursorStore.filePath).cursors, advanceChatCursor)
+  mergeCursorMaps(chatLastSeen, loadCursorFile(cursorStore.filePath).cursors, adoptChatCursor)
   cursorStore.flushIfDirty()
 }
 
@@ -10692,6 +10719,8 @@ async function pollChat(chatId: string): Promise<void> {
     unansweredButtonCount: chatUnansweredButtons.get(chatId)?.size ?? 0,
     forceFull: isBootPoll,
   })
+  // The email cursor holds this batch took (emailFileSavesFor), let go when it ends.
+  const pollEmailReleases: Array<() => void> = []
   try {
     const raw = await bgosGet(req.path, {
       cacheKey: req.cacheKey,
@@ -11191,12 +11220,19 @@ async function pollChat(chatId: string): Promise<void> {
       // read them (read attachments); undefined for every other row. Awaited
       // in line: the batch, its order and the cursor wait for it, bounded,
       // and the batch's budget bounds them all together.
-      const pollEmailSaves = await emailFileSavesFor(msg.message, msg.messageFiles ?? [], { budget: pollEmailBudget, chatId, messageId: msg.message.id })
+      const pollEmail = await emailFileSavesFor(msg.message, msg.messageFiles ?? [], { budget: pollEmailBudget, chatId, messageId: msg.message.id })
+      const pollEmailSaves = pollEmail?.saves
+      // Its cursor hold is let go once this batch is over (the finally below),
+      // delivered when the batch kept its claim on it.
+      if (pollEmail) {
+        const pollEmailId = msg.message.id
+        pollEmailReleases.push(() => pollEmail.release(forwardedMessageIds.has(pollEmailId)))
+      }
       // The keepalive's refresh found a rival holding the lock while the files
       // downloaded: this daemon has stood down, so it delivers nothing more.
       // Un-claimed and thrown, so the cursor stays and the holder (or this
       // daemon, re-armed) delivers it.
-      if (pollEmailSaves !== undefined && !lockHeld) {
+      if (pollEmail && !lockHeld) {
         forwardedMessageIds.delete(msg.message.id)
         log(`email files: message ${msg.message.id} in chat ${chatId} not delivered: this daemon stood down while its files downloaded`)
         throw new Error('stood down while an email\'s files downloaded')
@@ -11504,6 +11540,8 @@ async function pollChat(chatId: string): Promise<void> {
     // so a later 304 must not skip rows we never processed. Redelivery beats
     // loss; the cursor filter dedups anything already forwarded.
     bgosEtagCache.invalidate(req.cacheKey)
+  } finally {
+    for (const release of pollEmailReleases) release()
   }
   })
 }
@@ -13686,187 +13724,195 @@ async function forwardStreamInbound(
   // them (read attachments); undefined for every other message. This rail
   // resolves only after the handoff, so the stream cursor waits for it too.
   // Inside the WS down catch up the batch's budget bounds the downloads.
-  const streamEmailSaves = await emailFileSavesFor(view.raw, view.files, { budget: streamEmailBudget, chatId, messageId: view.messageId })
-  // Stood down while the files downloaded (see the poll site): un-claim and
-  // reject, so the chain pins the stream cursor and redelivers.
-  if (streamEmailSaves !== undefined && !lockHeld) {
-    forwardedMessageIds.delete(view.messageId)
-    log(`email files: message ${view.messageId} in chat ${chatId} not delivered: this daemon stood down while its files downloaded`)
-    throw new Error('stood down while an email\'s files downloaded')
-  }
-
-  // Another agent's message in a group (room_agent) names that agent, never
-  // the owner fallback.
-  const senderUserId = view.roomAgent
-    ? roomAgentUserId(view.roomAgent)
-    : (view.senderUserId ?? USER_ID)
-  const streamChannel = buildInboundChannel({
-    chatId,
-    messageId: view.messageId,
-    userId: senderUserId,
-    assistantId: ASSISTANT_ID,
-    timestamp: view.sentDate,
-    transport: 'stream',
-    text: view.text,
-    files: view.files as never[],
-    senderType: streamIsEmail
-      ? EXTERNAL_EMAIL_SENDER_TYPE
-      : view.agentOrigin
-        ? 'agent'
-        : isSystem
-          ? 'system'
-          : view.senderKind,
-    agentOrigin: view.agentOrigin,
-    peerConversationId: view.peerConversationId,
-    turnState: view.turnState,
-    sessionHandle: view.sessionHandle,
-    // This rail CARRIES the field, so it teaches the memo, absence included:
-    // an omitted key is the backend saying "the default level", which is what
-    // stops a stale sentence outliving a level the owner turned back down.
-    planPolicy: planPolicyMemo.learn(view.raw),
-    // Hydration carries senderRelationship and senderDisplayName flat beside
-    // senderUserId on a human authored row; this lane used to drop both.
-    serverSender: view.raw,
-    emailFileSaves: streamEmailSaves,
-  })
-  const originalContent = streamChannel.content
-  const slashRoute = streamIsEmail || view.roomAgent ? EMAIL_NEVER_SLASH : routeSlashCommand({
-    payload: view.raw,
-    sourceContent: originalContent,
-    registry: registeredSlashCommands,
-    legacyAliases: registeredSlashCommandAliases,
-  })
-  if (slashRoute.kind === 'compact') {
-    // A replayed /compact targets a session state that no longer exists;
-    // the poll path consumes stale backlog compacts the same way.
-    log(`remote compact via stream replay ignored (chat ${chatId})`)
-    return
-  }
-  if (slashRoute.kind === 'status') {
-    // ANSWERED here, unlike /compact directly above, and the difference is not a style choice.
-    //
-    // forwardStreamInbound claims the message id before anything else, deliberately, "so the WS and
-    // poll transports dedup against it". So when the stream sees a message first, it is the ONLY
-    // rail that will ever offer it: both other paths then skip it. Copying the /compact precedent
-    // here meant a /status delivered over the stream was claimed, ignored, and never answered, and
-    // the user simply got silence.
-    //
-    // The precedent is right for /compact, whose reasoning does not transfer: a replayed compact
-    // targets a session state that no longer exists, so acting on it would be wrong. A status reply
-    // is built from current facts at send time, so a late one is a correct one. The shared id set
-    // keeps it to a single answer across all three rails.
-    if (!alreadyHandledStatus(String(view.messageId))) {
-      log(`status requested via stream (chat ${chatId})`)
-      void trackMessageOperation(() => handleStatusCommand(chatId, view.raw)).catch((err) => {
-        log(`Status reply failed: ${err}`)
-      })
-    }
-    return
-  }
-  if (slashRoute.kind === 'login') {
-    // ANSWERED here, for /status's reason directly above: this rail claimed
-    // the id first, so it can be the only rail that ever offers the message.
-    if (!alreadyHandledLogin(String(view.messageId))) {
-      log(`login requested via stream (chat ${chatId})`)
-      void trackMessageOperation(() =>
-        handleLoginCommand(chatId, view.raw, slashRoute.commandArgs),
-      ).catch((err) => {
-        log(`Login command failed: ${err}`)
-      })
-    }
-    return
-  }
-  if (slashRoute.kind === 'plan_mode_off') {
-    onPlanModeOff(chatId)
-    return
-  }
-  const slashDelivery =
-    slashRoute.kind === 'directive' || slashRoute.kind === 'steer' ? slashRoute.delivery : null
-  noteSlashPlanDelivery(slashDelivery, chatId, view.messageId)
-  const content = slashDelivery?.content ?? originalContent
-  if (!content) return
-  // A /steer interrupts only while it is fresh: a reconnect's replay of an old
-  // one targets a turn that is long over (lib/steer.ts isFreshSteer).
-  const steerPlan = slashRoute.kind === 'steer'
-    ? planSteerFor({
-        chatId,
-        messageId: view.messageId,
-        payload: view.raw,
-        sentDate: view.sentDate,
-        backlog: false,
-        text: content,
-      })
-    : null
-  // A real owner turn resumes a mission a Stop paused (P6 stage 3).
-  noteOwnerMessageForStopPause(chatId, {
-    senderType: view.agentOrigin ? 'agent' : isSystem ? 'system' : view.senderKind,
-    agentOrigin: view.agentOrigin,
-    userId: senderUserId,
-  })
-
-  const isSlash = isSlashCommandPayload(view.raw)
-  const streamEventMeta = !isSlash && !streamIsEmail
-    ? buildEventMeta(view.messageType, view.eventMetaRaw)
-    : null
-  lastInboundAtMs = Date.now()
-  // An email has no human sender, nor has another agent's message, and the
-  // owner fallback must not stand in.
-  if (!streamIsEmail && !view.roomAgent) lastInboundUserByChat.set(chatId, senderUserId)
-  noteChatAuthor(chatId, !isSystem && view.senderKind === 'user' && !view.agentOrigin && !streamIsEmail, view.raw)
-  actingUser.noteInbound({
-    chatId,
-    userId: senderUserId,
-    senderType: isSystem ? 'system' : view.senderKind,
-    agentOrigin: view.agentOrigin,
-  })
-  // The chat this turn's hook rows belong to (see the note at the poll site).
-  turnChat.note({
-    chatId,
-    messageId: Number(view.messageId),
-    kind: streamIsEmail ? 'email' : isSystem ? 'system' : view.senderKind === 'agent' || view.roomAgent ? 'peer' : 'user',
-    // The delivered text (see the poll site): the binding proof reads it.
-    text: content,
-    now: Date.now(),
-  })
-  // Map the conversation before the awaited handoff. A close event can arrive
-  // during that await; it must already be able to resolve this chat so the
-  // successful handoff below cannot arm a reply timer on a closed thread.
-  if (view.peerConversationId) {
-    const priorConv = peerConvByChat.get(chatId)
-    if (
-      closedPeerChats.has(chatId) &&
-      priorConv !== view.peerConversationId
-    ) {
-      closedPeerChats.delete(chatId)
-    }
-    rememberPeerConvChat(view.peerConversationId, chatId)
-  }
-  log(`Stream replay message in chat ${chatId}: "${content.slice(0, 100)}${content.length > 100 ? '...' : ''}"`)
+  const streamEmail = await emailFileSavesFor(view.raw, view.files, { budget: streamEmailBudget, chatId, messageId: view.messageId })
+  const streamEmailSaves = streamEmail?.saves
+  // Its cursor hold is let go when this delivery ends, however it ends:
+  // delivered when this rail kept its claim (a failed handoff and a stand down
+  // both un-claim it).
   try {
-    await trackMessageOperation(() =>
-      deliverInbound(steerPlan, (interrupted) => mcp.notification({
-        method: 'notifications/claude/channel',
-        params: {
-          content: privateTurns.deliver({ content, chatId, peerSourceAssistantId: view.agentOrigin?.sourceAssistantId, emailBasis: emailSendBasis({ senderType: isSystem && !streamIsEmail ? 'system' : view.senderKind, agentOrigin: view.agentOrigin, eventMeta: view.eventMetaRaw, messageId: view.messageId, backlog: sentBeforeStart(view.sentDate, DAEMON_START_MS) }), fireKey: privateFireKey({ senderType: isSystem ? 'system' : view.senderKind, eventMeta: view.eventMetaRaw, messageId: view.messageId }), actingUserId: privateActor({ senderType: isSystem ? 'system' : view.senderKind, senderUserId: privateSenderUserId(view.raw), agentOrigin: view.agentOrigin, eventMeta: view.eventMetaRaw }) }),
-          meta: finalInboundMeta(
-            streamChannel.meta,
-            slashDelivery ? slashDelivery.meta : null,
-            streamEventMeta,
-            interrupted ? STEER_INTERRUPTED_META : null,
-          ),
-        },
-      })),
-    )
-  } catch (err) {
-    // The handoff did NOT resolve. Un-claim the pre-claimed id: the chain
-    // pins the stream cursor on this rejection (5.7) and the retry must not
-    // find its own claim and advance past an undelivered message.
-    forwardedMessageIds.delete(view.messageId)
-    throw err
+    // Stood down while the files downloaded (see the poll site): un-claim and
+    // reject, so the chain pins the stream cursor and redelivers.
+    if (streamEmail && !lockHeld) {
+      forwardedMessageIds.delete(view.messageId)
+      log(`email files: message ${view.messageId} in chat ${chatId} not delivered: this daemon stood down while its files downloaded`)
+      throw new Error('stood down while an email\'s files downloaded')
+    }
+
+    // Another agent's message in a group (room_agent) names that agent, never
+    // the owner fallback.
+    const senderUserId = view.roomAgent
+      ? roomAgentUserId(view.roomAgent)
+      : (view.senderUserId ?? USER_ID)
+    const streamChannel = buildInboundChannel({
+      chatId,
+      messageId: view.messageId,
+      userId: senderUserId,
+      assistantId: ASSISTANT_ID,
+      timestamp: view.sentDate,
+      transport: 'stream',
+      text: view.text,
+      files: view.files as never[],
+      senderType: streamIsEmail
+        ? EXTERNAL_EMAIL_SENDER_TYPE
+        : view.agentOrigin
+          ? 'agent'
+          : isSystem
+            ? 'system'
+            : view.senderKind,
+      agentOrigin: view.agentOrigin,
+      peerConversationId: view.peerConversationId,
+      turnState: view.turnState,
+      sessionHandle: view.sessionHandle,
+      // This rail CARRIES the field, so it teaches the memo, absence included:
+      // an omitted key is the backend saying "the default level", which is what
+      // stops a stale sentence outliving a level the owner turned back down.
+      planPolicy: planPolicyMemo.learn(view.raw),
+      // Hydration carries senderRelationship and senderDisplayName flat beside
+      // senderUserId on a human authored row; this lane used to drop both.
+      serverSender: view.raw,
+      emailFileSaves: streamEmailSaves,
+    })
+    const originalContent = streamChannel.content
+    const slashRoute = streamIsEmail || view.roomAgent ? EMAIL_NEVER_SLASH : routeSlashCommand({
+      payload: view.raw,
+      sourceContent: originalContent,
+      registry: registeredSlashCommands,
+      legacyAliases: registeredSlashCommandAliases,
+    })
+    if (slashRoute.kind === 'compact') {
+      // A replayed /compact targets a session state that no longer exists;
+      // the poll path consumes stale backlog compacts the same way.
+      log(`remote compact via stream replay ignored (chat ${chatId})`)
+      return
+    }
+    if (slashRoute.kind === 'status') {
+      // ANSWERED here, unlike /compact directly above, and the difference is not a style choice.
+      //
+      // forwardStreamInbound claims the message id before anything else, deliberately, "so the WS and
+      // poll transports dedup against it". So when the stream sees a message first, it is the ONLY
+      // rail that will ever offer it: both other paths then skip it. Copying the /compact precedent
+      // here meant a /status delivered over the stream was claimed, ignored, and never answered, and
+      // the user simply got silence.
+      //
+      // The precedent is right for /compact, whose reasoning does not transfer: a replayed compact
+      // targets a session state that no longer exists, so acting on it would be wrong. A status reply
+      // is built from current facts at send time, so a late one is a correct one. The shared id set
+      // keeps it to a single answer across all three rails.
+      if (!alreadyHandledStatus(String(view.messageId))) {
+        log(`status requested via stream (chat ${chatId})`)
+        void trackMessageOperation(() => handleStatusCommand(chatId, view.raw)).catch((err) => {
+          log(`Status reply failed: ${err}`)
+        })
+      }
+      return
+    }
+    if (slashRoute.kind === 'login') {
+      // ANSWERED here, for /status's reason directly above: this rail claimed
+      // the id first, so it can be the only rail that ever offers the message.
+      if (!alreadyHandledLogin(String(view.messageId))) {
+        log(`login requested via stream (chat ${chatId})`)
+        void trackMessageOperation(() =>
+          handleLoginCommand(chatId, view.raw, slashRoute.commandArgs),
+        ).catch((err) => {
+          log(`Login command failed: ${err}`)
+        })
+      }
+      return
+    }
+    if (slashRoute.kind === 'plan_mode_off') {
+      onPlanModeOff(chatId)
+      return
+    }
+    const slashDelivery =
+      slashRoute.kind === 'directive' || slashRoute.kind === 'steer' ? slashRoute.delivery : null
+    noteSlashPlanDelivery(slashDelivery, chatId, view.messageId)
+    const content = slashDelivery?.content ?? originalContent
+    if (!content) return
+    // A /steer interrupts only while it is fresh: a reconnect's replay of an old
+    // one targets a turn that is long over (lib/steer.ts isFreshSteer).
+    const steerPlan = slashRoute.kind === 'steer'
+      ? planSteerFor({
+          chatId,
+          messageId: view.messageId,
+          payload: view.raw,
+          sentDate: view.sentDate,
+          backlog: false,
+          text: content,
+        })
+      : null
+    // A real owner turn resumes a mission a Stop paused (P6 stage 3).
+    noteOwnerMessageForStopPause(chatId, {
+      senderType: view.agentOrigin ? 'agent' : isSystem ? 'system' : view.senderKind,
+      agentOrigin: view.agentOrigin,
+      userId: senderUserId,
+    })
+
+    const isSlash = isSlashCommandPayload(view.raw)
+    const streamEventMeta = !isSlash && !streamIsEmail
+      ? buildEventMeta(view.messageType, view.eventMetaRaw)
+      : null
+    lastInboundAtMs = Date.now()
+    // An email has no human sender, nor has another agent's message, and the
+    // owner fallback must not stand in.
+    if (!streamIsEmail && !view.roomAgent) lastInboundUserByChat.set(chatId, senderUserId)
+    noteChatAuthor(chatId, !isSystem && view.senderKind === 'user' && !view.agentOrigin && !streamIsEmail, view.raw)
+    actingUser.noteInbound({
+      chatId,
+      userId: senderUserId,
+      senderType: isSystem ? 'system' : view.senderKind,
+      agentOrigin: view.agentOrigin,
+    })
+    // The chat this turn's hook rows belong to (see the note at the poll site).
+    turnChat.note({
+      chatId,
+      messageId: Number(view.messageId),
+      kind: streamIsEmail ? 'email' : isSystem ? 'system' : view.senderKind === 'agent' || view.roomAgent ? 'peer' : 'user',
+      // The delivered text (see the poll site): the binding proof reads it.
+      text: content,
+      now: Date.now(),
+    })
+    // Map the conversation before the awaited handoff. A close event can arrive
+    // during that await; it must already be able to resolve this chat so the
+    // successful handoff below cannot arm a reply timer on a closed thread.
+    if (view.peerConversationId) {
+      const priorConv = peerConvByChat.get(chatId)
+      if (
+        closedPeerChats.has(chatId) &&
+        priorConv !== view.peerConversationId
+      ) {
+        closedPeerChats.delete(chatId)
+      }
+      rememberPeerConvChat(view.peerConversationId, chatId)
+    }
+    log(`Stream replay message in chat ${chatId}: "${content.slice(0, 100)}${content.length > 100 ? '...' : ''}"`)
+    try {
+      await trackMessageOperation(() =>
+        deliverInbound(steerPlan, (interrupted) => mcp.notification({
+          method: 'notifications/claude/channel',
+          params: {
+            content: privateTurns.deliver({ content, chatId, peerSourceAssistantId: view.agentOrigin?.sourceAssistantId, emailBasis: emailSendBasis({ senderType: isSystem && !streamIsEmail ? 'system' : view.senderKind, agentOrigin: view.agentOrigin, eventMeta: view.eventMetaRaw, messageId: view.messageId, backlog: sentBeforeStart(view.sentDate, DAEMON_START_MS) }), fireKey: privateFireKey({ senderType: isSystem ? 'system' : view.senderKind, eventMeta: view.eventMetaRaw, messageId: view.messageId }), actingUserId: privateActor({ senderType: isSystem ? 'system' : view.senderKind, senderUserId: privateSenderUserId(view.raw), agentOrigin: view.agentOrigin, eventMeta: view.eventMetaRaw }) }),
+            meta: finalInboundMeta(
+              streamChannel.meta,
+              slashDelivery ? slashDelivery.meta : null,
+              streamEventMeta,
+              interrupted ? STEER_INTERRUPTED_META : null,
+            ),
+          },
+        })),
+      )
+    } catch (err) {
+      // The handoff did NOT resolve. Un-claim the pre-claimed id: the chain
+      // pins the stream cursor on this rejection (5.7) and the retry must not
+      // find its own claim and advance past an undelivered message.
+      forwardedMessageIds.delete(view.messageId)
+      throw err
+    }
+    // A group, room or channel row: the poll reads this chat by the group rule from now on (groupChatIds).
+    if (isGroupChatDelivery(view.raw)) groupChatIds.add(chatId)
+    recordInbound(chatId, view.messageId, view.turnState, view.senderKind, privateActor({ senderType: isSystem ? 'system' : view.senderKind, senderUserId: privateSenderUserId(view.raw), agentOrigin: view.agentOrigin, eventMeta: view.eventMetaRaw }), inboundAddressesAgent({ text: view.text }))
+  } finally {
+    streamEmail?.release(forwardedMessageIds.has(view.messageId))
   }
-  // A group, room or channel row: the poll reads this chat by the group rule from now on (groupChatIds).
-  if (isGroupChatDelivery(view.raw)) groupChatIds.add(chatId)
-  recordInbound(chatId, view.messageId, view.turnState, view.senderKind, privateActor({ senderType: isSystem ? 'system' : view.senderKind, senderUserId: privateSenderUserId(view.raw), agentOrigin: view.agentOrigin, eventMeta: view.eventMetaRaw }), inboundAddressesAgent({ text: view.text }))
 }
 
 /**
@@ -14971,7 +15017,15 @@ function connectWebsocket(): void {
       if (emailSaves === undefined && emailFilesWanted(payload, payload?.files)) {
         const heldChatId = String(payload?.chatId ?? payload?.chat_id ?? '')
         void trackMessageOperation(async () => {
-          deliverWsInbound(payload, (await emailFileSavesFor(payload, payload?.files, { chatId: heldChatId, messageId })) ?? [])
+          const prepared = await emailFileSavesFor(payload, payload?.files, { chatId: heldChatId, messageId })
+          try {
+            deliverWsInbound(payload, prepared?.saves ?? [])
+          } finally {
+            // Delivered here, or by the poll meanwhile (both claim the id), or
+            // refused (stood down, not re-armed yet): only the first two let
+            // the cursor pass it.
+            prepared?.release(forwardedMessageIds.has(messageId))
+          }
         }).catch((err) => log(`email files: socket delivery failed: ${err}`))
         return
       }
@@ -15580,9 +15634,13 @@ function connectWebsocket(): void {
       // other lanes. Every other card goes exactly as before, at once.
       if (emailFilesWanted(payload, meetingFiles)) {
         void trackMessageOperation(async () => {
-          const saves = (await emailFileSavesFor(payload, meetingFiles)) ?? []
+          const meetingEmail = await emailFileSavesFor(payload, meetingFiles)
           // Stood down while the files downloaded: this daemon sends nothing more.
-          if (channelArmed) sendMeetingCard(saves)
+          try {
+            if (channelArmed) sendMeetingCard(meetingEmail?.saves ?? [])
+          } finally {
+            meetingEmail?.release(channelArmed)
+          }
         }).catch((err) => log(`meeting_message handler error: ${err}`))
       } else {
         sendMeetingCard()
@@ -16804,6 +16862,13 @@ async function main(): Promise<void> {
   // truth about the loops, so the catch can undo the latch in exactly the case
   // where undoing it is safe.
   let pollLoopKicked = false
+  // True while the FIRST arm runs (discovery, the boot sweep, every loop),
+  // from the latch above to its closing gate. The lock recheck never promotes
+  // meanwhile: a stand-down during the first arm (the email download
+  // keepalive can find a rival during the boot sweep) starts the recheck, and
+  // a promotion then would run the short re-arm path while the first arm is
+  // still building what that path assumes is built.
+  let firstArmInFlight = false
   const armDelivery = async (): Promise<void> => {
     // Attached before anything is delivered (0.68.4). The private turn hook writes a delivered prompt's marker only
     // under its own daemon's attached entry, and the boot poll delivers backlog before this arm ends: attached only by
@@ -16822,7 +16887,7 @@ async function main(): Promise<void> {
       const merged = mergeCursorMaps(
         chatLastSeen,
         loadCursorFile(cursorStore.filePath).cursors,
-        advanceChatCursor,
+        adoptChatCursor,
       )
       if (merged > 0) {
         log(`cursor catch-up on re-arm: ${merged} chat cursor(s) advanced from the shared file`)
@@ -16894,6 +16959,7 @@ async function main(): Promise<void> {
       return
     }
     deliveryLoopsStarted = true
+    firstArmInFlight = true
     // The pairing lock refresh, the poll tick's FIRST step (see the tick), as
     // its own step so the email download keepalive (emailFilesKeepalive) runs
     // the very same refresh, throttle and stand-down while a download holds
@@ -17596,6 +17662,9 @@ async function main(): Promise<void> {
     // can have been reclaimed by a rival on staleness without anything
     // noticing. So ask the lock file itself before arming, once, synchronously,
     // and treat a lost lock exactly as the tick does.
+    // The first arm's long work is done: from here to its end is synchronous,
+    // so the recheck may promote again (firstArmInFlight).
+    firstArmInFlight = false
     const gateNow = Date.now()
     const gateRefresh = refreshPairingLockDetailed({
       lockPath: PAIRING_LOCK_PATH,
@@ -17653,6 +17722,8 @@ async function main(): Promise<void> {
   const resumeLockRecheck = (): void => {
     if (lockRecheck) return
     lockRecheck = setInterval(() => {
+      // Never while the first arm runs (see firstArmInFlight): try again next interval.
+      if (firstArmInFlight) return
       try {
         const res = acquirePairingLock({
           lockPath: PAIRING_LOCK_PATH,
@@ -17695,6 +17766,8 @@ async function main(): Promise<void> {
           lockHeld = false
           // Stop consuming hook spools (see the re-arm gate above).
           stopHookIntake()
+          // A first arm that threw is over: let the recheck promote again.
+          firstArmInFlight = false
           // Only when the loops were never built. Undoing the latch after the
           // tick was kicked would let the next promotion run the full arm again
           // and leave two interleaved poll chains for the life of the process.
