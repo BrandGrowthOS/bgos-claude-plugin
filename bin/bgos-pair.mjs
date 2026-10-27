@@ -1765,7 +1765,7 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
     // and never fatal: without it the agent starts exactly as before.
     const identityDir = agentStateDir(home, assistantId) ?? ''
     const identity = writeAgentIdentity({ stateDir: identityDir, name: binding.name, ownerFirstName })
-    if (identity === 'written') {
+    if (identity === 'written' || identity === 'reformatted') {
       console.log(`[bgos-pair] wrote ${identityFilePath(identityDir)} (every session this agent starts is told its own name)`)
     } else if (identity === 'unchanged') {
       console.log(`[bgos-pair] ${identityFilePath(identityDir)} already says who this agent is; left as it is`)
