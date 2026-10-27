@@ -579,8 +579,12 @@ rules before replying so messages don't get lost.
   answer and starts a new turn, however late. `wait_seconds` above 0 (up to
   600), or no wait field at all (the old 600 s), blocks instead and returns
   the answers if they all come in time, otherwise pending, never invented
-  skips. A wait that is not a number of seconds is refused. Pending cards survive a restart (`pending-asks.json` beside the
-  cursor file).
+  skips. A wait that is not a number of seconds is refused. Pending cards
+  survive a restart (`pending-asks.json` beside the cursor file), and only
+  the session that asked gets the answers. In a session that is not the
+  one connected to BGOS for this agent, `wait_seconds: 0` is refused (its
+  answers could never come back there), and a wait that runs out withdraws
+  the questions not yet answered and returns the answers given.
 - `withdraw_ask`: retire a card you no longer need, by its `ask_id`.
 - `list_peers` — list other assistants on this BGOS account that you
   may message. Returns each peer's `assistantId` (the integer to pass

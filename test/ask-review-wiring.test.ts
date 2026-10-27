@@ -25,7 +25,8 @@ test('Important 4: a blocking wait the client cancelled hands its group to the e
   assert.match(server, /mcp\.setRequestHandler\(CallToolRequestSchema, \(req, extra\) => \{/)
   const ask = caseBody('ask_user_input')
   assert.match(ask, /while \(Date\.now\(\) < deadline && !askTracker\.isComplete\(askKey\) && !extra\.signal\.aborted\)/)
-  const cancelled = ask.indexOf('if (extra.signal.aborted) {')
+  // In the daemon holding the connection; a passive one retires the card instead (second review of #282, Important 3).
+  const cancelled = ask.indexOf('if (extra.signal.aborted && lockHeld) {')
   assert.ok(cancelled > 0, 'the cancel is checked after the wait')
   assert.ok(cancelled < ask.indexOf('askTracker.delivered(askKey)'), 'before a result could mark the group delivered')
   assert.match(ask.slice(cancelled, cancelled + 600), /announceCompleteAsks\('wait cancelled'\)/)

@@ -282,6 +282,35 @@ export function askPendingText(opts: {
 }
 
 /**
+ * What ask_user_input returns in a passive session's daemon when its wait ran
+ * out or was cancelled: no daemon would ever hand the later answers back
+ * there, so the questions not answered were retired, and the answers given
+ * are the whole result (second review of #282, Important 3). Never pending,
+ * never a skip the owner did not give.
+ */
+export function askWithdrawnText(opts: { ask: PendingAsk; waitedSeconds: number | null; notRetired: number }): string {
+  const { ask } = opts
+  const rows = askResultRows(ask).filter((_, i) => ask.answers[String(ask.questions[i].messageId)] !== undefined)
+  const open = ask.questions.length - rows.length
+  const status = { status: 'withdrawn', ask_id: ask.askId, questions: ask.questions.length, answered: rows.length, answers: rows }
+  const lead =
+    opts.waitedSeconds !== null
+      ? `Not every question was answered within the ${opts.waitedSeconds} s wait.`
+      : 'The wait was cancelled before every question was answered.'
+  const stuck =
+    opts.notRetired > 0
+      ? ` ${opts.notRetired} of them could not be withdrawn and may still show in the chat; an answer to it will not reach you.`
+      : ''
+  return [
+    JSON.stringify(status, null, 2),
+    `${lead} This session is not the one connected to BGOS for this agent, so later answers could never ` +
+      `come back here: the ${open} question(s) not answered were withdrawn from the chat.${stuck} The answers ` +
+      `above are all your owner gave; nothing was skipped for your owner. If you still need the rest, ask ` +
+      `again, in a plain reply or from the connected session.`,
+  ].join('\n')
+}
+
+/**
  * How long a pending group may go unread when nothing pushed that it moved.
  * With the stream off (the default) a delta poll never shows an answer, which
  * UPDATES an old row, so these reads are how an answer arrives: every 5 s

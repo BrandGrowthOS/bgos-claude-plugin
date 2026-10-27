@@ -279,6 +279,7 @@ import {
   askResultRows,
   askRetireBody,
   askWaitSeconds,
+  askWithdrawnText,
   buildAskAnsweredEvent,
   type AskRow,
   type PendingAsk,
@@ -4805,6 +4806,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'message, so tools that act for your owner (schedule, boards, the browser, email_send, ' +
         'call_owner) refuse in it: when one of them must follow the answers and your owner is ' +
         'in the chat, use wait_seconds, and the answers come back inside their own turn. ' +
+        'In a session that is not the one connected to BGOS for this agent, wait_seconds 0 is ' +
+        'refused, and a wait that runs out withdraws the questions not yet answered. ' +
         'For open-ended questions use `reply`.',
       inputSchema: {
         type: 'object' as const,
@@ -6714,20 +6717,24 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       }
       // Only the daemon holding this agent's connection delivers answers, and a
       // card's answers go only to the session that asked it (lib/ask-tracker.ts
-      // askIsOurs). A passive session's daemon could never hand them back, so
-      // it refuses before it posts anything (review of #282, item 1), and
-      // before the chat check, which in a daemon that never discovered this
-      // agent's chats would name only the chat.
-      if (!lockHeld) {
-        log('ask_user_input: refused in a passive daemon (another session holds this agent\'s connection)')
+      // askIsOurs). A passive session's daemon could never hand a pending
+      // card's answers back, so it refuses wait_seconds 0 before it posts
+      // anything (review of #282, item 1), and before the chat check, which in
+      // a daemon that never discovered this agent's chats would name only the
+      // chat. A blocking wait still works there, as before #282: it reads the
+      // card itself, and what is not answered in time is retired below
+      // (second review of #282, Important 3).
+      if (!lockHeld && !('error' in askWait) && askWait.seconds <= 0) {
+        log('ask_user_input: wait_seconds 0 refused in a passive daemon (another session holds this agent\'s connection)')
         return {
           content: [
             {
               type: 'text',
               text:
                 'Error: this session is not the one connected to BGOS for this agent (another session of it ' +
-                'holds the connection), so the answers to a question card could never come back here. Nothing ' +
-                'was posted. Ask in a plain reply instead, or ask from the connected session.',
+                'holds the connection), so the answers to a card that returns pending could never come back ' +
+                'here. Nothing was posted. Leave wait_seconds out (or pass up to 600) to wait for the answers ' +
+                'in this call, ask in a plain reply, or ask from the connected session.',
             },
           ],
           isError: true,
@@ -6837,14 +6844,45 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
           askTracker.release(askKey)
         }
 
-        // The client cancelled the call (the user pressed Esc): it throws this
-        // result away, so a group answered by now is never marked delivered
-        // here. It goes out as the ask_answered event instead, now if
-        // complete, else when the rest is answered.
-        if (extra.signal.aborted) {
+        // The client cancelled the call (the user pressed Esc) in the daemon
+        // holding the connection: it throws this result away, so a group
+        // answered by now is never marked delivered here. It goes out as the
+        // ask_answered event instead, now if complete, else when the rest is
+        // answered.
+        if (extra.signal.aborted && lockHeld) {
           log(`ask_user_input: the wait for ${askKey} was cancelled; its answers arrive as ask_answered`)
           announceCompleteAsks('wait cancelled')
           return { content: [{ type: 'text', text: askPendingText({ askId: askKey, total: questions.length, answered: 0 }) }] }
+        }
+
+        // A passive session's daemon (the lock as it stands now, so a daemon
+        // that lost it during the wait too): no daemon would ever hand this
+        // card's later answers back here, so whatever is not answered by now
+        // is retired and the answers given are the result. Never pending, never
+        // an invented skip (second review of #282, Important 3).
+        if (!lockHeld) {
+          const ask = askTracker.get(askKey)
+          if (!ask) {
+            return { content: [{ type: 'text', text: `The question card ${askKey} was withdrawn before every question was answered.` }] }
+          }
+          if (!extra.signal.aborted && askTracker.isComplete(askKey)) {
+            for (const q of ask.questions) rememberAnnouncedClick(q.messageId)
+            askTracker.delivered(askKey)
+            log(`ask_user_input: ${ask.questions.length}/${ask.questions.length} answered within the wait (askId=${askKey}, passive)`)
+            return { content: [{ type: 'text', text: JSON.stringify(askResultRows(ask), null, 2) }] }
+          }
+          askTracker.beginWithdraw(askKey)
+          const open = ask.questions.filter((q) => ask.answers[String(q.messageId)] === undefined).map((q) => q.messageId)
+          const retired = await retireOrphanAskRows(open, 'a card whose wait ended in a passive session')
+          askTracker.withdraw(askKey)
+          return {
+            content: [
+              {
+                type: 'text',
+                text: askWithdrawnText({ ask, waitedSeconds: extra.signal.aborted ? null : waitSeconds, notRetired: open.length - retired }),
+              },
+            ],
+          }
         }
 
         // No await from here to the return: no other door can announce this
@@ -11753,15 +11791,18 @@ async function reconcilePendingAsks(via: string, opts: { dueOnly?: boolean } = {
 }
 
 /** Retire the questions of a card whose post failed half way (best effort; nothing tracks them). */
-async function retireOrphanAskRows(messageIds: number[]): Promise<void> {
+async function retireOrphanAskRows(messageIds: number[], why = 'a card that failed to post'): Promise<number> {
+  let retired = 0
   for (const id of messageIds) {
     try {
       await bgosPatch(`messages/${id}`, askRetireBody())
+      retired += 1
     } catch (err) {
-      log(`ask_user_input: could not retire question ${id} of a card that failed to post: ${err}`)
+      log(`ask_user_input: could not retire question ${id} of ${why}: ${err}`)
     }
   }
-  log(`ask_user_input: retired ${messageIds.length} question(s) of a card that failed to post`)
+  log(`ask_user_input: retired ${retired} of ${messageIds.length} question(s) of ${why}`)
+  return retired
 }
 
 // ── Mission events from the owner's app ──────────────────────────────────────
