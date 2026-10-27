@@ -1199,3 +1199,156 @@ test('third fresh review of the recheck, Minor 2: after a sleep the connected da
     )
   })
 })
+
+/**
+ * What the lease follow-up of #282 adds (Data's gate notes), read through the
+ * instance so each case fails on its own before it exists.
+ */
+type LeaseFollowUp = {
+  retire?: (askId: string, opts: { withdrawn: number }) => PendingAsk | null
+  takeRetiredOwn?: () => Array<{ ask: PendingAsk; withdrawn: number }>
+}
+const leaseOf = (t: AskTracker) => t as unknown as LeaseFollowUp
+const fileOf = (filePath: string) =>
+  JSON.parse(readFileSync(filePath, 'utf8')) as { pending: PendingAsk[]; retired?: Array<{ ask: PendingAsk }> }
+
+for (const overlapS of [61, 65, 70, 74, 75]) {
+  test(`lease follow-up, item 1: a session that ran beside the asker for ${overlapS} s before it ended never takes its answers`, () => {
+    sharedFile(({ filePath, clock, live, at }) => {
+      const now = () => clock.at
+      const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
+      a.register(group({ askId: 'g', ids: [1401] }))
+      live.push(1)
+      // B starts after the post, so only the overlap tells it from a restart.
+      runUntil(clock, at('10:00:05'), a)
+      const b = trackerAs({ pid: 2, startedAt: clock.at }, live, { filePath, now })
+      live.push(2)
+      // A says it runs every 15 s on its 5 s tick, so its last lease can be up to 15 s older than its end.
+      stepUntil(clock, at('10:00:05') + overlapS * 1000, () => {
+        beat(a)
+        beat(b)
+      })
+      live.splice(live.indexOf(1), 1)
+      stepUntil(clock, clock.at + 5_000, () => beat(b))
+      b.record(1401, { skipped: true })
+      assert.deepEqual(b.completeUndelivered().map((g) => g.askId), [], `B ran beside A for ${overlapS} s: another session`)
+      assert.equal(b.isOurs(b.get('g')!), false)
+    })
+  })
+}
+
+test('lease follow-up, item 1: a real restart, started after the asker ended, still takes its answers; so does one that overlapped it a few seconds', () => {
+  for (const startS of [75, 70]) {
+    sharedFile(({ filePath, clock, live, at }) => {
+      const now = () => clock.at
+      const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
+      a.register(group({ askId: 'g', ids: [1411] }))
+      live.push(1)
+      runUntil(clock, at('10:00:00') + startS * 1000, a)
+      const a2 = trackerAs({ pid: 3, startedAt: clock.at }, live, { filePath, now })
+      live.push(3)
+      // A ends at 74 s, beside A2 started at 70 s; or as A2 starts, at 75 s.
+      if (startS === 70) stepUntil(clock, at('10:01:14'), () => (beat(a), beat(a2)))
+      live.splice(live.indexOf(1), 1)
+      stepUntil(clock, clock.at + 10_000, () => beat(a2))
+      a2.record(1411, { skipped: true })
+      assert.deepEqual(a2.completeUndelivered().map((g) => g.askId), ['g'], `the restart started at ${startS} s`)
+    })
+  }
+})
+
+test('lease follow-up, item 2: a card retired while its asker still runs is handed to the asker once, and to no other session', () => {
+  sharedFile(({ filePath, clock, live, at }) => {
+    const now = () => clock.at
+    const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
+    a.register(group({ askId: 'g', ids: [1421, 1422] }))
+    live.push(1)
+    runUntil(clock, at('10:01:00'), a)
+    const b = trackerAs({ pid: 2, startedAt: clock.at }, live, { filePath, now })
+    const c = trackerAs({ pid: 3, startedAt: clock.at }, live, { filePath, now })
+    live.push(2, 3)
+    runUntil(clock, at('10:01:40'), a, b, c)
+    // B holds the connection: it read one answer, retired the open question and withdraws the group.
+    b.record(1421, { skipped: true })
+    b.beginWithdraw('g')
+    const retired = leaseOf(b).retire?.('g', { withdrawn: 1 }) ?? 'missing'
+    assert.notEqual(retired, 'missing')
+    runUntil(clock, at('10:01:45'), a, b, c)
+    const toA = leaseOf(a).takeRetiredOwn?.() ?? 'missing'
+    assert.notEqual(toA, 'missing')
+    assert.deepEqual(
+      (toA as Array<{ ask: PendingAsk; withdrawn: number }>).map((r) => [r.ask.askId, r.withdrawn, Object.keys(r.ask.answers)]),
+      [['g', 1, ['1421']]],
+      'the asker gets its group as retired, with the answer read before',
+    )
+    assert.deepEqual(leaseOf(a).takeRetiredOwn?.(), [], 'once')
+    runUntil(clock, at('10:02:00'), a, b, c)
+    assert.deepEqual(leaseOf(a).takeRetiredOwn?.(), [], 'still once on later ticks')
+    assert.deepEqual(leaseOf(b).takeRetiredOwn?.(), [], 'never the daemon that retired it')
+    assert.deepEqual(leaseOf(c).takeRetiredOwn?.(), [], 'never another session')
+    assert.equal(a.get('g'), undefined, 'the asker forgets the group')
+    // The record ages out with the orphan grace.
+    runUntil(clock, at('10:13:00'), a, b, c)
+    b.register(group({ askId: 'later', ids: [1429] }))
+    assert.deepEqual(fileOf(filePath).retired ?? [], [], 'dropped at the next save after the grace')
+  })
+})
+
+test('lease follow-up, item 2: a card whose asker has ended leaves no record when it is retired', () => {
+  sharedFile(({ filePath, clock, live, at }) => {
+    const now = () => clock.at
+    const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
+    a.register(group({ askId: 'ended', ids: [1431] }))
+    live.push(1)
+    const b = trackerAs({ pid: 2, startedAt: at('09:30:00') }, live, { filePath, now })
+    live.push(2)
+    runUntil(clock, at('10:05:00'), a, b)
+    live.splice(live.indexOf(1), 1)
+    runUntil(clock, at('10:05:30'), b)
+    b.beginWithdraw('ended')
+    assert.notEqual(leaseOf(b).retire?.('ended', { withdrawn: 1 }) ?? 'missing', 'missing')
+    assert.deepEqual(fileOf(filePath).retired ?? [], [], 'nobody left to tell')
+  })
+})
+
+test('lease follow-up, item 2: a group handed over to the asker\'s restart is delivered there and never told withdrawn', () => {
+  sharedFile(({ filePath, clock, live, at }) => {
+    const now = () => clock.at
+    const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
+    a.register(group({ askId: 'handed', ids: [1432] }))
+    live.push(1)
+    runUntil(clock, at('10:01:00'), a)
+    live.splice(live.indexOf(1), 1)
+    const a2 = trackerAs({ pid: 4, startedAt: at('10:01:05') }, live, { filePath, now })
+    live.push(4)
+    runUntil(clock, at('10:01:30'), a2)
+    a2.record(1432, { skipped: true })
+    assert.deepEqual(a2.completeUndelivered().map((g) => g.askId), ['handed'])
+    a2.delivered('handed')
+    runUntil(clock, at('10:01:40'), a2)
+    assert.deepEqual(leaseOf(a2).takeRetiredOwn?.() ?? 'missing', [], 'the restart is never told')
+    assert.deepEqual(fileOf(filePath).retired ?? [], [])
+  })
+})
+
+test('lease follow-up, item 3: a clock stepped back a minute never stalls the lease refresh', () => {
+  sharedFile(({ filePath, clock, live, at }) => {
+    const now = () => clock.at
+    const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
+    a.register(group({ askId: 'g', ids: [1441] }))
+    live.push(1)
+    runUntil(clock, at('10:00:20'), a)
+    // The clock steps back a minute.
+    clock.at = at('09:59:20')
+    const ages: number[] = []
+    stepUntil(clock, at('10:00:00'), () => {
+      beat(a)
+      const leased = fileOf(filePath).pending.find((g) => g.askId === 'g')?.owner?.aliveAt ?? Number.NaN
+      ages.push(clock.at - leased)
+    })
+    assert.ok(
+      ages.every((ms) => ms >= 0 && ms <= 15_000 + 5_000),
+      `the lease on file stays within a refresh of the clock: ${JSON.stringify(ages)}`,
+    )
+  })
+})
