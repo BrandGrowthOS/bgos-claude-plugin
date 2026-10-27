@@ -596,11 +596,11 @@ export class AskTracker {
   private lookingSince = Number.NEGATIVE_INFINITY
   /**
    * In the connected daemon: since when each unheld group of a live asker
-   * other than this process has been seen so, on retire passes no more than
-   * ASK_TICK_GAP_MS apart (retirable).
+   * other than this process has been seen so on every retire pass, counted
+   * from no earlier than this process's last look gap or its last taking of
+   * the connection (retirable).
    */
   private readonly askerAsideSince = new Map<string, number>()
-  private lastRetireLook: number | null = null
   /** Groups dropped for age, said once; and why saves fail, said once while it lasts (fifth review of #282, Minor 3). */
   private readonly droppedForAge = new Set<string>()
   private saveFailing: string | null = null
@@ -819,20 +819,21 @@ export class AskTracker {
    * to retire as withdraw_ask does (server.ts retireOrphanedAsks, its only
    * caller, which runs only there):
    *   - marked askerEndedBeside;
-   *   - of a live asker other than this process, unheld, seen so on passes no
-   *     more than ASK_TICK_GAP_MS apart for ASK_LEASE_MS: that asker lost the
-   *     connection, whatever took it (a channel or route takeover, a stale lock
-   *     after a sleep), and runs on passive; the wait lets a lock that changes
-   *     hands for a moment, or a passive wait retiring its own card, settle;
+   *   - of a live asker other than this process, unheld, seen so on every
+   *     pass for ASK_LEASE_MS since the later of this process's last look gap
+   *     and `connectedSince` (when it last took the connection): that asker
+   *     lost the connection, whatever took it (a channel or route takeover, a
+   *     stale lock after a sleep), and runs on passive; the wait lets a lock
+   *     that changes hands for a moment, or a passive wait retiring its own
+   *     card, settle. Slow passes do not restart it (second fresh review of
+   *     the recheck, Minor 2);
    *   - of an ended asker, ASK_ORPHAN_GRACE_MS after its last lease.
    * Never this process's own, a held one, one being withdrawn, or one this
    * daemon may announce (Data's recheck of #282, and its fresh review).
    */
-  retirable(): PendingAsk[] {
+  retirable(connectedSince = Number.NEGATIVE_INFINITY): PendingAsk[] {
     this.look()
     const now = this.now()
-    if (this.lastRetireLook !== null && now - this.lastRetireLook > ASK_TICK_GAP_MS) this.askerAsideSince.clear()
-    this.lastRetireLook = now
     const out: PendingAsk[] = []
     for (const a of this.pending()) {
       const aside = this.askerAsideSince.get(a.askId)
@@ -842,8 +843,9 @@ export class AskTracker {
       if (a.askerEndedBeside !== undefined) {
         out.push(a)
       } else if (this.askerRunsNow(a)) {
-        this.askerAsideSince.set(a.askId, aside ?? now)
-        if (now - (aside ?? now) >= ASK_LEASE_MS) out.push(a)
+        const since = Math.max(aside ?? now, this.lookingSince, connectedSince)
+        this.askerAsideSince.set(a.askId, since)
+        if (now - since >= ASK_LEASE_MS) out.push(a)
       } else if (now - askerLastSaid(a) > ASK_ORPHAN_GRACE_MS) {
         out.push(a)
       }

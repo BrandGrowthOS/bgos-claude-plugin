@@ -426,6 +426,7 @@ import {
   formatChannelTakeoverLine,
   formatLockYieldReason,
   formatRouteTakeoverLine,
+  parseLockRecord,
   BEACON_HEARTBEAT_FILE,
 } from './lib/pairing-lock.js'
 import { probeChannelLoaded, probeSessionChannelSpecs, specMatches, type ChannelPresence } from './lib/channel-presence.js'
@@ -6892,6 +6893,12 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
             log(`ask_user_input: ${ask.questions.length}/${ask.questions.length} answered within the wait (askId=${askKey}, passive)`)
             return { content: [{ type: 'text', text: JSON.stringify(askResultRows(ask), null, 2) }] }
           }
+          // Held again on disk (no await since the release above) until this
+          // retire ends: the connected daemon retires an unheld card of a live
+          // asker after ASK_LEASE_MS, and a slow retire here must not race it
+          // (second fresh review of Data's recheck of #282, Minor 3). The
+          // deadline frees it should this process die retiring it.
+          askTracker.hold(askKey, Date.now() + ASK_PASSIVE_RETIRE_HOLD_MS)
           askTracker.beginWithdraw(askKey)
           const unanswered = () => ask.questions.filter((q) => ask.answers[String(q.messageId)] === undefined).map((q) => q.messageId)
           const retired = await retireOrphanAskRows(unanswered(), 'a card whose wait ended in a passive session')
@@ -8457,6 +8464,12 @@ function reportStandDownBeforeExit(reason: StandDownReason): void {
 // until the next tick's refresh noticed. Heartbeat on lockHeld, delivery on
 // channelArmed: the lock stays fresh from the moment it is ours.
 let lockHeld = false
+/**
+ * When this daemon last took the connection (lockHeld or channelArmed turned
+ * on): a retire counts how long a card has been seen aside from no earlier
+ * than this (second fresh review of Data's recheck of #282, Minor 2).
+ */
+let connectedSince = 0
 // Frame kinds already reported as ignored during the CURRENT stand-down.
 // Cleared when the daemon stands down, so each passive spell says each kind
 // once instead of once every few seconds for hours.
@@ -11729,6 +11742,8 @@ function refreshAskTracker(via: string): void {
 
 /** A blocking wait's hold on disk outlives its deadline by this much (the last read, the release). */
 const ASK_HOLD_MARGIN_MS = 30_000
+/** How long a passive wait's own retire holds its card: a PATCH per row and a read. */
+const ASK_PASSIVE_RETIRE_HOLD_MS = 5 * 60_000
 /** A failed read of a group the stream said was answered is tried again this many times. */
 const ASK_READ_RETRIES = 4
 const ASK_READ_RETRY_MS = 15_000
@@ -11867,9 +11882,25 @@ async function reconcilePendingAsks(via: string, opts: { dueOnly?: boolean } = {
  * said yet (Data's recheck of #282, item 1). Inside a reconcile pass, so two
  * passes never retire one card at once.
  */
+/**
+ * Whether the pairing lock file names this process, read now. lockHeld is
+ * cleared only by the poll tick, which slow reads can stall while a rival
+ * takes the lock, so a retire asks the file itself, as the arm gate does
+ * (second fresh review of Data's recheck of #282, Minor 1).
+ */
+function pairingLockNamesThisDaemon(): boolean {
+  try {
+    return parseLockRecord(readFileSync(PAIRING_LOCK_PATH, 'utf8'))?.pid === process.pid
+  } catch {
+    return false
+  }
+}
+
 async function retireOrphanedAsks(via: string): Promise<void> {
   if (!channelArmed || !lockHeld || updateDrainMode) return
-  for (const ask of askTracker.retirable()) {
+  for (const ask of askTracker.retirable(connectedSince)) {
+    // Asked again per card: each retire awaits the backend.
+    if (!channelArmed || !lockHeld || updateDrainMode || !pairingLockNamesThisDaemon()) return
     if (askDelivering.has(ask.askId)) continue
     // From here no door announces it, as in withdraw_ask.
     askTracker.beginWithdraw(ask.askId)
@@ -17241,6 +17272,7 @@ async function main(): Promise<void> {
       // a reconnect to chase it would cost the cheap re-arm this design is
       // built on.
       channelArmed = true
+      connectedSince = Date.now()
       channelEverArmed = true
       startHookIntakeIfHolder()
       log(
@@ -17983,6 +18015,7 @@ async function main(): Promise<void> {
       return
     }
     channelArmed = true
+    connectedSince = Date.now()
     channelEverArmed = true
     // Last, with the lock proven ours one line above: start draining this
     // session's hook spool. Only the holder consumes (see the guard inside).
@@ -18016,6 +18049,7 @@ async function main(): Promise<void> {
         // Same rule as the boot path: we own the lock now, so the heartbeat has
         // to start refreshing it immediately, not when the arm finishes.
         lockHeld = true
+        connectedSince = Date.now()
         // Who the pending cards belong to, seen now: the arm below can take a
         // while (fourth review of #282, Important 2).
         refreshAskTracker('promotion')
@@ -18082,6 +18116,7 @@ async function main(): Promise<void> {
     // tick's heartbeat is gated on lockHeld precisely so the lock stays fresh
     // while the (slow) arm runs.
     lockHeld = true
+    connectedSince = Date.now()
     log(
       lockAtBoot.reason === 'channel-takeover'
         ? `${formatChannelTakeoverLine({ selfPid: process.pid, holderPid: lockAtBoot.holderPid, selfReason: bootPresence.reason })}; ` +
