@@ -118,6 +118,8 @@ import {
   readFolderIdentity,
 } from '../lib/service-supervision.mjs'
 import { WIN_PATH_HELPER_FILE, installWrapper } from '../lib/hoai-wrapper-install.mjs'
+import { IDENTITY_FLAG, identityFilePath, identityLaunchArgs } from '../lib/agent-identity.mjs'
+import { PROBE_TIMEOUT_MS, classifyFlagProbe } from '../lib/claude-binary.mjs'
 
 /** Mirror of bgos-pair.mjs FOLDER_PIN_FILE_NAME / agent-credentials.ts
  *  FOLDER_PIN_FILE: the launch-folder pin whose number IS the assistant id. */
@@ -1856,9 +1858,11 @@ export function tclQuote(value) {
  * UNATTENDED, so this is the one place where "carry on with something" would
  * cost the most: it would bring the agent back on an empty channel flag and
  * nobody would be watching. The caller stops and prints instead.
+ * `extraArgs` (the agent's identity flag, lib/agent-identity.mjs) go between
+ * the two, so a relaunch is told who it is exactly like the first launch.
  * @param {{ scriptDir?: string, env?: Record<string, string | undefined>,
  *   home?: string, cwd?: string, readFile?: (path: string) => string | null,
- *   sessionArgs?: readonly string[] }} [opts]
+ *   sessionArgs?: readonly string[], extraArgs?: readonly string[] }} [opts]
  * @returns {string[] | null}
  */
 export function relaunchClaudeArgs({
@@ -1868,6 +1872,7 @@ export function relaunchClaudeArgs({
   cwd = process.cwd(),
   readFile = defaultReadText,
   sessionArgs = [],
+  extraArgs = [],
 } = {}) {
   // Resolved the SAME way as the first launch (workspace .mcp.json first, then
   // detection). A relaunch that resolved the channel differently from the
@@ -1875,7 +1880,7 @@ export function relaunchClaudeArgs({
   // and the marker relaunch path is unattended, so nobody would see it happen.
   const resolution = resolveChannelSpec({ cwd, env, home, readFile, scriptDir })
   if (!isResolvedChannel(resolution)) return null
-  return [...launchArgsFor(resolution), ...sessionArgs]
+  return [...launchArgsFor(resolution), ...extraArgs, ...sessionArgs]
 }
 
 /** The install method for a relaunch (fresh detection), used to decide whether
@@ -2558,6 +2563,7 @@ export async function superviseClaude(args, opts = {}) {
   const listProcesses = opts.listProcesses ?? (() => defaultListProcesses(platform))
   const force = opts.force === true
   const incumbentTimeoutMs = opts.incumbentTimeoutMs ?? INCUMBENT_WAIT_TIMEOUT_MS
+  const probeIdentityFlag = opts.probeIdentityFlag ?? (() => defaultProbeIdentityFlag({ platform, env }))
   const keepAlive = opts.keepAlive === true
   const stopSignal = opts.signal ?? null
   // Has the Claude login every agent of this credential store shares failed? Asked only for a launch
@@ -2990,6 +2996,64 @@ export async function superviseClaude(args, opts = {}) {
   // read). It never carries a session id (buildLaunchRecipe strips the
   // session args; hoai resumes its own pin itself) nor a token. Best effort:
   // a failed write changes nothing about this launch.
+  // Who this agent is (lib/agent-identity.mjs): the identity file pairing and
+  // the daemon write in the state folder rides every launch and relaunch as
+  // --append-system-prompt-file, so the owner's global CLAUDE.md cannot make
+  // it somebody else. Only when the file has text and this claude knows the
+  // flag; a person's own flag wins. Each note is printed once, so a relaunch
+  // loop does not repeat it. The answer is kept until a launch that carried
+  // the flag dies at once (see the exit below), or a restart someone asked
+  // for after a CLI that did not know it, and 'unknown' is never kept.
+  const identityPath = identityFilePath(stateDir)
+  // The person's own flag as they gave it, the pair or the one `=` token.
+  // Every relaunch rebuilds its arguments from the channel and so drops the
+  // person's; theirs is carried over there (relaunchIdentityArgs below), or
+  // the agent would run with no identity at all after its first relaunch.
+  const personIdentity = (() => {
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === IDENTITY_FLAG) return args.slice(i, i + 2)
+      if (String(args[i]).startsWith(`${IDENTITY_FLAG}=`)) return [args[i]]
+    }
+    return null
+  })()
+  const personChoseIdentity = personIdentity !== null
+  let identityAnswer = null
+  let identityNote = null
+  // Launches with the flag that died inside the health window, and whether
+  // this launcher has dropped the flag for the rest of its life.
+  let identityFastDeaths = 0
+  let identityOff = false
+  const identityArgsNow = () => {
+    if (personChoseIdentity || identityOff) return []
+    const out = identityLaunchArgs({
+      path: identityPath,
+      exists: (path) => String(readFile(path) ?? '').trim() !== '',
+      probe: () => {
+        if (identityAnswer) return identityAnswer
+        const answer = probeIdentityFlag()
+        if (answer === 'supported' || answer === 'unsupported') identityAnswer = answer
+        return answer
+      },
+      platform,
+    })
+    if (out.note && out.note !== identityNote) print(out.note)
+    identityNote = out.note
+    return out.args
+  }
+  const relaunchIdentityArgs = () => personIdentity ?? identityArgsNow()
+  // The recipe never carries the launcher's own identity args: a watcher
+  // relaunch goes through hoai, which adds them again from the file.
+  const withoutOwnIdentity = (launchArgs) => {
+    const out = []
+    for (let i = 0; i < launchArgs.length; i++) {
+      if (!personChoseIdentity && launchArgs[i] === IDENTITY_FLAG && launchArgs[i + 1] === identityPath) {
+        i += 1
+        continue
+      }
+      out.push(launchArgs[i])
+    }
+    return out
+  }
   const recordRecipe = (launchArgs) => {
     const detection = detectInstallMethod({
       scriptPath: joinDir(scriptDir, 'bgos-install-method.mjs'),
@@ -3003,7 +3067,7 @@ export async function superviseClaude(args, opts = {}) {
       recipe: buildLaunchRecipe({
         assistantId: id,
         cwd,
-        argv: launchArgs,
+        argv: withoutOwnIdentity(launchArgs),
         installMethod: detection.method,
         pluginRoot: detection.pluginRoot,
         node: process.execPath,
@@ -3071,7 +3135,7 @@ export async function superviseClaude(args, opts = {}) {
   let relaunchesAt = []
   let healthRelaunchesAt = []
   let exhausted = false
-  let currentArgs = [...args, ...sessionArgsFor(pinnedId, sessionExistsNow())]
+  let currentArgs = [...args, ...identityArgsNow(), ...sessionArgsFor(pinnedId, sessionExistsNow())]
   // The never-leave-dead fresh fallback is one-shot per relaunch cycle; a
   // marker relaunch (a genuine update) resets it below. Recovery keys on whether
   // the exited child was RESUMING a session (--resume present), which covers a
@@ -3096,6 +3160,9 @@ export async function superviseClaude(args, opts = {}) {
       /** @type {import('node:child_process').ChildProcess | null} */
       let childRef = null
       let restartRequested = false
+      // Set only by the restart marker (the app, a plugin update): hoai's own
+      // health relaunch is no sign that the CLI underneath changed.
+      let markerRestart = false
       // False once this launch's claude has exited: a late helper exit or check is not about it.
       let live = true
       const startedAt = now()
@@ -3257,6 +3324,7 @@ export async function superviseClaude(args, opts = {}) {
         }
         relaunchesAt.push(now())
         restartRequested = true
+        markerRestart = true
         print('[hoai] restart requested by the daemon; restarting claude to pick up the update...')
         try {
           endClaude(childRef)
@@ -3286,7 +3354,25 @@ export async function superviseClaude(args, opts = {}) {
       }
       // Asked to stop: whatever the exit, nothing is relaunched.
       if (stopSignal?.aborted) return code
+      const elapsedMs = now() - startedAt
+      // A launch that outlived the health window clears the identity flag's
+      // fast deaths, however it ended: most runs of an always on agent end
+      // by a marker relaunch, and two deaths days apart say nothing about
+      // the flag (plugin review 2).
+      if (elapsedMs >= healthyMs) identityFastDeaths = 0
       if (restartRequested) {
+        // A restart someone asked for (the app, a plugin update) gives back
+        // an identity this launcher dropped, and asks again a CLI that did
+        // not know the flag: either may have been updated since. Only the
+        // marker: a health relaunch hoai makes itself keeps both as they are.
+        const identityWasOff = markerRestart && identityOff
+        if (markerRestart) {
+          if (identityOff) {
+            identityOff = false
+            identityFastDeaths = 0
+          }
+          if (identityAnswer === 'unsupported') identityAnswer = null
+        }
         // A daemon-driven update restart: relaunch THIS agent's OWN session
         // (resume it when its transcript exists, else create it again by
         // id; never --continue), and give this cycle a fresh fallback.
@@ -3300,8 +3386,13 @@ export async function superviseClaude(args, opts = {}) {
         const sessionArgs = carried
           ? sessionArgsFor(carried, exists(sessionTranscriptPath(home, cwd, carried, env.CLAUDE_CONFIG_DIR)))
           : sessionArgsFor(pinnedId, sessionExistsNow())
-        const relaunchArgs = relaunchClaudeArgs({ scriptDir, env, home, cwd, readFile, sessionArgs })
+        const identityArgs = relaunchIdentityArgs()
+        const relaunchArgs = relaunchClaudeArgs({ scriptDir, env, home, cwd, readFile, sessionArgs, extraArgs: identityArgs })
         if (!relaunchArgs) return stopUnresolved()
+        if (identityWasOff && identityArgs.includes(IDENTITY_FLAG)) {
+          noteStatus('identity-flag-restored')
+          print(`[hoai] this agent's identity is back: the relaunch passes ${IDENTITY_FLAG} ${identityPath} again`)
+        }
         if (carried) pendingPin = carried
         currentArgs = relaunchArgs
         freshTried = false
@@ -3314,20 +3405,68 @@ export async function superviseClaude(args, opts = {}) {
       // window we already killed the old session (or the external keepalive
       // would loop on the same rejection), so never leave the agent dead: retry
       // once as a brand-new OWN session (a fresh pinned id).
-      const elapsedMs = now() - startedAt
       // A screen nobody may answer, or a signed-out account, is not a rejected
       // resume: a fresh session meets the same wall, and the retry would spend
       // the one-shot fallback (and overwrite launch-status) for nothing.
-      const recovery =
-        supervised && SUPERVISED_NO_FRESH_RETRY.has(code)
-          ? { action: 'return' }
-          : decideRelaunchRecovery({
-              isResumeAttempt: currentArgs.includes('--resume') || lastLaunchWasRelaunch,
-              exitCode: code,
-              elapsedMs,
-              freshTried,
-              healthyMs,
-            })
+      const namedSupervisedExit = supervised && SUPERVISED_NO_FRESH_RETRY.has(code)
+      const recovery = namedSupervisedExit
+        ? { action: 'return' }
+        : decideRelaunchRecovery({
+            isResumeAttempt: currentArgs.includes('--resume') || lastLaunchWasRelaunch,
+            exitCode: code,
+            elapsedMs,
+            freshTried,
+            healthyMs,
+          })
+      // A launch that carried the identity flag and died at once may have
+      // died OF it: the CLI under a long lived launcher can change (a
+      // reinstall, an old binary back on PATH), and one can parse the flag and
+      // still refuse the session. So the answer is asked again before the next
+      // launch, and when a second launch with it dies at once, or this one
+      // would otherwise end the launcher, this agent's own session comes back
+      // once without it (plugin review I1). Without the flag the agent is
+      // only missing its name; with it, it would not start at all.
+      // Under --keep-alive an exit 0 is relaunched like any other, so it counts
+      // too; supervised, the service restarts any exit (plugin review 4).
+      const identityDeath = code !== 0 || keepAlive || supervised
+      if (!personChoseIdentity && currentArgs.includes(IDENTITY_FLAG) && identityDeath && !namedSupervisedExit && elapsedMs < healthyMs) {
+        identityAnswer = null
+        identityFastDeaths += 1
+        const lastChance = recovery.action !== 'retry-fresh' && !keepAlive
+        if (!identityOff && (identityFastDeaths >= 2 || lastChance)) {
+          identityOff = true
+          noteStatus('identity-flag-dropped', { exit: code })
+          print(
+            `[hoai] claude exited at once (code ${code}) with ${IDENTITY_FLAG}, which may be the cause; ` +
+              `relaunching this agent's own session without it, so it runs without its identity (${identityPath}) ` +
+              'until the agent is restarted (from the app, by a plugin update, or hoai starting again). ' +
+              'Update Claude Code, then restart the agent, to give it back.',
+          )
+          rereadPin()
+          const plainArgs = relaunchClaudeArgs({
+            scriptDir,
+            env,
+            home,
+            cwd,
+            readFile,
+            sessionArgs: sessionArgsFor(pinnedId, sessionExistsNow()),
+            extraArgs: [],
+          })
+          if (!plainArgs) return stopUnresolved()
+          // A new cycle without the flag, with its own one fresh retry: the
+          // launch that died may have been the fresh retry already, and the
+          // resume it fled may be rejected again (plugin review 2). If this
+          // cycle dies at once too, the flag was not the cause. A fresh retry
+          // only ever follows a resume or a relaunch, so after one this launch
+          // of the pin counts as a relaunch: with no transcript it is
+          // --session-id <pin>, which is not a --resume (plugin review 3).
+          currentArgs = plainArgs
+          if (freshTried) lastLaunchWasRelaunch = true
+          freshTried = false
+          recordRecipe(currentArgs)
+          continue
+        }
+      }
       if (recovery.action === 'retry-fresh') {
         freshTried = true
         lastLaunchWasRelaunch = false
@@ -3343,7 +3482,15 @@ export async function superviseClaude(args, opts = {}) {
         } else {
           freshSessionArgs = []
         }
-        const freshArgs = relaunchClaudeArgs({ scriptDir, env, home, cwd, readFile, sessionArgs: freshSessionArgs })
+        const freshArgs = relaunchClaudeArgs({
+          scriptDir,
+          env,
+          home,
+          cwd,
+          readFile,
+          sessionArgs: freshSessionArgs,
+          extraArgs: relaunchIdentityArgs(),
+        })
         if (!freshArgs) return stopUnresolved()
         currentArgs = freshArgs
         recordRecipe(currentArgs)
@@ -3406,6 +3553,7 @@ export async function superviseClaude(args, opts = {}) {
         cwd,
         readFile,
         sessionArgs: sessionArgsFor(pinnedId, sessionExistsNow()),
+        extraArgs: relaunchIdentityArgs(),
       })
       if (!keepArgs) return stopUnresolved()
       currentArgs = keepArgs
@@ -3467,7 +3615,9 @@ export function lastLines(text, count = 60) {
  * node refuses to spawn without a shell (the EINVAL .cmd injection guard). So
  * the claude.cmd attempt goes through ComSpec (/c) explicitly; the args are
  * fixed constants with no user input, so the cmd.exe hop has no injection
- * surface. cmd.exe exits 9009 when claude.cmd does not exist, which the
+ * surface. The one exception is the identity file path, which comes from the
+ * home folder: identityLaunchArgs never passes one holding a character cmd.exe
+ * re-reads. cmd.exe exits 9009 when claude.cmd does not exist, which the
  * runner treats as "not found, try the next candidate".
  * @param {readonly string[]} args
  * @param {string} platform
@@ -3482,6 +3632,37 @@ export function claudeSpawnCandidates(args, platform, env = {}) {
     { file: comspec, args: ['/c', 'claude.cmd', ...args], notFoundExitCodes: [9009] },
     { file: 'claude.exe', args: [...args], notFoundExitCodes: [] },
   ]
+}
+
+/**
+ * Whether the claude this launcher starts knows --append-system-prompt-file. A
+ * bare use answers "argument missing" when it does and "unknown option" when
+ * it does not (classifyFlagProbe, the same reading as the channels flag). The
+ * same candidates as the launch, in the same order, hidden and killed after
+ * PROBE_TIMEOUT_MS; 'unknown' when none of them ran.
+ * @param {{ platform?: string, env?: Record<string, string | undefined>, run?: typeof spawnSync }} [opts]
+ * @returns {'supported' | 'unsupported' | 'unknown'}
+ */
+export function defaultProbeIdentityFlag({ platform = process.platform, env = process.env, run = spawnSync } = {}) {
+  for (const candidate of claudeSpawnCandidates([IDENTITY_FLAG], platform, env)) {
+    let out
+    try {
+      out = run(candidate.file, candidate.args, {
+        encoding: 'utf8',
+        timeout: PROBE_TIMEOUT_MS,
+        env,
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+    } catch (error) {
+      if (spawnErrorMeansNotFound(error)) continue
+      return 'unknown'
+    }
+    if (spawnErrorMeansNotFound(out?.error)) continue
+    if (candidate.notFoundExitCodes.includes(out?.status)) continue
+    return classifyFlagProbe(out)
+  }
+  return 'unknown'
 }
 
 /** Map a child's (code, signal) exit to this process's exit code. */

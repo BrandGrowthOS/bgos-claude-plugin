@@ -59,6 +59,8 @@ import {
 } from './bgos-install-method.mjs'
 import { installHoaiCli } from './hoai-core.mjs'
 import { preseedClaudeTrust } from '../lib/claude-preseed.mjs'
+import { identityFilePath, identityFromMe, writeAgentIdentity } from '../lib/agent-identity.mjs'
+import { agentStateDir } from '../lib/agent-inventory.mjs'
 
 export const DEFAULT_API_BASE = 'https://api.brandgrowthos.ai/api/v1'
 export const CLAUDE_INTEGRATION = 'claude-code'
@@ -280,6 +282,12 @@ export function resolveRequestedAssistantId({ argAssistantId, env } = {}) {
  *                                  the operator must rerun with --assistant-id)
  *   - nothing bound             -> { kind:'none' }
  */
+/** An assistant row's name when it is text, else '' (the rule identityFromMe
+ *  in lib/agent-identity.mjs reads the daemon's copy with). */
+function textName(row) {
+  return typeof row?.name === 'string' ? row.name : ''
+}
+
 export function selectAssistantBinding(meResponse, requestedId = '') {
   const list = Array.isArray(meResponse?.assistants) ? meResponse.assistants : []
   const candidates = list.filter((a) => a && a.assistant_id != null)
@@ -287,14 +295,16 @@ export function selectAssistantBinding(meResponse, requestedId = '') {
   const requested = String(requestedId ?? '').trim()
   if (requested) {
     const match = candidates.find((a) => String(a.assistant_id) === requested)
-    if (match) return { kind: 'ok', assistantId: match.assistant_id }
+    if (match) return { kind: 'ok', assistantId: match.assistant_id, name: textName(match) }
     return {
       kind: 'mismatch',
       requestedId: requested,
       boundIds: candidates.map((a) => String(a.assistant_id)),
     }
   }
-  if (candidates.length === 1) return { kind: 'ok', assistantId: candidates[0].assistant_id }
+  if (candidates.length === 1) {
+    return { kind: 'ok', assistantId: candidates[0].assistant_id, name: textName(candidates[0]) }
+  }
   return {
     kind: 'ambiguous',
     candidates: candidates.map((a) => ({
@@ -1527,6 +1537,9 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   console.log('[bgos-pair] paired. Adding your agent...')
   let binding = { kind: 'none' }
   let okPolls = 0
+  // The owner's first name, for the agent's identity (integrations/me sends
+  // it from 2026-10; an older backend sends none and the identity says less).
+  let ownerFirstName = ''
   // Injectable ONLY so the not-yet-bound path can be reached in a test. That
   // path (the user who pairs before finishing "Add agent" in the app) sits
   // behind a wall-clock MINUTE of polling, which is why it had no test at all
@@ -1548,6 +1561,8 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
     if (me.ok) {
       okPolls++
       binding = selectAssistantBinding(me.body, requestedId)
+      // The daemon's own rule, text only: never "[object Object]".
+      ownerFirstName = identityFromMe(me.body, requestedId).ownerFirstName
       if (binding.kind === 'ok' || binding.kind === 'ambiguous') break
       // 'mismatch' keeps polling: the requested binding may still propagate.
     }
@@ -1743,6 +1758,22 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
     await installCliOnce({ withFallback: true })
   } else {
     console.log(`[bgos-pair] verified: this file resolves to assistant ${assistantId}.`)
+    // Who this agent is (lib/agent-identity.mjs), written NOW so it exists
+    // before the agent's first launch: the CLI records a conversation's system
+    // prompt on its first request, and the launcher hands this file to every
+    // session as --append-system-prompt-file. Never in the agent's own folder,
+    // and never fatal: without it the agent starts exactly as before.
+    const identityDir = agentStateDir(home, assistantId) ?? ''
+    const identity = writeAgentIdentity({ stateDir: identityDir, name: binding.name, ownerFirstName })
+    if (identity === 'written') {
+      console.log(`[bgos-pair] wrote ${identityFilePath(identityDir)} (every session this agent starts is told its own name)`)
+    } else if (identity === 'unchanged') {
+      console.log(`[bgos-pair] ${identityFilePath(identityDir)} already says who this agent is; left as it is`)
+    } else if (identity === 'skipped') {
+      console.log('[bgos-pair] note: the app sent no name for this agent, so it starts without an identity file.')
+    } else {
+      console.error(`[bgos-pair] note: could not write ${identityFilePath(identityDir)}; the agent starts without it.`)
+    }
     // Bake the launch-folder auto-pin so a bare launch from THIS folder
     // self-resolves this identity with no env var (server.ts reads the folder
     // pin). Best effort: never fail a completed pairing on a bake hiccup.

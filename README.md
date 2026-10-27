@@ -128,6 +128,7 @@ launchd / systemd --user
      -> tmux -L hoai-<id>-home-<hid> new-session -d -s hoai-<id>-home-<hid> -c <workspace>   (when tmux is installed)
         -> node <current plugin root>/bin/hoai-core.mjs                (HOAI_SUPERVISED=1)
            -> expect + the startup gate block -> claude --resume <pinned session id>
+                                                  --append-system-prompt-file ~/.bgos-agent/<id>/identity.md
 ```
 
 - **hoai runs the agent, in tmux, on the agent's own socket.** The service starts
@@ -146,6 +147,14 @@ launchd / systemd --user
   transcript does not exist yet, never `--continue`. A resume that is rejected
   gets one fresh session, kept only once it stays up. `hoai-agent uninstall`
   keeps the pin, so the conversation survives a reinstall.
+- **The agent is told its own name.** `~/.bgos-agent/<id>/identity.md` (written
+  at pairing, refreshed by the daemon at boot) rides every launch and relaunch
+  as `--append-system-prompt-file`, so a global `~/.claude/CLAUDE.md` that names
+  somebody else cannot make the agent that person. Only when the file has text
+  and this Claude Code knows the flag. When a second launch with it dies at
+  once (or the launcher would otherwise end), the agent's own session comes
+  back without it until the agent is restarted (from the app, by a plugin
+  update, or hoai starting again), and the launcher says why.
 - **Remote compact is ON.** The session carries `BGOS_TMUX_SESSION=hoai-<id>-home-<hid>` and
   `BGOS_TMUX_SOCKET=hoai-<id>-home-<hid>`, which is what lets the daemon type `/compact`
   into it when the owner asks from the app. With no tmux on the host, hoai runs
