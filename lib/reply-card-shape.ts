@@ -549,3 +549,78 @@ export class ReplyCardNudges {
     }
   }
 }
+
+// ── Decisions in a reply with buttons (the async question card) ───────────────
+
+/** A list item's marker as a whole token: `-`, `*`, `+`, `1.`, `2)`. */
+const LIST_MARKER_TOKEN = /^(?:[-*+]|\d{1,2}[.)])$/
+/** An inline enumerator as a whole token: `1)`, `(2)`, `3.`. */
+const ENUMERATOR_TOKEN = /^\(?\d{1,2}[.)]$/
+/** A token that is a link, whose `?` is a query string, not a question. */
+const LINK_TOKEN = /^(?:https?:\/\/|www\.)/i
+/** Closing marks a question can sit inside: bold, italics, a bracket, a quote. */
+const TRAILING_MARKS = new Set(['*', '_', ')', ']', '"', "'", '`'])
+
+function withoutTrailingMarks(token: string): string {
+  let end = token.length
+  while (end > 0 && TRAILING_MARKS.has(token[end - 1])) end--
+  return token.slice(0, end)
+}
+
+function withoutLeadingEmphasis(token: string): string {
+  let start = 0
+  while (start < token.length && (token[start] === '*' || token[start] === '_')) start++
+  return token.slice(start)
+}
+
+/** The line with every `inline code` span removed, by a walk, never a regex. */
+function withoutInlineCode(line: string): string {
+  let out = ''
+  let inCode = false
+  for (const ch of line) {
+    if (ch === '`') {
+      inCode = !inCode
+      continue
+    }
+    if (!inCode) out += ch
+  }
+  return out
+}
+
+/**
+ * How many decisions a reply asks its reader, for the reply tool's warning
+ * when a reply WITH BUTTONS asks 2 or more (buttons answer exactly one; scope
+ * section 6). Conservative, like the card shapes: a decision is a prose line,
+ * outside code and quotes, that ENDS in a question mark (bold or a bracket
+ * around it allowed), so a rhetorical question answered on its own line never
+ * counts, a link's query string never counts, and a line opening with "Or"
+ * restates the choice before it. A line that enumerates its questions inline
+ * ("1) A? 2) B?") counts each. Linear in the text: tokens and walks only.
+ */
+export function decisionCount(text: string): number {
+  if (typeof text !== 'string') return 0
+  let count = 0
+  for (const raw of outsideCode(text.replace(/\r\n?/g, '\n').split('\n'))) {
+    const line = withoutInlineCode(raw).trim()
+    if (line === '' || line.startsWith('>')) continue
+    const tokens = line.split(/\s+/).filter((t) => t !== '' && !LINK_TOKEN.test(t))
+    if (tokens.length === 0) continue
+    const enumerators = tokens.filter((t) => ENUMERATOR_TOKEN.test(t)).length
+    const words = LIST_MARKER_TOKEN.test(tokens[0]) ? tokens.slice(1) : tokens
+    if (words.length === 0) continue
+    if (withoutLeadingEmphasis(words[0]).toLowerCase() === 'or') continue
+    if (!withoutTrailingMarks(words[words.length - 1]).endsWith('?')) continue
+    const marks = words.filter((t) => withoutTrailingMarks(t).endsWith('?')).length
+    count += enumerators >= 2 ? Math.max(1, Math.min(marks, enumerators)) : 1
+  }
+  return count
+}
+
+/** The ONE line appended to the reply tool's result when a reply with buttons asks several decisions. */
+export function multiDecisionLine(decisions: number): string {
+  return (
+    `This reply asks ${decisions} decisions, but buttons answer exactly one. It was sent as you wrote it. ` +
+    'Any message asking your owner 2 or more decisions is ONE ask_user_input card (up to 4 questions), ' +
+    'online or not: send the next one as a card.'
+  )
+}

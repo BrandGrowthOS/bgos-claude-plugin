@@ -268,7 +268,7 @@ import {
   type MissionEventWire,
 } from './lib/mission-events.js'
 import { declaredCapabilities } from './lib/declared-capabilities.js'
-import { ReplyCardNudges, UI_CARD } from './lib/reply-card-shape.ts'
+import { ReplyCardNudges, UI_CARD, decisionCount, multiDecisionLine } from './lib/reply-card-shape.ts'
 import {
   AskTracker,
   ASK_TRACKER_FILE_NAME,
@@ -6316,7 +6316,16 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
               log,
             })
         if (cardNudge) log(`reply to chat ${resolvedChatId}: card nudge given`)
-        return { content: [{ type: 'text', text: `Sent (${parts.join(', ')})${cardNudge ? `\n${cardNudge}` : ''}` }] }
+        // Buttons answer exactly one decision (scope section 6). A reply with
+        // buttons that asks 2 or more still went out as written; its result
+        // names the ask_user_input card instead, every time, never blocking.
+        // Not in a peer side thread, which an agent reads, as the nudge above.
+        const decisions =
+          options.length > 0 && !peerConvByChat.has(String(resolvedChatId)) ? decisionCount(text ?? '') : 0
+        const decisionWarning = decisions >= 2 ? multiDecisionLine(decisions) : null
+        if (decisionWarning) log(`reply to chat ${resolvedChatId}: ${decisions} decisions with buttons, card named`)
+        const notes = [cardNudge, decisionWarning].filter((n): n is string => n !== null)
+        return { content: [{ type: 'text', text: `Sent (${parts.join(', ')})${notes.map((n) => `\n${n}`).join('')}` }] }
       } catch (err) {
         if (peerRefusalOf(err) === PEER_NOT_PARTICIPANT) {
           // HOAI refuses this reply every time (lib/peer-refusal.ts). Say so in
