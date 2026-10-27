@@ -464,6 +464,61 @@ test('item 1: the process that posted a group is written with it, and read back'
   })
 })
 
+// ── Second review of #282, Important 2: a session that ran beside the asker never takes its answers ──
+
+/** Two trackers on one file, a clock and a list of live pids both can move. */
+function sharedFile(fn: (t: { filePath: string; clock: { at: number }; live: number[]; at: (hhmmss: string) => number }) => void) {
+  withDir((dir) => {
+    const at = (hhmmss: string) => Date.parse(`2026-10-27T${hhmmss}Z`)
+    fn({ filePath: join(dir, 'pending-asks.json'), clock: { at: at('10:00:00') }, live: [], at })
+  })
+}
+
+test('second review, Important 2: a session started after the card, beside its live asker, never takes the answers once the asker ends', () => {
+  sharedFile(({ filePath, clock, live, at }) => {
+    const now = () => clock.at
+    const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
+    a.register(group({ askId: 'g', ids: [901, 902] }))
+    live.push(1)
+    clock.at = at('10:30:00')
+    const b = trackerAs({ pid: 2, startedAt: clock.at }, live, { filePath, now })
+    live.splice(live.indexOf(1), 1)
+    clock.at = at('11:00:00')
+    b.refresh()
+    b.record(901, { skipped: true })
+    b.record(902, { skipped: true })
+    assert.deepEqual(b.completeUndelivered().map((g) => g.askId), [], 'B saw the asker alive half an hour before it ended: another session')
+    assert.equal(b.isOurs(b.get('g')!), false)
+  })
+})
+
+test('second review, Important 2: a restart whose old daemon ends seconds after the new one starts still gets the answers', () => {
+  sharedFile(({ filePath, clock, live, at }) => {
+    const now = () => clock.at
+    const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
+    a.register(group({ askId: 'g', ids: [911] }))
+    live.push(1)
+    clock.at = at('10:10:00')
+    const a2 = trackerAs({ pid: 3, startedAt: clock.at }, live, { filePath, now })
+    live.splice(live.indexOf(1), 1)
+    clock.at = at('10:10:03')
+    a2.refresh()
+    a2.record(911, { skipped: true })
+    assert.deepEqual(a2.completeUndelivered().map((g) => g.askId), ['g'])
+  })
+})
+
+test('second review, Minor 12: a group with no owner (a file from before the owner was written) goes by the post time alone', () => {
+  sharedFile(({ filePath, at }) => {
+    const ask = { askId: 'old', chatId: '7', postedAt: at('10:00:00'), questions: [{ messageId: 921, text: 'Q?', options: [{ label: 'A', value: 'a' }] }], answers: { '921': { skipped: true } } }
+    writeFileSync(filePath, JSON.stringify({ v: 1, pending: [ask], delivered: [] }))
+    const restarted = trackerAs({ pid: 5, startedAt: at('10:05:00') }, [], { filePath, now: () => at('10:06:00') })
+    assert.deepEqual(restarted.completeUndelivered().map((g) => g.askId), ['old'])
+    const older = trackerAs({ pid: 6, startedAt: at('09:55:00') }, [], { filePath, now: () => at('10:06:00') })
+    assert.deepEqual(older.completeUndelivered().map((g) => g.askId), [])
+  })
+})
+
 // ── Data's review of #282, item 4: only a file that read in full and failed to parse is kept aside ──
 
 /** Run with node:fs's readFileSync or renameSync failing as `fault` says (the tracker's own import sees it). */
