@@ -13131,8 +13131,10 @@ async function refreshAgentIdentity(
  * daemon when it first holds the pairing lock, and goes on if that daemon
  * later stands down (it tells only its own session). So with two sessions of
  * one agent, one passive since its start hears a rename at its next new
- * conversation or compaction, or once it takes the lock. Pairing only: an API
- * key daemon has no integrations/me. Never throws.
+ * conversation or compaction. Taking the lock later tells it only when the
+ * file still has the old name then; the holder's refresh has usually written
+ * the new one already, and the promoted daemon records it as told without a
+ * word. Pairing only: an API key daemon has no integrations/me. Never throws.
  */
 async function refreshIdentityWhileRunning(): Promise<void> {
   if (identityToldName === null || AUTH.mode !== 'pairing') return
