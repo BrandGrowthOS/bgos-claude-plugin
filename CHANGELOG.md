@@ -2,6 +2,14 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.78.1 (2026-10-27)
+
+**The question card's lease, after Data's gate on #282.**
+
+- **A session that ran beside the asker is told apart from its restart by when the asker could last have run**, not by its last lease, which can be up to 20 s older than its end. A session that ran beside the asker for 61 to 75 s before it ended no longer takes its answers; a real restart still does.
+- **The session that asked is told when its card is retired.** When the connected session retires a card whose asker still runs without the connection (after a takeover), the asker's own session gets one `ask_withdrawn` event too, with what was answered, on its next tick. A card handed over to a restart is never retired, so nobody is told it was withdrawn.
+- **A clock stepped back never stalls the lease.** The asker writes it again at once instead of waiting for the clock to catch up.
+
 ## 0.78.0 (2026-10-27)
 
 **A late answer to a question card now reaches the agent (#282, Kc's ask, Data approved option A, msg 161859).** The card stays answerable in the app and the backend accepts a late answer, but the plugin dropped it on both transports (`lib/stream-apply.ts`, `lib/poll-core.ts`), and `ask_user_input` blocked up to 600 s and then reported every unanswered question as skipped.
