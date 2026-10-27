@@ -34,6 +34,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync,
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import ts from 'typescript'
+import { emailToolNeedsTurn, emailTurnRefusalText } from '../lib/agent-email-tools.ts'
 import { appendEvent } from '../bin/hoai-hook.mjs'
 import { recordPrivateBoundary } from '../bin/hoai-private-turn-hook.mjs'
 import { startHookIntake } from '../lib/hook-intake.ts'
@@ -258,11 +259,11 @@ async function admit(host: ReturnType<typeof agentHost>, name: string): Promise<
   const result = new Function(
     'req', 'lockHeld', 'privateTurns', 'PRIVATE_MARKER_PATHS', 'PRIVATE_HOOK', 'PRIVATE_HOOK_MISSING_REFUSAL', 'USER_ID', 'log',
     'requirePrivateTurn', 'turnAwarePrivateTurn', 'requireEmailSendTurn', 'PRIVATE_TURN_REFUSAL', 'recordPeerRefusal', 'pathDirname',
-    'CURSOR_FILE_PATH', 'ASSISTANT_ID', admissionJs,
+    'CURSOR_FILE_PATH', 'ASSISTANT_ID', 'emailToolNeedsTurn', 'emailTurnRefusalText', admissionJs,
   )(
     { params: { name } }, true, host.tracker, host.markerPaths, { registered: true }, 'hook missing', OWNER, () => {},
     requirePrivateTurn, turnAwarePrivateTurn, requireEmailSendTurn, PRIVATE_TURN_REFUSAL, () => ({ line: '' }), () => '/s',
-    '/s/c', AGENT,
+    '/s/c', AGENT, emailToolNeedsTurn, emailTurnRefusalText,
   )
   if (typeof result?.then === 'function') {
     const settled = await result

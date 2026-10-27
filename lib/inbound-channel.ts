@@ -2,7 +2,6 @@ import {
   buildInboundContent,
   buildInboundFilesMeta,
   normalizeInboundFiles,
-  UNAVAILABLE_FILE_REF,
   type InboundFileEntry,
   type InboundFileLike,
 } from './message-text.ts'
@@ -536,11 +535,27 @@ export function emailSavedFileLine(f: { kind: string; name: string }, path: stri
     : `[Attached ${f.kind}: ${f.name} - not saved, the download failed]`
 }
 
+/**
+ * The one file line while the owner's switch is off, false or unknown (an old
+ * backend): no link, ever (Data's review of #3387, Medium 1, defence in depth).
+ * An older email row can still carry a presigned link, and a link in the turn
+ * would let the agent fetch a file the owner did not let it read. The owner
+ * opens it in the Email chat.
+ */
+export const EMAIL_FILE_NOT_OPENED = 'not opened here; your owner can open it in the Email chat'
+
+export function emailOffFileLine(f: { kind: string; name: string }): string {
+  return `[Attached ${f.kind}: ${f.name} - ${EMAIL_FILE_NOT_OPENED}]`
+}
+
 function buildExternalEmailChannel(input: InboundChannelInput): InboundChannelDelivery {
   const files = emailFileEntries(input.files ?? [])
   // The owner's read attachments switch, off the server's record. Off, false
-  // or an old backend: today's turn, byte for byte, and any saves are ignored.
-  // On: no link reaches the model; each file's one line carries its local
+  // or an old backend: today's turn with no link in it (each file's line says
+  // the owner opens it in the Email chat, and meta.files names no url), and
+  // any saves are ignored. Only the boolean true lets anything about a file
+  // reach the model beyond its name, type and size.
+  // On: no link reaches the model either; each file's one line carries its local
   // path, and a file this daemon did not save says so (a lane that does not
   // download hands no saves, so every file there reads not saved).
   const readsFiles = readsEmailFiles(input.serverSender)
@@ -561,7 +576,7 @@ function buildExternalEmailChannel(input: InboundChannelInput): InboundChannelDe
   if (input.backlogPrefix) parts.push(EXTERNAL_EMAIL_BACKLOG_PREFIX)
   parts.push(planPolicy ? `${buildPlanPolicyMarker(planPolicy)}\n\n${framed}` : framed)
   files.forEach((f, i) =>
-    parts.push(readsFiles ? emailSavedFileLine(f, paths[i]!) : `[Attached ${f.kind}: ${f.name} - ${f.ref || UNAVAILABLE_FILE_REF}]`),
+    parts.push(readsFiles ? emailSavedFileLine(f, paths[i]!) : emailOffFileLine(f)),
   )
   parts.push(EXTERNAL_EMAIL_END_MARKER)
 
@@ -591,13 +606,7 @@ function buildExternalEmailChannel(input: InboundChannelInput): InboundChannelDe
               kind: f.kind,
               ...(f.mimeType ? { mimeType: f.mimeType } : {}),
               ...(f.size ? { size: f.size } : {}),
-              ...(readsFiles
-                ? paths[i]
-                  ? { path: paths[i]! }
-                  : { unavailable: 'true' }
-                : f.ref
-                  ? { url: f.ref }
-                  : { unavailable: 'true' }),
+              ...(readsFiles && paths[i] ? { path: paths[i]! } : { unavailable: 'true' }),
               from_email: 'true',
             })),
           ),
@@ -652,9 +661,10 @@ export function labelsExternalEmail(): boolean {
         !/<\s*\/?\s*chan/i.test(d.content) &&
         !d.content.includes('\n[button_clicked]') &&
         all.filter((line) => line.startsWith('[Attached ')).length === 1 &&
+        // No link in either form (Data's review of #3387, Medium 1).
+        !`${d.content}${JSON.stringify(d.meta)}`.includes('probe.invalid') &&
         (emailFileSaves === undefined ||
-          (!d.content.includes('probe.invalid') &&
-            all.some((line) => line.startsWith('[Attached ') && line.includes(`saved on this computer at ${emailFileSaves[0]!.path};`)))) &&
+          all.some((line) => line.startsWith('[Attached ') && line.includes(`saved on this computer at ${emailFileSaves[0]!.path};`))) &&
         d.meta.sender_type === EXTERNAL_EMAIL_SENDER_TYPE &&
         d.meta.user_id === EXTERNAL_EMAIL_USER_ID
       )

@@ -93,9 +93,10 @@ export function emailFilesRoot(home: string): string {
 
 // ── the type ─────────────────────────────────────────────────────────────────
 
-type EmailFileType = 'pdf' | 'png' | 'jpg' | 'gif' | 'webp' | 'text' | 'docx' | 'xlsx'
+export type EmailFileType = 'pdf' | 'png' | 'jpg' | 'gif' | 'webp' | 'text' | 'docx' | 'xlsx'
 
-const TYPE_OF_EXTENSION: Record<string, EmailFileType> = {
+/** The safe list, by extension: the same list for a file that comes in and one that goes out (lib/email-outbound-files.ts). */
+export const TYPE_OF_EXTENSION: Readonly<Record<string, EmailFileType>> = {
   pdf: 'pdf', png: 'png', jpg: 'jpg', gif: 'gif', webp: 'webp', txt: 'text', csv: 'text', docx: 'docx', xlsx: 'xlsx',
 }
 
@@ -226,7 +227,8 @@ function officeTypeOf(bytes: Uint8Array): 'docx' | 'xlsx' | null {
   return docx ? 'docx' : 'xlsx'
 }
 
-function isType(bytes: Uint8Array, type: EmailFileType): boolean {
+/** Are these bytes that type? Read off the bytes alone (an office file off its zip directory), never off a name. */
+export function isType(bytes: Uint8Array, type: EmailFileType): boolean {
   switch (type) {
     case 'pdf':
       return startsWith(bytes, ascii('%PDF-'))
