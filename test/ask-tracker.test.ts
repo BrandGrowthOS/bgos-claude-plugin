@@ -400,3 +400,51 @@ test('the pending text says private tools refuse in the ask_answered turn, and w
   assert.match(text, /schedule/)
   assert.match(text, /wait_seconds/)
 })
+
+// ── Data's review of #282, item 1 (High): answers go only to the session that asked ──
+
+/** A tracker that knows which process it is and which others still run (read by the fix). */
+function trackerAs(self: { pid: number; startedAt: number }, live: number[], extra: Record<string, unknown> = {}) {
+  return new AskTracker({
+    filePath: null,
+    now: () => extra.now ? (extra.now as () => number)() : self.startedAt + 30 * MIN,
+    ...({ self, isAlive: (pid: number) => pid === self.pid || live.includes(pid) } as object),
+    ...(extra.filePath ? { filePath: extra.filePath as string } : {}),
+  })
+}
+
+function completeGroupOf(tracker: AskTracker, askId: string, ids: number[], owner?: { pid: number; startedAt: number }, postedAt?: number) {
+  const ask = tracker.register(group({ askId, ids }))
+  if (owner) (ask as unknown as { owner: unknown }).owner = owner
+  if (postedAt !== undefined) ask.postedAt = postedAt
+  for (const id of ids) tracker.record(id, { skipped: true })
+  return ask
+}
+
+test('item 1: a complete group another live daemon posted is never offered for an announce here', () => {
+  const self = { pid: 10, startedAt: Date.parse('2026-10-27T09:00:00Z') }
+  const tracker = trackerAs(self, [20])
+  completeGroupOf(tracker, 'theirs', [801], { pid: 20, startedAt: self.startedAt - MIN }, self.startedAt + MIN)
+  completeGroupOf(tracker, 'mine', [802])
+  assert.deepEqual(tracker.completeUndelivered().map((a) => a.askId), ['mine'])
+})
+
+test('item 1: a group whose asker ended is offered only to a daemon that started after it was posted (a restart)', () => {
+  const self = { pid: 10, startedAt: Date.parse('2026-10-27T09:00:00Z') }
+  const tracker = trackerAs(self, [])
+  completeGroupOf(tracker, 'asked-before-i-started', [811], { pid: 30, startedAt: self.startedAt - 60 * MIN }, self.startedAt - 30 * MIN)
+  completeGroupOf(tracker, 'asked-while-i-ran', [812], { pid: 31, startedAt: self.startedAt - 60 * MIN }, self.startedAt + 5 * MIN)
+  assert.deepEqual(tracker.completeUndelivered().map((a) => a.askId), ['asked-before-i-started'])
+})
+
+test('item 1: the process that posted a group is written with it, and read back', () => {
+  withDir((dir) => {
+    const filePath = join(dir, 'pending-asks.json')
+    const self = { pid: 4242, startedAt: Date.parse('2026-10-27T09:00:00Z') }
+    trackerAs(self, [], { filePath }).register(group({ askId: 'g', ids: [821] }))
+    const onDisk = JSON.parse(readFileSync(filePath, 'utf8'))
+    assert.deepEqual(onDisk.pending[0].owner, self)
+    const other = trackerAs({ pid: 7, startedAt: self.startedAt + MIN }, [4242], { filePath })
+    assert.deepEqual((other.get('g') as unknown as { owner: unknown }).owner, self)
+  })
+})
