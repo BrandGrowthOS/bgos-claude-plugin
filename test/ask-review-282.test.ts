@@ -64,6 +64,7 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean; f
     liftIf('function orphanRetireMayRun('),
     liftIf('async function retireOrphanedAsks('),
     liftIf('function tellRetiredOwnAsks('),
+    liftIf('function sendAskWithdrawn('),
     lift('function heartbeatAskTracker('),
     liftCase('ask_user_input', 'withdraw_ask', 'askTool'),
     liftCase('withdraw_ask', 'complete_voice_task', 'withdrawTool'),
@@ -221,6 +222,7 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean; f
     askTool(args: Record<string, unknown>): Promise<ToolResult>
     withdrawTool(args: Record<string, unknown>): Promise<ToolResult>
     announceCompleteAsks(via: string): void
+    heartbeatAskTracker(): void
     retireOrphanedAsks?: (via: string) => Promise<void>
   }
 
@@ -904,7 +906,7 @@ test('lease follow-up, item 2: the asker\'s own daemon, passive, tells its sessi
     // The daemon that took the connection reads one answer and retires the rest.
     const holder = new AskTracker({ filePath, now: () => r.now(), ...({ self: { pid: 2016, startedAt: START - MIN }, isAlive: () => true } as object) })
     holder.refresh()
-    holder.record(r.tracker.pending()[0].questions[0].messageId, { optionId: 1, skipped: false })
+    holder.record(r.tracker.pending()[0].questions[0].messageId, { skipped: true })
     holder.beginWithdraw(askId)
     assert.notEqual((holder as unknown as RetiredOwn).retire?.(askId, { withdrawn: 1 }) ?? 'missing', 'missing')
     for (let i = 0; i < 3; i++) {
@@ -918,13 +920,13 @@ test('lease follow-up, item 2: the asker\'s own daemon, passive, tells its sessi
     assert.equal(told[0].params.meta.withdrawn, '1')
     assert.ok(Object.values(told[0].params.meta).every((v) => typeof v === 'string'))
     assert.match(told[0].params.content, /this session posted/)
-    assert.equal(r.tracker.get(askId), undefined)
+    assert.equal(r.tracker.get(askId), null)
   }))
 
 test('lease follow-up, item 2: a group handed over to the asker\'s restart is announced there once, and no ask_withdrawn goes anywhere', async () => {
   const r = rig()
   r.foreignGroup('handed', [799], { pid: 2017, startedAt: START - 60 * MIN }, START - 30 * MIN)
-  r.tracker.record(799, { optionId: 7991, skipped: false })
+  r.tracker.record(799, { skipped: true })
   r.announceCompleteAsks('test')
   for (let i = 0; i < 4; i++) {
     await r.retireOrphanedAsks?.('timer')

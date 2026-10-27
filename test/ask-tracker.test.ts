@@ -1286,7 +1286,7 @@ test('lease follow-up, item 2: a card retired while its asker still runs is hand
     assert.deepEqual(leaseOf(a).takeRetiredOwn?.(), [], 'still once on later ticks')
     assert.deepEqual(leaseOf(b).takeRetiredOwn?.(), [], 'never the daemon that retired it')
     assert.deepEqual(leaseOf(c).takeRetiredOwn?.(), [], 'never another session')
-    assert.equal(a.get('g'), undefined, 'the asker forgets the group')
+    assert.equal(a.get('g'), null, 'the asker forgets the group')
     // The record ages out with the orphan grace.
     runUntil(clock, at('10:13:00'), a, b, c)
     b.register(group({ askId: 'later', ids: [1429] }))

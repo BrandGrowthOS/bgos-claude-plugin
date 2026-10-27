@@ -128,3 +128,14 @@ test('fourth review, Important 2: a passive daemon that takes the connection rea
   assert.ok(taken > 0)
   assert.match(server.slice(taken, at), /lockHeld = true\n\s*connectedSince = Date\.now\(\)\n(\s*\/\/[^\n]*\n)*\s*refreshAskTracker\('promotion'\)\n/)
 })
+
+test('lease follow-up of #282, item 2: the retire keeps a live asker\'s card on file for it, and every daemon\'s ask tick tells its own session of its retired cards', () => {
+  const retire = fnBody('async function retireOrphanedAsks(via: string): Promise<void> {', 4000)
+  assert.match(retire, /if \(!askTracker\.retire\(ask\.askId, \{ withdrawn \}\)\) continue/)
+  assert.match(retire, /sendAskWithdrawn\(ask, withdrawn, \{ toAsker: false, via \}\)/)
+  const tick = fnBody('function heartbeatAskTracker(): void {', 600)
+  assert.match(tick, /\n\s*tellRetiredOwnAsks\(\)\n\}/)
+  const tell = fnBody('function tellRetiredOwnAsks(): void {', 600)
+  assert.match(tell, /askTracker\.takeRetiredOwn\(\)\) sendAskWithdrawn\(ask, withdrawn, \{ toAsker: true, via: 'the ask tick' \}\)/)
+  assert.doesNotMatch(tell, /channelArmed|lockHeld/, 'the asker is passive by then')
+})
