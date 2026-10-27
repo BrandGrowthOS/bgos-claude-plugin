@@ -718,14 +718,41 @@ test('an answered row we never saw unanswered is not announced', () => {
   assert.deepEqual(r.announce, [])
 })
 
-test('ask_user_input rows are excluded (that tool owns its own polling)', () => {
+test('ask_user_input rows are never announced as clicks', () => {
   const r = selectClickTransitions({
     rows: [clickRow({ id: 6, messageType: 'ask_user_input', answered: true })],
     prevUnanswered: new Set([6]),
     isFirstPoll: false,
   })
-  assert.deepEqual(r.announce, [], 'no second delivery of a modal answer')
+  assert.deepEqual(r.announce, [], 'an ask answer is never a button_clicked')
   assert.deepEqual([...r.nextUnanswered], [])
+  assert.deepEqual(r.askAnswered, [], 'an ask row no group tracks is nobody\'s')
+})
+
+test('a late answer to a tracked ask question is handed to the tracker', () => {
+  const r = selectClickTransitions({
+    rows: [
+      clickRow({ id: 6, messageType: 'ask_user_input', answered: true }),
+      clickRow({ id: 7, messageType: 'ask_user_input', answered: false }),
+    ],
+    prevUnanswered: new Set(),
+    isFirstPoll: false,
+    trackedAsks: new Set([6, 7]),
+  })
+  assert.deepEqual(r.askAnswered, [6])
+  assert.deepEqual(r.announce, [])
+})
+
+test('a tracked ask answered while the daemon was down is handed over on the first poll', () => {
+  // The restart case: the click rule never replays history on a first poll,
+  // but a tracked ask is a promise this daemon made, so its answer is due.
+  const r = selectClickTransitions({
+    rows: [clickRow({ id: 6, messageType: 'ask_user_input', answered: true })],
+    prevUnanswered: new Set(),
+    isFirstPoll: true,
+    trackedAsks: new Set([6]),
+  })
+  assert.deepEqual(r.askAnswered, [6])
 })
 
 test('user rows and option-less rows are ignored', () => {
