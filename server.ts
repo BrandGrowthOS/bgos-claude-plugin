@@ -68,11 +68,17 @@ import {
   type ParsedMeetingContext,
 } from './lib/meeting-card.js'
 import {
+  EMAIL_FILES_BATCH_BUDGET_MS,
   EMAIL_FILES_SWEEP_MS,
+  createEmailBatchBudget,
+  createEmailCursorHolds,
+  createEmailFilesKeepalive,
   emailFilesRoot,
+  emailFilesRootLinkProblem,
   emailFilesWanted,
   prepareEmailFiles,
   sweepEmailFiles,
+  type EmailBatchBudget,
 } from './lib/email-files.js'
 import {
   VoiceRpcHandler,
@@ -1392,8 +1398,27 @@ setInterval(() => void sweepBoardFiles(BOARD_FILES_ROOT).catch(() => 0), BOARD_F
 // (whose floor refuses this folder, lib/hard-floor-lane.mjs) never sees them.
 // Swept at start and every 6 hours: a copy older than 7 days goes.
 const EMAIL_FILES_ROOT = emailFilesRoot(homedir())
+// A linked ~/.bgos-agent or email files folder refuses every save; say so once, here, with the reason.
+void emailFilesRootLinkProblem(EMAIL_FILES_ROOT)
+  .then((why) => {
+    if (why) log(`email files: no email file can be saved on this computer: ${why}; each one will read not saved until it is a real folder`)
+  })
+  .catch(() => {})
 void sweepEmailFiles(EMAIL_FILES_ROOT).catch(() => 0)
 setInterval(() => void sweepEmailFiles(EMAIL_FILES_ROOT).catch(() => 0), EMAIL_FILES_SWEEP_MS).unref()
+
+// While any email download runs, the pairing lock and the beacon are kept
+// fresh by the tick's own refresh: the poll and stream lanes await a download
+// INSIDE the tick, one email may take 20 s, and the lock goes stale at 15 s.
+// main() sets the beat once the tick's refresh exists (heartbeatPairingLock);
+// until then there is no lock to keep and the beat does nothing.
+let emailDownloadHeartbeat = (): void => {}
+const emailFilesKeepalive = createEmailFilesKeepalive({ beat: () => emailDownloadHeartbeat() })
+// Per chat, the emails whose files are downloading: advanceChatCursor never
+// moves a cursor to or past one until its download is over (lib/email-files.ts).
+const emailCursorHolds = createEmailCursorHolds()
+// The budget of the WS down stream catch up running now (streamWsDownCatchup), or null.
+let streamEmailBudget: EmailBatchBudget | null = null
 
 /**
  * An email's files, fetched and saved before its turn, when the server says
@@ -1405,20 +1430,56 @@ setInterval(() => void sweepEmailFiles(EMAIL_FILES_ROOT).catch(() => 0), EMAIL_F
  * it, so nothing is skipped), the socket by delivering after it (see
  * deliverWsInbound). A person's lane never calls it (lib/lane-daemon.ts): the
  * owner's mail is not a person's, and there every file reads not saved.
+ *
+ * What a download may hold up, and what it may not:
+ *  - the lock and the beacon: kept fresh by emailFilesKeepalive while it runs;
+ *  - its lane's batch: past `budget` (EMAIL_FILES_BATCH_BUDGET_MS spent on
+ *    downloads in this batch) no download starts and every file reads not
+ *    saved, so a poll batch holds its tick for at most the budget plus one
+ *    email's deadline. Not saved rather than left for the next tick: the
+ *    batch keeps its order and its cursor, and nothing parks across ticks;
+ *  - its chat's cursor: held one below this email (`chatId`, `messageId`)
+ *    until the download is over, so a later message delivered meanwhile
+ *    cannot move the cursor past it. The lane hands the email over in the
+ *    same turn of the event loop the hold ends in, before any cursor flush (a
+ *    timer) can run; an email this daemon stood down from never lets the
+ *    cursor pass it.
  */
-async function emailFileSavesFor(record: unknown, files: unknown): Promise<Array<EmailFileSave | null> | undefined> {
+async function emailFileSavesFor(
+  record: unknown,
+  files: unknown,
+  opts: { budget?: EmailBatchBudget | null; chatId?: string; messageId?: number } = {},
+): Promise<Array<EmailFileSave | null> | undefined> {
   if (!emailFilesWanted(record, files)) return undefined
+  if (opts.budget && !opts.budget.mayStart()) {
+    log(
+      `email files: none saved: this batch already spent ${EMAIL_FILES_BATCH_BUDGET_MS} ms on downloads, ` +
+        'so this email\'s files read not saved',
+    )
+    return []
+  }
+  const hold = opts.chatId && Number.isFinite(opts.messageId) ? { chatId: opts.chatId, id: Number(opts.messageId) } : null
+  if (hold) emailCursorHolds.hold(hold.chatId, hold.id)
+  const startedAt = Date.now()
   try {
-    return await prepareEmailFiles({
-      root: EMAIL_FILES_ROOT,
-      assistantId: ASSISTANT_ID,
-      record,
-      files: files as never[],
-      log,
-    })
+    return await emailFilesKeepalive.during(() =>
+      prepareEmailFiles({
+        root: EMAIL_FILES_ROOT,
+        assistantId: ASSISTANT_ID,
+        record,
+        files: files as never[],
+        log,
+      }),
+    )
   } catch (err) {
     log(`email files: none saved: ${err instanceof Error ? err.name : 'error'}`)
     return []
+  } finally {
+    opts.budget?.spend(Date.now() - startedAt)
+    if (hold) {
+      const catchUp = emailCursorHolds.release(hold.chatId, hold.id, lockHeld)
+      if (catchUp !== null) advanceChatCursor(hold.chatId, catchUp)
+    }
   }
 }
 
@@ -8359,6 +8420,8 @@ const chatFirstListedAtMs = new Map<string, number>()
  */
 function advanceChatCursor(chatId: string, id: number): void {
   if (!Number.isFinite(id)) return
+  // Never to or past an email whose files are still downloading (emailFileSavesFor).
+  id = emailCursorHolds.clamp(chatId, id)
   const seen = chatLastSeen.get(chatId) ?? 0
   if (id <= seen) return
   chatLastSeen.set(chatId, id)
@@ -10592,6 +10655,11 @@ function pollTurnStateOf(m: ChatMessage): string | null {
 
 async function pollChat(chatId: string): Promise<void> {
   if (updateDrainMode) return
+  // A daemon that has lost the pairing lock reads no chat. The tick stands
+  // down at its top, but the email download keepalive refreshes the lock too,
+  // so the stand-down can now land in the middle of a sweep: the chats after
+  // it are left to the holder.
+  if (!lockHeld) return
   await trackMessageOperation(async () => {
   // Delta polling (SERVERPERF P1a): after the first full fetch for a chat,
   // every poll passes afterId=<last seen id> so an idle chat costs an empty
@@ -11040,6 +11108,8 @@ async function pollChat(chatId: string): Promise<void> {
     }
     chatUnansweredButtons.set(chatId, nextUnanswered)
 
+    // What this batch may spend waiting on email downloads (EMAIL_FILES_BATCH_BUDGET_MS).
+    const pollEmailBudget = createEmailBatchBudget()
     for (const msg of newUserMessages) {
       // The second lock (person lanes), on the poll as on the socket.
       const pollLaneVerdict = ownerLaneVerdict(msg.message)
@@ -11119,8 +11189,18 @@ async function pollChat(chatId: string): Promise<void> {
 
       // An email's files, saved before its turn when the owner lets the agent
       // read them (read attachments); undefined for every other row. Awaited
-      // in line: the batch, its order and the cursor wait for it, bounded.
-      const pollEmailSaves = await emailFileSavesFor(msg.message, msg.messageFiles ?? [])
+      // in line: the batch, its order and the cursor wait for it, bounded,
+      // and the batch's budget bounds them all together.
+      const pollEmailSaves = await emailFileSavesFor(msg.message, msg.messageFiles ?? [], { budget: pollEmailBudget, chatId, messageId: msg.message.id })
+      // The keepalive's refresh found a rival holding the lock while the files
+      // downloaded: this daemon has stood down, so it delivers nothing more.
+      // Un-claimed and thrown, so the cursor stays and the holder (or this
+      // daemon, re-armed) delivers it.
+      if (pollEmailSaves !== undefined && !lockHeld) {
+        forwardedMessageIds.delete(msg.message.id)
+        log(`email files: message ${msg.message.id} in chat ${chatId} not delivered: this daemon stood down while its files downloaded`)
+        throw new Error('stood down while an email\'s files downloaded')
+      }
 
       // An email is never a person's meeting turn, whatever chat it sits in.
       const meetingId = pollIsEmail ? undefined : meetingIdByChatId.get(chatId)
@@ -13605,7 +13685,15 @@ async function forwardStreamInbound(
   // An email's files, saved before its turn when the owner lets the agent read
   // them (read attachments); undefined for every other message. This rail
   // resolves only after the handoff, so the stream cursor waits for it too.
-  const streamEmailSaves = await emailFileSavesFor(view.raw, view.files)
+  // Inside the WS down catch up the batch's budget bounds the downloads.
+  const streamEmailSaves = await emailFileSavesFor(view.raw, view.files, { budget: streamEmailBudget, chatId, messageId: view.messageId })
+  // Stood down while the files downloaded (see the poll site): un-claim and
+  // reject, so the chain pins the stream cursor and redelivers.
+  if (streamEmailSaves !== undefined && !lockHeld) {
+    forwardedMessageIds.delete(view.messageId)
+    log(`email files: message ${view.messageId} in chat ${chatId} not delivered: this daemon stood down while its files downloaded`)
+    throw new Error('stood down while an email\'s files downloaded')
+  }
 
   // Another agent's message in a group (room_agent) names that agent, never
   // the owner fallback.
@@ -14296,8 +14384,15 @@ async function streamWsDownCatchup(): Promise<void> {
   const consumer = streamConsumer
   if (!consumer) return
   await trackMessageOperation(async () => {
-    const outcome = await consumer.runCatchup('ws_down_poll', Date.now())
-    if (outcome === 'feature_absent') deactivateStream('updates endpoint 404')
+    // This catch up runs inside the tick: its email downloads share one
+    // budget (see emailFileSavesFor), so a long chain cannot hold the tick.
+    streamEmailBudget = createEmailBatchBudget()
+    try {
+      const outcome = await consumer.runCatchup('ws_down_poll', Date.now())
+      if (outcome === 'feature_absent') deactivateStream('updates endpoint 404')
+    } finally {
+      streamEmailBudget = null
+    }
   })
 }
 
@@ -14871,9 +14966,12 @@ function connectWebsocket(): void {
       // reads the message meanwhile delivers it itself (and this one then
       // stands down at the dedupe above): it can be overtaken, never dropped.
       // Bounded, and tracked so a self update drain waits for it.
+      // The chat's cursor is held one below it meanwhile (emailFileSavesFor),
+      // so a later message this socket delivers cannot move the cursor past it.
       if (emailSaves === undefined && emailFilesWanted(payload, payload?.files)) {
+        const heldChatId = String(payload?.chatId ?? payload?.chat_id ?? '')
         void trackMessageOperation(async () => {
-          deliverWsInbound(payload, (await emailFileSavesFor(payload, payload?.files)) ?? [])
+          deliverWsInbound(payload, (await emailFileSavesFor(payload, payload?.files, { chatId: heldChatId, messageId })) ?? [])
         }).catch((err) => log(`email files: socket delivery failed: ${err}`))
         return
       }
@@ -15481,8 +15579,11 @@ function connectWebsocket(): void {
       // the owner lets the agent read: saved first, then sent, as on the
       // other lanes. Every other card goes exactly as before, at once.
       if (emailFilesWanted(payload, meetingFiles)) {
-        void trackMessageOperation(async () => sendMeetingCard((await emailFileSavesFor(payload, meetingFiles)) ?? []))
-          .catch((err) => log(`meeting_message handler error: ${err}`))
+        void trackMessageOperation(async () => {
+          const saves = (await emailFileSavesFor(payload, meetingFiles)) ?? []
+          // Stood down while the files downloaded: this daemon sends nothing more.
+          if (channelArmed) sendMeetingCard(saves)
+        }).catch((err) => log(`meeting_message handler error: ${err}`))
       } else {
         sendMeetingCard()
       }
@@ -16793,6 +16894,91 @@ async function main(): Promise<void> {
       return
     }
     deliveryLoopsStarted = true
+    // The pairing lock refresh, the poll tick's FIRST step (see the tick), as
+    // its own step so the email download keepalive (emailFilesKeepalive) runs
+    // the very same refresh, throttle and stand-down while a download holds
+    // the tick, or holds the boot sweep below, before the tick has started.
+    // Answers whether it refreshed now (the tick's heartbeatThisTick).
+    // Single-instance heartbeat (0.38.6), FIRST in the tick and ahead of
+    // anything that forwards a message or advances a cursor: keep the
+    // pairing lock fresh so a rival never reclaims a live holder, and stand
+    // down the moment a rival genuinely holds it. Throttled to
+    // LOCK_HEARTBEAT_INTERVAL_MS off this 2s tick. Gated on lockHeld, NOT
+    // on channelArmed: a daemon that has just acquired the lock is still
+    // arming (discoverChats and friends take seconds), and a lock nobody
+    // refreshes during that window goes stale and is reclaimed underneath
+    // us. Skipped while we hold no lock at all, because a passive daemon has
+    // nothing to refresh; the recheck interval below is what brings it back.
+    const heartbeatPairingLock = (hbNow: number): boolean => {
+      const heartbeatThisTick =
+        lockHeld &&
+        shouldHeartbeatNow({
+          lastAt: lastDeliveryHeartbeatAt,
+          now: hbNow,
+          intervalMs: LOCK_HEARTBEAT_INTERVAL_MS,
+        })
+      if (heartbeatThisTick) {
+        lastDeliveryHeartbeatAt = hbNow
+        const refreshed = refreshPairingLockDetailed({
+          lockPath: PAIRING_LOCK_PATH,
+          selfPid: process.pid,
+          now: hbNow,
+          bootedAt: DAEMON_START_MS,
+          channelLoaded: channelPresence().loaded,
+          route: LOCK_ROUTE,
+        })
+        if (!refreshed.held) {
+          channelArmed = false
+          lockHeld = false
+          // Stop consuming hook spools (see the re-arm gate above).
+          stopHookIntake()
+          // Fresh spell, fresh "ignored" reporting: each wrapped frame kind
+          // gets to say it once more, and a heartbeat-write failure in a LATER
+          // spell warns again instead of being swallowed by this one's latch.
+          standDownIgnoredFrames.clear()
+          lockIoErrorWarned = false
+          const yieldWhy = lockYieldReason(refreshed.holderChannelLoaded, refreshed.holderRoute)
+          log(
+            `pid ${process.pid}: pairing lock now held by pid ` +
+              `${refreshed.holderPid ?? 'unknown'}; ` +
+              `standing down to passive (this daemon stops polling and forwarding ` +
+              `so it cannot eat the holder's messages) and watching for reclaim` +
+              (yieldWhy ? `; ${yieldWhy}` : ''),
+          )
+          void reportStandDown('lock_lost')
+          resumeLockRecheck()
+        } else if (refreshed.ioError) {
+          // We keep the channel (a write hiccup is not proof of reclaim) but
+          // we did NOT re-stamp the heartbeat, so this daemon is drifting
+          // towards a staleness reclaim while looking perfectly healthy. Once
+          // per spell, so a failing disk cannot flood the shared log.
+          if (!lockIoErrorWarned) {
+            lockIoErrorWarned = true
+            log(
+              `WARN pid ${process.pid}: pairing lock heartbeat could not be written ` +
+                `(${refreshed.ioError}); still holding the channel, but a rival will ` +
+                `reclaim it if this keeps failing`,
+            )
+          }
+        } else {
+          lockIoErrorWarned = false
+        }
+      }
+      return heartbeatThisTick
+    }
+    // The keepalive's beat: the tick's refresh, then the beacon, on the same
+    // throttle and only while armed, as the tick touches it. A download in
+    // flight is a lane delivering, which is what the beacon says.
+    emailDownloadHeartbeat = (): void => {
+      const now = Date.now()
+      if (heartbeatPairingLock(now) && channelArmed) {
+        touchBeaconHeartbeat({
+          path: BEACON_HEARTBEAT_PATH,
+          now,
+          pid: process.pid,
+        })
+      }
+    }
     // Step 2: Discover and baseline chats.
     //
     // AWAITED, and it stays awaited: this is not a warm-up. It is what decides
@@ -17039,71 +17225,9 @@ async function main(): Promise<void> {
     let lastFullCycleAt = 0
     const tick = async (): Promise<void> => {
       try {
-        // Single-instance heartbeat (0.38.6), FIRST in the tick and ahead of
-        // anything that forwards a message or advances a cursor: keep the
-        // pairing lock fresh so a rival never reclaims a live holder, and stand
-        // down the moment a rival genuinely holds it. Throttled to
-        // LOCK_HEARTBEAT_INTERVAL_MS off this 2s tick. Gated on lockHeld, NOT
-        // on channelArmed: a daemon that has just acquired the lock is still
-        // arming (discoverChats and friends take seconds), and a lock nobody
-        // refreshes during that window goes stale and is reclaimed underneath
-        // us. Skipped while we hold no lock at all, because a passive daemon has
-        // nothing to refresh; the recheck interval below is what brings it back.
+        // The single-instance heartbeat, FIRST in the tick (heartbeatPairingLock above).
         const hbNow = Date.now()
-        const heartbeatThisTick =
-          lockHeld &&
-          shouldHeartbeatNow({
-            lastAt: lastDeliveryHeartbeatAt,
-            now: hbNow,
-            intervalMs: LOCK_HEARTBEAT_INTERVAL_MS,
-          })
-        if (heartbeatThisTick) {
-          lastDeliveryHeartbeatAt = hbNow
-          const refreshed = refreshPairingLockDetailed({
-            lockPath: PAIRING_LOCK_PATH,
-            selfPid: process.pid,
-            now: hbNow,
-            bootedAt: DAEMON_START_MS,
-            channelLoaded: channelPresence().loaded,
-            route: LOCK_ROUTE,
-          })
-          if (!refreshed.held) {
-            channelArmed = false
-            lockHeld = false
-            // Stop consuming hook spools (see the re-arm gate above).
-            stopHookIntake()
-            // Fresh spell, fresh "ignored" reporting: each wrapped frame kind
-            // gets to say it once more, and a heartbeat-write failure in a LATER
-            // spell warns again instead of being swallowed by this one's latch.
-            standDownIgnoredFrames.clear()
-            lockIoErrorWarned = false
-            const yieldWhy = lockYieldReason(refreshed.holderChannelLoaded, refreshed.holderRoute)
-            log(
-              `pid ${process.pid}: pairing lock now held by pid ` +
-                `${refreshed.holderPid ?? 'unknown'}; ` +
-                `standing down to passive (this daemon stops polling and forwarding ` +
-                `so it cannot eat the holder's messages) and watching for reclaim` +
-                (yieldWhy ? `; ${yieldWhy}` : ''),
-            )
-            void reportStandDown('lock_lost')
-            resumeLockRecheck()
-          } else if (refreshed.ioError) {
-            // We keep the channel (a write hiccup is not proof of reclaim) but
-            // we did NOT re-stamp the heartbeat, so this daemon is drifting
-            // towards a staleness reclaim while looking perfectly healthy. Once
-            // per spell, so a failing disk cannot flood the shared log.
-            if (!lockIoErrorWarned) {
-              lockIoErrorWarned = true
-              log(
-                `WARN pid ${process.pid}: pairing lock heartbeat could not be written ` +
-                  `(${refreshed.ioError}); still holding the channel, but a rival will ` +
-                  `reclaim it if this keeps failing`,
-              )
-            }
-          } else {
-            lockIoErrorWarned = false
-          }
-        }
+        const heartbeatThisTick = heartbeatPairingLock(hbNow)
         // The stand-down consequence. Everything past this line either forwards
         // a message or moves the shared cursor, so a daemon that does not hold
         // the lock does none of it. The tick itself keeps running (cheap, 2s)
@@ -17197,6 +17321,9 @@ async function main(): Promise<void> {
             await pollChat(fastChatId)
           }
         }
+        // Stood down during this cycle (the email download keepalive refreshes
+        // the lock while a download holds the tick): no beacon, no home step.
+        if (!channelArmed) return
         // Beacon heartbeat, on the same throttle as the lock refresh at the top
         // of this tick: when the channel is actually delivering (WS up, or a
         // poll cycle ran this tick), touch the file whose mtime an external

@@ -260,7 +260,7 @@ test('a file whose bytes are not what its name says is refused', () => {
   for (const [name, bytes] of bad) assert.equal(ef.emailFileMatchesName(bytes, name), false, `${name} ${bytes.subarray(0, 8).toString('hex')}`)
 })
 
-test('text must be clean UTF-8: no NUL, no control character but tab, newline, return and form feed, no markup start', () => {
+test('text must be clean UTF-8: no NUL, no control character but tab, newline, return and form feed', () => {
   for (const bytes of [
     Buffer.from('hello\u0000world'),
     Buffer.from([0x68, 0x69, 0xc3, 0x28]), // invalid UTF-8
@@ -268,13 +268,18 @@ test('text must be clean UTF-8: no NUL, no control character but tab, newline, r
     Buffer.from('escape \u001b[31m red'),
     Buffer.from('a c1 \u0085 control'),
     Buffer.from('del \u007f'),
-    Buffer.from('<html><script>alert(1)</script>'),
-    Buffer.from('﻿  \n<?xml version="1.0"?>'),
   ]) {
     assert.equal(ef.emailFileMatchesName(bytes, 'attachment-1.txt'), false, JSON.stringify(bytes.toString('utf8')))
     assert.equal(ef.emailFileMatchesName(bytes, 'attachment-1.csv'), false)
   }
   assert.equal(ef.emailFileMatchesName(Buffer.from('﻿a,b\n1 < 2,3\n'), 'attachment-1.csv'), true, 'a < later on is text')
+  // The backend serves a Word or Excel file's extracted text as attachment-N.txt
+  // without its own markup check, so a document that opens with '<' is still
+  // that document's text: it is saved as text and only ever read with Read.
+  for (const opening of ['<html><body>Quarterly report</body></html>', '﻿  \n<?xml version="1.0"?>', '<Draft> terms of the lease\n']) {
+    assert.equal(ef.emailFileMatchesName(Buffer.from(opening), 'attachment-2.txt'), true, JSON.stringify(opening))
+    assert.equal(ef.emailFileMatchesName(Buffer.from(opening), 'attachment-2.csv'), true, JSON.stringify(opening))
+  }
   assert.equal(ef.emailFileMatchesName(Buffer.from('café مرحبا\n'), 'attachment-1.txt'), true)
 })
 
@@ -511,9 +516,14 @@ test('the sweep removes files older than 7 days and the folders they leave, and 
     const removed = await ef.sweepEmailFiles(root, now)
     assert.ok(removed >= 4, `removed ${removed}`)
     await assert.rejects(lstat(oldPath))
-    await assert.rejects(lstat(join(root, '900', EMAIL_ID)), 'the emptied folder goes too')
     await assert.rejects(lstat(otherAgent))
     await assert.rejects(lstat(join(root, '900', 'linked-email')))
+    // A folder changed within the hour is never removed (a save may be about to
+    // write into it): the one this pass just emptied stays until a later pass.
+    assert.equal((await lstat(join(root, '900', EMAIL_ID))).isDirectory(), true, 'just emptied, so kept this pass')
+    await ef.sweepEmailFiles(root, Date.now() + 2 * 3600_000)
+    await assert.rejects(lstat(join(root, '900', EMAIL_ID)), 'the emptied folder goes on a later pass')
+    await assert.rejects(lstat(join(root, '901')), 'and so does the assistant folder it leaves empty')
     assert.equal((await readFile(freshPath)).length, PDF.length, 'a fresh file stays')
     assert.equal(await readFile(join(outside, 'attachment-1.pdf'), 'utf8'), 'precious')
     assert.equal(await readFile(join(root, 'notes', 'keep.txt'), 'utf8'), 'mine')
@@ -542,4 +552,220 @@ test('the sweep never enters a root or an assistant folder that is a link', asyn
     // A missing root is nothing to do, never an error.
     assert.equal(await ef.sweepEmailFiles(join(dir, 'nowhere')), 0)
   })
+})
+
+test('the sweep never removes an email or assistant folder made within the hour, so it cannot pull one out from under a save', async () => {
+  await withDir(async (dir) => {
+    const root = ef.emailFilesRoot(join(dir, 'home'))
+    assert.equal(ef.EMAIL_FILES_FOLDER_GRACE_MS, 3600_000)
+    // The state saveEmailFile leaves between making the folders and writing the file.
+    await mkdir(join(root, '900', EMAIL_ID), { recursive: true })
+    await ef.sweepEmailFiles(root)
+    assert.equal((await lstat(join(root, '900', EMAIL_ID))).isDirectory(), true, 'a fresh empty folder stays')
+    const saved = await ef.saveEmailFile(root, '900', EMAIL_ID, 'attachment-1.pdf', PDF)
+    assert.equal((await readFile(saved)).length, PDF.length)
+    // An hour later an empty one is the sweep's again.
+    await mkdir(join(root, '900', 'old-empty'))
+    await ef.sweepEmailFiles(root, Date.now() + 2 * 3600_000)
+    await assert.rejects(lstat(join(root, '900', 'old-empty')))
+    assert.equal((await readFile(saved)).length, PDF.length, 'a file younger than 7 days stays')
+  })
+})
+
+// ── disk use ─────────────────────────────────────────────────────────────────
+
+test('one email brings at most 25 MB, the backend\'s own largest email', () => {
+  assert.equal(ef.EMAIL_FILES_TOTAL_BYTES, 25 * MB)
+  assert.equal(ef.EMAIL_FILE_MAX_BYTES, 25 * MB)
+})
+
+test('the whole email files folder has a cap: over it a file is not saved and the log says why', async () => {
+  await withDir(async (home) => {
+    const root = ef.emailFilesRoot(home)
+    assert.equal(ef.EMAIL_FILES_ROOT_MAX_BYTES, 1024 * MB)
+    await ef.saveEmailFile(root, '900', 'earlier-email', 'attachment-1.pdf', Buffer.concat([PDF, Buffer.alloc(4000)]))
+    await ef.saveEmailFile(root, '901', 'other-agent', 'attachment-1.txt', Buffer.alloc(3000, 0x61))
+    // Names this code never writes are not counted, but every saved file is, any agent's.
+    await writeFile(join(root, 'notes.txt'), Buffer.alloc(100_000))
+    assert.equal(await ef.emailFilesRootBytes(root), PDF.length + 4000 + 3000)
+    assert.equal(await ef.emailFilesRootBytes(join(home, 'nowhere')), 0)
+    const net = fetchServing({ 'https://s3.example.com/a': PDF })
+    const one = [{ id: 1, filename: 'attachment-1.pdf', mime: 'application/pdf', url: 'https://s3.example.com/a' }]
+    const logs: string[] = []
+    const refused = await ef.prepareEmailFiles({
+      root, assistantId: '900', record: RECORD_ON, files: one, fetchImpl: net.fetchImpl,
+      rootMaxBytes: PDF.length + 4000 + 3000 + PDF.length - 1, log: (l: string) => logs.push(l),
+    })
+    assert.deepEqual(refused, [null])
+    assert.ok(logs.some((l) => /attachment-1\.pdf not saved: the email files folder is full/.test(l)), logs.join(' | '))
+    await assert.rejects(lstat(join(root, '900', EMAIL_ID)), 'nothing written for it')
+    const fits = await ef.prepareEmailFiles({
+      root, assistantId: '900', record: RECORD_ON, files: one, fetchImpl: net.fetchImpl,
+      rootMaxBytes: PDF.length + 4000 + 3000 + PDF.length,
+    })
+    assert.deepEqual(fits, [{ path: join(root, '900', EMAIL_ID, 'attachment-1.pdf') }])
+  })
+})
+
+// ── one download per email ───────────────────────────────────────────────────
+
+test('a second request for the same email\'s files waits for the first instead of fetching again', async () => {
+  await withDir(async (home) => {
+    const root = ef.emailFilesRoot(home)
+    const seen: string[] = []
+    let open!: () => void
+    const gate = new Promise<void>((r) => (open = r))
+    const fetchImpl = async (url: string) => {
+      seen.push(url)
+      await gate
+      return response([PDF], { length: PDF.length }).res
+    }
+    const files = [
+      { id: 1, filename: 'attachment-1.pdf', mime: 'application/pdf', url: 'https://s3.example.com/a' },
+      { id: 2, filename: 'attachment-2.pdf', mime: 'application/pdf', url: 'https://s3.example.com/b' },
+    ]
+    const first = ef.prepareEmailFiles({ root, assistantId: '900', record: RECORD_ON, files, fetchImpl })
+    const second = ef.prepareEmailFiles({ root, assistantId: '900', record: RECORD_ON, files, fetchImpl })
+    // Another agent's copy of the same email id is its own download.
+    const other = ef.prepareEmailFiles({ root, assistantId: '901', record: RECORD_ON, files: files.slice(0, 1), fetchImpl })
+    await new Promise((r) => setTimeout(r, 20))
+    open()
+    const [a, b, c] = await Promise.all([first, second, other])
+    assert.deepEqual(a, b)
+    assert.deepEqual(a, [
+      { path: join(root, '900', EMAIL_ID, 'attachment-1.pdf') },
+      { path: join(root, '900', EMAIL_ID, 'attachment-2.pdf') },
+    ])
+    assert.deepEqual(c, [{ path: join(root, '901', EMAIL_ID, 'attachment-1.pdf') }])
+    assert.deepEqual(seen.sort(), ['https://s3.example.com/a', 'https://s3.example.com/a', 'https://s3.example.com/b'], 'each of 900\'s files fetched once')
+    // Once it is done, a later request is a fresh download (nothing is cached).
+    await ef.prepareEmailFiles({ root, assistantId: '900', record: RECORD_ON, files: files.slice(0, 1), fetchImpl })
+    assert.equal(seen.length, 4)
+  })
+})
+
+// ── a linked root ────────────────────────────────────────────────────────────
+
+test('a linked ~/.bgos-agent or email files folder is named at boot as the reason no file can be saved', async () => {
+  await withDir(async (dir) => {
+    const outside = join(dir, 'outside')
+    await mkdir(outside)
+    // Fine: missing, or real folders.
+    assert.equal(await ef.emailFilesRootLinkProblem(ef.emailFilesRoot(join(dir, 'h0'))), null)
+    await mkdir(ef.emailFilesRoot(join(dir, 'h1')), { recursive: true })
+    assert.equal(await ef.emailFilesRootLinkProblem(ef.emailFilesRoot(join(dir, 'h1'))), null)
+    // ~/.bgos-agent is a link.
+    await mkdir(join(dir, 'h2'))
+    await linkDir(outside, join(dir, 'h2', '.bgos-agent'))
+    const agentLink = await ef.emailFilesRootLinkProblem(ef.emailFilesRoot(join(dir, 'h2')))
+    assert.match(String(agentLink), /\.bgos-agent.*is a link/)
+    // The email files folder is a link.
+    await mkdir(join(dir, 'h3', '.bgos-agent'), { recursive: true })
+    await linkDir(outside, ef.emailFilesRoot(join(dir, 'h3')))
+    const rootLink = await ef.emailFilesRootLinkProblem(ef.emailFilesRoot(join(dir, 'h3')))
+    assert.match(String(rootLink), /email-files.*is a link/)
+    assert.equal(/[\u2013\u2014]/.test(`${agentLink}${rootLink}`), false)
+  })
+})
+
+// ── the lock and the beacon stay fresh while a download runs ─────────────────
+
+/** A timer this test fires by hand, standing in for setInterval. */
+function manualTimer() {
+  const t = { fire: null as null | (() => void), every: 0, starts: 0, clears: 0 }
+  return {
+    t,
+    setTimer: (fn: () => void, ms: number) => {
+      t.fire = fn
+      t.every = ms
+      t.starts++
+      return t.starts
+    },
+    clearTimer: () => {
+      t.fire = null
+      t.clears++
+    },
+  }
+}
+
+test('the keepalive beats while any download is in flight, and only then', async () => {
+  const timer = manualTimer()
+  let beats = 0
+  const keepalive = ef.createEmailFilesKeepalive({ beat: () => beats++, setTimer: timer.setTimer, clearTimer: timer.clearTimer })
+  assert.equal(ef.EMAIL_FILES_KEEPALIVE_MS, 1000)
+  assert.equal(timer.t.fire, null, 'no timer while nothing downloads')
+  let endA!: () => void
+  let endB!: () => void
+  const a = keepalive.during(() => new Promise<string>((r) => (endA = () => r('a'))))
+  const b = keepalive.during(() => new Promise<string>((r) => (endB = () => r('b'))))
+  assert.equal(timer.t.starts, 1, 'one timer however many downloads')
+  assert.equal(timer.t.every, ef.EMAIL_FILES_KEEPALIVE_MS)
+  timer.t.fire!()
+  timer.t.fire!()
+  assert.equal(beats, 2)
+  endA()
+  assert.equal(await a, 'a')
+  assert.notEqual(timer.t.fire, null, 'still running while b downloads')
+  endB()
+  assert.equal(await b, 'b')
+  assert.equal(timer.t.fire, null, 'stopped when the last one ends')
+  assert.equal(timer.t.clears, 1)
+  // A beat that throws never breaks a download, and a failing download still stops the timer.
+  const loud = ef.createEmailFilesKeepalive({ beat: () => { throw new Error('disk') }, setTimer: timer.setTimer, clearTimer: timer.clearTimer })
+  const failing = loud.during(async () => {
+    timer.t.fire!()
+    throw new Error('network')
+  })
+  await assert.rejects(failing, /network/)
+  assert.equal(timer.t.fire, null)
+})
+
+test('a batch has a budget for downloads: the first email always starts, none starts once it is spent', () => {
+  assert.equal(ef.EMAIL_FILES_BATCH_BUDGET_MS, 20_000)
+  // One batch then waits at most the budget plus one email's own deadline, short of the self update drain's 45 s.
+  assert.ok(ef.EMAIL_FILES_BATCH_BUDGET_MS + ef.EMAIL_FILES_DEADLINE_MS < 45_000)
+  const budget = ef.createEmailBatchBudget()
+  assert.equal(budget.mayStart(), true)
+  budget.spend(12_000)
+  assert.equal(budget.mayStart(), true)
+  budget.spend(8_000)
+  assert.equal(budget.mayStart(), false)
+  const small = ef.createEmailBatchBudget(10)
+  small.spend(-5)
+  assert.equal(small.mayStart(), true, 'a clock that steps back spends nothing')
+})
+
+// ── the chat cursor waits for an email whose files are downloading ───────────
+
+test('a held email keeps the chat cursor one below it, and its release catches the cursor up', () => {
+  const holds = ef.createEmailCursorHolds()
+  assert.equal(holds.clamp('7001', 9005), 9005, 'nothing held: the cursor goes where it is asked')
+  holds.hold('7001', 9001)
+  assert.equal(holds.clamp('7001', 9000), 9000, 'below the held id: as asked')
+  assert.equal(holds.clamp('7001', 9003), 9000, 'to or past it: one below it')
+  assert.equal(holds.clamp('7002', 9003), 9003, 'another chat is not held')
+  holds.hold('7001', 9002)
+  assert.equal(holds.clamp('7001', 9004), 9000)
+  assert.deepEqual(holds.held('7001'), [9001, 9002])
+  // 9002 delivered first: still under 9001, nothing to catch up past it yet.
+  assert.equal(holds.release('7001', 9002, true), 9004)
+  assert.equal(holds.clamp('7001', 9004), 9000, 'the catch up is clamped again while 9001 is held')
+  // 9001 delivered: the highest id asked for meanwhile.
+  assert.equal(holds.release('7001', 9001, true), 9004)
+  assert.equal(holds.clamp('7001', 9006), 9006, 'nothing held any more')
+  assert.equal(holds.release('7001', 9001, true), null, 'a second release is nothing')
+  // Two lanes holding the same email: it stays held until both let go.
+  holds.hold('7001', 9010)
+  holds.hold('7001', 9010)
+  assert.equal(holds.clamp('7001', 9011), 9009)
+  assert.equal(holds.release('7001', 9010, true), 9011)
+  assert.equal(holds.clamp('7001', 9011), 9009, 'the other lane still holds it')
+  assert.equal(holds.release('7001', 9010, true), 9011)
+  // An email released without being delivered (this daemon stood down): the cursor never passes it.
+  holds.hold('7001', 9020)
+  assert.equal(holds.clamp('7001', 9025), 9019)
+  assert.equal(holds.release('7001', 9020, false), 9019)
+  // Nothing asked while it was held: nothing to catch up.
+  holds.hold('7001', 9030)
+  assert.equal(holds.release('7001', 9030, true), null)
 })

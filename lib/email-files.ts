@@ -25,11 +25,19 @@
  *     with every segment checked against a strict pattern, private folders
  *     (0o700) and file (0o600), a `.part` file renamed into place, no linked
  *     folder anywhere on the way, and the real path kept inside the root;
+ *   - one email brings at most 25 MB, and the whole folder at most 1 GB;
  *   - nothing here ever names the link: it is a credential until it expires.
  * A file that fails any of this is simply not saved, and its line says so.
  *
  * The sweep (boot and every 6 hours) deletes what is older than 7 days, never
- * follows a link and enters only the folders this code names.
+ * follows a link, enters only the folders this code names, and never removes
+ * a folder changed within the hour (a save may be writing into it).
+ *
+ * The lanes that await a download (server.ts emailFileSavesFor) use three
+ * more pieces from here: a keepalive that keeps the pairing lock and the
+ * beacon fresh while any download runs, a per batch budget so one poll batch
+ * cannot hold its tick for long, and per chat cursor holds so no cursor moves
+ * past an email whose files are still downloading.
  *
  * No em or en dashes in this file.
  */
@@ -45,14 +53,29 @@ import type { InboundFileLike } from './message-text.ts'
 
 /** One file's cap, the backend's own per email cap. */
 export const EMAIL_FILE_MAX_BYTES = 25 * 1024 * 1024
-/** What one email may bring in all (originals of 25 MB plus extracted texts). */
-export const EMAIL_FILES_TOTAL_BYTES = 50 * 1024 * 1024
+/** What one email may bring in all: the backend's largest email. */
+export const EMAIL_FILES_TOTAL_BYTES = 25 * 1024 * 1024
+/** What the whole email files folder may hold, every agent's emails together. */
+export const EMAIL_FILES_ROOT_MAX_BYTES = 1024 * 1024 * 1024
+/** The most entries the count of that folder reads; past it the folder counts as full. */
+export const EMAIL_FILES_ROOT_WALK_MAX = 10_000
 /** The backend keeps at most 10 files per email (agent-email-config maxAttachments). */
 export const EMAIL_FILES_PER_EMAIL = 10
 /** One deadline for every file of one email, well inside UPDATE_DRAIN_TIMEOUT_MS (45 s). */
 export const EMAIL_FILES_DEADLINE_MS = 20_000
 export const EMAIL_FILES_KEEP_MS = 7 * 24 * 60 * 60 * 1000
 export const EMAIL_FILES_SWEEP_MS = 6 * 60 * 60 * 1000
+/** The sweep leaves a folder changed more recently than this: a save may be about to write into it. */
+export const EMAIL_FILES_FOLDER_GRACE_MS = 60 * 60 * 1000
+/**
+ * What one batch of a lane (a poll of one chat, one WS down stream catch up)
+ * may spend waiting on downloads. An email whose files would start after that
+ * gets them as not saved, so one batch holds its tick for at most this plus
+ * one email's own deadline (40 s, short of the self update drain's 45 s).
+ */
+export const EMAIL_FILES_BATCH_BUDGET_MS = 20_000
+/** How often the keepalive beats while a download runs; the lock's own throttle decides when it writes. */
+export const EMAIL_FILES_KEEPALIVE_MS = 1_000
 
 const ASSISTANT_SEGMENT = /^[0-9]{1,20}$/
 const EMAIL_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
@@ -84,7 +107,13 @@ function startsWith(bytes: Uint8Array, prefix: ArrayLike<number>, at = 0): boole
 
 const ascii = (s: string): number[] => Array.from(s, (c) => c.charCodeAt(0))
 
-/** Valid UTF-8 with no NUL and no control character but tab, newline, form feed and return, not opening as markup. */
+/**
+ * Valid UTF-8 with no NUL and no control character but tab, newline, form
+ * feed and return. A text that opens with markup is still text: the backend
+ * serves a Word or Excel file's extracted text as attachment-N.txt, and a
+ * document may well begin with '<'. It is saved as text and only ever read
+ * with Read, never opened or run.
+ */
 function isCleanText(bytes: Uint8Array): boolean {
   let text: string
   try {
@@ -92,8 +121,7 @@ function isCleanText(bytes: Uint8Array): boolean {
   } catch {
     return false
   }
-  if (/[\u0000-\u0008\u000B\u000E-\u001F\u007F-\u009F]/.test(text)) return false
-  return !text.replace(/^﻿/, '').trimStart().startsWith('<')
+  return !/[\u0000-\u0008\u000B\u000E-\u001F\u007F-\u009F]/.test(text)
 }
 
 const ZIP_ENTRIES_MAX = 2000
@@ -391,6 +419,56 @@ export async function saveEmailFile(
   return target
 }
 
+/**
+ * The bytes the saved email files take, every agent's: only the files this
+ * code writes (`<root>/<digits>/<email id>/attachment-N.ext` and `.part`
+ * files), never through a link. A bounded walk: past EMAIL_FILES_ROOT_WALK_MAX
+ * entries it answers Infinity, so a folder too big to count counts as full.
+ */
+export async function emailFilesRootBytes(root: string, walkMax: number = EMAIL_FILES_ROOT_WALK_MAX): Promise<number> {
+  let total = 0
+  let seen = 0
+  for (const assistant of await entriesOf(root)) {
+    if (++seen > walkMax) return Infinity
+    if (!assistant.isDirectory() || !ASSISTANT_SEGMENT.test(assistant.name)) continue
+    for (const email of await entriesOf(join(root, assistant.name))) {
+      if (++seen > walkMax) return Infinity
+      if (!email.isDirectory() || !EMAIL_SEGMENT.test(email.name)) continue
+      const folder = join(root, assistant.name, email.name)
+      for (const entry of await entriesOf(folder)) {
+        if (++seen > walkMax) return Infinity
+        if (!entry.isFile() || !(EMAIL_FILE_NAME.test(entry.name) || PART_FILE.test(entry.name))) continue
+        try {
+          total += (await lstat(join(folder, entry.name))).size
+        } catch {
+          /* gone already */
+        }
+      }
+    }
+  }
+  return total
+}
+
+/**
+ * Why no email file can be saved under `root`, or null when nothing stands
+ * in the way: ~/.bgos-agent or the email files folder is a link (or not a
+ * folder), which saveEmailFile refuses every time. Said once at boot, so the
+ * owner's log names the reason instead of only a "not saved" per file.
+ */
+export async function emailFilesRootLinkProblem(root: string): Promise<string | null> {
+  for (const path of [dirname(root), root]) {
+    let info
+    try {
+      info = await lstat(path)
+    } catch {
+      return null // not there yet: the first save makes it a real folder
+    }
+    if (info.isSymbolicLink()) return `${path} is a link, and email files are never written through one`
+    if (!info.isDirectory()) return `${path} is not a folder`
+  }
+  return null
+}
+
 // ── one email ────────────────────────────────────────────────────────────────
 
 /** Should a lane fetch this delivery's files before the turn? An email, the switch on, a file. */
@@ -399,13 +477,21 @@ export function emailFilesWanted(record: unknown, files: unknown): boolean {
 }
 
 /**
+ * The downloads running now, one per agent and email: a second request for
+ * the same email's files (the socket and the poll can both meet it) waits for
+ * the first instead of fetching again. Only while it runs; nothing is cached.
+ */
+const emailFilesInFlight = new Map<string, Promise<Array<EmailFileSave | null>>>()
+
+/**
  * Fetch and save every file of one email, in order, and answer one entry per
  * file (the order of lib/inbound-channel.ts emailFileEntries, which the
  * builder reads): its saved path, or null when it was not saved. Never throws
  * and never runs past `deadlineMs` for the whole email, so a lane awaiting it
  * is held for a bounded time and the self update drain is never stuck. Only
- * the first EMAIL_FILES_PER_EMAIL files are fetched, and EMAIL_FILES_TOTAL_BYTES
- * in all.
+ * the first EMAIL_FILES_PER_EMAIL files are fetched, EMAIL_FILES_TOTAL_BYTES in
+ * all, and none once the whole folder would pass EMAIL_FILES_ROOT_MAX_BYTES. A
+ * second call for the same agent and email while one runs shares its download.
  */
 export async function prepareEmailFiles(opts: {
   root: string
@@ -414,6 +500,8 @@ export async function prepareEmailFiles(opts: {
   files: InboundFileLike[]
   fetchImpl?: EmailFileFetch
   deadlineMs?: number
+  /** The cap for the whole folder; EMAIL_FILES_ROOT_MAX_BYTES unless a test says less. */
+  rootMaxBytes?: number
   log?: (line: string) => void
 }): Promise<Array<EmailFileSave | null>> {
   const log = opts.log ?? (() => {})
@@ -430,6 +518,30 @@ export async function prepareEmailFiles(opts: {
     log(`email files: none saved: ${emailId ? 'the assistant id is not a number' : 'the delivery names no email id'}`)
     return saves
   }
+  const key = `${assistantId}/${emailId}`
+  const running = emailFilesInFlight.get(key)
+  if (running) {
+    log('email files: this email\'s files are already downloading; waiting for that download')
+    return (await running).slice()
+  }
+  const work = fetchAndSave(opts, entries, saves, assistantId, emailId, log)
+  emailFilesInFlight.set(key, work)
+  try {
+    return (await work).slice()
+  } finally {
+    if (emailFilesInFlight.get(key) === work) emailFilesInFlight.delete(key)
+  }
+}
+
+async function fetchAndSave(
+  opts: Parameters<typeof prepareEmailFiles>[0],
+  entries: ReturnType<typeof emailFileEntries>,
+  saves: Array<EmailFileSave | null>,
+  assistantId: string,
+  emailId: string,
+  log: (line: string) => void,
+): Promise<Array<EmailFileSave | null>> {
+  const rootMax = opts.rootMaxBytes ?? EMAIL_FILES_ROOT_MAX_BYTES
   const until = Date.now() + (opts.deadlineMs ?? EMAIL_FILES_DEADLINE_MS)
   let budget = EMAIL_FILES_TOTAL_BYTES
   for (let i = 0; i < entries.length && i < EMAIL_FILES_PER_EMAIL; i++) {
@@ -458,6 +570,15 @@ export async function prepareEmailFiles(opts: {
         continue
       }
       budget -= bytes.byteLength
+      const used = await emailFilesRootBytes(opts.root)
+      if (used + bytes.byteLength > rootMax) {
+        log(
+          `email files: ${f.name} not saved: the email files folder is full ` +
+            `(${Number.isFinite(used) ? `${used} bytes` : 'more files than it counts'} in use, its cap is ${rootMax} bytes; ` +
+            'the sweep frees files older than 7 days)',
+        )
+        continue
+      }
       saves[i] = { path: await saveEmailFile(opts.root, assistantId, emailId, f.name, bytes) }
     } catch (err) {
       log(`email files: ${f.name} not saved: ${withoutLinks(err, f.ref)}`)
@@ -492,6 +613,19 @@ export async function sweepEmailFiles(
   keepMs: number = EMAIL_FILES_KEEP_MS,
 ): Promise<number> {
   let removed = 0
+  // Only a folder nobody changed within the hour, and only when empty (rmdir):
+  // saveEmailFile makes the folders and then writes into them, and a folder
+  // removed in between would fail that write. Removing a file changes its
+  // folder, so a folder this pass empties goes on a later pass.
+  const removeIfSettled = async (folder: string) => {
+    try {
+      const info = await lstat(folder)
+      if (!info.isDirectory() || now - info.mtimeMs < EMAIL_FILES_FOLDER_GRACE_MS) return
+      await rmdir(folder)
+    } catch {
+      /* not empty, or gone already */
+    }
+  }
   const removeLink = async (path: string) => {
     await rm(path, { force: true }).catch(() => {})
     removed++
@@ -526,9 +660,128 @@ export async function sweepEmailFiles(
           /* gone already */
         }
       }
-      await rmdir(folder).catch(() => {}) // only when empty
+      await removeIfSettled(folder)
     }
-    await rmdir(assistantDir).catch(() => {}) // only when empty
+    await removeIfSettled(assistantDir)
   }
   return removed
+}
+
+// ── what a download may hold up ──────────────────────────────────────────────
+
+/**
+ * Beats while any email download runs, and only then. The poll and stream
+ * lanes await a download inside the daemon's 2 s tick, and that tick is the
+ * one that refreshes the pairing lock and touches the beacon: one email may
+ * take EMAIL_FILES_DEADLINE_MS (20 s), past the lock's 15 s staleness window,
+ * so without this a rival daemon could reclaim the lock mid download and a
+ * supervisor could take the channel for dead. The daemon's beat is the tick's
+ * own refresh (server.ts heartbeatPairingLock), so the throttle, the
+ * stand-down and the beacon rule are the tick's exactly. A beat that throws
+ * is swallowed: it never fails a download.
+ */
+export function createEmailFilesKeepalive(opts: {
+  beat: () => void
+  everyMs?: number
+  setTimer?: (fire: () => void, ms: number) => unknown
+  clearTimer?: (handle: unknown) => void
+}): { during<T>(work: () => Promise<T>): Promise<T> } {
+  const everyMs = opts.everyMs ?? EMAIL_FILES_KEEPALIVE_MS
+  const setTimer =
+    opts.setTimer ??
+    ((fire: () => void, ms: number) => {
+      const handle = setInterval(fire, ms)
+      handle.unref?.()
+      return handle
+    })
+  const clearTimer = opts.clearTimer ?? ((handle: unknown) => clearInterval(handle as ReturnType<typeof setInterval>))
+  let running = 0
+  let handle: unknown = null
+  const beat = () => {
+    try {
+      opts.beat()
+    } catch {
+      /* the lock code logs its own trouble; a download never fails for it */
+    }
+  }
+  return {
+    async during<T>(work: () => Promise<T>): Promise<T> {
+      if (running++ === 0) handle = setTimer(beat, everyMs)
+      try {
+        return await work()
+      } finally {
+        if (--running === 0) {
+          clearTimer(handle)
+          handle = null
+        }
+      }
+    },
+  }
+}
+
+/** What one lane batch has spent waiting on downloads (EMAIL_FILES_BATCH_BUDGET_MS). */
+export interface EmailBatchBudget {
+  /** May one more email's downloads start? The first always may. */
+  mayStart(): boolean
+  spend(ms: number): void
+}
+
+export function createEmailBatchBudget(budgetMs: number = EMAIL_FILES_BATCH_BUDGET_MS): EmailBatchBudget {
+  let spent = 0
+  return {
+    mayStart: () => spent < budgetMs,
+    spend: (ms) => {
+      if (Number.isFinite(ms) && ms > 0) spent += ms
+    },
+  }
+}
+
+/**
+ * Per chat, the emails whose files are downloading. While one is held the
+ * chat cursor never moves to or past it: an ask to move it there stops one
+ * below the lowest held id, and the highest id asked for is kept, so the
+ * release catches the cursor up. Without this a later message delivered
+ * while an email's files download moves the cursor past the email, and a
+ * crash then loses it. A hold is counted, so two lanes holding one email both
+ * let go before it is free. An email released without being delivered (the
+ * daemon stood down) never lets the catch up pass it.
+ */
+export function createEmailCursorHolds() {
+  const held = new Map<string, Map<number, number>>()
+  const asked = new Map<string, number>()
+  const lowest = (chatId: string): number | null => {
+    const ids = held.get(chatId)
+    return ids && ids.size > 0 ? Math.min(...ids.keys()) : null
+  }
+  return {
+    hold(chatId: string, id: number): void {
+      if (!chatId || !Number.isFinite(id)) return
+      const ids = held.get(chatId) ?? new Map<number, number>()
+      ids.set(id, (ids.get(id) ?? 0) + 1)
+      held.set(chatId, ids)
+    },
+    /** Where the cursor may go when asked to `id`. */
+    clamp(chatId: string, id: number): number {
+      const low = lowest(chatId)
+      if (low === null || id < low) return id
+      asked.set(chatId, Math.max(asked.get(chatId) ?? id, id))
+      return low - 1
+    },
+    /** Let go of one hold; answers where the cursor should catch up to, or null when nothing was asked. */
+    release(chatId: string, id: number, delivered: boolean): number | null {
+      const ids = held.get(chatId)
+      const count = ids?.get(id)
+      if (!ids || !count) return null
+      if (count > 1) ids.set(id, count - 1)
+      else ids.delete(id)
+      if (ids.size === 0) held.delete(chatId)
+      const target = asked.get(chatId)
+      if (target === undefined) return null
+      if (!held.has(chatId)) asked.delete(chatId)
+      return delivered ? target : Math.min(target, id - 1)
+    },
+    held(chatId: string): number[] {
+      return [...(held.get(chatId)?.keys() ?? [])].sort((a, b) => a - b)
+    },
+  }
 }
