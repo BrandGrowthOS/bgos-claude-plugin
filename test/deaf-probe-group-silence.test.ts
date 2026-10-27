@@ -340,7 +340,7 @@ function daemon(laneSource: string, laneName: string, extra: Record<string, unkn
 
 function wsDaemon(extra: Record<string, unknown> = {}): Daemon {
   return daemon(
-    [serverConst('EMAIL_NEVER_SLASH'), serverFunction('  function deliverWsInbound(payload: any): void {', '\n  }\n')].join('\n'),
+    [serverConst('EMAIL_NEVER_SLASH'), serverFunction('  function deliverWsInbound(payload: any, emailSaves?: Array<EmailFileSave | null>): void {', '\n  }\n')].join('\n'),
     'deliverWsInbound',
     extra,
   )

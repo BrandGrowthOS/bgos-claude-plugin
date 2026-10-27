@@ -2,7 +2,7 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
-## 0.76.0 (2026-10-27)
+## 0.78.0 (2026-10-27)
 
 **A late answer to a question card now reaches the agent (#282, Kc's ask, Data approved option A, msg 161859).** The card stays answerable in the app and the backend accepts a late answer, but the plugin dropped it on both transports (`lib/stream-apply.ts`, `lib/poll-core.ts`), and `ask_user_input` blocked up to 600 s and then reported every unanswered question as skipped.
 
@@ -14,6 +14,19 @@ Notable changes to the HOAI Claude Code plugin.
 - **The reply tool warns, never blocks,** when a reply with buttons asks 2 or more decisions: it goes out as written and its result names the card.
 - **Scope section 6** replaces every "only when actively in the conversation" line in the instructions, the tool descriptions and `lib/capabilities.ts`, and the daemon declares `ask_answered`.
 - Tests: `test/ask-tracker.test.ts`, `test/ask-review-282.test.ts`, `test/ask-review-wiring.test.ts`, the stream and poll cases and `test/bundled-instructions.test.ts`, red first; a rig under a scratch HOME against a stub backend (an answer 15 minutes late on a fake clock, a restart between post and answer, a partial answer, skip all, the same answer twice, old blocking callers, withdraw, a cancelled wait, two daemons, a takeover, an orphan retired after the grace, an asker that ran beside another session, a route takeover from a live holder, the reply warning).
+
+## 0.77.0 (2026-10-27)
+
+**Agents read their email's files when the owner lets them (HOAI 5b141728, Kc 4465 msg 162972; backend BrandGrowthOS/bgos#3387).** Until now an agent got a signed link for each file and was told to ask before opening it. The owner now switches "Read attachments" per agent in the app; when delivery says the switch is on, the daemon saves each file on this computer before the turn and the turn gives the local path.
+
+- **When delivery allows it** (`readAttachments: true` beside `externalEmail.emailId` on the WS frame, poll row or history row), every owner lane (poll, stream, WS, meeting cards) fetches each file BEFORE the turn (`lib/email-files.ts`): the signed link only (https, no userinfo, `redirect: 'error'`, no header of this daemon's, so the pairing token never reaches the storage host); 25 MB per file and per email, one 20 s deadline per email, 10 files per email, 1 GB for the whole folder; the type re-checked by magic bytes and required to match the server's name (pdf, png, jpg, gif, webp, docx, xlsx; txt and csv valid UTF-8 with no NUL).
+- **Saved** atomically (`.part` then rename, folders 0700, files 0600, linked or junctioned folders refused, the real path must stay inside the root) to `~/.bgos-agent/email-files/<assistantId>/<emailId>/attachment-N.ext`, and deleted after 7 days (a sweep at boot and every 6 h that never follows a link).
+- **The turn**: each file keeps its one `[Attached ...]` line inside the email markers, now with `saved on this computer at <path>; read it with Read`, or `not saved, the download failed` with no link. With the switch on no signed link reaches the turn or its meta. The origin marker says a file's text is outside content too and is never run, unpacked, uploaded or forwarded. The email self-probe checks the switch-on form too.
+- **Switch off, or an older backend**: the turn is unchanged byte for byte (pinned by `test/fixtures/email-channel-today.json`), except that a body line imitating "saved on this computer" or "not saved, the download failed" is neutralized.
+- **Delivery stays safe while files download**: the pairing lock and beacon keep a 1 s keepalive during downloads; a lock lost meanwhile means the email is not delivered and no cursor moves; an undelivered email is a cursor ceiling and stays owed until a poll batch settles it; one poll batch or stream catch-up starts no download after `EMAIL_FILES_BATCH_BUDGET_MS`.
+- Person lanes never fetch, and `lanePathIsSecret` blocks `.bgos-agent/email-files`. The offline canon in `lib/capabilities.ts` matches the backend canon word for word.
+- **The switch is read per row**: a `readAttachments` or `read_attachments` that is present and not `true`, on the record a lane reads or on its `message`, means no fetch. With BGOS #3387, which computes the flag per row from the agent's current switch, an older email never has its files saved after the owner turned the switch off.
+- Tests: red first, in `test/email-files.test.ts`, `test/email-files-channel.test.ts` and the lane tests; a local rig (outside this repo) also ran the real daemon under a scratch HOME against a stub backend and an https stub file host, and the switch check mutated either way turned its cases red.
 
 ## 0.75.0 (2026-10-25)
 

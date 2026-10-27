@@ -97,7 +97,8 @@ test('no inbound_click WS listener was added (single-announce stays with the pol
 
 test('the connect handler runs ONE jittered catch-up chain in stream mode', () => {
   const body = handlerBody('connect')
-  assert.ok(body.includes("runCatchup('reconnect'"))
+  // Through runStreamCatchup, which gives the chain's email downloads a batch budget.
+  assert.ok(body.includes("runStreamCatchup(consumer, 'reconnect')"))
   assert.ok(body.includes('Math.floor(Math.random() * 5000)'), '0-5s jitter dep')
   assert.ok(
     body.includes('pollAllChats()'),
@@ -118,7 +119,7 @@ test('the 2s tick drives consumer deadlines and the beacon watchdog', () => {
 })
 
 test('WS down prefers one getDifference poll, with the sweep as fallback', () => {
-  assert.ok(serverSource.includes("runCatchup('ws_down_poll'"))
+  assert.ok(serverSource.includes("runStreamCatchup(consumer, 'ws_down_poll')"))
   assert.ok(serverSource.includes('!isWsHealthy() && streamWsDownPollPreferred()'))
 })
 
