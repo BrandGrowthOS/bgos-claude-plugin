@@ -75,7 +75,10 @@ test('Minor 9: a card whose post failed half way retires the questions it did po
 })
 
 test('fourth review, Important 2: a daemon not armed for delivery (passive, or still arming) reads the file on the ask tick, so it sees the asker end when it does', () => {
-  assert.match(server, /setInterval\(\(\) => \{\n\s*if \(!channelArmed\) askTracker\.refresh\(\)\n\s*\}, ASK_TICK_MS\)\.unref\(\)/)
+  // Fifth review, Minors 1 and 2: an armed daemon draining for an update reads too, and a throw is caught.
+  assert.match(server, /setInterval\(\(\) => \{\n\s*if \(!channelArmed \|\| updateDrainMode\) refreshAskTracker\('tick'\)\n\s*\}, ASK_TICK_MS\)\.unref\(\)/)
+  const fn = fnBody('function refreshAskTracker(via: string): void {', 600)
+  assert.match(fn, /try \{\n\s*askTracker\.refresh\(\)\n\s*\} catch \(err\) \{\n\s*log\(/)
 })
 
 test('fourth review, Important 2: a passive daemon that takes the connection reads the file at once, before the slow arm', () => {
@@ -83,5 +86,5 @@ test('fourth review, Important 2: a passive daemon that takes the connection rea
   assert.ok(at > 0)
   const taken = server.lastIndexOf('        lockHeld = true\n', at)
   assert.ok(taken > 0)
-  assert.match(server.slice(taken, at), /lockHeld = true\n(\s*\/\/[^\n]*\n)*\s*askTracker\.refresh\(\)\n/)
+  assert.match(server.slice(taken, at), /lockHeld = true\n(\s*\/\/[^\n]*\n)*\s*refreshAskTracker\('promotion'\)\n/)
 })

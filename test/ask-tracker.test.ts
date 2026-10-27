@@ -804,3 +804,51 @@ test('second review, Minor 10: a file that does not parse and cannot be kept asi
     assert.equal(readFileSync(filePath, 'utf8'), '{ not json')
   })
 })
+
+// ── Fifth review of #282: what a passive daemon's 5 s tick now repeats (Minors 3 and 4) ──
+
+test('fifth review, Minor 3: a group dropped for age is said once, not on every read', () => {
+  withDir((dir) => {
+    const old = { ...group({ askId: 'old', ids: [1001] }), postedAt: Date.now() - 40 * 24 * 60 * MIN, answers: {} }
+    const filePath = fileWith(dir, { v: 1, pending: [old], delivered: [] })
+    const logs: string[] = []
+    const t = new AskTracker({ filePath, log: (l) => logs.push(l) })
+    t.refresh()
+    t.refresh()
+    assert.equal(logs.filter((l) => /more than 30 days/.test(l)).length, 1, logs.join('\n'))
+  })
+})
+
+test('fifth review, Minor 3: a save that keeps failing is said once and tried once per pass, not with every pause', () => {
+  withDir((dir) => {
+    const filePath = join(dir, 'pending-asks.json')
+    const logs: string[] = []
+    let renames = 0
+    withFsFault({ rename: (to) => (to === filePath ? (renames++, 'EPERM') : null) }, () => {
+      const t = new AskTracker({ filePath, log: (l) => logs.push(l) })
+      t.register(group({ askId: 'a', ids: [1011] }))
+      const first = renames
+      t.register(group({ askId: 'b', ids: [1012] }))
+      assert.equal(renames - first, 1, `the second save renamed ${renames - first} times`)
+    })
+    assert.equal(logs.filter((l) => /could not save/.test(l)).length, 1, logs.join('\n'))
+  })
+})
+
+test('fifth review, Minor 4: a session older than the card that sees the asker end within 60 s of the post marks nothing, and the restart gets the card', () => {
+  sharedFile(({ filePath, clock, live, at }) => {
+    const now = () => clock.at
+    clock.at = at('09:30:00')
+    const c = trackerAs({ pid: 2, startedAt: clock.at }, live, { filePath, now })
+    clock.at = at('10:00:00')
+    const a = trackerAs({ pid: 1, startedAt: at('09:00:00') }, live, { filePath, now })
+    a.register(group({ askId: 'g', ids: [1021] }))
+    clock.at = at('10:00:40')
+    c.refresh()
+    assert.equal(JSON.parse(readFileSync(filePath, 'utf8')).pending[0].askerEndedBeside, undefined)
+    clock.at = at('10:05:00')
+    const a2 = trackerAs({ pid: 3, startedAt: clock.at }, live, { filePath, now })
+    a2.record(1021, { skipped: true })
+    assert.deepEqual(a2.completeUndelivered().map((g) => g.askId), ['g'])
+  })
+})
