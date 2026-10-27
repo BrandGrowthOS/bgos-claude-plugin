@@ -139,3 +139,8 @@ test('lease follow-up of #282, item 2: the retire keeps a live asker\'s card on 
   assert.match(tell, /askTracker\.takeRetiredOwn\(\)\) sendAskWithdrawn\(ask, withdrawn, \{ toAsker: true, via: 'the ask tick' \}\)/)
   assert.doesNotMatch(tell, /channelArmed|lockHeld/, 'the asker is passive by then')
 })
+
+test('lease follow-up of #282, rig: the retire still logs the line it always did (the rig and anyone reading the log match it)', () => {
+  const send = fnBody('function sendAskWithdrawn(ask: PendingAsk, withdrawn: number, opts: { toAsker: boolean; via: string }): void {', 2500)
+  assert.match(send, /log\(`ask_withdrawn: retired group \$\{ask\.askId\} in chat \$\{ask\.chatId\} and told this session/)
+})
