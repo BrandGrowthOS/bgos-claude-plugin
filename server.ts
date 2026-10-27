@@ -12178,7 +12178,7 @@ function sendAskWithdrawn(ask: PendingAsk, withdrawn: number, opts: { toAsker: b
       },
     }),
   )
-    .then(() => log(`ask_withdrawn: group ${ask.askId} in chat ${ask.chatId} was retired; told this session${opts.toAsker ? ', which asked it' : ''}, via ${opts.via}`))
+    .then(() => log(`ask_withdrawn: retired group ${ask.askId} in chat ${ask.chatId} and told this session${opts.toAsker ? ', which asked it' : ''}, via ${opts.via}`))
     .catch((err) => log(`ask_withdrawn: group ${ask.askId} was retired, but telling this session failed: ${err}`))
 }
 
