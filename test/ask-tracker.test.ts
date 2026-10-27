@@ -14,6 +14,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import fs from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -459,5 +461,124 @@ test('item 1: the process that posted a group is written with it, and read back'
     assert.deepEqual(onDisk.pending[0].owner, self)
     const other = trackerAs({ pid: 7, startedAt: self.startedAt + MIN }, [4242], { filePath })
     assert.deepEqual((other.get('g') as unknown as { owner: unknown }).owner, self)
+  })
+})
+
+// ── Data's review of #282, item 4: only a file that read in full and failed to parse is kept aside ──
+
+/** Run with node:fs's readFileSync or renameSync failing as `fault` says (the tracker's own import sees it). */
+function withFsFault<T>(
+  fault: { read?: (path: string, call: number) => string | null; rename?: (to: string, call: number) => string | null },
+  fn: () => T,
+): T {
+  const read = fs.readFileSync
+  const rename = fs.renameSync
+  let reads = 0
+  let renames = 0
+  const err = (code: string) => Object.assign(new Error(`${code}: simulated`), { code })
+  ;(fs as unknown as Record<string, unknown>).readFileSync = (path: string, ...rest: unknown[]) => {
+    const code = fault.read?.(String(path), reads++) ?? null
+    if (code) throw err(code)
+    return (read as (...a: unknown[]) => unknown)(path, ...rest)
+  }
+  ;(fs as unknown as Record<string, unknown>).renameSync = (from: string, to: string) => {
+    const code = fault.rename?.(String(to), renames++) ?? null
+    if (code) throw err(code)
+    return rename(from, to)
+  }
+  syncBuiltinESMExports()
+  try {
+    return fn()
+  } finally {
+    ;(fs as unknown as Record<string, unknown>).readFileSync = read
+    ;(fs as unknown as Record<string, unknown>).renameSync = rename
+    syncBuiltinESMExports()
+  }
+}
+
+function fileWith(dir: string, body: unknown): string {
+  const filePath = join(dir, 'pending-asks.json')
+  writeFileSync(filePath, typeof body === 'string' ? body : JSON.stringify(body))
+  return filePath
+}
+
+const OTHER = { v: 1, pending: [{ ...group({ askId: 'other', ids: [901] }), postedAt: Date.now(), answers: {} }], delivered: [] }
+const asideIn = (dir: string) => readdirSync(dir).filter((f) => f.includes('.corrupt-'))
+
+for (const code of ['EBUSY', 'EPERM', 'EACCES', 'EMFILE', 'ENOENT']) {
+  test(`item 4: a read that fails ${code} for a moment is tried again, and the file is never kept aside`, () => {
+    withDir((dir) => {
+      const filePath = fileWith(dir, OTHER)
+      const logs: string[] = []
+      const tracker = withFsFault({ read: (p, n) => (p.endsWith('pending-asks.json') && n < 2 ? code : null) }, () =>
+        new AskTracker({ filePath, log: (l) => logs.push(l) }),
+      )
+      assert.deepEqual(asideIn(dir), [], logs.join('\n'))
+      assert.ok(tracker.get('other'), 'the other daemon\'s group was read once the file could be')
+    })
+  })
+}
+
+test('item 4: a read that keeps failing is skipped: the file is left as it is, and no save writes over it', () => {
+  withDir((dir) => {
+    const filePath = fileWith(dir, OTHER)
+    const before = readFileSync(filePath, 'utf8')
+    const logs: string[] = []
+    const tracker = withFsFault({ read: (p) => (p.endsWith('pending-asks.json') ? 'EBUSY' : null) }, () => {
+      const t = new AskTracker({ filePath, log: (l) => logs.push(l) })
+      t.register(group({ askId: 'mine', ids: [902] }))
+      return t
+    })
+    assert.deepEqual(asideIn(dir), [])
+    assert.equal(readFileSync(filePath, 'utf8'), before, 'the other daemon\'s groups were not written over')
+    // Once the file reads again, the next save merges both.
+    tracker.record(902, { skipped: true })
+    const onDisk = JSON.parse(readFileSync(filePath, 'utf8'))
+    assert.deepEqual(onDisk.pending.map((a: { askId: string }) => a.askId).sort(), ['mine', 'other'])
+  })
+})
+
+test('item 4: a file of another version is left alone: not kept aside, not written over', () => {
+  withDir((dir) => {
+    const newer = { v: 2, pending: [{ askId: 'from-a-newer-plugin' }], delivered: [], more: true }
+    const filePath = fileWith(dir, newer)
+    const before = readFileSync(filePath, 'utf8')
+    const tracker = new AskTracker({ filePath })
+    tracker.register(group({ askId: 'mine', ids: [903] }))
+    assert.deepEqual(asideIn(dir), [])
+    assert.equal(readFileSync(filePath, 'utf8'), before)
+    assert.ok(tracker.get('mine'), 'this daemon still tracks its own card, in memory')
+  })
+})
+
+test('item 4: a file that read in full and does not parse is still kept aside', () => {
+  withDir((dir) => {
+    fileWith(dir, '{"v":1,"pending":[')
+    new AskTracker({ filePath: join(dir, 'pending-asks.json') })
+    assert.equal(asideIn(dir).length, 1)
+  })
+})
+
+test('item 4: a save whose rename fails EPERM for a moment (Windows, the file held open) is tried again, not dropped', () => {
+  withDir((dir) => {
+    const filePath = join(dir, 'pending-asks.json')
+    const logs: string[] = []
+    withFsFault({ rename: (to, n) => (to.endsWith('pending-asks.json') && n < 2 ? 'EPERM' : null) }, () => {
+      new AskTracker({ filePath, log: (l) => logs.push(l) }).register(group({ askId: 'saved', ids: [904] }))
+    })
+    const onDisk = JSON.parse(readFileSync(filePath, 'utf8'))
+    assert.deepEqual(onDisk.pending.map((a: { askId: string }) => a.askId), ['saved'], logs.join('\n'))
+  })
+})
+
+test('item 4: a save whose rename keeps failing is dropped with a line in the log and no temp file left', () => {
+  withDir((dir) => {
+    const filePath = join(dir, 'pending-asks.json')
+    const logs: string[] = []
+    withFsFault({ rename: (to) => (to.endsWith('pending-asks.json') ? 'EPERM' : null) }, () => {
+      new AskTracker({ filePath, log: (l) => logs.push(l) }).register(group({ askId: 'lost', ids: [905] }))
+    })
+    assert.ok(logs.some((l) => l.includes('could not save')))
+    assert.deepEqual(readdirSync(dir).filter((f) => f.endsWith('.tmp')), [])
   })
 })
