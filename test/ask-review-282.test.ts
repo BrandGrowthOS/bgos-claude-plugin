@@ -232,7 +232,7 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean; f
     announceCompleteAsks(via: string): void
     heartbeatAskTracker(): void
     retireOrphanedAsks?: (via: string) => Promise<void>
-    withRetiredOwnAskNotes?: <T>(result: T) => T
+    withRetiredOwnAskNotes?: <T>(result: T, signal?: AbortSignal) => T
   }
 
   return {
@@ -1029,4 +1029,21 @@ test('gaps after #284, gap 1, on the daemon\'s own code: the passive asker whose
     await r.settle()
     assert.deepEqual(r.withRetiredOwnAskNotes({ content: [{ type: 'text', text: 'again' }] }).content.length, 1, 'once')
     assert.deepEqual(r.notes.filter((n) => n.params.meta.event_type === 'ask_withdrawn'), [])
+  }))
+
+test('gaps after #284 review, Important 2, on the daemon\'s own code: a cancelled tool call carries no note (the SDK drops its result), and the next call does', () =>
+  withAskFile(async (filePath) => {
+    const r = rig({ filePath, channelLoaded: false })
+    const askId = await retiredForThePassiveAsker(r, filePath)
+    r.advance(5_000)
+    r.heartbeatAskTracker()
+    await r.settle()
+    assert.ok(r.withRetiredOwnAskNotes, 'withRetiredOwnAskNotes exists')
+    const cancelled = new AbortController()
+    cancelled.abort()
+    const dropped = r.withRetiredOwnAskNotes({ content: [{ type: 'text', text: 'cancelled' }] }, cancelled.signal)
+    assert.equal(dropped.content.length, 1, 'nothing rides a result nobody receives')
+    const next = r.withRetiredOwnAskNotes({ content: [{ type: 'text', text: 'next' }] }, new AbortController().signal)
+    assert.equal(next.content.length, 2, 'the next call carries it')
+    assert.match(next.content[1].text, new RegExp(`\\(ask_id=${askId}\\)`))
   }))
