@@ -470,3 +470,57 @@ test('item 1: a passive daemon says why before the chat check, which would other
   assert.match(res.content[0].text, /not the one connected to BGOS/)
   assert.equal(r.posts.length, 0)
 })
+
+// ── Second review of #282, Important 3: a passive daemon keeps the old blocking contract ──
+// It refuses only wait_seconds 0 (a pending card it could never deliver). A
+// blocking wait reads the card itself, as before #282, and when it runs out
+// the questions not answered are retired, so no card is left that nobody
+// would ever hand back, and nothing is reported skipped.
+
+test('second review, Important 3: a passive daemon with no wait field still blocks and returns the answers array, as before #282', async () => {
+  const r = rig({ lockHeld: false })
+  r.answerAt(0, START + 40_000)
+  r.answerAt(1, START + 90_000)
+  const res = await r.askTool({ chat_id: '77', questions: QUESTIONS })
+  assert.deepEqual(rowsOf(res), [
+    { question: 'Ship it?', picked_option_value: 'yes', picked_option_label: 'Yes' },
+    { question: 'Tonight?', picked_option_value: 'yes', picked_option_label: 'Yes' },
+  ], res.content[0].text.slice(0, 160))
+  assert.equal(r.posts.length, 2)
+  assert.equal(r.patches.length, 0)
+  assert.equal(r.notes.length, 0)
+})
+
+test('second review, Important 3: in a passive daemon a wait that runs out retires the questions not answered and returns the answers given, never pending', async () => {
+  const r = rig({ lockHeld: false })
+  r.answerAt(0, START + 10_000)
+  const res = await r.askTool({ chat_id: '77', questions: QUESTIONS, wait_seconds: 60 })
+  const text = res.content[0].text
+  const [first, second] = [...r.rows.keys()]
+  assert.doesNotMatch(text, /"status": "pending"/)
+  assert.doesNotMatch(text, /"skipped"/)
+  assert.match(text, /"status": "withdrawn"/)
+  assert.match(text, /"picked_option_value": "yes"/)
+  assert.match(text, /withdrawn from the chat/)
+  assert.deepEqual(r.patches.map((p) => p.path), [`messages/${second}`], 'only the open question is retired')
+  assert.ok(first !== undefined)
+  assert.equal(r.tracker.pending().length, 0, 'nothing is left for another daemon to hand out')
+  r.answerAt(1, START + 120_000)
+  r.advance(120_000)
+  r.announceCompleteAsks('test')
+  await r.settle()
+  assert.equal(r.notes.length, 0)
+})
+
+test('second review, Important 3: in a passive daemon a wait the client cancelled retires the card', async () => {
+  const r = rig({ lockHeld: false })
+  const cancelled = new AbortController()
+  cancelled.abort()
+  const res = await (r.askTool as (a: Record<string, unknown>, e: { signal: AbortSignal }) => Promise<ToolResult>)(
+    { chat_id: '77', questions: QUESTIONS },
+    { signal: cancelled.signal },
+  )
+  assert.doesNotMatch(res.content[0].text, /"status": "pending"/)
+  assert.equal(r.patches.length, 2, 'both questions retired')
+  assert.equal(r.tracker.pending().length, 0)
+})
