@@ -57,12 +57,13 @@ Data's shape, with the brief's additions:
 |---|---|---|
 | The rules | `lib/idle-update.mjs`, pure | `decideIdleUpdate(facts)` takes every input as a value and returns `{action: 'off' \| 'wait' \| 'restart', reason}`. The jitter draw, the version order, the record transitions, the lease and canary decisions, the back-off, the boot settle and the validation verdict are separate pure functions. |
 | The controller | `createIdleUpdate(deps)` in the same file | Polls every 30 s and logs each wait reason once. It reads the process tree and the wake schedule last, then checks every rule again. Then it takes the lease, writes the record, drains, and asks the ladder. |
-| The boot settle and validation | `settleIdleUpdateAtBoot` and `createIdleUpdateValidator` | The new daemon reads the record, then validates the new build on live evidence or decides to roll back (below). |
+| The boot settle and validation | `settleRecordAtBoot` and `decideValidation`, driven by the controller | The new daemon reads the record, then validates the new build on live evidence or decides to roll back (below). |
 | The ladder | `lib/update-rpc.ts` | New public `restartForStagedUpdate(target)` and `restartForRollback(target)`, each with its own log-only rpc id (added to the `progress()` filter and the watchdog text). |
-| The own launcher rung | `lib/update-rpc.ts` and `lib/update-readiness.ts provenOwnLauncher` | **Only these two new entry points use it.** A click, the scheduled update and the hook restart keep their behaviour exactly. |
+| The own launcher rung | `lib/update-rpc.ts`, with the proof from `lib/idle-update.mjs proveOwnLauncher` | **Only these two new entry points use it.** A click, the scheduled update and the hook restart keep their behaviour exactly. |
 | The version latch | `lib/idle-update.mjs`, read by `lib/pending-restart.ts` | A version latched bad on this computer reads as no pending restart, so the watcher, the heartbeat and a click target never push it again. |
 | Clone rollback | `lib/self-update.ts` | Its existing rollback, split from its `exit(0)` so the ladder can restart after it. That gives one checkout state machine, not two. |
-| Wiring | `server.ts` | Gathers the facts, runs the boot settle early, arms the controller after "startup complete", feeds the validator, and adds a fourth `lastError` producer. Adds activity stamps for the last voice frame and the last browser tool, and the wake schedule read. |
+| The host readings | `lib/idle-update-host.mjs` | The launcher claim (supervisor.json), the restart marker, the unattended proof's inputs, a person on the agent's tmux sockets, the watcher's sweep state, the wake schedule read, the versions held bad, the marketplace rollback and its enrolment hold. Each through an injected fs or exec; an answer it is unsure of waits. |
+| Wiring | `server.ts` | `armIdleUpdate()`, called once by the first arm of delivery after "startup complete" and the heartbeat. Stamps the busy facts nothing kept (a voice frame, a browser tool, the beacon, startup complete, a heartbeat that landed), adds the fourth `lastError` producer, and holds the marketplace enrolment while the latest version is held bad here. |
 
 ### The own launcher rung
 
@@ -90,7 +91,7 @@ Each rule has its own test and its own mutant.
 | 6 | No unattended authority proven | `wait: no_unattended_authority` | See the proof below. Staged and none never qualify. |
 | 7 | Already attempted this version and the back-off has not passed | `wait: attempted` | One attempt per version. The next is allowed after 24 h, doubling, capped at 7 days. A rolled-back version is never retried. |
 | 8 | Draining, the update lock held, or a restart marker present | `wait: update_in_flight`, or `wait: launcher_latched` if the marker is older than 5 min | A stranded marker means hoai stopped taking markers; it is reported. |
-| 9 | Up for less than 60 s, or claude started less than 10 min ago | `wait: young` or `wait: fresh_start` | |
+| 9 | Up for less than 60 s | `wait: young` | The daemon's boot also counts as activity in gate 16, so a session that just started waits the whole quiet window: a separate fresh start gate is not needed. |
 | 10 | Turn in flight, a reply owed, a permission card, an active operation | the `decideSafeMoment` reason | Turns use its 2 h stale rule. Inbounds and operations use the update path's 30 min rule (`updateDrainSnapshot`). |
 | 11 | A blocking ask, a plan card, or an own ask card younger than 24 h | `wait: open_ask` | Older non-blocking cards survive a restart (`lib/ask-tracker.ts`). |
 | 12 | A goal armed, arming, injecting, or clearing | `wait: goal_running` | |
@@ -102,7 +103,7 @@ Each rule has its own test and its own mutant.
 | 18 | Another agent holds the lease, or the last release was under 2 min ago | `wait: machine_busy` or `wait: spacing` | |
 | 19 | Another agent is the canary for this version and has not confirmed it | `wait: canary_unconfirmed` | |
 | 20 | Process tree: a background job under claude, or the tree unreadable | the `decideSafeMoment` reason | Read last. |
-| 21 | Wake schedule: a wake or call due within 10 min, or the schedule unreadable | `wait: wake_due` or `wait: wake_schedule_unknown` | Re-read just before the act. Fails closed. |
+| 21 | Wake schedule: a wake or call due within 10 min, or the schedule unreadable | `wait: wake_due` or `wait: wake_schedule_unknown` | `GET scheduled-tasks/agent?status=active`, the agent's own view (`AgentScheduledTaskViewDto.nextFireAt`). Re-read just before the act. Fails closed. |
 | 22 | Otherwise | `restart` | |
 
 **Unattended proof (gate 6), by authority:**
@@ -137,7 +138,7 @@ Each rule has its own test and its own mutant.
 - `arrived`: a lock-holding daemon on the target booted.
 - `validated`.
 - `came_back_old`.
-- `context_lost`: the pin changed. hoai's fresh retry after a resume that died within 25 s does that. It is reported, and counted as a failed attempt.
+- `context_lost`: the pin changed. hoai's fresh retry after a resume that died within 25 s does that. It is reported, and counted as a failed attempt. A later boot of the target on a new session is the same: never a reason to roll back, because a resume that died is claude's or the transcript's, not the build's. The session is read from claude's command line first (`--resume <id>` or `--session-id <id>`), then the pin file.
 - `did_not_arrive`: the old daemon is still alive 3.5 min after asking. The ladder's watchdog has already un-drained it.
 - `no_authority`: the ladder staged.
 - `rolled_back`, `rollback_failed`.
@@ -150,6 +151,8 @@ A daemon on the target is **validated** when ALL of these hold:
 3. This pid has touched the channel beacon, which happens only while delivery is live (`touchBeaconHeartbeat`, `server.ts`).
 4. There is no deaf verdict.
 5. It has held all of the above, as the lock holder, for 60 s.
+
+A boot heartbeat can land before the record settles, so until a beat lands after arrival the controller asks the heartbeat for one (`sendNow`), at most once a poll. An expired login or a usage cap (`currentAccountError`) suspends the 5 min deadline: neither is the build's fault.
 
 Validation writes `validated` to the record and, for the canary, `<version>/validated`. Then it releases the lease and clears any standing error.
 
@@ -169,7 +172,8 @@ A non-canary agent that fails on a version its canary already validated does **n
 1. **Marketplace:**
    - Point the `hoai@hoai` entry of `installed_plugins.json` back to `{version: from, installPath: fromRoot}`, only if `fromRoot/.claude-plugin/plugin.json` still says `from`. Write it atomically.
    - Turn off Claude Code's startup auto-update for this marketplace (`ensureMarketplaceAutoUpdate({enabled: false})`, `lib/claude-preseed.mjs`), so the relaunch does not reinstall the target.
-   - The boot enrolment (`server.ts`) leaves it off while the marketplace's latest version is latched bad on this computer. It enrols again once a newer version is published.
+   - That switch-off is recorded in `~/.bgos-agent/idle-update/enrolment-hold.json`, only when this call made it. An `autoUpdate: false` a person set stays theirs: today's enrolment never overturns one (`declined`), and nothing here records it.
+   - The boot enrolment (`server.ts`) leaves it off while the marketplace's latest version is latched bad on this computer. Once a newer version is published, it takes back its OWN switch-off (`ensureMarketplaceAutoUpdate({reclaim: true})`, passed only with the hold on record) and removes the hold.
 2. **Clone:** the self updater's own rollback, split from its `exit(0)`: the shared lock, the dirty tree refusal, `git checkout --detach fromCommit`, a dependency reinstall if needed, and the shared safety latch. It is the existing clone semantics for a bad build: updates paused, and the app says so.
 3. Write `<target>/bad`.
 4. Wait for a short safe moment: no turn, nothing owed, no background job, nobody attached, 2 min quiet. No lease or canary wait, because it already holds the lease.
@@ -225,7 +229,9 @@ The controller ships in 0.81.0. An agent still running 0.80 or older cannot run 
 - `test/pending-restart.test.ts`: additions for the latch.
 - `test/idle-update.wiring.test.ts`: the server.ts dependency block.
 
-**Integration:** `test/idle-update.integration.test.ts` uses the real `UpdateRpcHandler` and the real `superviseClaude` with an injected spawn, fs and clock, like `test/hook-restart.integration.test.ts`.
+- `test/idle-update.controller.test.ts`: the controller over an in-memory disk; `test/idle-update.host.test.ts`: the host readings and the marketplace rollback; `test/self-update.idle-rollback.test.ts`: the clone rollback without an exit; `test/claude-preseed.test.ts`: the reclaim.
+
+**Integration:** `test/idle-update.integration.test.ts` joins the real controller, the real `UpdateRpcHandler` (its own launcher rung) and the real host readings on the real disk in a scratch HOME, with a gen-2 Mac process table. The real `superviseClaude` taking the marker is the rig's job, on the real chain.
 
 **Rig** (`docs/idle-update/rig/`, Windows, this box):
 - **The real chain:** a hidden `wscript` of a generated `run-agent.vbs`, then the real `hoai-core.mjs --keep-alive`, then a stand-in `claude.exe` (node, which speaks MCP to the daemon and keeps a transcript per pin), then the real daemon (`bun server.ts`), loaded from a marketplace-style `installed_plugins.json` in the scratch config dir.
@@ -242,6 +248,14 @@ The controller ships in 0.81.0. An agent still running 0.80 or older cannot run 
 **MACOS-PROOF.md:** a short script Data runs on a Mac. It uses a scratch HOME and a gen-2 style launchd job with a scratch label. It cleans up, and it states its pass lines.
 
 **Not proven live here:** the gen-2 tmux ancestry rung on a real launchd or systemd host. This box has no Linux node or bun, and no expect. It is covered by unit and integration tests over real-shape process tables, and by `MACOS-PROOF.md`.
+
+## Residuals, stated not hidden
+
+- **The wake schedule is the agent's own view.** Tasks another acting user created on a shared agent are not in it, and meetings live elsewhere. A restart can land close to one of those; it still waits for an idle, quiet session, and the session it resumes is the pinned one. Whether a fire that lands during the restart minute is redelivered is the backend's, not verified here.
+- **Two agents breaking the same expired lease at once:** both rename it aside, and each checks that the file it moved is the one it read; the one that moved the other's fresh lease puts it back. The window is one rename wide, and the canary files are exclusive creates, so at worst two restarts on one computer, never a lost latch.
+- **Wall clock.** Every window is measured on the wall clock (the stamps in the files are ISO times). A computer that sleeps or a clock that jumps can shorten a wait; the lease and the canary still serialise the restarts.
+- **Enrolment comes back only at a boot.** After a marketplace rollback, Claude Code's own update stays off until a newer version is published AND a daemon of this computer boots. The app's update button (a click) still works meanwhile.
+- **A build that cannot evaluate at all** (see Rollback) is caught by hoai's own health relaunch and the canary hold, not by the daemon.
 
 ## Calls I made (Data or Ares may overrule)
 
