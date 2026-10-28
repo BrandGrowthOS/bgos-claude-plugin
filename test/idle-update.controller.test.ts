@@ -129,6 +129,9 @@ function agent(
     loginExpired: false,
     tookRestart: true as boolean | Error,
     rollbackOk: true,
+    unreachable: false,
+    slept: 0,
+    installGate: null as Promise<void> | null,
   }
   const out = {
     s,
@@ -137,6 +140,7 @@ function agent(
     restarts: [] as Array<{ target: string; proof: any }>,
     rollbackRestarts: [] as Array<{ target: string; proof: any }>,
     rollbackInstalls: [] as any[],
+    badAtInstall: [] as boolean[],
     reports: [] as any[],
     heartbeatRequests: 0,
     logs: [] as string[],
@@ -199,6 +203,8 @@ function agent(
     beaconAtMs: () => s.beaconAtMs,
     deaf: () => s.deaf,
     loginExpired: () => s.loginExpired,
+    backendUnreachable: () => s.unreachable,
+    monotonicNow: () => disk.clock.now - s.slept,
     drain: (on: boolean) => out.drains.push(on),
     restart: async (target: string, proof: any) => {
       out.restarts.push({ target, proof })
@@ -211,6 +217,8 @@ function agent(
     },
     rollbackInstall: async (rec: any) => {
       out.rollbackInstalls.push(rec)
+      out.badAtInstall.push(disk.fs.readFile(join(MACHINE, String(rec.target), 'bad')) !== null)
+      if (s.installGate) await s.installGate
       return s.rollbackOk ? { ok: true } : { ok: false, reason: 'from_root_missing' }
     },
     report: (err: any) => out.reports.push(err),
@@ -471,6 +479,170 @@ test('the rollback restart waits for a quiet moment, never cutting a turn', asyn
   assert.equal(await a.c.tick(), 'rollback_requested')
 })
 
+/** The canary, back on the new build and past the validation deadline: its rollback install is done. */
+async function rolledBackCanary() {
+  const disk = await afterAsk()
+  const a = agent(disk, { running: '0.81.0', staged: null })
+  assert.equal(await a.c.tick(), 'validating')
+  disk.clock.now += 5 * MIN + SEC
+  a.s.activity = [disk.clock.now - 3 * MIN]
+  assert.equal(await a.c.tick(), 'rollback')
+  return { disk, a }
+}
+
+test('the rollback restart never goes through a launch not proven unattended: it asks for a restart by hand instead', async () => {
+  const { a } = await rolledBackCanary()
+  a.s.authority = 'staged'
+  assert.equal(await a.c.tick(), 'rollback_staged')
+  assert.equal(a.rollbackRestarts.length, 0)
+  assert.equal(lastReport(a)?.code, 'idle_update_rollback_failed')
+  assert.match(lastReport(a)?.message ?? '', /by hand/)
+})
+
+test('the rollback restart waits for an open ask, a running goal, a call, the browser and a wake due, as the update does', async () => {
+  const { disk, a } = await rolledBackCanary()
+  a.s.openAsks = 1
+  assert.equal(await a.c.tick(), 'rollback_waiting')
+  a.s.openAsks = 0
+  a.s.goalRunning = true
+  assert.equal(await a.c.tick(), 'rollback_waiting')
+  a.s.goalRunning = false
+  a.s.wake = { ok: true, tasks: [{ nextFireAt: new Date(disk.clock.now + 3 * MIN).toISOString() }] }
+  assert.equal(await a.c.tick(), 'rollback_waiting')
+  assert.equal(a.rollbackRestarts.length, 0)
+  a.s.wake = { ok: true, tasks: [] }
+  assert.equal(await a.c.tick(), 'rollback_requested')
+  assert.ok(a.logs.some((l) => /waiting: rollback_open_ask/.test(l)), a.logs.join('\n'))
+})
+
+test('a passive daemon neither validates nor rolls back', async () => {
+  const disk = await afterAsk()
+  const a = agent(disk, { running: '0.81.0', staged: null })
+  assert.equal(await a.c.tick(), 'validating')
+  a.s.active = false
+  disk.clock.now += 5 * MIN + SEC
+  assert.equal(await a.c.tick(), 'passive')
+  assert.equal(a.rollbackInstalls.length, 0)
+})
+
+test('a slow rollback install holds the busy guard: a tick meanwhile is busy, the install runs once, the version is held bad first', async () => {
+  const disk = await afterAsk()
+  const a = agent(disk, { running: '0.81.0', staged: null })
+  assert.equal(await a.c.tick(), 'validating')
+  let open = () => {}
+  a.s.installGate = new Promise<void>((resolve) => {
+    open = resolve
+  })
+  disk.clock.now += 5 * MIN + SEC
+  const first = a.c.tick()
+  await new Promise((resolve) => setImmediate(resolve))
+  // Raced, so a second install waiting on the same gate fails here instead of hanging the file.
+  const second = await Promise.race([a.c.tick(), new Promise((resolve) => setTimeout(() => resolve('still installing'), 200))])
+  open()
+  assert.equal(second, 'busy')
+  assert.equal(await first, 'rollback')
+  assert.equal(a.rollbackInstalls.length, 1)
+  assert.deepEqual(a.badAtInstall, [true], 'the version is latched bad before the install is touched')
+})
+
+test('a canary whose attempt was voided, or a version another agent validated meanwhile, reports and never rolls back the shared install', async () => {
+  for (const mark of ['void-1', 'validated']) {
+    const disk = await afterAsk()
+    const a = agent(disk, { running: '0.81.0', staged: null })
+    assert.equal(await a.c.tick(), 'validating')
+    disk.fs.createExclusive(join(MACHINE, '0.81.0', mark), JSON.stringify({ assistantId: '913', at: new Date(disk.clock.now).toISOString() }))
+    disk.clock.now += 5 * MIN + SEC
+    assert.equal(await a.c.tick(), 'failed', mark)
+    assert.equal(a.rollbackInstalls.length, 0, mark)
+  }
+})
+
+test('two canaries that never came back latch the version bad on disk, for every reader of the latch', async () => {
+  const disk = memDisk()
+  for (const [n, id, age] of [[1, '913', 3 * 24 * HOUR], [2, '914', 11 * MIN]] as const) {
+    disk.fs.createExclusive(join(MACHINE, '0.81.0', `canary-${n}`), JSON.stringify({ assistantId: id, at: new Date(T0 - age).toISOString() }))
+  }
+  const a = agent(disk)
+  assert.equal(await a.c.tick(), 'version_held_bad')
+  assert.equal(readJson(disk, join(MACHINE, '0.81.0', 'bad'))?.reason, 'canaries_silent')
+  assert.equal(a.restarts.length, 0)
+})
+
+test('a keepalive restart only when claude resumes a pinned session: a bare --continue relaunch is never unattended', async () => {
+  const cont = agent(memDisk(), { authority: 'keepalive' })
+  cont.s.listing = { ok: true, processes: table(912).map((p) => (p.pid === 91240 ? { ...p, command: '/Users/a/.local/bin/claude --dangerously-skip-permissions --continue' } : p)) }
+  assert.equal(await cont.c.tick(), 'no_unattended_authority')
+  const short = agent(memDisk(), { authority: 'keepalive' })
+  short.s.listing = { ok: true, processes: table(912).map((p) => (p.pid === 91240 ? { ...p, command: `/Users/a/.local/bin/claude --resume ${PIN} -c` } : p)) }
+  assert.equal(await short.c.tick(), 'no_unattended_authority')
+  const pinned = agent(memDisk(), { authority: 'keepalive' })
+  assert.equal(await pinned.c.tick(), 'requested')
+  assert.equal(cont.restarts.length + short.restarts.length, 0)
+})
+
+test('an activity reading that throws is read as activity now, never as quiet', async () => {
+  const a = agent(memDisk())
+  Object.defineProperty(a.s, 'activity', {
+    get() {
+      throw new Error('transcript unreadable')
+    },
+  })
+  assert.notEqual(await a.c.tick(), 'requested')
+  assert.equal(a.restarts.length, 0)
+})
+
+test('this daemon\'s own startup not complete: no restart yet', async () => {
+  const a = agent(memDisk())
+  a.s.startupComplete = false
+  assert.equal(await a.c.tick(), 'young')
+  assert.equal(a.restarts.length, 0)
+})
+
+test('a backend outage during validation holds the deadline; the minutes it was down are not counted', async () => {
+  const disk = await afterAsk()
+  const a = agent(disk, { running: '0.81.0', staged: null })
+  assert.equal(await a.c.tick(), 'validating')
+  a.s.unreachable = true
+  for (let i = 0; i < 20; i += 1) {
+    disk.clock.now += 30 * SEC
+    assert.equal(await a.c.tick(), 'validating')
+  }
+  a.s.unreachable = false
+  disk.clock.now += 3 * MIN
+  assert.equal(await a.c.tick(), 'validating', 'ten minutes down, three up: not yet five minutes of chance')
+  disk.clock.now += 2 * MIN + SEC
+  assert.equal(await a.c.tick(), 'rollback')
+})
+
+test('a computer asleep during validation holds the deadline: the wall clock jumped, the monotonic one did not', async () => {
+  const disk = await afterAsk()
+  const a = agent(disk, { running: '0.81.0', staged: null })
+  assert.equal(await a.c.tick(), 'validating')
+  disk.clock.now += 40 * MIN
+  a.s.slept += 40 * MIN
+  assert.equal(await a.c.tick(), 'validating')
+  assert.equal(a.rollbackInstalls.length, 0)
+})
+
+test('a build that proved live and then booted once more (a person\'s restart) validates on that boot, never rolls back', async () => {
+  const disk = await afterAsk()
+  const first = agent(disk, { running: '0.81.0', staged: null })
+  assert.equal(await first.c.tick(), 'validating')
+  disk.clock.now += 20 * SEC
+  first.s.heartbeatOkAtMs = disk.clock.now - 5 * SEC
+  first.s.beaconAtMs = disk.clock.now - 2 * SEC
+  assert.equal(await first.c.tick(), 'validating')
+  assert.ok(readJson(disk, first.record).liveAt, 'live before the hold is on the record')
+  disk.clock.now += 20 * SEC
+  const second = agent(disk, { running: '0.81.0', staged: null })
+  assert.equal(await second.c.tick(), 'validating')
+  assert.equal(second.rollbackInstalls.length, 0)
+  disk.clock.now += 61 * SEC
+  second.s.heartbeatOkAtMs = disk.clock.now - 5 * SEC
+  second.s.beaconAtMs = disk.clock.now - 2 * SEC
+  assert.equal(await second.c.tick(), 'validated')
+})
+
 test('a non-canary that fails on a version reports and stays: it never rolls back the shared install', async () => {
   const disk = memDisk()
   disk.fs.writeAtomic(join(MACHINE, '0.81.0', 'validated'), JSON.stringify({ assistantId: '913', at: new Date(T0 - HOUR).toISOString() }))
@@ -586,7 +758,7 @@ function winTable(launcherStartedAtMs: number) {
 }
 
 test('Windows: the launcher\'s own process start, not the claim hoai rewrites at every relaunch, dates the hidden run-agent.vbs', async () => {
-  const unattended = { ownSockets: [], runShPath: null, launchStatus: { outcome: null, mtimeMs: null }, runAgentVbs: { text: VBS, mtimeMs: T0 - 2 * HOUR } }
+  const unattended = { ownSockets: [], runShPath: null, launchStatus: { outcome: null, mtimeMs: null }, runAgentVbs: { text: VBS, mtimeMs: T0 - 2 * HOUR }, runAgentVbsPath: 'C:\\Users\\kc\\.bgos-agent\\912\\run-agent.vbs' }
   // supervisor.json says T0 - 1 h (a relaunch rewrote it); the launcher process itself started at T0 - 3 h, BEFORE the
   // vbs was rewritten hidden: that launcher may have shown a console, so it is not proven unattended.
   const launcher = { pid: 920, startedAtMs: T0 - HOUR, markerPath: 'C:\\Users\\kc\\.bgos-agent\\912\\restart-requested.json', supervisorMtimeMs: T0 - HOUR }

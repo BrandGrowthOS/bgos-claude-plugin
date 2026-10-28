@@ -156,6 +156,14 @@ test('the idle update and its rollback report to the log, never to the backend (
   assert.ok(t.logs.some((l) => /^idle update rollback restart: staged/.test(l)), t.logs.join('\n'))
 })
 
+test('a backend rpc id that is also an object key (constructor, toString) is the backend\'s: its progress is posted, never taken for a log-only label', async () => {
+  for (const rpcId of ['constructor', 'toString', 'hasOwnProperty']) {
+    const t = harness()
+    await t.handler.handle({ rpcId, op: 'update_now' })
+    assert.ok(t.progress.length > 0, `${rpcId}: ${t.logs.join('\n')}`)
+  }
+})
+
 test('a restart that never arrives un-drains, and says the idle update backs off', async () => {
   const t = harness()
   await needEntry(t.handler, 'restartForStagedUpdate')('0.81.0', PROOF)

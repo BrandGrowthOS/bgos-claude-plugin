@@ -50,6 +50,7 @@ function idle(over: Record<string, unknown> = {}): any {
     updateLockHeld: false,
     markerAgeMs: null,
     bootAtMs: NOW - 2 * HOUR,
+    startupComplete: true,
     safe: { turnInFlight: false, turnSignal: 'hooks', pendingMessages: 0, pendingPermissions: 0, activeOperations: 0 },
     openAsks: 0,
     goalRunning: false,
@@ -92,11 +93,23 @@ test('version order: numeric X.Y.Z, so 0.80.10 is newer than 0.80.9 (a text comp
 
 // -- Durations, scale and jitter -----------------------------------------------------------------
 
+const RIG_BACKEND = { backendUrl: 'http://127.0.0.1:43561/api/v1' }
+
 test('scale: unset, junk, zero and negative read as 1; the rig scale is clamped to 600', () => {
   const m = need()
-  for (const raw of [undefined, '', 'fast', '0', '-5', 'NaN']) assert.equal(m.scaleFromEnv(raw), 1, String(raw))
-  assert.equal(m.scaleFromEnv('60'), 60)
-  assert.equal(m.scaleFromEnv('100000'), 600)
+  for (const raw of [undefined, '', 'fast', '0', '-5', 'NaN']) assert.equal(m.scaleFromEnv(raw, RIG_BACKEND), 1, String(raw))
+  assert.equal(m.scaleFromEnv('60', RIG_BACKEND), 60)
+  assert.equal(m.scaleFromEnv('100000', RIG_BACKEND), 600)
+})
+
+test('scale: honoured only against a loopback backend, so a real agent can never shrink its safety windows', () => {
+  const m = need()
+  assert.equal(m.scaleFromEnv('60', { backendUrl: 'https://api.bgos.ai/api/v1' }), 1)
+  assert.equal(m.scaleFromEnv('60', { backendUrl: 'http://127.0.0.1.example.com/api/v1' }), 1)
+  assert.equal(m.scaleFromEnv('60', { backendUrl: 'not a url' }), 1)
+  assert.equal(m.scaleFromEnv('60'), 1)
+  assert.equal(m.scaleFromEnv('60', { backendUrl: 'http://localhost:4000/api/v1' }), 60)
+  assert.equal(m.scaleFromEnv('60', { backendUrl: 'http://[::1]:4000/api/v1' }), 60)
 })
 
 test('scaled durations divide every duration by the scale and carry the scale itself', () => {
@@ -106,6 +119,13 @@ test('scaled durations divide every duration by the scale and carry the scale it
   assert.equal(d.leaseTtlMs, m.DEFAULT_DURATIONS.leaseTtlMs / 60)
   assert.equal(d.minUpMs, SEC)
   assert.equal(m.scaledDurations(1).leaseTtlMs, 10 * MIN)
+})
+
+test('scaled durations keep two floors: a relaunch gets its real 3.5 min to arrive, and a beacon 30 s to be fresh', () => {
+  const m = need()
+  assert.equal(m.scaledDurations(60).didNotArriveMs, 3.5 * MIN)
+  assert.equal(m.scaledDurations(60).beaconFreshMs, 30 * SEC)
+  assert.equal(m.scaledDurations(2).beaconFreshMs, MIN)
 })
 
 test('jitter is a uniform 0 to 10 min draw, a broken random reads as the midpoint, and it varies with the draw', () => {
@@ -185,6 +205,11 @@ test('gate 8: a marker hoai has not taken in 5 min is a launcher that stopped ta
 
 test('gate 9: never in the first minute of a daemon', () => {
   waits({ bootAtMs: NOW - 30 * SEC, activityMs: [] }, 'young')
+})
+
+test('gate 9: never before this daemon\'s own startup completed (a startup that hangs is no moment to restart)', () => {
+  waits({ startupComplete: false }, 'young')
+  waits({ startupComplete: undefined }, 'young')
 })
 
 test('gate 10: a turn in flight waits (the watcher safe moment)', () => {
@@ -295,6 +320,16 @@ test('lease: none is free, my own nonce is mine, a fresh other is held, an old o
   assert.equal(m.decideLease({ raw: lease('913', 'n-913', NOW - 11 * MIN), mtimeMs: NOW - 11 * MIN, now: NOW, me: ME }).state, 'expired')
 })
 
+test('lease and canary: a stamp more than the lease life in the future is a broken clock, so it expires', () => {
+  const m = need()
+  const future = JSON.stringify({ assistantId: '913', target: '0.81.0', nonce: 'n-913', at: new Date(NOW + DAY).toISOString() })
+  assert.equal(m.decideLease({ raw: future, mtimeMs: NOW + DAY, now: NOW, me: ME }).state, 'expired')
+  const near = JSON.stringify({ assistantId: '913', target: '0.81.0', nonce: 'n-913', at: new Date(NOW + 30 * SEC).toISOString() })
+  assert.equal(m.decideLease({ raw: near, mtimeMs: NOW, now: NOW, me: ME }).state, 'held')
+  const ahead = [{ n: 1, assistantId: '913', at: NOW + DAY }]
+  assert.deepEqual(m.decideCanary({ files: { canaries: ahead, voids: [], validated: false, bad: false }, now: NOW, me: ME }), { state: 'next', next: 2 })
+})
+
 test('lease: a half written file is held while young and expired once old, never free', () => {
   const m = need()
   assert.equal(m.decideLease({ raw: '', mtimeMs: NOW - 5 * SEC, now: NOW, me: ME }).state, 'held')
@@ -375,6 +410,13 @@ test('record: it round trips, and junk or another schema reads as none', () => {
   assert.equal(m.parseIdleUpdateRecord(null), null)
 })
 
+test('record: a target or from that is not a plain X.Y.Z is junk, so it can never name a folder', () => {
+  const m = need()
+  assert.equal(m.parseIdleUpdateRecord(JSON.stringify(record({ target: '../../x' }))), null)
+  assert.equal(m.parseIdleUpdateRecord(JSON.stringify(record({ from: '0.80.0/..' }))), null)
+  assert.equal(m.parseIdleUpdateRecord(JSON.stringify(record({ from: null }))), null)
+})
+
 test('record: the attempt facts for the staged version, and nothing for another version', () => {
   const m = need()
   const failed = record({ state: 'did_not_arrive', attempts: [{ at: new Date(NOW - HOUR).toISOString(), outcome: 'did_not_arrive' }] })
@@ -416,6 +458,27 @@ test('boot settle: a second lock holding boot of the target before it validated 
   const { record: next, event } = need().settleRecordAtBoot(arrived, { runningVersion: '0.81.0', pin: 'pin-1', now: NOW })
   assert.equal(event, 'second_boot')
   assert.equal(next.lockBoots, 2)
+})
+
+test('boot settle: a second boot resets the arrival, so a held deadline counts from the boot that is running', () => {
+  const arrived = record({ state: 'arrived', lockBoots: 1, arrivedAt: new Date(NOW - 4 * MIN).toISOString() })
+  const { record: next } = need().settleRecordAtBoot(arrived, { runningVersion: '0.81.0', pin: 'pin-1', now: NOW })
+  assert.equal(next.arrivedAt, new Date(NOW).toISOString())
+})
+
+test('boot settle: a build that already proved live may boot once more (a person\'s restart, a reconnect) before it is called failing', () => {
+  const m = need()
+  const live = record({ state: 'arrived', lockBoots: 1, arrivedAt: new Date(NOW - 4 * MIN).toISOString(), liveAt: new Date(NOW - 3 * MIN).toISOString() })
+  const again = m.settleRecordAtBoot(live, { runningVersion: '0.81.0', pin: 'pin-1', now: NOW })
+  assert.equal(again.event, 'arrived_again')
+  assert.equal(again.record.lockBoots, 2)
+  assert.equal(again.record.arrivedAt, new Date(NOW).toISOString())
+  assert.equal(again.record.liveAt, null)
+  assert.equal(again.record.rearrived, true)
+  const third = m.settleRecordAtBoot({ ...again.record, liveAt: new Date(NOW + MIN).toISOString() }, { runningVersion: '0.81.0', pin: 'pin-1', now: NOW + 2 * MIN })
+  assert.equal(third.event, 'second_boot', 'one re-arrival, never a loop')
+  const never = m.settleRecordAtBoot(record({ state: 'arrived', lockBoots: 1, arrivedAt: new Date(NOW - 4 * MIN).toISOString() }), { runningVersion: '0.81.0', pin: 'pin-1', now: NOW })
+  assert.equal(never.event, 'second_boot', 'a build that never proved live gets no second chance')
 })
 
 test('boot settle: the target booting again on a NEW session is a lost conversation, never a reason to roll back', () => {
@@ -501,11 +564,88 @@ test('validation: no proof 5 min after a live boot is the deadline, unless the s
   assert.equal(m.decideValidation(proof({ arrivedAtMs: NOW - 6 * MIN, beaconAtMs: null, loginExpired: true })), 'pending')
 })
 
+test('validation: an unreachable backend holds the deadline, and the time it was unreachable or asleep is not counted', () => {
+  const m = need()
+  const late = { arrivedAtMs: NOW - 6 * MIN, beaconAtMs: null }
+  assert.equal(m.decideValidation(proof({ ...late, backendUnreachable: true })), 'pending')
+  assert.equal(m.decideValidation(proof({ ...late, suspendedMs: 2 * MIN })), 'pending')
+  assert.equal(m.decideValidation(proof({ ...late, suspendedMs: 30 * SEC })), 'deadline')
+})
+
+test('outage: no answer, or a 5xx, is a backend this computer cannot reach; a 4xx is a backend that answered', () => {
+  const m = need()
+  assert.equal(m.isBackendUnreachableError(new Error('fetch failed')), true)
+  assert.equal(m.isBackendUnreachableError(Object.assign(new Error('POST 503'), { status: 503 })), true)
+  assert.equal(m.isBackendUnreachableError(Object.assign(new Error('POST 502'), { status: 502 })), true)
+  assert.equal(m.isBackendUnreachableError(Object.assign(new Error('POST 401'), { status: 401 })), false)
+  assert.equal(m.isBackendUnreachableError(Object.assign(new Error('POST 429'), { status: 429 })), false)
+})
+
+test('validation: live is every proof but the 60 s hold', () => {
+  const m = need()
+  const early = { arrivedAtMs: NOW - 30 * SEC, heartbeatOkAtMs: NOW - 20 * SEC }
+  assert.equal(m.decideValidation(proof(early)), 'pending')
+  assert.equal(m.isLiveBuild(proof(early)), true)
+  assert.equal(m.isLiveBuild(proof({ ...early, deaf: true })), false)
+  assert.equal(m.isLiveBuild(proof({ ...early, beaconAtMs: null })), false)
+  assert.equal(m.isLiveBuild(proof({ ...early, heartbeatOkAtMs: NOW - 40 * SEC })), false)
+})
+
 test('rollback: only the canary rolls back the shared install; another agent reports; an expired login does neither', () => {
   const m = need()
   assert.equal(m.decideRollback({ canary: true, loginExpired: false }), 'rollback')
   assert.equal(m.decideRollback({ canary: false, loginExpired: false }), 'report_only')
   assert.equal(m.decideRollback({ canary: true, loginExpired: true }), 'none')
+})
+
+/** The rollback restart's facts, everything quiet: the one case that goes. */
+function quietRollback(over: Record<string, unknown> = {}): any {
+  const f = idle()
+  return {
+    now: NOW,
+    bootAtMs: NOW - 10 * MIN,
+    active: true,
+    draining: false,
+    authority: f.authority,
+    safe: f.safe,
+    activityMs: [NOW - 5 * MIN],
+    openAsks: 0,
+    goalRunning: false,
+    call: f.call,
+    lastBrowserToolAtMs: null,
+    personAttached: false,
+    claudeKnown: true,
+    descendants: [],
+    wake: { known: true, nextDueAtMs: null },
+    ...over,
+  }
+}
+
+test('rollback moment: quiet, unattended and nothing open: go', () => {
+  assert.deepEqual(need().decideRollbackMoment(quietRollback()), { go: true, reason: 'quiet' })
+})
+
+test('rollback moment: never through an authority not proven unattended, never passive, never while draining', () => {
+  const m = need()
+  const no = (over: Record<string, unknown>, reason: string) => assert.deepEqual(m.decideRollbackMoment(quietRollback(over)), { go: false, reason })
+  no({ authority: { kind: 'launcher', unattended: false } }, 'no_unattended_authority')
+  no({ authority: { kind: 'staged', unattended: true } }, 'no_unattended_authority')
+  no({ authority: null }, 'no_unattended_authority')
+  no({ active: false }, 'passive')
+  no({ draining: true }, 'update_in_flight')
+})
+
+test('rollback moment: an open ask, a running goal, a call, a browser in use or a wake due waits', () => {
+  const m = need()
+  const no = (over: Record<string, unknown>, reason: string) => assert.deepEqual(m.decideRollbackMoment(quietRollback(over)), { go: false, reason })
+  no({ openAsks: 1 }, 'open_ask')
+  no({ goalRunning: true }, 'goal_running')
+  no({ call: { pendingConsults: 0, openContinuations: 0, lastVoiceAtMs: NOW - MIN, openMeetings: 0 } }, 'call_active')
+  no({ call: { pendingConsults: 0, openContinuations: 0, lastVoiceAtMs: null, openMeetings: 1 } }, 'call_active')
+  no({ lastBrowserToolAtMs: NOW - MIN }, 'browser_in_use')
+  no({ wake: { known: true, nextDueAtMs: NOW + 2 * MIN } }, 'wake_due')
+  // A schedule a failing build cannot read never keeps it on that build.
+  assert.equal(m.decideRollbackMoment(quietRollback({ wake: { known: false, nextDueAtMs: null } })).go, true)
 })
 
 // -- Unattended and own launcher proofs ----------------------------------------------------------
@@ -532,6 +672,7 @@ function unattended(over: Record<string, unknown> = {}): any {
     launchStatus: { outcome: null, mtimeMs: null },
     supervisorMtimeMs: NOW - HOUR,
     runAgentVbs: { text: null, mtimeMs: null },
+    runAgentVbsPath: 'C:\\Users\\kc\\.bgos-agent\\912\\run-agent.vbs',
     launcherStartedAtMs: NOW - HOUR,
     ...over,
   })
@@ -597,6 +738,17 @@ test('unattended on Windows: --keep-alive typed in a console, a visible vbs, a v
     unattended({ platform: 'win32', launcherPid: 920, processes: null, launchStatus: { outcome: 'live', mtimeMs: NOW }, runAgentVbs: { text: HIDDEN_VBS, mtimeMs: NOW - 2 * HOUR } }).unattended,
     false,
   )
+})
+
+test('unattended on Windows: only THIS agent\'s run-agent.vbs proves it, never another agent\'s or one elsewhere', () => {
+  const vbs = { text: HIDDEN_VBS, mtimeMs: NOW - 2 * HOUR }
+  const other = WIN_TABLE.map((p) => (p.pid === 910 ? { ...p, command: '"C:\\WINDOWS\\System32\\WScript.exe" //B "C:\\Users\\kc\\.bgos-agent\\913\\run-agent.vbs"' } : p))
+  assert.equal(unattended({ platform: 'win32', launcherPid: 920, processes: other, runAgentVbs: vbs }).unattended, false)
+  const elsewhere = WIN_TABLE.map((p) => (p.pid === 910 ? { ...p, command: '"C:\\WINDOWS\\System32\\WScript.exe" //B C:\\Temp\\run-agent.vbs' } : p))
+  assert.equal(unattended({ platform: 'win32', launcherPid: 920, processes: elsewhere, runAgentVbs: vbs }).unattended, false)
+  assert.equal(unattended({ platform: 'win32', launcherPid: 920, processes: WIN_TABLE, runAgentVbs: vbs, runAgentVbsPath: null }).unattended, false)
+  const slashes = WIN_TABLE.map((p) => (p.pid === 910 ? { ...p, command: 'wscript.exe //B c:/users/kc/.bgos-agent/912/run-agent.vbs' } : p))
+  assert.equal(unattended({ platform: 'win32', launcherPid: 920, processes: slashes, runAgentVbs: vbs }).unattended, true)
 })
 
 test('own launcher: the hoai that supervises this session\'s claude, a strict ancestor, is proven', () => {

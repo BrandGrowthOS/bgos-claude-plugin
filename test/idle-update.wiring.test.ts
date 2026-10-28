@@ -36,16 +36,35 @@ function firstArm(): string {
   return server.slice(at, end)
 }
 
-test('armed once, by the first arm of delivery, after startup complete and the heartbeat, on every platform', () => {
+/** The two places this daemon takes the pairing lock: at boot, and on promotion from passive. */
+function lockSites(): string[] {
+  const boot = server.indexOf('  if (lockAtBoot.acquired) {')
+  assert.ok(boot >= 0, 'the boot lock site moved')
+  const promotion = server.indexOf('        if (!res.acquired) return\n')
+  assert.ok(promotion >= 0, 'the promotion lock site moved')
+  return [
+    server.slice(boot, server.indexOf('await armDelivery()', boot) + 'await armDelivery()'.length),
+    server.slice(promotion, server.indexOf('void armDelivery()', promotion) + 'void armDelivery()'.length),
+  ]
+}
+
+test('armed the moment this daemon holds the pairing lock, at boot and on promotion, before the arm of delivery that can hang', () => {
   block()
-  const arm = firstArm()
-  const complete = arm.indexOf("log('startup complete: polling armed, message delivery is live')")
-  const sweep = arm.indexOf('setInterval(sweepUnresponsiveReport, SESSION_STATUS_TICK_MS).unref()')
-  const call = arm.indexOf('armIdleUpdate()')
-  assert.ok(complete >= 0 && sweep > complete, 'the arm order moved')
-  assert.ok(call > sweep, 'armIdleUpdate() is called after the heartbeat and the deaf sweep are armed')
-  assert.equal(server.match(/^\s+armIdleUpdate\(\)$/gm)?.length ?? 0, 1, 'one caller')
+  assert.equal(server.match(/^\s+armIdleUpdate\(\)$/gm)?.length ?? 0, 2, 'one caller per lock acquisition, none after startup complete')
+  for (const site of lockSites()) {
+    const held = site.indexOf('lockHeld = true')
+    const arm = site.indexOf('armIdleUpdate()')
+    assert.ok(held >= 0 && arm > held, 'armed after the lock is held')
+    assert.ok(site.indexOf('armDelivery()') > arm, 'armed before the arm of delivery, so a startup that hangs still meets its deadline')
+  }
   assert.match(block(), /if \(idleUpdate\) return/)
+})
+
+test('an API key session never arms it: the heartbeat that validates a new build is a pairing one', () => {
+  const b = block()
+  const guard = b.indexOf("if (AUTH.mode !== 'pairing') {")
+  assert.ok(guard >= 0 && guard < b.indexOf('idleUpdate = createIdleUpdate('), 'the auth mode is checked before the controller exists')
+  assert.match(b.slice(guard, b.indexOf('idleUpdate = createIdleUpdate(')), /log\('idle update: off: /)
 })
 
 test('it acts only as the pairing lock holder, never once shutdown has begun, on the daemon\'s own clock and boot', () => {
@@ -60,7 +79,8 @@ test('it acts only as the pairing lock holder, never once shutdown has begun, on
   assert.match(b, /fromCommit: selfUpdater\?\.runningCommitId \?\? null,/)
   assert.match(b, /autoUpdateEnabled: \(\) => isAutoUpdateEnabled\(process\.env\.BGOS_AUTO_UPDATE\),/)
   assert.match(b, /durations: IDLE_UPDATE_DURATIONS,/)
-  assert.match(server, /const IDLE_UPDATE_DURATIONS = scaledDurations\(scaleFromEnv\(process\.env\.BGOS_IDLE_UPDATE_SCALE\)\)/)
+  assert.match(server, /const IDLE_UPDATE_DURATIONS = scaledDurations\(scaleFromEnv\(process\.env\.BGOS_IDLE_UPDATE_SCALE, \{ backendUrl: BACKEND_URL \}\)\)/)
+  assert.ok(server.indexOf('const BACKEND_URL = ') < server.indexOf('const IDLE_UPDATE_DURATIONS = '), 'the backend is known before the scale is read')
 })
 
 test('the restart is the daemon\'s own ladder, through its two idle entry points, and nothing else', () => {
@@ -117,8 +137,19 @@ test('the new build validates on live evidence: startup, a heartbeat that landed
   assert.match(b, /deaf: \(\) => currentUnresponsiveError\(Date\.now\(\)\) !== null,/)
   assert.match(b, /loginExpired: \(\) => currentAccountError\(Date\.now\(\)\) !== null,/)
   assert.match(b, /requestHeartbeat: \(\) => versionHeartbeat\?\.sendNow\(\),/)
-  // Only a POST that resolved stamps it: bgosCall throws on a refusal.
-  assert.match(server, /post: async \(path: string, body: Record<string, unknown>\) => \{\n\s+const result = await bgosPost\(path, body\)\n\s+if \(path === 'integrations\/heartbeat'\) heartbeatOkAtMs = Date\.now\(\)\n\s+return result\n\s+\},/)
+  // Only a POST that resolved stamps it (bgosCall throws on a refusal), and only a beat that carried this build's
+  // version: a status-only beat says nothing about which build reached the backend.
+  const post = server.indexOf('post: async (path: string, body: Record<string, unknown>) => {')
+  assert.ok(post >= 0, 'the heartbeat post moved')
+  const wrapper = server.slice(post, server.indexOf('\n      },\n', post))
+  assert.match(wrapper, /const result = await bgosPost\(path, body\)/)
+  assert.match(wrapper, /if \(body\.daemonVersion === RUNNING_VERSION\) heartbeatOkAtMs = Date\.now\(\)/)
+  assert.doesNotMatch(wrapper, /if \(path === 'integrations\/heartbeat'\) heartbeatOkAtMs = Date\.now\(\)/)
+  // A heartbeat that could not reach the backend (no answer, or a 5xx) holds the deadline; any beat that lands lifts it.
+  assert.match(wrapper, /heartbeatUnreachableSinceMs = null/)
+  assert.match(wrapper, /isBackendUnreachableError\(err\)/)
+  assert.match(b, /backendUnreachable: \(\) => heartbeatUnreachableSinceMs !== null,/)
+  assert.match(b, /monotonicNow: \(\) => performance\.now\(\),/)
 })
 
 test('the report is a fourth lastError producer, after the credential, the login and the deaf verdict', () => {
@@ -145,6 +176,7 @@ test('the readings come from the host module: the launcher claim, the unattended
   assert.match(b, /markerMtimeMs: \(\) => readMarkerMtimeMs\(\{ stateDir, fs \}\),/)
   assert.match(b, /unattendedInputs: \(\) => readUnattendedInputs\(\{ platform: process\.platform, home: homedir\(\), assistantId: ASSISTANT_ID, stateDir, fs \}\),/)
   assert.match(b, /readPersonAttached\(\{\n?\s*platform: process\.platform,/)
+  assert.match(b, /keepalive: authority\.kind === 'keepalive',/)
   assert.match(b, /watcherSweepActive: \(\) => readWatcherSweepActive\(\{ home: homedir\(\), fs, now: Date\.now\(\), freshMs: IDLE_UPDATE_DURATIONS\.watcherFreshMs \}\),/)
   assert.match(b, /wakeSchedule: \(\) => readWakeSchedule\(\(path\) => bgosPeerGet\(path\)\),/)
   assert.match(b, /sessionId: async \(\) => readTextOrNull\(pathJoin\(stateDir, SESSION_ID_FILE_NAME\)\)\?\.trim\(\) \|\| null,/)
@@ -159,6 +191,8 @@ test('the rollback: the marketplace through the host module and the clone throug
   assert.match(body, /rollbackMarketplaceInstall\(\{/)
   assert.match(body, /installedPluginsPath: installedPluginsPath\(CLAUDE_CONFIG_DIR\),/)
   assert.match(body, /setAutoUpdate: \(\) => ensureMarketplaceAutoUpdate\(\{ configDir: CLAUDE_CONFIG_DIR, marketplace, enabled: false \}\)/)
+  // Its own line: the setAutoUpdate line above names the config folder too, for another call.
+  assert.match(body, /^\s+configDir: CLAUDE_CONFIG_DIR,$/m, 'the hold records the config folder it switched off')
   assert.match(body, /selfUpdater\.rollbackCheckoutTo\(record\.fromCommit\)/)
   assert.doesNotMatch(body, /process\.exit|attemptRollback/)
   assert.match(block(), /rollbackInstall: \(record: any\) => idleRollbackInstall\(record\),/)
@@ -177,4 +211,5 @@ test('the boot enrolment holds Claude Code\'s own update while the latest is lat
   assert.match(step, /badVersions: listHeldBadVersions\(\{ machineDir: IDLE_UPDATE_MACHINE_DIR, fs: nodeIdleUpdateFs\(\) \}\),/)
   assert.match(step, /marketplaceName && updatesAllowed && enrolment !== 'hold'/)
   assert.match(step, /reclaim: enrolment === 'reclaim',/)
+  assert.match(step.slice(decide, ensure), /^\s+configDir: CLAUDE_CONFIG_DIR,$/m)
 })

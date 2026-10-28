@@ -104,6 +104,7 @@ test('the unattended inputs: this HOME\'s tmux sockets, run.sh, launch-status an
   assert.equal(got.ownSockets[1], 'hoai-912')
   assert.deepEqual(got.launchStatus, { outcome: 'live', mtimeMs: NOW - 170 * MIN })
   assert.deepEqual(got.runAgentVbs, { text: 'WScript.Quit shell.Run("x", 0, True)\n', mtimeMs: NOW - 5 * 60 * MIN })
+  assert.equal(got.runAgentVbsPath, `${STATE}/run-agent.vbs`)
 })
 
 test('nothing on disk: every input is empty, never a guess', () => {
@@ -175,7 +176,27 @@ test('the keepalive\'s own session on the default server counts too', async () =
   const attached = tmuxExec({ [`list-clients -t =${session} -F #{client_readonly}`]: { code: 0, stdout: '0\n' } })
   assert.equal(await m.readPersonAttached({ platform: 'darwin', sockets: SOCKETS, keepaliveSession: session, tmuxPath: '/usr/bin/tmux', exec: attached.exec, env: {} }), true)
   const gone = tmuxExec({ [`list-clients -t =${session} -F #{client_readonly}`]: { code: 1, stderr: "can't find session: agent-912" } })
-  assert.equal(await m.readPersonAttached({ platform: 'darwin', sockets: SOCKETS, keepaliveSession: session, tmuxPath: '/usr/bin/tmux', exec: gone.exec, env: {} }), false)
+  assert.equal(await m.readPersonAttached({ platform: 'darwin', sockets: SOCKETS, keepalive: true, keepaliveSession: session, tmuxPath: '/usr/bin/tmux', exec: gone.exec, env: {} }), null, 'a label tmux cannot find proves nobody absent')
+  const noServer = tmuxExec({})
+  assert.equal(await m.readPersonAttached({ platform: 'darwin', sockets: SOCKETS, keepalive: true, keepaliveSession: session, tmuxPath: '/usr/bin/tmux', exec: noServer.exec, env: {} }), null, 'a keepalive on another server is not on the default one')
+})
+
+test('a keepalive with no session declared and no tmux of its own to ask is unknown, which waits', async () => {
+  const t = tmuxExec({})
+  assert.equal(await need().readPersonAttached({ platform: 'linux', sockets: SOCKETS, keepalive: true, keepaliveSession: null, tmuxPath: '/usr/bin/tmux', exec: t.exec, env: {} }), null)
+})
+
+test('a keepalive is asked on the tmux server and session the daemon itself runs in (TMUX, TMUX_PANE), first', async () => {
+  const m = need()
+  const env = { TMUX: '/private/tmp/tmux-501/default,4242,0', TMUX_PANE: '%3' }
+  const display = '-S /private/tmp/tmux-501/default display -p -t %3 #{session_name}'
+  const list = '-S /private/tmp/tmux-501/default list-clients -t =kc-agent -F #{client_readonly}'
+  const typing = tmuxExec({ [display]: { code: 0, stdout: 'kc-agent\n' }, [list]: { code: 0, stdout: '0\n' } })
+  assert.equal(await m.readPersonAttached({ platform: 'darwin', sockets: SOCKETS, keepalive: true, keepaliveSession: 'a stale label', tmuxPath: '/usr/bin/tmux', exec: typing.exec, env }), true)
+  const viewing = tmuxExec({ [display]: { code: 0, stdout: 'kc-agent\n' }, [list]: { code: 0, stdout: '1\n' } })
+  assert.equal(await m.readPersonAttached({ platform: 'darwin', sockets: SOCKETS, keepalive: true, keepaliveSession: null, tmuxPath: '/usr/bin/tmux', exec: viewing.exec, env }), false)
+  const unnamed = tmuxExec({ [display]: { code: 1, stderr: 'no current target' } })
+  assert.equal(await m.readPersonAttached({ platform: 'darwin', sockets: SOCKETS, keepalive: true, keepaliveSession: null, tmuxPath: '/usr/bin/tmux', exec: unnamed.exec, env }), null)
 })
 
 // -- The watcher's sweep ------------------------------------------------------------------------
@@ -190,6 +211,12 @@ test('the watcher sweep is active only when enabled and written in the last few 
   assert.equal(m.readWatcherSweepActive({ home: HOME, fs: at(NOW - 1 * MIN, false), now: NOW, freshMs: 5 * MIN }), false)
   assert.equal(m.readWatcherSweepActive({ home: HOME, fs: memFs({ [WATCHER_STATE]: 'null' }), now: NOW, freshMs: 5 * MIN }), false)
   assert.equal(m.readWatcherSweepActive({ home: HOME, fs: memFs(), now: NOW, freshMs: 5 * MIN }), false)
+})
+
+test('a watcher state stamped in the future (a clock that jumped back) is active: the watcher may well be sweeping', () => {
+  const m = need()
+  const fs = memFs({ [WATCHER_STATE]: JSON.stringify({ schemaVersion: 1, updatedAt: new Date(NOW + 10 * MIN).toISOString(), enabled: true }) })
+  assert.equal(m.readWatcherSweepActive({ home: HOME, fs, now: NOW, freshMs: 5 * MIN }), true)
 })
 
 // -- The wake schedule --------------------------------------------------------------------------
@@ -226,14 +253,24 @@ test('the versions latched bad on this computer are the X.Y.Z folders with a bad
 
 test('the boot enrolment: held while the latest is bad here, taken back only from a hold this rollback wrote', () => {
   const m = need()
-  const hold = JSON.stringify({ marketplace: 'hoai', version: '0.81.0', at: '2026-10-28T10:00:00.000Z' })
-  assert.equal(m.decideEnrolment({ holdRaw: null, marketplace: 'hoai', latestKnownVersion: '0.81.0', badVersions: ['0.81.0'] }), 'hold')
-  assert.equal(m.decideEnrolment({ holdRaw: hold, marketplace: 'hoai', latestKnownVersion: '0.81.0', badVersions: ['0.81.0'] }), 'hold')
-  assert.equal(m.decideEnrolment({ holdRaw: hold, marketplace: 'hoai', latestKnownVersion: null, badVersions: ['0.81.0'] }), 'hold')
-  assert.equal(m.decideEnrolment({ holdRaw: hold, marketplace: 'hoai', latestKnownVersion: '0.81.1', badVersions: ['0.81.0'] }), 'reclaim')
-  assert.equal(m.decideEnrolment({ holdRaw: null, marketplace: 'hoai', latestKnownVersion: '0.81.1', badVersions: ['0.81.0'] }), 'normal')
-  assert.equal(m.decideEnrolment({ holdRaw: hold, marketplace: 'other', latestKnownVersion: '0.81.1', badVersions: [] }), 'normal')
-  assert.equal(m.decideEnrolment({ holdRaw: '{ junk', marketplace: 'hoai', latestKnownVersion: '0.81.1', badVersions: [] }), 'normal')
+  const hold = JSON.stringify({ marketplace: 'hoai', configDir: '/Users/a/.claude', version: '0.81.0', at: '2026-10-28T10:00:00.000Z' })
+  const configDir = '/Users/a/.claude'
+  assert.equal(m.decideEnrolment({ holdRaw: null, marketplace: 'hoai', latestKnownVersion: '0.81.0', badVersions: ['0.81.0'], configDir }), 'hold')
+  assert.equal(m.decideEnrolment({ holdRaw: hold, marketplace: 'hoai', latestKnownVersion: '0.81.0', badVersions: ['0.81.0'], configDir }), 'hold')
+  assert.equal(m.decideEnrolment({ holdRaw: hold, marketplace: 'hoai', latestKnownVersion: null, badVersions: ['0.81.0'], configDir }), 'hold')
+  assert.equal(m.decideEnrolment({ holdRaw: hold, marketplace: 'hoai', latestKnownVersion: '0.81.1', badVersions: ['0.81.0'], configDir }), 'reclaim')
+  assert.equal(m.decideEnrolment({ holdRaw: null, marketplace: 'hoai', latestKnownVersion: '0.81.1', badVersions: ['0.81.0'], configDir }), 'normal')
+  assert.equal(m.decideEnrolment({ holdRaw: hold, marketplace: 'other', latestKnownVersion: '0.81.1', badVersions: [], configDir }), 'normal')
+  assert.equal(m.decideEnrolment({ holdRaw: '{ junk', marketplace: 'hoai', latestKnownVersion: '0.81.1', badVersions: [], configDir }), 'normal')
+})
+
+test('the boot enrolment takes a hold back only in the Claude config folder that rollback switched off', () => {
+  const m = need()
+  const hold = JSON.stringify({ marketplace: 'hoai', configDir: '/Users/a/.claude', version: '0.81.0', at: '2026-10-28T10:00:00.000Z' })
+  const at = { holdRaw: hold, marketplace: 'hoai', latestKnownVersion: '0.81.1', badVersions: ['0.81.0'] }
+  assert.equal(m.decideEnrolment({ ...at, configDir: '/Users/a/.claude' }), 'reclaim')
+  assert.equal(m.decideEnrolment({ ...at, configDir: '/Users/a/.claude-b' }), 'normal', 'another config folder\'s false is a person\'s')
+  assert.equal(m.decideEnrolment({ ...at, holdRaw: JSON.stringify({ marketplace: 'hoai', version: '0.81.0' }), configDir: '/Users/a/.claude' }), 'normal', 'a hold that names no folder reclaims nothing')
 })
 
 // -- The marketplace rollback -------------------------------------------------------------------
@@ -283,6 +320,43 @@ test('the marketplace rollback points installed_plugins.json back at the old fol
   assert.deepEqual({ marketplace: hold.marketplace, version: hold.version }, { marketplace: 'hoai', version: '0.81.0' })
 })
 
+test('the rollback\'s hold names the Claude config folder it switched off', async () => {
+  const w = rollbackWorld()
+  const result = await need().rollbackMarketplaceInstall({ record: RECORD, installedPluginsPath: INSTALLED, holdPath: `${MACHINE}/enrolment-hold.json`, marketplace: 'hoai', configDir: CONFIG, fs: w.fs, setAutoUpdate: w.setAutoUpdate, now: NOW })
+  assert.equal(result.ok, true)
+  assert.equal(JSON.parse(w.fs.readFile(`${MACHINE}/enrolment-hold.json`)!).configDir, CONFIG)
+})
+
+test('installed_plugins.json is read back after the write: one a concurrent claude overwrote is written again, one that never holds fails', async () => {
+  const m = need()
+  const flaky = rollbackWorld()
+  let clobbers = 1
+  const write = flaky.fs.writeAtomic
+  flaky.fs.writeAtomic = (p: string, text: string) => {
+    const ok = write(p, text)
+    if (p === INSTALLED && clobbers > 0) {
+      clobbers -= 1
+      write(p, installedDoc())
+    }
+    return ok
+  }
+  const healed = await m.rollbackMarketplaceInstall({ record: RECORD, installedPluginsPath: INSTALLED, holdPath: `${MACHINE}/enrolment-hold.json`, marketplace: 'hoai', configDir: CONFIG, fs: flaky.fs, setAutoUpdate: flaky.setAutoUpdate, now: NOW })
+  assert.equal(healed.ok, true, JSON.stringify(healed))
+  assert.equal(JSON.parse(flaky.fs.readFile(INSTALLED)!).plugins['hoai@hoai'][0].version, '0.80.0')
+  const stuck = rollbackWorld()
+  const put = stuck.fs.writeAtomic
+  stuck.fs.writeAtomic = (p: string, text: string) => (p === INSTALLED ? put(p, installedDoc()) : put(p, text))
+  const lost = await m.rollbackMarketplaceInstall({ record: RECORD, installedPluginsPath: INSTALLED, holdPath: `${MACHINE}/enrolment-hold.json`, marketplace: 'hoai', configDir: CONFIG, fs: stuck.fs, setAutoUpdate: stuck.setAutoUpdate, now: NOW })
+  assert.deepEqual(lost, { ok: false, reason: 'not_persisted' })
+  assert.deepEqual(stuck.autoUpdate, [], 'nothing more is changed once the install could not be pointed back')
+})
+
+test('a switch-off of Claude Code\'s own update that did not persist fails the rollback: no restart into a reinstall', async () => {
+  const w = rollbackWorld({ setResult: { changed: false, reason: 'not_persisted' } })
+  const result = await need().rollbackMarketplaceInstall({ record: RECORD, installedPluginsPath: INSTALLED, holdPath: `${MACHINE}/enrolment-hold.json`, marketplace: 'hoai', configDir: CONFIG, fs: w.fs, setAutoUpdate: w.setAutoUpdate, now: NOW })
+  assert.deepEqual(result, { ok: false, reason: 'auto_update_still_on' })
+})
+
 test('the old folder gone, or holding another version: refused, nothing written', async () => {
   const m = need()
   for (const over of [{ noFromRoot: true }, { fromRootVersion: '0.79.0' }]) {
@@ -312,11 +386,10 @@ test('auto-update the person had already switched off is theirs: no hold is reco
   assert.equal(w.fs.readFile(`${MACHINE}/enrolment-hold.json`), null)
 })
 
-test('a settings write that fails still leaves the install pointed back, and says so', async () => {
+test('a settings write that fails still leaves the install pointed back, and fails the rollback so nothing restarts into a reinstall', async () => {
   const w = rollbackWorld({ setThrows: true })
   const result = await need().rollbackMarketplaceInstall({ record: RECORD, installedPluginsPath: INSTALLED, holdPath: `${MACHINE}/enrolment-hold.json`, marketplace: 'hoai', fs: w.fs, setAutoUpdate: w.setAutoUpdate, now: NOW })
-  assert.equal(result.ok, true)
-  assert.match(String(result.enrolment), /error/)
+  assert.deepEqual(result, { ok: false, reason: 'auto_update_still_on' })
   assert.equal(JSON.parse(w.fs.readFile(INSTALLED)!).plugins['hoai@hoai'][0].version, '0.80.0')
 })
 
