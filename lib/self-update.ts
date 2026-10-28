@@ -1770,93 +1770,9 @@ export class SelfUpdater {
 
   async attemptRollback(): Promise<void> {
     if (!this.state.rollbackPending || !this.state.previousCommit) return
-    let lockResult = tryAcquireUpdateLock(this.lockPath, this.now())
-    if (lockResult.kind === 'held') {
-      this.opts.log('Auto-update rollback is being handled by another daemon. Waiting safely.')
-      while (lockResult.kind === 'held') {
-        await this.delay(UPDATE_DRAIN_POLL_MS)
-        lockResult = tryAcquireUpdateLock(this.lockPath, this.now())
-      }
-    }
-    const lock = lockResult
+    const lock = await this.acquireRollbackLock()
     try {
-      const status = await git(this.runner, this.opts.rootDir, [
-        'status',
-        '--porcelain',
-        '--untracked-files=normal',
-      ])
-      if (porcelainIndicatesDirtyTree(status)) {
-        this.opts.log('Auto-update rollback skipped because the checkout has local changes.')
-        return
-      }
-      await git(this.runner, this.opts.rootDir, [
-        'cat-file',
-        '-e',
-        `${this.state.previousCommit}^{commit}`,
-      ])
-      const dependencyChanges = this.state.targetCommit
-        ? await git(this.runner, this.opts.rootDir, [
-            'diff',
-            '--name-only',
-            this.state.previousCommit,
-            this.state.targetCommit,
-            '--',
-            'bun.lock',
-            'package.json',
-          ])
-        : ''
-      if (
-        !saveSharedUpdateSafety(this.safetyPath, {
-          schemaVersion: 1,
-          disabled: true,
-          resetArmed: false,
-        })
-      ) {
-        throw new Error('could not arm the shared rollback safety latch before checkout')
-      }
-      try {
-        await git(
-          this.runner,
-          this.opts.rootDir,
-          ['checkout', '--detach', this.state.previousCommit],
-          120_000,
-        )
-        if (dependencyChanges.length > 0) {
-          await this.runner('bun', ['install', '--frozen-lockfile'], {
-            cwd: this.opts.rootDir,
-            timeoutMs: 120_000,
-          })
-        }
-      } catch (rollbackError) {
-        try {
-          await git(
-            this.runner,
-            this.opts.rootDir,
-            ['checkout', '--detach', this.state.targetCommit!],
-            120_000,
-          )
-          if (dependencyChanges.length > 0) {
-            await this.runner('bun', ['install', '--frozen-lockfile'], {
-              cwd: this.opts.rootDir,
-              timeoutMs: 120_000,
-            })
-          }
-          this.opts.log(
-            'Auto-update rollback dependency restore failed. The target checkout was restored.',
-          )
-        } catch (restoreError) {
-          throw new Error(
-            `rollback failed and the target checkout could not be restored: ${errorText(restoreError)}`,
-          )
-        }
-        if (!saveSharedUpdateSafety(this.safetyPath, EMPTY_SHARED_UPDATE_SAFETY)) {
-          throw new Error(
-            `rollback failed after the target checkout was restored, ` +
-              `but the shared safety latch could not be cleared: ${errorText(rollbackError)}`,
-          )
-        }
-        throw rollbackError
-      }
+      if ((await this.checkoutPreviousCommit(this.state.previousCommit, this.state.targetCommit)) === 'dirty') return
       const transition = transitionRollbackState(this.state, {
         kind: 'rollback-succeeded',
       })
@@ -1878,6 +1794,135 @@ export class SelfUpdater {
     } finally {
       lock.release()
     }
+  }
+
+  /**
+   * The idle update's clone rollback (lib/idle-update.mjs, docs/idle-update/DESIGN.md):
+   * the same steps as attemptRollback (the shared lock, the dirty tree
+   * refusal, a detached checkout of a known commit, the dependency reinstall,
+   * the shared safety latch that pauses this checkout's updates, the target
+   * restored when a step fails) for the commit the old daemon was running,
+   * and WITHOUT the exit: the caller restarts through the ladder (a daemon
+   * never exits to restart itself, 2026-09-11). Never throws.
+   */
+  async rollbackCheckoutTo(previousCommit: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+    if (typeof previousCommit !== 'string' || !SHA_RE.test(previousCommit)) return { ok: false, reason: 'not_a_commit' }
+    const lock = await this.acquireRollbackLock()
+    try {
+      const targetCommit = await git(this.runner, this.opts.rootDir, ['rev-parse', 'HEAD'])
+      if (!SHA_RE.test(targetCommit)) return { ok: false, reason: 'head_unreadable' }
+      if ((await this.checkoutPreviousCommit(previousCommit, targetCommit)) === 'dirty') return { ok: false, reason: 'dirty_tree' }
+      this.opts.log(
+        `Auto-update rolled this checkout back to ${previousCommit.slice(0, 12)} for the idle update; ` +
+          'updates stay paused for this checkout until BGOS_AUTO_UPDATE is set off, then on again.',
+      )
+      return { ok: true }
+    } catch (error) {
+      this.opts.log(`Idle update rollback of the checkout failed and the daemon will continue: ${errorText(error)}`)
+      return { ok: false, reason: 'rollback_failed' }
+    } finally {
+      lock.release()
+    }
+  }
+
+  /** The shared update lock for a rollback, waited for while another daemon holds it. */
+  private async acquireRollbackLock() {
+    let lockResult = tryAcquireUpdateLock(this.lockPath, this.now())
+    if (lockResult.kind === 'held') {
+      this.opts.log('Auto-update rollback is being handled by another daemon. Waiting safely.')
+      while (lockResult.kind === 'held') {
+        await this.delay(UPDATE_DRAIN_POLL_MS)
+        lockResult = tryAcquireUpdateLock(this.lockPath, this.now())
+      }
+    }
+    return lockResult
+  }
+
+  /**
+   * Put the checkout back on `previousCommit`, under the caller's lock:
+   * 'dirty' (nothing touched) when the tree has local changes, 'done' when it
+   * is back. Throws when a step fails; the target is restored and the shared
+   * safety latch cleared first when the checkout itself failed.
+   */
+  private async checkoutPreviousCommit(previousCommit: string, targetCommit: string | null): Promise<'done' | 'dirty'> {
+    const status = await git(this.runner, this.opts.rootDir, [
+      'status',
+      '--porcelain',
+      '--untracked-files=normal',
+    ])
+    if (porcelainIndicatesDirtyTree(status)) {
+      this.opts.log('Auto-update rollback skipped because the checkout has local changes.')
+      return 'dirty'
+    }
+    await git(this.runner, this.opts.rootDir, [
+      'cat-file',
+      '-e',
+      `${previousCommit}^{commit}`,
+    ])
+    const dependencyChanges = targetCommit
+      ? await git(this.runner, this.opts.rootDir, [
+          'diff',
+          '--name-only',
+          previousCommit,
+          targetCommit,
+          '--',
+          'bun.lock',
+          'package.json',
+        ])
+      : ''
+    if (
+      !saveSharedUpdateSafety(this.safetyPath, {
+        schemaVersion: 1,
+        disabled: true,
+        resetArmed: false,
+      })
+    ) {
+      throw new Error('could not arm the shared rollback safety latch before checkout')
+    }
+    try {
+      await git(
+        this.runner,
+        this.opts.rootDir,
+        ['checkout', '--detach', previousCommit],
+        120_000,
+      )
+      if (dependencyChanges.length > 0) {
+        await this.runner('bun', ['install', '--frozen-lockfile'], {
+          cwd: this.opts.rootDir,
+          timeoutMs: 120_000,
+        })
+      }
+    } catch (rollbackError) {
+      try {
+        await git(
+          this.runner,
+          this.opts.rootDir,
+          ['checkout', '--detach', targetCommit!],
+          120_000,
+        )
+        if (dependencyChanges.length > 0) {
+          await this.runner('bun', ['install', '--frozen-lockfile'], {
+            cwd: this.opts.rootDir,
+            timeoutMs: 120_000,
+          })
+        }
+        this.opts.log(
+          'Auto-update rollback dependency restore failed. The target checkout was restored.',
+        )
+      } catch (restoreError) {
+        throw new Error(
+          `rollback failed and the target checkout could not be restored: ${errorText(restoreError)}`,
+        )
+      }
+      if (!saveSharedUpdateSafety(this.safetyPath, EMPTY_SHARED_UPDATE_SAFETY)) {
+        throw new Error(
+          `rollback failed after the target checkout was restored, ` +
+            `but the shared safety latch could not be cleared: ${errorText(rollbackError)}`,
+        )
+      }
+      throw rollbackError
+    }
+    return 'done'
   }
 }
 
