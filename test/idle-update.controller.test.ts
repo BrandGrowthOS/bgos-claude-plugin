@@ -888,6 +888,23 @@ test('an outage before startup completed is not subtracted again from the deadli
   assert.equal(await a.c.tick(), 'rollback', 'five minutes since startup completed, none of them down')
 })
 
+test('an expired login before startup completed is not subtracted again from the deadline after it', async () => {
+  const disk = await afterAsk()
+  const a = agent(disk, { running: '0.81.0', staged: null })
+  a.s.startupComplete = false
+  a.s.loginExpired = true
+  assert.equal(await a.c.tick(), 'validating')
+  for (let i = 0; i < 10; i += 1) {
+    disk.clock.now += 30 * SEC
+    assert.equal(await a.c.tick(), 'validating')
+  }
+  a.s.loginExpired = false
+  a.s.startupComplete = true
+  assert.equal(await a.c.tick(), 'validating')
+  disk.clock.now += 5 * MIN + SEC
+  assert.equal(await a.c.tick(), 'rollback', 'five minutes since startup completed, none of them expired')
+})
+
 test('a break in liveness restarts the 60 s hold', async () => {
   const disk = await afterAsk()
   const a = agent(disk, { running: '0.81.0', staged: null })

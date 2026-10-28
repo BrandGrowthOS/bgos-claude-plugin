@@ -588,6 +588,8 @@ test('validation: each missing proof keeps it pending (a deaf build never valida
     { heartbeatOkAtMs: null },
     { beaconAtMs: null },
     { beaconAtMs: NOW - 3 * MIN },
+    // Touched during the hold, but not since: the build went deaf after it.
+    { arrivedAtMs: NOW - 4 * MIN, liveSinceMs: NOW - 3 * MIN, beaconAtMs: NOW - 150 * SEC },
     { deaf: true },
     { arrivedAtMs: NOW - 30 * SEC },
     { liveSinceMs: null },
