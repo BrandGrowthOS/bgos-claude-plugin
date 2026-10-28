@@ -126,3 +126,8 @@ test('only a full commit id is accepted', async () => {
   }
   assert.equal(t.calls.some((c) => c.startsWith('git checkout') || c.startsWith('git status')), false)
 })
+
+test('the commit this daemon runs is readable, so the idle update records where a rollback goes back to', async () => {
+  const t = await updaterOn()
+  assert.equal(t.updater.runningCommitId, COMMIT_NEW, 'SelfUpdater.runningCommitId is missing: the record would have no fromCommit to roll a clone back to')
+})

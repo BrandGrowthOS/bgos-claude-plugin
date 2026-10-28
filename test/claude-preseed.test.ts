@@ -523,6 +523,19 @@ test('an explicit autoUpdate:false is a decision, and a daemon boot must not ove
   assert.equal(fs.files.get('/cfg/settings.json'), before, 'the file must not be rewritten at all')
 })
 
+test('a false the idle update rollback wrote is taken back only when its caller says so (reclaim)', () => {
+  // The rollback holds Claude Code's own update off so the relaunch does not reinstall the bad build
+  // (lib/idle-update-host.mjs rollbackMarketplaceInstall, which records the hold). Once a newer
+  // version is published the boot enrolment takes back ITS OWN false; a person's false never moves.
+  const held = JSON.stringify({ extraKnownMarketplaces: { hoai: { source: {}, autoUpdate: false } } })
+  const plain = memFs({ '/cfg/settings.json': held })
+  assert.equal(ensureMarketplaceAutoUpdate({ configDir: '/cfg', marketplace: 'hoai', fs: plain }).reason, 'declined')
+  const fs = memFs({ '/cfg/settings.json': held })
+  const r = ensureMarketplaceAutoUpdate({ configDir: '/cfg', marketplace: 'hoai', reclaim: true, fs } as any)
+  assert.equal(r.changed, true, JSON.stringify(r))
+  assert.equal(JSON.parse(fs.files.get('/cfg/settings.json')!).extraKnownMarketplaces.hoai.autoUpdate, true)
+})
+
 test('a marketplace named __proto__ cannot reach Object.prototype', () => {
   // The name is not ours: it comes off the filesystem, from a directory under the plugin cache. So
   // a directory called __proto__ is an input, and an unguarded entries[name] would both READ a
