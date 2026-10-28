@@ -186,6 +186,32 @@ export const SCHEDULED_RESTART_RPC = 'scheduled-auto-update'
  */
 export const HOOK_RESTART_RPC = 'hook-registration'
 
+/**
+ * The rpc ids of the idle update's restart onto a staged build and of its
+ * rollback restart (lib/idle-update.mjs). Nobody asked for either, so both
+ * report to the log only, like the scheduled and hook restarts.
+ */
+export const IDLE_UPDATE_RESTART_RPC = 'idle-update'
+export const IDLE_ROLLBACK_RESTART_RPC = 'idle-update-rollback'
+
+/** Log-only rpc ids, and how their lines are labelled. */
+const LOG_ONLY_RPC_LABELS: Record<string, string> = {
+  [SCHEDULED_RESTART_RPC]: 'auto-update restart',
+  [HOOK_RESTART_RPC]: 'hook registration restart',
+  [IDLE_UPDATE_RESTART_RPC]: 'idle update restart',
+  [IDLE_ROLLBACK_RESTART_RPC]: 'idle update rollback restart',
+}
+
+/**
+ * The hoai launcher proven to supervise THIS daemon's session
+ * (lib/idle-update.mjs proveOwnLauncher and proveUnattended, read by the idle
+ * controller right before it asks): its pid, and the marker it takes.
+ */
+export interface OwnLauncherProof {
+  markerPath: string
+  launcherPid: number
+}
+
 /** The backend caps progress messages at 300 chars (design 2.2). */
 export const PROGRESS_MESSAGE_MAX_CHARS = 300
 
@@ -313,10 +339,11 @@ export class UpdateRpcHandler {
   /** Progress is reporting, never control flow: a failed POST is logged and
    *  the update continues (the backend's own timeouts cover a silent rpc). */
   private async progress(rpcId: string, body: UpdateRpcProgress): Promise<void> {
-    if (rpcId === SCHEDULED_RESTART_RPC || rpcId === HOOK_RESTART_RPC) {
+    const label = LOG_ONLY_RPC_LABELS[rpcId]
+    if (label) {
       // Nobody asked, so there is nobody to answer. Posting would be a
       // progress report for an rpc the backend never issued.
-      this.deps.log(`${rpcId === HOOK_RESTART_RPC ? 'hook registration restart' : 'auto-update restart'}: ${body.stage}`)
+      this.deps.log(`${label}: ${body.stage}`)
       return
     }
     try {
@@ -510,7 +537,7 @@ export class UpdateRpcHandler {
    * walk, lib/update-readiness.ts resolveKeepalive); the service rung is a name
    * that is checked for ownership here, one rung later.
    */
-  private async restartLadder(rpcId: string, targetVersion: string | null): Promise<boolean> {
+  private async restartLadder(rpcId: string, targetVersion: string | null, ownLauncher: OwnLauncherProof | null = null): Promise<boolean> {
     const versionField = targetVersion ? { targetVersion } : {}
     const authority = this.deps.restartAuthority()
     if (authority.kind === 'keepalive') {
@@ -553,7 +580,24 @@ export class UpdateRpcHandler {
       this.armRestartWatchdog(rpcId)
       return true
     }
-    if (authority.kind === 'service') {
+    if (authority.kind === 'service' && ownLauncher) {
+      // The own launcher rung, for the idle update and its rollback ONLY (the
+      // only callers that pass a proof; they alone have the idle gates). A
+      // gen-2 bgos-agent job starts hoai inside a detached tmux server, so the
+      // job never owns the daemon, but the hoai under it does: the marker it
+      // polls ends claude and relaunches it with --resume <pin>. Still never a
+      // kickstart: the job is left alone.
+      await this.progress(rpcId, { stage: 'restarting', ...versionField })
+      if (this.deps.writeMarker(ownLauncher.markerPath)) {
+        this.deps.log(
+          `update_rpc: the ${authority.service.kind} job does not own this process; restart marker written for ` +
+            `this session's own hoai launcher (pid ${ownLauncher.launcherPid}): ${ownLauncher.markerPath}`,
+        )
+        this.armRestartWatchdog(rpcId)
+        return true
+      }
+      this.deps.log('update_rpc: could not write the restart marker for the own hoai launcher; staging instead')
+    } else if (authority.kind === 'service') {
       // Re-resolved after the drain and the install: a job that does not hold
       // this process must never be kicked (the mute of 2026-09-11). Staging is
       // the safe outcome; the update is on disk for the next real restart.
@@ -609,6 +653,27 @@ export class UpdateRpcHandler {
     return this.restartLadder(HOOK_RESTART_RPC, null)
   }
 
+  /**
+   * Restart an IDLE agent onto the build staged for it (lib/idle-update.mjs
+   * decides when: every gate, the lease and the canary). The same ladder, plus
+   * one rung no other caller gets: when the service authority does not own
+   * this process, the hoai launcher proven to supervise this session takes the
+   * marker. `ownLauncher` is that proof, or null (then the ladder is exactly
+   * the scheduled one). True when a restart was taken on, false when staged.
+   */
+  async restartForStagedUpdate(targetVersion: string, ownLauncher: OwnLauncherProof | null): Promise<boolean> {
+    return this.restartLadder(IDLE_UPDATE_RESTART_RPC, targetVersion, ownLauncher)
+  }
+
+  /**
+   * Restart back onto the old build after the canary rolled the shared
+   * install back (lib/idle-update.mjs). The same ladder and rung as
+   * restartForStagedUpdate.
+   */
+  async restartForRollback(previousVersion: string, ownLauncher: OwnLauncherProof | null): Promise<boolean> {
+    return this.restartLadder(IDLE_ROLLBACK_RESTART_RPC, previousVersion, ownLauncher)
+  }
+
   /** Is the job a service authority names actually holding this process?
    *  Pure decision over raw readings; a refusal logs the handle and both
    *  pids so the operator sees what was declared and what really holds us. */
@@ -645,8 +710,11 @@ export class UpdateRpcHandler {
         (rpcId === HOOK_RESTART_RPC
           ? 'Un-draining so the daemon is not left deaf; the hook restart is single use, so ' +
             'restart this agent by hand to load the private turn hook'
-          : 'this process is still running the OLD code. Un-draining so the daemon is not left deaf; ' +
-            'the update stays on disk as pendingRestartVersion until something really restarts this process'),
+          : rpcId === IDLE_UPDATE_RESTART_RPC || rpcId === IDLE_ROLLBACK_RESTART_RPC
+            ? 'this process is still running the code it started with. Un-draining so the daemon is not left deaf; ' +
+              'the idle update records it and backs off'
+            : 'this process is still running the OLD code. Un-draining so the daemon is not left deaf; ' +
+              'the update stays on disk as pendingRestartVersion until something really restarts this process'),
     )
     this.deps.setDrainMode(false)
     await this.progress(rpcId, { stage: 'error', message: RESTART_DID_NOT_ARRIVE })
