@@ -107,6 +107,7 @@ import {
   IDLE_UPDATE_FILE_NAME,
   createIdleUpdate,
   isBackendAnswer,
+  isCleanEnd,
   isVersionHeldBad,
   nodeIdleUpdateFs,
   scaleFromEnv,
@@ -17514,8 +17515,9 @@ async function main(): Promise<void> {
     log(describeShutdownCause(cause))
     selfUpdater?.markGracefulStop()
     // A clean end (its claude went away): the idle update's record says so, so the next boot of a new build being
-    // validated is not read as a crash. Never on a fatal error (that path does not come through here).
-    idleUpdate?.noteEnded()
+    // validated is not read as a crash. Never on a fault: uncaughtException and main().catch do not come through
+    // here, and a broken pipe from the fault handlers counts only once stdin has ended too.
+    idleUpdate?.noteEnded(isCleanEnd(cause, { stdinEnded: stdinHasEnded(process.stdin) }))
     stopHookIntake()
     // A clean stop takes the published state away (only when it is ours), so
     // the watcher never reads a dead daemon's "idle" as a live one's.
