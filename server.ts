@@ -461,6 +461,7 @@ import {
   marketplaceChannelSpec,
 } from './bin/bgos-install-method.mjs'
 import { resolveChannelSpec } from './bin/hoai-core.mjs'
+import { threadOptionsWarning } from './bin/bgos-launch.mjs'
 import {
   UpdateStreamConsumer,
   beaconWatchdog,
@@ -17222,6 +17223,10 @@ async function main(): Promise<void> {
     }),
   )
   if (ENV_ONLY_IDENTITY_WARN) log(`WARN ${ENV_ONLY_IDENTITY_WARN}`)
+  // Windows only (board rows a8646712 and dc37e2ac): started without the launcher's
+  // thread options, this daemon's committed memory grows while it runs.
+  const threadOptionsWarn = threadOptionsWarning({ env: process.env, platform: process.platform })
+  if (threadOptionsWarn) log(`WARN ${threadOptionsWarn}`)
   const noHomeWarn = formatNoHomeWarning(HOME_BINDING, ASSISTANT_ID)
   if (noHomeWarn) log(`WARN ${noHomeWarn}`)
   if (PAIRING_REJECTION_WARN) log(`WARN ${PAIRING_REJECTION_WARN}`)
