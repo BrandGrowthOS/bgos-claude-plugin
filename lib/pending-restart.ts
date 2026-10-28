@@ -32,6 +32,13 @@
  * (the same root and reader the running version was captured with at boot)
  * against that running version is the answer.
  *
+ * WHY the latch (idle update, docs/idle-update/DESIGN.md). After the canary
+ * agent rolled a bad build back, Claude Code's startup update or a later pull
+ * can put that build on disk again. Every reader of this answer (the
+ * heartbeat, agent-state.json and so the watcher, a click) would then push it
+ * again. A version latched bad on this computer (lib/idle-update.mjs
+ * isVersionHeldBad) is therefore not pending; a newer one is.
+ *
  * Never throws: telemetry must never break a heartbeat. Each source is read
  * on its own guard, so one unreadable file cannot hide what another says.
  */
@@ -97,7 +104,21 @@ export function resolvePendingRestartVersion(input: {
   /** The version in the package.json of the root this daemon runs from, read
    *  now (not at boot), or null when it is missing or unreadable. */
   readCheckoutVersion: () => string | null | undefined
+  /** Is this version latched bad on this computer? Optional: absent holds
+   *  nothing. A reader that throws holds nothing either: the latch is a guard,
+   *  never a reason to hide an update. */
+  heldBad?: (version: string) => boolean
 }): string | null {
+  const pending = composePendingRestartVersion(input)
+  if (!pending || !input.heldBad) return pending
+  try {
+    return input.heldBad(pending) === true ? null : pending
+  } catch {
+    return pending
+  }
+}
+
+function composePendingRestartVersion(input: Parameters<typeof resolvePendingRestartVersion>[0]): string | null {
   try {
     if (input.installMethod === 'marketplace') {
       const installed = installedEntryFrom(parseJsonOrNull(input.readInstalledPlugins()))
