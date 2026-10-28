@@ -134,15 +134,55 @@ test('lease follow-up of #282, item 2: the retire keeps a live asker\'s card on 
   // The connected daemon's own lane verdict decides whether the asker is told (fresh review of the follow-up, Important 2).
   assert.match(retire, /const refused = ownerAnnounceRefused\(\{ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership\.isOthers\(ask\.chatId\) \}\)/)
   assert.match(retire, /if \(!askTracker\.retire\(ask\.askId, \{ withdrawn, tellAsker: !refused \}\)\) continue/)
-  assert.match(retire, /sendAskWithdrawn\(ask, withdrawn, \{ toAsker: false, via \}\)/)
+  assert.match(retire, /sendAskWithdrawn\(ask, withdrawn, \{ toAsker: false, via, retiredBecause \}\)/)
   const tick = fnBody('function heartbeatAskTracker(): void {', 600)
   assert.match(tick, /\n\s*tellRetiredOwnAsks\(\)\n\}/)
-  const tell = fnBody('function tellRetiredOwnAsks(): void {', 600)
-  assert.match(tell, /askTracker\.takeRetiredOwn\(\)\) sendAskWithdrawn\(ask, withdrawn, \{ toAsker: true, via: 'the ask tick' \}\)/)
+  const tell = fnBody('function tellRetiredOwnAsks(): void {', 900)
+  assert.match(tell, /send: \(ask, withdrawn\) => sendAskWithdrawn\(ask, withdrawn, \{ toAsker: true, via: 'the ask tick' \}\)/)
   assert.doesNotMatch(tell, /channelArmed|lockHeld/, 'the asker is passive by then')
 })
 
 test('lease follow-up of #282, rig: the retire still logs the line it always did (the rig and anyone reading the log match it)', () => {
-  const send = fnBody('function sendAskWithdrawn(ask: PendingAsk, withdrawn: number, opts: { toAsker: boolean; via: string }): void {', 2500)
+  const send = fnBody('function sendAskWithdrawn(ask: PendingAsk, withdrawn: number, opts: AskWithdrawnOpts): Promise<void> {', 2500)
   assert.match(send, /log\(`ask_withdrawn: retired group \$\{ask\.askId\} in chat \$\{ask\.chatId\} and told this session/)
+})
+
+test('gaps after #284, gap 1: the ask tick tells through lib/ask-retired-tell.ts with this session\'s channel presence, and a failed send rejects so the next tick sends it again', () => {
+  const tell = fnBody('function tellRetiredOwnAsks(): void {', 900)
+  assert.match(tell, /tellRetiredOwnOnTick\(\{\s*tracker: askTracker,\s*channelLoaded: channelPresence\(\)\.loaded,/)
+  const send = fnBody('function sendAskWithdrawn(ask: PendingAsk, withdrawn: number, opts: AskWithdrawnOpts): Promise<void> {', 2500)
+  assert.match(send, /return trackMessageOperation\(/)
+  assert.match(send, /\.catch\(\(err\) => \{\n\s*log\(`ask_withdrawn: group \$\{ask\.askId\} was retired, but telling this session failed: \$\{err\}`\)\n\s*throw err\n/)
+  // The connected session's own tell has nobody to retry it: its failure is logged and dropped.
+  const retire = fnBody('async function retireOrphanedAsks(via: string): Promise<void> {', 4000)
+  assert.match(retire, /sendAskWithdrawn\(ask, withdrawn, \{ toAsker: false, via, retiredBecause \}\)\.catch\(\(\) => \{/)
+})
+
+test('gaps after #284, gap 1: every tool result of this daemon carries the ask_withdrawn its session could not hear on a channel that is not loaded, wrapped as the event is', () => {
+  const handlerAt = server.indexOf('mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {')
+  const dispatch = server.indexOf('\n  return trackMessageOperation(async () => {\n  const rawArgs', handlerAt)
+  assert.ok(handlerAt > 0 && dispatch > handlerAt, 'the dispatch of every tool')
+  // With the call's own signal: a cancelled call's result is dropped by the SDK, so it carries no note (review, Important 2).
+  const then = '\n  }).then((result) => withRetiredOwnAskNotes(result, extra.signal))'
+  const end = server.indexOf(`${then}\n})\n`, dispatch)
+  assert.ok(end > dispatch, 'the dispatch result goes through withRetiredOwnAskNotes')
+  // The first top level close after the dispatch is the handler's own, right after the then.
+  assert.equal(server.indexOf('\n})\n', dispatch), end + then.length, 'inside the same handler')
+  const notes = fnBody('function withRetiredOwnAskNotes<', 2000)
+  assert.match(notes, /^function withRetiredOwnAskNotes<T>\(result: T, signal\?: AbortSignal\): T \{\n(\s*\/\/[^\n]*\n)*\s*if \(signal\?\.aborted \|\| /)
+  assert.match(notes, /retiredOwnNotes\(\{\s*tracker: askTracker,\s*channelLoaded: channelPresence\(\)\.loaded,/)
+  assert.match(notes, /askWithdrawnContent\(ask, withdrawn, \{ toAsker: true \}\)/)
+  // One builder for the event and the note: the lane check and the private tap wrapping are the event's.
+  const content = fnBody('function askWithdrawnContent(', 2000)
+  assert.match(content, /ownerAnnounceRefused\(\{ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership\.isOthers\(ask\.chatId\) \}\)/)
+  assert.match(content, /privateTapCard\(/)
+  assert.match(fnBody('function sendAskWithdrawn(ask: PendingAsk, withdrawn: number, opts: AskWithdrawnOpts): Promise<void> {', 2500), /askWithdrawnContent\(ask, withdrawn, opts\)/)
+})
+
+test('gaps after #284, gap 2: the connected session is told why the card was retired (its asker ended beside another session, ended with no restart taking the connection, or runs on without it)', () => {
+  const retire = fnBody('async function retireOrphanedAsks(via: string): Promise<void> {', 4000)
+  const at = retire.indexOf('const retiredBecause = askTracker.retiredBecause(ask)')
+  assert.ok(at > 0, 'read before the retire forgets the group')
+  assert.ok(at < retire.indexOf('askTracker.retire(ask.askId'))
+  assert.match(fnBody('function askWithdrawnContent(', 2000), /retiredBecause: opts\.retiredBecause/)
 })

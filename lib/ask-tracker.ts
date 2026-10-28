@@ -476,6 +476,43 @@ export function buildAskAnsweredEvent(
 }
 
 /**
+ * Why the connected daemon retired a card another process asked
+ * (AskTracker.retiredBecause; Data's gaps after #284, gap 2, and its fresh
+ * review, Important 1).
+ */
+export type AskRetiredBecause = 'asker_disconnected' | 'asker_ended_beside' | 'asker_ended'
+
+/**
+ * The connected session's words for each reason. A restart that overlapped
+ * its asker by about 40 to 60 s is marked as a session beside it: nothing
+ * the daemon can read tells the two apart (no launch id reaches it, the
+ * claude process differs across a relaunch, and the hook session id is known
+ * only to the lock holder), so nothing is kept for it and the connected
+ * session is told why. The answers it lists are for the record, never its own.
+ */
+function retiredWhy(because: AskRetiredBecause | undefined): string {
+  const record = ' What was answered is listed below for the record, not handed to this session as its own.'
+  if (because === 'asker_ended_beside') {
+    return (
+      'the session that asked it has ended after running beside another session of this agent, so no session ' +
+      'takes its answers as its own: one that ran beside it is another session, and a restart of it cannot be told from one.' +
+      record
+    )
+  }
+  if (because === 'asker_ended') {
+    return (
+      `the session that asked it has ended, and no restart of it took this agent's connection within ${ASK_ORPHAN_GRACE_MS / 60_000} minutes ` +
+      'to receive its answers.' +
+      record
+    )
+  }
+  if (because === 'asker_disconnected') {
+    return "the session that asked it runs on without this agent's connection, so its answers could not come back to it; that session is told too while it still runs." + record
+  }
+  return "the session that asked it can no longer receive the answers (it ended, or it no longer holds this agent's connection)."
+}
+
+/**
  * The ONE ask_withdrawn channel event of a card the connected daemon retired
  * because no daemon may hand its answers to the session that asked
  * (retirable): what the owner answered before it was retired, and which
@@ -485,10 +522,12 @@ export function buildAskAnsweredEvent(
  * value is a string (Data's recheck of #282, item 1; its fresh review, Minor 3).
  * `toAsker`: the same event for the session that asked, still running without
  * the connection when its card was retired (Data's gate notes on #282, item 2).
+ * `retiredBecause`: for the connected session, why (retiredWhy, and
+ * meta.retired_because); unknown keeps the old words.
  */
 export function buildAskWithdrawnEvent(
   ask: PendingAsk,
-  opts: { assistantId: string; withdrawn: number; ts?: string; toAsker?: boolean },
+  opts: { assistantId: string; withdrawn: number; ts?: string; toAsker?: boolean; retiredBecause?: AskRetiredBecause },
 ): { content: string; meta: Record<string, string> } {
   const rows = askResultRows(ask)
   const answered = rows.filter((_, i) => ask.answers[String(ask.questions[i].messageId)] !== undefined)
@@ -503,8 +542,7 @@ export function buildAskWithdrawnEvent(
   const lead = opts.toAsker
     ? `[ask_withdrawn] A question card this session posted was retired (ask_id=${ask.askId}): this session no longer ` +
       `holds this agent's connection, so its answers could not come back here, and the session that holds it retired it. ${closed}`
-    : `[ask_withdrawn] A question card this agent posted was retired (ask_id=${ask.askId}): the session that asked ` +
-      `it can no longer receive the answers (it ended, or it no longer holds this agent's connection). ${closed}`
+    : `[ask_withdrawn] A question card this agent posted was retired (ask_id=${ask.askId}): ${retiredWhy(opts.retiredBecause)} ${closed}`
   const content = [
     lead,
     `(in chat_id=${ask.chatId}, first question message_id=${first})`,
@@ -524,6 +562,7 @@ export function buildAskWithdrawnEvent(
       ask_id: String(ask.askId),
       answers: JSON.stringify(answered),
       withdrawn: String(opts.withdrawn),
+      ...(opts.toAsker || opts.retiredBecause === undefined ? {} : { retired_because: opts.retiredBecause }),
       assistant_id: String(opts.assistantId),
       ts: String(opts.ts ?? new Date().toISOString()),
     },
@@ -702,8 +741,14 @@ export class AskTracker {
    * the connection (retirable).
    */
   private readonly askerAsideSince = new Map<string, number>()
-  /** Cards retired while their asker ran, on file (RetiredAsk); and those of this process already handed to its session. */
+  /**
+   * Cards retired while their asker ran, on file (RetiredAsk); those of this
+   * process whose tell to its session is out (handed out by takeRetiredOwn,
+   * not yet landed or failed); and those already told (Data's gaps after
+   * #284, gap 1).
+   */
   private retired_: RetiredAsk[] = []
+  private readonly tellingRetired = new Set<string>()
   private readonly toldRetired = new Set<string>()
   /**
    * The latest lease this process has seen on each group, for its asker as
@@ -1031,8 +1076,7 @@ export class AskTracker {
   retire(askId: string, opts: { withdrawn: number; tellAsker: boolean }): PendingAsk | null {
     const ask = this.asks.get(askId)
     if (!ask) return null
-    // This process's own pid on another process's group is an earlier process's, ended (as askerRuns reads it).
-    if (opts.tellAsker && ask.owner && ask.owner.pid !== this.self.pid && this.isAlive(ask.owner.pid)) {
+    if (opts.tellAsker && this.askerAliveElsewhere(ask)) {
       this.retired_ = this.retired_.filter((r) => r.ask.askId !== askId)
       this.retired_.push({ ask: { ...ask, answers: { ...ask.answers } }, withdrawn: opts.withdrawn, at: this.now() })
     }
@@ -1041,19 +1085,66 @@ export class AskTracker {
 
   /**
    * The cards this process posted that the connected daemon retired while it
-   * ran on without the connection, each handed out once: for this session's
-   * own ask_withdrawn event (server.ts tellRetiredOwnAsks, on the ask tick).
-   * Read from the file as last merged; never another process's.
+   * ran on without the connection: for this session's own ask_withdrawn
+   * (lib/ask-retired-tell.ts, on the ask tick or a tool result). Each is
+   * handed out once while its tell is out, and again after retiredTellFailed,
+   * until retiredTold or the record ages out with the orphan grace (Data's
+   * gaps after #284, gap 1: marked told before the send, a failed send lost
+   * it). Read from the file as last merged; never another process's.
    */
   takeRetiredOwn(): Array<{ ask: PendingAsk; withdrawn: number }> {
     const out: Array<{ ask: PendingAsk; withdrawn: number }> = []
     for (const r of this.retired_) {
-      if (!sameProcess(r.ask.owner, this.self) || this.toldRetired.has(r.ask.askId)) continue
-      this.toldRetired.add(r.ask.askId)
-      this.forget(r.ask.askId)
+      const id = r.ask.askId
+      if (!sameProcess(r.ask.owner, this.self) || this.toldRetired.has(id) || this.tellingRetired.has(id)) continue
+      this.tellingRetired.add(id)
+      this.forget(id)
       out.push({ ask: r.ask, withdrawn: r.withdrawn })
     }
     return out
+  }
+
+  /** The tell of a card takeRetiredOwn handed out has landed: never handed out again. */
+  retiredTold(askId: string): void {
+    this.tellingRetired.delete(askId)
+    this.toldRetired.add(askId)
+  }
+
+  /** The tell of a card takeRetiredOwn handed out failed: handed out again on the next take. */
+  retiredTellFailed(askId: string): void {
+    this.tellingRetired.delete(askId)
+  }
+
+  /**
+   * Why the connected daemon retires this group, for the event its session
+   * gets (Data's gaps after #284, gap 2, and its fresh reviews, Important 1).
+   * Whether the asker runs is its lease, never its pid alone (askerRuns): a
+   * dead asker's pid may already be another process's, and that session
+   * must not be told its asker runs on (asker_disconnected) when it ended.
+   * A beside mark stands unless the asker wrote a lease after it (only the
+   * asker writes its own): it was marked once its pid read dead, and that
+   * pid may be handed on while the last lease is still fresh. Judged
+   * strictly, also in the wait after a look gap (leaseJudged), when a card
+   * marked beside is retired all the same: in doubt the words say ended.
+   * An asker silent for less than the orphan grace ran beside this session
+   * (it was marked so, or picked while it ran and ended during the retire);
+   * only past the grace did no restart take the connection in time. retire
+   * keeps its record on the pid, a wider net: only that same process can
+   * take it, and a hung asker past its lease still gets it (second and third
+   * fresh reviews of the gaps, Important 1 and Minor 1, and the fourth's
+   * Important 1).
+   */
+  retiredBecause(ask: PendingAsk): AskRetiredBecause {
+    const marked = ask.askerEndedBeside
+    if (marked !== undefined && askerLastSaid(ask) <= marked) return 'asker_ended_beside'
+    if (askerRuns(ask, this.self, this.now(), this.isAlive)) return 'asker_disconnected'
+    return this.now() - askerLastSaid(ask) > ASK_ORPHAN_GRACE_MS ? 'asker_ended' : 'asker_ended_beside'
+  }
+
+  /** The group's asker is another process whose pid runs (maybe past its lease): retire keeps a record for it, which only that process takes. */
+  private askerAliveElsewhere(ask: PendingAsk): boolean {
+    // This process's own pid on another process's group is an earlier process's, ended (as askerRuns reads it).
+    return !!ask.owner && ask.owner.pid !== this.self.pid && this.isAlive(ask.owner.pid)
   }
 
   /**

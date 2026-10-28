@@ -17,6 +17,7 @@ import ts from 'typescript'
 import * as askLib from '../lib/ask-tracker.ts'
 import { AskTracker, type PendingAsk } from '../lib/ask-tracker.ts'
 import { parseLockRecord } from '../lib/pairing-lock.ts'
+import { retiredOwnNotes, tellRetiredOwnOnTick } from '../lib/ask-retired-tell.ts'
 
 const SERVER = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
 const START = Date.parse('2026-10-27T09:00:00Z')
@@ -54,7 +55,7 @@ interface Row {
   answer?: { optionId?: number; freeText?: string; skipped?: boolean }
 }
 
-function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean; filePath?: string; httpTimeoutMs?: number } = {}) {
+function rig(opts: { lockHeld?: boolean; live?: number[]; handedOn?: number[]; chatKnown?: boolean; filePath?: string; httpTimeoutMs?: number; channelLoaded?: boolean | null } = {}) {
   const source = [
     lift('async function readAskGroup('),
     lift('function announceCompleteAsks('),
@@ -64,13 +65,16 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean; f
     liftIf('function orphanRetireMayRun('),
     liftIf('async function retireOrphanedAsks('),
     liftIf('function tellRetiredOwnAsks('),
+    liftIf('function askWithdrawnContent('),
     liftIf('function sendAskWithdrawn('),
+    liftIf('function withRetiredOwnAskNotes<'),
     lift('function heartbeatAskTracker('),
     liftCase('ask_user_input', 'withdraw_ask', 'askTool'),
     liftCase('withdraw_ask', 'complete_voice_task', 'withdrawTool'),
   ].join('\n')
   const exported = ['askTool', 'withdrawTool', 'announceCompleteAsks', 'heartbeatAskTracker']
   if (source.includes('function retireOrphanedAsks(')) exported.push('retireOrphanedAsks')
+  if (source.includes('function withRetiredOwnAskNotes<')) exported.push('withRetiredOwnAskNotes')
   const js = ts.transpileModule(source, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
   }).outputText
@@ -93,11 +97,13 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean; f
     }
   }
   const live = new Set(opts.live ?? [])
+  // A dead asker's pid that another process has taken: it reads alive, and writes no lease.
+  const handedOn = new Set(opts.handedOn ?? [])
   const tracker = new AskTracker({
     filePath: opts.filePath ?? null,
     now: () => clock,
     // Read by the fix (who posted a group, and is that process still running).
-    ...({ self: SELF, isAlive: (pid: number) => pid === SELF.pid || live.has(pid) } as object),
+    ...({ self: SELF, isAlive: (pid: number) => pid === SELF.pid || live.has(pid) || handedOn.has(pid) } as object),
   })
 
   // The backend: question rows by id, answered or not, and what was sent.
@@ -202,6 +208,10 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean; f
     },
     privateTapCard: (o: { content: string }) => o.content,
     privateTurns: {},
+    tellRetiredOwnOnTick,
+    retiredOwnNotes,
+    // This session's channel, as lib/channel-presence.ts reads it off the claude command line.
+    channelPresence: () => ({ loaded: opts.channelLoaded ?? null, reason: 'the harness' }),
   }
   const scope = new Proxy(known, {
     has: (target, key) => key in target || !(key in globalThis),
@@ -224,6 +234,7 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean; f
     announceCompleteAsks(via: string): void
     heartbeatAskTracker(): void
     retireOrphanedAsks?: (via: string) => Promise<void>
+    withRetiredOwnAskNotes?: <T>(result: T, signal?: AbortSignal) => T
   }
 
   return {
@@ -245,6 +256,10 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean; f
     answer: (id: number, yes = true) => {
       rows.set(id, { id, answer: { optionId: id * 10 + (yes ? 1 : 2), skipped: false } })
     },
+    /** A live asker's process ends: its pid reads dead and it writes no more lease. */
+    end: (pid: number) => {
+      live.delete(pid)
+    },
     onPatch: (fn: (path: string) => void | Promise<void>) => {
       onPatch = fn
     },
@@ -262,6 +277,16 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; chatKnown?: boolean; f
     /** The lock file names another daemon, whatever this one's lockHeld says. */
     lockFileTakenBy: () => {
       lockFileNamesUs = false
+    },
+    /** The next `n` channel sends fail, as a closed transport does. */
+    failNotifications: (n: number) => {
+      let left = n
+      notify = async () => {
+        if (left > 0) {
+          left--
+          throw new Error('the transport is closed')
+        }
+      }
     },
     holdNotifications: () => {
       let release!: () => void
@@ -657,12 +682,72 @@ test('recheck, item 1: a group marked askerEndedBeside has its open questions re
   assert.equal(r.notes.length, 1)
   assert.equal(r.notes[0].params.meta.event_type, 'ask_withdrawn')
   assert.equal(r.notes[0].params.meta.ask_id, 'theirs')
+  assert.equal(r.notes[0].params.meta.retired_because, 'asker_ended_beside')
   assert.equal(r.tracker.get('theirs'), null)
   assert.equal(r.tracker.wasDelivered('theirs'), true, 'gone for every daemon')
   await r.retireOrphanedAsks?.('test')
   await r.settle()
   assert.equal(r.notes.length, 1, 'once')
   assert.equal(r.patches.length, 1)
+})
+
+test('second fresh review of the gaps after #284, Important 1, on the daemon\'s own code: a card whose asker ended beside another session is told as that, also when the asker\'s pid reads alive again (a dead pid handed on)', async () => {
+  const r = rig({ handedOn: [2003] })
+  const ask = r.foreignGroup('theirs', [744, 745], { pid: 2003, startedAt: START - 60 * MIN }, START - 30 * MIN)
+  ask.askerEndedBeside = START - MIN
+  r.answer(744)
+  assert.equal(typeof r.retireOrphanedAsks, 'function')
+  await r.retireOrphanedAsks?.('test')
+  await r.settle()
+  assert.deepEqual(r.patches, [{ path: 'messages/745', body: RETIRE }])
+  assert.equal(r.notes.length, 1)
+  assert.equal(r.notes[0].params.meta.retired_because, 'asker_ended_beside', 'the lease, never the pid alone, says whether the asker runs')
+  assert.doesNotMatch(r.notes[0].params.content, /runs on without this agent's connection|told too/)
+})
+
+test('third fresh review of the gaps after #284, Important 1, on the daemon\'s own code: after a look gap (a sleep) a beside card whose asker\'s pid was handed on is still told as beside, never as running on', async () => {
+  const r = rig({ handedOn: [2003] })
+  const ask = r.foreignGroup('theirs', [746, 747], { pid: 2003, startedAt: START - 60 * MIN }, START - 30 * MIN)
+  ask.askerEndedBeside = START - MIN
+  r.answer(746)
+  r.tracker.retirable()
+  // This daemon sleeps: on waking it cannot judge a lease for ASK_LEASE_MS.
+  r.advance(30_000)
+  assert.equal(typeof r.retireOrphanedAsks, 'function')
+  await r.retireOrphanedAsks?.('test')
+  await r.settle()
+  assert.deepEqual(r.patches, [{ path: 'messages/747', body: RETIRE }])
+  assert.equal(r.notes.length, 1)
+  assert.equal(r.notes[0].params.meta.retired_because, 'asker_ended_beside', 'the mark stands: no lease after it')
+})
+
+test('fourth fresh review of the gaps after #284, Important 1, on the daemon\'s own code: a card marked beside, whose asker\'s pid is another process\'s while its last lease is fresh, is told as beside', async () => {
+  const r = rig({ handedOn: [2015] })
+  const ask = r.foreignGroup('theirs', [748], { pid: 2015, startedAt: START - 60 * MIN }, START - MIN)
+  ;(ask.owner as PendingAsk['owner'] & { aliveAt?: number }).aliveAt = START - 3_000
+  ask.askerEndedBeside = START - 2_000
+  assert.equal(typeof r.retireOrphanedAsks, 'function')
+  await r.retireOrphanedAsks?.('test')
+  await r.settle()
+  assert.equal(r.notes.length, 1)
+  assert.equal(r.notes[0].params.meta.retired_because, 'asker_ended_beside', 'a mark with no lease after it stands, whatever the pid reads now')
+})
+
+test('fourth fresh review of the gaps after #284, Minor 2, on the daemon\'s own code: a card retired while its asker ran, whose asker ends during the PATCH, is never told a 10 minute grace passed', async () => {
+  const r = rig({ live: [2016] })
+  r.foreignGroup('theirs', [749], { pid: 2016, startedAt: START - 60 * MIN }, START - MIN)
+  r.onPatch(() => r.end(2016))
+  assert.equal(typeof r.retireOrphanedAsks, 'function')
+  for (let i = 0; i < 3; i++) {
+    await r.retireOrphanedAsks?.('timer')
+    r.advance(15_000)
+  }
+  await r.retireOrphanedAsks?.('timer')
+  await r.settle()
+  assert.deepEqual(r.patches.map((p) => p.path), ['messages/749'], 'picked while its asker ran')
+  assert.equal(r.notes.length, 1)
+  assert.equal(r.notes[0].params.meta.retired_because, 'asker_ended_beside')
+  assert.doesNotMatch(r.notes[0].params.content, /within 10 minutes/)
 })
 
 test('recheck, item 1: a retire whose PATCH fails keeps the group and says nothing yet; the next pass retires it', async () => {
@@ -957,3 +1042,74 @@ test('lease follow-up, item 2: a group handed over to the asker\'s restart is an
   }
   assert.deepEqual(r.notes.map((n) => n.params.meta.event_type), ['ask_answered'])
 })
+
+/** The asker posts and stands down; the daemon that took the connection reads one answer and retires the rest, keeping the card for the asker. */
+async function retiredForThePassiveAsker(r: ReturnType<typeof rig>, filePath: string): Promise<string> {
+  const pending = await r.askTool({ chat_id: '77', questions: QUESTIONS, wait_seconds: 0 })
+  assert.ok(!pending.isError)
+  const askId = r.tracker.pending()[0].askId
+  r.answer(r.tracker.pending()[0].questions[0].messageId)
+  r.known.lockHeld = false
+  r.known.channelArmed = false
+  const holder = new AskTracker({ filePath, now: () => r.now(), ...({ self: { pid: 2016, startedAt: START - MIN }, isAlive: () => true } as object) })
+  holder.refresh()
+  holder.record(r.tracker.pending()[0].questions[0].messageId, { skipped: true })
+  holder.beginWithdraw(askId)
+  assert.notEqual((holder as unknown as RetiredOwn).retire?.(askId, { withdrawn: 1, tellAsker: true }) ?? 'missing', 'missing')
+  return askId
+}
+
+test('gaps after #284, gap 1, on the daemon\'s own code: a tell whose send failed on the tick is sent again on the next, then never again', () =>
+  withAskFile(async (filePath) => {
+    const r = rig({ filePath })
+    const askId = await retiredForThePassiveAsker(r, filePath)
+    r.failNotifications(1)
+    for (let i = 0; i < 4; i++) {
+      r.advance(5_000)
+      r.heartbeatAskTracker()
+      await r.settle()
+    }
+    const tries = r.notes.filter((n) => n.params.meta.event_type === 'ask_withdrawn')
+    assert.equal(tries.length, 2, 'the failed send, then the one that landed')
+    assert.ok(tries.every((n) => n.params.meta.ask_id === askId))
+    assert.match(r.logs.join('\n'), /telling this session failed/)
+  }))
+
+test('gaps after #284, gap 1, on the daemon\'s own code: the passive asker whose channel is not loaded sends nothing on its tick, and its next tool result carries its one ask_withdrawn', () =>
+  withAskFile(async (filePath) => {
+    const r = rig({ filePath, channelLoaded: false })
+    const askId = await retiredForThePassiveAsker(r, filePath)
+    for (let i = 0; i < 3; i++) {
+      r.advance(5_000)
+      r.heartbeatAskTracker()
+      await r.settle()
+    }
+    assert.deepEqual(r.notes.filter((n) => n.params.meta.event_type === 'ask_withdrawn'), [], 'no channel event: it would be dropped unseen')
+    assert.ok(r.withRetiredOwnAskNotes, 'withRetiredOwnAskNotes exists')
+    const result = r.withRetiredOwnAskNotes({ content: [{ type: 'text', text: 'sent' }] })
+    assert.equal(result.content.length, 2)
+    assert.equal(result.content[0].text, 'sent', 'the tool\'s own result first, as it was')
+    assert.match(result.content[1].text, new RegExp(`^\\[ask_withdrawn\\] A question card this session posted was retired \\(ask_id=${askId}\\)`))
+    r.advance(5_000)
+    r.heartbeatAskTracker()
+    await r.settle()
+    assert.deepEqual(r.withRetiredOwnAskNotes({ content: [{ type: 'text', text: 'again' }] }).content.length, 1, 'once')
+    assert.deepEqual(r.notes.filter((n) => n.params.meta.event_type === 'ask_withdrawn'), [])
+  }))
+
+test('gaps after #284 review, Important 2, on the daemon\'s own code: a cancelled tool call carries no note (the SDK drops its result), and the next call does', () =>
+  withAskFile(async (filePath) => {
+    const r = rig({ filePath, channelLoaded: false })
+    const askId = await retiredForThePassiveAsker(r, filePath)
+    r.advance(5_000)
+    r.heartbeatAskTracker()
+    await r.settle()
+    assert.ok(r.withRetiredOwnAskNotes, 'withRetiredOwnAskNotes exists')
+    const cancelled = new AbortController()
+    cancelled.abort()
+    const dropped = r.withRetiredOwnAskNotes({ content: [{ type: 'text', text: 'cancelled' }] }, cancelled.signal)
+    assert.equal(dropped.content.length, 1, 'nothing rides a result nobody receives')
+    const next = r.withRetiredOwnAskNotes({ content: [{ type: 'text', text: 'next' }] }, new AbortController().signal)
+    assert.equal(next.content.length, 2, 'the next call carries it')
+    assert.match(next.content[1].text, new RegExp(`\\(ask_id=${askId}\\)`))
+  }))
