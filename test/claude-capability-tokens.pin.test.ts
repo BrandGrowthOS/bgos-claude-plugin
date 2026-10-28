@@ -102,7 +102,8 @@
  * offers multi_select only to a daemon that declares it (and only while the
  * backend serves it). Appended LAST, so the order before it is unchanged.
  * The red commit read ASK_MULTI_SELECT_TOKEN through the module object, so
- * this test ran and failed case by case before the token existed.
+ * this test ran and failed case by case before the token existed; it is
+ * imported by name now that it exists (that cast failed tsc --noEmit).
  *
  * Run: npm test, or npx tsx --test test/claude-capability-tokens.pin.test.ts
  */
@@ -115,13 +116,13 @@ import { join } from 'node:path'
 
 import {
   ASK_ANSWERED_TOKEN,
+  ASK_MULTI_SELECT_TOKEN,
   CLAUDE_CAPABILITY_TOKENS,
   HARD_FLOOR_RULES_2_TOKEN,
   HARD_FLOOR_TOKEN,
   PERMISSION_CARD,
   PLAN_CARD,
 } from '../lib/claude-capability-tokens.ts'
-import * as tokenFile from '../lib/claude-capability-tokens.ts'
 import {
   DECLARED_CAPABILITIES_BASE,
   DECLARED_CAPABILITIES_PAIRING,
@@ -141,7 +142,7 @@ const DECLARED_BY_THIS_RELEASE: readonly string[] = [
   HARD_FLOOR_TOKEN,
   HARD_FLOOR_RULES_2_TOKEN,
   ASK_ANSWERED_TOKEN,
-  (tokenFile as Record<string, string>).ASK_MULTI_SELECT_TOKEN,
+  ASK_MULTI_SELECT_TOKEN,
 ]
 
 /**
@@ -171,7 +172,7 @@ test('the file names exactly permission_card, plan_card, hard_floor, hard_floor_
   assert.deepEqual([...CLAUDE_CAPABILITY_TOKENS], ['permission_card', 'plan_card', 'hard_floor', 'hard_floor_rules_2', 'ask_answered', 'ask_multi_select'])
   assert.equal(HARD_FLOOR_RULES_2_TOKEN, 'hard_floor_rules_2')
   assert.equal(ASK_ANSWERED_TOKEN, 'ask_answered')
-  assert.equal((tokenFile as Record<string, string>).ASK_MULTI_SELECT_TOKEN, 'ask_multi_select')
+  assert.equal(ASK_MULTI_SELECT_TOKEN, 'ask_multi_select')
   assert.equal(PERMISSION_CARD, 'permission_card')
   assert.equal(PLAN_CARD, 'plan_card')
   assert.equal(HARD_FLOOR_TOKEN, 'hard_floor')
