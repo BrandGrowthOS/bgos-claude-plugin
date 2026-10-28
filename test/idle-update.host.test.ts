@@ -213,10 +213,12 @@ test('the watcher sweep is active only when enabled and written in the last few 
   assert.equal(m.readWatcherSweepActive({ home: HOME, fs: memFs(), now: NOW, freshMs: 5 * MIN }), false)
 })
 
-test('a watcher state stamped in the future (a clock that jumped back) is active: the watcher may well be sweeping', () => {
+test('a watcher state stamped a little in the future (a clock that jumped back) is active; one stamped further ahead than it stays fresh is stale', () => {
   const m = need()
-  const fs = memFs({ [WATCHER_STATE]: JSON.stringify({ schemaVersion: 1, updatedAt: new Date(NOW + 10 * MIN).toISOString(), enabled: true }) })
-  assert.equal(m.readWatcherSweepActive({ home: HOME, fs, now: NOW, freshMs: 5 * MIN }), true)
+  const ahead = (ms: number) => memFs({ [WATCHER_STATE]: JSON.stringify({ schemaVersion: 1, updatedAt: new Date(NOW + ms).toISOString(), enabled: true }) })
+  assert.equal(m.readWatcherSweepActive({ home: HOME, fs: ahead(4 * MIN), now: NOW, freshMs: 5 * MIN }), true)
+  assert.equal(m.readWatcherSweepActive({ home: HOME, fs: ahead(6 * MIN), now: NOW, freshMs: 5 * MIN }), false, 'a watcher that still sweeps rewrites it on the new clock')
+  assert.equal(m.readWatcherSweepActive({ home: HOME, fs: ahead(3 * 60 * MIN), now: NOW, freshMs: 5 * MIN }), false)
 })
 
 // -- The wake schedule --------------------------------------------------------------------------
@@ -398,4 +400,57 @@ test('a clone record is not the marketplace rollback\'s', async () => {
   const result = await need().rollbackMarketplaceInstall({ record: { ...RECORD, installMethod: 'clone' }, installedPluginsPath: INSTALLED, holdPath: `${MACHINE}/enrolment-hold.json`, marketplace: 'hoai', fs: w.fs, setAutoUpdate: w.setAutoUpdate, now: NOW })
   assert.deepEqual(result, { ok: false, reason: 'not_marketplace' })
   assert.deepEqual(w.fs.writes, [])
+})
+
+// -- The cgroup of an owning systemd unit -------------------------------------------------------
+
+const UNIT = { kind: 'systemd', handle: 'bgos-agent-912.service' }
+const SHOW = `--user show -p MainPID -p ControlGroup ${UNIT.handle}`
+const CG = '/user.slice/user-1000.slice/user@1000.service/app.slice/bgos-agent-912.service'
+const RUN_SH = '/home/a/.bgos-agent/912/run.sh'
+/** A gen-2 Linux agent: systemd --user > run.sh; the tmux server (own socket, reparented) > hoai > claude > this daemon. */
+const LINUX = [
+  { pid: 1, ppid: 0, command: '/sbin/init' },
+  { pid: 500, ppid: 1, command: '/lib/systemd/systemd --user' },
+  { pid: 600, ppid: 500, command: `/bin/bash ${RUN_SH}` },
+  { pid: 610, ppid: 500, command: `tmux -L ${SOCKETS[0]} new-session -d -s hoai-912` },
+  { pid: 620, ppid: 610, command: 'node /home/a/plugin/bin/hoai-core.mjs' },
+  { pid: 630, ppid: 620, command: 'claude --resume pin' },
+  { pid: 640, ppid: 630, command: 'bun /home/a/plugin/server.ts' },
+  { pid: 700, ppid: 500, command: 'python3 long_job.py' },
+]
+const showOk = { code: 0, stdout: `MainPID=600\nControlGroup=${CG}\n` }
+const strays = (o: { exec?: any; files?: Record<string, string>; processes?: any; service?: any } = {}) =>
+  need().readServiceStrays({
+    service: o.service === undefined ? UNIT : o.service,
+    processes: o.processes === undefined ? LINUX : o.processes,
+    claudePid: 630,
+    sockets: SOCKETS,
+    runShPath: RUN_SH,
+    exec: o.exec ?? tmuxExec({ [SHOW]: showOk }).exec,
+    fs: memFs(o.files ?? { [`/sys/fs/cgroup${CG}/cgroup.procs`]: '600\n610\n620\n630\n640\n700\n' }),
+    env: {},
+  })
+
+test('a systemd unit\'s cgroup: a job orphaned out of claude\'s tree is a stray its restart would kill; run.sh, the tmux server and claude\'s line are not', async () => {
+  assert.deepEqual(await strays(), { ok: true, strays: [700] })
+  assert.deepEqual(await strays({ files: { [`/sys/fs/cgroup${CG}/cgroup.procs`]: '600\n610\n620\n630\n640\n' } }), { ok: true, strays: [] })
+  assert.deepEqual(await strays({ files: { [`/sys/fs/cgroup/systemd${CG}/cgroup.procs`]: '600\n630\n640\n700\n' } }), { ok: true, strays: [700] }, 'cgroup v1 too')
+})
+
+test('the unit\'s cgroup fails closed: systemctl refusing or throwing, no cgroup.procs, or no process table is unreadable', async () => {
+  const fail = { ok: false, strays: [] }
+  assert.deepEqual(await strays({ exec: tmuxExec({ [SHOW]: { code: 1, stderr: 'Failed to connect to bus' } }).exec }), fail)
+  assert.deepEqual(await strays({ exec: tmuxExec({ [SHOW]: new Error('spawn systemctl ENOENT') }).exec }), fail)
+  assert.deepEqual(await strays({ files: {} }), fail)
+  assert.deepEqual(await strays({ files: { [`/sys/fs/cgroup${CG}/cgroup.procs`]: 'not pids' } }), fail)
+  assert.deepEqual(await strays({ processes: null }), fail)
+})
+
+test('only a systemd unit ends a whole group: a launchd job, or no service, reads nothing; a unit with no group kills nothing', async () => {
+  const t = tmuxExec({ [SHOW]: showOk })
+  assert.deepEqual(await strays({ service: { kind: 'launchd', handle: 'ai.bgos.agent.912' }, exec: t.exec }), { ok: true, strays: [] })
+  assert.deepEqual(await strays({ service: null, exec: t.exec }), { ok: true, strays: [] })
+  assert.equal(t.calls.length, 0)
+  assert.deepEqual(await strays({ exec: tmuxExec({ [SHOW]: { code: 0, stdout: 'MainPID=0\nControlGroup=\n' } }).exec }), { ok: true, strays: [] })
 })

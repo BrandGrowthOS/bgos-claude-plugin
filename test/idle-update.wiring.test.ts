@@ -125,7 +125,9 @@ test('every busy fact is stamped where it happens, or it reads as idle', () => {
   const hookBody = server.slice(hook, hookEnd)
   assert.match(hookBody, /\(event\.name === 'PreToolUse' \|\| event\.name === 'PostToolUse'\) && \/hoai-browser__\/\.test\(String\(payload\.tool_name \?\? ''\)\)/)
   assert.match(hookBody, /lastBrowserToolAtMs = Date\.now\(\)/)
-  assert.match(server, /touchBeaconHeartbeat\(\{\n\s+path: BEACON_HEARTBEAT_PATH,\n\s+now: hbNow,\n\s+pid: process\.pid,\n\s+\}\)\n\s+beaconTouchedAtMs = hbNow/)
+  // Only a beacon written where the supervisor watches proves delivery live: a write that failed stamps nothing.
+  assert.match(server, /const beaconWritten = touchBeaconHeartbeat\(\{\n\s+path: BEACON_HEARTBEAT_PATH,\n\s+now: hbNow,\n\s+pid: process\.pid,\n\s+\}\)\n(?:\s+\/\/.*\n)*\s+if \(beaconWritten\) beaconTouchedAtMs = hbNow\n/)
+  assert.doesNotMatch(server, /\}\)\n\s+beaconTouchedAtMs = hbNow/)
   assert.match(server, /startupCompleteAtMs = Date\.now\(\)\n\s+log\('startup complete: polling armed, message delivery is live'\)/)
 })
 
@@ -145,11 +147,30 @@ test('the new build validates on live evidence: startup, a heartbeat that landed
   assert.match(wrapper, /const result = await bgosPost\(path, body\)/)
   assert.match(wrapper, /if \(body\.daemonVersion === RUNNING_VERSION\) heartbeatOkAtMs = Date\.now\(\)/)
   assert.doesNotMatch(wrapper, /if \(path === 'integrations\/heartbeat'\) heartbeatOkAtMs = Date\.now\(\)/)
-  // A heartbeat that could not reach the backend (no answer, or a 5xx) holds the deadline; any beat that lands lifts it.
-  assert.match(wrapper, /heartbeatUnreachableSinceMs = null/)
-  assert.match(wrapper, /isBackendUnreachableError\(err\)/)
-  assert.match(b, /backendUnreachable: \(\) => heartbeatUnreachableSinceMs !== null,/)
   assert.match(b, /monotonicNow: \(\) => performance\.now\(\),/)
+})
+
+test('backend reach is read off every backend call, not the heartbeat alone, so an outage during a slow startup holds the deadline too', () => {
+  const at = server.indexOf('function bgosCall<T>(')
+  assert.ok(at >= 0, 'bgosCall moved')
+  const call = server.slice(at, server.indexOf('\n}\n', at))
+  assert.match(call, /noteBackendReach\(response\.status\)/)
+  assert.match(call, /if \(!answered\) noteBackendReach\(null\)/)
+  const note = server.indexOf('function noteBackendReach(status: number | null): void {')
+  assert.ok(note >= 0, 'noteBackendReach is missing')
+  const body = server.slice(note, server.indexOf('\n}\n', note))
+  assert.match(body, /if \(isBackendAnswer\(status\)\) backendUnreachableSinceMs = null/)
+  assert.match(body, /else backendUnreachableSinceMs \?\?= Date\.now\(\)/)
+  assert.match(block(), /backendUnreachable: \(\) => backendUnreachableSinceMs !== null,/)
+  assert.doesNotMatch(server, /heartbeatUnreachableSinceMs|isBackendUnreachableError/)
+})
+
+test('an owning systemd unit\'s cgroup is read through the host module, for the authority the restart goes through', () => {
+  const b = block()
+  assert.match(b, /serviceStrays: \(processes: any\[\] \| null, claudePid: number \| null\) => \{/)
+  assert.match(b, /readServiceStrays\(\{\n?\s*service: authority\.kind === 'service' \? authority\.service : null,/)
+  assert.match(b, /runShPath: inputs\.runShPath,/)
+  assert.match(b, /sockets: inputs\.ownSockets,/)
 })
 
 test('the report is a fourth lastError producer, after the credential, the login and the deaf verdict', () => {

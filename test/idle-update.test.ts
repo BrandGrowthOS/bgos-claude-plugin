@@ -62,6 +62,7 @@ function idle(over: Record<string, unknown> = {}): any {
     machine: { lease: 'free', spacingUntilMs: null, canary: 'none' },
     claudeKnown: true,
     descendants: [],
+    serviceStrays: { ok: true, strays: [] },
     wake: { known: true, nextDueAtMs: null },
     ...over,
   }
@@ -205,6 +206,16 @@ test('gate 8: a marker hoai has not taken in 5 min is a launcher that stopped ta
 
 test('gate 9: never in the first minute of a daemon', () => {
   waits({ bootAtMs: NOW - 30 * SEC, activityMs: [] }, 'young')
+})
+
+test('gate 20: a restart through a systemd unit ends its whole cgroup, so a stray job in it waits, and an unreadable group waits', () => {
+  waits({ serviceStrays: { ok: true, strays: [4242] } }, 'background_job')
+  waits({ serviceStrays: { ok: false, strays: [] } }, 'process_tree_unreadable')
+  assert.equal(decide({ serviceStrays: { ok: true, strays: [] } }).action, 'restart')
+})
+
+test('gates in their order: a turn is named before an open ask and a person (gate 10 comes first)', () => {
+  waits({ safe: { ...idle().safe, turnInFlight: true }, activityMs: [NOW - 5 * MIN], openAsks: 1, personAttached: true }, 'turn_in_flight')
 })
 
 test('gate 9: never before this daemon\'s own startup completed (a startup that hangs is no moment to restart)', () => {
@@ -481,6 +492,21 @@ test('boot settle: a build that already proved live may boot once more (a person
   assert.equal(never.event, 'second_boot', 'a build that never proved live gets no second chance')
 })
 
+test('boot settle: a boot whose predecessor was still alive (hoai relaunching a slow start, a person) is a re-arrival, once', () => {
+  const m = need()
+  const base = { state: 'arrived', lockBoots: 1, arrivedAt: new Date(NOW - 4 * MIN).toISOString() }
+  const alive = m.settleRecordAtBoot(record({ ...base, aliveAt: new Date(NOW - 40 * SEC).toISOString() }), { runningVersion: '0.81.0', pin: 'pin-1', now: NOW })
+  assert.equal(alive.event, 'arrived_again')
+  assert.equal(alive.record.rearrived, true)
+  assert.equal(alive.record.aliveAt, null)
+  assert.equal(alive.record.lockBoots, 2)
+  assert.equal(alive.record.arrivedAt, new Date(NOW).toISOString())
+  const silent = m.settleRecordAtBoot(record({ ...base, aliveAt: new Date(NOW - 3 * MIN).toISOString() }), { runningVersion: '0.81.0', pin: 'pin-1', now: NOW })
+  assert.equal(silent.event, 'second_boot', 'a predecessor that went silent (crashed or hung) is the build failing')
+  const twice = m.settleRecordAtBoot({ ...alive.record, aliveAt: new Date(NOW + 30 * SEC).toISOString() }, { runningVersion: '0.81.0', pin: 'pin-1', now: NOW + MIN })
+  assert.equal(twice.event, 'second_boot', 'one re-arrival per record, never a loop')
+})
+
 test('boot settle: the target booting again on a NEW session is a lost conversation, never a reason to roll back', () => {
   // hoai retries a resume that died inside 25 s as a fresh session: claude's
   // fault or the transcript's, not the build's. The new pin is kept, so the
@@ -528,7 +554,7 @@ test('boot settle: a validated record, or none, does nothing', () => {
 // -- Validation and rollback ---------------------------------------------------------------------
 
 function proof(over: Record<string, unknown> = {}): any {
-  return {
+  const p: any = {
     arrivedAtMs: NOW - 2 * MIN,
     now: NOW,
     startupComplete: true,
@@ -536,8 +562,12 @@ function proof(over: Record<string, unknown> = {}): any {
     beaconAtMs: NOW - 10 * SEC,
     deaf: false,
     loginExpired: false,
+    liveSinceMs: NOW - 60 * SEC,
     ...over,
   }
+  // Unless a case says otherwise, this boot's startup completed the moment it arrived.
+  if (!('startupCompleteAtMs' in over)) p.startupCompleteAtMs = p.arrivedAtMs
+  return p
 }
 
 test('validation: startup complete, a heartbeat at the new version, a live beacon, no deaf verdict, 60 s held', () => {
@@ -553,6 +583,8 @@ test('validation: each missing proof keeps it pending (a deaf build never valida
     { beaconAtMs: NOW - 3 * MIN },
     { deaf: true },
     { arrivedAtMs: NOW - 30 * SEC },
+    { liveSinceMs: null },
+    { liveSinceMs: NOW - 59 * SEC },
   ]) {
     assert.equal(m.decideValidation(proof(over)), 'pending', JSON.stringify(over))
   }
@@ -572,23 +604,56 @@ test('validation: an unreachable backend holds the deadline, and the time it was
   assert.equal(m.decideValidation(proof({ ...late, suspendedMs: 30 * SEC })), 'deadline')
 })
 
-test('outage: no answer, or a 5xx, is a backend this computer cannot reach; a 4xx is a backend that answered', () => {
+test('outage: an answer below 500 is a backend that answered; a 5xx, or no answer at all (null), is one this computer cannot reach', () => {
   const m = need()
-  assert.equal(m.isBackendUnreachableError(new Error('fetch failed')), true)
-  assert.equal(m.isBackendUnreachableError(Object.assign(new Error('POST 503'), { status: 503 })), true)
-  assert.equal(m.isBackendUnreachableError(Object.assign(new Error('POST 502'), { status: 502 })), true)
-  assert.equal(m.isBackendUnreachableError(Object.assign(new Error('POST 401'), { status: 401 })), false)
-  assert.equal(m.isBackendUnreachableError(Object.assign(new Error('POST 429'), { status: 429 })), false)
+  for (const status of [200, 204, 304, 401, 404, 429]) assert.equal(m.isBackendAnswer(status), true, String(status))
+  for (const status of [500, 502, 503, null, undefined]) assert.equal(m.isBackendAnswer(status), false, String(status))
+})
+
+test('validation: the 60 s hold counts from the first live reading, never from the arrival (a slow start validates on a minute live)', () => {
+  const m = need()
+  const slow = { arrivedAtMs: NOW - 10 * MIN, startupCompleteAtMs: NOW - 2 * MIN, heartbeatOkAtMs: NOW - 20 * SEC }
+  assert.equal(m.decideValidation(proof({ ...slow, liveSinceMs: NOW })), 'pending')
+  assert.equal(m.decideValidation(proof({ ...slow, liveSinceMs: NOW - 59 * SEC })), 'pending')
+  assert.equal(m.decideValidation(proof({ ...slow, liveSinceMs: NOW - 60 * SEC })), 'validated')
+  assert.equal(m.decideValidation(proof({ ...slow, liveSinceMs: null })), 'pending')
+})
+
+test('validation: the deadline counts from this boot\'s startup complete; a startup that never completes has its own 15 min bound', () => {
+  const m = need()
+  const dead = { beaconAtMs: null, arrivedAtMs: NOW - 12 * MIN }
+  assert.equal(m.decideValidation(proof({ ...dead, startupCompleteAtMs: NOW - 4 * MIN })), 'pending', 'a slow startup is not the build failing')
+  assert.equal(m.decideValidation(proof({ ...dead, startupCompleteAtMs: NOW - 5 * MIN })), 'deadline')
+  const never = { beaconAtMs: null, startupComplete: false, startupCompleteAtMs: null }
+  assert.equal(m.decideValidation(proof({ ...never, arrivedAtMs: NOW - 14 * MIN })), 'pending')
+  assert.equal(m.decideValidation(proof({ ...never, arrivedAtMs: NOW - 15 * MIN })), 'deadline')
+  assert.equal(m.decideValidation(proof({ ...never, arrivedAtMs: NOW - 16 * MIN, suspendedMs: 2 * MIN })), 'pending')
+  assert.equal(m.decideValidation(proof({ ...never, arrivedAtMs: NOW - 16 * MIN, backendUnreachable: true })), 'pending')
+})
+
+test('durations: a startup bound, a grace for a boot that was still alive, a bound on an unproven rollback restart', () => {
+  const m = need()
+  assert.equal(m.DEFAULT_DURATIONS.startupDeadlineMs, 15 * MIN)
+  assert.equal(m.DEFAULT_DURATIONS.aliveGraceMs, 2 * MIN)
+  assert.equal(m.DEFAULT_DURATIONS.rollbackProofGraceMs, 10 * MIN)
+  assert.equal(m.scaledDurations(60).aliveGraceMs, 90 * SEC, 'a relaunch takes real time whatever the scale')
 })
 
 test('validation: live is every proof but the 60 s hold', () => {
   const m = need()
-  const early = { arrivedAtMs: NOW - 30 * SEC, heartbeatOkAtMs: NOW - 20 * SEC }
+  const early = { arrivedAtMs: NOW - 30 * SEC, heartbeatOkAtMs: NOW - 20 * SEC, liveSinceMs: NOW - 20 * SEC }
   assert.equal(m.decideValidation(proof(early)), 'pending')
   assert.equal(m.isLiveBuild(proof(early)), true)
   assert.equal(m.isLiveBuild(proof({ ...early, deaf: true })), false)
   assert.equal(m.isLiveBuild(proof({ ...early, beaconAtMs: null })), false)
   assert.equal(m.isLiveBuild(proof({ ...early, heartbeatOkAtMs: NOW - 40 * SEC })), false)
+})
+
+test('rollback moment: a restart through a systemd unit waits for a stray job in its cgroup, or a group it cannot read', () => {
+  const m = need()
+  assert.deepEqual(m.decideRollbackMoment(quietRollback({ serviceStrays: { ok: true, strays: [4242] } })), { go: false, reason: 'background_job' })
+  assert.deepEqual(m.decideRollbackMoment(quietRollback({ serviceStrays: { ok: false, strays: [] } })), { go: false, reason: 'process_tree_unreadable' })
+  assert.deepEqual(m.decideRollbackMoment(quietRollback({ serviceStrays: { ok: true, strays: [] } })), { go: true, reason: 'quiet' })
 })
 
 test('rollback: only the canary rolls back the shared install; another agent reports; an expired login does neither', () => {
@@ -616,6 +681,7 @@ function quietRollback(over: Record<string, unknown> = {}): any {
     personAttached: false,
     claudeKnown: true,
     descendants: [],
+    serviceStrays: { ok: true, strays: [] },
     wake: { known: true, nextDueAtMs: null },
     ...over,
   }

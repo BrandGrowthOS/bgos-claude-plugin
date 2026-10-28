@@ -122,6 +122,8 @@ function agent(
     attached: false as boolean | null,
     wake: { ok: true, tasks: [] as Array<{ nextFireAt: string }> } as any,
     wakeReads: 0,
+    strays: { ok: true, strays: [] as number[] } as any,
+    strayReads: 0,
     startupComplete: true,
     heartbeatOkAtMs: null as number | null,
     beaconAtMs: null as number | null,
@@ -197,6 +199,10 @@ function agent(
     wakeSchedule: async () => {
       s.wakeReads += 1
       return s.wake
+    },
+    serviceStrays: async (_processes: any, _claudePid: any) => {
+      s.strayReads += 1
+      return s.strays
     },
     startupComplete: () => s.startupComplete,
     heartbeatOkAtMs: () => s.heartbeatOkAtMs,
@@ -274,7 +280,7 @@ test('a passive daemon never settles a record or acts', async () => {
   const disk = memDisk()
   const a = agent(disk)
   a.s.active = false
-  disk.fs.writeAtomic(a.record, JSON.stringify({ schema: 1, target: '0.81.0', state: 'requested', attempts: [], pin: PIN }))
+  disk.fs.writeAtomic(a.record, JSON.stringify({ schema: 1, target: '0.81.0', from: '0.80.0', state: 'requested', attempts: [], pin: PIN }))
   assert.equal(await a.c.tick(), 'passive')
   assert.equal(readJson(disk, a.record).state, 'requested')
   assert.equal(a.restarts.length, 0)
@@ -356,6 +362,77 @@ test('a job that owns the daemon restarts through the job: no own launcher proof
   assert.equal(a.restarts[0].proof, null)
 })
 
+test('a job that owns the daemon restarts claude only when claude resumes a pinned session: a gen-1 job would start it fresh', async () => {
+  const fresh = agent(memDisk(), { ownsUs: true })
+  fresh.s.listing = { ok: true, processes: table(912).map((p) => (p.pid === 91240 ? { ...p, command: '/Users/a/.local/bin/claude --dangerously-skip-permissions' } : p)) }
+  assert.equal(await fresh.c.tick(), 'no_unattended_authority')
+  assert.equal(fresh.restarts.length, 0)
+  const pinned = agent(memDisk(), { ownsUs: true })
+  assert.equal(await pinned.c.tick(), 'requested')
+})
+
+test('a restart through an owning service waits for a stray job in its group, or a group it cannot read; a launcher restart never reads it', async () => {
+  const stray = agent(memDisk(), { ownsUs: true })
+  stray.s.strays = { ok: true, strays: [4242] }
+  assert.equal(await stray.c.tick(), 'background_job')
+  assert.equal(stray.restarts.length, 0)
+  const unreadable = agent(memDisk(), { ownsUs: true })
+  unreadable.s.strays = { ok: false, strays: [] }
+  assert.equal(await unreadable.c.tick(), 'process_tree_unreadable')
+  assert.equal(unreadable.restarts.length, 0)
+  const launcher = agent(memDisk())
+  launcher.s.strays = { ok: true, strays: [4242] }
+  assert.equal(await launcher.c.tick(), 'requested')
+  assert.equal(launcher.s.strayReads, 0)
+})
+
+test('a person is read after the wake schedule call, so one who attaches during that call still holds the restart', async () => {
+  const a = agent(memDisk())
+  Object.defineProperty(a.s, 'wake', {
+    get() {
+      a.s.attached = true
+      return { ok: true, tasks: [] }
+    },
+  })
+  assert.equal(await a.c.tick(), 'person_attached')
+  assert.equal(a.restarts.length, 0)
+})
+
+test('another agent creating the lease between the read and the create wins: this one never acts', async () => {
+  const disk = memDisk()
+  const a = agent(disk)
+  const create = disk.fs.createExclusive
+  disk.fs.createExclusive = (p: string, text: string) => {
+    if (p === join(MACHINE, 'lease.json') && !disk.files.has(p)) {
+      create(p, JSON.stringify({ assistantId: '913', target: '0.81.0', nonce: '913-n1', at: new Date(disk.clock.now).toISOString() }))
+      return 'exists'
+    }
+    return create(p, text)
+  }
+  assert.equal(await a.c.tick(), 'machine_busy')
+  assert.equal(a.restarts.length, 0)
+  assert.deepEqual(a.drains, [])
+})
+
+test('a record that cannot be written: no restart, no drain, the lease released and the canary voided', async () => {
+  const disk = memDisk()
+  const a = agent(disk)
+  const write = disk.fs.writeAtomic
+  disk.fs.writeAtomic = (p: string, text: string) => (p === a.record ? false : write(p, text))
+  assert.equal(await a.c.tick(), 'record_failed')
+  assert.equal(a.restarts.length, 0)
+  assert.deepEqual(a.drains, [])
+  assert.equal(disk.files.has(join(MACHINE, 'lease.json')), false)
+  assert.ok(disk.files.has(join(MACHINE, '0.81.0', 'void-1')))
+})
+
+test('a released.json stamped further ahead than the spacing (a clock that jumped) never holds the spacing for hours', async () => {
+  const disk = memDisk()
+  disk.fs.writeAtomic(join(MACHINE, 'released.json'), JSON.stringify({ assistantId: '913', at: new Date(T0 + 3 * HOUR).toISOString() }))
+  const a = agent(disk)
+  assert.equal(await a.c.tick(), 'requested')
+})
+
 test('staged authority: waits without ever reading the process table', async () => {
   const a = agent(memDisk(), { authority: 'staged' })
   assert.equal(await a.c.tick(), 'no_unattended_authority')
@@ -433,6 +510,10 @@ test('back on the new version with the same session: validated on live proof, le
   const a = agent(disk, { running: '0.81.0', staged: null })
   assert.equal(await a.c.tick(), 'validating')
   assert.equal(readJson(disk, a.record).state, 'arrived')
+  disk.clock.now += 20 * SEC
+  a.s.heartbeatOkAtMs = disk.clock.now - 10 * SEC
+  a.s.beaconAtMs = disk.clock.now - 5 * SEC
+  assert.equal(await a.c.tick(), 'validating', 'the first live reading starts the 60 s hold')
   disk.clock.now += 61 * SEC
   a.s.heartbeatOkAtMs = disk.clock.now - 10 * SEC
   a.s.beaconAtMs = disk.clock.now - 5 * SEC
@@ -645,10 +726,114 @@ test('a build that proved live and then booted once more (a person\'s restart) v
   const second = agent(disk, { running: '0.81.0', staged: null })
   assert.equal(await second.c.tick(), 'validating')
   assert.equal(second.rollbackInstalls.length, 0)
+  disk.clock.now += 20 * SEC
+  second.s.heartbeatOkAtMs = disk.clock.now - 5 * SEC
+  second.s.beaconAtMs = disk.clock.now - 2 * SEC
+  assert.equal(await second.c.tick(), 'validating')
   disk.clock.now += 61 * SEC
   second.s.heartbeatOkAtMs = disk.clock.now - 5 * SEC
   second.s.beaconAtMs = disk.clock.now - 2 * SEC
   assert.equal(await second.c.tick(), 'validated')
+})
+
+test('a slow startup is not a broken build: the deadline counts from this boot\'s startup complete, the hold from the first live reading', async () => {
+  const disk = await afterAsk()
+  const a = agent(disk, { running: '0.81.0', staged: null })
+  a.s.startupComplete = false
+  assert.equal(await a.c.tick(), 'validating')
+  disk.clock.now += 6 * MIN
+  assert.equal(await a.c.tick(), 'validating', 'six minutes starting up is not the 5 min deadline')
+  a.s.startupComplete = true
+  assert.equal(await a.c.tick(), 'validating')
+  disk.clock.now += 4 * MIN
+  assert.equal(await a.c.tick(), 'validating', 'four minutes since startup complete')
+  a.s.heartbeatOkAtMs = disk.clock.now - 5 * SEC
+  a.s.beaconAtMs = disk.clock.now - 2 * SEC
+  assert.equal(await a.c.tick(), 'validating', 'the first live reading starts the hold')
+  disk.clock.now += 61 * SEC
+  a.s.heartbeatOkAtMs = disk.clock.now - 5 * SEC
+  a.s.beaconAtMs = disk.clock.now - 2 * SEC
+  assert.equal(await a.c.tick(), 'validated')
+  assert.equal(a.rollbackInstalls.length, 0)
+})
+
+test('a startup that never completes is the build failing: the canary rolls back 15 min after it arrived', async () => {
+  const disk = await afterAsk()
+  const a = agent(disk, { running: '0.81.0', staged: null })
+  a.s.startupComplete = false
+  assert.equal(await a.c.tick(), 'validating')
+  disk.clock.now += 14 * MIN
+  assert.equal(await a.c.tick(), 'validating')
+  disk.clock.now += MIN + SEC
+  assert.equal(await a.c.tick(), 'rollback')
+  assert.equal(a.rollbackInstalls.length, 1)
+})
+
+test('hoai relaunching a new build whose daemon was still alive is a re-arrival, once; a boot after a silent predecessor is a failed build', async () => {
+  const disk = await afterAsk()
+  const first = agent(disk, { running: '0.81.0', staged: null })
+  first.s.startupComplete = false
+  assert.equal(await first.c.tick(), 'validating')
+  for (let i = 0; i < 6; i += 1) {
+    disk.clock.now += 30 * SEC
+    assert.equal(await first.c.tick(), 'validating')
+  }
+  assert.ok(readJson(disk, first.record).aliveAt, 'each validating tick says the boot is alive')
+  disk.clock.now += 30 * SEC
+  const second = agent(disk, { running: '0.81.0', staged: null })
+  assert.equal(await second.c.tick(), 'validating')
+  assert.equal(second.rollbackInstalls.length, 0)
+  assert.equal(readJson(disk, second.record).rearrived, true)
+  disk.clock.now += 30 * SEC
+  const third = agent(disk, { running: '0.81.0', staged: null })
+  assert.equal(await third.c.tick(), 'rollback', 'one re-arrival per record, never a loop')
+})
+
+test('time spent passive during validation is not counted toward the deadline', async () => {
+  const disk = await afterAsk()
+  const a = agent(disk, { running: '0.81.0', staged: null })
+  assert.equal(await a.c.tick(), 'validating')
+  a.s.active = false
+  for (let i = 0; i < 8; i += 1) {
+    disk.clock.now += 30 * SEC
+    assert.equal(await a.c.tick(), 'passive')
+  }
+  a.s.active = true
+  disk.clock.now += 2 * MIN
+  assert.equal(await a.c.tick(), 'validating', 'four minutes passive, two holding the lock: not yet five minutes of chance')
+  disk.clock.now += 3 * MIN + SEC
+  assert.equal(await a.c.tick(), 'rollback')
+})
+
+test('one unproven authority reading never gives up the rollback restart: it waits, and asks for a restart by hand only after 10 min unproven', async () => {
+  const blip = await rolledBackCanary()
+  blip.a.s.listing = { ok: false }
+  assert.equal(await blip.a.c.tick(), 'rollback_waiting')
+  assert.notEqual(lastReport(blip.a)?.code, 'idle_update_rollback_failed')
+  blip.disk.clock.now += 5 * MIN
+  blip.a.s.listing = { ok: true, processes: table(912) }
+  assert.equal(await blip.a.c.tick(), 'rollback_requested', 'a proven reading clears it')
+
+  const gone = await rolledBackCanary()
+  gone.a.s.listing = { ok: false }
+  assert.equal(await gone.a.c.tick(), 'rollback_waiting')
+  gone.disk.clock.now += 9 * MIN
+  assert.equal(await gone.a.c.tick(), 'rollback_waiting')
+  gone.disk.clock.now += MIN + SEC
+  assert.equal(await gone.a.c.tick(), 'rollback_staged')
+  assert.equal(lastReport(gone.a)?.code, 'idle_update_rollback_failed')
+  assert.match(lastReport(gone.a)?.message ?? '', /by hand/)
+  assert.equal(gone.a.rollbackRestarts.length, 0)
+})
+
+test('the rollback restart through an owning service waits for a stray job in its group', async () => {
+  const { a } = await rolledBackCanary()
+  a.s.ownsUs = true
+  a.s.strays = { ok: true, strays: [4242] }
+  assert.equal(await a.c.tick(), 'rollback_waiting')
+  assert.equal(a.rollbackRestarts.length, 0)
+  a.s.strays = { ok: true, strays: [] }
+  assert.equal(await a.c.tick(), 'rollback_requested')
 })
 
 test('a non-canary that fails on a version reports and stays: it never rolls back the shared install', async () => {
