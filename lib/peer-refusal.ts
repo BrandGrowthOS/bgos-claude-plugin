@@ -217,8 +217,9 @@ export function a2aRouteRequiredResult(
           'which takes messages only through /send-message, so cards, questions and ' +
           'plans cannot be posted there, and the same post is refused every time. Do ' +
           'not retry it. Anything for your owner belongs in your owner\'s chat. A ' +
-          'reply in this side-thread reaches the peer agent, not your owner, and ' +
-          'reopens a closed conversation, so send one only if the peer needs to hear it.',
+          'reply in this side-thread reaches the peer agent, not your owner, and only ' +
+          'while their conversation is open; once it has ended, send_to_peer starts a ' +
+          'new one. Send one only if the peer needs to hear it.',
       },
     ],
     isError: true,

@@ -41,6 +41,8 @@ function overdueSweep() {
     closedPeerChats: new Set<string>(),
     peerReplyRefusedChats: new Set<string>(),
     peerReplyClosedChats: new Set<string>(),
+    markPeerReplyClosed: () => undefined,
+    liftPeerReplyClosed: () => undefined,
     noteMonitoredChat: () => undefined,
     markConversationClosed: () => undefined,
     inboundOwesReply,

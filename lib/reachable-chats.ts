@@ -36,5 +36,5 @@ export function summarizeReachableChats(payload: unknown): string {
       if (binding.revivable === true) revivable += 1
     }
   }
-  return `${chats.length} reachable chat(s); ${closedBridged} closed bridged (${revivable} revivable by replying).`
+  return `${chats.length} reachable chat(s); ${closedBridged} closed bridged (${revivable} revivable; reach them with send_to_peer, not reply).`
 }

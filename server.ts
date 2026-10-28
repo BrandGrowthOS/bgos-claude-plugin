@@ -997,9 +997,11 @@ import {
 import {
   CLOSED_DURING_SEND_NOTE,
   peerConversationClosedResult,
+  peerConversationEnded,
   peerDeliveryOf,
   peerDeliveryReason,
   peerReplyNotForwardedResult,
+  peerReplyNotPassedOnResult,
 } from './lib/peer-closed-reply.js'
 import { messagesCallerHeaders } from './lib/messages-caller-header.js'
 import { createChatOwnership } from './lib/chat-ownership.js'
@@ -5158,11 +5160,11 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'conversations that the poll inbox hides. Each `a2a` entry carries a ' +
         '`binding` with `status` ("open" or "closed"), the `peerAssistantId`, ' +
         'why/when it closed, and `revivable`. Use it to tell a DEAD binding ' +
-        '(outbound reply path closed) from a chat that is merely quiet. A ' +
-        'closed-but-revivable bridged chat is re-opened automatically when you ' +
-        'reply into it (send_to_peer / reply), because being a participant IS ' +
-        'the permission; a binding closed as revoked or promoted is not ' +
-        'revivable that way. No arguments.',
+        '(outbound reply path closed) from a chat that is merely quiet. Reach ' +
+        'the peer of a closed bridged chat with send_to_peer, not with reply: a ' +
+        'reply there may never reach them, and send_to_peer starts a new ' +
+        'conversation. `revivable` says whether HOAI could still reopen the old ' +
+        'one; a binding closed as revoked or promoted cannot be. No arguments.',
       inputSchema: {
         type: 'object' as const,
         properties: {},
@@ -6447,20 +6449,33 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
         const msgId = (result as any)?.message?.id
         // HOAI's own word on the forward to the other agent, on a backend that
         // gives it (`peerDelivery`, side threads only). Not forwarded: the reply
-        // is saved in the side thread and the peer will not see it, so it is
-        // not a Sent. Later replies there are answered here, unless a newer
-        // message arrived during the send (the same rule as the 403 below).
+        // is saved in the side thread and the peer may not have it, so it is
+        // not a Sent. When the reason is that the conversation is over, later
+        // replies there are answered here, unless a newer message arrived
+        // during the send (the same rule as the 403 below); any other reason
+        // fails this reply only.
         const peerDelivery = peerDeliveryOf(result)
         if (peerDelivery === 'not_forwarded') {
+          const ended = peerConversationEnded(result)
           if (pendingInbounds.get(String(resolvedChatId))?.messageId === answeringInboundId) {
-            peerReplyClosedChats.add(String(resolvedChatId))
+            if (ended) markPeerReplyClosed(String(resolvedChatId))
             clearInbound(resolvedChatId)
           }
           log(
             `reply to chat ${resolvedChatId} saved as ${msgId} but not forwarded to the peer ` +
               `(${peerDeliveryReason(result)}); told the agent`,
           )
-          return peerReplyNotForwardedResult(String(resolvedChatId), msgId)
+          return ended
+            ? peerReplyNotForwardedResult(String(resolvedChatId), msgId)
+            : peerReplyNotPassedOnResult(String(resolvedChatId), msgId, peerDeliveryReason(result))
+        }
+        // Forwarded: HOAI held the conversation open (reviving it on this
+        // write if it had closed), so a close that landed during the send no
+        // longer holds, and a later close that names only the conversation id
+        // must find this chat again (a close drops that lookup).
+        if (peerDelivery === 'forwarded') {
+          liftPeerReplyClosed(String(resolvedChatId))
+          rememberPeerConvChat(peerConvByChat.get(String(resolvedChatId)), String(resolvedChatId))
         }
         // A close that landed while the reply was on the wire: it was not in
         // peerReplyClosedChats before the send (that refuses above), so it is
@@ -7436,6 +7451,8 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
           isError: true,
         }
       }
+      // Closes counted before the send, so one landing during it is kept below.
+      const closeSeqAtSend = peerReplyCloseSeq
       try {
         const result = await bgosPeerPost(
           `peers/${target_assistant_id}/send`,
@@ -7457,7 +7474,12 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
         // This agent is a participant of whatever it just sent into, so a reply
         // refused there before may land now.
         if (sideThreadChatId != null) peerReplyRefusedChats.delete(String(sideThreadChatId))
-        if (turn_state === 'final') {
+        // HOAI decides whether this send closed the thread: it reads a closing
+        // phrase as the final turn whatever turn_state said, and says so in its
+        // answer (`turnState`, `closed`).
+        const closedBySend =
+          turn_state === 'final' || (result as any)?.turnState === 'final' || (result as any)?.closed != null
+        if (closedBySend) {
           // The agent just closed the thread. Pin it closed so neither the
           // peer's prior inbound nor a final inbound that races this can fire
           // a false-positive overdue. markConversationClosed also clears the
@@ -7470,8 +7492,11 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
           notePeerConversationOpened(resultConvId != null ? String(resultConvId) : undefined, String(sideThreadChatId))
           clearInbound(String(sideThreadChatId))
           // HOAI opened (or kept) a conversation there for this send, so a
-          // reply in that chat joins an open one again.
-          peerReplyClosedChats.delete(String(sideThreadChatId))
+          // reply in that chat joins an open one again, unless a close for
+          // that chat landed while this send was on the wire.
+          if ((peerReplyClosedAt.get(String(sideThreadChatId)) ?? 0) <= closeSeqAtSend) {
+            liftPeerReplyClosed(String(sideThreadChatId))
+          }
         }
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
       } catch (err) {
@@ -8922,8 +8947,24 @@ const peerReplyRefusedChats = createRefusedChats()
 // overdue sweep reads by conversation id: this one lifts on any new message in
 // the chat (recordInbound), because a revived conversation keeps its id, and on
 // a send_to_peer that lands in it. Every close signal sets it
-// (markConversationClosed), and so does a reply HOAI says it did not forward.
+// (markConversationClosed), and so does a reply HOAI says it did not forward
+// because the conversation is over.
 const peerReplyClosedChats = createRefusedChats()
+// When each chat was last marked, as a running count, so a send_to_peer that
+// was on the wire while a close landed (the peer's final turn during its
+// wait_for_reply) does not lift the mark that close just set.
+let peerReplyCloseSeq = 0
+const peerReplyClosedAt = new Map<string, number>()
+
+function markPeerReplyClosed(chatId: string): void {
+  peerReplyClosedChats.add(chatId)
+  peerReplyClosedAt.set(chatId, ++peerReplyCloseSeq)
+}
+
+function liftPeerReplyClosed(chatId: string): void {
+  peerReplyClosedChats.delete(chatId)
+  peerReplyClosedAt.delete(chatId)
+}
 // 4 minutes: agents legitimately run long (some tasks work up to ~10 min), so a
 // 2-minute nudge fired too early on work still in progress. KC 2026-08-15: push
 // the reply-overdue window to 4 min so the reminder only fires on genuine silence.
@@ -8944,7 +8985,7 @@ function markConversationClosed(opts: { convId?: string | number | null; chatId?
   // longer holds. The reply tool refuses it as a reply into a closed
   // conversation instead, until the chat is live again (peerReplyClosedChats).
   peerReplyRefusedChats.delete(chatId)
-  peerReplyClosedChats.add(chatId)
+  markPeerReplyClosed(chatId)
   // Drop any pending overdue for this chat and pin it closed so a late inbound
   // (or a re-delivery that races the close) cannot re-arm the tracker.
   pendingInbounds.delete(chatId)
@@ -9012,8 +9053,8 @@ function recordInbound(
   // here and not only below: a revived conversation keeps its id, so
   // closedPeerChats may still hold the chat and the early return below would
   // skip the close.
-  if (turnState === 'final') peerReplyClosedChats.add(chatId)
-  else peerReplyClosedChats.delete(chatId)
+  if (turnState === 'final') markPeerReplyClosed(chatId)
+  else liftPeerReplyClosed(chatId)
   if (!Number.isFinite(messageId)) return
   // A peer side-thread that is already closed owes no reply. Never arm an
   // overdue tracker for it (race-proof guard against a close that arrived

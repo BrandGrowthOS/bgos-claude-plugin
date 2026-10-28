@@ -22,21 +22,21 @@ test('summary counts closed bridged bindings and how many are revivable', () => 
   }
   assert.equal(
     summarizeReachableChats(payload),
-    '5 reachable chat(s); 2 closed bridged (1 revivable by replying).',
+    '5 reachable chat(s); 2 closed bridged (1 revivable; reach them with send_to_peer, not reply).',
   )
 })
 
 test('summary is safe on empty / malformed payloads', () => {
   assert.equal(
     summarizeReachableChats({ chats: [] }),
-    '0 reachable chat(s); 0 closed bridged (0 revivable by replying).',
+    '0 reachable chat(s); 0 closed bridged (0 revivable; reach them with send_to_peer, not reply).',
   )
   assert.equal(
     summarizeReachableChats({}),
-    '0 reachable chat(s); 0 closed bridged (0 revivable by replying).',
+    '0 reachable chat(s); 0 closed bridged (0 revivable; reach them with send_to_peer, not reply).',
   )
   assert.equal(
     summarizeReachableChats(null),
-    '0 reachable chat(s); 0 closed bridged (0 revivable by replying).',
+    '0 reachable chat(s); 0 closed bridged (0 revivable; reach them with send_to_peer, not reply).',
   )
 })

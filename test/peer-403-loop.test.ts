@@ -250,6 +250,8 @@ function harness(apiBase: string, turnChat: string): Harness {
     lift('function checkReplyOverdue('),
     lift('async function handleShowComponent('),
     ...refusalLedgers(),
+    lift('function markPeerReplyClosed('),
+    lift('function liftPeerReplyClosed('),
     liftReplyCase(),
     liftSendToPeerCase(),
     liftAskCase(),
@@ -289,6 +291,9 @@ function harness(apiBase: string, turnChat: string): Harness {
   const known: Record<string, unknown> = {
     ...peerRefusal,
     ...peerClosedReply,
+    // The close counter beside the closed-thread ledger (send_to_peer reads it).
+    peerReplyCloseSeq: 0,
+    peerReplyClosedAt: new Map<string, number>(),
     Date: FakeDate,
     log: (line: string) => logs.push(line),
     // HTTP, the daemon's own client against the mocked backend.
@@ -650,7 +655,9 @@ function assertA2aTyped(result: { content: Array<{ text: string }>; isError?: bo
   assert.match(text, /peer side-thread/)
   assert.match(text, /Do not retry/)
   assert.match(text, /Anything for your owner belongs in your owner's chat/)
-  assert.match(text, /reaches the peer agent, not your owner, and reopens a closed conversation/)
+  assert.match(text, /reaches the peer agent, not your owner, and only while their conversation is open/)
+  assert.match(text, /once it has ended, send_to_peer starts a new one/)
+  assert.doesNotMatch(text, /reopens a closed conversation/, 'a reply into a closed thread is refused (board row 28fed1cd)')
 }
 
 test('hook rail: an hour of tool cards into a closed side-thread refused with the a2a 400 is ONE post', async () => {
