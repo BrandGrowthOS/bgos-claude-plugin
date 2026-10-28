@@ -339,7 +339,8 @@ export class UpdateRpcHandler {
   /** Progress is reporting, never control flow: a failed POST is logged and
    *  the update continues (the backend's own timeouts cover a silent rpc). */
   private async progress(rpcId: string, body: UpdateRpcProgress): Promise<void> {
-    const label = LOG_ONLY_RPC_LABELS[rpcId]
+    // Own keys only: a backend rpc id like `constructor` is the backend's, never a log-only label.
+    const label = Object.prototype.hasOwnProperty.call(LOG_ONLY_RPC_LABELS, rpcId) ? LOG_ONLY_RPC_LABELS[rpcId] : undefined
     if (label) {
       // Nobody asked, so there is nobody to answer. Posting would be a
       // progress report for an rpc the backend never issued.

@@ -106,6 +106,7 @@ import {
   IDLE_UPDATE_DIR_NAME,
   IDLE_UPDATE_FILE_NAME,
   createIdleUpdate,
+  isBackendUnreachableError,
   isVersionHeldBad,
   nodeIdleUpdateFs,
   scaleFromEnv,
@@ -1057,13 +1058,18 @@ let updateDrainMode = false
 // The idle update (lib/idle-update.mjs, docs/idle-update/DESIGN.md): the facts
 // it reads that nothing else kept, each stamped where it happens, and its
 // report, the heartbeat's fourth lastError producer. Its windows shrink by
-// BGOS_IDLE_UPDATE_SCALE for the rig only (capped, lib/idle-update.mjs MAX_SCALE).
-const IDLE_UPDATE_DURATIONS = scaledDurations(scaleFromEnv(process.env.BGOS_IDLE_UPDATE_SCALE))
+// BGOS_IDLE_UPDATE_SCALE for the rig only: honoured only against a loopback backend (the
+// rig's stub), capped (lib/idle-update.mjs MAX_SCALE), and two windows keep their floors.
+const IDLE_UPDATE_DURATIONS = scaledDurations(scaleFromEnv(process.env.BGOS_IDLE_UPDATE_SCALE, { backendUrl: BACKEND_URL }))
 // ~/.bgos-agent/idle-update/: the lease, the canary and the versions held bad, shared by every agent of this HOME.
 const IDLE_UPDATE_MACHINE_DIR = pathJoin(homedir(), '.bgos-agent', IDLE_UPDATE_DIR_NAME)
 let idleUpdateError: { code: string; message: string; at: string } | null = null
-// A heartbeat POST that resolved (bgosCall throws on a refusal): the new build reached the backend.
+// A heartbeat POST carrying THIS build's version that resolved (bgosCall throws on a refusal): the new build
+// reached the backend. A status-only beat carries no version and proves nothing about the build.
 let heartbeatOkAtMs: number | null = null
+// Since when heartbeats cannot reach a working backend (no answer, or a 5xx); null once one lands. It holds the
+// idle update's validation deadline: an outage is not the new build's fault.
+let heartbeatUnreachableSinceMs: number | null = null
 // The channel beacon, touched only while delivery is live.
 let beaconTouchedAtMs: number | null = null
 let startupCompleteAtMs: number | null = null
@@ -14046,6 +14052,7 @@ async function idleRollbackInstall(record: any): Promise<{ ok: boolean; reason?:
       installedPluginsPath: installedPluginsPath(CLAUDE_CONFIG_DIR),
       holdPath: pathJoin(IDLE_UPDATE_MACHINE_DIR, ENROLMENT_HOLD_FILE_NAME),
       marketplace,
+      configDir: CLAUDE_CONFIG_DIR,
       fs: nodeIdleUpdateFs(),
       // Only ever a switch-off: the enrolment's own brakes gate every switch-on (the boot enrolment below).
       setAutoUpdate: () => ensureMarketplaceAutoUpdate({ configDir: CLAUDE_CONFIG_DIR, marketplace, enabled: false }),
@@ -17630,10 +17637,18 @@ async function main(): Promise<void> {
     hookRestart.start()
   }
 
-  // The idle update's controller (wired above main with its helpers): armed by
-  // the first arm of delivery, after startup complete and the heartbeat.
+  // The idle update's controller (wired above main with its helpers): armed the
+  // moment this daemon holds the pairing lock (at boot or on promotion), BEFORE
+  // the arm of delivery, so a new build whose startup hangs still meets its
+  // validation deadline and is rolled back. It restarts nothing before startup
+  // completes (gate 9). Paired agents only: an API key session has no agent
+  // identity for the heartbeat that validates a build.
   function armIdleUpdate(): void {
     if (idleUpdate) return
+    if (AUTH.mode !== 'pairing') {
+      log('idle update: off: this session uses an API key; the idle update runs on paired agents only')
+      return
+    }
     const stateDir = agentStateDir(homedir(), ASSISTANT_ID)
     if (!stateDir) return
     const fs = nodeIdleUpdateFs()
@@ -17689,6 +17704,7 @@ async function main(): Promise<void> {
         return readPersonAttached({
           platform: process.platform,
           sockets: readUnattendedInputs({ platform: process.platform, home: homedir(), assistantId: ASSISTANT_ID, stateDir, fs }).ownSockets,
+          keepalive: authority.kind === 'keepalive',
           keepaliveSession: authority.kind === 'keepalive' ? authority.tmuxSession : null,
           tmuxPath,
           exec: nodeExec(),
@@ -17701,6 +17717,8 @@ async function main(): Promise<void> {
       beaconAtMs: () => beaconTouchedAtMs,
       deaf: () => currentUnresponsiveError(Date.now()) !== null,
       loginExpired: () => currentAccountError(Date.now()) !== null,
+      backendUnreachable: () => heartbeatUnreachableSinceMs !== null,
+      monotonicNow: () => performance.now(),
       requestHeartbeat: () => versionHeartbeat?.sendNow(),
       drain: setUpdateDrainMode,
       restart: (target: string, proof: OwnLauncherProof | null) => updateRpc.restartForStagedUpdate(target, proof),
@@ -18585,6 +18603,7 @@ async function main(): Promise<void> {
           marketplace: marketplaceName ?? null,
           latestKnownVersion: marketplaceLatest.current(),
           badVersions: listHeldBadVersions({ machineDir: IDLE_UPDATE_MACHINE_DIR, fs: nodeIdleUpdateFs() }),
+          configDir: CLAUDE_CONFIG_DIR,
         })
         if (enrolment === 'hold') {
           log(`marketplace auto-update held: the latest ${marketplaceLatest.current() ?? '(unknown)'} is a version held bad on this computer`)
@@ -18641,9 +18660,17 @@ async function main(): Promise<void> {
       rootDir: import.meta.dir,
       // A beat that landed is the idle update's proof that a new build reached the backend.
       post: async (path: string, body: Record<string, unknown>) => {
-        const result = await bgosPost(path, body)
-        if (path === 'integrations/heartbeat') heartbeatOkAtMs = Date.now()
-        return result
+        try {
+          const result = await bgosPost(path, body)
+          if (path === 'integrations/heartbeat') {
+            heartbeatUnreachableSinceMs = null
+            if (body.daemonVersion === RUNNING_VERSION) heartbeatOkAtMs = Date.now()
+          }
+          return result
+        } catch (err) {
+          if (path === 'integrations/heartbeat' && isBackendUnreachableError(err)) heartbeatUnreachableSinceMs ??= Date.now()
+          throw err
+        }
       },
       log,
       // The fleet-visible half of the refusal that noteAuthOutcome already
@@ -18706,9 +18733,7 @@ async function main(): Promise<void> {
     // next 6 hourly beat (sweepUnresponsiveReport).
     setInterval(sweepUnresponsiveReport, SESSION_STATUS_TICK_MS).unref()
 
-    // Step 9.1: the idle update. Armed here, once, after startup complete and
-    // the heartbeat it reports through; it acts only as the lock holder.
-    armIdleUpdate()
+    // (The idle update is armed where the pairing lock is taken: armIdleUpdate.)
 
     // Step 9.5: auth divergence recheck. AUTH is frozen at boot; this slow
     // re-resolution (default 10 min + credentials-file watch) WARNs once per
@@ -18823,6 +18848,7 @@ async function main(): Promise<void> {
         // Who the pending cards belong to, seen now: the arm below can take a
         // while (fourth review of #282, Important 2).
         refreshAskTracker('promotion')
+        armIdleUpdate()
         if (res.reason === 'channel-takeover') {
           log(
             `${formatChannelTakeoverLine({ selfPid: process.pid, holderPid: res.holderPid, selfReason: channelPresence().reason })}; ` +
@@ -18889,6 +18915,7 @@ async function main(): Promise<void> {
     // while the (slow) arm runs.
     lockHeld = true
     connectedSince = Date.now()
+    armIdleUpdate()
     log(
       lockAtBoot.reason === 'channel-takeover'
         ? `${formatChannelTakeoverLine({ selfPid: process.pid, holderPid: lockAtBoot.holderPid, selfReason: bootPresence.reason })}; ` +
