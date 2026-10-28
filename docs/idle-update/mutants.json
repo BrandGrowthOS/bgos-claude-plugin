@@ -105,8 +105,8 @@
       "id": "gate-09-young",
       "rule": "9 the first minute of a daemon waits",
       "file": "lib/idle-update.mjs",
-      "find": "if (!finite(f.bootAtMs) || now - f.bootAtMs < d.minUpMs) return wait('young')",
-      "replace": "if (!finite(f.bootAtMs)) return wait('young')",
+      "find": "if (!finite(f.bootAtMs) || now - f.bootAtMs < d.minUpMs || f.startupComplete !== true) return wait('young')",
+      "replace": "if (!finite(f.bootAtMs) || f.startupComplete !== true) return wait('young')",
       "tests": [
         "test/idle-update.test.ts"
       ]
@@ -355,7 +355,7 @@
       "id": "settle-second-boot",
       "rule": "a second boot on the target before validation is the build failing",
       "file": "lib/idle-update.mjs",
-      "find": "    return { record: withAttempt(record, now, 'second_boot', { lockBoots }), event: 'second_boot' }",
+      "find": "    return { record: withAttempt(record, now, 'second_boot', { lockBoots, arrivedAt: iso }), event: 'second_boot' }",
       "replace": "    return { record, event: 'none' }",
       "tests": [
         "test/idle-update.test.ts"
@@ -405,8 +405,8 @@
       "id": "validate-deaf",
       "rule": "a deaf verdict never validates",
       "file": "lib/idle-update.mjs",
-      "find": "    deaf !== true &&\n",
-      "replace": "",
+      "find": "    now - beaconAtMs < d.beaconFreshMs &&\n    deaf !== true\n",
+      "replace": "    now - beaconAtMs < d.beaconFreshMs\n",
       "tests": [
         "test/idle-update.test.ts"
       ]
@@ -415,8 +415,8 @@
       "id": "validate-hold",
       "rule": "validation holds 60 s",
       "file": "lib/idle-update.mjs",
-      "find": "    now - arrivedAtMs >= d.validateHoldMs\n",
-      "replace": "    true\n",
+      "find": "if (isLiveBuild(input, d) && now - arrivedAtMs >= d.validateHoldMs) return 'validated'",
+      "replace": "if (isLiveBuild(input, d)) return 'validated'",
       "tests": [
         "test/idle-update.test.ts"
       ]
@@ -425,8 +425,8 @@
       "id": "validate-login",
       "rule": "an expired login suspends the deadline",
       "file": "lib/idle-update.mjs",
-      "find": "if (loginExpired !== true && now - arrivedAtMs >= d.validateDeadlineMs) return 'deadline'",
-      "replace": "if (now - arrivedAtMs >= d.validateDeadlineMs) return 'deadline'",
+      "find": "if (loginExpired !== true && backendUnreachable !== true && counted",
+      "replace": "if (backendUnreachable !== true && counted",
       "tests": [
         "test/idle-update.test.ts"
       ]
@@ -465,8 +465,8 @@
       "id": "unattended-win-parent",
       "rule": "Windows: the launcher's parent is the task's wscript",
       "file": "lib/idle-update.mjs",
-      "find": "if (!/wscript(\\.exe)?\"?\\s/i.test(text) || !/run-agent\\.vbs/i.test(text)) return { unattended: false, how: 'not_the_agent_task' }",
-      "replace": "if (!/run-agent\\.vbs/i.test(text)) return { unattended: false, how: 'not_the_agent_task' }",
+      "find": "if (!/wscript(\\.exe)?\"?\\s/i.test(text) || !namesFile(text, input.runAgentVbsPath)) return",
+      "replace": "if (!namesFile(text, input.runAgentVbsPath)) return",
       "tests": [
         "test/idle-update.test.ts"
       ]
@@ -505,8 +505,8 @@
       "id": "repoint-user-scope",
       "rule": "the rollback repoints the user-scope hoai entry only",
       "file": "lib/idle-update.mjs",
-      "find": "const entry = list.find((item) => item && typeof item === 'object' && item.scope === 'user') ?? (Array.isArray(raw) ? null : list[0])",
-      "replace": "const entry = list[0]",
+      "find": "  return list.find((item) => item && typeof item === 'object' && item.scope === 'user') ?? (Array.isArray(raw) ? null : (list[0] ?? null))",
+      "replace": "  return list[0] ?? null",
       "tests": [
         "test/idle-update.test.ts"
       ]
@@ -625,7 +625,7 @@
       "id": "host-watcher-fresh",
       "rule": "a stale watcher state is no sweep",
       "file": "lib/idle-update-host.mjs",
-      "find": "  return Number.isFinite(at) && now - at >= 0 && now - at < freshMs",
+      "find": "  return Number.isFinite(at) && now - at < freshMs",
       "replace": "  return Number.isFinite(at)",
       "tests": [
         "test/idle-update.host.test.ts"
@@ -635,8 +635,8 @@
       "id": "host-reclaim-own-only",
       "rule": "only this plugin's own switch-off is taken back",
       "file": "lib/idle-update-host.mjs",
-      "find": "return hold && typeof hold === 'object' && hold.marketplace === marketplace ? 'reclaim' : 'normal'",
-      "replace": "return hold && typeof hold === 'object' ? 'reclaim' : 'normal'",
+      "find": "    hold && typeof hold === 'object' && hold.marketplace === marketplace && typeof hold.configDir",
+      "replace": "    hold && typeof hold === 'object' && typeof hold.configDir",
       "tests": [
         "test/idle-update.host.test.ts"
       ]
@@ -645,8 +645,8 @@
       "id": "host-hold-only-when-changed",
       "rule": "a person's own false is never recorded as ours",
       "file": "lib/idle-update-host.mjs",
-      "find": "    if (result?.changed === true) {",
-      "replace": "    if (true) {",
+      "find": "  if (result?.changed === true) {",
+      "replace": "  if (true) {",
       "tests": [
         "test/idle-update.host.test.ts"
       ]
@@ -724,10 +724,10 @@
     },
     {
       "id": "wire-armed",
-      "rule": "server.ts arms the controller",
+      "rule": "server.ts arms the controller when the lock is taken at boot",
       "file": "server.ts",
-      "find": "    armIdleUpdate()\n",
-      "replace": "",
+      "find": "    connectedSince = Date.now()\n    armIdleUpdate()\n",
+      "replace": "    connectedSince = Date.now()\n",
       "tests": [
         "test/idle-update.wiring.test.ts"
       ]
@@ -758,6 +758,574 @@
       "file": "server.ts",
       "find": "    lastBrowserToolAtMs = Date.now()\n  }\n",
       "replace": "  }\n",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "scale-loopback-only",
+      "rule": "the scale is honoured only against a loopback backend",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (!isLoopbackUrl(backendUrl)) return 1\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "scale-floors",
+      "rule": "a scale never shrinks did-not-arrive below 3.5 min nor beacon-fresh below 30 s",
+      "file": "lib/idle-update.mjs",
+      "find": "Math.max(SCALE_FLOORS[key] ?? 1, ",
+      "replace": "Math.max(1, ",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-09-startup",
+      "rule": "9 never before startup completed",
+      "file": "lib/idle-update.mjs",
+      "find": " || f.startupComplete !== true) return wait('young')",
+      "replace": ") return wait('young')",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "lease-future-expires",
+      "rule": "a lease stamped beyond its life ahead expires",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (finite(at) && at - now > d.leaseTtlMs) return { state: 'expired', lease }\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "canary-future-silent",
+      "rule": "a canary stamped beyond the lease life ahead reads as silent",
+      "file": "lib/idle-update.mjs",
+      "find": "    .map((c) => (finite(c.at) && c.at - now > d.leaseTtlMs ? { ...c, at: Number.NEGATIVE_INFINITY } : c))",
+      "replace": "    .map((c) => c)",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "record-target-version",
+      "rule": "a record target must be X.Y.Z",
+      "file": "lib/idle-update.mjs",
+      "find": "if (typeof parsed.target !== 'string' || !VERSION_RE.test(parsed.target)) return null",
+      "replace": "if (typeof parsed.target !== 'string') return null",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "record-from-version",
+      "rule": "a record from must be X.Y.Z",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (typeof parsed.from !== 'string' || !VERSION_RE.test(parsed.from)) return null\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "settle-arrived-again",
+      "rule": "a build that proved live may boot once more",
+      "file": "lib/idle-update.mjs",
+      "find": "if (typeof record.liveAt === 'string' && record.rearrived !== true) {",
+      "replace": "if (false) {",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "settle-arrived-again-once",
+      "rule": "only once per record",
+      "file": "lib/idle-update.mjs",
+      "find": " && record.rearrived !== true) {",
+      "replace": ") {",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "settle-second-boot-arrival",
+      "rule": "a second boot restarts the arrival clock",
+      "file": "lib/idle-update.mjs",
+      "find": "'second_boot', { lockBoots, arrivedAt: iso })",
+      "replace": "'second_boot', { lockBoots })",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "validate-unreachable",
+      "rule": "an unreachable backend holds the deadline",
+      "file": "lib/idle-update.mjs",
+      "find": "backendUnreachable !== true && counted",
+      "replace": "counted",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "validate-suspended",
+      "rule": "time unreachable or asleep is not counted",
+      "file": "lib/idle-update.mjs",
+      "find": "  const counted = now - arrivedAtMs - (finite(suspendedMs) && suspendedMs > 0 ? suspendedMs : 0)",
+      "replace": "  const counted = now - arrivedAtMs",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "validate-live-heartbeat",
+      "rule": "live needs a heartbeat since arrival",
+      "file": "lib/idle-update.mjs",
+      "find": "    heartbeatOkAtMs >= arrivedAtMs &&\n    finite(beaconAtMs)",
+      "replace": "    finite(beaconAtMs)",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "outage-4xx-answered",
+      "rule": "a 4xx is a backend that answered",
+      "file": "lib/idle-update.mjs",
+      "find": "  return !(Number.isInteger(status) && status < 500)",
+      "replace": "  return !Number.isInteger(status)",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-sleep-not-counted",
+      "rule": "the controller counts a sleep as suspended",
+      "file": "lib/idle-update.mjs",
+      "find": "      if (wallGap > monoGap) suspendedMs += wallGap - monoGap\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-outage-not-counted",
+      "rule": "the controller counts unreachable minutes as suspended",
+      "file": "lib/idle-update.mjs",
+      "find": "      if (unreachable) suspendedMs += Math.max(0, Math.min(wallGap, monoGap))\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-live-on-record",
+      "rule": "live before the hold goes on the record",
+      "file": "lib/idle-update.mjs",
+      "find": "      if (!record.liveAt && isLiveBuild(input, d)) settleTo({ ...record, liveAt: iso(n) })\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-moment-authority",
+      "rule": "the rollback restart only through an unattended authority",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (!RESTART_KINDS.has(f.authority?.kind) || f.authority?.unattended !== true) return no('no_unattended_authority')\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-moment-passive",
+      "rule": "the rollback restart only as the lock holder",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (f.active !== true) return no('passive')\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-moment-draining",
+      "rule": "the rollback restart never while draining",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (f.draining) return no('update_in_flight')\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-moment-ask",
+      "rule": "the rollback restart waits for an open ask",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (f.openAsks > 0) return no('open_ask')\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-moment-goal",
+      "rule": "the rollback restart waits for a running goal",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (f.goalRunning) return no('goal_running')\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-moment-call",
+      "rule": "the rollback restart waits for a call",
+      "file": "lib/idle-update.mjs",
+      "find": "    return no('call_active')",
+      "replace": "    return { go: true, reason: 'quiet' }",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-moment-browser",
+      "rule": "the rollback restart waits for the browser",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (within(f.now, f.lastBrowserToolAtMs, d.browserRecentMs)) return no('browser_in_use')\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-moment-wake",
+      "rule": "the rollback restart waits for a wake due",
+      "file": "lib/idle-update.mjs",
+      "find": "Math.abs(wake.nextDueAtMs - f.now) < d.wakeGuardMs) return no('wake_due')",
+      "replace": "false) return no('wake_due')",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-rollback-by-hand",
+      "rule": "a rollback with no unattended authority asks for a restart by hand",
+      "file": "lib/idle-update.mjs",
+      "find": "        if (moment.reason === 'no_unattended_authority') {",
+      "replace": "        if (false) {",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-validate-awaited",
+      "rule": "the busy guard covers a slow rollback install",
+      "file": "lib/idle-update.mjs",
+      "find": "          return await validate()",
+      "replace": "          return validate()",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-validate-passive",
+      "rule": "a passive daemon never validates",
+      "file": "lib/idle-update.mjs",
+      "find": "          if (!read(deps.active, false)) return 'passive'\n          return await validate()",
+      "replace": "          return await validate()",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-rollback-passive",
+      "rule": "a passive daemon never rolls back",
+      "file": "lib/idle-update.mjs",
+      "find": "          if (!read(deps.active, false)) return 'passive'\n          return await rollback()",
+      "replace": "          return await rollback()",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-canaries-silent-latch",
+      "rule": "two silent canaries latch the version bad on disk",
+      "file": "lib/idle-update.mjs",
+      "find": "      if (machine.canary === 'latch_bad') markVersion(staged, 'bad', { reason: 'canaries_silent' })\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-startup-fact",
+      "rule": "the controller reads startup complete for gate 9",
+      "file": "lib/idle-update.mjs",
+      "find": "      startupComplete: read(deps.startupComplete, false),\n      safe:",
+      "replace": "      startupComplete: true,\n      safe:",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-activity-throws",
+      "rule": "an activity reading that throws is activity now",
+      "file": "lib/idle-update.mjs",
+      "find": "      activityMs: read(deps.activityMs, [n]),\n      jitterMs",
+      "replace": "      activityMs: read(deps.activityMs, []),\n      jitterMs",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-keepalive-pinned",
+      "rule": "a keepalive restart only when claude resumes a pinned session",
+      "file": "lib/idle-update.mjs",
+      "find": "      return { kind, unattended: pinned, proof: null }",
+      "replace": "      return { kind, unattended: true, proof: null }",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "keepalive-no-continue",
+      "rule": "a relaunch with --continue or -c is never pinned",
+      "file": "lib/idle-update.mjs",
+      "find": "  return sessionIdFromCommand(command) !== null && !CONTINUE_RE.test(String(command ?? ''))",
+      "replace": "  return sessionIdFromCommand(command) !== null",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-canary-still-canary",
+      "rule": "a voided or validated canary never rolls back",
+      "file": "lib/idle-update.mjs",
+      "find": "    const canary = Number.isInteger(record?.canaryN) && !files.voids.includes(record.canaryN) && !files.validated",
+      "replace": "    const canary = Number.isInteger(record?.canaryN)",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-latch-before-install",
+      "rule": "the version is latched bad before the install is touched",
+      "file": "lib/idle-update.mjs",
+      "find": "      markVersion(record.target, 'bad', { reason: why })\n      let result = null",
+      "replace": "      let result = null",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "win-own-vbs",
+      "rule": "Windows: only this agent's own run-agent.vbs proves the task",
+      "file": "lib/idle-update.mjs",
+      "find": "!namesFile(text, input.runAgentVbsPath)",
+      "replace": "!/run-agent\\.vbs/i.test(text)",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "host-vbs-path",
+      "rule": "the unattended inputs carry this agent's run-agent.vbs path",
+      "file": "lib/idle-update-host.mjs",
+      "find": "    runAgentVbsPath: vbsPath,\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-keepalive-own-tmux",
+      "rule": "a keepalive is asked on the tmux it runs in",
+      "file": "lib/idle-update-host.mjs",
+      "find": "  if (socket && pane) {",
+      "replace": "  if (false) {",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-keepalive-never-absent",
+      "rule": "a session tmux cannot find is unknown for a keepalive",
+      "file": "lib/idle-update-host.mjs",
+      "find": "const NEVER_ABSENT_RE = /(?!)/",
+      "replace": "const NEVER_ABSENT_RE = /can't find session|no server running|error connecting to|No such file or directory/i",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-keepalive-nothing-to-ask",
+      "rule": "a keepalive with nothing to ask is unknown",
+      "file": "lib/idle-update-host.mjs",
+      "find": "  if (!declared) return null\n",
+      "replace": "  if (!declared) return false\n",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-reclaim-config-dir",
+      "rule": "a hold is taken back only in its own config folder",
+      "file": "lib/idle-update-host.mjs",
+      "find": " && typeof hold.configDir === 'string' && hold.configDir !== '' && hold.configDir === configDir",
+      "replace": "",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-hold-config-dir",
+      "rule": "the hold names its config folder",
+      "file": "lib/idle-update-host.mjs",
+      "find": "...(typeof configDir === 'string' && configDir ? { configDir } : {}), ",
+      "replace": "",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-readback",
+      "rule": "installed_plugins.json is read back after the write",
+      "file": "lib/idle-update-host.mjs",
+      "find": "    held = installedPluginsPointsAt(safe(() => fs.readFile(installedPluginsPath), null), { version: from, installPath: fromRoot })",
+      "replace": "    held = true",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-switchoff-persisted",
+      "rule": "a switch-off that did not persist fails the rollback",
+      "file": "lib/idle-update-host.mjs",
+      "find": "  if (enrolment === 'not_persisted') return { ok: false, reason: 'auto_update_still_on' }\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-switchoff-throw",
+      "rule": "a switch-off that throws fails the rollback",
+      "file": "lib/idle-update-host.mjs",
+      "find": "  } catch {\n    return { ok: false, reason: 'auto_update_still_on' }\n  }",
+      "replace": "  } catch {\n    result = { reason: 'error' }\n  }",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "rpc-own-keys",
+      "rule": "a backend rpc id named like an object key is never a log-only label",
+      "file": "lib/update-rpc.ts",
+      "find": "Object.prototype.hasOwnProperty.call(LOG_ONLY_RPC_LABELS, rpcId) ? LOG_ONLY_RPC_LABELS[rpcId] : undefined",
+      "replace": "LOG_ONLY_RPC_LABELS[rpcId]",
+      "tests": [
+        "test/update-rpc.own-launcher.test.ts"
+      ]
+    },
+    {
+      "id": "wire-armed-promotion",
+      "rule": "server.ts arms the controller on promotion to the lock",
+      "file": "server.ts",
+      "find": "        refreshAskTracker('promotion')\n        armIdleUpdate()\n",
+      "replace": "        refreshAskTracker('promotion')\n",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-pairing-only",
+      "rule": "an API key session never arms it",
+      "file": "server.ts",
+      "find": "    if (AUTH.mode !== 'pairing') {\n      log('idle update: off: this session uses an API key; the idle update runs on paired agents only')\n      return\n    }\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-heartbeat-own-version",
+      "rule": "only a heartbeat carrying this build's version proves it",
+      "file": "server.ts",
+      "find": "if (body.daemonVersion === RUNNING_VERSION) heartbeatOkAtMs = Date.now()",
+      "replace": "heartbeatOkAtMs = Date.now()",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-unreachable",
+      "rule": "server.ts tells the controller when the backend cannot be reached",
+      "file": "server.ts",
+      "find": "      backendUnreachable: () => heartbeatUnreachableSinceMs !== null,",
+      "replace": "      backendUnreachable: () => false,",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-monotonic",
+      "rule": "server.ts gives the controller a monotonic clock",
+      "file": "server.ts",
+      "find": "      monotonicNow: () => performance.now(),\n      requestHeartbeat",
+      "replace": "      monotonicNow: () => Date.now(),\n      requestHeartbeat",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-scale-backend",
+      "rule": "server.ts passes the backend to the scale",
+      "file": "server.ts",
+      "find": "scaleFromEnv(process.env.BGOS_IDLE_UPDATE_SCALE, { backendUrl: BACKEND_URL })",
+      "replace": "scaleFromEnv(process.env.BGOS_IDLE_UPDATE_SCALE, { backendUrl: 'http://127.0.0.1' })",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-keepalive-flag",
+      "rule": "server.ts tells the person check it is a keepalive",
+      "file": "server.ts",
+      "find": "          keepalive: authority.kind === 'keepalive',\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-enrolment-config-dir",
+      "rule": "server.ts gives the enrolment its config folder",
+      "file": "server.ts",
+      "find": "          configDir: CLAUDE_CONFIG_DIR,\n        })",
+      "replace": "        })",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-rollback-config-dir",
+      "rule": "server.ts gives the rollback its config folder",
+      "file": "server.ts",
+      "find": "      marketplace,\n      configDir: CLAUDE_CONFIG_DIR,\n",
+      "replace": "      marketplace,\n",
       "tests": [
         "test/idle-update.wiring.test.ts"
       ]

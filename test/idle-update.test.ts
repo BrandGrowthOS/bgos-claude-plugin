@@ -749,6 +749,9 @@ test('unattended on Windows: only THIS agent\'s run-agent.vbs proves it, never a
   assert.equal(unattended({ platform: 'win32', launcherPid: 920, processes: WIN_TABLE, runAgentVbs: vbs, runAgentVbsPath: null }).unattended, false)
   const slashes = WIN_TABLE.map((p) => (p.pid === 910 ? { ...p, command: 'wscript.exe //B c:/users/kc/.bgos-agent/912/run-agent.vbs' } : p))
   assert.equal(unattended({ platform: 'win32', launcherPid: 920, processes: slashes, runAgentVbs: vbs }).unattended, true)
+  // This agent's own script, but run by cscript (a console a person sees and types in), is no proof either.
+  const byCscript = WIN_TABLE.map((p) => (p.pid === 910 ? { ...p, command: '"C:\\WINDOWS\\System32\\cscript.exe" //B "C:\\Users\\kc\\.bgos-agent\\912\\run-agent.vbs"' } : p))
+  assert.equal(unattended({ platform: 'win32', launcherPid: 920, processes: byCscript, runAgentVbs: vbs }).unattended, false)
 })
 
 test('own launcher: the hoai that supervises this session\'s claude, a strict ancestor, is proven', () => {

@@ -523,6 +523,14 @@ test('a passive daemon neither validates nor rolls back', async () => {
   disk.clock.now += 5 * MIN + SEC
   assert.equal(await a.c.tick(), 'passive')
   assert.equal(a.rollbackInstalls.length, 0)
+  // Passive after the rollback install: the restart stage does nothing at all, not even a wait.
+  const later = await rolledBackCanary()
+  later.a.s.active = false
+  later.disk.clock.now += 3 * MIN
+  assert.equal(await later.a.c.tick(), 'passive')
+  assert.equal(later.a.rollbackRestarts.length, 0)
+  later.a.s.active = true
+  assert.equal(await later.a.c.tick(), 'rollback_requested')
 })
 
 test('a slow rollback install holds the busy guard: a tick meanwhile is busy, the install runs once, the version is held bad first', async () => {

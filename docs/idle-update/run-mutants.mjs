@@ -31,7 +31,7 @@ if (mutants.length === 0) {
 }
 
 function runTests(files) {
-  const res = spawnSync('npx', ['tsx', '--test', '--test-reporter=spec', '--test-concurrency=2', ...files], {
+  const res = spawnSync('npx', ['tsx', '--test', '--test-reporter=spec', '--test-concurrency=2', '--test-timeout=60000', ...files], {
     cwd: root,
     encoding: 'utf8',
     shell: process.platform === 'win32',
