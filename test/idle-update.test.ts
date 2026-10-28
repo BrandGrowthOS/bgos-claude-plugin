@@ -553,7 +553,12 @@ const WIN_TABLE = [
   { pid: 940, ppid: 920, command: '"C:\\Users\\kc\\.local\\bin\\claude.exe" --resume pin-1' },
   { pid: 950, ppid: 940, command: 'C:\\Users\\kc\\.bun\\bin\\bun.exe C:\\plugin\\server.ts' },
 ]
-const HIDDEN_VBS = 'Set sh = CreateObject("WScript.Shell")\r\nsh.Run "node hoai-core.mjs --keep-alive", 0, True\r\n'
+// The body lib/agent-task-win32.mjs writes: the launcher runs hidden (style 0) and the script waits for it.
+const HIDDEN_VBS = [
+  'Set shell = CreateObject("WScript.Shell")',
+  'WScript.Quit shell.Run("""C:\\node.exe"" ""C:\\plugin\\bin\\hoai-core.mjs"" --keep-alive", 0, True)',
+  '',
+].join('\r\n')
 
 test('unattended on Windows: the logon task\'s hidden run-agent.vbs started the launcher', () => {
   const r = unattended({ platform: 'win32', launcherPid: 920, processes: WIN_TABLE, runAgentVbs: { text: HIDDEN_VBS, mtimeMs: NOW - 2 * HOUR } })
