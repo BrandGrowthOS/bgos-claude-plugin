@@ -2,7 +2,7 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
-## Unreleased
+## 0.80.1 (2026-10-28)
 
 **On Windows each agent's helper no longer grows by several GB a day (board rows a8646712 and dc37e2ac).**
 
