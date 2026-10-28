@@ -1323,19 +1323,25 @@ function bgosCall<T>(
   consume: (response: Response) => Promise<T>,
 ): Promise<T> {
   let answered = false
+  const backend = isBackendUrl(call.url)
   return boundedFetch(
     call,
     async (response) => {
       answered = true
       noteAuthOutcome(response.status)
-      noteBackendReach(response.status)
+      if (backend) noteBackendReach(response.status)
       return consume(response)
     },
     { log },
   ).catch((err) => {
-    if (!answered) noteBackendReach(null)
+    if (backend && !answered) noteBackendReach(null)
     throw err
   })
+}
+
+/** Is this call to the BGOS backend? An S3 presigned upload is not: it proves nothing about the backend either way. */
+function isBackendUrl(url: string): boolean {
+  return url === API_BASE || url.startsWith(`${API_BASE}/`)
 }
 
 /** The backend answered (below 500), or did not (a 5xx, or no answer at all: null). */
@@ -17507,6 +17513,9 @@ async function main(): Promise<void> {
     shuttingDown = true
     log(describeShutdownCause(cause))
     selfUpdater?.markGracefulStop()
+    // A clean end (its claude went away): the idle update's record says so, so the next boot of a new build being
+    // validated is not read as a crash. Never on a fatal error (that path does not come through here).
+    idleUpdate?.noteEnded()
     stopHookIntake()
     // A clean stop takes the published state away (only when it is ours), so
     // the watcher never reads a dead daemon's "idle" as a live one's.

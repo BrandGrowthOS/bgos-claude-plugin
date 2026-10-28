@@ -946,8 +946,9 @@ test('an outage during validation is forgiven for an hour at most; past that its
     disk.clock.now += 30 * SEC
     assert.equal(await a.c.tick(), 'validating', `minute ${(i + 1) / 2}`)
   }
-  disk.clock.now += 4 * MIN
-  assert.equal(await a.c.tick(), 'validating', 'five minutes past the hour, still down: not yet five minutes counted')
+  // 61 min down so far, one of them past the cap.
+  disk.clock.now += 3 * MIN
+  assert.equal(await a.c.tick(), 'validating', 'sixty-four minutes down, still down: four of them counted')
   disk.clock.now += MIN + SEC
   assert.equal(await a.c.tick(), 'rollback')
 })

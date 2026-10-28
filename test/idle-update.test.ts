@@ -662,6 +662,7 @@ test('validation: the hold needs a beacon touched and a heartbeat landed during 
   const m = need()
   assert.equal(m.decideValidation(proof({ beaconAtMs: NOW - 61 * SEC })), 'pending', 'one beacon at the first live reading, none since')
   assert.equal(m.decideValidation(proof({ heartbeatOkAtMs: NOW - 61 * SEC })), 'pending', 'no heartbeat landed during the hold')
+  assert.equal(m.decideValidation(proof({ arrivedAtMs: NOW - 50 * SEC, liveSinceMs: NOW - 70 * SEC })), 'pending', 'a hold that began before this boot arrived')
   assert.equal(m.decideValidation(proof()), 'validated')
 })
 
