@@ -447,10 +447,18 @@ test('the unit\'s cgroup fails closed: systemctl refusing or throwing, no cgroup
   assert.deepEqual(await strays({ processes: null }), fail)
 })
 
-test('only a systemd unit ends a whole group: a launchd job, or no service, reads nothing; a unit with no group kills nothing', async () => {
+test('only a systemd unit ends a whole group: a launchd job reads nothing; a unit running nothing kills nothing', async () => {
   const t = tmuxExec({ [SHOW]: showOk })
   assert.deepEqual(await strays({ service: { kind: 'launchd', handle: 'ai.bgos.agent.912' }, exec: t.exec }), { ok: true, strays: [] })
-  assert.deepEqual(await strays({ service: null, exec: t.exec }), { ok: true, strays: [] })
   assert.equal(t.calls.length, 0)
   assert.deepEqual(await strays({ exec: tmuxExec({ [SHOW]: { code: 0, stdout: 'MainPID=0\nControlGroup=\n' } }).exec }), { ok: true, strays: [] })
+})
+
+test('the unit\'s cgroup fails closed where it cannot tell: no service named, a running unit with no group, a member the listing does not have', async () => {
+  const fail = { ok: false, strays: [] }
+  const t = tmuxExec({ [SHOW]: showOk })
+  assert.deepEqual(await strays({ service: null, exec: t.exec }), fail, 'asked only for a service; none named now is unknown')
+  assert.equal(t.calls.length, 0)
+  assert.deepEqual(await strays({ exec: tmuxExec({ [SHOW]: { code: 0, stdout: 'MainPID=600\nControlGroup=\n' } }).exec }), fail)
+  assert.deepEqual(await strays({ files: { [`/sys/fs/cgroup${CG}/cgroup.procs`]: '600\n610\n620\n630\n640\n4242\n' } }), { ok: true, strays: [4242] }, 'started after the listing: not known to be ours')
 })

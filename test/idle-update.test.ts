@@ -492,19 +492,26 @@ test('boot settle: a build that already proved live may boot once more (a person
   assert.equal(never.event, 'second_boot', 'a build that never proved live gets no second chance')
 })
 
-test('boot settle: a boot whose predecessor was still alive (hoai relaunching a slow start, a person) is a re-arrival, once', () => {
+test('boot settle: a boot whose predecessor ended cleanly moments ago (its claude went away: hoai relaunching a slow start, a person) is a re-arrival, once', () => {
   const m = need()
   const base = { state: 'arrived', lockBoots: 1, arrivedAt: new Date(NOW - 4 * MIN).toISOString() }
-  const alive = m.settleRecordAtBoot(record({ ...base, aliveAt: new Date(NOW - 40 * SEC).toISOString() }), { runningVersion: '0.81.0', pin: 'pin-1', now: NOW })
-  assert.equal(alive.event, 'arrived_again')
-  assert.equal(alive.record.rearrived, true)
-  assert.equal(alive.record.aliveAt, null)
-  assert.equal(alive.record.lockBoots, 2)
-  assert.equal(alive.record.arrivedAt, new Date(NOW).toISOString())
-  const silent = m.settleRecordAtBoot(record({ ...base, aliveAt: new Date(NOW - 3 * MIN).toISOString() }), { runningVersion: '0.81.0', pin: 'pin-1', now: NOW })
-  assert.equal(silent.event, 'second_boot', 'a predecessor that went silent (crashed or hung) is the build failing')
-  const twice = m.settleRecordAtBoot({ ...alive.record, aliveAt: new Date(NOW + 30 * SEC).toISOString() }, { runningVersion: '0.81.0', pin: 'pin-1', now: NOW + MIN })
+  const ended = m.settleRecordAtBoot(record({ ...base, endedAt: new Date(NOW - 40 * SEC).toISOString() }), { runningVersion: '0.81.0', pin: 'pin-1', now: NOW })
+  assert.equal(ended.event, 'arrived_again')
+  assert.equal(ended.record.rearrived, true)
+  assert.equal(ended.record.endedAt, null)
+  assert.equal(ended.record.lockBoots, 2)
+  assert.equal(ended.record.arrivedAt, new Date(NOW).toISOString())
+  const long = m.settleRecordAtBoot(record({ ...base, endedAt: new Date(NOW - 3 * MIN).toISOString() }), { runningVersion: '0.81.0', pin: 'pin-1', now: NOW })
+  assert.equal(long.event, 'second_boot', 'an end long before this boot says nothing about what started it')
+  const twice = m.settleRecordAtBoot({ ...ended.record, endedAt: new Date(NOW + 30 * SEC).toISOString() }, { runningVersion: '0.81.0', pin: 'pin-1', now: NOW + MIN })
   assert.equal(twice.event, 'second_boot', 'one re-arrival per record, never a loop')
+})
+
+test('boot settle: a predecessor that only polled recently (no clean end on record: it crashed or hung) is a failed build', () => {
+  const m = need()
+  const base = { state: 'arrived', lockBoots: 1, arrivedAt: new Date(NOW - 4 * MIN).toISOString() }
+  const polled = m.settleRecordAtBoot(record({ ...base, aliveAt: new Date(NOW - 40 * SEC).toISOString() }), { runningVersion: '0.81.0', pin: 'pin-1', now: NOW })
+  assert.equal(polled.event, 'second_boot')
 })
 
 test('boot settle: the target booting again on a NEW session is a lost conversation, never a reason to roll back', () => {
@@ -558,7 +565,7 @@ function proof(over: Record<string, unknown> = {}): any {
     arrivedAtMs: NOW - 2 * MIN,
     now: NOW,
     startupComplete: true,
-    heartbeatOkAtMs: NOW - 90 * SEC,
+    heartbeatOkAtMs: NOW - 30 * SEC,
     beaconAtMs: NOW - 10 * SEC,
     deaf: false,
     loginExpired: false,
@@ -631,12 +638,31 @@ test('validation: the deadline counts from this boot\'s startup complete; a star
   assert.equal(m.decideValidation(proof({ ...never, arrivedAtMs: NOW - 16 * MIN, backendUnreachable: true })), 'pending')
 })
 
-test('durations: a startup bound, a grace for a boot that was still alive, a bound on an unproven rollback restart', () => {
+test('durations: a startup bound, a grace for a boot that ended cleanly, a bound on the rollback restart\'s waits, a cap on an outage', () => {
   const m = need()
   assert.equal(m.DEFAULT_DURATIONS.startupDeadlineMs, 15 * MIN)
-  assert.equal(m.DEFAULT_DURATIONS.aliveGraceMs, 2 * MIN)
+  assert.equal(m.DEFAULT_DURATIONS.endedGraceMs, 2 * MIN)
+  assert.equal('aliveGraceMs' in m.DEFAULT_DURATIONS, false)
   assert.equal(m.DEFAULT_DURATIONS.rollbackProofGraceMs, 10 * MIN)
-  assert.equal(m.scaledDurations(60).aliveGraceMs, 90 * SEC, 'a relaunch takes real time whatever the scale')
+  assert.equal(m.DEFAULT_DURATIONS.unreachableCapMs, 60 * MIN)
+  assert.equal(m.scaledDurations(60).endedGraceMs, 90 * SEC, 'a relaunch takes real time whatever the scale')
+})
+
+test('validation: an outage holds the deadline for at most an hour; past that its minutes count (a build that breaks its own calls is rolled back)', () => {
+  const m = need()
+  const down = { beaconAtMs: null, backendUnreachable: true, arrivedAtMs: NOW - 70 * MIN, startupCompleteAtMs: NOW - 70 * MIN }
+  assert.equal(m.decideValidation(proof({ ...down, unreachableMs: 59 * MIN })), 'pending')
+  assert.equal(m.decideValidation(proof({ ...down, unreachableMs: 61 * MIN })), 'deadline', 'seventy minutes, an hour of it forgiven')
+  assert.equal(m.decideValidation(proof({ ...down, unreachableMs: 61 * MIN, arrivedAtMs: NOW - 64 * MIN, startupCompleteAtMs: NOW - 64 * MIN })), 'pending')
+  assert.equal(m.decideValidation(proof({ ...down, backendUnreachable: false, unreachableMs: 30 * MIN, arrivedAtMs: NOW - 34 * MIN, startupCompleteAtMs: NOW - 34 * MIN })), 'pending', 'minutes down under the cap are never counted')
+  assert.equal(m.decideValidation(proof({ beaconAtMs: null, loginExpired: true, arrivedAtMs: NOW - 5 * HOUR, startupCompleteAtMs: NOW - 5 * HOUR })), 'pending', 'an expired login is never the build\'s fault')
+})
+
+test('validation: the hold needs a beacon touched and a heartbeat landed during it, not one reading still fresh from before', () => {
+  const m = need()
+  assert.equal(m.decideValidation(proof({ beaconAtMs: NOW - 61 * SEC })), 'pending', 'one beacon at the first live reading, none since')
+  assert.equal(m.decideValidation(proof({ heartbeatOkAtMs: NOW - 61 * SEC })), 'pending', 'no heartbeat landed during the hold')
+  assert.equal(m.decideValidation(proof()), 'validated')
 })
 
 test('validation: live is every proof but the 60 s hold', () => {
