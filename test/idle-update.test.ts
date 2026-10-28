@@ -418,6 +418,27 @@ test('boot settle: a second lock holding boot of the target before it validated 
   assert.equal(next.lockBoots, 2)
 })
 
+test('boot settle: the target booting again on a NEW session is a lost conversation, never a reason to roll back', () => {
+  // hoai retries a resume that died inside 25 s as a fresh session: claude's
+  // fault or the transcript's, not the build's. The new pin is kept, so the
+  // next boot on it (hoai's no-channel-heartbeat relaunch) still counts.
+  const m = need()
+  const arrived = record({ state: 'arrived', lockBoots: 1, arrivedAt: new Date(NOW - 4 * MIN).toISOString() })
+  const { record: next, event } = m.settleRecordAtBoot(arrived, { runningVersion: '0.81.0', pin: 'pin-2', now: NOW })
+  assert.equal(event, 'context_lost')
+  assert.equal(next.state, 'arrived')
+  assert.equal(next.pin, 'pin-2')
+  assert.equal(next.pinBefore, 'pin-1')
+  assert.equal(next.lockBoots, 1)
+  assert.equal(next.arrivedAt, new Date(NOW).toISOString())
+  assert.equal(m.settleRecordAtBoot(next, { runningVersion: '0.81.0', pin: 'pin-2', now: NOW + MIN }).event, 'second_boot')
+})
+
+test('boot settle: an unknown pin at boot is never read as a lost conversation', () => {
+  const m = need()
+  assert.equal(m.settleRecordAtBoot(record(), { runningVersion: '0.81.0', pin: null, now: NOW }).event, 'arrived')
+})
+
 test('boot settle: the target booting AGAIN after a rollback is rollback_failed, said once, never a second rollback', () => {
   const m = need()
   const rolled = record({ state: 'rolled_back' })
@@ -655,6 +676,13 @@ test('report: a restart that did not arrive or came back old says so with the ap
   assert.match(e.message, /2026-10-29T11:00:00\.000Z/)
   assert.ok(e.message.length <= 300)
   assert.equal(e.at, new Date(NOW - HOUR).toISOString())
+})
+
+test('report: a restart the ladder could only stage says so with the standing code too', () => {
+  const m = need()
+  const r = record({ state: 'no_authority', attempts: [{ at: new Date(NOW - HOUR).toISOString(), outcome: 'no_authority' }] })
+  assert.equal(m.idleUpdateLastError(r, { runningVersion: '0.80.0' }).code, 'scheduled_update_failed')
+  assert.equal(m.attemptFactsFor(r, '0.81.0').failed, 1)
 })
 
 test('report: a rollback, a failed rollback, a lost conversation and a non-canary failure each have their own code', () => {
