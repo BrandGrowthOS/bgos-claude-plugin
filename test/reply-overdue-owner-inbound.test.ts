@@ -40,6 +40,7 @@ function overdueSweep() {
     meetingChatIds: new Set<string>(),
     closedPeerChats: new Set<string>(),
     peerReplyRefusedChats: new Set<string>(),
+    peerReplyClosedChats: new Set<string>(),
     noteMonitoredChat: () => undefined,
     markConversationClosed: () => undefined,
     inboundOwesReply,
