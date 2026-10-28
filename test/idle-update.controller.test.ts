@@ -548,7 +548,9 @@ test('came back on the old version: a failed attempt, the canary voided for the 
 test('a new session on the new version: the lost conversation is said, and the build is still validated', async () => {
   const disk = await afterAsk()
   const a = agent(disk, { running: '0.81.0', staged: null })
-  a.s.session = '11111111-2222-4333-8444-555566667777'
+  const fresh = '11111111-2222-4333-8444-555566667777'
+  a.s.session = fresh
+  a.s.listing = { ok: true, processes: table(912).map((p) => (p.pid === 91240 ? { ...p, command: `claude --session-id ${fresh}` } : p)) }
   assert.equal(await a.c.tick(), 'validating')
   assert.equal(lastReport(a)?.code, 'idle_update_context_lost')
   disk.clock.now += 61 * SEC
