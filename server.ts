@@ -106,7 +106,7 @@ import {
   IDLE_UPDATE_DIR_NAME,
   IDLE_UPDATE_FILE_NAME,
   createIdleUpdate,
-  isBackendUnreachableError,
+  isBackendAnswer,
   isVersionHeldBad,
   nodeIdleUpdateFs,
   scaleFromEnv,
@@ -120,6 +120,7 @@ import {
   readLauncherClaim,
   readMarkerMtimeMs,
   readPersonAttached,
+  readServiceStrays,
   readUnattendedInputs,
   readWakeSchedule,
   readWatcherSweepActive,
@@ -1067,9 +1068,10 @@ let idleUpdateError: { code: string; message: string; at: string } | null = null
 // A heartbeat POST carrying THIS build's version that resolved (bgosCall throws on a refusal): the new build
 // reached the backend. A status-only beat carries no version and proves nothing about the build.
 let heartbeatOkAtMs: number | null = null
-// Since when heartbeats cannot reach a working backend (no answer, or a 5xx); null once one lands. It holds the
-// idle update's validation deadline: an outage is not the new build's fault.
-let heartbeatUnreachableSinceMs: number | null = null
+// Since when backend calls cannot reach a working backend (no answer, or a 5xx); null once any call is answered.
+// It holds the idle update's validation deadline: an outage is not the new build's fault. Read off every call
+// (bgosCall), so the calls of a slow startup count, not the heartbeat's alone.
+let backendUnreachableSinceMs: number | null = null
 // The channel beacon, touched only while delivery is live.
 let beaconTouchedAtMs: number | null = null
 let startupCompleteAtMs: number | null = null
@@ -1320,14 +1322,26 @@ function bgosCall<T>(
   call: { url: string; init?: RequestInit; timeoutMs: number; label: string },
   consume: (response: Response) => Promise<T>,
 ): Promise<T> {
+  let answered = false
   return boundedFetch(
     call,
     async (response) => {
+      answered = true
       noteAuthOutcome(response.status)
+      noteBackendReach(response.status)
       return consume(response)
     },
     { log },
-  )
+  ).catch((err) => {
+    if (!answered) noteBackendReach(null)
+    throw err
+  })
+}
+
+/** The backend answered (below 500), or did not (a 5xx, or no answer at all: null). */
+function noteBackendReach(status: number | null): void {
+  if (isBackendAnswer(status)) backendUnreachableSinceMs = null
+  else backendUnreachableSinceMs ??= Date.now()
 }
 
 async function bgosGet(
@@ -17712,12 +17726,26 @@ async function main(): Promise<void> {
         })
       },
       wakeSchedule: () => readWakeSchedule((path) => bgosPeerGet(path)),
+      serviceStrays: (processes: any[] | null, claudePid: number | null) => {
+        const authority = idleRestartAuthority()
+        const inputs = readUnattendedInputs({ platform: process.platform, home: homedir(), assistantId: ASSISTANT_ID, stateDir, fs })
+        return readServiceStrays({
+          service: authority.kind === 'service' ? authority.service : null,
+          processes,
+          claudePid,
+          sockets: inputs.ownSockets,
+          runShPath: inputs.runShPath,
+          exec: nodeExec(),
+          fs,
+          env: process.env,
+        })
+      },
       startupComplete: () => startupCompleteAtMs !== null,
       heartbeatOkAtMs: () => heartbeatOkAtMs,
       beaconAtMs: () => beaconTouchedAtMs,
       deaf: () => currentUnresponsiveError(Date.now()) !== null,
       loginExpired: () => currentAccountError(Date.now()) !== null,
-      backendUnreachable: () => heartbeatUnreachableSinceMs !== null,
+      backendUnreachable: () => backendUnreachableSinceMs !== null,
       monotonicNow: () => performance.now(),
       requestHeartbeat: () => versionHeartbeat?.sendNow(),
       drain: setUpdateDrainMode,
@@ -18443,12 +18471,13 @@ async function main(): Promise<void> {
         // cycle plan, and it is unreachable while stood down, which is right:
         // a passive daemon is not delivering and must not claim it is.
         if (heartbeatThisTick && (isWsHealthy() || plan.kind === 'full' || plan.kind === 'fast')) {
-          touchBeaconHeartbeat({
+          const beaconWritten = touchBeaconHeartbeat({
             path: BEACON_HEARTBEAT_PATH,
             now: hbNow,
             pid: process.pid,
           })
-          beaconTouchedAtMs = hbNow
+          // Only a beacon written where the supervisor watches proves delivery live to the idle update.
+          if (beaconWritten) beaconTouchedAtMs = hbNow
         }
         // The home step, once, by the channel holder. Reached only past the
         // `if (!channelArmed) return` above, so a passive daemon never writes,
@@ -18660,17 +18689,11 @@ async function main(): Promise<void> {
       rootDir: import.meta.dir,
       // A beat that landed is the idle update's proof that a new build reached the backend.
       post: async (path: string, body: Record<string, unknown>) => {
-        try {
-          const result = await bgosPost(path, body)
-          if (path === 'integrations/heartbeat') {
-            heartbeatUnreachableSinceMs = null
-            if (body.daemonVersion === RUNNING_VERSION) heartbeatOkAtMs = Date.now()
-          }
-          return result
-        } catch (err) {
-          if (path === 'integrations/heartbeat' && isBackendUnreachableError(err)) heartbeatUnreachableSinceMs ??= Date.now()
-          throw err
+        const result = await bgosPost(path, body)
+        if (path === 'integrations/heartbeat') {
+          if (body.daemonVersion === RUNNING_VERSION) heartbeatOkAtMs = Date.now()
         }
+        return result
       },
       log,
       // The fleet-visible half of the refusal that noteAuthOutcome already

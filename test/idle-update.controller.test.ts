@@ -921,6 +921,10 @@ test('a new session on the new version: the lost conversation is said, and the b
   a.s.listing = { ok: true, processes: table(912).map((p) => (p.pid === 91240 ? { ...p, command: `claude --session-id ${fresh}` } : p)) }
   assert.equal(await a.c.tick(), 'validating')
   assert.equal(lastReport(a)?.code, 'idle_update_context_lost')
+  disk.clock.now += 20 * SEC
+  a.s.heartbeatOkAtMs = disk.clock.now
+  a.s.beaconAtMs = disk.clock.now
+  assert.equal(await a.c.tick(), 'validating')
   disk.clock.now += 61 * SEC
   a.s.heartbeatOkAtMs = disk.clock.now
   a.s.beaconAtMs = disk.clock.now
