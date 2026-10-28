@@ -1726,8 +1726,8 @@
       "id": "ctl-note-ended-validate-only",
       "rule": "a clean end outside validation writes nothing",
       "file": "lib/idle-update.mjs",
-      "find": "      if (phase !== 'validate' || record?.state !== 'arrived') return",
-      "replace": "      if (!record) return",
+      "find": "      if (clean !== true || phase !== 'validate' || record?.state !== 'arrived') return",
+      "replace": "      if (clean !== true || !record) return",
       "tests": [
         "test/idle-update.controller.test.ts"
       ]
@@ -1736,7 +1736,7 @@
       "id": "wire-note-ended",
       "rule": "server.ts shutdown writes the clean end",
       "file": "server.ts",
-      "find": "    idleUpdate?.noteEnded()\n",
+      "find": "    idleUpdate?.noteEnded(isCleanEnd(cause, { stdinEnded: stdinHasEnded(process.stdin) }))\n",
       "replace": "",
       "tests": [
         "test/idle-update.wiring.test.ts"
@@ -1894,6 +1894,87 @@
       "replace": "  return true",
       "tests": [
         "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "clean-end-signal",
+      "rule": "a signal is a clean end",
+      "file": "lib/idle-update.mjs",
+      "find": "const CLEAN_END_CAUSES = new Set(['stdin-end', 'stdin-close', 'SIGTERM', 'SIGINT'])",
+      "replace": "const CLEAN_END_CAUSES = new Set(['stdin-end', 'stdin-close', 'SIGINT'])",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "clean-end-epipe-needs-stdin",
+      "rule": "a broken pipe is a clean end only once stdin has ended",
+      "file": "lib/idle-update.mjs",
+      "find": "  return cause === 'stdout-epipe' && stdinEnded === true",
+      "replace": "  return cause === 'stdout-epipe'",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-note-ended-clean-only",
+      "rule": "noteEnded writes only a clean end",
+      "file": "lib/idle-update.mjs",
+      "find": "      if (clean !== true || phase !== 'validate' || record?.state !== 'arrived') return",
+      "replace": "      if (phase !== 'validate' || record?.state !== 'arrived') return",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "wire-note-ended-cause",
+      "rule": "shutdown passes its cause through isCleanEnd",
+      "file": "server.ts",
+      "find": "    idleUpdate?.noteEnded(isCleanEnd(cause, { stdinEnded: stdinHasEnded(process.stdin) }))",
+      "replace": "    idleUpdate?.noteEnded(true)",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-cache-settled-only",
+      "rule": "a refusal on an input that could not be read is not remembered",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (proven || SETTLED_REFUSALS.has(own.reason)) unattendedCache = { key: `${kind}:${launcher.pid}`, value: proven }",
+      "replace": "    unattendedCache = { key: `${kind}:${launcher.pid}`, value: proven }",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-cache-settled-refusals",
+      "rule": "a refusal the table settles is remembered",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (proven || SETTLED_REFUSALS.has(own.reason)) unattendedCache",
+      "replace": "    if (proven) unattendedCache",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "canary-silent-window",
+      "rule": "a canary is silent only past canarySilentMs",
+      "file": "lib/idle-update.mjs",
+      "find": "  const silent = live.filter((c) => !within(now, c.at, d.canarySilentMs))",
+      "replace": "  const silent = live.filter((c) => !within(now, c.at, d.leaseTtlMs))",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "dur-canary-silent",
+      "rule": "canarySilentMs is 90 min",
+      "file": "lib/idle-update.mjs",
+      "find": "  canarySilentMs: 90 * MIN,",
+      "replace": "  canarySilentMs: 9 * MIN,",
+      "tests": [
+        "test/idle-update.test.ts"
       ]
     }
   ]
