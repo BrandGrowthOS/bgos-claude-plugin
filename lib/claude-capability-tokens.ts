@@ -35,10 +35,11 @@
  *   floor rules version 2 (installing a new plugin or tool), so the app may
  *   tell a paired owner the hook stops a plugin install too. Declared exactly
  *   where hard_floor is.
- * ask_answered: the daemon's ask_user_input returns pending at once unless
- *   wait_seconds asks it to wait, delivers every answer of a card together as
- *   one ask_answered event however late, never reports an unanswered question
- *   as skipped, and has the withdraw_ask tool.
+ * ask_answered: the daemon's ask_user_input returns pending at once on
+ *   wait_seconds 0 (with neither wait_seconds nor timeout_seconds it waits up
+ *   to 600 s), delivers every answer of a card together as one ask_answered
+ *   event however late, never reports an unanswered question as skipped, and
+ *   has the withdraw_ask tool.
  *
  * Not every token the canon gates on lives here: boards_playbook is older and
  * is declared and gated from its own files.

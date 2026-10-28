@@ -87,6 +87,14 @@
  * ask_answered event, withdraw_ask), so it declares the token on every host,
  * and the canon tells the pending card only to a daemon that declares it.
  *
+ * RECORDED FOR the `ask_answered` comment (askcard PR 3, 2026-10-28, both
+ * copies changed in one step, both digests moved to the same literal
+ * b5dcc739...bc54): the comment said ask_user_input returns pending at once
+ * unless wait_seconds asks it to wait, but a call with neither wait_seconds
+ * nor timeout_seconds waits up to 600 s. Comment only, no token moved. Red
+ * first: both digests moved before either copy, and the digest pin failed
+ * alone.
+ *
  * Run: npm test, or npx tsx --test test/claude-capability-tokens.pin.test.ts
  */
 
@@ -111,7 +119,7 @@ import {
 } from '../lib/declared-capabilities.ts'
 
 /** The digest BGOS's claude-capability-tokens.pin.spec.ts pins too. */
-const SHA256 = '6bf6854ee55b16191e3c6bb34980efd68205471f128cb0696f04141996f6d2fb'
+const SHA256 = 'b5dcc73927305a58a8f53fa4f35b75271ce4156460dbec54bf249b2b7737bc54'
 
 const ROOT = join(import.meta.dirname, '..')
 const FILE = join(ROOT, 'lib', 'claude-capability-tokens.ts')
