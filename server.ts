@@ -17516,8 +17516,8 @@ async function main(): Promise<void> {
     selfUpdater?.markGracefulStop()
     // A clean end (its claude went away): the idle update's record says so, so the next boot of a new build being
     // validated is not read as a crash. Never on a fault: uncaughtException and main().catch do not come through
-    // here, and a broken pipe from the fault handlers counts only once stdin has ended too.
-    idleUpdate?.noteEnded(isCleanEnd(cause, { stdinEnded: stdinHasEnded(process.stdin) }))
+    // here, and the fault handlers' broken pipe on some other stream is 'broken-pipe', never a clean end.
+    idleUpdate?.noteEnded(isCleanEnd(cause))
     stopHookIntake()
     // A clean stop takes the published state away (only when it is ours), so
     // the watcher never reads a dead daemon's "idle" as a live one's.
@@ -17546,6 +17546,10 @@ async function main(): Promise<void> {
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.once(signal, () => shutdown(signal, signal === 'SIGINT' ? 130 : 143))
   }
+  // A hangup is claude's terminal or claude itself gone: under expect, claude leads its pty's session, and when it
+  // exits the kernel hangs up its whole process group, this daemon included, whose default action would end it
+  // with no clean end recorded. Not once: the group's hangup and the launch shim's forward may both arrive.
+  if (process.platform !== 'win32') process.on('SIGHUP', () => shutdown('SIGHUP', 129))
 
   // agent-state.json (design section 7): ticks from here on; it writes only
   // while this daemon holds the pairing lock, so a passive daemon never does.
@@ -17802,9 +17806,18 @@ async function main(): Promise<void> {
   //
   // Both guards below were added after the first version of this block looped in production: the
   // handler logged, the log threw EPIPE, the throw re-entered the handler. So:
-  //   1. a broken pipe is the READER leaving, not a fault to report, so it goes to shutdown; and
+  //   1. a broken pipe goes to shutdown, not to the log (our own output's, the reader leaving, is caught on the
+  //      stream itself below; one here is on some other stream); and
   //   2. handlingFault makes a throw inside a handler impossible to recurse through.
   let handlingFault = false
+  // A broken pipe on this daemon's OWN output is its reader, claude, gone: a clean end, caught here on the stream
+  // itself. The fault handlers below see a broken pipe on any other stream, which is as likely a fault in the build.
+  for (const pipe of [process.stdout, process.stderr]) {
+    pipe.on('error', (err) => {
+      if (isBrokenPipe(err)) shutdown('stdout-epipe', 0)
+      else throw err
+    })
+  }
   const describeFault = (err: unknown) =>
     err instanceof Error ? err.stack ?? err.message : String(err)
 
@@ -17816,7 +17829,7 @@ async function main(): Promise<void> {
     handlingFault = true
     try {
       if (isBrokenPipe(reason)) {
-        shutdown('stdout-epipe', 0)
+        shutdown('broken-pipe', 0)
         return
       }
       log(`unhandledRejection: ${describeFault(reason)}`)
@@ -17837,7 +17850,7 @@ async function main(): Promise<void> {
     handlingFault = true
     try {
       if (isBrokenPipe(err)) {
-        shutdown('stdout-epipe', 0)
+        shutdown('broken-pipe', 0)
         return
       }
       log(`uncaughtException (fatal, exiting): ${describeFault(err)}`)

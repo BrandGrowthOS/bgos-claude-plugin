@@ -232,6 +232,9 @@ export function main(argv = process.argv.slice(2), opts = {}) {
     }
     onSignal('SIGTERM', () => forward('SIGTERM'))
     onSignal('SIGINT', () => forward('SIGINT'))
+    // A hangup (claude's pty gone) reaches the daemon too, so it records a clean end. Not on Windows, where a signal
+    // to a child is a forced kill.
+    if (platform !== 'win32') onSignal('SIGHUP', () => forward('SIGHUP'))
     child.on('error', (err) => {
       // A resolved path that still fails to spawn (EACCES, a broken install)
       // gets the same guidance as a missing bun, never a bare stack.

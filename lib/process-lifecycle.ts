@@ -21,7 +21,7 @@
  */
 
 /** The causes that can end this daemon, all of which must be named in the log. */
-export type ShutdownCause = 'stdin-end' | 'stdin-close' | 'stdout-epipe' | 'SIGINT' | 'SIGTERM'
+export type ShutdownCause = 'stdin-end' | 'stdin-close' | 'stdout-epipe' | 'broken-pipe' | 'SIGINT' | 'SIGTERM' | 'SIGHUP'
 
 /**
  * Does this stdin event mean the parent is gone?
@@ -46,6 +46,10 @@ export function describeShutdownCause(cause: ShutdownCause | string): string {
       return 'the launching Claude Code session closed our input, so it is gone: shutting down'
     case 'stdout-epipe':
       return 'our output pipe broke, so whoever was reading it is gone: shutting down'
+    case 'broken-pipe':
+      return 'a write went to a stream that had already ended or broken, not our own output: shutting down'
+    case 'SIGHUP':
+      return 'received SIGHUP (the session\'s terminal went away): shutting down'
     case 'SIGINT':
     case 'SIGTERM':
       return `received ${cause}: shutting down`
