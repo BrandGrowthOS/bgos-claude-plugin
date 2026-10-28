@@ -120,7 +120,7 @@ function agent(
     listing: { ok: true, processes: table(id) } as any,
     listings: 0,
     attached: false as boolean | null,
-    wake: { ok: true, tasks: [] as Array<{ nextRunAt: string }> } as any,
+    wake: { ok: true, tasks: [] as Array<{ nextFireAt: string }> } as any,
     wakeReads: 0,
     startupComplete: true,
     heartbeatOkAtMs: null as number | null,
@@ -314,7 +314,7 @@ test('the tree, a person and the schedule are read last; each says wait, and the
 
 test('a wake due within 10 min, read fresh just before the act, waits; an unreadable schedule fails closed', async () => {
   const due = agent(memDisk())
-  due.s.wake = { ok: true, tasks: [{ nextRunAt: new Date(T0 + 4 * MIN).toISOString() }] }
+  due.s.wake = { ok: true, tasks: [{ nextFireAt: new Date(T0 + 4 * MIN).toISOString() }] }
   assert.equal(await due.c.tick(), 'wake_due')
   assert.equal(due.s.wakeReads, 1)
   assert.equal(due.restarts.length, 0)
