@@ -90,7 +90,10 @@ function table(id: number, extra: Array<{ pid: number; ppid: number; command: st
 
 type Rig = ReturnType<typeof agent>
 
-function agent(disk: ReturnType<typeof memDisk>, o: { id?: number; running?: string; staged?: string | null; random?: number; authority?: string; ownsUs?: boolean; scale?: number } = {}) {
+function agent(
+  disk: ReturnType<typeof memDisk>,
+  o: { id?: number; running?: string; staged?: string | null; random?: number; authority?: string; ownsUs?: boolean; scale?: number; platform?: string; launcher?: any; unattended?: any } = {},
+) {
   const m = need()
   const id = o.id ?? 912
   const b = id * 100
@@ -142,7 +145,7 @@ function agent(disk: ReturnType<typeof memDisk>, o: { id?: number; running?: str
   out.c = m.createIdleUpdate({
     assistantId: String(id),
     ownPid: b + 50,
-    platform: 'darwin',
+    platform: o.platform ?? 'darwin',
     bootAtMs: T0 - 2 * HOUR,
     runningVersion: s.running,
     installMethod: 'marketplace',
@@ -175,13 +178,14 @@ function agent(disk: ReturnType<typeof memDisk>, o: { id?: number; running?: str
       s.listings += 1
       return s.listing
     },
-    launcher: () => ({ pid: b + 20, startedAtMs: T0 - 3 * HOUR, markerPath: MARKER, supervisorMtimeMs: T0 - 3 * HOUR }),
-    unattendedInputs: () => ({
+    launcher: () => o.launcher ?? { pid: b + 20, startedAtMs: T0 - 3 * HOUR, markerPath: MARKER, supervisorMtimeMs: T0 - 3 * HOUR },
+    unattendedInputs: () => o.unattended ?? ({
       ownSockets: [`hoai-${id}-home-abc`, `hoai-${id}`],
       runShPath: `/Users/a/.bgos-agent/${id}/run.sh`,
       launchStatus: { outcome: null, mtimeMs: null },
       runAgentVbs: { text: null, mtimeMs: null },
     }),
+    requestHeartbeat: () => {},
     personAttached: async () => s.attached,
     wakeSchedule: async () => {
       s.wakeReads += 1
@@ -551,4 +555,43 @@ test('a new session on the new version: the lost conversation is said, and the b
   a.s.heartbeatOkAtMs = disk.clock.now
   a.s.beaconAtMs = disk.clock.now
   assert.equal(await a.c.tick(), 'validated')
+})
+
+test('the session at boot is read from claude\'s command line first: a fresh retry is caught before hoai repins it', async () => {
+  const disk = await afterAsk()
+  const a = agent(disk, { running: '0.81.0', staged: null })
+  a.s.session = PIN
+  const fresh = '22222222-3333-4444-8555-666677778888'
+  a.s.listing = { ok: true, processes: table(912).map((p) => (p.pid === 91240 ? { ...p, command: `/Users/a/.local/bin/claude --dangerously-skip-permissions --session-id ${fresh}` } : p)) }
+  assert.equal(await a.c.tick(), 'validating')
+  assert.equal(lastReport(a)?.code, 'idle_update_context_lost')
+  assert.equal(readJson(disk, a.record).pin, fresh)
+})
+
+const VBS = 'WScript.Quit shell.Run("""C:\\node.exe"" ""C:\\plugin\\bin\\hoai-core.mjs"" --keep-alive", 0, True)\r\n'
+function winTable(launcherStartedAtMs: number) {
+  return [
+    { pid: 4, ppid: 0, command: 'System' },
+    { pid: 900, ppid: 4, command: 'C:\\WINDOWS\\system32\\svchost.exe -k netsvcs -p -s Schedule' },
+    { pid: 910, ppid: 900, command: '"C:\\WINDOWS\\System32\\WScript.exe" //B "C:\\Users\\kc\\.bgos-agent\\912\\run-agent.vbs"' },
+    { pid: 920, ppid: 910, startedAtMs: launcherStartedAtMs, command: '"C:\\node.exe" C:\\plugin\\bin\\hoai-core.mjs --keep-alive' },
+    { pid: 940, ppid: 920, command: `"C:\\Users\\kc\\.local\\bin\\claude.exe" --resume ${PIN}` },
+    { pid: 91250, ppid: 940, command: 'C:\\Users\\kc\\.bun\\bin\\bun.exe C:\\plugin\\server.ts' },
+  ]
+}
+
+test('Windows: the launcher\'s own process start, not the claim hoai rewrites at every relaunch, dates the hidden run-agent.vbs', async () => {
+  const unattended = { ownSockets: [], runShPath: null, launchStatus: { outcome: null, mtimeMs: null }, runAgentVbs: { text: VBS, mtimeMs: T0 - 2 * HOUR } }
+  // supervisor.json says T0 - 1 h (a relaunch rewrote it); the launcher process itself started at T0 - 3 h, BEFORE the
+  // vbs was rewritten hidden: that launcher may have shown a console, so it is not proven unattended.
+  const launcher = { pid: 920, startedAtMs: T0 - HOUR, markerPath: 'C:\\Users\\kc\\.bgos-agent\\912\\restart-requested.json', supervisorMtimeMs: T0 - HOUR }
+  const before = agent(memDisk(), { platform: 'win32', authority: 'launcher', launcher, unattended })
+  before.s.claudePid = 940
+  before.s.listing = { ok: true, processes: winTable(T0 - 3 * HOUR) }
+  assert.equal(await before.c.tick(), 'no_unattended_authority')
+  const after = agent(memDisk(), { platform: 'win32', authority: 'launcher', launcher, unattended })
+  after.s.claudePid = 940
+  after.s.listing = { ok: true, processes: winTable(T0 - 90 * MIN) }
+  assert.equal(await after.c.tick(), 'requested')
+  assert.equal(after.restarts[0].proof, null, 'a launcher authority uses its own marker rung')
 })
