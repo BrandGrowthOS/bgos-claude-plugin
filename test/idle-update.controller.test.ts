@@ -138,6 +138,7 @@ function agent(
     rollbackRestarts: [] as Array<{ target: string; proof: any }>,
     rollbackInstalls: [] as any[],
     reports: [] as any[],
+    heartbeatRequests: 0,
     logs: [] as string[],
     c: null as any,
   }
@@ -185,7 +186,9 @@ function agent(
       launchStatus: { outcome: null, mtimeMs: null },
       runAgentVbs: { text: null, mtimeMs: null },
     }),
-    requestHeartbeat: () => {},
+    requestHeartbeat: () => {
+      out.heartbeatRequests += 1
+    },
     personAttached: async () => s.attached,
     wakeSchedule: async () => {
       s.wakeReads += 1
@@ -596,4 +599,17 @@ test('Windows: the launcher\'s own process start, not the claim hoai rewrites at
   after.s.listing = { ok: true, processes: winTable(T0 - 90 * MIN) }
   assert.equal(await after.c.tick(), 'requested')
   assert.equal(after.restarts[0].proof, null, 'a launcher authority uses its own marker rung')
+})
+
+test('validation asks for a heartbeat while none has gone out since the new build arrived (the boot beat may have gone first)', async () => {
+  const disk = await afterAsk()
+  const a = agent(disk, { running: '0.81.0', staged: null })
+  a.s.heartbeatOkAtMs = disk.clock.now - 5 * SEC
+  a.s.beaconAtMs = disk.clock.now
+  assert.equal(await a.c.tick(), 'validating')
+  assert.equal(a.heartbeatRequests, 1)
+  disk.clock.now += 30 * SEC
+  a.s.heartbeatOkAtMs = disk.clock.now
+  assert.equal(await a.c.tick(), 'validating')
+  assert.equal(a.heartbeatRequests, 1, 'no more once one went out at the new version')
 })
