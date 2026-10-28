@@ -653,13 +653,23 @@ test('a canary whose attempt was voided, or a version another agent validated me
 
 test('two canaries that never came back latch the version bad on disk, for every reader of the latch', async () => {
   const disk = memDisk()
-  for (const [n, id, age] of [[1, '913', 3 * 24 * HOUR], [2, '914', 11 * MIN]] as const) {
+  for (const [n, id, age] of [[1, '913', 3 * 24 * HOUR], [2, '914', 91 * MIN]] as const) {
     disk.fs.createExclusive(join(MACHINE, '0.81.0', `canary-${n}`), JSON.stringify({ assistantId: id, at: new Date(T0 - age).toISOString() }))
   }
   const a = agent(disk)
   assert.equal(await a.c.tick(), 'version_held_bad')
   assert.equal(readJson(disk, join(MACHINE, '0.81.0', 'bad'))?.reason, 'canaries_silent')
   assert.equal(a.restarts.length, 0)
+})
+
+test('a second canary still validating past its lease is not latched bad by the others', async () => {
+  const disk = memDisk()
+  for (const [n, id, age] of [[1, '913', 3 * 24 * HOUR], [2, '914', 30 * MIN]] as const) {
+    disk.fs.createExclusive(join(MACHINE, '0.81.0', `canary-${n}`), JSON.stringify({ assistantId: id, at: new Date(T0 - age).toISOString() }))
+  }
+  const a = agent(disk)
+  assert.equal(await a.c.tick(), 'canary_unconfirmed')
+  assert.equal(disk.fs.readFile(join(MACHINE, '0.81.0', 'bad')), null)
 })
 
 test('a keepalive restart only when claude resumes a pinned session: a bare --continue relaunch is never unattended', async () => {
@@ -785,7 +795,7 @@ test('hoai relaunching a slow new build whose daemon ended cleanly (its claude w
   }
   // 3 min with no beacon: hoai ends claude (SIGTERM); the daemon's clean shutdown says so.
   disk.clock.now += 30 * SEC
-  first.c.noteEnded()
+  first.c.noteEnded(true)
   assert.ok(readJson(disk, first.record).endedAt, 'a clean end is on the record')
   disk.clock.now += 20 * SEC
   const second = agent(disk, { running: '0.81.0', staged: null })
@@ -793,7 +803,7 @@ test('hoai relaunching a slow new build whose daemon ended cleanly (its claude w
   assert.equal(second.rollbackInstalls.length, 0)
   assert.equal(readJson(disk, second.record).rearrived, true)
   disk.clock.now += 30 * SEC
-  second.c.noteEnded()
+  second.c.noteEnded(true)
   disk.clock.now += 20 * SEC
   const third = agent(disk, { running: '0.81.0', staged: null })
   assert.equal(await third.c.tick(), 'rollback', 'one re-arrival per record, never a loop')
@@ -820,8 +830,18 @@ test('a clean end outside validation writes nothing', async () => {
   const a = agent(disk)
   assert.equal(await a.c.tick(), 'requested')
   const before = disk.fs.readFile(a.record)
-  a.c.noteEnded()
+  a.c.noteEnded(true)
   assert.equal(disk.fs.readFile(a.record), before)
+})
+
+test('an end that is not a clean one (a fault in the broken-pipe class, stdin still open) writes nothing while validating', async () => {
+  const disk = await afterAsk()
+  const a = agent(disk, { running: '0.81.0', staged: null })
+  assert.equal(await a.c.tick(), 'validating')
+  const before = disk.fs.readFile(a.record)
+  a.c.noteEnded(false)
+  assert.equal(disk.fs.readFile(a.record), before)
+  assert.equal(readJson(disk, a.record).endedAt ?? null, null)
 })
 
 test('time spent passive during validation is not counted toward the deadline', async () => {
@@ -1161,6 +1181,39 @@ test('Windows: the launcher\'s own process start, not the claim hoai rewrites at
   after.s.listing = { ok: true, processes: winTable(T0 - 90 * MIN) }
   assert.equal(await after.c.tick(), 'requested')
   assert.equal(after.restarts[0].proof, null, 'a launcher authority uses its own marker rung')
+})
+
+test('Windows: a launch proof refused on an input it could not read (run-agent.vbs mid-scan) is not remembered: the next close look proves it', async () => {
+  const unattended: any = { ownSockets: [], runShPath: null, launchStatus: { outcome: null, mtimeMs: null }, runAgentVbs: { text: null, mtimeMs: null }, runAgentVbsPath: 'C:\\Users\\kc\\.bgos-agent\\912\\run-agent.vbs' }
+  const launcher = { pid: 920, startedAtMs: T0 - HOUR, markerPath: 'C:\\Users\\kc\\.bgos-agent\\912\\restart-requested.json', supervisorMtimeMs: T0 - HOUR }
+  const a = agent(memDisk(), { platform: 'win32', authority: 'launcher', launcher, unattended })
+  a.s.claudePid = 940
+  a.s.listing = { ok: true, processes: winTable(T0 - 90 * MIN) }
+  assert.equal(await a.c.tick(), 'no_unattended_authority')
+  unattended.runAgentVbs = { text: VBS, mtimeMs: T0 - 2 * HOUR }
+  disk_advance(a, 6 * MIN)
+  assert.equal(await a.c.tick(), 'requested')
+})
+
+test('a launch proof refused on a row missing from the table is not remembered; one refused on what the table does show is', async () => {
+  const unattended: any = { ownSockets: [], runShPath: null, launchStatus: { outcome: null, mtimeMs: null }, runAgentVbs: { text: VBS, mtimeMs: T0 - 2 * HOUR }, runAgentVbsPath: 'C:\\Users\\kc\\.bgos-agent\\912\\run-agent.vbs' }
+  const launcher = { pid: 920, startedAtMs: T0 - HOUR, markerPath: 'C:\\Users\\kc\\.bgos-agent\\912\\restart-requested.json', supervisorMtimeMs: T0 - HOUR }
+  const gap = agent(memDisk(), { platform: 'win32', authority: 'launcher', launcher, unattended })
+  gap.s.claudePid = 940
+  gap.s.listing = { ok: true, processes: winTable(T0 - 90 * MIN).filter((p) => p.pid !== 940) }
+  assert.equal(await gap.c.tick(), 'no_unattended_authority')
+  gap.s.listing = { ok: true, processes: winTable(T0 - 90 * MIN) }
+  disk_advance(gap, 6 * MIN)
+  assert.equal(await gap.c.tick(), 'requested', 'claude\'s row was missing from one listing')
+  // A launcher pid whose process is not hoai (a stale claim, a pid reused) stays refused without a listing every 5 min.
+  const other = agent(memDisk(), { platform: 'win32', authority: 'launcher', launcher, unattended })
+  other.s.claudePid = 940
+  other.s.listing = { ok: true, processes: winTable(T0 - 90 * MIN).map((p) => (p.pid === 920 ? { ...p, command: '"C:\\node.exe" C:\\tools\\other.mjs' } : p)) }
+  assert.equal(await other.c.tick(), 'no_unattended_authority')
+  const listed = other.s.listings
+  disk_advance(other, 6 * MIN)
+  assert.equal(await other.c.tick(), 'no_unattended_authority')
+  assert.equal(other.s.listings, listed)
 })
 
 test('validation asks for a heartbeat while none has gone out since the new build arrived (the boot beat may have gone first)', async () => {

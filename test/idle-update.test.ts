@@ -385,8 +385,15 @@ test('canary: one that never came back holds the version 24 h, then one more age
 
 test('canary: two that never came back latch the version bad, so a silent killer costs at most two agents', () => {
   const m = need()
-  const two = [{ n: 1, assistantId: '913', at: NOW - 3 * DAY }, { n: 2, assistantId: '914', at: NOW - 11 * MIN }]
+  const two = [{ n: 1, assistantId: '913', at: NOW - 3 * DAY }, { n: 2, assistantId: '914', at: NOW - 91 * MIN }]
   assert.equal(m.decideCanary({ files: canaryFiles({ canaries: two }), now: NOW, me: ME }).state, 'latch_bad')
+})
+
+test('canary: a second canary past its lease may still be validating (a slow start, an outage forgiven): it holds, it is not latched', () => {
+  const m = need()
+  const two = [{ n: 1, assistantId: '913', at: NOW - 3 * DAY }, { n: 2, assistantId: '914', at: NOW - 30 * MIN }]
+  assert.equal(m.decideCanary({ files: canaryFiles({ canaries: two }), now: NOW, me: ME }).state, 'hold')
+  assert.equal(m.DEFAULT_DURATIONS.canarySilentMs, 90 * MIN, 'past the startup bound, an hour of outage and the deadline')
 })
 
 // -- The record ----------------------------------------------------------------------------------
@@ -648,6 +655,15 @@ test('durations: a startup bound, a grace for a boot that ended cleanly, a bound
   assert.equal(m.DEFAULT_DURATIONS.rollbackProofGraceMs, 10 * MIN)
   assert.equal(m.DEFAULT_DURATIONS.unreachableCapMs, 60 * MIN)
   assert.equal(m.scaledDurations(60).endedGraceMs, 90 * SEC, 'a relaunch takes real time whatever the scale')
+})
+
+test('a clean end is its claude going away: stdin ended or closed, or a signal; a broken pipe only once stdin has ended too', () => {
+  const m = need()
+  for (const cause of ['stdin-end', 'stdin-close', 'SIGTERM', 'SIGINT']) assert.equal(m.isCleanEnd(cause, { stdinEnded: false }), true, cause)
+  // isBrokenPipe matches a write after end on ANY stream: a fault in the build, unless claude really went away.
+  assert.equal(m.isCleanEnd('stdout-epipe', { stdinEnded: false }), false)
+  assert.equal(m.isCleanEnd('stdout-epipe', { stdinEnded: true }), true)
+  for (const cause of ['uncaught', '', undefined, null]) assert.equal(m.isCleanEnd(cause, { stdinEnded: true }), false, String(cause))
 })
 
 test('validation: an outage holds the deadline for at most an hour; past that its minutes count (a build that breaks its own calls is rolled back)', () => {

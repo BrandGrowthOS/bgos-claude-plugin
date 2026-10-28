@@ -244,8 +244,11 @@ test('a clean end (its claude went away: stdin closed, a signal) is on the idle 
   const at = server.indexOf('  const shutdown = (cause: ShutdownCause | string, code: number): void => {')
   assert.ok(at >= 0, 'shutdown moved')
   const body = server.slice(at, server.indexOf('\n  }\n', at))
-  assert.match(body, /idleUpdate\?\.noteEnded\(\)/)
-  assert.ok(body.indexOf('idleUpdate?.noteEnded()') < body.indexOf('process.exit(code)'))
+  // Only a clean cause: a fault in the broken-pipe class comes through shutdown('stdout-epipe') too.
+  const call = 'idleUpdate?.noteEnded(isCleanEnd(cause, { stdinEnded: stdinHasEnded(process.stdin) }))'
+  assert.ok(body.includes(call), 'shutdown passes its cause through isCleanEnd')
+  assert.ok(body.indexOf(call) < body.indexOf('process.exit(code)'))
+  assert.match(server.slice(0, server.indexOf("} from './lib/idle-update.mjs'") + 40), /\bisCleanEnd,/)
   const fault = server.indexOf("process.on('uncaughtException', (err) => {")
   assert.ok(fault >= 0)
   assert.doesNotMatch(server.slice(fault, server.indexOf('\n  })\n', fault)), /noteEnded/)
