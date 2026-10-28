@@ -736,7 +736,7 @@
       "id": "wire-latch",
       "rule": "the heartbeat reports a held version as no pending restart",
       "file": "server.ts",
-      "find": "    heldBad: idleUpdateHeldBad,\n",
+      "find": "    heldBad: latched ? idleUpdateHeldBad : undefined,\n",
       "replace": "",
       "tests": [
         "test/idle-update.wiring.test.ts"

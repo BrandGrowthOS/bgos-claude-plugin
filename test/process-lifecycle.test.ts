@@ -259,8 +259,13 @@ test('boot enrolment into marketplace auto-update respects the same brakes as ev
   // The one path that could ignore the stop switch. BGOS_AUTO_UPDATE=0 and a latched rollback both
   // mean "this machine does not take updates right now"; enrolling it into unattended updates at
   // boot would quietly undo a user's or a bad release's decision.
-  const at = serverSource.indexOf('ensureMarketplaceAutoUpdate({')
+  const at = serverSource.indexOf('const enrolled = ensureMarketplaceAutoUpdate({')
   assert.notEqual(at, -1, 'the enrolment call must exist')
+  // Every other call only switches it off (the idle update's rollback holding a bad build out),
+  // which no brake has to allow.
+  const enrolment = at + 'const enrolled = '.length
+  const others = [...serverSource.matchAll(/ensureMarketplaceAutoUpdate\(\{[^}]*\}\)/g)].filter((m) => m.index !== enrolment).map((m) => m[0])
+  for (const call of others) assert.match(call, /enabled: false/, `a call outside the boot enrolment must only switch off: ${call}`)
   const before = serverSource.slice(Math.max(0, at - 1200), at)
   assert.match(before, /isAutoUpdateEnabled\(process\.env\.BGOS_AUTO_UPDATE\)/, 'must honour the kill switch')
   assert.match(before, /readRollbackLatch\(/, 'must honour a latched rollback')

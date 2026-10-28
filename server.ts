@@ -13538,23 +13538,13 @@ function updateReadinessSnapshot(): UpdateReadiness {
 // `state` is the auto-update.json read the caller already made, when it made one.
 // A version the idle update latched bad on this computer (its canary failed
 // on it) reads as NO pending restart here, so the heartbeat, a click and the
-// watcher never push an agent onto it again.
-function daemonPendingRestartVersion(state?: ReturnType<typeof loadAutoUpdateState>): string | null {
+// watcher never push an agent onto it again. `latched: false` is the same
+// answer without the latch, what is staged on disk now (daemonStagedVersion).
+function daemonPendingRestartVersion(
+  state?: ReturnType<typeof loadAutoUpdateState>,
+  { latched = true }: { latched?: boolean } = {},
+): string | null {
   return resolvePendingRestartVersion({
-    ...pendingRestartSources(state),
-    heldBad: idleUpdateHeldBad,
-  })
-}
-
-// The same answer without the latch: what is staged on disk now. The idle
-// update reads this one, so a version held bad shows as its own wait
-// (version_held_bad, reported) rather than as nothing staged.
-function daemonStagedVersion(): string | null {
-  return resolvePendingRestartVersion(pendingRestartSources())
-}
-
-function pendingRestartSources(state?: ReturnType<typeof loadAutoUpdateState>) {
-  return {
     installMethod: INSTALL_METHOD,
     runningVersion: RUNNING_VERSION,
     updaterPending: () => selfUpdater?.pendingRestartVersion() ?? null,
@@ -13564,7 +13554,14 @@ function pendingRestartSources(state?: ReturnType<typeof loadAutoUpdateState>) {
     },
     readInstalledPlugins: () => readTextOrNull(installedPluginsPath(CLAUDE_CONFIG_DIR)),
     readCheckoutVersion: () => readOwnVersion(RUNNING_ROOT),
-  }
+    heldBad: latched ? idleUpdateHeldBad : undefined,
+  })
+}
+
+// The idle update reads the unlatched answer, so a version held bad shows as
+// its own wait (version_held_bad, reported) rather than as nothing staged.
+function daemonStagedVersion(): string | null {
+  return daemonPendingRestartVersion(undefined, { latched: false })
 }
 
 function idleUpdateHeldBad(version: string): boolean {
@@ -14050,7 +14047,8 @@ async function idleRollbackInstall(record: any): Promise<{ ok: boolean; reason?:
       holdPath: pathJoin(IDLE_UPDATE_MACHINE_DIR, ENROLMENT_HOLD_FILE_NAME),
       marketplace,
       fs: nodeIdleUpdateFs(),
-      setAutoUpdate: (enabled: boolean) => ensureMarketplaceAutoUpdate({ configDir: CLAUDE_CONFIG_DIR, marketplace, enabled }),
+      // Only ever a switch-off: the enrolment's own brakes gate every switch-on (the boot enrolment below).
+      setAutoUpdate: () => ensureMarketplaceAutoUpdate({ configDir: CLAUDE_CONFIG_DIR, marketplace, enabled: false }),
       now: Date.now(),
     })
     if (result.ok) log(`idle update: Claude Code's own plugin update for ${marketplace ?? 'this marketplace'} on rollback: ${result.enrolment}`)
@@ -18577,17 +18575,6 @@ async function main(): Promise<void> {
       // a version the idle update latched bad on this computer (lib/idle-update-host.mjs decideEnrolment).
       await marketplaceLatest.observeNow()
       try {
-        // Respect the brakes this daemon already honours everywhere else. Enrolling a machine into
-        // unattended updates while its own updates are switched off, or while a bad release has
-        // latched rollback on, would be the one path that ignores the stop switch.
-        // Same read as the status block above: the directory holding auto-update.json, and the same
-        // lenient reader. Two readers of one latch that disagree would enrol a machine the other half
-        // of the daemon considers stopped.
-        const updatesAllowed =
-          isAutoUpdateEnabled(process.env.BGOS_AUTO_UPDATE) &&
-          !readRollbackLatch(pathDirname(resolveAutoUpdateStatePath(cursorStore.filePath)), {
-            readFile: readTextOrNull,
-          })
         const marketplaceName = INSTALL_DETECTION?.marketplace
         // The idle update's rollback switched Claude Code's own update off so a relaunch would not
         // reinstall the build it left. Held while the latest is still that build; once a newer one
@@ -18602,6 +18589,17 @@ async function main(): Promise<void> {
         if (enrolment === 'hold') {
           log(`marketplace auto-update held: the latest ${marketplaceLatest.current() ?? '(unknown)'} is a version held bad on this computer`)
         }
+        // Respect the brakes this daemon already honours everywhere else. Enrolling a machine into
+        // unattended updates while its own updates are switched off, or while a bad release has
+        // latched rollback on, would be the one path that ignores the stop switch.
+        // Same read as the status block above: the directory holding auto-update.json, and the same
+        // lenient reader. Two readers of one latch that disagree would enrol a machine the other half
+        // of the daemon considers stopped.
+        const updatesAllowed =
+          isAutoUpdateEnabled(process.env.BGOS_AUTO_UPDATE) &&
+          !readRollbackLatch(pathDirname(resolveAutoUpdateStatePath(cursorStore.filePath)), {
+            readFile: readTextOrNull,
+          })
         if (marketplaceName && updatesAllowed && enrolment !== 'hold') {
           const enrolled = ensureMarketplaceAutoUpdate({
             configDir: CLAUDE_CONFIG_DIR,

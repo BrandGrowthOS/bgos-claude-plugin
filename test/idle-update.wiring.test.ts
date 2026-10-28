@@ -131,12 +131,12 @@ test('a version latched bad here is no pending restart for the heartbeat, a clic
   const at = server.indexOf('function daemonPendingRestartVersion(')
   assert.ok(at >= 0)
   const end = server.indexOf('\n}\n', at)
-  assert.match(server.slice(at, end), /heldBad: idleUpdateHeldBad,/)
+  assert.match(server.slice(at, end), /heldBad: latched \? idleUpdateHeldBad : undefined,/)
   assert.match(server, /function idleUpdateHeldBad\(version: string\): boolean \{\n\s+return isVersionHeldBad\(version, \{ machineDir: IDLE_UPDATE_MACHINE_DIR, fs: nodeIdleUpdateFs\(\) \}\)/)
   assert.match(block(), /stagedVersion: \(\) => daemonStagedVersion\(\),/)
   const staged = server.indexOf('function daemonStagedVersion(')
   assert.ok(staged >= 0)
-  assert.doesNotMatch(server.slice(staged, server.indexOf('\n}\n', staged)), /heldBad/)
+  assert.match(server.slice(staged, server.indexOf('\n}\n', staged)), /return daemonPendingRestartVersion\(undefined, \{ latched: false \}\)/)
 })
 
 test('the readings come from the host module: the launcher claim, the unattended inputs, a person, the watcher, the schedule', () => {
@@ -158,7 +158,7 @@ test('the rollback: the marketplace through the host module and the clone throug
   const body = server.slice(at, server.indexOf('\n}\n', at))
   assert.match(body, /rollbackMarketplaceInstall\(\{/)
   assert.match(body, /installedPluginsPath: installedPluginsPath\(CLAUDE_CONFIG_DIR\),/)
-  assert.match(body, /ensureMarketplaceAutoUpdate\(\{ configDir: CLAUDE_CONFIG_DIR, marketplace, enabled \}\)/)
+  assert.match(body, /setAutoUpdate: \(\) => ensureMarketplaceAutoUpdate\(\{ configDir: CLAUDE_CONFIG_DIR, marketplace, enabled: false \}\)/)
   assert.match(body, /selfUpdater\.rollbackCheckoutTo\(record\.fromCommit\)/)
   assert.doesNotMatch(body, /process\.exit|attemptRollback/)
   assert.match(block(), /rollbackInstall: \(record: any\) => idleRollbackInstall\(record\),/)
