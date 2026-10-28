@@ -62,6 +62,13 @@ test('every shutdown names its cause, so a silent exit is never a mystery', () =
   assert.match(describeShutdownCause('SIGTERM'), /SIGTERM/)
 })
 
+test('a hangup and a broken pipe on some other stream name their causes too', () => {
+  const causes: ShutdownCause[] = ['SIGHUP', 'broken-pipe', 'stdout-epipe']
+  for (const cause of causes) assert.match(describeShutdownCause(cause), /shutting down/i, cause)
+  assert.match(describeShutdownCause('SIGHUP'), /SIGHUP/)
+  assert.match(describeShutdownCause('broken-pipe'), /stream/i)
+})
+
 test('an unknown cause still produces a usable line rather than throwing', () => {
   const line = describeShutdownCause('something-new' as ShutdownCause)
   assert.match(line, /something-new/)

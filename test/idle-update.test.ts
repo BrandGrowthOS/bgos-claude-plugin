@@ -654,16 +654,15 @@ test('durations: a startup bound, a grace for a boot that ended cleanly, a bound
   assert.equal('aliveGraceMs' in m.DEFAULT_DURATIONS, false)
   assert.equal(m.DEFAULT_DURATIONS.rollbackProofGraceMs, 10 * MIN)
   assert.equal(m.DEFAULT_DURATIONS.unreachableCapMs, 60 * MIN)
+  assert.equal(m.DEFAULT_DURATIONS.unattendedRecheckMs, 60 * MIN, 'a refused launch proof is read again an hour on')
   assert.equal(m.scaledDurations(60).endedGraceMs, 90 * SEC, 'a relaunch takes real time whatever the scale')
 })
 
-test('a clean end is its claude going away: stdin ended or closed, or a signal; a broken pipe only once stdin has ended too', () => {
+test('a clean end is its claude going away: stdin ended or closed, a signal (a hangup too), or a broken pipe on its own output', () => {
   const m = need()
-  for (const cause of ['stdin-end', 'stdin-close', 'SIGTERM', 'SIGINT']) assert.equal(m.isCleanEnd(cause, { stdinEnded: false }), true, cause)
-  // isBrokenPipe matches a write after end on ANY stream: a fault in the build, unless claude really went away.
-  assert.equal(m.isCleanEnd('stdout-epipe', { stdinEnded: false }), false)
-  assert.equal(m.isCleanEnd('stdout-epipe', { stdinEnded: true }), true)
-  for (const cause of ['uncaught', '', undefined, null]) assert.equal(m.isCleanEnd(cause, { stdinEnded: true }), false, String(cause))
+  for (const cause of ['stdin-end', 'stdin-close', 'SIGTERM', 'SIGINT', 'SIGHUP', 'stdout-epipe']) assert.equal(m.isCleanEnd(cause), true, cause)
+  // The fault handlers' broken pipe is a write after end on ANY stream: as likely a fault in the build.
+  for (const cause of ['broken-pipe', 'uncaught', '', undefined, null]) assert.equal(m.isCleanEnd(cause), false, String(cause))
 })
 
 test('validation: an outage holds the deadline for at most an hour; past that its minutes count (a build that breaks its own calls is rolled back)', () => {

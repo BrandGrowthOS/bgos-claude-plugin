@@ -308,6 +308,33 @@ test('main: forwards SIGTERM/SIGINT to the child and maps a signal death to 128+
   assert.equal(await done, SIGNAL_EXIT_CODES.SIGTERM)
 })
 
+test('main: forwards a hangup to the child off Windows, and never on Windows (a signal there is a forced kill)', async () => {
+  for (const platform of ['linux', 'darwin', 'win32']) {
+    const child = new FakeChild()
+    const handlers: Record<string, () => void> = {}
+    const win = platform === 'win32'
+    const done = main([win ? 'C:\\plugin\\wrapper.mjs' : '/opt/plugin/wrapper.mjs'], {
+      env: win ? { BUN_INSTALL: 'C:\\bun', PATH: 'C:\\Windows\\system32' } : { PATH: '/usr/bin' },
+      home: win ? 'C:\\Users\\kc' : '/home/kc',
+      platform,
+      exists: existsIn(win ? ['C:\\bun\\bin\\bun.exe'] : ['/usr/bin/bun']),
+      spawnImpl: (() => child) as never,
+      writeErr: () => {},
+      onSignal: (signal: string, handler: () => void) => {
+        handlers[signal] = handler
+      },
+    })
+    if (platform === 'win32') {
+      assert.equal(handlers.SIGHUP, undefined, platform)
+    } else {
+      handlers.SIGHUP()
+      assert.deepEqual(child.killed, ['SIGHUP'], platform)
+    }
+    child.emit('exit', 129, null)
+    assert.equal(await done, 129, platform)
+  }
+})
+
 test('main: a spawn error surfaces the hint, not a bare stack, and exits 127', async () => {
   const child = new FakeChild()
   let err = ''

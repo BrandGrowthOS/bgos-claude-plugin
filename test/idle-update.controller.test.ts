@@ -1183,7 +1183,7 @@ test('Windows: the launcher\'s own process start, not the claim hoai rewrites at
   assert.equal(after.restarts[0].proof, null, 'a launcher authority uses its own marker rung')
 })
 
-test('Windows: a launch proof refused on an input it could not read (run-agent.vbs mid-scan) is not remembered: the next close look proves it', async () => {
+test('Windows: a launch proof refused on an input it could not read (run-agent.vbs mid-scan) is read again an hour on, not held for the daemon\'s life', async () => {
   const unattended: any = { ownSockets: [], runShPath: null, launchStatus: { outcome: null, mtimeMs: null }, runAgentVbs: { text: null, mtimeMs: null }, runAgentVbsPath: 'C:\\Users\\kc\\.bgos-agent\\912\\run-agent.vbs' }
   const launcher = { pid: 920, startedAtMs: T0 - HOUR, markerPath: 'C:\\Users\\kc\\.bgos-agent\\912\\restart-requested.json', supervisorMtimeMs: T0 - HOUR }
   const a = agent(memDisk(), { platform: 'win32', authority: 'launcher', launcher, unattended })
@@ -1191,11 +1191,30 @@ test('Windows: a launch proof refused on an input it could not read (run-agent.v
   a.s.listing = { ok: true, processes: winTable(T0 - 90 * MIN) }
   assert.equal(await a.c.tick(), 'no_unattended_authority')
   unattended.runAgentVbs = { text: VBS, mtimeMs: T0 - 2 * HOUR }
+  const listed = a.s.listings
   disk_advance(a, 6 * MIN)
-  assert.equal(await a.c.tick(), 'requested')
+  assert.equal(await a.c.tick(), 'no_unattended_authority', 'a refusal is not read again every 5 min')
+  assert.equal(a.s.listings, listed)
+  disk_advance(a, 55 * MIN)
+  assert.equal(await a.c.tick(), 'requested', 'an hour on it is read again, and proves')
 })
 
-test('a launch proof refused on a row missing from the table is not remembered; one refused on what the table does show is', async () => {
+test('a person\'s own hoai (typed in a console, not the agent\'s hidden task) is refused once an hour at most, not listed every 5 min', async () => {
+  const unattended: any = { ownSockets: [], runShPath: null, launchStatus: { outcome: null, mtimeMs: null }, runAgentVbs: { text: VBS, mtimeMs: T0 - 2 * HOUR }, runAgentVbsPath: 'C:\\Users\\kc\\.bgos-agent\\912\\run-agent.vbs' }
+  const launcher = { pid: 920, startedAtMs: T0 - HOUR, markerPath: 'C:\\Users\\kc\\.bgos-agent\\912\\restart-requested.json', supervisorMtimeMs: T0 - HOUR }
+  const a = agent(memDisk(), { platform: 'win32', authority: 'launcher', launcher, unattended })
+  a.s.claudePid = 940
+  a.s.listing = { ok: true, processes: winTable(T0 - 90 * MIN).map((p) => (p.pid === 910 ? { ...p, command: 'C:\\WINDOWS\\system32\\cmd.exe' } : p)) }
+  assert.equal(await a.c.tick(), 'no_unattended_authority')
+  const listed = a.s.listings
+  for (let i = 0; i < 11; i += 1) {
+    disk_advance(a, 5 * MIN)
+    assert.equal(await a.c.tick(), 'no_unattended_authority')
+  }
+  assert.equal(a.s.listings, listed, 'no listing, schedule read or person probe for 55 min')
+})
+
+test('a launch proof refused on a row missing from the table is read again an hour on; one refused on what the table shows stays refused', async () => {
   const unattended: any = { ownSockets: [], runShPath: null, launchStatus: { outcome: null, mtimeMs: null }, runAgentVbs: { text: VBS, mtimeMs: T0 - 2 * HOUR }, runAgentVbsPath: 'C:\\Users\\kc\\.bgos-agent\\912\\run-agent.vbs' }
   const launcher = { pid: 920, startedAtMs: T0 - HOUR, markerPath: 'C:\\Users\\kc\\.bgos-agent\\912\\restart-requested.json', supervisorMtimeMs: T0 - HOUR }
   const gap = agent(memDisk(), { platform: 'win32', authority: 'launcher', launcher, unattended })
@@ -1203,7 +1222,7 @@ test('a launch proof refused on a row missing from the table is not remembered; 
   gap.s.listing = { ok: true, processes: winTable(T0 - 90 * MIN).filter((p) => p.pid !== 940) }
   assert.equal(await gap.c.tick(), 'no_unattended_authority')
   gap.s.listing = { ok: true, processes: winTable(T0 - 90 * MIN) }
-  disk_advance(gap, 6 * MIN)
+  disk_advance(gap, 61 * MIN)
   assert.equal(await gap.c.tick(), 'requested', 'claude\'s row was missing from one listing')
   // A launcher pid whose process is not hoai (a stale claim, a pid reused) stays refused without a listing every 5 min.
   const other = agent(memDisk(), { platform: 'win32', authority: 'launcher', launcher, unattended })

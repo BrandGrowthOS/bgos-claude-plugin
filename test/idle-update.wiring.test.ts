@@ -245,7 +245,7 @@ test('a clean end (its claude went away: stdin closed, a signal) is on the idle 
   assert.ok(at >= 0, 'shutdown moved')
   const body = server.slice(at, server.indexOf('\n  }\n', at))
   // Only a clean cause: a fault in the broken-pipe class comes through shutdown('stdout-epipe') too.
-  const call = 'idleUpdate?.noteEnded(isCleanEnd(cause, { stdinEnded: stdinHasEnded(process.stdin) }))'
+  const call = 'idleUpdate?.noteEnded(isCleanEnd(cause))'
   assert.ok(body.includes(call), 'shutdown passes its cause through isCleanEnd')
   assert.ok(body.indexOf(call) < body.indexOf('process.exit(code)'))
   assert.match(server.slice(0, server.indexOf("} from './lib/idle-update.mjs'") + 40), /\bisCleanEnd,/)
@@ -257,4 +257,23 @@ test('a clean end (its claude went away: stdin closed, a signal) is on the idle 
   assert.doesNotMatch(server.slice(main, server.indexOf('\n})\n', main)), /noteEnded/)
   const exit = server.indexOf("process.on('exit', () => {")
   assert.doesNotMatch(server.slice(exit, server.indexOf('\n  })\n', exit)), /noteEnded/, 'the exit backstop also runs after a crash')
+})
+
+test('a hangup (claude\'s pty gone: the kernel hangs up its whole process group) ends the daemon through shutdown, off Windows', () => {
+  assert.ok(server.includes("if (process.platform !== 'win32') process.on('SIGHUP', () => shutdown('SIGHUP', 129))"), 'SIGHUP goes through shutdown')
+})
+
+test('a broken pipe on the daemon\'s own output is its reader gone (a clean end); the fault handlers\' broken pipe is not', () => {
+  const own = server.indexOf('  for (const pipe of [process.stdout, process.stderr]) {')
+  assert.ok(own >= 0, 'no error listener on the daemon\'s own pipes')
+  const body = server.slice(own, server.indexOf('\n  }\n', own))
+  assert.match(body, /if \(isBrokenPipe\(err\)\) shutdown\('stdout-epipe', 0\)/)
+  assert.match(body, /else throw err/)
+  for (const head of ["process.on('unhandledRejection', (reason) => {", "process.on('uncaughtException', (err) => {"]) {
+    const at = server.indexOf(head)
+    assert.ok(at >= 0, head)
+    const handler = server.slice(at, server.indexOf('\n  })\n', at))
+    assert.match(handler, /shutdown\('broken-pipe', 0\)/, head)
+    assert.doesNotMatch(handler, /stdout-epipe/, head)
+  }
 })
