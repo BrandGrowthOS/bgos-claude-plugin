@@ -95,6 +95,15 @@
  * first: both digests moved before either copy, and the digest pin failed
  * alone.
  *
+ * ADDED FOR `ask_multi_select` (askcard PR 3, 2026-10-28, both copies changed
+ * in one step, both digests moved to the same literal 701f98e8...3e3b): this
+ * release takes multi_select on an ask_user_input question and answers it
+ * with arrays, so it declares the token on every host, and the BGOS canon
+ * offers multi_select only to a daemon that declares it (and only while the
+ * backend serves it). Appended LAST, so the order before it is unchanged.
+ * The red commit read ASK_MULTI_SELECT_TOKEN through the module object, so
+ * this test ran and failed case by case before the token existed.
+ *
  * Run: npm test, or npx tsx --test test/claude-capability-tokens.pin.test.ts
  */
 
@@ -112,6 +121,7 @@ import {
   PERMISSION_CARD,
   PLAN_CARD,
 } from '../lib/claude-capability-tokens.ts'
+import * as tokenFile from '../lib/claude-capability-tokens.ts'
 import {
   DECLARED_CAPABILITIES_BASE,
   DECLARED_CAPABILITIES_PAIRING,
@@ -119,13 +129,20 @@ import {
 } from '../lib/declared-capabilities.ts'
 
 /** The digest BGOS's claude-capability-tokens.pin.spec.ts pins too. */
-const SHA256 = 'b5dcc73927305a58a8f53fa4f35b75271ce4156460dbec54bf249b2b7737bc54'
+const SHA256 = '701f98e8891f80fe2f11e6a3b3d4ea446f4bcf589305cbd0f832581b31083e3b'
 
 const ROOT = join(import.meta.dirname, '..')
 const FILE = join(ROOT, 'lib', 'claude-capability-tokens.ts')
 
 /** The tokens this release carries the code for, and so declares. */
-const DECLARED_BY_THIS_RELEASE: readonly string[] = [PERMISSION_CARD, PLAN_CARD, HARD_FLOOR_TOKEN, HARD_FLOOR_RULES_2_TOKEN, ASK_ANSWERED_TOKEN]
+const DECLARED_BY_THIS_RELEASE: readonly string[] = [
+  PERMISSION_CARD,
+  PLAN_CARD,
+  HARD_FLOOR_TOKEN,
+  HARD_FLOOR_RULES_2_TOKEN,
+  ASK_ANSWERED_TOKEN,
+  (tokenFile as Record<string, string>).ASK_MULTI_SELECT_TOKEN,
+]
 
 /**
  * Named in the file, NOT declared by this release, and who declares them.
@@ -150,10 +167,11 @@ test('the token file still has the bytes BGOS pins for its copy', () => {
   )
 })
 
-test('the file names exactly permission_card, plan_card, hard_floor, hard_floor_rules_2 and ask_answered, in that order', () => {
-  assert.deepEqual([...CLAUDE_CAPABILITY_TOKENS], ['permission_card', 'plan_card', 'hard_floor', 'hard_floor_rules_2', 'ask_answered'])
+test('the file names exactly permission_card, plan_card, hard_floor, hard_floor_rules_2, ask_answered and ask_multi_select, in that order', () => {
+  assert.deepEqual([...CLAUDE_CAPABILITY_TOKENS], ['permission_card', 'plan_card', 'hard_floor', 'hard_floor_rules_2', 'ask_answered', 'ask_multi_select'])
   assert.equal(HARD_FLOOR_RULES_2_TOKEN, 'hard_floor_rules_2')
   assert.equal(ASK_ANSWERED_TOKEN, 'ask_answered')
+  assert.equal((tokenFile as Record<string, string>).ASK_MULTI_SELECT_TOKEN, 'ask_multi_select')
   assert.equal(PERMISSION_CARD, 'permission_card')
   assert.equal(PLAN_CARD, 'plan_card')
   assert.equal(HARD_FLOOR_TOKEN, 'hard_floor')

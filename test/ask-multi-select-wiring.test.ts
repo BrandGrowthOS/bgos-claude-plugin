@@ -109,6 +109,10 @@ test('the schema offers multi_select on a question and names the arrays it answe
   const schema = server.slice(schemaAt, server.indexOf("required: ['chat_id', 'questions']", schemaAt))
   assert.match(schema, /multi_select: \{\n\s*type: 'boolean',/)
   assert.match(schema, /picked_option_values/)
+  // An app or backend without multi select (ASK_MULTI_SELECT off, or an app
+  // installed before it) draws a single choice, so a one pick array may be
+  // all the owner could give (review of PR 3).
+  assert.match(schema.replace(/' \+\n\s*'/g, ''), /without multi select shows it as a single choice/)
 })
 
 test('the instructions say a multi_select question answers ask_answered with arrays', () => {

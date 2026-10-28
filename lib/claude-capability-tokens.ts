@@ -40,6 +40,10 @@
  *   to 600 s), delivers every answer of a card together as one ask_answered
  *   event however late, never reports an unanswered question as skipped, and
  *   has the withdraw_ask tool.
+ * ask_multi_select: the daemon's ask_user_input takes multi_select: true on a
+ *   question with 2 or more options, posts it as multiSelect, and answers it
+ *   with picked_option_values and picked_option_labels arrays, an array even
+ *   for one pick.
  *
  * Not every token the canon gates on lives here: boards_playbook is older and
  * is declared and gated from its own files.
@@ -49,6 +53,7 @@ export const PLAN_CARD = 'plan_card';
 export const HARD_FLOOR_TOKEN = 'hard_floor';
 export const HARD_FLOOR_RULES_2_TOKEN = 'hard_floor_rules_2';
 export const ASK_ANSWERED_TOKEN = 'ask_answered';
+export const ASK_MULTI_SELECT_TOKEN = 'ask_multi_select';
 
 /** Every token this file names, in the order above. */
 export const CLAUDE_CAPABILITY_TOKENS: readonly string[] = Object.freeze([
@@ -57,4 +62,5 @@ export const CLAUDE_CAPABILITY_TOKENS: readonly string[] = Object.freeze([
   HARD_FLOOR_TOKEN,
   HARD_FLOOR_RULES_2_TOKEN,
   ASK_ANSWERED_TOKEN,
+  ASK_MULTI_SELECT_TOKEN,
 ]);

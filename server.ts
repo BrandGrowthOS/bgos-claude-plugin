@@ -5014,7 +5014,9 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
                     'true when more than one option can be right: your owner ticks every ' +
                     'option that applies and submits once, and this question answers with ' +
                     'picked_option_values and picked_option_labels arrays (an array even ' +
-                    'for one pick). Needs 2 or more options. Default false: one pick.',
+                    'for one pick). Needs 2 or more options. An app or backend ' +
+                    'without multi select shows it as a single choice, so the array then ' +
+                    'holds one pick. Default false: one pick.',
                 },
               },
               required: ['text', 'options'],
