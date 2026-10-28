@@ -127,7 +127,11 @@ test('the instructions say a multi_select question answers ask_answered with arr
 test('the instructions draw a multi_select question as checkboxes and list it in the question shape', () => {
   const sheet = server.indexOf('The BGOS app shows the card as a sheet over the chat')
   assert.ok(sheet > 0)
-  assert.match(server.slice(sheet, server.indexOf('optional free-text fallback', sheet)), /checkboxes/)
+  const sheetText = server.slice(sheet, server.indexOf('optional free-text fallback', sheet))
+  assert.match(sheetText, /checkboxes/)
+  // ASK_MULTI_SELECT off, or an app installed before multi select, draws a single choice
+  // (review of PR 3): the instructions must not promise checkboxes unconditionally.
+  assert.match(sheetText, /single choice where the app or backend has no multi select/)
   const shapeAt = server.indexOf("'Each question: `{ text, options?")
   assert.ok(shapeAt > 0)
   assert.match(server.slice(shapeAt, server.indexOf('}`.', shapeAt)), /multi_select\?/)
