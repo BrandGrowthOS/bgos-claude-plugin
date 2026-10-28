@@ -208,9 +208,7 @@ test('the model is told plainly for the a2a 400: typed, why, and not to retry', 
   assert.match(text, /Do not retry it\./)
   // Where the thing belongs, and what a reply here would really do.
   assert.match(text, /Anything for your owner belongs in your owner's chat\./)
-  assert.match(text, /reaches the peer agent, not your owner, and only while their conversation is open/)
-  assert.match(text, /once it has ended, send_to_peer starts a new one/)
-  assert.doesNotMatch(text, /reopens a closed conversation/, 'a reply into a closed thread is refused (board row 28fed1cd)')
+  assert.match(text, /reaches the peer agent, not your owner, and reopens a closed conversation/)
   assert.doesNotMatch(text, /say it with reply instead/)
   assert.doesNotMatch(text, /[\u2013\u2014]/, 'no en or em dashes')
 })

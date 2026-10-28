@@ -1,26 +1,25 @@
 /**
- * A reply into a peer side thread whose conversation has CLOSED (board row
- * 28fed1cd).
+ * HOAI's word on a reply into a peer side thread: did the other agent get it
+ * (board row 28fed1cd)?
  *
  * On 2026-10-27 the conversation between Data and Ares closed on timeout, and
  * five of Data's later replies into that side thread were answered "Sent" and
  * never reached Ares, who asked the same questions four times.
  *
  * WHY "Sent" WAS NOT TRUE. HOAI holds the conversation's state. A participant's
- * /send-message into a closed side thread is accepted: the backend revives the
+ * /send-message into a closed side thread is accepted: the backend reopens the
  * conversation (ChatParticipationService.reviveClosedPeerConversation, BGOS
- * #1265) and saves the reply, then forwards it to the other agent best effort
- * (SendMessageService.bridgePeerReplyIfApplicable), whose every refusal logs
- * and returns. The answer is 201 with the saved message either way, so the
- * daemon could only ever say the reply was saved, never that the peer got it.
+ * #1265, Kc's rule) and saves the reply, then forwards it to the other agent
+ * best effort (SendMessageService.bridgePeerReplyIfApplicable). The answer was
+ * 201 with the saved message either way, so the daemon could only ever say the
+ * reply was saved, never that the peer got it.
  *
- * WHAT THE DAEMON DOES INSTEAD. It already learns every close (the socket's
- * peer_conversation_closed, the update stream's peer_closed, a final turn
- * either way), so a reply into a chat it saw close is refused here, before any
- * upload or POST, in words that send the agent to send_to_peer, which opens a
- * new conversation. A backend that reports the forward (`peerDelivery` on the
- * /send-message answer, the BGOS half of this row) covers the closes the
- * daemon did not see; with no such field nothing here changes.
+ * WHAT THE DAEMON DOES. A reply into a closed conversation still goes to HOAI,
+ * which reopens it (Data, 2026-10-28: the reopen rule holds). HOAI now says
+ * whether it forwarded the reply (`peerDelivery` on the /send-message answer,
+ * BGOS #3420). `not_forwarded` is an error that says why and offers only a
+ * remedy that works; `forwarded`, or no field at all (a backend without
+ * #3420), is the Sent it always was.
  *
  * The words are plain on purpose: an agent may pass them to its owner.
  */
@@ -42,17 +41,17 @@ export function peerDeliveryOf(answer: unknown): PeerDeliveryState | null {
   return state === 'forwarded' || state === 'not_forwarded' ? state : null
 }
 
-/** The reason HOAI gave for not forwarding, for the log line and the check below. */
+/** The reason HOAI gave for not forwarding, for the log line and the words below. */
 export function peerDeliveryReason(answer: unknown): string {
   const reason = (answer as { peerDelivery?: { reason?: unknown } } | null)?.peerDelivery?.reason
   return typeof reason === 'string' && /^[a-z_]{1,64}$/.test(reason) ? reason : 'no reason given'
 }
 
 /**
- * The reasons that mean the conversation in that chat is over, so the next
- * reply there would be refused too. Any other reason (a failure inside the
- * forward, the other agent offline, a refused writer, a paused contact link)
- * fails that one reply and leaves the next one to HOAI.
+ * The reasons that mean the conversation in that chat is over, so the error
+ * says it ended. Any other reason (a
+ * failure inside the forward, the other agent offline, a refused writer, a
+ * paused contact link) says only that this reply was not passed on.
  */
 const CONVERSATION_ENDED_REASONS = new Set(['conversation_not_open', 'no_conversation'])
 
@@ -62,25 +61,15 @@ export function peerConversationEnded(answer: unknown): boolean {
 }
 
 /**
- * The reply was refused here: the conversation in that side thread closed, and
- * this daemon was told. Nothing was uploaded or posted.
+ * What the agent can do instead. send_to_peer reaches the other agent in a new
+ * conversation or the pair's open one, and carries words only, so a reply with
+ * files is told to share them as a link.
  */
-export function peerConversationClosedResult(chatId: string): {
-  content: Array<{ type: 'text'; text: string }>
-  isError: true
-} {
-  return {
-    content: [
-      {
-        type: 'text',
-        text:
-          `Not sent: the side conversation in chat ${chatId} has ended, and a reply ` +
-          'there may never reach the other agent. Nothing was posted. If they still ' +
-          'need it, send it with send_to_peer, which starts a new conversation.',
-      },
-    ],
-    isError: true,
-  }
+function sendToPeerInstead(withFiles: boolean): string {
+  return withFiles
+    ? 'If they still need it, send the words with send_to_peer and share the files as a link: ' +
+        'send_to_peer carries no files.'
+    : 'If they still need it, send it with send_to_peer.'
 }
 
 /**
@@ -91,6 +80,7 @@ export function peerConversationClosedResult(chatId: string): {
 export function peerReplyNotForwardedResult(
   chatId: string,
   messageId: unknown,
+  withFiles: boolean,
 ): {
   content: Array<{ type: 'text'; text: string }>
   isError: true
@@ -102,71 +92,54 @@ export function peerReplyNotForwardedResult(
         type: 'text',
         text:
           `Not delivered: HOAI saved this reply in the side conversation in chat ${chatId}${saved}, ` +
-          'but that conversation has ended, so it was not passed on to the other agent. If ' +
-          'they still need it, send it with send_to_peer, which starts a new conversation.',
+          `but that conversation has ended, so it was not passed on to the other agent. ${sendToPeerInstead(withFiles)}`,
       },
     ],
     isError: true,
   }
 }
 
-/**
- * Why HOAI did not pass a reply on, for the reasons with a remedy of their own:
- * send_to_peer is refused while a contact link is not active, and carries no
- * files.
- */
+/** Why HOAI did not pass a reply on, for the reasons that say more than that it did not. */
 const NOT_PASSED_ON_BECAUSE = new Map<string, string>([
-  [
-    'peer_offline',
-    'but the other agent is not connected right now, so it was not passed on. If they still ' +
-      'need it, send it with send_to_peer.',
-  ],
+  ['peer_offline', 'but the other agent is not connected right now, so it was not passed on.'],
   [
     'contact_link_inactive',
-    "but the connection with that agent's owner is paused or was removed, so it was not " +
-      'passed on. Nothing reaches that agent until the connection is active again.',
+    "but the connection with that agent's owner is paused or was removed, so it was not passed on.",
   ],
-  [
-    'external_files_unsupported',
-    'but files cannot go to an agent of another account, so it was not passed on. If they ' +
-      'still need it, send the words with send_to_peer and share the file as a link.',
-  ],
+  ['external_files_unsupported', 'but files cannot go to an agent of another account, so it was not passed on.'],
+  ['undeliverable_content', 'but nothing in it could be passed on to the other agent.'],
 ])
 
 /**
  * HOAI saved the reply but did not pass it on, for a reason that does not end
  * the conversation (a failure inside the forward, the other agent offline, a
- * paused contact link). Only this reply failed; the next one is HOAI's to
- * answer.
+ * paused contact link). Only this reply failed; the next one goes to HOAI as
+ * always. A paused or removed contact link is offered no send_to_peer: HOAI
+ * refuses that too until the link is active again.
  */
 export function peerReplyNotPassedOnResult(
   chatId: string,
   messageId: unknown,
   reason: string,
+  withFiles: boolean,
 ): {
   content: Array<{ type: 'text'; text: string }>
   isError: true
 } {
   const saved = messageId != null ? ` (message ${String(messageId)})` : ''
+  const instead =
+    reason === 'contact_link_inactive'
+      ? 'Nothing reaches that agent until the connection is active again.'
+      : sendToPeerInstead(withFiles || reason === 'external_files_unsupported')
   return {
     content: [
       {
         type: 'text',
         text:
           `Not delivered: HOAI saved this reply in the side conversation in chat ${chatId}${saved}, ` +
-          (NOT_PASSED_ON_BECAUSE.get(reason) ??
-            'but did not pass it on to the other agent. If they still need it, send it with send_to_peer.'),
+          `${NOT_PASSED_ON_BECAUSE.get(reason) ?? 'but did not pass it on to the other agent.'} ${instead}`,
       },
     ],
     isError: true,
   }
 }
-
-/**
- * The line a Sent gets when the conversation closed while the reply was on the
- * wire and HOAI said nothing either way: the reply went out, and whether it
- * landed before or after the close is not something this daemon can know.
- */
-export const CLOSED_DURING_SEND_NOTE =
-  'The side conversation ended while this reply was being sent, so the other agent ' +
-  'may not get it. If they need it, send it again with send_to_peer.'

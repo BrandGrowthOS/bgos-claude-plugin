@@ -50,8 +50,6 @@ import * as planCard from '../lib/plan-card.ts'
 // Absent on code without the fix, which is exactly what the red run needs: the
 // lifted functions then never reference it.
 const peerRefusal: Record<string, unknown> = await import('../lib/peer-refusal.ts').catch(() => ({}))
-// The reply tool's closed-thread answers (board row 28fed1cd), absent the same way before that fix.
-const peerClosedReply: Record<string, unknown> = await import('../lib/peer-closed-reply.ts').catch(() => ({}))
 
 const SERVER = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
 
@@ -250,8 +248,6 @@ function harness(apiBase: string, turnChat: string): Harness {
     lift('function checkReplyOverdue('),
     lift('async function handleShowComponent('),
     ...refusalLedgers(),
-    lift('function markPeerReplyClosed('),
-    lift('function liftPeerReplyClosed('),
     liftReplyCase(),
     liftSendToPeerCase(),
     liftAskCase(),
@@ -290,10 +286,6 @@ function harness(apiBase: string, turnChat: string): Harness {
   })
   const known: Record<string, unknown> = {
     ...peerRefusal,
-    ...peerClosedReply,
-    // The close counter beside the closed-thread ledger (send_to_peer reads it).
-    peerReplyCloseSeq: 0,
-    peerReplyClosedAt: new Map<string, number>(),
     Date: FakeDate,
     log: (line: string) => logs.push(line),
     // HTTP, the daemon's own client against the mocked backend.
@@ -548,36 +540,21 @@ test('reply: a new message in that chat lifts the block, so a conversation the a
   assert.equal(backend.count('POST /api/v1/send-message'), 2)
 })
 
-test('reply: a send_to_peer that lands in that chat lifts the block too', async () => {
-  const backend = await startBackend('peer403')
-  const h = harness(backend.url, A2A)
-  h.recordInbound(A2A, 501)
-  assertTyped(await h.reply(A2A, 'first'))
-  assertTyped(await h.reply(A2A, 'again'))
-  assert.equal(backend.count('POST /api/v1/send-message'), 1)
-  backend.mode = 'ok'
-  await h.sendToPeer(A2A)
-  const sent = await h.reply(A2A, 'now it can land')
-  assert.match(sent.content[0]!.text, /^Sent \(message_id: 9002\)/)
-  assert.equal(backend.count('POST /api/v1/send-message'), 2)
-})
-
-test('reply: a close for that chat ends the participant refusal, and a reply there is refused as one into a closed conversation', async () => {
-  // Until board row 28fed1cd a close lifted the block and the next reply went
-  // out: HOAI revives a closed conversation on write and answers 201 whether
-  // or not the other agent gets it. Now a reply into a closed conversation is
-  // answered here, sent to send_to_peer, and nothing is posted.
-  const backend = await startBackend('peer403')
-  const h = harness(backend.url, A2A)
-  h.recordInbound(A2A, 501)
-  assertTyped(await h.reply(A2A, 'first'))
-  backend.mode = 'ok'
-  h.closeConversation(A2A)
-  const refused = await h.reply(A2A, 'after the close')
-  assert.equal(refused.isError, true)
-  assert.doesNotMatch(refused.content[0]!.text, /^peer_not_participant\b/, 'no longer the participant refusal')
-  assert.match(refused.content[0]!.text, /\bsend_to_peer\b/)
-  assert.equal(backend.count('POST /api/v1/send-message'), 1, 'nothing more was posted')
+test('reply: a close for that chat, or a send_to_peer that lands in it, lifts the block too', async () => {
+  for (const lift of ['close', 'send_to_peer'] as const) {
+    const backend = await startBackend('peer403')
+    const h = harness(backend.url, A2A)
+    h.recordInbound(A2A, 501)
+    assertTyped(await h.reply(A2A, 'first'))
+    assertTyped(await h.reply(A2A, 'again'))
+    assert.equal(backend.count('POST /api/v1/send-message'), 1, lift)
+    backend.mode = 'ok'
+    if (lift === 'close') h.closeConversation(A2A)
+    else await h.sendToPeer(A2A)
+    const sent = await h.reply(A2A, 'now it can land')
+    assert.match(sent.content[0]!.text, /^Sent \(message_id: 9002\)/, lift)
+    assert.equal(backend.count('POST /api/v1/send-message'), 2, lift)
+  }
 })
 
 test('reply: a message that arrives while the refused reply is in flight keeps its tracker and is not blocked', async () => {
@@ -655,9 +632,7 @@ function assertA2aTyped(result: { content: Array<{ text: string }>; isError?: bo
   assert.match(text, /peer side-thread/)
   assert.match(text, /Do not retry/)
   assert.match(text, /Anything for your owner belongs in your owner's chat/)
-  assert.match(text, /reaches the peer agent, not your owner, and only while their conversation is open/)
-  assert.match(text, /once it has ended, send_to_peer starts a new one/)
-  assert.doesNotMatch(text, /reopens a closed conversation/, 'a reply into a closed thread is refused (board row 28fed1cd)')
+  assert.match(text, /reaches the peer agent, not your owner, and reopens a closed conversation/)
 }
 
 test('hook rail: an hour of tool cards into a closed side-thread refused with the a2a 400 is ONE post', async () => {
