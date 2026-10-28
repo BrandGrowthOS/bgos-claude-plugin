@@ -1,0 +1,766 @@
+{
+  "note": "One mutation per rule. docs/idle-update/run-mutants.mjs applies each alone, runs its named tests, and expects them to FAIL (killed); the source is restored after every mutant.",
+  "mutants": [
+    {
+      "id": "gate-01-updates-disabled",
+      "rule": "1 BGOS_AUTO_UPDATE off never arms",
+      "file": "lib/idle-update.mjs",
+      "find": "if (f.autoUpdateEnabled !== true) return { action: 'off', reason: 'updates_disabled' }",
+      "replace": "if (false) return { action: 'off', reason: 'updates_disabled' }",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-02-strictly-newer",
+      "rule": "2 only a strictly newer X.Y.Z is staged",
+      "file": "lib/idle-update.mjs",
+      "find": "if (!isNewerVersion(f.stagedVersion, f.runningVersion)) return { action: 'off', reason: 'nothing_staged' }",
+      "replace": "if (!f.stagedVersion || f.stagedVersion === f.runningVersion) return { action: 'off', reason: 'nothing_staged' }",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-03-passive",
+      "rule": "3 only the pairing lock holder acts",
+      "file": "lib/idle-update.mjs",
+      "find": "if (f.active !== true) return wait('passive')",
+      "replace": "if (f.active === null) return wait('passive')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-04-watcher",
+      "rule": "4 the watcher sweep owns updates where active",
+      "file": "lib/idle-update.mjs",
+      "find": "if (f.watcherSweepActive) return wait('watcher_owns_updates')",
+      "replace": "if (false) return wait('watcher_owns_updates')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-05-held-bad",
+      "rule": "5 a version latched bad is never restarted onto",
+      "file": "lib/idle-update.mjs",
+      "find": "if (f.heldBad) return wait('version_held_bad')",
+      "replace": "if (false) return wait('version_held_bad')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-06-unattended",
+      "rule": "6 never an unsupervised interactive session",
+      "file": "lib/idle-update.mjs",
+      "find": "if (!RESTART_KINDS.has(f.authority?.kind) || f.authority?.unattended !== true) return wait('no_unattended_authority')",
+      "replace": "if (!RESTART_KINDS.has(f.authority?.kind)) return wait('no_unattended_authority')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-07a-rolled-back",
+      "rule": "7 a rolled back version is never retried",
+      "file": "lib/idle-update.mjs",
+      "find": "if (attempt.rolledBack || attempt.inFlight) return wait('attempted')",
+      "replace": "if (attempt.inFlight) return wait('attempted')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-07b-backoff",
+      "rule": "7 one attempt per version, then back off",
+      "file": "lib/idle-update.mjs",
+      "find": "if (attempt.failed > 0 && !(finite(attempt.lastAtMs) && now - attempt.lastAtMs >= attemptBackoffMs(attempt.failed, d))) {",
+      "replace": "if (attempt.failed > 99 && !(finite(attempt.lastAtMs) && now - attempt.lastAtMs >= attemptBackoffMs(attempt.failed, d))) {",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-08a-in-flight",
+      "rule": "8 draining or the update lock waits",
+      "file": "lib/idle-update.mjs",
+      "find": "if (f.draining || f.updateLockHeld) return wait('update_in_flight')",
+      "replace": "if (f.updateLockHeld) return wait('update_in_flight')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-08b-marker",
+      "rule": "8 a waiting restart marker waits (and a stranded one is reported)",
+      "file": "lib/idle-update.mjs",
+      "find": "if (finite(f.markerAgeMs)) return wait(f.markerAgeMs >= d.markerStrandedMs ? 'launcher_latched' : 'update_in_flight')",
+      "replace": "if (finite(f.markerAgeMs)) return wait('update_in_flight')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-09-young",
+      "rule": "9 the first minute of a daemon waits",
+      "file": "lib/idle-update.mjs",
+      "find": "if (!finite(f.bootAtMs) || now - f.bootAtMs < d.minUpMs) return wait('young')",
+      "replace": "if (!finite(f.bootAtMs)) return wait('young')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-10-safe-moment",
+      "rule": "10 a turn, an owed reply or a permission card waits",
+      "file": "lib/idle-update.mjs",
+      "find": "if (!safe.safe && safe.reason !== 'recent_activity') return wait(safe.reason)",
+      "replace": "if (false) return wait(safe.reason)",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-11-open-ask",
+      "rule": "11 an open ask card waits",
+      "file": "lib/idle-update.mjs",
+      "find": "if (f.openAsks > 0) return wait('open_ask')",
+      "replace": "if (f.openAsks > 1) return wait('open_ask')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-12-goal",
+      "rule": "12 a running goal waits",
+      "file": "lib/idle-update.mjs",
+      "find": "if (f.goalRunning) return wait('goal_running')",
+      "replace": "if (false) return wait('goal_running')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-13a-call-consult",
+      "rule": "13 a pending voice consult waits",
+      "file": "lib/idle-update.mjs",
+      "find": "if (call.pendingConsults > 0 || call.openContinuations > 0 || call.openMeetings > 0 || within(now, call.lastVoiceAtMs, d.callRecentMs)) {",
+      "replace": "if (call.openContinuations > 0 || call.openMeetings > 0 || within(now, call.lastVoiceAtMs, d.callRecentMs)) {",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-13b-call-recent",
+      "rule": "13 a voice frame in the last 30 min waits",
+      "file": "lib/idle-update.mjs",
+      "find": "if (call.pendingConsults > 0 || call.openContinuations > 0 || call.openMeetings > 0 || within(now, call.lastVoiceAtMs, d.callRecentMs)) {",
+      "replace": "if (call.pendingConsults > 0 || call.openContinuations > 0 || call.openMeetings > 0) {",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-14-browser",
+      "rule": "14 a browser tool in the last 30 min waits",
+      "file": "lib/idle-update.mjs",
+      "find": "if (within(now, f.lastBrowserToolAtMs, d.browserRecentMs)) return wait('browser_in_use')",
+      "replace": "if (false) return wait('browser_in_use')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-15-person",
+      "rule": "15 a person attached, or not knowing, waits",
+      "file": "lib/idle-update.mjs",
+      "find": "if (f.personAttached !== false) return wait('person_attached')",
+      "replace": "if (f.personAttached === true) return wait('person_attached')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-16-quiet",
+      "rule": "16 activity inside the quiet window waits",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (!safe.safe) return wait(safe.reason)\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-17-jitter",
+      "rule": "17 each agent waits its own jitter past the quiet window",
+      "file": "lib/idle-update.mjs",
+      "find": "if (now - newest < window + (finite(f.jitterMs) ? Math.max(0, f.jitterMs) : d.jitterMaxMs)) return wait('jitter')",
+      "replace": "if (now - newest < window) return wait('jitter')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-18a-lease",
+      "rule": "18 another agent holding the lease waits",
+      "file": "lib/idle-update.mjs",
+      "find": "if (!['free', 'mine', 'expired'].includes(machine.lease)) return wait('machine_busy')",
+      "replace": "if (false) return wait('machine_busy')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-18b-spacing",
+      "rule": "18 a release under 2 min ago waits",
+      "file": "lib/idle-update.mjs",
+      "find": "if (finite(machine.spacingUntilMs) && now < machine.spacingUntilMs) return wait('spacing')",
+      "replace": "if (false) return wait('spacing')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-19-canary",
+      "rule": "19 another agent's unconfirmed canary waits",
+      "file": "lib/idle-update.mjs",
+      "find": "if (!['none', 'validated', 'next', 'mine'].includes(machine.canary)) return wait('canary_unconfirmed')",
+      "replace": "if (machine.canary === 'never') return wait('canary_unconfirmed')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-20a-tree-unreadable",
+      "rule": "20 an unreadable process tree waits",
+      "file": "lib/idle-update.mjs",
+      "find": "if (f.claudeKnown !== true || !Array.isArray(f.descendants)) return wait('process_tree_unreadable')",
+      "replace": "if (!Array.isArray(f.descendants)) return wait('process_tree_unreadable')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-20b-background-job",
+      "rule": "20 a background job under claude waits",
+      "file": "lib/idle-update.mjs",
+      "find": "if (f.descendants.some(isBackgroundJobCommand)) return wait('background_job')",
+      "replace": "if (false) return wait('background_job')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-21a-wake-unknown",
+      "rule": "21 an unreadable wake schedule waits (fails closed)",
+      "file": "lib/idle-update.mjs",
+      "find": "if (wake.known !== true) return wait('wake_schedule_unknown')",
+      "replace": "if (false) return wait('wake_schedule_unknown')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-21b-wake-due",
+      "rule": "21 a wake due within 10 min waits",
+      "file": "lib/idle-update.mjs",
+      "find": "if (finite(wake.nextDueAtMs) && Math.abs(wake.nextDueAtMs - now) < d.wakeGuardMs) return wait('wake_due')",
+      "replace": "if (false) return wait('wake_due')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "wake-field",
+      "rule": "the schedule view field is nextFireAt",
+      "file": "lib/idle-update.mjs",
+      "find": "const at = typeof task?.nextFireAt === 'string' ? Date.parse(task.nextFireAt) : Number.NaN",
+      "replace": "const at = typeof task?.nextRunAt === 'string' ? Date.parse(task.nextRunAt) : Number.NaN",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "jitter-draw",
+      "rule": "the jitter is a uniform draw over 0 to 10 min",
+      "file": "lib/idle-update.mjs",
+      "find": "return Math.round(clamp01(random) * d.jitterMaxMs)",
+      "replace": "return Math.round(0.5 * d.jitterMaxMs)",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "backoff-doubling",
+      "rule": "the back-off doubles from 24 h, capped at 7 days",
+      "file": "lib/idle-update.mjs",
+      "find": "return Math.min(d.backoffMaxMs, d.backoffBaseMs * 2 ** Math.min(30, failed - 1))",
+      "replace": "return d.backoffBaseMs",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "lease-ttl",
+      "rule": "a lease older than 10 min is expired",
+      "file": "lib/idle-update.mjs",
+      "find": "if (!finite(at) || within(now, at, d.leaseTtlMs)) return { state: 'held', lease }",
+      "replace": "if (!finite(at) || true) return { state: 'held', lease }",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "lease-junk",
+      "rule": "a lease that does not parse is never free",
+      "file": "lib/idle-update.mjs",
+      "find": "if (raw === null || raw === undefined) return { state: 'free' }",
+      "replace": "if (raw === null || raw === undefined || !raw.startsWith('{\"')) return { state: 'free' }",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "canary-max",
+      "rule": "two canaries that never came back latch the version bad",
+      "file": "lib/idle-update.mjs",
+      "find": "if (silent.length >= MAX_CANARIES) return { state: 'latch_bad' }",
+      "replace": "if (silent.length > MAX_CANARIES) return { state: 'latch_bad' }",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "canary-hold",
+      "rule": "a canary that never came back holds the version 24 h",
+      "file": "lib/idle-update.mjs",
+      "find": "if (within(now, latest.at, d.canaryHoldMs)) return { state: 'hold' }",
+      "replace": "if (false) return { state: 'hold' }",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "settle-context-lost",
+      "rule": "a new session after the restart is context_lost",
+      "file": "lib/idle-update.mjs",
+      "find": "      if (newSession) return { record: withAttempt(record, now, 'context_lost', lostFields), event: 'context_lost' }\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "settle-second-boot",
+      "rule": "a second boot on the target before validation is the build failing",
+      "file": "lib/idle-update.mjs",
+      "find": "    return { record: withAttempt(record, now, 'second_boot', { lockBoots }), event: 'second_boot' }",
+      "replace": "    return { record, event: 'none' }",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "settle-came-back-old",
+      "rule": "a restart that came back on the old version is a failed attempt",
+      "file": "lib/idle-update.mjs",
+      "find": "return { record: withAttempt(record, now, 'came_back_old', { state: 'came_back_old' }), event: 'came_back_old' }",
+      "replace": "return { record, event: 'none' }",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "settle-rollback-once",
+      "rule": "a target booting after its rollback is never rolled back again",
+      "file": "lib/idle-update.mjs",
+      "find": "if (onTarget) return { record: withAttempt(record, now, 'rollback_failed', { state: 'rollback_failed' }), event: 'rollback_failed' }",
+      "replace": "if (false) return { record: withAttempt(record, now, 'rollback_failed', { state: 'rollback_failed' }), event: 'rollback_failed' }",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "validate-heartbeat",
+      "rule": "validation needs a heartbeat that landed after arrival",
+      "file": "lib/idle-update.mjs",
+      "find": "    heartbeatOkAtMs >= arrivedAtMs &&\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "validate-beacon",
+      "rule": "validation needs a fresh beacon",
+      "file": "lib/idle-update.mjs",
+      "find": "    now - beaconAtMs < d.beaconFreshMs &&\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "validate-deaf",
+      "rule": "a deaf verdict never validates",
+      "file": "lib/idle-update.mjs",
+      "find": "    deaf !== true &&\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "validate-hold",
+      "rule": "validation holds 60 s",
+      "file": "lib/idle-update.mjs",
+      "find": "    now - arrivedAtMs >= d.validateHoldMs\n",
+      "replace": "    true\n",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "validate-login",
+      "rule": "an expired login suspends the deadline",
+      "file": "lib/idle-update.mjs",
+      "find": "if (loginExpired !== true && now - arrivedAtMs >= d.validateDeadlineMs) return 'deadline'",
+      "replace": "if (now - arrivedAtMs >= d.validateDeadlineMs) return 'deadline'",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-canary-only",
+      "rule": "only the canary rolls back",
+      "file": "lib/idle-update.mjs",
+      "find": "return canary ? 'rollback' : 'report_only'",
+      "replace": "return 'rollback'",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "unattended-win-hidden",
+      "rule": "Windows: the task's run-agent.vbs must run hidden",
+      "file": "lib/idle-update.mjs",
+      "find": "const hidden = /, 0, True\\)\\s*$/.test(String(vbs.text ?? ''))",
+      "replace": "const hidden = /, \\d, True\\)\\s*$/.test(String(vbs.text ?? ''))",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "unattended-win-written-before",
+      "rule": "Windows: run-agent.vbs written before the launcher started",
+      "file": "lib/idle-update.mjs",
+      "find": "if (!hidden || !finite(vbs.mtimeMs) || !finite(input.launcherStartedAtMs) || vbs.mtimeMs >= input.launcherStartedAtMs) {",
+      "replace": "if (!hidden || !finite(vbs.mtimeMs)) {",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "unattended-win-parent",
+      "rule": "Windows: the launcher's parent is the task's wscript",
+      "file": "lib/idle-update.mjs",
+      "find": "if (!/wscript(\\.exe)?\"?\\s/i.test(text) || !/run-agent\\.vbs/i.test(text)) return { unattended: false, how: 'not_the_agent_task' }",
+      "replace": "if (!/run-agent\\.vbs/i.test(text)) return { unattended: false, how: 'not_the_agent_task' }",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "unattended-posix-status",
+      "rule": "macOS/Linux: a launch-status older than the claim proves nothing",
+      "file": "lib/idle-update.mjs",
+      "find": "if (SUPERVISED_LAUNCH_OUTCOMES.has(status.outcome) && finite(status.mtimeMs) && finite(input.supervisorMtimeMs) && status.mtimeMs >= input.supervisorMtimeMs) {",
+      "replace": "if (SUPERVISED_LAUNCH_OUTCOMES.has(status.outcome)) {",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "own-launcher-nested",
+      "rule": "a nested claude never proves the outer launcher",
+      "file": "lib/idle-update.mjs",
+      "find": "if (ancestors.slice(claudeAt + 1, at).some((p) => isClaudeCommand(p.command))) return { proven: false, reason: 'nested_claude' }",
+      "replace": "if (false) return { proven: false, reason: 'nested_claude' }",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "own-launcher-hoai",
+      "rule": "the proven launcher runs hoai-core.mjs",
+      "file": "lib/idle-update.mjs",
+      "find": "if (!/hoai-core\\.mjs/i.test(String(ancestors[at].command ?? ''))) return { proven: false, reason: 'not_hoai' }",
+      "replace": "if (false) return { proven: false, reason: 'not_hoai' }",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "repoint-user-scope",
+      "rule": "the rollback repoints the user-scope hoai entry only",
+      "file": "lib/idle-update.mjs",
+      "find": "const entry = list.find((item) => item && typeof item === 'object' && item.scope === 'user') ?? (Array.isArray(raw) ? null : list[0])",
+      "replace": "const entry = list[0]",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "enrolment-hold",
+      "rule": "the enrolment holds while the latest is a bad version",
+      "file": "lib/idle-update.mjs",
+      "find": "  return bad.includes(latestKnownVersion)\n}",
+      "replace": "  return false\n}",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-recheck-after-close-look",
+      "rule": "every rule again on the real facts after the close look",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (second.action !== 'restart') {\n      listAfterMs = now() + d.listBackoffMs",
+      "replace": "    if (false) {\n      listAfterMs = now() + d.listBackoffMs",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-no-record-no-restart",
+      "rule": "no record, no restart",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (!writeRecord(next)) {",
+      "replace": "    if (!writeRecord(next) && false) {",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-lease-before-act",
+      "rule": "the lease is taken before the restart",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (!takeLease(target, me)) {\n      waiting({ action: 'wait', reason: 'machine_busy' })",
+      "replace": "    if (!takeLease(target, me) && false) {\n      waiting({ action: 'wait', reason: 'machine_busy' })",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-did-not-arrive",
+      "rule": "a restart that never arrives is a failed attempt",
+      "file": "lib/idle-update.mjs",
+      "find": "          if (now() - requestedAtMs < d.didNotArriveMs) return 'requested'\n          return failAsk(",
+      "replace": "          if (true) return 'requested'\n          return failAsk(",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-staged-is-failure",
+      "rule": "a ladder that could only stage is a failed attempt",
+      "file": "lib/idle-update.mjs",
+      "find": "if (!took) return failAsk('no_authority', 'the restart ladder could only stage')",
+      "replace": "if (!took) return 'requested'",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-bad-marked-on-rollback",
+      "rule": "a failed canary latches the version bad",
+      "file": "lib/idle-update.mjs",
+      "find": "      markVersion(record.target, 'bad', { reason: why })\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-settle-lock-holder",
+      "rule": "the boot settle is the lock holder's",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (!read(deps.active, false)) return 'passive'\n    const found",
+      "replace": "    const found",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-heartbeat-request",
+      "rule": "validation asks for a heartbeat after arrival",
+      "file": "lib/idle-update.mjs",
+      "find": "if (!(finite(heartbeatOkAtMs) && heartbeatOkAtMs >= arrivedAtMs)) read(deps.requestHeartbeat, null)",
+      "replace": "if (false) read(deps.requestHeartbeat, null)",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "host-readonly-viewer",
+      "rule": "a read-only viewer is nobody typing",
+      "file": "lib/idle-update-host.mjs",
+      "find": "      .some((line) => line.trim() === '0')",
+      "replace": "      .some((line) => line.trim() !== '')",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-tmux-unknown",
+      "rule": "a tmux that did not answer is unknown, never nobody",
+      "file": "lib/idle-update-host.mjs",
+      "find": "  return absentRe.test(`${res.stderr ?? ''}\\n${res.stdout ?? ''}`) ? 'none' : null",
+      "replace": "  return 'none'",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-watcher-fresh",
+      "rule": "a stale watcher state is no sweep",
+      "file": "lib/idle-update-host.mjs",
+      "find": "  return Number.isFinite(at) && now - at >= 0 && now - at < freshMs",
+      "replace": "  return Number.isFinite(at)",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-reclaim-own-only",
+      "rule": "only this plugin's own switch-off is taken back",
+      "file": "lib/idle-update-host.mjs",
+      "find": "return hold && typeof hold === 'object' && hold.marketplace === marketplace ? 'reclaim' : 'normal'",
+      "replace": "return hold && typeof hold === 'object' ? 'reclaim' : 'normal'",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-hold-only-when-changed",
+      "rule": "a person's own false is never recorded as ours",
+      "file": "lib/idle-update-host.mjs",
+      "find": "    if (result?.changed === true) {",
+      "replace": "    if (true) {",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-from-root-check",
+      "rule": "the old folder must still hold the old version",
+      "file": "lib/idle-update-host.mjs",
+      "find": "  if (manifest?.version !== from) return { ok: false, reason: 'from_root_missing' }\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-launcher-relaunch",
+      "rule": "only a launcher that promises relaunch is a launcher",
+      "file": "lib/idle-update-host.mjs",
+      "find": "  if (!Array.isArray(claim.capabilities) || !claim.capabilities.includes('relaunch')) return null\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "ladder-own-launcher-rung",
+      "rule": "the own launcher rung writes the marker for a gen-2 job",
+      "file": "lib/update-rpc.ts",
+      "find": "    if (authority.kind === 'service' && ownLauncher) {",
+      "replace": "    if (authority.kind === 'service' && ownLauncher && false) {",
+      "tests": [
+        "test/update-rpc.own-launcher.test.ts",
+        "test/idle-update.integration.test.ts"
+      ]
+    },
+    {
+      "id": "ladder-rung-idle-only",
+      "rule": "only the idle entry points carry a launcher proof",
+      "file": "lib/update-rpc.ts",
+      "find": "    return this.restartLadder(SCHEDULED_RESTART_RPC, targetVersion)",
+      "replace": "    return this.restartLadder(SCHEDULED_RESTART_RPC, targetVersion, { markerPath: 'x', launcherPid: 1 })",
+      "tests": [
+        "test/update-rpc.own-launcher.test.ts"
+      ]
+    },
+    {
+      "id": "latch-pending-restart",
+      "rule": "a version held bad is no pending restart",
+      "file": "lib/pending-restart.ts",
+      "find": "    return input.heldBad(pending) === true ? null : pending",
+      "replace": "    return pending",
+      "tests": [
+        "test/pending-restart.test.ts"
+      ]
+    },
+    {
+      "id": "clone-rollback-dirty",
+      "rule": "a dirty checkout is never rolled back",
+      "file": "lib/self-update.ts",
+      "find": "if ((await this.checkoutPreviousCommit(previousCommit, targetCommit)) === 'dirty') return { ok: false, reason: 'dirty_tree' }",
+      "replace": "await this.checkoutPreviousCommit(previousCommit, targetCommit)",
+      "tests": [
+        "test/self-update.idle-rollback.test.ts"
+      ]
+    },
+    {
+      "id": "preseed-reclaim",
+      "rule": "a person's false is never overturned without the hold",
+      "file": "lib/claude-preseed.mjs",
+      "find": "  if (enabled && entry.autoUpdate === false && reclaim !== true) {",
+      "replace": "  if (enabled && entry.autoUpdate === false && false) {",
+      "tests": [
+        "test/claude-preseed.test.ts"
+      ]
+    },
+    {
+      "id": "wire-armed",
+      "rule": "server.ts arms the controller",
+      "file": "server.ts",
+      "find": "    armIdleUpdate()\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-latch",
+      "rule": "the heartbeat reports a held version as no pending restart",
+      "file": "server.ts",
+      "find": "    heldBad: idleUpdateHeldBad,\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-lock-holder",
+      "rule": "only the lock holder, never during shutdown",
+      "file": "server.ts",
+      "find": "      active: () => lockHeld && !shuttingDown,\n      watcherSweepActive",
+      "replace": "      active: () => true,\n      watcherSweepActive",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-browser-stamp",
+      "rule": "a browser tool is stamped",
+      "file": "server.ts",
+      "find": "    lastBrowserToolAtMs = Date.now()\n  }\n",
+      "replace": "  }\n",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    }
+  ]
+}
