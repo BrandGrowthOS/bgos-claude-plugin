@@ -44,7 +44,7 @@ test('armed once, by the first arm of delivery, after startup complete and the h
   const call = arm.indexOf('armIdleUpdate()')
   assert.ok(complete >= 0 && sweep > complete, 'the arm order moved')
   assert.ok(call > sweep, 'armIdleUpdate() is called after the heartbeat and the deaf sweep are armed')
-  assert.equal(server.split('armIdleUpdate()').length - 1, 1, 'one caller')
+  assert.equal(server.match(/^\s+armIdleUpdate\(\)$/gm)?.length ?? 0, 1, 'one caller')
   assert.match(block(), /if \(idleUpdate\) return/)
 })
 
