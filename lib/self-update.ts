@@ -1082,6 +1082,12 @@ export class SelfUpdater {
     return this.lastInspectedVersion
   }
 
+  /** The commit this daemon was started on: where the idle update's rollback
+   *  of a clone goes back to (rollbackCheckoutTo). */
+  get runningCommitId(): string {
+    return this.runningCommit
+  }
+
   /** True when either rollback latch (this daemon's state or the shared
    *  checkout safety file) is holding updates off. */
   isRollbackLatched(): boolean {
