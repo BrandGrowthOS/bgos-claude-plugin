@@ -240,6 +240,54 @@ test('never throws: a reader that throws is "nothing pending"', () => {
   )
 })
 
+test('idle update latch: a version held bad on this computer is not pending, for every reader of the answer', () => {
+  // docs/idle-update/DESIGN.md, the version latch: after a canary rolled a
+  // build back, Claude Code's startup update or a later pull may put it on disk
+  // again. The heartbeat, agent-state.json (so the watcher) and a click all
+  // read this one answer, so none of them pushes the held build again.
+  const held = new Set(['0.81.0'])
+  const marketplace = (version: string, heldBad?: (v: string) => boolean) =>
+    resolvePendingRestartVersion({
+      installMethod: 'marketplace',
+      runningVersion: '0.80.0',
+      updaterPending: () => null,
+      stagedTargetVersion: () => null,
+      readInstalledPlugins: () => installedDoc(version),
+      readCheckoutVersion: () => null,
+      ...(heldBad ? { heldBad } : {}),
+    } as any)
+  assert.equal(marketplace('0.81.0', (v) => held.has(v)), null, 'the held version is not pending')
+  assert.equal(marketplace('0.81.1', (v) => held.has(v)), '0.81.1', 'a newer version than the held one is')
+  assert.equal(marketplace('0.81.0'), '0.81.0', 'no latch reader: unchanged')
+  const clone = (checkout: string) =>
+    resolvePendingRestartVersion({
+      installMethod: 'clone',
+      runningVersion: '0.80.0',
+      updaterPending: () => null,
+      stagedTargetVersion: () => null,
+      readInstalledPlugins: () => null,
+      readCheckoutVersion: () => checkout,
+      heldBad: (v: string) => held.has(v),
+    } as any)
+  assert.equal(clone('0.81.0'), null)
+  assert.equal(clone('0.81.1'), '0.81.1')
+})
+
+test('idle update latch: a latch reader that throws holds nothing (it is a guard, never a reason to hide an update)', () => {
+  const got = resolvePendingRestartVersion({
+    installMethod: 'marketplace',
+    runningVersion: '0.80.0',
+    updaterPending: () => null,
+    stagedTargetVersion: () => null,
+    readInstalledPlugins: () => installedDoc('0.81.0'),
+    readCheckoutVersion: () => null,
+    heldBad: () => {
+      throw new Error('EIO')
+    },
+  } as any)
+  assert.equal(got, '0.81.0')
+})
+
 test('the installed_plugins.json path and reader follow the config dir (CLAUDE_CONFIG_DIR moves it)', () => {
   assert.equal(installedPluginsPath('/h/.claude'), '/h/.claude/plugins/installed_plugins.json')
   assert.equal(installedPluginsPath('/h/.claude-alt'), '/h/.claude-alt/plugins/installed_plugins.json')
