@@ -415,7 +415,7 @@
       "id": "validate-hold",
       "rule": "validation holds 60 s",
       "file": "lib/idle-update.mjs",
-      "find": "if (isLiveBuild(input, d) && now - arrivedAtMs >= d.validateHoldMs) return 'validated'",
+      "find": "if (isLiveBuild(input, d) && finite(liveSinceMs) && now - liveSinceMs >= d.validateHoldMs) return 'validated'",
       "replace": "if (isLiveBuild(input, d)) return 'validated'",
       "tests": [
         "test/idle-update.test.ts"
@@ -425,8 +425,8 @@
       "id": "validate-login",
       "rule": "an expired login suspends the deadline",
       "file": "lib/idle-update.mjs",
-      "find": "if (loginExpired !== true && backendUnreachable !== true && counted",
-      "replace": "if (backendUnreachable !== true && counted",
+      "find": "  if (loginExpired === true || backendUnreachable === true) return 'pending'",
+      "replace": "  if (backendUnreachable === true) return 'pending'",
       "tests": [
         "test/idle-update.test.ts"
       ]
@@ -837,8 +837,8 @@
       "id": "settle-arrived-again",
       "rule": "a build that proved live may boot once more",
       "file": "lib/idle-update.mjs",
-      "find": "if (typeof record.liveAt === 'string' && record.rearrived !== true) {",
-      "replace": "if (false) {",
+      "find": "    if ((typeof record.liveAt === 'string' || predecessorAlive) && record.rearrived !== true) {",
+      "replace": "    if (predecessorAlive && record.rearrived !== true) {",
       "tests": [
         "test/idle-update.test.ts",
         "test/idle-update.controller.test.ts"
@@ -868,8 +868,8 @@
       "id": "validate-unreachable",
       "rule": "an unreachable backend holds the deadline",
       "file": "lib/idle-update.mjs",
-      "find": "backendUnreachable !== true && counted",
-      "replace": "counted",
+      "find": "  if (loginExpired === true || backendUnreachable === true) return 'pending'",
+      "replace": "  if (loginExpired === true) return 'pending'",
       "tests": [
         "test/idle-update.test.ts"
       ]
@@ -878,8 +878,8 @@
       "id": "validate-suspended",
       "rule": "time unreachable or asleep is not counted",
       "file": "lib/idle-update.mjs",
-      "find": "  const counted = now - arrivedAtMs - (finite(suspendedMs) && suspendedMs > 0 ? suspendedMs : 0)",
-      "replace": "  const counted = now - arrivedAtMs",
+      "find": "  const counted = now - from - (finite(suspendedMs) && suspendedMs > 0 ? suspendedMs : 0)",
+      "replace": "  const counted = now - from",
       "tests": [
         "test/idle-update.test.ts"
       ]
@@ -898,8 +898,8 @@
       "id": "outage-4xx-answered",
       "rule": "a 4xx is a backend that answered",
       "file": "lib/idle-update.mjs",
-      "find": "  return !(Number.isInteger(status) && status < 500)",
-      "replace": "  return !Number.isInteger(status)",
+      "find": "  return Number.isInteger(status) && status < 500",
+      "replace": "  return Number.isInteger(status)",
       "tests": [
         "test/idle-update.test.ts"
       ]
@@ -928,8 +928,8 @@
       "id": "ctl-live-on-record",
       "rule": "live before the hold goes on the record",
       "file": "lib/idle-update.mjs",
-      "find": "      if (!record.liveAt && isLiveBuild(input, d)) settleTo({ ...record, liveAt: iso(n) })\n",
-      "replace": "",
+      "find": "...(!record.liveAt && live ? { liveAt: iso(n) } : {})",
+      "replace": "...({})",
       "tests": [
         "test/idle-update.controller.test.ts"
       ]
@@ -1044,8 +1044,8 @@
       "id": "ctl-validate-passive",
       "rule": "a passive daemon never validates",
       "file": "lib/idle-update.mjs",
-      "find": "          if (!read(deps.active, false)) return 'passive'\n          return await validate()",
-      "replace": "          return await validate()",
+      "find": "        case 'validate':\n          if (!read(deps.active, false)) {",
+      "replace": "        case 'validate':\n          if (false) {",
       "tests": [
         "test/idle-update.controller.test.ts"
       ]
@@ -1092,7 +1092,7 @@
     },
     {
       "id": "ctl-keepalive-pinned",
-      "rule": "a keepalive restart only when claude resumes a pinned session",
+      "rule": "a keepalive or an owning service restarts only a claude resuming a pinned session",
       "file": "lib/idle-update.mjs",
       "find": "      return { kind, unattended: pinned, proof: null }",
       "replace": "      return { kind, unattended: true, proof: null }",
@@ -1274,7 +1274,7 @@
       "id": "wire-unreachable",
       "rule": "server.ts tells the controller when the backend cannot be reached",
       "file": "server.ts",
-      "find": "      backendUnreachable: () => heartbeatUnreachableSinceMs !== null,",
+      "find": "      backendUnreachable: () => backendUnreachableSinceMs !== null,",
       "replace": "      backendUnreachable: () => false,",
       "tests": [
         "test/idle-update.wiring.test.ts"
@@ -1326,6 +1326,358 @@
       "file": "server.ts",
       "find": "      marketplace,\n      configDir: CLAUDE_CONFIG_DIR,\n",
       "replace": "      marketplace,\n",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "validate-hold-from-live",
+      "rule": "the 60 s hold counts from the first live reading",
+      "file": "lib/idle-update.mjs",
+      "find": "if (isLiveBuild(input, d) && finite(liveSinceMs) && now - liveSinceMs >= d.validateHoldMs) return 'validated'",
+      "replace": "if (isLiveBuild(input, d) && now - arrivedAtMs >= d.validateHoldMs) return 'validated'",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "validate-startup-from",
+      "rule": "the deadline counts from this boot's startup complete",
+      "file": "lib/idle-update.mjs",
+      "find": "  const from = started ? Math.max(arrivedAtMs, startupCompleteAtMs) : arrivedAtMs",
+      "replace": "  const from = arrivedAtMs",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "validate-startup-bound",
+      "rule": "a startup that never completes has its own 15 min bound",
+      "file": "lib/idle-update.mjs",
+      "find": "  return counted >= (started ? d.validateDeadlineMs : d.startupDeadlineMs) ? 'deadline' : 'pending'",
+      "replace": "  return counted >= d.validateDeadlineMs ? 'deadline' : 'pending'",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "dur-alive-floor",
+      "rule": "the alive grace keeps a floor under any scale",
+      "file": "lib/idle-update.mjs",
+      "find": "beaconFreshMs: 30 * SEC, aliveGraceMs: 90 * SEC })",
+      "replace": "beaconFreshMs: 30 * SEC })",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "settle-alive-predecessor",
+      "rule": "a boot after a live predecessor is a re-arrival",
+      "file": "lib/idle-update.mjs",
+      "find": "    if ((typeof record.liveAt === 'string' || predecessorAlive) && record.rearrived !== true) {",
+      "replace": "    if (typeof record.liveAt === 'string' && record.rearrived !== true) {",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "settle-alive-grace",
+      "rule": "only a predecessor alive within the grace counts",
+      "file": "lib/idle-update.mjs",
+      "find": "    const predecessorAlive = Number.isFinite(aliveAt) && Math.abs(now - aliveAt) < d.aliveGraceMs",
+      "replace": "    const predecessorAlive = Number.isFinite(aliveAt)",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "settle-rearrive-once",
+      "rule": "one re-arrival per record",
+      "file": "lib/idle-update.mjs",
+      "find": "    if ((typeof record.liveAt === 'string' || predecessorAlive) && record.rearrived !== true) {",
+      "replace": "    if (typeof record.liveAt === 'string' || predecessorAlive) {",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-alive-on-record",
+      "rule": "each validation poll writes aliveAt",
+      "file": "lib/idle-update.mjs",
+      "find": "settleTo({ ...record, aliveAt: iso(n), ",
+      "replace": "settleTo({ ...record, ",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-startup-stamp",
+      "rule": "the controller stamps this boot's startup complete",
+      "file": "lib/idle-update.mjs",
+      "find": "      startupCompleteAtMs = n\n      suspendedMs = 0",
+      "replace": "      suspendedMs = 0",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-startup-suspended-reset",
+      "rule": "only time suspended since startup complete is subtracted",
+      "file": "lib/idle-update.mjs",
+      "find": "      startupCompleteAtMs = n\n      suspendedMs = 0",
+      "replace": "      startupCompleteAtMs = n",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-live-since-break",
+      "rule": "a break in liveness restarts the hold",
+      "file": "lib/idle-update.mjs",
+      "find": "    liveSinceMs = live ? (liveSinceMs ?? n) : null",
+      "replace": "    liveSinceMs = live ? (liveSinceMs ?? n) : liveSinceMs",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-passive-suspend",
+      "rule": "passive minutes are not counted toward the deadline",
+      "file": "lib/idle-update.mjs",
+      "find": "            if (lastValidateAt) suspendedMs += Math.max(0, n - lastValidateAt.wall)\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-rollback-proof-grace",
+      "rule": "one unproven reading never gives up the rollback restart",
+      "file": "lib/idle-update.mjs",
+      "find": "          if (!RESTART_KINDS.has(close.authority.kind) || n - unprovenSinceMs >= d.rollbackProofGraceMs) {",
+      "replace": "          if (true) {",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-rollback-proof-ends",
+      "rule": "ten minutes unproven asks for a restart by hand",
+      "file": "lib/idle-update.mjs",
+      "find": "          if (!RESTART_KINDS.has(close.authority.kind) || n - unprovenSinceMs >= d.rollbackProofGraceMs) {",
+      "replace": "          if (!RESTART_KINDS.has(close.authority.kind)) {",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-rollback-proof-reset",
+      "rule": "a proven reading restarts the unproven clock",
+      "file": "lib/idle-update.mjs",
+      "find": "      if (RESTART_KINDS.has(close.authority.kind) && close.authority.unattended === true) unprovenSinceMs = null\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "gate-20-service-strays",
+      "rule": "a stray in an owning systemd unit's cgroup waits",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (strays.strays.length > 0) return wait('background_job')",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-20-strays-unreadable",
+      "rule": "an unreadable cgroup waits",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (strays?.ok !== true || !Array.isArray(strays.strays)) return wait('process_tree_unreadable')",
+      "replace": "  if (!Array.isArray(strays?.strays)) return wait('process_tree_unreadable')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-moment-strays",
+      "rule": "the rollback restart waits for a cgroup stray",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (strays.strays.length > 0) return no('background_job')",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-moment-strays-unreadable",
+      "rule": "the rollback restart waits for an unreadable cgroup",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (strays?.ok !== true || !Array.isArray(strays.strays)) return no('process_tree_unreadable')",
+      "replace": "  if (!Array.isArray(strays?.strays)) return no('process_tree_unreadable')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-strays-read",
+      "rule": "the controller reads the owning unit's strays",
+      "file": "lib/idle-update.mjs",
+      "find": "      const got = await deps.serviceStrays(processes, claude)\n      return got?.ok === true && Array.isArray(got.strays) ? got : { ok: false, strays: [] }",
+      "replace": "      return { ok: true, strays: [] }",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-strays-only-service",
+      "rule": "the cgroup is read only for an owning service",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (authority.kind !== 'service' || authority.unattended !== true || authority.proof) return { ok: true, strays: [] }",
+      "replace": "    if (false) return { ok: true, strays: [] }",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-strays-watch",
+      "rule": "the watch decision gets the strays",
+      "file": "lib/idle-update.mjs",
+      "find": "        serviceStrays: close.serviceStrays,\n        wake: close.wake,\n      },\n      d,\n    )\n    if (second.action",
+      "replace": "        serviceStrays: { ok: true, strays: [] },\n        wake: close.wake,\n      },\n      d,\n    )\n    if (second.action",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-strays-rollback",
+      "rule": "the rollback moment gets the strays",
+      "file": "lib/idle-update.mjs",
+      "find": "          serviceStrays: close.serviceStrays,\n          wake: close.wake,",
+      "replace": "          serviceStrays: { ok: true, strays: [] },\n          wake: close.wake,",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-person-after-wake",
+      "rule": "a person is read after the wake schedule call",
+      "file": "lib/idle-update.mjs",
+      "find": "    let wake = null\n    try {\n      wake = await deps.wakeSchedule()\n    } catch {\n      wake = null\n    }\n    // A person is read after the schedule call: one who attached while it was out still holds the restart.\n    let attached = null\n    try {\n      attached = await deps.personAttached()\n    } catch {\n      attached = null\n    }\n",
+      "replace": "    let attached = null\n    try {\n      attached = await deps.personAttached()\n    } catch {\n      attached = null\n    }\n    let wake = null\n    try {\n      wake = await deps.wakeSchedule()\n    } catch {\n      wake = null\n    }\n",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "spacing-future-bound",
+      "rule": "a release stamped far ahead holds no spacing",
+      "file": "lib/idle-update.mjs",
+      "find": "      const spacing = Number.isFinite(releasedAt) && releasedAt - n <= d.spacingMs",
+      "replace": "      const spacing = Number.isFinite(releasedAt)",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "host-watcher-future",
+      "rule": "a watcher stamp far ahead is stale",
+      "file": "lib/idle-update-host.mjs",
+      "find": "  return Number.isFinite(at) && now - at < freshMs && at - now <= freshMs",
+      "replace": "  return Number.isFinite(at) && now - at < freshMs",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-strays-systemd-only",
+      "rule": "only a systemd unit's group is read",
+      "file": "lib/idle-update-host.mjs",
+      "find": "  if (service?.kind !== 'systemd') return { ok: true, strays: [] }",
+      "replace": "  if (!service) return { ok: true, strays: [] }",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-strays-fail-closed",
+      "rule": "a systemctl that refuses is unreadable",
+      "file": "lib/idle-update-host.mjs",
+      "find": "  if (res?.code !== 0) return fail\n  const show",
+      "replace": "  const show",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-strays-found",
+      "rule": "a job orphaned out of claude's tree is a stray",
+      "file": "lib/idle-update-host.mjs",
+      "find": "  return { ok: true, strays: strayCgroupMembers({ members, processes, roots }) }",
+      "replace": "  return { ok: true, strays: [] }",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-strays-v1",
+      "rule": "cgroup v1 is read too",
+      "file": "lib/idle-update-host.mjs",
+      "find": " ?? procs('/sys/fs/cgroup/systemd')",
+      "replace": "",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "beacon-written",
+      "rule": "touchBeaconHeartbeat says whether it wrote",
+      "file": "lib/pairing-lock.ts",
+      "find": "    // Telemetry only.\n    return false",
+      "replace": "    // Telemetry only.\n    return true",
+      "tests": [
+        "test/pairing-lock.test.ts"
+      ]
+    },
+    {
+      "id": "wire-beacon-written",
+      "rule": "only a written beacon stamps beaconTouchedAtMs",
+      "file": "server.ts",
+      "find": "          if (beaconWritten) beaconTouchedAtMs = hbNow",
+      "replace": "          beaconTouchedAtMs = hbNow",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-reach-every-call",
+      "rule": "every backend answer marks the backend reached",
+      "file": "server.ts",
+      "find": "      noteBackendReach(response.status)\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-reach-no-answer",
+      "rule": "a call with no answer marks the backend unreachable",
+      "file": "server.ts",
+      "find": "    if (!answered) noteBackendReach(null)\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-service-strays",
+      "rule": "the cgroup read gets the authority's service",
+      "file": "server.ts",
+      "find": "          service: authority.kind === 'service' ? authority.service : null,",
+      "replace": "          service: null,",
       "tests": [
         "test/idle-update.wiring.test.ts"
       ]

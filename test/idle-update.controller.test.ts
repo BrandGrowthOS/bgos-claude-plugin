@@ -836,6 +836,61 @@ test('the rollback restart through an owning service waits for a stray job in it
   assert.equal(await a.c.tick(), 'rollback_requested')
 })
 
+test('an outage before startup completed is not subtracted again from the deadline after it', async () => {
+  const disk = await afterAsk()
+  const a = agent(disk, { running: '0.81.0', staged: null })
+  a.s.startupComplete = false
+  a.s.unreachable = true
+  assert.equal(await a.c.tick(), 'validating')
+  for (let i = 0; i < 10; i += 1) {
+    disk.clock.now += 30 * SEC
+    assert.equal(await a.c.tick(), 'validating')
+  }
+  a.s.unreachable = false
+  a.s.startupComplete = true
+  assert.equal(await a.c.tick(), 'validating')
+  disk.clock.now += 5 * MIN + SEC
+  assert.equal(await a.c.tick(), 'rollback', 'five minutes since startup completed, none of them down')
+})
+
+test('a break in liveness restarts the 60 s hold', async () => {
+  const disk = await afterAsk()
+  const a = agent(disk, { running: '0.81.0', staged: null })
+  const live = () => {
+    a.s.heartbeatOkAtMs = disk.clock.now - 5 * SEC
+    a.s.beaconAtMs = disk.clock.now - 2 * SEC
+  }
+  assert.equal(await a.c.tick(), 'validating')
+  disk.clock.now += 10 * SEC
+  live()
+  assert.equal(await a.c.tick(), 'validating')
+  disk.clock.now += 30 * SEC
+  a.s.deaf = true
+  assert.equal(await a.c.tick(), 'validating')
+  disk.clock.now += 40 * SEC
+  a.s.deaf = false
+  live()
+  assert.equal(await a.c.tick(), 'validating', 'seventy seconds since the first live reading, but live again only now')
+  disk.clock.now += 61 * SEC
+  live()
+  assert.equal(await a.c.tick(), 'validated')
+})
+
+test('a proven reading between unproven ones restarts the 10 min the rollback restart waits', async () => {
+  const { disk, a } = await rolledBackCanary()
+  a.s.listing = { ok: false }
+  assert.equal(await a.c.tick(), 'rollback_waiting')
+  disk.clock.now += 6 * MIN
+  a.s.listing = { ok: true, processes: table(912) }
+  a.s.openAsks = 1
+  assert.equal(await a.c.tick(), 'rollback_waiting', 'proven, but an ask is open')
+  a.s.openAsks = 0
+  a.s.listing = { ok: false }
+  disk.clock.now += 6 * MIN
+  assert.equal(await a.c.tick(), 'rollback_waiting', 'six minutes unproven since the proven reading')
+  assert.equal(a.rollbackRestarts.length, 0)
+})
+
 test('a non-canary that fails on a version reports and stays: it never rolls back the shared install', async () => {
   const disk = memDisk()
   disk.fs.writeAtomic(join(MACHINE, '0.81.0', 'validated'), JSON.stringify({ assistantId: '913', at: new Date(T0 - HOUR).toISOString() }))
