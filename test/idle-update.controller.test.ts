@@ -875,44 +875,84 @@ test('a clean end never overwrites a record another boot settled since, or anoth
   assert.equal(disk.fs.readFile(old.record), before, 'another attempt\'s record is kept')
 })
 
-/** D1 validating, then passive while another session of the agent settles the same attempt on its own boot and goes away. */
-async function lockMovedAndBack() {
+/**
+ * D1 validating (with the backend `down` for a while first), then passive (for `away` before the other boot) while another session of the agent settles the same
+ * attempt on its own boot (and, with `meanwhile`, proves what it can) and goes away.
+ */
+async function lockMovedAndBack({ away = 10 * SEC, down = 0, meanwhile }: { away?: number; down?: number; meanwhile?: (other: ReturnType<typeof agent>, disk: ReturnType<typeof memDisk>) => Promise<void> } = {}) {
   const disk = await afterAsk()
   const old = agent(disk, { running: '0.81.0', staged: null })
   assert.equal(await old.c.tick(), 'validating')
+  if (down) {
+    old.s.unreachable = true
+    for (let t = 0; t < down; t += MIN) {
+      disk.clock.now += MIN
+      assert.equal(await old.c.tick(), 'validating')
+    }
+    old.s.unreachable = false
+  }
   old.s.active = false
   disk.clock.now += 10 * SEC
   assert.equal(await old.c.tick(), 'passive')
-  disk.clock.now += 10 * SEC
+  disk.clock.now += away
   const other = onFreshSession(agent(disk, { running: '0.81.0', staged: null }))
   assert.equal(await other.c.tick(), 'validating')
-  const settled = disk.fs.readFile(old.record)
+  if (meanwhile) await meanwhile(other, disk)
+  const settled = disk.fs.readFile(old.record) as string
   // The other session ends; the old daemon, polling passively meanwhile, holds the lock again.
   for (let i = 0; i < 10; i += 1) {
     disk.clock.now += MIN
     assert.equal(await old.c.tick(), 'passive')
   }
   old.s.active = true
-  return { disk, old, settled }
+  return { disk, old, other, settled }
 }
 
 test('a daemon that holds the lock again after another boot settled the same attempt keeps validating on that record: a deaf build still rolls back, nothing overwritten', async () => {
-  const { disk, old, settled } = await lockMovedAndBack()
-  assert.equal(await old.c.tick(), 'validating', 'the attempt has no verdict yet, and this boot is the one to give it')
-  assert.equal(disk.fs.readFile(old.record), settled)
-  let result = 'validating'
-  let active = 0
-  while (result === 'validating' && active < 20 * MIN) {
-    disk.clock.now += 30 * SEC
-    active += 30 * SEC
-    result = await old.c.tick()
+  // However long this daemon was without the lock, or without the backend, before the other boot arrived, the
+  // deadline counts from that arrival only once: the time before it is not taken off again.
+  for (const { away, down } of [{ away: 10 * SEC, down: 0 }, { away: 3 * HOUR, down: 0 }, { away: 10 * SEC, down: 30 * MIN }]) {
+    const { disk, old, settled } = await lockMovedAndBack({ away, down })
+    assert.equal(await old.c.tick(), 'validating', 'the attempt has no verdict yet, and this boot is the one to give it')
+    assert.equal(disk.fs.readFile(old.record), settled)
+    let result = 'validating'
+    let active = 0
+    while (result === 'validating' && active < 20 * MIN) {
+      disk.clock.now += 30 * SEC
+      active += 30 * SEC
+      result = await old.c.tick()
+    }
+    assert.equal(result, 'rollback', `away ${away}, down ${down}`)
+    assert.ok(active >= 4 * MIN, 'the deadline counts the time this boot held the lock, not the passive minutes')
+    assert.equal(old.rollbackInstalls.length, 1)
+    const after = readJson(disk, old.record)
+    assert.equal(after.pin, FRESH, 'the newer record, extended, never the old copy written over it')
+    assert.equal(after.contextLost, true)
   }
-  assert.equal(result, 'rollback')
-  assert.ok(active >= 4 * MIN, 'the deadline counts the time this boot held the lock, not the passive minutes')
-  assert.equal(old.rollbackInstalls.length, 1)
-  const after = readJson(disk, old.record)
-  assert.equal(after.pin, FRESH, 'the newer record, extended, never the old copy written over it')
-  assert.equal(after.contextLost, true)
+})
+
+test('a daemon that adopts the record another boot settled drops that boot\'s clean end and live proof: its own crash is still a failed build', async () => {
+  const { disk, old } = await lockMovedAndBack({
+    meanwhile: async (other, disk) => {
+      disk.clock.now += 20 * SEC
+      other.s.heartbeatOkAtMs = disk.clock.now
+      other.s.beaconAtMs = disk.clock.now
+      assert.equal(await other.c.tick(), 'validating')
+      assert.ok(readJson(disk, other.record).liveAt, 'the other boot proved live')
+      other.c.noteEnded(true)
+      assert.ok(readJson(disk, other.record).endedAt, 'and ended cleanly')
+    },
+  })
+  assert.equal(await old.c.tick(), 'validating')
+  const adopted = readJson(disk, old.record)
+  assert.equal(adopted.liveAt, null, 'the other boot\'s live proof is not this one\'s')
+  assert.equal(adopted.endedAt, null, 'nor is its clean end')
+  assert.equal(adopted.pin, FRESH)
+  // This daemon dies with no end of its own; the next boot on the same session finds no proof, so the build failed.
+  disk.clock.now += 3 * MIN
+  const next = onFreshSession(agent(disk, { running: '0.81.0', staged: null }))
+  assert.equal(await next.c.tick(), 'rollback')
+  assert.equal(next.rollbackInstalls.length, 1)
 })
 
 test('a daemon that holds the lock again validates a healthy build on the record the other boot settled', async () => {
@@ -931,14 +971,48 @@ test('a daemon that holds the lock again validates a healthy build on the record
   assert.equal(after.pin, FRESH)
 })
 
+test('the other boot, alive and holding the lock again after this daemon gave the adopted attempt its verdict, writes nothing over it', async () => {
+  const { disk, old, other } = await lockMovedAndBack()
+  other.s.active = false
+  assert.equal(await old.c.tick(), 'validating')
+  disk.clock.now += 20 * SEC
+  old.s.heartbeatOkAtMs = disk.clock.now
+  old.s.beaconAtMs = disk.clock.now
+  assert.equal(await old.c.tick(), 'validating')
+  disk.clock.now += 61 * SEC
+  old.s.heartbeatOkAtMs = disk.clock.now
+  old.s.beaconAtMs = disk.clock.now
+  assert.equal(await old.c.tick(), 'validated')
+  const verdict = disk.fs.readFile(old.record)
+  // The lock goes back to the other boot, whose copy of the attempt has no verdict and the same arrival.
+  old.s.active = false
+  other.s.active = true
+  disk.clock.now += 30 * SEC
+  assert.equal(await other.c.tick(), 'superseded')
+  other.c.noteEnded(true)
+  for (let i = 0; i < 10; i += 1) {
+    disk.clock.now += MIN
+    await other.c.tick()
+  }
+  assert.equal(disk.fs.readFile(old.record), verdict, 'the verdict stands')
+  assert.equal(other.rollbackInstalls.length, 0)
+})
+
 test('a daemon that holds the lock again stands down, writing nothing, when the record on disk is another attempt or already has its verdict', async () => {
-  for (const kind of ['another attempt', 'a verdict'] as const) {
+  // A failed boot or a missed deadline is a verdict too, given while the record still says arrived: the boot that gave
+  // it was rolling back, and the next boot of this agent finishes that.
+  for (const kind of ['another attempt', 'another attempt on this version', 'a verdict', 'second_boot', 'deadline'] as const) {
     const { disk, old, settled } = await lockMovedAndBack()
     const onDisk = JSON.parse(settled)
+    const at = new Date(disk.clock.now).toISOString()
     const next =
       kind === 'another attempt'
         ? { ...onDisk, nonce: '912-other', target: '0.82.0', from: '0.81.0', state: 'requested', arrivedAt: null, attempts: [] }
-        : { ...onDisk, state: 'validated', validatedAt: new Date(disk.clock.now).toISOString() }
+        : kind === 'another attempt on this version'
+          ? { ...onDisk, nonce: '912-other', arrivedAt: at }
+          : kind === 'a verdict'
+            ? { ...onDisk, state: 'validated', validatedAt: at }
+            : { ...onDisk, attempts: [...onDisk.attempts, { at, outcome: kind }] }
     disk.fs.writeAtomic(old.record, `${JSON.stringify(next, null, 2)}\n`)
     const before = disk.fs.readFile(old.record)
     assert.equal(await old.c.tick(), 'superseded', kind)

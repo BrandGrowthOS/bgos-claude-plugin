@@ -531,15 +531,22 @@ test('boot settle: a new session drops the clean end and the live proof of the b
   }
 })
 
-test('a record is superseded by another attempt or by a later boot\'s settle, never by an older state of its own attempt', () => {
+test('a record is superseded by another attempt, a later boot\'s settle or a verdict given since, never by an older state of its own attempt', () => {
   const m = need()
-  const mine = { nonce: 'n1', target: '0.81.0', state: 'arrived', arrivedAt: new Date(NOW).toISOString() }
+  const mine = { nonce: 'n1', target: '0.81.0', state: 'arrived', arrivedAt: new Date(NOW).toISOString(), attempts: [{ at: new Date(NOW - 5 * MIN).toISOString(), outcome: 'requested' }] }
   assert.equal(m.isRecordSuperseded(mine, { ...mine }), false, 'the same record')
   assert.equal(m.isRecordSuperseded(mine, { ...mine, liveAt: new Date(NOW + MIN).toISOString() }), false, 'its own later write')
   assert.equal(m.isRecordSuperseded(mine, { ...mine, nonce: 'n2', target: '0.82.0', state: 'requested', arrivedAt: undefined }), true, 'another attempt')
   assert.equal(m.isRecordSuperseded(mine, { ...mine, arrivedAt: new Date(NOW + 2 * MIN).toISOString(), contextLost: true }), true, 'a later boot settled it')
   assert.equal(m.isRecordSuperseded(mine, { ...mine, state: 'requested', arrivedAt: undefined }), false, 'a disk that refused the settle holds the older state')
   assert.equal(m.isRecordSuperseded(mine, { ...mine, arrivedAt: new Date(NOW - MIN).toISOString() }), false, 'an older settle of its own attempt')
+  // The same boot's attempt given its verdict, or a failed attempt appended, by another daemon that held the lock since.
+  for (const state of ['validated', 'failed', 'came_back_old', 'rolled_back', 'rollback_failed']) {
+    assert.equal(m.isRecordSuperseded(mine, { ...mine, state }), true, `a verdict on disk: ${state}`)
+  }
+  assert.equal(m.isRecordSuperseded(mine, { ...mine, attempts: [...mine.attempts, { at: new Date(NOW + MIN).toISOString(), outcome: 'deadline' }] }), true, 'a failed attempt appended')
+  assert.equal(m.isRecordSuperseded({ ...mine, state: 'validated' }, { ...mine, state: 'validated' }), false, 'its own verdict')
+  assert.equal(m.isRecordSuperseded(mine, { ...mine, attempts: [] }), false, 'a disk that refused an attempt holds fewer')
   assert.equal(m.isRecordSuperseded(mine, null), false, 'nothing readable: keep acting')
   assert.equal(m.isRecordSuperseded(null, mine), false)
 })
