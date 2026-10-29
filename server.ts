@@ -17703,6 +17703,7 @@ async function main(): Promise<void> {
       autoUpdateEnabled: () => isAutoUpdateEnabled(process.env.BGOS_AUTO_UPDATE),
       stagedVersion: () => daemonStagedVersion(),
       active: () => lockHeld && !shuttingDown,
+      holdsLock: () => lockHeld,
       watcherSweepActive: () => readWatcherSweepActive({ home: homedir(), fs, now: Date.now(), freshMs: IDLE_UPDATE_DURATIONS.watcherFreshMs }),
       authorityKind: () => idleRestartAuthority().kind,
       serviceOwnsUs: () => idleServiceOwnsUs(),
