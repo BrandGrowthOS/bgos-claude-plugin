@@ -137,6 +137,7 @@ import {
   describeShutdownCause,
   installStdinShutdown,
   isBrokenPipe,
+  isReaderGone,
   stdinHasEnded,
   watchStdinEof,
   type ShutdownCause,
@@ -17544,11 +17545,13 @@ async function main(): Promise<void> {
   })
 
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-    process.once(signal, () => shutdown(signal, signal === 'SIGINT' ? 130 : 143))
+    process.on(signal, () => shutdown(signal, signal === 'SIGINT' ? 130 : 143))
   }
   // A hangup is claude's terminal or claude itself gone: under expect, claude leads its pty's session, and when it
   // exits the kernel hangs up its whole process group, this daemon included, whose default action would end it
-  // with no clean end recorded. Not once: the group's hangup and the launch shim's forward may both arrive.
+  // with no clean end recorded. Not once, here or above: the group's signal and the launch shim's forward may both
+  // arrive (a systemd stop signals the whole control group), and a second one with no handler would end the daemon
+  // before its shutdown recorded the clean end. shutdown() runs once whatever reaches it.
   if (process.platform !== 'win32') process.on('SIGHUP', () => shutdown('SIGHUP', 129))
 
   // agent-state.json (design section 7): ticks from here on; it writes only
@@ -17814,7 +17817,8 @@ async function main(): Promise<void> {
   // itself. The fault handlers below see a broken pipe on any other stream, which is as likely a fault in the build.
   for (const pipe of [process.stdout, process.stderr]) {
     pipe.on('error', (err) => {
-      if (isBrokenPipe(err)) shutdown('stdout-epipe', 0)
+      if (isReaderGone(err)) shutdown('stdout-epipe', 0)
+      else if (isBrokenPipe(err)) shutdown('broken-pipe', 0)
       else throw err
     })
   }

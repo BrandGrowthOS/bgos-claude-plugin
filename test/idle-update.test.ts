@@ -515,6 +515,15 @@ test('boot settle: a boot whose predecessor ended cleanly (its claude went away:
   assert.equal(twice.event, 'second_boot', 'one re-arrival per record, never a loop')
 })
 
+test('boot settle: an end time that does not read as a time is no clean end', () => {
+  const m = need()
+  const base = { state: 'arrived', lockBoots: 1, arrivedAt: new Date(NOW - 4 * MIN).toISOString() }
+  for (const endedAt of ['', 'yesterday', 'not a time']) {
+    const next = m.settleRecordAtBoot(record({ ...base, endedAt }), { runningVersion: '0.81.0', pin: 'pin-1', now: NOW })
+    assert.equal(next.event, 'second_boot', JSON.stringify(endedAt))
+  }
+})
+
 test('boot settle: a predecessor that only polled recently (no clean end on record: it crashed or hung) is a failed build', () => {
   const m = need()
   const base = { state: 'arrived', lockBoots: 1, arrivedAt: new Date(NOW - 4 * MIN).toISOString() }

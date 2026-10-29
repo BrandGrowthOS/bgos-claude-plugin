@@ -47,7 +47,7 @@ export function describeShutdownCause(cause: ShutdownCause | string): string {
     case 'stdout-epipe':
       return 'our output pipe broke, so whoever was reading it is gone: shutting down'
     case 'broken-pipe':
-      return 'a write went to a stream that had already ended or broken, not our own output: shutting down'
+      return 'a write went to a stream that had already ended or been destroyed, not to a reader that left: shutting down'
     case 'SIGHUP':
       return 'received SIGHUP (the session\'s terminal went away): shutting down'
     case 'SIGINT':
@@ -84,6 +84,17 @@ export function isBrokenPipe(err: unknown): boolean {
   ) {
     return true
   }
+  const message = (err as { message?: unknown }).message
+  return typeof message === 'string' && /\bEPIPE\b/.test(message)
+}
+
+/**
+ * The reader of a pipe gone (EPIPE, with or without its code, as bun surfaces it), and nothing else of
+ * isBrokenPipe: a write after end or to a destroyed stream is this process's own doing, never a clean end.
+ */
+export function isReaderGone(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false
+  if ((err as { code?: unknown }).code === 'EPIPE') return true
   const message = (err as { message?: unknown }).message
   return typeof message === 'string' && /\bEPIPE\b/.test(message)
 }
