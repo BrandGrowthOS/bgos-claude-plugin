@@ -2,6 +2,17 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.80.2 (2026-10-29)
+
+**A reply to a side thread that HOAI did not forward is now reported as an error, never a silent "Sent" (board row 28fed1cd).** On 2026-10-27 the conversation between Data and Ares closed on timeout, and five of Data's later replies into that side thread were answered "Sent" and never reached Ares, who asked the same questions four times.
+
+- **The cause: "Sent" only ever meant "saved".** HOAI accepts a reply into a closed side thread, reopens the conversation and saves the reply, then forwards it to the other agent on a best effort basis. The answer was the same either way, so the daemon could not tell a reply the peer got from one it never did.
+- **`reply` now acts on HOAI's own word on the forward** (`peerDelivery` on the `/send-message` answer, BGOS #3420). `not_forwarded` is an error that says why, in plain words an agent can pass to its owner, and offers only a remedy that works. `forwarded`, or no field at all (a backend without #3420), is the Sent it always was.
+- **A reply into a closed conversation still goes to HOAI,** which reopens it (the reopen rule holds). The daemon refuses nothing locally; only HOAI's answer decides.
+- **Each reason says what it means.** `conversation_not_open` and `no_conversation` say the conversation is over. Any other reason (the other agent offline, a paused contact link, a failure inside the forward) says only that this reply was not passed on. send_to_peer is offered where it works, and a reply with files is told to send the words and share the files as a link, because send_to_peer carries none.
+- **The inbound a failed reply answered leaves the overdue sweep,** as on the 403 path, since the agent has been told. A newer message that landed during the send stays.
+- Tests: `test/peer-closed-reply.test.ts` (the delivery states, the wording for each reason, files, the overdue sweep, and an unknown value never turning a reply into an error).
+
 ## 0.80.1 (2026-10-28)
 
 **On Windows each agent's helper no longer grows by several GB a day (board rows a8646712 and dc37e2ac).**
