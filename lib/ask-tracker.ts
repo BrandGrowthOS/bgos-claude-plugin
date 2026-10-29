@@ -179,6 +179,8 @@ export interface AskQuestion {
   messageId: number
   text: string
   options: AskOption[]
+  /** Posted with multi_select: the owner may pick several, and the answer comes back as arrays. */
+  multiSelect?: true
 }
 
 /** One question's answer, as the agent reads it (values already unescaped). */
@@ -186,6 +188,9 @@ export interface AskAnswer {
   skipped?: true
   optionValue?: string
   optionLabel?: string
+  /** Several picks (a multi-select question), in the card's own order. */
+  optionValues?: string[]
+  optionLabels?: string[]
   freeText?: string
 }
 
@@ -242,6 +247,7 @@ export interface AskRow {
     answeredAt: string | null
     answerPayload: {
       optionId?: number
+      optionIds?: number[]
       freeText?: string
       skipped?: boolean
     } | null
@@ -252,15 +258,30 @@ export interface AskRow {
 /**
  * Read one question's answer off its history row, or null while it is
  * unanswered. The backend's ask answer is { optionId?, freeText?, skipped }
- * (message.service.ts handleAskResponse); the option is matched to the row's
- * own options so the agent gets back the value it posted, `u:` sentinel off.
+ * (message.service.ts handleAskResponse), and a multi-select one adds
+ * optionIds, every pick in the card's order, optionId being the first; each
+ * option is matched to the row's own options so the agent gets back the value
+ * it posted, `u:` sentinel off.
  */
 export function askAnswerFromRow(row: AskRow): AskAnswer | null {
   const m = row.message
   if (!m.answeredAt || !m.answerPayload) return null
   const payload = m.answerPayload
   const answer: AskAnswer = {}
-  if (payload.optionId != null) {
+  if (Array.isArray(payload.optionIds) && payload.optionIds.length > 0) {
+    const picked = payload.optionIds
+      .map((id) => (row.messageOptions ?? []).find((o) => o.id === id))
+      .filter((o): o is { id: number; text: string; callbackData: string } => o !== undefined)
+    if (picked.length > 0) {
+      answer.optionValues = picked.map((o) => unescapeAgentButtonValue(o.callbackData))
+      answer.optionLabels = picked.map((o) => o.text)
+      // The first pick in the single fields too, as the backend copies it into optionId: a 0.78 daemon that
+      // adopts this group from pending-asks.json reads only these, and names one real pick, not a skip.
+      // askResultRows still hands a multi-select question back as arrays only.
+      answer.optionValue = answer.optionValues[0]
+      answer.optionLabel = answer.optionLabels[0]
+    }
+  } else if (payload.optionId != null) {
     const matched = (row.messageOptions ?? []).find((o) => o.id === payload.optionId)
     if (matched) {
       answer.optionValue = unescapeAgentButtonValue(matched.callbackData)
@@ -275,6 +296,31 @@ export function askAnswerFromRow(row: AskRow): AskAnswer | null {
   return answer
 }
 
+/** The questions ask_user_input takes, as the agent sends them. */
+export interface AskQuestionInput {
+  text: string
+  options: Array<{ label: string; value: string }>
+  allow_free_text?: boolean
+  allow_skip?: boolean
+  multi_select?: boolean
+}
+
+/** Why these questions cannot be posted, or null when they can. Checked before anything is posted. */
+export function askQuestionsError(questions: readonly AskQuestionInput[]): string | null {
+  for (const q of questions) {
+    if (!q.text || !q.options?.length) {
+      return 'Error: every question needs `text` and at least one option (use `reply` for open-ended questions).'
+    }
+    if (q.multi_select !== undefined && typeof q.multi_select !== 'boolean') {
+      return `Error: multi_select must be true or false ("${q.text}" has ${JSON.stringify(q.multi_select)}).`
+    }
+    if (q.multi_select === true && q.options.length < 2) {
+      return `Error: multi_select needs 2 or more options ("${q.text}" has ${q.options.length}).`
+    }
+  }
+  return null
+}
+
 /**
  * The PATCH body that retires one question row when the agent withdraws its
  * card (the withdraw_ask tool), exactly as codex-channel-bgos retires one
@@ -286,13 +332,24 @@ export function askRetireBody(): { options: []; renderMode: 'inline' } {
   return { options: [], renderMode: 'inline' }
 }
 
-/** The answers of a group in question order, in the shape the blocking tool has always returned. */
+/**
+ * The answers of a group in question order, in the shape the blocking tool has
+ * always returned. A multi-select question answers with arrays even for one
+ * pick (an old app, or a backend before multi-select, sends just one).
+ */
 export function askResultRows(ask: PendingAsk): Array<Record<string, unknown>> {
   return ask.questions.map((q) => {
     const a = ask.answers[String(q.messageId)] ?? {}
+    const values = a.optionValues ?? (a.optionValue !== undefined ? [a.optionValue] : undefined)
+    const labels = a.optionLabels ?? (a.optionLabel !== undefined ? [a.optionLabel] : undefined)
+    const asArrays = q.multiSelect === true || a.optionValues !== undefined
     return {
       question: q.text,
-      ...(a.optionValue !== undefined && {
+      ...(values !== undefined && asArrays && {
+        picked_option_values: values,
+        picked_option_labels: labels,
+      }),
+      ...(values !== undefined && !asArrays && {
         picked_option_value: a.optionValue,
         picked_option_label: a.optionLabel,
       }),
@@ -734,6 +791,7 @@ export class AskTracker {
         messageId: q.messageId,
         text: q.text,
         options: q.options.map((o) => ({ label: o.label, value: o.value })),
+        ...(q.multiSelect === true && { multiSelect: true as const }),
       })),
       answers: {},
       owner: { pid: this.self.pid, startedAt: this.self.startedAt, aliveAt: this.now() },

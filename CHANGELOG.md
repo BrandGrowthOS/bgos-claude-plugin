@@ -2,6 +2,29 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.80.1 (2026-10-28)
+
+**On Windows each agent's helper no longer grows by several GB a day (board rows a8646712 and dc37e2ac).**
+
+- **The cause is in bun on Windows, not in the daemon's own work.** bun 1.3 there leaks every thread that exits: its handle stays open and about 0.3 MB of committed memory stays with it. JavaScriptCore starts garbage collector helpers and JIT compiler threads when there is work and lets them exit seconds later, so an idle daemon made and lost threads all day: committed memory grew 100 to 330 MB an hour while the working set stayed flat, until Kc's PC reached 98% commit. A bare bun script that only collects every 12 s shows the same: +718 MB and 2,212 thread handles an hour.
+- **`bin/bgos-launch.mjs` starts bun on Windows with one GC marker, no concurrent collector and no concurrent compiler** (`WIN32_JSC_THREAD_OPTIONS`), so neither pool starts or stops a thread. A value the operator set is kept. macOS and Linux launch exactly as before. Measured on the daemon over 30 minutes: thread handles flat, committed memory flat, and less CPU than before.
+- **The Agent Pack wrapper gives its daemon the same options** (`bin/bgos-daemon-wrapper.mjs`, `daemonEnv`): its `.mcp.json` runs `bun <wrapper>`, never the launcher. The wrapper is copied out of the checkout, so it holds its own copy of the table and a test keeps the two equal.
+- **A bun that refuses the options still starts.** bun exits on a JSC option it does not know, and those change between bun releases, so the launcher and the wrapper first run one `bun -e 0` with them (about 0.1 s, Windows only) and start bun without them when it answers `invalid JSC environment variable`. A launch that only finds bunx, the last resort, starts as before.
+- **The options stay with the daemon.** They join `SESSION_ENV_KEYS` (`lib/marker-takeover.mjs`), so a takeover's helper and the claude it relaunches never get them; the lane supervisor, a long running bun of its own, keeps them.
+- **A Windows daemon started some other way says so once at boot** (`WARN this daemon runs on Windows without ...`), naming what is missing and what sets it.
+- Tests: `test/bgos-launch.test.ts` (the options, an operator's own value kept, the probe and a refusing bun, the Windows and macOS spawns, the boot warning), `test/daemon-wrapper.test.ts` (the wrapper's table and `daemonEnv`), `test/marker-takeover.test.ts` (a relaunch never gets the options), `test/win-commit-growth.soak.test.ts` (Windows, opt in with `HOAI_SOAK=1`, about 16 minutes: the real launcher and daemon against a stand in backend, red on main at 357 handles an hour, green with the fix at 0).
+
+## 0.80.0 (2026-10-27)
+
+**A question on the card can take several answers (askcard PR 3, Kc: "when there are multiple answers, you need to be able to multi-select").** The app draws such a question as checkboxes with one Submit (BrandGrowthOS/BGOS, the same PR 3), and the backend stores every pick.
+
+- **`multi_select: true` per question** in `ask_user_input`, with 2 or more options (`askQuestionsError` refuses fewer before anything is posted). The daemon posts `multiSelect: true` on that row only (only a flagged row carries the field), and the tracker keeps the flag in `pending-asks.json` across restarts. A `multi_select` that is not `true` or `false` is refused before anything is posted, rather than quietly asked as single choice.
+- **The answer comes back as arrays.** A multi select question answers with `picked_option_values` and `picked_option_labels`, every pick in the card's order, an array even for one pick (an app before multi select sends one, and a backend before it stores a bare `optionId`). A single choice question keeps `picked_option_value` and `picked_option_label`, and a skipped or typed multi select answer carries no empty arrays. The same rows serve the blocking result, `ask_answered` and `ask_withdrawn`. The backend stores `{ optionIds, optionId: first pick, skipped: false }`; `askAnswerFromRow` reads `optionIds`, drops an id the row no longer carries, and keeps the first pick in the single fields too, so a 0.78 daemon that adopts the group from `pending-asks.json` still names one real pick.
+- The tool description, the schema and the MCP instructions name the arrays; the instructions draw such a question as checkboxes and list `multi_select` in the question shape.
+- **BGOS serves the flag to the apps only once `ASK_MULTI_SELECT` is on** (client release first: an app installed before multi select refuses the key). Until then the app draws the question as single choice and the answer comes back as an array of one.
+- **Declares `ask_multi_select`** (new in `lib/claude-capability-tokens.ts`, the file BGOS pins by sha256, on every host), so the BGOS canon offers `multi_select` only to a daemon that has it, and only while the backend serves it. The schema says an app or backend without multi select shows the question as a single choice, so the array then holds one pick. The token file's `ask_answered` comment now says a call with neither wait field waits up to 600 s.
+- Tests: `test/ask-tracker.test.ts` and `test/ask-multi-select-wiring.test.ts` (which runs the lifted `ask_user_input` case against a fake backend and a real tracker), red first, and the `test/peer-403-loop.test.ts` harness now runs the real question checks; a local rig (outside this repo) ran the real daemon under a scratch HOME against a stub backend: the stream and the poll after a restart, an old app's single pick and a bare `optionId` on a multi select question, and a blocking wait answered in time.
+
 ## 0.79.1 (2026-10-27)
 
 **The question card's retire, after Data's two gaps on #284.**

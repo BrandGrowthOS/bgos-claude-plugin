@@ -292,12 +292,14 @@ import {
   askAnswerFromRow,
   askPendingText,
   askReadIntervalMs,
+  askQuestionsError,
   askResultRows,
   askRetireBody,
   askWaitSeconds,
   askWithdrawnText,
   buildAskAnsweredEvent,
   buildAskWithdrawnEvent,
+  type AskQuestionInput,
   type AskRetiredBecause,
   type AskRow,
   type PendingAsk,
@@ -459,6 +461,7 @@ import {
   marketplaceChannelSpec,
 } from './bin/bgos-install-method.mjs'
 import { resolveChannelSpec } from './bin/hoai-core.mjs'
+import { threadOptionsWarning } from './bin/bgos-launch.mjs'
 import {
   UpdateStreamConsumer,
   beaconWatchdog,
@@ -3256,7 +3259,9 @@ const mcp = new Server(
       'The pending return above needs wait_seconds: 0; to wait for the answers, pass wait_seconds from 1 to 600. A call with neither wait_seconds nor timeout_seconds keeps its old behaviour: it waits up to 600 s and returns the answers, or pending if they do not all come in time.',
       '',
       'The BGOS app shows the card as a sheet over the chat with numbered',
-      'choices, optional free-text fallback, and per-question Skip. With',
+      'choices (checkboxes and one Submit on a `multi_select` question, or a',
+      'single choice where the app or backend has no multi select yet),',
+      'optional free-text fallback, and per-question Skip. With',
       '`wait_seconds: 0` the tool returns at once as pending with an `ask_id`. When every',
       'question is answered (option picked, free text typed, or skipped) the',
       'answers arrive together as ONE channel event, however late, and it starts',
@@ -3265,7 +3270,9 @@ const mcp = new Server(
       '    [ask_answered] ... (ask_id=...)',
       '  </channel>',
       'with `meta.ask_id` and `meta.answers` (JSON, one entry per question in',
-      'order: `picked_option_value` and `picked_option_label`, `free_text`, or',
+      'order: `picked_option_value` and `picked_option_label`, on a',
+      '`multi_select` question `picked_option_values` and `picked_option_labels`',
+      'arrays (an array even for one pick), `free_text`, or',
       '`skipped: true`). `wait_seconds` above 0 (up to 600), or no wait field',
       'at all (the old 600 s), blocks instead and returns the answers if they',
       'all come in time; if not it returns pending, never invented skips, and',
@@ -3284,7 +3291,7 @@ const mcp = new Server(
       'taking answers and no ask_answered event comes for it.',
       '',
       'Each question: `{ text, options?: [{ label, value }], allow_free_text?,',
-      'allow_skip? }`. If `options` is omitted or empty, send it as a regular',
+      'allow_skip?, multi_select? }`. If `options` is omitted or empty, send it as a regular',
       '`reply` message instead, the modal exists to make CHOOSING easier, not',
       'to wrap every question.',
       '',
@@ -4955,7 +4962,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'in the chat, use wait_seconds, and the answers come back inside their own turn. ' +
         'In a session that is not the one connected to BGOS for this agent, wait_seconds 0 is ' +
         'refused, and a wait that runs out withdraws the questions not yet answered. ' +
-        'For open-ended questions use `reply`.',
+        'Set multi_select: true on a question when more than one option can be right; it ' +
+        'answers with arrays. For open-ended questions use `reply`.',
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -5008,6 +5016,16 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
                   type: 'boolean',
                   description:
                     'Show a Skip button so the user can move past without answering. Default true.',
+                },
+                multi_select: {
+                  type: 'boolean',
+                  description:
+                    'true when more than one option can be right: your owner ticks every ' +
+                    'option that applies and submits once, and this question answers with ' +
+                    'picked_option_values and picked_option_labels arrays (an array even ' +
+                    'for one pick). Needs 2 or more options. An app or backend ' +
+                    'without multi select shows it as a single choice, so the array then ' +
+                    'holds one pick. Default false: one pick.',
                 },
               },
               required: ['text', 'options'],
@@ -6865,14 +6883,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
 
     case 'ask_user_input': {
       const chat_id = rawArgs.chat_id as string | undefined
-      const questions = rawArgs.questions as
-        | Array<{
-            text: string
-            options: Array<{ label: string; value: string }>
-            allow_free_text?: boolean
-            allow_skip?: boolean
-          }>
-        | undefined
+      const questions = rawArgs.questions as AskQuestionInput[] | undefined
       // wait_seconds 0: post, return pending, the answers come back as ONE
       // ask_answered event however late. No wait field: the old 600 s block.
       // A wait that is not a number of seconds is refused before anything is
@@ -6936,18 +6947,9 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
           content: [{ type: 'text', text: 'Error: at least one question is required' }],
         }
       }
-      for (const q of questions) {
-        if (!q.text || !q.options?.length) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: 'Error: every question needs `text` and at least one option (use `reply` for open-ended questions).',
-              },
-            ],
-            isError: true,
-          }
-        }
+      const questionsError = askQuestionsError(questions)
+      if (questionsError) {
+        return { content: [{ type: 'text', text: questionsError }], isError: true }
       }
 
       if ('error' in askWait) {
@@ -6976,6 +6978,8 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
             askOrder: i + 1,
             allowFreeText: q.allow_free_text ?? true,
             allowSkip: q.allow_skip ?? true,
+            // Sent only when asked for: only a flagged row carries the field.
+            ...(q.multi_select === true && { multiSelect: true }),
             // Namespace-escape agent option values (same isolation as `reply`).
             options: q.options.map((o) => ({
               text: o.label,
@@ -6997,6 +7001,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
             messageId: postedIds[i],
             text: q.text,
             options: q.options.map((o) => ({ label: o.label, value: o.value })),
+            ...(q.multi_select === true && { multiSelect: true as const }),
           })),
         })
         registered = true
@@ -17245,6 +17250,10 @@ async function main(): Promise<void> {
     }),
   )
   if (ENV_ONLY_IDENTITY_WARN) log(`WARN ${ENV_ONLY_IDENTITY_WARN}`)
+  // Windows only (board rows a8646712 and dc37e2ac): started without the launcher's
+  // thread options, this daemon's committed memory grows while it runs.
+  const threadOptionsWarn = threadOptionsWarning({ env: process.env, platform: process.platform })
+  if (threadOptionsWarn) log(`WARN ${threadOptionsWarn}`)
   const noHomeWarn = formatNoHomeWarning(HOME_BINDING, ASSISTANT_ID)
   if (noHomeWarn) log(`WARN ${noHomeWarn}`)
   if (PAIRING_REJECTION_WARN) log(`WARN ${PAIRING_REJECTION_WARN}`)

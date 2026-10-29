@@ -87,6 +87,24 @@
  * ask_answered event, withdraw_ask), so it declares the token on every host,
  * and the canon tells the pending card only to a daemon that declares it.
  *
+ * RECORDED FOR the `ask_answered` comment (askcard PR 3, 2026-10-28, both
+ * copies changed in one step, both digests moved to the same literal
+ * b5dcc739...bc54): the comment said ask_user_input returns pending at once
+ * unless wait_seconds asks it to wait, but a call with neither wait_seconds
+ * nor timeout_seconds waits up to 600 s. Comment only, no token moved. Red
+ * first: both digests moved before either copy, and the digest pin failed
+ * alone.
+ *
+ * ADDED FOR `ask_multi_select` (askcard PR 3, 2026-10-28, both copies changed
+ * in one step, both digests moved to the same literal 701f98e8...3e3b): this
+ * release takes multi_select on an ask_user_input question and answers it
+ * with arrays, so it declares the token on every host, and the BGOS canon
+ * offers multi_select only to a daemon that declares it (and only while the
+ * backend serves it). Appended LAST, so the order before it is unchanged.
+ * The red commit read ASK_MULTI_SELECT_TOKEN through the module object, so
+ * this test ran and failed case by case before the token existed; it is
+ * imported by name now that it exists (that cast failed tsc --noEmit).
+ *
  * Run: npm test, or npx tsx --test test/claude-capability-tokens.pin.test.ts
  */
 
@@ -98,6 +116,7 @@ import { join } from 'node:path'
 
 import {
   ASK_ANSWERED_TOKEN,
+  ASK_MULTI_SELECT_TOKEN,
   CLAUDE_CAPABILITY_TOKENS,
   HARD_FLOOR_RULES_2_TOKEN,
   HARD_FLOOR_TOKEN,
@@ -111,13 +130,20 @@ import {
 } from '../lib/declared-capabilities.ts'
 
 /** The digest BGOS's claude-capability-tokens.pin.spec.ts pins too. */
-const SHA256 = '6bf6854ee55b16191e3c6bb34980efd68205471f128cb0696f04141996f6d2fb'
+const SHA256 = '701f98e8891f80fe2f11e6a3b3d4ea446f4bcf589305cbd0f832581b31083e3b'
 
 const ROOT = join(import.meta.dirname, '..')
 const FILE = join(ROOT, 'lib', 'claude-capability-tokens.ts')
 
 /** The tokens this release carries the code for, and so declares. */
-const DECLARED_BY_THIS_RELEASE: readonly string[] = [PERMISSION_CARD, PLAN_CARD, HARD_FLOOR_TOKEN, HARD_FLOOR_RULES_2_TOKEN, ASK_ANSWERED_TOKEN]
+const DECLARED_BY_THIS_RELEASE: readonly string[] = [
+  PERMISSION_CARD,
+  PLAN_CARD,
+  HARD_FLOOR_TOKEN,
+  HARD_FLOOR_RULES_2_TOKEN,
+  ASK_ANSWERED_TOKEN,
+  ASK_MULTI_SELECT_TOKEN,
+]
 
 /**
  * Named in the file, NOT declared by this release, and who declares them.
@@ -142,10 +168,11 @@ test('the token file still has the bytes BGOS pins for its copy', () => {
   )
 })
 
-test('the file names exactly permission_card, plan_card, hard_floor, hard_floor_rules_2 and ask_answered, in that order', () => {
-  assert.deepEqual([...CLAUDE_CAPABILITY_TOKENS], ['permission_card', 'plan_card', 'hard_floor', 'hard_floor_rules_2', 'ask_answered'])
+test('the file names exactly permission_card, plan_card, hard_floor, hard_floor_rules_2, ask_answered and ask_multi_select, in that order', () => {
+  assert.deepEqual([...CLAUDE_CAPABILITY_TOKENS], ['permission_card', 'plan_card', 'hard_floor', 'hard_floor_rules_2', 'ask_answered', 'ask_multi_select'])
   assert.equal(HARD_FLOOR_RULES_2_TOKEN, 'hard_floor_rules_2')
   assert.equal(ASK_ANSWERED_TOKEN, 'ask_answered')
+  assert.equal(ASK_MULTI_SELECT_TOKEN, 'ask_multi_select')
   assert.equal(PERMISSION_CARD, 'permission_card')
   assert.equal(PLAN_CARD, 'plan_card')
   assert.equal(HARD_FLOOR_TOKEN, 'hard_floor')
