@@ -746,8 +746,8 @@
       "id": "wire-lock-holder",
       "rule": "only the lock holder, never during shutdown",
       "file": "server.ts",
-      "find": "      active: () => lockHeld && !shuttingDown,\n      watcherSweepActive",
-      "replace": "      active: () => true,\n      watcherSweepActive",
+      "find": "      active: () => lockHeld && !shuttingDown,\n      holdsLock",
+      "replace": "      active: () => true,\n      holdsLock",
       "tests": [
         "test/idle-update.wiring.test.ts"
       ]
@@ -1652,26 +1652,6 @@
       ]
     },
     {
-      "id": "dur-ended-floor",
-      "rule": "the clean end grace keeps a floor under any scale",
-      "file": "lib/idle-update.mjs",
-      "find": "beaconFreshMs: 30 * SEC, endedGraceMs: 90 * SEC })",
-      "replace": "beaconFreshMs: 30 * SEC })",
-      "tests": [
-        "test/idle-update.test.ts"
-      ]
-    },
-    {
-      "id": "dur-ended-grace",
-      "rule": "a clean end counts for 2 min",
-      "file": "lib/idle-update.mjs",
-      "find": "  endedGraceMs: 2 * MIN,",
-      "replace": "  endedGraceMs: 20 * MIN,",
-      "tests": [
-        "test/idle-update.test.ts"
-      ]
-    },
-    {
       "id": "dur-unreachable-cap",
       "rule": "an outage is forgiven for 60 min at most",
       "file": "lib/idle-update.mjs",
@@ -1693,21 +1673,11 @@
       ]
     },
     {
-      "id": "settle-ended-grace",
-      "rule": "only a clean end within the grace counts",
-      "file": "lib/idle-update.mjs",
-      "find": "    const endedCleanly = Number.isFinite(endedAt) && Math.abs(now - endedAt) < d.endedGraceMs",
-      "replace": "    const endedCleanly = Number.isFinite(endedAt)",
-      "tests": [
-        "test/idle-update.test.ts"
-      ]
-    },
-    {
       "id": "settle-poll-is-no-end",
       "rule": "a recent poll is no clean end",
       "file": "lib/idle-update.mjs",
-      "find": "    const endedAt = typeof record.endedAt === 'string' ? Date.parse(record.endedAt) : Number.NaN",
-      "replace": "    const endedAt = typeof (record.endedAt ?? record.aliveAt) === 'string' ? Date.parse(record.endedAt ?? record.aliveAt) : Number.NaN",
+      "find": "    const endedCleanly = typeof record.endedAt === 'string' && Number.isFinite(Date.parse(record.endedAt))",
+      "replace": "    const endedCleanly = typeof (record.endedAt ?? record.aliveAt) === 'string' && Number.isFinite(Date.parse(record.endedAt ?? record.aliveAt))",
       "tests": [
         "test/idle-update.test.ts"
       ]
@@ -1716,8 +1686,8 @@
       "id": "ctl-note-ended",
       "rule": "a clean end while validating is on the record",
       "file": "lib/idle-update.mjs",
-      "find": "      read(() => settleTo({ ...record, endedAt: iso(now()) }), null)",
-      "replace": "      read(() => null, null)",
+      "find": "        if (!supersededOnDisk()) settleTo({ ...record, endedAt: iso(now()) })",
+      "replace": "        if (!supersededOnDisk()) null",
       "tests": [
         "test/idle-update.controller.test.ts"
       ]
@@ -1736,7 +1706,7 @@
       "id": "wire-note-ended",
       "rule": "server.ts shutdown writes the clean end",
       "file": "server.ts",
-      "find": "    idleUpdate?.noteEnded(isCleanEnd(cause, { stdinEnded: stdinHasEnded(process.stdin) }))\n",
+      "find": "    idleUpdate?.noteEnded(isCleanEnd(cause))\n",
       "replace": "",
       "tests": [
         "test/idle-update.wiring.test.ts"
@@ -1821,7 +1791,7 @@
       "rule": "a table with no claude row is not remembered",
       "file": "lib/idle-update.mjs",
       "find": "      if (!row) return { kind, unattended: false, proof: null }",
-      "replace": "      if (!row) { unattendedCache = { key: `${kind}:${read(deps.launcher, null)?.pid ?? ''}`, value: false }; return { kind, unattended: false, proof: null } }",
+      "replace": "      if (!row) { unattendedCache = { key: `${kind}:${read(deps.launcher, null)?.pid ?? ''}`, value: false, until: Number.POSITIVE_INFINITY }; return { kind, unattended: false, proof: null } }",
       "tests": [
         "test/idle-update.controller.test.ts"
       ]
@@ -1900,18 +1870,8 @@
       "id": "clean-end-signal",
       "rule": "a signal is a clean end",
       "file": "lib/idle-update.mjs",
-      "find": "const CLEAN_END_CAUSES = new Set(['stdin-end', 'stdin-close', 'SIGTERM', 'SIGINT'])",
-      "replace": "const CLEAN_END_CAUSES = new Set(['stdin-end', 'stdin-close', 'SIGINT'])",
-      "tests": [
-        "test/idle-update.test.ts"
-      ]
-    },
-    {
-      "id": "clean-end-epipe-needs-stdin",
-      "rule": "a broken pipe is a clean end only once stdin has ended",
-      "file": "lib/idle-update.mjs",
-      "find": "  return cause === 'stdout-epipe' && stdinEnded === true",
-      "replace": "  return cause === 'stdout-epipe'",
+      "find": "new Set(['stdin-end', 'stdin-close', 'SIGTERM', 'SIGINT', 'SIGHUP', 'stdout-epipe'])",
+      "replace": "new Set(['stdin-end', 'stdin-close', 'SIGINT', 'SIGHUP', 'stdout-epipe'])",
       "tests": [
         "test/idle-update.test.ts"
       ]
@@ -1930,30 +1890,10 @@
       "id": "wire-note-ended-cause",
       "rule": "shutdown passes its cause through isCleanEnd",
       "file": "server.ts",
-      "find": "    idleUpdate?.noteEnded(isCleanEnd(cause, { stdinEnded: stdinHasEnded(process.stdin) }))",
+      "find": "    idleUpdate?.noteEnded(isCleanEnd(cause))",
       "replace": "    idleUpdate?.noteEnded(true)",
       "tests": [
         "test/idle-update.wiring.test.ts"
-      ]
-    },
-    {
-      "id": "ctl-cache-settled-only",
-      "rule": "a refusal on an input that could not be read is not remembered",
-      "file": "lib/idle-update.mjs",
-      "find": "    if (proven || SETTLED_REFUSALS.has(own.reason)) unattendedCache = { key: `${kind}:${launcher.pid}`, value: proven }",
-      "replace": "    unattendedCache = { key: `${kind}:${launcher.pid}`, value: proven }",
-      "tests": [
-        "test/idle-update.controller.test.ts"
-      ]
-    },
-    {
-      "id": "ctl-cache-settled-refusals",
-      "rule": "a refusal the table settles is remembered",
-      "file": "lib/idle-update.mjs",
-      "find": "    if (proven || SETTLED_REFUSALS.has(own.reason)) unattendedCache",
-      "replace": "    if (proven) unattendedCache",
-      "tests": [
-        "test/idle-update.controller.test.ts"
       ]
     },
     {
@@ -1975,6 +1915,599 @@
       "replace": "  canarySilentMs: 9 * MIN,",
       "tests": [
         "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "clean-end-hangup",
+      "rule": "a hangup is a clean end",
+      "file": "lib/idle-update.mjs",
+      "find": "'SIGINT', 'SIGHUP', 'stdout-epipe'])",
+      "replace": "'SIGINT', 'stdout-epipe'])",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "clean-end-own-pipe",
+      "rule": "the reader of our own output gone is a clean end",
+      "file": "lib/idle-update.mjs",
+      "find": "'SIGINT', 'SIGHUP', 'stdout-epipe'])",
+      "replace": "'SIGINT', 'SIGHUP'])",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "clean-end-not-broken-pipe",
+      "rule": "a broken pipe elsewhere is no clean end",
+      "file": "lib/idle-update.mjs",
+      "find": "'SIGINT', 'SIGHUP', 'stdout-epipe'])",
+      "replace": "'SIGINT', 'SIGHUP', 'stdout-epipe', 'broken-pipe'])",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "wire-sighup",
+      "rule": "server.ts handles a hangup through its shutdown",
+      "file": "server.ts",
+      "find": "  if (process.platform !== 'win32') process.on('SIGHUP', () => shutdown('SIGHUP', 129))\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-fault-broken-pipe",
+      "rule": "an uncaught broken pipe is no clean end",
+      "file": "server.ts",
+      "find": "      if (isBrokenPipe(reason)) {\n        shutdown('broken-pipe', 0)",
+      "replace": "      if (isBrokenPipe(reason)) {\n        shutdown('stdout-epipe', 0)",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "describe-broken-pipe",
+      "rule": "a broken pipe elsewhere says so",
+      "file": "lib/process-lifecycle.ts",
+      "find": "    case 'broken-pipe':\n",
+      "replace": "",
+      "tests": [
+        "test/process-lifecycle.test.ts"
+      ]
+    },
+    {
+      "id": "describe-sighup",
+      "rule": "a hangup says the terminal went away",
+      "file": "lib/process-lifecycle.ts",
+      "find": "(the session\\'s terminal went away)",
+      "replace": "(hangup)",
+      "tests": [
+        "test/process-lifecycle.test.ts"
+      ]
+    },
+    {
+      "id": "shim-sighup",
+      "rule": "the launch shim forwards a hangup",
+      "file": "bin/bgos-launch.mjs",
+      "find": "        forward('SIGHUP')\n",
+      "replace": "",
+      "tests": [
+        "test/bgos-launch.test.ts"
+      ]
+    },
+    {
+      "id": "shim-sighup-not-windows",
+      "rule": "the launch shim never signals a hangup on Windows",
+      "file": "bin/bgos-launch.mjs",
+      "find": "    if (platform !== 'win32') {\n      onSignal('SIGHUP'",
+      "replace": "    if (true) {\n      onSignal('SIGHUP'",
+      "tests": [
+        "test/bgos-launch.test.ts"
+      ]
+    },
+    {
+      "id": "dur-unattended-recheck",
+      "rule": "a refused authority is asked again after an hour",
+      "file": "lib/idle-update.mjs",
+      "find": "  unattendedRecheckMs: 60 * MIN,",
+      "replace": "  unattendedRecheckMs: 6 * MIN,",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-refusal-recheck",
+      "rule": "a refused authority is cached only until its recheck",
+      "file": "lib/idle-update.mjs",
+      "find": "value: proven, until: proven ? Number.POSITIVE_INFINITY : now() + d.unattendedRecheckMs }",
+      "replace": "value: proven, until: Number.POSITIVE_INFINITY }",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-refusal-kept",
+      "rule": "a refused authority is not asked again before its recheck",
+      "file": "lib/idle-update.mjs",
+      "find": "const hit = unattendedCache?.key === key && now() < unattendedCache.until",
+      "replace": "const hit = unattendedCache?.key === key && false",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "wire-signal-on",
+      "rule": "SIGINT and SIGTERM stay handled through the shutdown",
+      "file": "server.ts",
+      "find": "    process.on(signal, () => shutdown(signal, signal === 'SIGINT' ? 130 : 143))",
+      "replace": "    process.once(signal, () => shutdown(signal, signal === 'SIGINT' ? 130 : 143))",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-own-pipe-reader",
+      "rule": "only the reader gone on our own pipes is clean",
+      "file": "server.ts",
+      "find": "      if (isReaderGone(err)) shutdown('stdout-epipe', 0)",
+      "replace": "      if (isBrokenPipe(err)) shutdown('stdout-epipe', 0)",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-own-pipe-other",
+      "rule": "any other broken pipe on our own pipes is not",
+      "file": "server.ts",
+      "find": "      else if (isBrokenPipe(err)) shutdown('broken-pipe', 0)",
+      "replace": "      else if (isBrokenPipe(err)) shutdown('stdout-epipe', 0)",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "reader-gone-code",
+      "rule": "the reader gone is an EPIPE code, not any stream fault",
+      "file": "lib/process-lifecycle.ts",
+      "find": "  if ((err as { code?: unknown }).code === 'EPIPE') return true",
+      "replace": "  if ((err as { code?: unknown }).code !== undefined) return true",
+      "tests": [
+        "test/process-lifecycle.test.ts"
+      ]
+    },
+    {
+      "id": "reader-gone-message",
+      "rule": "a code-less EPIPE (bun) is the reader gone",
+      "file": "lib/process-lifecycle.ts",
+      "find": "  if ((err as { code?: unknown }).code === 'EPIPE') return true\n  const message = (err as { message?: unknown }).message\n  return typeof message === 'string' && /\\bEPIPE\\b/.test(message)",
+      "replace": "  if ((err as { code?: unknown }).code === 'EPIPE') return true\n  const message = (err as { message?: unknown }).message\n  return false && typeof message === 'string'",
+      "tests": [
+        "test/process-lifecycle.test.ts"
+      ]
+    },
+    {
+      "id": "shim-hangup-kill",
+      "rule": "a child still running after a hangup is killed",
+      "file": "bin/bgos-launch.mjs",
+      "find": "          if (!exited) forward('SIGKILL')",
+      "replace": "          if (!exited) forward('SIGTERM')",
+      "tests": [
+        "test/bgos-launch.test.ts"
+      ]
+    },
+    {
+      "id": "shim-hangup-exited",
+      "rule": "a child already gone is never killed",
+      "file": "bin/bgos-launch.mjs",
+      "find": "      exited = true\n",
+      "replace": "",
+      "tests": [
+        "test/bgos-launch.test.ts"
+      ]
+    },
+    {
+      "id": "shim-hangup-ms",
+      "rule": "the backstop waits 10 s",
+      "file": "bin/bgos-launch.mjs",
+      "find": "export const HANGUP_KILL_MS = 10_000",
+      "replace": "export const HANGUP_KILL_MS = 60_000",
+      "tests": [
+        "test/bgos-launch.test.ts"
+      ]
+    },
+    {
+      "id": "shim-hangup-unref",
+      "rule": "the backstop never holds the shim open",
+      "file": "bin/bgos-launch.mjs",
+      "find": "        }, HANGUP_KILL_MS).unref?.()",
+      "replace": "        }, HANGUP_KILL_MS)",
+      "tests": [
+        "test/bgos-launch.test.ts"
+      ]
+    },
+    {
+      "id": "settle-ended-any-age",
+      "rule": "a clean end counts whatever its age",
+      "file": "lib/idle-update.mjs",
+      "find": "    const endedCleanly = typeof record.endedAt === 'string' && Number.isFinite(Date.parse(record.endedAt))",
+      "replace": "    const endedCleanly = typeof record.endedAt === 'string' && Math.abs(now - Date.parse(record.endedAt)) < 2 * 60_000",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "settle-ended-valid",
+      "rule": "an unreadable end time is no clean end",
+      "file": "lib/idle-update.mjs",
+      "find": "    const endedCleanly = typeof record.endedAt === 'string' && Number.isFinite(Date.parse(record.endedAt))",
+      "replace": "    const endedCleanly = typeof record.endedAt === 'string'",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "settle-lost-drops-end",
+      "rule": "a new session drops the clean end of the boot before it",
+      "file": "lib/idle-update.mjs",
+      "find": "liveAt: null, endedAt: null, contextLost: true,",
+      "replace": "liveAt: null, contextLost: true,",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "superseded-nonce",
+      "rule": "another attempt supersedes a record",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (onDisk.nonce !== mine.nonce) return true\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "superseded-later",
+      "rule": "a later boot's settle supersedes a record",
+      "file": "lib/idle-update.mjs",
+      "find": "  return Number.isFinite(theirs) && (!Number.isFinite(ours) || theirs > ours)",
+      "replace": "  return false",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "superseded-not-older",
+      "rule": "an older state of its own attempt does not supersede it",
+      "file": "lib/idle-update.mjs",
+      "find": "  return Number.isFinite(theirs) && (!Number.isFinite(ours) || theirs > ours)",
+      "replace": "  return Number.isFinite(theirs) && (!Number.isFinite(ours) || theirs !== ours)",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "superseded-refused-write",
+      "rule": "a disk that refused the settle holds no arrival and supersedes nothing",
+      "file": "lib/idle-update.mjs",
+      "find": "  return Number.isFinite(theirs) && (!Number.isFinite(ours) || theirs > ours)",
+      "replace": "  return !Number.isFinite(theirs) || !Number.isFinite(ours) || theirs > ours",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "note-ended-superseded",
+      "rule": "a clean end never writes over a superseded record",
+      "file": "lib/idle-update.mjs",
+      "find": "        if (!supersededOnDisk()) settleTo({ ...record, endedAt: iso(now()) })",
+      "replace": "        settleTo({ ...record, endedAt: iso(now()) })",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "reader-gone-code-only",
+      "rule": "an EPIPE code alone is the reader gone",
+      "file": "lib/process-lifecycle.ts",
+      "find": "  if ((err as { code?: unknown }).code === 'EPIPE') return true\n",
+      "replace": "",
+      "tests": [
+        "test/process-lifecycle.test.ts"
+      ]
+    },
+    {
+      "id": "settle-lost-drops-live",
+      "rule": "a new session drops the live proof of the boot before it",
+      "file": "lib/idle-update.mjs",
+      "find": "arrivedAt: iso, liveAt: null, endedAt: null, contextLost: true,",
+      "replace": "arrivedAt: iso, endedAt: null, contextLost: true,",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "validate-adopt",
+      "rule": "the same attempt with no verdict is validated on the newer record",
+      "file": "lib/idle-update.mjs",
+      "find": "            if (newer && newer.nonce === record.nonce && newer.state === 'arrived' && !theirs.some((a) => ROLLBACK_OUTCOMES.has(a?.outcome))) {",
+      "replace": "            if (false) {",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "validate-adopt-same-attempt",
+      "rule": "only the same attempt is adopted",
+      "file": "lib/idle-update.mjs",
+      "find": "            if (newer && newer.nonce === record.nonce && newer.state === 'arrived' && !theirs.some((a) => ROLLBACK_OUTCOMES.has(a?.outcome))) {",
+      "replace": "            if (newer && newer.state === 'arrived' && !theirs.some((a) => ROLLBACK_OUTCOMES.has(a?.outcome))) {",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "validate-adopt-no-verdict",
+      "rule": "an attempt with its verdict is never adopted",
+      "file": "lib/idle-update.mjs",
+      "find": "            if (newer && newer.nonce === record.nonce && newer.state === 'arrived' && !theirs.some((a) => ROLLBACK_OUTCOMES.has(a?.outcome))) {",
+      "replace": "            if (newer && newer.nonce === record.nonce && !theirs.some((a) => ROLLBACK_OUTCOMES.has(a?.outcome))) {",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "validate-adopt-record",
+      "rule": "an adopted record is the one written on",
+      "file": "lib/idle-update.mjs",
+      "find": "              record = newer.liveAt || newer.endedAt ?",
+      "replace": "              newer.liveAt || newer.endedAt ?",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "validate-stand-down",
+      "rule": "another attempt or a verdict on disk: stands down",
+      "file": "lib/idle-update.mjs",
+      "find": "            } else if (newer) {\n              log(",
+      "replace": "            } else if (false) {\n              log(",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "adopt-not-rolling-back",
+      "rule": "a failed boot or a missed deadline on disk is a verdict: stands down",
+      "file": "lib/idle-update.mjs",
+      "find": " && !theirs.some((a) => ROLLBACK_OUTCOMES.has(a?.outcome))) {",
+      "replace": ") {",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "adopt-outcome-second-boot",
+      "rule": "a failed boot on disk is a verdict",
+      "file": "lib/idle-update.mjs",
+      "find": "const ROLLBACK_OUTCOMES = new Set(['second_boot', 'deadline'])",
+      "replace": "const ROLLBACK_OUTCOMES = new Set(['deadline'])",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "adopt-outcome-deadline",
+      "rule": "a missed deadline on disk is a verdict",
+      "file": "lib/idle-update.mjs",
+      "find": "const ROLLBACK_OUTCOMES = new Set(['second_boot', 'deadline'])",
+      "replace": "const ROLLBACK_OUTCOMES = new Set(['second_boot'])",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "adopt-outcome-theirs",
+      "rule": "only a failure attempt the other boot appended is a rollback under way",
+      "file": "lib/idle-update.mjs",
+      "find": "const theirs = newer?.attempts.slice(record.attempts.length) ?? []",
+      "replace": "const theirs = newer?.attempts ?? []",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "adopt-suspended",
+      "rule": "adopting: the time before the other boot's arrival is not taken off again",
+      "file": "lib/idle-update.mjs",
+      "find": "              suspendedMs = Math.max(0, now() - Date.parse(newer.arrivedAt))\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "adopt-suspended-since",
+      "rule": "adopting: the time since that arrival is not counted",
+      "file": "lib/idle-update.mjs",
+      "find": "suspendedMs = Math.max(0, now() - Date.parse(newer.arrivedAt))",
+      "replace": "suspendedMs = 0",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "adopt-unreachable",
+      "rule": "adopting: an outage before the other boot's arrival is not taken off again",
+      "file": "lib/idle-update.mjs",
+      "find": "              unreachableMs = 0\n              liveSinceMs = null\n",
+      "replace": "              liveSinceMs = null\n",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "adopt-drops-proofs",
+      "rule": "adopting: the other boot's clean end and live proof are dropped",
+      "file": "lib/idle-update.mjs",
+      "find": "record = newer.liveAt || newer.endedAt ? settleTo({ ...newer, liveAt: null, endedAt: null }) : newer",
+      "replace": "record = newer",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "adopt-drops-live",
+      "rule": "adopting: the other boot's live proof is dropped",
+      "file": "lib/idle-update.mjs",
+      "find": "settleTo({ ...newer, liveAt: null, endedAt: null })",
+      "replace": "settleTo({ ...newer, endedAt: null })",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "adopt-drops-ended",
+      "rule": "adopting: the other boot's clean end is dropped",
+      "file": "lib/idle-update.mjs",
+      "find": "settleTo({ ...newer, liveAt: null, endedAt: null })",
+      "replace": "settleTo({ ...newer, liveAt: null })",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "superseded-verdict",
+      "rule": "a verdict another daemon gave since supersedes",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (VERDICT_STATES.has(onDisk.state) && onDisk.state !== mine.state) return true\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "superseded-verdict-not-own",
+      "rule": "its own verdict does not supersede",
+      "file": "lib/idle-update.mjs",
+      "find": "VERDICT_STATES.has(onDisk.state) && onDisk.state !== mine.state",
+      "replace": "VERDICT_STATES.has(onDisk.state)",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "superseded-attempt-appended",
+      "rule": "a failed attempt appended since supersedes",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (Array.isArray(onDisk.attempts) && Array.isArray(mine.attempts) && onDisk.attempts.length > mine.attempts.length) return true\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "superseded-attempts-more",
+      "rule": "fewer attempts on disk (a refused write) do not supersede",
+      "file": "lib/idle-update.mjs",
+      "find": "onDisk.attempts.length > mine.attempts.length",
+      "replace": "onDisk.attempts.length !== mine.attempts.length",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "verdict-state-validated",
+      "rule": "validated on disk is a verdict",
+      "file": "lib/idle-update.mjs",
+      "find": "const VERDICT_STATES = new Set(['validated', 'failed', 'came_back_old', 'rolled_back', 'rollback_failed'])",
+      "replace": "const VERDICT_STATES = new Set(['failed', 'came_back_old', 'rolled_back', 'rollback_failed'])",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "verdict-state-failed",
+      "rule": "failed on disk is a verdict",
+      "file": "lib/idle-update.mjs",
+      "find": "const VERDICT_STATES = new Set(['validated', 'failed', 'came_back_old', 'rolled_back', 'rollback_failed'])",
+      "replace": "const VERDICT_STATES = new Set(['validated', 'came_back_old', 'rolled_back', 'rollback_failed'])",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "verdict-state-came-back-old",
+      "rule": "came_back_old on disk is a verdict",
+      "file": "lib/idle-update.mjs",
+      "find": "const VERDICT_STATES = new Set(['validated', 'failed', 'came_back_old', 'rolled_back', 'rollback_failed'])",
+      "replace": "const VERDICT_STATES = new Set(['validated', 'failed', 'rolled_back', 'rollback_failed'])",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "verdict-state-rolled-back",
+      "rule": "rolled_back on disk is a verdict",
+      "file": "lib/idle-update.mjs",
+      "find": "const VERDICT_STATES = new Set(['validated', 'failed', 'came_back_old', 'rolled_back', 'rollback_failed'])",
+      "replace": "const VERDICT_STATES = new Set(['validated', 'failed', 'came_back_old', 'rollback_failed'])",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "verdict-state-rollback-failed",
+      "rule": "rollback_failed on disk is a verdict",
+      "file": "lib/idle-update.mjs",
+      "find": "const VERDICT_STATES = new Set(['validated', 'failed', 'came_back_old', 'rolled_back', 'rollback_failed'])",
+      "replace": "const VERDICT_STATES = new Set(['validated', 'failed', 'came_back_old', 'rolled_back'])",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "note-ended-holder",
+      "rule": "only the lock holder writes a clean end",
+      "file": "lib/idle-update.mjs",
+      "find": "      if (read(deps.holdsLock, false) !== true) return\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "adopt-live-since",
+      "rule": "adopting: the hold starts again from the adopted arrival",
+      "file": "lib/idle-update.mjs",
+      "find": "              liveSinceMs = null\n              record = newer.liveAt",
+      "replace": "              record = newer.liveAt",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "wire-holds-lock",
+      "rule": "the clean end asks for the lock without the shutdown",
+      "file": "server.ts",
+      "find": "      holdsLock: () => lockHeld,\n",
+      "replace": "      holdsLock: () => lockHeld && !shuttingDown,\n",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
       ]
     }
   ]

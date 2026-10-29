@@ -865,6 +865,10 @@ test('a clean end never overwrites a record another boot settled since, or anoth
   const other = onFreshSession(agent(disk, { running: '0.81.0', staged: null }))
   assert.equal(await other.c.tick(), 'validating')
   const settled = disk.fs.readFile(old.record)
+  // The lock comes back to this daemon, and it ends before its next poll: it holds the lock, so only the record on
+  // disk stops it.
+  other.s.active = false
+  old.s.active = true
   old.c.noteEnded(true)
   assert.equal(disk.fs.readFile(old.record), settled, 'a later boot\'s record is kept')
   // A newer attempt on disk (another version) is kept too.
@@ -877,8 +881,9 @@ test('a clean end never overwrites a record another boot settled since, or anoth
 })
 
 /**
- * D1 validating (with the backend `down` for a while first), then passive (for `away` before the other boot) while another session of the agent settles the same
- * attempt on its own boot (and, with `meanwhile`, proves what it can) and goes away.
+ * D1 validating (with the backend `down` for a while first), then passive (for `away` before the other boot) while
+ * another session of the agent settles the same attempt on its own boot (and, with `meanwhile`, proves what it can)
+ * and goes away.
  */
 async function lockMovedAndBack({ away = 10 * SEC, down = 0, meanwhile }: { away?: number; down?: number; meanwhile?: (other: ReturnType<typeof agent>, disk: ReturnType<typeof memDisk>) => Promise<void> } = {}) {
   const disk = await afterAsk()
