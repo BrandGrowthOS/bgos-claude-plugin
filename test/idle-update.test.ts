@@ -499,7 +499,7 @@ test('boot settle: a build that already proved live may boot once more (a person
   assert.equal(never.event, 'second_boot', 'a build that never proved live gets no second chance')
 })
 
-test('boot settle: a boot whose predecessor ended cleanly moments ago (its claude went away: hoai relaunching a slow start, a person) is a re-arrival, once', () => {
+test('boot settle: a boot whose predecessor ended cleanly (its claude went away: hoai relaunching a slow start, a person, a computer shut down overnight) is a re-arrival, once', () => {
   const m = need()
   const base = { state: 'arrived', lockBoots: 1, arrivedAt: new Date(NOW - 4 * MIN).toISOString() }
   const ended = m.settleRecordAtBoot(record({ ...base, endedAt: new Date(NOW - 40 * SEC).toISOString() }), { runningVersion: '0.81.0', pin: 'pin-1', now: NOW })
@@ -508,8 +508,9 @@ test('boot settle: a boot whose predecessor ended cleanly moments ago (its claud
   assert.equal(ended.record.endedAt, null)
   assert.equal(ended.record.lockBoots, 2)
   assert.equal(ended.record.arrivedAt, new Date(NOW).toISOString())
-  const long = m.settleRecordAtBoot(record({ ...base, endedAt: new Date(NOW - 3 * MIN).toISOString() }), { runningVersion: '0.81.0', pin: 'pin-1', now: NOW })
-  assert.equal(long.event, 'second_boot', 'an end long before this boot says nothing about what started it')
+  // A clean stop is a clean stop whenever the next boot comes: the computer shut down, the agent started next morning.
+  const long = m.settleRecordAtBoot(record({ ...base, endedAt: new Date(NOW - 9 * HOUR).toISOString() }), { runningVersion: '0.81.0', pin: 'pin-1', now: NOW })
+  assert.equal(long.event, 'arrived_again', 'a clean end hours before this boot')
   const twice = m.settleRecordAtBoot({ ...ended.record, endedAt: new Date(NOW + 30 * SEC).toISOString() }, { runningVersion: '0.81.0', pin: 'pin-1', now: NOW + MIN })
   assert.equal(twice.event, 'second_boot', 'one re-arrival per record, never a loop')
 })
@@ -647,15 +648,14 @@ test('validation: the deadline counts from this boot\'s startup complete; a star
   assert.equal(m.decideValidation(proof({ ...never, arrivedAtMs: NOW - 16 * MIN, backendUnreachable: true })), 'pending')
 })
 
-test('durations: a startup bound, a grace for a boot that ended cleanly, a bound on the rollback restart\'s waits, a cap on an outage', () => {
+test('durations: a startup bound, no age bound on a clean end, a bound on the rollback restart\'s waits, a cap on an outage', () => {
   const m = need()
   assert.equal(m.DEFAULT_DURATIONS.startupDeadlineMs, 15 * MIN)
-  assert.equal(m.DEFAULT_DURATIONS.endedGraceMs, 2 * MIN)
+  assert.equal('endedGraceMs' in m.DEFAULT_DURATIONS, false)
   assert.equal('aliveGraceMs' in m.DEFAULT_DURATIONS, false)
   assert.equal(m.DEFAULT_DURATIONS.rollbackProofGraceMs, 10 * MIN)
   assert.equal(m.DEFAULT_DURATIONS.unreachableCapMs, 60 * MIN)
   assert.equal(m.DEFAULT_DURATIONS.unattendedRecheckMs, 60 * MIN, 'a refused launch proof is read again an hour on')
-  assert.equal(m.scaledDurations(60).endedGraceMs, 90 * SEC, 'a relaunch takes real time whatever the scale')
 })
 
 test('a clean end is its claude going away: stdin ended or closed, a signal (a hangup too), or a broken pipe on its own output', () => {

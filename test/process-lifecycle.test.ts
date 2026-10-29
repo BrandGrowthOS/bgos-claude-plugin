@@ -25,6 +25,7 @@ import {
   stdinHasEnded,
   watchStdinEof,
   isBrokenPipe,
+  isReaderGone,
   shouldShutdownOnStdin,
   type ShutdownCause,
 } from '../lib/process-lifecycle.ts'
@@ -65,7 +66,7 @@ test('every shutdown names its cause, so a silent exit is never a mystery', () =
 test('a hangup and a broken pipe on some other stream name their causes too', () => {
   const causes: ShutdownCause[] = ['SIGHUP', 'broken-pipe', 'stdout-epipe']
   for (const cause of causes) assert.match(describeShutdownCause(cause), /shutting down/i, cause)
-  assert.match(describeShutdownCause('SIGHUP'), /SIGHUP/)
+  assert.match(describeShutdownCause('SIGHUP'), /SIGHUP.*terminal went away/)
   assert.match(describeShutdownCause('broken-pipe'), /stream/i)
 })
 
@@ -277,4 +278,14 @@ test('boot enrolment into marketplace auto-update respects the same brakes as ev
   assert.match(before, /isAutoUpdateEnabled\(process\.env\.BGOS_AUTO_UPDATE\)/, 'must honour the kill switch')
   assert.match(before, /readRollbackLatch\(/, 'must honour a latched rollback')
   assert.match(before, /updatesAllowed/, 'and the guard must actually gate the call')
+})
+
+test('the reader gone is an EPIPE only: a write after end or a destroyed stream is this process\'s own doing', () => {
+  assert.equal(isReaderGone(Object.assign(new Error('write EPIPE'), { code: 'EPIPE' })), true)
+  assert.equal(isReaderGone(new Error('Broken pipe: EPIPE')), true, 'a code-less EPIPE (bun)')
+  for (const code of ['ERR_STREAM_WRITE_AFTER_END', 'ERR_STREAM_DESTROYED', 'ECONNRESET']) {
+    assert.equal(isReaderGone(Object.assign(new Error(code), { code })), false, code)
+  }
+  assert.equal(isReaderGone(null), false)
+  assert.equal(isReaderGone('EPIPE'), false)
 })

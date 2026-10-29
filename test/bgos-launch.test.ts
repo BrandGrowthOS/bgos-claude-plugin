@@ -335,6 +335,41 @@ test('main: forwards a hangup to the child off Windows, and never on Windows (a 
   }
 })
 
+test('main: a child still running 10 s after a hangup is killed, so a stuck shutdown never strands the shim and bun', async () => {
+  for (const exitsFirst of [false, true]) {
+    const child = new FakeChild()
+    const handlers: Record<string, () => void> = {}
+    const timers: Array<{ fn: () => void; ms: number; unrefed: boolean }> = []
+    const done = main(['/opt/plugin/wrapper.mjs'], {
+      env: { PATH: '/usr/bin' },
+      home: '/home/kc',
+      platform: 'linux',
+      exists: existsIn(['/usr/bin/bun']),
+      spawnImpl: (() => child) as never,
+      writeErr: () => {},
+      onSignal: (signal: string, handler: () => void) => {
+        handlers[signal] = handler
+      },
+      setTimer: (fn: () => void, ms: number) => {
+        const timer = { fn, ms, unrefed: false }
+        timers.push(timer)
+        return { unref: () => { timer.unrefed = true } }
+      },
+    })
+    handlers.SIGTERM()
+    assert.equal(timers.length, 0, 'a plain stop sets no backstop')
+    handlers.SIGHUP()
+    assert.equal(timers.length, 1)
+    assert.equal(timers[0].ms, 10_000)
+    assert.equal(timers[0].unrefed, true, 'the backstop never holds the shim open')
+    if (exitsFirst) child.emit('exit', 129, null)
+    timers[0].fn()
+    assert.deepEqual(child.killed, exitsFirst ? ['SIGTERM', 'SIGHUP'] : ['SIGTERM', 'SIGHUP', 'SIGKILL'], `exitsFirst=${exitsFirst}`)
+    if (!exitsFirst) child.emit('exit', null, 'SIGKILL')
+    assert.equal(await done, exitsFirst ? 129 : exitCodeForChild(null, 'SIGKILL'))
+  }
+})
+
 test('main: a spawn error surfaces the hint, not a bare stack, and exits 127', async () => {
   const child = new FakeChild()
   let err = ''

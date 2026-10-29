@@ -267,7 +267,9 @@ test('a broken pipe on the daemon\'s own output is its reader gone (a clean end)
   const own = server.indexOf('  for (const pipe of [process.stdout, process.stderr]) {')
   assert.ok(own >= 0, 'no error listener on the daemon\'s own pipes')
   const body = server.slice(own, server.indexOf('\n  }\n', own))
-  assert.match(body, /if \(isBrokenPipe\(err\)\) shutdown\('stdout-epipe', 0\)/)
+  // Only the reader gone (EPIPE) is clean; a write after end or a destroyed stream there is this process's own doing.
+  assert.match(body, /if \(isReaderGone\(err\)\) shutdown\('stdout-epipe', 0\)/)
+  assert.match(body, /else if \(isBrokenPipe\(err\)\) shutdown\('broken-pipe', 0\)/)
   assert.match(body, /else throw err/)
   for (const head of ["process.on('unhandledRejection', (reason) => {", "process.on('uncaughtException', (err) => {"]) {
     const at = server.indexOf(head)
@@ -276,4 +278,9 @@ test('a broken pipe on the daemon\'s own output is its reader gone (a clean end)
     assert.match(handler, /shutdown\('broken-pipe', 0\)/, head)
     assert.doesNotMatch(handler, /stdout-epipe/, head)
   }
+})
+
+test('every shutdown signal stays handled through the shutdown: a second SIGTERM (a systemd stop plus the shim\'s forward) never kills it midway', () => {
+  assert.ok(server.includes("for (const signal of ['SIGINT', 'SIGTERM'] as const) {\n    process.on(signal, () => shutdown(signal, signal === 'SIGINT' ? 130 : 143))"), 'SIGINT and SIGTERM with process.on')
+  assert.doesNotMatch(server, /process\.once\((signal|'SIG[A-Z]+')/)
 })
