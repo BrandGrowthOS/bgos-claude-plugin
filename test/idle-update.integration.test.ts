@@ -118,6 +118,7 @@ function agent(w: ReturnType<typeof world>, id: number, opts: { running?: string
     autoUpdateEnabled: () => true,
     stagedVersion: () => opts.staged ?? '0.81.0',
     active: () => true,
+    holdsLock: () => true,
     watcherSweepActive: () => host.readWatcherSweepActive({ home: w.home, fs, now: w.clock.now, freshMs: m.DEFAULT_DURATIONS.watcherFreshMs }),
     authorityKind: () => authority.kind,
     serviceOwnsUs: () => false,

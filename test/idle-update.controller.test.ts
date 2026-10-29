@@ -168,6 +168,7 @@ function agent(
     autoUpdateEnabled: () => s.autoUpdate,
     stagedVersion: () => s.staged,
     active: () => s.active,
+    holdsLock: () => s.active,
     watcherSweepActive: () => s.watcher,
     authorityKind: () => s.authority,
     serviceOwnsUs: () => s.ownsUs,
@@ -996,6 +997,71 @@ test('the other boot, alive and holding the lock again after this daemon gave th
   }
   assert.equal(disk.fs.readFile(old.record), verdict, 'the verdict stands')
   assert.equal(other.rollbackInstalls.length, 0)
+})
+
+test('a clean end from a daemon that no longer holds the lock writes nothing, after another daemon adopted the attempt', async () => {
+  const { disk, old, other } = await lockMovedAndBack()
+  other.s.active = false
+  assert.equal(await old.c.tick(), 'validating')
+  const adopted = disk.fs.readFile(old.record)
+  other.c.noteEnded(true)
+  assert.equal(disk.fs.readFile(old.record), adopted, 'the record is the lock holder\'s to write')
+})
+
+test('a daemon whose own failed boot is the last attempt adopts a later boot\'s settle of it: no rollback ran, so the verdict is still its to give', async () => {
+  const disk = await afterAsk()
+  const first = agent(disk, { running: '0.81.0', staged: null })
+  assert.equal(await first.c.tick(), 'validating')
+  // That daemon dies with no end of its own; the next boot is a failed one, under an expired login: no rollback.
+  disk.clock.now += 3 * MIN
+  const old = agent(disk, { running: '0.81.0', staged: null })
+  old.s.loginExpired = true
+  assert.equal(await old.c.tick(), 'validating')
+  assert.equal(readJson(disk, old.record).attempts.at(-1).outcome, 'second_boot')
+  assert.equal(old.rollbackInstalls.length, 0)
+  old.s.loginExpired = false
+  disk.clock.now += 20 * SEC
+  old.s.heartbeatOkAtMs = disk.clock.now
+  old.s.beaconAtMs = disk.clock.now
+  assert.equal(await old.c.tick(), 'validating')
+  assert.ok(readJson(disk, old.record).liveAt)
+  old.s.active = false
+  disk.clock.now += 10 * SEC
+  assert.equal(await old.c.tick(), 'passive')
+  // Another session on the same conversation re-arrives (it appends no attempt) and goes away.
+  disk.clock.now += 10 * SEC
+  const other = agent(disk, { running: '0.81.0', staged: null })
+  assert.equal(await other.c.tick(), 'validating')
+  assert.equal(readJson(disk, other.record).attempts.at(-1).outcome, 'second_boot')
+  other.s.active = false
+  old.s.active = true
+  disk.clock.now += MIN
+  assert.equal(await old.c.tick(), 'validating', 'its own failed boot is no rollback under way')
+})
+
+test('a lock that moved and came back between two polls still lets a live build hold from the adopted arrival', async () => {
+  const disk = await afterAsk()
+  const old = agent(disk, { running: '0.81.0', staged: null })
+  const beat = () => {
+    old.s.heartbeatOkAtMs = disk.clock.now
+    old.s.beaconAtMs = disk.clock.now
+  }
+  assert.equal(await old.c.tick(), 'validating')
+  disk.clock.now += 20 * SEC
+  beat()
+  assert.equal(await old.c.tick(), 'validating', 'live: its hold has started')
+  // Between two of its polls another session takes the lock, settles the attempt on its own boot, and goes away.
+  disk.clock.now += 10 * SEC
+  const other = onFreshSession(agent(disk, { running: '0.81.0', staged: null }))
+  assert.equal(await other.c.tick(), 'validating')
+  other.s.active = false
+  let result = 'validating'
+  for (let i = 0; i < 20 && result === 'validating'; i += 1) {
+    disk.clock.now += 30 * SEC
+    beat()
+    result = await old.c.tick()
+  }
+  assert.equal(result, 'validated', 'the hold starts again from the adopted arrival')
 })
 
 test('a daemon that holds the lock again stands down, writing nothing, when the record on disk is another attempt or already has its verdict', async () => {

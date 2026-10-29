@@ -70,6 +70,8 @@ test('an API key session never arms it: the heartbeat that validates a new build
 test('it acts only as the pairing lock holder, never once shutdown has begun, on the daemon\'s own clock and boot', () => {
   const b = block()
   assert.match(b, /active: \(\) => lockHeld && !shuttingDown,/)
+  // The clean end is written during the shutdown, so whether this daemon holds the lock is asked without it.
+  assert.match(b, /holdsLock: \(\) => lockHeld,/)
   assert.match(b, /bootAtMs: DAEMON_START_MS,/)
   assert.match(b, /now: Date\.now,/)
   assert.match(b, /ownPid: process\.pid,/)
