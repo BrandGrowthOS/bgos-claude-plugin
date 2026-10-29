@@ -131,14 +131,71 @@ const CONTENT_TYPES_MAX = 256 * 1024
 const DOCX_MAIN = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml'
 const XLSX_MAIN = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml'
 
+/**
+ * Email files review round 13: the longest entry name read, in bytes. A longer one refuses the file before it is
+ * decoded: no Office part name comes near it, and the type check runs on the main thread (an inbound download's and
+ * an outbound file's), where 1990 names of 12000 slashes, 23 MB of directory, stalled it for 240 to 370 ms.
+ */
+const ZIP_ENTRY_NAME_MAX = 1024
+
 /** An entry name that could leave the archive's root, or hide what it is. */
 function unsafeEntryName(name: string): boolean {
   return (
     name === '' ||
     name.startsWith('/') ||
     /[\\:\u0000-\u001F\u007F]/.test(name) ||
-    name.split('/').some((seg) => seg === '..' || seg === '.')
+    hasDotSegment(name)
   )
+}
+
+/** Round 13: whether a '/' separated name has a '.' or '..' segment, by an indexOf walk (split made every segment). */
+function hasDotSegment(name: string): boolean {
+  for (let at = 0; at <= name.length; ) {
+    const slash = name.indexOf('/', at)
+    const end = slash < 0 ? name.length : slash
+    const length = end - at
+    if ((length === 1 || length === 2) && name.charCodeAt(at) === 46 && name.charCodeAt(end - 1) === 46) return true
+    at = end + 1
+  }
+  return false
+}
+
+/**
+ * Email files review round 8: each <Override tag of [Content_Types].xml, found by indexOf: '<Override' (not a longer
+ * name), then its first '>' outside a quoted attribute value; the walk stops at a tag with no end. Each character is
+ * read a fixed number of times. The regex /<Override\b[^>]*>/g read to the end of the text again from every
+ * '<Override' with no '>' after it, which is quadratic, on the main thread (the type check runs there, for an inbound
+ * download and for an outbound file).
+ */
+function* overrideTags(xml: string): Generator<string> {
+  const open = '<Override'
+  let at = 0
+  for (;;) {
+    const lt = xml.indexOf(open, at)
+    if (lt < 0) return
+    const after = lt + open.length
+    // \b after Override: <OverrideX is another element.
+    if (after < xml.length && /\w/.test(xml[after]!)) {
+      at = after
+      continue
+    }
+    let quote = ''
+    let gt = -1
+    for (let k = after; k < xml.length; k++) {
+      const ch = xml[k]!
+      if (quote !== '') {
+        if (ch === quote) quote = ''
+      } else if (ch === '"' || ch === "'") {
+        quote = ch
+      } else if (ch === '>') {
+        gt = k
+        break
+      }
+    }
+    if (gt < 0) return
+    yield xml.slice(lt, gt + 1)
+    at = gt + 1
+  }
 }
 
 /**
@@ -179,6 +236,7 @@ function officeTypeOf(bytes: Uint8Array): 'docx' | 'xlsx' | null {
     const extraLength = view.getUint16(at + 30, true)
     const commentLength = view.getUint16(at + 32, true)
     const local = view.getUint32(at + 42, true)
+    if (nameLength > ZIP_ENTRY_NAME_MAX) return null
     if (at + 46 + nameLength > end) return null
     const name = new TextDecoder('utf-8').decode(bytes.subarray(at + 46, at + 46 + nameLength))
     const folded = name.toLowerCase()
@@ -215,9 +273,9 @@ function officeTypeOf(bytes: Uint8Array): 'docx' | 'xlsx' | null {
   if (/macroEnabled|vbaProject|activeX/i.test(xml)) return null
   let docx = false
   let xlsx = false
-  for (const m of xml.matchAll(/<Override\b[^>]*>/g)) {
-    const part = /\bPartName="([^"]*)"/.exec(m[0])?.[1]
-    const type = /\bContentType="([^"]*)"/.exec(m[0])?.[1]
+  for (const tag of overrideTags(xml)) {
+    const part = /\bPartName="([^"]*)"/.exec(tag)?.[1]
+    const type = /\bContentType="([^"]*)"/.exec(tag)?.[1]
     if (part === '/word/document.xml' && type === DOCX_MAIN) docx = true
     if (part === '/xl/workbook.xml' && type === XLSX_MAIN) xlsx = true
   }

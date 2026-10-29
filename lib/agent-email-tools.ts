@@ -688,7 +688,7 @@ async function handleFilesCall(
   }
   const lexical = filesLexicalRefusal(name, paths)
   if (lexical) return fail(lexical)
-  const read = await (deps.readFiles ?? ((p) => readOutboundFiles(p)))(paths)
+  const read = await (deps.readFiles ?? ((p) => readOutboundFiles(p, { secrets: deps.secrets })))(paths)
   if (!read.ok) return fail(`${name} did not start: ${read.error} Nothing was saved or sent.`)
   const reason = { kind: basis.kind, id: basis.id }
   const ids: string[] = []

@@ -22,20 +22,54 @@
 //   4. a regular file, read through one open handle checked against the
 //      stat, at most 25 MB each and 25 MB in all, at most 10, and its bytes
 //      the type its name says, on the same safe list as an inbound file
-//      (lib/email-files.ts isType).
+//      (lib/email-files.ts isType); a text file whose header has a password
+//      column is a renamed password export, and one that holds a private key
+//      or an age key, a cookie file's header, this daemon's own credential,
+//      anything the secret scanner finds (lib/secret-scan.ts, the scan an
+//      email's words get) or a password written out anywhere in it is
+//      refused. Round 3: a Word file's words and an Excel file's shared
+//      strings get the same checks. A PDF's words are not read: a PDF is
+//      caught only by its name. Round 5: the password table check reads a
+//      Word or Excel file row by row (each Word table row, the first rows of
+//      each Excel sheet, inline strings too), as a text header is read.
+//      Round 4: a disk recovery key (BitLocker's eight groups of six digits,
+//      or "recovery key:" and a grouped value) and a run of 12 or more BIP39
+//      words (a wallet recovery phrase) are refused too, and the word rules
+//      of the secret list read only the path below the home folder.
+//      Round 7: that content stage (everything that reads a file's words)
+//      lives in lib/email-outbound-content.ts and runs in a worker thread
+//      that is terminated at OUTBOUND_CONTENT_DEADLINE_MS (5 seconds); late,
+//      broken or unreadable, the file is refused. Steps 1 to 3 and the size
+//      and type checks of step 4 stay on the main thread. Round 8: one long
+//      lived Worker, reused for every file and replaced only after a deadline,
+//      an error, an exit or a bad reply; the deadline is 5 seconds plus 1 per
+//      MB (at most 40); a path over 4096 characters is refused before any
+//      pattern reads it. Round 9: the Worker keeps its own budget and
+//      answers a slow file itself, the hard deadline ends after it, and at
+//      most OUTBOUND_CONTENT_WORKERS_MAX Workers start in the daemon's life.
 //
 // Every refusal is one plain sentence that names the file and says why. The
 // file system functions are injected (ctx.fs), so a test proves that a
 // network path met no file system call at all. The backend checks the type,
-// the size and the count again and scans every file (rule 3): this is the
-// first wall, not the only one.
+// the size and the count again and runs a virus scan (rule 3), which looks
+// for no password or key: for a secret, this file is the only wall.
 //
 // No em or en dashes in this file.
 
 import { realpath as realpathCallback } from 'node:fs'
 import { lstat as lstatPromise, open as openPromise, realpath as realpathPromise } from 'node:fs/promises'
 import { homedir } from 'node:os'
+import { Worker } from 'node:worker_threads'
 
+import {
+  CONTENT_VERDICT_KINDS,
+  FOREIGN_PASSWORD_WORDS,
+  OFFICE_TEXT_MAX,
+  PASS_OR_PIN,
+  SHORT_PASSWORD_WORDS,
+  type ContentType,
+  type ContentVerdict,
+} from './email-outbound-content.ts'
 import { isType, TYPE_OF_EXTENSION, type EmailFileType } from './email-files.ts'
 import { parsePreviewObject } from './email-send-approval.ts'
 import { lanePathIsSecret } from './hard-floor-lane.mjs'
@@ -53,8 +87,22 @@ const MB = 1024 * 1024
  * match refuses the file. lanePathIsSecret runs beside it and adds
  * .config/gcloud, .bgos-plugin-state, another person's lane and any `..` that
  * climbs out. One list, so a test can empty it and see the refusals go.
+ *
+ * Round 4: it has two halves. SECRET_PLACES (a key or cloud folder, a key
+ * file, a browser profile store, a keychain, ~/.claude, ~/.bgos-*) is read on
+ * the whole path. SECRET_WORDS (a word an owner puts in a name: key, seed,
+ * pass, wallet) is read only on the path below the owner's home folder when
+ * the file is inside it (secretWordsForm), so a home named after a person
+ * (C:\Users\John Key, /Users/amy.seed) does not refuse every file on the
+ * computer. Outside the home the whole path is read, as before.
  */
-export const OUTBOUND_SECRET_PATTERNS: readonly RegExp[] = Object.freeze([
+
+
+// Round 4: ONE vocabulary of password words (FOREIGN_PASSWORD_WORDS, SHORT_PASSWORD_WORDS, PASS_OR_PIN), read by the
+// name rules below and by the content checks; round 7 moved it to lib/email-outbound-content.ts with those checks.
+
+/** Where a secret lives, whatever the path above it: read on the whole path. */
+const SECRET_PLACES: readonly RegExp[] = [
   // .env, .env.local, .envrc: any segment.
   /(?:^|\/)\.env[^/]*(?:\/|$)/,
   // Key and cloud folders.
@@ -65,10 +113,10 @@ export const OUTBOUND_SECRET_PATTERNS: readonly RegExp[] = Object.freeze([
   /\.(?:pem|key|p12|pfx|ppk|kdbx|keystore|jks)$/,
   // id_rsa, id_ed25519, id_ecdsa.pub: anywhere, not only in .ssh.
   /(?:^|\/)id_[^/]*$/,
-  // credentials, credentials.csv, credentials.json.
-  /(?:^|\/)credentials[^/]*$/,
   // Password files of common tools.
   /(?:^|\/)\.(?:netrc|npmrc|pypirc|pgpass|git-credentials)$/,
+  // sops keeps its age key at ~/.config/sops/age/keys.txt, ~/Library/Application Support/sops/age and %AppData%\sops\age.
+  /(?:^|\/)(?:\.config|library\/application support|appdata\/roaming)\/sops(?:\/|$)/,
   // Browser profile stores: Chrome, Edge, Brave and Chromium keep every profile under "User Data" on Windows.
   /(?:^|\/)user data(?:\/|$)/,
   /(?:^|\/)firefox\/profiles(?:\/|$)/,
@@ -76,14 +124,118 @@ export const OUTBOUND_SECRET_PATTERNS: readonly RegExp[] = Object.freeze([
   /(?:^|\/)library\/application support\/(?:google\/chrome|microsoft edge|bravesoftware|chromium|firefox)(?:\/|$)/,
   /(?:^|\/)\.config\/(?:google-chrome|chromium|microsoft-edge|bravesoftware)(?:\/|$)/,
   /(?:^|\/)(?:login data|login data for account|cookies|cookies\.sqlite|key3\.db|key4\.db|logins\.json|signons\.sqlite|web data|local state)$/,
+  // Round 5: Opera's profile (AppData\Roaming\Opera Software), a snap or flatpak browser's (~/snap/firefox,
+  // ~/.var/app/org.mozilla.firefox, every flatpak app's data), and Safari's and macOS's cookie store.
+  /(?:^|\/)opera software(?:\/|$)/,
+  /(?:^|\/)snap\/(?:chromium|firefox)(?:\/|$)/,
+  /(?:^|\/)\.var\/app(?:\/|$)/,
+  /(?:^|\/)library\/safari(?:\/|$)/,
+  /(?:^|\/)library\/cookies(?:\/|$)/,
+  // Round 5: Windows' own key and credential stores (DPAPI master keys, the vault, saved credentials).
+  /(?:^|\/)appdata\/(?:local|roaming)\/microsoft\/(?:protect|vault|credentials)(?:\/|$)/,
+  // Round 5: shell history, where a typed password or token stays: PowerShell's ConsoleHost_history.txt and a
+  // *_history file (.bash_history, .zsh_history, .python_history).
+  /(?:^|\/)psreadline\/consolehost_history\.txt$/,
+  /(?:^|\/)[^/]*_history$/,
   // Keychains.
   /(?:^|\/)library\/keychains(?:\/|$)/,
   /\.keychain(?:-db)?(?:\/|$)/,
   // Claude's own folder and file (~/.claude, ~/.claude.json), and every HOAI state folder (~/.bgos-agent, which holds
   // the stranger's email files, and ~/.bgos-plugin-state, which holds the pairing).
   /(?:^|\/)\.claude[^/]*(?:\/|$)/,
-  /(?:^|\/)\.bgos-[^/]*(?:\/|$)/,
+  /(?:^|\/)\.bgos-[^/]*(?:\/|$)/,]
+
+/** Words an owner puts in the name of a secret: read on the path below the home folder (round 4). */
+const SECRET_WORDS: readonly RegExp[] = [
+  // credentials, credentials.csv, db-credentials.txt, credential.txt, a Credentials folder: the word anywhere in a file
+  // or folder name, as the password word is (credentialing is not it).
+  /(?:^|\/)[^/]*credentials?(?![a-z])[^/]*(?:\/|$)/,
+  // Password exports and the files of password managers: Chrome Passwords.csv, logins.csv (Firefox),
+  // bitwarden_export.csv, a Passwords folder, recovery-codes.txt. Each is a safe type, so its name is the wall.
+  // A file named with the word, or a folder named just Password(s); a folder that only has the word in a longer
+  // name (a password-reset-app project) is not a store.
+  /(?:^|\/)(?:passwords?(?:\/|$)|[^/]*passwords?[^/]*$)/,
+  /(?:^|\/)logins?[^/]*\.csv$/,
+  /(?:^|\/)(?:bitwarden|lastpass|1password|keepass|dashlane|nordpass)[^/]*(?:\/|$)/,
+  /(?:^|\/)[^/]*(?:recovery|backup)[ _-]?codes?[^/]*$/,
+  // A folder named for passwords (My Passwords, old_passwords), a password manager or a password vault: every file
+  // in it. The singular word in a longer folder name (password-reset-app) is still a project, not a store.
+  /(?:^|\/)[^/]*(?:passwords|password[ _-]?(?:manager|vault))[^/]*\//,
+  // Recovery keys and wallet secrets, as a file or a folder: BitLocker Recovery Key 1A2B3C4D.TXT (the name Windows
+  // gives a saved key), seed phrase.txt, wallet-recovery-phrase.txt, mnemonic.txt, a wallet backup, and 2FA, MFA or
+  // OTP backup codes and secrets. Each is a safe type, so its name is the wall.
+  /(?:^|\/)[^/]*recovery[ _-]?keys?[^/]*(?:\/|$)/,
+  /(?:^|\/)[^/]*(?:seed|recovery)[ _-]?phrases?[^/]*(?:\/|$)/,
+  /(?:^|\/)[^/]*mnemonic[^/]*(?:\/|$)/,
+  /(?:^|\/)[^/]*(?:wallet[ _-]?backup|backup[ _-]?wallet)[^/]*(?:\/|$)/,
+  /(?:^|\/)[^/]*(?:2fa|mfa|otp)[ _-]?(?:backup|recovery|codes?|secrets?)[^/]*(?:\/|$)/,
+  // Review round 2: names a reasonable owner gives a key, token or sign in file, as a file or a folder. Each is a safe
+  // type, so its name is the wall. A word that is often part of an ordinary name counts only where it ends the name
+  // (session token.txt, but not token economy deck.pdf; github login.txt, but not login page mockup.png).
+  // secrets anywhere; secret where it ends the name (client secret.txt, but not Secret Santa.xlsx or secretary).
+  /(?<![a-z0-9])(?:secrets(?![a-z])|secret(?:\.[^/]*)?(?:\/|$))/,
+  // An api, access, secret or private key: api keys.txt, kc_accessKeys.csv (the AWS console's download), eth_private_key.
+  /(?<![a-z0-9])(?:api|access|secret|private)[ _-]?keys?(?![a-z])/,
+  // A file or folder named just key or keys: keys.txt, Keys/stripe.txt (not key results, keynote or house keys).
+  /(?:^|\/)keys?(?:\.[^/]*)?(?:\/|$)/,
+  // A name that ends with token or tokens: tokens.txt, session token.txt, a Tokens folder.
+  /(?<![a-z0-9])tokens?(?:\.[^/]*)?(?:\/|$)/,
+  // A login file: logins anywhere, login details or info, or a name that ends with login.
+  /(?<![a-z0-9])log[ _-]?in(?:s(?![a-z])|[ _-]?(?:details|info)|(?:\.[^/]*)?(?:\/|$))/,
+  // A sign in file: sign in details or info, or a name that ends with sign in. A Sign-in sheet.pdf (who came to a
+  // meeting) and a list of event sign-ins are not a sign in to an account, so they go.
+  /(?<![a-z0-9])sign[ _-]?in(?:[ _-]?(?:details|info)|(?:\.[^/]*)?(?:\/|$))/,
+  // passwd anywhere, pwd or pwds as a word.
+  /passwd|(?<![a-z0-9])pwds?(?![a-z0-9])/,
+  /passphrases?/,
+  // A seed: seed words, or a name that ends with seed (not seed round deck or sunflower seeds).
+  /(?<![a-z0-9])seed(?:[ _-]?(?:words?|phrases?)|(?:\.[^/]*)?(?:\/|$))/,
+  /backup[ _-]?phrases?/,
+  // 2FA, MFA or TOTP as a word, and an authenticator's export or backup (2fa.txt, 2FA QR.png).
+  /(?<![a-z0-9])(?:2fa|mfa|totp)(?![a-z0-9])|authenticator/,
+  // Review round 3: a name that ends with key or keys after a space, an underscore or a dash (stripe key.txt,
+  // ssh_keys.docx, wifi key.txt, an SSH Keys folder), but not a key that opens a door or explains a map or a test.
+  // Each of those words must start a word: BitLocker key.txt and backdoor key.txt are refused.
+  /(?<!(?<![a-z0-9])(?:answer|map|house|car|door|office|spare|room|locker))[ _-]keys?(?:\.[^/]*)?(?:\/|$)/,
+  // A key backup, list, vault or ring that starts the name: key backup.txt, a Keys Backup folder, keyring.txt.
+  /(?:^|\/)keys?[ _-]?(?:backups?|lists?|vaults?|rings?)(?![a-z])/,
+  // creds as a word anywhere, in a file or a folder name: creds.txt, kc_creds.csv, creds/aws.txt (not credit).
+  /(?<![a-z0-9])creds?(?![a-z])/,
+  // privkey, priv key, rootkey (the name AWS gives a downloaded root access key).
+  /(?<![a-z0-9])(?:priv|root)[ _-]?keys?(?![a-z])/,
+  // A pgp, gpg or ssh private or secret file: pgp private.txt, ssh private.docx.
+  /(?<![a-z0-9])(?:pgp|gpg|ssh)[ _-]?(?:private|secret)(?![a-z])/,
+  // A wallet: a name that is or ends with wallet (wallet.txt, crypto wallet.txt, a Wallets folder), not wallet design.png.
+  /(?<![a-z0-9])wallets?(?:\.[^/]*)?(?:\/|$)/,
+  // A wallet brand anywhere, or a ledger recovery, backup, seed or words file. A ledger alone is an account book
+  // (General Ledger 2026.xlsx), so it goes.
+  /metamask|trezor|(?<![a-z0-9])ledger[ _-]?(?:recovery|backup|seed|words?)/,
+  // Recovery words or a recovery sheet, or a file or folder named just recovery (not disaster recovery plan.pdf).
+  /(?<![a-z0-9])recovery[ _-]?(?:words?|sheets?)|(?:^|\/)recovery(?:\.[^/]*)?(?:\/|$)/,
+  // 12, 15, 18, 21 or 24 words: the lengths of a wallet recovery phrase.
+  /(?<![a-z0-9])(?:12|15|18|21|24)[ _-]?words?(?![a-z])/,
+  // A file or folder named just seeds (not sunflower seeds.jpg).
+  /(?:^|\/)seeds(?:\.[^/]*)?(?:\/|$)/,
+  // A cookie jar saved as text (cookies.txt, youtube-cookies.txt): every cookie in it signs in as the owner.
+  /(?<![a-z0-9])cookies?\.txt$/,
+  // A .env inside a longer name: prod.env.txt, app.env.csv (not envelope or my.environment).
+  /(?:^|\/)[^/]+\.env(?![a-z])/,
+  // Round 4: pw, pws, passcode(s), passkey(s), pass(es) or pin(s) as a whole word that ends the name (pw.txt, gmail pw.txt,
+  // bank pin.txt, a Pins folder), but not a boarding pass, a day pass or a map pin; and a pw list or pin codes.
+  new RegExp(String.raw`(?:(?<![a-z0-9])(?:${SHORT_PASSWORD_WORDS})|${PASS_OR_PIN})(?:\.[^/]*)?(?:\/|$)`),
+  /(?<![a-z0-9])(?:pws?[ _-]?lists?|pin[ _-]?codes?)(?![a-z])/,
+  // Round 4: the word password in another language, anywhere in a name (Passwort.txt, contraseñas.xlsx, senhas.csv).
+  new RegExp(String.raw`(?<![a-z0-9])(?:${FOREIGN_PASSWORD_WORDS})`),
+  // Round 4: a disk encryption tool anywhere in a name: its recovery key is what such a file holds.
+  /bitlocker|filevault|veracrypt/,
+]
+
+export const OUTBOUND_SECRET_PATTERNS: readonly RegExp[] = Object.freeze([
+  ...SECRET_PLACES,
+  ...SECRET_WORDS,
 ])
+/** The patterns read only below the home folder. */
+const WORD_PATTERNS: ReadonlySet<RegExp> = new Set(SECRET_WORDS)
 
 /** A Unicode control character: never in a file name HOAI attaches. */
 const CONTROL = /[\u0000-\u001F\u007F-\u009F]/
@@ -135,6 +287,18 @@ export interface OutboundFileCtx {
   /** The owner's user id, so lanePathIsSecret refuses every other person's lane. */
   actorUserId?: string
   fs?: Partial<OutboundFs>
+  /** This daemon's own credentials: a text file that holds one is refused, as an email that carries one is. */
+  secrets?: readonly string[]
+  /**
+   * Round 7: the wall clock budget, in ms, for reading a Word or Excel file's words, kept on the content Worker's own
+   * clock (round 6 took an injected clock, which cannot cross into a Worker). Round 8: officeReadBudgetMs of the
+   * file's size when left out (2 s plus 1 s per MB, 3 s inside the Worker deadline). Round 9: the budget of the whole
+   * content stage (the read and every check), fixed when given; left out, the Worker sizes it from the larger of the
+   * file's size and its words.
+   */
+  officeReadMs?: number
+  /** Round 7: the content Worker's module; lib/email-outbound-content-worker.ts when left out (a test passes a broken one). */
+  contentWorker?: URL
 }
 
 export interface OutboundFile {
@@ -187,11 +351,71 @@ const megabytes = (bytes: number): number => Math.ceil(bytes / MB)
 /** `~`, `~/x` and `~\x` stand for the home; nothing else is expanded. */
 function expandHome(path: string, home: string): string {
   if (path === '~') return home
-  if (path.startsWith('~/') || path.startsWith('~\\')) return `${home.replace(/[\\/]+$/, '')}/${path.slice(2)}`
+  if (path.startsWith('~/') || path.startsWith('~\\')) {
+    // Round 8: the home's trailing slashes dropped by a backward loop, not a regex.
+    let end = home.length
+    while (end > 0 && (home[end - 1] === '/' || home[end - 1] === '\\')) end--
+    return `${home.slice(0, end)}/${path.slice(2)}`
+  }
   return path
 }
 
-type LexicalKind = 'secret' | 'device' | 'system' | 'not_full' | 'empty' | 'control'
+/**
+ * Round 8: the longest path read. Windows and Linux open nothing longer (MAX_PATH with long paths on is 32767 only
+ * behind \\?\, which is refused as a device path; Linux's PATH_MAX is 4096). A longer path is refused before any
+ * regular expression reads it.
+ */
+const PATH_MAX_CHARS = 4096
+
+/**
+ * Round 8: a segment with its trailing dots and spaces dropped (Windows opens `.ssh.` and `.ssh ` as `.ssh`), by a
+ * backward loop: the regex /[. ]+$/ tried again from every dot or space of a long run that does not end the segment,
+ * which is quadratic. A segment of dots and spaces only is kept as it is (`.` and `..`).
+ */
+function withoutTrailingDotsAndSpaces(segment: string): string {
+  let end = segment.length
+  while (end > 0 && (segment[end - 1] === '.' || segment[end - 1] === ' ')) end--
+  return end === 0 ? segment : segment.slice(0, end)
+}
+
+/**
+ * A home folder in the form the secret list reads (lower case, forward slashes, trailing dots and spaces dropped, `..`
+ * resolved), or null when it is not a full local path or is the top of a drive.
+ */
+function homeForm(home: unknown): string | null {
+  if (typeof home !== 'string' || home.trim() === '' || home.length > PATH_MAX_CHARS || /^[\\/]{2}/.test(home)) return null
+  const slashed = home.replace(/\\/g, '/')
+  const drive = /^[a-z]:\//i.test(slashed) ? slashed.slice(0, 2).toLowerCase() : ''
+  if (!drive && !slashed.startsWith('/')) return null
+  const segments: string[] = []
+  for (const raw of (drive ? slashed.slice(2) : slashed).split('/')) {
+    const seg = withoutTrailingDotsAndSpaces(raw)
+    if (seg === '' || seg === '.') continue
+    if (seg === '..') segments.pop()
+    else segments.push(seg.toLowerCase())
+  }
+  return segments.length === 0 ? null : `${drive}/${segments.join('/')}`
+}
+
+/**
+ * Round 4: the part of a path the word rules (SECRET_WORDS) read. Inside the owner's home folder (the home passed in,
+ * else this daemon's os.homedir() and, on Windows, USERPROFILE), only the path below it, starting with a slash: a
+ * home named C:\Users\John Key or /Users/amy.seed does not make every file in it look like a key. Outside every home,
+ * the whole path, as before.
+ */
+function secretWordsForm(form: string, ctx: OutboundFileCtx): string {
+  const homes = ctx.home !== undefined ? [ctx.home] : [homedir(), process.platform === 'win32' ? process.env.USERPROFILE : undefined]
+  let below: string | null = null
+  for (const home of homes) {
+    const h = homeForm(home)
+    if (h === null || (form !== h && !form.startsWith(`${h}/`))) continue
+    const rest = form.slice(h.length) || '/'
+    if (below === null || rest.length < below.length) below = rest
+  }
+  return below ?? form
+}
+
+type LexicalKind = 'secret' | 'device' | 'system' | 'not_full' | 'empty' | 'control' | 'too_long'
 type Lexical = { kind: LexicalKind } | { kind: 'ok'; form: string }
 
 /** Two slashes of any kind at the start: \\host, //host, \\?\ and \\.\ (device paths), \/host. */
@@ -202,11 +426,14 @@ const NETWORK_OR_DEVICE = /^[\\/]{2}/
  * case, forward slash, resolved path that both secret checks read.
  */
 function lexical(path: string, ctx: OutboundFileCtx): Lexical {
+  // Round 8: before any regular expression reads it.
+  if (path.length > PATH_MAX_CHARS) return { kind: 'too_long' }
   if (path.trim() === '') return { kind: 'empty' }
   if (CONTROL.test(path)) return { kind: 'control' }
   // `~` expands only a leading `~/` or `~\`, so a path that starts with two slashes is still one here; and a home
   // that is itself a network path is refused the same way.
   const expanded = expandHome(path, ctx.home ?? homedir())
+  if (expanded.length > PATH_MAX_CHARS) return { kind: 'too_long' }
   if (NETWORK_OR_DEVICE.test(expanded)) return { kind: 'device' }
   const slashed = expanded.replace(/\\/g, '/')
   const drive = /^[a-z]:\//i.test(slashed) ? slashed.slice(0, 2).toLowerCase() : ''
@@ -216,8 +443,9 @@ function lexical(path: string, ctx: OutboundFileCtx): Lexical {
   if (/[?*:]/.test(rest)) return { kind: 'device' }
   const segments: string[] = []
   for (const raw of rest.split('/')) {
-    // Windows drops trailing dots and spaces: `.ssh.` and `.ssh ` open `.ssh`, so they are read as it.
-    const seg = raw.replace(/[. ]+$/, '') || raw
+    // Windows drops trailing dots and spaces: `.ssh.` and `.ssh ` open `.ssh`, so they are read as it (round 8: by a
+    // backward loop).
+    const seg = withoutTrailingDotsAndSpaces(raw)
     if (seg === '' || seg === '.') continue
     if (WINDOWS_DEVICE.test(seg.split('.')[0]!.trim())) return { kind: 'device' }
     if (seg === '..') {
@@ -232,10 +460,17 @@ function lexical(path: string, ctx: OutboundFileCtx): Lexical {
     return { kind: 'system' }
   }
   const form = `${drive}/${segments.join('/')}`
-  if (OUTBOUND_SECRET_PATTERNS.some((pattern) => pattern.test(form))) return { kind: 'secret' }
+  const words = secretWordsForm(form, ctx)
+  if (OUTBOUND_SECRET_PATTERNS.some((pattern) => pattern.test(WORD_PATTERNS.has(pattern) ? words : form))) return { kind: 'secret' }
   if (lanePathIsSecret(form, { actorUserId: ctx.actorUserId ?? '' })) return { kind: 'secret' }
   return { kind: 'ok', form }
 }
+
+/**
+ * The clause every rule 4 refusal ends with (a key, a password store, a sign in file, a private key inside a text
+ * file): the agent may not get the same secret past the check another way.
+ */
+export const OUTBOUND_NO_WAY_AROUND = 'Do not copy, rename or retype it to send it another way; ask your owner.'
 
 function lexicalSentence(kind: Exclude<LexicalKind, 'ok'>, path: string, followed: boolean): string {
   const name = shown(path)
@@ -245,6 +480,8 @@ function lexicalSentence(kind: Exclude<LexicalKind, 'ok'>, path: string, followe
       return 'An attached file names no file, so nothing is attached.'
     case 'control':
       return 'A file path holds a control character, so it is not attached.'
+    case 'too_long':
+      return `${name} is too long to be a file path, so it is not attached.`
     case 'device':
       return followed
         ? `${lead} a network or device path (HOAI followed its links), so it is never attached.`
@@ -257,8 +494,8 @@ function lexicalSentence(kind: Exclude<LexicalKind, 'ok'>, path: string, followe
       return `${name} is not a full path, so it is not attached; name the file from the top, like C:\\Users\\you\\Documents\\report.pdf or /home/you/report.pdf.`
     case 'secret':
       return followed
-        ? `${lead} a key or password file (HOAI followed its links), so it is never attached.`
-        : `${name} looks like a key or password file, so it is never attached.`
+        ? `${lead} a key or password file (HOAI followed its links), so it is never attached. ${OUTBOUND_NO_WAY_AROUND}`
+        : `${name} looks like a key or password file, so it is never attached. ${OUTBOUND_NO_WAY_AROUND}`
   }
 }
 
@@ -276,6 +513,283 @@ export function outboundFileLexicalRefusal(path: unknown, ctx: OutboundFileCtx =
 /** A real path Windows hands back as \\?\C:\...: the same local file, read as C:\... (\\?\UNC\ stays a network path). */
 function plainLocal(real: string): string {
   return /^\\\\\?\\[a-z]:\\/i.test(real) ? real.slice(4) : real
+}
+
+
+/**
+ * Round 7: the hard deadline of the content stage. The content Worker is terminated this long after it is started,
+ * whatever it is doing, and the file is refused as "could not be read safely" (fail closed). Round 8: the base of the
+ * deadline, which grows with the file (outboundContentDeadlineMs).
+ */
+export const OUTBOUND_CONTENT_DEADLINE_MS = 5000
+/** Round 8: what each MB of the file adds to the deadline, and the longest deadline. */
+export const OUTBOUND_CONTENT_DEADLINE_PER_MB_MS = 1000
+export const OUTBOUND_CONTENT_DEADLINE_MAX_MS = 40_000
+
+/**
+ * Round 8: the deadline of one file's content stage, 5 s plus 1 s per MB, at most 40 s (30 s for a 25 MB file). The
+ * main thread is free while the Worker reads, so an ordinary large file (a 25 MB log under bun) is given the time its
+ * checks take, and only a file the checks cannot finish in that time is refused.
+ */
+export function outboundContentDeadlineMs(size: number): number {
+  const scaled = OUTBOUND_CONTENT_DEADLINE_MS + Math.ceil((OUTBOUND_CONTENT_DEADLINE_PER_MB_MS * Math.max(0, size)) / MB)
+  return Math.min(OUTBOUND_CONTENT_DEADLINE_MAX_MS, scaled)
+}
+
+/**
+ * Round 9: the hard deadline of one file's content stage, the backstop behind the Worker's own budget
+ * (email-outbound-content.ts: officeReadBudgetMs of the larger of the file's size and its words, 3 s inside
+ * outboundContentDeadlineMs of the same size). A text file's words are at most its bytes, so its deadline is that of
+ * its size. A Word or Excel file's words can be up to OFFICE_TEXT_MAX (25 MB) whatever its size (24 KB inflated to 24 MB
+ * of words), so its deadline is that of 25 MB, 30 s: the Worker's budget always ends first, and the Worker answers
+ * itself instead of being replaced.
+ */
+export function outboundContentHardDeadlineMs(type: ContentType, size: number): number {
+  return outboundContentDeadlineMs(type === 'text' ? size : Math.max(size, OFFICE_TEXT_MAX))
+}
+
+/**
+ * Round 9: at most this many content Workers start in one process (per Worker module; the daemon has one, the real
+ * one); past them every text, Word and Excel file is refused at once (a safety stop) and no Worker starts. Only a
+ * Worker that is replaced counts after the first: an error, an exit, a bad reply, or a hard deadline the Worker's own
+ * budget did not answer first. Round 11, measured under bun 1.3.9: the cap bounds how many Workers start, not the
+ * memory they hold. A Worker costs about 27 MB to start, but under bun terminate() lands only when the Worker's code
+ * returns to its event loop, so a Worker replaced while its code runs keeps a core busy and keeps everything it has
+ * built until that code ends (round 10's tree, the reviewer's amp shape: 8 replaced Workers still kept 8 cores busy 30 s
+ * after the last verdict, about 150 MB each at a 2 MB string, 1778 MB private in all; one at a 30 MB entity body about
+ * 900 MB). What bounds a Worker's work and memory is the content stage's own caps and budget, read in every loop of it
+ * (email-outbound-content.ts, round 11), so that the Worker answers every file itself and is never replaced.
+ */
+export const OUTBOUND_CONTENT_WORKERS_MAX = 8
+
+/** Round 9: the run of a file past OUTBOUND_CONTENT_WORKERS_MAX. */
+const WORKERS_SPENT = 'workers spent'
+
+/** Round 7: the content Worker's module, beside this file (bun and node with tsx both load a .ts worker by its URL). */
+const CONTENT_WORKER = new URL('./email-outbound-content-worker.ts', import.meta.url)
+const VERDICT_KINDS: ReadonlySet<string> = new Set(CONTENT_VERDICT_KINDS)
+/** A rule name of the secret scanner, as its reply may carry one. */
+const RULE_NAME = /^[a-z0-9_]{1,64}$/
+
+type ContentResult = { verdict: ContentVerdict; bytes: Uint8Array }
+
+/**
+ * Round 7: the content Worker's reply read strictly, or null when it does not parse (then the file is refused). Round 8:
+ * it must carry the job's own id.
+ */
+function contentReply(message: unknown, id: number, length: number): ContentResult | null {
+  if (typeof message !== 'object' || message === null) return null
+  const { id: replyId, verdict, buffer, length: got } = message as Record<string, unknown>
+  if (replyId !== id) return null
+  if (!(buffer instanceof ArrayBuffer) || got !== length || buffer.byteLength < length) return null
+  if (typeof verdict !== 'object' || verdict === null) return null
+  const { kind, rule } = verdict as Record<string, unknown>
+  if (typeof kind !== 'string' || !VERDICT_KINDS.has(kind)) return null
+  const bytes = new Uint8Array(buffer, 0, length)
+  if (kind === 'secret') return typeof rule === 'string' && RULE_NAME.test(rule) ? { verdict: { kind, rule }, bytes } : null
+  return { verdict: { kind } as ContentVerdict, bytes }
+}
+
+/** Round 8: one file's content stage, waiting its turn on the long lived Worker. */
+interface ContentJob {
+  id: number
+  owned: ArrayBuffer
+  length: number
+  message: Record<string, unknown>
+  deadlineMs: number
+  resolve: (value: ContentResult | null | typeof WORKERS_SPENT) => void
+}
+
+/**
+ * Round 8: ONE long lived content Worker (per Worker module), reused for every file, one job at a time from a queue,
+ * each job with its own id. Under bun a Worker's memory is not given back when it ends (round 9, measured with
+ * realrep.mjs: about 27 MB for each of this Worker's starts, 133 to 2875 MB over 100; round 8 said 3 MB, about what a
+ * Worker that loads nothing costs), so a Worker per file grew the daemon by that much per file. The Worker is replaced
+ * only after a hard deadline, an error, an exit, a message error or a reply that does not parse (a wrong id, a kind not
+ * on the list, the wrong bytes). Each of those refuses the job it happened to, exactly as one Worker per file did, and
+ * the next job gets a fresh Worker. Round 9: a slow file is answered by the Worker's own budget instead, so no input
+ * the checks read forces a new Worker; and past OUTBOUND_CONTENT_WORKERS_MAX Workers started, no new one starts and
+ * every job is refused (WORKERS_SPENT). The Worker is unref'd, so it never keeps the daemon alive; a job waiting on it
+ * is held by its own deadline timer.
+ */
+class ContentWorkerHost {
+  private worker: Worker | null = null
+  private current: { job: ContentJob; timer: ReturnType<typeof setTimeout> } | null = null
+  private readonly queue: ContentJob[] = []
+  private nextId = 1
+
+  constructor(private readonly url: URL) {}
+
+  /** Round 8: how many Workers this host has started (a test reads it: one for many files). */
+  started = 0
+
+  run(owned: ArrayBuffer, length: number, message: Record<string, unknown>, deadlineMs: number): Promise<ContentResult | null | typeof WORKERS_SPENT> {
+    return new Promise((resolve) => {
+      const id = this.nextId++
+      this.queue.push({ id, owned, length, message: { ...message, id, buffer: owned, length }, deadlineMs, resolve })
+      this.pump()
+    })
+  }
+
+  /** The Worker, started when there is none; null when it cannot start; WORKERS_SPENT past the cap (round 9). */
+  private ensure(): Worker | null | typeof WORKERS_SPENT {
+    if (this.worker !== null) return this.worker
+    if (this.started >= OUTBOUND_CONTENT_WORKERS_MAX) return WORKERS_SPENT
+    let worker: Worker
+    try {
+      // Under node its stdout and stderr are its own streams (never the daemon's), left unread: a stream being read
+      // keeps the process alive whatever unref says, and the Worker writes nothing to them (below). Bun ignores the
+      // option and hands a Worker the daemon's own stdout (the MCP channel), so the Worker module silences every
+      // console method and stdout and stderr write itself, before anything else of it runs
+      // (lib/email-outbound-content-quiet.ts).
+      worker = new Worker(this.url, { stdout: true, stderr: true })
+    } catch {
+      return null
+    }
+    this.started++
+    this.worker = worker
+    // Events of a Worker already replaced are ignored: only the current one's count.
+    worker.on('message', (message: unknown) => {
+      if (worker === this.worker) this.onMessage(message)
+    })
+    const failed = () => {
+      if (worker === this.worker) this.fail()
+    }
+    worker.on('error', failed)
+    worker.on('messageerror', failed)
+    worker.on('exit', failed)
+    // After the listeners: under node a 'message' listener added later refs the Worker again.
+    worker.unref()
+    return worker
+  }
+
+  /** The next job, when none is running. */
+  private pump(): void {
+    while (this.current === null && this.queue.length > 0) {
+      const job = this.queue.shift()!
+      const worker = this.ensure()
+      if (worker === null || worker === WORKERS_SPENT) {
+        job.resolve(worker)
+        continue
+      }
+      const timer = setTimeout(() => this.fail(), job.deadlineMs)
+      this.current = { job, timer }
+      try {
+        worker.postMessage(job.message, [job.owned])
+      } catch {
+        this.fail()
+      }
+    }
+  }
+
+  /** The running job's reply: its result, or (a reply that does not parse, or none expected) the Worker replaced. */
+  private onMessage(message: unknown): void {
+    const current = this.current
+    if (current === null) {
+      // A message no job asked for: the Worker is not trusted with the next file.
+      this.retire()
+      return
+    }
+    const result = contentReply(message, current.job.id, current.job.length)
+    if (result === null) {
+      this.fail()
+      return
+    }
+    clearTimeout(current.timer)
+    this.current = null
+    current.job.resolve(result)
+    this.pump()
+  }
+
+  /** Past the deadline, an error, an exit or a bad reply: the running job is refused and the Worker replaced. */
+  private fail(): void {
+    this.retire()
+    const current = this.current
+    if (current !== null) {
+      clearTimeout(current.timer)
+      this.current = null
+      current.job.resolve(null)
+    }
+    this.pump()
+  }
+
+  /** The Worker terminated and forgotten; the next job starts a new one. */
+  private retire(): void {
+    const worker = this.worker
+    if (worker === null) return
+    this.worker = null
+    worker.terminate().catch(() => {})
+  }
+}
+
+/** Round 8: the long lived host of each Worker module (the real one, or a broken one a test passes). */
+const CONTENT_HOSTS = new Map<string, ContentWorkerHost>()
+
+function contentHost(url: URL): ContentWorkerHost {
+  let host = CONTENT_HOSTS.get(url.href)
+  if (host === undefined) {
+    host = new ContentWorkerHost(url)
+    CONTENT_HOSTS.set(url.href, host)
+  }
+  return host
+}
+
+/** Round 8: how many content Workers have been started for this module (the real one when left out), for a test. */
+export function outboundContentWorkersStarted(url: URL = CONTENT_WORKER): number {
+  return CONTENT_HOSTS.get(url.href)?.started ?? 0
+}
+
+/**
+ * Round 7: the content stage of one file, in a worker thread the main thread never waits on: the bytes are transferred
+ * to it (`owned` is the file's own buffer, read by this file, so nothing else holds it), and its verdict comes back with
+ * the bytes. Null (refused) when it cannot start, errs, exits, or replies with anything that does not parse, and when it
+ * is still running at the deadline: then it is terminated. Round 8: on the one long lived Worker
+ * (ContentWorkerHost), under a deadline that grows with the file (outboundContentDeadlineMs).
+ */
+function contentInWorker(owned: ArrayBuffer, length: number, type: ContentType, name: string, ctx: OutboundFileCtx): Promise<ContentResult | null | typeof WORKERS_SPENT> {
+  const secrets = (ctx.secrets ?? []).filter((secret): secret is string => typeof secret === 'string')
+  // Round 9: the backstop, after the Worker's own budget (which the Worker sizes from the file and its words, or a
+  // test fixes with ctx.officeReadMs).
+  const deadlineMs = outboundContentHardDeadlineMs(type, length)
+  const message: Record<string, unknown> = { type, name, secrets }
+  if (typeof ctx.officeReadMs === 'number') message.budgetMs = ctx.officeReadMs
+  return contentHost(ctx.contentWorker ?? CONTENT_WORKER).run(owned, length, message, deadlineMs)
+}
+
+/**
+ * Round 9: what a file past OUTBOUND_CONTENT_WORKERS_MAX is told. Round 10: one sentence, with no "never" (a restart
+ * lets the file go), saying that nothing was found in it.
+ */
+const outboundSafetyStop = (path: string): string =>
+  `${shown(path)} is not attached for now: too many files could not be checked since this agent started, so no text, Word or Excel file is attached until the agent is restarted (a safety stop; nothing was found in this file).`
+
+/** Round 7: the sentence for what the content stage found, or null when the file may go. */
+function contentSentence(verdict: ContentVerdict, path: string): string | null {
+  const name = shown(path)
+  switch (verdict.kind) {
+    case 'ok':
+      return null
+    case 'unsafe':
+      return `${name} could not be read safely, so it is never attached.`
+    case 'unread':
+      return `${name} could not be read to check it for a password or key, so it is not attached.`
+    case 'table':
+      return `${name} has a password column, so it looks like a password export and is never attached. ${OUTBOUND_NO_WAY_AROUND}`
+    case 'private_key':
+      return `${name} holds a private key, so it is never attached. ${OUTBOUND_NO_WAY_AROUND}`
+    case 'cookie':
+      return `${name} is a browser cookie file, which signs in as you, so it is never attached. ${OUTBOUND_NO_WAY_AROUND}`
+    case 'own_credential':
+      return `${name} holds this agent's own credential, so it is never attached. ${OUTBOUND_NO_WAY_AROUND}`
+    case 'recovery_key':
+      return `${name} holds a recovery key, so it is never attached. ${OUTBOUND_NO_WAY_AROUND}`
+    case 'recovery_phrase':
+      return `${name} holds a wallet recovery phrase, so it is never attached. ${OUTBOUND_NO_WAY_AROUND}`
+    case 'secret':
+      return `${name} holds a secret (it looks like ${verdict.rule}), so it is never attached. ${OUTBOUND_NO_WAY_AROUND}`
+    case 'written':
+      return `${name} has a password or key written in it, so it is never attached. ${OUTBOUND_NO_WAY_AROUND}`
+  }
 }
 
 function baseName(path: string): string {
@@ -316,6 +830,12 @@ export async function readOutboundFile(path: unknown, ctx: OutboundFileCtx = {})
   const ext = /\.([^./\\]+)$/.exec(name)?.[1]?.toLowerCase() ?? ''
   const type = Object.hasOwn(TYPE_OF_EXTENSION, ext) ? TYPE_OF_EXTENSION[ext]! : null
   if (type === null) return { ok: false, error: `${shown(path)} is not a type that can be attached; ${SAFE_LIST_WORDS}.` }
+  // Round 5: the type is the link's name, so the real file's own name must say the same type (a notes.txt link to
+  // x.conf is a .conf file, whatever the link is called).
+  const realExt = /\.([^./\\]+)$/.exec(baseName(real))?.[1]?.toLowerCase() ?? ''
+  if (!Object.hasOwn(TYPE_OF_EXTENSION, realExt) || TYPE_OF_EXTENSION[realExt] !== type) {
+    return { ok: false, error: `${shown(path)} is a link to a file that cannot be attached; ${SAFE_LIST_WORDS}.` }
+  }
   let bytes: Uint8Array
   let handle: OutboundHandle
   try {
@@ -353,6 +873,18 @@ export async function readOutboundFile(path: unknown, ctx: OutboundFileCtx = {})
   }
   if (!isType(bytes, type)) {
     return { ok: false, error: `${shown(path)} is not really a ${TYPE_LABEL[type]} file (its contents say otherwise), so it is not attached.` }
+  }
+  // Round 7: the content stage (a text file's header and whole text, a Word or Excel file's rows and words, and every
+  // check on them) runs in the content Worker under a hard deadline; the steps above stay on this thread. A picture
+  // or a PDF has no words read here.
+  if (type === 'text' || type === 'docx' || type === 'xlsx') {
+    // `bytes` is a view, at offset 0, of the buffer allocated above for this read alone: it is transferred, not copied.
+    const checked = await contentInWorker(bytes.buffer as ArrayBuffer, bytes.length, type, name, ctx)
+    if (checked === WORKERS_SPENT) return { ok: false, error: outboundSafetyStop(path) }
+    if (checked === null) return { ok: false, error: `${shown(path)} could not be read safely, so it is never attached.` }
+    bytes = checked.bytes
+    const why = contentSentence(checked.verdict, path)
+    if (why !== null) return { ok: false, error: why }
   }
   return { ok: true, file: { path, realPath: real, name, type, mime: TYPE_MIME[type], size: bytes.length, bytes } }
 }

@@ -371,7 +371,8 @@ test('server.ts admits an email tool call through the email_send turn check when
   assert.ok(SRC.includes('if (emailTool && emailToolNeedsTurn(req.params.name, req.params.arguments)) {'))
   assert.equal(SRC.includes("if (req.params.name === 'email_send') {"), false, 'no longer only email_send')
   assert.ok(SRC.includes('emailTurnRefusalText(req.params.name, req.params.arguments, message)'))
-  assert.ok(SRC.includes('readFiles: (paths) => readOutboundFiles(paths, { actorUserId: USER_ID })'))
+  // Review round 2: the reader is also handed this daemon's own credential, as the email's words are.
+  assert.ok(SRC.includes("readFiles: (paths) => readOutboundFiles(paths, { actorUserId: USER_ID, secrets: [AUTH.mode === 'pairing' ? AUTH.pairingToken : AUTH.apiKey] })"))
 })
 
 test('rule 2: a helper started in an earlier turn cannot attach files to a draft; its text draft still saves', (t) => {
@@ -532,9 +533,25 @@ test('a refused file stops the whole call before any upload: a key path, alone o
       const backend = stubBackend()
       const result = await callTool(tool, { ...NEW_EMAIL, files }, { post: backend.post, basis: OWNER_BASIS, readFiles: (p: string[]) => lib.readOutboundFiles(p, { home }) })
       assert.equal(result.isError, true, `${tool} ${JSON.stringify(files)}`)
-      assert.match(textOf(result), /looks like a key or password file, so it is never attached\. Nothing was saved or sent\.$/)
+      assert.match(textOf(result), /looks like a key or password file, so it is never attached\. Do not copy, rename or retype it to send it another way; ask your owner\. Nothing was saved or sent\.$/)
       assert.deepEqual(backend.posted, [], 'nothing uploaded')
     }
+  }
+})
+
+test('review round 2: a text file that holds this agent\'s own credential is refused before any upload, by the default reader too', async (t) => {
+  const home = join(scratch(t), 'home')
+  mkdirSync(join(home, 'docs'), { recursive: true })
+  const notes = join(home, 'docs', 'setup notes.txt')
+  writeFileSync(notes, `Pairing for the new laptop: ${PAIRING_TOKEN}\n`)
+  for (const tool of ['email_draft', 'email_send']) {
+    const backend = stubBackend()
+    // No readFiles: the tool's own reader, which must be handed deps.secrets.
+    const result = await callTool(tool, { ...NEW_EMAIL, files: [{ path: notes }] }, { post: backend.post, basis: OWNER_BASIS })
+    assert.equal(result.isError, true, tool)
+    assert.match(textOf(result), /holds this agent's own credential, so it is never attached\. Do not copy, rename or retype it to send it another way; ask your owner\. Nothing was saved or sent\.$/, tool)
+    assert.equal(textOf(result).includes(PAIRING_TOKEN), false, 'the credential is never repeated')
+    assert.deepEqual(backend.posted, [], 'nothing uploaded')
   }
 })
 
@@ -606,6 +623,19 @@ test('the session instructions tell the agent when a file may go, what is refuse
     assert.ok(text.includes(phrase), phrase)
   }
   assert.equal(/[\u2013\u2014]/.test(text), false)
+})
+
+test('review round 1: the session instructions tell the agent never to copy, rename, retype or paste a refused file to get it past the check', () => {
+  const open = SRC.indexOf('    instructions: [\n')
+  const close = SRC.indexOf("\n    ].join('\\n'),", open)
+  const text = SRC.slice(open, close)
+    .split('\n')
+    .map((line) => (line.match(/^\s*'((?:[^'\\]|\\.)*)',$/)?.[1] ?? '').replace(/\\(.)/g, '$1'))
+    .join(' ')
+    .replace(/\s+/g, ' ')
+  assert.ok(text.includes('When HOAI refuses a file, never copy, rename, retype or paste it to send it another way; ask your owner.'), 'the way around is closed in words')
+  // D8 stays byte for byte: the canon paragraph does not take the new words.
+  assert.equal(FILES_PARAGRAPH.includes('rename'), false)
 })
 
 test('no em or en dash in the files code', () => {
