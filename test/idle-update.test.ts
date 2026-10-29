@@ -515,16 +515,19 @@ test('boot settle: a boot whose predecessor ended cleanly (its claude went away:
   assert.equal(twice.event, 'second_boot', 'one re-arrival per record, never a loop')
 })
 
-test('boot settle: a new session drops the clean end of the boot before it, so a crash on that session is a failed build', () => {
+test('boot settle: a new session drops the clean end and the live proof of the boot before it, so a crash on that session is a failed build', () => {
   const m = need()
-  const base = { state: 'arrived', lockBoots: 1, arrivedAt: new Date(NOW - 4 * MIN).toISOString(), endedAt: new Date(NOW - MIN).toISOString() }
-  for (const contextLost of [false, true]) {
-    const lost = m.settleRecordAtBoot(record({ ...base, contextLost }), { runningVersion: '0.81.0', pin: 'pin-2', now: NOW })
-    assert.equal(lost.event, 'context_lost')
-    assert.equal(lost.record.endedAt, null, `contextLost=${contextLost}: the clean end was the boot before's`)
-    // The context_lost boot crashed (no end of its own); hoai relaunched it on the same new session.
-    const next = m.settleRecordAtBoot(lost.record, { runningVersion: '0.81.0', pin: 'pin-2', now: NOW + 3 * MIN })
-    assert.equal(next.event, 'second_boot', `contextLost=${contextLost}`)
+  const proofs = { endedAt: new Date(NOW - MIN).toISOString(), liveAt: new Date(NOW - 2 * MIN).toISOString() }
+  for (const proof of ['endedAt', 'liveAt'] as const) {
+    const base = { state: 'arrived', lockBoots: 1, arrivedAt: new Date(NOW - 4 * MIN).toISOString(), [proof]: proofs[proof] }
+    for (const contextLost of [false, true]) {
+      const lost = m.settleRecordAtBoot(record({ ...base, contextLost }), { runningVersion: '0.81.0', pin: 'pin-2', now: NOW })
+      assert.equal(lost.event, 'context_lost')
+      assert.equal(lost.record[proof], null, `${proof}, contextLost=${contextLost}: it was the boot before's`)
+      // The context_lost boot crashed (no proof of its own); hoai relaunched it on the same new session.
+      const next = m.settleRecordAtBoot(lost.record, { runningVersion: '0.81.0', pin: 'pin-2', now: NOW + 3 * MIN })
+      assert.equal(next.event, 'second_boot', `${proof}, contextLost=${contextLost}`)
+    }
   }
 })
 
