@@ -825,6 +825,96 @@ test('a new build whose daemon crashed (no clean end) a minute before hoai relau
   assert.equal(second.rollbackInstalls.length, 1)
 })
 
+const FRESH = '33333333-4444-4555-8666-777788889999'
+function onFreshSession(a: ReturnType<typeof agent>) {
+  a.s.session = FRESH
+  a.s.listing = { ok: true, processes: table(912).map((p) => (p.pid === 91240 ? { ...p, command: `claude --session-id ${FRESH}` } : p)) }
+  return a
+}
+
+test('a boot on a new session after a clean end that then crashes is a failed build: the clean end was the boot before\'s', async () => {
+  const disk = await afterAsk()
+  const first = agent(disk, { running: '0.81.0', staged: null })
+  first.s.startupComplete = false
+  assert.equal(await first.c.tick(), 'validating')
+  disk.clock.now += 3 * MIN
+  first.c.noteEnded(true)
+  assert.ok(readJson(disk, first.record).endedAt)
+  // hoai's resume died, so it retried fresh: a new session, whose daemon crashes (no end of its own).
+  disk.clock.now += 20 * SEC
+  const second = onFreshSession(agent(disk, { running: '0.81.0', staged: null }))
+  second.s.startupComplete = false
+  assert.equal(await second.c.tick(), 'validating')
+  assert.equal(readJson(disk, second.record).endedAt, null)
+  disk.clock.now += 3 * MIN
+  const third = onFreshSession(agent(disk, { running: '0.81.0', staged: null }))
+  assert.equal(await third.c.tick(), 'rollback')
+  assert.equal(third.rollbackInstalls.length, 1)
+})
+
+test('a clean end never overwrites a record another boot settled since, or another attempt\'s', async () => {
+  const disk = await afterAsk()
+  const old = agent(disk, { running: '0.81.0', staged: null })
+  assert.equal(await old.c.tick(), 'validating')
+  old.s.active = false
+  disk.clock.now += 10 * SEC
+  assert.equal(await old.c.tick(), 'passive')
+  // Another session of this agent took the lock and settled the record on its own boot.
+  disk.clock.now += 10 * SEC
+  const other = onFreshSession(agent(disk, { running: '0.81.0', staged: null }))
+  assert.equal(await other.c.tick(), 'validating')
+  const settled = disk.fs.readFile(old.record)
+  old.c.noteEnded(true)
+  assert.equal(disk.fs.readFile(old.record), settled, 'a later boot\'s record is kept')
+  // A newer attempt on disk (another version) is kept too.
+  const newer = { ...readJson(disk, old.record), nonce: '912-other', target: '0.82.0', from: '0.81.0', state: 'requested', attempts: [] }
+  delete newer.arrivedAt
+  disk.fs.writeAtomic(old.record, `${JSON.stringify(newer, null, 2)}\n`)
+  const before = disk.fs.readFile(old.record)
+  old.c.noteEnded(true)
+  assert.equal(disk.fs.readFile(old.record), before, 'another attempt\'s record is kept')
+})
+
+test('a daemon that regains the lock after another boot settled the record stands down from its validation, writing nothing', async () => {
+  const disk = await afterAsk()
+  const old = agent(disk, { running: '0.81.0', staged: null })
+  assert.equal(await old.c.tick(), 'validating')
+  old.s.active = false
+  disk.clock.now += 10 * SEC
+  assert.equal(await old.c.tick(), 'passive')
+  disk.clock.now += 10 * SEC
+  const other = onFreshSession(agent(disk, { running: '0.81.0', staged: null }))
+  assert.equal(await other.c.tick(), 'validating')
+  const settled = disk.fs.readFile(old.record)
+  // The other session ends; the old daemon takes the lock back, past what would have been its deadline.
+  old.s.active = true
+  disk.clock.now += 20 * MIN
+  assert.equal(await old.c.tick(), 'superseded')
+  assert.equal(disk.fs.readFile(old.record), settled)
+  assert.equal(old.rollbackInstalls.length, 0)
+  assert.equal(old.c.phase(), 'watch')
+  disk.clock.now += 10 * SEC
+  assert.notEqual(await old.c.tick(), 'validating')
+  assert.equal(disk.fs.readFile(old.record), settled)
+})
+
+test('a disk that refused the settle write leaves this daemon validating on the record it kept', async () => {
+  const disk = await afterAsk()
+  const a = agent(disk, { running: '0.81.0', staged: null })
+  const write = disk.fs.writeAtomic
+  disk.fs.writeAtomic = (p: string, text: string) => (p === a.record ? false : write(p, text))
+  assert.equal(await a.c.tick(), 'validating')
+  assert.equal(readJson(disk, a.record).state, 'requested', 'the disk kept the older state')
+  disk.clock.now += 20 * SEC
+  a.s.heartbeatOkAtMs = disk.clock.now
+  a.s.beaconAtMs = disk.clock.now
+  assert.equal(await a.c.tick(), 'validating')
+  disk.clock.now += 61 * SEC
+  a.s.heartbeatOkAtMs = disk.clock.now
+  a.s.beaconAtMs = disk.clock.now
+  assert.equal(await a.c.tick(), 'validated')
+})
+
 test('a clean end outside validation writes nothing', async () => {
   const disk = memDisk()
   const a = agent(disk)

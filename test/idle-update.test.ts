@@ -515,6 +515,32 @@ test('boot settle: a boot whose predecessor ended cleanly (its claude went away:
   assert.equal(twice.event, 'second_boot', 'one re-arrival per record, never a loop')
 })
 
+test('boot settle: a new session drops the clean end of the boot before it, so a crash on that session is a failed build', () => {
+  const m = need()
+  const base = { state: 'arrived', lockBoots: 1, arrivedAt: new Date(NOW - 4 * MIN).toISOString(), endedAt: new Date(NOW - MIN).toISOString() }
+  for (const contextLost of [false, true]) {
+    const lost = m.settleRecordAtBoot(record({ ...base, contextLost }), { runningVersion: '0.81.0', pin: 'pin-2', now: NOW })
+    assert.equal(lost.event, 'context_lost')
+    assert.equal(lost.record.endedAt, null, `contextLost=${contextLost}: the clean end was the boot before's`)
+    // The context_lost boot crashed (no end of its own); hoai relaunched it on the same new session.
+    const next = m.settleRecordAtBoot(lost.record, { runningVersion: '0.81.0', pin: 'pin-2', now: NOW + 3 * MIN })
+    assert.equal(next.event, 'second_boot', `contextLost=${contextLost}`)
+  }
+})
+
+test('a record is superseded by another attempt or by a later boot\'s settle, never by an older state of its own attempt', () => {
+  const m = need()
+  const mine = { nonce: 'n1', target: '0.81.0', state: 'arrived', arrivedAt: new Date(NOW).toISOString() }
+  assert.equal(m.isRecordSuperseded(mine, { ...mine }), false, 'the same record')
+  assert.equal(m.isRecordSuperseded(mine, { ...mine, liveAt: new Date(NOW + MIN).toISOString() }), false, 'its own later write')
+  assert.equal(m.isRecordSuperseded(mine, { ...mine, nonce: 'n2', target: '0.82.0', state: 'requested', arrivedAt: undefined }), true, 'another attempt')
+  assert.equal(m.isRecordSuperseded(mine, { ...mine, arrivedAt: new Date(NOW + 2 * MIN).toISOString(), contextLost: true }), true, 'a later boot settled it')
+  assert.equal(m.isRecordSuperseded(mine, { ...mine, state: 'requested', arrivedAt: undefined }), false, 'a disk that refused the settle holds the older state')
+  assert.equal(m.isRecordSuperseded(mine, { ...mine, arrivedAt: new Date(NOW - MIN).toISOString() }), false, 'an older settle of its own attempt')
+  assert.equal(m.isRecordSuperseded(mine, null), false, 'nothing readable: keep acting')
+  assert.equal(m.isRecordSuperseded(null, mine), false)
+})
+
 test('boot settle: an end time that does not read as a time is no clean end', () => {
   const m = need()
   const base = { state: 'arrived', lockBoots: 1, arrivedAt: new Date(NOW - 4 * MIN).toISOString() }

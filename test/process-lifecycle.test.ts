@@ -283,6 +283,7 @@ test('boot enrolment into marketplace auto-update respects the same brakes as ev
 test('the reader gone is an EPIPE only: a write after end or a destroyed stream is this process\'s own doing', () => {
   assert.equal(isReaderGone(Object.assign(new Error('write EPIPE'), { code: 'EPIPE' })), true)
   assert.equal(isReaderGone(new Error('Broken pipe: EPIPE')), true, 'a code-less EPIPE (bun)')
+  assert.equal(isReaderGone(Object.assign(new Error('broken pipe'), { code: 'EPIPE' })), true, 'the code alone')
   for (const code of ['ERR_STREAM_WRITE_AFTER_END', 'ERR_STREAM_DESTROYED', 'ECONNRESET']) {
     assert.equal(isReaderGone(Object.assign(new Error(code), { code })), false, code)
   }
