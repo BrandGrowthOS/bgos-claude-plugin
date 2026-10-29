@@ -87,8 +87,11 @@ const LOOSE_PASSWORD_COLUMN = /^(?:.*[ _-])?(?:pass|pws?|pwds?|pin|pin[ _-]?code
 /** A user, login, email or site column: what a home made password table puts beside the password. */
 const ACCOUNT_WORDS = String.raw`user(?: ?name)?|userid|login(?: ?name)?|e-?mail(?: address)?|account|(?:web ?)?site|sitio|url|uri|benutzername|identifiant|usuario|utilisateur`
 const ACCOUNT_COLUMN = new RegExp(String.raw`^(?:.*[ _-])?(?:${ACCOUNT_WORDS})$`)
-/** Round 13: an account word as a cell on its own (Site, Email, User name), with nothing before it. */
-const ACCOUNT_CELL = new RegExp(String.raw`^(?:${ACCOUNT_WORDS})$`)
+/**
+ * Round 13: an account word as a cell on its own (Site, Email, User name), with nothing before it. Round 14: or bank,
+ * service, app or website, the other words a two column list of passwords puts first (Bank | Password).
+ */
+const ACCOUNT_CELL = new RegExp(String.raw`^(?:${ACCOUNT_WORDS}|bank|service|app|website)$`)
 
 /**
  * Round 11: the longest cell whose name is read whole. A longer cell is no header: its name is read from its last
@@ -120,7 +123,9 @@ const HEADER_MARKED_WORDS_MAX = 2
 /**
  * Round 13: at most this many words, once its note and marks are off, make a sheet or Word table cell that ends with a
  * colon lose its marks: a colon ends a label ("Email account password:" beside "Account"), where a full stop or '!'
- * ends prose ("Remember your password."), which keeps HEADER_MARKED_WORDS_MAX.
+ * ends prose ("Remember your password."), which keeps HEADER_MARKED_WORDS_MAX. Round 14: read only as a label
+ * (headerName's `label`), which names a password column beside an account cell, as a loose word does (PasswordRow),
+ * so a how to row ("Reset your password:" | "Open the portal") is not a header.
  */
 const HEADER_LABEL_WORDS_MAX = 3
 
@@ -163,7 +168,7 @@ function isWhite(code: number): boolean {
  * and, for a cell of a sheet or Word table (`tableCell`), its trailing marks (Password:) taken off, before the anchored
  * rules read it; a cell longer than HEADER_CELL_MAX is read on its end only (see there).
  */
-function headerName(cell: string, tableCell = true): string {
+function headerName(cell: string, tableCell = true, label = false): string {
   let text = cell
   let cut = false
   if (text.length > HEADER_CELL_MAX) {
@@ -197,9 +202,9 @@ function headerName(cell: string, tableCell = true): string {
   if (wordsIn(name.trimStart()) <= HEADER_WORDS_MAX) {
     const noteOff = (text: string) => text.replace(HEADER_NOTE, '')
     // Round 12: the marks only when what is left is at most HEADER_MARKED_WORDS_MAX words (round 13: a label that ends
-    // with a colon, HEADER_LABEL_WORDS_MAX).
+    // with a colon, HEADER_LABEL_WORDS_MAX; round 14: only when read as a label).
     const bare = tableCell ? trimMarks(noteOff(trimMarks(name))) : null
-    const most = endsWithColon(name) ? HEADER_LABEL_WORDS_MAX : HEADER_MARKED_WORDS_MAX
+    const most = label && endsWithColon(name) ? HEADER_LABEL_WORDS_MAX : HEADER_MARKED_WORDS_MAX
     name = bare !== null && wordsIn(bare.trimStart()) <= most ? bare : noteOff(name)
     name = name.replace(/"$/, '').trimEnd()
   }
@@ -239,6 +244,9 @@ class PasswordRow {
   private strict = false
   private loose = false
   private account = false
+  /** Round 15: a password word in a label (a 3 word cell that ends with a colon), and an account word on its own. */
+  private labelLoose = false
+  private accountCell = false
 
   /**
    * Round 11: the stage's budget, read every ROW_CELLS_PER_CHECK cells (a row of a sheet may hold 50000 cells), and
@@ -253,10 +261,19 @@ class PasswordRow {
     if (namesStrict(name)) this.strict = true
     if (LOOSE_PASSWORD_COLUMN.test(name)) this.loose = true
     if (ACCOUNT_COLUMN.test(name)) this.account = true
+    if (ACCOUNT_CELL.test(name)) this.accountCell = true
+    // Round 14: a sheet or Word table cell that kept its colon may be a label of HEADER_LABEL_WORDS_MAX words. Round
+    // 15: a password word in it names a column only beside an account word on its own (ACCOUNT_CELL: Account | Email
+    // account password:), never beside another label or a phrase that only ends in an account word ("Update your
+    // email:", "Unlock account:"), so a how to or FAQ list laid down a first column is not a header.
+    if (this.tableCells && !this.strict && endsWithColon(name)) {
+      const label = headerName(cell, true, true)
+      if (label !== name && (namesStrict(label) || LOOSE_PASSWORD_COLUMN.test(label))) this.labelLoose = true
+    }
   }
 
   get names(): boolean {
-    return this.strict || (this.loose && this.account)
+    return this.strict || (this.loose && this.account) || (this.labelLoose && this.accountCell)
   }
 }
 
@@ -354,75 +371,125 @@ const STRICT_PASSWORD_CELL = new RegExp(String.raw`^(?:pass(?:word|wd)s?|passcod
  * and at least two other cells are not blank (Site<tab>Username<tab>Password).
  *
  * Round 13: a paragraph is split at its line breaks (<w:br/>, Shift+Enter) first, and each line is judged as a
- * paragraph of its own and counts toward HEADER_LINES, so a list typed in one paragraph is read line by line. Below
- * the first lines, a line split by tabs or bars only (no comma or semicolon) needs one other cell that holds a letter
- * beside the strict one (Account<tab>Password, Site | Password); a line with a comma, a semicolon, spaced dashes or
- * runs of spaces still needs two other cells, or one that is an account word on its own (ACCOUNT_CELL:
- * "Site, Password"), so "Fields: Email, Password" and "Passwords, PINs" are not headers. The cell beside must hold a
- * letter, so a number ("2.<tab>Passwords") or a blank to fill in ("Password<tab>________") is not one.
+ * paragraph of its own, so a list typed in one paragraph is read line by line. Round 14: but a paragraph counts once
+ * toward HEADER_LINES, as in round 12 (round 13 counted each line, so a letterhead typed with line breaks pushed the
+ * header below it out of the top), and every line of a paragraph among the first HEADER_LINES gets the top table
+ * check. Below them, a line with one other cell beside the strict one needs that cell to be an account word on its
+ * own (ACCOUNT_CELL: Account<tab>Password, Bank | Password, Site, Password; round 13 took any cell with a letter after
+ * a tab or bar), so "Password<tab>Changed", "Home | Passwords" and "Fields: Email, Password" are not headers; two
+ * other cells are enough, as in round 12. Round 14: a line that only round 13's separators split (spaced en or em
+ * dashes, runs of spaces: nothing round 12 split it on) needs, at the top and below, an account or loose cell beside
+ * the strict one (Site \u2013 Username \u2013 Password), so a title such as "Acme \u2013 IT Policy \u2013 Passwords"
+ * is not a header.
+ *
+ * Round 15: only the first HEADER_LINES non blank lines of a top paragraph get the top table check (a long block of
+ * Shift+Enter lines, a pasted email or meeting notes, is read below them by the deep rule, so one UI line such as "New
+ * password, confirm password" on its 34th line is not a header). And each paragraph is also judged as one line, as
+ * round 12 judged it (joinedNames), so a header cell split across a line break is still read; a paragraph names a
+ * password column when that reading or one of its lines does.
  */
 class WordHeader {
   private lines = 0
 
   constructor(private readonly clock: StageClock) {}
 
-  /** Whether this paragraph names a password column: round 13, any of its lines. */
-  names(paragraph: string): boolean {
+  /**
+   * Whether this paragraph names a password column: round 13, any of its lines; round 15, or the paragraph read as one
+   * line, as round 12 read it (`joined`: its text as round 12 built it, see xmlText).
+   */
+  names(paragraph: string, joined: string = paragraph): boolean {
+    // Round 14: a non blank paragraph counts once, whatever its line breaks, and is at the top or not as a whole.
+    const top = this.lines < HEADER_LINES
+    if (top) {
+      if (isBlank(paragraph)) return false
+      this.lines++
+    }
+    if (this.joinedNames(joined, top)) return true
     let at = 0
+    // Round 15: the paragraph's non blank lines so far; only its first HEADER_LINES get the top table check.
+    let lineNo = 0
     for (let steps = 0; ; steps++) {
       if (steps % ROW_CELLS_PER_CHECK === 0) checkBudget(this.clock)
       const newline = paragraph.indexOf('\n', at)
       // An empty line is blank: it counts toward nothing and names nothing (no string is made for it).
-      if (newline !== at && this.lineNames(newline < 0 ? (at === 0 ? paragraph : paragraph.slice(at)) : paragraph.slice(at, newline))) return true
+      if (newline !== at) {
+        const line = newline < 0 ? (at === 0 ? paragraph : paragraph.slice(at)) : paragraph.slice(at, newline)
+        const lineTop = top && lineNo < HEADER_LINES
+        if (!isBlank(line)) lineNo++
+        if (this.lineNames(line, lineTop)) return true
+      }
       if (newline < 0) return false
       at = newline + 1
     }
   }
 
-  /** Whether one line of a paragraph names a password column. */
-  private lineNames(line: string): boolean {
-    const top = this.lines < HEADER_LINES
-    if (top) {
-      if (isBlank(line)) return false
-      this.lines++
-    }
-    const dashes = twoFinds(line, SPACED_SEPARATORS_ALL)
-    const spaces = twoFinds(line, SPACE_RUNS_ALL)
-    if (!dashes && !spaces && !HEADER_SEPARATORS.test(line)) return false
+  /**
+   * Round 15: round 12's verdict on a paragraph read as one line (its line breaks inside its cells, so a header cell
+   * split across a Shift+Enter, "Master" then "Password", is master password), round 12's rule unchanged: split on a
+   * text line's separators, or on spaced hyphens or slashes when it holds two; every cell header length; at the top
+   * the table check, below it a strict word on its own and two other cells. Its cells are walked once, the budget read
+   * as the lines' walk reads it.
+   */
+  private joinedNames(text: string, top: boolean): boolean {
+    const spaced = twoFinds(text, ROUND12_SPACED_ALL)
+    if (!spaced && !HEADER_SEPARATORS.test(text)) return false
     const row = top ? new PasswordRow(this.clock, false) : null
     let strict = false
     let others = 0
-    let lettered = false
+    let steps = 0
+    for (const cell of lineCells(text, spaced ? ROUND12_WORD_SEPARATORS_ALL : HEADER_SEPARATORS_ALL)) {
+      if (steps++ % ROW_CELLS_PER_CHECK === 0) checkBudget(this.clock)
+      if (!isHeaderLength(cell)) return false
+      if (row !== null) row.add(cell)
+      else if (!strict && namesStrict(headerName(cell, false), STRICT_PASSWORD_CELL)) strict = true
+      else if (!isBlank(cell)) others++
+    }
+    return row !== null ? row.names : strict && others >= 2
+  }
+
+  /** Whether one line of a paragraph names a password column; `top`: its paragraph is among the first HEADER_LINES. */
+  private lineNames(line: string, top: boolean): boolean {
+    const dashes = twoFinds(line, SPACED_SEPARATORS_ALL)
+    const spaces = twoFinds(line, SPACE_RUNS_ALL)
+    const split = HEADER_SEPARATORS.test(line)
+    if (!dashes && !spaces && !split) return false
+    // Round 14: split only by what round 13 added (nothing round 12 split this line on).
+    const added = !split && !twoFinds(line, ROUND12_SPACED_ALL)
+    const row = top ? new PasswordRow(this.clock, false) : null
+    let strict = false
+    let others = 0
     let account = false
+    let beside = false
     let steps = 0
     for (const cell of lineCells(line, wordSeparators(dashes, spaces))) {
       if (steps++ % ROW_CELLS_PER_CHECK === 0) checkBudget(this.clock)
       if (!isHeaderLength(cell)) return false
-      if (row !== null) {
-        row.add(cell)
-        continue
-      }
-      if (isBlank(cell)) continue
+      if (row !== null) row.add(cell)
+      if (isBlank(cell) || (row !== null && !added)) continue
       const name = headerName(cell, false)
+      // Round 14: an account or loose cell (never a strict one) beside the strict one, for a line `added` splits.
+      // Round 15: or an account word on its own (ACCOUNT_CELL: Service \u2013 Password \u2013 Notes).
+      if (added && (ACCOUNT_COLUMN.test(name) || ACCOUNT_CELL.test(name) || LOOSE_PASSWORD_COLUMN.test(name))) beside = true
+      if (row !== null) continue
       if (!strict && namesStrict(name, STRICT_PASSWORD_CELL)) {
         strict = true
         continue
       }
       others++
-      if (HAS_LETTER.test(cell)) lettered = true
       if (ACCOUNT_CELL.test(name)) account = true
     }
-    if (row !== null) return row.names
-    if (!strict || others === 0) return false
-    if (others >= 2) return true
-    // Round 13: one other cell. Read only now, once every cell was header length.
-    const tabsOrBars = !dashes && !spaces && !WORD_COMMA_OR_SEMICOLON.test(line)
-    return tabsOrBars ? lettered : account
+    if (row !== null) return row.names && (!added || beside)
+    if (!strict) return false
+    if (added) return beside
+    // Round 14: one other cell must be an account word on its own, whatever split the line.
+    return others >= 2 || account
   }
 }
 
-/** Round 13: a comma or a semicolon (a line split only by tabs or bars has neither). */
-const WORD_COMMA_OR_SEMICOLON = /[,;]/
+/** Round 14: round 12's spaced separators (a hyphen or slash with a space each side), read as twoFinds read them. */
+const ROUND12_SPACED_ALL = / [-/] /g
+/** Round 15: what round 12 split a paragraph on when it held two of them: a text line's separators and those. */
+const ROUND12_WORD_SEPARATORS_ALL = /[,;\t|]| [-/] /g
 
 /** Round 11: a text of whitespace only (as trim() === ''), read up to its first other character. */
 function isBlank(text: string): boolean {
@@ -956,9 +1023,18 @@ function xmlEntities(text: string, clock: StageClock = NO_CLOCK): string {
  * on is kept as it is. Round 11: the text between the tags is joined in pieces (TextPieces), not held as one string
  * each until the end (one shared string of millions of tags), and the budget is read every STEPS_PER_CHECK tags; the
  * entities are then read over the joined text, as before (a reference split by a tag is read whole, as round 10 read it).
+ * Round 14: a line break may carry attributes and whitespace (<w:br w:type="textWrapping"/>, <w:br />; every type of
+ * break is one), and a tab whitespace (<w:tab />). A tab with attributes is a tab stop (<w:tabs><w:tab w:val="left"
+ * w:pos="720"/></w:tabs> in a paragraph's properties), not a tab, and is not read as one.
  */
-const WORD_TAB_OR_BREAK = /^<(?:[a-z_][\w.-]*:)?(tab|br)\/>$/i
-function xmlText(xml: string, clock: StageClock = NO_CLOCK): string {
+const WORD_TAB_OR_BREAK = /^<(?:[a-z_][\w.-]*:)?(?:(tab)\s*|(br)(?:\s[^>]*)?)\/>$/i
+/** Round 15: round 12's tab and line break, the bare tag only (<w:tab/>, <w:br/>), read as WORD_TAB_OR_BREAK reads it. */
+const ROUND12_TAB_OR_BREAK = /^<(?:[a-z_][\w.-]*:)?(tab|br)\/>$/i
+/**
+ * Round 15: with `round12`, the text as round 12 built it (a tab or break with attributes or whitespace not read), for
+ * WordHeader's joined reading; `seen.added` is set when the text holds a tab or break that round 12 did not read.
+ */
+function xmlText(xml: string, clock: StageClock = NO_CLOCK, round12 = false, seen?: { added: boolean }): string {
   let lt = xml.indexOf('<')
   if (lt < 0) return xmlEntities(xml, clock)
   const out = new TextPieces()
@@ -977,9 +1053,16 @@ function xmlText(xml: string, clock: StageClock = NO_CLOCK): string {
       break
     }
     // Round 7: a tab or a line break under any prefix (<w:tab/>, <x:br/>); only a short tag can be one.
-    const brk = gt - lt <= 64 ? WORD_TAB_OR_BREAK.exec(xml.slice(lt, gt + 1))?.[1] : undefined
-    if (brk === 'tab') out.push('\t')
-    else if (brk === 'br') out.push('\n')
+    const tag = gt - lt <= 64 ? xml.slice(lt, gt + 1) : null
+    const brk = tag === null ? null : WORD_TAB_OR_BREAK.exec(tag)
+    // As in round 7, the element's own name is read in lower case only (<w:TAB/> is no Word tab).
+    let piece = brk?.[1] === 'tab' ? '\t' : brk?.[2] === 'br' ? '\n' : ''
+    // Round 15: round 12 read only the bare tag (a subset of these: the element's name in lower case, as here).
+    if (piece !== '' && (round12 || seen !== undefined) && ROUND12_TAB_OR_BREAK.exec(tag!)?.[1] !== (piece === '\t' ? 'tab' : 'br')) {
+      if (seen !== undefined) seen.added = true
+      if (round12) piece = ''
+    }
+    if (piece !== '') out.push(piece)
     at = gt + 1
     lt = xml.indexOf('<', at)
   }
@@ -1340,15 +1423,20 @@ async function officeWordsOf(read: OfficeRead, entries: ZipEntry[], type: 'docx'
     // header line too (WordHeader: a password list typed as tabbed or comma separated paragraphs).
     const lines = new TextPieces()
     const header = new WordHeader(read.budget)
+    const seen = { added: false }
     let at = 0
     for (;;) {
       tick(read)
       WORD_PARAGRAPH_END.lastIndex = at
       const end = WORD_PARAGRAPH_END.exec(xml)
-      const line = xmlText(xml.slice(at, end === null ? xml.length : end.index), read.budget)
+      const part = xml.slice(at, end === null ? xml.length : end.index)
+      seen.added = false
+      const line = xmlText(part, read.budget, false, seen)
       take(read, line.length + 1)
       element(read)
-      if (!table && header.names(line)) table = true
+      // Round 15: and the paragraph as round 12 built it, for the joined reading; read again only when it differs (a
+      // tab or break with attributes or whitespace), and not kept.
+      if (!table && header.names(line, seen.added ? xmlText(part, read.budget, true) : line)) table = true
       if (at > 0) lines.push('\n')
       lines.push(line)
       if (end === null) break

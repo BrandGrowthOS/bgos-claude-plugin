@@ -137,6 +137,12 @@ const XLSX_MAIN = 'application/vnd.openxmlformats-officedocument.spreadsheetml.s
  * an outbound file's), where 1990 names of 12000 slashes, 23 MB of directory, stalled it for 240 to 370 ms.
  */
 const ZIP_ENTRY_NAME_MAX = 1024
+/**
+ * Email files review round 14: the most entry name bytes of one directory, in all, read before its walk; past it the
+ * file is not typed as Office. A real Office directory's names are a few KB; at the other caps (2000 names of 1024
+ * bytes) the walk decoded 2 MB of names on the main thread, about 13 ms a file, and calls made at once queued them.
+ */
+const ZIP_NAME_BYTES_MAX = 256 * 1024
 
 /** An entry name that could leave the archive's root, or hide what it is. */
 function unsafeEntryName(name: string): boolean {
@@ -223,6 +229,15 @@ function officeTypeOf(bytes: Uint8Array): 'docx' | 'xlsx' | null {
   // Zip64 and multi disk archives are refused, as the backend refuses them.
   if (disk !== 0 || diskWithDir !== 0 || onDisk !== count || count === 0xffff || dirSize === 0xffffffff || dirAt === 0xffffffff) return null
   if (count > ZIP_ENTRIES_MAX || dirAt + dirSize > end) return null
+  // Round 14: the names' lengths summed first, off the fixed headers alone (nothing decoded), fail closed.
+  let nameBytes = 0
+  for (let n = 0, at = dirAt; n < count; n++) {
+    if (at + 46 > end || view.getUint32(at, true) !== 0x02014b50) return null
+    const nameLength = view.getUint16(at + 28, true)
+    nameBytes += nameLength
+    if (nameBytes > ZIP_NAME_BYTES_MAX) return null
+    at += 46 + nameLength + view.getUint16(at + 30, true) + view.getUint16(at + 32, true)
+  }
   const names = new Set<string>()
   let contentTypes: { method: number; packed: number; size: number; local: number } | null = null
   let at = dirAt

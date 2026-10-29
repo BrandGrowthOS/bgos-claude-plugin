@@ -2921,27 +2921,69 @@ test('review round 12: a password list typed with dashes or slashes, and a stric
   assert.equal((await memRefusal('policy.txt', Buffer.from('Rules\nPassword ********\n'))).why, null, 'policy.txt')
 })
 
-test('review round 12: trailing marks are taken off in linear time (255 marks then a letter, and 40000 such cells in a Word file)', async () => {
+/**
+ * Round 15: the least time of `runs` runs of each call, the calls taken in turn (a loaded machine only slows a run, so
+ * the least is the closest to the work itself, and the calls share whatever load there is).
+ */
+async function r15LeastMs(runs: number, ...calls: (() => unknown)[]): Promise<number[]> {
+  const best = calls.map(() => Number.POSITIVE_INFINITY)
+  for (let run = 0; run < runs; run++) {
+    for (const [k, call] of calls.entries()) {
+      const started = performance.now()
+      await call()
+      best[k] = Math.min(best[k]!, performance.now() - started)
+    }
+  }
+  return best
+}
+
+/**
+ * Round 15: linear work on an input 4x longer takes about 4x as long, quadratic work 16x. A run is linear when the
+ * longer input took less than R15_RATIO_MAX times the shorter one (the shorter read as at least R15_FLOOR_MS, so a
+ * run of a few ms is not judged on its noise), and under a generous ceiling.
+ */
+const R15_RATIO_MAX = 8
+const R15_FLOOR_MS = 10
+function r15Linear(label: string, short: number, long: number, ceiling: number): void {
+  const ratio = long / Math.max(short, R15_FLOOR_MS)
+  assert.ok(ratio < R15_RATIO_MAX && long < ceiling, `${label}: ${Math.round(short)} ms, 4x longer ${Math.round(long)} ms (ratio ${ratio.toFixed(1)}, ceiling ${ceiling} ms)`)
+}
+
+test('review round 12 (round 15: timed against an input 4x shorter): trailing marks are taken off in linear time (255 marks then a letter, and 40000 such cells in a Word file)', async () => {
   const C = await import('../lib/email-outbound-content.ts')
   const H = (C as Record<string, unknown>).HEADER_FOR_TESTS as { headerName(cell: string, tableCell?: boolean): string }
   const marks = '.,;:!'
-  let cell = ''
-  for (let i = 0; i < 255; i++) cell += marks[i % marks.length]
-  cell += 'x'
+  const marked = (length: number) => {
+    let cell = ''
+    for (let i = 0; i < length - 1; i++) cell += marks[i % marks.length]
+    return `${cell}x`
+  }
+  const cell = marked(256)
   assert.equal(cell.length, 256)
-  let started = performance.now()
-  for (let i = 0; i < 20_000; i++) H.headerName(cell)
-  let ms = performance.now() - started
-  assert.ok(ms < 500, `20000 cells of 255 marks then a letter took ${Math.round(ms)} ms`)
+  // Round 15: round 12's fixed 500 ms bound failed on a loaded machine (577 to 625 ms under bun, 551 to 860 ms under
+  // node) while the lib was no slower. Each input is timed against one 4x shorter (63 marks or dots then a letter).
+  const short = marked(64)
+  const [hShort, hLong] = await r15LeastMs(3, () => {
+    for (let i = 0; i < 20_000; i++) H.headerName(short)
+  }, () => {
+    for (let i = 0; i < 20_000; i++) H.headerName(cell)
+  })
+  r15Linear('20000 cells of 63 marks then a letter, and of 255', hShort!, hLong!, 5000)
   assert.equal(H.headerName('Password.;:! ,'), 'password')
-  const dots = `${'.'.repeat(255)}x`
-  const cells = `<w:tc><w:p><w:r><w:t>${dots}</w:t></w:r></w:p></w:tc>`.repeat(40)
-  const doc = docxRaw(`<w:tbl>${`<w:tr>${cells}</w:tr>`.repeat(1000)}</w:tbl>`)
-  started = performance.now()
-  const got = await C.outboundContentVerdict(new Uint8Array(doc), 'docx', 'dots.docx', [])
-  ms = performance.now() - started
-  assert.deepEqual(got, { kind: 'ok' })
-  assert.ok(ms < 500, `40000 cells of 255 dots then a letter took ${Math.round(ms)} ms`)
+  const dotsDoc = (length: number) => {
+    const cells = `<w:tc><w:p><w:r><w:t>${'.'.repeat(length - 1)}x</w:t></w:r></w:p></w:tc>`.repeat(40)
+    return new Uint8Array(docxRaw(`<w:tbl>${`<w:tr>${cells}</w:tr>`.repeat(1000)}</w:tbl>`))
+  }
+  const docShort = dotsDoc(64)
+  const docLong = dotsDoc(256)
+  const verdicts: unknown[] = []
+  const [dShort, dLong] = await r15LeastMs(3, async () => {
+    verdicts.push(await C.outboundContentVerdict(docShort, 'docx', 'dots.docx', []))
+  }, async () => {
+    verdicts.push(await C.outboundContentVerdict(docLong, 'docx', 'dots.docx', []))
+  })
+  for (const got of verdicts) assert.deepEqual(got, { kind: 'ok' })
+  r15Linear('40000 Word table cells of 63 dots then a letter, and of 255', dShort!, dLong!, 10_000)
 })
 
 test('review round 12 (round 13: the cap is 260): a relationship target longer than the cap is refused as unsafe before it is split', async () => {
@@ -3092,8 +3134,9 @@ test('review round 13: two column lists with tabs or bars deep, Word\'s spaced e
     ['guide.docx', ['How to reset your password', 'To sign in, enter your username and password, then click OK.', ...R12_FILLER, 'Enter your email, password, and the code from the app.', 'Never share any of these: PINs, passwords, or keys.']],
     ['numbered deep.docx', [...R12_FILLER, '2.\tPasswords', 'Password\t________']],
     ['address top.docx', [['Acme Ltd', '1 High Street', 'London'].join('\n'), 'Dear Sam,', 'Your password was reset today.', ...R12_FILLER]],
-    // Each line of a paragraph counts toward the first five: below a letterhead of five lines, a heading is deep.
-    ['letterhead.docx', [['Acme Ltd', '1 High Street', 'London', 'UK', 'Phone 0123 456'].join('\n'), 'Passwords, PINs', ...R12_FILLER]],
+    // Round 14: each non blank paragraph counts once toward the first five, as in round 12, so a heading below a
+    // letterhead of five lines is still at the top (see the round 14 test); below five paragraphs it is deep.
+    ['letterhead.docx', [['Acme Ltd', '1 High Street', 'London', 'UK', 'Phone 0123 456'].join('\n'), ...R12_FILLER, 'Passwords, PINs']],
   ] as const) {
     assert.equal((await memRefusal(name, r13Paragraphs([...lines]))).why, null, name)
   }
@@ -3112,10 +3155,12 @@ test('review round 13: a sheet or Word table header cell of 3 words that ends wi
     assert.equal((await memRefusal('notes.xlsx', xlsxSheetsOf([[['Account', header], ['gmail', 'ok']]]))).why, null, JSON.stringify(header))
   }
   const C = await import('../lib/email-outbound-content.ts')
-  const H = (C as Record<string, unknown>).HEADER_FOR_TESTS as { headerName(cell: string, tableCell?: boolean): string }
-  assert.equal(H.headerName('Email account password:'), 'email account password')
-  assert.equal(H.headerName('Email account password.'), 'email account password.')
-  assert.equal(H.headerName('Email account password:', false), 'email account password:')
+  const H = (C as Record<string, unknown>).HEADER_FOR_TESTS as { headerName(cell: string, tableCell?: boolean, label?: boolean): string }
+  // Round 14: the 3 word label is read only when asked (a row's label, read beside an account cell).
+  assert.equal(H.headerName('Email account password:', true, true), 'email account password')
+  assert.equal(H.headerName('Email account password:'), 'email account password:')
+  assert.equal(H.headerName('Email account password.', true, true), 'email account password.')
+  assert.equal(H.headerName('Email account password:', false, true), 'email account password:')
 })
 
 /** Round 13: a Word file whose central directory has `count` more entries of these names (no local data of their own). */
@@ -3172,6 +3217,248 @@ test('review round 13: a zip entry name over 1024 bytes is refused before it is 
   for (const name of ['a/..b', 'a/...', '.a/b', 'a/.b', 'a..', 'a/b.', 'a//b', 'a/']) {
     assert.equal(isType(r13LongNames(1, () => name), 'docx'), true, JSON.stringify(name))
   }
+})
+
+// ── review round 14: converge (paragraph counting, the round 13 narrowing, br and tab tags, zip name bytes) ──
+
+/** Round 14: a Word file of these paragraphs, '\t' and '\n' written as the tags given (Word's, or another generator's). */
+function r14Paragraphs(lines: string[], tab = '<w:tab/>', br = '<w:br/>'): Buffer {
+  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  const run = (piece: string) => (piece === '\t' ? `<w:r>${tab}</w:r>` : piece === '\n' ? `<w:r>${br}</w:r>` : piece === '' ? '' : `<w:r><w:t xml:space="preserve">${esc(piece)}</w:t></w:r>`)
+  return docxRaw(lines.map((line) => `<w:p>${line.split(/(\t|\n)/).map(run).join('')}</w:p>`).join(''))
+}
+const R14_LETTERHEAD = ['Alice Smith', '12 Main Street', 'Springfield', 'IL 62701', 'alice@example.com'].join('\n')
+const R14_TITLE = ['Family accounts', 'Updated March 2026', 'Private', ''].join('\n')
+
+test('review round 14: a paragraph counts once toward the first five, whatever its line breaks; each of its lines among them gets the top table check', async () => {
+  const rows = (sep: string, list: string[][]) => list.map((row) => row.join(sep))
+  for (const [name, lines] of [
+    ['letterhead 1.docx', [R14_LETTERHEAD, 'Site, Login, Pass', ...rows(', ', R13_ROWS3)]],
+    ['letterhead 2.docx', [R14_LETTERHEAD, 'Bank, Password', ...rows(', ', R13_ROWS2)]],
+    ['letterhead 3.docx', [R14_LETTERHEAD, 'Account\tPIN', 'Visa\t4921', 'Bank\t7731']],
+    ['title block.docx', [R14_TITLE, 'For the family.', 'Keep it safe.', 'Site\tUser\tPW', ...rows('\t', R13_ROWS3)]],
+    // A line of a top paragraph is judged on its own: the list on the third line of a letterhead.
+    ['header in letterhead.docx', [['Alice Smith', 'Accounts', 'Site\tUser\tPW', ...rows('\t', R13_ROWS3)].join('\n')]],
+  ] as const) {
+    const got = await memRefusal(name, r14Paragraphs([...lines]))
+    assert.equal(got.why, tableSentence6(got.path), name)
+  }
+  for (const [name, lines] of [
+    ['letterhead letter.docx', [R14_LETTERHEAD, 'Dear Sam,', 'Your new password is in the post, as you asked.', ...R12_FILLER]],
+    // Below five paragraphs, a loose header is deep (Known limits), as in round 12.
+    ['deep loose.docx', [R14_LETTERHEAD, ...R12_FILLER, 'Site\tUser\tPW', ...rows('\t', R13_ROWS3)]],
+  ] as const) {
+    assert.equal((await memRefusal(name, r14Paragraphs([...lines]))).why, null, name)
+  }
+})
+
+test('review round 14: below the first five, one other cell needs an account word; a spaced en dash or space run line needs an account or loose cell; ordinary lines go', async () => {
+  const rows = (sep: string, list: string[][]) => list.map((row) => row.join(sep))
+  for (const [name, lines] of [
+    ['account tab.docx', [...R12_FILLER, 'Account\tPassword', ...rows('\t', R13_ROWS2)]],
+    ['website tab.docx', [...R12_FILLER, 'Website\tPassword', ...rows('\t', R13_ROWS2)]],
+    ['bank bar.docx', [...R12_FILLER, 'Bank | Password', ...rows(' | ', R13_ROWS2)]],
+    ['service tab.docx', [...R12_FILLER, 'Service\tPassword', ...rows('\t', R13_ROWS2)]],
+    ['en dash top.docx', [`Site ${R13_EN} Username ${R13_EN} Password`, ...rows(` ${R13_EN} `, R13_ROWS3)]],
+    ['en dash deep.docx', [...R12_FILLER, `Site ${R13_EN} Username ${R13_EN} Password`, ...rows(` ${R13_EN} `, R13_ROWS3)]],
+    ['en dash loose top.docx', [`Site ${R13_EN} Notes ${R13_EN} PIN`, `Visa ${R13_EN} card ${R13_EN} 4921`]],
+    ['spaces deep.docx', [...R12_FILLER, 'Site    Username    Password', ...rows('    ', R13_ROWS3)]],
+  ] as const) {
+    const got = await memRefusal(name, r14Paragraphs([...lines]))
+    assert.equal(got.why, tableSentence6(got.path), name)
+  }
+  for (const [name, lines] of [
+    ['checklist.docx', [...R12_FILLER, 'Wi-Fi\tConnected', 'Password\tChanged', 'Printer\tInstalled']],
+    ['breadcrumb.docx', [...R12_FILLER, 'Home | Passwords', 'Choose a strong one and keep it to yourself.']],
+    ['contents.docx', [...R12_FILLER, 'Introduction\tPage 2', 'Passwords\tPage 4', 'Backups\tPage 6']],
+    ['glossary.docx', [...R12_FILLER, 'Password\tSecret word', 'Phishing\tA fake email']],
+    ['policy title deep.docx', [...R12_FILLER, `IT Policy ${R13_EN} Passwords ${R13_EN} 2026`, 'Use a long one.']],
+    ['policy title top.docx', [`Acme ${R13_EN} IT Policy ${R13_EN} Passwords`, 'Use a long one.', ...R12_FILLER]],
+    ['policy title spaces.docx', [...R12_FILLER, 'IT Policy    Passwords    2026', 'Use a long one.']],
+    ['em dash title top.docx', [`Passwords ${R13_EM} Guide ${R13_EM} Staff`, ...R12_FILLER]],
+  ] as const) {
+    assert.equal((await memRefusal(name, r14Paragraphs([...lines]))).why, null, name)
+  }
+})
+
+test('review round 14: a sheet or Word table label of 3 words that ends with a colon names a password column only beside an account cell', async () => {
+  const pw = 'Hunter2Zebra!'
+  for (const [name, bytes] of [
+    ['list.xlsx', xlsxSheetsOf([[['Account', 'Email account password:'], ['gmail', pw]]])],
+    ['list.docx', docxOf(['Accounts'], [['Account', 'Email account password:'], ['gmail', pw]])],
+    ['user label.xlsx', xlsxSheetsOf([[['User name', 'Your bank PIN:'], ['alice', '4921']]])],
+  ] as const) {
+    const got = await memRefusal(name, bytes)
+    assert.equal(got.why, tableSentence6(got.path), name)
+  }
+  for (const [name, bytes] of [
+    ['how to.xlsx', xlsxSheetsOf([[['Step', 'What to do'], ['Reset your password:', 'Open the portal'], ['Then:', 'Choose a new one']]])],
+    ['how to.docx', docxOf(['How to'], [['Change your password:', 'Open Settings, then Security.'], ['Lock your screen:', 'Press Windows and L.']])],
+  ] as const) {
+    assert.equal((await memRefusal(name, bytes)).why, null, name)
+  }
+})
+
+test('review round 14: tab and line break tags with attributes or whitespace are read (<w:br w:type="textWrapping"/>, <w:br />, <w:tab />)', async () => {
+  const rows = (sep: string, list: string[][]) => list.map((row) => row.join(sep))
+  const list = ['Site\tUser\tPassword', ...rows('\t', R13_ROWS3)].join('\n')
+  for (const [label, tab, br] of [
+    ['textWrapping', '<w:tab/>', '<w:br w:type="textWrapping"/>'],
+    ['page break', '<w:tab/>', '<w:br w:type="page"/>'],
+    ['space', '<w:tab />', '<w:br />'],
+    ['clear', '<w:tab  />', '<w:br w:type="textWrapping" w:clear="all" />'],
+  ] as const) {
+    for (const [where, lines] of [['top', [list]], ['deep', [...R12_FILLER, list]]] as const) {
+      const got = await memRefusal(`breaks ${label} ${where}.docx`, r14Paragraphs([...lines], tab, br))
+      assert.equal(got.why, tableSentence6(got.path), `${label} ${where}`)
+    }
+  }
+  // Only a short tag is one: a br longer than 64 characters is not read as a line break, and other tags are not tabs
+  // or breaks. A tab with attributes is a tab stop (<w:tabs><w:tab w:val="left" w:pos="720"/></w:tabs> in a
+  // paragraph's properties), not a tab: it is not read as one.
+  const C = await import('../lib/email-outbound-content.ts')
+  const X = (C as Record<string, unknown>).HEADER_FOR_TESTS as { xmlText(xml: string): string }
+  assert.equal(X.xmlText('a<w:br w:type="textWrapping"/>b<w:tab />c<w:br />d<x:br/>e<BR/>f'), 'a\nb\tc\nd\nef')
+  assert.equal(X.xmlText(`a<w:br w:x="${'y'.repeat(60)}"/>b`), 'ab')
+  assert.equal(X.xmlText('a<w:brk/>b<w:tabs/>c<w:tab>d<w:br>e'), 'abcde')
+  assert.equal(X.xmlText('<w:pPr><w:tabs><w:tab w:val="left" w:pos="720"/></w:tabs></w:pPr>x'), 'x')
+  const stops = '<w:pPr><w:tabs><w:tab w:val="left" w:pos="720"/><w:tab w:val="right" w:leader="dot" w:pos="9350"/></w:tabs></w:pPr>'
+  const heading = docxRaw(`<w:p>${stops}<w:r><w:t>Passwords</w:t></w:r></w:p><w:p>${stops}<w:r><w:t>Keep them safe.</w:t></w:r></w:p>`)
+  assert.equal((await memRefusal('tab stops.docx', heading)).why, null, 'tab stops')
+})
+
+test('review round 14: a zip directory whose entry names pass 256 KB in all is not typed as Office, before its walk; real files are; 20 at once stall the main thread under 50 ms (shared with inbound)', { timeout: 60_000 }, async () => {
+  const { isType } = await import('../lib/email-files.ts')
+  // 255 names of 1000 bytes (and the two real ones) are under 256 KB; 263 are over.
+  const nameOf = (n: number) => `word/media/${String(n).padStart(4, '0')}${'a'.repeat(985)}`
+  assert.equal(isType(r13LongNames(255, nameOf), 'docx'), true, '255 KB of names')
+  assert.equal(isType(r13LongNames(263, nameOf), 'docx'), false, '263 KB of names')
+  assert.equal(isType(docxOf(['Hello']), 'docx'), true, 'docx')
+  assert.equal(isType(xlsxSheetsOf([[['Item', 'Qty']]]), 'xlsx'), true, 'xlsx')
+  // The round 13 reviewer's shape at the caps: 1990 names of 1024 bytes (2 MB), 20 calls at once.
+  const hostile = r13LongNames(1990, (n) => `word/${String(n).padStart(4, '0')}${'b'.repeat(1015)}`)
+  const started = performance.now()
+  assert.equal(isType(hostile, 'docx'), false)
+  assert.ok(performance.now() - started < 20, `the type check took ${Math.round(performance.now() - started)} ms`)
+  let maxGap = 0
+  let last = performance.now()
+  const beat = setInterval(() => {
+    const now = performance.now()
+    maxGap = Math.max(maxGap, now - last)
+    last = now
+  }, 10)
+  try {
+    const got = await Promise.all(Array.from({ length: 20 }, (_, n) => memRefusal(`memo${n}.docx`, hostile)))
+    maxGap = Math.max(maxGap, performance.now() - last)
+    for (const one of got) assert.match(String(one.why), /is not really a .* file/)
+  } finally {
+    clearInterval(beat)
+  }
+  assert.ok(maxGap < 50, `20 at once stopped the main thread for ${Math.round(maxGap)} ms`)
+})
+
+// ── review round 15: converge (the top check on a paragraph's first five lines, labels beside a lone account cell, account words beside dash lines, round 12's joined paragraph kept) ──
+
+const R15_ROWS = (sep: string, list: string[][]) => list.map((row) => row.join(sep))
+
+test('review round 15: only the first five non blank lines of a top paragraph get the top table check; the letterhead and title block lists stay refused', async () => {
+  // The round 14 reviewer's file: one paragraph of 40 Shift+Enter lines, line 34 a UI line.
+  const notes = Array.from({ length: 40 }, (_, i) => (i === 33 ? 'New password, confirm password' : `Line ${i} of the notes from the meeting.`)).join('\n')
+  const ui = Array.from({ length: 30 }, (_, i) =>
+    i === 8 ? 'Sign in | Forgot password' : i === 15 ? 'Settings | Security | Change password' : i === 22 ? 'Account | Change password' : `Note ${i} from the IT session.`,
+  ).join('\n')
+  for (const [name, lines] of [
+    ['softbreak-notes.docx', [notes]],
+    ['softbreak-ui.docx', ['Weekly IT notes', ui, 'More text follows in the next paragraphs.']],
+    // A blank line (empty, or of spaces only) counts toward nothing: the UI line is still the sixth non blank one.
+    ['softbreak-blank.docx', [['Hi all,', '', 'One', 'Two', '  ', 'Three', 'Four', 'Account | Change password'].join('\n')]],
+  ] as const) {
+    assert.equal((await memRefusal(name, r14Paragraphs([...lines]))).why, null, name)
+  }
+  for (const [name, lines] of [
+    ['letterhead 1.docx', [R14_LETTERHEAD, 'Site, Login, Pass', ...R15_ROWS(', ', R13_ROWS3)]],
+    ['title block.docx', [R14_TITLE, 'For the family.', 'Keep it safe.', 'Site\tUser\tPW', ...R15_ROWS('\t', R13_ROWS3)]],
+    // The fifth non blank line of a top paragraph still gets the top check, a line of spaces only before it.
+    ['header on line 5.docx', [['Alice Smith', 'Accounts', ' ', 'Private', 'Updated 2026', 'Site\tUser\tPW', ...R15_ROWS('\t', R13_ROWS3)].join('\n')]],
+  ] as const) {
+    const got = await memRefusal(name, r14Paragraphs([...lines]))
+    assert.equal(got.why, tableSentence6(got.path), name)
+  }
+})
+
+test('review round 15: a label\'s password word names a column only beside a lone account cell, never beside another label or a phrase that ends in an account word', async () => {
+  const pw = 'Hunter2Zebra!'
+  for (const [name, bytes] of [
+    ['list.xlsx', xlsxSheetsOf([[['Account', 'Email account password:'], ['gmail', pw]]])],
+    ['list.docx', docxOf(['Accounts'], [['Account', 'Email account password:'], ['gmail', pw]])],
+    ['user label.xlsx', xlsxSheetsOf([[['User name', 'Your bank PIN:'], ['alice', '4921']]])],
+    ['site label.xlsx', xlsxSheetsOf([[['Site', 'Your login password:'], ['gmail', pw]]])],
+    ['bank label.docx', docxOf(['Banks'], [['Bank', 'Online banking PIN:'], ['Chase', '4921']])],
+  ] as const) {
+    const got = await memRefusal(name, bytes)
+    assert.equal(got.why, tableSentence6(got.path), name)
+  }
+  for (const [name, bytes] of [
+    ['howto.xlsx', xlsxSheetsOf([[['Task', 'How'], ['Reset your password:', 'Open the portal'], ['Unlock account:', 'Call IT']]])],
+    ['howto column.xlsx', xlsxSheetsOf([[['Reset your password:'], ['Update your email:'], ['Book a room:']]])],
+    ['pin column.xlsx', xlsxSheetsOf([[['Change your PIN:'], ['Update your email:']]])],
+    ['faq.docx', docxOf(['FAQ'], [['Question', 'Answer'], ['Forgot your password?', 'Choose Reset on the sign in page.'], ['Change your password:', 'Open Settings.'], ['Update your login:', 'Ask the IT desk.']])],
+    ['faq.xlsx', xlsxSheetsOf([[['Question'], ['Forgot your password?'], ['Change your password:'], ['Update your login:']]])],
+  ] as const) {
+    assert.equal((await memRefusal(name, bytes)).why, null, name)
+  }
+})
+
+test('review round 15: on a line split only by en or em dashes or space runs, an account word on its own beside the strict one is enough (Service, Bank, App)', async () => {
+  for (const dash of [R13_EN, R13_EM]) {
+    const header = `Service ${dash} Password ${dash} Notes`
+    const rows = [`Netflix ${dash} Tr0ub4dor&3x ${dash} family`, `Spotify ${dash} Blue!Horse77 ${dash} mine`]
+    for (const [name, lines] of [
+      ['service top.docx', [header, ...rows]],
+      ['service deep.docx', [...R12_FILLER, header, ...rows]],
+      ['bank deep.docx', [...R12_FILLER, `Bank ${dash} Password ${dash} Notes`, ...rows]],
+    ] as const) {
+      const got = await memRefusal(name, r14Paragraphs([...lines]))
+      assert.equal(got.why, tableSentence6(got.path), `${name} ${dash === R13_EN ? 'en' : 'em'}`)
+    }
+  }
+  const spaced = await memRefusal('service spaces.docx', r14Paragraphs([...R12_FILLER, 'Service    Password    Notes', 'Netflix    Tr0ub4dor&3x    family']))
+  assert.equal(spaced.why, tableSentence6(spaced.path), 'service spaces')
+  for (const [name, lines] of [
+    ['policy title top.docx', [`Acme ${R13_EN} IT Policy ${R13_EN} Passwords`, 'Use a long one.', ...R12_FILLER]],
+    ['policy title deep.docx', [...R12_FILLER, `IT Policy ${R13_EN} Passwords ${R13_EN} 2026`, 'Use a long one.']],
+    ['em dash title top.docx', [`Passwords ${R13_EM} Guide ${R13_EM} Staff`, ...R12_FILLER]],
+  ] as const) {
+    assert.equal((await memRefusal(name, r14Paragraphs([...lines]))).why, null, name)
+  }
+})
+
+test('review round 15: a paragraph is also judged as one joined line, as round 12 read it, so a header cell split across a line break is refused', async () => {
+  for (const [name, lines, br] of [
+    // A header wrapped after its comma, at the top and below the first five.
+    ['wrapped top.docx', ['Site, Username,\nPassword', ...R15_ROWS(', ', R13_ROWS3)], '<w:br/>'],
+    ['wrapped deep.docx', [...R12_FILLER, 'Site, Username,\nPassword', ...R15_ROWS(', ', R13_ROWS3)], '<w:br/>'],
+    // A cell that spans a break: round 12 read "Master\nPassword" as master password.
+    ['split cell top.docx', ['Website, Login, Master\nPassword', ...R15_ROWS(', ', R13_ROWS3)], '<w:br/>'],
+    ['split cell tab top.docx', ['Site\tUser\tOld\nPassword', ...R15_ROWS('\t', R13_ROWS3)], '<w:br/>'],
+    // Round 12's own text: a break with attributes was not read, so "Pass" and "word" were one word.
+    ['attribute break deep.docx', [...R12_FILLER, 'Site, Login, Pass\nword', ...R15_ROWS(', ', R13_ROWS3)], '<w:br w:type="textWrapping"/>'],
+  ] as const) {
+    const got = await memRefusal(name, r14Paragraphs([...lines], '<w:tab/>', br))
+    assert.equal(got.why, tableSentence6(got.path), name)
+  }
+  // Round 12 sent these, and so does the joined reading.
+  for (const [name, lines] of [
+    ['address.docx', [R14_LETTERHEAD, 'Dear Sam,', 'Your new password is in the post, as you asked.', ...R12_FILLER]],
+    ['notes.docx', [Array.from({ length: 12 }, (_, i) => (i === 8 ? 'Email, then PIN' : `Line ${i}, of the notes`)).join('\n')]],
+  ] as const) {
+    assert.equal((await memRefusal(name, r14Paragraphs([...lines]))).why, null, name)
+  }
+  const C = await import('../lib/email-outbound-content.ts')
+  const X = (C as Record<string, unknown>).HEADER_FOR_TESTS as { xmlText(xml: string, clock?: unknown, round12?: boolean): string }
+  // Round 12's text: only a bare tab or br tag is read.
+  assert.equal(X.xmlText('a<w:br w:type="textWrapping"/>b<w:tab />c<w:br/>d<w:tab/>e', undefined, true), 'abc\nd\te')
+  assert.equal(X.xmlText('a<w:br w:type="textWrapping"/>b<w:tab />c<w:br/>d<w:tab/>e'), 'a\nb\tc\nd\te')
 })
 
 test('no em or en dash in the new module', async () => {
