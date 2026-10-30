@@ -797,6 +797,34 @@ test('decideHeldFailure: a crash loop is failed even with no failed record yet, 
   )
 })
 
+test('decideHeldFailure: run.sh\'s escalation (outcome=wedged, kc-server 2026-10-29/30) is a failed launch the watcher reports, even over a claude the table reads as running (a zombie)', () => {
+  const base = { prevState: 'supervised', prevReason: 'canonical', fresh: false, statusAgeMs: 30_000 }
+  for (const claudeRunning of [false, true, null]) {
+    assert.deepEqual(
+      decideHeldFailure({ ...base, claudeRunning, launchOutcome: 'wedged', failCount: null }),
+      { state: 'failed', reason: 'launch_failing:wedged' },
+      `claudeRunning ${claudeRunning}`,
+    )
+  }
+  // The lap after the escalation overwrites launch-status with hoai's refusal; the fail count keeps the wedge.
+  assert.deepEqual(
+    decideHeldFailure({ ...base, claudeRunning: true, launchOutcome: 'already-supervised', failCount: 5 }),
+    { state: 'failed', reason: 'launch_failing:wedged' },
+  )
+  assert.deepEqual(
+    decideHeldFailure({ ...base, claudeRunning: true, launchOutcome: 'takeover-in-progress', failCount: 400 }),
+    { state: 'failed', reason: 'launch_failing:wedged' },
+  )
+})
+
+test('decideHeldFailure control: no wedge before the escalation, behind a live daemon, on an old status, or on a lap that came up', () => {
+  const base = { prevState: 'supervised', prevReason: 'canonical', fresh: false, claudeRunning: true, statusAgeMs: 30_000 }
+  assert.equal(decideHeldFailure({ ...base, launchOutcome: 'already-supervised', failCount: 4 }), null, 'two WEDGED laps: not yet')
+  assert.equal(decideHeldFailure({ ...base, fresh: true, launchOutcome: 'wedged', failCount: 9 }), null, 'a live daemon publishing state proves it up')
+  assert.equal(decideHeldFailure({ ...base, launchOutcome: 'wedged', failCount: 9, statusAgeMs: 3 * 60 * 60_000 }), null, 'an old status is no loop in progress')
+  assert.equal(decideHeldFailure({ ...base, launchOutcome: 'live', failCount: 9 }), null, 'a launch that came up is not a wedge, whatever the count left behind')
+})
+
 test('decideHeldFailure: an old launch-status is not a loop in progress, and a healthy agent is untouched', () => {
   assert.equal(
     decideHeldFailure({ prevState: 'supervised', prevReason: 'canonical', fresh: false, claudeRunning: false, launchOutcome: 'exited-during-startup', failCount: 12, statusAgeMs: 3 * 60 * 60_000 }),
