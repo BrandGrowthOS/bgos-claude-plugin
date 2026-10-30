@@ -46,13 +46,23 @@
 // No em or en dashes anywhere in this file (project copy rule).
 
 import { EMAIL_SEND_REFUSAL } from './private-turn.mjs'
-import { AGENT_EMAIL_OUTBOUND_MAX_FILES, emailFilesCountWords, outboundFileLexicalRefusal, readOutboundFiles, type OutboundReadAll } from './email-outbound-files.ts'
+import { AGENT_EMAIL_OUTBOUND_MAX_FILES, emailFilesCountWords, outboundFileLexicalRefusal, readOutboundFiles, type OutboundFileCtx, type OutboundReadAll } from './email-outbound-files.ts'
 import { scanText } from './secret-scan.ts'
 import { isOwnSendingTool } from './hard-floor.ts'
 import { EMAIL_SEND_CARD_TEXT_MAX, parsePreviewObject } from './email-send-approval.ts'
 
 /** The capability token: this daemon ships both tools (declared-capabilities.ts). */
 export const EMAIL_SEND = 'email_send'
+
+/**
+ * The files token (the backend's EMAIL_FILES, backend/src/agent-email/email-capability-tokens.ts): "my email_draft and
+ * email_send tools take `files: [{path}]`, and I run the rule 4 checks (secret path refusal, secret content scan)
+ * before each upload". Declared beside EMAIL_SEND only while shipsEmailFilesTools() holds. The backend serves the
+ * files send line and the files paragraph only to a caller that declares both (a caller with email_send alone hears
+ * main's text only sentence), and refuses an upload, or a draft or send naming fileIds, from a pairing whose stored
+ * list lacks it (403 files_not_declared).
+ */
+export const EMAIL_FILES = 'email_files'
 
 export const EMAIL_DRAFT_TOOL = 'email_draft'
 export const EMAIL_SEND_TOOL = 'email_send'
@@ -122,9 +132,9 @@ export const AGENT_EMAIL_SEND_SENTENCE =
 export const AGENT_EMAIL_FILES_SENTENCE =
   'Files: you can attach files to an email only when your owner asked for it in their own chat or in a task ' +
   'they scheduled. Safe types only (PDF, pictures, text, Word and Excel), at most 10 files and 25 MB in all. ' +
-  'An email with a file follows your usual send setting, but it waits for your owner\'s tap when your owner ' +
-  'asks before every send or when a file could not be checked for viruses. Key, password and sign in files ' +
-  'are never attached.'
+  'An email with a file follows your usual send setting, but it waits for your owner\'s tap in Send for me ' +
+  'while your owner\'s Always ask before risky actions is on, or when a file could not be checked for viruses. ' +
+  'Key, password and sign in files are never attached.'
 
 /**
  * Rule 2, said to the agent: files in a turn that is not the owner's own ask
@@ -196,6 +206,12 @@ export interface EmailToolDeps {
    * owner's user id; a test passes its own scratch home.
    */
   readFiles?: (paths: readonly string[]) => Promise<OutboundReadAll>
+  /**
+   * Final pre push fix: the ctx of every file check of this call that runs here (the lexical step before the read,
+   * and the default reader): server.ts outboundFileCtx(), with the owner's user id, this daemon's credential and its
+   * own Claude and HOAI folders wherever they were moved (runtimeDirs).
+   */
+  fileCtx?: OutboundFileCtx
 }
 
 /** What the approval step lets a send go with (see `approve`). */
@@ -361,6 +377,23 @@ export function shipsEmailTools(
   )
 }
 
+/**
+ * Final pre push fix: does this build ship the files capable tools? Both tools, each with the signature rule
+ * (shipsEmailTools), each taking `files` as a list and each telling the agent the files paragraph. EMAIL_FILES is
+ * declared on the heartbeat, the pair exchange and the canon fetch only while this holds, so a build that lost the
+ * files argument stops promising it and the backend serves the text only send sentence instead.
+ */
+export function shipsEmailFilesTools(
+  decls: ReadonlyArray<{ name: string; description: string; inputSchema?: unknown }> = EMAIL_TOOL_DECLS,
+): boolean {
+  if (!shipsEmailTools(decls)) return false
+  return [EMAIL_DRAFT_TOOL, EMAIL_SEND_TOOL].every((name) => {
+    const decl = decls.find((d) => d.name === name)
+    const files = (decl?.inputSchema as { properties?: Record<string, { type?: unknown }> } | undefined)?.properties?.files
+    return decl !== undefined && decl.description.includes(AGENT_EMAIL_FILES_SENTENCE) && files?.type === 'array'
+  })
+}
+
 const ALLOWED_ARGS: ReadonlySet<string> = new Set(Object.keys(TARGET_PROPERTIES))
 
 /** A uuid as the server's IsUUID() reads one: an email id the server would refuse never reaches a card or the network. */
@@ -510,17 +543,17 @@ function secretRefusal(tool: string, parts: string[], secrets: readonly string[]
 }
 
 /** Why this call would be refused before the network (its arguments, a secret in it), or null. */
-export function emailCallRefusal(name: string, rawArgs: unknown, secrets: readonly string[]): string | null {
+export function emailCallRefusal(name: string, rawArgs: unknown, secrets: readonly string[], fileCtx: OutboundFileCtx = {}): string | null {
   const parsed = parseArgs(name, rawArgs)
   if (!parsed.ok) return parsed.error
   const { target, text, files } = parsed
-  return secretRefusal(name, target.kind === 'new' ? [target.to, target.subject, text] : [text], secrets) ?? filesLexicalRefusal(name, files)
+  return secretRefusal(name, target.kind === 'new' ? [target.to, target.subject, text] : [text], secrets) ?? filesLexicalRefusal(name, files, fileCtx)
 }
 
 /** Rule 4's steps 1 and 2 on every path, with no file system call: why one is refused, or null. */
-function filesLexicalRefusal(tool: string, files: readonly string[]): string | null {
+function filesLexicalRefusal(tool: string, files: readonly string[], fileCtx: OutboundFileCtx = {}): string | null {
   for (const path of files) {
-    const why = outboundFileLexicalRefusal(path)
+    const why = outboundFileLexicalRefusal(path, fileCtx)
     if (why) return `${tool} did not start: ${why} Nothing was saved or sent.`
   }
   return null
@@ -534,10 +567,10 @@ function filesLexicalRefusal(tool: string, files: readonly string[]): string | n
  * card, a chat row or a push. A preview that is not the arguments is still
  * scanned for a secret. Null when it passes, or for any other tool.
  */
-export function emailSendPreflight(toolName: string, inputPreview: unknown, secrets: readonly string[]): string | null {
+export function emailSendPreflight(toolName: string, inputPreview: unknown, secrets: readonly string[], fileCtx: OutboundFileCtx = {}): string | null {
   if (!isOwnSendingTool(toolName)) return null
   const args = parsePreviewObject(inputPreview)
-  if (args) return emailCallRefusal(EMAIL_SEND_TOOL, args, secrets)
+  if (args) return emailCallRefusal(EMAIL_SEND_TOOL, args, secrets, fileCtx)
   return secretRefusal(EMAIL_SEND_TOOL, [typeof inputPreview === 'string' ? inputPreview : ''], secrets)
 }
 
@@ -637,6 +670,43 @@ function echoesFiles(answer: unknown, ids: readonly string[]): boolean {
   return echoed.size === ids.length && ids.every((id) => echoed.has(id))
 }
 
+/** The server's refusal code (its JSON body's `code`, as bgosPost keeps the body on the error), or null. */
+function codeOf(err: unknown): string | null {
+  const body = (err as { body?: unknown } | null)?.body
+  if (typeof body !== 'string' || body === '') return null
+  try {
+    const parsed: unknown = JSON.parse(body)
+    const code = parsed && typeof parsed === 'object' ? (parsed as { code?: unknown }).code : undefined
+    return typeof code === 'string' && /^[a-z_]{1,64}$/.test(code) ? code : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Final pre push fix: what is left of a call that failed after `count` files were handed over (the server took
+ * them; no draft or send claimed them). The server's unclaimed sweep deletes such a file within a day
+ * (sweepUnattachedFiles); the agent has no route to delete one, so the words say so instead of "nothing".
+ */
+function nothingSent(count: number): string {
+  if (count === 0) return 'nothing was saved or sent'
+  return `no email was saved or sent, and the ${count} file${count === 1 ? '' : 's'} already handed over ${count === 1 ? 'is' : 'are'} deleted by the server within a day`
+}
+const handedOverForIt = (count: number): string =>
+  `the ${count} file${count === 1 ? '' : 's'} handed over for it ${count === 1 ? 'is' : 'are'} deleted by the server within a day`
+
+/** Final pre push fix: an upload the server refused, said plainly (its two files codes), or with the server's words. */
+function uploadRefusal(name: string, file: string, err: unknown, count: number): string {
+  const code = codeOf(err)
+  if (code === 'files_not_declared') {
+    return `${name} did not start: the server does not yet know this HOAI plugin can attach files, so ${nothingSent(count)}. Do not try again now; tell your owner the HOAI plugin needs to reconnect (or update) before it can attach files. You can save the email without files.`
+  }
+  if (code === 'files_upload_limit') {
+    return `${name} did not start: the server already holds 20 files or 50 MB of yours that no email has taken yet, so it did not take ${file} and ${nothingSent(count)}. Do not try again now; those files are deleted within a day, or tell your owner.`
+  }
+  return `${name} did not start: the server did not take ${file}, so ${nothingSent(count)}: ${errorText(err)}`
+}
+
 const statusOf = (err: unknown): number | null => {
   const status = (err as { status?: unknown } | null)?.status
   if (typeof status === 'number') return status
@@ -686,9 +756,9 @@ async function handleFilesCall(
   if (!basis || (basis.kind !== 'owner_message' && basis.kind !== 'owner_task') || typeof basis.id !== 'string' || basis.id === '' || basis.askOwner === true) {
     return fail(emailFilesTurnRefusal(name))
   }
-  const lexical = filesLexicalRefusal(name, paths)
+  const lexical = filesLexicalRefusal(name, paths, deps.fileCtx)
   if (lexical) return fail(lexical)
-  const read = await (deps.readFiles ?? ((p) => readOutboundFiles(p, { secrets: deps.secrets })))(paths)
+  const read = await (deps.readFiles ?? ((p) => readOutboundFiles(p, { ...(deps.fileCtx ?? {}), secrets: deps.secrets ?? deps.fileCtx?.secrets })))(paths)
   if (!read.ok) return fail(`${name} did not start: ${read.error} Nothing was saved or sent.`)
   const reason = { kind: basis.kind, id: basis.id }
   const ids: string[] = []
@@ -699,8 +769,10 @@ async function handleFilesCall(
     } catch (err) {
       if (statusOf(err) === 404) return fail(EMAIL_FILES_OLD_SERVER)
       return fail(serverAnswered(err)
-        ? `${name} did not start: the server did not take ${file.name}, so nothing was saved or sent: ${errorText(err)}`
-        : `${name} did not start: HOAI got no answer while handing over ${file.name}, so nothing was saved or sent. ${errorText(err)}`)
+        ? uploadRefusal(name, file.name, err, ids.length)
+        : ids.length === 0
+          ? `${name} did not start: HOAI got no answer while handing over ${file.name}, so no email was saved or sent; if the server did take the file, it deletes it within a day. ${errorText(err)}`
+          : `${name} did not start: HOAI got no answer while handing over ${file.name}, so ${nothingSent(ids.length)}. ${errorText(err)}`)
     }
     const stored = readUploaded(answer)
     if (!stored) return fail(EMAIL_FILES_OLD_SERVER)
@@ -712,7 +784,7 @@ async function handleFilesCall(
       answer = await deps.post(AGENT_EMAIL_DRAFT_PATH, { ...body, basis: reason, fileIds: ids }, caller)
     } catch (err) {
       return fail(serverAnswered(err)
-        ? `email_draft failed, no draft was saved: ${errorText(err)}`
+        ? `email_draft failed, no draft was saved, and ${handedOverForIt(ids.length)}: ${errorText(err)}`
         : `email_draft did not get an answer, so the draft may have been saved: do not save it again; tell your owner to look in the Email chat. ${errorText(err)}`)
     }
     if (!echoesFiles(answer, ids)) {
@@ -730,7 +802,7 @@ async function handleFilesCall(
     answer = await deps.post(AGENT_EMAIL_SEND_PATH, { ...body, basis: reason, fileIds: ids }, caller)
   } catch (err) {
     return fail(serverAnswered(err)
-      ? `email_send failed, so treat it as not sent and tell your owner: ${errorText(err)}`
+      ? `email_send failed, so treat it as not sent and tell your owner; ${handedOverForIt(ids.length)}: ${errorText(err)}`
       : `email_send did not get an answer, so the email may have been sent: do not send it again; tell your owner to look in the Email chat. ${errorText(err)}`)
   }
   if (!echoesFiles(answer, ids)) {

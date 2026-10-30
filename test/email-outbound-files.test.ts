@@ -19,7 +19,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -3578,4 +3578,147 @@ test('no em or en dash in the new module', async () => {
     const src = readFileSync(new URL(`../lib/${file}`, import.meta.url), 'utf8')
     assert.equal(/[\u2013\u2014]/.test(src), false, file)
   }
+})
+
+// ── final pre push fix (plugin side): the swap check, the shown name, the moved runtime folders ───────────────
+
+/** The reader of one file, exported: its file (name, realPath) or its sentence. */
+async function readOne(path: string, ctx: Record<string, unknown>): Promise<any> {
+  const lib = await m()
+  assert.equal(typeof lib.readOutboundFile, 'function')
+  return lib.readOutboundFile(path, ctx)
+}
+
+const changedSentence = (path: string) => `${path} changed while HOAI read it, so it is not attached.`
+
+test('final fix: a path that leads somewhere else when HOAI looks again after opening it is refused (a parent folder swapped for a junction)', async (t) => {
+  const home = scratchHome(t)
+  mkdirSync(join(home, 'docs', 'sw'), { recursive: true })
+  mkdirSync(join(home, '.ssh'), { recursive: true })
+  const clean = join(home, 'docs', 'sw', 'report.pdf')
+  writeFileSync(clean, PDF)
+  // The file the swapped parent would lead to: a PDF of its own (another file number) inside a key folder.
+  const secret = join(home, '.ssh', 'report.pdf')
+  writeFileSync(secret, Buffer.concat([PDF, Buffer.from('% rig dummy\n')]))
+  const other = join(home, 'docs', 'other.pdf')
+  writeFileSync(other, Buffer.concat([PDF, Buffer.from('% another\n')]))
+  // realpath answers the clean path first (the checks pass), then where the path leads once the parent was swapped:
+  // the probe's race (docs/sw renamed and a junction docs/sw -> home/.ssh made), with lstat and open real.
+  const swapTo = (second: string) => {
+    let n = 0
+    return { realpath: async () => (n++ === 0 ? clean : second) }
+  }
+  assert.equal((await readOne(clean, { home, fs: swapTo(secret) })).error, changedSentence(clean), 'into a key folder')
+  assert.equal((await readOne(clean, { home, fs: swapTo(other) })).error, changedSentence(clean), 'onto another plain file')
+  // The very same file (a second name of it in the key folder): the second look still runs steps 1 and 2.
+  const sameInKeys = join(home, '.ssh', 'same.pdf')
+  linkSync(clean, sameInKeys)
+  assert.equal((await readOne(clean, { home, fs: swapTo(sameInKeys) })).error, changedSentence(clean), 'the same file, now reached through a key folder')
+  // A second look that cannot resolve at all is refused the same way.
+  let n = 0
+  const gone = { realpath: async () => { if (n++ === 0) return clean; throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }) } }
+  assert.equal((await readOne(clean, { home, fs: gone })).error, changedSentence(clean), 'gone')
+  // The control: the same answer twice goes, and the second look was really taken.
+  let looks = 0
+  const steady = { realpath: async () => { looks++; return clean } }
+  const read = await readOne(clean, { home, fs: steady })
+  assert.equal(read.ok, true, JSON.stringify(read.error))
+  assert.equal(looks, 2, 'realpath again after the open')
+  // The real file system, no injection: it goes.
+  assert.equal((await readOne(clean, { home })).ok, true)
+})
+
+test('final fix: a file swapped in place between the check and the open is refused by the handle check (the inode)', async () => {
+  // lstat sees file 7, the open lands on file 8 and the second look sees file 8 too: only the handle check sees it.
+  const stats = [7, 8]
+  let lstats = 0
+  const stat = (ino: number) => ({ isFile: () => true, size: PDF.length, dev: 1, ino })
+  const fs = {
+    realpath: async (p: string) => p,
+    lstat: async () => stat(stats[Math.min(lstats++, 1)]!),
+    open: async () => ({
+      stat: async () => stat(8),
+      read: async (buffer: Uint8Array, offset: number, length: number, position: number) => {
+        const n = Math.max(0, Math.min(length, PDF.length - position))
+        buffer.set(PDF.subarray(position, position + n), offset)
+        return { bytesRead: n }
+      },
+      close: async () => {},
+    }),
+  }
+  const path = `${MEM_HOME}\\Documents\\q3.pdf`
+  assert.equal((await readOne(path, { home: MEM_HOME, fs })).error, changedSentence(path))
+  // The control: the same file number all through goes.
+  lstats = 0
+  stats[0] = 8
+  assert.equal((await readOne(path, { home: MEM_HOME, fs })).ok, true)
+})
+
+test('final fix: the name the owner and the recipient see is the name of the file really read, not of the link', async (t) => {
+  const home = scratchHome(t)
+  const real = join(home, 'docs', 'passport.pdf')
+  writeFileSync(real, PDF)
+  const link = join(home, 'docs', 'invoice.pdf')
+  const via = { realpath: async () => real }
+  const read = await readOne(link, { home, fs: via })
+  assert.equal(read.ok, true, JSON.stringify(read.error))
+  assert.equal(read.file.name, 'passport.pdf', 'the real file\'s own name')
+  assert.equal(read.file.path, link, 'the path as the agent named it stays')
+  assert.equal(read.file.realPath, real)
+  // A short (8.3) or other cased spelling shows the long, real name.
+  const long = join(home, 'docs', 'Quarterly report 2026.pdf')
+  writeFileSync(long, PDF)
+  const short = await readOne(join(home, 'docs', 'QUARTE~1.PDF'), { home, fs: { realpath: async () => long } })
+  assert.equal(short.file.name, 'Quarterly report 2026.pdf')
+  // No link: the same name.
+  assert.equal((await readOne(real, { home })).file.name, 'passport.pdf')
+})
+
+test('final fix: a moved Claude config folder and a moved HOAI state folder are refused as HOAI or Claude folders, before any file system call', async () => {
+  const lib = await m()
+  const runtimeDirs = ['D:\\Agents\\Claude-Work', '/srv/hoai/state/', 'E:\\hoai\\..\\hoai-state.']
+  for (const path of [
+    'D:\\Agents\\Claude-Work\\paste-cache\\notes.txt',
+    'd:/agents/claude-work/notes.txt',
+    'D:\\AGENTS\\Claude-Work.\\projects\\x\\summary.pdf',
+    'D:\\Agents\\Claude-Work',
+    '/srv/hoai/state/12/notes.txt',
+    '/srv/hoai//state/./12/../12/report.pdf',
+    'E:\\hoai-state\\12\\notes.txt',
+  ]) {
+    const { calls, fs } = spyFs()
+    assert.equal(
+      await refusal(path, { home: 'C:\\Users\\kc', fs, runtimeDirs }),
+      `${path} looks like a key or password file, so it is never attached. ${NO_WAY_AROUND}`,
+      path,
+    )
+    assert.deepEqual(calls, [], `${path}: refused before any file system call`)
+    assert.match(String(lib.outboundFileLexicalRefusal(path, { home: 'C:\\Users\\kc', runtimeDirs })), /looks like a key or password file/, `${path}: the preflight`)
+    assert.equal(lib.outboundFileLexicalRefusal(path, { home: 'C:\\Users\\kc' }), null, `${path}: the gap without the folders`)
+  }
+  // Neighbours go: a longer name beside the folder, the folder above it.
+  for (const path of ['D:\\Agents\\Claude-Work2\\notes.txt', 'D:\\Agents\\notes.txt', '/srv/hoai/stateful/notes.txt', 'E:\\hoai\\notes.txt']) {
+    assert.equal(lib.outboundFileLexicalRefusal(path, { home: 'C:\\Users\\kc', runtimeDirs }), null, path)
+  }
+  // A folder that holds the home (or is it), the top of a drive and a relative or network value are not taken as one:
+  // refusing them would refuse every file of the owner, and the name patterns still hold ~/.claude and ~/.bgos-*.
+  for (const dir of ['C:\\Users\\kc', 'C:\\Users', 'C:\\', '/', 'relative\\dir', '\\\\host\\share', '']) {
+    assert.equal(lib.outboundFileLexicalRefusal('C:\\Users\\kc\\Documents\\q3.pdf', { home: 'C:\\Users\\kc', runtimeDirs: [dir] }), null, JSON.stringify(dir))
+  }
+  assert.match(String(lib.outboundFileLexicalRefusal('C:\\Users\\kc\\.claude\\notes.txt', { home: 'C:\\Users\\kc', runtimeDirs: ['C:\\Users\\kc'] })), /looks like a key/)
+})
+
+test('final fix: a real file in a moved config folder is refused, and so is a link that leads into it', async (t) => {
+  const home = scratchHome(t)
+  const cfg = join(home, '..', 'claude-work')
+  mkdirSync(join(cfg, 'paste-cache'), { recursive: true })
+  const pasted = join(cfg, 'paste-cache', 'notes.txt')
+  writeFileSync(pasted, 'Agenda: chairs and lunch.\n')
+  assert.equal(await refusal(pasted, { home }), null, 'the gap: a moved folder matches no name pattern')
+  assert.equal(await refusal(pasted, { home, runtimeDirs: [cfg] }), `${pasted} looks like a key or password file, so it is never attached. ${NO_WAY_AROUND}`)
+  const link = join(home, 'docs', 'agenda.txt')
+  assert.equal(
+    await refusal(link, { home, runtimeDirs: [cfg], fs: { realpath: async () => pasted } }),
+    `${link} leads to a key or password file (HOAI followed its links), so it is never attached. ${NO_WAY_AROUND}`,
+  )
 })

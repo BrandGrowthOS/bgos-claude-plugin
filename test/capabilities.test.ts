@@ -246,6 +246,7 @@ test('the daemon\'s own base declaration reaches the fetch, boards_playbook incl
     'ask_multi_select',
     'email_label',
     'email_send',
+    'email_files',
     'hard_floor',
     'hard_floor_rules_2',
   ])

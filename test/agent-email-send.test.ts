@@ -826,7 +826,9 @@ test('both tool descriptions say the owner\'s signature is added and never to si
   assert.ok(byName.get('email_send')!.description.includes(REFUSAL))
   // Always ask (Data 2026-10-13): the agent is told a send waits for the owner's approval on a card.
   assert.match(byName.get('email_send')!.description, /Always ask/)
-  assert.equal(/Always ask/.test(byName.get('email_draft')!.description), false, 'a draft is not a send')
+  // The files paragraph (the canon's words, byte for byte; final pre push fix) names Always ask before risky actions as
+  // what holds a files email in Send for me; the draft's own words still never say a draft waits for an approval.
+  assert.equal(/Always ask/.test(byName.get('email_draft')!.description.replace(m.AGENT_EMAIL_FILES_SENTENCE, '')), false, 'a draft is not a send')
   assert.equal(m.EMAIL_SIGNATURE_SENTENCE, SIGNATURE)
 })
 

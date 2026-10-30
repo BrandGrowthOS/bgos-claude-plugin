@@ -265,7 +265,10 @@ test('the self probe still holds, so email_label is still declared, and no new t
   for (const authMode of ['pairing', 'apikey'] as const) {
     const declared = declaredCapabilities({ canInjectGoal: false, floorHook: false, authMode })
     assert.equal(declared.filter((t) => t === 'email_label').length, 1)
-    assert.equal(declared.some((t) => /attach|email_file|read_files/.test(t)), false, declared.join(','))
+    // email_files (step 2, outbound) is the SEND side's token: it rides the email tools' files argument
+    // (lib/agent-email-tools.ts shipsEmailFilesTools), never the inbound read switch, so it is the one name let through.
+    assert.equal(declared.some((t) => /attach|email_file|read_files/.test(t) && t !== 'email_files'), false, declared.join(','))
+    assert.equal(declared.indexOf('email_files'), declared.indexOf('email_send') + 1, 'the send side token sits beside email_send')
     assert.ok(declared.length <= 32)
   }
 })

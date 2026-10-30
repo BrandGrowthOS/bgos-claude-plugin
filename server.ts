@@ -194,7 +194,7 @@ import {
   type EmailSendBasis,
   type EmailSendGo,
 } from './lib/agent-email-tools.js'
-import { readOutboundFiles } from './lib/email-outbound-files.js'
+import { readOutboundFiles, type OutboundFileCtx } from './lib/email-outbound-files.js'
 import {
   EMAIL_SEND_FLOOR_MATCH,
   EMAIL_SEND_FLOOR_TOOL,
@@ -3534,8 +3534,9 @@ const mcp = new Server(
       'on this computer>"} on `email_draft` or `email_send`. Safe types only (PDF,',
       'pictures, text, Word and Excel), at most 10 files and 25 MB in all. An',
       'email with a file follows your usual send setting, but it waits for your',
-      'owner\'s tap when your owner asks before every send or when a file could',
-      'not be checked for viruses; there is no approval card for it in your chat.',
+      'owner\'s tap in Send for me while your owner\'s Always ask before risky',
+      'actions is on, or when a file could not be checked for viruses; there is',
+      'no approval card for it in your chat.',
       'Key, password and sign in files, anything in a HOAI or Claude folder and',
       'the files of an email you received are never attached; HOAI refuses them',
       'and says why. When HOAI refuses a file, never copy, rename, retype or paste',
@@ -3639,7 +3640,7 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
   // is not plain letters, a key it does not take) never reaches the owner's
   // card, which would carry it into a chat row and a push: denied here, before
   // the floor, and the line says why without repeating it.
-  const emailRefusal = emailSendPreflight(tool_name, input_preview, [AUTH.mode === 'pairing' ? AUTH.pairingToken : AUTH.apiKey])
+  const emailRefusal = emailSendPreflight(tool_name, input_preview, [AUTH.mode === 'pairing' ? AUTH.pairingToken : AUTH.apiKey], outboundFileCtx())
   if (emailRefusal) {
     // Take (delete) the hook's record for this call too, so it can never pair
     // with a later request and lend that card this email's start.
@@ -3785,7 +3786,7 @@ function relayPermissionToOwner(
         toolName: tool_name,
         inputPreview: input_preview,
         record: floorRecord,
-        refusal: (fields) => emailCallRefusal('email_send', fields, [AUTH.mode === 'pairing' ? AUTH.pairingToken : AUTH.apiKey]),
+        refusal: (fields) => emailCallRefusal('email_send', fields, [AUTH.mode === 'pairing' ? AUTH.pairingToken : AUTH.apiKey], outboundFileCtx()),
       })
     : null
   if (emailCard?.refused) {
@@ -8465,7 +8466,9 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
         post: (path, body, headers) => bgosPost(path, body, { headers, ...(path === AGENT_EMAIL_OUTBOUND_FILES_PATH ? { timeoutMs: UPLOAD_TIMEOUT_MS } : {}) }),
         // Rule 4 and rule 3's local half on every file; any other person's lane is a secret too, and a text file that
         // holds this daemon's own credential is refused as the email's words are.
-        readFiles: (paths) => readOutboundFiles(paths, { actorUserId: USER_ID, secrets: [AUTH.mode === 'pairing' ? AUTH.pairingToken : AUTH.apiKey] }),
+        readFiles: (paths) => readOutboundFiles(paths, outboundFileCtx()),
+        // The tool's own lexical step (before any read) gets the same ctx, the moved folders included.
+        fileCtx: outboundFileCtx(),
         assistantId: ASSISTANT_ID,
         basis: emailSendReason,
         // An email that carries this daemon's own credential never leaves.
@@ -8619,6 +8622,20 @@ const CURSOR_FILE_PATH = resolveCursorFilePath({
   assistantId: ASSISTANT_ID,
   cwd: process.cwd(),
 })
+
+// Outbound email files, final pre push fix: this daemon's own Claude and HOAI folders wherever they were moved, which
+// the name patterns (~/.claude*, ~/.bgos-*) cannot see: the resolved CLAUDE_CONFIG_DIR, and the plugin state folder
+// as agent-inventory resolves it (BGOS_PLUGIN_STATE_DIR trimmed, else ~/.bgos-plugin-state) and as the cursor store
+// does (its value untrimmed). lib/email-outbound-files.ts refuses a file at or below any of them (runtimeDirs).
+const OUTBOUND_RUNTIME_DIRS: readonly string[] = Object.freeze([
+  CLAUDE_CONFIG_DIR,
+  pathResolve(pathDirname(pluginStateDirFor({ env: process.env, home: homedir(), assistantId: ASSISTANT_ID, cwd: process.cwd() }))),
+  pathResolve(pathDirname(pathDirname(CURSOR_FILE_PATH))),
+])
+/** The ctx of every outbound file check: the readFiles, the tool's lexical step and both preflights. */
+function outboundFileCtx(): OutboundFileCtx {
+  return { actorUserId: USER_ID, secrets: [AUTH.mode === 'pairing' ? AUTH.pairingToken : AUTH.apiKey], runtimeDirs: OUTBOUND_RUNTIME_DIRS }
+}
 // Fix 09: the channel-live marker lives next to the cursor file. Written on
 // the first tool call of every boot (positive proof the session hears us);
 // its absence marks a pairing that has NEVER proven live, which is what

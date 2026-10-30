@@ -299,6 +299,14 @@ export interface OutboundFileCtx {
   officeReadMs?: number
   /** Round 7: the content Worker's module; lib/email-outbound-content-worker.ts when left out (a test passes a broken one). */
   contentWorker?: URL
+  /**
+   * Final pre push fix: this daemon's own runtime folders wherever they were moved (server.ts OUTBOUND_RUNTIME_DIRS:
+   * the resolved CLAUDE_CONFIG_DIR and the plugin state folder, BGOS_PLUGIN_STATE_DIR or ~/.bgos-plugin-state). A
+   * path at or below one (read lower case, with forward slashes, as the secret list reads it) is refused as a HOAI or
+   * Claude folder, as ~/.claude and ~/.bgos-* are by name. A folder that is the home or holds it, the top of a drive,
+   * or a relative or network value is not taken as one: it would refuse every file of the owner.
+   */
+  runtimeDirs?: readonly string[]
 }
 
 export interface OutboundFile {
@@ -404,15 +412,36 @@ function homeForm(home: unknown): string | null {
  * the whole path, as before.
  */
 function secretWordsForm(form: string, ctx: OutboundFileCtx): string {
-  const homes = ctx.home !== undefined ? [ctx.home] : [homedir(), process.platform === 'win32' ? process.env.USERPROFILE : undefined]
   let below: string | null = null
-  for (const home of homes) {
+  for (const home of homesOf(ctx)) {
     const h = homeForm(home)
     if (h === null || (form !== h && !form.startsWith(`${h}/`))) continue
     const rest = form.slice(h.length) || '/'
     if (below === null || rest.length < below.length) below = rest
   }
   return below ?? form
+}
+
+/** The owner's home folders: the home passed in, else this daemon's os.homedir() and, on Windows, USERPROFILE. */
+function homesOf(ctx: OutboundFileCtx): unknown[] {
+  return ctx.home !== undefined ? [ctx.home] : [homedir(), process.platform === 'win32' ? process.env.USERPROFILE : undefined]
+}
+
+/**
+ * Final pre push fix: is this form at or below one of the daemon's own runtime folders (ctx.runtimeDirs)? Each folder
+ * is read in the form the secret list reads (homeForm); one that is not a full local path, is the top of a drive, or
+ * is a home folder or above one is skipped.
+ */
+function underRuntimeDir(form: string, ctx: OutboundFileCtx): boolean {
+  const dirs = ctx.runtimeDirs
+  if (!Array.isArray(dirs) || dirs.length === 0) return false
+  const homes = homesOf(ctx).map(homeForm).filter((h): h is string => h !== null)
+  for (const dir of dirs) {
+    const d = homeForm(dir)
+    if (d === null || homes.some((h) => h === d || h.startsWith(`${d}/`))) continue
+    if (form === d || form.startsWith(`${d}/`)) return true
+  }
+  return false
 }
 
 type LexicalKind = 'secret' | 'device' | 'system' | 'not_full' | 'empty' | 'control' | 'too_long'
@@ -463,6 +492,8 @@ function lexical(path: string, ctx: OutboundFileCtx): Lexical {
   const words = secretWordsForm(form, ctx)
   if (OUTBOUND_SECRET_PATTERNS.some((pattern) => pattern.test(WORD_PATTERNS.has(pattern) ? words : form))) return { kind: 'secret' }
   if (lanePathIsSecret(form, { actorUserId: ctx.actorUserId ?? '' })) return { kind: 'secret' }
+  // Final pre push fix: the daemon's own Claude and HOAI folders wherever they were moved.
+  if (underRuntimeDir(form, ctx)) return { kind: 'secret' }
   return { kind: 'ok', form }
 }
 
@@ -797,6 +828,34 @@ function baseName(path: string): string {
   return parts[parts.length - 1] ?? ''
 }
 
+/** The same file, by device and file number where the system gives them (a zero is none), else by size. */
+function sameFileAs(a: OutboundStat, b: OutboundStat): boolean {
+  const known = (v: unknown) => v !== undefined && String(v) !== '0'
+  return known(a.ino) && known(b.ino) ? String(a.ino) === String(b.ino) && String(a.dev) === String(b.dev) : a.size === b.size
+}
+
+/**
+ * Final pre push fix: after the open, the path the agent gave is resolved AGAIN and must still pass steps 1 and 2 and
+ * name the very file the handle holds. A parent folder swapped for a junction after the first realpath leads both the
+ * lstat and the open into the new place, so the handle check agrees with itself; this second look does not.
+ */
+async function stillLeadsTo(fs: OutboundFs, path: string, ctx: OutboundFileCtx, opened: OutboundStat): Promise<boolean> {
+  let again: string
+  try {
+    again = plainLocal(await fs.realpath(expandHome(path, ctx.home ?? homedir())))
+  } catch {
+    return false
+  }
+  if (lexical(again, ctx).kind !== 'ok') return false
+  let seen: OutboundStat
+  try {
+    seen = await fs.lstat(again)
+  } catch {
+    return false
+  }
+  return seen.isFile() && sameFileAs(seen, opened)
+}
+
 /** One file, all four steps: the file with its bytes, or the one sentence that says why not. */
 export async function readOutboundFile(path: unknown, ctx: OutboundFileCtx = {}): Promise<OutboundRead> {
   if (typeof path !== 'string') return { ok: false, error: lexicalSentence('empty', '', false) }
@@ -804,7 +863,8 @@ export async function readOutboundFile(path: unknown, ctx: OutboundFileCtx = {})
   const given = lexical(path, ctx)
   if (given.kind !== 'ok') return { ok: false, error: lexicalSentence(given.kind, path, false) }
   const fs = fsOf(ctx)
-  const name = baseName(path)
+  // The type is read off the name the agent gave; the name shown is the real file's (below).
+  const givenName = baseName(path)
   const notFound = `${shown(path)} could not be found or read, so it is not attached.`
   // Step 3: every link resolved, then steps 1 and 2 again on where it really is.
   let real: string
@@ -815,6 +875,9 @@ export async function readOutboundFile(path: unknown, ctx: OutboundFileCtx = {})
   }
   const resolved = lexical(real, ctx)
   if (resolved.kind !== 'ok') return { ok: false, error: lexicalSentence(resolved.kind, path, true) }
+  // Final pre push fix: the name the owner's card and the recipient show is the name of the file really read (a link
+  // named invoice.pdf to passport.pdf shows passport.pdf; a short 8.3 or other cased spelling shows the real name).
+  const name = baseName(real)
   // Step 4: a regular file, its size, its type by name and then by its bytes.
   let stat: OutboundStat
   try {
@@ -827,12 +890,12 @@ export async function readOutboundFile(path: unknown, ctx: OutboundFileCtx = {})
     `${shown(path)} is ${megabytes(size)} MB; one email can carry at most ${AGENT_EMAIL_OUTBOUND_MAX_BYTES / MB} MB of files, so it is not attached.`
   if (stat.size > AGENT_EMAIL_OUTBOUND_MAX_BYTES) return { ok: false, error: tooBig(stat.size) }
   if (stat.size === 0) return { ok: false, error: `${shown(path)} is empty, so it is not attached.` }
-  const ext = /\.([^./\\]+)$/.exec(name)?.[1]?.toLowerCase() ?? ''
+  const ext = /\.([^./\\]+)$/.exec(givenName)?.[1]?.toLowerCase() ?? ''
   const type = Object.hasOwn(TYPE_OF_EXTENSION, ext) ? TYPE_OF_EXTENSION[ext]! : null
   if (type === null) return { ok: false, error: `${shown(path)} is not a type that can be attached; ${SAFE_LIST_WORDS}.` }
   // Round 5: the type is the link's name, so the real file's own name must say the same type (a notes.txt link to
   // x.conf is a .conf file, whatever the link is called).
-  const realExt = /\.([^./\\]+)$/.exec(baseName(real))?.[1]?.toLowerCase() ?? ''
+  const realExt = /\.([^./\\]+)$/.exec(name)?.[1]?.toLowerCase() ?? ''
   if (!Object.hasOwn(TYPE_OF_EXTENSION, realExt) || TYPE_OF_EXTENSION[realExt] !== type) {
     return { ok: false, error: `${shown(path)} is a link to a file that cannot be attached; ${SAFE_LIST_WORDS}.` }
   }
@@ -846,14 +909,14 @@ export async function readOutboundFile(path: unknown, ctx: OutboundFileCtx = {})
   try {
     // The handle must be the file just checked: a swap between the stat and the open is refused.
     const opened = await handle.stat()
+    const changed = `${shown(path)} changed while HOAI read it, so it is not attached.`
     // Compared by device and file number where the system gives them (a zero is none), else by size.
-    const known = (v: unknown) => v !== undefined && String(v) !== '0'
-    const sameFile = known(stat.ino) && known(opened.ino)
-      ? String(stat.ino) === String(opened.ino) && String(stat.dev) === String(opened.dev)
-      : opened.size === stat.size
+    const sameFile = sameFileAs(stat, opened)
     if (!opened.isFile() || !sameFile) {
-      return { ok: false, error: `${shown(path)} changed while HOAI read it, so it is not attached.` }
+      return { ok: false, error: changed }
     }
+    // Final pre push fix: and the path, resolved again, still leads to this very file through no refused place.
+    if (!(await stillLeadsTo(fs, path, ctx, opened))) return { ok: false, error: changed }
     if (opened.size > AGENT_EMAIL_OUTBOUND_MAX_BYTES) return { ok: false, error: tooBig(opened.size) }
     // One byte past the cap, so a file that grew after the stat is caught too.
     const buffer = new Uint8Array(Math.min(opened.size, AGENT_EMAIL_OUTBOUND_MAX_BYTES) + 1)

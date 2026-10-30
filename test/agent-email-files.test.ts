@@ -37,6 +37,7 @@ import { privateToolRefusal, recordPrivateBoundary } from '../bin/hoai-private-t
 import { pickCapabilities } from '../lib/capabilities.ts'
 import { buildFloorCheckBody } from '../lib/floor-check.ts'
 import { buildPermissionRequestBody } from '../lib/permission-relay.ts'
+import { declaredCapabilities } from '../lib/declared-capabilities.ts'
 
 const pt = privateTurn as Record<string, any>
 
@@ -70,9 +71,14 @@ const OWNER_MESSAGE_ID = 90412
 const OWNER_TASK_ID = 551
 const PAIRING_TOKEN = 'fake-pairing-token-for-tests-only-0000'
 
-/** D8, byte for byte: the same words on the backend canon, the Hermes mirror and this offline copy. */
+/**
+ * D8, byte for byte: the same words on the backend canon, the Hermes mirror and this offline copy. The final pre push
+ * fix (BGOS 3950923dad, _step2/final-fix-handoff.md section 3) names the app's own labels: the hold is "in Send for me
+ * while your owner's Always ask before risky actions is on" (no longer "when your owner asks before every send", which
+ * is the label of the Ask me first mode).
+ */
 const FILES_PARAGRAPH =
-  "Files: you can attach files to an email only when your owner asked for it in their own chat or in a task they scheduled. Safe types only (PDF, pictures, text, Word and Excel), at most 10 files and 25 MB in all. An email with a file follows your usual send setting, but it waits for your owner's tap when your owner asks before every send or when a file could not be checked for viruses. Key, password and sign in files are never attached."
+  "Files: you can attach files to an email only when your owner asked for it in their own chat or in a task they scheduled. Safe types only (PDF, pictures, text, Word and Excel), at most 10 files and 25 MB in all. An email with a file follows your usual send setting, but it waits for your owner's tap in Send for me while your owner's Always ask before risky actions is on, or when a file could not be checked for viruses. Key, password and sign in files are never attached."
 
 const PDF = Buffer.from('%PDF-1.7\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n', 'latin1')
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52])
@@ -371,8 +377,10 @@ test('server.ts admits an email tool call through the email_send turn check when
   assert.ok(SRC.includes('if (emailTool && emailToolNeedsTurn(req.params.name, req.params.arguments)) {'))
   assert.equal(SRC.includes("if (req.params.name === 'email_send') {"), false, 'no longer only email_send')
   assert.ok(SRC.includes('emailTurnRefusalText(req.params.name, req.params.arguments, message)'))
-  // Review round 2: the reader is also handed this daemon's own credential, as the email's words are.
-  assert.ok(SRC.includes("readFiles: (paths) => readOutboundFiles(paths, { actorUserId: USER_ID, secrets: [AUTH.mode === 'pairing' ? AUTH.pairingToken : AUTH.apiKey] })"))
+  // Review round 2: the reader is also handed this daemon's own credential, as the email's words are (final fix: through
+  // outboundFileCtx(), the one ctx of every file check, which adds the moved runtime folders).
+  assert.ok(SRC.includes('readFiles: (paths) => readOutboundFiles(paths, outboundFileCtx()),'))
+  assert.ok(SRC.includes("return { actorUserId: USER_ID, secrets: [AUTH.mode === 'pairing' ? AUTH.pairingToken : AUTH.apiKey], runtimeDirs: OUTBOUND_RUNTIME_DIRS }"))
 })
 
 test('rule 2: a helper started in an earlier turn cannot attach files to a draft; its text draft still saves', (t) => {
@@ -642,4 +650,191 @@ test('no em or en dash in the files code', () => {
   for (const file of ['../lib/agent-email-tools.ts', '../lib/email-outbound-files.ts', '../bin/hoai-private-turn-hook.mjs']) {
     assert.equal(/[\u2013\u2014]/.test(readFileSync(new URL(file, import.meta.url), 'utf8')), false, file)
   }
+})
+
+// ── final pre push fix (plugin side): the email_files token, the hold words, the partial upload ─────────────────
+
+test('final fix: email_files is declared beside email_send exactly when both tools take files and say the files paragraph', async () => {
+  const m = await tools()
+  assert.equal(m.EMAIL_FILES, 'email_files', 'exported as EMAIL_SEND is')
+  assert.equal(m.EMAIL_SEND, 'email_send')
+  assert.equal(typeof m.shipsEmailFilesTools, 'function')
+  assert.equal(m.shipsEmailFilesTools(), true, 'this build ships the files capable tools')
+  const decls = m.EMAIL_TOOL_DECLS as Array<{ name: string; description: string; inputSchema: { properties: Record<string, unknown> } }>
+  const withoutFiles = (name: string) =>
+    decls.map((d) => {
+      if (d.name !== name) return d
+      const { files: _files, ...rest } = d.inputSchema.properties
+      return { ...d, inputSchema: { ...d.inputSchema, properties: rest } }
+    })
+  for (const name of ['email_draft', 'email_send']) {
+    assert.equal(m.shipsEmailFilesTools(withoutFiles(name)), false, `${name} without its files argument`)
+    assert.equal(
+      m.shipsEmailFilesTools(decls.map((d) => (d.name === name ? { ...d, description: d.description.replace(FILES_PARAGRAPH, '') } : d))),
+      false,
+      `${name} without the files paragraph`,
+    )
+    assert.equal(m.shipsEmailFilesTools(decls.filter((d) => d.name !== name)), false, `${name} missing`)
+  }
+  // A build that lost the email tools promises no files either (email_files means nothing without email_send).
+  assert.equal(m.shipsEmailFilesTools(decls.map((d) => (d.name === 'email_send' ? { ...d, description: d.description.replace(m.EMAIL_SIGNATURE_SENTENCE, '') } : d))), false)
+  // Every shape of the declaration: email_files right after email_send, once.
+  for (const authMode of ['pairing', 'apikey'] as const) {
+    for (const canInjectGoal of [true, false]) {
+      const list = [...declaredCapabilities({ canInjectGoal, floorHook: true, authMode })]
+      assert.equal(list.filter((x) => x === 'email_files').length, 1, `${authMode} ${canInjectGoal}`)
+      assert.equal(list.indexOf('email_files'), list.indexOf('email_send') + 1, 'beside email_send')
+      assert.ok(list.length <= 32, 'the backend cap')
+    }
+  }
+})
+
+test('final fix: the declaration code names email_files only behind the files tools\' own check', () => {
+  const src = readFileSync(new URL('../lib/declared-capabilities.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
+  assert.ok(src.includes("...(shipsEmailFilesTools() ? [EMAIL_FILES] : []),"), 'declared only while shipsEmailFilesTools() holds')
+  assert.ok(src.includes("import { EMAIL_FILES, EMAIL_SEND, shipsEmailFilesTools, shipsEmailTools } from './agent-email-tools.ts'"))
+  assert.equal(/'email_files'/.test(src), false, 'the token is spelled once, in lib/agent-email-tools.ts')
+})
+
+test('final fix: the offline canon carries the send line and the files paragraph in the backend\'s final words', async () => {
+  const m = await tools()
+  assert.equal(m.AGENT_EMAIL_FILES_SENTENCE, FILES_PARAGRAPH)
+  assert.ok(FILES_PARAGRAPH.includes("in Send for me while your owner's Always ask before risky actions is on, or when a file could not be checked for viruses"))
+  assert.equal(FILES_PARAGRAPH.includes('asks before every send'), false, 'the Ask me first label is not the hold')
+  const text = pickCapabilities(null, []).text
+  assert.ok(text.includes(`- ${m.AGENT_EMAIL_SEND_SENTENCE}\n- ${FILES_PARAGRAPH}\n`))
+  assert.ok(m.AGENT_EMAIL_SEND_SENTENCE.includes('Write plain text with no HTML'), 'the files plugin\'s send line')
+  for (const decl of m.EMAIL_TOOL_DECLS) assert.ok(decl.description.endsWith(FILES_PARAGRAPH), decl.name)
+})
+
+test('final fix: the session instructions name the same hold as the canon', () => {
+  const open = SRC.indexOf('    instructions: [\n')
+  const close = SRC.indexOf("\n    ].join('\\n'),", open)
+  const text = SRC.slice(open, close)
+    .split('\n')
+    .map((line) => (line.match(/^\s*'((?:[^'\\]|\\.)*)',$/)?.[1] ?? '').replace(/\\(.)/g, '$1'))
+    .join(' ')
+    .replace(/\s+/g, ' ')
+  assert.ok(text.includes("but it waits for your owner's tap in Send for me while your owner's Always ask before risky actions is on, or when a file could not be checked for viruses; there is no approval card for it in your chat."))
+  assert.equal(text.includes('when your owner asks before every send or when a file'), false)
+})
+
+test('final fix: a later upload that fails says no email was saved or sent and that the files already handed over are deleted by the server within a day', async (t) => {
+  const lib = await outbound()
+  const { home, pdf, png } = homeWithFiles(t)
+  const read = (p: string[]) => lib.readOutboundFiles(p, { home })
+  let n = 0
+  // The first upload is taken; the second is refused (the server answered) or gets no answer.
+  for (const [second, words] of [
+    [httpError(413, 'File too large.'), /^email_send did not start: the server did not take chart\.png, so no email was saved or sent, and the 1 file already handed over is deleted by the server within a day: POST 413: File too large\.$/],
+    [new Error('network down'), /^email_send did not start: HOAI got no answer while handing over chart\.png, so no email was saved or sent, and the 1 file already handed over is deleted by the server within a day\. network down$/],
+  ] as const) {
+    n = 0
+    const backend = stubBackend({
+      upload: () => {
+        if (n++ === 0) return { id: FILE_IDS[0], name: 'Q3 report.pdf', type: 'pdf', size: PDF.length, state: 'clean' }
+        throw second
+      },
+    })
+    const result = await callTool('email_send', { ...NEW_EMAIL, files: [{ path: pdf }, { path: png }] }, { post: backend.post, basis: OWNER_BASIS, readFiles: read })
+    assert.equal(result.isError, true)
+    assert.match(textOf(result), words)
+    assert.equal(textOf(result).includes('nothing was saved or sent'), false, 'a file did leave the machine')
+    assert.deepEqual(backend.posted.map((p) => p.path), ['integrations/agent-email/outbound-files', 'integrations/agent-email/outbound-files'], 'no draft, no send')
+  }
+  // Two handed over, the third refused: the count is said.
+  const third = join(home, 'docs', 'notes.txt')
+  writeFileSync(third, 'Agenda: chairs and lunch.\n')
+  n = 0
+  const backend = stubBackend({
+    upload: () => {
+      if (n < 2) return { id: FILE_IDS[n++], name: 'x', type: 'pdf', size: 1, state: 'clean' }
+      throw httpError(403, 'No.')
+    },
+  })
+  const result = await callTool('email_draft', { ...NEW_EMAIL, files: [{ path: pdf }, { path: png }, { path: third }] }, { post: backend.post, basis: OWNER_BASIS, readFiles: read })
+  assert.match(textOf(result), /so no email was saved or sent, and the 2 files already handed over are deleted by the server within a day: POST 403: No\.$/)
+  // The first upload refused: nothing left the machine, as before.
+  const first = stubBackend({ upload: httpError(403, 'No.') })
+  const none = await callTool('email_send', { ...NEW_EMAIL, files: [{ path: pdf }, { path: png }] }, { post: first.post, basis: OWNER_BASIS, readFiles: read })
+  assert.match(textOf(none), /so nothing was saved or sent: POST 403: No\.$/)
+})
+
+test('final fix: the drafts or send route failing after the uploads says the files handed over are deleted by the server within a day', async (t) => {
+  const lib = await outbound()
+  const { home, pdf } = homeWithFiles(t)
+  const read = (p: string[]) => lib.readOutboundFiles(p, { home })
+  const draft = await callTool('email_draft', { ...NEW_EMAIL, files: [{ path: pdf }] }, { post: stubBackend({ draft: httpError(400, 'Bad subject.') }).post, basis: OWNER_BASIS, readFiles: read })
+  assert.match(textOf(draft), /^email_draft failed, no draft was saved, and the 1 file handed over for it is deleted by the server within a day: POST 400: Bad subject\.$/)
+  const send = await callTool('email_send', { ...NEW_EMAIL, files: [{ path: pdf }] }, { post: stubBackend({ send: httpError(400, 'Bad subject.') }).post, basis: OWNER_BASIS, readFiles: read })
+  assert.match(textOf(send), /^email_send failed, so treat it as not sent and tell your owner; the 1 file handed over for it is deleted by the server within a day: POST 400: Bad subject\.$/)
+})
+
+/** An HTTP failure as bgosPost throws it: the status, the message, and the body the code is read off. */
+function httpErrorWithCode(status: number, code: string, message: string) {
+  return Object.assign(new Error(`POST ${status}: ${message}`), { status, body: JSON.stringify({ statusCode: status, code, message }) })
+}
+
+test('final fix: the server\'s files_not_declared and files_upload_limit refusals are said plainly, with what to do', async (t) => {
+  const lib = await outbound()
+  const { home, pdf } = homeWithFiles(t)
+  const read = (p: string[]) => lib.readOutboundFiles(p, { home })
+  const notDeclared = await callTool('email_send', { ...NEW_EMAIL, files: [{ path: pdf }] }, {
+    post: stubBackend({ upload: httpErrorWithCode(403, 'files_not_declared', 'Files can be attached only from a plugin that declares email_files; update the HOAI plugin and reconnect, then try again.') }).post,
+    basis: OWNER_BASIS,
+    readFiles: read,
+  })
+  assert.equal(notDeclared.isError, true)
+  assert.equal(
+    textOf(notDeclared),
+    'email_send did not start: the server does not yet know this HOAI plugin can attach files, so nothing was saved or sent. Do not try again now; tell your owner the HOAI plugin needs to reconnect (or update) before it can attach files. You can save the email without files.',
+  )
+  const limit = await callTool('email_draft', { ...NEW_EMAIL, files: [{ path: pdf }] }, {
+    post: stubBackend({ upload: httpErrorWithCode(429, 'files_upload_limit', 'This agent already has 20 files or 50 MB uploaded and not yet attached to an email; attach or drop those first, or wait a day.') }).post,
+    basis: OWNER_BASIS,
+    readFiles: read,
+  })
+  assert.equal(limit.isError, true)
+  assert.equal(
+    textOf(limit),
+    'email_draft did not start: the server already holds 20 files or 50 MB of yours that no email has taken yet, so it did not take Q3 report.pdf and nothing was saved or sent. Do not try again now; those files are deleted within a day, or tell your owner.',
+  )
+  // A code the plugin does not know keeps the server's own words.
+  const other = await callTool('email_send', { ...NEW_EMAIL, files: [{ path: pdf }] }, {
+    post: stubBackend({ upload: httpErrorWithCode(403, 'basis_too_old', 'Files go only when your owner asked for them.') }).post,
+    basis: OWNER_BASIS,
+    readFiles: read,
+  })
+  assert.match(textOf(other), /the server did not take Q3 report\.pdf, so nothing was saved or sent: POST 403: Files go only when your owner asked for them\.$/)
+})
+
+test('final fix: server.ts hands every file check of a call the moved Claude and HOAI folders (readFiles, the tool\'s own lexical step and both preflights)', () => {
+  const ctx = SRC.indexOf('function outboundFileCtx(')
+  assert.ok(ctx > 0, 'server.ts builds one file check ctx')
+  const body = SRC.slice(ctx, SRC.indexOf('\n}\n', ctx))
+  assert.ok(body.includes('runtimeDirs: OUTBOUND_RUNTIME_DIRS'), 'with the runtime folders')
+  assert.ok(body.includes('actorUserId: USER_ID'))
+  const dirs = SRC.slice(SRC.indexOf('const OUTBOUND_RUNTIME_DIRS'), SRC.indexOf('function outboundFileCtx('))
+  assert.ok(dirs.includes('CLAUDE_CONFIG_DIR'), 'the resolved Claude config folder')
+  assert.ok(dirs.includes('pathDirname(pluginStateDirFor({ env: process.env, home: homedir(), assistantId: ASSISTANT_ID, cwd: process.cwd() }))'), 'the plugin state folder, as agent-inventory resolves it')
+  assert.ok(dirs.includes('pathDirname(pathDirname(CURSOR_FILE_PATH))'), 'and as the cursor store resolves it')
+  assert.ok(SRC.includes('readFiles: (paths) => readOutboundFiles(paths, outboundFileCtx()),'))
+  assert.ok(SRC.includes('fileCtx: outboundFileCtx(),'))
+  assert.ok(SRC.includes("emailSendPreflight(tool_name, input_preview, [AUTH.mode === 'pairing' ? AUTH.pairingToken : AUTH.apiKey], outboundFileCtx())"))
+  assert.ok(SRC.includes("refusal: (fields) => emailCallRefusal('email_send', fields, [AUTH.mode === 'pairing' ? AUTH.pairingToken : AUTH.apiKey], outboundFileCtx()),"))
+})
+
+test('final fix: a moved Claude config folder is refused by the tool\'s own lexical step and both preflights, before any read or upload', async () => {
+  const m = await tools()
+  const fileCtx = { home: 'C:\\Users\\kc', runtimeDirs: ['D:\\Agents\\Claude-Work'] }
+  const args = { ...NEW_EMAIL, files: [{ path: 'D:\\Agents\\Claude-Work\\paste-cache\\notes.txt' }] }
+  assert.match(String(m.emailCallRefusal('email_send', args, [PAIRING_TOKEN], fileCtx)), /looks like a key or password file, so it is never attached/)
+  assert.equal(m.emailCallRefusal('email_send', args, [PAIRING_TOKEN]), null, 'the gap without the folder')
+  assert.match(String(m.emailSendPreflight('mcp__plugin_hoai_bgos__email_send', JSON.stringify(args), [PAIRING_TOKEN], fileCtx)), /looks like a key or password file/)
+  let read = 0
+  const backend = stubBackend()
+  const result = await callTool('email_send', args, { post: backend.post, basis: OWNER_BASIS, fileCtx, readFiles: async () => { read++; return { ok: false, error: 'read' } } })
+  assert.match(textOf(result), /looks like a key or password file, so it is never attached\. Do not copy, rename or retype it to send it another way; ask your owner\. Nothing was saved or sent\.$/)
+  assert.equal(read, 0, 'refused before any file is read')
+  assert.deepEqual(backend.posted, [])
 })
