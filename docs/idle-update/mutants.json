@@ -1948,16 +1948,6 @@
       ]
     },
     {
-      "id": "wire-sighup",
-      "rule": "server.ts handles a hangup through its shutdown",
-      "file": "server.ts",
-      "find": "  if (process.platform !== 'win32') process.on('SIGHUP', () => shutdown('SIGHUP', 129))\n",
-      "replace": "",
-      "tests": [
-        "test/idle-update.wiring.test.ts"
-      ]
-    },
-    {
       "id": "wire-fault-broken-pipe",
       "rule": "an uncaught broken pipe is no clean end",
       "file": "server.ts",
@@ -1988,26 +1978,6 @@
       ]
     },
     {
-      "id": "shim-sighup",
-      "rule": "the launch shim forwards a hangup",
-      "file": "bin/bgos-launch.mjs",
-      "find": "        forward('SIGHUP')\n",
-      "replace": "",
-      "tests": [
-        "test/bgos-launch.test.ts"
-      ]
-    },
-    {
-      "id": "shim-sighup-not-windows",
-      "rule": "the launch shim never signals a hangup on Windows",
-      "file": "bin/bgos-launch.mjs",
-      "find": "    if (platform !== 'win32') {\n      onSignal('SIGHUP'",
-      "replace": "    if (true) {\n      onSignal('SIGHUP'",
-      "tests": [
-        "test/bgos-launch.test.ts"
-      ]
-    },
-    {
       "id": "dur-unattended-recheck",
       "rule": "a refused authority is asked again after an hour",
       "file": "lib/idle-update.mjs",
@@ -2035,16 +2005,6 @@
       "replace": "const hit = unattendedCache?.key === key && false",
       "tests": [
         "test/idle-update.controller.test.ts"
-      ]
-    },
-    {
-      "id": "wire-signal-on",
-      "rule": "SIGINT and SIGTERM stay handled through the shutdown",
-      "file": "server.ts",
-      "find": "    process.on(signal, () => shutdown(signal, signal === 'SIGINT' ? 130 : 143))",
-      "replace": "    process.once(signal, () => shutdown(signal, signal === 'SIGINT' ? 130 : 143))",
-      "tests": [
-        "test/idle-update.wiring.test.ts"
       ]
     },
     {
@@ -2085,46 +2045,6 @@
       "replace": "  if ((err as { code?: unknown }).code === 'EPIPE') return true\n  const message = (err as { message?: unknown }).message\n  return false && typeof message === 'string'",
       "tests": [
         "test/process-lifecycle.test.ts"
-      ]
-    },
-    {
-      "id": "shim-hangup-kill",
-      "rule": "a child still running after a hangup is killed",
-      "file": "bin/bgos-launch.mjs",
-      "find": "          if (!exited) forward('SIGKILL')",
-      "replace": "          if (!exited) forward('SIGTERM')",
-      "tests": [
-        "test/bgos-launch.test.ts"
-      ]
-    },
-    {
-      "id": "shim-hangup-exited",
-      "rule": "a child already gone is never killed",
-      "file": "bin/bgos-launch.mjs",
-      "find": "      exited = true\n",
-      "replace": "",
-      "tests": [
-        "test/bgos-launch.test.ts"
-      ]
-    },
-    {
-      "id": "shim-hangup-ms",
-      "rule": "the backstop waits 10 s",
-      "file": "bin/bgos-launch.mjs",
-      "find": "export const HANGUP_KILL_MS = 10_000",
-      "replace": "export const HANGUP_KILL_MS = 60_000",
-      "tests": [
-        "test/bgos-launch.test.ts"
-      ]
-    },
-    {
-      "id": "shim-hangup-unref",
-      "rule": "the backstop never holds the shim open",
-      "file": "bin/bgos-launch.mjs",
-      "find": "        }, HANGUP_KILL_MS).unref?.()",
-      "replace": "        }, HANGUP_KILL_MS)",
-      "tests": [
-        "test/bgos-launch.test.ts"
       ]
     },
     {
@@ -2579,6 +2499,126 @@
       "replace": "if (s.turnSignal !== TURN_SIGNAL_HOOKS) return no('no_turn_signal')\n  const quiet = d.rollbackQuietMs",
       "tests": [
         "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "wire-signal-once",
+      "rule": "every daemon keeps main's one shot SIGINT and SIGTERM (Data's fix 2)",
+      "file": "server.ts",
+      "find": "process.once(signal, () => shutdown(signal, signal === 'SIGINT' ? 130 : 143))",
+      "replace": "process.on(signal, () => shutdown(signal, signal === 'SIGINT' ? 130 : 143))",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-guard-dep",
+      "rule": "the controller decides the window for the clean end signals",
+      "file": "server.ts",
+      "find": "guardCleanEnd: (open: boolean) => cleanEndSignals.set(open),",
+      "replace": "guardCleanEnd: () => {},",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "signals-open-hangup",
+      "rule": "open, a hangup goes through shutdown",
+      "file": "lib/process-lifecycle.ts",
+      "find": "const hangup = (): void => shutdown('SIGHUP', 129)",
+      "replace": "const hangup = (): void => {}",
+      "tests": [
+        "test/process-lifecycle.test.ts"
+      ]
+    },
+    {
+      "id": "signals-keep-term",
+      "rule": "open, a second SIGTERM stays handled",
+      "file": "lib/process-lifecycle.ts",
+      "find": "      apply('SIGTERM', keep)\n",
+      "replace": "",
+      "tests": [
+        "test/process-lifecycle.test.ts"
+      ]
+    },
+    {
+      "id": "signals-keep-int",
+      "rule": "open, a second SIGINT stays handled",
+      "file": "lib/process-lifecycle.ts",
+      "find": "      apply('SIGINT', keep)\n",
+      "replace": "",
+      "tests": [
+        "test/process-lifecycle.test.ts"
+      ]
+    },
+    {
+      "id": "signals-no-windows-hangup",
+      "rule": "no hangup listener on Windows",
+      "file": "lib/process-lifecycle.ts",
+      "find": "if (platform !== 'win32') apply('SIGHUP', hangup)",
+      "replace": "apply('SIGHUP', hangup)",
+      "tests": [
+        "test/process-lifecycle.test.ts"
+      ]
+    },
+    {
+      "id": "signals-shut-removes",
+      "rule": "shut again, the daemon is back to main's behaviour",
+      "file": "lib/process-lifecycle.ts",
+      "find": "const apply = open ? on : off",
+      "replace": "const apply = on",
+      "tests": [
+        "test/process-lifecycle.test.ts"
+      ]
+    },
+    {
+      "id": "signals-no-stack",
+      "rule": "opening twice stacks nothing",
+      "file": "lib/process-lifecycle.ts",
+      "find": "      if (open === opened) return\n",
+      "replace": "",
+      "tests": [
+        "test/process-lifecycle.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-guard-window-validate",
+      "rule": "the signals open only for a daemon validating an attempt",
+      "file": "lib/idle-update.mjs",
+      "find": "const open = phase === 'validate' && record?.state === 'arrived' && !record.liveAt",
+      "replace": "const open = record?.state === 'arrived' && !record.liveAt",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-guard-window-live",
+      "rule": "the signals close at the first live proof",
+      "file": "lib/idle-update.mjs",
+      "find": "const open = phase === 'validate' && record?.state === 'arrived' && !record.liveAt",
+      "replace": "const open = phase === 'validate' && record?.state === 'arrived'",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-guard-stop",
+      "rule": "a stopped controller closes the signals",
+      "file": "lib/idle-update.mjs",
+      "find": "      phase = 'done'\n      syncCleanEndSignals()\n",
+      "replace": "      phase = 'done'\n",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-guard-tick",
+      "rule": "every tick settles the signals, whichever way the phase changed",
+      "file": "lib/idle-update.mjs",
+      "find": "      busy = false\n      syncCleanEndSignals()\n",
+      "replace": "      busy = false\n",
+      "tests": [
+        "test/idle-update.controller.test.ts"
       ]
     }
   ]

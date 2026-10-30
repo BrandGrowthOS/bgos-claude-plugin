@@ -45,9 +45,6 @@ launches, and the install, restart and teardown logs.
    - the last launch resumed the same session on 0.81.1, so the context was kept;
    - the last versioned heartbeat says 0.81.1 with no lastError, so it reported;
    - the record is `validated`;
-   - the old daemon logged a `shutting down` line, so it ended through its own shutdown
-     (stdin closed, SIGTERM, SIGHUP when claude's pty went, or its output pipe), which is what
-     records a clean end. No such line means it died on a signal it does not handle.
 7. Tears down: `bgos-agent uninstall`, then a bootout of its own label, then `kill-server`
    on its own tmux socket, then the stub by its exact pid. It checks that the job is gone
    and that `launchctl list` is identical to before.

@@ -134,6 +134,7 @@ import {
   summarizeReachableChats,
 } from './lib/reachable-chats.js'
 import {
+  createCleanEndSignals,
   describeShutdownCause,
   installStdinShutdown,
   isBrokenPipe,
@@ -17577,14 +17578,15 @@ async function main(): Promise<void> {
   })
 
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-    process.on(signal, () => shutdown(signal, signal === 'SIGINT' ? 130 : 143))
+    process.once(signal, () => shutdown(signal, signal === 'SIGINT' ? 130 : 143))
   }
-  // A hangup is claude's terminal or claude itself gone: under expect, claude leads its pty's session, and when it
-  // exits the kernel hangs up its whole process group, this daemon included, whose default action would end it
-  // with no clean end recorded. Not once, here or above: the group's signal and the launch shim's forward may both
-  // arrive (a systemd stop signals the whole control group), and a second one with no handler would end the daemon
-  // before its shutdown recorded the clean end. shutdown() runs once whatever reaches it.
-  if (process.platform !== 'win32') process.on('SIGHUP', () => shutdown('SIGHUP', 129))
+  // Open only from an idle update restart's arrival to its first live proof, which the controller decides.
+  const cleanEndSignals = createCleanEndSignals({
+    platform: process.platform,
+    on: (signal, listener) => process.on(signal, listener),
+    off: (signal, listener) => process.off(signal, listener),
+    shutdown,
+  })
 
   // agent-state.json (design section 7): ticks from here on; it writes only
   // while this daemon holds the pairing lock, so a passive daemon never does.
@@ -17736,6 +17738,7 @@ async function main(): Promise<void> {
       stagedVersion: () => daemonStagedVersion(),
       active: () => lockHeld && !shuttingDown,
       holdsLock: () => lockHeld,
+      guardCleanEnd: (open: boolean) => cleanEndSignals.set(open),
       watcherSweepActive: () => readWatcherSweepActive({ home: homedir(), fs, now: Date.now(), freshMs: IDLE_UPDATE_DURATIONS.watcherFreshMs }),
       authorityKind: () => idleRestartAuthority().kind,
       serviceOwnsUs: () => idleServiceOwnsUs(),

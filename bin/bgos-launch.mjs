@@ -43,9 +43,6 @@ import { nodeFloorNotice } from '../lib/browser-profile-node-runtime.mjs'
 /** POSIX convention for "command not found"; scripts and humans both read it. */
 export const LAUNCH_EXIT_NOT_FOUND = 127
 
-/** A child still running this long after a forwarded hangup is killed: its shutdown is stuck. */
-export const HANGUP_KILL_MS = 10_000
-
 /** Exit codes for a child that died on a signal (128 + signal number). */
 export const SIGNAL_EXIT_CODES = Object.freeze({
   SIGINT: 130,
@@ -261,7 +258,6 @@ export function exitCodeForChild(code, signal) {
  *   spawnSyncImpl?: typeof spawnSync,
  *   writeErr?: (text: string) => void,
  *   onSignal?: (signal: string, handler: () => void) => void,
- *   setTimer?: (fn: () => void, ms: number) => { unref?: () => void },
  *   nodeVersion?: string,
  * }} [opts]
  * @returns {Promise<number>}
@@ -274,7 +270,6 @@ export function main(argv = process.argv.slice(2), opts = {}) {
   const spawnImpl = opts.spawnImpl ?? spawn
   const writeErr = opts.writeErr ?? ((text) => process.stderr.write(text))
   const onSignal = opts.onSignal ?? ((signal, handler) => process.on(signal, handler))
-  const setTimer = opts.setTimer ?? setTimeout
   const floor = nodeFloorNotice(opts.nodeVersion ?? process.versions.node)
   if (floor) writeErr(`[bgos-launch] ${floor}\n`)
 
@@ -331,18 +326,6 @@ export function main(argv = process.argv.slice(2), opts = {}) {
     }
     onSignal('SIGTERM', () => forward('SIGTERM'))
     onSignal('SIGINT', () => forward('SIGINT'))
-    // A hangup (claude's pty gone) reaches the daemon too, so it records a clean end. Not on Windows, where a signal
-    // to a child is a forced kill. Handling it keeps this shim alive past the hangup that used to end it, so a child
-    // whose shutdown is stuck is killed after HANGUP_KILL_MS rather than holding both open with nobody to read them.
-    let exited = false
-    if (platform !== 'win32') {
-      onSignal('SIGHUP', () => {
-        forward('SIGHUP')
-        setTimer(() => {
-          if (!exited) forward('SIGKILL')
-        }, HANGUP_KILL_MS).unref?.()
-      })
-    }
     child.on('error', (err) => {
       // A resolved path that still fails to spawn (EACCES, a broken install)
       // gets the same guidance as a missing bun, never a bare stack.
@@ -351,7 +334,6 @@ export function main(argv = process.argv.slice(2), opts = {}) {
       resolve(LAUNCH_EXIT_NOT_FOUND)
     })
     child.on('exit', (code, signal) => {
-      exited = true
       resolve(exitCodeForChild(code, signal))
     })
   })

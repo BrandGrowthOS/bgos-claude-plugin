@@ -35,6 +35,38 @@ export function shouldShutdownOnStdin(event: string): boolean {
 }
 
 /**
+ * What a daemon proving a new build needs from its signals, and no other daemon does. The idle update reads a
+ * restarted build's second boot as a failed build unless the first one ended cleanly (docs/idle-update/DESIGN.md).
+ * hoai relaunching a slow start ends claude, and under expect claude leads its pty's session, so the kernel hangs up
+ * the whole process group, this daemon included. A systemd stop signals the control group and the launch shim
+ * forwards it, so a second SIGTERM can land mid shutdown, when server.ts's one shot has gone.
+ *
+ * So, only while open: a hangup goes through shutdown, and SIGINT and SIGTERM keep a listener past that one shot.
+ * Shut, every daemon has main's signals: a repeated signal can still end a stuck shutdown, and a hangup its default
+ * action. The idle update opens this from a restart's arrival to its first live proof, and no other daemon opens it.
+ */
+export function createCleanEndSignals({ platform, on, off, shutdown }: {
+  platform: string
+  on: (signal: string, listener: () => void) => void
+  off: (signal: string, listener: () => void) => void
+  shutdown: (cause: ShutdownCause, code: number) => void
+}): { set: (open: boolean) => void } {
+  const hangup = (): void => shutdown('SIGHUP', 129)
+  const keep = (): void => {}
+  let opened = false
+  return {
+    set: (open) => {
+      if (open === opened) return
+      opened = open
+      const apply = open ? on : off
+      apply('SIGINT', keep)
+      apply('SIGTERM', keep)
+      if (platform !== 'win32') apply('SIGHUP', hangup)
+    },
+  }
+}
+
+/**
  * The single log line a shutdown emits. Every path names its cause, because the failure this whole
  * module exists to fix was invisible, and an exit with no explanation would trade one silent
  * behaviour for another.

@@ -264,7 +264,7 @@ test('a clean end (its claude went away: stdin closed, a signal) is on the idle 
 test('every daemon keeps main\'s signals: no hangup handler at process level, one shot each for SIGINT and SIGTERM', () => {
   assert.ok(server.includes("for (const signal of ['SIGINT', 'SIGTERM'] as const) {\n    process.once(signal, () => shutdown(signal, signal === 'SIGINT' ? 130 : 143))"), 'main\'s own lines')
   assert.doesNotMatch(server, /process\.on\(\s*'SIGHUP'/)
-  assert.doesNotMatch(server, /process\.on\(signal,/)
+  assert.doesNotMatch(server, /process\.on\(signal, \(\) =>/)
 })
 
 test('only the idle update opens the clean end signals: it is handed them, and nothing else touches them', () => {
