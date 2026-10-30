@@ -125,6 +125,7 @@ function agent(w: ReturnType<typeof world>, id: number, opts: { running?: string
     draining: () => out.drains.length > 0 && out.drains[out.drains.length - 1] === true,
     updateLockHeld: () => false,
     markerMtimeMs: () => host.readMarkerMtimeMs({ stateDir, fs }),
+    removeMarker: () => host.removeRestartMarker({ stateDir, fs }),
     safeState: () => ({ turnInFlight: false, turnSignal: 'hooks', pendingMessages: 0, pendingPermissions: 0, activeOperations: 0 }),
     activityMs: () => facts.activity,
     openAsks: () => 0,
@@ -210,6 +211,22 @@ test('the new daemon validates on live evidence and frees the computer; the seco
     assert.equal(await second.controller.tick(), 'requested', second.out.logs.join('\n'))
     assert.ok(existsSync(second.marker))
     assert.equal(second.record().canaryN, null)
+  } finally {
+    rmSync(w.home, { recursive: true, force: true })
+  }
+})
+
+test('a restart that never arrives: the real file the real ladder wrote is gone from the real disk, so hoai cannot take it later', async () => {
+  const w = world(scratchHome())
+  try {
+    const a = agent(w, 912)
+    assert.equal(await a.controller.tick(), 'requested')
+    assert.ok(existsSync(a.marker), 'the ladder wrote it')
+    w.clock.now += 3.5 * MIN + 1000
+    assert.equal(await a.controller.tick(), 'did_not_arrive', a.out.logs.join('\n'))
+    assert.equal(existsSync(a.marker), false)
+    assert.equal(a.record().markerStranded, true)
+    assert.equal(a.out.reports.at(-1)?.code, 'idle_update_launcher_latched')
   } finally {
     rmSync(w.home, { recursive: true, force: true })
   }

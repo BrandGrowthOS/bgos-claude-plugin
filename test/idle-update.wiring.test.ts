@@ -202,6 +202,7 @@ test('the readings come from the host module: the launcher claim, the unattended
   const b = block()
   assert.match(b, /launcher: \(\) => readLauncherClaim\(\{ stateDir, fs, alive: defaultPidAlive \}\),/)
   assert.match(b, /markerMtimeMs: \(\) => readMarkerMtimeMs\(\{ stateDir, fs \}\),/)
+  assert.match(b, /removeMarker: \(\) => removeRestartMarker\(\{ stateDir, fs \}\),/)
   assert.match(b, /unattendedInputs: \(\) => readUnattendedInputs\(\{ platform: process\.platform, home: homedir\(\), assistantId: ASSISTANT_ID, stateDir, fs \}\),/)
   assert.match(b, /readPersonAttached\(\{\n?\s*platform: process\.platform,/)
   assert.match(b, /keepalive: authority\.kind === 'keepalive',/)

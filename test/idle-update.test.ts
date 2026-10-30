@@ -1039,6 +1039,10 @@ test('report: a version held on this computer, and a launcher that stopped takin
   const m = need()
   assert.equal(m.idleUpdateWaitError('version_held_bad', { target: '0.81.0', runningVersion: '0.80.0', now: NOW }).code, 'idle_update_held')
   assert.equal(m.idleUpdateWaitError('launcher_latched', { target: '0.81.0', runningVersion: '0.80.0', now: NOW }).code, 'idle_update_launcher_latched')
+  // A restart that did not arrive with its marker still there: the launcher never read it, so a retry alone will not do.
+  const stranded = { schema: 1, target: '0.81.0', from: '0.80.0', state: 'did_not_arrive', attempts: [{ at: new Date(NOW).toISOString(), outcome: 'did_not_arrive' }] }
+  assert.equal(m.idleUpdateLastError({ ...stranded, markerStranded: true }, { runningVersion: '0.80.0' }).code, 'idle_update_launcher_latched')
+  assert.equal(m.idleUpdateLastError(stranded, { runningVersion: '0.80.0' }).code, 'scheduled_update_failed')
   const blind = m.idleUpdateWaitError('no_turn_signal', { target: '0.81.0', runningVersion: '0.80.0', now: NOW })
   assert.equal(blind.code, 'idle_update_no_turn_signal')
   assert.match(blind.message, /0\.81\.0/)

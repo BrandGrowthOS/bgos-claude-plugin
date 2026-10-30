@@ -134,6 +134,8 @@ function agent(
     unreachable: false,
     slept: 0,
     installGate: null as Promise<void> | null,
+    /** The launcher rung: the ask leaves a restart marker on disk. */
+    askWritesMarker: false,
   }
   const out = {
     s,
@@ -148,6 +150,7 @@ function agent(
     heartbeatRequests: 0,
     logs: [] as string[],
     guards: [] as boolean[],
+    markerRemovals: 0,
     c: null as any,
   }
   let nonces = 0
@@ -176,6 +179,11 @@ function agent(
     draining: () => s.draining,
     updateLockHeld: () => s.updateLock,
     markerMtimeMs: () => s.markerMtimeMs,
+    removeMarker: () => {
+      out.markerRemovals += 1
+      s.markerMtimeMs = null
+      return true
+    },
     safeState: () => s.safe,
     activityMs: () => s.activity,
     openAsks: () => s.openAsks,
@@ -218,10 +226,12 @@ function agent(
     restart: async (target: string, proof: any) => {
       out.restarts.push({ target, proof })
       if (s.tookRestart instanceof Error) throw s.tookRestart
+      if (s.askWritesMarker) s.markerMtimeMs = disk.clock.now
       return s.tookRestart
     },
     restartRollback: async (target: string, proof: any) => {
       out.rollbackRestarts.push({ target, proof })
+      if (s.askWritesMarker) s.markerMtimeMs = disk.clock.now
       return true
     },
     rollbackInstall: async (rec: any) => {
@@ -515,6 +525,57 @@ test('a restart that never arrives: did_not_arrive after 3.5 min, lease released
   assert.equal(lastReport(a)?.code, 'scheduled_update_failed')
   disk.clock.now += 10 * MIN
   assert.equal(await a.c.tick(), 'attempted')
+})
+
+test('a restart that never arrives takes back the marker hoai never took: its next poll would kill claude with no turn check', async () => {
+  const disk = memDisk()
+  const a = agent(disk)
+  a.s.askWritesMarker = true
+  assert.equal(await a.c.tick(), 'requested')
+  disk.clock.now += 3.5 * MIN + SEC
+  assert.equal(await a.c.tick(), 'did_not_arrive')
+  assert.equal(a.markerRemovals, 1)
+  assert.equal(a.s.markerMtimeMs, null)
+  assert.equal(readJson(disk, a.record).markerStranded, true)
+  // The marker was what said the launcher stopped taking them: the record says it now.
+  assert.equal(lastReport(a)?.code, 'idle_update_launcher_latched')
+})
+
+test('a marker hoai took leaves nothing to take back: the launcher works, and the report is the ordinary failed attempt', async () => {
+  const disk = memDisk()
+  const a = agent(disk)
+  a.s.askWritesMarker = true
+  assert.equal(await a.c.tick(), 'requested')
+  a.s.markerMtimeMs = null
+  disk.clock.now += 3.5 * MIN + SEC
+  assert.equal(await a.c.tick(), 'did_not_arrive')
+  assert.equal(a.markerRemovals, 0)
+  assert.notEqual(readJson(disk, a.record).markerStranded, true)
+  assert.equal(lastReport(a)?.code, 'scheduled_update_failed')
+})
+
+test('a marker another writer left since is never taken back: a person\'s restart writes the same file, and nothing in it names the writer', async () => {
+  const disk = memDisk()
+  const a = agent(disk)
+  a.s.askWritesMarker = true
+  assert.equal(await a.c.tick(), 'requested')
+  disk.clock.now += MIN
+  const theirs = disk.clock.now
+  a.s.markerMtimeMs = theirs
+  disk.clock.now += 2.5 * MIN + SEC
+  assert.equal(await a.c.tick(), 'did_not_arrive')
+  assert.equal(a.markerRemovals, 0)
+  assert.equal(a.s.markerMtimeMs, theirs)
+})
+
+test('no marker was asked for (a keepalive or an owning service): nothing is taken back, whatever waits there', async () => {
+  const disk = memDisk()
+  const a = agent(disk)
+  assert.equal(await a.c.tick(), 'requested')
+  a.s.markerMtimeMs = disk.clock.now
+  disk.clock.now += 3.5 * MIN + SEC
+  assert.equal(await a.c.tick(), 'did_not_arrive')
+  assert.equal(a.markerRemovals, 0)
 })
 
 // -- After the restart: the new daemon -------------------------------------------------------------
@@ -1603,3 +1664,28 @@ test('validation asks for a heartbeat while none has gone out since the new buil
   assert.equal(await a.c.tick(), 'validating')
   assert.equal(a.heartbeatRequests, 1, 'no more once one went out at the new version')
 })
+
+test('a rollback restart that never arrives takes back its marker too: a late take would land at a moment nobody checked', async () => {
+  const { disk, a } = await rolledBackCanaryAsked()
+  disk.clock.now += 3.5 * MIN + SEC
+  assert.equal(await a.c.tick(), 'rollback_staged')
+  assert.equal(a.markerRemovals, 1)
+  assert.equal(a.s.markerMtimeMs, null)
+  assert.equal(lastReport(a)?.code, 'idle_update_rollback_failed')
+})
+
+/** The canary rolled the install back and asked hoai for the restart onto the old build: the marker waits. */
+async function rolledBackCanaryAsked() {
+  const disk = await afterAsk()
+  const a = agent(disk, { running: '0.81.0', staged: null })
+  a.s.askWritesMarker = true
+  assert.equal(await a.c.tick(), 'validating')
+  a.s.deaf = true
+  a.s.heartbeatOkAtMs = disk.clock.now
+  a.s.beaconAtMs = disk.clock.now
+  disk.clock.now += 15 * MIN + SEC
+  a.s.activity = [disk.clock.now - 3 * MIN]
+  assert.equal(await a.c.tick(), 'rollback')
+  assert.equal(await a.c.tick(), 'rollback_requested')
+  return { disk, a }
+}

@@ -92,6 +92,14 @@ test('the restart marker: its age when one waits, null when none does', () => {
 
 // -- The unattended proof's inputs --------------------------------------------------------------
 
+test('the restart marker taken back: that one file, and a removal that fails says so', () => {
+  const removed: string[] = []
+  assert.equal(m.removeRestartMarker({ stateDir: STATE, fs: { remove: (p: string) => { removed.push(p); return true } } }), true)
+  assert.deepEqual(removed, [`${STATE}/restart-requested.json`])
+  assert.equal(m.removeRestartMarker({ stateDir: STATE, fs: { remove: () => false } }), false)
+  assert.equal(m.removeRestartMarker({ stateDir: STATE, fs: { remove: () => { throw new Error('EBUSY') } } }), false)
+})
+
 test('the unattended inputs: this HOME\'s tmux sockets, run.sh, launch-status and run-agent.vbs as read now', () => {
   const fs = memFs({
     [`${STATE}/launch-status`]: { text: 'outcome=live at=2026-10-28T09:00:05Z\n', mtimeMs: NOW - 170 * MIN },
