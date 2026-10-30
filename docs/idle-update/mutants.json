@@ -555,8 +555,8 @@
       "id": "ctl-did-not-arrive",
       "rule": "a restart that never arrives is a failed attempt",
       "file": "lib/idle-update.mjs",
-      "find": "          if (now() - requestedAtMs < d.didNotArriveMs) return 'requested'\n          return failAsk(",
-      "replace": "          if (true) return 'requested'\n          return failAsk(",
+      "find": "          if (now() - requestedAtMs < d.didNotArriveMs) return 'requested'\n          {\n            const markerStranded = takeBackMarker()",
+      "replace": "          if (true) return 'requested'\n          {\n            const markerStranded = takeBackMarker()",
       "tests": [
         "test/idle-update.controller.test.ts"
       ]
@@ -2619,6 +2619,89 @@
       "replace": "      busy = false\n",
       "tests": [
         "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "marker-taken-back",
+      "rule": "a restart that never arrives takes back the marker hoai never took (Data's fix 3)",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (ours) read(deps.removeMarker, false)\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.controller.test.ts",
+        "test/idle-update.integration.test.ts"
+      ]
+    },
+    {
+      "id": "marker-only-ours",
+      "rule": "only the file this ask left: another writer's marker stays",
+      "file": "lib/idle-update.mjs",
+      "find": "const ours = finite(askedMarkerMs) && read(deps.markerMtimeMs, null) === askedMarkerMs",
+      "replace": "const ours = finite(askedMarkerMs) && finite(read(deps.markerMtimeMs, null))",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "marker-only-asked",
+      "rule": "an authority that wrote no marker takes none back",
+      "file": "lib/idle-update.mjs",
+      "find": "const ours = finite(askedMarkerMs) && read(deps.markerMtimeMs, null) === askedMarkerMs",
+      "replace": "const ours = finite(read(deps.markerMtimeMs, null))",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "marker-rollback-taken-back",
+      "rule": "a rollback restart that never arrives takes back its marker too",
+      "file": "lib/idle-update.mjs",
+      "find": "      takeBackMarker()\n      return rollbackStuck(`the restart onto ${record.from} did not arrive`)",
+      "replace": "      return rollbackStuck(`the restart onto ${record.from} did not arrive`)",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "marker-stranded-on-record",
+      "rule": "the stranded marker is on the record: nothing else says the launcher stopped taking them now",
+      "file": "lib/idle-update.mjs",
+      "find": "did not arrive within ${Math.round(d.didNotArriveMs / 1000)}s`, { markerStranded })",
+      "replace": "did not arrive within ${Math.round(d.didNotArriveMs / 1000)}s`, {})",
+      "tests": [
+        "test/idle-update.controller.test.ts",
+        "test/idle-update.integration.test.ts"
+      ]
+    },
+    {
+      "id": "marker-stranded-report",
+      "rule": "a stranded marker reports the launcher, not an ordinary failed attempt",
+      "file": "lib/idle-update.mjs",
+      "find": "      if (record.markerStranded) return launcherLatchedError(target, lastAt)\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "marker-host-removes",
+      "rule": "the host removes the one marker file",
+      "file": "lib/idle-update-host.mjs",
+      "find": "return safe(() => fs.remove(joinDir(stateDir, RESTART_MARKER_FILE_NAME)), false) === true",
+      "replace": "return false",
+      "tests": [
+        "test/idle-update.host.test.ts",
+        "test/idle-update.integration.test.ts"
+      ]
+    },
+    {
+      "id": "wire-remove-marker",
+      "rule": "the daemon hands the controller the removal",
+      "file": "server.ts",
+      "find": "      removeMarker: () => removeRestartMarker({ stateDir, fs }),\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
       ]
     }
   ]

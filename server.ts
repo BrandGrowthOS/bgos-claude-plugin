@@ -120,6 +120,7 @@ import {
   listHeldBadVersions,
   readLauncherClaim,
   readMarkerMtimeMs,
+  removeRestartMarker,
   readPersonAttached,
   readServiceStrays,
   readUnattendedInputs,
@@ -17746,6 +17747,7 @@ async function main(): Promise<void> {
       updateLockHeld: () =>
         INSTALL_METHOD !== 'marketplace' && isUpdateLockHeld(joinPath(import.meta.dir, '.git', AUTO_UPDATE_LOCK_FILE)),
       markerMtimeMs: () => readMarkerMtimeMs({ stateDir, fs }),
+      removeMarker: () => removeRestartMarker({ stateDir, fs }),
       safeState: () => ({
         turnInFlight: hookTurnLive || hookTurn.carried.size > 0,
         turnSignal: hookTurnSignal({ lastEventAtMs: lastHookEventAtMs, endedSessionId: hookEndedSessionId }),

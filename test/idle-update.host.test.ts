@@ -93,6 +93,7 @@ test('the restart marker: its age when one waits, null when none does', () => {
 // -- The unattended proof's inputs --------------------------------------------------------------
 
 test('the restart marker taken back: that one file, and a removal that fails says so', () => {
+  const m = need()
   const removed: string[] = []
   assert.equal(m.removeRestartMarker({ stateDir: STATE, fs: { remove: (p: string) => { removed.push(p); return true } } }), true)
   assert.deepEqual(removed, [`${STATE}/restart-requested.json`])
