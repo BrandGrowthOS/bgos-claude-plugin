@@ -3461,6 +3461,116 @@ test('review round 15: a paragraph is also judged as one joined line, as round 1
   assert.equal(X.xmlText('a<w:br w:type="textWrapping"/>b<w:tab />c<w:br/>d<w:tab/>e'), 'a\nb\tc\nd\te')
 })
 
+// ── review round 16: a loose word beside a lone account word (Bank | Card | PIN) ──
+
+/**
+ * Round 16: an Excel file whose text cells are shared strings and whose number cells are values (`<c><v>4417</v></c>`),
+ * as Excel stores a typed PIN: the number is never in the file's text.
+ */
+function r16NumberSheet(rows: (string | number)[][]): Buffer {
+  const strings: string[] = []
+  const xml = rows
+    .map((row, r) => `<row r="${r + 1}">${row.map((cell, c) => {
+      const ref = `${String.fromCharCode(65 + c)}${r + 1}`
+      if (typeof cell === 'number') return `<c r="${ref}"><v>${cell}</v></c>`
+      strings.push(cell)
+      return `<c r="${ref}" t="s"><v>${strings.length - 1}</v></c>`
+    }).join('')}</row>`)
+    .join('')
+  return zipOf({
+    '[Content_Types].xml': officeTypes('xlsx'),
+    'xl/workbook.xml': '<workbook/>',
+    'xl/_rels/workbook.xml.rels': '<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>',
+    'xl/worksheets/sheet1.xml': `<worksheet><sheetData>${xml}</sheetData></worksheet>`,
+    'xl/sharedStrings.xml': `<sst>${strings.map((t) => `<si><t>${t}</t></si>`).join('')}</sst>`,
+  })
+}
+
+test('review round 16: a loose word (PIN, Pass) beside a lone account word (Bank, Service, App) names a password column, in a sheet, a Word table, a text file and Word paragraphs', async () => {
+  // The round 15 reviewer's card PIN lists, each under a neutral name (pins.xlsx is refused by its name alone).
+  const cards = [['Bank', 'Card', 'PIN'], ['Chase', 'Visa', '4417'], ['HSBC', 'Mastercard', '9921']]
+  for (const [name, bytes] of [
+    ['cards.xlsx', xlsxSheetsOf([cards])],
+    ['cards inline.xlsx', xlsxSheetsOf([cards], true)],
+    ['cards.csv', Buffer.from('Bank,Card,PIN\nChase,Visa,4417\nHSBC,Mastercard,9921\n')],
+    ['cards.txt', Buffer.from('Bank\tCard\tPIN\nChase\tVisa\t4417\n')],
+    ['cards.docx', docxOf(['Cards'], cards)],
+    ['cards2.docx', r14Paragraphs(['Cards', 'Bank\tPIN', 'Chase\t4417', 'HSBC\t9921'])],
+    ['apps.csv', Buffer.from('App,PIN\nBanking app,4417\n')],
+    // The reviewer's pins-num.xlsx (renamed): the PINs are numbers, so no value rule can see them.
+    ['cards-num.xlsx', r16NumberSheet([['Bank', 'Card', 'PIN'], ['Chase', 'Visa', 4417], ['HSBC', 'Mastercard', 9921]])],
+    ['bank two.xlsx', xlsxSheetsOf([[['Bank', 'PIN'], ['Chase', '4417']]])],
+    ['bank label.xlsx', xlsxSheetsOf([[['Bank', 'Card PIN:'], ['Chase', '4417']]])],
+    ['services.csv', Buffer.from('Service,Pass\nNetflix,Tr0ub4dor&3x\n')],
+  ] as const) {
+    const got = await memRefusal(name, bytes)
+    assert.equal(got.why, tableSentence6(got.path), name)
+  }
+  // The round 5 controls (a pass, pin or secret word and an account word in the same file, never in one row) and
+  // lists with a lone account word and no loose word beside it go.
+  const controls: [string, string[][]][] = [
+    ['gradebook', [['Student', 'Email', 'Result'], ['Sam Lee', 'sam@example.com', 'Pass'], ['Ana Ruiz', 'ana@example.com', 'Fail']]],
+    ['qa tracker', [['Test case', 'URL', 'Result'], ['Home page loads', 'https://example.com/', 'Pass'], ['Cart totals', 'https://example.com/cart', 'Pass']]],
+    ['inventory', [['Item', 'Account', 'Qty'], ['Pins', 'Office', '40'], ['Staples', 'Office', '12']]],
+    ['branches', [['Bank', 'Branch', 'Opening hours'], ['Chase', 'Main St', '9 to 5']]],
+    ['apps', [['App', 'Version', 'Notes'], ['Mail', '3.2', 'PIN reset in Settings']]],
+    ['stock', [['Service', 'Status', 'Pins'], ['Repairs', 'Open', '40']]],
+  ]
+  for (const [name, rows] of controls) {
+    const csv = rows.map((row) => row.join(',')).join('\n') + '\n'
+    for (const [file, bytes] of [
+      [`${name}.xlsx`, xlsxSheetsOf([rows])],
+      [`${name}.docx`, docxOf([name], rows)],
+      [`${name}.csv`, Buffer.from(csv)],
+    ] as const) {
+      assert.equal((await memRefusal(file, bytes)).why, null, file)
+    }
+  }
+})
+
+// ── review round 17: a cell of two or more words ending in pass (Day pass) no longer pairs with a lone cell ──
+
+test('review round 17: price and subscription lists headed Service, App or Bank go (Day pass, Season pass, Xbox Game Pass), while a bare Pass, PIN, Card PIN, PW or Secret beside a lone account word is still refused', async () => {
+  // The round 16 reviewer's lists: a lone header word in column A or a Word table's first column, and a priced item
+  // below it that ends in pass. Round 16 refused each as xlsx and as a Word table.
+  const lists: [string, string[][]][] = [
+    ['gym-prices', [['Service', 'Price', 'Notes'], ['Personal training', '45', 'per hour'], ['Day pass', '12', ''], ['Monthly pass', '60', ''], ['Annual pass', '550', 'save 20%']]],
+    ['ski-prices', [['Service', 'Adult', 'Child'], ['Lift ticket', '89', '59'], ['Season pass', '899', '499'], ['Ski rental', '45', '30']]],
+    ['transit-fares', [['Service', 'Fare'], ['Single ride', '2.75'], ['Day pass', '8.00'], ['7-day pass', '34.00']]],
+    ['subscriptions', [['Service', 'Monthly', 'Renews'], ['Netflix', '15.49', '3rd'], ['Spotify', '10.99', '12th'], ['Xbox Game Pass', '16.99', '20th'], ['iCloud+', '2.99', '1st']]],
+    ['apps-installed', [['App', 'Developer', 'Price'], ['Xbox Game Pass', 'Microsoft', 'Free'], ['Google Maps', 'Google', 'Free'], ['Slack', 'Salesforce', 'Free']]],
+    ['ski-budget', [['Service', 'Cost'], ['Flights', '420'], ['Hotel', '780'], ['Epic Pass', '949']]],
+    ['parking', [['Service', 'Rate'], ['Hourly', '3'], ['Daily', '20'], ['Visitor pass', '5']]],
+  ]
+  for (const [name, rows] of lists) {
+    for (const [file, bytes] of [
+      [`${name}.xlsx`, xlsxSheetsOf([rows])],
+      [`${name}.docx`, docxOf([name], rows)],
+    ] as const) {
+      assert.equal((await memRefusal(file, bytes)).why, null, file)
+    }
+  }
+  // A 60 row Word table whose first column holds Guest pass at row 40 (the whole first column is read).
+  const longCol: string[][] = [['Service', 'Price']]
+  for (let i = 1; i < 60; i++) longCol.push([i === 40 ? 'Guest pass' : `Class ${i}`, String(10 + i)])
+  assert.equal((await memRefusal('timetable-long.docx', docxOf(['Leisure centre prices'], longCol))).why, null, 'timetable-long.docx')
+  assert.equal((await memRefusal('timetable-long.xlsx', xlsxSheetsOf([longCol]))).why, null, 'timetable-long.xlsx')
+  // Still refused (the round 16 reviewer's must-refuse cases beyond round 16's test, under neutral names: app pw.csv is
+  // refused by its name alone): a bare loose word, or a cell that ends in PIN, PW or Secret, beside a lone Bank,
+  // Service or App cell, across, and down column A.
+  for (const [name, bytes] of [
+    ['bank cardpin.xlsx', xlsxSheetsOf([[['Bank', 'Card PIN'], ['Chase', '4417']]])],
+    ['apps two.csv', Buffer.from('App,PW\nNetflix,Tr0ub4dor&3x\n')],
+    ['services notes.docx', docxOf(['Notes'], [['Service', 'Secret'], ['AWS', 'Tr0ub4dor&3x']])],
+    ['banks online.csv', Buffer.from('Bank,Online PIN\nChase,4417\n')],
+    ['vertical bank.xlsx', r16NumberSheet([['Bank:', 'Chase'], ['Card PIN:', 4417], ['Online PIN:', 9921]])],
+    ['vertical plain.xlsx', xlsxSheetsOf([[['Bank', 'Chase'], ['PIN', '4417']]])],
+  ] as const) {
+    const got = await memRefusal(name, bytes)
+    assert.equal(got.why, tableSentence6(got.path), name)
+  }
+})
+
 test('no em or en dash in the new module', async () => {
   const { readFileSync } = await import('node:fs')
   // Round 7: and the content stage and its Worker.

@@ -237,16 +237,24 @@ function namesStrict(name: string, rule: RegExp = PASSWORD_COLUMN): boolean {
  * time, so a first column of a million rows is judged without holding its cells. It names a password column when a
  * cell names one, or when a loose cell (pass, pw, pin, secret) and an account cell (user, login, email, site) are both
  * in it. Round 10: no gradebook exemption (rounds 8 and 9 let a pass column beside a grade go; each narrowing was
- * fooled by where the cells sat), so Student, Email, Grade, Pass is refused, as it was before round 8.
+ * fooled by where the cells sat), so Student, Email, Grade, Pass is refused, as it was before round 8. Round 16: a lone
+ * bank, service or app cell is an account cell beside a loose one too, so Bank, Card, PIN is refused. Round 17: but
+ * not beside a cell of two or more words ending in pass, so Service over Day pass (a price list) goes.
  */
 class PasswordRow {
   cells = 0
   private strict = false
   private loose = false
   private account = false
-  /** Round 15: a password word in a label (a 3 word cell that ends with a colon), and an account word on its own. */
+  /**
+   * Round 15: a password word in a label (a 3 word cell that ends with a colon), and an account word on its own. Round
+   * 16: a loose cell pairs with an account word on its own too (ACCOUNT_CELL: Bank | Card | PIN, App, PIN). Round 17:
+   * only a loose cell that is not two or more words ending in pass (looseBare: Pass, PIN, Card PIN, PW, Secret, not
+   * Day pass or Xbox Game Pass, which a price list headed Service lays down column A).
+   */
   private labelLoose = false
   private accountCell = false
+  private looseBare = false
 
   /**
    * Round 11: the stage's budget, read every ROW_CELLS_PER_CHECK cells (a row of a sheet may hold 50000 cells), and
@@ -259,7 +267,10 @@ class PasswordRow {
     if (this.strict) return
     const name = headerName(cell, this.tableCells)
     if (namesStrict(name)) this.strict = true
-    if (LOOSE_PASSWORD_COLUMN.test(name)) this.loose = true
+    if (LOOSE_PASSWORD_COLUMN.test(name)) {
+      this.loose = true
+      if (!/^.+[ _-]pass$/i.test(name)) this.looseBare = true
+    }
     if (ACCOUNT_COLUMN.test(name)) this.account = true
     if (ACCOUNT_CELL.test(name)) this.accountCell = true
     // Round 14: a sheet or Word table cell that kept its colon may be a label of HEADER_LABEL_WORDS_MAX words. Round
@@ -273,7 +284,7 @@ class PasswordRow {
   }
 
   get names(): boolean {
-    return this.strict || (this.loose && this.account) || (this.labelLoose && this.accountCell)
+    return this.strict || (this.loose && this.account) || (this.looseBare && this.accountCell) || (this.labelLoose && this.accountCell)
   }
 }
 
