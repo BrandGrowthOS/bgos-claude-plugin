@@ -4,8 +4,10 @@ KC, 2026-10-30: "Follow the published version". A host that installs the plugin 
 example) must take the PUBLISHED version, the tag the hoai marketplace ref names, and never plugin main.
 Publishing is the one gate for every host.
 
-Branch `fix/clone-follows-published`, commits `4491ee3` (red tests) and `800001c` (the fix), then this report. Not
-pushed, no version bump, nothing published.
+Branch `fix/clone-follows-published`: `b9f6f15` (red tests), `4db31cd` (the fix), then the report commits. Not
+pushed, no version bump, nothing published. (The branch was rebuilt on 2026-10-30 to split four test-only commits
+out to `fix/suite-green-off-ci`; before that the red tests and the fix were `4491ee3` and `800001c`, and the old
+history is kept as `backup/clone-follows-published-before-split`.)
 
 ## What #268 already covered
 
@@ -74,7 +76,7 @@ no real host, service or `~/.bgos-agent` is touched.
 - `test/self-update.published-release.test.ts` (+1): the daemon's ahead line, a major ahead included.
 - `test/bgos-agent.update-reexec.test.ts`: its fixture now publishes the release it moves to.
 
-Red at the test commit `4491ee3` (the code of c636ded) for the true reasons: 29 of the 30 new node tests and the
+Red at the test commit `b9f6f15` (then `4491ee3`; the code of c636ded) for the true reasons: 29 of the 30 new node tests and the
 new bun test fail. The update and both installers landed on main's head, an ahead host printed nothing about it,
 an offline marketplace stopped nothing, bgos-claim pulled main, and the shared module did not exist. The one that
 passes there is the dirty tree guard on `hoai-agent update`, which pins behaviour that already held.
@@ -117,7 +119,7 @@ block. The check now anchors on the line right after the move, and kills it.
 ## Review
 
 An independent read of the diff (a reviewer given the code and the goal, not these conclusions) found nothing that
-breaks the goal and raised seven points, all fixed in `800001c`:
+breaks the goal and raised seven points, all fixed in `4db31cd`:
 
 1. `reset --hard` could drop commits that exist only in the checkout (new for bgos-claim, which used
    `pull --ff-only`): the move now refuses a checkout with commits no remote branch or tag holds.
@@ -131,33 +133,35 @@ breaks the goal and raised seven points, all fixed in `800001c`:
 
 ### Full suite and type check, macOS and Linux
 
-Both runs compare the change (`800001c`) with clean HEAD (`c636ded`), run the same way. The suite is not green at
-clean HEAD either; the change adds no failure on either OS.
+**This change adds no failure, and on its own the suite is exactly as green as c636ded.** The code on this branch's
+tip is the code of `4db31cd` (`git diff 4db31cd HEAD` touches only REPORT.md and the evidence folder).
 
-| | type check | node:test (pass / fail) | real Chromium | bun:test | failing tests that clean HEAD does not have |
-|---|---|---|---|---|---|
-| macOS, clean HEAD | pass | 7713 / 45 | 11 pass, 0 fail | 374 / 0 | |
-| macOS, change | pass | 7740 / 45 | 11 pass, 0 fail | 375 / 0 | none |
-| Linux, clean HEAD | pass | 7731 / 33 | 0 pass, 10 fail | 374 / 0 | |
-| Linux, change | pass | 7759 / 32 | 0 pass, 10 fail | 375 / 0 | none |
+| | type check | what the suite shows |
+|---|---|---|
+| CI, c636ded | pass | green on Linux (x86) and Windows; this branch runs there once pushed |
+| macOS, plain `npm test`, the change against clean HEAD | pass | the same failing set at both: 45 tests at c636ded, 45 with the change, none new (all browser profile tests, from the macOS temp folder below) |
+| Linux, the change against clean HEAD in the same container | pass | the change's failing set is a subset of c636ded's (42 tests against 43), none new |
+| macOS and a clean Debian 12 VM, this change plus the four test fixes | pass | green on both: macOS 7801 pass and 0 fail, Linux 7805 pass and 0 fail, Chromium 11 and bun 375 on each |
 
-- Linux is `node:24-bookworm` (node 24, bun 1.4, git 2.39, expect), with `HOAI_REQUIRE_EXPECT=1` and
-  `HOAI_REQUIRE_BASH=1` as in `.github/workflows/tests.yml`. The Docker VM's disk is full, so everything was written
-  to tmpfs, and nothing was pruned. The image has no browser, so the real Chromium files fail on both commits.
-- The failures at clean HEAD are in the browser profile files (`browser-profile-*`, `browser-bootstrap`) and
-  `external-email-label`. Each set is in `docs/evidence/2026-10-30-clone-follows-published/failing-tests.txt`.
-- On macOS, `test/browser-profile-active-backup.test.ts` and `test/browser-profile-companion-backups.test.ts`
-  HANG at clean HEAD: each one, run alone at c636ded with a 4 minute cap, never finished. So both runs ended a test
-  file stalled for 20 minutes, and only those two were ended.
-- An earlier macOS run of the change had two extra failures (`browser-profile-runtime`, `external-email-label`).
-  Each of those files then passed 3 runs out of 3 on its own, and neither failed in the final run. They are load
-  flakes, not this change.
-- Every one of the 36 new or changed tests passed on both OSes, none skipped.
+The 36 new or changed tests pass on every run above, none skipped.
+
+**Off CI, the suite is not green at clean HEAD c636ded either.** Four test-only problems, none in this change's
+code, make a stock Mac and a fast arm64 Linux box red: macOS's `$TMPDIR` is a link the browser profile code refuses
+on purpose (45 failures and two hung files), two private turn test helpers write a marker the coarse Linux file
+clock can stamp before the moment it follows, and a 30 ms fake protocol timeout trips under load. Fixing them is
+outside this brief, so (KC's choice, 2026-10-30) the four test-only commits are on their own branch,
+**`fix/suite-green-off-ci`** (off c636ded, with their red first runs and mutants in
+`docs/evidence/2026-10-30-suite-green-off-ci/`). With that branch's commits the suite and type check are green on
+both macOS and the clean Debian VM, as the last table row shows.
+
+The private turn clock edge is worth a look by the owners of `lib/private-turn.mjs`: in the field a Stop comes
+seconds after a delivery, so it is not a live bug, but the tracker mixes two clocks.
 
 Evidence in `docs/evidence/2026-10-30-clone-follows-published/`:
-- `red-at-4491ee3.log`: the red run.
+- `red-at-4491ee3.log`: the red run (at the red test commit, `4491ee3` before the rebuild, `b9f6f15` now).
 - `mutation.log` and `mutate.py`: every mutant with its changed line.
-- `failing-tests.txt`: the four failing sets.
+- `final-runs.txt`: the summary lines of the green runs of this change plus the four test fixes on both OSes.
+- `failing-tests.txt`: the change against clean HEAD on macOS and Linux, failing set by failing set.
 
 ## Rollout: how existing hosts pick it up
 
@@ -193,3 +197,4 @@ Evidence in `docs/evidence/2026-10-30-clone-follows-published/`:
   runs the suite, and the same `.ps1` test runs there).
 - kc-server was not inspected (the brief: no real agent host). Whether it is ahead today is for whoever has access to
   check with the read only commands in step 4.
+- The Windows leg of CI was not run here.

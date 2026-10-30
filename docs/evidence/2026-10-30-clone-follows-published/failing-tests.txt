@@ -1,6 +1,6 @@
 # failing test names, clean HEAD c636ded vs the change 800001c
 
-## macos-head (46)
+## macos-head (45)
 ✖ a macOS Keychain endpoint record saves and loads like a Secret Service one, and any other provider refuses
 ✖ a reviewed source pin permits blocked readiness but confirmed history alone cannot activate the agent
 ✖ actual shipped seal and journal workers encrypt a private native-shaped draft and verify durable readback
@@ -21,7 +21,6 @@
 ✖ explicit review uses fresh exact enrollment and current background consent before signing the local peer pin
 ✖ failed atomic replacement preserves old ciphertext, latches uncertainty and blocks automatic recovery
 ✖ failed fresh publication deletes only its new OS item after disposal and retains existing secrets
-✖ failing tests:
 ✖ four immutable reviewed peers are bounded and interrupted write markers require recovery
 ✖ full locally reviewed recipient set seals and confirms advisory backup through actual shipped workers while original source stays active
 ✖ global busy admission does not spend an untouched original artifact capability
@@ -48,7 +47,7 @@
 ✖ version2 receive role owner and exact locally reviewed source identity are proved before runtime preparation or ready
 ✖ wrong actor, profile, pin, grant and epoch cannot load an older record or silently create empty data
 
-## macos-change (46)
+## macos-change (45)
 ✖ a macOS Keychain endpoint record saves and loads like a Secret Service one, and any other provider refuses
 ✖ a reviewed source pin permits blocked readiness but confirmed history alone cannot activate the agent
 ✖ actual shipped seal and journal workers encrypt a private native-shaped draft and verify durable readback
@@ -69,7 +68,6 @@
 ✖ explicit review uses fresh exact enrollment and current background consent before signing the local peer pin
 ✖ failed atomic replacement preserves old ciphertext, latches uncertainty and blocks automatic recovery
 ✖ failed fresh publication deletes only its new OS item after disposal and retains existing secrets
-✖ failing tests:
 ✖ four immutable reviewed peers are bounded and interrupted write markers require recovery
 ✖ full locally reviewed recipient set seals and confirms advisory backup through actual shipped workers while original source stays active
 ✖ global busy admission does not spend an untouched original artifact capability
@@ -96,7 +94,7 @@
 ✖ version2 receive role owner and exact locally reviewed source identity are proved before runtime preparation or ready
 ✖ wrong actor, profile, pin, grant and epoch cannot load an older record or silently create empty data
 
-## linux-head (44)
+## linux-head (43)
 ✖ 70f1898b: an email delivered while the marker cannot be read asks the owner in the next owner turn, until a Stop written after it
 ✖ a bar from a delivery whose place was unknown ends with the next Stop the CLI ran after it (review round 2, R7)
 ✖ a CLONE-STYLE folder that carries a .mcp.json keeps it byte for byte, the prover is never even started, and hoai starts from this checkout
@@ -124,7 +122,6 @@
 ✖ behaviour: the trust gate with "No, exit" first is ACCEPTED and the agent stays up (the generation 1 wrapper once exited 0 in 2 s here)
 ✖ behaviour: with only the WANTED option readable nothing is pressed, because "it is painted first" would be a guess
 ✖ every refusal is NAMED, exits nonzero, and leaves nothing behind: no wrapper, no service file, no service call
-✖ failing tests:
 ✖ first native storage setup keeps the current completed sign-in and restores it encrypted after restart
 ✖ JavaScript and password-only login pages keep exact capture checks and permit explicit login save
 ✖ Linux: a reinstall over a RUNNING unit restarts it (enable --now leaves an active unit on its old run.sh), and a stopped unit is just started
@@ -142,7 +139,7 @@
 ✖ unlock clears a historical origin whose service worker still holds a locked IndexedDB connection
 ✖ when EVERY claude is stale the install is refused by name and leaves nothing behind
 
-## linux-change (43)
+## linux-change (42)
 ✖ a bar from a delivery whose place was unknown ends with the next Stop the CLI ran after it (review round 2, R7)
 ✖ a CLONE-STYLE folder that carries a .mcp.json keeps it byte for byte, the prover is never even started, and hoai starts from this checkout
 ✖ a paired folder whose plugin is installed ONLY under the custom CLAUDE_CONFIG_DIR is proven, and the service carries that config dir
@@ -169,7 +166,6 @@
 ✖ behaviour: the trust gate with "No, exit" first is ACCEPTED and the agent stays up (the generation 1 wrapper once exited 0 in 2 s here)
 ✖ behaviour: with only the WANTED option readable nothing is pressed, because "it is painted first" would be a guess
 ✖ every refusal is NAMED, exits nonzero, and leaves nothing behind: no wrapper, no service file, no service call
-✖ failing tests:
 ✖ first native storage setup keeps the current completed sign-in and restores it encrypted after restart
 ✖ JavaScript and password-only login pages keep exact capture checks and permit explicit login save
 ✖ Linux: a reinstall over a RUNNING unit restarts it (enable --now leaves an active unit on its old run.sh), and a stopped unit is just started
