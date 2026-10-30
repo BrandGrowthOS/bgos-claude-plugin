@@ -23,10 +23,11 @@ import { spawnSync } from 'node:child_process'
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { test } from 'node:test'
+import { after, before, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import { resolvePosixBash } from './helpers/posix-bash.ts'
+import { startManifestServer, type ManifestServer } from './helpers/manifest-server.ts'
 import { watcherHomeId } from '../lib/watcher-service.mjs'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -37,6 +38,15 @@ const hasNode = probe('command -v node')?.status === 0
 const SKIP = BASH && hasGit && hasNode ? false : 'needs bash, git and node'
 
 const NEW_MARKER = 'NEW-SCRIPT-RAN-THE-REST-OF-UPDATE'
+
+// The update follows the PUBLISHED release (board row 01a0db74): origin's 2.0.0 is tagged v2.0.0, and this
+// stand in for the marketplace names it, so the update moves exactly as it did when it followed main.
+let marketplace: ManifestServer | null = null
+before(async () => {
+  if (!SKIP) marketplace = await startManifestServer('v2.0.0')
+})
+after(() => marketplace?.stop())
+const published = () => ({ HOAI_PUBLISHED_MANIFEST_URL: marketplace!.url })
 
 function sh(cwd: string, cmd: string, env: Record<string, string> = {}) {
   const res = spawnSync(BASH!, ['-c', cmd], { cwd, encoding: 'utf8', env: { ...process.env, ...env } })
@@ -68,6 +78,9 @@ function fixture(scriptForCheckout: string) {
   // (on bun or node: the bun stub prints nothing for it, so the node on PATH answers). A plugin
   // checkout carries both.
   cpSync(join(repoRoot, 'bin', 'hoai-agent-service.mjs'), join(work, 'bin', 'hoai-agent-service.mjs'))
+  // What the update asks which release is published (board row 01a0db74), and what its lib imports from bin.
+  cpSync(join(repoRoot, 'bin', 'hoai-published-release.mjs'), join(work, 'bin', 'hoai-published-release.mjs'))
+  cpSync(join(repoRoot, 'bin', 'bgos-install-method.mjs'), join(work, 'bin', 'bgos-install-method.mjs'))
   cpSync(join(repoRoot, 'lib'), join(work, 'lib'), { recursive: true })
   const git = (c: string) => sh(work, `git ${c}`, { HOME: home, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' })
   git('init -q -b main')
@@ -94,7 +107,8 @@ function fixture(scriptForCheckout: string) {
   const gitNext = (c: string) => sh(next, `git ${c}`, { HOME: home, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' })
   gitNext('add -A')
   gitNext('commit -q -m v2')
-  gitNext('push -q origin main')
+  gitNext('tag v2.0.0')
+  gitNext('push -q origin main refs/tags/v2.0.0')
   return { work, home, stubs }
 }
 
@@ -102,7 +116,7 @@ function update(f: { work: string; home: string; stubs: string }) {
   return spawnSync(BASH!, [join(f.work, 'bin', 'bgos-agent'), 'update'], {
     cwd: f.work,
     encoding: 'utf8',
-    env: { ...process.env, HOME: f.home, PATH: `${f.stubs}:${process.env.PATH}`, CLAUDE_CONFIG_DIR: join(f.home, '.claude') },
+    env: { ...process.env, HOME: f.home, PATH: `${f.stubs}:${process.env.PATH}`, CLAUDE_CONFIG_DIR: join(f.home, '.claude'), ...published() },
   })
 }
 
@@ -114,7 +128,7 @@ test('the rest of the update runs the NEW script, and the version message still 
   assert.equal(res.status, 0, out)
   assert.match(out, new RegExp(NEW_MARKER), 'a line only the new file has was printed')
   assert.match(out, /plugin updated: 1\.0\.0 -> 2\.0\.0/)
-  assert.equal((out.match(/Fetching origin/g) ?? []).length, 1, 'the pull happens once')
+  assert.equal((out.match(/Following the published release/g) ?? []).length, 1, 'the move happens once')
 })
 
 test('the hand-over is not a loop: an update that is already the re-executed one does not exec again', { skip: SKIP }, () => {
@@ -123,11 +137,11 @@ test('the hand-over is not a loop: an update that is already the re-executed one
   const res = spawnSync(BASH!, [join(f.work, 'bin', 'bgos-agent'), 'update'], {
     cwd: f.work,
     encoding: 'utf8',
-    env: { ...process.env, HOME: f.home, PATH: `${f.stubs}:${process.env.PATH}`, CLAUDE_CONFIG_DIR: join(f.home, '.claude'), HOAI_UPDATE_REEXEC: '1', HOAI_UPDATE_FROM_VERSION: '0.9.0' },
+    env: { ...process.env, HOME: f.home, PATH: `${f.stubs}:${process.env.PATH}`, CLAUDE_CONFIG_DIR: join(f.home, '.claude'), ...published(), HOAI_UPDATE_REEXEC: '1', HOAI_UPDATE_FROM_VERSION: '0.9.0' },
   })
   const out = `${res.stdout}\n${res.stderr}`
   assert.equal(res.status, 0, out)
-  assert.doesNotMatch(out, /Fetching origin/, 'the flag says the pull is done')
+  assert.doesNotMatch(out, /Following the published release/, 'the flag says the move is done')
   assert.match(out, /0\.9\.0 -> 1\.0\.0/, 'the starting version comes from the environment')
 })
 
@@ -178,7 +192,7 @@ test('an update whose HOME id helper cannot answer still completes: it restarts 
     const res = spawnSync(BASH!, [join(f.work, 'bin', 'bgos-agent'), ...args], {
       cwd: f.work,
       encoding: 'utf8',
-      env: { ...process.env, HOME: f.home, PATH: `${f.stubs}:${process.env.PATH}`, CLAUDE_CONFIG_DIR: join(f.home, '.claude') },
+      env: { ...process.env, HOME: f.home, PATH: `${f.stubs}:${process.env.PATH}`, CLAUDE_CONFIG_DIR: join(f.home, '.claude'), ...published() },
     })
     const out = `${res.stdout}\n${res.stderr}`
     assert.equal(res.status, 0, `${name}: the update itself completes\n${out}`)
@@ -198,7 +212,7 @@ test('an update whose HOME id helper cannot answer still completes: it restarts 
         spawnSync(BASH!, [join(f.work, 'bin', 'bgos-agent'), 'is-installed', '--assistant', id], {
           cwd: f.work,
           encoding: 'utf8',
-          env: { ...process.env, HOME: f.home, PATH: `${f.stubs}:${process.env.PATH}`, CLAUDE_CONFIG_DIR: join(f.home, '.claude') },
+          env: { ...process.env, HOME: f.home, PATH: `${f.stubs}:${process.env.PATH}`, CLAUDE_CONFIG_DIR: join(f.home, '.claude'), ...published() },
         })
       const yes = isInstalled('42')
       assert.equal(yes.status, 0, `${name}: is-installed --assistant 42 sees the renamed service file\n${yes.stdout}\n${yes.stderr}`)

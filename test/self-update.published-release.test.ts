@@ -122,6 +122,31 @@ describe('a clone updates to exactly the published release (board row 84c23fab)'
     expect(head(clone)).toBe(ahead)
   })
 
+  test('a daemon ahead of the published release says so at its check, and that it waits for the release (board row 01a0db74)', async () => {
+    const o = releaseOrigin()
+    o.tag('v0.27.0', o.commit('0.27.0', 'release 0.27.0'))
+    const ahead = o.commit('0.28.0', 'bumped on main, never published')
+    const clone = o.clone()
+
+    const logs: string[] = []
+    const updater = await updaterFor(clone, { running: '0.28.0', published: () => 'v0.27.0', logs })
+    await updater.checkNow()
+    expect(head(clone)).toBe(ahead)
+    const line = logs.find((l) => l.startsWith('Auto-update check:')) ?? ''
+    expect(line).toContain('running 0.28.0 is ahead of the published release v0.27.0')
+    expect(line).toContain('stays at 0.28.0 until')
+    // At the published version there is nothing to wait for, and the line says only that.
+    const atRelease: string[] = []
+    const current = await updaterFor(o.clone(), { running: '0.27.0', published: () => 'v0.27.0', logs: atRelease })
+    await current.checkNow()
+    expect(atRelease.find((l) => l.startsWith('Auto-update check:')) ?? '').not.toContain('ahead')
+    // Ahead by a whole major (decideVersionUpdate answers major-change first): still ahead, still said.
+    const major: string[] = []
+    const nextMajor = await updaterFor(o.clone(), { running: '1.0.0', published: () => 'v0.27.0', logs: major })
+    await nextMajor.checkNow()
+    expect(major.find((l) => l.startsWith('Auto-update check:')) ?? '').toContain('running 1.0.0 is ahead of the published release v0.27.0')
+  })
+
   test('a depth 1 clone already past the release fetches nothing for its not-newer answer', async () => {
     const o = releaseOrigin()
     o.tag('v0.27.0', o.commit('0.27.0', 'release 0.27.0'))

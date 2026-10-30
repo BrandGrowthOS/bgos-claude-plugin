@@ -11,7 +11,7 @@
  */
 
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -29,9 +29,10 @@ function quietIdentity(dir: string): void {
   git(dir, 'config', 'core.autocrlf', 'false')
 }
 
-function writeVersion(dir: string, version: string, note: string): void {
+function writeVersion(dir: string, version: string, note: string, files: Record<string, string> = {}): void {
   writeFileSync(join(dir, 'package.json'), `${JSON.stringify({ name: 'claude-channel-bgos', version }, null, 2)}\n`)
   writeFileSync(join(dir, 'notes.md'), `${note}\n`)
+  for (const [name, body] of Object.entries(files)) writeFileSync(join(dir, name), body)
 }
 
 export function releaseOrigin(prefix = 'release-origin-') {
@@ -46,14 +47,18 @@ export function releaseOrigin(prefix = 'release-origin-') {
   return {
     root,
     bare,
-    /** One commit on main carrying `version`, pushed; returns its sha. */
-    commit(version: string, note = `change ${n + 1}`): string {
+    /** One commit on main carrying `version` (and any `files`, kept by later commits), pushed; returns its sha. */
+    commit(version: string, note = `change ${n + 1}`, files: Record<string, string> = {}): string {
       n += 1
-      writeVersion(work, version, note)
+      writeVersion(work, version, note, files)
       git(work, 'add', '-A')
       git(work, 'commit', '--quiet', '-m', note)
       git(work, 'push', '--quiet', 'origin', 'main')
       return git(work, 'rev-parse', 'HEAD')
+    },
+    /** Copy `src` (a file or a folder) to `dest` in the next commit: the plugin's real bin and lib, for a test that runs them from a clone. */
+    include(dest: string, src: string): void {
+      cpSync(src, join(work, dest), { recursive: true })
     },
     /** A lightweight tag on `sha`, pushed, the way release-tag.yml makes one. */
     tag(name: string, sha: string): void {
