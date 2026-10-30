@@ -26,6 +26,7 @@ import {
   watchStdinEof,
   isBrokenPipe,
   isReaderGone,
+  createCleanEndSignals,
   shouldShutdownOnStdin,
   type ShutdownCause,
 } from '../lib/process-lifecycle.ts'
@@ -289,4 +290,61 @@ test('the reader gone is an EPIPE only: a write after end or a destroyed stream 
   }
   assert.equal(isReaderGone(null), false)
   assert.equal(isReaderGone('EPIPE'), false)
+})
+
+/** A process's signal listeners, on a real EventEmitter so a once() listener leaves as it does on a process. */
+function signalRig(platform = 'darwin') {
+  const emitter = new EventEmitter()
+  const ended: Array<[string, number]> = []
+  const signals = createCleanEndSignals({
+    platform,
+    on: (signal, fn) => emitter.on(signal, fn),
+    off: (signal, fn) => emitter.off(signal, fn),
+    shutdown: (cause, code) => ended.push([String(cause), code]),
+  })
+  // server.ts's own lines, as on main: one shot each.
+  for (const signal of ['SIGINT', 'SIGTERM']) emitter.once(signal, () => ended.push([signal, signal === 'SIGINT' ? 130 : 143]))
+  return { emitter, ended, signals }
+}
+
+test('clean end signals: shut, they change nothing: a second signal finds no listener and a hangup keeps its default action', () => {
+  const { emitter, ended } = signalRig()
+  assert.equal(emitter.listenerCount('SIGHUP'), 0)
+  emitter.emit('SIGTERM')
+  assert.deepEqual(ended, [['SIGTERM', 143]])
+  assert.equal(emitter.listenerCount('SIGTERM'), 0, 'with none left, the default action ends a stuck shutdown')
+})
+
+test('clean end signals: open, a second signal stays handled through the shutdown, and a hangup goes through it', () => {
+  const { emitter, ended, signals } = signalRig()
+  signals.set(true)
+  emitter.emit('SIGTERM')
+  assert.deepEqual(ended, [['SIGTERM', 143]])
+  assert.equal(emitter.listenerCount('SIGTERM'), 1, 'a systemd stop and its forward both arrive')
+  emitter.emit('SIGTERM')
+  assert.deepEqual(ended, [['SIGTERM', 143]], 'and the second changes nothing')
+  emitter.emit('SIGINT')
+  assert.equal(emitter.listenerCount('SIGINT'), 1)
+  emitter.emit('SIGHUP')
+  assert.deepEqual(ended.at(-1), ['SIGHUP', 129])
+})
+
+test('clean end signals: shut again, the daemon is back to main\'s behaviour, and opening twice stacks nothing', () => {
+  const { emitter, signals } = signalRig()
+  signals.set(true)
+  signals.set(true)
+  assert.equal(emitter.listenerCount('SIGHUP'), 1)
+  assert.equal(emitter.listenerCount('SIGTERM'), 2)
+  signals.set(false)
+  signals.set(false)
+  assert.equal(emitter.listenerCount('SIGHUP'), 0)
+  assert.equal(emitter.listenerCount('SIGTERM'), 1, 'only server.ts\'s own one shot')
+  assert.equal(emitter.listenerCount('SIGINT'), 1)
+})
+
+test('clean end signals: no hangup listener on Windows', () => {
+  const { emitter, signals } = signalRig('win32')
+  signals.set(true)
+  assert.equal(emitter.listenerCount('SIGHUP'), 0)
+  assert.equal(emitter.listenerCount('SIGTERM'), 2)
 })

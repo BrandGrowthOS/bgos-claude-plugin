@@ -147,6 +147,7 @@ function agent(
     reports: [] as any[],
     heartbeatRequests: 0,
     logs: [] as string[],
+    guards: [] as boolean[],
     c: null as any,
   }
   let nonces = 0
@@ -230,6 +231,7 @@ function agent(
       return s.rollbackOk ? { ok: true } : { ok: false, reason: 'from_root_missing' }
     },
     report: (err: any) => out.reports.push(err),
+    guardCleanEnd: (open: boolean) => out.guards.push(open),
     log: (line: string) => out.logs.push(line),
     setInterval: () => ({ unref() {} }),
     clearInterval: () => {},
@@ -1125,6 +1127,44 @@ test('a disk that refused the settle write leaves this daemon validating on the 
   a.s.heartbeatOkAtMs = disk.clock.now
   a.s.beaconAtMs = disk.clock.now
   assert.equal(await a.c.tick(), 'validated')
+})
+
+test('the clean end signals are open only from arrival to the first live proof, so every other daemon keeps main\'s signals', async () => {
+  const disk = await afterAsk()
+  const a = agent(disk, { running: '0.81.0', staged: null })
+  assert.deepEqual(a.guards, [])
+  assert.equal(await a.c.tick(), 'validating')
+  assert.deepEqual(a.guards, [true], 'open from the arrival')
+  disk.clock.now += 20 * SEC
+  assert.equal(await a.c.tick(), 'validating')
+  assert.deepEqual(a.guards, [true], 'said once')
+  a.s.heartbeatOkAtMs = disk.clock.now
+  a.s.beaconAtMs = disk.clock.now
+  assert.equal(await a.c.tick(), 'validating')
+  // Past liveAt a death re-arrives whatever it was, so the daemon is back to main's signals for the rest of the hold.
+  assert.ok(readJson(disk, a.record).liveAt)
+  assert.deepEqual(a.guards, [true, false])
+})
+
+test('the clean end signals stay shut for a daemon with no attempt, and close when an attempt ends another way', async () => {
+  const idleDisk = memDisk()
+  const quiet = agent(idleDisk)
+  quiet.s.activity = [idleDisk.clock.now]
+  assert.equal(await quiet.c.tick(), 'recent_activity')
+  assert.deepEqual(quiet.guards, [], 'an agent with nothing to prove never touches a signal')
+  const stopped = await afterAsk()
+  const b = agent(stopped, { running: '0.81.0', staged: null })
+  await b.c.tick()
+  b.c.stop()
+  assert.deepEqual(b.guards, [true, false], 'a stopped controller closes them')
+  const dead = await afterAsk()
+  const c = agent(dead, { running: '0.81.0', staged: null })
+  await c.c.tick()
+  c.s.deaf = true
+  dead.clock.now += 16 * MIN
+  await c.c.tick()
+  assert.equal(c.c.phase(), 'rollback')
+  assert.deepEqual(c.guards, [true, false], 'a failed build has no clean end left to note')
 })
 
 test('a clean end outside validation writes nothing', async () => {

@@ -261,8 +261,19 @@ test('a clean end (its claude went away: stdin closed, a signal) is on the idle 
   assert.doesNotMatch(server.slice(exit, server.indexOf('\n  })\n', exit)), /noteEnded/, 'the exit backstop also runs after a crash')
 })
 
-test('a hangup (claude\'s pty gone: the kernel hangs up its whole process group) ends the daemon through shutdown, off Windows', () => {
-  assert.ok(server.includes("if (process.platform !== 'win32') process.on('SIGHUP', () => shutdown('SIGHUP', 129))"), 'SIGHUP goes through shutdown')
+test('every daemon keeps main\'s signals: no hangup handler at process level, one shot each for SIGINT and SIGTERM', () => {
+  assert.ok(server.includes("for (const signal of ['SIGINT', 'SIGTERM'] as const) {\n    process.once(signal, () => shutdown(signal, signal === 'SIGINT' ? 130 : 143))"), 'main\'s own lines')
+  assert.doesNotMatch(server, /process\.on\(\s*'SIGHUP'/)
+  assert.doesNotMatch(server, /process\.on\(signal,/)
+})
+
+test('only the idle update opens the clean end signals: it is handed them, and nothing else touches them', () => {
+  const at = server.indexOf('const cleanEndSignals = createCleanEndSignals({')
+  assert.ok(at >= 0, 'made in the shutdown block')
+  assert.ok(at > server.indexOf('  const shutdown = (cause: ShutdownCause | string, code: number): void => {'), 'after shutdown')
+  assert.match(server.slice(at, server.indexOf('\n  })\n', at)), /shutdown,/)
+  assert.ok(server.includes('guardCleanEnd: (open: boolean) => cleanEndSignals.set(open),'), 'the controller decides the window')
+  assert.equal([...server.matchAll(/cleanEndSignals\.set\(/g)].length, 1)
 })
 
 test('a broken pipe on the daemon\'s own output is its reader gone (a clean end); the fault handlers\' broken pipe is not', () => {
@@ -280,9 +291,4 @@ test('a broken pipe on the daemon\'s own output is its reader gone (a clean end)
     assert.match(handler, /shutdown\('broken-pipe', 0\)/, head)
     assert.doesNotMatch(handler, /stdout-epipe/, head)
   }
-})
-
-test('every shutdown signal stays handled through the shutdown: a second SIGTERM (a systemd stop plus the shim\'s forward) never kills it midway', () => {
-  assert.ok(server.includes("for (const signal of ['SIGINT', 'SIGTERM'] as const) {\n    process.on(signal, () => shutdown(signal, signal === 'SIGINT' ? 130 : 143))"), 'SIGINT and SIGTERM with process.on')
-  assert.doesNotMatch(server, /process\.once\((signal|'SIG[A-Z]+')/)
 })
