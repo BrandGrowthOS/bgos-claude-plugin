@@ -3,11 +3,16 @@
 # both sides (Windows tasks inside rig.mjs; WSL systemd timers, unit files and
 # crontab here) before and after, and run rig.mjs under Windows node through this
 # box's heavy queue (~/.local/bin/heavy: FIFO tickets and its slots, never a raw flock).
-# usage: run-rig.sh <idle|busy|broken|stagger> [scale] [agents]
+# usage: run-rig.sh <idle|busy|broken|stagger|many> [scale] [agents] [busy cases, comma separated]
+# many is stagger-many.mjs: fifteen real controllers in their own processes, without the real chain's 0.9 GB per agent.
 set -u
 scenario=${1:?scenario}
 scale=${2:-5}
 count=${3:-15}
+cases=${4:+ --cases $4}
+script='docs\idle-update\rig\rig.mjs'
+what=" --scenario $scenario"
+if [ "$scenario" = many ]; then script='docs\idle-update\rig\stagger-many.mjs'; what=''; fi
 RUN_WIN='E:\bgos-worktrees\idleupd\rig-run'
 RUN_WSL=/mnt/e/bgos-worktrees/idleupd/rig-run
 PLUGIN_WIN='E:\bgos-worktrees\idleupd\bgos-claude-plugin'
@@ -31,7 +36,7 @@ before=$(wsl_jobs); hb=$(printf '%s' "$before" | sha256sum | cut -c1-12)
 echo "[run-rig] WSL scheduled work before: $hb"
 # cmd.exe starts through a fresh cd: a working folder held through a long queue wait can go stale on /mnt/e,
 # and cmd.exe then fails with no output.
-"$HEAVY" bash -c 'cd "$1" || { echo "[run-rig] run folder unreadable" >&2; exit 97; }; exec cmd.exe /c "$2"' launch "$RUN_WSL" "cd /d $PLUGIN_WIN && set TEMP=E:\bgos-worktrees\idleupd\tmp&& set TMP=E:\bgos-worktrees\idleupd\tmp&& node docs\idle-update\rig\rig.mjs --run-dir $RUN_WIN --scenario $scenario --scale $scale --agents $count" 2>&1 | tr -d '\r'
+"$HEAVY" bash -c 'cd "$1" || { echo "[run-rig] run folder unreadable" >&2; exit 97; }; exec cmd.exe /c "$2"' launch "$RUN_WSL" "cd /d $PLUGIN_WIN && set TEMP=E:\bgos-worktrees\idleupd\tmp&& set TMP=E:\bgos-worktrees\idleupd\tmp&& node $script --run-dir $RUN_WIN$what --scale $scale --agents $count$cases" 2>&1 | tr -d '\r'
 rc=${PIPESTATUS[0]}
 after=$(wsl_jobs); ha=$(printf '%s' "$after" | sha256sum | cut -c1-12)
 echo "[run-rig] WSL scheduled work after: $ha"

@@ -15,6 +15,7 @@
  *
  * usage (Windows node, from the plugin root):
  *   node docs/idle-update/rig/rig.mjs --run-dir E:\...\rig-run --scenario idle|busy|broken|stagger [--scale 5] [--agents 15]
+ *   busy takes [--cases turn,owed,...] (the idle control always runs): about 0.9 GB per agent, so a run stays under the cap.
  * Prints RIG PASS <scenario> or RIG FAIL <scenario>: <why>, and writes <scenario dir>\result.json.
  */
 import { execFile, spawn, spawnSync } from 'node:child_process'
@@ -129,14 +130,19 @@ function adopt(rows) {
   // bytes are what the rig really commits, and the cap applies to them. Both are reported.
   let ws = 0
   let pb = 0
+  const byName = {}
   for (const [pid, info] of owned) {
     const row = byPid.get(pid)
     if (row && row.c === info.c) {
       ws += Number(row.ws ?? 0)
       pb += Number(row.pb ?? 0)
+      const name = String(row.n ?? '?').toLowerCase()
+      byName[name] ??= { count: 0, privateMB: 0 }
+      byName[name].count += 1
+      byName[name].privateMB += Math.round(Number(row.pb ?? 0) / 1024 ** 2)
     }
   }
-  return { ws, pb }
+  return { ws, pb, byName }
 }
 function aliveOwned(rows) {
   const byPid = new Map(rows.map((r) => [r.p, r]))
@@ -368,15 +374,19 @@ async function startStub() {
 
 let peakWs = 0
 let peakPb = 0
+let peakByName = {}
 async function watch(label, done, { timeoutMs, everyMs = 10 * SEC }) {
   const until = Date.now() + timeoutMs
   for (;;) {
     const rows = await listProcesses()
     if (rows) {
-      const { ws, pb } = adopt(rows)
+      const { ws, pb, byName } = adopt(rows)
       peakWs = Math.max(peakWs, ws)
-      peakPb = Math.max(peakPb, pb)
-      if (pb > MEMORY_CAP) throw new Error(`memory cap: the rig's processes commit ${(pb / 1024 ** 3).toFixed(2)} GB private (working set ${(ws / 1024 ** 3).toFixed(2)} GB)`)
+      if (pb > peakPb) {
+        peakPb = pb
+        peakByName = byName
+      }
+      if (pb > MEMORY_CAP) throw new Error(`memory cap: the rig's processes commit ${(pb / 1024 ** 3).toFixed(2)} GB private (working set ${(ws / 1024 ** 3).toFixed(2)} GB): ${JSON.stringify(byName)}`)
     }
     const verdict = await done()
     if (verdict) return verdict
@@ -473,40 +483,63 @@ async function scenarioIdle() {
   check('record validated', s.record?.state === 'validated', s.record?.state)
 }
 
+// The busy cases, in id order after the idle control (7200001). `--cases` runs the control and a subset, so a
+// run stays under the memory cap: each agent of the real chain commits about 0.9 GB (two bun processes).
+const BUSY_CASES = ['turn', 'owed', 'browser', 'wake', 'hand', 'off', 'ask', 'call', 'goal']
 async function scenarioBusy() {
-  const list = ids(10, 7200001).map((id) => prepareAgent(id, FROM))
-  const [control, turn, owed, browser, wake, byHand, off, ask, call, goal] = list
-  const roles = {
-    [control.id]: 'idle control',
-    [turn.id]: 'turn in flight',
-    [owed.id]: 'reply owed',
-    [browser.id]: 'browser in use',
-    [wake.id]: 'wake due',
-    [byHand.id]: 'launched by hand',
-    [off.id]: 'auto update off',
-    [ask.id]: 'open ask card',
-    [call.id]: 'call live',
-    [goal.id]: 'goal running',
+  const picked = flag('--cases', BUSY_CASES.join(',')).split(',').filter(Boolean)
+  for (const k of picked) if (!BUSY_CASES.includes(k)) die(`unknown busy case ${k}; known: ${BUSY_CASES.join(',')}`)
+  const control = prepareAgent(String(7200001), FROM)
+  const by = Object.fromEntries(BUSY_CASES.map((k, i) => [k, picked.includes(k) ? prepareAgent(String(7200002 + i), FROM) : null]))
+  const { turn, owed, browser, wake, hand: byHand, off, ask, call, goal } = by
+  const list = [control, ...BUSY_CASES.map((k) => by[k]).filter(Boolean)]
+  const names = { turn: 'turn in flight', owed: 'reply owed', browser: 'browser in use', wake: 'wake due', hand: 'launched by hand', off: 'auto update off', ask: 'open ask card', call: 'call live', goal: 'goal running' }
+  const reasons = {
+    turn: /waiting: turn_in_flight/,
+    owed: /waiting: pending_messages/,
+    browser: /waiting: browser_in_use/,
+    wake: /waiting: wake_due/,
+    hand: /waiting: no_unattended_authority/,
+    off: /off: updates_disabled/,
+    ask: /waiting: open_ask/,
+    call: /waiting: call_active/,
+    goal: /waiting: goal_running/,
+  }
+  const roles = { [control.id]: 'idle control' }
+  const expect = {}
+  for (const k of BUSY_CASES) {
+    if (!by[k]) continue
+    roles[by[k].id] = names[k]
+    expect[by[k].id] = reasons[k]
   }
   results.roles = roles
-  await bootAll(list, { how: { [byHand.id]: 'interactive' }, env: { [off.id]: { BGOS_AUTO_UPDATE: 'off' } } })
+  results.cases = picked
+  await bootAll(list, { how: byHand ? { [byHand.id]: 'interactive' } : {}, env: off ? { [off.id]: { BGOS_AUTO_UPDATE: 'off' } } : {} })
   // The busy facts, set before anything is staged.
-  step(turn, { op: 'prompt', text: 'rig: a long turn that has not ended' })
-  step(browser, { op: 'tool', name: 'mcp__plugin_hoai_hoai-browser__browser_navigate', phase: 'pre' })
-  step(browser, { op: 'tool', name: 'mcp__plugin_hoai_hoai-browser__browser_navigate', phase: 'post' })
-  const keepWakeDue = async () => stub('schedule', { assistantId: wake.id, tasks: [{ id: 1, name: 'rig wake', status: 'active', nextFireAt: new Date(Date.now() + 60 * SEC).toISOString() }] })
+  if (turn) step(turn, { op: 'prompt', text: 'rig: a long turn that has not ended' })
+  if (browser) {
+    step(browser, { op: 'tool', name: 'mcp__plugin_hoai_hoai-browser__browser_navigate', phase: 'pre' })
+    step(browser, { op: 'tool', name: 'mcp__plugin_hoai_hoai-browser__browser_navigate', phase: 'post' })
+  }
+  const keepWakeDue = async () => {
+    if (wake) await stub('schedule', { assistantId: wake.id, tasks: [{ id: 1, name: 'rig wake', status: 'active', nextFireAt: new Date(Date.now() + 60 * SEC).toISOString() }] })
+  }
   await keepWakeDue()
   // A voice frame in the last 30 min (scaled) is a live call; one every poll keeps it live.
-  const keepCallLive = async () => stub('voice', { assistantId: call.id })
+  const keepCallLive = async () => {
+    if (call) await stub('voice', { assistantId: call.id })
+  }
   await keepCallLive()
-  step(goal, { op: 'goal', condition: 'rig: keep going until the rig says stop' })
-  await stub('inbound', { assistantId: owed.id, text: 'rig: please answer me' })
-  await stub('inbound', { assistantId: ask.id, text: 'rig: ask me something' })
-  await watch('the ask agent saw its inbound', () => jsonLines(join(ask.cwd, '.rig', 'inbound.jsonl')).some((l) => l.meta?.chat_id), { timeoutMs: 3 * MIN })
-  const chatId = String(jsonLines(join(ask.cwd, '.rig', 'inbound.jsonl')).find((l) => l.meta?.chat_id).meta.chat_id)
-  step(ask, { op: 'call', tool: 'reply', arguments: { chat_id: chatId, text: 'rig: one question first' } })
-  step(ask, { op: 'call', tool: 'ask_user_input', arguments: { chat_id: chatId, wait_seconds: 0, questions: [{ text: 'Which one?', options: [{ label: 'A' }, { label: 'B' }] }] } })
-  await watch('the owed reply was delivered', () => jsonLines(join(owed.cwd, '.rig', 'inbound.jsonl')).length > 0, { timeoutMs: 3 * MIN })
+  if (goal) step(goal, { op: 'goal', condition: 'rig: keep going until the rig says stop' })
+  if (owed) await stub('inbound', { assistantId: owed.id, text: 'rig: please answer me' })
+  if (ask) {
+    await stub('inbound', { assistantId: ask.id, text: 'rig: ask me something' })
+    await watch('the ask agent saw its inbound', () => jsonLines(join(ask.cwd, '.rig', 'inbound.jsonl')).some((l) => l.meta?.chat_id), { timeoutMs: 3 * MIN })
+    const chatId = String(jsonLines(join(ask.cwd, '.rig', 'inbound.jsonl')).find((l) => l.meta?.chat_id).meta.chat_id)
+    step(ask, { op: 'call', tool: 'reply', arguments: { chat_id: chatId, text: 'rig: one question first' } })
+    step(ask, { op: 'call', tool: 'ask_user_input', arguments: { chat_id: chatId, wait_seconds: 0, questions: [{ text: 'Which one?', options: [{ label: 'A' }, { label: 'B' }] }] } })
+  }
+  if (owed) await watch('the owed reply was delivered', () => jsonLines(join(owed.cwd, '.rig', 'inbound.jsonl')).length > 0, { timeoutMs: 3 * MIN })
   stage(TARGET)
   // Quiet window (10 min with hooks) + jitter (10 min) + margin, all scaled; the wake stays due all along.
   const holdMs = (20 * MIN) / scale + 3 * MIN
@@ -516,17 +549,6 @@ async function scenarioBusy() {
     await keepCallLive()
     return Date.now() > until && record(control.id)?.state === 'validated'
   }, { timeoutMs: holdMs + 15 * MIN })
-  const expect = {
-    [turn.id]: /waiting: turn_in_flight/,
-    [owed.id]: /waiting: pending_messages/,
-    [browser.id]: /waiting: browser_in_use/,
-    [wake.id]: /waiting: wake_due/,
-    [byHand.id]: /waiting: no_unattended_authority/,
-    [off.id]: /off: updates_disabled/,
-    [ask.id]: /waiting: open_ask/,
-    [call.id]: /waiting: call_active/,
-    [goal.id]: /waiting: goal_running/,
-  }
   for (const a of list) results.agents[a.id] = { role: roles[a.id], ...summarise(a) }
   check('idle control restarted onto the target and validated', results.agents[control.id].launches.length === 2 && record(control.id)?.state === 'validated', results.agents[control.id].launches)
   for (const a of list.slice(1)) {
@@ -535,26 +557,27 @@ async function scenarioBusy() {
     check(`${roles[a.id]} (${a.id}) waited for the right reason`, s.idle.some((l) => expect[a.id].test(l)), s.idle)
   }
   // Released: the turn ends, the wake is gone, the reply is sent, the card withdrawn; the browser window runs out by itself.
-  step(turn, { op: 'stop' })
-  await stub('schedule', { assistantId: wake.id, tasks: [] })
-  const owedChat = String(jsonLines(join(owed.cwd, '.rig', 'inbound.jsonl')).find((l) => l.meta?.chat_id)?.meta?.chat_id ?? '')
+  if (turn) step(turn, { op: 'stop' })
+  if (wake) await stub('schedule', { assistantId: wake.id, tasks: [] })
+  const owedChat = owed ? String(jsonLines(join(owed.cwd, '.rig', 'inbound.jsonl')).find((l) => l.meta?.chat_id)?.meta?.chat_id ?? '') : ''
   if (owedChat) step(owed, { op: 'call', tool: 'reply', arguments: { chat_id: owedChat, text: 'rig: answered' } })
   const askId = (() => {
+    if (!ask) return null
     const r = jsonLines(join(ask.cwd, '.rig', 'results.jsonl')).find((l) => l.step?.tool === 'ask_user_input')
     const m = /ask_id["':\s]+([A-Za-z0-9_-]+)/.exec(r?.outcome?.result ?? '')
     return m ? m[1] : null
   })()
   if (askId) step(ask, { op: 'call', tool: 'withdraw_ask', arguments: { ask_id: askId } })
-  step(goal, { op: 'goal', condition: 'rig: keep going until the rig says stop', met: true })
+  if (goal) step(goal, { op: 'goal', condition: 'rig: keep going until the rig says stop', met: true })
   say('released turn, wake, reply, ask and goal; the browser and call windows run out by themselves')
-  const released = [turn, owed, browser, wake, ask, call, goal]
+  const released = [turn, owed, browser, wake, ask, call, goal].filter(Boolean)
   try {
     await watch('the released agents restarted onto the target', () => released.every((a) => latestVersion(a.id) === TARGET), { timeoutMs: (60 * MIN) / scale + 20 * MIN })
     check('every released busy agent then restarted onto the target', true)
   } catch (err) {
     check('every released busy agent then restarted onto the target', false, released.map((a) => ({ id: a.id, role: roles[a.id], version: latestVersion(a.id), idle: idleLines(a.id).slice(-3) })))
   }
-  for (const a of [byHand, off]) {
+  for (const a of [byHand, off].filter(Boolean)) {
     const s = summarise(a)
     check(`${roles[a.id]} (${a.id}) still never restarted`, s.launches.length === 1 && !s.versions.includes(TARGET), { launches: s.launches.length, versions: s.versions })
   }
@@ -654,6 +677,7 @@ check('scheduled tasks identical before and after', tasksBefore.sha === tasksAft
 check('no process of ours left alive', leftAlive.length === 0, leftAlive)
 results.peakWorkingSetGB = Number((peakWs / 1024 ** 3).toFixed(2))
 results.peakPrivateGB = Number((peakPb / 1024 ** 3).toFixed(2))
+results.peakPrivateByName = peakByName
 results.failure = failure
 writeFileSync(join(dir, 'result.json'), `${JSON.stringify(results, null, 2)}\n`)
 const failed = results.checks.filter((c) => !c.ok).map((c) => c.name)
