@@ -432,16 +432,6 @@
       ]
     },
     {
-      "id": "rollback-canary-only",
-      "rule": "only the canary rolls back",
-      "file": "lib/idle-update.mjs",
-      "find": "return canary ? 'rollback' : 'report_only'",
-      "replace": "return 'rollback'",
-      "tests": [
-        "test/idle-update.test.ts"
-      ]
-    },
-    {
       "id": "unattended-win-hidden",
       "rule": "Windows: the task's run-agent.vbs must run hidden",
       "file": "lib/idle-update.mjs",
@@ -1909,10 +1899,10 @@
     },
     {
       "id": "dur-canary-silent",
-      "rule": "canarySilentMs is 90 min",
+      "rule": "canarySilentMs is 100 min",
       "file": "lib/idle-update.mjs",
-      "find": "  canarySilentMs: 90 * MIN,",
-      "replace": "  canarySilentMs: 9 * MIN,",
+      "find": "  canarySilentMs: 100 * MIN,",
+      "replace": "  canarySilentMs: 90 * MIN,",
       "tests": [
         "test/idle-update.test.ts"
       ]
@@ -2702,6 +2692,186 @@
       "replace": "",
       "tests": [
         "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-non-canary",
+      "rule": "a failed non-canary has a way back",
+      "file": "lib/idle-update.mjs",
+      "find": "return canary || !wentBack ? 'rollback' : 'report_only'",
+      "replace": "return canary ? 'rollback' : 'report_only'",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-once",
+      "rule": "any agent but the canary goes back once",
+      "file": "lib/idle-update.mjs",
+      "find": "return canary || !wentBack ? 'rollback' : 'report_only'",
+      "replace": "return 'rollback'",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-canary-always",
+      "rule": "the canary's verdict is never limited",
+      "file": "lib/idle-update.mjs",
+      "find": "return canary || !wentBack ? 'rollback' : 'report_only'",
+      "replace": "return !wentBack ? 'rollback' : 'report_only'",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-source-canary",
+      "rule": "the way back is the newer of this agent's build and the canary's",
+      "file": "lib/idle-update.mjs",
+      "find": "const useCanary = mine.installMethod === 'marketplace' && typeof canary?.fromRoot === 'string' && isNewerVersion(canary.from, mine.from)",
+      "replace": "const useCanary = false",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-source-newer",
+      "rule": "only a newer plain version from the shared file",
+      "file": "lib/idle-update.mjs",
+      "find": "typeof canary?.fromRoot === 'string' && isNewerVersion(canary.from, mine.from)",
+      "replace": "typeof canary?.fromRoot === 'string'",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-source-root",
+      "rule": "a version with no root names nothing",
+      "file": "lib/idle-update.mjs",
+      "find": "typeof canary?.fromRoot === 'string' && isNewerVersion",
+      "replace": "isNewerVersion",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-source-clone",
+      "rule": "a clone goes back on its own checkout",
+      "file": "lib/idle-update.mjs",
+      "find": "mine.installMethod === 'marketplace' && typeof canary?.fromRoot",
+      "replace": "typeof canary?.fromRoot",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-record",
+      "rule": "the record takes the source: the report and the restart name the build installed",
+      "file": "lib/idle-update.mjs",
+      "find": "settleTo({ ...record, ...rollbackSourceFor(record,",
+      "replace": "void ({ ...record, ...rollbackSourceFor(record,",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-validated-carries",
+      "rule": "the canary's validated file says where it came from",
+      "file": "lib/idle-update.mjs",
+      "find": "{ canary: rec.canaryN, from: rec.from, fromRoot: rec.fromRoot }",
+      "replace": "{ canary: rec.canaryN }",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-file-written",
+      "rule": "a way back taken is on record",
+      "file": "lib/idle-update.mjs",
+      "find": "create(wentBackPath, { assistantId: deps.assistantId, at: iso(now()), target: record.target, reason: why })",
+      "replace": "void 0",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-file-cleared",
+      "rule": "a validated build clears it",
+      "file": "lib/idle-update.mjs",
+      "find": "read(() => fs.remove(wentBackPath), false)",
+      "replace": "void 0",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-canary-spends-nothing",
+      "rule": "the canary's own verdict spends nothing",
+      "file": "lib/idle-update.mjs",
+      "find": "if (!canary) {\n      create(wentBackPath",
+      "replace": "if (true) {\n      create(wentBackPath",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-same-target",
+      "rule": "a way back a crash cut short is not spent",
+      "file": "lib/idle-update.mjs",
+      "find": "const wentBack = spent !== null && spent.target !== record?.target",
+      "replace": "const wentBack = spent !== null",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-read",
+      "rule": "a spent way back stops the next rollback",
+      "file": "lib/idle-update.mjs",
+      "find": "const spent = parseJsonOrNull(read(() => fs.readFile(wentBackPath), null))",
+      "replace": "const spent = null",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-report",
+      "rule": "the report says what is true and what a person does",
+      "file": "lib/idle-update.mjs",
+      "find": "It already took this computer back once and has not validated a build since, so the install stays. Restart it by hand.",
+      "replace": "Another agent on this computer decides the rollback.",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "dur-hold",
+      "rule": "the hold is 5 min",
+      "file": "lib/idle-update.mjs",
+      "find": "  validateHoldMs: 5 * MIN,",
+      "replace": "  validateHoldMs: 60 * SEC,",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "dur-deadline",
+      "rule": "the deadline outlasts two holds",
+      "file": "lib/idle-update.mjs",
+      "find": "  validateDeadlineMs: 15 * MIN,",
+      "replace": "  validateDeadlineMs: 5 * MIN,",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "dur-lease",
+      "rule": "the lease outlasts a relaunch and the hold",
+      "file": "lib/idle-update.mjs",
+      "find": "  leaseTtlMs: 15 * MIN,",
+      "replace": "  leaseTtlMs: 10 * MIN,",
+      "tests": [
+        "test/idle-update.test.ts"
       ]
     }
   ]

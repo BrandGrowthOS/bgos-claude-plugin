@@ -119,7 +119,7 @@ test('scaled durations divide every duration by the scale and carry the scale it
   assert.equal(d.scale, 60)
   assert.equal(d.leaseTtlMs, m.DEFAULT_DURATIONS.leaseTtlMs / 60)
   assert.equal(d.minUpMs, SEC)
-  assert.equal(m.scaledDurations(1).leaseTtlMs, 10 * MIN)
+  assert.equal(m.scaledDurations(1).leaseTtlMs, 15 * MIN)
 })
 
 test('scaled durations keep two floors: a relaunch gets its real 3.5 min to arrive, and a beacon 30 s to be fresh', () => {
@@ -343,8 +343,8 @@ test('lease: none is free, my own nonce is mine, a fresh other is held, an old o
   assert.equal(m.decideLease({ raw: null, mtimeMs: null, now: NOW, me: ME }).state, 'free')
   assert.equal(m.decideLease({ raw: lease('912', 'n-912', NOW - MIN), mtimeMs: NOW - MIN, now: NOW, me: ME }).state, 'mine')
   assert.equal(m.decideLease({ raw: lease('912', 'other', NOW - MIN), mtimeMs: NOW - MIN, now: NOW, me: ME }).state, 'held')
-  assert.equal(m.decideLease({ raw: lease('913', 'n-913', NOW - 9 * MIN), mtimeMs: NOW - 9 * MIN, now: NOW, me: ME }).state, 'held')
-  assert.equal(m.decideLease({ raw: lease('913', 'n-913', NOW - 11 * MIN), mtimeMs: NOW - 11 * MIN, now: NOW, me: ME }).state, 'expired')
+  assert.equal(m.decideLease({ raw: lease('913', 'n-913', NOW - 14 * MIN), mtimeMs: NOW - 14 * MIN, now: NOW, me: ME }).state, 'held')
+  assert.equal(m.decideLease({ raw: lease('913', 'n-913', NOW - 16 * MIN), mtimeMs: NOW - 16 * MIN, now: NOW, me: ME }).state, 'expired')
 })
 
 test('lease and canary: a stamp more than the lease life in the future is a broken clock, so it expires', () => {
@@ -360,7 +360,7 @@ test('lease and canary: a stamp more than the lease life in the future is a brok
 test('lease: a half written file is held while young and expired once old, never free', () => {
   const m = need()
   assert.equal(m.decideLease({ raw: '', mtimeMs: NOW - 5 * SEC, now: NOW, me: ME }).state, 'held')
-  assert.equal(m.decideLease({ raw: '{"assist', mtimeMs: NOW - 11 * MIN, now: NOW, me: ME }).state, 'expired')
+  assert.equal(m.decideLease({ raw: '{"assist', mtimeMs: NOW - 16 * MIN, now: NOW, me: ME }).state, 'expired')
   assert.equal(m.decideLease({ raw: '', mtimeMs: null, now: NOW, me: ME }).state, 'held')
 })
 
@@ -391,7 +391,7 @@ test('canary: an attempt that ended with no verdict (not the build\'s fault) han
 
 test('canary: one that never came back holds the version 24 h, then one more agent may try', () => {
   const m = need()
-  const silent = [{ n: 1, assistantId: '913', at: NOW - 11 * MIN }]
+  const silent = [{ n: 1, assistantId: '913', at: NOW - 16 * MIN }]
   assert.equal(m.decideCanary({ files: canaryFiles({ canaries: silent }), now: NOW, me: ME }).state, 'hold')
   assert.deepEqual(
     m.decideCanary({ files: canaryFiles({ canaries: [{ n: 1, assistantId: '913', at: NOW - 25 * HOUR }] }), now: NOW, me: ME }),
@@ -401,7 +401,7 @@ test('canary: one that never came back holds the version 24 h, then one more age
 
 test('canary: two that never came back latch the version bad, so a silent killer costs at most two agents', () => {
   const m = need()
-  const two = [{ n: 1, assistantId: '913', at: NOW - 3 * DAY }, { n: 2, assistantId: '914', at: NOW - 91 * MIN }]
+  const two = [{ n: 1, assistantId: '913', at: NOW - 3 * DAY }, { n: 2, assistantId: '914', at: NOW - 101 * MIN }]
   assert.equal(m.decideCanary({ files: canaryFiles({ canaries: two }), now: NOW, me: ME }).state, 'latch_bad')
 })
 
@@ -409,7 +409,7 @@ test('canary: a second canary past its lease may still be validating (a slow sta
   const m = need()
   const two = [{ n: 1, assistantId: '913', at: NOW - 3 * DAY }, { n: 2, assistantId: '914', at: NOW - 30 * MIN }]
   assert.equal(m.decideCanary({ files: canaryFiles({ canaries: two }), now: NOW, me: ME }).state, 'hold')
-  assert.equal(m.DEFAULT_DURATIONS.canarySilentMs, 90 * MIN, 'past the startup bound, an hour of outage and the deadline')
+  assert.equal(m.DEFAULT_DURATIONS.canarySilentMs, 100 * MIN, 'past the startup bound, an hour of outage and the deadline')
 })
 
 // -- The record ----------------------------------------------------------------------------------
@@ -631,14 +631,14 @@ test('boot settle: a validated record, or none, does nothing', () => {
 
 function proof(over: Record<string, unknown> = {}): any {
   const p: any = {
-    arrivedAtMs: NOW - 2 * MIN,
+    arrivedAtMs: NOW - 6 * MIN,
     now: NOW,
     startupComplete: true,
     heartbeatOkAtMs: NOW - 30 * SEC,
     beaconAtMs: NOW - 10 * SEC,
     deaf: false,
     loginExpired: false,
-    liveSinceMs: NOW - 60 * SEC,
+    liveSinceMs: NOW - 5 * MIN,
     ...over,
   }
   // Unless a case says otherwise, this boot's startup completed the moment it arrived.
@@ -646,7 +646,7 @@ function proof(over: Record<string, unknown> = {}): any {
   return p
 }
 
-test('validation: startup complete, a heartbeat at the new version, a live beacon, no deaf verdict, 60 s held', () => {
+test('validation: startup complete, a heartbeat at the new version, a live beacon, no deaf verdict, 5 min held', () => {
   assert.equal(need().decideValidation(proof()), 'validated')
 })
 
@@ -668,15 +668,15 @@ test('validation: each missing proof keeps it pending (a deaf build never valida
   }
 })
 
-test('validation: no proof 5 min after a live boot is the deadline, unless the shared login has expired', () => {
+test('validation: no proof 15 min after a live boot is the deadline, unless the shared login has expired', () => {
   const m = need()
-  assert.equal(m.decideValidation(proof({ arrivedAtMs: NOW - 6 * MIN, beaconAtMs: null })), 'deadline')
-  assert.equal(m.decideValidation(proof({ arrivedAtMs: NOW - 6 * MIN, beaconAtMs: null, loginExpired: true })), 'pending')
+  assert.equal(m.decideValidation(proof({ arrivedAtMs: NOW - 16 * MIN, beaconAtMs: null })), 'deadline')
+  assert.equal(m.decideValidation(proof({ arrivedAtMs: NOW - 16 * MIN, beaconAtMs: null, loginExpired: true })), 'pending')
 })
 
 test('validation: an unreachable backend holds the deadline, and the time it was unreachable or asleep is not counted', () => {
   const m = need()
-  const late = { arrivedAtMs: NOW - 6 * MIN, beaconAtMs: null }
+  const late = { arrivedAtMs: NOW - 16 * MIN, beaconAtMs: null }
   assert.equal(m.decideValidation(proof({ ...late, backendUnreachable: true })), 'pending')
   assert.equal(m.decideValidation(proof({ ...late, suspendedMs: 2 * MIN })), 'pending')
   assert.equal(m.decideValidation(proof({ ...late, suspendedMs: 30 * SEC })), 'deadline')
@@ -688,20 +688,20 @@ test('outage: an answer below 500 is a backend that answered; a 5xx, or no answe
   for (const status of [500, 502, 503, null, undefined]) assert.equal(m.isBackendAnswer(status), false, String(status))
 })
 
-test('validation: the 60 s hold counts from the first live reading, never from the arrival (a slow start validates on a minute live)', () => {
+test('validation: the 5 min hold counts from the first live reading, never from the arrival (a slow start validates on five minutes live)', () => {
   const m = need()
-  const slow = { arrivedAtMs: NOW - 10 * MIN, startupCompleteAtMs: NOW - 2 * MIN, heartbeatOkAtMs: NOW - 20 * SEC }
+  const slow = { arrivedAtMs: NOW - 10 * MIN, startupCompleteAtMs: NOW - 6 * MIN, heartbeatOkAtMs: NOW - 20 * SEC }
   assert.equal(m.decideValidation(proof({ ...slow, liveSinceMs: NOW })), 'pending')
-  assert.equal(m.decideValidation(proof({ ...slow, liveSinceMs: NOW - 59 * SEC })), 'pending')
-  assert.equal(m.decideValidation(proof({ ...slow, liveSinceMs: NOW - 60 * SEC })), 'validated')
+  assert.equal(m.decideValidation(proof({ ...slow, liveSinceMs: NOW - 5 * MIN + SEC })), 'pending')
+  assert.equal(m.decideValidation(proof({ ...slow, liveSinceMs: NOW - 5 * MIN })), 'validated')
   assert.equal(m.decideValidation(proof({ ...slow, liveSinceMs: null })), 'pending')
 })
 
 test('validation: the deadline counts from this boot\'s startup complete; a startup that never completes has its own 15 min bound', () => {
   const m = need()
-  const dead = { beaconAtMs: null, arrivedAtMs: NOW - 12 * MIN }
-  assert.equal(m.decideValidation(proof({ ...dead, startupCompleteAtMs: NOW - 4 * MIN })), 'pending', 'a slow startup is not the build failing')
-  assert.equal(m.decideValidation(proof({ ...dead, startupCompleteAtMs: NOW - 5 * MIN })), 'deadline')
+  const dead = { beaconAtMs: null, arrivedAtMs: NOW - 22 * MIN }
+  assert.equal(m.decideValidation(proof({ ...dead, startupCompleteAtMs: NOW - 14 * MIN })), 'pending', 'a slow startup is not the build failing')
+  assert.equal(m.decideValidation(proof({ ...dead, startupCompleteAtMs: NOW - 15 * MIN })), 'deadline')
   const never = { beaconAtMs: null, startupComplete: false, startupCompleteAtMs: null }
   assert.equal(m.decideValidation(proof({ ...never, arrivedAtMs: NOW - 14 * MIN })), 'pending')
   assert.equal(m.decideValidation(proof({ ...never, arrivedAtMs: NOW - 15 * MIN })), 'deadline')
@@ -728,9 +728,9 @@ test('a clean end is its claude going away: stdin ended or closed, a signal (a h
 
 test('validation: an outage holds the deadline for at most an hour; past that its minutes count (a build that breaks its own calls is rolled back)', () => {
   const m = need()
-  const down = { beaconAtMs: null, backendUnreachable: true, arrivedAtMs: NOW - 70 * MIN, startupCompleteAtMs: NOW - 70 * MIN }
+  const down = { beaconAtMs: null, backendUnreachable: true, arrivedAtMs: NOW - 80 * MIN, startupCompleteAtMs: NOW - 80 * MIN }
   assert.equal(m.decideValidation(proof({ ...down, unreachableMs: 59 * MIN })), 'pending')
-  assert.equal(m.decideValidation(proof({ ...down, unreachableMs: 61 * MIN })), 'deadline', 'seventy minutes, an hour of it forgiven')
+  assert.equal(m.decideValidation(proof({ ...down, unreachableMs: 61 * MIN })), 'deadline', 'eighty minutes, an hour of it forgiven')
   assert.equal(m.decideValidation(proof({ ...down, unreachableMs: 61 * MIN, arrivedAtMs: NOW - 64 * MIN, startupCompleteAtMs: NOW - 64 * MIN })), 'pending')
   assert.equal(m.decideValidation(proof({ ...down, backendUnreachable: false, unreachableMs: 30 * MIN, arrivedAtMs: NOW - 34 * MIN, startupCompleteAtMs: NOW - 34 * MIN })), 'pending', 'minutes down under the cap are never counted')
   assert.equal(m.decideValidation(proof({ beaconAtMs: null, loginExpired: true, arrivedAtMs: NOW - 5 * HOUR, startupCompleteAtMs: NOW - 5 * HOUR })), 'pending', 'an expired login is never the build\'s fault')
@@ -738,13 +738,17 @@ test('validation: an outage holds the deadline for at most an hour; past that it
 
 test('validation: the hold needs a beacon touched and a heartbeat landed during it, not one reading still fresh from before', () => {
   const m = need()
-  assert.equal(m.decideValidation(proof({ beaconAtMs: NOW - 61 * SEC })), 'pending', 'one beacon at the first live reading, none since')
-  assert.equal(m.decideValidation(proof({ heartbeatOkAtMs: NOW - 61 * SEC })), 'pending', 'no heartbeat landed during the hold')
-  assert.equal(m.decideValidation(proof({ arrivedAtMs: NOW - 50 * SEC, liveSinceMs: NOW - 70 * SEC })), 'pending', 'a hold that began before this boot arrived')
+  // A beacon stays fresh 2 min, under the 5 min hold: only a scaled hold (15 s, fresh 30 s) has a fresh one from before it.
+  const short = m.scaledDurations(20)
+  const held = { arrivedAtMs: NOW - 30 * SEC, liveSinceMs: NOW - 16 * SEC, heartbeatOkAtMs: NOW - 5 * SEC }
+  assert.equal(m.decideValidation(proof({ ...held, beaconAtMs: NOW - 20 * SEC }), short), 'pending', 'one beacon at the first live reading, none since')
+  assert.equal(m.decideValidation(proof({ ...held, beaconAtMs: NOW - 5 * SEC }), short), 'validated')
+  assert.equal(m.decideValidation(proof({ heartbeatOkAtMs: NOW - 5 * MIN - SEC })), 'pending', 'no heartbeat landed during the hold')
+  assert.equal(m.decideValidation(proof({ arrivedAtMs: NOW - 4 * MIN })), 'pending', 'a hold that began before this boot arrived')
   assert.equal(m.decideValidation(proof()), 'validated')
 })
 
-test('validation: live is every proof but the 60 s hold', () => {
+test('validation: live is every proof but the 5 min hold', () => {
   const m = need()
   const early = { arrivedAtMs: NOW - 30 * SEC, heartbeatOkAtMs: NOW - 20 * SEC, liveSinceMs: NOW - 20 * SEC }
   assert.equal(m.decideValidation(proof(early)), 'pending')
@@ -761,7 +765,7 @@ test('rollback moment: a restart through a systemd unit waits for a stray job in
   assert.deepEqual(m.decideRollbackMoment(quietRollback({ serviceStrays: { ok: true, strays: [] } })), { go: true, reason: 'quiet' })
 })
 
-test('rollback: only the canary rolls back the shared install; another agent reports; an expired login does neither', () => {
+test('rollback: the canary always, any other agent once, and an expired login never', () => {
   const m = need()
   assert.equal(m.decideRollback({ canary: true, loginExpired: false }), 'rollback')
   // A failed non-canary has a way back too. Once: a poison agent never holds every release on this computer.

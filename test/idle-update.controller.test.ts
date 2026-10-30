@@ -597,8 +597,8 @@ test('back on the new version with the same session: validated on live proof, le
   disk.clock.now += 20 * SEC
   a.s.heartbeatOkAtMs = disk.clock.now - 10 * SEC
   a.s.beaconAtMs = disk.clock.now - 5 * SEC
-  assert.equal(await a.c.tick(), 'validating', 'the first live reading starts the 60 s hold')
-  disk.clock.now += 61 * SEC
+  assert.equal(await a.c.tick(), 'validating', 'the first live reading starts the 5 min hold')
+  disk.clock.now += 5 * MIN + SEC
   a.s.heartbeatOkAtMs = disk.clock.now - 10 * SEC
   a.s.beaconAtMs = disk.clock.now - 5 * SEC
   assert.equal(await a.c.tick(), 'validated')
@@ -617,7 +617,7 @@ test('a deaf new build never validates: at the deadline the canary rolls back, l
   a.s.deaf = true
   a.s.heartbeatOkAtMs = disk.clock.now
   a.s.beaconAtMs = disk.clock.now
-  disk.clock.now += 5 * MIN + SEC
+  disk.clock.now += 15 * MIN + SEC
   a.s.activity = [disk.clock.now - 3 * MIN]
   assert.equal(await a.c.tick(), 'rollback')
   assert.equal(a.rollbackInstalls.length, 1)
@@ -633,7 +633,7 @@ test('the rollback restart waits for a quiet moment, never cutting a turn', asyn
   const disk = await afterAsk()
   const a = agent(disk, { running: '0.81.0', staged: null })
   await a.c.tick()
-  disk.clock.now += 5 * MIN + SEC
+  disk.clock.now += 15 * MIN + SEC
   a.s.safe = { ...a.s.safe, turnInFlight: true }
   a.s.activity = [disk.clock.now - 10 * SEC]
   assert.equal(await a.c.tick(), 'rollback')
@@ -649,7 +649,7 @@ async function rolledBackCanary() {
   const disk = await afterAsk()
   const a = agent(disk, { running: '0.81.0', staged: null })
   assert.equal(await a.c.tick(), 'validating')
-  disk.clock.now += 5 * MIN + SEC
+  disk.clock.now += 15 * MIN + SEC
   a.s.activity = [disk.clock.now - 3 * MIN]
   assert.equal(await a.c.tick(), 'rollback')
   return { disk, a }
@@ -685,7 +685,7 @@ test('a passive daemon neither validates nor rolls back', async () => {
   const a = agent(disk, { running: '0.81.0', staged: null })
   assert.equal(await a.c.tick(), 'validating')
   a.s.active = false
-  disk.clock.now += 5 * MIN + SEC
+  disk.clock.now += 15 * MIN + SEC
   assert.equal(await a.c.tick(), 'passive')
   assert.equal(a.rollbackInstalls.length, 0)
   // Passive after the rollback install: the restart stage does nothing at all, not even a wait.
@@ -706,7 +706,7 @@ test('a slow rollback install holds the busy guard: a tick meanwhile is busy, th
   a.s.installGate = new Promise<void>((resolve) => {
     open = resolve
   })
-  disk.clock.now += 5 * MIN + SEC
+  disk.clock.now += 15 * MIN + SEC
   const first = a.c.tick()
   await new Promise((resolve) => setImmediate(resolve))
   // Raced, so a second install waiting on the same gate fails here instead of hanging the file.
@@ -724,7 +724,7 @@ test('a canary whose attempt was voided, or a version another agent validated me
     const a = agent(disk, { running: '0.81.0', staged: null })
     assert.equal(await a.c.tick(), 'validating')
     disk.fs.createExclusive(join(MACHINE, '0.81.0', mark), JSON.stringify({ assistantId: '913', at: new Date(disk.clock.now).toISOString() }))
-    disk.clock.now += 5 * MIN + SEC
+    disk.clock.now += 15 * MIN + SEC
     assert.equal(await a.c.tick(), 'rollback', mark)
     assert.equal(a.rollbackInstalls.length, 1, mark)
     assert.ok(disk.files.has(join(MACHINE, 'went-back-912')), mark)
@@ -735,14 +735,14 @@ test('the canary\'s own verdict spends nothing: it may fail on the next version 
   const disk = await afterAsk()
   const a = agent(disk, { running: '0.81.0', staged: null })
   assert.equal(await a.c.tick(), 'validating')
-  disk.clock.now += 5 * MIN + SEC
+  disk.clock.now += 15 * MIN + SEC
   assert.equal(await a.c.tick(), 'rollback')
   assert.equal(disk.files.has(join(MACHINE, 'went-back-912')), false)
 })
 
 test('two canaries that never came back latch the version bad on disk, for every reader of the latch', async () => {
   const disk = memDisk()
-  for (const [n, id, age] of [[1, '913', 3 * 24 * HOUR], [2, '914', 91 * MIN]] as const) {
+  for (const [n, id, age] of [[1, '913', 3 * 24 * HOUR], [2, '914', 101 * MIN]] as const) {
     disk.fs.createExclusive(join(MACHINE, '0.81.0', `canary-${n}`), JSON.stringify({ assistantId: id, at: new Date(T0 - age).toISOString() }))
   }
   const a = agent(disk)
@@ -801,8 +801,8 @@ test('a backend outage during validation holds the deadline; the minutes it was 
     assert.equal(await a.c.tick(), 'validating')
   }
   a.s.unreachable = false
-  disk.clock.now += 3 * MIN
-  assert.equal(await a.c.tick(), 'validating', 'ten minutes down, three up: not yet five minutes of chance')
+  disk.clock.now += 13 * MIN
+  assert.equal(await a.c.tick(), 'validating', 'ten minutes down, thirteen up: not yet fifteen minutes of chance')
   disk.clock.now += 2 * MIN + SEC
   assert.equal(await a.c.tick(), 'rollback')
 })
@@ -834,7 +834,7 @@ test('a build that proved live and then booted once more (a person\'s restart) v
   second.s.heartbeatOkAtMs = disk.clock.now - 5 * SEC
   second.s.beaconAtMs = disk.clock.now - 2 * SEC
   assert.equal(await second.c.tick(), 'validating')
-  disk.clock.now += 61 * SEC
+  disk.clock.now += 5 * MIN + SEC
   second.s.heartbeatOkAtMs = disk.clock.now - 5 * SEC
   second.s.beaconAtMs = disk.clock.now - 2 * SEC
   assert.equal(await second.c.tick(), 'validated')
@@ -854,7 +854,7 @@ test('a slow startup is not a broken build: the deadline counts from this boot\'
   a.s.heartbeatOkAtMs = disk.clock.now - 5 * SEC
   a.s.beaconAtMs = disk.clock.now - 2 * SEC
   assert.equal(await a.c.tick(), 'validating', 'the first live reading starts the hold')
-  disk.clock.now += 61 * SEC
+  disk.clock.now += 5 * MIN + SEC
   a.s.heartbeatOkAtMs = disk.clock.now - 5 * SEC
   a.s.beaconAtMs = disk.clock.now - 2 * SEC
   assert.equal(await a.c.tick(), 'validated')
@@ -1056,7 +1056,7 @@ test('a daemon that holds the lock again validates a healthy build on the record
   old.s.heartbeatOkAtMs = disk.clock.now
   old.s.beaconAtMs = disk.clock.now
   assert.equal(await old.c.tick(), 'validating')
-  disk.clock.now += 61 * SEC
+  disk.clock.now += 5 * MIN + SEC
   old.s.heartbeatOkAtMs = disk.clock.now
   old.s.beaconAtMs = disk.clock.now
   assert.equal(await old.c.tick(), 'validated')
@@ -1073,7 +1073,7 @@ test('the other boot, alive and holding the lock again after this daemon gave th
   old.s.heartbeatOkAtMs = disk.clock.now
   old.s.beaconAtMs = disk.clock.now
   assert.equal(await old.c.tick(), 'validating')
-  disk.clock.now += 61 * SEC
+  disk.clock.now += 5 * MIN + SEC
   old.s.heartbeatOkAtMs = disk.clock.now
   old.s.beaconAtMs = disk.clock.now
   assert.equal(await old.c.tick(), 'validated')
@@ -1194,7 +1194,7 @@ test('a disk that refused the settle write leaves this daemon validating on the 
   a.s.heartbeatOkAtMs = disk.clock.now
   a.s.beaconAtMs = disk.clock.now
   assert.equal(await a.c.tick(), 'validating')
-  disk.clock.now += 61 * SEC
+  disk.clock.now += 5 * MIN + SEC
   a.s.heartbeatOkAtMs = disk.clock.now
   a.s.beaconAtMs = disk.clock.now
   assert.equal(await a.c.tick(), 'validated')
@@ -1267,8 +1267,8 @@ test('time spent passive during validation is not counted toward the deadline', 
     assert.equal(await a.c.tick(), 'passive')
   }
   a.s.active = true
-  disk.clock.now += 2 * MIN
-  assert.equal(await a.c.tick(), 'validating', 'four minutes passive, two holding the lock: not yet five minutes of chance')
+  disk.clock.now += 12 * MIN
+  assert.equal(await a.c.tick(), 'validating', 'four minutes passive, twelve holding the lock: not yet fifteen minutes of chance')
   disk.clock.now += 3 * MIN + SEC
   assert.equal(await a.c.tick(), 'rollback')
 })
@@ -1317,7 +1317,7 @@ test('an outage before startup completed is not subtracted again from the deadli
   a.s.unreachable = false
   a.s.startupComplete = true
   assert.equal(await a.c.tick(), 'validating')
-  disk.clock.now += 5 * MIN + SEC
+  disk.clock.now += 15 * MIN + SEC
   assert.equal(await a.c.tick(), 'rollback', 'five minutes since startup completed, none of them down')
 })
 
@@ -1334,11 +1334,11 @@ test('an expired login before startup completed is not subtracted again from the
   a.s.loginExpired = false
   a.s.startupComplete = true
   assert.equal(await a.c.tick(), 'validating')
-  disk.clock.now += 5 * MIN + SEC
+  disk.clock.now += 15 * MIN + SEC
   assert.equal(await a.c.tick(), 'rollback', 'five minutes since startup completed, none of them expired')
 })
 
-test('a break in liveness restarts the 60 s hold', async () => {
+test('a break in liveness restarts the 5 min hold', async () => {
   const disk = await afterAsk()
   const a = agent(disk, { running: '0.81.0', staged: null })
   const live = () => {
@@ -1356,7 +1356,7 @@ test('a break in liveness restarts the 60 s hold', async () => {
   a.s.deaf = false
   live()
   assert.equal(await a.c.tick(), 'validating', 'seventy seconds since the first live reading, but live again only now')
-  disk.clock.now += 61 * SEC
+  disk.clock.now += 5 * MIN + SEC
   live()
   assert.equal(await a.c.tick(), 'validated')
 })
@@ -1397,8 +1397,8 @@ test('an outage during validation is forgiven for an hour at most; past that its
     assert.equal(await a.c.tick(), 'validating', `minute ${(i + 1) / 2}`)
   }
   // 61 min down so far, one of them past the cap.
-  disk.clock.now += 3 * MIN
-  assert.equal(await a.c.tick(), 'validating', 'sixty-four minutes down, still down: four of them counted')
+  disk.clock.now += 13 * MIN
+  assert.equal(await a.c.tick(), 'validating', 'seventy-four minutes down, still down: fourteen of them counted')
   disk.clock.now += MIN + SEC
   assert.equal(await a.c.tick(), 'rollback')
 })
@@ -1415,19 +1415,20 @@ test('minutes under an expired login are not counted toward the deadline once it
   a.s.loginExpired = false
   disk.clock.now += 30 * SEC
   assert.equal(await a.c.tick(), 'validating', 'thirty minutes expired, thirty seconds since')
-  disk.clock.now += 5 * MIN
+  disk.clock.now += 15 * MIN
   assert.equal(await a.c.tick(), 'rollback')
 })
 
 test('the hold needs the beacon touched again during it: one beacon still fresh from the first live reading never validates', async () => {
   const disk = await afterAsk()
-  const a = agent(disk, { running: '0.81.0', staged: null })
+  // A beacon stays fresh 30 s at this scale, past the 15 s hold. At scale 1 it goes stale first, and that alone breaks the hold.
+  const a = agent(disk, { running: '0.81.0', staged: null, scale: 20 })
   assert.equal(await a.c.tick(), 'validating')
-  disk.clock.now += 10 * SEC
+  disk.clock.now += SEC
   a.s.heartbeatOkAtMs = disk.clock.now
   a.s.beaconAtMs = disk.clock.now
   assert.equal(await a.c.tick(), 'validating')
-  disk.clock.now += 61 * SEC
+  disk.clock.now += 16 * SEC
   a.s.heartbeatOkAtMs = disk.clock.now
   assert.equal(await a.c.tick(), 'validating', 'the beacon stopped after one touch')
   a.s.beaconAtMs = disk.clock.now
@@ -1487,7 +1488,7 @@ test('a rollback that cannot be done is said, the version still held bad, and no
   const a = agent(disk, { running: '0.81.0', staged: null })
   await a.c.tick()
   a.s.rollbackOk = false
-  disk.clock.now += 5 * MIN + SEC
+  disk.clock.now += 15 * MIN + SEC
   assert.equal(await a.c.tick(), 'rollback_failed')
   assert.ok(disk.files.has(join(MACHINE, '0.81.0', 'bad')))
   assert.equal(readJson(disk, a.record).state, 'rollback_failed')
@@ -1499,7 +1500,7 @@ test('back on the old version after a rollback: reported, the lease released; ot
   const disk = await afterAsk()
   const a = agent(disk, { running: '0.81.0', staged: null })
   await a.c.tick()
-  disk.clock.now += 5 * MIN + SEC
+  disk.clock.now += 15 * MIN + SEC
   assert.equal(await a.c.tick(), 'rollback')
   assert.equal(await a.c.tick(), 'rollback_requested')
   disk.clock.now += 40 * SEC
@@ -1549,7 +1550,7 @@ test('a new session on the new version: the lost conversation is said, and the b
   a.s.heartbeatOkAtMs = disk.clock.now
   a.s.beaconAtMs = disk.clock.now
   assert.equal(await a.c.tick(), 'validating')
-  disk.clock.now += 61 * SEC
+  disk.clock.now += 5 * MIN + SEC
   a.s.heartbeatOkAtMs = disk.clock.now
   a.s.beaconAtMs = disk.clock.now
   assert.equal(await a.c.tick(), 'validated')
@@ -1687,11 +1688,11 @@ async function rolledBackCanaryAsked() {
 // -- A failed non-canary's way back ----------------------------------------------------------------
 
 /** Agent 912 restarted onto a version agent 913 validated from `canaryFrom`, and failed there at the deadline. */
-async function failedFollower(o: { running?: string; canaryFrom?: string; installMethod?: string; wentBack?: boolean } = {}) {
+async function failedFollower(o: { running?: string; canaryFrom?: string; installMethod?: string; wentBack?: string } = {}) {
   const disk = memDisk()
   const from = o.canaryFrom ?? '0.80.0'
   disk.fs.writeAtomic(join(MACHINE, '0.81.0', 'validated'), JSON.stringify({ assistantId: '913', at: new Date(T0 - HOUR).toISOString(), canary: 1, from, fromRoot: `/c/plugins/cache/hoai/hoai/${from}` }))
-  if (o.wentBack) disk.fs.writeAtomic(join(MACHINE, 'went-back-912'), '{}')
+  if (o.wentBack) disk.fs.writeAtomic(join(MACHINE, 'went-back-912'), JSON.stringify({ target: o.wentBack }))
   const old = agent(disk, { running: o.running, installMethod: o.installMethod })
   assert.equal(await old.c.tick(), 'requested')
   assert.equal(readJson(disk, old.record).canaryN, null)
@@ -1726,12 +1727,19 @@ test('an agent that came from an older build goes back to the canary\'s: never o
 })
 
 test('a poison agent takes the computer back once: on the next failure it stays and asks for a person, so no release is held for ever', async () => {
-  const { disk, a } = await failedFollower({ wentBack: true })
+  const { disk, a } = await failedFollower({ wentBack: '0.79.0' })
   assert.equal(await a.c.tick(), 'failed')
   assert.equal(a.rollbackInstalls.length, 0)
   assert.equal(disk.files.has(join(MACHINE, '0.81.0', 'bad')), false)
   assert.equal(readJson(disk, a.record).state, 'failed')
   assert.equal(lastReport(a)?.code, 'idle_update_failed')
+})
+
+test('a way back a crash cut short is not spent: the next boot finishes it, and gate 7 keeps that from being a loop', async () => {
+  const { disk, a } = await failedFollower({ wentBack: '0.81.0' })
+  assert.equal(await a.c.tick(), 'rollback')
+  assert.equal(a.rollbackInstalls.length, 1)
+  assert.equal(readJson(disk, a.record).state, 'rolled_back')
 })
 
 test('a validated build clears it: an agent that proved healthy may go back again on a later bad build', async () => {

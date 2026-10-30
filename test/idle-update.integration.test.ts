@@ -197,8 +197,8 @@ test('the new daemon validates on live evidence and frees the computer; the seco
     assert.equal(next.record().state, 'arrived')
     next.facts.heartbeatOkAtMs = w.clock.now
     next.facts.beaconAtMs = w.clock.now
-    assert.equal(await next.controller.tick(), 'validating', 'the first live reading starts the 60 s hold')
-    w.clock.now += 61_000
+    assert.equal(await next.controller.tick(), 'validating', 'the first live reading starts the 5 min hold')
+    w.clock.now += 301_000
     next.facts.beaconAtMs = w.clock.now
     assert.equal(await next.controller.tick(), 'validated', next.out.logs.join('\n'))
     assert.ok(existsSync(join(w.machineDir, '0.81.0', 'validated')))
