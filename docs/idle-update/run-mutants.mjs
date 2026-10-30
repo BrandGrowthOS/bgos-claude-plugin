@@ -63,9 +63,14 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
 // A run killed outright (no signal handler runs) leaves a mutant in the source: refuse to start over a source file
 // that differs from git, so a leftover is found here and never carried into a commit by a later run's restore.
 const sources = [...new Set(mutants.map((m) => m.file))]
-const dirty = spawnSync('git', ['diff', '--quiet', 'HEAD', '--', ...sources], { cwd: root, shell: false })
-if (dirty.status !== 0) {
+const dirty = spawnSync('git', ['diff', '--quiet', 'HEAD', '--', ...sources], { cwd: root, shell: false, encoding: 'utf8' })
+if (dirty.status === 1) {
   console.error(`[mutants] STOP: a mutated file differs from git HEAD (a killed run's leftover, or work not committed): ${sources.join(', ')}`)
+  process.exit(5)
+}
+if (dirty.status !== 0) {
+  // Not a checkout this git can read (a worktree another git made, git missing): nothing is proven clean.
+  console.error(`[mutants] STOP: git could not compare the sources with HEAD (exit ${dirty.status ?? 'none'}): ${String(dirty.stderr ?? dirty.error ?? '').trim()}`)
   process.exit(5)
 }
 
