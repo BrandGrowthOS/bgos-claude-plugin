@@ -99,7 +99,7 @@ import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
 import { DoctorRpcHandler, buildDoctorChecks, normalizeDoctorRpc } from './lib/doctor-rpc.ts'
 import { collectChanges, createNodeRunGit, nodeChangesFs } from './lib/git-changes.js'
 import { defaultPidAlive, pluginStateDirFor, readBootClock } from './lib/agent-inventory.mjs'
-import { ASSISTANT_UNBOUND_EVENT, createUnboundNoticeHandler } from './lib/agent-unbound.mjs'
+import { ASSISTANT_UNBOUND_EVENT, createUnboundFrameRouter, createUnboundNoticeHandler } from './lib/agent-unbound.mjs'
 import { cleanIdentityName, identityFilePath, identityFromMe, takeIdentityNotice, writeAgentIdentity } from './lib/agent-identity.mjs'
 import { createMarkerTakeover, currentPluginRootFor, handoffEnv, mcpEnvKeys, nodeTakeoverFs } from './lib/marker-takeover.mjs'
 import { HOOK_RESTART_FILE_NAME, createHookRestart, nodeHookRestartFs } from './lib/hook-restart.mjs'
@@ -15443,11 +15443,11 @@ async function drainLaneEventsOnce(): Promise<void> {
 // session, removes the auto start, archives ~/.bgos-agent/<id> and removes the
 // credentials file, and this daemon stops a little later through its own
 // shutdown (a session run by hand has nothing else to stop it).
+const UNBOUND_OWN = { assistantId: ASSISTANT_ID, pairingId: AUTH.mode === 'pairing' ? CREDENTIALS_FILE?.pairingId : undefined }
 const UNBOUND_HELPER = fileURLToPath(new URL('bin/hoai-agent-unbound.mjs', import.meta.url))
 const UNBOUND_SELF_STOP_MS = 15_000
 const onAssistantUnbound = createUnboundNoticeHandler({
-  assistantId: ASSISTANT_ID,
-  pairingId: AUTH.mode === 'pairing' ? CREDENTIALS_FILE?.pairingId : undefined,
+  ...UNBOUND_OWN,
   // A read of its own: no ETag (a 304 proves nothing here) and the body kept
   // as text, because a null the server sends may arrive as an empty body.
   readOwnAgent: () =>
@@ -15475,6 +15475,18 @@ const onAssistantUnbound = createUnboundNoticeHandler({
   },
   log,
 })
+// The socket side: never acked, and this agent's own notice heard before the
+// daemon armed is held until it does (handleUnboundBeforeArm at both arms).
+const unboundFrames = createUnboundFrameRouter({
+  isArmed: () => channelArmed,
+  own: UNBOUND_OWN,
+  handle: (payload) => {
+    void onAssistantUnbound(payload).catch((err) => log(`assistant_unbound handler error: ${String(err)}`))
+  },
+})
+function handleUnboundBeforeArm(): void {
+  unboundFrames.onArmed()
+}
 
 function connectWebsocket(): void {
   // Drawn ONCE per process, so 51 daemons dropped by one nginx reload do not
@@ -15820,13 +15832,12 @@ function connectWebsocket(): void {
     handleLaneRevoked(frame, LANE_OWNER_DEPS)
   }))
 
-  // An agent deleted in HOAI (see onAssistantUnbound): the ack the backend
-  // passes with a replayed notice is answered only for this agent's own,
-  // confirmed notice, so another agent's stays queued for that agent.
+  // An agent deleted in HOAI (see onAssistantUnbound). Never acked, so the
+  // backend keeps replaying it (lib/agent-unbound.mjs says why). The replay
+  // lands on connect, which at boot is before delivery is armed: held, not
+  // dropped, and handled once this daemon arms (a passive one never does).
   realtimeSocket.on(ASSISTANT_UNBOUND_EVENT, (payload: unknown, ack?: unknown) => {
-    whenArmed(ASSISTANT_UNBOUND_EVENT, (frame: unknown) => {
-      void onAssistantUnbound(frame, ack).catch((err) => log(`assistant_unbound handler error: ${String(err)}`))
-    })(payload)
+    unboundFrames.onFrame(payload, ack)
   })
 
   realtimeSocket.on('inbound_message', whenArmed('inbound_message', (payload: any) => {
@@ -17827,6 +17838,7 @@ async function main(): Promise<void> {
       connectedSince = Date.now()
       channelEverArmed = true
       startHookIntakeIfHolder()
+      handleUnboundBeforeArm()
       log(
         `delivery re-armed after reclaiming the pairing lock; ` +
           `monitoring ${monitoredChatIds.length} chat(s)`,
@@ -18624,6 +18636,7 @@ async function main(): Promise<void> {
     // Last, with the lock proven ours one line above: start draining this
     // session's hook spool. Only the holder consumes (see the guard inside).
     startHookIntakeIfHolder()
+    handleUnboundBeforeArm()
   }
 
   // The passive watch loop, shared by the two ways a daemon can find itself

@@ -49,7 +49,7 @@ function parseArgs(argv) {
 
 /** Start the run stage out of this process tree; the first command that starts wins. */
 function launch({ assistant, home }) {
-  for (const cmd of unboundRunStageCommands({ platform: process.platform, execPath: process.execPath, helperPath: HERE, assistantId: assistant, home })) {
+  for (const cmd of unboundRunStageCommands({ platform: process.platform, execPath: process.execPath, helperPath: HERE, assistantId: assistant, home, path: process.env.PATH ?? '' })) {
     if (cmd.how === 'systemd-run') {
       const res = spawnSync(cmd.file, cmd.args, { stdio: 'ignore', timeout: 15_000 })
       if (res.status === 0) return 0

@@ -37,6 +37,7 @@ import {
   REMOVED_DIR_NAME,
   classifyOwnAgentRead,
   cleanUpUnboundAgent,
+  createUnboundFrameRouter,
   createUnboundNoticeHandler,
   judgeUnboundNotice,
   removedArchivePath,
@@ -109,7 +110,6 @@ test('classifyOwnAgentRead: 200 with an empty or null body is a deleted agent; i
 function handlerRig(read: Array<{ status: number; body: string } | Error>) {
   const reads: number[] = []
   const launched: string[] = []
-  const acks: number[] = []
   const lines: string[] = []
   let n = 0
   const handle = createUnboundNoticeHandler({
@@ -127,59 +127,51 @@ function handlerRig(read: Array<{ status: number; body: string } | Error>) {
     },
     log: (line: string) => lines.push(line),
   })
-  const ack = () => acks.push(1)
-  return { handle, reads, launched, acks, lines, ack }
+  return { handle, reads, launched, lines }
 }
 
-test('handler: a forged notice is never acted on, never even confirmed, never acked', async () => {
+test('handler: a forged notice is never acted on, never even confirmed', async () => {
   const r = handlerRig([{ status: 200, body: 'null' }])
-  assert.equal(await r.handle({ pairingId: 8, assistantId: 42 }, r.ack), 'ignored:other_pairing')
-  assert.equal(await r.handle({ assistantId: 42 }, r.ack), 'ignored:malformed')
+  assert.equal(await r.handle({ pairingId: 8, assistantId: 42 }), 'ignored:other_pairing')
+  assert.equal(await r.handle({ assistantId: 42 }), 'ignored:malformed')
   assert.deepEqual(r.reads, [])
   assert.deepEqual(r.launched, [])
-  assert.deepEqual(r.acks, [], 'acking a forged notice would retire nothing real, and is no business of ours')
 })
 
-test('handler: another agent\'s notice is ignored and NOT acked (its own daemon must still get the replay)', async () => {
+test('handler: another agent\'s notice is ignored, never confirmed, never launched', async () => {
   const r = handlerRig([{ status: 200, body: 'null' }])
-  assert.equal(await r.handle({ pairingId: 7, assistantId: 43 }, r.ack), 'ignored:other_agent')
+  assert.equal(await r.handle({ pairingId: 7, assistantId: 43 }), 'ignored:other_agent')
   assert.deepEqual(r.reads, [])
   assert.deepEqual(r.launched, [])
-  assert.deepEqual(r.acks, [])
 })
 
 test('handler: our notice while the server still returns our agent (a re-pair, or a stale notice) does nothing', async () => {
   const r = handlerRig([{ status: 200, body: JSON.stringify({ id: 42 }) }])
-  assert.equal(await r.handle({ pairingId: 7, assistantId: 42 }, r.ack), 'ignored:still_present')
+  assert.equal(await r.handle({ pairingId: 7, assistantId: 42 }), 'ignored:still_present')
   assert.equal(r.reads.length, 1)
   assert.deepEqual(r.launched, [])
-  assert.deepEqual(r.acks, [])
 })
 
-test('handler: our notice the server cannot confirm (an error, an outage) does nothing and waits for the replay', async () => {
-  const r = handlerRig([new Error('GET 503'), { status: 500, body: '' }])
-  assert.equal(await r.handle({ pairingId: 7, assistantId: 42 }, r.ack), 'ignored:unconfirmed')
-  assert.equal(await r.handle({ pairingId: 7, assistantId: 42 }, r.ack), 'ignored:unconfirmed')
+test('handler: our notice the server cannot confirm (an error, an outage) does nothing, and the next one asks again', async () => {
+  const r = handlerRig([new Error('GET 503'), { status: 500, body: '' }, { status: 200, body: 'null' }])
+  assert.equal(await r.handle({ pairingId: 7, assistantId: 42 }), 'ignored:unconfirmed')
+  assert.equal(await r.handle({ pairingId: 7, assistantId: 42 }), 'ignored:unconfirmed')
   assert.deepEqual(r.launched, [])
-  assert.deepEqual(r.acks, [])
+  assert.equal(await r.handle({ pairingId: 7, assistantId: 42 }), 'cleanup_launched')
+  assert.deepEqual(r.launched, ['42'])
 })
 
-test('handler: our notice, confirmed deleted, launches the cleanup ONCE and acks; a replay launches nothing new', async () => {
+test('handler: our notice, confirmed deleted, launches the cleanup ONCE; a replay launches nothing new', async () => {
   const r = handlerRig([{ status: 200, body: 'null' }])
-  assert.equal(await r.handle({ pairingId: 7, assistantId: 42 }, r.ack), 'cleanup_launched')
+  assert.equal(await r.handle({ pairingId: 7, assistantId: 42 }), 'cleanup_launched')
   assert.deepEqual(r.launched, ['42'])
-  assert.deepEqual(r.acks, [1])
-  // The replay on the next connect, and the live emit racing it: acked (retired), never launched again.
-  assert.equal(await r.handle({ pairingId: 7, assistantId: 42 }, r.ack), 'already_handled')
+  assert.equal(await r.handle({ pairingId: 7, assistantId: 42 }), 'already_handled')
   assert.equal(await r.handle({ pairingId: 7, assistantId: 42 }), 'already_handled')
   assert.deepEqual(r.launched, ['42'])
-  assert.deepEqual(r.acks, [1, 1])
   assert.equal(r.reads.length, 1, 'the server is asked once')
 })
 
-test('handler: a cleanup that could not be launched is not acked, so the server replays it', async () => {
-  const lines: string[] = []
-  const acks: number[] = []
+test('handler: a cleanup that could not be launched is launched by the next notice', async () => {
   let launches = 0
   const handle = createUnboundNoticeHandler({
     assistantId: '42',
@@ -189,19 +181,60 @@ test('handler: a cleanup that could not be launched is not acked, so the server 
       launches += 1
       return launches === 1 ? { ok: false, detail: 'spawn ENOENT' } : { ok: true, detail: 'pid 1' }
     },
-    log: (line: string) => lines.push(line),
+    log: () => {},
   })
-  assert.equal(await handle({ pairingId: 7, assistantId: 42 }, () => acks.push(1)), 'cleanup_failed')
-  assert.equal(acks.length, 0)
-  assert.equal(await handle({ pairingId: 7, assistantId: 42 }, () => acks.push(1)), 'cleanup_launched')
-  assert.deepEqual(acks, [1])
+  assert.equal(await handle({ pairingId: 7, assistantId: 42 }), 'cleanup_failed')
+  assert.equal(await handle({ pairingId: 7, assistantId: 42 }), 'cleanup_launched')
+  assert.equal(launches, 2)
 })
 
 test('handler: two notices racing (live emit and replay) confirm and launch once', async () => {
   const r = handlerRig([{ status: 200, body: 'null' }])
-  const [a, b] = await Promise.all([r.handle({ pairingId: 7, assistantId: 42 }, r.ack), r.handle({ pairingId: 7, assistantId: 42 }, r.ack)])
+  const [a, b] = await Promise.all([r.handle({ pairingId: 7, assistantId: 42 }), r.handle({ pairingId: 7, assistantId: 42 })])
   assert.deepEqual([a, b].sort(), ['already_handled', 'cleanup_launched'])
   assert.deepEqual(r.launched, ['42'])
+})
+
+// -- the socket frame: never acked, held until the daemon is armed ----------------------------------
+
+function routerRig() {
+  let armed = false
+  const handled: unknown[] = []
+  const acks: string[] = []
+  const router = createUnboundFrameRouter({ isArmed: () => armed, own: { assistantId: '42', pairingId: 7 }, handle: (p: unknown) => handled.push(p) })
+  const ack = () => acks.push('ack')
+  return { router, handled, acks, ack, arm: () => (armed = true) }
+}
+
+test('router: no notice is ever acked (the daemon that launches the cleanup cannot know it finished; unacked, the replay is the retry)', () => {
+  const r = routerRig()
+  r.router.onFrame({ pairingId: 7, assistantId: 42 }, r.ack)
+  r.router.onFrame({ pairingId: 7, assistantId: 43 }, r.ack)
+  r.arm()
+  r.router.onArmed()
+  r.router.onFrame({ pairingId: 7, assistantId: 42 }, r.ack)
+  r.router.onFrame({ pairingId: 9, assistantId: 42 }, r.ack)
+  assert.deepEqual(r.acks, [])
+})
+
+test('router: our notice replayed at connect, before the daemon armed, is held and handled once it arms', () => {
+  const r = routerRig()
+  assert.equal(r.router.onFrame({ pairingId: 7, assistantId: 42 }, r.ack), 'held')
+  // Another agent's notice landing after it never takes its place.
+  assert.equal(r.router.onFrame({ pairingId: 7, assistantId: 43 }, r.ack), 'dropped')
+  assert.deepEqual(r.handled, [])
+  r.arm()
+  assert.equal(r.router.onArmed(), true)
+  assert.deepEqual(r.handled, [{ pairingId: 7, assistantId: 42 }])
+  assert.equal(r.router.onArmed(), false, 'handled once')
+})
+
+test('router: an armed daemon hands every frame to the handler (which judges it)', () => {
+  const r = routerRig()
+  r.arm()
+  assert.equal(r.router.onFrame({ pairingId: 7, assistantId: 43 }), 'handled')
+  assert.deepEqual(r.handled, [{ pairingId: 7, assistantId: 43 }])
+  assert.equal(r.router.onArmed(), false)
 })
 
 // -- the archive path -------------------------------------------------------------------------------
@@ -224,7 +257,7 @@ const WROOT = 'C:\\Users\\kc\\.claude\\plugins\\cache\\hoai\\hoai\\0.80.2'
 const wstate = (id: string) => `${WHOME}\\.bgos-agent\\${id}`
 const wcreds = (id: string) => `${WHOME}\\.bgos-agent\\credentials-${id}.json`
 
-async function windowsRig() {
+async function windowsRig(queryErrors: Array<{ action: 'probe' | 'probe-legacy'; times?: number; after?: number }> = []) {
   const fs = memoryFs({
     [`${wstate('912')}\\session-id`]: 'pin-912',
     [`${wstate('912')}\\agent.log`]: 'log-912',
@@ -232,7 +265,7 @@ async function windowsRig() {
     [wcreds('912')]: JSON.stringify({ assistantId: 912, pairingId: 7 }),
     [wcreds('913')]: JSON.stringify({ assistantId: 913, pairingId: 7 }),
   })
-  const host = fakeAgentTasks({ fs })
+  const host = fakeAgentTasks({ fs, queryErrors })
   for (const id of ['912', '913']) {
     const spec = agentTaskSpec({ assistantId: id, home: WHOME, nodePath: WNODE, pluginRoot: WROOT, cwd: `C:\\Users\\kc\\hoai-agents\\${id}` })
     await installAgentTask(spec, { exec: host.exec, fs, start: true })
@@ -285,6 +318,7 @@ test('Windows: a deleted agent\'s logon task is unregistered, its launcher tree 
   assert.equal(w.fs.files.get(`${archive}\\session-id`), 'pin-912')
   assert.equal(w.fs.files.get(`${archive}\\agent.log`), 'log-912')
   assert.ok(w.fs.files.has(`${archive}\\run-agent.vbs`), 'the generated launcher is archived with the folder, not deleted')
+  assert.ok(w.fs.files.has(`${archive}\\install-agent-task.ps1`), 'the task script the uninstall ran is archived with the folder, not deleted')
   // The credentials: removed, and only this agent's.
   assert.equal(w.fs.exists(wcreds('912')), false)
   assert.deepEqual([...w.fs.files.entries()].filter(([k]) => k.startsWith(wstate('913')) || k === wcreds('913')), before913)
@@ -317,6 +351,53 @@ test('Windows: a replayed cleanup does nothing new (no command, no second archiv
   assert.deepEqual(w.killed, ['taskkill.exe /PID 5912 /T /F'])
   assert.equal(JSON.stringify([...w.fs.files.entries()].sort()), files)
   assert.equal(w.fs.exists(wstate('912')), false)
+})
+
+test('Windows: a task the read back does not show gone stops the cleanup: no session ended, folder and credentials left for the replay to retry', async () => {
+  // Both installs read their task back once each (2 probes); every probe after that fails (a CIM timeout).
+  const w = await windowsRig([{ action: 'probe', after: 2 }])
+  const now = Date.now()
+  const report = await cleanUpUnboundAgent({
+    platform: 'win32',
+    home: WHOME,
+    assistantId: '912',
+    fs: w.fs,
+    exec: w.exec,
+    now: () => now,
+    readLauncher: () => ({ pid: 5912, supervisor: 'service' }),
+    pidAlive: (pid: number) => w.alive.has(pid),
+    sleep: async () => {},
+    log: () => {},
+  })
+  assert.equal(report.ok, false, JSON.stringify(report))
+  assert.ok([...w.host.tasks.keys()].some((n) => n.startsWith('HOAI Agent 912 ')), 'the task stays (it could not be read back)')
+  assert.deepEqual(w.killed, [], 'no session ended while its task may start it again')
+  assert.equal(report.archivedTo, null)
+  assert.equal(w.fs.files.get(`${wstate('912')}\\session-id`), 'pin-912', 'the folder stays where the task points')
+  assert.equal(w.fs.exists(wcreds('912')), true, 'the credentials stay, so a next life can hear the replay')
+})
+
+test('Windows: a run after the folder already moved (its credentials left behind) runs no task command and makes no folder again', async () => {
+  const w = await windowsRig()
+  const now = Date.now()
+  w.fs.rename(wstate('912'), `${WHOME}\\.bgos-agent\\.removed\\912-${dayOf(now)}`)
+  const calls = w.host.calls.length
+  const report = await cleanUpUnboundAgent({
+    platform: 'win32',
+    home: WHOME,
+    assistantId: '912',
+    fs: w.fs,
+    exec: w.exec,
+    now: () => now,
+    readLauncher: () => null,
+    pidAlive: () => false,
+    sleep: async () => {},
+    log: () => {},
+  })
+  assert.equal(report.ok, true, JSON.stringify(report))
+  assert.equal(w.host.calls.length, calls, 'no task command: its script would be written into a folder made again')
+  assert.equal(w.fs.exists(wstate('912')), false)
+  assert.equal(w.fs.exists(wcreds('912')), false, 'the credentials left behind are removed')
 })
 
 test('Windows: a folder still held open (EBUSY) is retried until it moves, never deleted', async () => {
@@ -509,6 +590,32 @@ test('macOS: a hand-run hoai launcher of the agent (no service) is stopped with 
   assert.deepEqual(order, ['kill 777 SIGTERM folder=true'])
 })
 
+test('Linux: an auto start the uninstall could not remove keeps the credentials (the folder is still archived first)', async () => {
+  const home = '/home/kc'
+  const fs = memoryFs({
+    [`${home}/.bgos-agent/42/run.sh`]: 'run',
+    [`${home}/.bgos-agent/credentials-42.json`]: '{}',
+  })
+  const now = Date.now()
+  const report = await cleanUpUnboundAgent({
+    platform: 'linux',
+    home,
+    assistantId: '42',
+    fs,
+    exec: async () => ({ code: 1, stdout: '', stderr: 'refused: agent 42\'s service could not be read back; nothing was removed', error: null, timedOut: false }),
+    bgosAgentBin: '/x/bgos-agent',
+    now: () => now,
+    readLauncher: () => null,
+    pidAlive: () => false,
+    sleep: async () => {},
+    log: () => {},
+  })
+  assert.equal(report.ok, false)
+  assert.equal(fs.files.get(`${home}/.bgos-agent/.removed/42-${dayOf(now)}/run.sh`), 'run')
+  assert.equal(fs.files.get(`${home}/.bgos-agent/credentials-42.json`), '{}')
+  assert.deepEqual(report.credentialsRemoved, [])
+})
+
 test('a junk assistant id builds no path and touches nothing', async () => {
   const fs = memoryFs({ '/home/kc/.bgos-agent/42/session-id': 'pin' })
   const calls: string[] = []
@@ -536,10 +643,11 @@ test('a junk assistant id builds no path and touches nothing', async () => {
 // -- the helper: out of the agent's process tree ----------------------------------------------------
 
 test('unboundRunStageCommands: Linux tries its own transient systemd unit first (a unit stop kills its whole cgroup), then a detached child', () => {
-  const cmds = unboundRunStageCommands({ platform: 'linux', execPath: '/usr/bin/node', helperPath: '/p/bin/hoai-agent-unbound.mjs', assistantId: '42', home: '/home/kc' })
+  const cmds = unboundRunStageCommands({ platform: 'linux', execPath: '/usr/bin/node', helperPath: '/p/bin/hoai-agent-unbound.mjs', assistantId: '42', home: '/home/kc', path: '/home/kc/.bun/bin:/usr/bin' })
   const run = ['/p/bin/hoai-agent-unbound.mjs', '--stage', 'run', '--assistant', '42', '--home', '/home/kc']
+  // The unit gets the user manager's environment: the daemon's PATH (where bin/bgos-agent finds bun or node) and HOME go with it.
   assert.deepEqual(cmds, [
-    { how: 'systemd-run', file: 'systemd-run', args: ['--user', '--collect', '--quiet', '--', '/usr/bin/node', ...run] },
+    { how: 'systemd-run', file: 'systemd-run', args: ['--user', '--collect', '--quiet', '--setenv=HOME=/home/kc', '--setenv=PATH=/home/kc/.bun/bin:/usr/bin', '--', '/usr/bin/node', ...run] },
     { how: 'detached', file: '/usr/bin/node', args: run },
   ])
 })
