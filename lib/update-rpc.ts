@@ -9,7 +9,9 @@
  * from its own pinned source, so a compromised backend cannot point an
  * update anywhere:
  *
- *   clone installs        SelfUpdater's origin/main inspection, with the
+ *   clone installs        SelfUpdater's published release inspection (the
+ *                         tag the marketplace ref names, board row
+ *                         84c23fab), with the
  *                         same-major gate, dirty-tree brake, checkout lock,
  *                         and rollback latches all staying authoritative;
  *   marketplace installs  the shared planner + executor over the Claude

@@ -34,7 +34,7 @@
  */
 
 import { createHash } from 'node:crypto'
-import { mkdir, writeFile, chmod, readdir } from 'node:fs/promises'
+import { mkdir, writeFile, chmod, readdir, rename, rm } from 'node:fs/promises'
 import { existsSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, dirname, resolve, sep } from 'node:path'
@@ -48,6 +48,7 @@ import {
 import { launchCommand } from './bgos-install-method.mjs'
 import { describeFileProtection, lockFileToWindowsUser } from './bgos-pair.mjs'
 import { ensureHookEntries } from '../lib/claude-preseed.mjs'
+import { exitCodeFor, followPublishedRelease } from '../lib/follow-published.mjs'
 
 const execFileAsync = promisify(execFile)
 
@@ -556,8 +557,16 @@ export async function hasCommand(cmd) {
  * (~/bgos-agents/.plugin/bgos-claude-plugin, the bgos-build-agent shared
  * clone pattern). BGOS_PLUGIN_DIR overrides; BGOS_PLUGIN_REPO overrides the
  * clone source. Returns the absolute server.ts path for API compatibility.
+ *
+ * The checkout follows the PUBLISHED release, never plugin main (board row
+ * 01a0db74; lib/follow-published.mjs). A new one is cloned beside its place,
+ * moved to the published tag and only then put in place, so a release that
+ * cannot be read leaves no checkout of main behind. An existing one moves only
+ * forward to a newer published release (it used to `git pull --ff-only` main);
+ * one ahead of the release, or a release that cannot be read, leaves it as it
+ * is. `deps.readPublishedTag` stands in for the marketplace in tests.
  */
-export async function ensurePluginCheckout(agentsRoot, env = process.env, log = console.error) {
+export async function ensurePluginCheckout(agentsRoot, env = process.env, log = console.error, deps = {}) {
   const overrideDir = env.BGOS_PLUGIN_DIR
   if (overrideDir) {
     const resolvedOverrideDir = resolve(overrideDir)
@@ -573,19 +582,30 @@ export async function ensurePluginCheckout(agentsRoot, env = process.env, log = 
   if (!(await hasCommand('git'))) {
     throw new Error('git is required (install git, then re-run this command)')
   }
+  const readPublishedTag = deps.readPublishedTag
   if (existsSync(serverPath)) {
-    try {
-      await execFileAsync('git', ['-C', pluginDir, 'pull', '--ff-only'], {
-        timeout: 60_000,
-      })
-    } catch {
-      log('[bgos-claim] warning: could not update the plugin checkout; using it as-is')
-    }
+    const followed = await followPublishedRelease({ dir: pluginDir, readPublishedTag })
+    log(
+      exitCodeFor(followed.outcome) === 1
+        ? `[bgos-claim] warning: ${followed.message}; using it as-is`
+        : `[bgos-claim] ${followed.message}`,
+    )
   } else {
     await mkdir(dirname(pluginDir), { recursive: true })
-    await execFileAsync('git', ['clone', '--depth', '1', repo, pluginDir], {
-      timeout: 180_000,
-    })
+    const partial = `${pluginDir}.partial-${process.pid}`
+    try {
+      await execFileAsync('git', ['clone', '--quiet', '--depth', '1', repo, partial], {
+        timeout: 180_000,
+      })
+      const pinned = await followPublishedRelease({ dir: partial, fresh: true, readPublishedTag })
+      if (exitCodeFor(pinned.outcome) === 1) {
+        throw new Error(`${pinned.message}; no plugin checkout was made at ${pluginDir}`)
+      }
+      await rename(partial, pluginDir)
+      log(`[bgos-claim] ${pinned.message}`)
+    } finally {
+      await rm(partial, { recursive: true, force: true })
+    }
   }
   if (await hasCommand('bun')) {
     try {

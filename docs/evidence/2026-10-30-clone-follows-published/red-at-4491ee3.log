@@ -1,0 +1,655 @@
+✖ hoai-agent update lands on the published release, not on main past it (2611.598375ms)
+✖ hoai-agent update on a host AHEAD of the published release does not move it back: it says so and waits (2124.56225ms)
+✖ hoai-agent update with the marketplace offline leaves the checkout exactly where it is (1971.268292ms)
+✖ hoai-agent update with an unreadable marketplace ref leaves the checkout exactly where it is (2094.790041ms)
+✔ hoai-agent update on a checkout with local changes refuses, and neither moves nor reads the release (1562.290041ms)
+✖ the update hands the rest of its work to the script it just checked out, once (1892.6315ms)
+✖ the rest of the update runs the NEW script, and the version message still names where it started (65.683ms)
+✖ the hand-over is not a loop: an update that is already the re-executed one does not exec again (2.630875ms)
+✖ an update whose HOME id helper cannot answer still completes: it restarts nothing by name and says why, for each agent (2.587792ms)
+✖ a new claim checkout is the published release, never main (797.959208ms)
+✖ a new claim checkout is never made when the published release cannot be read (816.347667ms)
+✖ an existing claim checkout moves to the published release, not to main (701.665583ms)
+✖ an existing claim checkout ahead of the published release stays, and says so; an unreadable release leaves it too (828.436792ms)
+✖ hoai-agent install clones the published release, not main (2894.374041ms)
+✖ hoai-agent install with the marketplace unreachable makes no checkout at all, rather than one of main (2129.001417ms)
+✖ hoai-bootstrap.sh (clone method) checks out the published release, not main (1566.602208ms)
+✖ hoai-bootstrap.sh (clone method) with the marketplace unreachable fails plugin-install and leaves no checkout (1561.28375ms)
+✖ hoai-bootstrap.sh (clone method): an empty folder where the checkout goes stays until a pinned checkout replaces it; a folder with files is never touched (1461.158083ms)
+✖ hoai-bootstrap.ps1 (clone method) pins its new clone to the published release before it is put in place (0.73975ms)
+✖ a clone behind the published release moves to exactly the tag the marketplace names, never to main past it (1.824625ms)
+✖ a depth 1 field clone fetches only the published tag, stays shallow, and lands on it (0.267542ms)
+✖ a clone AHEAD of the published release is never moved back: it says so and waits for the release to catch up (0.264625ms)
+✖ a clone at the published version with later commits on it stays where it is (0.26825ms)
+✖ a marketplace that cannot be read, or names no release, leaves the clone where it is (0.197792ms)
+✖ a published tag whose package.json carries another version is refused, and nothing moves (0.1385ms)
+✖ a checkout with local changes is never touched (0.191125ms)
+✖ a checkout with commits of its own that no remote or tag holds is never reset over them (review of 01a0db74) (0.099166ms)
+✖ fresh: a clone just made of main is pinned to the published release, even though main is ahead of it (0.238125ms)
+✖ fresh: a marketplace that cannot be read is a failure, so the caller never keeps a clone of main (0.157ms)
+✖ the exit codes the shell callers act on (0.159417ms)
+ℹ tests 30
+ℹ suites 0
+ℹ pass 1
+ℹ fail 29
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 12480.015416
+
+✖ failing tests:
+
+test at test/bgos-agent.update-published.test.ts:5:41
+✖ hoai-agent update lands on the published release, not on main past it (2611.598375ms)
+  AssertionError [ERR_ASSERTION]: the published tag's commit, not main (fdec7693791eca0d4a18cd53e24f127d8709c2d7)
+  ▸ Fetching origin/main
+  HEAD is now at fdec769 bumped and auto-tagged, never published
+  ▸ Continuing with the updated script
+  ▸ Installing plugin deps (bun install)
+  ✓ plugin updated: 1.0.0 -> 3.0.0
+  
+  From <tmp>/update-published-7tWaEF/origin
+   * branch            main       -> FETCH_HEAD
+   + 52d7d26...fdec769 main       -> origin/main  (forced update)
+  ! no installed agent services found; quit and relaunch Claude Code to use the update
+  
+  + actual - expected
+  
+  + 'fdec7693791eca0d4a18cd53e24f127d8709c2d7'
+  - '2d6232bfdc2a4b7cb6360f021f7d9960e8a74b09'
+  
+      at TestContext.<anonymous> (<scratchpad>/base/test/bgos-agent.update-published.test.ts:124:10)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 'fdec7693791eca0d4a18cd53e24f127d8709c2d7',
+    expected: '2d6232bfdc2a4b7cb6360f021f7d9960e8a74b09',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/bgos-agent.update-published.test.ts:6:281
+✖ hoai-agent update on a host AHEAD of the published release does not move it back: it says so and waits (2124.56225ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /3\.0\.0 is ahead of the published release v2\.0\.0/. Input:
+  
+  '▸ Fetching origin/main\n' +
+    'HEAD is now at d7d20c9 bumped and auto-tagged, never published\n' +
+    '▸ Continuing with the updated script\n' +
+    '▸ Installing plugin deps (bun install)\n' +
+    '✓ already up to date at 3.0.0\n' +
+    '\n' +
+    'From <tmp>/update-published-1JBCOn/origin\n' +
+    ' * branch            main       -> FETCH_HEAD\n' +
+    '! no installed agent services found; quit and relaunch Claude Code to use the update\n'
+  
+      at TestContext.<anonymous> (<scratchpad>/base/test/bgos-agent.update-published.test.ts:141:10)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: '▸ Fetching origin/main\nHEAD is now at d7d20c9 bumped and auto-tagged, never published\n▸ Continuing with the updated script\n▸ Installing plugin deps (bun install)\n✓ already up to date at 3.0.0\n\nFrom <tmp>/update-published-1JBCOn/origin\n * branch            main       -> FETCH_HEAD\n! no installed agent services found; quit and relaunch Claude Code to use the update\n',
+    expected: /3\.0\.0 is ahead of the published release v2\.0\.0/,
+    operator: 'match',
+    diff: 'simple'
+  }
+
+test at test/bgos-agent.update-published.test.ts:6:1006
+✖ hoai-agent update with the marketplace offline leaves the checkout exactly where it is (1971.268292ms)
+  AssertionError [ERR_ASSERTION]: ▸ Fetching origin/main
+  HEAD is now at bf98670 bumped and auto-tagged, never published
+  ▸ Continuing with the updated script
+  ▸ Installing plugin deps (bun install)
+  ✓ plugin updated: 1.0.0 -> 3.0.0
+  
+  From <tmp>/update-published-bDHrbH/origin
+   * branch            main       -> FETCH_HEAD
+   + f3f0794...bf98670 main       -> origin/main  (forced update)
+  ! no installed agent services found; quit and relaunch Claude Code to use the update
+  
+      at TestContext.<anonymous> (<scratchpad>/base/test/bgos-agent.update-published.test.ts:150:10)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 0,
+    expected: 0,
+    operator: 'notStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/bgos-agent.update-published.test.ts:7:186
+✖ hoai-agent update with an unreadable marketplace ref leaves the checkout exactly where it is (2094.790041ms)
+  AssertionError [ERR_ASSERTION]: an HTTP 500
+  ▸ Fetching origin/main
+  HEAD is now at 0974392 bumped and auto-tagged, never published
+  ▸ Continuing with the updated script
+  ▸ Installing plugin deps (bun install)
+  ✓ plugin updated: 1.0.0 -> 3.0.0
+  
+  From <tmp>/update-published-Dsibb7/origin
+   * branch            main       -> FETCH_HEAD
+   + 92a60df...0974392 main       -> origin/main  (forced update)
+  ! no installed agent services found; quit and relaunch Claude Code to use the update
+  
+      at TestContext.<anonymous> (<scratchpad>/base/test/bgos-agent.update-published.test.ts:168:12)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 0,
+    expected: 0,
+    operator: 'notStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/bgos-agent.update-published.test.ts:9:566
+✖ the update hands the rest of its work to the script it just checked out, once (1892.6315ms)
+  AssertionError [ERR_ASSERTION]: the move happens once
+  
+  0 !== 1
+  
+      at TestContext.<anonymous> (<scratchpad>/base/test/bgos-agent.update-published.test.ts:190:10)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 0,
+    expected: 1,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/bgos-agent.update-reexec.test.ts:6:819
+✖ the rest of the update runs the NEW script, and the version message still names where it started (65.683ms)
+  Error: ENOENT: no such file or directory, lstat '<scratchpad>/base/bin/hoai-published-release.mjs'
+      at cpSyncFn (node:internal/fs/cp/cp-sync:56:13)
+      at cpSync (node:fs:3131:3)
+      at fixture (<scratchpad>/base/test/bgos-agent.update-reexec.test.ts:82:3)
+      at TestContext.<anonymous> (<scratchpad>/base/test/bgos-agent.update-reexec.test.ts:125:13)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    errno: -2,
+    code: 'ENOENT',
+    syscall: 'lstat',
+    path: '<scratchpad>/base/bin/hoai-published-release.mjs'
+  }
+
+test at test/bgos-agent.update-reexec.test.ts:7:287
+✖ the hand-over is not a loop: an update that is already the re-executed one does not exec again (2.630875ms)
+  Error: ENOENT: no such file or directory, lstat '<scratchpad>/base/bin/hoai-published-release.mjs'
+      at cpSyncFn (node:internal/fs/cp/cp-sync:56:13)
+      at cpSync (node:fs:3131:3)
+      at fixture (<scratchpad>/base/test/bgos-agent.update-reexec.test.ts:82:3)
+      at TestContext.<anonymous> (<scratchpad>/base/test/bgos-agent.update-reexec.test.ts:136:13)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    errno: -2,
+    code: 'ENOENT',
+    syscall: 'lstat',
+    path: '<scratchpad>/base/bin/hoai-published-release.mjs'
+  }
+
+test at test/bgos-agent.update-reexec.test.ts:8:230
+✖ an update whose HOME id helper cannot answer still completes: it restarts nothing by name and says why, for each agent (2.587792ms)
+  Error: ENOENT: no such file or directory, lstat '<scratchpad>/base/bin/hoai-published-release.mjs'
+      at cpSyncFn (node:internal/fs/cp/cp-sync:56:13)
+      at cpSync (node:fs:3131:3)
+      at fixture (<scratchpad>/base/test/bgos-agent.update-reexec.test.ts:82:3)
+      at TestContext.<anonymous> (<scratchpad>/base/test/bgos-agent.update-reexec.test.ts:163:15)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    errno: -2,
+    code: 'ENOENT',
+    syscall: 'lstat',
+    path: '<scratchpad>/base/bin/hoai-published-release.mjs'
+  }
+
+test at test/bgos-claim.published.test.ts:1:1213
+✖ a new claim checkout is the published release, never main (797.959208ms)
+  AssertionError [ERR_ASSERTION]: not main (c969caa5ddc8c1c517417ea7ecf3141105a64d4b)
+  
+  + actual - expected
+  
+  + 'c969caa5ddc8c1c517417ea7ecf3141105a64d4b'
+  - '9cdcf81ee9832408d667792a77197a8306ee265a'
+  
+      at TestContext.<anonymous> (<scratchpad>/base/test/bgos-claim.published.test.ts:51:10)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 'c969caa5ddc8c1c517417ea7ecf3141105a64d4b',
+    expected: '9cdcf81ee9832408d667792a77197a8306ee265a',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/bgos-claim.published.test.ts:2:258
+✖ a new claim checkout is never made when the published release cannot be read (816.347667ms)
+  AssertionError [ERR_ASSERTION]: Missing expected rejection.
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async TestContext.<anonymous> (<scratchpad>/base/test/bgos-claim.published.test.ts:59:3)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    expected: /the published release could not be read/,
+    operator: 'rejects',
+    diff: 'simple'
+  }
+
+test at test/bgos-claim.published.test.ts:2:836
+✖ an existing claim checkout moves to the published release, not to main (701.665583ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /"0\.26\.0"/. Input:
+  
+  '{\n  "name": "claude-channel-bgos",\n  "version": "0.28.0"\n}'
+  
+      at TestContext.<anonymous> (<scratchpad>/base/test/bgos-claim.published.test.ts:77:10)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: '{\n  "name": "claude-channel-bgos",\n  "version": "0.28.0"\n}',
+    expected: /"0\.26\.0"/,
+    operator: 'match',
+    diff: 'simple'
+  }
+
+test at test/bgos-claim.published.test.ts:3:24
+✖ an existing claim checkout ahead of the published release stays, and says so; an unreadable release leaves it too (828.436792ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /0\.28\.0 is ahead of the published release v0\.27\.0/. Input:
+  
+  ''
+  
+      at TestContext.<anonymous> (<scratchpad>/base/test/bgos-claim.published.test.ts:92:10)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: '',
+    expected: /0\.28\.0 is ahead of the published release v0\.27\.0/,
+    operator: 'match',
+    diff: 'simple'
+  }
+
+test at test/clone-install.published.test.ts:7:43
+✖ hoai-agent install clones the published release, not main (2894.374041ms)
+  AssertionError [ERR_ASSERTION]: the published tag, not main (fac59592a374e44649b347aadf3bda5b8486f28a)
+  ▸ Preflight
+  ✓ git, bun, claude, expect present
+  ▸ Cloning plugin → <tmp>/clone-install-home-JQ8Sx6/bgos-claude-plugin
+  ▸ Installing plugin deps (bun install)
+  ✓ plugin ready at <tmp>/clone-install-home-JQ8Sx6/bgos-claude-plugin
+  ✓ wrote <tmp>/clone-install-home-JQ8Sx6/ws/.mcp.json
+  ✓ wrote <tmp>/clone-install-home-JQ8Sx6/ws/CLAUDE.md (stub, see plugin README Step 5 for full peer rules)
+  ✓ activity hooks registered in <tmp>/clone-install-home-JQ8Sx6/ws/.claude/settings.local.json
+  ✓ terminal-only tools denied in <tmp>/clone-install-home-JQ8Sx6/ws/.claude/settings.local.json
+  
+  ✓ Config ready (no supervisor, foreground mode).
+    Run it with:
+      cd <tmp>/clone-install-home-JQ8Sx6/ws
+      CLAUDE_CODE_ENABLE_TODO_TOOLS=1 claude --dangerously-skip-permissions --dangerously-load-development-channels server:bgos
+    Re-run with --always-on to keep it running + survive reboot.
+  
+  Cloning into '<tmp>/clone-install-home-JQ8Sx6/bgos-claude-plugin'...
+  
+  + actual - expected
+  
+  + 'fac59592a374e44649b347aadf3bda5b8486f28a'
+  - '1a298616ffe31fede9f03709c51387660e80bb37'
+  
+      at TestContext.<anonymous> (<scratchpad>/base/test/clone-install.published.test.ts:107:10)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 'fac59592a374e44649b347aadf3bda5b8486f28a',
+    expected: '1a298616ffe31fede9f03709c51387660e80bb37',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/clone-install.published.test.ts:8:233
+✖ hoai-agent install with the marketplace unreachable makes no checkout at all, rather than one of main (2129.001417ms)
+  AssertionError [ERR_ASSERTION]: ▸ Preflight
+  ✓ git, bun, claude, expect present
+  ▸ Cloning plugin → <tmp>/clone-install-home-FNOYlv/bgos-claude-plugin
+  ▸ Installing plugin deps (bun install)
+  ✓ plugin ready at <tmp>/clone-install-home-FNOYlv/bgos-claude-plugin
+  ✓ wrote <tmp>/clone-install-home-FNOYlv/ws/.mcp.json
+  ✓ wrote <tmp>/clone-install-home-FNOYlv/ws/CLAUDE.md (stub, see plugin README Step 5 for full peer rules)
+  ✓ activity hooks registered in <tmp>/clone-install-home-FNOYlv/ws/.claude/settings.local.json
+  ✓ terminal-only tools denied in <tmp>/clone-install-home-FNOYlv/ws/.claude/settings.local.json
+  
+  ✓ Config ready (no supervisor, foreground mode).
+    Run it with:
+      cd <tmp>/clone-install-home-FNOYlv/ws
+      CLAUDE_CODE_ENABLE_TODO_TOOLS=1 claude --dangerously-skip-permissions --dangerously-load-development-channels server:bgos
+    Re-run with --always-on to keep it running + survive reboot.
+  
+  Cloning into '<tmp>/clone-install-home-FNOYlv/bgos-claude-plugin'...
+  
+      at TestContext.<anonymous> (<scratchpad>/base/test/clone-install.published.test.ts:117:10)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 0,
+    expected: 0,
+    operator: 'notStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/clone-install.published.test.ts:15:53
+✖ hoai-bootstrap.sh (clone method) checks out the published release, not main (1566.602208ms)
+  AssertionError [ERR_ASSERTION]: the published tag, not main (1bb155ff9a95eb5725992ba7cd5b0e89d4e5808a)
+  Cloning the HOAI plugin to <tmp>/clone-install-home-8Q0oIT/bgos-claude-plugin
+  DONE <tmp>/clone-install-home-8Q0oIT/bgos-claude-plugin
+  
+  Cloning into '<tmp>/clone-install-home-8Q0oIT/bgos-claude-plugin'...
+  
+  + actual - expected
+  
+  + '1bb155ff9a95eb5725992ba7cd5b0e89d4e5808a'
+  - 'fb37d186effd7011e19399c537ad8763b0bd2050'
+  
+      at TestContext.<anonymous> (<scratchpad>/base/test/clone-install.published.test.ts:161:10)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: '1bb155ff9a95eb5725992ba7cd5b0e89d4e5808a',
+    expected: 'fb37d186effd7011e19399c537ad8763b0bd2050',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/clone-install.published.test.ts:16:256
+✖ hoai-bootstrap.sh (clone method) with the marketplace unreachable fails plugin-install and leaves no checkout (1561.28375ms)
+  AssertionError [ERR_ASSERTION]: Cloning the HOAI plugin to <tmp>/clone-install-home-xQeyrD/bgos-claude-plugin
+  DONE <tmp>/clone-install-home-xQeyrD/bgos-claude-plugin
+  
+  Cloning into '<tmp>/clone-install-home-xQeyrD/bgos-claude-plugin'...
+  
+  
+  0 !== 3
+  
+      at TestContext.<anonymous> (<scratchpad>/base/test/clone-install.published.test.ts:173:10)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 0,
+    expected: 3,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/clone-install.published.test.ts:16:715
+✖ hoai-bootstrap.sh (clone method): an empty folder where the checkout goes stays until a pinned checkout replaces it; a folder with files is never touched (1461.158083ms)
+  AssertionError [ERR_ASSERTION]: Cloning the HOAI plugin to <tmp>/clone-install-home-zhjpUT/bgos-claude-plugin
+  DONE <tmp>/clone-install-home-zhjpUT/bgos-claude-plugin
+  
+  Cloning into '<tmp>/clone-install-home-zhjpUT/bgos-claude-plugin'...
+  
+  
+  0 !== 3
+  
+      at TestContext.<anonymous> (<scratchpad>/base/test/clone-install.published.test.ts:186:10)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 0,
+    expected: 3,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/clone-install.published.test.ts:17:730
+✖ hoai-bootstrap.ps1 (clone method) pins its new clone to the published release before it is put in place (0.73975ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /& git clone --quiet --depth 1 https:\/\/github\.com\/BrandGrowthOS\/bgos-claude-plugin\.git \$pluginPartial\n/. Input:
+  
+  "    $PluginRoot = Join-Path $env:USERPROFILE 'bgos-claude-plugin'\n" +
+    "    if (-not (Test-Path (Join-Path $PluginRoot 'server.ts'))) {\n" +
+    "        Say ('Cloning the HOAI plugin to ' + $PluginRoot)\n" +
+    '        $global:LASTEXITCODE = 1\n' +
+    '        & git clone --depth 1 https://github.com/BrandGrowthOS/bgos-claude-plugin.git $PluginRoot\n' +
+    "        if ($LASTEXITCODE -ne 0) { Fail 'plugin-install' }\n" +
+    '    }\n'
+  
+      at TestContext.<anonymous> (<scratchpad>/base/test/clone-install.published.test.ts:219:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: "    $PluginRoot = Join-Path $env:USERPROFILE 'bgos-claude-plugin'\n    if (-not (Test-Path (Join-Path $PluginRoot 'server.ts'))) {\n        Say ('Cloning the HOAI plugin to ' + $PluginRoot)\n        $global:LASTEXITCODE = 1\n        & git clone --depth 1 https://github.com/BrandGrowthOS/bgos-claude-plugin.git $PluginRoot\n        if ($LASTEXITCODE -ne 0) { Fail 'plugin-install' }\n    }\n",
+    expected: /& git clone --quiet --depth 1 https:\/\/github\.com\/BrandGrowthOS\/bgos-claude-plugin\.git \$pluginPartial\n/,
+    operator: 'match',
+    diff: 'simple'
+  }
+
+test at test/follow-published.test.ts:1:1268
+✖ a clone behind the published release moves to exactly the tag the marketplace names, never to main past it (1.824625ms)
+  AssertionError [ERR_ASSERTION]: lib/follow-published.mjs does not exist: a clone installer moves to origin/main, not to the published release
+      at TestContext.<anonymous> (<scratchpad>/base/test/follow-published.test.ts:46:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.start (node:internal/test_runner/test:1096:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:385:17) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: null,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }
+
+test at test/follow-published.test.ts:1:1947
+✖ a depth 1 field clone fetches only the published tag, stays shallow, and lands on it (0.267542ms)
+  AssertionError [ERR_ASSERTION]: lib/follow-published.mjs does not exist: a clone installer moves to origin/main, not to the published release
+      at TestContext.<anonymous> (<scratchpad>/base/test/follow-published.test.ts:62:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: null,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }
+
+test at test/follow-published.test.ts:1:2798
+✖ a clone AHEAD of the published release is never moved back: it says so and waits for the release to catch up (0.264625ms)
+  AssertionError [ERR_ASSERTION]: lib/follow-published.mjs does not exist: a clone installer moves to origin/main, not to the published release
+      at TestContext.<anonymous> (<scratchpad>/base/test/follow-published.test.ts:78:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: null,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }
+
+test at test/follow-published.test.ts:1:3594
+✖ a clone at the published version with later commits on it stays where it is (0.26825ms)
+  AssertionError [ERR_ASSERTION]: lib/follow-published.mjs does not exist: a clone installer moves to origin/main, not to the published release
+      at TestContext.<anonymous> (<scratchpad>/base/test/follow-published.test.ts:94:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: null,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }
+
+test at test/follow-published.test.ts:1:4092
+✖ a marketplace that cannot be read, or names no release, leaves the clone where it is (0.197792ms)
+  AssertionError [ERR_ASSERTION]: lib/follow-published.mjs does not exist: a clone installer moves to origin/main, not to the published release
+      at TestContext.<anonymous> (<scratchpad>/base/test/follow-published.test.ts:105:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: null,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }
+
+test at test/follow-published.test.ts:1:4963
+✖ a published tag whose package.json carries another version is refused, and nothing moves (0.1385ms)
+  AssertionError [ERR_ASSERTION]: lib/follow-published.mjs does not exist: a clone installer moves to origin/main, not to the published release
+      at TestContext.<anonymous> (<scratchpad>/base/test/follow-published.test.ts:126:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: null,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }
+
+test at test/follow-published.test.ts:1:5606
+✖ a checkout with local changes is never touched (0.191125ms)
+  AssertionError [ERR_ASSERTION]: lib/follow-published.mjs does not exist: a clone installer moves to origin/main, not to the published release
+      at TestContext.<anonymous> (<scratchpad>/base/test/follow-published.test.ts:138:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: null,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }
+
+test at test/follow-published.test.ts:1:6151
+✖ a checkout with commits of its own that no remote or tag holds is never reset over them (review of 01a0db74) (0.099166ms)
+  AssertionError [ERR_ASSERTION]: lib/follow-published.mjs does not exist: a clone installer moves to origin/main, not to the published release
+      at TestContext.<anonymous> (<scratchpad>/base/test/follow-published.test.ts:156:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: null,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }
+
+test at test/follow-published.test.ts:1:6845
+✖ fresh: a clone just made of main is pinned to the published release, even though main is ahead of it (0.238125ms)
+  AssertionError [ERR_ASSERTION]: lib/follow-published.mjs does not exist: a clone installer moves to origin/main, not to the published release
+      at TestContext.<anonymous> (<scratchpad>/base/test/follow-published.test.ts:169:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: null,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }
+
+test at test/follow-published.test.ts:1:7352
+✖ fresh: a marketplace that cannot be read is a failure, so the caller never keeps a clone of main (0.157ms)
+  AssertionError [ERR_ASSERTION]: lib/follow-published.mjs does not exist: a clone installer moves to origin/main, not to the published release
+      at TestContext.<anonymous> (<scratchpad>/base/test/follow-published.test.ts:181:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: null,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }
+
+test at test/follow-published.test.ts:1:7866
+✖ the exit codes the shell callers act on (0.159417ms)
+  AssertionError [ERR_ASSERTION]: lib/follow-published.mjs does not exist: a clone installer moves to origin/main, not to the published release
+      at TestContext.<anonymous> (<scratchpad>/base/test/follow-published.test.ts:196:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: null,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }
+(fail) a clone updates to exactly the published release (board row 84c23fab) > a daemon ahead of the published release says so at its check, and that it waits for the release (board row 01a0db74) [433.12ms]
+ 9 pass
+ 1 fail
