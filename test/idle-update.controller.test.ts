@@ -1413,6 +1413,20 @@ test('came back on the old version: a failed attempt, the canary voided for the 
   assert.equal(lastReport(a)?.code, 'scheduled_update_failed')
 })
 
+test('a nonce read from disk never names a path: one that climbs out of the machine folder moves and deletes nothing there', async () => {
+  const disk = await afterAsk()
+  const climb = 'x/../../victim'
+  const rec = readJson(disk, join('/home/a/.bgos-agent', '912', 'idle-update.json'))
+  disk.fs.writeAtomic(join('/home/a/.bgos-agent', '912', 'idle-update.json'), JSON.stringify({ ...rec, nonce: climb }))
+  const lease = readJson(disk, join(MACHINE, 'lease.json'))
+  disk.fs.writeAtomic(join(MACHINE, 'lease.json'), JSON.stringify({ ...lease, nonce: climb }))
+  const victim = join('/home/a/.bgos-agent', 'victim.json')
+  disk.fs.writeAtomic(victim, '{"keep":true}')
+  const a = agent(disk, { running: '0.80.0' })
+  await a.c.tick()
+  assert.equal(disk.fs.readFile(victim), '{"keep":true}', 'a file outside the machine folder is neither replaced nor deleted')
+})
+
 test('a new session on the new version: the lost conversation is said, and the build is still validated', async () => {
   const disk = await afterAsk()
   const a = agent(disk, { running: '0.81.0', staged: null })
