@@ -195,8 +195,8 @@
       "id": "gate-17-jitter",
       "rule": "17 each agent waits its own jitter past the quiet window",
       "file": "lib/idle-update.mjs",
-      "find": "if (now - newest < window + (finite(f.jitterMs) ? Math.max(0, f.jitterMs) : d.jitterMaxMs)) return wait('jitter')",
-      "replace": "if (now - newest < window) return wait('jitter')",
+      "find": "if (now - newest < QUIET_WINDOW_MS / d.scale + (finite(f.jitterMs) ? Math.max(0, f.jitterMs) : d.jitterMaxMs)) return wait('jitter')",
+      "replace": "if (now - newest < QUIET_WINDOW_MS / d.scale) return wait('jitter')",
       "tests": [
         "test/idle-update.test.ts"
       ]
@@ -2518,6 +2518,67 @@
       "replace": "",
       "tests": [
         "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "gate-16-no-signal",
+      "rule": "16 no hook signal never restarts, however long the quiet (Data's fix 1)",
+      "file": "lib/idle-update.mjs",
+      "find": "if (f.safe?.turnSignal !== TURN_SIGNAL_HOOKS) return wait('no_turn_signal')",
+      "replace": "if (false) return wait('no_turn_signal')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-16-no-signal-only-hooks",
+      "rule": "16 only the word 'hooks' counts as a signal: a state that does not say is none",
+      "file": "lib/idle-update.mjs",
+      "find": "if (f.safe?.turnSignal !== TURN_SIGNAL_HOOKS) return wait('no_turn_signal')",
+      "replace": "if (f.safe?.turnSignal === 'none') return wait('no_turn_signal')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-16-no-signal-after-quiet",
+      "rule": "16 no_turn_signal comes after the 30 min quiet, so a fresh boot raises no report",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (!safe.safe) return wait(safe.reason)\n  // Past the 30 min a daemon with no hook signal uses: the moment it would have gone blind, it says so instead.\n  if (f.safe?.turnSignal !== TURN_SIGNAL_HOOKS) return wait('no_turn_signal')\n",
+      "replace": "  if (f.safe?.turnSignal !== TURN_SIGNAL_HOOKS) return wait('no_turn_signal')\n  if (!safe.safe) return wait(safe.reason)\n",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "report-no-signal",
+      "rule": "a standing no_turn_signal is on the heartbeat: never a silent wait",
+      "file": "lib/idle-update.mjs",
+      "find": "if (reason === 'no_turn_signal') {",
+      "replace": "if (false) {",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-quiet-no-signal",
+      "rule": "the rollback restart with no hook signal waits the 30 min quiet, never 2 min",
+      "file": "lib/idle-update.mjs",
+      "find": "const quiet = s.turnSignal === TURN_SIGNAL_HOOKS ? d.rollbackQuietMs : LEGACY_QUIET_WINDOW_MS / d.scale",
+      "replace": "const quiet = d.rollbackQuietMs",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-no-signal-still-goes",
+      "rule": "the rollback restart is never held for a hook signal that may never come",
+      "file": "lib/idle-update.mjs",
+      "find": "const quiet = s.turnSignal === TURN_SIGNAL_HOOKS ? d.rollbackQuietMs : LEGACY_QUIET_WINDOW_MS / d.scale",
+      "replace": "if (s.turnSignal !== TURN_SIGNAL_HOOKS) return no('no_turn_signal')\n  const quiet = d.rollbackQuietMs",
+      "tests": [
+        "test/idle-update.test.ts"
       ]
     }
   ]
