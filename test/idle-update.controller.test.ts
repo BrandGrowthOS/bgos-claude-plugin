@@ -1750,15 +1750,15 @@ test('a follower passes over a canary build held bad since, and over a folder sw
   }
 })
 
-test('a rollback never lands on a version held bad here: it leaves the install alone and asks for a person', async () => {
+test('a way back onto a version held bad still goes back: it is the build this agent ran, and the one it is on just failed', async () => {
   const disk = await afterAsk()
   disk.fs.writeAtomic(join(MACHINE, '0.80.0', 'bad'), JSON.stringify({ reason: 'canary_failed' }))
   const a = agent(disk, { running: '0.81.0', staged: null })
   assert.equal(await a.c.tick(), 'validating')
   disk.clock.now += 15 * MIN + SEC
-  assert.equal(await a.c.tick(), 'rollback_failed')
-  assert.equal(a.rollbackInstalls.length, 0)
-  assert.equal(lastReport(a)?.code, 'idle_update_rollback_failed')
+  assert.equal(await a.c.tick(), 'rollback')
+  assert.deepEqual(a.rollbackInstalls.map((r) => r.from), ['0.80.0'])
+  assert.equal(lastReport(a)?.code, 'idle_update_rolled_back')
 })
 
 /** Agent 912 on a version agent 913 proved here, on its first boot there. */
@@ -1774,34 +1774,31 @@ async function followerArrived() {
   return disk
 }
 
-test('on a version the canary proved here, a second boot is no verdict: a slow start reads the same, and the boot running now may prove itself', async () => {
+test('on a version the canary proved, a second boot is a verdict too: hoai relaunches once, so no third boot comes, and the latch is what stops the next follower', async () => {
   const disk = await followerArrived()
   const second = agent(disk, { running: '0.81.0', staged: null })
-  assert.equal(await second.c.tick(), 'validating')
-  assert.equal(second.rollbackInstalls.length, 0)
-  assert.equal(disk.files.has(join(MACHINE, '0.81.0', 'bad')), false)
-  assert.equal(disk.files.has(join(MACHINE, 'went-back-912')), false)
-  second.s.heartbeatOkAtMs = disk.clock.now
-  second.s.beaconAtMs = disk.clock.now
-  assert.equal(await second.c.tick(), 'validating')
-  disk.clock.now += 5 * MIN + SEC
-  second.s.heartbeatOkAtMs = disk.clock.now
-  second.s.beaconAtMs = disk.clock.now
-  assert.equal(await second.c.tick(), 'validated')
+  assert.equal(await second.c.tick(), 'rollback')
+  assert.equal(second.rollbackInstalls.length, 1)
+  assert.ok(disk.files.has(join(MACHINE, '0.81.0', 'bad')))
+  assert.ok(disk.files.has(join(MACHINE, 'went-back-912')))
 })
 
-test('that boot still has the deadline over it, and a third boot is a verdict: a follower that keeps dying has a way back', async () => {
-  const late = await followerArrived()
-  const second = agent(late, { running: '0.81.0', staged: null })
-  assert.equal(await second.c.tick(), 'validating')
-  assert.equal(await second.c.tick(), 'validating')
-  late.clock.now += 15 * MIN + SEC
-  assert.equal(await second.c.tick(), 'rollback')
-
-  const dying = await followerArrived()
-  assert.equal(await agent(dying, { running: '0.81.0', staged: null }).c.tick(), 'validating')
-  dying.clock.now += 3 * MIN
-  assert.equal(await agent(dying, { running: '0.81.0', staged: null }).c.tick(), 'rollback')
+test('a missed deadline leaves no live proof behind: the boot after a crash before the repoint finishes the way back', async () => {
+  const disk = await afterAsk()
+  const a = agent(disk, { running: '0.81.0', staged: null })
+  assert.equal(await a.c.tick(), 'validating')
+  a.s.heartbeatOkAtMs = disk.clock.now
+  a.s.beaconAtMs = disk.clock.now
+  assert.equal(await a.c.tick(), 'validating')
+  assert.ok(readJson(disk, a.record).liveAt)
+  disk.clock.now += 15 * MIN + SEC
+  a.s.installGate = new Promise(() => {})
+  void a.c.tick()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(readJson(disk, a.record).attempts.at(-1).outcome, 'deadline')
+  const next = agent(disk, { running: '0.81.0', staged: null })
+  assert.equal(await next.c.tick(), 'rollback')
+  assert.equal(next.rollbackInstalls.length, 1)
 })
 
 test('a rollback that finds no quiet moment for 3 h stops saying it went back, and asks for a person', async () => {

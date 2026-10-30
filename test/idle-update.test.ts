@@ -151,7 +151,7 @@ test('scaled durations divide every duration by the scale and carry the scale it
   assert.equal(d.scale, 60)
   assert.equal(d.leaseTtlMs, m.DEFAULT_DURATIONS.leaseTtlMs / 60)
   assert.equal(d.minUpMs, SEC)
-  assert.equal(m.scaledDurations(1).leaseTtlMs, 20 * MIN)
+  assert.equal(m.scaledDurations(1).leaseTtlMs, 25 * MIN)
 })
 
 test('scaled durations keep two floors: a relaunch gets its real 3.5 min to arrive, and a beacon 30 s to be fresh', () => {
@@ -925,7 +925,8 @@ test('the hold is 5 min, and everything that must outlast it does: a hold at or 
   // A break in the live proof restarts the hold, so the deadline leaves room for one late break, and a poll either side.
   assert.ok(d.validateDeadlineMs >= 2 * d.validateHoldMs + 2 * d.pollMs, 'the deadline')
   // The lease outlasts a failing agent's verdict, or the next agent walks onto a build about to be latched bad.
-  assert.ok(d.leaseTtlMs > d.didNotArriveMs + d.validateDeadlineMs + 2 * d.pollMs, 'the lease')
+  // hoai's relaunch of a boot with no beacon restarts the arrival, so the lease covers its 3 min wait and a 2 min start.
+  assert.ok(d.leaseTtlMs > d.didNotArriveMs + 3 * MIN + 2 * MIN + d.validateDeadlineMs + 2 * d.pollMs, 'the lease')
   // A canary is silent only past the slowest validation this side of an expired login.
   assert.ok(d.canarySilentMs >= d.startupDeadlineMs + d.unreachableCapMs + d.validateDeadlineMs + 10 * MIN, 'the silence')
 })
@@ -1137,7 +1138,12 @@ test('report: a rollback, a failed rollback, a lost conversation and a non-canar
   // No code decides anything for it: the report says what is true, and what a person does.
   const failed = m.idleUpdateLastError(record({ state: 'failed' }), { runningVersion: '0.81.0' })
   assert.doesNotMatch(failed.message, /Another agent/)
-  assert.match(failed.message, /restart it by hand/i)
+  // Its way back may have failed before the install moved, and a restart by hand boots the same build.
+  assert.doesNotMatch(failed.message, /took this computer back/)
+  assert.match(failed.message, /restart by hand comes back on 0\.81\.0/)
+  const stuck = m.idleUpdateLastError(record({ state: 'rollback_failed' }), { runningVersion: '0.81.0' })
+  assert.match(stuck.message, /restart by hand comes back on 0\.81\.0/)
+  assert.ok(failed.message.length <= 300 && stuck.message.length <= 300)
 })
 
 test('report: a validated restart, a pending one, or no record says nothing (and so clears a standing error)', () => {
@@ -1159,7 +1165,8 @@ test('report: a version held on this computer, and a launcher that stopped takin
   assert.equal(blind.code, 'idle_update_no_turn_signal')
   // On a gen-2 service a click stages, so the app is no remedy. After a /clear the signal is gone though events came.
   assert.match(blind.message, /by hand/)
-  assert.doesNotMatch(blind.message, /from the app|since it started/)
+  // The wait ends with a hook event; a later gate may still refuse, so it promises no restart.
+  assert.doesNotMatch(blind.message, /from the app|since it started|moves it on/)
   assert.match(blind.message, /0\.81\.0/)
   assert.ok(blind.message.length <= 300)
   assert.equal(m.idleUpdateWaitError('recent_activity', { target: '0.81.0', runningVersion: '0.80.0', now: NOW }), null)
