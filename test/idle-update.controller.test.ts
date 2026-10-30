@@ -115,6 +115,7 @@ function agent(
     goalRunning: false,
     call: { pendingConsults: 0, openContinuations: 0, lastVoiceAtMs: null as number | null, openMeetings: 0 },
     browserAt: null as number | null,
+    sessionWakeAt: null as number | null,
     claudePid: b + 40 as number | null,
     session: PIN as string | null,
     listing: { ok: true, processes: table(id) } as any,
@@ -190,6 +191,7 @@ function agent(
     goalRunning: () => s.goalRunning,
     call: () => s.call,
     lastBrowserToolAtMs: () => s.browserAt,
+    sessionWakeAtMs: () => s.sessionWakeAt,
     claudePid: () => s.claudePid,
     sessionId: async () => s.session,
     listProcesses: async () => {
@@ -312,6 +314,7 @@ test('each busy case waits, and each reason is logged once', async () => {
     ['goal_running', (s) => (s.goalRunning = true)],
     ['call_active', (s) => (s.call = { ...s.call, lastVoiceAtMs: T0 - 5 * MIN })],
     ['browser_in_use', (s) => (s.browserAt = T0 - 5 * MIN)],
+    ['session_wake', (s) => (s.sessionWakeAt = T0 - 5 * MIN)],
     ['recent_activity', (s) => (s.activity = [T0 - 2 * MIN])],
   ]
   for (const [reason, set] of cases) {

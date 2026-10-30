@@ -78,6 +78,38 @@ function waits(over: Record<string, unknown>, reason: string): void {
 
 // -- Version order -------------------------------------------------------------------------------
 
+test('gate 12b: a wakeup pending at the last Stop holds the restart: a self-paced /loop is not restored by --resume', () => {
+  const m = need()
+  waits({ sessionWakeAtMs: NOW - MIN }, 'session_wake')
+  waits({ sessionWakeAtMs: NOW - 119 * MIN }, 'session_wake')
+  // A wakeup fires within the hour: a stamp this old is one that was lost, and it holds nothing.
+  assert.equal(decide({ sessionWakeAtMs: NOW - 121 * MIN }).action, 'restart')
+  assert.equal(decide({ sessionWakeAtMs: null }).action, 'restart')
+  assert.equal(m.DEFAULT_DURATIONS.sessionWakeHoldMs, 2 * HOUR)
+  // Before the quiet window, so an agent on a self-paced loop says why, and after the goal, a harder hold.
+  waits({ sessionWakeAtMs: NOW - MIN, goalRunning: true }, 'goal_running')
+  waits({ sessionWakeAtMs: NOW - MIN, activityMs: [NOW - SEC] }, 'session_wake')
+})
+
+test('a Stop reads what is pending: one-shot entries are lost by a restart, interval ones are restored, no field is no reading', () => {
+  const m = need()
+  assert.equal(m.sessionWakePending([{ id: 'a', schedule: '30 12 * * *', recurring: false, prompt: 'p' }]), true)
+  assert.equal(m.sessionWakePending([{ id: 'a', schedule: '*/10 * * * *', recurring: true, prompt: 'p' }]), false)
+  assert.equal(
+    m.sessionWakePending([
+      { id: 'a', schedule: '*/10 * * * *', recurring: true, prompt: 'p' },
+      { id: 'b', schedule: '30 12 * * *', recurring: false, prompt: 'p' },
+    ]),
+    true,
+  )
+  assert.equal(m.sessionWakePending([]), false)
+  // An older Claude Code sends no field: that says nothing about what is scheduled.
+  assert.equal(m.sessionWakePending(undefined), null)
+  assert.equal(m.sessionWakePending('nope'), null)
+  // A recurring flag that is missing is no promise of a restore: the safe side holds.
+  assert.equal(m.sessionWakePending([{ id: 'a' }]), true)
+})
+
 test('version order: numeric X.Y.Z, so 0.80.10 is newer than 0.80.9 (a text compare says the opposite)', () => {
   const m = need()
   assert.equal(m.compareVersions('0.80.10', '0.80.9'), 1)
@@ -707,6 +739,9 @@ test('validation: the deadline counts from this boot\'s startup complete; a star
   assert.equal(m.decideValidation(proof({ ...never, arrivedAtMs: NOW - 15 * MIN })), 'deadline')
   assert.equal(m.decideValidation(proof({ ...never, arrivedAtMs: NOW - 16 * MIN, suspendedMs: 2 * MIN })), 'pending')
   assert.equal(m.decideValidation(proof({ ...never, arrivedAtMs: NOW - 16 * MIN, backendUnreachable: true })), 'pending')
+  // Both are 15 min today, and they stay two bounds: a longer deadline does not stretch the wait on a startup that hangs.
+  const longer = { ...m.DEFAULT_DURATIONS, validateDeadlineMs: 40 * MIN }
+  assert.equal(m.decideValidation(proof({ ...never, arrivedAtMs: NOW - 16 * MIN }), longer), 'deadline')
 })
 
 test('durations: a startup bound, no age bound on a clean end, a bound on the rollback restart\'s waits, a cap on an outage', () => {

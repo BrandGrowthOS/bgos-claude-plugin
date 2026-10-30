@@ -113,6 +113,7 @@ test('the safe moment is the one the watcher and the hook restart wait for, plus
   assert.match(b, /openMeetings: meetingContexts\.size,/)
   assert.match(b, /lastVoiceAtMs: lastVoiceFrameAtMs,/)
   assert.match(b, /lastBrowserToolAtMs: \(\) => lastBrowserToolAtMs,/)
+  assert.match(b, /sessionWakeAtMs: \(\) => sessionWakeAtMs,/)
   assert.match(b, /claudePid: \(\) => agentClaudePid\(\),/)
   assert.match(b, /listProcesses\(\{ platform: process\.platform, exec: nodeExec\(\), env: process\.env \}\)/)
   assert.match(b, /updateLockHeld: \(\) =>\s*INSTALL_METHOD !== 'marketplace' && isUpdateLockHeld\(joinPath\(import\.meta\.dir, '\.git', AUTO_UPDATE_LOCK_FILE\)\),/)
@@ -127,6 +128,9 @@ test('every busy fact is stamped where it happens, or it reads as idle', () => {
   const hookBody = server.slice(hook, hookEnd)
   assert.match(hookBody, /\(event\.name === 'PreToolUse' \|\| event\.name === 'PostToolUse'\) && \/hoai-browser__\/\.test\(String\(payload\.tool_name \?\? ''\)\)/)
   assert.match(hookBody, /lastBrowserToolAtMs = Date\.now\(\)/)
+  // Only a Stop says what is scheduled, a field no Stop sent changes nothing, and the next Stop with none clears it.
+  assert.match(hookBody, /event\.name === 'Stop'[\s\S]{0,200}sessionWakePending\(payload\.session_crons\)/)
+  assert.match(hookBody, /if \(pending !== null\) sessionWakeAtMs = pending \? Date\.now\(\) : null/)
   // Only a beacon written where the supervisor watches proves delivery live: a write that failed stamps nothing.
   assert.match(server, /const beaconWritten = touchBeaconHeartbeat\(\{\n\s+path: BEACON_HEARTBEAT_PATH,\n\s+now: hbNow,\n\s+pid: process\.pid,\n\s+\}\)\n(?:\s+\/\/.*\n)*\s+if \(beaconWritten\) beaconTouchedAtMs = hbNow\n/)
   assert.doesNotMatch(server, /\}\)\n\s+beaconTouchedAtMs = hbNow/)
