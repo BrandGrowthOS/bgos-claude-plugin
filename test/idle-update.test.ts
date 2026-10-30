@@ -914,7 +914,9 @@ test('the canary\'s build is a way back only where this install can stand on it:
   const mine = { from: '0.80.0', fromRoot: '/c/hoai/0.80.0', fromCommit: null, installMethod: 'marketplace' }
   assert.equal(m.rollbackSourceFor(mine, { from: '0.81.0', fromRoot: '/other/config/hoai/0.81.0' }).from, '0.80.0', 'not beside its own build')
   assert.equal(m.rollbackSourceFor(mine, { from: '0.81.0', fromRoot: '/c/hoai/0.81.0' }, { holds: () => false }).from, '0.80.0', 'the folder no longer holds it')
-  assert.equal(m.rollbackSourceFor(mine, { from: 'x', fromRoot: '/c/hoai/x' }, { heldBad: () => true }).from, '0.80.0', 'not a version')
+  assert.equal(m.rollbackSourceFor(mine, { from: 'x', fromRoot: '/c/hoai/x' }, { heldBad: (v: string) => v === '0.80.0' }).from, '0.80.0', 'not a version, even with its own held bad')
+  const clone = { from: '0.80.0', fromRoot: '/w/plugin', fromCommit: 'abc1234', installMethod: 'clone' }
+  assert.deepEqual(m.rollbackSourceFor(clone, { from: '0.81.0', fromRoot: '/w/other' }), { from: '0.80.0', fromRoot: '/w/plugin', fromCommit: 'abc1234' }, 'a checkout beside it')
 })
 
 test('the hold is 5 min, and everything that must outlast it does: a hold at or past the deadline would fail every healthy build', () => {
