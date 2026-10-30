@@ -18,7 +18,9 @@
  * sets that agent's active scheduled tasks; POST /__rig/voice {assistantId}
  * pushes one voice control frame (a stop_turn with no chat, which the daemon
  * answers unsupported and acts on nowhere) so the agent reads a call as live;
- * GET /__rig/ping.
+ * POST /__rig/fire {assistantId, taskId} posts the system card of a scheduled
+ * task it still holds (or {assistantId, text}, a card with no task, 409 for a
+ * task it does not hold); GET /__rig/ping.
  *
  * usage: node stub-backend.mjs --port <43000..48999> --dir <run dir> [--always-on]
  * (--always-on answers alwaysOn true: a launchd or systemd job the daemon would
@@ -107,17 +109,20 @@ const server = createServer(async (req, res) => {
     if (op === 'ping') return send(res, 200, { ok: true })
     // A person's message, or a scheduled wake's fire: the backend's system card, which owes no reply.
     if ((op === 'inbound' || op === 'fire') && body?.assistantId) {
+      const task = body.taskId == null ? null : (schedules.get(String(body.assistantId)) ?? []).find((t) => t.id === body.taskId)
+      if (body.taskId != null && !task) return send(res, 409, { error: 'no such task' })
       const sender = op === 'fire' ? 'system' : 'user'
+      const text = task ? `rig: scheduled wake: ${task.name}` : String(body.text ?? 'hello')
       const chatId = chatFor(body.assistantId)
       const id = nextMessageId++
       const list = messages.get(chatId) ?? []
-      list.push({ message: { id, chatId, sender, text: String(body.text ?? 'hello'), sentDate: new Date().toISOString() }, messageFiles: [], messageOptions: [] })
+      list.push({ message: { id, chatId, sender, text, sentDate: new Date().toISOString() }, messageFiles: [], messageOptions: [] })
       messages.set(chatId, list)
       record({ rig: op, assistantId: String(body.assistantId), chatId, id })
       realtime.to(`agent-${body.assistantId}`).emit('inbound_message', {
         messageId: id,
         chatId,
-        text: String(body.text ?? 'hello'),
+        text,
         senderType: sender,
         sentDate: new Date().toISOString(),
       })

@@ -14,7 +14,7 @@
  * before and after each scenario and must be identical.
  *
  * usage (Windows node, from the plugin root):
- *   node docs/idle-update/rig/rig.mjs --run-dir E:\...\rig-run --scenario idle|busy|broken|stagger [--scale 5] [--agents 15]
+ *   node docs/idle-update/rig/rig.mjs --run-dir E:\...\rig-run --scenario idle|busy|broken|stagger|wake [--scale 5] [--agents 15]
  *   busy takes [--cases turn,owed,...] (the idle control always runs): about 0.9 GB per agent, so a run stays under the cap.
  * Prints RIG PASS <scenario> or RIG FAIL <scenario>: <why>, and writes <scenario dir>\result.json.
  */
@@ -684,19 +684,20 @@ async function scenarioWake() {
   step(a, { op: 'stop', sessionCrons: [{ id: 'rig-interval', schedule: '*/10 * * * *', recurring: true, prompt: '/loop 10m rig' }] })
   await watch('the restart onto the target', () => latestVersion(a.id) === TARGET && record(a.id)?.state === 'validated', { timeoutMs: 15 * MIN })
   const before = seen().length
-  await stub('fire', { assistantId: a.id, text: 'rig: the wake fires' })
-  await watch('the fire reached the session', () => seen().slice(before).some((l) => l.content?.includes('rig: the wake fires')), { timeoutMs: 3 * MIN })
+  // The stub fires only a task it still holds: the wake armed before the restart.
+  await stub('fire', { assistantId: a.id, taskId: 1 })
+  await watch('the fire reached the session', () => seen().slice(before).some((l) => l.content?.includes('scheduled wake: rig wake')), { timeoutMs: 3 * MIN })
   say('watching two more minutes for a second restart')
   await sleep(2 * MIN)
   const s = summarise(a)
   results.agents[a.id] = s
-  const fired = seen().find((l) => l.content?.includes('rig: the wake fires'))
+  const fired = seen().find((l) => l.content?.includes('scheduled wake: rig wake'))
   check('held: no restart while the Stop showed a pending wakeup, through the quiet window and the largest jitter', whileHeld === 1, whileHeld)
   const scheduleReads = jsonLines(join(dir, 'stub-requests.jsonl')).filter((r) => r.path === 'scheduled-tasks/agent' && r.assistantId === a.id).length
   check('the old daemon read the wake, 6 h out, before it restarted', scheduleReads > 0, scheduleReads)
   check('one restart, onto the target, once only an interval /loop was left', s.launches.length === 2 && s.launches[1].version === TARGET, s.launches)
   check('context kept: the second launch resumed the same session', s.launches[1]?.mode === 'resume' && s.launches[1]?.sessionId === s.launches[0]?.sessionId, s.launches)
-  check("the wake's fire reached the resumed session, after the restart", Date.parse(fired?.at ?? '') > Date.parse(s.launches[1]?.at ?? ''), fired)
+  check("the wake armed before the restart fired into the resumed session", fired?.pid === sessionLaunches(a)[1]?.pid, fired)
   check('reported: heartbeats carry the new version with no error', latestVersion(a.id) === TARGET && s.lastError === null, { versions: s.versions, lastError: s.lastError })
 }
 
