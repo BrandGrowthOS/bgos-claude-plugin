@@ -18,6 +18,7 @@ import { join } from 'node:path'
 import ts from 'typescript'
 import { appendEvent } from '../../bin/hoai-hook.mjs'
 import { recordPrivateBoundary } from '../../bin/hoai-private-turn-hook.mjs'
+import { fileClockPast } from './file-clock.ts'
 import { startHookIntake, type SpoolLine } from '../../lib/hook-intake.ts'
 import { buildInboundChannel } from '../../lib/inbound-channel.ts'
 import { SessionTranscriptBinder } from '../../lib/session-binding.ts'
@@ -119,9 +120,15 @@ const admissionJs = ts.transpileModule(`${admissionSource}\nreturn { privateCall
 
 /**
  * The clock moves on past this instant, so a marker written before it and a time stamped after it never share one
- * millisecond (end() compares the two; on a real machine a hook's cold start keeps them seconds apart).
+ * millisecond (end() compares the two; on a real machine a hook's cold start keeps them seconds apart). The FILE clock
+ * too: a time stamped before it and a marker written after it, which Linux's coarse file clock could stamp earlier
+ * (test/helpers/file-clock.ts).
  */
-function settle() { const at = Date.now(); while (Date.now() < at + 2) { /* spin */ } }
+function settle() {
+  const at = Date.now()
+  while (Date.now() < at + 2) { /* spin */ }
+  fileClockPast(at)
+}
 
 /** One UserPromptSubmit (or Stop) as two steps the test orders: mark() the synchronous hook, spool() the forwarder line. */
 export interface Submission { mark: () => void; spool: () => void }

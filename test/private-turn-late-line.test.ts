@@ -30,7 +30,7 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { once } from 'node:events'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import ts from 'typescript'
@@ -42,6 +42,7 @@ import { SessionTranscriptBinder } from '../lib/session-binding.ts'
 import { createTurnChatTracker } from '../lib/turn-chat.ts'
 import { daemonFloorFolders, floorKey, markFloorAttached } from '../lib/floor-state.mjs'
 import * as privateTurn from '../lib/private-turn.mjs'
+import { fileClockPast } from './helpers/file-clock.ts'
 import {
   PRIVATE_TURN_REFUSAL,
   TURN_AWARE_REFUSAL,
@@ -706,21 +707,6 @@ test('70f1898b behind a late Stop line: a recipient message and the owner\'s sub
 })
 
 /**
- * Wait until a file written now is stamped later than `after` (a Date.now()). The tracker orders a delivery
- * (Date.now()) against the marker the next Stop wrote (its mtime), and Linux stamps files from a coarse clock a few
- * ms behind Date.now(): on a fast box (tmpfs in a Docker VM) a Stop written in the same few ms read as OLDER than the
- * delivery before it. In the field a Stop comes seconds later. Bounded at a second; instant where file times are fine.
- */
-function fileClockPast(dir: string, after: number) {
-  const probe = join(dir, '.file-clock-probe')
-  const until = Date.now() + 1000
-  do {
-    writeFileSync(probe, '')
-    if (statSync(probe).mtimeMs > after) return
-  } while (Date.now() < until)
-}
-
-/**
  * The tracker as server.ts wires it and the real private turn hook, with no intake: the test calls begin() and end()
  * for the forwarder lines, in the order it wants them to land.
  */
@@ -749,9 +735,9 @@ function cli(t: any) {
       return () => tracker.begin({ prompt, sessionId: session, promptId: payload.prompt_id })
     },
     /** The CLI's Stop (or SessionEnd) hook: the marker closes, written after everything before it on the file clock
-     *  too (fileClockPast). Its line is end(), when the test says. */
+     *  too (test/helpers/file-clock.ts). Its line is end(), when the test says. */
     stopHook(session = 's', event = 'Stop') {
-      fileClockPast(root, Date.now())
+      fileClockPast(Date.now())
       recordPrivateBoundary({ hook_event_name: event, session_id: session, cwd }, env)
     },
     end() { tracker.end() },
