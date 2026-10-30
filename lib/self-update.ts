@@ -880,6 +880,37 @@ export async function inspectGitUpdate(opts: {
   }
 }
 
+/**
+ * The check's line when nothing moves. A daemon AHEAD of the published release
+ * (a clone that followed origin/main before #268, or a hand checkout) is never
+ * moved back, and says so in words, with what it waits for (board row
+ * 01a0db74): "not-newer" alone read as "up to date" on a host running code
+ * nobody published.
+ */
+export function describeNoUpdate(
+  runningVersion: string | null,
+  inspection: Extract<GitUpdateInspection, { kind: 'checked' }>,
+): string {
+  const running = runningVersion ?? 'unknown'
+  const runningSemver = parseSemver(runningVersion)
+  const latestSemver = parseSemver(inspection.latestVersion)
+  // By version alone: decideVersionUpdate answers major-change before
+  // not-newer, and a host a whole major ahead is just as far ahead.
+  if (
+    inspection.versionDecision.kind === 'skip' &&
+    runningSemver &&
+    latestSemver &&
+    compareSemver(runningSemver, latestSemver) > 0
+  ) {
+    return (
+      `Auto-update check: running ${running} is ahead of the published release ${inspection.releaseTag}; ` +
+      `no update, and it stays at ${running} until a published release reaches it.`
+    )
+  }
+  const reason = inspection.versionDecision.kind === 'skip' ? inspection.versionDecision.reason : 'none'
+  return `Auto-update check: running ${running}, latest ${inspection.latestVersion ?? 'unknown'}, no update (${reason}).`
+}
+
 export async function runSelfUpdateDryRun(opts: {
   rootDir: string
   runningVersion: string | null
@@ -1224,11 +1255,7 @@ export class SelfUpdater {
       }
       this.lastInspectedVersion = inspection.latestVersion
       if (inspection.versionDecision.kind !== 'update') {
-        this.opts.log(
-          `Auto-update check: running ${this.opts.runningVersion ?? 'unknown'}, ` +
-            `latest ${inspection.latestVersion ?? 'unknown'}, no update ` +
-            `(${inspection.versionDecision.reason}).`,
-        )
+        this.opts.log(describeNoUpdate(this.opts.runningVersion, inspection))
         return
       }
       if (!inspection.canFastForward && inspection.currentCommit !== inspection.targetCommit) {

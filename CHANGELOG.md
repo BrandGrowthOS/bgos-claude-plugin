@@ -2,6 +2,19 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## Unreleased
+
+**Every clone install follows the published version, not plugin main (board row 01a0db74, KC 2026-10-30: "Follow the published version").** #268 (0.74.0) made the daemon's own updater and the watcher take exactly the tag the marketplace ref names; every other way a clone checkout is made or moved still took main, so a merged change reached clone hosts (kc-server) before anyone published it.
+
+- **`hoai-agent update`** used to `git fetch origin main` and `git reset --hard origin/main`: a host took every change merged since the release, and a host ahead of main went back to main. Now it moves only to a newer published release. A host at the release stays; a host ahead of it is not moved back and says `plugin X is ahead of the published release vY; it is not moved back, and stays at X until a published release reaches it`, and the update ends `no change: the plugin stays at X` (no longer "already up to date"). A marketplace that is offline or unreadable stops the update with the reason, and nothing changes. It hands over to the new script only after a real move.
+- **A new clone starts on the published release.** `hoai-agent install`, `bgos-claim` and the clone method of `bin/hoai-bootstrap.sh` and `.ps1` cloned main. Now main is cloned beside the target, pinned to the published tag, and only then put in place; a release that cannot be read leaves no checkout at all (a checkout of main would be found and kept by the next run). An empty folder where the checkout goes is removed only once the pinned checkout is ready; a folder with anything in it is refused.
+- **`bgos-claim`'s existing checkout** used `git pull --ff-only` of main; it now follows the published release the same way.
+- **One code path:** `lib/follow-published.mjs` (the rules) over `lib/published-release.mjs` (#268's reader), and `bin/hoai-published-release.mjs` (`tag`, `follow <checkout> [--fresh]`) for the shell scripts. Only the published tag is fetched; a depth 1 clone stays depth 1 and a full clone is not made shallow; the tag's package.json must carry its version; a checkout with local changes, or with commits no remote branch or tag holds, is never reset.
+- **The daemon says when it is ahead.** Its check line was `running 0.81.0, latest 0.80.2, no update (not-newer)`, which reads as up to date; a daemon ahead of the published release (by any amount, a major included) now says it is ahead and stays until a published release reaches it.
+- Rollout: nothing moves until the release carrying this is published. Clone hosts then take it through the daemon's own updater; `hoai-agent update` on a host that does not have it yet still runs the OLD script, which resets to origin/main, so let the daemon update first. Hosts already ahead of the published version are not moved back.
+
+Guards: `test/follow-published.test.ts`, `test/bgos-agent.update-published.test.ts` (the real `hoai-agent update`), `test/clone-install.published.test.ts` (the real `hoai-agent install` clone and the real clone step of `hoai-bootstrap.sh`; the `.ps1` by its text), `test/bgos-claim.published.test.ts`, and the ahead line in `test/self-update.published-release.test.ts`; all on a fake origin whose main runs ahead of the published tag. Not versioned here.
+
 ## 0.80.2 (2026-10-29)
 
 **A reply to a side thread that HOAI did not forward is now reported as an error, never a silent "Sent" (board row 28fed1cd).** On 2026-10-27 the conversation between Data and Ares closed on timeout, and five of Data's later replies into that side thread were answered "Sent" and never reached Ares, who asked the same questions four times.

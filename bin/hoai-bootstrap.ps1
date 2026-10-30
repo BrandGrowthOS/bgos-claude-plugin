@@ -315,10 +315,43 @@ if ($ResolvedMethod -eq 'marketplace') {
     }
     $PluginRoot = Join-Path $env:USERPROFILE 'bgos-claude-plugin'
     if (-not (Test-Path (Join-Path $PluginRoot 'server.ts'))) {
-        Say ('Cloning the HOAI plugin to ' + $PluginRoot)
+        # The PUBLISHED release, never plugin main (board row 01a0db74): main is
+        # cloned beside the folder, moved to the tag the marketplace names by
+        # the clone's own bin\hoai-published-release.mjs, and only then put in
+        # place. A release that cannot be read leaves no checkout at all, so a
+        # rerun does not find a checkout of main and keep it.
+        Say ('Cloning the HOAI plugin to ' + $PluginRoot + ' (the published release)')
+        $pluginPartial = $PluginRoot + '.partial-' + $PID
+        # Only an EMPTY folder may stand where the checkout goes, and it is
+        # removed only once the new checkout is ready to take its place.
+        if ((Test-Path $PluginRoot) -and @(Get-ChildItem -Force $PluginRoot).Count -gt 0) {
+            Say ('[hoai] ' + $PluginRoot + ' exists and is not a plugin checkout (no server.ts); move it away and run this again')
+            Fail 'plugin-install'
+        }
         $global:LASTEXITCODE = 1
-        & git clone --depth 1 https://github.com/BrandGrowthOS/bgos-claude-plugin.git $PluginRoot
-        if ($LASTEXITCODE -ne 0) { Fail 'plugin-install' }
+        & git clone --quiet --depth 1 https://github.com/BrandGrowthOS/bgos-claude-plugin.git $pluginPartial
+        if ($LASTEXITCODE -ne 0) {
+            if (Test-Path $pluginPartial) { Remove-Item -Recurse -Force $pluginPartial }
+            Fail 'plugin-install'
+        }
+        $global:LASTEXITCODE = 1
+        $pinned = (& node (Join-Path $pluginPartial 'bin\hoai-published-release.mjs') follow $pluginPartial --fresh 2>&1 | Out-String).Trim()
+        # 0 moved to the release, 10 main already was the release.
+        if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 10) {
+            Say ('[hoai] ' + $pinned)
+            Remove-Item -Recurse -Force $pluginPartial
+            Fail 'plugin-install'
+        }
+        if (Test-Path $PluginRoot) { Remove-Item -Force -ErrorAction SilentlyContinue $PluginRoot }
+        Move-Item -ErrorAction SilentlyContinue $pluginPartial $PluginRoot
+        # A rename Windows refused (a scanner holding the new .git open) is no
+        # checkout: say so rather than carry on without one.
+        if (-not (Test-Path (Join-Path $PluginRoot 'server.ts'))) {
+            Say ('[hoai] could not put the new checkout in place at ' + $PluginRoot)
+            if (Test-Path $pluginPartial) { Remove-Item -Recurse -Force $pluginPartial }
+            Fail 'plugin-install'
+        }
+        Say ('[hoai] ' + $pinned)
     }
     Say 'Installing plugin dependencies (bun install)...'
     Push-Location $PluginRoot

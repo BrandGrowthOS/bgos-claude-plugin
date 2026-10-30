@@ -18466,7 +18466,7 @@ async function main(): Promise<void> {
         ...declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, modelEffortPicker: modelEffortDeclared(), authMode: AUTH.mode }),
       ],
       // One-click update telemetry (wire contract v1): the newest version this
-      // daemon found at its own pinned source (origin/main for a clone, the
+      // daemon found at its own pinned source (the published release for a clone, the
       // local marketplace files for a marketplace install), and what would
       // restart it.
       updateStatus: {
