@@ -484,6 +484,21 @@ test('the ladder could only stage: recorded as a failed attempt, lease released,
   assert.equal(await a.c.tick(), 'attempted')
 })
 
+test('no hook signal: never restarts, says so on the heartbeat once it is the only thing in the way, and a turn clears it', async () => {
+  const disk = memDisk()
+  const a = agent(disk)
+  a.s.safe = { ...a.s.safe, turnSignal: 'none' }
+  assert.equal(await a.c.tick(), 'no_turn_signal')
+  assert.equal(a.restarts.length, 0)
+  assert.equal(lastReport(a)?.code, 'idle_update_no_turn_signal')
+  assert.ok(a.logs.some((line) => line.includes('waiting: no_turn_signal')))
+  // Its first hook event: an ordinary quiet wait again, and the app no longer shows the report.
+  a.s.safe = { ...a.s.safe, turnSignal: 'hooks' }
+  a.s.activity = [disk.clock.now - MIN]
+  assert.equal(await a.c.tick(), 'recent_activity')
+  assert.equal(lastReport(a), null)
+})
+
 test('a restart that never arrives: did_not_arrive after 3.5 min, lease released, canary voided, reported, backed off', async () => {
   const disk = memDisk()
   const a = agent(disk)

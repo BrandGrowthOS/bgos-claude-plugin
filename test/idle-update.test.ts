@@ -270,7 +270,23 @@ test('gate 15: a person attached to the agent session waits, and an unreadable r
 test('gate 16: activity inside the quiet window waits: 10 min with the hook signal, 30 without', () => {
   waits({ activityMs: [NOW - 9 * MIN] }, 'recent_activity')
   waits({ activityMs: [NOW - 29 * MIN], safe: { ...idle().safe, turnSignal: 'none' } }, 'recent_activity')
-  assert.equal(decide({ activityMs: [NOW - 50 * MIN], safe: { ...idle().safe, turnSignal: 'none' } }).action, 'restart')
+})
+
+test('gate 16: no hook signal never restarts: the daemon cannot see a turn, so no amount of quiet proves one is not running', () => {
+  const blind = { safe: { ...idle().safe, turnSignal: 'none' } }
+  // A long tool call writes no transcript line and fires no hook this daemon sees: it reads as quiet.
+  waits({ ...blind, activityMs: [NOW - 50 * MIN] }, 'no_turn_signal')
+  waits({ ...blind, activityMs: [NOW - 7 * DAY], bootAtMs: NOW - 8 * DAY }, 'no_turn_signal')
+  // A state that does not say is no signal.
+  waits({ safe: { ...idle().safe, turnSignal: undefined }, activityMs: [NOW - 50 * MIN] }, 'no_turn_signal')
+  assert.equal(decide({ activityMs: [NOW - 50 * MIN] }).action, 'restart')
+})
+
+test('gate 16: no_turn_signal says so only at the moment the old 30 min rule would have restarted: a fresh boot is no alarm', () => {
+  const blind = { safe: { ...idle().safe, turnSignal: 'none' } }
+  waits({ ...blind, activityMs: [NOW - 29 * MIN], bootAtMs: NOW - 2 * HOUR }, 'recent_activity')
+  waits({ ...blind, activityMs: [], bootAtMs: NOW - 12 * MIN }, 'recent_activity')
+  waits({ ...blind, activityMs: [NOW - 31 * MIN], bootAtMs: NOW - 2 * HOUR }, 'no_turn_signal')
 })
 
 test('gate 17: quiet, but this agent\'s jitter has not run out, so fifteen agents never leave together', () => {
@@ -803,6 +819,15 @@ test('rollback moment: an open ask, a running goal, a call, a browser in use or 
   assert.equal(m.decideRollbackMoment(quietRollback({ wake: { known: false, nextDueAtMs: null } })).go, true)
 })
 
+test('rollback moment: no hook signal goes back all the same, but on the 30 min quiet: 2 min of quiet proves nothing without one', () => {
+  const m = need()
+  const blind = (activity: number) => quietRollback({ safe: { ...quietRollback().safe, turnSignal: 'none' }, activityMs: [NOW - activity], bootAtMs: NOW - DAY })
+  assert.deepEqual(m.decideRollbackMoment(blind(29 * MIN)), { go: false, reason: 'recent_activity' })
+  // Never held for a signal that may never come: a deaf build gets no turns, and it must still go back.
+  assert.deepEqual(m.decideRollbackMoment(blind(31 * MIN)), { go: true, reason: 'quiet' })
+  assert.deepEqual(m.decideRollbackMoment(quietRollback({ activityMs: [NOW - 3 * MIN], bootAtMs: NOW - DAY })), { go: true, reason: 'quiet' })
+})
+
 // -- Unattended and own launcher proofs ----------------------------------------------------------
 
 const POSIX_TABLE = [
@@ -1014,5 +1039,9 @@ test('report: a version held on this computer, and a launcher that stopped takin
   const m = need()
   assert.equal(m.idleUpdateWaitError('version_held_bad', { target: '0.81.0', runningVersion: '0.80.0', now: NOW }).code, 'idle_update_held')
   assert.equal(m.idleUpdateWaitError('launcher_latched', { target: '0.81.0', runningVersion: '0.80.0', now: NOW }).code, 'idle_update_launcher_latched')
+  const blind = m.idleUpdateWaitError('no_turn_signal', { target: '0.81.0', runningVersion: '0.80.0', now: NOW })
+  assert.equal(blind.code, 'idle_update_no_turn_signal')
+  assert.match(blind.message, /0\.81\.0/)
+  assert.ok(blind.message.length <= 300)
   assert.equal(m.idleUpdateWaitError('recent_activity', { target: '0.81.0', runningVersion: '0.80.0', now: NOW }), null)
 })
