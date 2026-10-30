@@ -17547,11 +17547,11 @@ async function main(): Promise<void> {
     shuttingDown = true
     log(describeShutdownCause(cause))
     selfUpdater?.markGracefulStop()
+    stopHookIntake()
     // A clean end (its claude went away): the idle update's record says so, so the next boot of a new build being
     // validated is not read as a crash. Never on a fault: uncaughtException and main().catch do not come through
     // here, and the fault handlers' broken pipe on some other stream is 'broken-pipe', never a clean end.
     idleUpdate?.noteEnded(isCleanEnd(cause))
-    stopHookIntake()
     // A clean stop takes the published state away (only when it is ours), so
     // the watcher never reads a dead daemon's "idle" as a live one's.
     agentStatePublisher.shutdown()

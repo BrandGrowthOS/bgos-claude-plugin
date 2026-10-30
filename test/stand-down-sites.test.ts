@@ -566,6 +566,9 @@ test('silent 3: a normal shutdown (SIGINT, SIGTERM, the session going away) repo
       describeShutdownCause: () => 'x',
       selfUpdater: null,
       stopHookIntake: () => undefined,
+      // The idle update's clean end (0.81.0): not armed here.
+      idleUpdate: null,
+      isCleanEnd: () => true,
       agentStatePublisher: { shutdown: () => undefined },
       flushChatCursors: () => undefined,
       releasePairingLock: () => undefined,
