@@ -99,6 +99,7 @@ import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
 import { DoctorRpcHandler, buildDoctorChecks, normalizeDoctorRpc } from './lib/doctor-rpc.ts'
 import { collectChanges, createNodeRunGit, nodeChangesFs } from './lib/git-changes.js'
 import { defaultPidAlive, pluginStateDirFor, readBootClock } from './lib/agent-inventory.mjs'
+import { ASSISTANT_UNBOUND_EVENT, createUnboundNoticeHandler } from './lib/agent-unbound.mjs'
 import { cleanIdentityName, identityFilePath, identityFromMe, takeIdentityNotice, writeAgentIdentity } from './lib/agent-identity.mjs'
 import { createMarkerTakeover, currentPluginRootFor, handoffEnv, mcpEnvKeys, nodeTakeoverFs } from './lib/marker-takeover.mjs'
 import { HOOK_RESTART_FILE_NAME, createHookRestart, nodeHookRestartFs } from './lib/hook-restart.mjs'
@@ -15433,6 +15434,48 @@ async function drainLaneEventsOnce(): Promise<void> {
   }
 }
 
+// AN AGENT DELETED IN HOAI (board row 5b45611f6b0d): the backend tells the
+// pairing room `assistant_unbound` {pairingId, assistantId} after the delete,
+// and replays it with an ack on the next connect for up to 7 days
+// (lib/agent-unbound.mjs). This daemon acts only on its OWN agent from its OWN
+// pairing, and only once its own backend answers that the agent row is gone;
+// then bin/hoai-agent-unbound.mjs, started out of this process tree, stops the
+// session, removes the auto start, archives ~/.bgos-agent/<id> and removes the
+// credentials file, and this daemon stops a little later through its own
+// shutdown (a session run by hand has nothing else to stop it).
+const UNBOUND_HELPER = fileURLToPath(new URL('bin/hoai-agent-unbound.mjs', import.meta.url))
+const UNBOUND_SELF_STOP_MS = 15_000
+const onAssistantUnbound = createUnboundNoticeHandler({
+  assistantId: ASSISTANT_ID,
+  pairingId: AUTH.mode === 'pairing' ? CREDENTIALS_FILE?.pairingId : undefined,
+  // A read of its own: no ETag (a 304 proves nothing here) and the body kept
+  // as text, because a null the server sends may arrive as an empty body.
+  readOwnAgent: () =>
+    bgosCall(
+      {
+        url: `${API_BASE}/assistants/${encodeURIComponent(ASSISTANT_ID)}`,
+        init: { headers: { ...authHeaders(AUTH) } },
+        timeoutMs: HTTP_TIMEOUT_MS,
+        label: `GET assistants/${ASSISTANT_ID} (assistant_unbound check)`,
+      },
+      async (response) => ({ status: response.status, body: await response.text().catch(() => '') }),
+    ),
+  launchCleanup: () => {
+    const child = spawnProcess(
+      process.execPath,
+      [UNBOUND_HELPER, '--stage', 'launch', '--assistant', String(ASSISTANT_ID), '--home', homedir()],
+      { detached: true, stdio: 'ignore', windowsHide: true },
+    )
+    child.on('error', (err) => log(`assistant_unbound: cleanup helper error: ${String(err)}`))
+    child.unref()
+    if (!child.pid) return { ok: false, detail: 'the cleanup helper did not start' }
+    const stop = setTimeout(() => process.emit('SIGTERM'), UNBOUND_SELF_STOP_MS)
+    stop.unref?.()
+    return { ok: true, detail: `helper pid ${child.pid}, log ~/.bgos-agent/.removed/${ASSISTANT_ID}-unbound.log` }
+  },
+  log,
+})
+
 function connectWebsocket(): void {
   // Drawn ONCE per process, so 51 daemons dropped by one nginx reload do not
   // all come back inside the same second and meet a cold auth cache. See
@@ -15776,6 +15819,15 @@ function connectWebsocket(): void {
   realtimeSocket.on('lane_revoked', whenArmed('lane_revoked', (frame: unknown) => {
     handleLaneRevoked(frame, LANE_OWNER_DEPS)
   }))
+
+  // An agent deleted in HOAI (see onAssistantUnbound): the ack the backend
+  // passes with a replayed notice is answered only for this agent's own,
+  // confirmed notice, so another agent's stays queued for that agent.
+  realtimeSocket.on(ASSISTANT_UNBOUND_EVENT, (payload: unknown, ack?: unknown) => {
+    whenArmed(ASSISTANT_UNBOUND_EVENT, (frame: unknown) => {
+      void onAssistantUnbound(frame, ack).catch((err) => log(`assistant_unbound handler error: ${String(err)}`))
+    })(payload)
+  })
 
   realtimeSocket.on('inbound_message', whenArmed('inbound_message', (payload: any) => {
     if (updateDrainMode) return
