@@ -154,6 +154,9 @@ outside this brief, so (KC's choice, 2026-10-30) the four test-only commits are 
 `docs/evidence/2026-10-30-suite-green-off-ci/`). With that branch's commits the suite and type check are green on
 both macOS and the clean Debian VM, as the last table row shows.
 
+**Decision, KC, 2026-10-30:** accepted as is. This branch alone is not green off CI because of those pre-existing
+failures; it adds none, and the fixes are reviewed on their own branch. Not stacked on it, and not pushed for CI.
+
 The private turn clock edge is worth a look by the owners of `lib/private-turn.mjs`: in the field a Stop comes
 seconds after a delivery, so it is not a live bug, but the tracker mixes two clocks.
 
