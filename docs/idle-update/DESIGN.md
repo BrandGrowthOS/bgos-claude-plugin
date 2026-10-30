@@ -261,6 +261,26 @@ The controller ships in 0.81.0. An agent still running 0.80 or older cannot run 
 
 **Not proven live here:** the gen-2 tmux ancestry rung on a real launchd or systemd host. This box has no Linux node or bun, and no expect. It is covered by unit and integration tests over real-shape process tables, and by `MACOS-PROOF.md`.
 
+## Rig results (Windows, this box, scale 5)
+
+Run on `7afa42d` (the merge of main 0.80.2 and the eighth review's fixes); the two busy batches marked * on `48697ef`, whose only change is those two cases' rig steps. Every run: the real chain (hidden wscript, real `hoai-core.mjs --keep-alive`, the stand-in claude, the real `bun server.ts`) in a scratch HOME on E:, a stub backend on 127.0.0.1 in 43000 to 48999, watcher install off, no scheduled task created. Windows scheduled tasks (237, sha `9a89a022c2e9`) and WSL scheduled work (`9a4d2d56f7c3`) identical before and after every run; nothing of the rig's left alive after any run.
+
+| Scenario | Agents | Result | What it showed |
+|---|---|---|---|
+| idle | 1 | PASS, 6 checks | One restart onto 0.81.1; the second launch resumed the same session; heartbeats carry 0.81.1 with no error; record validated. |
+| busy: turn in flight, reply owed * | 3 | PASS, 8 checks | The idle control restarted and validated; each busy agent never restarted through the quiet window and jitter, waiting for its own reason (`turn_in_flight`, `pending_messages`); once released, each restarted onto 0.81.1. |
+| busy: browser in use, wake due * | 3 | PASS, 8 checks | The same, `browser_in_use` and `wake_due`. |
+| busy: launched by hand, auto update off | 3 | PASS, 10 checks | `no_unattended_authority` and `off: updates_disabled`; both still never restarted after the others were released. |
+| busy: open ask card, call live | 3 | PASS, 8 checks | `open_ask` and `call_active`; released, both restarted. |
+| busy: goal running | 2 | PASS, 6 checks | `goal_running`; released, it restarted. |
+| broken | 2 | PASS, 10 checks | The canary restarted onto the broken build once, came back on 0.81.0 in the same session, reported `idle_update_rolled_back`; the install points back at 0.81.0, 0.81.1 is latched bad, Claude Code's update for the marketplace is off; the other agent never restarted; 3 launches in all, no loop. |
+| stagger (real chain) | 3 | PASS, 6 checks | Each restarted exactly once, relaunches 51 s and 53 s apart (spacing 24 s), none before the previous one validated, every session kept. |
+| many (`stagger-many.mjs`) | 15 | PASS, 10 checks | Fifteen real controllers, each its own process on the real disk: all 15 validated on 0.81.1, each restarted exactly once with one attempt, the first onto the version was canary 1, relaunches at least 45 s apart (spacing 24 s), none before the previous validation, no rollback, 0.43 GB at peak. |
+
+**Why the busy cases run in batches and the fifteen as light processes.** Each real-chain agent commits about 0.9 GB (`bun server.ts` about 470 MB and the compiled stand-in about 340 MB, measured by the rig per process name), so the ten busy agents together, or fifteen stagger agents, pass the 4 GB a probe may use on this box (fifteen need about 13 GB). Each busy batch is the idle control plus up to two cases; the stagger runs on the real chain with three, and with fifteen as real controllers in their own processes. What `many` fakes: the process table, the turn and backend facts, and the restart itself (the supervisor relaunches on the controller's ask). The chain those fakes stand for is what the real-chain runs prove.
+
+**What the rig found on the way, all in the rig:** a fresh chat's first message is read as backlog (no tracked reply, by design on main), so the owed case first gets one message; a browser tool outside a turn that ends reads as a turn in flight, and the browser window (6 min at scale 5) is shorter than the hold, so the case uses the browser again every 2 min; a run once saw Windows remove two of its own `\SoftLanding\` tasks mid-run (the strict check failed it, and it was run again).
+
 ## Residuals, stated not hidden
 
 - **The wake schedule is the agent's own view.** Tasks another acting user created on a shared agent are not in it, and meetings live elsewhere. A restart can land close to one of those; it still waits for an idle, quiet session, and the session it resumes is the pinned one. Whether a fire that lands during the restart minute is redelivered is the backend's, not verified here.
