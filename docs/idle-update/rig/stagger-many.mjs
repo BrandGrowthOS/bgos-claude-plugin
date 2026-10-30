@@ -304,9 +304,8 @@ async function supervisor() {
   } finally {
     stopping = true
     for (const [, proc] of live) {
-      try {
-        process.kill(proc.pid)
-      } catch {}
+      // Through the child's own handle, held since the spawn: never a pid another process may have been handed.
+      proc.kill()
     }
     await sleep(2 * SEC)
   }

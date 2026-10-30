@@ -7,7 +7,8 @@
  * the unmutated source, with more than 0 tests.
  *
  * usage (from the plugin root): node docs/idle-update/run-mutants.mjs [--only id1,id2] [--out file.json]
- * Exit 0 only when every mutant was killed. Exit 3 when a run counted 0 tests.
+ * Exit 0 only when every mutant was killed. Exit 3 when a run counted 0 tests; exit 5 when a mutated source
+ * differs from git HEAD before the run.
  */
 import { readFileSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
@@ -57,6 +58,15 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
     restoreAll()
     process.exit(130)
   })
+}
+
+// A run killed outright (no signal handler runs) leaves a mutant in the source: refuse to start over a source file
+// that differs from git, so a leftover is found here and never carried into a commit by a later run's restore.
+const sources = [...new Set(mutants.map((m) => m.file))]
+const dirty = spawnSync('git', ['diff', '--quiet', 'HEAD', '--', ...sources], { cwd: root, shell: false })
+if (dirty.status !== 0) {
+  console.error(`[mutants] STOP: a mutated file differs from git HEAD (a killed run's leftover, or work not committed): ${sources.join(', ')}`)
+  process.exit(5)
 }
 
 const files = [...new Set(mutants.flatMap((m) => m.tests))]

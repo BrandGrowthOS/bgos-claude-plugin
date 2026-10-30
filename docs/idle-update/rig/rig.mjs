@@ -39,7 +39,10 @@ const MEMORY_CAP = 3.8 * 1024 ** 3
 const FROM = '0.81.0'
 const TARGET = '0.81.1'
 
+/** Once the run has started anything, a failure throws, so the teardown in its finally still ends every process. */
+let started = false
 function die(why) {
+  if (started) throw new Error(why)
   console.error(`RIG FAIL ${scenario ?? '?'}: ${why}`)
   process.exit(1)
 }
@@ -92,8 +95,13 @@ function listProcesses() {
 /** Every process this run started, directly or below one it started: pid -> {c, n, cmd}. */
 const owned = new Map()
 const roots = new Map()
-function addRoot(pid, label) {
-  roots.set(pid, label)
+/**
+ * A root is a process this run just started. Its creation time must not be older than the moment before the start
+ * (with a second of slack for the clock's grain): a root that died at once can have its pid handed to a process
+ * this run never started, and that one is never adopted.
+ */
+function addRoot(pid, label, startedAtMs) {
+  roots.set(pid, { label, floor: startedAtMs - SEC })
 }
 /** Walk down from the roots; a child must be younger than its parent (pid reuse). */
 function adopt(rows) {
@@ -104,9 +112,9 @@ function adopt(rows) {
   }
   const byPid = new Map(rows.map((r) => [r.p, r]))
   const queue = []
-  for (const pid of roots.keys()) {
+  for (const [pid, root] of roots) {
     const row = byPid.get(pid)
-    if (row && (!owned.has(pid) || owned.get(pid).c === row.c)) {
+    if (row && (owned.has(pid) ? owned.get(pid).c === row.c : row.c >= root.floor)) {
       owned.set(pid, { c: row.c, n: row.n, cmd: row.cmd })
       queue.push(row)
     }
@@ -148,13 +156,20 @@ function aliveOwned(rows) {
   const byPid = new Map(rows.map((r) => [r.p, r]))
   return [...owned].filter(([pid, info]) => byPid.get(pid)?.c === info.c).map(([pid, info]) => ({ pid, ...info }))
 }
-function killExact(pid) {
-  try {
-    process.kill(pid)
-    return true
-  } catch {
-    return false
-  }
+/**
+ * End each process by its pid only if it is still the process this run adopted: the creation time is read and the
+ * kill is made through one handle, so a pid freed and handed to another process in between is never ended.
+ * @param {Array<{ pid: number, c: number }>} list
+ */
+function killExact(list) {
+  const pairs = list.filter((p) => Number.isInteger(p.pid) && Number.isFinite(p.c)).map((p) => `${p.pid}:${Math.round(p.c)}`)
+  if (pairs.length === 0) return
+  const script =
+    `foreach ($pair in '${pairs.join(',')}'.Split(',')) { $id, $c = $pair.Split(':'); ` +
+    'try { $p = Get-Process -Id ([int]$id) -ErrorAction Stop; ' +
+    '$ms = ([DateTimeOffset]$p.StartTime).ToUnixTimeMilliseconds(); ' +
+    'if ([math]::Abs($ms - [int64]$c) -le 100) { $p.Kill() } } catch {} }'
+  spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 60 * SEC })
 }
 
 // -- Scheduled tasks, before and after -----------------------------------------------------------
@@ -289,18 +304,20 @@ function prepareAgent(id, version) {
 
 async function launch(agent, { how = 'task', env = {} } = {}) {
   if (how === 'task') {
+    const at = Date.now()
     const child = spawn('wscript.exe', ['//B', agent.vbs], { cwd: agent.cwd, env: agentEnv(env), stdio: 'ignore', windowsHide: true })
     agent.root = child.pid
-    addRoot(child.pid, `wscript ${agent.id}`)
+    addRoot(child.pid, `wscript ${agent.id}`, at)
   } else {
     // A person's own `hoai --keep-alive`: not the agent task's hidden wscript.
     const core = join(cacheRoot, FROM, 'bin', 'hoai-core.mjs')
     const ps = `$p = Start-Process -FilePath '${process.execPath}' -ArgumentList '"${core}" --keep-alive' -WorkingDirectory '${agent.cwd}' -WindowStyle Hidden -PassThru; $p.Id`
+    const at = Date.now()
     const res = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { encoding: 'utf8', env: agentEnv(env), windowsHide: true })
     const pid = Number(String(res.stdout).trim())
     if (!Number.isInteger(pid) || pid <= 0) die(`could not start the interactive launcher for ${agent.id}`)
     agent.root = pid
-    addRoot(pid, `hoai by hand ${agent.id}`)
+    addRoot(pid, `hoai by hand ${agent.id}`, at)
   }
   agent.how = how
   agents.push(agent)
@@ -353,18 +370,33 @@ async function stub(op, body) {
 async function startStub() {
   for (let i = 0; i < 10; i++) {
     const candidate = 43000 + Math.floor(Math.random() * 6000)
+    const at = Date.now()
     const child = spawn(process.execPath, [join(RIG_SRC, 'stub-backend.mjs'), '--port', String(candidate), '--dir', dir], { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true })
     const exited = new Promise((r) => child.on('exit', (code) => r(code)))
+    let ended = false
     for (let t = 0; t < 50; t++) {
-      if (existsSync(join(dir, 'stub-ready.json'))) {
+      // Only this candidate's own ready line counts: a slower one before it may still write the file.
+      let ready = null
+      try {
+        ready = JSON.parse(readFileSync(join(dir, 'stub-ready.json'), 'utf8'))
+      } catch {}
+      if (ready?.pid === child.pid && ready?.port === candidate) {
         port = candidate
         stubPid = child.pid
-        addRoot(child.pid, 'stub')
+        addRoot(child.pid, 'stub', at)
         say(`stub on 127.0.0.1:${port} pid ${stubPid}`)
         return
       }
       const code = await Promise.race([exited, sleep(100).then(() => 'running')])
-      if (code !== 'running') break
+      if (code !== 'running') {
+        ended = true
+        break
+      }
+    }
+    // Still starting after 5 s: ended through its own handle before the next candidate, never left listening.
+    if (!ended) {
+      child.kill()
+      await Promise.race([exited, sleep(5 * SEC)])
     }
   }
   die('the stub backend did not start')
@@ -412,7 +444,7 @@ async function teardown() {
   adopt(rows)
   for (const agent of agents) {
     const hoai = aliveOwned(rows).find((p) => /hoai-core\.mjs/i.test(p.cmd ?? '') && (p.pid === agent.root || owned.has(p.pid)) && descendsFrom(rows, p.pid, agent.root))
-    if (hoai) killExact(hoai.pid)
+    if (hoai) killExact([{ pid: hoai.pid, c: owned.get(hoai.pid)?.c }])
   }
   await sleep(3 * SEC)
   for (let round = 0; round < 5; round++) {
@@ -423,7 +455,7 @@ async function teardown() {
       say('teardown: nothing of ours is alive')
       return []
     }
-    for (const p of left) killExact(p.pid)
+    killExact(left.map((p) => ({ pid: p.pid, c: p.c })))
     await sleep(2 * SEC)
   }
   const last = aliveOwned((await listProcesses()) ?? [])
@@ -518,8 +550,11 @@ async function scenarioBusy() {
   // The busy facts, set before anything is staged.
   if (turn) step(turn, { op: 'prompt', text: 'rig: a long turn that has not ended' })
   if (browser) {
+    // A browser tool inside a turn that then ends: only the browser window holds it, not an open turn.
+    step(browser, { op: 'prompt', text: 'rig: look something up in the browser' })
     step(browser, { op: 'tool', name: 'mcp__plugin_hoai_hoai-browser__browser_navigate', phase: 'pre' })
     step(browser, { op: 'tool', name: 'mcp__plugin_hoai_hoai-browser__browser_navigate', phase: 'post' })
+    step(browser, { op: 'stop' })
   }
   const keepWakeDue = async () => {
     if (wake) await stub('schedule', { assistantId: wake.id, tasks: [{ id: 1, name: 'rig wake', status: 'active', nextFireAt: new Date(Date.now() + 60 * SEC).toISOString() }] })
@@ -531,7 +566,14 @@ async function scenarioBusy() {
   }
   await keepCallLive()
   if (goal) step(goal, { op: 'goal', condition: 'rig: keep going until the rig says stop' })
-  if (owed) await stub('inbound', { assistantId: owed.id, text: 'rig: please answer me' })
+  if (owed) {
+    // A fresh pairing's chat is empty, and the first message ever in a chat is read as backlog (the first-poll path,
+    // server.ts), which owes no tracked reply by design. A field agent always has history: one message first, then
+    // the one the reply is owed to.
+    await stub('inbound', { assistantId: owed.id, text: 'rig: hello' })
+    await watch('the owed agent saw its first message', () => jsonLines(join(owed.cwd, '.rig', 'inbound.jsonl')).length > 0, { timeoutMs: 3 * MIN })
+    await stub('inbound', { assistantId: owed.id, text: 'rig: please answer me' })
+  }
   if (ask) {
     await stub('inbound', { assistantId: ask.id, text: 'rig: ask me something' })
     await watch('the ask agent saw its inbound', () => jsonLines(join(ask.cwd, '.rig', 'inbound.jsonl')).some((l) => l.meta?.chat_id), { timeoutMs: 3 * MIN })
@@ -539,7 +581,7 @@ async function scenarioBusy() {
     step(ask, { op: 'call', tool: 'reply', arguments: { chat_id: chatId, text: 'rig: one question first' } })
     step(ask, { op: 'call', tool: 'ask_user_input', arguments: { chat_id: chatId, wait_seconds: 0, questions: [{ text: 'Which one?', options: [{ label: 'A' }, { label: 'B' }] }] } })
   }
-  if (owed) await watch('the owed reply was delivered', () => jsonLines(join(owed.cwd, '.rig', 'inbound.jsonl')).length > 0, { timeoutMs: 3 * MIN })
+  if (owed) await watch('the owed message was delivered', () => jsonLines(join(owed.cwd, '.rig', 'inbound.jsonl')).length > 1, { timeoutMs: 3 * MIN })
   stage(TARGET)
   // Quiet window (10 min with hooks) + jitter (10 min) + margin, all scaled; the wake stays due all along.
   const holdMs = (20 * MIN) / scale + 3 * MIN
@@ -650,6 +692,7 @@ const tasksBefore = scheduledTasks('before')
 say(`scheduled tasks before: ${tasksBefore.count} (${tasksBefore.sha.slice(0, 12)})`)
 let failure = null
 let leftAlive = []
+started = true
 try {
   standIn()
   PATH_RIG = rigPath()
@@ -669,7 +712,8 @@ try {
   for (const a of agents) results.agents[a.id] ??= summarise(a)
 } finally {
   leftAlive = await teardown()
-  if (stubPid && aliveOwned((await listProcesses()) ?? []).some((p) => p.pid === stubPid)) killExact(stubPid)
+  const stub = stubPid ? aliveOwned((await listProcesses()) ?? []).find((p) => p.pid === stubPid) : null
+  if (stub) killExact([{ pid: stub.pid, c: stub.c }])
 }
 const tasksAfter = scheduledTasks('after')
 say(`scheduled tasks after: ${tasksAfter.count} (${tasksAfter.sha.slice(0, 12)})`)

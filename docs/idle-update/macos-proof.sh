@@ -21,7 +21,9 @@ ID=7300001                    # no real agent has this id
 FROM=0.81.0
 TARGET=0.81.1
 SCALE=5
-ROOT=/private/tmp/idleupd-proof.$$   # the physical path: the installer compares HOME as typed
+# A fresh folder only this user owns (mktemp -d makes it 0700 and refuses a name already there); the physical
+# path, since the installer compares HOME as typed.
+ROOT=$(mktemp -d /private/tmp/idleupd-proof.XXXXXX) || { echo 'MACOS PROOF FAIL: no scratch folder' >&2; exit 1; }
 SH=$ROOT/home
 CACHE=$SH/.claude/plugins/cache/hoai/hoai
 WORK=$SH/agents/$ID
