@@ -818,6 +818,9 @@ test('final fix: server.ts hands every file check of a call the moved Claude and
   assert.ok(dirs.includes('CLAUDE_CONFIG_DIR'), 'the resolved Claude config folder')
   assert.ok(dirs.includes('pathDirname(pluginStateDirFor({ env: process.env, home: homedir(), assistantId: ASSISTANT_ID, cwd: process.cwd() }))'), 'the plugin state folder, as agent-inventory resolves it')
   assert.ok(dirs.includes('pathDirname(pathDirname(CURSOR_FILE_PATH))'), 'and as the cursor store resolves it')
+  // Final fix 2: each folder also by its real path (a junction, a link or an 8.3 spelling), resolved at boot.
+  assert.ok(dirs.startsWith('const OUTBOUND_RUNTIME_DIRS: readonly string[] = outboundRuntimeDirs(['), 'the real paths beside the configured ones')
+  assert.ok(/import \{[^}]*\boutboundRuntimeDirs\b[^}]*\} from '\.\/lib\/email-outbound-files\.js'/.test(SRC), 'imported from the file check')
   assert.ok(SRC.includes('readFiles: (paths) => readOutboundFiles(paths, outboundFileCtx()),'))
   assert.ok(SRC.includes('fileCtx: outboundFileCtx(),'))
   assert.ok(SRC.includes("emailSendPreflight(tool_name, input_preview, [AUTH.mode === 'pairing' ? AUTH.pairingToken : AUTH.apiKey], outboundFileCtx())"))
@@ -828,13 +831,13 @@ test('final fix: a moved Claude config folder is refused by the tool\'s own lexi
   const m = await tools()
   const fileCtx = { home: 'C:\\Users\\kc', runtimeDirs: ['D:\\Agents\\Claude-Work'] }
   const args = { ...NEW_EMAIL, files: [{ path: 'D:\\Agents\\Claude-Work\\paste-cache\\notes.txt' }] }
-  assert.match(String(m.emailCallRefusal('email_send', args, [PAIRING_TOKEN], fileCtx)), /looks like a key or password file, so it is never attached/)
+  assert.match(String(m.emailCallRefusal('email_send', args, [PAIRING_TOKEN], fileCtx)), /is in this agent's own Claude or HOAI folder, so it is never attached/)
   assert.equal(m.emailCallRefusal('email_send', args, [PAIRING_TOKEN]), null, 'the gap without the folder')
-  assert.match(String(m.emailSendPreflight('mcp__plugin_hoai_bgos__email_send', JSON.stringify(args), [PAIRING_TOKEN], fileCtx)), /looks like a key or password file/)
+  assert.match(String(m.emailSendPreflight('mcp__plugin_hoai_bgos__email_send', JSON.stringify(args), [PAIRING_TOKEN], fileCtx)), /is in this agent's own Claude or HOAI folder/)
   let read = 0
   const backend = stubBackend()
   const result = await callTool('email_send', args, { post: backend.post, basis: OWNER_BASIS, fileCtx, readFiles: async () => { read++; return { ok: false, error: 'read' } } })
-  assert.match(textOf(result), /looks like a key or password file, so it is never attached\. Do not copy, rename or retype it to send it another way; ask your owner\. Nothing was saved or sent\.$/)
+  assert.match(textOf(result), /is in this agent's own Claude or HOAI folder, so it is never attached\. Do not copy, rename or retype it to send it another way; ask your owner\. Nothing was saved or sent\.$/)
   assert.equal(read, 0, 'refused before any file is read')
   assert.deepEqual(backend.posted, [])
 })

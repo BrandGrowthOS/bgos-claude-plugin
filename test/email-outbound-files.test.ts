@@ -3689,11 +3689,11 @@ test('final fix: a moved Claude config folder and a moved HOAI state folder are 
     const { calls, fs } = spyFs()
     assert.equal(
       await refusal(path, { home: 'C:\\Users\\kc', fs, runtimeDirs }),
-      `${path} looks like a key or password file, so it is never attached. ${NO_WAY_AROUND}`,
+      `${path} is in this agent's own Claude or HOAI folder, so it is never attached. ${NO_WAY_AROUND}`,
       path,
     )
     assert.deepEqual(calls, [], `${path}: refused before any file system call`)
-    assert.match(String(lib.outboundFileLexicalRefusal(path, { home: 'C:\\Users\\kc', runtimeDirs })), /looks like a key or password file/, `${path}: the preflight`)
+    assert.match(String(lib.outboundFileLexicalRefusal(path, { home: 'C:\\Users\\kc', runtimeDirs })), /is in this agent's own Claude or HOAI folder/, `${path}: the preflight`)
     assert.equal(lib.outboundFileLexicalRefusal(path, { home: 'C:\\Users\\kc' }), null, `${path}: the gap without the folders`)
   }
   // Neighbours go: a longer name beside the folder, the folder above it.
@@ -3715,10 +3715,165 @@ test('final fix: a real file in a moved config folder is refused, and so is a li
   const pasted = join(cfg, 'paste-cache', 'notes.txt')
   writeFileSync(pasted, 'Agenda: chairs and lunch.\n')
   assert.equal(await refusal(pasted, { home }), null, 'the gap: a moved folder matches no name pattern')
-  assert.equal(await refusal(pasted, { home, runtimeDirs: [cfg] }), `${pasted} looks like a key or password file, so it is never attached. ${NO_WAY_AROUND}`)
+  assert.equal(await refusal(pasted, { home, runtimeDirs: [cfg] }), `${pasted} is in this agent's own Claude or HOAI folder, so it is never attached. ${NO_WAY_AROUND}`)
   const link = join(home, 'docs', 'agenda.txt')
   assert.equal(
     await refusal(link, { home, runtimeDirs: [cfg], fs: { realpath: async () => pasted } }),
-    `${link} leads to a key or password file (HOAI followed its links), so it is never attached. ${NO_WAY_AROUND}`,
+    `${link} leads to this agent's own Claude or HOAI folder (HOAI followed its links), so it is never attached. ${NO_WAY_AROUND}`,
   )
+})
+
+/**
+ * Final fix 2: file system functions for a Windows path answered from a table (realpath answers each path it knows,
+ * as a mapped drive's realpath.native does; lstat and open answer one PDF). Every call is kept in order.
+ */
+function answeredFs(answers: Record<string, string | string[]>) {
+  const calls: string[] = []
+  const asked: Record<string, number> = {}
+  const stat = { isFile: () => true, size: PDF.length, dev: 1, ino: 7 }
+  const fs = {
+    realpath: async (path: string) => {
+      calls.push(`realpath ${path}`)
+      const answer = answers[path]
+      const n = (asked[path] = (asked[path] ?? 0) + 1)
+      const one = Array.isArray(answer) ? answer[Math.min(n, answer.length) - 1] : answer
+      if (typeof one !== 'string' || one === 'ENOENT') throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      return one
+    },
+    lstat: async (path: string) => {
+      calls.push(`lstat ${path}`)
+      return stat
+    },
+    open: async (path: string) => {
+      calls.push(`open ${path}`)
+      return {
+        stat: async () => stat,
+        read: async (buffer: Uint8Array, offset: number, length: number, position: number) => {
+          const n = Math.max(0, Math.min(length, PDF.length - position))
+          buffer.set(PDF.subarray(position, position + n), offset)
+          return { bytesRead: n }
+        },
+        close: async () => {},
+      }
+    },
+  }
+  return { calls, fs }
+}
+
+const followedDevice = (path: string) => `${path} leads to a network or device path (HOAI followed its links), so it is never attached.`
+
+test('final fix 2: a file on a mapped network drive goes, read by its drive letter, when the share path is the given path below the drive', async () => {
+  const share = '\\\\192.168.50.182\\Other'
+  for (const [path, answer, root, realPath] of [
+    // The reviewer's probe: realpath.native answers Z:\ as \\192.168.50.182\Other\.
+    ['Z:\\Contracts\\offer.pdf', `${share}\\Contracts\\offer.pdf`, `${share}\\`, 'Z:\\Contracts\\offer.pdf'],
+    // Another case and forward slashes in the given path: the real spelling is kept, on the given drive.
+    ['z:/contracts/OFFER.pdf', `${share}\\Contracts\\offer.pdf`, `${share}\\`, 'z:\\Contracts\\offer.pdf'],
+    // The long \\?\UNC\ answer, and a drive mapped to a folder inside the share.
+    ['Z:\\Contracts\\offer.pdf', '\\\\?\\UNC\\192.168.50.182\\Other\\Contracts\\offer.pdf', '\\\\?\\UNC\\192.168.50.182\\Other\\', 'Z:\\Contracts\\offer.pdf'],
+    ['Y:\\Contracts\\offer.pdf', '\\\\nas\\team\\projects\\Contracts\\offer.pdf', '\\\\nas\\team\\projects', 'Y:\\Contracts\\offer.pdf'],
+  ] as const) {
+    const drive = `${path.slice(0, 2)}\\`
+    const { calls, fs } = answeredFs({ [path]: answer, [drive]: root })
+    const read = await readOne(path, { home: MEM_HOME, fs })
+    assert.equal(read.ok, true, `${path}: ${JSON.stringify(read.error)}`)
+    assert.equal(read.file.realPath, realPath, path)
+    assert.equal(read.file.name, 'offer.pdf', `${path}: the real name`)
+    assert.equal(read.file.path, path)
+    // lstat and open go through the drive letter the owner mapped, never a UNC path; the second look maps it again.
+    assert.deepEqual(
+      calls.filter((c) => !c.startsWith('realpath')),
+      [`lstat ${realPath}`, `open ${realPath}`, `lstat ${realPath}`],
+      path,
+    )
+    assert.equal(calls.filter((c) => c === `realpath ${drive}`).length, 2, `${path}: the drive's own share asked at the first and the second look`)
+  }
+})
+
+test('final fix 2: a mapped drive path that leads elsewhere in the share, a link to a share from a local drive, and a given UNC path stay refused', async () => {
+  const share = '\\\\server\\share'
+  // A link inside the share: the share path is not the given path below the drive.
+  for (const [path, answer] of [
+    ['Z:\\x\\link.pdf', `${share}\\.ssh\\id_rsa`],
+    ['Z:\\x\\link.pdf', `${share}\\x\\other.pdf`],
+    ['Z:\\x\\link.pdf', `${share}\\y\\x\\link.pdf`],
+    ['Z:\\x\\link.pdf', `${share}2\\x\\link.pdf`],
+  ] as const) {
+    const { calls, fs } = answeredFs({ [path]: answer, 'Z:\\': `${share}\\` })
+    assert.equal((await readOne(path, { home: MEM_HOME, fs })).error, followedDevice(path), `${path} to ${answer}`)
+    assert.deepEqual(calls.filter((c) => !c.startsWith('realpath')), [], `${path} to ${answer}: nothing opened`)
+  }
+  // A folder on a local drive linked to a share whose path mirrors the given one: the drive itself is not that share.
+  const local = 'C:\\Users\\kc\\Documents\\dir\\a.pdf'
+  for (const root of ['C:\\', 'ENOENT', '\\\\evil\\s\\other\\']) {
+    const { calls, fs } = answeredFs({ [local]: '\\\\evil\\s\\Users\\kc\\Documents\\dir\\a.pdf', 'C:\\': root })
+    assert.equal((await readOne(local, { home: MEM_HOME, fs })).error, followedDevice(local), `root ${root}`)
+    assert.deepEqual(calls.filter((c) => !c.startsWith('realpath')), [], `root ${root}: nothing opened`)
+  }
+  // A device answer is never a share.
+  const pipe = answeredFs({ 'Z:\\offer.pdf': '\\\\.\\pipe\\offer.pdf', 'Z:\\': '\\\\.\\pipe\\' })
+  assert.equal((await readOne('Z:\\offer.pdf', { home: MEM_HOME, fs: pipe.fs })).error, followedDevice('Z:\\offer.pdf'))
+  // A link to a key folder on the share stays refused, and the given UNC path with no call at all.
+  const key = answeredFs({ 'Z:\\docs\\offer.pdf': `${share}\\.ssh\\offer.pdf`, 'Z:\\': `${share}\\` })
+  assert.equal((await readOne('Z:\\docs\\offer.pdf', { home: MEM_HOME, fs: key.fs })).error, followedDevice('Z:\\docs\\offer.pdf'))
+  const given = answeredFs({})
+  assert.equal((await readOne(`${share}\\offer.pdf`, { home: MEM_HOME, fs: given.fs })).error, `${share}\\offer.pdf is a network or device path, so it is never attached.`)
+  assert.deepEqual(given.calls, [])
+})
+
+test('final fix 2: the second look reads a mapped drive the same way: a drive that no longer leads to its share is refused', async () => {
+  const path = 'Z:\\Contracts\\offer.pdf'
+  const answer = '\\\\192.168.50.182\\Other\\Contracts\\offer.pdf'
+  for (const second of ['ENOENT', 'C:\\', '\\\\192.168.50.182\\Elsewhere\\']) {
+    const { fs } = answeredFs({ [path]: answer, 'Z:\\': ['\\\\192.168.50.182\\Other\\', second] })
+    assert.equal((await readOne(path, { home: MEM_HOME, fs })).error, changedSentence(path), `second root answer ${second}`)
+  }
+})
+
+const runtimeSentence = (path: string) => `${path} is in this agent's own Claude or HOAI folder, so it is never attached. ${NO_WAY_AROUND}`
+
+test('final fix 2: a file in a moved Claude or HOAI folder has its own sentence; a link into one says HOAI followed it', async () => {
+  const lib = await m()
+  const runtimeDirs = ['D:\\Agents\\Claude-Work']
+  const path = 'D:\\Agents\\Claude-Work\\projects\\agenda.pdf'
+  assert.equal(lib.outboundFileLexicalRefusal(path, { home: MEM_HOME, runtimeDirs }), runtimeSentence(path))
+  const { calls, fs } = spyFs()
+  assert.equal(await refusal(path, { home: MEM_HOME, fs, runtimeDirs }), runtimeSentence(path))
+  assert.deepEqual(calls, [])
+  const link = `${MEM_HOME}\\Documents\\agenda.pdf`
+  assert.equal(
+    await refusal(link, { home: MEM_HOME, runtimeDirs, fs: { realpath: async () => path } }),
+    `${link} leads to this agent's own Claude or HOAI folder (HOAI followed its links), so it is never attached. ${NO_WAY_AROUND}`,
+  )
+  // A key name in it keeps the key sentence; ~/.claude by name keeps its own.
+  assert.match(String(lib.outboundFileLexicalRefusal('D:\\Agents\\Claude-Work\\id_rsa', { home: MEM_HOME, runtimeDirs })), /looks like a key or password file/)
+})
+
+test('final fix 2: the runtime folders are also taken by their real path, so a junctioned or 8.3 spelled config folder holds', async (t) => {
+  const lib = await m()
+  assert.equal(typeof lib.outboundRuntimeDirs, 'function', 'lib/email-outbound-files.ts exports outboundRuntimeDirs')
+  // An 8.3 short spelling, injected: the long form is added beside the configured one.
+  const short = lib.outboundRuntimeDirs(['D:\\CLAUDE~1', 'E:\\gone'], (dir: string) => {
+    if (dir === 'D:\\CLAUDE~1') return '\\\\?\\D:\\Claude Config Moved'
+    throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+  })
+  assert.deepEqual([...short], ['D:\\CLAUDE~1', 'D:\\Claude Config Moved', 'E:\\gone'])
+  assert.ok(Object.isFrozen(short))
+  const long = 'D:\\Claude Config Moved\\paste-cache\\notes.txt'
+  assert.equal(lib.outboundFileLexicalRefusal(long, { home: MEM_HOME, runtimeDirs: ['D:\\CLAUDE~1'] }), null, 'the gap: the configured spelling alone')
+  assert.equal(lib.outboundFileLexicalRefusal(long, { home: MEM_HOME, runtimeDirs: short }), runtimeSentence(long))
+  // The same folder twice is listed once; a folder that is its own real path is not repeated.
+  assert.deepEqual([...lib.outboundRuntimeDirs(['D:\\a', 'D:\\a'], (d: string) => d)], ['D:\\a'])
+  // A real junction (a symlink on Linux): the configured cfg leads to cfg-real, and a file reached by cfg-real is refused.
+  const home = scratchHome(t)
+  const realDir = join(home, '..', 'cfg-real')
+  mkdirSync(join(realDir, 'paste-cache'), { recursive: true })
+  const linked = join(home, '..', 'cfg')
+  symlinkSync(realDir, linked, 'junction')
+  const pasted = join(realDir, 'paste-cache', 'paste.pdf')
+  writeFileSync(pasted, PDF)
+  assert.equal(await refusal(pasted, { home, runtimeDirs: [linked] }), null, 'the gap: the junction alone')
+  const dirs = lib.outboundRuntimeDirs([linked])
+  assert.equal(dirs.length, 2, JSON.stringify(dirs))
+  assert.equal(await refusal(pasted, { home, runtimeDirs: dirs }), runtimeSentence(pasted))
 })

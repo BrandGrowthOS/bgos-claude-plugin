@@ -56,7 +56,7 @@
 //
 // No em or en dashes in this file.
 
-import { realpath as realpathCallback } from 'node:fs'
+import { realpath as realpathCallback, realpathSync } from 'node:fs'
 import { lstat as lstatPromise, open as openPromise, realpath as realpathPromise } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { Worker } from 'node:worker_threads'
@@ -444,7 +444,37 @@ function underRuntimeDir(form: string, ctx: OutboundFileCtx): boolean {
   return false
 }
 
-type LexicalKind = 'secret' | 'device' | 'system' | 'not_full' | 'empty' | 'control' | 'too_long'
+/** realpathSync.native where the runtime has it (it reads an 8.3 short name as the long one on Windows). */
+function nativeRealpathSync(path: string): string {
+  const native = (realpathSync as unknown as { native?: (p: string) => string }).native
+  return String(typeof native === 'function' ? native(path) : realpathSync(path))
+}
+
+/**
+ * Final fix 2: the runtime folders server.ts hands every file check (OUTBOUND_RUNTIME_DIRS), each as configured and,
+ * beside it, by its real path when it resolves (read at boot): a CLAUDE_CONFIG_DIR or BGOS_PLUGIN_STATE_DIR that is a
+ * junction, a link or an 8.3 short spelling then also holds the files reached by the folder's real long path. A folder
+ * that does not resolve keeps its configured form alone; the same spelling is listed once.
+ */
+export function outboundRuntimeDirs(dirs: readonly string[], real: (dir: string) => string = nativeRealpathSync): readonly string[] {
+  const out: string[] = []
+  const add = (dir: string) => {
+    if (!out.includes(dir)) out.push(dir)
+  }
+  for (const dir of dirs) {
+    add(dir)
+    let resolved: string
+    try {
+      resolved = plainLocal(String(real(dir)))
+    } catch {
+      continue
+    }
+    add(resolved)
+  }
+  return Object.freeze(out)
+}
+
+type LexicalKind = 'secret' | 'runtime' | 'device' | 'system' | 'not_full' | 'empty' | 'control' | 'too_long'
 type Lexical = { kind: LexicalKind } | { kind: 'ok'; form: string }
 
 /** Two slashes of any kind at the start: \\host, //host, \\?\ and \\.\ (device paths), \/host. */
@@ -492,8 +522,9 @@ function lexical(path: string, ctx: OutboundFileCtx): Lexical {
   const words = secretWordsForm(form, ctx)
   if (OUTBOUND_SECRET_PATTERNS.some((pattern) => pattern.test(WORD_PATTERNS.has(pattern) ? words : form))) return { kind: 'secret' }
   if (lanePathIsSecret(form, { actorUserId: ctx.actorUserId ?? '' })) return { kind: 'secret' }
-  // Final pre push fix: the daemon's own Claude and HOAI folders wherever they were moved.
-  if (underRuntimeDir(form, ctx)) return { kind: 'secret' }
+  // Final pre push fix: the daemon's own Claude and HOAI folders wherever they were moved (final fix 2: with a
+  // sentence of their own, as these are not key files by name).
+  if (underRuntimeDir(form, ctx)) return { kind: 'runtime' }
   return { kind: 'ok', form }
 }
 
@@ -527,6 +558,10 @@ function lexicalSentence(kind: Exclude<LexicalKind, 'ok'>, path: string, followe
       return followed
         ? `${lead} a key or password file (HOAI followed its links), so it is never attached. ${OUTBOUND_NO_WAY_AROUND}`
         : `${name} looks like a key or password file, so it is never attached. ${OUTBOUND_NO_WAY_AROUND}`
+    case 'runtime':
+      return followed
+        ? `${lead} this agent's own Claude or HOAI folder (HOAI followed its links), so it is never attached. ${OUTBOUND_NO_WAY_AROUND}`
+        : `${name} is in this agent's own Claude or HOAI folder, so it is never attached. ${OUTBOUND_NO_WAY_AROUND}`
   }
 }
 
@@ -544,6 +579,39 @@ export function outboundFileLexicalRefusal(path: unknown, ctx: OutboundFileCtx =
 /** A real path Windows hands back as \\?\C:\...: the same local file, read as C:\... (\\?\UNC\ stays a network path). */
 function plainLocal(real: string): string {
   return /^\\\\\?\\[a-z]:\\/i.test(real) ? real.slice(4) : real
+}
+
+/** A share's path as realpath answers it: \\server\share... or \\?\UNC\server\share..., never a \\?\ or \\.\ device path. */
+const SHARE_ANSWER = /^(?:\\\\\?\\UNC\\|[\\/]{2}(?![?.][\\/]))[^\\/]+[\\/][^\\/]+/i
+
+/**
+ * Final fix 2: where a path really leads, read as a local path when it is on a drive the owner mapped. On Windows
+ * realpath turns Z:\Contracts\offer.pdf on a mapped drive into \\server\share\Contracts\offer.pdf, which steps 1 and
+ * 2 refuse as a network path. When the given path starts with a drive letter, realpath answers a share path, the drive
+ * itself answers a share path (realpath of Z:\), and the answer is that share path plus exactly the given path below
+ * its drive (read as steps 1 and 2 read a path, so case, slashes and dots do not count), the real path is the drive
+ * letter form: the given drive plus the answer below the share, in the real spelling. Nothing new is contacted: the
+ * share is the one the owner mapped, and realpath already reached it. Anything else stays the answer as it is, so a
+ * link inside the share, a local folder linked to a share and a given UNC or device path stay refused.
+ */
+async function localReal(fs: OutboundFs, given: string, answer: string, ctx: OutboundFileCtx): Promise<string> {
+  const real = plainLocal(answer)
+  if (!/^[a-z]:[\\/]/i.test(given) || !SHARE_ANSWER.test(real)) return real
+  let root: string
+  try {
+    root = plainLocal(await fs.realpath(`${given.slice(0, 2)}\\`))
+  } catch {
+    return real
+  }
+  if (!SHARE_ANSWER.test(root)) return real
+  let top = root.length
+  while (top > 0 && (root[top - 1] === '\\' || root[top - 1] === '/')) top--
+  const below = real.slice(top)
+  if (real.slice(0, top).toLowerCase() !== root.slice(0, top).toLowerCase() || !/^[\\/]/.test(below)) return real
+  const mapped = `${given.slice(0, 2)}${below}`
+  const a = lexical(mapped, ctx)
+  const b = lexical(given, ctx)
+  return a.kind === 'ok' && b.kind === 'ok' && a.form === b.form ? mapped : real
 }
 
 
@@ -842,7 +910,8 @@ function sameFileAs(a: OutboundStat, b: OutboundStat): boolean {
 async function stillLeadsTo(fs: OutboundFs, path: string, ctx: OutboundFileCtx, opened: OutboundStat): Promise<boolean> {
   let again: string
   try {
-    again = plainLocal(await fs.realpath(expandHome(path, ctx.home ?? homedir())))
+    const given = expandHome(path, ctx.home ?? homedir())
+    again = await localReal(fs, given, await fs.realpath(given), ctx)
   } catch {
     return false
   }
@@ -869,7 +938,8 @@ export async function readOutboundFile(path: unknown, ctx: OutboundFileCtx = {})
   // Step 3: every link resolved, then steps 1 and 2 again on where it really is.
   let real: string
   try {
-    real = plainLocal(await fs.realpath(expandHome(path, ctx.home ?? homedir())))
+    const expanded = expandHome(path, ctx.home ?? homedir())
+    real = await localReal(fs, expanded, await fs.realpath(expanded), ctx)
   } catch {
     return { ok: false, error: notFound }
   }

@@ -194,7 +194,7 @@ import {
   type EmailSendBasis,
   type EmailSendGo,
 } from './lib/agent-email-tools.js'
-import { readOutboundFiles, type OutboundFileCtx } from './lib/email-outbound-files.js'
+import { outboundRuntimeDirs, readOutboundFiles, type OutboundFileCtx } from './lib/email-outbound-files.js'
 import {
   EMAIL_SEND_FLOOR_MATCH,
   EMAIL_SEND_FLOOR_TOOL,
@@ -8626,8 +8626,9 @@ const CURSOR_FILE_PATH = resolveCursorFilePath({
 // Outbound email files, final pre push fix: this daemon's own Claude and HOAI folders wherever they were moved, which
 // the name patterns (~/.claude*, ~/.bgos-*) cannot see: the resolved CLAUDE_CONFIG_DIR, and the plugin state folder
 // as agent-inventory resolves it (BGOS_PLUGIN_STATE_DIR trimmed, else ~/.bgos-plugin-state) and as the cursor store
-// does (its value untrimmed). lib/email-outbound-files.ts refuses a file at or below any of them (runtimeDirs).
-const OUTBOUND_RUNTIME_DIRS: readonly string[] = Object.freeze([
+// does (its value untrimmed). lib/email-outbound-files.ts refuses a file at or below any of them (runtimeDirs). Final
+// fix 2: each also by its real path, read once here at boot (a junction, a link or an 8.3 short spelling).
+const OUTBOUND_RUNTIME_DIRS: readonly string[] = outboundRuntimeDirs([
   CLAUDE_CONFIG_DIR,
   pathResolve(pathDirname(pluginStateDirFor({ env: process.env, home: homedir(), assistantId: ASSISTANT_ID, cwd: process.cwd() }))),
   pathResolve(pathDirname(pathDirname(CURSOR_FILE_PATH))),
