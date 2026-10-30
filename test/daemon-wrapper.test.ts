@@ -16,6 +16,8 @@ import { readFileSync } from 'node:fs'
 import {
   EMPTY_WRAPPER_STATE,
   HEALTHY_AFTER_MS,
+  WIN32_JSC_THREAD_OPTIONS,
+  daemonEnv,
   daemonSpawnSpec,
   installStableWrapper,
   isIntentionalRollbackExit,
@@ -30,6 +32,7 @@ import {
   validateAndInstallStableWrapper,
   wrapperFlagMode,
 } from '../bin/bgos-daemon-wrapper.mjs'
+import { WIN32_JSC_THREAD_OPTIONS as LAUNCHER_JSC_THREAD_OPTIONS } from '../bin/bgos-launch.mjs'
 
 const COMMIT_A = 'a'.repeat(40)
 const COMMIT_B = 'b'.repeat(40)
@@ -190,6 +193,45 @@ test('daemon spawn uses fixed bun argv without a shell', () => {
     file: 'bun',
     args: [join('/opt/bgos plugin', 'server.ts')],
   })
+})
+
+// Board rows a8646712 and dc37e2ac: an Agent Pack .mcp.json runs `bun <wrapper>`, never the
+// launcher, so the wrapper gives the daemon the launcher's Windows thread options itself.
+test('the wrapper holds the same Windows thread options as bin/bgos-launch.mjs', () => {
+  assert.deepEqual(WIN32_JSC_THREAD_OPTIONS, LAUNCHER_JSC_THREAD_OPTIONS)
+  assert.ok(Object.isFrozen(WIN32_JSC_THREAD_OPTIONS))
+})
+
+test('daemonEnv on Windows: the thread options a key does not have, once bun -e 0 has run with them', () => {
+  const probes: Array<{ file: string; args: string[]; env: Record<string, string> }> = []
+  const spawnSyncImpl = ((file: string, args: string[], opts: { env: Record<string, string> }) => {
+    probes.push({ file, args, env: opts.env })
+    return { status: 0, stderr: '' }
+  }) as never
+  const env = { PATH: 'C:\\Windows', BUN_JSC_useConcurrentJIT: '1' }
+  const out = daemonEnv(env, { platform: 'win32', spawnSyncImpl })
+  assert.deepEqual(out, { PATH: 'C:\\Windows', BUN_JSC_numberOfGCMarkers: '1', BUN_JSC_useConcurrentGC: '0', BUN_JSC_useConcurrentJIT: '1' })
+  assert.deepEqual(probes, [{ file: 'bun', args: ['-e', '0'], env: out }])
+  assert.deepEqual(env, { PATH: 'C:\\Windows', BUN_JSC_useConcurrentJIT: '1' }, 'the input is not mutated')
+})
+
+test('daemonEnv on Windows: a bun that refuses the options starts the daemon without them', () => {
+  const env = { PATH: 'C:\\Windows' }
+  const refuses = (() => ({ status: 1, stderr: 'error: invalid JSC environment variable\n\n    BUN_JSC_useConcurrentJIT=0\n' })) as never
+  assert.equal(daemonEnv(env, { platform: 'win32', spawnSyncImpl: refuses }), env)
+  // A probe that fails any other way (a timeout, a missing bun) is not a refusal.
+  const timesOut = (() => ({ status: null, stderr: '', error: new Error('spawnSync bun ETIMEDOUT') })) as never
+  const kept = daemonEnv(env, { platform: 'win32', spawnSyncImpl: timesOut }) as Record<string, string>
+  assert.equal(kept.BUN_JSC_useConcurrentGC, '0')
+})
+
+test('daemonEnv: macOS and Linux get env itself, and nothing is probed', () => {
+  const env = { PATH: '/usr/bin' }
+  const never = (() => assert.fail('no probe off Windows')) as never
+  assert.equal(daemonEnv(env, { platform: 'darwin', spawnSyncImpl: never }), env)
+  assert.equal(daemonEnv(env, { platform: 'linux', spawnSyncImpl: never }), env)
+  const complete = { ...WIN32_JSC_THREAD_OPTIONS }
+  assert.equal(daemonEnv(complete, { platform: 'win32', spawnSyncImpl: never }), complete, 'every key already set')
 })
 
 test('unset flag is transparent and performs no update state or git work', async () => {

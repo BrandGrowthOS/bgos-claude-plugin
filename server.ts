@@ -297,15 +297,19 @@ import {
   askAnswerFromRow,
   askPendingText,
   askReadIntervalMs,
+  askQuestionsError,
   askResultRows,
   askRetireBody,
   askWaitSeconds,
   askWithdrawnText,
   buildAskAnsweredEvent,
   buildAskWithdrawnEvent,
+  type AskQuestionInput,
+  type AskRetiredBecause,
   type AskRow,
   type PendingAsk,
 } from './lib/ask-tracker.ts'
+import { retiredOwnNotes, tellRetiredOwnOnTick } from './lib/ask-retired-tell.ts'
 import {
   StopPauseLane,
   isOwnerAuthoredInbound,
@@ -462,6 +466,7 @@ import {
   marketplaceChannelSpec,
 } from './bin/bgos-install-method.mjs'
 import { resolveChannelSpec } from './bin/hoai-core.mjs'
+import { threadOptionsWarning } from './bin/bgos-launch.mjs'
 import {
   UpdateStreamConsumer,
   beaconWatchdog,
@@ -997,6 +1002,13 @@ import {
   peerRefusalStatus,
   type PeerRefusal,
 } from './lib/peer-refusal.js'
+import {
+  peerConversationEnded,
+  peerDeliveryOf,
+  peerDeliveryReason,
+  peerReplyNotForwardedResult,
+  peerReplyNotPassedOnResult,
+} from './lib/peer-closed-reply.js'
 import { messagesCallerHeaders } from './lib/messages-caller-header.js'
 import { createChatOwnership } from './lib/chat-ownership.js'
 import { createTurnChatTracker } from './lib/turn-chat.js'
@@ -3252,7 +3264,9 @@ const mcp = new Server(
       'The pending return above needs wait_seconds: 0; to wait for the answers, pass wait_seconds from 1 to 600. A call with neither wait_seconds nor timeout_seconds keeps its old behaviour: it waits up to 600 s and returns the answers, or pending if they do not all come in time.',
       '',
       'The BGOS app shows the card as a sheet over the chat with numbered',
-      'choices, optional free-text fallback, and per-question Skip. With',
+      'choices (checkboxes and one Submit on a `multi_select` question, or a',
+      'single choice where the app or backend has no multi select yet),',
+      'optional free-text fallback, and per-question Skip. With',
       '`wait_seconds: 0` the tool returns at once as pending with an `ask_id`. When every',
       'question is answered (option picked, free text typed, or skipped) the',
       'answers arrive together as ONE channel event, however late, and it starts',
@@ -3261,7 +3275,9 @@ const mcp = new Server(
       '    [ask_answered] ... (ask_id=...)',
       '  </channel>',
       'with `meta.ask_id` and `meta.answers` (JSON, one entry per question in',
-      'order: `picked_option_value` and `picked_option_label`, `free_text`, or',
+      'order: `picked_option_value` and `picked_option_label`, on a',
+      '`multi_select` question `picked_option_values` and `picked_option_labels`',
+      'arrays (an array even for one pick), `free_text`, or',
       '`skipped: true`). `wait_seconds` above 0 (up to 600), or no wait field',
       'at all (the old 600 s), blocks instead and returns the answers if they',
       'all come in time; if not it returns pending, never invented skips, and',
@@ -3280,7 +3296,7 @@ const mcp = new Server(
       'taking answers and no ask_answered event comes for it.',
       '',
       'Each question: `{ text, options?: [{ label, value }], allow_free_text?,',
-      'allow_skip? }`. If `options` is omitted or empty, send it as a regular',
+      'allow_skip?, multi_select? }`. If `options` is omitted or empty, send it as a regular',
       '`reply` message instead, the modal exists to make CHOOSING easier, not',
       'to wrap every question.',
       '',
@@ -4981,7 +4997,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'in the chat, use wait_seconds, and the answers come back inside their own turn. ' +
         'In a session that is not the one connected to BGOS for this agent, wait_seconds 0 is ' +
         'refused, and a wait that runs out withdraws the questions not yet answered. ' +
-        'For open-ended questions use `reply`.',
+        'Set multi_select: true on a question when more than one option can be right; it ' +
+        'answers with arrays. For open-ended questions use `reply`.',
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -5034,6 +5051,16 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
                   type: 'boolean',
                   description:
                     'Show a Skip button so the user can move past without answering. Default true.',
+                },
+                multi_select: {
+                  type: 'boolean',
+                  description:
+                    'true when more than one option can be right: your owner ticks every ' +
+                    'option that applies and submits once, and this question answers with ' +
+                    'picked_option_values and picked_option_labels arrays (an array even ' +
+                    'for one pick). Needs 2 or more options. An app or backend ' +
+                    'without multi select shows it as a single choice, so the array then ' +
+                    'holds one pick. Default false: one pick.',
                 },
               },
               required: ['text', 'options'],
@@ -6465,6 +6492,26 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
 
         const result = await bgosPost('send-message', body)
         const msgId = (result as any)?.message?.id
+        // HOAI's own word on the forward to the other agent, on a backend that
+        // gives it (`peerDelivery`, side threads only; BGOS #3420). Not
+        // forwarded: the reply is saved in the side thread and the other agent
+        // does not have it, so it is not a Sent. Forwarded, or no word at all,
+        // is the Sent below. A reply into a closed conversation still goes to
+        // HOAI, which reopens it (Kc's rule, kept by Data on 2026-10-28); only
+        // its answer decides. The inbound this reply answered is dropped from
+        // the overdue sweep, as for the 403 below: the agent has been told.
+        if (peerDeliveryOf(result) === 'not_forwarded') {
+          if (pendingInbounds.get(String(resolvedChatId))?.messageId === answeringInboundId) {
+            clearInbound(resolvedChatId)
+          }
+          log(
+            `reply to chat ${resolvedChatId} saved as ${msgId} but not forwarded to the peer ` +
+              `(${peerDeliveryReason(result)}); told the agent`,
+          )
+          return peerConversationEnded(result)
+            ? peerReplyNotForwardedResult(String(resolvedChatId), msgId, hasAttachment)
+            : peerReplyNotPassedOnResult(String(resolvedChatId), msgId, peerDeliveryReason(result), hasAttachment)
+        }
         // Session binding: the CLI writes this tool call's result ("Sent
         // (message_id: N)...") verbatim into THIS session's transcript, so
         // the minted id is positive proof of which transcript is ours.
@@ -6877,14 +6924,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
 
     case 'ask_user_input': {
       const chat_id = rawArgs.chat_id as string | undefined
-      const questions = rawArgs.questions as
-        | Array<{
-            text: string
-            options: Array<{ label: string; value: string }>
-            allow_free_text?: boolean
-            allow_skip?: boolean
-          }>
-        | undefined
+      const questions = rawArgs.questions as AskQuestionInput[] | undefined
       // wait_seconds 0: post, return pending, the answers come back as ONE
       // ask_answered event however late. No wait field: the old 600 s block.
       // A wait that is not a number of seconds is refused before anything is
@@ -6948,18 +6988,9 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
           content: [{ type: 'text', text: 'Error: at least one question is required' }],
         }
       }
-      for (const q of questions) {
-        if (!q.text || !q.options?.length) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: 'Error: every question needs `text` and at least one option (use `reply` for open-ended questions).',
-              },
-            ],
-            isError: true,
-          }
-        }
+      const questionsError = askQuestionsError(questions)
+      if (questionsError) {
+        return { content: [{ type: 'text', text: questionsError }], isError: true }
       }
 
       if ('error' in askWait) {
@@ -6988,6 +7019,8 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
             askOrder: i + 1,
             allowFreeText: q.allow_free_text ?? true,
             allowSkip: q.allow_skip ?? true,
+            // Sent only when asked for: only a flagged row carries the field.
+            ...(q.multi_select === true && { multiSelect: true }),
             // Namespace-escape agent option values (same isolation as `reply`).
             options: q.options.map((o) => ({
               text: o.label,
@@ -7009,6 +7042,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
             messageId: postedIds[i],
             text: q.text,
             options: q.options.map((o) => ({ label: o.label, value: o.value })),
+            ...(q.multi_select === true && { multiSelect: true as const }),
           })),
         })
         registered = true
@@ -8450,7 +8484,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
     default:
       throw new Error(`Unknown tool: ${req.params.name}`)
   }
-  })
+  }).then((result) => withRetiredOwnAskNotes(result, extra.signal))
 })
 
 // ── Chat Polling ─────────────────────────────────────────────────────────────
@@ -12186,8 +12220,14 @@ async function retireOrphanedAsks(via: string): Promise<void> {
     // This daemon's lane verdict, fresh while it holds the connection, also
     // decides whether the asker is told (fresh review of the follow-up, Important 2).
     const refused = ownerAnnounceRefused({ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership.isOthers(ask.chatId) })
+    // Why, for this session's event, read before the retire forgets the
+    // group, from the asker's lease (Data's gaps after #284, gap 2, and its
+    // fresh reviews, Important 1).
+    const retiredBecause = askTracker.retiredBecause(ask)
     if (!askTracker.retire(ask.askId, { withdrawn, tellAsker: !refused })) continue
-    sendAskWithdrawn(ask, withdrawn, { toAsker: false, via })
+    sendAskWithdrawn(ask, withdrawn, { toAsker: false, via, retiredBecause }).catch(() => {
+      // Logged in sendAskWithdrawn; this session's own tell has no record to try again from.
+    })
   }
 }
 
@@ -12201,34 +12241,95 @@ async function retireOrphanedAsks(via: string): Promise<void> {
  */
 function tellRetiredOwnAsks(): void {
   try {
-    for (const { ask, withdrawn } of askTracker.takeRetiredOwn()) sendAskWithdrawn(ask, withdrawn, { toAsker: true, via: 'the ask tick' })
+    // Marked told only once the event is out; a session whose channel is not
+    // loaded hears it on its next tool result instead (withRetiredOwnAskNotes;
+    // Data's gaps after #284, gap 1).
+    tellRetiredOwnOnTick({
+      tracker: askTracker,
+      channelLoaded: channelPresence().loaded,
+      send: (ask, withdrawn) => sendAskWithdrawn(ask, withdrawn, { toAsker: true, via: 'the ask tick' }),
+      log,
+    })
   } catch (err) {
     log(`ask_withdrawn: could not tell this session of its retired cards: ${err}`)
   }
 }
 
-/** One ask_withdrawn channel event to this session (retireOrphanedAsks, tellRetiredOwnAsks). */
-function sendAskWithdrawn(ask: PendingAsk, withdrawn: number, opts: { toAsker: boolean; via: string }): void {
-  // The second lock (person lanes): a card in a share recipient's chat is
-  // retired, but never told to the owner's session.
+/**
+ * Every tool result of this daemon (the dispatch of the CallTool handler): a
+ * session whose channel is not loaded, the holder a channel takeover moved
+ * aside, drops every channel event unseen, so the ask_withdrawn of its own
+ * retired cards rides here, once (lib/ask-retired-tell.ts; Data's gaps after
+ * #284, gap 1). Never throws: a tool's own result is never lost to it. A
+ * subagent's call carries it too (it shares this server), and that counts as
+ * told: nothing here tells the two apart.
+ */
+function withRetiredOwnAskNotes<T>(result: T, signal?: AbortSignal): T {
+  // The SDK drops a cancelled call's result (Esc, the client's timeout), so a
+  // note on it would be marked told unseen: the next call carries it (fresh
+  // review of the gaps, Important 2). A client that gives up after the result
+  // was written drops the note all the same: nothing acknowledges a result.
+  if (signal?.aborted || !result || typeof result !== 'object') return result
+  try {
+    const notes = retiredOwnNotes({
+      tracker: askTracker,
+      channelLoaded: channelPresence().loaded,
+      text: (ask, withdrawn) => askWithdrawnContent(ask, withdrawn, { toAsker: true })?.content ?? null,
+    })
+    if (notes.length === 0) return result
+    log(`ask_withdrawn: told this session of ${notes.length} retired card(s) on a tool result (its channel is not loaded)`)
+    const content = (result as { content?: unknown }).content
+    return { ...result, content: [...(Array.isArray(content) ? content : []), ...notes.map((text) => ({ type: 'text' as const, text }))] }
+  } catch (err) {
+    log(`ask_withdrawn: could not add this session's retired cards to a tool result: ${err}`)
+    return result
+  }
+}
+
+type AskWithdrawnOpts = { toAsker: boolean; via: string; retiredBecause?: AskRetiredBecause }
+
+/**
+ * The ask_withdrawn of a card for this session, for its channel event or a
+ * tool result; null in a share recipient's chat (the second lock, person
+ * lanes): retired, but never told to the owner's session.
+ */
+function askWithdrawnContent(
+  ask: PendingAsk,
+  withdrawn: number,
+  opts: { toAsker: boolean; retiredBecause?: AskRetiredBecause },
+): { content: string; meta: Record<string, string> } | null {
   if (ownerAnnounceRefused({ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership.isOthers(ask.chatId) })) {
     noteLaneMisroute('ask withdrawn', ask.questions.map((q) => q.messageId).join(','), 'a recipient chat')
-    return
+    return null
   }
-  const event = buildAskWithdrawnEvent(ask, { assistantId: String(ASSISTANT_ID), withdrawn, toAsker: opts.toAsker })
-  void trackMessageOperation(() =>
+  const event = buildAskWithdrawnEvent(ask, { assistantId: String(ASSISTANT_ID), withdrawn, toAsker: opts.toAsker, retiredBecause: opts.retiredBecause })
+  return {
+    // Typed answers ride in it, as in an ask_answered event: never shown
+    // to be the owner's own words, and it opens no private turn.
+    content: privateTapCard({ tracker: privateTurns, lane: 'ask', ownerUserId: USER_ID, chatId: ask.chatId, messageId: ask.questions[0]?.messageId, tapperUserId: null, answeredAt: null, receivedAt: Date.now(), callbackData: '', customText: null, posted: false, content: event.content }),
+    meta: event.meta,
+  }
+}
+
+/**
+ * One ask_withdrawn channel event to this session (retireOrphanedAsks,
+ * tellRetiredOwnAsks). Resolves once it is out, or at once for a card it may
+ * never tell; rejects when the send failed, so the asker's tick sends it again.
+ */
+function sendAskWithdrawn(ask: PendingAsk, withdrawn: number, opts: AskWithdrawnOpts): Promise<void> {
+  const event = askWithdrawnContent(ask, withdrawn, opts)
+  if (!event) return Promise.resolve()
+  return trackMessageOperation(() =>
     mcp.notification({
       method: 'notifications/claude/channel',
-      params: {
-        // Typed answers ride in it, as in an ask_answered event: never shown
-        // to be the owner's own words, and it opens no private turn.
-        content: privateTapCard({ tracker: privateTurns, lane: 'ask', ownerUserId: USER_ID, chatId: ask.chatId, messageId: ask.questions[0]?.messageId, tapperUserId: null, answeredAt: null, receivedAt: Date.now(), callbackData: '', customText: null, posted: false, content: event.content }),
-        meta: event.meta,
-      },
+      params: { content: event.content, meta: event.meta },
     }),
   )
     .then(() => log(`ask_withdrawn: retired group ${ask.askId} in chat ${ask.chatId} and told this session${opts.toAsker ? ', which asked it' : ''}, via ${opts.via}`))
-    .catch((err) => log(`ask_withdrawn: group ${ask.askId} was retired, but telling this session failed: ${err}`))
+    .catch((err) => {
+      log(`ask_withdrawn: group ${ask.askId} was retired, but telling this session failed: ${err}`)
+      throw err
+    })
 }
 
 /** Retire the questions of a card whose post failed half way (best effort; nothing tracks them). */
@@ -17194,6 +17295,10 @@ async function main(): Promise<void> {
     }),
   )
   if (ENV_ONLY_IDENTITY_WARN) log(`WARN ${ENV_ONLY_IDENTITY_WARN}`)
+  // Windows only (board rows a8646712 and dc37e2ac): started without the launcher's
+  // thread options, this daemon's committed memory grows while it runs.
+  const threadOptionsWarn = threadOptionsWarning({ env: process.env, platform: process.platform })
+  if (threadOptionsWarn) log(`WARN ${threadOptionsWarn}`)
   const noHomeWarn = formatNoHomeWarning(HOME_BINDING, ASSISTANT_ID)
   if (noHomeWarn) log(`WARN ${noHomeWarn}`)
   if (PAIRING_REJECTION_WARN) log(`WARN ${PAIRING_REJECTION_WARN}`)

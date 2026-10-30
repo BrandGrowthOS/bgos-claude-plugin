@@ -579,7 +579,10 @@ rules before replying so messages don't get lost.
   answer and starts a new turn, however late. `wait_seconds` above 0 (up to
   600), or no wait field at all (the old 600 s), blocks instead and returns
   the answers if they all come in time, otherwise pending, never invented
-  skips. A wait that is not a number of seconds is refused. Pending cards
+  skips. A wait that is not a number of seconds is refused. A question with
+  `multi_select: true` lets the owner tick every option that applies and
+  answers with `picked_option_values` and `picked_option_labels`
+  arrays. Pending cards
   survive a restart (`pending-asks.json` beside the cursor file), and only
   the session that asked gets the answers. In a session that is not the
   one connected to BGOS for this agent, `wait_seconds: 0` is refused (its
@@ -589,9 +592,12 @@ rules before replying so messages don't get lost.
   session, it lost the connection to another session and runs on, or it
   ended and no restart took the card within 10 minutes) is retired by the
   connected session, as `withdraw_ask` does, and that session gets one
-  `ask_withdrawn` channel event naming what was answered and what was
-  withdrawn. When the session that asked still runs (it lost the
-  connection), it gets one `ask_withdrawn` event too, on its next tick.
+  `ask_withdrawn` channel event naming what was answered (for the record)
+  and what was withdrawn, and why (`meta.retired_because`: `asker_ended_beside`,
+  `asker_ended` or `asker_disconnected`). When the session that asked still
+  runs (it lost the connection), it gets one `ask_withdrawn` too: on its
+  next tick, sent again until it lands or the record ages out after 10
+  minutes, or, when its channel is not loaded, on its next tool result.
   Nothing in either needs a reply.
 - `withdraw_ask`: retire a card you no longer need, by its `ask_id`.
 - `list_peers` — list other assistants on this BGOS account that you

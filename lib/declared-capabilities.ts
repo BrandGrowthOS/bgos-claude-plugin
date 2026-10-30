@@ -281,7 +281,7 @@
  * agent silently untold.
  */
 
-import { ASK_ANSWERED_TOKEN, HARD_FLOOR_RULES_2_TOKEN, HARD_FLOOR_TOKEN, PERMISSION_CARD, PLAN_CARD } from './claude-capability-tokens.js'
+import { ASK_ANSWERED_TOKEN, ASK_MULTI_SELECT_TOKEN, HARD_FLOOR_RULES_2_TOKEN, HARD_FLOOR_TOKEN, PERMISSION_CARD, PLAN_CARD } from './claude-capability-tokens.js'
 import { SESSIONS_LIBRARY, STOP_PAUSES_MISSION } from './session-controls-contract.ts'
 import { EMAIL_LABEL, labelsExternalEmail } from './inbound-channel.ts'
 import { EMAIL_SEND, shipsEmailTools } from './agent-email-tools.ts'
@@ -310,6 +310,9 @@ export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   // withdraw_ask retires a card. Typed tools on any host, over pairing or an
   // API key (the poll and the reconcile timer deliver without the stream).
   ASK_ANSWERED_TOKEN,
+  // multi_select on an ask_user_input question, answered with arrays
+  // (lib/ask-tracker.ts). The same typed tool, so the same hosts.
+  ASK_MULTI_SELECT_TOKEN,
 ])
 
 /**
