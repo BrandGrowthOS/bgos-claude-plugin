@@ -265,6 +265,8 @@ type Step = {
   arguments?: Record<string, unknown>
   condition?: string
   met?: boolean
+  /** What the Stop tells its hooks is scheduled: Claude Code's own `session_crons`. */
+  sessionCrons?: unknown[]
 }
 let busy = false
 async function runStep(file: string, step: Step): Promise<unknown> {
@@ -274,7 +276,7 @@ async function runStep(file: string, step: Step): Promise<unknown> {
   }
   if (step.op === 'stop') {
     transcript('assistant', [{ type: 'text', text: 'rig: turn done' }])
-    return { hooks: await runHooks('Stop', { stop_hook_active: false }) }
+    return { hooks: await runHooks('Stop', { stop_hook_active: false, ...(step.sessionCrons ? { session_crons: step.sessionCrons } : {}) }) }
   }
   if (step.op === 'tool') {
     const toolUseId = `toolu_rig_${file}`

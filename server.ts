@@ -112,6 +112,7 @@ import {
   nodeIdleUpdateFs,
   scaleFromEnv,
   scaledDurations,
+  sessionWakePending,
 } from './lib/idle-update.mjs'
 import {
   ENROLMENT_HOLD_FILE_NAME,
@@ -1091,6 +1092,8 @@ let startupCompleteAtMs: number | null = null
 let lastVoiceFrameAtMs: number | null = null
 // A browser tool: the host is this daemon's child, so a restart closes Chrome.
 let lastBrowserToolAtMs: number | null = null
+/** The last Stop that showed a wakeup a restart would lose, until a Stop shows none: the idle update's gate 12b. */
+let sessionWakeAtMs: number | null = null
 const messageActivity = new MessageActivityTracker()
 // Channel liveness (fix 04): flips true on the first bgos tool call this
 // process sees. A Claude Code session launched without the channel flag
@@ -10615,6 +10618,11 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
   if ((event.name === 'PreToolUse' || event.name === 'PostToolUse') && /hoai-browser__/.test(String(payload.tool_name ?? ''))) {
     lastBrowserToolAtMs = Date.now()
   }
+  // What a restart would lose, only a Stop says: a self-paced /loop holds the idle update, and --resume would drop it.
+  if (event.name === 'Stop') {
+    const pending = sessionWakePending(payload.session_crons)
+    if (pending !== null) sessionWakeAtMs = pending ? Date.now() : null
+  }
   const hookSessionId = String(event.sessionId ?? '').trim()
   // Every admitted event decides it: a SessionEnd names the session that is
   // over, anything else is a live one again (a new session bound, a resume).
@@ -17764,6 +17772,7 @@ async function main(): Promise<void> {
         lastVoiceAtMs: lastVoiceFrameAtMs,
       }),
       lastBrowserToolAtMs: () => lastBrowserToolAtMs,
+      sessionWakeAtMs: () => sessionWakeAtMs,
       claudePid: () => agentClaudePid(),
       sessionId: async () => readTextOrNull(pathJoin(stateDir, SESSION_ID_FILE_NAME))?.trim() || null,
       listProcesses: () => listProcesses({ platform: process.platform, exec: nodeExec(), env: process.env }),

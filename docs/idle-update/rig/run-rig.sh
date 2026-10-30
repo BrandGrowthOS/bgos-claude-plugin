@@ -3,7 +3,7 @@
 # both sides (Windows tasks inside rig.mjs; WSL systemd timers, unit files and
 # crontab here) before and after, and run rig.mjs under Windows node through this
 # box's heavy queue (~/.local/bin/heavy: FIFO tickets and its slots, never a raw flock).
-# usage: run-rig.sh <idle|busy|broken|stagger|many> [scale] [agents] [busy cases, comma separated]
+# usage: run-rig.sh <idle|busy|broken|stagger|wake|many> [scale] [agents] [busy cases, comma separated]
 # many is stagger-many.mjs: fifteen real controllers in their own processes, without the real chain's 0.9 GB per agent.
 set -u
 scenario=${1:?scenario}

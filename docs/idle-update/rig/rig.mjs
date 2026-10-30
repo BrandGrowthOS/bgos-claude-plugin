@@ -47,7 +47,7 @@ function die(why) {
   process.exit(1)
 }
 if (process.platform !== 'win32') die('the rig runs on Windows node')
-if (!['idle', 'busy', 'broken', 'stagger'].includes(scenario ?? '')) die('--scenario idle|busy|broken|stagger')
+if (!['idle', 'busy', 'broken', 'stagger', 'wake'].includes(scenario ?? '')) die('--scenario idle|busy|broken|stagger|wake')
 if (!runDir || !/^[D-Zd-z]:\\/.test(runDir)) die('--run-dir must be an absolute path on a drive other than C:')
 if (!Number.isFinite(scale) || scale < 1 || scale > 10) die('--scale must be 1..10 (the beacon lands about every 10 s; 2 min / scale must stay above it)')
 const realProfile = (process.env.USERPROFILE ?? '').toLowerCase()
@@ -659,6 +659,47 @@ async function scenarioBroken() {
   check("Claude Code's own update for the marketplace is off after the rollback", JSON.stringify(settings ?? {}).includes('"autoUpdate":false'), settings?.extraKnownMarketplaces ?? null)
 }
 
+// What a restart does to a schedule (DESIGN.md, "What a restart does to /loop and scheduled wakes"). A backend wake is
+// the backend's, and its fire reaches the resumed session on the new build. A one-shot entry at a Stop (a self-paced
+// /loop) holds the restart; a Stop that shows only an interval /loop, which --resume restores, lets it through. The
+// stand-in proves the daemon's handling, never Claude Code's own restore.
+async function scenarioWake() {
+  const [a] = ids(1, 7500001).map((id) => prepareAgent(id, FROM))
+  await bootAll([a])
+  const seen = () => jsonLines(join(a.cwd, '.rig', 'inbound.jsonl'))
+  // A chat's first message reads as backlog (the owed case above), so the fire needs one before it.
+  await stub('fire', { assistantId: a.id, text: 'rig: hello' })
+  await watch('the first card was delivered', () => seen().some((l) => l.meta?.message_id), { timeoutMs: 3 * MIN })
+  await stub('schedule', { assistantId: a.id, tasks: [{ id: 1, name: 'rig wake', status: 'active', nextFireAt: new Date(Date.now() + 360 * MIN).toISOString() }] })
+  step(a, { op: 'prompt', text: 'rig: a turn that ends on a self-paced /loop' })
+  await sleep(SEC)
+  step(a, { op: 'stop', sessionCrons: [{ id: 'rig-wakeup', schedule: '30 12 * * *', recurring: false, prompt: '/loop rig' }] })
+  stage(TARGET)
+  await watch('the restart held for the pending wakeup', () => idleLines(a.id).some((l) => /waiting: session_wake/.test(l)), { timeoutMs: 5 * MIN })
+  say('held; watching past the quiet window and the largest jitter')
+  await sleep((20 * MIN) / scale + MIN)
+  const whileHeld = sessionLaunches(a).length
+  step(a, { op: 'prompt', text: 'rig: a turn that ends on an interval /loop only' })
+  await sleep(SEC)
+  step(a, { op: 'stop', sessionCrons: [{ id: 'rig-interval', schedule: '*/10 * * * *', recurring: true, prompt: '/loop 10m rig' }] })
+  await watch('the restart onto the target', () => latestVersion(a.id) === TARGET && record(a.id)?.state === 'validated', { timeoutMs: 15 * MIN })
+  const before = seen().length
+  await stub('fire', { assistantId: a.id, text: 'rig: the wake fires' })
+  await watch('the fire reached the session', () => seen().slice(before).some((l) => l.content?.includes('rig: the wake fires')), { timeoutMs: 3 * MIN })
+  say('watching two more minutes for a second restart')
+  await sleep(2 * MIN)
+  const s = summarise(a)
+  results.agents[a.id] = s
+  const fired = seen().find((l) => l.content?.includes('rig: the wake fires'))
+  check('held: no restart while the Stop showed a pending wakeup, through the quiet window and the largest jitter', whileHeld === 1, whileHeld)
+  const scheduleReads = jsonLines(join(dir, 'stub-requests.jsonl')).filter((r) => r.path === 'scheduled-tasks/agent' && r.assistantId === a.id).length
+  check('the old daemon read the wake, 6 h out, before it restarted', scheduleReads > 0, scheduleReads)
+  check('one restart, onto the target, once only an interval /loop was left', s.launches.length === 2 && s.launches[1].version === TARGET, s.launches)
+  check('context kept: the second launch resumed the same session', s.launches[1]?.mode === 'resume' && s.launches[1]?.sessionId === s.launches[0]?.sessionId, s.launches)
+  check("the wake's fire reached the resumed session, after the restart", Date.parse(fired?.at ?? '') > Date.parse(s.launches[1]?.at ?? ''), fired)
+  check('reported: heartbeats carry the new version with no error', latestVersion(a.id) === TARGET && s.lastError === null, { versions: s.versions, lastError: s.lastError })
+}
+
 async function scenarioStagger() {
   const list = ids(agentCount, 7400001).map((id) => prepareAgent(id, FROM))
   await bootAll(list)
@@ -713,6 +754,7 @@ try {
   if (scenario === 'busy') await scenarioBusy()
   if (scenario === 'broken') await scenarioBroken()
   if (scenario === 'stagger') await scenarioStagger()
+  if (scenario === 'wake') await scenarioWake()
 } catch (err) {
   failure = String(err?.message ?? err)
   say(`error: ${failure}`)

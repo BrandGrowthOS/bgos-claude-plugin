@@ -2873,6 +2873,126 @@
       "tests": [
         "test/idle-update.test.ts"
       ]
+    },
+    {
+      "id": "gate-12b-session-wake",
+      "rule": "a wakeup pending at the last Stop holds the restart",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (within(now, f.sessionWakeAtMs, d.sessionWakeHoldMs)) return wait('session_wake')\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-12b-order",
+      "rule": "the goal comes first, the quiet window after",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (f.goalRunning) return wait('goal_running')\n  if (within(now, f.sessionWakeAtMs, d.sessionWakeHoldMs)) return wait('session_wake')\n",
+      "replace": "  if (within(now, f.sessionWakeAtMs, d.sessionWakeHoldMs)) return wait('session_wake')\n  if (f.goalRunning) return wait('goal_running')\n",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "dur-session-wake",
+      "rule": "a lost wakeup holds for 2 h at most",
+      "file": "lib/idle-update.mjs",
+      "find": "  sessionWakeHoldMs: 2 * HOUR,",
+      "replace": "  sessionWakeHoldMs: 1 * HOUR,",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "session-pending-not-recurring",
+      "rule": "anything not plainly recurring counts",
+      "file": "lib/idle-update.mjs",
+      "find": "crons.some((task) => task?.recurring !== true)",
+      "replace": "crons.some((task) => task?.recurring === false)",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "session-pending-any",
+      "rule": "a recurring entry alone holds nothing",
+      "file": "lib/idle-update.mjs",
+      "find": "crons.some((task) => task?.recurring !== true)",
+      "replace": "crons.length > 0",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "session-pending-no-field",
+      "rule": "no field is no reading",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (!Array.isArray(crons)) return null\n",
+      "replace": "  if (!Array.isArray(crons)) return false\n",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-session-wake-fact",
+      "rule": "the controller reads the stamp",
+      "file": "lib/idle-update.mjs",
+      "find": "      sessionWakeAtMs: read(deps.sessionWakeAtMs, null),\n",
+      "replace": "      sessionWakeAtMs: null,\n",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "wire-session-wake-dep",
+      "rule": "the daemon gives the controller the stamp",
+      "file": "server.ts",
+      "find": "      sessionWakeAtMs: () => sessionWakeAtMs,\n",
+      "replace": "      sessionWakeAtMs: () => null,\n",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-session-wake-stop",
+      "rule": "only a Stop says what is scheduled",
+      "file": "server.ts",
+      "find": "  if (event.name === 'Stop') {\n    const pending = sessionWakePending",
+      "replace": "  if (event.name === 'PostToolUse') {\n    const pending = sessionWakePending",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-session-wake-clears",
+      "rule": "a Stop that shows none clears it, a Stop that says nothing does not",
+      "file": "server.ts",
+      "find": "    if (pending !== null) sessionWakeAtMs = pending ? Date.now() : null\n",
+      "replace": "    if (pending) sessionWakeAtMs = Date.now()\n",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "hook-keeps-session-crons",
+      "rule": "an oversized Stop keeps what session_crons says",
+      "file": "bin/hoai-hook.mjs",
+      "find": "  if (Array.isArray(payload.session_crons)) {\n",
+      "replace": "  if (false) {\n",
+      "tests": [
+        "test/hoai-hook.test.ts"
+      ]
+    },
+    {
+      "id": "hook-session-crons-no-prompt",
+      "rule": "and no prompt",
+      "file": "bin/hoai-hook.mjs",
+      "find": ".map((task) => ({ recurring: isRecord(task) && task.recurring === true }))",
+      "replace": ".map((task) => task)",
+      "tests": [
+        "test/hoai-hook.test.ts"
+      ]
     }
   ]
 }

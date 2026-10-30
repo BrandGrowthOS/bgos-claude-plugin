@@ -105,18 +105,20 @@ const server = createServer(async (req, res) => {
   if (url.pathname.startsWith('/__rig/')) {
     const op = url.pathname.slice('/__rig/'.length)
     if (op === 'ping') return send(res, 200, { ok: true })
-    if (op === 'inbound' && body?.assistantId) {
+    // A person's message, or a scheduled wake's fire: the backend's system card, which owes no reply.
+    if ((op === 'inbound' || op === 'fire') && body?.assistantId) {
+      const sender = op === 'fire' ? 'system' : 'user'
       const chatId = chatFor(body.assistantId)
       const id = nextMessageId++
       const list = messages.get(chatId) ?? []
-      list.push({ message: { id, chatId, sender: 'user', text: String(body.text ?? 'hello'), sentDate: new Date().toISOString() }, messageFiles: [], messageOptions: [] })
+      list.push({ message: { id, chatId, sender, text: String(body.text ?? 'hello'), sentDate: new Date().toISOString() }, messageFiles: [], messageOptions: [] })
       messages.set(chatId, list)
-      record({ rig: 'inbound', assistantId: String(body.assistantId), chatId, id })
+      record({ rig: op, assistantId: String(body.assistantId), chatId, id })
       realtime.to(`agent-${body.assistantId}`).emit('inbound_message', {
         messageId: id,
         chatId,
         text: String(body.text ?? 'hello'),
-        senderType: 'user',
+        senderType: sender,
         sentDate: new Date().toISOString(),
       })
       return send(res, 200, { ok: true, chatId, id })
