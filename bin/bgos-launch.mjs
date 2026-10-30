@@ -20,6 +20,11 @@
  * When nothing resolves, the user gets a plain install hint on stderr and
  * exit 127. A raw ENOENT stack is never the user-visible error.
  *
+ * On Windows bun also gets WIN32_JSC_THREAD_OPTIONS in its environment, once
+ * one `bun -e 0` with them has run: bun 1.3 there leaks every thread that
+ * exits, and without them JavaScriptCore starts and stops threads all day
+ * (board rows a8646712 and dc37e2ac).
+ *
  * Self-contained plain JavaScript: node >= 18 builtins only, no imports from
  * the TS plugin sources (lib/browser-profile-node-runtime.mjs is plain and
  * pure: on a Node older than the Agent Browser's floor, 22.12.0, this launcher
@@ -27,7 +32,7 @@
  * runs when the file is executed directly, so tests can import the pure pieces.
  */
 
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { win32 as win32Path, posix as posixPath } from 'node:path'
@@ -156,6 +161,83 @@ export function resolveLaunchCwd(argv, platform = process.platform) {
   return pathFlavor(platform).dirname(first)
 }
 
+/**
+ * Runtime options for bun on Windows (board rows a8646712 and dc37e2ac).
+ *
+ * On Windows, bun 1.3 leaks every thread that exits: its handle stays open
+ * and about 0.3 MB of committed memory stays with it. JavaScriptCore keeps two
+ * pools of threads that it starts when there is work and lets exit a few
+ * seconds after: the garbage collector's helpers (parallel markers and the
+ * concurrent collector thread) and the JIT's compiler threads. An idle daemon
+ * collects and compiles every so often, so it made and lost threads all day:
+ * its committed memory grew 100 to 330 MB an hour while its working set stayed
+ * flat (the lost memory is never touched again), until a PC with seven agents
+ * reached 98% commit and jobs were killed. With one marker, no concurrent
+ * collector and no concurrent compiler, both pools stay empty: the daemon
+ * collects and compiles on its own thread, and nothing starts or exits. Its
+ * JavaScript heap is about 13 MB, and on the rig it used less CPU this way.
+ *
+ * Only Windows: the Mac fleet stays flat on the same bun, so macOS and Linux
+ * launch exactly as before. bin/bgos-daemon-wrapper.mjs, copied out of the
+ * checkout and importing nothing from it, holds the same table (a test keeps
+ * the two equal) and lib/marker-takeover.mjs keeps these keys from a claude it
+ * relaunches.
+ */
+export const WIN32_JSC_THREAD_OPTIONS = Object.freeze({
+  BUN_JSC_numberOfGCMarkers: '1',
+  BUN_JSC_useConcurrentGC: '0',
+  BUN_JSC_useConcurrentJIT: '0',
+})
+
+/**
+ * The runtime options to add to bun's environment on this platform. A key the
+ * operator already set, even to an empty value, is left to them.
+ * @param {{ env: Record<string, string | undefined>, platform: string }} input
+ * @returns {Record<string, string>}
+ */
+export function bunRuntimeEnv({ env, platform }) {
+  if (platform !== 'win32') return {}
+  /** @type {Record<string, string>} */
+  const out = {}
+  for (const [key, value] of Object.entries(WIN32_JSC_THREAD_OPTIONS)) {
+    if (env[key] === undefined) out[key] = value
+  }
+  return out
+}
+
+/**
+ * True when this bun refuses `env`'s JSC options. bun exits before any script
+ * runs on a BUN_JSC_ option it does not know ("invalid JSC environment
+ * variable"), and those options change between bun releases, so one `bun -e 0`
+ * with them (about 0.1 s) tells. Anything else, a timeout included, is not a
+ * refusal.
+ * @param {string} bunPath
+ * @param {Record<string, string | undefined>} env
+ * @param {typeof spawnSync} [spawnSyncImpl]
+ */
+export function bunRefusesOptions(bunPath, env, spawnSyncImpl = spawnSync) {
+  const probe = spawnSyncImpl(bunPath, ['-e', '0'], { env, encoding: 'utf8', timeout: 15_000, windowsHide: true })
+  return /invalid JSC environment variable/i.test(String(probe?.stderr ?? ''))
+}
+
+/**
+ * The boot line of a daemon that runs on Windows without the thread options,
+ * because something other than this launcher started it (a hand written
+ * .mcp.json running `bun server.ts`). Null when nothing is missing or off
+ * Windows. The daemon logs it once, so a growing helper explains itself.
+ * @param {{ env: Record<string, string | undefined>, platform: string }} input
+ * @returns {string | null}
+ */
+export function threadOptionsWarning({ env, platform }) {
+  const missing = Object.keys(bunRuntimeEnv({ env, platform }))
+  if (missing.length === 0) return null
+  return (
+    `this daemon runs on Windows without ${missing.join(', ')}: bun there loses memory with every thread ` +
+    "it lets go, so its committed memory grows while it runs. bin/bgos-launch.mjs (the plugin's own launch) " +
+    'and the Agent Pack wrapper set them whenever this bun accepts them.'
+  )
+}
+
 /** Map a child's (code, signal) exit to this process's exit code. */
 export function exitCodeForChild(code, signal) {
   if (signal) return SIGNAL_EXIT_CODES[signal] ?? 1
@@ -176,6 +258,7 @@ export function exitCodeForChild(code, signal) {
  *   platform?: string,
  *   exists?: (path: string) => boolean,
  *   spawnImpl?: typeof spawn,
+ *   spawnSyncImpl?: typeof spawnSync,
  *   writeErr?: (text: string) => void,
  *   onSignal?: (signal: string, handler: () => void) => void,
  *   setTimer?: (fn: () => void, ms: number) => { unref?: () => void },
@@ -218,12 +301,23 @@ export function main(argv = process.argv.slice(2), opts = {}) {
     // resolve dependencies. So the original directory travels in the
     // environment, which survives the switch, and the server prefers it for
     // the pin lookup only. Everything else still runs from the plugin dir.
+    //
+    // On Windows bun also gets its thread options (WIN32_JSC_THREAD_OPTIONS),
+    // unless this bun refuses them: then it starts without them, as before.
+    // The bunx last resort starts as before too: `bunx -e 0` is no check of bun's.
+    let runtime = resolved.via.startsWith('bunx') ? {} : bunRuntimeEnv({ env, platform })
+    if (Object.keys(runtime).length > 0 && bunRefusesOptions(resolved.path, { ...env, ...runtime }, opts.spawnSyncImpl)) {
+      writeErr(`[bgos-launch] this bun refuses ${Object.keys(runtime).join(', ')}; starting it without them\n`)
+      runtime = {}
+    }
+    const extra = {
+      ...runtime,
+      ...(cwd ? { BGOS_LAUNCH_CWD: env.BGOS_LAUNCH_CWD || process.cwd() } : {}),
+    }
     const child = spawnImpl(resolved.path, argv, {
       stdio: 'inherit',
       ...(cwd ? { cwd } : {}),
-      ...(cwd
-        ? { env: { ...env, BGOS_LAUNCH_CWD: env.BGOS_LAUNCH_CWD || process.cwd() } }
-        : {}),
+      ...(Object.keys(extra).length > 0 ? { env: { ...env, ...extra } } : {}),
     })
     // Forward termination to the child so a stopped shim never strands a bun
     // process holding the MCP stdio pipes. Signal listeners do not hold the

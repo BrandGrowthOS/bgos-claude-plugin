@@ -2,6 +2,29 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.80.2 (2026-10-29)
+
+**A reply to a side thread that HOAI did not forward is now reported as an error, never a silent "Sent" (board row 28fed1cd).** On 2026-10-27 the conversation between Data and Ares closed on timeout, and five of Data's later replies into that side thread were answered "Sent" and never reached Ares, who asked the same questions four times.
+
+- **The cause: "Sent" only ever meant "saved".** HOAI accepts a reply into a closed side thread, reopens the conversation and saves the reply, then forwards it to the other agent on a best effort basis. The answer was the same either way, so the daemon could not tell a reply the peer got from one it never did.
+- **`reply` now acts on HOAI's own word on the forward** (`peerDelivery` on the `/send-message` answer, BGOS #3420). `not_forwarded` is an error that says why, in plain words an agent can pass to its owner, and offers only a remedy that works. `forwarded`, or no field at all (a backend without #3420), is the Sent it always was.
+- **A reply into a closed conversation still goes to HOAI,** which reopens it (the reopen rule holds). The daemon refuses nothing locally; only HOAI's answer decides.
+- **Each reason says what it means.** `conversation_not_open` and `no_conversation` say the conversation is over. Any other reason (the other agent offline, a paused contact link, a failure inside the forward) says only that this reply was not passed on. send_to_peer is offered where it works, and a reply with files is told to send the words and share the files as a link, because send_to_peer carries none.
+- **The inbound a failed reply answered leaves the overdue sweep,** as on the 403 path, since the agent has been told. A newer message that landed during the send stays.
+- Tests: `test/peer-closed-reply.test.ts` (the delivery states, the wording for each reason, files, the overdue sweep, and an unknown value never turning a reply into an error).
+
+## 0.80.1 (2026-10-28)
+
+**On Windows each agent's helper no longer grows by several GB a day (board rows a8646712 and dc37e2ac).**
+
+- **The cause is in bun on Windows, not in the daemon's own work.** bun 1.3 there leaks every thread that exits: its handle stays open and about 0.3 MB of committed memory stays with it. JavaScriptCore starts garbage collector helpers and JIT compiler threads when there is work and lets them exit seconds later, so an idle daemon made and lost threads all day: committed memory grew 100 to 330 MB an hour while the working set stayed flat, until Kc's PC reached 98% commit. A bare bun script that only collects every 12 s shows the same: +718 MB and 2,212 thread handles an hour.
+- **`bin/bgos-launch.mjs` starts bun on Windows with one GC marker, no concurrent collector and no concurrent compiler** (`WIN32_JSC_THREAD_OPTIONS`), so neither pool starts or stops a thread. A value the operator set is kept. macOS and Linux launch exactly as before. Measured on the daemon over 30 minutes: thread handles flat, committed memory flat, and less CPU than before.
+- **The Agent Pack wrapper gives its daemon the same options** (`bin/bgos-daemon-wrapper.mjs`, `daemonEnv`): its `.mcp.json` runs `bun <wrapper>`, never the launcher. The wrapper is copied out of the checkout, so it holds its own copy of the table and a test keeps the two equal.
+- **A bun that refuses the options still starts.** bun exits on a JSC option it does not know, and those change between bun releases, so the launcher and the wrapper first run one `bun -e 0` with them (about 0.1 s, Windows only) and start bun without them when it answers `invalid JSC environment variable`. A launch that only finds bunx, the last resort, starts as before.
+- **The options stay with the daemon.** They join `SESSION_ENV_KEYS` (`lib/marker-takeover.mjs`), so a takeover's helper and the claude it relaunches never get them; the lane supervisor, a long running bun of its own, keeps them.
+- **A Windows daemon started some other way says so once at boot** (`WARN this daemon runs on Windows without ...`), naming what is missing and what sets it.
+- Tests: `test/bgos-launch.test.ts` (the options, an operator's own value kept, the probe and a refusing bun, the Windows and macOS spawns, the boot warning), `test/daemon-wrapper.test.ts` (the wrapper's table and `daemonEnv`), `test/marker-takeover.test.ts` (a relaunch never gets the options), `test/win-commit-growth.soak.test.ts` (Windows, opt in with `HOAI_SOAK=1`, about 16 minutes: the real launcher and daemon against a stand in backend, red on main at 357 handles an hour, green with the fix at 0).
+
 ## 0.80.0 (2026-10-27)
 
 **A question on the card can take several answers (askcard PR 3, Kc: "when there are multiple answers, you need to be able to multi-select").** The app draws such a question as checkboxes with one Submit (BrandGrowthOS/BGOS, the same PR 3), and the backend stores every pick.

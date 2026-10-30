@@ -487,6 +487,7 @@ import {
   marketplaceChannelSpec,
 } from './bin/bgos-install-method.mjs'
 import { resolveChannelSpec } from './bin/hoai-core.mjs'
+import { threadOptionsWarning } from './bin/bgos-launch.mjs'
 import {
   UpdateStreamConsumer,
   beaconWatchdog,
@@ -1023,6 +1024,13 @@ import {
   peerRefusalStatus,
   type PeerRefusal,
 } from './lib/peer-refusal.js'
+import {
+  peerConversationEnded,
+  peerDeliveryOf,
+  peerDeliveryReason,
+  peerReplyNotForwardedResult,
+  peerReplyNotPassedOnResult,
+} from './lib/peer-closed-reply.js'
 import { messagesCallerHeaders } from './lib/messages-caller-header.js'
 import { createChatOwnership } from './lib/chat-ownership.js'
 import { createTurnChatTracker } from './lib/turn-chat.js'
@@ -6511,6 +6519,26 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
 
         const result = await bgosPost('send-message', body)
         const msgId = (result as any)?.message?.id
+        // HOAI's own word on the forward to the other agent, on a backend that
+        // gives it (`peerDelivery`, side threads only; BGOS #3420). Not
+        // forwarded: the reply is saved in the side thread and the other agent
+        // does not have it, so it is not a Sent. Forwarded, or no word at all,
+        // is the Sent below. A reply into a closed conversation still goes to
+        // HOAI, which reopens it (Kc's rule, kept by Data on 2026-10-28); only
+        // its answer decides. The inbound this reply answered is dropped from
+        // the overdue sweep, as for the 403 below: the agent has been told.
+        if (peerDeliveryOf(result) === 'not_forwarded') {
+          if (pendingInbounds.get(String(resolvedChatId))?.messageId === answeringInboundId) {
+            clearInbound(resolvedChatId)
+          }
+          log(
+            `reply to chat ${resolvedChatId} saved as ${msgId} but not forwarded to the peer ` +
+              `(${peerDeliveryReason(result)}); told the agent`,
+          )
+          return peerConversationEnded(result)
+            ? peerReplyNotForwardedResult(String(resolvedChatId), msgId, hasAttachment)
+            : peerReplyNotPassedOnResult(String(resolvedChatId), msgId, peerDeliveryReason(result), hasAttachment)
+        }
         // Session binding: the CLI writes this tool call's result ("Sent
         // (message_id: N)...") verbatim into THIS session's transcript, so
         // the minted id is positive proof of which transcript is ours.
@@ -17378,6 +17406,10 @@ async function main(): Promise<void> {
     }),
   )
   if (ENV_ONLY_IDENTITY_WARN) log(`WARN ${ENV_ONLY_IDENTITY_WARN}`)
+  // Windows only (board rows a8646712 and dc37e2ac): started without the launcher's
+  // thread options, this daemon's committed memory grows while it runs.
+  const threadOptionsWarn = threadOptionsWarning({ env: process.env, platform: process.platform })
+  if (threadOptionsWarn) log(`WARN ${threadOptionsWarn}`)
   const noHomeWarn = formatNoHomeWarning(HOME_BINDING, ASSISTANT_ID)
   if (noHomeWarn) log(`WARN ${noHomeWarn}`)
   if (PAIRING_REJECTION_WARN) log(`WARN ${PAIRING_REJECTION_WARN}`)
