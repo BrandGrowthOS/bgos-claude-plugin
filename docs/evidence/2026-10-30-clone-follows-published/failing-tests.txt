@@ -1,0 +1,188 @@
+# failing test names, clean HEAD c636ded vs the change 800001c
+
+## macos-head (46)
+✖ a macOS Keychain endpoint record saves and loads like a Secret Service one, and any other provider refuses
+✖ a reviewed source pin permits blocked readiness but confirmed history alone cannot activate the agent
+✖ actual shipped seal and journal workers encrypt a private native-shaped draft and verify durable readback
+✖ an explicit files read privately converts a real quarantined download but sending still needs recipient consent
+✖ an original reviewed return drains and confirms an injected durable encrypted journal before the paired POST
+✖ an uncertain outgoing upload is spent despite a later confirmed server read
+✖ approved preload persists whole encrypted extras across fresh providers without helper calls during capture
+✖ authorization loss after linking leaves a recovery tombstone and never promotes a failed review on restart
+✖ automatic scheduling waits the production60s debounce under a synthetic clock and keeps the source active
+✖ bad tags, truncated records and wrong purpose refuse before exposing entries
+✖ blocked runtime readiness waits for exact human confirmation and fresh active profile before network opens
+✖ bounded periodic hints capture storage-only changes without a command or network hint and stop synchronously on pause
+✖ changed pin, foreign binding, plaintext and endpoint replacement refuse without overwriting
+✖ constructed agent file offers leave sender headroom while preserving signed scope and encrypted payload
+✖ epoch loss after initial offer dispatch retains only the original read-only outcome
+✖ exact hash-pinned Bun-style dependency hardlinks are admitted and rechecked after alias changes
+✖ explicit matching full fingerprint stores only a signed public pin and never current permission
+✖ explicit review uses fresh exact enrollment and current background consent before signing the local peer pin
+✖ failed atomic replacement preserves old ciphertext, latches uncertainty and blocks automatic recovery
+✖ failed fresh publication deletes only its new OS item after disposal and retains existing secrets
+✖ failing tests:
+✖ four immutable reviewed peers are bounded and interrupted write markers require recovery
+✖ full locally reviewed recipient set seals and confirms advisory backup through actual shipped workers while original source stays active
+✖ global busy admission does not spend an untouched original artifact capability
+✖ inactive destination publication requires the exact activation and staged receipt and is one use
+✖ incoming upload preserves original opaque permission args then materializes the approved file once
+✖ incomplete write and stale lock require explicit recovery instead of missing-state fallback
+✖ local pin is immutable and tampered signatures cannot be promoted through discovery
+✖ locked OS backend never returns a usable provider or stores plaintext fallback
+✖ lost initial creation acknowledgement remains read-only and never creates another offer
+✖ lost ready write is never retried or allowed to open the staged destination
+✖ one browser artifact waits for exact human file consent and uploads encrypted bytes only once
+✖ only exact fresh version2 receive can issue a private reviewed-URL capability, then restore actual selected page without an extra blank
+✖ ordinary jpg and jpeg basenames retain exact engine-inferred JPEG metadata
+✖ oversized credential trees refuse before encryption or native writes
+✖ pause drains held original metadata work before resume and never starts a late native capture
+✖ possible upload failure is never automatically resent, including durable journal rediscovery after helper replacement
+✖ private conversion preserves one shared slot and creates only an owned one-use artifact
+✖ private endpoint catalog saves only encrypted keys and immutable public scope with durable readback
+✖ receive readiness cannot borrow a source key from relay metadata
+✖ revoked authority, async proof, duplicate physical writer and stale document tuple all refuse
+✖ test/browser-profile-companion-backups.test.ts
+✖ uncertain already-published fresh data retains its OS key and explicit deletion failure is reported
+✖ unknown local journal inspection blocks a fresh runtime instead of falling through to own-head restore
+✖ version2 receive role owner and exact locally reviewed source identity are proved before runtime preparation or ready
+✖ wrong actor, profile, pin, grant and epoch cannot load an older record or silently create empty data
+
+## macos-change (46)
+✖ a macOS Keychain endpoint record saves and loads like a Secret Service one, and any other provider refuses
+✖ a reviewed source pin permits blocked readiness but confirmed history alone cannot activate the agent
+✖ actual shipped seal and journal workers encrypt a private native-shaped draft and verify durable readback
+✖ an explicit files read privately converts a real quarantined download but sending still needs recipient consent
+✖ an original reviewed return drains and confirms an injected durable encrypted journal before the paired POST
+✖ an uncertain outgoing upload is spent despite a later confirmed server read
+✖ approved preload persists whole encrypted extras across fresh providers without helper calls during capture
+✖ authorization loss after linking leaves a recovery tombstone and never promotes a failed review on restart
+✖ automatic scheduling waits the production60s debounce under a synthetic clock and keeps the source active
+✖ bad tags, truncated records and wrong purpose refuse before exposing entries
+✖ blocked runtime readiness waits for exact human confirmation and fresh active profile before network opens
+✖ bounded periodic hints capture storage-only changes without a command or network hint and stop synchronously on pause
+✖ changed pin, foreign binding, plaintext and endpoint replacement refuse without overwriting
+✖ constructed agent file offers leave sender headroom while preserving signed scope and encrypted payload
+✖ epoch loss after initial offer dispatch retains only the original read-only outcome
+✖ exact hash-pinned Bun-style dependency hardlinks are admitted and rechecked after alias changes
+✖ explicit matching full fingerprint stores only a signed public pin and never current permission
+✖ explicit review uses fresh exact enrollment and current background consent before signing the local peer pin
+✖ failed atomic replacement preserves old ciphertext, latches uncertainty and blocks automatic recovery
+✖ failed fresh publication deletes only its new OS item after disposal and retains existing secrets
+✖ failing tests:
+✖ four immutable reviewed peers are bounded and interrupted write markers require recovery
+✖ full locally reviewed recipient set seals and confirms advisory backup through actual shipped workers while original source stays active
+✖ global busy admission does not spend an untouched original artifact capability
+✖ inactive destination publication requires the exact activation and staged receipt and is one use
+✖ incoming upload preserves original opaque permission args then materializes the approved file once
+✖ incomplete write and stale lock require explicit recovery instead of missing-state fallback
+✖ local pin is immutable and tampered signatures cannot be promoted through discovery
+✖ locked OS backend never returns a usable provider or stores plaintext fallback
+✖ lost initial creation acknowledgement remains read-only and never creates another offer
+✖ lost ready write is never retried or allowed to open the staged destination
+✖ one browser artifact waits for exact human file consent and uploads encrypted bytes only once
+✖ only exact fresh version2 receive can issue a private reviewed-URL capability, then restore actual selected page without an extra blank
+✖ ordinary jpg and jpeg basenames retain exact engine-inferred JPEG metadata
+✖ oversized credential trees refuse before encryption or native writes
+✖ pause drains held original metadata work before resume and never starts a late native capture
+✖ possible upload failure is never automatically resent, including durable journal rediscovery after helper replacement
+✖ private conversion preserves one shared slot and creates only an owned one-use artifact
+✖ private endpoint catalog saves only encrypted keys and immutable public scope with durable readback
+✖ receive readiness cannot borrow a source key from relay metadata
+✖ revoked authority, async proof, duplicate physical writer and stale document tuple all refuse
+✖ test/browser-profile-companion-backups.test.ts
+✖ uncertain already-published fresh data retains its OS key and explicit deletion failure is reported
+✖ unknown local journal inspection blocks a fresh runtime instead of falling through to own-head restore
+✖ version2 receive role owner and exact locally reviewed source identity are proved before runtime preparation or ready
+✖ wrong actor, profile, pin, grant and epoch cannot load an older record or silently create empty data
+
+## linux-head (44)
+✖ 70f1898b: an email delivered while the marker cannot be read asks the owner in the next owner turn, until a Stop written after it
+✖ a bar from a delivery whose place was unknown ends with the next Stop the CLI ran after it (review round 2, R7)
+✖ a CLONE-STYLE folder that carries a .mcp.json keeps it byte for byte, the prover is never even started, and hoai starts from this checkout
+✖ a paired folder whose plugin is installed ONLY under the custom CLAUDE_CONFIG_DIR is proven, and the service carries that config dir
+✖ a PROVEN paired folder with no .mcp.json gets its supervisor, on the channel the resolver proved, and no .mcp.json is invented
+✖ a stale claude first on PATH is stepped over and named, and the one that knows the launch flag is baked FIRST on the service PATH
+✖ actual Chromium keeps locked browsing ephemeral and restores encrypted session cookie, localStorage and IndexedDB after unlock
+✖ actual owner fill remains redacted from MCP snapshots, evaluate, console and text artifacts after Not now
+✖ an install lock older than ten minutes is stale (its install died without its trap) and is taken over, by name
+✖ behaviour: a claude that exits during startup is named, and a signed-out TUI is told apart from a working one
+✖ behaviour: a claude that rejects the launch flag leaves its own words in the status, not a silent exit (board row 84296679)
+✖ behaviour: a Down that draws no readable repaint is taken at its word, once, as a timed answer always was
+✖ behaviour: a gate no rule recognises is named with its words, and NOT ONE byte is sent
+✖ behaviour: a gate painted AGAIN after it was answered is not answered twice
+✖ behaviour: a gate whose DECLINING option is first gets Down then Enter
+✖ behaviour: a launch that LOSES the startup race is named, and the next one waits longer and wins (run.sh's fail count drives it)
+✖ behaviour: a recognised gate whose options cannot be read is not answered either
+✖ behaviour: a resumed transcript that SAYS "confirm", and a tip that mentions /login, do not get a healthy session killed
+✖ behaviour: a screen nobody can answer is a failed launch with a reason, never a process that looks healthy
+✖ behaviour: a selection that visibly goes BACK to the declining option is moved again, never confirmed there
+✖ behaviour: claude exiting during startup, and a signed-out claude, are each a named exit with the reason on disk
+✖ behaviour: the dev-channels gate gets Enter as painted today, and Down then Enter if the order ever flips
+✖ behaviour: the same gate with the WANTED option first gets Enter alone
+✖ behaviour: the session-age gate gets "Resume from summary" in either option order
+✖ behaviour: the trust gate with "No, exit" first is ACCEPTED and the agent stays up (the generation 1 wrapper once exited 0 in 2 s here)
+✖ behaviour: with only the WANTED option readable nothing is pressed, because "it is painted first" would be a guess
+✖ every refusal is NAMED, exits nonzero, and leaves nothing behind: no wrapper, no service file, no service call
+✖ failing tests:
+✖ first native storage setup keeps the current completed sign-in and restores it encrypted after restart
+✖ JavaScript and password-only login pages keep exact capture checks and permit explicit login save
+✖ Linux: a reinstall over a RUNNING unit restarts it (enable --now leaves an active unit on its old run.sh), and a stopped unit is just started
+✖ native sealed field entry works while locked and manual Save login works without a form
+✖ owner normal browser creates, switches and closes real agent tabs and navigates history under its lease
+✖ ownerless agent tabs respect the same cap before a viewer attaches and legacy views keep their old wire
+✖ real sign-in with unrelated iframe, signup footer and alternative Email OTP fills and saves encrypted login
+✖ run from a marketplace plugin's VERSIONED cache dir, a clone-style folder's supervisor looks its root up in the install record at every launch instead of baking that dir
+✖ run from a VERSIONED plugin cache dir, the install leaves a clone folder's hook entries on its durable checkout: none is moved into a dir the next update deletes
+✖ run.sh logs which claude the launch found and its version, every launch
+✖ slow headers, slow documents and owner-clicked links accept Stop without blocking the remote stream
+✖ the PATH an install bakes is correct for its OS: Homebrew on macOS only (board row 84296679, kc-server)
+✖ the service carries CLAUDE_CONFIG_DIR and a valid HOAI_SERVICE_NAMESPACE from the installing shell; an invalid namespace is refused by name and left out
+✖ two installs of the same agent at once: the second says "install already in progress", exits 0 and writes nothing; the lock goes with the first
+✖ unlock clears a historical origin whose service worker still holds a locked IndexedDB connection
+✖ when EVERY claude is stale the install is refused by name and leaves nothing behind
+
+## linux-change (43)
+✖ a bar from a delivery whose place was unknown ends with the next Stop the CLI ran after it (review round 2, R7)
+✖ a CLONE-STYLE folder that carries a .mcp.json keeps it byte for byte, the prover is never even started, and hoai starts from this checkout
+✖ a paired folder whose plugin is installed ONLY under the custom CLAUDE_CONFIG_DIR is proven, and the service carries that config dir
+✖ a PROVEN paired folder with no .mcp.json gets its supervisor, on the channel the resolver proved, and no .mcp.json is invented
+✖ a stale claude first on PATH is stepped over and named, and the one that knows the launch flag is baked FIRST on the service PATH
+✖ actual Chromium keeps locked browsing ephemeral and restores encrypted session cookie, localStorage and IndexedDB after unlock
+✖ actual owner fill remains redacted from MCP snapshots, evaluate, console and text artifacts after Not now
+✖ an install lock older than ten minutes is stale (its install died without its trap) and is taken over, by name
+✖ behaviour: a claude that exits during startup is named, and a signed-out TUI is told apart from a working one
+✖ behaviour: a claude that rejects the launch flag leaves its own words in the status, not a silent exit (board row 84296679)
+✖ behaviour: a Down that draws no readable repaint is taken at its word, once, as a timed answer always was
+✖ behaviour: a gate no rule recognises is named with its words, and NOT ONE byte is sent
+✖ behaviour: a gate painted AGAIN after it was answered is not answered twice
+✖ behaviour: a gate whose DECLINING option is first gets Down then Enter
+✖ behaviour: a launch that LOSES the startup race is named, and the next one waits longer and wins (run.sh's fail count drives it)
+✖ behaviour: a recognised gate whose options cannot be read is not answered either
+✖ behaviour: a resumed transcript that SAYS "confirm", and a tip that mentions /login, do not get a healthy session killed
+✖ behaviour: a screen nobody can answer is a failed launch with a reason, never a process that looks healthy
+✖ behaviour: a selection that visibly goes BACK to the declining option is moved again, never confirmed there
+✖ behaviour: claude exiting during startup, and a signed-out claude, are each a named exit with the reason on disk
+✖ behaviour: the dev-channels gate gets Enter as painted today, and Down then Enter if the order ever flips
+✖ behaviour: the same gate with the WANTED option first gets Enter alone
+✖ behaviour: the session-age gate gets "Resume from summary" in either option order
+✖ behaviour: the trust gate with "No, exit" first is ACCEPTED and the agent stays up (the generation 1 wrapper once exited 0 in 2 s here)
+✖ behaviour: with only the WANTED option readable nothing is pressed, because "it is painted first" would be a guess
+✖ every refusal is NAMED, exits nonzero, and leaves nothing behind: no wrapper, no service file, no service call
+✖ failing tests:
+✖ first native storage setup keeps the current completed sign-in and restores it encrypted after restart
+✖ JavaScript and password-only login pages keep exact capture checks and permit explicit login save
+✖ Linux: a reinstall over a RUNNING unit restarts it (enable --now leaves an active unit on its old run.sh), and a stopped unit is just started
+✖ native sealed field entry works while locked and manual Save login works without a form
+✖ owner normal browser creates, switches and closes real agent tabs and navigates history under its lease
+✖ ownerless agent tabs respect the same cap before a viewer attaches and legacy views keep their old wire
+✖ real sign-in with unrelated iframe, signup footer and alternative Email OTP fills and saves encrypted login
+✖ run from a marketplace plugin's VERSIONED cache dir, a clone-style folder's supervisor looks its root up in the install record at every launch instead of baking that dir
+✖ run from a VERSIONED plugin cache dir, the install leaves a clone folder's hook entries on its durable checkout: none is moved into a dir the next update deletes
+✖ run.sh logs which claude the launch found and its version, every launch
+✖ slow headers, slow documents and owner-clicked links accept Stop without blocking the remote stream
+✖ the PATH an install bakes is correct for its OS: Homebrew on macOS only (board row 84296679, kc-server)
+✖ the service carries CLAUDE_CONFIG_DIR and a valid HOAI_SERVICE_NAMESPACE from the installing shell; an invalid namespace is refused by name and left out
+✖ two installs of the same agent at once: the second says "install already in progress", exits 0 and writes nothing; the lock goes with the first
+✖ unlock clears a historical origin whose service worker still holds a locked IndexedDB connection
+✖ when EVERY claude is stale the install is refused by name and leaves nothing behind
