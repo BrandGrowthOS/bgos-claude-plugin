@@ -764,7 +764,12 @@ test('rollback moment: a restart through a systemd unit waits for a stray job in
 test('rollback: only the canary rolls back the shared install; another agent reports; an expired login does neither', () => {
   const m = need()
   assert.equal(m.decideRollback({ canary: true, loginExpired: false }), 'rollback')
-  assert.equal(m.decideRollback({ canary: false, loginExpired: false }), 'report_only')
+  // A failed non-canary has a way back too. Once: a poison agent never holds every release on this computer.
+  assert.equal(m.decideRollback({ canary: false, wentBack: false, loginExpired: false }), 'rollback')
+  assert.equal(m.decideRollback({ canary: false, wentBack: true, loginExpired: false }), 'report_only')
+  // The canary's own verdict is never limited: its failure is the version's.
+  assert.equal(m.decideRollback({ canary: true, wentBack: true, loginExpired: false }), 'rollback')
+  assert.equal(m.decideRollback({ canary: false, wentBack: false, loginExpired: true }), 'none')
   assert.equal(m.decideRollback({ canary: true, loginExpired: true }), 'none')
 })
 
@@ -826,6 +831,33 @@ test('rollback moment: no hook signal goes back all the same, but on the 30 min 
   // Never held for a signal that may never come: a deaf build gets no turns, and it must still go back.
   assert.deepEqual(m.decideRollbackMoment(blind(31 * MIN)), { go: true, reason: 'quiet' })
   assert.deepEqual(m.decideRollbackMoment(quietRollback({ activityMs: [NOW - 3 * MIN], bootAtMs: NOW - DAY })), { go: true, reason: 'quiet' })
+})
+
+test('the way back: the newer of this agent\'s own build and the canary\'s: fifteen agents do not all come from one version', () => {
+  const m = need()
+  const mine = { from: '0.79.0', fromRoot: '/c/hoai/0.79.0', fromCommit: null, installMethod: 'marketplace' }
+  const canary = { from: '0.80.0', fromRoot: '/c/hoai/0.80.0' }
+  assert.deepEqual(m.rollbackSourceFor(mine, canary), { from: '0.80.0', fromRoot: '/c/hoai/0.80.0', fromCommit: null })
+  assert.deepEqual(m.rollbackSourceFor({ ...mine, from: '0.80.1', fromRoot: '/c/hoai/0.80.1' }, canary), { from: '0.80.1', fromRoot: '/c/hoai/0.80.1', fromCommit: null })
+  assert.deepEqual(m.rollbackSourceFor(mine, null), { from: '0.79.0', fromRoot: '/c/hoai/0.79.0', fromCommit: null })
+  // The file is shared: anything but a plain version with a root names nothing.
+  assert.equal(m.rollbackSourceFor(mine, { from: '../../etc', fromRoot: '/x' }).from, '0.79.0')
+  assert.equal(m.rollbackSourceFor(mine, { from: '0.80.0' }).from, '0.79.0')
+  assert.equal(m.rollbackSourceFor(mine, { from: '0.80.0', fromRoot: 7 }).from, '0.79.0')
+  // A clone goes back on its own checkout: another agent's commit names nothing in it.
+  const clone = { from: '0.79.0', fromRoot: '/w/plugin', fromCommit: 'abc1234', installMethod: 'clone' }
+  assert.deepEqual(m.rollbackSourceFor(clone, canary), { from: '0.79.0', fromRoot: '/w/plugin', fromCommit: 'abc1234' })
+})
+
+test('the hold is 5 min, and everything that must outlast it does: a hold at or past the deadline would fail every healthy build', () => {
+  const d = need().DEFAULT_DURATIONS
+  assert.equal(d.validateHoldMs, 5 * MIN)
+  // A break in the live proof restarts the hold, so the deadline leaves room for one late break, and a poll either side.
+  assert.ok(d.validateDeadlineMs >= 2 * d.validateHoldMs + 2 * d.pollMs, 'the deadline')
+  // The lease outlasts a relaunch, a quick start and the hold, or the next agent breaks it mid validation.
+  assert.ok(d.leaseTtlMs > d.didNotArriveMs + d.validateHoldMs + 2 * d.pollMs, 'the lease')
+  // A canary is silent only past the slowest validation this side of an expired login.
+  assert.ok(d.canarySilentMs >= d.startupDeadlineMs + d.unreachableCapMs + d.validateDeadlineMs + 10 * MIN, 'the silence')
 })
 
 // -- Unattended and own launcher proofs ----------------------------------------------------------
@@ -1026,6 +1058,10 @@ test('report: a rollback, a failed rollback, a lost conversation and a non-canar
   assert.equal(m.idleUpdateLastError(record({ state: 'rollback_failed' }), { runningVersion: '0.81.0' }).code, 'idle_update_rollback_failed')
   assert.equal(m.idleUpdateLastError(record({ state: 'arrived', contextLost: true }), { runningVersion: '0.81.0' }).code, 'idle_update_context_lost')
   assert.equal(m.idleUpdateLastError(record({ state: 'failed' }), { runningVersion: '0.81.0' }).code, 'idle_update_failed')
+  // No code decides anything for it: the report says what is true, and what a person does.
+  const failed = m.idleUpdateLastError(record({ state: 'failed' }), { runningVersion: '0.81.0' })
+  assert.doesNotMatch(failed.message, /Another agent/)
+  assert.match(failed.message, /restart it by hand/i)
 })
 
 test('report: a validated restart, a pending one, or no record says nothing (and so clears a standing error)', () => {
