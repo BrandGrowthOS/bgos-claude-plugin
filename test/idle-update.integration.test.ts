@@ -50,7 +50,7 @@ function world(home: string) {
   return { home, clock, machineDir: join(home, '.bgos-agent', m.IDLE_UPDATE_DIR_NAME) }
 }
 
-function agent(w: ReturnType<typeof world>, id: number, opts: { running?: string; staged?: string } = {}) {
+function agent(w: ReturnType<typeof world>, id: number, opts: { running?: string; staged?: string; fromRoot?: string; rollbackInstall?: (record: any) => Promise<any> } = {}) {
   const stateDir = join(w.home, '.bgos-agent', String(id))
   mkdirSync(stateDir, { recursive: true })
   const b = id * 100
@@ -107,7 +107,7 @@ function agent(w: ReturnType<typeof world>, id: number, opts: { running?: string
     bootAtMs: w.clock.now - 2 * HOUR,
     runningVersion: opts.running ?? '0.80.0',
     installMethod: 'marketplace',
-    fromRoot: '/Users/a/.claude/plugins/cache/hoai/hoai/0.80.0',
+    fromRoot: opts.fromRoot ?? '/Users/a/.claude/plugins/cache/hoai/hoai/0.80.0',
     fromCommit: null,
     durations: m.DEFAULT_DURATIONS,
     paths: { record: join(stateDir, m.IDLE_UPDATE_FILE_NAME), machineDir: w.machineDir },
@@ -148,7 +148,7 @@ function agent(w: ReturnType<typeof world>, id: number, opts: { running?: string
     drain: (on: boolean) => out.drains.push(on),
     restart: (target: string, proof: any) => ladder.restartForStagedUpdate(target, proof),
     restartRollback: (from: string, proof: any) => ladder.restartForRollback(from, proof),
-    rollbackInstall: async () => ({ ok: false, reason: 'not_in_this_test' }),
+    rollbackInstall: opts.rollbackInstall ?? (async () => ({ ok: false, reason: 'not_in_this_test' })),
     report: (err: any) => out.reports.push(err),
     log: (line: string) => out.logs.push(line),
     setInterval: () => ({ unref() {} }),
@@ -227,6 +227,55 @@ test('a restart that never arrives: the real file the real ladder wrote is gone 
     assert.equal(existsSync(a.marker), false)
     assert.equal(a.record().markerStranded, true)
     assert.equal(a.out.reports.at(-1)?.code, 'idle_update_launcher_latched')
+  } finally {
+    rmSync(w.home, { recursive: true, force: true })
+  }
+})
+
+test('a follower fails on a build its canary proved: the real rollback points the real install at the build the canary left', async () => {
+  const w = world(scratchHome())
+  try {
+    const cache = join(w.home, '.claude', 'plugins', 'cache', 'hoai', 'hoai')
+    for (const version of ['0.79.0', '0.80.0', '0.81.0']) {
+      mkdirSync(join(cache, version, '.claude-plugin'), { recursive: true })
+      writeFileSync(join(cache, version, '.claude-plugin', 'plugin.json'), JSON.stringify({ version }))
+    }
+    const installed = join(w.home, '.claude', 'plugins', 'installed_plugins.json')
+    writeFileSync(installed, JSON.stringify({ version: 2, plugins: { 'hoai@hoai': [{ scope: 'user', version: '0.81.0', installPath: join(cache, '0.81.0'), lastUpdated: new Date(T0).toISOString() }] } }))
+    mkdirSync(join(w.machineDir, '0.81.0'), { recursive: true })
+    writeFileSync(
+      join(w.machineDir, '0.81.0', 'validated'),
+      JSON.stringify({ assistantId: '913', at: new Date(T0 - HOUR).toISOString(), canary: 1, from: '0.80.0', fromRoot: join(cache, '0.80.0') }),
+    )
+    const old = agent(w, 912, { running: '0.79.0', fromRoot: join(cache, '0.79.0') })
+    assert.equal(await old.controller.tick(), 'requested', old.out.logs.join('\n'))
+    assert.equal(old.record().canaryN, null)
+    rmSync(old.marker)
+    w.clock.now += 2 * MIN
+    const next = agent(w, 912, {
+      running: '0.81.0',
+      fromRoot: join(cache, '0.81.0'),
+      rollbackInstall: (record: any) =>
+        host.rollbackMarketplaceInstall({
+          record,
+          installedPluginsPath: installed,
+          holdPath: join(w.machineDir, 'enrolment-hold.json'),
+          marketplace: 'hoai',
+          configDir: join(w.home, '.claude'),
+          fs: m.nodeIdleUpdateFs(),
+          setAutoUpdate: () => ({ changed: true, reason: 'set' }),
+          now: w.clock.now,
+        }),
+    })
+    assert.equal(await next.controller.tick(), 'validating')
+    w.clock.now += 16 * MIN
+    assert.equal(await next.controller.tick(), 'rollback', next.out.logs.join('\n'))
+    assert.equal(next.record().state, 'rolled_back')
+    assert.equal(next.record().from, '0.80.0')
+    assert.match(readFileSync(installed, 'utf8'), /"version":\s*"0\.80\.0"/)
+    assert.ok(readFileSync(installed, 'utf8').includes(JSON.stringify(join(cache, '0.80.0')).slice(1, -1)))
+    assert.ok(existsSync(join(w.machineDir, '0.81.0', 'bad')))
+    assert.ok(existsSync(join(w.machineDir, 'went-back-912')))
   } finally {
     rmSync(w.home, { recursive: true, force: true })
   }

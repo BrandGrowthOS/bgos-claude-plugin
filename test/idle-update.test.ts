@@ -151,7 +151,7 @@ test('scaled durations divide every duration by the scale and carry the scale it
   assert.equal(d.scale, 60)
   assert.equal(d.leaseTtlMs, m.DEFAULT_DURATIONS.leaseTtlMs / 60)
   assert.equal(d.minUpMs, SEC)
-  assert.equal(m.scaledDurations(1).leaseTtlMs, 15 * MIN)
+  assert.equal(m.scaledDurations(1).leaseTtlMs, 20 * MIN)
 })
 
 test('scaled durations keep two floors: a relaunch gets its real 3.5 min to arrive, and a beacon 30 s to be fresh', () => {
@@ -375,8 +375,8 @@ test('lease: none is free, my own nonce is mine, a fresh other is held, an old o
   assert.equal(m.decideLease({ raw: null, mtimeMs: null, now: NOW, me: ME }).state, 'free')
   assert.equal(m.decideLease({ raw: lease('912', 'n-912', NOW - MIN), mtimeMs: NOW - MIN, now: NOW, me: ME }).state, 'mine')
   assert.equal(m.decideLease({ raw: lease('912', 'other', NOW - MIN), mtimeMs: NOW - MIN, now: NOW, me: ME }).state, 'held')
-  assert.equal(m.decideLease({ raw: lease('913', 'n-913', NOW - 14 * MIN), mtimeMs: NOW - 14 * MIN, now: NOW, me: ME }).state, 'held')
-  assert.equal(m.decideLease({ raw: lease('913', 'n-913', NOW - 16 * MIN), mtimeMs: NOW - 16 * MIN, now: NOW, me: ME }).state, 'expired')
+  assert.equal(m.decideLease({ raw: lease('913', 'n-913', NOW - 19 * MIN), mtimeMs: NOW - 19 * MIN, now: NOW, me: ME }).state, 'held')
+  assert.equal(m.decideLease({ raw: lease('913', 'n-913', NOW - 21 * MIN), mtimeMs: NOW - 21 * MIN, now: NOW, me: ME }).state, 'expired')
 })
 
 test('lease and canary: a stamp more than the lease life in the future is a broken clock, so it expires', () => {
@@ -392,7 +392,7 @@ test('lease and canary: a stamp more than the lease life in the future is a brok
 test('lease: a half written file is held while young and expired once old, never free', () => {
   const m = need()
   assert.equal(m.decideLease({ raw: '', mtimeMs: NOW - 5 * SEC, now: NOW, me: ME }).state, 'held')
-  assert.equal(m.decideLease({ raw: '{"assist', mtimeMs: NOW - 16 * MIN, now: NOW, me: ME }).state, 'expired')
+  assert.equal(m.decideLease({ raw: '{"assist', mtimeMs: NOW - 21 * MIN, now: NOW, me: ME }).state, 'expired')
   assert.equal(m.decideLease({ raw: '', mtimeMs: null, now: NOW, me: ME }).state, 'held')
 })
 
@@ -423,7 +423,7 @@ test('canary: an attempt that ended with no verdict (not the build\'s fault) han
 
 test('canary: one that never came back holds the version 24 h, then one more agent may try', () => {
   const m = need()
-  const silent = [{ n: 1, assistantId: '913', at: NOW - 16 * MIN }]
+  const silent = [{ n: 1, assistantId: '913', at: NOW - 21 * MIN }]
   assert.equal(m.decideCanary({ files: canaryFiles({ canaries: silent }), now: NOW, me: ME }).state, 'hold')
   assert.deepEqual(
     m.decideCanary({ files: canaryFiles({ canaries: [{ n: 1, assistantId: '913', at: NOW - 25 * HOUR }] }), now: NOW, me: ME }),
@@ -836,6 +836,16 @@ function quietRollback(over: Record<string, unknown> = {}): any {
   }
 }
 
+test('rollback moment: a turn flag nothing has backed for 2 h stops counting, as at gate 10: an interrupted turn never reaches a Stop', () => {
+  const m = need()
+  const stuck = { safe: { ...idle().safe, turnInFlight: true }, bootAtMs: NOW - 3 * HOUR }
+  assert.deepEqual(m.decideRollbackMoment(quietRollback({ ...stuck, activityMs: [NOW - 121 * MIN] })), { go: true, reason: 'quiet' })
+  assert.equal(m.decideRollbackMoment(quietRollback({ ...stuck, activityMs: [NOW - 119 * MIN] })).reason, 'turn_in_flight')
+  assert.equal(m.decideRollbackMoment(quietRollback({ ...stuck, activityMs: [NOW - 121 * MIN], bootAtMs: NOW - 119 * MIN })).reason, 'turn_in_flight')
+  assert.equal(m.decideRollbackMoment(quietRollback({ ...stuck, activityMs: [NOW - 121 * MIN], descendants: null })).reason, 'turn_in_flight', 'unknown is not stale')
+  assert.equal(m.decideRollbackMoment(quietRollback({ ...stuck, activityMs: [NOW - 121 * MIN], descendants: ['npm run build'] })).reason, 'turn_in_flight', 'a job backs it')
+})
+
 test('rollback moment: quiet, unattended and nothing open: go', () => {
   assert.deepEqual(need().decideRollbackMoment(quietRollback()), { go: true, reason: 'quiet' })
 })
@@ -888,13 +898,32 @@ test('the way back: the newer of this agent\'s own build and the canary\'s: fift
   assert.deepEqual(m.rollbackSourceFor(clone, canary), { from: '0.79.0', fromRoot: '/w/plugin', fromCommit: 'abc1234' })
 })
 
+test('the way back is never a version held bad here: the newest good one of the two, or this agent\'s own for the rollback to refuse', () => {
+  const m = need()
+  const mine = { from: '0.80.0', fromRoot: '/c/hoai/0.80.0', fromCommit: null, installMethod: 'marketplace' }
+  const canary = { from: '0.81.0', fromRoot: '/c/hoai/0.81.0' }
+  const held = (...versions: string[]) => ({ heldBad: (v: string) => versions.includes(v) })
+  assert.equal(m.rollbackSourceFor(mine, canary, held('0.81.0')).from, '0.80.0', 'the canary left a build held bad since')
+  const newer = { ...mine, from: '0.82.0', fromRoot: '/c/hoai/0.82.0' }
+  assert.deepEqual(m.rollbackSourceFor(newer, canary, held('0.82.0')), { from: '0.81.0', fromRoot: '/c/hoai/0.81.0', fromCommit: null }, 'its own is held, the older one is good')
+  assert.equal(m.rollbackSourceFor(mine, canary, held('0.80.0', '0.81.0')).from, '0.80.0', 'both held')
+})
+
+test('the canary\'s build is a way back only where this install can stand on it: another config folder, a checkout or a swept folder is not', () => {
+  const m = need()
+  const mine = { from: '0.80.0', fromRoot: '/c/hoai/0.80.0', fromCommit: null, installMethod: 'marketplace' }
+  assert.equal(m.rollbackSourceFor(mine, { from: '0.81.0', fromRoot: '/other/config/hoai/0.81.0' }).from, '0.80.0', 'not beside its own build')
+  assert.equal(m.rollbackSourceFor(mine, { from: '0.81.0', fromRoot: '/c/hoai/0.81.0' }, { holds: () => false }).from, '0.80.0', 'the folder no longer holds it')
+  assert.equal(m.rollbackSourceFor(mine, { from: 'x', fromRoot: '/c/hoai/x' }, { heldBad: () => true }).from, '0.80.0', 'not a version')
+})
+
 test('the hold is 5 min, and everything that must outlast it does: a hold at or past the deadline would fail every healthy build', () => {
   const d = need().DEFAULT_DURATIONS
   assert.equal(d.validateHoldMs, 5 * MIN)
   // A break in the live proof restarts the hold, so the deadline leaves room for one late break, and a poll either side.
   assert.ok(d.validateDeadlineMs >= 2 * d.validateHoldMs + 2 * d.pollMs, 'the deadline')
-  // The lease outlasts a relaunch, a quick start and the hold, or the next agent breaks it mid validation.
-  assert.ok(d.leaseTtlMs > d.didNotArriveMs + d.validateHoldMs + 2 * d.pollMs, 'the lease')
+  // The lease outlasts a failing agent's verdict, or the next agent walks onto a build about to be latched bad.
+  assert.ok(d.leaseTtlMs > d.didNotArriveMs + d.validateDeadlineMs + 2 * d.pollMs, 'the lease')
   // A canary is silent only past the slowest validation this side of an expired login.
   assert.ok(d.canarySilentMs >= d.startupDeadlineMs + d.unreachableCapMs + d.validateDeadlineMs + 10 * MIN, 'the silence')
 })
@@ -1097,6 +1126,12 @@ test('report: a rollback, a failed rollback, a lost conversation and a non-canar
   assert.equal(m.idleUpdateLastError(record({ state: 'rollback_failed' }), { runningVersion: '0.81.0' }).code, 'idle_update_rollback_failed')
   assert.equal(m.idleUpdateLastError(record({ state: 'arrived', contextLost: true }), { runningVersion: '0.81.0' }).code, 'idle_update_context_lost')
   assert.equal(m.idleUpdateLastError(record({ state: 'failed' }), { runningVersion: '0.81.0' }).code, 'idle_update_failed')
+  // A clone's rollback pauses updates on the checkout, and no newer version arrives by itself to lift that.
+  const clone = m.idleUpdateLastError(record({ state: 'rolled_back', from: '0.80.0', installMethod: 'clone' }), { runningVersion: '0.80.0' })
+  assert.equal(clone.code, 'idle_update_rolled_back')
+  assert.match(clone.message, /BGOS_AUTO_UPDATE/)
+  assert.doesNotMatch(clone.message, /until a newer version/)
+  assert.match(m.idleUpdateLastError(record({ state: 'rolled_back', from: '0.80.0', installMethod: 'marketplace' }), { runningVersion: '0.80.0' }).message, /until a newer version/)
   // No code decides anything for it: the report says what is true, and what a person does.
   const failed = m.idleUpdateLastError(record({ state: 'failed' }), { runningVersion: '0.81.0' })
   assert.doesNotMatch(failed.message, /Another agent/)
@@ -1120,6 +1155,9 @@ test('report: a version held on this computer, and a launcher that stopped takin
   assert.equal(m.idleUpdateLastError(stranded, { runningVersion: '0.80.0' }).code, 'scheduled_update_failed')
   const blind = m.idleUpdateWaitError('no_turn_signal', { target: '0.81.0', runningVersion: '0.80.0', now: NOW })
   assert.equal(blind.code, 'idle_update_no_turn_signal')
+  // On a gen-2 service a click stages, so the app is no remedy. After a /clear the signal is gone though events came.
+  assert.match(blind.message, /by hand/)
+  assert.doesNotMatch(blind.message, /from the app|since it started/)
   assert.match(blind.message, /0\.81\.0/)
   assert.ok(blind.message.length <= 300)
   assert.equal(m.idleUpdateWaitError('recent_activity', { target: '0.81.0', runningVersion: '0.80.0', now: NOW }), null)

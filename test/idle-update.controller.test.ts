@@ -1239,6 +1239,15 @@ test('the clean end signals stay shut for a daemon with no attempt, and close wh
   await c.c.tick()
   assert.equal(c.c.phase(), 'rollback')
   assert.deepEqual(c.guards, [true, false], 'a failed build has no clean end left to note')
+
+  const d = agent(await afterAsk(), { running: '0.81.0', staged: null })
+  assert.equal(await d.c.tick(), 'validating')
+  d.s.active = false
+  assert.equal(await d.c.tick(), 'passive')
+  assert.deepEqual(d.guards, [true, false], 'a daemon that lost the lock writes no clean end, so it borrows nothing for one')
+  d.s.active = true
+  assert.equal(await d.c.tick(), 'validating')
+  assert.deepEqual(d.guards, [true, false, true], 'and it borrows them again with the lock')
 })
 
 test('a clean end outside validation writes nothing', async () => {
@@ -1691,9 +1700,11 @@ async function rolledBackCanaryAsked() {
 // -- A failed non-canary's way back ----------------------------------------------------------------
 
 /** Agent 912 restarted onto a version agent 913 validated from `canaryFrom`, and failed there at the deadline. */
-async function failedFollower(o: { running?: string; canaryFrom?: string; installMethod?: string; wentBack?: string } = {}) {
+async function failedFollower(o: { running?: string; canaryFrom?: string; installMethod?: string; wentBack?: string; held?: string; swept?: boolean } = {}) {
   const disk = memDisk()
   const from = o.canaryFrom ?? '0.80.0'
+  if (!o.swept) disk.fs.writeAtomic(join(`/c/plugins/cache/hoai/hoai/${from}`, '.claude-plugin', 'plugin.json'), JSON.stringify({ version: from }))
+  if (o.held) disk.fs.writeAtomic(join(MACHINE, o.held, 'bad'), JSON.stringify({ reason: 'canary_failed' }))
   disk.fs.writeAtomic(join(MACHINE, '0.81.0', 'validated'), JSON.stringify({ assistantId: '913', at: new Date(T0 - HOUR).toISOString(), canary: 1, from, fromRoot: `/c/plugins/cache/hoai/hoai/${from}` }))
   if (o.wentBack) disk.fs.writeAtomic(join(MACHINE, 'went-back-912'), JSON.stringify({ target: o.wentBack }))
   const old = agent(disk, { running: o.running, installMethod: o.installMethod })
@@ -1727,6 +1738,86 @@ test('an agent that came from an older build goes back to the canary\'s: never o
   assert.equal(readJson(disk, a.record).from, '0.80.0', 'the report and the old daemon read this')
   assert.equal(await a.c.tick(), 'rollback_requested')
   assert.deepEqual(a.rollbackRestarts.map((r) => r.target), ['0.80.0'])
+})
+
+test('a follower passes over a canary build held bad since, and over a folder swept since: its own build is still a way back', async () => {
+  for (const o of [{ held: '0.80.0' }, { swept: true }]) {
+    const { disk, a } = await failedFollower({ running: '0.79.0', canaryFrom: '0.80.0', ...o })
+    assert.equal(await a.c.tick(), 'rollback')
+    assert.equal(a.rollbackInstalls[0].from, '0.79.0')
+    assert.equal(a.rollbackInstalls[0].fromRoot, '/c/plugins/cache/hoai/hoai/0.79.0')
+    assert.equal(readJson(disk, a.record).from, '0.79.0')
+  }
+})
+
+test('a rollback never lands on a version held bad here: it leaves the install alone and asks for a person', async () => {
+  const disk = await afterAsk()
+  disk.fs.writeAtomic(join(MACHINE, '0.80.0', 'bad'), JSON.stringify({ reason: 'canary_failed' }))
+  const a = agent(disk, { running: '0.81.0', staged: null })
+  assert.equal(await a.c.tick(), 'validating')
+  disk.clock.now += 15 * MIN + SEC
+  assert.equal(await a.c.tick(), 'rollback_failed')
+  assert.equal(a.rollbackInstalls.length, 0)
+  assert.equal(lastReport(a)?.code, 'idle_update_rollback_failed')
+})
+
+/** Agent 912 on a version agent 913 proved here, on its first boot there. */
+async function followerArrived() {
+  const disk = memDisk()
+  disk.fs.writeAtomic(join(MACHINE, '0.81.0', 'validated'), JSON.stringify({ assistantId: '913', at: new Date(T0 - HOUR).toISOString(), canary: 1 }))
+  const old = agent(disk)
+  assert.equal(await old.c.tick(), 'requested')
+  disk.clock.now += 40 * SEC
+  const first = agent(disk, { running: '0.81.0', staged: null })
+  assert.equal(await first.c.tick(), 'validating')
+  disk.clock.now += 3 * MIN
+  return disk
+}
+
+test('on a version the canary proved here, a second boot is no verdict: a slow start reads the same, and the boot running now may prove itself', async () => {
+  const disk = await followerArrived()
+  const second = agent(disk, { running: '0.81.0', staged: null })
+  assert.equal(await second.c.tick(), 'validating')
+  assert.equal(second.rollbackInstalls.length, 0)
+  assert.equal(disk.files.has(join(MACHINE, '0.81.0', 'bad')), false)
+  assert.equal(disk.files.has(join(MACHINE, 'went-back-912')), false)
+  second.s.heartbeatOkAtMs = disk.clock.now
+  second.s.beaconAtMs = disk.clock.now
+  assert.equal(await second.c.tick(), 'validating')
+  disk.clock.now += 5 * MIN + SEC
+  second.s.heartbeatOkAtMs = disk.clock.now
+  second.s.beaconAtMs = disk.clock.now
+  assert.equal(await second.c.tick(), 'validated')
+})
+
+test('that boot still has the deadline over it, and a third boot is a verdict: a follower that keeps dying has a way back', async () => {
+  const late = await followerArrived()
+  const second = agent(late, { running: '0.81.0', staged: null })
+  assert.equal(await second.c.tick(), 'validating')
+  late.clock.now += 15 * MIN + SEC
+  assert.equal(await second.c.tick(), 'rollback')
+
+  const dying = await followerArrived()
+  assert.equal(await agent(dying, { running: '0.81.0', staged: null }).c.tick(), 'validating')
+  dying.clock.now += 3 * MIN
+  assert.equal(await agent(dying, { running: '0.81.0', staged: null }).c.tick(), 'rollback')
+})
+
+test('a rollback that finds no quiet moment for 3 h stops saying it went back, and asks for a person', async () => {
+  const disk = await afterAsk()
+  const a = agent(disk, { running: '0.81.0', staged: null })
+  assert.equal(await a.c.tick(), 'validating')
+  disk.clock.now += 15 * MIN + SEC
+  a.s.openAsks = 1
+  assert.equal(await a.c.tick(), 'rollback')
+  assert.equal(await a.c.tick(), 'rollback_waiting')
+  assert.equal(lastReport(a)?.code, 'idle_update_rolled_back')
+  disk.clock.now += 3 * HOUR - MIN
+  assert.equal(await a.c.tick(), 'rollback_waiting')
+  disk.clock.now += MIN + SEC
+  assert.equal(await a.c.tick(), 'rollback_staged')
+  assert.equal(a.rollbackRestarts.length, 0)
+  assert.equal(lastReport(a)?.code, 'idle_update_rollback_failed')
 })
 
 test('a poison agent takes the computer back once: on the next failure it stays and asks for a person, so no release is held for ever', async () => {
