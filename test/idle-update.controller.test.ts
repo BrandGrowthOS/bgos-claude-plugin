@@ -1794,6 +1794,7 @@ test('that boot still has the deadline over it, and a third boot is a verdict: a
   const late = await followerArrived()
   const second = agent(late, { running: '0.81.0', staged: null })
   assert.equal(await second.c.tick(), 'validating')
+  assert.equal(await second.c.tick(), 'validating')
   late.clock.now += 15 * MIN + SEC
   assert.equal(await second.c.tick(), 'rollback')
 

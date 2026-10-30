@@ -843,7 +843,7 @@ test('rollback moment: a turn flag nothing has backed for 2 h stops counting, as
   assert.equal(m.decideRollbackMoment(quietRollback({ ...stuck, activityMs: [NOW - 119 * MIN] })).reason, 'turn_in_flight')
   assert.equal(m.decideRollbackMoment(quietRollback({ ...stuck, activityMs: [NOW - 121 * MIN], bootAtMs: NOW - 119 * MIN })).reason, 'turn_in_flight')
   assert.equal(m.decideRollbackMoment(quietRollback({ ...stuck, activityMs: [NOW - 121 * MIN], descendants: null })).reason, 'turn_in_flight', 'unknown is not stale')
-  assert.equal(m.decideRollbackMoment(quietRollback({ ...stuck, activityMs: [NOW - 121 * MIN], descendants: ['npm run build'] })).reason, 'turn_in_flight', 'a job backs it')
+  assert.equal(m.decideRollbackMoment(quietRollback({ ...stuck, activityMs: [NOW - 121 * MIN], descendants: ['/bin/zsh -c source /Users/a/.claude/shell-snapshots/snapshot-zsh-1.sh && npm run build'] })).reason, 'turn_in_flight', 'a job backs it')
 })
 
 test('rollback moment: quiet, unattended and nothing open: go', () => {

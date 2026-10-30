@@ -13602,8 +13602,8 @@ function updateReadinessSnapshot(): UpdateReadiness {
 // RUNNING_ROOT read now. Both callers re-read it on their own cadence (per
 // heartbeat send and readiness poll, and agent-state.json's memoizeFor).
 // `state` is the auto-update.json read the caller already made, when it made one.
-// A version the idle update latched bad on this computer (its canary failed
-// on it) reads as NO pending restart here, so the heartbeat, a click and the
+// A version the idle update latched bad on this computer (it failed an agent
+// here, which went back) reads as NO pending restart here, so the heartbeat, a click and the
 // watcher never push an agent onto it again. `latched: false` is the same
 // answer without the latch, what is staged on disk now (daemonStagedVersion).
 function daemonPendingRestartVersion(
@@ -14068,8 +14068,9 @@ const updateRpc = new UpdateRpcHandler({
 // a newer build is staged and this agent has been idle and quiet, past its own
 // jitter and the computer's lease, the controller restarts the session through
 // the daemon's own ladder (its two idle entry points only), resuming the pinned
-// session; the new daemon validates the build on live evidence, and the
-// computer's first agent onto a version (its canary) rolls a failed one back.
+// session; the new daemon validates the build on live evidence, and a failed
+// one is rolled back by the computer's first agent onto it (its canary), or
+// once by any other agent it fails on.
 // Never a busy agent, never a session a person may be typing in, one attempt
 // per version, and BGOS_AUTO_UPDATE off means never. The pairing lock holder
 // only, never once shutdown has begun (active), so the shutdown path needs

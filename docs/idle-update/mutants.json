@@ -303,7 +303,7 @@
     },
     {
       "id": "lease-ttl",
-      "rule": "a lease older than 10 min is expired",
+      "rule": "a lease older than 20 min is expired",
       "file": "lib/idle-update.mjs",
       "find": "if (!finite(at) || within(now, at, d.leaseTtlMs)) return { state: 'held', lease }",
       "replace": "if (!finite(at) || true) return { state: 'held', lease }",
@@ -413,7 +413,7 @@
     },
     {
       "id": "validate-hold",
-      "rule": "validation holds 60 s",
+      "rule": "validation holds 5 min",
       "file": "lib/idle-update.mjs",
       "find": "  if (isLiveBuild(input, d) && held && beaconAtMs",
       "replace": "  if (isLiveBuild(input, d) && beaconAtMs",
@@ -1322,7 +1322,7 @@
     },
     {
       "id": "validate-hold-from-live",
-      "rule": "the 60 s hold counts from the first live reading",
+      "rule": "the 5 min hold counts from the first live reading",
       "file": "lib/idle-update.mjs",
       "find": "const held = finite(liveSinceMs) && liveSinceMs >= arrivedAtMs && now - liveSinceMs >= d.validateHoldMs",
       "replace": "const held = finite(liveSinceMs) && liveSinceMs >= arrivedAtMs && now - arrivedAtMs >= d.validateHoldMs",
@@ -2575,8 +2575,8 @@
       "id": "ctl-guard-window-validate",
       "rule": "the signals open only for a daemon validating an attempt",
       "file": "lib/idle-update.mjs",
-      "find": "const open = phase === 'validate' && record?.state === 'arrived' && !record.liveAt",
-      "replace": "const open = record?.state === 'arrived' && !record.liveAt",
+      "find": "phase === 'validate' && record?.state === 'arrived' && !record.liveAt",
+      "replace": "record?.state === 'arrived' && !record.liveAt",
       "tests": [
         "test/idle-update.controller.test.ts"
       ]
@@ -2585,8 +2585,8 @@
       "id": "ctl-guard-window-live",
       "rule": "the signals close at the first live proof",
       "file": "lib/idle-update.mjs",
-      "find": "const open = phase === 'validate' && record?.state === 'arrived' && !record.liveAt",
-      "replace": "const open = phase === 'validate' && record?.state === 'arrived'",
+      "find": "phase === 'validate' && record?.state === 'arrived' && !record.liveAt",
+      "replace": "phase === 'validate' && record?.state === 'arrived'",
       "tests": [
         "test/idle-update.controller.test.ts"
       ]
@@ -2725,51 +2725,11 @@
       ]
     },
     {
-      "id": "way-back-source-canary",
-      "rule": "the way back is the newer of this agent's build and the canary's",
-      "file": "lib/idle-update.mjs",
-      "find": "const useCanary = mine.installMethod === 'marketplace' && typeof canary?.fromRoot === 'string' && isNewerVersion(canary.from, mine.from)",
-      "replace": "const useCanary = false",
-      "tests": [
-        "test/idle-update.test.ts"
-      ]
-    },
-    {
-      "id": "way-back-source-newer",
-      "rule": "only a newer plain version from the shared file",
-      "file": "lib/idle-update.mjs",
-      "find": "typeof canary?.fromRoot === 'string' && isNewerVersion(canary.from, mine.from)",
-      "replace": "typeof canary?.fromRoot === 'string'",
-      "tests": [
-        "test/idle-update.test.ts"
-      ]
-    },
-    {
-      "id": "way-back-source-root",
-      "rule": "a version with no root names nothing",
-      "file": "lib/idle-update.mjs",
-      "find": "typeof canary?.fromRoot === 'string' && isNewerVersion",
-      "replace": "isNewerVersion",
-      "tests": [
-        "test/idle-update.test.ts"
-      ]
-    },
-    {
-      "id": "way-back-source-clone",
-      "rule": "a clone goes back on its own checkout",
-      "file": "lib/idle-update.mjs",
-      "find": "mine.installMethod === 'marketplace' && typeof canary?.fromRoot",
-      "replace": "typeof canary?.fromRoot",
-      "tests": [
-        "test/idle-update.test.ts"
-      ]
-    },
-    {
       "id": "way-back-record",
       "rule": "the record takes the source: the report and the restart name the build installed",
       "file": "lib/idle-update.mjs",
-      "find": "settleTo({ ...record, ...rollbackSourceFor(record,",
-      "replace": "void ({ ...record, ...rollbackSourceFor(record,",
+      "find": "      settleTo({ ...record, ...rollbackSourceFor(record, canaryLeft, { heldBad, holds }) })",
+      "replace": "      void ({ ...record, ...rollbackSourceFor(record, canaryLeft, { heldBad, holds }) })",
       "tests": [
         "test/idle-update.controller.test.ts"
       ]
@@ -2866,10 +2826,10 @@
     },
     {
       "id": "dur-lease",
-      "rule": "the lease outlasts a relaunch and the hold",
+      "rule": "the lease outlasts a failing agent's verdict",
       "file": "lib/idle-update.mjs",
-      "find": "  leaseTtlMs: 15 * MIN,",
-      "replace": "  leaseTtlMs: 10 * MIN,",
+      "find": "  leaseTtlMs: 20 * MIN,",
+      "replace": "  leaseTtlMs: 15 * MIN,",
       "tests": [
         "test/idle-update.test.ts"
       ]
@@ -2992,6 +2952,226 @@
       "replace": ".map((task) => task)",
       "tests": [
         "test/hoai-hook.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-source-canary",
+      "rule": "the way back is the newer of this agent's build and the canary's",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (!beside || !VERSION_RE.test(String(canary.from)) || heldBad(canary.from) || !holds(canary)) return own\n",
+      "replace": "  return own\n",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-source-newer",
+      "rule": "the older of the two is no way back while the newer is good",
+      "file": "lib/idle-update.mjs",
+      "find": "return heldBad(mine.from) || isNewerVersion(canary.from, mine.from) ? {",
+      "replace": "return true ? {",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-source-own-bad",
+      "rule": "an agent's own build held bad gives way to the canary's",
+      "file": "lib/idle-update.mjs",
+      "find": "return heldBad(mine.from) || isNewerVersion(canary.from, mine.from) ? {",
+      "replace": "return isNewerVersion(canary.from, mine.from) ? {",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-source-canary-bad",
+      "rule": "a canary build held bad is passed over",
+      "file": "lib/idle-update.mjs",
+      "find": "|| heldBad(canary.from) || !holds(canary)) return own",
+      "replace": "|| !holds(canary)) return own",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-source-holds",
+      "rule": "a folder that no longer holds it is passed over",
+      "file": "lib/idle-update.mjs",
+      "find": "|| heldBad(canary.from) || !holds(canary)) return own",
+      "replace": "|| heldBad(canary.from)) return own",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-source-version",
+      "rule": "not a version names nothing",
+      "file": "lib/idle-update.mjs",
+      "find": "!beside || !VERSION_RE.test(String(canary.from)) ||",
+      "replace": "!beside ||",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-source-beside",
+      "rule": "only a build beside its own in the same cache",
+      "file": "lib/idle-update.mjs",
+      "find": "    dirname(canary.fromRoot) === dirname(mine.fromRoot)\n",
+      "replace": "    true\n",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-source-clone",
+      "rule": "a clone goes back on its own checkout",
+      "file": "lib/idle-update.mjs",
+      "find": "    mine.installMethod === 'marketplace' &&\n    typeof canary?.fromRoot === 'string' &&",
+      "replace": "    typeof canary?.fromRoot === 'string' &&",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-source-checks",
+      "rule": "the controller checks the latch and the folder",
+      "file": "lib/idle-update.mjs",
+      "find": "rollbackSourceFor(record, canaryLeft, { heldBad, holds })",
+      "replace": "rollbackSourceFor(record, canaryLeft)",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-never-held-bad",
+      "rule": "a rollback never lands on a version held bad",
+      "file": "lib/idle-update.mjs",
+      "find": "        const held = isVersionHeldBad(record.from, { machineDir: dir, fs })\n",
+      "replace": "        const held = false\n",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "second-boot-no-verdict",
+      "rule": "on a proven version a second boot is no verdict",
+      "file": "lib/idle-update.mjs",
+      "find": "const verdict = unproven ? 'none' : decideRollback(",
+      "replace": "const verdict = decideRollback(",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "second-boot-proven-only",
+      "rule": "only on a proven version",
+      "file": "lib/idle-update.mjs",
+      "find": "why === 'second_boot' && files?.validated === true && record.lockBoots < 3",
+      "replace": "why === 'second_boot' && record.lockBoots < 3",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "second-boot-only",
+      "rule": "a missed deadline is always a verdict",
+      "file": "lib/idle-update.mjs",
+      "find": "why === 'second_boot' && files?.validated === true && record.lockBoots < 3",
+      "replace": "files?.validated === true && record.lockBoots < 3",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "third-boot-verdict",
+      "rule": "a third boot is a verdict",
+      "file": "lib/idle-update.mjs",
+      "find": "files?.validated === true && record.lockBoots < 3",
+      "replace": "files?.validated === true",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-wait-bound",
+      "rule": "a rollback that finds no quiet moment asks for a person",
+      "file": "lib/idle-update.mjs",
+      "find": "if (n - rollbackWaitSinceMs >= d.rollbackWaitMaxMs) {",
+      "replace": "if (false) {",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "dur-rollback-wait",
+      "rule": "3 h",
+      "file": "lib/idle-update.mjs",
+      "find": "  rollbackWaitMaxMs: 3 * HOUR,",
+      "replace": "  rollbackWaitMaxMs: 6 * HOUR,",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-stale-turn",
+      "rule": "a stale turn flag stops counting",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (s.turnInFlight && !staleTurn) return no('turn_in_flight')\n",
+      "replace": "  if (s.turnInFlight) return no('turn_in_flight')\n",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-stale-unknown",
+      "rule": "an unreadable tree is not stale",
+      "file": "lib/idle-update.mjs",
+      "find": "f.now - newest >= STALE_TURN_MS / d.scale && Array.isArray(f.descendants) && !f.descendants.some(isBackgroundJobCommand)",
+      "replace": "f.now - newest >= STALE_TURN_MS / d.scale && !(f.descendants ?? []).some(isBackgroundJobCommand)",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-stale-job",
+      "rule": "a job backs the turn",
+      "file": "lib/idle-update.mjs",
+      "find": "f.now - newest >= STALE_TURN_MS / d.scale && Array.isArray(f.descendants) && !f.descendants.some(isBackgroundJobCommand)",
+      "replace": "f.now - newest >= STALE_TURN_MS / d.scale && Array.isArray(f.descendants)",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "report-clone-way-back",
+      "rule": "a clone is told what lifts the pause",
+      "file": "lib/idle-update.mjs",
+      "find": "(record.installMethod === 'marketplace'\n            ? `${target} is held on this computer until a newer version.`",
+      "replace": "(true\n            ? `${target} is held on this computer until a newer version.`",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "report-no-signal-remedy",
+      "rule": "the remedy is one that works",
+      "file": "lib/idle-update.mjs",
+      "find": "if it has no hooks, restart it once by hand.",
+      "replace": "if it has no hooks, restart it once from the app.",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-guard-window-active",
+      "rule": "a daemon that lost the lock borrows nothing",
+      "file": "lib/idle-update.mjs",
+      "find": "const open = read(deps.active, false) === true && phase === 'validate'",
+      "replace": "const open = phase === 'validate'",
+      "tests": [
+        "test/idle-update.controller.test.ts"
       ]
     }
   ]

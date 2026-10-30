@@ -32,8 +32,8 @@
  * (the same root and reader the running version was captured with at boot)
  * against that running version is the answer.
  *
- * WHY the latch (idle update, docs/idle-update/DESIGN.md). After the canary
- * agent rolled a bad build back, Claude Code's startup update or a later pull
+ * WHY the latch (idle update, docs/idle-update/DESIGN.md). After an agent
+ * rolled a bad build back, Claude Code's startup update or a later pull
  * can put that build on disk again. Every reader of this answer (the
  * heartbeat, agent-state.json and so the watcher, a click) would then push it
  * again. A version latched bad on this computer (lib/idle-update.mjs

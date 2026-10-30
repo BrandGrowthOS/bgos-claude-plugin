@@ -667,7 +667,7 @@ export class UpdateRpcHandler {
   }
 
   /**
-   * Restart back onto the old build after the canary rolled the shared
+   * Restart back onto the old build after a failed one rolled the shared
    * install back (lib/idle-update.mjs). The same ladder and rung as
    * restartForStagedUpdate.
    */
