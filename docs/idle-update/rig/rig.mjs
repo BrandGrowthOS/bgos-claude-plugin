@@ -549,13 +549,18 @@ async function scenarioBusy() {
   await bootAll(list, { how: byHand ? { [byHand.id]: 'interactive' } : {}, env: off ? { [off.id]: { BGOS_AUTO_UPDATE: 'off' } } : {} })
   // The busy facts, set before anything is staged.
   if (turn) step(turn, { op: 'prompt', text: 'rig: a long turn that has not ended' })
-  if (browser) {
-    // A browser tool inside a turn that then ends: only the browser window holds it, not an open turn.
+  // A browser tool inside a turn that then ends: only the browser window holds it, not an open turn. The window
+  // (30 min, scaled) is shorter than the hold below, so the browser is used again every 2 min, as a person still at it.
+  let browserUsedAt = 0
+  const keepBrowserInUse = () => {
+    if (!browser || Date.now() - browserUsedAt < 2 * MIN) return
+    browserUsedAt = Date.now()
     step(browser, { op: 'prompt', text: 'rig: look something up in the browser' })
     step(browser, { op: 'tool', name: 'mcp__plugin_hoai_hoai-browser__browser_navigate', phase: 'pre' })
     step(browser, { op: 'tool', name: 'mcp__plugin_hoai_hoai-browser__browser_navigate', phase: 'post' })
     step(browser, { op: 'stop' })
   }
+  keepBrowserInUse()
   const keepWakeDue = async () => {
     if (wake) await stub('schedule', { assistantId: wake.id, tasks: [{ id: 1, name: 'rig wake', status: 'active', nextFireAt: new Date(Date.now() + 60 * SEC).toISOString() }] })
   }
@@ -571,7 +576,8 @@ async function scenarioBusy() {
     // server.ts), which owes no tracked reply by design. A field agent always has history: one message first, then
     // the one the reply is owed to.
     await stub('inbound', { assistantId: owed.id, text: 'rig: hello' })
-    await watch('the owed agent saw its first message', () => jsonLines(join(owed.cwd, '.rig', 'inbound.jsonl')).length > 0, { timeoutMs: 3 * MIN })
+    // A chat message (it has a message id), not the boot hello the session also gets.
+    await watch('the owed agent saw its first message', () => jsonLines(join(owed.cwd, '.rig', 'inbound.jsonl')).some((l) => l.meta?.message_id), { timeoutMs: 3 * MIN })
     await stub('inbound', { assistantId: owed.id, text: 'rig: please answer me' })
   }
   if (ask) {
@@ -581,7 +587,7 @@ async function scenarioBusy() {
     step(ask, { op: 'call', tool: 'reply', arguments: { chat_id: chatId, text: 'rig: one question first' } })
     step(ask, { op: 'call', tool: 'ask_user_input', arguments: { chat_id: chatId, wait_seconds: 0, questions: [{ text: 'Which one?', options: [{ label: 'A' }, { label: 'B' }] }] } })
   }
-  if (owed) await watch('the owed message was delivered', () => jsonLines(join(owed.cwd, '.rig', 'inbound.jsonl')).length > 1, { timeoutMs: 3 * MIN })
+  if (owed) await watch('the owed message was delivered', () => jsonLines(join(owed.cwd, '.rig', 'inbound.jsonl')).filter((l) => l.meta?.message_id).length > 1, { timeoutMs: 3 * MIN })
   stage(TARGET)
   // Quiet window (10 min with hooks) + jitter (10 min) + margin, all scaled; the wake stays due all along.
   const holdMs = (20 * MIN) / scale + 3 * MIN
@@ -589,6 +595,7 @@ async function scenarioBusy() {
   await watch('the idle control restarted and every busy agent held for the quiet window and jitter', async () => {
     await keepWakeDue()
     await keepCallLive()
+    keepBrowserInUse()
     return Date.now() > until && record(control.id)?.state === 'validated'
   }, { timeoutMs: holdMs + 15 * MIN })
   for (const a of list) results.agents[a.id] = { role: roles[a.id], ...summarise(a) }
