@@ -2509,6 +2509,16 @@
       "tests": [
         "test/idle-update.wiring.test.ts"
       ]
+    },
+    {
+      "id": "lease-aside-plain-tag",
+      "rule": "a nonce read from disk never names a path: the lease is moved aside only under a plain tag",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (typeof tag !== 'string' || !/^[A-Za-z0-9_-]{1,160}$/.test(tag)) return false\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
     }
   ]
 }
