@@ -464,8 +464,14 @@ test('silent: past 24 h one more agent may try', () => {
 
 test('silent: two mark the build bad, whatever it proved before', () => {
   const m = need()
-  const two = [{ n: 1, assistantId: '914', nonce: 'n-914', at: NOW - 2 * DAY }, { n: 2, assistantId: '915', nonce: 'n-915', at: NOW - MIN }]
+  const two = [{ n: 1, assistantId: '914', nonce: 'n-914', at: NOW - 2 * DAY }, { n: 2, assistantId: '915', nonce: 'n-915', at: NOW - 75 * MIN }]
   assert.equal(m.decideCanary({ files: canaryFiles({ validated: true, silents: two }), now: NOW, me: ME }).state, 'latch_bad')
+})
+
+test('silent: a silence counts only once it can no longer be a slow start, like a canary: until then the hold stands', () => {
+  const m = need()
+  const two = [{ n: 1, assistantId: '914', nonce: 'n-914', at: NOW - 2 * DAY }, { n: 2, assistantId: '915', nonce: 'n-915', at: NOW - 75 * MIN + 1 }]
+  assert.equal(m.decideCanary({ files: canaryFiles({ validated: true, silents: two }), now: NOW, me: ME }).state, 'silent_hold')
 })
 
 test('silent: a stamp more than a lease life ahead is a clock that jumped: it still counts, but holds nothing for ever', () => {
@@ -532,10 +538,10 @@ test('follower wait: a canary that lasted this wait has proved it, however long 
   assert.equal(m.decideCanary({ target: '0.81.0', files: files(validatedAtMs + wait - 2 * MIN - 1), now: NOW, me: ME }).state, 'canary_quiet')
 })
 
-test('follower wait: a canary already on the record as silent is not read again: past the hold the next agent is the test', () => {
+test('follower wait: a proof whose canary is on the record as silent lets nobody follow, past the hold too', () => {
   const m = need()
   const files = validatedFiles({ validatedAtMs: NOW - 3 * DAY, aliveAtMs: null, silents: [{ n: 1, assistantId: '913', nonce: null, at: NOW - 25 * HOUR }] })
-  assert.equal(m.decideCanary({ target: '0.81.0', files, now: NOW, me: ME }).state, 'validated')
+  assert.equal(m.decideCanary({ target: '0.81.0', files, now: NOW, me: ME }).state, 'canary_quiet')
 })
 
 test('follower wait: a validation stamped further ahead than the longest wait is a clock that jumped, and holds nothing', () => {
