@@ -2,6 +2,18 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.81.0 (2026-10-31)
+
+**An idle agent loads its staged update by itself (board row 5a455021).** A staged build only loads when the session restarts, and nothing restarted an idle one: Alex's 15 agents had 0.74.3 staged and still ran 0.69.12 to 0.74.0. Once an agent has been idle for a while it now restarts onto the new version through its existing restart authority, resumes its pinned session, and reports the version it came back on. The design, its rules and what it does not cover are in `docs/idle-update/DESIGN.md`.
+
+- **Never a busy agent, never a person's session.** A turn, an owed reply, an open ask, a goal, a call, a browser in use, a wake due within 10 minutes or a person attached all wait, and only a launch proven unattended qualifies. `BGOS_AUTO_UPDATE` off means never.
+- **One computer, one at a time.** A lease, a 2 minute spacing and per-agent jitter keep agents apart. The first agent onto a version is its canary, and the others wait for it.
+- **Followers wait 30 to 60 minutes after the canary validates,** and the canary keeps proving the build through that wait, so a late fault stops at one agent. The wait survives a daemon restart.
+- **An agent that goes silent holds the version.** Breaking an expired lease writes `silent-<n>`: one holds the version 24 hours, two mark it bad on that computer.
+- **A failed build goes back.** The agent it failed on rolls the install back, marks the version bad on that computer and restarts onto the old build: the canary always, any other agent once. A rollback also takes the failed build's `gitCommitSha` out of the plugin entry.
+- **An agent running 0.80 or older needs one restart to load this.** By a person, the watcher's sweep or an owning service. From then on it updates itself.
+- Tests: `test/idle-update*.test.ts`, `test/update-rpc.own-launcher.test.ts`, `test/self-update.idle-rollback.test.ts`, with the mutants in `docs/idle-update/mutants.json` and the rig in `docs/idle-update/rig/`.
+
 ## 0.80.2 (2026-10-29)
 
 **A reply to a side thread that HOAI did not forward is now reported as an error, never a silent "Sent" (board row 28fed1cd).** On 2026-10-27 the conversation between Data and Ares closed on timeout, and five of Data's later replies into that side thread were answered "Sent" and never reached Ares, who asked the same questions four times.
