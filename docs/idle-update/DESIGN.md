@@ -591,3 +591,23 @@ Data's word on `d5d63e1` was "merge after fixes", with these five. The review te
 **The rest of the proof.** 315 mutants, all killed: 313 in a complete run on `93425d9`, and after `8dc06de` the two that run found alive, each a test sized for the old hold or deadline. The whole suite on `88e0572`: 8503 tests, 38 failing, the same 38 by name as main `c636ded`, all in the browser host and Chromium tests. `tsc` on `88e0572`: 1083 files, 0 errors.
 
 **What the rig does not prove.** `broken` is a canary whose daemon stays alive. No scenario runs a follower's way back, which rests on the controller tests and an integration test against the real marketplace rollback on a real disk, and none runs a daemon that dies. The stand-in claude proves the daemon's handling, never Claude Code's own restore of a `/loop`, which rests on the docs and the read of 2.1.314.
+
+## Round 3: Data's four changes
+
+Data's fresh reviewer on `2b63ff4`: 510 of 510 green, merge after these four. Written before the code.
+
+**1. What would a top release engineer also check?**
+- A wait stops nothing unless something reads the canary when it ends: a canary dead at minute 20 would still let every follower walk on at minute 45. So the canary keeps stamping `alive` through the wait, and a follower needs that stamp to reach its own wait's end.
+- The wait counts from the stamp in `<version>/validated` and its length is a hash of agent and version, so a daemon restart neither resets nor redraws it. An expired lease now costs a 24 h hold, not 25 min, so the lease's sum, the 15 agent stagger and every test sized for the old hold get read again.
+
+**2. Where would they start?**
+- The failing path, red first: a follower dies after its first beacon, its lease lapses, and the next follower walks on. Then a canary that dies after `validated`, then the stale `gitCommitSha`.
+- The version comes last, because that check is already red on `2b63ff4` and needs no reproducing beyond `scripts/check-version-bump.mjs`.
+
+**3. Which tools?**
+- node --test with a red commit before each fix, a mutant each, the full suite and tsc on the final code.
+- The scratch HOME rig, with `stagger` and `many` updated for the wait and two fault cases in `many`: a canary killed after it validates and a follower killed after it arrives.
+
+**4. What would prove it right, independent of you and me?**
+- A fresh security reviewer subagent given the code and Data's four points, not my conclusions; every Critical and Important fixed red first.
+- The rig on the final head, read from its own files: no follower before its wait, no follower at all after a fault, the scheduled tasks identical before and after.
