@@ -7,7 +7,7 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 
-import { laneChildEnv, lineSplitter, spawnStreamJson, userMessageLine } from '../lib/stream-json-child.ts'
+import { LANE_CREDENTIAL_VARS, laneChildEnv, lineSplitter, spawnStreamJson, userMessageLine } from '../lib/stream-json-child.ts'
 
 test('frames split across chunks are parsed whole, blank and broken lines are skipped', () => {
   const seen: Array<Record<string, unknown>> = []
@@ -79,4 +79,46 @@ test('a command that cannot start reports an exit instead of throwing', async ()
   child.write('x\n')
   child.end()
   child.kill('SIGTERM')
+})
+
+test('a lane child never inherits the daemon BGOS credentials or its terminal', () => {
+  const env = laneChildEnv({
+    PATH: '/bin',
+    HOME: '/h',
+    BGOS_PLUGIN_STATE_DIR: '/state',
+    BGOS_ASSISTANT_ID: '7',
+    BGOS_API_KEY: 'k',
+    BGOS_PAIRING_TOKEN: 'p',
+    BGOS_CREDENTIALS_PATH: '/c.json',
+    BGOS_OPENAI_API_KEY: 'o',
+    HOAI_BROWSER_HOST_PAIRING_TOKEN: 'b',
+    HOAI_RELAY_PAIRING_TOKEN: 'r',
+    BGOS_SOME_NEW_SECRET: 's',
+    HOAI_FUTURE_TOKEN: 't',
+    BGOS_TMUX_SESSION: 'agent',
+    BGOS_TMUX_SOCKET: '/tmp/s',
+    TMUX: '/tmp/tmux,1,0',
+    TMUX_PANE: '%1',
+  })
+  assert.deepEqual(env, { PATH: '/bin', HOME: '/h', BGOS_PLUGIN_STATE_DIR: '/state', BGOS_ASSISTANT_ID: '7' })
+  for (const name of ['BGOS_API_KEY', 'BGOS_PAIRING_TOKEN', 'TMUX']) assert.ok(LANE_CREDENTIAL_VARS.includes(name), name)
+})
+
+test('kill stops the lane whole process group, so a tool it started stops with it', { skip: process.platform === 'win32' }, async () => {
+  // node stands in for claude and starts a grandchild (a tool), prints its pid, then waits.
+  const child = spawnStreamJson(process.execPath, [
+    '-e',
+    "const c=require('child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});process.stdout.write(c.pid+'\\n');setInterval(()=>{},1000)",
+  ], { cwd: process.cwd() })
+  let out = ''
+  const pid = await new Promise<number>((resolve) => child.onStdout((c) => { out += c; if (out.includes('\n')) resolve(Number(out.trim())) }))
+  const exited = new Promise<void>((resolve) => child.onExit(() => resolve()))
+  const alive = (p: number) => { try { process.kill(p, 0); return true } catch { return false } }
+  assert.equal(alive(pid), true)
+  child.kill('SIGTERM')
+  await exited
+  for (let i = 0; i < 50 && alive(pid); i++) await new Promise((d) => setTimeout(d, 20))
+  const survived = alive(pid)
+  if (survived) process.kill(pid, 'SIGKILL') // our own grandchild, never left behind
+  assert.equal(survived, false, 'the grandchild got the signal too')
 })

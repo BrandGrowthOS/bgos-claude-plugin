@@ -11,8 +11,16 @@ import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 import { dirname, join } from 'node:path'
 
-import { ThreadLaneManager, ThreadLaneError, type ThreadLaneDeps, type ThreadTurnInput } from '../lib/thread-lanes.ts'
-import { threadLaneArgs, threadTurnPrompt } from '../lib/thread-lane-args.ts'
+import {
+  THREAD_POST_RETRY_MS,
+  THREAD_TURN_TIMEOUT_MS,
+  ThreadLaneManager,
+  ThreadLaneError,
+  threadsPendingPath,
+  type ThreadLaneDeps,
+  type ThreadTurnInput,
+} from '../lib/thread-lanes.ts'
+import { THREAD_TEXT_MAX, threadLaneArgs, threadTurnPrompt } from '../lib/thread-lane-args.ts'
 import { userMessageLine, type StreamJsonChild } from '../lib/stream-json-child.ts'
 import { sessionTranscriptPath } from '../bin/hoai-core.mjs'
 
@@ -48,14 +56,16 @@ class FakeChild implements StreamJsonChild {
 
 interface Timer { fn: () => void; ms: number; cleared: boolean; fired: boolean }
 
-function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; files?: Record<string, string> } = {}) {
+function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; files?: Record<string, string>; shell?: boolean; failPosts?: (path: string, body: Record<string, unknown>) => boolean } = {}) {
   const repo = opts.repo ?? true
   const files = new Map<string, string>(Object.entries(opts.files ?? {}))
   const dirs = new Set<string>()
   const spawned: Array<{ command: string; args: string[]; cwd: string; child: FakeChild }> = []
   const posts: Array<{ path: string; body: Record<string, unknown> }> = []
+  const failedPosts: Array<{ path: string; body: Record<string, unknown> }> = []
   const gitCalls: string[][] = []
   const removed: string[] = []
+  const branchesDeleted: string[] = []
   const timers: Timer[] = []
   const clock = { now: opts.startAt ?? 1_000_000 }
   const mainSrc = sessionTranscriptPath(HOME, AGENT, MAIN, '')
@@ -73,12 +83,17 @@ function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; f
     home: HOME,
     configDir: '',
     emptyMcpConfigPath: () => MCP,
+    shellSandbox: () => opts.shell ?? true,
     git: async (args) => {
       gitCalls.push(args)
       const sub = args.slice(2)
       if (!repo) return { ok: false, stdout: '' }
       if (sub[0] === 'rev-parse' && sub[1] === '--show-prefix') return { ok: true, stdout: '\n' }
       if (sub[0] === 'rev-parse' && sub[1] === '--git-path') return { ok: true, stdout: '.git/info/exclude\n' }
+      if (sub[0] === 'rev-parse' && sub[2] === '--git-common-dir') return { ok: true, stdout: `${AGENT}/.git\n` }
+      if (sub[0] === 'rev-parse' && sub[2] === '--git-dir') return { ok: true, stdout: `${AGENT}/.git/worktrees/${args[1]!.split('/').at(-1)}\n` }
+      if (sub[0] === 'for-each-ref') return { ok: true, stdout: `refs/heads/main\nrefs/heads/hoai/thread-${'101'}\n` }
+      if (sub[0] === 'branch' && sub[1] === '-D') { branchesDeleted.push(sub[2]!); return { ok: true, stdout: '' } }
       if (sub[0] === 'worktree' && sub[1] === 'add') { dirs.add(join(AGENT, sub[2]!)); return { ok: true, stdout: '' } }
       if (sub[0] === 'worktree' && sub[1] === 'remove') { removed.push(sub[3]!); dirs.delete(sub[3]!); return { ok: true, stdout: '' } }
       return { ok: true, stdout: '' }
@@ -94,7 +109,10 @@ function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; f
       rmrf: (p) => { removed.push(p); dirs.delete(p) },
       list: (d) => [...files.keys()].filter((k) => dirname(k) === d).map((k) => k.slice(d.length + 1)),
     },
-    post: async (path, body) => { posts.push({ path, body }) },
+    post: async (path, body) => {
+      if (opts.failPosts?.(path, body)) { failedPosts.push({ path, body }); throw new Error('HTTP 500') }
+      posts.push({ path, body })
+    },
     now: () => clock.now,
     setTimer: (fn, ms) => { const t: Timer = { fn, ms, cleared: false, fired: false }; timers.push(t); return t },
     clearTimer: (h) => { (h as Timer).cleared = true },
@@ -103,13 +121,26 @@ function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; f
   const manager = new ThreadLaneManager(deps)
   const live = (ms: number) => timers.filter((t) => t.ms === ms && !t.cleared && !t.fired)
   const fire = (t: Timer) => { t.fired = true; t.fn() }
-  return { manager, deps, files, dirs, spawned, posts, gitCalls, removed, timers, clock, live, fire, mainSrc }
+  return { manager, deps, files, dirs, spawned, posts, failedPosts, gitCalls, removed, branchesDeleted, timers, clock, live, fire, mainSrc }
+}
+
+/** The command the manager must build for a working lane in wt(root) (protected: the agent repo's own state). */
+const PROTECTED = [`${AGENT}/.git/index`, `${AGENT}/.git/HEAD`, `${AGENT}/.git/packed-refs`, `${AGENT}/.git/refs/heads/main`]
+function workArgs(root: string, fork: string | null): string[] {
+  return threadLaneArgs({
+    mainSessionId: MAIN,
+    forkSessionId: fork,
+    emptyMcpConfigPath: MCP,
+    confinement: { root: wt(root), readOnly: false, shellSandbox: true, protectedPaths: PROTECTED },
+  })
 }
 
 const wt = (root: string) => join(AGENT, '.hoai', 'threads', root)
 const turn = (rootId: string, over: Partial<ThreadTurnInput> = {}): ThreadTurnInput => ({
   chatId: '55', rootId, replyId: `${rootId}0`, mode: 'start', text: `work on ${rootId}`, title: `T${rootId}`, rootText: `root ${rootId}`, ...over,
 })
+/** Lets pending promise steps run without waiting on work that waits for a process exit. */
+const flush = async () => { for (let i = 0; i < 20; i++) await new Promise((done) => setImmediate(done)) }
 const statePosts = (r: ReturnType<typeof rig>) => r.posts.filter((p) => p.path === 'integrations/threads/state').map((p) => `${p.body.rootId}:${p.body.state}`)
 
 test('a first turn makes the worktree, copies the main transcript beside it, and forks the main session there', async () => {
@@ -120,13 +151,17 @@ test('a first turn makes the worktree, copies the main transcript beside it, and
     ['-C', AGENT, 'rev-parse', '--show-prefix'],
     ['-C', AGENT, 'rev-parse', '--git-path', 'info/exclude'],
     ['-C', AGENT, 'worktree', 'add', join('.hoai', 'threads', '101'), '-b', 'hoai/thread-101'],
+    // The source repository's git state the lane's sandbox must refuse.
+    ['-C', AGENT, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+    ['-C', wt('101'), 'rev-parse', '--path-format=absolute', '--git-dir'],
+    ['-C', AGENT, 'for-each-ref', '--format=%(refname)', 'refs/heads'],
   ])
   assert.equal(r.files.get(sessionTranscriptPath(HOME, wt('101'), MAIN, '')), '{"main":true}\n', 'the fork finds the main transcript from its own cwd')
   assert.equal(r.spawned.length, 1)
   const s = r.spawned[0]!
   assert.equal(s.command, '/bin/claude')
   assert.equal(s.cwd, wt('101'))
-  assert.deepEqual(s.args, threadLaneArgs({ mainSessionId: MAIN, forkSessionId: null, emptyMcpConfigPath: MCP }))
+  assert.deepEqual(s.args, workArgs('101', null))
   assert.deepEqual(s.child.stdin, [userMessageLine(threadTurnPrompt({ mode: 'start', text: 'work on 101', title: 'T101', rootText: 'root 101' }))])
   assert.deepEqual(statePosts(r), ['101:working'])
 })
@@ -224,6 +259,12 @@ test('two lanes run at once per agent; a third waits FIFO and starts when a slot
   r.spawned[1]!.child.init(FORK_B)
   r.spawned[1]!.child.result('102 done.')
   await r.manager.idle()
+  // 102's idle process still holds its slot: it gives it up for 103 and
+  // the slot is free once that process has exited.
+  assert.equal(r.spawned.length, 2)
+  assert.deepEqual(r.spawned[1]!.child.killed, ['SIGTERM'])
+  r.spawned[1]!.child.exit(null)
+  await r.manager.idle()
   assert.equal(r.spawned.length, 3)
   assert.equal(r.spawned[2]!.cwd, wt('103'), 'the first that waited starts first')
   assert.ok(statePosts(r).includes('103:working'))
@@ -276,7 +317,7 @@ test('a lane idle for 20 minutes is stopped (SIGTERM, then SIGKILL after 10 s) a
   r.manager.turn(turn('101', { mode: 'reply', replyId: '1011', text: 'one more' }))
   await r.manager.idle()
   assert.equal(r.spawned.length, 2)
-  assert.deepEqual(r.spawned[1]!.args, threadLaneArgs({ mainSessionId: MAIN, forkSessionId: FORK_A, emptyMcpConfigPath: MCP }))
+  assert.deepEqual(r.spawned[1]!.args, workArgs('101', FORK_A))
   assert.equal(r.spawned[1]!.cwd, wt('101'))
   assert.equal(r.gitCalls.filter((g) => g[2] === 'worktree').length, 1, 'the worktree is made once')
 })
@@ -307,8 +348,8 @@ test('a daemon restart resumes the lane by the fork id it saved', async () => {
   r.dirs.add(wt('101'))
   r.manager.turn(turn('101', { mode: 'reply', replyId: '1011', text: 'back' }))
   await r.manager.idle()
-  assert.deepEqual(r.spawned[0]!.args, threadLaneArgs({ mainSessionId: MAIN, forkSessionId: FORK_A, emptyMcpConfigPath: MCP }))
-  assert.equal(r.gitCalls.length, 0)
+  assert.deepEqual(r.spawned[0]!.args, workArgs('101', FORK_A))
+  assert.equal(r.gitCalls.some((g) => g[2] === 'worktree'), false, 'the worktree is not made again')
 })
 
 test('a folder that is not a git repository runs the lane read only in a plain folder', async () => {
@@ -319,7 +360,12 @@ test('a folder that is not a git repository runs the lane read only in a plain f
   assert.equal(r.gitCalls.some((g) => g[2] === 'worktree'), false)
   const s = r.spawned[0]!
   assert.equal(s.cwd, wt('101'))
-  assert.deepEqual(s.args, threadLaneArgs({ mainSessionId: MAIN, forkSessionId: null, emptyMcpConfigPath: MCP, readOnly: true }))
+  assert.deepEqual(s.args, threadLaneArgs({
+    mainSessionId: MAIN,
+    forkSessionId: null,
+    emptyMcpConfigPath: MCP,
+    confinement: { root: wt('101'), readOnly: true, shellSandbox: false, readDirs: [AGENT] },
+  }))
   assert.match(s.child.stdin[0]!, /read only/)
 })
 
@@ -409,7 +455,7 @@ test('close with removeWorktree removes the worktree, the fork session file and 
   assert.deepEqual(await r.manager.close({ rootId: '101', removeWorktree: true }), { stopped: true })
   c.exit(null)
   await r.manager.idle()
-  assert.deepEqual(r.gitCalls.at(-1), ['-C', AGENT, 'worktree', 'remove', '--force', wt('101')])
+  assert.deepEqual(r.gitCalls.at(-2), ['-C', AGENT, 'worktree', 'remove', '--force', wt('101')])
   assert.equal(r.files.has(forkFile), false)
   assert.equal(r.files.has(join(STATE, '101.json')), false)
 })
@@ -434,11 +480,13 @@ test('closing a running lane frees its slot for a waiting thread and drops its l
   const c = r.spawned[0]!.child
   c.init(FORK_A)
   await r.manager.close({ rootId: '101', removeWorktree: false })
+  c.result('late answer.')
+  await flush()
+  assert.equal(r.posts.some((p) => p.body.text === 'late answer.'), false)
+  assert.equal(r.spawned.length, 2, 'the closed lane holds its slot until its process has exited')
+  c.exit(null)
   await r.manager.idle()
   assert.equal(r.spawned.length, 3)
-  c.result('late answer.')
-  await r.manager.idle()
-  assert.equal(r.posts.some((p) => p.body.text === 'late answer.'), false)
 })
 
 test('reconcile runs a reply turn for each pending thread and skips one already working', async () => {
@@ -446,13 +494,17 @@ test('reconcile runs a reply turn for each pending thread and skips one already 
   r.manager.turn(turn('101'))
   await r.manager.idle()
   let asked = 0
+  // The server's answer, as GET api/v1/integrations/threads/pending gives it.
   const ran = await r.manager.reconcile(async () => {
     asked++
-    return [
-      { chatId: '55', rootId: '101', replyId: '1011', text: 'x', title: 'T', mode: 'reply' },
-      { chatId: '55', rootId: '102', replyId: '1021', text: 'pending one', title: 'T102' },
-    ]
-  })
+    return {
+      turns: [
+        { chatId: '55', rootId: '101', replyId: '1011', mode: 'reply', text: 'x', title: 'T', assistantId: '7' },
+        { chatId: '55', rootId: '102', replyId: '1021', mode: 'reply', text: 'pending one', title: 'T102', assistantId: '7' },
+        { chatId: '56', rootId: '103', replyId: '1031', mode: 'reply', text: 'not mine', title: 'T103', assistantId: '8' },
+      ],
+    }
+  }, { assistantIds: ['7'] })
   await r.manager.idle()
   assert.equal(asked, 1)
   assert.equal(ran, 1)
@@ -476,4 +528,250 @@ test('a root id that could leave the threads folder is refused', () => {
     assert.throws(() => r.manager.turn(turn(rootId)), (err: unknown) => err instanceof ThreadLaneError && err.code === 'bad_request', rootId)
   }
   assert.throws(() => r.manager.turn(turn('101', { mode: 'other' as 'reply' })), ThreadLaneError)
+})
+
+test('the pending route names the agents this daemon serves, and any other answer shape starts nothing', async () => {
+  assert.equal(threadsPendingPath(['7']), 'integrations/threads/pending?assistantIds=7')
+  assert.equal(threadsPendingPath(['7', '12']), 'integrations/threads/pending?assistantIds=7,12')
+  const r = rig()
+  const row = { chatId: '55', rootId: '102', replyId: '1021', mode: 'reply', text: 'x', title: 'T' }
+  assert.equal(await r.manager.reconcile(async () => [row]), 0)
+  assert.equal(await r.manager.reconcile(async () => ({ threads: [row] })), 0)
+  assert.equal(await r.manager.reconcile(async () => ({ turns: [row] })), 1)
+})
+
+test('a turn that arrives while the idle stop is under way runs on a new process, never failed by the old one', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const old = r.spawned[0]!.child
+  old.init(FORK_A)
+  old.result('done.')
+  await r.manager.idle()
+  r.fire(r.live(20 * MIN)[0]!)
+  assert.deepEqual(old.killed, ['SIGTERM'])
+  r.manager.turn(turn('101', { mode: 'reply', replyId: '1011', text: 'one more' }))
+  await flush()
+  assert.equal(r.spawned.length, 1, 'no second process while the first still runs')
+  old.exit(null)
+  await r.manager.idle()
+  assert.deepEqual(statePosts(r), ['101:working', '101:working'], 'never put back to open')
+  assert.equal(r.posts.filter((p) => p.path === 'integrations/threads/reply').length, 1)
+  assert.equal(r.spawned.length, 2)
+  const next = r.spawned[1]!.child
+  assert.deepEqual(next.stdin, [userMessageLine('one more')])
+  assert.equal(r.manager.runningCount(), 1)
+  next.result('the second answer.')
+  await r.manager.idle()
+  assert.equal(r.posts.at(-1)!.body.text, 'the second answer.')
+  assert.equal(r.live(20 * MIN).length, 1, 'the new process has its own idle stop')
+  assert.equal(r.manager.liveChildren(), 1)
+})
+
+test('a delete while the worktree is still being made removes it, its branch and the state, and starts nothing', async () => {
+  const r = rig()
+  let release: () => void = () => {}
+  const gate = new Promise<void>((done) => { release = done })
+  const git = r.deps.git
+  r.deps.git = async (args, cwd) => {
+    if (args[2] === 'worktree' && args[3] === 'add') await gate
+    return git(args, cwd)
+  }
+  r.manager.turn(turn('101'))
+  await new Promise((done) => setImmediate(done))
+  await r.manager.close({ rootId: '101', removeWorktree: true })
+  release()
+  await r.manager.idle()
+  assert.equal(r.spawned.length, 0)
+  assert.equal(r.files.has(sessionTranscriptPath(HOME, wt('101'), MAIN, '')), false, 'no copy of the main transcript')
+  assert.ok(r.gitCalls.some((g) => g[2] === 'worktree' && g[3] === 'remove' && g[5] === wt('101')), 'the worktree made meanwhile is removed')
+  assert.deepEqual(r.branchesDeleted, ['hoai/thread-101'])
+  assert.equal(r.files.has(join(STATE, '101.json')), false)
+  assert.equal(r.manager.runningCount(), 0)
+})
+
+test('a plain close while the worktree is still being made records closedAt, so the 7 day sweep removes it', async () => {
+  const r = rig()
+  let release: () => void = () => {}
+  const gate = new Promise<void>((done) => { release = done })
+  const git = r.deps.git
+  r.deps.git = async (args, cwd) => {
+    if (args[2] === 'worktree' && args[3] === 'add') await gate
+    return git(args, cwd)
+  }
+  r.manager.turn(turn('101'))
+  await new Promise((done) => setImmediate(done))
+  await r.manager.close({ rootId: '101', removeWorktree: false })
+  release()
+  await r.manager.idle()
+  assert.equal(r.spawned.length, 0)
+  assert.equal(r.files.has(sessionTranscriptPath(HOME, wt('101'), MAIN, '')), false)
+  assert.equal(JSON.parse(r.files.get(join(STATE, '101.json'))!).closedAt, r.clock.now)
+  assert.deepEqual(await r.manager.sweepClosed(r.clock.now + 7 * DAY + 1), ['101'])
+  assert.deepEqual(r.branchesDeleted, [], 'the sweep keeps the branch; only Delete removes it')
+})
+
+test('delete removes the thread branch, only that one, once the worktree is gone', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  r.spawned[0]!.child.init(FORK_A)
+  await r.manager.close({ rootId: '101', removeWorktree: true })
+  r.spawned[0]!.child.exit(null)
+  await r.manager.idle()
+  assert.deepEqual(r.gitCalls.at(-1), ['-C', AGENT, 'branch', '-D', 'hoai/thread-101'])
+  // A worktree that could not be removed keeps its branch.
+  const k = rig()
+  k.manager.turn(turn('102'))
+  await k.manager.idle()
+  const kGit = k.deps.git
+  k.deps.git = async (args, cwd) => (args[2] === 'worktree' && args[3] === 'remove' ? { ok: false, stdout: '' } : kGit(args, cwd))
+  k.deps.fs.rmrf = () => { throw new Error('busy') }
+  await k.manager.close({ rootId: '102', removeWorktree: true })
+  k.spawned[0]!.child.exit(null)
+  await k.manager.idle()
+  assert.deepEqual(k.branchesDeleted, [])
+})
+
+test('a reply longer than the server holds is cut to 20,000 characters with a plain note', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  r.spawned[0]!.child.result('z'.repeat(THREAD_TEXT_MAX + 100))
+  await r.manager.idle()
+  const text = String(r.posts.find((p) => p.path === 'integrations/threads/reply')!.body.text)
+  assert.equal(text.length, THREAD_TEXT_MAX)
+  assert.match(text, /cut here/)
+})
+
+test('a failed reply post is retried with backoff and lands', async () => {
+  let failures = 2
+  const r = rig({ failPosts: (path) => path === 'integrations/threads/reply' && failures-- > 0 })
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  r.spawned[0]!.child.result('the answer.')
+  for (const ms of THREAD_POST_RETRY_MS.slice(0, 2)) {
+    await new Promise((done) => setImmediate(done))
+    const wait = r.live(ms)
+    assert.equal(wait.length, 1, `a wait of ${ms} ms before the next try`)
+    r.fire(wait[0]!)
+  }
+  await r.manager.idle()
+  assert.equal(r.failedPosts.length, 2)
+  assert.deepEqual(r.posts.filter((p) => p.path === 'integrations/threads/reply').map((p) => p.body.text), ['the answer.'])
+  assert.deepEqual(statePosts(r), ['101:working'])
+})
+
+test('a reply post that keeps failing puts the thread back to open with a short reply, never stuck at working', async () => {
+  const r = rig({ failPosts: (path, body) => path === 'integrations/threads/reply' && body.text === 'the answer.' })
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  r.spawned[0]!.child.result('the answer.')
+  for (const ms of THREAD_POST_RETRY_MS) {
+    await new Promise((done) => setImmediate(done))
+    r.fire(r.live(ms)[0]!)
+  }
+  await r.manager.idle()
+  assert.equal(r.failedPosts.length, THREAD_POST_RETRY_MS.length + 1)
+  assert.deepEqual(statePosts(r), ['101:working', '101:open'])
+  const reply = r.posts.find((p) => p.path === 'integrations/threads/reply')!.body
+  assert.match(String(reply.text), /could not be delivered/)
+  assert.equal(reply.final, false)
+})
+
+test('a turn with no result after 30 minutes is failed and its lane stopped, freeing the slot', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  r.manager.turn(turn('102'))
+  r.manager.turn(turn('103'))
+  await r.manager.idle()
+  const c = r.spawned[0]!.child
+  c.init(FORK_A)
+  assert.equal(THREAD_TURN_TIMEOUT_MS, 30 * MIN)
+  const timeout = r.live(THREAD_TURN_TIMEOUT_MS).filter((t) => r.timers.indexOf(t) === 0)
+  assert.equal(timeout.length, 1, "the first lane's turn timer")
+  r.fire(timeout[0]!)
+  await r.manager.idle()
+  assert.deepEqual(c.killed, ['SIGTERM'])
+  assert.ok(statePosts(r).includes('101:open'))
+  assert.match(String(r.posts.find((p) => p.path === 'integrations/threads/reply' && p.body.rootId === '101')!.body.text), /longer than 30 minutes/)
+  assert.equal(r.spawned.length, 2, 'the slot frees when the stopped process exits')
+  c.result('too late.')
+  c.exit(null)
+  await r.manager.idle()
+  assert.equal(r.posts.some((p) => p.body.text === 'too late.'), false)
+  assert.equal(r.posts.filter((p) => p.path === 'integrations/threads/reply' && p.body.rootId === '101').length, 1, 'failed once')
+  assert.equal(r.spawned.length, 3)
+})
+
+test('a result ends its turn timer', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  r.spawned[0]!.child.result('quick.')
+  await r.manager.idle()
+  assert.equal(r.live(THREAD_TURN_TIMEOUT_MS).length, 0)
+})
+
+test('stopAll resolves once every lane has exited, and killAll sends SIGKILL to the rest', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  r.manager.turn(turn('102'))
+  await r.manager.idle()
+  let done = false
+  const stopped = r.manager.stopAll().then(() => { done = true })
+  assert.equal(r.manager.liveChildren(), 2)
+  r.spawned[0]!.child.exit(null)
+  await new Promise((d) => setImmediate(d))
+  assert.equal(done, false)
+  r.manager.killAll()
+  assert.deepEqual(r.spawned[1]!.child.killed, ['SIGTERM', 'SIGKILL'])
+  r.spawned[1]!.child.exit(null)
+  await stopped
+  assert.equal(done, true)
+  assert.equal(r.manager.liveChildren(), 0)
+})
+
+test('on a host with no Bash sandbox the lane runs without Bash, and the repository state is not even read', async () => {
+  const r = rig({ shell: false })
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  assert.deepEqual(r.spawned[0]!.args, threadLaneArgs({
+    mainSessionId: MAIN,
+    forkSessionId: null,
+    emptyMcpConfigPath: MCP,
+    confinement: { root: wt('101'), readOnly: false, shellSandbox: false },
+  }))
+  assert.equal(r.gitCalls.some((g) => g[2] === 'for-each-ref'), false)
+})
+
+test('a lane whose repository state cannot be read runs without Bash, never with an unprotected sandbox', async () => {
+  const r = rig()
+  const git = r.deps.git
+  r.deps.git = async (args, cwd) => (args[2] === 'for-each-ref' ? { ok: false, stdout: '' } : git(args, cwd))
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const args = r.spawned[0]!.args
+  assert.equal(args[args.indexOf('--tools') + 1]!.split(',').includes('Bash'), false)
+})
+
+test('a close while the lane confinement is being read starts nothing and copies nothing', async () => {
+  const r = rig()
+  let release: () => void = () => {}
+  const gate = new Promise<void>((done) => { release = done })
+  const git = r.deps.git
+  let reading = false
+  r.deps.git = async (args, cwd) => {
+    if (args[2] === 'for-each-ref') { reading = true; await gate }
+    return git(args, cwd)
+  }
+  r.manager.turn(turn('101'))
+  await flush()
+  assert.ok(reading, 'the start is reading the repository state')
+  await r.manager.close({ rootId: '101', removeWorktree: true })
+  release()
+  await r.manager.idle()
+  assert.equal(r.spawned.length, 0)
+  assert.equal(r.files.has(sessionTranscriptPath(HOME, wt('101'), MAIN, '')), false)
+  assert.deepEqual(r.branchesDeleted, ['hoai/thread-101'])
 })

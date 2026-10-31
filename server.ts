@@ -953,8 +953,10 @@ import {
   watch,
   writeFileSync,
 } from 'node:fs'
-import { ThreadLaneManager } from './lib/thread-lanes.ts'
-import { runAside } from './lib/aside-fork.ts'
+import { ThreadLaneManager, threadsPendingPath } from './lib/thread-lanes.ts'
+import { AsideForks, runAside } from './lib/aside-fork.ts'
+import { laneShellSandboxAvailable } from './lib/lane-policy.mjs'
+import { findOnPath } from './lib/lane-cli-probe.mjs'
 import { spawnStreamJson } from './lib/stream-json-child.ts'
 import { join as pathJoin, dirname as pathDirname, resolve as pathResolve } from 'node:path'
 import { ensureLogDir, resolveLogPath } from './lib/log-path.js'
@@ -13312,6 +13314,14 @@ const threadLanes = new ThreadLaneManager({
   home: homedir(),
   configDir: CLAUDE_CONFIG_DIR,
   emptyMcpConfigPath: threadsEmptyMcpConfig,
+  // A lane gets Bash only inside the CLI's sandbox (sandbox-exec on macOS,
+  // bwrap and socat on Linux); without it, no Bash at all.
+  shellSandbox: () =>
+    laneShellSandboxAvailable({
+      platform: process.platform,
+      exists: (p: string) => existsSync(p),
+      onPath: (name: string) => findOnPath(name, { pathVar: process.env.PATH ?? '' }) !== null,
+    }),
   git: async (args, cwd) => {
     try {
       const { stdout } = await execFileAsync('git', args, { cwd, timeout: 60_000, maxBuffer: 1024 * 1024 })
@@ -13341,6 +13351,48 @@ const threadLanes = new ThreadLaneManager({
   clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
   log,
 })
+// By the way forks in flight, stopped and cleaned up on shutdown.
+const asideForks = new AsideForks()
+
+/**
+ * A thread turn the person sent while this daemon was away runs now
+ * (GET integrations/threads/pending, scoped to the agent this daemon serves).
+ * Only the lock holder runs lanes, and only where it declares threads, so it
+ * runs on every (re)connect once armed AND when the channel arms: the first
+ * connect after a boot comes before the arm.
+ */
+function reconcilePendingThreads(why: string): void {
+  if (!channelArmed || !threadsDeclared()) return
+  const assistantIds = [String(ASSISTANT_ID)]
+  void threadLanes
+    // no-cache: an ETag 304 would hide turns this new process never ran.
+    .reconcile(() => bgosGet(threadsPendingPath(assistantIds), { headers: { 'Cache-Control': 'no-cache' } }), { assistantIds })
+    .then((started) => { if (started > 0) log(`threads: ${started} pending thread turn(s) started (${why})`) })
+    .catch((err) => log(`threads: pending reconcile failed (${why}): ${err instanceof Error ? err.name : 'error'}`))
+}
+
+const THREAD_CHILDREN_STOP_WAIT_MS = 3_000
+/**
+ * Shutdown: SIGTERM to every thread lane and By the way fork (each its own
+ * process group), at most THREAD_CHILDREN_STOP_WAIT_MS for them to exit,
+ * then SIGKILL for the rest and the forks' session files deleted. Null when
+ * none runs, so a shutdown without them exits at once as before.
+ */
+function stopThreadChildren(): Promise<void> | null {
+  if (threadLanes.liveChildren() === 0 && asideForks.size() === 0) return null
+  const all = Promise.allSettled([threadLanes.stopAll(), asideForks.stopAll()])
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      threadLanes.killAll()
+      asideForks.killAll()
+      resolve()
+    }, THREAD_CHILDREN_STOP_WAIT_MS)
+    void all.then(() => {
+      clearTimeout(timer)
+      resolve()
+    })
+  })
+}
 
 const voiceRpc = new VoiceRpcHandler({
   config: {
@@ -13436,6 +13488,7 @@ const voiceRpc = new VoiceRpcHandler({
               unlink: (path) => unlinkSync(path),
               onDelta,
               log,
+              forks: asideForks,
             }),
         },
       }
@@ -15604,13 +15657,8 @@ function connectWebsocket(): void {
   realtimeSocket.on('connect', () => {
     log(`WS connected (id=${realtimeSocket?.id}), polling will throttle`)
     // Threads phase 1: a turn the person sent while this daemon was away is
-    // run now (GET integrations/threads/pending). Only the lock holder runs
-    // lanes, and only where it declares threads.
-    if (channelArmed && threadsDeclared()) {
-      void threadLanes
-        .reconcile(() => bgosGet('integrations/threads/pending'))
-        .catch((err) => log(`threads: pending reconcile failed: ${err instanceof Error ? err.name : 'error'}`))
-    }
+    // run now (also when the channel arms, for the first connect after boot).
+    reconcilePendingThreads('ws connect')
     // Pending ask groups are read again on every connect: an answer given
     // while this daemon was down or disconnected is due now, and a stream
     // entry for it may be behind a cursor this life never reads.
@@ -17563,8 +17611,16 @@ async function main(): Promise<void> {
     releasePairingLock({ lockPath: PAIRING_LOCK_PATH, selfPid: process.pid })
     // Never leave a sign-in child behind (lib/auth-login.ts).
     loginController.dispose()
-    // Nor a thread lane (lib/thread-lanes.ts).
-    threadLanes.stopAll()
+    // Nor a thread lane or a By the way fork (lib/thread-lanes.ts,
+    // lib/aside-fork.ts): a bounded wait for them, only when one runs.
+    const threadChildrenDown = stopThreadChildren()
+    if (threadChildrenDown) {
+      void threadChildrenDown.then(() => {
+        browserHost?.stop()
+        process.exit(code)
+      })
+      return
+    }
     browserHost?.stop()
     process.exit(code)
   }
@@ -17578,7 +17634,8 @@ async function main(): Promise<void> {
     flushChatCursors()
     releasePairingLock({ lockPath: PAIRING_LOCK_PATH, selfPid: process.pid })
     loginController.dispose()
-    threadLanes.stopAll()
+    void threadLanes.stopAll()
+    asideForks.killAll()
     browserHost?.stop()
   })
 
@@ -17949,6 +18006,7 @@ async function main(): Promise<void> {
       channelEverArmed = true
       startHookIntakeIfHolder()
       handleUnboundBeforeArm()
+      reconcilePendingThreads('re-armed')
       log(
         `delivery re-armed after reclaiming the pairing lock; ` +
           `monitoring ${monitoredChatIds.length} chat(s)`,
@@ -18747,6 +18805,8 @@ async function main(): Promise<void> {
     // session's hook spool. Only the holder consumes (see the guard inside).
     startHookIntakeIfHolder()
     handleUnboundBeforeArm()
+    // The first connect after a boot came before this arm: run what waits.
+    reconcilePendingThreads('armed')
   }
 
   // The passive watch loop, shared by the two ways a daemon can find itself

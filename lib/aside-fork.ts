@@ -12,11 +12,16 @@
  * the result frame (or the streamed text when the result is missing), and the
  * fork's own session file is ALWAYS deleted once the child has exited: an
  * aside never becomes a session anybody resumes. The main session's file is
- * never touched. Hard timeout 55 s, under BGOS's 60 s.
+ * never touched. Hard timeout 55 s, under BGOS's 60 s. An error result
+ * ("API Error: 529 ...", a turn limit) is a failure, never the answer.
+ *
+ * Every fork in flight is listed in an AsideForks registry, so a daemon
+ * shutdown stops them (lib/stream-json-child.ts signals the whole process
+ * group) and deletes their session files.
  */
 
 import { asideArgs, asidePrompt, isSessionId, type AsideExchange } from './thread-lane-args.ts'
-import { lineSplitter, type SpawnStreamJson } from './stream-json-child.ts'
+import { lineSplitter, type SpawnStreamJson, type StreamJsonChild } from './stream-json-child.ts'
 import { sessionTranscriptPath } from '../bin/hoai-core.mjs'
 
 export const ASIDE_TIMEOUT_MS = 55_000
@@ -27,6 +32,59 @@ export class AsideError extends Error {
   constructor(code: string, message: string) {
     super(message)
     this.code = code
+  }
+}
+
+interface LiveFork {
+  child: StreamJsonChild
+  exited: Promise<void>
+  /** The fork's session file once its init frame named it, else null. */
+  forkFile(): string | null
+  unlink(path: string): void
+}
+
+/** The By the way forks in flight, so a shutdown can stop them and clean up. */
+export class AsideForks {
+  private readonly live = new Set<LiveFork>()
+
+  size(): number {
+    return this.live.size
+  }
+
+  add(fork: LiveFork): void {
+    this.live.add(fork)
+  }
+
+  delete(fork: LiveFork): void {
+    this.live.delete(fork)
+  }
+
+  /**
+   * Shutdown: SIGTERM to every fork, resolved once all have exited (their
+   * own exit handlers delete their session files). The caller bounds the
+   * wait and calls killAll for the rest.
+   */
+  stopAll(): Promise<void> {
+    const exits: Array<Promise<void>> = []
+    for (const fork of this.live) {
+      fork.child.kill('SIGTERM')
+      exits.push(fork.exited)
+    }
+    return Promise.all(exits).then(() => undefined)
+  }
+
+  /** The end of the wait, or a process exit that cannot wait: SIGKILL, and delete each fork file now. */
+  killAll(): void {
+    for (const fork of [...this.live]) {
+      fork.child.kill('SIGKILL')
+      const file = fork.forkFile()
+      if (file) {
+        try {
+          fork.unlink(file)
+        } catch {}
+      }
+      this.live.delete(fork)
+    }
   }
 }
 
@@ -48,6 +106,8 @@ export interface AsideDeps {
   setTimer?(fn: () => void, ms: number): unknown
   clearTimer?(handle: unknown): void
   log?(msg: string): void
+  /** Where a fork in flight is listed for the shutdown. */
+  forks?: AsideForks
 }
 
 export interface AsideInput {
@@ -75,6 +135,7 @@ export function runAside(input: AsideInput, deps: AsideDeps): Promise<{ text: st
     let seq = 0
     let streamed = ''
     let resultText: string | null = null
+    let failedResult = false
     const settle = (fn: () => void): void => {
       if (settled) return
       settled = true
@@ -82,6 +143,16 @@ export function runAside(input: AsideInput, deps: AsideDeps): Promise<{ text: st
     }
 
     const child = deps.spawn(claude, args, { cwd: deps.mainFolder })
+    const forkFile = (): string | null =>
+      forkId ? sessionTranscriptPath(deps.home, deps.mainFolder, forkId, deps.configDir) : null
+    let markExited: () => void = () => {}
+    const live: LiveFork = {
+      child,
+      exited: new Promise<void>((done) => { markExited = done }),
+      forkFile,
+      unlink: (path) => deps.unlink(path),
+    }
+    deps.forks?.add(live)
     const timer = setTimer(() => {
       child.kill('SIGKILL')
       settle(() => reject(new AsideError('timed_out', 'The side question took too long to answer.')))
@@ -104,6 +175,13 @@ export function runAside(input: AsideInput, deps: AsideDeps): Promise<{ text: st
         return
       }
       if (frame.type === 'result') {
+        // is_error or any subtype but success: an API error, a turn limit.
+        // Its text (or what streamed before it) is never the answer.
+        if (frame.is_error === true || (frame.subtype !== undefined && frame.subtype !== 'success')) {
+          failedResult = true
+          settle(() => reject(new AsideError('failed', 'The side question could not be answered from what the agent knows.')))
+          return
+        }
         if (typeof frame.result === 'string' && frame.result.trim() !== '') resultText = frame.result
         const text = resultText ?? streamed
         if (text.trim() !== '') settle(() => resolve({ text }))
@@ -112,17 +190,19 @@ export function runAside(input: AsideInput, deps: AsideDeps): Promise<{ text: st
 
     child.onExit(() => {
       clearTimer(timer)
-      if (forkId) {
-        const path = sessionTranscriptPath(deps.home, deps.mainFolder, forkId, deps.configDir)
+      deps.forks?.delete(live)
+      const path = forkFile()
+      if (path) {
         try {
           deps.unlink(path)
         } catch (err) {
           deps.log?.(`aside: could not delete the fork session file: ${err instanceof Error ? err.name : 'error'}`)
         }
       }
+      markExited()
       const text = resultText ?? streamed
       settle(() =>
-        text.trim() !== ''
+        !failedResult && text.trim() !== ''
           ? resolve({ text })
           : reject(new AsideError('failed', 'The side question could not be answered from what the agent knows.')),
       )

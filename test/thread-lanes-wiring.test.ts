@@ -2,7 +2,8 @@
  * server.ts wires the thread lanes and By the way (Threads phase 1) with real
  * dependencies: the session this daemon has proven, the folder its session
  * runs in, the agent's own state dir, the voice_rpc ops, a reconcile on every
- * (re)connect, the hourly sweep, and a stop of every lane on shutdown. A
+ * (re)connect and arm, the hourly sweep, and a bounded stop of every lane and
+ * By the way fork on shutdown. A
  * source read, like the other wiring tests: server.ts boots a whole daemon.
  */
 
@@ -44,18 +45,39 @@ test('the voice_rpc handler gets the lanes, the aside runner from the same folde
   assert.match(rpc, /bgosPost\(`integrations\/voice-rpc\/\$\{encodeURIComponent\(rpcId\)\}\/progress`, body\)/)
 })
 
-test('every (re)connect reconciles the pending threads, on the lock holder only', () => {
+test('pending threads are reconciled with the served agent ids and the server real answer, on connect AND when the channel arms', () => {
+  const fn = block('function reconcilePendingThreads(why: string): void {', '\n}\n')
+  assert.match(fn, /if \(!channelArmed \|\| !threadsDeclared\(\)\) return/)
+  assert.match(fn, /const assistantIds = \[String\(ASSISTANT_ID\)\]/)
+  assert.match(fn, /\.reconcile\(\(\) => bgosGet\(threadsPendingPath\(assistantIds\), \{ headers: \{ 'Cache-Control': 'no-cache' \} \}\), \{ assistantIds \}\)/)
+  assert.doesNotMatch(server, /bgosGet\('integrations\/threads\/pending'\)/, 'never the call with no agent ids')
   const connect = block("realtimeSocket.on('connect', () => {", '\n  })\n')
-  assert.match(connect, /if \(channelArmed && threadsDeclared\(\)\) \{\n\s*void threadLanes\n\s*\.reconcile\(\(\) => bgosGet\('integrations\/threads\/pending'\)\)/)
+  assert.match(connect, /reconcilePendingThreads\('ws connect'\)/)
+  // Both arms: the first connect after a boot comes before channelArmed.
+  assert.match(server, /handleUnboundBeforeArm\(\)\n\s*reconcilePendingThreads\('re-armed'\)/)
+  assert.match(server, /handleUnboundBeforeArm\(\)\n\s*\/\/[^\n]*\n\s*reconcilePendingThreads\('armed'\)/)
+})
+
+test('a lane gets Bash only where the host has the CLI sandbox', () => {
+  const manager = block('const threadLanes = new ThreadLaneManager({', '\n})\n')
+  assert.match(manager, /shellSandbox: \(\) =>\s*laneShellSandboxAvailable\(/)
 })
 
 test('closed thread worktrees are swept every hour', () => {
   assert.match(server, /void threadLanes\n\s*\.sweepClosed\(Date\.now\(\)\)[\s\S]{0,400}\}, 60 \* 60_000\)\.unref\(\)/)
 })
 
-test('a daemon shutdown stops every lane, on both exit paths', () => {
-  const shutdown = block('const shutdown = (cause: ShutdownCause | string, code: number): void => {', 'process.exit(code)')
-  assert.match(shutdown, /threadLanes\.stopAll\(\)/)
+test('a daemon shutdown stops every lane and By the way fork with a bounded wait, on both exit paths', () => {
+  const shutdown = block('const shutdown = (cause: ShutdownCause | string, code: number): void => {', "process.on('exit', () => {")
+  assert.match(shutdown, /const threadChildrenDown = stopThreadChildren\(\)\n\s*if \(threadChildrenDown\) \{\n\s*void threadChildrenDown\.then\(\(\) => \{\n\s*browserHost\?\.stop\(\)\n\s*process\.exit\(code\)/)
+  const stop = block('function stopThreadChildren(): Promise<void> | null {', '\n}\n')
+  assert.match(stop, /if \(threadLanes\.liveChildren\(\) === 0 && asideForks\.size\(\) === 0\) return null/)
+  assert.match(stop, /Promise\.allSettled\(\[threadLanes\.stopAll\(\), asideForks\.stopAll\(\)\]\)/)
+  assert.match(stop, /threadLanes\.killAll\(\)\n\s*asideForks\.killAll\(\)/)
+  assert.match(server, /const THREAD_CHILDREN_STOP_WAIT_MS = 3_000/)
   const onExit = block("process.on('exit', () => {", '\n  })\n')
   assert.match(onExit, /threadLanes\.stopAll\(\)/)
+  assert.match(onExit, /asideForks\.killAll\(\)/)
+  const rpc = block('const voiceRpc = new VoiceRpcHandler({', '\n})\n')
+  assert.match(rpc, /forks: asideForks,/)
 })

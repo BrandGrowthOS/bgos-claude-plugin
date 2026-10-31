@@ -10,11 +10,19 @@
  *  - Key: the thread's root message id. Phase 1 is the owner's lanes only, and
  *    one manager serves one agent, so the root alone is the
  *    `${assistantId}:${rootId}` key.
- *  - Slots: at most 2 lanes run a turn at once per agent; a third waits FIFO
- *    (state "waiting" posted) and starts when a slot frees. Turns for one
- *    thread are serialized.
- *  - Idle stop: a lane with no turn for 20 minutes is stopped (SIGTERM, then
- *    SIGKILL after 10 s); its next turn resumes it by its own id.
+ *  - Slots: at most 2 lane processes per agent. A slot is held by a lane
+ *    running a turn or by a lane whose process is alive (idle or still
+ *    exiting), so a closed or stopped lane frees its slot only once its
+ *    process has exited. A third thread waits FIFO (state "waiting" posted);
+ *    an idle lane gives its slot to it (stopped, resumed by id later). Turns
+ *    for one thread are serialized.
+ *  - Idle stop: a lane with no turn for 20 minutes is stopped (SIGTERM to its
+ *    process group, then SIGKILL after 10 s); its next turn resumes it by its
+ *    own id. A turn that has neither answered nor ended after 30 minutes is
+ *    failed and its lane stopped the same way.
+ *  - Confinement: every lane runs `--restricted` with its own tools,
+ *    permission mode and settings (lib/thread-lane-args.ts threadLaneArgs):
+ *    edits only in its worktree, Bash only in the CLI's sandbox.
  *  - Working tree: the daemon (never the lane) runs `git worktree add
  *    .hoai/threads/<root> -b hoai/thread-<root>` in the agent folder, and the
  *    lane works there; `.hoai/` is excluded through `.git/info/exclude`, never
@@ -24,10 +32,15 @@
  *    cwd, so before the first start the main transcript is copied into the
  *    worktree's project dir; the copy goes once the fork's init frame shows it
  *    was read. The fork's own file stays: it is the thread's memory.
+ *  - A summary turn posts the draft to the summary route instead of a reply.
  *  - Each result is ONE thread reply (`final` unless it ends asking a
- *    question); a summary turn posts the draft to the summary route instead.
+ *    question), clipped to the server's 20,000 characters; a post that fails
+ *    is retried with backoff, and one that still fails puts the thread back
+ *    to Open with a short plain reply, never a thread stuck at Working.
  *  - Close stops the lane and keeps the worktree for 7 days (sweepClosed);
- *    delete also removes the worktree, the fork's session file and the state.
+ *    delete also removes the worktree, its hoai/thread-<root> branch, the
+ *    fork's session file and the state. Either waits for a start in flight,
+ *    so a worktree being made while the person deletes is removed too.
  *
  * Every effect is an injected dependency, so the whole manager is unit tested
  * with fakes (test/thread-lanes.test.ts). Erasable TypeScript only.
@@ -35,7 +48,16 @@
 
 import { dirname, join, resolve } from 'node:path'
 
-import { isFinalReply, isSessionId, threadLaneArgs, threadTurnPrompt, type ThreadTurnMode } from './thread-lane-args.ts'
+import {
+  clipThreadText,
+  isFinalReply,
+  isSessionId,
+  protectedGitPaths,
+  threadLaneArgs,
+  threadTurnPrompt,
+  type ThreadLaneConfinement,
+  type ThreadTurnMode,
+} from './thread-lane-args.ts'
 import { lineSplitter, userMessageLine, type SpawnStreamJson, type StreamJsonChild } from './stream-json-child.ts'
 import { sessionTranscriptPath } from '../bin/hoai-core.mjs'
 
@@ -43,6 +65,10 @@ export const THREAD_LANE_MAX_RUNNING = 2
 export const THREAD_LANE_IDLE_MS = 20 * 60_000
 export const THREAD_LANE_KILL_GRACE_MS = 10_000
 export const THREAD_LANE_KEEP_CLOSED_MS = 7 * 24 * 60 * 60_000
+/** A turn with no result and no exit after this long is failed and its lane stopped. */
+export const THREAD_TURN_TIMEOUT_MS = 30 * 60_000
+/** The waits between attempts of a post to BGOS (so 4 attempts in all). */
+export const THREAD_POST_RETRY_MS: readonly number[] = Object.freeze([2_000, 10_000, 30_000])
 
 const ROOT_ID_RE = /^[A-Za-z0-9_-]{1,64}$/
 const MODES: readonly string[] = ['start', 'reply', 'summary']
@@ -51,6 +77,13 @@ const FAILED_TURN = 'This turn failed before the agent could answer, so send you
 const NO_SESSION = 'This thread could not start because the agent has no running session to fork yet.'
 const NO_CLAUDE = 'This turn failed because this computer cannot run Claude Code right now.'
 const NO_WORKTREE = 'This thread could not start because its working copy could not be made.'
+const TIMED_OUT = 'This turn took longer than 30 minutes, so it was stopped. Send your reply again to retry.'
+const POST_FAILED = 'The answer to this turn could not be delivered, so send your reply again to retry.'
+
+/** The pending route, scoped to the agents this daemon serves (the server answers nothing without them). */
+export function threadsPendingPath(assistantIds: readonly string[]): string {
+  return `integrations/threads/pending?assistantIds=${assistantIds.map((id) => encodeURIComponent(id)).join(',')}`
+}
 
 export class ThreadLaneError extends Error {
   readonly code: string
@@ -95,6 +128,8 @@ export interface ThreadLaneDeps {
   /** CLAUDE_CONFIG_DIR, '' for ~/.claude. */
   configDir: string
   emptyMcpConfigPath(): string
+  /** This host can run the CLI's Bash sandbox (lib/lane-policy.mjs laneShellSandboxAvailable). */
+  shellSandbox(): boolean
   git(args: string[], cwd: string): Promise<{ ok: boolean; stdout: string }>
   fs: ThreadLaneFs
   post(path: string, body: Record<string, unknown>): Promise<unknown>
@@ -106,6 +141,8 @@ export interface ThreadLaneDeps {
   idleMs?: number
   killGraceMs?: number
   keepClosedMs?: number
+  turnTimeoutMs?: number
+  postRetryMs?: readonly number[]
 }
 
 /** What a lane keeps on disk, one JSON file per thread. */
@@ -132,6 +169,13 @@ interface Lane {
   idleTimer: unknown
   queue: ThreadTurnInput[]
   current: ThreadTurnInput | null
+  /** The turn written to the CURRENT child: only its exit or its result may end that turn. */
+  childTurn: ThreadTurnInput | null
+  turnTimer: unknown
+  /** A start in flight (worktree, confinement, spawn): close and delete wait for it. */
+  starting: Promise<void> | null
+  /** When the lane last finished a turn: the oldest idle lane gives its slot first. */
+  idleSince: number
   copiedMainPath: string | null
   posts: Promise<void>
   closed: boolean
@@ -143,8 +187,10 @@ export class ThreadLaneManager {
   private readonly lanes = new Map<string, Lane>()
   private readonly running = new Set<string>()
   private waiting: string[] = []
-  /** A closed lane's child that is still exiting: a reopen waits for it. */
+  /** A closed lane still settling (its start, its exit, its removal): a reopen waits for it. */
   private readonly exiting = new Map<string, Promise<void>>()
+  /** Closed lanes whose process has not exited yet: they still hold a slot. */
+  private readonly closing = new Set<Lane>()
   private readonly work = new Set<Promise<unknown>>()
 
   constructor(deps: ThreadLaneDeps) {
@@ -158,6 +204,25 @@ export class ThreadLaneManager {
   /** Lanes running a turn right now. */
   runningCount(): number {
     return this.running.size
+  }
+
+  /** Lane processes alive right now (running, idle or exiting). */
+  liveChildren(): number {
+    let n = 0
+    for (const lane of [...this.lanes.values(), ...this.closing]) if (lane.child) n++
+    return n
+  }
+
+  /** Slots in use: lanes running a turn or holding a live process, and closed lanes still exiting. */
+  private slotsUsed(): number {
+    let n = this.closing.size
+    for (const lane of this.lanes.values()) if (lane.current || lane.child) n++
+    return n
+  }
+
+  /** A lane can start a turn now: it already holds a slot, or one is free. */
+  private canStart(lane: Lane): boolean {
+    return lane.child !== null || this.slotsUsed() < this.maxRunning
   }
 
   /** Resolves once every background step (starts, posts, removals) has settled. */
@@ -186,13 +251,14 @@ export class ThreadLaneManager {
     this.clearIdle(lane)
     if (lane.current) return { accepted: true, state: 'working' }
     if (this.waiting.includes(input.rootId)) return { accepted: true, state: 'waiting' }
-    if (this.running.size < this.maxRunning) {
+    if (this.waiting.length === 0 && this.canStart(lane)) {
       this.start(lane)
       return { accepted: true, state: 'working' }
     }
     this.waiting.push(input.rootId)
     this.post(lane, 'integrations/threads/state', { chatId: lane.state.chatId, rootId: input.rootId, state: 'waiting' })
-    return { accepted: true, state: 'waiting' }
+    this.pump()
+    return { accepted: true, state: this.waiting.includes(input.rootId) ? 'waiting' : 'working' }
   }
 
   /** Stop a thread's lane. removeWorktree (delete) also removes its worktree, session file and state. */
@@ -211,27 +277,34 @@ export class ThreadLaneManager {
     lane.queue = []
     this.waiting = this.waiting.filter((id) => id !== rootId)
     if (lane.current) {
-      lane.current = null
-      this.running.delete(rootId)
+      this.endTurn(lane)
     }
     this.clearIdle(lane)
+    this.lanes.delete(rootId)
+    // A start in flight (the worktree being made) settles first: it sees
+    // lane.closed and spawns nothing, and its folder is then known here.
+    const starting = (lane.starting ?? Promise.resolve()).catch(() => {})
     let exited: Promise<void> = Promise.resolve()
     if (lane.child) {
+      this.closing.add(lane)
       this.stopChild(lane)
       exited = lane.exited
-      this.exiting.set(rootId, exited)
-      void exited.then(() => {
-        if (this.exiting.get(rootId) === exited) this.exiting.delete(rootId)
-      })
     }
-    this.lanes.delete(rootId)
-    if (input.removeWorktree) {
-      const state = lane.state
-      this.track(exited.then(() => this.removeLane(state)))
-    } else if (lane.state.folder) {
-      lane.state.closedAt = this.deps.now()
-      this.persist(lane)
-    }
+    const state = lane.state
+    const settled: Promise<void> = input.removeWorktree
+      ? Promise.all([starting, exited]).then(() => this.removeLane(state, { deleteBranch: true }))
+      : starting.then(() => {
+          // Not when the thread was reopened meanwhile: that lane owns the file now.
+          if (!state.folder || this.lanes.has(rootId)) return
+          state.closedAt = this.deps.now()
+          this.persistState(state)
+        })
+    const done = Promise.all([settled, exited]).then(() => undefined)
+    this.exiting.set(rootId, done)
+    void done.then(() => {
+      if (this.exiting.get(rootId) === done) this.exiting.delete(rootId)
+    })
+    this.track(done)
     this.pump()
     return { stopped: true }
   }
@@ -254,31 +327,29 @@ export class ThreadLaneManager {
       const state = this.load(rootId)
       if (!state || state.closedAt === null) continue
       if (now - state.closedAt <= keep) continue
-      await this.removeLane(state)
+      await this.removeLane(state, { deleteBranch: false })
       removed.push(rootId)
     }
     return removed
   }
 
   /**
-   * After a reconnect: ask the server which threads wait on this agent (the
-   * newest row is the person's and no lane works on it) and run a reply turn
-   * for each that is not already running here. Answers how many started.
+   * After a reconnect, and when the channel arms: ask the server which
+   * threads wait on this agent (GET integrations/threads/pending, answered
+   * `{ turns: [{ chatId, rootId, replyId, mode, text, title, assistantId }] }`)
+   * and run a reply turn for each that is not already running here. A row for
+   * an agent this daemon does not serve is skipped. Answers how many started.
    */
-  async reconcile(fetchPending: () => Promise<unknown>): Promise<number> {
+  async reconcile(fetchPending: () => Promise<unknown>, opts: { assistantIds?: readonly string[] } = {}): Promise<number> {
     const raw = await fetchPending()
-    const body = raw as Record<string, unknown> | null
-    const rows: unknown[] = Array.isArray(raw)
-      ? raw
-      : Array.isArray(body?.threads)
-        ? (body!.threads as unknown[])
-        : Array.isArray(body?.pending)
-          ? (body!.pending as unknown[])
-          : []
+    const body = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : null
+    const rows: unknown[] = Array.isArray(body?.turns) ? (body!.turns as unknown[]) : []
+    const served = opts.assistantIds ? new Set(opts.assistantIds.map(String)) : null
     let started = 0
     for (const row of rows) {
       if (!row || typeof row !== 'object') continue
       const r = row as Record<string, unknown>
+      if (served && str(r.assistantId) !== '' && !served.has(str(r.assistantId))) continue
       const input: ThreadTurnInput = {
         chatId: str(r.chatId),
         rootId: str(r.rootId),
@@ -300,14 +371,30 @@ export class ThreadLaneManager {
     return started
   }
 
-  /** Daemon shutdown: stop every lane now (synchronous, the process exits next). */
-  stopAll(): void {
+  /**
+   * Daemon shutdown: SIGTERM to every lane's process group now, and resolve
+   * once they have all exited. The caller bounds the wait and then calls
+   * killAll for whatever is left.
+   */
+  stopAll(): Promise<void> {
     this.waiting = []
-    for (const lane of this.lanes.values()) {
+    const exits: Array<Promise<void>> = []
+    for (const lane of [...this.lanes.values(), ...this.closing]) {
       this.clearIdle(lane)
+      this.clearTurnTimer(lane)
       lane.queue = []
-      lane.child?.kill('SIGTERM')
+      if (lane.child) {
+        lane.stopping = true
+        lane.child.kill('SIGTERM')
+        exits.push(lane.exited)
+      }
     }
+    return Promise.all(exits).then(() => undefined)
+  }
+
+  /** The end of the shutdown wait: SIGKILL to every lane process group still alive. */
+  killAll(): void {
+    for (const lane of [...this.lanes.values(), ...this.closing]) lane.child?.kill('SIGKILL')
   }
 
   // -- internals --------------------------------------------------------------
@@ -344,6 +431,10 @@ export class ThreadLaneManager {
       idleTimer: null,
       queue: [],
       current: null,
+      childTurn: null,
+      turnTimer: null,
+      starting: null,
+      idleSince: 0,
       copiedMainPath: null,
       posts: Promise.resolve(),
       closed: false,
@@ -363,8 +454,16 @@ export class ThreadLaneManager {
 
   private async runTurn(lane: Lane, turn: ThreadTurnInput): Promise<void> {
     try {
-      await this.ensureChild(lane)
-      if (lane.current !== turn || !lane.child) return
+      const starting = this.ensureChild(lane)
+      lane.starting = starting
+      try {
+        await starting
+      } finally {
+        if (lane.starting === starting) lane.starting = null
+      }
+      if (lane.current !== turn || !lane.child || lane.closed) return
+      lane.childTurn = turn
+      this.armTurnTimer(lane, turn)
       lane.child.write(userMessageLine(threadTurnPrompt({ ...turn, readOnly: lane.state.readOnly })))
     } catch (err) {
       this.deps.log(`threads: turn ${turn.rootId} could not start (${err instanceof ThreadLaneError ? err.code : 'error'})`)
@@ -372,16 +471,42 @@ export class ThreadLaneManager {
     }
   }
 
-  /** Give the freed slots to the threads that waited longest. */
+  /**
+   * Give the free slots to the threads that waited longest. When none is free
+   * and a lane only sits idle on one, that lane is stopped (oldest idle
+   * first) and its exit frees the slot.
+   */
   private pump(): void {
-    while (this.running.size < this.maxRunning && this.waiting.length > 0) {
-      const rootId = this.waiting.shift()!
+    while (this.waiting.length > 0) {
+      const rootId = this.waiting[0]!
       const lane = this.lanes.get(rootId)
-      if (lane && !lane.closed && !lane.current && lane.queue.length > 0) this.start(lane)
+      if (!lane || lane.closed || lane.current || lane.queue.length === 0) {
+        this.waiting.shift()
+        continue
+      }
+      if (!this.canStart(lane)) {
+        this.stopOldestIdle()
+        return
+      }
+      this.waiting.shift()
+      this.start(lane)
+    }
+  }
+
+  private stopOldestIdle(): void {
+    let oldest: Lane | null = null
+    for (const lane of this.lanes.values()) {
+      if (!lane.child || lane.stopping || lane.current || lane.queue.length > 0) continue
+      if (!oldest || lane.idleSince < oldest.idleSince) oldest = lane
+    }
+    if (oldest) {
+      this.clearIdle(oldest)
+      this.stopChild(oldest)
     }
   }
 
   private afterTurn(lane: Lane): void {
+    lane.idleSince = this.deps.now()
     if (lane.closed) {
       this.pump()
       return
@@ -399,33 +524,41 @@ export class ThreadLaneManager {
     this.pump()
   }
 
-  private onResult(lane: Lane, frame: Record<string, unknown>): void {
-    const turn = lane.current
-    if (!turn) return
+  /** The current turn is over: its slot, its timer and its child's claim on it go. */
+  private endTurn(lane: Lane): void {
     lane.current = null
+    lane.childTurn = null
+    this.clearTurnTimer(lane)
     this.running.delete(lane.state.rootId)
-    const text = typeof frame.result === 'string' ? frame.result : ''
-    const failed = frame.is_error === true || (frame.subtype !== undefined && frame.subtype !== 'success') || text.trim() === ''
+  }
+
+  private onResult(lane: Lane, frame: Record<string, unknown>): void {
+    const turn = lane.childTurn
+    if (!turn || lane.current !== turn) return
+    this.endTurn(lane)
+    const raw = typeof frame.result === 'string' ? frame.result : ''
+    const failed = frame.is_error === true || (frame.subtype !== undefined && frame.subtype !== 'success') || raw.trim() === ''
+    const text = clipThreadText(raw)
     if (failed) {
       this.postFailure(lane, turn, FAILED_TURN)
     } else if (turn.mode === 'summary') {
-      this.post(lane, 'integrations/threads/summary', { chatId: turn.chatId, rootId: turn.rootId, summary: text })
+      this.post(lane, 'integrations/threads/summary', { chatId: turn.chatId, rootId: turn.rootId, summary: text }, () =>
+        this.postFailure(lane, turn, POST_FAILED),
+      )
     } else {
-      this.post(lane, 'integrations/threads/reply', {
-        chatId: turn.chatId,
-        rootId: turn.rootId,
-        text,
-        final: isFinalReply(text),
-        clientId: this.clientId(lane, turn),
-      })
+      this.post(
+        lane,
+        'integrations/threads/reply',
+        { chatId: turn.chatId, rootId: turn.rootId, text, final: isFinalReply(raw), clientId: this.clientId(lane, turn) },
+        () => this.postFailure(lane, turn, POST_FAILED),
+      )
     }
     this.afterTurn(lane)
   }
 
   private failTurn(lane: Lane, turn: ThreadTurnInput, sentence: string): void {
     if (lane.current !== turn) return
-    lane.current = null
-    this.running.delete(lane.state.rootId)
+    this.endTurn(lane)
     this.postFailure(lane, turn, sentence)
     this.afterTurn(lane)
   }
@@ -449,10 +582,15 @@ export class ThreadLaneManager {
     const before = this.exiting.get(lane.state.rootId)
     if (before) await before
     if (lane.child && lane.stopping) await lane.exited
-    if (lane.child) return
+    if (lane.closed || lane.child) return
     const claude = this.deps.claudeBin()
     if (!claude) throw new ThreadLaneError('unavailable', NO_CLAUDE)
     await this.prepareFolder(lane)
+    if (lane.closed) return
+    const confinement = await this.confinement(lane)
+    // Closed while the worktree or its confinement was being made: no copy of
+    // the main transcript, no process (close removes or keeps the folder).
+    if (lane.closed) return
     const mcp = this.deps.emptyMcpConfigPath()
     let args: string[]
     if (lane.state.forkSessionId) {
@@ -460,15 +598,14 @@ export class ThreadLaneManager {
         mainSessionId: this.deps.mainSessionId(),
         forkSessionId: lane.state.forkSessionId,
         emptyMcpConfigPath: mcp,
-        readOnly: lane.state.readOnly,
+        confinement,
       })
     } else {
       const mainId = this.deps.mainSessionId()
       if (!isSessionId(mainId)) throw new ThreadLaneError('no_session', NO_SESSION)
+      args = threadLaneArgs({ mainSessionId: mainId, forkSessionId: null, emptyMcpConfigPath: mcp, confinement })
       this.copyMainTranscript(lane, mainId)
-      args = threadLaneArgs({ mainSessionId: mainId, forkSessionId: null, emptyMcpConfigPath: mcp, readOnly: lane.state.readOnly })
     }
-    if (lane.closed) return
     const child = this.deps.spawn(claude, args, { cwd: lane.state.cwd })
     lane.child = child
     lane.stopping = false
@@ -479,6 +616,45 @@ export class ThreadLaneManager {
       })
     })
     child.onStdout(lineSplitter((frame) => this.onFrame(lane, child, frame)))
+  }
+
+  /** Where this lane may write and what it may run (lib/thread-lane-args.ts). */
+  private async confinement(lane: Lane): Promise<ThreadLaneConfinement> {
+    const { agentFolder } = this.deps
+    const root = lane.state.folder
+    if (lane.state.readOnly) {
+      return { root, readOnly: true, shellSandbox: false, readDirs: [agentFolder] }
+    }
+    if (!this.deps.shellSandbox()) return { root, readOnly: false, shellSandbox: false }
+    const protectedPaths = await this.protectedPaths(lane)
+    // Without the source repository's git state to protect, no Bash at all.
+    if (protectedPaths === null) {
+      this.deps.log(`threads: lane ${lane.state.rootId} runs without Bash, its repository's git state could not be read`)
+      return { root, readOnly: false, shellSandbox: false }
+    }
+    return { root, readOnly: false, shellSandbox: true, protectedPaths }
+  }
+
+  private async protectedPaths(lane: Lane): Promise<string[] | null> {
+    const { git, fs, agentFolder } = this.deps
+    const folder = lane.state.folder
+    const common = await git(['-C', agentFolder, 'rev-parse', '--path-format=absolute', '--git-common-dir'], agentFolder)
+    const own = await git(['-C', folder, 'rev-parse', '--path-format=absolute', '--git-dir'], folder)
+    const refs = await git(['-C', agentFolder, 'for-each-ref', '--format=%(refname)', 'refs/heads'], agentFolder)
+    const commonDir = common.stdout.trim()
+    const ownGitDir = own.stdout.trim()
+    if (!common.ok || !own.ok || !refs.ok || !commonDir.startsWith('/') || !ownGitDir.startsWith('/')) return null
+    let worktreeNames: string[] = []
+    try {
+      worktreeNames = fs.list(join(commonDir, 'worktrees'))
+    } catch {}
+    return protectedGitPaths({
+      commonDir,
+      ownGitDir,
+      ownBranch: `hoai/thread-${lane.state.rootId}`,
+      branches: refs.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean),
+      worktreeNames,
+    })
   }
 
   private copyMainTranscript(lane: Lane, mainId: string): void {
@@ -496,7 +672,8 @@ export class ThreadLaneManager {
   }
 
   private onFrame(lane: Lane, child: StreamJsonChild, frame: Record<string, unknown>): void {
-    if (lane.child !== child) return
+    // A stopping child (closed, timed out, idle) speaks for no turn any more.
+    if (lane.child !== child || lane.stopping) return
     if (frame.type === 'system' && frame.subtype === 'init') {
       const id = frame.session_id
       // Stream json input repeats init at every turn: the first one counts.
@@ -520,7 +697,13 @@ export class ThreadLaneManager {
     }
     this.clearIdle(lane)
     this.dropCopiedMain(lane)
-    if (lane.current) this.failTurn(lane, lane.current, FAILED_TURN)
+    this.closing.delete(lane)
+    // Only the turn this child was running fails. A turn that arrived while
+    // it was stopping waits in ensureChild and runs on the next child.
+    const ran = lane.childTurn
+    lane.childTurn = null
+    if (ran && lane.current === ran) this.failTurn(lane, ran, FAILED_TURN)
+    else this.pump()
   }
 
   private dropCopiedMain(lane: Lane): void {
@@ -540,6 +723,23 @@ export class ThreadLaneManager {
       lane.graceTimer = null
       if (lane.child === child) child.kill('SIGKILL')
     }, this.deps.killGraceMs ?? THREAD_LANE_KILL_GRACE_MS)
+  }
+
+  private armTurnTimer(lane: Lane, turn: ThreadTurnInput): void {
+    this.clearTurnTimer(lane)
+    lane.turnTimer = this.deps.setTimer(() => {
+      lane.turnTimer = null
+      if (lane.current !== turn) return
+      this.deps.log(`threads: turn ${turn.rootId} timed out, its lane is stopped`)
+      this.stopChild(lane)
+      this.failTurn(lane, turn, TIMED_OUT)
+    }, this.deps.turnTimeoutMs ?? THREAD_TURN_TIMEOUT_MS)
+  }
+
+  private clearTurnTimer(lane: Lane): void {
+    if (lane.turnTimer === null) return
+    this.deps.clearTimer(lane.turnTimer)
+    lane.turnTimer = null
   }
 
   private armIdle(lane: Lane): void {
@@ -585,6 +785,7 @@ export class ThreadLaneManager {
       lane.state.worktree = false
       lane.state.readOnly = true
     }
+    // A delete that came meanwhile removes the folder and this file next.
     this.persist(lane)
   }
 
@@ -607,7 +808,7 @@ export class ThreadLaneManager {
     }
   }
 
-  private async removeLane(state: ThreadLaneState): Promise<void> {
+  private async removeLane(state: ThreadLaneState, opts: { deleteBranch: boolean }): Promise<void> {
     const { fs, git, agentFolder, home, configDir } = this.deps
     if (state.worktree && state.folder) {
       const removed = await git(['-C', agentFolder, 'worktree', 'remove', '--force', state.folder], agentFolder)
@@ -616,6 +817,11 @@ export class ThreadLaneManager {
           fs.rmrf(state.folder)
         } catch {}
         await git(['-C', agentFolder, 'worktree', 'prune'], agentFolder)
+      }
+      // Delete takes the thread's branch too, only that one and only once its
+      // worktree is gone (git refuses a branch a worktree still has out).
+      if (opts.deleteBranch && !fs.exists(state.folder)) {
+        await git(['-C', agentFolder, 'branch', '-D', `hoai/thread-${state.rootId}`], agentFolder)
       }
     } else if (state.folder) {
       try {
@@ -637,9 +843,13 @@ export class ThreadLaneManager {
   }
 
   private persist(lane: Lane): void {
+    this.persistState(lane.state)
+  }
+
+  private persistState(state: ThreadLaneState): void {
     try {
       this.deps.fs.mkdir(this.deps.stateDir)
-      this.deps.fs.writeFile(this.statePath(lane.state.rootId), `${JSON.stringify(lane.state)}\n`)
+      this.deps.fs.writeFile(this.statePath(state.rootId), `${JSON.stringify(state)}\n`)
     } catch (err) {
       this.deps.log(`threads: could not save lane state (${err instanceof Error ? err.name : 'error'})`)
     }
@@ -667,15 +877,37 @@ export class ThreadLaneManager {
     }
   }
 
-  /** Posts for one lane go out in order. */
-  private post(lane: Lane, path: string, body: Record<string, unknown>): void {
-    lane.posts = lane.posts.then(
-      () => this.deps.post(path, body).then(
-        () => undefined,
-        (err: unknown) => this.deps.log(`threads: ${path} failed (${err instanceof Error ? err.name : 'error'})`),
-      ),
-    )
+  /**
+   * Posts for one lane go out in order. A failed post is tried again after
+   * each wait of THREAD_POST_RETRY_MS; when the last try fails too, onGiveUp
+   * runs (a reply or a summary: the thread goes back to Open with a short
+   * plain reply, so it never reads Working for good).
+   */
+  private post(lane: Lane, path: string, body: Record<string, unknown>, onGiveUp?: () => void): void {
+    lane.posts = lane.posts
+      .then(() => this.postWithRetry(path, body))
+      .then((ok) => {
+        if (!ok && onGiveUp) onGiveUp()
+      })
     this.track(lane.posts)
+  }
+
+  private async postWithRetry(path: string, body: Record<string, unknown>): Promise<boolean> {
+    const waits = this.deps.postRetryMs ?? THREAD_POST_RETRY_MS
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await this.deps.post(path, body)
+        return true
+      } catch (err) {
+        const why = err instanceof Error ? err.name : 'error'
+        if (attempt >= waits.length) {
+          this.deps.log(`threads: ${path} failed ${attempt + 1} times, giving up (${why})`)
+          return false
+        }
+        this.deps.log(`threads: ${path} failed (${why}), trying again`)
+        await new Promise<void>((done) => this.deps.setTimer(done, waits[attempt]!))
+      }
+    }
   }
 
   private track(p: Promise<unknown>): void {

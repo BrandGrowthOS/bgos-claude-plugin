@@ -65,22 +65,54 @@ const PARENT_SESSION_VARS = [
   'CLAUDE_CODE_ENTRYPOINT',
 ]
 
+/**
+ * The daemon's own BGOS credentials and its terminal. Nothing in a lane or a
+ * By the way fork uses them: both load an empty MCP config (no BGOS server),
+ * a lane runs --restricted (no hooks, no plugin), and the plugin's hooks the
+ * aside may still run read none of these (bin/hoai-hook.mjs reads only
+ * BGOS_PLUGIN_STATE_DIR). A lane's Bash could read every one of them.
+ */
+export const LANE_CREDENTIAL_VARS: readonly string[] = Object.freeze([
+  'BGOS_API_KEY',
+  'BGOS_PAIRING_TOKEN',
+  'BGOS_CREDENTIALS_PATH',
+  'BGOS_OPENAI_API_KEY',
+  'HOAI_BROWSER_HOST_PAIRING_TOKEN',
+  'HOAI_RELAY_PAIRING_TOKEN',
+  'BGOS_TMUX_SESSION',
+  'BGOS_TMUX_SOCKET',
+  'TMUX',
+  'TMUX_PANE',
+])
+
+/** Any other BGOS_ or HOAI_ variable whose name says it is a secret. */
+const SECRET_NAME_RE = /^(?:BGOS|HOAI)_\w*(?:TOKEN|KEY|SECRET|PASSWORD|CREDENTIAL)/i
+
 export function laneChildEnv(env: Record<string, string | undefined>): Record<string, string> {
   const out: Record<string, string> = {}
   for (const [key, value] of Object.entries(env)) {
     if (value === undefined || PARENT_SESSION_VARS.includes(key)) continue
+    if (LANE_CREDENTIAL_VARS.includes(key) || SECRET_NAME_RE.test(key)) continue
     out[key] = value
   }
   return out
 }
 
-/** The real child: node's spawn with three pipes; stderr is drained and dropped. */
+/**
+ * The real child: node's spawn with three pipes; stderr is drained and
+ * dropped. Off Windows it leads its own process group (detached), and kill
+ * signals the whole group, so the tools a lane started (a shell, a test run,
+ * a dev server) stop with it. Its stdin stays a pipe, so a daemon that dies
+ * outright still closes it, and `claude -p` ends on that.
+ */
 export function spawnStreamJson(command: string, args: string[], opts: { cwd: string }): StreamJsonChild {
+  const ownGroup = process.platform !== 'win32'
   const child = spawn(command, args, {
     cwd: opts.cwd,
     env: laneChildEnv(process.env),
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,
+    detached: ownGroup,
   })
   let gone = false
   const exitCallbacks: Array<(code: number | null, signal: string | null) => void> = []
@@ -105,6 +137,12 @@ export function spawnStreamJson(command: string, args: string[], opts: { cwd: st
     },
     kill(signal) {
       if (gone) return
+      if (ownGroup && typeof child.pid === 'number') {
+        try {
+          process.kill(-child.pid, signal)
+          return
+        } catch {}
+      }
       try {
         child.kill(signal)
       } catch {}

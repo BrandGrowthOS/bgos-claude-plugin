@@ -571,7 +571,7 @@ test('silent 3: a normal shutdown (SIGINT, SIGTERM, the session going away) repo
       releasePairingLock: () => undefined,
       PAIRING_LOCK_PATH: 'x',
       loginController: { dispose: () => undefined },
-      threadLanes: { stopAll: () => undefined },
+      stopThreadChildren: () => null,
       browserHost: null,
     },
   })

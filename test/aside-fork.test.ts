@@ -8,9 +8,14 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 
-import { ASIDE_TIMEOUT_MS, AsideError, runAside, type AsideDeps } from '../lib/aside-fork.ts'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { createHash } from 'node:crypto'
+
+import { ASIDE_TIMEOUT_MS, AsideError, AsideForks, runAside, type AsideDeps } from '../lib/aside-fork.ts'
 import { asideArgs, asidePrompt } from '../lib/thread-lane-args.ts'
-import type { StreamJsonChild } from '../lib/stream-json-child.ts'
+import { spawnStreamJson, type StreamJsonChild } from '../lib/stream-json-child.ts'
 import { sessionTranscriptPath } from '../bin/hoai-core.mjs'
 
 const MAIN = '435f1f18-2716-4c27-bfd8-e2c48f28b3ac'
@@ -177,4 +182,114 @@ test('a child that exits before any frame is failed', async () => {
   r.spawned[0]!.child.exit(null)
   await assert.rejects(answer, (err: unknown) => err instanceof AsideError && err.code === 'failed')
   assert.equal(r.timers[0]!.cleared, true)
+})
+
+test('an error result is a failure, never the answer, even with text in it or streamed before it', async () => {
+  const r = rig()
+  const answer = runAside(input, r.deps)
+  const c = r.spawned[0]!.child
+  c.frame(init(FORK))
+  c.frame(delta('partial '))
+  c.frame({ type: 'result', subtype: 'success', is_error: true, result: 'API Error: 529 {"type":"overloaded_error"}' })
+  c.exit(1)
+  await assert.rejects(answer, (err: unknown) => err instanceof AsideError && err.code === 'failed')
+  assert.deepEqual(r.unlinked, [forkFile])
+  const r2 = rig()
+  const answer2 = runAside(input, r2.deps)
+  r2.spawned[0]!.child.frame({ type: 'result', subtype: 'error_during_execution', result: 'some text' })
+  r2.spawned[0]!.child.exit(1)
+  await assert.rejects(answer2, (err: unknown) => err instanceof AsideError && err.code === 'failed')
+})
+
+test('a fork in flight is listed for the shutdown: stopAll signals it, killAll kills it and deletes its session file', async () => {
+  const forks = new AsideForks()
+  const r = rig({ forks })
+  const answer = runAside(input, r.deps)
+  const c = r.spawned[0]!.child
+  c.frame(init(FORK))
+  assert.equal(forks.size(), 1)
+  let stopped = false
+  const done = forks.stopAll().then(() => { stopped = true })
+  assert.deepEqual(c.killed, ['SIGTERM'])
+  forks.killAll()
+  assert.deepEqual(c.killed, ['SIGTERM', 'SIGKILL'])
+  assert.deepEqual(r.unlinked, [forkFile], 'deleted now: a process exit cannot wait for the child')
+  assert.equal(forks.size(), 0)
+  c.exit(null)
+  await done
+  assert.equal(stopped, true)
+  await assert.rejects(answer)
+  // A fork that ends on its own leaves the list.
+  const r2 = rig({ forks })
+  const a2 = runAside(input, r2.deps)
+  r2.spawned[0]!.child.frame({ type: 'result', subtype: 'success', is_error: false, result: 'ok' })
+  r2.spawned[0]!.child.exit(0)
+  await a2
+  assert.equal(forks.size(), 0)
+})
+
+test('spec 15: the main transcript is byte identical after a By the way answer (a fake claude that writes its fork file)', async () => {
+  // A stand in for claude: it reads the main transcript like the real fork
+  // does, writes its OWN session file beside it, streams, answers, exits. No
+  // model runs. The aside runs through the real spawner.
+  const dir = mkdtempSync(join(tmpdir(), 'aside-spec15-'))
+  try {
+    const home = join(dir, 'home')
+    const config = join(dir, 'config')
+    const folder = join(dir, 'agent')
+    mkdirSync(folder, { recursive: true })
+    const main = sessionTranscriptPath(home, folder, MAIN, config)
+    const fork = sessionTranscriptPath(home, folder, FORK, config)
+    mkdirSync(dirname(main), { recursive: true })
+    writeFileSync(main, '{"type":"user","message":"Remember PELICAN-42."}\n{"type":"assistant","message":"ok"}\n')
+    const before = createHash('sha256').update(readFileSync(main)).digest('hex')
+    const fake = join(dir, 'claude')
+    writeFileSync(fake, [
+      `#!${process.execPath}`,
+      "const fs = require('fs')",
+      `const main = ${JSON.stringify(main)}, fork = ${JSON.stringify(fork)}`,
+      "const args = process.argv.slice(2)",
+      `if (args[args.indexOf('--resume') + 1] !== ${JSON.stringify(MAIN)} || !args.includes('--fork-session')) process.exit(9)`,
+      "let q = ''",
+      "process.stdin.on('data', (d) => { q += d })",
+      "process.stdin.on('end', () => {",
+      "  const history = fs.readFileSync(main, 'utf8')",
+      "  fs.writeFileSync(fork, history + JSON.stringify({ type: 'user', message: q }) + '\\n')",
+      `  const out = (f) => process.stdout.write(JSON.stringify(f) + '\\n')`,
+      `  out({ type: 'system', subtype: 'init', session_id: ${JSON.stringify(FORK)} })`,
+      "  out({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'PELICAN-42' } } })",
+      "  fs.appendFileSync(fork, JSON.stringify({ type: 'assistant', message: 'PELICAN-42' }) + '\\n')",
+      "  out({ type: 'result', subtype: 'success', is_error: false, result: 'PELICAN-42' })",
+      "  process.exit(0)",
+      "})",
+      '',
+    ].join('\n'))
+    chmodSync(fake, 0o755)
+    const forks = new AsideForks()
+    let exited: () => void = () => {}
+    const gone = new Promise<void>((done) => { exited = done })
+    const answer = await runAside(input, {
+      spawn: (command, args, opts) => {
+        const child = spawnStreamJson(command, args, opts)
+        child.onExit(() => exited())
+        return child
+      },
+      claudeBin: () => fake,
+      mainSessionId: () => MAIN,
+      mainFolder: folder,
+      home,
+      configDir: config,
+      emptyMcpConfigPath: () => join(dir, 'empty-mcp.json'),
+      unlink: (path) => unlinkSync(path),
+      onDelta: () => {},
+      forks,
+    })
+    await gone
+    assert.deepEqual(answer, { text: 'PELICAN-42' })
+    assert.equal(createHash('sha256').update(readFileSync(main)).digest('hex'), before, 'the main transcript is byte identical')
+    assert.equal(existsSync(fork), false, 'the fork session file is gone')
+    assert.equal(forks.size(), 0)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
