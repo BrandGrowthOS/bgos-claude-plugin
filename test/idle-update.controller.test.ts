@@ -2089,7 +2089,7 @@ test('a slow follower after an earlier silence takes its own back in time: a hea
   assert.equal(await slow.c.tick(), 'validating')
   assert.equal(await next.c.tick(), 'canary_unconfirmed')
   assert.equal(silentFiles(disk).length, 2)
-  disk.clock.now += MIN
+  disk.clock.now += 3 * MIN
   assert.equal(await next.c.tick(), 'silent_hold')
   assert.equal(disk.files.has(join(MACHINE, '0.81.0', 'bad')), false, 'a second silence is not two strikes until it can no longer be a slow start')
   slow.s.unreachable = false

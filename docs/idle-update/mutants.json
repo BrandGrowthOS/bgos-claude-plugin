@@ -797,8 +797,8 @@
       "id": "canary-future-silent",
       "rule": "a canary stamped beyond the lease life ahead reads as silent",
       "file": "lib/idle-update.mjs",
-      "find": "    .map((c) => (finite(c.at) && c.at - now > d.leaseTtlMs ? { ...c, at: Number.NEGATIVE_INFINITY } : c))",
-      "replace": "    .map((c) => c)",
+      "find": "  const jumped = (c) => (finite(c.at) && c.at - now > d.leaseTtlMs ? { ...c, at: Number.NEGATIVE_INFINITY } : c)\n",
+      "replace": "  const jumped = (c) => c\n",
       "tests": [
         "test/idle-update.test.ts"
       ]
@@ -3182,6 +3182,510 @@
       "replace": "Its next turn moves it on; if it has no hooks",
       "tests": [
         "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "silent-lease-writes",
+      "rule": "breaking an expired lease writes silent-<n>",
+      "file": "lib/idle-update.mjs",
+      "find": "lease.state === 'expired' && !(noteExpiredLease(lease.lease) && moveLeaseAside(lease.raw, `broken-${me.nonce}`))",
+      "replace": "lease.state === 'expired' && !moveLeaseAside(lease.raw, `broken-${me.nonce}`)",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "silent-before-the-lease-goes",
+      "rule": "a silence that cannot be written leaves the lease where it is",
+      "file": "lib/idle-update.mjs",
+      "find": "!(noteExpiredLease(lease.lease) && moveLeaseAside(lease.raw, `broken-${me.nonce}`))",
+      "replace": "!(noteExpiredLease(lease.lease), moveLeaseAside(lease.raw, `broken-${me.nonce}`))",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "silent-write-failure-says-so",
+      "rule": "a silence that could not be written reads as not written",
+      "file": "lib/idle-update.mjs",
+      "find": "at: iso(now()) }) !== 'error'",
+      "replace": "at: iso(now()) }), true",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "silent-canary-left-out",
+      "rule": "a live canary's lease leaves no silent",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (files.canaries.some((c) => c.assistantId === holder.assistantId && !files.voids.includes(c.n))) return true\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "silent-voided-canary-counts",
+      "rule": "a voided canary that went back on as a follower is a follower",
+      "file": "lib/idle-update.mjs",
+      "find": "c.assistantId === holder.assistantId && !files.voids.includes(c.n)",
+      "replace": "c.assistantId === holder.assistantId",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "silent-own-lease",
+      "rule": "an agent breaking its own old lease writes no silence about itself",
+      "file": "lib/idle-update.mjs",
+      "find": "if (!holder || holder.assistantId === deps.assistantId || !VERSION_RE.test(String(holder.target))) return true",
+      "replace": "if (!holder || !VERSION_RE.test(String(holder.target))) return true",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "silent-plain-target",
+      "rule": "a lease that names no plain version names no folder",
+      "file": "lib/idle-update.mjs",
+      "find": "holder.assistantId === deps.assistantId || !VERSION_RE.test(String(holder.target))",
+      "replace": "holder.assistantId === deps.assistantId",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "silent-no-holder",
+      "rule": "a lease that does not parse names nobody",
+      "file": "lib/idle-update.mjs",
+      "find": "if (!holder || holder.assistantId === deps.assistantId",
+      "replace": "if (holder.assistantId === deps.assistantId",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "silent-in-the-lease-target-folder",
+      "rule": "the silence goes in the folder of the version the lease names",
+      "file": "lib/idle-update.mjs",
+      "find": "return noteSilent(holder.target, { assistantId: holder.assistantId, nonce: holder.nonce }, files)",
+      "replace": "return noteSilent(read(deps.stagedVersion, null), { assistantId: holder.assistantId, nonce: holder.nonce })",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "silent-once",
+      "rule": "one silence for each agent and attempt",
+      "file": "lib/idle-update.mjs",
+      "find": "if (files.silents.some((s) => s.assistantId === who.assistantId && s.nonce === who.nonce)) return true\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "silent-names-the-attempt",
+      "rule": "the silence carries the attempt it was",
+      "file": "lib/idle-update.mjs",
+      "find": "{ assistantId: holder.assistantId, nonce: holder.nonce }, files)",
+      "replace": "{ assistantId: holder.assistantId, nonce: null }, files)",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "silent-max",
+      "rule": "two silences latch the version",
+      "file": "lib/idle-update.mjs",
+      "find": "if (silents.filter((s) => !within(now, s.at, d.canarySilentMs - d.leaseTtlMs)).length >= MAX_CANARIES) return { state: 'latch_bad' }",
+      "replace": "if (false) return { state: 'latch_bad' }",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "silent-hold",
+      "rule": "one silence holds the version 24 h",
+      "file": "lib/idle-update.mjs",
+      "find": "if (silents.some((s) => within(now, s.at, d.canaryHoldMs))) return { state: 'silent_hold' }",
+      "replace": "if (false) return { state: 'silent_hold' }",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "silent-hold-window",
+      "rule": "the hold ends",
+      "file": "lib/idle-update.mjs",
+      "find": "within(now, s.at, d.canaryHoldMs)",
+      "replace": "finite(s.at)",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "silent-future",
+      "rule": "a silence stamped far ahead holds nothing for ever",
+      "file": "lib/idle-update.mjs",
+      "find": "const silents = (Array.isArray(files.silents) ? files.silents : []).map(jumped)",
+      "replace": "const silents = Array.isArray(files.silents) ? files.silents : []",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "silent-taken-back",
+      "rule": "a follower that validates takes its silence back",
+      "file": "lib/idle-update.mjs",
+      "find": "if (s.nonce === rec.nonce) read(() => fs.remove(join(dir, rec.target, `silent-${s.n}`)), false)",
+      "replace": "if (false) read(() => fs.remove(join(dir, rec.target, `silent-${s.n}`)), false)",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "silent-taken-back-own-only",
+      "rule": "it takes back only its own",
+      "file": "lib/idle-update.mjs",
+      "find": "if (s.nonce === rec.nonce) read(",
+      "replace": "if (true) read(",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "gate-19-silent-hold",
+      "rule": "gate 19 names the hold",
+      "file": "lib/idle-update.mjs",
+      "find": "['silent_hold', 'follower_wait', 'canary_quiet'].includes(machine.canary)",
+      "replace": "['follower_wait', 'canary_quiet'].includes(machine.canary)",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-19-follower-wait",
+      "rule": "gate 19 names the wait",
+      "file": "lib/idle-update.mjs",
+      "find": "['silent_hold', 'follower_wait', 'canary_quiet'].includes(machine.canary)",
+      "replace": "['silent_hold', 'canary_quiet'].includes(machine.canary)",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-19-canary-quiet",
+      "rule": "gate 19 names a quiet canary",
+      "file": "lib/idle-update.mjs",
+      "find": "['silent_hold', 'follower_wait', 'canary_quiet'].includes(machine.canary)",
+      "replace": "['silent_hold', 'follower_wait'].includes(machine.canary)",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "wait-floor",
+      "rule": "no follower under 30 min",
+      "file": "lib/idle-update.mjs",
+      "find": "followerWaitMinMs: 30 * MIN,",
+      "replace": "followerWaitMinMs: 20 * MIN,",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "wait-ceiling",
+      "rule": "no follower over 60 min",
+      "file": "lib/idle-update.mjs",
+      "find": "followerWaitMaxMs: 60 * MIN,",
+      "replace": "followerWaitMaxMs: 90 * MIN,",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "wait-spread-agents",
+      "rule": "the wait differs by agent",
+      "file": "lib/idle-update.mjs",
+      "find": ".update(`${assistantId}|${target}`)",
+      "replace": ".update(`${target}`)",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "wait-spread-versions",
+      "rule": "each version draws again",
+      "file": "lib/idle-update.mjs",
+      "find": ".update(`${assistantId}|${target}`)",
+      "replace": ".update(`${assistantId}`)",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "wait-spread-window",
+      "rule": "the wait spreads over the window",
+      "file": "lib/idle-update.mjs",
+      "find": "return d.followerWaitMinMs + Math.floor(share * (d.followerWaitMaxMs - d.followerWaitMinMs))",
+      "replace": "return d.followerWaitMinMs",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "wait-gate",
+      "rule": "a follower waits",
+      "file": "lib/idle-update.mjs",
+      "find": "if (now < until) return { state: 'follower_wait', until }",
+      "replace": "if (false) return { state: 'follower_wait', until }",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "wait-from-the-stamp",
+      "rule": "the wait counts from the stamp on disk",
+      "file": "lib/idle-update.mjs",
+      "find": "const until = at + followerWaitMs(",
+      "replace": "const until = now + followerWaitMs(",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "wait-jumped-clock",
+      "rule": "a validation far ahead holds nothing",
+      "file": "lib/idle-update.mjs",
+      "find": "finite(files.validatedAtMs) && files.validatedAtMs - now <= d.followerWaitMaxMs ? files.validatedAtMs : 0",
+      "replace": "finite(files.validatedAtMs) ? files.validatedAtMs : 0",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "act-reads-the-wait",
+      "rule": "the act decides on the same rule, for this version",
+      "file": "lib/idle-update.mjs",
+      "find": "const canary = decideCanary({ target, files: versionFiles(target), now: now(), me }, d)",
+      "replace": "const canary = decideCanary({ target, files: { ...versionFiles(target), validatedAtMs: 0, aliveAtMs: now() }, now: now(), me }, d)",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "quiet-read",
+      "rule": "a canary that stopped short is quiet",
+      "file": "lib/idle-update.mjs",
+      "find": "const lasted = finite(files.aliveAtMs) && files.aliveAtMs >= until - d.beaconFreshMs",
+      "replace": "const lasted = true",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "quiet-to-the-end",
+      "rule": "the stamp must reach the end of this wait",
+      "file": "lib/idle-update.mjs",
+      "find": "files.aliveAtMs >= until - d.beaconFreshMs",
+      "replace": "files.aliveAtMs >= at",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "quiet-margin",
+      "rule": "one beacon window short still counts",
+      "file": "lib/idle-update.mjs",
+      "find": "files.aliveAtMs >= until - d.beaconFreshMs",
+      "replace": "files.aliveAtMs >= until",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "quiet-polls-in-a-row",
+      "rule": "ten polls in a row",
+      "file": "lib/idle-update.mjs",
+      "find": "quietPolls = machine.canary === 'canary_quiet' ? quietPolls + 1 : 0",
+      "replace": "quietPolls = machine.canary === 'canary_quiet' ? quietPolls + 1 : quietPolls",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "quiet-polls-count",
+      "rule": "one stale poll is no silence",
+      "file": "lib/idle-update.mjs",
+      "find": "if (quietPolls >= CANARY_QUIET_POLLS && noteSilent(",
+      "replace": "if (quietPolls >= 1 && noteSilent(",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "quiet-writes",
+      "rule": "a quiet canary goes on the record",
+      "file": "lib/idle-update.mjs",
+      "find": "if (quietPolls >= CANARY_QUIET_POLLS && noteSilent(staged, { assistantId: files.validatedBy, nonce: null }, files)) {",
+      "replace": "if (quietPolls >= CANARY_QUIET_POLLS) {",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "quiet-polls-ten",
+      "rule": "nine polls are not enough",
+      "file": "lib/idle-update.mjs",
+      "find": "export const CANARY_QUIET_POLLS = 10",
+      "replace": "export const CANARY_QUIET_POLLS = 9",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "stamp-called",
+      "rule": "the canary stamps at every poll",
+      "file": "lib/idle-update.mjs",
+      "find": "          stampAlive()\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "stamp-canary-only",
+      "rule": "a follower stamps nothing",
+      "file": "lib/idle-update.mjs",
+      "find": "if (record?.state !== 'validated' || !Number.isInteger(record.canaryN) || record.target !== deps.runningVersion) return\n    const files",
+      "replace": "if (record?.state !== 'validated' || record.target !== deps.runningVersion) return\n    const files",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "stamp-on-the-version",
+      "rule": "a canary off the version stamps nothing",
+      "file": "lib/idle-update.mjs",
+      "find": "!Number.isInteger(record.canaryN) || record.target !== deps.runningVersion) return\n    const files",
+      "replace": "!Number.isInteger(record.canaryN)) return\n    const files",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "stamp-lock-holder",
+      "rule": "only the lock holder stamps",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (read(deps.active, false) !== true) return\n    const n = now()\n    const live = isLiveBuild(",
+      "replace": "    const n = now()\n    const live = isLiveBuild(",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "stamp-live-only",
+      "rule": "a dead channel stamps nothing",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (live) read(() => fs.writeAtomic(join(dir, record.target, 'alive')",
+      "replace": "    if (true) read(() => fs.writeAtomic(join(dir, record.target, 'alive')",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-clears-commit",
+      "rule": "a rollback takes the failed build's commit out of the plugin entry",
+      "file": "lib/idle-update.mjs",
+      "find": "  delete entry.gitCommitSha\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.integration.test.ts"
+      ]
+    },
+    {
+      "id": "silent-counts-late",
+      "rule": "a silence counts only past the slowest validation",
+      "file": "lib/idle-update.mjs",
+      "find": "!within(now, s.at, d.canarySilentMs - d.leaseTtlMs)).length",
+      "replace": "true).length",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "silent-counts-from-the-lease",
+      "rule": "it waited out its lease already",
+      "file": "lib/idle-update.mjs",
+      "find": "!within(now, s.at, d.canarySilentMs - d.leaseTtlMs)).length",
+      "replace": "!within(now, s.at, d.canarySilentMs)).length",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "quiet-gives-up-the-proof",
+      "rule": "a quiet canary gives up its proof",
+      "file": "lib/idle-update.mjs",
+      "find": "        read(() => fs.remove(join(dir, staged, 'validated')), false)\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "quiet-after-the-record",
+      "rule": "the silence goes on the record before the proof goes",
+      "file": "lib/idle-update.mjs",
+      "find": "if (quietPolls >= CANARY_QUIET_POLLS && noteSilent(staged, { assistantId: files.validatedBy, nonce: null }, files)) {\n        read(() => fs.remove(join(dir, staged, 'validated')), false)\n      }",
+      "replace": "if (quietPolls >= CANARY_QUIET_POLLS) {\n        read(() => fs.remove(join(dir, staged, 'validated')), false)\n        noteSilent(staged, { assistantId: files.validatedBy, nonce: null }, files)\n      }",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "quiet-its-own-canary",
+      "rule": "the silence names the canary that went quiet",
+      "file": "lib/idle-update.mjs",
+      "find": "noteSilent(staged, { assistantId: files.validatedBy, nonce: null }, files)) {",
+      "replace": "noteSilent(staged, { assistantId: deps.assistantId, nonce: null }, files)) {",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "stamp-own-proof",
+      "rule": "a canary stamps only under its own proof",
+      "file": "lib/idle-update.mjs",
+      "find": "if (files.validatedBy !== deps.assistantId || files.aliveAtMs >=",
+      "replace": "if (files.aliveAtMs >=",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "stamp-ends",
+      "rule": "the stamps end",
+      "file": "lib/idle-update.mjs",
+      "find": "if (files.validatedBy !== deps.assistantId || files.aliveAtMs >= files.validatedAtMs + d.followerWaitMaxMs) return",
+      "replace": "if (files.validatedBy !== deps.assistantId) return",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "stamp-end-is-a-stamp",
+      "rule": "the last stamp is the first past the longest wait, not a time",
+      "file": "lib/idle-update.mjs",
+      "find": "files.aliveAtMs >= files.validatedAtMs + d.followerWaitMaxMs) return",
+      "replace": "now() >= files.validatedAtMs + d.followerWaitMaxMs) return",
+      "tests": [
+        "test/idle-update.controller.test.ts"
       ]
     }
   ]
