@@ -45,7 +45,7 @@ function memDisk() {
     fs: {
       readFile: (p: string) => files.get(p)?.text ?? null,
       mtimeMs: (p: string) => files.get(p)?.mtimeMs ?? null,
-      createExclusive: (p: string, text: string) => {
+      createExclusive: (p: string, text: string): 'ok' | 'exists' | 'error' => {
         if (files.has(p)) return 'exists'
         files.set(p, { text, mtimeMs: clock.now })
         return 'ok'
