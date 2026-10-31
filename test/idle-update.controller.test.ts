@@ -3168,6 +3168,48 @@ test('a raise that fails says nothing is wrong, for nothing is: the install is o
   assert.equal(a.logs.filter((l) => l.includes('could not raise')).length, 1)
 })
 
+test('a daemon that lost the lock after it settled leaves the install alone, stepping in or raising', async () => {
+  const disk = memDisk()
+  const install = { version: '0.80.0' }
+  const a = agent(disk, { install })
+  assert.equal(await a.c.tick(), 'nothing_staged')
+  a.s.active = false
+  install.version = '0.81.0'
+  marksBad(disk)
+  assert.equal(await a.c.tick(), 'passive')
+  assert.deepEqual(a.rollbackInstalls, [])
+  assert.equal(install.version, '0.81.0')
+  install.version = '0.74.0'
+  disk.fs.writeAtomic(join(MACHINE, 'install-back.json'), JSON.stringify({ target: '0.81.0', by: '914', at: new Date(disk.clock.now).toISOString() }))
+  await a.c.tick()
+  assert.deepEqual(a.rollbackInstalls, [])
+  assert.equal(install.version, '0.74.0')
+})
+
+test('each reason is logged once, over every try, moving or raising', async () => {
+  const disk = memDisk()
+  const install = { version: '0.81.0' }
+  marksBad(disk)
+  const stepping = agent(disk, { id: 914, running: '0.74.0', install })
+  stepping.s.rollbackOk = false
+  await stepping.c.tick()
+  disk.clock.now += 6 * MIN
+  await stepping.c.tick()
+  assert.equal(stepping.rollbackInstalls.length, 2)
+  assert.equal(stepping.logs.filter((l) => l.includes('could not finish')).length, 1)
+  stepping.s.rollbackOk = true
+  disk.clock.now += 6 * MIN
+  await stepping.c.tick()
+  assert.equal(install.version, '0.74.0')
+  const raising = agent(disk, { id: 915, running: '0.80.0', install })
+  raising.s.rollbackOk = false
+  await raising.c.tick()
+  disk.clock.now += 6 * MIN
+  await raising.c.tick()
+  assert.equal(raising.rollbackInstalls.length, 2)
+  assert.equal(raising.logs.filter((l) => l.includes('could not raise')).length, 1)
+})
+
 test('a raise that finds the install moved writes nothing and reports nothing', async () => {
   const disk = memDisk()
   const install = { version: '0.81.0' }

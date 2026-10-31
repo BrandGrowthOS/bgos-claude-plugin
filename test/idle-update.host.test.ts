@@ -574,6 +574,7 @@ test('stepping in: the result names the version the install reads after the writ
   }
   const lost = await need().rollbackMarketplaceInstall({ record: STILL_ON, installedPluginsPath: INSTALLED, holdPath: `${MACHINE}/enrolment-hold.json`, marketplace: 'hoai', configDir: CONFIG, fs, setAutoUpdate: other.setAutoUpdate, now: NOW })
   assert.equal(lost.on, '0.80.5')
+  assert.equal(lost.moved, true, 'this call did write, and the read back took what it found as done')
   assert.equal(writes, 1)
 })
 
