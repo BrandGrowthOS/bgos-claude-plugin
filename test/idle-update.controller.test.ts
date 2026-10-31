@@ -2059,3 +2059,219 @@ test('validating takes back only its own silence, never another agent\'s', async
   assert.equal(await a.c.tick(), 'validated')
   assert.equal(silentFiles(disk).length, 1)
 })
+
+// -- Followers wait, and read the canary when the wait ends --------------------------------------------
+
+function deliver(a: Rig) {
+  a.s.heartbeatOkAtMs = a.clock.now
+  a.s.beaconAtMs = a.clock.now
+}
+
+/** Agent 913 is the canary, back on the version with a live channel, and validated just now. */
+async function canaryProved(disk: ReturnType<typeof memDisk>) {
+  const old = agent(disk, { id: 913 })
+  assert.equal(await old.c.tick(), 'requested')
+  disk.clock.now += 40 * SEC
+  const canary = agent(disk, { id: 913, running: '0.81.0', staged: null })
+  assert.equal(await canary.c.tick(), 'validating')
+  deliver(canary)
+  assert.equal(await canary.c.tick(), 'validating')
+  disk.clock.now += 5 * MIN + SEC
+  deliver(canary)
+  assert.equal(await canary.c.tick(), 'validated')
+  return canary
+}
+
+const waitOf = (id: number) => need().followerWaitMs({ assistantId: String(id), target: '0.81.0' })
+const aliveAt = (disk: ReturnType<typeof memDisk>) => readJson(disk, join(MACHINE, '0.81.0', 'alive'))?.at ?? null
+
+test('the canary stamps alive at every poll of the longest wait while it delivers, and stops when that is over', async () => {
+  const disk = memDisk()
+  const canary = await canaryProved(disk)
+  const provedAt = disk.clock.now
+  disk.clock.now += 30 * SEC
+  deliver(canary)
+  await canary.c.tick()
+  assert.equal(aliveAt(disk), new Date(disk.clock.now).toISOString())
+  disk.clock.now = provedAt + 59 * MIN
+  deliver(canary)
+  await canary.c.tick()
+  assert.equal(aliveAt(disk), new Date(disk.clock.now).toISOString())
+  const last = aliveAt(disk)
+  disk.clock.now = provedAt + 60 * MIN
+  deliver(canary)
+  await canary.c.tick()
+  assert.equal(aliveAt(disk), last, 'no file is written for ever')
+})
+
+test('a canary that is no longer live stamps nothing: deaf, its beacon stale, or not the lock holder', async () => {
+  for (const fault of ['deaf', 'beacon', 'passive']) {
+    const disk = memDisk()
+    const canary = await canaryProved(disk)
+    disk.clock.now += 3 * MIN
+    deliver(canary)
+    if (fault === 'deaf') canary.s.deaf = true
+    if (fault === 'beacon') canary.s.beaconAtMs = disk.clock.now - 3 * MIN
+    if (fault === 'passive') canary.s.active = false
+    await canary.c.tick()
+    assert.equal(aliveAt(disk), null, fault)
+  }
+})
+
+test('a canary restarted inside the wait goes on stamping: the wait lives on the record, not in the daemon', async () => {
+  const disk = memDisk()
+  await canaryProved(disk)
+  disk.clock.now += 3 * MIN
+  const again = agent(disk, { id: 913, running: '0.81.0', staged: null })
+  deliver(again)
+  await again.c.tick()
+  assert.equal(aliveAt(disk), new Date(disk.clock.now).toISOString())
+})
+
+test('a follower stamps nothing: only the canary\'s life is what the others wait to read', async () => {
+  const disk = memDisk()
+  proven(disk)
+  const before = aliveAt(disk)
+  const old = agent(disk, { id: 912 })
+  assert.equal(await old.c.tick(), 'requested')
+  disk.clock.now += 40 * SEC
+  const a = agent(disk, { id: 912, running: '0.81.0', staged: null })
+  assert.equal(await a.c.tick(), 'validating')
+  deliver(a)
+  assert.equal(await a.c.tick(), 'validating')
+  disk.clock.now += 5 * MIN + SEC
+  deliver(a)
+  assert.equal(await a.c.tick(), 'validated')
+  disk.clock.now += 30 * SEC
+  deliver(a)
+  await a.c.tick()
+  assert.equal(aliveAt(disk), before)
+})
+
+test('a follower waits out its own wait holding no lease, and goes the moment it ends', async () => {
+  const disk = memDisk()
+  const canary = await canaryProved(disk)
+  const provedAt = disk.clock.now
+  const f = agent(disk, { id: 914 })
+  const wait = waitOf(914)
+  disk.clock.now = provedAt + 3 * MIN
+  assert.equal(await f.c.tick(), 'follower_wait')
+  assert.equal(disk.files.has(join(MACHINE, 'lease.json')), false, 'a wait holds nothing other agents need')
+  while (disk.clock.now + MIN < provedAt + wait) {
+    disk.clock.now += MIN
+    deliver(canary)
+    await canary.c.tick()
+    assert.equal(await f.c.tick(), 'follower_wait', `${(disk.clock.now - provedAt) / MIN} min`)
+  }
+  assert.equal(f.restarts.length, 0)
+  disk.clock.now = provedAt + wait
+  deliver(canary)
+  await canary.c.tick()
+  assert.equal(await f.c.tick(), 'requested')
+})
+
+test('a daemon restart neither resets a follower\'s wait nor redraws it', async () => {
+  const disk = memDisk()
+  const canary = await canaryProved(disk)
+  const provedAt = disk.clock.now
+  const wait = waitOf(914)
+  disk.clock.now = provedAt + wait - SEC
+  deliver(canary)
+  await canary.c.tick()
+  assert.equal(await agent(disk, { id: 914, random: 0 }).c.tick(), 'follower_wait', 'a new boot still waits, with another draw of its jitter')
+  disk.clock.now = provedAt + wait
+  deliver(canary)
+  await canary.c.tick()
+  assert.equal(await agent(disk, { id: 914, random: 0.99 }).c.tick(), 'requested', 'and goes on time: its wait did not start again')
+})
+
+test('the canary dies at minute 20: not one of fourteen followers moves, and one silence is on the record', async () => {
+  const disk = memDisk()
+  const canary = await canaryProved(disk)
+  const provedAt = disk.clock.now
+  const followers = Array.from({ length: 14 }, (_, i) => agent(disk, { id: 920 + i }))
+  while (disk.clock.now < provedAt + 20 * MIN) {
+    disk.clock.now += MIN
+    deliver(canary)
+    await canary.c.tick()
+    for (const f of followers) await f.c.tick()
+  }
+  // It stamps no more. Every follower's wait runs out, each reads it quiet, and the polls count up.
+  const seen = new Set<string>()
+  for (let t = 0; t < 45 * 2; t += 1) {
+    disk.clock.now += 30 * SEC
+    for (const f of followers) seen.add(await f.c.tick())
+  }
+  assert.equal(followers.reduce((n, f) => n + f.restarts.length, 0), 0)
+  assert.deepEqual(silentFiles(disk), [join(MACHINE, '0.81.0', 'silent-1')])
+  assert.equal(readJson(disk, join(MACHINE, '0.81.0', 'silent-1')).assistantId, '913')
+  assert.ok(seen.has('canary_quiet') && seen.has('silent_hold'), [...seen].join(','))
+  assert.equal(disk.files.has(join(MACHINE, 'lease.json')), false)
+})
+
+test('a stale stamp at a wake is no silence: nine polls of it write nothing, and a canary back in time lets the follower go', async () => {
+  const disk = memDisk()
+  const canary = await canaryProved(disk)
+  const provedAt = disk.clock.now
+  const f = agent(disk, { id: 914 })
+  disk.clock.now = provedAt + 2 * HOUR
+  for (let poll = 0; poll < 9; poll += 1) {
+    assert.equal(await f.c.tick(), 'canary_quiet')
+    disk.clock.now += 30 * SEC
+  }
+  assert.deepEqual(silentFiles(disk), [])
+  disk.fs.writeAtomic(join(MACHINE, '0.81.0', 'alive'), JSON.stringify({ assistantId: '913', at: new Date(disk.clock.now).toISOString() }))
+  assert.equal(await f.c.tick(), 'requested')
+  assert.equal(canary.restarts.length, 0)
+})
+
+test('the count needs polls in a row, and sleep is no poll: a fresh stamp starts it again, and hours between two polls add nothing', async () => {
+  const disk = memDisk()
+  await canaryProved(disk)
+  const provedAt = disk.clock.now
+  const f = agent(disk, { id: 914 })
+  f.s.goalRunning = true
+  disk.clock.now = provedAt + 2 * HOUR
+  for (let poll = 0; poll < 9; poll += 1) {
+    await f.c.tick()
+    disk.clock.now += 30 * SEC
+  }
+  disk.fs.writeAtomic(join(MACHINE, '0.81.0', 'alive'), JSON.stringify({ assistantId: '913', at: new Date(disk.clock.now).toISOString() }))
+  await f.c.tick()
+  disk.fs.remove(join(MACHINE, '0.81.0', 'alive'))
+  disk.clock.now += 8 * HOUR
+  for (let poll = 0; poll < 9; poll += 1) {
+    await f.c.tick()
+    disk.clock.now += 30 * SEC
+  }
+  assert.deepEqual(silentFiles(disk), [], 'a busy follower counts too, and nine in a row is not ten')
+  await f.c.tick()
+  assert.equal(silentFiles(disk).length, 1)
+})
+
+test('past the hold ONE more goes, with no second silence for the same canary, and validating lets the rest follow', async () => {
+  const disk = memDisk()
+  await canaryProved(disk)
+  const provedAt = disk.clock.now
+  const first = agent(disk, { id: 914 })
+  const second = agent(disk, { id: 915 })
+  disk.clock.now = provedAt + 2 * HOUR
+  for (let poll = 0; poll < 10; poll += 1) await first.c.tick()
+  assert.equal(silentFiles(disk).length, 1)
+  assert.equal(await first.c.tick(), 'silent_hold')
+  disk.clock.now += 24 * HOUR + MIN
+  assert.equal(await first.c.tick(), 'requested')
+  assert.equal(silentFiles(disk).length, 1)
+  assert.equal(await second.c.tick(), 'machine_busy')
+  disk.clock.now += 40 * SEC
+  const back = agent(disk, { id: 914, running: '0.81.0', staged: null })
+  assert.equal(await back.c.tick(), 'validating')
+  deliver(back)
+  assert.equal(await back.c.tick(), 'validating')
+  disk.clock.now += 5 * MIN + SEC
+  deliver(back)
+  assert.equal(await back.c.tick(), 'validated')
+  disk.clock.now += 2 * MIN + SEC
+  assert.equal(await second.c.tick(), 'requested')
+  assert.equal(silentFiles(disk).length, 1)
+})

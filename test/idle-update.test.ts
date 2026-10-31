@@ -339,6 +339,8 @@ test('gate 19: the first agent onto a version is its canary, and the rest wait u
   waits({ machine: { lease: 'free', spacingUntilMs: null, canary: 'hold' } }, 'canary_unconfirmed')
   waits({ machine: { lease: 'free', spacingUntilMs: null, canary: 'latch_bad' } }, 'version_held_bad')
   waits({ machine: { lease: 'free', spacingUntilMs: null, canary: 'silent_hold' } }, 'silent_hold')
+  waits({ machine: { lease: 'free', spacingUntilMs: null, canary: 'follower_wait' } }, 'follower_wait')
+  waits({ machine: { lease: 'free', spacingUntilMs: null, canary: 'canary_quiet' } }, 'canary_quiet')
   for (const canary of ['none', 'validated', 'next', 'mine']) {
     assert.equal(decide({ machine: { lease: 'free', spacingUntilMs: null, canary } }).action, 'restart', canary)
   }
@@ -471,6 +473,76 @@ test('silent: a stamp more than a lease life ahead is a clock that jumped: it st
   assert.equal(m.decideCanary({ files: ahead, now: NOW, me: ME }).state, 'validated')
   const two = [{ n: 1, assistantId: '914', nonce: 'n-914', at: NOW + 40 * DAY }, { n: 2, assistantId: '915', nonce: 'n-915', at: NOW - 3 * DAY }]
   assert.equal(m.decideCanary({ files: canaryFiles({ validated: true, silents: two }), now: NOW, me: ME }).state, 'latch_bad')
+})
+
+test('follower wait: 30 to 60 min, the same for one agent and version every time, spread over the agents', () => {
+  const m = need()
+  const waits = Array.from({ length: 15 }, (_, i) => m.followerWaitMs({ assistantId: String(7500001 + i), target: '0.81.1' }))
+  for (const w of waits) assert.ok(w >= 30 * MIN && w <= 60 * MIN, String(w))
+  assert.equal(new Set(waits).size, 15, 'no two agents draw alike')
+  assert.ok(Math.max(...waits) - Math.min(...waits) > 15 * MIN, 'spread over the window')
+  assert.equal(m.followerWaitMs({ assistantId: '912', target: '0.81.0' }), m.followerWaitMs({ assistantId: '912', target: '0.81.0' }))
+  assert.notEqual(m.followerWaitMs({ assistantId: '912', target: '0.81.0' }), m.followerWaitMs({ assistantId: '912', target: '0.81.1' }), 'each version draws again')
+})
+
+test('follower wait: scaled with every other window, so the rig runs it', () => {
+  const m = need()
+  const d = m.scaledDurations(5)
+  const w = m.followerWaitMs({ assistantId: '912', target: '0.81.0' }, d)
+  assert.ok(w >= 6 * MIN && w <= 12 * MIN, String(w))
+})
+
+function validatedFiles(over: Record<string, unknown> = {}): any {
+  return canaryFiles({ validated: true, validatedBy: '913', validatedAtMs: NOW - 2 * HOUR, aliveAtMs: NOW, ...over })
+}
+
+test('follower wait: nobody follows until its own wait has run from the canary\'s validation, to the millisecond', () => {
+  const m = need()
+  const wait = m.followerWaitMs({ assistantId: ME.assistantId, target: '0.81.0' })
+  const at = (validatedAtMs: number) => m.decideCanary({ target: '0.81.0', files: validatedFiles({ validatedAtMs }), now: NOW, me: ME })
+  assert.deepEqual(at(NOW - wait + 1), { state: 'follower_wait', until: NOW + 1 })
+  assert.equal(at(NOW - wait).state, 'validated')
+  assert.equal(at(NOW - 29 * MIN).state, 'follower_wait', 'never under 30 min')
+})
+
+test('follower wait: another agent\'s silence holds first, and a version held bad before that', () => {
+  const m = need()
+  const silents = [{ n: 1, assistantId: '914', nonce: 'n-914', at: NOW - MIN }]
+  assert.equal(m.decideCanary({ target: '0.81.0', files: validatedFiles({ validatedAtMs: NOW - MIN, silents }), now: NOW, me: ME }).state, 'silent_hold')
+  assert.equal(m.decideCanary({ target: '0.81.0', files: validatedFiles({ validatedAtMs: NOW - MIN, silents, bad: true }), now: NOW, me: ME }).state, 'bad')
+})
+
+test('follower wait: a canary that stopped before this wait ended is quiet: the wait is what read it', () => {
+  const m = need()
+  const validatedAtMs = NOW - 2 * HOUR
+  const stoppedAt = validatedAtMs + 20 * MIN
+  assert.equal(m.decideCanary({ target: '0.81.0', files: validatedFiles({ validatedAtMs, aliveAtMs: stoppedAt }), now: NOW, me: ME }).state, 'canary_quiet')
+  assert.equal(m.decideCanary({ target: '0.81.0', files: validatedFiles({ validatedAtMs, aliveAtMs: null }), now: NOW, me: ME }).state, 'canary_quiet', 'it never stamped at all')
+})
+
+test('follower wait: a canary that lasted this wait has proved it, however long ago: a canary quit since holds nothing', () => {
+  const m = need()
+  const validatedAtMs = NOW - 3 * DAY
+  const wait = m.followerWaitMs({ assistantId: ME.assistantId, target: '0.81.0' })
+  const files = (aliveAtMs: number) => validatedFiles({ validatedAtMs, aliveAtMs })
+  assert.equal(m.decideCanary({ target: '0.81.0', files: files(validatedAtMs + 60 * MIN), now: NOW, me: ME }).state, 'validated')
+  // One stamp's fresh window short of the end still counts; past that, the canary stopped inside this wait.
+  assert.equal(m.decideCanary({ target: '0.81.0', files: files(validatedAtMs + wait - 2 * MIN), now: NOW, me: ME }).state, 'validated')
+  assert.equal(m.decideCanary({ target: '0.81.0', files: files(validatedAtMs + wait - 2 * MIN - 1), now: NOW, me: ME }).state, 'canary_quiet')
+})
+
+test('follower wait: a canary already on the record as silent is not read again: past the hold the next agent is the test', () => {
+  const m = need()
+  const files = validatedFiles({ validatedAtMs: NOW - 3 * DAY, aliveAtMs: null, silents: [{ n: 1, assistantId: '913', nonce: null, at: NOW - 25 * HOUR }] })
+  assert.equal(m.decideCanary({ target: '0.81.0', files, now: NOW, me: ME }).state, 'validated')
+})
+
+test('follower wait: a validation stamped further ahead than the longest wait is a clock that jumped, and holds nothing', () => {
+  const m = need()
+  const far = validatedFiles({ validatedAtMs: NOW + 61 * MIN })
+  assert.equal(m.decideCanary({ target: '0.81.0', files: far, now: NOW, me: ME }).state, 'validated')
+  const near = validatedFiles({ validatedAtMs: NOW + 10 * MIN })
+  assert.equal(m.decideCanary({ target: '0.81.0', files: near, now: NOW, me: ME }).state, 'follower_wait')
 })
 
 // -- The record ----------------------------------------------------------------------------------
@@ -1115,6 +1187,14 @@ test('repoint: the user-scope hoai entry goes back to the old version and folder
   assert.equal(doc.plugins['hoai@hoai'][0].version, '0.81.0')
   assert.deepEqual(doc.plugins['other@hoai'], [{ scope: 'user', version: '9.9.9', installPath: '/x' }])
   assert.equal(doc.version, 2)
+})
+
+test('repoint: the failed build\'s commit goes with it, so no reader takes the old build for the one that failed', () => {
+  const r = need().repointInstalledPlugins(INSTALLED, { version: '0.80.0', installPath: '/c/plugins/cache/hoai/hoai/0.80.0', now: NOW })
+  assert.equal(r.ok, true)
+  const doc = JSON.parse(r.text)
+  assert.equal('gitCommitSha' in doc.plugins['hoai@hoai'][1], false)
+  assert.equal(doc.plugins['hoai@hoai'][1].installedAt, '2026-10-01T00:00:00.000Z', 'nothing else goes with it')
 })
 
 test('repoint: no hoai entry, or a document that does not parse, is refused and never rewritten', () => {
