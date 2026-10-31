@@ -25,7 +25,9 @@
  *                   silent-1, its proof goes, and no follower moves. Past the hold the next agent
  *                   is canary 2, and it dies the same way: silent-2, and the build is marked bad.
  *                   The hold (hours even at this scale) passes by moving the stamps back on the
- *                   scratch disk; every agent still reads them by the real rules.
+ *                   scratch disk; every agent still reads them by the real rules. An agent on the
+ *                   old build then takes the install off the marked build, and one that restarts
+ *                   after that comes back on the old build.
  *   --fault silent  the first follower dies once it arrived: its lease runs out with no
  *                   outcome, the next agent writes silent-1, and no third agent moves.
  *
@@ -35,7 +37,7 @@
  */
 import { execFile, spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -151,9 +153,14 @@ async function child() {
       emit({ ev: 'rollback_restart', target })
       return false
     },
-    rollbackInstall: async () => {
-      emit({ ev: 'rollback_install' })
-      return { ok: false, reason: 'not_in_this_rig' }
+    // staged.txt is this rig's install: there while it names the new build, gone once something took it off.
+    rollbackInstall: async (rec) => {
+      emit({ ev: 'rollback_install', from: rec.from, ifStillOn: rec.ifStillOn })
+      if (!rec.ifStillOn) return { ok: false, reason: 'not_in_this_rig' }
+      if (!existsSync(join(dir, 'staged.txt'))) return { ok: true, moved: false }
+      rmSync(join(dir, 'staged.txt'), { force: true })
+      emit({ ev: 'install_moved', from: rec.from })
+      return { ok: true }
     },
     report: (err) => emit({ ev: 'report', err }),
     log: (line) => emit({ ev: 'log', line }),
@@ -248,7 +255,9 @@ async function supervisor() {
           const ev = JSON.parse(line)
           events.push(ev)
           if (ev.ev === 'restart') restarted = true
-          if (ev.ev === 'rollback_restart' || ev.ev === 'rollback_install') unexpected ??= `${id}: ${ev.ev}`
+          // Only an agent on the old build, stepping in on a build marked bad, ever touches the install here.
+          const marked = ev.ev === 'rollback_install' && ev.ifStillOn && existsSync(join(versionDir, 'bad'))
+          if ((ev.ev === 'rollback_restart' || ev.ev === 'rollback_install') && !marked) unexpected ??= `${id}: ${ev.ev}`
         } catch {}
       }
     })
@@ -345,6 +354,7 @@ async function supervisor() {
     let canary = null
     let silent = null
     let second = null
+    let back = null
     try {
       for (const id of ids) launch(id, FROM)
       await armed()
@@ -383,7 +393,18 @@ async function supervisor() {
         age('silent-2', scaled.canarySilentMs - scaled.leaseTtlMs + MIN)
         await until('the build marked bad', () => existsSync(join(versionDir, 'bad')), 8 * MIN)
         say('the build is marked bad')
+        await until('an agent on the old build took the install off it', () => !existsSync(join(dir, 'staged.txt')), 2 * MIN)
+        say(`the install is back: ${events.filter((e) => e.ev === 'install_moved').map((e) => `${e.id} onto ${e.from}`).join(', ')}`)
         await stillAfter((3 * MIN) / scale)
+        // An agent on the old build restarts for its own reasons, and loads what the install names, as hoai and claude do.
+        back = ids.find((id) => id !== canary && id !== second && launches.get(id).length === 1)
+        die(back, 'it restarts for its own reasons')
+        await until('it ended', () => !live.has(back), 30 * SEC)
+        launch(back, existsSync(join(dir, 'staged.txt')) ? TARGET : FROM)
+        const boots = () => events.filter((e) => e.id === back && e.ev === 'log' && /armed on/.test(e.line)).length
+        await until('it came back', () => boots() === 2, 2 * MIN)
+        await stillAfter((3 * MIN) / scale)
+        results.back = { id: back, launches: launches.get(back).map((l) => l.version) }
       }
     } catch (err) {
       failure = String(err?.message ?? err)
@@ -392,7 +413,7 @@ async function supervisor() {
       await finish()
     }
     for (const id of ids) results.launches[id] = launches.get(id)?.map((l) => ({ version: l.version, at: new Date(l.at).toISOString() })) ?? []
-    const others = ids.filter((id) => id !== canary && id !== silent && id !== second)
+    const others = ids.filter((id) => id !== canary && id !== silent && id !== second && id !== back)
     const restarted = others.filter((id) => launches.get(id).length !== 1)
     const body = silences()[0] ? JSON.parse(readFileSync(join(versionDir, silences()[0]), 'utf8')) : null
     results.silence = body
@@ -408,11 +429,15 @@ async function supervisor() {
       check('past the hold one agent moved, and it was a canary', results.afterHold?.moved.length === 1 && results.afterHold.moved[0] === second, results.afterHold)
       check('the second silence names canary 2', last?.assistantId === String(second), last)
       check('two silences marked the build bad', bad?.reason === 'canaries_silent', bad)
+      const moves = events.filter((e) => e.ev === 'install_moved')
+      check('an agent on the old build took the install off it', moves.length >= 1 && moves.every((e) => e.from === FROM), moves)
+      check('the old build agent that restarted after that came back on the old build', results.back?.launches?.join() === `${FROM},${FROM}`, results.back)
     }
     check(`none of the other ${others.length} agents moved`, others.length > 0 && restarted.length === 0, restarted)
     check('every one of them reads the hold', others.every((id) => events.some((e) => e.id === id && e.ev === 'log' && /waiting: silent_hold/.test(e.line))))
     check('the lease is free: a hold keeps nothing from the next version', !existsSync(join(machineDir, 'lease.json')))
-    check('no rollback anywhere', !events.some((e) => e.ev === 'rollback_restart' || e.ev === 'rollback_install'))
+    check('no rollback restart anywhere: a marked build goes off the install with nobody restarted', !events.some((e) => e.ev === 'rollback_restart'))
+    if (fault !== 'late') check('no rollback anywhere', !events.some((e) => e.ev === 'rollback_install'))
     const aliveLeft = [...live.values()].map((p) => p.pid)
     check('no process of ours left alive', aliveLeft.length === 0, aliveLeft)
     const tasksAfter = scheduledTasks('after')

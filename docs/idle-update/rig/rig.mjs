@@ -14,7 +14,7 @@
  * before and after each scenario and must be identical.
  *
  * usage (Windows node, from the plugin root):
- *   node docs/idle-update/rig/rig.mjs --run-dir E:\...\rig-run --scenario idle|busy|broken|stagger|wake [--scale 5] [--agents 15]
+ *   node docs/idle-update/rig/rig.mjs --run-dir E:\...\rig-run --scenario idle|busy|broken|stagger|wake|marked [--scale 5] [--agents 15]
  *   busy takes [--cases turn,owed,...] (the idle control always runs): about 0.9 GB per agent, so a run stays under the cap.
  * Prints RIG PASS <scenario> or RIG FAIL <scenario>: <why>, and writes <scenario dir>\result.json.
  */
@@ -49,7 +49,7 @@ function die(why) {
   process.exit(1)
 }
 if (process.platform !== 'win32') die('the rig runs on Windows node')
-if (!['idle', 'busy', 'broken', 'stagger', 'wake'].includes(scenario ?? '')) die('--scenario idle|busy|broken|stagger|wake')
+if (!['idle', 'busy', 'broken', 'stagger', 'wake', 'marked'].includes(scenario ?? '')) die('--scenario idle|busy|broken|stagger|wake|marked')
 if (!runDir || !/^[D-Zd-z]:\\/.test(runDir)) die('--run-dir must be an absolute path on a drive other than C:')
 if (!Number.isFinite(scale) || scale < 1 || scale > 10) die('--scale must be 1..10 (the beacon lands about every 10 s; 2 min / scale must stay above it)')
 const realProfile = (process.env.USERPROFILE ?? '').toLowerCase()
@@ -758,6 +758,55 @@ async function scenarioStagger() {
   check('no silence on the record', !readdirSync(versionDir).some((name) => name.startsWith('silent-')))
 }
 
+// Two silences, then an old build agent restarts (Data's ruling on Call 28). The two silences are planted, as the
+// files they are: `many-late` runs two agents really going quiet up to these files. From there it is the real chain:
+// the real daemons read them, mark the build by the real rules, and hoai's real relaunch reads the real install. A
+// person's restart is the file a person's restart writes (lib/agent-restart.mjs writeRestartMarker).
+async function scenarioMarked() {
+  const list = ids(2, 7600001).map((id) => prepareAgent(id, FROM))
+  await bootAll(list)
+  const versionDir = join(machineDir, 'idle-update', TARGET)
+  mkdirSync(versionDir, { recursive: true })
+  const durations = scaledDurations(scale)
+  // Older than the 75 min a silence takes to count, so the only wait left is the latch's own polls.
+  const at = new Date(Date.now() - durations.canarySilentMs).toISOString()
+  for (const [n, who] of [[1, '7699001'], [2, '7699002']]) {
+    writeFileSync(join(versionDir, `silent-${n}`), JSON.stringify({ assistantId: who, nonce: `rig-${n}`, by: 'rig', at }))
+  }
+  stage(TARGET)
+  await watch('the build marked bad', () => existsSync(join(versionDir, 'bad')), { timeoutMs: 8 * MIN })
+  say('the build is marked bad; letting both daemons read it')
+  await sleep(3 * durations.pollMs + 3 * SEC)
+  const installedThen = installedVersion()
+  const [restarted, other] = list
+  writeFileSync(join(restarted.stateDir, 'restart-requested.json'), '{}\n')
+  say(`${restarted.id} restarts by hand, with the install on ${installedThen}`)
+  await watch(`${restarted.id} back from its restart`, () => {
+    const second = sessionLaunches(restarted)[1]
+    return second && versionBeats(restarted.id).some((h) => Date.parse(h.at) > Date.parse(second.at))
+  }, { timeoutMs: 8 * MIN, everyMs: 5 * SEC })
+  say('back; watching two more minutes for any further restart')
+  await sleep(2 * MIN)
+  for (const a of list) results.agents[a.id] = summarise(a)
+  const r = results.agents[restarted.id]
+  const o = results.agents[other.id]
+  const moved = list.flatMap((a) => idleLines(a.id).filter((l) => l.includes('put the install back on')))
+  const bad = JSON.parse(readText(join(versionDir, 'bad')) || 'null')
+  let settings = null
+  try {
+    settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8'))
+  } catch {}
+  check('two silences marked the build bad, by the real rules', bad?.reason === 'canaries_silent', bad)
+  check('the install went back before the restart', installedThen === FROM, installedThen)
+  check('an old build agent moved it, and said so', moved.length >= 1, moved)
+  check('the old build agent came back on the old build', r.launches.length === 2 && r.launches[1].version === FROM, r.launches)
+  check('in the same session', r.launches[1]?.mode === 'resume' && r.launches[1]?.sessionId === r.launches[0]?.sessionId, r.launches)
+  check('no agent ever ran the marked build', !r.versions.includes(TARGET) && !o.versions.includes(TARGET), { restarted: r.versions, other: o.versions })
+  check('the other agent never restarted', o.launches.length === 1, o.launches)
+  check('the install is still on the old build', installedVersion() === FROM, installedVersion())
+  check("Claude Code's own update for the marketplace is off, so nothing reinstalls it", JSON.stringify(settings ?? {}).includes('"autoUpdate":false'), settings?.extraKnownMarketplaces ?? null)
+}
+
 // -- Run -----------------------------------------------------------------------------------------
 
 say(`scenario ${scenario}, scale ${scale}, dir ${dir}`)
@@ -780,6 +829,7 @@ try {
   if (scenario === 'broken') await scenarioBroken()
   if (scenario === 'stagger') await scenarioStagger()
   if (scenario === 'wake') await scenarioWake()
+  if (scenario === 'marked') await scenarioMarked()
 } catch (err) {
   failure = String(err?.message ?? err)
   say(`error: ${failure}`)
