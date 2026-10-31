@@ -688,7 +688,8 @@ async function scenarioWake() {
   const before = seen().length
   // The stub fires only a task it still holds: the wake armed before the restart.
   await stub('fire', { assistantId: a.id, taskId: 1 })
-  await watch('the fire reached the session', () => seen().slice(before).some((l) => l.content?.includes('scheduled wake: rig wake')), { timeoutMs: 3 * MIN })
+  // Only the full sweep reads a fired row, every 5 min with a healthy socket, at any scale.
+  await watch('the fire reached the session', () => seen().slice(before).some((l) => l.content?.includes('scheduled wake: rig wake')), { timeoutMs: 6 * MIN })
   say('watching two more minutes for a second restart')
   await sleep(2 * MIN)
   const s = summarise(a)
