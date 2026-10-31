@@ -3539,8 +3539,8 @@
       "id": "stamp-lock-holder",
       "rule": "only the lock holder stamps",
       "file": "lib/idle-update.mjs",
-      "find": "    if (read(deps.active, false) !== true) return\n    const n = now()\n    const live = isLiveBuild(",
-      "replace": "    const n = now()\n    const live = isLiveBuild(",
+      "find": "    if (read(deps.active, false) !== true) return\n    const n = now()\n    const arrivedAtMs",
+      "replace": "    const n = now()\n    const arrivedAtMs",
       "tests": [
         "test/idle-update.controller.test.ts"
       ]
@@ -3549,8 +3549,8 @@
       "id": "stamp-live-only",
       "rule": "a dead channel stamps nothing",
       "file": "lib/idle-update.mjs",
-      "find": "    if (!live) return\n    const provedMs =",
-      "replace": "    const provedMs =",
+      "find": "if (!live && read(deps.loginExpired, false) !== true) return",
+      "replace": "if (false) return",
       "tests": [
         "test/idle-update.controller.test.ts"
       ]
@@ -3753,8 +3753,8 @@
       "id": "stamp-keeps-the-sum",
       "rule": "the proof carries on from what is on the disk",
       "file": "lib/idle-update.mjs",
-      "find": "const provedMs = files.provedMs + Math.min(",
-      "replace": "const provedMs = Math.min(",
+      "find": "const provedMs = files.provedMs + (live ?",
+      "replace": "const provedMs = 0 + (live ?",
       "tests": [
         "test/idle-update.controller.test.ts"
       ]
@@ -3806,6 +3806,57 @@
       "find": "n - last.at <= 2 * d.pollMs ? last.count + 1 : 1",
       "replace": "last.count + 1",
       "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "stamp-login-keeps-it-fresh",
+      "rule": "a login that ran out stops the proof, not the canary",
+      "file": "lib/idle-update.mjs",
+      "find": "if (!live && read(deps.loginExpired, false) !== true) return",
+      "replace": "if (!live) return",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "stamp-login-adds-nothing",
+      "rule": "the minutes under an expired login prove nothing",
+      "file": "lib/idle-update.mjs",
+      "find": "files.provedMs + (live ? Math.min(Math.max(0, n - (files.aliveAtMs ?? files.validatedAtMs)), 2 * d.pollMs) : 0)",
+      "replace": "files.provedMs + Math.min(Math.max(0, n - (files.aliveAtMs ?? files.validatedAtMs)), 2 * d.pollMs)",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "stamp-asks-a-beat",
+      "rule": "a canary with no beat since it arrived asks for one",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (!(finite(heartbeatOkAtMs) && heartbeatOkAtMs >= arrivedAtMs)) read(deps.requestHeartbeat, null)\n    // A login that ran out",
+      "replace": "    // A login that ran out",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "stamp-asks-only-with-none",
+      "rule": "none while the beat stands",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (!(finite(heartbeatOkAtMs) && heartbeatOkAtMs >= arrivedAtMs)) read(deps.requestHeartbeat, null)\n    // A login that ran out",
+      "replace": "    read(deps.requestHeartbeat, null)\n    // A login that ran out",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "gate-19-held-only-when-held",
+      "rule": "nothing says held until something is",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (machine.canary === 'bad') return wait('version_held_bad')\n",
+      "replace": "  if (machine.canary === 'bad' || machine.canary === 'latch_bad') return wait('version_held_bad')\n",
+      "tests": [
+        "test/idle-update.test.ts",
         "test/idle-update.controller.test.ts"
       ]
     }
