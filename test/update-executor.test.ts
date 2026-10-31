@@ -461,7 +461,40 @@ test('a rollback onto a held build takes no other agent onto it, and the first f
   assert.equal(result.rolledBack, true, JSON.stringify(result.failedStep))
   assert.equal(world.installedVersion(), '0.38.1')
   assert.equal(deps.restarts.some((r: any) => r.id === '913'), false, JSON.stringify(deps.restarts))
+  assert.equal(deps.restarts.filter((r: any) => r.id === '912').length, 1, `the rollback's own retry reads the mark too: ${JSON.stringify(deps.restarts)}`)
   assert.equal(String(result.failedStep?.message).endsWith('version_held_bad'), false, JSON.stringify(result.failedStep))
+})
+
+test('a mark that stops a run with no rollback names itself over a softer failure before it', async () => {
+  const world = memWorld()
+  const plan = seededUpdate(world, { agents: [agentState('912'), agentState('913')] })
+  let held = false
+  const deps = memDeps(world, realisticScript(world, '0.38.3'), {
+    heldBad: (version: string) => held && version === '0.38.3',
+    restartAgent: async () => {
+      held = true
+      return { ok: false, how: 'marker', message: 'no marker' }
+    },
+  } as Partial<Deps>)
+  const result = await executePlan(plan, deps.deps)
+  assert.match(String(result.failedStep?.message), /version_held_bad$/, JSON.stringify(result.failedStep))
+})
+
+test('a restart on a clone goes by the checkout', async () => {
+  const { world, pluginRoot, git, state } = cloneWorld()
+  const plan = planMachine(state)
+  const deps = memDeps(world, {}, { installMethod: 'clone', pluginRoot, git, heldBad: (version: string) => version === '0.38.1' } as Partial<Deps>)
+  const result = await executePlan({ ...plan, steps: [{ id: 's01', kind: 'restart_agent', target: '912', onFailure: 'continue', reason: 'r' }] } as any, deps.deps)
+  assertRefused(result, deps, 'restart_agent')
+})
+
+test('a restart with nothing readable on the install goes by the target', async () => {
+  const world = memWorld()
+  world.seedMarketplace('0.38.3')
+  const plan = planMachine(updateState(world))
+  const deps = memDeps(world, realisticScript(world, '0.38.3'), { heldBad: (version: string) => version === '0.38.3' } as Partial<Deps>)
+  const result = await executePlan({ ...plan, steps: [{ id: 's01', kind: 'restart_agent', target: '912', onFailure: 'continue', reason: 'r' }] } as any, deps.deps)
+  assertRefused(result, deps, 'restart_agent')
 })
 
 test('a restart goes by what is installed: a target the refresh moved past the mark lets no agent onto it', async () => {

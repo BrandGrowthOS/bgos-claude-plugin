@@ -273,6 +273,24 @@ test('idle update latch: a version held bad on this computer is not pending, for
   assert.equal(clone('0.81.1'), '0.81.1')
 })
 
+test('idle update latch: a held answer does not hide the next source, so a clone that moved on to a fix stays pending on it', () => {
+  const clone = (over: Record<string, () => string | null>) =>
+    resolvePendingRestartVersion({
+      installMethod: 'clone',
+      runningVersion: '0.80.0',
+      updaterPending: () => '0.81.0',
+      stagedTargetVersion: () => '0.81.0',
+      readInstalledPlugins: () => null,
+      readCheckoutVersion: () => '0.81.1',
+      heldBad: (v: string) => v === '0.81.0',
+      ...over,
+    } as any)
+  assert.equal(clone({}), '0.81.1', 'past a held live answer and a held staged target')
+  assert.equal(clone({ updaterPending: () => null, stagedTargetVersion: () => '0.81.2' }), '0.81.2', 'a good staged target still comes first')
+  assert.equal(clone({ readCheckoutVersion: () => '0.81.0' }), null, 'every source held: nothing is pending')
+  assert.equal(clone({ heldBad: undefined as any }), '0.81.0', 'no latch reader: unchanged')
+})
+
 test('idle update latch: a latch reader that throws holds nothing (it is a guard, never a reason to hide an update)', () => {
   const got = resolvePendingRestartVersion({
     installMethod: 'marketplace',
