@@ -338,6 +338,7 @@ test('gate 19: the first agent onto a version is its canary, and the rest wait u
   waits({ machine: { lease: 'free', spacingUntilMs: null, canary: 'pending' } }, 'canary_unconfirmed')
   waits({ machine: { lease: 'free', spacingUntilMs: null, canary: 'hold' } }, 'canary_unconfirmed')
   waits({ machine: { lease: 'free', spacingUntilMs: null, canary: 'latch_bad' } }, 'version_held_bad')
+  waits({ machine: { lease: 'free', spacingUntilMs: null, canary: 'silent_hold' } }, 'silent_hold')
   for (const canary of ['none', 'validated', 'next', 'mine']) {
     assert.equal(decide({ machine: { lease: 'free', spacingUntilMs: null, canary } }).action, 'restart', canary)
   }
@@ -442,6 +443,34 @@ test('canary: a second canary past its lease may still be validating (a slow sta
   const two = [{ n: 1, assistantId: '913', at: NOW - 3 * DAY }, { n: 2, assistantId: '914', at: NOW - 30 * MIN }]
   assert.equal(m.decideCanary({ files: canaryFiles({ canaries: two }), now: NOW, me: ME }).state, 'hold')
   assert.equal(m.DEFAULT_DURATIONS.canarySilentMs, 100 * MIN, 'past the startup bound, an hour of outage and the deadline')
+})
+
+test('silent: one agent that never came back holds a version even after it validated, for 24 h', () => {
+  const m = need()
+  const held = canaryFiles({ validated: true, silents: [{ n: 1, assistantId: '914', nonce: 'n-914', at: NOW - MIN }] })
+  assert.equal(m.decideCanary({ files: held, now: NOW, me: ME }).state, 'silent_hold')
+  const stillHeld = canaryFiles({ validated: true, silents: [{ n: 1, assistantId: '914', nonce: 'n-914', at: NOW - 23 * HOUR }] })
+  assert.equal(m.decideCanary({ files: stillHeld, now: NOW, me: ME }).state, 'silent_hold')
+})
+
+test('silent: past 24 h one more agent may try', () => {
+  const m = need()
+  const old = canaryFiles({ validated: true, aliveAtMs: NOW, silents: [{ n: 1, assistantId: '914', nonce: 'n-914', at: NOW - 25 * HOUR }] })
+  assert.equal(m.decideCanary({ files: old, now: NOW, me: ME }).state, 'validated')
+})
+
+test('silent: two mark the build bad, whatever it proved before', () => {
+  const m = need()
+  const two = [{ n: 1, assistantId: '914', nonce: 'n-914', at: NOW - 2 * DAY }, { n: 2, assistantId: '915', nonce: 'n-915', at: NOW - MIN }]
+  assert.equal(m.decideCanary({ files: canaryFiles({ validated: true, silents: two }), now: NOW, me: ME }).state, 'latch_bad')
+})
+
+test('silent: a stamp more than a lease life ahead is a clock that jumped: it still counts, but holds nothing for ever', () => {
+  const m = need()
+  const ahead = canaryFiles({ validated: true, aliveAtMs: NOW, silents: [{ n: 1, assistantId: '914', nonce: 'n-914', at: NOW + 40 * DAY }] })
+  assert.equal(m.decideCanary({ files: ahead, now: NOW, me: ME }).state, 'validated')
+  const two = [{ n: 1, assistantId: '914', nonce: 'n-914', at: NOW + 40 * DAY }, { n: 2, assistantId: '915', nonce: 'n-915', at: NOW - 3 * DAY }]
+  assert.equal(m.decideCanary({ files: canaryFiles({ validated: true, silents: two }), now: NOW, me: ME }).state, 'latch_bad')
 })
 
 // -- The record ----------------------------------------------------------------------------------
