@@ -8,9 +8,10 @@
 //
 // Each path goes through four steps, in this order:
 //   1. a lexical refusal BEFORE any file system call: not a full path, a
-//      network (UNC) or device path (\\host, //host, \\?\, \\.\, a Windows
-//      device name, a stream after a colon), a Unix system folder (/proc,
-//      /dev, /sys, /etc). A stat of \\host\share on Windows opens an SMB
+//      network (UNC) or device path (\\host, //host, \\?\, \\.\, and on a
+//      path with a drive letter or on Windows a device name or a stream
+//      after a colon), a Unix system folder (/proc, /dev, /sys, /etc). A
+//      stat of \\host\share on Windows opens an SMB
 //      connection and can hand the user's NTLM hash to that host (G2), so
 //      nothing here may touch such a path;
 //   2. backslashes read as slashes, then the secret list
@@ -89,8 +90,8 @@ const MB = 1024 * 1024
  * climbs out. One list, so a test can empty it and see the refusals go.
  *
  * Round 4: it has two halves. SECRET_PLACES (a key or cloud folder, a key
- * file, a browser profile store, a keychain, ~/.claude, ~/.bgos-*) is read on
- * the whole path. SECRET_WORDS (a word an owner puts in a name: key, seed,
+ * file, a browser profile store, a keychain, ~/.claude, ~/.bgos-*, any .hoai
+ * folder) is read on the whole path. SECRET_WORDS (a word an owner puts in a name: key, seed,
  * pass, wallet) is read only on the path below the owner's home folder when
  * the file is inside it (secretWordsForm), so a home named after a person
  * (C:\Users\John Key, /Users/amy.seed) does not refuse every file on the
@@ -143,13 +144,17 @@ const SECRET_PLACES: readonly RegExp[] = [
   // Claude's own folder and file (~/.claude, ~/.claude.json), and every HOAI state folder (~/.bgos-agent, which holds
   // the stranger's email files, and ~/.bgos-plugin-state, which holds the pairing).
   /(?:^|\/)\.claude[^/]*(?:\/|$)/,
-  /(?:^|\/)\.bgos-[^/]*(?:\/|$)/,]
+  /(?:^|\/)\.bgos-[^/]*(?:\/|$)/,
+  // Final fix 4: every .hoai folder, as the tool text and the session instructions promise: ~/.hoai (the Agent Browser's
+  // sessions, screenshots and downloads) and <agent folder>/.hoai/board-files, the owner's board files included.
+  /(?:^|\/)\.hoai(?:\/|$)/,
+]
 
 /** Words an owner puts in the name of a secret: read on the path below the home folder (round 4). */
 const SECRET_WORDS: readonly RegExp[] = [
-  // credentials, credentials.csv, db-credentials.txt, credential.txt, a Credentials folder: the word anywhere in a file
-  // or folder name, as the password word is (credentialing is not it).
-  /(?:^|\/)[^/]*credentials?(?![a-z])[^/]*(?:\/|$)/,
+  // credentials, credentials.csv, db-credentials.txt, credentialsbackup.txt, credential.txt, a Credentials folder: the
+  // word anywhere in a file or folder name, as the password word is (credentialing is not it).
+  /(?:^|\/)[^/]*(?:credentials|credential(?![a-z]))[^/]*(?:\/|$)/,
   // Password exports and the files of password managers: Chrome Passwords.csv, logins.csv (Firefox),
   // bitwarden_export.csv, a Passwords folder, recovery-codes.txt. Each is a safe type, so its name is the wall.
   // A file named with the word, or a folder named just Password(s); a folder that only has the word in a longer
@@ -301,7 +306,8 @@ export interface OutboundFileCtx {
   contentWorker?: URL
   /**
    * Final pre push fix: this daemon's own runtime folders wherever they were moved (server.ts OUTBOUND_RUNTIME_DIRS:
-   * the resolved CLAUDE_CONFIG_DIR and the plugin state folder, BGOS_PLUGIN_STATE_DIR or ~/.bgos-plugin-state). A
+   * the resolved CLAUDE_CONFIG_DIR, the plugin state folder, BGOS_PLUGIN_STATE_DIR or ~/.bgos-plugin-state, and
+   * ~/.bgos-agent). A
    * path at or below one (read lower case, with forward slashes, as the secret list reads it) is refused as a HOAI or
    * Claude folder, as ~/.claude and ~/.bgos-* are by name. A folder that is the home or holds it, the top of a drive,
    * or a relative or network value is not taken as one: it would refuse every file of the owner.
@@ -498,15 +504,18 @@ function lexical(path: string, ctx: OutboundFileCtx): Lexical {
   const drive = /^[a-z]:\//i.test(slashed) ? slashed.slice(0, 2).toLowerCase() : ''
   if (!drive && !slashed.startsWith('/')) return { kind: 'not_full' }
   const rest = drive ? slashed.slice(2) : slashed
+  // Final fix 4: Windows' own rules, read on a path with a drive letter or on Windows; on Linux and macOS a ?, * or : and
+  // a device word are ordinary parts of a name (/home/kc/Meeting 10:30.pdf, /home/kc/con.pdf).
+  const windows = drive !== '' || process.platform === 'win32'
   // A wildcard or a colon after the drive (an NTFS stream such as a.pdf:hidden) names no plain file.
-  if (/[?*:]/.test(rest)) return { kind: 'device' }
+  if (windows && /[?*:]/.test(rest)) return { kind: 'device' }
   const segments: string[] = []
   for (const raw of rest.split('/')) {
     // Windows drops trailing dots and spaces: `.ssh.` and `.ssh ` open `.ssh`, so they are read as it (round 8: by a
     // backward loop).
     const seg = withoutTrailingDotsAndSpaces(raw)
     if (seg === '' || seg === '.') continue
-    if (WINDOWS_DEVICE.test(seg.split('.')[0]!.trim())) return { kind: 'device' }
+    if (windows && WINDOWS_DEVICE.test(seg.split('.')[0]!.trim())) return { kind: 'device' }
     if (seg === '..') {
       // Above the top is not a full path; lanePathIsSecret reads the same climb as a secret.
       if (segments.length === 0) return { kind: 'not_full' }
@@ -588,13 +597,16 @@ const SHARE_ANSWER = /^(?:\\\\\?\\UNC\\|[\\/]{2}(?![?.][\\/]))[^\\/]+[\\/][^\\/]
  * Final fix 3: a share path as the checks of steps 1 and 2 read it, for those checks only (nothing is opened by it): the
  * given drive plus the share and the folders below it. The server's name is dropped, so a NAS named keys refuses
  * nothing. An admin share is the disk it stands for (\\localhost\C$\Users\kc is C:\Users\kc), so a moved runtime folder
- * and the owner's home are found there. The word rules read the rest of any share as a place outside the home.
+ * and the owner's home are found there. The word rules read the rest of any share as a place outside the home. Final
+ * fix 4: a hidden share is read without its one trailing $ (\\nas\Keys$ as Keys), as the name rules end a word at a
+ * slash, a dot or the end of the name; the admin share is told first, as its $ is what makes it one.
  */
 function shareSide(drive: string, real: string): string {
   const head = SHARE_ANSWER.exec(real)![0]
   const share = head.slice(Math.max(head.lastIndexOf('\\'), head.lastIndexOf('/')) + 1)
   const rest = real.slice(head.length)
-  return /^[a-z]\$$/i.test(share) ? `${share[0]}:${rest}` : `${drive}\\${share}${rest}`
+  if (/^[a-z]\$$/i.test(share)) return `${share[0]}:${rest}`
+  return `${drive}\\${share.endsWith('$') ? share.slice(0, -1) : share}${rest}`
 }
 
 /**

@@ -820,6 +820,8 @@ test('final fix: server.ts hands every file check of a call the moved Claude and
   assert.ok(dirs.includes('pathDirname(pathDirname(CURSOR_FILE_PATH))'), 'and as the cursor store resolves it')
   // Final fix 2: each folder also by its real path (a junction, a link or an 8.3 spelling), resolved at boot.
   assert.ok(dirs.startsWith('const OUTBOUND_RUNTIME_DIRS: readonly string[] = outboundRuntimeDirs(['), 'the real paths beside the configured ones')
+  // Final fix 4: ~/.bgos-agent too, which holds a stranger's saved email files: moved by a junction, its real path holds.
+  assert.ok(dirs.includes("pathJoin(homedir(), '.bgos-agent')"), 'the HOAI agent folder')
   assert.ok(/import \{[^}]*\boutboundRuntimeDirs\b[^}]*\} from '\.\/lib\/email-outbound-files\.js'/.test(SRC), 'imported from the file check')
   assert.ok(SRC.includes('readFiles: (paths) => readOutboundFiles(paths, outboundFileCtx()),'))
   assert.ok(SRC.includes('fileCtx: outboundFileCtx(),'))

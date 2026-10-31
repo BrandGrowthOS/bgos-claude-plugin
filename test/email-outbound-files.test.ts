@@ -425,6 +425,9 @@ test('review round 2: names a reasonable owner gives a key, password, token or s
       'C:\\Users\\kc\\Downloads\\Admin_credentials.csv',
       '/home/kc/Documents/credential.txt',
       '/home/kc/Documents/Credentials/github.txt',
+      // Final fix 4: the plural runs on into a longer word; only the singular keeps the lookahead (credentialing goes).
+      '/home/kc/Documents/credentialsbackup.txt',
+      'C:\\Users\\kc\\Documents\\credentialsbackup.txt',
     ],
     'secrets, or a name that ends with secret': [
       '/home/kc/Documents/secrets.txt',
@@ -492,6 +495,7 @@ test('review round 2: names a reasonable owner gives a key, password, token or s
     '/home/kc/docs/Secret Santa 2026.xlsx',
     '/home/kc/docs/secretary notes.docx',
     '/home/kc/docs/credentialing application.pdf',
+    '/home/kc/docs/credentialed staff.pdf',
     '/home/kc/docs/seed round deck.pdf',
     '/home/kc/docs/sunflower seeds.jpg',
     '/home/kc/docs/cookie recipe.docx',
@@ -1683,6 +1687,19 @@ async function heartbeatRefusal(name: string, bytes: Buffer, extra: Record<strin
   }
 }
 
+/**
+ * Final fix 4: how long a check stopped the main thread, read over rounds, so a loaded runner does not turn a test red
+ * with no code cause (seen on healthy code, once each: 116, 124, 127 and 257 ms against a limit of 100). A first round
+ * within the limit settles it, so a green run costs one round. Past it, the check runs twice more and the answer is the
+ * median of the three: noise comes once, and a main thread the code really stops is stopped every round, so the limit
+ * stays where it was and the test stays red on the slow code it guards.
+ */
+async function stopOf(round: () => Promise<number>, limit = 100): Promise<number> {
+  const first = await round()
+  if (first <= limit) return first
+  return [first, await round(), await round()].sort((a, b) => a - b)[1]!
+}
+
 /** Round 7: a CSV of one digit per line, `size` bytes, built in memory. */
 function digitLines(size: number): Buffer {
   const out = Buffer.alloc(size)
@@ -1703,9 +1720,12 @@ test('review round 7: the four hostile inputs each settle within the Worker dead
     ['aws run.docx', () => docxRaw(`<w:p><w:r><w:t>${'=aws'.repeat(15_000_000)}</w:t></w:r></w:p>`)],
   ] as const) {
     const bytes = build()
-    const got = await heartbeatRefusal(name, bytes)
-    assert.ok(got.ms <= R7_DEADLINE_MS + 1000, `${name} took ${Math.round(got.ms)} ms`)
-    assert.ok(got.maxGap <= 100, `${name} stopped the main thread for ${Math.round(got.maxGap)} ms`)
+    const stop = await stopOf(async () => {
+      const got = await heartbeatRefusal(name, bytes)
+      assert.ok(got.ms <= R7_DEADLINE_MS + 1000, `${name} took ${Math.round(got.ms)} ms`)
+      return got.maxGap
+    })
+    assert.ok(stop <= 100, `${name} stopped the main thread for ${Math.round(stop)} ms`)
   }
 })
 
@@ -1736,10 +1756,13 @@ parentPort.on('message', (m) => setTimeout(() => parentPort.postMessage({ id: m.
   assert.deepEqual([0, MB, 6 * MB, 25 * MB, 100 * MB].map((size) => C.officeReadBudgetMs(size)), [2000, 3000, 8000, 27000, 37000])
   // 8 MB of '=aws' and a closing dot: each position costs the aws_secret_access_key rule a bounded but long try that
   // finds nothing (about 7 s under node with tsx; round 7 refused it at its 5 s deadline). Its deadline is now 13 s.
-  const got = await heartbeatRefusal('slow.txt', Buffer.from(`${'=aws'.repeat(2 * 1024 * 1024)}.`))
-  assert.equal(got.why, null)
-  assert.ok(got.ms <= 13_000 + 1000, `slow.txt took ${Math.round(got.ms)} ms`)
-  assert.ok(got.maxGap <= 100, `slow.txt stopped the main thread for ${Math.round(got.maxGap)} ms`)
+  const stop = await stopOf(async () => {
+    const got = await heartbeatRefusal('slow.txt', Buffer.from(`${'=aws'.repeat(2 * 1024 * 1024)}.`))
+    assert.equal(got.why, null)
+    assert.ok(got.ms <= 13_000 + 1000, `slow.txt took ${Math.round(got.ms)} ms`)
+    return got.maxGap
+  })
+  assert.ok(stop <= 100, `slow.txt stopped the main thread for ${Math.round(stop)} ms`)
   // The next file: a gradebook goes.
   assert.equal((await memRefusal('gradebook.xlsx', xlsxSheetsOf([R7_GRADEBOOK]))).why, null)
 })
@@ -1779,10 +1802,14 @@ test('review round 7: the content Worker fails closed: one that cannot start, th
     }
   }
   // One that never replies (a busy loop): terminated at the deadline, and the main thread keeps running.
-  const busy = await heartbeatRefusal('plan.txt', Buffer.from('Plan for Monday.\n'), { contentWorker: worker('busy', 'parentPort.once("message", () => { for (;;) {} })') })
-  assert.equal(busy.why, unsafeSentence(busy.path))
-  assert.ok(busy.ms <= R7_DEADLINE_MS + 1000, `busy took ${Math.round(busy.ms)} ms`)
-  assert.ok(busy.maxGap <= 100, `busy stopped the main thread for ${Math.round(busy.maxGap)} ms`)
+  const looping = worker('busy', 'parentPort.once("message", () => { for (;;) {} })')
+  const stop = await stopOf(async () => {
+    const busy = await heartbeatRefusal('plan.txt', Buffer.from('Plan for Monday.\n'), { contentWorker: looping })
+    assert.equal(busy.why, unsafeSentence(busy.path))
+    assert.ok(busy.ms <= R7_DEADLINE_MS + 1000, `busy took ${Math.round(busy.ms)} ms`)
+    return busy.maxGap
+  })
+  assert.ok(stop <= 100, `busy stopped the main thread for ${Math.round(stop)} ms`)
 })
 
 test('review round 7: a file that goes comes back from the Worker whole, byte for byte', async () => {
@@ -1918,14 +1945,19 @@ test('review round 8: a [Content_Types].xml of 26000 unclosed <Override tags is 
   const { isType } = await import('../lib/email-files.ts')
   const hostile = r8Docx(`<?xml version="1.0"?><Types xmlns="x">${R8_OVERRIDE}${'<Override '.repeat(26000)}`)
   // isType runs on the main thread: its whole time is a gap of the main thread.
-  const started = performance.now()
-  assert.equal(isType(hostile, 'docx'), true)
-  const ms = performance.now() - started
-  assert.ok(ms < 100, `the type check took ${Math.round(ms)} ms on the main thread`)
+  const ms = await stopOf(async () => {
+    const started = performance.now()
+    assert.equal(isType(hostile, 'docx'), true)
+    return performance.now() - started
+  })
+  assert.ok(ms <= 100, `the type check took ${Math.round(ms)} ms on the main thread`)
   // Through readOutboundFile, with a heartbeat: the main thread never stops for 100 ms.
-  const got = await heartbeatRefusal('memo.docx', hostile)
-  assert.equal(got.why, null)
-  assert.ok(got.maxGap <= 100, `memo.docx stopped the main thread for ${Math.round(got.maxGap)} ms`)
+  const stop = await stopOf(async () => {
+    const got = await heartbeatRefusal('memo.docx', hostile)
+    assert.equal(got.why, null)
+    return got.maxGap
+  })
+  assert.ok(stop <= 100, `memo.docx stopped the main thread for ${Math.round(stop)} ms`)
   // Ten of them in one email (the reviewer's ct10.mjs: 41 s and a 4.4 s stop before).
   const lib = await m()
   const files: Record<string, Buffer> = {}
@@ -1944,21 +1976,24 @@ test('review round 8: a [Content_Types].xml of 26000 unclosed <Override tags is 
       close: async () => {},
     }),
   }
-  let maxGap = 0
-  let last = performance.now()
-  const beat = setInterval(() => {
-    const now = performance.now()
-    maxGap = Math.max(maxGap, now - last)
-    last = now
-  }, 10)
-  const t0 = performance.now()
-  const all = await lib.readOutboundFiles(Object.keys(files), { home: MEM_HOME, fs })
-  const allMs = performance.now() - t0
-  maxGap = Math.max(maxGap, performance.now() - last)
-  clearInterval(beat)
-  assert.equal(all.ok, true, all.error)
-  assert.ok(allMs < 5000, `ten files took ${Math.round(allMs)} ms`)
-  assert.ok(maxGap <= 100, `ten files stopped the main thread for ${Math.round(maxGap)} ms`)
+  const tenFiles = await stopOf(async () => {
+    let maxGap = 0
+    let last = performance.now()
+    const beat = setInterval(() => {
+      const now = performance.now()
+      maxGap = Math.max(maxGap, now - last)
+      last = now
+    }, 10)
+    const t0 = performance.now()
+    const all = await lib.readOutboundFiles(Object.keys(files), { home: MEM_HOME, fs })
+    const allMs = performance.now() - t0
+    maxGap = Math.max(maxGap, performance.now() - last)
+    clearInterval(beat)
+    assert.equal(all.ok, true, all.error)
+    assert.ok(allMs < 5000, `ten files took ${Math.round(allMs)} ms`)
+    return maxGap
+  })
+  assert.ok(tenFiles <= 100, `ten files stopped the main thread for ${Math.round(tenFiles)} ms`)
 })
 
 test('review round 8: an <Override tag ends at its first > outside quotes; a longer element name and an unclosed last tag are not read as one', async () => {
@@ -2083,32 +2118,35 @@ test('review round 8: files checked at the same time each get their own verdict 
   const sales = Buffer.from('date,item,qty\n2026-10-01,widget,4\n')
   const export_ = Buffer.from('name,url,username,password\nHarbor,https://example.com,kc,rig dummy\n')
   const accounts = docxOf([], [['Site', 'User', 'Password'], ['example.com', 'kc', 'rig dummy']])
-  let maxGap = 0
-  let last = performance.now()
-  const beat = setInterval(() => {
-    const now = performance.now()
-    maxGap = Math.max(maxGap, now - last)
-    last = now
-  }, 10)
-  try {
-    for (let round = 0; round < 40; round++) {
-      const got = await Promise.all([
-        memRefusal('grades.xlsx', grades),
-        memRefusal('export.csv', export_),
-        memRefusal('tracker.docx', tracker),
-        memRefusal('accounts.docx', accounts),
-        memRefusal('sales.csv', sales),
-      ])
-      assert.deepEqual(
-        got.map((g) => g.why),
-        [null, tableSentence6(got[1]!.path), null, tableSentence6(got[3]!.path), null],
-        `round ${round}`,
-      )
+  const stop = await stopOf(async () => {
+    let maxGap = 0
+    let last = performance.now()
+    const beat = setInterval(() => {
+      const now = performance.now()
+      maxGap = Math.max(maxGap, now - last)
+      last = now
+    }, 10)
+    try {
+      for (let round = 0; round < 40; round++) {
+        const got = await Promise.all([
+          memRefusal('grades.xlsx', grades),
+          memRefusal('export.csv', export_),
+          memRefusal('tracker.docx', tracker),
+          memRefusal('accounts.docx', accounts),
+          memRefusal('sales.csv', sales),
+        ])
+        assert.deepEqual(
+          got.map((g) => g.why),
+          [null, tableSentence6(got[1]!.path), null, tableSentence6(got[3]!.path), null],
+          `round ${round}`,
+        )
+      }
+    } finally {
+      clearInterval(beat)
     }
-  } finally {
-    clearInterval(beat)
-  }
-  assert.ok(maxGap <= 100, `the main thread stopped for ${Math.round(maxGap)} ms`)
+    return maxGap
+  })
+  assert.ok(stop <= 100, `the main thread stopped for ${Math.round(stop)} ms`)
 })
 
 /** Round 8: run a module in a child node with the same loader (tsx), and its stdout, stderr, exit code and time. */
@@ -2220,9 +2258,12 @@ test('review round 8: ordinary large files go: 24.9 MB of prose, a 24 MB log, a 
     ['orders.xlsx', () => r8BigWorkbook(900_000)],
   ] as const) {
     const bytes = build()
-    const got = await heartbeatRefusal(name, bytes)
-    assert.equal(got.why, null, `${name} (${(bytes.length / MB).toFixed(1)} MB)`)
-    assert.ok(got.maxGap <= 100, `${name} stopped the main thread for ${Math.round(got.maxGap)} ms`)
+    const stop = await stopOf(async () => {
+      const got = await heartbeatRefusal(name, bytes)
+      assert.equal(got.why, null, `${name} (${(bytes.length / MB).toFixed(1)} MB)`)
+      return got.maxGap
+    })
+    assert.ok(stop <= 100, `${name} stopped the main thread for ${Math.round(stop)} ms`)
   }
 })
 
@@ -2359,11 +2400,14 @@ test('review round 9: a file over its budget is refused by the Worker itself, in
   // 8 MB of 'pw ' in a text file, under a 100 ms budget (ctx.officeReadMs): before round 9 the budget covered only a
   // Word or Excel file's read, and this text went after about a second of checks.
   const text = Buffer.from('pw '.repeat(Math.floor((8 * MB) / 3)))
-  const slow = await heartbeatRefusal('notes.txt', text, { contentWorker: url, officeReadMs: 100 })
-  assert.equal(slow.why, unsafeSentence(slow.path))
-  // Its hard deadline is 13 s: the Worker's own budget answered long before it.
-  assert.ok(slow.ms < 2500, `notes.txt took ${Math.round(slow.ms)} ms`)
-  assert.ok(slow.maxGap <= 100, `notes.txt stopped the main thread for ${Math.round(slow.maxGap)} ms`)
+  const stop = await stopOf(async () => {
+    const slow = await heartbeatRefusal('notes.txt', text, { contentWorker: url, officeReadMs: 100 })
+    assert.equal(slow.why, unsafeSentence(slow.path))
+    // Its hard deadline is 13 s: the Worker's own budget answered long before it.
+    assert.ok(slow.ms < 2500, `notes.txt took ${Math.round(slow.ms)} ms`)
+    return slow.maxGap
+  })
+  assert.ok(stop <= 100, `notes.txt stopped the main thread for ${Math.round(stop)} ms`)
   // The reviewer's docxslow (24 KB, 24 MB of 'pw '), 10 times under a 300 ms budget: each refused by the budget, and
   // the one Worker reads them all (under bun each Worker replaced cost about 27 MB that is never given back).
   const bytes = docxSlow(24)
@@ -3201,9 +3245,12 @@ test('review round 13: a zip entry name over 1024 bytes is refused before it is 
     const ms = performance.now() - started
     assert.ok(ms < 50, `the type check took ${Math.round(ms)} ms on the main thread`)
   }
-  const got = await heartbeatRefusal('memo.docx', hostile)
-  assert.match(String(got.why), /is not really a .* file/)
-  assert.ok(got.maxGap < 50, `memo.docx stopped the main thread for ${Math.round(got.maxGap)} ms`)
+  const stop = await stopOf(async () => {
+    const got = await heartbeatRefusal('memo.docx', hostile)
+    assert.match(String(got.why), /is not really a .* file/)
+    return got.maxGap
+  }, 50)
+  assert.ok(stop <= 50, `memo.docx stopped the main thread for ${Math.round(stop)} ms`)
   // A name of 1024 bytes is read; 1025 is refused. Real Word and Excel files are typed.
   assert.equal(isType(r13LongNames(1, () => `word/${'a'.repeat(1019)}`), 'docx'), true, '1024 bytes')
   assert.equal(isType(r13LongNames(1, () => `word/${'a'.repeat(1020)}`), 'docx'), false, '1025 bytes')
@@ -3340,21 +3387,24 @@ test('review round 14: a zip directory whose entry names pass 256 KB in all is n
   const started = performance.now()
   assert.equal(isType(hostile, 'docx'), false)
   assert.ok(performance.now() - started < 20, `the type check took ${Math.round(performance.now() - started)} ms`)
-  let maxGap = 0
-  let last = performance.now()
-  const beat = setInterval(() => {
-    const now = performance.now()
-    maxGap = Math.max(maxGap, now - last)
-    last = now
-  }, 10)
-  try {
-    const got = await Promise.all(Array.from({ length: 20 }, (_, n) => memRefusal(`memo${n}.docx`, hostile)))
-    maxGap = Math.max(maxGap, performance.now() - last)
-    for (const one of got) assert.match(String(one.why), /is not really a .* file/)
-  } finally {
-    clearInterval(beat)
-  }
-  assert.ok(maxGap < 50, `20 at once stopped the main thread for ${Math.round(maxGap)} ms`)
+  const stop = await stopOf(async () => {
+    let maxGap = 0
+    let last = performance.now()
+    const beat = setInterval(() => {
+      const now = performance.now()
+      maxGap = Math.max(maxGap, now - last)
+      last = now
+    }, 10)
+    try {
+      const got = await Promise.all(Array.from({ length: 20 }, (_, n) => memRefusal(`memo${n}.docx`, hostile)))
+      maxGap = Math.max(maxGap, performance.now() - last)
+      for (const one of got) assert.match(String(one.why), /is not really a .* file/)
+    } finally {
+      clearInterval(beat)
+    }
+    return maxGap
+  }, 50)
+  assert.ok(stop <= 50, `20 at once stopped the main thread for ${Math.round(stop)} ms`)
 })
 
 // ── review round 15: converge (the top check on a paragraph's first five lines, labels beside a lone account cell, account words beside dash lines, round 12's joined paragraph kept) ──
@@ -3965,4 +4015,194 @@ test('final fix 2: the runtime folders are also taken by their real path, so a j
   const dirs = lib.outboundRuntimeDirs([linked])
   assert.equal(dirs.length, 2, JSON.stringify(dirs))
   assert.equal(await refusal(pasted, { home, runtimeDirs: dirs }), runtimeSentence(pasted))
+})
+
+/**
+ * Final fix 4: a list of drives mapped straight to a place the checks refuse, each in the \\server and \\?\UNC\ forms, in
+ * the form of final fix 3's refusal test: the plain link sentence, and nothing opens.
+ */
+async function refusedDrives(drives: readonly (readonly [string, string])[], sentence: (path: string) => string): Promise<void> {
+  for (const [path, root] of drives) {
+    const rest = path.slice(2)
+    for (const [answer, top] of [
+      [`${root}${rest}`, `${root}\\`],
+      [`\\\\?\\UNC\\${root.slice(2)}${rest}`, `\\\\?\\UNC\\${root.slice(2)}\\`],
+    ] as const) {
+      const { calls, fs } = answeredFs({ [path]: answer, [`${path.slice(0, 2)}\\`]: top })
+      assert.equal((await readOne(path, { home: MEM_HOME, fs })).error, sentence(path), `${path} to ${answer}`)
+      assert.deepEqual(calls.filter((c) => !c.startsWith('realpath')), [], `${path} to ${answer}: nothing opened`)
+    }
+  }
+}
+
+const lookedSecret = (path: string) => `${path} looks like a key or password file, so it is never attached. ${NO_WAY_AROUND}`
+
+test('final fix 4: anything in a .hoai folder is refused, as the tool text and the session instructions promise: the Agent Browser, its downloads and the board files, the owner\'s too', async () => {
+  const lib = await m()
+  for (const [path, home] of [
+    ['~/.hoai/agent-browser/sessions/x/shot.png', '/home/kc'],
+    ['/home/kc/.hoai/agent-browser/sessions/x/downloads/statement.pdf', '/home/kc'],
+    ['C:\\Users\\kc\\.hoai\\agent-browser\\sessions\\x\\shot.png', 'C:\\Users\\kc'],
+    ['~\\.hoai\\agent-browser\\sessions\\x\\shot.png', 'C:\\Users\\kc'],
+    ['/home/kc/agents/sales/.hoai/board-files/person-abc/f.pdf', '/home/kc'],
+    ['/home/kc/agents/sales/.hoai/board-files/owner/f.pdf', '/home/kc'],
+    ['D:\\Agents\\Sales\\.hoai\\board-files\\person-abc\\f.pdf', 'C:\\Users\\kc'],
+    ['D:\\Agents\\Sales\\.hoai\\board-files\\owner\\f.pdf', 'C:\\Users\\kc'],
+    // Its case, and the trailing dots and spaces Windows drops.
+    ['C:\\Users\\kc\\.HOAI\\board-files\\owner\\f.pdf', 'C:\\Users\\kc'],
+    ['C:\\Users\\kc\\.hoai. \\board-files\\owner\\f.pdf', 'C:\\Users\\kc'],
+    // The folder itself.
+    ['/home/kc/.hoai', '/home/kc'],
+  ] as const) {
+    assert.equal(lib.outboundFileLexicalRefusal(path, { home }), lookedSecret(path), path)
+    const { calls, fs } = spyFs()
+    assert.equal(await refusal(path, { home, fs }), lookedSecret(path), path)
+    assert.deepEqual(calls, [], `${path}: no file system call`)
+  }
+  // The control: a name that only starts or ends the same way is no HOAI folder, and reaches the file system.
+  for (const path of ['/home/kc/.hoai-notes/f.pdf', '/home/kc/docs/hoai/f.pdf', '/home/kc/docs/my.hoai/f.pdf', '/home/kc/docs/.hoaiplan.pdf']) {
+    const { calls, fs } = spyFs()
+    assert.match(String(await refusal(path, { home: '/home/kc', fs })), /could not be found or read/, path)
+    assert.ok(calls.length > 0, path)
+  }
+})
+
+test('final fix 4: a junction into a .hoai folder is refused by where it leads', async (t) => {
+  const home = scratchHome(t)
+  const board = join(home, 'agent', '.hoai', 'board-files', 'person-abc')
+  mkdirSync(board, { recursive: true })
+  writeFileSync(join(board, 'f.pdf'), PDF)
+  const link = join(home, 'docs', 'board')
+  symlinkSync(board, link, 'junction')
+  const path = join(link, 'f.pdf')
+  assert.equal(await refusal(path, { home }), `${path} leads to a key or password file (HOAI followed its links), so it is never attached. ${NO_WAY_AROUND}`)
+  // The control: the same bytes through a junction into a plain folder go.
+  const plain = join(home, 'agent', 'plain')
+  mkdirSync(plain, { recursive: true })
+  writeFileSync(join(plain, 'f.pdf'), PDF)
+  const other = join(home, 'docs', 'plain')
+  symlinkSync(plain, other, 'junction')
+  assert.equal(await refusal(join(other, 'f.pdf'), { home }), null)
+})
+
+test('final fix 4: a drive mapped into a .hoai folder is refused on its share side', async () => {
+  await refusedDrives([
+    ['Y:\\shot.png', '\\\\localhost\\C$\\Users\\kc\\.hoai\\agent-browser\\sessions\\x'],
+    ['Y:\\f.pdf', '\\\\localhost\\D$\\Agents\\Sales\\.hoai\\board-files\\owner'],
+    ['Y:\\f.pdf', '\\\\nas\\kc\\.hoai\\board-files\\person-abc'],
+    ['Y:\\f.pdf', '\\\\nas\\kc\\.hoai'],
+    ['Y:\\f.pdf', '\\\\nas\\.hoai'],
+    ['Y:\\f.pdf', '\\\\nas\\.hoai$'],
+  ], followedSecret)
+})
+
+test('final fix 4: a hidden share is read without its trailing $, so a drive mapped to a key share is refused and an ordinary hidden share goes', async () => {
+  await refusedDrives([
+    ['K:\\stripe.pdf', '\\\\nas\\Keys$'],
+    ['K:\\prod\\stripe.pdf', '\\\\nas\\Keys$'],
+    ['K:\\stripe.pdf', '\\\\nas\\.ssh$'],
+    ['K:\\sub\\a.pdf', '\\\\nas\\.ssh$'],
+    ['K:\\config.pdf', '\\\\nas\\.aws$'],
+    ['K:\\a.pdf', '\\\\nas\\.gnupg$'],
+    ['K:\\a.pdf', '\\\\nas\\.git$'],
+    ['K:\\a.pdf', '\\\\nas\\wallet$'],
+    ['K:\\a.pdf', '\\\\nas\\wallets$'],
+    ['K:\\a.pdf', '\\\\nas\\recovery$'],
+    ['K:\\a.pdf', '\\\\nas\\tokens$'],
+    ['K:\\a.pdf', '\\\\nas\\pins$'],
+    ['K:\\a.pdf', '\\\\nas\\seeds$'],
+    // A folder of the share below it, as before.
+    ['K:\\a.pdf', '\\\\nas\\Keys$\\prod'],
+    ['K:\\a.pdf', '\\\\nas\\kc$\\.ssh'],
+  ], followedSecret)
+  // Ordinary hidden shares go, read by their drive letter.
+  for (const root of ['\\\\nas\\Team$', '\\\\nas\\Public$', '\\\\?\\UNC\\nas\\Team$', '\\\\nas\\Team$\\Contracts', '\\\\nas\\$']) {
+    const path = 'Z:\\offer.pdf'
+    const { calls, fs } = answeredFs({ [path]: `${root}\\offer.pdf`, 'Z:\\': `${root}\\` })
+    const read = await readOne(path, { home: MEM_HOME, fs })
+    assert.equal(read.ok, true, `${root}: ${JSON.stringify(read.error)}`)
+    assert.equal(read.file.realPath, path, root)
+    assert.deepEqual(calls.filter((c) => !c.startsWith('realpath')), [`lstat ${path}`, `open ${path}`, `lstat ${path}`], root)
+  }
+  // The second look reads it the same way.
+  const path = 'Z:\\notes.pdf'
+  const { calls, fs } = answeredFs({ [path]: ['\\\\nas\\Team$\\notes.pdf', '\\\\nas\\Keys$\\notes.pdf'], 'Z:\\': ['\\\\nas\\Team$\\', '\\\\nas\\Keys$\\'] })
+  assert.equal((await readOne(path, { home: MEM_HOME, fs })).error, changedSentence(path))
+  assert.deepEqual(calls.filter((c) => !c.startsWith('realpath')), [`lstat ${path}`, `open ${path}`])
+})
+
+test('final fix 4: an admin share is still read as its disk before any $ is dropped', async () => {
+  await refusedDrives([['Y:\\a.pdf', '\\\\localhost\\C$\\Users\\kc\\.aws']], followedSecret)
+  // C$ below the owner's own home: the word rules read below the home, so John Key's files go. Read as a share named C,
+  // the home would not be found and the word key would refuse them.
+  const root = '\\\\localhost\\C$\\Users\\John Key'
+  const { fs } = answeredFs({ 'Y:\\Documents\\offer.pdf': `${root}\\Documents\\offer.pdf`, 'Y:\\': root })
+  const read = await readOne('Y:\\Documents\\offer.pdf', { home: 'C:\\Users\\John Key', fs })
+  assert.equal(read.ok, true, JSON.stringify(read.error))
+})
+
+/** Final fix 4: run a check as if on another operating system; lexical reads process.platform at each call. */
+async function asPlatform<T>(platform: string, run: () => Promise<T>): Promise<T> {
+  const was = Object.getOwnPropertyDescriptor(process, 'platform')!
+  Object.defineProperty(process, 'platform', { value: platform, configurable: true, enumerable: true })
+  try {
+    return await run()
+  } finally {
+    Object.defineProperty(process, 'platform', was)
+  }
+}
+
+test('final fix 4: on Linux and macOS a ?, * or : and a Windows device word are ordinary name parts; with a drive letter or on Windows they stay refused', async () => {
+  const lib = await m()
+  const posix = [
+    '/home/kc/Meeting 10:30.pdf',
+    '/home/kc/con.pdf',
+    '/home/kc/aux/report.pdf',
+    '/home/kc/Is this ok?.pdf',
+    '/home/kc/draft*.pdf',
+    '/Users/kc/Documents/Q3:Q4.pdf',
+    '~/nul.pdf',
+  ]
+  for (const platform of ['linux', 'darwin']) {
+    await asPlatform(platform, async () => {
+      for (const path of posix) {
+        assert.equal(lib.outboundFileLexicalRefusal(path, { home: '/home/kc' }), null, `${platform}: ${path}`)
+        const { calls, fs } = spyFs()
+        assert.match(String(await refusal(path, { home: '/home/kc', fs })), /could not be found or read/, `${platform}: ${path}`)
+        assert.ok(calls.length > 0, `${platform}: ${path}`)
+      }
+      // A drive letter is a Windows path wherever it is read.
+      for (const path of ['C:\\Users\\kc\\CON', 'C:\\Users\\kc\\nul.pdf', 'C:\\Users\\kc\\a.pdf:hidden', 'C:\\Users\\kc\\*.pdf', 'C:/Users/kc/what?.pdf']) {
+        assert.match(String(lib.outboundFileLexicalRefusal(path, { home: 'C:\\Users\\kc' })), /is a network or device path/, `${platform}: ${path}`)
+      }
+      // The system folders and the key rules do not change.
+      assert.match(String(lib.outboundFileLexicalRefusal('/etc/aux/a.pdf', { home: '/home/kc' })), /is a system file/)
+      assert.equal(lib.outboundFileLexicalRefusal('/home/kc/.ssh/con.pdf', { home: '/home/kc' }), lookedSecret('/home/kc/.ssh/con.pdf'))
+    })
+  }
+  await asPlatform('win32', async () => {
+    for (const path of posix) assert.match(String(lib.outboundFileLexicalRefusal(path, { home: '/home/kc' })), /is a network or device path/, `win32: ${path}`)
+  })
+})
+
+test('final fix 4: a main thread stop is read over rounds: one spike passes, a steady stop stays red, and a green first round is the only one', async () => {
+  const rounds = (...gaps: number[]) => {
+    const given = [...gaps]
+    return { round: async () => given.shift()!, left: () => given.length }
+  }
+  // A green first round settles it.
+  const green = rounds(40, 900, 900)
+  assert.equal(await stopOf(green.round), 40)
+  assert.equal(green.left(), 2)
+  // One spike, at the first round: the median of three is healthy (the 257 ms of the review's run).
+  assert.equal(await stopOf(rounds(257, 40, 30).round), 40)
+  // Two rounds over the limit, a stop every round, and one just over it stay over it: the limit did not move.
+  assert.equal(await stopOf(rounds(150, 40, 160).round), 150)
+  assert.equal(await stopOf(rounds(4400, 4300, 4500).round), 4400)
+  assert.equal(await stopOf(rounds(101, 102, 103).round), 102)
+  // A limit of its own.
+  assert.equal(await stopOf(rounds(60, 70, 80).round, 50), 70)
+  const within = rounds(50, 900, 900)
+  assert.equal(await stopOf(within.round, 50), 50)
+  assert.equal(within.left(), 2)
 })
