@@ -2836,9 +2836,9 @@ test('the old build\'s files are gone: nothing written, a person told what a res
   assert.equal(await a.c.tick(), 'version_held_bad')
   assert.equal(install.version, '0.81.0')
   assert.equal(lastReport(a).code, 'idle_update_rollback_failed')
-  assert.match(lastReport(a).message, /still names it/)
+  assert.match(lastReport(a).message, /could not finish putting the install back on 0\.80\.0/)
   assert.match(lastReport(a).message, /from_root_missing/)
-  assert.match(lastReport(a).message, /A restart lands on 0\.81\.0/)
+  assert.match(lastReport(a).message, /a restart can land on 0\.81\.0/)
   disk.clock.now += 30 * SEC
   assert.equal(await a.c.tick(), 'version_held_bad')
   assert.equal(a.rollbackInstalls.length, 1, 'once a poll would be a write attempt every 30 s for as long as it lasts')

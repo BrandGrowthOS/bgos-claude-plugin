@@ -127,6 +127,7 @@ import {
   readUnattendedInputs,
   readWakeSchedule,
   readWatcherSweepActive,
+  rollbackCloneInstall,
   rollbackMarketplaceInstall,
 } from './lib/idle-update-host.mjs'
 import { buildCallOwnerBody, CALL_OWNER_OTHER_CHAT_REFUSAL } from './lib/call-owner.js'
@@ -14122,9 +14123,7 @@ async function idleRollbackInstall(record: any): Promise<{ ok: boolean; reason?:
     if (result.ok) log(`idle update: Claude Code's own plugin update for ${marketplace ?? 'this marketplace'} on rollback: ${result.enrolment}`)
     return result
   }
-  if (!selfUpdater) return { ok: false, reason: 'no_updater' }
-  if (typeof record?.fromCommit !== 'string' || !record.fromCommit) return { ok: false, reason: 'no_commit' }
-  return selfUpdater.rollbackCheckoutTo(record.fromCommit)
+  return rollbackCloneInstall({ record, updater: selfUpdater, checkoutVersion: () => readOwnVersion(RUNNING_ROOT) })
 }
 
 
