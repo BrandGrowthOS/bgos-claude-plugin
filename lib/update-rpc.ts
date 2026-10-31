@@ -428,7 +428,9 @@ export class UpdateRpcHandler {
       })
       if (outcome.kind === 'busy') return this.fail(rpcId, 'update_in_flight')
       if (outcome.kind === 'latched') return this.fail(rpcId, 'rollback_latched')
-      if (outcome.kind === 'no-update') return this.fail(rpcId, 'no_update_available')
+      if (outcome.kind === 'no-update') {
+        return this.fail(rpcId, outcome.reason === 'version_held_bad' ? 'version_held_bad' : 'no_update_available')
+      }
       if (outcome.kind === 'dirty-tree') return this.fail(rpcId, 'dirty_tree')
       if (outcome.kind === 'not-fast-forward') return this.fail(rpcId, 'not_fast_forward')
       if (outcome.kind === 'failed') {

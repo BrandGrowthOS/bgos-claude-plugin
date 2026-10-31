@@ -996,6 +996,7 @@ type ApplyUpdateOutcome =
   | 'skipped-not-ff'
   | 'skipped-target-mismatch'
   | 'skipped-busy'
+  | 'skipped-held'
   | 'failed-latched'
 
 export interface SelfUpdaterOptions {
@@ -1292,6 +1293,7 @@ export class SelfUpdater {
         // decision record, not an accident, and adding a read here breaks it
         // for no gain. See observeLatestVersion.
         const pending = this.pendingRestartVersion()
+        if (pending && this.opts.heldBad?.(pending)) return { kind: 'no-update', latestVersion: pending, reason: 'version_held_bad' }
         return pending ? { kind: 'installed', targetVersion: pending } : { kind: 'busy' }
       }
       const inspection = await inspectGitUpdate({
@@ -1332,6 +1334,7 @@ export class SelfUpdater {
       }
       if (applied === 'skipped-dirty') return { kind: 'dirty-tree' }
       if (applied === 'skipped-not-ff') return { kind: 'not-fast-forward' }
+      if (applied === 'skipped-held') return { kind: 'no-update', latestVersion: inspection.latestVersion, reason: 'version_held_bad' }
       if (applied === 'skipped-target-mismatch') {
         return {
           kind: 'failed',
@@ -1500,6 +1503,14 @@ export class SelfUpdater {
     return 'installed'
   }
 
+  /** The wait for quiet, or for the lock, can outlast the check: a build marked meanwhile is not taken. */
+  private markedWhileWaiting(version: string | null): boolean {
+    if (!version || !this.opts.heldBad?.(version)) return false
+    this.opts.log(`Auto-update skipped: ${version} was held bad on this computer while this daemon waited.`)
+    this.opts.setDrainMode(false)
+    return true
+  }
+
   private async applyUpdate(
     inspection: Extract<GitUpdateInspection, { kind: 'checked' }>,
     mode: 'scheduled' | 'triggered' = 'scheduled',
@@ -1531,6 +1542,7 @@ export class SelfUpdater {
         break
       }
       try {
+        if (this.markedWhileWaiting(inspection.latestVersion)) return 'skipped-held'
         const installedCommit = await git(this.runner, this.opts.rootDir, ['rev-parse', 'HEAD'])
         if (installedCommit !== inspection.targetCommit) {
           this.opts.log(
@@ -1575,6 +1587,7 @@ export class SelfUpdater {
       }
     }
     try {
+      if (this.markedWhileWaiting(inspection.latestVersion)) return 'skipped-held'
       const status = await git(this.runner, this.opts.rootDir, [
         'status',
         '--porcelain',
