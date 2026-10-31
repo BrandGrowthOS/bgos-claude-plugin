@@ -106,29 +106,33 @@ export function resolvePendingRestartVersion(input: {
   readCheckoutVersion: () => string | null | undefined
   /** Is this version latched bad on this computer? Optional: absent holds
    *  nothing. A reader that throws holds nothing either: the latch is a guard,
-   *  never a reason to hide an update. */
+   *  never a reason to hide an update. A held answer does not hide the next
+   *  source: a clone staged on a held build may have moved on to a fix. */
   heldBad?: (version: string) => boolean
 }): string | null {
-  const pending = composePendingRestartVersion(input)
-  if (!pending || !input.heldBad) return pending
-  try {
-    return input.heldBad(pending) === true ? null : pending
-  } catch {
-    return pending
+  const held = (version: string): boolean => {
+    try {
+      return input.heldBad?.(version) === true
+    } catch {
+      return false
+    }
   }
-}
-
-function composePendingRestartVersion(input: Parameters<typeof resolvePendingRestartVersion>[0]): string | null {
   try {
     if (input.installMethod === 'marketplace') {
       const installed = installedEntryFrom(parseJsonOrNull(input.readInstalledPlugins()))
-      return pendingMarketplaceRestartVersion({ installed, runningVersion: input.runningVersion ?? null })
+      const pending = pendingMarketplaceRestartVersion({ installed, runningVersion: input.runningVersion ?? null })
+      return pending && held(pending) ? null : pending
     }
-    const fromUpdater = attempt(input.updaterPending)
-    if (fromUpdater) return fromUpdater
-    const staged = pendingRestartVersionFrom(input.runningVersion, attempt(input.stagedTargetVersion))
-    if (staged) return staged
-    return pendingRestartVersionFrom(input.runningVersion, attempt(input.readCheckoutVersion))
+    const sources = [
+      () => attempt(input.updaterPending),
+      () => pendingRestartVersionFrom(input.runningVersion, attempt(input.stagedTargetVersion)),
+      () => pendingRestartVersionFrom(input.runningVersion, attempt(input.readCheckoutVersion)),
+    ]
+    for (const source of sources) {
+      const version = source()
+      if (version && !held(version)) return version
+    }
+    return null
   } catch {
     return null
   }
