@@ -686,8 +686,8 @@
       "id": "latch-pending-restart",
       "rule": "a version held bad is no pending restart",
       "file": "lib/pending-restart.ts",
-      "find": "    return input.heldBad(pending) === true ? null : pending",
-      "replace": "    return pending",
+      "find": "      if (version && !held(version)) return version\n",
+      "replace": "      if (version) return version\n",
       "tests": [
         "test/pending-restart.test.ts"
       ]
