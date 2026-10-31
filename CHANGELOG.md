@@ -2,6 +2,17 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.82.0 (2026-10-31)
+
+**Threads and By the way on Claude Code (Threads phase 1, behind BGOS's thread flag).** In the agent chat the owner can ask a private side question, and start a thread: a parallel conversation about one message that this agent works on in its own copy of the chat.
+
+- **By the way (`aside` op):** a one shot fork of the chat's session (`claude -p --resume <session> --fork-session`) with no tools at all (`--tools ""`), one turn, run in the session's own folder. The question goes inside the user message with the side question instruction, never in the system prompt. Its text streams to BGOS as ordered progress frames (`POST integrations/voice-rpc/:rpcId/progress {seq, delta}`), the answer is the result, 55 s at most, and the fork's session file is always deleted afterwards. It never becomes a message, a turn or a session (`lib/aside-fork.ts`).
+- **Threads (`thread_turn`, `thread_close` ops):** each thread runs as its own headless `claude -p` fed stream json, forked from the chat's session on its first start and resumed by its own session id after (`lib/thread-lanes.ts`). It works in a git worktree of the agent folder at `.hoai/threads/<root>` (branch `hoai/thread-<root>`, made by the daemon; `.hoai/` is excluded through `.git/info/exclude`), or read only in a plain folder when the agent folder is no repository. At most 2 threads run at once per agent; a third waits and says so. A lane idle for 20 minutes stops and resumes by its id on the next turn. Each answer is one thread reply (`final` unless it ends asking a question); a summary turn posts the merge draft. Close keeps the worktree 7 days (an hourly sweep removes it after); delete removes it with the thread's session file.
+- **The command builders refuse to resume the chat's own session without `--fork-session`** (`lib/thread-lane-args.ts` `assertForksMain`): without it the question would run as that session's next turn. Both load an empty MCP config, so a lane never starts a second copy of this channel.
+- **Declares `message_threads`, `thread_sessions` and `asides`** where a claude binary resolves, not on Windows in phase 1. A reconnect runs any thread turn the owner sent while the daemon was away (`GET integrations/threads/pending`), and a shutdown stops every lane.
+- The CLI facts these rest on are in `docs/thread-lanes-spike.md` (among them: `dontAsk` alone still let Read run, and stream json input repeats the init frame every turn).
+- Tests: `test/thread-lane-args.test.ts`, `test/thread-lanes.test.ts`, `test/aside-fork.test.ts`, `test/stream-json-child.test.ts`, `test/voice-rpc-threads.test.ts`, `test/thread-lanes-wiring.test.ts`, and the declaration cases in `test/declared-capabilities.test.ts`.
+
 ## 0.81.0 (2026-10-31)
 
 - A deleted agent's computer cleans up after it: once the server confirms the agent is gone, the computer stops it, removes its auto start and archives its folder (never deletes a file). Other agents on the machine are untouched, and a replayed notice does nothing new.
