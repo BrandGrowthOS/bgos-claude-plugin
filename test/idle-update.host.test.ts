@@ -404,6 +404,116 @@ test('a settings write that fails still leaves the install pointed back, and fai
   assert.equal(JSON.parse(w.fs.readFile(INSTALLED)!).plugins['hoai@hoai'][0].version, '0.80.0')
 })
 
+// An agent that is not failing steps in only while the install still names the marked build (DESIGN.md, Round 4).
+const STILL_ON = { ...RECORD, ifStillOn: '0.81.0' }
+const OTHER_ROOT = `${CONFIG}/plugins/cache/hoai/hoai/0.80.5`
+
+test('stepping in: the install still on the marked build goes back, and the write is said to be this call\'s', async () => {
+  const w = rollbackWorld()
+  const result = await need().rollbackMarketplaceInstall({ record: STILL_ON, installedPluginsPath: INSTALLED, holdPath: `${MACHINE}/enrolment-hold.json`, marketplace: 'hoai', configDir: CONFIG, fs: w.fs, setAutoUpdate: w.setAutoUpdate, now: NOW })
+  assert.equal(result.ok, true, JSON.stringify(result))
+  assert.equal(result.moved, true)
+  assert.equal(JSON.parse(w.fs.readFile(INSTALLED)!).plugins['hoai@hoai'][0].version, '0.80.0')
+  assert.deepEqual(w.autoUpdate, [false])
+})
+
+test('stepping in: another agent\'s good build stands: nothing written, not even for an agent whose own folder went, and the switch-off is still asked', async () => {
+  for (const noFromRoot of [false, true]) {
+    const before = installedDoc('0.80.5', OTHER_ROOT)
+    const w = rollbackWorld({ installed: before, noFromRoot })
+    const writes: string[] = []
+    const fs = { ...w.fs, writeAtomic: (p: string, text: string) => (writes.push(p), w.fs.writeAtomic(p, text)) }
+    const result = await need().rollbackMarketplaceInstall({ record: STILL_ON, installedPluginsPath: INSTALLED, holdPath: `${MACHINE}/enrolment-hold.json`, marketplace: 'hoai', configDir: CONFIG, fs, setAutoUpdate: w.setAutoUpdate, now: NOW })
+    assert.equal(result.ok, true, JSON.stringify(result))
+    assert.equal(result.moved, false)
+    assert.equal(w.fs.readFile(INSTALLED), before)
+    assert.equal(writes.includes(INSTALLED), false)
+    assert.deepEqual(w.autoUpdate, [false], 'an agent that crashed before its switch-off leaves one owing')
+  }
+})
+
+test('stepping in: two agents at once: the read back finds the other\'s good build, and neither fights it', async () => {
+  const w = rollbackWorld()
+  let writes = 0
+  const fs = {
+    ...w.fs,
+    writeAtomic: (p: string, text: string) => {
+      if (p !== INSTALLED) return w.fs.writeAtomic(p, text)
+      writes += 1
+      // The other agent's write lands right after this one.
+      w.fs.writeAtomic(p, text)
+      return w.fs.writeAtomic(p, installedDoc('0.80.5', OTHER_ROOT))
+    },
+  }
+  const result = await need().rollbackMarketplaceInstall({ record: STILL_ON, installedPluginsPath: INSTALLED, holdPath: `${MACHINE}/enrolment-hold.json`, marketplace: 'hoai', configDir: CONFIG, fs, setAutoUpdate: w.setAutoUpdate, now: NOW })
+  assert.equal(result.ok, true, JSON.stringify(result))
+  assert.equal(writes, 1)
+  assert.equal(JSON.parse(w.fs.readFile(INSTALLED)!).plugins['hoai@hoai'][0].version, '0.80.5')
+})
+
+test('stepping in: a claude that writes the marked build back over this write is written again, and one that never stops fails', async () => {
+  const healed = rollbackWorld()
+  let writes = 0
+  const fs = {
+    ...healed.fs,
+    writeAtomic: (p: string, text: string) => {
+      if (p !== INSTALLED) return healed.fs.writeAtomic(p, text)
+      writes += 1
+      return healed.fs.writeAtomic(p, writes === 1 ? installedDoc() : text)
+    },
+  }
+  const result = await need().rollbackMarketplaceInstall({ record: STILL_ON, installedPluginsPath: INSTALLED, holdPath: `${MACHINE}/enrolment-hold.json`, marketplace: 'hoai', configDir: CONFIG, fs, setAutoUpdate: healed.setAutoUpdate, now: NOW })
+  assert.equal(result.ok, true, JSON.stringify(result))
+  assert.equal(writes, 2)
+  const stuck = rollbackWorld()
+  const never = { ...stuck.fs, writeAtomic: (p: string, text: string) => stuck.fs.writeAtomic(p, p === INSTALLED ? installedDoc() : text) }
+  const lost = await need().rollbackMarketplaceInstall({ record: STILL_ON, installedPluginsPath: INSTALLED, holdPath: `${MACHINE}/enrolment-hold.json`, marketplace: 'hoai', configDir: CONFIG, fs: never, setAutoUpdate: stuck.setAutoUpdate, now: NOW })
+  assert.deepEqual(lost, { ok: false, reason: 'not_persisted' })
+})
+
+test('stepping in: the old folder gone with the install still on the marked build is refused, nothing written', async () => {
+  const before = installedDoc()
+  const w = rollbackWorld({ noFromRoot: true })
+  const result = await need().rollbackMarketplaceInstall({ record: STILL_ON, installedPluginsPath: INSTALLED, holdPath: `${MACHINE}/enrolment-hold.json`, marketplace: 'hoai', fs: w.fs, setAutoUpdate: w.setAutoUpdate, now: NOW })
+  assert.deepEqual(result, { ok: false, reason: 'from_root_missing' })
+  assert.equal(w.fs.readFile(INSTALLED), before)
+  assert.deepEqual(w.autoUpdate, [])
+})
+
+test('stepping in: an install it cannot read is no sign that it moved', async () => {
+  for (const installed of ['{ not json', JSON.stringify({ version: 2, plugins: {} })]) {
+    const w = rollbackWorld({ installed })
+    const result = await need().rollbackMarketplaceInstall({ record: STILL_ON, installedPluginsPath: INSTALLED, holdPath: `${MACHINE}/enrolment-hold.json`, marketplace: 'hoai', fs: w.fs, setAutoUpdate: w.setAutoUpdate, now: NOW })
+    assert.equal(result.ok, false, installed)
+    assert.deepEqual(w.autoUpdate, [], installed)
+  }
+})
+
+test('the clone rollback: the self updater\'s, for the commit on the record', async () => {
+  const calls: string[] = []
+  const updater = { rollbackCheckoutTo: async (commit: string) => (calls.push(commit), { ok: true as const }) }
+  const result = await need().rollbackCloneInstall({ record: { from: '0.80.0', target: '0.81.0', fromCommit: 'abc' }, updater, checkoutVersion: () => '0.81.0' })
+  assert.deepEqual(result, { ok: true })
+  assert.deepEqual(calls, ['abc'])
+})
+
+test('the clone rollback: no updater, or no commit, is refused', async () => {
+  const updater = { rollbackCheckoutTo: async () => assert.fail('never asked') }
+  assert.deepEqual(await need().rollbackCloneInstall({ record: { fromCommit: 'abc' }, updater: null, checkoutVersion: () => null }), { ok: false, reason: 'no_updater' })
+  assert.deepEqual(await need().rollbackCloneInstall({ record: { fromCommit: null }, updater, checkoutVersion: () => null }), { ok: false, reason: 'no_commit' })
+})
+
+test('the clone rollback, stepping in: only while the checkout still holds the marked build, or a pending state a daemon cannot lose would check it out every poll', async () => {
+  const calls: string[] = []
+  const updater = { rollbackCheckoutTo: async (commit: string) => (calls.push(commit), { ok: true as const }) }
+  const record = { from: '0.80.0', target: '0.81.0', fromCommit: 'abc', ifStillOn: '0.81.0' }
+  assert.deepEqual(await need().rollbackCloneInstall({ record, updater, checkoutVersion: () => '0.80.0' }), { ok: true, moved: false })
+  assert.deepEqual(calls, [])
+  assert.deepEqual(await need().rollbackCloneInstall({ record, updater, checkoutVersion: () => '0.81.0' }), { ok: true })
+  assert.deepEqual(calls, ['abc'])
+  assert.deepEqual(await need().rollbackCloneInstall({ record, updater, checkoutVersion: () => null }), { ok: true }, 'a package.json it cannot read is no sign that it moved')
+})
+
 test('a clone record is not the marketplace rollback\'s', async () => {
   const w = rollbackWorld()
   const result = await need().rollbackMarketplaceInstall({ record: { ...RECORD, installMethod: 'clone' }, installedPluginsPath: INSTALLED, holdPath: `${MACHINE}/enrolment-hold.json`, marketplace: 'hoai', fs: w.fs, setAutoUpdate: w.setAutoUpdate, now: NOW })

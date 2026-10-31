@@ -50,7 +50,7 @@ function world(home: string) {
   return { home, clock, machineDir: join(home, '.bgos-agent', m.IDLE_UPDATE_DIR_NAME) }
 }
 
-function agent(w: ReturnType<typeof world>, id: number, opts: { running?: string; staged?: string; fromRoot?: string; rollbackInstall?: (record: any) => Promise<any> } = {}) {
+function agent(w: ReturnType<typeof world>, id: number, opts: { running?: string; staged?: string; stagedVersion?: () => string | null; fromRoot?: string; rollbackInstall?: (record: any) => Promise<any> } = {}) {
   const stateDir = join(w.home, '.bgos-agent', String(id))
   mkdirSync(stateDir, { recursive: true })
   const b = id * 100
@@ -116,7 +116,7 @@ function agent(w: ReturnType<typeof world>, id: number, opts: { running?: string
     random: () => 0,
     nonce: () => `${id}-${w.clock.now}`,
     autoUpdateEnabled: () => true,
-    stagedVersion: () => opts.staged ?? '0.81.0',
+    stagedVersion: opts.stagedVersion ?? (() => opts.staged ?? '0.81.0'),
     active: () => true,
     holdsLock: () => true,
     watcherSweepActive: () => host.readWatcherSweepActive({ home: w.home, fs, now: w.clock.now, freshMs: m.DEFAULT_DURATIONS.watcherFreshMs }),
@@ -292,6 +292,55 @@ test('a follower fails on a build its canary proved: the real rollback points th
   }
 })
 
+test('two silences on the real disk: the agent on the old build points the real install at its own build, and the next launch has nothing else to load', async () => {
+  const w = world(scratchHome())
+  try {
+    const cache = join(w.home, '.claude', 'plugins', 'cache', 'hoai', 'hoai')
+    for (const version of ['0.80.0', '0.81.0']) {
+      mkdirSync(join(cache, version, '.claude-plugin'), { recursive: true })
+      writeFileSync(join(cache, version, '.claude-plugin', 'plugin.json'), JSON.stringify({ version }))
+    }
+    const installed = join(w.home, '.claude', 'plugins', 'installed_plugins.json')
+    writeFileSync(installed, JSON.stringify({ version: 2, plugins: { 'hoai@hoai': [{ scope: 'user', version: '0.81.0', installPath: join(cache, '0.81.0'), lastUpdated: new Date(T0).toISOString(), gitCommitSha: 'the-marked-build' }] } }))
+    mkdirSync(join(w.machineDir, '0.81.0'), { recursive: true })
+    for (const [n, id] of [[1, '913'], [2, '914']]) {
+      writeFileSync(join(w.machineDir, '0.81.0', `silent-${n}`), JSON.stringify({ assistantId: id, nonce: `n${n}`, by: '915', at: new Date(T0 - 3 * HOUR).toISOString() }))
+    }
+    const stagedNow = () => {
+      const entry = JSON.parse(readFileSync(installed, 'utf8')).plugins['hoai@hoai'][0]
+      return entry.version === '0.80.0' ? null : entry.version
+    }
+    const switched: boolean[] = []
+    const rollbackInstall = (record: any) =>
+      host.rollbackMarketplaceInstall({
+        record,
+        installedPluginsPath: installed,
+        holdPath: join(w.machineDir, 'enrolment-hold.json'),
+        marketplace: 'hoai',
+        configDir: join(w.home, '.claude'),
+        fs: m.nodeIdleUpdateFs(),
+        setAutoUpdate: (enabled: boolean) => (switched.push(enabled), { changed: true, reason: 'set' }),
+        now: w.clock.now,
+      })
+    const old = agent(w, 915, { fromRoot: join(cache, '0.80.0'), stagedVersion: stagedNow, rollbackInstall })
+    for (let poll = 0; poll < 31; poll += 1) {
+      await old.controller.tick()
+      w.clock.now += 30_000
+    }
+    assert.equal(JSON.parse(readFileSync(join(w.machineDir, '0.81.0', 'bad'), 'utf8')).reason, 'canaries_silent')
+    const entry = JSON.parse(readFileSync(installed, 'utf8')).plugins['hoai@hoai'][0]
+    assert.deepEqual([entry.version, entry.installPath], ['0.80.0', join(cache, '0.80.0')])
+    assert.equal(entry.gitCommitSha, undefined, 'the marked build\'s commit left with it')
+    assert.deepEqual(switched, [false])
+    assert.equal(JSON.parse(readFileSync(join(w.machineDir, 'enrolment-hold.json'), 'utf8')).version, '0.81.0')
+    assert.equal(existsSync(old.marker), false, 'it restarted nobody')
+    assert.deepEqual(old.out.drains, [])
+    assert.equal(await old.controller.tick(), 'nothing_staged')
+  } finally {
+    rmSync(w.home, { recursive: true, force: true })
+  }
+})
+
 test('a follower never heard from again: on the real disk its lease goes, silent-1 stays, and the next agent stays where it is', async () => {
   const w = world(scratchHome())
   try {
@@ -320,7 +369,8 @@ test('a version latched bad on this computer is never asked, and the wait is rep
   try {
     mkdirSync(join(w.machineDir, '0.81.0'), { recursive: true })
     writeFileSync(join(w.machineDir, '0.81.0', 'bad'), '{}')
-    const a = agent(w, 912)
+    // Another agent is the one that moves the install: this one finds nothing to write.
+    const a = agent(w, 912, { rollbackInstall: async () => ({ ok: true, moved: false }) })
     assert.equal(await a.controller.tick(), 'version_held_bad')
     assert.equal(await a.controller.tick(), 'version_held_bad')
     assert.equal(existsSync(a.marker), false)

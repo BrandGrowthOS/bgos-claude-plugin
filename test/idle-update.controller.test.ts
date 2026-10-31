@@ -92,7 +92,7 @@ type Rig = ReturnType<typeof agent>
 
 function agent(
   disk: ReturnType<typeof memDisk>,
-  o: { id?: number; running?: string; staged?: string | null; random?: number; authority?: string; ownsUs?: boolean; scale?: number; platform?: string; launcher?: any; unattended?: any; installMethod?: string } = {},
+  o: { id?: number; running?: string; staged?: string | null; random?: number; authority?: string; ownsUs?: boolean; scale?: number; platform?: string; launcher?: any; unattended?: any; installMethod?: string; install?: { version: string }; fromCommit?: string } = {},
 ) {
   const m = need()
   const id = o.id ?? 912
@@ -132,6 +132,9 @@ function agent(
     loginExpired: false,
     tookRestart: true as boolean | Error,
     rollbackOk: true,
+    rollbackThrows: null as Error | null,
+    /** A rollback that moved the install and then could not switch Claude Code's own update off. */
+    rollbackStillOn: false,
     unreachable: false,
     slept: 0,
     installGate: null as Promise<void> | null,
@@ -163,7 +166,7 @@ function agent(
     runningVersion: s.running,
     installMethod: o.installMethod ?? 'marketplace',
     fromRoot: `/c/plugins/cache/hoai/hoai/${s.running}`,
-    fromCommit: null,
+    fromCommit: o.fromCommit ?? null,
     durations: m.scaledDurations(o.scale ?? 1),
     paths: { record, machineDir: MACHINE },
     fs: disk.fs,
@@ -171,7 +174,8 @@ function agent(
     random: () => o.random ?? 0.5,
     nonce: () => `${id}-n${(nonces += 1)}`,
     autoUpdateEnabled: () => s.autoUpdate,
-    stagedVersion: () => s.staged,
+    // `install`: the one every agent of a test reads, as they read installed_plugins.json.
+    stagedVersion: () => (o.install ? (o.install.version === s.running ? null : o.install.version) : s.staged),
     active: () => s.active,
     holdsLock: () => s.active,
     watcherSweepActive: () => s.watcher,
@@ -240,6 +244,15 @@ function agent(
       out.rollbackInstalls.push(rec)
       out.badAtInstall.push(disk.fs.readFile(join(MACHINE, String(rec.target), 'bad')) !== null)
       if (s.installGate) await s.installGate
+      if (s.rollbackThrows) throw s.rollbackThrows
+      if (o.install) {
+        if (rec.ifStillOn && o.install.version !== rec.ifStillOn) return { ok: true, moved: false }
+        if (s.rollbackOk) o.install.version = rec.from
+      }
+      if (s.rollbackStillOn) {
+        s.rollbackStillOn = false
+        return { ok: false, reason: 'auto_update_still_on' }
+      }
       return s.rollbackOk ? { ok: true } : { ok: false, reason: 'from_root_missing' }
     },
     report: (err: any) => out.reports.push(err),
@@ -2636,4 +2649,327 @@ test('a proof that cannot be removed stays quiet past the hold: nobody follows i
   assert.equal(silentFiles(disk).length, 1)
   assert.equal(await f.c.tick(), 'requested')
   assert.equal(readJson(disk, f.record).canaryN, 2)
+})
+
+// -- A build marked bad, and an agent still on the old one (Data's ruling on Call 28) ---------------
+
+const OLD_ROOT = '/c/plugins/cache/hoai/hoai/0.80.0'
+
+function marksBad(disk: ReturnType<typeof memDisk>, version = '0.81.0', reason = 'canaries_silent') {
+  disk.fs.createExclusive(join(MACHINE, version, 'bad'), JSON.stringify({ assistantId: '913', at: new Date(disk.clock.now).toISOString(), reason }))
+}
+
+function restartedNobody(a: Rig) {
+  assert.deepEqual(a.restarts, [])
+  assert.deepEqual(a.rollbackRestarts, [])
+  assert.deepEqual(a.drains, [])
+}
+
+test('two silences mark a build bad: the agent on the old build puts the shared install back on its own build, and restarts nobody', async () => {
+  const disk = memDisk()
+  const install = { version: '0.81.0' }
+  proven(disk)
+  await goesSilent(disk, 912)
+  disk.clock.now += 25 * MIN + SEC
+  assert.equal(await agent(disk, { id: 914 }).c.tick(), 'canary_unconfirmed')
+  disk.clock.now += 24 * HOUR + MIN
+  proven(disk)
+  await goesSilent(disk, 915)
+  disk.clock.now += 25 * MIN + SEC
+  const old = agent(disk, { id: 916, install })
+  assert.equal(await old.c.tick(), 'canary_unconfirmed')
+  disk.clock.now += 3 * MIN
+  assert.equal(await old.c.tick(), 'silent_hold')
+  assert.equal(install.version, '0.81.0', 'nothing is marked yet, and a hold moves nothing')
+  disk.clock.now += 75 * MIN
+  await latches(disk, old)
+  assert.equal(readJson(disk, join(MACHINE, '0.81.0', 'bad')).reason, 'canaries_silent')
+  assert.equal(install.version, '0.80.0', 'an agent that restarts now lands on the old build')
+  assert.deepEqual(old.rollbackInstalls, [{ installMethod: 'marketplace', target: '0.81.0', from: '0.80.0', fromRoot: OLD_ROOT, fromCommit: null, ifStillOn: '0.81.0' }])
+  restartedNobody(old)
+  assert.equal(disk.files.has(old.record), false, 'it is no attempt of this agent')
+  assert.equal(disk.files.has(join(MACHINE, 'went-back-916')), false, 'it failed nothing, so it spends nothing')
+  assert.equal(await old.c.tick(), 'nothing_staged')
+  assert.equal(old.rollbackInstalls.length, 1)
+})
+
+test('a build marked bad by any agent, with the install still on it: the old build agent puts it back, and says so once', async () => {
+  for (const reason of ['deadline', 'second_boot']) {
+    const disk = memDisk()
+    const install = { version: '0.81.0' }
+    marksBad(disk, '0.81.0', reason)
+    const a = agent(disk, { install })
+    await a.c.tick()
+    assert.equal(install.version, '0.80.0', reason)
+    await a.c.tick()
+    assert.equal(a.reports.length, 1, reason)
+    assert.equal(lastReport(a).code, 'idle_update_held', reason)
+    assert.match(lastReport(a).message, /0\.81\.0/, reason)
+    assert.match(lastReport(a).message, /install went back to 0\.80\.0/, reason)
+    assert.equal(a.logs.filter((l) => l.includes('put the install back on 0.80.0')).length, 1, reason)
+  }
+})
+
+test('it is a file and not a restart, so a busy agent does it too: a turn, a person attached, a young daemon', async () => {
+  const cases: Array<[string, (s: any) => void]> = [
+    ['a turn', (s) => (s.safe = { ...s.safe, turnInFlight: true }) && (s.activity = [T0 - 5 * MIN])],
+    ['a person', (s) => (s.attached = true)],
+    ['a startup not complete', (s) => (s.startupComplete = false)],
+    ['no authority', (s) => (s.authority = 'staged')],
+  ]
+  for (const [what, set] of cases) {
+    const disk = memDisk()
+    const install = { version: '0.81.0' }
+    marksBad(disk)
+    const a = agent(disk, { install })
+    set(a.s)
+    await a.c.tick()
+    assert.equal(install.version, '0.80.0', what)
+    restartedNobody(a)
+  }
+})
+
+test('one restart authority per computer is about restarts: under the watcher\'s sweep the install still goes back', async () => {
+  const disk = memDisk()
+  const install = { version: '0.81.0' }
+  marksBad(disk)
+  const a = agent(disk, { install })
+  a.s.watcher = true
+  assert.equal(await a.c.tick(), 'watcher_owns_updates')
+  assert.equal(install.version, '0.80.0')
+})
+
+test('two agents at once: the one that finds the install already moved writes nothing and says nothing', async () => {
+  const disk = memDisk()
+  const install = { version: '0.81.0' }
+  marksBad(disk)
+  const slow = agent(disk, { id: 914, install })
+  const quick = agent(disk, { id: 915, install })
+  let open = () => {}
+  slow.s.installGate = new Promise<void>((resolve) => {
+    open = resolve
+  })
+  const first = slow.c.tick()
+  await new Promise((resolve) => setImmediate(resolve))
+  await quick.c.tick()
+  assert.equal(install.version, '0.80.0')
+  open()
+  await first
+  assert.equal(lastReport(quick).code, 'idle_update_held')
+  assert.equal(lastReport(quick).message.includes('install went back'), true)
+  assert.equal(slow.reports.some((r) => r?.message?.includes('install went back')), false, 'it moved nothing')
+  assert.equal(slow.logs.some((l) => l.includes('put the install back')), false)
+  assert.equal(await slow.c.tick(), 'nothing_staged')
+})
+
+test('the agents behind it read the install back on a good build: nothing for them to do', async () => {
+  const disk = memDisk()
+  const install = { version: '0.81.0' }
+  marksBad(disk)
+  const a = agent(disk, { id: 914, install })
+  await a.c.tick()
+  const same = agent(disk, { id: 915, install })
+  assert.equal(await same.c.tick(), 'nothing_staged')
+  assert.deepEqual(same.rollbackInstalls, [])
+})
+
+test('versions only go down: an older agent takes a marked build back further, and a newer build than the one marked is left', async () => {
+  const disk = memDisk()
+  const install = { version: '0.82.0' }
+  marksBad(disk, '0.82.0')
+  marksBad(disk, '0.81.0')
+  const onMarked = agent(disk, { id: 914, running: '0.81.0', install })
+  await onMarked.c.tick()
+  assert.equal(install.version, '0.81.0', 'it ran here until now, and it is older than the build marked')
+  const oldest = agent(disk, { id: 915, running: '0.80.0', install })
+  await oldest.c.tick()
+  assert.equal(install.version, '0.80.0')
+  assert.equal(await onMarked.c.tick(), 'nothing_staged', 'not newer than this agent: never its to move')
+  assert.equal(await oldest.c.tick(), 'nothing_staged')
+  assert.equal(install.version, '0.80.0')
+})
+
+test('an agent not older than the marked build leaves the install alone', async () => {
+  for (const running of ['0.81.0', '0.82.0']) {
+    const disk = memDisk()
+    const install = { version: '0.81.0' }
+    marksBad(disk)
+    const a = agent(disk, { running, install })
+    assert.equal(await a.c.tick(), 'nothing_staged', running)
+    assert.deepEqual(a.rollbackInstalls, [], running)
+  }
+})
+
+test('a daemon that does not hold the lock, or one with updates off, leaves the install alone', async () => {
+  const cases: Array<[string, (s: any) => void, string]> = [
+    ['passive', (s) => (s.active = false), 'passive'],
+    ['updates off', (s) => (s.autoUpdate = false), 'updates_disabled'],
+  ]
+  for (const [what, set, reason] of cases) {
+    const disk = memDisk()
+    const install = { version: '0.81.0' }
+    marksBad(disk)
+    const a = agent(disk, { install })
+    set(a.s)
+    assert.equal(await a.c.tick(), reason, what)
+    assert.deepEqual(a.rollbackInstalls, [], what)
+  }
+})
+
+test('a canary only held, or a silence not counted yet, moves nothing: only the mark does', async () => {
+  const disk = memDisk()
+  const install = { version: '0.81.0' }
+  proven(disk)
+  disk.fs.createExclusive(join(MACHINE, '0.81.0', 'silent-1'), JSON.stringify({ assistantId: '914', nonce: 'n', at: new Date(disk.clock.now).toISOString() }))
+  const a = agent(disk, { install })
+  assert.equal(await a.c.tick(), 'silent_hold')
+  assert.deepEqual(a.rollbackInstalls, [])
+  assert.equal(install.version, '0.81.0')
+})
+
+test('the old build\'s files are gone: nothing written, a person told what a restart would do, tried again at the next close look and not every poll', async () => {
+  const disk = memDisk()
+  const install = { version: '0.81.0' }
+  marksBad(disk)
+  const a = agent(disk, { install })
+  a.s.rollbackOk = false
+  assert.equal(await a.c.tick(), 'version_held_bad')
+  assert.equal(install.version, '0.81.0')
+  assert.equal(lastReport(a).code, 'idle_update_rollback_failed')
+  assert.match(lastReport(a).message, /still names it/)
+  assert.match(lastReport(a).message, /from_root_missing/)
+  assert.match(lastReport(a).message, /A restart lands on 0\.81\.0/)
+  disk.clock.now += 30 * SEC
+  assert.equal(await a.c.tick(), 'version_held_bad')
+  assert.equal(a.rollbackInstalls.length, 1, 'once a poll would be a write attempt every 30 s for as long as it lasts')
+  assert.equal(a.logs.filter((l) => l.includes('from_root_missing')).length, 1)
+  disk.clock.now += 5 * MIN
+  a.s.rollbackOk = true
+  await a.c.tick()
+  assert.equal(a.rollbackInstalls.length, 2)
+  assert.equal(install.version, '0.80.0')
+  assert.equal(lastReport(a).code, 'idle_update_held')
+})
+
+test('a rollback that throws is a try that failed: the poll goes on', async () => {
+  const disk = memDisk()
+  const install = { version: '0.81.0' }
+  marksBad(disk)
+  const a = agent(disk, { install })
+  a.s.rollbackThrows = new Error('EACCES')
+  assert.equal(await a.c.tick(), 'version_held_bad')
+  assert.equal(lastReport(a).code, 'idle_update_rollback_failed')
+  assert.match(lastReport(a).message, /EACCES/)
+})
+
+test('moved, and Claude Code\'s own update not switched off: tried again though the install now reads good, or its next start reinstalls the build', async () => {
+  const disk = memDisk()
+  const install = { version: '0.81.0' }
+  marksBad(disk)
+  const a = agent(disk, { install })
+  a.s.rollbackStillOn = true
+  await a.c.tick()
+  assert.equal(install.version, '0.80.0')
+  assert.equal(lastReport(a).code, 'idle_update_rollback_failed')
+  disk.clock.now += 30 * SEC
+  assert.equal(await a.c.tick(), 'nothing_staged')
+  assert.equal(a.rollbackInstalls.length, 1)
+  disk.clock.now += 5 * MIN
+  assert.equal(await a.c.tick(), 'nothing_staged')
+  assert.equal(a.rollbackInstalls.length, 2, 'the try that finishes it')
+  assert.equal(lastReport(a), null, 'the install stands, so nothing is left to report')
+  disk.clock.now += 5 * MIN
+  await a.c.tick()
+  assert.equal(a.rollbackInstalls.length, 2, 'and then it is over')
+})
+
+test('a mark never clears: whatever reinstalls the build, the install goes back again', async () => {
+  const disk = memDisk()
+  const install = { version: '0.81.0' }
+  marksBad(disk)
+  const a = agent(disk, { install })
+  await a.c.tick()
+  assert.equal(install.version, '0.80.0')
+  disk.clock.now += 3 * HOUR
+  install.version = '0.81.0'
+  await a.c.tick()
+  assert.equal(install.version, '0.80.0')
+  assert.equal(a.rollbackInstalls.length, 2)
+  assert.deepEqual(a.restarts, [])
+})
+
+test('a newer build than the one marked goes on as any update, and takes the report with it', async () => {
+  const disk = memDisk()
+  const install = { version: '0.81.0' }
+  marksBad(disk)
+  const a = agent(disk, { install })
+  await a.c.tick()
+  assert.equal(lastReport(a).code, 'idle_update_held')
+  install.version = '0.82.0'
+  a.s.openAsks = 1
+  assert.equal(await a.c.tick(), 'open_ask')
+  assert.equal(lastReport(a), null)
+  a.s.openAsks = 0
+  assert.equal(await a.c.tick(), 'requested')
+  assert.deepEqual(a.restarts.map((r) => r.target), ['0.82.0'])
+  assert.equal(a.rollbackInstalls.length, 1)
+})
+
+test('a try that failed for a marked build is given up when a newer build takes the install', async () => {
+  const disk = memDisk()
+  const install = { version: '0.81.0' }
+  marksBad(disk)
+  const a = agent(disk, { install })
+  a.s.rollbackOk = false
+  await a.c.tick()
+  install.version = '0.82.0'
+  a.s.rollbackOk = true
+  a.s.openAsks = 1
+  disk.clock.now += 6 * MIN
+  assert.equal(await a.c.tick(), 'open_ask')
+  assert.equal(a.rollbackInstalls.length, 1, 'switching Claude Code off for a good build would hold the next one back')
+  assert.equal(lastReport(a), null)
+})
+
+test('on a clone it passes its own commit, and the report says what a clone\'s rollback costs', async () => {
+  const disk = memDisk()
+  const install = { version: '0.81.0' }
+  marksBad(disk)
+  const a = agent(disk, { install, installMethod: 'clone', fromCommit: 'a'.repeat(40) })
+  await a.c.tick()
+  assert.equal(a.rollbackInstalls[0].fromCommit, 'a'.repeat(40))
+  assert.equal(a.rollbackInstalls[0].installMethod, 'clone')
+  assert.match(lastReport(a).message, /BGOS_AUTO_UPDATE off/)
+})
+
+test('the race with a follower: one still waiting reads the mark and stays, one already asked comes back old with nothing to roll back', async () => {
+  const disk = memDisk()
+  const install = { version: '0.81.0' }
+  proven(disk)
+  const asked = agent(disk, { id: 914, install })
+  assert.equal(await asked.c.tick(), 'requested')
+  const waiting = agent(disk, { id: 915, install })
+  marksBad(disk)
+  await waiting.c.tick()
+  assert.equal(install.version, '0.80.0')
+  assert.deepEqual(waiting.restarts, [])
+  disk.clock.now += 2 * MIN
+  const back = agent(disk, { id: 914, install })
+  assert.equal(await back.c.tick(), 'nothing_staged')
+  assert.equal(readJson(disk, back.record).state, 'came_back_old')
+  assert.deepEqual(back.rollbackInstalls, [])
+  assert.deepEqual(back.rollbackRestarts, [])
+  assert.equal(disk.files.has(join(MACHINE, 'lease.json')), false, 'the lease it held goes with it')
+})
+
+test('an agent that went back, and finds the build reinstalled over it, puts it back with its record left alone', async () => {
+  const disk = memDisk()
+  const install = { version: '0.81.0' }
+  marksBad(disk)
+  const a = agent(disk, { install })
+  const record = { schema: 1, target: '0.81.0', from: '0.80.0', fromRoot: OLD_ROOT, nonce: 'n', state: 'rolled_back', attempts: [{ at: new Date(T0 - HOUR).toISOString(), outcome: 'rolled_back' }], reportedAt: new Date(T0 - HOUR).toISOString() }
+  disk.fs.writeAtomic(a.record, JSON.stringify(record))
+  await a.c.tick()
+  assert.equal(install.version, '0.80.0')
+  assert.deepEqual(readJson(disk, a.record), record)
 })

@@ -226,7 +226,7 @@ test('the rollback: the marketplace through the host module and the clone throug
   assert.match(body, /setAutoUpdate: \(\) => ensureMarketplaceAutoUpdate\(\{ configDir: CLAUDE_CONFIG_DIR, marketplace, enabled: false \}\)/)
   // Its own line: the setAutoUpdate line above names the config folder too, for another call.
   assert.match(body, /^\s+configDir: CLAUDE_CONFIG_DIR,$/m, 'the hold records the config folder it switched off')
-  assert.match(body, /selfUpdater\.rollbackCheckoutTo\(record\.fromCommit\)/)
+  assert.match(body, /rollbackCloneInstall\(\{ record, updater: selfUpdater, checkoutVersion: \(\) => readOwnVersion\(RUNNING_ROOT\) \}\)/)
   assert.doesNotMatch(body, /process\.exit|attemptRollback/)
   assert.match(block(), /rollbackInstall: \(record: any\) => idleRollbackInstall\(record\),/)
 })
