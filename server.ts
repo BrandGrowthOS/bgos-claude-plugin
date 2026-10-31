@@ -99,6 +99,7 @@ import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
 import { DoctorRpcHandler, buildDoctorChecks, normalizeDoctorRpc } from './lib/doctor-rpc.ts'
 import { collectChanges, createNodeRunGit, nodeChangesFs } from './lib/git-changes.js'
 import { defaultPidAlive, pluginStateDirFor, readBootClock } from './lib/agent-inventory.mjs'
+import { createUnboundFrameRouter, createUnboundNoticeHandler } from './lib/agent-unbound.mjs'
 import { cleanIdentityName, identityFilePath, identityFromMe, takeIdentityNotice, writeAgentIdentity } from './lib/agent-identity.mjs'
 import { createMarkerTakeover, currentPluginRootFor, handoffEnv, mcpEnvKeys, nodeTakeoverFs } from './lib/marker-takeover.mjs'
 import { HOOK_RESTART_FILE_NAME, createHookRestart, nodeHookRestartFs } from './lib/hook-restart.mjs'
@@ -15729,6 +15730,60 @@ async function drainLaneEventsOnce(): Promise<void> {
   }
 }
 
+// AN AGENT DELETED IN HOAI (board row 5b45611f6b0d): the backend tells the
+// pairing room `assistant_unbound` {pairingId, assistantId} after the delete,
+// and replays it with an ack on the next connect for up to 7 days
+// (lib/agent-unbound.mjs). This daemon acts only on its OWN agent from its OWN
+// pairing, and only once its own backend answers that the agent row is gone;
+// then bin/hoai-agent-unbound.mjs, started out of this process tree, stops the
+// session, removes the auto start, archives ~/.bgos-agent/<id> and removes the
+// credentials file, and this daemon stops a little later through its own
+// shutdown (a session run by hand has nothing else to stop it).
+const UNBOUND_OWN = { assistantId: ASSISTANT_ID, pairingId: AUTH.mode === 'pairing' ? CREDENTIALS_FILE?.pairingId : undefined }
+const UNBOUND_HELPER = fileURLToPath(new URL('bin/hoai-agent-unbound.mjs', import.meta.url))
+const UNBOUND_SELF_STOP_MS = 15_000
+const onAssistantUnbound = createUnboundNoticeHandler({
+  ...UNBOUND_OWN,
+  // A read of its own: no ETag (a 304 proves nothing here) and the body kept
+  // as text, because a null the server sends may arrive as an empty body.
+  readOwnAgent: () =>
+    bgosCall(
+      {
+        url: `${API_BASE}/assistants/${encodeURIComponent(ASSISTANT_ID)}`,
+        init: { headers: { ...authHeaders(AUTH) } },
+        timeoutMs: HTTP_TIMEOUT_MS,
+        label: `GET assistants/${ASSISTANT_ID} (assistant_unbound check)`,
+      },
+      async (response) => ({ status: response.status, body: await response.text().catch(() => '') }),
+    ),
+  launchCleanup: () => {
+    const child = spawnProcess(
+      process.execPath,
+      [UNBOUND_HELPER, '--stage', 'launch', '--assistant', String(ASSISTANT_ID), '--home', homedir()],
+      { detached: true, stdio: 'ignore', windowsHide: true },
+    )
+    child.on('error', (err) => log(`assistant_unbound: cleanup helper error: ${String(err)}`))
+    child.unref()
+    if (!child.pid) return { ok: false, detail: 'the cleanup helper did not start' }
+    const stop = setTimeout(() => process.emit('SIGTERM'), UNBOUND_SELF_STOP_MS)
+    stop.unref?.()
+    return { ok: true, detail: `helper pid ${child.pid}, log ~/.bgos-agent/.removed/${ASSISTANT_ID}-unbound.log` }
+  },
+  log,
+})
+// The socket side: never acked, and this agent's own notice heard before the
+// daemon armed is held until it does (handleUnboundBeforeArm at both arms).
+const unboundFrames = createUnboundFrameRouter({
+  isArmed: () => channelArmed,
+  own: UNBOUND_OWN,
+  handle: (payload) => {
+    void onAssistantUnbound(payload).catch((err) => log(`assistant_unbound handler error: ${String(err)}`))
+  },
+})
+function handleUnboundBeforeArm(): void {
+  unboundFrames.onArmed()
+}
+
 function connectWebsocket(): void {
   // Drawn ONCE per process, so 51 daemons dropped by one nginx reload do not
   // all come back inside the same second and meet a cold auth cache. See
@@ -16072,6 +16127,14 @@ function connectWebsocket(): void {
   realtimeSocket.on('lane_revoked', whenArmed('lane_revoked', (frame: unknown) => {
     handleLaneRevoked(frame, LANE_OWNER_DEPS)
   }))
+
+  // An agent deleted in HOAI (see onAssistantUnbound). Never acked, so the
+  // backend keeps replaying it (lib/agent-unbound.mjs says why). The replay
+  // lands on connect, which at boot is before delivery is armed: held, not
+  // dropped, and handled once this daemon arms (a passive one never does).
+  realtimeSocket.on('assistant_unbound', (payload: unknown, ack?: unknown) => {
+    unboundFrames.onFrame(payload, ack)
+  })
 
   realtimeSocket.on('inbound_message', whenArmed('inbound_message', (payload: any) => {
     if (updateDrainMode) return
@@ -18071,6 +18134,7 @@ async function main(): Promise<void> {
       connectedSince = Date.now()
       channelEverArmed = true
       startHookIntakeIfHolder()
+      handleUnboundBeforeArm()
       log(
         `delivery re-armed after reclaiming the pairing lock; ` +
           `monitoring ${monitoredChatIds.length} chat(s)`,
@@ -18868,6 +18932,7 @@ async function main(): Promise<void> {
     // Last, with the lock proven ours one line above: start draining this
     // session's hook spool. Only the holder consumes (see the guard inside).
     startHookIntakeIfHolder()
+    handleUnboundBeforeArm()
   }
 
   // The passive watch loop, shared by the two ways a daemon can find itself

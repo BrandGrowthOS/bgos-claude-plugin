@@ -91,6 +91,13 @@ const PAIRING_FRAMES = [
 // unwrapped on purpose.
 const TRANSPORT_FRAMES = ['connect', 'disconnect', 'connect_error']
 
+// Gated on arming by their own router instead of whenArmed: whenArmed DROPS a
+// frame heard before arming, and the deleted agent notice replayed at connect
+// always lands then, so it must be held and handled once this daemon arms
+// (lib/agent-unbound.mjs createUnboundFrameRouter). A passive daemon never arms,
+// so it still never acts.
+const SELF_GATED_FRAMES = ['assistant_unbound']
+
 test('the stand-down gate wraps every socket handler that acts for the pairing', () => {
   assert.match(server, /const whenArmed\s*=/)
   for (const frame of PAIRING_FRAMES) {
@@ -114,13 +121,24 @@ test('the wrapped set is exactly the handlers minus the transport ones', () => {
   const wrapped = [...server.matchAll(/whenArmed\('([A-Za-z0-9_]+)'/g)].map((m) => m[1])
   assert.deepEqual(
     [...new Set(registered)].sort(),
-    [...PAIRING_FRAMES, ...TRANSPORT_FRAMES].sort(),
+    [...PAIRING_FRAMES, ...TRANSPORT_FRAMES, ...SELF_GATED_FRAMES].sort(),
     'server.ts registers a socket handler this test does not classify; wrap it or list it as transport',
   )
   assert.deepEqual([...new Set(wrapped)].sort(), [...PAIRING_FRAMES].sort())
   for (const frame of TRANSPORT_FRAMES) {
     assert.ok(!wrapped.includes(frame), `${frame} must not be gated on channelArmed`)
   }
+})
+
+test('the deleted agent notice is gated on arming by its own router, which reads channelArmed', () => {
+  assert.match(
+    server,
+    /realtimeSocket\.on\('assistant_unbound', \(payload: unknown, ack\?: unknown\) => \{\n\s*unboundFrames\.onFrame\(payload, ack\)/,
+    'assistant_unbound must go straight to the unbound frame router',
+  )
+  assert.match(server, /const unboundFrames = createUnboundFrameRouter\(\{\n\s*isArmed: \(\) => channelArmed,/)
+  // Both places the channel arms hand over a notice held before arming.
+  assert.equal([...server.matchAll(/channelArmed = true[\s\S]{0,400}?handleUnboundBeforeArm\(\)/g)].length, 2)
 })
 
 test('the poll tick reschedules itself from a finally, so standing down cannot kill the loop', () => {

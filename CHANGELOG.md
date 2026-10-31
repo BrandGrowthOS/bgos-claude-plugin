@@ -2,7 +2,7 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
-## 0.81.0 (2026-10-31)
+## 0.83.0 (2026-10-31)
 
 **An agent can mark every mission goal it is working on, so the card animates them all at once (board row 9d7880bf, KC: "it is a must").** BGOS #3575 (5.26.0) shipped the working mark in the app and the backend; until now the plugin had no tool for it, so the card only ever animated the first unticked goal.
 
@@ -13,6 +13,10 @@ Notable changes to the HOAI Claude Code plugin.
 - **They take NO pending self write stamp, unlike every other mission write (found in review).** A mark only ever emits `mission_updated`, which is never narrated and never spends a pending stamp, so one taken here would linger and the owner's next Pause or Resume (which carry no `cleared_by`) would read as the agent's own write and never reach it. `MISSION_MARK_TOOLS` in `lib/missions.ts` names the exemption, and `test/mission-ws-wiring.test.ts` holds both halves.
 - **Declares `mission_goal_working`** on every host, so the served canon now tells this agent BGOS's working mark paragraph. The MCP instructions (Missions, item 7) and the bundled fallback canon name both tools.
 - Tests: `test/goal-marks.test.ts` (red first, 22 cases: the paths, the input judges, one PATCH per goal id with its body and headers, refusals before any request, the backend's refusal surfaced, the owner's Pause and Resume still heard after a mark, the declarations, the guard, the canon text and the declared token), and the six-tool lists in `test/mission-private.test.ts` and `test/turn-aware-tools.test.ts` now run the two new tools through every private turn case.
+
+## 0.81.0 (2026-10-31)
+
+- A deleted agent's computer cleans up after it: once the server confirms the agent is gone, the computer stops it, removes its auto start and archives its folder (never deletes a file). Other agents on the machine are untouched, and a replayed notice does nothing new.
 
 ## 0.80.2 (2026-10-29)
 
