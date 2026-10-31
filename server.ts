@@ -99,7 +99,7 @@ import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
 import { DoctorRpcHandler, buildDoctorChecks, normalizeDoctorRpc } from './lib/doctor-rpc.ts'
 import { collectChanges, createNodeRunGit, nodeChangesFs } from './lib/git-changes.js'
 import { defaultPidAlive, pluginStateDirFor, readBootClock } from './lib/agent-inventory.mjs'
-import { ASSISTANT_UNBOUND_EVENT, createUnboundFrameRouter, createUnboundNoticeHandler } from './lib/agent-unbound.mjs'
+import { createUnboundFrameRouter, createUnboundNoticeHandler } from './lib/agent-unbound.mjs'
 import { cleanIdentityName, identityFilePath, identityFromMe, takeIdentityNotice, writeAgentIdentity } from './lib/agent-identity.mjs'
 import { createMarkerTakeover, currentPluginRootFor, handoffEnv, mcpEnvKeys, nodeTakeoverFs } from './lib/marker-takeover.mjs'
 import { HOOK_RESTART_FILE_NAME, createHookRestart, nodeHookRestartFs } from './lib/hook-restart.mjs'
@@ -15836,7 +15836,7 @@ function connectWebsocket(): void {
   // backend keeps replaying it (lib/agent-unbound.mjs says why). The replay
   // lands on connect, which at boot is before delivery is armed: held, not
   // dropped, and handled once this daemon arms (a passive one never does).
-  realtimeSocket.on(ASSISTANT_UNBOUND_EVENT, (payload: unknown, ack?: unknown) => {
+  realtimeSocket.on('assistant_unbound', (payload: unknown, ack?: unknown) => {
     unboundFrames.onFrame(payload, ack)
   })
 
