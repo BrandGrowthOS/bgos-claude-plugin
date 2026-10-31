@@ -375,8 +375,8 @@ test('lease: none is free, my own nonce is mine, a fresh other is held, an old o
   assert.equal(m.decideLease({ raw: null, mtimeMs: null, now: NOW, me: ME }).state, 'free')
   assert.equal(m.decideLease({ raw: lease('912', 'n-912', NOW - MIN), mtimeMs: NOW - MIN, now: NOW, me: ME }).state, 'mine')
   assert.equal(m.decideLease({ raw: lease('912', 'other', NOW - MIN), mtimeMs: NOW - MIN, now: NOW, me: ME }).state, 'held')
-  assert.equal(m.decideLease({ raw: lease('913', 'n-913', NOW - 19 * MIN), mtimeMs: NOW - 19 * MIN, now: NOW, me: ME }).state, 'held')
-  assert.equal(m.decideLease({ raw: lease('913', 'n-913', NOW - 21 * MIN), mtimeMs: NOW - 21 * MIN, now: NOW, me: ME }).state, 'expired')
+  assert.equal(m.decideLease({ raw: lease('913', 'n-913', NOW - 24 * MIN), mtimeMs: NOW - 24 * MIN, now: NOW, me: ME }).state, 'held')
+  assert.equal(m.decideLease({ raw: lease('913', 'n-913', NOW - 26 * MIN), mtimeMs: NOW - 26 * MIN, now: NOW, me: ME }).state, 'expired')
 })
 
 test('lease and canary: a stamp more than the lease life in the future is a broken clock, so it expires', () => {
@@ -392,7 +392,7 @@ test('lease and canary: a stamp more than the lease life in the future is a brok
 test('lease: a half written file is held while young and expired once old, never free', () => {
   const m = need()
   assert.equal(m.decideLease({ raw: '', mtimeMs: NOW - 5 * SEC, now: NOW, me: ME }).state, 'held')
-  assert.equal(m.decideLease({ raw: '{"assist', mtimeMs: NOW - 21 * MIN, now: NOW, me: ME }).state, 'expired')
+  assert.equal(m.decideLease({ raw: '{"assist', mtimeMs: NOW - 26 * MIN, now: NOW, me: ME }).state, 'expired')
   assert.equal(m.decideLease({ raw: '', mtimeMs: null, now: NOW, me: ME }).state, 'held')
 })
 
@@ -423,7 +423,7 @@ test('canary: an attempt that ended with no verdict (not the build\'s fault) han
 
 test('canary: one that never came back holds the version 24 h, then one more agent may try', () => {
   const m = need()
-  const silent = [{ n: 1, assistantId: '913', at: NOW - 21 * MIN }]
+  const silent = [{ n: 1, assistantId: '913', at: NOW - 26 * MIN }]
   assert.equal(m.decideCanary({ files: canaryFiles({ canaries: silent }), now: NOW, me: ME }).state, 'hold')
   assert.deepEqual(
     m.decideCanary({ files: canaryFiles({ canaries: [{ n: 1, assistantId: '913', at: NOW - 25 * HOUR }] }), now: NOW, me: ME }),
@@ -898,7 +898,7 @@ test('the way back: the newer of this agent\'s own build and the canary\'s: fift
   assert.deepEqual(m.rollbackSourceFor(clone, canary), { from: '0.79.0', fromRoot: '/w/plugin', fromCommit: 'abc1234' })
 })
 
-test('the way back is never a version held bad here: the newest good one of the two, or this agent\'s own for the rollback to refuse', () => {
+test('the way back passes over a version held bad here: the newest good one of the two, or with both held this agent\'s own', () => {
   const m = need()
   const mine = { from: '0.80.0', fromRoot: '/c/hoai/0.80.0', fromCommit: null, installMethod: 'marketplace' }
   const canary = { from: '0.81.0', fromRoot: '/c/hoai/0.81.0' }

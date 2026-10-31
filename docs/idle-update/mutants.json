@@ -303,7 +303,7 @@
     },
     {
       "id": "lease-ttl",
-      "rule": "a lease older than 20 min is expired",
+      "rule": "a lease older than 25 min is expired",
       "file": "lib/idle-update.mjs",
       "find": "if (!finite(at) || within(now, at, d.leaseTtlMs)) return { state: 'held', lease }",
       "replace": "if (!finite(at) || true) return { state: 'held', lease }",
@@ -2798,8 +2798,8 @@
       "id": "way-back-report",
       "rule": "the report says what is true and what a person does",
       "file": "lib/idle-update.mjs",
-      "find": "It already took this computer back once and has not validated a build since, so the install stays. Restart it by hand.",
-      "replace": "Another agent on this computer decides the rollback.",
+      "find": "It has used its one way back and has not validated a build since, so the install stays. A restart by hand comes back on ${running}",
+      "replace": "Another agent on this computer decides the rollback. A restart by hand comes back on ${running}",
       "tests": [
         "test/idle-update.test.ts"
       ]
@@ -2828,8 +2828,8 @@
       "id": "dur-lease",
       "rule": "the lease outlasts a failing agent's verdict",
       "file": "lib/idle-update.mjs",
-      "find": "  leaseTtlMs: 20 * MIN,",
-      "replace": "  leaseTtlMs: 15 * MIN,",
+      "find": "  leaseTtlMs: 25 * MIN,",
+      "replace": "  leaseTtlMs: 20 * MIN,",
       "tests": [
         "test/idle-update.test.ts"
       ]
@@ -3045,56 +3045,6 @@
       ]
     },
     {
-      "id": "rollback-never-held-bad",
-      "rule": "a rollback never lands on a version held bad",
-      "file": "lib/idle-update.mjs",
-      "find": "        const held = isVersionHeldBad(record.from, { machineDir: dir, fs })\n",
-      "replace": "        const held = false\n",
-      "tests": [
-        "test/idle-update.controller.test.ts"
-      ]
-    },
-    {
-      "id": "second-boot-no-verdict",
-      "rule": "on a proven version a second boot is no verdict",
-      "file": "lib/idle-update.mjs",
-      "find": "const verdict = unproven ? 'none' : decideRollback(",
-      "replace": "const verdict = decideRollback(",
-      "tests": [
-        "test/idle-update.controller.test.ts"
-      ]
-    },
-    {
-      "id": "second-boot-proven-only",
-      "rule": "only on a proven version",
-      "file": "lib/idle-update.mjs",
-      "find": "why === 'second_boot' && files?.validated === true && record.lockBoots < 3",
-      "replace": "why === 'second_boot' && record.lockBoots < 3",
-      "tests": [
-        "test/idle-update.controller.test.ts"
-      ]
-    },
-    {
-      "id": "second-boot-only",
-      "rule": "a missed deadline is always a verdict",
-      "file": "lib/idle-update.mjs",
-      "find": "why === 'second_boot' && files?.validated === true && record.lockBoots < 3",
-      "replace": "files?.validated === true && record.lockBoots < 3",
-      "tests": [
-        "test/idle-update.controller.test.ts"
-      ]
-    },
-    {
-      "id": "third-boot-verdict",
-      "rule": "a third boot is a verdict",
-      "file": "lib/idle-update.mjs",
-      "find": "files?.validated === true && record.lockBoots < 3",
-      "replace": "files?.validated === true",
-      "tests": [
-        "test/idle-update.controller.test.ts"
-      ]
-    },
-    {
       "id": "rollback-wait-bound",
       "rule": "a rollback that finds no quiet moment asks for a person",
       "file": "lib/idle-update.mjs",
@@ -3172,6 +3122,66 @@
       "replace": "const open = phase === 'validate'",
       "tests": [
         "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "second-boot-verdict-proven",
+      "rule": "a second boot is a verdict on a proven version too: no third boot comes",
+      "file": "lib/idle-update.mjs",
+      "find": "    const verdict = decideRollback({ canary, wentBack, loginExpired: read(deps.loginExpired, false) })\n",
+      "replace": "    const verdict = why === 'second_boot' && files?.validated === true ? 'none' : decideRollback({ canary, wentBack, loginExpired: read(deps.loginExpired, false) })\n",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-held-source-goes-back",
+      "rule": "a held source is no refusal: the agent ran it, and the build it is on just failed",
+      "file": "lib/idle-update.mjs",
+      "find": "        result = await deps.rollbackInstall(record)\n",
+      "replace": "        result = isVersionHeldBad(record.from, { machineDir: dir, fs }) ? { ok: false, reason: 'source_held_bad' } : await deps.rollbackInstall(record)\n",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "deadline-clears-live",
+      "rule": "a missed deadline leaves no live proof for the boot after a crash to read",
+      "file": "lib/idle-update.mjs",
+      "find": "settleTo(withAttempt(record, now(), 'deadline', { liveAt: null }))",
+      "replace": "settleTo(withAttempt(record, now(), 'deadline'))",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "report-failed-remedy",
+      "rule": "a restart by hand is said to come back on the same build",
+      "file": "lib/idle-update.mjs",
+      "find": "so the install stays. A restart by hand comes back on ${running}; a newer version, or a person installing an older one, moves it.",
+      "replace": "so the install stays. Restart it by hand.",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "report-rollback-failed-remedy",
+      "rule": "a rollback that did not take names a remedy that works",
+      "file": "lib/idle-update.mjs",
+      "find": "this agent runs ${running}. A restart by hand comes back on ${running}; a newer version, or a person installing an older one, moves it.",
+      "replace": "this agent runs ${running}. Restart it by hand.",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "report-no-signal-promise",
+      "rule": "the report promises no restart a later gate may refuse",
+      "file": "lib/idle-update.mjs",
+      "find": "A hook event ends this wait; if it has no hooks",
+      "replace": "Its next turn moves it on; if it has no hooks",
+      "tests": [
+        "test/idle-update.test.ts"
       ]
     }
   ]
