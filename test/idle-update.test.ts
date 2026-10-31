@@ -409,7 +409,7 @@ test('canary: no canary yet means I would be canary 1', () => {
 
 test('canary: a validated version the canary outlived lets everyone go; a bad one holds everyone', () => {
   const m = need()
-  const proved = canaryFiles({ validated: true, validatedBy: '913', validatedAtMs: NOW - 2 * HOUR, aliveAtMs: NOW, canaries: [{ n: 1, assistantId: '913', at: NOW - 3 * HOUR }] })
+  const proved = canaryFiles({ validated: true, validatedBy: '913', validatedAtMs: NOW - 2 * HOUR, aliveAtMs: NOW, provedMs: 60 * MIN, canaries: [{ n: 1, assistantId: '913', at: NOW - 3 * HOUR }] })
   assert.equal(m.decideCanary({ target: '0.81.0', files: proved, now: NOW, me: ME }).state, 'validated')
   assert.equal(m.decideCanary({ files: canaryFiles({ bad: true, validated: true }), now: NOW, me: ME }).state, 'bad')
 })
@@ -458,7 +458,7 @@ test('silent: one agent that never came back holds a version even after it valid
 
 test('silent: past 24 h one more agent may try', () => {
   const m = need()
-  const old = canaryFiles({ validated: true, aliveAtMs: NOW, silents: [{ n: 1, assistantId: '914', nonce: 'n-914', at: NOW - 25 * HOUR }] })
+  const old = canaryFiles({ validated: true, aliveAtMs: NOW, provedMs: 60 * MIN, silents: [{ n: 1, assistantId: '914', nonce: 'n-914', at: NOW - 25 * HOUR }] })
   assert.equal(m.decideCanary({ files: old, now: NOW, me: ME }).state, 'validated')
 })
 
@@ -476,7 +476,7 @@ test('silent: a silence counts only once it can no longer be a slow start, like 
 
 test('silent: a stamp more than a lease life ahead is a clock that jumped: it still counts, but holds nothing for ever', () => {
   const m = need()
-  const ahead = canaryFiles({ validated: true, aliveAtMs: NOW, silents: [{ n: 1, assistantId: '914', nonce: 'n-914', at: NOW + 40 * DAY }] })
+  const ahead = canaryFiles({ validated: true, aliveAtMs: NOW, provedMs: 60 * MIN, silents: [{ n: 1, assistantId: '914', nonce: 'n-914', at: NOW + 40 * DAY }] })
   assert.equal(m.decideCanary({ files: ahead, now: NOW, me: ME }).state, 'validated')
   const two = [{ n: 1, assistantId: '914', nonce: 'n-914', at: NOW + 40 * DAY }, { n: 2, assistantId: '915', nonce: 'n-915', at: NOW - 3 * DAY }]
   assert.equal(m.decideCanary({ files: canaryFiles({ validated: true, silents: two }), now: NOW, me: ME }).state, 'latch_bad')
@@ -500,7 +500,7 @@ test('follower wait: scaled with every other window, so the rig runs it', () => 
 })
 
 function validatedFiles(over: Record<string, unknown> = {}): any {
-  return canaryFiles({ validated: true, validatedBy: '913', validatedAtMs: NOW - 2 * HOUR, aliveAtMs: NOW, ...over })
+  return canaryFiles({ validated: true, validatedBy: '913', validatedAtMs: NOW - 2 * HOUR, aliveAtMs: NOW, provedMs: 60 * MIN, ...over })
 }
 
 test('follower wait: nobody follows until its own wait has run from the canary\'s validation, to the millisecond', () => {
@@ -519,28 +519,43 @@ test('follower wait: another agent\'s silence holds first, and a version held ba
   assert.equal(m.decideCanary({ target: '0.81.0', files: validatedFiles({ validatedAtMs: NOW - MIN, silents, bad: true }), now: NOW, me: ME }).state, 'bad')
 })
 
-test('follower wait: a canary that stopped before this wait ended is quiet: the wait is what read it', () => {
+test('follower wait: a canary that stopped short of this wait is quiet: the wait is what read it', () => {
   const m = need()
-  const validatedAtMs = NOW - 2 * HOUR
-  const stoppedAt = validatedAtMs + 20 * MIN
-  assert.equal(m.decideCanary({ target: '0.81.0', files: validatedFiles({ validatedAtMs, aliveAtMs: stoppedAt }), now: NOW, me: ME }).state, 'canary_quiet')
-  assert.equal(m.decideCanary({ target: '0.81.0', files: validatedFiles({ validatedAtMs, aliveAtMs: null }), now: NOW, me: ME }).state, 'canary_quiet', 'it never stamped at all')
+  assert.equal(m.decideCanary({ target: '0.81.0', files: validatedFiles({ aliveAtMs: NOW - 2 * MIN, provedMs: 20 * MIN }), now: NOW, me: ME }).state, 'canary_quiet')
+  assert.equal(m.decideCanary({ target: '0.81.0', files: validatedFiles({ aliveAtMs: null, provedMs: 0 }), now: NOW, me: ME }).state, 'canary_quiet', 'it never stamped at all')
 })
 
-test('follower wait: a canary that lasted this wait has proved it, however long ago: a canary quit since holds nothing', () => {
+test('follower wait: a canary that proved the longest wait has proved it for everyone, however long ago: a canary quit since holds nothing', () => {
   const m = need()
-  const validatedAtMs = NOW - 3 * DAY
+  const files = (provedMs: number) => validatedFiles({ validatedAtMs: NOW - 3 * DAY, aliveAtMs: NOW - 2 * DAY, provedMs })
+  assert.equal(m.decideCanary({ target: '0.81.0', files: files(58 * MIN), now: NOW, me: ME }).state, 'validated')
+  assert.equal(m.decideCanary({ target: '0.81.0', files: files(58 * MIN - 1), now: NOW, me: ME }).state, 'canary_quiet')
+})
+
+test('follower wait: a live canary lets a follower go once it has proved that follower\'s wait, and until then the follower waits on', () => {
+  const m = need()
   const wait = m.followerWaitMs({ assistantId: ME.assistantId, target: '0.81.0' })
-  const files = (aliveAtMs: number) => validatedFiles({ validatedAtMs, aliveAtMs })
-  assert.equal(m.decideCanary({ target: '0.81.0', files: files(validatedAtMs + 60 * MIN), now: NOW, me: ME }).state, 'validated')
-  // One stamp's fresh window short of the end still counts; past that, the canary stopped inside this wait.
-  assert.equal(m.decideCanary({ target: '0.81.0', files: files(validatedAtMs + wait - 2 * MIN), now: NOW, me: ME }).state, 'validated')
-  assert.equal(m.decideCanary({ target: '0.81.0', files: files(validatedAtMs + wait - 2 * MIN - 1), now: NOW, me: ME }).state, 'canary_quiet')
+  const files = (provedMs: number) => validatedFiles({ aliveAtMs: NOW - 2 * MIN + 1, provedMs })
+  assert.equal(m.decideCanary({ target: '0.81.0', files: files(wait - 2 * MIN), now: NOW, me: ME }).state, 'validated')
+  assert.equal(m.decideCanary({ target: '0.81.0', files: files(wait - 2 * MIN - 1), now: NOW, me: ME }).state, 'follower_wait', 'a sleep is not proof, and this is no silence')
+})
+
+test('follower wait: proof of its own wait is not enough once the canary has stopped: a follower past its wait reads the canary as it stands', () => {
+  const m = need()
+  const wait = m.followerWaitMs({ assistantId: ME.assistantId, target: '0.81.0' })
+  const files = validatedFiles({ aliveAtMs: NOW - 2 * MIN, provedMs: Math.min(wait, 57 * MIN) })
+  assert.equal(m.decideCanary({ target: '0.81.0', files, now: NOW, me: ME }).state, 'canary_quiet')
+})
+
+test('follower wait: a stamp further ahead than a lease lives is a clock that jumped, and no live canary', () => {
+  const m = need()
+  const files = validatedFiles({ aliveAtMs: NOW + 26 * MIN, provedMs: 20 * MIN })
+  assert.equal(m.decideCanary({ target: '0.81.0', files, now: NOW, me: ME }).state, 'canary_quiet')
 })
 
 test('follower wait: a proof whose canary is on the record as silent lets nobody follow, past the hold too', () => {
   const m = need()
-  const files = validatedFiles({ validatedAtMs: NOW - 3 * DAY, aliveAtMs: null, silents: [{ n: 1, assistantId: '913', nonce: null, at: NOW - 25 * HOUR }] })
+  const files = validatedFiles({ validatedAtMs: NOW - 3 * DAY, aliveAtMs: null, provedMs: 0, silents: [{ n: 1, assistantId: '913', nonce: null, at: NOW - 25 * HOUR }] })
   assert.equal(m.decideCanary({ target: '0.81.0', files, now: NOW, me: ME }).state, 'canary_quiet')
 })
 
@@ -548,6 +563,8 @@ test('follower wait: a validation stamped further ahead than the longest wait is
   const m = need()
   const far = validatedFiles({ validatedAtMs: NOW + 61 * MIN })
   assert.equal(m.decideCanary({ target: '0.81.0', files: far, now: NOW, me: ME }).state, 'validated')
+  const unproved = validatedFiles({ validatedAtMs: NOW + 61 * MIN, aliveAtMs: null, provedMs: 0 })
+  assert.equal(m.decideCanary({ target: '0.81.0', files: unproved, now: NOW, me: ME }).state, 'canary_quiet', 'the wait goes, what the canary proved is still read')
   const near = validatedFiles({ validatedAtMs: NOW + 10 * MIN })
   assert.equal(m.decideCanary({ target: '0.81.0', files: near, now: NOW, me: ME }).state, 'follower_wait')
 })

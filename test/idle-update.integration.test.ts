@@ -253,7 +253,7 @@ test('a follower fails on a build its canary proved: the real rollback points th
       join(w.machineDir, '0.81.0', 'validated'),
       JSON.stringify({ assistantId: '913', at: new Date(T0 - HOUR).toISOString(), canary: 1, from: '0.80.0', fromRoot: join(cache, '0.80.0') }),
     )
-    writeFileSync(join(w.machineDir, '0.81.0', 'alive'), JSON.stringify({ assistantId: '913', at: new Date(T0).toISOString() }))
+    writeFileSync(join(w.machineDir, '0.81.0', 'alive'), JSON.stringify({ assistantId: '913', at: new Date(T0).toISOString(), provedMs: 60 * MIN }))
     const old = agent(w, 912, { running: '0.79.0', fromRoot: join(cache, '0.79.0') })
     assert.equal(await old.controller.tick(), 'requested', old.out.logs.join('\n'))
     assert.equal(old.record().canaryN, null)
@@ -294,7 +294,7 @@ test('a follower never heard from again: on the real disk its lease goes, silent
   try {
     mkdirSync(join(w.machineDir, '0.81.0'), { recursive: true })
     writeFileSync(join(w.machineDir, '0.81.0', 'validated'), JSON.stringify({ assistantId: '913', at: new Date(T0 - HOUR).toISOString(), canary: 1 }))
-    writeFileSync(join(w.machineDir, '0.81.0', 'alive'), JSON.stringify({ assistantId: '913', at: new Date(T0).toISOString() }))
+    writeFileSync(join(w.machineDir, '0.81.0', 'alive'), JSON.stringify({ assistantId: '913', at: new Date(T0).toISOString(), provedMs: 60 * MIN }))
     const gone = agent(w, 912)
     assert.equal(await gone.controller.tick(), 'requested', gone.out.logs.join('\n'))
     const nonce = gone.record().nonce
