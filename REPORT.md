@@ -7,7 +7,9 @@ Commits:
 
 - `0672e86` fix(agent): a deleted agent's machine stops it, removes its auto start and archives its folder
 - `f8be89d` fix(agent): unbound cleanup acts only once the auto start is proven gone (the review fixes)
-- the commit that adds this REPORT.md, plus the socket guard fix (a literal frame name, classified in the stand-down guard)
+- `6b27175` fix(agent): register assistant_unbound by name and classify it in the stand-down guard (plus the first REPORT.md)
+- `e840f6e` test(agent): the cleanup never deletes a file of the agent's folder, and a replay logs that it found nothing (kills M9 and M16)
+- the last commit: the final review's fixes (a folder that cannot move stops the cleanup) and this REPORT.md
 
 ## The backend shape this assumes
 
@@ -69,12 +71,16 @@ dependencies.
     3. Only after that, end the launcher tree with `taskkill /PID <pid> /T /F`
        (hoai-core `--keep-alive` would otherwise relaunch claude).
     4. Wait for the process to go, then archive the folder, retrying while it
-       is busy (EBUSY/EPERM), then remove the credentials.
+       is busy (EBUSY/EPERM). Remove the credentials only once the folder has
+       moved. A folder that never moves keeps them, so the agent still shows on
+       this computer.
   - **macOS and Linux**:
     1. Send SIGTERM to a hand-run hoai launcher (its supervisor.json pid,
        proven the writer) and wait for it to exit.
     2. Archive the folder FIRST, because `bgos-agent uninstall` deletes the
-       state.
+       state. If the folder could not move, stop there: no uninstall (its
+       state wipe would delete the folder) and credentials kept, so the
+       running service hears the replay and tries again.
     3. Run the existing `bin/bgos-agent uninstall --assistant <id>`. That
        takes the install lock, removes the plist or unit and runs launchctl
        bootout or systemctl --user stop.
@@ -109,7 +115,7 @@ dependencies.
   SIGTERM after 15 s, so a plain claude with no service also loses its channel.
 - `handleUnboundBeforeArm()` runs at both places the channel arms.
 
-## Tests (`test/agent-unbound.test.ts`, 32 tests, all pass)
+## Tests (`test/agent-unbound.test.ts`, 37 tests, all pass)
 
 Everything uses fakes. No date is pinned: the archive date is computed from
 the injected clock with `dayOf(ms)`.
@@ -148,9 +154,19 @@ the injected clock with `dayOf(ms)`.
   - The archive holds run.sh and session-id, and the credentials are removed.
   - 43's files are byte-identical, and no cleanup command names 43.
   - Replays do nothing new.
-  - A hand-run launcher is sent SIGTERM before the move.
+  - A hand-run launcher is sent SIGTERM before the move. A launcher its
+    service runs is never signalled; the uninstall stops it.
   - A failed uninstall keeps the credentials.
+  - A folder that cannot move is never handed to the uninstall, and its
+    credentials stay. On Windows, a folder that never moves keeps its
+    credentials too.
+  - The legacy `credentials.json` is removed only when it names this agent.
 - **Other**:
+  - The server.ts wiring, by source scan:
+    - the own pairing comes from the daemon's credentials file, never from
+      the notice
+    - the confirming read is `assistants/<own id>` with the daemon's own auth
+    - the helper is started for the daemon's own agent id and HOME
   - a junk id touches nothing
   - the run-stage commands per platform
   - the real bin `--stage run` end to end on macOS
@@ -163,7 +179,19 @@ the injected clock with `dayOf(ms)`.
    existed. They failed with
    `does not provide an export named 'unboundRunStageCommands'` and
    `... named 'createUnboundFrameRouter'`.
-3. The review-driven tests were run against the lib from commit 0672e86
+3. The final review's tests (`red-final.out`, run against e840f6e): `ℹ pass 35`,
+   `ℹ fail 2`. The two failures:
+   - `Linux: a folder that cannot be moved is never handed to the uninstall`:
+     `no uninstall while the folder is still in place`, with
+     actual `[ '/x/bgos-agent uninstall --assistant 42' ]` and expected `[]`.
+   - `Windows: a folder that never moves keeps the credentials and is never deleted`:
+     `the credentials stay with the folder that could not move`, with
+     actual `false` and expected `true`.
+
+   The legacy credentials, service-launcher and server.ts tests guard
+   behavior that already existed. They passed at once, and M33 to M38 prove
+   they can fail.
+4. The review-driven tests were run against the lib from commit 0672e86
    (with only the router appended so the file loads): `ℹ pass 29`,
    `ℹ fail 3`.
 
@@ -195,14 +223,14 @@ put in (`+`), and the result.
 | M6 | a replay launches again | `+ state = 'idle'` after launch | KILLED (1) |
 | M7 | a failed launch never retried | `+ state = 'done'` on failure | KILLED (1) |
 | M8 | Windows task not unregistered | `+ const res = { ok: true, notes: [] }` | KILLED (1) |
-| M9 | Windows launcher files deleted, not archived | `+ uninstallAgentTask(reg,` | SURVIVED: equivalent (see below) |
+| M9 | Windows launcher files deleted, not archived | `+ uninstallAgentTask(reg,` | KILLED (1) |
 | M10 | Windows launcher tree not ended | `+ if (launcherPid === -1) {` | KILLED (1) |
 | M11 | busy folder not retried | `+ archivedTo = await archive({ retry: false })` | KILLED (1) |
 | M12 | Windows replay runs the task uninstall with no folder | `+ if (true) {` | KILLED (1) |
-| M13 | posix archive after the uninstall wiped it | archive line moved below the uninstall | KILLED (2) |
+| M13 | posix: no archive before the uninstall wipes it | `- archivedTo = await archive({ retry: false })` (and its stop check) | KILLED (2) |
 | M14 | posix auto start not removed | `+ const res = { code: 0, stdout: '', stderr: '' }` | KILLED (2) |
 | M15 | credentials not removed | `- fs.rm(path)` (deleted) | KILLED (2) |
-| M16 | the nothing-left early return | `+ if (false) {` | SURVIVED: equivalent (see below) |
+| M16 | the nothing-left early return | `+ if (false) {` | KILLED (1) |
 | M17 | hand-run launcher not stopped | `+ ... launcher.supervisor === 'nobody'` | KILLED (1) |
 | M18 | archive name not unique | `+ return base` | KILLED (1) |
 | M19 | junk id accepted (traversal) | `+ const stateDir = agentStateDir(home, String(deps.assistantId).replace(/\D/g, ''))` | KILLED (1) |
@@ -213,20 +241,31 @@ put in (`+`), and the result.
 | M24 | Windows: a task not read back gone counts as removed | `+ gone = res.ok` | KILLED (1) |
 | M25 | posix creds removed although auto start stayed | `+ if (true) removeCredentials()` | KILLED (1) |
 | M26 | Linux systemd-run unit gets no PATH | `+ ...(path ? [] : [])` | KILLED (1) |
+| M31 | Windows: credentials removed though the folder never moved | `+ if (false) say(... its credentials are kept` | KILLED (1) |
+| M32 | posix: the uninstall runs with the folder still in place | `+ if (false) {` (the stop check) | KILLED (1) |
+| M33 | another agent's legacy credentials removed | `+ if (parsed) credentialFiles.push(legacy)` | KILLED (1) |
+| M34 | this agent's legacy credentials kept | `+ if (false) credentialFiles.push(legacy)` | KILLED (1) |
+| M35 | posix: a service-run launcher signalled too | `+ ... launcher.supervisor !== 'nobody'` | KILLED (1) |
+| M36 | server: own pairing not from the credentials file | `+ pairingId: undefined }` | KILLED (1) |
+| M37 | server: the confirming read asks another path | ``+ url: `${API_BASE}/assistants/me`,`` | KILLED (1) |
+| M38 | server: helper started for another HOME | `+ '--home', process.cwd()]` | KILLED (1) |
 
-Two survivors, both equivalent mutants. Their observable result is the same,
-so no test can tell them apart:
+**Every mutant is killed; none survives.** The final run, against the
+committed code, is in the scratchpad: `mutations-final.txt`. It covers M1 to
+M4, M6 to M38, and M28.1 and M28.2. M5 belonged to the old ack design and no
+longer applies.
 
-- **M9**: `agentTaskRegistration` carries no `files` list. With the mutant,
-  `uninstallAgentTask` deletes only `install-agent-task.ps1`, and the
-  `agentTaskStatus` read-back that follows writes it again with the same
-  content, because the folder still exists. The archive ends up
-  byte-identical. Passing `files: []` just skips that delete and rewrite.
-- **M16**: with no folder, no credentials and no service file, every later
-  step is already a no-op, so the early return only saves work.
+M9 and M16 first survived as equivalents: their result could not be
+observed. New assertions now make them observable:
 
-M12 and M22 were rerun after their test patterns were fixed (M12's anchor had
-also moved). Both are killed (`mutations4.txt`).
+- **M9**: with the mutant, the uninstall deletes `install-agent-task.ps1` and
+  the read-back writes it again. The Windows test now records every `fs.rm`
+  and requires that nothing inside `~/.bgos-agent/<id>` is ever removed,
+  only moved.
+- **M16**: the Windows replay test now requires the run log to say "already
+  cleaned up".
+
+M12 and M22 were rerun after their test patterns were fixed.
 
 ### The socket guard (after the full suite found it)
 
@@ -259,13 +298,15 @@ Then green: 81 pass across the two guard files and agent-unbound.
 | M29 | frame registered through a variable again | `+ realtimeSocket.on(UNBOUND_FRAME,` | KILLED (3) |
 | M30 | the notice bypasses the router | `+ void onAssistantUnbound(payload)` | KILLED (1) |
 
-The delegated review ran before this fix. The fix is a 2 line server.ts
-change plus the guard test.
+The first delegated review ran before this fix. The second review (below)
+covers it.
 
 ## Review
 
-One delegated review (feature-dev:code-reviewer), given the diff and the
-brief's requirement, not my conclusions. What it found and what I did:
+Two delegated reviews (feature-dev:code-reviewer), each given the code and
+the brief's requirement, not my conclusions.
+
+### First review (on 0672e86)
 
 1. "The folder is archived after the uninstall deletes it." **False
    positive.** The reviewer read the working tree while mutation M13 was
@@ -288,16 +329,59 @@ brief's requirement, not my conclusions. What it found and what I did:
    **Fixed**: it is read back again with `agentTaskStatus`, and nothing
    continues unless the task is `absent`. M24 guards it.
 
+### Final review (on e840f6e, the whole branch including the socket guard fix)
+
+It found no serious defect. It confirmed:
+- notices are judged by both ids, with the pairing taken from the
+  credentials file
+- the server confirms the delete
+- every path uses the exact id
+- the folder is only ever renamed, never deleted
+- the Windows task must read back absent
+- the cleanup runs out of the agent's process tree
+- a replay does nothing
+- the stand-down set is classified, with `channelArmed` cleared at every
+  stand-down site and the held notice handed over at both arm sites
+
+Its minor findings, and what I did:
+
+1. The server.ts choices (own pairing, the read URL, the spawn arguments)
+   were not tested. **Fixed** with a source-scan test. M36, M37 and M38
+   guard it.
+2. Other branches were not tested. **Covered**:
+   - legacy `credentials.json` (M33, M34)
+   - a service-run launcher is not signalled (M35)
+
+   Still not unit tested: the late re-archive sweep, the legacy plist and
+   unit names, the `systemd-run` fallback inside the bin, and the bin's
+   `readLauncher`. They are listed as follow ups.
+3. On Windows, the credentials were removed even when the folder never
+   moved. **Fixed**: they are kept while the folder is still in place. M31
+   guards it.
+
+   The same review led me to a sharper case on macOS and Linux. If the
+   archive failed, the cleanup still ran `bgos-agent uninstall`, whose state
+   wipe would have DELETED the folder. **Fixed**: the cleanup stops before
+   the uninstall, with the folder, auto start and credentials all kept, so
+   the running service hears the replay and retries. M32 guards it.
+4. On macOS and Linux, an uninstall that refuses after the folder has moved
+   leaves a service whose `run.sh` is gone, so nothing hears the replay.
+   **Kept as a known trade-off**: the archive must come first, or the
+   uninstall deletes the state. Logged, and listed as a follow up.
+5. If the launch stage cannot start the run stage, the daemon still stops
+   itself. Under a service it restarts and hears the replay again; when run
+   by hand, it does not. **Follow up.**
+
 ## Gates
 
-- `npx tsc --noEmit`: clean (rc 0) after the review fixes and again after the socket guard fix.
-- `test/agent-unbound.test.ts`: 32 pass, 0 fail. With the two guard files (pairing-lock-standdown, mission-ws-wiring): 81 pass, 0 fail.
+- `npx tsc --noEmit`: clean (rc 0) on the final code.
+- `test/agent-unbound.test.ts`: 37 pass, 0 fail. With the two guard files (pairing-lock-standdown, mission-ws-wiring): 86 pass, 0 fail.
 - The plugin's own test command (`npm test`, which is `scripts/run-tests.mjs`):
   run family by family, the same split `scripts/run-tests.mjs` makes, because
   a plain `npm test` hung for over an hour on two files that hang on main
   too (details below):
-  - **node family** (382 files, everything except the two below):
-    7817 tests, 7706 pass, 39 fail, 72 skipped.
+  - **node family** (382 files, everything except the two below), run on the
+    final code: 7822 tests, 7711 pass, 39 fail, 72 skipped.
   - **The 39 failures are already on main.** They come from 10 browser-profile
     and browser-bootstrap files: artifacts, backup-workers, companion-state,
     companion, downloads, files, peer-pins, peer-review, portable-extras and
@@ -307,13 +391,24 @@ brief's requirement, not my conclusions. What it found and what I did:
     imports anything this branch changes.
   - **The two files left out** are `browser-profile-active-backup` and
     `browser-profile-companion-backups`. Inside the full `npm test` they hung
-    for over an hour (`--test-timeout=0`); another lane on this machine shows
-    the same file hung for 16 hours. Run alone with a 120 s timeout they give
-    34 tests, 23 pass, 9 fail, 2 cancelled, and main c636ded gives the
-    identical result.
-  - **real Chromium files** (7, one at a time): 15 tests, 11 pass, 0 fail,
-    4 skipped.
-  - **bun:test family** (14 files): 374 pass, 1 skip, 0 fail.
+    for over an hour; another lane on this machine shows the same file hung
+    for 16 hours.
+    - Run alone with a 120 s timeout they give 34 tests, 23 pass, 9 fail and
+      2 cancelled. Main c636ded gives the identical result.
+    - The 2 cancelled tests never finish. On main c636ded, with a 600 s cap,
+      both were still running at 600 s and were cancelled
+      (`hang-main.out`):
+      - `reviewed return closes backup admission ...`
+      - `storage-only cadence follows asynchronous confirmation ...`
+    - So the unmodified `npm test` cannot complete on main either: the
+      runner sets no per-test timeout, and node refuses `--test-timeout` in
+      NODE_OPTIONS. That is why the families were run with a timeout
+      instead.
+  - **real Chromium files** (7, one at a time), run after the socket guard
+    fix: 15 tests, 11 pass, 0 fail, 4 skipped. None of them loads the files
+    the final fix changed.
+  - **bun:test family** (14 files), run on the final code: 374 pass, 1 skip,
+    0 fail.
   - The one failure this branch caused (the socket guard, above) is fixed.
     After the fix the failing set is exactly main's.
 - No em or en dash anywhere in the diff (checked with grep for U+2013 and
@@ -333,16 +428,25 @@ brief's requirement, not my conclusions. What it found and what I did:
    signal.
 3. **A hand-run plain claude** (no hoai launcher) only loses its channel
    through the daemon's 15 s self-stop. Its claude process is not ended.
-4. **Linux without systemd-run**: the detached child stays in the agent's
+4. **macOS and Linux: an uninstall that refuses after the folder has moved**
+   leaves the plist or unit without its `run.sh`, so nothing hears the
+   replay. The credentials stay and the run log says what happened. Fixing
+   it would mean splitting the service removal from the state wipe in
+   `bgos-agent uninstall`.
+5. **The launch stage cannot detect a failure to start the run stage.** The
+   daemon still stops itself 15 s later. Under a service it restarts and
+   retries on the replay; when run by hand, it does not.
+6. **Not unit tested**: the late re-archive sweep, the legacy plist and unit
+   names, the bin's `systemd-run` fallback, and the bin's `readLauncher`.
+7. **Linux without systemd-run**: the detached child stays in the agent's
    cgroup and can die halfway through the uninstall. The credentials are then
    kept and the replay retries.
-5. **Windows**: a task whose folder is already gone cannot be probed or
+8. **Windows**: a task whose folder is already gone cannot be probed or
    removed through the watcher's uninstall, because that needs the
    registration built from the folder.
-6. `~/.bgos-plugin-state/<id>` is not archived.
-7. CHANGELOG: there is no unreleased section and no version bump was
+9. `~/.bgos-plugin-state/<id>` is not archived.
+10. CHANGELOG: there is no unreleased section and no version bump was
    allowed, so the entry is left for the release.
-8. The server.ts wiring is covered only by the source-scan guard in
-   pairing-lock-standdown (registration, `isArmed` and both arm sites) and by
-   the router and handler lib tests. No test runs the daemon itself.
-9. The doctor does not list archived agents under `.removed`.
+11. The server.ts wiring is covered only by source scans and by the router
+    and handler lib tests. No test runs the daemon itself.
+12. The doctor does not list archived agents under `.removed`.

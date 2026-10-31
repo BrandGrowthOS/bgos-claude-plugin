@@ -625,6 +625,108 @@ test('Linux: an auto start the uninstall could not remove keeps the credentials 
   assert.deepEqual(report.credentialsRemoved, [])
 })
 
+/** A Linux memory rig for the branches the real bash run does not reach; `exec` records every call. */
+function linuxMemoryRig(files: Record<string, string>, opts: { renameFails?: boolean } = {}) {
+  const home = '/home/kc'
+  const fs = memoryFs(files)
+  if (opts.renameFails) {
+    fs.rename = () => {
+      throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' })
+    }
+  }
+  const calls: string[] = []
+  const signals: string[] = []
+  const now = Date.now()
+  const deps = (over: Record<string, unknown> = {}) => ({
+    platform: 'linux',
+    home,
+    assistantId: '42',
+    fs,
+    exec: async (file: string, args: readonly string[]) => {
+      calls.push(`${file} ${args.join(' ')}`)
+      return { code: 0, stdout: '', stderr: '', error: null, timedOut: false }
+    },
+    bgosAgentBin: '/x/bgos-agent',
+    now: () => now,
+    readLauncher: () => null,
+    kill: (pid: number, signal: string) => {
+      signals.push(`${pid} ${signal}`)
+    },
+    pidAlive: () => false,
+    sleep: async () => {},
+    log: () => {},
+    ...over,
+  })
+  return { home, fs, calls, signals, now, deps }
+}
+
+test('Linux: a folder that cannot be moved is never handed to the uninstall (its state wipe would delete it); the credentials stay', async () => {
+  const r = linuxMemoryRig({ '/home/kc/.bgos-agent/42/run.sh': 'run', '/home/kc/.bgos-agent/credentials-42.json': '{}' }, { renameFails: true })
+  const report = await cleanUpUnboundAgent(r.deps())
+  assert.equal(report.ok, false)
+  assert.deepEqual(r.calls, [], 'no uninstall while the folder is still in place')
+  assert.equal(r.fs.files.get('/home/kc/.bgos-agent/42/run.sh'), 'run')
+  assert.equal(r.fs.files.get('/home/kc/.bgos-agent/credentials-42.json'), '{}')
+})
+
+test('Windows: a folder that never moves keeps the credentials and is never deleted', async () => {
+  const w = await windowsRig()
+  const now = Date.now()
+  const rename = w.fs.rename
+  w.fs.rename = (from: string, to: string) => {
+    if (from === wstate('912')) throw Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' })
+    rename(from, to)
+  }
+  const report = await cleanUpUnboundAgent({
+    platform: 'win32',
+    home: WHOME,
+    assistantId: '912',
+    fs: w.fs,
+    exec: w.exec,
+    now: () => now,
+    readLauncher: () => null,
+    pidAlive: () => false,
+    sleep: async () => {},
+    log: () => {},
+  })
+  assert.equal(report.ok, false)
+  assert.equal(report.archivedTo, null)
+  assert.equal(w.fs.files.get(`${wstate('912')}\\session-id`), 'pin-912')
+  assert.ok(w.fs.exists(wcreds('912')), 'the credentials stay with the folder that could not move')
+  assert.deepEqual(report.credentialsRemoved, [])
+})
+
+test('the legacy credentials.json is removed only when it names this agent', async () => {
+  const ours = linuxMemoryRig({ '/home/kc/.bgos-agent/42/run.sh': 'run', '/home/kc/.bgos-agent/credentials.json': JSON.stringify({ assistantId: 42 }) })
+  const mine = await cleanUpUnboundAgent(ours.deps())
+  assert.equal(mine.ok, true, JSON.stringify(mine))
+  assert.equal(ours.fs.exists('/home/kc/.bgos-agent/credentials.json'), false)
+
+  const theirs = linuxMemoryRig({ '/home/kc/.bgos-agent/42/run.sh': 'run', '/home/kc/.bgos-agent/credentials.json': JSON.stringify({ assistantId: 43 }) })
+  const other = await cleanUpUnboundAgent(theirs.deps())
+  assert.equal(other.ok, true, JSON.stringify(other))
+  assert.equal(theirs.fs.files.get('/home/kc/.bgos-agent/credentials.json'), JSON.stringify({ assistantId: 43 }), 'another agent\'s legacy credentials are untouched')
+})
+
+test('Linux: a launcher its service runs is not signalled; the uninstall stops the service', async () => {
+  const r = linuxMemoryRig({ '/home/kc/.bgos-agent/42/run.sh': 'run' })
+  const report = await cleanUpUnboundAgent(r.deps({ readLauncher: () => ({ pid: 4242, supervisor: 'service' }) }))
+  assert.equal(report.ok, true, JSON.stringify(report))
+  assert.deepEqual(r.signals, [])
+  assert.deepEqual(r.calls, ['/x/bgos-agent uninstall --assistant 42'])
+})
+
+test('server.ts: the daemon judges by its own agent and its own pairing, asks its own server, and starts the helper for its own agent', () => {
+  const server = readFileSync(join(repoRoot, 'server.ts'), 'utf8').replace(/\r\n/g, '\n')
+  // The pairing comes from this daemon's own credentials file, never from the notice.
+  assert.match(server, /const UNBOUND_OWN = \{ assistantId: ASSISTANT_ID, pairingId: AUTH\.mode === 'pairing' \? CREDENTIALS_FILE\?\.pairingId : undefined \}/)
+  assert.match(server, /const onAssistantUnbound = createUnboundNoticeHandler\(\{\n\s*\.\.\.UNBOUND_OWN,/)
+  // The confirming read is its own agent on its own server, with its own auth.
+  assert.match(server, /url: `\$\{API_BASE\}\/assistants\/\$\{encodeURIComponent\(ASSISTANT_ID\)\}`,\n\s*init: \{ headers: \{ \.\.\.authHeaders\(AUTH\) \} \},/)
+  // The helper is started for this agent and this HOME.
+  assert.match(server, /\[UNBOUND_HELPER, '--stage', 'launch', '--assistant', String\(ASSISTANT_ID\), '--home', homedir\(\)\]/)
+})
+
 test('a junk assistant id builds no path and touches nothing', async () => {
   const fs = memoryFs({ '/home/kc/.bgos-agent/42/session-id': 'pin' })
   const calls: string[] = []
