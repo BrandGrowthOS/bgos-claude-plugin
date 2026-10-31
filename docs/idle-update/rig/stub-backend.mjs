@@ -19,9 +19,10 @@
  * pushes one voice control frame (a stop_turn with no chat, which the daemon
  * answers unsupported and acts on nowhere) so the agent reads a call as live;
  * POST /__rig/fire {assistantId, taskId} posts the system card of a scheduled
- * task it still holds (or {assistantId, text}, a card with no task, 409 for a
- * task it does not hold), the way a real one lands: an empty row and no frame,
- * filled 2 s later, so only the poll delivers it; GET /__rig/ping.
+ * task it still holds, the way a real one lands: an empty row and no frame,
+ * filled 2 s later, so only the poll delivers it (409 for a task it does not
+ * hold). {assistantId, text} is a filled system card with a frame, for a
+ * chat's first card, which a poll would read as backlog; GET /__rig/ping.
  *
  * usage: node stub-backend.mjs --port <43000..48999> --dir <run dir> [--always-on]
  * (--always-on answers alwaysOn true: a launchd or systemd job the daemon would
@@ -117,12 +118,12 @@ const server = createServer(async (req, res) => {
       const chatId = chatFor(body.assistantId)
       const id = nextMessageId++
       const list = messages.get(chatId) ?? []
-      const row = { message: { id, chatId, sender, text: op === 'fire' ? '' : text, sentDate: new Date().toISOString() }, messageFiles: [], messageOptions: [] }
+      const row = { message: { id, chatId, sender, text: task ? '' : text, sentDate: new Date().toISOString() }, messageFiles: [], messageOptions: [] }
       list.push(row)
       messages.set(chatId, list)
       record({ rig: op, assistantId: String(body.assistantId), chatId, id })
       // A real wake's card is an empty row with no frame, filled by a later update only the poll reads (server.ts isPendingEmptySystem).
-      if (op === 'fire') {
+      if (task) {
         setTimeout(() => {
           row.message.text = text
         }, 2000)

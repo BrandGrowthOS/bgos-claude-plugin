@@ -2798,8 +2798,8 @@
       "id": "way-back-report",
       "rule": "the report says what is true and what a person does",
       "file": "lib/idle-update.mjs",
-      "find": "It has used its one way back and has not validated a build since, so the install stays. A restart by hand comes back on ${running}",
-      "replace": "Another agent on this computer decides the rollback. A restart by hand comes back on ${running}",
+      "find": "It has used its one way back and has not validated a build since, so it leaves the install alone.",
+      "replace": "Another agent on this computer decides the rollback.",
       "tests": [
         "test/idle-update.test.ts"
       ]
@@ -3156,19 +3156,19 @@
     },
     {
       "id": "report-failed-remedy",
-      "rule": "a restart by hand is said to come back on the same build",
+      "rule": "a report names no build a restart lands on: another agent may move the install",
       "file": "lib/idle-update.mjs",
-      "find": "so the install stays. A restart by hand comes back on ${running}; a newer version, or a person installing an older one, moves it.",
-      "replace": "so the install stays. Restart it by hand.",
+      "find": "so it leaves the install alone. A restart by hand loads what is installed, which may be this same build.",
+      "replace": "so it leaves the install alone. A restart by hand comes back on ${running}.",
       "tests": [
         "test/idle-update.test.ts"
       ]
     },
     {
       "id": "report-rollback-failed-remedy",
-      "rule": "a rollback that did not take names a remedy that works",
+      "rule": "a rollback that did not take names no build a restart lands on",
       "file": "lib/idle-update.mjs",
-      "find": "this agent runs ${running}. A restart by hand comes back on ${running}; a newer version, or a person installing an older one, moves it.",
+      "find": "this agent runs ${running}. A restart by hand loads what is installed, which may be this same build.",
       "replace": "this agent runs ${running}. Restart it by hand.",
       "tests": [
         "test/idle-update.test.ts"

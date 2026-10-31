@@ -679,11 +679,12 @@ async function scenarioWake() {
   say('held; watching past the quiet window and the largest jitter')
   await sleep((20 * MIN) / scale + MIN)
   const whileHeld = sessionLaunches(a).length
-  const scheduleReads = jsonLines(join(dir, 'stub-requests.jsonl')).filter((r) => r.path === 'scheduled-tasks/agent' && r.assistantId === a.id).length
   step(a, { op: 'prompt', text: 'rig: a turn that ends on an interval /loop only' })
   await sleep(SEC)
   step(a, { op: 'stop', sessionCrons: [{ id: 'rig-interval', schedule: '*/10 * * * *', recurring: true, prompt: '/loop 10m rig' }] })
   await watch('the restart onto the target', () => latestVersion(a.id) === TARGET && record(a.id)?.state === 'validated', { timeoutMs: 15 * MIN })
+  // Only a close look reads the schedule, and the new daemon has nothing staged to look at, so these are the old daemon's.
+  const scheduleReads = jsonLines(join(dir, 'stub-requests.jsonl')).filter((r) => r.path === 'scheduled-tasks/agent' && r.assistantId === a.id).length
   const before = seen().length
   // The stub fires only a task it still holds: the wake armed before the restart.
   await stub('fire', { assistantId: a.id, taskId: 1 })
