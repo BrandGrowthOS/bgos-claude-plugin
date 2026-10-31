@@ -1,0 +1,3864 @@
+{
+  "note": "One mutation per rule. docs/idle-update/run-mutants.mjs applies each alone, runs its named tests, and expects them to FAIL (killed); the source is restored after every mutant.",
+  "mutants": [
+    {
+      "id": "gate-01-updates-disabled",
+      "rule": "1 BGOS_AUTO_UPDATE off never arms",
+      "file": "lib/idle-update.mjs",
+      "find": "if (f.autoUpdateEnabled !== true) return { action: 'off', reason: 'updates_disabled' }",
+      "replace": "if (false) return { action: 'off', reason: 'updates_disabled' }",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-02-strictly-newer",
+      "rule": "2 only a strictly newer X.Y.Z is staged",
+      "file": "lib/idle-update.mjs",
+      "find": "if (!isNewerVersion(f.stagedVersion, f.runningVersion)) return { action: 'off', reason: 'nothing_staged' }",
+      "replace": "if (!f.stagedVersion || f.stagedVersion === f.runningVersion) return { action: 'off', reason: 'nothing_staged' }",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-03-passive",
+      "rule": "3 only the pairing lock holder acts",
+      "file": "lib/idle-update.mjs",
+      "find": "if (f.active !== true) return wait('passive')",
+      "replace": "if (f.active === null) return wait('passive')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-04-watcher",
+      "rule": "4 the watcher sweep owns updates where active",
+      "file": "lib/idle-update.mjs",
+      "find": "if (f.watcherSweepActive) return wait('watcher_owns_updates')",
+      "replace": "if (false) return wait('watcher_owns_updates')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-05-held-bad",
+      "rule": "5 a version latched bad is never restarted onto",
+      "file": "lib/idle-update.mjs",
+      "find": "if (f.heldBad) return wait('version_held_bad')",
+      "replace": "if (false) return wait('version_held_bad')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-06-unattended",
+      "rule": "6 never an unsupervised interactive session",
+      "file": "lib/idle-update.mjs",
+      "find": "if (!RESTART_KINDS.has(f.authority?.kind) || f.authority?.unattended !== true) return wait('no_unattended_authority')",
+      "replace": "if (!RESTART_KINDS.has(f.authority?.kind)) return wait('no_unattended_authority')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-07a-rolled-back",
+      "rule": "7 a rolled back version is never retried",
+      "file": "lib/idle-update.mjs",
+      "find": "if (attempt.rolledBack || attempt.inFlight) return wait('attempted')",
+      "replace": "if (attempt.inFlight) return wait('attempted')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-07b-backoff",
+      "rule": "7 one attempt per version, then back off",
+      "file": "lib/idle-update.mjs",
+      "find": "if (attempt.failed > 0 && !(finite(attempt.lastAtMs) && now - attempt.lastAtMs >= attemptBackoffMs(attempt.failed, d))) {",
+      "replace": "if (attempt.failed > 99 && !(finite(attempt.lastAtMs) && now - attempt.lastAtMs >= attemptBackoffMs(attempt.failed, d))) {",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-08a-in-flight",
+      "rule": "8 draining or the update lock waits",
+      "file": "lib/idle-update.mjs",
+      "find": "if (f.draining || f.updateLockHeld) return wait('update_in_flight')",
+      "replace": "if (f.updateLockHeld) return wait('update_in_flight')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-08b-marker",
+      "rule": "8 a waiting restart marker waits (and a stranded one is reported)",
+      "file": "lib/idle-update.mjs",
+      "find": "if (finite(f.markerAgeMs)) return wait(f.markerAgeMs >= d.markerStrandedMs ? 'launcher_latched' : 'update_in_flight')",
+      "replace": "if (finite(f.markerAgeMs)) return wait('update_in_flight')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-09-young",
+      "rule": "9 the first minute of a daemon waits",
+      "file": "lib/idle-update.mjs",
+      "find": "if (!finite(f.bootAtMs) || now - f.bootAtMs < d.minUpMs || f.startupComplete !== true) return wait('young')",
+      "replace": "if (!finite(f.bootAtMs) || f.startupComplete !== true) return wait('young')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-10-safe-moment",
+      "rule": "10 a turn, an owed reply or a permission card waits",
+      "file": "lib/idle-update.mjs",
+      "find": "if (!safe.safe && safe.reason !== 'recent_activity') return wait(safe.reason)",
+      "replace": "if (false) return wait(safe.reason)",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-11-open-ask",
+      "rule": "11 an open ask card waits",
+      "file": "lib/idle-update.mjs",
+      "find": "if (f.openAsks > 0) return wait('open_ask')",
+      "replace": "if (f.openAsks > 1) return wait('open_ask')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-12-goal",
+      "rule": "12 a running goal waits",
+      "file": "lib/idle-update.mjs",
+      "find": "if (f.goalRunning) return wait('goal_running')",
+      "replace": "if (false) return wait('goal_running')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-13a-call-consult",
+      "rule": "13 a pending voice consult waits",
+      "file": "lib/idle-update.mjs",
+      "find": "if (call.pendingConsults > 0 || call.openContinuations > 0 || call.openMeetings > 0 || within(now, call.lastVoiceAtMs, d.callRecentMs)) {",
+      "replace": "if (call.openContinuations > 0 || call.openMeetings > 0 || within(now, call.lastVoiceAtMs, d.callRecentMs)) {",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-13b-call-recent",
+      "rule": "13 a voice frame in the last 30 min waits",
+      "file": "lib/idle-update.mjs",
+      "find": "if (call.pendingConsults > 0 || call.openContinuations > 0 || call.openMeetings > 0 || within(now, call.lastVoiceAtMs, d.callRecentMs)) {",
+      "replace": "if (call.pendingConsults > 0 || call.openContinuations > 0 || call.openMeetings > 0) {",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-14-browser",
+      "rule": "14 a browser tool in the last 30 min waits",
+      "file": "lib/idle-update.mjs",
+      "find": "if (within(now, f.lastBrowserToolAtMs, d.browserRecentMs)) return wait('browser_in_use')",
+      "replace": "if (false) return wait('browser_in_use')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-15-person",
+      "rule": "15 a person attached, or not knowing, waits",
+      "file": "lib/idle-update.mjs",
+      "find": "if (f.personAttached !== false) return wait('person_attached')",
+      "replace": "if (f.personAttached === true) return wait('person_attached')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-16-quiet",
+      "rule": "16 activity inside the quiet window waits",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (!safe.safe) return wait(safe.reason)\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-17-jitter",
+      "rule": "17 each agent waits its own jitter past the quiet window",
+      "file": "lib/idle-update.mjs",
+      "find": "if (now - newest < QUIET_WINDOW_MS / d.scale + (finite(f.jitterMs) ? Math.max(0, f.jitterMs) : d.jitterMaxMs)) return wait('jitter')",
+      "replace": "if (now - newest < QUIET_WINDOW_MS / d.scale) return wait('jitter')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-18a-lease",
+      "rule": "18 another agent holding the lease waits",
+      "file": "lib/idle-update.mjs",
+      "find": "if (!['free', 'mine', 'expired'].includes(machine.lease)) return wait('machine_busy')",
+      "replace": "if (false) return wait('machine_busy')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-18b-spacing",
+      "rule": "18 a release under 2 min ago waits",
+      "file": "lib/idle-update.mjs",
+      "find": "if (finite(machine.spacingUntilMs) && now < machine.spacingUntilMs) return wait('spacing')",
+      "replace": "if (false) return wait('spacing')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-19-canary",
+      "rule": "19 another agent's unconfirmed canary waits",
+      "file": "lib/idle-update.mjs",
+      "find": "if (!['none', 'validated', 'next', 'mine'].includes(machine.canary)) return wait('canary_unconfirmed')",
+      "replace": "if (machine.canary === 'never') return wait('canary_unconfirmed')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-20a-tree-unreadable",
+      "rule": "20 an unreadable process tree waits",
+      "file": "lib/idle-update.mjs",
+      "find": "if (f.claudeKnown !== true || !Array.isArray(f.descendants)) return wait('process_tree_unreadable')",
+      "replace": "if (!Array.isArray(f.descendants)) return wait('process_tree_unreadable')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-20b-background-job",
+      "rule": "20 a background job under claude waits",
+      "file": "lib/idle-update.mjs",
+      "find": "if (f.descendants.some(isBackgroundJobCommand)) return wait('background_job')",
+      "replace": "if (false) return wait('background_job')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-21a-wake-unknown",
+      "rule": "21 an unreadable wake schedule waits (fails closed)",
+      "file": "lib/idle-update.mjs",
+      "find": "if (wake.known !== true) return wait('wake_schedule_unknown')",
+      "replace": "if (false) return wait('wake_schedule_unknown')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-21b-wake-due",
+      "rule": "21 a wake due within 10 min waits",
+      "file": "lib/idle-update.mjs",
+      "find": "if (finite(wake.nextDueAtMs) && Math.abs(wake.nextDueAtMs - now) < d.wakeGuardMs) return wait('wake_due')",
+      "replace": "if (false) return wait('wake_due')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "wake-field",
+      "rule": "the schedule view field is nextFireAt",
+      "file": "lib/idle-update.mjs",
+      "find": "const at = typeof task?.nextFireAt === 'string' ? Date.parse(task.nextFireAt) : Number.NaN",
+      "replace": "const at = typeof task?.nextRunAt === 'string' ? Date.parse(task.nextRunAt) : Number.NaN",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "jitter-draw",
+      "rule": "the jitter is a uniform draw over 0 to 10 min",
+      "file": "lib/idle-update.mjs",
+      "find": "return Math.round(clamp01(random) * d.jitterMaxMs)",
+      "replace": "return Math.round(0.5 * d.jitterMaxMs)",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "backoff-doubling",
+      "rule": "the back-off doubles from 24 h, capped at 7 days",
+      "file": "lib/idle-update.mjs",
+      "find": "return Math.min(d.backoffMaxMs, d.backoffBaseMs * 2 ** Math.min(30, failed - 1))",
+      "replace": "return d.backoffBaseMs",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "lease-ttl",
+      "rule": "a lease older than 25 min is expired",
+      "file": "lib/idle-update.mjs",
+      "find": "if (!finite(at) || within(now, at, d.leaseTtlMs)) return { state: 'held', lease }",
+      "replace": "if (!finite(at) || true) return { state: 'held', lease }",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "lease-junk",
+      "rule": "a lease that does not parse is never free",
+      "file": "lib/idle-update.mjs",
+      "find": "if (raw === null || raw === undefined) return { state: 'free' }",
+      "replace": "if (raw === null || raw === undefined || !raw.startsWith('{\"')) return { state: 'free' }",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "canary-max",
+      "rule": "two canaries that never came back latch the version bad",
+      "file": "lib/idle-update.mjs",
+      "find": "if (silent.length >= MAX_CANARIES) return { state: 'latch_bad' }",
+      "replace": "if (silent.length > MAX_CANARIES) return { state: 'latch_bad' }",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "canary-hold",
+      "rule": "a canary that never came back holds the version 24 h",
+      "file": "lib/idle-update.mjs",
+      "find": "if (within(now, latest.at, d.canaryHoldMs)) return { state: 'hold' }",
+      "replace": "if (false) return { state: 'hold' }",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "settle-context-lost",
+      "rule": "a new session after the restart is context_lost",
+      "file": "lib/idle-update.mjs",
+      "find": "      if (newSession) return { record: withAttempt(record, now, 'context_lost', lostFields), event: 'context_lost' }\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "settle-second-boot",
+      "rule": "a second boot on the target before validation is the build failing",
+      "file": "lib/idle-update.mjs",
+      "find": "    return { record: withAttempt(record, now, 'second_boot', { lockBoots, arrivedAt: iso }), event: 'second_boot' }",
+      "replace": "    return { record, event: 'none' }",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "settle-came-back-old",
+      "rule": "a restart that came back on the old version is a failed attempt",
+      "file": "lib/idle-update.mjs",
+      "find": "return { record: withAttempt(record, now, 'came_back_old', { state: 'came_back_old' }), event: 'came_back_old' }",
+      "replace": "return { record, event: 'none' }",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "settle-rollback-once",
+      "rule": "a target booting after its rollback is never rolled back again",
+      "file": "lib/idle-update.mjs",
+      "find": "if (onTarget) return { record: withAttempt(record, now, 'rollback_failed', { state: 'rollback_failed' }), event: 'rollback_failed' }",
+      "replace": "if (false) return { record: withAttempt(record, now, 'rollback_failed', { state: 'rollback_failed' }), event: 'rollback_failed' }",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "validate-heartbeat",
+      "rule": "validation needs a heartbeat that landed after arrival",
+      "file": "lib/idle-update.mjs",
+      "find": "    heartbeatOkAtMs >= arrivedAtMs &&\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "validate-beacon",
+      "rule": "validation needs a fresh beacon",
+      "file": "lib/idle-update.mjs",
+      "find": "    now - beaconAtMs < d.beaconFreshMs &&\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "validate-deaf",
+      "rule": "a deaf verdict never validates",
+      "file": "lib/idle-update.mjs",
+      "find": "    now - beaconAtMs < d.beaconFreshMs &&\n    deaf !== true\n",
+      "replace": "    now - beaconAtMs < d.beaconFreshMs\n",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "validate-hold",
+      "rule": "validation holds 5 min",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (isLiveBuild(input, d) && held && beaconAtMs",
+      "replace": "  if (isLiveBuild(input, d) && beaconAtMs",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "validate-login",
+      "rule": "an expired login suspends the deadline",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (loginExpired === true) return 'pending'\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "unattended-win-hidden",
+      "rule": "Windows: the task's run-agent.vbs must run hidden",
+      "file": "lib/idle-update.mjs",
+      "find": "const hidden = /, 0, True\\)\\s*$/.test(String(vbs.text ?? ''))",
+      "replace": "const hidden = /, \\d, True\\)\\s*$/.test(String(vbs.text ?? ''))",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "unattended-win-written-before",
+      "rule": "Windows: run-agent.vbs written before the launcher started",
+      "file": "lib/idle-update.mjs",
+      "find": "if (!hidden || !finite(vbs.mtimeMs) || !finite(input.launcherStartedAtMs) || vbs.mtimeMs >= input.launcherStartedAtMs) {",
+      "replace": "if (!hidden || !finite(vbs.mtimeMs)) {",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "unattended-win-parent",
+      "rule": "Windows: the launcher's parent is the task's wscript",
+      "file": "lib/idle-update.mjs",
+      "find": "if (!/wscript(\\.exe)?\"?\\s/i.test(text) || !namesFile(text, input.runAgentVbsPath)) return",
+      "replace": "if (!namesFile(text, input.runAgentVbsPath)) return",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "unattended-posix-status",
+      "rule": "macOS/Linux: a launch-status older than the claim proves nothing",
+      "file": "lib/idle-update.mjs",
+      "find": "if (SUPERVISED_LAUNCH_OUTCOMES.has(status.outcome) && finite(status.mtimeMs) && finite(input.supervisorMtimeMs) && status.mtimeMs >= input.supervisorMtimeMs) {",
+      "replace": "if (SUPERVISED_LAUNCH_OUTCOMES.has(status.outcome)) {",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "own-launcher-nested",
+      "rule": "a nested claude never proves the outer launcher",
+      "file": "lib/idle-update.mjs",
+      "find": "if (ancestors.slice(claudeAt + 1, at).some((p) => isClaudeCommand(p.command))) return { proven: false, reason: 'nested_claude' }",
+      "replace": "if (false) return { proven: false, reason: 'nested_claude' }",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "own-launcher-hoai",
+      "rule": "the proven launcher runs hoai-core.mjs",
+      "file": "lib/idle-update.mjs",
+      "find": "if (!/hoai-core\\.mjs/i.test(String(ancestors[at].command ?? ''))) return { proven: false, reason: 'not_hoai' }",
+      "replace": "if (false) return { proven: false, reason: 'not_hoai' }",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "repoint-user-scope",
+      "rule": "the rollback repoints the user-scope hoai entry only",
+      "file": "lib/idle-update.mjs",
+      "find": "  return list.find((item) => item && typeof item === 'object' && item.scope === 'user') ?? (Array.isArray(raw) ? null : (list[0] ?? null))",
+      "replace": "  return list[0] ?? null",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "enrolment-hold",
+      "rule": "the enrolment holds while the latest is a bad version",
+      "file": "lib/idle-update.mjs",
+      "find": "  return bad.includes(latestKnownVersion)\n}",
+      "replace": "  return false\n}",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-recheck-after-close-look",
+      "rule": "every rule again on the real facts after the close look",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (second.action !== 'restart') {\n      listAfterMs = now() + d.listBackoffMs",
+      "replace": "    if (false) {\n      listAfterMs = now() + d.listBackoffMs",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-no-record-no-restart",
+      "rule": "no record, no restart",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (!writeRecord(next)) {",
+      "replace": "    if (!writeRecord(next) && false) {",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-lease-before-act",
+      "rule": "the lease is taken before the restart",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (!takeLease(target, me)) {\n      waiting({ action: 'wait', reason: 'machine_busy' })",
+      "replace": "    if (!takeLease(target, me) && false) {\n      waiting({ action: 'wait', reason: 'machine_busy' })",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-did-not-arrive",
+      "rule": "a restart that never arrives is a failed attempt",
+      "file": "lib/idle-update.mjs",
+      "find": "          if (now() - requestedAtMs < d.didNotArriveMs) return 'requested'\n          {\n            const markerStranded = takeBackMarker()",
+      "replace": "          if (true) return 'requested'\n          {\n            const markerStranded = takeBackMarker()",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-staged-is-failure",
+      "rule": "a ladder that could only stage is a failed attempt",
+      "file": "lib/idle-update.mjs",
+      "find": "if (!took) return failAsk('no_authority', 'the restart ladder could only stage')",
+      "replace": "if (!took) return 'requested'",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-bad-marked-on-rollback",
+      "rule": "a failed canary latches the version bad",
+      "file": "lib/idle-update.mjs",
+      "find": "      markVersion(record.target, 'bad', { reason: why })\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-settle-lock-holder",
+      "rule": "the boot settle is the lock holder's",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (!read(deps.active, false)) return 'passive'\n    const found",
+      "replace": "    const found",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-heartbeat-request",
+      "rule": "validation asks for a heartbeat after arrival",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (!(finite(heartbeatOkAtMs) && heartbeatOkAtMs >= beatSince)) read(deps.requestHeartbeat, null)",
+      "replace": "    if (false) read(deps.requestHeartbeat, null)",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "host-readonly-viewer",
+      "rule": "a read-only viewer is nobody typing",
+      "file": "lib/idle-update-host.mjs",
+      "find": "      .some((line) => line.trim() === '0')",
+      "replace": "      .some((line) => line.trim() !== '')",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-tmux-unknown",
+      "rule": "a tmux that did not answer is unknown, never nobody",
+      "file": "lib/idle-update-host.mjs",
+      "find": "  return absentRe.test(`${res.stderr ?? ''}\\n${res.stdout ?? ''}`) ? 'none' : null",
+      "replace": "  return 'none'",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-watcher-fresh",
+      "rule": "a stale watcher state is no sweep",
+      "file": "lib/idle-update-host.mjs",
+      "find": "  return Number.isFinite(at) && now - at < freshMs",
+      "replace": "  return Number.isFinite(at)",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-reclaim-own-only",
+      "rule": "only this plugin's own switch-off is taken back",
+      "file": "lib/idle-update-host.mjs",
+      "find": "    hold && typeof hold === 'object' && hold.marketplace === marketplace && typeof hold.configDir",
+      "replace": "    hold && typeof hold === 'object' && typeof hold.configDir",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-hold-only-when-changed",
+      "rule": "a person's own false is never recorded as ours",
+      "file": "lib/idle-update-host.mjs",
+      "find": "  if (result?.changed === true) {",
+      "replace": "  if (true) {",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-from-root-check",
+      "rule": "the old folder must still hold the old version",
+      "file": "lib/idle-update-host.mjs",
+      "find": "  if (manifest?.version !== from) return { ok: false, reason: 'from_root_missing' }\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-launcher-relaunch",
+      "rule": "only a launcher that promises relaunch is a launcher",
+      "file": "lib/idle-update-host.mjs",
+      "find": "  if (!Array.isArray(claim.capabilities) || !claim.capabilities.includes('relaunch')) return null\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "ladder-own-launcher-rung",
+      "rule": "the own launcher rung writes the marker for a gen-2 job",
+      "file": "lib/update-rpc.ts",
+      "find": "    if (authority.kind === 'service' && ownLauncher) {",
+      "replace": "    if (authority.kind === 'service' && ownLauncher && false) {",
+      "tests": [
+        "test/update-rpc.own-launcher.test.ts",
+        "test/idle-update.integration.test.ts"
+      ]
+    },
+    {
+      "id": "ladder-rung-idle-only",
+      "rule": "only the idle entry points carry a launcher proof",
+      "file": "lib/update-rpc.ts",
+      "find": "    return this.restartLadder(SCHEDULED_RESTART_RPC, targetVersion)",
+      "replace": "    return this.restartLadder(SCHEDULED_RESTART_RPC, targetVersion, { markerPath: 'x', launcherPid: 1 })",
+      "tests": [
+        "test/update-rpc.own-launcher.test.ts"
+      ]
+    },
+    {
+      "id": "latch-pending-restart",
+      "rule": "a version held bad is no pending restart",
+      "file": "lib/pending-restart.ts",
+      "find": "    return input.heldBad(pending) === true ? null : pending",
+      "replace": "    return pending",
+      "tests": [
+        "test/pending-restart.test.ts"
+      ]
+    },
+    {
+      "id": "clone-rollback-dirty",
+      "rule": "a dirty checkout is never rolled back",
+      "file": "lib/self-update.ts",
+      "find": "if ((await this.checkoutPreviousCommit(previousCommit, targetCommit)) === 'dirty') return { ok: false, reason: 'dirty_tree' }",
+      "replace": "await this.checkoutPreviousCommit(previousCommit, targetCommit)",
+      "tests": [
+        "test/self-update.idle-rollback.test.ts"
+      ]
+    },
+    {
+      "id": "preseed-reclaim",
+      "rule": "a person's false is never overturned without the hold",
+      "file": "lib/claude-preseed.mjs",
+      "find": "  if (enabled && entry.autoUpdate === false && reclaim !== true) {",
+      "replace": "  if (enabled && entry.autoUpdate === false && false) {",
+      "tests": [
+        "test/claude-preseed.test.ts"
+      ]
+    },
+    {
+      "id": "wire-armed",
+      "rule": "server.ts arms the controller when the lock is taken at boot",
+      "file": "server.ts",
+      "find": "    connectedSince = Date.now()\n    armIdleUpdate()\n",
+      "replace": "    connectedSince = Date.now()\n",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-latch",
+      "rule": "the heartbeat reports a held version as no pending restart",
+      "file": "server.ts",
+      "find": "    heldBad: latched ? idleUpdateHeldBad : undefined,\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-lock-holder",
+      "rule": "only the lock holder, never during shutdown",
+      "file": "server.ts",
+      "find": "      active: () => lockHeld && !shuttingDown,\n      holdsLock",
+      "replace": "      active: () => true,\n      holdsLock",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-browser-stamp",
+      "rule": "a browser tool is stamped",
+      "file": "server.ts",
+      "find": "    lastBrowserToolAtMs = Date.now()\n  }\n",
+      "replace": "  }\n",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "scale-loopback-only",
+      "rule": "the scale is honoured only against a loopback backend",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (!isLoopbackUrl(backendUrl)) return 1\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "scale-floors",
+      "rule": "a scale never shrinks did-not-arrive below 3.5 min nor beacon-fresh below 30 s",
+      "file": "lib/idle-update.mjs",
+      "find": "Math.max(SCALE_FLOORS[key] ?? 1, ",
+      "replace": "Math.max(1, ",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-09-startup",
+      "rule": "9 never before startup completed",
+      "file": "lib/idle-update.mjs",
+      "find": " || f.startupComplete !== true) return wait('young')",
+      "replace": ") return wait('young')",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "lease-future-expires",
+      "rule": "a lease stamped beyond its life ahead expires",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (finite(at) && at - now > d.leaseTtlMs) return { state: 'expired', lease }\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "canary-future-silent",
+      "rule": "a canary stamped beyond the lease life ahead reads as silent",
+      "file": "lib/idle-update.mjs",
+      "find": "  const jumped = (c) => (finite(c.at) && c.at - now > d.leaseTtlMs ? { ...c, at: Number.NEGATIVE_INFINITY } : c)\n",
+      "replace": "  const jumped = (c) => c\n",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "record-target-version",
+      "rule": "a record target must be X.Y.Z",
+      "file": "lib/idle-update.mjs",
+      "find": "if (typeof parsed.target !== 'string' || !VERSION_RE.test(parsed.target)) return null",
+      "replace": "if (typeof parsed.target !== 'string') return null",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "record-from-version",
+      "rule": "a record from must be X.Y.Z",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (typeof parsed.from !== 'string' || !VERSION_RE.test(parsed.from)) return null\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "settle-arrived-again",
+      "rule": "a build that proved live may boot once more",
+      "file": "lib/idle-update.mjs",
+      "find": "    if ((typeof record.liveAt === 'string' || endedCleanly) && record.rearrived !== true) {",
+      "replace": "    if (endedCleanly && record.rearrived !== true) {",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "settle-arrived-again-once",
+      "rule": "only once per record",
+      "file": "lib/idle-update.mjs",
+      "find": " && record.rearrived !== true) {",
+      "replace": ") {",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "settle-second-boot-arrival",
+      "rule": "a second boot restarts the arrival clock",
+      "file": "lib/idle-update.mjs",
+      "find": "'second_boot', { lockBoots, arrivedAt: iso })",
+      "replace": "'second_boot', { lockBoots })",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "validate-unreachable",
+      "rule": "an unreachable backend holds the deadline",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (backendUnreachable === true && down < d.unreachableCapMs) return 'pending'",
+      "replace": "  if (false) return 'pending'",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "validate-suspended",
+      "rule": "time unreachable or asleep is not counted",
+      "file": "lib/idle-update.mjs",
+      "find": "  const counted = now - from - (finite(suspendedMs) && suspendedMs > 0 ? suspendedMs : 0)",
+      "replace": "  const counted = now - from",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "validate-live-heartbeat",
+      "rule": "live needs a heartbeat since arrival",
+      "file": "lib/idle-update.mjs",
+      "find": "    heartbeatOkAtMs >= arrivedAtMs &&\n    finite(beaconAtMs)",
+      "replace": "    finite(beaconAtMs)",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "outage-4xx-answered",
+      "rule": "a 4xx is a backend that answered",
+      "file": "lib/idle-update.mjs",
+      "find": "  return Number.isInteger(status) && status < 500",
+      "replace": "  return Number.isInteger(status)",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-sleep-not-counted",
+      "rule": "the controller counts a sleep as suspended",
+      "file": "lib/idle-update.mjs",
+      "find": "      if (wallGap > monoGap) suspendedMs += wallGap - monoGap\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-outage-not-counted",
+      "rule": "the controller counts unreachable minutes as suspended",
+      "file": "lib/idle-update.mjs",
+      "find": "      else if (unreachable) unreachableMs += awake",
+      "replace": "      else if (false) unreachableMs += awake",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-live-on-record",
+      "rule": "live before the hold goes on the record",
+      "file": "lib/idle-update.mjs",
+      "find": "      if (!record.liveAt && live) settleTo({ ...record, liveAt: iso(n) })",
+      "replace": "      if (false) settleTo({ ...record, liveAt: iso(n) })",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-moment-authority",
+      "rule": "the rollback restart only through an unattended authority",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (!RESTART_KINDS.has(f.authority?.kind) || f.authority?.unattended !== true) return no('no_unattended_authority')\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-moment-passive",
+      "rule": "the rollback restart only as the lock holder",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (f.active !== true) return no('passive')\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-moment-draining",
+      "rule": "the rollback restart never while draining",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (f.draining) return no('update_in_flight')\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-moment-ask",
+      "rule": "the rollback restart waits for an open ask",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (f.openAsks > 0) return no('open_ask')\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-moment-goal",
+      "rule": "the rollback restart waits for a running goal",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (f.goalRunning) return no('goal_running')\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-moment-call",
+      "rule": "the rollback restart waits for a call",
+      "file": "lib/idle-update.mjs",
+      "find": "    return no('call_active')",
+      "replace": "    return { go: true, reason: 'quiet' }",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-moment-browser",
+      "rule": "the rollback restart waits for the browser",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (within(f.now, f.lastBrowserToolAtMs, d.browserRecentMs)) return no('browser_in_use')\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-moment-wake",
+      "rule": "the rollback restart waits for a wake due",
+      "file": "lib/idle-update.mjs",
+      "find": "Math.abs(wake.nextDueAtMs - f.now) < d.wakeGuardMs) return no('wake_due')",
+      "replace": "false) return no('wake_due')",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-rollback-by-hand",
+      "rule": "a rollback with no unattended authority asks for a restart by hand",
+      "file": "lib/idle-update.mjs",
+      "find": "        if (moment.reason === 'no_unattended_authority') {",
+      "replace": "        if (false) {",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-validate-awaited",
+      "rule": "the busy guard covers a slow rollback install",
+      "file": "lib/idle-update.mjs",
+      "find": "          return await validate()",
+      "replace": "          return validate()",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-validate-passive",
+      "rule": "a passive daemon never validates",
+      "file": "lib/idle-update.mjs",
+      "find": "        case 'validate':\n          if (!read(deps.active, false)) {",
+      "replace": "        case 'validate':\n          if (false) {",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-rollback-passive",
+      "rule": "a passive daemon never rolls back",
+      "file": "lib/idle-update.mjs",
+      "find": "          if (!read(deps.active, false)) return 'passive'\n          return await rollback()",
+      "replace": "          return await rollback()",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-canaries-silent-latch",
+      "rule": "two silent canaries latch the version bad on disk",
+      "file": "lib/idle-update.mjs",
+      "find": "if (latch.count * d.pollMs > d.validateDeadlineMs) markVersion(",
+      "replace": "if (false) markVersion(",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-startup-fact",
+      "rule": "the controller reads startup complete for gate 9",
+      "file": "lib/idle-update.mjs",
+      "find": "      startupComplete: read(deps.startupComplete, false),\n      safe:",
+      "replace": "      startupComplete: true,\n      safe:",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-activity-throws",
+      "rule": "an activity reading that throws is activity now",
+      "file": "lib/idle-update.mjs",
+      "find": "      activityMs: read(deps.activityMs, [n]),\n      jitterMs",
+      "replace": "      activityMs: read(deps.activityMs, []),\n      jitterMs",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-keepalive-pinned",
+      "rule": "a keepalive or an owning service restarts only a claude resuming a pinned session",
+      "file": "lib/idle-update.mjs",
+      "find": "      return { kind, unattended: pinned, proof: null }",
+      "replace": "      return { kind, unattended: true, proof: null }",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "keepalive-no-continue",
+      "rule": "a relaunch with --continue or -c is never pinned",
+      "file": "lib/idle-update.mjs",
+      "find": "  return sessionIdFromCommand(command) !== null && !CONTINUE_RE.test(String(command ?? ''))",
+      "replace": "  return sessionIdFromCommand(command) !== null",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-canary-still-canary",
+      "rule": "a voided or validated canary never rolls back",
+      "file": "lib/idle-update.mjs",
+      "find": "    const canary = Number.isInteger(record?.canaryN) && !files.voids.includes(record.canaryN) && !files.validated",
+      "replace": "    const canary = Number.isInteger(record?.canaryN)",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-latch-before-install",
+      "rule": "the version is latched bad before the install is touched",
+      "file": "lib/idle-update.mjs",
+      "find": "      markVersion(record.target, 'bad', { reason: why })\n      let result = null",
+      "replace": "      let result = null",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "win-own-vbs",
+      "rule": "Windows: only this agent's own run-agent.vbs proves the task",
+      "file": "lib/idle-update.mjs",
+      "find": "!namesFile(text, input.runAgentVbsPath)",
+      "replace": "!/run-agent\\.vbs/i.test(text)",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "host-vbs-path",
+      "rule": "the unattended inputs carry this agent's run-agent.vbs path",
+      "file": "lib/idle-update-host.mjs",
+      "find": "    runAgentVbsPath: vbsPath,\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-keepalive-own-tmux",
+      "rule": "a keepalive is asked on the tmux it runs in",
+      "file": "lib/idle-update-host.mjs",
+      "find": "  if (socket && pane) {",
+      "replace": "  if (false) {",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-keepalive-never-absent",
+      "rule": "a session tmux cannot find is unknown for a keepalive",
+      "file": "lib/idle-update-host.mjs",
+      "find": "const NEVER_ABSENT_RE = /(?!)/",
+      "replace": "const NEVER_ABSENT_RE = /can't find session|no server running|error connecting to|No such file or directory/i",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-keepalive-nothing-to-ask",
+      "rule": "a keepalive with nothing to ask is unknown",
+      "file": "lib/idle-update-host.mjs",
+      "find": "  if (!declared) return null\n",
+      "replace": "  if (!declared) return false\n",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-reclaim-config-dir",
+      "rule": "a hold is taken back only in its own config folder",
+      "file": "lib/idle-update-host.mjs",
+      "find": " && typeof hold.configDir === 'string' && hold.configDir !== '' && hold.configDir === configDir",
+      "replace": "",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-hold-config-dir",
+      "rule": "the hold names its config folder",
+      "file": "lib/idle-update-host.mjs",
+      "find": "...(typeof configDir === 'string' && configDir ? { configDir } : {}), ",
+      "replace": "",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-readback",
+      "rule": "installed_plugins.json is read back after the write",
+      "file": "lib/idle-update-host.mjs",
+      "find": "    held = installedPluginsPointsAt(safe(() => fs.readFile(installedPluginsPath), null), { version: from, installPath: fromRoot })",
+      "replace": "    held = true",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-switchoff-persisted",
+      "rule": "a switch-off that did not persist fails the rollback",
+      "file": "lib/idle-update-host.mjs",
+      "find": "  if (enrolment === 'not_persisted') return { ok: false, reason: 'auto_update_still_on' }\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-switchoff-throw",
+      "rule": "a switch-off that throws fails the rollback",
+      "file": "lib/idle-update-host.mjs",
+      "find": "  } catch {\n    return { ok: false, reason: 'auto_update_still_on' }\n  }",
+      "replace": "  } catch {\n    result = { reason: 'error' }\n  }",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "rpc-own-keys",
+      "rule": "a backend rpc id named like an object key is never a log-only label",
+      "file": "lib/update-rpc.ts",
+      "find": "Object.prototype.hasOwnProperty.call(LOG_ONLY_RPC_LABELS, rpcId) ? LOG_ONLY_RPC_LABELS[rpcId] : undefined",
+      "replace": "LOG_ONLY_RPC_LABELS[rpcId]",
+      "tests": [
+        "test/update-rpc.own-launcher.test.ts"
+      ]
+    },
+    {
+      "id": "wire-armed-promotion",
+      "rule": "server.ts arms the controller on promotion to the lock",
+      "file": "server.ts",
+      "find": "        refreshAskTracker('promotion')\n        armIdleUpdate()\n",
+      "replace": "        refreshAskTracker('promotion')\n",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-pairing-only",
+      "rule": "an API key session never arms it",
+      "file": "server.ts",
+      "find": "    if (AUTH.mode !== 'pairing') {\n      log('idle update: off: this session uses an API key; the idle update runs on paired agents only')\n      return\n    }\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-heartbeat-own-version",
+      "rule": "only a heartbeat carrying this build's version proves it",
+      "file": "server.ts",
+      "find": "if (body.daemonVersion === RUNNING_VERSION) heartbeatOkAtMs = Date.now()",
+      "replace": "heartbeatOkAtMs = Date.now()",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-unreachable",
+      "rule": "server.ts tells the controller when the backend cannot be reached",
+      "file": "server.ts",
+      "find": "      backendUnreachable: () => backendUnreachableSinceMs !== null,",
+      "replace": "      backendUnreachable: () => false,",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-monotonic",
+      "rule": "server.ts gives the controller a monotonic clock",
+      "file": "server.ts",
+      "find": "      monotonicNow: () => performance.now(),\n      requestHeartbeat",
+      "replace": "      monotonicNow: () => Date.now(),\n      requestHeartbeat",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-scale-backend",
+      "rule": "server.ts passes the backend to the scale",
+      "file": "server.ts",
+      "find": "scaleFromEnv(process.env.BGOS_IDLE_UPDATE_SCALE, { backendUrl: BACKEND_URL })",
+      "replace": "scaleFromEnv(process.env.BGOS_IDLE_UPDATE_SCALE, { backendUrl: 'http://127.0.0.1' })",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-keepalive-flag",
+      "rule": "server.ts tells the person check it is a keepalive",
+      "file": "server.ts",
+      "find": "          keepalive: authority.kind === 'keepalive',\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-enrolment-config-dir",
+      "rule": "server.ts gives the enrolment its config folder",
+      "file": "server.ts",
+      "find": "          configDir: CLAUDE_CONFIG_DIR,\n        })",
+      "replace": "        })",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-rollback-config-dir",
+      "rule": "server.ts gives the rollback its config folder",
+      "file": "server.ts",
+      "find": "      marketplace,\n      configDir: CLAUDE_CONFIG_DIR,\n",
+      "replace": "      marketplace,\n",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "validate-hold-from-live",
+      "rule": "the 5 min hold counts from the first live reading",
+      "file": "lib/idle-update.mjs",
+      "find": "const held = finite(liveSinceMs) && liveSinceMs >= arrivedAtMs && now - liveSinceMs >= d.validateHoldMs",
+      "replace": "const held = finite(liveSinceMs) && liveSinceMs >= arrivedAtMs && now - arrivedAtMs >= d.validateHoldMs",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "validate-startup-from",
+      "rule": "the deadline counts from this boot's startup complete",
+      "file": "lib/idle-update.mjs",
+      "find": "  const from = started ? Math.max(arrivedAtMs, startupCompleteAtMs) : arrivedAtMs",
+      "replace": "  const from = arrivedAtMs",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "validate-startup-bound",
+      "rule": "a startup that never completes has its own 15 min bound",
+      "file": "lib/idle-update.mjs",
+      "find": "  return counted >= (started ? d.validateDeadlineMs : d.startupDeadlineMs) ? 'deadline' : 'pending'",
+      "replace": "  return counted >= d.validateDeadlineMs ? 'deadline' : 'pending'",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "settle-rearrive-once",
+      "rule": "one re-arrival per record",
+      "file": "lib/idle-update.mjs",
+      "find": "    if ((typeof record.liveAt === 'string' || endedCleanly) && record.rearrived !== true) {",
+      "replace": "    if (typeof record.liveAt === 'string' || endedCleanly) {",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-startup-stamp",
+      "rule": "the controller stamps this boot's startup complete",
+      "file": "lib/idle-update.mjs",
+      "find": "      startupCompleteAtMs = n\n      suspendedMs = 0",
+      "replace": "      suspendedMs = 0",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-startup-suspended-reset",
+      "rule": "only time suspended since startup complete is subtracted",
+      "file": "lib/idle-update.mjs",
+      "find": "      startupCompleteAtMs = n\n      suspendedMs = 0",
+      "replace": "      startupCompleteAtMs = n",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-startup-unreachable-reset",
+      "rule": "only outage minutes since startup complete are taken off",
+      "file": "lib/idle-update.mjs",
+      "find": "      suspendedMs = 0\n      unreachableMs = 0",
+      "replace": "      suspendedMs = 0",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-live-since-break",
+      "rule": "a break in liveness restarts the hold",
+      "file": "lib/idle-update.mjs",
+      "find": "    liveSinceMs = live ? (liveSinceMs ?? n) : null",
+      "replace": "    liveSinceMs = live ? (liveSinceMs ?? n) : liveSinceMs",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-passive-suspend",
+      "rule": "passive minutes are not counted toward the deadline",
+      "file": "lib/idle-update.mjs",
+      "find": "            if (lastValidateAt) suspendedMs += Math.max(0, n - lastValidateAt.wall)\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-rollback-proof-grace",
+      "rule": "one unproven reading never gives up the rollback restart",
+      "file": "lib/idle-update.mjs",
+      "find": "          if (!RESTART_KINDS.has(close.authority.kind) || n - unprovenSinceMs >= d.rollbackProofGraceMs) {",
+      "replace": "          if (true) {",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-rollback-proof-ends",
+      "rule": "ten minutes unproven asks for a restart by hand",
+      "file": "lib/idle-update.mjs",
+      "find": "          if (!RESTART_KINDS.has(close.authority.kind) || n - unprovenSinceMs >= d.rollbackProofGraceMs) {",
+      "replace": "          if (!RESTART_KINDS.has(close.authority.kind)) {",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-rollback-proof-reset",
+      "rule": "a proven reading restarts the unproven clock",
+      "file": "lib/idle-update.mjs",
+      "find": "      if (RESTART_KINDS.has(close.authority.kind) && close.authority.unattended === true) unprovenSinceMs = null\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "gate-20-service-strays",
+      "rule": "a stray in an owning systemd unit's cgroup waits",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (strays.strays.length > 0) return wait('background_job')",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-20-strays-unreadable",
+      "rule": "an unreadable cgroup waits",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (strays?.ok !== true || !Array.isArray(strays.strays)) return wait('process_tree_unreadable')",
+      "replace": "  if (!Array.isArray(strays?.strays)) return wait('process_tree_unreadable')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-moment-strays",
+      "rule": "the rollback restart waits for a cgroup stray",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (strays.strays.length > 0) return no('background_job')",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-moment-strays-unreadable",
+      "rule": "the rollback restart waits for an unreadable cgroup",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (strays?.ok !== true || !Array.isArray(strays.strays)) return no('process_tree_unreadable')",
+      "replace": "  if (!Array.isArray(strays?.strays)) return no('process_tree_unreadable')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-strays-read",
+      "rule": "the controller reads the owning unit's strays",
+      "file": "lib/idle-update.mjs",
+      "find": "      const got = await deps.serviceStrays(processes, claude)\n      return got?.ok === true && Array.isArray(got.strays) ? got : { ok: false, strays: [] }",
+      "replace": "      return { ok: true, strays: [] }",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-strays-only-service",
+      "rule": "the cgroup is read only for an owning service",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (authority.kind !== 'service' || authority.unattended !== true || authority.proof) return { ok: true, strays: [] }",
+      "replace": "    if (false) return { ok: true, strays: [] }",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-strays-watch",
+      "rule": "the watch decision gets the strays",
+      "file": "lib/idle-update.mjs",
+      "find": "        serviceStrays: close.serviceStrays,\n        wake: close.wake,\n      },\n      d,\n    )\n    if (second.action",
+      "replace": "        serviceStrays: { ok: true, strays: [] },\n        wake: close.wake,\n      },\n      d,\n    )\n    if (second.action",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-strays-rollback",
+      "rule": "the rollback moment gets the strays",
+      "file": "lib/idle-update.mjs",
+      "find": "          serviceStrays: close.serviceStrays,\n          wake: close.wake,",
+      "replace": "          serviceStrays: { ok: true, strays: [] },\n          wake: close.wake,",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-person-after-wake",
+      "rule": "a person is read after the wake schedule call",
+      "file": "lib/idle-update.mjs",
+      "find": "    let wake = null\n    try {\n      wake = await deps.wakeSchedule()\n    } catch {\n      wake = null\n    }\n    // A person is read after the schedule call: one who attached while it was out still holds the restart.\n    let attached = null\n    try {\n      attached = await deps.personAttached()\n    } catch {\n      attached = null\n    }\n",
+      "replace": "    let attached = null\n    try {\n      attached = await deps.personAttached()\n    } catch {\n      attached = null\n    }\n    let wake = null\n    try {\n      wake = await deps.wakeSchedule()\n    } catch {\n      wake = null\n    }\n",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "spacing-future-bound",
+      "rule": "a release stamped far ahead holds no spacing",
+      "file": "lib/idle-update.mjs",
+      "find": "      const spacing = Number.isFinite(releasedAt) && releasedAt - n <= d.spacingMs",
+      "replace": "      const spacing = Number.isFinite(releasedAt)",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "host-watcher-future",
+      "rule": "a watcher stamp far ahead is stale",
+      "file": "lib/idle-update-host.mjs",
+      "find": "  return Number.isFinite(at) && now - at < freshMs && at - now <= freshMs",
+      "replace": "  return Number.isFinite(at) && now - at < freshMs",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-strays-systemd-only",
+      "rule": "only a systemd unit's group is read",
+      "file": "lib/idle-update-host.mjs",
+      "find": "  if (service.kind !== 'systemd') return { ok: true, strays: [] }\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-strays-fail-closed",
+      "rule": "a systemctl that refuses is unreadable",
+      "file": "lib/idle-update-host.mjs",
+      "find": "  if (res?.code !== 0) return fail\n  const show",
+      "replace": "  const show",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-strays-found",
+      "rule": "a job orphaned out of claude's tree is a stray",
+      "file": "lib/idle-update-host.mjs",
+      "find": "  return { ok: true, strays: [...strayCgroupMembers({ members, processes, roots }), ...unlisted] }",
+      "replace": "  return { ok: true, strays: [...unlisted] }",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-strays-v1",
+      "rule": "cgroup v1 is read too",
+      "file": "lib/idle-update-host.mjs",
+      "find": " ?? procs('/sys/fs/cgroup/systemd')",
+      "replace": "",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "beacon-written",
+      "rule": "touchBeaconHeartbeat says whether it wrote",
+      "file": "lib/pairing-lock.ts",
+      "find": "    // Telemetry only.\n    return false",
+      "replace": "    // Telemetry only.\n    return true",
+      "tests": [
+        "test/pairing-lock.test.ts"
+      ]
+    },
+    {
+      "id": "wire-beacon-written",
+      "rule": "only a written beacon stamps beaconTouchedAtMs",
+      "file": "server.ts",
+      "find": "          if (beaconWritten) beaconTouchedAtMs = hbNow",
+      "replace": "          beaconTouchedAtMs = hbNow",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-reach-every-call",
+      "rule": "every backend answer marks the backend reached",
+      "file": "server.ts",
+      "find": "      if (backend) noteBackendReach(response.status)\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-reach-no-answer",
+      "rule": "a call with no answer marks the backend unreachable",
+      "file": "server.ts",
+      "find": "    if (backend && !answered) noteBackendReach(null)\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-service-strays",
+      "rule": "the cgroup read gets the authority's service",
+      "file": "server.ts",
+      "find": "          service: authority.kind === 'service' ? authority.service : null,",
+      "replace": "          service: null,",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "dur-unreachable-cap",
+      "rule": "an outage is forgiven for 60 min at most",
+      "file": "lib/idle-update.mjs",
+      "find": "  unreachableCapMs: 60 * MIN,",
+      "replace": "  unreachableCapMs: 600 * MIN,",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "settle-ended-rearrival",
+      "rule": "a boot after a clean end is a re-arrival",
+      "file": "lib/idle-update.mjs",
+      "find": "    if ((typeof record.liveAt === 'string' || endedCleanly) && record.rearrived !== true) {",
+      "replace": "    if (typeof record.liveAt === 'string' && record.rearrived !== true) {",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "settle-poll-is-no-end",
+      "rule": "a recent poll is no clean end",
+      "file": "lib/idle-update.mjs",
+      "find": "    const endedCleanly = typeof record.endedAt === 'string' && Number.isFinite(Date.parse(record.endedAt))",
+      "replace": "    const endedCleanly = typeof (record.endedAt ?? record.aliveAt) === 'string' && Number.isFinite(Date.parse(record.endedAt ?? record.aliveAt))",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-note-ended",
+      "rule": "a clean end while validating is on the record",
+      "file": "lib/idle-update.mjs",
+      "find": "        if (!supersededOnDisk()) settleTo({ ...record, endedAt: iso(now()) })",
+      "replace": "        if (!supersededOnDisk()) null",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-note-ended-validate-only",
+      "rule": "a clean end outside validation writes nothing",
+      "file": "lib/idle-update.mjs",
+      "find": "      if (clean !== true || phase !== 'validate' || record?.state !== 'arrived') return",
+      "replace": "      if (clean !== true || !record) return",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "wire-note-ended",
+      "rule": "server.ts shutdown writes the clean end",
+      "file": "server.ts",
+      "find": "    idleUpdate?.noteEnded(isCleanEnd(cause))\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "valid-unreachable-cap",
+      "rule": "an outage holds the deadline only under its cap",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (backendUnreachable === true && down < d.unreachableCapMs) return 'pending'",
+      "replace": "  if (backendUnreachable === true) return 'pending'",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "valid-unreachable-counted-cap",
+      "rule": "only the capped outage is taken off the deadline",
+      "file": "lib/idle-update.mjs",
+      "find": "- Math.min(down, d.unreachableCapMs)",
+      "replace": "- down",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-login-suspended",
+      "rule": "minutes under an expired login are not counted",
+      "file": "lib/idle-update.mjs",
+      "find": "      if (loginExpired) suspendedMs += awake\n      else if (unreachable) unreachableMs += awake",
+      "replace": "      if (unreachable) unreachableMs += awake",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "valid-hold-new-beacon",
+      "rule": "the hold needs a beacon touched during it",
+      "file": "lib/idle-update.mjs",
+      "find": "held && beaconAtMs > liveSinceMs && heartbeatOkAtMs",
+      "replace": "held && heartbeatOkAtMs",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "valid-hold-new-heartbeat",
+      "rule": "the hold needs a heartbeat landed during it",
+      "file": "lib/idle-update.mjs",
+      "find": " && heartbeatOkAtMs >= liveSinceMs) return 'validated'",
+      "replace": ") return 'validated'",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "valid-hold-this-boot",
+      "rule": "the hold counts on this boot only",
+      "file": "lib/idle-update.mjs",
+      "find": "finite(liveSinceMs) && liveSinceMs >= arrivedAtMs && now",
+      "replace": "finite(liveSinceMs) && now",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-heartbeat-ask-since-hold",
+      "rule": "the heartbeat is asked for since the hold began",
+      "file": "lib/idle-update.mjs",
+      "find": "    const beatSince = Math.max(arrivedAtMs, liveSinceMs ?? arrivedAtMs)",
+      "replace": "    const beatSince = arrivedAtMs",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-no-cache-without-row",
+      "rule": "a table with no claude row is not remembered",
+      "file": "lib/idle-update.mjs",
+      "find": "      if (!row) return { kind, unattended: false, proof: null }",
+      "replace": "      if (!row) { unattendedCache = { key: `${kind}:${read(deps.launcher, null)?.pid ?? ''}`, value: false, until: Number.POSITIVE_INFINITY }; return { kind, unattended: false, proof: null } }",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-rollback-strays-bound",
+      "rule": "the rollback restart waits 10 min at most for a cgroup stray",
+      "file": "lib/idle-update.mjs",
+      "find": "        if (moment.reason === 'background_job' && strayed && n - straysSinceMs >= d.rollbackProofGraceMs) {",
+      "replace": "        if (false) {",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "host-strays-no-service",
+      "rule": "no service named fails closed",
+      "file": "lib/idle-update-host.mjs",
+      "find": "  if (!service) return fail\n",
+      "replace": "  if (!service) return { ok: true, strays: [] }\n",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-strays-running-no-group",
+      "rule": "a running unit with no group fails closed",
+      "file": "lib/idle-update-host.mjs",
+      "find": "  if (!show.controlGroup) return show.mainPid ? fail : { ok: true, strays: [] }",
+      "replace": "  if (!show.controlGroup) return { ok: true, strays: [] }",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-strays-unlisted",
+      "rule": "a group member the listing does not have is a stray",
+      "file": "lib/idle-update-host.mjs",
+      "find": "...strayCgroupMembers({ members, processes, roots }), ...unlisted]",
+      "replace": "...strayCgroupMembers({ members, processes, roots })]",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "wire-backend-only-answer",
+      "rule": "only backend answers feed backend reach",
+      "file": "server.ts",
+      "find": "      if (backend) noteBackendReach(response.status)",
+      "replace": "      noteBackendReach(response.status)",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-backend-only-fail",
+      "rule": "only backend failures feed backend reach",
+      "file": "server.ts",
+      "find": "    if (backend && !answered) noteBackendReach(null)",
+      "replace": "    if (!answered) noteBackendReach(null)",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-backend-url",
+      "rule": "isBackendUrl is the backend base URL only",
+      "file": "server.ts",
+      "find": "  return url === API_BASE || url.startsWith(`${API_BASE}/`)",
+      "replace": "  return true",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "clean-end-signal",
+      "rule": "a signal is a clean end",
+      "file": "lib/idle-update.mjs",
+      "find": "new Set(['stdin-end', 'stdin-close', 'SIGTERM', 'SIGINT', 'SIGHUP', 'stdout-epipe'])",
+      "replace": "new Set(['stdin-end', 'stdin-close', 'SIGINT', 'SIGHUP', 'stdout-epipe'])",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-note-ended-clean-only",
+      "rule": "noteEnded writes only a clean end",
+      "file": "lib/idle-update.mjs",
+      "find": "      if (clean !== true || phase !== 'validate' || record?.state !== 'arrived') return",
+      "replace": "      if (phase !== 'validate' || record?.state !== 'arrived') return",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "wire-note-ended-cause",
+      "rule": "shutdown passes its cause through isCleanEnd",
+      "file": "server.ts",
+      "find": "    idleUpdate?.noteEnded(isCleanEnd(cause))",
+      "replace": "    idleUpdate?.noteEnded(true)",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "canary-silent-window",
+      "rule": "a canary is silent only past canarySilentMs",
+      "file": "lib/idle-update.mjs",
+      "find": "  const silent = live.filter((c) => !within(now, c.at, d.canarySilentMs))",
+      "replace": "  const silent = live.filter((c) => !within(now, c.at, d.leaseTtlMs))",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "dur-canary-silent",
+      "rule": "canarySilentMs is 100 min",
+      "file": "lib/idle-update.mjs",
+      "find": "  canarySilentMs: 100 * MIN,",
+      "replace": "  canarySilentMs: 90 * MIN,",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "clean-end-hangup",
+      "rule": "a hangup is a clean end",
+      "file": "lib/idle-update.mjs",
+      "find": "'SIGINT', 'SIGHUP', 'stdout-epipe'])",
+      "replace": "'SIGINT', 'stdout-epipe'])",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "clean-end-own-pipe",
+      "rule": "the reader of our own output gone is a clean end",
+      "file": "lib/idle-update.mjs",
+      "find": "'SIGINT', 'SIGHUP', 'stdout-epipe'])",
+      "replace": "'SIGINT', 'SIGHUP'])",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "clean-end-not-broken-pipe",
+      "rule": "a broken pipe elsewhere is no clean end",
+      "file": "lib/idle-update.mjs",
+      "find": "'SIGINT', 'SIGHUP', 'stdout-epipe'])",
+      "replace": "'SIGINT', 'SIGHUP', 'stdout-epipe', 'broken-pipe'])",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "wire-fault-broken-pipe",
+      "rule": "an uncaught broken pipe is no clean end",
+      "file": "server.ts",
+      "find": "      if (isBrokenPipe(reason)) {\n        shutdown('broken-pipe', 0)",
+      "replace": "      if (isBrokenPipe(reason)) {\n        shutdown('stdout-epipe', 0)",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "describe-broken-pipe",
+      "rule": "a broken pipe elsewhere says so",
+      "file": "lib/process-lifecycle.ts",
+      "find": "    case 'broken-pipe':\n",
+      "replace": "",
+      "tests": [
+        "test/process-lifecycle.test.ts"
+      ]
+    },
+    {
+      "id": "describe-sighup",
+      "rule": "a hangup says the terminal went away",
+      "file": "lib/process-lifecycle.ts",
+      "find": "(the session\\'s terminal went away)",
+      "replace": "(hangup)",
+      "tests": [
+        "test/process-lifecycle.test.ts"
+      ]
+    },
+    {
+      "id": "dur-unattended-recheck",
+      "rule": "a refused authority is asked again after an hour",
+      "file": "lib/idle-update.mjs",
+      "find": "  unattendedRecheckMs: 60 * MIN,",
+      "replace": "  unattendedRecheckMs: 6 * MIN,",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-refusal-recheck",
+      "rule": "a refused authority is cached only until its recheck",
+      "file": "lib/idle-update.mjs",
+      "find": "value: proven, until: proven ? Number.POSITIVE_INFINITY : now() + d.unattendedRecheckMs }",
+      "replace": "value: proven, until: Number.POSITIVE_INFINITY }",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-refusal-kept",
+      "rule": "a refused authority is not asked again before its recheck",
+      "file": "lib/idle-update.mjs",
+      "find": "const hit = unattendedCache?.key === key && now() < unattendedCache.until",
+      "replace": "const hit = unattendedCache?.key === key && false",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "wire-own-pipe-reader",
+      "rule": "only the reader gone on our own pipes is clean",
+      "file": "server.ts",
+      "find": "      if (isReaderGone(err)) shutdown('stdout-epipe', 0)",
+      "replace": "      if (isBrokenPipe(err)) shutdown('stdout-epipe', 0)",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-own-pipe-other",
+      "rule": "any other broken pipe on our own pipes is not",
+      "file": "server.ts",
+      "find": "      else if (isBrokenPipe(err)) shutdown('broken-pipe', 0)",
+      "replace": "      else if (isBrokenPipe(err)) shutdown('stdout-epipe', 0)",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "reader-gone-code",
+      "rule": "the reader gone is an EPIPE code, not any stream fault",
+      "file": "lib/process-lifecycle.ts",
+      "find": "  if ((err as { code?: unknown }).code === 'EPIPE') return true",
+      "replace": "  if ((err as { code?: unknown }).code !== undefined) return true",
+      "tests": [
+        "test/process-lifecycle.test.ts"
+      ]
+    },
+    {
+      "id": "reader-gone-message",
+      "rule": "a code-less EPIPE (bun) is the reader gone",
+      "file": "lib/process-lifecycle.ts",
+      "find": "  if ((err as { code?: unknown }).code === 'EPIPE') return true\n  const message = (err as { message?: unknown }).message\n  return typeof message === 'string' && /\\bEPIPE\\b/.test(message)",
+      "replace": "  if ((err as { code?: unknown }).code === 'EPIPE') return true\n  const message = (err as { message?: unknown }).message\n  return false && typeof message === 'string'",
+      "tests": [
+        "test/process-lifecycle.test.ts"
+      ]
+    },
+    {
+      "id": "settle-ended-any-age",
+      "rule": "a clean end counts whatever its age",
+      "file": "lib/idle-update.mjs",
+      "find": "    const endedCleanly = typeof record.endedAt === 'string' && Number.isFinite(Date.parse(record.endedAt))",
+      "replace": "    const endedCleanly = typeof record.endedAt === 'string' && Math.abs(now - Date.parse(record.endedAt)) < 2 * 60_000",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "settle-ended-valid",
+      "rule": "an unreadable end time is no clean end",
+      "file": "lib/idle-update.mjs",
+      "find": "    const endedCleanly = typeof record.endedAt === 'string' && Number.isFinite(Date.parse(record.endedAt))",
+      "replace": "    const endedCleanly = typeof record.endedAt === 'string'",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "settle-lost-drops-end",
+      "rule": "a new session drops the clean end of the boot before it",
+      "file": "lib/idle-update.mjs",
+      "find": "liveAt: null, endedAt: null, contextLost: true,",
+      "replace": "liveAt: null, contextLost: true,",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "superseded-nonce",
+      "rule": "another attempt supersedes a record",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (onDisk.nonce !== mine.nonce) return true\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "superseded-later",
+      "rule": "a later boot's settle supersedes a record",
+      "file": "lib/idle-update.mjs",
+      "find": "  return Number.isFinite(theirs) && (!Number.isFinite(ours) || theirs > ours)",
+      "replace": "  return false",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "superseded-not-older",
+      "rule": "an older state of its own attempt does not supersede it",
+      "file": "lib/idle-update.mjs",
+      "find": "  return Number.isFinite(theirs) && (!Number.isFinite(ours) || theirs > ours)",
+      "replace": "  return Number.isFinite(theirs) && (!Number.isFinite(ours) || theirs !== ours)",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "superseded-refused-write",
+      "rule": "a disk that refused the settle holds no arrival and supersedes nothing",
+      "file": "lib/idle-update.mjs",
+      "find": "  return Number.isFinite(theirs) && (!Number.isFinite(ours) || theirs > ours)",
+      "replace": "  return !Number.isFinite(theirs) || !Number.isFinite(ours) || theirs > ours",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "note-ended-superseded",
+      "rule": "a clean end never writes over a superseded record",
+      "file": "lib/idle-update.mjs",
+      "find": "        if (!supersededOnDisk()) settleTo({ ...record, endedAt: iso(now()) })",
+      "replace": "        settleTo({ ...record, endedAt: iso(now()) })",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "reader-gone-code-only",
+      "rule": "an EPIPE code alone is the reader gone",
+      "file": "lib/process-lifecycle.ts",
+      "find": "  if ((err as { code?: unknown }).code === 'EPIPE') return true\n",
+      "replace": "",
+      "tests": [
+        "test/process-lifecycle.test.ts"
+      ]
+    },
+    {
+      "id": "settle-lost-drops-live",
+      "rule": "a new session drops the live proof of the boot before it",
+      "file": "lib/idle-update.mjs",
+      "find": "arrivedAt: iso, liveAt: null, endedAt: null, contextLost: true,",
+      "replace": "arrivedAt: iso, endedAt: null, contextLost: true,",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "validate-adopt",
+      "rule": "the same attempt with no verdict is validated on the newer record",
+      "file": "lib/idle-update.mjs",
+      "find": "            if (newer && newer.nonce === record.nonce && newer.state === 'arrived' && !theirs.some((a) => ROLLBACK_OUTCOMES.has(a?.outcome))) {",
+      "replace": "            if (false) {",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "validate-adopt-same-attempt",
+      "rule": "only the same attempt is adopted",
+      "file": "lib/idle-update.mjs",
+      "find": "            if (newer && newer.nonce === record.nonce && newer.state === 'arrived' && !theirs.some((a) => ROLLBACK_OUTCOMES.has(a?.outcome))) {",
+      "replace": "            if (newer && newer.state === 'arrived' && !theirs.some((a) => ROLLBACK_OUTCOMES.has(a?.outcome))) {",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "validate-adopt-no-verdict",
+      "rule": "an attempt with its verdict is never adopted",
+      "file": "lib/idle-update.mjs",
+      "find": "            if (newer && newer.nonce === record.nonce && newer.state === 'arrived' && !theirs.some((a) => ROLLBACK_OUTCOMES.has(a?.outcome))) {",
+      "replace": "            if (newer && newer.nonce === record.nonce && !theirs.some((a) => ROLLBACK_OUTCOMES.has(a?.outcome))) {",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "validate-adopt-record",
+      "rule": "an adopted record is the one written on",
+      "file": "lib/idle-update.mjs",
+      "find": "              record = newer.liveAt || newer.endedAt ?",
+      "replace": "              newer.liveAt || newer.endedAt ?",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "validate-stand-down",
+      "rule": "another attempt or a verdict on disk: stands down",
+      "file": "lib/idle-update.mjs",
+      "find": "            } else if (newer) {\n              log(",
+      "replace": "            } else if (false) {\n              log(",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "adopt-not-rolling-back",
+      "rule": "a failed boot or a missed deadline on disk is a verdict: stands down",
+      "file": "lib/idle-update.mjs",
+      "find": " && !theirs.some((a) => ROLLBACK_OUTCOMES.has(a?.outcome))) {",
+      "replace": ") {",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "adopt-outcome-second-boot",
+      "rule": "a failed boot on disk is a verdict",
+      "file": "lib/idle-update.mjs",
+      "find": "const ROLLBACK_OUTCOMES = new Set(['second_boot', 'deadline'])",
+      "replace": "const ROLLBACK_OUTCOMES = new Set(['deadline'])",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "adopt-outcome-deadline",
+      "rule": "a missed deadline on disk is a verdict",
+      "file": "lib/idle-update.mjs",
+      "find": "const ROLLBACK_OUTCOMES = new Set(['second_boot', 'deadline'])",
+      "replace": "const ROLLBACK_OUTCOMES = new Set(['second_boot'])",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "adopt-outcome-theirs",
+      "rule": "only a failure attempt the other boot appended is a rollback under way",
+      "file": "lib/idle-update.mjs",
+      "find": "const theirs = newer?.attempts.slice(record.attempts.length) ?? []",
+      "replace": "const theirs = newer?.attempts ?? []",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "adopt-suspended",
+      "rule": "adopting: the time before the other boot's arrival is not taken off again",
+      "file": "lib/idle-update.mjs",
+      "find": "              suspendedMs = Math.max(0, now() - Date.parse(newer.arrivedAt))\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "adopt-suspended-since",
+      "rule": "adopting: the time since that arrival is not counted",
+      "file": "lib/idle-update.mjs",
+      "find": "suspendedMs = Math.max(0, now() - Date.parse(newer.arrivedAt))",
+      "replace": "suspendedMs = 0",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "adopt-unreachable",
+      "rule": "adopting: an outage before the other boot's arrival is not taken off again",
+      "file": "lib/idle-update.mjs",
+      "find": "              unreachableMs = 0\n              liveSinceMs = null\n",
+      "replace": "              liveSinceMs = null\n",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "adopt-drops-proofs",
+      "rule": "adopting: the other boot's clean end and live proof are dropped",
+      "file": "lib/idle-update.mjs",
+      "find": "record = newer.liveAt || newer.endedAt ? settleTo({ ...newer, liveAt: null, endedAt: null }) : newer",
+      "replace": "record = newer",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "adopt-drops-live",
+      "rule": "adopting: the other boot's live proof is dropped",
+      "file": "lib/idle-update.mjs",
+      "find": "settleTo({ ...newer, liveAt: null, endedAt: null })",
+      "replace": "settleTo({ ...newer, endedAt: null })",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "adopt-drops-ended",
+      "rule": "adopting: the other boot's clean end is dropped",
+      "file": "lib/idle-update.mjs",
+      "find": "settleTo({ ...newer, liveAt: null, endedAt: null })",
+      "replace": "settleTo({ ...newer, liveAt: null })",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "superseded-verdict",
+      "rule": "a verdict another daemon gave since supersedes",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (VERDICT_STATES.has(onDisk.state) && onDisk.state !== mine.state) return true\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "superseded-verdict-not-own",
+      "rule": "its own verdict does not supersede",
+      "file": "lib/idle-update.mjs",
+      "find": "VERDICT_STATES.has(onDisk.state) && onDisk.state !== mine.state",
+      "replace": "VERDICT_STATES.has(onDisk.state)",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "superseded-attempt-appended",
+      "rule": "a failed attempt appended since supersedes",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (Array.isArray(onDisk.attempts) && Array.isArray(mine.attempts) && onDisk.attempts.length > mine.attempts.length) return true\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "superseded-attempts-more",
+      "rule": "fewer attempts on disk (a refused write) do not supersede",
+      "file": "lib/idle-update.mjs",
+      "find": "onDisk.attempts.length > mine.attempts.length",
+      "replace": "onDisk.attempts.length !== mine.attempts.length",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "verdict-state-validated",
+      "rule": "validated on disk is a verdict",
+      "file": "lib/idle-update.mjs",
+      "find": "const VERDICT_STATES = new Set(['validated', 'failed', 'came_back_old', 'rolled_back', 'rollback_failed'])",
+      "replace": "const VERDICT_STATES = new Set(['failed', 'came_back_old', 'rolled_back', 'rollback_failed'])",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "verdict-state-failed",
+      "rule": "failed on disk is a verdict",
+      "file": "lib/idle-update.mjs",
+      "find": "const VERDICT_STATES = new Set(['validated', 'failed', 'came_back_old', 'rolled_back', 'rollback_failed'])",
+      "replace": "const VERDICT_STATES = new Set(['validated', 'came_back_old', 'rolled_back', 'rollback_failed'])",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "verdict-state-came-back-old",
+      "rule": "came_back_old on disk is a verdict",
+      "file": "lib/idle-update.mjs",
+      "find": "const VERDICT_STATES = new Set(['validated', 'failed', 'came_back_old', 'rolled_back', 'rollback_failed'])",
+      "replace": "const VERDICT_STATES = new Set(['validated', 'failed', 'rolled_back', 'rollback_failed'])",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "verdict-state-rolled-back",
+      "rule": "rolled_back on disk is a verdict",
+      "file": "lib/idle-update.mjs",
+      "find": "const VERDICT_STATES = new Set(['validated', 'failed', 'came_back_old', 'rolled_back', 'rollback_failed'])",
+      "replace": "const VERDICT_STATES = new Set(['validated', 'failed', 'came_back_old', 'rollback_failed'])",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "verdict-state-rollback-failed",
+      "rule": "rollback_failed on disk is a verdict",
+      "file": "lib/idle-update.mjs",
+      "find": "const VERDICT_STATES = new Set(['validated', 'failed', 'came_back_old', 'rolled_back', 'rollback_failed'])",
+      "replace": "const VERDICT_STATES = new Set(['validated', 'failed', 'came_back_old', 'rolled_back'])",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "note-ended-holder",
+      "rule": "only the lock holder writes a clean end",
+      "file": "lib/idle-update.mjs",
+      "find": "      if (read(deps.holdsLock, false) !== true) return\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "adopt-live-since",
+      "rule": "adopting: the hold starts again from the adopted arrival",
+      "file": "lib/idle-update.mjs",
+      "find": "              liveSinceMs = null\n              record = newer.liveAt",
+      "replace": "              record = newer.liveAt",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "wire-holds-lock",
+      "rule": "the clean end asks for the lock without the shutdown",
+      "file": "server.ts",
+      "find": "      holdsLock: () => lockHeld,\n",
+      "replace": "      holdsLock: () => lockHeld && !shuttingDown,\n",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "lease-aside-plain-tag",
+      "rule": "a nonce read from disk never names a path: the lease is moved aside only under a plain tag",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (typeof tag !== 'string' || !/^[A-Za-z0-9_-]{1,160}$/.test(tag)) return false\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "gate-16-no-signal",
+      "rule": "16 no hook signal never restarts, however long the quiet (Data's fix 1)",
+      "file": "lib/idle-update.mjs",
+      "find": "if (f.safe?.turnSignal !== TURN_SIGNAL_HOOKS) return wait('no_turn_signal')",
+      "replace": "if (false) return wait('no_turn_signal')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-16-no-signal-only-hooks",
+      "rule": "16 only the word 'hooks' counts as a signal: a state that does not say is none",
+      "file": "lib/idle-update.mjs",
+      "find": "if (f.safe?.turnSignal !== TURN_SIGNAL_HOOKS) return wait('no_turn_signal')",
+      "replace": "if (f.safe?.turnSignal === 'none') return wait('no_turn_signal')",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-16-no-signal-after-quiet",
+      "rule": "16 no_turn_signal comes after the 30 min quiet, so a fresh boot raises no report",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (!safe.safe) return wait(safe.reason)\n  // Past the 30 min a daemon with no hook signal uses: the moment it would have gone blind, it says so instead.\n  if (f.safe?.turnSignal !== TURN_SIGNAL_HOOKS) return wait('no_turn_signal')\n",
+      "replace": "  if (f.safe?.turnSignal !== TURN_SIGNAL_HOOKS) return wait('no_turn_signal')\n  if (!safe.safe) return wait(safe.reason)\n",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "report-no-signal",
+      "rule": "a standing no_turn_signal is on the heartbeat: never a silent wait",
+      "file": "lib/idle-update.mjs",
+      "find": "if (reason === 'no_turn_signal') {",
+      "replace": "if (false) {",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-quiet-no-signal",
+      "rule": "the rollback restart with no hook signal waits the 30 min quiet, never 2 min",
+      "file": "lib/idle-update.mjs",
+      "find": "const quiet = s.turnSignal === TURN_SIGNAL_HOOKS ? d.rollbackQuietMs : LEGACY_QUIET_WINDOW_MS / d.scale",
+      "replace": "const quiet = d.rollbackQuietMs",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-no-signal-still-goes",
+      "rule": "the rollback restart is never held for a hook signal that may never come",
+      "file": "lib/idle-update.mjs",
+      "find": "const quiet = s.turnSignal === TURN_SIGNAL_HOOKS ? d.rollbackQuietMs : LEGACY_QUIET_WINDOW_MS / d.scale",
+      "replace": "if (s.turnSignal !== TURN_SIGNAL_HOOKS) return no('no_turn_signal')\n  const quiet = d.rollbackQuietMs",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "wire-signal-once",
+      "rule": "every daemon keeps main's one shot SIGINT and SIGTERM (Data's fix 2)",
+      "file": "server.ts",
+      "find": "process.once(signal, () => shutdown(signal, signal === 'SIGINT' ? 130 : 143))",
+      "replace": "process.on(signal, () => shutdown(signal, signal === 'SIGINT' ? 130 : 143))",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-guard-dep",
+      "rule": "the controller decides the window for the clean end signals",
+      "file": "server.ts",
+      "find": "guardCleanEnd: (open: boolean) => cleanEndSignals.set(open),",
+      "replace": "guardCleanEnd: () => {},",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "signals-open-hangup",
+      "rule": "open, a hangup goes through shutdown",
+      "file": "lib/process-lifecycle.ts",
+      "find": "const hangup = (): void => shutdown('SIGHUP', 129)",
+      "replace": "const hangup = (): void => {}",
+      "tests": [
+        "test/process-lifecycle.test.ts"
+      ]
+    },
+    {
+      "id": "signals-keep-term",
+      "rule": "open, a second SIGTERM stays handled",
+      "file": "lib/process-lifecycle.ts",
+      "find": "      apply('SIGTERM', keep)\n",
+      "replace": "",
+      "tests": [
+        "test/process-lifecycle.test.ts"
+      ]
+    },
+    {
+      "id": "signals-keep-int",
+      "rule": "open, a second SIGINT stays handled",
+      "file": "lib/process-lifecycle.ts",
+      "find": "      apply('SIGINT', keep)\n",
+      "replace": "",
+      "tests": [
+        "test/process-lifecycle.test.ts"
+      ]
+    },
+    {
+      "id": "signals-no-windows-hangup",
+      "rule": "no hangup listener on Windows",
+      "file": "lib/process-lifecycle.ts",
+      "find": "if (platform !== 'win32') apply('SIGHUP', hangup)",
+      "replace": "apply('SIGHUP', hangup)",
+      "tests": [
+        "test/process-lifecycle.test.ts"
+      ]
+    },
+    {
+      "id": "signals-shut-removes",
+      "rule": "shut again, the daemon is back to main's behaviour",
+      "file": "lib/process-lifecycle.ts",
+      "find": "const apply = open ? on : off",
+      "replace": "const apply = on",
+      "tests": [
+        "test/process-lifecycle.test.ts"
+      ]
+    },
+    {
+      "id": "signals-no-stack",
+      "rule": "opening twice stacks nothing",
+      "file": "lib/process-lifecycle.ts",
+      "find": "      if (open === opened) return\n",
+      "replace": "",
+      "tests": [
+        "test/process-lifecycle.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-guard-window-validate",
+      "rule": "the signals open only for a daemon validating an attempt",
+      "file": "lib/idle-update.mjs",
+      "find": "phase === 'validate' && record?.state === 'arrived' && !record.liveAt",
+      "replace": "record?.state === 'arrived' && !record.liveAt",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-guard-window-live",
+      "rule": "the signals close at the first live proof",
+      "file": "lib/idle-update.mjs",
+      "find": "phase === 'validate' && record?.state === 'arrived' && !record.liveAt",
+      "replace": "phase === 'validate' && record?.state === 'arrived'",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-guard-stop",
+      "rule": "a stopped controller closes the signals",
+      "file": "lib/idle-update.mjs",
+      "find": "      phase = 'done'\n      syncCleanEndSignals()\n",
+      "replace": "      phase = 'done'\n",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-guard-tick",
+      "rule": "every tick settles the signals, whichever way the phase changed",
+      "file": "lib/idle-update.mjs",
+      "find": "      busy = false\n      syncCleanEndSignals()\n",
+      "replace": "      busy = false\n",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "marker-taken-back",
+      "rule": "a restart that never arrives takes back the marker hoai never took (Data's fix 3)",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (ours) read(deps.removeMarker, false)\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.controller.test.ts",
+        "test/idle-update.integration.test.ts"
+      ]
+    },
+    {
+      "id": "marker-only-ours",
+      "rule": "only the file this ask left: another writer's marker stays",
+      "file": "lib/idle-update.mjs",
+      "find": "const ours = finite(askedMarkerMs) && read(deps.markerMtimeMs, null) === askedMarkerMs",
+      "replace": "const ours = finite(askedMarkerMs) && finite(read(deps.markerMtimeMs, null))",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "marker-only-asked",
+      "rule": "an authority that wrote no marker takes none back",
+      "file": "lib/idle-update.mjs",
+      "find": "const ours = finite(askedMarkerMs) && read(deps.markerMtimeMs, null) === askedMarkerMs",
+      "replace": "const ours = finite(read(deps.markerMtimeMs, null))",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "marker-rollback-taken-back",
+      "rule": "a rollback restart that never arrives takes back its marker too",
+      "file": "lib/idle-update.mjs",
+      "find": "      takeBackMarker()\n      return rollbackStuck(`the restart onto ${record.from} did not arrive`)",
+      "replace": "      return rollbackStuck(`the restart onto ${record.from} did not arrive`)",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "marker-stranded-on-record",
+      "rule": "the stranded marker is on the record: nothing else says the launcher stopped taking them now",
+      "file": "lib/idle-update.mjs",
+      "find": "did not arrive within ${Math.round(d.didNotArriveMs / 1000)}s`, { markerStranded })",
+      "replace": "did not arrive within ${Math.round(d.didNotArriveMs / 1000)}s`, {})",
+      "tests": [
+        "test/idle-update.controller.test.ts",
+        "test/idle-update.integration.test.ts"
+      ]
+    },
+    {
+      "id": "marker-stranded-report",
+      "rule": "a stranded marker reports the launcher, not an ordinary failed attempt",
+      "file": "lib/idle-update.mjs",
+      "find": "      if (record.markerStranded) return launcherLatchedError(target, lastAt)\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "marker-host-removes",
+      "rule": "the host removes the one marker file",
+      "file": "lib/idle-update-host.mjs",
+      "find": "return safe(() => fs.remove(joinDir(stateDir, RESTART_MARKER_FILE_NAME)), false) === true",
+      "replace": "return false",
+      "tests": [
+        "test/idle-update.host.test.ts",
+        "test/idle-update.integration.test.ts"
+      ]
+    },
+    {
+      "id": "wire-remove-marker",
+      "rule": "the daemon hands the controller the removal",
+      "file": "server.ts",
+      "find": "      removeMarker: () => removeRestartMarker({ stateDir, fs }),\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-non-canary",
+      "rule": "a failed non-canary has a way back",
+      "file": "lib/idle-update.mjs",
+      "find": "return canary || !wentBack ? 'rollback' : 'report_only'",
+      "replace": "return canary ? 'rollback' : 'report_only'",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-once",
+      "rule": "any agent but the canary goes back once",
+      "file": "lib/idle-update.mjs",
+      "find": "return canary || !wentBack ? 'rollback' : 'report_only'",
+      "replace": "return 'rollback'",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-canary-always",
+      "rule": "the canary's verdict is never limited",
+      "file": "lib/idle-update.mjs",
+      "find": "return canary || !wentBack ? 'rollback' : 'report_only'",
+      "replace": "return !wentBack ? 'rollback' : 'report_only'",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-record",
+      "rule": "the record takes the source: the report and the restart name the build installed",
+      "file": "lib/idle-update.mjs",
+      "find": "      settleTo({ ...record, ...rollbackSourceFor(record, canaryLeft, { heldBad, holds }) })",
+      "replace": "      void ({ ...record, ...rollbackSourceFor(record, canaryLeft, { heldBad, holds }) })",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-validated-carries",
+      "rule": "the canary's validated file says where it came from",
+      "file": "lib/idle-update.mjs",
+      "find": "{ canary: rec.canaryN, from: rec.from, fromRoot: rec.fromRoot }",
+      "replace": "{ canary: rec.canaryN }",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-file-written",
+      "rule": "a way back taken is on record",
+      "file": "lib/idle-update.mjs",
+      "find": "create(wentBackPath, { assistantId: deps.assistantId, at: iso(now()), target: record.target, reason: why })",
+      "replace": "void 0",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-file-cleared",
+      "rule": "a validated build clears it",
+      "file": "lib/idle-update.mjs",
+      "find": "read(() => fs.remove(wentBackPath), false)",
+      "replace": "void 0",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-canary-spends-nothing",
+      "rule": "the canary's own verdict spends nothing",
+      "file": "lib/idle-update.mjs",
+      "find": "if (!canary) {\n      create(wentBackPath",
+      "replace": "if (true) {\n      create(wentBackPath",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-same-target",
+      "rule": "a way back a crash cut short is not spent",
+      "file": "lib/idle-update.mjs",
+      "find": "const wentBack = spent !== null && spent.target !== record?.target",
+      "replace": "const wentBack = spent !== null",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-read",
+      "rule": "a spent way back stops the next rollback",
+      "file": "lib/idle-update.mjs",
+      "find": "const spent = parseJsonOrNull(read(() => fs.readFile(wentBackPath), null))",
+      "replace": "const spent = null",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-report",
+      "rule": "the report says what is true and what a person does",
+      "file": "lib/idle-update.mjs",
+      "find": "It has used its one way back and has not validated a build since, so it leaves the install alone.",
+      "replace": "Another agent on this computer decides the rollback.",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "dur-hold",
+      "rule": "the hold is 5 min",
+      "file": "lib/idle-update.mjs",
+      "find": "  validateHoldMs: 5 * MIN,",
+      "replace": "  validateHoldMs: 60 * SEC,",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "dur-deadline",
+      "rule": "the deadline outlasts two holds",
+      "file": "lib/idle-update.mjs",
+      "find": "  validateDeadlineMs: 15 * MIN,",
+      "replace": "  validateDeadlineMs: 5 * MIN,",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "dur-lease",
+      "rule": "the lease outlasts a failing agent's verdict",
+      "file": "lib/idle-update.mjs",
+      "find": "  leaseTtlMs: 25 * MIN,",
+      "replace": "  leaseTtlMs: 20 * MIN,",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-12b-session-wake",
+      "rule": "a wakeup pending at the last Stop holds the restart",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (within(now, f.sessionWakeAtMs, d.sessionWakeHoldMs)) return wait('session_wake')\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-12b-order",
+      "rule": "the goal comes first, the quiet window after",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (f.goalRunning) return wait('goal_running')\n  if (within(now, f.sessionWakeAtMs, d.sessionWakeHoldMs)) return wait('session_wake')\n",
+      "replace": "  if (within(now, f.sessionWakeAtMs, d.sessionWakeHoldMs)) return wait('session_wake')\n  if (f.goalRunning) return wait('goal_running')\n",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "dur-session-wake",
+      "rule": "a lost wakeup holds for 2 h at most",
+      "file": "lib/idle-update.mjs",
+      "find": "  sessionWakeHoldMs: 2 * HOUR,",
+      "replace": "  sessionWakeHoldMs: 1 * HOUR,",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "session-pending-not-recurring",
+      "rule": "anything not plainly recurring counts",
+      "file": "lib/idle-update.mjs",
+      "find": "crons.some((task) => task?.recurring !== true)",
+      "replace": "crons.some((task) => task?.recurring === false)",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "session-pending-any",
+      "rule": "a recurring entry alone holds nothing",
+      "file": "lib/idle-update.mjs",
+      "find": "crons.some((task) => task?.recurring !== true)",
+      "replace": "crons.length > 0",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "session-pending-no-field",
+      "rule": "no field is no reading",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (!Array.isArray(crons)) return null\n",
+      "replace": "  if (!Array.isArray(crons)) return false\n",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-session-wake-fact",
+      "rule": "the controller reads the stamp",
+      "file": "lib/idle-update.mjs",
+      "find": "      sessionWakeAtMs: read(deps.sessionWakeAtMs, null),\n",
+      "replace": "      sessionWakeAtMs: null,\n",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "wire-session-wake-dep",
+      "rule": "the daemon gives the controller the stamp",
+      "file": "server.ts",
+      "find": "      sessionWakeAtMs: () => sessionWakeAtMs,\n",
+      "replace": "      sessionWakeAtMs: () => null,\n",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-session-wake-stop",
+      "rule": "only a Stop says what is scheduled",
+      "file": "server.ts",
+      "find": "  if (event.name === 'Stop') {\n    const pending = sessionWakePending",
+      "replace": "  if (event.name === 'PostToolUse') {\n    const pending = sessionWakePending",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wire-session-wake-clears",
+      "rule": "a Stop that shows none clears it, a Stop that says nothing does not",
+      "file": "server.ts",
+      "find": "    if (pending !== null) sessionWakeAtMs = pending ? Date.now() : null\n",
+      "replace": "    if (pending) sessionWakeAtMs = Date.now()\n",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "hook-keeps-session-crons",
+      "rule": "an oversized Stop keeps what session_crons says",
+      "file": "bin/hoai-hook.mjs",
+      "find": "  if (Array.isArray(payload.session_crons)) {\n",
+      "replace": "  if (false) {\n",
+      "tests": [
+        "test/hoai-hook.test.ts"
+      ]
+    },
+    {
+      "id": "hook-session-crons-no-prompt",
+      "rule": "and no prompt",
+      "file": "bin/hoai-hook.mjs",
+      "find": ".map((task) => ({ recurring: isRecord(task) && task.recurring === true }))",
+      "replace": ".map((task) => task)",
+      "tests": [
+        "test/hoai-hook.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-source-canary",
+      "rule": "the way back is the newer of this agent's build and the canary's",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (!beside || !VERSION_RE.test(String(canary.from)) || heldBad(canary.from) || !holds(canary)) return own\n",
+      "replace": "  return own\n",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-source-newer",
+      "rule": "the older of the two is no way back while the newer is good",
+      "file": "lib/idle-update.mjs",
+      "find": "return heldBad(mine.from) || isNewerVersion(canary.from, mine.from) ? {",
+      "replace": "return true ? {",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-source-own-bad",
+      "rule": "an agent's own build held bad gives way to the canary's",
+      "file": "lib/idle-update.mjs",
+      "find": "return heldBad(mine.from) || isNewerVersion(canary.from, mine.from) ? {",
+      "replace": "return isNewerVersion(canary.from, mine.from) ? {",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-source-canary-bad",
+      "rule": "a canary build held bad is passed over",
+      "file": "lib/idle-update.mjs",
+      "find": "|| heldBad(canary.from) || !holds(canary)) return own",
+      "replace": "|| !holds(canary)) return own",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-source-holds",
+      "rule": "a folder that no longer holds it is passed over",
+      "file": "lib/idle-update.mjs",
+      "find": "|| heldBad(canary.from) || !holds(canary)) return own",
+      "replace": "|| heldBad(canary.from)) return own",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-source-version",
+      "rule": "not a version names nothing",
+      "file": "lib/idle-update.mjs",
+      "find": "!beside || !VERSION_RE.test(String(canary.from)) ||",
+      "replace": "!beside ||",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-source-beside",
+      "rule": "only a build beside its own in the same cache",
+      "file": "lib/idle-update.mjs",
+      "find": "    dirname(canary.fromRoot) === dirname(mine.fromRoot)\n",
+      "replace": "    true\n",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-source-clone",
+      "rule": "a clone goes back on its own checkout",
+      "file": "lib/idle-update.mjs",
+      "find": "    mine.installMethod === 'marketplace' &&\n    typeof canary?.fromRoot === 'string' &&",
+      "replace": "    typeof canary?.fromRoot === 'string' &&",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "way-back-source-checks",
+      "rule": "the controller checks the latch and the folder",
+      "file": "lib/idle-update.mjs",
+      "find": "rollbackSourceFor(record, canaryLeft, { heldBad, holds })",
+      "replace": "rollbackSourceFor(record, canaryLeft)",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-wait-bound",
+      "rule": "a rollback that finds no quiet moment asks for a person",
+      "file": "lib/idle-update.mjs",
+      "find": "if (n - rollbackWaitSinceMs >= d.rollbackWaitMaxMs) {",
+      "replace": "if (false) {",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "dur-rollback-wait",
+      "rule": "3 h",
+      "file": "lib/idle-update.mjs",
+      "find": "  rollbackWaitMaxMs: 3 * HOUR,",
+      "replace": "  rollbackWaitMaxMs: 6 * HOUR,",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-stale-turn",
+      "rule": "a stale turn flag stops counting",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (s.turnInFlight && !staleTurn) return no('turn_in_flight')\n",
+      "replace": "  if (s.turnInFlight) return no('turn_in_flight')\n",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-stale-unknown",
+      "rule": "an unreadable tree is not stale",
+      "file": "lib/idle-update.mjs",
+      "find": "f.now - newest >= STALE_TURN_MS / d.scale && Array.isArray(f.descendants) && !f.descendants.some(isBackgroundJobCommand)",
+      "replace": "f.now - newest >= STALE_TURN_MS / d.scale && !(f.descendants ?? []).some(isBackgroundJobCommand)",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-stale-job",
+      "rule": "a job backs the turn",
+      "file": "lib/idle-update.mjs",
+      "find": "f.now - newest >= STALE_TURN_MS / d.scale && Array.isArray(f.descendants) && !f.descendants.some(isBackgroundJobCommand)",
+      "replace": "f.now - newest >= STALE_TURN_MS / d.scale && Array.isArray(f.descendants)",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "report-clone-way-back",
+      "rule": "a clone is told what lifts the pause",
+      "file": "lib/idle-update.mjs",
+      "find": "(record.installMethod === 'marketplace'\n            ? `${target} is held on this computer until a newer version.`",
+      "replace": "(true\n            ? `${target} is held on this computer until a newer version.`",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "report-no-signal-remedy",
+      "rule": "the remedy is one that works",
+      "file": "lib/idle-update.mjs",
+      "find": "if it has no hooks, restart it once by hand.",
+      "replace": "if it has no hooks, restart it once from the app.",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "ctl-guard-window-active",
+      "rule": "a daemon that lost the lock borrows nothing",
+      "file": "lib/idle-update.mjs",
+      "find": "const open = read(deps.active, false) === true && phase === 'validate'",
+      "replace": "const open = phase === 'validate'",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "second-boot-verdict-proven",
+      "rule": "a second boot is a verdict on a proven version too: no third boot comes",
+      "file": "lib/idle-update.mjs",
+      "find": "    const verdict = decideRollback({ canary, wentBack, loginExpired: read(deps.loginExpired, false) })\n",
+      "replace": "    const verdict = why === 'second_boot' && files?.validated === true ? 'none' : decideRollback({ canary, wentBack, loginExpired: read(deps.loginExpired, false) })\n",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-held-source-goes-back",
+      "rule": "a held source is no refusal: the agent ran it, and the build it is on just failed",
+      "file": "lib/idle-update.mjs",
+      "find": "        result = await deps.rollbackInstall(record)\n",
+      "replace": "        result = isVersionHeldBad(record.from, { machineDir: dir, fs }) ? { ok: false, reason: 'source_held_bad' } : await deps.rollbackInstall(record)\n",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "deadline-clears-live",
+      "rule": "a missed deadline leaves no live proof for the boot after a crash to read",
+      "file": "lib/idle-update.mjs",
+      "find": "settleTo(withAttempt(record, now(), 'deadline', { liveAt: null }))",
+      "replace": "settleTo(withAttempt(record, now(), 'deadline'))",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "report-failed-remedy",
+      "rule": "a report names no build a restart lands on: another agent may move the install",
+      "file": "lib/idle-update.mjs",
+      "find": "so it leaves the install alone. A restart by hand loads what is installed, which may be this same build.",
+      "replace": "so it leaves the install alone. A restart by hand comes back on ${running}.",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "report-rollback-failed-remedy",
+      "rule": "a rollback that did not take names no build a restart lands on",
+      "file": "lib/idle-update.mjs",
+      "find": "this agent runs ${running}. A restart by hand loads what is installed, which may be this same build.",
+      "replace": "this agent runs ${running}. Restart it by hand.",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "report-no-signal-promise",
+      "rule": "the report promises no restart a later gate may refuse",
+      "file": "lib/idle-update.mjs",
+      "find": "A hook event ends this wait; if it has no hooks",
+      "replace": "Its next turn moves it on; if it has no hooks",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "silent-lease-writes",
+      "rule": "breaking an expired lease writes silent-<n>",
+      "file": "lib/idle-update.mjs",
+      "find": "lease.state === 'expired' && !(noteExpiredLease(lease.lease) && moveLeaseAside(lease.raw, `broken-${me.nonce}`))",
+      "replace": "lease.state === 'expired' && !moveLeaseAside(lease.raw, `broken-${me.nonce}`)",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "silent-before-the-lease-goes",
+      "rule": "a silence that cannot be written leaves the lease where it is",
+      "file": "lib/idle-update.mjs",
+      "find": "!(noteExpiredLease(lease.lease) && moveLeaseAside(lease.raw, `broken-${me.nonce}`))",
+      "replace": "!(noteExpiredLease(lease.lease), moveLeaseAside(lease.raw, `broken-${me.nonce}`))",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "silent-write-failure-says-so",
+      "rule": "a silence that could not be written reads as not written",
+      "file": "lib/idle-update.mjs",
+      "find": "at: iso(now()) }) !== 'error'",
+      "replace": "at: iso(now()) }), true",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "silent-canary-left-out",
+      "rule": "a live canary's lease leaves no silent",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (files.canaries.some((c) => c.assistantId === holder.assistantId && !files.voids.includes(c.n))) return true\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "silent-voided-canary-counts",
+      "rule": "a voided canary that went back on as a follower is a follower",
+      "file": "lib/idle-update.mjs",
+      "find": "c.assistantId === holder.assistantId && !files.voids.includes(c.n)",
+      "replace": "c.assistantId === holder.assistantId",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "silent-own-lease",
+      "rule": "an agent breaking its own old lease writes no silence about itself",
+      "file": "lib/idle-update.mjs",
+      "find": "if (!holder || holder.assistantId === deps.assistantId || !VERSION_RE.test(String(holder.target))) return true",
+      "replace": "if (!holder || !VERSION_RE.test(String(holder.target))) return true",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "silent-plain-target",
+      "rule": "a lease that names no plain version names no folder",
+      "file": "lib/idle-update.mjs",
+      "find": "holder.assistantId === deps.assistantId || !VERSION_RE.test(String(holder.target))",
+      "replace": "holder.assistantId === deps.assistantId",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "silent-no-holder",
+      "rule": "a lease that does not parse names nobody",
+      "file": "lib/idle-update.mjs",
+      "find": "if (!holder || holder.assistantId === deps.assistantId",
+      "replace": "if (holder.assistantId === deps.assistantId",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "silent-in-the-lease-target-folder",
+      "rule": "the silence goes in the folder of the version the lease names",
+      "file": "lib/idle-update.mjs",
+      "find": "return noteSilent(holder.target, { assistantId: holder.assistantId, nonce: holder.nonce }, files)",
+      "replace": "return noteSilent(read(deps.stagedVersion, null), { assistantId: holder.assistantId, nonce: holder.nonce })",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "silent-once",
+      "rule": "one silence for each agent and attempt",
+      "file": "lib/idle-update.mjs",
+      "find": "if (files.silents.some((s) => s.assistantId === who.assistantId && s.nonce === who.nonce)) return true\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "silent-names-the-attempt",
+      "rule": "the silence carries the attempt it was",
+      "file": "lib/idle-update.mjs",
+      "find": "{ assistantId: holder.assistantId, nonce: holder.nonce }, files)",
+      "replace": "{ assistantId: holder.assistantId, nonce: null }, files)",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "silent-max",
+      "rule": "two silences latch the version",
+      "file": "lib/idle-update.mjs",
+      "find": "if (silents.filter((s) => !within(now, s.at, d.canarySilentMs - d.leaseTtlMs)).length >= MAX_CANARIES) return { state: 'latch_bad' }",
+      "replace": "if (false) return { state: 'latch_bad' }",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "silent-hold",
+      "rule": "one silence holds the version 24 h",
+      "file": "lib/idle-update.mjs",
+      "find": "if (silents.some((s) => within(now, s.at, d.canaryHoldMs))) return { state: 'silent_hold' }",
+      "replace": "if (false) return { state: 'silent_hold' }",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "silent-hold-window",
+      "rule": "the hold ends",
+      "file": "lib/idle-update.mjs",
+      "find": "within(now, s.at, d.canaryHoldMs)",
+      "replace": "finite(s.at)",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "silent-future",
+      "rule": "a silence stamped far ahead holds nothing for ever",
+      "file": "lib/idle-update.mjs",
+      "find": "const silents = (Array.isArray(files.silents) ? files.silents : []).map(jumped)",
+      "replace": "const silents = Array.isArray(files.silents) ? files.silents : []",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "silent-taken-back",
+      "rule": "a follower that validates takes its silence back",
+      "file": "lib/idle-update.mjs",
+      "find": "if (s.nonce === rec.nonce) read(() => fs.remove(join(dir, rec.target, `silent-${s.n}`)), false)",
+      "replace": "if (false) read(() => fs.remove(join(dir, rec.target, `silent-${s.n}`)), false)",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "silent-taken-back-own-only",
+      "rule": "it takes back only its own",
+      "file": "lib/idle-update.mjs",
+      "find": "if (s.nonce === rec.nonce) read(",
+      "replace": "if (true) read(",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "gate-19-silent-hold",
+      "rule": "gate 19 names the hold",
+      "file": "lib/idle-update.mjs",
+      "find": "['silent_hold', 'follower_wait', 'canary_quiet'].includes(machine.canary)",
+      "replace": "['follower_wait', 'canary_quiet'].includes(machine.canary)",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-19-follower-wait",
+      "rule": "gate 19 names the wait",
+      "file": "lib/idle-update.mjs",
+      "find": "['silent_hold', 'follower_wait', 'canary_quiet'].includes(machine.canary)",
+      "replace": "['silent_hold', 'canary_quiet'].includes(machine.canary)",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "gate-19-canary-quiet",
+      "rule": "gate 19 names a quiet canary",
+      "file": "lib/idle-update.mjs",
+      "find": "['silent_hold', 'follower_wait', 'canary_quiet'].includes(machine.canary)",
+      "replace": "['silent_hold', 'follower_wait'].includes(machine.canary)",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "wait-floor",
+      "rule": "no follower under 30 min",
+      "file": "lib/idle-update.mjs",
+      "find": "followerWaitMinMs: 30 * MIN,",
+      "replace": "followerWaitMinMs: 20 * MIN,",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "wait-ceiling",
+      "rule": "no follower over 60 min",
+      "file": "lib/idle-update.mjs",
+      "find": "followerWaitMaxMs: 60 * MIN,",
+      "replace": "followerWaitMaxMs: 90 * MIN,",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "wait-spread-agents",
+      "rule": "the wait differs by agent",
+      "file": "lib/idle-update.mjs",
+      "find": ".update(`${assistantId}|${target}`)",
+      "replace": ".update(`${target}`)",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "wait-spread-versions",
+      "rule": "each version draws again",
+      "file": "lib/idle-update.mjs",
+      "find": ".update(`${assistantId}|${target}`)",
+      "replace": ".update(`${assistantId}`)",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "wait-spread-window",
+      "rule": "the wait spreads over the window",
+      "file": "lib/idle-update.mjs",
+      "find": "return d.followerWaitMinMs + Math.floor(share * (d.followerWaitMaxMs - d.followerWaitMinMs))",
+      "replace": "return d.followerWaitMinMs",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "wait-gate",
+      "rule": "a follower waits",
+      "file": "lib/idle-update.mjs",
+      "find": "if (now < at + wait) return { state: 'follower_wait', until: at + wait }",
+      "replace": "if (false) return { state: 'follower_wait', until: at + wait }",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "wait-from-the-stamp",
+      "rule": "the wait counts from the stamp on disk",
+      "file": "lib/idle-update.mjs",
+      "find": "if (now < at + wait) return { state: 'follower_wait', until: at + wait }",
+      "replace": "if (now < now + wait) return { state: 'follower_wait', until: at + wait }",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "wait-jumped-clock",
+      "rule": "a validation far ahead holds nothing",
+      "file": "lib/idle-update.mjs",
+      "find": "finite(files.validatedAtMs) && files.validatedAtMs - now <= d.followerWaitMaxMs ? files.validatedAtMs : 0",
+      "replace": "finite(files.validatedAtMs) ? files.validatedAtMs : 0",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "act-reads-the-wait",
+      "rule": "the act decides on the same rule, for this version",
+      "file": "lib/idle-update.mjs",
+      "find": "const canary = decideCanary({ target, files: versionFiles(target), now: now(), me }, d)",
+      "replace": "const canary = decideCanary({ target, files: { ...versionFiles(target), validatedAtMs: 0, provedMs: d.followerWaitMaxMs }, now: now(), me }, d)",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "quiet-polls-in-a-row",
+      "rule": "ten polls in a row",
+      "file": "lib/idle-update.mjs",
+      "find": "({ count: !on ? 0 : n - last.at",
+      "replace": "({ count: !on ? last.count : n - last.at",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "quiet-polls-count",
+      "rule": "one stale poll is no silence",
+      "file": "lib/idle-update.mjs",
+      "find": "if (quiet.count >= CANARY_QUIET_POLLS && noteSilent(",
+      "replace": "if (quiet.count >= 1 && noteSilent(",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "quiet-writes",
+      "rule": "a quiet canary goes on the record",
+      "file": "lib/idle-update.mjs",
+      "find": "if (quiet.count >= CANARY_QUIET_POLLS && noteSilent(staged, { assistantId: files.validatedBy, nonce: null }, files)) {",
+      "replace": "if (quiet.count >= CANARY_QUIET_POLLS) {",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "quiet-polls-ten",
+      "rule": "nine polls are not enough",
+      "file": "lib/idle-update.mjs",
+      "find": "export const CANARY_QUIET_POLLS = 10",
+      "replace": "export const CANARY_QUIET_POLLS = 9",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "stamp-called",
+      "rule": "the canary stamps at every poll",
+      "file": "lib/idle-update.mjs",
+      "find": "          stampAlive()\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "stamp-on-the-version",
+      "rule": "a canary off the version stamps nothing",
+      "file": "lib/idle-update.mjs",
+      "find": "if (record?.state !== 'validated' || record.target !== deps.runningVersion) return\n    const files",
+      "replace": "if (record?.state !== 'validated') return\n    const files",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "stamp-lock-holder",
+      "rule": "only the lock holder stamps",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (read(deps.active, false) !== true) return\n    const n = now()\n    const arrivedAtMs",
+      "replace": "    const n = now()\n    const arrivedAtMs",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "stamp-live-only",
+      "rule": "a dead channel stamps nothing",
+      "file": "lib/idle-update.mjs",
+      "find": "if (!live && read(deps.loginExpired, false) !== true) return",
+      "replace": "if (false) return",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-clears-commit",
+      "rule": "a rollback takes the failed build's commit out of the plugin entry",
+      "file": "lib/idle-update.mjs",
+      "find": "  delete entry.gitCommitSha\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.integration.test.ts"
+      ]
+    },
+    {
+      "id": "silent-counts-late",
+      "rule": "a silence counts only past the slowest validation",
+      "file": "lib/idle-update.mjs",
+      "find": "!within(now, s.at, d.canarySilentMs - d.leaseTtlMs)).length",
+      "replace": "true).length",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "silent-counts-from-the-lease",
+      "rule": "it waited out its lease already",
+      "file": "lib/idle-update.mjs",
+      "find": "!within(now, s.at, d.canarySilentMs - d.leaseTtlMs)).length",
+      "replace": "!within(now, s.at, d.canarySilentMs)).length",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "quiet-gives-up-the-proof",
+      "rule": "a quiet canary gives up its proof",
+      "file": "lib/idle-update.mjs",
+      "find": "        read(() => fs.remove(join(dir, staged, 'validated')), false)\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "quiet-after-the-record",
+      "rule": "the silence goes on the record before the proof goes",
+      "file": "lib/idle-update.mjs",
+      "find": "if (quiet.count >= CANARY_QUIET_POLLS && noteSilent(staged, { assistantId: files.validatedBy, nonce: null }, files)) {\n        read(() => fs.remove(join(dir, staged, 'validated')), false)\n      }",
+      "replace": "if (quiet.count >= CANARY_QUIET_POLLS) {\n        read(() => fs.remove(join(dir, staged, 'validated')), false)\n        noteSilent(staged, { assistantId: files.validatedBy, nonce: null }, files)\n      }",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "quiet-its-own-canary",
+      "rule": "the silence names the canary that went quiet",
+      "file": "lib/idle-update.mjs",
+      "find": "noteSilent(staged, { assistantId: files.validatedBy, nonce: null }, files)) {",
+      "replace": "noteSilent(staged, { assistantId: deps.assistantId, nonce: null }, files)) {",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "stamp-own-proof",
+      "rule": "a canary stamps only under its own proof, so a follower stamps nothing",
+      "file": "lib/idle-update.mjs",
+      "find": "if (files.validatedBy !== deps.assistantId || files.provedMs >= d.followerWaitMaxMs) return",
+      "replace": "if (files.provedMs >= d.followerWaitMaxMs) return",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "stamp-ends",
+      "rule": "the stamps end",
+      "file": "lib/idle-update.mjs",
+      "find": "if (files.validatedBy !== deps.assistantId || files.provedMs >= d.followerWaitMaxMs) return",
+      "replace": "if (files.validatedBy !== deps.assistantId) return",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "proved-the-longest",
+      "rule": "a canary that proved the longest wait proved it for everyone, however long ago",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (files.provedMs >= d.followerWaitMaxMs - d.beaconFreshMs) return { state: 'validated' }\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "proved-the-longest-margin",
+      "rule": "one beacon window short still counts, or a canary that stopped stamping at the end would read short",
+      "file": "lib/idle-update.mjs",
+      "find": "files.provedMs >= d.followerWaitMaxMs - d.beaconFreshMs) return",
+      "replace": "files.provedMs >= d.followerWaitMaxMs) return",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "proved-stale-is-quiet",
+      "rule": "short of the longest wait a stale stamp is quiet",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (!within(now, jumped({ at: files.aliveAtMs }).at, d.beaconFreshMs)) return { state: 'canary_quiet' }\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "proved-stale-window",
+      "rule": "a stamp is stale past one beacon window",
+      "file": "lib/idle-update.mjs",
+      "find": "jumped({ at: files.aliveAtMs }).at, d.beaconFreshMs))",
+      "replace": "jumped({ at: files.aliveAtMs }).at, d.canaryHoldMs))",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "proved-stale-jumped",
+      "rule": "a stamp far ahead of the clock is no live canary",
+      "file": "lib/idle-update.mjs",
+      "find": "jumped({ at: files.aliveAtMs }).at, d.beaconFreshMs))",
+      "replace": "files.aliveAtMs, d.beaconFreshMs))",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "proved-own-wait",
+      "rule": "a live canary must have proved this agent's wait",
+      "file": "lib/idle-update.mjs",
+      "find": "const short = wait - d.beaconFreshMs - files.provedMs",
+      "replace": "const short = 0",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "proved-own-wait-margin",
+      "rule": "one beacon window short of this wait still counts",
+      "file": "lib/idle-update.mjs",
+      "find": "const short = wait - d.beaconFreshMs - files.provedMs",
+      "replace": "const short = wait - files.provedMs",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "stamp-adds-two-polls",
+      "rule": "a stamp adds two polls at most",
+      "file": "lib/idle-update.mjs",
+      "find": "Math.min(Math.max(0, n - (files.aliveAtMs ?? files.validatedAtMs)), 2 * d.pollMs)",
+      "replace": "Math.max(0, n - (files.aliveAtMs ?? files.validatedAtMs))",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "stamp-clock-back",
+      "rule": "a clock set back takes nothing away",
+      "file": "lib/idle-update.mjs",
+      "find": "Math.min(Math.max(0, n - (files.aliveAtMs ?? files.validatedAtMs)), 2 * d.pollMs)",
+      "replace": "Math.min(n - (files.aliveAtMs ?? files.validatedAtMs), 2 * d.pollMs)",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "stamp-from-the-last",
+      "rule": "a stamp adds the time since the last one",
+      "file": "lib/idle-update.mjs",
+      "find": "n - (files.aliveAtMs ?? files.validatedAtMs)",
+      "replace": "n - files.validatedAtMs",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "stamp-first-from-validation",
+      "rule": "the first stamp counts from the validation",
+      "file": "lib/idle-update.mjs",
+      "find": "(files.aliveAtMs ?? files.validatedAtMs)",
+      "replace": "files.aliveAtMs",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "stamp-keeps-the-sum",
+      "rule": "the proof carries on from what is on the disk",
+      "file": "lib/idle-update.mjs",
+      "find": "const provedMs = files.provedMs + (live ?",
+      "replace": "const provedMs = 0 + (live ?",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "alive-own-canary",
+      "rule": "what canary 1 proved is not canary 2's",
+      "file": "lib/idle-update.mjs",
+      "find": "const stamped = proof !== null && alive?.assistantId === proof.assistantId",
+      "replace": "const stamped = proof !== null && alive !== null",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "latch-polls",
+      "rule": "a latch stands for a validation's deadline before it is written",
+      "file": "lib/idle-update.mjs",
+      "find": "if (latch.count * d.pollMs > d.validateDeadlineMs) markVersion(",
+      "replace": "if (latch.count >= 1) markVersion(",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "latch-only-a-latch",
+      "rule": "only a latch counts toward the latch",
+      "file": "lib/idle-update.mjs",
+      "find": "latch = inARow(latch, machine.canary === 'latch_bad', n)",
+      "replace": "latch = inARow(latch, true, n)",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "quiet-no-outage",
+      "rule": "a poll in this agent's outage counts nothing",
+      "file": "lib/idle-update.mjs",
+      "find": "machine.canary === 'canary_quiet' && read(deps.backendUnreachable, false) !== true, n)",
+      "replace": "machine.canary === 'canary_quiet', n)",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "polls-gap",
+      "rule": "a gap of more than two polls starts the count again",
+      "file": "lib/idle-update.mjs",
+      "find": "n - last.at <= 2 * d.pollMs ? last.count + 1 : 1",
+      "replace": "last.count + 1",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "stamp-login-keeps-it-fresh",
+      "rule": "a login that ran out stops the proof, not the canary",
+      "file": "lib/idle-update.mjs",
+      "find": "if (!live && read(deps.loginExpired, false) !== true) return",
+      "replace": "if (!live) return",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "stamp-login-adds-nothing",
+      "rule": "the minutes under an expired login prove nothing",
+      "file": "lib/idle-update.mjs",
+      "find": "files.provedMs + (live ? Math.min(Math.max(0, n - (files.aliveAtMs ?? files.validatedAtMs)), 2 * d.pollMs) : 0)",
+      "replace": "files.provedMs + Math.min(Math.max(0, n - (files.aliveAtMs ?? files.validatedAtMs)), 2 * d.pollMs)",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "stamp-asks-a-beat",
+      "rule": "a canary with no beat since it arrived asks for one",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (!(finite(heartbeatOkAtMs) && heartbeatOkAtMs >= arrivedAtMs)) read(deps.requestHeartbeat, null)\n    // A login that ran out",
+      "replace": "    // A login that ran out",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "stamp-asks-only-with-none",
+      "rule": "none while the beat stands",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (!(finite(heartbeatOkAtMs) && heartbeatOkAtMs >= arrivedAtMs)) read(deps.requestHeartbeat, null)\n    // A login that ran out",
+      "replace": "    read(deps.requestHeartbeat, null)\n    // A login that ran out",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "gate-19-held-only-when-held",
+      "rule": "nothing says held until something is",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (machine.canary === 'bad') return wait('version_held_bad')\n",
+      "replace": "  if (machine.canary === 'bad' || machine.canary === 'latch_bad') return wait('version_held_bad')\n",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    }
+  ]
+}

@@ -511,6 +511,11 @@ test('touchBeaconHeartbeat never throws on an IO failure', () => {
   )
 })
 
+test('touchBeaconHeartbeat says whether the beacon was written: only a beacon the supervisor can see proves delivery live', () => {
+  assert.equal(touchBeaconHeartbeat({ path: '/state/plugin/channel-beacon.json', now: 1, pid: 1, io: makeIo() }), true)
+  assert.equal(touchBeaconHeartbeat({ path: '/x', now: 1, pid: 1, io: makeIo({ failWrite: true }) }), false)
+})
+
 test('beacon file name is a sibling of channel-live.json, and serialize round-trips', () => {
   assert.equal(BEACON_HEARTBEAT_FILE, 'channel-beacon.json')
   const round = JSON.parse(serializeBeaconHeartbeat({ beaconAt: 7, pid: 3 }))

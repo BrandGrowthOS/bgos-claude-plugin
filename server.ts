@@ -98,10 +98,37 @@ import { exportSkill, installBundle } from './lib/skills-share.js'
 import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
 import { DoctorRpcHandler, buildDoctorChecks, normalizeDoctorRpc } from './lib/doctor-rpc.ts'
 import { collectChanges, createNodeRunGit, nodeChangesFs } from './lib/git-changes.js'
-import { defaultPidAlive, pluginStateDirFor, readBootClock } from './lib/agent-inventory.mjs'
+import { SESSION_ID_FILE_NAME, defaultPidAlive, pluginStateDirFor, readBootClock } from './lib/agent-inventory.mjs'
 import { cleanIdentityName, identityFilePath, identityFromMe, takeIdentityNotice, writeAgentIdentity } from './lib/agent-identity.mjs'
 import { createMarkerTakeover, currentPluginRootFor, handoffEnv, mcpEnvKeys, nodeTakeoverFs } from './lib/marker-takeover.mjs'
 import { HOOK_RESTART_FILE_NAME, createHookRestart, nodeHookRestartFs } from './lib/hook-restart.mjs'
+import {
+  IDLE_UPDATE_DIR_NAME,
+  IDLE_UPDATE_FILE_NAME,
+  createIdleUpdate,
+  isBackendAnswer,
+  isCleanEnd,
+  isVersionHeldBad,
+  nodeIdleUpdateFs,
+  scaleFromEnv,
+  scaledDurations,
+  sessionWakePending,
+} from './lib/idle-update.mjs'
+import {
+  ENROLMENT_HOLD_FILE_NAME,
+  decideEnrolment,
+  findTmux,
+  listHeldBadVersions,
+  readLauncherClaim,
+  readMarkerMtimeMs,
+  removeRestartMarker,
+  readPersonAttached,
+  readServiceStrays,
+  readUnattendedInputs,
+  readWakeSchedule,
+  readWatcherSweepActive,
+  rollbackMarketplaceInstall,
+} from './lib/idle-update-host.mjs'
 import { buildCallOwnerBody, CALL_OWNER_OTHER_CHAT_REFUSAL } from './lib/call-owner.js'
 import { alwaysOnGraceRemainingMs, ALWAYS_ON_INSTALL_GRACE_MS, ALWAYS_ON_INSTALLED_AT_FILE } from './lib/always-on-grace.js'
 import {
@@ -109,9 +136,11 @@ import {
   summarizeReachableChats,
 } from './lib/reachable-chats.js'
 import {
+  createCleanEndSignals,
   describeShutdownCause,
   installStdinShutdown,
   isBrokenPipe,
+  isReaderGone,
   stdinHasEnded,
   watchStdinEof,
   type ShutdownCause,
@@ -612,7 +641,7 @@ import {
   UPDATE_STALE_WORK_MS,
   type SelfUpdater,
 } from './lib/self-update'
-import { normalizeUpdateRpc, UpdateRpcHandler } from './lib/update-rpc.js'
+import { normalizeUpdateRpc, UpdateRpcHandler, type OwnLauncherProof } from './lib/update-rpc.js'
 import { buildStatusAnswer } from './lib/slash-status.js'
 import {
   isOwnerSender,
@@ -649,6 +678,7 @@ import {
   detectSupervision,
   probeServiceOwnership,
   resolveSupervision,
+  serviceOwnsProcess,
   supervisorFilePath,
   wireSupervisedKind,
   type ResolvedService,
@@ -1039,6 +1069,31 @@ const RUNNING_ROOT = import.meta.dir
 // readiness must compare against what is RUNNING.
 const RUNNING_VERSION = readOwnVersion(RUNNING_ROOT)
 let updateDrainMode = false
+// The idle update (lib/idle-update.mjs, docs/idle-update/DESIGN.md): the facts
+// it reads that nothing else kept, each stamped where it happens, and its
+// report, the heartbeat's fourth lastError producer. Its windows shrink by
+// BGOS_IDLE_UPDATE_SCALE for the rig only: honoured only against a loopback backend (the
+// rig's stub), capped (lib/idle-update.mjs MAX_SCALE), and two windows keep their floors.
+const IDLE_UPDATE_DURATIONS = scaledDurations(scaleFromEnv(process.env.BGOS_IDLE_UPDATE_SCALE, { backendUrl: BACKEND_URL }))
+// ~/.bgos-agent/idle-update/: the lease, the canary and the versions held bad, shared by every agent of this HOME.
+const IDLE_UPDATE_MACHINE_DIR = pathJoin(homedir(), '.bgos-agent', IDLE_UPDATE_DIR_NAME)
+let idleUpdateError: { code: string; message: string; at: string } | null = null
+// A heartbeat POST carrying THIS build's version that resolved (bgosCall throws on a refusal): the new build
+// reached the backend. A status-only beat carries no version and proves nothing about the build.
+let heartbeatOkAtMs: number | null = null
+// Since when backend calls cannot reach a working backend (no answer, or a 5xx); null once any call is answered.
+// It holds the idle update's validation deadline: an outage is not the new build's fault. Read off every call
+// (bgosCall), so the calls of a slow startup count, not the heartbeat's alone.
+let backendUnreachableSinceMs: number | null = null
+// The channel beacon, touched only while delivery is live.
+let beaconTouchedAtMs: number | null = null
+let startupCompleteAtMs: number | null = null
+// A voice frame: a call is live, and a restart would cut it.
+let lastVoiceFrameAtMs: number | null = null
+// A browser tool: the host is this daemon's child, so a restart closes Chrome.
+let lastBrowserToolAtMs: number | null = null
+/** The last Stop that showed a wakeup a restart would lose, until a Stop shows none: the idle update's gate 12b. */
+let sessionWakeAtMs: number | null = null
 const messageActivity = new MessageActivityTracker()
 // Channel liveness (fix 04): flips true on the first bgos tool call this
 // process sees. A Claude Code session launched without the channel flag
@@ -1282,14 +1337,32 @@ function bgosCall<T>(
   call: { url: string; init?: RequestInit; timeoutMs: number; label: string },
   consume: (response: Response) => Promise<T>,
 ): Promise<T> {
+  let answered = false
+  const backend = isBackendUrl(call.url)
   return boundedFetch(
     call,
     async (response) => {
+      answered = true
       noteAuthOutcome(response.status)
+      if (backend) noteBackendReach(response.status)
       return consume(response)
     },
     { log },
-  )
+  ).catch((err) => {
+    if (backend && !answered) noteBackendReach(null)
+    throw err
+  })
+}
+
+/** Is this call to the BGOS backend? An S3 presigned upload is not: it proves nothing about the backend either way. */
+function isBackendUrl(url: string): boolean {
+  return url === API_BASE || url.startsWith(`${API_BASE}/`)
+}
+
+/** The backend answered (below 500), or did not (a 5xx, or no answer at all: null). */
+function noteBackendReach(status: number | null): void {
+  if (isBackendAnswer(status)) backendUnreachableSinceMs = null
+  else backendUnreachableSinceMs ??= Date.now()
 }
 
 async function bgosGet(
@@ -10541,6 +10614,15 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
     /* binding is telemetry; it may never break the rail */
   }
   lastHookEventAtMs = Date.now()
+  // The browser host is this daemon's child, so a restart would close Chrome mid task: the idle update waits.
+  if ((event.name === 'PreToolUse' || event.name === 'PostToolUse') && /hoai-browser__/.test(String(payload.tool_name ?? ''))) {
+    lastBrowserToolAtMs = Date.now()
+  }
+  // What a restart would lose, only a Stop says: a self-paced /loop holds the idle update, and --resume would drop it.
+  if (event.name === 'Stop') {
+    const pending = sessionWakePending(payload.session_crons)
+    if (pending !== null) sessionWakeAtMs = pending ? Date.now() : null
+  }
   const hookSessionId = String(event.sessionId ?? '').trim()
   // Every admitted event decides it: a SessionEnd names the session that is
   // over, anything else is a live one again (a new session bound, a resume).
@@ -13520,7 +13602,14 @@ function updateReadinessSnapshot(): UpdateReadiness {
 // RUNNING_ROOT read now. Both callers re-read it on their own cadence (per
 // heartbeat send and readiness poll, and agent-state.json's memoizeFor).
 // `state` is the auto-update.json read the caller already made, when it made one.
-function daemonPendingRestartVersion(state?: ReturnType<typeof loadAutoUpdateState>): string | null {
+// A version the idle update latched bad on this computer (it failed an agent
+// here, which went back) reads as NO pending restart here, so the heartbeat, a click and the
+// watcher never push an agent onto it again. `latched: false` is the same
+// answer without the latch, what is staged on disk now (daemonStagedVersion).
+function daemonPendingRestartVersion(
+  state?: ReturnType<typeof loadAutoUpdateState>,
+  { latched = true }: { latched?: boolean } = {},
+): string | null {
   return resolvePendingRestartVersion({
     installMethod: INSTALL_METHOD,
     runningVersion: RUNNING_VERSION,
@@ -13531,7 +13620,18 @@ function daemonPendingRestartVersion(state?: ReturnType<typeof loadAutoUpdateSta
     },
     readInstalledPlugins: () => readTextOrNull(installedPluginsPath(CLAUDE_CONFIG_DIR)),
     readCheckoutVersion: () => readOwnVersion(RUNNING_ROOT),
+    heldBad: latched ? idleUpdateHeldBad : undefined,
   })
+}
+
+// The idle update reads the unlatched answer, so a version held bad shows as
+// its own wait (version_held_bad, reported) rather than as nothing staged.
+function daemonStagedVersion(): string | null {
+  return daemonPendingRestartVersion(undefined, { latched: false })
+}
+
+function idleUpdateHeldBad(version: string): boolean {
+  return isVersionHeldBad(version, { machineDir: IDLE_UPDATE_MACHINE_DIR, fs: nodeIdleUpdateFs() })
 }
 
 // ── Published agent state (design section 7, finding 9) ─────────────────────
@@ -13961,6 +14061,72 @@ const updateRpc = new UpdateRpcHandler({
       execSync: defaultExecSync,
     }),
 })
+
+// ── The idle update (lib/idle-update.mjs, docs/idle-update/DESIGN.md) ───────
+// A staged build loads only when the session restarts, and nothing restarted
+// an idle one: Alex's 15 agents ran 0.69.12 to 0.74.0 with 0.74.3 staged. Once
+// a newer build is staged and this agent has been idle and quiet, past its own
+// jitter and the computer's lease, the controller restarts the session through
+// the daemon's own ladder (its two idle entry points only), resuming the pinned
+// session; the new daemon validates the build on live evidence, and a failed
+// one is rolled back by the computer's first agent onto it (its canary), or
+// once by any other agent it fails on.
+// Never a busy agent, never a session a person may be typing in, one attempt
+// per version, and BGOS_AUTO_UPDATE off means never. The pairing lock holder
+// only, never once shutdown has begun (active), so the shutdown path needs
+// nothing from it; its poll is unref'd.
+let idleUpdate: ReturnType<typeof createIdleUpdate> | null = null
+// Blocking asks, plan cards and own ask cards younger than this hold a restart;
+// an older non-blocking card survives one (lib/ask-tracker.ts).
+const IDLE_ASK_FRESH_MS = 24 * 60 * 60_000
+// The authority is resolved from files and a few process reads: once a minute is plenty for a 30 s poll.
+const idleRestartAuthority = memoizeFor(60_000, Date.now, () =>
+  chooseRestartAuthority({
+    ...supervisionProbe(),
+    uid: typeof process.getuid === 'function' ? process.getuid() : null,
+  }),
+)
+
+function idleOpenAsks(now: number): number {
+  return asksWaiting + openPlansByChat.size + askTracker.pending().filter((ask) => now - ask.postedAt < IDLE_ASK_FRESH_MS).length
+}
+
+/** The job the authority names really holds this process (the 2026-09-11 rule, read only when every cheap fact says go). */
+function idleServiceOwnsUs(): boolean {
+  const authority = idleRestartAuthority()
+  if (authority.kind !== 'service') return false
+  const reading = probeServiceOwnership({
+    ownPid: process.pid,
+    service: authority.service,
+    uid: typeof process.getuid === 'function' ? process.getuid() : null,
+    execSync: defaultExecSync,
+  })
+  return serviceOwnsProcess(reading.ancestorPids, reading.servicePid)
+}
+
+/** Puts the install back on the build the record came from: the marketplace entry, or the clone's checkout. Never exits. */
+async function idleRollbackInstall(record: any): Promise<{ ok: boolean; reason?: string }> {
+  if (record?.installMethod === 'marketplace') {
+    const marketplace = INSTALL_DETECTION?.marketplace || undefined
+    const result = await rollbackMarketplaceInstall({
+      record,
+      installedPluginsPath: installedPluginsPath(CLAUDE_CONFIG_DIR),
+      holdPath: pathJoin(IDLE_UPDATE_MACHINE_DIR, ENROLMENT_HOLD_FILE_NAME),
+      marketplace,
+      configDir: CLAUDE_CONFIG_DIR,
+      fs: nodeIdleUpdateFs(),
+      // Only ever a switch-off: the enrolment's own brakes gate every switch-on (the boot enrolment below).
+      setAutoUpdate: () => ensureMarketplaceAutoUpdate({ configDir: CLAUDE_CONFIG_DIR, marketplace, enabled: false }),
+      now: Date.now(),
+    })
+    if (result.ok) log(`idle update: Claude Code's own plugin update for ${marketplace ?? 'this marketplace'} on rollback: ${result.enrolment}`)
+    return result
+  }
+  if (!selfUpdater) return { ok: false, reason: 'no_updater' }
+  if (typeof record?.fromCommit !== 'string' || !record.fromCommit) return { ok: false, reason: 'no_commit' }
+  return selfUpdater.rollbackCheckoutTo(record.fromCommit)
+}
+
 
 // ── Watcher install (watcher_install_rpc) ────────────────────────────────────
 // The app's "set up the watcher on this machine" button (design 7.6): this
@@ -15529,6 +15695,7 @@ function connectWebsocket(): void {
       const frame = normalizeVoiceRpc(payload)
       if (!frame) return
       log(`voice_rpc received (op=${rpcLogOp(frame.op)}, rpc=${rpcLogTag(frame.rpcId)})`)
+      lastVoiceFrameAtMs = Date.now()
       void trackMessageOperation(() => voiceRpc.handle(frame)).catch((err) => {
         log(`voice_rpc handler error: ${err}`)
       })
@@ -17392,6 +17559,10 @@ async function main(): Promise<void> {
     log(describeShutdownCause(cause))
     selfUpdater?.markGracefulStop()
     stopHookIntake()
+    // A clean end (its claude went away): the idle update's record says so, so the next boot of a new build being
+    // validated is not read as a crash. Never on a fault: uncaughtException and main().catch do not come through
+    // here, and the fault handlers' broken pipe on some other stream is 'broken-pipe', never a clean end.
+    idleUpdate?.noteEnded(isCleanEnd(cause))
     // A clean stop takes the published state away (only when it is ours), so
     // the watcher never reads a dead daemon's "idle" as a live one's.
     agentStatePublisher.shutdown()
@@ -17419,6 +17590,13 @@ async function main(): Promise<void> {
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.once(signal, () => shutdown(signal, signal === 'SIGINT' ? 130 : 143))
   }
+  // Open only from an idle update restart's arrival to its first live proof, which the controller decides.
+  const cleanEndSignals = createCleanEndSignals({
+    platform: process.platform,
+    on: (signal, listener) => process.on(signal, listener),
+    off: (signal, listener) => process.off(signal, listener),
+    shutdown,
+  })
 
   // agent-state.json (design section 7): ticks from here on; it writes only
   // while this daemon holds the pairing lock, so a passive daemon never does.
@@ -17535,6 +17713,122 @@ async function main(): Promise<void> {
     hookRestart.start()
   }
 
+  // The idle update's controller (wired above main with its helpers): armed the
+  // moment this daemon holds the pairing lock (at boot or on promotion), BEFORE
+  // the arm of delivery, so a new build whose startup hangs still meets its
+  // validation deadline and is rolled back. It restarts nothing before startup
+  // completes (gate 9). Paired agents only: an API key session has no agent
+  // identity for the heartbeat that validates a build.
+  function armIdleUpdate(): void {
+    if (idleUpdate) return
+    if (AUTH.mode !== 'pairing') {
+      log('idle update: off: this session uses an API key; the idle update runs on paired agents only')
+      return
+    }
+    const stateDir = agentStateDir(homedir(), ASSISTANT_ID)
+    if (!stateDir) return
+    const fs = nodeIdleUpdateFs()
+    const tmuxPath = process.platform === 'win32' ? null : findTmux({ env: process.env, home: homedir() })
+    idleUpdate = createIdleUpdate({
+      assistantId: String(ASSISTANT_ID),
+      ownPid: process.pid,
+      platform: process.platform,
+      bootAtMs: DAEMON_START_MS,
+      runningVersion: RUNNING_VERSION,
+      installMethod: INSTALL_METHOD,
+      fromRoot: RUNNING_ROOT,
+      fromCommit: selfUpdater?.runningCommitId ?? null,
+      durations: IDLE_UPDATE_DURATIONS,
+      paths: { record: pathJoin(stateDir, IDLE_UPDATE_FILE_NAME), machineDir: IDLE_UPDATE_MACHINE_DIR },
+      fs,
+      now: Date.now,
+      random: Math.random,
+      nonce: () => crypto.randomUUID(),
+      autoUpdateEnabled: () => isAutoUpdateEnabled(process.env.BGOS_AUTO_UPDATE),
+      stagedVersion: () => daemonStagedVersion(),
+      active: () => lockHeld && !shuttingDown,
+      holdsLock: () => lockHeld,
+      guardCleanEnd: (open: boolean) => cleanEndSignals.set(open),
+      watcherSweepActive: () => readWatcherSweepActive({ home: homedir(), fs, now: Date.now(), freshMs: IDLE_UPDATE_DURATIONS.watcherFreshMs }),
+      authorityKind: () => idleRestartAuthority().kind,
+      serviceOwnsUs: () => idleServiceOwnsUs(),
+      draining: () => updateDrainMode,
+      updateLockHeld: () =>
+        INSTALL_METHOD !== 'marketplace' && isUpdateLockHeld(joinPath(import.meta.dir, '.git', AUTO_UPDATE_LOCK_FILE)),
+      markerMtimeMs: () => readMarkerMtimeMs({ stateDir, fs }),
+      removeMarker: () => removeRestartMarker({ stateDir, fs }),
+      safeState: () => ({
+        turnInFlight: hookTurnLive || hookTurn.carried.size > 0,
+        turnSignal: hookTurnSignal({ lastEventAtMs: lastHookEventAtMs, endedSessionId: hookEndedSessionId }),
+        ...updateDrainSnapshot(),
+      }),
+      activityMs: () => [DAEMON_START_MS, lastInboundAtMs, lastHookEventAtMs, agentTranscript().activityMs],
+      openAsks: () => idleOpenAsks(Date.now()),
+      goalRunning: () =>
+        (goalLane.condition !== null && !goalLane.closed) || goalPendingArm !== null || goalInjectionsInFlight > 0 || goalSelfClears > 0,
+      call: () => ({
+        pendingConsults: voiceRpc.pendingConsultCount,
+        openContinuations: voiceRpc.openContinuationCount,
+        openMeetings: meetingContexts.size,
+        lastVoiceAtMs: lastVoiceFrameAtMs,
+      }),
+      lastBrowserToolAtMs: () => lastBrowserToolAtMs,
+      sessionWakeAtMs: () => sessionWakeAtMs,
+      claudePid: () => agentClaudePid(),
+      sessionId: async () => readTextOrNull(pathJoin(stateDir, SESSION_ID_FILE_NAME))?.trim() || null,
+      listProcesses: () => listProcesses({ platform: process.platform, exec: nodeExec(), env: process.env }),
+      launcher: () => readLauncherClaim({ stateDir, fs, alive: defaultPidAlive }),
+      unattendedInputs: () => readUnattendedInputs({ platform: process.platform, home: homedir(), assistantId: ASSISTANT_ID, stateDir, fs }),
+      personAttached: () => {
+        const authority = idleRestartAuthority()
+        return readPersonAttached({
+          platform: process.platform,
+          sockets: readUnattendedInputs({ platform: process.platform, home: homedir(), assistantId: ASSISTANT_ID, stateDir, fs }).ownSockets,
+          keepalive: authority.kind === 'keepalive',
+          keepaliveSession: authority.kind === 'keepalive' ? authority.tmuxSession : null,
+          tmuxPath,
+          exec: nodeExec(),
+          env: process.env,
+        })
+      },
+      wakeSchedule: () => readWakeSchedule((path) => bgosPeerGet(path)),
+      serviceStrays: (processes: any[] | null, claudePid: number | null) => {
+        const authority = idleRestartAuthority()
+        const inputs = readUnattendedInputs({ platform: process.platform, home: homedir(), assistantId: ASSISTANT_ID, stateDir, fs })
+        return readServiceStrays({
+          service: authority.kind === 'service' ? authority.service : null,
+          processes,
+          claudePid,
+          sockets: inputs.ownSockets,
+          runShPath: inputs.runShPath,
+          exec: nodeExec(),
+          fs,
+          env: process.env,
+        })
+      },
+      startupComplete: () => startupCompleteAtMs !== null,
+      heartbeatOkAtMs: () => heartbeatOkAtMs,
+      beaconAtMs: () => beaconTouchedAtMs,
+      deaf: () => currentUnresponsiveError(Date.now()) !== null,
+      loginExpired: () => currentAccountError(Date.now()) !== null,
+      backendUnreachable: () => backendUnreachableSinceMs !== null,
+      monotonicNow: () => performance.now(),
+      requestHeartbeat: () => versionHeartbeat?.sendNow(),
+      drain: setUpdateDrainMode,
+      restart: (target: string, proof: OwnLauncherProof | null) => updateRpc.restartForStagedUpdate(target, proof),
+      restartRollback: (from: string, proof: OwnLauncherProof | null) => updateRpc.restartForRollback(from, proof),
+      rollbackInstall: (record: any) => idleRollbackInstall(record),
+      report: (err: { code: string; message: string; at: string } | null) => {
+        idleUpdateError = err
+        versionHeartbeat?.sendNow()
+      },
+      log,
+      setInterval,
+      clearInterval,
+    })
+    idleUpdate.start()
+  }
+
   // The parent Claude Code session holds our stdin. When it dies the pipe closes, which is a fact
   // about the process tree rather than an inference. Without this the daemon survives its session:
   // four of our timers are not unref'd (the poll loop among them), so it keeps polling, keeps its
@@ -17563,9 +17857,19 @@ async function main(): Promise<void> {
   //
   // Both guards below were added after the first version of this block looped in production: the
   // handler logged, the log threw EPIPE, the throw re-entered the handler. So:
-  //   1. a broken pipe is the READER leaving, not a fault to report, so it goes to shutdown; and
+  //   1. a broken pipe goes to shutdown, not to the log (our own output's, the reader leaving, is caught on the
+  //      stream itself below; one here is on some other stream); and
   //   2. handlingFault makes a throw inside a handler impossible to recurse through.
   let handlingFault = false
+  // A broken pipe on this daemon's OWN output is its reader, claude, gone: a clean end, caught here on the stream
+  // itself. The fault handlers below see a broken pipe on any other stream, which is as likely a fault in the build.
+  for (const pipe of [process.stdout, process.stderr]) {
+    pipe.on('error', (err) => {
+      if (isReaderGone(err)) shutdown('stdout-epipe', 0)
+      else if (isBrokenPipe(err)) shutdown('broken-pipe', 0)
+      else throw err
+    })
+  }
   const describeFault = (err: unknown) =>
     err instanceof Error ? err.stack ?? err.message : String(err)
 
@@ -17577,7 +17881,7 @@ async function main(): Promise<void> {
     handlingFault = true
     try {
       if (isBrokenPipe(reason)) {
-        shutdown('stdout-epipe', 0)
+        shutdown('broken-pipe', 0)
         return
       }
       log(`unhandledRejection: ${describeFault(reason)}`)
@@ -17598,7 +17902,7 @@ async function main(): Promise<void> {
     handlingFault = true
     try {
       if (isBrokenPipe(err)) {
-        shutdown('stdout-epipe', 0)
+        shutdown('broken-pipe', 0)
         return
       }
       log(`uncaughtException (fatal, exiting): ${describeFault(err)}`)
@@ -18243,11 +18547,13 @@ async function main(): Promise<void> {
         // cycle plan, and it is unreachable while stood down, which is right:
         // a passive daemon is not delivering and must not claim it is.
         if (heartbeatThisTick && (isWsHealthy() || plan.kind === 'full' || plan.kind === 'fast')) {
-          touchBeaconHeartbeat({
+          const beaconWritten = touchBeaconHeartbeat({
             path: BEACON_HEARTBEAT_PATH,
             now: hbNow,
             pid: process.pid,
           })
+          // Only a beacon written where the supervisor watches proves delivery live to the idle update.
+          if (beaconWritten) beaconTouchedAtMs = hbNow
         }
         // The home step, once, by the channel holder. Reached only past the
         // `if (!channelArmed) return` above, so a passive daemon never writes,
@@ -18308,6 +18614,7 @@ async function main(): Promise<void> {
     // The single line that says delivery is live. Its ABSENCE in a log is the
     // signal to read back up the startup phases and find the one that started
     // and never finished.
+    startupCompleteAtMs = Date.now()
     log('startup complete: polling armed, message delivery is live')
 
     // This version started and reached live delivery, so it is the one to name if a later release has
@@ -18387,7 +18694,25 @@ async function main(): Promise<void> {
       // The marketplace NAME comes from install detection, never a hardcoded 'hoai': a machine that
       // registered the marketplace under another name is a real case that has confused an external
       // tester twice, and writing the wrong key would silently do nothing.
+      // The latest version first (local files, no network): the enrolment below holds while it is
+      // a version the idle update latched bad on this computer (lib/idle-update-host.mjs decideEnrolment).
+      await marketplaceLatest.observeNow()
       try {
+        const marketplaceName = INSTALL_DETECTION?.marketplace
+        // The idle update's rollback switched Claude Code's own update off so a relaunch would not
+        // reinstall the build it left. Held while the latest is still that build; once a newer one
+        // is published, this plugin takes back its OWN switch-off (a person's false never moves).
+        const holdPath = pathJoin(IDLE_UPDATE_MACHINE_DIR, ENROLMENT_HOLD_FILE_NAME)
+        const enrolment = decideEnrolment({
+          holdRaw: readTextOrNull(holdPath),
+          marketplace: marketplaceName ?? null,
+          latestKnownVersion: marketplaceLatest.current(),
+          badVersions: listHeldBadVersions({ machineDir: IDLE_UPDATE_MACHINE_DIR, fs: nodeIdleUpdateFs() }),
+          configDir: CLAUDE_CONFIG_DIR,
+        })
+        if (enrolment === 'hold') {
+          log(`marketplace auto-update held: the latest ${marketplaceLatest.current() ?? '(unknown)'} is a version held bad on this computer`)
+        }
         // Respect the brakes this daemon already honours everywhere else. Enrolling a machine into
         // unattended updates while its own updates are switched off, or while a bad release has
         // latched rollback on, would be the one path that ignores the stop switch.
@@ -18399,12 +18724,16 @@ async function main(): Promise<void> {
           !readRollbackLatch(pathDirname(resolveAutoUpdateStatePath(cursorStore.filePath)), {
             readFile: readTextOrNull,
           })
-        const marketplaceName = INSTALL_DETECTION?.marketplace
-        if (marketplaceName && updatesAllowed) {
+        if (marketplaceName && updatesAllowed && enrolment !== 'hold') {
           const enrolled = ensureMarketplaceAutoUpdate({
             configDir: CLAUDE_CONFIG_DIR,
             marketplace: marketplaceName,
+            reclaim: enrolment === 'reclaim',
           })
+          if (enrolment === 'reclaim' && (enrolled.changed || enrolled.reason === 'already')) {
+            nodeIdleUpdateFs().remove(holdPath)
+            log(`marketplace auto-update taken back for ${marketplaceName}: a version newer than the one held here is published`)
+          }
           if (enrolled.changed) {
             log(`marketplace auto-update enabled for ${marketplaceName} (this machine now self-updates)`)
           } else if (enrolled.reason === 'not_persisted') {
@@ -18422,10 +18751,9 @@ async function main(): Promise<void> {
         log(`could not enable marketplace auto-update: ${err}`)
       }
 
-      // Seed the marketplace latest-version cache from the local files (no
-      // network, a few file reads) so the boot heartbeat below already
-      // carries it, then arm the delayed + periodic network refresh.
-      await marketplaceLatest.observeNow()
+      // The latest-version cache was seeded from the local files above (no
+      // network, a few file reads), so the boot heartbeat below already
+      // carries it; now arm the delayed + periodic network refresh.
       marketplaceLatest.start()
       log(
         `marketplace latest-version refresh armed (local now: ${marketplaceLatest.current() ?? 'unknown'}; ` +
@@ -18435,13 +18763,23 @@ async function main(): Promise<void> {
     versionHeartbeat = startVersionHeartbeat({
       authMode: AUTH.mode,
       rootDir: import.meta.dir,
-      post: bgosPost,
+      // A beat that landed is the idle update's proof that a new build reached the backend.
+      post: async (path: string, body: Record<string, unknown>) => {
+        const result = await bgosPost(path, body)
+        if (path === 'integrations/heartbeat') {
+          if (body.daemonVersion === RUNNING_VERSION) heartbeatOkAtMs = Date.now()
+        }
+        return result
+      },
       log,
       // The fleet-visible half of the refusal that noteAuthOutcome already
       // detects. Derived from that same state, so the two can never disagree,
       // and null once any call succeeds, which the backend reads as "clear it".
-      // THREE producers, one field. See pickAccountAwareLastError: a refused
+      // FOUR producers, one field. See pickAccountAwareLastError: a refused
       // credential wins, because it explains a session that then looks deaf.
+      // The idle update's report (a restart that did not take, a rollback, a
+      // version held here) comes last: each of the three explains more about
+      // a session than an update does.
       lastError: () => {
         const now = Date.now()
         return pickAccountAwareLastError(
@@ -18452,7 +18790,7 @@ async function main(): Promise<void> {
           // The deaf verdict, read the same way sweepUnresponsiveReport reads
           // it, so the beat it sends at once carries what it saw.
           currentUnresponsiveError(now),
-        )
+        ) ?? idleUpdateError
       },
       // What this daemon reports it can do, sent on EVERY beat because the
       // backend replaces the stored declaration wholesale. That is what lets
@@ -18493,6 +18831,8 @@ async function main(): Promise<void> {
     // The not responding verdict and its clearing go out at once, not on the
     // next 6 hourly beat (sweepUnresponsiveReport).
     setInterval(sweepUnresponsiveReport, SESSION_STATUS_TICK_MS).unref()
+
+    // (The idle update is armed where the pairing lock is taken: armIdleUpdate.)
 
     // Step 9.5: auth divergence recheck. AUTH is frozen at boot; this slow
     // re-resolution (default 10 min + credentials-file watch) WARNs once per
@@ -18607,6 +18947,7 @@ async function main(): Promise<void> {
         // Who the pending cards belong to, seen now: the arm below can take a
         // while (fourth review of #282, Important 2).
         refreshAskTracker('promotion')
+        armIdleUpdate()
         if (res.reason === 'channel-takeover') {
           log(
             `${formatChannelTakeoverLine({ selfPid: process.pid, holderPid: res.holderPid, selfReason: channelPresence().reason })}; ` +
@@ -18673,6 +19014,7 @@ async function main(): Promise<void> {
     // while the (slow) arm runs.
     lockHeld = true
     connectedSince = Date.now()
+    armIdleUpdate()
     log(
       lockAtBoot.reason === 'channel-takeover'
         ? `${formatChannelTakeoverLine({ selfPid: process.pid, holderPid: lockAtBoot.holderPid, selfReason: bootPresence.reason })}; ` +
