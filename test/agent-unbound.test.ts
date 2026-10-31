@@ -292,6 +292,13 @@ test('Windows: a deleted agent\'s logon task is unregistered, its launcher tree 
   const task912 = [...w.host.tasks.keys()].find((n) => n.startsWith('HOAI Agent 912 '))!
   const task913 = [...w.host.tasks.keys()].find((n) => n.startsWith('HOAI Agent 913 '))!
   const before913 = [...w.fs.files.entries()].filter(([k]) => k.startsWith(wstate('913')) || k === wcreds('913'))
+  // Archive, never delete: nothing inside the agent's folder is ever removed, only moved whole.
+  const deleted: string[] = []
+  const rm = w.fs.rm
+  w.fs.rm = (p: string) => {
+    deleted.push(p)
+    rm(p)
+  }
   const report = await cleanUpUnboundAgent({
     platform: 'win32',
     home: WHOME,
@@ -319,6 +326,7 @@ test('Windows: a deleted agent\'s logon task is unregistered, its launcher tree 
   assert.equal(w.fs.files.get(`${archive}\\agent.log`), 'log-912')
   assert.ok(w.fs.files.has(`${archive}\\run-agent.vbs`), 'the generated launcher is archived with the folder, not deleted')
   assert.ok(w.fs.files.has(`${archive}\\install-agent-task.ps1`), 'the task script the uninstall ran is archived with the folder, not deleted')
+  assert.deepEqual(deleted.filter((p) => p.toLowerCase().startsWith(`${wstate('912')}\\`.toLowerCase())), [], 'no file of the agent\'s folder is ever deleted')
   // The credentials: removed, and only this agent's.
   assert.equal(w.fs.exists(wcreds('912')), false)
   assert.deepEqual([...w.fs.files.entries()].filter(([k]) => k.startsWith(wstate('913')) || k === wcreds('913')), before913)
@@ -347,6 +355,7 @@ test('Windows: a replayed cleanup does nothing new (no command, no second archiv
   const again = await cleanUpUnboundAgent(deps)
   assert.equal(again.ok, true)
   assert.equal(again.archivedTo, null)
+  assert.deepEqual(again.notes, ['agent 912: nothing of it is left on this computer (already cleaned up)'], 'the run log says the replay found nothing to do')
   assert.equal(w.host.calls.length, calls, 'no command at all on the replay')
   assert.deepEqual(w.killed, ['taskkill.exe /PID 5912 /T /F'])
   assert.equal(JSON.stringify([...w.fs.files.entries()].sort()), files)
