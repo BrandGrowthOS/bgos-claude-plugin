@@ -1811,10 +1811,15 @@ export class SelfUpdater {
    * and WITHOUT the exit: the caller restarts through the ladder (a daemon
    * never exits to restart itself, 2026-09-11). Never throws.
    */
-  async rollbackCheckoutTo(previousCommit: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+  async rollbackCheckoutTo(
+    previousCommit: string,
+    stillWanted?: () => boolean,
+  ): Promise<{ ok: true; moved?: false } | { ok: false; reason: string }> {
     if (typeof previousCommit !== 'string' || !SHA_RE.test(previousCommit)) return { ok: false, reason: 'not_a_commit' }
     const lock = await this.acquireRollbackLock()
     try {
+      // Asked under the lock: an agent stepping in may have queued behind another's rollback.
+      if (stillWanted && !stillWanted()) return { ok: true, moved: false }
       const targetCommit = await git(this.runner, this.opts.rootDir, ['rev-parse', 'HEAD'])
       if (!SHA_RE.test(targetCommit)) return { ok: false, reason: 'head_unreadable' }
       if ((await this.checkoutPreviousCommit(previousCommit, targetCommit)) === 'dirty') return { ok: false, reason: 'dirty_tree' }

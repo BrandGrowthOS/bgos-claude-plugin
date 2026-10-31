@@ -115,8 +115,8 @@ import {
   sessionWakePending,
 } from './lib/idle-update.mjs'
 import {
-  ENROLMENT_HOLD_FILE_NAME,
   decideEnrolment,
+  enrolmentHoldFileName,
   findTmux,
   listHeldBadVersions,
   readLauncherClaim,
@@ -14112,7 +14112,7 @@ async function idleRollbackInstall(record: any): Promise<{ ok: boolean; reason?:
     const result = await rollbackMarketplaceInstall({
       record,
       installedPluginsPath: installedPluginsPath(CLAUDE_CONFIG_DIR),
-      holdPath: pathJoin(IDLE_UPDATE_MACHINE_DIR, ENROLMENT_HOLD_FILE_NAME),
+      holdPath: pathJoin(IDLE_UPDATE_MACHINE_DIR, enrolmentHoldFileName(CLAUDE_CONFIG_DIR)),
       marketplace,
       configDir: CLAUDE_CONFIG_DIR,
       fs: nodeIdleUpdateFs(),
@@ -18701,7 +18701,7 @@ async function main(): Promise<void> {
         // The idle update's rollback switched Claude Code's own update off so a relaunch would not
         // reinstall the build it left. Held while the latest is still that build; once a newer one
         // is published, this plugin takes back its OWN switch-off (a person's false never moves).
-        const holdPath = pathJoin(IDLE_UPDATE_MACHINE_DIR, ENROLMENT_HOLD_FILE_NAME)
+        const holdPath = pathJoin(IDLE_UPDATE_MACHINE_DIR, enrolmentHoldFileName(CLAUDE_CONFIG_DIR))
         const enrolment = decideEnrolment({
           holdRaw: readTextOrNull(holdPath),
           marketplace: marketplaceName ?? null,

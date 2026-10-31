@@ -3884,8 +3884,8 @@
       "id": "install-back-lock-holder",
       "rule": "only the lock holder moves the install",
       "file": "lib/idle-update.mjs",
-      "find": "if (owed === null || facts.active !== true || facts.autoUpdateEnabled !== true || now() < installBackAfterMs) return",
-      "replace": "if (owed === null || facts.autoUpdateEnabled !== true || now() < installBackAfterMs) return",
+      "find": "if (facts.active !== true || facts.autoUpdateEnabled !== true || now() < installBackAfterMs) return",
+      "replace": "if (facts.autoUpdateEnabled !== true || now() < installBackAfterMs) return",
       "tests": [
         "test/idle-update.controller.test.ts"
       ]
@@ -3894,8 +3894,8 @@
       "id": "install-back-updates-off",
       "rule": "BGOS_AUTO_UPDATE off never moves the install",
       "file": "lib/idle-update.mjs",
-      "find": "if (owed === null || facts.active !== true || facts.autoUpdateEnabled !== true || now() < installBackAfterMs) return",
-      "replace": "if (owed === null || facts.active !== true || now() < installBackAfterMs) return",
+      "find": "if (facts.active !== true || facts.autoUpdateEnabled !== true || now() < installBackAfterMs) return",
+      "replace": "if (facts.active !== true || now() < installBackAfterMs) return",
       "tests": [
         "test/idle-update.controller.test.ts"
       ]
@@ -3904,8 +3904,8 @@
       "id": "install-back-close-look",
       "rule": "a try that failed comes round at the next close look, never every poll",
       "file": "lib/idle-update.mjs",
-      "find": "if (owed === null || facts.active !== true || facts.autoUpdateEnabled !== true || now() < installBackAfterMs) return",
-      "replace": "if (owed === null || facts.active !== true || facts.autoUpdateEnabled !== true) return",
+      "find": "if (facts.active !== true || facts.autoUpdateEnabled !== true || now() < installBackAfterMs) return",
+      "replace": "if (facts.active !== true || facts.autoUpdateEnabled !== true) return",
       "tests": [
         "test/idle-update.controller.test.ts"
       ]
@@ -3914,7 +3914,7 @@
       "id": "install-back-if-still-on",
       "rule": "the agent says which build it is stepping in on, so the write stops once the install left it",
       "file": "lib/idle-update.mjs",
-      "find": "fromCommit: deps.fromCommit ?? null, ifStillOn: owed })",
+      "find": "fromCommit: deps.fromCommit ?? null, ifStillOn: owed ?? staged })",
       "replace": "fromCommit: deps.fromCommit ?? null })",
       "tests": [
         "test/idle-update.controller.test.ts"
@@ -3954,8 +3954,8 @@
       "id": "install-back-moved-false-waits",
       "rule": "a pending state that stays after the install moved is read at the close look",
       "file": "lib/idle-update.mjs",
-      "find": "      installBack = null\n      installBackAfterMs = now() + d.listBackoffMs\n      return\n",
-      "replace": "      installBack = null\n      return\n",
+      "find": "      if (installBack?.target !== marked || installBack.owed) installBack = null\n      installBackAfterMs = now() + d.listBackoffMs\n      return\n",
+      "replace": "      if (installBack?.target !== marked || installBack.owed) installBack = null\n      return\n",
       "tests": [
         "test/idle-update.controller.test.ts"
       ]
@@ -4004,8 +4004,8 @@
       "id": "install-back-logs-once",
       "rule": "each reason is logged once",
       "file": "lib/idle-update.mjs",
-      "find": "      if (!said.has(`install:${reason}`)) log(",
-      "replace": "      log(",
+      "find": "      if (!said.has(`install:${reason}`)) {\n",
+      "replace": "      if (true) {\n",
       "tests": [
         "test/idle-update.controller.test.ts"
       ]
@@ -4094,8 +4094,8 @@
       "id": "host-stepin-moved",
       "rule": "the result says whether this call moved it",
       "file": "lib/idle-update-host.mjs",
-      "find": "  const moved = !held\n",
-      "replace": "  const moved = true\n",
+      "find": "  let moved = !held\n",
+      "replace": "  let moved = true\n",
       "tests": [
         "test/idle-update.host.test.ts"
       ]
@@ -4114,8 +4114,8 @@
       "id": "host-stepin-switch-off",
       "rule": "the switch-off is asked though the install already moved",
       "file": "lib/idle-update-host.mjs",
-      "find": "  if (typeof marketplace !== 'string' || !marketplace) return { ok: true, enrolment: 'no_marketplace', moved }\n",
-      "replace": "  if (!moved) return { ok: true, enrolment: 'already', moved }\n  if (typeof marketplace !== 'string' || !marketplace) return { ok: true, enrolment: 'no_marketplace', moved }\n",
+      "find": "  if (typeof marketplace !== 'string' || !marketplace) return { ok: true, enrolment: 'no_marketplace', moved, on }\n",
+      "replace": "  if (!moved) return { ok: true, enrolment: 'already', moved, on }\n  if (typeof marketplace !== 'string' || !marketplace) return { ok: true, enrolment: 'no_marketplace', moved, on }\n",
       "tests": [
         "test/idle-update.host.test.ts"
       ]
@@ -4124,7 +4124,7 @@
       "id": "host-clone-still-on",
       "rule": "a clone is checked out only while it holds the marked build",
       "file": "lib/idle-update-host.mjs",
-      "find": "    if (on !== null && on !== record.ifStillOn) return { ok: true, moved: false }\n",
+      "find": "  if (stepsIn && !stillOn()) return { ok: true, moved: false }\n",
       "replace": "",
       "tests": [
         "test/idle-update.host.test.ts"
@@ -4134,8 +4134,8 @@
       "id": "host-clone-unknown",
       "rule": "a package.json it cannot read is no sign that the clone moved",
       "file": "lib/idle-update-host.mjs",
-      "find": "    if (on !== null && on !== record.ifStillOn) return { ok: true, moved: false }\n",
-      "replace": "    if (on !== record.ifStillOn) return { ok: true, moved: false }\n",
+      "find": "    return on === null || on === record.ifStillOn\n",
+      "replace": "    return on === record.ifStillOn\n",
       "tests": [
         "test/idle-update.host.test.ts"
       ]
@@ -4144,8 +4144,8 @@
       "id": "host-clone-updater",
       "rule": "no self updater is refused",
       "file": "lib/idle-update-host.mjs",
-      "find": "  if (!updater) return { ok: false, reason: 'no_updater' }\n",
-      "replace": "",
+      "find": "  if (!updater) return { ok: false, reason: 'no_updater' }\n  if (typeof record?.fromCommit",
+      "replace": "  if (typeof record?.fromCommit",
       "tests": [
         "test/idle-update.host.test.ts"
       ]
@@ -4154,8 +4154,8 @@
       "id": "host-clone-commit",
       "rule": "no commit on the record is refused",
       "file": "lib/idle-update-host.mjs",
-      "find": "  if (typeof record?.fromCommit !== 'string' || !record.fromCommit) return { ok: false, reason: 'no_commit' }\n  if (typeof record.ifStillOn",
-      "replace": "  if (typeof record.ifStillOn",
+      "find": "  if (typeof record?.fromCommit !== 'string' || !record.fromCommit) return { ok: false, reason: 'no_commit' }\n  return stepsIn",
+      "replace": "  return stepsIn",
       "tests": [
         "test/idle-update.host.test.ts"
       ]
@@ -4166,6 +4166,226 @@
       "file": "server.ts",
       "find": "  return rollbackCloneInstall({ record, updater: selfUpdater, checkoutVersion: () => readOwnVersion(RUNNING_ROOT) })\n",
       "replace": "  return selfUpdater?.rollbackCheckoutTo(record.fromCommit) ?? { ok: false, reason: 'no_updater' }\n",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "install-back-on-record",
+      "rule": "the move is on the record before the install is touched",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (owed !== null) read(() => fs.writeAtomic(join(dir, INSTALL_BACK_FILE), `${JSON.stringify({ target: marked, by: deps.assistantId, at: iso(now()) })}\\n`), false)\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "install-back-raise-quiet",
+      "rule": "a raise that fails reports nothing: the install is on a good build",
+      "file": "lib/idle-update.mjs",
+      "find": "      if (owed !== null) installBack = { target: marked, owed: true,",
+      "replace": "      installBack = { target: marked, owed: true,",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "install-back-report-stands",
+      "rule": "an agent's own move and report stand when its staged reading outlives the move",
+      "file": "lib/idle-update.mjs",
+      "find": "      if (installBack?.target !== marked || installBack.owed) installBack = null\n",
+      "replace": "      installBack = null\n",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "install-back-owed-finishes",
+      "rule": "a try that finished by finding the install moved owes nothing more",
+      "file": "lib/idle-update.mjs",
+      "find": "      if (installBack?.target !== marked || installBack.owed) installBack = null\n",
+      "replace": "      if (installBack?.target !== marked) installBack = null\n",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "install-back-landed",
+      "rule": "the report names the build the install landed on",
+      "file": "lib/idle-update.mjs",
+      "find": "    const landed = typeof result.on === 'string' ? result.on : from\n",
+      "replace": "    const landed = from\n",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "install-back-remedy",
+      "rule": "the report says how a person lifts the hold",
+      "file": "lib/idle-update.mjs",
+      "find": " To lift the hold, remove ~/.bgos-agent/idle-update/${target}.`, at)",
+      "replace": "`, at)",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "raise-not-clone",
+      "rule": "a clone is never raised",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (deps.installMethod !== 'marketplace' || staged === null || !isNewerVersion(deps.runningVersion, staged)) return null\n",
+      "replace": "    if (staged === null || !isNewerVersion(deps.runningVersion, staged)) return null\n",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "raise-only-up",
+      "rule": "only an install on an older build is raised",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (deps.installMethod !== 'marketplace' || staged === null || !isNewerVersion(deps.runningVersion, staged)) return null\n",
+      "replace": "    if (deps.installMethod !== 'marketplace' || staged === null) return null\n",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "raise-below-mark",
+      "rule": "this agent's build must be below the mark",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (!isNewerVersion(marked, deps.runningVersion)) return null\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "raise-mark-stands",
+      "rule": "the build on record must still be marked",
+      "file": "lib/idle-update.mjs",
+      "find": "    return heldBad(marked) && !heldBad(deps.runningVersion) ? marked : null\n",
+      "replace": "    return !heldBad(deps.runningVersion) ? marked : null\n",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "raise-own-good",
+      "rule": "this agent's own build must be good",
+      "file": "lib/idle-update.mjs",
+      "find": "    return heldBad(marked) && !heldBad(deps.runningVersion) ? marked : null\n",
+      "replace": "    return heldBad(marked) ? marked : null\n",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "raise-holds-marked",
+      "rule": "the hold is for the build marked",
+      "file": "lib/idle-update.mjs",
+      "find": "deps.rollbackInstall({ installMethod, target: marked, from,",
+      "replace": "deps.rollbackInstall({ installMethod, target: owed ?? staged, from,",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "raise-still-on",
+      "rule": "a raise stops if the install left the build it saw",
+      "file": "lib/idle-update.mjs",
+      "find": "ifStillOn: owed ?? staged })",
+      "replace": "ifStillOn: owed })",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "host-guard-at-write",
+      "rule": "a good build that arrives before the write stands",
+      "file": "lib/idle-update-host.mjs",
+      "find": "    if (stepsIn && movedOff(raw)) {\n",
+      "replace": "    if (false) {\n",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-guard-not-moved",
+      "rule": "and that call says it moved nothing",
+      "file": "lib/idle-update-host.mjs",
+      "find": "      held = true\n      moved = false\n      break\n",
+      "replace": "      held = true\n      break\n",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-on",
+      "rule": "the result names what the install reads",
+      "file": "lib/idle-update-host.mjs",
+      "find": "  const on = installedPluginsVersion(installed())\n",
+      "replace": "  const on = null\n",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-hold-per-folder",
+      "rule": "one hold per config folder",
+      "file": "lib/idle-update-host.mjs",
+      "find": "update(String(configDir))",
+      "replace": "update('one')",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-clone-under-lock",
+      "rule": "a clone step in is read again under the update lock",
+      "file": "lib/idle-update-host.mjs",
+      "find": "  return stepsIn ? updater.rollbackCheckoutTo(record.fromCommit, stillOn) : updater.rollbackCheckoutTo(record.fromCommit)\n",
+      "replace": "  return updater.rollbackCheckoutTo(record.fromCommit)\n",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-clone-failing-goes",
+      "rule": "a failing agent goes back whatever the checkout reads",
+      "file": "lib/idle-update-host.mjs",
+      "find": "  return stepsIn ? updater.rollbackCheckoutTo(record.fromCommit, stillOn) : updater.rollbackCheckoutTo(record.fromCommit)\n",
+      "replace": "  return updater.rollbackCheckoutTo(record.fromCommit, stillOn)\n",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "self-update-still-wanted",
+      "rule": "the checkout is not touched when the step in is no longer wanted",
+      "file": "lib/self-update.ts",
+      "find": "      if (stillWanted && !stillWanted()) return { ok: true, moved: false }\n",
+      "replace": "",
+      "tests": [
+        "test/self-update.idle-rollback.test.ts"
+      ]
+    },
+    {
+      "id": "wiring-hold-rollback",
+      "rule": "the rollback holds in this agent's config folder",
+      "file": "server.ts",
+      "find": "      holdPath: pathJoin(IDLE_UPDATE_MACHINE_DIR, enrolmentHoldFileName(CLAUDE_CONFIG_DIR)),\n",
+      "replace": "      holdPath: pathJoin(IDLE_UPDATE_MACHINE_DIR, enrolmentHoldFileName(null)),\n",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wiring-hold-boot",
+      "rule": "the boot reads that same hold",
+      "file": "server.ts",
+      "find": "        const holdPath = pathJoin(IDLE_UPDATE_MACHINE_DIR, enrolmentHoldFileName(CLAUDE_CONFIG_DIR))\n",
+      "replace": "        const holdPath = pathJoin(IDLE_UPDATE_MACHINE_DIR, enrolmentHoldFileName(null))\n",
       "tests": [
         "test/idle-update.wiring.test.ts"
       ]

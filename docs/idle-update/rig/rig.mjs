@@ -40,6 +40,8 @@ const agentCount = Number(flag('--agents', '15'))
 const MEMORY_CAP = 3.8 * 1024 ** 3
 const FROM = '0.81.0'
 const TARGET = '0.81.1'
+/** Older than FROM: where an agent on an older build left the install, in `raised`. */
+const OLDER = '0.80.9'
 
 /** Once the run has started anything, a failure throws, so the teardown in its finally still ends every process. */
 let started = false
@@ -49,7 +51,7 @@ function die(why) {
   process.exit(1)
 }
 if (process.platform !== 'win32') die('the rig runs on Windows node')
-if (!['idle', 'busy', 'broken', 'stagger', 'wake', 'marked'].includes(scenario ?? '')) die('--scenario idle|busy|broken|stagger|wake|marked')
+if (!['idle', 'busy', 'broken', 'stagger', 'wake', 'marked', 'raised'].includes(scenario ?? '')) die('--scenario idle|busy|broken|stagger|wake|marked|raised')
 if (!runDir || !/^[D-Zd-z]:\\/.test(runDir)) die('--run-dir must be an absolute path on a drive other than C:')
 if (!Number.isFinite(scale) || scale < 1 || scale > 10) die('--scale must be 1..10 (the beacon lands about every 10 s; 2 min / scale must stay above it)')
 const realProfile = (process.env.USERPROFILE ?? '').toLowerCase()
@@ -807,6 +809,37 @@ async function scenarioMarked() {
   check("Claude Code's own update for the marketplace is off, so nothing reinstalls it", JSON.stringify(settings ?? {}).includes('"autoUpdate":false'), settings?.extraKnownMarketplaces ?? null)
 }
 
+/**
+ * A mixed fleet: an agent on an older build got to the install first, as far back as its own build. That move is planted,
+ * since nothing here can force the order of two real daemons, and the controller and integration tests run the order.
+ * The daemon is real, and what it alone can show is that it reads an install older than itself and raises it.
+ */
+async function scenarioRaised() {
+  const [a] = ids(1, 7700001).map((id) => prepareAgent(id, FROM))
+  await bootAll([a])
+  const stateRoot = join(machineDir, 'idle-update')
+  const at = new Date().toISOString()
+  mkdirSync(join(stateRoot, TARGET), { recursive: true })
+  writeFileSync(join(stateRoot, TARGET, 'bad'), JSON.stringify({ assistantId: '7799001', at, reason: 'canaries_silent' }))
+  writeFileSync(join(stateRoot, 'install-back.json'), JSON.stringify({ target: TARGET, by: '7799002', at }))
+  stage(OLDER)
+  await watch('the install raised', () => installedVersion() === FROM, { timeoutMs: 3 * MIN })
+  say('raised; watching one more minute for any restart')
+  await sleep(MIN)
+  results.agents[a.id] = summarise(a)
+  const s = results.agents[a.id]
+  const raised = idleLines(a.id).filter((l) => l.includes(`raised the install from ${OLDER} to ${FROM}`))
+  let settings = null
+  try {
+    settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8'))
+  } catch {}
+  check('the install came up to the build this agent runs', installedVersion() === FROM, installedVersion())
+  check('it said so', raised.length === 1, raised)
+  check('it restarted nobody', s.launches.length === 1, s.launches)
+  check('no agent ever ran the marked build', !s.versions.includes(TARGET), s.versions)
+  check("Claude Code's own update for the marketplace is off, so nothing reinstalls it", JSON.stringify(settings ?? {}).includes('"autoUpdate":false'), settings?.extraKnownMarketplaces ?? null)
+}
+
 // -- Run -----------------------------------------------------------------------------------------
 
 say(`scenario ${scenario}, scale ${scale}, dir ${dir}`)
@@ -821,6 +854,7 @@ try {
   say('building the installed version')
   build(FROM)
   if (scenario !== 'broken') build(TARGET)
+  if (scenario === 'raised') build(OLDER)
   installedPlugins(FROM)
   enrolMarketplace()
   await startStub()
@@ -830,6 +864,7 @@ try {
   if (scenario === 'stagger') await scenarioStagger()
   if (scenario === 'wake') await scenarioWake()
   if (scenario === 'marked') await scenarioMarked()
+  if (scenario === 'raised') await scenarioRaised()
 } catch (err) {
   failure = String(err?.message ?? err)
   say(`error: ${failure}`)
