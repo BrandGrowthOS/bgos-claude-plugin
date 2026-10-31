@@ -1138,12 +1138,13 @@ test('report: a rollback, a failed rollback, a lost conversation and a non-canar
   // No code decides anything for it: the report says what is true, and what a person does.
   const failed = m.idleUpdateLastError(record({ state: 'failed' }), { runningVersion: '0.81.0' })
   assert.doesNotMatch(failed.message, /Another agent/)
-  // Its way back may have failed before the install moved, and a restart by hand boots the same build.
-  assert.doesNotMatch(failed.message, /took this computer back/)
-  assert.match(failed.message, /restart by hand comes back on 0\.81\.0/)
+  // Its way back may have failed before the install moved, and another agent may move it later: neither names where a restart lands.
   const stuck = m.idleUpdateLastError(record({ state: 'rollback_failed' }), { runningVersion: '0.81.0' })
-  assert.match(stuck.message, /restart by hand comes back on 0\.81\.0/)
-  assert.ok(failed.message.length <= 300 && stuck.message.length <= 300)
+  for (const report of [failed, stuck]) {
+    assert.match(report.message, /restart by hand loads what is installed/i)
+    assert.doesNotMatch(report.message, /took this computer back|comes back on|newer version/)
+    assert.ok(report.message.length <= 300)
+  }
 })
 
 test('report: a validated restart, a pending one, or no record says nothing (and so clears a standing error)', () => {
