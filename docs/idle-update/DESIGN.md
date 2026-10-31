@@ -690,7 +690,7 @@ A third fresh reader read those changes the same way: no Critical, and it traced
 
 Its other minor points are in Residuals.
 
-**What the rig does not prove.** The rig's results for this round are in the PR body, run on the pushed head, so that this file does not change the code under test.
+**What the rig does not prove.** The rig's results for this round are in the PR body, with the commit each ran on, so that this file does not change the code under test.
 - `many`, `many-late` and `many-silent` are real controllers on a real disk, but their process table, turn facts and restart are fakes. The real chain is `stagger`, with three agents.
 - Both faults end a process. Nothing runs a daemon that stays alive and goes deaf: that rests on the controller tests of `stampAlive`.
 - `many-late` runs the second strike to the `bad` file, but passes the 24 h hold and the 75 min by moving the stamps back on the scratch disk, because the hold is hours even at this scale. How long they last rests on the controller tests.
