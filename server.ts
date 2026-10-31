@@ -13626,10 +13626,11 @@ function daemonPendingRestartVersion(
   })
 }
 
-// The idle update reads the unlatched answer, so a version held bad shows as
-// its own wait (version_held_bad, reported) rather than as nothing staged.
+// The idle update reads a good pending build first, then the unlatched answer,
+// so a version held bad with nothing past it shows as its own wait
+// (version_held_bad, reported) rather than as nothing staged.
 function daemonStagedVersion(): string | null {
-  return daemonPendingRestartVersion(undefined, { latched: false })
+  return daemonPendingRestartVersion() ?? daemonPendingRestartVersion(undefined, { latched: false })
 }
 
 function idleUpdateHeldBad(version: string): boolean {

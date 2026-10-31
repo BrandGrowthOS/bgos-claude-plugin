@@ -43,6 +43,7 @@
  * on its own guard, so one unreadable file cannot hide what another says.
  */
 
+import { isNewerVersion } from './idle-update.mjs'
 import { pendingMarketplaceRestartVersion } from './marketplace-update.mjs'
 import { installedEntryFrom, marketplaceConfigPaths } from './plugin-cli.mjs'
 import { pendingRestartVersionFrom } from './self-update.js'
@@ -106,8 +107,9 @@ export function resolvePendingRestartVersion(input: {
   readCheckoutVersion: () => string | null | undefined
   /** Is this version latched bad on this computer? Optional: absent holds
    *  nothing. A reader that throws holds nothing either: the latch is a guard,
-   *  never a reason to hide an update. A held answer does not hide the next
-   *  source: a clone staged on a held build may have moved on to a fix. */
+   *  never a reason to hide an update. A held answer does not hide a newer
+   *  build in the next source: a clone staged on a held build may have moved
+   *  on to a fix. An older one is a rollback's way down, and is not pending. */
   heldBad?: (version: string) => boolean
 }): string | null {
   const held = (version: string): boolean => {
@@ -128,9 +130,15 @@ export function resolvePendingRestartVersion(input: {
       () => pendingRestartVersionFrom(input.runningVersion, attempt(input.stagedTargetVersion)),
       () => pendingRestartVersionFrom(input.runningVersion, attempt(input.readCheckoutVersion)),
     ]
+    let passedHeld = false
     for (const source of sources) {
       const version = source()
-      if (version && !held(version)) return version
+      if (!version) continue
+      if (held(version)) {
+        passedHeld = true
+        continue
+      }
+      return !passedHeld || isNewerVersion(version, input.runningVersion) ? version : null
     }
     return null
   } catch {
