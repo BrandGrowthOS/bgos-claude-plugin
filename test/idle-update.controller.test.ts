@@ -2025,6 +2025,7 @@ test('a follower past its lease that then validates takes its silence back: a sl
   slow.s.unreachable = true
   assert.equal(await slow.c.tick(), 'validating')
   disk.clock.now += 25 * MIN
+  assert.equal(await slow.c.tick(), 'validating', 'an outage is forgiven, and past the lease it still runs')
   const next = agent(disk, { id: 914 })
   assert.equal(await next.c.tick(), 'canary_unconfirmed')
   assert.equal(silentFiles(disk).length, 1)
