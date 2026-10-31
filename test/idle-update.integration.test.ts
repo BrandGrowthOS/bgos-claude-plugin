@@ -281,6 +281,7 @@ test('a follower fails on a build its canary proved: the real rollback points th
     assert.equal(next.record().from, '0.80.0')
     assert.match(readFileSync(installed, 'utf8'), /"version":\s*"0\.80\.0"/)
     assert.ok(readFileSync(installed, 'utf8').includes(JSON.stringify(join(cache, '0.80.0')).slice(1, -1)))
+    assert.equal(readFileSync(installed, 'utf8').includes('gitCommitSha'), false, 'the failed build\'s commit left with it')
     assert.ok(existsSync(join(w.machineDir, '0.81.0', 'bad')))
     assert.ok(existsSync(join(w.machineDir, 'went-back-912')))
   } finally {
