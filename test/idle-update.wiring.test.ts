@@ -231,6 +231,11 @@ test('the rollback: the marketplace through the host module and the clone throug
   assert.match(block(), /rollbackInstall: \(record: any\) => idleRollbackInstall\(record\),/)
 })
 
+test('the rollback and the boot enrolment read the same hold, one per config folder', () => {
+  assert.equal(server.split('pathJoin(IDLE_UPDATE_MACHINE_DIR, enrolmentHoldFileName(CLAUDE_CONFIG_DIR))').length - 1, 2)
+  assert.doesNotMatch(server, /ENROLMENT_HOLD_FILE_NAME/)
+})
+
 test('the boot enrolment holds Claude Code\'s own update while the latest is latched bad here, and takes back only its own hold', () => {
   const at = server.indexOf("if (INSTALL_METHOD === 'marketplace') {\n      // Make sure this machine is enrolled")
   assert.ok(at >= 0, 'the boot enrolment moved')

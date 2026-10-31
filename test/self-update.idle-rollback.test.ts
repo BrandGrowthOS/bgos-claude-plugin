@@ -118,6 +118,15 @@ test('a checkout that fails restores the target and clears the latch it armed', 
   assert.deepEqual(t.exits, [])
 })
 
+test('a step in that waited its turn at the lock and finds it no longer wanted leaves the checkout alone', async () => {
+  const t = await updaterOn()
+  const result = await t.updater.rollbackCheckoutTo(COMMIT_OLD, () => false)
+  assert.deepEqual(result, { ok: true, moved: false })
+  assert.equal(t.calls.some((c) => c.startsWith('git checkout')), false)
+  assert.equal(loadSharedUpdateSafety(join(t.gitDir, 'bgos-auto-update-disabled.json')).disabled, false, 'nothing paused')
+  assert.equal(existsSync(join(t.gitDir, 'bgos-auto-update.lock')), false, 'the shared lock is released')
+})
+
 test('only a full commit id is accepted', async () => {
   const t = await updaterOn()
   for (const bad of ['', 'HEAD~1', 'main', '--orphan', 'abc']) {

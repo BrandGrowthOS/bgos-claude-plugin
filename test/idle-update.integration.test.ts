@@ -17,6 +17,7 @@ import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
+import { pendingMarketplaceRestartVersion } from '../lib/marketplace-update.mjs'
 import { RESTART_WATCHDOG_MS, UpdateRpcHandler } from '../lib/update-rpc'
 import type { RestartAuthority } from '../lib/update-readiness'
 
@@ -336,6 +337,46 @@ test('two silences on the real disk: the agent on the old build points the real 
     assert.equal(existsSync(old.marker), false, 'it restarted nobody')
     assert.deepEqual(old.out.drains, [])
     assert.equal(await old.controller.tick(), 'nothing_staged')
+  } finally {
+    rmSync(w.home, { recursive: true, force: true })
+  }
+})
+
+test('a mixed fleet on the real disk: the oldest agent takes the install first, and the newest good build raises it, through the real reader and the real rollback', async () => {
+  const w = world(scratchHome())
+  try {
+    const cache = join(w.home, '.claude', 'plugins', 'cache', 'hoai', 'hoai')
+    for (const version of ['0.74.0', '0.80.0', '0.81.0']) {
+      mkdirSync(join(cache, version, '.claude-plugin'), { recursive: true })
+      writeFileSync(join(cache, version, '.claude-plugin', 'plugin.json'), JSON.stringify({ version }))
+    }
+    const installed = join(w.home, '.claude', 'plugins', 'installed_plugins.json')
+    writeFileSync(installed, JSON.stringify({ version: 2, plugins: { 'hoai@hoai': [{ scope: 'user', version: '0.81.0', installPath: join(cache, '0.81.0'), lastUpdated: new Date(T0).toISOString() }] } }))
+    mkdirSync(join(w.machineDir, '0.81.0'), { recursive: true })
+    writeFileSync(join(w.machineDir, '0.81.0', 'bad'), JSON.stringify({ assistantId: '913', at: new Date(T0).toISOString(), reason: 'canaries_silent' }))
+    const onInstall = () => JSON.parse(readFileSync(installed, 'utf8')).plugins['hoai@hoai'][0]
+    const stagedFor = (running: string) => () => pendingMarketplaceRestartVersion({ installed: { present: true, version: onInstall().version }, runningVersion: running })
+    const switched: boolean[] = []
+    const rollbackInstall = (record: any) =>
+      host.rollbackMarketplaceInstall({
+        record,
+        installedPluginsPath: installed,
+        holdPath: join(w.machineDir, host.enrolmentHoldFileName(join(w.home, '.claude'))),
+        marketplace: 'hoai',
+        configDir: join(w.home, '.claude'),
+        fs: m.nodeIdleUpdateFs(),
+        setAutoUpdate: (enabled: boolean) => (switched.push(enabled), { changed: switched.length === 1, reason: 'set' }),
+        now: w.clock.now,
+      })
+    const oldest = agent(w, 914, { running: '0.74.0', fromRoot: join(cache, '0.74.0'), stagedVersion: stagedFor('0.74.0'), rollbackInstall })
+    const newest = agent(w, 915, { running: '0.80.0', fromRoot: join(cache, '0.80.0'), stagedVersion: stagedFor('0.80.0'), rollbackInstall })
+    await oldest.controller.tick()
+    assert.equal(onInstall().version, '0.74.0')
+    await newest.controller.tick()
+    assert.deepEqual([onInstall().version, onInstall().installPath], ['0.80.0', join(cache, '0.80.0')])
+    assert.equal(JSON.parse(readFileSync(join(w.machineDir, 'install-back.json'), 'utf8')).target, '0.81.0')
+    assert.equal(existsSync(newest.marker), false, 'it restarted nobody')
+    assert.equal(await newest.controller.tick(), 'nothing_staged')
   } finally {
     rmSync(w.home, { recursive: true, force: true })
   }
