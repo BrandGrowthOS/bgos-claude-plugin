@@ -686,8 +686,8 @@
       "id": "latch-pending-restart",
       "rule": "a version held bad is no pending restart",
       "file": "lib/pending-restart.ts",
-      "find": "      if (version && !held(version)) return version\n",
-      "replace": "      if (version) return version\n",
+      "find": "      if (held(version)) {\n        passedHeld = true\n",
+      "replace": "      if (false) {\n        passedHeld = true\n",
       "tests": [
         "test/pending-restart.test.ts"
       ]
@@ -4892,8 +4892,8 @@
       "id": "pending-walks-on",
       "rule": "a held answer does not hide the next source",
       "file": "lib/pending-restart.ts",
-      "find": "      if (version && !held(version)) return version\n",
-      "replace": "      if (version) return held(version) ? null : version\n",
+      "find": "        passedHeld = true\n        continue\n",
+      "replace": "        return null\n",
       "tests": [
         "test/pending-restart.test.ts"
       ]
@@ -4916,6 +4916,26 @@
       "replace": "    } catch {\n      return true\n    }\n  }\n  try {\n    if (input.installMethod === 'marketplace') {",
       "tests": [
         "test/pending-restart.test.ts"
+      ]
+    },
+    {
+      "id": "pending-way-down",
+      "rule": "past a held answer an older build is not pending",
+      "file": "lib/pending-restart.ts",
+      "find": "      return !passedHeld || isNewerVersion(version, input.runningVersion) ? version : null\n",
+      "replace": "      return version\n",
+      "tests": [
+        "test/pending-restart.test.ts"
+      ]
+    },
+    {
+      "id": "wiring-staged-good-first",
+      "rule": "the idle update takes a good pending build past a held one",
+      "file": "server.ts",
+      "find": "  return daemonPendingRestartVersion() ?? daemonPendingRestartVersion(undefined, { latched: false })\n",
+      "replace": "  return daemonPendingRestartVersion(undefined, { latched: false })\n",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
       ]
     }
   ]
