@@ -66,6 +66,7 @@ function relayRig(opts: { monitored: string[]; main: string[]; refuse?: string[]
     mcp: { notification: async (n: { params: { behavior: string } }) => { notes.push({ behavior: n.params.behavior, claimed: store.claim(SEND_ARGS) }) } },
     trackMessageOperation: (fn: () => Promise<unknown>) => fn(),
     isOwnSendingTool, emailSendCardBinding, emailSendCardTooLong, emailSendCardChat, emailCallRefusal, emailSendFilesGetNoCard,
+    outboundFileCtx: () => ({}),
     AUTH: { mode: 'pairing', pairingToken: 'fake-pairing-token-for-tests-only-0000' },
     emailSendApprovals: store,
     privateTurns: { current: () => opts.turn ?? null },

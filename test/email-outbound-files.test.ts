@@ -3830,6 +3830,95 @@ test('final fix 2: the second look reads a mapped drive the same way: a drive th
   }
 })
 
+/**
+ * Final fix 3: the drive letter form drops the part of the real path the drive stands for, so the secret list and the
+ * runtime folders also read the share side: the given drive plus the real answer below its server. Both looks do.
+ */
+const followedSecret = (path: string) => `${path} leads to a key or password file (HOAI followed its links), so it is never attached. ${NO_WAY_AROUND}`
+const followedRuntime = (path: string) => `${path} leads to this agent's own Claude or HOAI folder (HOAI followed its links), so it is never attached. ${NO_WAY_AROUND}`
+
+test('final fix 3: a drive mapped to a key, password or runtime place is refused as a link, whatever the drive letter form says, and nothing opens', async () => {
+  for (const [path, root] of [
+    ['Z:\\notes.pdf', '\\\\nas\\kc\\.ssh'],
+    ['Z:\\prod.pdf', '\\\\localhost\\C$\\Users\\kc\\.aws'],
+    ['P:\\bank.pdf', '\\\\nas\\kc\\Passwords'],
+    ['K:\\stripe.pdf', '\\\\nas\\Keys'],
+    ['K:\\prod\\stripe.pdf', '\\\\nas\\Keys'],
+    ['S:\\prod.pdf', '\\\\nas\\secrets'],
+    ['S:\\prod.pdf', '\\\\nas\\Credentials'],
+    ['Y:\\paste.pdf', '\\\\localhost\\C$\\Users\\kc\\.claude'],
+    ['Y:\\inbound.pdf', '\\\\localhost\\C$\\Users\\kc\\.bgos-agent\\email-files\\1'],
+    ['Y:\\inbound.pdf', '\\\\nas\\kc\\.bgos-agent\\email-files\\1'],
+  ] as const) {
+    const rest = path.slice(2)
+    for (const [answer, top] of [
+      [`${root}${rest}`, `${root}\\`],
+      [`\\\\?\\UNC\\${root.slice(2)}${rest}`, `\\\\?\\UNC\\${root.slice(2)}\\`],
+    ] as const) {
+      const { calls, fs } = answeredFs({ [path]: answer, [`${path.slice(0, 2)}\\`]: top })
+      assert.equal((await readOne(path, { home: MEM_HOME, fs })).error, followedSecret(path), `${path} to ${answer}`)
+      assert.deepEqual(calls.filter((c) => !c.startsWith('realpath')), [], `${path} to ${answer}: nothing opened`)
+    }
+  }
+})
+
+test('final fix 3: a share path steps 1 and 2 read as a device stays refused, so a device name cannot hide a key folder behind it', async () => {
+  const path = 'Z:\\notes.pdf'
+  const { calls, fs } = answeredFs({ [path]: '\\\\nas\\aux\\.ssh\\notes.pdf', 'Z:\\': '\\\\nas\\aux\\.ssh\\' })
+  assert.equal((await readOne(path, { home: MEM_HOME, fs })).error, followedDevice(path))
+  assert.deepEqual(calls.filter((c) => !c.startsWith('realpath')), [])
+})
+
+test('final fix 3: a drive mapped through an admin share is read as that disk, so a moved runtime folder is refused and a home named after a person is not', async () => {
+  // D$ is the D: disk: the runtime folder on it is found by its own path, in the plain words of a runtime folder.
+  for (const root of ['\\\\localhost\\D$\\AgentData\\hoai', '\\\\LOCALHOST\\d$\\agentdata\\HOAI', '\\\\?\\UNC\\localhost\\D$\\AgentData\\hoai']) {
+    const { calls, fs } = answeredFs({ 'Y:\\state.pdf': `${root}\\state.pdf`, 'Y:\\': `${root}\\` })
+    assert.equal((await readOne('Y:\\state.pdf', { home: MEM_HOME, runtimeDirs: ['D:\\AgentData\\hoai'], fs })).error, followedRuntime('Y:\\state.pdf'), root)
+    assert.deepEqual(calls.filter((c) => !c.startsWith('realpath')), [], `${root}: nothing opened`)
+  }
+  // C$ under the owner's own home: the word rules read below the home, as they do on C: itself.
+  const root = '\\\\localhost\\C$\\Users\\John Key'
+  const { fs } = answeredFs({ 'Y:\\Documents\\offer.pdf': `${root}\\Documents\\offer.pdf`, 'Y:\\': root })
+  const read = await readOne('Y:\\Documents\\offer.pdf', { home: 'C:\\Users\\John Key', fs })
+  assert.equal(read.ok, true, JSON.stringify(read.error))
+  assert.equal(read.file.realPath, 'Y:\\Documents\\offer.pdf')
+})
+
+test('final fix 3: ordinary shares still go, and a server name alone refuses nothing', async () => {
+  for (const [path, root] of [
+    ['Z:\\Contracts\\offer.pdf', '\\\\192.168.50.182\\Other'],
+    ['Z:\\offer.pdf', '\\\\nas\\Team\\Contracts'],
+    ['Z:\\offer.pdf', '\\\\?\\UNC\\nas\\Team\\Contracts'],
+    ['Z:\\offer.pdf', '\\\\nas\\Public$'],
+    // The server's name is not read: these are a NAS that happens to be called so.
+    ['Z:\\offer.pdf', '\\\\keys\\Team'],
+    ['Z:\\offer.pdf', '\\\\secrets\\Team'],
+    ['Z:\\offer.pdf', '\\\\?\\UNC\\passwords\\Team'],
+    ['Z:\\offer.pdf', '\\\\.ssh\\Team'],
+  ] as const) {
+    const drive = `${path.slice(0, 2)}\\`
+    const { calls, fs } = answeredFs({ [path]: `${root}${path.slice(2)}`, [drive]: `${root}\\` })
+    const read = await readOne(path, { home: MEM_HOME, fs })
+    assert.equal(read.ok, true, `${path} on ${root}: ${JSON.stringify(read.error)}`)
+    assert.equal(read.file.realPath, path, root)
+    assert.deepEqual(calls.filter((c) => !c.startsWith('realpath')), [`lstat ${path}`, `open ${path}`, `lstat ${path}`], root)
+  }
+})
+
+test('final fix 3: the second look reads the share side too: a drive remapped to a key folder while the file is read is refused', async () => {
+  for (const [second, secondRoot] of [
+    ['\\\\nas\\kc\\.ssh\\notes.pdf', '\\\\nas\\kc\\.ssh\\'],
+    ['\\\\nas\\Keys\\notes.pdf', '\\\\nas\\Keys\\'],
+    ['\\\\localhost\\C$\\Users\\kc\\.claude\\notes.pdf', '\\\\localhost\\C$\\Users\\kc\\.claude\\'],
+  ] as const) {
+    const path = 'Z:\\notes.pdf'
+    const { calls, fs } = answeredFs({ [path]: ['\\\\nas\\Team\\notes.pdf', second], 'Z:\\': ['\\\\nas\\Team\\', secondRoot] })
+    assert.equal((await readOne(path, { home: MEM_HOME, fs })).error, changedSentence(path), second)
+    // The second look stops at the check: its lstat, the one after the open, never runs.
+    assert.deepEqual(calls.filter((c) => !c.startsWith('realpath')), [`lstat ${path}`, `open ${path}`], second)
+  }
+})
+
 const runtimeSentence = (path: string) => `${path} is in this agent's own Claude or HOAI folder, so it is never attached. ${NO_WAY_AROUND}`
 
 test('final fix 2: a file in a moved Claude or HOAI folder has its own sentence; a link into one says HOAI followed it', async () => {

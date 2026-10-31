@@ -585,6 +585,19 @@ function plainLocal(real: string): string {
 const SHARE_ANSWER = /^(?:\\\\\?\\UNC\\|[\\/]{2}(?![?.][\\/]))[^\\/]+[\\/][^\\/]+/i
 
 /**
+ * Final fix 3: a share path as the checks of steps 1 and 2 read it, for those checks only (nothing is opened by it): the
+ * given drive plus the share and the folders below it. The server's name is dropped, so a NAS named keys refuses
+ * nothing. An admin share is the disk it stands for (\\localhost\C$\Users\kc is C:\Users\kc), so a moved runtime folder
+ * and the owner's home are found there. The word rules read the rest of any share as a place outside the home.
+ */
+function shareSide(drive: string, real: string): string {
+  const head = SHARE_ANSWER.exec(real)![0]
+  const share = head.slice(Math.max(head.lastIndexOf('\\'), head.lastIndexOf('/')) + 1)
+  const rest = real.slice(head.length)
+  return /^[a-z]\$$/i.test(share) ? `${share[0]}:${rest}` : `${drive}\\${share}${rest}`
+}
+
+/**
  * Final fix 2: where a path really leads, read as a local path when it is on a drive the owner mapped. On Windows
  * realpath turns Z:\Contracts\offer.pdf on a mapped drive into \\server\share\Contracts\offer.pdf, which steps 1 and
  * 2 refuse as a network path. When the given path starts with a drive letter, realpath answers a share path, the drive
@@ -592,7 +605,10 @@ const SHARE_ANSWER = /^(?:\\\\\?\\UNC\\|[\\/]{2}(?![?.][\\/]))[^\\/]+[\\/][^\\/]
  * its drive (read as steps 1 and 2 read a path, so case, slashes and dots do not count), the real path is the drive
  * letter form: the given drive plus the answer below the share, in the real spelling. Nothing new is contacted: the
  * share is the one the owner mapped, and realpath already reached it. Anything else stays the answer as it is, so a
- * link inside the share, a local folder linked to a share and a given UNC or device path stay refused.
+ * link inside the share, a local folder linked to a share and a given UNC or device path stay refused. Final fix 3: the
+ * drive letter form drops the part of the real path the drive stands for (Z: to \\nas\kc\.ssh reads as Z:\notes.pdf),
+ * so that part is read too: when steps 1 and 2 refuse shareSide(), that form is the answer, and the caller's own check
+ * refuses it as a link that leads there, at the first look and at the second.
  */
 async function localReal(fs: OutboundFs, given: string, answer: string, ctx: OutboundFileCtx): Promise<string> {
   const real = plainLocal(answer)
@@ -611,7 +627,9 @@ async function localReal(fs: OutboundFs, given: string, answer: string, ctx: Out
   const mapped = `${given.slice(0, 2)}${below}`
   const a = lexical(mapped, ctx)
   const b = lexical(given, ctx)
-  return a.kind === 'ok' && b.kind === 'ok' && a.form === b.form ? mapped : real
+  if (a.kind !== 'ok' || b.kind !== 'ok' || a.form !== b.form) return real
+  const side = shareSide(given.slice(0, 2), real)
+  return lexical(side, ctx).kind === 'ok' ? mapped : side
 }
 
 
