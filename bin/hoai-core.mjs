@@ -958,6 +958,24 @@ export const TAKEOVER_LOCK_STALE_MS = 2 * 60_000
  *  for the keep-alive backoff) still counts. */
 export const RELAUNCH_DEADLINE_SLACK_MS = 30_000
 
+/** Ending this launcher's own child, for a stop or a relaunch (the kc-server
+ *  wedge, 2026-10-29/30). It is asked with SIGTERM; one still there
+ *  CHILD_TERM_WAIT_MS later is ended with SIGKILL, live children first (the
+ *  claude under an expect); and one still there CHILD_KILL_WAIT_MS after that
+ *  is no longer waited for: the launch returns, so the claim goes with it.
+ *  Before, the launcher awaited that exit for good, holding supervisor.json
+ *  over an expect that never exited and a claude it never reaped, and every
+ *  later launch ended as already-supervised. */
+export const CHILD_TERM_WAIT_MS = 5_000
+export const CHILD_KILL_WAIT_MS = 3_000
+/** The expect claude runs under exits as soon as claude does. One that has
+ *  run no live claude for this long, read from the marker poll, is stuck
+ *  over a claude that is gone (or a zombie it never reaped), and is ended the
+ *  same bounded way. It is looked at every EXPECT_IDLE_CHECK_MS at most (a
+ *  third of the confirm window when that is shorter). */
+export const EXPECT_IDLE_CONFIRM_MS = 15_000
+export const EXPECT_IDLE_CHECK_MS = 5_000
+
 /** Marker-triggered relaunch budget: 3 per rolling hour. A daemon stuck in
  *  an update-crash loop must not bounce the session forever. */
 export const MAX_RELAUNCHES_PER_WINDOW = 3
@@ -1210,13 +1228,23 @@ export function decideMarkerRelaunch(relaunchesAt, now, max = MAX_RELAUNCHES_PER
  * one with no live child and no relaunch deadline comes back with
  * `takeover: true`, which superviseClaude confirms over a window and then
  * acts on. Children that cannot be read (the default) keep the claim.
+ *
+ * A live child is not yet a live claude either (the kc-server wedge,
+ * 2026-10-29/30: David 873, Ava 871 and nono 1104 dark about 8 h, about 400
+ * restarts each). On posix the launcher's child is the expect claude runs
+ * under, and after a stop that expect stayed alive over a zombie claude it
+ * never reaped. So a live expect child counts only while a live claude runs
+ * under it (judgeHolderChildren); one with none, whose script names THIS
+ * agent's `stateDir`, supervises nothing, and the verdict names it in
+ * `stuckExpects` so the takeover ends it with its launcher.
  * @param {{ existingRaw: string | null | undefined, ownPid: number,
  *   pidAlive?: (pid: number) => boolean,
  *   pidProcess?: (pid: number) => { command: string | null, startedAtMs: number | null } | null,
- *   holderChildren?: (pid: number) => Array<{ zombie: boolean, startedAtMs?: number | null }> | null,
+ *   holderChildren?: (pid: number) => Array<{ pid?: number, zombie: boolean, name?: string, startedAtMs?: number | null }> | null,
+ *   stateDir?: string,
  *   now?: number }} params
  * @returns {{ arm: true, reclaimedStale?: true } | { arm: false, ownerPid: number,
- *   takeover?: true, reason?: 'claude-zombie' | 'no-child' }}
+ *   takeover?: true, reason?: 'claude-zombie' | 'claude-missing' | 'no-child', stuckExpects?: number[] }}
  */
 export function decideSupervisorArming({
   existingRaw,
@@ -1225,6 +1253,7 @@ export function decideSupervisorArming({
   pidProcess = () => null,
   holderChildren = () => null,
   holderInFolder = () => null,
+  stateDir = '',
   now = Date.now(),
 }) {
   if (existingRaw == null || String(existingRaw).length === 0) return { arm: true }
@@ -1257,7 +1286,12 @@ export function decideSupervisorArming({
   if (!proc || typeof proc.command !== 'string' || !runsHoaiLauncher(proc.command) || record?.declaredLauncher) {
     return { arm: false, ownerPid: pid }
   }
-  const children = holderChildren(pid)
+  const children = judgeHolderChildren({
+    children: holderChildren(pid),
+    readChildren: holderChildren,
+    readCommand: (childPid) => pidProcess(childPid)?.command ?? null,
+    stateDir,
+  })
   const activity = holderActivity({ relaunchBy: parsed.relaunchBy, holderStartedAtMs: proc.startedAtMs, children, now })
   if (activity !== 'idle') return { arm: false, ownerPid: pid }
   // Ended only when it is provably THIS agent's launcher, not merely a hoai:
@@ -1271,7 +1305,52 @@ export function decideSupervisorArming({
   if (inFolder === false || !startedByStamp(record, proc, inFolder === true ? HOLDER_START_TOLERANCE_MS : 0)) {
     return { arm: false, ownerPid: pid }
   }
-  return { arm: false, ownerPid: pid, takeover: true, reason: children.some((child) => child?.zombie === true) ? 'claude-zombie' : 'no-child' }
+  const stuckExpects = children.filter((child) => child?.idleExpect === true).map((child) => child.pid)
+  const reason = children.some((child) => child?.zombie === true || child?.claudeZombie === true)
+    ? 'claude-zombie'
+    : stuckExpects.length > 0
+      ? 'claude-missing'
+      : 'no-child'
+  return { arm: false, ownerPid: pid, takeover: true, reason, ...(stuckExpects.length > 0 ? { stuckExpects } : {}) }
+}
+
+/** Is a child process row (its name, as readChildProcesses gives it) an expect? */
+function isExpectProcess(name) {
+  return String(name ?? '').split(/[\\/]/).at(-1) === 'expect'
+}
+
+/**
+ * A holder's children, each live expect among them judged by what runs under
+ * it (the kc-server wedge, decideSupervisorArming). A live expect with a live
+ * child of its own is left as it is: it supervises. One with no live child
+ * whose command line holds THIS agent's state dir (the supervised expect
+ * script's first line, `set hoai_statedir "<dir>"`) comes back marked
+ * `idleExpect`, with `claudeZombie` when what is left under it is a claude it
+ * never reaped. One that names no state dir, another agent's, or whose command
+ * line cannot be read, is left as it is too: it is not proven this agent's.
+ * Null (unknown) when the children, or an expect's children, cannot be read.
+ * @param {{ children: Array<{ pid?: number, zombie: boolean, name?: string, startedAtMs?: number | null }> | null,
+ *   readChildren: (pid: number) => Array<{ zombie: boolean }> | null,
+ *   readCommand: (pid: number) => string | null, stateDir: string }} input
+ */
+export function judgeHolderChildren({ children, readChildren, readCommand, stateDir }) {
+  if (!Array.isArray(children)) return null
+  const out = []
+  for (const child of children) {
+    if (!child || child.zombie === true || !isExpectProcess(child.name) || !Number.isInteger(child.pid)) {
+      out.push(child)
+      continue
+    }
+    const under = readChildren(child.pid)
+    if (!Array.isArray(under)) return null
+    const command = under.some((row) => row && row.zombie !== true) ? null : readCommand(child.pid)
+    if (!stateDir || typeof command !== 'string' || !command.includes(`set hoai_statedir ${tclQuote(stateDir)}`)) {
+      out.push(child)
+      continue
+    }
+    out.push({ ...child, idleExpect: true, claudeZombie: under.some((row) => row?.zombie === true) })
+  }
+  return out
 }
 
 /** ps reads a start time in whole seconds (etime), so a writer read that way
@@ -1324,7 +1403,8 @@ export function defaultHolderInFolder(pid, platform = process.platform, cwd = pr
  * What a live holder that wrote supervisor.json is doing with its claim
  * (board row fabeef45, agent 867):
  *   'supervising'  a child of it is alive: the claude it started, or the
- *                  expect it runs claude under. A zombie is not alive;
+ *                  expect it runs claude under. A zombie is not alive, nor
+ *                  an expect judgeHolderChildren found idle (`idleExpect`);
  *   'relaunching'  no child, inside the relaunch deadline it declared
  *                  (relaunchBy), and that deadline is no further out than a
  *                  keep-alive backoff can be: a wall clock stepped back must not
@@ -1341,7 +1421,7 @@ export function holderActivity({ relaunchBy, holderStartedAtMs = null, children,
   if (!Array.isArray(children)) return 'unknown'
   const olderThanHolder = (child) =>
     typeof holderStartedAtMs === 'number' && typeof child?.startedAtMs === 'number' && child.startedAtMs < holderStartedAtMs - 1_000
-  if (children.some((child) => child && child.zombie !== true && !olderThanHolder(child))) return 'supervising'
+  if (children.some((child) => child && child.zombie !== true && child.idleExpect !== true && !olderThanHolder(child))) return 'supervising'
   const by = typeof relaunchBy === 'string' ? Date.parse(relaunchBy) : Number.NaN
   if (Number.isFinite(by) && now <= by + RELAUNCH_DEADLINE_SLACK_MS && by - now <= KEEP_ALIVE_BACKOFF_CAP_MS + RELAUNCH_DEADLINE_SLACK_MS) {
     return 'relaunching'
@@ -2565,6 +2645,27 @@ export async function superviseClaude(args, opts = {}) {
   const takeoverPollMs = opts.takeoverPollMs ?? TAKEOVER_POLL_MS
   const takeoverTermWaitMs = opts.takeoverTermWaitMs ?? TAKEOVER_TERM_WAIT_MS
   const takeoverKillWaitMs = opts.takeoverKillWaitMs ?? TAKEOVER_KILL_WAIT_MS
+  const childTermWaitMs = opts.childTermWaitMs ?? CHILD_TERM_WAIT_MS
+  const childKillWaitMs = opts.childKillWaitMs ?? CHILD_KILL_WAIT_MS
+  const expectIdleConfirmMs = opts.expectIdleConfirmMs ?? EXPECT_IDLE_CONFIRM_MS
+  const expectIdleCheckMs = Math.min(EXPECT_IDLE_CHECK_MS, expectIdleConfirmMs / 3)
+  // What runs under this launcher's own expect, and the kill for it: the real
+  // ones only over a real spawn (a fake child has no process to look under,
+  // and its made up pid may be anyone's). No expect on Windows.
+  const ownChildren =
+    opts.readChildren ?? (spawnImpl === spawn && platform !== 'win32' ? (pid) => readChildProcesses({ platform, pid }) : () => null)
+  const killOwn =
+    opts.killPid ??
+    (spawnImpl === spawn
+      ? (pid, signal) => {
+          try {
+            process.kill(pid, signal)
+            return true
+          } catch {
+            return false
+          }
+        }
+      : () => false)
   const mtimeMs = opts.mtimeMs ?? fileMtimeMs
   const generateId = opts.generateId ?? randomUUID
   const hasExpect = opts.hasExpect ?? hostHasExpect({ platform, env, exists: opts.expectExists ?? existsSync })
@@ -2643,9 +2744,12 @@ export async function superviseClaude(args, opts = {}) {
   const spawnGateHelper = opts.spawnGateHelper ?? defaultSpawnGateHelper
   const clearConsole = opts.clearConsole ?? (() => clearWin32Console(process.stdout))
   let spawnsSoFar = 0
+  // Whether the latest spawn runs claude under expect (the child is the expect).
+  let childIsExpect = false
   const spawnSupervised = (spawnArgs, onSpawn, onGateHelperExit) => {
     const relaunch = spawnsSoFar > 0
     spawnsSoFar += 1
+    childIsExpect = false
     const method = relaunchInstallMethod({ scriptDir, env, home })
     // Built at every spawn: main() adds the plan's env before the first one.
     const childEnv = childEnvWithoutSupervision(env, platform)
@@ -2686,6 +2790,7 @@ export async function superviseClaude(args, opts = {}) {
               ? { stateDir: supervisedStateDir, interactive: stdinIsTTY, compact: compactStatus(env) }
               : null,
         })
+        childIsExpect = true
         return spawnExpectScript(script, { spawnImpl, writeErr, onSpawn, childEnv })
       }
       if (!warnedGate) {
@@ -2837,7 +2942,7 @@ export async function superviseClaude(args, opts = {}) {
   let judgedRaw = null
   const decideArmingNow = () => {
     judgedRaw = readFile(supervisorPath)
-    return decideSupervisorArming({ existingRaw: judgedRaw, ownPid: process.pid, pidAlive, pidProcess, holderChildren, holderInFolder, now: now() })
+    return decideSupervisorArming({ existingRaw: judgedRaw, ownPid: process.pid, pidAlive, pidProcess, holderChildren, holderInFolder, stateDir, now: now() })
   }
   const refuseOwned = (ownerPid) => {
     noteStatus('already-supervised', { owner: ownerPid })
@@ -2904,10 +3009,38 @@ export async function superviseClaude(args, opts = {}) {
   }
   // End a holder proven to supervise nothing: SIGTERM, then SIGKILL when it
   // is still that idle launcher after the TERM wait (agent 867's ignored TERM).
-  const endIdleHolder = async (owner, reason) => {
-    const why = reason === 'claude-zombie' ? 'its claude has exited and was never reaped' : 'it has no claude'
+  // An expect of its own that runs no live claude (the kc-server wedge) is
+  // what that launcher waits on, ignoring its stop: SIGKILL ends it right
+  // after the TERM, so the launcher sees its child exit and lets go itself.
+  // The expects are the ones the verdict that confirmed the takeover named,
+  // each read again right before the KILL (alive, still running no live
+  // claude, its script still naming this agent's state dir): an owner that
+  // died of the TERM must not leave its stuck expect behind, orphaned over
+  // the zombie.
+  const stillIdleExpect = (pid) =>
+    pidAlive(pid) &&
+    judgeHolderChildren({
+      children: [{ pid, zombie: false, name: 'expect' }],
+      readChildren: holderChildren,
+      readCommand: (p) => pidProcess(p)?.command ?? null,
+      stateDir,
+    })?.[0]?.idleExpect === true
+  const endIdleHolder = async (owner, reason, stuckExpects = []) => {
+    const why =
+      reason === 'claude-zombie'
+        ? 'its claude has exited and was never reaped'
+        : reason === 'claude-missing'
+          ? 'its expect runs no claude'
+          : 'it has no claude'
     print(`[hoai] launcher pid ${owner} holds assistant ${id} but supervises nothing (${why}); ending it with SIGTERM`)
     signalPid(owner, 'SIGTERM')
+    await sleep(Math.min(250, takeoverTermWaitMs))
+    if (stopSignal?.aborted) return 'stopped'
+    for (const expectPid of stuckExpects) {
+      if (!stillIdleExpect(expectPid)) continue
+      print(`[hoai] ending its expect (pid ${expectPid}), which runs no live claude, with SIGKILL`)
+      signalPid(expectPid, 'SIGKILL')
+    }
     const afterTerm = await waitReleased(owner, takeoverTermWaitMs)
     if (afterTerm !== false) return afterTerm ? 'SIGTERM' : 'stopped'
     const still = decideArmingNow()
@@ -2949,7 +3082,7 @@ export async function superviseClaude(args, opts = {}) {
           again = decideArmingNow()
         }
         if (again.takeover && again.ownerPid === owner) {
-          const ended = await endIdleHolder(owner, again.reason)
+          const ended = await endIdleHolder(owner, again.reason, again.stuckExpects ?? [])
           if (ended === 'stopped') return exitCodeForChild(null, 'SIGTERM')
           if (ended === 'unkillable') {
             noteStatus('stale-launcher-unkillable', { owner })
@@ -3228,6 +3361,69 @@ export async function superviseClaude(args, opts = {}) {
       // False once this launch's claude has exited: a late helper exit or check is not about it.
       let live = true
       const startedAt = now()
+      // Ending this launch's child for a stop or a relaunch, bounded (CHILD_TERM_WAIT_MS): TERM,
+      // then KILL, then no more waiting. `abandoned` settles the wait below when even KILL did not
+      // end it, and that launch then returns (the claim goes with it) instead of relaunching
+      // beside a child that may still run. The clock is the real one, never the injected
+      // setTimer: this is a wall clock safety, and a test's timer that fires at once (for the
+      // pin window) must not end every relaunch it makes.
+      let endTimer = null
+      let gaveUp = false
+      let giveUp = () => {}
+      const abandoned = new Promise((resolve) => {
+        giveUp = resolve
+      })
+      const killChildTree = (child) => {
+        // Windows ends a process outright either way; endClaude also ends the claude under an
+        // npm shim, never the shim alone.
+        if (platform === 'win32') {
+          endClaude(child)
+          return
+        }
+        // The claude under this launcher's expect first: KILL ends expect at once, and a live
+        // claude must not outlive it in the folder.
+        const under = childIsExpect && Number.isInteger(child.pid) ? ownChildren(child.pid) : null
+        for (const row of Array.isArray(under) ? under : []) {
+          if (row && row.zombie !== true && Number.isInteger(row.pid)) killOwn(row.pid, 'SIGKILL')
+        }
+        child.kill('SIGKILL')
+      }
+      const endChild = () => {
+        if (!childRef) return
+        const child = childRef
+        try {
+          endClaude(child)
+        } catch {
+          // Already gone; its exit resolves the loop below.
+        }
+        if (endTimer !== null || !live) return
+        const what = childIsExpect ? 'expect' : 'claude'
+        endTimer = setTimeout(() => {
+          endTimer = null
+          if (!live) return
+          print(
+            `[hoai] ${what} (pid ${child.pid}) is still there ${Math.round(childTermWaitMs / 1000)}s after SIGTERM; ` +
+              `ending it${childIsExpect ? ' and the claude under it' : ''} with SIGKILL`,
+          )
+          try {
+            killChildTree(child)
+          } catch {
+            // Gone meanwhile.
+          }
+          endTimer = setTimeout(() => {
+            endTimer = null
+            if (!live) return
+            print(`[hoai] ${what} (pid ${child.pid}) is still there after SIGKILL; not waiting for it any longer`)
+            gaveUp = true
+            // Its handle must not keep this process up either: the launcher is to exit.
+            child.unref?.()
+            giveUp(exitCodeForChild(null, 'SIGKILL'))
+          }, childKillWaitMs)
+        }, childTermWaitMs)
+      }
+      // How long this launch's expect has run no live claude (EXPECT_IDLE_CONFIRM_MS), and when it was last looked at.
+      let expectIdleSince = null
+      let expectCheckedAt = Number.NEGATIVE_INFINITY
       // Relaunch THIS claude because it is not proven healthy: the same relaunch a restart marker
       // gets (its own pinned session, a fresh fallback cycle), on a budget of its own so it can
       // never loop. Past the budget it is reported and claude is left as it is.
@@ -3248,11 +3444,7 @@ export async function superviseClaude(args, opts = {}) {
         restartRequested = true
         noteStatus('health-relaunch', { reason })
         print(`[hoai] ${why}. Relaunching claude on this agent's own session...`)
-        try {
-          endClaude(childRef)
-        } catch {
-          // Already gone; its exit resolves the loop below.
-        }
+        endChild()
       }
       // Read before the spawn: whatever daemon the beacon names now is not this launch's.
       const staleBeaconPid = unattended ? (parseChannelBeacon(readFile(beaconPath))?.pid ?? null) : null
@@ -3327,13 +3519,7 @@ export async function superviseClaude(args, opts = {}) {
       // A stop request ends the live claude; the exit below then returns
       // instead of relaunching. Checked once more after registering, because an
       // abort that already happened fires no event.
-      const onStop = () => {
-        try {
-          if (childRef) endClaude(childRef)
-        } catch {
-          // Already gone; its exit resolves the loop.
-        }
-      }
+      const onStop = () => endChild()
       stopSignal?.addEventListener?.('abort', onStop, { once: true })
       if (stopSignal?.aborted) onStop()
       // Deferred pin commit. A fresh session that dies inside the health
@@ -3371,6 +3557,26 @@ export async function superviseClaude(args, opts = {}) {
         if (pinTimer && typeof pinTimer === 'object' && typeof pinTimer.unref === 'function') pinTimer.unref()
       }
       const poller = setInterval(() => {
+        // An expect that runs no live claude any more is stuck (it exits as soon as claude
+        // does): left alone it held this launcher, and the claim, for good. Unreadable is no.
+        // Looked at every EXPECT_IDLE_CHECK_MS at most, not every poll: on macOS each look is a ps.
+        if (live && childRef && childIsExpect && endTimer === null && now() - expectCheckedAt >= expectIdleCheckMs) {
+          expectCheckedAt = now()
+          const under = ownChildren(childRef.pid)
+          if (Array.isArray(under) && !under.some((row) => row && row.zombie !== true)) {
+            expectIdleSince ??= now()
+            if (now() - expectIdleSince >= expectIdleConfirmMs) {
+              const zombies = under.filter((row) => row?.zombie === true).map((row) => row.pid)
+              print(
+                `[hoai] claude has exited${zombies.length > 0 ? ` (pid ${zombies.join(', ')}, never reaped)` : ''} and ` +
+                  `its expect (pid ${childRef.pid}) has not; ending expect so this launch can go on`,
+              )
+              endChild()
+            }
+          } else {
+            expectIdleSince = null
+          }
+        }
         if (exhausted || restartRequested || !childRef) return
         if (!exists(markerPath)) return
         removeFile(markerPath)
@@ -3388,11 +3594,7 @@ export async function superviseClaude(args, opts = {}) {
         restartRequested = true
         markerRestart = true
         print('[hoai] restart requested by the daemon; restarting claude to pick up the update...')
-        try {
-          endClaude(childRef)
-        } catch {
-          // The child already died; its exit resolves the loop below.
-        }
+        endChild()
       }, pollMs)
       // Never what keeps this process alive: while claude runs, its own child
       // handle does, and nothing here waits on an exit without one. A ref'd
@@ -3400,8 +3602,12 @@ export async function superviseClaude(args, opts = {}) {
       // child nobody exits) ticking every few ms, and held `tsx --test` open,
       // idle, for hours.
       poller.unref?.()
-      const code = await exited
+      const code = await Promise.race([exited, abandoned])
       live = false
+      if (endTimer !== null) {
+        clearTimeout(endTimer)
+        endTimer = null
+      }
       if (heartbeatTimer) {
         clearTimer(heartbeatTimer)
         heartbeatTimer = null
@@ -3414,8 +3620,9 @@ export async function superviseClaude(args, opts = {}) {
         // Died inside its window: never the pin (a relaunch that carries it writes it again).
         removeFile(pendingPinPath)
       }
-      // Asked to stop: whatever the exit, nothing is relaunched.
-      if (stopSignal?.aborted) return code
+      // Asked to stop: whatever the exit, nothing is relaunched. Nor beside a child that even
+      // SIGKILL did not end.
+      if (stopSignal?.aborted || gaveUp) return code
       const elapsedMs = now() - startedAt
       // A launch that outlived the health window clears the identity flag's
       // fast deaths, however it ended: most runs of an always on agent end

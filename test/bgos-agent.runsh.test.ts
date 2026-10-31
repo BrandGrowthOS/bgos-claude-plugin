@@ -605,3 +605,52 @@ test('WEDGED: the third fast lap is named with the measured reason, and the back
   assert.ok(box.calls().some((c) => c[0] === 'sleep' && c[1] === '60'))
   assert.doesNotMatch(box.agentLog(), /syntax error|command not found|unbound variable|bad substitution/)
 })
+
+// kc-server 2026-10-29/30: David 873, Ava 871 and nono 1104 WEDGED about 400 times in a row each,
+// every lap ending already-supervised behind a stale launcher, 8 h dark under "active" units, and
+// nothing but the WEDGED line said so. From the third WEDGED lap in a row it is escalated.
+function wedgedLap(box: Box, failsBefore: number) {
+  writeFileSync(join(box.fake, 'run-pane'), '')
+  // What hoai measured on each of those laps, exactly as it wrote it.
+  writeFileSync(join(box.fake, 'node-status'), '2026-10-30 06:58:39 outcome=already-supervised owner=1422734\n')
+  writeFileSync(join(box.fake, 'node-rc'), '3')
+  writeFileSync(join(box.state, 'failcount'), `${failsBefore}\n`)
+  return runSync(box, box.generate('clone'))
+}
+
+test('ESCALATED: the third WEDGED lap in a row says in one line that the agent is NOT running, and launch-status says outcome=wedged with the measured reason', (t) => {
+  if (!ready(t)) return
+  const box = sandbox()
+  t.after(box.cleanup)
+  wedgedLap(box, 4)
+  const log = box.agentLog()
+  assert.match(log, /WEDGED: agent exited after \d+s .*, 5 times in a row\./)
+  assert.match(
+    log,
+    /ESCALATED: agent 42 is NOT running: 3 WEDGED laps in a row and retrying has not fixed it \(last outcome: already-supervised owner=1422734\)\. Reported to the watcher as a failed launch \(launch-status outcome=wedged\)/,
+  )
+  assert.match(box.status(), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} outcome=wedged laps=3 last="already-supervised owner=1422734"$/)
+  assert.ok(box.calls().some((c) => c[0] === 'sleep' && c[1] === '60'), 'and it still retries after the back-off')
+  assert.doesNotMatch(log, /syntax error|command not found|unbound variable|bad substitution/)
+})
+
+test('ESCALATED: every later WEDGED lap stays escalated, counting the laps', (t) => {
+  if (!ready(t)) return
+  const box = sandbox()
+  t.after(box.cleanup)
+  wedgedLap(box, 400)
+  assert.match(box.agentLog(), /ESCALATED: agent 42 is NOT running: 399 WEDGED laps in a row/)
+  assert.match(box.status(), /outcome=wedged laps=399 /)
+})
+
+test('ESCALATED control: the first two WEDGED laps are not escalated, and launch-status keeps what hoai measured', (t) => {
+  if (!ready(t)) return
+  for (const failsBefore of [2, 3]) {
+    const box = sandbox()
+    t.after(box.cleanup)
+    wedgedLap(box, failsBefore)
+    assert.match(box.agentLog(), /WEDGED: /)
+    assert.doesNotMatch(box.agentLog(), /ESCALATED/, `lap ${failsBefore + 1}`)
+    assert.equal(box.status(), '2026-10-30 06:58:39 outcome=already-supervised owner=1422734')
+  }
+})

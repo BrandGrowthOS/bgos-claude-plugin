@@ -1085,6 +1085,18 @@ if [ "$fails" -ge 3 ]; then
   # root), not a guess. The generation 1 text blamed auth or .mcp.json for what
   # was, as often, a declined startup gate.
   echo "[$(ts)]   Last launch: $(cat "$sd/launch-status" 2>/dev/null || echo 'no launch-status was written')"
+  # Escalated, not retried in silence (kc-server 2026-10-29/30: three agents
+  # WEDGED about 400 times in a row, 8 h dark under "active" units). From the
+  # third WEDGED lap in a row the log says so in one line, and launch-status
+  # says outcome=wedged: the watcher reports the agent failed in its
+  # heartbeat, even over a zombie claude (lib/keepalive-plan.mjs
+  # decideHeldFailure), and hoai-agent status shows it.
+  wedged=$((fails - 2))
+  if [ "$wedged" -ge 3 ]; then
+    last="$(sed -n '1{s/^.* outcome=//;s/"//g;p;}' "$sd/launch-status" 2>/dev/null)"
+    echo "[$(ts)] ESCALATED: agent $id is NOT running: $wedged WEDGED laps in a row and retrying has not fixed it (last outcome: ${last:-unknown}). Reported to the watcher as a failed launch (launch-status outcome=wedged); see hoai-agent status --assistant $id."
+    note_status "outcome=wedged laps=$wedged last=\"${last:-unknown}\""
+  fi
   sleep 60 & wait $!
 fi
 exit "$rc"

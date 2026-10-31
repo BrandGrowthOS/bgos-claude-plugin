@@ -30,7 +30,7 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { once } from 'node:events'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import ts from 'typescript'
@@ -721,6 +721,20 @@ function cli(t: any) {
   attach()
   const markerPaths = [privateMarkerPath(root, floorKey(cwd))]
   let tracker = createPrivateTurnTracker({ ownerUserId: OWNER, markerPaths })
+  // A real CLI hook writes its marker seconds after the delivery before it; here it is microseconds after. Linux stamps
+  // a file from a coarse clock that can trail Date.now() by a tick, so a marker written right after a delivery could
+  // read as older than it, and a Stop "written after" a delivery not count as after it (red on a fast Linux host, main
+  // included). Each hook below first waits, a few ms at most, until the file clock has passed the moment it was called.
+  const fileClockPastNow = () => {
+    const calledAt = Date.now()
+    const probe = join(root, '.file-clock')
+    for (let i = 0; i < 1_000; i++) {
+      writeFileSync(probe, '')
+      if (statSync(probe).mtimeMs > calledAt) return
+      const until = Date.now() + 1
+      while (Date.now() < until) { /* one ms */ }
+    }
+  }
   const c = {
     markerPaths, cwd, env, root, attach,
     get tracker() { return tracker },
@@ -730,11 +744,15 @@ function cli(t: any) {
     /** The CLI submits a prompt: the hook writes its marker now; the returned function is its line reaching begin(). */
     prompt(prompt: string, session = 's') {
       const payload = { hook_event_name: 'UserPromptSubmit', session_id: session, cwd, prompt, prompt_id: randomUUID() }
+      fileClockPastNow()
       recordPrivateBoundary(payload, env)
       return () => tracker.begin({ prompt, sessionId: session, promptId: payload.prompt_id })
     },
     /** The CLI's Stop (or SessionEnd) hook: the marker closes. Its line is end(), when the test says. */
-    stopHook(session = 's', event = 'Stop') { recordPrivateBoundary({ hook_event_name: event, session_id: session, cwd }, env) },
+    stopHook(session = 's', event = 'Stop') {
+      fileClockPastNow()
+      recordPrivateBoundary({ hook_event_name: event, session_id: session, cwd }, env)
+    },
     end() { tracker.end() },
     gated() { try { return requirePrivateTurn(tracker, markerPaths, OWNER).actingUserId } catch { return 'refused' } },
     turnAware() { try { return turnAwarePrivateTurn({ tracker, markerPaths, ownerUserId: OWNER }).actingUserId } catch { return 'refused' } },
