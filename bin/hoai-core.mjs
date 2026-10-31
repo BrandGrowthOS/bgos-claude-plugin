@@ -112,6 +112,7 @@ import {
   preseedClaudeTrust,
 } from '../lib/claude-preseed.mjs'
 import { declaredCheckout } from '../lib/clone-hooks.mjs'
+import { ATTACH_SCOPE_DIR_ENV, ATTACH_SCOPE_ENV } from '../lib/attach-scope.mjs'
 import {
   MCP_CONFIG_FILE_NAME,
   parseMcpChannelServerName,
@@ -718,6 +719,32 @@ export function hookScriptDirFor({ cwd, scriptDir, serverName, readFile, exists 
 }
 
 /**
+ * Name the agent this launch is for in the env claude (and so the HOAI daemon
+ * claude starts) inherits: HOAI_ATTACH_SCOPE (lib/attach-scope.mjs, board row
+ * bab90cdb, design BGOS #1244). The daemon compares it with the agent it
+ * resolves, so a session launched for one agent never quietly attaches as
+ * another. Unlike the rest of the plan's env, an inherited value is
+ * OVERRIDDEN: a `hoai` run from an agent's Bash tool inherits that agent's
+ * scope, and passing it down would scope this launch to the wrong agent. With
+ * no agent to name, an inherited scope is removed for the same reason.
+ * HOAI_ATTACH_SCOPE_DIR names the folder launched, the same way.
+ * @param {Record<string, string | undefined>} env
+ * @param {string | undefined} scope
+ * @param {string} [dir]
+ */
+export function applyAttachScope(env, scope, dir) {
+  const id = String(scope ?? '').trim()
+  if (/^\d{1,12}$/.test(id)) env[ATTACH_SCOPE_ENV] = id
+  else delete env[ATTACH_SCOPE_ENV]
+  // The folder this launch is for, set even when no agent can be named: it is
+  // how the daemon tells "hoai launched me here" from a scope a child carried
+  // into another folder (inherited, so not this session's).
+  const folder = String(dir ?? '').trim()
+  if (folder) env[ATTACH_SCOPE_DIR_ENV] = folder
+  else delete env[ATTACH_SCOPE_DIR_ENV]
+}
+
+/**
  * Decide HOW a bare `hoai` launches the agent from this folder.
  *
  * The channel flag comes from install-method detection (the sibling
@@ -744,7 +771,7 @@ export function hookScriptDirFor({ cwd, scriptDir, serverName, readFile, exists 
  *   scriptDir?: string,
  * }} [opts]
  * @returns {{ ok: true, command: 'claude', args: string[], note: string,
- *             env: Record<string, string>,
+ *             env: Record<string, string>, attachScope: string, attachScopeDir: string,
  *             hooks: { settingsPath: string, forwarderPath: string } | null,
  *             detection: { method: string, channelSpec: string, pluginRoot: string } }
  *         | { ok: false, reason: string,
@@ -835,6 +862,8 @@ export function buildRunPlan({
       command: 'claude',
       args,
       env: launchEnv,
+      attachScope: declared.id,
+      attachScopeDir: cwd,
       hooks,
       detection,
       note:
@@ -851,6 +880,8 @@ export function buildRunPlan({
       command: 'claude',
       args,
       env: launchEnv,
+      attachScope: envId,
+      attachScopeDir: cwd,
       hooks,
       detection,
       note: `${methodLine}\n[hoai] launching as assistant ${envId} (BGOS_ASSISTANT_ID env pin).`,
@@ -874,6 +905,8 @@ export function buildRunPlan({
       command: 'claude',
       args,
       env: { ...launchEnv, BGOS_ASSISTANT_ID: serviceId },
+      attachScope: serviceId,
+      attachScopeDir: cwd,
       hooks,
       detection,
       note:
@@ -910,6 +943,10 @@ export function buildRunPlan({
     command: 'claude',
     args,
     env: launchEnv,
+    // The sole paired agent is the one the daemon resolves; with none paired
+    // the launcher names nobody (the daemon serves the pairing notice).
+    attachScope: ids.length === 1 ? ids[0] : '',
+    attachScopeDir: cwd,
     hooks,
     detection,
     note: `${methodLine}\n${identityLine}`,
@@ -4309,6 +4346,9 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   for (const [key, value] of Object.entries(applyEnv)) {
     if (!env[key]) env[key] = value
   }
+  // The attach scope is the one entry an inherited value must NOT win: it says
+  // which agent THIS launch is for (lib/attach-scope.mjs).
+  applyAttachScope(env, plan.attachScope, plan.attachScopeDir)
   if (plan.hooks) {
     const register = opts.registerHooks ?? ensureHookEntries
     try {

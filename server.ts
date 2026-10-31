@@ -96,7 +96,7 @@ import { SkillsRpcHandler, normalizeSkillsRpc } from './lib/skills-rpc.js'
 import { listSkills, managedSkillsDir, removeAgentSkill } from './lib/skills-inventory.js'
 import { exportSkill, installBundle } from './lib/skills-share.js'
 import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
-import { DoctorRpcHandler, buildDoctorChecks, normalizeDoctorRpc } from './lib/doctor-rpc.ts'
+import { DoctorRpcHandler, buildDoctorChecks, normalizeDoctorRpc, type DoctorCheck } from './lib/doctor-rpc.ts'
 import { collectChanges, createNodeRunGit, nodeChangesFs } from './lib/git-changes.js'
 import { defaultPidAlive, pluginStateDirFor, readBootClock } from './lib/agent-inventory.mjs'
 import { cleanIdentityName, identityFilePath, identityFromMe, takeIdentityNotice, writeAgentIdentity } from './lib/agent-identity.mjs'
@@ -707,7 +707,18 @@ import {
   resolveNodePath,
 } from './lib/watcher-install.mjs'
 import { readMarketplaceLatest, runClaudeCli } from './lib/plugin-cli.mjs'
-import { serveDuplicateCopy, serveHomeRefused, servePairRequired } from './lib/pair-required-server.mjs'
+import { serveDuplicateCopy, serveHomeRefused, servePairRequired, serveScopeRefused } from './lib/pair-required-server.mjs'
+import {
+  ATTACH_SCOPE_SETTINGS_FILE,
+  attachScopeDoctorCheck,
+  decideAttachScope,
+  formatAttachScopeBootLine,
+  formatAttachScopeRefusal,
+  readAttachScopeEvents,
+  recordAttachScopeEvent,
+  resolveAttachScopeMode,
+  summarizeAttachScopeEvents,
+} from './lib/attach-scope.mjs'
 import { installWatcherBundle, nodeExec } from './lib/watcher-bundle.mjs'
 import { listProcesses } from './lib/process-tree.mjs'
 import {
@@ -927,6 +938,78 @@ if (!AUTH.complete) {
   // never runs, which is what the exit used to guarantee.
   const served = await servePairRequired({
     reason: missingCredsMessage(AUTH),
+    log: (line: string) => process.stderr.write(`[bgos] ${line}\n`),
+  })
+  process.exit(served ? 0 : 1)
+}
+
+// Attach scope (board row bab90cdb, design BGOS #1244, lib/attach-scope.mjs).
+// The launcher names the agent it launched (HOAI_ATTACH_SCOPE); this daemon
+// resolved ASSISTANT_ID. On a computer with several agents the machine wide
+// marketplace copy starts a daemon for every session, and an inherited
+// BGOS_ASSISTANT_ID can make a session launched for one agent attach as
+// another. The setting starts OFF: nothing is refused, every start is counted
+// with what it WOULD have done, so the flip is measured before it is made. A
+// scope, identity or setting that cannot be read fails open. DECIDED here,
+// once, after the unpaired notice above (an unpaired daemon attaches to
+// nothing): pure, it writes nothing. ACTED ON in main() (attachScopeAtBoot),
+// right after the duplicate copy check, which must stay the first thing that
+// runs and the only one a standing aside copy runs: that copy writes no
+// plugin state, not even this count. Still before any lock, socket or poll.
+const ATTACH_SCOPE_MODE = resolveAttachScopeMode({
+  env: process.env,
+  readText: (path: string) => {
+    try {
+      return readFileSync(path, 'utf8')
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return null
+      throw err
+    }
+  },
+  settingsPath: pathJoin(homedir(), '.bgos-agent', ATTACH_SCOPE_SETTINGS_FILE),
+})
+// The launch folder under a name of its own: the scope compares it with the
+// folder the launcher named and reads its pin, but it resolves no identity, so
+// it is not one of LAUNCH_CWD's counted identity sites
+// (test/agent-credentials.test.ts).
+const ATTACH_SCOPE_FOLDER = LAUNCH_CWD
+const ATTACH_SCOPE = decideAttachScope({
+  mode: ATTACH_SCOPE_MODE.mode,
+  env: process.env,
+  assistantId: String(ASSISTANT_ID ?? ''),
+  cwd: ATTACH_SCOPE_FOLDER,
+  // The folder's own declaration: a pin naming another agent than the one
+  // resolved means an inherited BGOS_ASSISTANT_ID beat it.
+  folderPinId: readFolderPinId(ATTACH_SCOPE_FOLDER),
+})
+// The plugin state dir every daemon on this computer shares, so the tally is
+// the machine's.
+const ATTACH_SCOPE_STATE_DIR = process.env.BGOS_PLUGIN_STATE_DIR?.trim() || pathJoin(homedir(), '.bgos-plugin-state')
+
+/** Say the verdict, count it, and stand aside when it is a refusal (main(), see above). */
+async function attachScopeAtBoot(): Promise<void> {
+  process.stderr.write(`[bgos] ${formatAttachScopeBootLine(ATTACH_SCOPE, ATTACH_SCOPE_MODE)}\n`)
+  recordAttachScopeEvent({
+    dir: ATTACH_SCOPE_STATE_DIR,
+    decision: ATTACH_SCOPE,
+    mode: ATTACH_SCOPE_MODE.mode,
+    route: IDENTITY_ROUTE,
+    version: readOwnVersion(import.meta.dir),
+    cwd: ATTACH_SCOPE_FOLDER,
+  })
+  if (ATTACH_SCOPE.verdict !== 'refuse') return
+  // Only when the setting is on. A quiet one tool notice like a refused
+  // stray's (hoai_not_this_agent, with its own text: the home check's advice
+  // to pin the folder would make it worse): no lock, no socket, no presence, no
+  // agent state, and never process.exit(1) before the handshake (a dead
+  // server reads as CONNECTION_CLOSED and invites a retry loop). No stand-down
+  // report: its reasons are the backend's fixed contract and none of them is
+  // this one, so a mislabelled report would be worse than none.
+  const reason = formatAttachScopeRefusal(ATTACH_SCOPE)
+  process.stderr.write(`[bgos] ${reason}\n`)
+  const served = await serveScopeRefused({
+    reason,
+    assistantId: String(ASSISTANT_ID ?? ''),
     log: (line: string) => process.stderr.write(`[bgos] ${line}\n`),
   })
   process.exit(served ? 0 : 1)
@@ -14276,8 +14359,8 @@ const changesRpc = new ChangesRpcHandler({
 // network. `hoai doctor` on the computer stays the deep check.
 const doctorRpc = new DoctorRpcHandler({
   assistantId: () => String(ASSISTANT_ID ?? ''),
-  runChecks: async () =>
-    buildDoctorChecks({
+  runChecks: async () => [
+    ...buildDoctorChecks({
       now: Date.now(),
       runningVersion: RUNNING_VERSION,
       pendingRestartVersion: daemonPendingRestartVersion(),
@@ -14287,6 +14370,15 @@ const doctorRpc = new DoctorRpcHandler({
       login: claudeLoginState,
       resting: observedResting,
     }),
+    // Attach scope (lib/attach-scope.mjs): this session's verdict and the
+    // machine's tally of what the flip WOULD refuse, read from the local
+    // events file (no network, no child process, as the rows above).
+    attachScopeDoctorCheck({
+      decision: ATTACH_SCOPE,
+      mode: ATTACH_SCOPE_MODE.mode,
+      summary: summarizeAttachScopeEvents(readAttachScopeEvents({ dir: ATTACH_SCOPE_STATE_DIR })),
+    }) as DoctorCheck,
+  ],
   postAck: (rpcId) =>
     bgosPost(`integrations/doctor-rpc/${encodeURIComponent(rpcId)}/ack`, {}),
   postResult: (rpcId, body) =>
@@ -17202,6 +17294,11 @@ async function main(): Promise<void> {
       process.exit(served ? 0 : 1)
     }
   }
+  // Attach scope (board row bab90cdb): count this start and, only when the
+  // setting is on and the verdict is a refusal, stand aside. Second, right
+  // behind the duplicate copy check, before anything below locks, connects or
+  // polls.
+  await attachScopeAtBoot()
   // The git self-updater is for CLONE installs only. A marketplace install's
   // plugin root is Claude Code's own cache dir, which the CLI leaves as a git
   // clone pinned to the release tag: without this gate the updater would
