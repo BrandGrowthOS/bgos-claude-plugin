@@ -376,41 +376,36 @@ Its minor findings, and what I did:
 
 - `npx tsc --noEmit`: clean (rc 0) on the final code.
 - `test/agent-unbound.test.ts`: 37 pass, 0 fail. With the two guard files (pairing-lock-standdown, mission-ws-wiring): 86 pass, 0 fail.
-- The plugin's own test command (`npm test`, which is `scripts/run-tests.mjs`):
-  run family by family, the same split `scripts/run-tests.mjs` makes, because
-  a plain `npm test` hung for over an hour on two files that hang on main
-  too (details below):
-  - **node family** (382 files, everything except the two below), run on the
-    final code: 7822 tests, 7711 pass, 39 fail, 72 skipped.
-  - **The 39 failures are already on main.** They come from 10 browser-profile
-    and browser-bootstrap files: artifacts, backup-workers, companion-state,
-    companion, downloads, files, peer-pins, peer-review, portable-extras and
-    bootstrap. I ran those 10 files on a clean detached checkout of main
-    c636ded at the same time as the branch. Both gave 136 tests, 97 pass,
-    39 fail, with an identical list of failing tests. None of the files
-    imports anything this branch changes.
-  - **The two files left out** are `browser-profile-active-backup` and
-    `browser-profile-companion-backups`. Inside the full `npm test` they hung
-    for over an hour; another lane on this machine shows the same file hung
-    for 16 hours.
-    - Run alone with a 120 s timeout they give 34 tests, 23 pass, 9 fail and
-      2 cancelled. Main c636ded gives the identical result.
-    - The 2 cancelled tests never finish. On main c636ded, with a 600 s cap,
-      both were still running at 600 s and were cancelled
-      (`hang-main.out`):
-      - `reviewed return closes backup admission ...`
-      - `storage-only cadence follows asynchronous confirmation ...`
-    - So the unmodified `npm test` cannot complete on main either: the
-      runner sets no per-test timeout, and node refuses `--test-timeout` in
-      NODE_OPTIONS. That is why the families were run with a timeout
-      instead.
-  - **real Chromium files** (7, one at a time), run after the socket guard
-    fix: 15 tests, 11 pass, 0 fail, 4 skipped. None of them loads the files
-    the final fix changed.
-  - **bun:test family** (14 files), run on the final code: 374 pass, 1 skip,
-    0 fail.
-  - The one failure this branch caused (the socket guard, above) is fixed.
-    After the fix the failing set is exactly main's.
+- **The plugin's own test command, `npm test`, is GREEN on the final code**
+  (2d8c804): rc 0, and `[run-tests] both families green` (`npmtest-final.out`).
+
+  | Family | Tests | Pass | Fail | Skipped |
+  |---|---|---|---|---|
+  | node:test (384 files) | 7856 | 7809 | 0 | 47 |
+  | real Chromium (7 files, one at a time) | 15 | 11 | 0 | 4 |
+  | bun:test (14 files) | 375 | 374 | 0 | 1 |
+
+  It was run with `TMPDIR=/private/tmp/claude-501/mbt/` (a private 0700
+  folder) and bun on PATH. The command and the code are unchanged.
+
+- **Why TMPDIR matters on this Mac.** The first runs used the default macOS
+  TMPDIR, `/var/folders/.../T`.
+  - In that setup `npm test` hung for over an hour on two browser-profile
+    files. The parts I ran with a timeout showed 39 failures plus 9 failures
+    and 2 never-finishing tests in those two files.
+  - main c636ded gave the identical results, in tests that do not import
+    anything this branch changes.
+  - The cause: `lib/browser-profile-core/profile-file-staging.js:58` lstats
+    every ancestor of a path and refuses a symlink, and on macOS `/var` is a
+    symlink to `private/var`. So every browser-profile test that works under
+    `os.tmpdir()` is refused here: it fails or waits forever.
+  - With a TMPDIR that has no symlink in its path, those same files pass
+    (`browser-profile-files` 23 of 23; the two "hanging" files 34 of 34 in
+    5 s), and then the whole suite passes.
+  - CI (`.github/workflows/tests.yml`, Ubuntu and Windows on node 24) has no
+    such symlink. This lane does not touch that code; it is a follow up.
+- One failure WAS caused by this branch: the socket guard (above). It is
+  fixed, and it passes in the green run.
 - No em or en dash anywhere in the diff (checked with grep for U+2013 and
   U+2014 over `git diff main`).
 - This repo has no frontend, backend, `.claude/rules` or
@@ -450,3 +445,8 @@ Its minor findings, and what I did:
 11. The server.ts wiring is covered only by source scans and by the router
     and handler lib tests. No test runs the daemon itself.
 12. The doctor does not list archived agents under `.removed`.
+13. **Browser-profile tests on macOS** (not this lane's code): they refuse the
+    default `/var/folders` TMPDIR because `/var` is a symlink, so a plain
+    `npm test` on a Mac fails and hangs on main as well. The fix is either to
+    realpath `os.tmpdir()` in those tests, or to document a TMPDIR for local
+    runs.
