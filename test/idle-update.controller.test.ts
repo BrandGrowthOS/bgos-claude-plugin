@@ -2426,6 +2426,36 @@ test('canary 2 that fails gives its verdict as a canary: no proof is left to lea
   assert.ok(disk.files.has(join(MACHINE, '0.81.0', 'bad')))
 })
 
+test('a silence that cannot be written keeps the proof: with nothing on the record the next agent would walk on, and the next poll tries again', async () => {
+  const disk = memDisk()
+  await canaryProved(disk)
+  const f = agent(disk, { id: 914 })
+  disk.clock.now += 2 * HOUR
+  const create = disk.fs.createExclusive
+  disk.fs.createExclusive = (p: string, text: string) => (/silent-/.test(p) ? 'error' : create(p, text))
+  for (let poll = 0; poll < 10; poll += 1) await f.c.tick()
+  assert.ok(disk.files.has(join(MACHINE, '0.81.0', 'validated')))
+  disk.fs.createExclusive = create
+  await f.c.tick()
+  assert.equal(silentFiles(disk).length, 1)
+  assert.equal(disk.files.has(join(MACHINE, '0.81.0', 'validated')), false)
+})
+
+test('the act reads the wait again under the lease: a proof that moved since the gate sends nobody', async () => {
+  const disk = memDisk()
+  proven(disk)
+  const create = disk.fs.createExclusive
+  disk.fs.createExclusive = (p: string, text: string) => {
+    const made = create(p, text)
+    if (p.endsWith('lease.json')) disk.fs.writeAtomic(join(MACHINE, '0.81.0', 'validated'), JSON.stringify({ assistantId: '913', at: new Date(disk.clock.now).toISOString(), canary: 1 }))
+    return made
+  }
+  const a = agent(disk, { id: 912 })
+  assert.equal(await a.c.tick(), 'canary_unconfirmed')
+  assert.equal(a.restarts.length, 0)
+  assert.equal(disk.files.has(join(MACHINE, 'lease.json')), false)
+})
+
 test('a proof that cannot be removed stays quiet past the hold: nobody follows it, and the next look removes it', async () => {
   const disk = memDisk()
   await canaryProved(disk)

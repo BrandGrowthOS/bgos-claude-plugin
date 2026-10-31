@@ -3557,21 +3557,11 @@
       ]
     },
     {
-      "id": "stamp-canary-only",
-      "rule": "a follower stamps nothing",
-      "file": "lib/idle-update.mjs",
-      "find": "if (record?.state !== 'validated' || !Number.isInteger(record.canaryN) || record.target !== deps.runningVersion) return\n    const files",
-      "replace": "if (record?.state !== 'validated' || record.target !== deps.runningVersion) return\n    const files",
-      "tests": [
-        "test/idle-update.controller.test.ts"
-      ]
-    },
-    {
       "id": "stamp-on-the-version",
       "rule": "a canary off the version stamps nothing",
       "file": "lib/idle-update.mjs",
-      "find": "!Number.isInteger(record.canaryN) || record.target !== deps.runningVersion) return\n    const files",
-      "replace": "!Number.isInteger(record.canaryN)) return\n    const files",
+      "find": "if (record?.state !== 'validated' || record.target !== deps.runningVersion) return\n    const files",
+      "replace": "if (record?.state !== 'validated') return\n    const files",
       "tests": [
         "test/idle-update.controller.test.ts"
       ]
@@ -3660,7 +3650,7 @@
     },
     {
       "id": "stamp-own-proof",
-      "rule": "a canary stamps only under its own proof",
+      "rule": "a canary stamps only under its own proof, so a follower stamps nothing",
       "file": "lib/idle-update.mjs",
       "find": "if (files.validatedBy !== deps.assistantId || files.aliveAtMs >=",
       "replace": "if (files.aliveAtMs >=",
