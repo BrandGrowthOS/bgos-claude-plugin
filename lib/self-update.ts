@@ -980,7 +980,7 @@ export type UpdateNowOutcome =
   | {
       kind: 'no-update'
       latestVersion: string | null
-      reason: 'invalid-version' | 'not-newer' | 'major-change'
+      reason: 'invalid-version' | 'not-newer' | 'major-change' | 'version_held_bad'
     }
   | { kind: 'dirty-tree' }
   | { kind: 'not-fast-forward' }
@@ -999,6 +999,8 @@ type ApplyUpdateOutcome =
   | 'failed-latched'
 
 export interface SelfUpdaterOptions {
+  /** A version held bad on this computer (lib/idle-update.mjs): never pulled, by a click or the nightly check. */
+  heldBad?: (version: string) => boolean
   rootDir: string
   stateFilePath: string
   env: Record<string, string | undefined>
@@ -1237,6 +1239,10 @@ export class SelfUpdater {
         )
         return
       }
+      if (this.opts.heldBad?.(inspection.latestVersion as string)) {
+        this.opts.log(`Auto-update skipped: ${inspection.latestVersion} is held bad on this computer.`)
+        return
+      }
       if (!inspection.canFastForward && inspection.currentCommit !== inspection.targetCommit) {
         this.opts.log(
           `Auto-update skipped because the checkout cannot fast-forward to the published release ${inspection.releaseTag}.`,
@@ -1302,6 +1308,9 @@ export class SelfUpdater {
           latestVersion: inspection.latestVersion,
           reason: inspection.versionDecision.reason,
         }
+      }
+      if (this.opts.heldBad?.(inspection.latestVersion as string)) {
+        return { kind: 'no-update', latestVersion: inspection.latestVersion, reason: 'version_held_bad' }
       }
       if (!inspection.canFastForward && inspection.currentCommit !== inspection.targetCommit) {
         return { kind: 'not-fast-forward' }

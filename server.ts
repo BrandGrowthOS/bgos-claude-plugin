@@ -17445,6 +17445,7 @@ async function main(): Promise<void> {
     log('git self-updater not armed: marketplace install (updates go through `claude plugin update`)')
   } else {
   selfUpdater = await initializeSelfUpdater({
+    heldBad: idleUpdateHeldBad,
     rootDir: import.meta.dir,
     stateFilePath: resolveAutoUpdateStatePath(cursorStore.filePath),
     env: process.env,
