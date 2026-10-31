@@ -135,6 +135,8 @@ function agent(
     rollbackThrows: null as Error | null,
     /** A rollback that moved the install and then could not switch Claude Code's own update off. */
     rollbackStillOn: false,
+    /** Another agent moved the install, and this agent's staged reading has not caught up. */
+    installMoved: false,
     unreachable: false,
     slept: 0,
     installGate: null as Promise<void> | null,
@@ -245,6 +247,7 @@ function agent(
       out.badAtInstall.push(disk.fs.readFile(join(MACHINE, String(rec.target), 'bad')) !== null)
       if (s.installGate) await s.installGate
       if (s.rollbackThrows) throw s.rollbackThrows
+      if (s.installMoved) return { ok: true, moved: false }
       if (o.install) {
         if (rec.ifStillOn && o.install.version !== rec.ifStillOn) return { ok: true, moved: false }
         if (s.rollbackOk) o.install.version = rec.from
@@ -2881,6 +2884,34 @@ test('moved, and Claude Code\'s own update not switched off: tried again though 
   disk.clock.now += 5 * MIN
   await a.c.tick()
   assert.equal(a.rollbackInstalls.length, 2, 'and then it is over')
+})
+
+test('updates switched off after a try that failed: nothing more is tried', async () => {
+  const disk = memDisk()
+  const install = { version: '0.81.0' }
+  marksBad(disk)
+  const a = agent(disk, { install })
+  a.s.rollbackOk = false
+  await a.c.tick()
+  a.s.autoUpdate = false
+  disk.clock.now += 6 * MIN
+  assert.equal(await a.c.tick(), 'updates_disabled')
+  assert.equal(a.rollbackInstalls.length, 1)
+})
+
+test('a pending state that names the marked build after the install moved, as a clone\'s self updater can: looked at each close look, not each poll, and said nothing about', async () => {
+  const disk = memDisk()
+  marksBad(disk)
+  const a = agent(disk, { staged: '0.81.0' })
+  a.s.installMoved = true
+  assert.equal(await a.c.tick(), 'version_held_bad')
+  disk.clock.now += 30 * SEC
+  assert.equal(await a.c.tick(), 'version_held_bad')
+  assert.equal(a.rollbackInstalls.length, 1)
+  disk.clock.now += 5 * MIN
+  await a.c.tick()
+  assert.equal(a.rollbackInstalls.length, 2)
+  assert.equal(a.logs.some((l) => l.includes('put the install back')), false)
 })
 
 test('a mark never clears: whatever reinstalls the build, the install goes back again', async () => {
