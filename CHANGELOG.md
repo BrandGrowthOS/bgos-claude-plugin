@@ -2,7 +2,7 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
-## 0.81.0 (2026-10-31)
+## 0.82.0 (2026-10-31)
 
 **An idle agent loads its staged update by itself (board row 5a455021).** A staged build only loads when the session restarts, and nothing restarted an idle one: Alex's 15 agents had 0.74.3 staged and still ran 0.69.12 to 0.74.0. Once an agent has been idle for a while it now restarts onto the new version through its existing restart authority, resumes its pinned session, and reports the version it came back on. The design, its rules and what it does not cover are in `docs/idle-update/DESIGN.md`.
 
@@ -11,8 +11,13 @@ Notable changes to the HOAI Claude Code plugin.
 - **Followers wait 30 to 60 minutes after the canary validates,** and the canary keeps proving the build through that wait, counted in minutes it lived, so a sleep proves nothing. A fault that shows inside it stops the agents still waiting; a canary that went quiet gives up its proof, and a day later the next agent is a canary too, so two such faults mark the build bad. The wait survives a daemon restart.
 - **An agent that goes silent holds the version.** Breaking an expired lease writes `silent-<n>`: one holds the version 24 hours, two mark it bad on that computer.
 - **A failed build goes back.** The agent it failed on rolls the install back, marks the version bad on that computer and restarts onto the old build: the canary always, any other agent once. A rollback also takes the failed build's `gitCommitSha` out of the plugin entry.
-- **An agent running 0.80 or older needs one restart to load this.** By a person, the watcher's sweep or an owning service. From then on it updates itself.
+- **Two silences take the install off the build as well.** An agent on an older build that reads the mark puts the shared install back on its own build, with no restart, so a restart cannot land on a build already marked bad. In a mixed fleet the install ends on the newest good build running on that computer. A click or a push is refused on a version held there (`version_held_bad`). To lift a hold, remove `~/.bgos-agent/idle-update/<version>/`.
+- **An agent running 0.81 or older needs one restart to load this.** By a person, the watcher's sweep or an owning service. From then on it updates itself.
 - Tests: `test/idle-update*.test.ts`, `test/update-rpc.own-launcher.test.ts`, `test/self-update.idle-rollback.test.ts`, with the mutants in `docs/idle-update/mutants.json` and the rig in `docs/idle-update/rig/`.
+
+## 0.81.0 (2026-10-31)
+
+- A deleted agent's computer cleans up after it: once the server confirms the agent is gone, the computer stops it, removes its auto start and archives its folder (never deletes a file). Other agents on the machine are untouched, and a replayed notice does nothing new.
 
 ## 0.80.2 (2026-10-29)
 
