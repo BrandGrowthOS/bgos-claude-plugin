@@ -231,6 +231,12 @@ test('the rollback: the marketplace through the host module and the clone throug
   assert.match(block(), /rollbackInstall: \(record: any\) => idleRollbackInstall\(record\),/)
 })
 
+test('a clone reads the same mark before it pulls', () => {
+  const at = server.indexOf('selfUpdater = await initializeSelfUpdater({')
+  assert.ok(at > 0)
+  assert.match(server.slice(at, at + 700), /heldBad: idleUpdateHeldBad,/)
+})
+
 test('a click or a push reads the same mark, and the step in is told what is marked', () => {
   const at = server.indexOf('return runMarketplaceUpdate({')
   assert.ok(at > 0)

@@ -3267,6 +3267,34 @@ test('the agent that loses the race reports the build, not null, for the one pol
   assert.equal(a.reports.some((r) => r?.message?.includes('null')), false, JSON.stringify(a.reports))
 })
 
+test('the mark that lands while the close look is out reports the build, not null', async () => {
+  const disk = memDisk()
+  const install = { version: '0.81.0' }
+  proven(disk)
+  const a = agent(disk, { running: '0.80.0', install })
+  a.s.listing = { ok: true, get processes() {
+    marksBad(disk)
+    install.version = '0.80.0'
+    return table(912)
+  } }
+  await a.c.tick()
+  assert.equal(a.reports.some((r) => r?.message?.includes('null')), false, JSON.stringify(a.reports))
+})
+
+test('a last resort that landed on a build not this agent\'s keeps its report while the install stays there', async () => {
+  const disk = memDisk()
+  const install = { version: '0.81.0' }
+  marksBad(disk)
+  const a = agent(disk, { running: '0.80.0', install })
+  a.s.rollbackOn = '0.80.5'
+  await a.c.tick()
+  install.version = '0.80.5'
+  a.s.activity = [disk.clock.now]
+  disk.clock.now += 30 * SEC
+  await a.c.tick()
+  assert.match(lastReport(a).message, /went back to 0\.80\.5/)
+})
+
 test('a raise that finds the install moved writes nothing and reports nothing', async () => {
   const disk = memDisk()
   const install = { version: '0.81.0' }

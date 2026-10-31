@@ -27,7 +27,7 @@ const IDLE = { activeOperations: 0, pendingMessages: 0, pendingPermissions: 0 }
 setDefaultTimeout(120_000)
 
 /** A daemon's updater on `clone`, running `running`, with the marketplace publishing whatever `published` says. */
-async function updaterFor(clone: string, opts: { running: string; published: () => string; logs?: string[] }) {
+async function updaterFor(clone: string, opts: { running: string; published: () => string; logs?: string[]; heldBad?: (version: string) => boolean }) {
   const stateDir = realpathSync(mkdtempSync(join(tmpdir(), 'published-release-state-')))
   const runner: CommandRunner = async (file, args, runnerOpts) =>
     file === 'bun' ? { stdout: '', stderr: '' } : runCommand(file, args, runnerOpts)
@@ -45,6 +45,7 @@ async function updaterFor(clone: string, opts: { running: string; published: () 
     runner,
     readPublishedTag: async () => opts.published(),
     schedule: () => setTimeout(() => {}, 60_000),
+    heldBad: opts.heldBad,
   })
   expect(updater).not.toBeNull()
   return updater!
@@ -54,6 +55,21 @@ const head = (dir: string) => git(dir, 'rev-parse', 'HEAD')
 const noStages = async () => {}
 
 describe('a clone updates to exactly the published release (board row 84c23fab)', () => {
+  test('a release held bad on this computer is not taken, by a click or the nightly check, on a checkout that never went back itself', async () => {
+    const o = releaseOrigin()
+    const current = o.commit('0.26.0')
+    const clone = o.clone()
+    o.tag('v0.27.0', o.commit('0.27.0', 'release 0.27.0'))
+
+    const logs: string[] = []
+    const updater = await updaterFor(clone, { running: '0.26.0', published: () => 'v0.27.0', logs, heldBad: (version) => version === '0.27.0' })
+    expect(await updater.updateNow(noStages)).toEqual({ kind: 'no-update', latestVersion: '0.27.0', reason: 'version_held_bad' })
+    expect(head(clone)).toBe(current)
+    await updater.checkNow()
+    expect(head(clone)).toBe(current)
+    expect(logs.some((line) => line.includes('held bad on this computer'))).toBe(true)
+  })
+
   test('a commit merged to main after the published release is never taken', async () => {
     const o = releaseOrigin()
     o.commit('0.26.0')
