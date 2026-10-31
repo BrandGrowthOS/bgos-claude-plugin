@@ -645,8 +645,8 @@
       "id": "host-from-root-check",
       "rule": "the old folder must still hold the old version",
       "file": "lib/idle-update-host.mjs",
-      "find": "  if (manifest?.version !== from) return { ok: false, reason: 'from_root_missing' }\n",
-      "replace": "",
+      "find": "  return parseJson(safe(() => fs.readFile(joinDir(joinDir(root, '.claude-plugin'), 'plugin.json')), null))?.version === version\n",
+      "replace": "  return true\n",
       "tests": [
         "test/idle-update.host.test.ts"
       ]
