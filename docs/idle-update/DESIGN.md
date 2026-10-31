@@ -698,3 +698,23 @@ Its other minor points are in Residuals.
 - The check that the canary proved the first follower's wait reads the final stamp, so it shows the canary got there, not that it had when that follower went. The controller tests read that moment.
 - Nothing runs a computer that sleeps. `provedMs` and the ten polls rest on the controller tests, with a clock moved by hand.
 - As in round 2: no follower's way back, and no real Claude Code restore of a `/loop`. The launchd rung is Data's `MACOS-PROOF.md`.
+
+## Round 4: Data's rulings on the last round
+
+Data on `764e6a2`: fix Call 28 here, an old build agent rolling the install back is fine. Call 27 is not fixed, and the PR says so. The readings in Calls 20 and 26 stand, and Call 21 stands. Written before the code.
+
+**1. What would a top release engineer also check that was not asked?**
+- Ares's four: two agents rolling back at once (each stops once it reads the install off the marked build, so neither fights the other's good build); a rollback racing a follower's wait (one already asked comes back on the old build, a plain `came_back_old`, and one still waiting reads `bad` first); a rollback when the old build's files are gone (nothing written, said, and tried again, since another agent's build may still be there); a bad mark that never clears (it puts the install back every time something reinstalls that build, a person included, so the remedy has to be written down).
+- Mine: a mixed fleet, where the first agent there may be on the oldest build; a switch-off of Claude Code's own update that fails after the repoint, which would reinstall the build at the next claude start; a clone, where the same rollback pauses the checkout; and three daemons that must not touch the install: passive, auto update off, and one not older than the marked build. It restarts nobody, so a busy agent does it too.
+
+**2. Where would they start?**
+- The path after two silences, red first: `baseFacts` writes `<version>/bad` and nothing acts on it. A controller test that latches and then asks where the install went.
+- Then the real chain: the same marks, a real restart of an agent on the old build, and the version it comes back on, red before the fix.
+
+**3. Which tools?**
+- node --test with a red commit before the fix, a mutant for each rule, the full suite and tsc on the final code.
+- The scratch HOME rig with a new real chain scenario, and a fresh reviewer.
+
+**4. What would prove it right, independent of you and me?**
+- A fresh reviewer subagent given the code and Data's ruling, not my conclusions; every Critical and Important fixed red first.
+- The rig on the head that is pushed, not an earlier one, read from its own files: the version an old build agent comes back on after two silences.
