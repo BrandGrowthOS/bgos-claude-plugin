@@ -600,6 +600,17 @@ async function scenarioBusy() {
     keepBrowserInUse()
     return Date.now() > until && record(control.id)?.state === 'validated'
   }, { timeoutMs: holdMs + 15 * MIN })
+  // The launch proof is the close look, past gate 19: a session a person launched says so once its own wait is over.
+  if (byHand) {
+    const provedAt = Date.parse(JSON.parse(readFileSync(join(machineDir, 'idle-update', TARGET, 'validated'), 'utf8')).at)
+    const end = provedAt + followerWaitMs({ assistantId: byHand.id, target: TARGET }, scaledDurations(scale)) + 3 * MIN
+    await watch('the agent launched by hand read its own wait out', async () => {
+      await keepWakeDue()
+      await keepCallLive()
+      keepBrowserInUse()
+      return Date.now() > end
+    }, { timeoutMs: Math.max(0, end - Date.now()) + 3 * MIN })
+  }
   for (const a of list) results.agents[a.id] = { role: roles[a.id], ...summarise(a) }
   check('idle control restarted onto the target and validated', results.agents[control.id].launches.length === 2 && record(control.id)?.state === 'validated', results.agents[control.id].launches)
   for (const a of list.slice(1)) {
