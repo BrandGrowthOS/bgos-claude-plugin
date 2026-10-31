@@ -1758,6 +1758,7 @@ describe('the lock loser takes the same restart decision as the winner', () => {
   function loserHarness(opts: {
     env?: Record<string, string | undefined>
     requestRestart?: (targetVersion: string | null) => Promise<boolean>
+    heldBad?: (version: string) => boolean
   }) {
     const rootDir = tempDir('self-update-loser-ladder-root-')
     mkdirSync(join(rootDir, '.git'))
@@ -1801,6 +1802,7 @@ describe('the lock loser takes the same restart decision as the winner', () => {
         },
         schedule: () => setTimeout(() => {}, 60_000),
         now: () => 1_001,
+        heldBad: opts.heldBad,
         requestRestart: opts.requestRestart
           ? async (target) => {
               lockHeldAtRestart.push(existsSync(lockPath))
@@ -1904,6 +1906,26 @@ describe('the lock loser takes the same restart decision as the winner', () => {
     expect(updater.pendingRestartVersion()).toBe('0.27.0')
   })
 
+  test('a loser that waited out the winner leaves a build marked meanwhile alone: no ladder, intake back, lock free', async () => {
+    const asked: Array<string | null> = []
+    let looks = 0
+    const h = loserHarness({
+      heldBad: () => ++looks > 1,
+      requestRestart: async (target) => {
+        asked.push(target)
+        return true
+      },
+    })
+    const updater = (await h.build())!
+    await updater.checkNow()
+    expect(asked).toEqual([])
+    expect(h.exits).toEqual([])
+    expect(h.drainModes.at(-1)).toBe(false)
+    expect(h.logs.some((line) => line.startsWith('Auto-update staged by another daemon'))).toBe(false)
+    expect(h.logs.some((line) => line.includes('held bad on this computer'))).toBe(true)
+    expect(existsSync(h.lockPath)).toBe(false)
+  })
+
   test('a TRIGGERED loser keeps its early return: no exit and no ladder here, even with the opt in and a ladder wired', async () => {
     const asked: Array<string | null> = []
     const h = loserHarness({
@@ -1927,6 +1949,7 @@ describe('updateNow (one-click update_rpc trigger)', () => {
   function updaterHarness(opts: {
     runner?: CommandRunner
     env?: Record<string, string | undefined>
+    heldBad?: (version: string) => boolean
   } = {}) {
     const rootDir = tempDir('self-update-now-root-')
     mkdirSync(join(rootDir, '.git'))
@@ -1952,6 +1975,7 @@ describe('updateNow (one-click update_rpc trigger)', () => {
         exit: (code) => exits.push(code),
         runner,
         schedule: () => setTimeout(() => {}, 60_000),
+        heldBad: opts.heldBad,
       })
     return { rootDir, stateFilePath, calls, exits, drainModes, logs, build }
   }
@@ -1994,6 +2018,15 @@ describe('updateNow (one-click update_rpc trigger)', () => {
     // No new inspection, no new drain, no stages: straight to the ladder.
     expect(stages).toEqual([])
     expect(h.calls.filter((c) => c.args[0] === 'fetch').length).toBe(fetchesBefore)
+  })
+
+  test('a version pending on this checkout and held bad here is not handed to the ladder', async () => {
+    let held = false
+    const h = updaterHarness({ heldBad: () => held })
+    const updater = (await h.build())!
+    await updater.updateNow(async () => {})
+    held = true
+    expect(await updater.updateNow(async () => {})).toEqual({ kind: 'no-update', latestVersion: '0.27.0', reason: 'version_held_bad' })
   })
 
   test('BGOS_EXIT_AFTER_UPDATE is ignored on the triggered path (the ladder owns restarts)', async () => {

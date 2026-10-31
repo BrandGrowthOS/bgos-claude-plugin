@@ -27,7 +27,7 @@ const IDLE = { activeOperations: 0, pendingMessages: 0, pendingPermissions: 0 }
 setDefaultTimeout(120_000)
 
 /** A daemon's updater on `clone`, running `running`, with the marketplace publishing whatever `published` says. */
-async function updaterFor(clone: string, opts: { running: string; published: () => string; logs?: string[]; heldBad?: (version: string) => boolean }) {
+async function updaterFor(clone: string, opts: { running: string; published: () => string; logs?: string[]; drains?: boolean[]; heldBad?: (version: string) => boolean }) {
   const stateDir = realpathSync(mkdtempSync(join(tmpdir(), 'published-release-state-')))
   const runner: CommandRunner = async (file, args, runnerOpts) =>
     file === 'bun' ? { stdout: '', stderr: '' } : runCommand(file, args, runnerOpts)
@@ -38,7 +38,7 @@ async function updaterFor(clone: string, opts: { running: string; published: () 
     runningVersion: opts.running,
     log: (line) => opts.logs?.push(line),
     drainSnapshot: () => IDLE,
-    setDrainMode: () => {},
+    setDrainMode: (enabled) => opts.drains?.push(enabled),
     exit: () => {
       throw new Error('this host is not supervised; the updater must never exit')
     },
@@ -68,6 +68,27 @@ describe('a clone updates to exactly the published release (board row 84c23fab)'
     await updater.checkNow()
     expect(head(clone)).toBe(current)
     expect(logs.some((line) => line.includes('held bad on this computer'))).toBe(true)
+  })
+
+  test('a mark that lands while the daemon waits stops the pull, by the nightly check or a click, and intake comes back', async () => {
+    const o = releaseOrigin()
+    const current = o.commit('0.26.0')
+    const clone = o.clone()
+    o.tag('v0.27.0', o.commit('0.27.0', 'release 0.27.0'))
+
+    const logs: string[] = []
+    const drains: boolean[] = []
+    let looks = 0
+    const updater = await updaterFor(clone, { running: '0.26.0', published: () => 'v0.27.0', logs, drains, heldBad: () => ++looks > 1 })
+    await updater.checkNow()
+    expect(head(clone)).toBe(current)
+    expect(logs.some((line) => line.includes('held bad on this computer'))).toBe(true)
+    expect(drains.at(-1)).toBe(false)
+
+    looks = 0
+    expect(await updater.updateNow(noStages)).toEqual({ kind: 'no-update', latestVersion: '0.27.0', reason: 'version_held_bad' })
+    expect(head(clone)).toBe(current)
+    expect(drains.at(-1)).toBe(false)
   })
 
   test('a commit merged to main after the published release is never taken', async () => {

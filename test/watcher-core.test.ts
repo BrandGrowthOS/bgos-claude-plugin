@@ -584,6 +584,7 @@ test('runWatcher reconcile: the executor reads the marks the agents wrote, so a 
   const fs = machineFs()
   manifestFor(fs)
   fs.files.set(`${HOME}/.bgos-agent/idle-update/0.39.0/bad`, JSON.stringify({ assistantId: '913', reason: 'canaries_silent' }))
+  fs.files.set(`${HOME}/.bgos-agent/idle-update/../0.39.0/bad`, 'a file the shape check must keep out of reach')
   const backend = fakeBackend({ frames: [{ rpcId: 'j', op: 'reconcile' }], jobs: { j: { op: 'reconcile', intent: 'update', targets: [] } } })
   const clock = fakeClock()
   let given: any = null
