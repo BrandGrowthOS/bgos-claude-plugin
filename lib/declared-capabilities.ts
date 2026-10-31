@@ -343,6 +343,14 @@ export const DECLARED_CAPABILITIES_PAIRING: readonly string[] = Object.freeze([H
 /** The owner's model and effort picker (BGOS #3060), declared only while it can act. */
 export const MODEL_EFFORT_PICKER_TOKEN = 'model_effort_picker'
 
+/**
+ * Threads phase 1 (plan "Wire contract"): message_threads (this daemon answers
+ * thread_turn and thread_close), thread_sessions (its threads run as forked
+ * lanes, lib/thread-lanes.ts) and asides (it answers aside,
+ * lib/aside-fork.ts). Declared together, only where a lane can run.
+ */
+export const THREAD_CAPABILITY_TOKENS: readonly string[] = Object.freeze(['message_threads', 'thread_sessions', 'asides'])
+
 /** Declared only while this daemon can type into its own CLI's composer. */
 export const DECLARED_CAPABILITIES_INJECTOR: readonly string[] = Object.freeze([
   'mission_goal_loop',
@@ -393,8 +401,14 @@ export function declaredCapabilities(input: {
    * observation, non empty catalog)? Absent reads as no.
    */
   modelEffortPicker?: boolean
+  /**
+   * Can this host run thread lanes and By the way forks (server.ts
+   * threadsDeclared: a claude binary resolves)? Absent reads as no. Never
+   * declared on win32 in phase 1.
+   */
+  threads?: boolean
   authMode: 'pairing' | 'apikey'
-  /** The host platform; process.platform when absent. The picker is never declared on win32. */
+  /** The host platform; process.platform when absent. The picker and the thread tokens are never declared on win32. */
   platform?: NodeJS.Platform
 }): readonly string[] {
   return [
@@ -407,5 +421,6 @@ export function declaredCapabilities(input: {
     ...(input.authMode === 'pairing' && input.modelEffortPicker === true && (input.platform ?? process.platform) !== 'win32'
       ? [MODEL_EFFORT_PICKER_TOKEN]
       : []),
+    ...(input.threads === true && (input.platform ?? process.platform) !== 'win32' ? THREAD_CAPABILITY_TOKENS : []),
   ]
 }

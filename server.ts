@@ -942,15 +942,20 @@ const API_BASE = getApiBaseUrl()
 
 import {
   appendFileSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
   readdirSync,
+  rmSync,
   statSync,
   unlinkSync,
   watch,
   writeFileSync,
 } from 'node:fs'
+import { ThreadLaneManager } from './lib/thread-lanes.ts'
+import { runAside } from './lib/aside-fork.ts'
+import { spawnStreamJson } from './lib/stream-json-child.ts'
 import { join as pathJoin, dirname as pathDirname, resolve as pathResolve } from 'node:path'
 import { ensureLogDir, resolveLogPath } from './lib/log-path.js'
 // Agent activity from the session's own hooks (stage 4). The mapper is pure
@@ -1583,7 +1588,7 @@ async function loadServedCapabilities(): Promise<ServedCapabilities> {
     // ONE declared list for the fetch AND the offline copy, so a fetch that
     // fails tells the agent no more than the served canon would have told
     // this daemon (capabilitiesFallbackFor, the stage 6 backend review).
-    const declared = declaredCapabilities({ canInjectGoal: false, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, authMode: AUTH.mode })
+    const declared = declaredCapabilities({ canInjectGoal: false, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, threads: threadsDeclared(), authMode: AUTH.mode })
     try {
       data = await bgosGetCapped(
         capabilitiesFetchPath(
@@ -1930,6 +1935,13 @@ function resolveClaude(): string | null {
   })
 }
 const CLAUDE_EXECUTABLE: string | null = resolveClaude()
+// Threads phase 1: message_threads, thread_sessions and asides are declared
+// where a thread lane or a By the way fork can start, a claude binary this
+// daemon can spawn (lib/thread-lanes.ts, lib/aside-fork.ts). Not Windows in
+// phase 1. Resolved per declaration, like /login's binary above.
+function threadsDeclared(): boolean {
+  return process.platform !== 'win32' && resolveClaude() !== null
+}
 const bootSlashCommands = prepareSlashCommands(
   catalogForCapabilities({
     remoteCompact: compactTarget !== null,
@@ -6515,7 +6527,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
               chatId: String(resolvedChatId),
               text,
               declared: () =>
-                declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, authMode: AUTH.mode }).includes(UI_CARD),
+                declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, threads: threadsDeclared(), authMode: AUTH.mode }).includes(UI_CARD),
               log,
             })
         if (cardNudge) log(`reply to chat ${resolvedChatId}: card nudge given`)
@@ -13087,7 +13099,7 @@ const stopPauseLane = new StopPauseLane({
  *  this daemon never pauses on a host whose owner was never offered Pause. */
 function stopGoalView(): StopGoalView {
   return {
-    pauseDeclared: declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, modelEffortPicker: modelEffortDeclared(), authMode: AUTH.mode }).includes('mission_pause'),
+    pauseDeclared: declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, modelEffortPicker: modelEffortDeclared(), threads: threadsDeclared(), authMode: AUTH.mode }).includes('mission_pause'),
     held: goalHeld,
     attachedMissionId: goalMissionId,
     pending: goalPendingArm,
@@ -13275,6 +13287,61 @@ const sessionLibrary = new AgentSessionLibrary({
   currentName: () => sessionBinder.resolve()?.binding.name ?? null,
 })
 
+// ── Threads phase 1: thread lanes and By the way (lib/thread-lanes.ts) ──────
+// A thread runs as its own headless claude, forked from the session this
+// daemon has proven it serves, in a git worktree of the agent folder under
+// .hoai/threads/<root>; By the way is a one shot tool-less fork of the same
+// session in the same folder. Lane state lives in ~/.bgos-agent/<id>/threads.
+const THREADS_STATE_DIR = pathJoin(agentStateDir(homedir(), ASSISTANT_ID) ?? pathJoin(homedir(), '.bgos-agent', 'unknown'), 'threads')
+function threadsEmptyMcpConfig(): string {
+  // --strict-mcp-config with no server: a lane never starts a second copy of
+  // this channel plugin, which would deliver every chat message twice.
+  const path = pathJoin(THREADS_STATE_DIR, 'empty-mcp.json')
+  if (!existsSync(path)) {
+    mkdirSync(THREADS_STATE_DIR, { recursive: true })
+    writeFileSync(path, '{"mcpServers":{}}\n')
+  }
+  return path
+}
+const threadLanes = new ThreadLaneManager({
+  spawn: spawnStreamJson,
+  claudeBin: resolveClaude,
+  mainSessionId: () => provenSessionId(),
+  agentFolder: CLAUDE_PROJECT_CWD,
+  stateDir: THREADS_STATE_DIR,
+  home: homedir(),
+  configDir: CLAUDE_CONFIG_DIR,
+  emptyMcpConfigPath: threadsEmptyMcpConfig,
+  git: async (args, cwd) => {
+    try {
+      const { stdout } = await execFileAsync('git', args, { cwd, timeout: 60_000, maxBuffer: 1024 * 1024 })
+      return { ok: true, stdout: String(stdout) }
+    } catch {
+      return { ok: false, stdout: '' }
+    }
+  },
+  fs: {
+    exists: (path) => existsSync(path),
+    mkdir: (path) => { mkdirSync(path, { recursive: true }) },
+    readFile: (path) => readFileSync(path, 'utf8'),
+    writeFile: (path, data) => writeFileSync(path, data),
+    appendFile: (path, data) => appendFileSync(path, data),
+    copyFile: (from, to) => copyFileSync(from, to),
+    unlink: (path) => unlinkSync(path),
+    rmrf: (path) => rmSync(path, { recursive: true, force: true }),
+    list: (dir) => readdirSync(dir),
+  },
+  post: (path, body) => bgosPost(path, body),
+  now: () => Date.now(),
+  setTimer: (fn, ms) => {
+    const timer = setTimeout(fn, ms)
+    timer.unref?.()
+    return timer
+  },
+  clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  log,
+})
+
 const voiceRpc = new VoiceRpcHandler({
   config: {
     openaiApiKey: VOICE_OPENAI_API_KEY,
@@ -13350,6 +13417,31 @@ const voiceRpc = new VoiceRpcHandler({
   modelEffort: modelEffortPicker,
   // A dispatch card queued behind a change is accepted at once.
   cardsHeld: () => modelEffortControl.busy,
+  // Threads phase 1 (lib/thread-rpc.ts): thread_turn, thread_close, aside.
+  // Not on Windows in phase 1: the ops answer unsupported there.
+  ...(process.platform !== 'win32'
+    ? {
+        threads: {
+          turn: (input) => threadLanes.turn(input),
+          close: (input) => threadLanes.close(input),
+          aside: (input, onDelta) =>
+            runAside(input, {
+              spawn: spawnStreamJson,
+              claudeBin: resolveClaude,
+              mainSessionId: () => provenSessionId(),
+              mainFolder: CLAUDE_PROJECT_CWD,
+              home: homedir(),
+              configDir: CLAUDE_CONFIG_DIR,
+              emptyMcpConfigPath: threadsEmptyMcpConfig,
+              unlink: (path) => unlinkSync(path),
+              onDelta,
+              log,
+            }),
+        },
+      }
+    : {}),
+  postProgress: (rpcId, body) =>
+    bgosPost(`integrations/voice-rpc/${encodeURIComponent(rpcId)}/progress`, body),
   log,
 })
 
@@ -15511,6 +15603,14 @@ function connectWebsocket(): void {
 
   realtimeSocket.on('connect', () => {
     log(`WS connected (id=${realtimeSocket?.id}), polling will throttle`)
+    // Threads phase 1: a turn the person sent while this daemon was away is
+    // run now (GET integrations/threads/pending). Only the lock holder runs
+    // lanes, and only where it declares threads.
+    if (channelArmed && threadsDeclared()) {
+      void threadLanes
+        .reconcile(() => bgosGet('integrations/threads/pending'))
+        .catch((err) => log(`threads: pending reconcile failed: ${err instanceof Error ? err.name : 'error'}`))
+    }
     // Pending ask groups are read again on every connect: an answer given
     // while this daemon was down or disconnected is due now, and a stream
     // entry for it may be behind a cursor this life never reads.
@@ -17463,6 +17563,8 @@ async function main(): Promise<void> {
     releasePairingLock({ lockPath: PAIRING_LOCK_PATH, selfPid: process.pid })
     // Never leave a sign-in child behind (lib/auth-login.ts).
     loginController.dispose()
+    // Nor a thread lane (lib/thread-lanes.ts).
+    threadLanes.stopAll()
     browserHost?.stop()
     process.exit(code)
   }
@@ -17476,6 +17578,7 @@ async function main(): Promise<void> {
     flushChatCursors()
     releasePairingLock({ lockPath: PAIRING_LOCK_PATH, selfPid: process.pid })
     loginController.dispose()
+    threadLanes.stopAll()
     browserHost?.stop()
   })
 
@@ -17486,6 +17589,13 @@ async function main(): Promise<void> {
   // agent-state.json (design section 7): ticks from here on; it writes only
   // while this daemon holds the pairing lock, so a passive daemon never does.
   setInterval(() => { agentStatePublisher.tick(); publishBrowserPrivateTurn() }, AGENT_STATE_TICK_MS).unref()
+  // Threads phase 1: the worktree of a thread closed more than 7 days ago goes.
+  setInterval(() => {
+    void threadLanes
+      .sweepClosed(Date.now())
+      .then((removed) => { if (removed.length > 0) log(`threads: removed ${removed.length} closed thread worktree(s)`) })
+      .catch((err) => log(`threads: sweep failed: ${err instanceof Error ? err.name : 'error'}`))
+  }, 60 * 60_000).unref()
   // The session pin (finding 7): asks only while this daemon holds the channel
   // and its live session is not pinned yet (lib/session-pin.ts).
   setInterval(() => checkSessionPin(), SESSION_PIN_CHECK_MS).unref()
@@ -18527,7 +18637,7 @@ async function main(): Promise<void> {
       // CLI's composer, and lib/compact-capability.ts can discover that up to
       // thirty minutes after boot. See lib/declared-capabilities.ts.
       capabilities: () => [
-        ...declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, modelEffortPicker: modelEffortDeclared(), authMode: AUTH.mode }),
+        ...declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, modelEffortPicker: modelEffortDeclared(), threads: threadsDeclared(), authMode: AUTH.mode }),
       ],
       // One-click update telemetry (wire contract v1): the newest version this
       // daemon found at its own pinned source (origin/main for a clone, the
