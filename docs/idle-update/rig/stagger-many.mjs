@@ -21,7 +21,11 @@
  *
  * Two faults, each ending one process by its handle and never starting it again,
  * so the other agents have only the files to go on:
- *   --fault late    the canary dies after it validated: its stamp stops, and no follower moves.
+ *   --fault late    the canary dies after it validated: its stamp stops, it goes on the record as
+ *                   silent-1, its proof goes, and no follower moves. Past the hold the next agent
+ *                   is canary 2, and it dies the same way: silent-2, and the build is marked bad.
+ *                   The hold (hours even at this scale) passes by moving the stamps back on the
+ *                   scratch disk; every agent still reads them by the real rules.
  *   --fault silent  the first follower dies once it arrived: its lease runs out with no
  *                   outcome, the next agent writes silent-1, and no third agent moves.
  *
@@ -292,7 +296,13 @@ async function supervisor() {
   }
   const followers = () => ids.filter((id) => record(id)?.canaryN !== 1)
   const firstOnTarget = (state) => ids.find((id) => launches.get(id).length === 2 && record(id)?.canaryN !== 1 && record(id)?.state === state)
-  const canaryOf = () => ids.find((id) => record(id)?.canaryN === 1 && record(id)?.state === 'validated')
+  const canaryOf = (n = 1) => ids.find((id) => record(id)?.canaryN === n && record(id)?.state === 'validated')
+  /** Move a shared stamp this far into the past. */
+  const age = (name, ms) => {
+    const path = join(versionDir, name)
+    const body = JSON.parse(readFileSync(path, 'utf8'))
+    writeFileSync(path, JSON.stringify({ ...body, at: new Date(Date.parse(body.at) - ms).toISOString() }))
+  }
   const rules = await import(pathToFileURL(join(PLUGIN, 'lib', 'idle-update.mjs')).href)
   const scaled = rules.scaledDurations(scale)
   const waitOf = (id) => rules.followerWaitMs({ assistantId: String(id), target: TARGET }, scaled)
@@ -334,12 +344,14 @@ async function supervisor() {
   if (fault) {
     let canary = null
     let silent = null
+    let second = null
     try {
       for (const id of ids) launch(id, FROM)
       await armed()
       stagedThen()
-      canary = await until('the canary validated', canaryOf, 30 * MIN)
+      canary = await until('the canary validated', () => canaryOf(), 30 * MIN)
       say(`canary ${canary} validated`)
+      const provedAt = Date.parse(record(canary).validatedAt)
       if (fault === 'late') {
         await sleep((2 * MIN) / scale)
         die(canary, 'it validated, and dies inside the wait')
@@ -354,7 +366,25 @@ async function supervisor() {
       say(`on the record: ${silences().join(', ')}`)
       // Every other agent's wait has run out by now or soon: long enough for one to walk on if any would.
       const latest = Math.max(...followers().map(waitOf)) + 3 * MIN
-      await stillAfter(Math.max((3 * MIN) / scale, Date.parse(JSON.parse(readFileSync(join(versionDir, 'validated'), 'utf8')).at) + latest - Date.now()))
+      await stillAfter(Math.max((3 * MIN) / scale, provedAt + latest - Date.now()))
+      if (fault === 'late') {
+        const moved = () => ids.filter((id) => id !== canary && launches.get(id).length !== 1)
+        results.hold = { silences: silences(), moved: moved(), proofGone: !existsSync(join(versionDir, 'validated')) }
+        age('silent-1', scaled.canaryHoldMs + MIN)
+        age('canary-1', scaled.canaryHoldMs + MIN)
+        say('the hold has run out')
+        second = await until('canary 2 validated', () => canaryOf(2), 30 * MIN)
+        say(`canary 2 is ${second}, and validated`)
+        results.afterHold = { moved: moved() }
+        await sleep((2 * MIN) / scale)
+        die(second, 'canary 2 validated, and dies inside the wait')
+        await until('silent-2', () => silences().length > 1, (60 * MIN) / scale + 15 * MIN)
+        say(`on the record: ${silences().join(', ')}`)
+        age('silent-2', scaled.canarySilentMs - scaled.leaseTtlMs + MIN)
+        await until('the build marked bad', () => existsSync(join(versionDir, 'bad')), 5 * MIN)
+        say('the build is marked bad')
+        await stillAfter((3 * MIN) / scale)
+      }
     } catch (err) {
       failure = String(err?.message ?? err)
       say(`error: ${failure}`)
@@ -362,13 +392,23 @@ async function supervisor() {
       await finish()
     }
     for (const id of ids) results.launches[id] = launches.get(id)?.map((l) => ({ version: l.version, at: new Date(l.at).toISOString() })) ?? []
-    const others = ids.filter((id) => id !== canary && id !== silent)
+    const others = ids.filter((id) => id !== canary && id !== silent && id !== second)
     const restarted = others.filter((id) => launches.get(id).length !== 1)
     const body = silences()[0] ? JSON.parse(readFileSync(join(versionDir, silences()[0]), 'utf8')) : null
     results.silence = body
-    check('one silence on the record', silences().length === 1, silences())
     check('it names the agent that went quiet', body?.assistantId === String(fault === 'late' ? canary : silent), body)
-    if (fault === 'silent') check('with the nonce of its attempt', body?.nonce === record(silent)?.nonce, body)
+    if (fault === 'silent') {
+      check('one silence on the record', silences().length === 1, silences())
+      check('with the nonce of its attempt', body?.nonce === record(silent)?.nonce, body)
+    } else {
+      const last = existsSync(join(versionDir, 'silent-2')) ? JSON.parse(readFileSync(join(versionDir, 'silent-2'), 'utf8')) : null
+      const bad = existsSync(join(versionDir, 'bad')) ? JSON.parse(readFileSync(join(versionDir, 'bad'), 'utf8')) : null
+      check('the first silence took the proof with it', results.hold?.proofGone === true, results.hold)
+      check('through the hold nobody moved', results.hold?.silences.length === 1 && results.hold?.moved.length === 0, results.hold)
+      check('past the hold one agent moved, and it was a canary', results.afterHold?.moved.length === 1 && results.afterHold.moved[0] === second, results.afterHold)
+      check('the second silence names canary 2', last?.assistantId === String(second), last)
+      check('two silences marked the build bad', bad?.reason === 'canaries_silent', bad)
+    }
     check(`none of the other ${others.length} agents moved`, others.length > 0 && restarted.length === 0, restarted)
     check('every one of them reads the hold', others.every((id) => events.some((e) => e.id === id && e.ev === 'log' && /waiting: silent_hold/.test(e.line))))
     check('the lease is free: a hold keeps nothing from the next version', !existsSync(join(machineDir, 'lease.json')))
