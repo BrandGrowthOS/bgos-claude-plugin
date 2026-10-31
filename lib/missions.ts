@@ -777,6 +777,22 @@ export function buildMissionAddGoalsPath(assistantId: unknown, missionId: unknow
 }
 
 /**
+ * The goal id sentence, or null when the id is usable. Exported so a tool can
+ * judge the id BEFORE it reads the mission, and so refuse a bad one with no
+ * request at all.
+ */
+export function missionGoalIdError(goalId: unknown): string | null {
+  // A NUMBER, as tick_mini_goal and set_goal_working take it: a string such as
+  // " 3" or "0x10" would pass a Number() check and reach the URL as typed.
+  if (typeof goalId === 'number' && Number.isInteger(goalId) && goalId > 0) return null
+  return goalIdSentence(goalId)
+}
+
+const goalIdSentence = (goalId: unknown): string =>
+  `goal_id must be a positive integer, the id shown on the mission card ` +
+  `(got ${JSON.stringify(goalId)}).`
+
+/**
  * The cancel_mission_goal write, a DELETE of one goal by its id.
  *
  * The goal is named in the PATH and there is no body at all, so there is
@@ -793,18 +809,162 @@ export function buildMissionCancelGoalPath(
   if (!isPositiveIntLike(missionId)) {
     return { ok: false, error: `mission id must be a positive integer (got ${JSON.stringify(missionId)}).` }
   }
-  if (!isPositiveIntLike(goalId)) {
-    return {
-      ok: false,
-      error:
-        `goal_id must be a positive integer, the id shown on the mission card ` +
-        `(got ${JSON.stringify(goalId)}).`,
-    }
-  }
+  if (!isPositiveIntLike(goalId)) return { ok: false, error: goalIdSentence(goalId) }
   return {
     ok: true,
     path: `integrations/assistants/${assistantId}/missions/${missionId}/goals/${goalId}`,
   }
+}
+
+/**
+ * The working mark (BGOS #3575, board row 9d7880bf): the agent says it is
+ * working on a goal now, or no longer is, and the card animates every goal so
+ * marked. The backend stamps workingSince and reads a mark not sent again
+ * within this many minutes as not working, so a worker that stops leaves no
+ * goal spinning. The tools say it in these words.
+ */
+export const MISSION_GOAL_WORKING_REFRESH_MINUTES = 30
+
+/**
+ * The mission writes that take NO pending self-write stamp (server.ts). A
+ * mark only ever emits mission_updated, which is never narrated and never
+ * spends a pending stamp (lib/mission-events.ts MISSION_SELF_WRITE_FRAMES), so
+ * a pending stamp taken for it would linger until the owner's next Pause or
+ * Resume and swallow it: the agent would never be told (found in review). The
+ * landed stamp still answers for the mark's own echo.
+ */
+export const MISSION_MARK_TOOLS: readonly string[] = Object.freeze(['set_goal_working', 'set_goal_waiting'])
+
+/** The waiting state's limits, as the backend's parseMissionGoalWaiting judges them. */
+export const MISSION_WAITING_WHO_MAX = 80
+export const MISSION_WAITING_WHY_MAX = 200
+
+/** One goal's PATCH .../goals/:goalId/<mark>, the pairing family like the add and the cancel. */
+function buildMissionGoalMarkPath(
+  assistantId: unknown,
+  missionId: unknown,
+  goalId: unknown,
+  mark: 'working' | 'waiting',
+): MissionPathResult {
+  const built = buildMissionCancelGoalPath(assistantId, missionId, goalId)
+  if (!built.ok) return built
+  return { ok: true, path: `${built.path}/${mark}` }
+}
+
+/** set_goal_working's write for ONE goal: PATCH .../goals/:goalId/working. */
+export function buildMissionGoalWorkingPath(assistantId: unknown, missionId: unknown, goalId: unknown): MissionPathResult {
+  return buildMissionGoalMarkPath(assistantId, missionId, goalId, 'working')
+}
+
+/** set_goal_waiting's write: PATCH .../goals/:goalId/waiting. */
+export function buildMissionGoalWaitingPath(assistantId: unknown, missionId: unknown, goalId: unknown): MissionPathResult {
+  return buildMissionGoalMarkPath(assistantId, missionId, goalId, 'waiting')
+}
+
+export interface MissionGoalWorkingInput {
+  /** Distinct goal ids in the order the agent gave them: one request each. */
+  goalIds: number[]
+  working: boolean
+}
+
+/**
+ * set_goal_working's arguments, judged WHOLE before any request: a bad id
+ * anywhere in the list refuses the call, so a half applied list never happens
+ * because of a typo. A repeated id is one goal and one request. The backend
+ * takes one goal per request, so the tool loops; the cap is a mission's own
+ * goal cap, since there are never more goals to mark than that.
+ */
+export function buildMissionGoalWorkingInput(input: {
+  goal_ids?: unknown
+  working?: unknown
+}): MissionBuildResult<MissionGoalWorkingInput> {
+  const { goal_ids, working } = input
+  if (!Array.isArray(goal_ids) || goal_ids.length < 1 || goal_ids.length > MISSION_MAX_GOALS) {
+    return {
+      ok: false,
+      error:
+        `goal_ids must list 1 to ${MISSION_MAX_GOALS} goal ids, the ids shown on the mission card ` +
+        `(got ${JSON.stringify(goal_ids)}).`,
+    }
+  }
+  const goalIds: number[] = []
+  for (let i = 0; i < goal_ids.length; i++) {
+    const id = goal_ids[i]
+    if (typeof id !== 'number' || !Number.isInteger(id) || id < 1) {
+      return {
+        ok: false,
+        error:
+          `goal_ids[${i}] must be a positive integer, the id shown on the mission card ` +
+          `(got ${JSON.stringify(id)}). Nothing was marked.`,
+      }
+    }
+    if (!goalIds.includes(id)) goalIds.push(id)
+  }
+  if (typeof working !== 'boolean') {
+    return {
+      ok: false,
+      error:
+        `working must be true or false: true marks the goals as being worked on now, false ` +
+        `clears the mark (got ${JSON.stringify(working)}).`,
+    }
+  }
+  return { ok: true, body: { goalIds, working } }
+}
+
+export interface MissionGoalWaitingBody {
+  waiting: { on: 'owner' | 'agent'; who: string; why: string } | null
+}
+
+// The backend refuses control characters and the line and paragraph
+// separators in `who` (CONTROL in mission-goal-check.ts); judged here so the
+// agent gets a sentence, not a 400.
+const CONTROL_CHARS = /[\u0000-\u001f\u007f\u2028\u2029]/
+
+/**
+ * set_goal_waiting's body: { waiting: { on, who, why } } to say the goal waits
+ * on somebody, or { waiting: null } (clear: true) to say it no longer does.
+ * Judged as the backend's parseMissionGoalWaiting judges it, so a refusal
+ * reaches the agent as the sentence below before any request is made.
+ */
+export function buildMissionGoalWaitingBody(input: {
+  on?: unknown
+  who?: unknown
+  why?: unknown
+  clear?: unknown
+}): MissionBuildResult<MissionGoalWaitingBody> {
+  const { on, who, why, clear } = input
+  if (clear !== undefined && clear !== false) {
+    if (clear !== true) {
+      return { ok: false, error: `clear must be true to clear the waiting mark (got ${JSON.stringify(clear)}).` }
+    }
+    if (on !== undefined || who !== undefined || why !== undefined) {
+      return {
+        ok: false,
+        error: 'clear: true takes no on, who or why: send either clear: true, or on, who and why.',
+      }
+    }
+    return { ok: true, body: { waiting: null } }
+  }
+  if (on !== 'owner' && on !== 'agent') {
+    return {
+      ok: false,
+      error:
+        `on must be "owner" or "agent": who the goal waits on, your owner or another agent ` +
+        `(got ${JSON.stringify(on)}). To clear the mark, send clear: true.`,
+    }
+  }
+  const whoText = typeof who === 'string' ? who.trim() : ''
+  if (!whoText) return { ok: false, error: 'who must name them: your owner\'s name or the other agent\'s.' }
+  if (whoText.length > MISSION_WAITING_WHO_MAX) {
+    return { ok: false, error: `who is too long (${whoText.length} chars, max ${MISSION_WAITING_WHO_MAX}).` }
+  }
+  if (CONTROL_CHARS.test(whoText)) return { ok: false, error: 'who must be one line, a name and nothing else.' }
+  const whyText = typeof why === 'string' ? why.trim() : ''
+  if (!whyText) return { ok: false, error: 'why must say what they owe the goal, e.g. "needs to send the API key".' }
+  if (whyText.length > MISSION_WAITING_WHY_MAX) {
+    return { ok: false, error: `why is too long (${whyText.length} chars, max ${MISSION_WAITING_WHY_MAX}).` }
+  }
+  return { ok: true, body: { waiting: { on, who: whoText, why: whyText } } }
 }
 
 /** The goal lane's check write. */

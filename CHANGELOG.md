@@ -2,6 +2,18 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.83.0 (2026-10-31)
+
+**An agent can mark every mission goal it is working on, so the card animates them all at once (board row 9d7880bf, KC: "it is a must").** BGOS #3575 (5.26.0) shipped the working mark in the app and the backend; until now the plugin had no tool for it, so the card only ever animated the first unticked goal.
+
+- **`set_goal_working { goal_ids, working, mission_id?, chat_id? }`** sends `PATCH integrations/assistants/:id/missions/:missionId/goals/:goalId/working` with `{ working }`, one request per goal, in the order given, through the same `bgosPatch` and caller headers as the other mission tools. Every id and the flag are judged before anything is read or written, so a typo never leaves half the list marked; a repeated id is one request. A goal the server refuses (a ticked goal, a paused mission) is named with the server's own words, the other goals are still sent, and the result is an error.
+- **The refresh rule is in the tool's description, its result and the instructions:** the mark lapses after 30 minutes, so the agent calls again within 30 minutes for every goal it is still on, and sends `working: false` when it stops. A mark is not progress and never ticks a goal.
+- **`set_goal_waiting { goal_id, on: "owner" | "agent", who, why, clear?, mission_id?, chat_id? }`** covers the sibling route `.../goals/:goalId/waiting`, which also had no tool. It sends `{ waiting: { on, who, why } }`, or `{ waiting: null }` with `clear: true`, judged as the backend's `parseMissionGoalWaiting` judges it (who up to 80 characters on one line, why up to 200).
+- **Both are mission tools in every way the others are:** turn aware at admission, in the helper guard's `PRIVATE_TOOL_MATCHER` (all three installs), and own tools for the hook rows. Each landed write is stamped as the agent's own.
+- **They take NO pending self write stamp, unlike every other mission write (found in review).** A mark only ever emits `mission_updated`, which is never narrated and never spends a pending stamp, so one taken here would linger and the owner's next Pause or Resume (which carry no `cleared_by`) would read as the agent's own write and never reach it. `MISSION_MARK_TOOLS` in `lib/missions.ts` names the exemption, and `test/mission-ws-wiring.test.ts` holds both halves.
+- **Declares `mission_goal_working`** on every host, so the served canon now tells this agent BGOS's working mark paragraph. The MCP instructions (Missions, item 7) and the bundled fallback canon name both tools.
+- Tests: `test/goal-marks.test.ts` (red first, 22 cases: the paths, the input judges, one PATCH per goal id with its body and headers, refusals before any request, the backend's refusal surfaced, the owner's Pause and Resume still heard after a mark, the declarations, the guard, the canon text and the declared token), and the six-tool lists in `test/mission-private.test.ts` and `test/turn-aware-tools.test.ts` now run the two new tools through every private turn case.
+
 ## 0.81.0 (2026-10-31)
 
 - A deleted agent's computer cleans up after it: once the server confirms the agent is gone, the computer stops it, removes its auto start and archives its folder (never deletes a file). Other agents on the machine are untouched, and a replayed notice does nothing new.
