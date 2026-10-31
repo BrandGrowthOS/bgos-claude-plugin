@@ -4554,7 +4554,7 @@
       "id": "executor-held-stops",
       "rule": "a target held bad here stops before anything moves",
       "file": "lib/update-executor.mjs",
-      "find": "      if (!ctx.rolledBack && TAKES_TARGET_STEP_KINDS.includes(step.kind) && (await ctx.deps.heldBad?.(ctx.targetVersion)) === true) {\n",
+      "find": "      if (held !== null) {\n",
       "replace": "      if (false) {\n",
       "tests": [
         "test/update-executor.test.ts"
@@ -4562,10 +4562,10 @@
     },
     {
       "id": "executor-held-after-rollback",
-      "rule": "a rollback still restarts agents, onto the old build",
+      "rule": "after a rollback the failure that caused it stays the cause",
       "file": "lib/update-executor.mjs",
-      "find": "      if (!ctx.rolledBack && TAKES_TARGET_STEP_KINDS.includes(step.kind) && (await ctx.deps.heldBad?.(ctx.targetVersion)) === true) {\n",
-      "replace": "      if (TAKES_TARGET_STEP_KINDS.includes(step.kind) && (await ctx.deps.heldBad?.(ctx.targetVersion)) === true) {\n",
+      "find": "        noteFailure(ctx, step, 'version_held_bad')\n        ctx.aborted = true\n",
+      "replace": "        abort(ctx, step, 'version_held_bad')\n",
       "tests": [
         "test/update-executor.test.ts"
       ]
@@ -4574,8 +4574,8 @@
       "id": "executor-held-restart",
       "rule": "a plan that only restarts agents stops too",
       "file": "lib/update-executor.mjs",
-      "find": "const TAKES_TARGET_STEP_KINDS = Object.freeze(['install_plugin', 'update_plugin', 'reinstall_plugin', 'git_fast_forward', 'restart_agent'])\n",
-      "replace": "const TAKES_TARGET_STEP_KINDS = Object.freeze(['install_plugin', 'update_plugin', 'reinstall_plugin', 'git_fast_forward'])\n",
+      "find": "const TAKES_BUILD_STEP_KINDS = Object.freeze(['install_plugin', 'update_plugin', 'reinstall_plugin', 'git_fast_forward', 'restart_agent'])\n",
+      "replace": "const TAKES_BUILD_STEP_KINDS = Object.freeze(['install_plugin', 'update_plugin', 'reinstall_plugin', 'git_fast_forward'])\n",
       "tests": [
         "test/update-executor.test.ts"
       ]
@@ -4584,8 +4584,8 @@
       "id": "executor-held-update",
       "rule": "an update stops",
       "file": "lib/update-executor.mjs",
-      "find": "const TAKES_TARGET_STEP_KINDS = Object.freeze(['install_plugin', 'update_plugin', 'reinstall_plugin', 'git_fast_forward', 'restart_agent'])\n",
-      "replace": "const TAKES_TARGET_STEP_KINDS = Object.freeze(['install_plugin', 'reinstall_plugin', 'git_fast_forward', 'restart_agent'])\n",
+      "find": "const TAKES_BUILD_STEP_KINDS = Object.freeze(['install_plugin', 'update_plugin', 'reinstall_plugin', 'git_fast_forward', 'restart_agent'])\n",
+      "replace": "const TAKES_BUILD_STEP_KINDS = Object.freeze(['install_plugin', 'reinstall_plugin', 'git_fast_forward', 'restart_agent'])\n",
       "tests": [
         "test/update-executor.test.ts"
       ]
@@ -4711,6 +4711,142 @@
       "tests": [
         "test/self-update.published-release.test.ts"
       ]
+    },
+    {
+      "id": "executor-held-install",
+      "rule": "an install stops",
+      "file": "lib/update-executor.mjs",
+      "find": "const TAKES_BUILD_STEP_KINDS = Object.freeze(['install_plugin', 'update_plugin', 'reinstall_plugin', 'git_fast_forward', 'restart_agent'])\n",
+      "replace": "const TAKES_BUILD_STEP_KINDS = Object.freeze(['update_plugin', 'reinstall_plugin', 'git_fast_forward', 'restart_agent'])\n",
+      "tests": [
+        "test/update-executor.test.ts"
+      ]
+    },
+    {
+      "id": "executor-held-reinstall",
+      "rule": "a reinstall stops",
+      "file": "lib/update-executor.mjs",
+      "find": "const TAKES_BUILD_STEP_KINDS = Object.freeze(['install_plugin', 'update_plugin', 'reinstall_plugin', 'git_fast_forward', 'restart_agent'])\n",
+      "replace": "const TAKES_BUILD_STEP_KINDS = Object.freeze(['install_plugin', 'update_plugin', 'git_fast_forward', 'restart_agent'])\n",
+      "tests": [
+        "test/update-executor.test.ts"
+      ]
+    },
+    {
+      "id": "executor-held-ff",
+      "rule": "a fast forward stops",
+      "file": "lib/update-executor.mjs",
+      "find": "const TAKES_BUILD_STEP_KINDS = Object.freeze(['install_plugin', 'update_plugin', 'reinstall_plugin', 'git_fast_forward', 'restart_agent'])\n",
+      "replace": "const TAKES_BUILD_STEP_KINDS = Object.freeze(['install_plugin', 'update_plugin', 'reinstall_plugin', 'restart_agent'])\n",
+      "tests": [
+        "test/update-executor.test.ts"
+      ]
+    },
+    {
+      "id": "executor-restart-landing",
+      "rule": "a restart goes by what is installed",
+      "file": "lib/update-executor.mjs",
+      "find": "  const version = restart ? ((await installedNow(ctx)) ?? ctx.targetVersion) : ctx.targetVersion\n",
+      "replace": "  const version = ctx.targetVersion\n",
+      "tests": [
+        "test/update-executor.test.ts"
+      ]
+    },
+    {
+      "id": "executor-person-restart",
+      "rule": "a restart a person asked for stays open",
+      "file": "lib/update-executor.mjs",
+      "find": "  if (restart && ctx.plan?.intent === 'restart_only') return null\n",
+      "replace": "",
+      "tests": [
+        "test/update-executor.test.ts"
+      ]
+    },
+    {
+      "id": "executor-no-marks",
+      "rule": "with no reading of the marks, nothing extra is read",
+      "file": "lib/update-executor.mjs",
+      "find": "  if (typeof ctx.deps.heldBad !== 'function' || !TAKES_BUILD_STEP_KINDS.includes(step.kind)) return null\n",
+      "replace": "  if (typeof ctx.deps.heldBad !== 'function' && !TAKES_BUILD_STEP_KINDS.includes(step.kind)) return null\n",
+      "tests": [
+        "test/update-executor.test.ts"
+      ]
+    },
+    {
+      "id": "planner-intent",
+      "rule": "the plan says what was asked",
+      "file": "lib/update-planner.mjs",
+      "find": "    verdict: steps.length > 0 ? 'plan' : 'nothing_to_do',\n    intent,\n",
+      "replace": "    verdict: steps.length > 0 ? 'plan' : 'nothing_to_do',\n",
+      "tests": [
+        "test/update-executor.test.ts"
+      ]
+    },
+    {
+      "id": "clone-marked-winner",
+      "rule": "the winner reads the mark after its wait",
+      "file": "lib/self-update.ts",
+      "find": "      if (this.markedWhileWaiting(inspection.latestVersion)) return 'skipped-held'\n      const status = await git(",
+      "replace": "      const status = await git(",
+      "tests": [
+        "test/self-update.published-release.test.ts"
+      ],
+      "bun": true
+    },
+    {
+      "id": "clone-marked-loser",
+      "rule": "the loser reads the mark after its wait",
+      "file": "lib/self-update.ts",
+      "find": "        if (this.markedWhileWaiting(inspection.latestVersion)) return 'skipped-held'\n        const installedCommit",
+      "replace": "        const installedCommit",
+      "tests": [
+        "test/self-update.test.ts"
+      ],
+      "bun": true
+    },
+    {
+      "id": "clone-marked-intake",
+      "rule": "intake comes back",
+      "file": "lib/self-update.ts",
+      "find": "    this.opts.log(`Auto-update skipped: ${version} was held bad on this computer while this daemon waited.`)\n    this.opts.setDrainMode(false)\n",
+      "replace": "    this.opts.log(`Auto-update skipped: ${version} was held bad on this computer while this daemon waited.`)\n",
+      "tests": [
+        "test/self-update.published-release.test.ts"
+      ],
+      "bun": true
+    },
+    {
+      "id": "clone-marked-answer",
+      "rule": "a click stopped by a late mark says so",
+      "file": "lib/self-update.ts",
+      "find": "      if (applied === 'skipped-held') return { kind: 'no-update', latestVersion: inspection.latestVersion, reason: 'version_held_bad' }\n",
+      "replace": "",
+      "tests": [
+        "test/self-update.published-release.test.ts"
+      ],
+      "bun": true
+    },
+    {
+      "id": "clone-pending-held",
+      "rule": "a pending version held bad is not handed to the ladder",
+      "file": "lib/self-update.ts",
+      "find": "        if (pending && this.opts.heldBad?.(pending)) return { kind: 'no-update', latestVersion: pending, reason: 'version_held_bad' }\n",
+      "replace": "",
+      "tests": [
+        "test/self-update.test.ts"
+      ],
+      "bun": true
+    },
+    {
+      "id": "rpc-held-reason",
+      "rule": "a clone click answers version_held_bad",
+      "file": "lib/update-rpc.ts",
+      "find": "outcome.reason === 'version_held_bad' ? 'version_held_bad' : 'no_update_available'",
+      "replace": "'no_update_available'",
+      "tests": [
+        "test/update-rpc.test.ts"
+      ],
+      "bun": true
     }
   ]
 }
