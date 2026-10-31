@@ -2208,9 +2208,10 @@ test('a clock set back proves nothing either, and takes nothing away', async () 
   const disk = memDisk()
   const canary = await canaryProved(disk)
   await lives(canary, 6 * MIN)
-  disk.clock.now -= 3 * HOUR
+  disk.clock.now -= 2 * MIN
   deliver(canary)
   await canary.c.tick()
+  assert.equal(aliveAt(disk), new Date(disk.clock.now).toISOString(), 'still live, and it stamped')
   assert.equal(proved(disk), 6 * MIN)
 })
 
