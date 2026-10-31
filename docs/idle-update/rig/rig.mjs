@@ -679,6 +679,7 @@ async function scenarioWake() {
   say('held; watching past the quiet window and the largest jitter')
   await sleep((20 * MIN) / scale + MIN)
   const whileHeld = sessionLaunches(a).length
+  const scheduleReads = jsonLines(join(dir, 'stub-requests.jsonl')).filter((r) => r.path === 'scheduled-tasks/agent' && r.assistantId === a.id).length
   step(a, { op: 'prompt', text: 'rig: a turn that ends on an interval /loop only' })
   await sleep(SEC)
   step(a, { op: 'stop', sessionCrons: [{ id: 'rig-interval', schedule: '*/10 * * * *', recurring: true, prompt: '/loop 10m rig' }] })
@@ -693,7 +694,6 @@ async function scenarioWake() {
   results.agents[a.id] = s
   const fired = seen().find((l) => l.content?.includes('scheduled wake: rig wake'))
   check('held: no restart while the Stop showed a pending wakeup, through the quiet window and the largest jitter', whileHeld === 1, whileHeld)
-  const scheduleReads = jsonLines(join(dir, 'stub-requests.jsonl')).filter((r) => r.path === 'scheduled-tasks/agent' && r.assistantId === a.id).length
   check('the old daemon read the wake, 6 h out, before it restarted', scheduleReads > 0, scheduleReads)
   check('one restart, onto the target, once only an interval /loop was left', s.launches.length === 2 && s.launches[1].version === TARGET, s.launches)
   check('context kept: the second launch resumed the same session', s.launches[1]?.mode === 'resume' && s.launches[1]?.sessionId === s.launches[0]?.sessionId, s.launches)
