@@ -42,6 +42,7 @@ import { SessionTranscriptBinder } from '../lib/session-binding.ts'
 import { createTurnChatTracker } from '../lib/turn-chat.ts'
 import { daemonFloorFolders, floorKey, markFloorAttached } from '../lib/floor-state.mjs'
 import * as privateTurn from '../lib/private-turn.mjs'
+import { fileClockPast } from './helpers/file-clock.ts'
 import {
   PRIVATE_TURN_REFUSAL,
   TURN_AWARE_REFUSAL,
@@ -733,8 +734,12 @@ function cli(t: any) {
       recordPrivateBoundary(payload, env)
       return () => tracker.begin({ prompt, sessionId: session, promptId: payload.prompt_id })
     },
-    /** The CLI's Stop (or SessionEnd) hook: the marker closes. Its line is end(), when the test says. */
-    stopHook(session = 's', event = 'Stop') { recordPrivateBoundary({ hook_event_name: event, session_id: session, cwd }, env) },
+    /** The CLI's Stop (or SessionEnd) hook: the marker closes, written after everything before it on the file clock
+     *  too (test/helpers/file-clock.ts). Its line is end(), when the test says. */
+    stopHook(session = 's', event = 'Stop') {
+      fileClockPast(Date.now())
+      recordPrivateBoundary({ hook_event_name: event, session_id: session, cwd }, env)
+    },
     end() { tracker.end() },
     gated() { try { return requirePrivateTurn(tracker, markerPaths, OWNER).actingUserId } catch { return 'refused' } },
     turnAware() { try { return turnAwarePrivateTurn({ tracker, markerPaths, ownerUserId: OWNER }).actingUserId } catch { return 'refused' } },

@@ -20,8 +20,13 @@ import { spawnSync } from 'node:child_process'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { useRealTmpdir } from './run-tests-env.mjs'
+
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const testDir = join(repoRoot, 'test')
+
+// Every family gets the REAL temp folder: on macOS $TMPDIR is a link, which the browser profile code refuses.
+useRealTmpdir(process.env)
 
 const files = readdirSync(testDir)
   .filter((name) => name.endsWith('.test.ts'))

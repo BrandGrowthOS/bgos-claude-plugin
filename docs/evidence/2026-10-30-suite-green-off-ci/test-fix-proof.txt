@@ -1,0 +1,59 @@
+# Red first and mutation proof for the four test-only fixes
+
+Kill rule: a mutant counts as killed only when the same check on the unmutated tip fails 0 times over the same
+number of runs. Timing checks are counted over many runs because the defects they fix are timing.
+
+## ffb2b3c, the runner's real temp folder (test/run-tests-tmpdir.test.ts)
+red, the tree before the fix (no scripts/run-tests-env.mjs, no call): ℹ pass 0 ℹ fail 3 
+tip unmutated: ℹ pass 3 ℹ fail 0 
+=== R1  scripts/run-tests-env.mjs
+-  if (platform === 'win32') return
++  if (true) return
+   parses
+   ℹ pass 2 ℹ fail 1 
+=== R2  scripts/run-tests.mjs
+-  useRealTmpdir(process.env)
++  (the call removed)
+   parses
+   ℹ pass 2 ℹ fail 1 
+
+## 59ea0a8 and 212aa54, the file clock (clean Debian 12 arm64 VM, node 24, ext4 /tmp; failed runs of 10)
+## red first, at each fix's own commit (failed runs of 10)
+86fa955 test/private-turn-late-line.test.ts: 10
+59ea0a8 test/private-turn-late-line.test.ts: 0
+ffb2b3c test/private-turn-owner-authority.test.ts: 6
+ffb2b3c test/private-turn-owner-tap.test.ts: 0
+212aa54 test/private-turn-owner-authority.test.ts: 0
+212aa54 test/private-turn-owner-tap.test.ts: 0
+## the unmutated tip (failed runs of 10)
+tip test/private-turn-late-line.test.ts: 0
+tip test/private-turn-owner-authority.test.ts: 0
+tip test/private-turn-owner-tap.test.ts: 0
+## mutants of the tip
+=== F1  test/helpers/file-clock.ts
+-  if (statSync(probe).mtimeMs > after) return
++  return
+   parses
+   test/private-turn-late-line.test.ts: 10 of 10 runs failed
+   test/private-turn-owner-authority.test.ts: 7 of 10 runs failed
+=== F2  test/helpers/private-turn-host.ts
+-  fileClockPast(at)
++  void at
+   parses
+   test/private-turn-owner-authority.test.ts: 6 of 10 runs failed
+   test/private-turn-owner-tap.test.ts: 0 of 10 runs failed
+=== F3  test/private-turn-late-line.test.ts
+-  fileClockPast(Date.now())
++  void Date.now()
+   parses
+   test/private-turn-late-line.test.ts: 10 of 10 runs failed
+
+## 5ae786e, the fake protocol timeout (macOS, 16 parallel runs of the file)
+212aa54 (parent, timeout 30 ms): 4
+5ae786e (the fix, 1000 ms): 0
+tip 662f4a8 unmutated: 0
+=== T1  test/browser-profile-runtime.test.ts
+-  ledger = new ProfileTargetLedger(root, { timeoutMs: 1000, ...options })
++  ledger = new ProfileTargetLedger(root, { timeoutMs: 30, ...options })
+   parses
+   3 of 16 parallel runs failed
