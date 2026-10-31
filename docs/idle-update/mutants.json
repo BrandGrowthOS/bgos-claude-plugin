@@ -3964,7 +3964,7 @@
       "id": "install-back-newer-clears",
       "rule": "a newer build takes the report and the owed try with it",
       "file": "lib/idle-update.mjs",
-      "find": "      if (staged !== null && staged !== installBack?.target) installBack = null\n",
+      "find": "      if (staged !== null && staged !== installBack?.target && (!installBack?.owed || isNewerVersion(staged, installBack.target))) installBack = null\n",
       "replace": "",
       "tests": [
         "test/idle-update.controller.test.ts"
@@ -4104,8 +4104,8 @@
       "id": "host-stepin-folder",
       "rule": "an agent whose folder went does not fail on an install already off the marked build",
       "file": "lib/idle-update-host.mjs",
-      "find": "  if (moved) {\n    if (typeof from !== 'string'",
-      "replace": "  if (true) {\n    if (typeof from !== 'string'",
+      "find": "  if (moved && !folderHolds(fromRoot, from, fs)) {\n",
+      "replace": "  if (!folderHolds(fromRoot, from, fs)) {\n",
       "tests": [
         "test/idle-update.host.test.ts"
       ]
@@ -4184,7 +4184,7 @@
       "id": "install-back-raise-quiet",
       "rule": "a raise that fails reports nothing: the install is on a good build",
       "file": "lib/idle-update.mjs",
-      "find": "      if (owed !== null) installBack = { target: marked, owed: true,",
+      "find": "      if (owed !== null || reason === 'auto_update_still_on') installBack = { target: marked, owed: true,",
       "replace": "      installBack = { target: marked, owed: true,",
       "tests": [
         "test/idle-update.controller.test.ts"
@@ -4388,6 +4388,176 @@
       "replace": "        const holdPath = pathJoin(IDLE_UPDATE_MACHINE_DIR, enrolmentHoldFileName(null))\n",
       "tests": [
         "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "raise-still-on-owed",
+      "rule": "a raise that stopped at the switch-off owes it",
+      "file": "lib/idle-update.mjs",
+      "find": "      if (owed !== null || reason === 'auto_update_still_on') installBack =",
+      "replace": "      if (owed !== null) installBack =",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "raise-failed-agent",
+      "rule": "an agent that failed on its own build raises nothing",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (record?.state === 'failed' && record.target === deps.runningVersion) return null\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "install-back-owed-outlives",
+      "rule": "a try still owed outlives a raise below the mark",
+      "file": "lib/idle-update.mjs",
+      "find": "      if (staged !== null && staged !== installBack?.target && (!installBack?.owed || isNewerVersion(staged, installBack.target))) installBack = null\n",
+      "replace": "      if (staged !== null && staged !== installBack?.target) installBack = null\n",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "install-back-owed-newer",
+      "rule": "a try still owed ends with a build newer than the mark",
+      "file": "lib/idle-update.mjs",
+      "find": "      if (staged !== null && staged !== installBack?.target && (!installBack?.owed || isNewerVersion(staged, installBack.target))) installBack = null\n",
+      "replace": "      if (staged !== null && staged !== installBack?.target && !installBack?.owed) installBack = null\n",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "publish-tick-staged",
+      "rule": "the wait reports the build of this tick's facts",
+      "file": "lib/idle-update.mjs",
+      "find": "      publish(first.reason, staged)\n",
+      "replace": "      publish(first.reason)\n",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "market-held-target",
+      "rule": "a click never installs a version held bad here",
+      "file": "lib/marketplace-update.mjs",
+      "find": "  if (heldBad(targetVersion)) return { kind: 'blocked', reason: 'version_held_bad' }\n",
+      "replace": "",
+      "tests": [
+        "test/marketplace-update.test.ts"
+      ]
+    },
+    {
+      "id": "market-held-pending",
+      "rule": "a click never restarts onto a held version already installed",
+      "file": "lib/marketplace-update.mjs",
+      "find": "    if (heldBad(pending)) return { kind: 'blocked', reason: 'version_held_bad' }\n",
+      "replace": "",
+      "tests": [
+        "test/marketplace-update.test.ts"
+      ]
+    },
+    {
+      "id": "wiring-click-held",
+      "rule": "the click reads the mark",
+      "file": "server.ts",
+      "find": "      state,\n      heldBad: idleUpdateHeldBad,\n",
+      "replace": "      state,\n",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "wiring-rollback-held",
+      "rule": "the step in reads the marks",
+      "file": "server.ts",
+      "find": "      fs: nodeIdleUpdateFs(),\n      heldBad: idleUpdateHeldBad,\n",
+      "replace": "      fs: nodeIdleUpdateFs(),\n",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "host-beside-only-off-mark",
+      "rule": "only an agent stepping off the marked build looks beside it",
+      "file": "lib/idle-update-host.mjs",
+      "find": "    const good = record.ifStillOn === record.target ? newestGoodBuildBeside(fromRoot, record.target, { fs, heldBad }) : null\n",
+      "replace": "    const good = newestGoodBuildBeside(fromRoot, record.target, { fs, heldBad })\n",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-beside-below-mark",
+      "rule": "never a build above the mark",
+      "file": "lib/idle-update-host.mjs",
+      "find": "filter((v) => isNewerVersion(marked, v) && !heldBad(v) && folderHolds(joinDir(cache, v), v, fs))",
+      "replace": "filter((v) => !heldBad(v) && folderHolds(joinDir(cache, v), v, fs))",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-beside-not-marked",
+      "rule": "never a marked build",
+      "file": "lib/idle-update-host.mjs",
+      "find": "filter((v) => isNewerVersion(marked, v) && !heldBad(v) && folderHolds(joinDir(cache, v), v, fs))",
+      "replace": "filter((v) => isNewerVersion(marked, v) && folderHolds(joinDir(cache, v), v, fs))",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-beside-whole",
+      "rule": "never a folder that does not hold its build",
+      "file": "lib/idle-update-host.mjs",
+      "find": "filter((v) => isNewerVersion(marked, v) && !heldBad(v) && folderHolds(joinDir(cache, v), v, fs))",
+      "replace": "filter((v) => isNewerVersion(marked, v) && !heldBad(v))",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-beside-newest",
+      "rule": "the newest of them",
+      "file": "lib/idle-update-host.mjs",
+      "find": "  const version = good.sort(compareVersions).at(-1)\n",
+      "replace": "  const version = good.sort(compareVersions).at(0)\n",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-beside-marks-known",
+      "rule": "with no way to read the marks it chooses nothing",
+      "file": "lib/idle-update-host.mjs",
+      "find": "  if (typeof root !== 'string' || !root || !heldBad) return null\n",
+      "replace": "  if (typeof root !== 'string' || !root) return null\n",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-beside-root-known",
+      "rule": "with no root it chooses nothing",
+      "file": "lib/idle-update-host.mjs",
+      "find": "  if (typeof root !== 'string' || !root || !heldBad) return null\n",
+      "replace": "  if (!heldBad) return null\n",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "host-beside-own-first",
+      "rule": "its own build comes first",
+      "file": "lib/idle-update-host.mjs",
+      "find": "  if (moved && !folderHolds(fromRoot, from, fs)) {\n",
+      "replace": "  if (moved) {\n",
+      "tests": [
+        "test/idle-update.host.test.ts"
       ]
     }
   ]

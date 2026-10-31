@@ -3247,16 +3247,14 @@ test('a try still owed outlives a raise below the mark, and ends with a build ne
 })
 
 test('an agent that failed on its own build raises nothing: not marked is not proved', async () => {
-  const disk = memDisk()
-  const install = { version: '0.74.0' }
-  marksBad(disk)
-  disk.fs.writeAtomic(join(MACHINE, 'install-back.json'), JSON.stringify({ target: '0.81.0', by: '914', at: new Date(disk.clock.now).toISOString() }))
-  const recordPath = join('/home/a/.bgos-agent', '912', 'idle-update.json')
-  disk.fs.writeAtomic(recordPath, JSON.stringify({ state: 'failed', target: '0.80.0', from: '0.79.0', fromRoot: null, nonce: 'n', attempts: [] }))
-  const a = agent(disk, { running: '0.80.0', install })
+  const { disk, a } = await failedFollower({ wentBack: '0.79.0' })
+  assert.equal(await a.c.tick(), 'failed')
+  assert.equal(readJson(disk, a.record).state, 'failed')
+  marksBad(disk, '0.82.0')
+  disk.fs.writeAtomic(join(MACHINE, 'install-back.json'), JSON.stringify({ target: '0.82.0', by: '914', at: new Date(disk.clock.now).toISOString() }))
+  a.s.staged = '0.79.0'
   await a.c.tick()
   assert.deepEqual(a.rollbackInstalls, [])
-  assert.equal(install.version, '0.74.0')
 })
 
 test('the agent that loses the race reports the build, not null, for the one poll its facts are old', async () => {

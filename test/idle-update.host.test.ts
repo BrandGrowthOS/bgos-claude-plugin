@@ -603,6 +603,9 @@ test('stepping in with its own folder swept and nothing whole beside it: nothing
   assert.deepEqual(await stepWithSwept(w), { ok: false, reason: 'from_root_missing' })
   assert.deepEqual(w.fs.writes, [])
   assert.deepEqual(await stepWithSwept(rollbackWorld({ noFromRoot: true }), { record: { ...STILL_ON, fromRoot: null } }), { ok: false, reason: 'from_root_missing' })
+  const full = rollbackWorld({ noFromRoot: true })
+  for (const [p, text] of Object.entries(beside({ '0.80.3': '0.80.3' }))) full.fs.map.set(p, { text, mtimeMs: NOW })
+  assert.deepEqual(await stepWithSwept(full, { heldBad: undefined }), { ok: false, reason: 'from_root_missing' }, 'with no way to read the marks it chooses nothing')
 })
 
 test('its own build comes first: a newer whole build beside it is not taken while its own folder stands', async () => {

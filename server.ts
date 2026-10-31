@@ -14006,6 +14006,7 @@ const updateRpc = new UpdateRpcHandler({
     })
     return runMarketplaceUpdate({
       state,
+      heldBad: idleUpdateHeldBad,
       cli: (args, opts) => runClaudeCli(args, opts),
       home: homedir(),
       configDir: CLAUDE_CONFIG_DIR,
@@ -14116,6 +14117,7 @@ async function idleRollbackInstall(record: any): Promise<{ ok: boolean; reason?:
       marketplace,
       configDir: CLAUDE_CONFIG_DIR,
       fs: nodeIdleUpdateFs(),
+      heldBad: idleUpdateHeldBad,
       // Only ever a switch-off: the enrolment's own brakes gate every switch-on (the boot enrolment below).
       setAutoUpdate: () => ensureMarketplaceAutoUpdate({ configDir: CLAUDE_CONFIG_DIR, marketplace, enabled: false }),
       now: Date.now(),
