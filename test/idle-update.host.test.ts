@@ -578,6 +578,50 @@ test('stepping in: the result names the version the install reads after the writ
   assert.equal(writes, 1)
 })
 
+// An agent stepping in whose own folder Claude Code swept: the install must still leave the marked build.
+const CACHE = `${CONFIG}/plugins/cache/hoai/hoai`
+const beside = (versions: Record<string, string>) =>
+  Object.fromEntries(Object.entries(versions).map(([folder, version]) => [`${CACHE}/${folder}/.claude-plugin/plugin.json`, JSON.stringify({ name: 'hoai', version })]))
+const stepWithSwept = (w: ReturnType<typeof rollbackWorld>, over: Record<string, any> = {}) =>
+  need().rollbackMarketplaceInstall({ record: STILL_ON, installedPluginsPath: INSTALLED, holdPath: `${MACHINE}/enrolment-hold.json`, marketplace: 'hoai', configDir: CONFIG, fs: w.fs, setAutoUpdate: w.setAutoUpdate, now: NOW, heldBad: (v: string) => v === '0.80.5' || v === '0.81.0', ...over })
+
+test('stepping in with its own folder swept: the newest whole build beside it, below the mark and not marked, takes the install', async () => {
+  const w = rollbackWorld({ noFromRoot: true })
+  for (const [p, text] of Object.entries(beside({ '0.82.0': '0.82.0', '0.81.0': '0.81.0', '0.80.5': '0.80.5', '0.80.3': '0.80.3', '0.80.4': '0.70.0', '0.79.0': '0.79.0', junk: '0.80.3' }))) w.fs.map.set(p, { text, mtimeMs: NOW })
+  const result = await stepWithSwept(w)
+  assert.equal(result.ok, true, JSON.stringify(result))
+  assert.equal(result.on, '0.80.3')
+  assert.equal(result.moved, true)
+  const entry = JSON.parse(w.fs.readFile(INSTALLED)!).plugins['hoai@hoai'][0]
+  assert.deepEqual([entry.version, entry.installPath], ['0.80.3', `${CACHE}/0.80.3`])
+  assert.deepEqual(w.autoUpdate, [false])
+})
+
+test('stepping in with its own folder swept and nothing whole beside it: nothing written, and it says so', async () => {
+  const w = rollbackWorld({ noFromRoot: true })
+  for (const [p, text] of Object.entries(beside({ '0.81.0': '0.81.0', '0.80.5': '0.80.5' }))) w.fs.map.set(p, { text, mtimeMs: NOW })
+  assert.deepEqual(await stepWithSwept(w), { ok: false, reason: 'from_root_missing' })
+  assert.deepEqual(w.fs.writes, [])
+  assert.deepEqual(await stepWithSwept(rollbackWorld({ noFromRoot: true }), { record: { ...STILL_ON, fromRoot: null } }), { ok: false, reason: 'from_root_missing' })
+})
+
+test('its own build comes first: a newer whole build beside it is not taken while its own folder stands', async () => {
+  const w = rollbackWorld()
+  for (const [p, text] of Object.entries(beside({ '0.80.3': '0.80.3' }))) w.fs.map.set(p, { text, mtimeMs: NOW })
+  const result = await stepWithSwept(w)
+  assert.equal(result.on, '0.80.0')
+})
+
+test('only an agent stepping off the marked build looks beside it: never a failing agent, and never a raise, where the install is on a good build already', async () => {
+  const records = [RECORD, { ...RECORD, ifStillOn: '0.74.0' }]
+  for (const record of records) {
+    const w = rollbackWorld({ noFromRoot: true, installed: installedDoc('0.74.0', `${CACHE}/0.74.0`) })
+    for (const [p, text] of Object.entries(beside({ '0.80.3': '0.80.3' }))) w.fs.map.set(p, { text, mtimeMs: NOW })
+    assert.deepEqual(await stepWithSwept(w, { record }), { ok: false, reason: 'from_root_missing' }, JSON.stringify(record))
+    assert.deepEqual(w.fs.writes, [])
+  }
+})
+
 test('two config folders on one HOME each keep their own hold: a second switch-off leaves the first folder\'s to be taken back', async () => {
   const m = need()
   const folders = ['/Users/a/.claude-a', '/Users/a/.claude-b']

@@ -181,6 +181,22 @@ test('blocked plans map to blocked with the planner reason (or a generic token)'
   assert.deepEqual(bare, { kind: 'blocked', reason: 'blocked' })
 })
 
+test('a version held bad on this computer: a click or a push neither installs it nor restarts onto it', async () => {
+  let ran = 0
+  const modules = modulesWith({ planMachine: () => PLAN, executePlan: async () => (ran += 1, { ok: true, steps: [] }) })
+  const held = await runMarketplaceUpdate({ ...RUN_BASE, state: state(), modules, heldBad: (version: string) => version === '0.39.0' })
+  assert.deepEqual(held, { kind: 'blocked', reason: 'version_held_bad' })
+  assert.equal(ran, 0, 'nothing was touched')
+  const nothing = modulesWith({ planMachine: () => ({ verdict: 'nothing_to_do', targetVersion: null, steps: [] }) })
+  const installedAlready = state({ observation: { ...OBSERVATION, installed: { present: true, version: '0.39.0', installPath: '/x' } } })
+  const pending = await runMarketplaceUpdate({ ...RUN_BASE, state: installedAlready, modules: nothing, heldBad: (version: string) => version === '0.39.0' })
+  assert.deepEqual(pending, { kind: 'blocked', reason: 'version_held_bad' }, 'already installed, a restart is all that is left, and that is what it must not do')
+  const other = await runMarketplaceUpdate({ ...RUN_BASE, state: installedAlready, modules: nothing, heldBad: () => false })
+  assert.deepEqual(other, { kind: 'installed', targetVersion: '0.39.0' })
+  await runMarketplaceUpdate({ ...RUN_BASE, state: state(), modules, heldBad: (version: string) => version === '0.38.0' })
+  assert.equal(ran, 1, 'a build not held goes on as any update')
+})
+
 test('nothing_to_do maps to no-update with the latest version, unless a newer version is already installed', async () => {
   const modules = modulesWith({ planMachine: () => ({ verdict: 'nothing_to_do', targetVersion: null, steps: [] }) })
   const nothing = await runMarketplaceUpdate({ ...RUN_BASE, state: state(), modules })

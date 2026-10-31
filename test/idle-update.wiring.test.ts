@@ -231,6 +231,15 @@ test('the rollback: the marketplace through the host module and the clone throug
   assert.match(block(), /rollbackInstall: \(record: any\) => idleRollbackInstall\(record\),/)
 })
 
+test('a click or a push reads the same mark, and the step in is told what is marked', () => {
+  const at = server.indexOf('return runMarketplaceUpdate({')
+  assert.ok(at > 0)
+  assert.match(server.slice(at, at + 500), /heldBad: idleUpdateHeldBad,/)
+  const rollback = server.indexOf('const result = await rollbackMarketplaceInstall({')
+  assert.ok(rollback > 0)
+  assert.match(server.slice(rollback, rollback + 500), /heldBad: idleUpdateHeldBad,/)
+})
+
 test('the rollback and the boot enrolment read the same hold, one per config folder', () => {
   assert.equal(server.split('pathJoin(IDLE_UPDATE_MACHINE_DIR, enrolmentHoldFileName(CLAUDE_CONFIG_DIR))').length - 1, 2)
   assert.doesNotMatch(server, /ENROLMENT_HOLD_FILE_NAME/)

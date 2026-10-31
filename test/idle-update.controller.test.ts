@@ -251,7 +251,10 @@ function agent(
       out.badAtInstall.push(disk.fs.readFile(join(MACHINE, String(rec.target), 'bad')) !== null)
       if (s.installGate) await s.installGate
       if (s.rollbackThrows) throw s.rollbackThrows
-      if (s.installMoved) return { ok: true, moved: false }
+      if (s.installMoved) {
+        if (o.install) o.install.version = s.running
+        return { ok: true, moved: false }
+      }
       if (s.stagedStays && out.rollbackInstalls.length > 1) return { ok: true, moved: false }
       if (o.install) {
         if (rec.ifStillOn && o.install.version !== rec.ifStillOn) return { ok: true, moved: false }
@@ -3208,6 +3211,62 @@ test('each reason is logged once, over every try, moving or raising', async () =
   await raising.c.tick()
   assert.equal(raising.rollbackInstalls.length, 2)
   assert.equal(raising.logs.filter((l) => l.includes('could not raise')).length, 1)
+})
+
+test('a raise that landed but could not switch Claude Code\'s own update off owes that, and says so: its next start can reinstall the build', async () => {
+  const disk = memDisk()
+  const install = { version: '0.81.0' }
+  marksBad(disk)
+  await agent(disk, { id: 914, running: '0.74.0', install }).c.tick()
+  const a = agent(disk, { running: '0.80.0', install })
+  a.s.rollbackStillOn = true
+  await a.c.tick()
+  assert.equal(install.version, '0.80.0')
+  assert.equal(lastReport(a).code, 'idle_update_rollback_failed')
+  disk.clock.now += 6 * MIN
+  await a.c.tick()
+  assert.equal(a.rollbackInstalls.length, 2)
+  assert.deepEqual([a.rollbackInstalls[1].target, a.rollbackInstalls[1].ifStillOn], ['0.81.0', '0.81.0'])
+  assert.equal(a.reports.at(-1), null, 'done, and the report is over')
+})
+
+test('a try still owed outlives a raise below the mark, and ends with a build newer than the mark', async () => {
+  const disk = memDisk()
+  const install = { version: '0.81.0' }
+  marksBad(disk)
+  const a = agent(disk, { running: '0.79.0', install })
+  a.s.rollbackStillOn = true
+  await a.c.tick()
+  assert.equal(install.version, '0.79.0')
+  install.version = '0.80.0'
+  disk.clock.now += 6 * MIN
+  a.s.activity = [disk.clock.now]
+  await a.c.tick()
+  assert.equal(a.rollbackInstalls.length, 2, 'a raise can leave the switch-off unasked')
+  assert.equal(a.rollbackInstalls[1].target, '0.81.0')
+})
+
+test('an agent that failed on its own build raises nothing: not marked is not proved', async () => {
+  const disk = memDisk()
+  const install = { version: '0.74.0' }
+  marksBad(disk)
+  disk.fs.writeAtomic(join(MACHINE, 'install-back.json'), JSON.stringify({ target: '0.81.0', by: '914', at: new Date(disk.clock.now).toISOString() }))
+  const recordPath = join('/home/a/.bgos-agent', '912', 'idle-update.json')
+  disk.fs.writeAtomic(recordPath, JSON.stringify({ state: 'failed', target: '0.80.0', from: '0.79.0', fromRoot: null, nonce: 'n', attempts: [] }))
+  const a = agent(disk, { running: '0.80.0', install })
+  await a.c.tick()
+  assert.deepEqual(a.rollbackInstalls, [])
+  assert.equal(install.version, '0.74.0')
+})
+
+test('the agent that loses the race reports the build, not null, for the one poll its facts are old', async () => {
+  const disk = memDisk()
+  const install = { version: '0.81.0' }
+  marksBad(disk)
+  const a = agent(disk, { running: '0.80.0', install })
+  a.s.installMoved = true
+  await a.c.tick()
+  assert.equal(a.reports.some((r) => r?.message?.includes('null')), false, JSON.stringify(a.reports))
 })
 
 test('a raise that finds the install moved writes nothing and reports nothing', async () => {
