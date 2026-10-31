@@ -1020,7 +1020,7 @@ test('a daemon that holds the lock again after another boot settled the same att
       result = await old.c.tick()
     }
     assert.equal(result, 'rollback', `away ${away}, down ${down}`)
-    assert.ok(active >= 4 * MIN, 'the deadline counts the time this boot held the lock, not the passive minutes')
+    assert.ok(active >= 15 * MIN, 'the deadline counts the time this boot held the lock, not the passive minutes')
     assert.equal(old.rollbackInstalls.length, 1)
     const after = readJson(disk, old.record)
     assert.equal(after.pin, FRESH, 'the newer record, extended, never the old copy written over it')
@@ -1361,13 +1361,13 @@ test('a break in liveness restarts the 5 min hold', async () => {
   disk.clock.now += 10 * SEC
   live()
   assert.equal(await a.c.tick(), 'validating')
-  disk.clock.now += 30 * SEC
+  disk.clock.now += 5 * MIN + 30 * SEC
   a.s.deaf = true
   assert.equal(await a.c.tick(), 'validating')
   disk.clock.now += 40 * SEC
   a.s.deaf = false
   live()
-  assert.equal(await a.c.tick(), 'validating', 'seventy seconds since the first live reading, but live again only now')
+  assert.equal(await a.c.tick(), 'validating', 'past the hold since the first live reading, but live again only now')
   disk.clock.now += 5 * MIN + SEC
   live()
   assert.equal(await a.c.tick(), 'validated')
