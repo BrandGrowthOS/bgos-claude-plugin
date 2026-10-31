@@ -199,7 +199,7 @@ test('a version latched bad here is no pending restart for the heartbeat, a clic
   assert.match(block(), /stagedVersion: \(\) => daemonStagedVersion\(\),/)
   const staged = server.indexOf('function daemonStagedVersion(')
   assert.ok(staged >= 0)
-  assert.match(server.slice(staged, server.indexOf('\n}\n', staged)), /return daemonPendingRestartVersion\(undefined, \{ latched: false \}\)/)
+  assert.match(server.slice(staged, server.indexOf('\n}\n', staged)), /\?\? daemonPendingRestartVersion\(undefined, \{ latched: false \}\)/)
 })
 
 test('the readings come from the host module: the launcher claim, the unattended inputs, a person, the watcher, the schedule', () => {
@@ -229,6 +229,11 @@ test('the rollback: the marketplace through the host module and the clone throug
   assert.match(body, /rollbackCloneInstall\(\{ record, updater: selfUpdater, checkoutVersion: \(\) => readOwnVersion\(RUNNING_ROOT\) \}\)/)
   assert.doesNotMatch(body, /process\.exit|attemptRollback/)
   assert.match(block(), /rollbackInstall: \(record: any\) => idleRollbackInstall\(record\),/)
+})
+
+test('the idle update takes a good pending build past a held one, and reads the held one only with nothing else', () => {
+  const body = /function daemonStagedVersion\(\): string \| null \{([\s\S]*?)\n\}/.exec(server)?.[1] ?? ''
+  assert.match(body, /return daemonPendingRestartVersion\(\) \?\? daemonPendingRestartVersion\(undefined, \{ latched: false \}\)/)
 })
 
 test('a clone reads the same mark before it pulls', () => {
