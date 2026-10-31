@@ -407,9 +407,10 @@ test('canary: no canary yet means I would be canary 1', () => {
   assert.deepEqual(need().decideCanary({ files: canaryFiles(), now: NOW, me: ME }), { state: 'none', next: 1 })
 })
 
-test('canary: a validated version lets everyone go; a bad one holds everyone', () => {
+test('canary: a validated version the canary outlived lets everyone go; a bad one holds everyone', () => {
   const m = need()
-  assert.equal(m.decideCanary({ files: canaryFiles({ validated: true, canaries: [{ n: 1, assistantId: '913', at: NOW - MIN }] }), now: NOW, me: ME }).state, 'validated')
+  const proved = canaryFiles({ validated: true, validatedBy: '913', validatedAtMs: NOW - 2 * HOUR, aliveAtMs: NOW, canaries: [{ n: 1, assistantId: '913', at: NOW - 3 * HOUR }] })
+  assert.equal(m.decideCanary({ target: '0.81.0', files: proved, now: NOW, me: ME }).state, 'validated')
   assert.equal(m.decideCanary({ files: canaryFiles({ bad: true, validated: true }), now: NOW, me: ME }).state, 'bad')
 })
 

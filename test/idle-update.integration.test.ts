@@ -181,7 +181,7 @@ test('a gen-2 Mac agent, idle with a newer build staged: the ladder writes the m
   }
 })
 
-test('the new daemon validates on live evidence and frees the computer; the second agent waited for the canary and then follows, alone', async () => {
+test('the new daemon validates on live evidence and frees the computer; the second agent waits for the canary, then for the canary to last, and follows alone', async () => {
   const w = world(scratchHome())
   try {
     const first = agent(w, 912)
@@ -205,9 +205,15 @@ test('the new daemon validates on live evidence and frees the computer; the seco
     assert.equal(existsSync(join(w.machineDir, 'lease.json')), false, 'the lease is released')
     assert.ok(next.out.logs.some((l) => /restarted onto 0\.81\.0 from 0\.80\.0, resumed pinned session/.test(l)), next.out.logs.join('\n'))
 
-    // The spacing after a release, then the second agent goes, with no canary of its own.
+    // The spacing after a release, then its own wait, read off the canary's stamp on the real disk; then it goes, with no canary of its own.
+    const provedAt = w.clock.now
     assert.equal(await second.controller.tick(), 'spacing')
     w.clock.now += 2 * MIN + 1000
+    assert.equal(await second.controller.tick(), 'follower_wait', second.out.logs.join('\n'))
+    assert.equal(existsSync(second.marker), false)
+    w.clock.now = provedAt + m.followerWaitMs({ assistantId: '913', target: '0.81.0' })
+    next.facts.beaconAtMs = w.clock.now
+    await next.controller.tick()
     assert.equal(await second.controller.tick(), 'requested', second.out.logs.join('\n'))
     assert.ok(existsSync(second.marker))
     assert.equal(second.record().canaryN, null)
@@ -241,12 +247,13 @@ test('a follower fails on a build its canary proved: the real rollback points th
       writeFileSync(join(cache, version, '.claude-plugin', 'plugin.json'), JSON.stringify({ version }))
     }
     const installed = join(w.home, '.claude', 'plugins', 'installed_plugins.json')
-    writeFileSync(installed, JSON.stringify({ version: 2, plugins: { 'hoai@hoai': [{ scope: 'user', version: '0.81.0', installPath: join(cache, '0.81.0'), lastUpdated: new Date(T0).toISOString() }] } }))
+    writeFileSync(installed, JSON.stringify({ version: 2, plugins: { 'hoai@hoai': [{ scope: 'user', version: '0.81.0', installPath: join(cache, '0.81.0'), lastUpdated: new Date(T0).toISOString(), gitCommitSha: 'the-failed-build' }] } }))
     mkdirSync(join(w.machineDir, '0.81.0'), { recursive: true })
     writeFileSync(
       join(w.machineDir, '0.81.0', 'validated'),
       JSON.stringify({ assistantId: '913', at: new Date(T0 - HOUR).toISOString(), canary: 1, from: '0.80.0', fromRoot: join(cache, '0.80.0') }),
     )
+    writeFileSync(join(w.machineDir, '0.81.0', 'alive'), JSON.stringify({ assistantId: '913', at: new Date(T0).toISOString() }))
     const old = agent(w, 912, { running: '0.79.0', fromRoot: join(cache, '0.79.0') })
     assert.equal(await old.controller.tick(), 'requested', old.out.logs.join('\n'))
     assert.equal(old.record().canaryN, null)
@@ -276,6 +283,29 @@ test('a follower fails on a build its canary proved: the real rollback points th
     assert.ok(readFileSync(installed, 'utf8').includes(JSON.stringify(join(cache, '0.80.0')).slice(1, -1)))
     assert.ok(existsSync(join(w.machineDir, '0.81.0', 'bad')))
     assert.ok(existsSync(join(w.machineDir, 'went-back-912')))
+  } finally {
+    rmSync(w.home, { recursive: true, force: true })
+  }
+})
+
+test('a follower never heard from again: on the real disk its lease goes, silent-1 stays, and the next agent stays where it is', async () => {
+  const w = world(scratchHome())
+  try {
+    mkdirSync(join(w.machineDir, '0.81.0'), { recursive: true })
+    writeFileSync(join(w.machineDir, '0.81.0', 'validated'), JSON.stringify({ assistantId: '913', at: new Date(T0 - HOUR).toISOString(), canary: 1 }))
+    writeFileSync(join(w.machineDir, '0.81.0', 'alive'), JSON.stringify({ assistantId: '913', at: new Date(T0).toISOString() }))
+    const gone = agent(w, 912)
+    assert.equal(await gone.controller.tick(), 'requested', gone.out.logs.join('\n'))
+    const nonce = gone.record().nonce
+    w.clock.now += 25 * MIN + 1000
+    const next = agent(w, 914)
+    assert.equal(await next.controller.tick(), 'canary_unconfirmed', next.out.logs.join('\n'))
+    assert.equal(JSON.parse(readFileSync(join(w.machineDir, '0.81.0', 'silent-1'), 'utf8')).nonce, nonce)
+    assert.equal(existsSync(join(w.machineDir, 'lease.json')), false)
+    assert.equal(existsSync(next.marker), false)
+    assert.deepEqual(next.out.drains, [])
+    w.clock.now += 3 * MIN
+    assert.equal(await next.controller.tick(), 'silent_hold', next.out.logs.join('\n'))
   } finally {
     rmSync(w.home, { recursive: true, force: true })
   }

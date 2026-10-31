@@ -475,7 +475,7 @@ test('fifteen agents on one computer: one lease at a time, the canary first, the
 test('a lease released by another agent under 2 min ago keeps the spacing', async () => {
   const disk = memDisk()
   disk.fs.writeAtomic(join(MACHINE, 'released.json'), JSON.stringify({ assistantId: '913', at: new Date(T0 - 1 * MIN).toISOString() }))
-  disk.fs.writeAtomic(join(MACHINE, '0.81.0', 'validated'), JSON.stringify({ assistantId: '913', at: new Date(T0 - 1 * MIN).toISOString() }))
+  proven(disk)
   const a = agent(disk)
   assert.equal(await a.c.tick(), 'spacing')
   disk.clock.now += 2 * MIN
@@ -1705,6 +1705,7 @@ async function failedFollower(o: { running?: string; canaryFrom?: string; instal
   const from = o.canaryFrom ?? '0.80.0'
   if (!o.swept) disk.fs.writeAtomic(join(`/c/plugins/cache/hoai/hoai/${from}`, '.claude-plugin', 'plugin.json'), JSON.stringify({ version: from }))
   if (o.held) disk.fs.writeAtomic(join(MACHINE, o.held, 'bad'), JSON.stringify({ reason: 'canary_failed' }))
+  proven(disk)
   disk.fs.writeAtomic(join(MACHINE, '0.81.0', 'validated'), JSON.stringify({ assistantId: '913', at: new Date(T0 - HOUR).toISOString(), canary: 1, from, fromRoot: `/c/plugins/cache/hoai/hoai/${from}` }))
   if (o.wentBack) disk.fs.writeAtomic(join(MACHINE, 'went-back-912'), JSON.stringify({ target: o.wentBack }))
   const old = agent(disk, { running: o.running, installMethod: o.installMethod })
@@ -1764,7 +1765,7 @@ test('a way back onto a version held bad still goes back: it is the build this a
 /** Agent 912 on a version agent 913 proved here, on its first boot there. */
 async function followerArrived() {
   const disk = memDisk()
-  disk.fs.writeAtomic(join(MACHINE, '0.81.0', 'validated'), JSON.stringify({ assistantId: '913', at: new Date(T0 - HOUR).toISOString(), canary: 1 }))
+  proven(disk)
   const old = agent(disk)
   assert.equal(await old.c.tick(), 'requested')
   disk.clock.now += 40 * SEC
