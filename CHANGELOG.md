@@ -2,6 +2,10 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.81.0 (2026-10-31)
+
+- A deleted agent's computer cleans up after it: once the server confirms the agent is gone, the computer stops it, removes its auto start and archives its folder (never deletes a file). Other agents on the machine are untouched, and a replayed notice does nothing new.
+
 ## 0.80.2 (2026-10-29)
 
 **A reply to a side thread that HOAI did not forward is now reported as an error, never a silent "Sent" (board row 28fed1cd).** On 2026-10-27 the conversation between Data and Ares closed on timeout, and five of Data's later replies into that side thread were answered "Sent" and never reached Ares, who asked the same questions four times.
