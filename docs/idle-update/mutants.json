@@ -4564,7 +4564,7 @@
       "id": "executor-held-after-rollback",
       "rule": "after a rollback the failure that caused it stays the cause",
       "file": "lib/update-executor.mjs",
-      "find": "        noteFailure(ctx, step, 'version_held_bad')\n        ctx.aborted = true\n",
+      "find": "        if (ctx.rolledBack) ctx.aborted = true\n        else abort(ctx, step, 'version_held_bad')\n",
       "replace": "        abort(ctx, step, 'version_held_bad')\n",
       "tests": [
         "test/update-executor.test.ts"
@@ -4847,6 +4847,76 @@
         "test/update-rpc.test.ts"
       ],
       "bun": true
+    },
+    {
+      "id": "executor-held-names-itself",
+      "rule": "a mark that stops a run with no rollback names itself",
+      "file": "lib/update-executor.mjs",
+      "find": "        if (ctx.rolledBack) ctx.aborted = true\n        else abort(ctx, step, 'version_held_bad')\n",
+      "replace": "        noteFailure(ctx, step, 'version_held_bad')\n        ctx.aborted = true\n",
+      "tests": [
+        "test/update-executor.test.ts"
+      ]
+    },
+    {
+      "id": "executor-retry-held",
+      "rule": "a rollback's retry reads the mark",
+      "file": "lib/update-executor.mjs",
+      "find": "  const held = await heldAtStep(ctx, { kind: 'restart_agent' })\n  if (held !== null) {\n    await finish(ctx, retry, 'failed', 'version_held_bad', `held:${held}`)\n    return\n  }\n",
+      "replace": "",
+      "tests": [
+        "test/update-executor.test.ts"
+      ]
+    },
+    {
+      "id": "executor-installed-clone",
+      "rule": "a clone restart goes by the checkout",
+      "file": "lib/update-executor.mjs",
+      "find": "  if (ctx.installMethod === 'clone') return (await observeInstalledVersion(ctx)).version\n",
+      "replace": "",
+      "tests": [
+        "test/update-executor.test.ts"
+      ]
+    },
+    {
+      "id": "executor-landing-fallback",
+      "rule": "with nothing readable on the install a restart goes by the target",
+      "file": "lib/update-executor.mjs",
+      "find": "((await installedNow(ctx)) ?? ctx.targetVersion)",
+      "replace": "(await installedNow(ctx))",
+      "tests": [
+        "test/update-executor.test.ts"
+      ]
+    },
+    {
+      "id": "pending-walks-on",
+      "rule": "a held answer does not hide the next source",
+      "file": "lib/pending-restart.ts",
+      "find": "      if (version && !held(version)) return version\n",
+      "replace": "      if (version) return held(version) ? null : version\n",
+      "tests": [
+        "test/pending-restart.test.ts"
+      ]
+    },
+    {
+      "id": "pending-market-held",
+      "rule": "a held install is not pending",
+      "file": "lib/pending-restart.ts",
+      "find": "      return pending && held(pending) ? null : pending\n",
+      "replace": "      return pending\n",
+      "tests": [
+        "test/pending-restart.test.ts"
+      ]
+    },
+    {
+      "id": "pending-held-throw",
+      "rule": "a latch reader that throws holds nothing",
+      "file": "lib/pending-restart.ts",
+      "find": "    } catch {\n      return false\n    }\n  }\n  try {\n    if (input.installMethod === 'marketplace') {",
+      "replace": "    } catch {\n      return true\n    }\n  }\n  try {\n    if (input.installMethod === 'marketplace') {",
+      "tests": [
+        "test/pending-restart.test.ts"
+      ]
     }
   ]
 }
