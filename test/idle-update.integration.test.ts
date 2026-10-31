@@ -211,9 +211,12 @@ test('the new daemon validates on live evidence and frees the computer; the seco
     w.clock.now += 2 * MIN + 1000
     assert.equal(await second.controller.tick(), 'follower_wait', second.out.logs.join('\n'))
     assert.equal(existsSync(second.marker), false)
-    w.clock.now = provedAt + m.followerWaitMs({ assistantId: '913', target: '0.81.0' })
-    next.facts.beaconAtMs = w.clock.now
-    await next.controller.tick()
+    const end = provedAt + m.followerWaitMs({ assistantId: '913', target: '0.81.0' })
+    while (w.clock.now < end) {
+      w.clock.now = Math.min(end, w.clock.now + 30_000)
+      next.facts.beaconAtMs = w.clock.now
+      await next.controller.tick()
+    }
     assert.equal(await second.controller.tick(), 'requested', second.out.logs.join('\n'))
     assert.ok(existsSync(second.marker))
     assert.equal(second.record().canaryN, null)

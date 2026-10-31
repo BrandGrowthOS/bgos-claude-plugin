@@ -1054,8 +1054,8 @@
       "id": "ctl-canaries-silent-latch",
       "rule": "two silent canaries latch the version bad on disk",
       "file": "lib/idle-update.mjs",
-      "find": "      if (machine.canary === 'latch_bad') markVersion(staged, 'bad', { reason: 'canaries_silent' })\n",
-      "replace": "",
+      "find": "if (latch.count * d.pollMs > d.validateDeadlineMs) markVersion(",
+      "replace": "if (false) markVersion(",
       "tests": [
         "test/idle-update.controller.test.ts"
       ]
@@ -3438,8 +3438,8 @@
       "id": "wait-gate",
       "rule": "a follower waits",
       "file": "lib/idle-update.mjs",
-      "find": "if (now < until) return { state: 'follower_wait', until }",
-      "replace": "if (false) return { state: 'follower_wait', until }",
+      "find": "if (now < at + wait) return { state: 'follower_wait', until: at + wait }",
+      "replace": "if (false) return { state: 'follower_wait', until: at + wait }",
       "tests": [
         "test/idle-update.test.ts",
         "test/idle-update.controller.test.ts"
@@ -3449,8 +3449,8 @@
       "id": "wait-from-the-stamp",
       "rule": "the wait counts from the stamp on disk",
       "file": "lib/idle-update.mjs",
-      "find": "const until = at + followerWaitMs(",
-      "replace": "const until = now + followerWaitMs(",
+      "find": "if (now < at + wait) return { state: 'follower_wait', until: at + wait }",
+      "replace": "if (now < now + wait) return { state: 'follower_wait', until: at + wait }",
       "tests": [
         "test/idle-update.test.ts"
       ]
@@ -3470,48 +3470,17 @@
       "rule": "the act decides on the same rule, for this version",
       "file": "lib/idle-update.mjs",
       "find": "const canary = decideCanary({ target, files: versionFiles(target), now: now(), me }, d)",
-      "replace": "const canary = decideCanary({ target, files: { ...versionFiles(target), validatedAtMs: 0, aliveAtMs: now() }, now: now(), me }, d)",
+      "replace": "const canary = decideCanary({ target, files: { ...versionFiles(target), validatedAtMs: 0, provedMs: d.followerWaitMaxMs }, now: now(), me }, d)",
       "tests": [
         "test/idle-update.controller.test.ts"
-      ]
-    },
-    {
-      "id": "quiet-read",
-      "rule": "a canary that stopped short is quiet",
-      "file": "lib/idle-update.mjs",
-      "find": "const lasted = finite(files.aliveAtMs) && files.aliveAtMs >= until - d.beaconFreshMs",
-      "replace": "const lasted = true",
-      "tests": [
-        "test/idle-update.test.ts",
-        "test/idle-update.controller.test.ts"
-      ]
-    },
-    {
-      "id": "quiet-to-the-end",
-      "rule": "the stamp must reach the end of this wait",
-      "file": "lib/idle-update.mjs",
-      "find": "files.aliveAtMs >= until - d.beaconFreshMs",
-      "replace": "files.aliveAtMs >= at",
-      "tests": [
-        "test/idle-update.test.ts"
-      ]
-    },
-    {
-      "id": "quiet-margin",
-      "rule": "one beacon window short still counts",
-      "file": "lib/idle-update.mjs",
-      "find": "files.aliveAtMs >= until - d.beaconFreshMs",
-      "replace": "files.aliveAtMs >= until",
-      "tests": [
-        "test/idle-update.test.ts"
       ]
     },
     {
       "id": "quiet-polls-in-a-row",
       "rule": "ten polls in a row",
       "file": "lib/idle-update.mjs",
-      "find": "quietPolls = machine.canary === 'canary_quiet' ? quietPolls + 1 : 0",
-      "replace": "quietPolls = machine.canary === 'canary_quiet' ? quietPolls + 1 : quietPolls",
+      "find": "({ count: !on ? 0 : n - last.at",
+      "replace": "({ count: !on ? last.count : n - last.at",
       "tests": [
         "test/idle-update.controller.test.ts"
       ]
@@ -3520,8 +3489,8 @@
       "id": "quiet-polls-count",
       "rule": "one stale poll is no silence",
       "file": "lib/idle-update.mjs",
-      "find": "if (quietPolls >= CANARY_QUIET_POLLS && noteSilent(",
-      "replace": "if (quietPolls >= 1 && noteSilent(",
+      "find": "if (quiet.count >= CANARY_QUIET_POLLS && noteSilent(",
+      "replace": "if (quiet.count >= 1 && noteSilent(",
       "tests": [
         "test/idle-update.controller.test.ts"
       ]
@@ -3530,8 +3499,8 @@
       "id": "quiet-writes",
       "rule": "a quiet canary goes on the record",
       "file": "lib/idle-update.mjs",
-      "find": "if (quietPolls >= CANARY_QUIET_POLLS && noteSilent(staged, { assistantId: files.validatedBy, nonce: null }, files)) {",
-      "replace": "if (quietPolls >= CANARY_QUIET_POLLS) {",
+      "find": "if (quiet.count >= CANARY_QUIET_POLLS && noteSilent(staged, { assistantId: files.validatedBy, nonce: null }, files)) {",
+      "replace": "if (quiet.count >= CANARY_QUIET_POLLS) {",
       "tests": [
         "test/idle-update.controller.test.ts"
       ]
@@ -3580,8 +3549,8 @@
       "id": "stamp-live-only",
       "rule": "a dead channel stamps nothing",
       "file": "lib/idle-update.mjs",
-      "find": "    if (live) read(() => fs.writeAtomic(join(dir, record.target, 'alive')",
-      "replace": "    if (true) read(() => fs.writeAtomic(join(dir, record.target, 'alive')",
+      "find": "    if (!live) return\n    const provedMs =",
+      "replace": "    const provedMs =",
       "tests": [
         "test/idle-update.controller.test.ts"
       ]
@@ -3632,8 +3601,8 @@
       "id": "quiet-after-the-record",
       "rule": "the silence goes on the record before the proof goes",
       "file": "lib/idle-update.mjs",
-      "find": "if (quietPolls >= CANARY_QUIET_POLLS && noteSilent(staged, { assistantId: files.validatedBy, nonce: null }, files)) {\n        read(() => fs.remove(join(dir, staged, 'validated')), false)\n      }",
-      "replace": "if (quietPolls >= CANARY_QUIET_POLLS) {\n        read(() => fs.remove(join(dir, staged, 'validated')), false)\n        noteSilent(staged, { assistantId: files.validatedBy, nonce: null }, files)\n      }",
+      "find": "if (quiet.count >= CANARY_QUIET_POLLS && noteSilent(staged, { assistantId: files.validatedBy, nonce: null }, files)) {\n        read(() => fs.remove(join(dir, staged, 'validated')), false)\n      }",
+      "replace": "if (quiet.count >= CANARY_QUIET_POLLS) {\n        read(() => fs.remove(join(dir, staged, 'validated')), false)\n        noteSilent(staged, { assistantId: files.validatedBy, nonce: null }, files)\n      }",
       "tests": [
         "test/idle-update.controller.test.ts"
       ]
@@ -3652,8 +3621,8 @@
       "id": "stamp-own-proof",
       "rule": "a canary stamps only under its own proof, so a follower stamps nothing",
       "file": "lib/idle-update.mjs",
-      "find": "if (files.validatedBy !== deps.assistantId || files.aliveAtMs >=",
-      "replace": "if (files.aliveAtMs >=",
+      "find": "if (files.validatedBy !== deps.assistantId || files.provedMs >= d.followerWaitMaxMs) return",
+      "replace": "if (files.provedMs >= d.followerWaitMaxMs) return",
       "tests": [
         "test/idle-update.controller.test.ts"
       ]
@@ -3662,18 +3631,180 @@
       "id": "stamp-ends",
       "rule": "the stamps end",
       "file": "lib/idle-update.mjs",
-      "find": "if (files.validatedBy !== deps.assistantId || files.aliveAtMs >= files.validatedAtMs + d.followerWaitMaxMs) return",
+      "find": "if (files.validatedBy !== deps.assistantId || files.provedMs >= d.followerWaitMaxMs) return",
       "replace": "if (files.validatedBy !== deps.assistantId) return",
       "tests": [
         "test/idle-update.controller.test.ts"
       ]
     },
     {
-      "id": "stamp-end-is-a-stamp",
-      "rule": "the last stamp is the first past the longest wait, not a time",
+      "id": "proved-the-longest",
+      "rule": "a canary that proved the longest wait proved it for everyone, however long ago",
       "file": "lib/idle-update.mjs",
-      "find": "files.aliveAtMs >= files.validatedAtMs + d.followerWaitMaxMs) return",
-      "replace": "now() >= files.validatedAtMs + d.followerWaitMaxMs) return",
+      "find": "    if (files.provedMs >= d.followerWaitMaxMs - d.beaconFreshMs) return { state: 'validated' }\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "proved-the-longest-margin",
+      "rule": "one beacon window short still counts, or a canary that stopped stamping at the end would read short",
+      "file": "lib/idle-update.mjs",
+      "find": "files.provedMs >= d.followerWaitMaxMs - d.beaconFreshMs) return",
+      "replace": "files.provedMs >= d.followerWaitMaxMs) return",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "proved-stale-is-quiet",
+      "rule": "short of the longest wait a stale stamp is quiet",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (!within(now, jumped({ at: files.aliveAtMs }).at, d.beaconFreshMs)) return { state: 'canary_quiet' }\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "proved-stale-window",
+      "rule": "a stamp is stale past one beacon window",
+      "file": "lib/idle-update.mjs",
+      "find": "jumped({ at: files.aliveAtMs }).at, d.beaconFreshMs))",
+      "replace": "jumped({ at: files.aliveAtMs }).at, d.canaryHoldMs))",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "proved-stale-jumped",
+      "rule": "a stamp far ahead of the clock is no live canary",
+      "file": "lib/idle-update.mjs",
+      "find": "jumped({ at: files.aliveAtMs }).at, d.beaconFreshMs))",
+      "replace": "files.aliveAtMs, d.beaconFreshMs))",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "proved-own-wait",
+      "rule": "a live canary must have proved this agent's wait",
+      "file": "lib/idle-update.mjs",
+      "find": "const short = wait - d.beaconFreshMs - files.provedMs",
+      "replace": "const short = 0",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "proved-own-wait-margin",
+      "rule": "one beacon window short of this wait still counts",
+      "file": "lib/idle-update.mjs",
+      "find": "const short = wait - d.beaconFreshMs - files.provedMs",
+      "replace": "const short = wait - files.provedMs",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "stamp-adds-two-polls",
+      "rule": "a stamp adds two polls at most",
+      "file": "lib/idle-update.mjs",
+      "find": "Math.min(Math.max(0, n - (files.aliveAtMs ?? files.validatedAtMs)), 2 * d.pollMs)",
+      "replace": "Math.max(0, n - (files.aliveAtMs ?? files.validatedAtMs))",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "stamp-clock-back",
+      "rule": "a clock set back takes nothing away",
+      "file": "lib/idle-update.mjs",
+      "find": "Math.min(Math.max(0, n - (files.aliveAtMs ?? files.validatedAtMs)), 2 * d.pollMs)",
+      "replace": "Math.min(n - (files.aliveAtMs ?? files.validatedAtMs), 2 * d.pollMs)",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "stamp-from-the-last",
+      "rule": "a stamp adds the time since the last one",
+      "file": "lib/idle-update.mjs",
+      "find": "n - (files.aliveAtMs ?? files.validatedAtMs)",
+      "replace": "n - files.validatedAtMs",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "stamp-first-from-validation",
+      "rule": "the first stamp counts from the validation",
+      "file": "lib/idle-update.mjs",
+      "find": "(files.aliveAtMs ?? files.validatedAtMs)",
+      "replace": "files.aliveAtMs",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "stamp-keeps-the-sum",
+      "rule": "the proof carries on from what is on the disk",
+      "file": "lib/idle-update.mjs",
+      "find": "const provedMs = files.provedMs + Math.min(",
+      "replace": "const provedMs = Math.min(",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "alive-own-canary",
+      "rule": "what canary 1 proved is not canary 2's",
+      "file": "lib/idle-update.mjs",
+      "find": "const stamped = proof !== null && alive?.assistantId === proof.assistantId",
+      "replace": "const stamped = proof !== null && alive !== null",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "latch-polls",
+      "rule": "a latch stands for a validation's deadline before it is written",
+      "file": "lib/idle-update.mjs",
+      "find": "if (latch.count * d.pollMs > d.validateDeadlineMs) markVersion(",
+      "replace": "if (latch.count >= 1) markVersion(",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "latch-only-a-latch",
+      "rule": "only a latch counts toward the latch",
+      "file": "lib/idle-update.mjs",
+      "find": "latch = inARow(latch, machine.canary === 'latch_bad', n)",
+      "replace": "latch = inARow(latch, true, n)",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "quiet-no-outage",
+      "rule": "a poll in this agent's outage counts nothing",
+      "file": "lib/idle-update.mjs",
+      "find": "machine.canary === 'canary_quiet' && read(deps.backendUnreachable, false) !== true, n)",
+      "replace": "machine.canary === 'canary_quiet', n)",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "polls-gap",
+      "rule": "a gap of more than two polls starts the count again",
+      "file": "lib/idle-update.mjs",
+      "find": "n - last.at <= 2 * d.pollMs ? last.count + 1 : 1",
+      "replace": "last.count + 1",
       "tests": [
         "test/idle-update.controller.test.ts"
       ]

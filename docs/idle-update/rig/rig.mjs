@@ -742,8 +742,8 @@ async function scenarioStagger() {
   const durations = scaledDurations(scale)
   const followers = windows.slice(1).map((w) => ({ id: w.id, requested: w.requested, earliest: provedAt + followerWaitMs({ assistantId: String(w.id), target: TARGET }, durations) }))
   check('no follower before its own wait after the canary validated', followers.length > 0 && followers.every((f) => f.requested >= f.earliest), followers)
-  const aliveAt = Date.parse(JSON.parse(readFileSync(join(versionDir, 'alive'), 'utf8')).at)
-  check("the canary's stamp reached the first follower's wait", aliveAt >= Math.min(...followers.map((f) => f.earliest)) - durations.beaconFreshMs, { provedAt, aliveAt })
+  const { provedMs } = JSON.parse(readFileSync(join(versionDir, 'alive'), 'utf8'))
+  check("the canary proved the first follower's wait", provedMs >= Math.min(...followers.map((f) => f.earliest)) - provedAt - durations.beaconFreshMs, { provedAt, provedMs })
   check('no silence on the record', !readdirSync(versionDir).some((name) => name.startsWith('silent-')))
 }
 

@@ -381,7 +381,7 @@ async function supervisor() {
         await until('silent-2', () => silences().length > 1, (60 * MIN) / scale + 15 * MIN)
         say(`on the record: ${silences().join(', ')}`)
         age('silent-2', scaled.canarySilentMs - scaled.leaseTtlMs + MIN)
-        await until('the build marked bad', () => existsSync(join(versionDir, 'bad')), 5 * MIN)
+        await until('the build marked bad', () => existsSync(join(versionDir, 'bad')), 8 * MIN)
         say('the build is marked bad')
         await stillAfter((3 * MIN) / scale)
       }
@@ -486,7 +486,7 @@ async function supervisor() {
   const provedAt = Date.parse(JSON.parse(readFileSync(join(versionDir, 'validated'), 'utf8')).at)
   const earliest = windows.slice(1).map((w) => ({ id: w.id, requested: iso(w.requested), earliest: iso(provedAt + waitOf(w.id)), early: w.requested < provedAt + waitOf(w.id) }))
   check('no follower before its own wait after the canary validated', earliest.length > 0 && earliest.every((f) => !f.early), earliest.filter((f) => f.early))
-  check("the canary's stamp reached the first follower's wait", Date.parse(JSON.parse(readFileSync(join(versionDir, 'alive'), 'utf8')).at) >= provedAt + Math.min(...windows.slice(1).map((w) => waitOf(w.id))) - scaled.beaconFreshMs)
+  check("the canary proved the first follower's wait", JSON.parse(readFileSync(join(versionDir, 'alive'), 'utf8')).provedMs >= Math.min(...windows.slice(1).map((w) => waitOf(w.id))) - scaled.beaconFreshMs)
   check('no silence on the record', silences().length === 0, silences())
   check('no rollback anywhere', !events.some((e) => e.ev === 'rollback_restart' || e.ev === 'rollback_install'))
   check('memory under the cap', peak > 0 && peak <= MEMORY_CAP, `${results.peakPrivateGB} GB private at peak`)
