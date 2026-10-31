@@ -92,10 +92,44 @@ stdin closed -> exit 0; wt project dir holds only dbd3b62b-....jsonl; the main t
 
 **Finding 5: stream json input repeats the `system/init` frame at the start of EVERY turn** (same session id). The first run of the spike script crashed deleting the already deleted copy on the second init. The lane manager records the fork id from the first init only and drops the copy idempotently (`test/thread-lanes.test.ts`, "the init frame records the fork id ... once").
 
+## (g) Confinement: what a lane may write (2026-11-01, review finding 1)
+
+**Where:** CLI 2.1.316 on macOS, against a fake Anthropic Messages API on `127.0.0.1` (a local script that answers each request with the next scripted `tool_use` and logs every `tool_result`; no model ran), `CLAUDE_CONFIG_DIR` and `ANTHROPIC_BASE_URL` pointed at throwaway places, `env -i` with a dummy key. The repository was a throwaway one under the home folder (the sandbox lets every command write the temp folders, so a probe under `/tmp` proves nothing: the first round there wrote everywhere), removed afterwards. The lane's worktree was made by `git worktree add` exactly as the daemon does.
+
+**Before (the reviewer's point, confirmed).** Today's lane command with default settings: every `Write`, `Edit` and Bash redirect, inside the worktree or not, was refused ("you haven't granted it yet"), so a working thread could do nothing; and with the owner's permissive settings it would have inherited them.
+
+**The lane now runs** `--restricted --tools <list> --permission-mode acceptEdits --settings <json>` (lib/thread-lane-args.ts `threadLaneArgs`), the settings being `permissions.allow` `Read(//<worktree>/**)`, `Edit(//<worktree>/**)`, `Bash(git add:*)`, `Bash(git commit:*)`, `additionalDirectories: [<worktree>]`, `sandbox: {enabled, autoAllowBashIfSandboxed, allowUnsandboxedCommands: false, filesystem.denyWrite: <source repository state>}` and `remoteControlAtStartup: false`. Measured with that exact command (built by the shipped code):
+
+| Probe | Result |
+|---|---|
+| `Write` and `Edit` inside the worktree | done |
+| `Write` in the main checkout, `Read` there, `Write` elsewhere in the home folder | refused: "is outside <worktree>; --restricted confines the file tools to the working directory" |
+| Bash `echo > <worktree>/x` | done |
+| Bash `echo > <main checkout>/x`, `python3 open(..., 'w')`, `node writeFileSync` elsewhere | refused by the operating system ("operation not permitted", EPERM) |
+| the same with `dangerouslyDisableSandbox: true` | refused (allowUnsandboxedCommands false) |
+| Bash write to the source repository's `.git/hooks`, `.git/config` | refused (the CLI's own protection) |
+| Bash write to `.git/refs/heads/main`, `.git/index`, another worktree's admin dir | refused once listed in `denyWrite`; **written without it** (the CLI opens a worktree's common git dir to the sandbox) |
+| `git add -A`, `git commit -qm x` in the worktree | done, on `hoai/thread-<root>`; the main checkout's HEAD, index and branch unchanged |
+| `git -c user.email=... commit` | refused "requires approval" (the allow rule matches `git commit`, not `git -c`) |
+| a lane whose cwd is a subfolder of its worktree | writes anywhere in the worktree (the additional directory widens both the file tools and the sandbox) |
+| read only lane (`--tools Read,Glob,Grep,WebFetch,WebSearch --permission-mode dontAsk`, deny `Bash,Edit,Write,NotebookEdit`, the agent folder as an additional directory) | `Read` of the agent folder done; `Write`, `Edit`, `Bash`, `NotebookEdit`: "No such tool available ... disabled for this session, in subagents as well as here" |
+| a `CLAUDE.md` canary in the main folder | still reached the lane's request (it rides in the forked conversation), although `--restricted` loads no `CLAUDE.md` itself |
+
+**What is guaranteed (as measured on 2.1.316, macOS):** the built in file tools write and read only inside the worktree (a read only lane: read the agent folder, write nothing, no Bash); no user, project or local setting of the owner applies (no permissive allow rule, no hook, no plugin, no Remote Control); Bash, and every program it starts, writes only inside the worktree, the temp folders and the git state a worktree needs, and never the main checkout, its index, HEAD, `packed-refs`, a branch that existed when the lane started (other than its own), or another worktree's admin dir; one tool argument cannot switch the sandbox off; bypass is refused by the CLI under `--restricted`.
+
+**What is NOT guaranteed:**
+- Reads by Bash are not confined (the sandbox confines writes; `cat <main checkout>/file` worked). The person's own agent reading its own folder is accepted.
+- Network: WebFetch, WebSearch and Bash's network follow the CLI's sandbox defaults, not narrowed here.
+- A branch or worktree created AFTER the lane started is not in its `denyWrite` list until the lane's next start (each start reads them again). Git objects stay writable (content addressed, a commit needs them).
+- A host without the CLI's sandbox (no `sandbox-exec` on macOS, no `bwrap` and `socat` on Linux): the lane gets no Bash at all rather than an unconfined one; so does a lane whose repository state cannot be read.
+- Linux was not measured here (person lanes measured the same flags on macOS only too); Windows runs no thread lanes in phase 1.
+- The lane needs a CLI with `--restricted` (measured 2.1.301 and later); an older one fails the turn.
+- The CLI process itself (not its tools) created an empty `.claude/` folder in the main checkout and the worktree; nothing was written into it.
+
 ## What changed in the builders
 
 - `asideArgs` gains `--tools ""` (Finding 3). Everything else is as briefed.
 - Both builders keep `--mcp-config <empty>` last and take the prompt on stdin (Finding 1).
-- `threadLaneArgs` is unchanged from the brief.
+- `threadLaneArgs` runs every lane confined (section (g)); `assertConfined` refuses a lane command without `--restricted`, `--tools`, `--permission-mode` or `--settings`, or with a bypass or `--add-dir`.
 
 None of this changes the wire contract with BGOS.
