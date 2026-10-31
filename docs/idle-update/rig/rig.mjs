@@ -24,6 +24,8 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renam
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
+import { followerWaitMs, scaledDurations } from '../../../lib/idle-update.mjs'
+
 const RIG_SRC = dirname(fileURLToPath(import.meta.url))
 const PLUGIN = resolve(RIG_SRC, '..', '..', '..')
 const args = process.argv.slice(2)
@@ -734,6 +736,15 @@ async function scenarioStagger() {
     const l = sessionLaunches(a)
     return l[1]?.mode === 'resume' && l[1]?.sessionId === l[0]?.sessionId
   }))
+  // The canary is the first onto the version; every other agent waits out its own wait from the stamp it left, on its own.
+  const versionDir = join(machineDir, 'idle-update', TARGET)
+  const provedAt = Date.parse(JSON.parse(readFileSync(join(versionDir, 'validated'), 'utf8')).at)
+  const durations = scaledDurations(scale)
+  const followers = windows.slice(1).map((w) => ({ id: w.id, requested: w.requested, earliest: provedAt + followerWaitMs({ assistantId: String(w.id), target: TARGET }, durations) }))
+  check('no follower before its own wait after the canary validated', followers.length > 0 && followers.every((f) => f.requested >= f.earliest), followers)
+  const aliveAt = Date.parse(JSON.parse(readFileSync(join(versionDir, 'alive'), 'utf8')).at)
+  check("the canary's stamp reached the first follower's wait", aliveAt >= Math.min(...followers.map((f) => f.earliest)) - durations.beaconFreshMs, { provedAt, aliveAt })
+  check('no silence on the record', !readdirSync(versionDir).some((name) => name.startsWith('silent-')))
 }
 
 // -- Run -----------------------------------------------------------------------------------------

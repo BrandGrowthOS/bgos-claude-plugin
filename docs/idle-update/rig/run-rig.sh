@@ -3,8 +3,9 @@
 # both sides (Windows tasks inside rig.mjs; WSL systemd timers, unit files and
 # crontab here) before and after, and run rig.mjs under Windows node through this
 # box's heavy queue (~/.local/bin/heavy: FIFO tickets and its slots, never a raw flock).
-# usage: run-rig.sh <idle|busy|broken|stagger|wake|many> [scale] [agents] [busy cases, comma separated]
+# usage: run-rig.sh <idle|busy|broken|stagger|wake|many|many-late|many-silent> [scale] [agents] [busy cases, comma separated]
 # many is stagger-many.mjs: fifteen real controllers in their own processes, without the real chain's 0.9 GB per agent.
+# many-late and many-silent are the same fifteen with one agent ended on purpose (its --fault).
 set -u
 scenario=${1:?scenario}
 scale=${2:-5}
@@ -12,7 +13,10 @@ count=${3:-15}
 cases=${4:+ --cases $4}
 script='docs\idle-update\rig\rig.mjs'
 what=" --scenario $scenario"
-if [ "$scenario" = many ]; then script='docs\idle-update\rig\stagger-many.mjs'; what=''; fi
+case "$scenario" in
+  many) script='docs\idle-update\rig\stagger-many.mjs'; what='' ;;
+  many-*) script='docs\idle-update\rig\stagger-many.mjs'; what=" --fault ${scenario#many-}" ;;
+esac
 RUN_WIN='E:\bgos-worktrees\idleupd\rig-run'
 RUN_WSL=/mnt/e/bgos-worktrees/idleupd/rig-run
 PLUGIN_WIN='E:\bgos-worktrees\idleupd\bgos-claude-plugin'

@@ -19,13 +19,19 @@
  * scheduled task is created; they are listed before and after and must be
  * identical. Every process is ended by its exact pid.
  *
+ * Two faults, each ending one process by its handle and never starting it again,
+ * so the other agents have only the files to go on:
+ *   --fault late    the canary dies after it validated: its stamp stops, and no follower moves.
+ *   --fault silent  the first follower dies once it arrived: its lease runs out with no
+ *                   outcome, the next agent writes silent-1, and no third agent moves.
+ *
  * usage (Windows node, from the plugin root):
- *   node docs/idle-update/rig/stagger-many.mjs --run-dir E:\...\rig-run [--agents 15] [--scale 5]
+ *   node docs/idle-update/rig/stagger-many.mjs --run-dir E:\...\rig-run [--agents 15] [--scale 5] [--fault late|silent]
  * Prints RIG PASS many or RIG FAIL many: <why>, and writes <scenario dir>\result.json.
  */
 import { execFile, spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -168,22 +174,24 @@ async function supervisor() {
   const runDir = flag('--run-dir')
   const count = Number(flag('--agents', '15'))
   const scale = Number(flag('--scale', '5'))
-  if (!runDir) {
-    console.error('usage: stagger-many.mjs --run-dir <dir> [--agents 15] [--scale 5]')
+  const fault = flag('--fault')
+  if (!runDir || ![null, 'late', 'silent'].includes(fault)) {
+    console.error('usage: stagger-many.mjs --run-dir <dir> [--agents 15] [--scale 5] [--fault late|silent]')
     process.exit(2)
   }
   const stamp = new Date().toISOString().replace(/[-:]/g, '').slice(0, 15)
-  const dir = join(runDir, `many-${stamp}`)
+  const name = fault ? `many-${fault}` : 'many'
+  const dir = join(runDir, `${name}-${stamp}`)
   const home = join(dir, 'home')
   const machineDir = join(home, '.bgos-agent', 'idle-update')
   mkdirSync(join(dir, 'agents'), { recursive: true })
   const say = (line) => {
-    const text = `[many ${new Date().toISOString().slice(11, 19)}] ${line}`
+    const text = `[${name} ${new Date().toISOString().slice(11, 19)}] ${line}`
     console.log(text)
     appendFileSync(join(dir, 'progress.log'), `${text}\n`)
   }
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-  const results = { scenario: 'many', scale, agents: count, from: FROM, target: TARGET, dir, checks: [], launches: {} }
+  const results = { scenario: name, scale, agents: count, from: FROM, target: TARGET, dir, checks: [], launches: {} }
   const check = (name, ok, detail) => {
     results.checks.push({ name, ok: Boolean(ok), detail })
     say(`${ok ? 'PASS' : 'FAIL'} ${name}${detail === undefined ? '' : `: ${typeof detail === 'string' ? detail : JSON.stringify(detail)}`}`)
@@ -212,6 +220,8 @@ async function supervisor() {
   const events = []
   let unexpected = null
   let stopping = false
+  /** The agents this run ended on purpose: never started again, and their end is no surprise. */
+  const faulted = new Set()
   const launch = (id, version) => {
     const proc = spawn(process.execPath, [SELF, '--child', '--id', String(id), '--version', version, '--dir', dir, '--scale', String(scale)], {
       cwd: PLUGIN,
@@ -242,7 +252,7 @@ async function supervisor() {
     proc.on('exit', (code) => {
       if (live.get(id) !== proc) return
       live.delete(id)
-      if (stopping) return
+      if (stopping || faulted.has(id)) return
       if (!restarted) {
         unexpected ??= `${id} on ${version} ended by itself (code ${code})`
         return
@@ -262,24 +272,127 @@ async function supervisor() {
     }
   }
 
-  const ids = Array.from({ length: count }, (_, i) => 7500001 + i)
-  let failure = null
-  let peak = 0
-  const tasksBefore = scheduledTasks('before')
-  say(`scenario many, ${count} agents, scale ${scale}, dir ${dir}`)
-  say(`scheduled tasks before: ${tasksBefore.count} (${tasksBefore.sha.slice(0, 12)})`)
-  try {
-    for (const id of ids) launch(id, FROM)
+  const versionDir = join(machineDir, TARGET)
+  const silences = () => (existsSync(versionDir) ? readdirSync(versionDir).filter((f) => /^silent-\d+$/.test(f)) : [])
+  const until = async (label, done, ms) => {
+    const by = Date.now() + ms
+    for (;;) {
+      if (unexpected) throw new Error(unexpected)
+      const got = done()
+      if (got) return got
+      if (Date.now() > by) throw new Error(`timed out: ${label}`)
+      await sleep(SEC)
+    }
+  }
+  /** End one agent through the handle held since its spawn, and never start it again. */
+  const die = (id, why) => {
+    faulted.add(id)
+    live.get(id)?.kill()
+    say(`${id} ended here: ${why}`)
+  }
+  const followers = () => ids.filter((id) => record(id)?.canaryN !== 1)
+  const firstOnTarget = (state) => ids.find((id) => launches.get(id).length === 2 && record(id)?.canaryN !== 1 && record(id)?.state === state)
+  const canaryOf = () => ids.find((id) => record(id)?.canaryN === 1 && record(id)?.state === 'validated')
+  const rules = await import(pathToFileURL(join(PLUGIN, 'lib', 'idle-update.mjs')).href)
+  const scaled = rules.scaledDurations(scale)
+  const waitOf = (id) => rules.followerWaitMs({ assistantId: String(id), target: TARGET }, scaled)
+  const stagedThen = () => {
+    writeFileSync(join(dir, 'staged.txt'), TARGET)
+    results.stagedAt = new Date().toISOString()
+    say(`staged ${TARGET}`)
+  }
+  const armed = async () => {
     const armedBy = Date.now() + 2 * MIN
     while (ids.some((id) => !events.some((e) => e.id === id && e.ev === 'log' && /armed on/.test(e.line)))) {
       if (Date.now() > armedBy) throw new Error('not every controller armed in 2 min')
       await sleep(SEC)
     }
     say(`all ${count} controllers armed on ${FROM}`)
-    writeFileSync(join(dir, 'staged.txt'), TARGET)
-    results.stagedAt = new Date().toISOString()
-    say(`staged ${TARGET}`)
-    const until = Date.now() + 90 * MIN
+  }
+  const stillAfter = async (ms) => {
+    const by = Date.now() + ms
+    while (Date.now() < by) {
+      if (unexpected) throw new Error(unexpected)
+      await sleep(SEC)
+    }
+  }
+  const finish = async () => {
+    stopping = true
+    for (const [, proc] of live) {
+      // Through the child's own handle, held since the spawn: never a pid another process may have been handed.
+      proc.kill()
+    }
+    await sleep(2 * SEC)
+  }
+
+  const ids = Array.from({ length: count }, (_, i) => 7500001 + i)
+  let failure = null
+  let peak = 0
+  const tasksBefore = scheduledTasks('before')
+  say(`scenario many, ${count} agents, scale ${scale}, dir ${dir}`)
+  say(`scheduled tasks before: ${tasksBefore.count} (${tasksBefore.sha.slice(0, 12)})`)
+  if (fault) {
+    let canary = null
+    let silent = null
+    try {
+      for (const id of ids) launch(id, FROM)
+      await armed()
+      stagedThen()
+      canary = await until('the canary validated', canaryOf, 30 * MIN)
+      say(`canary ${canary} validated`)
+      if (fault === 'late') {
+        await sleep((2 * MIN) / scale)
+        die(canary, 'it validated, and dies inside the wait')
+        await until('silent-1', () => silences().length > 0, (60 * MIN) / scale + 15 * MIN)
+        results.silentAt = new Date().toISOString()
+      } else {
+        silent = await until('a follower arrived', () => firstOnTarget('arrived'), (60 * MIN) / scale + 15 * MIN)
+        die(silent, 'it arrived, and dies before it validates')
+        await until('silent-1', () => silences().length > 0, (60 * MIN) / scale + 15 * MIN)
+        results.silentAt = new Date().toISOString()
+      }
+      say(`on the record: ${silences().join(', ')}`)
+      // Every other agent's wait has run out by now or soon: long enough for one to walk on if any would.
+      const latest = Math.max(...followers().map(waitOf)) + 3 * MIN
+      await stillAfter(Math.max((3 * MIN) / scale, Date.parse(JSON.parse(readFileSync(join(versionDir, 'validated'), 'utf8')).at) + latest - Date.now()))
+    } catch (err) {
+      failure = String(err?.message ?? err)
+      say(`error: ${failure}`)
+    } finally {
+      await finish()
+    }
+    for (const id of ids) results.launches[id] = launches.get(id)?.map((l) => ({ version: l.version, at: new Date(l.at).toISOString() })) ?? []
+    const others = ids.filter((id) => id !== canary && id !== silent)
+    const restarted = others.filter((id) => launches.get(id).length !== 1)
+    const body = silences()[0] ? JSON.parse(readFileSync(join(versionDir, silences()[0]), 'utf8')) : null
+    results.silence = body
+    check('one silence on the record', silences().length === 1, silences())
+    check('it names the agent that went quiet', body?.assistantId === String(fault === 'late' ? canary : silent), body)
+    if (fault === 'silent') check('with the nonce of its attempt', body?.nonce === record(silent)?.nonce, body)
+    check(`none of the other ${others.length} agents moved`, others.length > 0 && restarted.length === 0, restarted)
+    check('every one of them reads the hold', others.every((id) => events.some((e) => e.id === id && e.ev === 'log' && /waiting: silent_hold/.test(e.line))))
+    check('the lease is free: a hold keeps nothing from the next version', !existsSync(join(machineDir, 'lease.json')))
+    check('no rollback anywhere', !events.some((e) => e.ev === 'rollback_restart' || e.ev === 'rollback_install'))
+    const aliveLeft = [...live.values()].map((p) => p.pid)
+    check('no process of ours left alive', aliveLeft.length === 0, aliveLeft)
+    const tasksAfter = scheduledTasks('after')
+    say(`scheduled tasks after: ${tasksAfter.count} (${tasksAfter.sha.slice(0, 12)})`)
+    check('scheduled tasks identical before and after', tasksBefore.sha === tasksAfter.sha, { before: tasksBefore, after: tasksAfter })
+    results.failure = failure
+    writeFileSync(join(dir, 'result.json'), `${JSON.stringify(results, null, 2)}\n`)
+    const failed = results.checks.filter((c) => !c.ok)
+    if (failure || failed.length) {
+      console.log(`RIG FAIL ${name}: ${failure ?? failed.map((c) => c.name).join('; ')}`)
+      process.exit(1)
+    }
+    console.log(`RIG PASS ${name} (${results.checks.length} checks)`)
+    return
+  }
+  try {
+    for (const id of ids) launch(id, FROM)
+    await armed()
+    stagedThen()
+    const deadline = Date.now() + 90 * MIN
     let lastOn = -1
     for (;;) {
       if (unexpected) throw new Error(unexpected)
@@ -292,7 +405,7 @@ async function supervisor() {
       if (on !== lastOn) say(`${on}/${count} on ${TARGET}`)
       lastOn = on
       if (on === count) break
-      if (Date.now() > until) throw new Error(`timed out: ${on}/${count} validated`)
+      if (Date.now() > deadline) throw new Error(`timed out: ${on}/${count} validated`)
       await sleep(10 * SEC)
     }
     // Every agent on the target: watch a little longer for a second restart.
@@ -302,12 +415,7 @@ async function supervisor() {
     failure = String(err?.message ?? err)
     say(`error: ${failure}`)
   } finally {
-    stopping = true
-    for (const [, proc] of live) {
-      // Through the child's own handle, held since the spawn: never a pid another process may have been handed.
-      proc.kill()
-    }
-    await sleep(2 * SEC)
+    await finish()
   }
 
   for (const id of ids) results.launches[id] = launches.get(id)?.map((l) => ({ version: l.version, at: new Date(l.at).toISOString() })) ?? []
@@ -335,6 +443,11 @@ async function supervisor() {
   check("no relaunch before the previous agent's validation", !overlap)
   check('the first agent onto the version was its canary', windows[0]?.canaryN === 1, windows[0])
   check('one attempt per agent', ids.every((id) => (record(id)?.attempts ?? []).filter((a) => a.outcome === 'requested').length === 1))
+  const provedAt = Date.parse(JSON.parse(readFileSync(join(versionDir, 'validated'), 'utf8')).at)
+  const earliest = windows.slice(1).map((w) => ({ id: w.id, requested: iso(w.requested), earliest: iso(provedAt + waitOf(w.id)), early: w.requested < provedAt + waitOf(w.id) }))
+  check('no follower before its own wait after the canary validated', earliest.length > 0 && earliest.every((f) => !f.early), earliest.filter((f) => f.early))
+  check("the canary's stamp reached the first follower's wait", Date.parse(JSON.parse(readFileSync(join(versionDir, 'alive'), 'utf8')).at) >= provedAt + Math.min(...windows.slice(1).map((w) => waitOf(w.id))) - scaled.beaconFreshMs)
+  check('no silence on the record', silences().length === 0, silences())
   check('no rollback anywhere', !events.some((e) => e.ev === 'rollback_restart' || e.ev === 'rollback_install'))
   check('memory under the cap', peak > 0 && peak <= MEMORY_CAP, `${results.peakPrivateGB} GB private at peak`)
   const aliveAfter = [...live.values()].map((p) => p.pid)
