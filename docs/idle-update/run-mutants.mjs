@@ -48,6 +48,25 @@ function runTests(files) {
   return { status: res.status, tests: count('tests') ?? 0, fail: count('fail'), failing: [...new Set(failing)].slice(0, 5) }
 }
 
+// A bun:test file cannot run under tsx. A mutant whose tests are one says `"bun": true`.
+function runBun(files) {
+  const res = spawnSync('bun', ['test', ...files.map((f) => `./${f}`)], {
+    cwd: root,
+    encoding: 'utf8',
+    shell: process.platform === 'win32',
+    maxBuffer: 64 * 1024 * 1024,
+  })
+  const out = `${res.stdout ?? ''}\n${res.stderr ?? ''}`.replace(/\r/g, '')
+  const count = (label) => {
+    const match = new RegExp(`^ *(\\d+) ${label}`, 'm').exec(out)
+    return match ? Number(match[1]) : null
+  }
+  const pass = count('pass') ?? 0
+  const fail = count('fail')
+  const failing = [...out.matchAll(/^\(fail\) (.+?)(?: \[[\d.]+ms\])?$/gm)].map((m) => m[1])
+  return { status: res.status, tests: pass + (fail ?? 0), fail, failing: [...new Set(failing)].slice(0, 5) }
+}
+
 // Put every touched file back, whatever stops this run.
 const originals = new Map()
 const restoreAll = () => {
@@ -74,9 +93,17 @@ if (dirty.status !== 0) {
   process.exit(5)
 }
 
-const files = [...new Set(mutants.flatMap((m) => m.tests))]
-console.log(`[mutants] ${mutants.length} mutants over ${files.length} named test files`)
-const baseline = runTests(files)
+const named = (bun) => [...new Set(mutants.filter((m) => (m.bun === true) === bun).flatMap((m) => m.tests))]
+const files = named(false)
+const bunFiles = named(true)
+console.log(`[mutants] ${mutants.length} mutants over ${files.length + bunFiles.length} named test files`)
+const runs = [...(files.length ? [runTests(files)] : []), ...(bunFiles.length ? [runBun(bunFiles)] : [])]
+const baseline = {
+  status: runs.find((run) => run.status !== 0)?.status ?? 0,
+  tests: runs.reduce((sum, run) => sum + run.tests, 0),
+  fail: runs.reduce((sum, run) => sum + (run.fail ?? 0), 0),
+  failing: runs.flatMap((run) => run.failing),
+}
 console.log(`[mutants] baseline: exit ${baseline.status}, tests ${baseline.tests}, fail ${baseline.fail}`)
 if (baseline.tests === 0) {
   console.error('[mutants] STOP: the baseline ran 0 tests')
@@ -102,7 +129,7 @@ for (const m of mutants) {
   let run
   try {
     writeFileSync(path, original.replace(m.find, () => m.replace))
-    run = runTests(m.tests)
+    run = m.bun === true ? runBun(m.tests) : runTests(m.tests)
   } finally {
     writeFileSync(path, original)
     originals.delete(m.file)

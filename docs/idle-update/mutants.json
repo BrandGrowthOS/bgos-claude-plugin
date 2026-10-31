@@ -3964,7 +3964,7 @@
       "id": "install-back-newer-clears",
       "rule": "a newer build takes the report and the owed try with it",
       "file": "lib/idle-update.mjs",
-      "find": "      if (staged !== null && staged !== installBack?.target && (!installBack?.owed || isNewerVersion(staged, installBack.target))) installBack = null\n",
+      "find": "      if (another && (!installBack?.owed || isNewerVersion(staged, installBack.target))) installBack = null\n",
       "replace": "",
       "tests": [
         "test/idle-update.controller.test.ts"
@@ -4414,8 +4414,8 @@
       "id": "install-back-owed-outlives",
       "rule": "a try still owed outlives a raise below the mark",
       "file": "lib/idle-update.mjs",
-      "find": "      if (staged !== null && staged !== installBack?.target && (!installBack?.owed || isNewerVersion(staged, installBack.target))) installBack = null\n",
-      "replace": "      if (staged !== null && staged !== installBack?.target) installBack = null\n",
+      "find": "      if (another && (!installBack?.owed || isNewerVersion(staged, installBack.target))) installBack = null\n",
+      "replace": "      if (another) installBack = null\n",
       "tests": [
         "test/idle-update.controller.test.ts"
       ]
@@ -4424,8 +4424,8 @@
       "id": "install-back-owed-newer",
       "rule": "a try still owed ends with a build newer than the mark",
       "file": "lib/idle-update.mjs",
-      "find": "      if (staged !== null && staged !== installBack?.target && (!installBack?.owed || isNewerVersion(staged, installBack.target))) installBack = null\n",
-      "replace": "      if (staged !== null && staged !== installBack?.target && !installBack?.owed) installBack = null\n",
+      "find": "      if (another && (!installBack?.owed || isNewerVersion(staged, installBack.target))) installBack = null\n",
+      "replace": "      if (another && !installBack?.owed) installBack = null\n",
       "tests": [
         "test/idle-update.controller.test.ts"
       ]
@@ -4441,20 +4441,10 @@
       ]
     },
     {
-      "id": "market-held-target",
-      "rule": "a click never installs a version held bad here",
-      "file": "lib/marketplace-update.mjs",
-      "find": "  if (heldBad(targetVersion)) return { kind: 'blocked', reason: 'version_held_bad' }\n",
-      "replace": "",
-      "tests": [
-        "test/marketplace-update.test.ts"
-      ]
-    },
-    {
       "id": "market-held-pending",
       "rule": "a click never restarts onto a held version already installed",
       "file": "lib/marketplace-update.mjs",
-      "find": "    if (heldBad(pending)) return { kind: 'blocked', reason: 'version_held_bad' }\n",
+      "find": "    if (heldBad(pending)) return refused()\n",
       "replace": "",
       "tests": [
         "test/marketplace-update.test.ts"
@@ -4558,6 +4548,168 @@
       "replace": "  if (moved) {\n",
       "tests": [
         "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "executor-held-stops",
+      "rule": "a target held bad here stops before anything moves",
+      "file": "lib/update-executor.mjs",
+      "find": "      if (!ctx.rolledBack && TAKES_TARGET_STEP_KINDS.includes(step.kind) && (await ctx.deps.heldBad?.(ctx.targetVersion)) === true) {\n",
+      "replace": "      if (false) {\n",
+      "tests": [
+        "test/update-executor.test.ts"
+      ]
+    },
+    {
+      "id": "executor-held-after-rollback",
+      "rule": "a rollback still restarts agents, onto the old build",
+      "file": "lib/update-executor.mjs",
+      "find": "      if (!ctx.rolledBack && TAKES_TARGET_STEP_KINDS.includes(step.kind) && (await ctx.deps.heldBad?.(ctx.targetVersion)) === true) {\n",
+      "replace": "      if (TAKES_TARGET_STEP_KINDS.includes(step.kind) && (await ctx.deps.heldBad?.(ctx.targetVersion)) === true) {\n",
+      "tests": [
+        "test/update-executor.test.ts"
+      ]
+    },
+    {
+      "id": "executor-held-restart",
+      "rule": "a plan that only restarts agents stops too",
+      "file": "lib/update-executor.mjs",
+      "find": "const TAKES_TARGET_STEP_KINDS = Object.freeze(['install_plugin', 'update_plugin', 'reinstall_plugin', 'git_fast_forward', 'restart_agent'])\n",
+      "replace": "const TAKES_TARGET_STEP_KINDS = Object.freeze(['install_plugin', 'update_plugin', 'reinstall_plugin', 'git_fast_forward'])\n",
+      "tests": [
+        "test/update-executor.test.ts"
+      ]
+    },
+    {
+      "id": "executor-held-update",
+      "rule": "an update stops",
+      "file": "lib/update-executor.mjs",
+      "find": "const TAKES_TARGET_STEP_KINDS = Object.freeze(['install_plugin', 'update_plugin', 'reinstall_plugin', 'git_fast_forward', 'restart_agent'])\n",
+      "replace": "const TAKES_TARGET_STEP_KINDS = Object.freeze(['install_plugin', 'reinstall_plugin', 'git_fast_forward', 'restart_agent'])\n",
+      "tests": [
+        "test/update-executor.test.ts"
+      ]
+    },
+    {
+      "id": "market-refused-good-pending",
+      "rule": "a click restarts onto a good build waiting on the install",
+      "file": "lib/marketplace-update.mjs",
+      "find": "    return pending && !heldBad(pending) ? { kind: 'installed', targetVersion: pending } : { kind: 'blocked', reason: 'version_held_bad' }\n",
+      "replace": "    return { kind: 'blocked', reason: 'version_held_bad' }\n",
+      "tests": [
+        "test/marketplace-update.test.ts"
+      ]
+    },
+    {
+      "id": "market-refused-held-pending",
+      "rule": "never onto a pending build that is held too",
+      "file": "lib/marketplace-update.mjs",
+      "find": "    return pending && !heldBad(pending) ? { kind: 'installed', targetVersion: pending } : { kind: 'blocked', reason: 'version_held_bad' }\n",
+      "replace": "    return pending ? { kind: 'installed', targetVersion: pending } : { kind: 'blocked', reason: 'version_held_bad' }\n",
+      "tests": [
+        "test/marketplace-update.test.ts"
+      ]
+    },
+    {
+      "id": "market-held-reaches-executor",
+      "rule": "the executor gets the marks",
+      "file": "lib/marketplace-update.mjs",
+      "find": "    staggerMs: 0,\n    heldBad,\n    log,\n",
+      "replace": "    staggerMs: 0,\n    log,\n",
+      "tests": [
+        "test/marketplace-update.test.ts"
+      ]
+    },
+    {
+      "id": "market-landed-guard",
+      "rule": "a run that ends on a held version is never handed to the ladder",
+      "file": "lib/marketplace-update.mjs",
+      "find": "    return heldBad(landed) ? refused() : { kind: 'installed', targetVersion: landed }\n",
+      "replace": "    return { kind: 'installed', targetVersion: landed }\n",
+      "tests": [
+        "test/marketplace-update.test.ts"
+      ]
+    },
+    {
+      "id": "market-failed-held",
+      "rule": "a held stop is a refusal, not a failed update",
+      "file": "lib/marketplace-update.mjs",
+      "find": "  if (String(result?.failedStep?.message).endsWith('version_held_bad')) return refused()\n",
+      "replace": "",
+      "tests": [
+        "test/marketplace-update.test.ts"
+      ]
+    },
+    {
+      "id": "watcher-held-reads",
+      "rule": "a watcher job reads the marks",
+      "file": "lib/watcher-core.mjs",
+      "find": "      /^\\d+\\.\\d+\\.\\d+$/.test(String(version)) && fs.exists(joinDir(joinDir(joinDir(joinDir(home, '.bgos-agent'), 'idle-update'), String(version)), 'bad')),\n",
+      "replace": "      false,\n",
+      "tests": [
+        "test/watcher-core.test.ts"
+      ]
+    },
+    {
+      "id": "watcher-held-shape",
+      "rule": "a version from a plan never names a path",
+      "file": "lib/watcher-core.mjs",
+      "find": "      /^\\d+\\.\\d+\\.\\d+$/.test(String(version)) && fs.exists(joinDir(joinDir(joinDir(joinDir(home, '.bgos-agent'), 'idle-update'), String(version)), 'bad')),\n",
+      "replace": "      fs.exists(joinDir(joinDir(joinDir(joinDir(home, '.bgos-agent'), 'idle-update'), String(version)), 'bad')),\n",
+      "tests": [
+        "test/watcher-core.test.ts"
+      ]
+    },
+    {
+      "id": "publish-second-staged",
+      "rule": "the second wait reports the build of this tick too",
+      "file": "lib/idle-update.mjs",
+      "find": "      publish(second.reason, staged)\n",
+      "replace": "      publish(second.reason)\n",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "install-back-landed-stands",
+      "rule": "a report stands while the install is where this agent put it",
+      "file": "lib/idle-update.mjs",
+      "find": " && staged !== installBack?.landed\n",
+      "replace": "\n",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "wiring-clone-held",
+      "rule": "a clone reads the marks",
+      "file": "server.ts",
+      "find": "    heldBad: idleUpdateHeldBad,\n    rootDir: import.meta.dir,\n",
+      "replace": "    rootDir: import.meta.dir,\n",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "clone-held-check",
+      "rule": "the nightly check never pulls a build held bad here",
+      "file": "lib/self-update.ts",
+      "bun": true,
+      "find": "      if (this.opts.heldBad?.(inspection.latestVersion as string)) {\n        this.opts.log(",
+      "replace": "      if (false) {\n        this.opts.log(",
+      "tests": [
+        "test/self-update.published-release.test.ts"
+      ]
+    },
+    {
+      "id": "clone-held-click",
+      "rule": "a click on a clone never pulls a build held bad here",
+      "file": "lib/self-update.ts",
+      "bun": true,
+      "find": "      if (this.opts.heldBad?.(inspection.latestVersion as string)) {\n        return { kind: 'no-update'",
+      "replace": "      if (false) {\n        return { kind: 'no-update'",
+      "tests": [
+        "test/self-update.published-release.test.ts"
       ]
     }
   ]
