@@ -160,14 +160,28 @@ Every fix above was mutation proven again (M23 to M34).
 |---|---|
 | `npx tsc --noEmit` (plugin root; `NODE_OPTIONS=--max-old-space-size=8192`) | exit 0, no output |
 | The new tests | `test/attach-scope.test.ts` 38 pass, `test/attach-scope.launcher.test.ts` 7 pass, `test/attach-scope.e2e.test.ts` 6 pass |
-| Full `npm test`, with `TMPDIR` set to its real path | **green**: node family 7822 pass, 0 fail, 47 skipped; real Chromium 11 pass, 0 fail, 4 skipped; bun family 375 pass, 0 fail; `[run-tests] both families green`, exit 0 |
-| Full `npm test` with this Mac's default `TMPDIR` (a symlink) | 45 fail, every one in 12 browser-profile and browser-bootstrap files. Two of those files also hang until stopped (I stopped only those two PIDs of my own run). The same files fail the same way on a pristine `git archive HEAD` export of main (48 fail and 2 timeouts, with the hung tests capped at 180 s), and no file fails on my tree that passes on HEAD. |
+| **Full `npm test`, plain, this Mac's default environment** (`TMPDIR=/var/folders/...`, a symlink), on the final commit | **green**: node family 7825 pass, 0 fail, 47 skipped; real Chromium 11 pass, 0 fail, 4 skipped; bun family 375 pass, 0 fail; `[run-tests] both families green`, exit 0 |
+| How it got there | Before the runner fix, plain `npm test` here had 45 fails and 2 hangs. Every one was in 12 browser-profile and browser-bootstrap files, and the same files fail the same way on a pristine `git archive HEAD` export of main (48 fail and 2 timeouts, the hung tests capped at 180 s). No file failed on my tree that passed on HEAD. The cause: on macOS `$TMPDIR` is a symlink, which the browser profile code refuses on purpose. I cherry picked `46db295` from the local branch `fix/suite-green-off-ci` (`git cherry-pick -x`, test runner and its own test only, nothing that ships), which hands every family the real temp folder. The identical patch merges cleanly when that branch lands. |
 | Version advances against base | 0.80.2 (main) to 0.82.0 in `package.json`, `.claude-plugin/plugin.json` and `package-lock.json`; CHANGELOG entry at the top |
 | Dashes | No em or en dash in any added line, the evidence files or this report. `test/attach-scope.test.ts` scans every source file of the change. |
 
-About the second row: the cause is environmental and known. On macOS `$TMPDIR` is a symlink, which the browser profile code refuses on purpose. The local branch `fix/suite-green-off-ci` (not on main here) makes `scripts/run-tests.mjs` hand every family the real temp folder. The green run above sets the same thing in the environment only, with no code change.
-
 **Not applicable here, said plainly.** This lane touched only the plugin repo, so these BRIEF items did not apply: the BGOS `frontend` (yarn install, the expo-app tsc, `src/__tests__/meta`), `backend` (npm ci, jest), and the light and dark UI checks. The plugin repo has no `.claude/rules` and no `docs/CORE-CONTRACTS.md`. I installed the plugin's own dependencies with `npm ci`.
+
+## Done when, checked
+
+The BRIEF has no literal "Done when" sentence. Its done conditions are the GATE line and the RULES deliverables, each checked here against evidence above:
+
+| BRIEF requirement | Evidence |
+|---|---|
+| Step one of the #1244 design: the scope check behind a setting that starts OFF, fail open | `DEFAULT_ATTACH_SCOPE_MODE = 'off'`; the unknown, unreadable and fail open tests; e2e "setting OFF: the full daemon as before" |
+| Telemetry that counts how often it WOULD have refused | events file, `summarizeAttachScopeEvents`, `bin/hoai-attach-scope.mjs`, check up row; e2e asserts the counted would-refuse |
+| Red first unit tests: right agent attaches, wrong agent refused when on, fail open when the scope cannot be read | Tests, red first section, steps 1 to 7 |
+| Mutation proven, changed line printed, non-compiling mutant not counted | 36 of 36 killed; M31's non-compiling first form was reported and redone |
+| Full `npm test` and tsc green | Gates rows 1 and 3 |
+| Version above origin/main's 0.81.x, CHANGELOG entry, the version check passes | 0.82.0; `scripts/check-version-bump.mjs`: "ok: Version advances 0.80.2 -> 0.82.0", and against a 0.81.9 base "ok: Version advances 0.81.9 -> 0.82.0" |
+| One delegated review, its findings fixed | Delegated review section |
+| REPORT.md with what changed, tests, mutations, how to measure before the flip | This file |
+| Branch `feat/daemon-attach-scope`, commit only, no push; read only against production; no em or en dashes | Committed, never pushed; no production access; dash scans at 0 |
 
 ## Follow ups
 
