@@ -746,8 +746,9 @@ test('the canary\'s own verdict spends nothing: it may fail on the next version 
 /** A latch is written once it has stood for a validation's whole deadline, in polls in a row. */
 async function latches(disk: ReturnType<typeof memDisk>, a: Rig) {
   for (let poll = 0; poll < 30; poll += 1) {
-    assert.equal(await a.c.tick(), 'version_held_bad')
+    assert.equal(await a.c.tick(), 'canary_unconfirmed', 'nothing is held yet, so nothing says so')
     assert.equal(disk.files.has(join(MACHINE, '0.81.0', 'bad')), false, `poll ${poll + 1}`)
+    disk.clock.now += 30 * SEC
   }
   assert.equal(await a.c.tick(), 'version_held_bad')
 }
@@ -1881,6 +1882,7 @@ const silentFiles = (disk: ReturnType<typeof memDisk>) => [...disk.files.keys()]
 
 /** Agent 913 proved this version here an hour ago, and has delivered since. */
 function proven(disk: ReturnType<typeof memDisk>, target = '0.81.0') {
+  disk.fs.createExclusive(join(MACHINE, target, 'canary-1'), JSON.stringify({ assistantId: '913', at: new Date(disk.clock.now - 2 * HOUR).toISOString() }))
   disk.fs.writeAtomic(join(MACHINE, target, 'validated'), JSON.stringify({ assistantId: '913', at: new Date(disk.clock.now - HOUR).toISOString(), canary: 1 }))
   disk.fs.writeAtomic(join(MACHINE, target, 'alive'), JSON.stringify({ assistantId: '913', at: new Date(disk.clock.now).toISOString(), provedMs: 60 * MIN }))
 }
@@ -2358,6 +2360,43 @@ test('the canary dies at minute 20: not one of fourteen followers moves, and one
   assert.equal(disk.files.has(join(MACHINE, 'lease.json')), false)
 })
 
+test('a login that ran out stops the proof, not the canary: the stamp stays fresh and adds nothing, so the followers wait and nothing goes on the record', async () => {
+  const disk = memDisk()
+  const canary = await canaryProved(disk)
+  const f = agent(disk, { id: 914 })
+  await lives(canary, 6 * MIN)
+  canary.s.loginExpired = true
+  canary.s.deaf = true
+  for (let poll = 0; poll < 120; poll += 1) {
+    disk.clock.now += 30 * SEC
+    canary.s.beaconAtMs = disk.clock.now
+    await canary.c.tick()
+    await f.c.tick()
+  }
+  assert.equal(proved(disk), 6 * MIN)
+  assert.equal(aliveAt(disk), new Date(disk.clock.now).toISOString())
+  assert.deepEqual(silentFiles(disk), [])
+  assert.equal(await f.c.tick(), 'follower_wait')
+  canary.s.loginExpired = false
+  canary.s.deaf = false
+  await lives(canary, MIN)
+  assert.equal(proved(disk), 7 * MIN)
+})
+
+test('a canary with no beat since it arrived asks for one: after a restart in an outage the timer is hours away, and it could not stamp till then', async () => {
+  const disk = memDisk()
+  await canaryProved(disk)
+  disk.clock.now += 3 * MIN
+  const again = agent(disk, { id: 913, running: '0.81.0', staged: null })
+  again.s.beaconAtMs = disk.clock.now
+  await again.c.tick()
+  assert.equal(aliveAt(disk), null)
+  assert.equal(again.heartbeatRequests, 1)
+  deliver(again)
+  await again.c.tick()
+  assert.equal(again.heartbeatRequests, 1, 'none while the beat stands')
+})
+
 test('a stale stamp at a wake is no silence, and no proof: nine polls of it write nothing, and the follower waits for what the canary proves next', async () => {
   const disk = memDisk()
   const canary = await canaryProved(disk)
@@ -2423,7 +2462,7 @@ test('polls hours apart are not in a row: a computer that wakes for a moment at 
   assert.deepEqual(silentFiles(disk), [])
 })
 
-test('an outage on this agent counts nothing: the canary stops stamping in one too, and that says nothing about the build', async () => {
+test('an outage on this agent counts nothing: a canary cut off in one may stop stamping, and that says nothing about the build', async () => {
   const disk = memDisk()
   await canaryProved(disk)
   const f = agent(disk, { id: 914 })

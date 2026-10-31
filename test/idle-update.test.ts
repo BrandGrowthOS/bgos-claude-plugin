@@ -337,7 +337,7 @@ test('gate 18: another agent on this computer holds the restart lease, or releas
 test('gate 19: the first agent onto a version is its canary, and the rest wait until it confirms', () => {
   waits({ machine: { lease: 'free', spacingUntilMs: null, canary: 'pending' } }, 'canary_unconfirmed')
   waits({ machine: { lease: 'free', spacingUntilMs: null, canary: 'hold' } }, 'canary_unconfirmed')
-  waits({ machine: { lease: 'free', spacingUntilMs: null, canary: 'latch_bad' } }, 'version_held_bad')
+  waits({ machine: { lease: 'free', spacingUntilMs: null, canary: 'latch_bad' } }, 'canary_unconfirmed')
   waits({ machine: { lease: 'free', spacingUntilMs: null, canary: 'silent_hold' } }, 'silent_hold')
   waits({ machine: { lease: 'free', spacingUntilMs: null, canary: 'follower_wait' } }, 'follower_wait')
   waits({ machine: { lease: 'free', spacingUntilMs: null, canary: 'canary_quiet' } }, 'canary_quiet')
