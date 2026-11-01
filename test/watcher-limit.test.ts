@@ -552,6 +552,57 @@ test('option A lasts only until the reset passes: a later limit with a later res
   assertOnlySafeTmux(tmux.calls)
 })
 
+test('option A counts from the refusal, not the press: a real turn just before the refusal does not end it', async () => {
+  const { r, fs, clock } = usageBackRig()
+  const tmux = fakeTmux(socketOf(r), () => picker())
+  clock.onSleep((nowMs) => {
+    // Inside one poll: the queue drains into one answered turn, then Claude refuses the next.
+    if (tmux.state.entered === 1 && fs.readFile(r.transcript)!.split('\n').filter(Boolean).length === 1) {
+      appendTranscript(fs, r, assistantTurn(nowMs - 2_000))
+      appendTranscript(fs, r, limitRecord(nowMs - 1_000))
+    }
+  })
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'still_limited')
+  fs.touch(r.credentials, SWAP_AT + 2 * HOUR - MIN)
+  clock.set(SWAP_AT + 2 * HOUR)
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'limited', 'the login proof is still spent')
+  assert.equal(enters(tmux.calls).length, 1)
+  assertOnlySafeTmux(tmux.calls)
+})
+
+test('option A also when the refusal comes after the verify (the press closed the picker, Claude refused the next message)', async () => {
+  const { r, fs, clock } = usageBackRig()
+  let pickerUp = true
+  const tmux = fakeTmux(socketOf(r), () => (pickerUp ? picker() : IDLE), () => {
+    pickerUp = false
+  })
+  const notices: string[] = []
+  const rename = fs.rename
+  fs.rename = (a, b) => {
+    rename(a, b)
+    if (b.endsWith(LIMIT_NOTICE_FILE_NAME)) notices.push(parseLimitNotice(fs.readFile(b)!)!.outcome)
+  }
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'closed', 'nothing was waiting')
+  // An hour later the owner writes; Claude refuses it and the picker opens again. No real turn since.
+  const refusedAt = SWAP_AT + 70 * MIN
+  appendTranscript(fs, r, limitRecord(refusedAt))
+  pickerUp = true
+  for (const later of [80 * MIN, 3 * HOUR, 26 * HOUR]) {
+    fs.touch(r.credentials, SWAP_AT + later - MIN) // the login keeps refreshing
+    clock.set(SWAP_AT + later)
+    assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'limited', `+${later / MIN} min: the press on the login proof met the limit again`)
+  }
+  assert.equal(enters(tmux.calls).length, 1, 'no second press before the reset')
+  assert.deepEqual(notices, ['closed', 'still_limited'], 'told once that the watcher waits for the reset')
+  assert.match(limitNoticeText(noticeOf(fs, r)!), /waits for the limit to reset at 2026-11-06 16:00 UTC/)
+  clock.set(RESETS_AT + 2 * MIN)
+  await runLimitPass(ctx)
+  assert.equal(enters(tmux.calls).length, 2, 'the reset passed: one press')
+  assertOnlySafeTmux(tmux.calls)
+})
+
 test('option A ends with the episode: after a real turn (the owner fixed it), the next limit may use a login change again', async () => {
   const { r, fs, clock } = usageBackRig()
   const tmux = fakeTmux(socketOf(r), () => picker())
