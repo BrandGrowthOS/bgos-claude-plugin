@@ -702,6 +702,53 @@ test('Windows: a dead launcher (no console to attach to) is never pressed; the o
   assert.deepEqual([out.agents[0].outcome, noticeOf(fs, r)?.why], ['cannot_press', 'no_console'])
 })
 
+// The process table as listAgents reads it (lib/agent-inventory.mjs launcherProcessQuery): identity only.
+const processTable = (command: string) => (file: string, args: string[]) =>
+  file === 'powershell.exe' && args.join(' ').includes('Win32_Process')
+    ? { code: 0, stdout: JSON.stringify({ ProcessId: 4242, CommandLine: command, StartedAtMs: LIMIT_AT - 6 * HOUR }) }
+    : { code: 1, stdout: '' }
+
+test('Windows: the console pid must still be the hoai launcher (row.launcherLive); a pid another program took is never read or pressed', async () => {
+  const hoai = '"C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\kc\\.claude\\plugins\\cache\\hoai\\hoai\\0.74.4\\bin\\hoai-core.mjs" --x'
+  for (const [label, command, presses] of [
+    ['another program took the pid', 'C:\\Windows\\System32\\notepad.exe', 0],
+    ['the pid is still the hoai launcher', hoai, 1],
+  ] as const) {
+    const r = winRig()
+    const fs = agentFs(r)
+    writeTranscript(fs, r, [limitRecord()])
+    fs.touch(r.credentials, SWAP_AT)
+    const clock = fakeClock(SWAP_AT + MIN)
+    // The fake helper only records the read and the press it would get.
+    const helper = fakeHelper((s) => (s.pressed ? IDLE : picker()))
+    const { ctx } = ctxFor(r, fs, clock, helper.exec, { execSync: processTable(command) })
+    const out = await runLimitPass(ctx)
+    assertOnlySafeHelper(helper.calls)
+    assert.equal(helper.calls.filter((c) => c.args.includes('press')).length, presses, label)
+    if (presses === 0) {
+      assert.deepEqual(helper.calls, [], `${label}: its console is not even read`)
+      assert.deepEqual([out.agents[0].outcome, noticeOf(fs, r)?.why], ['cannot_press', 'no_console'], label)
+    }
+  }
+})
+
+test("Windows: a record the agent's daemon declares (its pid is the daemon, not the launcher console) is never read or pressed", async () => {
+  const r = winRig()
+  const fs = agentFs(r)
+  fs.writeFile(
+    `${r.stateDir}\\supervisor.json`,
+    JSON.stringify({ pid: 4242, capabilities: ['relaunch'], startedAt: new Date(LIMIT_AT - 6 * HOUR).toISOString(), supervisor: { kind: 'launcher' } }),
+  )
+  writeTranscript(fs, r, [limitRecord()])
+  fs.touch(r.credentials, SWAP_AT)
+  const clock = fakeClock(SWAP_AT + MIN)
+  const helper = fakeHelper(() => picker())
+  const { ctx } = ctxFor(r, fs, clock, helper.exec)
+  const out = await runLimitPass(ctx)
+  assert.deepEqual(helper.calls, [], 'the daemon console is not the agent console')
+  assert.deepEqual([out.agents[0].outcome, noticeOf(fs, r)?.why], ['cannot_press', 'no_console'])
+})
+
 test('Windows: a helper answer that does not hash to its own text is unreadable, never pressed', async () => {
   const r = winRig()
   const fs = agentFs(r)
