@@ -22,6 +22,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { MARKER_POLL_MS, MAX_RELAUNCHES_PER_WINDOW, RELAUNCH_HEALTHY_MS, RELAUNCH_WINDOW_MS } from '../bin/hoai-core.mjs'
+import { WIN32_JSC_THREAD_OPTIONS } from '../bin/bgos-launch.mjs'
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..')
 const MISSING =
@@ -391,6 +392,13 @@ test('handoffEnv: drops Claude Code session markers and every key the plugin and
   }
   assert.ok(SESSION_ENV_KEYS.includes('CLAUDECODE'))
   assert.equal(env.BGOS_API_KEY, 'secret', 'the input is not mutated')
+})
+
+test('handoffEnv: the JSC thread options the launcher gives this daemon on Windows never reach the helper or a relaunched claude', () => {
+  const { handoffEnv, SESSION_ENV_KEYS } = m()
+  for (const key of Object.keys(WIN32_JSC_THREAD_OPTIONS)) assert.ok(SESSION_ENV_KEYS.includes(key), key)
+  const out = handoffEnv({ ...WIN32_JSC_THREAD_OPTIONS, PATH: 'C:\\Windows' }, { platform: 'win32' })
+  assert.deepEqual(out, { PATH: 'C:\\Windows' })
 })
 
 test('handoffArgv and parseHandoffArgv round trip; junk ids, pids, kinds and relative paths give null', () => {

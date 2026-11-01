@@ -27,6 +27,10 @@ import {
   resolveLaunchCwd,
   exitCodeForChild,
   main,
+  bunRuntimeEnv,
+  bunRefusesOptions,
+  threadOptionsWarning,
+  WIN32_JSC_THREAD_OPTIONS,
   LAUNCH_EXIT_NOT_FOUND,
   SIGNAL_EXIT_CODES,
 } from '../bin/bgos-launch.mjs'
@@ -430,4 +434,219 @@ test('main: on a Node older than 22.12.0 it says so in one plain line and still 
       assert.equal(errs[0], `[bgos-launch] This machine runs Node.js ${nodeVersion}, and the HOAI Agent Browser needs Node.js 22.12.0 or newer: install a current Node.js 22 or 24 LTS release from https://nodejs.org, then restart this agent.\n`)
     } else assert.deepEqual(errs, [], nodeVersion)
   }
+})
+
+// Board rows a8646712 and dc37e2ac. On Windows, bun 1.3 leaks every thread that
+// exits: its handle stays open and about 0.3 MB of committed memory with it.
+// JavaScriptCore starts garbage collector helpers and JIT compiler threads when
+// there is work and lets them exit a few seconds later, so an idle daemon made
+// and lost threads all day: committed memory grew 100 to 330 MB an hour while
+// the working set stayed flat, until a PC ran out. One marker, no concurrent
+// collector and no concurrent compiler leave both pools empty. Windows only:
+// the Mac fleet stays flat on the same bun.
+test('WIN32_JSC_THREAD_OPTIONS: one GC marker, no concurrent collector, no concurrent compiler', () => {
+  assert.deepEqual({ ...WIN32_JSC_THREAD_OPTIONS }, {
+    BUN_JSC_numberOfGCMarkers: '1',
+    BUN_JSC_useConcurrentGC: '0',
+    BUN_JSC_useConcurrentJIT: '0',
+  })
+  assert.ok(Object.isFrozen(WIN32_JSC_THREAD_OPTIONS))
+})
+
+test('bunRuntimeEnv: win32 gets the thread options; macOS and Linux get nothing', () => {
+  assert.deepEqual(bunRuntimeEnv({ env: { PATH: 'C:\\bin' }, platform: 'win32' }), {
+    BUN_JSC_numberOfGCMarkers: '1',
+    BUN_JSC_useConcurrentGC: '0',
+    BUN_JSC_useConcurrentJIT: '0',
+  })
+  assert.deepEqual(bunRuntimeEnv({ env: { PATH: '/usr/bin' }, platform: 'darwin' }), {})
+  assert.deepEqual(bunRuntimeEnv({ env: { PATH: '/usr/bin' }, platform: 'linux' }), {})
+})
+
+test('bunRuntimeEnv: a value the operator set is theirs, even an empty one', () => {
+  assert.deepEqual(
+    bunRuntimeEnv({ env: { BUN_JSC_numberOfGCMarkers: '4' }, platform: 'win32' }),
+    { BUN_JSC_useConcurrentGC: '0', BUN_JSC_useConcurrentJIT: '0' },
+  )
+  assert.deepEqual(
+    bunRuntimeEnv({ env: { BUN_JSC_numberOfGCMarkers: '2', BUN_JSC_useConcurrentGC: '', BUN_JSC_useConcurrentJIT: '1' }, platform: 'win32' }),
+    {},
+  )
+})
+
+/** A stand in for spawnSync that records each `bun -e 0` probe and answers with `result`. */
+function probeSpy(result: { status: number | null; stderr: string }) {
+  const probes: Array<{ file: string; args: string[]; env: Record<string, string> }> = []
+  const impl = ((file: string, args: string[], opts: { env: Record<string, string> }) => {
+    probes.push({ file, args, env: opts.env })
+    return result
+  }) as never
+  return { probes, impl }
+}
+
+const REFUSED = { status: 1, stderr: 'error: invalid JSC environment variable\n\n    BUN_JSC_useConcurrentJIT=0\n' }
+
+test('main: on win32 bun starts with the thread options beside the relocation and the rest of the environment', async () => {
+  const child = new FakeChild()
+  const calls: Array<{ file: string; opts: Record<string, unknown> }> = []
+  const probe = probeSpy({ status: 0, stderr: '' })
+  const done = main(['C:\\plugin\\server.ts'], {
+    env: { PATH: 'C:\\bun', USERPROFILE: 'C:\\Users\\kc' },
+    home: 'C:\\Users\\kc',
+    platform: 'win32',
+    exists: existsIn(['C:\\bun\\bun.exe']),
+    spawnImpl: ((file: string, _a: string[], opts: Record<string, unknown>) => {
+      calls.push({ file, opts })
+      return child
+    }) as never,
+    spawnSyncImpl: probe.impl,
+    writeErr: () => {},
+    onSignal: () => {},
+  })
+  child.emit('exit', 0, null)
+  assert.equal(await done, 0)
+  assert.equal(calls[0].file, 'C:\\bun\\bun.exe')
+  assert.equal(calls[0].opts.cwd, 'C:\\plugin')
+  const env = calls[0].opts.env as Record<string, string>
+  assert.equal(env.BUN_JSC_numberOfGCMarkers, '1')
+  assert.equal(env.BUN_JSC_useConcurrentGC, '0')
+  assert.equal(env.BUN_JSC_useConcurrentJIT, '0')
+  assert.equal(env.BGOS_LAUNCH_CWD, process.cwd())
+  assert.equal(env.PATH, 'C:\\bun')
+  assert.equal(env.USERPROFILE, 'C:\\Users\\kc')
+  // The same bun ran `-e 0` with the options first, once.
+  assert.equal(probe.probes.length, 1)
+  assert.equal(probe.probes[0].file, 'C:\\bun\\bun.exe')
+  assert.deepEqual(probe.probes[0].args, ['-e', '0'])
+  assert.equal(probe.probes[0].env.BUN_JSC_useConcurrentJIT, '0')
+})
+
+// bun exits on a JSC option it does not know, and those options change between
+// bun releases: a bun that refuses them must still start the daemon, as before.
+test('main: on win32 a bun that refuses the options starts without them and says so', async () => {
+  const child = new FakeChild()
+  const calls: Array<{ opts: Record<string, unknown> }> = []
+  let err = ''
+  const done = main(['C:\\plugin\\server.ts'], {
+    env: { PATH: 'C:\\bun' },
+    home: 'C:\\Users\\kc',
+    platform: 'win32',
+    exists: existsIn(['C:\\bun\\bun.exe']),
+    spawnImpl: ((_f: string, _a: string[], opts: Record<string, unknown>) => {
+      calls.push({ opts })
+      return child
+    }) as never,
+    spawnSyncImpl: probeSpy(REFUSED).impl,
+    writeErr: (text: string) => {
+      err += text
+    },
+    onSignal: () => {},
+  })
+  child.emit('exit', 0, null)
+  assert.equal(await done, 0)
+  const env = calls[0].opts.env as Record<string, string>
+  assert.deepEqual(Object.keys(env).sort(), ['BGOS_LAUNCH_CWD', 'PATH'])
+  assert.match(err, /^\[bgos-launch\] this bun refuses BUN_JSC_numberOfGCMarkers, BUN_JSC_useConcurrentGC, BUN_JSC_useConcurrentJIT; starting it without them\n$/)
+})
+
+// The bunx last resort is bun in `bun x` mode: `bunx -e 0` would fetch a package
+// named 0, not check the options, so a bunx launch stays exactly as before.
+test('main: on win32 a bunx launch gets no thread options and runs no check', async () => {
+  const child = new FakeChild()
+  const calls: Array<{ file: string; opts: Record<string, unknown> }> = []
+  const done = main(['C:\\plugin\\server.ts'], {
+    env: { PATH: 'C:\\bun' },
+    home: 'C:\\Users\\kc',
+    platform: 'win32',
+    exists: existsIn(['C:\\bun\\bunx.exe']),
+    spawnImpl: ((file: string, _a: string[], opts: Record<string, unknown>) => {
+      calls.push({ file, opts })
+      return child
+    }) as never,
+    spawnSyncImpl: (() => assert.fail('no check through bunx')) as never,
+    writeErr: () => {},
+    onSignal: () => {},
+  })
+  child.emit('exit', 0, null)
+  assert.equal(await done, 0)
+  assert.equal(calls[0].file, 'C:\\bun\\bunx.exe')
+  assert.deepEqual(Object.keys(calls[0].opts.env as Record<string, string>).sort(), ['BGOS_LAUNCH_CWD', 'PATH'])
+})
+
+test('bunRefusesOptions: only bun\'s own refusal counts, never a probe that failed some other way', () => {
+  assert.equal(bunRefusesOptions('bun', {}, probeSpy(REFUSED).impl), true)
+  assert.equal(bunRefusesOptions('bun', {}, probeSpy({ status: 0, stderr: '' }).impl), false)
+  assert.equal(bunRefusesOptions('bun', {}, probeSpy({ status: null, stderr: '' }).impl), false, 'a timeout')
+  assert.equal(bunRefusesOptions('bun', {}, probeSpy({ status: 1, stderr: 'error: Module not found' }).impl), false)
+})
+
+test('main: on win32 a wrapper argv still gets the thread options, and no relocation variable', async () => {
+  const child = new FakeChild()
+  const calls: Array<{ opts: Record<string, unknown> }> = []
+  const done = main(['C:\\plugin\\wrapper.mjs'], {
+    env: { PATH: 'C:\\bun' },
+    home: 'C:\\Users\\kc',
+    platform: 'win32',
+    exists: existsIn(['C:\\bun\\bun.exe']),
+    spawnImpl: ((_f: string, _a: string[], opts: Record<string, unknown>) => {
+      calls.push({ opts })
+      return child
+    }) as never,
+    spawnSyncImpl: probeSpy({ status: 0, stderr: '' }).impl,
+    writeErr: () => {},
+    onSignal: () => {},
+  })
+  child.emit('exit', 0, null)
+  assert.equal(await done, 0)
+  assert.equal(calls[0].opts.cwd, undefined)
+  const env = calls[0].opts.env as Record<string, string>
+  assert.equal(env.BUN_JSC_numberOfGCMarkers, '1')
+  assert.equal(env.BUN_JSC_useConcurrentGC, '0')
+  assert.equal(env.BUN_JSC_useConcurrentJIT, '0')
+  assert.equal(env.BGOS_LAUNCH_CWD, undefined)
+})
+
+test('main: on macOS bun starts exactly as before, with no runtime options added', async () => {
+  const child = new FakeChild()
+  const calls: Array<{ opts: Record<string, unknown> }> = []
+  const done = main(['/opt/plugin/server.ts'], {
+    env: { PATH: '/usr/bin' },
+    home: '/Users/kc',
+    platform: 'darwin',
+    exists: existsIn(['/usr/bin/bun']),
+    spawnImpl: ((_f: string, _a: string[], opts: Record<string, unknown>) => {
+      calls.push({ opts })
+      return child
+    }) as never,
+    spawnSyncImpl: (() => assert.fail('nothing is probed off Windows')) as never,
+    writeErr: () => {},
+    onSignal: () => {},
+  })
+  child.emit('exit', 0, null)
+  assert.equal(await done, 0)
+  const env = calls[0].opts.env as Record<string, string>
+  assert.deepEqual(Object.keys(env).sort(), ['BGOS_LAUNCH_CWD', 'PATH'])
+})
+
+// A daemon started on Windows some other way than through this launcher (a
+// hand written .mcp.json running bun server.ts) still loses memory with every
+// thread, so it says so once at boot, naming what is missing and the way out.
+test('threadOptionsWarning: a Windows daemon without the options says which and how to fix it; otherwise nothing', () => {
+  const warning = threadOptionsWarning({ env: { BUN_JSC_numberOfGCMarkers: '1' }, platform: 'win32' })
+  assert.ok(warning)
+  assert.ok(warning.includes('BUN_JSC_useConcurrentGC'), warning)
+  assert.ok(warning.includes('BUN_JSC_useConcurrentJIT'), warning)
+  assert.ok(!warning.includes('BUN_JSC_numberOfGCMarkers'), 'a key already set is not missing')
+  assert.ok(warning.includes('bin/bgos-launch.mjs'), 'it names the way out')
+  assert.ok(!/[\u2013\u2014]/.test(warning), 'no en or em dashes')
+  assert.equal(threadOptionsWarning({ env: { ...WIN32_JSC_THREAD_OPTIONS }, platform: 'win32' }), null)
+  assert.equal(threadOptionsWarning({ env: {}, platform: 'darwin' }), null)
+  assert.equal(threadOptionsWarning({ env: {}, platform: 'linux' }), null)
+})
+
+test('server.ts logs the thread options warning once at boot', async () => {
+  const { readFileSync } = await import('node:fs')
+  const source = readFileSync(join(import.meta.dirname, '..', 'server.ts'), 'utf8')
+  assert.match(source, /import \{ threadOptionsWarning \} from '\.\/bin\/bgos-launch\.mjs'/)
+  assert.match(source, /threadOptionsWarning\(\{ env: process\.env, platform: process\.platform \}\)/)
 })

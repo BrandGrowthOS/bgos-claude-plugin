@@ -59,6 +59,15 @@
  *                       for a daemon declaring this, because that wake asks
  *                       the agent to write its goals. Every host: it is a
  *                       plain HTTP write the model makes itself.
+ *   mission_goal_working
+ *                       the model has set_goal_working, which marks the
+ *                       goals it is working on now (PATCH .../goals/:goalId/
+ *                       working, BGOS #3575). The served canon tells the
+ *                       working mark paragraph (the 30 minute refresh, who
+ *                       may set and clear, a mark is not progress) only to a
+ *                       caller declaring this (MISSION_GOAL_WORKING_TOKEN in
+ *                       BGOS capability-canon.ts). Every host: a plain HTTP
+ *                       write the model makes itself.
  *   mission_pause       a pause truly stops the work. ONLY where the injector
  *                       answers, because the pause this daemon can enforce IS
  *                       clearing the native goal. It is honest about its
@@ -246,6 +255,25 @@
  *                       before 0.71.8 a Claude Code agent could send a card
  *                       it was never told about.
  *
+ *   model_effort_picker
+ *                       BGOS's own token (#3060, model-effort-picker.model.ts
+ *                       MODEL_EFFORT_PICKER): its gate shows the owner's model
+ *                       and effort picker only for a pairing that declares it.
+ *                       This daemon answers list_model_effort and
+ *                       apply_model_effort over voice_rpc (lib/model-effort-rpc.ts):
+ *                       it LISTS the model and effort the session really runs
+ *                       and what the installed CLI offers, and it APPLIES a
+ *                       selection by typing a frozen literal into its own pane
+ *                       only when every precondition holds, confirmed from the
+ *                       session's own status line (lib/model-effort-control.ts,
+ *                       Route A). ONLY while the owner opted this agent in on
+ *                       its machine, the injector answers, and the status line
+ *                       bridge has a fresh observation with a non empty
+ *                       catalog, so losing any one withdraws it on the next
+ *                       beat. PAIRING CONNECTIONS ONLY (BGOS's gate requires a
+ *                       pairing) and NEVER ON WINDOWS: the pane proof reads the
+ *                       process tree and tmux, which a Windows host has not.
+ *
  * Token grammar is the backend's: /^[a-z][a-z0-9_]{0,63}$/, at most 32
  * entries (backend/src/dto/integrations/pair-exchange.dto.ts). The base is
  * frozen so no call site can push onto it at runtime, and the answer is a
@@ -253,7 +281,7 @@
  * poison the next beat; test/declared-capabilities.test.ts holds all of it in
  * place.
  *
- * The canon gated tokens (permission_card, plan_card and hard_floor) are NOT spelled
+ * The canon gated tokens (permission_card, plan_card, hard_floor and ask_answered) are NOT spelled
  * here. They come from lib/claude-capability-tokens.ts, a byte-for-byte copy
  * of the BGOS file the canon gates on
  * (backend/src/integrations/claude-capability-tokens.ts), whose sha256 both
@@ -262,7 +290,7 @@
  * agent silently untold.
  */
 
-import { HARD_FLOOR_RULES_2_TOKEN, HARD_FLOOR_TOKEN, PERMISSION_CARD, PLAN_CARD } from './claude-capability-tokens.js'
+import { ASK_ANSWERED_TOKEN, ASK_MULTI_SELECT_TOKEN, HARD_FLOOR_RULES_2_TOKEN, HARD_FLOOR_TOKEN, PERMISSION_CARD, PLAN_CARD } from './claude-capability-tokens.js'
 import { SESSIONS_LIBRARY, STOP_PAUSES_MISSION } from './session-controls-contract.ts'
 import { EMAIL_LABEL, labelsExternalEmail } from './inbound-channel.ts'
 import { EMAIL_SEND, shipsEmailTools } from './agent-email-tools.ts'
@@ -273,6 +301,7 @@ export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   'mission_events',
   'mission_goal_checks',
   'mission_set_goals',
+  'mission_goal_working',
   PERMISSION_CARD,
   PLAN_CARD,
   'memory_rpc',
@@ -286,6 +315,14 @@ export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   'skills_list',
   'skills_receive',
   'ui_card',
+  // The async question card (lib/ask-tracker.ts): ask_user_input returns
+  // pending, one ask_answered event carries every answer however late, and
+  // withdraw_ask retires a card. Typed tools on any host, over pairing or an
+  // API key (the poll and the reconcile timer deliver without the stream).
+  ASK_ANSWERED_TOKEN,
+  // multi_select on an ask_user_input question, answered with arrays
+  // (lib/ask-tracker.ts). The same typed tool, so the same hosts.
+  ASK_MULTI_SELECT_TOKEN,
 ])
 
 /**
@@ -312,6 +349,9 @@ export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
  * hard_floor is.
  */
 export const DECLARED_CAPABILITIES_PAIRING: readonly string[] = Object.freeze([HARD_FLOOR_TOKEN, HARD_FLOOR_RULES_2_TOKEN])
+
+/** The owner's model and effort picker (BGOS #3060), declared only while it can act. */
+export const MODEL_EFFORT_PICKER_TOKEN = 'model_effort_picker'
 
 /** Declared only while this daemon can type into its own CLI's composer. */
 export const DECLARED_CAPABILITIES_INJECTOR: readonly string[] = Object.freeze([
@@ -357,7 +397,15 @@ export function declaredCapabilities(input: {
    * the panel opens a person's lane only when the pairing declares both.
    */
   personLanes?: boolean
+  /**
+   * Can this daemon change its session's model and effort for the owner right
+   * now (server.ts modelEffortDeclared: opted in, injector, fresh status line
+   * observation, non empty catalog)? Absent reads as no.
+   */
+  modelEffortPicker?: boolean
   authMode: 'pairing' | 'apikey'
+  /** The host platform; process.platform when absent. The picker is never declared on win32. */
+  platform?: NodeJS.Platform
 }): readonly string[] {
   return [
     ...DECLARED_CAPABILITIES_BASE,
@@ -366,5 +414,8 @@ export function declaredCapabilities(input: {
     ...(input.authMode === 'pairing' && input.floorHook === true ? DECLARED_CAPABILITIES_PAIRING : []),
     ...(input.canInjectGoal === true ? DECLARED_CAPABILITIES_INJECTOR : []),
     ...(input.authMode === 'pairing' && input.personLanes === true ? [PERSON_LANES_TOKEN, LANE_MEMORY_RPC_TOKEN] : []),
+    ...(input.authMode === 'pairing' && input.modelEffortPicker === true && (input.platform ?? process.platform) !== 'win32'
+      ? [MODEL_EFFORT_PICKER_TOKEN]
+      : []),
   ]
 }

@@ -128,6 +128,7 @@ launchd / systemd --user
      -> tmux -L hoai-<id>-home-<hid> new-session -d -s hoai-<id>-home-<hid> -c <workspace>   (when tmux is installed)
         -> node <current plugin root>/bin/hoai-core.mjs                (HOAI_SUPERVISED=1)
            -> expect + the startup gate block -> claude --resume <pinned session id>
+                                                  --append-system-prompt-file ~/.bgos-agent/<id>/identity.md
 ```
 
 - **hoai runs the agent, in tmux, on the agent's own socket.** The service starts
@@ -146,6 +147,14 @@ launchd / systemd --user
   transcript does not exist yet, never `--continue`. A resume that is rejected
   gets one fresh session, kept only once it stays up. `hoai-agent uninstall`
   keeps the pin, so the conversation survives a reinstall.
+- **The agent is told its own name.** `~/.bgos-agent/<id>/identity.md` (written
+  at pairing, refreshed by the daemon at boot) rides every launch and relaunch
+  as `--append-system-prompt-file`, so a global `~/.claude/CLAUDE.md` that names
+  somebody else cannot make the agent that person. Only when the file has text
+  and this Claude Code knows the flag. When a second launch with it dies at
+  once (or the launcher would otherwise end), the agent's own session comes
+  back without it until the agent is restarted (from the app, by a plugin
+  update, or hoai starting again), and the launcher says why.
 - **Remote compact is ON.** The session carries `BGOS_TMUX_SESSION=hoai-<id>-home-<hid>` and
   `BGOS_TMUX_SOCKET=hoai-<id>-home-<hid>`, which is what lets the daemon type `/compact`
   into it when the owner asks from the app. With no tmux on the host, hoai runs
@@ -562,9 +571,35 @@ rules before replying so messages don't get lost.
   inline option buttons.
 - `edit_message` — patch one of your previous messages.
 - `rename_chat` — set a descriptive title on the current chat.
-- `ask_user_input` — open a polished modal/sheet with 1–4 multiple-
-  choice questions. Blocks until the user answers (or 600s timeout).
-  Use this when you need a structured choice, not free-form text.
+- `ask_user_input`: post ONE card of 1 to 4 multiple-choice questions.
+  Any message asking the owner 2 or more decisions is one card, online or
+  not; a reply with buttons asks exactly one thing. With `wait_seconds: 0`
+  it returns at once as pending with an `ask_id`; when every question is
+  answered or skipped, one `ask_answered` channel event carries every
+  answer and starts a new turn, however late. `wait_seconds` above 0 (up to
+  600), or no wait field at all (the old 600 s), blocks instead and returns
+  the answers if they all come in time, otherwise pending, never invented
+  skips. A wait that is not a number of seconds is refused. A question with
+  `multi_select: true` lets the owner tick every option that applies and
+  answers with `picked_option_values` and `picked_option_labels`
+  arrays. Pending cards
+  survive a restart (`pending-asks.json` beside the cursor file), and only
+  the session that asked gets the answers. In a session that is not the
+  one connected to BGOS for this agent, `wait_seconds: 0` is refused (its
+  answers could never come back there), and a wait that runs out withdraws
+  the questions not yet answered and returns the answers given. A card whose
+  session can no longer receive its answers (it ended beside another
+  session, it lost the connection to another session and runs on, or it
+  ended and no restart took the card within 10 minutes) is retired by the
+  connected session, as `withdraw_ask` does, and that session gets one
+  `ask_withdrawn` channel event naming what was answered (for the record)
+  and what was withdrawn, and why (`meta.retired_because`: `asker_ended_beside`,
+  `asker_ended` or `asker_disconnected`). When the session that asked still
+  runs (it lost the connection), it gets one `ask_withdrawn` too: on its
+  next tick, sent again until it lands or the record ages out after 10
+  minutes, or, when its channel is not loaded, on its next tool result.
+  Nothing in either needs a reply.
+- `withdraw_ask`: retire a card you no longer need, by its `ask_id`.
 - `list_peers` — list other assistants on this BGOS account that you
   may message. Returns each peer's `assistantId` (the integer to pass
   to `send_to_peer`) and an `introduced` flag — true ONLY if the user
@@ -681,7 +716,8 @@ All share the same plugin installation at `~/bgos-claude-plugin/`.
 | `reply` | Send a message with optional file attachments and interactive buttons |
 | `edit_message` | Edit a previously sent message |
 | `rename_chat` | Set a descriptive title on a chat |
-| `ask_user_input` | Blocking modal/sheet with 1–4 multiple-choice questions |
+| `ask_user_input` | One card of 1 to 4 multiple-choice questions; returns pending, every answer arrives as one `ask_answered` event |
+| `withdraw_ask` | Retire a question card you no longer need |
 | `list_peers` | List the user's other assistants you can message as peers |
 | `send_to_peer` | Send a message to another assistant (peer agent) — supports `turn_state` and `wait_for_reply` |
 | `complete_peer_thread` | Close the active peer conversation with a one-line summary (collapses the SideConversationCard) |
@@ -1066,9 +1102,9 @@ deliveries and its own polls are left out on purpose (agent-state.json keeps
 counting them for the watcher), because a frozen session's daemon keeps doing
 all of them. `running` comes from the hook rail's open rows (a command between
 its start and its result, a helper agent still working, also one that outlived
-its parent's turn), not from the daemon's own operations counter. A blocking
-`ask_user_input`, a permission card and an unanswered plan card count as
-questions waiting.
+its parent's turn), not from the daemon's own operations counter. An
+`ask_user_input` blocking on `wait_seconds`, a permission card and an
+unanswered plan card count as questions waiting.
 
 **When it is sent.** On every heartbeat, and on its own small beat
 (`{ sessionStatus }`) within a minute of a change and every 2

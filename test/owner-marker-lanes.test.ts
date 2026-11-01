@@ -614,7 +614,7 @@ function callArgs(body: string, callee: string): string[] {
   }
 }
 
-const WS_LANE = region('  function deliverWsInbound(payload: any): void {', "\n  realtimeSocket.on('peer_conversation_closed'")
+const WS_LANE = region('  function deliverWsInbound(payload: any, emailSaves?: Array<EmailFileSave | null>): void {', "\n  realtimeSocket.on('peer_conversation_closed'")
 const POLL_LANE = region('async function pollChat(chatId: string): Promise<void> {', '\n}\n')
 const STREAM_LANE = region('async function forwardStreamInbound(', '\nfunction applyStreamButtonsAnswered(')
 const STREAM_TAP_LANE = region('function applyStreamButtonsAnswered(', '\nasync function applyStreamMessage(')

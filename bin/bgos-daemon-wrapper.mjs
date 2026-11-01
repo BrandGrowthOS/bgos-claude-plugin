@@ -8,7 +8,7 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto'
-import { execFile, spawn } from 'node:child_process'
+import { execFile, spawn, spawnSync } from 'node:child_process'
 import {
   chmodSync,
   closeSync,
@@ -604,11 +604,41 @@ export function daemonSpawnSpec(pluginDir) {
   return { file: 'bun', args: [join(pluginDir, 'server.ts')] }
 }
 
+/**
+ * The JSC options bin/bgos-launch.mjs gives bun on Windows (its
+ * WIN32_JSC_THREAD_OPTIONS, which a test keeps equal to this table: this file
+ * is copied out of the checkout and imports nothing from it). bun 1.3 there
+ * leaks every thread that exits, and without them the daemon's committed memory
+ * grows while it runs (board rows a8646712 and dc37e2ac).
+ */
+export const WIN32_JSC_THREAD_OPTIONS = Object.freeze({
+  BUN_JSC_numberOfGCMarkers: '1',
+  BUN_JSC_useConcurrentGC: '0',
+  BUN_JSC_useConcurrentJIT: '0',
+})
+
+/**
+ * The daemon's env: on Windows with the thread options a key does not already
+ * have, unless this bun refuses them (it exits on a JSC option it does not
+ * know, so one `bun -e 0` with them tells). Elsewhere, env itself.
+ */
+export function daemonEnv(env = process.env, { platform = process.platform, spawnSyncImpl = spawnSync } = {}) {
+  if (platform !== 'win32') return env
+  const extra = {}
+  for (const [key, value] of Object.entries(WIN32_JSC_THREAD_OPTIONS)) {
+    if (env[key] === undefined) extra[key] = value
+  }
+  if (Object.keys(extra).length === 0) return env
+  const next = { ...env, ...extra }
+  const probe = spawnSyncImpl('bun', ['-e', '0'], { env: next, encoding: 'utf8', timeout: 15_000, windowsHide: true })
+  return /invalid JSC environment variable/i.test(String(probe?.stderr ?? '')) ? env : next
+}
+
 export function spawnDaemon(pluginDir, env = process.env) {
   const spec = daemonSpawnSpec(pluginDir)
   return spawn(spec.file, spec.args, {
     cwd: process.cwd(),
-    env,
+    env: daemonEnv(env),
     stdio: ['inherit', 'inherit', 'inherit'],
     shell: false,
   })

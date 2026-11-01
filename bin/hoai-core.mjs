@@ -68,12 +68,14 @@ import {
   closeSync,
   existsSync,
   fstatSync,
+  linkSync,
   mkdirSync,
   openSync,
   readFileSync,
   readSync,
   readdirSync,
   realpathSync,
+  renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -95,8 +97,11 @@ import {
   pluginStateDirFor,
   readBootClock,
   readLauncherProcesses,
+  runsHoaiLauncher,
   writeLaunchRecipe,
 } from '../lib/agent-inventory.mjs'
+import { readChildProcesses, startLauncherWatchdog } from '../lib/launcher-liveness.mjs'
+export { decideWatchdogAction, startLauncherWatchdog } from '../lib/launcher-liveness.mjs'
 import {
   HOAI_MARKETPLACE as HOAI_MARKETPLACE_NAME,
   observeMarketplaceInstall,
@@ -113,6 +118,20 @@ import {
   readFolderIdentity,
 } from '../lib/service-supervision.mjs'
 import { WIN_PATH_HELPER_FILE, installWrapper } from '../lib/hoai-wrapper-install.mjs'
+import {
+  IDENTITY_FLAG,
+  IDENTITY_REFRESH_TIMEOUT_MS,
+  agentIdentityText,
+  cleanIdentityName,
+  fetchAgentIdentity,
+  identityFilePath,
+  identityLaunchArgs,
+  identityNamesOfText,
+  identityNoticePath,
+  pairingFromCredentials,
+  writePrivateText,
+} from '../lib/agent-identity.mjs'
+import { PROBE_TIMEOUT_MS, classifyFlagProbe } from '../lib/claude-binary.mjs'
 
 /** Mirror of bgos-pair.mjs FOLDER_PIN_FILE_NAME / agent-credentials.ts
  *  FOLDER_PIN_FILE: the launch-folder pin whose number IS the assistant id. */
@@ -914,6 +933,30 @@ export const KEEPALIVE_MARKER_FILE_NAME = 'keepalive.json'
  *  session by id, never `--continue` (newest-in-shared-cwd, the identity bleed
  *  that caused the 2026-08-23 fleet incident). */
 export const SESSION_ID_FILE_NAME = 'session-id'
+/** A fresh session this launcher started and will pin once it outlives the
+ *  health window: {sessionId, startedAt}. On disk from its spawn, so a launcher
+ *  that dies or stops ticking inside that window (agent 867) does not take it
+ *  along: the next launch pins it when its transcript proves it lived on
+ *  (decidePendingPin). */
+export const PENDING_PIN_FILE_NAME = 'session-id.pending'
+
+/** Taking over a holder that supervises nothing (board row fabeef45, agent
+ *  867). The holder must stay idle for the whole confirm window, read every
+ *  poll, before anything is sent: a launcher between two children (a marker
+ *  relaunch, the fresh retry) has one again within a second. Then SIGTERM, and
+ *  SIGKILL when it is still there after the TERM wait. One launcher at a time
+ *  takes over (the lock beside supervisor.json); a lock older than its stale
+ *  age, empty, unreadable, or whose launcher is gone, was left by a takeover
+ *  that died. */
+export const TAKEOVER_CONFIRM_MS = 10_000
+export const TAKEOVER_POLL_MS = 1_000
+export const TAKEOVER_TERM_WAIT_MS = 5_000
+export const TAKEOVER_KILL_WAIT_MS = 3_000
+export const TAKEOVER_LOCK_SUFFIX = '.takeover'
+export const TAKEOVER_LOCK_STALE_MS = 2 * 60_000
+/** How long past its time a declared relaunch deadline (relaunchBy, written
+ *  for the keep-alive backoff) still counts. */
+export const RELAUNCH_DEADLINE_SLACK_MS = 30_000
 
 /** Marker-triggered relaunch budget: 3 per rolling hour. A daemon stuck in
  *  an update-crash loop must not bounce the session forever. */
@@ -1071,12 +1114,16 @@ export function folderIdentity(cwd, readFile = defaultReadText) {
  *  F1): it lets a reader prove this pid is still the writer on the clock ps
  *  measures etime with, which a wall clock step does not move. Written only
  *  when there is one.
+ * `relaunchBy` (ISO) is written only while the launcher is between two
+ * children on purpose, the keep-alive backoff: it has no child then, and
+ * says by when it will have one again (holderActivity).
  * @param {number} pid
  * @param {string} startedAt
  * @param {{ id: string, uptimeMs: number } | null} [boot]
+ * @param {{ relaunchBy?: string }} [extra]
  * @returns {string} */
-export function supervisorFileBody(pid, startedAt, boot = null) {
-  return JSON.stringify({ pid, capabilities: ['relaunch'], startedAt, ...(boot ? { boot } : {}) })
+export function supervisorFileBody(pid, startedAt, boot = null, { relaunchBy } = {}) {
+  return JSON.stringify({ pid, capabilities: ['relaunch'], startedAt, ...(boot ? { boot } : {}), ...(relaunchBy ? { relaunchBy } : {}) })
 }
 
 /**
@@ -1155,12 +1202,31 @@ export function decideMarkerRelaunch(relaunchesAt, now, max = MAX_RELAUNCHES_PER
  * exit 3, for as long as that process ran. What cannot be read (pidProcess
  * answers null, and the default when no reader is given does) keeps the
  * liveness answer.
+ *
+ * A live writer is not yet a supervisor (board row fabeef45, kc-server agent
+ * 867: two days down, 5,393 restarts of exit 3). Its loop can stop, and then
+ * its claude is a zombie nobody reaps or relaunches. So a holder proven to be
+ * a hoai launcher is asked for its children (holderChildren, holderActivity):
+ * one with no live child and no relaunch deadline comes back with
+ * `takeover: true`, which superviseClaude confirms over a window and then
+ * acts on. Children that cannot be read (the default) keep the claim.
  * @param {{ existingRaw: string | null | undefined, ownPid: number,
  *   pidAlive?: (pid: number) => boolean,
- *   pidProcess?: (pid: number) => { command: string | null, startedAtMs: number | null } | null }} params
- * @returns {{ arm: true, reclaimedStale?: true } | { arm: false, ownerPid: number }}
+ *   pidProcess?: (pid: number) => { command: string | null, startedAtMs: number | null } | null,
+ *   holderChildren?: (pid: number) => Array<{ zombie: boolean, startedAtMs?: number | null }> | null,
+ *   now?: number }} params
+ * @returns {{ arm: true, reclaimedStale?: true } | { arm: false, ownerPid: number,
+ *   takeover?: true, reason?: 'claude-zombie' | 'no-child' }}
  */
-export function decideSupervisorArming({ existingRaw, ownPid, pidAlive = defaultPidAlive, pidProcess = () => null }) {
+export function decideSupervisorArming({
+  existingRaw,
+  ownPid,
+  pidAlive = defaultPidAlive,
+  pidProcess = () => null,
+  holderChildren = () => null,
+  holderInFolder = () => null,
+  now = Date.now(),
+}) {
   if (existingRaw == null || String(existingRaw).length === 0) return { arm: true }
   let parsed
   try {
@@ -1180,10 +1246,138 @@ export function decideSupervisorArming({ existingRaw, ownPid, pidAlive = default
     capabilities.includes('relaunch')
   if (!isAuthority) return { arm: true, reclaimedStale: true }
   if (pid === ownPid) return { arm: true, reclaimedStale: true }
-  if (pidAlive(pid) && isSupervisorWriter(parseSupervisorRecord(String(existingRaw)), pidProcess(pid))) {
+  if (!pidAlive(pid)) return { arm: true, reclaimedStale: true }
+  const record = parseSupervisorRecord(String(existingRaw))
+  const proc = pidProcess(pid)
+  if (!isSupervisorWriter(record, proc)) return { arm: true, reclaimedStale: true }
+  // Alive, and the launcher that wrote the claim. Does it still supervise a
+  // claude? Asked only of a holder PROVEN to be a hoai launcher (its command
+  // line read, running hoai-core.mjs): one that could not be read, or the
+  // daemon's declared-launcher record, keeps the claim exactly as before.
+  if (!proc || typeof proc.command !== 'string' || !runsHoaiLauncher(proc.command) || record?.declaredLauncher) {
     return { arm: false, ownerPid: pid }
   }
-  return { arm: true, reclaimedStale: true }
+  const children = holderChildren(pid)
+  const activity = holderActivity({ relaunchBy: parsed.relaunchBy, holderStartedAtMs: proc.startedAtMs, children, now })
+  if (activity !== 'idle') return { arm: false, ownerPid: pid }
+  // Ended only when it is provably THIS agent's launcher, not merely a hoai:
+  // the writer check allows a minute of slack, and inside it a dead writer's
+  // pid can be another agent's launcher in its own incumbent wait (no child
+  // either), even one in the same folder. It started no later than its own
+  // stamp, and its working folder is not another one: in this agent's folder
+  // (linux, darwin) within HOLDER_START_TOLERANCE_MS, and where the folder
+  // cannot be read (win32), to the ms.
+  const inFolder = holderInFolder(pid)
+  if (inFolder === false || !startedByStamp(record, proc, inFolder === true ? HOLDER_START_TOLERANCE_MS : 0)) {
+    return { arm: false, ownerPid: pid }
+  }
+  return { arm: false, ownerPid: pid, takeover: true, reason: children.some((child) => child?.zombie === true) ? 'claude-zombie' : 'no-child' }
+}
+
+/** ps reads a start time in whole seconds (etime), so a writer read that way
+ *  can look up to a second younger than it is. */
+const HOLDER_START_TOLERANCE_MS = 2_000
+
+/** Did `proc` start no later than `record`'s stamp, plus `toleranceMs`? On the
+ *  boot clock when both carry it (a wall clock step moves neither), else on
+ *  the wall clock. Unreadable is no. */
+function startedByStamp(record, proc, toleranceMs) {
+  if (record?.boot && proc?.boot) {
+    return record.boot.id === proc.boot.id && proc.boot.startedUptimeMs <= record.boot.uptimeMs + toleranceMs
+  }
+  return typeof proc?.startedAtMs === 'number' && typeof record?.startedAtMs === 'number' && proc.startedAtMs <= record.startedAtMs + toleranceMs
+}
+
+/**
+ * Does `pid` run in the folder `cwd` (both resolved)? true / false, or null
+ * when it cannot be read: linux /proc/<pid>/cwd, darwin lsof; null on win32,
+ * where reading another process's folder is no cheap call.
+ * @param {number} pid
+ * @param {string} [platform]
+ * @param {string} [cwd]
+ * @param {{ run?: typeof spawnSync }} [opts]
+ * @returns {boolean | null}
+ */
+export function defaultHolderInFolder(pid, platform = process.platform, cwd = process.cwd(), { run = spawnSync } = {}) {
+  try {
+    const want = realpathSync(cwd)
+    if (platform === 'linux') {
+      try {
+        return realpathSync(`/proc/${pid}/cwd`) === want
+      } catch (err) {
+        // A folder deleted under it reads as gone; another user's process cannot be read at all.
+        return err?.code === 'ENOENT' ? false : null
+      }
+    }
+    if (platform === 'darwin') {
+      const res = run('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], { encoding: 'utf8', timeout: PROCESS_PROBE_TIMEOUT_MS })
+      const line = String(res?.stdout ?? '').split('\n').find((l) => l.startsWith('n'))
+      return line ? realpathSync(line.slice(1)) === want : null
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * What a live holder that wrote supervisor.json is doing with its claim
+ * (board row fabeef45, agent 867):
+ *   'supervising'  a child of it is alive: the claude it started, or the
+ *                  expect it runs claude under. A zombie is not alive;
+ *   'relaunching'  no child, inside the relaunch deadline it declared
+ *                  (relaunchBy), and that deadline is no further out than a
+ *                  keep-alive backoff can be: a wall clock stepped back must not
+ *                  make a dead launcher look busy for days;
+ *   'idle'         no live child, no deadline: it supervises nothing;
+ *   'unknown'      its children could not be read, which proves nothing.
+ * A child that started before its parent is not its child: Windows keeps a
+ * dead parent's pid in ParentProcessId, and reuses pids.
+ * @param {{ relaunchBy?: unknown, holderStartedAtMs?: number | null,
+ *   children: Array<{ zombie: boolean, startedAtMs?: number | null }> | null, now: number }} input
+ * @returns {'supervising' | 'relaunching' | 'idle' | 'unknown'}
+ */
+export function holderActivity({ relaunchBy, holderStartedAtMs = null, children, now }) {
+  if (!Array.isArray(children)) return 'unknown'
+  const olderThanHolder = (child) =>
+    typeof holderStartedAtMs === 'number' && typeof child?.startedAtMs === 'number' && child.startedAtMs < holderStartedAtMs - 1_000
+  if (children.some((child) => child && child.zombie !== true && !olderThanHolder(child))) return 'supervising'
+  const by = typeof relaunchBy === 'string' ? Date.parse(relaunchBy) : Number.NaN
+  if (Number.isFinite(by) && now <= by + RELAUNCH_DEADLINE_SLACK_MS && by - now <= KEEP_ALIVE_BACKOFF_CAP_MS + RELAUNCH_DEADLINE_SLACK_MS) {
+    return 'relaunching'
+  }
+  return 'idle'
+}
+
+/**
+ * The fresh session a launcher left in PENDING_PIN_FILE_NAME, judged by the
+ * next launch: 'promote' it to the pin when its transcript was still being
+ * written after the health window (it lived on, the launcher did not: agent
+ * 867 lost two days of context to the older pin), 'drop' it when it died
+ * inside the window (zaid 2026-09-02: a fast death must never take the pin),
+ * has no transcript, is already the pin, or the file is junk; 'none' when
+ * there is no file. It is also dropped when the pin is no longer the one it
+ * was written beside (pinAtWrite): a pin rewritten meanwhile (the daemon pins
+ * the live session, a /clear moved it on) names the live session and wins.
+ * @param {{ pendingRaw: string | null | undefined, pinnedId: string, healthyMs: number,
+ *   transcriptMtimeMs: (sessionId: string) => number | null }} input
+ * @returns {{ action: 'promote', sessionId: string } | { action: 'drop' | 'none' }}
+ */
+export function decidePendingPin({ pendingRaw, pinnedId, healthyMs, transcriptMtimeMs }) {
+  if (pendingRaw == null) return { action: 'none' }
+  let parsed
+  try {
+    parsed = JSON.parse(String(pendingRaw))
+  } catch {
+    return { action: 'drop' }
+  }
+  const sessionId = String(parsed?.sessionId ?? '').trim()
+  const startedAtMs = typeof parsed?.startedAt === 'string' ? Date.parse(parsed.startedAt) : Number.NaN
+  if (!isSessionIdLike(sessionId) || !Number.isFinite(startedAtMs) || sessionId === pinnedId) return { action: 'drop' }
+  if (typeof parsed?.pinAtWrite !== 'string' || parsed.pinAtWrite.trim() !== pinnedId) return { action: 'drop' }
+  const lastWrite = transcriptMtimeMs(sessionId)
+  if (typeof lastWrite !== 'number' || lastWrite < startedAtMs + healthyMs) return { action: 'drop' }
+  return { action: 'promote', sessionId }
 }
 
 /**
@@ -1676,9 +1870,11 @@ export function tclQuote(value) {
  * UNATTENDED, so this is the one place where "carry on with something" would
  * cost the most: it would bring the agent back on an empty channel flag and
  * nobody would be watching. The caller stops and prints instead.
+ * `extraArgs` (the agent's identity flag, lib/agent-identity.mjs) go between
+ * the two, so a relaunch is told who it is exactly like the first launch.
  * @param {{ scriptDir?: string, env?: Record<string, string | undefined>,
  *   home?: string, cwd?: string, readFile?: (path: string) => string | null,
- *   sessionArgs?: readonly string[] }} [opts]
+ *   sessionArgs?: readonly string[], extraArgs?: readonly string[] }} [opts]
  * @returns {string[] | null}
  */
 export function relaunchClaudeArgs({
@@ -1688,6 +1884,7 @@ export function relaunchClaudeArgs({
   cwd = process.cwd(),
   readFile = defaultReadText,
   sessionArgs = [],
+  extraArgs = [],
 } = {}) {
   // Resolved the SAME way as the first launch (workspace .mcp.json first, then
   // detection). A relaunch that resolved the channel differently from the
@@ -1695,7 +1892,7 @@ export function relaunchClaudeArgs({
   // and the marker relaunch path is unattended, so nobody would see it happen.
   const resolution = resolveChannelSpec({ cwd, env, home, readFile, scriptDir })
   if (!isResolvedChannel(resolution)) return null
-  return [...launchArgsFor(resolution), ...sessionArgs]
+  return [...launchArgsFor(resolution), ...extraArgs, ...sessionArgs]
 }
 
 /** The install method for a relaunch (fresh detection), used to decide whether
@@ -1712,10 +1909,60 @@ export function relaunchInstallMethod({ scriptDir = '', env = process.env, home 
 function defaultWriteFile(path, content) {
   try {
     mkdirSync(dirname(path), { recursive: true })
+  } catch {
+    return false
+  }
+  // Whole or not at all (board row fabeef45): a reader never sees the file
+  // half written, so an empty supervisor.json can only be what a crash or a
+  // power cut left, and reads as stale. The temp file sits beside the target,
+  // on the same disk, so the rename is atomic. Windows refuses a rename onto a
+  // file another process holds open without delete sharing (an antivirus
+  // scan): that one write goes in place, as before.
+  const temp = `${path}.${process.pid}.tmp`
+  try {
+    writeFileSync(temp, content)
+    renameSync(temp, path)
+    return true
+  } catch {
+    defaultRemoveFile(temp)
+  }
+  try {
     writeFileSync(path, content)
     return true
   } catch {
     return false
+  }
+}
+
+/** Create `path` with `content` only when it does not exist yet: 'created',
+ *  'exists', or 'failed' (no folder, no permission, a full disk). Of two
+ *  launchers that find no claim, one wins. The content is written to a temp
+ *  file first and hard linked into place, which fails when the name exists
+ *  and never shows the file empty (and is the exclusive create that also
+ *  holds on NFS). A disk without hard links (FAT, some network shares) gets an
+ *  exclusive open instead. */
+function defaultCreateExclusive(path, content) {
+  const temp = `${path}.${process.pid}.new`
+  try {
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(temp, content)
+  } catch {
+    defaultRemoveFile(temp)
+    return 'failed'
+  }
+  try {
+    linkSync(temp, path)
+    return 'created'
+  } catch (err) {
+    if (err?.code === 'EEXIST') return 'exists'
+  } finally {
+    defaultRemoveFile(temp)
+  }
+  try {
+    writeFileSync(path, content, { flag: 'wx' })
+    return 'created'
+  } catch (err) {
+    return err?.code === 'EEXIST' ? 'exists' : 'failed'
   }
 }
 
@@ -2289,6 +2536,36 @@ export async function superviseClaude(args, opts = {}) {
   // The boot clock every supervisor.json stamp carries (review 3 F1), read
   // through the same reader as everything else here; null off Linux.
   const bootClock = opts.bootClock ?? (() => readBootClock({ platform, readFile }))
+  // Taking over a holder that supervises nothing (decideSupervisorArming). The
+  // real process table and the real kill only go together with the real pid
+  // readers: a test that fakes a pid never has a real process read or signalled
+  // under that number.
+  const realPids = opts.pidAlive === undefined && opts.pidProcess === undefined
+  const holderChildren = opts.holderChildren ?? (realPids ? (pid) => readChildProcesses({ platform, pid }) : () => null)
+  const holderInFolder = opts.holderInFolder ?? (realPids ? (pid) => defaultHolderInFolder(pid, platform, cwd) : () => true)
+  const signalPid =
+    opts.signalPid ??
+    (realPids && opts.holderChildren === undefined
+      ? (pid, signal) => {
+          try {
+            process.kill(pid, signal)
+            return true
+          } catch {
+            return false
+          }
+        }
+      : () => false)
+  const createExclusive =
+    opts.createExclusive ??
+    (opts.writeFile ? (path, content) => (exists(path) ? 'exists' : writeFile(path, content) ? 'created' : 'failed') : defaultCreateExclusive)
+  // The launcher's own watchdog (lib/launcher-liveness.mjs). Only over a real
+  // claude: a child from an injected spawn is no process it could look at.
+  const startWatchdog = opts.startWatchdog ?? (spawnImpl === spawn ? startLauncherWatchdog : () => null)
+  const takeoverConfirmMs = opts.takeoverConfirmMs ?? TAKEOVER_CONFIRM_MS
+  const takeoverPollMs = opts.takeoverPollMs ?? TAKEOVER_POLL_MS
+  const takeoverTermWaitMs = opts.takeoverTermWaitMs ?? TAKEOVER_TERM_WAIT_MS
+  const takeoverKillWaitMs = opts.takeoverKillWaitMs ?? TAKEOVER_KILL_WAIT_MS
+  const mtimeMs = opts.mtimeMs ?? fileMtimeMs
   const generateId = opts.generateId ?? randomUUID
   const hasExpect = opts.hasExpect ?? hostHasExpect({ platform, env, exists: opts.expectExists ?? existsSync })
   const freshSession = opts.freshSession === true
@@ -2298,6 +2575,7 @@ export async function superviseClaude(args, opts = {}) {
   const listProcesses = opts.listProcesses ?? (() => defaultListProcesses(platform))
   const force = opts.force === true
   const incumbentTimeoutMs = opts.incumbentTimeoutMs ?? INCUMBENT_WAIT_TIMEOUT_MS
+  const probeIdentityFlag = opts.probeIdentityFlag ?? (() => defaultProbeIdentityFlag({ platform, env }))
   const keepAlive = opts.keepAlive === true
   const stopSignal = opts.signal ?? null
   // Has the Claude login every agent of this credential store shares failed? Asked only for a launch
@@ -2548,32 +2826,180 @@ export async function superviseClaude(args, opts = {}) {
   // A stop that came before anything was armed (main wires SIGTERM and SIGHUP
   // to it for an unattended launch): nothing to clean up, nothing to start.
   if (stopSignal?.aborted) return exitCodeForChild(null, 'SIGTERM')
-  // Singleton guard: never start a second session behind a live supervisor.
-  const arming = decideSupervisorArming({
-    existingRaw: readFile(supervisorPath),
-    ownPid: process.pid,
-    pidAlive,
-    pidProcess,
-  })
-  if (!arming.arm) {
-    noteStatus('already-supervised', { owner: arming.ownerPid })
+  // -- Claiming the agent: supervisor.json (board row fabeef45) ---------------
+  // 'armed', 'unarmed' (nowhere to write it), or the exit code of a refusal.
+  // A claim that is absent is created exclusively. One that is there (stale,
+  // or naming a holder that supervises nothing) is replaced under the takeover
+  // lock, judged again under it, so of two launchers only one ever arms.
+  const takeoverLockPath = `${supervisorPath}${TAKEOVER_LOCK_SUFFIX}`
+  const armBody = () => supervisorFileBody(process.pid, new Date(now()).toISOString(), bootClock())
+  // The claim as the last judgement read it: it is replaced only while it still says that.
+  let judgedRaw = null
+  const decideArmingNow = () => {
+    judgedRaw = readFile(supervisorPath)
+    return decideSupervisorArming({ existingRaw: judgedRaw, ownPid: process.pid, pidAlive, pidProcess, holderChildren, holderInFolder, now: now() })
+  }
+  const refuseOwned = (ownerPid) => {
+    noteStatus('already-supervised', { owner: ownerPid })
     print(
-      `[hoai] assistant ${id} is already supervised by a live launcher (pid ${arming.ownerPid}). ` +
+      `[hoai] assistant ${id} is already supervised by a live launcher (pid ${ownerPid}). ` +
         'Not starting a second session. If that launcher is actually stale, remove ' +
-        `${supervisorPath} and re-run hoai; only stop pid ${arming.ownerPid} after confirming ` +
+        `${supervisorPath} and re-run hoai; only stop pid ${ownerPid} after confirming ` +
         'it really is this agent (a reused pid could be an unrelated process).',
     )
     return EXIT_ALREADY_SUPERVISED
   }
-  const body = supervisorFileBody(process.pid, new Date(now()).toISOString(), bootClock())
-  if (!writeFile(supervisorPath, body)) {
-    // No state dir to arm in: launch exactly as before, unsupervised.
-    return spawnSupervised(args)
+  const ownerNow = () => parseSupervisorRecord(readFile(supervisorPath))?.pid ?? 'unknown'
+  const standDown = (ownerPid) => {
+    noteStatus('takeover-in-progress', { owner: ownerPid ?? 'none' })
+    print(`[hoai] another launcher is taking assistant ${id} over right now (${takeoverLockPath}); not starting a second session`)
+    return EXIT_ALREADY_SUPERVISED
   }
+  // The takeover lock: {pid, startedAt}. One left empty, unreadable, by a
+  // launcher that is gone, or older than any takeover takes, is stale.
+  const takeoverLockIsStale = (raw) => {
+    let lock
+    try {
+      lock = JSON.parse(String(raw ?? ''))
+    } catch {
+      return true
+    }
+    const at = typeof lock?.startedAt === 'string' ? Date.parse(lock.startedAt) : Number.NaN
+    if (!Number.isInteger(lock?.pid) || lock.pid <= 0 || lock.pid === process.pid || !Number.isFinite(at)) return true
+    return !pidAlive(lock.pid) || Math.abs(now() - at) > TAKEOVER_LOCK_STALE_MS
+  }
+  const lockIsOurs = () => {
+    try {
+      return JSON.parse(String(readFile(takeoverLockPath) ?? ''))?.pid === process.pid
+    } catch {
+      return false
+    }
+  }
+  // 'ours', 'held' (another launcher's), or 'failed' (it cannot be made here:
+  // no folder, a read-only or full disk).
+  const takeTakeoverLock = () => {
+    const body = JSON.stringify({ pid: process.pid, startedAt: new Date(now()).toISOString() })
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const made = createExclusive(takeoverLockPath, body)
+      if (made === 'failed') return 'failed'
+      // Two launchers that both removed a stale lock: only the one named in it
+      // goes on (the lib/restart-handoff.mjs pattern).
+      if (made === 'created') return lockIsOurs() ? 'ours' : 'held'
+      if (!takeoverLockIsStale(readFile(takeoverLockPath))) return 'held'
+      removeFile(takeoverLockPath)
+    }
+    return 'held'
+  }
+  // true: gone, or no longer that launcher (a zombie's command line is not
+  // hoai's), or the claim released. false: still there after `ms`. null: this
+  // launcher was told to stop meanwhile.
+  const waitReleased = async (owner, ms) => {
+    const until = now() + ms
+    while (true) {
+      if (stopSignal?.aborted) return null
+      if (!pidAlive(owner) || decideArmingNow().arm) return true
+      if (now() >= until) return false
+      await sleep(Math.min(250, ms))
+    }
+  }
+  // End a holder proven to supervise nothing: SIGTERM, then SIGKILL when it
+  // is still that idle launcher after the TERM wait (agent 867's ignored TERM).
+  const endIdleHolder = async (owner, reason) => {
+    const why = reason === 'claude-zombie' ? 'its claude has exited and was never reaped' : 'it has no claude'
+    print(`[hoai] launcher pid ${owner} holds assistant ${id} but supervises nothing (${why}); ending it with SIGTERM`)
+    signalPid(owner, 'SIGTERM')
+    const afterTerm = await waitReleased(owner, takeoverTermWaitMs)
+    if (afterTerm !== false) return afterTerm ? 'SIGTERM' : 'stopped'
+    const still = decideArmingNow()
+    if (!(still.takeover && still.ownerPid === owner)) return still.arm ? 'SIGTERM' : 'refused'
+    print(`[hoai] launcher pid ${owner} ignored SIGTERM; ending it with SIGKILL`)
+    signalPid(owner, 'SIGKILL')
+    const afterKill = await waitReleased(owner, takeoverKillWaitMs)
+    if (afterKill !== false) return afterKill ? 'SIGKILL' : 'stopped'
+    return 'unkillable'
+  }
+  const claimSupervision = async () => {
+    const verdict = decideArmingNow()
+    if (verdict.arm) {
+      const made = createExclusive(supervisorPath, armBody())
+      if (made !== 'exists') return made === 'created' ? 'armed' : 'unarmed'
+    } else if (!verdict.takeover) {
+      return refuseOwned(verdict.ownerPid)
+    }
+    const lock = takeTakeoverLock()
+    if (lock === 'failed') {
+      // No lock can be made here: no live holder is ended without one, and a
+      // stale claim is replaced as it always was, while it still says what was
+      // judged (one another launcher armed meanwhile is theirs).
+      if (!verdict.arm) return refuseOwned(verdict.ownerPid)
+      if (judgedRaw === null || readFile(supervisorPath) !== judgedRaw) return refuseOwned(ownerNow())
+      return writeFile(supervisorPath, armBody()) ? 'armed' : 'unarmed'
+    }
+    if (lock === 'held') return standDown(verdict.ownerPid)
+    try {
+      let again = decideArmingNow()
+      if (again.takeover) {
+        // Idle for the whole window, read every poll: a launcher between two
+        // children has one again within a second, and is never signalled.
+        const owner = again.ownerPid
+        const until = now() + takeoverConfirmMs
+        while (again.takeover && again.ownerPid === owner && now() < until) {
+          await sleep(takeoverPollMs)
+          if (stopSignal?.aborted) return exitCodeForChild(null, 'SIGTERM')
+          again = decideArmingNow()
+        }
+        if (again.takeover && again.ownerPid === owner) {
+          const ended = await endIdleHolder(owner, again.reason)
+          if (ended === 'stopped') return exitCodeForChild(null, 'SIGTERM')
+          if (ended === 'unkillable') {
+            noteStatus('stale-launcher-unkillable', { owner })
+            print(
+              `[hoai] launcher pid ${owner} supervises nothing and is still there after SIGKILL; not starting a second ` +
+                `session beside it. Its owner (or a reboot) has to end it, then the agent starts on its next launch.`,
+            )
+            return EXIT_ALREADY_SUPERVISED
+          }
+          if (ended !== 'refused') {
+            noteStatus('took-over', { owner, reason: again.reason, signal: ended })
+            print(`[hoai] took over assistant ${id} from launcher pid ${owner} (${ended})`)
+          }
+          again = decideArmingNow()
+        }
+      }
+      if (!again.arm) return refuseOwned(again.ownerPid)
+      // Released meanwhile: created exclusively, as for no claim at all.
+      if (judgedRaw === null) {
+        const made = createExclusive(supervisorPath, armBody())
+        if (made === 'exists') return refuseOwned(ownerNow())
+        return made === 'created' ? 'armed' : 'unarmed'
+      }
+      // Replaced only while the lock is still ours and the claim still says
+      // what was judged stale: a launcher that armed meanwhile keeps its claim.
+      if (!lockIsOurs()) return standDown(again.ownerPid)
+      if (readFile(supervisorPath) !== judgedRaw) return refuseOwned(ownerNow())
+      return writeFile(supervisorPath, armBody()) ? 'armed' : 'unarmed'
+    } finally {
+      if (lockIsOurs()) removeFile(takeoverLockPath)
+    }
+  }
+  // Singleton guard: never start a second session behind a live supervisor,
+  // and never stay down behind one that supervises nothing (agent 867).
+  const claimed = await claimSupervision()
+  // No state dir to arm in: launch exactly as before, unsupervised.
+  if (claimed === 'unarmed') return spawnSupervised(args)
+  if (claimed !== 'armed') return claimed
   // A marker left behind by a dead launcher is moot: this launch already
   // starts the newest installed code.
   if (exists(markerPath)) removeFile(markerPath)
   print(`[hoai] restart supervisor armed for assistant ${id}`)
+  // If this launcher's own loop ever stops while it holds the claim and its
+  // claude is gone, the watchdog releases the claim and ends it (agent 867).
+  const watchdog = startWatchdog({
+    claimPath: supervisorPath,
+    pid: process.pid,
+    platform,
+    statusPath: unattended ? joinDir(stateDir, LAUNCH_STATUS_FILE_NAME) : null,
+  })
 
   // Launch recipe (design 1.7): what a per-machine watcher needs to relaunch
   // THIS agent as itself in this folder when no supervisor is alive any more
@@ -2582,6 +3008,110 @@ export async function superviseClaude(args, opts = {}) {
   // read). It never carries a session id (buildLaunchRecipe strips the
   // session args; hoai resumes its own pin itself) nor a token. Best effort:
   // a failed write changes nothing about this launch.
+  // Who this agent is (lib/agent-identity.mjs): the identity file pairing and
+  // the daemon write in the state folder rides every launch and relaunch as
+  // --append-system-prompt-file, so the owner's global CLAUDE.md cannot make
+  // it somebody else. Only when the file has text and this claude knows the
+  // flag; a person's own flag wins. Each note is printed once, so a relaunch
+  // loop does not repeat it. The answer is kept until a launch that carried
+  // the flag dies at once (see the exit below), or a restart someone asked
+  // for after a CLI that did not know it, and 'unknown' is never kept.
+  const identityPath = identityFilePath(stateDir)
+  // The person's own flag as they gave it, the pair or the one `=` token.
+  // Every relaunch rebuilds its arguments from the channel and so drops the
+  // person's; theirs is carried over there (relaunchIdentityArgs below), or
+  // the agent would run with no identity at all after its first relaunch.
+  const personIdentity = (() => {
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === IDENTITY_FLAG) return args.slice(i, i + 2)
+      if (String(args[i]).startsWith(`${IDENTITY_FLAG}=`)) return [args[i]]
+    }
+    return null
+  })()
+  const personChoseIdentity = personIdentity !== null
+  let identityAnswer = null
+  let identityNote = null
+  // Launches with the flag that died inside the health window, and whether
+  // this launcher has dropped the flag for the rest of its life.
+  let identityFastDeaths = 0
+  let identityOff = false
+  const identityArgsNow = () => {
+    if (personChoseIdentity || identityOff) return []
+    const out = identityLaunchArgs({
+      path: identityPath,
+      exists: (path) => String(readFile(path) ?? '').trim() !== '',
+      probe: () => {
+        if (identityAnswer) return identityAnswer
+        const answer = probeIdentityFlag()
+        if (answer === 'supported' || answer === 'unsupported') identityAnswer = answer
+        return answer
+      },
+      platform,
+    })
+    if (out.note && out.note !== identityNote) print(out.note)
+    identityNote = out.note
+    return out.args
+  }
+  const relaunchIdentityArgs = () => personIdentity ?? identityArgsNow()
+  // Before every launch and relaunch, the identity file is read again from
+  // integrations/me (Data's review of #281, the Medium): a rename in the app
+  // otherwise reached only the daemon's boot refresh, after claude had read
+  // the old name. With this agent's own pairing and a short timeout; any
+  // failure launches on the file as it is. A change also leaves the daemon a
+  // notice (lib/agent-identity.mjs takeIdentityNotice), so a resumed
+  // conversation, whose recorded system prompt has the old name, is told;
+  // only a change of a name does, never the same names in a new form. The
+  // pairing is the daemon's: BGOS_CREDENTIALS_PATH outright when set, else
+  // this agent's own file, else the legacy one when it is this agent's. The
+  // token goes in the one request header, never into a print. It never
+  // stands in the way of a launch: a throw launches on the file as it is.
+  const fetchImpl = opts.fetchImpl ?? globalThis.fetch
+  const identityRefreshTimeoutMs = opts.identityRefreshTimeoutMs ?? IDENTITY_REFRESH_TIMEOUT_MS
+  const writePrivate = opts.writeFile ? writeFile : (path, content) => writePrivateText(path, content)
+  const refreshIdentityFile = async () => {
+    if (personChoseIdentity || identityOff) return
+    try {
+      const credentialsPath = String(env.BGOS_CREDENTIALS_PATH ?? '').trim()
+      const pairing = credentialsPath
+        ? pairingFromCredentials(readFile(credentialsPath), id, env)
+        : (pairingFromCredentials(readFile(joinDir(agentDir(home), `credentials-${id}.json`)), id, env) ??
+          pairingFromCredentials(readFile(joinDir(agentDir(home), 'credentials.json')), id, env))
+      if (!pairing) return
+      const me = await fetchAgentIdentity({ ...pairing, assistantId: id, fetchImpl, timeoutMs: identityRefreshTimeoutMs })
+      const text = me ? agentIdentityText(me) : null
+      const before = String(readFile(identityPath) ?? '')
+      if (!me || !text || before === `${text}\n`) return
+      if (!writePrivate(identityPath, `${text}\n`)) return
+      const was = identityNamesOfText(before)
+      const who = cleanIdentityName(me.name)
+      const owner = cleanIdentityName(me.ownerFirstName)
+      if (was.name === who && was.ownerFirstName === owner) return
+      writePrivate(
+        identityNoticePath(stateDir),
+        `${JSON.stringify({ name: me.name, ownerFirstName: me.ownerFirstName, at: new Date(now()).toISOString() })}\n`,
+      )
+      print(
+        was.name === who
+          ? `[hoai] identity: the owner's first name is now ${JSON.stringify(owner)}`
+          : `[hoai] identity: this agent's name is now ${JSON.stringify(who)}`,
+      )
+    } catch (err) {
+      print(`[hoai] identity: could not refresh the identity file (${err?.message ?? err}); launching on it as it is`)
+    }
+  }
+  // The recipe never carries the launcher's own identity args: a watcher
+  // relaunch goes through hoai, which adds them again from the file.
+  const withoutOwnIdentity = (launchArgs) => {
+    const out = []
+    for (let i = 0; i < launchArgs.length; i++) {
+      if (!personChoseIdentity && launchArgs[i] === IDENTITY_FLAG && launchArgs[i + 1] === identityPath) {
+        i += 1
+        continue
+      }
+      out.push(launchArgs[i])
+    }
+    return out
+  }
   const recordRecipe = (launchArgs) => {
     const detection = detectInstallMethod({
       scriptPath: joinDir(scriptDir, 'bgos-install-method.mjs'),
@@ -2595,7 +3125,7 @@ export async function superviseClaude(args, opts = {}) {
       recipe: buildLaunchRecipe({
         assistantId: id,
         cwd,
-        argv: launchArgs,
+        argv: withoutOwnIdentity(launchArgs),
         installMethod: detection.method,
         pluginRoot: detection.pluginRoot,
         node: process.execPath,
@@ -2615,6 +3145,26 @@ export async function superviseClaude(args, opts = {}) {
   let pinnedId = freshSession
     ? freshPinnedSessionId({ path: sessionIdPath, writeFile, generateId })
     : ensurePinnedSessionId({ path: sessionIdPath, readFile, writeFile, generateId })
+  // A fresh session an earlier launcher started and never got to pin (it died,
+  // or its loop stopped, inside the health window, while the session lived
+  // on): pinned now when its transcript proves it, or dropped (decidePendingPin).
+  // `--new` asked for a new conversation, so whatever was pending goes.
+  const pendingPinPath = joinDir(stateDir, PENDING_PIN_FILE_NAME)
+  const pending = freshSession
+    ? { action: 'drop' }
+    : decidePendingPin({
+        pendingRaw: readFile(pendingPinPath),
+        pinnedId,
+        healthyMs,
+        transcriptMtimeMs: (sessionId) => mtimeMs(sessionTranscriptPath(home, cwd, sessionId, env.CLAUDE_CONFIG_DIR)),
+      })
+  if (pending.action === 'promote' && writeFile(sessionIdPath, pending.sessionId)) {
+    print(`[hoai] the fresh session ${pending.sessionId} an earlier launch started outlived its health window; it is now this agent's pinned session`)
+    pinnedId = pending.sessionId
+    removeFile(pendingPinPath)
+  } else if (pending.action === 'drop' && exists(pendingPinPath)) {
+    removeFile(pendingPinPath)
+  }
   // Whether the pinned session can be RESUMED is answered by its transcript
   // on disk, every time, including a marker relaunch. "We launched it, so
   // it exists" is not true for a channel-only session: Claude Code writes
@@ -2643,7 +3193,8 @@ export async function superviseClaude(args, opts = {}) {
   let relaunchesAt = []
   let healthRelaunchesAt = []
   let exhausted = false
-  let currentArgs = [...args, ...sessionArgsFor(pinnedId, sessionExistsNow())]
+  await refreshIdentityFile()
+  let currentArgs = [...args, ...identityArgsNow(), ...sessionArgsFor(pinnedId, sessionExistsNow())]
   // The never-leave-dead fresh fallback is one-shot per relaunch cycle; a
   // marker relaunch (a genuine update) resets it below. Recovery keys on whether
   // the exited child was RESUMING a session (--resume present), which covers a
@@ -2665,9 +3216,15 @@ export async function superviseClaude(args, opts = {}) {
   let exitTimes = []
   try {
     while (true) {
+      // A stop that came while this launch was prepared (the identity read
+      // waits up to 3 s): nothing to start, and the finally lets go of the claim.
+      if (stopSignal?.aborted) return exitCodeForChild(null, 'SIGTERM')
       /** @type {import('node:child_process').ChildProcess | null} */
       let childRef = null
       let restartRequested = false
+      // Set only by the restart marker (the app, a plugin update): hoai's own
+      // health relaunch is no sign that the CLI underneath changed.
+      let markerRestart = false
       // False once this launch's claude has exited: a late helper exit or check is not about it.
       let live = true
       const startedAt = now()
@@ -2793,14 +3350,21 @@ export async function superviseClaude(args, opts = {}) {
         const candidate = pendingPin
         pendingPin = null
         windowPin = candidate
+        // On disk from now on, so a launcher that dies or stops ticking inside
+        // the window does not take the fresh session with it (agent 867).
+        writeFile(pendingPinPath, JSON.stringify({ sessionId: candidate, startedAt: new Date(startedAt).toISOString(), pinAtWrite: pinnedId }))
         pinTimer = setTimer(() => {
           pinTimer = null
           windowPin = null
           if (writeFile(sessionIdPath, candidate)) {
             pinnedId = candidate
+            removeFile(pendingPinPath)
             print('[hoai] the fresh session stayed up; it is now this agent\'s pinned session')
           } else {
-            print('[hoai] warning: the fresh session stayed up but its pin could not be written; the previous pin stands')
+            print(
+              '[hoai] warning: the fresh session stayed up but its pin could not be written; the previous pin stands, ' +
+                `and the next launch pins it from ${pendingPinPath}`,
+            )
           }
         }, healthyMs)
         // Never let the pending pin hold the process open past the child.
@@ -2822,6 +3386,7 @@ export async function superviseClaude(args, opts = {}) {
         }
         relaunchesAt.push(now())
         restartRequested = true
+        markerRestart = true
         print('[hoai] restart requested by the daemon; restarting claude to pick up the update...')
         try {
           endClaude(childRef)
@@ -2846,10 +3411,30 @@ export async function superviseClaude(args, opts = {}) {
       if (pinTimer) {
         clearTimer(pinTimer)
         pinTimer = null
+        // Died inside its window: never the pin (a relaunch that carries it writes it again).
+        removeFile(pendingPinPath)
       }
       // Asked to stop: whatever the exit, nothing is relaunched.
       if (stopSignal?.aborted) return code
+      const elapsedMs = now() - startedAt
+      // A launch that outlived the health window clears the identity flag's
+      // fast deaths, however it ended: most runs of an always on agent end
+      // by a marker relaunch, and two deaths days apart say nothing about
+      // the flag (plugin review 2).
+      if (elapsedMs >= healthyMs) identityFastDeaths = 0
       if (restartRequested) {
+        // A restart someone asked for (the app, a plugin update) gives back
+        // an identity this launcher dropped, and asks again a CLI that did
+        // not know the flag: either may have been updated since. Only the
+        // marker: a health relaunch hoai makes itself keeps both as they are.
+        const identityWasOff = markerRestart && identityOff
+        if (markerRestart) {
+          if (identityOff) {
+            identityOff = false
+            identityFastDeaths = 0
+          }
+          if (identityAnswer === 'unsupported') identityAnswer = null
+        }
         // A daemon-driven update restart: relaunch THIS agent's OWN session
         // (resume it when its transcript exists, else create it again by
         // id; never --continue), and give this cycle a fresh fallback.
@@ -2863,8 +3448,15 @@ export async function superviseClaude(args, opts = {}) {
         const sessionArgs = carried
           ? sessionArgsFor(carried, exists(sessionTranscriptPath(home, cwd, carried, env.CLAUDE_CONFIG_DIR)))
           : sessionArgsFor(pinnedId, sessionExistsNow())
-        const relaunchArgs = relaunchClaudeArgs({ scriptDir, env, home, cwd, readFile, sessionArgs })
+        await refreshIdentityFile()
+        if (stopSignal?.aborted) return code
+        const identityArgs = relaunchIdentityArgs()
+        const relaunchArgs = relaunchClaudeArgs({ scriptDir, env, home, cwd, readFile, sessionArgs, extraArgs: identityArgs })
         if (!relaunchArgs) return stopUnresolved()
+        if (identityWasOff && identityArgs.includes(IDENTITY_FLAG)) {
+          noteStatus('identity-flag-restored')
+          print(`[hoai] this agent's identity is back: the relaunch passes ${IDENTITY_FLAG} ${identityPath} again`)
+        }
         if (carried) pendingPin = carried
         currentArgs = relaunchArgs
         freshTried = false
@@ -2877,20 +3469,68 @@ export async function superviseClaude(args, opts = {}) {
       // window we already killed the old session (or the external keepalive
       // would loop on the same rejection), so never leave the agent dead: retry
       // once as a brand-new OWN session (a fresh pinned id).
-      const elapsedMs = now() - startedAt
       // A screen nobody may answer, or a signed-out account, is not a rejected
       // resume: a fresh session meets the same wall, and the retry would spend
       // the one-shot fallback (and overwrite launch-status) for nothing.
-      const recovery =
-        supervised && SUPERVISED_NO_FRESH_RETRY.has(code)
-          ? { action: 'return' }
-          : decideRelaunchRecovery({
-              isResumeAttempt: currentArgs.includes('--resume') || lastLaunchWasRelaunch,
-              exitCode: code,
-              elapsedMs,
-              freshTried,
-              healthyMs,
-            })
+      const namedSupervisedExit = supervised && SUPERVISED_NO_FRESH_RETRY.has(code)
+      const recovery = namedSupervisedExit
+        ? { action: 'return' }
+        : decideRelaunchRecovery({
+            isResumeAttempt: currentArgs.includes('--resume') || lastLaunchWasRelaunch,
+            exitCode: code,
+            elapsedMs,
+            freshTried,
+            healthyMs,
+          })
+      // A launch that carried the identity flag and died at once may have
+      // died OF it: the CLI under a long lived launcher can change (a
+      // reinstall, an old binary back on PATH), and one can parse the flag and
+      // still refuse the session. So the answer is asked again before the next
+      // launch, and when a second launch with it dies at once, or this one
+      // would otherwise end the launcher, this agent's own session comes back
+      // once without it (plugin review I1). Without the flag the agent is
+      // only missing its name; with it, it would not start at all.
+      // Under --keep-alive an exit 0 is relaunched like any other, so it counts
+      // too; supervised, the service restarts any exit (plugin review 4).
+      const identityDeath = code !== 0 || keepAlive || supervised
+      if (!personChoseIdentity && currentArgs.includes(IDENTITY_FLAG) && identityDeath && !namedSupervisedExit && elapsedMs < healthyMs) {
+        identityAnswer = null
+        identityFastDeaths += 1
+        const lastChance = recovery.action !== 'retry-fresh' && !keepAlive
+        if (!identityOff && (identityFastDeaths >= 2 || lastChance)) {
+          identityOff = true
+          noteStatus('identity-flag-dropped', { exit: code })
+          print(
+            `[hoai] claude exited at once (code ${code}) with ${IDENTITY_FLAG}, which may be the cause; ` +
+              `relaunching this agent's own session without it, so it runs without its identity (${identityPath}) ` +
+              'until the agent is restarted (from the app, by a plugin update, or hoai starting again). ' +
+              'Update Claude Code, then restart the agent, to give it back.',
+          )
+          rereadPin()
+          const plainArgs = relaunchClaudeArgs({
+            scriptDir,
+            env,
+            home,
+            cwd,
+            readFile,
+            sessionArgs: sessionArgsFor(pinnedId, sessionExistsNow()),
+            extraArgs: [],
+          })
+          if (!plainArgs) return stopUnresolved()
+          // A new cycle without the flag, with its own one fresh retry: the
+          // launch that died may have been the fresh retry already, and the
+          // resume it fled may be rejected again (plugin review 2). If this
+          // cycle dies at once too, the flag was not the cause. A fresh retry
+          // only ever follows a resume or a relaunch, so after one this launch
+          // of the pin counts as a relaunch: with no transcript it is
+          // --session-id <pin>, which is not a --resume (plugin review 3).
+          currentArgs = plainArgs
+          if (freshTried) lastLaunchWasRelaunch = true
+          freshTried = false
+          recordRecipe(currentArgs)
+          continue
+        }
+      }
       if (recovery.action === 'retry-fresh') {
         freshTried = true
         lastLaunchWasRelaunch = false
@@ -2906,7 +3546,17 @@ export async function superviseClaude(args, opts = {}) {
         } else {
           freshSessionArgs = []
         }
-        const freshArgs = relaunchClaudeArgs({ scriptDir, env, home, cwd, readFile, sessionArgs: freshSessionArgs })
+        await refreshIdentityFile()
+        if (stopSignal?.aborted) return code
+        const freshArgs = relaunchClaudeArgs({
+          scriptDir,
+          env,
+          home,
+          cwd,
+          readFile,
+          sessionArgs: freshSessionArgs,
+          extraArgs: relaunchIdentityArgs(),
+        })
         if (!freshArgs) return stopUnresolved()
         currentArgs = freshArgs
         recordRecipe(currentArgs)
@@ -2949,11 +3599,21 @@ export async function superviseClaude(args, opts = {}) {
             "resuming this agent's own session",
         )
       }
+      // No child until that relaunch: the claim says by when, so a launcher
+      // reading it meanwhile sees a holder between children, not an idle one.
+      writeFile(
+        supervisorPath,
+        supervisorFileBody(process.pid, new Date(now()).toISOString(), bootClock(), {
+          relaunchBy: new Date(now() + backoff.delayMs).toISOString(),
+        }),
+      )
       await sleep(backoff.delayMs)
       if (stopSignal?.aborted) return code
       // The channel is re-resolved, and the session args are the identity-safe
       // pair: --resume <pin> when its transcript exists, else --session-id <pin>.
       rereadPin()
+      await refreshIdentityFile()
+      if (stopSignal?.aborted) return code
       const keepArgs = relaunchClaudeArgs({
         scriptDir,
         env,
@@ -2961,6 +3621,7 @@ export async function superviseClaude(args, opts = {}) {
         cwd,
         readFile,
         sessionArgs: sessionArgsFor(pinnedId, sessionExistsNow()),
+        extraArgs: relaunchIdentityArgs(),
       })
       if (!keepArgs) return stopUnresolved()
       currentArgs = keepArgs
@@ -2975,6 +3636,7 @@ export async function superviseClaude(args, opts = {}) {
       continue
     }
   } finally {
+    watchdog?.stop()
     removeFile(supervisorPath)
   }
 }
@@ -3021,7 +3683,9 @@ export function lastLines(text, count = 60) {
  * node refuses to spawn without a shell (the EINVAL .cmd injection guard). So
  * the claude.cmd attempt goes through ComSpec (/c) explicitly; the args are
  * fixed constants with no user input, so the cmd.exe hop has no injection
- * surface. cmd.exe exits 9009 when claude.cmd does not exist, which the
+ * surface. The one exception is the identity file path, which comes from the
+ * home folder: identityLaunchArgs never passes one holding a character cmd.exe
+ * re-reads. cmd.exe exits 9009 when claude.cmd does not exist, which the
  * runner treats as "not found, try the next candidate".
  * @param {readonly string[]} args
  * @param {string} platform
@@ -3036,6 +3700,37 @@ export function claudeSpawnCandidates(args, platform, env = {}) {
     { file: comspec, args: ['/c', 'claude.cmd', ...args], notFoundExitCodes: [9009] },
     { file: 'claude.exe', args: [...args], notFoundExitCodes: [] },
   ]
+}
+
+/**
+ * Whether the claude this launcher starts knows --append-system-prompt-file. A
+ * bare use answers "argument missing" when it does and "unknown option" when
+ * it does not (classifyFlagProbe, the same reading as the channels flag). The
+ * same candidates as the launch, in the same order, hidden and killed after
+ * PROBE_TIMEOUT_MS; 'unknown' when none of them ran.
+ * @param {{ platform?: string, env?: Record<string, string | undefined>, run?: typeof spawnSync }} [opts]
+ * @returns {'supported' | 'unsupported' | 'unknown'}
+ */
+export function defaultProbeIdentityFlag({ platform = process.platform, env = process.env, run = spawnSync } = {}) {
+  for (const candidate of claudeSpawnCandidates([IDENTITY_FLAG], platform, env)) {
+    let out
+    try {
+      out = run(candidate.file, candidate.args, {
+        encoding: 'utf8',
+        timeout: PROBE_TIMEOUT_MS,
+        env,
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+    } catch (error) {
+      if (spawnErrorMeansNotFound(error)) continue
+      return 'unknown'
+    }
+    if (spawnErrorMeansNotFound(out?.error)) continue
+    if (candidate.notFoundExitCodes.includes(out?.status)) continue
+    return classifyFlagProbe(out)
+  }
+  return 'unknown'
 }
 
 /** Map a child's (code, signal) exit to this process's exit code. */

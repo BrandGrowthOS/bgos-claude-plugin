@@ -221,6 +221,15 @@ test('selectAssistantBinding: a single bound assistant resolves without a reques
   assert.equal(r.assistantId, 7)
 })
 
+// The same rule as identityFromMe (lib/agent-identity.mjs): a name is text
+// or nothing, never "[object Object]" in the agent's identity file.
+test('selectAssistantBinding: a name is read only when it is text', () => {
+  const named = selectAssistantBinding({ assistants: [{ assistant_id: 7, name: 'Mira' }] })
+  assert.equal(named.kind === 'ok' && named.name, 'Mira')
+  const junk = selectAssistantBinding({ assistants: [{ assistant_id: 7, name: { first: 'Mira' } }] }, '7')
+  assert.equal(junk.kind === 'ok' && junk.name, '')
+})
+
 test('selectAssistantBinding: a requested id that is bound resolves to exactly that id', () => {
   const r = selectAssistantBinding(
     { assistants: [{ assistant_id: 871, agent_route: 'claude' }, { assistant_id: 872, agent_route: 'claude' }] },

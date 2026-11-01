@@ -305,6 +305,12 @@ export class SteerGate {
     })
   }
 
+  /** A steer is waiting to be delivered or its Escape is pending: the owner
+   *  model and effort control types nothing then (lib/model-effort-control.ts). */
+  get busy(): boolean {
+    return this.pressing !== null || this.undelivered > 0
+  }
+
   /** Resolves once no decided press is pending (the daemon's own typing waits on it). */
   pressDone(): Promise<void> {
     return this.pressing ?? Promise.resolve()

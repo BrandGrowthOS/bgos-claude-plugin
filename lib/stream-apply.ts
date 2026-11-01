@@ -379,7 +379,7 @@ function isSystemFinalize(view: StreamMessageView): boolean {
 
 // ── buttons_answered (single-announce contract) ──────────────────────────────
 
-export type ButtonsAnsweredDecision = 'forward' | 'permission' | 'skip'
+export type ButtonsAnsweredDecision = 'forward' | 'permission' | 'skip' | 'ask'
 
 /**
  * The gate is an announced-ids dedup set SHARED with the poll's announce
@@ -391,6 +391,13 @@ export type ButtonsAnsweredDecision = 'forward' | 'permission' | 'skip'
  * orders: poll-first, the shared set blocks the stream replay; stream
  * first, the caller consumes the tracked baseline entry so the poll's
  * prevUnanswered can never contain the id again.
+ *
+ * 'ask': the message is a question of a group the ask tracker holds
+ * (lib/ask-tracker.ts), answered however late. Its hydrated entry carries no
+ * messageType and an answer of { optionId, freeText, skipped }, no button
+ * fields at all, so the caller must route it BEFORE any button payload check.
+ * An ask_user_input row nothing tracks (an older daemon's card, or a group
+ * already delivered) is still skipped: nobody here is waiting for it.
  */
 export function decideButtonsAnswered(opts: {
   messageType: string | null | undefined
@@ -398,9 +405,12 @@ export function decideButtonsAnswered(opts: {
   /** True when either transport already announced this id (the shared set). */
   alreadyAnnounced: boolean
   permissionRe: RegExp
+  /** True when the ask tracker holds a pending group with this message in it. */
+  askTracked?: boolean
 }): ButtonsAnsweredDecision {
-  if (opts.messageType === 'ask_user_input') return 'skip'
   if (opts.alreadyAnnounced) return 'skip'
+  if (opts.askTracked) return 'ask'
+  if (opts.messageType === 'ask_user_input') return 'skip'
   if (opts.permissionRe.test(opts.callbackData)) return 'permission'
   return 'forward'
 }

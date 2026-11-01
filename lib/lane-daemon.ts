@@ -170,6 +170,12 @@ export function laneDeliveryGate(
  * (lib/inbound-channel.ts), plus the lane's own stamp. EVERY meta value is a
  * string (the wake card contract: Claude Code silently drops a card with any
  * other value), and optional keys are omitted, never null.
+ *
+ * An email's files are NEVER fetched here (read attachments): the owner's
+ * mail is not a person's, and a lane's floor refuses the folder they are saved
+ * in (lib/hard-floor-lane.mjs). So no saves are handed to the builder, and an
+ * email that ever reached a lane with the owner's switch on would read every
+ * file as not saved, with no link.
  */
 export function buildLaneChannelEvent(
   delivery: LaneDelivery,

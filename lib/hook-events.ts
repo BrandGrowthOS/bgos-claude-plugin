@@ -348,6 +348,8 @@ export const OWN_MCP_TOOLS = [
   'rename_chat',
   'set_status',
   'ask_user_input',
+  // Retiring a question card is the agent talking to the owner too.
+  'withdraw_ask',
   'complete_voice_task',
   'voice_consult_reply',
   'list_peers',
@@ -367,6 +369,8 @@ export const OWN_MCP_TOOLS = [
   'set_mission_goals',
   'add_mission_goals',
   'cancel_mission_goal',
+  'set_goal_working',
+  'set_goal_waiting',
   'complete_mission',
   'log_health_event',
   'list_health_events',

@@ -1,0 +1,281 @@
+/**
+ * Owner model and effort control (Route A): end to end on a REAL tmux server
+ * with a FAKE agent (test/fixtures/fake-claude-tui.mjs).
+ *
+ * The unit cases (model-effort-control.test.ts) prove the transaction; this
+ * one proves the transport: the real argv from lib/compact-inject.ts typed by
+ * real tmux send-keys, the real pane probes, the real `ps` ancestry, and
+ * confirmation from observations written by the real status line bridge.
+ *
+ * Each tmux server is this test's own, on a socket FILE inside the test's own
+ * temp folder (-S <tmp>/tmux.sock, -f /dev/null), killed with kill-server on
+ * that socket only and the folder removed. No other tmux server, session or
+ * agent on the machine is touched, and nothing is left in the shared tmux
+ * socket folder. Skipped where tmux is absent (Windows).
+ */
+
+import { test, after } from 'node:test'
+import assert from 'node:assert/strict'
+import { execFile, spawnSync } from 'node:child_process'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
+
+import type { TmuxTarget } from '../lib/compact-inject.ts'
+import { ModelEffortControl } from '../lib/model-effort-control.ts'
+import { processAncestry } from '../lib/model-effort-pane.ts'
+import { modelControlDir, readObservation } from '../lib/model-control-store.mjs'
+import { pickerModelOf } from '../lib/model-effort-catalog.ts'
+
+/** One step through the production path, `apply` (round 3 review L2). */
+async function step(control: ModelEffortControl, op: 'set_model' | 'set_effort', value: string) {
+  const snap = await control.snapshot()
+  const o = snap.observation
+  const selection = op === 'set_model'
+    ? { sessionId: snap.sessionId, model: value, effort: o?.effort ?? 'high' }
+    : { sessionId: snap.sessionId, model: (o && pickerModelOf(o.modelId)) ?? 'opus', effort: value }
+  return control.apply(selection, { deadlineAtMs: Number.POSITIVE_INFINITY })
+}
+
+const execFileAsync = promisify(execFile)
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+const HELP = spawnSync('cat', [join(ROOT, 'test', 'fixtures', 'claude-help-2.1.309.txt')], { encoding: 'utf8' }).stdout
+const hasTmux = spawnSync('tmux', ['-V']).status === 0
+const started: Array<{ socket: string; folder: string; panePid: number }> = []
+
+function alive(pid: number): boolean {
+  try { process.kill(pid, 0); return true } catch { return false }
+}
+
+after(async () => {
+  // Every server is killed before any folder goes, so one folder that will
+  // not go never leaves the other servers running. The fake agent is its
+  // pane's process and leads its own process group, with its stand in daemon
+  // and any status line bridge still in flight: that group (and only it) is
+  // killed first, or a late bridge writes into a folder already removed.
+  for (const { socket, panePid } of started) {
+    if (panePid > 0) try { process.kill(-panePid, 'SIGKILL') } catch {}
+    spawnSync('tmux', ['-S', socket, 'kill-server'])
+  }
+  for (const { folder, panePid } of started) {
+    for (let i = 0; i < 50 && panePid > 0 && alive(panePid); i++) await new Promise((r) => setTimeout(r, 100))
+    rmSync(folder, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  }
+})
+
+async function exec(argv: string[]): Promise<string> {
+  const { stdout } = await execFileAsync(argv[0]!, argv.slice(1), { timeout: 5_000 })
+  return stdout
+}
+
+type Exec = (argv: string[]) => Promise<string>
+
+async function startRig(name: string, env: Record<string, string> = {}, wrapExec?: (socket: string, run: Exec) => Exec) {
+  const state = mkdtempSync(join(tmpdir(), 'hoai-mec-rig-'))
+  const sessionId = `rig-${name}-${process.pid}`
+  const socket = join(state, 'tmux.sock')
+  const command = [
+    `BGOS_PLUGIN_STATE_DIR='${state}'`,
+    `FAKE_TUI_SESSION_ID='${sessionId}'`,
+    `FAKE_TUI_BRIDGE='${join(ROOT, 'bin', 'hoai-statusline-bridge.mjs')}'`,
+    ...Object.entries(env).map(([k, v]) => `${k}='${v}'`),
+    `exec '${process.execPath}' '${join(ROOT, 'test', 'fixtures', 'fake-claude-tui.mjs')}'`,
+  ].join(' ')
+  const run = spawnSync('tmux', ['-S', socket, '-f', '/dev/null', 'new-session', '-d', '-s', 'rig', '-x', '120', '-y', '30', command])
+  assert.equal(run.status, 0, String(run.stderr))
+  const rig = { socket, folder: state, panePid: 0 }
+  started.push(rig)
+  const target: TmuxTarget = { target: 'rig', socketArgs: ['-S', socket], source: 'tmux-pane' }
+  const panePid = Number((await exec(['tmux', '-S', socket, 'display-message', '-p', '-t', 'rig', '#{pane_pid}'])).trim())
+  rig.panePid = panePid
+  const dir = modelControlDir({ env: { BGOS_PLUGIN_STATE_DIR: state }, home: state })
+  // Wait for the first status line observation and the stand in daemon, the
+  // fake agent's own child, whose ancestry a real daemon would walk.
+  const pidFile = join(state, 'daemon.pid')
+  for (let i = 0; i < 50 && !(readObservation(dir, sessionId) && existsSync(pidFile)); i++) {
+    await new Promise((r) => setTimeout(r, 100))
+  }
+  const daemonPid = Number(readFileSync(pidFile, 'utf8').trim())
+  // And for the composer to be drawn: an observation can land before the
+  // first frame, and a screen read then finds no composer.
+  for (let i = 0; i < 50 && !/❯/.test(await capture(socket)); i++) {
+    await new Promise((r) => setTimeout(r, 100))
+  }
+  const control = new ModelEffortControl({
+    optedIn: () => true,
+    target: () => target,
+    sessionId: () => sessionId,
+    turnState: () => 'idle',
+    dialogOpen: () => false,
+    otherInjectionBusy: () => false,
+    // A daemon walks up from itself to the pane's root, the fake agent.
+    ancestry: () => processAncestry(daemonPid, exec),
+    readObservation: (sid) => readObservation(dir, sid),
+    helpText: async () => HELP,
+    exec: wrapExec ? wrapExec(socket, exec) : exec,
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    now: () => Date.now(),
+    log: () => {},
+  }, { confirmTimeoutMs: 8_000, pollMs: 100, staleMs: 15_000 })
+  return { control, socket, target, panePid, daemonPid }
+}
+
+async function capture(socket: string): Promise<string> {
+  return exec(['tmux', '-S', socket, 'capture-pane', '-p', '-t', 'rig'])
+}
+
+test('the ancestry of a real process names its own tty and foreground group', { skip: !hasTmux }, async () => {
+  const { panePid, daemonPid } = await startRig('ps')
+  const chain = await processAncestry(daemonPid, exec)
+  assert.ok(chain.length >= 2)
+  assert.equal(chain[0]!.pid, daemonPid)
+  assert.equal(chain[1]!.pid, panePid, 'the stand in daemon is the fake agent\'s child')
+  assert.match(chain[0]!.tty, /^ttys?\d+|^pts\//)
+  assert.equal(chain[0]!.pgid, chain[0]!.tpgid, 'the agent\'s job is the foreground of its pane')
+})
+
+test('set_model and set_effort are typed by real tmux and confirmed by the real bridge', { skip: !hasTmux }, async () => {
+  const { control, socket } = await startRig('apply')
+  const model = await step(control, 'set_model', 'sonnet')
+  assert.equal(model.ok, true, JSON.stringify(model))
+  if (model.ok) assert.equal(model.report.model, 'claude-sonnet-5-5')
+  const effort = await step(control, 'set_effort', 'max')
+  assert.equal(effort.ok, true, JSON.stringify(effort))
+  if (effort.ok) {
+    assert.equal(effort.report.effort, 'max')
+    assert.equal(effort.report.model, 'claude-sonnet-5-5')
+  }
+  assert.match(await capture(socket), /Set effort max/)
+})
+
+test('a real draft in the pane is refused and left exactly as the owner typed it', { skip: !hasTmux }, async () => {
+  const { control, socket } = await startRig('draft')
+  // The owner's own typing, simulated in this test's own pane.
+  await exec(['tmux', '-S', socket, 'send-keys', '-t', 'rig', '-l', '--', 'half a thought'])
+  // Wait until the draft is on screen: a key still in flight when the control
+  // reads the pane is the one race no screen read can close (RESULT.md).
+  for (let i = 0; i < 100 && !/❯\shalf a thought/.test(await capture(socket)); i++) {
+    await new Promise((r) => setTimeout(r, 50))
+  }
+  assert.match(await capture(socket), /❯\shalf a thought/, 'the owner\'s draft is drawn before the request')
+  const out = await step(control, 'set_model', 'sonnet')
+  assert.equal(out.ok, false)
+  if (!out.ok) assert.equal(out.code, 'composer_not_empty')
+  assert.match(await capture(socket), /❯\shalf a thought/)
+})
+
+test('echoed input that never applies is not confirmed', { skip: !hasTmux }, async () => {
+  const { control } = await startRig('echo', { FAKE_TUI_APPLY: '0' })
+  const out = await step(control, 'set_effort', 'low')
+  assert.equal(out.ok, false)
+  if (!out.ok) {
+    assert.equal(out.code, 'not_confirmed')
+    assert.equal(out.report!.effort, 'high')
+    assert.match(out.message, /still in the agent's message box/)
+  }
+})
+
+async function typeAsOwner(socket: string, text: string): Promise<void> {
+  // The owner's own typing, simulated in this test's own pane; then wait until
+  // it is drawn (a key still in flight is the race no screen read can close).
+  await exec(['tmux', '-S', socket, 'send-keys', '-t', 'rig', '-l', '--', text])
+  for (let i = 0; i < 100 && !(await capture(socket)).includes(`❯\u00a0${text}`); i++) {
+    await new Promise((r) => setTimeout(r, 50))
+  }
+  assert.ok((await capture(socket)).includes(`❯\u00a0${text}`), 'the owner\'s draft is drawn before the request')
+}
+
+// Security review H1, the reviewer's own end to end case: before the fix the
+// control typed `/model sonnet` and Enter after this draft and the screen
+// showed `● Unknown: const f = () =>/model sonnet`.
+test('H1: a real draft ending with > is refused and left exactly as the owner typed it', { skip: !hasTmux }, async () => {
+  const { control, socket } = await startRig('arrow')
+  await typeAsOwner(socket, 'const f = () =>')
+  const out = await step(control, 'set_model', 'sonnet')
+  const screen = await capture(socket)
+  assert.doesNotMatch(screen, /Unknown:|\/model sonnet/, screen)
+  assert.equal(out.ok, false, JSON.stringify(out))
+  if (!out.ok) assert.equal(out.code, 'composer_not_empty')
+  assert.match(screen, /❯\sconst f = \(\) =>/)
+})
+
+// Security review M2 on a real tmux server: the target is a session NAME, and
+// a window opened in that session right after the control read the agent's
+// screen becomes what the name resolves to. The keys must still reach the
+// proven pane, and nothing the window's program (cat, which echoes) receives.
+test('M2: a window opened mid request does not receive the keys; the proven pane does', { skip: !hasTmux }, async () => {
+  let opened = false
+  const { control, socket } = await startRig('window', {}, (sock, run) => async (argv) => {
+    const out = await run(argv)
+    if (!opened && argv.includes('capture-pane')) {
+      opened = true
+      await run(['tmux', '-S', sock, 'new-window', '-t', 'rig', 'cat'])
+    }
+    return out
+  })
+  const out = await step(control, 'set_model', 'sonnet')
+  assert.ok(opened)
+  const other = await capture(socket)
+  assert.doesNotMatch(other, /\/model/, `the new window received keys: ${other}`)
+  assert.equal(out.ok, true, JSON.stringify(out))
+  if (out.ok) assert.equal(out.report.model, 'claude-sonnet-5-5')
+})
+
+// Round 2 on PR #275, the Medium, on a real tmux server. Faint used to be any
+// grey or black colour, and both the empty check and the re-read before the
+// Enter skipped faint text: a draft drawn in the light themes' text colour,
+// rgb(0,0,0), read as empty, and so did a tag drawn dim with no space after
+// it (the reviewer's probe sent the owner's draft with /model sonnet added).
+test('round 2: a real draft drawn in the light theme\'s black is refused and left as typed', { skip: !hasTmux }, async () => {
+  const { control, socket } = await startRig('black', { FAKE_TUI_TEXT_SGR: '38;2;0;0;0' })
+  await typeAsOwner(socket, 'half a thought')
+  const out = await step(control, 'set_model', 'sonnet')
+  const screen = await capture(socket)
+  assert.doesNotMatch(screen, /Unknown:|\/model sonnet/, screen)
+  assert.equal(out.ok, false, JSON.stringify(out))
+  if (!out.ok) assert.equal(out.code, 'composer_not_empty')
+  assert.match(screen, /❯\shalf a thought/)
+})
+
+test('round 2: a real pasted text tag drawn dim is refused and left as it was', { skip: !hasTmux }, async () => {
+  const { control, socket } = await startRig('dimtag', { FAKE_TUI_DIM_TAGS: '1' })
+  await typeAsOwner(socket, '[Pasted text #1 +40 lines]')
+  const out = await step(control, 'set_model', 'sonnet')
+  const screen = await capture(socket)
+  assert.doesNotMatch(screen, /Unknown:|\/model sonnet/, screen)
+  assert.equal(out.ok, false, JSON.stringify(out))
+  if (!out.ok) assert.equal(out.code, 'composer_not_empty')
+  assert.match(screen, /❯\s\[Pasted text #1 \+40 lines\]/)
+})
+
+// Round 2, Low 1, on a real tmux server: the owner's key lands in front of the
+// typed command and the cursor stays after it (they pressed Left to get
+// there). One BSpace per character from that cursor deleted the owner's key.
+test('round 2 L1: an arrow key in the gap: the owner\'s key is never deleted', { skip: !hasTmux }, async () => {
+  let owner = false
+  const { control, socket } = await startRig('cursor', {}, (sock, run) => async (argv) => {
+    const out = await run(argv)
+    if (!owner && argv.includes('-l') && argv.at(-1) === '/model sonnet') {
+      owner = true
+      const keys = ['tmux', '-S', sock, 'send-keys', '-t', 'rig']
+      await run([...keys, ...Array.from('/model sonnet', () => 'Left')])
+      await run([...keys, '-l', '--', 'q'])
+      for (let i = 0; i < 100 && !(await capture(sock)).includes('❯\u00a0q/model sonnet'); i++) {
+        await new Promise((r) => setTimeout(r, 20))
+      }
+    }
+    return out
+  })
+  const out = await step(control, 'set_model', 'sonnet')
+  assert.ok(owner)
+  // Any key the control sent is given time to land and be drawn: read too
+  // early, a screen would still show the owner's key a BSpace is about to take.
+  await new Promise((r) => setTimeout(r, 500))
+  const screen = await capture(socket)
+  assert.equal(out.ok, false, JSON.stringify(out))
+  if (!out.ok) assert.equal(out.code, 'composer_changed')
+  assert.match(screen, /❯\sq\/model sonnet/, screen)
+  assert.doesNotMatch(screen, /Unknown:|Set model/, screen)
+})
