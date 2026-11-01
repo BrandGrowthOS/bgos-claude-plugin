@@ -29,6 +29,16 @@ const SID = '8c1f0000-0000-4000-8000-000000000001'
 const LIMIT_AT = Date.parse('2026-11-01T16:39:03.000Z')
 const RESETS_AT = 1_793_980_800_000
 const SWAP_AT = Date.parse('2026-11-01T16:53:14.000Z')
+// The launcher stamped supervisor.json when it armed, six hours before the limit; it started 2 s before that.
+const STAMP = new Date(LIMIT_AT - 6 * HOUR).toISOString()
+const LAUNCHER_STARTED_AT = LIMIT_AT - 6 * HOUR - 2_000
+const HOAI_LAUNCHER = '"C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\kc\\.claude\\plugins\\cache\\hoai\\hoai\\0.74.4\\bin\\hoai-core.mjs" --x'
+// The process table as listAgents reads it (lib/agent-inventory.mjs launcherProcessQuery): identity only.
+const isProcessQuery = (file: string, args: string[]) => file === 'powershell.exe' && args.join(' ').includes('Win32_Process')
+const processTable =
+  (command: string, startedAtMs = LAUNCHER_STARTED_AT) =>
+  (file: string, args: string[]) =>
+    isProcessQuery(file, args) ? { code: 0, stdout: JSON.stringify({ ProcessId: 4242, CommandLine: command, StartedAtMs: startedAtMs }) } : { code: 1, stdout: '' }
 
 const LIMIT_LINE = "  ⎿  You've hit your weekly limit · resets Nov 6, 8pm (Asia/Dubai)"
 function picker(selected = 0, options = ['Stop and wait for limit to reset', 'Wait here, then continue automatically at Nov 6, 8pm', 'Add funds to continue with usage credits']) {
@@ -89,7 +99,7 @@ function agentFs(r: Rig): MemoryFs {
     {
       [join(r, 'credentials-912.json')]: JSON.stringify({ pairingToken: 'agent-secret-912', backendUrl: 'x' }),
       [`${r.stateDir}${sep}launch.json`]: recipe,
-      [`${r.stateDir}${sep}supervisor.json`]: supervisorFileBody(4242, 'x'),
+      [`${r.stateDir}${sep}supervisor.json`]: supervisorFileBody(4242, STAMP),
       [`${r.stateDir}${sep}session-id`]: `${SID}\n`,
       [`${r.cwd}${sep}.bgos-agent-id`]: '912\n',
       // A credential file whose CONTENT no test may ever see read: only its mtime counts.
@@ -202,7 +212,8 @@ function ctxFor(r: Rig, fs: MemoryFs, clock: ReturnType<typeof fakeClock>, exec:
       sleep: clock.sleep,
       log: (line: string) => logs.push(line),
       pidAlive: (pid: number) => pid === 4242,
-      execSync: () => ({ code: 1, stdout: '' }),
+      // Windows: the process table shows pid 4242 as the hoai launcher that stamped the record.
+      execSync: r.platform === 'win32' ? processTable(HOAI_LAUNCHER) : () => ({ code: 1, stdout: '' }),
       uid: 501,
       assistantIds: ['912'],
       tmuxPath: '/usr/bin/tmux',
@@ -702,17 +713,10 @@ test('Windows: a dead launcher (no console to attach to) is never pressed; the o
   assert.deepEqual([out.agents[0].outcome, noticeOf(fs, r)?.why], ['cannot_press', 'no_console'])
 })
 
-// The process table as listAgents reads it (lib/agent-inventory.mjs launcherProcessQuery): identity only.
-const processTable = (command: string) => (file: string, args: string[]) =>
-  file === 'powershell.exe' && args.join(' ').includes('Win32_Process')
-    ? { code: 0, stdout: JSON.stringify({ ProcessId: 4242, CommandLine: command, StartedAtMs: LIMIT_AT - 6 * HOUR }) }
-    : { code: 1, stdout: '' }
-
 test('Windows: the console pid must still be the hoai launcher (row.launcherLive); a pid another program took is never read or pressed', async () => {
-  const hoai = '"C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\kc\\.claude\\plugins\\cache\\hoai\\hoai\\0.74.4\\bin\\hoai-core.mjs" --x'
   for (const [label, command, presses] of [
     ['another program took the pid', 'C:\\Windows\\System32\\notepad.exe', 0],
-    ['the pid is still the hoai launcher', hoai, 1],
+    ['the pid is still the hoai launcher', HOAI_LAUNCHER, 1],
   ] as const) {
     const r = winRig()
     const fs = agentFs(r)
@@ -729,6 +733,37 @@ test('Windows: the console pid must still be the hoai launcher (row.launcherLive
       assert.deepEqual(helper.calls, [], `${label}: its console is not even read`)
       assert.deepEqual([out.agents[0].outcome, noticeOf(fs, r)?.why], ['cannot_press', 'no_console'], label)
     }
+  }
+})
+
+test('Windows: the launcher is proven from the process table read NOW; a table that proves nothing is never read or pressed', async () => {
+  let queries = 0
+  const cases: Array<[string, (fs: MemoryFs, r: Rig) => void, (file: string, args: string[]) => { code: number; stdout: string }]> = [
+    // listAgents' launcherLive passes an unreadable table on "pid alive"; the key path must not.
+    ['the process table cannot be read', () => {}, () => ({ code: 1, stdout: '' })],
+    ['a hoai launcher that started after the record was stamped (the pid went to another agent)', () => {}, processTable(HOAI_LAUNCHER, LIMIT_AT - HOUR)],
+    ['a record with no start stamp to prove the pid against', (fs, r) => fs.writeFile(`${r.stateDir}\\supervisor.json`, supervisorFileBody(4242, 'x')), processTable(HOAI_LAUNCHER)],
+    // The row was listed when 4242 was the launcher; by the time of the press another program has it.
+    ['the table changed after the agents were listed', () => {}, (file, args) => {
+      if (!isProcessQuery(file, args)) return { code: 1, stdout: '' }
+      queries += 1
+      return processTable(queries === 1 ? HOAI_LAUNCHER : 'C:\\Windows\\System32\\notepad.exe')(file, args)
+    }],
+  ]
+  for (const [label, arrange, execSync] of cases) {
+    queries = 0
+    const r = winRig()
+    const fs = agentFs(r)
+    arrange(fs, r)
+    writeTranscript(fs, r, [limitRecord()])
+    fs.touch(r.credentials, SWAP_AT)
+    const clock = fakeClock(SWAP_AT + MIN)
+    // The fake helper only records the read and the press it would get.
+    const helper = fakeHelper(() => picker())
+    const { ctx } = ctxFor(r, fs, clock, helper.exec, { execSync })
+    const out = await runLimitPass(ctx)
+    assert.deepEqual(helper.calls, [], `${label}: its console is not even read`)
+    assert.deepEqual([out.agents[0].outcome, noticeOf(fs, r)?.why], ['cannot_press', 'no_console'], label)
   }
 })
 
