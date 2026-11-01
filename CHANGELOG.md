@@ -14,15 +14,6 @@ Notable changes to the HOAI Claude Code plugin.
 - **Inbound defence:** email rows write file links into the turn only when `readAttachments` is true.
 - Tests: `test/email-outbound-files.test.ts`, `test/agent-email-files.test.ts`, `test/secret-scan.test.ts`, and the touched `agent-email-send`, `email-files-channel`, `external-email-label`, `permission-card-email-send` and `declared-capabilities` files.
 
-## Unreleased (no version of its own; ships in the next version main takes after 0.83.0)
-
-**A mission holds up to 20 mini goals (was 12), matching the BGOS backend (BGOS #3105; KC, 1048 msg 149968: "remove that 12 goals limit ... up to at least 20").** The connector checked the count itself before sending, so the backend's new limit could not reach an agent until this change. It carries no version bump: `release-tag.yml` tags `v0.83.0` when set_goal_working (#295) merges, so this rides the next version bump on main.
-
-- `lib/missions.ts`: `MISSION_MAX_GOALS` 12 to 20; the create, set and add doors all read it.
-- `server.ts`: the `create_mission`, `set_mission_goals` and `add_mission_goals` tool descriptions say 2 to 20 and 1 to 20.
-- `set_goal_working` (from 0.83.0) already reads `MISSION_MAX_GOALS`, so its `goal_ids` now take 1 to 20; its tool description says so too.
-- Test: `test/missions.test.ts` pins the literal 20 on all three doors (red before this change: actual 12), and `test/goal-marks.test.ts` refuses 21 goal ids with "1 to 20".
-
 ## 0.83.0 (2026-10-31)
 
 **An agent can mark every mission goal it is working on, so the card animates them all at once (board row 9d7880bf, KC: "it is a must").** BGOS #3575 (5.26.0) shipped the working mark in the app and the backend; until now the plugin had no tool for it, so the card only ever animated the first unticked goal.
@@ -34,6 +25,13 @@ Notable changes to the HOAI Claude Code plugin.
 - **They take NO pending self write stamp, unlike every other mission write (found in review).** A mark only ever emits `mission_updated`, which is never narrated and never spends a pending stamp, so one taken here would linger and the owner's next Pause or Resume (which carry no `cleared_by`) would read as the agent's own write and never reach it. `MISSION_MARK_TOOLS` in `lib/missions.ts` names the exemption, and `test/mission-ws-wiring.test.ts` holds both halves.
 - **Declares `mission_goal_working`** on every host, so the served canon now tells this agent BGOS's working mark paragraph. The MCP instructions (Missions, item 7) and the bundled fallback canon name both tools.
 - Tests: `test/goal-marks.test.ts` (red first, 22 cases: the paths, the input judges, one PATCH per goal id with its body and headers, refusals before any request, the backend's refusal surfaced, the owner's Pause and Resume still heard after a mark, the declarations, the guard, the canon text and the declared token), and the six-tool lists in `test/mission-private.test.ts` and `test/turn-aware-tools.test.ts` now run the two new tools through every private turn case.
+
+**A mission holds up to 20 mini goals (was 12), matching the BGOS backend (BGOS #3105; KC, 1048 msg 149968: "remove that 12 goals limit ... up to at least 20").** The connector checked the count itself before sending, so the backend's new limit could not reach an agent until this change (#274, folded into this release).
+
+- `lib/missions.ts`: `MISSION_MAX_GOALS` 12 to 20; the create, set and add doors all read it.
+- `server.ts`: every mission tool description that counts goals says 20: `create_mission` (2 to 20 accepted), `set_mission_goals` (2 to 20), `add_mission_goals` (1 to 20 per add, 20 in all; it still said 12 until review) and `set_goal_working` (`goal_ids` 1 to 20).
+- `set_goal_working` counts DISTINCT goal ids: the 1 to 20 cap is judged after repeats are removed, so `[1..20, 1]` is twenty goals and twenty requests, not a refusal (found in review).
+- Tests: `test/missions.test.ts` pins the literal 20 on all three doors (red before this change: actual 12), pins 20 in each counting mission tool's description read from the real `server.ts` with no 12 left in any mission tool's text (red on b59272a: add_mission_goals said 12), and holds the distinct id count (red on b59272a: refused); `test/goal-marks.test.ts` refuses 21 goal ids with "1 to 20".
 
 ## 0.81.0 (2026-10-31)
 

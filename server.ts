@@ -5584,7 +5584,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: 'create_mission',
       description:
         'Create a durable mission card pinned in the BGOS chat (capability ' +
-        '#19): a title plus 4 to 10 BINARY mini-goals, each with a ' +
+        '#19): a title plus 4 to 10 BINARY mini-goals (2 to 20 goals are ' +
+        'accepted), each with a ' +
         '`done_when` line stating the observable check that proves it. Call ' +
         'this FIRST whenever a user request is multi-step (3+ distinct ' +
         'steps or work spanning tools and minutes), then work normally and ' +
@@ -5734,8 +5735,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'themselves (every /goal mission), where the card tells them to ask ' +
         'you. NEVER call create_mission to add a goal: that sets the mission ' +
         'aside and discards every tick on it. Send ONLY the new goals, 1 to ' +
-        '12, each { name, done_when }; never restate the goals the mission ' +
-        'already has. A mission holds 12 in all, so an add that would pass ' +
+        '20, each { name, done_when }; never restate the goals the mission ' +
+        'already has. A mission holds 20 in all, so an add that would pass ' +
         'that is refused with both numbers. Refused on a mission with NO ' +
         'goals yet: use set_mission_goals for that. Targets your active ' +
         'mission unless mission_id is passed. Maps to POST ' +
@@ -5815,8 +5816,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       description:
         'Mark the mission mini-goals you are working on RIGHT NOW, or clear ' +
         'that mark, so the mission card animates every one of them at once. ' +
-        'Pass every goal you are running in parallel in goal_ids, with ' +
-        'working: true; pass working: false when you stop or hand a goal ' +
+        'Pass every goal you are running in parallel in goal_ids (1 to 20), ' +
+        'with working: true; pass working: false when you stop or hand a goal ' +
         'off. REFRESH RULE: the mark lapses after 30 minutes, so call this ' +
         'again with working: true within 30 minutes for every goal you are ' +
         'still working on, or the card stops animating it. A tick ends the ' +
