@@ -560,6 +560,10 @@ test('the checkup words for an Enter not pressed name the real reason, and a sti
   const timedOut = freeLimitResult({ outcome: 'not_pressed', reason: 'helper_timed_out' })
   assert.match(timedOut.detail, /may have reached/)
   assert.doesNotMatch(timedOut.detail, /Did not press|screen changed/)
+  // A tmux send-keys that timed out is reported as inject_failed: the key may have gone out too.
+  const injectFailed = freeLimitResult({ outcome: 'not_pressed', reason: 'inject_failed' })
+  assert.match(injectFailed.detail, /could not be confirmed/)
+  assert.doesNotMatch(injectFailed.detail, /Did not press/)
   for (const r of ['record_unsaved', 'screen_changed', 'helper_timed_out', 'inject_failed']) assert.equal(freeLimitResult({ outcome: 'not_pressed', reason: r }).outcome, 'not_fixed')
   const still = freeLimitResult({ outcome: 'still_limited', how: 'login_changed' })
   assert.match(still.detail, /waits for the limit to reset/)

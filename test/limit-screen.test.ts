@@ -281,6 +281,16 @@ test('still limited after a press on the login proof: the owner is told the watc
   assert.match(unknown, /waits for the limit to reset/)
 })
 
+test('still limited never contradicts itself or promises a press: usage only LOOKED available, and the watcher waits before it presses again', () => {
+  for (const how of ['reset_passed', 'login_changed'] as const) {
+    const text = limitNoticeText(parseLimitNotice(JSON.stringify(notice({ outcome: 'still_limited', how })))!)
+    assert.doesNotMatch(text, /usage is available again/, how)
+    assert.match(text, /looked available again/, how)
+    assert.match(text, /waits for the limit to reset at 2026-11-06 16:00 UTC before it presses again/, how)
+    assert.doesNotMatch(text, /then presses|presses Enter once more/, `${how}: no promise the sweep may not keep (keep-alive off, the picker gone)`)
+  }
+})
+
 test('cannot press (no tmux): the owner gets the one tap fix, Restart now, or Enter in the window', () => {
   const text = limitNoticeText(parseLimitNotice(JSON.stringify(notice({ outcome: 'cannot_press', why: 'no_tmux', pressedAt: null })))!)
   assert.match(text, /Restart now/)
