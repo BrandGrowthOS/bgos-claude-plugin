@@ -115,6 +115,32 @@ test('the automatic continue line ("continuing automatically ... esc to cancel")
   assert.equal(readLimitScreen(armed).ok, false)
 })
 
+// Review 1, item 2: the dialog must be the newest thing under the newest limit line, close to it,
+// with nothing dialog-like below its footer.
+
+test('a full quoted dialog, footer and all, ABOVE the newest limit line is not the picker', () => {
+  const quoted = picker()
+  const screen = [quoted, '', '● Here is the dialog you asked about.', '', LIMIT_LINE, '', '╭────────────────────────────╮', '│ > ', '╰────────────────────────────╯'].join('\n')
+  assert.deepEqual(pick(readLimitScreen(screen)), [false, 'no_picker'])
+})
+
+test('the dialog far below the newest limit line is not taken for its picker', () => {
+  const rows = picker().split('\n')
+  const far = [rows[0], ...Array.from({ length: 12 }, (_, i) => `  line ${i} of something else`), ...rows.slice(1)].join('\n')
+  assert.deepEqual(pick(readLimitScreen(far)), [false, 'limit_line_far'])
+})
+
+test('anything dialog like below the footer (another choice list, another footer) is not pressed', () => {
+  const second = ['╭──────────────────────────╮', '│ Do you trust this folder? │', '│ ❯ 1. Yes                  │', '│   2. No                   │', '│ Enter to confirm          │', '╰──────────────────────────╯']
+  assert.deepEqual(pick(readLimitScreen([picker(), ...second].join('\n'))), [false, 'below_footer'])
+  assert.deepEqual(pick(readLimitScreen([picker(), '  Esc to cancel'].join('\n'))), [false, 'below_footer'])
+})
+
+test('the composer and the status line below the picker do not count as a dialog', () => {
+  const screen = [picker(), '', '╭────────────────────────────╮', '│ > ', '╰────────────────────────────╯', '  ⏵⏵ bypass permissions on (shift+tab to cycle)'].join('\n')
+  assert.equal(readLimitScreen(screen).ok, true, readLimitScreen(screen).reason)
+})
+
 function pick(seen: { ok: boolean; reason: string }) {
   return [seen.ok, seen.reason]
 }
