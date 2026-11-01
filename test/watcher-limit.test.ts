@@ -322,6 +322,121 @@ test('a second Enter inside the hour is refused; the next one is allowed only on
   assertOnlySafeTmux(tmux.calls)
 })
 
+// -- the record of the Enter: whole on disk, and a record that is lost or not saved never allows a key ----
+// The fake tmux only records the Enter it would get; no test here can reach a real window.
+
+const watchPathOf = (r: Rig) => join(r, 'watcher', LIMIT_WATCH_FILE_NAME)
+// The agent's own copy of its last Enter, beside the notice: a second witness if the watcher's file goes.
+const enterCopyOf = (r: Rig) => `${r.stateDir}${r.platform === 'win32' ? '\\' : '/'}limit-enter.json`
+
+function usageBackRig() {
+  const r = linuxRig()
+  const fs = agentFs(r)
+  writeTranscript(fs, r, [limitRecord()])
+  fs.touch(r.credentials, SWAP_AT)
+  return { r, fs, clock: fakeClock(SWAP_AT + MIN) }
+}
+
+test('the record of the Enter is written whole: a temp file, then a rename, never in place', async () => {
+  const { r, fs, clock } = usageBackRig()
+  const watchPath = watchPathOf(r)
+  fs.writeFile(watchPath, `${JSON.stringify({ schemaVersion: 1, agents: { 913: { lastEnterAt: '2026-10-30T09:00:00.000Z' } } })}\n`)
+  const inPlace: string[] = []
+  const landed: string[] = []
+  const writeFile = fs.writeFile
+  const rename = fs.rename
+  fs.writeFile = (p, t, o) => {
+    if (p === watchPath || p === enterCopyOf(r)) inPlace.push(p)
+    writeFile(p, t, o)
+  }
+  fs.rename = (a, b) => {
+    if (a !== b && (b === watchPath || b === enterCopyOf(r))) landed.push(b)
+    rename(a, b)
+  }
+  const tmux = fakeTmux(socketOf(r), (s) => (s.entered ? IDLE : picker()))
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+  await runLimitPass(ctx)
+  assert.equal(enters(tmux.calls).length, 1)
+  assert.deepEqual(inPlace, [], 'neither record is ever written in place (a crash mid write would tear it)')
+  assert.ok(landed.includes(watchPath) && landed.includes(enterCopyOf(r)), `both land by rename: ${landed.join(', ')}`)
+  assert.equal(JSON.parse(fs.readFile(watchPath)!).agents['913'].lastEnterAt, '2026-10-30T09:00:00.000Z', 'the other agents are kept')
+  assert.equal(JSON.parse(fs.readFile(enterCopyOf(r))!).lastEnterAt, new Date(SWAP_AT + MIN).toISOString())
+})
+
+test('a corrupt record (torn, empty, or the wrong shape): no Enter for an hour, the bad copy is kept aside, then one Enter', async () => {
+  const torn = '{"schemaVersion":1,"agents":{"912":{"lastEnterAt":"2026-11-01T16:5'
+  for (const [label, path, body] of [
+    ['torn watch file', 'watch', torn],
+    ['empty watch file', 'watch', ''],
+    ['watch file of the wrong shape', 'watch', '{"agents":[]}'],
+    ['torn agent copy', 'copy', '{"schemaVersion":1,"lastEnt'],
+  ] as const) {
+    const { r, fs, clock } = usageBackRig()
+    const target = path === 'watch' ? watchPathOf(r) : enterCopyOf(r)
+    fs.writeFile(target, body)
+    const tmux = fakeTmux(socketOf(r), (s) => (s.entered ? IDLE : picker()))
+    const { ctx, logs } = ctxFor(r, fs, clock, tmux.exec)
+    const first = await runLimitPass(ctx)
+    assert.equal(first.agents[0].outcome, 'waiting', `${label}: a record that cannot be read blocks the key`)
+    assert.equal(enters(tmux.calls).length, 0, label)
+    assert.equal(fs.readFile(`${target}.lost`), body, `${label}: the unreadable copy is kept for a person`)
+    assert.ok(logs.some((l) => /record .*could not be read/.test(l)), `${label}: logged`)
+    clock.set(SWAP_AT + MIN + 59 * MIN)
+    assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'waiting', `${label}: still inside the hour`)
+    assert.equal(enters(tmux.calls).length, 0, label)
+    clock.set(SWAP_AT + MIN + HOUR)
+    await runLimitPass(ctx)
+    assert.equal(enters(tmux.calls).length, 1, `${label}: an hour after the loss was seen, one Enter`)
+    assertOnlySafeTmux(tmux.calls)
+  }
+})
+
+test('the watcher record deleted after an Enter: the agent copy still holds the hour (and the other way round)', async () => {
+  for (const gone of ['watch', 'copy'] as const) {
+    const { r, fs, clock } = usageBackRig()
+    // The Enter "does not take": the picker stays up, so every pass would press again if it could.
+    const tmux = fakeTmux(socketOf(r), () => picker())
+    const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+    assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'not_taken')
+    assert.equal(enters(tmux.calls).length, 1)
+    fs.rm(gone === 'watch' ? watchPathOf(r) : enterCopyOf(r))
+    clock.set(SWAP_AT + MIN + 10 * MIN)
+    assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'waiting', `${gone} gone: the other record holds the hour`)
+    assert.equal(enters(tmux.calls).length, 1, `${gone} gone: still one Enter`)
+    clock.set(SWAP_AT + MIN + HOUR)
+    await runLimitPass(ctx)
+    assert.equal(enters(tmux.calls).length, 2, `${gone} gone: the hour is spent, one more`)
+    assertOnlySafeTmux(tmux.calls)
+  }
+})
+
+test('the Enter cannot be put on disk (a write throws, or does not land): no key', async () => {
+  const breakers: Array<[string, (fs: MemoryFs, r: Rig) => void]> = [
+    ['the watch file rename throws', (fs, r) => {
+      const rename = fs.rename
+      fs.rename = (a, b) => (b === watchPathOf(r) ? (() => { throw new Error('EPERM') })() : rename(a, b))
+    }],
+    ['the watch file write is lost', (fs, r) => {
+      const writeFile = fs.writeFile
+      fs.writeFile = (p, t, o) => (p.startsWith(watchPathOf(r)) ? undefined : writeFile(p, t, o))
+    }],
+    ['the agent copy write throws', (fs, r) => {
+      const writeFile = fs.writeFile
+      fs.writeFile = (p, t, o) => (p.startsWith(enterCopyOf(r)) ? (() => { throw new Error('ENOSPC') })() : writeFile(p, t, o))
+    }],
+  ]
+  for (const [label, breakIt] of breakers) {
+    const { r, fs, clock } = usageBackRig()
+    breakIt(fs, r)
+    const tmux = fakeTmux(socketOf(r), (s) => (s.entered ? IDLE : picker()))
+    const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+    const out = await runLimitPass(ctx)
+    assert.deepEqual([out.agents[0].outcome, out.agents[0].reason], ['not_pressed', 'record_unsaved'], label)
+    assert.equal(enters(tmux.calls).length, 0, `${label}: no key without the record on disk`)
+    assertOnlySafeTmux(tmux.calls)
+  }
+})
+
 // -- the press itself ------------------------------------------------------------------------------------
 
 test('the screen changed between the read and the press: no key is sent', async () => {
