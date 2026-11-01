@@ -412,7 +412,14 @@ const back = (over: Record<string, any> = {}) => ({
 })
 
 test('C9 still limited: reported as before, no free_limit, whatever the key path', () => {
-  for (const limitFree of [undefined, null, { usageBack: false, how: null, keyPath: { ok: true, reason: 'tmux' }, lastEnterAtMs: null }]) {
+  for (const limitFree of [
+    undefined,
+    null,
+    { usageBack: false, how: null, keyPath: { ok: true, reason: 'tmux' }, lastEnterAtMs: null },
+    // A proof word without the proof is not usage back: the planner trusts usageBack, never `how` alone.
+    { usageBack: false, how: 'login_changed', keyPath: { ok: true, reason: 'tmux' }, lastEnterAtMs: null },
+    { usageBack: 'yes', how: 'reset_passed', keyPath: { ok: true, reason: 'tmux' }, lastEnterAtMs: null },
+  ]) {
     const pass = checkupPass(obs({ ...LIMITED, limitFree }))
     assert.deepEqual(steps(pass.actions), ['report:planned'], JSON.stringify(limitFree))
     assert.equal(pass.findings[0].fixable, false)
