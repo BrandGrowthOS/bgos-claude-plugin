@@ -872,22 +872,25 @@ export interface MissionGoalWorkingInput {
  * anywhere in the list refuses the call, so a half applied list never happens
  * because of a typo. A repeated id is one goal and one request. The backend
  * takes one goal per request, so the tool loops; the cap is a mission's own
- * goal cap, since there are never more goals to mark than that.
+ * goal cap, since there are never more goals to mark than that, and it counts
+ * distinct ids, after the repeats are removed.
  */
 export function buildMissionGoalWorkingInput(input: {
   goal_ids?: unknown
   working?: unknown
 }): MissionBuildResult<MissionGoalWorkingInput> {
   const { goal_ids, working } = input
-  if (!Array.isArray(goal_ids) || goal_ids.length < 1 || goal_ids.length > MISSION_MAX_GOALS) {
-    return {
-      ok: false,
-      error:
-        `goal_ids must list 1 to ${MISSION_MAX_GOALS} goal ids, the ids shown on the mission card ` +
-        `(got ${JSON.stringify(goal_ids)}).`,
-    }
-  }
+  const countRefusal = (): { ok: false; error: string } => ({
+    ok: false,
+    error:
+      `goal_ids must list 1 to ${MISSION_MAX_GOALS} distinct goal ids, the ids shown on the mission card ` +
+      `(got ${JSON.stringify(goal_ids)}).`,
+  })
+  if (!Array.isArray(goal_ids) || goal_ids.length < 1) return countRefusal()
+  // The cap counts DISTINCT goals, so it is judged after repeats are folded
+  // away: [1..20, 1] is twenty goals and twenty requests, not twenty one.
   const goalIds: number[] = []
+  const seen = new Set<number>()
   for (let i = 0; i < goal_ids.length; i++) {
     const id = goal_ids[i]
     if (typeof id !== 'number' || !Number.isInteger(id) || id < 1) {
@@ -898,8 +901,12 @@ export function buildMissionGoalWorkingInput(input: {
           `(got ${JSON.stringify(id)}). Nothing was marked.`,
       }
     }
-    if (!goalIds.includes(id)) goalIds.push(id)
+    if (!seen.has(id)) {
+      seen.add(id)
+      goalIds.push(id)
+    }
   }
+  if (goalIds.length > MISSION_MAX_GOALS) return countRefusal()
   if (typeof working !== 'boolean') {
     return {
       ok: false,
