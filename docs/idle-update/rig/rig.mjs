@@ -602,11 +602,14 @@ async function scenarioBusy() {
     keepBrowserInUse()
     return Date.now() > until && record(control.id)?.state === 'validated'
   }, { timeoutMs: holdMs + 15 * MIN })
-  // The launch proof is the close look, past gate 19: a session a person launched says so once its own wait is over.
-  if (byHand) {
+  // The launch proof (the close look) and the wake schedule (gate 21) are read past gate 19, so a follower says so once
+  // its own wait is over. A wake agent that reached gate 21 before the control took the lease said so already, and one
+  // that came after it read only the follower wait for as long as the hold above lasted (twice in a row on 1c74eed).
+  const pastWait = [byHand, wake].filter(Boolean)
+  if (pastWait.length > 0) {
     const provedAt = Date.parse(JSON.parse(readFileSync(join(machineDir, 'idle-update', TARGET, 'validated'), 'utf8')).at)
-    const end = provedAt + followerWaitMs({ assistantId: byHand.id, target: TARGET }, scaledDurations(scale)) + 3 * MIN
-    await watch('the agent launched by hand read its own wait out', async () => {
+    const end = Math.max(...pastWait.map((a) => provedAt + followerWaitMs({ assistantId: a.id, target: TARGET }, scaledDurations(scale)) + 3 * MIN))
+    await watch('the agents read past gate 19 read their own wait out', async () => {
       await keepWakeDue()
       await keepCallLive()
       keepBrowserInUse()
