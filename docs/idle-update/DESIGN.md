@@ -304,7 +304,7 @@ Data's question, fix 5. hoai relaunches claude with a plain `--resume <pin>`. Re
 
 ## Rollout
 
-The controller ships in 0.82.0. An agent still running 0.81 or older cannot run code it does not have. Each such agent needs ONE restart to load 0.82: by a person, by the watcher's sweep, or by an owning service. From then on it updates itself. Alex's 15 agents need that one restart.
+The controller ships in 0.85.0. An agent still running 0.84 or older cannot run code it does not have. Each such agent needs ONE restart to load 0.85: by a person, by the watcher's sweep, or by an owning service. From then on it updates itself. Alex's 15 agents need that one restart.
 
 ## Proof plan
 
@@ -468,7 +468,7 @@ These runs predate round 2 (the 60 s hold, no way back for a follower). Round 2'
    - A marker older than 5 min is reported as latched.
    - The rig scales every duration down through one env var, `BGOS_IDLE_UPDATE_SCALE` (clamped, logged at arm time).
 9. **Reporting reuses `lastError`,** and sends no chat message.
-10. **The version is 0.82.0.** Rounds 1 to 3 said 0.81.0, on a base of 0.80.2. Data's plugin PR #294 is also 0.81.0 and merges first, so by Data's ruling in round 4 this PR merges origin/main after it and takes the next minor step. It is a minor step because this is a feature.
+10. **The version is 0.85.0.** Rounds 1 to 3 said 0.81.0, on a base of 0.80.2. Data's plugin PR #294 is also 0.81.0 and merges first, so by Data's ruling in round 4 this PR merged origin/main after it and took 0.82.0. Data's release order of 1 Nov then put #274 (mission goals) at 0.83.0 and #296 (email files) at 0.84.0 ahead of this PR, so it merges #296's branch, which carries #274, and takes 0.85.0. It is a minor step because this is a feature.
 11. **A Windows slow start that hoai relaunches is a failed build, held bad on that computer until a newer version** (Residuals). The fifth review suggested voiding that canary so another retries at once, or retrying after the hold. Voiding retries a build that crashed before its first beacon on every agent here, one after another; a later retry reinstalls it for the whole computer while no agent on it has proved it. Both trade a safe outcome (a healthy release held back) for an unsafe one (a broken release reinstalled), so the code keeps the conservative verdict. Round 2 tried one exception, no verdict on a follower's second boot on a proven version, and took it back: hoai relaunches once, so the third boot it waited for never came, nothing latched the build, and the next follower walked on. A real fix needs a clean end hoai can vouch for on Windows (a launcher that records the daemon alive when it relaunches), which is a launcher change outside this lane.
 12. **Data's review text is not on #291.** Its issue comments, reviews, review comments and commit comments are all empty, and the goal's `NOTES.md` is in the lane folder, not on the branch. Round 2 works from the five lines in the goal. Where a line has two readings the calls below say which was taken.
 13. **"A way back" is read as the shared rollback, for any agent that fails, once.** A per-agent pin cannot be proven from this branch, and one agent stuck on a failing build is the unsafe side. This flips the second review's item 11 on purpose. Its cost is real and belongs to Data: a follower that fails for its own reasons holds a release every other agent proved, and on a clone it pauses updates on the checkout until a person acts. If Data means a per-agent way back, or the old rule on clones, this is the call to overrule.
