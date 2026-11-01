@@ -25,7 +25,7 @@ import './helpers/real-os-sentinel.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { runWatcher } from '../lib/watcher-core.mjs'
+import { freeLimitResult, runWatcher } from '../lib/watcher-core.mjs'
 import { checkupTarget, isOwnerChannelText, parseTranscriptTail } from '../lib/watcher-checkup.mjs'
 import { agentServiceNamesFor, buildLaunchRecipe } from '../lib/agent-inventory.mjs'
 import { bundleFingerprint } from '../lib/watcher-bundle.mjs'
@@ -549,6 +549,21 @@ test('a usage limit still in force: the checkup reports it and never reads or pr
   assert.deepEqual(terminal.actions.map((a: any) => [a.cause, a.did, a.outcome]), [['usage_limit', 'report', 'not_fixed']])
   assert.deepEqual(fake.tmux, [], 'nothing read, nothing pressed')
   assertDtoShape(backend.progress('chk-1'))
+})
+
+test('the checkup words for an Enter not pressed name the real reason, and a still limited one says the watcher waits for the reset', () => {
+  const unsaved = freeLimitResult({ outcome: 'not_pressed', reason: 'record_unsaved' })
+  assert.match(unsaved.detail, /could not be recorded on disk/)
+  assert.doesNotMatch(unsaved.detail, /screen changed/)
+  assert.match(freeLimitResult({ outcome: 'not_pressed', reason: 'screen_changed' }).detail, /screen changed before the key/)
+  // A helper that timed out may or may not have delivered the key: never claim it was not sent.
+  const timedOut = freeLimitResult({ outcome: 'not_pressed', reason: 'helper_timed_out' })
+  assert.match(timedOut.detail, /may have reached/)
+  assert.doesNotMatch(timedOut.detail, /Did not press|screen changed/)
+  for (const r of ['record_unsaved', 'screen_changed', 'helper_timed_out', 'inject_failed']) assert.equal(freeLimitResult({ outcome: 'not_pressed', reason: r }).outcome, 'not_fixed')
+  const still = freeLimitResult({ outcome: 'still_limited', how: 'login_changed' })
+  assert.match(still.detail, /waits for the limit to reset/)
+  assert.doesNotMatch(still.detail, /send|another Claude account|sign it in/i)
 })
 
 // -- the job's own rules ------------------------------------------------------------------------------
