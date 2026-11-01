@@ -71,7 +71,8 @@ function startFakePicker(dir: string, screen: string): { pid: number; keys: stri
   return { pid, keys }
 }
 
-function runHelper(args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
+function runHelper(args: string[] | null): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  assert.ok(args, 'the helper arguments were built')
   return new Promise((resolve) => {
     const child = spawn('powershell.exe', args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
     let stdout = ''
