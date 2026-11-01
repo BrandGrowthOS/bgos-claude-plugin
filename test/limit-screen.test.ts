@@ -166,6 +166,16 @@ test('no reset time and no credential file (macOS keeps the login in the Keychai
   assert.deepEqual(usageBackFrom({ now: T0 + 30 * 24 * HOUR, limit: { atMs: T0, resetsAtMs: null }, credentialsMtimeMs: null }), { back: false, how: null })
 })
 
+// Ares's ruling (option A, 2026-11-02): once a press on the login proof was followed by the limit
+// again, only the reset time counts for that agent until the reset passes.
+test('a spent login proof is not proof: the credential file moving again does not count, the reset time still does', () => {
+  const limit = { atMs: T0, resetsAtMs: RESETS_AT }
+  const moved = T0 + 2 * HOUR
+  assert.deepEqual(usageBackFrom({ now: moved + MIN, limit, credentialsMtimeMs: moved, loginProofSpent: true }), { back: false, how: null })
+  assert.deepEqual(usageBackFrom({ now: moved + MIN, limit, credentialsMtimeMs: moved, loginProofSpent: false }), { back: true, how: 'login_changed' })
+  assert.deepEqual(usageBackFrom({ now: RESETS_AT + 2 * MIN, limit, credentialsMtimeMs: moved, loginProofSpent: true }), { back: true, how: 'reset_passed' })
+})
+
 // -- decideLimitFree: the gates, in order ----------------------------------------------------------------
 
 const LIMIT = { atMs: T0, resetsAtMs: RESETS_AT }
@@ -261,6 +271,14 @@ test('still limited after the Enter: the owner is told Claude still refuses and 
   assert.match(text, /still/)
   assert.match(text, /2026-11-06 16:00 UTC/)
   assert.doesNotMatch(text, /working again/)
+})
+
+test('still limited after a press on the login proof: the owner is told the watcher now waits for the reset time, and is never asked to resend', () => {
+  const text = limitNoticeText(parseLimitNotice(JSON.stringify(notice({ outcome: 'still_limited', how: 'login_changed' })))!)
+  assert.match(text, /waits for the limit to reset at 2026-11-06 16:00 UTC/)
+  assert.doesNotMatch(text, /send|another Claude account|sign it in/i)
+  const unknown = limitNoticeText(parseLimitNotice(JSON.stringify(notice({ outcome: 'still_limited', how: 'login_changed', resetsAt: null })))!)
+  assert.match(unknown, /waits for the limit to reset/)
 })
 
 test('cannot press (no tmux): the owner gets the one tap fix, Restart now, or Enter in the window', () => {

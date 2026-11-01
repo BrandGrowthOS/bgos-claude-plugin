@@ -18,7 +18,7 @@ import assert from 'node:assert/strict'
 
 import { agentServiceNamesFor, buildLaunchRecipe } from '../lib/agent-inventory.mjs'
 import { LIMIT_NOTICE_FILE_NAME, LIMIT_WATCH_FILE_NAME, runLimitPass } from '../lib/watcher-limit.mjs'
-import { parseLimitNotice } from '../lib/limit-screen.mjs'
+import { limitNoticeText, parseLimitNotice } from '../lib/limit-screen.mjs'
 import { supervisorFileBody } from '../bin/hoai-core.mjs'
 import { memoryFs, type MemoryFs } from './helpers/memory-fs.ts'
 
@@ -112,14 +112,14 @@ function agentFs(r: Rig): MemoryFs {
   return fs
 }
 
-const limitRecord = (atMs = LIMIT_AT) =>
+const limitRecord = (atMs = LIMIT_AT, resetsAtMs = RESETS_AT) =>
   JSON.stringify({
     type: 'assistant',
     isApiErrorMessage: true,
     error: 'rate_limit',
     apiError: 'usage_limit_reached',
     apiErrorStatus: 429,
-    apiErrorParams: { rate_limit_info: { status: 'rejected', resetsAt: RESETS_AT / 1000, rateLimitType: 'seven_day', isUsingOverage: false } },
+    apiErrorParams: { rate_limit_info: { status: 'rejected', resetsAt: resetsAtMs / 1000, rateLimitType: 'seven_day', isUsingOverage: false } },
     timestamp: new Date(atMs).toISOString(),
     message: { role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text: "You've hit your weekly limit · resets Nov 6, 8pm (Asia/Dubai)" }] },
   })
@@ -469,6 +469,100 @@ test('still limited after the Enter (the login changed but to the same capped ac
   assert.equal(enters(tmux.calls).length, 1)
   assert.equal(out.agents[0].outcome, 'still_limited')
   assert.equal(noticeOf(fs, r)!.outcome, 'still_limited')
+})
+
+// Ares's ruling (option A, 2026-11-02): a login refresh is proof only until one press on it is followed
+// by the limit again; then only the reset time counts for that agent until the reset passes, and the
+// owner is told once, in plain words, that the watcher waits for the reset time (never to resend).
+test('option A: a miss on the login proof, then no press until the reset time, then exactly one press; the owner is told once', async () => {
+  const { r, fs, clock } = usageBackRig()
+  // The CLI reopens the picker on every refusal; the fake only records the Enter it would get.
+  const tmux = fakeTmux(socketOf(r), () => picker())
+  clock.onSleep((nowMs) => {
+    const lines = fs.readFile(r.transcript)!.split('\n').filter(Boolean).length
+    if (tmux.state.entered === 1 && lines === 1) appendTranscript(fs, r, limitRecord(nowMs)) // Claude refuses again
+    if (tmux.state.entered === 2 && lines === 2) appendTranscript(fs, r, assistantTurn(nowMs)) // after the reset: a real turn
+  })
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+  const miss: any = await runLimitPass(ctx)
+  assert.deepEqual([miss.agents[0].outcome, miss.agents[0].how], ['still_limited', 'login_changed'])
+  assert.equal(enters(tmux.calls).length, 1)
+  const told = noticeOf(fs, r)!
+  assert.deepEqual([told.outcome, told.how, told.resetsAt], ['still_limited', 'login_changed', new Date(RESETS_AT).toISOString()])
+  const words = limitNoticeText(told)
+  assert.match(words, /waits for the limit to reset at 2026-11-06 16:00 UTC/)
+  assert.doesNotMatch(words, /send|another Claude account|sign it in/i, 'the owner is never asked to resend or to sign in again')
+  fs.rm(`${r.stateDir}/${LIMIT_NOTICE_FILE_NAME}`) // the daemon took it
+
+  // The login keeps refreshing before the reset: none of it is proof any more, for this agent.
+  for (const later of [2 * HOUR, 26 * HOUR, 3 * 24 * HOUR]) {
+    fs.touch(r.credentials, SWAP_AT + later - MIN)
+    clock.set(SWAP_AT + later)
+    const out = await runLimitPass(ctx)
+    assert.equal(out.agents[0].outcome, 'limited', `+${later / HOUR} h: the login proof is spent`)
+    assert.equal(enters(tmux.calls).length, 1, `+${later / HOUR} h: no press before the reset time`)
+    assert.equal(noticeOf(fs, r), null, `+${later / HOUR} h: told once, not again`)
+  }
+
+  // The reset time passes: exactly one press, and it frees the agent.
+  clock.set(RESETS_AT + 2 * MIN)
+  const reset: any = await runLimitPass(ctx)
+  assert.deepEqual([reset.agents[0].outcome, reset.agents[0].how], ['freed', 'reset_passed'])
+  assert.equal(enters(tmux.calls).length, 2, 'exactly one press after the miss')
+  // A real turn ends the episode: the next limit may use a login refresh as proof again.
+  clock.set(RESETS_AT + 20 * MIN)
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'none')
+  assert.equal(enters(tmux.calls).length, 2)
+  assert.equal(limitWatch(fs, r).loginProofOff, undefined)
+  assertOnlySafeTmux(tmux.calls)
+})
+
+test('option A lasts only until the reset passes: a later limit with a later reset may use a login change again', async () => {
+  const { r, fs, clock } = usageBackRig()
+  // After the reset nobody pressed (the picker was gone), and a new refusal came with a new reset.
+  let pickerUp = true
+  const tmux = fakeTmux(socketOf(r), () => (pickerUp ? picker() : IDLE))
+  clock.onSleep((nowMs) => {
+    if (tmux.state.entered === 1 && fs.readFile(r.transcript)!.split('\n').filter(Boolean).length === 1) appendTranscript(fs, r, limitRecord(nowMs))
+  })
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'still_limited')
+  pickerUp = false
+  clock.set(RESETS_AT + 2 * MIN)
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'no_picker')
+  pickerUp = true
+  const again = RESETS_AT + 2 * HOUR
+  appendTranscript(fs, r, limitRecord(again, again + 7 * 24 * HOUR))
+  fs.touch(r.credentials, again + 5 * MIN)
+  clock.set(again + 10 * MIN)
+  const out: any = await runLimitPass(ctx)
+  // The fake answers nothing to this press (the picker stays): what counts is that the login change was proof again.
+  assert.deepEqual([out.agents[0].outcome, out.agents[0].how, enters(tmux.calls).length], ['not_taken', 'login_changed', 2])
+  assertOnlySafeTmux(tmux.calls)
+})
+
+test('option A ends with the episode: after a real turn (the owner fixed it), the next limit may use a login change again', async () => {
+  const { r, fs, clock } = usageBackRig()
+  const tmux = fakeTmux(socketOf(r), () => picker())
+  clock.onSleep((nowMs) => {
+    const lines = fs.readFile(r.transcript)!.split('\n').filter(Boolean).length
+    if (tmux.state.entered === 1 && lines === 1) appendTranscript(fs, r, limitRecord(nowMs))
+    if (tmux.state.entered === 2 && lines === 4) appendTranscript(fs, r, assistantTurn(nowMs))
+  })
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'still_limited')
+  // The owner restarted it on another account: a real turn, then later a new limit on that account.
+  const back = SWAP_AT + 3 * HOUR
+  appendTranscript(fs, r, assistantTurn(back))
+  appendTranscript(fs, r, limitRecord(back + HOUR))
+  fs.touch(r.credentials, back + HOUR + 5 * MIN)
+  clock.set(back + HOUR + 10 * MIN)
+  assert.deepEqual(
+    [(await runLimitPass(ctx)).agents[0].outcome, enters(tmux.calls).length],
+    ['freed', 2],
+    'a new episode: the login change is proof again, one press',
+  )
+  assertOnlySafeTmux(tmux.calls)
 })
 
 test('closed but no turn yet (nothing was waiting): the picker is gone, the notice says it answers the next message', async () => {
