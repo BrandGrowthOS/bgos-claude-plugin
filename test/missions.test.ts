@@ -10,7 +10,7 @@
  *   PATCH assistants/:assistantId/missions/:missionId/tick      { goalId, evidence? }
  *   PATCH assistants/:assistantId/missions/:missionId/complete  { summary? }
  *
- * Create body: { title, miniGoals: [{ name, doneWhen }] }, 2..12 goals
+ * Create body: { title, miniGoals: [{ name, doneWhen }] }, 2..20 goals
  * (trained flow targets 4 to 10), title <= 200, name <= 120, doneWhen <= 200,
  * evidence <= 200, summary <= 500. Responses embed the full mission snapshot with
  * server-assigned goal ids 1..n.
@@ -18,6 +18,7 @@
 
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
+import { readFileSync } from 'node:fs'
 
 import {
   MISSION_MIN_GOALS,
@@ -523,7 +524,7 @@ test('add goals body: ONE goal is enough, unlike the fill door', () => {
   })
 })
 
-test('add goals body: trims, accepts the doneWhen alias, and keeps the twelve ceiling', () => {
+test('add goals body: trims, accepts the doneWhen alias, and keeps the ceiling', () => {
   assert.deepEqual(buildMissionAddGoalsBody({
     mini_goals: [
       { name: ' Draft ', done_when: ' a draft exists ' },
@@ -591,4 +592,84 @@ test('cancel goal path: the goal id is in the path and validated before the netw
   }
   assert.equal(buildMissionCancelGoalPath('873', 0, 3).ok, false)
   assert.equal(buildMissionCancelGoalPath('x', 42, 3).ok, false)
+})
+
+// ── the cap matches the backend (BGOS feat/mission-goals-20 raised it to 20, KC 1048 msg 149968) ──
+// The literal 20 on purpose: a test that read MISSION_MAX_GOALS would follow
+// any value, and the point is that this connector and the backend agree.
+test('the mini goal cap is 20 on create, set and add, the same as the backend', () => {
+  const twenty = goals(20)
+  const twentyOne = goals(21)
+  assert.equal(MISSION_MAX_GOALS, 20)
+  assert.equal(buildMissionCreateBody({ title: 'T', mini_goals: twenty }).ok, true)
+  assert.equal(buildMissionCreateBody({ title: 'T', mini_goals: twentyOne }).ok, false)
+  assert.equal(buildMissionSetGoalsBody({ mini_goals: twenty }).ok, true)
+  assert.equal(buildMissionSetGoalsBody({ mini_goals: twentyOne }).ok, false)
+  assert.equal(buildMissionAddGoalsBody({ mini_goals: twenty }).ok, true)
+  assert.equal(buildMissionAddGoalsBody({ mini_goals: twentyOne }).ok, false)
+})
+
+// ── every mission tool's description says 20, never 12 (PR #274 review) ──
+// The cap lives in three places an agent reads: the builders (pinned above),
+// the tool descriptions in server.ts and the instructions. The builders moved
+// to 20 while add_mission_goals still told the agent "1 to 12" and "A mission
+// holds 12 in all", so an agent obeying its own tool text would split a 15
+// goal add the backend takes in one call. Read from the REAL server.ts tool
+// list, joining the '...' + '...' pieces, with the literal 20 on purpose.
+const serverSource = readFileSync('server.ts', 'utf8').replace(/\r\n/g, '\n')
+const MISSION_TOOLS = [
+  'create_mission',
+  'tick_mini_goal',
+  'set_mission_goals',
+  'add_mission_goals',
+  'cancel_mission_goal',
+  'set_goal_working',
+  'set_goal_waiting',
+  'complete_mission',
+]
+// The tools whose text states how many goals (or goal ids) a call may carry.
+const COUNTED_MISSION_TOOLS: Record<string, RegExp[]> = {
+  create_mission: [/2 to 20 goals/],
+  set_mission_goals: [/Pass 2 to 20 binary goals/],
+  add_mission_goals: [/Send ONLY the new goals, 1 to 20,/, /A mission holds 20 in all/],
+  set_goal_working: [/goal_ids \(1 to 20\)/],
+}
+const joinPieces = (text: string) => text.replace(/'\s*\+\s*'/g, '').replace(/\\'/g, "'")
+function missionToolBlock(name: string): string {
+  const start = serverSource.indexOf(`      name: '${name}',\n      description:`)
+  assert.ok(start > 0, `${name} is in the server.ts tool list`)
+  const end = serverSource.indexOf('\n    {\n      name: ', start)
+  return joinPieces(serverSource.slice(start, end > start ? end : undefined))
+}
+function topDescription(block: string): string {
+  return block.slice(block.indexOf('description:'), block.indexOf('inputSchema:'))
+}
+
+test('every mission tool description that counts goals says 20, and none says 12', () => {
+  for (const name of MISSION_TOOLS) {
+    const block = missionToolBlock(name)
+    assert.doesNotMatch(block, /\b12\b|twelve/i, `${name} still says 12 somewhere in its tool text`)
+  }
+  for (const [name, phrases] of Object.entries(COUNTED_MISSION_TOOLS)) {
+    const description = topDescription(missionToolBlock(name))
+    for (const phrase of phrases) assert.match(description, phrase, `${name} description`)
+  }
+})
+
+// ── set_goal_working counts DISTINCT ids (PR #274 review) ──
+// A repeated id is one goal and one request, so 20 goals named once more each
+// is still 20 goals; the cap is judged after the repeats are folded away.
+test('set_goal_working input: the 1 to 20 cap counts distinct ids, after repeats are removed', () => {
+  const build = (missionsModule as any).buildMissionGoalWorkingInput
+  const twenty = Array.from({ length: 20 }, (_v, i) => i + 1)
+  const repeated = build({ goal_ids: [...twenty, 1, 2, 20], working: true })
+  assert.equal(repeated.ok, true, JSON.stringify(repeated))
+  assert.deepEqual(repeated.body, { goalIds: twenty, working: true })
+  const once = build({ goal_ids: [5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5], working: false })
+  assert.deepEqual(once, { ok: true, body: { goalIds: [5], working: false } })
+  const twentyOne = build({ goal_ids: [...twenty, 21, 21], working: true })
+  assert.equal(twentyOne.ok, false)
+  assert.match(twentyOne.error, /goal_ids must list 1 to 20/)
+  assert.match(twentyOne.error, /21/)
+  assert.equal(build({ goal_ids: [], working: true }).ok, false)
 })

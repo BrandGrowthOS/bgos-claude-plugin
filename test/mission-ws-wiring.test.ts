@@ -27,6 +27,7 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 import { readFileSync } from 'node:fs'
+import { MISSION_MARK_TOOLS } from '../lib/missions.ts'
 
 const server = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
 
@@ -182,7 +183,7 @@ test('the writing tools stamp the mission BEFORE the request, not after the answ
   // model is told its owner marked done the mission it had just ticked shut.
   // An explicit mission_id is not required for the stamp: both tools resolve a
   // mission id before they write, which is exactly what the stamp is keyed on.
-  for (const c of missionWriteCases()) {
+  for (const c of missionWriteCases().filter((w) => !MISSION_MARK_TOOLS.includes(w.name))) {
     const { name: tool, body: bodyText } = c
     const stamp = bodyText.indexOf('noteMissionPendingSelfWrite(')
     // Every verb a mission write can use. Naming only Patch and Put here was
@@ -200,6 +201,19 @@ test('the writing tools stamp the mission BEFORE the request, not after the answ
       bodyText.includes('rememberMissionSelfWrite('),
       `${tool} must still stamp the landed write, which is what covers a late frame`,
     )
+  }
+})
+
+test('the goal mark tools take NO pending stamp, only the landed one (lib/missions.ts MISSION_MARK_TOOLS)', () => {
+  // A mark only ever emits mission_updated, which never spends a pending
+  // stamp, so one taken here would linger and swallow the owner's next Pause
+  // or Resume. Named, not derived, so the exemption above cannot grow quietly.
+  const writes = missionWriteCases()
+  for (const tool of MISSION_MARK_TOOLS) {
+    const c = writes.find((w) => w.name === tool)
+    assert.ok(c, `${tool} must be a derived mission write case`)
+    assert.ok(!c.body.includes('noteMissionPendingSelfWrite('), `${tool} must not take a pending stamp`)
+    assert.ok(c.body.includes('rememberMissionSelfWrite('), `${tool} must stamp the landed write`)
   }
 })
 

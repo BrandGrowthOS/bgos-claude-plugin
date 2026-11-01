@@ -415,11 +415,13 @@ describe('declared capabilities on the heartbeat', () => {
     // phase 3) rides beside them on every host: it is a sentence the model
     // reads and needs no tool.
     // changes_rpc (P7 stage 3) likewise: every host can read its own folder
-    // with Git, so it rides every beat after memory_rpc.
+    // with Git, so it rides every beat after memory_rpc. email_files rides
+    // right after email_send, while this plugin ships the files tools.
     expect([...declaredCapabilities({ canInjectGoal: true, floorHook: true, authMode: 'pairing' })]).toEqual([
       'mission_events',
       'mission_goal_checks',
       'mission_set_goals',
+      'mission_goal_working',
       'permission_card',
       'plan_card',
       'memory_rpc',
@@ -437,6 +439,7 @@ describe('declared capabilities on the heartbeat', () => {
       'ask_multi_select',
       'email_label',
       'email_send',
+      'email_files',
       'hard_floor',
       'hard_floor_rules_2',
       'mission_goal_loop',
@@ -448,6 +451,7 @@ describe('declared capabilities on the heartbeat', () => {
       'mission_events',
       'mission_goal_checks',
       'mission_set_goals',
+      'mission_goal_working',
       'permission_card',
       'plan_card',
       'memory_rpc',
@@ -465,6 +469,7 @@ describe('declared capabilities on the heartbeat', () => {
       'ask_multi_select',
       'email_label',
       'email_send',
+      'email_files',
       'hard_floor',
       'hard_floor_rules_2',
     ])

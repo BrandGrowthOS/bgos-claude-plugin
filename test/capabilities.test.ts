@@ -229,6 +229,7 @@ test('the daemon\'s own base declaration reaches the fetch, boards_playbook incl
     'mission_events',
     'mission_goal_checks',
     'mission_set_goals',
+    'mission_goal_working',
     'permission_card',
     'plan_card',
     'memory_rpc',
@@ -246,6 +247,7 @@ test('the daemon\'s own base declaration reaches the fetch, boards_playbook incl
     'ask_multi_select',
     'email_label',
     'email_send',
+    'email_files',
     'hard_floor',
     'hard_floor_rules_2',
   ])
