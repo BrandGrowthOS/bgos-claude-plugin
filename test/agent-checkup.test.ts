@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url'
 import {
   BEACON_STALE_MS,
   DRAIN_MAX_MS,
+  LIMIT_ENTER_MIN_INTERVAL_MS,
   PASS_DEADLINE_MS,
   VALIDATION_WINDOW_MS,
   WEDGE_WINDOW_MS,
@@ -397,6 +398,102 @@ test('C9: a limit with no known reset time still reports', () => {
   assert.equal(pass.actions[0].ownerAction?.kind, 'wait')
 })
 
+// -- C9 with usage back: ONE Enter on the limit screen (Kc 2026-11-01, msg 180081) -------------------
+//
+// The limit picker ("What do you want to do?") holds every queued message until someone presses
+// Enter. While usage is still out, C9 stays a report. Once usage is back (the reset time passed, or
+// the login on this computer changed after the limit), the safe fix is `free_limit`: one Enter on a
+// screen the watcher has read, at most once an hour. It is not a restart: C9 still blocks those.
+
+const LIMITED = { transcriptError: { kind: 'rate_limit', resetAt: 'Nov 6, 8pm (Asia/Dubai)' } }
+const back = (over: Record<string, any> = {}) => ({
+  ...LIMITED,
+  limitFree: { usageBack: true, how: 'login_changed', keyPath: { ok: true, reason: 'tmux' }, lastEnterAtMs: null, ...over },
+})
+
+test('C9 still limited: reported as before, no free_limit, whatever the key path', () => {
+  for (const limitFree of [undefined, null, { usageBack: false, how: null, keyPath: { ok: true, reason: 'tmux' }, lastEnterAtMs: null }]) {
+    const pass = checkupPass(obs({ ...LIMITED, limitFree }))
+    assert.deepEqual(steps(pass.actions), ['report:planned'], JSON.stringify(limitFree))
+    assert.equal(pass.findings[0].fixable, false)
+    assert.equal(pass.actions[0].ownerAction?.kind, 'wait')
+  }
+})
+
+test('C9 with usage back and a key path: fixable, ONE free_limit planned, nothing reported, nothing restarted', () => {
+  for (const how of ['login_changed', 'reset_passed']) {
+    const pass = checkupPass(obs(back({ how })))
+    assert.deepEqual(causes(pass.findings), ['C9'])
+    assert.equal(pass.findings[0].fixable, true, how)
+    assert.equal(pass.findings[0].how, how)
+    assert.deepEqual(steps(pass.actions), ['free_limit:planned'], how)
+    assert.deepEqual(pass.actions[0].causes, ['C9'])
+  }
+})
+
+test('C9 free_limit: a second Enter inside the hour is held, with the time it may run', () => {
+  const held = checkupPass(obs(back({ lastEnterAtMs: NOW - 20 * MIN })))
+  assert.deepEqual(steps(held.actions), ['free_limit:skipped'])
+  assert.deepEqual([held.actions[0].reason, held.actions[0].state], ['one_enter_per_hour', 'waiting_idle'])
+  assert.equal(held.actions[0].retryAtMs, NOW + 40 * MIN)
+  // Exactly an hour after the last Enter it may run again.
+  assert.deepEqual(steps(checkupPass(obs(back({ lastEnterAtMs: NOW - LIMIT_ENTER_MIN_INTERVAL_MS }))).actions), ['free_limit:planned'])
+})
+
+test('C9 with usage back but no way to press here: reported with the one tap fix (Restart now, or Enter in the window)', () => {
+  for (const reason of ['no_tmux', 'no_console', 'unsupported']) {
+    const pass = checkupPass(obs(back({ keyPath: { ok: false, reason } })))
+    assert.equal(pass.findings[0].fixable, false)
+    assert.deepEqual(steps(pass.actions), ['report:planned'], reason)
+    assert.equal(pass.actions[0].ownerAction?.kind, 'press_enter')
+    assert.match(pass.actions[0].ownerAction?.text, /Restart now/)
+    assert.match(pass.actions[0].ownerAction?.text, /Stop and wait for limit to reset/)
+    assert.ok(pass.actions[0].ownerAction!.text.length <= 240)
+  }
+})
+
+test('C9 with usage back still blocks every restart and start but the C3 connector restart', () => {
+  for (const over of [
+    { claudeAlive: false, daemonAlive: false },
+    { runningVersion: '0.73.0', installedVersion: '0.74.0' },
+    { update: { ...healthy().update, stagedNeverApplied: true } },
+  ]) {
+    const pass = checkupPass(obs({ ...over, ...back() }))
+    assert.equal(plannedRestart(pass.actions), false, JSON.stringify(over))
+    for (const a of pass.actions) if (MUTATING.has(a.action)) assert.equal(a.reason, 'blocked_by_usage_limit', JSON.stringify(over))
+  }
+  const connector = checkupPass(obs({ daemonAlive: false, ...back() }))
+  assert.deepEqual(steps(connector.actions), ['free_limit:planned', 'restart:planned', 'verify:planned'])
+})
+
+test('free_limit is only ever planned for C9 with usage back and a key path (every combination)', () => {
+  const kinds = [null, 'rate_limit', 'authentication_failed']
+  const backs = [undefined, null, false, true]
+  const paths = [true, false]
+  const lasts = [null, NOW - 10 * MIN, NOW - 2 * 60 * MIN]
+  let cases = 0
+  for (const kind of kinds)
+    for (const usageBack of backs)
+      for (const ok of paths)
+        for (const lastEnterAtMs of lasts) {
+          const limitFree = usageBack === undefined ? undefined : { usageBack, how: usageBack ? 'reset_passed' : null, keyPath: { ok, reason: ok ? 'tmux' : 'no_tmux' }, lastEnterAtMs }
+          const pass = checkupPass(obs({ transcriptError: kind ? { kind, resetAt: null } : null, limitFree }))
+          const frees = pass.actions.filter((a: any) => a.action === 'free_limit')
+          const allowed = kind === 'rate_limit' && usageBack === true && ok
+          assert.equal(frees.length, allowed ? 1 : 0, JSON.stringify({ kind, limitFree }))
+          if (allowed) assert.equal(frees[0].outcome, lastEnterAtMs === NOW - 10 * MIN ? 'skipped' : 'planned')
+          cases++
+        }
+  assert.equal(cases, 72)
+})
+
+test('the hour between two Enters is the same in the planner and in the limit screen module', async () => {
+  // Both modules are pure and import nothing of each other, so the one number is pinned here.
+  const screen = await import('../lib/limit-screen.mjs')
+  assert.equal(LIMIT_ENTER_MIN_INTERVAL_MS, screen.LIMIT_ENTER_MIN_INTERVAL_MS)
+  assert.equal(LIMIT_ENTER_MIN_INTERVAL_MS, 60 * MIN)
+})
+
 test('C8 and C9 are reported FIRST, before any other action, in the same pass', () => {
   const pass = checkupPass(
     obs({ daemonAlive: false, runningVersion: '0.73.0', installedVersion: '0.74.0', transcriptError: { kind: 'authentication_failed', resetAt: null } }),
@@ -579,6 +676,8 @@ test('invariant: no planned restart or start under C8 or C9 (but the C3 connecto
   const flags: Array<[string, Record<string, any>]> = [
     ['login', { transcriptError: { kind: 'authentication_failed', resetAt: null } }],
     ['limit', { transcriptError: { kind: 'rate_limit', resetAt: null } }],
+    // Usage back (one Enter may free the limit screen) changes nothing about restarts.
+    ['back', { limitFree: { usageBack: true, how: 'reset_passed', keyPath: { ok: true, reason: 'tmux' }, lastEnterAtMs: null } }],
     ['daemon', { daemonAlive: false }],
     ['dead', { claudeAlive: false, daemonAlive: false }],
     ['wedged', { messagesDeliveredAtMs: NOW - 30 * MIN, lastTranscriptActivityAtMs: NOW - 40 * MIN }],
@@ -624,7 +723,7 @@ test('invariant: no planned restart or start under C8 or C9 (but the C3 connecto
       }
     }
   }
-  assert.ok(cases > 800, `expected the full cross product, got ${cases}`)
+  assert.ok(cases > 1600, `expected the full cross product, got ${cases}`)
 })
 
 // -- Purity ------------------------------------------------------------------------------------

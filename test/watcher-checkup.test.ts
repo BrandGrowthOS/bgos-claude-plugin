@@ -27,7 +27,7 @@ import assert from 'node:assert/strict'
 
 import { runWatcher } from '../lib/watcher-core.mjs'
 import { checkupTarget, isOwnerChannelText, parseTranscriptTail } from '../lib/watcher-checkup.mjs'
-import { buildLaunchRecipe } from '../lib/agent-inventory.mjs'
+import { agentServiceNamesFor, buildLaunchRecipe } from '../lib/agent-inventory.mjs'
 import { bundleFingerprint } from '../lib/watcher-bundle.mjs'
 import { supervisorFileBody } from '../bin/hoai-core.mjs'
 import { memoryFs, type MemoryFs } from './helpers/memory-fs.ts'
@@ -426,6 +426,106 @@ test('a usage limit is reported with its reset time and never restarted, even wh
   assertDtoShape(backend.progress('chk-1'))
 })
 
+// -- C9 with usage back: one Enter on the limit screen (Kc 2026-11-01) -----------------------------------
+
+/** The CLI's own limit envelope, with the machine readable reset (apiErrorParams.rate_limit_info.resetsAt, Unix seconds). */
+const limitEnvelope = (atMs: number, resetsAtMs: number) =>
+  JSON.stringify({
+    type: 'assistant',
+    isApiErrorMessage: true,
+    error: 'rate_limit',
+    apiError: 'usage_limit_reached',
+    apiErrorStatus: 429,
+    apiErrorParams: { rate_limit_info: { status: 'rejected', resetsAt: resetsAtMs / 1000, rateLimitType: 'five_hour' } },
+    timestamp: new Date(atMs).toISOString(),
+    message: { role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text: "You've hit your session limit · resets 7:40pm (Asia/Dubai)" }] },
+  })
+const LIMIT_SCREEN = [
+  "  ⎿  You've hit your session limit · resets 7:40pm (Asia/Dubai)",
+  '',
+  '╭──────────────────────────────────────────────────╮',
+  '│ What do you want to do?                          │',
+  '│                                                  │',
+  '│ ❯ 1. Stop and wait for limit to reset            │',
+  '│   2. Add funds to continue with usage credits    │',
+  '│                                                  │',
+  '│ Enter to confirm · Esc to cancel                 │',
+  '╰──────────────────────────────────────────────────╯',
+].join('\n')
+const SOCKET = agentServiceNamesFor('912', HOME, 'linux')!.current.tmuxSocket
+
+/** ps for the live claude and daemon of agent 912, and a fake tmux on its socket whose pane is the limit screen until ONE Enter. */
+function limitExec(ps: string) {
+  const tmux: string[][] = []
+  const state = { entered: 0 }
+  const exec = async (file: string, args: string[]) => {
+    if (file === 'ps') return { code: 0, stdout: `${ps}\n`, stderr: '', error: null, timedOut: false }
+    if (file === 'tmux') {
+      tmux.push([...args])
+      if (args[1] !== SOCKET) return { code: 1, stdout: '', stderr: 'no server running', error: null, timedOut: false }
+      if (args[2] === 'capture-pane') return { code: 0, stdout: state.entered ? '│ > \n' : `${LIMIT_SCREEN}\n`, stderr: '', error: null, timedOut: false }
+      if (args[2] === 'send-keys') {
+        state.entered += 1
+        return { code: 0, stdout: '', stderr: '', error: null, timedOut: false }
+      }
+    }
+    return { code: 1, stdout: '', stderr: '', error: null, timedOut: false }
+  }
+  return { exec, tmux, state }
+}
+
+test('a usage limit with usage back (the login changed after it): the checkup presses ONE Enter on the limit screen, verified by a fresh turn', async () => {
+  const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState() })
+  writeTranscript(fs, [assistantTurn(T0 - 40 * MIN), ownerMessage(T0 - 31 * MIN), limitEnvelope(T0 - 30 * MIN, T0 + 3 * 60 * MIN), ownerMessage(T0 - 15 * MIN)], T0 - 15 * MIN)
+  // The owner switched the Claude account 10 minutes ago: the credential file moved (its mtime only; never opened).
+  fs.writeFile(`${CONFIG}/.credentials.json`, 'NEVER-READ')
+  fs.touch(`${CONFIG}/.credentials.json`, T0 - 10 * MIN)
+  const ps = [psLine(1, 0, '/sbin/init'), psLine(3000, 4242, `node ${ROOT}/bin/hoai-core.mjs`), psLine(5912, 3000, `claude --resume ${SID}`), psLine(4912, 5912, `node ${ROOT}/server.ts`)].join('\n')
+  const fake = limitExec(ps)
+  const backend = fakeBackend(checkupJob())
+  const clock = fakeClock()
+  clock.onSleep((_ms, nowMs) => {
+    if (fake.state.entered === 1 && !fs.readFile(TRANSCRIPT)!.includes('"On it."', fs.readFile(TRANSCRIPT)!.indexOf('usage_limit_reached'))) {
+      fs.writeFile(TRANSCRIPT, `${fs.readFile(TRANSCRIPT)}${assistantTurn(nowMs)}\n`)
+    }
+  })
+  const run = rig(fs, backend, clock, ps, { alive: [3000, 5912, 4912], exec: fake.exec })
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.equal(terminal.state, 'done')
+  assert.deepEqual(terminal.findings.map((f: any) => [f.cause, f.status]), [['usage_limit', 'WARN']])
+  assert.deepEqual(terminal.actions.map((a: any) => [a.cause, a.did, a.outcome]), [['usage_limit', 'free_limit', 'fixed']])
+  assert.match(terminal.actions[0].detail, /Enter once/)
+  assert.equal(fake.state.entered, 1, 'exactly one Enter')
+  for (const args of fake.tmux) {
+    const verb = args[2]
+    if (verb === 'capture-pane') assert.deepEqual(args, ['-L', SOCKET, 'capture-pane', '-p', '-t', `=${SOCKET}:`])
+    else assert.deepEqual(args, ['-L', SOCKET, 'send-keys', '-t', `=${SOCKET}:`, 'Enter'])
+  }
+  assert.equal(restartRequested(fs), false, 'a usage limit is never restarted')
+  assert.deepEqual(run.spawns, [])
+  assert.deepEqual(run.kills, [])
+  assertDtoShape(backend.progress('chk-1'))
+})
+
+test('a usage limit still in force: the checkup reports it and never reads or presses the screen', async () => {
+  const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState() })
+  writeTranscript(fs, [assistantTurn(T0 - 40 * MIN), limitEnvelope(T0 - 30 * MIN, T0 + 3 * 60 * MIN)], T0 - 30 * MIN)
+  // The login did not change since the limit.
+  fs.writeFile(`${CONFIG}/.credentials.json`, 'NEVER-READ')
+  fs.touch(`${CONFIG}/.credentials.json`, T0 - 5 * 60 * MIN)
+  const ps = [psLine(1, 0, '/sbin/init'), psLine(3000, 4242, `node ${ROOT}/bin/hoai-core.mjs`), psLine(5912, 3000, `claude --resume ${SID}`), psLine(4912, 5912, `node ${ROOT}/server.ts`)].join('\n')
+  const fake = limitExec(ps)
+  const backend = fakeBackend(checkupJob())
+  const clock = fakeClock()
+  const run = rig(fs, backend, clock, ps, { alive: [3000, 5912, 4912], exec: fake.exec })
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.deepEqual(terminal.actions.map((a: any) => [a.cause, a.did, a.outcome]), [['usage_limit', 'report', 'not_fixed']])
+  assert.deepEqual(fake.tmux, [], 'nothing read, nothing pressed')
+  assertDtoShape(backend.progress('chk-1'))
+})
+
 // -- the job's own rules ------------------------------------------------------------------------------
 
 test('a checkup job never runs the reconcile planner: an intent this watcher knows is never widened into a reconcile', async () => {
@@ -631,7 +731,7 @@ test('parseTranscriptTail: a real turn after an error ends it (the login works a
   assert.equal(login.error, null)
   assert.equal(login.lastActivityAtMs, T0 - 10 * MIN)
   const still = parseTranscriptTail([assistantTurn(T0 - 40 * MIN), apiError(T0 - 30 * MIN, 'authentication_failed', 'Login expired · Please run /login')].join('\n'), T0)
-  assert.deepEqual(still.error, { kind: 'authentication_failed', resetAt: null, atMs: T0 - 30 * MIN })
+  assert.deepEqual(still.error, { kind: 'authentication_failed', resetAt: null, atMs: T0 - 30 * MIN, resetsAtMs: null })
 })
 
 test('parseTranscriptTail: a session cap older than its 5 h window says nothing; a weekly one holds for days', () => {
@@ -640,6 +740,27 @@ test('parseTranscriptTail: a session cap older than its 5 h window says nothing;
   const weekly = parseTranscriptTail(apiError(T0 - 3 * 24 * 60 * MIN, 'rate_limit', "You've hit your weekly limit · resets Jul 10 at 10pm (Asia/Dubai)"), T0)
   assert.equal(weekly.error?.kind, 'rate_limit')
   assert.equal(weekly.error?.resetAt, 'Jul 10 at 10pm (Asia/Dubai)')
+})
+
+test('parseTranscriptTail: the machine readable reset time rides along (rate_limit_info.resetsAt, else quotaLimits.resetsAt)', () => {
+  const resetsAtMs = T0 + 2 * 60 * MIN
+  const info = parseTranscriptTail(limitEnvelope(T0 - 30 * MIN, resetsAtMs), T0)
+  assert.equal(info.error?.resetsAtMs, resetsAtMs)
+  const quota = JSON.stringify({ ...JSON.parse(apiError(T0 - 30 * MIN, 'rate_limit', "You've hit your session limit · resets 4pm")), quotaLimits: { resetsAt: resetsAtMs / 1000 } })
+  assert.equal(parseTranscriptTail(quota, T0).error?.resetsAtMs, resetsAtMs)
+  for (const bad of ['soon', -1, 0, null, 1e20]) {
+    const junk = JSON.stringify({ ...JSON.parse(limitEnvelope(T0 - 30 * MIN, resetsAtMs)), apiErrorParams: { rate_limit_info: { resetsAt: bad } } })
+    assert.equal(parseTranscriptTail(junk, T0).error?.resetsAtMs, null, String(bad))
+  }
+  assert.equal(parseTranscriptTail(apiError(T0 - 30 * MIN, 'authentication_failed', 'Please run /login'), T0).error?.resetsAtMs, null)
+})
+
+test('parseTranscriptTail: a session cap stays an error until an hour past its own reset, so the watcher has time to free it', () => {
+  // Hit early in its window: the reset is 4 h 59 min later, a minute before the old 5 h staleness edge.
+  const atMs = T0 - 5 * 60 * MIN + 30_000
+  const tail = limitEnvelope(atMs, atMs + 5 * 60 * MIN - 60_000)
+  assert.equal(parseTranscriptTail(tail, T0 + 30 * MIN).error?.kind, 'rate_limit')
+  assert.equal(parseTranscriptTail(tail, atMs + 6 * 60 * MIN).error, null)
 })
 
 test('parseTranscriptTail: only an OWNER channel message is a delivery; events, peers, the system, sidechains and synthetic turns are not', () => {
