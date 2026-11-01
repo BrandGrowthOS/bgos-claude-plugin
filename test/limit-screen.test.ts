@@ -16,6 +16,7 @@ import assert from 'node:assert/strict'
 
 import {
   LIMIT_ENTER_MIN_INTERVAL_MS,
+  UNSAFE_DIALOG_REASONS,
   decideLimitFree,
   limitNoticeText,
   parseLimitNotice,
@@ -134,6 +135,17 @@ test('anything dialog like below the footer (another choice list, another footer
   const second = ['╭──────────────────────────╮', '│ Do you trust this folder? │', '│ ❯ 1. Yes                  │', '│   2. No                   │', '│ Enter to confirm          │', '╰──────────────────────────╯']
   assert.deepEqual(pick(readLimitScreen([picker(), ...second].join('\n'))), [false, 'below_footer'])
   assert.deepEqual(pick(readLimitScreen([picker(), '  Esc to cancel'].join('\n'))), [false, 'below_footer'])
+})
+
+test('two limit dialogs on one screen are never pressed: the newest copy could hide the real one (pointer on "Add funds")', () => {
+  // A real picker with the flipped order and its pointer on "Add funds", and under it a copy with its
+  // own limit line and its pointer on "Stop and wait" (text painted below an open dialog).
+  const flipped = picker({ options: ['Add funds to continue with usage credits', 'Upgrade your plan', 'Stop and wait for limit to reset'], selected: [0] })
+  const screen = [flipped, picker()].join('\n')
+  assert.deepEqual(pick(readLimitScreen(screen)), [false, 'two_dialogs'])
+  assert.ok(UNSAFE_DIALOG_REASONS.includes('two_dialogs'), 'the owner is told, not left with a silent "not up"')
+  // A title alone (a reply quoting it) above the real picker is a second dialog too: refused, never guessed.
+  assert.deepEqual(pick(readLimitScreen(['  The CLI asks: What do you want to do?', picker()].join('\n'))), [false, 'two_dialogs'])
 })
 
 test('the composer and the status line below the picker do not count as a dialog', () => {
