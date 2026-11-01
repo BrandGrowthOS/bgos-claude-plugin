@@ -19,7 +19,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -3812,6 +3812,43 @@ function answeredFs(answers: Record<string, string | string[]>) {
 
 const followedDevice = (path: string) => `${path} leads to a network or device path (HOAI followed its links), so it is never attached.`
 
+test('Windows aliases: the real home bounds the word rules after an 8.3 prefix or home junction expands', async () => {
+  for (const [home, realHome] of [
+    ['C:\\Users\\RUNNER~1\\John Key', 'C:\\Users\\Runner Account\\John Key'],
+    ['c:/users/RUNNER~1/John Key', 'C:\\Users\\Runner Account\\John Key'],
+    ['E:\\Homes\\John Key', 'D:\\People\\John Key'],
+  ]) {
+    const path = `${home}\\Documents\\report.pdf`
+    const real = `${realHome}\\Documents\\report.pdf`
+    const { fs, calls } = answeredFs({ [path]: real, [home]: `\\\\?\\${realHome}` })
+    const read = await readOne(path, { home, fs })
+    assert.equal(read.ok, true, JSON.stringify(read.error))
+    assert.equal(read.file.realPath, real)
+    assert.equal(calls.filter((c) => c === `realpath ${home}`).length, 1, 'the home is resolved after the lexical checks')
+    assert.equal(calls.filter((c) => c === `realpath ${path}`).length, 2, 'the second look still resolves the original path')
+  }
+})
+
+test('Windows aliases: resolving the home never exempts a sibling, an outside link, a secret below the home or a fixed secret folder', async () => {
+  const home = 'C:\\Users\\RUNNER~1\\John Key'
+  const realHome = 'C:\\Users\\Runner Account\\John Key'
+  const path = `${home}\\Documents\\report.pdf`
+  for (const real of [
+    `${realHome}.seed\\report.pdf`,
+    'D:\\Other Key\\report.pdf',
+    `${realHome}\\Documents\\stripe key.pdf`,
+    `${realHome}\\.ssh\\report.pdf`,
+  ]) {
+    const { fs, calls } = answeredFs({ [path]: real, [home]: realHome })
+    assert.equal(await refusal(path, { home, fs }), `${path} leads to a key or password file (HOAI followed its links), so it is never attached. ${NO_WAY_AROUND}`, real)
+    assert.deepEqual(calls.filter((c) => !c.startsWith('realpath')), [], 'nothing was opened')
+  }
+  const { fs, calls } = spyFs()
+  const key = `${home}\\.ssh\\report.pdf`
+  assert.equal(await refusal(key, { home, fs }), `${key} looks like a key or password file, so it is never attached. ${NO_WAY_AROUND}`)
+  assert.deepEqual(calls, [], 'a lexical refusal still resolves nothing, including the home')
+})
+
 test('final fix 2: a file on a mapped network drive goes, read by its drive letter, when the share path is the given path below the drive', async () => {
   const share = '\\\\192.168.50.182\\Other'
   for (const [path, answer, root, realPath] of [
@@ -4004,7 +4041,8 @@ test('final fix 2: the runtime folders are also taken by their real path, so a j
   // The same folder twice is listed once; a folder that is its own real path is not repeated.
   assert.deepEqual([...lib.outboundRuntimeDirs(['D:\\a', 'D:\\a'], (d: string) => d)], ['D:\\a'])
   // A real junction (a symlink on Linux): the configured cfg leads to cfg-real, and a file reached by cfg-real is refused.
-  const home = scratchHome(t)
+  // This assertion names the file by its real path; TEMP itself can have an unrelated 8.3 or junction prefix.
+  const home = realpathSync.native(scratchHome(t))
   const realDir = join(home, '..', 'cfg-real')
   mkdirSync(join(realDir, 'paste-cache'), { recursive: true })
   const linked = join(home, '..', 'cfg')
