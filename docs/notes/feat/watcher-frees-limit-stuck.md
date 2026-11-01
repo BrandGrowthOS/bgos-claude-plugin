@@ -86,27 +86,34 @@ Usage is "back" only by one of two proofs, never a guess:
   (option A, 2026-11-02): once ONE press on this proof is followed by the limit again, the login proof is
   spent for that agent (`loginProofOff {since, until}` in its watch record, `until` the reset Claude gave with
   the new refusal); only the reset time counts until it passes, or until a real turn after the miss ends the
-  episode. The owner is told once that the watcher waits for the limit to reset at that time; never asked to
-  resend.
+  episode. `since` is the refusal's time, not the press's. A refusal seen after the verify counts too: the
+  press records its proof (`lastEnterHow`), and a later refusal with no real turn since that press is the miss.
+  The owner is told once that the watcher waits for the limit to reset at that time before it presses again;
+  never asked to resend.
 
 Then, and only then, the screen is read; it must show ALL of: the NEWEST `You've hit your ... limit` line, the
 `What do you want to do?` title at most 6 rows under it, the `Stop and wait for limit to reset` option carrying
 the ONLY pointer in the dialog, then the `Enter to confirm` footer, and nothing dialog like after the footer (no
 choice row, no title, no `Enter to` / `Esc to` hint; the composer and the status line pass). So a full quote of
-the dialog in an agent's reply, footer and all, is not the picker. Anything else is "unclear": no key, the owner
-is told.
+the dialog in an agent's reply, footer and all, is not the picker. And one dialog only: a second title or footer
+anywhere on the screen refuses it (`two_dialogs`), since a newer copy could hide the real picker and its pointer.
+Anything else is "unclear": no key, the owner is told.
 
 At most one Enter per hour per agent, spent on disk BEFORE the key in two records, each written whole (a temp
 file, then a rename) and read back: `~/.bgos-agent/watcher/limit-watch.json` (shared by the sweep pass and the
 checkup) and the agent's own `~/.bgos-agent/<id>/limit-enter.json`. The later of the two counts, so a deleted
 file does not re-arm the key. A record that is torn, empty or the wrong shape counts as an Enter at the moment
-it was seen: the bad copy is kept as `<file>.lost`, the file starts over with `lostAt`, and no key goes out for
-that hour (every agent, for the watcher's file). If either record does not land, no key (`record_unsaved`).
+it was seen: the bad copy is kept as `<file>.lost` (copied, then the fresh file written over it, so a failed
+write leaves the bad file holding), the file starts over with `lostAt`, and no key goes out for that hour (every
+agent, for the watcher's file). A record that is there but cannot be read (the real fs reads any error as null;
+on Windows often a short lock) holds the key while it lasts and is left untouched. If either record does not
+land, no key (`record_unsaved`). After the key, a failed write is logged and never hides that the Enter went out.
 Never /login, never text, never Esc, never a second key.
 
-On Windows only the console of a proven hoai launcher is read or pressed: `row.launcherLive` (the pid is alive
-and still the launcher that wrote supervisor.json, by the process table) and never a record the agent's daemon
-declares for itself (its pid is the daemon), the rule `lib/agent-windows.mjs` already uses. Else `no_console`.
+On Windows only the console of a proven hoai launcher is read or pressed: `row.launcherLive`, never a record the
+agent's daemon declares for itself (its pid is the daemon), a start stamp in the record, and the process table
+read NOW for that one pid: an entry, dated, started no later than the stamp, running hoai-core.mjs when its
+command line is readable. An unreadable table proves nothing, as in `lib/agent-windows.mjs`. Else `no_console`.
 
 Verify: re-read the screen (the picker must be gone), then watch the transcript for a real turn after the Enter
 (freed) or a new `rate_limit` record (Claude still refuses).
@@ -136,7 +143,7 @@ timeout that may have delivered the key, inject_failed), freed, closed, still_li
 ## 5. Verification
 
 - Red first: 5feba0c (the tests alone, each failing for a missing module or behaviour).
-- After the review round: `test/limit-screen.test.ts` 35, `test/watcher-limit.test.ts` 27,
+- After both review rounds: `test/limit-screen.test.ts` 37, `test/watcher-limit.test.ts` 33,
   `test/limit-notice.test.ts` 8, `test/agent-checkup.test.ts` 74 (8 new), `test/watcher-checkup.test.ts` 22
   (6 new), `test/watcher-core.test.ts` 57 (3 new), all green.
 - `test/win32-limit-screen.console.test.ts` 5, RUN for real on this Windows box (not skipped): the real
@@ -187,6 +194,18 @@ keys, and asked for four Important fixes. Ares ruled item 4 (option A) and set t
 
 No step was cut off or skipped.
 
+Review 2 (a fresh reviewer on 58f297e..65f4e51) found no path that types text and no path that sends two Enters
+through one agent's record, and one FAIL on safety check 3: the Windows proof fell back to "pid alive" when the
+process table could not be read. Fixed, with every minor it raised, each red first:
+
+| Commit | What |
+|---|---|
+| b90902a | Windows: the launcher proven from the process table read now (Important 1). |
+| 08b6686 | Option A counts from the refusal, and catches a refusal seen after the verify (minor 1). |
+| 2342b74 | Still limited words never contradict themselves or promise a press; a tmux key not confirmed is not "not sent" (minors 2, 8). |
+| 98ff2f4 | Unreadable is not missing; a repair never drops the hold; a write after the key never hides the press; read back rows that only the read back can catch (minors 3, 4, 6, 7). |
+| 6acdce4 | Two dialogs on one screen are never pressed (minor 5; red: that screen read ok). |
+
 ## 8. Leftovers for Data
 
 Not done here, by Ares's word (budget and logging stay notes) or because they touch the key sending code,
@@ -227,3 +246,9 @@ Other:
     anywhere in the watcher). The read back just before the key narrows the race; it does not close it.
 11. Whether the backend accepts `did: free_limit` and the step kind `free_limit`, and whether the app shows
     Restart now for an agent on the limit screen, could not be checked from this repo.
+12. The rules are built from the measured dialog, not from a capture of the real 2.1.316 screen with many queued
+    messages (the incident had 29). If the CLI paints rows between the limit line and the title, or below the
+    footer, the watcher refuses (`limit_line_far`, `below_footer`) and tells the owner; it never presses on a
+    guess. A real capture would show whether the 6 row bound needs to grow.
+13. With the login proof spent, a refusal seen late is found only if the transcript tail still shows the real
+    turns since the press; a tail full of refusals is read the safe way (option A stays on).
