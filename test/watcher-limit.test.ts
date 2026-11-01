@@ -421,6 +421,53 @@ test('the watcher record deleted after an Enter: the agent copy still holds the 
   }
 })
 
+test('a record that is there but cannot be read (the real fs reads it as null) holds the key like a corrupt one', async () => {
+  const { r, fs, clock } = usageBackRig()
+  fs.writeFile(watchPathOf(r), `${JSON.stringify({ schemaVersion: 1, agents: { 912: { lastEnterAt: new Date(SWAP_AT).toISOString() } } })}\n`)
+  const readFile = fs.readFile
+  let locked = true
+  fs.readFile = (p: string) => (locked && p === watchPathOf(r) ? null : readFile(p))
+  const tmux = fakeTmux(socketOf(r), (s) => (s.entered ? IDLE : picker()))
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'waiting', 'an unreadable record is not "never pressed"')
+  assert.equal(enters(tmux.calls).length, 0)
+  locked = false
+  assert.equal(JSON.parse(fs.readFile(watchPathOf(r))!).agents['912'].lastEnterAt, new Date(SWAP_AT).toISOString(), 'the other entries are not overwritten with one agent')
+})
+
+test('setting a bad record aside never loses the hold: if the fresh write fails, the bad file stays and still holds the key', async () => {
+  const { r, fs, clock } = usageBackRig()
+  fs.writeFile(watchPathOf(r), '{"agents":')
+  const writeFile = fs.writeFile
+  fs.writeFile = (p, t, o) => (p.startsWith(watchPathOf(r)) && !p.endsWith('.lost') ? (() => { throw new Error('EACCES') })() : writeFile(p, t, o))
+  const tmux = fakeTmux(socketOf(r), (s) => (s.entered ? IDLE : picker()))
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+  for (const later of [0, 5 * MIN, 2 * HOUR]) {
+    clock.set(SWAP_AT + MIN + later)
+    const out = await runLimitPass(ctx)
+    assert.equal(enters(tmux.calls).length, 0, `+${later / MIN} min: no key while the record cannot be repaired`)
+    assert.notEqual(out.agents[0].outcome, 'freed')
+  }
+  assert.equal(fs.readFile(watchPathOf(r)), '{"agents":', 'the bad file is still there, still holding')
+})
+
+test('a write that fails AFTER the key (the notice, the record) never hides the press: the outcome still says it was pressed', async () => {
+  const { r, fs, clock } = usageBackRig()
+  const tmux = fakeTmux(socketOf(r), (s) => (s.entered ? IDLE : picker()))
+  clock.onSleep((nowMs) => {
+    if (tmux.state.entered === 1 && !fs.readFile(r.transcript)!.includes('Catching up')) appendTranscript(fs, r, assistantTurn(nowMs))
+  })
+  const rename = fs.rename
+  fs.rename = (a, b) => {
+    if (tmux.state.entered === 1) throw new Error('EBUSY')
+    rename(a, b)
+  }
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+  const out = await runLimitPass(ctx)
+  assert.equal(enters(tmux.calls).length, 1)
+  assert.equal(out.agents[0].outcome, 'freed', 'reported as pressed and freed, not as an error')
+})
+
 test('the Enter cannot be put on disk (a write throws, or does not land): no key', async () => {
   const breakers: Array<[string, (fs: MemoryFs, r: Rig) => void]> = [
     ['the watch file rename throws', (fs, r) => {
@@ -430,6 +477,15 @@ test('the Enter cannot be put on disk (a write throws, or does not land): no key
     ['the watch file write is lost', (fs, r) => {
       const writeFile = fs.writeFile
       fs.writeFile = (p, t, o) => (p.startsWith(watchPathOf(r)) ? undefined : writeFile(p, t, o))
+    }],
+    // The rename succeeds but what landed is not this Enter: only the read back can catch it.
+    ['the watch file lands without this Enter', (fs, r) => {
+      const writeFile = fs.writeFile
+      fs.writeFile = (p, t, o) => writeFile(p, p === `${watchPathOf(r)}.tmp` ? '{"schemaVersion":1,"agents":{}}\n' : t, o)
+    }],
+    ['the agent copy lands with another time', (fs, r) => {
+      const writeFile = fs.writeFile
+      fs.writeFile = (p, t, o) => writeFile(p, p === `${enterCopyOf(r)}.tmp` ? '{"schemaVersion":1,"lastEnterAt":"2026-10-01T00:00:00.000Z"}\n' : t, o)
     }],
     ['the agent copy write throws', (fs, r) => {
       const writeFile = fs.writeFile
@@ -487,6 +543,12 @@ test('still limited after the Enter (the login changed but to the same capped ac
 // owner is told once, in plain words, that the watcher waits for the reset time (never to resend).
 test('option A: a miss on the login proof, then no press until the reset time, then exactly one press; the owner is told once', async () => {
   const { r, fs, clock } = usageBackRig()
+  const notices: string[] = []
+  const rename = fs.rename
+  fs.rename = (a, b) => {
+    rename(a, b)
+    if (b.endsWith(LIMIT_NOTICE_FILE_NAME)) notices.push(parseLimitNotice(fs.readFile(b)!)!.outcome)
+  }
   // The CLI reopens the picker on every refusal; the fake only records the Enter it would get.
   const tmux = fakeTmux(socketOf(r), () => picker())
   clock.onSleep((nowMs) => {
@@ -520,6 +582,7 @@ test('option A: a miss on the login proof, then no press until the reset time, t
   const reset: any = await runLimitPass(ctx)
   assert.deepEqual([reset.agents[0].outcome, reset.agents[0].how], ['freed', 'reset_passed'])
   assert.equal(enters(tmux.calls).length, 2, 'exactly one press after the miss')
+  assert.deepEqual(notices, ['still_limited', 'freed'], 'told once that the watcher waits, then once that it works again')
   // A real turn ends the episode: the next limit may use a login refresh as proof again.
   clock.set(RESETS_AT + 20 * MIN)
   assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'none')
