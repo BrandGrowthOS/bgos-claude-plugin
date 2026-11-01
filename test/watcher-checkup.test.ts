@@ -508,6 +508,31 @@ test('a usage limit with usage back (the login changed after it): the checkup pr
   assertDtoShape(backend.progress('chk-1'))
 })
 
+test('a usage limit with usage back but a corrupt Enter record: the checkup reads and presses nothing for the hour, and keeps the bad copy', async () => {
+  const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState() })
+  writeTranscript(fs, [assistantTurn(T0 - 40 * MIN), ownerMessage(T0 - 31 * MIN), limitEnvelope(T0 - 30 * MIN, T0 + 3 * 60 * MIN), ownerMessage(T0 - 15 * MIN)], T0 - 15 * MIN)
+  fs.writeFile(`${CONFIG}/.credentials.json`, 'NEVER-READ')
+  fs.touch(`${CONFIG}/.credentials.json`, T0 - 10 * MIN)
+  // A torn write: the record may have held an Enter a minute ago, so it counts as one just now.
+  const watchFile = `${HOME}/.bgos-agent/watcher/limit-watch.json`
+  const torn = '{"schemaVersion":1,"agents":{"912":{"lastEnterAt":"'
+  fs.writeFile(watchFile, torn)
+  const ps = [psLine(1, 0, '/sbin/init'), psLine(3000, 4242, `node ${ROOT}/bin/hoai-core.mjs`), psLine(5912, 3000, `claude --resume ${SID}`), psLine(4912, 5912, `node ${ROOT}/server.ts`)].join('\n')
+  const fake = limitExec(ps)
+  const backend = fakeBackend(checkupJob())
+  const clock = fakeClock()
+  const run = rig(fs, backend, clock, ps, { alive: [3000, 5912, 4912], exec: fake.exec })
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.equal(terminal.state, 'done')
+  assert.deepEqual(terminal.actions.map((a: any) => [a.cause, a.did, a.outcome]), [['usage_limit', 'free_limit', 'skipped']])
+  assert.equal(fake.state.entered, 0, 'no Enter on a record that cannot be read')
+  assert.deepEqual(fake.tmux, [], 'the screen is not even read')
+  assert.equal(fs.readFile(`${watchFile}.lost`), torn, 'the bad copy is kept for a person')
+  assert.equal(restartRequested(fs), false)
+  assertDtoShape(backend.progress('chk-1'))
+})
+
 test('a usage limit still in force: the checkup reports it and never reads or presses the screen', async () => {
   const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState() })
   writeTranscript(fs, [assistantTurn(T0 - 40 * MIN), limitEnvelope(T0 - 30 * MIN, T0 + 3 * 60 * MIN)], T0 - 30 * MIN)
