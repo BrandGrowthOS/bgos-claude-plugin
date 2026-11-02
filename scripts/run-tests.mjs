@@ -19,9 +19,13 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { snapshotWorkingTree } from './test-tree-snapshot.mjs'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const testDir = join(repoRoot, 'test')
+const beforeStarted = performance.now()
+const beforePaths = snapshotWorkingTree(repoRoot)
+console.log(`[run-tests] recorded ${beforePaths.size} paths before tests in ${Math.round(performance.now() - beforeStarted)} ms`)
 
 const files = readdirSync(testDir)
   .filter((name) => name.endsWith('.test.ts'))
@@ -100,8 +104,19 @@ const bunStatus = bunFiles.length
   ? run('bun:test family', 'bun', ['test', ...bunFiles])
   : 0
 
-if (nodeStatus !== 0 || bunStatus !== 0) {
-  console.error(`\n[run-tests] FAILED (node family exit ${nodeStatus}, bun family exit ${bunStatus})`)
-  process.exit(1)
+const afterStarted = performance.now()
+const afterPaths = snapshotWorkingTree(repoRoot)
+const newPaths = [...afterPaths].filter((path) => !beforePaths.has(path)).sort()
+console.log(`[run-tests] recorded ${afterPaths.size} paths after tests in ${Math.round(performance.now() - afterStarted)} ms`)
+if (newPaths.length) {
+  console.error(`\n[run-tests] tests left ${newPaths.length} new paths in the working tree:`)
+  for (const path of newPaths) console.error(`[run-tests] NEW PATH: ${JSON.stringify(path)}`)
 }
-console.log('\n[run-tests] both families green')
+
+if (nodeStatus !== 0 || bunStatus !== 0 || newPaths.length) {
+  console.error(`\n[run-tests] FAILED (node family exit ${nodeStatus}, bun family exit ${bunStatus}, new paths ${newPaths.length})`)
+  // Let stderr drain so a long list of paths is not cut off in CI logs.
+  process.exitCode = 1
+} else {
+  console.log('\n[run-tests] both families green')
+}

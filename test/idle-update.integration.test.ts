@@ -15,6 +15,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { pendingMarketplaceRestartVersion } from '../lib/marketplace-update.mjs'
@@ -24,14 +25,13 @@ import type { RestartAuthority } from '../lib/update-readiness'
 const m: any = await import('../lib/idle-update.mjs')
 const host: any = await import('../lib/idle-update-host.mjs')
 
-const SCRATCH = process.env.TEMP || process.env.TMPDIR || '.'
 const PIN = '0d6f2a8e-3c1b-4e7a-9f20-5b8c7d6e4f31'
 const T0 = Date.parse('2026-10-28T12:00:00.000Z')
 const MIN = 60_000
 const HOUR = 60 * MIN
 
 function scratchHome(): string {
-  return mkdtempSync(join(SCRATCH, 'idle-update-int-'))
+  return mkdtempSync(join(tmpdir(), 'idle-update-int-'))
 }
 
 /** The gen-2 Mac chain for one agent: launchd, its tmux server on the agent's own socket, hoai, claude, the daemon. */
