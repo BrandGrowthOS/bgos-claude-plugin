@@ -303,8 +303,17 @@ test('a browser that fails to start leaves no download watcher behind; the next 
   }
 })
 
+test('a reply that cannot carry the line does not use the download up: the next one still names it', () => {
+  const core: any = new BrowserHostCore({ pool: {} as any, browserTools: [], deviceLabel: 'box-1' })
+  const rows = [{ fileName: 'x.p8', handle: 'dl_ab', state: 'asking' }]
+  let handedOut = 0
+  const slot = { downloads: { untold: () => (handedOut++ ? [] : rows) } }
+  assert.deepEqual(core._withDownloads(slot, { isError: true }), { isError: true })
+  assert.match(core._withDownloads(slot, { content: [] }).content[0].text, /x\.p8 \(dl_ab\): your owner is asked/)
+})
+
 test("the reply of a call whose download is held says held, not 'not saved'", () => {
   const core: any = new BrowserHostCore({ pool: {} as any, browserTools: [], deviceLabel: 'box-1' })
-  const result = core._withDownloads({ downloads: { since: () => [{ fileName: 'x.p8', handle: 'dl_ab', state: 'held' }] } }, 0, { content: [] })
+  const result = core._withDownloads({ downloads: { untold: () => [{ fileName: 'x.p8', handle: 'dl_ab', state: 'held' }] } }, { content: [] })
   assert.match(result.content[0].text, /^### Download\n- x\.p8 \(dl_ab\): held on this machine for your owner until the browser host next starts; you are not given it\.$/)
 })
