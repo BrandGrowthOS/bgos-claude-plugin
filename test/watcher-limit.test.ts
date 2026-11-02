@@ -796,6 +796,24 @@ test('a press that freed the agent forgets the proof it was on; a refusal with n
   assert.doesNotMatch(limitNoticeText(told), /2026-11-06 16:00 UTC/)
 })
 
+test('a refusal with no reset time of its own: the owner is never promised a press at a borrowed one', async () => {
+  const { r, fs, clock } = usageBackRig()
+  const tmux = fakeTmux(socketOf(r), () => picker())
+  clock.onSleep((nowMs) => {
+    if (tmux.state.entered === 1 && fs.readFile(r.transcript)!.split('\n').filter(Boolean).length === 1) {
+      appendTranscript(fs, r, JSON.stringify({ ...JSON.parse(limitRecord(nowMs)), apiErrorParams: {} }))
+    }
+  })
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'still_limited')
+  const told = noticeOf(fs, r)!
+  assert.equal(told.resetsAt, null, 'Claude gave no reset time with this refusal')
+  assert.match(limitNoticeText(told), /gave no reset time/)
+  assert.doesNotMatch(limitNoticeText(told), /2026-11-06 16:00 UTC/)
+  // The login proof stays spent until the earlier reset, as before: only the words changed.
+  assert.equal(limitWatch(fs, r).loginProofOff.until, new Date(RESETS_AT).toISOString())
+})
+
 test('option A ends with the episode: after a real turn (the owner fixed it), the next limit may use a login change again', async () => {
   const { r, fs, clock } = usageBackRig()
   const tmux = fakeTmux(socketOf(r), () => picker())
