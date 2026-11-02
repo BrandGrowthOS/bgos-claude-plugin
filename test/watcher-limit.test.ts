@@ -464,6 +464,19 @@ test('a record that turns unreadable AFTER the key is logged, never silent', asy
   assert.ok(logs.some((l) => /the Enter went out, but the record could not be written/.test(l)), logs.join('\n'))
 })
 
+test('a notice told after the key, whose record turns unreadable, is logged: it may be told again', async () => {
+  const { r, fs, clock } = usageBackRig()
+  let pickerUp = true
+  const tmux = fakeTmux(socketOf(r), () => (pickerUp ? picker() : IDLE), () => {
+    pickerUp = false
+  })
+  const readFile = fs.readFile
+  fs.readFile = (p: string) => (tmux.state.entered === 1 && p === watchPathOf(r) ? null : readFile(p))
+  const { ctx, logs } = ctxFor(r, fs, clock, tmux.exec)
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'closed', 'nothing was waiting: only the notice writes after the key')
+  assert.ok(logs.some((l) => /the watch record could not be read; this notice may be told again/.test(l)), logs.join('\n'))
+})
+
 test('a rename that fails AFTER the key never hides the press: the outcome still says it was pressed', async () => {
   const { r, fs, clock } = usageBackRig()
   const tmux = fakeTmux(socketOf(r), (s) => (s.entered ? IDLE : picker()))
