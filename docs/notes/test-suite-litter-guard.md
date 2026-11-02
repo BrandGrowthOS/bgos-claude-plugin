@@ -6,6 +6,8 @@ Before: `npm test` ran both test families without inspecting the working tree af
 
 After: `scripts/run-tests.mjs` takes filesystem path snapshots before and after both test families. Every surviving new path is named, and any new path fails the run even if the child runners passed. Directories themselves are recorded, including empty directories and nested `.git` entries. Git internals and dependency contents are skipped, and links are recorded without following their targets. A scan error also fails the run. Existing paths form the baseline; this check does not compare file contents.
 
+The runner sets `process.exitCode` and lets output drain naturally, so a long list of paths is not truncated by a forced process exit.
+
 `test/idle-update.integration.test.ts` now makes its nine scratch homes under `os.tmpdir()` using `mkdtempSync`. Its existing `finally` blocks remove each home on success or assertion failure.
 
 ## Proof

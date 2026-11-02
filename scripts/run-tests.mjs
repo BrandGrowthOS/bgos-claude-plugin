@@ -115,6 +115,8 @@ if (newPaths.length) {
 
 if (nodeStatus !== 0 || bunStatus !== 0 || newPaths.length) {
   console.error(`\n[run-tests] FAILED (node family exit ${nodeStatus}, bun family exit ${bunStatus}, new paths ${newPaths.length})`)
-  process.exit(1)
+  // Let stderr drain so a long list of paths is not cut off in CI logs.
+  process.exitCode = 1
+} else {
+  console.log('\n[run-tests] both families green')
 }
-console.log('\n[run-tests] both families green')
