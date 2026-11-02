@@ -698,14 +698,59 @@ function lateMissRig() {
 test('option A late miss is bounded: a refusal days after a press that closed the picker is a new limit, a login change counts again', async () => {
   const { r, fs, clock, tmux, ctx, reopen } = lateMissRig()
   assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'closed')
-  // Two days idle; other agents on the login used the new account up; the next message is refused.
+  // Two days idle; other agents on the login used the new account up; the next message is refused,
+  // with the new account's own reset: a new limit, not the one the press was on.
   const refusedAt = SWAP_AT + 2 * 24 * HOUR
-  appendTranscript(fs, r, limitRecord(refusedAt))
+  appendTranscript(fs, r, limitRecord(refusedAt, RESETS_AT + 3 * 24 * HOUR))
   reopen()
   fs.touch(r.credentials, refusedAt + 30 * MIN) // the owner switched the account again
   clock.set(refusedAt + 40 * MIN)
   const out: any = await runLimitPass(ctx)
   assert.deepEqual([out.agents[0].how, enters(tmux.calls).length], ['login_changed', 2], 'not blamed on the press two days ago')
+  assertOnlySafeTmux(tmux.calls)
+})
+
+test('option A late miss on a weekly limit: a refusal hours after the press, with the same reset, is the same limit; no press until the reset', async () => {
+  const { r, fs, clock, tmux, notices, ctx, reopen } = lateMissRig()
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'closed', 'a token refresh moved the file; nothing was waiting')
+  // The next message, the next morning, is refused with the same weekly reset: the press did not lift it.
+  const refusedAt = SWAP_AT + 14 * HOUR
+  appendTranscript(fs, r, limitRecord(refusedAt, RESETS_AT))
+  reopen()
+  for (const later of [30 * MIN, 3 * HOUR, 30 * HOUR]) {
+    fs.touch(r.credentials, refusedAt + later - 10 * MIN) // the login keeps refreshing
+    clock.set(refusedAt + later)
+    assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'limited', `+${later / MIN} min: the login proof is spent`)
+  }
+  assert.equal(enters(tmux.calls).length, 1, 'no second press on a login refresh')
+  assert.deepEqual(notices, ['closed', 'still_limited'], 'told once that the watcher waits for the reset')
+  clock.set(RESETS_AT + 2 * MIN)
+  const out: any = await runLimitPass(ctx)
+  assert.deepEqual([out.agents[0].how, enters(tmux.calls).length], ['reset_passed', 2], 'the reset passed: one press')
+  assertOnlySafeTmux(tmux.calls)
+})
+
+test('option A late miss ends at the pressed limit\'s own reset: a new session limit soon after it is a new limit, a login change counts again', async () => {
+  const r = linuxRig()
+  const fs = agentFs(r)
+  const sessionReset = LIMIT_AT + 2 * HOUR // a session limit: it resets two hours after the hit
+  writeTranscript(fs, r, [limitRecord(LIMIT_AT, sessionReset)])
+  fs.touch(r.credentials, SWAP_AT)
+  const clock = fakeClock(SWAP_AT + MIN)
+  let pickerUp = true
+  const tmux = fakeTmux(socketOf(r), () => (pickerUp ? picker() : IDLE), () => {
+    pickerUp = false
+  })
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'closed')
+  // The session reset passed; within the 5 h window a new session limit, with its own later reset.
+  const refusedAt = sessionReset + HOUR
+  appendTranscript(fs, r, limitRecord(refusedAt, refusedAt + 5 * HOUR))
+  pickerUp = true
+  fs.touch(r.credentials, refusedAt + 20 * MIN) // the owner switched the account
+  clock.set(refusedAt + 30 * MIN)
+  const out: any = await runLimitPass(ctx)
+  assert.deepEqual([out.agents[0].how, enters(tmux.calls).length], ['login_changed', 2], 'not blamed on the press before the reset')
   assertOnlySafeTmux(tmux.calls)
 })
 
