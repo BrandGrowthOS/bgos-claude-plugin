@@ -666,6 +666,78 @@ test('option A also when the refusal comes after the verify (the press closed th
   assertOnlySafeTmux(tmux.calls)
 })
 
+function lateMissRig() {
+  const { r, fs, clock } = usageBackRig()
+  let pickerUp = true
+  const tmux = fakeTmux(socketOf(r), () => (pickerUp ? picker() : IDLE), () => {
+    pickerUp = false
+  })
+  const notices: string[] = []
+  const rename = fs.rename
+  fs.rename = (a, b) => {
+    rename(a, b)
+    if (b.endsWith(LIMIT_NOTICE_FILE_NAME)) notices.push(parseLimitNotice(fs.readFile(b)!)!.outcome)
+  }
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+  return { r, fs, clock, tmux, notices, ctx, reopen: () => (pickerUp = true) }
+}
+
+test('option A late miss is bounded: a refusal days after a press that closed the picker is a new limit, a login change counts again', async () => {
+  const { r, fs, clock, tmux, ctx, reopen } = lateMissRig()
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'closed')
+  // Two days idle; other agents on the login used the new account up; the next message is refused.
+  const refusedAt = SWAP_AT + 2 * 24 * HOUR
+  appendTranscript(fs, r, limitRecord(refusedAt))
+  reopen()
+  fs.touch(r.credentials, refusedAt + 30 * MIN) // the owner switched the account again
+  clock.set(refusedAt + 40 * MIN)
+  const out: any = await runLimitPass(ctx)
+  assert.deepEqual([out.agents[0].how, enters(tmux.calls).length], ['login_changed', 2], 'not blamed on the press two days ago')
+  assertOnlySafeTmux(tmux.calls)
+})
+
+test('option A late miss never once the reset passed: no "waits for the reset" notice for a time already gone, one press', async () => {
+  const { r, fs, clock, tmux, notices, ctx, reopen } = lateMissRig()
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'closed')
+  appendTranscript(fs, r, limitRecord(SWAP_AT + 70 * MIN))
+  reopen()
+  // The watcher's next look is after the reset (it was off meanwhile).
+  clock.set(RESETS_AT + 2 * MIN)
+  const out: any = await runLimitPass(ctx)
+  assert.deepEqual([out.agents[0].how, enters(tmux.calls).length], ['reset_passed', 2])
+  assert.ok(!notices.includes('still_limited'), `no still limited notice: ${notices.join(', ')}`)
+  assertOnlySafeTmux(tmux.calls)
+})
+
+test('a press that freed the agent forgets the proof it was on; a refusal with no reset time never borrows one that passed', async () => {
+  const { r, fs, clock } = usageBackRig()
+  const tmux = fakeTmux(socketOf(r), (s) => (s.entered ? IDLE : picker()))
+  clock.onSleep((nowMs) => {
+    if (tmux.state.entered === 1 && !fs.readFile(r.transcript)!.includes('Catching up')) appendTranscript(fs, r, assistantTurn(nowMs))
+  })
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'freed')
+  assert.equal(limitWatch(fs, r).lastEnterHow, undefined, 'freed: nothing left to count as a later miss')
+
+  // After the reset passed: a press on it, and Claude refuses again with no machine readable reset.
+  const r2 = linuxRig()
+  const fs2 = agentFs(r2)
+  writeTranscript(fs2, r2, [limitRecord()])
+  const clock2 = fakeClock(RESETS_AT + 2 * MIN)
+  const tmux2 = fakeTmux(socketOf(r2), () => picker())
+  const bare = JSON.stringify({ ...JSON.parse(limitRecord(RESETS_AT + 3 * MIN)), apiErrorParams: {} })
+  clock2.onSleep((nowMs) => {
+    if (tmux2.state.entered === 1 && fs2.readFile(r2.transcript)!.split('\n').filter(Boolean).length === 1) {
+      appendTranscript(fs2, r2, JSON.stringify({ ...JSON.parse(bare), timestamp: new Date(nowMs).toISOString() }))
+    }
+  })
+  const out: any = await runLimitPass(ctxFor(r2, fs2, clock2, tmux2.exec).ctx)
+  assert.equal(out.agents[0].outcome, 'still_limited')
+  const told = noticeOf(fs2, r2)!
+  assert.equal(told.resetsAt, null, 'the passed reset is not the time the watcher waits for')
+  assert.doesNotMatch(limitNoticeText(told), /2026-11-06 16:00 UTC/)
+})
+
 test('option A ends with the episode: after a real turn (the owner fixed it), the next limit may use a login change again', async () => {
   const { r, fs, clock } = usageBackRig()
   const tmux = fakeTmux(socketOf(r), () => picker())
