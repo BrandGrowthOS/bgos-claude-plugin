@@ -772,3 +772,91 @@ test('control: a holder that ignores TERM but has a live claude again by the end
     sb.cleanup()
   }
 })
+
+// -- 6: the posix shape, where the launcher's child is EXPECT and claude sits under it
+// (kc-server agent 867, 2 Nov 2026: expect alive, its claude <defunct>, 4,681 exits 3)
+
+const EXPECT = 4290
+const CLAUDE = 4300
+
+test('agent 867 (2 Nov): a live expect over a zombie claude is not supervising: takeover, reason claude-zombie, the expect named', () => {
+  const v = decideSupervisorArming({
+    existingRaw: supervisorFileBody(HOLDER, STAMP),
+    ownPid: 1,
+    pidAlive: () => true,
+    pidProcess: () => ({ command: HOAI_CMD, startedAtMs: STAMP_MS - 1_000 }),
+    holderChildren: (pid: number) =>
+      pid === HOLDER
+        ? [{ pid: EXPECT, zombie: false, name: 'expect', startedAtMs: null }]
+        : pid === EXPECT
+          ? [{ pid: CLAUDE, zombie: true, name: 'claude', startedAtMs: null }]
+          : null,
+    holderInFolder: () => true,
+    now: STAMP_MS + 86_400_000,
+  } as never) as { takeover?: boolean; reason?: string; staleExpects?: number[] }
+  assert.equal(v.takeover, true)
+  assert.equal(v.reason, 'claude-zombie')
+  assert.deepEqual(v.staleExpects, [EXPECT])
+})
+
+test('control: an expect over a LIVE claude is supervising: no takeover', () => {
+  const v = decideSupervisorArming({
+    existingRaw: supervisorFileBody(HOLDER, STAMP),
+    ownPid: 1,
+    pidAlive: () => true,
+    pidProcess: () => ({ command: HOAI_CMD, startedAtMs: STAMP_MS - 1_000 }),
+    holderChildren: (pid: number) =>
+      pid === HOLDER
+        ? [{ pid: EXPECT, zombie: false, name: 'expect', startedAtMs: null }]
+        : pid === EXPECT
+          ? [{ pid: CLAUDE, zombie: false, name: 'claude', startedAtMs: null }]
+          : null,
+    holderInFolder: () => true,
+    now: STAMP_MS + 86_400_000,
+  } as never) as { takeover?: boolean; arm: boolean }
+  assert.equal(v.arm, false)
+  assert.equal(v.takeover, undefined)
+})
+
+test('control: an expect whose own children cannot be read keeps the claim (unknown is never stale)', () => {
+  const v = decideSupervisorArming({
+    existingRaw: supervisorFileBody(HOLDER, STAMP),
+    ownPid: 1,
+    pidAlive: () => true,
+    pidProcess: () => ({ command: HOAI_CMD, startedAtMs: STAMP_MS - 1_000 }),
+    holderChildren: (pid: number) => (pid === HOLDER ? [{ pid: EXPECT, zombie: false, name: 'expect', startedAtMs: null }] : null),
+    holderInFolder: () => true,
+    now: STAMP_MS + 86_400_000,
+  } as never) as { takeover?: boolean }
+  assert.equal(v.takeover, undefined)
+})
+
+test('agent 867 (2 Nov), end to end: holder KILLed, then the orphaned expect KILLed, then the agent launches', async () => {
+  const sb = sandbox()
+  try {
+    writeFileSync(sb.claim, supervisorFileBody(HOLDER, STAMP))
+    const holder = fakeHolder({ children: [{ pid: EXPECT, zombie: false, name: 'expect', startedAtMs: STAMP_MS + 5_000 }], diesOn: ['SIGKILL'] })
+    let expectAlive = true
+    const signals: Array<[number, string]> = []
+    const r = await launch(sb, holder, {
+      pidAlive: (pid: number) => (pid === HOLDER ? holder.alive : pid === EXPECT ? expectAlive : false),
+      holderChildren: (pid: number) =>
+        pid === HOLDER ? holder.children : pid === EXPECT ? [{ pid: CLAUDE, zombie: true, name: 'claude', startedAtMs: null }] : null,
+      signalPid: (pid: number, signal: string) => {
+        signals.push([pid, signal])
+        if (pid === HOLDER && holder.diesOn.includes(signal)) holder.alive = false
+        if (pid === EXPECT && signal === 'SIGKILL') expectAlive = false
+        return true
+      },
+    })
+    assert.deepEqual(signals, [
+      [HOLDER, 'SIGTERM'],
+      [HOLDER, 'SIGKILL'],
+      [EXPECT, 'SIGKILL'],
+    ], r.prints.join('\n'))
+    assert.equal(r.spawns.length, 1, 'the agent is launched once the holder and its expect are gone')
+    assert.equal(r.code, 0)
+  } finally {
+    sb.cleanup()
+  }
+})
