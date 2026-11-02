@@ -853,7 +853,7 @@ async function createAgentRun(opts: {
   return { fs, backend, terminal, folder, launches, spawns: recorder.spawns, logs }
 }
 
-test('create_agent win32, Keep agents running off (or a backend without the route): ONE hidden one shot launch, wscript //B launch-hidden.vbs with window style 0; never cmd.exe, never cmd /k, nothing installed', async () => {
+test('create_agent win32, Start with Windows off (or a backend without the route): ONE hidden one shot launch, wscript //B launch-hidden.vbs with window style 0; never cmd.exe, never cmd /k, nothing installed', async () => {
   const cases: Array<[Record<string, unknown> | undefined, string]> = [
     [undefined, 'no_answer'],
     [{ enabled: false, enabledAt: null, assistantIds: [] }, 'switch_off'],
@@ -870,11 +870,11 @@ test('create_agent win32, Keep agents running off (or a backend without the rout
     assert.match(vbs, /, 0, False\r\n$/, `${what}: style 0, nothing waits`)
     assert.deepEqual(run.launches, [], `${what}: no task registered, none started`)
     assert.equal(run.fs.files.has(`${HOME}/.bgos-agent/55/run-agent.vbs`), false, what)
-    assert.equal(run.terminal.steps[3]!.message, `launched via recipe-hidden (keep agents running: ${reason})`, what)
+    assert.equal(run.terminal.steps[3]!.message, `launched via recipe-hidden (Start with Windows: ${reason})`, what)
   }
 })
 
-test('create_agent win32, Keep agents running on: the agent task is registered AND started (its launcher hidden, style 0); no one shot launch beside it', async () => {
+test('create_agent win32, Start with Windows on: the agent task is registered AND started (its launcher hidden, style 0); no one shot launch beside it', async () => {
   const run = await createAgentRun({ platform: 'win32', keepAlive: { enabled: true, enabledAt: '2026-10-01T00:00:00.000Z', assistantIds: [], switchState: 'on' } })
   assert.equal(run.terminal.state, 'done', JSON.stringify(run.terminal))
   // Read back first (this HOME's name, then the old one: neither registered), then registered and
@@ -892,7 +892,7 @@ test('create_agent win32, Keep agents running on: the agent task is registered A
   assert.deepEqual(run.spawns, [], 'the task is the launch: no wscript one shot, no cmd')
   const vbs = run.fs.files.get(`${HOME}/.bgos-agent/55/run-agent.vbs`)!
   assert.match(vbs, /--keep-alive", 0, True\)\r\n$/, 'the task launcher runs hidden')
-  assert.equal(run.terminal.steps[3]!.message, 'launched via task (keep agents running: switch_on)')
+  assert.equal(run.terminal.steps[3]!.message, 'launched via task (Start with Windows: switch_on)')
 })
 
 test('create_agent win32, a computer never set (choice 1): the first new agent there is kept running, the task registered and started', async () => {
@@ -900,7 +900,7 @@ test('create_agent win32, a computer never set (choice 1): the first new agent t
   assert.equal(run.terminal.state, 'done', JSON.stringify(run.terminal))
   assert.deepEqual(run.launches.map((c) => c.file), ['powershell.exe', 'powershell.exe', 'powershell.exe', 'schtasks.exe'])
   assert.deepEqual(run.spawns, [])
-  assert.equal(run.terminal.steps[3]!.message, 'launched via task (keep agents running: never_set)')
+  assert.equal(run.terminal.steps[3]!.message, 'launched via task (Start with Windows: never_set)')
   assert.deepEqual(run.launches.map((c) => c.args.at(-1)), ['probe', 'probe-legacy', 'install', TASK_55])
 })
 
@@ -915,7 +915,7 @@ test('create_agent win32, the task cannot be registered: the files it wrote are 
   assert.equal(run.fs.files.has(`${HOME}/.bgos-agent/55/run-agent.vbs`), false, 'no task launcher left to read as a supervisor')
   assert.equal(run.launches.some((c) => c.file === 'schtasks.exe'), false, 'an unregistered task is never run')
   assert.deepEqual(run.launches.map((c) => c.args.at(-1)), ['probe', 'probe-legacy', 'install'], 'read back (none registered), then the registration that failed')
-  assert.match(run.terminal.steps[3]!.message, /^launched via recipe-hidden \(keep agents running: switch_on; supervisor not installed: /)
+  assert.match(run.terminal.steps[3]!.message, /^launched via recipe-hidden \(Start with Windows: switch_on; supervisor not installed: /)
 })
 
 test('create_agent win32 (review), re-creating an agent that already runs with the switch on: the task is registered but NOT started beside it, and the running session restarts in place (its launcher marker), as before', async () => {
@@ -932,7 +932,7 @@ test('create_agent win32 (review), re-creating an agent that already runs with t
   assert.deepEqual(run.launches.map((c) => [c.file, c.args.at(-1)]), [['powershell.exe', 'probe'], ['powershell.exe', 'probe-legacy'], ['powershell.exe', 'install']], 'read back, registered, never /Run beside the live session')
   assert.deepEqual(run.spawns, [], 'no one shot beside it')
   assert.equal(run.fs.files.get(`${HOME}/.bgos-agent/55/restart-requested.json`), '{}', 'restarted in place through its live launcher')
-  assert.equal(run.terminal.steps[3]!.message, 'launched via task, restarted via marker (keep agents running: switch_on)')
+  assert.equal(run.terminal.steps[3]!.message, 'launched via task, restarted via marker (Start with Windows: switch_on)')
 })
 
 test('create_agent win32 (review): the task registered but its start refused: the task files stay (it IS registered), and the agent starts once, hidden; never a second start', async () => {

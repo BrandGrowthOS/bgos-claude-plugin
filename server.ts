@@ -17101,8 +17101,9 @@ async function reconcileAlwaysOn(): Promise<void> {
     log(
       `always-on reconcile DISABLED on this Windows host: this daemon does not ` +
         `install a per-agent supervisor here. The per-machine watcher installs ` +
-        `the Windows supervisor (a logon Scheduled Task) when Keep agents ` +
-        `running is on for this computer in HOAI (Settings, Computers). ` +
+        `the Windows supervisor (a logon Scheduled Task) when ` +
+        `Start with Windows is on for this computer in HOAI ` +
+        `(Integrations, this computer's card). ` +
         `Logged once.`,
     )
     // The stand-down report says so only when Keep agents running is known to
