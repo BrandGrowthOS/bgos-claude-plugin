@@ -118,8 +118,9 @@ agent's daemon declares for itself (its pid is the daemon), a start stamp in the
 read NOW for that one pid: an entry, dated, started no later than the stamp, running hoai-core.mjs when its
 command line is readable. An unreadable table proves nothing, as in `lib/agent-windows.mjs`. Else `no_console`.
 
-Verify: re-read the screen (the picker must be gone), then watch the transcript for a real turn after the Enter
-(freed) or a new `rate_limit` record (Claude still refuses).
+Verify: watch the transcript for a real turn after the Enter (freed) or a new `rate_limit` record (Claude still
+refuses); if neither comes inside the window, read the screen once: the picker gone is `closed`, still up is
+`not_taken`.
 
 Tell the owner: the watcher drops `~/.bgos-agent/<id>/limit-notice.json` (tokens and times only); the agent's
 daemon reads it, builds the words from fixed templates, and posts them in the owner's chat as a connection
@@ -234,6 +235,9 @@ reset, as a new limit, so a token refresh got another press. Fixed, with the che
 | b8c8cc0 | A clock that is not a number never opens the hour gate (minor 7). |
 | (notes) | The race test asserts that both sides of the hour were hit; docs, comments and two test names match the code (minors 1, 3, 6, 9). |
 
+Review 5 (a fresh reviewer on 421c5cf..f6a78e7): all three safety checks PASS, the key code byte identical, no
+Critical or Important; "Ready to push: Yes". Its minors are leftovers 20 to 22, and two doc nits were fixed.
+
 ## 8. Leftovers for Data
 
 Not done here, by Ares's word (budget and logging stay notes) or because they touch the key sending code,
@@ -299,3 +303,16 @@ From review 4:
     up to about two minutes earlier. It only reads and parses; prove the console again before it if that matters.
 19. The late miss window for a refusal with a different or unknown reset is 5 h after the press (the shortest
     usage window) and before the pressed limit's reset. That length is a policy call, left to Data.
+
+From review 5:
+20. A `no_clock` wait (a clock that is not a number) comes back as `waiting`, and the checkup words it as the hour
+    hold. It cannot happen with `Date.now`. Return the reason and give it its own words; the `decideLimitFree`
+    doc comment does not list it yet.
+21. The same limit is matched by its reset time only. A limit on another account with the same reset instant
+    counts as a miss: no extra press (it fails safe), the login proof waits for that reset. Compare
+    `rate_limit_info.rateLimitType` as well if that matters.
+22. A refusal with no reset of its own after a login press: `loginProofOff.until` borrows the earlier reset, so
+    once that passes a login change counts as proof again, and the next token refresh may get one more press
+    (and a second "still limited" notice under a new key). The owner's words neither promise nor deny that
+    press (351f60b's message says it "would not come": it can, on a login change). Hold the proof until a real
+    turn instead if "told once" must be strict.
