@@ -13,20 +13,42 @@
  *
  * Run: npx tsx --test test/self-update.idle-rollback.test.ts
  */
-import { test } from 'node:test'
+import { after, afterEach, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { EMPTY_AUTO_UPDATE_STATE, initializeSelfUpdater, loadSharedUpdateSafety, saveAutoUpdateState, type CommandRunner } from '../lib/self-update'
 
 const COMMIT_OLD = 'a'.repeat(40)
 const COMMIT_NEW = 'b'.repeat(40)
-const SCRATCH = process.env.TEMP || process.env.TMPDIR || '.'
+const made: string[] = []
 
 function scratch(prefix: string): string {
-  return mkdtempSync(join(SCRATCH, prefix))
+  // os.tmpdir() follows TEMP/TMP/TMPDIR; it never falls back to the working tree.
+  const dir = mkdtempSync(join(tmpdir(), prefix))
+  made.push(dir)
+  return dir
 }
+
+// Runs after every test, passed or failed, so a failing test leaves nothing behind either.
+afterEach(() => {
+  for (const dir of made) rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+})
+
+// Litter guard: every folder this file made must be outside the repo working tree and gone when the file ends.
+after(() => {
+  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+  const inTree = made.filter((dir) => {
+    const rel = relative(repoRoot, resolve(dir))
+    return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+  })
+  const left = made.filter((dir) => existsSync(dir))
+  assert.deepEqual(inTree, [], 'scratch folders were created inside the repo working tree')
+  assert.deepEqual(left, [], 'scratch folders were left behind')
+})
 
 async function updaterOn(opts: { dirty?: boolean; deps?: string; checkoutFails?: boolean; missingCommit?: boolean } = {}) {
   const rootDir = scratch('idle-rollback-root-')
