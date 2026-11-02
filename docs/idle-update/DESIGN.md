@@ -310,7 +310,7 @@ The controller ships in 0.85.0. An agent still running 0.84 or older cannot run 
 ## Proof plan
 
 **Unit, red first:**
-- `test/delivery-proof.test.ts`: what the session is owed, and when one that has not reached it means something. `test/canary-delivery.e2e.test.ts`: the real daemon and controller on a scaled clock, three builds with one fault patched into a copy of the source and healthy builds quiet and with traffic, read through the `alive` file the followers read.
+- `test/delivery-proof.test.ts`: what the session is owed, and when one that has not reached it means something. `test/canary-delivery.daemon.test.ts`: the real daemon and controller on a scaled clock, three builds with one fault patched into a copy of the source and healthy builds quiet and with traffic, read through the `alive` file the followers read.
 - `test/idle-update.test.ts`: one test per gate, plus the version order, lease, canary, record transitions, back-off, validation and rollback decisions. Each has a mutant recorded in `docs/idle-update/mutants.json`.
 - `test/update-rpc.own-launcher.test.ts`: the rung and every refusal (not an ancestor, not hoai, a nested claude, a dead pid, the click, scheduled and hook paths unchanged).
 - `test/pending-restart.test.ts`: additions for the latch.

@@ -28,3 +28,10 @@ test('there are real Chromium files for that rule to hold', () => {
   assert.ok(files.includes('remote-browser-controls.chromium.test.ts'))
   assert.ok(files.length >= 5)
 })
+
+test('files that boot real daemons stay out of the pool and run after it: side by side they push fixed limits elsewhere past their time', () => {
+  assert.match(RUNNER, /if \(file\.endsWith\('\.daemon\.test\.ts'\)\) daemonFiles\.push\(file\)\n\s*else nodeFiles\.push\(file\)/)
+  assert.match(RUNNER, /run\('real daemon files, one at a time', 'npx', \['tsx', '--test', '--test-concurrency=1', \.\.\.daemonFiles\]\)/)
+  const files = readdirSync(join(ROOT, 'test')).filter((name) => name.endsWith('.daemon.test.ts'))
+  assert.ok(files.includes('canary-delivery.daemon.test.ts'))
+})

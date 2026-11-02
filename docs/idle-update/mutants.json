@@ -5007,7 +5007,7 @@
       "replace": "        c.tip = 0\n",
       "tests": [
         "test/delivery-proof.test.ts",
-        "test/canary-delivery.e2e.test.ts"
+        "test/canary-delivery.daemon.test.ts"
       ]
     },
     {
@@ -5018,7 +5018,7 @@
       "replace": "c.waiting.delete(messageId)",
       "tests": [
         "test/delivery-proof.test.ts",
-        "test/canary-delivery.e2e.test.ts"
+        "test/canary-delivery.daemon.test.ts"
       ]
     },
     {
@@ -5058,7 +5058,7 @@
       "find": "    writeToClaudeCode(...args).then(() => {\n",
       "replace": "    writeToClaudeCode(...args).catch(() => {}).then(() => {\n",
       "tests": [
-        "test/canary-delivery.e2e.test.ts"
+        "test/canary-delivery.daemon.test.ts"
       ]
     },
     {
@@ -5068,7 +5068,7 @@
       "find": "      if (handed) deliveryProof.noteHanded(handed.chatId, handed.messageId)\n",
       "replace": "",
       "tests": [
-        "test/canary-delivery.e2e.test.ts"
+        "test/canary-delivery.daemon.test.ts"
       ]
     },
     {
@@ -5078,7 +5078,7 @@
       "find": "{ cacheKey: `delivery:${chatId}` }",
       "replace": "{ cacheKey: `delivery:${chatId}`, callerAssistantId: ASSISTANT_ID }",
       "tests": [
-        "test/canary-delivery.e2e.test.ts"
+        "test/canary-delivery.daemon.test.ts"
       ]
     },
     {
@@ -5088,7 +5088,7 @@
       "find": "      liveReadsInFlight.add(chatId)\n      void pollChat(chatId).finally(() => liveReadsInFlight.delete(chatId))\n    }\n  }\n}\n\n/** Armed again",
       "replace": "    }\n  }\n}\n\n/** Armed again",
       "tests": [
-        "test/canary-delivery.e2e.test.ts"
+        "test/canary-delivery.daemon.test.ts"
       ]
     },
     {
@@ -5098,7 +5098,7 @@
       "find": "      undelivered: readUndelivered,\n",
       "replace": "",
       "tests": [
-        "test/canary-delivery.e2e.test.ts"
+        "test/canary-delivery.daemon.test.ts"
       ]
     },
     {
@@ -5119,7 +5119,7 @@
       "replace": "",
       "tests": [
         "test/delivery-proof.test.ts",
-        "test/canary-delivery.e2e.test.ts"
+        "test/canary-delivery.daemon.test.ts"
       ]
     },
     {

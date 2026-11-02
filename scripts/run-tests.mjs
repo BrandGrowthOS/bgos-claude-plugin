@@ -29,9 +29,14 @@ const files = readdirSync(testDir)
 
 const bunFiles = []
 const nodeFiles = []
+// Files that boot real daemons (named *.daemon.test.ts) run after the pool, for
+// the reason the real Chromium files below do: four daemons inside it pushed the
+// fixed 15 s limits in browser-profile-node-runtime past their time.
+const daemonFiles = []
 for (const file of files) {
   const source = readFileSync(join(repoRoot, file), 'utf8')
   if (/from\s+['"]bun:test['"]/.test(source)) bunFiles.push(file)
+  else if (file.endsWith('.daemon.test.ts')) daemonFiles.push(file)
   else nodeFiles.push(file)
 }
 
@@ -96,6 +101,10 @@ chromiumBatches.forEach((batch, i) => {
   const status = run(label, 'npx', ['tsx', '--test', '--test-concurrency=1', ...batch])
   if (status !== 0) nodeStatus = status
 })
+if (daemonFiles.length) {
+  const status = run('real daemon files, one at a time', 'npx', ['tsx', '--test', '--test-concurrency=1', ...daemonFiles])
+  if (status !== 0) nodeStatus = status
+}
 const bunStatus = bunFiles.length
   ? run('bun:test family', 'bun', ['test', ...bunFiles])
   : 0

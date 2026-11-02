@@ -1,7 +1,7 @@
 /**
  * The delivery proof's rules (lib/delivery-proof.ts): what counts as a message
  * the session is owed, and when one that has not reached it means something.
- * The daemon around it runs in test/canary-delivery.e2e.test.ts.
+ * The daemon around it runs in test/canary-delivery.daemon.test.ts.
  *
  * Run: npx tsx --test test/delivery-proof.test.ts
  */

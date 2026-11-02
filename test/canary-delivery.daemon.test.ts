@@ -13,7 +13,7 @@
  * is the same source with one fault patched into the copy, so no test hook
  * ships in the daemon.
  *
- * Run with: npx tsx --test test/canary-delivery.e2e.test.ts
+ * Run with: npx tsx --test test/canary-delivery.daemon.test.ts
  */
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'

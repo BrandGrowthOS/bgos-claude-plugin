@@ -30,6 +30,10 @@ The re-check of 084ffa1 found a third consumer of a verdict, the permission watc
 
 Left, on purpose, in DESIGN.md Residuals: the wall clock grace, a chat that was hidden and then shown, and a message the cursor passed unhanded.
 
+## The new test's cost to the rest of the suite
+
+Run in the pool, four daemons at a time, the new file pushed fixed 15 s limits elsewhere past their time: 10 failures in the node pool against 4 once it runs after the pool (same tree, same disk, nothing else running). It is `*.daemon.test.ts` now, in a stage of its own in `scripts/run-tests.mjs`.
+
 ## What it does not catch
 
 A session that discards a good card it was handed: the write resolves. See the stamp's Residual in DESIGN.md. Only asking the session reads that (Data's channel probe, Calls 27).
