@@ -100,6 +100,7 @@ function setup() {
   const tools = [
     { name: 'browser_navigate', description: '', inputSchema: { type: 'object', properties: { url: { type: 'string' } } } },
     { name: 'browser_click', description: '', inputSchema: { type: 'object', properties: { element: { type: 'string' } } } },
+    { name: 'browser_snapshot', description: '', inputSchema: { type: 'object', properties: {} } },
   ]
   const core: any = new BrowserHostCore({ pool, browserTools: tools, deviceLabel: 'box-1', gates, downloadStore: () => store })
   const ctx = { assistantId: 900, principal: 'owner', assistantName: 'Data' }
@@ -148,6 +149,25 @@ test('a click that starts a download is told in its own reply that the owner is 
     assert.match(status.text, /Downloads: dl_[0-9a-f]+ AuthKey_7KQ2X9\.p8, 17 B, waiting for your owner's answer/)
     assert.match(status.text, /Waiting for the owner about a download the page started, AuthKey_7KQ2X9\.p8/)
     assert.doesNotMatch(status.text, /sig=|SECRET/)
+  } finally {
+    s.done()
+  }
+})
+
+// Playwright's click returns about 500 ms after the click, and Chrome raises a download when the site's headers arrive.
+// A slower site raises it after the click's reply has gone, and the reply of the next call used to count only what
+// began during that call, so no reply ever named it (Windows CI, runs 41299037606 and 41498314780).
+test("a download Chrome raises after the click's reply has gone is told in the agent's next reply, and only once", async () => {
+  const s = setup()
+  try {
+    await s.call('browser_navigate', { url: 'https://files.example.com/' })
+    const click = await s.call('browser_click', { element: 'Download' })
+    assert.doesNotMatch(click.text, /### Download/, 'nothing was raised when the click answered')
+    s.engines[0].onDownload(fakeDownload(s.engines[0].heldDir, 'Late.p8'))
+    const next = await s.call('browser_snapshot')
+    assert.match(next.text, /### Download\n- Late\.p8 \(dl_[0-9a-f]+\): your owner is asked before it is saved/)
+    const after = await s.call('browser_snapshot')
+    assert.doesNotMatch(after.text, /### Download/, 'told once, not on every reply after it')
   } finally {
     s.done()
   }
@@ -283,8 +303,17 @@ test('a browser that fails to start leaves no download watcher behind; the next 
   }
 })
 
+test('a reply that cannot carry the line does not use the download up: the next one still names it', () => {
+  const core: any = new BrowserHostCore({ pool: {} as any, browserTools: [], deviceLabel: 'box-1' })
+  const rows = [{ fileName: 'x.p8', handle: 'dl_ab', state: 'asking' }]
+  let handedOut = 0
+  const slot = { downloads: { untold: () => (handedOut++ ? [] : rows) } }
+  assert.deepEqual(core._withDownloads(slot, { isError: true }), { isError: true })
+  assert.match(core._withDownloads(slot, { content: [] }).content[0].text, /x\.p8 \(dl_ab\): your owner is asked/)
+})
+
 test("the reply of a call whose download is held says held, not 'not saved'", () => {
   const core: any = new BrowserHostCore({ pool: {} as any, browserTools: [], deviceLabel: 'box-1' })
-  const result = core._withDownloads({ downloads: { since: () => [{ fileName: 'x.p8', handle: 'dl_ab', state: 'held' }] } }, 0, { content: [] })
+  const result = core._withDownloads({ downloads: { untold: () => [{ fileName: 'x.p8', handle: 'dl_ab', state: 'held' }] } }, { content: [] })
   assert.match(result.content[0].text, /^### Download\n- x\.p8 \(dl_ab\): held on this machine for your owner until the browser host next starts; you are not given it\.$/)
 })

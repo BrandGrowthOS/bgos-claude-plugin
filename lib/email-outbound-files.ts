@@ -937,7 +937,7 @@ function sameFileAs(a: OutboundStat, b: OutboundStat): boolean {
  * name the very file the handle holds. A parent folder swapped for a junction after the first realpath leads both the
  * lstat and the open into the new place, so the handle check agrees with itself; this second look does not.
  */
-async function stillLeadsTo(fs: OutboundFs, path: string, ctx: OutboundFileCtx, opened: OutboundStat): Promise<boolean> {
+async function stillLeadsTo(fs: OutboundFs, path: string, ctx: OutboundFileCtx, opened: OutboundStat, realCtx: OutboundFileCtx): Promise<boolean> {
   let again: string
   try {
     const given = expandHome(path, ctx.home ?? homedir())
@@ -945,7 +945,7 @@ async function stillLeadsTo(fs: OutboundFs, path: string, ctx: OutboundFileCtx, 
   } catch {
     return false
   }
-  if (lexical(again, ctx).kind !== 'ok') return false
+  if (lexical(again, realCtx).kind !== 'ok') return false
   let seen: OutboundStat
   try {
     seen = await fs.lstat(again)
@@ -953,6 +953,28 @@ async function stillLeadsTo(fs: OutboundFs, path: string, ctx: OutboundFileCtx, 
     return false
   }
   return seen.isFile() && sameFileAs(seen, opened)
+}
+
+/**
+ * A Windows home can contain an 8.3 name or a junction that realpath expands. Resolve the home only after the given
+ * file passed the lexical checks, and only when that file started below it but its real path no longer does. The
+ * real home must still contain the real file: a link outside the home gets no exemption from the word rules.
+ */
+async function resolvedHomeCtx(fs: OutboundFs, givenForm: string, real: string, ctx: OutboundFileCtx): Promise<OutboundFileCtx> {
+  const form = homeForm(real)
+  if (form === null) return ctx
+  for (const home of homesOf(ctx)) {
+    const h = homeForm(home)
+    if (h === null || !givenForm.startsWith(`${h}/`) || form.startsWith(`${h}/`)) continue
+    try {
+      const resolved = plainLocal(await fs.realpath(home as string))
+      const resolvedForm = homeForm(resolved)
+      if (resolvedForm !== null && form.startsWith(`${resolvedForm}/`)) return { ...ctx, home: resolved }
+    } catch {
+      // An unreadable home changes no rule: the real file is checked against the original context.
+    }
+  }
+  return ctx
 }
 
 /** One file, all four steps: the file with its bytes, or the one sentence that says why not. */
@@ -973,7 +995,8 @@ export async function readOutboundFile(path: unknown, ctx: OutboundFileCtx = {})
   } catch {
     return { ok: false, error: notFound }
   }
-  const resolved = lexical(real, ctx)
+  const realCtx = await resolvedHomeCtx(fs, given.form, real, ctx)
+  const resolved = lexical(real, realCtx)
   if (resolved.kind !== 'ok') return { ok: false, error: lexicalSentence(resolved.kind, path, true) }
   // Final pre push fix: the name the owner's card and the recipient show is the name of the file really read (a link
   // named invoice.pdf to passport.pdf shows passport.pdf; a short 8.3 or other cased spelling shows the real name).
@@ -1016,7 +1039,7 @@ export async function readOutboundFile(path: unknown, ctx: OutboundFileCtx = {})
       return { ok: false, error: changed }
     }
     // Final pre push fix: and the path, resolved again, still leads to this very file through no refused place.
-    if (!(await stillLeadsTo(fs, path, ctx, opened))) return { ok: false, error: changed }
+    if (!(await stillLeadsTo(fs, path, ctx, opened, realCtx))) return { ok: false, error: changed }
     if (opened.size > AGENT_EMAIL_OUTBOUND_MAX_BYTES) return { ok: false, error: tooBig(opened.size) }
     // One byte past the cap, so a file that grew after the stat is caught too.
     const buffer = new Uint8Array(Math.min(opened.size, AGENT_EMAIL_OUTBOUND_MAX_BYTES) + 1)

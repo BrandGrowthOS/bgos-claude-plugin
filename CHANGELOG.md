@@ -19,6 +19,7 @@ Not caught yet: a session that receives a message and silently ignores it, when 
 - **A failed build goes back.** The agent it failed on rolls the install back, marks the version bad on that computer and restarts onto the old build: the canary always, any other agent once. A rollback also takes the failed build's `gitCommitSha` out of the plugin entry.
 - **Two silences take the install off the build as well.** An agent on an older build that reads the mark puts the shared install back on its own build, with no restart, so a restart cannot land on a build already marked bad. In a mixed fleet the install ends on the newest good build running on that computer. A click, a push, a watcher job or a clone's pull is refused on a version held there (`version_held_bad`); a restart a person asks for stays open. To lift a hold, remove `~/.bgos-agent/idle-update/<version>/`.
 - **An agent running 0.84 or older needs one restart to load this.** By a person, the watcher's sweep or an owning service. From then on it updates itself.
+- **A download Chrome raises late is still told to the agent.** Chrome raises a download on its own clock. If it landed after the click's reply had gone, no reply ever named it, and only `hoai_browser_status` showed it. The agent's next reply names it now, once. `test/hoai-browser-host.downloads.test.ts`.
 - Tests: `test/idle-update*.test.ts`, `test/update-rpc.own-launcher.test.ts`, `test/self-update.idle-rollback.test.ts`, with the mutants in `docs/idle-update/mutants.json` and the rig in `docs/idle-update/rig/`.
 
 ## 0.84.0 (2026-11-01)
