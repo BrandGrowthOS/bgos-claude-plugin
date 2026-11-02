@@ -16,8 +16,8 @@ import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { agentServiceNamesFor, buildLaunchRecipe } from '../lib/agent-inventory.mjs'
-import { LIMIT_NOTICE_FILE_NAME, LIMIT_WATCH_FILE_NAME, runLimitPass } from '../lib/watcher-limit.mjs'
+import { agentServiceNamesFor, buildLaunchRecipe, listAgents } from '../lib/agent-inventory.mjs'
+import { LIMIT_NOTICE_FILE_NAME, LIMIT_WATCH_FILE_NAME, limitFreeObservation, runLimitPass } from '../lib/watcher-limit.mjs'
 import { limitNoticeText, parseLimitNotice } from '../lib/limit-screen.mjs'
 import { supervisorFileBody } from '../bin/hoai-core.mjs'
 import { memoryFs, type MemoryFs } from './helpers/memory-fs.ts'
@@ -1031,6 +1031,29 @@ test('Windows: while the hour gate holds the key, the launcher is not proven aga
   clock.set(SWAP_AT + 11 * MIN)
   assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'waiting')
   assert.equal(queries, 1, 'only the listing reads the table; the key path proof waits for the hour')
+})
+
+test('Windows: a checkup inside the hour still proves the console, so the owner is told Restart now, not "held"', async () => {
+  const r = winRig()
+  const fs = agentFs(r)
+  writeTranscript(fs, r, [limitRecord()])
+  fs.touch(r.credentials, SWAP_AT)
+  const clock = fakeClock(SWAP_AT + MIN)
+  const helper = fakeHelper(() => picker()) // the Enter "does not take": the picker stays
+  let table = processTable(HOAI_LAUNCHER)
+  const execSync = (file: string, args: string[]) => table(file, args)
+  const { ctx } = ctxFor(r, fs, clock, helper.exec, { execSync })
+  await runLimitPass(ctx)
+  assert.equal(helper.state.pressed, 1)
+  // Twenty minutes later another program has pid 4242, and the owner asks for a checkup.
+  table = processTable('C:\\Windows\\System32\\notepad.exe')
+  clock.set(SWAP_AT + 21 * MIN)
+  const rows = listAgents({ home: r.home, env: ctx.env, platform: r.platform, fs, pidAlive: ctx.pidAlive, execSync, now: clock.now(), uid: 501 })
+  const row = rows.find((one: any) => one.assistantId === '912')
+  const seen: any = limitFreeObservation(row, ctx)
+  assert.equal(seen.usageBack, true)
+  assert.deepEqual(seen.keyPath, { ok: false, reason: 'no_console' }, 'not "a key path, held for the hour"')
+  assert.equal(helper.state.pressed, 1)
 })
 
 test('Windows: the hour ending between the look and the press never lets an unproven console be read', async () => {
