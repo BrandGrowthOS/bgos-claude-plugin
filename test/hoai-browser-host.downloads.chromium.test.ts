@@ -145,7 +145,7 @@ test(
       t.diagnostic(`the deny download was told in ${inClickReply ? "the click's own reply" : 'the next reply'}`)
       const toldDeny = inClickReply ? denied.clicked.text : (await call('browser_snapshot')).text
       assert.match(toldDeny, new RegExp(`### Download\\n- ${escapeRe(CASES.deny.name)} \\(dl_[0-9a-f]+\\): (your owner is asked|not saved)`), `the agent is told of the download by its next reply at the latest:\n${toldDeny}`)
-      assert.doesNotMatch(denied.clicked.text, /Downloaded file/, 'never the Playwright line that hands the agent a path')
+      assert.doesNotMatch(`${denied.clicked.text}\n${toldDeny}`, /Downloaded file/, 'never the Playwright line that hands the agent a path')
       await waitFor(async () => /Deny_\w+\.p8.*your owner said no/.test(await status()), async () => `status reads the Deny:\n${await status()}`)
       assert.deepEqual(markerFiles('deny'), [], `a denied download leaves no file: ${where()}`)
 

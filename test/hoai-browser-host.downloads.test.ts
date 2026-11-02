@@ -303,6 +303,25 @@ test('a browser that fails to start leaves no download watcher behind; the next 
   }
 })
 
+test("the owner's own download never reaches the agent's replies, and the agent's next one still does", async () => {
+  const s = setup()
+  try {
+    await s.call('browser_navigate', { url: 'https://files.example.com/' })
+    const slot = s.pool.peek(s.ctx)
+    slot.ownerInputLease = { pending: false }
+    s.engines[0].onDownload(fakeDownload(s.engines[0].heldDir, 'tax-return-private.pdf'))
+    slot.ownerInputLease = null
+    const next = await s.call('browser_snapshot')
+    assert.doesNotMatch(next.text, /tax-return|### Download/, 'the owner asked for that file, and the agent did not')
+    s.engines[0].onDownload(fakeDownload(s.engines[0].heldDir, 'Late.p8'))
+    const after = await s.call('browser_snapshot')
+    assert.match(after.text, /### Download\n- Late\.p8 \(dl_[0-9a-f]+\): your owner is asked/)
+    assert.doesNotMatch(after.text, /tax-return/)
+  } finally {
+    s.done()
+  }
+})
+
 test('a reply that cannot carry the line does not use the download up: the next one still names it', () => {
   const core: any = new BrowserHostCore({ pool: {} as any, browserTools: [], deviceLabel: 'box-1' })
   const rows = [{ fileName: 'x.p8', handle: 'dl_ab', state: 'asking' }]
