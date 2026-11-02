@@ -438,6 +438,16 @@ test('the boot warning names an elimination start with no home, and only that', 
   }
 })
 
+test('the moved home warning names the switch the way the app does: Start with Windows on Windows, Keep agents running on Mac and Linux', () => {
+  const said = (platform: string) => formatHomeMovedWarning({ previousHomeDir: STRAY, confirmedHomeDir: HOME, assistantId: '1040', platform })
+  assert.ok(said('win32').includes('a Start with Windows recipe'), said('win32'))
+  assert.equal(said('win32').includes('Keep agents running'), false, 'the old name is gone on Windows')
+  for (const platform of ['linux', 'darwin']) {
+    assert.ok(said(platform).includes('a Keep agents running recipe'), said(platform))
+    assert.equal(said(platform).includes('Start with Windows'), false, `${platform} never reads Windows text`)
+  }
+})
+
 test('a pinned start that moves an unconfirmed home says so, naming both folders and the fix', () => {
   // The agent paired in its pinned folder but also relaunched from an
   // unpinned one, which 0.64.3 recorded: the pinned start replaces it, and the

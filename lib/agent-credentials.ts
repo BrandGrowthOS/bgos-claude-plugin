@@ -773,11 +773,13 @@ export function formatHomeMovedWarning(input: {
     normalizeHomeDir(confirmed, { platform: input.platform })
   if (same) return ''
   const id = str(input.assistantId).trim() || '<id>'
+  // The switch's name as the app shows it: Start with Windows on Windows, Keep agents running elsewhere.
+  const switchName = (input.platform ?? process.platform) === 'win32' ? 'Start with Windows' : 'Keep agents running'
   return (
     `this agent's home moved from ${previous} (unconfirmed, recorded by plugin 0.64.3 or ` +
     `earlier) to ${confirmed} (this daemon's pinned folder). A session started in ${previous} ` +
-    `with no pin is now refused as this agent; if the agent also runs there (a Keep agents ` +
-    `running recipe, a hoai started by hand), pin that folder: \`echo ${id} > ${FOLDER_PIN_FILE}\`.`
+    `with no pin is now refused as this agent; if the agent also runs there (a ${switchName} ` +
+    `recipe, a hoai started by hand), pin that folder: \`echo ${id} > ${FOLDER_PIN_FILE}\`.`
   )
 }
 

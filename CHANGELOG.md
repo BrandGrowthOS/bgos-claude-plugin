@@ -2,6 +2,10 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.81.1 (2026-11-02)
+
+- On a Windows computer the plugin names the switch the way the app does now, Start with Windows (it was Keep agents running), and points to where it is: the computer's card in Integrations, not Settings, Computers. This covers the once-only line a Windows daemon logs when it stands down from installing a supervisor, the launch step of create_agent, and the warning when an agent's home moves. A Mac and Linux keep today's words. Words only: no behaviour, token or reason code changed.
+
 ## 0.81.0 (2026-10-31)
 
 - A deleted agent's computer cleans up after it: once the server confirms the agent is gone, the computer stops it, removes its auto start and archives its folder (never deletes a file). Other agents on the machine are untouched, and a replayed notice does nothing new.
