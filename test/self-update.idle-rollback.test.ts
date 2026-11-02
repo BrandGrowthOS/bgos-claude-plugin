@@ -15,9 +15,9 @@
  */
 import { after, afterEach, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { EMPTY_AUTO_UPDATE_STATE, initializeSelfUpdater, loadSharedUpdateSafety, saveAutoUpdateState, type CommandRunner } from '../lib/self-update'
@@ -27,7 +27,7 @@ const COMMIT_NEW = 'b'.repeat(40)
 const made: string[] = []
 
 function scratch(prefix: string): string {
-  // os.tmpdir() follows TEMP/TMP/TMPDIR; it never falls back to the working tree.
+  // os.tmpdir() follows TEMP/TMP/TMPDIR; it does not fall back to the working tree.
   const dir = mkdtempSync(join(tmpdir(), prefix))
   made.push(dir)
   return dir
@@ -40,11 +40,24 @@ afterEach(() => {
 
 // Litter guard: every folder this file made must be outside the repo working tree and gone when the file ends.
 after(() => {
-  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-  const inTree = made.filter((dir) => {
-    const rel = relative(repoRoot, resolve(dir))
-    return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
-  })
+  const real = (p: string) => {
+    try {
+      return realpathSync(p)
+    } catch {
+      return resolve(p)
+    }
+  }
+  const inside = (child: string, parent: string) => {
+    const rel = relative(parent, child)
+    return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
+  }
+  const repoRoot = real(resolve(dirname(fileURLToPath(import.meta.url)), '..'))
+  // A checkout that itself sits under the OS temp folder cannot tell its tree from the temp folder, so only the removal is checked there.
+  // A temp folder that IS the checkout (or sits inside it) is exactly the litter case, so it is not excused.
+  const tempRoot = real(tmpdir())
+  const checkoutInTemp = inside(repoRoot, tempRoot) && !inside(tempRoot, repoRoot)
+  // The folders are gone by now, so the folder that held them (tmpdir()) is what gets resolved.
+  const inTree = checkoutInTemp ? [] : made.filter((dir) => inside(join(real(dirname(dir)), basename(dir)), repoRoot))
   const left = made.filter((dir) => existsSync(dir))
   assert.deepEqual(inTree, [], 'scratch folders were created inside the repo working tree')
   assert.deepEqual(left, [], 'scratch folders were left behind')

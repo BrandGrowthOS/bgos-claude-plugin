@@ -19,7 +19,7 @@ only if a test failed before its rmSync. Left alone, not asked.)
 
 ## After
 
-Scratch folders come from `fs.mkdtempSync(path.join(os.tmpdir(), prefix))`, which never falls back
+Scratch folders come from `fs.mkdtempSync(path.join(os.tmpdir(), prefix))`, which does not fall back
 to the working tree. An `afterEach` removes them after every test, passed or failed. An `after`
 guard fails the file if any scratch folder was made inside the repo tree or still exists.
 
