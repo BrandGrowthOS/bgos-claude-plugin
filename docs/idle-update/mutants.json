@@ -5136,7 +5136,7 @@
       "id": "delivery-gone-from-server",
       "rule": "41 a message the server no longer returns stops waiting",
       "file": "lib/delivery-proof.ts",
-      "find": "      for (const id of c.waiting.keys()) if (!returned.has(id)) c.waiting.delete(id)\n",
+      "find": "        for (const id of c.waiting.keys()) if (!returned.has(id)) c.waiting.delete(id)\n",
       "replace": "",
       "tests": [
         "test/delivery-proof.test.ts"
@@ -5156,8 +5156,8 @@
       "id": "delivery-verdict-settled-poll",
       "rule": "41 a permission verdict the poll consumed is settled",
       "file": "server.ts",
-      "find": "        deliveryProof.noteSettled(msg.message.id)\n",
-      "replace": "",
+      "find": "      if (isPermissionVerdict) {\n        deliveryProof.noteSettled(msg.message.id)\n",
+      "replace": "      if (isPermissionVerdict) {\n",
       "tests": [
         "test/idle-update.wiring.test.ts"
       ]
@@ -5188,6 +5188,36 @@
       "file": "server.ts",
       "find": "    if (deliveryProof.epoch() !== epoch || !lockHeld || !channelArmed) return\n",
       "replace": "    if (!lockHeld || !channelArmed) return\n",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "delivery-full-page",
+      "rule": "41 a full page says nothing about what is below it",
+      "file": "lib/delivery-proof.ts",
+      "find": "      if (rows.length < READ_PAGE) {\n",
+      "replace": "      {\n",
+      "tests": [
+        "test/delivery-proof.test.ts"
+      ]
+    },
+    {
+      "id": "delivery-verdict-settled-watch",
+      "rule": "41 a typed verdict the permission watch consumed is settled",
+      "file": "server.ts",
+      "find": "      // Update last seen so we don't re-process this message\n      deliveryProof.noteSettled(msg.message.id)\n",
+      "replace": "      // Update last seen so we don't re-process this message\n",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "delivery-verdict-settled-refused",
+      "rule": "41 a typed verdict the permission watch refused is settled",
+      "file": "server.ts",
+      "find": "        deliveryProof.noteSettled(msg.message.id)\n        advanceChatCursor(chatId, msg.message.id)\n        return null\n",
+      "replace": "        advanceChatCursor(chatId, msg.message.id)\n        return null\n",
       "tests": [
         "test/idle-update.wiring.test.ts"
       ]

@@ -4660,12 +4660,14 @@ async function waitForVerdict(
               `the hard floor holds this request, so only a tap on its card can allow it`,
           )
         }
+        deliveryProof.noteSettled(msg.message.id)
         advanceChatCursor(chatId, msg.message.id)
         return null
       }
       if (!choice) return null
 
       // Update last seen so we don't re-process this message
+      deliveryProof.noteSettled(msg.message.id)
       advanceChatCursor(chatId, msg.message.id)
 
       return choice

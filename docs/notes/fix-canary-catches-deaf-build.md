@@ -22,11 +22,13 @@ Stacked on #291 (`fix/idle-agent-loads-staged-update`), merges after it. Ships a
 
 ## From the fresh review (commit efc89cb)
 
-Fixed: the reply reminder counted as delivering the message it names; any assistant row cleared a waiting message, including the daemon's own `/status` answer (the rule is gone: the poll's delta branch hands every row over anyway); a permission verdict the daemon consumed waited for ever; a read in flight across a re-arm; a row or chat gone from the server waited for ever; the poll told only after the whole sweep; a stale validator after a re-arm; reads with no end under an expired login; `send` dropping its other arguments; the history test passing through restart recovery; two timing assertions.
+Fixed: the reply reminder counted as delivering the message it names; any assistant row cleared a waiting message, including the daemon's own `/status` answer (the rule is gone: the poll's delta branch hands over every row above the cursor, and one the cursor passed unhanded is a real loss, in the Residuals); a permission verdict the daemon consumed waited for ever; a read in flight across a re-arm; a row or chat gone from the server waited for ever; the poll told only after the whole sweep; a stale validator after a re-arm; reads with no end under an expired login; `send` dropping its other arguments; the history test passing through restart recovery; two timing assertions.
 
 Added from the review's Minor 7: a card the host would silently drop no longer counts as handed.
 
-Left, on purpose: a wall clock grace, so a sleep can cost one broken hold or one missed stamp (no false verdict, the deadline already takes sleep off); a chat whose first read came back empty and that is later admitted can read its history as new. It needs a chat the backend hides from this agent and then shows it, and costs a hold.
+The re-check of 084ffa1 found a third consumer of a verdict, the permission watch, now settled as well, and a message off the end of a full page read as gone, now read only off a short page.
+
+Left, on purpose, in DESIGN.md Residuals: the wall clock grace, a chat that was hidden and then shown, and a message the cursor passed unhanded.
 
 ## What it does not catch
 

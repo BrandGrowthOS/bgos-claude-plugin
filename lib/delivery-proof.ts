@@ -41,6 +41,9 @@ const SETTLED_MAX = 4096
  */
 const CARD_ENVELOPE = ['chat_id', 'message_id', 'user', 'user_id', 'assistant_id', 'ts'] as const
 
+/** The route's page when no limit is asked for: a page this long may have left older rows off its end. */
+const READ_PAGE = 50
+
 /** Cards that name a message and do not deliver it: a reminder of one, the answer to the agent's own card. */
 const NOT_A_DELIVERY = new Set(['reply_overdue', 'button_clicked', 'ask_answered', 'ask_withdrawn'])
 
@@ -128,9 +131,11 @@ export function createDeliveryProof(opts: { now: () => number; graceMs: number }
         c.tip = Math.max(newest, c.handed)
         return
       }
-      // This read began at or below every message waiting, so one it did not return is gone from the server.
-      const returned = new Set(rows.map((r) => r.id))
-      for (const id of c.waiting.keys()) if (!returned.has(id)) c.waiting.delete(id)
+      // This read began at or below every message waiting, so one a short page did not return is gone from the server.
+      if (rows.length < READ_PAGE) {
+        const returned = new Set(rows.map((r) => r.id))
+        for (const id of c.waiting.keys()) if (!returned.has(id)) c.waiting.delete(id)
+      }
       for (const row of rows) {
         // At or below the tip it has been looked at already, and a route that ignores the cursor adds nothing.
         if (row.id <= c.tip || !row.owed || row.id <= c.handed || settled.has(row.id)) continue

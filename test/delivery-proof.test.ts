@@ -134,6 +134,18 @@ describe('when a message has waited too long', () => {
     assert.deepEqual(p.waitingChats(), [])
   })
 
+  test('a full page says nothing about what is below it: a message off the end of 50 rows still waits', () => {
+    const { clock, p } = proof()
+    p.noteRead('7', [])
+    p.noteRead('7', [owed(51)])
+    const fifty = Array.from({ length: 50 }, (_, i) => notOwed(100 + i))
+    p.noteRead('7', fifty)
+    clock.now += GRACE
+    assert.equal(p.stuck()?.messageId, 51)
+    p.noteRead('7', fifty.slice(0, 49))
+    assert.equal(p.stuck(), null, 'a short page is the whole of what is above the floor')
+  })
+
   test('a chat that left what this daemon reads stops counting, and comes back with a fresh tip', () => {
     const { clock, p } = proof()
     p.noteRead('7', [])

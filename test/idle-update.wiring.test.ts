@@ -328,6 +328,17 @@ test('a permission verdict the daemon consumed is settled on both lanes that rea
   assert.match(server, /if \(isPermissionVerdict\) \{\n\s*deliveryProof\.noteSettled\(view\.messageId\)\n\s*return\n\s*\}/, 'the stream')
 })
 
+test('the permission watch settles every typed verdict it moves the cursor past, or the poll never sees it to settle it', () => {
+  const at = server.indexOf('verdictFrom')
+  assert.ok(at >= 0, 'the watch moved')
+  const advances = [...server.matchAll(/^(\s*)advanceChatCursor\(chatId, msg\.message\.id\)$/gm)]
+  assert.ok(advances.length >= 2, `the watch's two advances: ${advances.length}`)
+  for (const advance of advances) {
+    const before = server.slice(Math.max(0, advance.index! - 120), advance.index!)
+    assert.match(before, /deliveryProof\.noteSettled\(msg\.message\.id\)\n$/, 'settled right before its cursor moves')
+  }
+})
+
 test('a re-arm forgets the proof and its validators: what another holder delivered is not this daemon\'s, and a 304 must not eat a first read', () => {
   const at = server.indexOf('function resetDeliveryProof(): void {')
   assert.ok(at >= 0, 'resetDeliveryProof is gone')
