@@ -225,6 +225,15 @@ test('usage back but no way to send a key here (no tmux): no key, the owner gets
   assert.deepEqual([d.act, d.reason], ['report', 'no_key_path:no_tmux'])
 })
 
+test('a clock that is not a number never opens the hour gate: wait, nothing read, no key', () => {
+  for (const now of [Number.NaN, undefined, Number.POSITIVE_INFINITY]) {
+    for (const lastEnterAtMs of [null, T0]) {
+      const d = decideLimitFree({ now: now as any, limit: LIMIT, usage: BACK, lastEnterAtMs, keyPath: TMUX, screen: SAFE })
+      assert.deepEqual([d.act, d.reason], ['wait', 'no_clock'], `now ${now}, last Enter ${lastEnterAtMs}`)
+    }
+  }
+})
+
 test('a second Enter inside the hour is refused, with the time the next one is allowed; at the hour it is allowed', () => {
   const pressedAt = T0 + 10 * MIN
   const held = decideLimitFree({ now: pressedAt + 59 * MIN, limit: LIMIT, usage: BACK, lastEnterAtMs: pressedAt, keyPath: TMUX, screen: SAFE })
