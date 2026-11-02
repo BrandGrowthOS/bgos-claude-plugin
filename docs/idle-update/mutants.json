@@ -4937,6 +4937,169 @@
       "tests": [
         "test/idle-update.wiring.test.ts"
       ]
+    },
+    {
+      "id": "delivery-live-reads-it",
+      "rule": "41 a message left undelivered is not a live build",
+      "file": "lib/idle-update.mjs",
+      "find": "    deaf !== true &&\n    undelivered !== true\n",
+      "replace": "    deaf !== true\n",
+      "tests": [
+        "test/idle-update.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "delivery-stamp-reads-it",
+      "rule": "41 the canary stops stamping while a message waits",
+      "file": "lib/idle-update.mjs",
+      "find": "        undelivered: read(deps.undelivered, false),\n      },\n      d,\n    )",
+      "replace": "        undelivered: false,\n      },\n      d,\n    )",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "delivery-validation-reads-it",
+      "rule": "41 a build with a message undelivered does not validate",
+      "file": "lib/idle-update.mjs",
+      "find": "      undelivered: read(deps.undelivered, false),\n      loginExpired,",
+      "replace": "      undelivered: false,\n      loginExpired,",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "delivery-stamp-asks",
+      "rule": "41 the server is asked what waits while the canary stamps",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (read(deps.active, false) !== true) return\n    read(deps.askDeliveryRead, null)\n",
+      "replace": "    if (read(deps.active, false) !== true) return\n",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "delivery-validation-asks",
+      "rule": "41 the server is asked what waits while a build validates",
+      "file": "lib/idle-update.mjs",
+      "find": "  const validate = () => {\n    read(deps.askDeliveryRead, null)\n",
+      "replace": "  const validate = () => {\n",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "delivery-grace",
+      "rule": "41 a message has its grace",
+      "file": "lib/delivery-proof.ts",
+      "find": "if (waitedMs >= opts.graceMs && ",
+      "replace": "if (",
+      "tests": [
+        "test/delivery-proof.test.ts"
+      ]
+    },
+    {
+      "id": "delivery-first-read-tip",
+      "rule": "41 what was there on arrival is history",
+      "file": "lib/delivery-proof.ts",
+      "find": "        c.tip = Math.max(newest, c.handed)\n        return\n",
+      "replace": "        c.tip = 0\n",
+      "tests": [
+        "test/delivery-proof.test.ts",
+        "test/canary-delivery.e2e.test.ts"
+      ]
+    },
+    {
+      "id": "delivery-later-clears",
+      "rule": "41 a later message through clears an older one",
+      "file": "lib/delivery-proof.ts",
+      "find": "for (const id of c.waiting.keys()) if (id <= messageId) c.waiting.delete(id)",
+      "replace": "c.waiting.delete(messageId)",
+      "tests": [
+        "test/delivery-proof.test.ts",
+        "test/canary-delivery.e2e.test.ts"
+      ]
+    },
+    {
+      "id": "delivery-settled",
+      "rule": "41 a row the daemon finished itself never waits",
+      "file": "lib/delivery-proof.ts",
+      "find": "row.id <= c.handed || settled.has(row.id)",
+      "replace": "row.id <= c.handed",
+      "tests": [
+        "test/delivery-proof.test.ts"
+      ]
+    },
+    {
+      "id": "delivery-owner-word",
+      "rule": "41 while the owner's word is awaited a plain row proves nothing",
+      "file": "lib/delivery-proof.ts",
+      "find": "  if (ctx.ownerWordAwaited) return false\n",
+      "replace": "",
+      "tests": [
+        "test/delivery-proof.test.ts"
+      ]
+    },
+    {
+      "id": "delivery-slash",
+      "rule": "41 a slash command the daemon answers is not owed",
+      "file": "lib/delivery-proof.ts",
+      "find": "  if (isSlashCommandPayload(message as Parameters<typeof isSlashCommandPayload>[0])) return false\n",
+      "replace": "",
+      "tests": [
+        "test/delivery-proof.test.ts"
+      ]
+    },
+    {
+      "id": "delivery-handed-resolved",
+      "rule": "41 a card counts as handed only once its write resolved",
+      "file": "server.ts",
+      "find": "    writeToClaudeCode(message).then(() => {\n",
+      "replace": "    writeToClaudeCode(message).catch(() => {}).then(() => {\n",
+      "tests": [
+        "test/canary-delivery.e2e.test.ts"
+      ]
+    },
+    {
+      "id": "delivery-handed-noted",
+      "rule": "41 a hand-off is noted",
+      "file": "server.ts",
+      "find": "      if (handed) deliveryProof.noteHanded(handed.chatId, handed.messageId)\n",
+      "replace": "",
+      "tests": [
+        "test/canary-delivery.e2e.test.ts"
+      ]
+    },
+    {
+      "id": "delivery-read-names-no-agent",
+      "rule": "41 the proof's read never names the agent",
+      "file": "server.ts",
+      "find": "{ cacheKey: `delivery:${chatId}` }",
+      "replace": "{ cacheKey: `delivery:${chatId}`, callerAssistantId: ASSISTANT_ID }",
+      "tests": [
+        "test/canary-delivery.e2e.test.ts"
+      ]
+    },
+    {
+      "id": "delivery-waiting-reads-now",
+      "rule": "41 a message waiting has its chat read at once",
+      "file": "server.ts",
+      "find": "    liveReadsInFlight.add(chatId)\n    void pollChat(chatId).finally(() => liveReadsInFlight.delete(chatId))\n  }\n}\n\n/** A message the server holds",
+      "replace": "  }\n}\n\n/** A message the server holds",
+      "tests": [
+        "test/canary-delivery.e2e.test.ts"
+      ]
+    },
+    {
+      "id": "delivery-wired",
+      "rule": "41 the controller reads the proof",
+      "file": "server.ts",
+      "find": "      undelivered: readUndelivered,\n",
+      "replace": "",
+      "tests": [
+        "test/canary-delivery.e2e.test.ts"
+      ]
     }
   ]
 }

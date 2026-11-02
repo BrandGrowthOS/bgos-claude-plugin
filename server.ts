@@ -115,6 +115,7 @@ import {
   scaledDurations,
   sessionWakePending,
 } from './lib/idle-update.mjs'
+import { cardMessage, createDeliveryProof, isOwedRow } from './lib/delivery-proof.ts'
 import {
   decideEnrolment,
   enrolmentHoldFileName,
@@ -1091,6 +1092,11 @@ const IDLE_UPDATE_DURATIONS = scaledDurations(scaleFromEnv(process.env.BGOS_IDLE
 // ~/.bgos-agent/idle-update/: the lease, the canary and the versions held bad, shared by every agent of this HOME.
 const IDLE_UPDATE_MACHINE_DIR = pathJoin(homedir(), '.bgos-agent', IDLE_UPDATE_DIR_NAME)
 let idleUpdateError: { code: string; message: string; at: string } | null = null
+// What the server holds against what reached the session, read only while a build is being proved (lib/delivery-proof.ts).
+const deliveryProof = createDeliveryProof({ now: Date.now, graceMs: IDLE_UPDATE_DURATIONS.deliveryGraceMs })
+let deliveryReadAtMs = 0
+let deliveryReadRunning = false
+let undeliveredLoggedId: number | null = null
 // A heartbeat POST carrying THIS build's version that resolved (bgosCall throws on a refusal): the new build
 // reached the backend. A status-only beat carries no version and proves nothing about the build.
 let heartbeatOkAtMs: number | null = null
@@ -2412,6 +2418,7 @@ function consumedAsLoginCode(input: {
   })
   if (mustDropMessage(outcome)) {
     log(`/login: a ${outcome} code arrived via ${input.via} (chat ${input.chatId}); not forwarded`)
+    deliveryProof.noteSettled(Number(input.messageId))
   }
   return mustDropMessage(outcome)
 }
@@ -6570,6 +6577,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
             asAssistantId: Number(ASSISTANT_ID),
           })
           rememberReturnedMessageId(result, rememberForwarded)
+          rememberReturnedMessageId(result, deliveryProof.noteSettled)
           log(`meeting reply sent via reply tool to meeting ${meetingIdForChat} (chat ${resolvedChatId})`)
           clearInbound(resolvedChatId)
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
@@ -7666,6 +7674,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
           },
         )
         rememberReturnedMessageId(result, rememberForwarded)
+        rememberReturnedMessageId(result, deliveryProof.noteSettled)
         // Clear any pending reply-overdue tracker for the side-thread chat
         //, the peer's inbound was just responded to, so the 2-min timer
         // should not fire for it.
@@ -7787,6 +7796,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       try {
         const result = await bgosPost(`meetings/${meeting_id}/messages`, body)
         rememberReturnedMessageId(result, rememberForwarded)
+        rememberReturnedMessageId(result, deliveryProof.noteSettled)
         const ctx = meetingContexts.get(Number(meeting_id))
         if (ctx?.chatId != null) clearInbound(String(ctx.chatId))
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
@@ -12323,6 +12333,72 @@ async function pollAllChats(): Promise<void> {
   for (const chatId of monitoredChatIds) {
     await pollChat(chatId)
   }
+}
+
+/**
+ * Asked at each poll while a build is being proved (lib/idle-update.mjs): what does the server hold for this agent?
+ * Never names the agent. A chat read that does is the one the backend records as a wake handed off (chat.controller.ts
+ * noteHandedOff), and this read hands nothing over, so a deaf build would mark its wakes received. The boot sweeps read
+ * the same way. Groups and meetings stay out: a group's row may be one the socket rightly never sent, and the poll
+ * would hand it over early.
+ */
+function askDeliveryRead(): void {
+  const at = Date.now()
+  if (deliveryReadRunning || at - deliveryReadAtMs < IDLE_UPDATE_DURATIONS.deliveryReadMs) return
+  if (!lockHeld || !channelArmed || updateDrainMode || startupCompleteAtMs === null) return
+  deliveryReadAtMs = at
+  deliveryReadRunning = true
+  void readWhatWaits()
+    .catch((err) => log(`delivery read failed: ${err}`))
+    .finally(() => {
+      deliveryReadRunning = false
+    })
+}
+
+async function readWhatWaits(): Promise<void> {
+  const ownerWordAwaited = () => pendingPermissions.size > 0
+  for (const chatId of monitoredChatIds) {
+    if (groupChatIds.has(chatId) || meetingIdByChatId.has(chatId)) continue
+    let raw: unknown
+    try {
+      raw = await bgosGet(deliveryProof.readPath(chatId, USER_ID), { cacheKey: `delivery:${chatId}` })
+    } catch {
+      // A read that failed says nothing about this chat. An outage is read off the backend's own calls.
+      continue
+    }
+    if (!lockHeld || !channelArmed) return
+    if (isNotModified(raw)) continue
+    const messages = (raw as ChatHistoryResponse).messages ?? []
+    deliveryProof.noteRead(
+      chatId,
+      messages.map((m) => ({
+        id: m.message.id,
+        owed: isOwedRow(m.message as Parameters<typeof isOwedRow>[0], pollAgentOriginOf(m), { assistantId: ASSISTANT_ID, ownerWordAwaited: ownerWordAwaited() }),
+        answer: m.message.sender === 'assistant',
+      })),
+    )
+  }
+  // A frame the socket missed waits for the next sweep, 5 minutes on a healthy socket and a day on the stream. Read it
+  // now, so a healthy build delivers it inside the grace. The poll's own dedupe makes this safe.
+  for (const chatId of deliveryProof.waitingChats()) {
+    if (!monitoredChatIds.includes(chatId) || liveReadsInFlight.has(chatId)) continue
+    liveReadsInFlight.add(chatId)
+    void pollChat(chatId).finally(() => liveReadsInFlight.delete(chatId))
+  }
+}
+
+/** A message the server holds that never reached the session, past its grace. Named once in the log. */
+function readUndelivered(): boolean {
+  if (!lockHeld || !channelArmed || updateDrainMode) return false
+  const stuck = deliveryProof.stuck()
+  if (stuck && stuck.messageId !== undeliveredLoggedId) {
+    undeliveredLoggedId = stuck.messageId
+    log(
+      `WARN message ${stuck.messageId} in chat ${stuck.chatId} not delivered to the session ` +
+        `${Math.round(stuck.waitedMs / 1000)}s after the server showed it: this build does not count as live until one gets through`,
+    )
+  }
+  return stuck !== null
 }
 
 // ── Realtime WS subscription ─────────────────────────────────────────────────
@@ -17890,6 +17966,14 @@ async function main(): Promise<void> {
   const sawStdinEofDuringStartup = watchStdinEof(process.stdin)
 
   const transport = new StdioServerTransport()
+  // The one place a card counts as handed to the session: the write to Claude Code itself, behind every hold and gate,
+  // once it resolved (lib/delivery-proof.ts). A card held, dropped on the way or failed never gets here.
+  const writeToClaudeCode = transport.send.bind(transport)
+  transport.send = (message) =>
+    writeToClaudeCode(message).then(() => {
+      const handed = cardMessage(message as { method?: string; params?: unknown })
+      if (handed) deliveryProof.noteHanded(handed.chatId, handed.messageId)
+    })
   await mcp.connect(transport)
   log('MCP server connected over stdio')
 
@@ -18239,6 +18323,8 @@ async function main(): Promise<void> {
       heartbeatOkAtMs: () => heartbeatOkAtMs,
       beaconAtMs: () => beaconTouchedAtMs,
       deaf: () => currentUnresponsiveError(Date.now()) !== null,
+      undelivered: readUndelivered,
+      askDeliveryRead,
       loginExpired: () => currentAccountError(Date.now()) !== null,
       backendUnreachable: () => backendUnreachableSinceMs !== null,
       monotonicNow: () => performance.now(),
@@ -18507,6 +18593,7 @@ async function main(): Promise<void> {
       channelArmed = true
       connectedSince = Date.now()
       channelEverArmed = true
+      deliveryProof.reset()
       startHookIntakeIfHolder()
       handleUnboundBeforeArm()
       log(

@@ -914,6 +914,8 @@ test('validation: live is every proof but the 5 min hold', () => {
   assert.equal(m.decideValidation(proof(early)), 'pending')
   assert.equal(m.isLiveBuild(proof(early)), true)
   assert.equal(m.isLiveBuild(proof({ ...early, deaf: true })), false)
+  assert.equal(m.isLiveBuild(proof({ ...early, undelivered: true })), false, 'a message the server holds that never reached the session')
+  assert.equal(m.isLiveBuild(proof({ ...early, undelivered: false })), true, 'no traffic, or traffic delivered')
   assert.equal(m.isLiveBuild(proof({ ...early, beaconAtMs: null })), false)
   assert.equal(m.isLiveBuild(proof({ ...early, heartbeatOkAtMs: NOW - 40 * SEC })), false)
 })

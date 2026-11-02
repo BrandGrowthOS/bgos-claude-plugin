@@ -129,6 +129,7 @@ function agent(
     heartbeatOkAtMs: null as number | null,
     beaconAtMs: null as number | null,
     deaf: false,
+    undelivered: false,
     loginExpired: false,
     tookRestart: true as boolean | Error,
     rollbackOk: true,
@@ -158,6 +159,7 @@ function agent(
     badAtInstall: [] as boolean[],
     reports: [] as any[],
     heartbeatRequests: 0,
+    deliveryReads: 0,
     logs: [] as string[],
     guards: [] as boolean[],
     markerRemovals: 0,
@@ -231,6 +233,10 @@ function agent(
     heartbeatOkAtMs: () => s.heartbeatOkAtMs,
     beaconAtMs: () => s.beaconAtMs,
     deaf: () => s.deaf,
+    undelivered: () => s.undelivered,
+    askDeliveryRead: () => {
+      out.deliveryReads += 1
+    },
     loginExpired: () => s.loginExpired,
     backendUnreachable: () => s.unreachable,
     monotonicNow: () => disk.clock.now - s.slept,
@@ -3348,4 +3354,120 @@ test('an agent that went back, and finds the build reinstalled over it, puts it 
   await a.c.tick()
   assert.equal(install.version, '0.80.0')
   assert.deepEqual(readJson(disk, a.record), record)
+})
+
+// -- The proof reads a delivery, not a loop (board row 42499778) ---------------------------------
+
+test('a canary that keeps polling but delivers nothing stops stamping: the stamp goes stale, and a follower past its wait reads canary_quiet', async () => {
+  const disk = memDisk()
+  const canary = await canaryProved(disk)
+  const id = [914, 915, 916, 917, 918, 919].find((n) => waitOf(n) < 50 * MIN)!
+  await lives(canary, 20 * MIN)
+  const lastGood = aliveAt(disk)
+  const provedThen = proved(disk)
+  // Beacon, heartbeat and no deaf verdict all still read as healthy: only the delivery says otherwise.
+  canary.s.undelivered = true
+  await lives(canary, waitOf(id) - 20 * MIN + SEC)
+  assert.equal(aliveAt(disk), lastGood, 'no stamp while a message waits')
+  assert.equal(proved(disk), provedThen, 'and no minute proved')
+  const f = agent(disk, { id })
+  assert.equal(await f.c.tick(), 'canary_quiet')
+  assert.equal(f.restarts.length, 0)
+})
+
+test('a canary whose delivery comes back takes up the stamp again, and the minutes it did not deliver are not proved', async () => {
+  const disk = memDisk()
+  const canary = await canaryProved(disk)
+  await lives(canary, 5 * MIN)
+  const before = proved(disk)
+  canary.s.undelivered = true
+  await lives(canary, 10 * MIN)
+  canary.s.undelivered = false
+  await lives(canary, 30 * SEC)
+  assert.equal(aliveAt(disk), new Date(disk.clock.now).toISOString())
+  // Two polls at most: the ten minutes it was not delivering add nothing.
+  assert.equal(proved(disk), before + 60 * SEC)
+})
+
+test('a canary quiet with no traffic and delivering with traffic stamp the same', async () => {
+  const disk = memDisk()
+  const canary = await canaryProved(disk)
+  assert.equal(canary.s.undelivered, false)
+  await lives(canary, 2 * MIN)
+  assert.equal(aliveAt(disk), new Date(disk.clock.now).toISOString())
+  assert.equal(proved(disk), 2 * MIN)
+})
+
+test('a new build with a message it did not deliver never validates: at the deadline the canary rolls back', async () => {
+  const disk = await afterAsk()
+  const a = agent(disk, { running: '0.81.0', staged: null })
+  assert.equal(await a.c.tick(), 'validating')
+  a.s.undelivered = true
+  for (let t = 0; t < 15 * MIN + SEC; t += 30 * SEC) {
+    disk.clock.now += 30 * SEC
+    deliver(a)
+    const phase = await a.c.tick()
+    if (t < 15 * MIN - 30 * SEC) assert.equal(phase, 'validating', `at ${t} ms`)
+  }
+  assert.equal(a.c.phase(), 'rollback')
+  assert.ok(disk.files.has(join(MACHINE, '0.81.0', 'bad')))
+})
+
+test('a delivery that came back inside the deadline starts the hold again, and the build validates', async () => {
+  const disk = await afterAsk()
+  const a = agent(disk, { running: '0.81.0', staged: null })
+  assert.equal(await a.c.tick(), 'validating')
+  a.s.undelivered = true
+  disk.clock.now += 6 * MIN
+  deliver(a)
+  assert.equal(await a.c.tick(), 'validating')
+  a.s.undelivered = false
+  deliver(a)
+  assert.equal(await a.c.tick(), 'validating')
+  disk.clock.now += 5 * MIN + SEC
+  deliver(a)
+  assert.equal(await a.c.tick(), 'validated')
+})
+
+test('the server is asked what waits only while a build is being proved: validating, then stamping, and not once the proof is done', async () => {
+  const disk = memDisk()
+  const canary = await canaryProved(disk)
+  assert.ok(canary.deliveryReads >= 2, `asked ${canary.deliveryReads} time(s) while validating`)
+  const reads = canary.deliveryReads
+  await lives(canary, 90 * SEC)
+  assert.equal(canary.deliveryReads - reads, 3, 'once a poll while it stamps')
+  await lives(canary, 61 * MIN)
+  const done = canary.deliveryReads
+  await lives(canary, 5 * MIN)
+  assert.equal(canary.deliveryReads, done, 'its proof is finished: the stamps end, and so do the reads')
+  const idle = agent(memDisk())
+  idle.s.staged = null
+  await idle.c.tick()
+  assert.equal(idle.deliveryReads, 0, 'an agent with nothing to prove reads nothing')
+})
+
+test('a follower that is validating asks too, and one past validation asks no more', async () => {
+  const disk = memDisk()
+  const canary = await canaryProved(disk)
+  await lives(canary, 61 * MIN)
+  const f = agent(disk, { id: 914 })
+  assert.equal(await f.c.tick(), 'requested')
+  disk.clock.now += 40 * SEC
+  const back = await provesIt(disk, 914)
+  assert.ok(back.deliveryReads >= 2)
+  const reads = back.deliveryReads
+  await lives(back, 2 * MIN)
+  assert.equal(back.deliveryReads, reads, 'a follower\'s proof ends with its validation: nothing reads it after that')
+})
+
+test('an expired login with a message waiting is not the build: the stamp stays fresh and adds nothing', async () => {
+  const disk = memDisk()
+  const canary = await canaryProved(disk)
+  await lives(canary, 5 * MIN)
+  const before = proved(disk)
+  canary.s.undelivered = true
+  canary.s.loginExpired = true
+  await lives(canary, 2 * MIN)
+  assert.equal(aliveAt(disk), new Date(disk.clock.now).toISOString())
+  assert.equal(proved(disk), before)
 })

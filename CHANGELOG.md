@@ -2,6 +2,12 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.85.1 (2026-11-02)
+
+**A new build that stops handing messages to the session is caught before the other agents move onto it (board row 42499778).** The first agent onto a new version proves it to the others on its computer, and that proof only read the polling loop: a build that kept polling and delivered nothing passed. It now also compares what the server holds with what actually reached Claude Code. A message left undelivered for 3 minutes stops the proof, so the other agents wait, and a build still being checked goes back. An agent with no messages at all still counts as healthy, and this costs no turn.
+
+Not caught yet: a session that receives a message and silently ignores it, when no message owes a reply during the wait. Only asking the session can show that, which is the channel check still open in the design notes.
+
 ## 0.85.0 (2026-11-01)
 
 **An idle agent loads its staged update by itself (board row 5a455021).** A staged build only loads when the session restarts, and nothing restarted an idle one: Alex's 15 agents had 0.74.3 staged and still ran 0.69.12 to 0.74.0. Once an agent has been idle for a while it now restarts onto the new version through its existing restart authority, resumes its pinned session, and reports the version it came back on. The design, its rules and what it does not cover are in `docs/idle-update/DESIGN.md`.
