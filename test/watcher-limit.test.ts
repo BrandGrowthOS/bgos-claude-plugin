@@ -421,7 +421,7 @@ test('the watcher record deleted after an Enter: the agent copy still holds the 
   }
 })
 
-test('a record that is there but cannot be read (the real fs reads it as null) holds the key like a corrupt one', async () => {
+test('a record that is there but cannot be read (the real fs reads it as null) holds the key and is left as it is', async () => {
   const { r, fs, clock } = usageBackRig()
   fs.writeFile(watchPathOf(r), `${JSON.stringify({ schemaVersion: 1, agents: { 912: { lastEnterAt: new Date(SWAP_AT).toISOString() } } })}\n`)
   const readFile = fs.readFile
@@ -464,7 +464,7 @@ test('a record that turns unreadable AFTER the key is logged, never silent', asy
   assert.ok(logs.some((l) => /the Enter went out, but the record could not be written/.test(l)), logs.join('\n'))
 })
 
-test('a write that fails AFTER the key (the notice, the record) never hides the press: the outcome still says it was pressed', async () => {
+test('a rename that fails AFTER the key never hides the press: the outcome still says it was pressed', async () => {
   const { r, fs, clock } = usageBackRig()
   const tmux = fakeTmux(socketOf(r), (s) => (s.entered ? IDLE : picker()))
   clock.onSleep((nowMs) => {
@@ -940,6 +940,7 @@ test('Windows: the launcher is proven from the process table read NOW; a table t
   const cases: Array<[string, (fs: MemoryFs, r: Rig) => void, (file: string, args: string[]) => { code: number; stdout: string }]> = [
     // listAgents' launcherLive passes an unreadable table on "pid alive"; the key path must not.
     ['the process table cannot be read', () => {}, () => ({ code: 1, stdout: '' })],
+    // listAgents refuses this one too, so it guards the pair; "the table changed after the agents were listed" is the one only the fresh read catches.
     ['a hoai launcher that started after the record was stamped (the pid went to another agent)', () => {}, processTable(HOAI_LAUNCHER, LIMIT_AT - HOUR)],
     ['a record with no start stamp to prove the pid against', (fs, r) => fs.writeFile(`${r.stateDir}\\supervisor.json`, supervisorFileBody(4242, 'x')), processTable(HOAI_LAUNCHER)],
     // The row was listed when 4242 was the launcher; by the time of the press another program has it.

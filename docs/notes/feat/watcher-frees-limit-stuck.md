@@ -206,6 +206,18 @@ process table could not be read. Fixed, with every minor it raised, each red fir
 | 98ff2f4 | Unreadable is not missing; a repair never drops the hold; a write after the key never hides the press; read back rows that only the read back can catch (minors 3, 4, 6, 7). |
 | 6acdce4 | Two dialogs on one screen are never pressed (minor 5; red: that screen read ok). |
 
+Review 3 (a fresh reviewer on the whole feature, f486e81..cb2b4ff) passed all three safety checks: no path types
+text, no path sends a second Enter through one agent's record, and no path acts on a screen that is not the limit
+screen; `lib/limit-keys.mjs` and the helper are byte identical to e382b2b. One Important: the late miss rule
+(a refusal seen after the verify, with no real turn since the press) had no bound in time, so an old login press
+could keep the login proof off for a later limit. Fixed, with the cheap minors, each red first:
+
+| Commit | What |
+|---|---|
+| bfa5c94 | The late miss counts only inside its own episode: within 5 h of the press, before the press's reset, never once the current reset has passed; a freed press drops it (Important 1, minors 4a, 4b). |
+| e6cc68d | The Windows process table is read only when a key could go out (usage back, hour gate open), the gate is decided at the observation's time, an unproven console is never read, and a write after the key that returns false is logged (minor 2 and the first half of minor 6, plus a race found while fixing them: the hour ending between the look and the press; minor 2's second half is leftover 8). |
+| (notes) | Test names that claimed more than they prove renamed; the changelog line on unreadable records corrected (minors 7, 8). |
+
 ## 8. Leftovers for Data
 
 Not done here, by Ares's word (budget and logging stay notes) or because they touch the key sending code,
@@ -252,3 +264,16 @@ Other:
     guess. A real capture would show whether the 6 row bound needs to grow.
 13. With the login proof spent, a refusal seen late is found only if the transcript tail still shows the real
     turns since the press; a tail full of refusals is read the safe way (option A stays on).
+
+From review 3 (minors not fixed here):
+14. Windows has no guard per console, only per agent. If a launcher pid is reused within the start stamp's
+    tolerance, two agents' records could resolve to one console, and that console could get one Enter per agent
+    in the same hour. Each press is still hash gated on the picker screen, so it is a second Enter on the limit
+    picker, never on anything else. Fix: key the hour gate by the console pid as well.
+15. The verify's outcome depends on when its polls land: a real turn that arrives just after the verify window is
+    reported as `closed` (or `not_taken`) rather than `freed`. Words only; no key follows from it.
+16. The checkup's held words (`FREE_LIMIT_HELD`, "an Enter went out within the hour") are wrong when the hold comes
+    from a lost or unreadable record, and a hold from an unreadable record writes no log line. Name the real
+    reason in both.
+17. With usage back and no picker on the screen (`no_picker`), every sweep reads the screen again until the limit
+    record goes stale; on Windows that is one PowerShell start a minute. Remember `no_picker` per limit.
