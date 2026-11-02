@@ -322,3 +322,31 @@ test('a broken pipe on the daemon\'s own output is its reader gone (a clean end)
     assert.doesNotMatch(handler, /stdout-epipe/, head)
   }
 })
+
+test('a permission verdict the daemon consumed is settled on both lanes that read one, or it would wait for ever on a healthy build', () => {
+  assert.match(server, /if \(isPermissionVerdict\) \{\n\s*deliveryProof\.noteSettled\(msg\.message\.id\)\n\s*continue\n\s*\}/, 'the poll')
+  assert.match(server, /if \(isPermissionVerdict\) \{\n\s*deliveryProof\.noteSettled\(view\.messageId\)\n\s*return\n\s*\}/, 'the stream')
+})
+
+test('a re-arm forgets the proof and its validators: what another holder delivered is not this daemon\'s, and a 304 must not eat a first read', () => {
+  const at = server.indexOf('function resetDeliveryProof(): void {')
+  assert.ok(at >= 0, 'resetDeliveryProof is gone')
+  const body = server.slice(at, server.indexOf('\n}\n', at))
+  assert.match(body, /deliveryProof\.reset\(\)/)
+  assert.match(body, /bgosEtagCache\.invalidate\(`delivery:\$\{chatId\}`\)/)
+  assert.match(server, /channelArmed = true\n\s*connectedSince = Date\.now\(\)\n\s*channelEverArmed = true\n\s*resetDeliveryProof\(\)/)
+})
+
+test('the proof reads nothing outside the moments it can mean something, and drops a read that crossed a stand down', () => {
+  const at = server.indexOf('function askDeliveryRead(): void {')
+  assert.ok(at >= 0, 'askDeliveryRead is gone')
+  const ask = server.slice(at, server.indexOf('\n}\n', at))
+  for (const gate of ['!lockHeld', '!channelArmed', 'updateDrainMode', 'startupCompleteAtMs === null', 'currentAccountError(Date.now()) !== null']) {
+    assert.ok(ask.includes(gate), `askDeliveryRead does not read ${gate}`)
+  }
+  const read = server.slice(server.indexOf('async function readWhatWaits(): Promise<void> {'), server.indexOf('function readUndelivered(): boolean {'))
+  assert.match(read, /deliveryProof\.epoch\(\) !== epoch/)
+  assert.match(read, /deliveryProof\.keepChats\(/)
+  const undelivered = server.slice(server.indexOf('function readUndelivered(): boolean {'), server.indexOf('function readUndelivered(): boolean {') + 200)
+  assert.match(undelivered, /!lockHeld \|\| !channelArmed \|\| updateDrainMode/)
+})

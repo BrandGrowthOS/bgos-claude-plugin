@@ -12,13 +12,14 @@
  *     poll that drops a row, or moves its cursor past one, would hide exactly
  *     the fault this looks for.
  *   - what was HANDED comes off the write to Claude Code itself (noteHanded),
- *     after every gate and hold in front of it, and only once the write resolved.
+ *     after every gate and hold in front of it, once the write resolved, and only
+ *     for a card that delivers a message in a shape the host keeps (cardMessage).
  *
  * True on a quiet agent: no traffic means nothing waits, and an agent is never
  * asked to prove anything it was not given. It asks the session nothing and
- * costs no turn. What it cannot see is a session that discards a card it was
- * handed: that write resolves. The deaf verdict reads that once a message owes
- * a reply (docs/idle-update/DESIGN.md Residuals).
+ * costs no turn. What it cannot see is a session that discards a good card it
+ * was handed: that write resolves. The deaf verdict reads that once a message
+ * owes a reply (docs/idle-update/DESIGN.md Residuals).
  *
  * A false alarm here costs a healthy build a 24 h hold, or a rollback while it
  * validates, so a row counts only when it is plainly a message for the session
@@ -33,6 +34,15 @@ import { isSlashCommandPayload } from './slash-catalog.ts'
 
 /** Plenty for an hour of what a daemon settles without handing over; the oldest fall off. */
 const SETTLED_MAX = 4096
+
+/**
+ * Without these the host's channel renderer silently drops the card (server.ts, the meeting_message handler), as it
+ * does one whose meta holds anything but a string (lib/stream-apply.ts, the wake card contract).
+ */
+const CARD_ENVELOPE = ['chat_id', 'message_id', 'user', 'user_id', 'assistant_id', 'ts'] as const
+
+/** Cards that name a message and do not deliver it: a reminder of one, the answer to the agent's own card. */
+const NOT_A_DELIVERY = new Set(['reply_overdue', 'button_clicked', 'ask_answered', 'ask_withdrawn'])
 
 /** A chat history row, as far as these rules read it. */
 export interface DeliveryRowMessage {
@@ -85,6 +95,7 @@ export interface StuckMessage {
 export function createDeliveryProof(opts: { now: () => number; graceMs: number }) {
   const chats = new Map<string, ChatProof>()
   const settled = new Set<number>()
+  let epoch = 0
 
   const chat = (chatId: string): ChatProof => {
     let c = chats.get(chatId)
@@ -99,7 +110,7 @@ export function createDeliveryProof(opts: { now: () => number; graceMs: number }
     /**
      * The read that says what the server holds. The first takes the chat's tip: what was there on arrival is history
      * this boot's poll has its own rules for. After it, what is above the tip, and from just below a message still
-     * waiting, so it is read until it is settled. The route refuses an afterId of 0.
+     * waiting, so it is read until it is settled. An afterId of 0 says nothing, so it is left off.
      */
     readPath(chatId: string, userId: string): string {
       const base = `chats/${chatId}/messages?userId=${userId}`
@@ -110,22 +121,28 @@ export function createDeliveryProof(opts: { now: () => number; graceMs: number }
     },
 
     /** What that read returned. */
-    noteRead(chatId: string, rows: ReadonlyArray<{ id: number; owed: boolean; answer?: boolean }>): void {
+    noteRead(chatId: string, rows: ReadonlyArray<{ id: number; owed: boolean }>): void {
       const c = chat(chatId)
       const newest = rows.reduce((max, r) => Math.max(max, r.id), 0)
       if (c.tip === null) {
         c.tip = Math.max(newest, c.handed)
         return
       }
+      // This read began at or below every message waiting, so one it did not return is gone from the server.
+      const returned = new Set(rows.map((r) => r.id))
+      for (const id of c.waiting.keys()) if (!returned.has(id)) c.waiting.delete(id)
       for (const row of rows) {
         // At or below the tip it has been looked at already, and a route that ignores the cursor adds nothing.
         if (row.id <= c.tip || !row.owed || row.id <= c.handed || settled.has(row.id)) continue
         c.waiting.set(row.id, opts.now())
       }
       c.tip = Math.max(c.tip, newest)
-      // The agent's own answer above a message: something handled it, by a path that is not this write.
-      const answered = rows.reduce((max, r) => (r.answer === true ? Math.max(max, r.id) : max), 0)
-      for (const id of c.waiting.keys()) if (id < answered) c.waiting.delete(id)
+    },
+
+    /** The chats this daemon reads now. One that left is not waited on, and takes a fresh tip if it comes back. */
+    keepChats(chatIds: readonly string[]): void {
+      const kept = new Set(chatIds)
+      for (const chatId of chats.keys()) if (!kept.has(chatId)) chats.delete(chatId)
     },
 
     /** The write to the session resolved. A later message through clears an older one: this build delivers. */
@@ -136,7 +153,7 @@ export function createDeliveryProof(opts: { now: () => number; graceMs: number }
       for (const id of c.waiting.keys()) if (id <= messageId) c.waiting.delete(id)
     },
 
-    /** The daemon finished with this row itself: its own send, a sign-in code it consumed. */
+    /** The daemon finished with this row itself: its own send, a sign-in code or a permission verdict it consumed. */
     noteSettled(messageId: number): void {
       settled.add(messageId)
       if (settled.size > SETTLED_MAX) settled.delete(settled.values().next().value as number)
@@ -165,16 +182,30 @@ export function createDeliveryProof(opts: { now: () => number; graceMs: number }
     reset(): void {
       chats.clear()
       settled.clear()
+      epoch += 1
+    },
+
+    /** Moves when the proof is reset, so a read in flight across it can be dropped. */
+    epoch(): number {
+      return epoch
     },
   }
 }
 
-/** The chat and message a channel card carries, or null for one that names no message. */
+/**
+ * The message this write hands to the session, or null. Null for anything but a channel card, for a card that names a
+ * message without delivering it, and for one the host would silently drop: that write resolves too, and nothing arrives.
+ */
 export function cardMessage(notification: { method?: string; params?: unknown }): { chatId: string; messageId: number } | null {
   if (notification.method !== 'notifications/claude/channel') return null
-  const meta = (notification.params as { meta?: Record<string, unknown> } | undefined)?.meta
-  const messageId = Number(meta?.message_id)
-  const chatId = meta?.chat_id
-  if (!Number.isFinite(messageId) || messageId <= 0 || (typeof chatId !== 'string' && typeof chatId !== 'number') || chatId === '') return null
-  return { chatId: String(chatId), messageId }
+  const params = notification.params as { content?: unknown; meta?: Record<string, unknown> } | undefined
+  const meta = params?.meta
+  if (!meta || typeof params.content !== 'string' || params.content === '') return null
+  if (typeof meta.event_type === 'string' && NOT_A_DELIVERY.has(meta.event_type)) return null
+  // Undefined never reaches the wire.
+  if (!Object.values(meta).every((value) => value === undefined || typeof value === 'string')) return null
+  if (!CARD_ENVELOPE.every((key) => typeof meta[key] === 'string' && meta[key] !== '')) return null
+  const messageId = Number(meta.message_id)
+  if (!Number.isFinite(messageId) || messageId <= 0) return null
+  return { chatId: meta.chat_id as string, messageId }
 }

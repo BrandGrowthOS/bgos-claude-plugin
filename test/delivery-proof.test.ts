@@ -8,7 +8,8 @@
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { createDeliveryProof, isOwedRow } from '../lib/delivery-proof.ts'
+import { cardMessage, createDeliveryProof, isOwedRow } from '../lib/delivery-proof.ts'
+import { buildButtonClickedMeta, buildInboundChannel, finalInboundMeta } from '../lib/inbound-channel.ts'
 
 const GRACE = 180_000
 
@@ -114,17 +115,35 @@ describe('when a message has waited too long', () => {
     assert.equal(fresh.p.stuck(), null)
   })
 
-  test('an answer above a message clears it: something handled it, as the poll reads a reply sent another way', () => {
+  test('an assistant row above a message clears nothing: the daemon writes those itself, the /status answer on a deaf build among them', () => {
+    const { clock, p } = proof()
+    p.noteRead('7', [])
+    p.noteRead('7', [owed(51)])
+    clock.now += GRACE
+    p.noteRead('7', [owed(51), notOwed(52)])
+    assert.equal(p.stuck()?.messageId, 51)
+  })
+
+  test('a message the server no longer returns is gone: it stops waiting', () => {
     const { clock, p } = proof()
     p.noteRead('7', [])
     p.noteRead('7', [owed(51)])
     clock.now += 2 * GRACE
-    assert.equal(p.stuck()?.messageId, 51)
-    p.noteRead('7', [owed(51), { id: 52, owed: false, answer: true }])
+    p.noteRead('7', [])
     assert.equal(p.stuck(), null)
-    p.noteRead('7', [{ id: 60, owed: false, answer: true }, owed(61)])
-    clock.now += GRACE
-    assert.equal(p.stuck()?.messageId, 61, 'an answer below a message says nothing about it')
+    assert.deepEqual(p.waitingChats(), [])
+  })
+
+  test('a chat that left what this daemon reads stops counting, and comes back with a fresh tip', () => {
+    const { clock, p } = proof()
+    p.noteRead('7', [])
+    p.noteRead('8', [])
+    p.noteRead('7', [owed(51)])
+    p.noteRead('8', [owed(61)])
+    clock.now += 2 * GRACE
+    p.keepChats(['8'])
+    assert.equal(p.stuck()?.chatId, '8')
+    assert.equal(p.readPath('7', 'u1'), 'chats/7/messages?userId=u1&limit=1')
   })
 
   test('the oldest message waiting is the one named', () => {
@@ -146,6 +165,17 @@ describe('when a message has waited too long', () => {
     clock.now += 2 * GRACE
     assert.equal(p.stuck(), null)
     assert.equal(p.readPath('7', 'u1'), 'chats/7/messages?userId=u1&limit=1', 'and the next read takes the tip again')
+  })
+
+  test('standing down moves the epoch, so a read in flight across it can be told apart', () => {
+    const { p } = proof()
+    const before = p.epoch()
+    assert.equal(p.epoch(), before, 'nothing else moves it')
+    p.noteRead('7', [])
+    p.noteHanded('7', 3)
+    assert.equal(p.epoch(), before)
+    p.reset()
+    assert.notEqual(p.epoch(), before)
   })
 
   test('the settled record does not grow for ever', () => {
@@ -175,7 +205,7 @@ describe('the read that says what the server holds', () => {
     assert.equal(p.readPath('7', 'u1'), 'chats/7/messages?userId=u1&afterId=40')
   })
 
-  test('a chat with no rows has no cursor to send: the route refuses an afterId of 0', () => {
+  test('a chat with no rows has no cursor to send: an afterId of 0 says nothing', () => {
     const { p } = proof()
     p.noteRead('7', [])
     assert.equal(p.readPath('7', 'u1'), 'chats/7/messages?userId=u1')
@@ -204,6 +234,60 @@ describe('the read that says what the server holds', () => {
     p.noteRead('8', [])
     p.noteRead('7', [owed(51)])
     assert.deepEqual(p.waitingChats(), ['7'])
+  })
+})
+
+describe('what counts as handed to the session', () => {
+  const channel = (meta: Record<string, unknown>) => ({ method: 'notifications/claude/channel', params: { content: 'hi', meta } })
+  const envelope = { chat_id: '7', message_id: '51', user: 'User', user_id: 'u1', assistant_id: '42', ts: '2026-11-02T00:00:00Z', transport: 'poll' }
+  const inbound = (over: Record<string, unknown> = {}) =>
+    buildInboundChannel({ chatId: 7, messageId: 51, userId: 'u1', assistantId: 42, timestamp: '2026-11-02T00:00:00Z', transport: 'poll', text: 'hello', ...over })
+
+  test('every card the real builders make for a message counts, as it goes out', () => {
+    const wanted = { chatId: '7', messageId: 51 }
+    assert.deepEqual(cardMessage(channel(inbound().meta)), wanted, 'an owner\'s message')
+    assert.deepEqual(cardMessage(channel(inbound({ senderType: 'system' }).meta)), wanted, 'a wake')
+    assert.deepEqual(cardMessage(channel(inbound({ senderType: 'agent', agentOrigin: { sourceAssistantId: 947, sourceName: 'Milba' } }).meta)), wanted, 'another agent')
+    assert.deepEqual(cardMessage(channel(inbound({ senderType: 'external_email' }).meta)), wanted, 'an email')
+    assert.deepEqual(cardMessage(channel(finalInboundMeta(inbound().meta, { event_type: 'slash_command', command: 'plan' }, null, { steer_interrupted: 'true' }))), wanted, 'a slash directive')
+  })
+
+  test('a reminder about a message is not that message: it carries the id and none of the content', () => {
+    assert.equal(cardMessage(channel({ event_type: 'reply_overdue', chat_id: '7', message_id: '51', age_seconds: '240', ts: 'x' })), null)
+  })
+
+  for (const event_type of ['reply_overdue', 'button_clicked', 'ask_answered', 'ask_withdrawn']) {
+    test(`${event_type} delivers no message, even on a whole envelope`, () => {
+      assert.equal(cardMessage(channel({ ...envelope, event_type })), null)
+    })
+  }
+
+  test('a tap names the agent\'s own row, so the real tap card clears nothing', () => {
+    const meta = buildButtonClickedMeta({ chatId: 7, messageId: 900, callbackData: 'a', buttonText: 'A', tapperUserId: 'u1', assistantId: 42, ts: 'x' })
+    assert.equal(cardMessage(channel(meta as Record<string, unknown>)), null)
+  })
+
+  test('a card the host would silently drop was not handed over: a value that is not a string', () => {
+    assert.deepEqual(cardMessage(channel(envelope)), { chatId: '7', messageId: 51 })
+    assert.equal(cardMessage(channel({ ...envelope, retries: 3 })), null)
+    assert.equal(cardMessage(channel({ ...envelope, chat_id: 7 })), null)
+    assert.equal(cardMessage(channel({ ...envelope, extra: null })), null)
+    assert.deepEqual(cardMessage(channel({ ...envelope, gone: undefined })), { chatId: '7', messageId: 51 }, 'undefined never reaches the wire')
+  })
+
+  for (const key of ['chat_id', 'message_id', 'user', 'user_id', 'assistant_id', 'ts']) {
+    test(`a card the host would silently drop was not handed over: no ${key}`, () => {
+      const { [key as keyof typeof envelope]: _gone, ...rest } = envelope
+      assert.equal(cardMessage(channel(rest)), null)
+    })
+  }
+
+  test('nor is a card with no content, another method, or a message id that is no id', () => {
+    assert.equal(cardMessage({ method: 'notifications/claude/channel', params: { content: '', meta: envelope } }), null)
+    assert.equal(cardMessage({ method: 'notifications/claude/channel/permission', params: { content: 'x', meta: envelope } }), null)
+    assert.equal(cardMessage(channel({ ...envelope, message_id: 'abc' })), null)
+    assert.equal(cardMessage(channel({ ...envelope, message_id: '0' })), null)
+    assert.equal(cardMessage({ method: 'notifications/claude/channel' }), null)
   })
 })
 

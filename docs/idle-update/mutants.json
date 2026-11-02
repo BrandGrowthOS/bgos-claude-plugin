@@ -5055,8 +5055,8 @@
       "id": "delivery-handed-resolved",
       "rule": "41 a card counts as handed only once its write resolved",
       "file": "server.ts",
-      "find": "    writeToClaudeCode(message).then(() => {\n",
-      "replace": "    writeToClaudeCode(message).catch(() => {}).then(() => {\n",
+      "find": "    writeToClaudeCode(...args).then(() => {\n",
+      "replace": "    writeToClaudeCode(...args).catch(() => {}).then(() => {\n",
       "tests": [
         "test/canary-delivery.e2e.test.ts"
       ]
@@ -5085,8 +5085,8 @@
       "id": "delivery-waiting-reads-now",
       "rule": "41 a message waiting has its chat read at once",
       "file": "server.ts",
-      "find": "    liveReadsInFlight.add(chatId)\n    void pollChat(chatId).finally(() => liveReadsInFlight.delete(chatId))\n  }\n}\n\n/** A message the server holds",
-      "replace": "  }\n}\n\n/** A message the server holds",
+      "find": "      liveReadsInFlight.add(chatId)\n      void pollChat(chatId).finally(() => liveReadsInFlight.delete(chatId))\n    }\n  }\n}\n\n/** Armed again",
+      "replace": "    }\n  }\n}\n\n/** Armed again",
       "tests": [
         "test/canary-delivery.e2e.test.ts"
       ]
@@ -5099,6 +5099,97 @@
       "replace": "",
       "tests": [
         "test/canary-delivery.e2e.test.ts"
+      ]
+    },
+    {
+      "id": "delivery-reminder-not-delivery",
+      "rule": "41 a card that names a message without delivering it counts for nothing",
+      "file": "lib/delivery-proof.ts",
+      "find": "  if (typeof meta.event_type === 'string' && NOT_A_DELIVERY.has(meta.event_type)) return null\n",
+      "replace": "",
+      "tests": [
+        "test/delivery-proof.test.ts"
+      ]
+    },
+    {
+      "id": "delivery-card-strings",
+      "rule": "41 a card with a meta value that is not a string was not handed over",
+      "file": "lib/delivery-proof.ts",
+      "find": "  if (!Object.values(meta).every((value) => value === undefined || typeof value === 'string')) return null\n",
+      "replace": "",
+      "tests": [
+        "test/delivery-proof.test.ts",
+        "test/canary-delivery.e2e.test.ts"
+      ]
+    },
+    {
+      "id": "delivery-card-envelope",
+      "rule": "41 a card with no canonical envelope was not handed over",
+      "file": "lib/delivery-proof.ts",
+      "find": "  if (!CARD_ENVELOPE.every((key) => typeof meta[key] === 'string' && meta[key] !== '')) return null\n",
+      "replace": "",
+      "tests": [
+        "test/delivery-proof.test.ts"
+      ]
+    },
+    {
+      "id": "delivery-gone-from-server",
+      "rule": "41 a message the server no longer returns stops waiting",
+      "file": "lib/delivery-proof.ts",
+      "find": "      for (const id of c.waiting.keys()) if (!returned.has(id)) c.waiting.delete(id)\n",
+      "replace": "",
+      "tests": [
+        "test/delivery-proof.test.ts"
+      ]
+    },
+    {
+      "id": "delivery-keep-chats",
+      "rule": "41 a chat that left what this daemon reads stops counting",
+      "file": "lib/delivery-proof.ts",
+      "find": "      for (const chatId of chats.keys()) if (!kept.has(chatId)) chats.delete(chatId)\n",
+      "replace": "",
+      "tests": [
+        "test/delivery-proof.test.ts"
+      ]
+    },
+    {
+      "id": "delivery-verdict-settled-poll",
+      "rule": "41 a permission verdict the poll consumed is settled",
+      "file": "server.ts",
+      "find": "        deliveryProof.noteSettled(msg.message.id)\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "delivery-verdict-settled-stream",
+      "rule": "41 a permission verdict the stream consumed is settled",
+      "file": "server.ts",
+      "find": "    deliveryProof.noteSettled(view.messageId)\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "delivery-rearm-resets",
+      "rule": "41 a re-arm forgets the proof",
+      "file": "server.ts",
+      "find": "      channelEverArmed = true\n      resetDeliveryProof()\n",
+      "replace": "      channelEverArmed = true\n",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "delivery-stale-read-dropped",
+      "rule": "41 a read in flight across a re-arm is dropped",
+      "file": "server.ts",
+      "find": "    if (deliveryProof.epoch() !== epoch || !lockHeld || !channelArmed) return\n",
+      "replace": "    if (!lockHeld || !channelArmed) return\n",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
       ]
     }
   ]

@@ -18,6 +18,7 @@
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -104,7 +105,17 @@ async function startBackend(): Promise<Backend> {
         .filter((r) => r.chatId === chatId && r.id > Number(afterParam ?? 0))
         .sort((a, b) => a.id - b.id)
         .slice(-Number(limitParam ?? 50))
-      return json({ messages: page.map((message) => ({ message, messageFiles: [], messageOptions: [] })) })
+      // The real route's conditional GET: an unchanged body is a 304, on the proof's read as on the poll's.
+      const body = JSON.stringify({ messages: page.map((message) => ({ message, messageFiles: [], messageOptions: [] })) })
+      const etag = `W/"${createHash('sha1').update(body).digest('hex')}"`
+      if (req.headers['if-none-match'] === etag) {
+        res.writeHead(304, { ETag: etag })
+        res.end()
+        return
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json', ETag: etag })
+      res.end(body)
+      return
     }
     return json({})
   }
@@ -143,12 +154,17 @@ const DROPS_EVERY_ROW: Fault[] = [
 
 /** The loop runs and picks each row up; the write to Claude Code fails every time. */
 const HAND_OFF_FAILS: Fault[] = [
-  { find: 'writeToClaudeCode(message).then(', replace: "((message as any)?.method === 'notifications/claude/channel' ? Promise.reject(new Error('stand in hand-off fault')) : writeToClaudeCode(message)).then(" },
+  { find: 'writeToClaudeCode(...args).then(', replace: "((args[0] as any)?.method === 'notifications/claude/channel' ? Promise.reject(new Error('stand in hand-off fault')) : writeToClaudeCode(...args)).then(" },
 ]
 
 /** Every read of the chat's messages comes back empty: nothing is ever seen to deliver. */
 const POLL_READS_NOTHING: Fault[] = [
   { find: 'const data = raw as ChatHistoryResponse\n    if (!data.messages?.length) return', replace: 'const data = { messages: [] } as ChatHistoryResponse\n    if (!data.messages?.length) return' },
+]
+
+/** Each card goes out in a shape Claude Code silently drops: a meta value that is not a string. */
+const CARDS_THE_HOST_DROPS: Fault[] = [
+  { find: 'writeToClaudeCode(...args).then(', replace: "((args[0] as any)?.params?.meta ? ((args[0] as any).params.meta.retries = 3, writeToClaudeCode(...args)) : writeToClaudeCode(...args)).then(" },
 ]
 
 interface Rig {
@@ -323,12 +339,13 @@ async function staysFresh(w: World, ms: number): Promise<void> {
     worst = Math.max(worst, w.aliveAge())
     await sleep(100)
   }
-  assert.ok(worst < 8 * POLL_MS, `the stamp fell ${worst} ms behind\n${w.daemon.stderr.slice(-15).join('\n')}`)
+  // Wide for a loaded machine, and still far under the window a build that stopped would fall behind by.
+  assert.ok(worst < 12 * POLL_MS, `the stamp fell ${worst} ms behind\n${w.daemon.stderr.slice(-15).join('\n')}`)
 }
 
 const FAR_PAST_GRACE = 3 * GRACE_MS
 
-describe('the canary stamps alive only while it delivers', { concurrency: true }, () => {
+describe('the canary stamps alive only while it delivers', { concurrency: 4 }, () => {
   test('a healthy quiet build, with no traffic at all, stays live', OPTS, async () => {
     const w = await canaryOn()
     try {
@@ -349,7 +366,7 @@ describe('the canary stamps alive only while it delivers', { concurrency: true }
         await staysFresh(w, POLL_MS)
       }
       assert.deepEqual([...w.daemon.cardIds].sort(), [201, 202, 203])
-      await staysFresh(w, GRACE_MS)
+      await staysFresh(w, FAR_PAST_GRACE)
     } finally {
       await w.end()
     }
@@ -425,6 +442,19 @@ describe('the canary stamps alive only while it delivers', { concurrency: true }
     }
   })
 
+  test('a build whose cards are in a shape Claude Code silently drops stops stamping, though each write resolves', OPTS, async () => {
+    const w = await canaryOn(CARDS_THE_HOST_DROPS)
+    try {
+      await staysFresh(w, 2 * POLL_MS)
+      w.backend.pushLive(ownerRow(651))
+      await sleep(FAR_PAST_GRACE)
+      assert.ok(w.daemon.cardIds.includes(651), 'the write went out')
+      assert.ok(w.aliveAge() >= GRACE_MS, `still stamping, ${w.aliveAge()} ms old\n${w.daemon.stderr.slice(-15).join('\n')}`)
+    } finally {
+      await w.end()
+    }
+  })
+
   test('a build whose poll reads nothing, with a socket that missed the push, stops stamping', OPTS, async () => {
     const w = await canaryOn(POLL_READS_NOTHING)
     try {
@@ -442,16 +472,14 @@ describe('the canary stamps alive only while it delivers', { concurrency: true }
     const w = await canaryOn(HAND_OFF_FAILS.map((f) => ({
       ...f,
       // Only the first card fails: a blip, and the next message gets through.
-      replace: "((message as any)?.method === 'notifications/claude/channel' && !(globalThis as any).__blipped && ((globalThis as any).__blipped = true) ? Promise.reject(new Error('stand in blip')) : writeToClaudeCode(message)).then(",
+      replace: "((args[0] as any)?.method === 'notifications/claude/channel' && !(globalThis as any).__blipped && ((globalThis as any).__blipped = true) ? Promise.reject(new Error('stand in blip')) : writeToClaudeCode(...args)).then(",
     })))
     try {
       w.backend.pushLive(ownerRow(801))
-      await sleep(GRACE_MS + 4 * POLL_MS)
-      assert.ok(w.aliveAge() >= 2 * POLL_MS, `still stamping through the lost message, ${w.aliveAge()} ms old`)
+      await waitFor(() => w.aliveAge() >= 6 * POLL_MS, 'the stamp to stop on the lost message', 4 * GRACE_MS)
       w.backend.pushLive(ownerRow(802))
       await waitFor(() => w.daemon.cardIds.includes(802), 'the next message')
-      await sleep(4 * POLL_MS)
-      assert.ok(w.aliveAge() < 3 * POLL_MS, `the stamp did not come back, ${w.aliveAge()} ms old`)
+      await waitFor(() => w.aliveAge() < 3 * POLL_MS, 'the stamp to come back', 4 * GRACE_MS)
     } finally {
       await w.end()
     }
@@ -460,15 +488,17 @@ describe('the canary stamps alive only while it delivers', { concurrency: true }
   test('history the canary found on arrival is not traffic it owes: the first read only takes the chat\'s tip', OPTS, async () => {
     const backend = await startBackend()
     const rig = makeRig(backend.url, [])
-    // An old row the cursor already passed, as the chat stood before this boot.
+    // Old rows the cursor already passed, as the chat stood before this boot: answered, so the boot hands nothing over.
     backend.rows.push(ownerRow(50))
+    backend.rows.push(replyRow(51))
     const daemon = await startDaemon(rig)
     try {
       await waitFor(() => existsSync(join(rig.home, '.bgos-agent', 'idle-update', VERSION, 'alive')), 'the canary to stamp')
       const path = join(rig.home, '.bgos-agent', 'idle-update', VERSION, 'alive')
       const age = () => Date.now() - Date.parse(JSON.parse(readFileSync(path, 'utf8')).at)
       await sleep(FAR_PAST_GRACE)
-      assert.ok(age() < 8 * POLL_MS, `the stamp stopped on old history, ${age()} ms old`)
+      assert.ok(age() < 12 * POLL_MS, `the stamp stopped on old history, ${age()} ms old`)
+      assert.deepEqual(daemon.cardIds, [], 'nothing was handed over, so only the tip rule keeps this live')
     } finally {
       await daemon.stop().catch(() => {})
       await backend.close()

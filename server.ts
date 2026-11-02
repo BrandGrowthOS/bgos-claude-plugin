@@ -11991,7 +11991,10 @@ async function pollChat(chatId: string): Promise<void> {
           }
         }
       }
-      if (isPermissionVerdict) continue
+      if (isPermissionVerdict) {
+        deliveryProof.noteSettled(msg.message.id)
+        continue
+      }
 
       // An email's files, saved before its turn when the owner lets the agent
       // read them (read attachments); undefined for every other row. Awaited
@@ -12346,6 +12349,8 @@ function askDeliveryRead(): void {
   const at = Date.now()
   if (deliveryReadRunning || at - deliveryReadAtMs < IDLE_UPDATE_DURATIONS.deliveryReadMs) return
   if (!lockHeld || !channelArmed || updateDrainMode || startupCompleteAtMs === null) return
+  // An expired login adds no proof, and can outlast any proof's end: nothing to read for until it is back.
+  if (currentAccountError(Date.now()) !== null) return
   deliveryReadAtMs = at
   deliveryReadRunning = true
   void readWhatWaits()
@@ -12356,9 +12361,10 @@ function askDeliveryRead(): void {
 }
 
 async function readWhatWaits(): Promise<void> {
-  const ownerWordAwaited = () => pendingPermissions.size > 0
-  for (const chatId of monitoredChatIds) {
-    if (groupChatIds.has(chatId) || meetingIdByChatId.has(chatId)) continue
+  const epoch = deliveryProof.epoch()
+  const chats = monitoredChatIds.filter((chatId) => !groupChatIds.has(chatId) && !meetingIdByChatId.has(chatId))
+  deliveryProof.keepChats(chats)
+  for (const chatId of chats) {
     let raw: unknown
     try {
       raw = await bgosGet(deliveryProof.readPath(chatId, USER_ID), { cacheKey: `delivery:${chatId}` })
@@ -12366,25 +12372,30 @@ async function readWhatWaits(): Promise<void> {
       // A read that failed says nothing about this chat. An outage is read off the backend's own calls.
       continue
     }
-    if (!lockHeld || !channelArmed) return
-    if (isNotModified(raw)) continue
-    const messages = (raw as ChatHistoryResponse).messages ?? []
-    deliveryProof.noteRead(
-      chatId,
-      messages.map((m) => ({
-        id: m.message.id,
-        owed: isOwedRow(m.message as Parameters<typeof isOwedRow>[0], pollAgentOriginOf(m), { assistantId: ASSISTANT_ID, ownerWordAwaited: ownerWordAwaited() }),
-        answer: m.message.sender === 'assistant',
-      })),
-    )
+    // Stood down while it was in flight: an answer from before a re-arm would set a tip the next read reads past.
+    if (deliveryProof.epoch() !== epoch || !lockHeld || !channelArmed) return
+    if (!isNotModified(raw)) {
+      deliveryProof.noteRead(
+        chatId,
+        ((raw as ChatHistoryResponse).messages ?? []).map((m) => ({
+          id: m.message.id,
+          owed: isOwedRow(m.message as Parameters<typeof isOwedRow>[0], pollAgentOriginOf(m), { assistantId: ASSISTANT_ID, ownerWordAwaited: pendingPermissions.size > 0 }),
+        })),
+      )
+    }
+    // A frame the socket missed waits for the next sweep, 5 minutes on a healthy socket and a day on the stream. Read
+    // it now, so a healthy build delivers it inside the grace. The poll's own dedupe makes this safe.
+    if (deliveryProof.waitingChats().includes(chatId) && !liveReadsInFlight.has(chatId)) {
+      liveReadsInFlight.add(chatId)
+      void pollChat(chatId).finally(() => liveReadsInFlight.delete(chatId))
+    }
   }
-  // A frame the socket missed waits for the next sweep, 5 minutes on a healthy socket and a day on the stream. Read it
-  // now, so a healthy build delivers it inside the grace. The poll's own dedupe makes this safe.
-  for (const chatId of deliveryProof.waitingChats()) {
-    if (!monitoredChatIds.includes(chatId) || liveReadsInFlight.has(chatId)) continue
-    liveReadsInFlight.add(chatId)
-    void pollChat(chatId).finally(() => liveReadsInFlight.delete(chatId))
-  }
+}
+
+/** Armed again after standing down. A validator kept across this would answer a first read with a 304, and it would take no tip. */
+function resetDeliveryProof(): void {
+  deliveryProof.reset()
+  for (const chatId of monitoredChatIds) bgosEtagCache.invalidate(`delivery:${chatId}`)
 }
 
 /** A message the server holds that never reached the session, past its grace. Named once in the log. */
@@ -15078,7 +15089,10 @@ async function forwardStreamInbound(
       }
     }
   }
-  if (isPermissionVerdict) return
+  if (isPermissionVerdict) {
+    deliveryProof.noteSettled(view.messageId)
+    return
+  }
 
   // An email's files, saved before its turn when the owner lets the agent read
   // them (read attachments); undefined for every other message. This rail
@@ -17969,9 +17983,9 @@ async function main(): Promise<void> {
   // The one place a card counts as handed to the session: the write to Claude Code itself, behind every hold and gate,
   // once it resolved (lib/delivery-proof.ts). A card held, dropped on the way or failed never gets here.
   const writeToClaudeCode = transport.send.bind(transport)
-  transport.send = (message) =>
-    writeToClaudeCode(message).then(() => {
-      const handed = cardMessage(message as { method?: string; params?: unknown })
+  transport.send = (...args: Parameters<typeof writeToClaudeCode>) =>
+    writeToClaudeCode(...args).then(() => {
+      const handed = cardMessage(args[0] as { method?: string; params?: unknown })
       if (handed) deliveryProof.noteHanded(handed.chatId, handed.messageId)
     })
   await mcp.connect(transport)
@@ -18593,7 +18607,7 @@ async function main(): Promise<void> {
       channelArmed = true
       connectedSince = Date.now()
       channelEverArmed = true
-      deliveryProof.reset()
+      resetDeliveryProof()
       startHookIntakeIfHolder()
       handleUnboundBeforeArm()
       log(
