@@ -451,6 +451,19 @@ test('setting a bad record aside never loses the hold: if the fresh write fails,
   assert.equal(fs.readFile(watchPathOf(r)), '{"agents":', 'the bad file is still there, still holding')
 })
 
+test('a record that turns unreadable AFTER the key is logged, never silent', async () => {
+  const { r, fs, clock } = usageBackRig()
+  const tmux = fakeTmux(socketOf(r), (s) => (s.entered ? IDLE : picker()))
+  clock.onSleep((nowMs) => {
+    if (tmux.state.entered === 1 && !fs.readFile(r.transcript)!.includes('Catching up')) appendTranscript(fs, r, assistantTurn(nowMs))
+  })
+  const readFile = fs.readFile
+  fs.readFile = (p: string) => (tmux.state.entered === 1 && p === watchPathOf(r) ? null : readFile(p))
+  const { ctx, logs } = ctxFor(r, fs, clock, tmux.exec)
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'freed')
+  assert.ok(logs.some((l) => /the Enter went out, but the record could not be written/.test(l)), logs.join('\n'))
+})
+
 test('a write that fails AFTER the key (the notice, the record) never hides the press: the outcome still says it was pressed', async () => {
   const { r, fs, clock } = usageBackRig()
   const tmux = fakeTmux(socketOf(r), (s) => (s.entered ? IDLE : picker()))
@@ -950,6 +963,64 @@ test('Windows: the launcher is proven from the process table read NOW; a table t
     const out = await runLimitPass(ctx)
     assert.deepEqual(helper.calls, [], `${label}: its console is not even read`)
     assert.deepEqual([out.agents[0].outcome, noticeOf(fs, r)?.why], ['cannot_press', 'no_console'], label)
+  }
+})
+
+test('Windows: while the hour gate holds the key, the launcher is not proven again (no PowerShell for a key that cannot go out)', async () => {
+  const r = winRig()
+  const fs = agentFs(r)
+  writeTranscript(fs, r, [limitRecord()])
+  fs.touch(r.credentials, SWAP_AT)
+  const clock = fakeClock(SWAP_AT + MIN)
+  const helper = fakeHelper(() => picker()) // the Enter "does not take": the picker stays
+  let queries = 0
+  const table = processTable(HOAI_LAUNCHER)
+  const execSync = (file: string, args: string[]) => {
+    if (isProcessQuery(file, args)) queries += 1
+    return table(file, args)
+  }
+  const { ctx } = ctxFor(r, fs, clock, helper.exec, { execSync })
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'not_taken')
+  queries = 0
+  clock.set(SWAP_AT + 11 * MIN)
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'waiting')
+  assert.equal(queries, 1, 'only the listing reads the table; the key path proof waits for the hour')
+})
+
+test('Windows: the hour ending between the look and the press never lets an unproven console be read', async () => {
+  for (let k = 1; k <= 40; k++) {
+    const r = winRig()
+    const fs = agentFs(r)
+    writeTranscript(fs, r, [limitRecord()])
+    fs.touch(r.credentials, SWAP_AT)
+    const t0 = SWAP_AT + MIN
+    // A clock that moves 1 ms on every look once racing: the hour runs out somewhere inside the pass.
+    let base = t0
+    let racing = false
+    let ticks = 0
+    const clock = {
+      now: () => (racing ? base + ticks++ : base),
+      sleep: async (ms: number) => {
+        base += ms
+      },
+    }
+    const helper = fakeHelper(() => picker()) // the Enter "does not take": the picker stays
+    let queries = 0
+    const table = processTable(HOAI_LAUNCHER)
+    const execSync = (file: string, args: string[]) => {
+      if (isProcessQuery(file, args)) queries += 1
+      return table(file, args)
+    }
+    const { ctx } = ctxFor(r, fs, clock as any, helper.exec, { execSync })
+    await runLimitPass(ctx)
+    assert.equal(helper.state.pressed, 1, `k=${k}: the first press`)
+    base = t0 + HOUR - k
+    racing = true
+    queries = 0
+    const callsBefore = helper.calls.length
+    await runLimitPass(ctx)
+    const read = helper.calls.length > callsBefore
+    assert.ok(!read || queries >= 2, `k=${k}: the console was read in a pass that did not prove it (${queries} table reads)`)
   }
 })
 
