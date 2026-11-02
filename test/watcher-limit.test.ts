@@ -451,7 +451,7 @@ test('setting a bad record aside never loses the hold: if the fresh write fails,
   assert.equal(fs.readFile(watchPathOf(r)), '{"agents":', 'the bad file is still there, still holding')
 })
 
-test('a record that turns unreadable AFTER the key is logged, never silent', async () => {
+test('a record that turns unreadable AFTER the key, at the freed write, is logged, never silent', async () => {
   const { r, fs, clock } = usageBackRig()
   const tmux = fakeTmux(socketOf(r), (s) => (s.entered ? IDLE : picker()))
   clock.onSleep((nowMs) => {
@@ -1043,7 +1043,7 @@ test('Windows: the launcher is proven from the process table read NOW; a table t
   }
 })
 
-test('Windows: while the hour gate holds the key, the launcher is not proven again (no PowerShell for a key that cannot go out)', async () => {
+test('Windows: while the hour gate holds the key, the launcher is not proven again (only the listing reads the process table)', async () => {
   const r = winRig()
   const fs = agentFs(r)
   writeTranscript(fs, r, [limitRecord()])
@@ -1088,6 +1088,8 @@ test('Windows: a checkup inside the hour still proves the console, so the owner 
 })
 
 test('Windows: the hour ending between the look and the press never lets an unproven console be read', async () => {
+  let readAfterProof = 0
+  let held = 0
   for (let k = 1; k <= 40; k++) {
     const r = winRig()
     const fs = agentFs(r)
@@ -1121,7 +1123,11 @@ test('Windows: the hour ending between the look and the press never lets an unpr
     await runLimitPass(ctx)
     const read = helper.calls.length > callsBefore
     assert.ok(!read || queries >= 2, `k=${k}: the console was read in a pass that did not prove it (${queries} table reads)`)
+    if (read) readAfterProof += 1
+    else held += 1
   }
+  // The boundary was crossed inside the loop: some passes looked after the hour, some before it.
+  assert.ok(readAfterProof > 0 && held > 0, `read after proof ${readAfterProof}, held ${held}`)
 })
 
 test("Windows: a record the agent's daemon declares (its pid is the daemon, not the launcher console) is never read or pressed", async () => {

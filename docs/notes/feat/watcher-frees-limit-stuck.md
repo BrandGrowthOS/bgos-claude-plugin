@@ -87,9 +87,12 @@ Usage is "back" only by one of two proofs, never a guess:
   spent for that agent (`loginProofOff {since, until}` in its watch record, `until` the reset Claude gave with
   the new refusal); only the reset time counts until it passes, or until a real turn after the miss ends the
   episode. `since` is the refusal's time, not the press's. A refusal seen after the verify counts too: the
-  press records its proof (`lastEnterHow`), and a later refusal with no real turn since that press is the miss.
-  The owner is told once that the watcher waits for the limit to reset at that time before it presses again;
-  never asked to resend.
+  press records its proof and its limit's reset (`lastEnterHow`, `lastEnterResetsAt`), and a later refusal with
+  no real turn since that press is the miss when it is the same limit: it carries the pressed limit's own reset
+  (a weekly limit refused the next day), or it came within 5 h of the press and before that reset. Never once
+  the current reset has passed, and a press that freed the agent drops its proof. Any other refusal is a new
+  limit. The owner is told once that the watcher waits for the limit to reset at that time before it presses
+  again (or, when Claude gave no reset with the refusal, that it cannot tell when); never asked to resend.
 
 Then, and only then, the screen is read; it must show ALL of: the NEWEST `You've hit your ... limit` line, the
 `What do you want to do?` title at most 6 rows under it, the `Stop and wait for limit to reset` option carrying
@@ -215,8 +218,21 @@ could keep the login proof off for a later limit. Fixed, with the cheap minors, 
 | Commit | What |
 |---|---|
 | bfa5c94 | The late miss counts only inside its own episode: within 5 h of the press, before the press's reset, never once the current reset has passed; a freed press drops it (Important 1, minors 4a, 4b). |
-| e6cc68d | The Windows process table is read only when a key could go out (usage back, hour gate open), the gate is decided at the observation's time, an unproven console is never read, and a write after the key that returns false is logged (minor 2 and the first half of minor 6, plus a race found while fixing them: the hour ending between the look and the press; minor 2's second half is leftover 8). |
+| e6cc68d | The launcher proof's process table read runs only when a key could go out (usage back, hour gate open), the gate is decided at the observation's time, an unproven console is never read, and a write after the key that returns false is logged (minor 2 and the first half of minor 6, plus a race found while fixing them: the hour ending between the look and the press; minor 2's second half is leftover 8). |
 | (notes) | Test names that claimed more than they prove renamed; the changelog line on unreadable records corrected (minors 7, 8). |
+
+Review 4 (a fresh reviewer on cb2b4ff..421c5cf) passed all three safety checks again, with the key code byte
+identical. One Important: the 5 h bound from bfa5c94 read a weekly limit refused the next day, with the same
+reset, as a new limit, so a token refresh got another press. Fixed, with the cheap minors, each red first:
+
+| Commit | What |
+|---|---|
+| 9fd7e86 | A late refusal that carries the pressed limit's own reset is the same limit, however long after the press (Important 1). A new case pins the press's reset in the 5 h window. |
+| e34f09a | A checkup inside the hour still proves the Windows console, so the owner reads Restart now, not "held" (minor 5). |
+| 351f60b | The owner is told only a reset Claude gave with the refusal, never a borrowed one (minor 4). |
+| 409c58a | A notice whose watch record could not be kept is logged (minor 2). |
+| b8c8cc0 | A clock that is not a number never opens the hour gate (minor 7). |
+| (notes) | The race test asserts that both sides of the hour were hit; docs, comments and two test names match the code (minors 1, 3, 6, 9). |
 
 ## 8. Leftovers for Data
 
@@ -277,3 +293,9 @@ From review 3 (minors not fixed here):
     reason in both.
 17. With usage back and no picker on the screen (`no_picker`), every sweep reads the screen again until the limit
     record goes stale; on Windows that is one PowerShell start a minute. Remember `no_picker` per limit.
+
+From review 4:
+18. The screen read after the verify (to tell `closed` from `not_taken`) uses the console proven at the look,
+    up to about two minutes earlier. It only reads and parses; prove the console again before it if that matters.
+19. The late miss window for a refusal with a different or unknown reset is 5 h after the press (the shortest
+    usage window) and before the pressed limit's reset. That length is a policy call, left to Data.
