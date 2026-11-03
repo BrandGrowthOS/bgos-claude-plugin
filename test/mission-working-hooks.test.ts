@@ -113,6 +113,94 @@ test('409 drops a ticked goal so later activity and stop do not retry it', async
   assert.equal(r.calls.length, 2)
 })
 
+for (const status of [400, 403, 404, 409]) {
+  for (const trigger of ['Stop', 'idle', 'explicit', 'refresh', 'reselect']) {
+    test(`${status} refusal during ${trigger} retires the goal without later writes`, async t => {
+      const r = await rig(t)
+      await r.tracker.mark({ ...scope, working: true })
+      r.setFailure(status)
+      if (trigger === 'explicit' || trigger === 'reselect') {
+        await assert.rejects(r.tracker.mark({ ...scope, working: trigger === 'reselect' }))
+      } else if (trigger === 'idle') {
+        r.advance(15 * minute)
+        await r.tracker.sweep()
+      } else if (trigger === 'refresh') {
+        r.advance(10 * minute)
+        await r.event()
+      } else {
+        await r.event('Stop')
+      }
+      assert.equal(r.calls.length, 2, 'the refusal must come from a real attempted write')
+      r.setFailure(0)
+      for (let tick = 0; tick < 20; tick++) {
+        r.advance(30_000)
+        await r.tracker.sweep()
+        await r.event()
+      }
+      await r.event('Stop')
+      assert.equal(r.calls.length, 2, 'a final refusal must retire both the selection and the mark')
+    })
+  }
+}
+
+for (const failure of [429, 500, 503, 'network'] as const) {
+  test(`${failure} clear failures back off across sweeps and tool events, then recover`, async t => {
+    const r = await rig(t)
+    await r.tracker.mark({ ...scope, working: true })
+    r.setFailure(typeof failure === 'number' ? failure : 503)
+    if (failure === 'network') r.loseResponse()
+    await r.event('Stop')
+    for (let tick = 0; tick < 20; tick++) {
+      r.advance(30_000)
+      await r.tracker.sweep()
+      await r.event()
+    }
+    assert.deepEqual(r.calls.map(c => c.body.working), [true, false, false, false, false, false],
+      'clear attempts occur at 0, 30, 90, 210 and 450 seconds, even with hook traffic')
+    r.setFailure(0)
+    r.advance(329_999)
+    await r.tracker.sweep()
+    assert.equal(r.calls.length, 6, 'recovery still honors the reserved retry window')
+    r.advance(1)
+    await r.tracker.sweep()
+    assert.equal(r.calls.length, 7)
+    assert.equal(r.calls.at(-1)?.body.working, false)
+    r.advance(20 * minute)
+    await r.event()
+    await r.tracker.sweep()
+    assert.equal(r.calls.length, 7, 'a successful clear ends retries')
+  })
+}
+
+test('an explicit selection bypasses and resets a failed clear backoff', async t => {
+  const r = await rig(t)
+  await r.tracker.mark({ ...scope, working: true })
+  r.setFailure(503)
+  await assert.rejects(r.tracker.mark({ ...scope, working: false }))
+  await r.event()
+  assert.equal(r.calls.length, 2, 'tool traffic must honor an explicit clear failure backoff')
+  r.setFailure(0)
+  await r.tracker.mark({ ...scope, working: true })
+  await r.event('Stop')
+  assert.deepEqual(r.calls.map(c => c.body.working), [true, false, true, false])
+})
+
+test('clear retry backoff caps at ten minutes instead of abandoning the clear', async t => {
+  const r = await rig(t)
+  await r.tracker.mark({ ...scope, working: true })
+  r.setFailure(503)
+  await r.event('Stop')
+  let attempts = 2
+  for (const delay of [30_000, 60_000, 120_000, 240_000, 480_000, 600_000, 600_000]) {
+    r.advance(delay - 1)
+    await r.tracker.sweep()
+    assert.equal(r.calls.length, attempts, 'a retry cannot run before its deadline')
+    r.advance(1)
+    await r.tracker.sweep()
+    assert.equal(r.calls.length, ++attempts, 'a retry must run when the capped deadline arrives')
+  }
+})
+
 test('refresh failures resolve normally, preserve other goals, and reserve the rate limit', async t => {
   const r = await rig(t)
   await r.tracker.mark({ ...scope, working: true })
@@ -156,6 +244,9 @@ test('stop queued behind an in-flight refresh wins and a failed clear is retried
   r.setFailure(503)
   await r.event('SessionEnd')
   r.setFailure(0)
+  await r.tracker.sweep()
+  assert.equal(r.calls.length, 5, 'a failed clear reserves its first retry window')
+  r.advance(30_000)
   await r.tracker.sweep()
   assert.deepEqual(r.calls.slice(-3).map(c => c.body.working), [true, false, false])
 })
@@ -235,7 +326,9 @@ test('a failed explicit selection does not become a hook-owned goal', async t =>
   r.advance(10 * minute)
   await r.event()
   assert.equal(r.calls.filter(c => c.body.working).length, 1)
-  assert.equal(r.calls.at(-1)?.body.working, false, 'an uncertain write is cleared without adopting it')
+  await r.event('Stop')
+  await r.tracker.sweep()
+  assert.equal(r.calls.length, 1, 'a failed write must not create a confirmed mark to clear')
 })
 
 
@@ -285,6 +378,7 @@ test('a newer session owns the shared goal even if the old session clear failed'
   await r.event('SessionEnd')
   r.setFailure(0)
   await r.tracker.mark({ ...scope, sessionId: 'session-b', working: true })
+  r.advance(30_000)
   await r.tracker.sweep()
   assert.deepEqual(r.calls.map(c => c.body.working), [true, false, true])
   await r.event('Stop')
@@ -293,12 +387,13 @@ test('a newer session owns the shared goal even if the old session clear failed'
   assert.equal(r.calls.at(-1)?.body.working, false)
 })
 
-test('a true write with a lost response remains eligible for Stop cleanup', async t => {
+test('a true write with a lost response is not treated as a confirmed mark', async t => {
   const r = await rig(t)
   r.loseResponse()
   await assert.rejects(r.tracker.mark({ ...scope, working: true }))
   await r.event('Stop')
-  assert.deepEqual(r.calls.map(c => c.body.working), [true, false])
+  await r.tracker.sweep()
+  assert.deepEqual(r.calls.map(c => c.body.working), [true])
 })
 
 test('hook refresh errors produce no stdout or stderr and exit normally', () => {

@@ -6,6 +6,27 @@ import { createMissionWorkingTracker } from '../lib/mission-working.ts'
 import { parseHookEvent } from '../lib/hook-events.ts'
 
 const source = readFileSync(new URL('../server.ts', import.meta.url), 'utf8')
+const parsed = ts.createSourceFile('server.ts', source, ts.ScriptTarget.Latest, true)
+const standDownPaths: string[] = []
+let trackerArmedCheck = ''
+function findLifecycle(node: ts.Node) {
+  if (ts.isVariableDeclaration(node) && node.name.getText(parsed) === 'missionWorking' && node.initializer && ts.isCallExpression(node.initializer)) {
+    const options = node.initializer.arguments[0] as ts.ObjectLiteralExpression
+    const armed = options.properties.find(p => p.name?.getText(parsed) === 'isArmed') as ts.PropertyAssignment
+    trackerArmedCheck = armed.initializer.getText(parsed)
+  }
+  if (ts.isExpressionStatement(node) && ts.isCallExpression(node.expression) && node.expression.expression.getText(parsed) === 'stopHookIntake' && ts.isBlock(node.parent)) {
+    const siblings = node.parent.statements
+    const index = siblings.indexOf(node)
+    const disarm = siblings.slice(index - 2, index)
+    if (disarm.length === 2 && disarm.every(statement => ts.isExpressionStatement(statement) && ts.isBinaryExpression(statement.expression) &&
+      ['channelArmed', 'lockHeld'].includes(statement.expression.left.getText(parsed)))) {
+      standDownPaths.push([...disarm, node].map(statement => statement.getText(parsed)).join('\n'))
+    }
+  }
+  ts.forEachChild(node, findLifecycle)
+}
+findLifecycle(parsed)
 function runFunction(name: string, bindings: Record<string, any>, args: any[] = []) {
   const start = source.indexOf(`function ${name}(`)
   assert.ok(start > 0)
@@ -14,6 +35,13 @@ function runFunction(name: string, bindings: Record<string, any>, args: any[] = 
   return new Function(...Object.keys(bindings), `${js}\nreturn ${name}(...args);`)(...Object.values(bindings), ...[])
 }
 const scope = { sessionId: 'session-a', missionId: 77, goalId: 3, headers: {} }
+function stopIntake(tracker: ReturnType<typeof createMissionWorkingTracker>) {
+  return runFunction('stopHookIntake', { args: [], hookIntake: { stop: () => {} },
+    missionWorking: tracker, missionWorkingTimer: null, clearInterval: () => {},
+    clearFloorAttachedMarker: () => {}, hookCardTimer: null, hookCardPending: { clear: () => {} }, hookTurnCardKey: null,
+    hookCardIds: new Map(), stopHookStepsHeartbeat: () => {},
+  })
+}
 
 test('the actual admitted hook handler refreshes selected goals and clears them on Stop', async () => {
   let now = 1_000_000
@@ -82,6 +110,63 @@ test('the daemon starts an unrefed idle sweep and stops it on stand-down', async
   })
   assert.equal(cleared, true)
   assert.deepEqual(writes, [true, false, true, false])
+})
+
+test('each real stand-down path clears marks after changing the actual armed flags', async t => {
+  assert.equal(standDownPaths.length, 4)
+  assert.ok(trackerArmedCheck)
+  for (const [index, standDown] of standDownPaths.entries()) {
+    await t.test(`stand-down path ${index + 1}`, async () => {
+      const writes: boolean[] = []
+      let pending: Promise<void> | undefined
+      const js = ts.transpileModule(`
+        let channelArmed = true, lockHeld = true;
+        const tracker = makeTracker(${trackerArmedCheck});
+        const stopHookIntake = () => onStop(tracker);
+        return { tracker, standDown() { ${standDown}; return [channelArmed, lockHeld]; } };
+      `, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText
+      const harness = new Function('makeTracker', 'onStop', js)(
+        (isArmed: () => boolean) => createMissionWorkingTracker({ isArmed,
+          patch: async (_scope, value) => { writes.push(value); return { mission: { id: 77 } } },
+        }),
+        (tracker: ReturnType<typeof createMissionWorkingTracker>) => {
+          pending = stopIntake(tracker)
+          return pending
+        },
+      )
+      await harness.tracker.mark({ ...scope, working: true })
+      assert.deepEqual(harness.standDown(), [false, false])
+      await pending
+      assert.deepEqual(writes, [true, false], 'stand-down must clear despite both armed flags being false')
+      await harness.tracker.onHook({ hook_event_name: 'PreToolUse', session_id: scope.sessionId })
+      await harness.tracker.sweep()
+      assert.deepEqual(writes, [true, false], 'passive activity must not refresh a retired selection')
+    })
+  }
+})
+
+test('stand-down makes a final clear attempt during an earlier failure backoff', async () => {
+  let armed = true
+  let failure = false
+  const writes: boolean[] = []
+  const tracker = createMissionWorkingTracker({ now: () => 1_000_000, isArmed: () => armed,
+    patch: async (_scope, working) => {
+      writes.push(working)
+      if (failure) throw Object.assign(new Error('unavailable'), { status: 503 })
+      return { mission: { id: 77 } }
+    },
+  })
+  await tracker.mark({ ...scope, working: true })
+  failure = true
+  await tracker.onHook({ hook_event_name: 'Stop', session_id: scope.sessionId })
+  await tracker.sweep()
+  assert.deepEqual(writes, [true, false], 'ordinary sweeps must respect the backoff')
+  failure = false
+  armed = false
+  await stopIntake(tracker)
+  assert.deepEqual(writes, [true, false, false], 'stand-down gets a final chance before its sweep timer is removed')
+  await stopIntake(tracker)
+  assert.deepEqual(writes, [true, false, false], 'a successful final clear is not repeated')
 })
 
 test('graceful shutdown keeps authority until clears finish, with a bounded fallback', async () => {

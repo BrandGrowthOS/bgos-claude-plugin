@@ -27,6 +27,8 @@ type Entry = {
   lastActivity: number
   selectedAt: number
   lastAttempt: number
+  clearRetryAt: number
+  clearRetryDelay: number
   pending: number
   tail: Promise<unknown>
 }
@@ -54,7 +56,7 @@ export function createMissionWorkingTracker(opts: {
     }
   }
   const keyOf = (scope: WorkingScope) => JSON.stringify([scope.missionId, scope.goalId])
-  const conflict = (error: unknown) => (error as { status?: unknown } | null)?.status === 409
+  const finalRefusal = (error: unknown) => [400, 403, 404, 409].includes((error as { status?: number } | null)?.status ?? 0)
   const enqueue = <T>(entry: Entry, work: () => Promise<T>): Promise<T> => {
     entry.pending++
     const next = entry.tail.then(work).finally(() => { entry.pending-- })
@@ -64,39 +66,47 @@ export function createMissionWorkingTracker(opts: {
   }
   const write = async (entry: Entry, working: boolean, scope = entry.scope) => {
     entry.scope = scope
-    if (working) {
-      entry.lastAttempt = now()
-      // A request can land even if its response is lost. Retain enough state
-      // to clear it, without adopting a failed selection for auto-refresh.
-      entry.marked = true
+    if (working) entry.lastAttempt = now()
+    let result: unknown
+    try {
+      result = await opts.patch(scope, working)
+    } catch (error) {
+      if (finalRefusal(error)) {
+        entry.wanted = false
+        entry.marked = false
+      } else if (!working) {
+        // Reserve failed clear attempts across both sweeps and hook bursts.
+        entry.clearRetryAt = now() + entry.clearRetryDelay
+        entry.clearRetryDelay = Math.min(entry.clearRetryDelay * 2, MISSION_WORKING_REFRESH_MS)
+      }
+      throw error
     }
-    const result = await opts.patch(scope, working)
     entry.marked = working
+    entry.clearRetryAt = 0
+    entry.clearRetryDelay = MISSION_WORKING_SWEEP_MS
     const mission = (result as { mission?: unknown } | null)?.mission
     if (mission) {
       try { opts.onMission?.(mission) } catch { /* bookkeeping cannot lose a landed write */ }
     }
     return result
   }
-  const maintain = (entry: Entry, refresh = true) => enqueue(entry, async () => {
-    if (!opts.isArmed()) return
+  const maintain = (entry: Entry, refresh = true, stopping = false) => enqueue(entry, async () => {
+    if (!stopping && !opts.isArmed()) return
     const busy = entry.wanted && now() - entry.lastActivity < MISSION_WORKING_IDLE_MS
     try {
       if (!busy) {
-        if (entry.marked) await write(entry, false)
+        // Stand-down removes the sweep timer, so give its final clear a
+        // chance even when an earlier failure reserved a retry window.
+        if (entry.marked && (stopping || now() >= entry.clearRetryAt)) await write(entry, false)
       } else if (refresh && now() - entry.lastAttempt >= MISSION_WORKING_REFRESH_MS) {
         await write(entry, true)
       }
-    } catch (error) {
-      if (conflict(error)) {
-        entry.wanted = false
-        entry.marked = false
-      }
+    } catch {
       // Never emit the error: an upstream response can contain private data.
     }
   })
-  const sweep = async () => {
-    await Promise.all([...entries.values()].map(entry => maintain(entry, false)))
+  const sweep = async (stopping = false) => {
+    await Promise.all([...entries.values()].map(entry => maintain(entry, false, stopping)))
     for (const [key, entry] of entries) {
       if (!entry.wanted && !entry.marked && entry.pending === 0) entries.delete(key)
     }
@@ -120,7 +130,7 @@ export function createMissionWorkingTracker(opts: {
       const key = keyOf(scope)
       let entry = entries.get(key)
       if (!entry) {
-        entry = { scope, ownerSession: scope.sessionId, wanted: false, marked: false, lastActivity: now(), selectedAt: context.startedAt, lastAttempt: -Infinity, pending: 0, tail: Promise.resolve() }
+        entry = { scope, ownerSession: scope.sessionId, wanted: false, marked: false, lastActivity: now(), selectedAt: context.startedAt, lastAttempt: -Infinity, clearRetryAt: 0, clearRetryDelay: MISSION_WORKING_SWEEP_MS, pending: 0, tail: Promise.resolve() }
         entries.set(key, entry)
       }
       const held = entry
@@ -146,10 +156,7 @@ export function createMissionWorkingTracker(opts: {
           }
           return result
         } catch (error) {
-          if (conflict(error)) {
-            held.wanted = false
-            held.marked = false
-          } else if (held.wanted) {
+          if (held.wanted) {
             held.scope = previousScope
           }
           throw error
@@ -178,13 +185,15 @@ export function createMissionWorkingTracker(opts: {
       }
       await Promise.all(work)
     },
-    sweep,
+    sweep: () => sweep(),
     async stop(): Promise<void> {
       invalidate(null, Infinity)
       for (const entry of entries.values()) {
         entry.wanted = false
       }
-      await sweep()
+      // Stand-down disarms the channel before stopping intake. Only this
+      // final cleanup may clear confirmed marks after authority is disabled.
+      await sweep(true)
     },
   }
 }

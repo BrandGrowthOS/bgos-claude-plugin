@@ -102,7 +102,11 @@ function rig(privateCall: { actingUserId: string; chatId: string; headers: Recor
   const run = async (name: string, rawArgs: Record<string, unknown>) =>
     execute(`${missionHelpers}\nreturn (async () => { switch(name) { ${missionCases} } })();`, { ...bindings, name, rawArgs })
   const writes = () => sent.filter((c) => c.method === 'PATCH')
-  return { sent, writes, run, stamped, remembered }
+  return { sent, writes, run, stamped, remembered,
+    setBound: (sessionId: string | null) => { bindings.hookIntake = { bound: () => sessionId } },
+    disconnectHooks: () => { bindings.hookIntake = null },
+    tracker: bindings.missionWorking as ReturnType<typeof createMissionWorkingTracker>,
+  }
 }
 
 const ownerCall = { actingUserId: OWNER, chatId: OWNER_CHAT, headers: {} as Record<string, string> }
@@ -200,6 +204,32 @@ test('set_goal_working with working false clears each mark the same way', async 
   assert.notEqual(result?.isError, true, textOf(result))
   assert.deepEqual(r.writes().map((c) => [c.path, c.body]), [['integrations/assistants/900/missions/77/goals/3/working', { working: false }]])
   assert.match(textOf(result), /cleared/i)
+})
+
+for (const intake of ['unbound', 'absent']) {
+  test(`set_goal_working with ${intake} hook intake gives manual refresh guidance`, async () => {
+    const r = rig(ownerCall)
+    if (intake === 'unbound') r.setBound(null)
+    else r.disconnectHooks()
+    const result = await r.run('set_goal_working', { goal_ids: [3], working: true })
+    assert.notEqual(result?.isError, true, textOf(result))
+    assert.match(textOf(result), /Marked working: goal 3/)
+    assert.match(textOf(result), /no bound hook session/i)
+    assert.match(textOf(result), /refresh within 30 minutes/i)
+    assert.doesNotMatch(textOf(result), /Hook activity refreshes|Stop clears/)
+    r.setBound('session-a')
+    await r.tracker.onHook({ hook_event_name: 'Stop', session_id: 'session-a' })
+    assert.equal(r.writes().length, 1, 'binding later must not imply ownership of the manual write')
+  })
+}
+
+test('set_goal_working with a bound session describes its real hook lifecycle', async () => {
+  const r = rig(ownerCall)
+  const result = await r.run('set_goal_working', { goal_ids: [3], working: true })
+  assert.match(textOf(result), /Hook activity refreshes selected goals/)
+  assert.match(textOf(result), /Stop clears the selection/)
+  await r.tracker.onHook({ hook_event_name: 'Stop', session_id: 'session-a' })
+  assert.deepEqual(r.writes().map(call => call.body), [{ working: true }, { working: false }])
 })
 
 test('set_goal_working on a recipient turn carries their caller header on every write', async () => {

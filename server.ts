@@ -8399,8 +8399,10 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
         if (marked.length > 0) {
           lines.push(
             working
-              ? `Marked working: ${named(marked)}. Hook activity refreshes selected goals; ` +
-                  'Stop clears the selection, so select again when you resume. Without hooks, ' +
+              ? `Marked working: ${named(marked)}. ` +
+                  (workingContext.sessionId
+                    ? 'Hook activity refreshes selected goals; Stop clears the selection, so select again when you resume. Without hooks, '
+                    : 'There is no bound hook session for this mark; ') +
                   `refresh within ${MISSION_GOAL_WORKING_REFRESH_MINUTES} minutes. ` +
                   'Send working: false when you stop or hand a goal off.'
               : `Working mark cleared: ${named(marked)}.`,
