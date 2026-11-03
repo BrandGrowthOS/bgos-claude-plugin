@@ -159,6 +159,9 @@ test('the source repository git state a lane may not write: index, HEAD, packed-
       '/work/atlas/.git/index',
       '/work/atlas/.git/HEAD',
       '/work/atlas/.git/packed-refs',
+      // Follow up: core.hooksPath, core.fsmonitor and the hooks would run code outside any sandbox.
+      '/work/atlas/.git/config',
+      '/work/atlas/.git/hooks',
       // Gate review finding 4: the stash (its entries live in the reflog), tags, remotes, notes and replace refs.
       '/work/atlas/.git/refs/stash',
       '/work/atlas/.git/logs/refs/stash',

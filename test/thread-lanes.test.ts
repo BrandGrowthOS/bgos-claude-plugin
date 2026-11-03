@@ -150,7 +150,7 @@ function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; f
 
 /** The command the manager must build for a working lane in wt(root) (protected: the agent repo's own state). */
 const PROTECTED = [
-  `${AGENT}/.git/index`, `${AGENT}/.git/HEAD`, `${AGENT}/.git/packed-refs`,
+  `${AGENT}/.git/index`, `${AGENT}/.git/HEAD`, `${AGENT}/.git/packed-refs`, `${AGENT}/.git/config`, `${AGENT}/.git/hooks`,
   ...['refs/stash', 'logs/refs/stash', 'refs/tags', 'refs/remotes', 'refs/notes', 'refs/replace'].map((p) => `${AGENT}/.git/${p}`),
   `${AGENT}/.git/refs/heads/main`,
 ]
@@ -1141,4 +1141,42 @@ test('a lane state saved before lastDelivered existed still gets the notice (nev
   assert.equal(await r.manager.reconcile(async () => ({ turns: [pendingRow('101', '1010', 'x')] }), { assistantIds: ['7'] }), 0)
   await r.manager.idle()
   assert.deepEqual(statePosts(r), ['101:open'])
+})
+
+// -- follow up (Data, item 4): on Linux the stash paths exist before the lane starts --
+
+test('on Linux with no stash yet, refs/stash is made an empty folder and logs/refs/stash an empty file, so both can be bound read only', async () => {
+  const SHA = 'a'.repeat(40)
+  const r = rig({ platform: 'linux', git: (sub) => (sub[0] === 'rev-parse' && sub[1] === '--verify' ? { ok: true, stdout: `${SHA}\n` } : undefined) })
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  assert.ok(r.dirs.has(`${AGENT}/.git/refs/stash`), 'an empty folder git ignores, and replaces on the owner\'s own git stash')
+  assert.equal(r.files.has(`${AGENT}/.git/refs/stash`), false, 'never an empty ref file (git warns of a broken ref)')
+  assert.equal(r.files.get(`${AGENT}/.git/logs/refs/stash`), '')
+  assert.ok(r.dirs.has(`${AGENT}/.git/hooks`))
+  assert.ok(laneSettings(r).tools.includes('Bash'))
+})
+
+test('on Linux an existing stash is left exactly as it is', async () => {
+  const SHA = 'a'.repeat(40)
+  const r = rig({
+    platform: 'linux',
+    files: { [`${AGENT}/.git/refs/stash`]: `${SHA}\n`, [`${AGENT}/.git/logs/refs/stash`]: 'entries\n' },
+    git: (sub) => (sub[0] === 'rev-parse' && sub[1] === '--verify' ? { ok: true, stdout: `${SHA}\n` } : undefined),
+  })
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  assert.equal(r.files.get(`${AGENT}/.git/refs/stash`), `${SHA}\n`)
+  assert.equal(r.files.get(`${AGENT}/.git/logs/refs/stash`), 'entries\n')
+  assert.equal(r.dirs.has(`${AGENT}/.git/refs/stash`), false)
+})
+
+test('on Linux a stash log that cannot be made leaves the lane without Bash', async () => {
+  const SHA = 'a'.repeat(40)
+  const r = rig({ platform: 'linux', git: (sub) => (sub[0] === 'rev-parse' && sub[1] === '--verify' ? { ok: true, stdout: `${SHA}\n` } : undefined) })
+  const create = r.deps.fs.createExclusive
+  r.deps.fs.createExclusive = (p, d) => { if (p.endsWith('logs/refs/stash')) throw new Error('EACCES'); create(p, d) }
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  assert.equal(laneSettings(r).tools.includes('Bash'), false)
 })

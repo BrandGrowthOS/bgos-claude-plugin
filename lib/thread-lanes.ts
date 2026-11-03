@@ -807,11 +807,12 @@ export class ThreadLaneManager {
    */
   private async materializeRefs(commonDir: string, paths: readonly string[]): Promise<boolean> {
     const { fs, git, agentFolder } = this.deps
-    for (const dir of THREAD_LANE_REF_DIRS) {
+    for (const dir of [...THREAD_LANE_REF_DIRS, 'hooks']) {
       try {
         fs.mkdir(join(commonDir, dir))
       } catch {}
     }
+    if (!this.stashPlaceholders(commonDir)) return false
     const heads = `${commonDir}/refs/heads/`
     for (const path of paths) {
       if (!path.startsWith(heads) || fs.exists(path)) continue
@@ -841,6 +842,30 @@ export class ThreadLaneManager {
       }
     }
     return true
+  }
+
+  /**
+   * Linux, no stash yet: refs/stash becomes an empty FOLDER (git ignores it,
+   * and the owner's own `git stash` replaces it; an empty file would be a
+   * broken ref) and logs/refs/stash an empty file, so the sandbox can bind
+   * both read only. An existing stash is left as it is. False when either
+   * could not be made: then the lane gets no Bash.
+   */
+  private stashPlaceholders(commonDir: string): boolean {
+    const { fs } = this.deps
+    const ref = join(commonDir, 'refs', 'stash')
+    const log = join(commonDir, 'logs', 'refs', 'stash')
+    try {
+      if (!fs.exists(ref)) fs.mkdir(ref)
+      if (!fs.exists(log)) {
+        fs.mkdir(dirname(log))
+        fs.createExclusive(log, '')
+      }
+      return true
+    } catch {
+      this.deps.log('threads: the stash could not be protected, the lane runs without Bash')
+      return false
+    }
   }
 
   private copyMainTranscript(lane: Lane, mainId: string): void {

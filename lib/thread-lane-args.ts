@@ -262,7 +262,10 @@ export function threadLaneArgs(input: {
  * live), tags, remotes, notes and replace refs (a replace ref would change
  * what every other branch appears to hold). A branch new since the lane
  * started is still not here (THREAD_LANE_REF_DIRS lists the folders; the
- * daemon makes them exist on Linux, lib/thread-lanes.ts).
+ * daemon makes them exist on Linux, lib/thread-lanes.ts). And the
+ * repository's config and hooks (follow up to finding 4): a lane that set
+ * core.hooksPath or core.fsmonitor, or wrote a hook, would run code the next
+ * time the owner runs git, outside any sandbox.
  */
 /** Ref folders a lane may not write anything in (protectedGitPaths). */
 export const THREAD_LANE_REF_DIRS: readonly string[] = Object.freeze(['refs/tags', 'refs/remotes', 'refs/notes', 'refs/replace'])
@@ -276,7 +279,14 @@ export function protectedGitPaths(input: {
 }): string[] {
   const common = input.commonDir.replace(/\/+$/, '')
   const own = input.ownGitDir.replace(/\/+$/, '')
-  const out = [`${common}/index`, `${common}/HEAD`, `${common}/packed-refs`, `${common}/refs/stash`, `${common}/logs/refs/stash`]
+  const out = [
+    `${common}/index`, `${common}/HEAD`, `${common}/packed-refs`,
+    // The repository's config (core.hooksPath, core.fsmonitor, a filter or a
+    // diff driver) and its hooks run commands for the owner's own git,
+    // outside any sandbox.
+    `${common}/config`, `${common}/hooks`,
+    `${common}/refs/stash`, `${common}/logs/refs/stash`,
+  ]
   for (const dir of THREAD_LANE_REF_DIRS) out.push(`${common}/${dir}`)
   for (const ref of input.branches) {
     if (!ref.startsWith('refs/heads/') || ref.split('/').includes('..')) continue
