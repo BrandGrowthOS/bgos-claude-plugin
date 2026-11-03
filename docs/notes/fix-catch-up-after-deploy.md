@@ -117,6 +117,16 @@ No majors. It checked the hold (frames cannot be orphaned on any outcome), the c
 
 Its doubt about a flake in the framing case was checked and does not hold: arming runs with no await after `connectWebsocket()`, so no frame can land first. That case now waits on the log line, not a fixed time. Its note about line numbers: the citations in the fake and these notes are right at fc9e3bc853 (`git show` confirms `ORDER BY m.id DESC` at 4916), the commit they name. The checkout both reviewers read is another commit, deda76b9d0.
 
+## Mutants
+
+36, one or more per fix, each undoing one thing on its own copy of the tree. All 36 end red. The record is `mutants-summary.txt`, and each `m*.txt` holds the exact change and the run.
+
+- Batches 1 and 2 ran on 99eecf0 and led to new tests where a mutant survived.
+- Batch 3 ran 34 of them on the tree of bf1ed90 (m01 to m34), after the first review's fixes.
+- Batch 4 ran what changed after that, and m35 and m36 are new there. Two survivors along the way each showed something real:
+  - **m08** had become a no-op. The validator drop leaves a page on the chat's key nothing to send. Its true job is keeping a page off its own path as a key, and no test reached that, because the failed page case failed the first older page. It now fails the second, and without the guard the restarted walk loses 250 of 300 rows.
+  - **m36** was a race in my test: the 2 s read of a chat with an open request could beat the request's watch. The case now holds that read open.
+
 ## Other residuals
 
 - A chat that reads empty only because the caller is not admitted yet would hand over its whole history once admitted. Not reachable for chats this daemon lists.

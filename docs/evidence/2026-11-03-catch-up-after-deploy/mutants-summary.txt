@@ -82,3 +82,5 @@ m36-answer-not-deduped: SURVIVED fail=0 pass=1 10s  undoes: second review: the a
 m36 above survived a race in the test, not a gap in the fix: an open request's chat is also read every 2 s, and when that
 read beat the request's watch the hole never opened. A trace of the same mutant with the watch ahead delivered the answer.
 The case now holds the 2 s read open until the watch has acted, and m35 and m36 ran again:
+m35-answer-leaves-no-floor: RED fail=1 pass=0 56s  undoes: second review: a typed answer leaves the floor
+m36-answer-not-deduped: RED fail=1 pass=0 15s  undoes: second review: the answer itself is not delivered
