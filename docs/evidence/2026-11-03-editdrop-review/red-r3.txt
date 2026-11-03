@@ -1,0 +1,118 @@
+✖ review R3: a confirmed message deletion rejects a delayed edit without affecting another tracker (158.436208ms)
+✖ review R3: a deleted chat rejects late socket and stream edits (60.172833ms)
+✖ review R3: deletion clears a pending edit before original delivery by socket or poll (57.275292ms)
+✖ review R3: deletion during an authoritative read cancels the queued correction (60.671709ms)
+✖ review R3: deletion during a transport handoff cannot rearm tracking or later edits (54.204625ms)
+✖ review R3: a legacy socket deletion creates the same tombstone (53.201709ms)
+ℹ tests 6
+ℹ suites 0
+ℹ pass 0
+ℹ fail 6
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 891.312208
+
+✖ failing tests:
+
+test at test/message-edits.test.ts:4:22241
+✖ review R3: a confirmed message deletion rejects a delayed edit without affecting another tracker (158.436208ms)
+  AssertionError [ERR_ASSERTION]: the deleted message must not return
+
+  2 !== 1
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/test/message-edits.test.ts:757:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 2,
+    expected: 1,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/message-edits.test.ts:4:22726
+✖ review R3: a deleted chat rejects late socket and stream edits (60.172833ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  3 !== 1
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/test/message-edits.test.ts:767:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 3,
+    expected: 1,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/message-edits.test.ts:4:22991
+✖ review R3: deletion clears a pending edit before original delivery by socket or poll (57.275292ms)
+  AssertionError [ERR_ASSERTION]: socket
+
+  1 !== 0
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/test/message-edits.test.ts:777:12)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 0,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/message-edits.test.ts:4:23342
+✖ review R3: deletion during an authoritative read cancels the queued correction (60.671709ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  2 !== 1
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/test/message-edits.test.ts:793:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 2,
+    expected: 1,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/message-edits.test.ts:4:23909
+✖ review R3: deletion during a transport handoff cannot rearm tracking or later edits (54.204625ms)
+  AssertionError [ERR_ASSERTION]: the completed transport must not rearm a deleted inbound
+
+  2 !== 1
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/test/message-edits.test.ts:810:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 2,
+    expected: 1,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/message-edits.test.ts:4:24794
+✖ review R3: a legacy socket deletion creates the same tombstone (53.201709ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  2 !== 1
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/test/message-edits.test.ts:822:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 2,
+    expected: 1,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

@@ -52,50 +52,34 @@ export function userMessageLine(text: string): string {
 }
 
 /**
- * The variables that tie a process to the session that launched this daemon.
- * A lane or a By the way fork is a session of its own: inheriting these would
- * let its hooks or its bridge speak as the main session.
+ * The complete child environment allow list. Runtime paths, locale and network
+ * settings let Claude and its tools run; the last group is only Claude's own
+ * configuration and authentication. All other daemon variables are dropped,
+ * including provider credentials, session identity and messaging bridges.
+ * Allowed proxy URLs and client-key passphrases can contain credentials;
+ * these network credentials are intentionally available to the child.
  */
-const PARENT_SESSION_VARS = [
-  'CLAUDE_CODE_SESSION_ID',
-  'CLAUDE_CODE_BRIDGE_SESSION_ID',
-  'CLAUDE_CODE_MESSAGING_SOCKET',
-  'CLAUDE_CODE_MESSAGING_TOKEN',
-  'CLAUDE_CODE_CHILD_SESSION',
-  'CLAUDE_PID',
-  'CLAUDECODE',
-  'CLAUDE_CODE_ENTRYPOINT',
-]
-
-/**
- * The daemon's own BGOS credentials and its terminal. Nothing in a lane or a
- * By the way fork uses them: both load an empty MCP config (no BGOS server),
- * a lane runs --restricted (no hooks, no plugin), and an aside runs no hook
- * at all (lib/thread-lane-args.ts ASIDE_SETTINGS). A lane's Bash could read
- * every one of them.
- */
-export const LANE_CREDENTIAL_VARS: readonly string[] = Object.freeze([
-  'BGOS_API_KEY',
-  'BGOS_PAIRING_TOKEN',
-  'BGOS_CREDENTIALS_PATH',
-  'BGOS_OPENAI_API_KEY',
-  'HOAI_BROWSER_HOST_PAIRING_TOKEN',
-  'HOAI_RELAY_PAIRING_TOKEN',
-  'BGOS_TMUX_SESSION',
-  'BGOS_TMUX_SOCKET',
-  'TMUX',
-  'TMUX_PANE',
+export const LANE_CHILD_ENV_VARS: readonly string[] = Object.freeze([
+  'PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL',
+  'TMPDIR', 'TMP', 'TEMP',
+  'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
+  'SystemRoot', 'WINDIR', 'COMSPEC', 'PATHEXT',
+  'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'APPDATA', 'LOCALAPPDATA',
+  'HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'ALL_PROXY',
+  'https_proxy', 'http_proxy', 'no_proxy', 'all_proxy',
+  'SSL_CERT_FILE', 'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS',
+  'CLAUDE_CODE_CERT_STORE', 'CLAUDE_CODE_CLIENT_CERT',
+  'CLAUDE_CODE_CLIENT_KEY', 'CLAUDE_CODE_CLIENT_KEY_PASSPHRASE',
+  'CLAUDE_CONFIG_DIR',
+  'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN',
+  'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',
 ])
-
-/** Any other BGOS_ or HOAI_ variable whose name says it is a secret. */
-const SECRET_NAME_RE = /^(?:BGOS|HOAI)_\w*(?:TOKEN|KEY|SECRET|PASSWORD|CREDENTIAL)/i
 
 export function laneChildEnv(env: Record<string, string | undefined>): Record<string, string> {
   const out: Record<string, string> = {}
-  for (const [key, value] of Object.entries(env)) {
-    if (value === undefined || PARENT_SESSION_VARS.includes(key)) continue
-    if (LANE_CREDENTIAL_VARS.includes(key) || SECRET_NAME_RE.test(key)) continue
-    out[key] = value
+  for (const key of LANE_CHILD_ENV_VARS) {
+    const value = env[key]
+    if (value !== undefined) out[key] = value
   }
   return out
 }

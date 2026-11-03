@@ -70,7 +70,7 @@ function setup(opts: { platform?: NodeJS.Platform } = {}) {
     emptyMcpConfigPath: () => join(dir, 'empty-mcp.json'),
     shellSandbox: () => true,
     platform: opts.platform ?? process.platform,
-    processes: { stamp: () => null, kill: () => {} },
+    processes: { stamp: async () => null, runsIn: async () => false, kill: () => {} },
     git: async (args, cwd) => {
       try {
         const { stdout } = await run('git', args, { cwd })
@@ -125,6 +125,8 @@ test('a real git: the worktree and its branch are made, and the sandbox protects
       join(common, 'HEAD'),
       join(common, 'index'),
       join(common, 'packed-refs'),
+      join(common, 'config'),
+      join(common, 'hooks'),
       join(common, 'refs', 'stash'),
       join(common, 'logs', 'refs', 'stash'),
       join(common, 'refs', 'tags'),
@@ -182,6 +184,28 @@ test('a real git on Linux: branches kept only in packed-refs are written out loo
     for (const d of ['tags', 'remotes', 'notes', 'replace']) assert.ok(existsSync(join(r.agent, '.git', 'refs', d)), d)
     assert.equal(git(r.agent, 'status', '--porcelain'), '')
     git(r.agent, 'fsck', '--no-progress')
+  } finally {
+    r.cleanup()
+  }
+})
+
+test('a real git on Linux with no stash: the placeholders are invisible to git, and the owner can still stash and pop', async () => {
+  const r = setup({ platform: 'linux' })
+  try {
+    r.manager.turn(turn('101'))
+    await r.manager.idle()
+    const common = join(r.agent, '.git')
+    assert.deepEqual(readdirSync(join(common, 'refs', 'stash')), [], 'an empty folder')
+    assert.equal(readFileSync(join(common, 'logs', 'refs', 'stash'), 'utf8'), '')
+    const refs = execFileSync('git', ['for-each-ref'], { cwd: r.agent, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    assert.doesNotMatch(refs, /stash/)
+    assert.equal(execFileSync('git', ['stash', 'list'], { cwd: r.agent, encoding: 'utf8' }), '')
+    git(r.agent, 'fsck', '--no-progress')
+    writeFileSync(join(r.agent, 'a.txt'), 'changed\n')
+    git(r.agent, 'stash')
+    assert.match(git(r.agent, 'stash', 'list'), /stash@\{0\}/)
+    git(r.agent, 'stash', 'pop', '-q')
+    assert.equal(readFileSync(join(r.agent, 'a.txt'), 'utf8'), 'changed\n')
   } finally {
     r.cleanup()
   }

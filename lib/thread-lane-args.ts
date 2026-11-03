@@ -86,6 +86,8 @@ export interface ThreadLaneConfinement {
   protectedPaths?: readonly string[]
   /** Paths the sandbox must refuse Bash to read: credential files and keys (laneSecretPaths). */
   secretPaths?: readonly string[]
+  /** Specific directories reopened inside the denied credential tree. */
+  readablePaths?: readonly string[]
   /** Folders a read only lane may read (the agent folder). Absolute. */
   readDirs?: readonly string[]
   platform?: NodeJS.Platform
@@ -191,6 +193,7 @@ export function threadLaneSettings(c: ThreadLaneConfinement): Record<string, unk
             filesystem: {
               denyWrite: [...(c.protectedPaths ?? [])],
               ...(c.secretPaths ? { denyRead: [...c.secretPaths] } : {}),
+              ...(c.readablePaths?.length ? { allowRead: [...c.readablePaths] } : {}),
             },
           },
         }
@@ -262,7 +265,10 @@ export function threadLaneArgs(input: {
  * live), tags, remotes, notes and replace refs (a replace ref would change
  * what every other branch appears to hold). A branch new since the lane
  * started is still not here (THREAD_LANE_REF_DIRS lists the folders; the
- * daemon makes them exist on Linux, lib/thread-lanes.ts).
+ * daemon makes them exist on Linux, lib/thread-lanes.ts). And the
+ * repository's config and hooks (follow up to finding 4): a lane that set
+ * core.hooksPath or core.fsmonitor, or wrote a hook, would run code the next
+ * time the owner runs git, outside any sandbox.
  */
 /** Ref folders a lane may not write anything in (protectedGitPaths). */
 export const THREAD_LANE_REF_DIRS: readonly string[] = Object.freeze(['refs/tags', 'refs/remotes', 'refs/notes', 'refs/replace'])
@@ -276,7 +282,14 @@ export function protectedGitPaths(input: {
 }): string[] {
   const common = input.commonDir.replace(/\/+$/, '')
   const own = input.ownGitDir.replace(/\/+$/, '')
-  const out = [`${common}/index`, `${common}/HEAD`, `${common}/packed-refs`, `${common}/refs/stash`, `${common}/logs/refs/stash`]
+  const out = [
+    `${common}/index`, `${common}/HEAD`, `${common}/packed-refs`,
+    // The repository's config (core.hooksPath, core.fsmonitor, a filter or a
+    // diff driver) and its hooks run commands for the owner's own git,
+    // outside any sandbox.
+    `${common}/config`, `${common}/hooks`,
+    `${common}/refs/stash`, `${common}/logs/refs/stash`,
+  ]
   for (const dir of THREAD_LANE_REF_DIRS) out.push(`${common}/${dir}`)
   for (const ref of input.branches) {
     if (!ref.startsWith('refs/heads/') || ref.split('/').includes('..')) continue
@@ -292,42 +305,43 @@ export function protectedGitPaths(input: {
 }
 
 /**
- * What a working lane's Bash may not read (gate review finding 6). The
- * sandbox lets Bash read the whole disk except what `filesystem.denyRead`
- * names, and --restricted confines only the file tools. Refused: ~/.ssh, the
- * CLI's own credentials file (Linux keeps the sign in there; with
- * CLAUDE_CONFIG_DIR, in that folder too), and ~/.bgos-agent, where every
- * agent's HOAI credentials, browser profile and state live. An agent folder
- * inside ~/.bgos-agent (the default `<id>-workspace`) stays readable with its
- * own .git: there every sibling on the way to it is refused instead. Only
- * paths that exist are named (the Linux sandbox binds over real paths).
+ * What a working lane's Bash may not read (gate review finding 6 and its
+ * follow up). The sandbox lets Bash read the whole disk except what
+ * `filesystem.denyRead` names, and --restricted confines only the file tools.
+ * Refused: ~/.ssh, the CLI's own credentials file (Linux keeps the sign in
+ * there; with CLAUDE_CONFIG_DIR, in that folder too), the AWS, GitHub CLI,
+ * netrc, Docker and npm credentials, the default plugin state and any
+ * BGOS_PLUGIN_STATE_DIR override, and ~/.bgos-agent, where every agent's
+ * HOAI credentials, browser profile and state live.
+ *
+ * Deny ~/.bgos-agent whole, including credentials created after startup.
+ * The manager supplies narrow allowRead exceptions for its workspace and
+ * its own email files. Enumerating current siblings misses future secrets.
+ * Only paths that exist are named (the Linux sandbox binds over real paths).
  */
 export function laneSecretPaths(input: {
   home: string
   configDir: string
-  agentFolder: string
+  /** BGOS_PLUGIN_STATE_DIR, else ~/.bgos-plugin-state. */
+  pluginStateDir?: string
   exists(path: string): boolean
-  list(dir: string): string[]
 }): string[] {
-  const home = input.home.replace(/\/+$/, '')
-  const out = [`${home}/.ssh`, `${home}/.claude/.credentials.json`]
-  const config = input.configDir.replace(/\/+$/, '')
+  const trim = (p: string) => p.replace(/\/+$/, '')
+  const home = trim(input.home)
+  const out = [
+    `${home}/.ssh`,
+    `${home}/.claude/.credentials.json`,
+    `${home}/.aws`,
+    `${home}/.config/gh`,
+    `${home}/.netrc`,
+    `${home}/.docker/config.json`,
+    `${home}/.npmrc`,
+    `${home}/.bgos-plugin-state`,
+    trim(input.pluginStateDir?.trim() || `${home}/.bgos-plugin-state`),
+    `${home}/.bgos-agent`,
+  ]
+  const config = trim(input.configDir)
   if (config !== '') out.push(`${config}/.credentials.json`)
-  const agents = `${home}/.bgos-agent`
-  const folder = input.agentFolder.replace(/\/+$/, '')
-  if (folder.startsWith(`${agents}/`)) {
-    let dir = agents
-    for (const part of folder.slice(agents.length + 1).split('/').filter(Boolean)) {
-      let children: string[] = []
-      try {
-        children = input.list(dir)
-      } catch {}
-      for (const child of children) if (child !== part) out.push(`${dir}/${child}`)
-      dir = `${dir}/${part}`
-    }
-  } else if (folder !== agents) {
-    out.push(agents)
-  }
   return [...new Set(out)].filter((p) => {
     try {
       return input.exists(p)

@@ -1,0 +1,10 @@
+✔ review R2: a socket correction waits for this chat on the new epoch, independently of another tracker (150.179208ms)
+✔ review R2: poll catch-up delivers B before the later correction to A (59.79775ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 695.69525

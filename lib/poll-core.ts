@@ -811,3 +811,24 @@ export function planPollCycle(opts: {
   }
   return { kind: 'idle' }
 }
+
+/** Keep originals in ID order; insert corrections at their edit time.
+ * An unversioned correction belongs after the owed originals, never ahead.
+ */
+export function mergeHumanEditDeliveries<T>(
+  originals: T[], edits: T[], sentAt: (row: T) => number | null, editedAt: (row: T) => number | null,
+): Array<{ row: T; edit: boolean }> {
+  const pending = [...edits].sort((a, b) => (editedAt(a) ?? Infinity) - (editedAt(b) ?? Infinity))
+  const editRows = new Set(edits)
+  const plan: Array<{ row: T; edit: boolean }> = []
+  for (const row of originals) {
+    if (editRows.has(row)) continue
+    const sent = sentAt(row)
+    while (pending.length && sent !== null && (editedAt(pending[0]!) ?? Infinity) <= sent) {
+      plan.push({ row: pending.shift()!, edit: true })
+    }
+    plan.push({ row, edit: false })
+  }
+  for (const row of pending) plan.push({ row, edit: true })
+  return plan
+}

@@ -1,0 +1,47 @@
+✔ with no proven main session it refuses with no_session and spawns nothing (2.139709ms)
+✔ with no claude binary it refuses with unavailable and spawns nothing (0.262625ms)
+✔ on a claude that cannot run the aside it refuses with unsupported and the real cause, and spawns nothing (0.200959ms)
+✔ a CLI answer still being probed is waited for, then the aside runs (9.311625ms)
+✔ it forks the main session in the main folder with the aside command and the prompt on stdin (1.557708ms)
+✔ text deltas stream as ordered progress, numbered from 0 (0.16925ms)
+✔ the fork session file is deleted after the answer, and the main file never is (0.107833ms)
+✔ an init frame that names the MAIN session is never treated as the fork (0.083541ms)
+✔ a missing result falls back to the streamed text (0.154834ms)
+✔ a fork that says nothing (it tried a tool, or failed) is failed, and still cleaned up (0.165625ms)
+✔ the hard timeout is 55 s: it kills the child, answers timed_out, and deletes the fork file once it exits (0.178041ms)
+✔ a child that exits before any frame is failed (0.101417ms)
+✔ an error result is a failure, never the answer, even with text in it or streamed before it (1.046041ms)
+✔ a fork in flight is listed for the shutdown: stopAll signals it, killAll kills it and deletes its session file (0.325792ms)
+✔ spec 15: the main transcript is byte identical after a By the way answer (a fake claude that writes its fork file) (533.31475ms)
+✔ a live process has a stable start stamp; once it has exited it has none (198.887041ms)
+✔ the stop reaches the whole process group, the tools a lane started included (73.705625ms)
+✔ a pid nobody holds has no stamp, and a stop of it is harmless (17.049333ms)
+✔ the real stream json child exposes its pid, so the lane state can name it (107.637792ms)
+✔ on Linux the stamp is the start time from /proc/<pid>/stat, and a zombie counts as gone (0.288958ms)
+✔ elsewhere the stamp is what ps prints as the start, and a zombie or a missing pid counts as gone (0.118708ms)
+✔ reading a stamp never blocks the event loop: timers keep firing while ps runs (215.563208ms)
+✔ a process is known by the folder it runs in when no stamp was saved (342.807792ms)
+✔ a live unstamped process stays unknown when cwd inspection unavailable (12.684541ms)
+✔ a live unstamped process stays unknown when cwd inspection failed (11.397833ms)
+✔ a live unstamped process stays unknown when cwd inspection timed out (12.263834ms)
+✔ a live unstamped process stays unknown when cwd inspection missing cwd (10.670084ms)
+✔ the real ps read runs off the event loop: a 300 ms ps leaves timers firing (877.468625ms)
+✔ frames split across chunks are parsed whole, blank and broken lines are skipped (1.387666ms)
+✔ a JSON value that is not an object is not a frame (0.104417ms)
+✔ the user message line is one NDJSON line in the CLI stream json input shape (0.127ms)
+✔ a lane child never inherits the main session identity or its messaging bridge (0.084459ms)
+✔ the real spawner writes stdin, reads stdout chunks and reports the exit (114.193333ms)
+✔ a command that cannot start reports an exit instead of throwing (2.596791ms)
+✔ a lane child never inherits the daemon BGOS credentials or its terminal (0.152ms)
+✔ the child environment allows only runtime and explicit Claude authentication variables (0.088375ms)
+✔ the real thread child starts without AWS, GitHub, or unknown exported tokens (203.45325ms)
+✔ kill stops the lane whole process group, so a tool it started stops with it (250.277167ms)
+✔ the real thread starts with filtered credentials and its sandbox reads only permitted files (2194.401375ms)
+ℹ tests 39
+ℹ suites 0
+ℹ pass 39
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2896.061417

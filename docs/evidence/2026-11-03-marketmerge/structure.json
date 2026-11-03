@@ -1,0 +1,57 @@
+{
+  "branch_parent": "0c096eaadce0a9b439cbcc7be42b01b76fdbdf1c",
+  "main_parent": "309ef744bbb6d03ad771492df0af0e7df13ed5c9",
+  "merge_base": "c636ded67e0a7db63e51e20f901c5e870bc71108",
+  "checks": {
+    ".claude-plugin/plugin.json": {
+      "identical_to_main": true,
+      "sha256": "e3fffb37b854d55c018b69014b6316fc9efd941fa57454db0f2019f96a1fb6df"
+    },
+    "package.json": {
+      "identical_to_main": true,
+      "sha256": "56dcd010d8d6538b180835aab745344dc10d9f0e7c1560151d6d0139c5f2d94f"
+    },
+    "package-lock.json": {
+      "identical_to_main": true,
+      "sha256": "7a2c4eac891f5a984b9c9f5660ba154fe89c03a59b00a6c06c37491784ebe089"
+    },
+    "REPORT.md": {
+      "identical_to_main": true,
+      "sha256": "21ab6bd8b8fa6a4f52ff613b6ac1fe7be38a2e645174bb6688af4f9be2e0eb55"
+    },
+    "REPORT-ROUND.md": {
+      "identical_to_branch_parent": true
+    },
+    "CHANGELOG.md": {
+      "main_text_preserved": true,
+      "branch_note_preserved_verbatim": true,
+      "under_newest_heading": true
+    },
+    "test/bootstrap-askuserquestion-deny.test.ts": {
+      "parent_test_names_and_assertions_preserved": true,
+      "test_declarations": 7,
+      "assertion_calls": 27
+    },
+    "test/run-tests-tmpdir.test.ts": {
+      "parent_test_names_and_assertions_preserved": true,
+      "test_declarations": 3,
+      "assertion_calls": 9
+    },
+    "test/attach-scope.test.ts": {
+      "parent_test_names_and_assertions_preserved": true,
+      "test_declarations": 39,
+      "assertion_calls": 131
+    },
+    "all_other_original_files": {
+      "verified_paths": 1260,
+      "clean_three_way_merges": [
+        "bin/hoai-core.mjs",
+        "scripts/run-tests.mjs",
+        "server.ts",
+        "test/duplicate-copy.test.ts",
+        "test/stand-down-sites.test.ts"
+      ]
+    }
+  },
+  "passed": true
+}

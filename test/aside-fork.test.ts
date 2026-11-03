@@ -87,9 +87,24 @@ test('with no claude binary it refuses with unavailable and spawns nothing', asy
 
 test('on a claude that cannot run the aside it refuses with unsupported and the real cause, and spawns nothing', async () => {
   const sentence = 'Claude Code on this computer cannot answer side questions: it is version 2.1.250 and they need 2.1.301 or later. Update Claude Code, then ask again.'
-  const r = rig({ cliProblem: () => sentence })
+  const r = rig({ cliProblem: async () => sentence })
   await assert.rejects(runAside(input, r.deps), (err: unknown) => err instanceof AsideError && err.code === 'unsupported' && err.message === sentence)
   assert.equal(r.spawned.length, 0)
+})
+
+test('a CLI answer still being probed is waited for, then the aside runs', async () => {
+  let answer: (p: string | null) => void = () => {}
+  const r = rig({ cliProblem: () => new Promise((done) => { answer = done }) })
+  const pending = runAside(input, r.deps)
+  await new Promise((done) => setImmediate(done))
+  assert.equal(r.spawned.length, 0, 'nothing runs before the answer')
+  answer(null)
+  await new Promise((done) => setImmediate(done))
+  assert.equal(r.spawned.length, 1)
+  const c = r.spawned[0]!.child
+  c.frame({ type: 'result', subtype: 'success', is_error: false, result: 'PELICAN-42.' })
+  c.exit(0)
+  assert.deepEqual(await pending, { text: 'PELICAN-42.' })
 })
 
 test('it forks the main session in the main folder with the aside command and the prompt on stdin', async () => {

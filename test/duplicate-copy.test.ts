@@ -207,10 +207,10 @@ test('probeSessionChannelSpecs reads the specs off the claude ancestor, and answ
 
 const serverSource = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
 
-test('server.ts asks the duplicate question FIRST in main(), and a duplicate exits before the lock, the supervisor record and any poll', () => {
-  const main = serverSource.slice(serverSource.indexOf('async function main(): Promise<void> {'))
+test('server.ts asks the duplicate question FIRST in preflight, and a duplicate exits before the lock, the supervisor record and any poll', () => {
+  const main = serverSource.slice(serverSource.indexOf('async function preflightDuplicateCopy(): Promise<void> {'))
   const ask = main.indexOf('decideDuplicateCopy({')
-  assert.ok(ask > 0, 'main() must ask decideDuplicateCopy')
+  assert.ok(ask > 0, 'preflight must ask decideDuplicateCopy')
   const exit = main.indexOf('process.exit(served ? 0 : 1)', ask)
   assert.ok(exit > ask, 'a duplicate serves its notice and exits')
   const before = main.slice(0, exit)
@@ -222,7 +222,7 @@ test('server.ts asks the duplicate question FIRST in main(), and a duplicate exi
 })
 
 test('a clone is never asked to stand aside: both probes are gated on the marketplace install', () => {
-  const main = serverSource.slice(serverSource.indexOf('async function main(): Promise<void> {'))
+  const main = serverSource.slice(serverSource.indexOf('async function preflightDuplicateCopy(): Promise<void> {'))
   const block = main.slice(main.indexOf('decideDuplicateCopy({'), main.indexOf('process.exit(served ? 0 : 1)'))
   // The method itself, the session probe and the sibling lookup: three gates on one install method.
   assert.equal((block.match(/INSTALL_METHOD === 'marketplace'/g) ?? []).length, 2)

@@ -52,8 +52,8 @@ test('actual schedule create/list/cancel carry frozen recipient header; omitted 
   for (const call of calls) assert.deepEqual(call.headers, { 'X-BGOS-Acting-User': 'user_recipient' })
 })
 
-test('all three admitted message lanes use opaque private delivery identity and authoritative actor fields', () => {
-  assert.equal((source.match(/content: privateTurns\.deliver\(/g) || []).length, 3)
+test('all admitted message lanes use opaque private delivery identity and authoritative actor fields', () => {
+  assert.equal((source.match(/content: privateTurns\.deliver\(/g) || []).length, 4)
   assert.match(source, /senderUserId: privateSenderUserId\(msg\.message\)/)
   assert.match(source, /senderUserId: privateSenderUserId\(view\.raw\)/)
   assert.match(source, /senderUserId: privateSenderUserId\(payload\)/)
@@ -80,15 +80,15 @@ test('all three admitted message lanes use opaque private delivery identity and 
 
 test('actual delivery actor expressions refuse legacy owner userId and user_id in every lane', () => {
   const lines = source.split('\n').filter(line => line.includes('content: privateTurns.deliver('))
-  assert.equal(lines.length, 3)
+  assert.equal(lines.length, 4)
   for (const line of lines) {
     const match = line.trim().match(/actingUserId: (privateActor\(.*\)) \}\),$/)!
     assert.ok(match)
     for (const payload of [{ user_id: 'user_owner' }, { userId: 'user_owner' }]) {
-      const bindings = { privateActor, privateSenderUserId, msg: { message: payload }, view: { raw: payload, senderKind: 'user' }, payload,
+      const bindings = { privateActor, privateSenderUserId, edited: { raw: payload }, msg: { message: payload }, view: { raw: payload, senderKind: 'user' }, payload,
         pollSenderType: 'user', pollAgentOrigin: null, isSystem: false, wsSenderType: 'user', wsAgentOrigin: null }
       assert.equal(execute('return ' + match[1], bindings), null)
-      assert.equal(execute('return ' + match[1], { ...bindings, msg: { message: { ...payload, senderUserId: 'user_recipient' } }, view: { raw: { ...payload, senderUserId: 'user_recipient' }, senderKind: 'user' }, payload: { ...payload, senderUserId: 'user_recipient' } }), 'user_recipient')
+      assert.equal(execute('return ' + match[1], { ...bindings, edited: { raw: { ...payload, senderUserId: 'user_recipient' } }, msg: { message: { ...payload, senderUserId: 'user_recipient' } }, view: { raw: { ...payload, senderUserId: 'user_recipient' }, senderKind: 'user' }, payload: { ...payload, senderUserId: 'user_recipient' } }), 'user_recipient')
     }
   }
 })
@@ -98,7 +98,7 @@ test('every lane names the scheduled fire it delivers, with the same fields its 
   // deliver() the fire key, or a replay through it is never caught.
   const privateFireKey = (privateTurnModule as any).privateFireKey
   assert.equal(typeof privateFireKey, 'function', 'lib/private-turn.mjs exports privateFireKey')
-  const lines = source.split('\n').filter(line => line.includes('content: privateTurns.deliver('))
+  const lines = source.split('\n').filter(line => line.includes('content: privateTurns.deliver(') && !line.includes('edited.chatId'))
   assert.equal(lines.length, 3)
   const wake = { source: 'scheduler', payload: { scheduledTaskId: 77, fireId: '3f2a9c1e-0000-4000-8000-000000000001', actingUserId: 'user_owner' } }
   const reminder = { source: 'scheduler', payload: { scheduled_action_id: 'a0da1344-0000-4000-8000-000000000000', actingUserId: 'user_owner' } }

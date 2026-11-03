@@ -2,6 +2,13 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.84.0 (2026-11-04)
+
+- Threads recover safely after a restart, keep delivered answers from running again, and protect your credentials and repository while side conversations run. Checking CLI support runs in the background, so it does not stall your chat.
+- Mission goals you mark as working stay marked while tools run. Hooks clear the marks when the session stops or goes idle, and prevent an old daemon from changing a newer session's marks.
+- Editing a message already delivered to your agent now sends the correction once, including edits that share a timestamp, while preserving missed-message catch-up and deletion handling.
+- The marketplace plugin attaches in the matching agent's home or an explicitly requested session. Elsewhere it stays quiet, and launcher identity checks help prevent a session from attaching as the wrong agent.
+
 ## 0.83.1 (2026-11-03)
 
 **An agent's service keeps the login user Claude was signed in with.** The launchd plist and the systemd unit wrote USER and LOGNAME from `id -un`. On a Mac where Claude was logged in from a shell whose USER differs from the account name (a home reached through a symlinked user folder), every agent whose service file was rewritten showed "Login expired" while the others worked. They now take the installing shell's USER, and fall back to the account name only when USER is unset.

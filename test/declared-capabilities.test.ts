@@ -892,5 +892,5 @@ test('server.ts declares threads from the live claude lookup, its threads CLI pr
   for (const call of calls) assert.match(call, /threads: threadsDeclared\(\),/)
   // Gate review finding 2: a binary alone is not enough, it must pass the probe.
   assert.match(server, /function threadsDeclared\(\): boolean \{\n\s*return process\.platform !== 'win32' && threadsCli\(\)\.ok\n\}/)
-  assert.match(server, /claudePath: resolveClaude\(\),/)
+  assert.match(server, /claudePath: \(\) => resolveClaude\(\),/)
 })

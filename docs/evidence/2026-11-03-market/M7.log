@@ -1,0 +1,28 @@
+✖ marketplace real boot: a non agent folder stays dormant with no tools, channel or lock (185.646333ms)
+✔ test/marketplace-attach.test.ts (90.672125ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 1
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 284.54675
+
+✖ failing tests:
+
+test at test/marketplace-attach.e2e.test.ts:2:1921
+✖ marketplace real boot: a non agent folder stays dormant with no tools, channel or lock (185.646333ms)
+  AssertionError [ERR_ASSERTION]: every dormant boot records its scope decision
+      at assertDormant (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:156:10)
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:166:5)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }

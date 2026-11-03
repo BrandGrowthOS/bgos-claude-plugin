@@ -58,7 +58,7 @@ class FakeChild implements StreamJsonChild {
 
 interface Timer { fn: () => void; ms: number; cleared: boolean; fired: boolean }
 
-function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; files?: Record<string, string>; shell?: boolean; failPosts?: (path: string, body: Record<string, unknown>) => boolean; cliProblem?: string | null; platform?: NodeJS.Platform; git?: (sub: string[]) => { ok: boolean; stdout: string } | undefined } = {}) {
+function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; files?: Record<string, string>; shell?: boolean; failPosts?: (path: string, body: Record<string, unknown>) => boolean; cliProblem?: string | null | (() => Promise<string | null>); platform?: NodeJS.Platform; git?: (sub: string[]) => { ok: boolean; stdout: string } | undefined } = {}) {
   const repo = opts.repo ?? true
   const files = new Map<string, string>(Object.entries(opts.files ?? {}))
   const dirs = new Set<string>()
@@ -73,6 +73,10 @@ function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; f
   /** The machine's processes as the lanes see them: a stamp while alive, and what stops each. */
   const procs = new Map<number, { stamp: string; alive: boolean; dies: 'SIGTERM' | 'SIGKILL' | 'never' }>()
   const procKills: Array<[number, string]> = []
+  /** ps (or /proc) failing: no start stamp can be read while this is true. */
+  const ctl = { stampDown: false }
+  /** The folder each process runs in, as the lane's cwd check reads it. */
+  const procCwd = new Map<number, string>()
   let lastPid = 4000
   const mainSrc = sessionTranscriptPath(HOME, AGENT, MAIN, '')
   files.set(mainSrc, '{"main":true}\n')
@@ -82,12 +86,15 @@ function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; f
       const pid = ++lastPid
       child.pid = pid
       procs.set(pid, { stamp: `S${pid}`, alive: true, dies: 'SIGTERM' })
+      procCwd.set(pid, o.cwd)
       child.onExit(() => { procs.get(pid)!.alive = false })
       spawned.push({ command, args, cwd: o.cwd, child })
       return child
     },
     processes: {
-      stamp: (pid) => { const p = procs.get(pid); return p && p.alive ? p.stamp : null },
+      // Asynchronous, like the real ps and /proc reads: never a blocked event loop.
+      stamp: async (pid) => { if (ctl.stampDown) return undefined; const p = procs.get(pid); return p && p.alive ? p.stamp : null },
+      runsIn: async (pid, dir) => { const p = procs.get(pid); return !ctl.stampDown && p !== undefined && p.alive && procCwd.get(pid) === dir },
       kill: (pid, signal) => {
         procKills.push([pid, signal])
         const p = procs.get(pid)
@@ -95,13 +102,14 @@ function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; f
       },
     },
     claudeBin: () => '/bin/claude',
-    cliProblem: () => opts.cliProblem ?? null,
+    cliProblem: async () => (typeof opts.cliProblem === 'function' ? opts.cliProblem() : opts.cliProblem ?? null),
     mainSessionId: () => (opts.mainId === undefined ? MAIN : opts.mainId),
     agentFolder: AGENT,
     stateDir: STATE,
     home: HOME,
     configDir: '',
     emptyMcpConfigPath: () => MCP,
+    emailFilesDir: `${HOME}/.bgos-agent/email-files/7`,
     shellSandbox: () => opts.shell ?? true,
     platform: opts.platform ?? 'darwin',
     git: async (args) => {
@@ -145,12 +153,12 @@ function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; f
   const manager = new ThreadLaneManager(deps)
   const live = (ms: number) => timers.filter((t) => t.ms === ms && !t.cleared && !t.fired)
   const fire = (t: Timer) => { t.fired = true; t.fn() }
-  return { manager, deps, files, dirs, spawned, posts, failedPosts, gitCalls, removed, branchesDeleted, timers, clock, live, fire, mainSrc, procs, procKills }
+  return { manager, deps, files, dirs, spawned, posts, failedPosts, gitCalls, removed, branchesDeleted, timers, clock, live, fire, mainSrc, procs, procKills, ctl, procCwd }
 }
 
 /** The command the manager must build for a working lane in wt(root) (protected: the agent repo's own state). */
 const PROTECTED = [
-  `${AGENT}/.git/index`, `${AGENT}/.git/HEAD`, `${AGENT}/.git/packed-refs`,
+  `${AGENT}/.git/index`, `${AGENT}/.git/HEAD`, `${AGENT}/.git/packed-refs`, `${AGENT}/.git/config`, `${AGENT}/.git/hooks`,
   ...['refs/stash', 'logs/refs/stash', 'refs/tags', 'refs/remotes', 'refs/notes', 'refs/replace'].map((p) => `${AGENT}/.git/${p}`),
   `${AGENT}/.git/refs/heads/main`,
 ]
@@ -159,7 +167,7 @@ function workArgs(root: string, fork: string | null): string[] {
     mainSessionId: MAIN,
     forkSessionId: fork,
     emptyMcpConfigPath: MCP,
-    confinement: { root: wt(root), readOnly: false, shellSandbox: true, protectedPaths: PROTECTED, secretPaths: [] },
+    confinement: { root: wt(root), readOnly: false, shellSandbox: true, protectedPaths: PROTECTED, secretPaths: [], readablePaths: [`${HOME}/.bgos-agent/email-files/7`] },
   })
 }
 
@@ -469,6 +477,207 @@ test('a turn on a closed thread reopens it, so the sweep no longer removes it', 
   await r.manager.idle()
   assert.equal(JSON.parse(r.files.get(join(STATE, '101.json'))!).closedAt, null)
   assert.deepEqual(await r.manager.sweepClosed(r.clock.now + 8 * DAY), [])
+})
+
+test('a reopen waits for an in-flight sweep and starts in a recreated worktree', async () => {
+  const state = { rootId: '101', chatId: '55', title: 'T', forkSessionId: FORK_A, folder: wt('101'), cwd: wt('101'), worktree: true, readOnly: false, closedAt: 1, lastReplyId: '1010', lastDelivered: true, pid: null, pidStamp: null }
+  const forkFile = sessionTranscriptPath(HOME, wt('101'), FORK_A, '')
+  const r = rig({ files: { [join(STATE, '101.json')]: JSON.stringify(state), [forkFile]: '{}\n' } })
+  r.dirs.add(wt('101'))
+  const git = r.deps.git
+  let release: () => void = () => {}
+  const gate = new Promise<void>((done) => { release = done })
+  let removing = false
+  r.deps.git = async (args, cwd) => {
+    if (args[2] === 'worktree' && args[3] === 'remove') { removing = true; await gate }
+    return git(args, cwd)
+  }
+  const sweep = r.manager.sweepClosed(30 * DAY)
+  await flush()
+  assert.equal(removing, true, 'the sweep has reached the paused git removal')
+  r.manager.turn(turn('101', { mode: 'reply', replyId: '1011', text: 'reopened during sweep' }))
+  await flush()
+  const startedDuringRemoval = r.spawned.length
+  const secondSweep = await r.manager.sweepClosed(30 * DAY)
+  release()
+  assert.deepEqual(await sweep, ['101'])
+  await r.manager.idle()
+  assert.equal(startedDuringRemoval, 0, 'no child may start in a worktree being removed')
+  assert.deepEqual(secondSweep, [], 'a second sweep does not claim the same root')
+  assert.equal(r.spawned.length, 1)
+  assert.equal(r.dirs.has(wt('101')), true, 'the new child owns a recreated worktree')
+  assert.equal(saved(r).closedAt, null)
+  assert.equal(saved(r).pid, r.spawned[0]!.child.pid)
+  assert.equal(r.files.has(forkFile), false, 'the swept fork is gone')
+  assert.deepEqual(r.spawned[0]!.args, workArgs('101', null), 'fork main again instead of resuming the deleted transcript')
+  assert.equal(r.files.get(sessionTranscriptPath(HOME, wt('101'), MAIN, '')), '{"main":true}\n')
+  r.spawned[0]!.child.init(FORK_B)
+  r.spawned[0]!.child.result('reopened safely')
+  await r.manager.idle()
+  assert.ok(replyTexts(r).includes('reopened safely'))
+  assert.equal(saved(r).forkSessionId, FORK_B)
+})
+
+for (const scenario of ['sweep', 'delete', 'sweep then close'] as const) {
+  test(`a reopen queued behind busy slots forks afresh after ${scenario} finishes`, async () => {
+    const state = { rootId: '101', chatId: '55', title: 'T', forkSessionId: FORK_A, folder: wt('101'), cwd: wt('101'), worktree: true, readOnly: false, closedAt: 1, lastReplyId: '1010', lastDelivered: true, pid: null, pidStamp: null }
+    const forkFile = sessionTranscriptPath(HOME, wt('101'), FORK_A, '')
+    const r = rig({ files: { [join(STATE, '101.json')]: JSON.stringify(state), [forkFile]: '{}\n' } })
+    r.dirs.add(wt('101'))
+    r.manager.turn(turn('201'))
+    r.manager.turn(turn('301'))
+    await r.manager.idle()
+    assert.equal(r.spawned.length, 2, 'both process slots are occupied')
+
+    const git = r.deps.git
+    let release: () => void = () => {}
+    const gate = new Promise<void>((done) => { release = done })
+    let removing = false
+    r.deps.git = async (args, cwd) => {
+      if (args[2] === 'worktree' && args[3] === 'remove') { removing = true; await gate }
+      return git(args, cwd)
+    }
+    const removal = scenario === 'delete'
+      ? r.manager.close({ rootId: '101', removeWorktree: true })
+      : r.manager.sweepClosed(30 * DAY)
+    await flush()
+    assert.equal(removing, true, 'cleanup is paused in git removal')
+    assert.deepEqual(r.manager.turn(turn('101', { mode: 'reply', replyId: '1011', text: 'queued reopen' })), { accepted: true, state: 'waiting' })
+    assert.equal(saved(r).forkSessionId, FORK_A, 'the queued lane loaded the old fork')
+    const closing = scenario === 'sweep then close'
+      ? r.manager.close({ rootId: '101', removeWorktree: false })
+      : Promise.resolve()
+    release()
+    await removal
+    await closing
+    await r.manager.idle()
+    if (scenario === 'sweep then close') {
+      assert.equal(saved(r).forkSessionId, null, 'a later close cannot persist the deleted fork')
+      assert.deepEqual(r.manager.turn(turn('101', { mode: 'reply', replyId: '1012', text: 'queued reopen' })), { accepted: true, state: 'waiting' })
+    } else {
+      assert.equal(r.files.has(join(STATE, '101.json')), false, 'cleanup finishes before a slot frees')
+    }
+    assert.equal(r.files.has(forkFile), false, 'the old transcript is gone')
+    assert.equal(r.spawned.length, 2, 'the reopen is still queued')
+
+    r.spawned[0]!.child.result('slot released')
+    r.spawned[0]!.child.exit()
+    await r.manager.idle()
+    assert.equal(r.spawned.length, 3)
+    const reopened = r.spawned[2]!
+    assert.equal(r.dirs.has(wt('101')), true, 'the worktree was recreated')
+    assert.equal(reopened.args[reopened.args.indexOf('--resume') + 1], MAIN, 'resume main, never the deleted fork')
+    assert.ok(reopened.args.includes('--fork-session'), 'start a fresh fork')
+    assert.equal(r.files.get(sessionTranscriptPath(HOME, wt('101'), MAIN, '')), '{"main":true}\n')
+    assert.ok(reopened.child.stdin[0]!.includes('queued reopen'), 'the accepted reply reaches the new child')
+    reopened.child.init(FORK_B)
+    reopened.child.result('queued reopen answered')
+    await r.manager.idle()
+    assert.equal(saved(r).forkSessionId, FORK_B)
+    assert.equal(saved(r).closedAt, null)
+    assert.ok(replyTexts(r).includes('queued reopen answered'))
+  })
+}
+
+test('late delivery cannot restore a deleted fork while its reopen waits for capacity', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const oldChild = r.spawned[0]!.child
+  oldChild.init(FORK_A)
+  const forkFile = sessionTranscriptPath(HOME, wt('101'), FORK_A, '')
+  r.files.set(forkFile, '{}\n')
+  const post = r.deps.post
+  let releasePost: () => void = () => {}
+  const gate = new Promise<void>((done) => { releasePost = done })
+  let delivering = false
+  r.deps.post = async (path, body) => {
+    if (path === 'integrations/threads/reply' && body.text === 'old answer') {
+      delivering = true
+      await gate
+    }
+    return post(path, body)
+  }
+  oldChild.result('old answer')
+  await flush()
+  assert.equal(delivering, true, 'the old answer is still being delivered')
+  r.manager.turn(turn('201'))
+  r.manager.turn(turn('301'))
+  await flush()
+  await r.manager.close({ rootId: '101', removeWorktree: true })
+  assert.deepEqual(r.manager.turn(turn('101', { mode: 'reply', replyId: '1011', text: 'queued reopen' })), { accepted: true, state: 'waiting' })
+  oldChild.exit()
+  await flush()
+  assert.equal(r.spawned.length, 3, '201 and 301 occupy both slots')
+  const stateRemoved = !r.files.has(join(STATE, '101.json'))
+  const forkRemoved = !r.files.has(forkFile)
+  releasePost()
+  await r.manager.idle()
+  assert.equal(stateRemoved, true, 'deletion completed before the old answer landed')
+  assert.equal(forkRemoved, true)
+  assert.equal(saved(r).forkSessionId, null, 'delivery cannot restore the deleted fork')
+  assert.equal(saved(r).lastDelivered, true, 'the old delivery still gets recorded')
+
+  r.spawned[1]!.child.result('slot released')
+  r.spawned[1]!.child.exit()
+  await r.manager.idle()
+  assert.equal(r.spawned.length, 4)
+  const reopened = r.spawned[3]!
+  assert.equal(reopened.args[reopened.args.indexOf('--resume') + 1], MAIN)
+  assert.ok(reopened.args.includes('--fork-session'))
+  assert.ok(reopened.child.stdin[0]!.includes('queued reopen'))
+})
+
+test('overlapping sweeps reserve a closed root only once', async () => {
+  const state = { rootId: '101', chatId: '55', title: 'T', forkSessionId: FORK_A, folder: wt('101'), cwd: wt('101'), worktree: true, readOnly: false, closedAt: 1, pid: null, pidStamp: null }
+  const r = rig({ files: { [join(STATE, '101.json')]: JSON.stringify(state) } })
+  r.dirs.add(wt('101'))
+  const git = r.deps.git
+  let release: () => void = () => {}
+  const gate = new Promise<void>((done) => { release = done })
+  let removals = 0
+  r.deps.git = async (args, cwd) => {
+    if (args[2] === 'worktree' && args[3] === 'remove') { removals++; await gate }
+    return git(args, cwd)
+  }
+  const first = r.manager.sweepClosed(30 * DAY)
+  await flush()
+  const second = r.manager.sweepClosed(30 * DAY)
+  await flush()
+  release()
+  assert.deepEqual(await first, ['101'])
+  assert.deepEqual(await second, [])
+  assert.equal(removals, 1)
+})
+
+test('a close during a sweep cannot release its root for an early reopen', async () => {
+  const state = { rootId: '101', chatId: '55', title: 'T', forkSessionId: FORK_A, folder: wt('101'), cwd: wt('101'), worktree: true, readOnly: false, closedAt: 1, pid: null, pidStamp: null }
+  const r = rig({ files: { [join(STATE, '101.json')]: JSON.stringify(state) } })
+  r.dirs.add(wt('101'))
+  const git = r.deps.git
+  let release: () => void = () => {}
+  const gate = new Promise<void>((done) => { release = done })
+  r.deps.git = async (args, cwd) => {
+    if (args[2] === 'worktree' && args[3] === 'remove') await gate
+    return git(args, cwd)
+  }
+  const sweep = r.manager.sweepClosed(30 * DAY)
+  await flush()
+  const closing = r.manager.close({ rootId: '101', removeWorktree: false })
+  await flush()
+  r.manager.turn(turn('101', { mode: 'reply', replyId: '1011', text: 'reopen after close' }))
+  await flush()
+  const startedDuringRemoval = r.spawned.length
+  release()
+  await Promise.all([sweep, closing])
+  await r.manager.idle()
+  assert.equal(startedDuringRemoval, 0, 'close must not replace the pending sweep owner')
+  r.manager.turn(turn('101', { mode: 'reply', replyId: '1012', text: 'retry after cleanup' }))
+  await r.manager.idle()
+  assert.equal(r.spawned.length, 1)
+  assert.equal(r.dirs.has(wt('101')), true)
+  assert.equal(saved(r).pid, r.spawned[0]!.child.pid)
+  assert.deepEqual(r.spawned[0]!.args, workArgs('101', null))
 })
 
 test('close with removeWorktree removes the worktree, the fork session file and the lane state', async () => {
@@ -893,14 +1102,16 @@ test('a new reply listed while the last answer is still being posted runs once t
 })
 
 test('after a daemon restart a listed turn that already finished is never run again: the thread goes back to open', async () => {
-  const r1 = rig()
+  // The daemon dies while the answer is still being retried: it never lands.
+  const r1 = rig({ failPosts: (path) => path === 'integrations/threads/reply' })
   r1.manager.turn(turn('101'))
   await r1.manager.idle()
   r1.spawned[0]!.child.init(FORK_A)
   r1.spawned[0]!.child.result('the answer.')
-  await r1.manager.idle()
+  await flush()
   assert.equal(JSON.parse(r1.files.get(join(STATE, '101.json'))!).lastReplyId, '1010', 'the finished reply is saved with the lane')
-  // The answer never landed (the daemon died while posting it): the server still lists the thread.
+  assert.equal(JSON.parse(r1.files.get(join(STATE, '101.json'))!).lastDelivered, false)
+  // The server still lists the thread.
   const r2 = rig({ files: Object.fromEntries(r1.files) })
   assert.equal(await r2.manager.reconcile(async () => ({ turns: [pendingRow('101', '1010', 'work on 101')] }), { assistantIds: ['7'] }), 0)
   await r2.manager.idle()
@@ -965,6 +1176,7 @@ test('a working lane refuses Bash reads of ~/.ssh, the CLI credentials and ~/.bg
   const args = r.spawned[0]!.args
   const settings = JSON.parse(args[args.indexOf('--settings') + 1]!)
   assert.deepEqual(settings.sandbox.filesystem.denyRead, [`${HOME}/.ssh`, `${HOME}/.claude/.credentials.json`, `${HOME}/.bgos-agent`])
+  assert.deepEqual(settings.sandbox.filesystem.allowRead, [`${HOME}/.bgos-agent/email-files/7`])
 })
 
 // -- gate review finding 4: the source repository's refs, all of them --
@@ -1093,4 +1305,348 @@ test('closing or deleting a thread after a daemon crash stops its old lane proce
     await pollOut(r)
     assert.deepEqual(r.procKills, [[777, 'SIGTERM']], `removeWorktree ${removeWorktree}`)
   }
+})
+
+// -- follow up (Data, item 1): a summary or answer that landed is never reopened after a restart --
+
+test('after a restart a listed row naming a summary that already landed leaves the thread alone', async () => {
+  const r1 = rig()
+  r1.manager.turn(turn('101'))
+  await r1.manager.idle()
+  const c = r1.spawned[0]!.child
+  c.init(FORK_A)
+  c.result('done.')
+  await r1.manager.idle()
+  r1.manager.turn(turn('101', { mode: 'summary', replyId: '1012', text: '' }))
+  await r1.manager.idle()
+  c.result('- what was asked\n- what was done')
+  await r1.manager.idle()
+  assert.ok(r1.posts.some((p) => p.path === 'integrations/threads/summary'), 'the summary landed')
+  assert.equal(JSON.parse(r1.files.get(join(STATE, '101.json'))!).lastDelivered, true)
+  // The server's pending list still names the summary request (a summary is no thread reply).
+  const r2 = rig({ files: Object.fromEntries(r1.files) })
+  assert.equal(await r2.manager.reconcile(async () => ({ turns: [{ ...pendingRow('101', '1012', ''), mode: 'summary' }] }), { assistantIds: ['7'] }), 0)
+  await r2.manager.idle()
+  assert.deepEqual(r2.posts, [], 'no state change, no notice: the thread is not reopened')
+  assert.equal(r2.spawned.length, 0)
+})
+
+test('after a restart a listed row naming an answer that already landed posts nothing either', async () => {
+  const r1 = rig()
+  r1.manager.turn(turn('101'))
+  await r1.manager.idle()
+  r1.spawned[0]!.child.init(FORK_A)
+  r1.spawned[0]!.child.result('the answer.')
+  await r1.manager.idle()
+  const r2 = rig({ files: Object.fromEntries(r1.files) })
+  assert.equal(await r2.manager.reconcile(async () => ({ turns: [pendingRow('101', '1010', 'work on 101')] }), { assistantIds: ['7'] }), 0)
+  await r2.manager.idle()
+  assert.deepEqual(r2.posts, [])
+  assert.equal(r2.spawned.length, 0)
+})
+
+test('a delayed summary from a closed lane cannot overwrite its reopened lane state', async () => {
+  for (const closeAgain of [false, true]) {
+    const r = rig()
+    let release: () => void = () => {}
+    const pending = new Promise<void>((resolve) => { release = resolve })
+    const post = r.deps.post
+    r.deps.post = async (path, body) => {
+      if (path === 'integrations/threads/summary') await pending
+      return post(path, body)
+    }
+    try {
+      r.manager.turn(turn('101'))
+      await r.manager.idle()
+      const first = r.spawned[0]!.child
+      first.init(FORK_A)
+      first.result('done.')
+      await r.manager.idle()
+      r.manager.turn(turn('101', { mode: 'summary', replyId: '1012', text: '' }))
+      await r.manager.idle()
+      first.result('the summary')
+      await flush()
+      await r.manager.close({ rootId: '101', removeWorktree: false })
+      first.exit()
+      await flush()
+      r.manager.turn(turn('101', { mode: 'reply', replyId: '1013', text: 'new work' }))
+      await flush()
+      assert.equal(r.spawned.length, 2)
+      let reopened = saved(r)
+      assert.equal(reopened.closedAt, null)
+      assert.equal(reopened.pid, r.spawned[1]!.child.pid)
+      if (closeAgain) {
+        r.clock.now += 1234
+        await r.manager.close({ rootId: '101', removeWorktree: false })
+        r.spawned[1]!.child.exit()
+        await flush()
+        reopened = saved(r)
+        assert.equal(reopened.closedAt, r.clock.now)
+      }
+      release()
+      await r.manager.idle()
+      assert.deepEqual(saved(r), { ...reopened, lastDelivered: true }, 'mark the matching reply without erasing the new pid or restoring closedAt')
+    } finally {
+      release()
+      await r.manager.idle()
+    }
+  }
+})
+
+test('a lane state saved before lastDelivered existed still gets the notice (never a silent stuck thread)', async () => {
+  const state = { rootId: '101', chatId: '55', title: 'T', forkSessionId: FORK_A, folder: wt('101'), cwd: wt('101'), worktree: true, readOnly: false, closedAt: null, lastReplyId: '1010' }
+  const r = rig({ files: { [join(STATE, '101.json')]: JSON.stringify(state) } })
+  assert.equal(await r.manager.reconcile(async () => ({ turns: [pendingRow('101', '1010', 'x')] }), { assistantIds: ['7'] }), 0)
+  await r.manager.idle()
+  assert.deepEqual(statePosts(r), ['101:open'])
+})
+
+// -- follow up (Data, item 4): on Linux the stash paths exist before the lane starts --
+
+test('on Linux with no stash yet, refs/stash is made an empty folder and logs/refs/stash an empty file, so both can be bound read only', async () => {
+  const SHA = 'a'.repeat(40)
+  const r = rig({ platform: 'linux', git: (sub) => (sub[0] === 'rev-parse' && sub[1] === '--verify' ? { ok: true, stdout: `${SHA}\n` } : undefined) })
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  assert.ok(r.dirs.has(`${AGENT}/.git/refs/stash`), 'an empty folder git ignores, and replaces on the owner\'s own git stash')
+  assert.equal(r.files.has(`${AGENT}/.git/refs/stash`), false, 'never an empty ref file (git warns of a broken ref)')
+  assert.equal(r.files.get(`${AGENT}/.git/logs/refs/stash`), '')
+  assert.ok(r.dirs.has(`${AGENT}/.git/hooks`))
+  assert.ok(laneSettings(r).tools.includes('Bash'))
+})
+
+test('on Linux an existing stash is left exactly as it is', async () => {
+  const SHA = 'a'.repeat(40)
+  const r = rig({
+    platform: 'linux',
+    files: { [`${AGENT}/.git/refs/stash`]: `${SHA}\n`, [`${AGENT}/.git/logs/refs/stash`]: 'entries\n' },
+    git: (sub) => (sub[0] === 'rev-parse' && sub[1] === '--verify' ? { ok: true, stdout: `${SHA}\n` } : undefined),
+  })
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  assert.equal(r.files.get(`${AGENT}/.git/refs/stash`), `${SHA}\n`)
+  assert.equal(r.files.get(`${AGENT}/.git/logs/refs/stash`), 'entries\n')
+  assert.equal(r.dirs.has(`${AGENT}/.git/refs/stash`), false)
+})
+
+test('on Linux a stash log that cannot be made leaves the lane without Bash', async () => {
+  const SHA = 'a'.repeat(40)
+  const r = rig({ platform: 'linux', git: (sub) => (sub[0] === 'rev-parse' && sub[1] === '--verify' ? { ok: true, stdout: `${SHA}\n` } : undefined) })
+  const create = r.deps.fs.createExclusive
+  r.deps.fs.createExclusive = (p, d) => { if (p.endsWith('logs/refs/stash')) throw new Error('EACCES'); create(p, d) }
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  assert.equal(laneSettings(r).tools.includes('Bash'), false)
+})
+
+test('a working lane can read its own email files but not the rest of ~/.bgos-agent', async () => {
+  const r = rig({ files: { [`${HOME}/.bgos-agent/credentials-7.json`]: '{}', [`${HOME}/.bgos-agent/email-files/7/1/a.pdf`]: 'x', [`${HOME}/.bgos-agent/email-files/8/1/b.pdf`]: 'y' } })
+  for (const d of ['.bgos-agent', '.bgos-agent/email-files', '.bgos-agent/email-files/7', '.bgos-agent/email-files/8']) r.dirs.add(`${HOME}/${d}`)
+  r.deps.fs.list = (d) => ({
+    [`${HOME}/.bgos-agent`]: ['credentials-7.json', 'email-files'],
+    [`${HOME}/.bgos-agent/email-files`]: ['7', '8'],
+  } as Record<string, string[]>)[d] ?? []
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const deny: string[] = laneSettings(r).settings.sandbox.filesystem.denyRead
+  assert.deepEqual(deny, [`${HOME}/.bgos-agent`])
+  assert.deepEqual(laneSettings(r).settings.sandbox.filesystem.allowRead, [`${HOME}/.bgos-agent/email-files/7`])
+})
+
+test('pairing another agent after a lane starts cannot expose its new credentials through the attachment exception', async () => {
+  const agents = `${HOME}/.bgos-agent`
+  const ownFiles = `${agents}/email-files/7`
+  const r = rig({ files: { [`${agents}/credentials-7.json`]: '{}', [`${ownFiles}/1/a.pdf`]: 'attachment' } })
+  for (const path of [agents, `${agents}/email-files`, ownFiles]) r.dirs.add(path)
+  r.deps.fs.list = (dir) => dir === agents ? ['credentials-7.json', 'email-files'] : dir === `${agents}/email-files` ? ['7'] : []
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const filesystem = laneSettings(r).settings.sandbox.filesystem
+  // The owner pairs agent 8 after this child's settings have been frozen.
+  const futureCredential = `${agents}/credentials-8.json`
+  r.files.set(futureCredential, '{"token":"new-agent"}')
+  assert.ok(filesystem.denyRead.includes(agents), 'the parent deny covers credentials created after startup')
+  assert.deepEqual(filesystem.allowRead, [ownFiles], 'only this agent attachments reopen the denied tree')
+  assert.equal(filesystem.allowRead.some((path: string) => futureCredential === path || futureCredential.startsWith(`${path}/`)), false)
+  assert.ok(laneSettings(r).tools.includes('Bash'), 'attachment access does not cost the working lane its shell')
+})
+
+test('a workspace inside the credential tree and its attachments reopen only their own directories', async () => {
+  const agents = `${HOME}/.bgos-agent`
+  const workspace = `${agents}/7-workspace`
+  const ownFiles = `${agents}/email-files/7`
+  const r = rig()
+  r.deps.agentFolder = workspace
+  r.dirs.add(agents)
+  r.files.set(sessionTranscriptPath(HOME, workspace, MAIN, ''), '{"main":true}\n')
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const filesystem = laneSettings(r).settings.sandbox.filesystem
+  assert.ok(filesystem.denyRead.includes(agents))
+  assert.deepEqual(filesystem.allowRead, [workspace, ownFiles])
+})
+
+// -- follow up (Data, item 3): the pid is kept even when no start stamp can be read at spawn --
+
+test('a lane whose start stamp cannot be read at spawn still has its pid saved, and its stamp once it can be read', async () => {
+  const r = rig()
+  r.ctl.stampDown = true
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const c = r.spawned[0]!.child
+  assert.equal(saved(r).pid, c.pid, 'the pid from the child handle')
+  assert.equal(saved(r).pidStamp, null)
+  r.ctl.stampDown = false
+  c.init(FORK_A)
+  await r.manager.idle()
+  assert.equal(saved(r).pidStamp, `S${c.pid}`, 'read again on the next frame')
+})
+
+test('after a crash, an unstamped pid is never signalled and blocks a duplicate while still in the lane folder', async () => {
+  for (const where of [wt('101'), '/somewhere/else']) {
+    const state = { rootId: '101', chatId: '55', title: 'T', forkSessionId: FORK_A, folder: wt('101'), cwd: wt('101'), worktree: true, readOnly: false, closedAt: null, lastReplyId: '1010', lastDelivered: true, pid: 777, pidStamp: null }
+    const r = rig({ files: { [join(STATE, '101.json')]: JSON.stringify(state) } })
+    r.dirs.add(wt('101'))
+    r.procs.set(777, { stamp: 'S777', alive: true, dies: 'SIGTERM' })
+    r.procCwd.set(777, where)
+    r.manager.turn(turn('101', { mode: 'reply', replyId: '1011', text: 'again' }))
+    await pollOut(r)
+    assert.deepEqual(r.procKills, [], where)
+    assert.equal(r.spawned.length, where === wt('101') ? 0 : 1)
+    if (where === wt('101')) {
+      assert.equal(saved(r).pid, 777, 'keep the uncertain pid for the next check')
+      assert.match(String(replyTexts(r).at(-1)), /earlier run of this thread is still stopping/)
+      r.procs.get(777)!.alive = false
+      r.manager.turn(turn('101', { mode: 'reply', replyId: '1012', text: 'retry after it exited' }))
+      await pollOut(r)
+      assert.equal(r.spawned.length, 1, 'the next turn can run once the old process is gone')
+    }
+  }
+})
+
+test('delete and the closed-thread sweep retain a folder used by an unstamped process', async () => {
+  for (const action of ['delete', 'sweep']) {
+    const state = { rootId: '101', chatId: '55', title: 'T', forkSessionId: FORK_A, folder: wt('101'), cwd: wt('101'), worktree: true, readOnly: false, closedAt: 1, lastReplyId: '1010', lastDelivered: true, pid: 777, pidStamp: null }
+    const r = rig({ files: { [join(STATE, '101.json')]: JSON.stringify(state) } })
+    r.dirs.add(wt('101'))
+    r.procs.set(777, { stamp: 'a reused pid', alive: true, dies: 'SIGTERM' })
+    r.procCwd.set(777, wt('101'))
+    if (action === 'delete') {
+      await r.manager.close({ rootId: '101', removeWorktree: true })
+      await pollOut(r)
+    } else {
+      assert.deepEqual(await r.manager.sweepClosed(30 * DAY), [])
+    }
+    assert.deepEqual(r.procKills, [], action)
+    assert.deepEqual(r.removed, [], action)
+    assert.deepEqual(r.branchesDeleted, [], action)
+    assert.equal(saved(r).pid, 777, action)
+  }
+})
+
+for (const action of ['replacement', 'delete', 'sweep']) {
+  test(`unknown cwd inspection preserves a live unstamped PID during ${action}`, async () => {
+    const state = { rootId: '101', chatId: '55', title: 'T', forkSessionId: FORK_A, folder: wt('101'), cwd: wt('101'), worktree: true, readOnly: false, closedAt: action === 'replacement' ? null : 1, lastReplyId: '1010', lastDelivered: true, pid: 777, pidStamp: null }
+    const r = rig({ files: { [join(STATE, '101.json')]: JSON.stringify(state) } })
+    r.dirs.add(wt('101'))
+    r.procs.set(777, { stamp: 'S777', alive: true, dies: 'SIGTERM' })
+    r.procCwd.set(777, wt('101'))
+    // The process survived the daemon. Its initial stamp and recovery lsof failed.
+    r.deps.processes.runsIn = async () => null
+    if (action === 'replacement') {
+      r.manager.turn(turn('101', { mode: 'reply', replyId: '1011', text: 'again' }))
+      await pollOut(r)
+    } else if (action === 'delete') {
+      await r.manager.close({ rootId: '101', removeWorktree: true })
+      await pollOut(r)
+    } else {
+      await r.manager.sweepClosed(30 * DAY)
+    }
+    assert.equal(r.spawned.length, 0, `${action}: no replacement while inspection is unknown`)
+    assert.equal(r.removed.length, 0, `${action}: preserve the active folder`)
+    assert.equal(r.files.has(join(STATE, '101.json')), true, `${action}: preserve the lane state`)
+    assert.equal(saved(r).pid, 777, `${action}: retain the uncertain PID`)
+    assert.equal(saved(r).pidStamp, null)
+    assert.deepEqual(r.procKills, [], `${action}: never signal an unverified process`)
+    assert.deepEqual(r.branchesDeleted, [], `${action}: preserve the active branch`)
+    assert.equal(r.procs.get(777)!.alive, true)
+    // Once inspection confirms it is gone, the retained state can make progress.
+    r.procs.get(777)!.alive = false
+    r.deps.processes.runsIn = async () => false
+    if (action === 'replacement') {
+      r.manager.turn(turn('101', { mode: 'reply', replyId: '1012', text: 'retry' }))
+      await pollOut(r)
+      assert.equal(r.spawned.length, 1)
+    } else {
+      if (action === 'delete') await r.manager.close({ rootId: '101', removeWorktree: true })
+      else await r.manager.sweepClosed(30 * DAY)
+      await pollOut(r)
+      assert.ok(r.removed.includes(wt('101')), `${action}: cleanup resumes after confirmed exit`)
+    }
+  })
+}
+
+for (const action of ['replacement', 'delete', 'sweep']) {
+  test(`unknown stamp inspection preserves a live stamped PID during ${action}`, async () => {
+    const r = crashedWithOrphan('SIGTERM')
+    if (action === 'sweep') {
+      const state = saved(r)
+      state.closedAt = 1
+      r.files.set(join(STATE, '101.json'), JSON.stringify(state))
+    }
+    r.ctl.stampDown = true
+    if (action === 'replacement') r.manager.turn(turn('101', { mode: 'reply', replyId: '1011', text: 'again' }))
+    else if (action === 'delete') await r.manager.close({ rootId: '101', removeWorktree: true })
+    else assert.deepEqual(await r.manager.sweepClosed(30 * DAY), [])
+    await pollOut(r)
+    assert.equal(r.spawned.length, 0, 'do not replace an unverified live process')
+    assert.equal(r.files.has(join(STATE, '101.json')), true, 'keep the uncertain process state')
+    assert.equal(saved(r).pid, 777)
+    assert.equal(saved(r).pidStamp, 'S777')
+    assert.equal(r.dirs.has(wt('101')), true)
+    assert.deepEqual(r.removed, [])
+    assert.deepEqual(r.branchesDeleted, [])
+    assert.deepEqual(r.procKills, [], 'do not signal an unverified identity')
+    assert.equal(r.procs.get(777)!.alive, true)
+    // Once the saved identity is readable again, normal recovery may stop it.
+    r.ctl.stampDown = false
+    if (action === 'replacement') r.manager.turn(turn('101', { mode: 'reply', replyId: '1012', text: 'retry' }))
+    else if (action === 'delete') await r.manager.close({ rootId: '101', removeWorktree: true })
+    else assert.deepEqual(await r.manager.sweepClosed(30 * DAY), ['101'])
+    await pollOut(r)
+    assert.deepEqual(r.procKills, [[777, 'SIGTERM']])
+    assert.equal(r.procs.get(777)!.alive, false)
+    if (action === 'replacement') assert.equal(r.spawned.length, 1)
+    else assert.equal(r.files.has(join(STATE, '101.json')), false)
+  })
+}
+
+test('stamp inspection lost after SIGTERM preserves the PID and does not signal an unverified process again', async () => {
+  const r = crashedWithOrphan('never')
+  const kill = r.deps.processes.kill
+  r.deps.processes.kill = (pid, signal) => { kill(pid, signal); r.ctl.stampDown = true }
+  r.manager.turn(turn('101', { mode: 'reply', replyId: '1011', text: 'again' }))
+  await pollOut(r)
+  assert.deepEqual(r.procKills, [[777, 'SIGTERM']], 'only the initially verified identity may be signalled')
+  assert.equal(r.spawned.length, 0)
+  assert.equal(saved(r).pid, 777)
+  assert.equal(saved(r).pidStamp, 'S777')
+  assert.equal(r.procs.get(777)!.alive, true)
+  r.procs.get(777)!.alive = false
+  r.ctl.stampDown = false
+  r.manager.turn(turn('101', { mode: 'reply', replyId: '1012', text: 'retry after exit' }))
+  await pollOut(r)
+  assert.equal(r.spawned.length, 1, 'confirmed absence permits a later retry')
+})
+
+test('a turn waits for the CLI answer without blocking, and fails with its cause when it comes', async () => {
+  let answer: (s: string | null) => void = () => {}
+  const r = rig({ cliProblem: () => new Promise((done) => { answer = done }) })
+  assert.deepEqual(r.manager.turn(turn('101')), { accepted: true, state: 'working' }, 'answered at once')
+  await flush()
+  assert.equal(r.spawned.length, 0)
+  answer('This turn failed because Claude Code on this computer cannot run threads: its version could not be read. Update Claude Code, then send your reply again.')
+  await r.manager.idle()
+  assert.equal(r.spawned.length, 0)
+  assert.match(String(replyTexts(r).at(-1)), /version could not be read/)
 })
