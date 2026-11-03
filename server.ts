@@ -882,6 +882,8 @@ const AUTO_APPROVE = process.env.BGOS_AUTO_APPROVE === 'true'
 // lives above them all.
 /** Lanes can run here: a pairing, a host and a CLI with every locked flag (cached per binary). */
 let laneSupportMemo: { ok: boolean; missing: string[]; reason?: string } | null = null
+/** The last threads CLI answer logged (threadsCli, below): declared above every caller. */
+let threadsCliLogged: string | null = null
 function laneSupport(): { ok: boolean; missing: string[]; reason?: string } {
   if (laneSupportMemo) return laneSupportMemo
   if (AUTH.mode !== 'pairing') {
@@ -959,15 +961,25 @@ const API_BASE = getApiBaseUrl()
 
 import {
   appendFileSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
   readdirSync,
+  renameSync,
+  rmSync,
   statSync,
   unlinkSync,
   watch,
   writeFileSync,
 } from 'node:fs'
+import { ThreadLaneManager, threadsPendingPath } from './lib/thread-lanes.ts'
+import { AsideForks, runAside } from './lib/aside-fork.ts'
+import { threadsCliProblem, threadsCliSupport, type ThreadsCliAnswer } from './lib/threads-cli.ts'
+import { killProcessGroup, processStamp } from './lib/lane-process.ts'
+import { laneShellSandboxAvailable } from './lib/lane-policy.mjs'
+import { findOnPath } from './lib/lane-cli-probe.mjs'
+import { spawnStreamJson } from './lib/stream-json-child.ts'
 import { join as pathJoin, dirname as pathDirname, resolve as pathResolve } from 'node:path'
 import { ensureLogDir, resolveLogPath } from './lib/log-path.js'
 // Agent activity from the session's own hooks (stage 4). The mapper is pure
@@ -1603,7 +1615,7 @@ async function loadServedCapabilities(): Promise<ServedCapabilities> {
     // ONE declared list for the fetch AND the offline copy, so a fetch that
     // fails tells the agent no more than the served canon would have told
     // this daemon (capabilitiesFallbackFor, the stage 6 backend review).
-    const declared = declaredCapabilities({ canInjectGoal: false, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, authMode: AUTH.mode })
+    const declared = declaredCapabilities({ canInjectGoal: false, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, threads: threadsDeclared(), authMode: AUTH.mode })
     try {
       data = await bgosGetCapped(
         capabilitiesFetchPath(
@@ -1950,6 +1962,34 @@ function resolveClaude(): string | null {
   })
 }
 const CLAUDE_EXECUTABLE: string | null = resolveClaude()
+// Threads phase 1: message_threads, thread_sessions and asides are declared
+// where a thread lane or a By the way fork can start: a claude binary this
+// daemon can spawn that passes the threads CLI probe (lib/threads-cli.ts:
+// --restricted, 2.1.301 and later, --tools, --fork-session, the stream json
+// flags, acceptEdits and dontAsk). Not Windows in phase 1. Resolved per
+// declaration, like /login's binary above; the probe is cached per binary.
+function threadsCli(): ThreadsCliAnswer {
+  let answer: ThreadsCliAnswer
+  try {
+    answer = threadsCliSupport({
+      claudePath: resolveClaude(),
+      cachePath: pathJoin(process.env.BGOS_PLUGIN_STATE_DIR?.trim() || pathJoin(homedir(), '.bgos-plugin-state'), 'threads-cli-probe.json'),
+    })
+  } catch (err) {
+    answer = { ok: false, missing: [], version: null, reason: `probe_failed: ${err instanceof Error ? err.name : 'error'}` }
+  }
+  const said = answer.ok
+    ? `threads: claude ${answer.version} can run thread lanes and By the way; declaring message_threads, thread_sessions and asides`
+    : `threads: not declared (${answer.reason ?? `claude ${answer.version ?? 'of unknown version'} lacks ${answer.missing.join(', ')}`})`
+  if (said !== threadsCliLogged) {
+    threadsCliLogged = said
+    log(said)
+  }
+  return answer
+}
+function threadsDeclared(): boolean {
+  return process.platform !== 'win32' && threadsCli().ok
+}
 const bootSlashCommands = prepareSlashCommands(
   catalogForCapabilities({
     remoteCompact: compactTarget !== null,
@@ -6642,7 +6682,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
               chatId: String(resolvedChatId),
               text,
               declared: () =>
-                declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, authMode: AUTH.mode }).includes(UI_CARD),
+                declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, threads: threadsDeclared(), authMode: AUTH.mode }).includes(UI_CARD),
               log,
             })
         if (cardNudge) log(`reply to chat ${resolvedChatId}: card nudge given`)
@@ -13664,7 +13704,7 @@ const stopPauseLane = new StopPauseLane({
  *  this daemon never pauses on a host whose owner was never offered Pause. */
 function stopGoalView(): StopGoalView {
   return {
-    pauseDeclared: declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, modelEffortPicker: modelEffortDeclared(), authMode: AUTH.mode }).includes('mission_pause'),
+    pauseDeclared: declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, modelEffortPicker: modelEffortDeclared(), threads: threadsDeclared(), authMode: AUTH.mode }).includes('mission_pause'),
     held: goalHeld,
     attachedMissionId: goalMissionId,
     pending: goalPendingArm,
@@ -13852,6 +13892,120 @@ const sessionLibrary = new AgentSessionLibrary({
   currentName: () => sessionBinder.resolve()?.binding.name ?? null,
 })
 
+// ── Threads phase 1: thread lanes and By the way (lib/thread-lanes.ts) ──────
+// A thread runs as its own headless claude, forked from the session this
+// daemon has proven it serves, in a git worktree of the agent folder under
+// .hoai/threads/<root>; By the way is a one shot tool-less fork of the same
+// session in the same folder. Lane state lives in ~/.bgos-agent/<id>/threads.
+const THREADS_STATE_DIR = pathJoin(agentStateDir(homedir(), ASSISTANT_ID) ?? pathJoin(homedir(), '.bgos-agent', 'unknown'), 'threads')
+function threadsEmptyMcpConfig(): string {
+  // --strict-mcp-config with no server: a lane never starts a second copy of
+  // this channel plugin, which would deliver every chat message twice.
+  const path = pathJoin(THREADS_STATE_DIR, 'empty-mcp.json')
+  if (!existsSync(path)) {
+    mkdirSync(THREADS_STATE_DIR, { recursive: true })
+    writeFileSync(path, '{"mcpServers":{}}\n')
+  }
+  return path
+}
+const threadLanes = new ThreadLaneManager({
+  spawn: spawnStreamJson,
+  claudeBin: resolveClaude,
+  cliProblem: () => threadsCliProblem(threadsCli(), 'turn'),
+  mainSessionId: () => provenSessionId(),
+  agentFolder: CLAUDE_PROJECT_CWD,
+  stateDir: THREADS_STATE_DIR,
+  home: homedir(),
+  configDir: CLAUDE_CONFIG_DIR,
+  emptyMcpConfigPath: threadsEmptyMcpConfig,
+  // A lane gets Bash only inside the CLI's sandbox (sandbox-exec on macOS,
+  // bwrap and socat on Linux); without it, no Bash at all.
+  shellSandbox: () =>
+    laneShellSandboxAvailable({
+      platform: process.platform,
+      exists: (p: string) => existsSync(p),
+      onPath: (name: string) => findOnPath(name, { pathVar: process.env.PATH ?? '' }) !== null,
+    }),
+  platform: process.platform,
+  // A lane left from before a daemon crash is found by pid and start stamp, and stopped (lib/lane-process.ts).
+  processes: {
+    stamp: (pid) => processStamp(pid),
+    kill: (pid, signal) => killProcessGroup(pid, signal),
+  },
+  git: async (args, cwd) => {
+    try {
+      const { stdout } = await execFileAsync('git', args, { cwd, timeout: 60_000, maxBuffer: 1024 * 1024 })
+      return { ok: true, stdout: String(stdout) }
+    } catch {
+      return { ok: false, stdout: '' }
+    }
+  },
+  fs: {
+    exists: (path) => existsSync(path),
+    mkdir: (path) => { mkdirSync(path, { recursive: true }) },
+    readFile: (path) => readFileSync(path, 'utf8'),
+    writeFile: (path, data) => writeFileSync(path, data),
+    appendFile: (path, data) => appendFileSync(path, data),
+    copyFile: (from, to) => copyFileSync(from, to),
+    unlink: (path) => unlinkSync(path),
+    rmrf: (path) => rmSync(path, { recursive: true, force: true }),
+    list: (dir) => readdirSync(dir),
+    createExclusive: (path, data) => writeFileSync(path, data, { flag: 'wx' }),
+    rename: (from, to) => renameSync(from, to),
+  },
+  post: (path, body) => bgosPost(path, body),
+  now: () => Date.now(),
+  setTimer: (fn, ms) => {
+    const timer = setTimeout(fn, ms)
+    timer.unref?.()
+    return timer
+  },
+  clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  log,
+})
+// By the way forks in flight, stopped and cleaned up on shutdown.
+const asideForks = new AsideForks()
+
+/**
+ * A thread turn the person sent while this daemon was away runs now
+ * (GET integrations/threads/pending, scoped to the agent this daemon serves).
+ * Only the lock holder runs lanes, and only where it declares threads, so it
+ * runs on every (re)connect once armed AND when the channel arms: the first
+ * connect after a boot comes before the arm.
+ */
+function reconcilePendingThreads(why: string): void {
+  if (!channelArmed || !threadsDeclared()) return
+  const assistantIds = [String(ASSISTANT_ID)]
+  void threadLanes
+    // no-cache: an ETag 304 would hide turns this new process never ran.
+    .reconcile(() => bgosGet(threadsPendingPath(assistantIds), { headers: { 'Cache-Control': 'no-cache' } }), { assistantIds })
+    .then((started) => { if (started > 0) log(`threads: ${started} pending thread turn(s) started (${why})`) })
+    .catch((err) => log(`threads: pending reconcile failed (${why}): ${err instanceof Error ? err.name : 'error'}`))
+}
+
+const THREAD_CHILDREN_STOP_WAIT_MS = 3_000
+/**
+ * Shutdown: SIGTERM to every thread lane and By the way fork (each its own
+ * process group), at most THREAD_CHILDREN_STOP_WAIT_MS for them to exit,
+ * then SIGKILL for the rest and the forks' session files deleted. Null when
+ * none runs, so a shutdown without them exits at once as before.
+ */
+function stopThreadChildren(): Promise<void> | null {
+  if (threadLanes.liveChildren() === 0 && asideForks.size() === 0) return null
+  const all = Promise.allSettled([threadLanes.stopAll(), asideForks.stopAll()])
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      threadLanes.killAll()
+      asideForks.killAll()
+      resolve()
+    }, THREAD_CHILDREN_STOP_WAIT_MS)
+    void all.then(() => {
+      clearTimeout(timer)
+      resolve()
+    })
+  })
+}
+
 const voiceRpc = new VoiceRpcHandler({
   config: {
     openaiApiKey: VOICE_OPENAI_API_KEY,
@@ -13927,6 +14081,33 @@ const voiceRpc = new VoiceRpcHandler({
   modelEffort: modelEffortPicker,
   // A dispatch card queued behind a change is accepted at once.
   cardsHeld: () => modelEffortControl.busy,
+  // Threads phase 1 (lib/thread-rpc.ts): thread_turn, thread_close, aside.
+  // Not on Windows in phase 1: the ops answer unsupported there.
+  ...(process.platform !== 'win32'
+    ? {
+        threads: {
+          turn: (input) => threadLanes.turn(input),
+          close: (input) => threadLanes.close(input),
+          aside: (input, onDelta) =>
+            runAside(input, {
+              spawn: spawnStreamJson,
+              claudeBin: resolveClaude,
+              cliProblem: () => threadsCliProblem(threadsCli(), 'aside'),
+              mainSessionId: () => provenSessionId(),
+              mainFolder: CLAUDE_PROJECT_CWD,
+              home: homedir(),
+              configDir: CLAUDE_CONFIG_DIR,
+              emptyMcpConfigPath: threadsEmptyMcpConfig,
+              unlink: (path) => unlinkSync(path),
+              onDelta,
+              log,
+              forks: asideForks,
+            }),
+        },
+      }
+    : {}),
+  postProgress: (rpcId, body) =>
+    bgosPost(`integrations/voice-rpc/${encodeURIComponent(rpcId)}/progress`, body),
   log,
 })
 
@@ -16241,6 +16422,9 @@ function connectWebsocket(): void {
     log(`WS connected (id=${realtimeSocket?.id}), polling will throttle`)
     // From here every chat is behind this connection until a read says otherwise.
     socketEpoch++
+    // Threads phase 1: a turn the person sent while this daemon was away is
+    // run now (also when the channel arms, for the first connect after boot).
+    reconcilePendingThreads('ws connect')
     // Pending ask groups are read again on every connect: an answer given
     // while this daemon was down or disconnected is due now, and a stream
     // entry for it may be behind a cursor this life never reads.
@@ -18323,6 +18507,16 @@ async function main(): Promise<void> {
     releasePairingLock({ lockPath: PAIRING_LOCK_PATH, selfPid: process.pid })
     // Never leave a sign-in child behind (lib/auth-login.ts).
     loginController.dispose()
+    // Nor a thread lane or a By the way fork (lib/thread-lanes.ts,
+    // lib/aside-fork.ts): a bounded wait for them, only when one runs.
+    const threadChildrenDown = stopThreadChildren()
+    if (threadChildrenDown) {
+      void threadChildrenDown.then(() => {
+        browserHost?.stop()
+        process.exit(code)
+      })
+      return
+    }
     browserHost?.stop()
     process.exit(code)
   }
@@ -18336,6 +18530,8 @@ async function main(): Promise<void> {
     flushChatCursors()
     releasePairingLock({ lockPath: PAIRING_LOCK_PATH, selfPid: process.pid })
     loginController.dispose()
+    void threadLanes.stopAll()
+    asideForks.killAll()
     browserHost?.stop()
   })
 
@@ -18346,6 +18542,13 @@ async function main(): Promise<void> {
   // agent-state.json (design section 7): ticks from here on; it writes only
   // while this daemon holds the pairing lock, so a passive daemon never does.
   setInterval(() => { agentStatePublisher.tick(); publishBrowserPrivateTurn() }, AGENT_STATE_TICK_MS).unref()
+  // Threads phase 1: the worktree of a thread closed more than 7 days ago goes.
+  setInterval(() => {
+    void threadLanes
+      .sweepClosed(Date.now())
+      .then((removed) => { if (removed.length > 0) log(`threads: removed ${removed.length} closed thread worktree(s)`) })
+      .catch((err) => log(`threads: sweep failed: ${err instanceof Error ? err.name : 'error'}`))
+  }, 60 * 60_000).unref()
   // The session pin (finding 7): asks only while this daemon holds the channel
   // and its live session is not pinned yet (lib/session-pin.ts).
   setInterval(() => checkSessionPin(), SESSION_PIN_CHECK_MS).unref()
@@ -18705,6 +18908,7 @@ async function main(): Promise<void> {
       channelEverArmed = true
       startHookIntakeIfHolder()
       handleUnboundBeforeArm()
+      reconcilePendingThreads('re-armed')
       log(
         `delivery re-armed after reclaiming the pairing lock; ` +
           `monitoring ${monitoredChatIds.length} chat(s)`,
@@ -19433,7 +19637,7 @@ async function main(): Promise<void> {
       // CLI's composer, and lib/compact-capability.ts can discover that up to
       // thirty minutes after boot. See lib/declared-capabilities.ts.
       capabilities: () => [
-        ...declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, modelEffortPicker: modelEffortDeclared(), authMode: AUTH.mode }),
+        ...declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, modelEffortPicker: modelEffortDeclared(), threads: threadsDeclared(), authMode: AUTH.mode }),
       ],
       // One-click update telemetry (wire contract v1): the newest version this
       // daemon found at its own pinned source (origin/main for a clone, the
@@ -19543,6 +19747,8 @@ async function main(): Promise<void> {
     // session's hook spool. Only the holder consumes (see the guard inside).
     startHookIntakeIfHolder()
     handleUnboundBeforeArm()
+    // The first connect after a boot came before this arm: run what waits.
+    reconcilePendingThreads('armed')
   }
 
   // The passive watch loop, shared by the two ways a daemon can find itself

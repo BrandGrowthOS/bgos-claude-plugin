@@ -2,6 +2,20 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.83.1 (2026-11-03)
+
+**An agent's service keeps the login user Claude was signed in with.** The launchd plist and the systemd unit wrote USER and LOGNAME from `id -un`. On a Mac where Claude was logged in from a shell whose USER differs from the account name (a home reached through a symlinked user folder), every agent whose service file was rewritten showed "Login expired" while the others worked. They now take the installing shell's USER, and fall back to the account name only when USER is unset.
+
+## 0.83.0 (2026-11-03)
+
+**Threads and By the way on Claude Code (Threads phase 1, behind BGOS's thread flag).** Ships with the gate review's seven fixes (a reconnect never reruns a finished turn, threads declared only where the CLI can run them, a crashed lane is stopped first, the sandbox protects every ref, a side question runs no owner hooks, a lane reads no credential file, delete stays inside the threads folder) and an end to end rig pass. In the agent chat the owner can ask a private side question, and start a thread: a parallel conversation about one message that this agent works on in its own copy of the chat.
+
+- **By the way (`aside` op):** a one shot fork of the chat's session (`claude -p --resume <session> --fork-session`) with no tools at all (`--tools ""`), one turn, run in the session's own folder. The question goes inside the user message with the side question instruction, never in the system prompt. Its text streams to BGOS as ordered progress frames (`POST integrations/voice-rpc/:rpcId/progress {seq, delta}`), the answer is the result, 55 s at most, and the fork's session file is always deleted afterwards. It never becomes a message, a turn or a session (`lib/aside-fork.ts`).
+- **Threads (`thread_turn`, `thread_close` ops):** each thread runs as its own headless `claude -p` fed stream json, forked from the chat's session on its first start and resumed by its own session id after (`lib/thread-lanes.ts`). It works in a git worktree of the agent folder at `.hoai/threads/<root>` (branch `hoai/thread-<root>`, made by the daemon; `.hoai/` is excluded through `.git/info/exclude`), or read only in a plain folder when the agent folder is no repository. At most 2 threads run at once per agent; a third waits and says so. A lane idle for 20 minutes stops and resumes by its id on the next turn. Each answer is one thread reply (`final` unless it ends asking a question); a summary turn posts the merge draft. Close keeps the worktree 7 days (an hourly sweep removes it after); delete removes it with the thread's session file.
+- **The command builders refuse to resume the chat's own session without `--fork-session`** (`lib/thread-lane-args.ts` `assertForksMain`): without it the question would run as that session's next turn. Both load an empty MCP config, so a lane never starts a second copy of this channel.
+- **Declares `message_threads`, `thread_sessions` and `asides`** where a claude binary resolves, not on Windows in phase 1. A reconnect runs any thread turn the owner sent while the daemon was away (`GET integrations/threads/pending`), and a shutdown stops every lane.
+- The CLI facts these rest on are in `docs/thread-lanes-spike.md` (among them: `dontAsk` alone still let Read run, and stream json input repeats the init frame every turn).
+- Tests: `test/thread-lane-args.test.ts`, `test/thread-lanes.test.ts`, `test/aside-fork.test.ts`, `test/stream-json-child.test.ts`, `test/voice-rpc-threads.test.ts`, `test/thread-lanes-wiring.test.ts`, and the declaration cases in `test/declared-capabilities.test.ts`.
 ## 0.82.0 (2026-11-03)
 
 One release for the set merged in #305. The sections below written as 0.81.1, 0.74.4 and 0.83.0 ship here, in 0.82.0.
@@ -25,7 +39,7 @@ One release for the set merged in #305. The sections below written as 0.81.1, 0.
 - **A daemon that stood down and took the lock back.** It had ignored every frame of its passive spell and the socket never dropped, so nothing marked its chats as behind and a live message passed the rows of the spell. Taking the lock back now marks them, and the first live message into each chat reads it first. No sweep is added, so the re-arm stays cheap.
 - **A person lane's running poll.** The boot's choice of what to re-offer (at most 10 rows from the last 24 hours, 5 from the last 15 minutes with no cursor) ran on every poll, and the cursor then moved over every row read. A dropped socket with 30 rows behind it handed over 10 and skipped 20. Only a boot chooses now; a running lane takes every row past its cursor. The boot's cap is unchanged: it is a decision about what a relaunched lane should answer. A live message landing during the poll that follows a reconnect can still arrive before the rows that poll hands over, and a poll already running at the reconnect leaves them for the next poll, up to 30 seconds later: order and delay, no loss.
 - Tests: `test/lane-dedupe.test.ts` (a running lane's poll), `test/catch-up-after-deploy.e2e.test.ts` (the real daemon against a stand in that copies the route's paging rules: more than 50 rows across several chats, a chat that started empty with more than 10, a reconnect or a failure or a restart in the middle of a page), `test/catch-up-paging.test.ts` (the pure half). `test/first-read-cursor-zero.e2e.test.ts` changes where a live message now waits for its read.
-## 0.83.0 (2026-10-31)
+## Goal working marks (written as 0.83.0 on 2026-10-31; shipped in 0.82.0)
 
 **An agent can mark every mission goal it is working on, so the card animates them all at once (board row 9d7880bf, KC: "it is a must").** BGOS #3575 (5.26.0) shipped the working mark in the app and the backend; until now the plugin had no tool for it, so the card only ever animated the first unticked goal.
 
