@@ -48,6 +48,8 @@ const PAIRING_FRAMES = [
   'watcher_install_rpc',
   'inbound_message',
   'message_edited',
+  'message_deleted',
+  'chat_deleted',
   'peer_conversation_closed',
   'peer_turn_yielded',
   'meeting_invitation',

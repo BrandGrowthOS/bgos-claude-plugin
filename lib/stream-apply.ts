@@ -29,7 +29,7 @@
  */
 
 import type { StreamUpdate } from './update-stream.ts'
-export { HumanMessageEdits } from './message-edits.ts'
+export { HumanMessageEdits, humanEditTime } from './message-edits.ts'
 import {
   buildButtonClickedMeta,
   buildInboundChannel,
@@ -423,6 +423,7 @@ export type StreamKindClass =
   | 'message_new'
   | 'message_finalized'
   | 'message_edited'
+  | 'message_deleted'
   | 'buttons_answered'
   | 'chat_created'
   | 'chat_deleted'
@@ -446,6 +447,8 @@ export function classifyStreamKind(kind: string): StreamKindClass {
       return 'message_finalized'
     case 'message_edited':
       return 'message_edited'
+    case 'message_deleted':
+      return 'message_deleted'
     case 'buttons_answered':
       return 'buttons_answered'
     case 'chat_created':

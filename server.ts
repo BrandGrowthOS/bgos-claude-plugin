@@ -387,6 +387,7 @@ import {
   pageMayHaveOlderRows,
   readNeedsOlderPage,
   walkOlderPages,
+  mergeHumanEditDeliveries,
   advanceCursor,
   shouldForwardPollMessage,
   rememberReturnedMessageId,
@@ -500,6 +501,7 @@ import {
   decideMessageFinalized,
   decideMessageNew,
   HumanMessageEdits,
+  humanEditTime,
   viewStreamMessage,
   type StreamMessageView,
 } from './lib/stream-apply.js'
@@ -11379,13 +11381,13 @@ function pollTurnStateOf(m: ChatMessage): string | null {
 }
 
 async function pollChat(chatId: string): Promise<void> {
-  if (updateDrainMode) return
+  if (updateDrainMode || humanMessageEdits.isChatDeleted(chatId)) return
   // A daemon that has lost the pairing lock reads no chat. The tick stands
   // down at its top, but the email download keepalive refreshes the lock too,
   // so the stand-down can now land in the middle of a sweep: the chats after
   // it are left to the holder.
   if (!lockHeld) return
-  await trackMessageOperation(async () => {
+  const operation = trackMessageOperation(async () => {
   // Delta polling (SERVERPERF P1a): after the first full fetch for a chat,
   // every poll passes afterId=<last seen id> so an idle chat costs an empty
   // window (usually a 304) instead of the full newest-50 envelope with its
@@ -11537,18 +11539,11 @@ async function pollChat(chatId: string): Promise<void> {
     const ordered = [...data.messages].sort(
       (a, b) => a.message.id - b.message.id,
     )
-    // Only examine edits after the whole walk succeeded. A partial read must
-    // neither notify nor mark the chat caught up.
-    for (const row of ordered) {
-      const view = viewStreamMessage({ seq: 0, kind: 'message_edited', chatId: Number(chatId), messageId: row.message.id, payload: row as unknown as Record<string, unknown> }, ASSISTANT_ID)
-      if (!view) continue
-      const latest = humanMessageEdits.latest(view) ?? view
-      Object.assign(row.message, latest.raw)
-      if (humanMessageEdits.has(view)) await forwardHumanEdit(view, 'poll', editReadGeneration)
-    }
+    // Preserve each raw row until original preparation or edit reconciliation.
+    // Folding a pending frame here would hide which version the read returned.
     const maxId = ordered[ordered.length - 1]!.message.id
     const pollForwardableRows = ordered.filter((m) =>
-      shouldForwardPollMessage(m.message, ASSISTANT_ID),
+      !humanMessageEdits.isDeleted({ chatId, messageId: m.message.id }) && shouldForwardPollMessage(m.message, ASSISTANT_ID),
     )
 
     let newUserMessages: ChatMessage[]
@@ -11946,7 +11941,23 @@ async function pollChat(chatId: string): Promise<void> {
 
     // What this batch may spend waiting on email downloads (EMAIL_FILES_BATCH_BUDGET_MS).
     const pollEmailBudget = createEmailBatchBudget()
-    for (const msg of newUserMessages) {
+    const editRows = ordered.filter((row) => {
+      const view = viewStreamMessage({ seq: 0, kind: 'message_edited', chatId: Number(chatId), messageId: row.message.id, payload: row as unknown as Record<string, unknown> }, ASSISTANT_ID)
+      return view !== null && humanMessageEdits.has(view)
+    })
+    const deliveries = mergeHumanEditDeliveries(newUserMessages, editRows,
+      (row) => sentDateToMs(row.message.sentDate),
+      (row) => {
+        const view = viewStreamMessage({ seq: 0, kind: 'message_edited', chatId: Number(chatId), messageId: row.message.id, payload: row as unknown as Record<string, unknown> }, ASSISTANT_ID)
+        return view ? humanEditTime(view) : null
+      })
+    for (const { row: msg, edit } of deliveries) {
+      if (humanMessageEdits.isDeleted({ chatId, messageId: msg.message.id })) continue
+      if (edit) {
+        const view = viewStreamMessage({ seq: 0, kind: 'message_edited', chatId: Number(chatId), messageId: msg.message.id, payload: msg as unknown as Record<string, unknown> }, ASSISTANT_ID)
+        if (view) await forwardHumanEdit(view, 'poll', editReadGeneration)
+        continue
+      }
       // A live message this read also delivers (holdLiveFrame) did not come in while
       // this daemon was away, and the rows under it did: it keeps a live message's
       // framing and its overdue timer. Only a boot read can be both.
@@ -12037,10 +12048,32 @@ async function pollChat(chatId: string): Promise<void> {
       // An edit may have arrived while preparation yielded. Resolve it at
       // the last synchronous stretch before constructing the delivered card.
       const preparedView = viewStreamMessage({ seq: 0, kind: 'message_new', chatId: Number(chatId), messageId: msg.message.id, payload: msg as unknown as Record<string, unknown> }, ASSISTANT_ID)
-      const latestPrepared = preparedView ? humanMessageEdits.latest(preparedView) : null
+      const latestPrepared = preparedView ? await Promise.resolve(humanMessageEdits.resolveOriginal(preparedView, readHumanEdit)).catch((err) => {
+        forwardedMessageIds.delete(msg.message.id)
+        throw err
+      }) : undefined
+      if (latestPrepared === null) {
+        forwardedMessageIds.delete(msg.message.id)
+        pollEmail?.release(true)
+        continue
+      }
       if (latestPrepared) {
+        if (latestPrepared.text !== text) {
+          if (consumedAsLoginCode({
+            chatId,
+            messageId: msg.message.id,
+            payload: latestPrepared.raw,
+            text: latestPrepared.text,
+            fromHuman: !isPollAgent && pollSenderType !== 'system',
+            via: 'poll',
+          })) continue
+        }
         text = latestPrepared.text
         Object.assign(msg.message, latestPrepared.raw)
+      }
+      if (humanMessageEdits.isDeleted({ chatId, messageId: msg.message.id })) {
+        pollEmail?.release(true)
+        continue
       }
       const pollEmailSaves = pollEmail?.saves
       // Its cursor hold is let go once this batch is over (the finally below),
@@ -12101,7 +12134,7 @@ async function pollChat(chatId: string): Promise<void> {
           viewStreamMessage({ seq: 0, kind: 'message_new', chatId: Number(chatId), messageId: msg.message.id, payload: msg as unknown as Record<string, unknown> }, ASSISTANT_ID),
           meetingHandoff, card.meta,
         )
-        void meetingHandoff.catch((err) => {
+        await meetingHandoff.catch((err) => {
           log(`Failed to deliver meeting poll inbound to Claude: ${err}`)
         })
         continue
@@ -12278,7 +12311,7 @@ async function pollChat(chatId: string): Promise<void> {
         text: content,
         now: Date.now(),
       })
-      const humanHandoff = trackMessageOperation(() => deliverInbound(steerPlan, (interrupted) => mcp.notification({
+      const humanHandoff = trackMessageOperation(() => deliverInbound(steerPlan, (interrupted) => humanMessageEdits.isDeleted({ chatId, messageId: msg.message.id }) ? Promise.resolve() : mcp.notification({
         method: 'notifications/claude/channel',
         params: {
           content: privateTurns.deliver({ content, chatId, peerSourceAssistantId: pollAgentOrigin?.sourceAssistantId, emailBasis: emailSendBasis({ senderType: pollSenderType, agentOrigin: pollAgentOrigin, eventMeta: msg.message.eventMeta, messageId: msg.message.id, backlog: isBacklog }), fireKey: privateFireKey({ senderType: pollSenderType, eventMeta: msg.message.eventMeta, messageId: msg.message.id }), actingUserId: privateActor({ senderType: pollSenderType, senderUserId: privateSenderUserId(msg.message), agentOrigin: pollAgentOrigin, eventMeta: msg.message.eventMeta }) }),
@@ -12294,9 +12327,10 @@ async function pollChat(chatId: string): Promise<void> {
         viewStreamMessage({ seq: 0, kind: 'message_new', chatId: Number(chatId), messageId: msg.message.id, payload: msg as unknown as Record<string, unknown> }, ASSISTANT_ID),
         humanHandoff,
       )
-      void humanHandoff.catch((err) => {
+      await humanHandoff.catch((err) => {
         log(`Failed to deliver inbound to Claude: ${err}`)
       })
+      if (humanMessageEdits.isDeleted({ chatId, messageId: msg.message.id })) continue
       // Skip overdue tracking for backlog messages: they were forwarded
       // because the daemon was offline, not because they're new live
       // traffic. The previous session may have already handled them via
@@ -12396,6 +12430,15 @@ async function pollChat(chatId: string): Promise<void> {
     for (const release of pollEmailReleases) release()
   }
   })
+  const pending = chatPollsInFlight.get(chatId) ?? new Set<Promise<void>>()
+  pending.add(operation)
+  chatPollsInFlight.set(chatId, pending)
+  try {
+    await operation
+  } finally {
+    pending.delete(operation)
+    if (pending.size === 0) chatPollsInFlight.delete(chatId)
+  }
 }
 
 async function pollAllChats(): Promise<void> {
@@ -12435,6 +12478,7 @@ const WS_URL = (() => {
 
 const forwardedMessageIds = new Set<number>()
 const humanMessageEdits = new HumanMessageEdits()
+const chatPollsInFlight = new Map<string, Set<Promise<void>>>()
 const FORWARD_CACHE_MAX = 500
 // The only dedupe between overlapping reads and between the socket and a read,
 // so it must outlast the longest read: at 500, across all chats, a catch up of
@@ -14831,14 +14875,44 @@ const doctorRpc = new DoctorRpcHandler({
   log,
 })
 
+/** Read one exact row, bypassing both the history snapshot and its ETag. */
+async function readHumanEdit(view: StreamMessageView): Promise<StreamMessageView | null> {
+  const data = await bgosGet(
+    `chats/${encodeURIComponent(view.chatId)}/messages?userId=${USER_ID}&afterId=${view.messageId - 1}&beforeId=${view.messageId + 1}&limit=1&withPagination=1`,
+    { conditional: false, callerAssistantId: ASSISTANT_ID },
+  ) as ChatHistoryResponse
+  const row = data.messages?.find((row) => row.message.id === view.messageId)
+  return row ? viewStreamMessage({ seq: 0, kind: 'message_edited', chatId: Number(view.chatId), messageId: view.messageId, payload: row as unknown as Record<string, unknown> }, ASSISTANT_ID) : null
+}
+
+/** A correction cannot pass the same reconnect/read barrier as a live original. */
+async function waitForHumanEditCatchup(chatId: string): Promise<boolean> {
+  if (!monitoredChatIds.includes(chatId)) return true
+  const pending = chatPollsInFlight.get(chatId)
+  if (pending?.size) await Promise.all([...pending])
+  if (streamCoveredChats.has(chatId)) return true
+  if (!chatBehindSocket(chatId) && !chatReadFloor.has(chatId)) return true
+  if (chatBehindSocket(chatId) || chatReadFloor.has(chatId)) await pollChat(chatId)
+  return !chatBehindSocket(chatId) && !chatReadFloor.has(chatId)
+}
+
 /** Deliver a replacement without executing commands from its quoted words. */
-async function forwardHumanEdit(view: StreamMessageView, transport: string, readGeneration?: number): Promise<boolean> {
-  if (!channelArmed || updateDrainMode || !ownerLaneVerdict(view.raw).deliver) return false
+async function forwardHumanEdit(view: StreamMessageView, transport: 'poll' | 'ws' | 'stream', readGeneration?: number): Promise<boolean> {
+  if (!channelArmed || updateDrainMode || humanMessageEdits.isDeleted(view) || !ownerLaneVerdict(view.raw).deliver) return false
+  if (transport !== 'poll' && !await waitForHumanEditCatchup(view.chatId)) return false
   return humanMessageEdits.deliverEdit(view, async (edited, originalMeta) => {
     // The queue may have waited for another handoff while this daemon stood down.
-    if (!channelArmed || updateDrainMode || !ownerLaneVerdict(edited.raw).deliver) {
+    if (!channelArmed || updateDrainMode || humanMessageEdits.isDeleted(edited) || !ownerLaneVerdict(edited.raw).deliver) {
       throw new Error('stood down before edit delivery')
     }
+    if (consumedAsLoginCode({
+      chatId: edited.chatId,
+      messageId: edited.messageId,
+      payload: edited.raw,
+      text: edited.text,
+      fromHuman: true,
+      via: transport,
+    })) return
     const senderUserId = edited.senderUserId ?? USER_ID
     const card = buildInboundChannel({
       chatId: edited.chatId,
@@ -14874,6 +14948,7 @@ async function forwardHumanEdit(view: StreamMessageView, transport: string, read
         },
       }))
     }
+    if (humanMessageEdits.isDeleted(edited)) return
     lastInboundAtMs = Date.now()
     if (!originalMeta?.meeting_id) {
       lastInboundUserByChat.set(edited.chatId, senderUserId)
@@ -14886,14 +14961,14 @@ async function forwardHumanEdit(view: StreamMessageView, transport: string, read
     if (!originalMeta?.meeting_id) {
       recordInbound(edited.chatId, edited.messageId, undefined, 'user', privateActor({ senderType: 'user', senderUserId: privateSenderUserId(edited.raw) }), inboundAddressesAgent({ text: edited.text }))
     }
-  }, readGeneration)
+  }, readGeneration, readHumanEdit)
 }
 
 async function applyHumanEdit(payload: unknown): Promise<void> {
   const raw = payload as Record<string, unknown> | null
   if (!raw || (raw.assistantId != null && String(raw.assistantId) !== String(ASSISTANT_ID))) return
   const view = viewStreamMessage({ seq: 0, kind: 'message_edited', chatId: null, messageId: null, payload: raw }, ASSISTANT_ID)
-  if (!view || !view.chatId || !ownerLaneVerdict(view.raw).deliver) return
+  if (!view || !view.chatId || humanMessageEdits.isDeleted(view) || !ownerLaneVerdict(view.raw).deliver) return
   if (humanMessageEdits.has(view)) await forwardHumanEdit(view, 'ws')
   else humanMessageEdits.notePending(view)
 }
@@ -15029,6 +15104,7 @@ async function forwardStreamInbound(
     return
   }
   const chatId = view.chatId
+  if (humanMessageEdits.isDeleted(view)) return
   // Claim the id first so the WS and poll transports dedup against it, the
   // same ordering the poll path uses.
   rememberForwarded(view.messageId)
@@ -15077,13 +15153,34 @@ async function forwardStreamInbound(
   // them (read attachments); undefined for every other message. This rail
   // resolves only after the handoff, so the stream cursor waits for it too.
   // Inside the WS down catch up the batch's budget bounds the downloads.
+  const textBeforePreparation = view.text
   const streamEmail = await emailFileSavesFor(view.raw, view.files, { budget: streamEmailBudget, chatId, messageId: view.messageId })
-  view = humanMessageEdits.latest(view) ?? view
+  const prepared = await Promise.resolve(humanMessageEdits.resolveOriginal(view, readHumanEdit)).catch((err) => {
+    forwardedMessageIds.delete(view.messageId)
+    throw err
+  })
+  if (prepared === null) {
+    forwardedMessageIds.delete(view.messageId)
+    streamEmail?.release(true)
+    return
+  }
+  view = prepared ?? view
+  if (view.text !== textBeforePreparation) {
+    if (consumedAsLoginCode({
+      chatId,
+      messageId: view.messageId,
+      payload: view.raw,
+      text: view.text,
+      fromHuman: !isSystem && !view.agentOrigin && view.senderKind === 'user',
+      via: 'stream',
+    })) return
+  }
   const streamEmailSaves = streamEmail?.saves
   // Its cursor hold is let go when this delivery ends, however it ends:
   // delivered when this rail kept its claim (a failed handoff and a stand down
   // both un-claim it).
   try {
+    if (humanMessageEdits.isDeleted(view)) return
     // Stood down while the files downloaded (see the poll site): un-claim and
     // reject, so the chain pins the stream cursor and redelivers.
     if (streamEmail && !lockHeld) {
@@ -15241,7 +15338,7 @@ async function forwardStreamInbound(
     log(`Stream replay message in chat ${chatId}: "${content.slice(0, 100)}${content.length > 100 ? '...' : ''}"`)
     try {
       const humanHandoff = trackMessageOperation(() =>
-        deliverInbound(steerPlan, (interrupted) => mcp.notification({
+        deliverInbound(steerPlan, (interrupted) => humanMessageEdits.isDeleted(view) ? Promise.resolve() : mcp.notification({
           method: 'notifications/claude/channel',
           params: {
             content: privateTurns.deliver({ content, chatId, peerSourceAssistantId: view.agentOrigin?.sourceAssistantId, emailBasis: emailSendBasis({ senderType: isSystem && !streamIsEmail ? 'system' : view.senderKind, agentOrigin: view.agentOrigin, eventMeta: view.eventMetaRaw, messageId: view.messageId, backlog: sentBeforeStart(view.sentDate, DAEMON_START_MS) }), fireKey: privateFireKey({ senderType: isSystem ? 'system' : view.senderKind, eventMeta: view.eventMetaRaw, messageId: view.messageId }), actingUserId: privateActor({ senderType: isSystem ? 'system' : view.senderKind, senderUserId: privateSenderUserId(view.raw), agentOrigin: view.agentOrigin, eventMeta: view.eventMetaRaw }) }),
@@ -15256,6 +15353,7 @@ async function forwardStreamInbound(
       )
       if (!isSlash) humanMessageEdits.rememberOriginal(view, humanHandoff)
       await humanHandoff
+      if (humanMessageEdits.isDeleted(view)) return
     } catch (err) {
       // The handoff did NOT resolve. Un-claim the pre-claimed id: the chain
       // pins the stream cursor on this rejection (5.7) and the retry must not
@@ -15546,8 +15644,8 @@ async function applyStreamMessage(
   cls: 'message_new' | 'message_finalized' | 'message_edited',
 ): Promise<void> {
   const rawView = viewStreamMessage(update, ASSISTANT_ID)
-  if (!rawView || !rawView.chatId) return
-  const view = humanMessageEdits.latest(rawView) ?? rawView
+  if (!rawView || !rawView.chatId || humanMessageEdits.isDeleted(rawView)) return
+  const view = rawView
   const chatId = view.chatId
   if (cls !== 'message_new' && humanMessageEdits.has(view)) {
     await forwardHumanEdit(view, 'stream')
@@ -15572,6 +15670,14 @@ async function applyStreamMessage(
     cls === 'message_new'
       ? decideMessageNew(view, { lastSeenInChat, alreadyForwarded, roomAgentWaiting })
       : decideMessageFinalized(view, { held, lastSeenInChat, alreadyForwarded, roomAgentWaiting })
+  if (decision.action === 'advance_only' && decision.reason === 'empty_non_system' &&
+      (humanMessageEdits.latest(view)?.text.trim().length ?? 0) > 0) {
+    // Pending text makes this an original delivery, but keep the raw version
+    // until the forwarder reconciles it. Do not advance past its body unseen.
+    await forwardStreamInbound(view, false)
+    advanceStreamChatCursor(chatId, view.messageId)
+    return
+  }
   if (decision.action === 'hold_empty') {
     // Remember the id, do not forward, and do NOT advance the per-chat
     // cursor past it: the later finalize (same id) delivers AS the wake.
@@ -15599,6 +15705,14 @@ async function applyStreamMessage(
   advanceStreamChatCursor(chatId, view.messageId)
 }
 
+function applyMessageDeleted(update: StreamUpdate): void {
+  const view = viewStreamMessage(update, ASSISTANT_ID)
+  if (!view) return
+  humanMessageEdits.deleteMessage(view.messageId)
+  streamHeldEmptyChatByMessageId.delete(view.messageId)
+  if (pendingInbounds.get(view.chatId)?.messageId === view.messageId) clearInbound(view.chatId)
+}
+
 /**
  * The consumer's applyUpdate dep: one replayed update, honoring 5.7.
  * Resolves only after the side effects for this update completed, so the
@@ -15611,6 +15725,9 @@ async function applyStreamUpdate(update: StreamUpdate): Promise<void> {
     case 'message_finalized':
     case 'message_edited':
       await applyStreamMessage(update, cls)
+      return
+    case 'message_deleted':
+      applyMessageDeleted(update)
       return
     case 'buttons_answered':
       applyStreamButtonsAnswered(update)
@@ -15627,6 +15744,8 @@ async function applyStreamUpdate(update: StreamUpdate): Promise<void> {
     case 'chat_deleted': {
       const chatId = update.chatId != null ? String(update.chatId) : ''
       if (chatId) {
+        humanMessageEdits.deleteChat(chatId)
+        for (const [id, heldChat] of streamHeldEmptyChatByMessageId) if (heldChat === chatId) streamHeldEmptyChatByMessageId.delete(id)
         monitoredChatIds = monitoredChatIds.filter((id) => id !== chatId)
         streamCoveredChats.delete(chatId)
         clearInbound(chatId)
@@ -16451,6 +16570,18 @@ function connectWebsocket(): void {
     unboundFrames.onFrame(payload, ack)
   })
 
+  realtimeSocket.on('message_deleted', whenArmed('message_deleted', (payload: any) => {
+    if (updateDrainMode) return
+    if (payload?.assistantId != null && String(payload.assistantId) !== String(ASSISTANT_ID)) return
+    applyMessageDeleted({ seq: 0, kind: 'message_deleted', chatId: payload?.chatId ?? payload?.chat_id ?? null, messageId: payload?.messageId ?? payload?.message_id ?? null, payload })
+  }))
+  realtimeSocket.on('chat_deleted', whenArmed('chat_deleted', (payload: any) => {
+    if (updateDrainMode) return
+    if (payload?.assistantId != null && String(payload.assistantId) !== String(ASSISTANT_ID)) return
+    void trackMessageOperation(() => applyStreamUpdate({ seq: 0, kind: 'chat_deleted', chatId: payload?.chatId ?? payload?.chat_id ?? null, messageId: null, payload }))
+      .catch((err) => log(`chat_deleted delivery failed: ${err}`))
+  }))
+
   realtimeSocket.on('message_edited', whenArmed('message_edited', (payload: any) => {
     if (updateDrainMode) return
     const deliver = (frame: unknown) => applyHumanEdit(frame)
@@ -16543,6 +16674,14 @@ function connectWebsocket(): void {
       if (!Number.isFinite(messageId)) return
       if (forwardedMessageIds.has(messageId)) return
       const initialView = viewStreamMessage({ seq: 0, kind: 'message_new', chatId: null, messageId, payload }, ASSISTANT_ID)
+      if (initialView && humanMessageEdits.isDeleted(initialView)) return
+      if (initialView && humanMessageEdits.requiresOriginalRead(initialView)) {
+        void trackMessageOperation(async () => {
+          const current = await humanMessageEdits.resolveOriginal(initialView, readHumanEdit)
+          if (current) deliverWsInbound({ ...payload, ...current.raw, text: current.text }, emailSaves)
+        }).catch((err) => log(`pending original reconciliation failed: ${err}`))
+        return
+      }
       const latest = initialView ? humanMessageEdits.latest(initialView) : null
       if (latest) payload = { ...payload, ...latest.raw, text: latest.text }
       // An email whose files the owner lets the agent read (read attachments):
@@ -16869,7 +17008,7 @@ function connectWebsocket(): void {
           | null
           | undefined,
       )
-      const humanHandoff = trackMessageOperation(() => deliverInbound(steerPlan, (interrupted) => mcp.notification({
+      const humanHandoff = trackMessageOperation(() => deliverInbound(steerPlan, (interrupted) => humanMessageEdits.isDeleted({ chatId, messageId }) ? Promise.resolve() : mcp.notification({
         method: 'notifications/claude/channel',
         params: {
           content: privateTurns.deliver({ content, chatId, peerSourceAssistantId: wsAgentOrigin?.sourceAssistantId, emailBasis: emailSendBasis({ senderType: wsSenderType, agentOrigin: wsAgentOrigin, eventMeta: payload?.eventMeta ?? payload?.event_meta, messageId, backlog: sentBeforeStart(payload?.sentDate ?? payload?.sent_date, DAEMON_START_MS) }), fireKey: privateFireKey({ senderType: wsSenderType, eventMeta: payload?.eventMeta ?? payload?.event_meta, messageId }), actingUserId: privateActor({ senderType: wsSenderType, senderUserId: privateSenderUserId(payload), agentOrigin: wsAgentOrigin, eventMeta: payload?.eventMeta ?? payload?.event_meta }) }),
@@ -17164,12 +17303,31 @@ function connectWebsocket(): void {
       const currentSpeakerRaw = payload?.currentSpeakerId
       const meetingFiles = Array.isArray(payload?.files) ? payload.files : []
       const sendMeetingCard = (emailFileSaves?: Array<EmailFileSave | null>): void => {
+        if (humanMessageEdits.isDeleted({ chatId, messageId })) return
         const original = viewStreamMessage({ seq: 0, kind: 'message_new', chatId: null, messageId, payload }, ASSISTANT_ID)
+        if (original && humanMessageEdits.requiresOriginalRead(original)) {
+          void trackMessageOperation(async () => {
+            const current = await humanMessageEdits.resolveOriginal(original, readHumanEdit)
+            if (current) {
+              payload = { ...payload, ...current.raw, text: current.text }
+              sendMeetingCard(emailFileSaves)
+            }
+          }).catch((err) => log(`pending meeting reconciliation failed: ${err}`))
+          return
+        }
         const latest = original ? humanMessageEdits.latest(original) : null
         if (latest) {
           text = latest.text
           payload = { ...payload, ...latest.raw, text }
         }
+        if (consumedAsLoginCode({
+          chatId,
+          messageId,
+          payload,
+          text,
+          fromHuman: senderId == null && payload?.senderType !== 'agent',
+          via: 'meeting',
+        })) return
         const card = buildMeetingCard({
           meetingId,
           chatId,
