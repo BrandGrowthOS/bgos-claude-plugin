@@ -1,0 +1,49 @@
+✖ review R2: a socket correction waits for this chat on the new epoch, independently of another tracker (163.156958ms)
+✖ review R2: poll catch-up delivers B before the later correction to A (69.476875ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 0
+ℹ fail 2
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 700.623959
+
+✖ failing tests:
+
+test at test/message-edits.test.ts:4:20081
+✖ review R2: a socket correction waits for this chat on the new epoch, independently of another tracker (163.156958ms)
+  AssertionError [ERR_ASSERTION]: the correction cannot overtake the held catch-up read
+
+  2 !== 1
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/test/message-edits.test.ts:725:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 2,
+    expected: 1,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/message-edits.test.ts:4:21503
+✖ review R2: poll catch-up delivers B before the later correction to A (69.476875ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+
+  + '[Message edited: message 9001. This replaces the earlier version of this message.]\n' +
+  +   '> A corrected'
+  - 'B'
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/test/message-edits.test.ts:740:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: '[Message edited: message 9001. This replaces the earlier version of this message.]\n> A corrected',
+    expected: 'B',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

@@ -995,9 +995,14 @@ describe('hole 4: a row the server never pushes', { concurrency: 3 }, () => {
       // message for a read would cost the fleet a read per message.
       assert.deepEqual(arrived(d.cards, MAIN).sort((a, b) => a - b), [101, 102], 'PL3: forwarded once each')
       const continued = w.backend.readsOf(MAIN).filter((r) => r.ids.includes(101))
-      assert.ok(continued.length > 0 && continued.every((r) => r.afterId === 100), 'the read started under the live message')
+      assert.ok(continued.length > 0 && continued.every((r) => r.afterId === null || r.afterId <= 100), 'the read started under the live message')
       await reconnectAndRead(w.backend, MAIN)
-      assert.equal(w.backend.readsOf(MAIN).at(-1)?.afterId, 102, 'and once a read reached the cursor, reads start at it again')
+      // Full edit reconciliation may read older rows again; the persisted
+      // delivery cursor must still reach the live message, without a rewind.
+      await d.client.callTool({ name: 'channel_ack', arguments: {} })
+      await d.stop()
+      const saved = JSON.parse(readFileSync(join(w.rig.home, '.bgos-plugin-state', String(ASSISTANT_ID), 'chat-cursors.json'), 'utf8'))
+      assert.equal(saved.cursors[MAIN], 102, 'the delivery cursor reached the live message')
     } finally {
       await w.end()
     }
@@ -1230,7 +1235,7 @@ describe('what a long read must not break', { concurrency: 3 }, () => {
     }
   })
 
-  test('a wake card that never fills does not pin the cursor: the rows above it arrive once and the next read starts above them', OPTS, async () => {
+  test('a wake card that never fills does not pin the delivery cursor: the rows above it arrive once', OPTS, async () => {
     const w = await world({ '999': 5, [MAIN]: 100 })
     try {
       primed(w.backend, MAIN, 91)
@@ -1244,8 +1249,11 @@ describe('what a long read must not break', { concurrency: 3 }, () => {
       assertExactlyOnceInOrder(arrived(d.cards, MAIN), want, 'rows above an abandoned card')
       await reconnectAndRead(w.backend, MAIN)
       await sleep(500)
-      const last = w.backend.readsOf(MAIN).at(-1)
-      assert.equal(last?.afterId, 170, 'the abandoned card no longer holds the read position down')
+      await d.client.callTool({ name: 'channel_ack', arguments: {} })
+      await d.stop()
+      const saved = JSON.parse(readFileSync(join(w.rig.home, '.bgos-plugin-state', String(ASSISTANT_ID), 'chat-cursors.json'), 'utf8'))
+      assert.equal(saved.cursors[MAIN], 170, 'the abandoned card no longer holds the delivery cursor down')
+      assertExactlyOnceInOrder(arrived(d.cards, MAIN), want, 'edit reconciliation does not redeliver originals')
     } finally {
       await w.end()
     }

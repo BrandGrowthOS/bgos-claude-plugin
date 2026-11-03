@@ -1,0 +1,1054 @@
+6221b9fb2f44057b6b9da0883006ccf54e01fa948fba3d67c1619428070f1efb  server.ts
+1a8bdd8a871748937201a5e07bf45bfd987d788a10f24b3b1336a4120be80fed  lib/message-edits.ts
+356e14d7d1d9acbb874043bb109d4980639cabab7239ead435ae045870e0efdd  lib/poll-core.ts
+47731fe43868358870317be976612ed07cd632b31681940699a1e9e2abea3a1b  lib/stream-apply.ts
+8aafb056556cd380176dcd6bf0fd7591d79d13bae7868edeb1189914b1fcc96b  test/message-edits.test.ts
+
+MUTATION R1 replay
+FILE lib/message-edits.ts
+REPLACE const current = await reconcile?.(view)
+WITH const current = view
+✖ review R1: a replayed unversioned B cannot roll C back or cause a restoring poll card (110.99475ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 656.837333
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-review/mutant-wiGvwD/test/message-edits.test.ts:4:19269
+✖ review R1: a replayed unversioned B cannot roll C back or cause a restoring poll card (110.99475ms)
+  AssertionError [ERR_ASSERTION]: the replay must not become a fourth correction
+
+  4 !== 3
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-review/mutant-wiGvwD/test/message-edits.test.ts:679:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 4,
+    expected: 3,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED R1 replay; exit=1
+
+MUTATION R1 two trackers / legitimate revert
+FILE lib/message-edits.ts
+REPLACE const current = await reconcile?.(view)
+WITH const current = view
+✖ review R1: two trackers distinguish the same old text replay from an authoritative revert (4.775ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 560.223375
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-review/mutant-1rvq3U/test/message-edits.test.ts:4:19710
+✖ review R1: two trackers distinguish the same old text replay from an authoritative revert (4.775ms)
+  AssertionError [ERR_ASSERTION]: tracker one receives an old frame while the row still says C
+  + actual - expected
+
+    [
+      'A',
+      'B',
+      'C',
+  +   'B'
+    ]
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-review/mutant-1rvq3U/test/message-edits.test.ts:696:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: [ 'A', 'B', 'C', 'B' ],
+    expected: [ 'A', 'B', 'C' ],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+KILLED R1 two trackers / legitimate revert; exit=1
+
+MUTATION R1 stale poll
+FILE lib/message-edits.ts
+REPLACE const current = await reconcile?.(view)
+WITH const current = view
+✖ review R1: a stale unversioned poll snapshot fetched after C is authoritatively reconciled (123.595625ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 657.431875
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-review/mutant-oRPtb6/test/message-edits.test.ts:4:20693
+✖ review R1: a stale unversioned poll snapshot fetched after C is authoritatively reconciled (123.595625ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  4 !== 3
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-review/mutant-oRPtb6/test/message-edits.test.ts:707:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 4,
+    expected: 3,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED R1 stale poll; exit=1
+
+MUTATION R1 stable revision
+FILE lib/message-edits.ts
+REPLACE if (revision !== null && entry.revision !== null && revision < entry.revision) return false
+WITH if (false) return false
+✖ review R1: stable message revisions reject replay even when edit timestamps are absent (121.936959ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 662.330875
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-review/mutant-nwkhFX/test/message-edits.test.ts:4:21031
+✖ review R1: stable message revisions reject replay even when edit timestamps are absent (121.936959ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  4 !== 3
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-review/mutant-nwkhFX/test/message-edits.test.ts:716:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 4,
+    expected: 3,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED R1 stable revision; exit=1
+
+MUTATION R2 socket barrier
+FILE server.ts
+REPLACE if (transport !== 'poll' && !await waitForHumanEditCatchup(view.chatId)) return false
+WITH if (false) return false
+✖ review R2: a socket correction waits for this chat on the new epoch, independently of another tracker (232.980292ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 862.314209
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-review/mutant-TxwKCz/test/message-edits.test.ts:4:21324
+✖ review R2: a socket correction waits for this chat on the new epoch, independently of another tracker (232.980292ms)
+  AssertionError [ERR_ASSERTION]: the correction cannot overtake the held catch-up read
+
+  2 !== 1
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-review/mutant-TxwKCz/test/message-edits.test.ts:740:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 2,
+    expected: 1,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED R2 socket barrier; exit=1
+
+MUTATION R2 poll ordering
+FILE lib/poll-core.ts
+REPLACE for (const row of pending) plan.push({ row, edit: true })
+  return plan
+WITH for (const row of pending) plan.push({ row, edit: true })
+  return plan.sort((a, b) => Number(b.edit) - Number(a.edit))
+✖ review R2: poll catch-up delivers B before the later correction to A (155.076125ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 798.503709
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-review/mutant-aE5z5K/test/message-edits.test.ts:4:22781
+✖ review R2: poll catch-up delivers B before the later correction to A (155.076125ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+
+  + '[Message edited: message 9001. This replaces the earlier version of this message.]\n' +
+  +   '> A corrected'
+  - 'B'
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-review/mutant-aE5z5K/test/message-edits.test.ts:755:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: '[Message edited: message 9001. This replaces the earlier version of this message.]\n> A corrected',
+    expected: 'B',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED R2 poll ordering; exit=1
+
+MUTATION R3 message tombstone
+FILE server.ts
+REPLACE humanMessageEdits.deleteMessage(view.messageId)
+WITH void view.messageId
+✖ review R3: a confirmed message deletion rejects a delayed edit without affecting another tracker (240.289459ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 899.823458
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-review/mutant-e5e5fE/test/message-edits.test.ts:4:23265
+✖ review R3: a confirmed message deletion rejects a delayed edit without affecting another tracker (240.289459ms)
+  AssertionError [ERR_ASSERTION]: the deleted message must not return
+
+  2 !== 1
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-review/mutant-e5e5fE/test/message-edits.test.ts:766:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 2,
+    expected: 1,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED R3 message tombstone; exit=1
+
+MUTATION R3 chat tombstone
+FILE server.ts
+REPLACE humanMessageEdits.deleteChat(chatId)
+WITH void chatId
+✖ review R3: a deleted chat rejects late socket and stream edits (135.105583ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 805.34825
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-review/mutant-9WGYXB/test/message-edits.test.ts:4:23750
+✖ review R3: a deleted chat rejects late socket and stream edits (135.105583ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  3 !== 1
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-review/mutant-9WGYXB/test/message-edits.test.ts:776:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 3,
+    expected: 1,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED R3 chat tombstone; exit=1
+
+MUTATION R3 pending original
+FILE server.ts
+REPLACE humanMessageEdits.deleteMessage(view.messageId)
+WITH void view.messageId
+✖ review R3: deletion clears a pending edit before original delivery by socket or poll (141.89825ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 815.261333
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-review/mutant-nMzMMj/test/message-edits.test.ts:4:24015
+✖ review R3: deletion clears a pending edit before original delivery by socket or poll (141.89825ms)
+  AssertionError [ERR_ASSERTION]: socket
+
+  1 !== 0
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-review/mutant-nMzMMj/test/message-edits.test.ts:786:12)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 0,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED R3 pending original; exit=1
+
+MUTATION R3 awaited read
+FILE server.ts
+REPLACE humanMessageEdits.deleteMessage(view.messageId)
+WITH void view.messageId
+✖ review R3: deletion during an authoritative read cancels the queued correction (150.794375ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 857.980166
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-review/mutant-icW4D5/test/message-edits.test.ts:4:24366
+✖ review R3: deletion during an authoritative read cancels the queued correction (150.794375ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  2 !== 1
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-review/mutant-icW4D5/test/message-edits.test.ts:802:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 2,
+    expected: 1,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED R3 awaited read; exit=1
+
+MUTATION R3 awaited edit transport
+FILE server.ts
+REPLACE if (humanMessageEdits.isDeleted(edited)) return
+WITH if (false) return
+✖ review R3: deletion during a transport handoff cannot rearm tracking or later edits (132.137917ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 737.779834
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-review/mutant-qBNMzl/test/message-edits.test.ts:4:24933
+✖ review R3: deletion during a transport handoff cannot rearm tracking or later edits (132.137917ms)
+  AssertionError [ERR_ASSERTION]: the completed transport must not rearm a deleted inbound
+
+  2 !== 1
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-review/mutant-qBNMzl/test/message-edits.test.ts:819:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 2,
+    expected: 1,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED R3 awaited edit transport; exit=1
+
+MUTATION R3 legacy deletion
+FILE server.ts
+REPLACE realtimeSocket.on('message_deleted',
+WITH realtimeSocket.on('message_deleted_disabled',
+✖ review R3: a legacy socket deletion creates the same tombstone (144.8285ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 730.474792
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-review/mutant-wagbmL/test/message-edits.test.ts:4:25818
+✖ review R3: a legacy socket deletion creates the same tombstone (144.8285ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  2 !== 1
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-review/mutant-wagbmL/test/message-edits.test.ts:831:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 2,
+    expected: 1,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED R3 legacy deletion; exit=1
+
+MUTATION R3 awaited poll original
+FILE server.ts
+REPLACE log(`Failed to deliver inbound to Claude: ${err}`)
+      })
+      if (humanMessageEdits.isDeleted({ chatId, messageId: msg.message.id })) continue
+WITH log(`Failed to deliver inbound to Claude: ${err}`)
+      })
+✖ review R3: deleting during the original poll handoff leaves no inbound tracking (118.908208ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 675.271084
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-review/mutant-vUumTR/test/message-edits.test.ts:4:26130
+✖ review R3: deleting during the original poll handoff leaves no inbound tracking (118.908208ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  1 !== 0
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-review/mutant-vUumTR/test/message-edits.test.ts:847:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 0,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED R3 awaited poll original; exit=1
+
+MUTATION R3 awaited stream original
+FILE server.ts
+REPLACE await humanHandoff
+      if (humanMessageEdits.isDeleted(view)) return
+WITH await humanHandoff
+✖ review R3: deleting during the original stream handoff leaves no inbound tracking (144.976292ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 800.043
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-review/mutant-VRPYyh/test/message-edits.test.ts:4:26130
+✖ review R3: deleting during the original stream handoff leaves no inbound tracking (144.976292ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  1 !== 0
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-review/mutant-VRPYyh/test/message-edits.test.ts:847:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 0,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED R3 awaited stream original; exit=1
+
+MUTATION R2 same-epoch periodic barrier
+FILE server.ts
+REPLACE if (pending?.size) await Promise.all([...pending])
+WITH if (false) await Promise.all([...pending])
+✖ review R2: an already-running periodic read in the current epoch also holds a correction (132.645417ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 712.185291
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-review/mutant-DBVjDy/test/message-edits.test.ts:4:26818
+✖ review R2: an already-running periodic read in the current epoch also holds a correction (132.645417ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  2 !== 1
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-review/mutant-DBVjDy/test/message-edits.test.ts:865:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 2,
+    expected: 1,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED R2 same-epoch periodic barrier; exit=1
+
+MUTATION R1 pending revision ordering
+FILE lib/message-edits.ts
+REPLACE if (revision >= pendingRevision) return view
+WITH if (false) return view
+✖ review R1: pending revisions cannot overwrite a newer original and survive original delivery (153.59925ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 886.640375
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-review/mutant-mkQ4Dl/test/message-edits.test.ts:4:27632
+✖ review R1: pending revisions cannot overwrite a newer original and survive original delivery (153.59925ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  'B' !== 'C'
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-review/mutant-mkQ4Dl/test/message-edits.test.ts:874:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'B',
+    expected: 'C',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED R1 pending revision ordering; exit=1
+
+MUTATION R1 pending revision carried
+FILE lib/message-edits.ts
+REPLACE ...(pendingRevision !== null ? { revision: pendingRevision } : {})
+WITH ...{}
+✖ review R1: pending revisions cannot overwrite a newer original and survive original delivery (226.906875ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 815.977833
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-review/mutant-x2odsb/test/message-edits.test.ts:4:27632
+✖ review R1: pending revisions cannot overwrite a newer original and survive original delivery (226.906875ms)
+  AssertionError [ERR_ASSERTION]: the pending revision must become the delivered baseline
+
+  2 !== 1
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-review/mutant-x2odsb/test/message-edits.test.ts:880:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 2,
+    expected: 1,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED R1 pending revision carried; exit=1
+
+MUTATION R1 pre-read pending authority
+FILE lib/message-edits.ts
+REPLACE const current = await reconcile(view)
+WITH const current = this.latest(view)
+✖ review R1: a pending unversioned replay cannot overwrite a later authoritative poll row (126.194708ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 701.363958
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-review/mutant-F7cq4D/test/message-edits.test.ts:4:28252
+✖ review R1: a pending unversioned replay cannot overwrite a later authoritative poll row (126.194708ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  'B' !== 'C'
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-review/mutant-F7cq4D/test/message-edits.test.ts:889:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'B',
+    expected: 'C',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED R1 pre-read pending authority; exit=1
+
+MUTATION R1 during-preparation authority
+FILE lib/message-edits.ts
+REPLACE const current = await reconcile(view)
+WITH const current = this.latest(view)
+✖ review R1: an unversioned replay received during original preparation is reconciled (120.494292ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 667.60325
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-review/mutant-oVRGkN/test/message-edits.test.ts:4:29791
+✖ review R1: an unversioned replay received during original preparation is reconciled (120.494292ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  'B' !== 'C'
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-review/mutant-oVRGkN/test/message-edits.test.ts:939:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'B',
+    expected: 'C',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED R1 during-preparation authority; exit=1
+
+MUTATION R1 delayed socket original authority
+FILE lib/message-edits.ts
+REPLACE const current = await reconcile(view)
+WITH const current = this.latest(view)
+✖ review R1: pending unversioned replay is reconciled before a delayed socket original (109.484583ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 664.626583
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-review/mutant-PxYdHh/test/message-edits.test.ts:4:31307
+✖ review R1: pending unversioned replay is reconciled before a delayed socket original (109.484583ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  'B' !== 'C'
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-review/mutant-PxYdHh/test/message-edits.test.ts:969:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'B',
+    expected: 'C',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED R1 delayed socket original authority; exit=1
+
+MUTATION Privacy edit guard
+FILE server.ts
+REPLACE if (consumedAsLoginCode({
+      chatId: edited.chatId,
+WITH if (false && consumedAsLoginCode({
+      chatId: edited.chatId,
+✖ review privacy: an edited sign-in code is withheld from the model (121.560291ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 669.771292
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-review/mutant-M8jQAH/test/message-edits.test.ts:4:28524
+✖ review privacy: an edited sign-in code is withheld from the model (121.560291ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  2 !== 1
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-review/mutant-M8jQAH/test/message-edits.test.ts:898:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 2,
+    expected: 1,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED Privacy edit guard; exit=1
+
+MUTATION Privacy prepared poll guard
+FILE server.ts
+REPLACE if (latestPrepared.text !== text)
+WITH if (false)
+✖ review privacy: a pending sign-in code during poll preparation stays private (134.685ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 700.657417
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-review/mutant-eUyknh/test/message-edits.test.ts:4:30423
+✖ review privacy: a pending sign-in code during poll preparation stays private (134.685ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  1 !== 0
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-review/mutant-eUyknh/test/message-edits.test.ts:958:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 0,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED Privacy prepared poll guard; exit=1
+
+MUTATION Privacy prepared stream guard
+FILE server.ts
+REPLACE if (view.text !== textBeforePreparation)
+WITH if (false)
+✖ review privacy: a pending sign-in code during stream preparation stays private (134.913166ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 704.8085
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-review/mutant-KokBy3/test/message-edits.test.ts:4:30423
+✖ review privacy: a pending sign-in code during stream preparation stays private (134.913166ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  1 !== 0
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-review/mutant-KokBy3/test/message-edits.test.ts:958:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 0,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED Privacy prepared stream guard; exit=1
+
+MUTATION Privacy pending meeting guard
+FILE server.ts
+REPLACE if (consumedAsLoginCode({
+          chatId,
+          messageId,
+          payload,
+          text,
+WITH if (false && consumedAsLoginCode({
+          chatId,
+          messageId,
+          payload,
+          text,
+✖ review privacy: a pending meeting sign-in code stays private (129.425542ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 702.550708
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-review/mutant-Bk0M7l/test/message-edits.test.ts:4:31612
+✖ review privacy: a pending meeting sign-in code stays private (129.425542ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  1 !== 0
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-review/mutant-Bk0M7l/test/message-edits.test.ts:978:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 0,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED Privacy pending meeting guard; exit=1
+
+MUTATION R3 deferred poll callback
+FILE server.ts
+REPLACE humanMessageEdits.isDeleted({ chatId, messageId: msg.message.id }) ? Promise.resolve() : mcp.notification
+WITH false ? Promise.resolve() : mcp.notification
+✖ review R3: a deferred poll callback checks deletion before creating a notification (143.203583ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 793.67425
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-review/mutant-rItysH/test/message-edits.test.ts:4:28996
+✖ review R3: a deferred poll callback checks deletion before creating a notification (143.203583ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  1 !== 0
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-review/mutant-rItysH/test/message-edits.test.ts:921:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 0,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED R3 deferred poll callback; exit=1
+
+MUTATION R3 deferred stream callback
+FILE server.ts
+REPLACE humanMessageEdits.isDeleted(view) ? Promise.resolve() : mcp.notification
+WITH false ? Promise.resolve() : mcp.notification
+✖ review R3: a deferred stream callback checks deletion before creating a notification (135.502417ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 810.294584
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-review/mutant-tOobGN/test/message-edits.test.ts:4:28996
+✖ review R3: a deferred stream callback checks deletion before creating a notification (135.502417ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  1 !== 0
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-review/mutant-tOobGN/test/message-edits.test.ts:921:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 0,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED R3 deferred stream callback; exit=1
+
+MUTATION R3 deferred socket callback
+FILE server.ts
+REPLACE humanMessageEdits.isDeleted({ chatId, messageId }) ? Promise.resolve() : mcp.notification
+WITH false ? Promise.resolve() : mcp.notification
+✖ review R3: a deferred socket callback checks deletion before creating a notification (197.57125ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 819.97975
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-review/mutant-HymBEj/test/message-edits.test.ts:4:28996
+✖ review R3: a deferred socket callback checks deletion before creating a notification (197.57125ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  1 !== 0
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-review/mutant-HymBEj/test/message-edits.test.ts:921:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 0,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED R3 deferred socket callback; exit=1
+
+MUTATION R1 preserve stream source row
+FILE server.ts
+REPLACE const view = rawView
+  const chatId = view.chatId
+WITH const view = humanMessageEdits.latest(rawView) ?? rawView
+  const chatId = view.chatId
+✖ review R1: stream originals preserve the raw row until pending replay reconciliation (230.34025ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1078.985041
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-review/mutant-lPkuCu/test/message-edits.test.ts:4:31989
+✖ review R1: stream originals preserve the raw row until pending replay reconciliation (230.34025ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  'B' !== 'C'
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-review/mutant-lPkuCu/test/message-edits.test.ts:988:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'B',
+    expected: 'C',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED R1 preserve stream source row; exit=1
+
+MUTATION R1 preserve polled source row
+FILE server.ts
+REPLACE humanMessageEdits.resolveOriginal(preparedView, readHumanEdit)
+WITH humanMessageEdits.resolveOriginal(humanMessageEdits.latest(preparedView), readHumanEdit)
+✖ review R1: a replay arriving during the poll fetch cannot mask the authoritative row (148.3395ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 808.056625
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-review/mutant-zmkymp/test/message-edits.test.ts:4:32371
+✖ review R1: a replay arriving during the poll fetch cannot mask the authoritative row (148.3395ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  'B' !== 'C'
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-review/mutant-zmkymp/test/message-edits.test.ts:1002:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'B',
+    expected: 'C',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED R1 preserve polled source row; exit=1
+
+MUTATION R1 pending body behind empty original
+FILE server.ts
+REPLACE if (decision.action === 'advance_only' && decision.reason === 'empty_non_system' &&
+WITH if (false && decision.action === 'advance_only' && decision.reason === 'empty_non_system' &&
+✖ review R1: an empty stale stream original cannot hide a pending edited body (134.180375ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 743.652958
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-review/mutant-QrQQfA/test/message-edits.test.ts:4:32789
+✖ review R1: an empty stale stream original cannot hide a pending edited body (134.180375ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  0 !== 1
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-review/mutant-QrQQfA/test/message-edits.test.ts:1010:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 0,
+    expected: 1,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED R1 pending body behind empty original; exit=1
+
+ALL 30 REVIEW MUTANTS KILLED; source unchanged

@@ -806,8 +806,8 @@ test('server.ts scopes the caller assistant header to opted-in GETs', () => {
   assert.ok(getBody.includes('opts?.callerAssistantId'))
   assert.equal(
     serverSource.match(/callerAssistantId: ASSISTANT_ID/g)?.length,
-    // The poll's read and the pages of its catch up walk (D04-1): one read.
-    2,
+    // Poll, catch-up pages, and the exact authoritative edit read.
+    3,
   )
 })
 
@@ -819,7 +819,7 @@ test('server.ts filters self-authored poll rows through the tested predicate', (
   const filterIndex = pollBody.indexOf(
     'shouldForwardPollMessage(m.message, ASSISTANT_ID)',
   )
-  const forwardIndex = pollBody.indexOf('for (const msg of newUserMessages)')
+  const forwardIndex = pollBody.indexOf('for (const { row: msg, edit } of deliveries)')
   assert.ok(filterIndex >= 0, 'poll author filter must be wired')
   assert.ok(filterIndex < forwardIndex, 'author filter must run before forwarding')
 })

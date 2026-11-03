@@ -1115,7 +1115,7 @@ test('server.ts, run: a daemon without the agent connection, or without the priv
 
 test('server.ts notes every meeting card with the tracker, so one mid turn stops a send, and tags the card with what it hands back (70f1898b)', () => {
   const cards = SRC.match(/params: card,/g) ?? []
-  const noted = SRC.match(/card\.content \+= privateTurns\.noteUntracked\(\{ chatId[^\n]*\}\)\n\s*void trackMessageOperation\(\(\) => mcp\.notification\(\{\n\s*method: 'notifications\/claude\/channel',\n\s*params: card,/g) ?? []
+  const noted = SRC.match(/card\.content \+= privateTurns\.noteUntracked\(\{ chatId[^\n]*\}\)\n\s*(?:void |const meetingHandoff = )trackMessageOperation\(\(\) => mcp\.notification\(\{\n\s*method: 'notifications\/claude\/channel',\n\s*params: card,/g) ?? []
   assert.ok(cards.length >= 3, 'the meeting lanes')
   assert.equal(noted.length, cards.length)
 })
@@ -1124,7 +1124,7 @@ test('server.ts lists both tools and hands every lane\'s turn to the tracker wit
   const listTools = serverSlice('mcp.setRequestHandler(ListToolsRequestSchema, async () => ({', '\n}))\n')
   assert.ok(listTools.includes('...EMAIL_TOOL_DECLS'))
   const delivers = SRC.match(/privateTurns\.deliver\(\{[^\n]*\}\)/g) ?? []
-  assert.equal(delivers.length, 3, 'the poll, stream and socket lanes')
+  assert.equal(delivers.length, 4, 'the poll, stream, socket and shared edit lanes')
   for (const site of delivers) assert.match(site, /emailBasis: emailSendBasis\(\{/)
 })
 
