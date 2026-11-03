@@ -35,6 +35,11 @@ Limits:
 
 - One the agent started just before the owner took over is left to status.
 - An owner's file whose event lands after the agent has run another action, a read-only one too, is still named.
+- A call the engine itself refuses still counts as the agent's action: with the tab limit reached, `browser_tabs` new
+  returns `browser_tabs_full` and an owner's late file is named after it. A reviewer ran this. It needs the limit, and
+  any read-only action opens the same window.
+- The credential lease has no pending state, so an agent's download raised while that lease drains reads as the
+  owner's and is left to status. Read, not run.
 - Only the `### Download` line is covered. `_parkedResult` prints an open ask's summary (`gate_parked: Another
   permission request is already waiting for the owner (download medical-private.pdf ...`), and
   `hoai_browser_wait_gate` on that id names the file. A reviewer ran this with two late owner files and a gated
