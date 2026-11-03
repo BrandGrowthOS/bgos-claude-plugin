@@ -307,9 +307,9 @@ export function protectedGitPaths(input: {
  * `filesystem.denyRead` names, and --restricted confines only the file tools.
  * Refused: ~/.ssh, the CLI's own credentials file (Linux keeps the sign in
  * there; with CLAUDE_CONFIG_DIR, in that folder too), the AWS, GitHub CLI,
- * netrc, Docker and npm credentials, the plugin state (BGOS_PLUGIN_STATE_DIR
- * moves it), and ~/.bgos-agent, where every agent's HOAI credentials, browser
- * profile and state live.
+ * netrc, Docker and npm credentials, the default plugin state and any
+ * BGOS_PLUGIN_STATE_DIR override, and ~/.bgos-agent, where every agent's
+ * HOAI credentials, browser profile and state live.
  *
  * What the lane needs inside ~/.bgos-agent stays readable (keepReadable plus
  * the agent folder, when inside): the agent folder with its .git (the default
@@ -338,6 +338,7 @@ export function laneSecretPaths(input: {
     `${home}/.netrc`,
     `${home}/.docker/config.json`,
     `${home}/.npmrc`,
+    `${home}/.bgos-plugin-state`,
     trim(input.pluginStateDir?.trim() || `${home}/.bgos-plugin-state`),
   ]
   const config = trim(input.configDir)

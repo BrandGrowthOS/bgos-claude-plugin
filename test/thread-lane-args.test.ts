@@ -351,10 +351,10 @@ test('the secret paths also cover AWS, gh, netrc, docker, npm and the plugin sta
   const extra = ['/home/u/.aws', '/home/u/.config/gh', '/home/u/.netrc', '/home/u/.docker/config.json', '/home/u/.npmrc', '/home/u/.bgos-plugin-state']
   const paths = laneSecretPaths({ home, configDir: '', agentFolder: '/work/atlas', exists: () => true, list: () => [] })
   for (const p of extra) assert.ok(paths.includes(p), p)
-  // BGOS_PLUGIN_STATE_DIR moves the plugin state.
+  // An override does not make credentials left in the default state readable.
   const moved = laneSecretPaths({ home, configDir: '', agentFolder: '/work/atlas', pluginStateDir: '/srv/state', exists: () => true, list: () => [] })
   assert.ok(moved.includes('/srv/state'))
-  assert.equal(moved.includes('/home/u/.bgos-plugin-state'), false)
+  assert.ok(moved.includes('/home/u/.bgos-plugin-state'))
 })
 
 test('the agent own email files stay readable: every sibling on the way to them is refused instead of ~/.bgos-agent whole', () => {

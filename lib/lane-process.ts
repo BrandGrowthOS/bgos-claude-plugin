@@ -15,7 +15,8 @@
  * Linux: the start time in clock ticks from /proc/<pid>/stat (field 22).
  * Elsewhere: `ps -o stat= -o lstart=`. A zombie counts as gone. Every read
  * is asynchronous. When no stamp could be read at spawn, the pid is still
- * saved, and the process is known by the folder it runs in (processRunsIn). Erasable
+ * saved, and processRunsIn detects a possibly active lane without treating
+ * its working directory as proof of identity. Erasable
  * TypeScript only. No em or en dashes in this file.
  */
 
@@ -77,8 +78,9 @@ export async function processStamp(
 
 /**
  * The process is alive and runs in `dir` (its working directory, both real
- * paths): how a lane's process is told from a stranger when no start stamp
- * could be saved for it. Linux reads /proc/<pid>/cwd, elsewhere lsof. False
+ * paths). Without a saved start stamp this only indicates a possibly active
+ * lane; it does not prove the process is safe to signal. Linux reads
+ * /proc/<pid>/cwd, elsewhere lsof. False
  * when it cannot be told (then nothing is signalled).
  */
 export async function processRunsIn(

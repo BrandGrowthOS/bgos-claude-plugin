@@ -11,6 +11,7 @@ import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import ts from 'typescript'
 
 const server = readFileSync(join(import.meta.dirname, '..', 'server.ts'), 'utf8').replace(/\r\n/g, '\n')
 
@@ -21,6 +22,57 @@ function block(startMarker: string, endMarker: string): string {
   assert.ok(end > start, `missing after it: ${endMarker}`)
   return server.slice(start, end)
 }
+
+/** Run the real startup function without booting the daemon or contacting its API. */
+function reconcileStartup() {
+  let resolveProbe: (answer: { ok: boolean }) => void = () => {}
+  let answer: { ok: boolean } | null = null
+  const probe = new Promise<{ ok: boolean }>((resolve) => { resolveProbe = resolve })
+  const requests: Array<{ path: string; options: unknown; assistantIds: string[] }> = []
+  const scope = {
+    channelArmed: true,
+    threadsDeclared: () => answer?.ok === true,
+    threadsCliGate: { ready: () => probe },
+    ASSISTANT_ID: 7,
+    threadsPendingPath: (ids: string[]) => `integrations/threads/pending?assistantIds=${ids.join(',')}`,
+    bgosGet: async (path: string, options: unknown) => ({ path, options }),
+    threadLanes: {
+      reconcile: async (fetch: () => Promise<{ path: string; options: unknown }>, options: { assistantIds: string[] }) => {
+        requests.push({ ...await fetch(), assistantIds: options.assistantIds })
+        return 1
+      },
+    },
+    log: () => {},
+  }
+  const source = block('function reconcilePendingThreads(why: string): void {', '\n}\n') + '\n}'
+  const js = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText
+  const reconcile = new Function('scope', `with (scope) { ${js}; return reconcilePendingThreads }`)(scope) as (why: string) => void
+  return {
+    scope, requests, reconcile,
+    ready(ok: boolean) { answer = { ok }; resolveProbe(answer) },
+    settle: () => new Promise<void>((resolve) => setImmediate(resolve)),
+  }
+}
+
+test('arming before the CLI probe finishes reconciles pending threads once the answer arrives', async () => {
+  const r = reconcileStartup()
+  r.reconcile('armed')
+  assert.deepEqual(r.requests, [], 'the pending CLI does not start threads')
+  r.ready(true)
+  await r.settle()
+  assert.deepEqual(r.requests, [{ path: 'integrations/threads/pending?assistantIds=7', options: { headers: { 'Cache-Control': 'no-cache' } }, assistantIds: ['7'] }])
+})
+
+test('a failed probe or a channel that lost its lock starts no pending threads', async () => {
+  for (const ok of [false, true]) {
+    const r = reconcileStartup()
+    r.reconcile('armed')
+    if (ok) r.scope.channelArmed = false
+    r.ready(ok)
+    await r.settle()
+    assert.deepEqual(r.requests, [])
+  }
+})
 
 test('the lane manager forks the proven session from the folder that session runs in', () => {
   const manager = block('const threadLanes = new ThreadLaneManager({', '\n})\n')
@@ -47,7 +99,7 @@ test('the voice_rpc handler gets the lanes, the aside runner from the same folde
 
 test('pending threads are reconciled with the served agent ids and the server real answer, on connect AND when the channel arms', () => {
   const fn = block('function reconcilePendingThreads(why: string): void {', '\n}\n')
-  assert.match(fn, /if \(!channelArmed \|\| !threadsDeclared\(\)\) return/)
+  assert.match(fn, /if \(!channelArmed\) return/)
   assert.match(fn, /const assistantIds = \[String\(ASSISTANT_ID\)\]/)
   assert.match(fn, /\.reconcile\(\(\) => bgosGet\(threadsPendingPath\(assistantIds\), \{ headers: \{ 'Cache-Control': 'no-cache' \} \}\), \{ assistantIds \}\)/)
   assert.doesNotMatch(server, /bgosGet\('integrations\/threads\/pending'\)/, 'never the call with no agent ids')
@@ -101,7 +153,7 @@ test('threads are declared only where the claude lanes spawn passes the threads 
   const gate = block('const threadsCliGate = new ThreadsCliGate({', '\n})\n')
   assert.match(gate, /claudePath: \(\) => resolveClaude\(\),/)
   assert.match(gate, /'threads-cli-probe\.json'/)
-  assert.match(server, /\nvoid threadsCliGate\.ready\(\)\n/, 'started at boot')
+  assert.match(server, /\n  void threadsCliGate\.ready\(\)\n/, 'started after the startup guard')
   assert.doesNotMatch(server, /threadsCliSupport\(|probeThreadsCli\(/, 'the blocking probe is never called')
   const manager = block('const threadLanes = new ThreadLaneManager({', '\n})\n')
   assert.match(manager, /cliProblem: async \(\) => threadsCliProblem\(await threadsCliGate\.ready\(\), 'turn'\),/)

@@ -1144,6 +1144,54 @@ test('after a restart a listed row naming an answer that already landed posts no
   assert.equal(r2.spawned.length, 0)
 })
 
+test('a delayed summary from a closed lane cannot overwrite its reopened lane state', async () => {
+  for (const closeAgain of [false, true]) {
+    const r = rig()
+    let release: () => void = () => {}
+    const pending = new Promise<void>((resolve) => { release = resolve })
+    const post = r.deps.post
+    r.deps.post = async (path, body) => {
+      if (path === 'integrations/threads/summary') await pending
+      return post(path, body)
+    }
+    try {
+      r.manager.turn(turn('101'))
+      await r.manager.idle()
+      const first = r.spawned[0]!.child
+      first.init(FORK_A)
+      first.result('done.')
+      await r.manager.idle()
+      r.manager.turn(turn('101', { mode: 'summary', replyId: '1012', text: '' }))
+      await r.manager.idle()
+      first.result('the summary')
+      await flush()
+      await r.manager.close({ rootId: '101', removeWorktree: false })
+      first.exit()
+      await flush()
+      r.manager.turn(turn('101', { mode: 'reply', replyId: '1013', text: 'new work' }))
+      await flush()
+      assert.equal(r.spawned.length, 2)
+      let reopened = saved(r)
+      assert.equal(reopened.closedAt, null)
+      assert.equal(reopened.pid, r.spawned[1]!.child.pid)
+      if (closeAgain) {
+        r.clock.now += 1234
+        await r.manager.close({ rootId: '101', removeWorktree: false })
+        r.spawned[1]!.child.exit()
+        await flush()
+        reopened = saved(r)
+        assert.equal(reopened.closedAt, r.clock.now)
+      }
+      release()
+      await r.manager.idle()
+      assert.deepEqual(saved(r), { ...reopened, lastDelivered: true }, 'mark the matching reply without erasing the new pid or restoring closedAt')
+    } finally {
+      release()
+      await r.manager.idle()
+    }
+  }
+})
+
 test('a lane state saved before lastDelivered existed still gets the notice (never a silent stuck thread)', async () => {
   const state = { rootId: '101', chatId: '55', title: 'T', forkSessionId: FORK_A, folder: wt('101'), cwd: wt('101'), worktree: true, readOnly: false, closedAt: null, lastReplyId: '1010' }
   const r = rig({ files: { [join(STATE, '101.json')]: JSON.stringify(state) } })
@@ -1219,8 +1267,8 @@ test('a lane whose start stamp cannot be read at spawn still has its pid saved, 
   assert.equal(saved(r).pidStamp, `S${c.pid}`, 'read again on the next frame')
 })
 
-test('after a crash, a saved pid without a stamp is stopped when it runs in the lane folder, and never signalled otherwise', async () => {
-  for (const [where, expect] of [[wt('101'), [[777, 'SIGTERM']]], ['/somewhere/else', []]] as const) {
+test('after a crash, an unstamped pid is never signalled and blocks a duplicate while still in the lane folder', async () => {
+  for (const where of [wt('101'), '/somewhere/else']) {
     const state = { rootId: '101', chatId: '55', title: 'T', forkSessionId: FORK_A, folder: wt('101'), cwd: wt('101'), worktree: true, readOnly: false, closedAt: null, lastReplyId: '1010', lastDelivered: true, pid: 777, pidStamp: null }
     const r = rig({ files: { [join(STATE, '101.json')]: JSON.stringify(state) } })
     r.dirs.add(wt('101'))
@@ -1228,8 +1276,36 @@ test('after a crash, a saved pid without a stamp is stopped when it runs in the 
     r.procCwd.set(777, where)
     r.manager.turn(turn('101', { mode: 'reply', replyId: '1011', text: 'again' }))
     await pollOut(r)
-    assert.deepEqual(r.procKills, expect, where)
-    assert.equal(r.spawned.length, 1)
+    assert.deepEqual(r.procKills, [], where)
+    assert.equal(r.spawned.length, where === wt('101') ? 0 : 1)
+    if (where === wt('101')) {
+      assert.equal(saved(r).pid, 777, 'keep the uncertain pid for the next check')
+      assert.match(String(replyTexts(r).at(-1)), /earlier run of this thread is still stopping/)
+      r.procs.get(777)!.alive = false
+      r.manager.turn(turn('101', { mode: 'reply', replyId: '1012', text: 'retry after it exited' }))
+      await pollOut(r)
+      assert.equal(r.spawned.length, 1, 'the next turn can run once the old process is gone')
+    }
+  }
+})
+
+test('delete and the closed-thread sweep retain a folder used by an unstamped process', async () => {
+  for (const action of ['delete', 'sweep']) {
+    const state = { rootId: '101', chatId: '55', title: 'T', forkSessionId: FORK_A, folder: wt('101'), cwd: wt('101'), worktree: true, readOnly: false, closedAt: 1, lastReplyId: '1010', lastDelivered: true, pid: 777, pidStamp: null }
+    const r = rig({ files: { [join(STATE, '101.json')]: JSON.stringify(state) } })
+    r.dirs.add(wt('101'))
+    r.procs.set(777, { stamp: 'a reused pid', alive: true, dies: 'SIGTERM' })
+    r.procCwd.set(777, wt('101'))
+    if (action === 'delete') {
+      await r.manager.close({ rootId: '101', removeWorktree: true })
+      await pollOut(r)
+    } else {
+      assert.deepEqual(await r.manager.sweepClosed(30 * DAY), [])
+    }
+    assert.deepEqual(r.procKills, [], action)
+    assert.deepEqual(r.removed, [], action)
+    assert.deepEqual(r.branchesDeleted, [], action)
+    assert.equal(saved(r).pid, 777, action)
   }
 })
 

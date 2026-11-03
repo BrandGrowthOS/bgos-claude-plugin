@@ -1972,7 +1972,6 @@ function threadsCli(): ThreadsCliAnswer {
 function threadsDeclared(): boolean {
   return process.platform !== 'win32' && threadsCli().ok
 }
-void threadsCliGate.ready()
 const bootSlashCommands = prepareSlashCommands(
   catalogForCapabilities({
     remoteCompact: compactTarget !== null,
@@ -13404,11 +13403,16 @@ const asideForks = new AsideForks()
  * connect after a boot comes before the arm.
  */
 function reconcilePendingThreads(why: string): void {
-  if (!channelArmed || !threadsDeclared()) return
+  if (!channelArmed) return
   const assistantIds = [String(ASSISTANT_ID)]
-  void threadLanes
-    // no-cache: an ETag 304 would hide turns this new process never ran.
-    .reconcile(() => bgosGet(threadsPendingPath(assistantIds), { headers: { 'Cache-Control': 'no-cache' } }), { assistantIds })
+  void threadsCliGate.ready()
+    .then((answer) => {
+      // A cold-start probe may finish after the channel arms. Wait without
+      // blocking, then check the lock again before recovering pending turns.
+      if (!answer.ok || !channelArmed) return 0
+      // no-cache: an ETag 304 would hide turns this new process never ran.
+      return threadLanes.reconcile(() => bgosGet(threadsPendingPath(assistantIds), { headers: { 'Cache-Control': 'no-cache' } }), { assistantIds })
+    })
     .then((started) => { if (started > 0) log(`threads: ${started} pending thread turn(s) started (${why})`) })
     .catch((err) => log(`threads: pending reconcile failed (${why}): ${err instanceof Error ? err.name : 'error'}`))
 }
@@ -17456,6 +17460,9 @@ async function main(): Promise<void> {
       process.exit(served ? 0 : 1)
     }
   }
+  // A duplicate serves only its notice and must write no probe cache.
+  // Start the shared background probe only after that startup guard.
+  void threadsCliGate.ready()
   // The git self-updater is for CLONE installs only. A marketplace install's
   // plugin root is Claude Code's own cache dir, which the CLI leaves as a git
   // clone pinned to the release tag: without this gate the updater would

@@ -346,7 +346,7 @@ export class ThreadLaneManager {
     }
     const state = lane.state
     const settled: Promise<void> = input.removeWorktree
-      ? Promise.all([starting, exited]).then(() => this.removeLane(state, { deleteBranch: true }))
+      ? Promise.all([starting, exited]).then(async () => { await this.removeLane(state, { deleteBranch: true }) })
       : starting.then(() => {
           // Not when the thread was reopened meanwhile: that lane owns the file now.
           if (!state.folder || this.lanes.has(rootId)) return
@@ -381,8 +381,7 @@ export class ThreadLaneManager {
       const state = this.load(rootId)
       if (!state || state.closedAt === null) continue
       if (now - state.closedAt <= keep) continue
-      await this.removeLane(state, { deleteBranch: false })
-      removed.push(rootId)
+      if (await this.removeLane(state, { deleteBranch: false })) removed.push(rootId)
     }
     return removed
   }
@@ -697,8 +696,13 @@ export class ThreadLaneManager {
   private landed(lane: Lane, turn: ThreadTurnInput): void {
     if (turn.replyId === '' || lane.state.lastReplyId !== turn.replyId || lane.state.lastDelivered) return
     lane.state.lastDelivered = true
+    // A close and reopen may have replaced this lane while its post was in
+    // flight. Update only the matching reply on the current owner's state.
+    const current = this.lanes.get(lane.state.rootId)?.state ?? this.load(lane.state.rootId)
+    if (!current || current.lastReplyId !== turn.replyId) return
+    current.lastDelivered = true
     // Never recreate a state file a delete removed meanwhile.
-    if (lane.state.folder && this.deps.fs.exists(this.statePath(lane.state.rootId))) this.persist(lane)
+    if (current.folder) this.persistState(current)
   }
 
   private clientId(lane: Lane, turn: ThreadTurnInput): string {
@@ -979,11 +983,14 @@ export class ThreadLaneManager {
     const { pid, pidStamp, cwd } = state
     if (pid === null) return true
     const procs = this.deps.processes
-    // Its start stamp, or without one the lane's own folder as its working
-    // directory: a pid since given to another process matches neither.
-    const alive = pidStamp !== null
-      ? async (): Promise<boolean> => (await procs.stamp(pid)) === pidStamp
-      : async (): Promise<boolean> => cwd !== '' && (await procs.runsIn(pid, cwd))
+    // A working directory is not process identity: a shell or test may reuse
+    // this pid in the same worktree. Preserve the state and refuse a second
+    // lane until it leaves, without signalling a process we cannot identify.
+    if (pidStamp === null && cwd !== '' && await procs.runsIn(pid, cwd)) {
+      this.deps.log(`threads: lane ${state.rootId} has an unverified process in its folder; waiting for it to exit`)
+      return false
+    }
+    const alive = async (): Promise<boolean> => pidStamp !== null && (await procs.stamp(pid)) === pidStamp
     if (await alive()) {
       this.deps.log(`threads: lane ${state.rootId} still runs from before a restart, it is stopped first`)
       const grace = this.deps.killGraceMs ?? THREAD_LANE_KILL_GRACE_MS
@@ -1126,9 +1133,9 @@ export class ThreadLaneManager {
     return ROOT_ID_RE.test(state.rootId) && resolve(state.folder) === expected ? expected : null
   }
 
-  private async removeLane(state: ThreadLaneState, opts: { deleteBranch: boolean }): Promise<void> {
+  private async removeLane(state: ThreadLaneState, opts: { deleteBranch: boolean }): Promise<boolean> {
     const { fs, git, agentFolder, home, configDir } = this.deps
-    await this.stopOrphan(state)
+    if (!(await this.stopOrphan(state))) return false
     const folder = this.ownFolder(state)
     if (state.folder && folder === null) {
       this.deps.log(`threads: lane ${state.rootId} names a folder outside the threads folder, it is not removed`)
@@ -1169,6 +1176,7 @@ export class ThreadLaneManager {
     try {
       fs.unlink(this.statePath(state.rootId))
     } catch {}
+    return true
   }
 
   private statePath(rootId: string): string {
