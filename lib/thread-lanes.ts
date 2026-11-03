@@ -158,6 +158,12 @@ export interface ThreadLaneState {
   worktree: boolean
   readOnly: boolean
   closedAt: number | null
+  /**
+   * The reply id of the last turn this lane finished (answered or failed), ''
+   * before any. A reconnect's pending list can still name it while its answer
+   * is being posted, or when that post never landed: it never runs again.
+   */
+  lastReplyId: string
 }
 
 interface Lane {
@@ -178,6 +184,10 @@ interface Lane {
   idleSince: number
   copiedMainPath: string | null
   posts: Promise<void>
+  /** Posts queued or being tried for this lane (a reply retried with backoff counts until it settles). */
+  postsInFlight: number
+  /** The last finished turn's reply id while its answer (or its failure reply) has not landed, else null. */
+  undelivered: string | null
   closed: boolean
   turnCount: number
 }
@@ -339,6 +349,14 @@ export class ThreadLaneManager {
    * `{ turns: [{ chatId, rootId, replyId, mode, text, title, assistantId }] }`)
    * and run a reply turn for each that is not already running here. A row for
    * an agent this daemon does not serve is skipped. Answers how many started.
+   *
+   * The server lists every open thread whose newest row is the person's, so a
+   * turn this lane already finished is listed while its answer is still being
+   * posted (a retry with backoff), and after that post never landed. Neither
+   * runs again (its edits would be redone, a second answer posted): a row for
+   * a lane with a post in flight waits for those posts to settle, and a row
+   * naming the lane's last finished reply only puts the thread back to Open
+   * with a short plain reply when nothing is left to land.
    */
   async reconcile(fetchPending: () => Promise<unknown>, opts: { assistantIds?: readonly string[] } = {}): Promise<number> {
     const raw = await fetchPending()
@@ -346,6 +364,7 @@ export class ThreadLaneManager {
     const rows: unknown[] = Array.isArray(body?.turns) ? (body!.turns as unknown[]) : []
     const served = opts.assistantIds ? new Set(opts.assistantIds.map(String)) : null
     let started = 0
+    const later: Array<Promise<number>> = []
     for (const row of rows) {
       if (!row || typeof row !== 'object') continue
       const r = row as Record<string, unknown>
@@ -361,14 +380,48 @@ export class ThreadLaneManager {
       }
       const lane = this.lanes.get(input.rootId)
       if (lane && (lane.current || lane.queue.length > 0)) continue
-      try {
-        this.turn(input)
-        started++
-      } catch (err) {
-        this.deps.log(`threads: a pending thread was skipped (${err instanceof Error ? err.message : 'error'})`)
+      if (lane && lane.postsInFlight > 0) {
+        later.push(this.postsSettled(lane).then(() => this.reconcileTurn(input)))
+        continue
       }
+      started += this.reconcileTurn(input)
     }
+    for (const n of await Promise.all(later)) started += n
     return started
+  }
+
+  /** One pending row, once no post for its lane is in flight: 1 when a turn started. */
+  private reconcileTurn(input: ThreadTurnInput): number {
+    try {
+      validateTurn(input)
+    } catch (err) {
+      this.deps.log(`threads: a pending thread was skipped (${err instanceof Error ? err.message : 'error'})`)
+      return 0
+    }
+    const lane = this.lanes.get(input.rootId)
+    if (lane && (lane.current || lane.queue.length > 0)) return 0
+    const saved = lane ? null : this.load(input.rootId)
+    const last = lane ? lane.state.lastReplyId : (saved?.lastReplyId ?? '')
+    if (input.replyId !== '' && input.replyId === last) {
+      // Its answer landed meanwhile (the row was read before it did), or is still on its way.
+      if (lane && (lane.postsInFlight > 0 || lane.undelivered !== input.replyId)) return 0
+      // Finished here, and its answer never landed: back to Open, never run again.
+      this.deps.log(`threads: thread ${input.rootId} turn ${input.replyId} already finished, its answer is marked undelivered`)
+      this.postFailure(lane ?? this.newLane(saved!), input, POST_FAILED)
+      return 0
+    }
+    try {
+      this.turn(input)
+      return 1
+    } catch (err) {
+      this.deps.log(`threads: a pending thread was skipped (${err instanceof Error ? err.message : 'error'})`)
+      return 0
+    }
+  }
+
+  /** Resolves once no post for this lane is queued or being tried. */
+  private async postsSettled(lane: Lane): Promise<void> {
+    while (lane.postsInFlight > 0) await lane.posts.catch(() => {})
   }
 
   /**
@@ -414,6 +467,7 @@ export class ThreadLaneManager {
         worktree: false,
         readOnly: false,
         closedAt: null,
+        lastReplyId: '',
       },
     )
     if (saved && saved.chatId === '') lane.state.chatId = input.chatId
@@ -437,6 +491,8 @@ export class ThreadLaneManager {
       idleSince: 0,
       copiedMainPath: null,
       posts: Promise.resolve(),
+      postsInFlight: 0,
+      undelivered: null,
       closed: false,
       turnCount: 0,
     }
@@ -536,14 +592,19 @@ export class ThreadLaneManager {
     const turn = lane.childTurn
     if (!turn || lane.current !== turn) return
     this.endTurn(lane)
+    this.finished(lane, turn)
     const raw = typeof frame.result === 'string' ? frame.result : ''
     const failed = frame.is_error === true || (frame.subtype !== undefined && frame.subtype !== 'success') || raw.trim() === ''
     const text = clipThreadText(raw)
     if (failed) {
       this.postFailure(lane, turn, FAILED_TURN)
     } else if (turn.mode === 'summary') {
-      this.post(lane, 'integrations/threads/summary', { chatId: turn.chatId, rootId: turn.rootId, summary: text }, () =>
-        this.postFailure(lane, turn, POST_FAILED),
+      this.post(
+        lane,
+        'integrations/threads/summary',
+        { chatId: turn.chatId, rootId: turn.rootId, summary: text },
+        () => this.postFailure(lane, turn, POST_FAILED),
+        () => this.landed(lane, turn),
       )
     } else {
       this.post(
@@ -551,6 +612,7 @@ export class ThreadLaneManager {
         'integrations/threads/reply',
         { chatId: turn.chatId, rootId: turn.rootId, text, final: isFinalReply(raw), clientId: this.clientId(lane, turn) },
         () => this.postFailure(lane, turn, POST_FAILED),
+        () => this.landed(lane, turn),
       )
     }
     this.afterTurn(lane)
@@ -559,19 +621,32 @@ export class ThreadLaneManager {
   private failTurn(lane: Lane, turn: ThreadTurnInput, sentence: string): void {
     if (lane.current !== turn) return
     this.endTurn(lane)
+    this.finished(lane, turn)
     this.postFailure(lane, turn, sentence)
     this.afterTurn(lane)
   }
 
+  /** Remember the turn as finished (finding 1): a pending list naming it never runs it again. */
+  private finished(lane: Lane, turn: ThreadTurnInput): void {
+    if (turn.replyId === '') return
+    lane.undelivered = turn.replyId
+    lane.state.lastReplyId = turn.replyId
+    if (lane.state.folder) this.persist(lane)
+  }
+
   private postFailure(lane: Lane, turn: ThreadTurnInput, sentence: string): void {
     this.post(lane, 'integrations/threads/state', { chatId: turn.chatId, rootId: turn.rootId, state: 'open' })
-    this.post(lane, 'integrations/threads/reply', {
-      chatId: turn.chatId,
-      rootId: turn.rootId,
-      text: sentence,
-      final: false,
-      clientId: this.clientId(lane, turn),
-    })
+    this.post(
+      lane,
+      'integrations/threads/reply',
+      { chatId: turn.chatId, rootId: turn.rootId, text: sentence, final: false, clientId: this.clientId(lane, turn) },
+      undefined,
+      () => this.landed(lane, turn),
+    )
+  }
+
+  private landed(lane: Lane, turn: ThreadTurnInput): void {
+    if (lane.undelivered === turn.replyId) lane.undelivered = null
   }
 
   private clientId(lane: Lane, turn: ThreadTurnInput): string {
@@ -899,6 +974,7 @@ export class ThreadLaneManager {
       worktree: r.worktree === true,
       readOnly: r.readOnly === true,
       closedAt: typeof r.closedAt === 'number' && Number.isFinite(r.closedAt) ? r.closedAt : null,
+      lastReplyId: str(r.lastReplyId),
     }
   }
 
@@ -906,13 +982,20 @@ export class ThreadLaneManager {
    * Posts for one lane go out in order. A failed post is tried again after
    * each wait of THREAD_POST_RETRY_MS; when the last try fails too, onGiveUp
    * runs (a reply or a summary: the thread goes back to Open with a short
-   * plain reply, so it never reads Working for good).
+   * plain reply, so it never reads Working for good). onLanded runs once the
+   * post went through.
    */
-  private post(lane: Lane, path: string, body: Record<string, unknown>, onGiveUp?: () => void): void {
+  private post(lane: Lane, path: string, body: Record<string, unknown>, onGiveUp?: () => void, onLanded?: () => void): void {
+    lane.postsInFlight++
     lane.posts = lane.posts
       .then(() => this.postWithRetry(path, body))
       .then((ok) => {
-        if (!ok && onGiveUp) onGiveUp()
+        // A give up queues its own posts first, so the count never dips to 0 between.
+        if (ok) onLanded?.()
+        else onGiveUp?.()
+      })
+      .finally(() => {
+        lane.postsInFlight--
       })
     this.track(lane.posts)
   }

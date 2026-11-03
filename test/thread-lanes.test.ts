@@ -817,3 +817,96 @@ test('the 7 day sweep refuses a state folder outside the threads folder too', as
   assert.deepEqual(await r.manager.sweepClosed(30 * DAY), ['101'])
   assert.deepEqual(r.removed, [])
 })
+
+// -- gate review finding 1: a reconnect never runs a finished turn again --
+
+const pendingRow = (rootId: string, replyId: string, text: string) => ({ chatId: '55', rootId, replyId, mode: 'reply', text, title: `T${rootId}`, assistantId: '7' })
+const replyTexts = (r: ReturnType<typeof rig>) => r.posts.filter((p) => p.path === 'integrations/threads/reply').map((p) => p.body.text)
+
+test('a reconnect while the reply post is being retried never runs the finished turn again', async () => {
+  let failures = 1
+  const r = rig({ failPosts: (path) => path === 'integrations/threads/reply' && failures-- > 0 })
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const c = r.spawned[0]!.child
+  c.init(FORK_A)
+  c.result('the answer.')
+  await flush()
+  const retry = r.live(THREAD_POST_RETRY_MS[0]!)
+  assert.equal(retry.length, 1, 'the reply post waits to be tried again')
+  // The server still lists the thread: its last row is the person's.
+  const pending = r.manager.reconcile(async () => ({ turns: [pendingRow('101', '1010', 'work on 101')] }), { assistantIds: ['7'] })
+  await flush()
+  r.fire(retry[0]!)
+  assert.equal(await pending, 0)
+  await r.manager.idle()
+  assert.equal(c.stdin.length, 1, 'the turn was written to the lane once')
+  assert.equal(r.spawned.length, 1)
+  assert.deepEqual(replyTexts(r), ['the answer.'], 'one answer, never a second one')
+})
+
+test('a new reply listed while the last answer is still being posted runs once that post has settled', async () => {
+  let failures = 1
+  const r = rig({ failPosts: (path) => path === 'integrations/threads/reply' && failures-- > 0 })
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const c = r.spawned[0]!.child
+  c.init(FORK_A)
+  c.result('the answer.')
+  await flush()
+  const pending = r.manager.reconcile(async () => ({ turns: [pendingRow('101', '1011', 'and more')] }), { assistantIds: ['7'] })
+  await flush()
+  assert.equal(c.stdin.length, 1, 'nothing runs while a post for that thread is in flight')
+  r.fire(r.live(THREAD_POST_RETRY_MS[0]!)[0]!)
+  assert.equal(await pending, 1)
+  await r.manager.idle()
+  assert.deepEqual(c.stdin, [c.stdin[0], userMessageLine('and more')])
+})
+
+test('after a daemon restart a listed turn that already finished is never run again: the thread goes back to open', async () => {
+  const r1 = rig()
+  r1.manager.turn(turn('101'))
+  await r1.manager.idle()
+  r1.spawned[0]!.child.init(FORK_A)
+  r1.spawned[0]!.child.result('the answer.')
+  await r1.manager.idle()
+  assert.equal(JSON.parse(r1.files.get(join(STATE, '101.json'))!).lastReplyId, '1010', 'the finished reply is saved with the lane')
+  // The answer never landed (the daemon died while posting it): the server still lists the thread.
+  const r2 = rig({ files: Object.fromEntries(r1.files) })
+  assert.equal(await r2.manager.reconcile(async () => ({ turns: [pendingRow('101', '1010', 'work on 101')] }), { assistantIds: ['7'] }), 0)
+  await r2.manager.idle()
+  assert.equal(r2.spawned.length, 0, 'no lane runs it again')
+  assert.deepEqual(statePosts(r2), ['101:open'])
+  const notice = r2.posts.find((p) => p.path === 'integrations/threads/reply')!.body
+  assert.match(String(notice.text), /could not be delivered/)
+  assert.equal(notice.clientId, 'thread-101-1010', 'the same client id as the lost answer, so the server keeps one')
+  // A reply the person sent after it still runs.
+  assert.equal(await r2.manager.reconcile(async () => ({ turns: [pendingRow('101', '1011', 'more')] }), { assistantIds: ['7'] }), 1)
+  await r2.manager.idle()
+  assert.equal(r2.spawned.length, 1)
+})
+
+test('a reconnect after every post of a finished turn failed puts the thread back to open, never runs it again', async () => {
+  let down = true
+  const r = rig({ failPosts: (path) => down && path === 'integrations/threads/reply' })
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const c = r.spawned[0]!.child
+  c.init(FORK_A)
+  c.result('the answer.')
+  // The answer, then its failure reply, each given up after every retry.
+  for (let round = 0; round < 2; round++) {
+    for (const ms of THREAD_POST_RETRY_MS) {
+      await flush()
+      r.fire(r.live(ms)[0]!)
+    }
+  }
+  await r.manager.idle()
+  assert.deepEqual(replyTexts(r), [])
+  down = false
+  assert.equal(await r.manager.reconcile(async () => ({ turns: [pendingRow('101', '1010', 'work on 101')] }), { assistantIds: ['7'] }), 0)
+  await r.manager.idle()
+  assert.equal(c.stdin.length, 1, 'never written to the lane again')
+  assert.match(String(replyTexts(r)[0]), /could not be delivered/)
+  assert.equal(statePosts(r).at(-1), '101:open')
+})
