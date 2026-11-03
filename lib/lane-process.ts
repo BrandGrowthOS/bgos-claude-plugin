@@ -13,26 +13,46 @@
  * since given to another process has another start time.
  *
  * Linux: the start time in clock ticks from /proc/<pid>/stat (field 22).
- * Elsewhere: `ps -o stat= -o lstart=`. A zombie counts as gone. Erasable
+ * Elsewhere: `ps -o stat= -o lstart=`. A zombie counts as gone. Every read
+ * is asynchronous. When no stamp could be read at spawn, the pid is still
+ * saved, and the process is known by the folder it runs in (processRunsIn). Erasable
  * TypeScript only. No em or en dashes in this file.
  */
 
-import { readFileSync } from 'node:fs'
-import { spawnSync } from 'node:child_process'
+import { readFile as readFileAsync, readlink, realpath } from 'node:fs/promises'
+import { execFile } from 'node:child_process'
 
-type Run = (command: string, args: string[], opts: Record<string, unknown>) => { status: number | null; stdout?: string | Buffer }
+type RunResult = { status: number | null; stdout?: string }
+type Run = (command: string, args: string[]) => Promise<RunResult>
 
-/** The process's start stamp while it is alive (not a zombie), else null. */
-export function processStamp(
+/** execFile as a promise that never rejects: the exit status and stdout. Never blocks the event loop. */
+const runAsync: Run = (command, args) =>
+  new Promise((done) => {
+    try {
+      execFile(command, args, { encoding: 'utf8', timeout: 5_000, maxBuffer: 64 * 1024 }, (err, stdout) => {
+        const code = err ? (typeof (err as { code?: unknown }).code === 'number' ? (err as { code: number }).code : 1) : 0
+        done({ status: code, stdout: String(stdout ?? '') })
+      })
+    } catch {
+      done({ status: null, stdout: '' })
+    }
+  })
+
+/**
+ * The process's start stamp while it is alive (not a zombie), else null.
+ * Asynchronous (follow up to finding 3): a stop polls it every 250 ms, and a
+ * synchronous ps there blocked the daemon's event loop each time.
+ */
+export async function processStamp(
   pid: number,
-  deps: { platform?: NodeJS.Platform; readFile?: (path: string) => string; run?: Run } = {},
-): string | null {
+  deps: { platform?: NodeJS.Platform; readFile?: (path: string) => Promise<string>; run?: Run } = {},
+): Promise<string | null> {
   if (!Number.isInteger(pid) || pid <= 0) return null
   const platform = deps.platform ?? process.platform
   if (platform === 'win32') return null
   if (platform === 'linux') {
     try {
-      const stat = (deps.readFile ?? ((p: string) => readFileSync(p, 'utf8')))(`/proc/${pid}/stat`)
+      const stat = await (deps.readFile ?? ((p: string) => readFileAsync(p, 'utf8')))(`/proc/${pid}/stat`)
       // The command name is in parentheses and may hold spaces: count after the last one.
       const fields = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/)
       const state = fields[0] ?? ''
@@ -44,8 +64,7 @@ export function processStamp(
     }
   }
   try {
-    const run: Run = deps.run ?? (spawnSync as unknown as Run)
-    const out = run('ps', ['-o', 'stat=', '-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', timeout: 5_000 })
+    const out = await (deps.run ?? runAsync)('ps', ['-o', 'stat=', '-o', 'lstart=', '-p', String(pid)])
     const line = String(out.stdout ?? '').trim()
     if (out.status !== 0 || line === '') return null
     const [state, ...start] = line.split(/\s+/)
@@ -53,6 +72,46 @@ export function processStamp(
     return start.join(' ')
   } catch {
     return null
+  }
+}
+
+/**
+ * The process is alive and runs in `dir` (its working directory, both real
+ * paths): how a lane's process is told from a stranger when no start stamp
+ * could be saved for it. Linux reads /proc/<pid>/cwd, elsewhere lsof. False
+ * when it cannot be told (then nothing is signalled).
+ */
+export async function processRunsIn(
+  pid: number,
+  dir: string,
+  deps: { platform?: NodeJS.Platform; run?: Run } = {},
+): Promise<boolean> {
+  if (!Number.isInteger(pid) || pid <= 0 || dir === '') return false
+  const platform = deps.platform ?? process.platform
+  if (platform === 'win32') return false
+  let want: string
+  try {
+    want = await realpath(dir)
+  } catch {
+    return false
+  }
+  let cwd: string | null = null
+  if (platform === 'linux') {
+    try {
+      cwd = await readlink(`/proc/${pid}/cwd`)
+    } catch {
+      return false
+    }
+  } else {
+    const out = await (deps.run ?? runAsync)('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'])
+    if (out.status !== 0) return false
+    cwd = String(out.stdout ?? '').split('\n').find((l) => l.startsWith('n'))?.slice(1) ?? null
+  }
+  if (!cwd) return false
+  try {
+    return (await realpath(cwd)) === want
+  } catch {
+    return cwd === want
   }
 }
 

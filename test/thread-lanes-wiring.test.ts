@@ -68,6 +68,7 @@ test('a lane gets Bash only where the host has the CLI sandbox', () => {
   assert.match(manager, /pluginStateDir: process\.env\.BGOS_PLUGIN_STATE_DIR\?\.trim\(\) \|\| undefined,/)
   // Gate review finding 3: a lane left from before a crash is found by pid and start stamp.
   assert.match(manager, /stamp: \(pid\) => processStamp\(pid\),/)
+  assert.match(manager, /runsIn: \(pid, dir\) => processRunsIn\(pid, dir\),/)
   assert.match(manager, /kill: \(pid, signal\) => killProcessGroup\(pid, signal\),/)
   assert.match(manager, /createExclusive: \(path, data\) => writeFileSync\(path, data, \{ flag: 'wx' \}\),/)
   assert.match(manager, /rename: \(from, to\) => renameSync\(from, to\),/)

@@ -70,7 +70,7 @@ function setup(opts: { platform?: NodeJS.Platform } = {}) {
     emptyMcpConfigPath: () => join(dir, 'empty-mcp.json'),
     shellSandbox: () => true,
     platform: opts.platform ?? process.platform,
-    processes: { stamp: () => null, kill: () => {} },
+    processes: { stamp: async () => null, runsIn: async () => false, kill: () => {} },
     git: async (args, cwd) => {
       try {
         const { stdout } = await run('git', args, { cwd })

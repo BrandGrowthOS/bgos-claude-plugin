@@ -154,7 +154,10 @@ export interface ThreadLaneDeps {
    * while it is alive, and a signal to the process group it leads.
    */
   processes: {
-    stamp(pid: number): string | null
+    /** Asynchronous (never a blocked event loop): the start stamp while alive, else null. */
+    stamp(pid: number): Promise<string | null>
+    /** Alive and running in this folder: how a lane is known when no stamp was saved. */
+    runsIn(pid: number, dir: string): Promise<boolean>
     kill(pid: number, signal: 'SIGTERM' | 'SIGKILL'): void
   }
   /** This host can run the CLI's Bash sandbox (lib/lane-policy.mjs laneShellSandboxAvailable). */
@@ -905,6 +908,8 @@ export class ThreadLaneManager {
         this.persist(lane)
       }
       this.dropCopiedMain(lane)
+      // A stamp that could not be read at spawn is asked for again.
+      if (lane.state.pidStamp === null) this.readStamp(lane, child)
       return
     }
     if (frame.type === 'result') this.onResult(lane, frame)
@@ -936,15 +941,30 @@ export class ThreadLaneManager {
     else this.pump()
   }
 
+  /**
+   * The pid from the child handle goes into the lane state at once (follow up
+   * to finding 3: before, a ps that failed at spawn left none), and its start
+   * stamp as soon as it can be read (readStamp, again on the next init frame).
+   */
   private recordPid(lane: Lane, child: StreamJsonChild): void {
     const pid = child.pid
     if (typeof pid !== 'number') return
-    const stamp = this.deps.processes.stamp(pid)
-    // Without a stamp the pid could not be told from a reused one later: not kept.
-    if (stamp === null) return
     lane.state.pid = pid
-    lane.state.pidStamp = stamp
+    lane.state.pidStamp = null
     if (lane.state.folder) this.persist(lane)
+    this.readStamp(lane, child)
+  }
+
+  private readStamp(lane: Lane, child: StreamJsonChild): void {
+    const pid = child.pid
+    if (typeof pid !== 'number' || lane.state.pid !== pid || lane.state.pidStamp !== null) return
+    this.track(
+      this.deps.processes.stamp(pid).then((stamp) => {
+        if (stamp === null || lane.child !== child || lane.state.pid !== pid || lane.state.pidStamp !== null) return
+        lane.state.pidStamp = stamp
+        if (lane.state.folder) this.persist(lane)
+      }),
+    )
   }
 
   /**
@@ -954,11 +974,15 @@ export class ThreadLaneManager {
    * another process is never signalled. False when it would not stop.
    */
   private async stopOrphan(state: ThreadLaneState): Promise<boolean> {
-    const { pid, pidStamp } = state
-    if (pid === null || pidStamp === null) return true
+    const { pid, pidStamp, cwd } = state
+    if (pid === null) return true
     const procs = this.deps.processes
-    const alive = (): boolean => procs.stamp(pid) === pidStamp
-    if (alive()) {
+    // Its start stamp, or without one the lane's own folder as its working
+    // directory: a pid since given to another process matches neither.
+    const alive = pidStamp !== null
+      ? async (): Promise<boolean> => (await procs.stamp(pid)) === pidStamp
+      : async (): Promise<boolean> => cwd !== '' && (await procs.runsIn(pid, cwd))
+    if (await alive()) {
       this.deps.log(`threads: lane ${state.rootId} still runs from before a restart, it is stopped first`)
       const grace = this.deps.killGraceMs ?? THREAD_LANE_KILL_GRACE_MS
       procs.kill(pid, 'SIGTERM')
@@ -978,10 +1002,10 @@ export class ThreadLaneManager {
     return true
   }
 
-  /** True once alive() is false, polled every THREAD_ORPHAN_POLL_MS for at most ms. */
-  private async gone(alive: () => boolean, ms: number): Promise<boolean> {
+  /** True once alive() is false, polled every THREAD_ORPHAN_POLL_MS (asynchronously) for at most ms. */
+  private async gone(alive: () => Promise<boolean>, ms: number): Promise<boolean> {
     for (let waited = 0; ; waited += THREAD_ORPHAN_POLL_MS) {
-      if (!alive()) return true
+      if (!(await alive())) return true
       if (waited >= ms) return false
       await new Promise<void>((done) => this.deps.setTimer(done, THREAD_ORPHAN_POLL_MS))
     }

@@ -73,6 +73,10 @@ function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; f
   /** The machine's processes as the lanes see them: a stamp while alive, and what stops each. */
   const procs = new Map<number, { stamp: string; alive: boolean; dies: 'SIGTERM' | 'SIGKILL' | 'never' }>()
   const procKills: Array<[number, string]> = []
+  /** ps (or /proc) failing: no start stamp can be read while this is true. */
+  const ctl = { stampDown: false }
+  /** The folder each process runs in, as the lane's cwd check reads it. */
+  const procCwd = new Map<number, string>()
   let lastPid = 4000
   const mainSrc = sessionTranscriptPath(HOME, AGENT, MAIN, '')
   files.set(mainSrc, '{"main":true}\n')
@@ -82,12 +86,15 @@ function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; f
       const pid = ++lastPid
       child.pid = pid
       procs.set(pid, { stamp: `S${pid}`, alive: true, dies: 'SIGTERM' })
+      procCwd.set(pid, o.cwd)
       child.onExit(() => { procs.get(pid)!.alive = false })
       spawned.push({ command, args, cwd: o.cwd, child })
       return child
     },
     processes: {
-      stamp: (pid) => { const p = procs.get(pid); return p && p.alive ? p.stamp : null },
+      // Asynchronous, like the real ps and /proc reads: never a blocked event loop.
+      stamp: async (pid) => { if (ctl.stampDown) return null; const p = procs.get(pid); return p && p.alive ? p.stamp : null },
+      runsIn: async (pid, dir) => { const p = procs.get(pid); return !ctl.stampDown && p !== undefined && p.alive && procCwd.get(pid) === dir },
       kill: (pid, signal) => {
         procKills.push([pid, signal])
         const p = procs.get(pid)
@@ -146,7 +153,7 @@ function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; f
   const manager = new ThreadLaneManager(deps)
   const live = (ms: number) => timers.filter((t) => t.ms === ms && !t.cleared && !t.fired)
   const fire = (t: Timer) => { t.fired = true; t.fn() }
-  return { manager, deps, files, dirs, spawned, posts, failedPosts, gitCalls, removed, branchesDeleted, timers, clock, live, fire, mainSrc, procs, procKills }
+  return { manager, deps, files, dirs, spawned, posts, failedPosts, gitCalls, removed, branchesDeleted, timers, clock, live, fire, mainSrc, procs, procKills, ctl, procCwd }
 }
 
 /** The command the manager must build for a working lane in wt(root) (protected: the agent repo's own state). */
@@ -1194,4 +1201,34 @@ test('a working lane can read its own email files but not the rest of ~/.bgos-ag
   await r.manager.idle()
   const deny: string[] = laneSettings(r).settings.sandbox.filesystem.denyRead
   assert.deepEqual(deny, [`${HOME}/.bgos-agent/credentials-7.json`, `${HOME}/.bgos-agent/email-files/8`])
+})
+
+// -- follow up (Data, item 3): the pid is kept even when no start stamp can be read at spawn --
+
+test('a lane whose start stamp cannot be read at spawn still has its pid saved, and its stamp once it can be read', async () => {
+  const r = rig()
+  r.ctl.stampDown = true
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const c = r.spawned[0]!.child
+  assert.equal(saved(r).pid, c.pid, 'the pid from the child handle')
+  assert.equal(saved(r).pidStamp, null)
+  r.ctl.stampDown = false
+  c.init(FORK_A)
+  await r.manager.idle()
+  assert.equal(saved(r).pidStamp, `S${c.pid}`, 'read again on the next frame')
+})
+
+test('after a crash, a saved pid without a stamp is stopped when it runs in the lane folder, and never signalled otherwise', async () => {
+  for (const [where, expect] of [[wt('101'), [[777, 'SIGTERM']]], ['/somewhere/else', []]] as const) {
+    const state = { rootId: '101', chatId: '55', title: 'T', forkSessionId: FORK_A, folder: wt('101'), cwd: wt('101'), worktree: true, readOnly: false, closedAt: null, lastReplyId: '1010', lastDelivered: true, pid: 777, pidStamp: null }
+    const r = rig({ files: { [join(STATE, '101.json')]: JSON.stringify(state) } })
+    r.dirs.add(wt('101'))
+    r.procs.set(777, { stamp: 'S777', alive: true, dies: 'SIGTERM' })
+    r.procCwd.set(777, where)
+    r.manager.turn(turn('101', { mode: 'reply', replyId: '1011', text: 'again' }))
+    await pollOut(r)
+    assert.deepEqual(r.procKills, expect, where)
+    assert.equal(r.spawned.length, 1)
+  }
 })
