@@ -2,6 +2,16 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.82.0 (2026-11-03)
+
+One release for the set merged in #305. The sections below written as 0.81.1, 0.74.4 and 0.83.0 ship here, in 0.82.0.
+
+- **Every missed message once, in order, after a deploy** (#304, the 0.81.1 section below).
+- **An agent stuck on the usage limit screen comes back by itself** once usage is back (#297).
+- **Mark every goal you are working on:** the `set_goal_working` and `set_goal_waiting` tools, so the mission card shows each goal in progress (#295).
+- **A launcher no longer wedges on an `expect` over a dead claude:** such an expect no longer counts as supervising, and it is re-checked right before it is ended (Guru's fix, 82dc3f8).
+- **Tests:** the suite is green off CI on stock macOS and arm64 Linux (#293), and every test removes its temp folders (#303).
+
 ## 0.81.1 (2026-11-03)
 
 **The plugin catches up after every deploy: every message an agent missed reaches it once, oldest first, however many there are (D04-1, board row 62fa8e83).** A deploy restarts the server and drops every socket, and the daemon read back only part of what it had missed, then moved its place in the chat past the rest. Those messages were gone for good and nothing said so. The D04 report measured it on the real routes: with a live message right after a reconnect, none of 7 missed rows arrived; of 80 missed rows, 30 were lost; and a chat that started empty lost its oldest rows.
