@@ -442,6 +442,7 @@ import {
   probeRequestPath,
   LIVENESS_PROBE_POLL_MS,
 } from './lib/boot-hello.js'
+import { LIMIT_NOTICE_FILE_NAME, LIMIT_NOTICE_POLL_MS, createLimitNoticeIntake } from './lib/limit-notice.js'
 import {
   LOCK_HEARTBEAT_INTERVAL_MS,
   acquirePairingLock,
@@ -18423,6 +18424,46 @@ async function main(): Promise<void> {
           }),
         ).catch((err) => log(`liveness probe delivery failed: ${err}`))
       }, LIVENESS_PROBE_POLL_MS).unref()
+    }
+
+    // Step 2.65: the limit watch's notice (lib/limit-notice.ts). When this agent was stuck on Claude
+    // Code's usage limit screen, the watcher presses Enter once as soon as usage is back (or says why
+    // it could not) and drops ~/.bgos-agent/<id>/limit-notice.json: tokens and times only. Here it is
+    // turned into the owner's words from fixed templates and posted into the owner's own chat, the
+    // deaf warning's way (deafNoticeChat: never a group, never somebody else's chat). No owner chat
+    // known yet: the file stays and the next tick tries again, at most once a minute.
+    const limitNoticeDir = agentStateDir(homedir(), ASSISTANT_ID)
+    if (limitNoticeDir) {
+      const limitNotices = createLimitNoticeIntake({
+        path: pathJoin(limitNoticeDir, LIMIT_NOTICE_FILE_NAME),
+        readFile: (path) => {
+          try {
+            return readFileSync(path, 'utf8')
+          } catch {
+            return null
+          }
+        },
+        removeFile: (path) => unlinkSync(path),
+        post: async (text) => {
+          const chat = deafNoticeChat({ pendingChatId: '', mainChatIds, ownership: chatOwnership })
+          if (!chat) return false
+          await sendConnectionNotice(chat, text)
+          return true
+        },
+        now: () => Date.now(),
+        log,
+      })
+      let limitNoticeBusy = false
+      setInterval(() => {
+        if (limitNoticeBusy) return
+        limitNoticeBusy = true
+        void limitNotices
+          .tick()
+          .catch((err) => log(`limit notice failed: ${err}`))
+          .finally(() => {
+            limitNoticeBusy = false
+          })
+      }, LIMIT_NOTICE_POLL_MS).unref()
     }
 
     // Step 2.7: Agent Update Stream (flag-gated; STRICT default OFF). Mint a

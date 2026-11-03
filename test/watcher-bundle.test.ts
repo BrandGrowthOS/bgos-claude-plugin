@@ -77,6 +77,13 @@ test('WATCHER_BUNDLE_FILES is exactly the design 7.5 list (order and names)', ()
     // The keep-alive sweep (design 5) and its imports.
     'lib/watcher-keepalive.mjs',
     'lib/keepalive-plan.mjs',
+    'lib/watcher-checkup.mjs',
+    'lib/agent-checkup.mjs',
+    // The limit watch (Kc 2026-11-01): the pass, its key module, its pure rules, the Windows helper.
+    'lib/watcher-limit.mjs',
+    'lib/limit-keys.mjs',
+    'lib/limit-screen.mjs',
+    'bin/win32-limit-screen.ps1',
     'lib/process-tree.mjs',
     'lib/agent-task-win32.mjs',
     // The read-back of an agent's own service before the sweep or a restart acts on it
