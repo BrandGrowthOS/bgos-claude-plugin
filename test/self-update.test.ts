@@ -3,13 +3,11 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   statSync,
   writeFileSync,
 } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import {
@@ -53,6 +51,7 @@ import {
   type CommandRunner,
 } from '../lib/self-update'
 import { PUBLISHED_MANIFEST_URL } from '../lib/published-release.mjs'
+import { scratchDir } from './helpers/scratch-dirs'
 
 const COMMIT_A = 'a'.repeat(40)
 const COMMIT_B = 'b'.repeat(40)
@@ -81,7 +80,7 @@ afterAll(() => {
 })
 
 function tempDir(prefix: string): string {
-  const dir = mkdtempSync(join(tmpdir(), prefix))
+  const dir = scratchDir(prefix)
   tempDirs.push(dir)
   return dir
 }
@@ -2107,9 +2106,9 @@ describe('bounded drain for triggered updates (UPDATE_DRAIN_TIMEOUT_MS)', () => 
   })
 
   function drainHarness(snapshot: () => typeof idle) {
-    const rootDir = mkdtempSync(join(tmpdir(), 'self-update-drain-root-'))
+    const rootDir = scratchDir('self-update-drain-root-')
     mkdirSync(join(rootDir, '.git'))
-    const stateFilePath = join(mkdtempSync(join(tmpdir(), 'self-update-drain-state-')), 'auto-update.json')
+    const stateFilePath = join(scratchDir('self-update-drain-state-'), 'auto-update.json')
     const calls: Array<{ file: string; args: readonly string[] }> = []
     const drainModes: boolean[] = []
     const logs: string[] = []
@@ -2314,7 +2313,7 @@ describe('a staged daemon keeps observing what the latest version is', () => {
 
 describe('isUpdateLockHeld: a click never restarts onto a checkout another daemon is installing', () => {
   test('a fresh lock is held, a stale one (older than UPDATE_LOCK_STALE_MS) and a missing one are not', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'lock-held-'))
+    const dir = scratchDir('lock-held-')
     const lock = join(dir, 'bgos-auto-update.lock')
     expect(isUpdateLockHeld(lock)).toBe(false)
     writeFileSync(lock, '{}')

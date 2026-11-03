@@ -19,15 +19,15 @@
 // disk.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { DENIED_TOOLS, ensureDeniedTools } from '../lib/claude-preseed.mjs'
+import { scratchDir } from './helpers/scratch-dirs'
 
 function agentFolder() {
-  const root = mkdtempSync(join(tmpdir(), 'hoai-deny-'))
+  const root = scratchDir('hoai-deny-')
   mkdirSync(join(root, '.claude'), { recursive: true })
   return { root, settingsPath: join(root, '.claude', 'settings.local.json') }
 }

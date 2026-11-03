@@ -18,8 +18,7 @@
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readdirSync, realpathSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, readdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -27,11 +26,12 @@ import { fileURLToPath } from 'node:url'
 import { floorKey, floorStateRoot, markFloorAttached, sessionFolders } from '../lib/floor-state.mjs'
 import { privateMarkerPath } from '../lib/private-turn.mjs'
 import { linkFolder } from './helpers/links.ts'
+import { scratchDir } from './helpers/scratch-dirs.ts'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 function aliasOfRepo(): string {
-  const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'entry-alias-')))
+  const scratch = realpathSync(scratchDir('entry-alias-'))
   const alias = join(scratch, 'alias')
   linkFolder(repoRoot, alias)
   return alias
@@ -60,7 +60,7 @@ for (const [label, rootOf] of [
   ['symlinked checkout', aliasOfRepo],
 ] as const) {
   test(`hoai-hook spools the event (${label})`, () => {
-    const home = mkdtempSync(join(tmpdir(), 'entry-hook-'))
+    const home = scratchDir('entry-hook-')
     const res = run(
       'hoai-hook.mjs',
       rootOf(),
@@ -88,8 +88,8 @@ for (const [label, rootOf] of [
   })
 
   test(`hoai-private-turn-hook refuses a prompt it cannot record (${label})`, () => {
-    const state = mkdtempSync(join(tmpdir(), 'entry-private-'))
-    const cwd = mkdtempSync(join(tmpdir(), 'entry-cwd-'))
+    const state = scratchDir('entry-private-')
+    const cwd = scratchDir('entry-cwd-')
     const env = { BGOS_PLUGIN_STATE_DIR: state, HOME: state, USERPROFILE: state }
     // A managed agent's daemon is attached to its folder and names where its
     // transcripts live (0.68.4); with it in place, a prompt that has no

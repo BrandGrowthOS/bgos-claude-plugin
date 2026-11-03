@@ -16,7 +16,6 @@ import {
   existsSync,
   linkSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
   realpathSync,
@@ -26,19 +25,20 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { execFileSync } from 'node:child_process'
-import { tmpdir, userInfo } from 'node:os'
+import { userInfo } from 'node:os'
 import { join } from 'node:path'
 
 import { bundleSha256, sha256Hex } from '../lib/skill-share-content-rules.ts'
 import { exportSkill, installBundle, readSkillFolder } from '../lib/skills-share.ts'
 import { fileSymlinkRefused, linkFolder } from './helpers/links.ts'
+import { scratchDir } from './helpers/scratch-dirs.ts'
 
 const SKILL = '---\nname: notes\ndescription: Take notes.\n---\n\n# Notes\n'
 
 type World = { root: string; home: string; agent: string; config: string; managed: string; trash: string }
 
 function world(): World {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'skills-share-')))
+  const root = realpathSync(scratchDir('skills-share-'))
   const home = join(root, 'home')
   const agent = join(home, 'agents', 'data')
   const config = join(home, '.claude')

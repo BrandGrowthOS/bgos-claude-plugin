@@ -6,6 +6,7 @@
  * is hoai-browser-host.downloads.chromium.test.ts.
  */
 import { test as nativeTest, type TestContext } from 'node:test'
+import { scratchDir } from './helpers/scratch-dirs'
 
 // Production background timers are unreferenced. A synthetic test has no
 // browser socket to keep Node alive while those original timers settle.
@@ -18,8 +19,7 @@ function test(name: string, body: (context: TestContext) => void | Promise<void>
 }
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { BrowserHostCore, BrowserPool, DOWNLOAD_SENTENCE, hostInstructions, loadPlaywright } from '../bin/hoai-browser-host.mjs'
@@ -65,7 +65,7 @@ function fakeDownload(held: string, name: string) {
 }
 
 function setup() {
-  const home = mkdtempSync(join(tmpdir(), 'dl-host-'))
+  const home = scratchDir('dl-host-')
   const agentRoot = join(home, '.bgos-agent')
   const srv = server()
   let n = 0

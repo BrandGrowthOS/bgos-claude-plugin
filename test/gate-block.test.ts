@@ -21,12 +21,12 @@
  * Run: npm test, or npx tsx --test test/gate-block.test.ts
  */
 import { spawn } from 'node:child_process'
-import { mkdtempSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { scratchDir } from './helpers/scratch-dirs'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const blockPath = join(repoRoot, 'lib', 'gate-block.tcl')
@@ -210,7 +210,7 @@ function runBlock(
   mode: string,
   { recordsKeys = true }: { recordsKeys?: boolean } = {},
 ): Promise<{ outcome: string; answered: string; screen: string; keys: string }> {
-  const dir = mkdtempSync(join(tmpdir(), 'hoai-gate-'))
+  const dir = scratchDir('hoai-gate-')
   const sim = join(dir, 'sim.cjs')
   const keyFile = join(dir, 'keys.hex')
   const statusFile = join(dir, 'status.txt')
