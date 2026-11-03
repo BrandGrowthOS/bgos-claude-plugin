@@ -1,16 +1,22 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import ts from 'typescript'
 import { createMissionWorkingTracker } from '../lib/mission-working.ts'
+import { createMissionWorkingWriteLock, hasUnconfirmedWorkingWrite } from '../lib/mission-working-lock.ts'
+import { buildMissionGoalWorkingPath } from '../lib/missions.ts'
 import { parseHookEvent } from '../lib/hook-events.ts'
 
 const source = readFileSync(new URL('../server.ts', import.meta.url), 'utf8')
 const parsed = ts.createSourceFile('server.ts', source, ts.ScriptTarget.Latest, true)
 const standDownPaths: string[] = []
 let trackerArmedCheck = ''
+let trackerInitializer = ''
 function findLifecycle(node: ts.Node) {
   if (ts.isVariableDeclaration(node) && node.name.getText(parsed) === 'missionWorking' && node.initializer && ts.isCallExpression(node.initializer)) {
+    trackerInitializer = node.initializer.getText(parsed)
     const options = node.initializer.arguments[0] as ts.ObjectLiteralExpression
     const armed = options.properties.find(p => p.name?.getText(parsed) === 'isArmed') as ts.PropertyAssignment
     trackerArmedCheck = armed.initializer.getText(parsed)
@@ -40,6 +46,55 @@ function stopIntake(tracker: ReturnType<typeof createMissionWorkingTracker>) {
     missionWorking: tracker, missionWorkingTimer: null, clearInterval: () => {},
     clearFloorAttachedMarker: () => {}, hookCardTimer: null, hookCardPending: { clear: () => {} }, hookTurnCardKey: null,
     hookCardIds: new Map(), stopHookStepsHeartbeat: () => {},
+  })
+}
+
+for (const delayed of [false, true]) {
+  test(`the real daemon transport protects a successor across handover, delayed clear=${delayed}`, async t => {
+    const root = mkdtempSync(join(tmpdir(), 'working-daemons-'))
+    t.after(() => rmSync(root, { recursive: true, force: true }))
+    let owner = 'A', backend = false
+    let release!: () => void, entered!: () => void
+    const waiting = new Promise<void>(resolve => { release = resolve })
+    const started = new Promise<void>(resolve => { entered = resolve })
+    const writes: string[] = []
+    const make = (name: string) => {
+      const bindings = {
+        createMissionWorkingTracker, createMissionWorkingWriteLock, hasUnconfirmedWorkingWrite, buildMissionGoalWorkingPath,
+        PAIRING_LOCK_PATH: join(root, 'pairing.lock'), ASSISTANT_ID: '900',
+        pairingLockNamesThisDaemon: () => owner === name,
+        rememberMissionSelfWrite: () => {},
+        bgosPatch: async (_path: string, body: { working: boolean }) => {
+          if (name === 'A' && !body.working && delayed) { entered(); await waiting }
+          writes.push(`${name}:${body.working}`)
+          backend = body.working
+          return { mission: { id: 77 } }
+        },
+      }
+      const js = ts.transpileModule(`
+        let channelArmed = true, lockHeld = true;
+        const tracker = ${trackerInitializer};
+        return { tracker, disarm() { channelArmed = false; lockHeld = false; } };
+      `, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText
+      return new Function(...Object.keys(bindings), js)(...Object.values(bindings))
+    }
+    const a = make('A'), b = make('B')
+    await a.tracker.mark({ ...scope, working: true })
+    let clearing: Promise<void> | undefined
+    if (delayed) { clearing = stopIntake(a.tracker); await started }
+    owner = 'B'
+    a.disarm()
+    const selecting = b.tracker.mark({ ...scope, sessionId: 'session-b', working: true })
+    if (delayed) {
+      await new Promise(resolve => setImmediate(resolve))
+      release()
+      await clearing
+    }
+    await selecting
+    if (!delayed) await stopIntake(a.tracker)
+    await b.tracker.onHook({ hook_event_name: 'PreToolUse', session_id: 'session-b' })
+    assert.equal(backend, true)
+    assert.deepEqual(writes, delayed ? ['A:true', 'A:false', 'B:true'] : ['A:true', 'B:true'])
   })
 }
 

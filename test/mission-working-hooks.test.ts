@@ -328,7 +328,7 @@ test('a failed explicit selection does not become a hook-owned goal', async t =>
   assert.equal(r.calls.filter(c => c.body.working).length, 1)
   await r.event('Stop')
   await r.tracker.sweep()
-  assert.equal(r.calls.length, 1, 'a failed write must not create a confirmed mark to clear')
+  assert.deepEqual(r.calls.map(c => c.body.working), [true, false], 'an uncertain write is cleared without adopting it')
 })
 
 
@@ -387,13 +387,13 @@ test('a newer session owns the shared goal even if the old session clear failed'
   assert.equal(r.calls.at(-1)?.body.working, false)
 })
 
-test('a true write with a lost response is not treated as a confirmed mark', async t => {
+test('a true write with a lost response remains eligible for Stop cleanup', async t => {
   const r = await rig(t)
   r.loseResponse()
   await assert.rejects(r.tracker.mark({ ...scope, working: true }))
   await r.event('Stop')
   await r.tracker.sweep()
-  assert.deepEqual(r.calls.map(c => c.body.working), [true])
+  assert.deepEqual(r.calls.map(c => c.body.working), [true, false])
 })
 
 test('hook refresh errors produce no stdout or stderr and exit normally', () => {

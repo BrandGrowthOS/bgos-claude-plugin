@@ -923,6 +923,19 @@ use their existing hook registrations. A disconnected session needs manual
 refresh within 30 minutes. If the daemon is killed or the backend stays down,
 the backend's existing 30-minute expiry is the final bound on a stale mark.
 
+HTTP 400, 403 and 404 also retire refused goals. Other failed clears back off
+from 30 seconds to ten minutes. A daemon that loses the pairing lock retires
+its local ownership; it must not clear the new holder's marks.
+
+If a working request times out or loses its response, its remote outcome may
+still be unknown. The daemon preserves cleanup for that goal but refuses new
+`working: true` selections until the old write can be safely reconciled.
+This fence survives a daemon restart and has no automatic expiry; other goals
+remain usable. Cleanup can repeat with backoff if an old true arrives late.
+Safe recovery requires confirmation that the old server operation cannot
+still run, or a server-enforced conditional write. Restarting alone does not
+provide that confirmation.
+
 ## Keep working until it is done: the goal lane (v0.42.0+)
 
 Claude Code has a goal loop of its own. A person types `/goal <condition>` in

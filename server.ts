@@ -285,6 +285,7 @@ import {
   type MissionSnapshot,
 } from './lib/missions.js'
 import { createMissionWorkingTracker, MISSION_WORKING_SWEEP_MS } from './lib/mission-working.ts'
+import { createMissionWorkingWriteLock, hasUnconfirmedWorkingWrite } from './lib/mission-working-lock.ts'
 import {
   createMissionSelfWriteLedger,
   decideMissionNotice,
@@ -10301,6 +10302,9 @@ let hookIntake: HookIntake | null = null
 let missionWorkingTimer: ReturnType<typeof setInterval> | null = null
 const missionWorking = createMissionWorkingTracker({
   isArmed: () => channelArmed && lockHeld,
+  hasAuthority: () => pairingLockNamesThisDaemon(),
+  withWriteLock: createMissionWorkingWriteLock(`${PAIRING_LOCK_PATH}.working-writes`),
+  hasUnconfirmedWrite: (scope) => hasUnconfirmedWorkingWrite(`${PAIRING_LOCK_PATH}.working-writes`, scope),
   patch: (scope, working) => {
     const built = buildMissionGoalWorkingPath(ASSISTANT_ID, scope.missionId, scope.goalId)
     if (!built.ok) return Promise.reject(new Error(built.error))
