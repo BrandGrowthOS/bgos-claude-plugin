@@ -958,7 +958,7 @@ import {
 } from 'node:fs'
 import { ThreadLaneManager, threadsPendingPath } from './lib/thread-lanes.ts'
 import { AsideForks, runAside } from './lib/aside-fork.ts'
-import { threadsCliProblem, threadsCliSupport, type ThreadsCliAnswer } from './lib/threads-cli.ts'
+import { ThreadsCliGate, threadsCliProblem, type ThreadsCliAnswer } from './lib/threads-cli.ts'
 import { killProcessGroup, processRunsIn, processStamp } from './lib/lane-process.ts'
 import { laneShellSandboxAvailable } from './lib/lane-policy.mjs'
 import { findOnPath } from './lib/lane-cli-probe.mjs'
@@ -1948,16 +1948,15 @@ const CLAUDE_EXECUTABLE: string | null = resolveClaude()
 // --restricted, 2.1.301 and later, --tools, --fork-session, the stream json
 // flags, acceptEdits and dontAsk). Not Windows in phase 1. Resolved per
 // declaration, like /login's binary above; the probe is cached per binary.
-function threadsCli(): ThreadsCliAnswer {
-  let answer: ThreadsCliAnswer
-  try {
-    answer = threadsCliSupport({
-      claudePath: resolveClaude(),
-      cachePath: pathJoin(process.env.BGOS_PLUGIN_STATE_DIR?.trim() || pathJoin(homedir(), '.bgos-plugin-state'), 'threads-cli-probe.json'),
-    })
-  } catch (err) {
-    answer = { ok: false, missing: [], version: null, reason: `probe_failed: ${err instanceof Error ? err.name : 'error'}` }
-  }
+// The probe runs in the background and never on the event loop; a failed or
+// hung one is kept for a while (lib/threads-cli.ts ThreadsCliGate). Started at
+// boot, so the first heartbeats can already declare.
+const threadsCliGate = new ThreadsCliGate({
+  claudePath: () => resolveClaude(),
+  cachePath: pathJoin(process.env.BGOS_PLUGIN_STATE_DIR?.trim() || pathJoin(homedir(), '.bgos-plugin-state'), 'threads-cli-probe.json'),
+  onAnswer: (answer) => logThreadsCli(answer),
+})
+function logThreadsCli(answer: ThreadsCliAnswer): void {
   const said = answer.ok
     ? `threads: claude ${answer.version} can run thread lanes and By the way; declaring message_threads, thread_sessions and asides`
     : `threads: not declared (${answer.reason ?? `claude ${answer.version ?? 'of unknown version'} lacks ${answer.missing.join(', ')}`})`
@@ -1965,11 +1964,15 @@ function threadsCli(): ThreadsCliAnswer {
     threadsCliLogged = said
     log(said)
   }
-  return answer
+}
+/** Never waits: the kept answer, or `probing` while the probe runs. */
+function threadsCli(): ThreadsCliAnswer {
+  return threadsCliGate.current()
 }
 function threadsDeclared(): boolean {
   return process.platform !== 'win32' && threadsCli().ok
 }
+void threadsCliGate.ready()
 const bootSlashCommands = prepareSlashCommands(
   catalogForCapabilities({
     remoteCompact: compactTarget !== null,
@@ -13334,7 +13337,7 @@ function threadsEmptyMcpConfig(): string {
 const threadLanes = new ThreadLaneManager({
   spawn: spawnStreamJson,
   claudeBin: resolveClaude,
-  cliProblem: () => threadsCliProblem(threadsCli(), 'turn'),
+  cliProblem: async () => threadsCliProblem(await threadsCliGate.ready(), 'turn'),
   mainSessionId: () => provenSessionId(),
   agentFolder: CLAUDE_PROJECT_CWD,
   stateDir: THREADS_STATE_DIR,
@@ -13519,7 +13522,7 @@ const voiceRpc = new VoiceRpcHandler({
             runAside(input, {
               spawn: spawnStreamJson,
               claudeBin: resolveClaude,
-              cliProblem: () => threadsCliProblem(threadsCli(), 'aside'),
+              cliProblem: async () => threadsCliProblem(await threadsCliGate.ready(), 'aside'),
               mainSessionId: () => provenSessionId(),
               mainFolder: CLAUDE_PROJECT_CWD,
               home: homedir(),

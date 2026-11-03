@@ -25,7 +25,7 @@
  */
 
 import * as nodeFs from 'node:fs'
-import { spawnSync } from 'node:child_process'
+import { execFile, spawnSync } from 'node:child_process'
 import { dirname } from 'node:path'
 
 export const THREADS_MIN_CLI = '2.1.301'
@@ -214,4 +214,172 @@ export function threadsCliProblem(answer: ThreadsCliAnswer, what: 'turn' | 'asid
   return turn
     ? `This turn failed because Claude Code on this computer cannot run threads: ${why}. Update Claude Code, then send your reply again.`
     : `Claude Code on this computer cannot answer side questions: ${why}. Update Claude Code, then ask again.`
+}
+
+// -- Follow up (item 2): never on the event loop, and a failed probe is kept --
+
+/** How long a probe that read no version (it hung or failed) is kept before claude is asked again. */
+export const THREADS_FAILED_RETRY_MS = 10 * 60_000
+
+type AsyncRun = (command: string, args: string[], timeoutMs: number) => Promise<ProbeOutput>
+
+const execAsync: AsyncRun = (command, args, timeoutMs) =>
+  new Promise((done) => {
+    try {
+      execFile(
+        command,
+        args,
+        { encoding: 'utf8', timeout: timeoutMs, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024, env: process.env },
+        (err, stdout, stderr) => {
+          const code = err ? (typeof (err as { code?: unknown }).code === 'number' ? (err as { code: number }).code : null) : 0
+          done({ status: code, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') })
+        },
+      )
+    } catch (err) {
+      done({ status: null, stdout: '', stderr: String((err as Error)?.message ?? err) })
+    }
+  })
+
+/**
+ * The probe, asynchronous: the four questions at once, each cut at the
+ * timeout (a hung claude costs one timeout, off the event loop, never 4 x 10 s
+ * of a blocked daemon).
+ */
+export async function probeThreadsCliAsync(
+  claudePath: string,
+  deps: { run?: AsyncRun; timeoutMs?: number } = {},
+): Promise<{ ok: boolean; missing: string[]; version: string | null }> {
+  const run = deps.run ?? execAsync
+  const t = deps.timeoutMs ?? THREADS_PROBE_TIMEOUT_MS
+  const [version, help, mode, ...hiddenOuts] = await Promise.all([
+    run(claudePath, ['--version'], t),
+    run(claudePath, ['--help'], t),
+    run(claudePath, ['--permission-mode', MODE_PROBE_VALUE], t),
+    ...THREADS_HIDDEN_VALUE_FLAGS.map((flag) => run(claudePath, [flag], t)),
+  ])
+  const hidden: Record<string, ProbeOutput> = {}
+  THREADS_HIDDEN_VALUE_FLAGS.forEach((flag, i) => { hidden[flag] = hiddenOuts[i]! })
+  return classifyThreadsCliProbe({ version: version!, help: help!, mode: mode!, hidden })
+}
+
+type GateFs = Pick<typeof nodeFs, 'realpathSync' | 'statSync' | 'readFileSync' | 'mkdirSync' | 'writeFileSync' | 'renameSync'>
+
+/**
+ * The daemon's one view of "can this claude run threads" (follow up to
+ * finding 2). current() answers at once and never waits: a cached answer for
+ * this binary, or `probing` while the one shared probe runs in the background
+ * (threads stay undeclared until it answers; capabilities go out on every
+ * heartbeat). ready() waits for that answer, asynchronously, for a turn or a
+ * side question. An answer with a version is kept per binary (on disk too);
+ * one that read nothing (claude hung or failed) is kept for
+ * THREADS_FAILED_RETRY_MS, so no later turn waits on it again, also after a
+ * restart.
+ */
+export class ThreadsCliGate {
+  private readonly deps: {
+    claudePath(): string | null
+    cachePath: string
+    platform?: NodeJS.Platform
+    fs?: GateFs
+    probe?: (claudePath: string) => Promise<{ ok: boolean; missing: string[]; version: string | null }>
+    now?: () => number
+    onAnswer?(answer: ThreadsCliAnswer): void
+  }
+
+  private memo: { key: string; answer: ThreadsCliAnswer; retryAt: number | null } | null = null
+  private inflight: { key: string; promise: Promise<ThreadsCliAnswer> } | null = null
+
+  constructor(deps: ThreadsCliGate['deps']) {
+    this.deps = deps
+  }
+
+  current(): ThreadsCliAnswer {
+    const at = this.where()
+    if ('answer' in at) return at.answer
+    const known = this.known(at.key)
+    if (known) return known
+    void this.start(at.key, at.path)
+    return { ok: false, missing: [], version: null, reason: 'probing' }
+  }
+
+  async ready(): Promise<ThreadsCliAnswer> {
+    const at = this.where()
+    if ('answer' in at) return at.answer
+    return this.known(at.key) ?? this.start(at.key, at.path)
+  }
+
+  private now(): number {
+    return (this.deps.now ?? Date.now)()
+  }
+
+  /** The binary's cache key, or the answer when there is no binary to ask. */
+  private where(): { key: string; path: string } | { answer: ThreadsCliAnswer } {
+    if ((this.deps.platform ?? process.platform) === 'win32') return { answer: { ok: false, missing: [], version: null, reason: 'platform' } }
+    const path = this.deps.claudePath()
+    if (!path) return { answer: { ok: false, missing: [], version: null, reason: 'no_claude' } }
+    try {
+      const fs = this.deps.fs ?? nodeFs
+      const real = fs.realpathSync(path)
+      const st = fs.statSync(real)
+      return { key: `${THREADS_PROBE_VERSION}:${real}:${st.size}:${Math.trunc(st.mtimeMs)}`, path }
+    } catch {
+      return { answer: { ok: false, missing: [], version: null, reason: 'no_claude' } }
+    }
+  }
+
+  private fresh(retryAt: number | null): boolean {
+    return retryAt === null || this.now() < retryAt
+  }
+
+  private known(key: string): ThreadsCliAnswer | null {
+    if (this.memo?.key === key && this.fresh(this.memo.retryAt)) return this.memo.answer
+    try {
+      const cached = JSON.parse(String((this.deps.fs ?? nodeFs).readFileSync(this.deps.cachePath, 'utf8')))
+      if (cached?.key !== key || typeof cached.ok !== 'boolean') return null
+      const version = typeof cached.version === 'string' ? cached.version : null
+      const retryAt = version === null ? (typeof cached.retryAt === 'number' ? cached.retryAt : 0) : null
+      if (!this.fresh(retryAt)) return null
+      const answer: ThreadsCliAnswer = {
+        ok: cached.ok,
+        missing: Array.isArray(cached.missing) ? cached.missing.map(String) : [],
+        version,
+        cached: true,
+      }
+      this.memo = { key, answer, retryAt }
+      return answer
+    } catch {
+      return null
+    }
+  }
+
+  private start(key: string, path: string): Promise<ThreadsCliAnswer> {
+    if (this.inflight?.key === key) return this.inflight.promise
+    const probe = this.deps.probe ?? ((p: string) => probeThreadsCliAsync(p))
+    const promise = probe(path)
+      .catch(() => ({ ok: false, missing: [UNREADABLE], version: null }))
+      .then((found) => {
+        const answer: ThreadsCliAnswer = { ok: found.ok, missing: found.missing, version: found.version, cached: false }
+        const retryAt = found.version === null ? this.now() + THREADS_FAILED_RETRY_MS : null
+        this.memo = { key, answer, retryAt }
+        this.save(key, answer, retryAt)
+        if (this.inflight?.key === key) this.inflight = null
+        this.deps.onAnswer?.(answer)
+        return answer
+      })
+    this.inflight = { key, promise }
+    return promise
+  }
+
+  private save(key: string, answer: ThreadsCliAnswer, retryAt: number | null): void {
+    const fs = this.deps.fs ?? nodeFs
+    try {
+      fs.mkdirSync(dirname(this.deps.cachePath), { recursive: true })
+      const tmp = `${this.deps.cachePath}.${process.pid}.tmp`
+      const at = new Date(this.now()).toISOString()
+      fs.writeFileSync(tmp, `${JSON.stringify({ key, ok: answer.ok, missing: answer.missing, version: answer.version, retryAt, at })}\n`)
+      fs.renameSync(tmp, this.deps.cachePath)
+    } catch {
+      // A cache that cannot be written only costs a probe after a restart.
+    }
+  }
 }

@@ -58,7 +58,7 @@ class FakeChild implements StreamJsonChild {
 
 interface Timer { fn: () => void; ms: number; cleared: boolean; fired: boolean }
 
-function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; files?: Record<string, string>; shell?: boolean; failPosts?: (path: string, body: Record<string, unknown>) => boolean; cliProblem?: string | null; platform?: NodeJS.Platform; git?: (sub: string[]) => { ok: boolean; stdout: string } | undefined } = {}) {
+function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; files?: Record<string, string>; shell?: boolean; failPosts?: (path: string, body: Record<string, unknown>) => boolean; cliProblem?: string | null | (() => Promise<string | null>); platform?: NodeJS.Platform; git?: (sub: string[]) => { ok: boolean; stdout: string } | undefined } = {}) {
   const repo = opts.repo ?? true
   const files = new Map<string, string>(Object.entries(opts.files ?? {}))
   const dirs = new Set<string>()
@@ -102,7 +102,7 @@ function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; f
       },
     },
     claudeBin: () => '/bin/claude',
-    cliProblem: () => opts.cliProblem ?? null,
+    cliProblem: async () => (typeof opts.cliProblem === 'function' ? opts.cliProblem() : opts.cliProblem ?? null),
     mainSessionId: () => (opts.mainId === undefined ? MAIN : opts.mainId),
     agentFolder: AGENT,
     stateDir: STATE,
@@ -1231,4 +1231,16 @@ test('after a crash, a saved pid without a stamp is stopped when it runs in the 
     assert.deepEqual(r.procKills, expect, where)
     assert.equal(r.spawned.length, 1)
   }
+})
+
+test('a turn waits for the CLI answer without blocking, and fails with its cause when it comes', async () => {
+  let answer: (s: string | null) => void = () => {}
+  const r = rig({ cliProblem: () => new Promise((done) => { answer = done }) })
+  assert.deepEqual(r.manager.turn(turn('101')), { accepted: true, state: 'working' }, 'answered at once')
+  await flush()
+  assert.equal(r.spawned.length, 0)
+  answer('This turn failed because Claude Code on this computer cannot run threads: its version could not be read. Update Claude Code, then send your reply again.')
+  await r.manager.idle()
+  assert.equal(r.spawned.length, 0)
+  assert.match(String(replyTexts(r).at(-1)), /version could not be read/)
 })

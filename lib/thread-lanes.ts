@@ -135,7 +135,7 @@ export interface ThreadLaneDeps {
    * Why this claude cannot run a confined lane (lib/threads-cli.ts
    * threadsCliProblem), as the plain sentence the person reads, or null.
    */
-  cliProblem(): string | null
+  cliProblem(): string | null | Promise<string | null>
   mainSessionId(): string | null
   /** The folder the main session runs in. */
   agentFolder: string
@@ -716,8 +716,10 @@ export class ThreadLaneManager {
     const claude = this.deps.claudeBin()
     if (!claude) throw new ThreadLaneError('unavailable', NO_CLAUDE)
     // An older CLI refuses --restricted: say so, never the generic "turn failed".
-    const problem = this.deps.cliProblem()
+    // Asynchronous: a probe still running is waited for off the event loop.
+    const problem = await this.deps.cliProblem()
     if (problem) throw new ThreadLaneError('unsupported', problem)
+    if (lane.closed || lane.child) return
     await this.prepareFolder(lane)
     if (lane.closed) return
     const confinement = await this.confinement(lane)
