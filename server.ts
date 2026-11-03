@@ -959,6 +959,7 @@ import {
 import { ThreadLaneManager, threadsPendingPath } from './lib/thread-lanes.ts'
 import { AsideForks, runAside } from './lib/aside-fork.ts'
 import { threadsCliProblem, threadsCliSupport, type ThreadsCliAnswer } from './lib/threads-cli.ts'
+import { killProcessGroup, processStamp } from './lib/lane-process.ts'
 import { laneShellSandboxAvailable } from './lib/lane-policy.mjs'
 import { findOnPath } from './lib/lane-cli-probe.mjs'
 import { spawnStreamJson } from './lib/stream-json-child.ts'
@@ -13349,6 +13350,11 @@ const threadLanes = new ThreadLaneManager({
       onPath: (name: string) => findOnPath(name, { pathVar: process.env.PATH ?? '' }) !== null,
     }),
   platform: process.platform,
+  // A lane left from before a daemon crash is found by pid and start stamp, and stopped (lib/lane-process.ts).
+  processes: {
+    stamp: (pid) => processStamp(pid),
+    kill: (pid, signal) => killProcessGroup(pid, signal),
+  },
   git: async (args, cwd) => {
     try {
       const { stdout } = await execFileAsync('git', args, { cwd, timeout: 60_000, maxBuffer: 1024 * 1024 })

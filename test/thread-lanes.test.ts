@@ -12,6 +12,7 @@ import { test } from 'node:test'
 import { dirname, join } from 'node:path'
 
 import {
+  THREAD_ORPHAN_POLL_MS,
   THREAD_POST_RETRY_MS,
   THREAD_TURN_TIMEOUT_MS,
   ThreadLaneManager,
@@ -35,6 +36,7 @@ const MIN = 60_000
 const DAY = 24 * 60 * MIN
 
 class FakeChild implements StreamJsonChild {
+  pid?: number
   stdin: string[] = []
   ended = false
   killed: string[] = []
@@ -68,13 +70,29 @@ function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; f
   const branchesDeleted: string[] = []
   const timers: Timer[] = []
   const clock = { now: opts.startAt ?? 1_000_000 }
+  /** The machine's processes as the lanes see them: a stamp while alive, and what stops each. */
+  const procs = new Map<number, { stamp: string; alive: boolean; dies: 'SIGTERM' | 'SIGKILL' | 'never' }>()
+  const procKills: Array<[number, string]> = []
+  let lastPid = 4000
   const mainSrc = sessionTranscriptPath(HOME, AGENT, MAIN, '')
   files.set(mainSrc, '{"main":true}\n')
   const deps: ThreadLaneDeps = {
     spawn: (command, args, o) => {
       const child = new FakeChild()
+      const pid = ++lastPid
+      child.pid = pid
+      procs.set(pid, { stamp: `S${pid}`, alive: true, dies: 'SIGTERM' })
+      child.onExit(() => { procs.get(pid)!.alive = false })
       spawned.push({ command, args, cwd: o.cwd, child })
       return child
+    },
+    processes: {
+      stamp: (pid) => { const p = procs.get(pid); return p && p.alive ? p.stamp : null },
+      kill: (pid, signal) => {
+        procKills.push([pid, signal])
+        const p = procs.get(pid)
+        if (p && p.dies !== 'never' && (signal === 'SIGKILL' || p.dies === signal)) p.alive = false
+      },
     },
     claudeBin: () => '/bin/claude',
     cliProblem: () => opts.cliProblem ?? null,
@@ -127,7 +145,7 @@ function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; f
   const manager = new ThreadLaneManager(deps)
   const live = (ms: number) => timers.filter((t) => t.ms === ms && !t.cleared && !t.fired)
   const fire = (t: Timer) => { t.fired = true; t.fn() }
-  return { manager, deps, files, dirs, spawned, posts, failedPosts, gitCalls, removed, branchesDeleted, timers, clock, live, fire, mainSrc }
+  return { manager, deps, files, dirs, spawned, posts, failedPosts, gitCalls, removed, branchesDeleted, timers, clock, live, fire, mainSrc, procs, procKills }
 }
 
 /** The command the manager must build for a working lane in wt(root) (protected: the agent repo's own state). */
@@ -994,4 +1012,85 @@ test('on macOS nothing is written into the source repository (the sandbox denies
   await r.manager.idle()
   assert.equal(r.files.has(`${AGENT}/.git/refs/heads/main`), false)
   assert.equal(r.gitCalls.some((a) => a.includes('--verify')), false)
+})
+
+// -- gate review finding 3: never two lanes on one thread after a daemon crash --
+
+const saved = (r: ReturnType<typeof rig>, root = '101') => JSON.parse(r.files.get(join(STATE, `${root}.json`))!)
+/** A daemon that crashed while lane 101 ran: its state names the process, which is still finishing its turn. */
+function crashedWithOrphan(dies: 'SIGTERM' | 'SIGKILL' | 'never', stamp = 'S777') {
+  const state = { rootId: '101', chatId: '55', title: 'T', forkSessionId: FORK_A, folder: wt('101'), cwd: wt('101'), worktree: true, readOnly: false, closedAt: null, lastReplyId: '1010', pid: 777, pidStamp: 'S777' }
+  const r = rig({ files: { [join(STATE, '101.json')]: JSON.stringify(state) } })
+  r.dirs.add(wt('101'))
+  r.procs.set(777, { stamp, alive: true, dies })
+  return r
+}
+/** Fire the orphan wait's poll timers until the lane spawns or the wait gives up. */
+async function pollOut(r: ReturnType<typeof rig>) {
+  for (let i = 0; i < 200; i++) {
+    await flush()
+    const t = r.live(THREAD_ORPHAN_POLL_MS)
+    if (t.length === 0) break
+    r.fire(t[0]!)
+  }
+  await r.manager.idle()
+}
+
+test('a lane process is written into the lane state with its start stamp, and taken out when it exits', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const pid = r.spawned[0]!.child.pid!
+  assert.equal(saved(r).pid, pid)
+  assert.equal(saved(r).pidStamp, `S${pid}`)
+  r.spawned[0]!.child.exit(0)
+  await r.manager.idle()
+  assert.equal(saved(r).pid, null)
+  assert.equal(saved(r).pidStamp, null)
+})
+
+test('after a daemon crash the old lane process is stopped (its whole group) before the thread runs again', async () => {
+  const r = crashedWithOrphan('SIGTERM')
+  r.manager.turn(turn('101', { mode: 'reply', replyId: '1011', text: 'again' }))
+  await pollOut(r)
+  assert.deepEqual(r.procKills, [[777, 'SIGTERM']])
+  assert.equal(r.procs.get(777)!.alive, false)
+  assert.equal(r.spawned.length, 1, 'one lane, never two')
+  assert.equal(saved(r).pid, r.spawned[0]!.child.pid)
+})
+
+test('an old lane process that ignores SIGTERM gets SIGKILL after the grace, then the new one starts', async () => {
+  const r = crashedWithOrphan('SIGKILL')
+  r.manager.turn(turn('101', { mode: 'reply', replyId: '1011', text: 'again' }))
+  await flush()
+  assert.equal(r.spawned.length, 0, 'nothing starts while the old one lives')
+  await pollOut(r)
+  assert.deepEqual(r.procKills, [[777, 'SIGTERM'], [777, 'SIGKILL']])
+  assert.equal(r.spawned.length, 1)
+})
+
+test('an old lane process that cannot be stopped fails the turn in plain words, and starts nothing', async () => {
+  const r = crashedWithOrphan('never')
+  r.manager.turn(turn('101', { mode: 'reply', replyId: '1011', text: 'again' }))
+  await pollOut(r)
+  assert.equal(r.spawned.length, 0)
+  assert.match(String(replyTexts(r).at(-1)), /earlier run of this thread is still stopping/)
+  assert.equal(statePosts(r).at(-1), '101:open')
+})
+
+test('a pid now held by another process (its start stamp differs) is never signalled', async () => {
+  const r = crashedWithOrphan('SIGTERM', 'S-someone-else')
+  r.manager.turn(turn('101', { mode: 'reply', replyId: '1011', text: 'again' }))
+  await pollOut(r)
+  assert.deepEqual(r.procKills, [])
+  assert.equal(r.spawned.length, 1)
+})
+
+test('closing or deleting a thread after a daemon crash stops its old lane process too', async () => {
+  for (const removeWorktree of [false, true]) {
+    const r = crashedWithOrphan('SIGTERM')
+    await r.manager.close({ rootId: '101', removeWorktree })
+    await pollOut(r)
+    assert.deepEqual(r.procKills, [[777, 'SIGTERM']], `removeWorktree ${removeWorktree}`)
+  }
 })

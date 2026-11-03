@@ -63,6 +63,9 @@ test('a lane gets Bash only where the host has the CLI sandbox', () => {
   assert.match(manager, /shellSandbox: \(\) =>\s*laneShellSandboxAvailable\(/)
   // Gate review finding 4: Linux writes packed-only branches out loose, through git's own lock convention.
   assert.match(manager, /platform: process\.platform,/)
+  // Gate review finding 3: a lane left from before a crash is found by pid and start stamp.
+  assert.match(manager, /stamp: \(pid\) => processStamp\(pid\),/)
+  assert.match(manager, /kill: \(pid, signal\) => killProcessGroup\(pid, signal\),/)
   assert.match(manager, /createExclusive: \(path, data\) => writeFileSync\(path, data, \{ flag: 'wx' \}\),/)
   assert.match(manager, /rename: \(from, to\) => renameSync\(from, to\),/)
 })

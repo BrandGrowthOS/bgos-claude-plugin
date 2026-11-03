@@ -37,6 +37,10 @@
  *    question), clipped to the server's 20,000 characters; a post that fails
  *    is retried with backoff, and one that still fails puts the thread back
  *    to Open with a short plain reply, never a thread stuck at Working.
+ *  - A daemon crash leaves a lane finishing its turn (its stdin closed): its
+ *    pid and start stamp are in the lane state, so the next start, a close or
+ *    a delete stops it first (lib/lane-process.ts), never two lanes on one
+ *    thread.
  *  - Close stops the lane and keeps the worktree for 7 days (sweepClosed);
  *    delete also removes the worktree, its hoai/thread-<root> branch, the
  *    fork's session file and the state. Either waits for a start in flight,
@@ -69,6 +73,8 @@ export const THREAD_LANE_KILL_GRACE_MS = 10_000
 export const THREAD_LANE_KEEP_CLOSED_MS = 7 * 24 * 60 * 60_000
 /** A turn with no result and no exit after this long is failed and its lane stopped. */
 export const THREAD_TURN_TIMEOUT_MS = 30 * 60_000
+/** How often a stop of a lane process left from before a daemon crash checks whether it is gone. */
+export const THREAD_ORPHAN_POLL_MS = 250
 /** The waits between attempts of a post to BGOS (so 4 attempts in all). */
 export const THREAD_POST_RETRY_MS: readonly number[] = Object.freeze([2_000, 10_000, 30_000])
 
@@ -81,6 +87,7 @@ const NO_CLAUDE = 'This turn failed because this computer cannot run Claude Code
 const NO_WORKTREE = 'This thread could not start because its working copy could not be made.'
 const TIMED_OUT = 'This turn took longer than 30 minutes, so it was stopped. Send your reply again to retry.'
 const POST_FAILED = 'The answer to this turn could not be delivered, so send your reply again to retry.'
+const ORPHAN_ALIVE = 'This turn could not start because an earlier run of this thread is still stopping. Send your reply again in a minute.'
 
 /** The pending route, scoped to the agents this daemon serves (the server answers nothing without them). */
 export function threadsPendingPath(assistantIds: readonly string[]): string {
@@ -138,6 +145,14 @@ export interface ThreadLaneDeps {
   /** CLAUDE_CONFIG_DIR, '' for ~/.claude. */
   configDir: string
   emptyMcpConfigPath(): string
+  /**
+   * The machine's processes (lib/lane-process.ts): a process's start stamp
+   * while it is alive, and a signal to the process group it leads.
+   */
+  processes: {
+    stamp(pid: number): string | null
+    kill(pid: number, signal: 'SIGTERM' | 'SIGKILL'): void
+  }
   /** This host can run the CLI's Bash sandbox (lib/lane-policy.mjs laneShellSandboxAvailable). */
   shellSandbox(): boolean
   /** process.platform: on Linux the sandbox protects only paths that exist (protectedPaths). */
@@ -176,6 +191,13 @@ export interface ThreadLaneState {
    * is being posted, or when that post never landed: it never runs again.
    */
   lastReplyId: string
+  /**
+   * The lane's process while it runs, and its start stamp (finding 3): a
+   * daemon that crashed leaves it finishing its turn, and the next start stops
+   * it first. Null when none runs (or its stamp could not be read).
+   */
+  pid: number | null
+  pidStamp: string | null
 }
 
 interface Lane {
@@ -311,6 +333,9 @@ export class ThreadLaneManager {
       this.closing.add(lane)
       this.stopChild(lane)
       exited = lane.exited
+    } else if (lane.state.pid !== null) {
+      // Its process from before a daemon crash stops too.
+      exited = this.stopOrphan(lane.state).then(() => undefined)
     }
     const state = lane.state
     const settled: Promise<void> = input.removeWorktree
@@ -480,6 +505,8 @@ export class ThreadLaneManager {
         readOnly: false,
         closedAt: null,
         lastReplyId: '',
+        pid: null,
+        pidStamp: null,
       },
     )
     if (saved && saved.chatId === '') lane.state.chatId = input.chatId
@@ -670,6 +697,9 @@ export class ThreadLaneManager {
     if (before) await before
     if (lane.child && lane.stopping) await lane.exited
     if (lane.closed || lane.child) return
+    // A process left from before a daemon crash still runs this thread: never a second one.
+    if (!(await this.stopOrphan(lane.state))) throw new ThreadLaneError('busy', ORPHAN_ALIVE)
+    if (lane.closed || lane.child) return
     const claude = this.deps.claudeBin()
     if (!claude) throw new ThreadLaneError('unavailable', NO_CLAUDE)
     // An older CLI refuses --restricted: say so, never the generic "turn failed".
@@ -699,6 +729,7 @@ export class ThreadLaneManager {
     const child = this.deps.spawn(claude, args, { cwd: lane.state.cwd })
     lane.child = child
     lane.stopping = false
+    this.recordPid(lane, child)
     lane.exited = new Promise<void>((done) => {
       child.onExit(() => {
         this.onExit(lane, child)
@@ -840,6 +871,13 @@ export class ThreadLaneManager {
     if (lane.child !== child) return
     lane.child = null
     lane.stopping = false
+    if (lane.state.pid !== null && lane.state.pid === child.pid) {
+      lane.state.pid = null
+      lane.state.pidStamp = null
+      // Not over a reopened lane's own state file.
+      const current = this.lanes.get(lane.state.rootId)
+      if (lane.state.folder && (current === lane || current === undefined)) this.persist(lane)
+    }
     if (lane.graceTimer !== null) {
       this.deps.clearTimer(lane.graceTimer)
       lane.graceTimer = null
@@ -853,6 +891,57 @@ export class ThreadLaneManager {
     lane.childTurn = null
     if (ran && lane.current === ran) this.failTurn(lane, ran, FAILED_TURN)
     else this.pump()
+  }
+
+  private recordPid(lane: Lane, child: StreamJsonChild): void {
+    const pid = child.pid
+    if (typeof pid !== 'number') return
+    const stamp = this.deps.processes.stamp(pid)
+    // Without a stamp the pid could not be told from a reused one later: not kept.
+    if (stamp === null) return
+    lane.state.pid = pid
+    lane.state.pidStamp = stamp
+    if (lane.state.folder) this.persist(lane)
+  }
+
+  /**
+   * Stop the process a lane state names if it still runs under the same start
+   * stamp (a daemon crash left it finishing its turn): SIGTERM to its group,
+   * SIGKILL after the grace, and true once it is gone. A pid now held by
+   * another process is never signalled. False when it would not stop.
+   */
+  private async stopOrphan(state: ThreadLaneState): Promise<boolean> {
+    const { pid, pidStamp } = state
+    if (pid === null || pidStamp === null) return true
+    const procs = this.deps.processes
+    const alive = (): boolean => procs.stamp(pid) === pidStamp
+    if (alive()) {
+      this.deps.log(`threads: lane ${state.rootId} still runs from before a restart, it is stopped first`)
+      const grace = this.deps.killGraceMs ?? THREAD_LANE_KILL_GRACE_MS
+      procs.kill(pid, 'SIGTERM')
+      if (!(await this.gone(alive, grace))) {
+        procs.kill(pid, 'SIGKILL')
+        if (!(await this.gone(alive, grace))) {
+          this.deps.log(`threads: lane ${state.rootId} from before a restart would not stop`)
+          return false
+        }
+      }
+    }
+    if (state.pid === pid) {
+      state.pid = null
+      state.pidStamp = null
+      if (state.folder) this.persistState(state)
+    }
+    return true
+  }
+
+  /** True once alive() is false, polled every THREAD_ORPHAN_POLL_MS for at most ms. */
+  private async gone(alive: () => boolean, ms: number): Promise<boolean> {
+    for (let waited = 0; ; waited += THREAD_ORPHAN_POLL_MS) {
+      if (!alive()) return true
+      if (waited >= ms) return false
+      await new Promise<void>((done) => this.deps.setTimer(done, THREAD_ORPHAN_POLL_MS))
+    }
   }
 
   private dropCopiedMain(lane: Lane): void {
@@ -970,6 +1059,7 @@ export class ThreadLaneManager {
 
   private async removeLane(state: ThreadLaneState, opts: { deleteBranch: boolean }): Promise<void> {
     const { fs, git, agentFolder, home, configDir } = this.deps
+    await this.stopOrphan(state)
     const folder = this.ownFolder(state)
     if (state.folder && folder === null) {
       this.deps.log(`threads: lane ${state.rootId} names a folder outside the threads folder, it is not removed`)
@@ -1049,6 +1139,8 @@ export class ThreadLaneManager {
       readOnly: r.readOnly === true,
       closedAt: typeof r.closedAt === 'number' && Number.isFinite(r.closedAt) ? r.closedAt : null,
       lastReplyId: str(r.lastReplyId),
+      pid: typeof r.pid === 'number' && Number.isInteger(r.pid) && r.pid > 0 ? r.pid : null,
+      pidStamp: typeof r.pidStamp === 'string' && r.pidStamp !== '' ? r.pidStamp : null,
     }
   }
 

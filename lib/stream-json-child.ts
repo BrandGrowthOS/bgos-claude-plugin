@@ -10,6 +10,8 @@
 import { spawn } from 'node:child_process'
 
 export interface StreamJsonChild {
+  /** The process id (it leads its own process group off Windows), when it started. */
+  readonly pid?: number
   /** Write to stdin. A no op once the child is gone. */
   write(chunk: string): void
   /** Close stdin. */
@@ -127,6 +129,7 @@ export function spawnStreamJson(command: string, args: string[], opts: { cwd: st
   child.stdout?.setEncoding('utf8')
   child.stderr?.resume()
   return {
+    pid: child.pid,
     write(chunk) {
       if (gone || !child.stdin || child.stdin.destroyed) return
       child.stdin.write(chunk)
