@@ -28,6 +28,7 @@ import {
   assertForksMain,
   clipThreadText,
   isFinalReply,
+  laneSecretPaths,
   protectedGitPaths,
   threadLaneArgs,
   threadLaneSettings,
@@ -283,4 +284,46 @@ test('a reply is final unless it ends asking a question', () => {
   assert.equal(isFinalReply('Shall I open a PR?'), false)
   assert.equal(isFinalReply('Shall I open a PR?  \n'), false)
   assert.equal(isFinalReply('Is it? No. It is done.'), true)
+})
+
+// -- gate review finding 6: a lane's Bash reads no credential file --
+
+test('a working lane sandbox refuses Bash reads of the secret paths it is given', () => {
+  const secrets = ['/home/u/.ssh', '/home/u/.bgos-agent']
+  const settings = threadLaneSettings({ ...WORK, secretPaths: secrets }) as { sandbox: { filesystem: Record<string, unknown> } }
+  assert.deepEqual(settings.sandbox.filesystem, { denyWrite: ['/work/atlas/.git/index'], denyRead: secrets })
+  const noShell = threadLaneSettings({ ...WORK, shellSandbox: false, secretPaths: secrets }) as { sandbox?: unknown }
+  assert.equal(noShell.sandbox, undefined, 'no Bash, nothing to refuse')
+})
+
+test('the secret paths: ~/.ssh, the CLI credentials file, and all of ~/.bgos-agent when the agent folder is elsewhere', () => {
+  const present = new Set(['/home/u/.ssh', '/home/u/.claude/.credentials.json', '/cfg/.credentials.json', '/home/u/.bgos-agent'])
+  const paths = laneSecretPaths({ home: '/home/u', configDir: '/cfg', agentFolder: '/work/atlas', exists: (p) => present.has(p), list: () => [] })
+  assert.deepEqual(paths, ['/home/u/.ssh', '/home/u/.claude/.credentials.json', '/cfg/.credentials.json', '/home/u/.bgos-agent'])
+  // Only what exists (the Linux sandbox binds over real paths); no config dir, no second credentials file.
+  assert.deepEqual(laneSecretPaths({ home: '/home/u', configDir: '', agentFolder: '/work/atlas', exists: (p) => p === '/home/u/.ssh', list: () => [] }), ['/home/u/.ssh'])
+})
+
+test('an agent folder inside ~/.bgos-agent keeps its own path readable and refuses every sibling on the way', () => {
+  const tree: Record<string, string[]> = {
+    '/home/u/.bgos-agent': ['credentials-7.json', 'credentials.json', '7', '7-workspace', 'runtime'],
+    '/home/u/.bgos-agent/7-workspace': ['repo', 'notes.md'],
+  }
+  const paths = laneSecretPaths({
+    home: '/home/u/',
+    configDir: '',
+    agentFolder: '/home/u/.bgos-agent/7-workspace/repo',
+    exists: () => true,
+    list: (d) => tree[d] ?? [],
+  })
+  assert.deepEqual(paths, [
+    '/home/u/.ssh',
+    '/home/u/.claude/.credentials.json',
+    '/home/u/.bgos-agent/credentials-7.json',
+    '/home/u/.bgos-agent/credentials.json',
+    '/home/u/.bgos-agent/7',
+    '/home/u/.bgos-agent/runtime',
+    '/home/u/.bgos-agent/7-workspace/notes.md',
+  ])
+  assert.equal(paths.some((p) => '/home/u/.bgos-agent/7-workspace/repo/.git'.startsWith(`${p}/`)), false, 'nothing on the path to the agent folder (its .git included)')
 })

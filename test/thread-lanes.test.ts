@@ -132,7 +132,7 @@ function workArgs(root: string, fork: string | null): string[] {
     mainSessionId: MAIN,
     forkSessionId: fork,
     emptyMcpConfigPath: MCP,
-    confinement: { root: wt(root), readOnly: false, shellSandbox: true, protectedPaths: PROTECTED },
+    confinement: { root: wt(root), readOnly: false, shellSandbox: true, protectedPaths: PROTECTED, secretPaths: [] },
   })
 }
 
@@ -924,4 +924,17 @@ test('on a claude too old for a confined lane the turn fails with the real cause
   assert.deepEqual(statePosts(r), ['101:working', '101:open'])
   assert.deepEqual(replyTexts(r), [sentence])
   assert.equal(r.manager.runningCount(), 0, 'its slot is free')
+})
+
+// -- gate review finding 6: the manager hands the lane its secret paths --
+
+test('a working lane refuses Bash reads of ~/.ssh, the CLI credentials and ~/.bgos-agent', async () => {
+  const r = rig({ files: { [`${HOME}/.claude/.credentials.json`]: '{}', [`${HOME}/.bgos-agent/credentials-7.json`]: '{}' } })
+  r.dirs.add(`${HOME}/.ssh`)
+  r.dirs.add(`${HOME}/.bgos-agent`)
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const args = r.spawned[0]!.args
+  const settings = JSON.parse(args[args.indexOf('--settings') + 1]!)
+  assert.deepEqual(settings.sandbox.filesystem.denyRead, [`${HOME}/.ssh`, `${HOME}/.claude/.credentials.json`, `${HOME}/.bgos-agent`])
 })

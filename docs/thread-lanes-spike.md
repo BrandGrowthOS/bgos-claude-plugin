@@ -118,7 +118,7 @@ stdin closed -> exit 0; wt project dir holds only dbd3b62b-....jsonl; the main t
 **What is guaranteed (as measured on 2.1.316, macOS):** the built in file tools write and read only inside the worktree (a read only lane: read the agent folder, write nothing, no Bash); no user, project or local setting of the owner applies (no permissive allow rule, no hook, no plugin, no Remote Control); Bash, and every program it starts, writes only inside the worktree, the temp folders and the git state a worktree needs, and never the main checkout, its index, HEAD, `packed-refs`, a branch that existed when the lane started (other than its own), or another worktree's admin dir; one tool argument cannot switch the sandbox off; bypass is refused by the CLI under `--restricted`.
 
 **What is NOT guaranteed:**
-- Reads by Bash are not confined (the sandbox confines writes; `cat <main checkout>/file` worked). The person's own agent reading its own folder is accepted.
+- Reads by Bash are not confined beyond the secret paths (the sandbox confines writes; `cat <main checkout>/file` worked). The person's own agent reading its own folder is accepted. Refused since the gate review (finding 6, `filesystem.denyRead`, lib/thread-lane-args.ts `laneSecretPaths`): `~/.ssh`, the CLI's `.credentials.json` (in `~/.claude` and in `CLAUDE_CONFIG_DIR`) and `~/.bgos-agent` (every sibling on the way when the agent folder is inside it). Measured on 2.1.317, macOS, against a fake API: with the shipped settings `cat` of a key in `.ssh` and of `.bgos-agent/credentials-7.json` answered "Operation not permitted" while an ordinary file in the same home read fine; without them both printed. Only paths that exist when the lane starts are named.
 - Network: WebFetch, WebSearch and Bash's network follow the CLI's sandbox defaults, not narrowed here.
 - A branch or worktree created AFTER the lane started is not in its `denyWrite` list until the lane's next start (each start reads them again). Git objects stay writable (content addressed, a commit needs them).
 - A host without the CLI's sandbox (no `sandbox-exec` on macOS, no `bwrap` and `socat` on Linux): the lane gets no Bash at all rather than an unconfined one; so does a lane whose repository state cannot be read.
@@ -128,7 +128,7 @@ stdin closed -> exit 0; wt project dir holds only dbd3b62b-....jsonl; the main t
 
 ## What changed in the builders
 
-- `asideArgs` gains `--tools ""` (Finding 3). Everything else is as briefed.
+- `asideArgs` gains `--tools ""` (Finding 3), and since the gate review (finding 5) `--settings {"disableAllHooks":true}`: measured on 2.1.317, the aside had run the owner's user and project SessionStart, UserPromptSubmit and Stop hooks; with it none runs (also when the project sets it false and adds a local hook) and the answer still arrives. Everything else is as briefed.
 - Both builders keep `--mcp-config <empty>` last and take the prompt on stdin (Finding 1).
 - `threadLaneArgs` runs every lane confined (section (g)); `assertConfined` refuses a lane command without `--restricted`, `--tools`, `--permission-mode` or `--settings`, or with a bypass or `--add-dir`.
 

@@ -84,6 +84,8 @@ export interface ThreadLaneConfinement {
   shellSandbox: boolean
   /** Paths the sandbox must refuse to write although they are git state a worktree may touch. */
   protectedPaths?: readonly string[]
+  /** Paths the sandbox must refuse Bash to read: credential files and keys (laneSecretPaths). */
+  secretPaths?: readonly string[]
   /** Folders a read only lane may read (the agent folder). Absolute. */
   readDirs?: readonly string[]
   platform?: NodeJS.Platform
@@ -183,7 +185,15 @@ export function threadLaneSettings(c: ThreadLaneConfinement): Record<string, unk
       additionalDirectories: [root],
     },
     ...(shell
-      ? { sandbox: { ...THREAD_LANE_SANDBOX, filesystem: { denyWrite: [...(c.protectedPaths ?? [])] } } }
+      ? {
+          sandbox: {
+            ...THREAD_LANE_SANDBOX,
+            filesystem: {
+              denyWrite: [...(c.protectedPaths ?? [])],
+              ...(c.secretPaths ? { denyRead: [...c.secretPaths] } : {}),
+            },
+          },
+        }
       : {}),
     // A lane left alone would open a Remote Control session on the owner's
     // account (spike S2 finding 2, person lanes).
@@ -268,6 +278,52 @@ export function protectedGitPaths(input: {
     if (dir !== own) out.push(dir)
   }
   return out
+}
+
+/**
+ * What a working lane's Bash may not read (gate review finding 6). The
+ * sandbox lets Bash read the whole disk except what `filesystem.denyRead`
+ * names, and --restricted confines only the file tools. Refused: ~/.ssh, the
+ * CLI's own credentials file (Linux keeps the sign in there; with
+ * CLAUDE_CONFIG_DIR, in that folder too), and ~/.bgos-agent, where every
+ * agent's HOAI credentials, browser profile and state live. An agent folder
+ * inside ~/.bgos-agent (the default `<id>-workspace`) stays readable with its
+ * own .git: there every sibling on the way to it is refused instead. Only
+ * paths that exist are named (the Linux sandbox binds over real paths).
+ */
+export function laneSecretPaths(input: {
+  home: string
+  configDir: string
+  agentFolder: string
+  exists(path: string): boolean
+  list(dir: string): string[]
+}): string[] {
+  const home = input.home.replace(/\/+$/, '')
+  const out = [`${home}/.ssh`, `${home}/.claude/.credentials.json`]
+  const config = input.configDir.replace(/\/+$/, '')
+  if (config !== '') out.push(`${config}/.credentials.json`)
+  const agents = `${home}/.bgos-agent`
+  const folder = input.agentFolder.replace(/\/+$/, '')
+  if (folder.startsWith(`${agents}/`)) {
+    let dir = agents
+    for (const part of folder.slice(agents.length + 1).split('/').filter(Boolean)) {
+      let children: string[] = []
+      try {
+        children = input.list(dir)
+      } catch {}
+      for (const child of children) if (child !== part) out.push(`${dir}/${child}`)
+      dir = `${dir}/${part}`
+    }
+  } else if (folder !== agents) {
+    out.push(agents)
+  }
+  return [...new Set(out)].filter((p) => {
+    try {
+      return input.exists(p)
+    } catch {
+      return false
+    }
+  })
 }
 
 /** What a thread reply or a summary may hold (the server's reply and summary DTOs). */

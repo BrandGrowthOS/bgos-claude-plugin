@@ -52,6 +52,7 @@ import {
   clipThreadText,
   isFinalReply,
   isSessionId,
+  laneSecretPaths,
   protectedGitPaths,
   threadLaneArgs,
   threadTurnPrompt,
@@ -715,7 +716,9 @@ export class ThreadLaneManager {
       this.deps.log(`threads: lane ${lane.state.rootId} runs without Bash, its repository's git state could not be read`)
       return { root, readOnly: false, shellSandbox: false }
     }
-    return { root, readOnly: false, shellSandbox: true, protectedPaths }
+    const { home, configDir, fs } = this.deps
+    const secretPaths = laneSecretPaths({ home, configDir, agentFolder, exists: (p) => fs.exists(p), list: (d) => fs.list(d) })
+    return { root, readOnly: false, shellSandbox: true, protectedPaths, secretPaths }
   }
 
   private async protectedPaths(lane: Lane): Promise<string[] | null> {
