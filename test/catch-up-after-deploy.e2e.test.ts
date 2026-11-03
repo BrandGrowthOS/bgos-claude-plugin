@@ -1062,7 +1062,9 @@ describe('a reconnect or a failure in the middle of a page', { concurrency: 3 },
       await quietAfterBoot(w.backend, MAIN)
       const want = ids(101, 400)
       for (const id of want) w.backend.rows.push(ownerRow(MAIN, id))
-      w.backend.failRead(MAIN, isContinuation)
+      // The second older page, so the first was answered and thrown away. The next
+      // read asks for that page again, and a 304 there would be a page with no rows.
+      w.backend.failRead(MAIN, (r) => r.beforeId === 151)
       w.backend.cutSocket()
       await waitFor(() => w.backend.pending().failures === 0, 'the failed page', 60_000)
       await sleep(300)
@@ -1070,7 +1072,7 @@ describe('a reconnect or a failure in the middle of a page', { concurrency: 3 },
       await settle(() => d.cards, MAIN, want)
       assertExactlyOnceInOrder(arrived(d.cards, MAIN), want, 'a failed page')
       const pages = w.backend.readsOf(MAIN).filter(isContinuation)
-      assert.ok(pages.length > 0, 'older pages were read')
+      assert.ok(pages.filter((r) => r.beforeId === 351).length >= 2, 'the page before the failed one was read again')
       assert.deepEqual(pages.filter((r) => r.ifNoneMatch !== null).map((r) => r.beforeId), [], 'an older page never rides a validator: a 304 there is a page with no rows')
       assertHarnessRan(w.backend)
     } finally {

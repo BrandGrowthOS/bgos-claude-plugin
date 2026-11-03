@@ -67,3 +67,10 @@ m33-lane-window-on-every-poll: RED fail=1 pass=0 23s  undoes: review F6: no time
 m34-lane-boot-uncapped: RED fail=1 pass=0 3s  undoes: what stays: a lane boot still chooses
 m21-spread-back: RED fail=1 pass=0 0s  undoes: one read can outgrow a spread
 m22-no-progress-guard: RED fail=2 pass=1 0s  undoes: a server ignoring beforeId cannot spin the walk
+
+Batch 3 ran on the tree of bf1ed90. Its one survivor, m08, was a mutant the review fix had made a no-op:
+the validator drop leaves a page on the chat key with nothing to send. The guard keeps a page off its own
+path as a key, so a restarted walk rides no validator of a page it threw away. The failed page case now fails
+the second older page to reach that, and m08 undoes the guard itself. See batch 4.
+
+=== batch 4: on the final tree, what changed after batch 3 ===
