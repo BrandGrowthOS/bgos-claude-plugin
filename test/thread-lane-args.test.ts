@@ -21,6 +21,7 @@ import {
   THREAD_LANE_TOOLS,
   THREAD_TEXT_CLIPPED_NOTE,
   THREAD_TEXT_MAX,
+  ASIDE_SETTINGS,
   asideArgs,
   asidePrompt,
   assertConfined,
@@ -202,9 +203,19 @@ test('an aside forks the main session, has no tools at all, one turn, and stream
     // The spike (docs/thread-lanes-spike.md): dontAsk alone let Read run.
     '--tools', '',
     '--permission-mode', 'dontAsk', '--max-turns', '1',
+    // Gate review finding 5: none of the owner's hooks (measured on 2.1.317).
+    '--settings', '{"disableAllHooks":true}',
     '--output-format', 'stream-json', '--include-partial-messages', '--verbose',
     '--strict-mcp-config', '--mcp-config', MCP,
   ])
+})
+
+test('an aside runs none of the owner hooks: user, project, local or plugin (gate review finding 5)', () => {
+  const args = asideArgs({ mainSessionId: MAIN, emptyMcpConfigPath: MCP })
+  assert.deepEqual(JSON.parse(flag(args, '--settings')), { disableAllHooks: true })
+  assert.deepEqual(ASIDE_SETTINGS, { disableAllHooks: true })
+  // Not --restricted: the aside keeps the owner's model, sign in and env, only the hooks go.
+  assert.equal(args.includes('--restricted'), false)
 })
 
 test('assertForksMain throws on --resume <main> without --fork-session, in every spelling', () => {

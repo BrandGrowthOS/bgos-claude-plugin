@@ -68,9 +68,9 @@ const PARENT_SESSION_VARS = [
 /**
  * The daemon's own BGOS credentials and its terminal. Nothing in a lane or a
  * By the way fork uses them: both load an empty MCP config (no BGOS server),
- * a lane runs --restricted (no hooks, no plugin), and the plugin's hooks the
- * aside may still run read none of these (bin/hoai-hook.mjs reads only
- * BGOS_PLUGIN_STATE_DIR). A lane's Bash could read every one of them.
+ * a lane runs --restricted (no hooks, no plugin), and an aside runs no hook
+ * at all (lib/thread-lane-args.ts ASIDE_SETTINGS). A lane's Bash could read
+ * every one of them.
  */
 export const LANE_CREDENTIAL_VARS: readonly string[] = Object.freeze([
   'BGOS_API_KEY',

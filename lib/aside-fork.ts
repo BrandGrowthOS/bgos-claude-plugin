@@ -2,8 +2,8 @@
  * By the way on Claude Code (Threads phase 1, spec 8.4 and 19).
  *
  * A side question is answered by a one shot fork of the agent's MAIN session:
- * `claude -p --resume <main> --fork-session` with no tools at all
- * (lib/thread-lane-args.ts asideArgs), run in the main session's own folder so
+ * `claude -p --resume <main> --fork-session` with no tools at all and none
+ * of the owner's hooks (lib/thread-lane-args.ts asideArgs), run in the main session's own folder so
  * the CLI finds the transcript. The fork reads the session file as far as it
  * is written, which is "everything in the conversation so far". The question
  * goes on stdin with the side question instruction inside the message.

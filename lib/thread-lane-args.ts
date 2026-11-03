@@ -287,9 +287,22 @@ export function clipThreadText(text: string): string {
 }
 
 /**
+ * The aside's own settings (gate review finding 5). Without them a fork runs
+ * every hook of the owner: measured on CLI 2.1.317 against a fake API, the
+ * user's and the project's SessionStart, UserPromptSubmit and Stop hooks all
+ * ran for one side question. `disableAllHooks` from `--settings` (a flag
+ * setting, above user, project and local) stops every one of them, also when
+ * the project sets it false and adds hooks of its own in settings.local.json
+ * (measured). Not `--restricted`: that would drop the owner's model, sign in
+ * and env with them, and the aside has no tool to confine.
+ */
+export const ASIDE_SETTINGS = Object.freeze({ disableAllHooks: true })
+
+/**
  * A By the way answer: a one shot fork of the main session. `--tools ""`
  * removes every tool (the spike showed `--permission-mode dontAsk` alone still
- * let Read run), dontAsk and one turn stay as belts.
+ * let Read run), dontAsk and one turn stay as belts, and no hook of the
+ * owner's runs (ASIDE_SETTINGS).
  */
 export function asideArgs(input: { mainSessionId: string; emptyMcpConfigPath: string }): string[] {
   const main = requireSessionId(input.mainSessionId, 'the main')
@@ -298,6 +311,7 @@ export function asideArgs(input: { mainSessionId: string; emptyMcpConfigPath: st
     '-p', '--resume', main, '--fork-session',
     '--tools', '',
     '--permission-mode', 'dontAsk', '--max-turns', '1',
+    '--settings', JSON.stringify(ASIDE_SETTINGS),
     '--output-format', 'stream-json', '--include-partial-messages', '--verbose',
     '--strict-mcp-config', '--mcp-config', mcp,
   ]
