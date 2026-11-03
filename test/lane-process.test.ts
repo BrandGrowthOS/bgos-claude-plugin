@@ -124,6 +124,27 @@ test('a process is known by the folder it runs in when no stamp was saved', { sk
   }
 })
 
+for (const inspection of ['unavailable', 'failed', 'timed out', 'missing cwd']) {
+  test(`a live unstamped process stays unknown when cwd inspection ${inspection}`, { skip: process.platform === 'win32' }, async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'lane-cwd-unreadable-')))
+    const child = spawn('sleep', ['30'], { cwd: dir, detached: true, stdio: 'ignore' })
+    try {
+      const run = async () => {
+        if (inspection === 'unavailable') throw Object.assign(new Error('lsof unavailable'), { code: 'ENOENT' })
+        return { status: inspection === 'missing cwd' ? 0 : inspection === 'failed' ? 1 : null, stdout: inspection === 'missing cwd' ? `p${child.pid}\n` : '' }
+      }
+      assert.equal(await processRunsIn(child.pid!, dir, { platform: 'darwin', run }), null, 'unknown is not proof that the live process left')
+      assert.doesNotThrow(() => process.kill(child.pid!, 0), 'the process remains alive')
+    } finally {
+      const exited = new Promise((done) => child.once('exit', done))
+      process.kill(-child.pid!, 'SIGKILL')
+      await exited
+      assert.equal(await processRunsIn(child.pid!, dir, { platform: 'darwin', run: async () => ({ status: 1, stdout: '' }) }), false, 'affirmative absence is still false')
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+}
+
 test('the real ps read runs off the event loop: a 300 ms ps leaves timers firing', { skip: process.platform === 'win32' }, async () => {
   const { writeFileSync, chmodSync } = await import('node:fs')
   const bin = realpathSync(mkdtempSync(join(tmpdir(), 'slow-ps-')))

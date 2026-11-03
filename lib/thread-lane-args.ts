@@ -86,6 +86,8 @@ export interface ThreadLaneConfinement {
   protectedPaths?: readonly string[]
   /** Paths the sandbox must refuse Bash to read: credential files and keys (laneSecretPaths). */
   secretPaths?: readonly string[]
+  /** Specific directories reopened inside the denied credential tree. */
+  readablePaths?: readonly string[]
   /** Folders a read only lane may read (the agent folder). Absolute. */
   readDirs?: readonly string[]
   platform?: NodeJS.Platform
@@ -191,6 +193,7 @@ export function threadLaneSettings(c: ThreadLaneConfinement): Record<string, unk
             filesystem: {
               denyWrite: [...(c.protectedPaths ?? [])],
               ...(c.secretPaths ? { denyRead: [...c.secretPaths] } : {}),
+              ...(c.readablePaths?.length ? { allowRead: [...c.readablePaths] } : {}),
             },
           },
         }
@@ -311,22 +314,17 @@ export function protectedGitPaths(input: {
  * BGOS_PLUGIN_STATE_DIR override, and ~/.bgos-agent, where every agent's
  * HOAI credentials, browser profile and state live.
  *
- * What the lane needs inside ~/.bgos-agent stays readable (keepReadable plus
- * the agent folder, when inside): the agent folder with its .git (the default
- * `<id>-workspace` lives there) and the agent's own email files. Then
- * ~/.bgos-agent is not refused whole; every sibling on the way to those is.
+ * Deny ~/.bgos-agent whole, including credentials created after startup.
+ * The manager supplies narrow allowRead exceptions for its workspace and
+ * its own email files. Enumerating current siblings misses future secrets.
  * Only paths that exist are named (the Linux sandbox binds over real paths).
  */
 export function laneSecretPaths(input: {
   home: string
   configDir: string
-  agentFolder: string
-  /** Folders under ~/.bgos-agent the lane reads (its agent's email files). */
-  keepReadable?: readonly string[]
   /** BGOS_PLUGIN_STATE_DIR, else ~/.bgos-plugin-state. */
   pluginStateDir?: string
   exists(path: string): boolean
-  list(dir: string): string[]
 }): string[] {
   const trim = (p: string) => p.replace(/\/+$/, '')
   const home = trim(input.home)
@@ -340,35 +338,10 @@ export function laneSecretPaths(input: {
     `${home}/.npmrc`,
     `${home}/.bgos-plugin-state`,
     trim(input.pluginStateDir?.trim() || `${home}/.bgos-plugin-state`),
+    `${home}/.bgos-agent`,
   ]
   const config = trim(input.configDir)
   if (config !== '') out.push(`${config}/.credentials.json`)
-  const agents = `${home}/.bgos-agent`
-  const keep = [input.agentFolder, ...(input.keepReadable ?? [])]
-    .map(trim)
-    .filter((p) => p.startsWith(`${agents}/`))
-    .map((p) => p.slice(agents.length + 1).split('/').filter((part) => part !== '' && part !== '.' && part !== '..'))
-    .filter((parts) => parts.length > 0)
-  const agentFolder = trim(input.agentFolder)
-  if (keep.length === 0) {
-    if (agentFolder !== agents) out.push(agents)
-  } else {
-    // Walk down every kept route at once: at each folder, refuse each child
-    // that leads to no kept path; stop below a kept path itself.
-    const walk = (dir: string, routes: string[][]): void => {
-      if (routes.some((r) => r.length === 0)) return
-      let children: string[] = []
-      try {
-        children = input.list(dir)
-      } catch {}
-      for (const child of children) {
-        const next = routes.filter((r) => r[0] === child).map((r) => r.slice(1))
-        if (next.length === 0) out.push(`${dir}/${child}`)
-        else walk(`${dir}/${child}`, next)
-      }
-    }
-    walk(agents, keep)
-  }
   return [...new Set(out)].filter((p) => {
     try {
       return input.exists(p)

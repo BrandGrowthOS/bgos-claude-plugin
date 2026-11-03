@@ -80,40 +80,53 @@ export async function processStamp(
  * The process is alive and runs in `dir` (its working directory, both real
  * paths). Without a saved start stamp this only indicates a possibly active
  * lane; it does not prove the process is safe to signal. Linux reads
- * /proc/<pid>/cwd, elsewhere lsof. False
- * when it cannot be told (then nothing is signalled).
+ * /proc/<pid>/cwd, elsewhere lsof. False means absent or a different cwd;
+ * null means inspection failed, so recovery must retain the uncertain PID.
  */
 export async function processRunsIn(
   pid: number,
   dir: string,
   deps: { platform?: NodeJS.Platform; run?: Run } = {},
-): Promise<boolean> {
-  if (!Number.isInteger(pid) || pid <= 0 || dir === '') return false
+): Promise<boolean | null> {
+  if (!Number.isInteger(pid) || pid <= 0) return false
+  const unknown = (): false | null => {
+    try {
+      process.kill(pid, 0)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false
+    }
+    return null
+  }
+  if (dir === '') return unknown()
   const platform = deps.platform ?? process.platform
-  if (platform === 'win32') return false
+  if (platform === 'win32') return unknown()
   let want: string
   try {
     want = await realpath(dir)
   } catch {
-    return false
+    return unknown()
   }
   let cwd: string | null = null
   if (platform === 'linux') {
     try {
       cwd = await readlink(`/proc/${pid}/cwd`)
     } catch {
-      return false
+      return unknown()
     }
   } else {
-    const out = await (deps.run ?? runAsync)('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'])
-    if (out.status !== 0) return false
-    cwd = String(out.stdout ?? '').split('\n').find((l) => l.startsWith('n'))?.slice(1) ?? null
+    try {
+      const out = await (deps.run ?? runAsync)('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'])
+      if (out.status !== 0) return unknown()
+      cwd = String(out.stdout ?? '').split('\n').find((l) => l.startsWith('n'))?.slice(1) ?? null
+    } catch {
+      return unknown()
+    }
   }
-  if (!cwd) return false
+  if (!cwd) return unknown()
   try {
     return (await realpath(cwd)) === want
   } catch {
-    return cwd === want
+    return cwd === want ? true : unknown()
   }
 }
 

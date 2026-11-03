@@ -167,7 +167,7 @@ function workArgs(root: string, fork: string | null): string[] {
     mainSessionId: MAIN,
     forkSessionId: fork,
     emptyMcpConfigPath: MCP,
-    confinement: { root: wt(root), readOnly: false, shellSandbox: true, protectedPaths: PROTECTED, secretPaths: [] },
+    confinement: { root: wt(root), readOnly: false, shellSandbox: true, protectedPaths: PROTECTED, secretPaths: [], readablePaths: [`${HOME}/.bgos-agent/email-files/7`] },
   })
 }
 
@@ -974,8 +974,8 @@ test('a working lane refuses Bash reads of ~/.ssh, the CLI credentials and ~/.bg
   await r.manager.idle()
   const args = r.spawned[0]!.args
   const settings = JSON.parse(args[args.indexOf('--settings') + 1]!)
-  // The agent's email files are under ~/.bgos-agent, so it is refused child by child (the next test).
-  assert.deepEqual(settings.sandbox.filesystem.denyRead, [`${HOME}/.ssh`, `${HOME}/.claude/.credentials.json`, `${HOME}/.bgos-agent/credentials-7.json`])
+  assert.deepEqual(settings.sandbox.filesystem.denyRead, [`${HOME}/.ssh`, `${HOME}/.claude/.credentials.json`, `${HOME}/.bgos-agent`])
+  assert.deepEqual(settings.sandbox.filesystem.allowRead, [`${HOME}/.bgos-agent/email-files/7`])
 })
 
 // -- gate review finding 4: the source repository's refs, all of them --
@@ -1248,7 +1248,41 @@ test('a working lane can read its own email files but not the rest of ~/.bgos-ag
   r.manager.turn(turn('101'))
   await r.manager.idle()
   const deny: string[] = laneSettings(r).settings.sandbox.filesystem.denyRead
-  assert.deepEqual(deny, [`${HOME}/.bgos-agent/credentials-7.json`, `${HOME}/.bgos-agent/email-files/8`])
+  assert.deepEqual(deny, [`${HOME}/.bgos-agent`])
+  assert.deepEqual(laneSettings(r).settings.sandbox.filesystem.allowRead, [`${HOME}/.bgos-agent/email-files/7`])
+})
+
+test('pairing another agent after a lane starts cannot expose its new credentials through the attachment exception', async () => {
+  const agents = `${HOME}/.bgos-agent`
+  const ownFiles = `${agents}/email-files/7`
+  const r = rig({ files: { [`${agents}/credentials-7.json`]: '{}', [`${ownFiles}/1/a.pdf`]: 'attachment' } })
+  for (const path of [agents, `${agents}/email-files`, ownFiles]) r.dirs.add(path)
+  r.deps.fs.list = (dir) => dir === agents ? ['credentials-7.json', 'email-files'] : dir === `${agents}/email-files` ? ['7'] : []
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const filesystem = laneSettings(r).settings.sandbox.filesystem
+  // The owner pairs agent 8 after this child's settings have been frozen.
+  const futureCredential = `${agents}/credentials-8.json`
+  r.files.set(futureCredential, '{"token":"new-agent"}')
+  assert.ok(filesystem.denyRead.includes(agents), 'the parent deny covers credentials created after startup')
+  assert.deepEqual(filesystem.allowRead, [ownFiles], 'only this agent attachments reopen the denied tree')
+  assert.equal(filesystem.allowRead.some((path: string) => futureCredential === path || futureCredential.startsWith(`${path}/`)), false)
+  assert.ok(laneSettings(r).tools.includes('Bash'), 'attachment access does not cost the working lane its shell')
+})
+
+test('a workspace inside the credential tree and its attachments reopen only their own directories', async () => {
+  const agents = `${HOME}/.bgos-agent`
+  const workspace = `${agents}/7-workspace`
+  const ownFiles = `${agents}/email-files/7`
+  const r = rig()
+  r.deps.agentFolder = workspace
+  r.dirs.add(agents)
+  r.files.set(sessionTranscriptPath(HOME, workspace, MAIN, ''), '{"main":true}\n')
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const filesystem = laneSettings(r).settings.sandbox.filesystem
+  assert.ok(filesystem.denyRead.includes(agents))
+  assert.deepEqual(filesystem.allowRead, [workspace, ownFiles])
 })
 
 // -- follow up (Data, item 3): the pid is kept even when no start stamp can be read at spawn --
@@ -1308,6 +1342,48 @@ test('delete and the closed-thread sweep retain a folder used by an unstamped pr
     assert.equal(saved(r).pid, 777, action)
   }
 })
+
+for (const action of ['replacement', 'delete', 'sweep']) {
+  test(`unknown cwd inspection preserves a live unstamped PID during ${action}`, async () => {
+    const state = { rootId: '101', chatId: '55', title: 'T', forkSessionId: FORK_A, folder: wt('101'), cwd: wt('101'), worktree: true, readOnly: false, closedAt: action === 'replacement' ? null : 1, lastReplyId: '1010', lastDelivered: true, pid: 777, pidStamp: null }
+    const r = rig({ files: { [join(STATE, '101.json')]: JSON.stringify(state) } })
+    r.dirs.add(wt('101'))
+    r.procs.set(777, { stamp: 'S777', alive: true, dies: 'SIGTERM' })
+    r.procCwd.set(777, wt('101'))
+    // The process survived the daemon. Its initial stamp and recovery lsof failed.
+    r.deps.processes.runsIn = async () => null
+    if (action === 'replacement') {
+      r.manager.turn(turn('101', { mode: 'reply', replyId: '1011', text: 'again' }))
+      await pollOut(r)
+    } else if (action === 'delete') {
+      await r.manager.close({ rootId: '101', removeWorktree: true })
+      await pollOut(r)
+    } else {
+      await r.manager.sweepClosed(30 * DAY)
+    }
+    assert.equal(r.spawned.length, 0, `${action}: no replacement while inspection is unknown`)
+    assert.equal(r.removed.length, 0, `${action}: preserve the active folder`)
+    assert.equal(r.files.has(join(STATE, '101.json')), true, `${action}: preserve the lane state`)
+    assert.equal(saved(r).pid, 777, `${action}: retain the uncertain PID`)
+    assert.equal(saved(r).pidStamp, null)
+    assert.deepEqual(r.procKills, [], `${action}: never signal an unverified process`)
+    assert.deepEqual(r.branchesDeleted, [], `${action}: preserve the active branch`)
+    assert.equal(r.procs.get(777)!.alive, true)
+    // Once inspection confirms it is gone, the retained state can make progress.
+    r.procs.get(777)!.alive = false
+    r.deps.processes.runsIn = async () => false
+    if (action === 'replacement') {
+      r.manager.turn(turn('101', { mode: 'reply', replyId: '1012', text: 'retry' }))
+      await pollOut(r)
+      assert.equal(r.spawned.length, 1)
+    } else {
+      if (action === 'delete') await r.manager.close({ rootId: '101', removeWorktree: true })
+      else await r.manager.sweepClosed(30 * DAY)
+      await pollOut(r)
+      assert.ok(r.removed.includes(wt('101')), `${action}: cleanup resumes after confirmed exit`)
+    }
+  })
+}
 
 test('a turn waits for the CLI answer without blocking, and fails with its cause when it comes', async () => {
   let answer: (s: string | null) => void = () => {}

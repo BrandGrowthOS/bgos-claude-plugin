@@ -156,8 +156,8 @@ export interface ThreadLaneDeps {
   processes: {
     /** Asynchronous (never a blocked event loop): the start stamp while alive, else null. */
     stamp(pid: number): Promise<string | null>
-    /** Alive and running in this folder: how a lane is known when no stamp was saved. */
-    runsIn(pid: number, dir: string): Promise<boolean>
+    /** True if in this folder, false if absent/elsewhere, null if inspection failed. */
+    runsIn(pid: number, dir: string): Promise<boolean | null>
     kill(pid: number, signal: 'SIGTERM' | 'SIGKILL'): void
   }
   /** This host can run the CLI's Bash sandbox (lib/lane-policy.mjs laneShellSandboxAvailable). */
@@ -776,13 +776,15 @@ export class ThreadLaneManager {
     const secretPaths = laneSecretPaths({
       home,
       configDir,
-      agentFolder,
-      keepReadable: this.deps.emailFilesDir ? [this.deps.emailFilesDir] : [],
       pluginStateDir: this.deps.pluginStateDir,
       exists: (p) => fs.exists(p),
-      list: (d) => fs.list(d),
     })
-    return { root, readOnly: false, shellSandbox: true, protectedPaths, secretPaths }
+    const agents = resolve(home, '.bgos-agent')
+    const readablePaths = [agentFolder, this.deps.emailFilesDir]
+      .filter((p): p is string => !!p)
+      .map((p) => resolve(p))
+      .filter((p) => p.startsWith(`${agents}/`))
+    return { root, readOnly: false, shellSandbox: true, protectedPaths, secretPaths, readablePaths }
   }
 
   private async protectedPaths(lane: Lane): Promise<string[] | null> {
@@ -986,8 +988,8 @@ export class ThreadLaneManager {
     // A working directory is not process identity: a shell or test may reuse
     // this pid in the same worktree. Preserve the state and refuse a second
     // lane until it leaves, without signalling a process we cannot identify.
-    if (pidStamp === null && cwd !== '' && await procs.runsIn(pid, cwd)) {
-      this.deps.log(`threads: lane ${state.rootId} has an unverified process in its folder; waiting for it to exit`)
+    if (pidStamp === null && (await procs.runsIn(pid, cwd)) !== false) {
+      this.deps.log(`threads: lane ${state.rootId} has an unverified process that may still use its folder; waiting for it to exit`)
       return false
     }
     const alive = async (): Promise<boolean> => pidStamp !== null && (await procs.stamp(pid)) === pidStamp

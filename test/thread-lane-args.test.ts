@@ -307,25 +307,15 @@ test('a working lane sandbox refuses Bash reads of the secret paths it is given'
 })
 
 test('the secret paths: ~/.ssh, the CLI credentials file, and all of ~/.bgos-agent when the agent folder is elsewhere', () => {
-  const present = new Set(['/home/u/.ssh', '/home/u/.claude/.credentials.json', '/cfg/.credentials.json', '/home/u/.bgos-agent'])
-  const paths = laneSecretPaths({ home: '/home/u', configDir: '/cfg', agentFolder: '/work/atlas', exists: (p) => present.has(p), list: () => [] })
-  assert.deepEqual(paths, ['/home/u/.ssh', '/home/u/.claude/.credentials.json', '/cfg/.credentials.json', '/home/u/.bgos-agent'])
+  const present = new Set(['/home/u/.ssh', '/home/u/.claude/.credentials.json', '/home/u/.bgos-agent', '/cfg/.credentials.json'])
+  const paths = laneSecretPaths({ home: '/home/u', configDir: '/cfg', exists: (p) => present.has(p) })
+  assert.deepEqual(paths, ['/home/u/.ssh', '/home/u/.claude/.credentials.json', '/home/u/.bgos-agent', '/cfg/.credentials.json'])
   // Only what exists (the Linux sandbox binds over real paths); no config dir, no second credentials file.
-  assert.deepEqual(laneSecretPaths({ home: '/home/u', configDir: '', agentFolder: '/work/atlas', exists: (p) => p === '/home/u/.ssh', list: () => [] }), ['/home/u/.ssh'])
+  assert.deepEqual(laneSecretPaths({ home: '/home/u', configDir: '', exists: (p) => p === '/home/u/.ssh' }), ['/home/u/.ssh'])
 })
 
-test('an agent folder inside ~/.bgos-agent keeps its own path readable and refuses every sibling on the way', () => {
-  const tree: Record<string, string[]> = {
-    '/home/u/.bgos-agent': ['credentials-7.json', 'credentials.json', '7', '7-workspace', 'runtime'],
-    '/home/u/.bgos-agent/7-workspace': ['repo', 'notes.md'],
-  }
-  const paths = laneSecretPaths({
-    home: '/home/u/',
-    configDir: '',
-    agentFolder: '/home/u/.bgos-agent/7-workspace/repo',
-    exists: () => true,
-    list: (d) => tree[d] ?? [],
-  })
+test('the credential directory stays denied without inspecting its current children', () => {
+  const paths = laneSecretPaths({ home: '/home/u/', configDir: '', exists: () => true })
   assert.deepEqual(paths, [
     '/home/u/.ssh',
     '/home/u/.claude/.credentials.json',
@@ -335,13 +325,8 @@ test('an agent folder inside ~/.bgos-agent keeps its own path readable and refus
     '/home/u/.docker/config.json',
     '/home/u/.npmrc',
     '/home/u/.bgos-plugin-state',
-    '/home/u/.bgos-agent/credentials-7.json',
-    '/home/u/.bgos-agent/credentials.json',
-    '/home/u/.bgos-agent/7',
-    '/home/u/.bgos-agent/7-workspace/notes.md',
-    '/home/u/.bgos-agent/runtime',
+    '/home/u/.bgos-agent',
   ])
-  assert.equal(paths.some((p) => '/home/u/.bgos-agent/7-workspace/repo/.git'.startsWith(`${p}/`)), false, 'nothing on the path to the agent folder (its .git included)')
 })
 
 // -- follow up (Data, item 6): more credential files, and the agent's own email files stay readable --
@@ -349,54 +334,10 @@ test('an agent folder inside ~/.bgos-agent keeps its own path readable and refus
 test('the secret paths also cover AWS, gh, netrc, docker, npm and the plugin state, wherever the agent folder is', () => {
   const home = '/home/u'
   const extra = ['/home/u/.aws', '/home/u/.config/gh', '/home/u/.netrc', '/home/u/.docker/config.json', '/home/u/.npmrc', '/home/u/.bgos-plugin-state']
-  const paths = laneSecretPaths({ home, configDir: '', agentFolder: '/work/atlas', exists: () => true, list: () => [] })
+  const paths = laneSecretPaths({ home, configDir: '', exists: () => true })
   for (const p of extra) assert.ok(paths.includes(p), p)
   // An override does not make credentials left in the default state readable.
-  const moved = laneSecretPaths({ home, configDir: '', agentFolder: '/work/atlas', pluginStateDir: '/srv/state', exists: () => true, list: () => [] })
+  const moved = laneSecretPaths({ home, configDir: '', pluginStateDir: '/srv/state', exists: () => true })
   assert.ok(moved.includes('/srv/state'))
   assert.ok(moved.includes('/home/u/.bgos-plugin-state'))
-})
-
-test('the agent own email files stay readable: every sibling on the way to them is refused instead of ~/.bgos-agent whole', () => {
-  const tree: Record<string, string[]> = {
-    '/home/u/.bgos-agent': ['credentials-7.json', '7', 'email-files', 'runtime'],
-    '/home/u/.bgos-agent/email-files': ['7', '8'],
-  }
-  const paths = laneSecretPaths({
-    home: '/home/u',
-    configDir: '',
-    agentFolder: '/work/atlas',
-    keepReadable: ['/home/u/.bgos-agent/email-files/7'],
-    exists: () => true,
-    list: (d) => tree[d] ?? [],
-  })
-  const agents = paths.filter((p) => p.startsWith('/home/u/.bgos-agent'))
-  assert.deepEqual(agents, [
-    '/home/u/.bgos-agent/credentials-7.json',
-    '/home/u/.bgos-agent/7',
-    '/home/u/.bgos-agent/email-files/8',
-    '/home/u/.bgos-agent/runtime',
-  ])
-})
-
-test('an agent folder and its email files both inside ~/.bgos-agent: both routes stay readable, all else is refused', () => {
-  const tree: Record<string, string[]> = {
-    '/home/u/.bgos-agent': ['credentials-7.json', '7', '7-workspace', 'email-files'],
-    '/home/u/.bgos-agent/email-files': ['7', '8'],
-    '/home/u/.bgos-agent/7-workspace': ['repo', 'secret.txt'],
-  }
-  const paths = laneSecretPaths({
-    home: '/home/u',
-    configDir: '',
-    agentFolder: '/home/u/.bgos-agent/7-workspace/repo',
-    keepReadable: ['/home/u/.bgos-agent/email-files/7'],
-    exists: () => true,
-    list: (d) => tree[d] ?? [],
-  })
-  assert.deepEqual(paths.filter((p) => p.startsWith('/home/u/.bgos-agent')), [
-    '/home/u/.bgos-agent/credentials-7.json',
-    '/home/u/.bgos-agent/7',
-    '/home/u/.bgos-agent/7-workspace/secret.txt',
-    '/home/u/.bgos-agent/email-files/8',
-  ])
 })

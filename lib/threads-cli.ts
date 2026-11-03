@@ -332,6 +332,9 @@ export class ThreadsCliGate {
   }
 
   private known(key: string): ThreadsCliAnswer | null {
+    // Observing another binary supersedes a probe even if this key already
+    // has a cached answer and does not need a new probe of its own.
+    if (this.inflight && this.inflight.key !== key) this.inflight = null
     if (this.memo?.key === key && this.fresh(this.memo.retryAt)) return this.memo.answer
     try {
       const cached = JSON.parse(String((this.deps.fs ?? nodeFs).readFileSync(this.deps.cachePath, 'utf8')))
@@ -359,10 +362,14 @@ export class ThreadsCliGate {
       .catch(() => ({ ok: false, missing: [UNREADABLE], version: null }))
       .then((found) => {
         const answer: ThreadsCliAnswer = { ok: found.ok, missing: found.missing, version: found.version, cached: false }
+        // A binary update can start another probe before this one finishes.
+        // Old waiters still get their answer, but only the current generation
+        // may change the capabilities, cache or completion notification.
+        if (this.inflight?.promise !== promise) return answer
         const retryAt = found.version === null ? this.now() + THREADS_FAILED_RETRY_MS : null
         this.memo = { key, answer, retryAt }
         this.save(key, answer, retryAt)
-        if (this.inflight?.key === key) this.inflight = null
+        this.inflight = null
         this.deps.onAnswer?.(answer)
         return answer
       })
