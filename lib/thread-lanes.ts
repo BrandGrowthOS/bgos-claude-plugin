@@ -54,6 +54,7 @@ import {
   isSessionId,
   laneSecretPaths,
   protectedGitPaths,
+  THREAD_LANE_REF_DIRS,
   threadLaneArgs,
   threadTurnPrompt,
   type ThreadLaneConfinement,
@@ -115,6 +116,9 @@ export interface ThreadLaneFs {
   unlink(path: string): void
   rmrf(path: string): void
   list(dir: string): string[]
+  /** Create a file that must not exist yet (git's own lock convention); throws when it does. */
+  createExclusive(path: string, data: string): void
+  rename(from: string, to: string): void
 }
 
 export interface ThreadLaneDeps {
@@ -136,6 +140,8 @@ export interface ThreadLaneDeps {
   emptyMcpConfigPath(): string
   /** This host can run the CLI's Bash sandbox (lib/lane-policy.mjs laneShellSandboxAvailable). */
   shellSandbox(): boolean
+  /** process.platform: on Linux the sandbox protects only paths that exist (protectedPaths). */
+  platform?: NodeJS.Platform
   git(args: string[], cwd: string): Promise<{ ok: boolean; stdout: string }>
   fs: ThreadLaneFs
   post(path: string, body: Record<string, unknown>): Promise<unknown>
@@ -730,17 +736,74 @@ export class ThreadLaneManager {
     const commonDir = common.stdout.trim()
     const ownGitDir = own.stdout.trim()
     if (!common.ok || !own.ok || !refs.ok || !commonDir.startsWith('/') || !ownGitDir.startsWith('/')) return null
+    // The reftable backend keeps every ref in reftable/: no path protects one
+    // branch and leaves the lane its own. An older git, without the question,
+    // has no reftable.
+    const format = await git(['-C', agentFolder, 'rev-parse', '--show-ref-format'], agentFolder)
+    if (format.ok && format.stdout.trim() !== '' && format.stdout.trim() !== 'files') {
+      this.deps.log(`threads: lane ${lane.state.rootId} runs without Bash, its repository keeps refs as ${format.stdout.trim()}`)
+      return null
+    }
     let worktreeNames: string[] = []
     try {
       worktreeNames = fs.list(join(commonDir, 'worktrees'))
     } catch {}
-    return protectedGitPaths({
+    const branches = refs.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
+    const paths = protectedGitPaths({
       commonDir,
       ownGitDir,
       ownBranch: `hoai/thread-${lane.state.rootId}`,
-      branches: refs.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean),
+      branches,
       worktreeNames,
     })
+    if ((this.deps.platform ?? process.platform) === 'linux' && !(await this.materializeRefs(commonDir, paths))) return null
+    return paths
+  }
+
+  /**
+   * Linux (gate review finding 4): the sandbox binds a denied path read only,
+   * so a path that does not exist is not protected, and a branch kept only in
+   * packed-refs could be shadowed by a loose ref the lane writes. Each such
+   * branch is written out loose (same commit, through a `.lock` like git
+   * itself), and the ref folders are made. False when a branch could not be:
+   * then the lane gets no Bash.
+   */
+  private async materializeRefs(commonDir: string, paths: readonly string[]): Promise<boolean> {
+    const { fs, git, agentFolder } = this.deps
+    for (const dir of THREAD_LANE_REF_DIRS) {
+      try {
+        fs.mkdir(join(commonDir, dir))
+      } catch {}
+    }
+    const heads = `${commonDir}/refs/heads/`
+    for (const path of paths) {
+      if (!path.startsWith(heads) || fs.exists(path)) continue
+      const ref = path.slice(commonDir.length + 1)
+      const sha = await git(['-C', agentFolder, 'rev-parse', '--verify', '--quiet', `${ref}^{commit}`], agentFolder)
+      const id = sha.stdout.trim()
+      if (!sha.ok || !/^[0-9a-f]{40,64}$/.test(id)) {
+        this.deps.log(`threads: a packed branch could not be written out, the lane runs without Bash`)
+        return false
+      }
+      const lock = `${path}.lock`
+      try {
+        fs.mkdir(dirname(path))
+        fs.createExclusive(lock, `${id}\n`)
+      } catch {
+        // git holds the lock (or the folder cannot be made): not protectable now.
+        this.deps.log(`threads: a packed branch is locked, the lane runs without Bash`)
+        return false
+      }
+      try {
+        fs.rename(lock, path)
+      } catch {
+        try {
+          fs.unlink(lock)
+        } catch {}
+        return false
+      }
+    }
+    return true
   }
 
   private copyMainTranscript(lane: Lane, mainId: string): void {

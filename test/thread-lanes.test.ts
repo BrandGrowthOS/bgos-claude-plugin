@@ -56,7 +56,7 @@ class FakeChild implements StreamJsonChild {
 
 interface Timer { fn: () => void; ms: number; cleared: boolean; fired: boolean }
 
-function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; files?: Record<string, string>; shell?: boolean; failPosts?: (path: string, body: Record<string, unknown>) => boolean; cliProblem?: string | null } = {}) {
+function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; files?: Record<string, string>; shell?: boolean; failPosts?: (path: string, body: Record<string, unknown>) => boolean; cliProblem?: string | null; platform?: NodeJS.Platform; git?: (sub: string[]) => { ok: boolean; stdout: string } | undefined } = {}) {
   const repo = opts.repo ?? true
   const files = new Map<string, string>(Object.entries(opts.files ?? {}))
   const dirs = new Set<string>()
@@ -85,10 +85,13 @@ function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; f
     configDir: '',
     emptyMcpConfigPath: () => MCP,
     shellSandbox: () => opts.shell ?? true,
+    platform: opts.platform ?? 'darwin',
     git: async (args) => {
       gitCalls.push(args)
       const sub = args.slice(2)
       if (!repo) return { ok: false, stdout: '' }
+      const over = opts.git?.(sub)
+      if (over) return over
       if (sub[0] === 'rev-parse' && sub[1] === '--show-prefix') return { ok: true, stdout: '\n' }
       if (sub[0] === 'rev-parse' && sub[1] === '--git-path') return { ok: true, stdout: '.git/info/exclude\n' }
       if (sub[0] === 'rev-parse' && sub[2] === '--git-common-dir') return { ok: true, stdout: `${AGENT}/.git\n` }
@@ -108,6 +111,8 @@ function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; f
       copyFile: (a, b) => { const v = files.get(a); if (v === undefined) throw new Error(`ENOENT ${a}`); files.set(b, v) },
       unlink: (p) => { if (!files.delete(p)) throw new Error(`ENOENT ${p}`) },
       rmrf: (p) => { removed.push(p); dirs.delete(p) },
+      createExclusive: (p, s) => { if (files.has(p)) throw new Error(`EEXIST ${p}`); files.set(p, s) },
+      rename: (a, b) => { const v = files.get(a); if (v === undefined) throw new Error(`ENOENT ${a}`); files.delete(a); files.set(b, v) },
       list: (d) => [...files.keys()].filter((k) => dirname(k) === d).map((k) => k.slice(d.length + 1)),
     },
     post: async (path, body) => {
@@ -126,7 +131,11 @@ function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; f
 }
 
 /** The command the manager must build for a working lane in wt(root) (protected: the agent repo's own state). */
-const PROTECTED = [`${AGENT}/.git/index`, `${AGENT}/.git/HEAD`, `${AGENT}/.git/packed-refs`, `${AGENT}/.git/refs/heads/main`]
+const PROTECTED = [
+  `${AGENT}/.git/index`, `${AGENT}/.git/HEAD`, `${AGENT}/.git/packed-refs`,
+  ...['refs/stash', 'logs/refs/stash', 'refs/tags', 'refs/remotes', 'refs/notes', 'refs/replace'].map((p) => `${AGENT}/.git/${p}`),
+  `${AGENT}/.git/refs/heads/main`,
+]
 function workArgs(root: string, fork: string | null): string[] {
   return threadLaneArgs({
     mainSessionId: MAIN,
@@ -156,6 +165,7 @@ test('a first turn makes the worktree, copies the main transcript beside it, and
     ['-C', AGENT, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
     ['-C', wt('101'), 'rev-parse', '--path-format=absolute', '--git-dir'],
     ['-C', AGENT, 'for-each-ref', '--format=%(refname)', 'refs/heads'],
+    ['-C', AGENT, 'rev-parse', '--show-ref-format'],
   ])
   assert.equal(r.files.get(sessionTranscriptPath(HOME, wt('101'), MAIN, '')), '{"main":true}\n', 'the fork finds the main transcript from its own cwd')
   assert.equal(r.spawned.length, 1)
@@ -937,4 +947,51 @@ test('a working lane refuses Bash reads of ~/.ssh, the CLI credentials and ~/.bg
   const args = r.spawned[0]!.args
   const settings = JSON.parse(args[args.indexOf('--settings') + 1]!)
   assert.deepEqual(settings.sandbox.filesystem.denyRead, [`${HOME}/.ssh`, `${HOME}/.claude/.credentials.json`, `${HOME}/.bgos-agent`])
+})
+
+// -- gate review finding 4: the source repository's refs, all of them --
+
+const laneSettings = (r: ReturnType<typeof rig>, i = 0) => {
+  const args = r.spawned[i]!.args
+  return { tools: args[args.indexOf('--tools') + 1]!.split(','), settings: JSON.parse(args[args.indexOf('--settings') + 1]!) }
+}
+
+test('a repository on the reftable backend keeps every ref in one place the sandbox cannot split: the lane runs without Bash', async () => {
+  const r = rig({ git: (sub) => (sub[0] === 'rev-parse' && sub[1] === '--show-ref-format' ? { ok: true, stdout: 'reftable\n' } : undefined) })
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const { tools, settings } = laneSettings(r)
+  assert.equal(tools.includes('Bash'), false)
+  assert.equal(settings.sandbox, undefined)
+})
+
+test('on Linux a branch kept only in packed-refs is written out as a loose ref before the lane starts, so the sandbox can protect it', async () => {
+  const SHA = 'a'.repeat(40)
+  const r = rig({
+    platform: 'linux',
+    git: (sub) => (sub[0] === 'rev-parse' && sub[1] === '--verify' ? { ok: true, stdout: `${SHA}\n` } : undefined),
+  })
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  assert.equal(r.files.get(`${AGENT}/.git/refs/heads/main`), `${SHA}\n`, 'the loose ref, same commit as the packed one')
+  assert.equal(r.files.has(`${AGENT}/.git/refs/heads/main.lock`), false, 'written through a lock, then renamed')
+  assert.ok(r.gitCalls.some((a) => a.join(' ') === `-C ${AGENT} rev-parse --verify --quiet refs/heads/main^{commit}`))
+  assert.equal(r.files.has(`${AGENT}/.git/refs/heads/hoai/thread-101`), false, "never the lane's own branch")
+  for (const d of ['refs/tags', 'refs/remotes', 'refs/notes', 'refs/replace']) assert.ok(r.dirs.has(`${AGENT}/.git/${d}`), `${d} exists, so it can be bound read only`)
+  assert.ok(laneSettings(r).tools.includes('Bash'))
+})
+
+test('on Linux a packed-only branch that cannot be written out leaves the lane without Bash, never unprotected', async () => {
+  const r = rig({ platform: 'linux', git: (sub) => (sub[0] === 'rev-parse' && sub[1] === '--verify' ? { ok: false, stdout: '' } : undefined) })
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  assert.equal(laneSettings(r).tools.includes('Bash'), false)
+})
+
+test('on macOS nothing is written into the source repository (the sandbox denies a path that does not exist yet)', async () => {
+  const r = rig({ platform: 'darwin' })
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  assert.equal(r.files.has(`${AGENT}/.git/refs/heads/main`), false)
+  assert.equal(r.gitCalls.some((a) => a.includes('--verify')), false)
 })

@@ -256,7 +256,17 @@ export function threadLaneArgs(input: {
  * the main checkout's index, HEAD and packed-refs, every branch that exists
  * when the lane starts except the lane's own, and every other worktree's
  * admin dir. Objects stay writable (content addressed, a commit needs them).
+ *
+ * Gate review finding 4: and every other ref a lane has no business moving,
+ * whole: the stash (refs/stash, and logs/refs/stash where its older entries
+ * live), tags, remotes, notes and replace refs (a replace ref would change
+ * what every other branch appears to hold). A branch new since the lane
+ * started is still not here (THREAD_LANE_REF_DIRS lists the folders; the
+ * daemon makes them exist on Linux, lib/thread-lanes.ts).
  */
+/** Ref folders a lane may not write anything in (protectedGitPaths). */
+export const THREAD_LANE_REF_DIRS: readonly string[] = Object.freeze(['refs/tags', 'refs/remotes', 'refs/notes', 'refs/replace'])
+
 export function protectedGitPaths(input: {
   commonDir: string
   ownGitDir: string
@@ -266,7 +276,8 @@ export function protectedGitPaths(input: {
 }): string[] {
   const common = input.commonDir.replace(/\/+$/, '')
   const own = input.ownGitDir.replace(/\/+$/, '')
-  const out = [`${common}/index`, `${common}/HEAD`, `${common}/packed-refs`]
+  const out = [`${common}/index`, `${common}/HEAD`, `${common}/packed-refs`, `${common}/refs/stash`, `${common}/logs/refs/stash`]
+  for (const dir of THREAD_LANE_REF_DIRS) out.push(`${common}/${dir}`)
   for (const ref of input.branches) {
     if (!ref.startsWith('refs/heads/') || ref.split('/').includes('..')) continue
     if (ref === `refs/heads/${input.ownBranch}`) continue

@@ -146,7 +146,7 @@ test('assertConfined refuses a lane command without its confinement or with a by
   assert.throws(() => threadLaneArgs({ mainSessionId: MAIN, forkSessionId: null, emptyMcpConfigPath: MCP, confinement: { ...WORK, root: 'relative/dir' } }), /absolute/)
 })
 
-test('the source repository git state a lane may not write: index, HEAD, packed-refs, other branches, other worktrees', () => {
+test('the source repository git state a lane may not write: index, HEAD, packed-refs, stash, tags, remotes, notes, replace refs, other branches, other worktrees', () => {
   assert.deepEqual(
     protectedGitPaths({
       commonDir: '/work/atlas/.git',
@@ -159,6 +159,13 @@ test('the source repository git state a lane may not write: index, HEAD, packed-
       '/work/atlas/.git/index',
       '/work/atlas/.git/HEAD',
       '/work/atlas/.git/packed-refs',
+      // Gate review finding 4: the stash (its entries live in the reflog), tags, remotes, notes and replace refs.
+      '/work/atlas/.git/refs/stash',
+      '/work/atlas/.git/logs/refs/stash',
+      '/work/atlas/.git/refs/tags',
+      '/work/atlas/.git/refs/remotes',
+      '/work/atlas/.git/refs/notes',
+      '/work/atlas/.git/refs/replace',
       '/work/atlas/.git/refs/heads/main',
       '/work/atlas/.git/refs/heads/hoai/thread-102',
       '/work/atlas/.git/refs/heads/feature/x',

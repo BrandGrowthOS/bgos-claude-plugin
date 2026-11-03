@@ -949,6 +949,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   statSync,
   unlinkSync,
@@ -13347,6 +13348,7 @@ const threadLanes = new ThreadLaneManager({
       exists: (p: string) => existsSync(p),
       onPath: (name: string) => findOnPath(name, { pathVar: process.env.PATH ?? '' }) !== null,
     }),
+  platform: process.platform,
   git: async (args, cwd) => {
     try {
       const { stdout } = await execFileAsync('git', args, { cwd, timeout: 60_000, maxBuffer: 1024 * 1024 })
@@ -13365,6 +13367,8 @@ const threadLanes = new ThreadLaneManager({
     unlink: (path) => unlinkSync(path),
     rmrf: (path) => rmSync(path, { recursive: true, force: true }),
     list: (dir) => readdirSync(dir),
+    createExclusive: (path, data) => writeFileSync(path, data, { flag: 'wx' }),
+    rename: (from, to) => renameSync(from, to),
   },
   post: (path, body) => bgosPost(path, body),
   now: () => Date.now(),

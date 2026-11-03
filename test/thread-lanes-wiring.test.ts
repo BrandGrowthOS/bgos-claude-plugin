@@ -61,6 +61,10 @@ test('pending threads are reconciled with the served agent ids and the server re
 test('a lane gets Bash only where the host has the CLI sandbox', () => {
   const manager = block('const threadLanes = new ThreadLaneManager({', '\n})\n')
   assert.match(manager, /shellSandbox: \(\) =>\s*laneShellSandboxAvailable\(/)
+  // Gate review finding 4: Linux writes packed-only branches out loose, through git's own lock convention.
+  assert.match(manager, /platform: process\.platform,/)
+  assert.match(manager, /createExclusive: \(path, data\) => writeFileSync\(path, data, \{ flag: 'wx' \}\),/)
+  assert.match(manager, /rename: \(from, to\) => renameSync\(from, to\),/)
 })
 
 test('closed thread worktrees are swept every hour', () => {

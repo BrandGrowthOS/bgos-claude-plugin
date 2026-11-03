@@ -12,7 +12,7 @@ import { test } from 'node:test'
 import { execFile, execFileSync } from 'node:child_process'
 import { promisify } from 'node:util'
 import {
-  appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, unlinkSync, writeFileSync,
+  appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -39,7 +39,7 @@ function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd, encoding: 'utf8' })
 }
 
-function setup() {
+function setup(opts: { platform?: NodeJS.Platform } = {}) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'thread-git-')))
   const agent = join(dir, 'agent')
   mkdirSync(agent)
@@ -69,6 +69,7 @@ function setup() {
     configDir: config,
     emptyMcpConfigPath: () => join(dir, 'empty-mcp.json'),
     shellSandbox: () => true,
+    platform: opts.platform ?? process.platform,
     git: async (args, cwd) => {
       try {
         const { stdout } = await run('git', args, { cwd })
@@ -86,6 +87,8 @@ function setup() {
       copyFile: (a, b) => copyFileSync(a, b),
       unlink: (p) => unlinkSync(p),
       rmrf: (p) => rmSync(p, { recursive: true, force: true }),
+      createExclusive: (p, d) => writeFileSync(p, d, { flag: 'wx' }),
+      rename: (a, b) => renameSync(a, b),
       list: (d) => readdirSync(d),
     },
     post: async () => {},
@@ -121,6 +124,12 @@ test('a real git: the worktree and its branch are made, and the sandbox protects
       join(common, 'HEAD'),
       join(common, 'index'),
       join(common, 'packed-refs'),
+      join(common, 'refs', 'stash'),
+      join(common, 'logs', 'refs', 'stash'),
+      join(common, 'refs', 'tags'),
+      join(common, 'refs', 'remotes'),
+      join(common, 'refs', 'notes'),
+      join(common, 'refs', 'replace'),
       join(common, 'refs', 'heads', 'feature', 'x'),
       join(common, 'refs', 'heads', 'main'),
     ].sort(), 'never the lane\'s own branch or its own worktree admin dir')
@@ -151,6 +160,27 @@ test('a real git: a branch left from an earlier worktree is reused, and Delete r
     const branches = git(r.agent, 'branch', '--format=%(refname:short)').split('\n').filter(Boolean).sort()
     assert.deepEqual(branches, ['feature/x', 'hoai/thread-103', 'main'])
     assert.doesNotMatch(git(r.agent, 'worktree', 'list'), /threads\/102/)
+  } finally {
+    r.cleanup()
+  }
+})
+
+test('a real git on Linux: branches kept only in packed-refs are written out loose, same commits, and git reads the repository as before', async () => {
+  const r = setup({ platform: 'linux' })
+  try {
+    git(r.agent, 'tag', 'v1')
+    git(r.agent, 'pack-refs', '--all')
+    const heads = join(r.agent, '.git', 'refs', 'heads')
+    assert.equal(existsSync(join(heads, 'main')), false, 'packed only before')
+    const before = git(r.agent, 'for-each-ref', '--format=%(refname) %(objectname)')
+    r.manager.turn(turn('101'))
+    await r.manager.idle()
+    assert.equal(readFileSync(join(heads, 'main'), 'utf8').trim(), git(r.agent, 'rev-parse', 'main').trim())
+    assert.equal(readFileSync(join(heads, 'feature', 'x'), 'utf8').trim(), git(r.agent, 'rev-parse', 'feature/x').trim())
+    assert.equal(git(r.agent, 'for-each-ref', '--format=%(refname) %(objectname)'), before.replace('\n', `\nrefs/heads/hoai/thread-101 ${git(r.agent, 'rev-parse', 'main').trim()}\n`).replace(/\n\n$/, '\n'), 'the same refs, plus the lane branch')
+    for (const d of ['tags', 'remotes', 'notes', 'replace']) assert.ok(existsSync(join(r.agent, '.git', 'refs', d)), d)
+    assert.equal(git(r.agent, 'status', '--porcelain'), '')
+    git(r.agent, 'fsck', '--no-progress')
   } finally {
     r.cleanup()
   }
