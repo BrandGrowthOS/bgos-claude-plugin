@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -7,6 +8,26 @@ type Ticket = { pid: number; ticket: number | null; name: string }
 type Scope = { missionId: number; goalId: number }
 type Receipt = { token: string; pid: number; working: boolean; uncertain: boolean }
 const activeReceipts = new Set<string>()
+
+/** PID liveness alone cannot distinguish a queue owner from a reused PID.
+ * An unreadable start identity is unknown, never proof that a writer died. */
+function processIncarnation(pid: number): string | null {
+  try {
+    if (process.platform === 'linux') {
+      const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
+      const start = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/)[19]
+      const boot = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim()
+      return start && /^\d+$/.test(start) && boot ? `${boot}:${start}` : null
+    }
+    const value = process.platform === 'win32'
+      ? execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+        `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`],
+      { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+      : execFileSync('ps', ['-p', String(pid), '-o', 'lstart='],
+        { encoding: 'utf8', timeout: 1000, env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' }, stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+    return value || null
+  } catch { return null }
+}
 
 function goalDirectory(root: string, scope?: Scope): string {
   if (scope && (!Number.isSafeInteger(scope.missionId) || scope.missionId <= 0 ||
@@ -31,11 +52,12 @@ export function hasUnconfirmedWorkingWrite(root: string, scope: Scope): boolean 
  * its successor. Live writers are never evicted on a wall-clock deadline.
  */
 export function createMissionWorkingWriteLock(root: string, options: { waitMs?: number } = {}) {
+  const incarnation = processIncarnation(process.pid)
   const readTickets = (directory: string): Ticket[] => {
     const tickets: Ticket[] = []
     for (const name of readdirSync(directory).filter(name => name.endsWith('.json'))) {
       const path = join(directory, name)
-      let record: { pid?: unknown; ticket?: unknown }
+      let record: { pid?: unknown; ticket?: unknown; incarnation?: unknown }
       try {
         record = JSON.parse(readFileSync(path, 'utf8'))
       } catch (error) {
@@ -43,21 +65,28 @@ export function createMissionWorkingWriteLock(root: string, options: { waitMs?: 
         throw new Error('Working-mark write queue is unreadable.')
       }
       if (!Number.isSafeInteger(record.pid) || Number(record.pid) <= 0 ||
+        (record.incarnation != null && (typeof record.incarnation !== 'string' || !record.incarnation)) ||
         (record.ticket !== null && (!Number.isSafeInteger(record.ticket) || Number(record.ticket) <= 0))) {
         throw new Error('Working-mark write queue is invalid.')
       }
       const pid = Number(record.pid)
+      let obsolete = false
       try {
         process.kill(pid, 0)
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ESRCH') {
-          // Unique names are never reused, so cleanup cannot unlink a new owner.
-          try { unlinkSync(path) } catch (removeError) {
-            if ((removeError as NodeJS.ErrnoException).code !== 'ENOENT') throw removeError
-          }
-          continue
+          obsolete = true
         }
         // EPERM or an unknown probe failure is not proof of death.
+      }
+      const current = pid === process.pid ? incarnation : processIncarnation(pid)
+      if (record.incarnation && current && record.incarnation !== current) obsolete = true
+      if (obsolete) {
+        // Unique names are never reused. Receipts are independent and stay put.
+        try { unlinkSync(path) } catch (removeError) {
+          if ((removeError as NodeJS.ErrnoException).code !== 'ENOENT') throw removeError
+        }
+        continue
       }
       tickets.push({ pid, ticket: record.ticket as number | null, name })
     }
@@ -71,12 +100,13 @@ export function createMissionWorkingWriteLock(root: string, options: { waitMs?: 
   }
 
   async function run<T>(directory: string, work: () => Promise<T>, working: boolean): Promise<T> {
+    if (!incarnation) throw new Error('Working-mark process identity is unavailable.')
     mkdirSync(directory, { recursive: true, mode: 0o700 })
     const name = `${process.pid}-${randomUUID()}.json`
     const path = join(directory, name)
     const temp = `${path}.tmp`
     const publish = (ticket: number | null) => {
-      writeFileSync(temp, JSON.stringify({ pid: process.pid, ticket }), { mode: 0o600 })
+      writeFileSync(temp, JSON.stringify({ pid: process.pid, incarnation, ticket }), { mode: 0o600 })
       renameSync(temp, path)
     }
     const deadline = Date.now() + (options.waitMs ?? 30_000)

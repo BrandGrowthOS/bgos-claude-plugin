@@ -41,6 +41,40 @@ function runFunction(name: string, bindings: Record<string, any>, args: any[] = 
   return new Function(...Object.keys(bindings), `${js}\nreturn ${name}(...args);`)(...Object.values(bindings), ...[])
 }
 const scope = { sessionId: 'session-a', missionId: 77, goalId: 3, headers: {} }
+for (const working of [true, false]) {
+  test(`the real passive daemon accepts an unbound explicit working=${working} call`, async t => {
+    const root = mkdtempSync(join(tmpdir(), 'working-passive-'))
+    t.after(() => rmSync(root, { recursive: true, force: true }))
+    const writes: boolean[] = []
+    const headers = { 'X-Actor': 'passive-session' }
+    const bindings = {
+      createMissionWorkingTracker, createMissionWorkingWriteLock, hasUnconfirmedWorkingWrite, buildMissionGoalWorkingPath,
+      PAIRING_LOCK_PATH: join(root, 'pairing.lock'), ASSISTANT_ID: '900',
+      // Another daemon owns the pairing. This one still serves MCP tools.
+      pairingLockNamesThisDaemon: () => false,
+      rememberMissionSelfWrite: () => {},
+      bgosPatch: async (path: string, body: { working: boolean }, sentHeaders: Record<string, string>) => {
+        assert.equal(path, 'integrations/assistants/900/missions/77/goals/3/working')
+        assert.deepEqual(sentHeaders, headers)
+        writes.push(body.working)
+        return { mission: { id: 77 } }
+      },
+    }
+    const js = ts.transpileModule(`
+      const channelArmed = false, lockHeld = false;
+      return ${trackerInitializer};
+    `, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText
+    const tracker = new Function(...Object.keys(bindings), js)(...Object.values(bindings)) as ReturnType<typeof createMissionWorkingTracker>
+    const context = tracker.capture('')
+    await assert.doesNotReject(tracker.mark({ ...scope, sessionId: '', context, headers, working }))
+    await tracker.sweep()
+    await tracker.stop()
+    assert.deepEqual(writes, [working], 'manual intent sends once and does not become automatic cleanup')
+    await assert.rejects(tracker.mark({ ...scope, sessionId: '', context, headers, working }), /session ended/i)
+    assert.deepEqual(writes, [working], 'shutdown still invalidates old explicit intent')
+  })
+}
+
 function stopIntake(tracker: ReturnType<typeof createMissionWorkingTracker>) {
   return runFunction('stopHookIntake', { args: [], hookIntake: { stop: () => {} },
     missionWorking: tracker, missionWorkingTimer: null, clearInterval: () => {},

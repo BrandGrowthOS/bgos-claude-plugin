@@ -78,7 +78,10 @@ export function createMissionWorkingTracker(opts: {
       return await withWriteLock(async () => {
         // Recheck after acquiring the cross-daemon gate, not before waiting for it.
         try {
-          if (epoch !== authorityEpoch || (opts.hasAuthority && !opts.hasAuthority())) {
+          // Fresh unbound tool intent remains available in passive daemons.
+          // Automatic work has no admission check and still needs authority.
+          const manual = !!check && !scope.sessionId
+          if (epoch !== authorityEpoch || (!manual && opts.hasAuthority && !opts.hasAuthority())) {
             retire(entry)
             throw new Error('The daemon no longer owns this pairing.')
           }

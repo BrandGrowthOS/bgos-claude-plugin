@@ -40,9 +40,11 @@ test('the pairing write lock holds through async completion and releases after r
   assert.deepEqual(readdirSync(lock), [], 'completed operations leave no queue records')
 })
 
-test('two real processes cannot deliver a successor write before an older delayed clear', async t => {
+for (const crossTimezone of [false, true]) {
+test(`two real processes cannot deliver a successor write before an older delayed clear, different timezones=${crossTimezone}`, async t => {
   const { root, lock } = setup(t)
   const log = join(root, 'order'), ready = join(root, 'ready'), release = join(root, 'release')
+  const contenderReady = join(root, 'contender-ready')
   const children: ReturnType<typeof spawn>[] = []
   t.after(() => { for (const child of children) child.kill() })
   const run = (name: string) => {
@@ -50,15 +52,19 @@ test('two real processes cannot deliver a successor write before an older delaye
       import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
       import { setTimeout as delay } from 'node:timers/promises';
       import { createMissionWorkingWriteLock } from ${JSON.stringify(moduleUrl.href)};
-      await createMissionWorkingWriteLock(${JSON.stringify(lock)})(async () => {
+      const pending = createMissionWorkingWriteLock(${JSON.stringify(lock)})(async () => {
         appendFileSync(${JSON.stringify(log)}, ${JSON.stringify(`${name}:start\n`)});
         if (${JSON.stringify(name)} === 'A') {
           writeFileSync(${JSON.stringify(ready)}, 'ready');
           while (!existsSync(${JSON.stringify(release)})) await delay(10);
         }
         appendFileSync(${JSON.stringify(log)}, ${JSON.stringify(`${name}:finish\n`)});
-      });
-    `], { stdio: ['ignore', 'pipe', 'pipe'], env: process.env })
+      }, undefined, ${JSON.stringify(crossTimezone && name === 'A')});
+      // The gate runs synchronously until it yields on contention. If waiting
+      // is broken, B has already entered the transport before this barrier.
+      if (${JSON.stringify(name)} === 'B') writeFileSync(${JSON.stringify(contenderReady)}, 'ready');
+      await pending;
+    `], { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, TZ: crossTimezone && name === 'B' ? 'Asia/Dubai' : 'UTC' } })
     children.push(child)
     let output = ''
     child.stdout.on('data', chunk => { output += chunk })
@@ -72,12 +78,13 @@ test('two real processes cannot deliver a successor write before an older delaye
   const first = settle(run('A'))
   await until(() => existsSync(ready))
   const second = settle(run('B'))
-  await wait(150)
+  await until(() => existsSync(contenderReady))
   assert.equal(readFileSync(log, 'utf8'), 'A:start\n')
   writeFileSync(release, 'go')
   assert.deepEqual(await Promise.all([first, second]), ['', ''], 'both processes must complete successfully')
   assert.equal(readFileSync(log, 'utf8'), 'A:start\nA:finish\nB:start\nB:finish\n')
 })
+}
 
 test('a dead process queue record is removed, including an interrupted ticket choice', async t => {
   const { lock, make } = setup(t)
@@ -113,6 +120,48 @@ test('a live holder is never evicted by timeout and a waiting operation sends no
     await holding
   }
   assert.deepEqual(readdirSync(lock), [])
+})
+
+for (const ticket of [null, 1]) {
+  for (const working of [true, false]) {
+    test(`a reused live PID cannot block working=${working} with an orphan ticket=${ticket}`, async t => {
+      const { lock, make } = setup(t)
+      const scope = { missionId: 77, goalId: 3 }
+      const directory = join(lock, '77-3')
+      let previous: { incarnation?: string } = {}
+      await make(lock)(async () => {
+        const name = readdirSync(directory).find(name => name.endsWith('.json'))!
+        previous = JSON.parse(readFileSync(join(directory, name), 'utf8'))
+      }, scope)
+      const orphan = join(directory, `${process.pid}-old-incarnation.json`)
+      // The PID is live again, but belongs to a different process incarnation.
+      writeFileSync(orphan, JSON.stringify({ pid: process.pid,
+        incarnation: previous.incarnation ? `${previous.incarnation}:previous` : undefined, ticket }))
+      const writes: boolean[] = []
+      await assert.doesNotReject(make(lock, { waitMs: 50 })(async () => { writes.push(working) }, scope, working))
+      assert.deepEqual(writes, [working])
+      assert.equal(existsSync(orphan), false)
+      assert.deepEqual(readdirSync(directory), [], 'no HTTP uncertainty exists for a choosing or queued orphan')
+    })
+  }
+}
+
+test('reclaiming a reused PID queue ticket retains its independent uncertain HTTP receipt', async t => {
+  const { lock, make } = setup(t)
+  const scope = { missionId: 77, goalId: 3 }
+  await make(lock)(async () => {}, scope)
+  const directory = join(lock, '77-3')
+  writeFileSync(join(directory, `${process.pid}-old-incarnation.json`), JSON.stringify({
+    pid: process.pid, incarnation: 'previous-process-start', ticket: null,
+  }))
+  const receipt = JSON.stringify({ token: 'old-http-write', pid: process.pid, working: true, uncertain: true })
+  writeFileSync(join(directory, 'unconfirmed-write'), receipt)
+  const writes: boolean[] = []
+  const gate = make(lock, { waitMs: 50 })
+  await assert.rejects(gate(async () => { writes.push(true) }, scope, true), /unconfirmed write/i)
+  await gate(async () => { writes.push(false) }, scope, false)
+  assert.deepEqual(writes, [false], 'safe cleanup proceeds but replacement stays fenced')
+  assert.equal(readFileSync(join(directory, 'unconfirmed-write'), 'utf8'), receipt)
 })
 
 test('ticket selection waits for a live choosing record before comparing order', async t => {

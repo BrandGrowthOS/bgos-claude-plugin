@@ -926,6 +926,12 @@ the backend's existing 30-minute expiry is the final bound on a stale mark.
 HTTP 400, 403 and 404 also retire refused goals. Other failed clears back off
 from 30 seconds to ten minutes. A daemon that loses the pairing lock retires
 its local ownership; it must not clear the new holder's marks.
+Passive sessions can still explicitly mark or clear goals without a bound hook
+session. These writes use the same per-goal queue. Successful manual marks do
+not become hook-owned selections. Queue tickets include the process start identity
+so a reused PID cannot keep an orphan ticket alive. Unreadable identities and
+legacy tickets without one remain conservative; uncertain HTTP receipts are
+preserved independently of queue cleanup.
 
 If a working request times out or loses its response, its remote outcome may
 still be unknown. The daemon preserves cleanup for that goal but refuses new
