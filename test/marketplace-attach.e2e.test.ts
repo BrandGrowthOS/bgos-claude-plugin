@@ -146,6 +146,33 @@ function events(r: Rig): Array<Record<string, unknown>> {
   return readFileSync(path, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l))
 }
 
+function applyManifestEnv(env: Record<string, string>, userConfig: Record<string, string> = {}): Record<string, string> {
+  const manifest = JSON.parse(readFileSync(join(repoRoot, '.claude-plugin', 'plugin.json'), 'utf8'))
+  return { ...env, ...Object.fromEntries(Object.entries(manifest.mcpServers.bgos.env).map(([key, value]) => [
+    key, String(value).replace(/\$\{user_config\.([^}]+)\}/g, (_match, name) => userConfig[name] ?? ''),
+  ])) }
+}
+
+async function launch(r: Rig, env: Record<string, string>): Promise<Record<string, string>> {
+  let daemonEnv: Record<string, string> | undefined
+  // Replace only the external Claude CLI. The launcher and daemon are real;
+  // the manifest environment is applied between them, just as Claude does.
+  const exitCode = await main([], {
+    platform: 'linux', env, home: r.home, cwd: r.folder, scriptDir: join(r.pluginRoot, 'bin'),
+    listProcesses: () => [], print: () => {}, hasExpect: true,
+    spawnImpl: (_file: string, _args: string[], opts: { env: Record<string, string> }) => {
+      daemonEnv = { ...opts.env }
+      const child = new EventEmitter() as EventEmitter & { kill: () => void }
+      child.kill = () => child.emit('exit', null, 'SIGTERM')
+      setImmediate(() => child.emit('exit', 0, null))
+      return child
+    },
+  } as never)
+  assert.equal(exitCode, 0)
+  assert.ok(daemonEnv, 'hoai launched the CLI with the daemon environment')
+  return daemonEnv
+}
+
 
 function assertDormant(a: Answer, r: Rig) {
   assert.deepEqual(a.names, [], a.stderr)
@@ -271,33 +298,39 @@ for (const layout of ['legacy plus numbered', 'explicit path plus numbered', 'le
       const plan = buildRunPlan({ cwd: r.folder, env, home: r.home, scriptDir: join(r.pluginRoot, 'bin') })
       assert.equal(plan.ok, true)
       if (!plan.ok) return
-      assert.equal(plan.attachScope, '42', 'scope follows the selected credentials, not another filename')
-      let daemonEnv: Record<string, string> | undefined
-      // Replace only the external Claude CLI. Run the real launcher entry
-      // point, then boot the real marketplace daemon with its child's env.
-      const exitCode = await main([], {
-        platform: 'linux', env, home: r.home, cwd: r.folder, scriptDir: join(r.pluginRoot, 'bin'),
-        listProcesses: () => [], print: () => {}, hasExpect: true,
-        spawnImpl: (_file: string, _args: string[], opts: { env: Record<string, string> }) => {
-          daemonEnv = { ...opts.env }
-          const child = new EventEmitter() as EventEmitter & { kill: () => void }
-          child.kill = () => child.emit('exit', null, 'SIGTERM')
-          setImmediate(() => child.emit('exit', 0, null))
-          return child
-        },
-      } as never)
-      assert.equal(exitCode, 0)
-      assert.ok(daemonEnv, 'hoai launched the CLI with the daemon environment')
-      const launched = await boot(r, daemonEnv)
+      assert.equal(plan.attachScope, '', 'the daemon resolves identity after applying the manifest environment')
+      const launched = await boot(r, applyManifestEnv(await launch(r, env)))
       assert.ok(launched.names.includes('reply'), launched.stderr)
       const event = events(r).at(-1)!
       assert.equal(event.assistantId, '42')
-      assert.equal(event.scope, '42')
+      assert.equal(event.scope, '')
       assert.equal(event.verdict, 'attach')
       assert.equal(event.route, layout.startsWith('explicit') ? 'env-path' : 'legacy')
     } finally { rmSync(r.home, { recursive: true, force: true }) }
   })
 }
+
+test('market3 launcher: manifest agent 42 overrides legacy 41 without losing reply', SLOW, async () => {
+  const r = rig()
+  try {
+    const legacy = join(r.home, '.bgos-agent', 'credentials-41.json')
+    writeFileSync(join(r.home, '.bgos-agent', 'credentials.json'), readFileSync(legacy, 'utf8'))
+    rmSync(legacy)
+    rmSync(join(r.folder, '.bgos-agent-id'))
+    const env = await launch(r, { CLAUDE_CONFIG_DIR: join(r.home, '.claude') })
+    const daemonEnv = applyManifestEnv(env, { assistant_id: '42' })
+    const launched = await boot(r, daemonEnv)
+    assert.ok(launched.names.includes('reply'), launched.stderr)
+    const event = events(r).at(-1)!
+    assert.equal(event.assistantId, '42')
+    assert.equal(event.verdict, 'attach')
+    assert.equal(event.route, 'env-assistant')
+    assert.equal(event.launcher, 'hoai')
+    // A genuinely conflicting numeric scope is still refused in its own home.
+    assertDormant(await boot(r, { ...daemonEnv, HOAI_ATTACH_SCOPE: '41' }), r)
+    assert.equal(events(r).at(-1)!.outcome, 'wrong-agent')
+  } finally { rmSync(r.home, { recursive: true, force: true }) }
+})
 
 test('market2 diagnostics: installed marketplace CLI reports effective home and the legacy setting', SLOW, () => {
   const r = rig()

@@ -496,9 +496,27 @@ test('the launcher is recorded: hoai (its folder), generation one (BGOS_CONTINUE
     realpath: realpathSame,
   })
   assert.equal(hoai.launcher, 'hoai', 'hoai launched it but could not name the agent')
-  assert.equal(hoai.outcome, 'unscoped')
+  assert.equal(hoai.outcome, 'match')
   assert.equal(decideAttachScope({ mode: 'off', env: { BGOS_CONTINUE: '1' }, assistantId: '900' }).launcher, 'gen1')
   assert.equal(decideAttachScope({ mode: 'off', env: {}, assistantId: '900' }).launcher, 'none')
+})
+
+test('market3 scope: folder-only launch intent uses the resolved agent without bypassing wrong-agent checks', () => {
+  for (const row of [
+    { dir: '/work', cwd: '/work', scope: '', pin: '', outcome: 'match', verdict: 'attach', by: null },
+    { dir: '/parent', cwd: '/work', scope: '', pin: '', outcome: 'unscoped', verdict: 'refuse', by: null },
+    { dir: '', cwd: '/work', scope: '', pin: '', outcome: 'unscoped', verdict: 'refuse', by: null },
+    { dir: '/work', cwd: '', scope: '', pin: '', outcome: 'unscoped', verdict: 'refuse', by: null },
+    { dir: '/work', cwd: '/work', scope: '41', pin: '', outcome: 'wrong-agent', verdict: 'refuse', by: 'scope' },
+    { dir: '/work', cwd: '/work', scope: '', pin: '41', outcome: 'wrong-agent', verdict: 'refuse', by: 'folder' },
+  ]) {
+    const decision = decideAttachScope({ mode: 'strict', assistantId: '42', cwd: row.cwd,
+      env: { HOAI_ATTACH_SCOPE_DIR: row.dir, HOAI_ATTACH_SCOPE: row.scope },
+      folderPinId: row.pin, realpath: realpathSame })
+    assert.equal(decision.outcome, row.outcome, JSON.stringify(row))
+    assert.equal(decision.verdict, row.verdict, JSON.stringify(row))
+    assert.equal(decision.by, row.by, JSON.stringify(row))
+  }
 })
 
 test('the summary splits by launcher and by signal, and counts distinct sessions, not boots', () => {

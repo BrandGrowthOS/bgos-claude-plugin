@@ -933,28 +933,19 @@ export function buildRunPlan({
         `or set BGOS_ASSISTANT_ID=${ids[0]} in this agent's environment.`,
     }
   }
-  // Follow the daemon's unpinned credentials precedence. A legacy file wins
-  // over a sole numbered file, and an explicit path wins over the inventory.
-  // Scope identifies the authenticated agent, never an unrelated filename.
+  // Claude applies the marketplace configuration after this plan. Without an
+  // explicit identity, hand over the launch folder and let the daemon resolve
+  // its agent from that effective configuration. A credentials guess here can
+  // conflict with the configured agent and make a valid launch go dormant.
   const legacyPath = joinDir(agentDir(home), 'credentials.json')
   const legacy = explicitPath ? null : readFile(legacyPath)
-  const selectedPath = explicitPath || (legacy !== null || exists(legacyPath) || ids.length !== 1
-    ? legacyPath : joinDir(agentDir(home), `credentials-${ids[0]}.json`))
-  let attachScope = ''
-  try {
-    const credentials = JSON.parse(String(!explicitPath && selectedPath === legacyPath ? legacy : readFile(selectedPath)))
-    const id = String(credentials?.assistantId ?? '').trim()
-    if (!env.BGOS_PAIRING_TOKEN && credentials?.pairingToken && /^\d{1,12}$/.test(id)) attachScope = id
-  } catch {
-    // An absent or unreadable pairing cannot establish launcher intent.
-  }
-  const homeNote = ids.length === 1 && selectedPath !== legacyPath && !explicitPath
+  const homeNote = ids.length === 1 && !explicitPath && legacy === null && !exists(legacyPath)
     ? soleAgentHomeNote({ home, assistantId: ids[0], cwd, readFile }) : ''
   const identityLine =
-    attachScope && (explicitPath || selectedPath === legacyPath)
-      ? `[hoai] launching as assistant ${attachScope} from ${explicitPath ? 'explicit' : 'legacy'} credentials; the daemon self-resolves.`
+    explicitPath || legacy !== null || exists(legacyPath)
+      ? `[hoai] launching with ${explicitPath ? 'explicit' : 'legacy'} credentials available; the daemon self-resolves from its effective configuration.`
       : ids.length === 1
-      ? `[hoai] launching as this host's sole paired agent (assistant ${ids[0]}); the daemon self-resolves.` +
+      ? `[hoai] this host has one paired agent (assistant ${ids[0]}); the daemon self-resolves from its effective configuration.` +
         (homeNote ? `\n${homeNote}` : '')
       : `[hoai] no pairing on this host yet; if the agent cannot connect, run: hoai pair <CODE> (code from the HOAI app).`
   return {
@@ -962,7 +953,7 @@ export function buildRunPlan({
     command: 'claude',
     args,
     env: launchEnv,
-    attachScope,
+    attachScope: '',
     attachScopeDir: cwd,
     hooks,
     detection,

@@ -71,7 +71,7 @@ test('run plan: a supervised launch with a pinless folder scopes to the service 
   assert.equal(plan.attachScope, '900')
 })
 
-test('run plan: the sole paired agent scopes the launch; no pairing names nobody', () => {
+test('run plan: an unpinned launch carries its folder without guessing an agent from credentials', () => {
   const sole = buildRunPlan({
     cwd: '/home/kc/somewhere',
     env: {},
@@ -81,7 +81,10 @@ test('run plan: the sole paired agent scopes the launch; no pairing names nobody
     scriptDir: CLONE_SCRIPT_DIR,
   })
   assert.equal(sole.ok, true)
-  if (sole.ok) assert.equal(sole.attachScope, '871')
+  if (sole.ok) {
+    assert.equal(sole.attachScope, '')
+    assert.equal(sole.attachScopeDir, '/home/kc/somewhere')
+  }
   const none = buildRunPlan({
     cwd: '/home/kc/somewhere',
     env: {},

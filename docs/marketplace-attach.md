@@ -17,14 +17,15 @@ Duplicate copies still stand aside first, without writing scope telemetry.
 
 ## Explicit opt-in and rollback
 
-The `hoai` launcher sets `HOAI_ATTACH_SCOPE` to the agent it launches and
-`HOAI_ATTACH_SCOPE_DIR` to the launch folder. A matching scope opts in from
-outside the recorded home. A scope inherited from a different folder does not.
-The scope verifies the resolved identity; it does not choose credentials.
-For an unpinned launch, scope follows the effective pairing: an explicit
-`BGOS_CREDENTIALS_PATH` wins, and legacy `credentials.json` wins over a sole
-numbered file. A legacy pairing needs no recorded home for an explicit `hoai`
-launch to opt in.
+The `hoai` launcher sets `HOAI_ATTACH_SCOPE` when a folder, environment, or
+supervisor explicitly names the agent, and `HOAI_ATTACH_SCOPE_DIR` to the
+launch folder. A matching scope opts in from outside the recorded home. With
+no explicit identity, it sends only the launch folder and the daemon resolves
+the agent after Claude applies the marketplace configuration. This folder-only
+intent also opts in, including for a legacy pairing without a recorded home.
+A marker inherited from a different folder does not opt in. An explicit scope
+or folder pin naming a different agent still refuses attachment. The scope
+verifies the resolved identity; it does not choose credentials.
 
 For a deliberate one-process override, set `BGOS_ALLOW_ANY_FOLDER=1` (or `true`).
 The existing `HOAI_ATTACH_SCOPE_MODE=off` also disables attachment enforcement.
