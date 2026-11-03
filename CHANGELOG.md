@@ -2,6 +2,10 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.83.1 (2026-11-03)
+
+**An agent's service keeps the login user Claude was signed in with.** The launchd plist and the systemd unit wrote USER and LOGNAME from `id -un`. On a Mac where Claude was logged in from a shell whose USER differs from the account name (a home reached through a symlinked user folder), every agent whose service file was rewritten showed "Login expired" while the others worked. They now take the installing shell's USER, and fall back to the account name only when USER is unset.
+
 ## 0.83.0 (2026-11-03)
 
 **Threads and By the way on Claude Code (Threads phase 1, behind BGOS's thread flag).** Ships with the gate review's seven fixes (a reconnect never reruns a finished turn, threads declared only where the CLI can run them, a crashed lane is stopped first, the sandbox protects every ref, a side question runs no owner hooks, a lane reads no credential file, delete stays inside the threads folder) and an end to end rig pass. In the agent chat the owner can ask a private side question, and start a thread: a parallel conversation about one message that this agent works on in its own copy of the chat.
