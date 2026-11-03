@@ -70,8 +70,9 @@ The product rule and the assertions are unchanged. A mutation by a reviewer show
 
 ## Left alone, on purpose
 
-`review round 7` in `test/email-outbound-files.test.ts` fails now and then under load, on 2 of the native full runs
-of this lane (101 ms and 108 ms on `digits.csv`, limit 100). The stall is real: 40 to 59 ms alone, 68 to 310 ms with 24 CPU
+`review round 7` in `test/email-outbound-files.test.ts` fails now and then under load, on 3 of the 8 native full
+runs of this lane (101, 108 and 117 ms on `digits.csv`, limit 100), including the last run of #300's head, b14e0a7.
+That run's other tests all passed, and #291's last run was fully green. The stall is real: 40 to 59 ms alone, 68 to 310 ms with 24 CPU
 spinners on 32 CPUs, where 1 run in 6 failed. Sustained load beats the test's median of three, which assumes noise
 comes once. The step on the main thread was not identified. The limit is #296's decision, and raising it would be a
 blind fix.
