@@ -13341,6 +13341,9 @@ const threadLanes = new ThreadLaneManager({
   home: homedir(),
   configDir: CLAUDE_CONFIG_DIR,
   emptyMcpConfigPath: threadsEmptyMcpConfig,
+  // A lane's Bash reads none of ~/.bgos-agent but this agent's own email files.
+  emailFilesDir: pathJoin(EMAIL_FILES_ROOT, String(ASSISTANT_ID)),
+  pluginStateDir: process.env.BGOS_PLUGIN_STATE_DIR?.trim() || undefined,
   // A lane gets Bash only inside the CLI's sandbox (sandbox-exec on macOS,
   // bwrap and socat on Linux); without it, no Bash at all.
   shellSandbox: () =>

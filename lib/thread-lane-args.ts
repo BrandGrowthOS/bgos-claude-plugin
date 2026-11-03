@@ -302,41 +302,71 @@ export function protectedGitPaths(input: {
 }
 
 /**
- * What a working lane's Bash may not read (gate review finding 6). The
- * sandbox lets Bash read the whole disk except what `filesystem.denyRead`
- * names, and --restricted confines only the file tools. Refused: ~/.ssh, the
- * CLI's own credentials file (Linux keeps the sign in there; with
- * CLAUDE_CONFIG_DIR, in that folder too), and ~/.bgos-agent, where every
- * agent's HOAI credentials, browser profile and state live. An agent folder
- * inside ~/.bgos-agent (the default `<id>-workspace`) stays readable with its
- * own .git: there every sibling on the way to it is refused instead. Only
- * paths that exist are named (the Linux sandbox binds over real paths).
+ * What a working lane's Bash may not read (gate review finding 6 and its
+ * follow up). The sandbox lets Bash read the whole disk except what
+ * `filesystem.denyRead` names, and --restricted confines only the file tools.
+ * Refused: ~/.ssh, the CLI's own credentials file (Linux keeps the sign in
+ * there; with CLAUDE_CONFIG_DIR, in that folder too), the AWS, GitHub CLI,
+ * netrc, Docker and npm credentials, the plugin state (BGOS_PLUGIN_STATE_DIR
+ * moves it), and ~/.bgos-agent, where every agent's HOAI credentials, browser
+ * profile and state live.
+ *
+ * What the lane needs inside ~/.bgos-agent stays readable (keepReadable plus
+ * the agent folder, when inside): the agent folder with its .git (the default
+ * `<id>-workspace` lives there) and the agent's own email files. Then
+ * ~/.bgos-agent is not refused whole; every sibling on the way to those is.
+ * Only paths that exist are named (the Linux sandbox binds over real paths).
  */
 export function laneSecretPaths(input: {
   home: string
   configDir: string
   agentFolder: string
+  /** Folders under ~/.bgos-agent the lane reads (its agent's email files). */
+  keepReadable?: readonly string[]
+  /** BGOS_PLUGIN_STATE_DIR, else ~/.bgos-plugin-state. */
+  pluginStateDir?: string
   exists(path: string): boolean
   list(dir: string): string[]
 }): string[] {
-  const home = input.home.replace(/\/+$/, '')
-  const out = [`${home}/.ssh`, `${home}/.claude/.credentials.json`]
-  const config = input.configDir.replace(/\/+$/, '')
+  const trim = (p: string) => p.replace(/\/+$/, '')
+  const home = trim(input.home)
+  const out = [
+    `${home}/.ssh`,
+    `${home}/.claude/.credentials.json`,
+    `${home}/.aws`,
+    `${home}/.config/gh`,
+    `${home}/.netrc`,
+    `${home}/.docker/config.json`,
+    `${home}/.npmrc`,
+    trim(input.pluginStateDir?.trim() || `${home}/.bgos-plugin-state`),
+  ]
+  const config = trim(input.configDir)
   if (config !== '') out.push(`${config}/.credentials.json`)
   const agents = `${home}/.bgos-agent`
-  const folder = input.agentFolder.replace(/\/+$/, '')
-  if (folder.startsWith(`${agents}/`)) {
-    let dir = agents
-    for (const part of folder.slice(agents.length + 1).split('/').filter(Boolean)) {
+  const keep = [input.agentFolder, ...(input.keepReadable ?? [])]
+    .map(trim)
+    .filter((p) => p.startsWith(`${agents}/`))
+    .map((p) => p.slice(agents.length + 1).split('/').filter((part) => part !== '' && part !== '.' && part !== '..'))
+    .filter((parts) => parts.length > 0)
+  const agentFolder = trim(input.agentFolder)
+  if (keep.length === 0) {
+    if (agentFolder !== agents) out.push(agents)
+  } else {
+    // Walk down every kept route at once: at each folder, refuse each child
+    // that leads to no kept path; stop below a kept path itself.
+    const walk = (dir: string, routes: string[][]): void => {
+      if (routes.some((r) => r.length === 0)) return
       let children: string[] = []
       try {
         children = input.list(dir)
       } catch {}
-      for (const child of children) if (child !== part) out.push(`${dir}/${child}`)
-      dir = `${dir}/${part}`
+      for (const child of children) {
+        const next = routes.filter((r) => r[0] === child).map((r) => r.slice(1))
+        if (next.length === 0) out.push(`${dir}/${child}`)
+        else walk(`${dir}/${child}`, next)
+      }
     }
-  } else if (folder !== agents) {
-    out.push(agents)
+    walk(agents, keep)
   }
   return [...new Set(out)].filter((p) => {
     try {

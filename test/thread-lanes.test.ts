@@ -102,6 +102,7 @@ function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; f
     home: HOME,
     configDir: '',
     emptyMcpConfigPath: () => MCP,
+    emailFilesDir: `${HOME}/.bgos-agent/email-files/7`,
     shellSandbox: () => opts.shell ?? true,
     platform: opts.platform ?? 'darwin',
     git: async (args) => {
@@ -966,7 +967,8 @@ test('a working lane refuses Bash reads of ~/.ssh, the CLI credentials and ~/.bg
   await r.manager.idle()
   const args = r.spawned[0]!.args
   const settings = JSON.parse(args[args.indexOf('--settings') + 1]!)
-  assert.deepEqual(settings.sandbox.filesystem.denyRead, [`${HOME}/.ssh`, `${HOME}/.claude/.credentials.json`, `${HOME}/.bgos-agent`])
+  // The agent's email files are under ~/.bgos-agent, so it is refused child by child (the next test).
+  assert.deepEqual(settings.sandbox.filesystem.denyRead, [`${HOME}/.ssh`, `${HOME}/.claude/.credentials.json`, `${HOME}/.bgos-agent/credentials-7.json`])
 })
 
 // -- gate review finding 4: the source repository's refs, all of them --
@@ -1179,4 +1181,17 @@ test('on Linux a stash log that cannot be made leaves the lane without Bash', as
   r.manager.turn(turn('101'))
   await r.manager.idle()
   assert.equal(laneSettings(r).tools.includes('Bash'), false)
+})
+
+test('a working lane can read its own email files but not the rest of ~/.bgos-agent', async () => {
+  const r = rig({ files: { [`${HOME}/.bgos-agent/credentials-7.json`]: '{}', [`${HOME}/.bgos-agent/email-files/7/1/a.pdf`]: 'x', [`${HOME}/.bgos-agent/email-files/8/1/b.pdf`]: 'y' } })
+  for (const d of ['.bgos-agent', '.bgos-agent/email-files', '.bgos-agent/email-files/7', '.bgos-agent/email-files/8']) r.dirs.add(`${HOME}/${d}`)
+  r.deps.fs.list = (d) => ({
+    [`${HOME}/.bgos-agent`]: ['credentials-7.json', 'email-files'],
+    [`${HOME}/.bgos-agent/email-files`]: ['7', '8'],
+  } as Record<string, string[]>)[d] ?? []
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const deny: string[] = laneSettings(r).settings.sandbox.filesystem.denyRead
+  assert.deepEqual(deny, [`${HOME}/.bgos-agent/credentials-7.json`, `${HOME}/.bgos-agent/email-files/8`])
 })

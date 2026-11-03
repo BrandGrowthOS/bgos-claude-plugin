@@ -145,6 +145,10 @@ export interface ThreadLaneDeps {
   /** CLAUDE_CONFIG_DIR, '' for ~/.claude. */
   configDir: string
   emptyMcpConfigPath(): string
+  /** This agent's email files (~/.bgos-agent/email-files/<id>): a lane's Bash may read them. */
+  emailFilesDir?: string | null
+  /** BGOS_PLUGIN_STATE_DIR when set: refused to a lane's Bash like ~/.bgos-plugin-state. */
+  pluginStateDir?: string
   /**
    * The machine's processes (lib/lane-process.ts): a process's start stamp
    * while it is alive, and a signal to the process group it leads.
@@ -760,7 +764,15 @@ export class ThreadLaneManager {
       return { root, readOnly: false, shellSandbox: false }
     }
     const { home, configDir, fs } = this.deps
-    const secretPaths = laneSecretPaths({ home, configDir, agentFolder, exists: (p) => fs.exists(p), list: (d) => fs.list(d) })
+    const secretPaths = laneSecretPaths({
+      home,
+      configDir,
+      agentFolder,
+      keepReadable: this.deps.emailFilesDir ? [this.deps.emailFilesDir] : [],
+      pluginStateDir: this.deps.pluginStateDir,
+      exists: (p) => fs.exists(p),
+      list: (d) => fs.list(d),
+    })
     return { root, readOnly: false, shellSandbox: true, protectedPaths, secretPaths }
   }
 

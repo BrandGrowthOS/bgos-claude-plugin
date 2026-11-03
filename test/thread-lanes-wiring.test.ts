@@ -63,6 +63,9 @@ test('a lane gets Bash only where the host has the CLI sandbox', () => {
   assert.match(manager, /shellSandbox: \(\) =>\s*laneShellSandboxAvailable\(/)
   // Gate review finding 4: Linux writes packed-only branches out loose, through git's own lock convention.
   assert.match(manager, /platform: process\.platform,/)
+  // Follow up to finding 6: the agent's own email files stay readable, the plugin state follows its variable.
+  assert.match(manager, /emailFilesDir: pathJoin\(EMAIL_FILES_ROOT, String\(ASSISTANT_ID\)\),/)
+  assert.match(manager, /pluginStateDir: process\.env\.BGOS_PLUGIN_STATE_DIR\?\.trim\(\) \|\| undefined,/)
   // Gate review finding 3: a lane left from before a crash is found by pid and start stamp.
   assert.match(manager, /stamp: \(pid\) => processStamp\(pid\),/)
   assert.match(manager, /kill: \(pid, signal\) => killProcessGroup\(pid, signal\),/)
