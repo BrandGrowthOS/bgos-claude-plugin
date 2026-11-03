@@ -21,6 +21,7 @@ import {
   probeThreadsCli,
   threadsCliProblem,
   threadsCliSupport,
+  type ThreadsCliAnswer,
 } from '../lib/threads-cli.ts'
 
 /** What CLI 2.1.317 prints, cut to the option lines the probe reads. */
@@ -140,4 +141,205 @@ test('a CLI that cannot run threads gives a plain sentence with the real cause, 
   assert.equal(threadsCliProblem({ ok: true, missing: [], version: '2.1.317' }, 'turn'), null)
   // No binary at all has its own sentence where it is checked.
   assert.equal(threadsCliProblem({ ok: false, missing: [], version: null, reason: 'no_claude' }, 'turn'), null)
+})
+
+// -- follow up (Data, item 2): the probe never blocks the event loop, and a failed or hung one is kept --
+
+import { ThreadsCliGate, THREADS_FAILED_RETRY_MS, probeThreadsCliAsync } from '../lib/threads-cli.ts'
+
+function gateRig(probe: (path: string) => Promise<{ ok: boolean; missing: string[]; version: string | null }>) {
+  const dir = mkdtempSync(join(tmpdir(), 'threads-gate-'))
+  const bin = join(dir, 'claude')
+  writeFileSync(bin, '#!/bin/sh\n')
+  chmodSync(bin, 0o755)
+  const clock = { now: 1_000_000 }
+  let probes = 0
+  const make = (onAnswer?: (answer: ThreadsCliAnswer) => void) => new ThreadsCliGate({
+    claudePath: () => bin,
+    cachePath: join(dir, 'state', 'threads-cli-probe.json'),
+    probe: (p) => { probes++; return probe(p) },
+    now: () => clock.now,
+    onAnswer,
+  })
+  return { dir, bin, clock, make, probes: () => probes, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
+}
+
+test('the gate answers at once while the probe runs, shares one probe, and keeps its answer', async () => {
+  let finish: (a: { ok: boolean; missing: string[]; version: string | null }) => void = () => {}
+  const r = gateRig(() => new Promise((done) => { finish = done }))
+  try {
+    const gate = r.make()
+    const t0 = Date.now()
+    assert.deepEqual(gate.current(), { ok: false, missing: [], version: null, reason: 'probing' }, 'not yet: threads stay undeclared until the answer')
+    assert.ok(Date.now() - t0 < 50, 'never waits on the probe')
+    const a = gate.ready()
+    const b = gate.ready()
+    gate.current()
+    assert.equal(r.probes(), 1, 'one probe, shared')
+    finish({ ok: true, missing: [], version: '2.1.317' })
+    assert.deepEqual(await a, { ok: true, missing: [], version: '2.1.317', cached: false })
+    assert.equal((await b).ok, true)
+    assert.equal(gate.current().ok, true)
+    assert.equal(r.probes(), 1)
+  } finally {
+    r.cleanup()
+  }
+})
+
+test('a probe that read nothing (it hung, or failed) is kept for a while: no turn waits on it again, also after a restart', async () => {
+  const r = gateRig(async () => ({ ok: false, missing: ['a readable version'], version: null }))
+  try {
+    const gate = r.make()
+    assert.equal((await gate.ready()).version, null)
+    for (let i = 0; i < 5; i++) {
+      gate.current()
+      assert.match(String(threadsCliProblem(await gate.ready(), 'turn')), /version could not be read/)
+    }
+    assert.equal(r.probes(), 1, 'every later turn answered from the kept failure')
+    assert.equal(r.make().current().reason, undefined, 'a restarted daemon reads the kept failure from disk')
+    assert.equal(r.probes(), 1)
+    r.clock.now += THREADS_FAILED_RETRY_MS + 1
+    await r.make().ready()
+    assert.equal(r.probes(), 2, 'asked again once the wait is over')
+  } finally {
+    r.cleanup()
+  }
+})
+
+test('the real probe runs its questions off the event loop, at once, and a hung claude ends at the timeout', { skip: process.platform === 'win32' }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'threads-hang-'))
+  try {
+    const bin = join(dir, 'claude')
+    writeFileSync(bin, '#!/bin/sh\nsleep 30\n')
+    chmodSync(bin, 0o755)
+    let ticks = 0
+    const timer = setInterval(() => { ticks++ }, 10)
+    const t0 = Date.now()
+    const answer = await probeThreadsCliAsync(bin, { timeoutMs: 300 })
+    clearInterval(timer)
+    const took = Date.now() - t0
+    assert.deepEqual(answer, { ok: false, missing: ['a readable version'], version: null })
+    assert.ok(took < 1_000, `four questions at once, each cut at 300 ms (one after another would take 1,200): ${took} ms`)
+    assert.ok(ticks >= 15, `the loop kept turning: ${ticks} ticks`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the real probe answers yes for a claude that has everything', { skip: process.platform === 'win32' }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'threads-good-'))
+  try {
+    const bin = join(dir, 'claude')
+    const help = HELP.replace(/'/g, '')
+    writeFileSync(bin, `#!/bin/sh
+case "$1" in
+  --version) echo "2.1.317 (Claude Code)" ;;
+  --help) cat <<'H'
+${help}
+H
+;;
+  --permission-mode) echo "${MODES.stderr.trim()}" >&2; exit 1 ;;
+  --max-turns) echo "error: option '--max-turns <turns>' argument missing" >&2; exit 1 ;;
+esac
+`)
+    chmodSync(bin, 0o755)
+    assert.deepEqual(await probeThreadsCliAsync(bin), { ok: true, missing: [], version: '2.1.317' })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the heartbeat alone starts the probe (an updated claude is asked again without any turn), and declares once it answers', async () => {
+  const r = gateRig(async () => ({ ok: true, missing: [], version: '2.1.317' }))
+  try {
+    const gate = r.make()
+    assert.equal(gate.current().reason, 'probing')
+    assert.equal(r.probes(), 1, 'started by current() itself')
+    await new Promise((done) => setImmediate(done))
+    assert.equal(gate.current().ok, true, 'the next beat declares')
+    // claude updated: another binary, asked again from current() alone.
+    writeFileSync(r.bin, '#!/bin/sh\n# updated\n')
+    utimesSync(r.bin, new Date(), new Date(Date.now() + 5_000))
+    assert.equal(gate.current().reason, 'probing')
+    assert.equal(r.probes(), 2)
+  } finally {
+    r.cleanup()
+  }
+})
+
+test('a stale timed-out probe cannot overwrite the updated binary success or withdraw its capabilities', async () => {
+  type Result = { ok: boolean; missing: string[]; version: string | null }
+  const finish: Array<(result: Result) => void> = []
+  const r = gateRig(() => new Promise((done) => { finish.push(done) }))
+  try {
+    const published: ThreadsCliAnswer[] = []
+    const gate = r.make((answer) => published.push(answer))
+    const old = gate.ready()
+    writeFileSync(r.bin, '#!/bin/sh\n# updated binary B\n')
+    const current = gate.ready()
+    finish[1]!({ ok: true, missing: [], version: '2.1.318' })
+    assert.equal((await current).ok, true)
+    const cachePath = join(r.dir, 'state', 'threads-cli-probe.json')
+    const verifiedCache = readFileSync(cachePath, 'utf8')
+    finish[0]!({ ok: false, missing: ['a readable version'], version: null })
+    assert.equal((await old).ok, false, 'the old waiter still receives its own result')
+    assert.equal(gate.current().ok, true, 'B remains declared after A times out')
+    assert.equal(readFileSync(cachePath, 'utf8'), verifiedCache, 'A cannot replace B on disk')
+    assert.equal(r.make().current().ok, true, 'a restart also retains B verification')
+    assert.equal(r.probes(), 2, 'no third probe for a binary that was already verified')
+    assert.deepEqual(published.map((answer) => answer.version), ['2.1.318'], 'stale results cannot notify capability consumers')
+  } finally {
+    r.cleanup()
+  }
+})
+
+test('a superseded probe finishing first cannot publish or displace the pending current probe', async () => {
+  type Result = { ok: boolean; missing: string[]; version: string | null }
+  const finish: Array<(result: Result) => void> = []
+  const r = gateRig(() => new Promise((done) => { finish.push(done) }))
+  try {
+    const published: ThreadsCliAnswer[] = []
+    const gate = r.make((answer) => published.push(answer))
+    const old = gate.ready()
+    writeFileSync(r.bin, '#!/bin/sh\n# binary B\n')
+    const current = gate.ready()
+    finish[0]!({ ok: true, missing: [], version: '2.1.317' })
+    await old
+    assert.equal(published.length, 0, 'A does not notify while B is being verified')
+    assert.equal(gate.current().reason, 'probing')
+    assert.equal(r.probes(), 2, 'the B probe is still shared')
+    finish[1]!({ ok: true, missing: [], version: '2.1.318' })
+    assert.equal((await current).version, '2.1.318')
+    assert.deepEqual(published.map((answer) => answer.version), ['2.1.318'])
+  } finally {
+    r.cleanup()
+  }
+})
+
+test('returning to a cached binary invalidates the other binary pending probe', async () => {
+  type Result = { ok: boolean; missing: string[]; version: string | null }
+  const finish: Array<(result: Result) => void> = []
+  const r = gateRig(() => new Promise((done) => { finish.push(done) }))
+  try {
+    const originalTime = new Date('2026-01-01T00:00:00Z')
+    utimesSync(r.bin, originalTime, originalTime)
+    const published: ThreadsCliAnswer[] = []
+    const gate = r.make((answer) => published.push(answer))
+    const first = gate.ready()
+    finish[0]!({ ok: true, missing: [], version: '2.1.317' })
+    await first
+    writeFileSync(r.bin, '#!/bin/sh\n# binary B\n')
+    const other = gate.ready()
+    writeFileSync(r.bin, '#!/bin/sh\n')
+    utimesSync(r.bin, originalTime, originalTime)
+    assert.equal(gate.current().ok, true, 'A is already cached when the binary switches back')
+    finish[1]!({ ok: false, missing: ['a readable version'], version: null })
+    await other
+    assert.equal(gate.current().ok, true, 'B cannot displace the current cached A')
+    assert.equal(r.make().current().ok, true, 'the cache on disk still belongs to A')
+    assert.equal(r.probes(), 2)
+    assert.deepEqual(published.map((answer) => answer.version), ['2.1.317'])
+  } finally {
+    r.cleanup()
+  }
 })

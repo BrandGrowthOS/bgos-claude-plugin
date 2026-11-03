@@ -135,7 +135,7 @@ export interface ThreadLaneDeps {
    * Why this claude cannot run a confined lane (lib/threads-cli.ts
    * threadsCliProblem), as the plain sentence the person reads, or null.
    */
-  cliProblem(): string | null
+  cliProblem(): string | null | Promise<string | null>
   mainSessionId(): string | null
   /** The folder the main session runs in. */
   agentFolder: string
@@ -145,12 +145,19 @@ export interface ThreadLaneDeps {
   /** CLAUDE_CONFIG_DIR, '' for ~/.claude. */
   configDir: string
   emptyMcpConfigPath(): string
+  /** This agent's email files (~/.bgos-agent/email-files/<id>): a lane's Bash may read them. */
+  emailFilesDir?: string | null
+  /** BGOS_PLUGIN_STATE_DIR when set: refused to a lane's Bash like ~/.bgos-plugin-state. */
+  pluginStateDir?: string
   /**
    * The machine's processes (lib/lane-process.ts): a process's start stamp
    * while it is alive, and a signal to the process group it leads.
    */
   processes: {
-    stamp(pid: number): string | null
+    /** Start stamp while alive, null if gone, undefined if inspection failed. Asynchronous. */
+    stamp(pid: number): Promise<string | null | undefined>
+    /** True if in this folder, false if absent/elsewhere, null if inspection failed. */
+    runsIn(pid: number, dir: string): Promise<boolean | null>
     kill(pid: number, signal: 'SIGTERM' | 'SIGKILL'): void
   }
   /** This host can run the CLI's Bash sandbox (lib/lane-policy.mjs laneShellSandboxAvailable). */
@@ -191,6 +198,8 @@ export interface ThreadLaneState {
    * is being posted, or when that post never landed: it never runs again.
    */
   lastReplyId: string
+  /** That turn's answer, summary or failure reply landed. False until it does (and in a state saved before this field). */
+  lastDelivered: boolean
   /**
    * The lane's process while it runs, and its start stamp (finding 3): a
    * daemon that crashed leaves it finishing its turn, and the next start stops
@@ -220,8 +229,6 @@ interface Lane {
   posts: Promise<void>
   /** Posts queued or being tried for this lane (a reply retried with backoff counts until it settles). */
   postsInFlight: number
-  /** The last finished turn's reply id while its answer (or its failure reply) has not landed, else null. */
-  undelivered: string | null
   closed: boolean
   turnCount: number
 }
@@ -311,6 +318,8 @@ export class ThreadLaneManager {
       throw new ThreadLaneError('bad_request', 'The thread id is not valid.')
     }
     const rootId = input.rootId
+    // A sweep or an earlier close owns this root until its removal settles.
+    while (this.exiting.has(rootId)) await this.exiting.get(rootId)
     let lane = this.lanes.get(rootId)
     if (!lane) {
       const saved = this.load(rootId)
@@ -339,7 +348,7 @@ export class ThreadLaneManager {
     }
     const state = lane.state
     const settled: Promise<void> = input.removeWorktree
-      ? Promise.all([starting, exited]).then(() => this.removeLane(state, { deleteBranch: true }))
+      ? Promise.all([starting, exited]).then(async () => { await this.removeLane(state, { deleteBranch: true }) })
       : starting.then(() => {
           // Not when the thread was reopened meanwhile: that lane owns the file now.
           if (!state.folder || this.lanes.has(rootId)) return
@@ -370,12 +379,20 @@ export class ThreadLaneManager {
       const m = /^([A-Za-z0-9_-]{1,64})\.json$/.exec(name)
       if (!m || m[1] === 'empty-mcp') continue
       const rootId = m[1]!
-      if (this.lanes.has(rootId)) continue
+      if (this.lanes.has(rootId) || this.exiting.has(rootId)) continue
       const state = this.load(rootId)
       if (!state || state.closedAt === null) continue
       if (now - state.closedAt <= keep) continue
-      await this.removeLane(state, { deleteBranch: false })
-      removed.push(rootId)
+      // Reserve the root before removal yields, just like explicit deletion.
+      // A reopening turn may queue, but ensureChild waits for this owner.
+      const removal = this.removeLane(state, { deleteBranch: false })
+      const done = removal.then(() => undefined)
+      this.exiting.set(rootId, done)
+      try {
+        if (await removal) removed.push(rootId)
+      } finally {
+        if (this.exiting.get(rootId) === done) this.exiting.delete(rootId)
+      }
     }
     return removed
   }
@@ -438,10 +455,12 @@ export class ThreadLaneManager {
     const lane = this.lanes.get(input.rootId)
     if (lane && (lane.current || lane.queue.length > 0)) return 0
     const saved = lane ? null : this.load(input.rootId)
-    const last = lane ? lane.state.lastReplyId : (saved?.lastReplyId ?? '')
-    if (input.replyId !== '' && input.replyId === last) {
-      // Its answer landed meanwhile (the row was read before it did), or is still on its way.
-      if (lane && (lane.postsInFlight > 0 || lane.undelivered !== input.replyId)) return 0
+    const state = lane ? lane.state : saved
+    if (input.replyId !== '' && state !== null && input.replyId === state.lastReplyId) {
+      // Its answer (a reply or a summary) is still on its way, or landed: also
+      // before a restart, and a summary leaves the row listed (it is no
+      // thread reply), so a landed one never reopens the thread.
+      if ((lane && lane.postsInFlight > 0) || state.lastDelivered) return 0
       // Finished here, and its answer never landed: back to Open, never run again.
       this.deps.log(`threads: thread ${input.rootId} turn ${input.replyId} already finished, its answer is marked undelivered`)
       this.postFailure(lane ?? this.newLane(saved!), input, POST_FAILED)
@@ -505,6 +524,7 @@ export class ThreadLaneManager {
         readOnly: false,
         closedAt: null,
         lastReplyId: '',
+        lastDelivered: false,
         pid: null,
         pidStamp: null,
       },
@@ -531,7 +551,6 @@ export class ThreadLaneManager {
       copiedMainPath: null,
       posts: Promise.resolve(),
       postsInFlight: 0,
-      undelivered: null,
       closed: false,
       turnCount: 0,
     }
@@ -668,8 +687,8 @@ export class ThreadLaneManager {
   /** Remember the turn as finished (finding 1): a pending list naming it never runs it again. */
   private finished(lane: Lane, turn: ThreadTurnInput): void {
     if (turn.replyId === '') return
-    lane.undelivered = turn.replyId
     lane.state.lastReplyId = turn.replyId
+    lane.state.lastDelivered = false
     if (lane.state.folder) this.persist(lane)
   }
 
@@ -684,8 +703,17 @@ export class ThreadLaneManager {
     )
   }
 
+  /** The finished turn's answer (or its failure reply) landed: saved, so a restart knows. */
   private landed(lane: Lane, turn: ThreadTurnInput): void {
-    if (lane.undelivered === turn.replyId) lane.undelivered = null
+    if (turn.replyId === '' || lane.state.lastReplyId !== turn.replyId || lane.state.lastDelivered) return
+    lane.state.lastDelivered = true
+    // A close and reopen may have replaced this lane while its post was in
+    // flight. Update only the matching reply on the current owner's state.
+    const current = this.lanes.get(lane.state.rootId)?.state ?? this.load(lane.state.rootId)
+    if (!current || current.lastReplyId !== turn.replyId) return
+    current.lastDelivered = true
+    // Never recreate a state file a delete removed meanwhile.
+    if (current.folder) this.persistState(current)
   }
 
   private clientId(lane: Lane, turn: ThreadTurnInput): string {
@@ -695,6 +723,13 @@ export class ThreadLaneManager {
   private async ensureChild(lane: Lane): Promise<void> {
     const before = this.exiting.get(lane.state.rootId)
     if (before) await before
+    // Cleanup can finish while this turn waits for a slot, leaving no
+    // exiting entry. Check at startup before recreating the saved state.
+    if (!this.deps.fs.exists(this.statePath(lane.state.rootId))) {
+      lane.state.forkSessionId = null
+      lane.state.pid = null
+      lane.state.pidStamp = null
+    }
     if (lane.child && lane.stopping) await lane.exited
     if (lane.closed || lane.child) return
     // A process left from before a daemon crash still runs this thread: never a second one.
@@ -703,8 +738,10 @@ export class ThreadLaneManager {
     const claude = this.deps.claudeBin()
     if (!claude) throw new ThreadLaneError('unavailable', NO_CLAUDE)
     // An older CLI refuses --restricted: say so, never the generic "turn failed".
-    const problem = this.deps.cliProblem()
+    // Asynchronous: a probe still running is waited for off the event loop.
+    const problem = await this.deps.cliProblem()
     if (problem) throw new ThreadLaneError('unsupported', problem)
+    if (lane.closed || lane.child) return
     await this.prepareFolder(lane)
     if (lane.closed) return
     const confinement = await this.confinement(lane)
@@ -754,8 +791,18 @@ export class ThreadLaneManager {
       return { root, readOnly: false, shellSandbox: false }
     }
     const { home, configDir, fs } = this.deps
-    const secretPaths = laneSecretPaths({ home, configDir, agentFolder, exists: (p) => fs.exists(p), list: (d) => fs.list(d) })
-    return { root, readOnly: false, shellSandbox: true, protectedPaths, secretPaths }
+    const secretPaths = laneSecretPaths({
+      home,
+      configDir,
+      pluginStateDir: this.deps.pluginStateDir,
+      exists: (p) => fs.exists(p),
+    })
+    const agents = resolve(home, '.bgos-agent')
+    const readablePaths = [agentFolder, this.deps.emailFilesDir]
+      .filter((p): p is string => !!p)
+      .map((p) => resolve(p))
+      .filter((p) => p.startsWith(`${agents}/`))
+    return { root, readOnly: false, shellSandbox: true, protectedPaths, secretPaths, readablePaths }
   }
 
   private async protectedPaths(lane: Lane): Promise<string[] | null> {
@@ -801,11 +848,12 @@ export class ThreadLaneManager {
    */
   private async materializeRefs(commonDir: string, paths: readonly string[]): Promise<boolean> {
     const { fs, git, agentFolder } = this.deps
-    for (const dir of THREAD_LANE_REF_DIRS) {
+    for (const dir of [...THREAD_LANE_REF_DIRS, 'hooks']) {
       try {
         fs.mkdir(join(commonDir, dir))
       } catch {}
     }
+    if (!this.stashPlaceholders(commonDir)) return false
     const heads = `${commonDir}/refs/heads/`
     for (const path of paths) {
       if (!path.startsWith(heads) || fs.exists(path)) continue
@@ -837,6 +885,30 @@ export class ThreadLaneManager {
     return true
   }
 
+  /**
+   * Linux, no stash yet: refs/stash becomes an empty FOLDER (git ignores it,
+   * and the owner's own `git stash` replaces it; an empty file would be a
+   * broken ref) and logs/refs/stash an empty file, so the sandbox can bind
+   * both read only. An existing stash is left as it is. False when either
+   * could not be made: then the lane gets no Bash.
+   */
+  private stashPlaceholders(commonDir: string): boolean {
+    const { fs } = this.deps
+    const ref = join(commonDir, 'refs', 'stash')
+    const log = join(commonDir, 'logs', 'refs', 'stash')
+    try {
+      if (!fs.exists(ref)) fs.mkdir(ref)
+      if (!fs.exists(log)) {
+        fs.mkdir(dirname(log))
+        fs.createExclusive(log, '')
+      }
+      return true
+    } catch {
+      this.deps.log('threads: the stash could not be protected, the lane runs without Bash')
+      return false
+    }
+  }
+
   private copyMainTranscript(lane: Lane, mainId: string): void {
     const { fs, home, configDir, agentFolder } = this.deps
     const from = sessionTranscriptPath(home, agentFolder, mainId, configDir)
@@ -862,6 +934,8 @@ export class ThreadLaneManager {
         this.persist(lane)
       }
       this.dropCopiedMain(lane)
+      // A stamp that could not be read at spawn is asked for again.
+      if (lane.state.pidStamp === null) this.readStamp(lane, child)
       return
     }
     if (frame.type === 'result') this.onResult(lane, frame)
@@ -893,15 +967,30 @@ export class ThreadLaneManager {
     else this.pump()
   }
 
+  /**
+   * The pid from the child handle goes into the lane state at once (follow up
+   * to finding 3: before, a ps that failed at spawn left none), and its start
+   * stamp as soon as it can be read (readStamp, again on the next init frame).
+   */
   private recordPid(lane: Lane, child: StreamJsonChild): void {
     const pid = child.pid
     if (typeof pid !== 'number') return
-    const stamp = this.deps.processes.stamp(pid)
-    // Without a stamp the pid could not be told from a reused one later: not kept.
-    if (stamp === null) return
     lane.state.pid = pid
-    lane.state.pidStamp = stamp
+    lane.state.pidStamp = null
     if (lane.state.folder) this.persist(lane)
+    this.readStamp(lane, child)
+  }
+
+  private readStamp(lane: Lane, child: StreamJsonChild): void {
+    const pid = child.pid
+    if (typeof pid !== 'number' || lane.state.pid !== pid || lane.state.pidStamp !== null) return
+    this.track(
+      this.deps.processes.stamp(pid).then((stamp) => {
+        if (typeof stamp !== 'string' || lane.child !== child || lane.state.pid !== pid || lane.state.pidStamp !== null) return
+        lane.state.pidStamp = stamp
+        if (lane.state.folder) this.persist(lane)
+      }),
+    )
   }
 
   /**
@@ -911,19 +1000,40 @@ export class ThreadLaneManager {
    * another process is never signalled. False when it would not stop.
    */
   private async stopOrphan(state: ThreadLaneState): Promise<boolean> {
-    const { pid, pidStamp } = state
-    if (pid === null || pidStamp === null) return true
+    const { pid, pidStamp, cwd } = state
+    if (pid === null) return true
     const procs = this.deps.processes
-    const alive = (): boolean => procs.stamp(pid) === pidStamp
-    if (alive()) {
+    // A working directory is not process identity: a shell or test may reuse
+    // this pid in the same worktree. Preserve the state and refuse a second
+    // lane until it leaves, without signalling a process we cannot identify.
+    if (pidStamp === null && (await procs.runsIn(pid, cwd)) !== false) {
+      this.deps.log(`threads: lane ${state.rootId} has an unverified process that may still use its folder; waiting for it to exit`)
+      return false
+    }
+    const alive = async (): Promise<boolean | null> => {
+      if (pidStamp === null) return false
+      const stamp = await procs.stamp(pid)
+      return stamp === undefined ? null : stamp === pidStamp
+    }
+    const inspected = await alive()
+    if (inspected === null) {
+      this.deps.log(`threads: lane ${state.rootId} has an unreadable process stamp; waiting for verified identity or exit`)
+      return false
+    }
+    if (inspected) {
       this.deps.log(`threads: lane ${state.rootId} still runs from before a restart, it is stopped first`)
       const grace = this.deps.killGraceMs ?? THREAD_LANE_KILL_GRACE_MS
       procs.kill(pid, 'SIGTERM')
       if (!(await this.gone(alive, grace))) {
-        procs.kill(pid, 'SIGKILL')
-        if (!(await this.gone(alive, grace))) {
-          this.deps.log(`threads: lane ${state.rootId} from before a restart would not stop`)
-          return false
+        // A failed poll must not authorize signalling an unverified identity.
+        const current = await alive()
+        if (current === null) return false
+        if (current) {
+          procs.kill(pid, 'SIGKILL')
+          if (!(await this.gone(alive, grace))) {
+            this.deps.log(`threads: lane ${state.rootId} from before a restart would not stop`)
+            return false
+          }
         }
       }
     }
@@ -935,10 +1045,10 @@ export class ThreadLaneManager {
     return true
   }
 
-  /** True once alive() is false, polled every THREAD_ORPHAN_POLL_MS for at most ms. */
-  private async gone(alive: () => boolean, ms: number): Promise<boolean> {
+  /** Only affirmative absence ends the wait; failed inspection keeps polling up to ms. */
+  private async gone(alive: () => Promise<boolean | null>, ms: number): Promise<boolean> {
     for (let waited = 0; ; waited += THREAD_ORPHAN_POLL_MS) {
-      if (!alive()) return true
+      if ((await alive()) === false) return true
       if (waited >= ms) return false
       await new Promise<void>((done) => this.deps.setTimer(done, THREAD_ORPHAN_POLL_MS))
     }
@@ -1057,9 +1167,9 @@ export class ThreadLaneManager {
     return ROOT_ID_RE.test(state.rootId) && resolve(state.folder) === expected ? expected : null
   }
 
-  private async removeLane(state: ThreadLaneState, opts: { deleteBranch: boolean }): Promise<void> {
+  private async removeLane(state: ThreadLaneState, opts: { deleteBranch: boolean }): Promise<boolean> {
     const { fs, git, agentFolder, home, configDir } = this.deps
-    await this.stopOrphan(state)
+    if (!(await this.stopOrphan(state))) return false
     const folder = this.ownFolder(state)
     if (state.folder && folder === null) {
       this.deps.log(`threads: lane ${state.rootId} names a folder outside the threads folder, it is not removed`)
@@ -1100,6 +1210,15 @@ export class ThreadLaneManager {
     try {
       fs.unlink(this.statePath(state.rootId))
     } catch {}
+    // A queued reopen may have loaded this fork before cleanup. Invalidate
+    // that copy too, so a close or late delivery cannot save it again.
+    const reopened = this.lanes.get(state.rootId)
+    if (reopened) {
+      reopened.state.forkSessionId = null
+      reopened.state.pid = null
+      reopened.state.pidStamp = null
+    }
+    return true
   }
 
   private statePath(rootId: string): string {
@@ -1139,6 +1258,7 @@ export class ThreadLaneManager {
       readOnly: r.readOnly === true,
       closedAt: typeof r.closedAt === 'number' && Number.isFinite(r.closedAt) ? r.closedAt : null,
       lastReplyId: str(r.lastReplyId),
+      lastDelivered: r.lastDelivered === true,
       pid: typeof r.pid === 'number' && Number.isInteger(r.pid) && r.pid > 0 ? r.pid : null,
       pidStamp: typeof r.pidStamp === 'string' && r.pidStamp !== '' ? r.pidStamp : null,
     }

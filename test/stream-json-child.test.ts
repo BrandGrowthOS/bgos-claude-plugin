@@ -7,7 +7,25 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 
-import { LANE_CREDENTIAL_VARS, laneChildEnv, lineSplitter, spawnStreamJson, userMessageLine } from '../lib/stream-json-child.ts'
+import { laneChildEnv, lineSplitter, spawnStreamJson, userMessageLine } from '../lib/stream-json-child.ts'
+
+const networkEnv = {
+  HTTPS_PROXY: 'http://user:fake-proxy-password@secure-proxy.invalid:8080',
+  HTTP_PROXY: 'http://http-proxy.invalid:8081',
+  NO_PROXY: 'localhost,127.0.0.1,.internal.invalid',
+  ALL_PROXY: 'http://all-proxy.invalid:8082',
+  https_proxy: 'http://lower-secure-proxy.invalid:8083',
+  http_proxy: 'http://lower-http-proxy.invalid:8084',
+  no_proxy: 'localhost .lower-internal.invalid',
+  all_proxy: 'http://lower-all-proxy.invalid:8085',
+  NODE_EXTRA_CA_CERTS: '/fake/corporate-ca.pem',
+  SSL_CERT_FILE: '/fake/ca-bundle.pem',
+  SSL_CERT_DIR: '/fake/certificates',
+  CLAUDE_CODE_CERT_STORE: 'bundled,system',
+  CLAUDE_CODE_CLIENT_CERT: '/fake/client.pem',
+  CLAUDE_CODE_CLIENT_KEY: '/fake/client-key.pem',
+  CLAUDE_CODE_CLIENT_KEY_PASSPHRASE: 'fake-client-key-passphrase',
+}
 
 test('frames split across chunks are parsed whole, blank and broken lines are skipped', () => {
   const seen: Array<Record<string, unknown>> = []
@@ -100,8 +118,64 @@ test('a lane child never inherits the daemon BGOS credentials or its terminal', 
     TMUX: '/tmp/tmux,1,0',
     TMUX_PANE: '%1',
   })
-  assert.deepEqual(env, { PATH: '/bin', HOME: '/h', BGOS_PLUGIN_STATE_DIR: '/state', BGOS_ASSISTANT_ID: '7' })
-  for (const name of ['BGOS_API_KEY', 'BGOS_PAIRING_TOKEN', 'TMUX']) assert.ok(LANE_CREDENTIAL_VARS.includes(name), name)
+  assert.deepEqual(env, { PATH: '/bin', HOME: '/h' })
+})
+
+test('the child environment allows only runtime and explicit Claude authentication variables', () => {
+  const allowed = {
+    PATH: '/bin', HOME: '/h', TMPDIR: '/tmp', LANG: 'en_US.UTF-8',
+    CLAUDE_CONFIG_DIR: '/c', ANTHROPIC_API_KEY: 'fake-claude-key',
+    ANTHROPIC_AUTH_TOKEN: 'fake-claude-auth', CLAUDE_CODE_OAUTH_TOKEN: 'fake-oauth',
+    ANTHROPIC_BASE_URL: 'http://127.0.0.1:1234',
+  }
+  assert.deepEqual(laneChildEnv({
+    ...allowed,
+    AWS_ACCESS_KEY_ID: 'fake-aws-id', AWS_SECRET_ACCESS_KEY: 'fake-aws-secret',
+    AWS_SESSION_TOKEN: 'fake-aws-session', GITHUB_TOKEN: 'fake-github',
+    FOO_TOKEN: 'fake-unknown', UNRELATED_SETTING: 'also dropped',
+    NODE_OPTIONS: '--require=/untrusted/preload.js',
+  }), allowed)
+})
+
+test('the child preserves explicit proxy and certificate settings without unrelated credentials', () => {
+  assert.deepEqual(laneChildEnv({
+    ...networkEnv,
+    AWS_ACCESS_KEY_ID: 'fake-aws-id', AWS_SECRET_ACCESS_KEY: 'fake-aws-secret',
+    AWS_SESSION_TOKEN: 'fake-aws-session', GITHUB_TOKEN: 'fake-github',
+    FOO_TOKEN: 'fake-unknown', PROXY_TOKEN: 'fake-unapproved-proxy-token',
+    CLAUDE_CODE_UNKNOWN_TOKEN: 'fake-unapproved-claude-token',
+    NODE_OPTIONS: '--require=/untrusted/preload.js',
+  }), networkEnv)
+})
+
+test('the real thread child keeps network settings without AWS, GitHub, or unknown exported tokens', async () => {
+  const parentEnv = process.env
+  let child: ReturnType<typeof spawnStreamJson>
+  try {
+    // Only fabricated credentials are ever exposed to the pre-fix spawner.
+    process.env = {
+      PATH: parentEnv.PATH, HOME: parentEnv.HOME,
+      ...networkEnv,
+      ANTHROPIC_API_KEY: 'fake-claude-key',
+      AWS_ACCESS_KEY_ID: 'fake-aws-id', AWS_SECRET_ACCESS_KEY: 'fake-aws-secret',
+      AWS_SESSION_TOKEN: 'fake-aws-session', GITHUB_TOKEN: 'fake-github', FOO_TOKEN: 'fake-unknown',
+    }
+    child = spawnStreamJson(process.execPath, ['-e', 'process.stdout.write(JSON.stringify(process.env))'], { cwd: process.cwd() })
+  } finally {
+    process.env = parentEnv
+  }
+  let output = ''
+  child.onStdout((chunk) => { output += chunk })
+  const code = await new Promise<number | null>((done) => child.onExit(done))
+  assert.equal(code, 0, 'the real child still starts')
+  const env = JSON.parse(output)
+  assert.equal(env.ANTHROPIC_API_KEY, 'fake-claude-key', 'Claude authentication survives')
+  for (const [name, value] of Object.entries(networkEnv)) {
+    assert.equal(env[name], value, `${name} is preserved in the actual child`)
+  }
+  for (const name of ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'GITHUB_TOKEN', 'FOO_TOKEN']) {
+    assert.equal(env[name], undefined, `${name} is absent in the actual child`)
+  }
 })
 
 test('kill stops the lane whole process group, so a tool it started stops with it', { skip: process.platform === 'win32' }, async () => {

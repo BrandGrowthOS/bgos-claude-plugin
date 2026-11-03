@@ -91,8 +91,8 @@ export class AsideForks {
 export interface AsideDeps {
   spawn: SpawnStreamJson
   claudeBin(): string | null
-  /** Why this claude cannot run the aside (lib/threads-cli.ts threadsCliProblem), or null. */
-  cliProblem(): string | null
+  /** Why this claude cannot run the aside (lib/threads-cli.ts threadsCliProblem), or null; may wait for the probe. */
+  cliProblem(): string | null | Promise<string | null>
   /** The main session this daemon has proven it serves, or null. */
   mainSessionId(): string | null
   /** The folder the main session runs in (its transcripts' project dir derives from it). */
@@ -128,7 +128,15 @@ export function runAside(input: AsideInput, deps: AsideDeps): Promise<{ text: st
     return Promise.reject(new AsideError('unavailable', 'This computer cannot run Claude Code for a side question.'))
   }
   const problem = deps.cliProblem()
+  // A probe still running is waited for, off the event loop; a known answer is used at once.
+  if (problem !== null && typeof problem === 'object') {
+    return problem.then((p) => (p ? Promise.reject(new AsideError('unsupported', p)) : startAside(input, deps, mainId, claude)))
+  }
   if (problem) return Promise.reject(new AsideError('unsupported', problem))
+  return startAside(input, deps, mainId, claude)
+}
+
+function startAside(input: AsideInput, deps: AsideDeps, mainId: string, claude: string): Promise<{ text: string }> {
   const setTimer = deps.setTimer ?? ((fn: () => void, ms: number) => setTimeout(fn, ms))
   const clearTimer = deps.clearTimer ?? ((h: unknown) => clearTimeout(h as ReturnType<typeof setTimeout>))
   const args = asideArgs({ mainSessionId: mainId, emptyMcpConfigPath: deps.emptyMcpConfigPath() })

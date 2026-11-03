@@ -1,0 +1,50 @@
+✖ a reopen waits for an in-flight sweep and starts in a recreated worktree (48.432208ms)
+✖ overlapping sweeps reserve a closed root only once (10.19925ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 0
+ℹ fail 2
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 413.626208
+
+✖ failing tests:
+
+test at test/thread-lanes.test.ts:6:14208
+✖ a reopen waits for an in-flight sweep and starts in a recreated worktree (48.432208ms)
+  AssertionError [ERR_ASSERTION]: no child may start in a worktree being removed
+
+  1 !== 0
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbthreads-plugin/test/thread-lanes.test.ts:505:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 0,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/thread-lanes.test.ts:6:16160
+✖ overlapping sweeps reserve a closed root only once (10.19925ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+
+  + [
+  +   '101'
+  + ]
+  - []
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbthreads-plugin/test/thread-lanes.test.ts:539:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ '101' ],
+    expected: [],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }

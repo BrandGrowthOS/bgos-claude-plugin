@@ -972,8 +972,8 @@ import {
 } from 'node:fs'
 import { ThreadLaneManager, threadsPendingPath } from './lib/thread-lanes.ts'
 import { AsideForks, runAside } from './lib/aside-fork.ts'
-import { threadsCliProblem, threadsCliSupport, type ThreadsCliAnswer } from './lib/threads-cli.ts'
-import { killProcessGroup, processStamp } from './lib/lane-process.ts'
+import { ThreadsCliGate, threadsCliProblem, type ThreadsCliAnswer } from './lib/threads-cli.ts'
+import { killProcessGroup, processRunsIn, processStamp } from './lib/lane-process.ts'
 import { laneShellSandboxAvailable } from './lib/lane-policy.mjs'
 import { findOnPath } from './lib/lane-cli-probe.mjs'
 import { spawnStreamJson } from './lib/stream-json-child.ts'
@@ -1965,16 +1965,15 @@ const CLAUDE_EXECUTABLE: string | null = resolveClaude()
 // --restricted, 2.1.301 and later, --tools, --fork-session, the stream json
 // flags, acceptEdits and dontAsk). Not Windows in phase 1. Resolved per
 // declaration, like /login's binary above; the probe is cached per binary.
-function threadsCli(): ThreadsCliAnswer {
-  let answer: ThreadsCliAnswer
-  try {
-    answer = threadsCliSupport({
-      claudePath: resolveClaude(),
-      cachePath: pathJoin(process.env.BGOS_PLUGIN_STATE_DIR?.trim() || pathJoin(homedir(), '.bgos-plugin-state'), 'threads-cli-probe.json'),
-    })
-  } catch (err) {
-    answer = { ok: false, missing: [], version: null, reason: `probe_failed: ${err instanceof Error ? err.name : 'error'}` }
-  }
+// The probe runs in the background and never on the event loop; a failed or
+// hung one is kept for a while (lib/threads-cli.ts ThreadsCliGate). Started at
+// boot, so the first heartbeats can already declare.
+const threadsCliGate = new ThreadsCliGate({
+  claudePath: () => resolveClaude(),
+  cachePath: pathJoin(process.env.BGOS_PLUGIN_STATE_DIR?.trim() || pathJoin(homedir(), '.bgos-plugin-state'), 'threads-cli-probe.json'),
+  onAnswer: (answer) => logThreadsCli(answer),
+})
+function logThreadsCli(answer: ThreadsCliAnswer): void {
   const said = answer.ok
     ? `threads: claude ${answer.version} can run thread lanes and By the way; declaring message_threads, thread_sessions and asides`
     : `threads: not declared (${answer.reason ?? `claude ${answer.version ?? 'of unknown version'} lacks ${answer.missing.join(', ')}`})`
@@ -1982,7 +1981,10 @@ function threadsCli(): ThreadsCliAnswer {
     threadsCliLogged = said
     log(said)
   }
-  return answer
+}
+/** Never waits: the kept answer, or `probing` while the probe runs. */
+function threadsCli(): ThreadsCliAnswer {
+  return threadsCliGate.current()
 }
 function threadsDeclared(): boolean {
   return process.platform !== 'win32' && threadsCli().ok
@@ -13833,13 +13835,16 @@ function threadsEmptyMcpConfig(): string {
 const threadLanes = new ThreadLaneManager({
   spawn: spawnStreamJson,
   claudeBin: resolveClaude,
-  cliProblem: () => threadsCliProblem(threadsCli(), 'turn'),
+  cliProblem: async () => threadsCliProblem(await threadsCliGate.ready(), 'turn'),
   mainSessionId: () => provenSessionId(),
   agentFolder: CLAUDE_PROJECT_CWD,
   stateDir: THREADS_STATE_DIR,
   home: homedir(),
   configDir: CLAUDE_CONFIG_DIR,
   emptyMcpConfigPath: threadsEmptyMcpConfig,
+  // A lane's Bash reads none of ~/.bgos-agent but this agent's own email files.
+  emailFilesDir: pathJoin(EMAIL_FILES_ROOT, String(ASSISTANT_ID)),
+  pluginStateDir: process.env.BGOS_PLUGIN_STATE_DIR?.trim() || undefined,
   // A lane gets Bash only inside the CLI's sandbox (sandbox-exec on macOS,
   // bwrap and socat on Linux); without it, no Bash at all.
   shellSandbox: () =>
@@ -13852,6 +13857,7 @@ const threadLanes = new ThreadLaneManager({
   // A lane left from before a daemon crash is found by pid and start stamp, and stopped (lib/lane-process.ts).
   processes: {
     stamp: (pid) => processStamp(pid),
+    runsIn: (pid, dir) => processRunsIn(pid, dir),
     kill: (pid, signal) => killProcessGroup(pid, signal),
   },
   git: async (args, cwd) => {
@@ -13896,11 +13902,16 @@ const asideForks = new AsideForks()
  * connect after a boot comes before the arm.
  */
 function reconcilePendingThreads(why: string): void {
-  if (!channelArmed || !threadsDeclared()) return
+  if (!channelArmed) return
   const assistantIds = [String(ASSISTANT_ID)]
-  void threadLanes
-    // no-cache: an ETag 304 would hide turns this new process never ran.
-    .reconcile(() => bgosGet(threadsPendingPath(assistantIds), { headers: { 'Cache-Control': 'no-cache' } }), { assistantIds })
+  void threadsCliGate.ready()
+    .then((answer) => {
+      // A cold-start probe may finish after the channel arms. Wait without
+      // blocking, then check the lock again before recovering pending turns.
+      if (!answer.ok || !channelArmed) return 0
+      // no-cache: an ETag 304 would hide turns this new process never ran.
+      return threadLanes.reconcile(() => bgosGet(threadsPendingPath(assistantIds), { headers: { 'Cache-Control': 'no-cache' } }), { assistantIds })
+    })
     .then((started) => { if (started > 0) log(`threads: ${started} pending thread turn(s) started (${why})`) })
     .catch((err) => log(`threads: pending reconcile failed (${why}): ${err instanceof Error ? err.name : 'error'}`))
 }
@@ -14014,7 +14025,7 @@ const voiceRpc = new VoiceRpcHandler({
             runAside(input, {
               spawn: spawnStreamJson,
               claudeBin: resolveClaude,
-              cliProblem: () => threadsCliProblem(threadsCli(), 'aside'),
+              cliProblem: async () => threadsCliProblem(await threadsCliGate.ready(), 'aside'),
               mainSessionId: () => provenSessionId(),
               mainFolder: CLAUDE_PROJECT_CWD,
               home: homedir(),
@@ -18009,6 +18020,9 @@ async function main(): Promise<void> {
       process.exit(served ? 0 : 1)
     }
   }
+  // A duplicate serves only its notice and must write no probe cache.
+  // Start the shared background probe only after that startup guard.
+  void threadsCliGate.ready()
   // The git self-updater is for CLONE installs only. A marketplace install's
   // plugin root is Claude Code's own cache dir, which the CLI leaves as a git
   // clone pinned to the release tag: without this gate the updater would
