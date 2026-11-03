@@ -479,6 +479,97 @@ test('a turn on a closed thread reopens it, so the sweep no longer removes it', 
   assert.deepEqual(await r.manager.sweepClosed(r.clock.now + 8 * DAY), [])
 })
 
+test('a reopen waits for an in-flight sweep and starts in a recreated worktree', async () => {
+  const state = { rootId: '101', chatId: '55', title: 'T', forkSessionId: FORK_A, folder: wt('101'), cwd: wt('101'), worktree: true, readOnly: false, closedAt: 1, lastReplyId: '1010', lastDelivered: true, pid: null, pidStamp: null }
+  const forkFile = sessionTranscriptPath(HOME, wt('101'), FORK_A, '')
+  const r = rig({ files: { [join(STATE, '101.json')]: JSON.stringify(state), [forkFile]: '{}\n' } })
+  r.dirs.add(wt('101'))
+  const git = r.deps.git
+  let release: () => void = () => {}
+  const gate = new Promise<void>((done) => { release = done })
+  let removing = false
+  r.deps.git = async (args, cwd) => {
+    if (args[2] === 'worktree' && args[3] === 'remove') { removing = true; await gate }
+    return git(args, cwd)
+  }
+  const sweep = r.manager.sweepClosed(30 * DAY)
+  await flush()
+  assert.equal(removing, true, 'the sweep has reached the paused git removal')
+  r.manager.turn(turn('101', { mode: 'reply', replyId: '1011', text: 'reopened during sweep' }))
+  await flush()
+  const startedDuringRemoval = r.spawned.length
+  const secondSweep = await r.manager.sweepClosed(30 * DAY)
+  release()
+  assert.deepEqual(await sweep, ['101'])
+  await r.manager.idle()
+  assert.equal(startedDuringRemoval, 0, 'no child may start in a worktree being removed')
+  assert.deepEqual(secondSweep, [], 'a second sweep does not claim the same root')
+  assert.equal(r.spawned.length, 1)
+  assert.equal(r.dirs.has(wt('101')), true, 'the new child owns a recreated worktree')
+  assert.equal(saved(r).closedAt, null)
+  assert.equal(saved(r).pid, r.spawned[0]!.child.pid)
+  assert.equal(r.files.has(forkFile), false, 'the swept fork is gone')
+  assert.deepEqual(r.spawned[0]!.args, workArgs('101', null), 'fork main again instead of resuming the deleted transcript')
+  assert.equal(r.files.get(sessionTranscriptPath(HOME, wt('101'), MAIN, '')), '{"main":true}\n')
+  r.spawned[0]!.child.init(FORK_B)
+  r.spawned[0]!.child.result('reopened safely')
+  await r.manager.idle()
+  assert.ok(replyTexts(r).includes('reopened safely'))
+  assert.equal(saved(r).forkSessionId, FORK_B)
+})
+
+test('overlapping sweeps reserve a closed root only once', async () => {
+  const state = { rootId: '101', chatId: '55', title: 'T', forkSessionId: FORK_A, folder: wt('101'), cwd: wt('101'), worktree: true, readOnly: false, closedAt: 1, pid: null, pidStamp: null }
+  const r = rig({ files: { [join(STATE, '101.json')]: JSON.stringify(state) } })
+  r.dirs.add(wt('101'))
+  const git = r.deps.git
+  let release: () => void = () => {}
+  const gate = new Promise<void>((done) => { release = done })
+  let removals = 0
+  r.deps.git = async (args, cwd) => {
+    if (args[2] === 'worktree' && args[3] === 'remove') { removals++; await gate }
+    return git(args, cwd)
+  }
+  const first = r.manager.sweepClosed(30 * DAY)
+  await flush()
+  const second = r.manager.sweepClosed(30 * DAY)
+  await flush()
+  release()
+  assert.deepEqual(await first, ['101'])
+  assert.deepEqual(await second, [])
+  assert.equal(removals, 1)
+})
+
+test('a close during a sweep cannot release its root for an early reopen', async () => {
+  const state = { rootId: '101', chatId: '55', title: 'T', forkSessionId: FORK_A, folder: wt('101'), cwd: wt('101'), worktree: true, readOnly: false, closedAt: 1, pid: null, pidStamp: null }
+  const r = rig({ files: { [join(STATE, '101.json')]: JSON.stringify(state) } })
+  r.dirs.add(wt('101'))
+  const git = r.deps.git
+  let release: () => void = () => {}
+  const gate = new Promise<void>((done) => { release = done })
+  r.deps.git = async (args, cwd) => {
+    if (args[2] === 'worktree' && args[3] === 'remove') await gate
+    return git(args, cwd)
+  }
+  const sweep = r.manager.sweepClosed(30 * DAY)
+  await flush()
+  const closing = r.manager.close({ rootId: '101', removeWorktree: false })
+  await flush()
+  r.manager.turn(turn('101', { mode: 'reply', replyId: '1011', text: 'reopen after close' }))
+  await flush()
+  const startedDuringRemoval = r.spawned.length
+  release()
+  await Promise.all([sweep, closing])
+  await r.manager.idle()
+  assert.equal(startedDuringRemoval, 0, 'close must not replace the pending sweep owner')
+  r.manager.turn(turn('101', { mode: 'reply', replyId: '1012', text: 'retry after cleanup' }))
+  await r.manager.idle()
+  assert.equal(r.spawned.length, 1)
+  assert.equal(r.dirs.has(wt('101')), true)
+  assert.equal(saved(r).pid, r.spawned[0]!.child.pid)
+  assert.deepEqual(r.spawned[0]!.args, workArgs('101', null))
+})
+
 test('close with removeWorktree removes the worktree, the fork session file and the lane state', async () => {
   const r = rig()
   r.manager.turn(turn('101'))

@@ -318,6 +318,8 @@ export class ThreadLaneManager {
       throw new ThreadLaneError('bad_request', 'The thread id is not valid.')
     }
     const rootId = input.rootId
+    // A sweep or an earlier close owns this root until its removal settles.
+    while (this.exiting.has(rootId)) await this.exiting.get(rootId)
     let lane = this.lanes.get(rootId)
     if (!lane) {
       const saved = this.load(rootId)
@@ -377,11 +379,20 @@ export class ThreadLaneManager {
       const m = /^([A-Za-z0-9_-]{1,64})\.json$/.exec(name)
       if (!m || m[1] === 'empty-mcp') continue
       const rootId = m[1]!
-      if (this.lanes.has(rootId)) continue
+      if (this.lanes.has(rootId) || this.exiting.has(rootId)) continue
       const state = this.load(rootId)
       if (!state || state.closedAt === null) continue
       if (now - state.closedAt <= keep) continue
-      if (await this.removeLane(state, { deleteBranch: false })) removed.push(rootId)
+      // Reserve the root before removal yields, just like explicit deletion.
+      // A reopening turn may queue, but ensureChild waits for this owner.
+      const removal = this.removeLane(state, { deleteBranch: false })
+      const done = removal.then(() => undefined)
+      this.exiting.set(rootId, done)
+      try {
+        if (await removal) removed.push(rootId)
+      } finally {
+        if (this.exiting.get(rootId) === done) this.exiting.delete(rootId)
+      }
     }
     return removed
   }
@@ -711,7 +722,16 @@ export class ThreadLaneManager {
 
   private async ensureChild(lane: Lane): Promise<void> {
     const before = this.exiting.get(lane.state.rootId)
-    if (before) await before
+    if (before) {
+      await before
+      // Removal also took the saved fork transcript. A turn queued during
+      // that removal must fork main again, not resume the now deleted fork.
+      if (!this.deps.fs.exists(this.statePath(lane.state.rootId))) {
+        lane.state.forkSessionId = null
+        lane.state.pid = null
+        lane.state.pidStamp = null
+      }
+    }
     if (lane.child && lane.stopping) await lane.exited
     if (lane.closed || lane.child) return
     // A process left from before a daemon crash still runs this thread: never a second one.

@@ -7,7 +7,7 @@ Scope: the P1 and two P2 findings in `~/.bgos-reviews/threadsfix3.md`, starting 
 Work stays in this checkout. Each finding gets a failing regression first, its smallest implementation fix, affected tests, and one commit. No push or production access. Test commands use at most four workers and a temporary directory under this checkout's ignored `node_modules/.cache/threadsfix4`.
 
 - [x] P1: replace the environment block list in `lib/stream-json-child.ts` with one explicit allow list for runtime and Claude authentication. Test fabricated AWS, GitHub, and unknown tokens against the real spawner; run a real Claude child with local scripted responses and isolated test credentials.
-- [ ] P2: reserve the root in `exiting` while `sweepClosed` removes it. Pause removal in a regression, reopen concurrently, and verify startup waits and recreates the removed worktree and transcript safely.
+- [x] P2: reserve the root in `exiting` while `sweepClosed` removes it. Pause removal in a regression, reopen concurrently, and verify startup waits and recreates the removed worktree and transcript safely.
 - [ ] P2: distinguish unknown stamp inspection from confirmed absence or a different process. Test helper failures and manager replacement, delete, and sweep; retain uncertain identity and permit progress after inspection recovers.
 - [ ] Run all affected suites and typecheck. Record red and green evidence, inspect the final diff, and verify the three commits and clean status.
 
@@ -22,3 +22,13 @@ The regression tests were red before the fix. [p1-red.log](docs/evidence/threads
 [p1-green.log](docs/evidence/threadsfix4/p1-green.log): 39 tests passed across stream/environment, real Claude sandbox, aside, and real process suites. The Node child regression checks every fabricated AWS/GitHub/unknown variable is absent. The real Claude test uses the production spawner, isolated HOME/config, a local scripted API, and dummy authentication. It initialized, ran three Bash checks, read its attachment, refused a future credential file, and exposed none of the fabricated credentials. No real model service or production agent was used.
 
 P1 typecheck: `./node_modules/.bin/tsc --noEmit` exited 0. See [p1-typecheck.log](docs/evidence/threadsfix4/p1-typecheck.log).
+
+### P2: sweep and reopen ownership
+
+The sweep reserves the root in the existing `exiting` map before awaiting removal and releases it in `finally`. Reopen startup already waits on this map, and close now also waits for its previous owner before loading or mutating state. After successful removal, startup drops the obsolete fork/PID references, recreates the worktree, and forks main with a fresh copied transcript. An overlapping sweep skips a reserved root.
+
+Both regressions were red before the fix: [p2-sweep-red.log](docs/evidence/threadsfix4/p2-sweep-red.log) shows a child starting during paused removal, and two overlapping sweeps both removing the same root. The reopen test also verifies the recreated folder, state/PID, fresh fork arguments, transcript, and delivered answer after removal completes.
+
+Independent review identified a third ordering within this finding: closing during the paused sweep could replace its ownership marker and permit an early reopen. The new regression was red before the correction ([p2-close-red.log](docs/evidence/threadsfix4/p2-close-red.log)), showing one child starting during removal. Waiting for existing ownership in close addresses it in this same finding's commit.
+
+[p2-sweep-green.log](docs/evidence/threadsfix4/p2-sweep-green.log): 81 tests passed across the manager and real Git suites, including all three new overlap regressions.
