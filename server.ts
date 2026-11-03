@@ -499,6 +499,7 @@ import {
   decideButtonsAnswered,
   decideMessageFinalized,
   decideMessageNew,
+  HumanMessageEdits,
   viewStreamMessage,
   type StreamMessageView,
 } from './lib/stream-apply.js'
@@ -11412,12 +11413,17 @@ async function pollChat(chatId: string): Promise<void> {
   const lastSeen = chatReadFloor.get(chatId) ?? chatLastSeen.get(chatId) ?? 0
   // Taken before the fetch for the reason the cursor is: see chatBehindSocket.
   const startedAtEpoch = socketEpoch
+  const editReadGeneration = humanMessageEdits.readGeneration
+  const oldestHuman = humanMessageEdits.oldestInChat(chatId)
+  // Read existing human rows too: an edit keeps its ID and cannot appear in
+  // an afterId delta. The selection cursor below remains lastSeen.
+  const historyFloor = oldestHuman === undefined ? lastSeen : Math.min(lastSeen, oldestHuman - 1)
   const req = buildChatPollRequest({
     chatId,
     userId: USER_ID,
     lastSeen,
     unansweredButtonCount: chatUnansweredButtons.get(chatId)?.size ?? 0,
-    forceFull: isBootPoll,
+    forceFull: isBootPoll || oldestHuman !== undefined,
   })
   // The email cursor holds this batch took (emailFileSavesFor), let go when it ends.
   const pollEmailReleases: Array<() => void> = []
@@ -11482,7 +11488,7 @@ async function pollChat(chatId: string): Promise<void> {
           readNeedsOlderPage({
             mayHaveOlder,
             oldestId: rows[0]!.message.id,
-            lastSeen,
+            lastSeen: historyFloor,
             firstRead:
               lastSeen > 0
                 ? null
@@ -11505,7 +11511,7 @@ async function pollChat(chatId: string): Promise<void> {
           // and call the chat caught up (noteChatReadAtEpoch).
           bgosEtagCache.invalidate(req.cacheKey)
           const older = (await bgosGet(
-            buildOlderPagePath({ chatId, userId: USER_ID, lastSeen, beforeId }),
+            buildOlderPagePath({ chatId, userId: USER_ID, lastSeen: historyFloor, beforeId }),
             { conditional: false, callerAssistantId: ASSISTANT_ID },
           )) as ChatHistoryResponse
           const rows = older.messages ?? []
@@ -11531,6 +11537,15 @@ async function pollChat(chatId: string): Promise<void> {
     const ordered = [...data.messages].sort(
       (a, b) => a.message.id - b.message.id,
     )
+    // Only examine edits after the whole walk succeeded. A partial read must
+    // neither notify nor mark the chat caught up.
+    for (const row of ordered) {
+      const view = viewStreamMessage({ seq: 0, kind: 'message_edited', chatId: Number(chatId), messageId: row.message.id, payload: row as unknown as Record<string, unknown> }, ASSISTANT_ID)
+      if (!view) continue
+      const latest = humanMessageEdits.latest(view) ?? view
+      Object.assign(row.message, latest.raw)
+      if (humanMessageEdits.has(view)) await forwardHumanEdit(view, 'poll', editReadGeneration)
+    }
     const maxId = ordered[ordered.length - 1]!.message.id
     const pollForwardableRows = ordered.filter((m) =>
       shouldForwardPollMessage(m.message, ASSISTANT_ID),
@@ -11942,7 +11957,7 @@ async function pollChat(chatId: string): Promise<void> {
         noteLaneMisroute('poll', msg.message.id, pollLaneVerdict.stamp)
         continue
       }
-      const text = msg.message.text ?? ''
+      let text = msg.message.text ?? ''
       // Recorded HERE, where the message is accepted, and not further down where it is handed to the
       // model: the daemon-answered commands take a `continue` before that point, so /status was
       // reporting "no messages yet" while answering a message the user had just sent. Caught by
@@ -12019,6 +12034,14 @@ async function pollChat(chatId: string): Promise<void> {
       // in line: the batch, its order and the cursor wait for it, bounded,
       // and the batch's budget bounds them all together.
       const pollEmail = await emailFileSavesFor(msg.message, msg.messageFiles ?? [], { budget: pollEmailBudget, chatId, messageId: msg.message.id })
+      // An edit may have arrived while preparation yielded. Resolve it at
+      // the last synchronous stretch before constructing the delivered card.
+      const preparedView = viewStreamMessage({ seq: 0, kind: 'message_new', chatId: Number(chatId), messageId: msg.message.id, payload: msg as unknown as Record<string, unknown> }, ASSISTANT_ID)
+      const latestPrepared = preparedView ? humanMessageEdits.latest(preparedView) : null
+      if (latestPrepared) {
+        text = latestPrepared.text
+        Object.assign(msg.message, latestPrepared.raw)
+      }
       const pollEmailSaves = pollEmail?.saves
       // Its cursor hold is let go once this batch is over (the finally below),
       // delivered when the batch kept its claim on it.
@@ -12070,10 +12093,15 @@ async function pollChat(chatId: string): Promise<void> {
         // Another party's words with no delivery token: an email_send in the turn it reaches refuses, and the tag on the
         // card's end names it in whatever CLI turn the card runs in (70f1898b).
         card.content += privateTurns.noteUntracked({ chatId })
-        void trackMessageOperation(() => mcp.notification({
+        const meetingHandoff = trackMessageOperation(() => mcp.notification({
           method: 'notifications/claude/channel',
           params: card,
-        })).catch((err) => {
+        }))
+        humanMessageEdits.rememberOriginal(
+          viewStreamMessage({ seq: 0, kind: 'message_new', chatId: Number(chatId), messageId: msg.message.id, payload: msg as unknown as Record<string, unknown> }, ASSISTANT_ID),
+          meetingHandoff, card.meta,
+        )
+        void meetingHandoff.catch((err) => {
           log(`Failed to deliver meeting poll inbound to Claude: ${err}`)
         })
         continue
@@ -12250,7 +12278,7 @@ async function pollChat(chatId: string): Promise<void> {
         text: content,
         now: Date.now(),
       })
-      void trackMessageOperation(() => deliverInbound(steerPlan, (interrupted) => mcp.notification({
+      const humanHandoff = trackMessageOperation(() => deliverInbound(steerPlan, (interrupted) => mcp.notification({
         method: 'notifications/claude/channel',
         params: {
           content: privateTurns.deliver({ content, chatId, peerSourceAssistantId: pollAgentOrigin?.sourceAssistantId, emailBasis: emailSendBasis({ senderType: pollSenderType, agentOrigin: pollAgentOrigin, eventMeta: msg.message.eventMeta, messageId: msg.message.id, backlog: isBacklog }), fireKey: privateFireKey({ senderType: pollSenderType, eventMeta: msg.message.eventMeta, messageId: msg.message.id }), actingUserId: privateActor({ senderType: pollSenderType, senderUserId: privateSenderUserId(msg.message), agentOrigin: pollAgentOrigin, eventMeta: msg.message.eventMeta }) }),
@@ -12261,7 +12289,12 @@ async function pollChat(chatId: string): Promise<void> {
             interrupted ? STEER_INTERRUPTED_META : null,
           ),
         },
-      }))).catch((err) => {
+      })))
+      if (!isSlashCommand) humanMessageEdits.rememberOriginal(
+        viewStreamMessage({ seq: 0, kind: 'message_new', chatId: Number(chatId), messageId: msg.message.id, payload: msg as unknown as Record<string, unknown> }, ASSISTANT_ID),
+        humanHandoff,
+      )
+      void humanHandoff.catch((err) => {
         log(`Failed to deliver inbound to Claude: ${err}`)
       })
       // Skip overdue tracking for backlog messages: they were forwarded
@@ -12401,6 +12434,7 @@ const WS_URL = (() => {
 })()
 
 const forwardedMessageIds = new Set<number>()
+const humanMessageEdits = new HumanMessageEdits()
 const FORWARD_CACHE_MAX = 500
 // The only dedupe between overlapping reads and between the socket and a read,
 // so it must outlast the longest read: at 500, across all chats, a catch up of
@@ -14797,6 +14831,73 @@ const doctorRpc = new DoctorRpcHandler({
   log,
 })
 
+/** Deliver a replacement without executing commands from its quoted words. */
+async function forwardHumanEdit(view: StreamMessageView, transport: string, readGeneration?: number): Promise<boolean> {
+  if (!channelArmed || updateDrainMode || !ownerLaneVerdict(view.raw).deliver) return false
+  return humanMessageEdits.deliverEdit(view, async (edited, originalMeta) => {
+    // The queue may have waited for another handoff while this daemon stood down.
+    if (!channelArmed || updateDrainMode || !ownerLaneVerdict(edited.raw).deliver) {
+      throw new Error('stood down before edit delivery')
+    }
+    const senderUserId = edited.senderUserId ?? USER_ID
+    const card = buildInboundChannel({
+      chatId: edited.chatId,
+      messageId: edited.messageId,
+      userId: senderUserId,
+      assistantId: ASSISTANT_ID,
+      timestamp: new Date().toISOString(),
+      transport,
+      text: edited.text,
+      files: edited.files as Parameters<typeof buildInboundChannel>[0]['files'],
+      senderType: 'user',
+      serverSender: edited.raw,
+    })
+    const content = `[Message edited: message ${edited.messageId}. This replaces the earlier version of this message.]\n` +
+      card.content.split('\n').map((line) => `> ${line}`).join('\n')
+    const meta = {
+      ...card.meta,
+      ...(originalMeta?.meeting_id ? { meeting_id: originalMeta.meeting_id, your_turn: 'NO' } : {}),
+      sender_type: 'user', event_type: 'message_edited', replaces_message_id: String(edited.messageId),
+    }
+    if (originalMeta?.meeting_id) {
+      // A correction cannot grant private authority its meeting original lacked.
+      await trackMessageOperation(() => mcp.notification({
+        method: 'notifications/claude/channel',
+        params: { content: content + privateTurns.noteUntracked({ chatId: edited.chatId }), meta },
+      }))
+    } else {
+      await trackMessageOperation(() => mcp.notification({
+        method: 'notifications/claude/channel',
+        params: {
+          content: privateTurns.deliver({ content, chatId: edited.chatId, emailBasis: emailSendBasis({ senderType: 'user', messageId: edited.messageId, backlog: false }), fireKey: null, actingUserId: privateActor({ senderType: 'user', senderUserId: privateSenderUserId(edited.raw) }) }),
+          meta,
+        },
+      }))
+    }
+    lastInboundAtMs = Date.now()
+    if (!originalMeta?.meeting_id) {
+      lastInboundUserByChat.set(edited.chatId, senderUserId)
+      actingUser.noteInbound({ chatId: edited.chatId, userId: senderUserId, senderType: 'user' })
+    }
+    turnChat.note({
+      chatId: edited.chatId, messageId: edited.messageId, kind: originalMeta?.meeting_id ? 'meeting' : 'user',
+      text: content, now: Date.now(),
+    })
+    if (!originalMeta?.meeting_id) {
+      recordInbound(edited.chatId, edited.messageId, undefined, 'user', privateActor({ senderType: 'user', senderUserId: privateSenderUserId(edited.raw) }), inboundAddressesAgent({ text: edited.text }))
+    }
+  }, readGeneration)
+}
+
+async function applyHumanEdit(payload: unknown): Promise<void> {
+  const raw = payload as Record<string, unknown> | null
+  if (!raw || (raw.assistantId != null && String(raw.assistantId) !== String(ASSISTANT_ID))) return
+  const view = viewStreamMessage({ seq: 0, kind: 'message_edited', chatId: null, messageId: null, payload: raw }, ASSISTANT_ID)
+  if (!view || !view.chatId || !ownerLaneVerdict(view.raw).deliver) return
+  if (humanMessageEdits.has(view)) await forwardHumanEdit(view, 'ws')
+  else humanMessageEdits.notePending(view)
+}
+
 function rememberForwarded(id: number): void {
   if (forwardedMessageIds.has(id)) return
   forwardedMessageIds.add(id)
@@ -14977,6 +15078,7 @@ async function forwardStreamInbound(
   // resolves only after the handoff, so the stream cursor waits for it too.
   // Inside the WS down catch up the batch's budget bounds the downloads.
   const streamEmail = await emailFileSavesFor(view.raw, view.files, { budget: streamEmailBudget, chatId, messageId: view.messageId })
+  view = humanMessageEdits.latest(view) ?? view
   const streamEmailSaves = streamEmail?.saves
   // Its cursor hold is let go when this delivery ends, however it ends:
   // delivered when this rail kept its claim (a failed handoff and a stand down
@@ -15138,7 +15240,7 @@ async function forwardStreamInbound(
     }
     log(`Stream replay message in chat ${chatId}: "${content.slice(0, 100)}${content.length > 100 ? '...' : ''}"`)
     try {
-      await trackMessageOperation(() =>
+      const humanHandoff = trackMessageOperation(() =>
         deliverInbound(steerPlan, (interrupted) => mcp.notification({
           method: 'notifications/claude/channel',
           params: {
@@ -15152,6 +15254,8 @@ async function forwardStreamInbound(
           },
         })),
       )
+      if (!isSlash) humanMessageEdits.rememberOriginal(view, humanHandoff)
+      await humanHandoff
     } catch (err) {
       // The handoff did NOT resolve. Un-claim the pre-claimed id: the chain
       // pins the stream cursor on this rejection (5.7) and the retry must not
@@ -15439,11 +15543,16 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
 /** message_new / message_finalized from the stream, per the 5.7 contract. */
 async function applyStreamMessage(
   update: StreamUpdate,
-  cls: 'message_new' | 'message_finalized',
+  cls: 'message_new' | 'message_finalized' | 'message_edited',
 ): Promise<void> {
-  const view = viewStreamMessage(update, ASSISTANT_ID)
-  if (!view || !view.chatId) return
+  const rawView = viewStreamMessage(update, ASSISTANT_ID)
+  if (!rawView || !rawView.chatId) return
+  const view = humanMessageEdits.latest(rawView) ?? rawView
   const chatId = view.chatId
+  if (cls !== 'message_new' && humanMessageEdits.has(view)) {
+    await forwardHumanEdit(view, 'stream')
+    return
+  }
   noteMonitoredChat(chatId)
   // Meeting chats keep their specialized turn framing: replay through ONE
   // poll of that chat (pollChat advances the per-chat cursor itself, so
@@ -15500,6 +15609,7 @@ async function applyStreamUpdate(update: StreamUpdate): Promise<void> {
   switch (cls) {
     case 'message_new':
     case 'message_finalized':
+    case 'message_edited':
       await applyStreamMessage(update, cls)
       return
     case 'buttons_answered':
@@ -16341,6 +16451,14 @@ function connectWebsocket(): void {
     unboundFrames.onFrame(payload, ack)
   })
 
+  realtimeSocket.on('message_edited', whenArmed('message_edited', (payload: any) => {
+    if (updateDrainMode) return
+    const deliver = (frame: unknown) => applyHumanEdit(frame)
+    if (routeStampedInbound(payload, deliver)) return
+    void trackMessageOperation(() => applyHumanEdit(payload))
+      .catch((err) => log(`message_edited delivery failed: ${err}`))
+  }))
+
   realtimeSocket.on('inbound_message', whenArmed('inbound_message', (payload: any) => {
     if (updateDrainMode) return
     // The second lock (person lanes): a delivery stamped for a person's lane
@@ -16424,6 +16542,9 @@ function connectWebsocket(): void {
       const messageId = Number(payload?.messageId ?? payload?.message_id)
       if (!Number.isFinite(messageId)) return
       if (forwardedMessageIds.has(messageId)) return
+      const initialView = viewStreamMessage({ seq: 0, kind: 'message_new', chatId: null, messageId, payload }, ASSISTANT_ID)
+      const latest = initialView ? humanMessageEdits.latest(initialView) : null
+      if (latest) payload = { ...payload, ...latest.raw, text: latest.text }
       // An email whose files the owner lets the agent read (read attachments):
       // fetch and save them first, then deliver through this same function.
       // Nothing is claimed and no cursor moves until then, so a poll that
@@ -16629,10 +16750,15 @@ function connectWebsocket(): void {
             `your_turn=${wsMeeting.yourTurn ? 'YES' : 'NO'})`,
         )
         card.content += privateTurns.noteUntracked({ chatId })
-        void trackMessageOperation(() => mcp.notification({
+        const meetingHandoff = trackMessageOperation(() => mcp.notification({
           method: 'notifications/claude/channel',
           params: card,
-        })).catch((err) => log(`meeting twin mcp.notification error: ${err}`))
+        }))
+        humanMessageEdits.rememberOriginal(
+          viewStreamMessage({ seq: 0, kind: 'message_new', chatId: null, messageId, payload }, ASSISTANT_ID),
+          meetingHandoff, card.meta,
+        )
+        void meetingHandoff.catch((err) => log(`meeting twin mcp.notification error: ${err}`))
         return
       }
       const wsChannel = buildInboundChannel({
@@ -16743,7 +16869,7 @@ function connectWebsocket(): void {
           | null
           | undefined,
       )
-      void trackMessageOperation(() => deliverInbound(steerPlan, (interrupted) => mcp.notification({
+      const humanHandoff = trackMessageOperation(() => deliverInbound(steerPlan, (interrupted) => mcp.notification({
         method: 'notifications/claude/channel',
         params: {
           content: privateTurns.deliver({ content, chatId, peerSourceAssistantId: wsAgentOrigin?.sourceAssistantId, emailBasis: emailSendBasis({ senderType: wsSenderType, agentOrigin: wsAgentOrigin, eventMeta: payload?.eventMeta ?? payload?.event_meta, messageId, backlog: sentBeforeStart(payload?.sentDate ?? payload?.sent_date, DAEMON_START_MS) }), fireKey: privateFireKey({ senderType: wsSenderType, eventMeta: payload?.eventMeta ?? payload?.event_meta, messageId }), actingUserId: privateActor({ senderType: wsSenderType, senderUserId: privateSenderUserId(payload), agentOrigin: wsAgentOrigin, eventMeta: payload?.eventMeta ?? payload?.event_meta }) }),
@@ -16754,7 +16880,12 @@ function connectWebsocket(): void {
             interrupted ? STEER_INTERRUPTED_META : null,
           ),
         },
-      }))).catch((err) => log(`WS forward error: ${err}`))
+      })))
+      if (!isWsSlashCommand) humanMessageEdits.rememberOriginal(
+        viewStreamMessage({ seq: 0, kind: 'message_new', chatId: null, messageId, payload }, ASSISTANT_ID),
+        humanHandoff,
+      )
+      void humanHandoff.catch((err) => log(`WS forward error: ${err}`))
       // If this inbound carries a peer_conversation_id, remember which
       // side-thread chat hosts it so peer_conversation_closed can clear
       // the overdue tracker without needing chatId in its own payload.
@@ -17011,7 +17142,7 @@ function connectWebsocket(): void {
       // Skip our own outbound replies, we'd already see them via the
       // POST response. Self-loops would confuse the model.
       if (senderId != null && senderId === Number(ASSISTANT_ID)) return
-      const text = String(payload?.text ?? '')
+      let text = String(payload?.text ?? '')
       // A sign-in code is never forwarded from a meeting either (see the poll
       // site). No sign-in starts in a meeting, so this can only withhold.
       if (consumedAsLoginCode({
@@ -17033,6 +17164,12 @@ function connectWebsocket(): void {
       const currentSpeakerRaw = payload?.currentSpeakerId
       const meetingFiles = Array.isArray(payload?.files) ? payload.files : []
       const sendMeetingCard = (emailFileSaves?: Array<EmailFileSave | null>): void => {
+        const original = viewStreamMessage({ seq: 0, kind: 'message_new', chatId: null, messageId, payload }, ASSISTANT_ID)
+        const latest = original ? humanMessageEdits.latest(original) : null
+        if (latest) {
+          text = latest.text
+          payload = { ...payload, ...latest.raw, text }
+        }
         const card = buildMeetingCard({
           meetingId,
           chatId,
@@ -17062,10 +17199,15 @@ function connectWebsocket(): void {
           emailFileSaves,
         })
         card.content += privateTurns.noteUntracked({ chatId })
-        void trackMessageOperation(() => mcp.notification({
+        const meetingHandoff = trackMessageOperation(() => mcp.notification({
           method: 'notifications/claude/channel',
           params: card,
-        })).catch((err) => log(`meeting_message mcp.notification error: ${err}`))
+        }))
+        if (senderId == null) humanMessageEdits.rememberOriginal(
+          viewStreamMessage({ seq: 0, kind: 'message_new', chatId: null, messageId, payload }, ASSISTANT_ID),
+          meetingHandoff, card.meta,
+        )
+        void meetingHandoff.catch((err) => log(`meeting_message mcp.notification error: ${err}`))
       }
       // An email the server marks on this broadcast (none today) whose files
       // the owner lets the agent read: saved first, then sent, as on the

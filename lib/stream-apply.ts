@@ -13,9 +13,10 @@
  *    pending-empty park: the id is remembered, nothing is forwarded, the
  *    per-chat cursor must not step past it. The later message_finalized for
  *    that id delivers AS the wake, not as an edit.
- *  - The per-chat cursor remains the dedup substrate forever: a row at or
- *    under it was handled in a previous run and only advances the stream
- *    cursor.
+ *  - The per-chat cursor dedupes original delivery: a row at or under it
+ *    was handled in a previous run. For human messages delivered by this
+ *    daemon, server.ts checks the shared edit ledger before these decisions
+ *    so a changed version is delivered as a replacement, not an original.
  *  - buttons_answered forwards iff the id is not in the announced-clicks
  *    dedup set shared with the poll's transition detector; the caller then
  *    marks it announced and consumes any live-tracked baseline entry so the
@@ -28,6 +29,7 @@
  */
 
 import type { StreamUpdate } from './update-stream.ts'
+export { HumanMessageEdits } from './message-edits.ts'
 import {
   buildButtonClickedMeta,
   buildInboundChannel,
@@ -420,6 +422,7 @@ export function decideButtonsAnswered(opts: {
 export type StreamKindClass =
   | 'message_new'
   | 'message_finalized'
+  | 'message_edited'
   | 'buttons_answered'
   | 'chat_created'
   | 'chat_deleted'
@@ -441,6 +444,8 @@ export function classifyStreamKind(kind: string): StreamKindClass {
       return 'message_new'
     case 'message_finalized':
       return 'message_finalized'
+    case 'message_edited':
+      return 'message_edited'
     case 'buttons_answered':
       return 'buttons_answered'
     case 'chat_created':
