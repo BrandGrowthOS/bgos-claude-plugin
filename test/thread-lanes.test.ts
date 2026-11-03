@@ -468,7 +468,7 @@ test('deleting a read only lane removes its plain folder', async () => {
   await r.manager.close({ rootId: '101', removeWorktree: true })
   r.spawned[0]!.child.exit(null)
   await r.manager.idle()
-  assert.deepEqual(r.removed, [wt('101')])
+  assert.deepEqual(r.removed, [wt('101'), sessionTranscriptPath(HOME, wt('101'), FORK_A, '').replace(/\.jsonl$/, '')])
 })
 
 test('closing a running lane frees its slot for a waiting thread and drops its late result', async () => {
@@ -774,4 +774,46 @@ test('a close while the lane confinement is being read starts nothing and copies
   assert.equal(r.spawned.length, 0)
   assert.equal(r.files.has(sessionTranscriptPath(HOME, wt('101'), MAIN, '')), false)
   assert.deepEqual(r.branchesDeleted, ['hoai/thread-101'])
+})
+
+// -- gate review finding 7: removeLane stays inside the threads folder and takes the fork's own folder --
+
+/** The CLI keeps a session's large tool results in <project dir>/<session id>/tool-results/. */
+const forkDir = (cwd: string, id: string) => sessionTranscriptPath(HOME, cwd, id, '').replace(/\.jsonl$/, '')
+
+test('delete removes the fork session folder (its tool-results) with the session file', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const c = r.spawned[0]!.child
+  c.init(FORK_A)
+  c.result('done.')
+  await r.manager.idle()
+  await r.manager.close({ rootId: '101', removeWorktree: true })
+  c.exit(null)
+  await r.manager.idle()
+  assert.ok(r.removed.includes(forkDir(wt('101'), FORK_A)), `removed: ${r.removed.join(', ')}`)
+})
+
+test('a lane state file naming a folder outside <agent>/.hoai/threads/ never gets that folder removed', async () => {
+  for (const folder of ['/etc', '/home/u', `${AGENT}/src`, `${AGENT}/.hoai/threads/../../src`, `${AGENT}/.hoai/threads/102`, `${AGENT}/.hoai/threads`]) {
+    for (const worktree of [true, false]) {
+      const state = { rootId: '101', chatId: '55', title: 'T', forkSessionId: FORK_A, folder, cwd: folder, worktree, readOnly: !worktree, closedAt: 1 }
+      const r = rig({ files: { [join(STATE, '101.json')]: JSON.stringify(state) } })
+      r.dirs.add(folder)
+      await r.manager.close({ rootId: '101', removeWorktree: true })
+      await r.manager.idle()
+      assert.deepEqual(r.removed.filter((p) => !p.startsWith(`${HOME}/.claude/`)), [], `${folder} (worktree ${worktree})`)
+      assert.equal(r.gitCalls.some((a) => a.includes('worktree') && a.includes(folder)), false, `${folder}: no git worktree remove`)
+      assert.equal(r.branchesDeleted.length, 0, `${folder}: no branch deleted`)
+      assert.equal(r.files.has(join(STATE, '101.json')), false, 'the bad state file itself goes')
+    }
+  }
+})
+
+test('the 7 day sweep refuses a state folder outside the threads folder too', async () => {
+  const state = { rootId: '101', chatId: '55', title: 'T', forkSessionId: null, folder: '/work', cwd: '/work', worktree: false, readOnly: true, closedAt: 1 }
+  const r = rig({ files: { [join(STATE, '101.json')]: JSON.stringify(state) } })
+  assert.deepEqual(await r.manager.sweepClosed(30 * DAY), ['101'])
+  assert.deepEqual(r.removed, [])
 })

@@ -808,30 +808,55 @@ export class ThreadLaneManager {
     }
   }
 
+  /**
+   * The lane's folder as the daemon made it, <agentFolder>/.hoai/threads/<root>,
+   * or null for anything else a state file names: removeLane never removes a
+   * folder (nor asks git to) that is not the thread's own.
+   */
+  private ownFolder(state: ThreadLaneState): string | null {
+    if (!state.folder) return null
+    const expected = resolve(this.deps.agentFolder, '.hoai', 'threads', state.rootId)
+    return ROOT_ID_RE.test(state.rootId) && resolve(state.folder) === expected ? expected : null
+  }
+
   private async removeLane(state: ThreadLaneState, opts: { deleteBranch: boolean }): Promise<void> {
     const { fs, git, agentFolder, home, configDir } = this.deps
-    if (state.worktree && state.folder) {
-      const removed = await git(['-C', agentFolder, 'worktree', 'remove', '--force', state.folder], agentFolder)
+    const folder = this.ownFolder(state)
+    if (state.folder && folder === null) {
+      this.deps.log(`threads: lane ${state.rootId} names a folder outside the threads folder, it is not removed`)
+    }
+    if (folder === null) {
+      // Nothing of the folder's: only the session files and the state below.
+    } else if (state.worktree) {
+      const removed = await git(['-C', agentFolder, 'worktree', 'remove', '--force', folder], agentFolder)
       if (!removed.ok) {
         try {
-          fs.rmrf(state.folder)
+          fs.rmrf(folder)
         } catch {}
         await git(['-C', agentFolder, 'worktree', 'prune'], agentFolder)
       }
       // Delete takes the thread's branch too, only that one and only once its
       // worktree is gone (git refuses a branch a worktree still has out).
-      if (opts.deleteBranch && !fs.exists(state.folder)) {
+      if (opts.deleteBranch && !fs.exists(folder)) {
         await git(['-C', agentFolder, 'branch', '-D', `hoai/thread-${state.rootId}`], agentFolder)
       }
-    } else if (state.folder) {
+    } else {
       try {
-        fs.rmrf(state.folder)
+        fs.rmrf(folder)
       } catch {}
     }
-    if (state.forkSessionId && state.cwd) {
+    if (state.forkSessionId && state.cwd && isSessionId(state.forkSessionId)) {
+      const transcript = sessionTranscriptPath(home, state.cwd, state.forkSessionId, configDir)
       try {
-        fs.unlink(sessionTranscriptPath(home, state.cwd, state.forkSessionId, configDir))
+        fs.unlink(transcript)
       } catch {}
+      // The session's own folder beside it (<id>/tool-results/, where the CLI
+      // keeps large tool outputs): named by the UUID, under the project dir.
+      if (transcript.endsWith(`${state.forkSessionId}.jsonl`)) {
+        try {
+          fs.rmrf(transcript.slice(0, -'.jsonl'.length))
+        } catch {}
+      }
     }
     try {
       fs.unlink(this.statePath(state.rootId))
