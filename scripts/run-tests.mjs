@@ -92,7 +92,7 @@ let nodeStatus = 0
 const nodeBatches = batches(parallelFiles, 'npx tsx --test'.length)
 nodeBatches.forEach((batch, i) => {
   const label = nodeBatches.length > 1 ? `node:test family, batch ${i + 1} of ${nodeBatches.length}` : 'node:test family'
-  const status = run(label, 'npx', ['tsx', '--test', ...batch])
+  const status = run(label, 'npx', ['tsx', '--test', '--test-concurrency=4', ...batch])
   if (status !== 0) nodeStatus = status
 })
 const chromiumBatches = batches(chromiumFiles, 'npx tsx --test --test-concurrency=1'.length)
@@ -102,7 +102,7 @@ chromiumBatches.forEach((batch, i) => {
   if (status !== 0) nodeStatus = status
 })
 const bunStatus = bunFiles.length
-  ? run('bun:test family', 'bun', ['test', ...bunFiles])
+  ? run('bun:test family', 'bun', ['test', '--max-concurrency=4', ...bunFiles])
   : 0
 
 if (nodeStatus !== 0 || bunStatus !== 0) {

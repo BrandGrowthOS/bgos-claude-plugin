@@ -250,6 +250,7 @@ async function runSite(
     readOwnVersion,
     __IMPORT_META_DIR: ROOT,
     CREDENTIALS_SELECTION: { kind: 'ok', path: 'credentials-1040.json', via: opts.via ?? 'sole-per-assistant' },
+    MARKETPLACE_ATTACH: null,
     CREDENTIALS_FILE: { backendUrl: backend.url, pairingToken: TOKEN, userId: 'u-1', assistantId: 1040 },
     // The machine id is READ for a report, never minted (the heartbeat mints it).
     ensureMachineId: () => assert.fail('a report never mints the machine id'),
@@ -339,7 +340,7 @@ const lockScope = () => ({
 // ── The twelve sites that report ────────────────────────────────────────────
 
 test('site 1, refuse_home_mismatch: the home refusal reports once (boot), with the route the resolver chose', async () => {
-  const site = one(ifWith("HOME_BINDING.action === 'refuse'"), 'the home refusal')
+  const site = one(ifWith("HOME_BINDING.action === 'refuse' && !MARKETPLACE_ATTACH"), 'the home refusal')
   const run = await runSite(text(site), {
     via: 'legacy',
     scope: {
@@ -649,7 +650,7 @@ test('a boot that goes passive is not delayed by a backend that never answers', 
 })
 
 test('the home refusal serves its notice at once and exits within the 2 s deadline when the backend never answers', async () => {
-  const site = one(ifWith("HOME_BINDING.action === 'refuse'"), 'the home refusal')
+  const site = one(ifWith("HOME_BINDING.action === 'refuse' && !MARKETPLACE_ATTACH"), 'the home refusal')
   let servedAtMs = -1
   const t = Date.now()
   const run = await runSite(text(site), {

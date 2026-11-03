@@ -56,6 +56,9 @@ type World = { home: string; configDir: string; workdir: string; userSettings: s
 
 function withWorld(fn: (w: World) => void) {
   const root = mkdtempSync(join(tmpdir(), 'hoai-deny-'))
+  // This fake HOME may live under the repository when TMPDIR is local. The
+  // real bootstrap's CommonJS snippet must not inherit our ESM package scope.
+  writeFileSync(join(root, 'package.json'), '{"type":"commonjs"}\n')
   const home = join(root, 'home')
   const configDir = join(home, '.claude')
   const workdir = join(root, 'agent')
