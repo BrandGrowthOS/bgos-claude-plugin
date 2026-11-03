@@ -284,6 +284,8 @@ import {
   MISSION_TITLE_MAX,
   type MissionSnapshot,
 } from './lib/missions.js'
+import { createMissionWorkingTracker, MISSION_WORKING_SWEEP_MS } from './lib/mission-working.ts'
+import { createMissionWorkingGeneration, createMissionWorkingWriteLock, hasUnconfirmedWorkingWrite } from './lib/mission-working-lock.ts'
 import {
   createMissionSelfWriteLedger,
   decideMissionNotice,
@@ -1752,7 +1754,7 @@ async function bgosPatch(path: string, body: Record<string, unknown>, privateHea
     async (response) => {
       if (!response.ok) {
         const text = await response.text().catch(() => '')
-        throw new Error(`PATCH ${response.status}: ${errorBodyText(text)}`)
+        throw new HttpError(`PATCH ${response.status}: ${errorBodyText(text)}`, response.status)
       }
       return response.json()
     },
@@ -3268,9 +3270,11 @@ const mcp = new Server(
       '   mission in another.',
       '7. Mark EVERY goal you are working on right now with',
       '   `set_goal_working` (goal_ids, working: true), as many as you run at',
-      '   once, and the card animates each one. The mark lapses after 30',
-      '   minutes: call it again within 30 minutes for every goal you are',
-      '   still on, and send working: false when you stop or hand one off. A',
+      '   once, and the card animates each one. Hooks refresh selected goals',
+      '   during tool activity at most once per 10 minutes. Stop clears the',
+      '   selection: select again on resuming. After 15 minutes without tool',
+      '   activity, marks clear until tools resume. Without hooks, refresh',
+      '   within 30 minutes. Send working: false when you hand a goal off. A',
       '   tick ends the mark, and a mark is not progress: it never ticks a',
       '   goal. When a goal waits on your owner or another agent, say so with',
       '   `set_goal_waiting` (goal_id, on "owner" or "agent", who, why), and',
@@ -5834,9 +5838,13 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'that mark, so the mission card animates every one of them at once. ' +
         'Pass every goal you are running in parallel in goal_ids, with ' +
         'working: true; pass working: false when you stop or hand a goal ' +
-        'off. REFRESH RULE: the mark lapses after 30 minutes, so call this ' +
-        'again with working: true within 30 minutes for every goal you are ' +
-        'still working on, or the card stops animating it. A tick ends the ' +
+        'off. In a hook-connected session, tool activity refreshes selected ' +
+        'goals at most once per 10 minutes. Stop or SessionEnd clears the ' +
+        'selection; select goals again when you resume. After 15 minutes ' +
+        'without tool activity, hooks clear the marks and restore them on ' +
+        'resumed activity. If hooks are unavailable, call this again with ' +
+        'working: true within 30 minutes for every goal you are still working ' +
+        'on, or the mark lapses. A tick ends the ' +
         'mark by itself, a ticked goal is refused, and a paused or closed ' +
         'mission takes no new mark. A mark is not progress: it never ticks a ' +
         'goal, so still call tick_mini_goal when a check is true. One request ' +
@@ -5857,8 +5865,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           working: {
             type: 'boolean',
             description:
-              'true: you are working on these goals now (send it again within ' +
-              '30 minutes to keep the mark). false: you are not any more.',
+              'true: select these goals for hook-driven refresh while tools run. ' +
+              'Without hooks, refresh within 30 minutes. false: deselect and clear.',
           },
           mission_id: {
             type: 'number',
@@ -8364,6 +8372,8 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
     }
 
     case 'set_goal_working': {
+      // Freeze the session before mission lookup and all per-goal awaits.
+      const workingContext = missionWorking.capture(hookIntake?.bound() ?? '')
       // Every id and the flag are judged BEFORE anything is read or written,
       // so a typo in the list never leaves half the goals marked.
       const built = buildMissionGoalWorkingInput({
@@ -8391,7 +8401,6 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
           }
         }
         const { goalIds, working } = built.body
-        const paths: string[] = []
         for (const goalId of goalIds) {
           const builtPath = buildMissionGoalWorkingPath(ASSISTANT_ID, missionId, goalId)
           if (!builtPath.ok) {
@@ -8400,7 +8409,6 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
               isError: true,
             }
           }
-          paths.push(builtPath.path)
         }
         // The backend takes ONE goal per request, so the marks go one by one,
         // in the order given. A refusal (a ticked goal, a paused mission) is
@@ -8417,7 +8425,10 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
           // owner's next Pause or Resume (lib/missions.ts MISSION_MARK_TOOLS).
           // The landed stamp below is what answers for this write's echo.
           try {
-            const result = (await bgosPatch(paths[i]!, { working }, privateCall!.headers)) as {
+            const result = (await missionWorking.mark({
+              sessionId: workingContext.sessionId, context: workingContext, missionId, goalId, working,
+              headers: privateCall!.headers,
+            })) as {
               mission?: MissionSnapshot
             }
             if (!result?.mission) {
@@ -8442,9 +8453,12 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
         if (marked.length > 0) {
           lines.push(
             working
-              ? `Marked working: ${named(marked)}. Call set_goal_working again with working: ` +
-                  `true within ${MISSION_GOAL_WORKING_REFRESH_MINUTES} minutes for each goal you ` +
-                  'are still on, or the mark lapses; send working: false when you stop.'
+              ? `Marked working: ${named(marked)}. ` +
+                  (workingContext.sessionId
+                    ? 'Hook activity refreshes selected goals; Stop clears the selection, so select again when you resume. Without hooks, '
+                    : 'There is no bound hook session for this mark; ') +
+                  `refresh within ${MISSION_GOAL_WORKING_REFRESH_MINUTES} minutes. ` +
+                  'Send working: false when you stop or hand a goal off.'
               : `Working mark cleared: ${named(marked)}.`,
           )
         }
@@ -10422,6 +10436,20 @@ const hookRailRefusedChats = createRefusedChats()
  *  which then answer the model locally instead of posting again. */
 const a2aRouteRefusedChats = createRefusedChats()
 let hookIntake: HookIntake | null = null
+let missionWorkingTimer: ReturnType<typeof setInterval> | null = null
+const missionWorking = createMissionWorkingTracker({
+  isArmed: () => channelArmed && lockHeld,
+  hasAuthority: () => pairingLockNamesThisDaemon(),
+  withWriteLock: createMissionWorkingWriteLock(`${PAIRING_LOCK_PATH}.working-writes`),
+  generation: createMissionWorkingGeneration(`${PAIRING_LOCK_PATH}.working-writes`),
+  hasUnconfirmedWrite: (scope) => hasUnconfirmedWorkingWrite(`${PAIRING_LOCK_PATH}.working-writes`, scope),
+  patch: (scope, working) => {
+    const built = buildMissionGoalWorkingPath(ASSISTANT_ID, scope.missionId, scope.goalId)
+    if (!built.ok) return Promise.reject(new Error(built.error))
+    return bgosPatch(built.path, { working }, scope.headers)
+  },
+  onMission: (mission) => rememberMissionSelfWrite(mission),
+})
 
 /**
  * Where a hook row is posted.
@@ -10966,6 +10994,9 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
   // with the Stop hook at the Stop, before the next prompt's hook can run. Its receivedAt comes after the forwarder's
   // cold start and stdin read, which can be after the next prompt's marker (the re-review of c09e214e).
   const lineAt = line?.startedAt ?? receivedAt
+  // Use the event's own time: a delayed spool line is not fresh activity.
+  // Fire and forget. A working-mark failure cannot block the tool or intake.
+  void missionWorking.onHook(payload, lineAt).catch(() => {})
   // The payload carries the CLI's own transcript_path, which is the strongest
   // binding evidence there is (lib/session-binding.ts). Feeding it here is what
   // lets the context gauge stop guessing.
@@ -11064,6 +11095,10 @@ function startHookIntakeIfHolder(): void {
       },
       log,
     })
+    if (missionWorkingTimer === null) {
+      missionWorkingTimer = setInterval(() => { void missionWorking.sweep().catch(() => {}) }, MISSION_WORKING_SWEEP_MS)
+      missionWorkingTimer.unref?.()
+    }
     log(`hook intake: draining ${hooksRoot(root)} (this daemon holds the pairing lock)`)
   } catch (err) {
     // A missing state directory or an unavailable watch must never stop a boot.
@@ -11073,7 +11108,9 @@ function startHookIntakeIfHolder(): void {
 }
 
 /** Stop consuming. Called on stand down and on exit, idempotent. */
-function stopHookIntake(): void {
+function stopHookIntake(): Promise<void> {
+  if (missionWorkingTimer !== null) clearInterval(missionWorkingTimer)
+  missionWorkingTimer = null
   try {
     hookIntake?.stop()
   } catch {
@@ -11089,6 +11126,7 @@ function stopHookIntake(): void {
   hookTurnCardKey = null
   hookCardIds.clear()
   stopHookStepsHeartbeat()
+  return missionWorking.stop().catch(() => {})
 }
 
 /**
@@ -18212,27 +18250,35 @@ async function main(): Promise<void> {
     shuttingDown = true
     log(describeShutdownCause(cause))
     selfUpdater?.markGracefulStop()
-    stopHookIntake()
-    // A clean stop takes the published state away (only when it is ours), so
-    // the watcher never reads a dead daemon's "idle" as a live one's.
-    agentStatePublisher.shutdown()
-    flushChatCursors()
-    // No-op unless this daemon still owns the lock.
-    releasePairingLock({ lockPath: PAIRING_LOCK_PATH, selfPid: process.pid })
-    // Never leave a sign-in child behind (lib/auth-login.ts).
-    loginController.dispose()
-    // Nor a thread lane or a By the way fork (lib/thread-lanes.ts,
-    // lib/aside-fork.ts): a bounded wait for them, only when one runs.
-    const threadChildrenDown = stopThreadChildren()
-    if (threadChildrenDown) {
-      void threadChildrenDown.then(() => {
-        browserHost?.stop()
-        process.exit(code)
-      })
-      return
+    const workingStopped = stopHookIntake()
+    // Give session-death clears a bounded chance before releasing authority.
+    // SIGKILL and a failed backend still rely on the server's lease expiry.
+    const finish = () => {
+      // A clean stop takes the published state away (only when it is ours), so
+      // the watcher never reads a dead daemon's "idle" as a live one's.
+      agentStatePublisher.shutdown()
+      flushChatCursors()
+      // No-op unless this daemon still owns the lock.
+      releasePairingLock({ lockPath: PAIRING_LOCK_PATH, selfPid: process.pid })
+      // Never leave a sign-in child behind (lib/auth-login.ts).
+      loginController.dispose()
+      // Nor a thread lane or a By the way fork (lib/thread-lanes.ts,
+      // lib/aside-fork.ts): a bounded wait for them, only when one runs.
+      const threadChildrenDown = stopThreadChildren()
+      if (threadChildrenDown) {
+        void threadChildrenDown.then(() => {
+          browserHost?.stop()
+          process.exit(code)
+        })
+        return
+      }
+      browserHost?.stop()
+      process.exit(code)
     }
-    browserHost?.stop()
-    process.exit(code)
+    void Promise.race([
+      workingStopped,
+      new Promise<void>(resolve => setTimeout(resolve, 2000)),
+    ]).finally(finish)
   }
   // Sync backstop for any exit that did NOT route through shutdown() (a natural
   // exit, or the uncaughtException handler's process.exit(1) below): flush the

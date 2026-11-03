@@ -905,6 +905,51 @@ turn, which is a pause it can honestly enforce, so `mission_pause` and
 `mission_goal_loop` are declared there and absent everywhere else. Mark done and
 Set aside have always reached the agent, and they end the mission.
 
+### Working marks follow session activity
+
+Call `set_goal_working` with `goal_ids: [2, 3]` and `working: true` to select
+all the goals you are working on, including parallel work. The agent chooses
+the goals; hooks never guess them from a command or a task description.
+`working: false` deselects and clears the named goals. A mark never ticks a goal.
+
+In a session connected to the hook intake, `PreToolUse`, `PostToolUse` and
+`PostToolUseFailure` keep selected goals fresh, with at most one automatic
+refresh attempt per goal every 10 minutes, including failed attempts. After
+15 minutes without a tool event, a daemon sweep clears the marks within the
+next 30 seconds. Tool activity can restore an idle selection. `Stop` and
+`SessionEnd` clear and forget the session's selections; select goals again
+when resuming work. A new prompt also clears old selections if Stop was missed.
+Helper tool activity counts for the parent session. A helper ending does not
+clear other workers' goals; the parent session's Stop clears all its selections.
+A single tool running silently for 15 minutes reaches the same idle threshold.
+
+The existing asynchronous forwarder writes only the hook spool, and the daemon
+uses the original acting-user scope for HTTP. No credentials are added to hook
+files or logs. Background failures never block a tool call, failed clears are
+retried, and HTTP 409 drops the refused goal. Marketplace and clone installs
+use their existing hook registrations. A disconnected session needs manual
+refresh within 30 minutes. If the daemon is killed or the backend stays down,
+the backend's existing 30-minute expiry is the final bound on a stale mark.
+
+HTTP 400, 403 and 404 also retire refused goals. Other failed clears back off
+from 30 seconds to ten minutes. A daemon that loses the pairing lock retires
+its local ownership; it must not clear the new holder's marks.
+Passive sessions can still explicitly mark or clear goals without a bound hook
+session. These writes use the same per-goal queue. Successful manual marks do
+not become hook-owned selections. Queue tickets include the process start identity
+so a reused PID cannot keep an orphan ticket alive. Unreadable identities and
+legacy tickets without one remain conservative; uncertain HTTP receipts are
+preserved independently of queue cleanup.
+
+If a working request times out or loses its response, its remote outcome may
+still be unknown. The daemon preserves cleanup for that goal but refuses new
+`working: true` selections until the old write can be safely reconciled.
+This fence survives a daemon restart and has no automatic expiry; other goals
+remain usable. Cleanup can repeat with backoff if an old true arrives late.
+Safe recovery requires confirmation that the old server operation cannot
+still run, or a server-enforced conditional write. Restarting alone does not
+provide that confirmation.
+
 ## Keep working until it is done: the goal lane (v0.42.0+)
 
 Claude Code has a goal loop of its own. A person types `/goal <condition>` in
