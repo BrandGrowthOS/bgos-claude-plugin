@@ -384,6 +384,67 @@ test('timestamped edits can revert text and reject a stale replay', async () => 
   assert.ok(h.run.notifications[2]!.content.includes('> first'))
 })
 
+// Inject the event/snapshot separately from the backend's current row so that
+// replayed frames and stale poll pages cannot silently change the authority.
+async function deliverTimestampedEdit(h: ReturnType<typeof harness>, lane: 'socket' | 'poll' | 'stream', text: string, updatedAt: string) {
+  if (lane === 'socket') h.listeners.get('message_edited')?.(frame(text, { updatedAt }))
+  else if (lane === 'stream') await h.api.applyStreamUpdate({
+    seq: 20, kind: 'message_edited', chatId: Number(CHAT), messageId: 9001,
+    payload: frame(text, { updatedAt }),
+  })
+  else {
+    const read = h.scope.bgosGet as (path: string) => Promise<unknown>
+    h.scope.bgosGet = async (path: string) => path.includes('limit=1&')
+      ? read(path)
+      : { messages: [row(text, { updatedAt })], hasMore: false }
+    try { await h.poll() } finally { h.scope.bgosGet = read }
+  }
+  await h.drain()
+}
+
+for (const lane of ['socket', 'poll', 'stream'] as const) {
+  for (const [precision, bTime, cTime] of [
+    ['identical timestamps', '2026-11-03T10:02:00.000Z', '2026-11-03T10:02:00.000Z'],
+    ['microsecond timestamps', '2026-11-03T10:02:00.000100Z', '2026-11-03T10:02:00.000900Z'],
+  ] as const) {
+    test(`review R4: ${lane} rejects replayed B after C with ${precision}`, async () => {
+      const h = harness()
+      await h.socket('A', { updatedAt: '2026-11-03T10:00:00Z' })
+      h.persist('B', { updatedAt: bTime })
+      await deliverTimestampedEdit(h, lane, 'B', bTime)
+      h.persist('C', { updatedAt: cTime })
+      await deliverTimestampedEdit(h, lane, 'C', cTime)
+      assert.equal(h.run.notifications.length, 3, 'the legitimate equal-time edit arrives')
+      assert.ok(h.run.notifications[1]!.content.includes('> B'))
+      assert.ok(h.run.notifications[2]!.content.includes('> C'))
+
+      await deliverTimestampedEdit(h, lane, 'B', bTime)
+      assert.equal(h.run.notifications.length, 3, 'the current row is still C; replayed B must not become a fourth card')
+      await h.poll()
+      assert.equal(h.run.notifications.length, 3, 'the next poll must not send a restoring C card')
+      assert.ok(h.run.notifications.every(n => Object.values(n.meta).every(v => typeof v === 'string')))
+    })
+
+    test(`review R4: ${lane} delivers a later edit and genuine revert with ${precision}`, async () => {
+      const h = harness()
+      await h.socket('A', { updatedAt: '2026-11-03T10:00:00Z' })
+      h.persist('B', { updatedAt: bTime })
+      await deliverTimestampedEdit(h, lane, 'B', bTime)
+      h.persist('C', { updatedAt: cTime })
+      await deliverTimestampedEdit(h, lane, 'C', cTime)
+      assert.equal(h.run.notifications.length, 3, 'timestamp equality must not discard the current C')
+      assert.ok(h.run.notifications[2]!.content.includes('> C'))
+
+      h.persist('B', { updatedAt: cTime })
+      await deliverTimestampedEdit(h, lane, 'B', cTime)
+      assert.equal(h.run.notifications.length, 4, 'the authoritative revert is a new correction even at the same time')
+      assert.ok(h.run.notifications[3]!.content.includes('> B'))
+      await h.poll()
+      assert.equal(h.run.notifications.length, 4, 'the genuine revert is delivered once')
+    })
+  }
+}
+
 test('edits of slash-looking text are quoted and never execute a daemon command', async () => {
   const h = harness()
   await h.socket('hello')

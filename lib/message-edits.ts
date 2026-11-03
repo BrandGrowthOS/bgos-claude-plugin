@@ -154,9 +154,13 @@ export class HumanMessageEdits {
     if (!entry || this.isDeleted(view) || !isHuman(view) || typeof view.raw.text !== 'string') return false
     const result = entry.tail.then(async () => {
       if (this.entries.get(key) !== entry || entry.generation > readGeneration) return false
-      // A different unversioned text can be a replay or a genuine revert.
+      // Unversioned text and timestamp collisions can be replays or genuine edits.
       // Only an unconditional authoritative read can distinguish those cases.
-      if (view.text !== entry.view.text && humanEditTime(view) === null && editRevision(view) === null) {
+      const incomingTime = humanEditTime(view)
+      const incomingRevision = editRevision(view)
+      const ambiguousTime = incomingTime !== null && incomingTime === entry.time &&
+        (incomingRevision === null || entry.revision === null)
+      if (view.text !== entry.view.text && ((incomingTime === null && incomingRevision === null) || ambiguousTime)) {
         const current = await reconcile?.(view)
         if (!current || current.chatId !== view.chatId || current.messageId !== view.messageId || !isHuman(current)) return false
         view = current
