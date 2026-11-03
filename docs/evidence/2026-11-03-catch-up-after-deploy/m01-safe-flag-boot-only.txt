@@ -12,30 +12,34 @@ chatsPolledSinceBoot.has(chatId) ||
 exit=1
 
 ▶ hole 1: the reconnect skip
-  ✔ rows missed around a deploy, then a live message beats the catch up read: every row once, oldest first (11599.910448ms)
-  ✔ the catch up read fails, then a live message: the rows under it are still read, every row once (10931.296693ms)
-  ✔ the read a live message waits for fails: the message goes through, and the rows under it still arrive, each once (12453.842765ms)
-  ✔ a read that started before the socket came back is not the catch up: rows it could not see still arrive before a live message (17139.628285ms)
-✔ hole 1: the reconnect skip (28074.083319ms)
+  ✔ rows missed around a deploy, then a live message beats the catch up read: every row once, oldest first (5681.434124ms)
+  ✔ the catch up read fails, then a live message: the rows under it are still read, every row once (7733.21447ms)
+  ✔ the read a live message waits for fails: the message goes through, and the rows under it still arrive, each once (8537.034651ms)
+  ✔ a read that started before the socket came back is not the catch up: rows it could not see still arrive before a live message (14773.890698ms)
+  ✔ a live message does not overtake one that still waits for a read (7865.915548ms)
+  ✔ a daemon that stood down and took the lock back: a row of the passive spell goes before the next live message (13170.344375ms)
+  ✔ a live message behind a failed boot read is framed live, and the rows under it as backlog (3700.097843ms)
+✔ hole 1: the reconnect skip (21710.745391ms)
 ▶ a reconnect or a failure in the middle of a page
-  ✔ the socket drops and comes back while an older page is in flight, a live message lands: every row once, oldest first (7970.981306ms)
-  ✔ an older page fails: nothing is lost or repeated, and the next read starts over without a validator on any page (19326.725055ms)
-  ✔ the daemon restarts while an older page is in flight: every row once, oldest first, across both lives (10169.546538ms)
-✔ a reconnect or a failure in the middle of a page (19327.373334ms)
-✖ a frame that reaches the socket lane while the chat is behind this connection moves no cursor, and reads the chat (70.004876ms)
-ℹ tests 8
+  ✔ the socket drops and comes back while an older page is in flight, a live message lands: every row once, oldest first (16837.098144ms)
+  ✔ an older page fails: nothing is lost or repeated, and the next read starts over without a validator on any page (12613.09205ms)
+  ✔ the daemon restarts while an older page is in flight: every row once, oldest first, across both lives (10909.445706ms)
+  ✔ a read that starts during a walk is not answered 304 by the walk's first page: a live message after it does not overtake the walk (15605.515404ms)
+✔ a reconnect or a failure in the middle of a page (26516.063955ms)
+✖ a frame that reaches the socket lane while the chat is behind this connection moves no cursor, and reads the chat (82.817064ms)
+ℹ tests 12
 ℹ suites 2
-ℹ pass 7
+ℹ pass 11
 ℹ fail 1
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 47789.535288
+ℹ duration_ms 48797.771354
 
 ✖ failing tests:
 
 test at test/external-email-label.test.ts:32:2974
-✖ a frame that reaches the socket lane while the chat is behind this connection moves no cursor, and reads the chat (70.004876ms)
+✖ a frame that reaches the socket lane while the chat is behind this connection moves no cursor, and reads the chat (82.817064ms)
   AssertionError [ERR_ASSERTION]: behind: delivered, no bump, a read
   + actual - expected
   
@@ -49,7 +53,7 @@ test at test/external-email-label.test.ts:32:2974
   -   ]
     }
   
-      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m01-safe-flag-boot-only.eg4_wg5u/test/external-email-label.test.ts:823:10)
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m01-safe-flag-boot-only.83b4yjb9/test/external-email-label.test.ts:823:10)
       at Test.runInAsyncScope (node:async_hooks:227:14)
       at Test.run (node:internal/test_runner/test:1402:25)
       at Test.start (node:internal/test_runner/test:1262:17)

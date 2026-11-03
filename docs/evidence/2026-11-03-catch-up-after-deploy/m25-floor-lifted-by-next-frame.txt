@@ -9,8 +9,8 @@ file: server.ts
 
 exit=1
 
-✖ the read floor: set once under the first move past unread rows, kept while the socket stays ahead of the reads (49.239773ms)
-✔ a cursor taken from the shared file drops the read floor: the holder delivered those rows, and its ids are not in this process (6.408699ms)
+✖ the read floor: set once under the first move past unread rows, kept while the socket stays ahead of the reads (48.015625ms)
+✔ a cursor taken from the shared file drops the read floor: the holder delivered those rows, and its ids are not in this process (6.074905ms)
 ℹ tests 2
 ℹ suites 0
 ℹ pass 1
@@ -18,17 +18,17 @@ exit=1
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 808.616005
+ℹ duration_ms 734.067339
 
 ✖ failing tests:
 
 test at test/external-email-label.test.ts:32:4041
-✖ the read floor: set once under the first move past unread rows, kept while the socket stays ahead of the reads (49.239773ms)
+✖ the read floor: set once under the first move past unread rows, kept while the socket stays ahead of the reads (48.015625ms)
   AssertionError [ERR_ASSERTION]: a later live message does not lift it over the rows still unread
   
   105 !== 100
   
-      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m25-floor-lifted-by-next-frame.y28xibcy/test/external-email-label.test.ts:848:10)
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m25-floor-lifted-by-next-frame.cs4p939d/test/external-email-label.test.ts:848:10)
       at Test.runInAsyncScope (node:async_hooks:227:14)
       at Test.run (node:internal/test_runner/test:1402:25)
       at Test.start (node:internal/test_runner/test:1262:17)

@@ -5,52 +5,26 @@ file: server.ts
 { conditional: false, callerAssistantId: ASSISTANT_ID },
 +++ added
 { cacheKey: req.cacheKey, callerAssistantId: ASSISTANT_ID },
-exit=1
+exit=0
 
 ▶ hole 2: the newest 50
-  ✔ a deploy with more than 50 missed rows in each of several chats: every row once, oldest first, in every chat (8600.444054ms)
-  ✔ the boot read: 120 rows above a persisted cursor all arrive once, oldest first, framed as backlog (2280.607384ms)
-  ✔ the limit is 50 rows of any sender: 60 rows of owner and agent turns lose no owner row (14697.593641ms)
-  ✔ a chat with open buttons, which every poll reads in full: 120 missed rows all arrive once (12325.715468ms)
-  ✔ an idle chat with a long history costs one conditional read: no page below the cursor, ever (8981.791894ms)
-✔ hole 2: the newest 50 (17583.385161ms)
+  ✔ a deploy with more than 50 missed rows in each of several chats: every row once, oldest first, in every chat (9813.707158ms)
+  ✔ the boot read: 120 rows above a persisted cursor all arrive once, oldest first, framed as backlog (2256.029969ms)
+  ✔ the limit is 50 rows of any sender: 60 rows of owner and agent turns lose no owner row (9334.307949ms)
+  ✔ a chat with open buttons, which every poll reads in full: 120 missed rows all arrive once (11002.183358ms)
+  ✔ an idle chat with a long history costs one conditional read: no page below the cursor, ever (8571.992897ms)
+✔ hole 2: the newest 50 (17910.310051ms)
 ▶ a reconnect or a failure in the middle of a page
-  ✔ the socket drops and comes back while an older page is in flight, a live message lands: every row once, oldest first (13446.132528ms)
-  ✖ an older page fails: nothing is lost or repeated, and the next read starts over without a validator on any page (13980.758617ms)
-  ✔ the daemon restarts while an older page is in flight: every row once, oldest first, across both lives (14535.072962ms)
-✖ a reconnect or a failure in the middle of a page (14536.282036ms)
-ℹ tests 8
+  ✔ the socket drops and comes back while an older page is in flight, a live message lands: every row once, oldest first (17556.727835ms)
+  ✔ an older page fails: nothing is lost or repeated, and the next read starts over without a validator on any page (22160.948293ms)
+  ✔ the daemon restarts while an older page is in flight: every row once, oldest first, across both lives (12699.645961ms)
+  ✔ a read that starts during a walk is not answered 304 by the walk's first page: a live message after it does not overtake the walk (22056.458125ms)
+✔ a reconnect or a failure in the middle of a page (34757.346329ms)
+ℹ tests 9
 ℹ suites 2
-ℹ pass 7
-ℹ fail 1
+ℹ pass 9
+ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 32516.297818
-
-✖ failing tests:
-
-test at test/catch-up-after-deploy.e2e.test.ts:3:15302
-✖ an older page fails: nothing is lost or repeated, and the next read starts over without a validator on any page (13980.758617ms)
-  AssertionError [ERR_ASSERTION]: an older page never rides a validator: a 304 there is a page with no rows
-  + actual - expected
-  
-  + [
-  +   351,
-  +   351,
-  +   151
-  + ]
-  - []
-  
-      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m08-older-pages-conditional.vsfn9db7/test/catch-up-after-deploy.e2e.test.ts:901:14)
-      at async Test.run (node:internal/test_runner/test:1409:7)
-      at async Promise.all (index 1)
-      at async Suite.run (node:internal/test_runner/test:1905:7)
-      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
-    generatedMessage: false,
-    code: 'ERR_ASSERTION',
-    actual: [ 351, 351, 151 ],
-    expected: [],
-    operator: 'deepStrictEqual',
-    diff: 'simple'
-  }
+ℹ duration_ms 53070.288767

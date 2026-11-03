@@ -10,10 +10,10 @@ file: lib/poll-core.ts
 exit=1
 
 ▶ hole 2: the newest 50
-  ✖ an idle chat with a long history costs one conditional read: no page below the cursor, ever (8672.979859ms)
-✖ hole 2: the newest 50 (8674.473723ms)
-✖ with a cursor the walk goes on until the rows touch it (3.487218ms)
-✖ hasMore alone never walks past the cursor: a long chat with an idle cursor costs one read (0.254665ms)
+  ✖ an idle chat with a long history costs one conditional read: no page below the cursor, ever (12546.830311ms)
+✖ hole 2: the newest 50 (12548.3491ms)
+✖ with a cursor the walk goes on until the rows touch it (3.420262ms)
+✖ hasMore alone never walks past the cursor: a long chat with an idle cursor costs one read (0.241567ms)
 ℹ tests 3
 ℹ suites 1
 ℹ pass 0
@@ -21,12 +21,12 @@ exit=1
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 9045.332906
+ℹ duration_ms 12915.908872
 
 ✖ failing tests:
 
-test at test/catch-up-after-deploy.e2e.test.ts:3:8980
-✖ an idle chat with a long history costs one conditional read: no page below the cursor, ever (8672.979859ms)
+test at test/catch-up-after-deploy.e2e.test.ts:3:13085
+✖ an idle chat with a long history costs one conditional read: no page below the cursor, ever (12546.830311ms)
   AssertionError [ERR_ASSERTION]: no page below the cursor
   + actual - expected
   
@@ -35,7 +35,7 @@ test at test/catch-up-after-deploy.e2e.test.ts:3:8980
   + ]
   - []
   
-      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m07-walk-past-cursor.g3qksvdr/test/catch-up-after-deploy.e2e.test.ts:717:14)
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m07-walk-past-cursor.vxkfog2y/test/catch-up-after-deploy.e2e.test.ts:855:14)
       at async Test.run (node:internal/test_runner/test:1409:7)
       at async Promise.all (index 4)
       at async Suite.run (node:internal/test_runner/test:1905:7)
@@ -49,12 +49,12 @@ test at test/catch-up-after-deploy.e2e.test.ts:3:8980
   }
 
 test at test/catch-up-paging.test.ts:1:2333
-✖ with a cursor the walk goes on until the rows touch it (3.487218ms)
+✖ with a cursor the walk goes on until the rows touch it (3.420262ms)
   AssertionError [ERR_ASSERTION]: the next row above the cursor is in hand
   
   true !== false
   
-      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m07-walk-past-cursor.g3qksvdr/test/catch-up-paging.test.ts:88:10)
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m07-walk-past-cursor.vxkfog2y/test/catch-up-paging.test.ts:88:10)
       at Test.runInAsyncScope (node:async_hooks:227:14)
       at Test.run (node:internal/test_runner/test:1402:25)
       at Test.start (node:internal/test_runner/test:1262:17)
@@ -68,12 +68,12 @@ test at test/catch-up-paging.test.ts:1:2333
   }
 
 test at test/catch-up-paging.test.ts:1:2743
-✖ hasMore alone never walks past the cursor: a long chat with an idle cursor costs one read (0.254665ms)
+✖ hasMore alone never walks past the cursor: a long chat with an idle cursor costs one read (0.241567ms)
   AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
   
   true !== false
   
-      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m07-walk-past-cursor.g3qksvdr/test/catch-up-paging.test.ts:95:10)
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m07-walk-past-cursor.vxkfog2y/test/catch-up-paging.test.ts:95:10)
       at Test.runInAsyncScope (node:async_hooks:227:14)
       at Test.run (node:internal/test_runner/test:1402:25)
       at Test.processPendingSubtests (node:internal/test_runner/test:974:18)

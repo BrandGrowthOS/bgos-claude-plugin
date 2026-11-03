@@ -11,34 +11,33 @@ file: server.ts
 exit=1
 
 ▶ what a long read must not break
-  ✔ a walk that outlasts the lock's 15 seconds inside a tick keeps the lock fresh (32764.026728ms)
-  ✔ a daemon that stands down during a walk reads no further page and delivers nothing (15545.849083ms)
-  ✖ a wake card that never fills does not pin the cursor: the rows above it arrive once and the next read starts above them (13881.173975ms)
-  ✔ a wake card inside the newest page still waits for its body, and arrives once with it (13919.069832ms)
-  ✔ a drain of 600 rows in one chat does not make the daemon forget what it handed over in another (21058.656031ms)
-✖ what a long read must not break (36607.590862ms)
-ℹ tests 5
+  ✔ a walk that outlasts the lock's 15 seconds inside a tick keeps the lock fresh (32715.111638ms)
+  ✔ a daemon that stands down during a walk reads no further page and delivers nothing (21725.756445ms)
+  ✔ a daemon that stands down during the last older page delivers nothing (9960.014494ms)
+  ✖ a wake card that never fills does not pin the cursor: the rows above it arrive once and the next read starts above them (19077.134082ms)
+  ✔ a wake card inside the newest page still waits for its body, and arrives once with it (11281.523433ms)
+  ✔ a drain of 600 rows in one chat does not make the daemon forget what it handed over in another (16774.187639ms)
+✖ what a long read must not break (45814.966391ms)
+ℹ tests 6
 ℹ suites 1
-ℹ pass 4
+ℹ pass 5
 ℹ fail 1
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 37008.631015
+ℹ duration_ms 46186.441532
 
 ✖ failing tests:
 
-test at test/catch-up-after-deploy.e2e.test.ts:3:19407
-✖ a wake card that never fills does not pin the cursor: the rows above it arrive once and the next read starts above them (13881.173975ms)
+test at test/catch-up-after-deploy.e2e.test.ts:3:25804
+✖ a wake card that never fills does not pin the cursor: the rows above it arrive once and the next read starts above them (19077.134082ms)
   AssertionError [ERR_ASSERTION]: the abandoned card no longer holds the read position down
   
   100 !== 170
   
-      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m09-parks-on-any-page.7xv1e4x6/test/catch-up-after-deploy.e2e.test.ts:1016:14)
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m09-parks-on-any-page.0p44h0a_/test/catch-up-after-deploy.e2e.test.ts:1213:14)
       at async Test.run (node:internal/test_runner/test:1409:7)
-      at async Promise.all (index 2)
-      at async Suite.run (node:internal/test_runner/test:1905:7)
-      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+      at async Suite.processPendingSubtests (node:internal/test_runner/test:974:7) {
     generatedMessage: false,
     code: 'ERR_ASSERTION',
     actual: 100,

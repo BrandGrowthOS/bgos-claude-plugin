@@ -9,10 +9,10 @@ file: lib/poll-core.ts
 exit=1
 
 ▶ hole 3: a chat that started empty
-  ✔ a genuine first install: 60 recent rows above 300 dormant ones, only the recent arrive, and the walk stops at the window (2151.278594ms)
-✔ hole 3: a chat that started empty (2152.514695ms)
-✖ a first read reaching rows below the first run gate stops: dormant history is not walked (2.901144ms)
-✖ the walk's stop agrees with the selection: it stops exactly where more rows change nothing (0.771499ms)
+  ✔ a genuine first install: 60 recent rows above 300 dormant ones, only the recent arrive, and the walk stops at the window (2245.881567ms)
+✔ hole 3: a chat that started empty (2247.279116ms)
+✖ a first read reaching rows below the first run gate stops: dormant history is not walked (8.490573ms)
+✖ the walk's stop agrees with the selection: it stops exactly where more rows change nothing (0.853075ms)
 ℹ tests 3
 ℹ suites 1
 ℹ pass 1
@@ -20,17 +20,17 @@ exit=1
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 2519.84077
+ℹ duration_ms 2653.413797
 
 ✖ failing tests:
 
 test at test/catch-up-paging.test.ts:1:3846
-✖ a first read reaching rows below the first run gate stops: dormant history is not walked (2.901144ms)
+✖ a first read reaching rows below the first run gate stops: dormant history is not walked (8.490573ms)
   AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
   
   true !== false
   
-      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m15-no-gate-stop.3zobl2bg/test/catch-up-paging.test.ts:125:10)
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m15-no-gate-stop.d2p8e_kq/test/catch-up-paging.test.ts:125:10)
       at Test.runInAsyncScope (node:async_hooks:227:14)
       at Test.run (node:internal/test_runner/test:1402:25)
       at Test.start (node:internal/test_runner/test:1262:17)
@@ -44,12 +44,12 @@ test at test/catch-up-paging.test.ts:1:3846
   }
 
 test at test/catch-up-paging.test.ts:1:5221
-✖ the walk's stop agrees with the selection: it stops exactly where more rows change nothing (0.771499ms)
+✖ the walk's stop agrees with the selection: it stops exactly where more rows change nothing (0.853075ms)
   AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
   
   true !== false
   
-      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m15-no-gate-stop.3zobl2bg/test/catch-up-paging.test.ts:164:12)
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m15-no-gate-stop.d2p8e_kq/test/catch-up-paging.test.ts:164:12)
       at Test.runInAsyncScope (node:async_hooks:227:14)
       at Test.run (node:internal/test_runner/test:1402:25)
       at Test.processPendingSubtests (node:internal/test_runner/test:974:18) {

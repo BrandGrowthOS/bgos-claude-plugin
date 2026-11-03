@@ -9,9 +9,9 @@ file: lib/poll-core.ts
 
 exit=1
 
-✖ a row the server repeats on an older page is taken once (3.73649ms)
-✖ a server that ignores beforeId cannot spin the walk: it stops, says so, and keeps what it has (0.203143ms)
-✔ an empty page that still claims more cannot spin the walk either (0.283416ms)
+✖ a row the server repeats on an older page is taken once (3.264615ms)
+✖ a server that ignores beforeId cannot spin the walk: it stops, says so, and keeps what it has (0.188816ms)
+✔ an empty page that still claims more cannot spin the walk either (0.277107ms)
 ℹ tests 3
 ℹ suites 0
 ℹ pass 1
@@ -19,12 +19,12 @@ exit=1
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 182.490107
+ℹ duration_ms 145.542195
 
 ✖ failing tests:
 
 test at test/catch-up-paging.test.ts:1:8447
-✖ a row the server repeats on an older page is taken once (3.73649ms)
+✖ a row the server repeats on an older page is taken once (3.264615ms)
   AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
   + actual - expected
   
@@ -35,7 +35,7 @@ test at test/catch-up-paging.test.ts:1:8447
       11
     ]
   
-      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m22-no-progress-guard.u7lyl5uh/test/catch-up-paging.test.ts:254:10)
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m22-no-progress-guard.95j6y7ka/test/catch-up-paging.test.ts:254:10)
       at async Test.run (node:internal/test_runner/test:1409:7)
       at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
     generatedMessage: true,
@@ -47,11 +47,11 @@ test at test/catch-up-paging.test.ts:1:8447
   }
 
 test at test/catch-up-paging.test.ts:1:9423
-✖ a server that ignores beforeId cannot spin the walk: it stops, says so, and keeps what it has (0.203143ms)
+✖ a server that ignores beforeId cannot spin the walk: it stops, says so, and keeps what it has (0.188816ms)
   Error: the walk is spinning
-      at fetchOlder (/home/karim/lane-tmp/d041/mut/m22-no-progress-guard.u7lyl5uh/test/catch-up-paging.test.ts:288:30)
-      at <anonymous> (/home/karim/lane-tmp/d041/mut/m22-no-progress-guard.u7lyl5uh/lib/poll-core.ts:329:26)
-      at async Object.during (/home/karim/lane-tmp/d041/mut/m22-no-progress-guard.u7lyl5uh/test/catch-up-paging.test.ts:223:16)
-      at async TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m22-no-progress-guard.u7lyl5uh/test/catch-up-paging.test.ts:292:21)
+      at fetchOlder (/home/karim/lane-tmp/d041/mut/m22-no-progress-guard.95j6y7ka/test/catch-up-paging.test.ts:288:30)
+      at <anonymous> (/home/karim/lane-tmp/d041/mut/m22-no-progress-guard.95j6y7ka/lib/poll-core.ts:329:26)
+      at async Object.during (/home/karim/lane-tmp/d041/mut/m22-no-progress-guard.95j6y7ka/test/catch-up-paging.test.ts:223:16)
+      at async TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m22-no-progress-guard.95j6y7ka/test/catch-up-paging.test.ts:292:21)
       at async Test.run (node:internal/test_runner/test:1409:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)

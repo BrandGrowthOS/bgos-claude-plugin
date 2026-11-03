@@ -4538,13 +4538,13 @@ async function waitForVerdict(
               `the hard floor holds this request, so only a tap on its card can allow it`,
           )
         }
-        advanceChatCursor(chatId, msg.message.id)
+        passCursorOverAnswer(chatId, msg.message.id)
         return null
       }
       if (!choice) return null
 
       // Update last seen so we don't re-process this message
-      advanceChatCursor(chatId, msg.message.id)
+      passCursorOverAnswer(chatId, msg.message.id)
 
       return choice
     },
@@ -8794,6 +8794,19 @@ const chatReadFloor = new Map<string, number>()
 function noteCursorPassedUnread(chatId: string, before: number): void {
   if (before <= 0 || chatReadFloor.has(chatId) || streamCoveredChats.has(chatId)) return
   if ((chatLastSeen.get(chatId) ?? 0) > before) chatReadFloor.set(chatId, before)
+}
+
+/**
+ * A typed permission answer moves the cursor with no read of the chat behind it.
+ * The rows under it are still owed, so the next read starts below them, and the
+ * answer itself stands down at the dedupe: by then its request is closed, and
+ * nothing else can tell a typed label is an answer.
+ */
+function passCursorOverAnswer(chatId: string, id: number): void {
+  const before = chatLastSeen.get(chatId) ?? 0
+  advanceChatCursor(chatId, id)
+  noteCursorPassedUnread(chatId, before)
+  rememberForwarded(id)
 }
 
 /** A read returned everything up to `readUpTo`. Anything the socket moved past since stays in reach. */

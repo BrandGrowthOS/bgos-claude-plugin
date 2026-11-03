@@ -106,6 +106,17 @@ Each finding was checked in the code before anything changed. Line numbers are f
 
 The lane's server order could not be checked: `integrations/lanes/inbound` is not in the backend checkout this lane reads (channels-org-ux deda76b9d0), so "oldest 200 first" is the plugin's own comment. The fix does not depend on it, because it only stops dropping rows the fetch already returned.
 
+## The second review (Opus, given the D04-1 text and the diff of bf1ed90)
+
+No majors. It checked the hold (frames cannot be orphaned on any outcome), the check after the walk, the re-arm, the dropped validator, per row backlog and the lane change, and found them sound. Four minors:
+
+1. **Fixed: a typed permission answer moved the cursor over rows under it, with no read behind it and no floor.** Hole 4 through another cursor writer, and a real loss: `red-typed-verdict-cursor.txt` has 0 of 2, missing 101-102. The same on main. The answer now leaves the floor, and stands down at the dedupe when the read reaches it. The other writers were checked: the email hold's release only returns to a value already reached, the read settles its own floor, and the stream's writer is D04-6.
+2. **Answered: a one page read awaiting an email's files keeps its validator,** so a read starting then can be told 304 and a live message can pass the rows above the email. Order only: the floor keeps them in reach. Dropping the validator there would make that second read process the email row while the first still downloads it, for a window of at most 20 s that also needs a reconnect in it. The same family as F11.
+3. **Answered: one read more than needed.** A frame held during a read whose page already held its row still starts the next read, and a live message during a sweep's walk starts a second walk. Bounded, with no effect on delivery: one conditional read per burst per chat, at a reconnect, not per live message.
+4. **Answered, left as a row: a running lane's order after a reconnect.** A live frame goes straight to Claude, so it can arrive before rows the reconnect's poll is still fetching, and a poll already running drops the connect's poll, so those rows wait up to 30 s. Order and delay, no loss: a lane's cursor moves only on its poll. A hold would have to work around `test/lane-dedupe.test.ts` bug 1, where a frame must be handed over during the fetch, so it is its own piece of work. Said so in CHANGELOG.
+
+Its doubt about a flake in the framing case was checked and does not hold: arming runs with no await after `connectWebsocket()`, so no frame can land first. That case now waits on the log line, not a fixed time. Its note about line numbers: the citations in the fake and these notes are right at fc9e3bc853 (`git show` confirms `ORDER BY m.id DESC` at 4916), the commit they name. The checkout both reviewers read is another commit, deda76b9d0.
+
 ## Other residuals
 
 - A chat that reads empty only because the caller is not admitted yet would hand over its whole history once admitted. Not reachable for chats this daemon lists.

@@ -711,11 +711,13 @@ describe('hole 1: the reconnect skip', { concurrency: 3 }, () => {
       // and the read the live message waits for is a boot read.
       w.backend.failRead(MAIN, () => w.backend.connected() === 0)
       w.backend.onNextConnect(() => w.backend.pushLive(ownerRow(MAIN, 900)))
-      // Long enough for the frame to reach the daemon before the read answers.
+      // The read answers only once the frame has reached the daemon.
+      let booted: Daemon | null = null
       w.backend.holdRead(MAIN, () => w.backend.connected() > 0, async () => {
-        await sleep(1_500)
+        await waitFor(() => booted?.stderr.some((l) => l.includes('Live message 900 ')) === true, 'the live message to wait for this read', 30_000)
       })
       const d = await w.boot()
+      booted = d
       const want = [...missed, 900]
       await settle(() => d.cards, MAIN, want)
       assertExactlyOnceInOrder(arrived(d.cards, MAIN), want, 'a live message behind a boot read')
@@ -996,6 +998,30 @@ describe('hole 4: a row the server never pushes', { concurrency: 3 }, () => {
       assert.ok(continued.length > 0 && continued.every((r) => r.afterId === 100), 'the read started under the live message')
       await reconnectAndRead(w.backend, MAIN)
       assert.equal(w.backend.readsOf(MAIN).at(-1)?.afterId, 102, 'and once a read reached the cursor, reads start at it again')
+    } finally {
+      await w.end()
+    }
+  })
+
+  test('a typed permission answer does not move the place over rows under it: they still arrive, once, and the answer itself never does', OPTS, async () => {
+    const w = await world({ '999': 5, [MAIN]: 100 })
+    try {
+      primed(w.backend, MAIN, 99)
+      const d = await w.boot()
+      await quietAfterBoot(w.backend, MAIN)
+      await d.client.notification({
+        method: 'notifications/claude/channel/permission_request',
+        params: { request_id: 'abcde', tool_name: 'Bash', description: 'run a thing', input_preview: '{}' },
+      })
+      await waitFor(() => d.stderr.some((l) => l.includes('Permission request: Bash [abcde]')), 'the request', 15_000)
+      // Two rows the socket never pushed, then the owner's answer, which the
+      // request's own watch reads and acts on with no read of the chat behind it.
+      // Only the label, which nothing but the open request can recognise.
+      w.backend.rows.push(ownerRow(MAIN, 101), ownerRow(MAIN, 102), { ...ownerRow(MAIN, 103), text: 'Yes, this once' })
+      await waitFor(() => d.stderr.some((l) => l.includes('Verdict for Bash [abcde]: once')), 'the answer to be read', 30_000)
+      await reconnectAndRead(w.backend, MAIN)
+      await settle(() => d.cards, MAIN, [101, 102])
+      assertExactlyOnceInOrder(arrived(d.cards, MAIN), [101, 102], 'rows under a typed permission answer')
     } finally {
       await w.end()
     }

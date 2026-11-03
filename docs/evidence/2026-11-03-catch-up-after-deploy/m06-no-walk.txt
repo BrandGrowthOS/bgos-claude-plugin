@@ -14,12 +14,12 @@ file: server.ts
 exit=1
 
 ▶ hole 2: the newest 50
-  ✖ a deploy with more than 50 missed rows in each of several chats: every row once, oldest first, in every chat (64653.766979ms)
-  ✖ the boot read: 120 rows above a persisted cursor all arrive once, oldest first, framed as backlog (47196.814926ms)
-  ✖ the limit is 50 rows of any sender: 60 rows of owner and agent turns lose no owner row (55859.281414ms)
-  ✖ a chat with open buttons, which every poll reads in full: 120 missed rows all arrive once (58081.992422ms)
-  ✔ an idle chat with a long history costs one conditional read: no page below the cursor, ever (11583.750689ms)
-✖ hole 2: the newest 50 (105282.251248ms)
+  ✖ a deploy with more than 50 missed rows in each of several chats: every row once, oldest first, in every chat (65155.654665ms)
+  ✖ the boot read: 120 rows above a persisted cursor all arrive once, oldest first, framed as backlog (47246.896086ms)
+  ✖ the limit is 50 rows of any sender: 60 rows of owner and agent turns lose no owner row (52341.556087ms)
+  ✖ a chat with open buttons, which every poll reads in full: 120 missed rows all arrive once (56139.543362ms)
+  ✔ an idle chat with a long history costs one conditional read: no page below the cursor, ever (12862.525124ms)
+✖ hole 2: the newest 50 (103389.752216ms)
 ℹ tests 5
 ℹ suites 1
 ℹ pass 1
@@ -27,12 +27,12 @@ exit=1
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 105638.790086
+ℹ duration_ms 103790.508677
 
 ✖ failing tests:
 
-test at test/catch-up-after-deploy.e2e.test.ts:3:6129
-✖ a deploy with more than 50 missed rows in each of several chats: every row once, oldest first, in every chat (64653.766979ms)
+test at test/catch-up-after-deploy.e2e.test.ts:3:10234
+✖ a deploy with more than 50 missed rows in each of several chats: every row once, oldest first, in every chat (65155.654665ms)
   AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
   + actual - expected
   
@@ -47,8 +47,8 @@ test at test/catch-up-after-deploy.e2e.test.ts:3:6129
       unexpected: 'none'
     }
   
-      at assertExactlyOnceInOrder (/home/karim/lane-tmp/d041/mut/m06-no-walk.q0r8op3m/test/catch-up-after-deploy.e2e.test.ts:430:10)
-      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m06-no-walk.q0r8op3m/test/catch-up-after-deploy.e2e.test.ts:646:42)
+      at assertExactlyOnceInOrder (/home/karim/lane-tmp/d041/mut/m06-no-walk.rilhd8l6/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m06-no-walk.rilhd8l6/test/catch-up-after-deploy.e2e.test.ts:784:42)
       at async Test.run (node:internal/test_runner/test:1409:7)
       at async Promise.all (index 0)
       at async Suite.run (node:internal/test_runner/test:1905:7)
@@ -61,8 +61,8 @@ test at test/catch-up-after-deploy.e2e.test.ts:3:6129
     diff: 'simple'
   }
 
-test at test/catch-up-after-deploy.e2e.test.ts:3:7284
-✖ the boot read: 120 rows above a persisted cursor all arrive once, oldest first, framed as backlog (47196.814926ms)
+test at test/catch-up-after-deploy.e2e.test.ts:3:11389
+✖ the boot read: 120 rows above a persisted cursor all arrive once, oldest first, framed as backlog (47246.896086ms)
   AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
   + actual - expected
   
@@ -77,8 +77,8 @@ test at test/catch-up-after-deploy.e2e.test.ts:3:7284
       unexpected: 'none'
     }
   
-      at assertExactlyOnceInOrder (/home/karim/lane-tmp/d041/mut/m06-no-walk.q0r8op3m/test/catch-up-after-deploy.e2e.test.ts:430:10)
-      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m06-no-walk.q0r8op3m/test/catch-up-after-deploy.e2e.test.ts:660:7)
+      at assertExactlyOnceInOrder (/home/karim/lane-tmp/d041/mut/m06-no-walk.rilhd8l6/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m06-no-walk.rilhd8l6/test/catch-up-after-deploy.e2e.test.ts:798:7)
       at async Test.run (node:internal/test_runner/test:1409:7)
       at async Promise.all (index 1)
       at async Suite.run (node:internal/test_runner/test:1905:7)
@@ -91,8 +91,8 @@ test at test/catch-up-after-deploy.e2e.test.ts:3:7284
     diff: 'simple'
   }
 
-test at test/catch-up-after-deploy.e2e.test.ts:3:7807
-✖ the limit is 50 rows of any sender: 60 rows of owner and agent turns lose no owner row (55859.281414ms)
+test at test/catch-up-after-deploy.e2e.test.ts:3:11912
+✖ the limit is 50 rows of any sender: 60 rows of owner and agent turns lose no owner row (52341.556087ms)
   AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
   + actual - expected
   
@@ -107,8 +107,8 @@ test at test/catch-up-after-deploy.e2e.test.ts:3:7807
       unexpected: 'none'
     }
   
-      at assertExactlyOnceInOrder (/home/karim/lane-tmp/d041/mut/m06-no-walk.q0r8op3m/test/catch-up-after-deploy.e2e.test.ts:430:10)
-      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m06-no-walk.q0r8op3m/test/catch-up-after-deploy.e2e.test.ts:684:7)
+      at assertExactlyOnceInOrder (/home/karim/lane-tmp/d041/mut/m06-no-walk.rilhd8l6/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m06-no-walk.rilhd8l6/test/catch-up-after-deploy.e2e.test.ts:822:7)
       at async Test.run (node:internal/test_runner/test:1409:7)
       at async Promise.all (index 2)
       at async Suite.run (node:internal/test_runner/test:1905:7)
@@ -121,8 +121,8 @@ test at test/catch-up-after-deploy.e2e.test.ts:3:7807
     diff: 'simple'
   }
 
-test at test/catch-up-after-deploy.e2e.test.ts:3:8386
-✖ a chat with open buttons, which every poll reads in full: 120 missed rows all arrive once (58081.992422ms)
+test at test/catch-up-after-deploy.e2e.test.ts:3:12491
+✖ a chat with open buttons, which every poll reads in full: 120 missed rows all arrive once (56139.543362ms)
   AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
   + actual - expected
   
@@ -137,8 +137,8 @@ test at test/catch-up-after-deploy.e2e.test.ts:3:8386
       unexpected: 'none'
     }
   
-      at assertExactlyOnceInOrder (/home/karim/lane-tmp/d041/mut/m06-no-walk.q0r8op3m/test/catch-up-after-deploy.e2e.test.ts:430:10)
-      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m06-no-walk.q0r8op3m/test/catch-up-after-deploy.e2e.test.ts:701:7)
+      at assertExactlyOnceInOrder (/home/karim/lane-tmp/d041/mut/m06-no-walk.rilhd8l6/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m06-no-walk.rilhd8l6/test/catch-up-after-deploy.e2e.test.ts:839:7)
       at async Test.run (node:internal/test_runner/test:1409:7)
       at async Suite.processPendingSubtests (node:internal/test_runner/test:974:7) {
     generatedMessage: true,

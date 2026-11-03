@@ -4,36 +4,41 @@ file: server.ts
 --- removed
 (chatsPolledSinceBoot.has(chatId) && !chatBehindSocket(chatId)) ||
       streamCoveredChats.has(chatId)
-    if (caughtUp
+    // A chat can be caught up
 +++ added
 chatsPolledSinceBoot.has(chatId) ||
       streamCoveredChats.has(chatId)
-    if (caughtUp
+    // A chat can be caught up
 exit=1
 
 ▶ hole 1: the reconnect skip
-  ✖ rows missed around a deploy, then a live message beats the catch up read: every row once, oldest first (9014.253438ms)
-  ✖ the catch up read fails, then a live message: the rows under it are still read, every row once (7732.892019ms)
-  ✖ a read that started before the socket came back is not the catch up: rows it could not see still arrive before a live message (18045.365474ms)
-✖ hole 1: the reconnect skip (18048.693767ms)
+  ✖ rows missed around a deploy, then a live message beats the catch up read: every row once, oldest first (6917.567662ms)
+  ✖ the catch up read fails, then a live message: the rows under it are still read, every row once (13281.086383ms)
+  ✔ the read a live message waits for fails: the message goes through, and the rows under it still arrive, each once (12520.492416ms)
+  ✖ a read that started before the socket came back is not the catch up: rows it could not see still arrive before a live message (16184.833935ms)
+  ✖ a live message does not overtake one that still waits for a read (54559.320393ms)
+  ✖ a daemon that stood down and took the lock back: a row of the passive spell goes before the next live message (13205.804122ms)
+  ✔ a live message behind a failed boot read is framed live, and the rows under it as backlog (3688.852794ms)
+✖ hole 1: the reconnect skip (67083.403962ms)
 ▶ a reconnect or a failure in the middle of a page
-  ✖ the socket drops and comes back while an older page is in flight, a live message lands: every row once, oldest first (12844.910314ms)
-  ✔ an older page fails: nothing is lost or repeated, and the next read starts over without a validator on any page (27090.266726ms)
-  ✔ the daemon restarts while an older page is in flight: every row once, oldest first, across both lives (12684.773494ms)
-✖ a reconnect or a failure in the middle of a page (27090.970814ms)
-ℹ tests 6
+  ✖ the socket drops and comes back while an older page is in flight, a live message lands: every row once, oldest first (10290.27191ms)
+  ✔ an older page fails: nothing is lost or repeated, and the next read starts over without a validator on any page (16761.096402ms)
+  ✔ the daemon restarts while an older page is in flight: every row once, oldest first, across both lives (9998.142374ms)
+  ✔ a read that starts during a walk is not answered 304 by the walk's first page: a live message after it does not overtake the walk (17803.065597ms)
+✖ a reconnect or a failure in the middle of a page (27802.2752ms)
+ℹ tests 11
 ℹ suites 2
-ℹ pass 2
-ℹ fail 4
+ℹ pass 5
+ℹ fail 6
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 45493.52276
+ℹ duration_ms 95312.415927
 
 ✖ failing tests:
 
-test at test/catch-up-after-deploy.e2e.test.ts:3:2847
-✖ rows missed around a deploy, then a live message beats the catch up read: every row once, oldest first (9014.253438ms)
+test at test/catch-up-after-deploy.e2e.test.ts:3:3370
+✖ rows missed around a deploy, then a live message beats the catch up read: every row once, oldest first (6917.567662ms)
   AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
   + actual - expected
   
@@ -47,8 +52,8 @@ test at test/catch-up-after-deploy.e2e.test.ts:3:2847
       unexpected: 'none'
     }
   
-      at assertExactlyOnceInOrder (/home/karim/lane-tmp/d041/mut/m02-hold-safe-flag-boot-only.enk_b9hk/test/catch-up-after-deploy.e2e.test.ts:430:10)
-      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m02-hold-safe-flag-boot-only.enk_b9hk/test/catch-up-after-deploy.e2e.test.ts:536:7)
+      at assertExactlyOnceInOrder (/home/karim/lane-tmp/d041/mut/m02-hold-safe-flag-boot-only.z0jr4nff/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m02-hold-safe-flag-boot-only.z0jr4nff/test/catch-up-after-deploy.e2e.test.ts:561:7)
       at async Test.run (node:internal/test_runner/test:1409:7)
       at async Promise.all (index 0)
       at async Suite.run (node:internal/test_runner/test:1905:7)
@@ -61,8 +66,8 @@ test at test/catch-up-after-deploy.e2e.test.ts:3:2847
     diff: 'simple'
   }
 
-test at test/catch-up-after-deploy.e2e.test.ts:3:3452
-✖ the catch up read fails, then a live message: the rows under it are still read, every row once (7732.892019ms)
+test at test/catch-up-after-deploy.e2e.test.ts:3:3975
+✖ the catch up read fails, then a live message: the rows under it are still read, every row once (13281.086383ms)
   AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
   + actual - expected
   
@@ -76,8 +81,8 @@ test at test/catch-up-after-deploy.e2e.test.ts:3:3452
       unexpected: 'none'
     }
   
-      at assertExactlyOnceInOrder (/home/karim/lane-tmp/d041/mut/m02-hold-safe-flag-boot-only.enk_b9hk/test/catch-up-after-deploy.e2e.test.ts:430:10)
-      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m02-hold-safe-flag-boot-only.enk_b9hk/test/catch-up-after-deploy.e2e.test.ts:557:7)
+      at assertExactlyOnceInOrder (/home/karim/lane-tmp/d041/mut/m02-hold-safe-flag-boot-only.z0jr4nff/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m02-hold-safe-flag-boot-only.z0jr4nff/test/catch-up-after-deploy.e2e.test.ts:582:7)
       at async Test.run (node:internal/test_runner/test:1409:7)
       at async Promise.all (index 1)
       at async Suite.run (node:internal/test_runner/test:1905:7)
@@ -90,8 +95,8 @@ test at test/catch-up-after-deploy.e2e.test.ts:3:3452
     diff: 'simple'
   }
 
-test at test/catch-up-after-deploy.e2e.test.ts:3:4249
-✖ a read that started before the socket came back is not the catch up: rows it could not see still arrive before a live message (18045.365474ms)
+test at test/catch-up-after-deploy.e2e.test.ts:3:5512
+✖ a read that started before the socket came back is not the catch up: rows it could not see still arrive before a live message (16184.833935ms)
   AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
   + actual - expected
   
@@ -105,12 +110,12 @@ test at test/catch-up-after-deploy.e2e.test.ts:3:4249
       unexpected: 'none'
     }
   
-      at assertExactlyOnceInOrder (/home/karim/lane-tmp/d041/mut/m02-hold-safe-flag-boot-only.enk_b9hk/test/catch-up-after-deploy.e2e.test.ts:430:10)
-      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m02-hold-safe-flag-boot-only.enk_b9hk/test/catch-up-after-deploy.e2e.test.ts:588:7)
+      at assertExactlyOnceInOrder (/home/karim/lane-tmp/d041/mut/m02-hold-safe-flag-boot-only.z0jr4nff/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m02-hold-safe-flag-boot-only.z0jr4nff/test/catch-up-after-deploy.e2e.test.ts:635:7)
+      at runNextTicks (node:internal/process/task_queues:65:5)
+      at process.processTimers (node:internal/timers:615:9)
       at async Test.run (node:internal/test_runner/test:1409:7)
-      at async Promise.all (index 2)
-      at async Suite.run (node:internal/test_runner/test:1905:7)
-      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+      at async Suite.processPendingSubtests (node:internal/test_runner/test:974:7) {
     generatedMessage: true,
     code: 'ERR_ASSERTION',
     actual: { label: 'a read from before the reconnect', forwarded: '8 of 8', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: false },
@@ -119,8 +124,63 @@ test at test/catch-up-after-deploy.e2e.test.ts:3:4249
     diff: 'simple'
   }
 
-test at test/catch-up-after-deploy.e2e.test.ts:3:14453
-✖ the socket drops and comes back while an older page is in flight, a live message lands: every row once, oldest first (12844.910314ms)
+test at test/catch-up-after-deploy.e2e.test.ts:3:6484
+✖ a live message does not overtake one that still waits for a read (54559.320393ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+  +   forwarded: '2 of 3',
+  -   forwarded: '3 of 3',
+      label: "three live messages, each landing during the last one's read",
+  +   missing: '203',
+  -   missing: 'none',
+      oldestFirst: true,
+      twice: 'none',
+      unexpected: 'none'
+    }
+  
+      at assertExactlyOnceInOrder (/home/karim/lane-tmp/d041/mut/m02-hold-safe-flag-boot-only.z0jr4nff/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m02-hold-safe-flag-boot-only.z0jr4nff/test/catch-up-after-deploy.e2e.test.ts:672:7)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Suite.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { label: "three live messages, each landing during the last one's read", forwarded: '2 of 3', missing: '203', unexpected: 'none', twice: 'none', oldestFirst: true },
+    expected: { label: "three live messages, each landing during the last one's read", forwarded: '3 of 3', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: true },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:7653
+✖ a daemon that stood down and took the lock back: a row of the passive spell goes before the next live message (13205.804122ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+      forwarded: '2 of 2',
+      label: 'a passive spell, then a live message',
+      missing: 'none',
+  +   oldestFirst: false,
+  -   oldestFirst: true,
+      twice: 'none',
+      unexpected: 'none'
+    }
+  
+      at assertExactlyOnceInOrder (/home/karim/lane-tmp/d041/mut/m02-hold-safe-flag-boot-only.z0jr4nff/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m02-hold-safe-flag-boot-only.z0jr4nff/test/catch-up-after-deploy.e2e.test.ts:698:7)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Suite.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { label: 'a passive spell, then a live message', forwarded: '2 of 2', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: false },
+    expected: { label: 'a passive spell, then a live message', forwarded: '2 of 2', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: true },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:18991
+✖ the socket drops and comes back while an older page is in flight, a live message lands: every row once, oldest first (10290.27191ms)
   AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
   + actual - expected
   
@@ -134,8 +194,8 @@ test at test/catch-up-after-deploy.e2e.test.ts:3:14453
       unexpected: 'none'
     }
   
-      at assertExactlyOnceInOrder (/home/karim/lane-tmp/d041/mut/m02-hold-safe-flag-boot-only.enk_b9hk/test/catch-up-after-deploy.e2e.test.ts:430:10)
-      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m02-hold-safe-flag-boot-only.enk_b9hk/test/catch-up-after-deploy.e2e.test.ts:877:7)
+      at assertExactlyOnceInOrder (/home/karim/lane-tmp/d041/mut/m02-hold-safe-flag-boot-only.z0jr4nff/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m02-hold-safe-flag-boot-only.z0jr4nff/test/catch-up-after-deploy.e2e.test.ts:1024:7)
       at async Test.run (node:internal/test_runner/test:1409:7)
       at async Promise.all (index 0)
       at async Suite.run (node:internal/test_runner/test:1905:7)

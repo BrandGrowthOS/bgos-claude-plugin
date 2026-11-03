@@ -31,3 +31,39 @@ m24-settle-always-deletes: RED fail=1 pass=1 1s  undoes: hole 4: a live message 
 m25-floor-lifted-by-next-frame: RED fail=1 pass=1 1s  undoes: hole 4: a later live message does not lift the floor
 m26-empty-page-guard-gone: RED fail=2 pass=0 0s  undoes: an empty page that claims more cannot spin the walk
 m22-no-progress-guard: RED fail=2 pass=1 0s  undoes: a server ignoring beforeId cannot spin the walk
+
+=== batch 3: every mutant again, on the tree of bf1ed90, after the review fixes ===
+m01-safe-flag-boot-only: RED fail=1 pass=11 49s  undoes: hole 1: cursor safety tied to this connection
+m02-hold-safe-flag-boot-only: RED fail=6 pass=5 95s  undoes: hole 1: the hold is tied to this connection too
+m03-epoch-at-finish: RED fail=1 pass=10 47s  undoes: hole 1: a read counts from when it STARTED
+m04-frames-not-held: RED fail=7 pass=4 99s  undoes: hole 1: a live frame waits for the read (order)
+m05-always-hold: RED fail=1 pass=0 8s  undoes: the healthy path costs no read
+m06-no-walk: RED fail=4 pass=1 104s  undoes: hole 2: walk down to the cursor
+m07-walk-past-cursor: RED fail=3 pass=0 13s  undoes: hole 2: hasMore alone never walks past the cursor
+m08-older-pages-conditional: SURVIVED fail=0 pass=9 53s  undoes: hole 2: older pages never ride a validator
+m09-parks-on-any-page: RED fail=1 pass=5 46s  undoes: a card below the newest page does not park
+m10-dedupe-cap-500: RED fail=1 pass=9 87s  undoes: the dedupe outlasts a long read
+m11-no-keepalive: RED fail=1 pass=0 35s  undoes: the lock stays fresh during a walk
+m12-no-standdown-check: RED fail=1 pass=0 16s  undoes: a walk stops when the daemon stands down
+m13-empty-read-no-cursor: RED fail=2 pass=4 59s  undoes: hole 3: an empty read gets a cursor
+m14-first-read-no-stop: RED fail=2 pass=5 26s  undoes: hole 3: a first read stops where more rows change nothing
+m15-no-gate-stop: RED fail=2 pass=1 3s  undoes: hole 3: the walk stops at the first run gate
+m16-no-reply-stop: RED fail=3 pass=0 3s  undoes: hole 3: the walk stops at a real reply
+m17-no-cap-stop: RED fail=3 pass=0 15s  undoes: hole 3: the walk stops when the group cap is full
+m18-no-read-floor: RED fail=1 pass=0 58s  undoes: hole 4: the next read starts under the bump
+m19-floor-never-settles: RED fail=1 pass=0 22s  undoes: hole 4: the floor goes once the read reached the cursor
+m20-clock-on-reread: RED fail=1 pass=0 1s  undoes: a re-read row is no inbound
+m23-adopted-cursor-keeps-floor: RED fail=1 pass=0 1s  undoes: a cursor from the shared file drops the floor
+m24-settle-always-deletes: RED fail=1 pass=1 1s  undoes: hole 4: a live message during a read stays in reach
+m25-floor-lifted-by-next-frame: RED fail=1 pass=1 1s  undoes: hole 4: a later live message does not lift the floor
+m26-empty-page-guard-gone: RED fail=2 pass=0 0s  undoes: an empty page that claims more cannot spin the walk
+m27-no-check-after-walk: RED fail=1 pass=0 16s  undoes: review F1: a stand down during the last page delivers nothing
+m28-overtakes-waiting-frames: RED fail=1 pass=0 13s  undoes: review F2: a live message does not pass one still waiting
+m29-rearm-no-epoch: RED fail=1 pass=0 59s  undoes: review F4: taking the lock back marks the chats as behind
+m30-validator-kept-during-walk: RED fail=1 pass=0 19s  undoes: review F7: a read during a walk is not told 304
+m31-live-framed-as-backlog: RED fail=1 pass=0 4s  undoes: review F13a: a live message behind a boot read is framed live
+m32-lane-cap-on-every-poll: RED fail=2 pass=1 47s  undoes: review F6: a running lane takes every row past its cursor
+m33-lane-window-on-every-poll: RED fail=1 pass=0 23s  undoes: review F6: no time window on a running lane
+m34-lane-boot-uncapped: RED fail=1 pass=0 3s  undoes: what stays: a lane boot still chooses
+m21-spread-back: RED fail=1 pass=0 0s  undoes: one read can outgrow a spread
+m22-no-progress-guard: RED fail=2 pass=1 0s  undoes: a server ignoring beforeId cannot spin the walk

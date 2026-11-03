@@ -8,8 +8,8 @@ during: (work) => work(),
 exit=1
 
 ▶ what a long read must not break
-  ✖ a walk that outlasts the lock's 15 seconds inside a tick keeps the lock fresh (32685.535186ms)
-✖ what a long read must not break (32687.491419ms)
+  ✖ a walk that outlasts the lock's 15 seconds inside a tick keeps the lock fresh (34691.254345ms)
+✖ what a long read must not break (34692.676972ms)
 ℹ tests 1
 ℹ suites 1
 ℹ pass 0
@@ -17,14 +17,14 @@ exit=1
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 33064.247031
+ℹ duration_ms 35090.999561
 
 ✖ failing tests:
 
-test at test/catch-up-after-deploy.e2e.test.ts:3:17302
-✖ a walk that outlasts the lock's 15 seconds inside a tick keeps the lock fresh (32685.535186ms)
-  AssertionError [ERR_ASSERTION]: the lock's heartbeat was 19756 ms old, and it goes stale at 15000
-      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m11-no-keepalive.hotdjhh9/test/catch-up-after-deploy.e2e.test.ts:959:14)
+test at test/catch-up-after-deploy.e2e.test.ts:3:22965
+✖ a walk that outlasts the lock's 15 seconds inside a tick keeps the lock fresh (34691.254345ms)
+  AssertionError [ERR_ASSERTION]: the lock's heartbeat was 21776 ms old, and it goes stale at 15000
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m11-no-keepalive.0eimhl9b/test/catch-up-after-deploy.e2e.test.ts:1137:14)
       at async Test.run (node:internal/test_runner/test:1409:7)
       at async Promise.all (index 0)
       at async Suite.run (node:internal/test_runner/test:1905:7)
