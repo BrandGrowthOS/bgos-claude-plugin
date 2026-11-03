@@ -69,9 +69,52 @@ The red run took the report's PL1 and PL2 numbers on its own, from a rig this la
 
 - **The walk delivers nothing until it is whole.** Rows must go out oldest first, and a failed page must leave the cursor where it was. So a walk is one read: pages are held in memory, and then the existing code runs over them.
 - **A live frame waits rather than overtakes.** Without this, "in order" fails on the first message after every reconnect. The read delivers it too (`poll`), and the frame then stands down at the dedupe. Frames held in a chat the inbox does not list would never be read, so only monitored chats hold. Stamped frames keep the stream's own arithmetic: `holdLiveFrame` sits on the legacy path only, which also leaves `deliverWsInbound`'s signature and the source pins on it alone.
-- **The cursor still bumps, the next read starts under it.** Removing the bump would have meant one more read per live message across the fleet, and a restart re-delivering what the socket delivered. The floor costs no request.
+- **The cursor still bumps, the next read starts under it.** Removing the bump would have meant one more read per live message across the fleet, and a restart re-delivering what the socket delivered. The floor adds no read of its own: the next read starts lower, in more pages when more than 50 rows are re-read.
 - **The empty chat's cursor is 1, not an id borrowed from another chat.** A borrowed high-water mark would stop a not-yet-admitted chat handing over history, but it adds a small way to lose a row, in a row whose whole point is no loss. Chats polled here come from this assistant's own inbox listing or an open meeting, so empty means empty on every path known today. The narrow remainder is reported.
 - **Parking only on the newest page.** That is the bound main always had, by accident: a card that never fills falls out of the newest 50 and the cursor moves on.
+
+## The reviewer (Opus, given only the D04-1 text and the diff of 99eecf0)
+
+Each finding was checked in the code before anything changed. Line numbers are from 99eecf0.
+
+**Fixed, each with a kept red run (`red-review-findings.txt`), a green run and a mutant:**
+
+| Finding | What was wrong | Fix |
+|---|---|---|
+| F1 major | A daemon losing the lock during the LAST older page still delivered and moved the cursor. Only pages after the stand down were refused. | The same check again after the walk, whether or not it walked. |
+| F2 major | M1 held, M2 held during its read, that read finishes (caught up), M3 goes straight: M1, M3, M2. | A caught up chat with a held read in flight still holds. |
+| F4 major | Re-arming after a passive spell did not move the epoch, so a live message passed the rows of the spell. | `socketEpoch++` on re-arm. No sweep: the cheap re-arm is deliberate. |
+| F6, part | A running person lane ran the boot's cap on every poll, then moved the cursor over every row: 30 missed gave 10, and 8 at cursor 0 gave 5. | Only a boot chooses. |
+| F7 minor | The validator of a walk's first page answered a read that started during the walk with a 304, which called the chat caught up with rows undelivered. | Drop the validator while walking. |
+| F13a | A live message behind an unfinished boot read took the whole read's backlog framing: `/compact` dropped, no overdue. Narrower than stated: only after a boot read failed, since the socket connects after the sweep. | Backlog is per row, from the live floor. |
+| F13c | "adds no request" was false when more than 50 rows are re-read. | Wording, in CHANGELOG and the comment. |
+| Test note | "costs one conditional read" never counted reads. | It counts them now. |
+
+**Answered, not changed:**
+
+- **F3 major, left as a row.** The read floor is in memory. A never pushed row passed by a live message, then a daemon restart or lock handover in the at most 5 minutes before the next read, loses that row. Same as main, not a regression, and outside the two events the row names unless a restart lands in that window. Persisting the floor alone would re-deliver up to 5 minutes of live messages on every restart, so a fix needs persisted forwarded ids and a handover merge. The other option, reading sooner whenever a floor exists, is a fleet traffic decision.
+- **F5 major, left to D04-6.** Stream covered chats keep the skip while stream mode is inactive after a connect. `BGOS_UPDATE_STREAM` is off by default, so `streamCoveredChats` is empty today.
+- **F6, the rest, left as rows.** Rooms and channels are never polled. Other agents' meeting turns (sender `assistant`) are not forwarded by the poll. A lane boot's cap of 10 stays, pinned by a test: it decides what a relaunched lane answers, it is documented in `selectLaneBacklog`, and a server deploy does not relaunch a lane.
+- **F8 minor.** An empty chat's cursor is not persisted in a quiet life (no tool call yet). `CursorStore.flushIfDirty` writes the whole live map and the file's existence is the first run gate, so writing it could disarm that gate. Only a group is affected (cap of 10), only after a restart in a life that never went live.
+- **F9 minor, row.** A group first seen after an outage stays capped at 10: Data's gate of #265, and it logs a line. Doing better needs a join time from the server.
+- **F10 minor.** A hard kill within the 5 s flush redelivers the batch. At least once is the repo's stated rule (`lib/channel-liveness.ts:53`); flushing earlier trades a duplicate for possible loss.
+- **F11, F12 minor.** An email awaiting files can be overtaken by an overlapping read, and a fresh wake card below the newest page is not waited for. Both as on main, and rare.
+- **F13b, for Ares and Data to rule on.** A group's human to human rows under an @mention now arrive at the next read, up to 5 minutes after the answer. The server rides them in that message's context, so the agent may see them twice in a different form. On main the sweep delivered such chatter too, unless a bump skipped it. Kept because the row says every message.
+- **F13d.** A failed catch up read with no live traffic waits for the next sweep and a walk restarts from the top: as on main, no loss.
+- **F14 minor, for Ares.** A first read has no stop in an A2A or system only chat, so a long thread with no cursor delivers all its history at once. That is what "however many" says; there is no pacing.
+- **Unconfirmed.** The socket's join window (order only; the floor covers it); an A2A chat closing during an outage may drop its last row (row); commit order is D03-8's row.
+
+The lane's server order could not be checked: `integrations/lanes/inbound` is not in the backend checkout this lane reads (channels-org-ux deda76b9d0), so "oldest 200 first" is the plugin's own comment. The fix does not depend on it, because it only stops dropping rows the fetch already returned.
+
+## Other residuals
+
+- A chat that reads empty only because the caller is not admitted yet would hand over its whole history once admitted. Not reachable for chats this daemon lists.
+- A row under a live message (hole 4) arrives after it, by design: nothing shows it exists until the next read.
+- A live message's hold is bounded by the read: one HTTP timeout per page. A double read failure gives up order, never the row.
+- A restart with a parked cursor re-delivers rows above it, as on main. Restart recovery does not reach below the cursor when more than 50 rows are above it.
+- More than 100,000 rows in one read would outrun the dedupe.
+- A live frame after a reconnect is delivered by the read, so it arrives as `transport: poll` with poll framing, and the session handle and plan memo are not learned from it (a reply falls back to the chat id).
+- D04-2, D04-3, D04-6 and D04-11 are untouched. Whoever merges should run the report's `reports/D04/experiments/connectors/plugin/d04-r2-plugin-daemon.mjs` on the real routes: this lane may not.
 
 ## Changes to tests that existed before this row, and why
 

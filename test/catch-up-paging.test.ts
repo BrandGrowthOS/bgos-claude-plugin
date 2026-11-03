@@ -284,7 +284,8 @@ test('a server that ignores beforeId cannot spin the walk: it stops, says so, an
   let calls = 0
   const { done, noProgress } = run([{ id: 10 }, { id: 11 }], true, {
     fetchOlder: async () => {
-      calls++
+      // Fail, not hang, if the guard is ever gone.
+      if (++calls > 3) throw new Error('the walk is spinning')
       return { rows: [{ id: 10 }, { id: 11 }], mayHaveOlder: true }
     },
   })
@@ -297,7 +298,7 @@ test('an empty page that still claims more cannot spin the walk either', async (
   let calls = 0
   const { done, noProgress } = run([{ id: 10 }], true, {
     fetchOlder: async () => {
-      calls++
+      if (++calls > 3) throw new Error('the walk is spinning')
       return { rows: [], mayHaveOlder: true }
     },
   })

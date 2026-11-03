@@ -1,0 +1,40 @@
+MUTANT m05-always-hold
+undoes: the healthy path costs no read
+file: server.ts
+--- removed
+    if (caughtUp || !monitoredChatIds.includes(chatId)) return false
+
++++ added
+    if (!monitoredChatIds.includes(chatId)) return false
+
+exit=1
+
+▶ the healthy path stays as it was
+  ✖ a chat caught up on this connection: a live message goes straight over the socket, and costs no read (5075.699294ms)
+✖ the healthy path stays as it was (5077.067089ms)
+ℹ tests 1
+ℹ suites 1
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 5430.372069
+
+✖ failing tests:
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:5288
+✖ a chat caught up on this connection: a live message goes straight over the socket, and costs no read (5075.699294ms)
+  AssertionError [ERR_ASSERTION]: over the socket
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m05-always-hold.xt8zjg66/test/catch-up-after-deploy.e2e.test.ts:608:14)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 0)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }

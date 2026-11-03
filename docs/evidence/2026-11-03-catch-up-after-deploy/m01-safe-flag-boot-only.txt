@@ -1,0 +1,63 @@
+MUTANT m01-safe-flag-boot-only
+undoes: hole 1: cursor safety tied to this connection
+file: server.ts
+--- removed
+(chatsPolledSinceBoot.has(chatId) && !chatBehindSocket(chatId)) ||
+          streamCoveredChats.has(chatId)
+        if (wsCursorSafe) {
++++ added
+chatsPolledSinceBoot.has(chatId) ||
+          streamCoveredChats.has(chatId)
+        if (wsCursorSafe) {
+exit=1
+
+▶ hole 1: the reconnect skip
+  ✔ rows missed around a deploy, then a live message beats the catch up read: every row once, oldest first (11599.910448ms)
+  ✔ the catch up read fails, then a live message: the rows under it are still read, every row once (10931.296693ms)
+  ✔ the read a live message waits for fails: the message goes through, and the rows under it still arrive, each once (12453.842765ms)
+  ✔ a read that started before the socket came back is not the catch up: rows it could not see still arrive before a live message (17139.628285ms)
+✔ hole 1: the reconnect skip (28074.083319ms)
+▶ a reconnect or a failure in the middle of a page
+  ✔ the socket drops and comes back while an older page is in flight, a live message lands: every row once, oldest first (7970.981306ms)
+  ✔ an older page fails: nothing is lost or repeated, and the next read starts over without a validator on any page (19326.725055ms)
+  ✔ the daemon restarts while an older page is in flight: every row once, oldest first, across both lives (10169.546538ms)
+✔ a reconnect or a failure in the middle of a page (19327.373334ms)
+✖ a frame that reaches the socket lane while the chat is behind this connection moves no cursor, and reads the chat (70.004876ms)
+ℹ tests 8
+ℹ suites 2
+ℹ pass 7
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 47789.535288
+
+✖ failing tests:
+
+test at test/external-email-label.test.ts:32:2974
+✖ a frame that reaches the socket lane while the chat is behind this connection moves no cursor, and reads the chat (70.004876ms)
+  AssertionError [ERR_ASSERTION]: behind: delivered, no bump, a read
+  + actual - expected
+  
+    {
+  +   cursor: 9010,
+  -   cursor: 9000,
+      delivered: 1,
+  +   kicked: []
+  -   kicked: [
+  -     '7001'
+  -   ]
+    }
+  
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m01-safe-flag-boot-only.eg4_wg5u/test/external-email-label.test.ts:823:10)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.start (node:internal/test_runner/test:1262:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:387:17) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: { cursor: 9010, kicked: [], delivered: 1 },
+    expected: { cursor: 9000, kicked: [ '7001' ], delivered: 1 },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }

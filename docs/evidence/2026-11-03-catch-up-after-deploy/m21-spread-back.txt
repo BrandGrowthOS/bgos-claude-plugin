@@ -1,0 +1,35 @@
+MUTANT m21-spread-back
+undoes: one read can outgrow a spread
+file: lib/poll-core.ts
+--- removed
+  let cap = maxId
+  for (const id of pendingEmptyIds) cap = Math.min(cap, id - 1)
+  return Math.max(lastSeen, cap)
+
++++ added
+  const cap = pendingEmptyIds.length ? Math.min(...pendingEmptyIds) - 1 : maxId
+  return Math.max(lastSeen, Math.min(maxId, cap))
+
+exit=1
+
+✖ the cursor advance survives a read larger than a spread can carry (48.483088ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 227.139375
+
+✖ failing tests:
+
+test at test/catch-up-paging.test.ts:1:10671
+✖ the cursor advance survives a read larger than a spread can carry (48.483088ms)
+  RangeError [Error]: Maximum call stack size exceeded
+      at advanceCursor (/home/karim/lane-tmp/d041/mut/m21-spread-back.41r0q1lr/lib/poll-core.ts:361:45)
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m21-spread-back.41r0q1lr/test/catch-up-paging.test.ts:331:16)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.start (node:internal/test_runner/test:1262:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:387:17)

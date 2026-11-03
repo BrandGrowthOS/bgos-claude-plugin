@@ -1,0 +1,407 @@
+▶ hole 1: the reconnect skip
+  ✖ a live message does not overtake one that still waits for a read (15753.149994ms)
+  ✖ a daemon that stood down and took the lock back: a row of the passive spell goes before the next live message (60565.613709ms)
+  ✖ a live message behind a failed boot read is framed live, and the rows under it as backlog (6094.321293ms)
+✖ hole 1: the reconnect skip (60569.029109ms)
+▶ hole 2: the newest 50
+  ✔ an idle chat with a long history costs one conditional read: no page below the cursor, ever (9569.907688ms)
+✔ hole 2: the newest 50 (9570.397827ms)
+▶ a reconnect or a failure in the middle of a page
+  ✖ a read that starts during a walk is not answered 304 by the walk's first page: a live message after it does not overtake the walk (19741.316819ms)
+✖ a reconnect or a failure in the middle of a page (19741.682499ms)
+▶ what a long read must not break
+  ✖ a daemon that stands down during the last older page delivers nothing (17213.412193ms)
+✖ what a long read must not break (17214.01757ms)
+✖ D04-1: thirty rows the socket missed reach a running lane whole, oldest first, the oldest of them a day old (23353.750436ms)
+✖ D04-1: a lane that started with nothing to read is not treated as new at its later polls: eight rows, not the newest five (21760.125821ms)
+ℹ tests 8
+ℹ suites 4
+ℹ pass 1
+ℹ fail 7
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 110628.791025
+
+✖ failing tests:
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:6484
+✖ a live message does not overtake one that still waits for a read (15753.149994ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+      forwarded: '3 of 3',
+      label: "three live messages, each landing during the last one's read",
+      missing: 'none',
+  +   oldestFirst: false,
+  -   oldestFirst: true,
+      twice: 'none',
+      unexpected: 'none'
+    }
+  
+      at assertExactlyOnceInOrder (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:672:7)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 4)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { label: "three live messages, each landing during the last one's read", forwarded: '3 of 3', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: false },
+    expected: { label: "three live messages, each landing during the last one's read", forwarded: '3 of 3', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: true },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:7653
+✖ a daemon that stood down and took the lock back: a row of the passive spell goes before the next live message (60565.613709ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+  +   forwarded: '1 of 2',
+  -   forwarded: '2 of 2',
+      label: 'a passive spell, then a live message',
+  +   missing: '101',
+  -   missing: 'none',
+      oldestFirst: true,
+      twice: 'none',
+      unexpected: 'none'
+    }
+  
+      at assertExactlyOnceInOrder (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:698:7)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 5)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { label: 'a passive spell, then a live message', forwarded: '1 of 2', missing: '101', unexpected: 'none', twice: 'none', oldestFirst: true },
+    expected: { label: 'a passive spell, then a live message', forwarded: '2 of 2', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: true },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:8474
+✖ a live message behind a failed boot read is framed live, and the rows under it as backlog (6094.321293ms)
+  AssertionError [ERR_ASSERTION]: only the rows the daemon missed are framed as backlog
+  + actual - expected
+  ... Skipped lines
+  
+    [
+      101,
+      102,
+      103,
+      104,
+  ...
+      120,
+  +   900
+    ]
+  
+      at TestContext.<anonymous> (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:720:14)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 6)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: [
+      101, 102, 103, 104, 105,
+      106, 107, 108, 109, 110,
+      111, 112, 113, 114, 115,
+      116, 117, 118, 119, 120,
+      900
+    ],
+    expected: [
+      101, 102, 103, 104, 105,
+      106, 107, 108, 109, 110,
+      111, 112, 113, 114, 115,
+      116, 117, 118, 119, 120
+    ],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:21657
+✖ a read that starts during a walk is not answered 304 by the walk's first page: a live message after it does not overtake the walk (19741.316819ms)
+  AssertionError [ERR_ASSERTION]: the rows under this read are not delivered yet, so it cannot be told nothing changed
+  
+  304 !== 200
+  
+      at TestContext.<anonymous> (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:1104:14)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 3)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 304,
+    expected: 200,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:24876
+✖ a daemon that stands down during the last older page delivers nothing (17213.412193ms)
+  AssertionError [ERR_ASSERTION]: nothing delivered by a daemon that lost the lock
+  + actual - expected
+  
+  + [
+  +   101,
+  +   102,
+  +   103,
+  +   104,
+  +   105,
+  +   106,
+  +   107,
+  +   108,
+  +   109,
+  +   110,
+  +   111,
+  +   112,
+  +   113,
+  +   114,
+  +   115,
+  +   116,
+  +   117,
+  +   118,
+  +   119,
+  +   120,
+  +   121,
+  +   122,
+  +   123,
+  +   124,
+  +   125,
+  +   126,
+  +   127,
+  +   128,
+  +   129,
+  +   130,
+  +   131,
+  +   132,
+  +   133,
+  +   134,
+  +   135,
+  +   136,
+  +   137,
+  +   138,
+  +   139,
+  +   140,
+  +   141,
+  +   142,
+  +   143,
+  +   144,
+  +   145,
+  +   146,
+  +   147,
+  +   148,
+  +   149,
+  +   150,
+  +   151,
+  +   152,
+  +   153,
+  +   154,
+  +   155,
+  +   156,
+  +   157,
+  +   158,
+  +   159,
+  +   160,
+  +   161,
+  +   162,
+  +   163,
+  +   164,
+  +   165,
+  +   166,
+  +   167,
+  +   168,
+  +   169,
+  +   170,
+  +   171,
+  +   172,
+  +   173,
+  +   174,
+  +   175,
+  +   176,
+  +   177,
+  +   178,
+  +   179,
+  +   180,
+  +   181,
+  +   182,
+  +   183,
+  +   184,
+  +   185,
+  +   186,
+  +   187,
+  +   188,
+  +   189,
+  +   190,
+  +   191,
+  +   192,
+  +   193,
+  +   194,
+  +   195,
+  +   196,
+  +   197,
+  +   198,
+  +   199,
+  +   200
+  + ]
+  - []
+  
+      at TestContext.<anonymous> (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:1189:14)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 2)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: [
+      101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111,
+      112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122,
+      123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133,
+      134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144,
+      145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155,
+      156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166,
+      167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177,
+      178, 179, 180, 181, 182, 183, 184, 185, 186, 187, 188,
+      189, 190, 191, 192, 193, 194, 195, 196, 197, 198, 199,
+      200
+    ],
+    expected: [],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/lane-dedupe.test.ts:1:753
+✖ D04-1: thirty rows the socket missed reach a running lane whole, oldest first, the oldest of them a day old (23353.750436ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    [
+      100,
+  -   101,
+  -   102,
+  -   103,
+  -   104,
+  -   105,
+  -   106,
+  -   107,
+  -   108,
+  -   109,
+  -   110,
+  -   111,
+  -   112,
+  -   113,
+  -   114,
+  -   115,
+  -   116,
+  -   117,
+  -   118,
+  -   119,
+  -   120,
+      121,
+      122,
+      123,
+      124,
+      125,
+  
+      at TestContext.<anonymous> (/mnt/e/bgos-worktrees/d041/plugin/test/lane-dedupe.test.ts:786:12)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [
+      100, 121, 122, 123,
+      124, 125, 126, 127,
+      128, 129, 130
+    ],
+    expected: [
+      100, 101, 102, 103, 104, 105,
+      106, 107, 108, 109, 110, 111,
+      112, 113, 114, 115, 116, 117,
+      118, 119, 120, 121, 122, 123,
+      124, 125, 126, 127, 128, 129,
+      130
+    ],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/lane-dedupe.test.ts:1:753
+✖ D04-1: a lane that started with nothing to read is not treated as new at its later polls: eight rows, not the newest five (21760.125821ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    [
+  -   201,
+  -   202,
+  -   203,
+      204,
+      205,
+      206,
+      207,
+      208
+  
+      at TestContext.<anonymous> (/mnt/e/bgos-worktrees/d041/plugin/test/lane-dedupe.test.ts:804:12)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ 204, 205, 206, 207, 208 ],
+    expected: [
+      201, 202, 203,
+      204, 205, 206,
+      207, 208
+    ],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+exit=1
+
+=== the same case again, the order assertion now first ===
+▶ a reconnect or a failure in the middle of a page
+  ✖ a read that starts during a walk is not answered 304 by the walk's first page: a live message after it does not overtake the walk (18196.136213ms)
+✖ a reconnect or a failure in the middle of a page (18198.045157ms)
+ℹ tests 1
+ℹ suites 1
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 26077.331958
+
+✖ failing tests:
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:21670
+✖ a read that starts during a walk is not answered 304 by the walk's first page: a live message after it does not overtake the walk (18196.136213ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+      forwarded: '301 of 301',
+      label: 'a live message after a read that started during a walk',
+      missing: 'none',
+  +   oldestFirst: false,
+  -   oldestFirst: true,
+      twice: 'none',
+      unexpected: 'none'
+    }
+  
+      at assertExactlyOnceInOrder (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:1106:7)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 3)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { label: 'a live message after a read that started during a walk', forwarded: '301 of 301', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: false },
+    expected: { label: 'a live message after a read that started during a walk', forwarded: '301 of 301', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: true },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }

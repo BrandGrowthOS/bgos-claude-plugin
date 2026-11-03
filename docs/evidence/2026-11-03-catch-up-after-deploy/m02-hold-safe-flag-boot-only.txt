@@ -1,0 +1,149 @@
+MUTANT m02-hold-safe-flag-boot-only
+undoes: hole 1: the hold is tied to this connection too
+file: server.ts
+--- removed
+(chatsPolledSinceBoot.has(chatId) && !chatBehindSocket(chatId)) ||
+      streamCoveredChats.has(chatId)
+    if (caughtUp
++++ added
+chatsPolledSinceBoot.has(chatId) ||
+      streamCoveredChats.has(chatId)
+    if (caughtUp
+exit=1
+
+▶ hole 1: the reconnect skip
+  ✖ rows missed around a deploy, then a live message beats the catch up read: every row once, oldest first (9014.253438ms)
+  ✖ the catch up read fails, then a live message: the rows under it are still read, every row once (7732.892019ms)
+  ✖ a read that started before the socket came back is not the catch up: rows it could not see still arrive before a live message (18045.365474ms)
+✖ hole 1: the reconnect skip (18048.693767ms)
+▶ a reconnect or a failure in the middle of a page
+  ✖ the socket drops and comes back while an older page is in flight, a live message lands: every row once, oldest first (12844.910314ms)
+  ✔ an older page fails: nothing is lost or repeated, and the next read starts over without a validator on any page (27090.266726ms)
+  ✔ the daemon restarts while an older page is in flight: every row once, oldest first, across both lives (12684.773494ms)
+✖ a reconnect or a failure in the middle of a page (27090.970814ms)
+ℹ tests 6
+ℹ suites 2
+ℹ pass 2
+ℹ fail 4
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 45493.52276
+
+✖ failing tests:
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:2847
+✖ rows missed around a deploy, then a live message beats the catch up read: every row once, oldest first (9014.253438ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+      forwarded: '8 of 8',
+      label: 'PL2: 7 missed rows and one live',
+      missing: 'none',
+  +   oldestFirst: false,
+  -   oldestFirst: true,
+      twice: 'none',
+      unexpected: 'none'
+    }
+  
+      at assertExactlyOnceInOrder (/home/karim/lane-tmp/d041/mut/m02-hold-safe-flag-boot-only.enk_b9hk/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m02-hold-safe-flag-boot-only.enk_b9hk/test/catch-up-after-deploy.e2e.test.ts:536:7)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 0)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { label: 'PL2: 7 missed rows and one live', forwarded: '8 of 8', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: false },
+    expected: { label: 'PL2: 7 missed rows and one live', forwarded: '8 of 8', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: true },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:3452
+✖ the catch up read fails, then a live message: the rows under it are still read, every row once (7732.892019ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+      forwarded: '8 of 8',
+      label: 'a failed read is not a catch up',
+      missing: 'none',
+  +   oldestFirst: false,
+  -   oldestFirst: true,
+      twice: 'none',
+      unexpected: 'none'
+    }
+  
+      at assertExactlyOnceInOrder (/home/karim/lane-tmp/d041/mut/m02-hold-safe-flag-boot-only.enk_b9hk/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m02-hold-safe-flag-boot-only.enk_b9hk/test/catch-up-after-deploy.e2e.test.ts:557:7)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 1)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { label: 'a failed read is not a catch up', forwarded: '8 of 8', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: false },
+    expected: { label: 'a failed read is not a catch up', forwarded: '8 of 8', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: true },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:4249
+✖ a read that started before the socket came back is not the catch up: rows it could not see still arrive before a live message (18045.365474ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+      forwarded: '8 of 8',
+      label: 'a read from before the reconnect',
+      missing: 'none',
+  +   oldestFirst: false,
+  -   oldestFirst: true,
+      twice: 'none',
+      unexpected: 'none'
+    }
+  
+      at assertExactlyOnceInOrder (/home/karim/lane-tmp/d041/mut/m02-hold-safe-flag-boot-only.enk_b9hk/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m02-hold-safe-flag-boot-only.enk_b9hk/test/catch-up-after-deploy.e2e.test.ts:588:7)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 2)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { label: 'a read from before the reconnect', forwarded: '8 of 8', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: false },
+    expected: { label: 'a read from before the reconnect', forwarded: '8 of 8', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: true },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:14453
+✖ the socket drops and comes back while an older page is in flight, a live message lands: every row once, oldest first (12844.910314ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+      forwarded: '301 of 301',
+      label: 'a reconnect in the middle of a page',
+      missing: 'none',
+  +   oldestFirst: false,
+  -   oldestFirst: true,
+      twice: 'none',
+      unexpected: 'none'
+    }
+  
+      at assertExactlyOnceInOrder (/home/karim/lane-tmp/d041/mut/m02-hold-safe-flag-boot-only.enk_b9hk/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m02-hold-safe-flag-boot-only.enk_b9hk/test/catch-up-after-deploy.e2e.test.ts:877:7)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 0)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { label: 'a reconnect in the middle of a page', forwarded: '301 of 301', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: false },
+    expected: { label: 'a reconnect in the middle of a page', forwarded: '301 of 301', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: true },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }

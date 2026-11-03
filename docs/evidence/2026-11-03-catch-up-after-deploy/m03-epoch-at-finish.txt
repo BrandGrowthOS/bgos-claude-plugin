@@ -1,0 +1,59 @@
+MUTANT m03-epoch-at-finish
+undoes: hole 1: a read counts from when it STARTED
+file: server.ts
+--- removed
+  chatReadAtEpoch.set(chatId, Math.max(chatReadAtEpoch.get(chatId) ?? 0, startedAtEpoch))
+
++++ added
+  chatReadAtEpoch.set(chatId, socketEpoch)
+
+exit=1
+
+▶ hole 1: the reconnect skip
+  ✔ rows missed around a deploy, then a live message beats the catch up read: every row once, oldest first (5653.570584ms)
+  ✔ the catch up read fails, then a live message: the rows under it are still read, every row once (9265.999424ms)
+  ✔ the read a live message waits for fails: the message goes through, and the rows under it still arrive, each once (8529.861792ms)
+  ✖ a read that started before the socket came back is not the catch up: rows it could not see still arrive before a live message (25876.446836ms)
+✖ hole 1: the reconnect skip (31531.463806ms)
+▶ a reconnect or a failure in the middle of a page
+  ✔ the socket drops and comes back while an older page is in flight, a live message lands: every row once, oldest first (12702.346916ms)
+  ✔ an older page fails: nothing is lost or repeated, and the next read starts over without a validator on any page (18014.143262ms)
+  ✔ the daemon restarts while an older page is in flight: every row once, oldest first, across both lives (14521.909692ms)
+✔ a reconnect or a failure in the middle of a page (18014.844256ms)
+ℹ tests 7
+ℹ suites 2
+ℹ pass 6
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 49898.569797
+
+✖ failing tests:
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:4989
+✖ a read that started before the socket came back is not the catch up: rows it could not see still arrive before a live message (25876.446836ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+      forwarded: '8 of 8',
+      label: 'a read from before the reconnect',
+      missing: 'none',
+  +   oldestFirst: false,
+  -   oldestFirst: true,
+      twice: 'none',
+      unexpected: 'none'
+    }
+  
+      at assertExactlyOnceInOrder (/home/karim/lane-tmp/d041/mut/m03-epoch-at-finish._w1ob1w4/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m03-epoch-at-finish._w1ob1w4/test/catch-up-after-deploy.e2e.test.ts:610:7)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Suite.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { label: 'a read from before the reconnect', forwarded: '8 of 8', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: false },
+    expected: { label: 'a read from before the reconnect', forwarded: '8 of 8', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: true },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }

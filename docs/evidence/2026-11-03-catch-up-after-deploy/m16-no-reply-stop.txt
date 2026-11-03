@@ -1,0 +1,83 @@
+MUTANT m16-no-reply-stop
+undoes: hole 3: the walk stops at a real reply
+file: lib/poll-core.ts
+--- removed
+      if (i > 0 && rows[i - 1]!.sender === 'user') return false
+
++++ added
+
+exit=1
+
+▶ hole 3: a chat that started empty
+  ✖ a chat this daemon has never read: 120 unanswered rows above a long answered history, and the walk stops at the reply (2178.187168ms)
+✖ hole 3: a chat that started empty (2179.675006ms)
+✖ a first read stops at a real reply: everything older was handled (3.625698ms)
+✖ the walk's stop agrees with the selection: it stops exactly where more rows change nothing (0.355712ms)
+ℹ tests 3
+ℹ suites 1
+ℹ pass 0
+ℹ fail 3
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2558.526507
+
+✖ failing tests:
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:11413
+✖ a chat this daemon has never read: 120 unanswered rows above a long answered history, and the walk stops at the reply (2178.187168ms)
+  AssertionError [ERR_ASSERTION]: the answered history is not read: 6 older pages
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m16-no-reply-stop.j3jx0saf/test/catch-up-after-deploy.e2e.test.ts:790:14)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 3)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }
+
+test at test/catch-up-paging.test.ts:1:3385
+✖ a first read stops at a real reply: everything older was handled (3.625698ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  true !== false
+  
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m16-no-reply-stop.j3jx0saf/test/catch-up-paging.test.ts:112:10)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.start (node:internal/test_runner/test:1262:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:387:17) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: true,
+    expected: false,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/catch-up-paging.test.ts:1:5221
+✖ the walk's stop agrees with the selection: it stops exactly where more rows change nothing (0.355712ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  true !== false
+  
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m16-no-reply-stop.j3jx0saf/test/catch-up-paging.test.ts:164:12)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at node:internal/test_runner/test:1305:31
+      at node:internal/process/task_queues:151:7
+      at AsyncResource.runInAsyncScope (node:async_hooks:227:14)
+      at AsyncResource.runMicrotask (node:internal/process/task_queues:148:8) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: true,
+    expected: false,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

@@ -1,0 +1,40 @@
+MUTANT m23-adopted-cursor-keeps-floor
+undoes: a cursor from the shared file drops the floor
+file: server.ts
+--- removed
+  if ((chatLastSeen.get(chatId) ?? 0) > before) chatReadFloor.delete(chatId)
+
++++ added
+
+exit=1
+
+✖ a cursor taken from the shared file drops the read floor: the holder delivered those rows, and its ids are not in this process (52.346751ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 805.179346
+
+✖ failing tests:
+
+test at test/external-email-label.test.ts:32:5507
+✖ a cursor taken from the shared file drops the read floor: the holder delivered those rows, and its ids are not in this process (52.346751ms)
+  AssertionError [ERR_ASSERTION]: another daemon read this chat up to there
+  
+  true !== false
+  
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m23-adopted-cursor-keeps-floor.2exujek9/test/external-email-label.test.ts:871:10)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.start (node:internal/test_runner/test:1262:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:387:17) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: true,
+    expected: false,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

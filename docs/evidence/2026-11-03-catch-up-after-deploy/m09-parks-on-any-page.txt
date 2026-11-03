@@ -1,0 +1,48 @@
+MUTANT m09-parks-on-any-page
+undoes: a card below the newest page does not park
+file: server.ts
+--- removed
+    const pendingIds = emptyCards
+      .filter((m) => newestPageIds.has(m.message.id))
+
++++ added
+    const pendingIds = emptyCards
+
+exit=1
+
+▶ what a long read must not break
+  ✔ a walk that outlasts the lock's 15 seconds inside a tick keeps the lock fresh (32764.026728ms)
+  ✔ a daemon that stands down during a walk reads no further page and delivers nothing (15545.849083ms)
+  ✖ a wake card that never fills does not pin the cursor: the rows above it arrive once and the next read starts above them (13881.173975ms)
+  ✔ a wake card inside the newest page still waits for its body, and arrives once with it (13919.069832ms)
+  ✔ a drain of 600 rows in one chat does not make the daemon forget what it handed over in another (21058.656031ms)
+✖ what a long read must not break (36607.590862ms)
+ℹ tests 5
+ℹ suites 1
+ℹ pass 4
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 37008.631015
+
+✖ failing tests:
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:19407
+✖ a wake card that never fills does not pin the cursor: the rows above it arrive once and the next read starts above them (13881.173975ms)
+  AssertionError [ERR_ASSERTION]: the abandoned card no longer holds the read position down
+  
+  100 !== 170
+  
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m09-parks-on-any-page.7xv1e4x6/test/catch-up-after-deploy.e2e.test.ts:1016:14)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 2)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 100,
+    expected: 170,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

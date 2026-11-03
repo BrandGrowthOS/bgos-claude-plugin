@@ -8785,9 +8785,9 @@ const heldReadsInFlight = new Set<string>()
 // delivered, and the forwarded ids do not survive one), but the next read starts
 // from here, under it, and so sees those rows; the dedupe drops what the socket
 // delivered. This also keeps a wake card still waiting for its body inside the read
-// when a live message lands above it. No request is added: the next scheduled read
-// just carries those rows. In memory, so a restart before that read loses the rows
-// this was keeping in reach.
+// when a live message lands above it. No read is scheduled for it: the next read
+// starts lower and carries those rows, in more pages when they are more than 50. In
+// memory, so a restart before that read loses the rows this was keeping in reach.
 const chatReadFloor = new Map<string, number>()
 
 /** A live message moved the cursor from `before`: the rows above that are unread. */
@@ -11190,6 +11190,10 @@ async function pollChat(chatId: string): Promise<void> {
           // that stood down or is draining reads no more; the holder, or the next
           // daemon, reads this chat from the cursor this leaves where it was.
           if (updateDrainMode || !lockHeld) throw new Error('stood down during a catch up read')
+          // The validator the first page recorded says "you have these rows", and this
+          // read has not delivered them yet. A read starting now must not be told 304
+          // and call the chat caught up (noteChatReadAtEpoch).
+          bgosEtagCache.invalidate(req.cacheKey)
           const older = (await bgosGet(
             buildOlderPagePath({ chatId, userId: USER_ID, lastSeen, beforeId }),
             { conditional: false, callerAssistantId: ASSISTANT_ID },
@@ -11206,6 +11210,10 @@ async function pollChat(chatId: string): Promise<void> {
           log(`WARN catch up read of chat ${chatId} stopped at message ${beforeId}: the server returned nothing below it but says there is more`),
       }),
     }
+    // The same question once more, now that the last page is in: a daemon that lost
+    // the lock during it, or during a read of one page, delivers nothing and moves
+    // no cursor. The catch below drops the validator, so whoever reads next gets rows.
+    if (updateDrainMode || !lockHeld) throw new Error('stood down during a catch up read')
 
     // Messages are returned oldest → newest by message id. Make sure we
     // operate on a stable ordered copy (defensive; the backend already
@@ -11219,7 +11227,7 @@ async function pollChat(chatId: string): Promise<void> {
     )
 
     let newUserMessages: ChatMessage[]
-    let isBacklog = false
+    let readIsBacklog = false
     if (lastSeen === 0) {
       // First poll for a chat with no cursor: forward user messages that
       // haven't been answered yet WITHOUT over-forwarding historic ones.
@@ -11303,7 +11311,7 @@ async function pollChat(chatId: string): Promise<void> {
       // explicit to Claude that these came in WHILE OFFLINE. Without
       // this, Claude can't tell a fresh user message apart from a
       // crash-recovered one and may treat it as already-handled.
-      isBacklog = newUserMessages.length > 0
+      readIsBacklog = newUserMessages.length > 0
     } else {
       newUserMessages = pollForwardableRows.filter(
         (m) =>
@@ -11368,7 +11376,7 @@ async function pollChat(chatId: string): Promise<void> {
           }
         }
       }
-      isBacklog =
+      readIsBacklog =
         isBootPoll &&
         newUserMessages.some((m) => {
           const t = sentDateToMs(m.message.sentDate)
@@ -11614,6 +11622,10 @@ async function pollChat(chatId: string): Promise<void> {
     // What this batch may spend waiting on email downloads (EMAIL_FILES_BATCH_BUDGET_MS).
     const pollEmailBudget = createEmailBatchBudget()
     for (const msg of newUserMessages) {
+      // A live message this read also delivers (holdLiveFrame) did not come in while
+      // this daemon was away, and the rows under it did: it keeps a live message's
+      // framing and its overdue timer. Only a boot read can be both.
+      const isBacklog = readIsBacklog && !(msg.message.id >= (chatLiveFloor.get(chatId) ?? Number.POSITIVE_INFINITY))
       // The second lock (person lanes), on the poll as on the socket.
       const pollLaneVerdict = ownerLaneVerdict(msg.message)
       if (!pollLaneVerdict.deliver) {
@@ -16053,7 +16065,9 @@ function connectWebsocket(): void {
     const caughtUp =
       (chatsPolledSinceBoot.has(chatId) && !chatBehindSocket(chatId)) ||
       streamCoveredChats.has(chatId)
-    if (caughtUp || !monitoredChatIds.includes(chatId)) return false
+    // A chat can be caught up with frames still waiting for their read: going
+    // straight would put this message in front of them.
+    if ((caughtUp && !heldReadsInFlight.has(chatId)) || !monitoredChatIds.includes(chatId)) return false
     noteLiveFloor(chatId, messageId)
     const held = heldLiveFrames.get(chatId)
     if (held) held.push(payload)
@@ -18070,6 +18084,12 @@ async function main(): Promise<void> {
       // backend. Acceptable, and documented rather than fixed, because forcing
       // a reconnect to chase it would cost the cheap re-arm this design is
       // built on.
+      //
+      // Every frame of the spell was ignored, and the socket never dropped, so this
+      // is the one thing that says the chats are behind. The first live message into
+      // each reads it first (holdLiveFrame); a chat with no live message is read at
+      // the next sweep. No sweep here, for the same cheap re-arm.
+      socketEpoch++
       channelArmed = true
       connectedSince = Date.now()
       channelEverArmed = true

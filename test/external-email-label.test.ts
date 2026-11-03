@@ -824,6 +824,37 @@ test('a frame that reaches the socket lane while the chat is behind this connect
   assert.deepEqual(lane(false), { cursor: 9010, kicked: [], delivered: 1 }, 'caught up: delivered, the bump, no read')
 })
 
+test('the read floor: set once under the first move past unread rows, kept while the socket stays ahead of the reads', () => {
+  const chatLastSeen = new Map([[CHAT, 105]])
+  const chatReadFloor = new Map<string, number>()
+  const streamCoveredChats = new Set<string>()
+  const scope = { chatLastSeen, chatReadFloor, streamCoveredChats }
+  const passed = compile(serverFunction('function noteCursorPassedUnread('), 'noteCursorPassedUnread', scope).fn
+  const settled = compile(serverFunction('function settleChatReadFloor('), 'settleChatReadFloor', scope).fn
+
+  passed(CHAT, 105)
+  assert.equal(chatReadFloor.has(CHAT), false, 'the cursor did not move (an email held it): nothing was passed')
+  passed(CHAT, 0)
+  assert.equal(chatReadFloor.has(CHAT), false, 'from no cursor there is no position to go back to')
+  streamCoveredChats.add(CHAT)
+  passed(CHAT, 100)
+  assert.equal(chatReadFloor.has(CHAT), false, 'the stream has its own gap arithmetic')
+  streamCoveredChats.clear()
+
+  passed(CHAT, 100)
+  assert.equal(chatReadFloor.get(CHAT), 100)
+  chatLastSeen.set(CHAT, 110)
+  passed(CHAT, 105)
+  assert.equal(chatReadFloor.get(CHAT), 100, 'a later live message does not lift it over the rows still unread')
+
+  settled(CHAT, 104)
+  assert.equal(chatReadFloor.get(CHAT), 104, 'a read up to 104 while the socket is at 110: the rows above 104 stay in reach')
+  settled(CHAT, 102)
+  assert.equal(chatReadFloor.get(CHAT), 104, 'an older overlapping read finishing late does not rewind it')
+  settled(CHAT, 110)
+  assert.equal(chatReadFloor.has(CHAT), false, 'a read reached the cursor: it is gone')
+})
+
 test('a cursor taken from the shared file drops the read floor: the holder delivered those rows, and its ids are not in this process', () => {
   const chatLastSeen = new Map([[CHAT, 105]])
   const chatReadFloor = new Map([[CHAT, 100]])

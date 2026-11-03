@@ -516,6 +516,31 @@ async function world(cursors: Record<string, number> | null = { '999': 5 }): Pro
   }
 }
 
+const lockOf = (rig: Rig) => join(rig.home, '.bgos-agent', `credentials-${ASSISTANT_ID}.json.lock`)
+
+/** Another daemon holding the pairing lock, its heartbeat fresh until `stop`. */
+function rivalForLock(rig: Rig): { start: () => void; stop: () => Promise<void> } {
+  let alive = false
+  let beating: Promise<void> = Promise.resolve()
+  const write = () => writeFileSync(lockOf(rig), JSON.stringify({ pid: process.pid, heartbeatAt: Date.now(), bootedAt: Date.now() }))
+  return {
+    start: () => {
+      alive = true
+      write()
+      beating = (async () => {
+        while (alive) {
+          write()
+          await sleep(1_000)
+        }
+      })()
+    },
+    stop: async () => {
+      alive = false
+      await beating
+    },
+  }
+}
+
 /** A chat with a cursor at 100: one answered exchange at or below it. */
 function primed(backend: Backend, chatId: number, first: number): void {
   backend.rows.push(ownerRow(chatId, first), replyRow(chatId, first + 1))
@@ -608,6 +633,97 @@ describe('hole 1: the reconnect skip', { concurrency: 3 }, () => {
       w.backend.pushLive(ownerRow(MAIN, 200))
       await settle(() => d.cards, MAIN, [...missed, 200])
       assertExactlyOnceInOrder(arrived(d.cards, MAIN), [...missed, 200], 'a read from before the reconnect')
+      assertHarnessRan(w.backend)
+    } finally {
+      await w.end()
+    }
+  })
+
+  test('a live message does not overtake one that still waits for a read', OPTS, async () => {
+    const w = await world({ '999': 5, [MAIN]: 100 })
+    let openSweep = () => {}
+    try {
+      primed(w.backend, MAIN, 91)
+      const d = await w.boot()
+      await quietAfterBoot(w.backend, MAIN)
+      const waits = (id: number) => waitFor(() => d.stderr.some((l) => l.includes(`Live message ${id} `)), `message ${id} to wait`, 30_000)
+      const cutAt = Date.now()
+      // The connect's own read stays open, so the chat stays behind this
+      // connection until the first live message starts a read of its own.
+      const sweepOpen = new Promise<void>((resolve) => {
+        openSweep = resolve
+      })
+      w.backend.holdRead(MAIN, () => w.backend.lastConnectAt() > cutAt, () => sweepOpen)
+      w.backend.cutSocket()
+      await waitFor(() => w.backend.pending().holds === 0, 'the read the connect starts', 90_000)
+      // 201 starts a read. 202 lands during it, so it waits for the next read.
+      // That read starts with the chat caught up, and 203 lands during it.
+      w.backend.holdRead(MAIN, (r) => r.ids.includes(201), async () => {
+        w.backend.pushLive(ownerRow(MAIN, 202))
+        await waits(202)
+        w.backend.holdRead(MAIN, (r) => r.ids.includes(202), async () => {
+          w.backend.pushLive(ownerRow(MAIN, 203))
+          await sleep(500)
+        })
+      })
+      w.backend.pushLive(ownerRow(MAIN, 201))
+      const want = [201, 202, 203]
+      await settle(() => d.cards, MAIN, want)
+      assertExactlyOnceInOrder(arrived(d.cards, MAIN), want, 'three live messages, each landing during the last one\'s read')
+      openSweep()
+      assertHarnessRan(w.backend)
+    } finally {
+      openSweep()
+      await w.end()
+    }
+  })
+
+  test('a daemon that stood down and took the lock back: a row of the passive spell goes before the next live message', OPTS, async () => {
+    const w = await world({ '999': 5, [MAIN]: 100 })
+    try {
+      primed(w.backend, MAIN, 91)
+      const d = await w.boot()
+      await quietAfterBoot(w.backend, MAIN)
+      const rival = rivalForLock(w.rig)
+      rival.start()
+      await waitFor(() => d.stderr.some((l) => l.includes('standing down to passive')), 'the daemon to stand down', 30_000)
+      // Written while this daemon ignored its socket. The socket never dropped,
+      // so nothing else says this chat is behind.
+      w.backend.rows.push(ownerRow(MAIN, 101))
+      await rival.stop()
+      rmSync(lockOf(w.rig), { force: true })
+      await waitFor(() => d.stderr.some((l) => l.includes('delivery re-armed')), 'the daemon to take the lock back', 60_000)
+      w.backend.pushLive(ownerRow(MAIN, 102))
+      await settle(() => d.cards, MAIN, [101, 102])
+      assertExactlyOnceInOrder(arrived(d.cards, MAIN), [101, 102], 'a passive spell, then a live message')
+    } finally {
+      await w.end()
+    }
+  })
+
+  test('a live message behind a failed boot read is framed live, and the rows under it as backlog', OPTS, async () => {
+    const w = await world({ '999': 5, [MAIN]: 100 })
+    try {
+      primed(w.backend, MAIN, 91)
+      const missed = ids(101, 120)
+      for (const id of missed) w.backend.rows.push(ownerRow(MAIN, id))
+      // The boot read fails, so the socket comes up with this chat still unread
+      // and the read the live message waits for is a boot read.
+      w.backend.failRead(MAIN, () => w.backend.connected() === 0)
+      w.backend.onNextConnect(() => w.backend.pushLive(ownerRow(MAIN, 900)))
+      // Long enough for the frame to reach the daemon before the read answers.
+      w.backend.holdRead(MAIN, () => w.backend.connected() > 0, async () => {
+        await sleep(1_500)
+      })
+      const d = await w.boot()
+      const want = [...missed, 900]
+      await settle(() => d.cards, MAIN, want)
+      assertExactlyOnceInOrder(arrived(d.cards, MAIN), want, 'a live message behind a boot read')
+      assert.deepEqual(
+        d.cards.filter((c) => c.chatId === MAIN && c.backlog).map((c) => c.messageId),
+        missed,
+        'only the rows the daemon missed are framed as backlog',
+      )
       assertHarnessRan(w.backend)
     } finally {
       await w.end()
@@ -738,7 +854,12 @@ describe('hole 2: the newest 50', { concurrency: 3 }, () => {
       await sleep(500)
       assert.deepEqual(w.backend.readsOf(MAIN).filter(isContinuation).map((r) => r.beforeId), [], 'no page below the cursor')
       assert.deepEqual(arrived(d.cards, MAIN), [], 'nothing to hand over')
-      assert.ok(w.backend.readsOf(MAIN).some((r) => r.status === 304), 'an idle read is answered 304')
+      const back = w.backend.lastConnectAt()
+      assert.deepEqual(
+        w.backend.readsOf(MAIN).filter((r) => r.startedAt >= back).map((r) => r.status),
+        [304],
+        'a reconnect costs this chat one read, answered 304',
+      )
     } finally {
       await w.end()
     }
@@ -871,6 +992,10 @@ describe('hole 4: a row the server never pushes', { concurrency: 3 }, () => {
       // the daemon a row was owed until the next read, and holding every live
       // message for a read would cost the fleet a read per message.
       assert.deepEqual(arrived(d.cards, MAIN).sort((a, b) => a - b), [101, 102], 'PL3: forwarded once each')
+      const continued = w.backend.readsOf(MAIN).filter((r) => r.ids.includes(101))
+      assert.ok(continued.length > 0 && continued.every((r) => r.afterId === 100), 'the read started under the live message')
+      await reconnectAndRead(w.backend, MAIN)
+      assert.equal(w.backend.readsOf(MAIN).at(-1)?.afterId, 102, 'and once a read reached the cursor, reads start at it again')
     } finally {
       await w.end()
     }
@@ -952,11 +1077,42 @@ describe('a reconnect or a failure in the middle of a page', { concurrency: 3 },
       await w.end()
     }
   })
+
+  test('a read that starts during a walk is not answered 304 by the walk\'s first page: a live message after it does not overtake the walk', OPTS, async () => {
+    const w = await world({ '999': 5, [MAIN]: 100 })
+    try {
+      primed(w.backend, MAIN, 91)
+      const d = await w.boot()
+      await quietAfterBoot(w.backend, MAIN)
+      const missed = ids(101, 400)
+      for (const id of missed) w.backend.rows.push(ownerRow(MAIN, id))
+      let readDuringWalk: Read | undefined
+      w.backend.holdRead(MAIN, isContinuation, async () => {
+        const cutAt = Date.now()
+        w.backend.cutSocket()
+        await waitFor(() => w.backend.lastConnectAt() > cutAt, 'the socket to be back', 90_000)
+        const back = w.backend.lastConnectAt()
+        await waitFor(() => {
+          readDuringWalk = w.backend.readsOf(MAIN).find((r) => !isContinuation(r) && r.startedAt >= back)
+          return readDuringWalk !== undefined
+        }, 'the read the connect starts', 30_000)
+        await sleep(300)
+        w.backend.pushLive(ownerRow(MAIN, 900))
+        await sleep(500)
+      })
+      w.backend.cutSocket()
+      const want = [...missed, 900]
+      await settle(() => d.cards, MAIN, want, 120_000)
+      assertExactlyOnceInOrder(arrived(d.cards, MAIN), want, 'a live message after a read that started during a walk')
+      assert.equal(readDuringWalk?.status, 200, 'the rows under this read are not delivered yet, so it cannot be told nothing changed')
+      assertHarnessRan(w.backend)
+    } finally {
+      await w.end()
+    }
+  })
 })
 
 describe('what a long read must not break', { concurrency: 3 }, () => {
-  const lockOf = (rig: Rig) => join(rig.home, '.bgos-agent', `credentials-${ASSISTANT_ID}.json.lock`)
-
   test('a walk that outlasts the lock\'s 15 seconds inside a tick keeps the lock fresh', OPTS, async () => {
     const w = await world({ '999': 5, [MAIN]: 100 })
     try {
@@ -995,24 +1151,43 @@ describe('what a long read must not break', { concurrency: 3 }, () => {
       for (const id of ids(101, 600)) w.backend.rows.push(ownerRow(MAIN, id))
       // A rival takes the lock while the first older page is in flight. It stays
       // fresh until the end of the case, so this daemon does not take it back.
-      let rivalAlive = true
-      const rival = () => writeFileSync(lockOf(w.rig), JSON.stringify({ pid: process.pid, heartbeatAt: Date.now(), bootedAt: Date.now() }))
+      const rival = rivalForLock(w.rig)
       w.backend.holdRead(MAIN, isContinuation, async () => {
-        rival()
-        void (async () => {
-          while (rivalAlive) {
-            rival()
-            await sleep(1_000)
-          }
-        })()
+        rival.start()
         await waitFor(() => d.stderr.some((l) => l.includes('standing down to passive')), 'the daemon to stand down', 30_000)
       })
       await reconnectAndRead(w.backend, MAIN)
       await waitFor(() => w.backend.pending().holds === 0, 'the walk to reach the held page', 30_000)
       await waitFor(() => w.backend.readsOf(MAIN).some(isContinuation), 'the held page to be answered', 40_000)
       await sleep(3_000)
-      rivalAlive = false
+      await rival.stop()
       assert.equal(w.backend.readsOf(MAIN).filter(isContinuation).length, 1, 'no page after the stand down')
+      assert.deepEqual(arrived(d.cards, MAIN), [], 'nothing delivered by a daemon that lost the lock')
+      assertHarnessRan(w.backend)
+    } finally {
+      await w.end()
+    }
+  })
+
+  test('a daemon that stands down during the last older page delivers nothing', OPTS, async () => {
+    const w = await world({ '999': 5, [MAIN]: 100 })
+    try {
+      primed(w.backend, MAIN, 99)
+      const d = await w.boot()
+      await quietAfterBoot(w.backend, MAIN)
+      // The newest 50 and one older page, which reaches the cursor: no page comes
+      // after the stand down to notice it.
+      for (const id of ids(101, 200)) w.backend.rows.push(ownerRow(MAIN, id))
+      const rival = rivalForLock(w.rig)
+      w.backend.holdRead(MAIN, isContinuation, async () => {
+        rival.start()
+        await waitFor(() => d.stderr.some((l) => l.includes('standing down to passive')), 'the daemon to stand down', 30_000)
+      })
+      await reconnectAndRead(w.backend, MAIN)
+      await waitFor(() => w.backend.readsOf(MAIN).some(isContinuation), 'the held page to be answered', 70_000)
+      await sleep(3_000)
+      await rival.stop()
+      assert.equal(w.backend.readsOf(MAIN).filter(isContinuation).length, 1, 'one older page was enough')
       assert.deepEqual(arrived(d.cards, MAIN), [], 'nothing delivered by a daemon that lost the lock')
       assertHarnessRan(w.backend)
     } finally {
@@ -1083,9 +1258,12 @@ describe('what a long read must not break', { concurrency: 3 }, () => {
       await reconnectAndRead(w.backend, SECOND)
       await settle(() => d.cards, SECOND, drain, 120_000)
       assertExactlyOnceInOrder(arrived(d.cards, SECOND), drain, 'a drain past the old 500 id bound')
+      // A new row, because an unchanged window answers 304 and never reaches the
+      // dedupe: the rows above the card must really be handed to it again.
+      w.backend.rows.push(ownerRow(MAIN, 2000))
       await reconnectAndRead(w.backend, MAIN)
-      await sleep(1_500)
-      assertExactlyOnceInOrder(arrived(d.cards, MAIN), above, 'the parked chat, read again after the drain')
+      await settle(() => d.cards, MAIN, [...above, 2000])
+      assertExactlyOnceInOrder(arrived(d.cards, MAIN), [...above, 2000], 'the parked chat, read again after the drain')
     } finally {
       await w.end()
     }
