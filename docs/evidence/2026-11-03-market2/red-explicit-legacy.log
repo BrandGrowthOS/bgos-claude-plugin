@@ -1,0 +1,29 @@
+✖ market2 launcher: explicit legacy without home launches the effective agent 42 (308.298333ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 491.940458
+
+✖ failing tests:
+
+test at test/marketplace-attach.e2e.test.ts:2:5362
+✖ market2 launcher: explicit legacy without home launches the effective agent 42 (308.298333ms)
+  AssertionError [ERR_ASSERTION]: scope follows the selected credentials, not another filename
+
+  '' !== '42'
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:273:14)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: '',
+    expected: '42',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

@@ -1,0 +1,332 @@
+docs/evidence/2026-10-30-suite-green-off-ci/test-fix-proof.txt:7: trailing whitespace.
++red, the tree before the fix (no scripts/run-tests-env.mjs, no call): ℹ pass 0 ℹ fail 3
+docs/evidence/2026-10-30-suite-green-off-ci/test-fix-proof.txt:8: trailing whitespace.
++tip unmutated: ℹ pass 3 ℹ fail 0
+docs/evidence/2026-10-30-suite-green-off-ci/test-fix-proof.txt:13: trailing whitespace.
++   ℹ pass 2 ℹ fail 1
+docs/evidence/2026-10-30-suite-green-off-ci/test-fix-proof.txt:18: trailing whitespace.
++   ℹ pass 2 ℹ fail 1
+docs/evidence/2026-11-03-catch-up-after-deploy/m01-safe-flag-boot-only.txt:45: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m01-safe-flag-boot-only.txt:55: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m02-hold-safe-flag-boot-only.txt:44: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m02-hold-safe-flag-boot-only.txt:54: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m02-hold-safe-flag-boot-only.txt:73: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m02-hold-safe-flag-boot-only.txt:83: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m02-hold-safe-flag-boot-only.txt:102: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m02-hold-safe-flag-boot-only.txt:112: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m02-hold-safe-flag-boot-only.txt:131: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m02-hold-safe-flag-boot-only.txt:142: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m02-hold-safe-flag-boot-only.txt:159: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m02-hold-safe-flag-boot-only.txt:169: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m02-hold-safe-flag-boot-only.txt:186: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m02-hold-safe-flag-boot-only.txt:196: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m03-epoch-at-finish.txt:42: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m03-epoch-at-finish.txt:52: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m04-frames-not-held.txt:41: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m04-frames-not-held.txt:51: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m04-frames-not-held.txt:70: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m04-frames-not-held.txt:80: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m04-frames-not-held.txt:99: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m04-frames-not-held.txt:109: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m04-frames-not-held.txt:126: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m04-frames-not-held.txt:137: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m04-frames-not-held.txt:154: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m04-frames-not-held.txt:164: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m04-frames-not-held.txt:181: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m04-frames-not-held.txt:191: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m04-frames-not-held.txt:210: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m04-frames-not-held.txt:220: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m06-no-walk.txt:38: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m06-no-walk.txt:49: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m06-no-walk.txt:68: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m06-no-walk.txt:79: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m06-no-walk.txt:98: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m06-no-walk.txt:109: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m06-no-walk.txt:128: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m06-no-walk.txt:139: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m07-walk-past-cursor.txt:32: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m07-walk-past-cursor.txt:37: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m07-walk-past-cursor.txt:54: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m07-walk-past-cursor.txt:56: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m07-walk-past-cursor.txt:73: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m07-walk-past-cursor.txt:75: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m08-older-pages-conditional.txt:28: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m08-older-pages-conditional.txt:39: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m09-parks-on-any-page.txt:35: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m09-parks-on-any-page.txt:37: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m10-dedupe-cap-500.txt:39: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m10-dedupe-cap-500.txt:50: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m12-no-standdown-check.txt:28: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m12-no-standdown-check.txt:30: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m13-empty-read-no-cursor.txt:34: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m13-empty-read-no-cursor.txt:45: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m13-empty-read-no-cursor.txt:64: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m13-empty-read-no-cursor.txt:75: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m14-first-read-no-stop.txt:50: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m14-first-read-no-stop.txt:56: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m15-no-gate-stop.txt:30: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m15-no-gate-stop.txt:32: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m15-no-gate-stop.txt:49: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m15-no-gate-stop.txt:51: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m16-no-reply-stop.txt:46: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m16-no-reply-stop.txt:48: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m16-no-reply-stop.txt:65: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m16-no-reply-stop.txt:67: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m17-no-cap-stop.txt:34: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m17-no-cap-stop.txt:40: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m17-no-cap-stop.txt:57: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m17-no-cap-stop.txt:59: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m17-no-cap-stop.txt:76: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m17-no-cap-stop.txt:78: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m18-no-read-floor.txt:29: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m18-no-read-floor.txt:34: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m19-floor-never-settles.txt:28: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m19-floor-never-settles.txt:30: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m20-clock-on-reread.txt:25: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m20-clock-on-reread.txt:27: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m22-no-progress-guard.txt:30: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m22-no-progress-guard.txt:37: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m23-adopted-cursor-keeps-floor.txt:26: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m23-adopted-cursor-keeps-floor.txt:28: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m24-settle-always-deletes.txt:28: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m24-settle-always-deletes.txt:30: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m25-floor-lifted-by-next-frame.txt:28: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m25-floor-lifted-by-next-frame.txt:30: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m27-no-check-after-walk.txt:31: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m27-no-check-after-walk.txt:135: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m28-overtakes-waiting-frames.txt:30: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m28-overtakes-waiting-frames.txt:40: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m29-rearm-no-epoch.txt:31: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m29-rearm-no-epoch.txt:42: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m30-validator-kept-during-walk.txt:29: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m30-validator-kept-during-walk.txt:39: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m31-live-framed-as-backlog.txt:31: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m31-live-framed-as-backlog.txt:41: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m32-lane-cap-on-every-poll.txt:32: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m32-lane-cap-on-every-poll.txt:60: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m32-lane-cap-on-every-poll.txt:87: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m32-lane-cap-on-every-poll.txt:97: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m33-lane-window-on-every-poll.txt:32: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m33-lane-window-on-every-poll.txt:41: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m34-lane-boot-uncapped.txt:30: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m34-lane-boot-uncapped.txt:39: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m35-answer-leaves-no-floor.txt:33: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m35-answer-leaves-no-floor.txt:44: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m36-answer-not-deduped.txt:31: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/m36-answer-not-deduped.txt:42: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-activity-clock.txt:16: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-activity-clock.txt:18: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-adopted-cursor-floor.txt:16: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-adopted-cursor-floor.txt:18: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-main-f780cf1.txt:49: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-main-f780cf1.txt:60: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-main-f780cf1.txt:79: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-main-f780cf1.txt:90: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-main-f780cf1.txt:109: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-main-f780cf1.txt:120: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-main-f780cf1.txt:139: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-main-f780cf1.txt:150: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-main-f780cf1.txt:169: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-main-f780cf1.txt:180: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-main-f780cf1.txt:199: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-main-f780cf1.txt:210: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-main-f780cf1.txt:229: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-main-f780cf1.txt:240: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-main-f780cf1.txt:257: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-main-f780cf1.txt:268: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-main-f780cf1.txt:287: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-main-f780cf1.txt:298: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-main-f780cf1.txt:317: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-main-f780cf1.txt:328: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-main-f780cf1.txt:347: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-main-f780cf1.txt:358: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-main-f780cf1.txt:375: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-main-f780cf1.txt:386: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-main-f780cf1.txt:403: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-main-f780cf1.txt:408: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-main-f780cf1.txt:426: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-main-f780cf1.txt:437: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-main-f780cf1.txt:479: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-main-f780cf1.txt:490: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-main-f780cf1.txt:509: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-main-f780cf1.txt:520: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-review-findings.txt:32: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-review-findings.txt:42: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-review-findings.txt:61: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-review-findings.txt:72: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-review-findings.txt:92: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-review-findings.txt:102: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-review-findings.txt:130: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-review-findings.txt:132: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-review-findings.txt:150: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-review-findings.txt:254: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-review-findings.txt:283: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-review-findings.txt:311: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-review-findings.txt:338: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-review-findings.txt:348: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-review-findings.txt:384: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-review-findings.txt:394: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-typed-verdict-cursor.txt:22: trailing whitespace.
++
+docs/evidence/2026-11-03-catch-up-after-deploy/red-typed-verdict-cursor.txt:33: trailing whitespace.
++

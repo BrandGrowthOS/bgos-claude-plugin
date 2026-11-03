@@ -1,0 +1,5 @@
+{
+  "command": "node_modules/.bin/tsx --test --test-concurrency=4 test/attach-scope.test.ts",
+  "exit_code": 0,
+  "remaining_attach_scope_fixture_directories": []
+}

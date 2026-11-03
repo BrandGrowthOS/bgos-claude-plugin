@@ -96,7 +96,7 @@ import { SkillsRpcHandler, normalizeSkillsRpc } from './lib/skills-rpc.js'
 import { listSkills, managedSkillsDir, removeAgentSkill } from './lib/skills-inventory.js'
 import { exportSkill, installBundle } from './lib/skills-share.js'
 import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
-import { DoctorRpcHandler, buildDoctorChecks, normalizeDoctorRpc } from './lib/doctor-rpc.ts'
+import { DoctorRpcHandler, buildDoctorChecks, normalizeDoctorRpc, type DoctorCheck } from './lib/doctor-rpc.ts'
 import { collectChanges, createNodeRunGit, nodeChangesFs } from './lib/git-changes.js'
 import { defaultPidAlive, pluginStateDirFor, readBootClock } from './lib/agent-inventory.mjs'
 import { createUnboundFrameRouter, createUnboundNoticeHandler } from './lib/agent-unbound.mjs'
@@ -727,7 +727,19 @@ import {
   resolveNodePath,
 } from './lib/watcher-install.mjs'
 import { readMarketplaceLatest, runClaudeCli } from './lib/plugin-cli.mjs'
-import { serveDuplicateCopy, serveHomeRefused, servePairRequired } from './lib/pair-required-server.mjs'
+import { serveDuplicateCopy, serveHomeRefused, servePairRequired, serveScopeRefused, serveMarketplaceDormant } from './lib/pair-required-server.mjs'
+import {
+  ATTACH_SCOPE_SETTINGS_FILE,
+  attachScopeDoctorCheck,
+  decideAttachScope,
+  formatAttachScopeBootLine,
+  formatAttachScopeRefusal,
+  readAttachScopeEvents,
+  recordAttachScopeEvent,
+  resolveAttachScopeMode,
+  summarizeAttachScopeEvents,
+} from './lib/attach-scope.mjs'
+import { evaluateMarketplaceAttach } from './lib/marketplace-attach.js'
 import { installWatcherBundle, nodeExec } from './lib/watcher-bundle.mjs'
 import { listProcesses } from './lib/process-tree.mjs'
 import {
@@ -781,7 +793,78 @@ const CLAUDE_CONFIG_DIR = pathResolve(LAUNCH_CWD, claudeConfigDir({ env: process
 // (and so, for now, are the memory folder and the session pin keeper).
 const CLAUDE_PROJECT_CWD = claudeProjectCwd(LAUNCH_CWD)
 
-const CREDENTIALS_SELECTION = resolveCredentialsSelection({
+// Install method + plugin root, detected once. For a marketplace install the
+// root is the VERSIONED cache dir this process was loaded from (design 7.3),
+// which is also where the watcher bundle is copied FROM.
+const INSTALL_DETECTION = (() => {
+  try {
+    return detectInstallMethod({ scriptPath: fileURLToPath(import.meta.url) })
+  } catch {
+    return null
+  }
+})()
+// `unknown` is unreachable in practice here (the daemon is loaded FROM the
+// install, so its own path is the evidence), but it is a real return value now
+// and it must not be spelled as a method: everything downstream only ever asks
+// `=== 'marketplace'`, so it lands on the clone branch either way, explicitly.
+const INSTALL_METHOD: 'marketplace' | 'clone' =
+  INSTALL_DETECTION?.method === 'marketplace' ? 'marketplace' : 'clone'
+const PLUGIN_ROOT =
+  (INSTALL_DETECTION?.pluginRoot ?? '') || (INSTALL_DETECTION?.executionRoot ?? '') || import.meta.dir
+
+// Duplicate detection remains first, before even dormant telemetry or identity refusal.
+async function preflightDuplicateCopy(): Promise<void> {
+  // THE PLUGIN'S SECOND COPY STANDS ASIDE (kc-server, 2026-10-13). When this is the marketplace
+  // copy and the session provably loads the checkout as its channel (server:bgos, this folder's
+  // .mcp.json), a second full daemon only adds a lock race and a second set of tools that refuse
+  // private calls. It serves a one tool notice instead and runs nothing else: no lock, no
+  // supervisor record, no polling, no channel capability. Every doubt keeps the daemon as it was
+  // (lib/duplicate-copy.mjs). Asked FIRST, before anything below writes a file or starts a timer.
+  {
+    const verdict = decideDuplicateCopy({
+      installMethod: INSTALL_METHOD,
+      ownSpec: INSTALL_DETECTION?.method === 'marketplace' ? marketplaceChannelSpec(INSTALL_DETECTION.marketplace) : '',
+      sessionSpecs:
+        INSTALL_METHOD === 'marketplace'
+          ? probeSessionChannelSpecs({ platform: process.platform, ownPid: process.pid, execSync: defaultExecSync })
+          : null,
+      sibling: INSTALL_METHOD === 'marketplace' ? findSiblingClone({ cwd: LAUNCH_CWD, ownRoot: import.meta.dir }) : null,
+      specMatches,
+    })
+    if (verdict.duplicate) {
+      process.stderr.write(`[bgos] duplicate plugin copy, standing aside: ${verdict.reason}\n`)
+      const served = await serveDuplicateCopy({
+        reason: verdict.reason,
+        version: readOwnVersion(import.meta.dir) ?? undefined,
+        log: (line: string) => process.stderr.write(`[bgos] ${line}\n`),
+      })
+      process.exit(served ? 0 : 1)
+    }
+  }
+}
+await preflightDuplicateCopy()
+
+// A marketplace copy is loaded in every session. Decide before identity/home
+// refusals, any state initialization, or any backend connection.
+const MARKETPLACE_ATTACH_FOLDER = LAUNCH_CWD
+const MARKETPLACE_ATTACH = INSTALL_METHOD === 'marketplace'
+  ? evaluateMarketplaceAttach({ cwd: LAUNCH_CWD, home: homedir(), env: process.env })
+  : null
+if (MARKETPLACE_ATTACH?.decision.verdict === 'refuse') {
+  process.stderr.write('[bgos] marketplace dormant: this session is outside its agent home or explicit attach scope.\n')
+  recordAttachScopeEvent({
+    dir: process.env.BGOS_PLUGIN_STATE_DIR?.trim() || pathJoin(homedir(), '.bgos-plugin-state'),
+    decision: MARKETPLACE_ATTACH.decision,
+    mode: MARKETPLACE_ATTACH.modeInfo.mode,
+    cwd: MARKETPLACE_ATTACH_FOLDER,
+    version: readOwnVersion(import.meta.dir),
+    route: MARKETPLACE_ATTACH.selection?.kind === 'ok' ? MARKETPLACE_ATTACH.selection.via : 'ambiguous',
+  })
+  const served = await serveMarketplaceDormant({ version: readOwnVersion(import.meta.dir) ?? undefined })
+  process.exit(served ? 0 : 1)
+}
+
+const CREDENTIALS_SELECTION = MARKETPLACE_ATTACH?.selection ?? resolveCredentialsSelection({
   env: process.env,
   defaultPath: DEFAULT_CREDENTIALS_FILE,
   cwd: LAUNCH_CWD,
@@ -791,7 +874,9 @@ if (CREDENTIALS_SELECTION.kind === 'refuse') {
   process.exit(1)
 }
 const CREDENTIALS_PATH = CREDENTIALS_SELECTION.path
-const CREDENTIALS_FILE = loadCredentialsFile(CREDENTIALS_PATH)
+const CREDENTIALS_FILE = MARKETPLACE_ATTACH && 'credentials' in MARKETPLACE_ATTACH
+  ? MARKETPLACE_ATTACH.credentials ?? null
+  : loadCredentialsFile(CREDENTIALS_PATH)
 
 // Stand-down reports (identity race plan step 3, board fc75c7c3): a refusal, a
 // passive spell, a lost lock, a fatal exit or a duty switched off tells the
@@ -820,7 +905,9 @@ const standDownReporter = createStandDownReporter({
 // resolves by elimination and speaks in that agent's name, and the pairing
 // lock cannot help because it picks a winner without knowing who is who.
 const HOME_BINDING = decideHomeBinding({
-  via: CREDENTIALS_SELECTION.via,
+  // The shared home binder treats a recorded-home selection as a file lookup;
+  // canonical confirmation comes from the marketplace preflight below.
+  via: CREDENTIALS_SELECTION.via === 'recorded-home' ? 'sole-per-assistant' : CREDENTIALS_SELECTION.via,
   cwd: LAUNCH_CWD,
   recordedHomeDir: CREDENTIALS_FILE?.homeDir ?? null,
   recordedHomeSource: CREDENTIALS_FILE?.homeSource ?? null,
@@ -830,7 +917,7 @@ const HOME_BINDING = decideHomeBinding({
   assistantId: String(CREDENTIALS_FILE?.assistantId ?? ''),
   env: process.env,
 })
-if (HOME_BINDING.action === 'refuse') {
+if (HOME_BINDING.action === 'refuse' && !MARKETPLACE_ATTACH) {
   process.stderr.write(`[bgos] ${formatHomeBindingRefusal(HOME_BINDING)}\n`)
   // Not process.exit(1) before the handshake: Claude Code could show only a
   // failed server (CONNECTION_CLOSED), and the session could not say why. A
@@ -853,11 +940,11 @@ if (HOME_BINDING.action === 'refuse') {
 // it runs, but it never repoints the resume pin and never serves the owner's
 // Memory and Changes panels (board fc75c7c3). Fixed for the life of the
 // process, because nothing below can change how this daemon was started.
-const HOME_CONFIRMED = homeCheckPassed(HOME_BINDING)
+const HOME_CONFIRMED = homeCheckPassed(HOME_BINDING) || MARKETPLACE_ATTACH?.homeMatched === true
 // How this daemon found its identity, in the one word the pairing lock
 // records ('pin', 'env' or 'elimination'): a pinned agent takes the channel
 // back from a stray that found it by elimination (lib/pairing-lock.ts).
-const LOCK_ROUTE = lockRouteFor(CREDENTIALS_SELECTION.via)
+const LOCK_ROUTE = CREDENTIALS_SELECTION.via === 'recorded-home' ? 'pin' : lockRouteFor(CREDENTIALS_SELECTION.via)
 
 // Warn when this daemon boots ONLY because an env var is present. See
 // describeEnvOnlyIdentityRisk: the failure it predicts is process.exit(1), not
@@ -949,6 +1036,78 @@ if (!AUTH.complete) {
   // never runs, which is what the exit used to guarantee.
   const served = await servePairRequired({
     reason: missingCredsMessage(AUTH),
+    log: (line: string) => process.stderr.write(`[bgos] ${line}\n`),
+  })
+  process.exit(served ? 0 : 1)
+}
+
+// Attach scope (board row bab90cdb, design BGOS #1244, lib/attach-scope.mjs).
+// The launcher names the agent it launched (HOAI_ATTACH_SCOPE); this daemon
+// resolved ASSISTANT_ID. On a computer with several agents the machine wide
+// marketplace copy starts a daemon for every session, and an inherited
+// BGOS_ASSISTANT_ID can make a session launched for one agent attach as
+// another. The setting starts OFF: nothing is refused, every start is counted
+// with what it WOULD have done, so the flip is measured before it is made. A
+// scope, identity or setting that cannot be read fails open. DECIDED here,
+// once, after the unpaired notice above (an unpaired daemon attaches to
+// nothing): pure, it writes nothing. ACTED ON in main() (attachScopeAtBoot),
+// right after the duplicate copy check, which must stay the first thing that
+// runs and the only one a standing aside copy runs: that copy writes no
+// plugin state, not even this count. Still before any lock, socket or poll.
+const ATTACH_SCOPE_MODE = MARKETPLACE_ATTACH?.modeInfo ?? resolveAttachScopeMode({
+  env: process.env,
+  readText: (path: string) => {
+    try {
+      return readFileSync(path, 'utf8')
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return null
+      throw err
+    }
+  },
+  settingsPath: pathJoin(homedir(), '.bgos-agent', ATTACH_SCOPE_SETTINGS_FILE),
+})
+// The launch folder under a name of its own: the scope compares it with the
+// folder the launcher named and reads its pin, but it resolves no identity, so
+// it is not one of LAUNCH_CWD's counted identity sites
+// (test/agent-credentials.test.ts).
+const ATTACH_SCOPE_FOLDER = LAUNCH_CWD
+const ATTACH_SCOPE = MARKETPLACE_ATTACH?.decision ?? decideAttachScope({
+  mode: ATTACH_SCOPE_MODE.mode,
+  env: process.env,
+  assistantId: String(ASSISTANT_ID ?? ''),
+  cwd: ATTACH_SCOPE_FOLDER,
+  // The folder's own declaration: a pin naming another agent than the one
+  // resolved means an inherited BGOS_ASSISTANT_ID beat it.
+  folderPinId: readFolderPinId(ATTACH_SCOPE_FOLDER),
+})
+// The plugin state dir every daemon on this computer shares, so the tally is
+// the machine's.
+const ATTACH_SCOPE_STATE_DIR = process.env.BGOS_PLUGIN_STATE_DIR?.trim() || pathJoin(homedir(), '.bgos-plugin-state')
+
+/** Say the verdict, count it, and stand aside when it is a refusal (main(), see above). */
+async function attachScopeAtBoot(): Promise<void> {
+  process.stderr.write(`[bgos] ${formatAttachScopeBootLine(ATTACH_SCOPE, ATTACH_SCOPE_MODE)}\n`)
+  recordAttachScopeEvent({
+    dir: ATTACH_SCOPE_STATE_DIR,
+    decision: ATTACH_SCOPE,
+    mode: ATTACH_SCOPE_MODE.mode,
+    route: CREDENTIALS_SELECTION.kind === 'ok' ? CREDENTIALS_SELECTION.via : 'ambiguous',
+    version: readOwnVersion(import.meta.dir),
+    cwd: ATTACH_SCOPE_FOLDER,
+  })
+  if (ATTACH_SCOPE.verdict !== 'refuse') return
+  // Only when the setting is on. A quiet one tool notice like a refused
+  // stray's (hoai_not_this_agent, with its own text: the home check's advice
+  // to pin the folder would make it worse): no lock, no socket, no presence, no
+  // agent state, and never process.exit(1) before the handshake (a dead
+  // server reads as CONNECTION_CLOSED and invites a retry loop). No stand-down
+  // report: its reasons are the backend's fixed contract and none of them is
+  // this one, so a mislabelled report would be worse than none.
+  const reason = formatAttachScopeRefusal(ATTACH_SCOPE)
+  process.stderr.write(`[bgos] ${reason}\n`)
+  const served = await serveScopeRefused({
+    reason,
+    assistantId: String(ASSISTANT_ID ?? ''),
     log: (line: string) => process.stderr.write(`[bgos] ${line}\n`),
   })
   process.exit(served ? 0 : 1)
@@ -14494,25 +14653,6 @@ function checkSessionPin(): void {
   )
 }
 
-// Install method + plugin root, detected once. For a marketplace install the
-// root is the VERSIONED cache dir this process was loaded from (design 7.3),
-// which is also where the watcher bundle is copied FROM.
-const INSTALL_DETECTION = (() => {
-  try {
-    return detectInstallMethod({ scriptPath: fileURLToPath(import.meta.url) })
-  } catch {
-    return null
-  }
-})()
-// `unknown` is unreachable in practice here (the daemon is loaded FROM the
-// install, so its own path is the evidence), but it is a real return value now
-// and it must not be spelled as a method: everything downstream only ever asks
-// `=== 'marketplace'`, so it lands on the clone branch either way, explicitly.
-const INSTALL_METHOD: 'marketplace' | 'clone' =
-  INSTALL_DETECTION?.method === 'marketplace' ? 'marketplace' : 'clone'
-const PLUGIN_ROOT =
-  (INSTALL_DETECTION?.pluginRoot ?? '') || (INSTALL_DETECTION?.executionRoot ?? '') || import.meta.dir
-
 // Owner model and effort control: bring the status line bridge's stable copy
 // up to this version, only where an agent is opted in and the owner's own
 // `hoai-model-control on` already made it. Never creates one, never touches a
@@ -15084,8 +15224,8 @@ const changesRpc = new ChangesRpcHandler({
 // network. `hoai doctor` on the computer stays the deep check.
 const doctorRpc = new DoctorRpcHandler({
   assistantId: () => String(ASSISTANT_ID ?? ''),
-  runChecks: async () =>
-    buildDoctorChecks({
+  runChecks: async () => [
+    ...buildDoctorChecks({
       now: Date.now(),
       runningVersion: RUNNING_VERSION,
       pendingRestartVersion: daemonPendingRestartVersion(),
@@ -15095,6 +15235,15 @@ const doctorRpc = new DoctorRpcHandler({
       login: claudeLoginState,
       resting: observedResting,
     }),
+    // Attach scope (lib/attach-scope.mjs): this session's verdict and the
+    // machine's tally of what the flip WOULD refuse, read from the local
+    // events file (no network, no child process, as the rows above).
+    attachScopeDoctorCheck({
+      decision: ATTACH_SCOPE,
+      mode: ATTACH_SCOPE_MODE.mode,
+      summary: summarizeAttachScopeEvents(readAttachScopeEvents({ dir: ATTACH_SCOPE_STATE_DIR })),
+    }) as DoctorCheck,
+  ],
   postAck: (rpcId) =>
     bgosPost(`integrations/doctor-rpc/${encodeURIComponent(rpcId)}/ack`, {}),
   postResult: (rpcId, body) =>
@@ -18331,35 +18480,10 @@ async function reconcileAlwaysOn(): Promise<void> {
 // ── Startup ──────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  // THE PLUGIN'S SECOND COPY STANDS ASIDE (kc-server, 2026-10-13). When this is the marketplace
-  // copy and the session provably loads the checkout as its channel (server:bgos, this folder's
-  // .mcp.json), a second full daemon only adds a lock race and a second set of tools that refuse
-  // private calls. It serves a one tool notice instead and runs nothing else: no lock, no
-  // supervisor record, no polling, no channel capability. Every doubt keeps the daemon as it was
-  // (lib/duplicate-copy.mjs). Asked FIRST, before anything below writes a file or starts a timer.
-  {
-    const verdict = decideDuplicateCopy({
-      installMethod: INSTALL_METHOD,
-      ownSpec: INSTALL_DETECTION?.method === 'marketplace' ? marketplaceChannelSpec(INSTALL_DETECTION.marketplace) : '',
-      sessionSpecs:
-        INSTALL_METHOD === 'marketplace'
-          ? probeSessionChannelSpecs({ platform: process.platform, ownPid: process.pid, execSync: defaultExecSync })
-          : null,
-      sibling: INSTALL_METHOD === 'marketplace' ? findSiblingClone({ cwd: LAUNCH_CWD, ownRoot: import.meta.dir }) : null,
-      specMatches,
-    })
-    if (verdict.duplicate) {
-      log(`duplicate plugin copy, standing aside: ${verdict.reason}`)
-      const served = await serveDuplicateCopy({
-        reason: verdict.reason,
-        version: readOwnVersion(import.meta.dir) ?? undefined,
-        log: (line: string) => process.stderr.write(`[bgos] ${line}\n`),
-      })
-      process.exit(served ? 0 : 1)
-    }
-  }
-  // A duplicate serves only its notice and must write no probe cache.
-  // Start the shared background probe only after that startup guard.
+  // Duplicate detection already ran in preflight, before identity and state setup.
+  // Count attachment and stand aside when required before starting the CLI probe.
+  await attachScopeAtBoot()
+  // A copy that stands aside must write no thread probe cache.
   void threadsCliGate.ready()
   // The git self-updater is for CLONE installs only. A marketplace install's
   // plugin root is Claude Code's own cache dir, which the CLI leaves as a git
