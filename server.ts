@@ -865,6 +865,8 @@ const AUTO_APPROVE = process.env.BGOS_AUTO_APPROVE === 'true'
 // lives above them all.
 /** Lanes can run here: a pairing, a host and a CLI with every locked flag (cached per binary). */
 let laneSupportMemo: { ok: boolean; missing: string[]; reason?: string } | null = null
+/** The last threads CLI answer logged (threadsCli, below): declared above every caller. */
+let threadsCliLogged: string | null = null
 function laneSupport(): { ok: boolean; missing: string[]; reason?: string } {
   if (laneSupportMemo) return laneSupportMemo
   if (AUTH.mode !== 'pairing') {
@@ -955,6 +957,7 @@ import {
 } from 'node:fs'
 import { ThreadLaneManager, threadsPendingPath } from './lib/thread-lanes.ts'
 import { AsideForks, runAside } from './lib/aside-fork.ts'
+import { threadsCliProblem, threadsCliSupport, type ThreadsCliAnswer } from './lib/threads-cli.ts'
 import { laneShellSandboxAvailable } from './lib/lane-policy.mjs'
 import { findOnPath } from './lib/lane-cli-probe.mjs'
 import { spawnStreamJson } from './lib/stream-json-child.ts'
@@ -1938,11 +1941,32 @@ function resolveClaude(): string | null {
 }
 const CLAUDE_EXECUTABLE: string | null = resolveClaude()
 // Threads phase 1: message_threads, thread_sessions and asides are declared
-// where a thread lane or a By the way fork can start, a claude binary this
-// daemon can spawn (lib/thread-lanes.ts, lib/aside-fork.ts). Not Windows in
-// phase 1. Resolved per declaration, like /login's binary above.
+// where a thread lane or a By the way fork can start: a claude binary this
+// daemon can spawn that passes the threads CLI probe (lib/threads-cli.ts:
+// --restricted, 2.1.301 and later, --tools, --fork-session, the stream json
+// flags, acceptEdits and dontAsk). Not Windows in phase 1. Resolved per
+// declaration, like /login's binary above; the probe is cached per binary.
+function threadsCli(): ThreadsCliAnswer {
+  let answer: ThreadsCliAnswer
+  try {
+    answer = threadsCliSupport({
+      claudePath: resolveClaude(),
+      cachePath: pathJoin(process.env.BGOS_PLUGIN_STATE_DIR?.trim() || pathJoin(homedir(), '.bgos-plugin-state'), 'threads-cli-probe.json'),
+    })
+  } catch (err) {
+    answer = { ok: false, missing: [], version: null, reason: `probe_failed: ${err instanceof Error ? err.name : 'error'}` }
+  }
+  const said = answer.ok
+    ? `threads: claude ${answer.version} can run thread lanes and By the way; declaring message_threads, thread_sessions and asides`
+    : `threads: not declared (${answer.reason ?? `claude ${answer.version ?? 'of unknown version'} lacks ${answer.missing.join(', ')}`})`
+  if (said !== threadsCliLogged) {
+    threadsCliLogged = said
+    log(said)
+  }
+  return answer
+}
 function threadsDeclared(): boolean {
-  return process.platform !== 'win32' && resolveClaude() !== null
+  return process.platform !== 'win32' && threadsCli().ok
 }
 const bootSlashCommands = prepareSlashCommands(
   catalogForCapabilities({
@@ -13308,6 +13332,7 @@ function threadsEmptyMcpConfig(): string {
 const threadLanes = new ThreadLaneManager({
   spawn: spawnStreamJson,
   claudeBin: resolveClaude,
+  cliProblem: () => threadsCliProblem(threadsCli(), 'turn'),
   mainSessionId: () => provenSessionId(),
   agentFolder: CLAUDE_PROJECT_CWD,
   stateDir: THREADS_STATE_DIR,
@@ -13480,6 +13505,7 @@ const voiceRpc = new VoiceRpcHandler({
             runAside(input, {
               spawn: spawnStreamJson,
               claudeBin: resolveClaude,
+              cliProblem: () => threadsCliProblem(threadsCli(), 'aside'),
               mainSessionId: () => provenSessionId(),
               mainFolder: CLAUDE_PROJECT_CWD,
               home: homedir(),

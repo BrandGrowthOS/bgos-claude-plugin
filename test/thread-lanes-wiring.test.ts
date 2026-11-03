@@ -81,3 +81,15 @@ test('a daemon shutdown stops every lane and By the way fork with a bounded wait
   const rpc = block('const voiceRpc = new VoiceRpcHandler({', '\n})\n')
   assert.match(rpc, /forks: asideForks,/)
 })
+
+test('threads are declared only where the claude lanes spawn passes the threads CLI probe, and a refusal names the real cause', () => {
+  const declared = block('function threadsDeclared(): boolean {', '\n}\n')
+  assert.match(declared, /process\.platform !== 'win32' && threadsCli\(\)\.ok/)
+  const probe = block('function threadsCli(): ThreadsCliAnswer {', '\n}\n')
+  assert.match(probe, /threadsCliSupport\(\{\s*claudePath: resolveClaude\(\),/)
+  assert.match(probe, /'threads-cli-probe\.json'/)
+  const manager = block('const threadLanes = new ThreadLaneManager({', '\n})\n')
+  assert.match(manager, /cliProblem: \(\) => threadsCliProblem\(threadsCli\(\), 'turn'\),/)
+  const rpc = block('const voiceRpc = new VoiceRpcHandler({', '\n})\n')
+  assert.match(rpc, /cliProblem: \(\) => threadsCliProblem\(threadsCli\(\), 'aside'\),/)
+})

@@ -54,6 +54,7 @@ function rig(over: Partial<AsideDeps> = {}) {
       return child
     },
     claudeBin: () => '/bin/claude',
+    cliProblem: () => null,
     mainSessionId: () => MAIN,
     mainFolder: FOLDER,
     home: HOME,
@@ -81,6 +82,13 @@ test('with no proven main session it refuses with no_session and spawns nothing'
 test('with no claude binary it refuses with unavailable and spawns nothing', async () => {
   const r = rig({ claudeBin: () => null })
   await assert.rejects(runAside(input, r.deps), (err: unknown) => err instanceof AsideError && err.code === 'unavailable')
+  assert.equal(r.spawned.length, 0)
+})
+
+test('on a claude that cannot run the aside it refuses with unsupported and the real cause, and spawns nothing', async () => {
+  const sentence = 'Claude Code on this computer cannot answer side questions: it is version 2.1.250 and they need 2.1.301 or later. Update Claude Code, then ask again.'
+  const r = rig({ cliProblem: () => sentence })
+  await assert.rejects(runAside(input, r.deps), (err: unknown) => err instanceof AsideError && err.code === 'unsupported' && err.message === sentence)
   assert.equal(r.spawned.length, 0)
 })
 
@@ -275,6 +283,7 @@ test('spec 15: the main transcript is byte identical after a By the way answer (
         return child
       },
       claudeBin: () => fake,
+      cliProblem: () => null,
       mainSessionId: () => MAIN,
       mainFolder: folder,
       home,

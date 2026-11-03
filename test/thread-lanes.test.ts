@@ -56,7 +56,7 @@ class FakeChild implements StreamJsonChild {
 
 interface Timer { fn: () => void; ms: number; cleared: boolean; fired: boolean }
 
-function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; files?: Record<string, string>; shell?: boolean; failPosts?: (path: string, body: Record<string, unknown>) => boolean } = {}) {
+function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; files?: Record<string, string>; shell?: boolean; failPosts?: (path: string, body: Record<string, unknown>) => boolean; cliProblem?: string | null } = {}) {
   const repo = opts.repo ?? true
   const files = new Map<string, string>(Object.entries(opts.files ?? {}))
   const dirs = new Set<string>()
@@ -77,6 +77,7 @@ function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; f
       return child
     },
     claudeBin: () => '/bin/claude',
+    cliProblem: () => opts.cliProblem ?? null,
     mainSessionId: () => (opts.mainId === undefined ? MAIN : opts.mainId),
     agentFolder: AGENT,
     stateDir: STATE,
@@ -909,4 +910,18 @@ test('a reconnect after every post of a finished turn failed puts the thread bac
   assert.equal(c.stdin.length, 1, 'never written to the lane again')
   assert.match(String(replyTexts(r)[0]), /could not be delivered/)
   assert.equal(statePosts(r).at(-1), '101:open')
+})
+
+// -- gate review finding 2: a CLI that cannot run a lane says so --
+
+test('on a claude too old for a confined lane the turn fails with the real cause, and nothing is made or started', async () => {
+  const sentence = 'This turn failed because Claude Code on this computer cannot run threads: it is version 2.1.250 and threads need 2.1.301 or later. Update Claude Code, then send your reply again.'
+  const r = rig({ cliProblem: sentence })
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  assert.equal(r.spawned.length, 0)
+  assert.equal(r.gitCalls.some((a) => a.includes('worktree')), false, 'no worktree for a lane that cannot start')
+  assert.deepEqual(statePosts(r), ['101:working', '101:open'])
+  assert.deepEqual(replyTexts(r), [sentence])
+  assert.equal(r.manager.runningCount(), 0, 'its slot is free')
 })

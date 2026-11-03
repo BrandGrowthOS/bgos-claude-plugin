@@ -61,6 +61,7 @@ function setup() {
       return child
     },
     claudeBin: () => '/bin/claude',
+    cliProblem: () => null,
     mainSessionId: () => MAIN,
     agentFolder: agent,
     stateDir: join(dir, 'state'),

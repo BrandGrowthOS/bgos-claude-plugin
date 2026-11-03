@@ -882,10 +882,12 @@ test('the fullest declaration, every token in its place, is exactly this list', 
   )
 })
 
-test('server.ts declares threads from the live claude lookup and the platform, at every declaration', () => {
+test('server.ts declares threads from the live claude lookup, its threads CLI probe and the platform, at every declaration', () => {
   const server = readFileSync(join(import.meta.dirname, '..', 'server.ts'), 'utf8').replace(/\r\n/g, '\n')
   const calls = server.match(/declaredCapabilities\(\{[^}]*\}\)/g) ?? []
   assert.equal(calls.length, 4)
   for (const call of calls) assert.match(call, /threads: threadsDeclared\(\),/)
-  assert.match(server, /function threadsDeclared\(\): boolean \{\n\s*return process\.platform !== 'win32' && resolveClaude\(\) !== null\n\}/)
+  // Gate review finding 2: a binary alone is not enough, it must pass the probe.
+  assert.match(server, /function threadsDeclared\(\): boolean \{\n\s*return process\.platform !== 'win32' && threadsCli\(\)\.ok\n\}/)
+  assert.match(server, /claudePath: resolveClaude\(\),/)
 })

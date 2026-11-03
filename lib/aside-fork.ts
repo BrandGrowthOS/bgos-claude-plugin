@@ -91,6 +91,8 @@ export class AsideForks {
 export interface AsideDeps {
   spawn: SpawnStreamJson
   claudeBin(): string | null
+  /** Why this claude cannot run the aside (lib/threads-cli.ts threadsCliProblem), or null. */
+  cliProblem(): string | null
   /** The main session this daemon has proven it serves, or null. */
   mainSessionId(): string | null
   /** The folder the main session runs in (its transcripts' project dir derives from it). */
@@ -125,6 +127,8 @@ export function runAside(input: AsideInput, deps: AsideDeps): Promise<{ text: st
   if (!claude) {
     return Promise.reject(new AsideError('unavailable', 'This computer cannot run Claude Code for a side question.'))
   }
+  const problem = deps.cliProblem()
+  if (problem) return Promise.reject(new AsideError('unsupported', problem))
   const setTimer = deps.setTimer ?? ((fn: () => void, ms: number) => setTimeout(fn, ms))
   const clearTimer = deps.clearTimer ?? ((h: unknown) => clearTimeout(h as ReturnType<typeof setTimeout>))
   const args = asideArgs({ mainSessionId: mainId, emptyMcpConfigPath: deps.emptyMcpConfigPath() })

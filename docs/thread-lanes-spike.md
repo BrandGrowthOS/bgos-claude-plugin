@@ -123,7 +123,7 @@ stdin closed -> exit 0; wt project dir holds only dbd3b62b-....jsonl; the main t
 - A branch or worktree created AFTER the lane started is not in its `denyWrite` list until the lane's next start (each start reads them again). Git objects stay writable (content addressed, a commit needs them).
 - A host without the CLI's sandbox (no `sandbox-exec` on macOS, no `bwrap` and `socat` on Linux): the lane gets no Bash at all rather than an unconfined one; so does a lane whose repository state cannot be read.
 - Linux was not measured here (person lanes measured the same flags on macOS only too); Windows runs no thread lanes in phase 1.
-- The lane needs a CLI with `--restricted` (measured 2.1.301 and later); an older one fails the turn.
+- The lane needs a CLI with `--restricted` (measured 2.1.301 and later). Threads are declared only where lib/threads-cli.ts says the CLI has it (and every other flag a lane and an aside need); a turn or a side question that still reaches an older one fails with that cause in plain words, never the generic "turn failed".
 - The CLI process itself (not its tools) created an empty `.claude/` folder in the main checkout and the worktree; nothing was written into it.
 
 ## What changed in the builders
