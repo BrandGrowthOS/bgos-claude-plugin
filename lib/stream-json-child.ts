@@ -52,10 +52,12 @@ export function userMessageLine(text: string): string {
 }
 
 /**
- * The complete child environment allow list. Runtime paths, locale and TLS
- * roots let Claude and its tools run; the last group is only Claude's own
+ * The complete child environment allow list. Runtime paths, locale and network
+ * settings let Claude and its tools run; the last group is only Claude's own
  * configuration and authentication. All other daemon variables are dropped,
  * including provider credentials, session identity and messaging bridges.
+ * Allowed proxy URLs and client-key passphrases can contain credentials;
+ * these network credentials are intentionally available to the child.
  */
 export const LANE_CHILD_ENV_VARS: readonly string[] = Object.freeze([
   'PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL',
@@ -63,7 +65,11 @@ export const LANE_CHILD_ENV_VARS: readonly string[] = Object.freeze([
   'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
   'SystemRoot', 'WINDIR', 'COMSPEC', 'PATHEXT',
   'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'APPDATA', 'LOCALAPPDATA',
+  'HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'ALL_PROXY',
+  'https_proxy', 'http_proxy', 'no_proxy', 'all_proxy',
   'SSL_CERT_FILE', 'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS',
+  'CLAUDE_CODE_CERT_STORE', 'CLAUDE_CODE_CLIENT_CERT',
+  'CLAUDE_CODE_CLIENT_KEY', 'CLAUDE_CODE_CLIENT_KEY_PASSPHRASE',
   'CLAUDE_CONFIG_DIR',
   'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN',
   'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',
