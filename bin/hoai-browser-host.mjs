@@ -1903,6 +1903,7 @@ export class BrowserHostCore {
       remember: (origin, choice) => this._remember(ctx, slot, this._settingsFor(slot), { gate: 'download', origin, choice }),
       // The owner holding the browser (not while the agent's work drains).
       ownerControl: () => !!slot.ownerInputLease && slot.ownerInputLease.pending !== true,
+      ownerHeldSinceAgent: () => slot.ownerHeldSinceAgent === true,
       choices: policy.gateChoices('download'),
       originOf: (url) => policy.originOf(url),
       log: this._log,
@@ -2318,6 +2319,7 @@ export class BrowserHostCore {
     const { wait_seconds: waitSeconds, ...engineArgs } = args
     const slot = await this.pool.acquire(ctx)
     if (slot.ownerInputLease) throw new HostError('owner_control', OWNER_CONTROL_MESSAGE)
+    slot.ownerHeldSinceAgent = false
     if (ctx.assistantName) slot.agentName = ctx.assistantName
     if (!slot.purpose) slot.purpose = typeof engineArgs.url === 'string' ? `Browsing ${engineArgs.url}` : 'Browsing on request'
     const verdict = await this._permit(ctx, slot, name, engineArgs, waitSeconds, signal)
