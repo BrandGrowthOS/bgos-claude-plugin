@@ -1,0 +1,23 @@
+MUTANT m36-answer-not-deduped
+undoes: second review: the answer itself is not delivered
+file: server.ts
+--- removed
+  noteCursorPassedUnread(chatId, before)
+  rememberForwarded(id)
+
++++ added
+  noteCursorPassedUnread(chatId, before)
+
+exit=0
+
+▶ hole 4: a row the server never pushes
+  ✔ a typed permission answer does not move the place over rows under it: they still arrive, once, and the answer itself never does (10167.923029ms)
+✔ hole 4: a row the server never pushes (10169.37312ms)
+ℹ tests 1
+ℹ suites 1
+ℹ pass 1
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 10567.988839

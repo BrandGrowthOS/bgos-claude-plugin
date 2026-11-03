@@ -10,8 +10,8 @@ file: server.ts
 exit=1
 
 ▶ hole 1: the reconnect skip
-  ✖ a live message behind a failed boot read is framed live, and the rows under it as backlog (3664.733786ms)
-✖ hole 1: the reconnect skip (3666.336471ms)
+  ✖ a live message behind a failed boot read is framed live, and the rows under it as backlog (2180.69494ms)
+✖ hole 1: the reconnect skip (2182.173099ms)
 ℹ tests 1
 ℹ suites 1
 ℹ pass 0
@@ -19,12 +19,12 @@ exit=1
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 4030.686874
+ℹ duration_ms 2553.842165
 
 ✖ failing tests:
 
 test at test/catch-up-after-deploy.e2e.test.ts:3:8474
-✖ a live message behind a failed boot read is framed live, and the rows under it as backlog (3664.733786ms)
+✖ a live message behind a failed boot read is framed live, and the rows under it as backlog (2180.69494ms)
   AssertionError [ERR_ASSERTION]: only the rows the daemon missed are framed as backlog
   + actual - expected
   ... Skipped lines
@@ -39,7 +39,7 @@ test at test/catch-up-after-deploy.e2e.test.ts:3:8474
   +   900
     ]
   
-      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m31-live-framed-as-backlog.g4k5h0zc/test/catch-up-after-deploy.e2e.test.ts:722:14)
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m31-live-framed-as-backlog.55x0tuxw/test/catch-up-after-deploy.e2e.test.ts:724:14)
       at async Test.run (node:internal/test_runner/test:1409:7)
       at async Promise.all (index 6)
       at async Suite.run (node:internal/test_runner/test:1905:7)

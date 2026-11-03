@@ -74,3 +74,11 @@ path as a key, so a restarted walk rides no validator of a page it threw away. T
 the second older page to reach that, and m08 undoes the guard itself. See batch 4.
 
 === batch 4: on the final tree, what changed after batch 3 ===
+m08-older-pages-conditional: RED fail=1 pass=0 59s  undoes: hole 2: older pages never ride a validator
+m31-live-framed-as-backlog: RED fail=1 pass=0 2s  undoes: review F13a: a live message behind a boot read is framed live
+m35-answer-leaves-no-floor: RED fail=1 pass=0 58s  undoes: second review: a typed answer leaves the floor
+m36-answer-not-deduped: SURVIVED fail=0 pass=1 10s  undoes: second review: the answer itself is not delivered
+
+m36 above survived a race in the test, not a gap in the fix: an open request's chat is also read every 2 s, and when that
+read beat the request's watch the hole never opened. A trace of the same mutant with the watch ahead delivered the answer.
+The case now holds the 2 s read open until the watch has acted, and m35 and m36 ran again:

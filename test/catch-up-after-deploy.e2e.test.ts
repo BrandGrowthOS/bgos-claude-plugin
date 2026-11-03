@@ -1014,14 +1014,21 @@ describe('hole 4: a row the server never pushes', { concurrency: 3 }, () => {
         params: { request_id: 'abcde', tool_name: 'Bash', description: 'run a thing', input_preview: '{}' },
       })
       await waitFor(() => d.stderr.some((l) => l.includes('Permission request: Bash [abcde]')), 'the request', 15_000)
+      // An open request's chat is also read every 2 s, and a read that sees these
+      // rows first leaves nothing owed. That read stays open, holding what it saw
+      // when it arrived, until the request's own watch has acted.
+      const answered = () => d.stderr.some((l) => l.includes('Verdict for Bash [abcde]: once'))
+      w.backend.holdRead(MAIN, () => true, () => waitFor(answered, 'the answer to be read', 30_000))
+      await waitFor(() => w.backend.pending().holds === 0, 'the 2 s read', 15_000)
       // Two rows the socket never pushed, then the owner's answer, which the
-      // request's own watch reads and acts on with no read of the chat behind it.
-      // Only the label, which nothing but the open request can recognise.
+      // watch reads and acts on with no read of the chat behind it. Only the label,
+      // which nothing but the open request can recognise.
       w.backend.rows.push(ownerRow(MAIN, 101), ownerRow(MAIN, 102), { ...ownerRow(MAIN, 103), text: 'Yes, this once' })
-      await waitFor(() => d.stderr.some((l) => l.includes('Verdict for Bash [abcde]: once')), 'the answer to be read', 30_000)
+      await waitFor(answered, 'the answer to be read', 30_000)
       await reconnectAndRead(w.backend, MAIN)
       await settle(() => d.cards, MAIN, [101, 102])
       assertExactlyOnceInOrder(arrived(d.cards, MAIN), [101, 102], 'rows under a typed permission answer')
+      assertHarnessRan(w.backend)
     } finally {
       await w.end()
     }

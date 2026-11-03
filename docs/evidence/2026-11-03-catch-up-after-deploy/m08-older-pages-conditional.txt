@@ -4,27 +4,49 @@ file: server.ts
 --- removed
 { conditional: false, callerAssistantId: ASSISTANT_ID },
 +++ added
-{ cacheKey: req.cacheKey, callerAssistantId: ASSISTANT_ID },
-exit=0
+{ callerAssistantId: ASSISTANT_ID },
+exit=1
 
-▶ hole 2: the newest 50
-  ✔ a deploy with more than 50 missed rows in each of several chats: every row once, oldest first, in every chat (9813.707158ms)
-  ✔ the boot read: 120 rows above a persisted cursor all arrive once, oldest first, framed as backlog (2256.029969ms)
-  ✔ the limit is 50 rows of any sender: 60 rows of owner and agent turns lose no owner row (9334.307949ms)
-  ✔ a chat with open buttons, which every poll reads in full: 120 missed rows all arrive once (11002.183358ms)
-  ✔ an idle chat with a long history costs one conditional read: no page below the cursor, ever (8571.992897ms)
-✔ hole 2: the newest 50 (17910.310051ms)
 ▶ a reconnect or a failure in the middle of a page
-  ✔ the socket drops and comes back while an older page is in flight, a live message lands: every row once, oldest first (17556.727835ms)
-  ✔ an older page fails: nothing is lost or repeated, and the next read starts over without a validator on any page (22160.948293ms)
-  ✔ the daemon restarts while an older page is in flight: every row once, oldest first, across both lives (12699.645961ms)
-  ✔ a read that starts during a walk is not answered 304 by the walk's first page: a live message after it does not overtake the walk (22056.458125ms)
-✔ a reconnect or a failure in the middle of a page (34757.346329ms)
-ℹ tests 9
-ℹ suites 2
-ℹ pass 9
-ℹ fail 0
+  ✖ an older page fails: nothing is lost or repeated, and the next read starts over without a validator on any page (59118.63699ms)
+✖ a reconnect or a failure in the middle of a page (59120.359567ms)
+ℹ tests 1
+ℹ suites 1
+ℹ pass 0
+ℹ fail 1
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 53070.288767
+ℹ duration_ms 59484.752595
+
+✖ failing tests:
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:20954
+✖ an older page fails: nothing is lost or repeated, and the next read starts over without a validator on any page (59118.63699ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+  +   forwarded: '50 of 300',
+  -   forwarded: '300 of 300',
+      label: 'a failed page',
+  +   missing: '101-350',
+  -   missing: 'none',
+      oldestFirst: true,
+      twice: 'none',
+      unexpected: 'none'
+    }
+  
+      at assertExactlyOnceInOrder (/home/karim/lane-tmp/d041/mut/m08-older-pages-conditional.qkk9zcx9/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m08-older-pages-conditional.qkk9zcx9/test/catch-up-after-deploy.e2e.test.ts:1073:7)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 1)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { label: 'a failed page', forwarded: '50 of 300', missing: '101-350', unexpected: 'none', twice: 'none', oldestFirst: true },
+    expected: { label: 'a failed page', forwarded: '300 of 300', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: true },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
