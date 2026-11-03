@@ -1277,9 +1277,10 @@ install_launchd() { # $1 id $2 workdir $3 statedir $4 path [$5 claude config dir
   local x_wd x_sd x_path x_home x_user
   x_wd="$(xml_escape "$workdir")"; x_sd="$(xml_escape "$statedir")"
   x_path="$(xml_escape "$path")";  x_home="$(xml_escape "$HOME")"
-  # USER/LOGNAME so a headless Claude can find its Keychain login (keyed by
-  # username), without them it falls to a "Not logged in" wall and never serves.
-  x_user="$(xml_escape "$(id -un)")"
+  # Claude's Keychain login is keyed by the USER value its login shell saw,
+  # which can differ from id -un. Preserve it for both USER and LOGNAME.
+  # Fall back to the account name only when USER is unset or empty.
+  x_user="$(xml_escape "${USER:-$(id -un)}")"
   # Optional entries, present only when the installing shell had them (see cmd_install).
   local x_extra=""
   if [ -n "$config_dir" ]; then
@@ -1359,7 +1360,9 @@ install_systemd() { # $1 id $2 workdir $3 statedir $4 path [$5 claude config dir
   local id="$1" workdir="$2" statedir="$3" path="$4" config_dir="${5:-}" namespace="${6:-}" legacy_state="${7:-absent}"
   local unit; unit="$(unit_for "$id")"
   local unitfile; unitfile="$(unitfile_for "$id")"
-  local user_name; user_name="$(id -un)"
+  # Keep USER/LOGNAME consistent with the shell Claude was logged in from;
+  # use the account name only when USER is unset or empty.
+  local user_name; user_name="${USER:-$(id -un)}"
   ensure_user_bus
   local env_extra=""
   [ -n "$config_dir" ] && env_extra="$env_extra$(systemd_env_line CLAUDE_CONFIG_DIR "$config_dir")"$'\n'
