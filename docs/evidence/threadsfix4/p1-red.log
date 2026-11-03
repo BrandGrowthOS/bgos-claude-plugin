@@ -23,14 +23,14 @@ test at test/stream-json-child.test.ts:1:2516
 ✖ a lane child never inherits the daemon BGOS credentials or its terminal (2.321875ms)
   AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
   + actual - expected
-  
+
     {
   +   BGOS_ASSISTANT_ID: '7',
   +   BGOS_PLUGIN_STATE_DIR: '/state',
       HOME: '/h',
       PATH: '/bin'
     }
-  
+
       at TestContext.<anonymous> (/Users/kc/hoai-work/mbthreads-plugin/test/stream-json-child.test.ts:103:10)
       at Test.runInAsyncScope (node:async_hooks:226:14)
       at Test.run (node:internal/test_runner/test:1201:25)
@@ -51,7 +51,7 @@ test at test/stream-json-child.test.ts:1:3045
 ✖ the child environment allows only runtime and explicit Claude authentication variables (0.296917ms)
   AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
   + actual - expected
-  
+
     {
       ANTHROPIC_API_KEY: 'fake-claude-key',
       ANTHROPIC_AUTH_TOKEN: 'fake-claude-auth',
@@ -70,7 +70,7 @@ test at test/stream-json-child.test.ts:1:3045
       TMPDIR: '/tmp',
   +   UNRELATED_SETTING: 'also dropped'
     }
-  
+
       at TestContext.<anonymous> (/Users/kc/hoai-work/mbthreads-plugin/test/stream-json-child.test.ts:113:10)
       at Test.runInAsyncScope (node:async_hooks:226:14)
       at Test.run (node:internal/test_runner/test:1201:25)
@@ -91,10 +91,10 @@ test at test/stream-json-child.test.ts:1:3690
 ✖ the real thread child starts without AWS, GitHub, or unknown exported tokens (96.217542ms)
   AssertionError [ERR_ASSERTION]: AWS_ACCESS_KEY_ID is absent in the actual child
   + actual - expected
-  
+
   + 'fake-aws-id'
   - undefined
-  
+
       at TestContext.<anonymous> (/Users/kc/hoai-work/mbthreads-plugin/test/stream-json-child.test.ts:144:12)
       at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
       at async Test.run (node:internal/test_runner/test:1208:7)

@@ -89,6 +89,28 @@ test('elsewhere the stamp is what ps prints as the start, and a zombie or a miss
   assert.equal(await processStamp(4242, ps(1, '')), null)
 })
 
+for (const inspection of ['unavailable', 'failed', 'timed out', 'empty', 'malformed']) {
+  test(`a live process has an unknown stamp when ps is ${inspection}`, async () => {
+    const run = async () => {
+      if (inspection === 'unavailable') throw Object.assign(new Error('ps unavailable'), { code: 'ENOENT' })
+      return { status: inspection === 'failed' ? 1 : inspection === 'timed out' ? null : 0, stdout: inspection === 'malformed' ? 'S' : '' }
+    }
+    assert.equal(await processStamp(process.pid, { platform: 'darwin', run }), undefined, 'inspection failure is not affirmative exit')
+    assert.equal(await processStamp(2 ** 22 - 3, { platform: 'darwin', run }), null, 'an absent PID can still be confirmed without ps')
+  })
+}
+
+for (const inspection of ['unreadable', 'malformed']) {
+  test(`a live process has an unknown stamp when proc stat is ${inspection}`, async () => {
+    const readFile = async () => {
+      if (inspection === 'unreadable') throw Object.assign(new Error('cannot read stat'), { code: 'EACCES' })
+      return 'malformed stat'
+    }
+    assert.equal(await processStamp(process.pid, { platform: 'linux', readFile }), undefined)
+    assert.equal(await processStamp(2 ** 22 - 3, { platform: 'linux', readFile }), null)
+  })
+}
+
 test('reading a stamp never blocks the event loop: timers keep firing while ps runs', { skip: process.platform === 'win32' }, async () => {
   let ticks = 0
   const timer = setInterval(() => { ticks++ }, 5)

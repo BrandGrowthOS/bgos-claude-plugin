@@ -93,7 +93,7 @@ function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; f
     },
     processes: {
       // Asynchronous, like the real ps and /proc reads: never a blocked event loop.
-      stamp: async (pid) => { if (ctl.stampDown) return null; const p = procs.get(pid); return p && p.alive ? p.stamp : null },
+      stamp: async (pid) => { if (ctl.stampDown) return undefined; const p = procs.get(pid); return p && p.alive ? p.stamp : null },
       runsIn: async (pid, dir) => { const p = procs.get(pid); return !ctl.stampDown && p !== undefined && p.alive && procCwd.get(pid) === dir },
       kill: (pid, signal) => {
         procKills.push([pid, signal])
@@ -1475,6 +1475,59 @@ for (const action of ['replacement', 'delete', 'sweep']) {
     }
   })
 }
+
+for (const action of ['replacement', 'delete', 'sweep']) {
+  test(`unknown stamp inspection preserves a live stamped PID during ${action}`, async () => {
+    const r = crashedWithOrphan('SIGTERM')
+    if (action === 'sweep') {
+      const state = saved(r)
+      state.closedAt = 1
+      r.files.set(join(STATE, '101.json'), JSON.stringify(state))
+    }
+    r.ctl.stampDown = true
+    if (action === 'replacement') r.manager.turn(turn('101', { mode: 'reply', replyId: '1011', text: 'again' }))
+    else if (action === 'delete') await r.manager.close({ rootId: '101', removeWorktree: true })
+    else assert.deepEqual(await r.manager.sweepClosed(30 * DAY), [])
+    await pollOut(r)
+    assert.equal(r.spawned.length, 0, 'do not replace an unverified live process')
+    assert.equal(r.files.has(join(STATE, '101.json')), true, 'keep the uncertain process state')
+    assert.equal(saved(r).pid, 777)
+    assert.equal(saved(r).pidStamp, 'S777')
+    assert.equal(r.dirs.has(wt('101')), true)
+    assert.deepEqual(r.removed, [])
+    assert.deepEqual(r.branchesDeleted, [])
+    assert.deepEqual(r.procKills, [], 'do not signal an unverified identity')
+    assert.equal(r.procs.get(777)!.alive, true)
+    // Once the saved identity is readable again, normal recovery may stop it.
+    r.ctl.stampDown = false
+    if (action === 'replacement') r.manager.turn(turn('101', { mode: 'reply', replyId: '1012', text: 'retry' }))
+    else if (action === 'delete') await r.manager.close({ rootId: '101', removeWorktree: true })
+    else assert.deepEqual(await r.manager.sweepClosed(30 * DAY), ['101'])
+    await pollOut(r)
+    assert.deepEqual(r.procKills, [[777, 'SIGTERM']])
+    assert.equal(r.procs.get(777)!.alive, false)
+    if (action === 'replacement') assert.equal(r.spawned.length, 1)
+    else assert.equal(r.files.has(join(STATE, '101.json')), false)
+  })
+}
+
+test('stamp inspection lost after SIGTERM preserves the PID and does not signal an unverified process again', async () => {
+  const r = crashedWithOrphan('never')
+  const kill = r.deps.processes.kill
+  r.deps.processes.kill = (pid, signal) => { kill(pid, signal); r.ctl.stampDown = true }
+  r.manager.turn(turn('101', { mode: 'reply', replyId: '1011', text: 'again' }))
+  await pollOut(r)
+  assert.deepEqual(r.procKills, [[777, 'SIGTERM']], 'only the initially verified identity may be signalled')
+  assert.equal(r.spawned.length, 0)
+  assert.equal(saved(r).pid, 777)
+  assert.equal(saved(r).pidStamp, 'S777')
+  assert.equal(r.procs.get(777)!.alive, true)
+  r.procs.get(777)!.alive = false
+  r.ctl.stampDown = false
+  r.manager.turn(turn('101', { mode: 'reply', replyId: '1012', text: 'retry after exit' }))
+  await pollOut(r)
+  assert.equal(r.spawned.length, 1, 'confirmed absence permits a later retry')
+})
 
 test('a turn waits for the CLI answer without blocking, and fails with its cause when it comes', async () => {
   let answer: (s: string | null) => void = () => {}

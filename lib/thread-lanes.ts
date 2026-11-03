@@ -154,8 +154,8 @@ export interface ThreadLaneDeps {
    * while it is alive, and a signal to the process group it leads.
    */
   processes: {
-    /** Asynchronous (never a blocked event loop): the start stamp while alive, else null. */
-    stamp(pid: number): Promise<string | null>
+    /** Start stamp while alive, null if gone, undefined if inspection failed. Asynchronous. */
+    stamp(pid: number): Promise<string | null | undefined>
     /** True if in this folder, false if absent/elsewhere, null if inspection failed. */
     runsIn(pid: number, dir: string): Promise<boolean | null>
     kill(pid: number, signal: 'SIGTERM' | 'SIGKILL'): void
@@ -988,7 +988,7 @@ export class ThreadLaneManager {
     if (typeof pid !== 'number' || lane.state.pid !== pid || lane.state.pidStamp !== null) return
     this.track(
       this.deps.processes.stamp(pid).then((stamp) => {
-        if (stamp === null || lane.child !== child || lane.state.pid !== pid || lane.state.pidStamp !== null) return
+        if (typeof stamp !== 'string' || lane.child !== child || lane.state.pid !== pid || lane.state.pidStamp !== null) return
         lane.state.pidStamp = stamp
         if (lane.state.folder) this.persist(lane)
       }),
@@ -1012,16 +1012,30 @@ export class ThreadLaneManager {
       this.deps.log(`threads: lane ${state.rootId} has an unverified process that may still use its folder; waiting for it to exit`)
       return false
     }
-    const alive = async (): Promise<boolean> => pidStamp !== null && (await procs.stamp(pid)) === pidStamp
-    if (await alive()) {
+    const alive = async (): Promise<boolean | null> => {
+      if (pidStamp === null) return false
+      const stamp = await procs.stamp(pid)
+      return stamp === undefined ? null : stamp === pidStamp
+    }
+    const inspected = await alive()
+    if (inspected === null) {
+      this.deps.log(`threads: lane ${state.rootId} has an unreadable process stamp; waiting for verified identity or exit`)
+      return false
+    }
+    if (inspected) {
       this.deps.log(`threads: lane ${state.rootId} still runs from before a restart, it is stopped first`)
       const grace = this.deps.killGraceMs ?? THREAD_LANE_KILL_GRACE_MS
       procs.kill(pid, 'SIGTERM')
       if (!(await this.gone(alive, grace))) {
-        procs.kill(pid, 'SIGKILL')
-        if (!(await this.gone(alive, grace))) {
-          this.deps.log(`threads: lane ${state.rootId} from before a restart would not stop`)
-          return false
+        // A failed poll must not authorize signalling an unverified identity.
+        const current = await alive()
+        if (current === null) return false
+        if (current) {
+          procs.kill(pid, 'SIGKILL')
+          if (!(await this.gone(alive, grace))) {
+            this.deps.log(`threads: lane ${state.rootId} from before a restart would not stop`)
+            return false
+          }
         }
       }
     }
@@ -1033,10 +1047,10 @@ export class ThreadLaneManager {
     return true
   }
 
-  /** True once alive() is false, polled every THREAD_ORPHAN_POLL_MS (asynchronously) for at most ms. */
-  private async gone(alive: () => Promise<boolean>, ms: number): Promise<boolean> {
+  /** Only affirmative absence ends the wait; failed inspection keeps polling up to ms. */
+  private async gone(alive: () => Promise<boolean | null>, ms: number): Promise<boolean> {
     for (let waited = 0; ; waited += THREAD_ORPHAN_POLL_MS) {
-      if (!(await alive())) return true
+      if ((await alive()) === false) return true
       if (waited >= ms) return false
       await new Promise<void>((done) => this.deps.setTimer(done, THREAD_ORPHAN_POLL_MS))
     }

@@ -40,17 +40,26 @@ const runAsync: Run = (command, args) =>
   })
 
 /**
- * The process's start stamp while it is alive (not a zombie), else null.
+ * The live process's start stamp, null for confirmed exit (or a zombie),
+ * undefined when inspection failed and absence cannot be established.
  * Asynchronous (follow up to finding 3): a stop polls it every 250 ms, and a
  * synchronous ps there blocked the daemon's event loop each time.
  */
 export async function processStamp(
   pid: number,
   deps: { platform?: NodeJS.Platform; readFile?: (path: string) => Promise<string>; run?: Run } = {},
-): Promise<string | null> {
+): Promise<string | null | undefined> {
   if (!Number.isInteger(pid) || pid <= 0) return null
+  const unknown = (): null | undefined => {
+    try {
+      process.kill(pid, 0)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ESRCH') return null
+    }
+    return undefined
+  }
   const platform = deps.platform ?? process.platform
-  if (platform === 'win32') return null
+  if (platform === 'win32') return unknown()
   if (platform === 'linux') {
     try {
       const stat = await (deps.readFile ?? ((p: string) => readFileAsync(p, 'utf8')))(`/proc/${pid}/stat`)
@@ -58,21 +67,23 @@ export async function processStamp(
       const fields = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/)
       const state = fields[0] ?? ''
       const start = fields[19] ?? ''
-      if (state === 'Z' || state === 'X' || !/^\d+$/.test(start)) return null
+      if (state === 'Z' || state === 'X') return null
+      if (!/^\d+$/.test(start)) return unknown()
       return `linux:${start}`
     } catch {
-      return null
+      return unknown()
     }
   }
   try {
     const out = await (deps.run ?? runAsync)('ps', ['-o', 'stat=', '-o', 'lstart=', '-p', String(pid)])
     const line = String(out.stdout ?? '').trim()
-    if (out.status !== 0 || line === '') return null
+    if (out.status !== 0 || line === '') return unknown()
     const [state, ...start] = line.split(/\s+/)
-    if (!state || state.startsWith('Z') || start.length === 0) return null
+    if (state?.startsWith('Z') || state?.startsWith('X')) return null
+    if (!state || start.length === 0) return unknown()
     return start.join(' ')
   } catch {
-    return null
+    return unknown()
   }
 }
 
