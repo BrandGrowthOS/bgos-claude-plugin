@@ -21,6 +21,7 @@ export interface WorkingContext {
 
 type Entry = {
   scope: WorkingScope
+  generation?: string
   ownerSession: string
   wanted: boolean
   marked: boolean
@@ -40,6 +41,7 @@ export function createMissionWorkingTracker(opts: {
   isArmed(): boolean
   hasAuthority?(): boolean
   hasUnconfirmedWrite?(scope: WorkingScope): boolean
+  generation?: { read(scope: WorkingScope): string; advance(scope: WorkingScope): string }
   withWriteLock?<T>(work: () => Promise<T>, scope: WorkingScope, working: boolean): Promise<T>
   onMission?(mission: unknown): void
 }) {
@@ -86,6 +88,16 @@ export function createMissionWorkingTracker(opts: {
             throw new Error('The daemon no longer owns this pairing.')
           }
           check?.()
+          const generation = opts.generation?.read(scope)
+          // A manual clear cannot settle an older remote write that may
+          // still land. Its independent receipt keeps cleanup necessary.
+          const unresolved = !working && opts.hasUnconfirmedWrite?.(scope)
+          if (!check && entry.generation !== generation && !unresolved) {
+            retire(entry)
+            return
+          }
+          // Only success may replace an existing selection's generation.
+          entry.generation ??= generation
         } catch (error) {
           throw Object.assign(error as Error, { workingWriteNotSent: true })
         }
@@ -96,6 +108,7 @@ export function createMissionWorkingTracker(opts: {
           entry.uncertain = true
         }
         const result = await opts.patch(scope, working)
+        if (check) entry.generation = opts.generation?.advance(scope)
         if (epoch !== authorityEpoch) {
           retire(entry)
           return result

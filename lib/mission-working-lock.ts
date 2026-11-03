@@ -35,6 +35,26 @@ function goalDirectory(root: string, scope?: Scope): string {
   return scope ? join(root, `${scope.missionId}-${scope.goalId}`) : root
 }
 
+/** Call only inside the goal's write gate. Successful manual writes replace
+ * the generation so other daemons can retire their old automatic ownership. */
+export function createMissionWorkingGeneration(root: string) {
+  return {
+    read(scope: Scope): string {
+      try { return readFileSync(join(goalDirectory(root, scope), 'generation'), 'utf8') } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return ''
+        throw error
+      }
+    },
+    advance(scope: Scope): string {
+      const path = join(goalDirectory(root, scope), 'generation')
+      const generation = randomUUID()
+      writeFileSync(`${path}.tmp`, generation, { mode: 0o600 })
+      renameSync(`${path}.tmp`, path)
+      return generation
+    },
+  }
+}
+
 /** An unknown write remains a cleanup obligation, even after an acknowledged
  * clear, because the original server operation could still commit later. */
 export function hasUnconfirmedWorkingWrite(root: string, scope: Scope): boolean {

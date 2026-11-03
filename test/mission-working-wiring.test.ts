@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import ts from 'typescript'
 import { createMissionWorkingTracker } from '../lib/mission-working.ts'
-import { createMissionWorkingWriteLock, hasUnconfirmedWorkingWrite } from '../lib/mission-working-lock.ts'
+import { createMissionWorkingGeneration, createMissionWorkingWriteLock, hasUnconfirmedWorkingWrite } from '../lib/mission-working-lock.ts'
+import * as workingWrites from '../lib/mission-working-lock.ts'
 import { buildMissionGoalWorkingPath } from '../lib/missions.ts'
 import { parseHookEvent } from '../lib/hook-events.ts'
 
@@ -48,7 +49,7 @@ for (const working of [true, false]) {
     const writes: boolean[] = []
     const headers = { 'X-Actor': 'passive-session' }
     const bindings = {
-      createMissionWorkingTracker, createMissionWorkingWriteLock, hasUnconfirmedWorkingWrite, buildMissionGoalWorkingPath,
+      createMissionWorkingTracker, createMissionWorkingGeneration, createMissionWorkingWriteLock, hasUnconfirmedWorkingWrite, buildMissionGoalWorkingPath,
       PAIRING_LOCK_PATH: join(root, 'pairing.lock'), ASSISTANT_ID: '900',
       // Another daemon owns the pairing. This one still serves MCP tools.
       pairingLockNamesThisDaemon: () => false,
@@ -75,6 +76,86 @@ for (const working of [true, false]) {
   })
 }
 
+for (const scenario of [
+  { name: 'failed clear retry', working: true, writes: ['A:true', 'A:false:503', 'B:true'] },
+  { name: 'normal Stop', working: true, writes: ['A:true', 'B:true'] },
+  { name: 'automatic refresh', working: false, writes: ['A:true', 'B:false'] },
+  { name: 'Stop queued behind manual write', working: true, writes: ['A:true', 'B:true'] },
+  { name: 'failed reselection', working: true, writes: ['A:true', 'B:true', 'A:true:503'] },
+]) {
+  test(`a passive manual write survives the active daemon's ${scenario.name}`, async t => {
+    const root = mkdtempSync(join(tmpdir(), 'working-passive-peer-'))
+    t.after(() => rmSync(root, { recursive: true, force: true }))
+    let now = 1_000_000, backend = false, failClear = false, failReselect = false
+    let entered!: () => void, release!: () => void
+    const started = new Promise<void>(resolve => { entered = resolve })
+    const waiting = new Promise<void>(resolve => { release = resolve })
+    const writes: string[] = []
+    const make = (name: string) => {
+      const bindings = {
+        ...workingWrites, buildMissionGoalWorkingPath,
+        createMissionWorkingTracker: (options: Parameters<typeof createMissionWorkingTracker>[0]) =>
+          createMissionWorkingTracker({ ...options, now: () => now }),
+        PAIRING_LOCK_PATH: join(root, 'pairing.lock'), ASSISTANT_ID: '900',
+        pairingLockNamesThisDaemon: () => name === 'A',
+        rememberMissionSelfWrite: () => {},
+        bgosPatch: async (_path: string, body: { working: boolean }) => {
+          if (name === 'B' && scenario.name === 'Stop queued behind manual write') { entered(); await waiting }
+          if (name === 'A' && body.working && failReselect) {
+            writes.push('A:true:503')
+            throw Object.assign(new Error('unavailable'), { status: 503 })
+          }
+          if (name === 'A' && !body.working && failClear) {
+            writes.push('A:false:503')
+            throw Object.assign(new Error('unavailable'), { status: 503 })
+          }
+          writes.push(`${name}:${body.working}`)
+          backend = body.working
+          return { mission: { id: 77 } }
+        },
+      }
+      const js = ts.transpileModule(`
+        const channelArmed = ${name === 'A'}, lockHeld = ${name === 'A'};
+        return ${trackerInitializer};
+      `, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText
+      return new Function(...Object.keys(bindings), js)(...Object.values(bindings)) as ReturnType<typeof createMissionWorkingTracker>
+    }
+    const a = make('A'), b = make('B')
+    await a.mark({ ...scope, working: true })
+    if (scenario.name === 'failed clear retry') {
+      failClear = true
+      await a.onHook({ hook_event_name: 'Stop', session_id: scope.sessionId })
+      failClear = false
+    }
+    const selecting = b.mark({ ...scope, sessionId: '', working: scenario.working })
+    if (scenario.name === 'Stop queued behind manual write') {
+      await started
+      const clearing = a.onHook({ hook_event_name: 'Stop', session_id: scope.sessionId })
+      await new Promise(resolve => setImmediate(resolve))
+      release()
+      await Promise.all([selecting, clearing])
+    } else {
+      await selecting
+      if (scenario.name === 'failed reselection') {
+        failReselect = true
+        await assert.rejects(a.mark({ ...scope, working: true }), /unavailable/)
+      }
+      if (scenario.name === 'failed clear retry') {
+        now += 30_000
+        await a.sweep()
+      } else {
+        now += 600_000
+        await a.onHook({ hook_event_name: scenario.name === 'automatic refresh' ? 'PreToolUse' : 'Stop', session_id: scope.sessionId })
+      }
+    }
+    assert.equal(backend, scenario.working, 'the passive manual choice must survive while A still owns the pairing')
+    await a.stop()
+    await b.stop()
+    assert.equal(backend, scenario.working, 'retired automatic ownership must stay retired on shutdown')
+    assert.deepEqual(writes, scenario.writes)
+  })
+}
+
 function stopIntake(tracker: ReturnType<typeof createMissionWorkingTracker>) {
   return runFunction('stopHookIntake', { args: [], hookIntake: { stop: () => {} },
     missionWorking: tracker, missionWorkingTimer: null, clearInterval: () => {},
@@ -94,7 +175,7 @@ for (const delayed of [false, true]) {
     const writes: string[] = []
     const make = (name: string) => {
       const bindings = {
-        createMissionWorkingTracker, createMissionWorkingWriteLock, hasUnconfirmedWorkingWrite, buildMissionGoalWorkingPath,
+        createMissionWorkingTracker, createMissionWorkingGeneration, createMissionWorkingWriteLock, hasUnconfirmedWorkingWrite, buildMissionGoalWorkingPath,
         PAIRING_LOCK_PATH: join(root, 'pairing.lock'), ASSISTANT_ID: '900',
         pairingLockNamesThisDaemon: () => owner === name,
         rememberMissionSelfWrite: () => {},

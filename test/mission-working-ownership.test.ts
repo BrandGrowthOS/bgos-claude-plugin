@@ -145,6 +145,7 @@ for (const restoration of [false, true]) {
     const writes: boolean[] = []
     const tracker = createMissionWorkingTracker({ now: () => now, isArmed: () => true,
       withWriteLock: writeLocks.createMissionWorkingWriteLock(root),
+      generation: writeLocks.createMissionWorkingGeneration(root),
       hasUnconfirmedWrite: s => writeLocks.hasUnconfirmedWorkingWrite(root, s),
       patch: async (_scope, working) => {
         writes.push(working)
@@ -293,6 +294,7 @@ test('a locally timed-out clear fences later selections while its remote commit 
   const make = (name: string) => {
     const options = { isArmed: () => owner === name, hasAuthority: () => owner === name,
       withWriteLock: writeLocks.createMissionWorkingWriteLock(root),
+      generation: writeLocks.createMissionWorkingGeneration(root),
       hasUnconfirmedWrite: (s: typeof scope) => writeLocks.hasUnconfirmedWorkingWrite(root, s),
       patch: async (_scope: typeof scope, working: boolean) => {
         if (name === 'A' && !working) {
@@ -341,6 +343,7 @@ test('a delayed true after local timeout is cleared again without admitting a su
   const writes: boolean[] = []
   const options = { now: () => now, isArmed: () => true,
     withWriteLock: writeLocks.createMissionWorkingWriteLock(root),
+    generation: writeLocks.createMissionWorkingGeneration(root),
     hasUnconfirmedWrite: (s: typeof scope) => writeLocks.hasUnconfirmedWorkingWrite(root, s),
     patch: async (_scope: typeof scope, working: boolean) => {
       if (working) return boundedFetch({ url: 'unused', timeoutMs: 10, label: 'mark' }, async () => mission, {
@@ -397,4 +400,50 @@ test('an uncertain first write survives a failed cleanup and its retry window', 
   await tracker.sweep()
   assert.equal(backend, false)
   assert.deepEqual(writes, [true, false, false])
+})
+
+test('a passive manual clear preserves cleanup of an older unresolved true', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'working-passive-fence-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const release = deferred(), committed = deferred()
+  let now = 1_000_000, backend = false
+  const writes: string[] = []
+  const make = (name: string) => createMissionWorkingTracker({ now: () => now,
+    isArmed: () => name === 'A', hasAuthority: () => name === 'A',
+    withWriteLock: writeLocks.createMissionWorkingWriteLock(root),
+    generation: writeLocks.createMissionWorkingGeneration(root),
+    hasUnconfirmedWrite: s => writeLocks.hasUnconfirmedWorkingWrite(root, s),
+    patch: async (_scope, working) => {
+      if (name === 'A' && working) return boundedFetch({ url: 'unused', timeoutMs: 10, label: 'mark' }, async () => mission, {
+        fetchImpl: async () => {
+          await release.promise
+          writes.push('A:true')
+          backend = true
+          committed.resolve()
+          return {}
+        },
+      })
+      writes.push(`${name}:${working}`)
+      backend = working
+      return mission
+    },
+  })
+  const a = make('A'), b = make('B')
+  const keepAlive = setInterval(() => {}, 100)
+  try {
+    await assert.rejects(a.mark({ ...scope, working: true }), /timed out/)
+    await b.mark({ ...scope, sessionId: '', working: false })
+    await a.onHook(event('Stop'))
+    release.resolve()
+    await committed.promise
+    assert.equal(backend, true, 'the older remote write really arrives after the passive clear')
+    now += 30_000
+    await a.sweep()
+    assert.equal(backend, false, 'the active daemon must keep the unresolved cleanup obligation')
+    assert.deepEqual(writes, ['B:false', 'A:false', 'A:true', 'A:false'])
+    await assert.rejects(b.mark({ ...scope, sessionId: '', working: true }), /unconfirmed write/i)
+  } finally {
+    clearInterval(keepAlive)
+    release.resolve()
+  }
 })
