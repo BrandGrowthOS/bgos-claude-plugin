@@ -2017,7 +2017,12 @@ export class BrowserHostCore {
       settings,
       preapproved: [],
     })
-    const run = () => runAgentBrowserWork(slot, () => slot.engine.callTool(name, engineArgs, signal))
+    // Only here does the agent act: a call refused or parked starts no download, and one held at the gate runs later,
+    // perhaps after the owner looked in and handed back (SlotDownloads._mayBeOwners).
+    const run = () => runAgentBrowserWork(slot, () => {
+      slot.ownerHeldSinceAgent = false
+      return slot.engine.callTool(name, engineArgs, signal)
+    })
     if (decision.verdict === 'allow') return { allowed: true, ran: Promise.resolve().then(run) }
     if (decision.verdict === 'deny') {
       return { allowed: false, message: this._refusedMessage(decision, classification) }
@@ -2319,7 +2324,6 @@ export class BrowserHostCore {
     const { wait_seconds: waitSeconds, ...engineArgs } = args
     const slot = await this.pool.acquire(ctx)
     if (slot.ownerInputLease) throw new HostError('owner_control', OWNER_CONTROL_MESSAGE)
-    slot.ownerHeldSinceAgent = false
     if (ctx.assistantName) slot.agentName = ctx.assistantName
     if (!slot.purpose) slot.purpose = typeof engineArgs.url === 'string' ? `Browsing ${engineArgs.url}` : 'Browsing on request'
     const verdict = await this._permit(ctx, slot, name, engineArgs, waitSeconds, signal)
