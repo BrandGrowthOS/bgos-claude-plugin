@@ -191,6 +191,8 @@ export interface ThreadLaneState {
    * is being posted, or when that post never landed: it never runs again.
    */
   lastReplyId: string
+  /** That turn's answer, summary or failure reply landed. False until it does (and in a state saved before this field). */
+  lastDelivered: boolean
   /**
    * The lane's process while it runs, and its start stamp (finding 3): a
    * daemon that crashed leaves it finishing its turn, and the next start stops
@@ -220,8 +222,6 @@ interface Lane {
   posts: Promise<void>
   /** Posts queued or being tried for this lane (a reply retried with backoff counts until it settles). */
   postsInFlight: number
-  /** The last finished turn's reply id while its answer (or its failure reply) has not landed, else null. */
-  undelivered: string | null
   closed: boolean
   turnCount: number
 }
@@ -438,10 +438,12 @@ export class ThreadLaneManager {
     const lane = this.lanes.get(input.rootId)
     if (lane && (lane.current || lane.queue.length > 0)) return 0
     const saved = lane ? null : this.load(input.rootId)
-    const last = lane ? lane.state.lastReplyId : (saved?.lastReplyId ?? '')
-    if (input.replyId !== '' && input.replyId === last) {
-      // Its answer landed meanwhile (the row was read before it did), or is still on its way.
-      if (lane && (lane.postsInFlight > 0 || lane.undelivered !== input.replyId)) return 0
+    const state = lane ? lane.state : saved
+    if (input.replyId !== '' && state !== null && input.replyId === state.lastReplyId) {
+      // Its answer (a reply or a summary) is still on its way, or landed: also
+      // before a restart, and a summary leaves the row listed (it is no
+      // thread reply), so a landed one never reopens the thread.
+      if ((lane && lane.postsInFlight > 0) || state.lastDelivered) return 0
       // Finished here, and its answer never landed: back to Open, never run again.
       this.deps.log(`threads: thread ${input.rootId} turn ${input.replyId} already finished, its answer is marked undelivered`)
       this.postFailure(lane ?? this.newLane(saved!), input, POST_FAILED)
@@ -505,6 +507,7 @@ export class ThreadLaneManager {
         readOnly: false,
         closedAt: null,
         lastReplyId: '',
+        lastDelivered: false,
         pid: null,
         pidStamp: null,
       },
@@ -531,7 +534,6 @@ export class ThreadLaneManager {
       copiedMainPath: null,
       posts: Promise.resolve(),
       postsInFlight: 0,
-      undelivered: null,
       closed: false,
       turnCount: 0,
     }
@@ -668,8 +670,8 @@ export class ThreadLaneManager {
   /** Remember the turn as finished (finding 1): a pending list naming it never runs it again. */
   private finished(lane: Lane, turn: ThreadTurnInput): void {
     if (turn.replyId === '') return
-    lane.undelivered = turn.replyId
     lane.state.lastReplyId = turn.replyId
+    lane.state.lastDelivered = false
     if (lane.state.folder) this.persist(lane)
   }
 
@@ -684,8 +686,12 @@ export class ThreadLaneManager {
     )
   }
 
+  /** The finished turn's answer (or its failure reply) landed: saved, so a restart knows. */
   private landed(lane: Lane, turn: ThreadTurnInput): void {
-    if (lane.undelivered === turn.replyId) lane.undelivered = null
+    if (turn.replyId === '' || lane.state.lastReplyId !== turn.replyId || lane.state.lastDelivered) return
+    lane.state.lastDelivered = true
+    // Never recreate a state file a delete removed meanwhile.
+    if (lane.state.folder && this.deps.fs.exists(this.statePath(lane.state.rootId))) this.persist(lane)
   }
 
   private clientId(lane: Lane, turn: ThreadTurnInput): string {
@@ -1139,6 +1145,7 @@ export class ThreadLaneManager {
       readOnly: r.readOnly === true,
       closedAt: typeof r.closedAt === 'number' && Number.isFinite(r.closedAt) ? r.closedAt : null,
       lastReplyId: str(r.lastReplyId),
+      lastDelivered: r.lastDelivered === true,
       pid: typeof r.pid === 'number' && Number.isInteger(r.pid) && r.pid > 0 ? r.pid : null,
       pidStamp: typeof r.pidStamp === 'string' && r.pidStamp !== '' ? r.pidStamp : null,
     }

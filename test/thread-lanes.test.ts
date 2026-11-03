@@ -893,14 +893,16 @@ test('a new reply listed while the last answer is still being posted runs once t
 })
 
 test('after a daemon restart a listed turn that already finished is never run again: the thread goes back to open', async () => {
-  const r1 = rig()
+  // The daemon dies while the answer is still being retried: it never lands.
+  const r1 = rig({ failPosts: (path) => path === 'integrations/threads/reply' })
   r1.manager.turn(turn('101'))
   await r1.manager.idle()
   r1.spawned[0]!.child.init(FORK_A)
   r1.spawned[0]!.child.result('the answer.')
-  await r1.manager.idle()
+  await flush()
   assert.equal(JSON.parse(r1.files.get(join(STATE, '101.json'))!).lastReplyId, '1010', 'the finished reply is saved with the lane')
-  // The answer never landed (the daemon died while posting it): the server still lists the thread.
+  assert.equal(JSON.parse(r1.files.get(join(STATE, '101.json'))!).lastDelivered, false)
+  // The server still lists the thread.
   const r2 = rig({ files: Object.fromEntries(r1.files) })
   assert.equal(await r2.manager.reconcile(async () => ({ turns: [pendingRow('101', '1010', 'work on 101')] }), { assistantIds: ['7'] }), 0)
   await r2.manager.idle()
@@ -1093,4 +1095,50 @@ test('closing or deleting a thread after a daemon crash stops its old lane proce
     await pollOut(r)
     assert.deepEqual(r.procKills, [[777, 'SIGTERM']], `removeWorktree ${removeWorktree}`)
   }
+})
+
+// -- follow up (Data, item 1): a summary or answer that landed is never reopened after a restart --
+
+test('after a restart a listed row naming a summary that already landed leaves the thread alone', async () => {
+  const r1 = rig()
+  r1.manager.turn(turn('101'))
+  await r1.manager.idle()
+  const c = r1.spawned[0]!.child
+  c.init(FORK_A)
+  c.result('done.')
+  await r1.manager.idle()
+  r1.manager.turn(turn('101', { mode: 'summary', replyId: '1012', text: '' }))
+  await r1.manager.idle()
+  c.result('- what was asked\n- what was done')
+  await r1.manager.idle()
+  assert.ok(r1.posts.some((p) => p.path === 'integrations/threads/summary'), 'the summary landed')
+  assert.equal(JSON.parse(r1.files.get(join(STATE, '101.json'))!).lastDelivered, true)
+  // The server's pending list still names the summary request (a summary is no thread reply).
+  const r2 = rig({ files: Object.fromEntries(r1.files) })
+  assert.equal(await r2.manager.reconcile(async () => ({ turns: [{ ...pendingRow('101', '1012', ''), mode: 'summary' }] }), { assistantIds: ['7'] }), 0)
+  await r2.manager.idle()
+  assert.deepEqual(r2.posts, [], 'no state change, no notice: the thread is not reopened')
+  assert.equal(r2.spawned.length, 0)
+})
+
+test('after a restart a listed row naming an answer that already landed posts nothing either', async () => {
+  const r1 = rig()
+  r1.manager.turn(turn('101'))
+  await r1.manager.idle()
+  r1.spawned[0]!.child.init(FORK_A)
+  r1.spawned[0]!.child.result('the answer.')
+  await r1.manager.idle()
+  const r2 = rig({ files: Object.fromEntries(r1.files) })
+  assert.equal(await r2.manager.reconcile(async () => ({ turns: [pendingRow('101', '1010', 'work on 101')] }), { assistantIds: ['7'] }), 0)
+  await r2.manager.idle()
+  assert.deepEqual(r2.posts, [])
+  assert.equal(r2.spawned.length, 0)
+})
+
+test('a lane state saved before lastDelivered existed still gets the notice (never a silent stuck thread)', async () => {
+  const state = { rootId: '101', chatId: '55', title: 'T', forkSessionId: FORK_A, folder: wt('101'), cwd: wt('101'), worktree: true, readOnly: false, closedAt: null, lastReplyId: '1010' }
+  const r = rig({ files: { [join(STATE, '101.json')]: JSON.stringify(state) } })
+  assert.equal(await r.manager.reconcile(async () => ({ turns: [pendingRow('101', '1010', 'x')] }), { assistantIds: ['7'] }), 0)
+  await r.manager.idle()
+  assert.deepEqual(statePosts(r), ['101:open'])
 })
