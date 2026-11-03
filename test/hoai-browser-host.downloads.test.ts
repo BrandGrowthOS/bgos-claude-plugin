@@ -32,15 +32,18 @@ type Card = Record<string, any>
 function server() {
   const cards: Card[] = []
   const state = new Map<string, { state: string; choice: string | null }>()
+  let holding = false
   return {
     cards,
+    /** From now on every card waits for the test, as a download's does. */
+    holdCards(on: boolean) { holding = on },
     answer(gateId: string, choice: string | null, as = 'answered') {
       state.set(gateId, { state: as, choice })
     },
     postCard: async (card: Card) => {
       cards.push(card)
       // Navigations and clicks are allowed at once; a download waits for the test.
-      state.set(String(card.gateId), card.kind === 'download' ? { state: 'open', choice: null } : { state: 'answered', choice: 'allow_once' })
+      state.set(String(card.gateId), card.kind === 'download' || holding ? { state: 'open', choice: null } : { state: 'answered', choice: 'allow_once' })
       return true
     },
     readGate: async (gateId: string) => state.get(gateId) ?? { state: 'unknown', choice: null },
@@ -362,10 +365,52 @@ test("an owner's download Chrome raises after the hand-back names nothing to the
     s.engines[0].onDownload(fakeDownload(s.engines[0].heldDir, 'tax-return-private.pdf'))
     const next = await s.call('browser_snapshot')
     assert.doesNotMatch(next.text, /tax-return|### Download/, 'the agent has not acted since the owner held the browser')
+    await until(() => s.srv.cards.some((c) => c.kind === 'download'), () => 'the owner is still asked, as before')
     s.engines[0].onDownload(fakeDownload(s.engines[0].heldDir, 'Late.p8'))
     const after = await s.call('browser_snapshot')
     assert.match(after.text, /### Download\n- Late\.p8 \(dl_[0-9a-f]+\): your owner is asked/, 'the agent has acted since')
     assert.doesNotMatch(after.text, /tax-return/)
+  } finally {
+    s.done()
+  }
+})
+
+test("an agent call that never ran does not make the owner's late download the agent's", async () => {
+  const s = setup()
+  try {
+    await s.call('browser_navigate', { url: 'https://files.example.com/' })
+    const slot = s.pool.peek(s.ctx)
+    const input = new RemoteOwnerInput({ current: () => slot })
+    const view: any = { engine: slot.engine, cdp: { send: async () => ({}) } }
+    await input.acquire(view)
+    input.release(view)
+    const refused = await s.call('browser_navigate', { url: 'file:///etc/passwd' })
+    assert.equal(refused.isError, true, refused.text)
+    s.engines[0].onDownload(fakeDownload(s.engines[0].heldDir, 'tax-return-private.pdf'))
+    const next = await s.call('browser_snapshot')
+    assert.doesNotMatch(next.text, /tax-return|### Download/, 'nothing of the agent ran since the owner held the browser')
+  } finally {
+    s.done()
+  }
+})
+
+test("the agent's click still waiting for the owner, who looks in and hands back before allowing it, is the agent's own", async () => {
+  const s = setup()
+  try {
+    await s.call('browser_navigate', { url: 'https://files.example.com/' })
+    const slot = s.pool.peek(s.ctx)
+    s.engines[0].downloadOnClick = 'AgentsOwn.p8'
+    const before = s.srv.cards.length
+    s.srv.holdCards(true)
+    const clicking = s.call('browser_click', { element: 'Download' })
+    await until(() => s.srv.cards.length > before, () => 'the click is asked')
+    const input = new RemoteOwnerInput({ current: () => slot })
+    const view: any = { engine: slot.engine, cdp: { send: async () => ({}) } }
+    await input.acquire(view)
+    input.release(view)
+    s.srv.answer(String(s.srv.cards.at(-1)!.gateId), 'allow_once')
+    const clicked = await clicking
+    assert.match(clicked.text, /### Download\n- AgentsOwn\.p8 \(dl_[0-9a-f]+\): your owner is asked/, 'it started after the hand-back, from the agent\'s own action')
   } finally {
     s.done()
   }
@@ -408,6 +453,14 @@ test('a file no download event claimed, found while the owner holds the browser,
     slot.ownerInputLease = null
     const next = await s.call('browser_snapshot')
     assert.doesNotMatch(next.text, /### Download/)
+    const input = new RemoteOwnerInput({ current: () => slot })
+    const view: any = { engine: slot.engine, cdp: { send: async () => ({}) } }
+    await input.acquire(view)
+    input.release(view)
+    writeFileSync(join(held, randomUUID()), 'x')
+    slot.downloads._adoptUnclaimed(true)
+    const after = await s.call('browser_snapshot')
+    assert.doesNotMatch(after.text, /### Download/, 'found after the hand-back, before the agent acted')
   } finally {
     s.done()
   }
