@@ -1,0 +1,46 @@
+MUTANT m26-empty-page-guard-gone
+undoes: an empty page that claims more cannot spin the walk
+file: lib/poll-core.ts
+--- removed
+      if (older.length === 0) {
+        if (page.mayHaveOlder) opts.onNoProgress(beforeId)
+        return held
+      }
+
++++ added
+      if (older.length === 0 && !page.mayHaveOlder) return held
+
+exit=1
+
+✖ a server that ignores beforeId cannot spin the walk: it stops, says so, and keeps what it has (2.292207ms)
+✖ an empty page that still claims more cannot spin the walk either (0.161874ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 0
+ℹ fail 2
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 148.97083
+
+✖ failing tests:
+
+test at test/catch-up-paging.test.ts:1:9423
+✖ a server that ignores beforeId cannot spin the walk: it stops, says so, and keeps what it has (2.292207ms)
+  Error: the walk is spinning
+      at fetchOlder (/home/karim/lane-tmp/d041/mut/m26-empty-page-guard-gone.t0gewzzw/test/catch-up-paging.test.ts:288:30)
+      at <anonymous> (/home/karim/lane-tmp/d041/mut/m26-empty-page-guard-gone.t0gewzzw/lib/poll-core.ts:329:26)
+      at async Object.during (/home/karim/lane-tmp/d041/mut/m26-empty-page-guard-gone.t0gewzzw/test/catch-up-paging.test.ts:223:16)
+      at async TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m26-empty-page-guard-gone.t0gewzzw/test/catch-up-paging.test.ts:292:21)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3)
+
+test at test/catch-up-paging.test.ts:1:9854
+✖ an empty page that still claims more cannot spin the walk either (0.161874ms)
+  Error: the walk is spinning
+      at fetchOlder (/home/karim/lane-tmp/d041/mut/m26-empty-page-guard-gone.t0gewzzw/test/catch-up-paging.test.ts:301:30)
+      at <anonymous> (/home/karim/lane-tmp/d041/mut/m26-empty-page-guard-gone.t0gewzzw/lib/poll-core.ts:329:26)
+      at async Object.during (/home/karim/lane-tmp/d041/mut/m26-empty-page-guard-gone.t0gewzzw/test/catch-up-paging.test.ts:223:16)
+      at async TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m26-empty-page-guard-gone.t0gewzzw/test/catch-up-paging.test.ts:305:21)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)

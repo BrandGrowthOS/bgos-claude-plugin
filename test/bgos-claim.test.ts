@@ -15,10 +15,9 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { chmod, mkdir, mkdtemp, readFile, readdir, stat, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, readdir, stat, rm, writeFile } from 'node:fs/promises'
 import { readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
-import { tmpdir } from 'node:os'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -55,6 +54,7 @@ import {
 } from '../bin/bgos-claim.mjs'
 import { CLONE_CHANNEL_SPEC, MARKETPLACE_CHANNEL_SPEC, launchCommand } from '../bin/bgos-install-method.mjs'
 import { buildStoredZip } from '../lib/pack-zip.ts'
+import { scratchDir } from './helpers/scratch-dirs.ts'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -279,7 +279,7 @@ const MCP_CONFIG = buildMcpJson({
 
 test('MCP_JSON_MODE is 600 and writeMcpJsonFile pins it on disk', async () => {
   assert.equal(MCP_JSON_MODE, 0o600)
-  const dir = await mkdtemp(join(tmpdir(), 'bgos-claim-test-'))
+  const dir = scratchDir('bgos-claim-test-')
   try {
     const path = join(dir, '.mcp.json')
     // A re-claim writes over an EXISTING .mcp.json, and writeFile keeps an existing file's
@@ -313,7 +313,7 @@ test('MCP_JSON_MODE is 600 and writeMcpJsonFile pins it on disk', async () => {
 // its credentials file this way; the claim installer now does the same.
 
 test('on Windows writeMcpJsonFile locks .mcp.json to the user with icacls, as bgos-pair does', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'bgos-claim-acl-'))
+  const dir = scratchDir('bgos-claim-acl-')
   try {
     const path = join(dir, '.mcp.json')
     const calls: Array<{ file: string; args: string[] }> = []
@@ -334,7 +334,7 @@ test('on Windows writeMcpJsonFile locks .mcp.json to the user with icacls, as bg
 })
 
 test('a Windows lock that fails says UNPROTECTED, never chmod 600', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'bgos-claim-acl-fail-'))
+  const dir = scratchDir('bgos-claim-acl-fail-')
   try {
     const result = await writeMcpJsonFile(join(dir, '.mcp.json'), MCP_CONFIG, {
       platform: 'win32',
@@ -353,7 +353,7 @@ test('a Windows lock that fails says UNPROTECTED, never chmod 600', async () => 
 })
 
 test('off Windows no icacls runs and the line says chmod 600', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'bgos-claim-acl-posix-'))
+  const dir = scratchDir('bgos-claim-acl-posix-')
   try {
     const calls: string[] = []
     const result = await writeMcpJsonFile(join(dir, '.mcp.json'), MCP_CONFIG, {
@@ -378,7 +378,7 @@ test('hasCommand finds a command on PATH on every OS, so a Windows claim gets pa
 })
 
 test('claim installer copies the daemon wrapper outside the plugin checkout', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'bgos-claim-wrapper-'))
+  const root = scratchDir('bgos-claim-wrapper-')
   const pluginDir = join(root, 'plugin')
   const home = join(root, 'home')
   await mkdir(join(pluginDir, 'bin'), { recursive: true })
@@ -507,7 +507,7 @@ test('claim: the spec literal is not retyped in the source, it is imported', () 
 // ── Scaffold layout ──────────────────────────────────────────────────────────
 
 test('scaffoldWorkspace writes the bgos-build-agent layout from pack entries', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'bgos-claim-scaffold-'))
+  const dir = scratchDir('bgos-claim-scaffold-')
   try {
     const written = await scaffoldWorkspace(
       dir,
@@ -628,7 +628,7 @@ test('resolveAgentDir keeps the scaffold strictly inside the agents root', () =>
 })
 
 test('a hostile network slug never escapes the root; a good slug scaffolds inside it', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'bgos-claim-root-'))
+  const root = scratchDir('bgos-claim-root-')
   try {
     // The pack endpoint tries to traverse out; the installer ignores it and
     // uses the safe local slug from the agent name instead.
@@ -654,7 +654,7 @@ test('a hostile network slug never escapes the root; a good slug scaffolds insid
 })
 
 test('scaffoldWorkspace never writes a pack entry outside the scaffold dir (zip-slip)', async () => {
-  const parent = await mkdtemp(join(tmpdir(), 'bgos-claim-slip-'))
+  const parent = scratchDir('bgos-claim-slip-')
   const dir = join(parent, 'agent-x')
   try {
     const written = await scaffoldWorkspace(

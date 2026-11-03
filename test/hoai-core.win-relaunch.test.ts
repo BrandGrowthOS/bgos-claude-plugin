@@ -28,14 +28,14 @@
  */
 
 import { EventEmitter } from 'node:events'
-import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, readdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import * as core from '../bin/hoai-core.mjs'
 import { extractLoginSignal } from '../lib/claude-login.ts'
+import { scratchDir } from './helpers/scratch-dirs.ts'
 
 const { FOLDER_PIN_FILE, LAUNCH_STATUS_FILE_NAME, MAX_RELAUNCHES_PER_WINDOW, RESTART_MARKER_FILE_NAME, SESSION_ID_FILE_NAME, sessionTranscriptPath, superviseClaude } = core
 /** New in this change: read off the namespace so a missing export fails a test instead of the import. */
@@ -1185,7 +1185,7 @@ test('superviseClaude reads the store the CLI signs in through: CLAUDE_CONFIG_DI
 })
 
 test('the default detector reads real transcripts: an expired login another agent recorded on disk is an alert, not a relaunch, until an agent answers after it', async () => {
-  const store = mkdtempSync(join(tmpdir(), 'hoai-login-store-'))
+  const store = scratchDir('hoai-login-store-')
   const agent = join(store, 'projects', 'C--agents-871')
   mkdirSync(agent, { recursive: true })
   // Written now (a fresh mtime), recorded 30 s before the fake clock's launch check.
@@ -1209,7 +1209,7 @@ test('the default detector reads real transcripts: an expired login another agen
 })
 
 test('the default detector sees a sign-in on disk: the CLI rewrote the store s credentials file after the failure, so the one relaunch follows', async () => {
-  const store = mkdtempSync(join(tmpdir(), 'hoai-login-signin-'))
+  const store = scratchDir('hoai-login-signin-')
   const agent = join(store, 'projects', 'C--agents-871')
   mkdirSync(agent, { recursive: true })
   writeFileSync(join(agent, 'b.jsonl'), `${record('failed', T0 + THREE_MIN - 30_000)}\n`)
@@ -1226,7 +1226,7 @@ test('the default detector sees a sign-in on disk: the CLI rewrote the store s c
 })
 
 test('readFileTail and fileMtimeMs on real files: the tail starts at a whole line, a missing file is null', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'hoai-login-tail-'))
+  const dir = scratchDir('hoai-login-tail-')
   const file = join(dir, 'a.jsonl')
   const lines = [record('activity', NOW - 3000), record('failed', NOW - 2000), record('failed', NOW - 1000, 'Not logged in · Please run /login')]
   writeFileSync(file, `${lines.join('\n')}\n`)

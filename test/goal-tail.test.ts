@@ -20,13 +20,13 @@
 
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
-import { appendFileSync, mkdtempSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { appendFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { GoalTail } from '../lib/goal-tail.ts'
+import { scratchDir } from './helpers/scratch-dirs.ts'
 
-const dir = (): string => mkdtempSync(join(tmpdir(), 'goal-tail-'))
+const dir = (): string => scratchDir('goal-tail-')
 
 let seq = 0
 const row = (condition: string): string =>

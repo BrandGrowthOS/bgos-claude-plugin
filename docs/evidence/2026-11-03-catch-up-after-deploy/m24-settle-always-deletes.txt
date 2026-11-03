@@ -1,0 +1,42 @@
+MUTANT m24-settle-always-deletes
+undoes: hole 4: a live message during a read stays in reach
+file: server.ts
+--- removed
+    chatReadFloor.set(chatId, Math.max(chatReadFloor.get(chatId) ?? 0, readUpTo))
+
++++ added
+    chatReadFloor.delete(chatId)
+
+exit=1
+
+✖ the read floor: set once under the first move past unread rows, kept while the socket stays ahead of the reads (51.059145ms)
+✔ a cursor taken from the shared file drops the read floor: the holder delivered those rows, and its ids are not in this process (6.490474ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 1
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 769.734235
+
+✖ failing tests:
+
+test at test/external-email-label.test.ts:32:4041
+✖ the read floor: set once under the first move past unread rows, kept while the socket stays ahead of the reads (51.059145ms)
+  AssertionError [ERR_ASSERTION]: a read up to 104 while the socket is at 110: the rows above 104 stay in reach
+  
+  undefined !== 104
+  
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m24-settle-always-deletes.be63xje3/test/external-email-label.test.ts:851:10)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.start (node:internal/test_runner/test:1262:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:387:17) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    expected: 104,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

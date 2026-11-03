@@ -15,7 +15,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { dirname, join } from 'node:path'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 
 import {
@@ -25,6 +25,7 @@ import {
   preflightVerdict,
 } from '../bin/bgos-doctor.mjs'
 import { resolveCredentialsSelection } from '../lib/agent-credentials.ts'
+import { scratchDir } from './helpers/scratch-dirs.ts'
 
 const HOME = join(tmpdir(), 'doctor-resolver-fake-home')
 const AGENT_DIR = join(HOME, '.bgos-agent')
@@ -309,7 +310,7 @@ test('a refusal says which places the doctor looked, so a pin set somewhere it c
 // ── The row ──────────────────────────────────────────────────────────────────
 
 test('probeCredentials on disk, kc-server shape: the .mcp.json id names the file, the home is read, no refusal is reported', () => {
-  const root = mkdtempSync(join(tmpdir(), 'doctor-resolver-'))
+  const root = scratchDir('doctor-resolver-')
   const folder = join(root, 'agents', '867')
   mkdirSync(folder, { recursive: true })
   mkdirSync(join(root, '.bgos-agent'), { recursive: true })
@@ -333,7 +334,7 @@ test('probeCredentials on disk, kc-server shape: the .mcp.json id names the file
 })
 
 test('probeCredentials on a folder nothing names, 3 agents paired: no path, a refusal that names the ids and both remedies', () => {
-  const root = mkdtempSync(join(tmpdir(), 'doctor-resolver-'))
+  const root = scratchDir('doctor-resolver-')
   const folder = join(root, 'agents', 'stray')
   mkdirSync(folder, { recursive: true })
   mkdirSync(join(root, '.bgos-agent'), { recursive: true })

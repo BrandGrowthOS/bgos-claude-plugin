@@ -105,7 +105,7 @@ test('a host that cannot type declares the READ half only', () => {
   // the honest answer, and still sees every Last check.
   assert.deepEqual(
     [...declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode: 'pairing' })],
-    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'boards_download', 'sessions_library', 'changes_rpc', 'doctor_rpc', 'skills_list', 'skills_receive', 'ui_card', 'ask_answered', 'ask_multi_select', 'email_label', 'email_send', 'hard_floor', 'hard_floor_rules_2'],
+    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'mission_goal_working', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'boards_download', 'sessions_library', 'changes_rpc', 'doctor_rpc', 'skills_list', 'skills_receive', 'ui_card', 'ask_answered', 'ask_multi_select', 'email_label', 'email_send', 'hard_floor', 'hard_floor_rules_2'],
   )
 })
 
@@ -132,6 +132,7 @@ test('boards_playbook is declared on every host, because the tool is typed and h
       'mission_events',
       'mission_goal_checks',
       'mission_set_goals',
+      'mission_goal_working',
       'permission_card',
       'plan_card',
       'memory_rpc',
@@ -239,6 +240,7 @@ test('permission_card is declared on every host, because the relay has no platfo
       'mission_events',
       'mission_goal_checks',
       'mission_set_goals',
+      'mission_goal_working',
       'permission_card',
       'plan_card',
       'memory_rpc',
@@ -710,6 +712,7 @@ test('the stop pause token rides with mission_pause and nothing else, the gate t
       'mission_events',
       'mission_goal_checks',
       'mission_set_goals',
+      'mission_goal_working',
       'permission_card',
       'plan_card',
       'memory_rpc',

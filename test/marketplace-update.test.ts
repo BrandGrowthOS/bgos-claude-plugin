@@ -9,8 +9,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 import {
@@ -29,6 +28,7 @@ import {
   refreshMarketplaceLatest,
   runMarketplaceUpdate,
 } from '../lib/marketplace-update.mjs'
+import { scratchDir } from './helpers/scratch-dirs'
 
 const OBSERVATION = {
   marketplaceRegistered: true,
@@ -334,7 +334,7 @@ test('a throwing report callback is logged and never breaks the update', async (
 // ── Latest version ───────────────────────────────────────────────────────────
 
 function configDirWithMarketplace(version: string | null): string {
-  const configDir = mkdtempSync(join(tmpdir(), 'mp-cfg-'))
+  const configDir = scratchDir('mp-cfg-')
   if (version !== null) {
     const path = marketplaceJsonPath(configDir)
     mkdirSync(dirname(path), { recursive: true })
@@ -512,7 +512,7 @@ test('createMarketplaceLatestTracker: current() is the local read, the network r
 
 test('executorFs exposes the executor surface over node fs', () => {
   const fs = executorFs()
-  const dir = mkdtempSync(join(tmpdir(), 'mp-fs-'))
+  const dir = scratchDir('mp-fs-')
   fs.mkdir(join(dir, 'a', 'b'))
   fs.writeFile(join(dir, 'a', 'b', 'f.txt'), 'hello')
   assert.equal(fs.exists(join(dir, 'a', 'b', 'f.txt')), true)
