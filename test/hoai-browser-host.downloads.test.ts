@@ -416,6 +416,31 @@ test("the agent's click still waiting for the owner, who looks in and hands back
   }
 })
 
+test("a click the owner's lease refuses at the gate's answer does not make the owner's late download the agent's", async () => {
+  const s = setup()
+  try {
+    await s.call('browser_navigate', { url: 'https://files.example.com/' })
+    const slot = s.pool.peek(s.ctx)
+    const before = s.srv.cards.length
+    s.srv.holdCards(true)
+    const clicking = s.call('browser_click', { element: 'Download' })
+    await until(() => s.srv.cards.length > before, () => 'the click is asked')
+    const input = new RemoteOwnerInput({ current: () => slot })
+    const view: any = { engine: slot.engine, cdp: { send: async () => ({}) } }
+    await input.acquire(view)
+    s.srv.answer(String(s.srv.cards.at(-1)!.gateId), 'allow_once')
+    const clicked = await clicking
+    assert.equal(clicked.isError, true, 'the owner holds the browser, so the click did not run')
+    input.release(view)
+    s.srv.holdCards(false)
+    s.engines[0].onDownload(fakeDownload(s.engines[0].heldDir, 'tax-return-private.pdf'))
+    const next = await s.call('browser_snapshot')
+    assert.doesNotMatch(next.text, /tax-return|### Download/, 'nothing of the agent ran since the owner held the browser')
+  } finally {
+    s.done()
+  }
+})
+
 test('the work the agent started before the owner took over is still its own while it drains', async () => {
   const s = setup()
   try {
