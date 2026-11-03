@@ -25,6 +25,7 @@ import { join } from 'node:path'
 import { BrowserHostCore, BrowserPool, DOWNLOAD_SENTENCE, hostInstructions, loadPlaywright } from '../bin/hoai-browser-host.mjs'
 import { GATE_ATTACH_MS, GateKeeper } from '../lib/browser-gate.mjs'
 import { DownloadStore } from '../lib/browser-downloads.mjs'
+import { RemoteOwnerInput, runAgentBrowserWork } from '../lib/remote-input.mjs'
 
 type Card = Record<string, any>
 
@@ -317,6 +318,96 @@ test("the owner's own download never reaches the agent's replies, and the agent'
     const after = await s.call('browser_snapshot')
     assert.match(after.text, /### Download\n- Late\.p8 \(dl_[0-9a-f]+\): your owner is asked/)
     assert.doesNotMatch(after.text, /tax-return/)
+  } finally {
+    s.done()
+  }
+})
+
+test("an owner's download refused at the start, or one that cannot start, names nothing to the agent", async () => {
+  const s = setup()
+  try {
+    await s.call('browser_navigate', { url: 'https://files.example.com/' })
+    const slot = s.pool.peek(s.ctx)
+    const held = s.engines[0].heldDir
+    const noPath: any = fakeDownload(held, 'no-path-private.pdf')
+    delete noPath._artifact
+    for (const [guard, download] of [
+      [{ ...readyGuard, verify: () => false }, fakeDownload(held, 'folder-refused-private.pdf')],
+      [readyGuard, noPath],
+      [{ ...readyGuard, verify: () => { throw new Error('the folder check broke') } }, fakeDownload(held, 'cannot-start-private.pdf')],
+    ] as const) {
+      slot.ownerInputLease = { pending: false }
+      ;(s.store as any).guard = guard
+      s.engines[0].onDownload(download)
+      ;(s.store as any).guard = readyGuard
+      slot.ownerInputLease = null
+    }
+    const next = await s.call('browser_snapshot')
+    assert.doesNotMatch(next.text, /private|### Download/, 'the owner asked for those files, and the agent did not')
+  } finally {
+    s.done()
+  }
+})
+
+test("an owner's download Chrome raises after the hand-back names nothing to the agent, and the agent's next action opens the way again", async () => {
+  const s = setup()
+  try {
+    await s.call('browser_navigate', { url: 'https://files.example.com/' })
+    const slot = s.pool.peek(s.ctx)
+    const input = new RemoteOwnerInput({ current: () => slot })
+    const view: any = { engine: slot.engine, cdp: { send: async () => ({}) } }
+    await input.acquire(view)
+    input.release(view)
+    assert.equal(slot.ownerInputLease, null, 'the owner handed the browser back')
+    s.engines[0].onDownload(fakeDownload(s.engines[0].heldDir, 'tax-return-private.pdf'))
+    const next = await s.call('browser_snapshot')
+    assert.doesNotMatch(next.text, /tax-return|### Download/, 'the agent has not acted since the owner held the browser')
+    s.engines[0].onDownload(fakeDownload(s.engines[0].heldDir, 'Late.p8'))
+    const after = await s.call('browser_snapshot')
+    assert.match(after.text, /### Download\n- Late\.p8 \(dl_[0-9a-f]+\): your owner is asked/, 'the agent has acted since')
+    assert.doesNotMatch(after.text, /tax-return/)
+  } finally {
+    s.done()
+  }
+})
+
+test('the work the agent started before the owner took over is still its own while it drains', async () => {
+  const s = setup()
+  try {
+    await s.call('browser_navigate', { url: 'https://files.example.com/' })
+    const slot = s.pool.peek(s.ctx)
+    let finish!: () => void
+    const running = runAgentBrowserWork(slot, () => new Promise<void>((resolve) => { finish = resolve }))
+    await new Promise((resolve) => setImmediate(resolve))
+    const input = new RemoteOwnerInput({ current: () => slot })
+    const view: any = { engine: slot.engine, cdp: { send: async () => ({}) } }
+    const acquiring = input.acquire(view)
+    await new Promise((resolve) => setImmediate(resolve))
+    s.engines[0].onDownload(fakeDownload(s.engines[0].heldDir, 'Drained.p8'))
+    finish()
+    await running
+    await acquiring
+    input.release(view)
+    const next = await s.call('browser_snapshot')
+    assert.match(next.text, /### Download\n- Drained\.p8 \(dl_[0-9a-f]+\): your owner is asked/, 'raised before the owner had the browser')
+  } finally {
+    s.done()
+  }
+})
+
+test('a file no download event claimed, found while the owner holds the browser, is not pushed to the agent', async () => {
+  const s = setup()
+  try {
+    await s.call('browser_navigate', { url: 'https://files.example.com/' })
+    const slot = s.pool.peek(s.ctx)
+    slot.ownerInputLease = { pending: false }
+    const held = s.engines[0].heldDir
+    mkdirSync(held, { recursive: true })
+    writeFileSync(join(held, randomUUID()), 'x')
+    slot.downloads._adoptUnclaimed(true)
+    slot.ownerInputLease = null
+    const next = await s.call('browser_snapshot')
+    assert.doesNotMatch(next.text, /### Download/)
   } finally {
     s.done()
   }
