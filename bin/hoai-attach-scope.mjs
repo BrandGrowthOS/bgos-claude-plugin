@@ -15,9 +15,11 @@ import { readFileSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { detectInstallMethod } from './bgos-install-method.mjs'
 
 import {
   ATTACH_SCOPE_SETTINGS_FILE,
+  effectiveAttachScopeMode,
   formatAttachScopeSummary,
   readAttachScopeEvents,
   resolveAttachScopeMode,
@@ -45,7 +47,7 @@ export function main(argv = process.argv.slice(2), { env = process.env, home = h
     }
   }
   const dir = String(env.BGOS_PLUGIN_STATE_DIR ?? '').trim() || join(home, '.bgos-plugin-state')
-  const mode = resolveAttachScopeMode({
+  const setting = resolveAttachScopeMode({
     env,
     readText: (path) => {
       try {
@@ -57,8 +59,11 @@ export function main(argv = process.argv.slice(2), { env = process.env, home = h
     },
     settingsPath: join(home, '.bgos-agent', ATTACH_SCOPE_SETTINGS_FILE),
   })
+  const installMethod = detectInstallMethod({ scriptPath: fileURLToPath(import.meta.url), env, home }).method
+  const mode = effectiveAttachScopeMode(setting, installMethod)
   const summary = summarizeAttachScopeEvents(readAttachScopeEvents({ dir }), { now, windowMs: days * DAY_MS })
-  write(json ? `${JSON.stringify({ mode, summary, eventsDir: dir }, null, 2)}\n` : `${formatAttachScopeSummary(summary, mode)}\n`)
+  write(json ? `${JSON.stringify({ mode, setting, installMethod, summary, eventsDir: dir }, null, 2)}\n`
+    : `${formatAttachScopeSummary(summary, mode)}; setting ${setting.mode} (${setting.source}); install ${installMethod}\n`)
   return 0
 }
 

@@ -21,6 +21,10 @@ The `hoai` launcher sets `HOAI_ATTACH_SCOPE` to the agent it launches and
 `HOAI_ATTACH_SCOPE_DIR` to the launch folder. A matching scope opts in from
 outside the recorded home. A scope inherited from a different folder does not.
 The scope verifies the resolved identity; it does not choose credentials.
+For an unpinned launch, scope follows the effective pairing: an explicit
+`BGOS_CREDENTIALS_PATH` wins, and legacy `credentials.json` wins over a sole
+numbered file. A legacy pairing needs no recorded home for an explicit `hoai`
+launch to opt in.
 
 For a deliberate one-process override, set `BGOS_ALLOW_ANY_FOLDER=1` (or `true`).
 The existing `HOAI_ATTACH_SCOPE_MODE=off` also disables attachment enforcement.
@@ -45,6 +49,11 @@ normal startup path. The default marketplace mode is recorded as `home`, with
 the existing `match`, `wrong-agent`, `unscoped`, and `unreadable` outcomes.
 The event retains the resolved agent, launcher, folder, route, verdict, and
 counterfactual refusal class. Read it with `bin/hoai-attach-scope.mjs --json`.
+Home admissions retain their strict-mode refusal forecast even though their
+effective outcome is `match`. The diagnostic command reports the detected
+install's effective `mode`, its legacy `setting`, and `installMethod`
+separately. Thus an unconfigured marketplace install shows mode `home` and
+setting `off`; a clone keeps its `off` default.
 The local `recorded-home` route denotes selection by unique home; backend
 stand-down reporting uses its existing `unknown` route for that new case.
 No new heartbeat or backend fields are required.

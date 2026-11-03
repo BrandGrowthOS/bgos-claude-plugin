@@ -76,7 +76,7 @@ test('run plan: the sole paired agent scopes the launch; no pairing names nobody
     cwd: '/home/kc/somewhere',
     env: {},
     home: POSIX_HOME,
-    readFile: noFiles,
+    readFile: readFileServing(`${POSIX_HOME}/.bgos-agent/credentials-871.json`, JSON.stringify({ assistantId: 871, pairingToken: 'TEST871' })),
     listDir: () => ['credentials-871.json'],
     scriptDir: CLONE_SCRIPT_DIR,
   })

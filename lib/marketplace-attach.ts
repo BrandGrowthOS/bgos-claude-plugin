@@ -2,7 +2,7 @@
 import { readFileSync, readdirSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { resolveCredentialsSelection, resolveAuth, type CredentialsFile, type CredentialsSelection } from './agent-credentials.js'
-import { decideAttachScope, resolveAttachScopeMode, sameFolder } from './attach-scope.mjs'
+import { decideAttachScope, effectiveAttachScopeMode, resolveAttachScopeMode, sameFolder } from './attach-scope.mjs'
 
 function readOptional(path: string): string | null {
   try { return readFileSync(path, 'utf8') } catch (error) {
@@ -49,7 +49,7 @@ export function evaluateMarketplaceAttach({
   const fallback = { ...decideAttachScope({ assistantId: '' }), mode: 'home' }
   try {
     const setting = resolveAttachScopeMode({ env, readText, settingsPath: join(home, '.bgos-agent', 'attach-scope.json') })
-    const modeInfo = setting.source === 'default' ? { ...setting, mode: 'home' } : setting
+    const modeInfo = effectiveAttachScopeMode(setting, 'marketplace')
     let selection: NonNullable<MarketplaceAttachResult['selection']> = resolveCredentialsSelection({ env, cwd,
       defaultPath: join(home, '.bgos-agent', 'credentials.json'), readText, listDir,
       exists: (path) => readText(path) !== null,
@@ -100,7 +100,8 @@ export function evaluateMarketplaceAttach({
     // An explicit strict mode still requires launcher intent. The marketplace
     // default also accepts residence in this agent's own home.
     if (modeInfo.mode === 'home' || modeInfo.mode === 'wrong-agent') {
-      if (ownPin || ownHome) decision = { ...decision, verdict: 'attach', outcome: 'match', refusedFrom: null }
+      // Home admits this start, but strict mode would still require scope.
+      if (ownPin || ownHome) decision = { ...decision, verdict: 'attach', outcome: 'match' }
     }
     return result()
   } catch {

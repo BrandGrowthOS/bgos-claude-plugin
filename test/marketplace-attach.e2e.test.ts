@@ -5,8 +5,10 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { EventEmitter } from 'node:events'
 
 import { ATTACH_SCOPE_EVENTS_FILE } from '../lib/attach-scope.mjs'
+import { buildRunPlan, main } from '../bin/hoai-core.mjs'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const hasBun = spawnSync('bun', ['--version'], { encoding: 'utf8' }).status === 0
@@ -243,5 +245,75 @@ test('marketplace real boot: unsubstituted manifest identity stays dormant', SLO
     assertDormant(await boot(r, env, cwd), r)
     for (const id of ['41', '42']) rmSync(join(r.home, '.bgos-agent', `credentials-${id}.json`))
     assertDormant(await boot(r, env, cwd), r)
+  } finally { rmSync(r.home, { recursive: true, force: true }) }
+})
+
+for (const layout of ['legacy plus numbered', 'explicit path plus numbered', 'legacy without home', 'explicit legacy without home'] as const) {
+  test(`market2 launcher: ${layout} launches the effective agent 42`, SLOW, async () => {
+    const r = rig()
+    try {
+      const numbered = join(r.home, '.bgos-agent', 'credentials-42.json')
+      const credentials = JSON.parse(readFileSync(numbered, 'utf8'))
+      const env: Record<string, string> = { CLAUDE_CONFIG_DIR: join(r.home, '.claude') }
+      const target = layout === 'explicit path plus numbered'
+        ? join(r.home, 'explicit-42.json') : join(r.home, '.bgos-agent', 'credentials.json')
+      if (layout.endsWith('without home')) {
+        delete credentials.homeDir
+        delete credentials.homeSource
+        rmSync(join(r.home, '.bgos-agent', 'credentials-41.json'))
+      }
+      writeFileSync(target, JSON.stringify(credentials))
+      rmSync(numbered)
+      rmSync(join(r.folder, '.bgos-agent-id'))
+      if (layout.startsWith('explicit')) env.BGOS_CREDENTIALS_PATH = target
+      if (layout.endsWith('without home')) assertDormant(await boot(r), r)
+
+      const plan = buildRunPlan({ cwd: r.folder, env, home: r.home, scriptDir: join(r.pluginRoot, 'bin') })
+      assert.equal(plan.ok, true)
+      if (!plan.ok) return
+      assert.equal(plan.attachScope, '42', 'scope follows the selected credentials, not another filename')
+      let daemonEnv: Record<string, string> | undefined
+      // Replace only the external Claude CLI. Run the real launcher entry
+      // point, then boot the real marketplace daemon with its child's env.
+      const exitCode = await main([], {
+        platform: 'linux', env, home: r.home, cwd: r.folder, scriptDir: join(r.pluginRoot, 'bin'),
+        listProcesses: () => [], print: () => {}, hasExpect: true,
+        spawnImpl: (_file: string, _args: string[], opts: { env: Record<string, string> }) => {
+          daemonEnv = { ...opts.env }
+          const child = new EventEmitter() as EventEmitter & { kill: () => void }
+          child.kill = () => child.emit('exit', null, 'SIGTERM')
+          setImmediate(() => child.emit('exit', 0, null))
+          return child
+        },
+      } as never)
+      assert.equal(exitCode, 0)
+      assert.ok(daemonEnv, 'hoai launched the CLI with the daemon environment')
+      const launched = await boot(r, daemonEnv)
+      assert.ok(launched.names.includes('reply'), launched.stderr)
+      const event = events(r).at(-1)!
+      assert.equal(event.assistantId, '42')
+      assert.equal(event.scope, '42')
+      assert.equal(event.verdict, 'attach')
+      assert.equal(event.route, layout.startsWith('explicit') ? 'env-path' : 'legacy')
+    } finally { rmSync(r.home, { recursive: true, force: true }) }
+  })
+}
+
+test('market2 diagnostics: installed marketplace CLI reports effective home and the legacy setting', SLOW, () => {
+  const r = rig()
+  try {
+    const script = join(r.pluginRoot, 'bin', 'hoai-attach-scope.mjs')
+    const env = { PATH: process.env.PATH, HOME: r.home, CLAUDE_CONFIG_DIR: join(r.home, '.claude') }
+    const json = spawnSync(process.execPath, [script, '--json'], { env, encoding: 'utf8' })
+    assert.equal(json.status, 0, json.stderr)
+    const parsed = JSON.parse(json.stdout)
+    assert.equal(parsed.mode.mode, 'home', 'the installed marketplace enforces home by default')
+    assert.equal(parsed.setting.mode, 'off', 'the legacy setting remains independently visible')
+    assert.equal(parsed.installMethod, 'marketplace')
+    const plain = spawnSync(process.execPath, [script], { env, encoding: 'utf8' })
+    assert.equal(plain.status, 0, plain.stderr)
+    assert.match(plain.stdout, /mode home \(default\)/)
+    assert.match(plain.stdout, /setting off \(default\)/)
+    assert.doesNotMatch(plain.stdout, /[\u2013\u2014]/)
   } finally { rmSync(r.home, { recursive: true, force: true }) }
 })

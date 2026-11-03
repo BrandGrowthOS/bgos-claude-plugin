@@ -1,7 +1,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { evaluateMarketplaceAttach } from '../lib/marketplace-attach.js'
+import { attachScopeDoctorCheck, recordAttachScopeEvent, readAttachScopeEvents, summarizeAttachScopeEvents } from '../lib/attach-scope.mjs'
 
 const credentials: Record<string, string> = {
   '/home/.bgos-agent/credentials-41.json': JSON.stringify({ assistantId: 41, pairingToken: 'TEST41', homeDir: '/agents/a' }),
@@ -109,4 +112,38 @@ test('marketplace: canonical home proof reaches downstream home confirmation', (
   assert.equal(linked.homeMatched, true)
   const source = readFileSync(new URL('../server.ts', import.meta.url), 'utf8')
   assert.match(source, /const HOME_CONFIRMED = homeCheckPassed\(HOME_BINDING\) \|\| MARKETPLACE_ATTACH\?\.homeMatched === true/)
+})
+
+for (const evidence of ['pin', 'recorded home'] as const) {
+  test(`market2 forecast: ${evidence} admission still forecasts its strict refusal`, () => {
+    const dir = mkdtempSync(join(tmpdir(), 'market2-forecast-'))
+    try {
+      const extra: Record<string, string> = evidence === 'pin' ? { '/work/.bgos-agent-id': '41' } : {}
+      const cwd = evidence === 'pin' ? '/work' : '/agents/a'
+      const home = evaluate(cwd, { BGOS_ASSISTANT_ID: '41' }, extra)
+      assert.equal(home.decision.verdict, 'attach')
+      assert.equal(home.decision.outcome, 'match')
+      const now = Date.now()
+      assert.equal(recordAttachScopeEvent({ dir, decision: home.decision, mode: home.modeInfo.mode, cwd, now }), true)
+      const recorded = readAttachScopeEvents({ dir })
+      const forecast = summarizeAttachScopeEvents(recorded, { now })
+      assert.equal(forecast.wouldRefuseStrict, 1, 'home admission must not hide strict rollout risk')
+      assert.equal(recorded[0]!.refusedFrom, 'strict')
+      assert.equal(forecast.distinctWouldRefuseStrict, 1)
+      assert.equal(forecast.match, 1)
+      assert.equal(forecast.refused, 0)
+      assert.equal(forecast.wouldRefuseWrongAgent, 0)
+      const strict = evaluate(cwd, { BGOS_ASSISTANT_ID: '41', HOAI_ATTACH_SCOPE_MODE: 'strict' }, extra)
+      assert.equal(strict.decision.verdict, 'refuse', 'the forecast matches the same input in strict mode')
+      assert.equal(strict.decision.refusedFrom, 'strict')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+}
+
+test('market2 diagnostics: doctor preserves the effective marketplace home mode', () => {
+  const result = evaluate('/agents/a', { BGOS_ASSISTANT_ID: '41' })
+  const row = attachScopeDoctorCheck({ decision: result.decision, mode: result.modeInfo.mode,
+    summary: summarizeAttachScopeEvents([]) })
+  assert.equal(row.status, 'OK')
+  assert.match(row.detail, /^Mode home;/)
 })
