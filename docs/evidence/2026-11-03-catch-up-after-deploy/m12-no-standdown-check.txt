@@ -1,0 +1,42 @@
+MUTANT m12-no-standdown-check
+undoes: a walk stops when the daemon stands down
+file: server.ts
+--- removed
+          if (updateDrainMode || !lockHeld) throw new Error('stood down during a catch up read')
+
++++ added
+
+exit=1
+
+▶ what a long read must not break
+  ✖ a daemon that stands down during a walk reads no further page and delivers nothing (16004.043808ms)
+✖ what a long read must not break (16005.644246ms)
+ℹ tests 1
+ℹ suites 1
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 16378.093593
+
+✖ failing tests:
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:23871
+✖ a daemon that stands down during a walk reads no further page and delivers nothing (16004.043808ms)
+  AssertionError [ERR_ASSERTION]: no page after the stand down
+  
+  3 !== 1
+  
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m12-no-standdown-check.7w31_z0y/test/catch-up-after-deploy.e2e.test.ts:1164:14)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 1)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 3,
+    expected: 1,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

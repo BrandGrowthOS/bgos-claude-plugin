@@ -20,14 +20,14 @@
  */
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import { resolvePosixBash } from './helpers/posix-bash.ts'
 import { watcherHomeId } from '../lib/watcher-service.mjs'
+import { scratchDir } from './helpers/scratch-dirs.ts'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const BASH = process.platform === 'win32' ? null : resolvePosixBash()
@@ -46,7 +46,7 @@ function sh(cwd: string, cmd: string, env: Record<string, string> = {}) {
 
 /** A checkout whose origin has a newer commit that carries the NEW script. */
 function fixture(scriptForCheckout: string) {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'reexec-')))
+  const root = realpathSync(scratchDir('reexec-'))
   const home = join(root, 'home')
   mkdirSync(home, { recursive: true })
   const stubs = join(root, 'stubs')

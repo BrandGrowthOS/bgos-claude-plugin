@@ -1,0 +1,150 @@
+MUTANT m06-no-walk
+undoes: hole 2: walk down to the cursor
+file: server.ts
+--- removed
+        mayHaveOlder: pageMayHaveOlderRows({
+          rowCount: firstPage.messages.length,
+          hasMore: firstPage.hasMore,
+          limit: CHAT_PAGE_DEFAULT_LIMIT,
+        }),
+
++++ added
+        mayHaveOlder: false,
+
+exit=1
+
+▶ hole 2: the newest 50
+  ✖ a deploy with more than 50 missed rows in each of several chats: every row once, oldest first, in every chat (65155.654665ms)
+  ✖ the boot read: 120 rows above a persisted cursor all arrive once, oldest first, framed as backlog (47246.896086ms)
+  ✖ the limit is 50 rows of any sender: 60 rows of owner and agent turns lose no owner row (52341.556087ms)
+  ✖ a chat with open buttons, which every poll reads in full: 120 missed rows all arrive once (56139.543362ms)
+  ✔ an idle chat with a long history costs one conditional read: no page below the cursor, ever (12862.525124ms)
+✖ hole 2: the newest 50 (103389.752216ms)
+ℹ tests 5
+ℹ suites 1
+ℹ pass 1
+ℹ fail 4
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 103790.508677
+
+✖ failing tests:
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:10234
+✖ a deploy with more than 50 missed rows in each of several chats: every row once, oldest first, in every chat (65155.654665ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+  +   forwarded: '50 of 120',
+  -   forwarded: '120 of 120',
+      label: 'chat 501',
+  +   missing: '1001,1004,1007,1010,1013,1016,1019,1022,1025,1028,1031,1034,1037,1040,1043,1046,1049,1052,1055,1058,1061,1064,1067,1070,1073,1076,1079,1082,1085,1088,1091,1094,1097,1100,1103,1106,1109,1112,1115,1118,1121,1124,1127,1130,1133,1136,1139,1142,1145,1148,1151,1154,1156,1158,1160,1162,1164,1166,1168,1170,1172,1174,1176,1178,1180,1182,1184,1186,1188,1190',
+  -   missing: 'none',
+      oldestFirst: true,
+      twice: 'none',
+      unexpected: 'none'
+    }
+  
+      at assertExactlyOnceInOrder (/home/karim/lane-tmp/d041/mut/m06-no-walk.rilhd8l6/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m06-no-walk.rilhd8l6/test/catch-up-after-deploy.e2e.test.ts:784:42)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 0)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { label: 'chat 501', forwarded: '50 of 120', missing: '1001,1004,1007,1010,1013,1016,1019,1022,1025,1028,1031,1034,1037,1040,1043,1046,1049,1052,1055,1058,1061,1064,1067,1070,1073,1076,1079,1082,1085,1088,1091,1094,1097,1100,1103,1106,1109,1112,1115,1118,1121,1124,1127,1130,1133,1136,1139,1142,1145,1148,1151,1154,1156,1158,1160,1162,1164,1166,1168,1170,1172,1174,1176,1178,1180,1182,1184,1186,1188,1190', unexpected: 'none', twice: 'none', oldestFirst: true },
+    expected: { label: 'chat 501', forwarded: '120 of 120', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: true },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:11389
+✖ the boot read: 120 rows above a persisted cursor all arrive once, oldest first, framed as backlog (47246.896086ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+  +   forwarded: '50 of 120',
+  -   forwarded: '120 of 120',
+      label: 'PL1: the first poll after a restart',
+  +   missing: '101-170',
+  -   missing: 'none',
+      oldestFirst: true,
+      twice: 'none',
+      unexpected: 'none'
+    }
+  
+      at assertExactlyOnceInOrder (/home/karim/lane-tmp/d041/mut/m06-no-walk.rilhd8l6/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m06-no-walk.rilhd8l6/test/catch-up-after-deploy.e2e.test.ts:798:7)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 1)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { label: 'PL1: the first poll after a restart', forwarded: '50 of 120', missing: '101-170', unexpected: 'none', twice: 'none', oldestFirst: true },
+    expected: { label: 'PL1: the first poll after a restart', forwarded: '120 of 120', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: true },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:11912
+✖ the limit is 50 rows of any sender: 60 rows of owner and agent turns lose no owner row (52341.556087ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+  +   forwarded: '25 of 30',
+  -   forwarded: '30 of 30',
+      label: 'PL1: 30 owner rows among 60',
+  +   missing: '101,103,105,107,109',
+  -   missing: 'none',
+      oldestFirst: true,
+      twice: 'none',
+      unexpected: 'none'
+    }
+  
+      at assertExactlyOnceInOrder (/home/karim/lane-tmp/d041/mut/m06-no-walk.rilhd8l6/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m06-no-walk.rilhd8l6/test/catch-up-after-deploy.e2e.test.ts:822:7)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 2)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { label: 'PL1: 30 owner rows among 60', forwarded: '25 of 30', missing: '101,103,105,107,109', unexpected: 'none', twice: 'none', oldestFirst: true },
+    expected: { label: 'PL1: 30 owner rows among 60', forwarded: '30 of 30', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: true },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:12491
+✖ a chat with open buttons, which every poll reads in full: 120 missed rows all arrive once (56139.543362ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+  +   forwarded: '50 of 120',
+  -   forwarded: '120 of 120',
+      label: 'a full read',
+  +   missing: '101-170',
+  -   missing: 'none',
+      oldestFirst: true,
+      twice: 'none',
+      unexpected: 'none'
+    }
+  
+      at assertExactlyOnceInOrder (/home/karim/lane-tmp/d041/mut/m06-no-walk.rilhd8l6/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m06-no-walk.rilhd8l6/test/catch-up-after-deploy.e2e.test.ts:839:7)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Suite.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { label: 'a full read', forwarded: '50 of 120', missing: '101-170', unexpected: 'none', twice: 'none', oldestFirst: true },
+    expected: { label: 'a full read', forwarded: '120 of 120', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: true },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }

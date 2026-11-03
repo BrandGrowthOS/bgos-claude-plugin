@@ -772,3 +772,147 @@ test('control: a holder that ignores TERM but has a live claude again by the end
     sb.cleanup()
   }
 })
+
+// -- 6: the posix shape, where the launcher's child is EXPECT and claude sits under it
+// (kc-server agent 867, 2 Nov 2026: expect alive, its claude <defunct>, 4,681 exits 3)
+
+const EXPECT = 4290
+const CLAUDE = 4300
+
+test('agent 867 (2 Nov): a live expect over a zombie claude is not supervising: takeover, reason claude-zombie, the expect named', () => {
+  const v = decideSupervisorArming({
+    existingRaw: supervisorFileBody(HOLDER, STAMP),
+    ownPid: 1,
+    pidAlive: () => true,
+    pidProcess: () => ({ command: HOAI_CMD, startedAtMs: STAMP_MS - 1_000 }),
+    holderChildren: (pid: number) =>
+      pid === HOLDER
+        ? [{ pid: EXPECT, zombie: false, name: 'expect', startedAtMs: null }]
+        : pid === EXPECT
+          ? [{ pid: CLAUDE, zombie: true, name: 'claude', startedAtMs: null }]
+          : null,
+    holderInFolder: () => true,
+    now: STAMP_MS + 86_400_000,
+  } as never) as { takeover?: boolean; reason?: string; staleExpects?: number[] }
+  assert.equal(v.takeover, true)
+  assert.equal(v.reason, 'claude-zombie')
+  assert.deepEqual(v.staleExpects, [EXPECT])
+})
+
+test('control: an expect over a LIVE claude is supervising: no takeover', () => {
+  const v = decideSupervisorArming({
+    existingRaw: supervisorFileBody(HOLDER, STAMP),
+    ownPid: 1,
+    pidAlive: () => true,
+    pidProcess: () => ({ command: HOAI_CMD, startedAtMs: STAMP_MS - 1_000 }),
+    holderChildren: (pid: number) =>
+      pid === HOLDER
+        ? [{ pid: EXPECT, zombie: false, name: 'expect', startedAtMs: null }]
+        : pid === EXPECT
+          ? [{ pid: CLAUDE, zombie: false, name: 'claude', startedAtMs: null }]
+          : null,
+    holderInFolder: () => true,
+    now: STAMP_MS + 86_400_000,
+  } as never) as { takeover?: boolean; arm: boolean }
+  assert.equal(v.arm, false)
+  assert.equal(v.takeover, undefined)
+})
+
+test('control: an expect whose own children cannot be read keeps the claim (unknown is never stale)', () => {
+  const v = decideSupervisorArming({
+    existingRaw: supervisorFileBody(HOLDER, STAMP),
+    ownPid: 1,
+    pidAlive: () => true,
+    pidProcess: () => ({ command: HOAI_CMD, startedAtMs: STAMP_MS - 1_000 }),
+    holderChildren: (pid: number) => (pid === HOLDER ? [{ pid: EXPECT, zombie: false, name: 'expect', startedAtMs: null }] : null),
+    holderInFolder: () => true,
+    now: STAMP_MS + 86_400_000,
+  } as never) as { takeover?: boolean }
+  assert.equal(v.takeover, undefined)
+})
+
+test('a childless expect is not supervising either (mutant: an expect with no children read as alive)', () => {
+  const v = decideSupervisorArming({
+    existingRaw: supervisorFileBody(HOLDER, STAMP),
+    ownPid: 1,
+    pidAlive: () => true,
+    pidProcess: () => ({ command: HOAI_CMD, startedAtMs: STAMP_MS - 1_000 }),
+    holderChildren: (pid: number) => (pid === HOLDER ? [{ pid: EXPECT, zombie: false, name: 'expect', startedAtMs: null }] : pid === EXPECT ? [] : null),
+    holderInFolder: () => true,
+    now: STAMP_MS + 86_400_000,
+  } as never) as { takeover?: boolean; staleExpects?: number[] }
+  assert.equal(v.takeover, true)
+  assert.deepEqual(v.staleExpects, [EXPECT])
+})
+
+const EXPECT_CMD = 'expect -c set hoai_statedir "/home/kc/.bgos-agent/900"'
+
+/**
+ * End to end on the posix shape: the holder runs EXPECT, whose claude is a zombie.
+ * `expectCmd` is what the expect pid reads as at kill time (a reused pid reads as something else),
+ * `expectAliveAtStart` whether it is still there, `liveChildAtKill` whether it has a live child again by then.
+ */
+async function launchOverExpect(over: Partial<{ holderDiesOn: string[]; expectCmd: string | null; expectAliveAtStart: boolean; liveChildAtKill: boolean }> = {}) {
+  const o = { holderDiesOn: ['SIGKILL'], expectCmd: EXPECT_CMD as string | null, expectAliveAtStart: true, liveChildAtKill: false, ...over }
+  const sb = sandbox()
+  try {
+    writeFileSync(sb.claim, supervisorFileBody(HOLDER, STAMP))
+    const holder = fakeHolder({ children: [{ pid: EXPECT, zombie: false, name: 'expect', startedAtMs: STAMP_MS + 5_000 }], diesOn: o.holderDiesOn })
+    let expectAlive = o.expectAliveAtStart
+    const signals: Array<[number, string]> = []
+    const r = await launch(sb, holder, {
+      pidAlive: (pid: number) => (pid === HOLDER ? holder.alive : pid === EXPECT ? expectAlive : false),
+      pidProcess: (pid: number) =>
+        pid === HOLDER && holder.alive ? { command: HOAI_CMD, startedAtMs: STAMP_MS - 1_000 } : pid === EXPECT ? { command: o.expectCmd, startedAtMs: null } : null,
+      holderChildren: (pid: number) =>
+        pid === HOLDER
+          ? holder.children
+          : pid === EXPECT
+            ? [{ pid: CLAUDE, zombie: !(o.liveChildAtKill && !holder.alive), name: 'claude', startedAtMs: null }]
+            : null,
+      signalPid: (pid: number, signal: string) => {
+        signals.push([pid, signal])
+        if (pid === HOLDER && holder.diesOn.includes(signal)) holder.alive = false
+        if (pid === EXPECT && signal === 'SIGKILL') expectAlive = false
+        return true
+      },
+    })
+    return { ...r, signals }
+  } finally {
+    sb.cleanup()
+  }
+}
+
+test('agent 867 (2 Nov), end to end: holder KILLed, then the orphaned expect KILLed, then the agent launches', async () => {
+  const r = await launchOverExpect()
+  assert.deepEqual(r.signals, [[HOLDER, 'SIGTERM'], [HOLDER, 'SIGKILL'], [EXPECT, 'SIGKILL']], r.prints.join('\n'))
+  assert.equal(r.spawns.length, 1)
+  assert.equal(r.code, 0)
+})
+
+test('the expect is also ended when the holder takes SIGTERM (mutant: no expect kill on the TERM path)', async () => {
+  const r = await launchOverExpect({ holderDiesOn: ['SIGTERM', 'SIGKILL'] })
+  assert.deepEqual(r.signals, [[HOLDER, 'SIGTERM'], [EXPECT, 'SIGKILL']], r.prints.join('\n'))
+  assert.equal(r.spawns.length, 1)
+})
+
+test('an expect already gone by kill time gets no signal (mutant: no pidAlive skip)', async () => {
+  const r = await launchOverExpect({ expectAliveAtStart: false })
+  assert.deepEqual(r.signals, [[HOLDER, 'SIGTERM'], [HOLDER, 'SIGKILL']], r.prints.join('\n'))
+  assert.equal(r.spawns.length, 1)
+})
+
+test('pid reuse: an expect pid that reads as another program at kill time is never signalled', async () => {
+  const r = await launchOverExpect({ expectCmd: '/usr/bin/python3 -m http.server' })
+  assert.deepEqual(r.signals, [[HOLDER, 'SIGTERM'], [HOLDER, 'SIGKILL']], r.prints.join('\n'))
+})
+
+test('an expect whose command line cannot be read at kill time is never signalled', async () => {
+  const r = await launchOverExpect({ expectCmd: null })
+  assert.deepEqual(r.signals, [[HOLDER, 'SIGTERM'], [HOLDER, 'SIGKILL']], r.prints.join('\n'))
+})
+
+test('an expect that has a live child again at kill time is never signalled', async () => {
+  const r = await launchOverExpect({ liveChildAtKill: true })
+  assert.deepEqual(r.signals, [[HOLDER, 'SIGTERM'], [HOLDER, 'SIGKILL']], r.prints.join('\n'))
+})

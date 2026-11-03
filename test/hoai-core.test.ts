@@ -15,8 +15,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { MCP_CONFIG_FILE_NAME } from '../lib/service-supervision.mjs'
@@ -65,6 +64,7 @@ import {
   LAUNCH_ENV,
   hookRegistrationFor,
 } from '../bin/hoai-core.mjs'
+import { scratchDir } from './helpers/scratch-dirs'
 
 const WIN_HOME = 'C:\\Users\\x'
 const POSIX_HOME = '/home/kc'
@@ -934,8 +934,8 @@ function claudeArgsFrom(record: { file: string; args: string[] }): string[] {
 /** A throwaway home + agent folder with a baked folder pin, so main() runs the
  *  full supervised path (state dir, session pin) without touching a real home. */
 function tempAgentFolder(): { home: string; cwd: string } {
-  const home = mkdtempSync(join(tmpdir(), 'hoai-home-'))
-  const cwd = mkdtempSync(join(tmpdir(), 'hoai-agent-'))
+  const home = scratchDir('hoai-home-')
+  const cwd = scratchDir('hoai-agent-')
   writeFileSync(join(cwd, FOLDER_PIN_FILE), '871\n')
   return { home, cwd }
 }
