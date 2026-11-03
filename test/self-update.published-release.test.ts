@@ -14,12 +14,12 @@
  * Run: bun test test/self-update.published-release.test.ts
  */
 import { describe, expect, setDefaultTimeout, test } from 'bun:test'
-import { mkdtempSync, realpathSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { realpathSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { initializeSelfUpdater, runCommand, type CommandRunner } from '../lib/self-update'
 import { git, releaseOrigin } from './helpers/release-origin'
+import { scratchDir } from './helpers/scratch-dirs'
 
 const IDLE = { activeOperations: 0, pendingMessages: 0, pendingPermissions: 0 }
 
@@ -28,7 +28,7 @@ setDefaultTimeout(120_000)
 
 /** A daemon's updater on `clone`, running `running`, with the marketplace publishing whatever `published` says. */
 async function updaterFor(clone: string, opts: { running: string; published: () => string; logs?: string[] }) {
-  const stateDir = realpathSync(mkdtempSync(join(tmpdir(), 'published-release-state-')))
+  const stateDir = realpathSync(scratchDir('published-release-state-'))
   const runner: CommandRunner = async (file, args, runnerOpts) =>
     file === 'bun' ? { stdout: '', stderr: '' } : runCommand(file, args, runnerOpts)
   const updater = await initializeSelfUpdater({

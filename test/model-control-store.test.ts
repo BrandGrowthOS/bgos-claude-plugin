@@ -20,13 +20,11 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -44,13 +42,14 @@ import {
   writeBridgeCopy,
   writeOptIn,
 } from '../lib/model-control-store.mjs'
+import { scratchDir } from './helpers/scratch-dirs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const BRIDGE = join(ROOT, 'bin', 'hoai-statusline-bridge.mjs')
 const CLI = join(ROOT, 'bin', 'hoai-model-control.mjs')
 
 function tmp(): string {
-  return mkdtempSync(join(tmpdir(), 'hoai-model-control-'))
+  return scratchDir('hoai-model-control-')
 }
 
 const SID = '6f1c2b8e-3d4a-4f5b-9c0d-1e2f3a4b5c6d'

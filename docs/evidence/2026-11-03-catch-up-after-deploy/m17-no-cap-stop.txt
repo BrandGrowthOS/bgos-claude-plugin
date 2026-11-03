@@ -1,0 +1,94 @@
+MUTANT m17-no-cap-stop
+undoes: hole 3: the walk stops when the group cap is full
+file: lib/poll-core.ts
+--- removed
+ && ++history >= historyCap.max) {
+      return false
+    }
++++ added
+) {
+      history++
+    }
+exit=1
+
+▶ hole 3: a chat that started empty
+  ✖ a group this agent is added to mid run, with 300 rows of history: the newest 10, and no walk through the rest (14235.526453ms)
+✖ hole 3: a chat that started empty (14237.563408ms)
+✖ a group's first read stops once its history cap is full, and only then (3.746674ms)
+✖ the walk's stop agrees with the selection: it stops exactly where more rows change nothing (0.800229ms)
+ℹ tests 3
+ℹ suites 1
+ℹ pass 0
+ℹ fail 3
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 14640.849959
+
+✖ failing tests:
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:16971
+✖ a group this agent is added to mid run, with 300 rows of history: the newest 10, and no walk through the rest (14235.526453ms)
+  AssertionError [ERR_ASSERTION]: no page below the history the cap keeps
+  + actual - expected
+  
+  + [
+  +   3251,
+  +   3051
+  + ]
+  - []
+  
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m17-no-cap-stop.c0ov98qz/test/catch-up-after-deploy.e2e.test.ts:971:14)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 5)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: [ 3251, 3051 ],
+    expected: [],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/catch-up-paging.test.ts:1:4303
+✖ a group's first read stops once its history cap is full, and only then (3.746674ms)
+  AssertionError [ERR_ASSERTION]: three of three
+  
+  true !== false
+  
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m17-no-cap-stop.c0ov98qz/test/catch-up-paging.test.ts:133:10)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.start (node:internal/test_runner/test:1262:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:387:17) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: true,
+    expected: false,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/catch-up-paging.test.ts:1:5221
+✖ the walk's stop agrees with the selection: it stops exactly where more rows change nothing (0.800229ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  true !== false
+  
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m17-no-cap-stop.c0ov98qz/test/catch-up-paging.test.ts:164:12)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at node:internal/test_runner/test:1305:31
+      at node:internal/process/task_queues:151:7
+      at AsyncResource.runInAsyncScope (node:async_hooks:227:14)
+      at AsyncResource.runMicrotask (node:internal/process/task_queues:148:8) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: true,
+    expected: false,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
