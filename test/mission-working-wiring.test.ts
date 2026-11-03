@@ -344,25 +344,34 @@ test('graceful shutdown keeps authority until clears finish, with a bounded fall
   const end = source.indexOf('  // Sync backstop', start)
   assert.ok(start > 0 && end > start)
   const js = ts.transpileModule(source.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText
-  for (const useFallback of [false, true]) {
+  for (const [useFallback, hasThreadChildren] of [[false, false], [false, true], [true, false], [true, true]]) {
     const steps: string[] = []
     let finishClear!: () => void
+    let finishChildren!: () => void
     let timeout!: () => void
     const clearing = new Promise<void>(resolve => { finishClear = resolve })
+    const childrenDown = new Promise<void>(resolve => { finishChildren = resolve })
     const bindings = {
       shuttingDown: false, log: () => {}, describeShutdownCause: () => '', selfUpdater: null,
-      stopHookIntake: () => clearing,
+      stopHookIntake: () => { steps.push('hooks'); return clearing },
+      stopThreadChildren: () => { steps.push('threads'); return hasThreadChildren ? childrenDown : null },
       agentStatePublisher: { shutdown: () => {} }, flushChatCursors: () => {},
       releasePairingLock: () => { steps.push('release') }, PAIRING_LOCK_PATH: '/unused',
-      process: { pid: 1, exit: () => { steps.push('exit') } }, loginController: { dispose: () => {} }, browserHost: null,
+      process: { pid: 1, exit: () => { steps.push('exit') } }, loginController: { dispose: () => {} },
+      browserHost: { stop: () => { steps.push('browser') } },
       setTimeout: (cb: () => void, ms: number) => { assert.equal(ms, 2000); timeout = cb },
     }
     const shutdown = new Function(...Object.keys(bindings), `${js}; return shutdown;`)(...Object.values(bindings))
     shutdown('stdin_end', 0)
-    assert.deepEqual(steps, [], 'authority must remain until clear completion or deadline')
+    assert.deepEqual(steps, ['hooks'], 'intake stops immediately; authority remains until clear completion or deadline')
     if (useFallback) timeout()
     else finishClear()
     await new Promise(resolve => setImmediate(resolve))
-    assert.deepEqual(steps, ['release', 'exit'])
+    if (hasThreadChildren) {
+      assert.deepEqual(steps, ['hooks', 'release', 'threads'], 'exit must also wait for thread children')
+      finishChildren()
+      await new Promise(resolve => setImmediate(resolve))
+    }
+    assert.deepEqual(steps, ['hooks', 'release', 'threads', 'browser', 'exit'])
   }
 })
