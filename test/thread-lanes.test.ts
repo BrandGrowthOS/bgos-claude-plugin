@@ -518,6 +518,116 @@ test('a reopen waits for an in-flight sweep and starts in a recreated worktree',
   assert.equal(saved(r).forkSessionId, FORK_B)
 })
 
+for (const scenario of ['sweep', 'delete', 'sweep then close'] as const) {
+  test(`a reopen queued behind busy slots forks afresh after ${scenario} finishes`, async () => {
+    const state = { rootId: '101', chatId: '55', title: 'T', forkSessionId: FORK_A, folder: wt('101'), cwd: wt('101'), worktree: true, readOnly: false, closedAt: 1, lastReplyId: '1010', lastDelivered: true, pid: null, pidStamp: null }
+    const forkFile = sessionTranscriptPath(HOME, wt('101'), FORK_A, '')
+    const r = rig({ files: { [join(STATE, '101.json')]: JSON.stringify(state), [forkFile]: '{}\n' } })
+    r.dirs.add(wt('101'))
+    r.manager.turn(turn('201'))
+    r.manager.turn(turn('301'))
+    await r.manager.idle()
+    assert.equal(r.spawned.length, 2, 'both process slots are occupied')
+
+    const git = r.deps.git
+    let release: () => void = () => {}
+    const gate = new Promise<void>((done) => { release = done })
+    let removing = false
+    r.deps.git = async (args, cwd) => {
+      if (args[2] === 'worktree' && args[3] === 'remove') { removing = true; await gate }
+      return git(args, cwd)
+    }
+    const removal = scenario === 'delete'
+      ? r.manager.close({ rootId: '101', removeWorktree: true })
+      : r.manager.sweepClosed(30 * DAY)
+    await flush()
+    assert.equal(removing, true, 'cleanup is paused in git removal')
+    assert.deepEqual(r.manager.turn(turn('101', { mode: 'reply', replyId: '1011', text: 'queued reopen' })), { accepted: true, state: 'waiting' })
+    assert.equal(saved(r).forkSessionId, FORK_A, 'the queued lane loaded the old fork')
+    const closing = scenario === 'sweep then close'
+      ? r.manager.close({ rootId: '101', removeWorktree: false })
+      : Promise.resolve()
+    release()
+    await removal
+    await closing
+    await r.manager.idle()
+    if (scenario === 'sweep then close') {
+      assert.equal(saved(r).forkSessionId, null, 'a later close cannot persist the deleted fork')
+      assert.deepEqual(r.manager.turn(turn('101', { mode: 'reply', replyId: '1012', text: 'queued reopen' })), { accepted: true, state: 'waiting' })
+    } else {
+      assert.equal(r.files.has(join(STATE, '101.json')), false, 'cleanup finishes before a slot frees')
+    }
+    assert.equal(r.files.has(forkFile), false, 'the old transcript is gone')
+    assert.equal(r.spawned.length, 2, 'the reopen is still queued')
+
+    r.spawned[0]!.child.result('slot released')
+    r.spawned[0]!.child.exit()
+    await r.manager.idle()
+    assert.equal(r.spawned.length, 3)
+    const reopened = r.spawned[2]!
+    assert.equal(r.dirs.has(wt('101')), true, 'the worktree was recreated')
+    assert.equal(reopened.args[reopened.args.indexOf('--resume') + 1], MAIN, 'resume main, never the deleted fork')
+    assert.ok(reopened.args.includes('--fork-session'), 'start a fresh fork')
+    assert.equal(r.files.get(sessionTranscriptPath(HOME, wt('101'), MAIN, '')), '{"main":true}\n')
+    assert.ok(reopened.child.stdin[0]!.includes('queued reopen'), 'the accepted reply reaches the new child')
+    reopened.child.init(FORK_B)
+    reopened.child.result('queued reopen answered')
+    await r.manager.idle()
+    assert.equal(saved(r).forkSessionId, FORK_B)
+    assert.equal(saved(r).closedAt, null)
+    assert.ok(replyTexts(r).includes('queued reopen answered'))
+  })
+}
+
+test('late delivery cannot restore a deleted fork while its reopen waits for capacity', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const oldChild = r.spawned[0]!.child
+  oldChild.init(FORK_A)
+  const forkFile = sessionTranscriptPath(HOME, wt('101'), FORK_A, '')
+  r.files.set(forkFile, '{}\n')
+  const post = r.deps.post
+  let releasePost: () => void = () => {}
+  const gate = new Promise<void>((done) => { releasePost = done })
+  let delivering = false
+  r.deps.post = async (path, body) => {
+    if (path === 'integrations/threads/reply' && body.text === 'old answer') {
+      delivering = true
+      await gate
+    }
+    return post(path, body)
+  }
+  oldChild.result('old answer')
+  await flush()
+  assert.equal(delivering, true, 'the old answer is still being delivered')
+  r.manager.turn(turn('201'))
+  r.manager.turn(turn('301'))
+  await flush()
+  await r.manager.close({ rootId: '101', removeWorktree: true })
+  assert.deepEqual(r.manager.turn(turn('101', { mode: 'reply', replyId: '1011', text: 'queued reopen' })), { accepted: true, state: 'waiting' })
+  oldChild.exit()
+  await flush()
+  assert.equal(r.spawned.length, 3, '201 and 301 occupy both slots')
+  const stateRemoved = !r.files.has(join(STATE, '101.json'))
+  const forkRemoved = !r.files.has(forkFile)
+  releasePost()
+  await r.manager.idle()
+  assert.equal(stateRemoved, true, 'deletion completed before the old answer landed')
+  assert.equal(forkRemoved, true)
+  assert.equal(saved(r).forkSessionId, null, 'delivery cannot restore the deleted fork')
+  assert.equal(saved(r).lastDelivered, true, 'the old delivery still gets recorded')
+
+  r.spawned[1]!.child.result('slot released')
+  r.spawned[1]!.child.exit()
+  await r.manager.idle()
+  assert.equal(r.spawned.length, 4)
+  const reopened = r.spawned[3]!
+  assert.equal(reopened.args[reopened.args.indexOf('--resume') + 1], MAIN)
+  assert.ok(reopened.args.includes('--fork-session'))
+  assert.ok(reopened.child.stdin[0]!.includes('queued reopen'))
+})
+
 test('overlapping sweeps reserve a closed root only once', async () => {
   const state = { rootId: '101', chatId: '55', title: 'T', forkSessionId: FORK_A, folder: wt('101'), cwd: wt('101'), worktree: true, readOnly: false, closedAt: 1, pid: null, pidStamp: null }
   const r = rig({ files: { [join(STATE, '101.json')]: JSON.stringify(state) } })

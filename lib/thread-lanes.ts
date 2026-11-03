@@ -722,15 +722,13 @@ export class ThreadLaneManager {
 
   private async ensureChild(lane: Lane): Promise<void> {
     const before = this.exiting.get(lane.state.rootId)
-    if (before) {
-      await before
-      // Removal also took the saved fork transcript. A turn queued during
-      // that removal must fork main again, not resume the now deleted fork.
-      if (!this.deps.fs.exists(this.statePath(lane.state.rootId))) {
-        lane.state.forkSessionId = null
-        lane.state.pid = null
-        lane.state.pidStamp = null
-      }
+    if (before) await before
+    // Cleanup can finish while this turn waits for a slot, leaving no
+    // exiting entry. Check at startup before recreating the saved state.
+    if (!this.deps.fs.exists(this.statePath(lane.state.rootId))) {
+      lane.state.forkSessionId = null
+      lane.state.pid = null
+      lane.state.pidStamp = null
     }
     if (lane.child && lane.stopping) await lane.exited
     if (lane.closed || lane.child) return
@@ -1212,6 +1210,14 @@ export class ThreadLaneManager {
     try {
       fs.unlink(this.statePath(state.rootId))
     } catch {}
+    // A queued reopen may have loaded this fork before cleanup. Invalidate
+    // that copy too, so a close or late delivery cannot save it again.
+    const reopened = this.lanes.get(state.rootId)
+    if (reopened) {
+      reopened.state.forkSessionId = null
+      reopened.state.pid = null
+      reopened.state.pidStamp = null
+    }
     return true
   }
 
