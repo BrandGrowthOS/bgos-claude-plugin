@@ -39,8 +39,11 @@ class Protocol extends EventEmitter {
   child(id: string, method: string, params: any = {}) { this.event('legacy-' + id, method, params) }
   childCommands(method: string) { return this.calls.filter(value => value.method === 'Target.sendMessageToTarget').map(value => JSON.parse(value.params.message)).filter(value => value.method === method) }
 }
+// The fake protocol answers at once, so its command timeout only has to outlast a loaded full run: at 30 ms, three
+// tests here (target discovery, nested workers, oversized packets) failed profile_target_tracking_unavailable in 3
+// or 4 of 16 parallel runs at c636ded. No test here waits for that timeout to fire.
 async function fixture(t: any, options: any = {}) {
-  const root = new Protocol(), ledger = new ProfileTargetLedger(root, { timeoutMs: 30, ...options }); t.after(() => ledger.dispose()); await ledger.start()
+  const root = new Protocol(), ledger = new ProfileTargetLedger(root, { timeoutMs: 1000, ...options }); t.after(() => ledger.dispose()); await ledger.start()
   return { root, ledger, ready: async (id: string, type = 'page', context = 'context-a', url?: string) => { root.add(id, type, context, url); await ledger.readyTarget(id) } }
 }
 test('target discovery pauses births and installs raw Network tracking before any first resume', async t => {
