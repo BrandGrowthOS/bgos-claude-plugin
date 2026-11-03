@@ -39,8 +39,7 @@
  * Run: npm test, or npx tsx --test test/bgos-agent.install.test.ts
  */
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, utimesSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, utimesSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test, type TestContext } from 'node:test'
@@ -50,6 +49,7 @@ import { CLONE_CHANNEL_SPEC, MARKETPLACE_CHANNEL_SPEC } from '../bin/bgos-instal
 import { resolvePosixBash } from './helpers/posix-bash.ts'
 import { LAUNCHCTL_PRINT_NOT_LOADED, systemctlShowFromUnitFile } from './helpers/bash-service-probes.ts'
 import { watcherHomeId } from '../lib/watcher-service.mjs'
+import { scratchDir } from './helpers/scratch-dirs.ts'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 // bin/bgos-agent is the macOS and Linux installer: it refuses any other OS by name (on Windows it
@@ -90,7 +90,7 @@ interface Machine {
 }
 
 function machine({ fromClone = false, fromCache = false, pluginInstalled = true, pluginEnabled = true, withNode = true, realNode = false, os, holdInstall = false }: { fromClone?: boolean; fromCache?: boolean; pluginInstalled?: boolean; pluginEnabled?: boolean; withNode?: boolean; realNode?: boolean; os?: 'Linux' | 'Darwin'; holdInstall?: boolean } = {}): Machine {
-  const home = mkdtempSync(join(tmpdir(), 'hoai-install-'))
+  const home = scratchDir('hoai-install-')
   // Where the code runs from. npx-shaped by default; a plain checkout-shaped dir for the clone
   // case; a marketplace plugin's versioned cache dir (where the watcher's sweep runs it from).
   const pluginRoot = fromClone

@@ -18,11 +18,11 @@
 // files on disk end up holding.
 import { test } from 'node:test'
 import assert from 'node:assert'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
-import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { scratchDir } from './helpers/scratch-dirs'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const sh = readFileSync(join(repoRoot, 'bin', 'hoai-bootstrap.sh'), 'utf8').replace(/\r\n/g, '\n')
@@ -55,7 +55,7 @@ test('with CLAUDE_CONFIG_DIR unset, both scripts pre-seed $HOME/.claude (the own
 type World = { home: string; configDir: string; workdir: string; userSettings: string; agentSettings: string }
 
 function withWorld(fn: (w: World) => void) {
-  const root = mkdtempSync(join(tmpdir(), 'hoai-deny-'))
+  const root = scratchDir('hoai-deny-')
   const home = join(root, 'home')
   const configDir = join(home, '.claude')
   const workdir = join(root, 'agent')

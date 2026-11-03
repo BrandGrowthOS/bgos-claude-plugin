@@ -12,8 +12,7 @@
  * Run: npx tsx --test test/clone-hooks.boot.test.ts
  */
 import assert from 'node:assert/strict'
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -23,6 +22,7 @@ import { ensureHookEntries } from '../lib/claude-preseed.mjs'
 import * as cloneHooks from '../lib/clone-hooks.mjs'
 import { privateHookPresence } from '../lib/private-hook-presence'
 import { linkFolder } from './helpers/links.ts'
+import { scratchDir } from './helpers/scratch-dirs.ts'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const FORWARDER = join(repoRoot, 'bin', 'hoai-hook.mjs')
@@ -34,7 +34,7 @@ const NO_BOOT =
 
 /** A clone workspace of this checkout, with `settings` as its .claude/settings.local.json when given. */
 function workspace(settings?: unknown): string {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'clone-hooks-boot-')))
+  const dir = realpathSync(scratchDir('clone-hooks-boot-'))
   writeFileSync(join(dir, '.mcp.json'), JSON.stringify({ mcpServers: { bgos: { command: 'bun', args: [join(repoRoot, 'server.ts')] } } }))
   if (settings !== undefined) {
     mkdirSync(join(dir, '.claude'), { recursive: true })
@@ -48,7 +48,7 @@ const hooksOf = (dir: string) => JSON.parse(settingsText(dir)).hooks
 
 /** What `hoai run` leaves in a folder (bin/hoai-core.mjs hookRegistrationFor + ensureHookEntries): the full set, floor included. */
 function whatHoaiRunWrites(stale: string): unknown {
-  const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'clone-hooks-hoai-run-')))
+  const scratch = realpathSync(scratchDir('clone-hooks-hoai-run-'))
   const path = join(scratch, 'settings.local.json')
   writeFileSync(path, stale)
   ensureHookEntries({ settingsPath: path, forwarderPath: FORWARDER })
@@ -61,7 +61,7 @@ function whatHoaiRunWrites(stale: string): unknown {
  * private tool guard on PreToolUse, no PostCompact event, no floor.
  */
 function staleSettings(): string {
-  const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'clone-hooks-stale-')))
+  const scratch = realpathSync(scratchDir('clone-hooks-stale-'))
   const path = join(scratch, 'settings.local.json')
   ensureHookEntries({ settingsPath: path, forwarderPath: FORWARDER })
   const settings = JSON.parse(readFileSync(path, 'utf8'))
@@ -144,7 +144,7 @@ test('a marketplace install, and a folder that is not this checkout\'s, are neve
   const market = atBoot({ folders: [clone], pluginDir: repoRoot, installMethod: 'marketplace', privateHookRegistered: false })
   assert.deepEqual(market, { results: [], restartOutcomes: [] })
   assert.equal(existsSync(settingsPath(clone)), false)
-  const other = realpathSync(mkdtempSync(join(tmpdir(), 'clone-hooks-boot-other-')))
+  const other = realpathSync(scratchDir('clone-hooks-boot-other-'))
   const boot = atBoot({ folders: [other], pluginDir: repoRoot, installMethod: 'clone', privateHookRegistered: false })
   assert.deepEqual(boot.results.map((r: { outcome: string }) => r.outcome), ['not_clone'])
   assert.equal(existsSync(settingsPath(other)), false)
@@ -183,7 +183,7 @@ test('a folder `hoai run` wrote through another spelling of this checkout is alr
   // `hoai run` writes its own path to the forwarder (bin/hoai-core.mjs hookRegistrationFor, from its scriptDir); the
   // daemon knows the checkout by import.meta.dir. Through an aliased home those are two spellings of one file, and
   // ensureHookEntries compares strings: before this, every boot rewrote the block and every `hoai run` wrote it back.
-  const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'clone-hooks-boot-alias-')))
+  const scratch = realpathSync(scratchDir('clone-hooks-boot-alias-'))
   const alias = join(scratch, 'checkout')
   linkFolder(repoRoot, alias)
   const dir = workspace()
@@ -193,7 +193,7 @@ test('a folder `hoai run` wrote through another spelling of this checkout is alr
   assert.equal(cloneHooks.registerCloneHooks({ workdir: dir, pluginDir: repoRoot }).outcome, 'already')
   assert.equal(settingsText(dir), written)
   // A forwarder of ANOTHER checkout is still replaced with this one.
-  const other = realpathSync(mkdtempSync(join(tmpdir(), 'clone-hooks-boot-othercheckout-')))
+  const other = realpathSync(scratchDir('clone-hooks-boot-othercheckout-'))
   mkdirSync(join(other, 'bin'))
   copyFileSync(FORWARDER, join(other, 'bin', 'hoai-hook.mjs'))
   const elsewhere = workspace()
@@ -211,7 +211,7 @@ test('a folder `hoai run` wrote through another spelling of this checkout is alr
 test('a workspace that starts the daemon through the stable wrapper (bgos-claim, bgos-agent) is this checkout\'s clone too', () => {
   assert.equal(typeof atBoot, 'function', NO_BOOT)
   // bin/bgos-claim.mjs buildMcpJson and bin/bgos-agent write_mcp_json: no server.ts in the args, the checkout is --plugin-dir.
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'clone-hooks-boot-wrapper-')))
+  const dir = realpathSync(scratchDir('clone-hooks-boot-wrapper-'))
   const wrapper = { mcpServers: { bgos: { command: 'bun', args: ['/home/kc/.bgos-agent/runtime/bgos-daemon-wrapper.mjs', '--plugin-dir', repoRoot], env: { BGOS_ASSISTANT_ID: '7' } } } }
   writeFileSync(join(dir, '.mcp.json'), JSON.stringify(wrapper))
   assert.equal(cloneHooks.workspaceNamesThisClone({ workdir: dir, pluginDir: repoRoot }), true)
@@ -219,7 +219,7 @@ test('a workspace that starts the daemon through the stable wrapper (bgos-claim,
   assert.deepEqual(boot.results.map((r: { outcome: string }) => r.outcome), ['registered'])
   assert.match(JSON.stringify(hooksOf(dir).UserPromptSubmit), /hoai-private-turn-hook\.mjs/)
   // Another checkout as --plugin-dir is not ours.
-  const other = realpathSync(mkdtempSync(join(tmpdir(), 'clone-hooks-boot-wrapper-other-')))
+  const other = realpathSync(scratchDir('clone-hooks-boot-wrapper-other-'))
   writeFileSync(join(other, '.mcp.json'), JSON.stringify({ mcpServers: { bgos: { command: 'bun', args: ['/w.mjs', '--plugin-dir', other] } } }))
   assert.equal(cloneHooks.workspaceNamesThisClone({ workdir: other, pluginDir: repoRoot }), false)
 })
@@ -227,13 +227,13 @@ test('a workspace that starts the daemon through the stable wrapper (bgos-claim,
 test('`hoai run` from ANOTHER checkout registers the hooks of the checkout the folder serves, so a boot finds them current', () => {
   assert.equal(typeof atBoot, 'function', NO_BOOT)
   // hoai's own checkout (its bin, with a forwarder) differs from the one the folder's .mcp.json starts (this repo).
-  const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), 'clone-hooks-boot-hoai-elsewhere-')))
+  const elsewhere = realpathSync(scratchDir('clone-hooks-boot-hoai-elsewhere-'))
   mkdirSync(join(elsewhere, 'bin'))
   copyFileSync(FORWARDER, join(elsewhere, 'bin', 'hoai-hook.mjs'))
   const dir = workspace()
   // The folder publishes its channel and identity, as a real agent folder does.
   writeFileSync(join(dir, '.mcp.json'), JSON.stringify({ mcpServers: { bgos: { command: 'bun', args: [join(repoRoot, 'server.ts')], env: { BGOS_ASSISTANT_ID: '7' } } } }))
-  const plan = buildRunPlan({ cwd: dir, env: {}, home: realpathSync(mkdtempSync(join(tmpdir(), 'clone-hooks-boot-home-'))), scriptDir: join(elsewhere, 'bin') })
+  const plan = buildRunPlan({ cwd: dir, env: {}, home: realpathSync(scratchDir('clone-hooks-boot-home-')), scriptDir: join(elsewhere, 'bin') })
   assert.ok(plan.ok, JSON.stringify(plan))
   assert.equal(plan.hooks?.forwarderPath, FORWARDER, 'the forwarder of the checkout this folder serves, not hoai\'s own')
   ensureHookEntries(plan.hooks!)
