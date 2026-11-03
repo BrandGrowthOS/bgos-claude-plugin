@@ -2939,9 +2939,18 @@ export async function superviseClaude(args, opts = {}) {
   // is still that idle launcher after the TERM wait (agent 867's ignored TERM).
   // An expect still holding the dead claude (decideSupervisorArming staleExpects)
   // outlives its launcher, so it is ended with SIGKILL once the launcher is gone.
+  // The pid was read up to the TERM and KILL waits earlier, so it is read again
+  // right before the SIGKILL: still alive, still an expect, and still with no
+  // live child. A reused pid, or an expect that has a live child again, or one
+  // that cannot be read, is left alone.
   const endStaleExpects = (staleExpects) => {
     for (const pid of staleExpects) {
       if (!pidAlive(pid)) continue
+      const proc = pidProcess(pid)
+      const name = typeof proc?.command === 'string' ? (proc.command.trim().split(/\s+/)[0] ?? '').split('/').at(-1) : ''
+      if (name !== 'expect') continue
+      const kids = holderChildren(pid)
+      if (!Array.isArray(kids) || kids.some((child) => child && child.zombie !== true)) continue
       print(`[hoai] ending expect pid ${pid}, which still held the dead claude of assistant ${id}`)
       signalPid(pid, 'SIGKILL')
     }
