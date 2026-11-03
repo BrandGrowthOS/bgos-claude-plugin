@@ -15,11 +15,11 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, realpathSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { realpathSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { UpdateRpcHandler } from '../lib/update-rpc'
+import { scratchDir } from './helpers/scratch-dirs'
 
 // Only a missing module reads as missing; a module that does not load is a failure of its own.
 const mod: any = await import('../lib/hook-restart.mjs').catch((err) => {
@@ -391,7 +391,7 @@ test('decideHookRestart: only a registration made by this boot arms it, and a re
 
 test('the real record is created exclusively: a second create finds it and leaves it byte for byte; a missing state folder is made', () => {
   const { nodeHookRestartFs } = need()
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'hook-restart-rec-')))
+  const dir = realpathSync(scratchDir('hook-restart-rec-'))
   const path = join(dir, '909', 'hook-restart.json')
   const fs = nodeHookRestartFs()
   assert.equal(fs.exists(path), false)

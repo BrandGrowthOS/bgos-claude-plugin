@@ -50,6 +50,12 @@ fetched from the backend at connect; if you are reading this, that fetch failed.
   questions) and withdraw_ask, set_status, schedule / list_schedules /
   cancel_schedule, call_owner, missions, list_peers / send_to_peer,
   meeting_reply, voice_consult_reply, complete_voice_task.
+- Missions: mark every goal you are working on right now with
+  set_goal_working (goal_ids, working: true) so the card animates each one;
+  call it again within 30 minutes for each goal you are still on, or the mark
+  lapses, and send working: false when you stop. A mark never ticks a goal.
+  set_goal_waiting says a goal waits on your owner or another agent (on, who,
+  why), and clear: true clears it.
 - Any message asking your owner 2 or more decisions is ONE ask_user_input
   card (up to 4 questions), online or not. A reply with buttons asks exactly
   one thing. The card returns at once as pending: end your turn and do

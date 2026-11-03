@@ -11,6 +11,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync } from 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { scratchDir } from './helpers/scratch-dirs'
 
 const helper: any = await import('../scripts/run-tests-env.mjs').catch((err) => {
   if (err?.code === 'ERR_MODULE_NOT_FOUND') return null
@@ -19,7 +20,7 @@ const helper: any = await import('../scripts/run-tests-env.mjs').catch((err) => 
 
 test('a temp folder reached through a link is handed over as its real path', { skip: process.platform === 'win32' ? 'no symlinked temp folder to stand in for on Windows' : false }, () => {
   assert.ok(helper, 'scripts/run-tests-env.mjs does not exist: the tests get $TMPDIR as it is, link and all')
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'run-tests-tmpdir-')))
+  const root = realpathSync(scratchDir('run-tests-tmpdir-'))
   const real = join(root, 'private', 'var', 'T')
   mkdirSync(real, { recursive: true })
   const link = join(root, 'var')

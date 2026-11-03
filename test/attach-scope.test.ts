@@ -26,9 +26,9 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, writeFileSync, existsSync, statSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync, writeFileSync, existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+import { scratchDir } from './helpers/scratch-dirs'
 
 import {
   ATTACH_SCOPE_ENV,
@@ -212,7 +212,7 @@ test('resolveAttachScopeMode: an unreadable setting is OFF and says why', () => 
 // ── Telemetry: the count of what it WOULD have refused ──────────────────────
 
 function tmp(): string {
-  return mkdtempSync(join(tmpdir(), 'attach-scope-'))
+  return scratchDir('attach-scope-')
 }
 
 test('recordAttachScopeEvent appends one line per evaluation, and the summary counts would-refuses', () => {

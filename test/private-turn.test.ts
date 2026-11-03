@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { createHmac } from 'node:crypto'
 import { spawn, spawnSync } from 'node:child_process'
 import { startHookIntake } from '../lib/hook-intake.js'
-import { mkdtempSync, readFileSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { readFileSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { privatePromptHash } from '../lib/private-turn.mjs'
@@ -13,9 +13,10 @@ import { recordPrivateBoundary } from '../bin/hoai-private-turn-hook.mjs'
 import { clipPayload } from '../bin/hoai-hook.mjs'
 import { ensureHookEntries } from '../lib/claude-preseed.mjs'
 import { managedLaunchRequired, relayEnvFromResolution } from '../bin/hoai-browser-launch.mjs'
+import { scratchDir } from './helpers/scratch-dirs'
 
 function fixture(t: any) {
-  const root = mkdtempSync(join(tmpdir(), 'hoai-private-turn-'))
+  const root = scratchDir('hoai-private-turn-')
   t.after(() => { assert.ok(resolve(root).startsWith(resolve(tmpdir()) + '\\') || resolve(root).startsWith(resolve(tmpdir()) + '/')); rmSync(root, { recursive: true, force: true }) })
   const cwd = join(root, 'agent')
   mkdirSync(cwd)
@@ -326,7 +327,7 @@ test('a peer turn is remembered for counting and still has no actor: the gate st
   tracker.begin({ prompt: content, sessionId: 's1' })
   assert.deepEqual(tracker.peerTurn(), { sourceAssistantId: '888', chatId: '5' })
   // Even with a live marker the hook wrote for exactly this prompt and session, a peer turn is no verified sender.
-  const root = mkdtempSync(join(tmpdir(), 'peer-turn-'))
+  const root = scratchDir('peer-turn-')
   const markerPath = privateMarkerPath(root, 'k')
   writePrivateJson(markerPath, { schemaVersion: 1, turnId: 't1', sessionId: 's1', promptHash: privatePromptHash(content), live: true })
   assert.equal(tracker.current({ markerPaths: [markerPath] }), null)

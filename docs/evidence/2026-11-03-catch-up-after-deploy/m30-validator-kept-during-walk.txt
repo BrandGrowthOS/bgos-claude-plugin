@@ -1,0 +1,52 @@
+MUTANT m30-validator-kept-during-walk
+undoes: review F7: a read during a walk is not told 304
+file: server.ts
+--- removed
+          bgosEtagCache.invalidate(req.cacheKey)
+          const older = (await bgosGet(
++++ added
+          const older = (await bgosGet(
+exit=1
+
+▶ a reconnect or a failure in the middle of a page
+  ✖ a read that starts during a walk is not answered 304 by the walk's first page: a live message after it does not overtake the walk (18280.197452ms)
+✖ a reconnect or a failure in the middle of a page (18281.697174ms)
+ℹ tests 1
+ℹ suites 1
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 18639.993664
+
+✖ failing tests:
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:21670
+✖ a read that starts during a walk is not answered 304 by the walk's first page: a live message after it does not overtake the walk (18280.197452ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+      forwarded: '301 of 301',
+      label: 'a live message after a read that started during a walk',
+      missing: 'none',
+  +   oldestFirst: false,
+  -   oldestFirst: true,
+      twice: 'none',
+      unexpected: 'none'
+    }
+  
+      at assertExactlyOnceInOrder (/home/karim/lane-tmp/d041/mut/m30-validator-kept-during-walk.667clbz_/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m30-validator-kept-during-walk.667clbz_/test/catch-up-after-deploy.e2e.test.ts:1106:7)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 3)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { label: 'a live message after a read that started during a walk', forwarded: '301 of 301', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: false },
+    expected: { label: 'a live message after a read that started during a walk', forwarded: '301 of 301', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: true },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }

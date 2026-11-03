@@ -59,6 +59,15 @@
  *                       for a daemon declaring this, because that wake asks
  *                       the agent to write its goals. Every host: it is a
  *                       plain HTTP write the model makes itself.
+ *   mission_goal_working
+ *                       the model has set_goal_working, which marks the
+ *                       goals it is working on now (PATCH .../goals/:goalId/
+ *                       working, BGOS #3575). The served canon tells the
+ *                       working mark paragraph (the 30 minute refresh, who
+ *                       may set and clear, a mark is not progress) only to a
+ *                       caller declaring this (MISSION_GOAL_WORKING_TOKEN in
+ *                       BGOS capability-canon.ts). Every host: a plain HTTP
+ *                       write the model makes itself.
  *   mission_pause       a pause truly stops the work. ONLY where the injector
  *                       answers, because the pause this daemon can enforce IS
  *                       clearing the native goal. It is honest about its
@@ -292,6 +301,7 @@ export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   'mission_events',
   'mission_goal_checks',
   'mission_set_goals',
+  'mission_goal_working',
   PERMISSION_CARD,
   PLAN_CARD,
   'memory_rpc',
@@ -343,6 +353,14 @@ export const DECLARED_CAPABILITIES_PAIRING: readonly string[] = Object.freeze([H
 /** The owner's model and effort picker (BGOS #3060), declared only while it can act. */
 export const MODEL_EFFORT_PICKER_TOKEN = 'model_effort_picker'
 
+/**
+ * Threads phase 1 (plan "Wire contract"): message_threads (this daemon answers
+ * thread_turn and thread_close), thread_sessions (its threads run as forked
+ * lanes, lib/thread-lanes.ts) and asides (it answers aside,
+ * lib/aside-fork.ts). Declared together, only where a lane can run.
+ */
+export const THREAD_CAPABILITY_TOKENS: readonly string[] = Object.freeze(['message_threads', 'thread_sessions', 'asides'])
+
 /** Declared only while this daemon can type into its own CLI's composer. */
 export const DECLARED_CAPABILITIES_INJECTOR: readonly string[] = Object.freeze([
   'mission_goal_loop',
@@ -393,8 +411,14 @@ export function declaredCapabilities(input: {
    * observation, non empty catalog)? Absent reads as no.
    */
   modelEffortPicker?: boolean
+  /**
+   * Can this host run thread lanes and By the way forks (server.ts
+   * threadsDeclared: a claude binary resolves)? Absent reads as no. Never
+   * declared on win32 in phase 1.
+   */
+  threads?: boolean
   authMode: 'pairing' | 'apikey'
-  /** The host platform; process.platform when absent. The picker is never declared on win32. */
+  /** The host platform; process.platform when absent. The picker and the thread tokens are never declared on win32. */
   platform?: NodeJS.Platform
 }): readonly string[] {
   return [
@@ -407,5 +431,6 @@ export function declaredCapabilities(input: {
     ...(input.authMode === 'pairing' && input.modelEffortPicker === true && (input.platform ?? process.platform) !== 'win32'
       ? [MODEL_EFFORT_PICKER_TOKEN]
       : []),
+    ...(input.threads === true && (input.platform ?? process.platform) !== 'win32' ? THREAD_CAPABILITY_TOKENS : []),
   ]
 }

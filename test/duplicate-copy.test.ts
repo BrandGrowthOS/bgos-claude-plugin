@@ -20,8 +20,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
@@ -37,6 +36,7 @@ import {
   serveDuplicateCopy,
 } from '../lib/pair-required-server.mjs'
 import { linkFolder } from './helpers/links.ts'
+import { scratchDir } from './helpers/scratch-dirs.ts'
 
 const OWN_SPEC = 'plugin:hoai@hoai'
 const sibling = { root: '/home/karim/bgos-claude-plugin' }
@@ -73,7 +73,7 @@ test('every doubt keeps the daemon: it is a duplicate only when ALL the proofs h
 })
 
 function folder(mcp: unknown, withServer = true) {
-  const root = mkdtempSync(join(tmpdir(), 'hoai-dup-'))
+  const root = scratchDir('hoai-dup-')
   const cwd = join(root, 'agent')
   const checkout = join(root, 'bgos-claude-plugin')
   const cache = join(root, 'cache', 'hoai', 'hoai', '0.68.5')

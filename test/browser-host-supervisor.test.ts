@@ -25,7 +25,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -45,6 +45,7 @@ import {
 import { resolveNodePath } from '../lib/watcher-install.mjs'
 import { STOP_ON_STDIN_EOF_ENV, pidAlive } from '../bin/hoai-browser-host.mjs'
 import { startFakeRelay } from './helpers/fake-browser-relay.ts'
+import { scratchDir } from './helpers/scratch-dirs.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const HOST_BIN = join(HERE, '..', 'bin', 'hoai-browser-host.mjs')
@@ -100,7 +101,7 @@ function fakeSpawn(make: () => FakeChild = () => fakeChild()) {
 }
 
 function harness(overrides: Partial<BrowserHostSupervisorOptions> = {}) {
-  const agentRoot = overrides.agentRoot ?? mkdtempSync(join(tmpdir(), 'bh-sup-'))
+  const agentRoot = overrides.agentRoot ?? scratchDir('bh-sup-')
   const logs: string[] = []
   const { spawnFn, calls } = fakeSpawn()
   const sup = startBrowserHostSupervisor({
@@ -224,7 +225,7 @@ test('a daemon whose pairing lock was taken stands its host down, then takes the
 })
 
 test('a live holder that is only late (a machine waking from sleep) keeps its lock; one that stays silent loses it', async () => {
-  const agentRoot = mkdtempSync(join(tmpdir(), 'bh-sleep-'))
+  const agentRoot = scratchDir('bh-sleep-')
   const lockPath = browserHostLockPath(agentRoot, browserHostPairingKey(AUTH.backendUrl, AUTH.pairingToken))
   // The holder is alive (this very process) but its last beat is 60 s old.
   const lastBeat = Date.now() - 60_000
@@ -333,7 +334,7 @@ test(
     if (e2eSkip) return // bun ignores the skip option; this is the same skip
     const TOKEN = 'tok-sup-e2e'
     const relay = await startFakeRelay({ token: TOKEN, admissible: [900] })
-    const home = mkdtempSync(join(tmpdir(), 'bh-sup-e2e-'))
+    const home = scratchDir('bh-sup-e2e-')
     const agentRoot = join(home, '.bgos-agent')
     const auth = { ...AUTH, backendUrl: relay.backendUrl, pairingToken: TOKEN }
     const logs: string[] = []
@@ -401,7 +402,7 @@ test('END TO END: a host whose daemon is killed outright stops itself', { timeou
   if (e2eSkip) return
   const TOKEN = 'tok-parent'
   const relay = await startFakeRelay({ token: TOKEN, admissible: [900] })
-  const home = mkdtempSync(join(tmpdir(), 'bh-parent-'))
+  const home = scratchDir('bh-parent-')
   // A stand-in daemon that is SIGKILLed: it cannot send its host a SIGTERM.
   const standIn = spawn(nodePath!, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })
   const host = spawn(nodePath!, [HOST_BIN], {
@@ -438,7 +439,7 @@ test(`END TO END: stopping the daemon closes its host cleanly, on Windows too: e
   // ran its stop, so its Chrome was cut off mid write on every daemon stop or restart.
   const TOKEN = 'tok-stop'
   const relay = await startFakeRelay({ token: TOKEN, admissible: [900] })
-  const home = mkdtempSync(join(tmpdir(), 'bh-stop-'))
+  const home = scratchDir('bh-stop-')
   const agentRoot = join(home, '.bgos-agent')
   const auth = { ...AUTH, backendUrl: relay.backendUrl, pairingToken: TOKEN }
   const sup = startBrowserHostSupervisor({ env: { ...process.env, HOME: home, USERPROFILE: home }, auth, agentRoot, hostScript: HOST_BIN, nodePath, log: () => {}, platform: stopPlatform })
@@ -471,7 +472,7 @@ const standInSkip = e2eSkip || (bunOk ? false : 'bun is not on PATH (the daemon 
  */
 async function bunStandIn(token: string, platform?: string) {
   const relay = await startFakeRelay({ token, admissible: [900] })
-  const home = mkdtempSync(join(tmpdir(), 'bh-standin-'))
+  const home = scratchDir('bh-standin-')
   const agentRoot = join(home, '.bgos-agent')
   const auth = { ...AUTH, backendUrl: relay.backendUrl, pairingToken: token }
   const script = join(home, 'stand-in-daemon.ts')

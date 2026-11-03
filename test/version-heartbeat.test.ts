@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { declaredCapabilities } from '../lib/declared-capabilities'
@@ -16,9 +16,10 @@ import {
   type SessionStatusReport,
 } from '../lib/session-status-contract'
 import { SESSION_STATUS_MIN_GAP_MS, SESSION_STATUS_TICK_MS } from '../lib/session-status'
+import { scratchDir } from './helpers/scratch-dirs'
 
 function dirWithPackage(version: unknown): string {
-  const d = mkdtempSync(join(tmpdir(), 'vhb-'))
+  const d = scratchDir('vhb-')
   writeFileSync(join(d, 'package.json'), JSON.stringify({ version }))
   return d
 }
@@ -420,6 +421,7 @@ describe('declared capabilities on the heartbeat', () => {
       'mission_events',
       'mission_goal_checks',
       'mission_set_goals',
+      'mission_goal_working',
       'permission_card',
       'plan_card',
       'memory_rpc',
@@ -448,6 +450,7 @@ describe('declared capabilities on the heartbeat', () => {
       'mission_events',
       'mission_goal_checks',
       'mission_set_goals',
+      'mission_goal_working',
       'permission_card',
       'plan_card',
       'memory_rpc',
