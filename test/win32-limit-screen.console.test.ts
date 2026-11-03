@@ -19,6 +19,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
+import { scratchDir } from './helpers/scratch-dirs'
 import assert from 'node:assert/strict'
 
 import { readLimitScreen } from '../lib/limit-screen.mjs'
@@ -114,7 +115,7 @@ function stop(pid: number) {
 
 test('read: the visible screen and its sha256; the text passes the strict limit screen rules', { skip, timeout: 120_000 }, async () => {
   for (const pointer of ['❯', '>']) {
-    const dir = mkdtempSync(join(tmpdir(), 'hoai-limit-console-'))
+    const dir = scratchDir('hoai-limit-console-')
     const fake = startFakePicker(dir, PICKER(pointer))
     try {
       const { hash, text } = await readWhenPainted(fake.pid)
@@ -128,7 +129,7 @@ test('read: the visible screen and its sha256; the text passes the strict limit 
 })
 
 test('press with the approved hash: exactly ONE Enter (one CR byte) reaches the console', { skip, timeout: 120_000 }, async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'hoai-limit-console-'))
+  const dir = scratchDir('hoai-limit-console-')
   const fake = startFakePicker(dir, PICKER('❯'))
   try {
     const { hash } = await readWhenPainted(fake.pid)
@@ -142,7 +143,7 @@ test('press with the approved hash: exactly ONE Enter (one CR byte) reaches the 
 })
 
 test('press with any other hash (the screen changed since it was approved): nothing is sent, exit 7', { skip, timeout: 120_000 }, async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'hoai-limit-console-'))
+  const dir = scratchDir('hoai-limit-console-')
   const fake = startFakePicker(dir, PICKER('❯'))
   try {
     await readWhenPainted(fake.pid)
@@ -156,7 +157,7 @@ test('press with any other hash (the screen changed since it was approved): noth
 })
 
 test('a bad argument (a pid with letters, an unknown mode, a hash that is not one) sends nothing and fails', { skip, timeout: 120_000 }, async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'hoai-limit-console-'))
+  const dir = scratchDir('hoai-limit-console-')
   const fake = startFakePicker(dir, PICKER('❯'))
   try {
     const { hash } = await readWhenPainted(fake.pid)
