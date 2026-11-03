@@ -18,8 +18,7 @@ import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import * as fsMod from 'node:fs'
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { join, sep } from 'node:path'
 
 import { GateKeeper } from '../lib/browser-gate.mjs'
@@ -38,6 +37,7 @@ import {
   saveName,
   syncedFolderOf,
 } from '../lib/browser-downloads.mjs'
+import { scratchDir } from './helpers/scratch-dirs'
 
 const DOWNLOAD_CHOICES = ['allow_once', 'allow_session', 'trust_site', 'deny']
 
@@ -122,7 +122,7 @@ function fakeDownload(held: string, { name = 'AuthKey_7KQ2X9.p8', url = 'https:/
 }
 
 function setup(over: Record<string, any> = {}) {
-  const home = mkdtempSync(join(tmpdir(), 'dl-unit-'))
+  const home = scratchDir('dl-unit-')
   const agentRoot = join(home, '.bgos-agent')
   const srv = server()
   const gates = keeper(srv)
@@ -643,7 +643,7 @@ test('the folder guard on Windows: the built in Administrator reads back as LA, 
 })
 
 test('the folder guard on the REAL file system makes a folder owner only even when it starts with explicit entries for others', { skip: process.platform !== 'win32' ? 'Windows only' : false }, async () => {
-  const home = mkdtempSync(join(tmpdir(), 'dl-guard-explicit-'))
+  const home = scratchDir('dl-guard-explicit-')
   try {
     const dir = join(home, '.bgos-agent', '900', 'browser-downloads')
     mkdirSync(dir, { recursive: true })
@@ -658,7 +658,7 @@ test('the folder guard on the REAL file system makes a folder owner only even wh
 })
 
 test('the folder guard on the REAL file system: owner only, read back, nothing above it trusted', { skip: process.platform === 'win32' && !spawnSync(system32('icacls.exe'), ['/?']).stdout ? 'no icacls' : false }, async () => {
-  const home = mkdtempSync(join(tmpdir(), 'dl-guard-'))
+  const home = scratchDir('dl-guard-')
   try {
     const dir = join(home, '.bgos-agent', '900', 'browser-downloads')
     const guard = new KeptFolderGuard({ dir, home, env: { ...process.env, OneDrive: undefined, OneDriveConsumer: undefined, OneDriveCommercial: undefined } })

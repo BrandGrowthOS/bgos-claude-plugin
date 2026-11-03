@@ -382,6 +382,13 @@ import {
   isNotModified,
   EtagCache,
   buildChatPollRequest,
+  buildOlderPagePath,
+  CHAT_OLDER_PAGE_LIMIT,
+  CHAT_PAGE_DEFAULT_LIMIT,
+  firstReadOwedFrom,
+  pageMayHaveOlderRows,
+  readNeedsOlderPage,
+  walkOlderPages,
   advanceCursor,
   shouldForwardPollMessage,
   rememberReturnedMessageId,
@@ -443,6 +450,7 @@ import {
   probeRequestPath,
   LIVENESS_PROBE_POLL_MS,
 } from './lib/boot-hello.js'
+import { LIMIT_NOTICE_FILE_NAME, LIMIT_NOTICE_POLL_MS, createLimitNoticeIntake } from './lib/limit-notice.js'
 import {
   LOCK_HEARTBEAT_INTERVAL_MS,
   acquirePairingLock,
@@ -873,6 +881,8 @@ const AUTO_APPROVE = process.env.BGOS_AUTO_APPROVE === 'true'
 // lives above them all.
 /** Lanes can run here: a pairing, a host and a CLI with every locked flag (cached per binary). */
 let laneSupportMemo: { ok: boolean; missing: string[]; reason?: string } | null = null
+/** The last threads CLI answer logged (threadsCli, below): declared above every caller. */
+let threadsCliLogged: string | null = null
 function laneSupport(): { ok: boolean; missing: string[]; reason?: string } {
   if (laneSupportMemo) return laneSupportMemo
   if (AUTH.mode !== 'pairing') {
@@ -950,15 +960,25 @@ const API_BASE = getApiBaseUrl()
 
 import {
   appendFileSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
   readdirSync,
+  renameSync,
+  rmSync,
   statSync,
   unlinkSync,
   watch,
   writeFileSync,
 } from 'node:fs'
+import { ThreadLaneManager, threadsPendingPath } from './lib/thread-lanes.ts'
+import { AsideForks, runAside } from './lib/aside-fork.ts'
+import { threadsCliProblem, threadsCliSupport, type ThreadsCliAnswer } from './lib/threads-cli.ts'
+import { killProcessGroup, processStamp } from './lib/lane-process.ts'
+import { laneShellSandboxAvailable } from './lib/lane-policy.mjs'
+import { findOnPath } from './lib/lane-cli-probe.mjs'
+import { spawnStreamJson } from './lib/stream-json-child.ts'
 import { join as pathJoin, dirname as pathDirname, resolve as pathResolve } from 'node:path'
 import { ensureLogDir, resolveLogPath } from './lib/log-path.js'
 // Agent activity from the session's own hooks (stage 4). The mapper is pure
@@ -1303,7 +1323,7 @@ function bgosCall<T>(
 
 async function bgosGet(
   path: string,
-  opts?: { cacheKey?: string; callerAssistantId?: string; headers?: Record<string, string> },
+  opts?: { cacheKey?: string; callerAssistantId?: string; headers?: Record<string, string>; conditional?: boolean },
 ): Promise<unknown> {
   const url = `${API_BASE}/${path.replace(/^\//, '')}`
   const cacheKey = opts?.cacheKey ?? path
@@ -1311,7 +1331,10 @@ async function bgosGet(
   // item 0.4). The ETag cache is keyed by the path alone, so a read made for
   // one person never rides it: no validator is sent and none is kept.
   const personal = opts?.headers != null && Object.keys(opts.headers).length > 0
-  const prevEtag = personal ? null : bgosEtagCache.ifNoneMatch(cacheKey)
+  // `conditional: false`: a page of a catch up walk. A 304 there would be a page
+  // with no rows, and its validator must never stand in for the chat's own.
+  const riddenByEtag = !personal && opts?.conditional !== false
+  const prevEtag = riddenByEtag ? bgosEtagCache.ifNoneMatch(cacheKey) : null
   return bgosCall(
     {
       url,
@@ -1334,7 +1357,7 @@ async function bgosGet(
         const text = await response.text().catch(() => '')
         throw new Error(`GET ${response.status}: ${errorBodyText(text)}`)
       }
-      if (!personal) bgosEtagCache.record(cacheKey, response.headers.get('etag'))
+      if (riddenByEtag) bgosEtagCache.record(cacheKey, response.headers.get('etag'))
       return response.json()
     },
   )
@@ -1591,7 +1614,7 @@ async function loadServedCapabilities(): Promise<ServedCapabilities> {
     // ONE declared list for the fetch AND the offline copy, so a fetch that
     // fails tells the agent no more than the served canon would have told
     // this daemon (capabilitiesFallbackFor, the stage 6 backend review).
-    const declared = declaredCapabilities({ canInjectGoal: false, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, authMode: AUTH.mode })
+    const declared = declaredCapabilities({ canInjectGoal: false, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, threads: threadsDeclared(), authMode: AUTH.mode })
     try {
       data = await bgosGetCapped(
         capabilitiesFetchPath(
@@ -1938,6 +1961,34 @@ function resolveClaude(): string | null {
   })
 }
 const CLAUDE_EXECUTABLE: string | null = resolveClaude()
+// Threads phase 1: message_threads, thread_sessions and asides are declared
+// where a thread lane or a By the way fork can start: a claude binary this
+// daemon can spawn that passes the threads CLI probe (lib/threads-cli.ts:
+// --restricted, 2.1.301 and later, --tools, --fork-session, the stream json
+// flags, acceptEdits and dontAsk). Not Windows in phase 1. Resolved per
+// declaration, like /login's binary above; the probe is cached per binary.
+function threadsCli(): ThreadsCliAnswer {
+  let answer: ThreadsCliAnswer
+  try {
+    answer = threadsCliSupport({
+      claudePath: resolveClaude(),
+      cachePath: pathJoin(process.env.BGOS_PLUGIN_STATE_DIR?.trim() || pathJoin(homedir(), '.bgos-plugin-state'), 'threads-cli-probe.json'),
+    })
+  } catch (err) {
+    answer = { ok: false, missing: [], version: null, reason: `probe_failed: ${err instanceof Error ? err.name : 'error'}` }
+  }
+  const said = answer.ok
+    ? `threads: claude ${answer.version} can run thread lanes and By the way; declaring message_threads, thread_sessions and asides`
+    : `threads: not declared (${answer.reason ?? `claude ${answer.version ?? 'of unknown version'} lacks ${answer.missing.join(', ')}`})`
+  if (said !== threadsCliLogged) {
+    threadsCliLogged = said
+    log(said)
+  }
+  return answer
+}
+function threadsDeclared(): boolean {
+  return process.platform !== 'win32' && threadsCli().ok
+}
 const bootSlashCommands = prepareSlashCommands(
   catalogForCapabilities({
     remoteCompact: compactTarget !== null,
@@ -4547,13 +4598,13 @@ async function waitForVerdict(
               `the hard floor holds this request, so only a tap on its card can allow it`,
           )
         }
-        advanceChatCursor(chatId, msg.message.id)
+        passCursorOverAnswer(chatId, msg.message.id)
         return null
       }
       if (!choice) return null
 
       // Update last seen so we don't re-process this message
-      advanceChatCursor(chatId, msg.message.id)
+      passCursorOverAnswer(chatId, msg.message.id)
 
       return choice
     },
@@ -6636,7 +6687,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
               chatId: String(resolvedChatId),
               text,
               declared: () =>
-                declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, authMode: AUTH.mode }).includes(UI_CARD),
+                declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, threads: threadsDeclared(), authMode: AUTH.mode }).includes(UI_CARD),
               log,
             })
         if (cardNudge) log(`reply to chat ${resolvedChatId}: card nudge given`)
@@ -8867,6 +8918,8 @@ interface ChatMessage {
 
 interface ChatHistoryResponse {
   messages: ChatMessage[]
+  /** withPagination=1: the server's own answer, from a probe row. Absent on an old backend. */
+  hasMore?: unknown
 }
 
 // ── Poll cursor persistence (restart-replay fix, Dutify aijvk1h8LM) ──────────
@@ -9015,12 +9068,43 @@ const FIRST_POLL_RECENT_CUTOFF_MS: number | null = cursorBoot.fileExisted
 // not capped.
 const MAX_RESTART_RECOVERY_FORWARD = 10
 
+// The cursor of a chat that read empty: below every real message id (ids are one
+// series across all chats and the store keeps positive integers only). The server
+// answers a chat this caller is not admitted to with no rows, not a refusal (its
+// WHERE clause is the authorization), so empty proves the chat is empty only for a
+// chat the caller is admitted to. Every chat read here comes from this assistant's
+// own inbox listing, or an open meeting it sits in, so that holds on every path
+// known today; a chat that broke it would hand over its history once admitted.
+const EMPTY_CHAT_CURSOR = 1
+
 // Chats fully processed by pollChat at least once since THIS process started.
 // A chat's first successful poll after boot is the one that may carry
 // messages that arrived while the daemon was down; those keep the [backlog]
 // framing even though the persisted cursor routes them through the delta
 // branch.
 const chatsPolledSinceBoot = new Set<string>()
+
+// Which connection of the socket this is, and per chat the latest connection a
+// finished read had STARTED under. A live message may move a chat's cursor only
+// when a read of that chat began on this very connection: a push fired while the
+// socket was down is never replayed, so "a read finished once" says nothing about
+// the rows missed since. A read that started before the reconnect does not count
+// either, however late it finishes: it may never have seen those rows. This used
+// to rest on chatsPolledSinceBoot alone, so after a deploy the first live message
+// moved the cursor over every row of the outage: 0 of 7 reached the agent (the D04
+// report, PL2). The epoch moves on every connect, the boot's first one included.
+let socketEpoch = 0
+const chatReadAtEpoch = new Map<string, number>()
+
+/** Has no read of this chat started on this connection of the socket? */
+function chatBehindSocket(chatId: string): boolean {
+  return chatReadAtEpoch.get(chatId) !== socketEpoch
+}
+
+/** A read of this chat finished. Overlapping reads can finish in either order. */
+function noteChatReadAtEpoch(chatId: string, startedAtEpoch: number): void {
+  chatReadAtEpoch.set(chatId, Math.max(chatReadAtEpoch.get(chatId) ?? 0, startedAtEpoch))
+}
 
 // Per chat, the lowest message id the socket received while it could not move
 // the chat's cursor (the boot poll had not completed). From that id on this
@@ -9037,6 +9121,53 @@ const chatLiveFloor = new Map<string, number>()
 // Chats with a read in flight that a live message started (deliverWsInbound):
 // a burst of live messages into a chat nobody has read yet starts one read.
 const liveReadsInFlight = new Set<string>()
+
+// Per chat, the live messages waiting for a catch up read, and the chats with such
+// a read running (holdLiveFrame). A set of its own: liveReadsInFlight also marks
+// reads nobody releases frames after.
+const heldLiveFrames = new Map<string, any[]>()
+const heldReadsInFlight = new Set<string>()
+
+// Per chat, where the next read starts when a live message has moved the cursor
+// past rows no read has returned. Some rows are never pushed at all, with no outage
+// to mark it: nginx keeps old sockets for 30 s after a deploy's reload and there is
+// no socket.io adapter, so a socket on the old container hears nothing the new one
+// commits. The cursor still moves (a restart must not hand back what the socket
+// delivered, and the forwarded ids do not survive one), but the next read starts
+// from here, under it, and so sees those rows; the dedupe drops what the socket
+// delivered. This also keeps a wake card still waiting for its body inside the read
+// when a live message lands above it. No read is scheduled for it: the next read
+// starts lower and carries those rows, in more pages when they are more than 50. In
+// memory, so a restart before that read loses the rows this was keeping in reach.
+const chatReadFloor = new Map<string, number>()
+
+/** A live message moved the cursor from `before`: the rows above that are unread. */
+function noteCursorPassedUnread(chatId: string, before: number): void {
+  if (before <= 0 || chatReadFloor.has(chatId) || streamCoveredChats.has(chatId)) return
+  if ((chatLastSeen.get(chatId) ?? 0) > before) chatReadFloor.set(chatId, before)
+}
+
+/**
+ * A typed permission answer moves the cursor with no read of the chat behind it.
+ * The rows under it are still owed, so the next read starts below them, and the
+ * answer itself stands down at the dedupe: by then its request is closed, and
+ * nothing else can tell a typed label is an answer.
+ */
+function passCursorOverAnswer(chatId: string, id: number): void {
+  const before = chatLastSeen.get(chatId) ?? 0
+  advanceChatCursor(chatId, id)
+  noteCursorPassedUnread(chatId, before)
+  rememberForwarded(id)
+}
+
+/** A read returned everything up to `readUpTo`. Anything the socket moved past since stays in reach. */
+function settleChatReadFloor(chatId: string, readUpTo: number): void {
+  if ((chatLastSeen.get(chatId) ?? 0) > readUpTo) {
+    chatReadFloor.set(chatId, Math.max(chatReadFloor.get(chatId) ?? 0, readUpTo))
+  } else {
+    chatReadFloor.delete(chatId)
+  }
+}
 
 // Per group chat, when this daemon first saw it listed (discoverChats). Rows
 // sent before then, below the chat's live floor, are history the agent may
@@ -9065,10 +9196,14 @@ function advanceChatCursor(chatId: string, id: number, adopt = false): void {
  * Take a cursor value from the shared cursor file as it is (the flush and the
  * re-arm merge): the file holds what this daemon or the holder already wrote,
  * and clamping it to this daemon's email holds would rewind it on the next
- * write. Monotonic like every advance.
+ * write. Monotonic like every advance. A value above this daemon's own means
+ * another daemon read the chat up to there, and the rows it delivered are not in
+ * this process's forwarded ids, so no read here may start below it any more.
  */
 function adoptChatCursor(chatId: string, id: number): void {
+  const before = chatLastSeen.get(chatId) ?? 0
   advanceChatCursor(chatId, id, true)
+  if ((chatLastSeen.get(chatId) ?? 0) > before) chatReadFloor.delete(chatId)
 }
 
 /**
@@ -11350,8 +11485,11 @@ async function pollChat(chatId: string): Promise<void> {
   // at 10. Never a rewind: advanceChatCursor below only moves forward, and
   // the forwarded-id dedupe skips the live message itself. (The first-poll
   // branch also looks at the cursor as it stands after the fetch, for
-  // owedFrom only.)
-  const lastSeen = chatLastSeen.get(chatId) ?? 0
+  // owedFrom only.) Under the cursor when a live message moved it past rows no
+  // read has returned: see chatReadFloor.
+  const lastSeen = chatReadFloor.get(chatId) ?? chatLastSeen.get(chatId) ?? 0
+  // Taken before the fetch for the reason the cursor is: see chatBehindSocket.
+  const startedAtEpoch = socketEpoch
   const req = buildChatPollRequest({
     chatId,
     userId: USER_ID,
@@ -11367,11 +11505,103 @@ async function pollChat(chatId: string): Promise<void> {
       callerAssistantId: ASSISTANT_ID,
     })
     // 304: byte-identical to a response we already fully processed.
-    if (isNotModified(raw)) return
-    const data = raw as ChatHistoryResponse
-    if (!data.messages?.length) return
+    if (isNotModified(raw)) {
+      noteChatReadAtEpoch(chatId, startedAtEpoch)
+      return
+    }
+    const firstPage = raw as ChatHistoryResponse
+    if (!firstPage.messages?.length) {
+      noteChatReadAtEpoch(chatId, startedAtEpoch)
+      // A chat read empty has been read: every row that lands from now on is new.
+      // It gets a cursor to say so, and one that survives a restart, so its next
+      // read takes the delta path and owes all of them. Without one the next read
+      // was a first read again, for rows nobody had ever seen: the walk back
+      // stopped at the first agent row under a person's, and a group's history cap
+      // kept the newest 10, once a restart had lost the time it was first listed.
+      // Still not a completed boot poll (chatsPolledSinceBoot): that says the rows
+      // below the cursor were read, and a live bump relies on it.
+      if (lastSeen === 0) advanceChatCursor(chatId, EMPTY_CHAT_CURSOR)
+      return
+    }
 
-    const maxId = Math.max(...data.messages.map((m) => m.message.id))
+    // The rows a first read's walk back looks at, for the walk below and the
+    // selection further down alike, so the two cannot disagree on a stop.
+    const firstPollRowsOf = (rows: ChatMessage[], owedFrom: number) =>
+      rows
+        .filter((m) => m.message.id < owedFrom && shouldForwardPollMessage(m.message, ASSISTANT_ID))
+        .map((m) => ({
+          id: m.message.id,
+          sender: m.message.sender,
+          pendingEmptySystem: isPendingEmptySystem(m),
+          sentDateMs: sentDateToMs(m.message.sentDate),
+        }))
+    // A group chat's history (see chatFirstListedAtMs) is capped; every other
+    // chat, and a group's rows from its listing on, are not.
+    const groupHistoryCap = groupChatIds.has(chatId)
+      ? { beforeMs: chatFirstListedAtMs.get(chatId) ?? DAEMON_START_MS, max: MAX_GROUP_HISTORY_FORWARD }
+      : null
+
+    // The rest of the read (D04-1). The page above holds the NEWEST rows of the
+    // range, so everything between them and the cursor is read now, going down,
+    // and only then does anything below run: the rows go out oldest first, and a
+    // page that fails lands in the catch with nothing delivered and no cursor
+    // moved. See the note in lib/poll-core.ts.
+    const data: ChatHistoryResponse = {
+      ...firstPage,
+      messages: await walkOlderPages({
+        rows: firstPage.messages,
+        mayHaveOlder: pageMayHaveOlderRows({
+          rowCount: firstPage.messages.length,
+          hasMore: firstPage.hasMore,
+          limit: CHAT_PAGE_DEFAULT_LIMIT,
+        }),
+        idOf: (m: ChatMessage) => m.message.id,
+        needsOlder: (rows, mayHaveOlder) =>
+          readNeedsOlderPage({
+            mayHaveOlder,
+            oldestId: rows[0]!.message.id,
+            lastSeen,
+            firstRead:
+              lastSeen > 0
+                ? null
+                : {
+                    rows: firstPollRowsOf(
+                      rows,
+                      firstReadOwedFrom({ liveFloor: chatLiveFloor.get(chatId), cursorNow: chatLastSeen.get(chatId) ?? 0 }),
+                    ),
+                    recentCutoffMs: FIRST_POLL_RECENT_CUTOFF_MS,
+                    historyCap: groupHistoryCap,
+                  },
+          }),
+        fetchOlder: async (beforeId) => {
+          // The walk can outlast the checks at the top of this function. A daemon
+          // that stood down or is draining reads no more; the holder, or the next
+          // daemon, reads this chat from the cursor this leaves where it was.
+          if (updateDrainMode || !lockHeld) throw new Error('stood down during a catch up read')
+          // The validator the first page recorded says "you have these rows", and this
+          // read has not delivered them yet. A read starting now must not be told 304
+          // and call the chat caught up (noteChatReadAtEpoch).
+          bgosEtagCache.invalidate(req.cacheKey)
+          const older = (await bgosGet(
+            buildOlderPagePath({ chatId, userId: USER_ID, lastSeen, beforeId }),
+            { conditional: false, callerAssistantId: ASSISTANT_ID },
+          )) as ChatHistoryResponse
+          const rows = older.messages ?? []
+          return {
+            rows,
+            mayHaveOlder: pageMayHaveOlderRows({ rowCount: rows.length, hasMore: older.hasMore, limit: CHAT_OLDER_PAGE_LIMIT }),
+          }
+        },
+        // A walk runs inside the tick and the pairing lock goes stale in 15 s.
+        during: (work) => emailFilesKeepalive.during(work),
+        onNoProgress: (beforeId) =>
+          log(`WARN catch up read of chat ${chatId} stopped at message ${beforeId}: the server returned nothing below it but says there is more`),
+      }),
+    }
+    // The same question once more, now that the last page is in: a daemon that lost
+    // the lock during it, or during a read of one page, delivers nothing and moves
+    // no cursor. The catch below drops the validator, so whoever reads next gets rows.
+    if (updateDrainMode || !lockHeld) throw new Error('stood down during a catch up read')
 
     // Messages are returned oldest → newest by message id. Make sure we
     // operate on a stable ordered copy (defensive; the backend already
@@ -11379,12 +11609,13 @@ async function pollChat(chatId: string): Promise<void> {
     const ordered = [...data.messages].sort(
       (a, b) => a.message.id - b.message.id,
     )
+    const maxId = ordered[ordered.length - 1]!.message.id
     const pollForwardableRows = ordered.filter((m) =>
       shouldForwardPollMessage(m.message, ASSISTANT_ID),
     )
 
     let newUserMessages: ChatMessage[]
-    let isBacklog = false
+    let readIsBacklog = false
     if (lastSeen === 0) {
       // First poll for a chat with no cursor: forward user messages that
       // haven't been answered yet WITHOUT over-forwarding historic ones.
@@ -11419,24 +11650,8 @@ async function pollChat(chatId: string): Promise<void> {
       // forwarded those). Only the rows below go through the walk-back, so an
       // answer above them, the agent replying to a live message, cannot end
       // it early.
-      const cursorNow = chatLastSeen.get(chatId) ?? 0
-      const owedFrom = Math.min(
-        chatLiveFloor.get(chatId) ?? Number.POSITIVE_INFINITY,
-        cursorNow > 0 ? cursorNow + 1 : Number.POSITIVE_INFINITY,
-      )
-      // A group chat's history (see chatFirstListedAtMs) is capped; every
-      // other chat, and a group's rows from its listing on, are not.
-      const groupHistoryCap = groupChatIds.has(chatId)
-        ? { beforeMs: chatFirstListedAtMs.get(chatId) ?? DAEMON_START_MS, max: MAX_GROUP_HISTORY_FORWARD }
-        : null
-      const firstPollRows = pollForwardableRows
-        .filter((m) => m.message.id < owedFrom)
-        .map((m) => ({
-          id: m.message.id,
-          sender: m.message.sender,
-          pendingEmptySystem: isPendingEmptySystem(m),
-          sentDateMs: sentDateToMs(m.message.sentDate),
-        }))
+      const owedFrom = firstReadOwedFrom({ liveFloor: chatLiveFloor.get(chatId), cursorNow: chatLastSeen.get(chatId) ?? 0 })
+      const firstPollRows = firstPollRowsOf(ordered, owedFrom)
       const backlogIds = new Set(
         selectFirstPollBacklogIds({
           rows: firstPollRows,
@@ -11484,7 +11699,7 @@ async function pollChat(chatId: string): Promise<void> {
       // explicit to Claude that these came in WHILE OFFLINE. Without
       // this, Claude can't tell a fresh user message apart from a
       // crash-recovered one and may treat it as already-handled.
-      isBacklog = newUserMessages.length > 0
+      readIsBacklog = newUserMessages.length > 0
     } else {
       newUserMessages = pollForwardableRows.filter(
         (m) =>
@@ -11549,7 +11764,7 @@ async function pollChat(chatId: string): Promise<void> {
           }
         }
       }
-      isBacklog =
+      readIsBacklog =
         isBootPoll &&
         newUserMessages.some((m) => {
           const t = sentDateToMs(m.message.sentDate)
@@ -11795,6 +12010,10 @@ async function pollChat(chatId: string): Promise<void> {
     // What this batch may spend waiting on email downloads (EMAIL_FILES_BATCH_BUDGET_MS).
     const pollEmailBudget = createEmailBatchBudget()
     for (const msg of newUserMessages) {
+      // A live message this read also delivers (holdLiveFrame) did not come in while
+      // this daemon was away, and the rows under it did: it keeps a live message's
+      // framing and its overdue timer. Only a boot read can be both.
+      const isBacklog = readIsBacklog && !(msg.message.id >= (chatLiveFloor.get(chatId) ?? Number.POSITIVE_INFINITY))
       // The second lock (person lanes), on the poll as on the socket.
       const pollLaneVerdict = ownerLaneVerdict(msg.message)
       if (!pollLaneVerdict.deliver) {
@@ -11806,7 +12025,9 @@ async function pollChat(chatId: string): Promise<void> {
       // model: the daemon-answered commands take a `continue` before that point, so /status was
       // reporting "no messages yet" while answering a message the user had just sent. Caught by
       // running the real daemon; every unit test around it passed either way.
-      lastInboundAtMs = Date.now()
+      // Not for a row already handed over: a read can start below rows the socket delivered
+      // (chatReadFloor), and that is no message coming in.
+      if (!forwardedMessageIds.has(msg.message.id)) lastInboundAtMs = Date.now()
       const isSlashCommand = isSlashCommandPayload(msg.message)
       // WS may arrive during the boot poll window where its cursor advance is
       // intentionally deferred. Text can tolerate that safety replay, but an
@@ -12171,9 +12392,24 @@ async function pollChat(chatId: string): Promise<void> {
     // delta branch one poll later, defeating the gate. Abandoned rows do not
     // park; rows of unknown age still do (could be a live scheduler race).
     // Keep in lockstep with test/first-poll-gate.test.ts (parkedPendingIds).
+    //
+    // Only a card on the NEWEST page parks. That is the bound this has always
+    // had: a card that never fills falls out of the newest page and the cursor
+    // moves on. A walk reads below that page, and a card found there must not
+    // park, or one card that never fills would pin the cursor for good and every
+    // later read would walk the same rows again.
     const gatedFirstPoll = lastSeen === 0 && FIRST_POLL_RECENT_CUTOFF_MS !== null
-    const pendingIds = ordered
-      .filter(isPendingEmptySystem)
+    const newestPageIds = new Set(firstPage.messages.map((m) => m.message.id))
+    const emptyCards = ordered.filter(isPendingEmptySystem)
+    const unwaitedCards = emptyCards.filter((m) => !newestPageIds.has(m.message.id))
+    if (unwaitedCards.length > 0) {
+      log(
+        `Chat ${chatId}: not waiting for ${unwaitedCards.length} empty wake card(s) below the newest page ` +
+          `(ids ${unwaitedCards.map((m) => m.message.id).join(', ')})`,
+      )
+    }
+    const pendingIds = emptyCards
+      .filter((m) => newestPageIds.has(m.message.id))
       .filter((m) => {
         if (!gatedFirstPoll) return true
         const t = sentDateToMs(m.message.sentDate)
@@ -12186,15 +12422,15 @@ async function pollChat(chatId: string): Promise<void> {
     // longer (lib/email-files.ts createEmailCursorHolds). Exactly the rows
     // this advance treats as handled.
     emailCursorHolds.settle(chatId, maxId)
-    advanceChatCursor(
-      chatId,
-      advanceCursor({ lastSeen, maxId, pendingEmptyIds: pendingIds }),
-    )
+    const readUpTo = advanceCursor({ lastSeen, maxId, pendingEmptyIds: pendingIds })
+    advanceChatCursor(chatId, readUpTo)
+    settleChatReadFloor(chatId, readUpTo)
 
     // Only now (everything processed without throwing) does this chat's boot
     // poll count as done; an error path retries as a boot poll so offline
     // backlog framing is not lost to a transient failure.
     chatsPolledSinceBoot.add(chatId)
+    noteChatReadAtEpoch(chatId, startedAtEpoch)
   } catch {
     // Silent, network blips. Drop the ETag validator for this chat: it may
     // have been recorded before the failure, and the cursor did NOT advance,
@@ -12227,8 +12463,9 @@ async function pollAllChats(): Promise<void> {
 //
 // Existing `pollChat` flow stays in place; it's the cold-start backfill +
 // reliability fallback. A WS-pushed message moves `chatLastSeen` only once
-// the chat's boot poll has completed (deliverWsInbound, wsCursorSafe);
-// before that a chat the poll covers is read instead (0.71.10). The
+// a read of the chat has completed that started on this connection of the
+// socket (deliverWsInbound, wsCursorSafe); before that a chat the poll covers
+// is read first and the message waits for it (holdLiveFrame, 0.81.1). The
 // meeting_message event does not move `chatLastSeen`. What keeps a later poll from handing a pushed
 // message over again is the bounded forwarded-id Set below, which both
 // transports read and write (slash deliveries included, so a delayed WS frame
@@ -12243,6 +12480,12 @@ const WS_URL = (() => {
 
 const forwardedMessageIds = new Set<number>()
 const FORWARD_CACHE_MAX = 500
+// The only dedupe between overlapping reads and between the socket and a read,
+// so it must outlast the longest read: at 500, across all chats, a catch up of
+// more rows than that forgot its own first rows while it was still running, and a
+// read overlapping it handed them over again. Far bigger than any other set here
+// because one number costs little and one duplicate turn costs a lot.
+const FORWARDED_IDS_MAX = 100_000
 // Click ids already announced to the agent by EITHER transport (the poll's
 // transition detector or a stream buttons_answered replay). The shared set
 // is what makes single-announce hold in both race orders AND for ids the
@@ -13421,7 +13664,7 @@ const stopPauseLane = new StopPauseLane({
  *  this daemon never pauses on a host whose owner was never offered Pause. */
 function stopGoalView(): StopGoalView {
   return {
-    pauseDeclared: declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, modelEffortPicker: modelEffortDeclared(), authMode: AUTH.mode }).includes('mission_pause'),
+    pauseDeclared: declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, modelEffortPicker: modelEffortDeclared(), threads: threadsDeclared(), authMode: AUTH.mode }).includes('mission_pause'),
     held: goalHeld,
     attachedMissionId: goalMissionId,
     pending: goalPendingArm,
@@ -13609,6 +13852,120 @@ const sessionLibrary = new AgentSessionLibrary({
   currentName: () => sessionBinder.resolve()?.binding.name ?? null,
 })
 
+// ── Threads phase 1: thread lanes and By the way (lib/thread-lanes.ts) ──────
+// A thread runs as its own headless claude, forked from the session this
+// daemon has proven it serves, in a git worktree of the agent folder under
+// .hoai/threads/<root>; By the way is a one shot tool-less fork of the same
+// session in the same folder. Lane state lives in ~/.bgos-agent/<id>/threads.
+const THREADS_STATE_DIR = pathJoin(agentStateDir(homedir(), ASSISTANT_ID) ?? pathJoin(homedir(), '.bgos-agent', 'unknown'), 'threads')
+function threadsEmptyMcpConfig(): string {
+  // --strict-mcp-config with no server: a lane never starts a second copy of
+  // this channel plugin, which would deliver every chat message twice.
+  const path = pathJoin(THREADS_STATE_DIR, 'empty-mcp.json')
+  if (!existsSync(path)) {
+    mkdirSync(THREADS_STATE_DIR, { recursive: true })
+    writeFileSync(path, '{"mcpServers":{}}\n')
+  }
+  return path
+}
+const threadLanes = new ThreadLaneManager({
+  spawn: spawnStreamJson,
+  claudeBin: resolveClaude,
+  cliProblem: () => threadsCliProblem(threadsCli(), 'turn'),
+  mainSessionId: () => provenSessionId(),
+  agentFolder: CLAUDE_PROJECT_CWD,
+  stateDir: THREADS_STATE_DIR,
+  home: homedir(),
+  configDir: CLAUDE_CONFIG_DIR,
+  emptyMcpConfigPath: threadsEmptyMcpConfig,
+  // A lane gets Bash only inside the CLI's sandbox (sandbox-exec on macOS,
+  // bwrap and socat on Linux); without it, no Bash at all.
+  shellSandbox: () =>
+    laneShellSandboxAvailable({
+      platform: process.platform,
+      exists: (p: string) => existsSync(p),
+      onPath: (name: string) => findOnPath(name, { pathVar: process.env.PATH ?? '' }) !== null,
+    }),
+  platform: process.platform,
+  // A lane left from before a daemon crash is found by pid and start stamp, and stopped (lib/lane-process.ts).
+  processes: {
+    stamp: (pid) => processStamp(pid),
+    kill: (pid, signal) => killProcessGroup(pid, signal),
+  },
+  git: async (args, cwd) => {
+    try {
+      const { stdout } = await execFileAsync('git', args, { cwd, timeout: 60_000, maxBuffer: 1024 * 1024 })
+      return { ok: true, stdout: String(stdout) }
+    } catch {
+      return { ok: false, stdout: '' }
+    }
+  },
+  fs: {
+    exists: (path) => existsSync(path),
+    mkdir: (path) => { mkdirSync(path, { recursive: true }) },
+    readFile: (path) => readFileSync(path, 'utf8'),
+    writeFile: (path, data) => writeFileSync(path, data),
+    appendFile: (path, data) => appendFileSync(path, data),
+    copyFile: (from, to) => copyFileSync(from, to),
+    unlink: (path) => unlinkSync(path),
+    rmrf: (path) => rmSync(path, { recursive: true, force: true }),
+    list: (dir) => readdirSync(dir),
+    createExclusive: (path, data) => writeFileSync(path, data, { flag: 'wx' }),
+    rename: (from, to) => renameSync(from, to),
+  },
+  post: (path, body) => bgosPost(path, body),
+  now: () => Date.now(),
+  setTimer: (fn, ms) => {
+    const timer = setTimeout(fn, ms)
+    timer.unref?.()
+    return timer
+  },
+  clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  log,
+})
+// By the way forks in flight, stopped and cleaned up on shutdown.
+const asideForks = new AsideForks()
+
+/**
+ * A thread turn the person sent while this daemon was away runs now
+ * (GET integrations/threads/pending, scoped to the agent this daemon serves).
+ * Only the lock holder runs lanes, and only where it declares threads, so it
+ * runs on every (re)connect once armed AND when the channel arms: the first
+ * connect after a boot comes before the arm.
+ */
+function reconcilePendingThreads(why: string): void {
+  if (!channelArmed || !threadsDeclared()) return
+  const assistantIds = [String(ASSISTANT_ID)]
+  void threadLanes
+    // no-cache: an ETag 304 would hide turns this new process never ran.
+    .reconcile(() => bgosGet(threadsPendingPath(assistantIds), { headers: { 'Cache-Control': 'no-cache' } }), { assistantIds })
+    .then((started) => { if (started > 0) log(`threads: ${started} pending thread turn(s) started (${why})`) })
+    .catch((err) => log(`threads: pending reconcile failed (${why}): ${err instanceof Error ? err.name : 'error'}`))
+}
+
+const THREAD_CHILDREN_STOP_WAIT_MS = 3_000
+/**
+ * Shutdown: SIGTERM to every thread lane and By the way fork (each its own
+ * process group), at most THREAD_CHILDREN_STOP_WAIT_MS for them to exit,
+ * then SIGKILL for the rest and the forks' session files deleted. Null when
+ * none runs, so a shutdown without them exits at once as before.
+ */
+function stopThreadChildren(): Promise<void> | null {
+  if (threadLanes.liveChildren() === 0 && asideForks.size() === 0) return null
+  const all = Promise.allSettled([threadLanes.stopAll(), asideForks.stopAll()])
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      threadLanes.killAll()
+      asideForks.killAll()
+      resolve()
+    }, THREAD_CHILDREN_STOP_WAIT_MS)
+    void all.then(() => {
+      clearTimeout(timer)
+      resolve()
+    })
+  })
+}
+
 const voiceRpc = new VoiceRpcHandler({
   config: {
     openaiApiKey: VOICE_OPENAI_API_KEY,
@@ -13684,6 +14041,33 @@ const voiceRpc = new VoiceRpcHandler({
   modelEffort: modelEffortPicker,
   // A dispatch card queued behind a change is accepted at once.
   cardsHeld: () => modelEffortControl.busy,
+  // Threads phase 1 (lib/thread-rpc.ts): thread_turn, thread_close, aside.
+  // Not on Windows in phase 1: the ops answer unsupported there.
+  ...(process.platform !== 'win32'
+    ? {
+        threads: {
+          turn: (input) => threadLanes.turn(input),
+          close: (input) => threadLanes.close(input),
+          aside: (input, onDelta) =>
+            runAside(input, {
+              spawn: spawnStreamJson,
+              claudeBin: resolveClaude,
+              cliProblem: () => threadsCliProblem(threadsCli(), 'aside'),
+              mainSessionId: () => provenSessionId(),
+              mainFolder: CLAUDE_PROJECT_CWD,
+              home: homedir(),
+              configDir: CLAUDE_CONFIG_DIR,
+              emptyMcpConfigPath: threadsEmptyMcpConfig,
+              unlink: (path) => unlinkSync(path),
+              onDelta,
+              log,
+              forks: asideForks,
+            }),
+        },
+      }
+    : {}),
+  postProgress: (rpcId, body) =>
+    bgosPost(`integrations/voice-rpc/${encodeURIComponent(rpcId)}/progress`, body),
   log,
 })
 
@@ -14636,7 +15020,7 @@ function rememberForwarded(id: number): void {
   if (forwardedMessageIds.has(id)) return
   forwardedMessageIds.add(id)
   // Bound the set so a long-running plugin doesn't grow forever.
-  if (forwardedMessageIds.size > FORWARD_CACHE_MAX) {
+  if (forwardedMessageIds.size > FORWARDED_IDS_MAX) {
     const first = forwardedMessageIds.values().next().value
     if (first !== undefined) forwardedMessageIds.delete(first)
   }
@@ -15845,6 +16229,11 @@ function connectWebsocket(): void {
 
   realtimeSocket.on('connect', () => {
     log(`WS connected (id=${realtimeSocket?.id}), polling will throttle`)
+    // From here every chat is behind this connection until a read says otherwise.
+    socketEpoch++
+    // Threads phase 1: a turn the person sent while this daemon was away is
+    // run now (also when the channel arms, for the first connect after boot).
+    reconcilePendingThreads('ws connect')
     // Pending ask groups are read again on every connect: an answer given
     // while this daemon was down or disconnected is due now, and a stream
     // entry for it may be behind a cursor this life never reads.
@@ -16188,8 +16577,60 @@ function connectWebsocket(): void {
     // delivery below (deliverWsInbound). Flag off, no stream mode, or an
     // unstamped payload: the legacy path runs untouched.
     if (routeStampedInbound(payload, deliverWsInbound)) return
+    if (holdLiveFrame(payload)) return
     deliverWsInbound(payload)
   }))
+
+  // A live message into a chat no read has caught up on this connection waits for
+  // that read: the rows it missed are older than this message and go first. The
+  // read delivers this message too (it is on the server by now), and the release
+  // below then stands down at the forwarded-id dedupe, so a live message right
+  // after a reconnect reaches the agent over the poll lane, in its place. Read now,
+  // not at the next sweep. A chat the inbox does not list is the socket's alone,
+  // so it is not held. Only the legacy path comes here: a stamped frame has the
+  // stream's own gap arithmetic.
+  function holdLiveFrame(payload: any): boolean {
+    if (!channelArmed) return false
+    const messageId = Number(payload?.messageId ?? payload?.message_id)
+    const chatId = String(payload?.chatId ?? payload?.chat_id ?? '')
+    if (!Number.isFinite(messageId) || !chatId || forwardedMessageIds.has(messageId)) return false
+    const caughtUp =
+      (chatsPolledSinceBoot.has(chatId) && !chatBehindSocket(chatId)) ||
+      streamCoveredChats.has(chatId)
+    // A chat can be caught up with frames still waiting for their read: going
+    // straight would put this message in front of them.
+    if ((caughtUp && !heldReadsInFlight.has(chatId)) || !monitoredChatIds.includes(chatId)) return false
+    noteLiveFloor(chatId, messageId)
+    const held = heldLiveFrames.get(chatId)
+    if (held) held.push(payload)
+    else heldLiveFrames.set(chatId, [payload])
+    log(`Live message ${messageId} in chat ${chatId} waits for the catch up read`)
+    readThenReleaseHeld(chatId)
+    return true
+  }
+
+  // One read per chat for the frames held so far, then let them go. A frame that
+  // lands during the read waits for the next one: this read may have started before
+  // that row was written. A failed read still lets its frames through (deliverWsInbound
+  // reads the chat again and moves no cursor): out of order at worst, because a live
+  // message must not wait on a server that cannot answer, and the rows under it are
+  // still read. A frame refused here (a drain, a stand down) moved no cursor, so
+  // whoever reads the chat next delivers it.
+  function readThenReleaseHeld(chatId: string): void {
+    if (heldReadsInFlight.has(chatId)) return
+    const frames = heldLiveFrames.get(chatId) ?? []
+    heldLiveFrames.delete(chatId)
+    heldReadsInFlight.add(chatId)
+    void pollChat(chatId)
+      .catch((err) => log(`Catch up read of chat ${chatId} failed: ${err}`))
+      .finally(() => {
+        heldReadsInFlight.delete(chatId)
+        const byId = (frame: any) => Number(frame?.messageId ?? frame?.message_id)
+        frames.sort((a, b) => byId(a) - byId(b))
+        if (!updateDrainMode) for (const frame of frames) deliverWsInbound(frame)
+        if (heldLiveFrames.has(chatId)) readThenReleaseHeld(chatId)
+      })
+  }
 
   // The legacy inbound delivery body, shared verbatim by the direct path
   // above and the stream-stamped apply. Hoisted declaration so the handler
@@ -16257,16 +16698,23 @@ function connectWebsocket(): void {
       // socket. Only a chat the poll covers is read: a chat the inbox does not
       // list is the socket's alone until discoverChats lists it. Driven end to
       // end in test/first-read-cursor-zero.e2e.test.ts.
+      //
+      // A completed boot poll is not enough either (D04-1): the read must have
+      // started on this connection of the socket, see chatBehindSocket. Most frames
+      // that are not safe never get here: holdLiveFrame keeps them until the read.
+      // Driven end to end in test/catch-up-after-deploy.e2e.test.ts.
       const chatId = String(payload?.chatId ?? payload?.chat_id ?? '')
       if (chatId) {
         // A chat the update stream has fed since boot counts as covered
         // exactly like a completed boot poll (5.7: the stream feeds the
         // per-chat cursors; streamCoveredChats is empty with the flag off).
         const wsCursorSafe =
-          chatsPolledSinceBoot.has(chatId) ||
+          (chatsPolledSinceBoot.has(chatId) && !chatBehindSocket(chatId)) ||
           streamCoveredChats.has(chatId)
         if (wsCursorSafe) {
+          const cursorBefore = chatLastSeen.get(chatId) ?? 0
           advanceChatCursor(chatId, messageId)
+          noteCursorPassedUnread(chatId, cursorBefore)
           // Cut short below an email this daemon let go undelivered (it stood
           // down while its files downloaded, then re-armed): read the chat now,
           // so that email is delivered and settled at once, not at the next
@@ -17800,6 +18248,16 @@ async function main(): Promise<void> {
       releasePairingLock({ lockPath: PAIRING_LOCK_PATH, selfPid: process.pid })
       // Never leave a sign-in child behind (lib/auth-login.ts).
       loginController.dispose()
+      // Nor a thread lane or a By the way fork (lib/thread-lanes.ts,
+      // lib/aside-fork.ts): a bounded wait for them, only when one runs.
+      const threadChildrenDown = stopThreadChildren()
+      if (threadChildrenDown) {
+        void threadChildrenDown.then(() => {
+          browserHost?.stop()
+          process.exit(code)
+        })
+        return
+      }
       browserHost?.stop()
       process.exit(code)
     }
@@ -17818,6 +18276,8 @@ async function main(): Promise<void> {
     flushChatCursors()
     releasePairingLock({ lockPath: PAIRING_LOCK_PATH, selfPid: process.pid })
     loginController.dispose()
+    void threadLanes.stopAll()
+    asideForks.killAll()
     browserHost?.stop()
   })
 
@@ -17828,6 +18288,13 @@ async function main(): Promise<void> {
   // agent-state.json (design section 7): ticks from here on; it writes only
   // while this daemon holds the pairing lock, so a passive daemon never does.
   setInterval(() => { agentStatePublisher.tick(); publishBrowserPrivateTurn() }, AGENT_STATE_TICK_MS).unref()
+  // Threads phase 1: the worktree of a thread closed more than 7 days ago goes.
+  setInterval(() => {
+    void threadLanes
+      .sweepClosed(Date.now())
+      .then((removed) => { if (removed.length > 0) log(`threads: removed ${removed.length} closed thread worktree(s)`) })
+      .catch((err) => log(`threads: sweep failed: ${err instanceof Error ? err.name : 'error'}`))
+  }, 60 * 60_000).unref()
   // The session pin (finding 7): asks only while this daemon holds the channel
   // and its live session is not pinned yet (lib/session-pin.ts).
   setInterval(() => checkSessionPin(), SESSION_PIN_CHECK_MS).unref()
@@ -18176,11 +18643,18 @@ async function main(): Promise<void> {
       // backend. Acceptable, and documented rather than fixed, because forcing
       // a reconnect to chase it would cost the cheap re-arm this design is
       // built on.
+      //
+      // Every frame of the spell was ignored, and the socket never dropped, so this
+      // is the one thing that says the chats are behind. The first live message into
+      // each reads it first (holdLiveFrame); a chat with no live message is read at
+      // the next sweep. No sweep here, for the same cheap re-arm.
+      socketEpoch++
       channelArmed = true
       connectedSince = Date.now()
       channelEverArmed = true
       startHookIntakeIfHolder()
       handleUnboundBeforeArm()
+      reconcilePendingThreads('re-armed')
       log(
         `delivery re-armed after reclaiming the pairing lock; ` +
           `monitoring ${monitoredChatIds.length} chat(s)`,
@@ -18496,6 +18970,46 @@ async function main(): Promise<void> {
           }),
         ).catch((err) => log(`liveness probe delivery failed: ${err}`))
       }, LIVENESS_PROBE_POLL_MS).unref()
+    }
+
+    // Step 2.65: the limit watch's notice (lib/limit-notice.ts). When this agent was stuck on Claude
+    // Code's usage limit screen, the watcher presses Enter once as soon as usage is back (or says why
+    // it could not) and drops ~/.bgos-agent/<id>/limit-notice.json: tokens and times only. Here it is
+    // turned into the owner's words from fixed templates and posted into the owner's own chat, the
+    // deaf warning's way (deafNoticeChat: never a group, never somebody else's chat). No owner chat
+    // known yet: the file stays and the next tick tries again, at most once a minute.
+    const limitNoticeDir = agentStateDir(homedir(), ASSISTANT_ID)
+    if (limitNoticeDir) {
+      const limitNotices = createLimitNoticeIntake({
+        path: pathJoin(limitNoticeDir, LIMIT_NOTICE_FILE_NAME),
+        readFile: (path) => {
+          try {
+            return readFileSync(path, 'utf8')
+          } catch {
+            return null
+          }
+        },
+        removeFile: (path) => unlinkSync(path),
+        post: async (text) => {
+          const chat = deafNoticeChat({ pendingChatId: '', mainChatIds, ownership: chatOwnership })
+          if (!chat) return false
+          await sendConnectionNotice(chat, text)
+          return true
+        },
+        now: () => Date.now(),
+        log,
+      })
+      let limitNoticeBusy = false
+      setInterval(() => {
+        if (limitNoticeBusy) return
+        limitNoticeBusy = true
+        void limitNotices
+          .tick()
+          .catch((err) => log(`limit notice failed: ${err}`))
+          .finally(() => {
+            limitNoticeBusy = false
+          })
+      }, LIMIT_NOTICE_POLL_MS).unref()
     }
 
     // Step 2.7: Agent Update Stream (flag-gated; STRICT default OFF). Mint a
@@ -18869,7 +19383,7 @@ async function main(): Promise<void> {
       // CLI's composer, and lib/compact-capability.ts can discover that up to
       // thirty minutes after boot. See lib/declared-capabilities.ts.
       capabilities: () => [
-        ...declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, modelEffortPicker: modelEffortDeclared(), authMode: AUTH.mode }),
+        ...declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, modelEffortPicker: modelEffortDeclared(), threads: threadsDeclared(), authMode: AUTH.mode }),
       ],
       // One-click update telemetry (wire contract v1): the newest version this
       // daemon found at its own pinned source (origin/main for a clone, the
@@ -18979,6 +19493,8 @@ async function main(): Promise<void> {
     // session's hook spool. Only the holder consumes (see the guard inside).
     startHookIntakeIfHolder()
     handleUnboundBeforeArm()
+    // The first connect after a boot came before this arm: run what waits.
+    reconcilePendingThreads('armed')
   }
 
   // The passive watch loop, shared by the two ways a daemon can find itself

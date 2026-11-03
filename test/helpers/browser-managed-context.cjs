@@ -65,7 +65,7 @@ async function rig(t, { managed = true, credential = "pairing", env: overrides =
   const send = message => child.stdin.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n");
   const response = async id => { await until(() => responses.some(row => row.id === id)); return responses.find(row => row.id === id); };
   const request = async (method = "tools/call", params = { name: "browser_snapshot", arguments: {} }) => { const id = nextId++; send({ id, method, params }); return response(id); };
-  t.after(async () => { if (child.exitCode === null) { const exit = new Promise(resolve => child.once("exit", resolve)); child.kill(); await exit; } server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+  t.after(async () => { if (child.exitCode === null) { const exit = new Promise(resolve => child.once("exit", resolve)); child.kill(); await exit; } server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); fs.rmSync(home, { recursive: true, force: true, maxRetries: 3 }); });
   return { seen, state, send, response, request, publish, contextFile, markerFile, responses, stderr: () => stderr };
 }
 

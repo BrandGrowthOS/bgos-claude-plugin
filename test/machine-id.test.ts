@@ -12,8 +12,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import * as nodeFs from 'node:fs'
-import { mkdtempSync, readFileSync, statSync, existsSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync, statSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 
 import {
@@ -23,11 +22,12 @@ import {
   machineIdPath,
   normalizeMachineId,
 } from '../lib/machine-id.mjs'
+import { scratchDir } from './helpers/scratch-dirs'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 
 function freshHome(): string {
-  return mkdtempSync(join(tmpdir(), 'machine-id-'))
+  return scratchDir('machine-id-')
 }
 
 test('machineIdPath sits at <home>/.bgos-agent/machine-id', () => {

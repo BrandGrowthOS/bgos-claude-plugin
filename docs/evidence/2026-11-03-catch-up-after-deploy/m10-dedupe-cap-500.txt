@@ -1,0 +1,61 @@
+MUTANT m10-dedupe-cap-500
+undoes: the dedupe outlasts a long read
+file: server.ts
+--- removed
+if (forwardedMessageIds.size > FORWARDED_IDS_MAX) {
++++ added
+if (forwardedMessageIds.size > FORWARD_CACHE_MAX) {
+exit=1
+
+▶ a reconnect or a failure in the middle of a page
+  ✔ the socket drops and comes back while an older page is in flight, a live message lands: every row once, oldest first (15012.329965ms)
+  ✔ an older page fails: nothing is lost or repeated, and the next read starts over without a validator on any page (12976.375793ms)
+  ✔ the daemon restarts while an older page is in flight: every row once, oldest first, across both lives (9712.649775ms)
+  ✔ a read that starts during a walk is not answered 304 by the walk's first page: a live message after it does not overtake the walk (20252.662544ms)
+✔ a reconnect or a failure in the middle of a page (29968.9803ms)
+▶ what a long read must not break
+  ✔ a walk that outlasts the lock's 15 seconds inside a tick keeps the lock fresh (34879.613425ms)
+  ✔ a daemon that stands down during a walk reads no further page and delivers nothing (22207.808639ms)
+  ✔ a daemon that stands down during the last older page delivers nothing (16309.093095ms)
+  ✔ a wake card that never fills does not pin the cursor: the rows above it arrive once and the next read starts above them (16560.280103ms)
+  ✔ a wake card inside the newest page still waits for its body, and arrives once with it (19889.604729ms)
+  ✖ a drain of 600 rows in one chat does not make the daemon forget what it handed over in another (23996.956071ms)
+✖ what a long read must not break (56868.261901ms)
+ℹ tests 10
+ℹ suites 2
+ℹ pass 9
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 87227.277553
+
+✖ failing tests:
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:27357
+✖ a drain of 600 rows in one chat does not make the daemon forget what it handed over in another (23996.956071ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+      forwarded: '10 of 10',
+      label: 'the parked chat, read again after the drain',
+      missing: 'none',
+  +   oldestFirst: false,
+  +   twice: '102-110',
+  -   oldestFirst: true,
+  -   twice: 'none',
+      unexpected: 'none'
+    }
+  
+      at assertExactlyOnceInOrder (/home/karim/lane-tmp/d041/mut/m10-dedupe-cap-500.3bo8xg2g/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m10-dedupe-cap-500.3bo8xg2g/test/catch-up-after-deploy.e2e.test.ts:1266:7)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Suite.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { label: 'the parked chat, read again after the drain', forwarded: '10 of 10', missing: 'none', unexpected: 'none', twice: '102-110', oldestFirst: false },
+    expected: { label: 'the parked chat, read again after the drain', forwarded: '10 of 10', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: true },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }

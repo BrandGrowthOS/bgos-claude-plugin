@@ -9,19 +9,19 @@
  */
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import { registerCloneHooks, workspaceNamesThisClone } from '../lib/clone-hooks.mjs'
 import { linkFolder } from './helpers/links.ts'
+import { scratchDir } from './helpers/scratch-dirs.ts'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 function workspace(serverTs: string | null, settings?: unknown): string {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'clone-hooks-ws-')))
+  const dir = realpathSync(scratchDir('clone-hooks-ws-'))
   if (serverTs) writeFileSync(join(dir, '.mcp.json'), JSON.stringify({ mcpServers: { bgos: { command: 'bun', args: [serverTs] } } }))
   if (settings) {
     mkdirSync(join(dir, '.claude'), { recursive: true })
@@ -32,7 +32,7 @@ function workspace(serverTs: string | null, settings?: unknown): string {
 const settingsOf = (dir: string) => JSON.parse(readFileSync(join(dir, '.claude', 'settings.local.json'), 'utf8'))
 const text = (value: unknown) => JSON.stringify(value)
 const aliasOf = (target: string) => {
-  const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'clone-hooks-alias-')))
+  const scratch = realpathSync(scratchDir('clone-hooks-alias-'))
   const alias = join(scratch, 'alias')
   linkFolder(target, alias)
   return alias
@@ -46,7 +46,7 @@ test('a clone workspace that names this checkout is recognised, through an alias
 })
 
 test('another checkout, no .mcp.json and a junk .mcp.json are not clone workspaces', () => {
-  const other = realpathSync(mkdtempSync(join(tmpdir(), 'clone-hooks-other-')))
+  const other = realpathSync(scratchDir('clone-hooks-other-'))
   writeFileSync(join(other, 'server.ts'), '')
   assert.equal(workspaceNamesThisClone({ workdir: workspace(join(other, 'server.ts')), pluginDir: repoRoot }), false)
   assert.equal(workspaceNamesThisClone({ workdir: workspace(null), pluginDir: repoRoot }), false)

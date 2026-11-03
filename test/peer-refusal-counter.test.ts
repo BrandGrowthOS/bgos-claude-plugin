@@ -5,16 +5,16 @@
  * Run: npx tsx --test test/peer-refusal-counter.test.ts
  */
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
 import { PEER_REFUSAL_FILE_NAME, PEER_REFUSAL_KEEP_DAYS, dayKey, readPeerRefusals, recordPeerRefusal } from '../lib/peer-refusal-counter.mjs'
+import { scratchDir } from './helpers/scratch-dirs'
 
 const T0 = Date.UTC(2026, 9, 12, 8, 0, 0)
 const DAY = 24 * 60 * 60 * 1000
-const dir = () => mkdtempSync(join(tmpdir(), 'peer-refusal-'))
+const dir = () => scratchDir('peer-refusal-')
 
 test('one refusal is one line with the tool, the delegate, the target and a running count, and nothing else', () => {
   const d = dir()

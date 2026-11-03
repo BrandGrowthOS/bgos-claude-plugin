@@ -16,14 +16,13 @@
 
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtempSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { scratchDir } from './helpers/scratch-dirs'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
-const missingBrowser = join(mkdtempSync(join(tmpdir(), 'no-browser-')), process.platform === 'win32' ? 'chrome.exe' : 'chrome')
+const missingBrowser = join(scratchDir('no-browser-'), process.platform === 'win32' ? 'chrome.exe' : 'chrome')
 
 function runAlone(file: string): Promise<{ code: number | null; timedOut: boolean; output: string }> {
   return new Promise((resolve) => {
