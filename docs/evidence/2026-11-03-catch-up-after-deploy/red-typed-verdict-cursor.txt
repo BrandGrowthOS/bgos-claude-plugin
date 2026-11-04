@@ -1,0 +1,47 @@
+▶ hole 1: the reconnect skip
+  ✔ a live message behind a failed boot read is framed live, and the rows under it as backlog (3233.713467ms)
+✔ hole 1: the reconnect skip (3234.855166ms)
+▶ hole 4: a row the server never pushes
+  ✖ a typed permission answer does not move the place over rows under it: they still arrive, once, and the answer itself never does (57352.819263ms)
+✖ hole 4: a row the server never pushes (57353.830904ms)
+ℹ tests 2
+ℹ suites 2
+ℹ pass 1
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 68597.064372
+
+✖ failing tests:
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:19042
+✖ a typed permission answer does not move the place over rows under it: they still arrive, once, and the answer itself never does (57352.819263ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+  +   forwarded: '0 of 2',
+  -   forwarded: '2 of 2',
+      label: 'rows under a typed permission answer',
+  +   missing: '101-102',
+  -   missing: 'none',
+      oldestFirst: true,
+      twice: 'none',
+      unexpected: 'none'
+    }
+  
+      at assertExactlyOnceInOrder (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:1024:7)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 1)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { label: 'rows under a typed permission answer', forwarded: '0 of 2', missing: '101-102', unexpected: 'none', twice: 'none', oldestFirst: true },
+    expected: { label: 'rows under a typed permission answer', forwarded: '2 of 2', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: true },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+exit=1

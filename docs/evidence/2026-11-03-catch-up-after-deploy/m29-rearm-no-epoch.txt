@@ -1,0 +1,55 @@
+MUTANT m29-rearm-no-epoch
+undoes: review F4: taking the lock back marks the chats as behind
+file: server.ts
+--- removed
+      socketEpoch++
+      channelArmed = true
+
++++ added
+      channelArmed = true
+
+exit=1
+
+▶ hole 1: the reconnect skip
+  ✖ a daemon that stood down and took the lock back: a row of the passive spell goes before the next live message (58283.447551ms)
+✖ hole 1: the reconnect skip (58285.267109ms)
+ℹ tests 1
+ℹ suites 1
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 58706.647229
+
+✖ failing tests:
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:7653
+✖ a daemon that stood down and took the lock back: a row of the passive spell goes before the next live message (58283.447551ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+  +   forwarded: '1 of 2',
+  -   forwarded: '2 of 2',
+      label: 'a passive spell, then a live message',
+  +   missing: '101',
+  -   missing: 'none',
+      oldestFirst: true,
+      twice: 'none',
+      unexpected: 'none'
+    }
+  
+      at assertExactlyOnceInOrder (/home/karim/lane-tmp/d041/mut/m29-rearm-no-epoch.bvtqz8r9/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m29-rearm-no-epoch.bvtqz8r9/test/catch-up-after-deploy.e2e.test.ts:698:7)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 5)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { label: 'a passive spell, then a live message', forwarded: '1 of 2', missing: '101', unexpected: 'none', twice: 'none', oldestFirst: true },
+    expected: { label: 'a passive spell, then a live message', forwarded: '2 of 2', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: true },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }

@@ -125,7 +125,7 @@ test('first poll (no cursor) is a FULL fetch without afterId', () => {
     unansweredButtonCount: 0,
   })
   assert.equal(req.mode, 'full')
-  assert.equal(req.path, 'chats/946/messages?userId=user_1')
+  assert.equal(req.path, 'chats/946/messages?userId=user_1&withPagination=1')
   assert.ok(!req.path.includes('afterId'), 'first poll must not pass afterId')
 })
 
@@ -137,7 +137,7 @@ test('subsequent polls pass afterId=<last seen id>', () => {
     unansweredButtonCount: 0,
   })
   assert.equal(req.mode, 'delta')
-  assert.equal(req.path, 'chats/946/messages?userId=user_1&afterId=4711')
+  assert.equal(req.path, 'chats/946/messages?userId=user_1&afterId=4711&withPagination=1')
 })
 
 test('a chat with tracked unanswered inline buttons keeps FULL fetching', () => {
@@ -377,7 +377,7 @@ test('poll sequence: first full fetch, then deltas that only carry new rows', ()
   const state: HarnessState = { cursor: 0, unansweredButtonCount: 0 }
 
   const p1 = pollOnce(backend, state, cache)
-  assert.equal(backend.requests[0], 'chats/1/messages?userId=u', 'first poll is full')
+  assert.equal(backend.requests[0], 'chats/1/messages?userId=u&withPagination=1', 'first poll is full')
   assert.equal(state.cursor, 2)
   assert.equal(p1.notModified, false)
 
@@ -385,7 +385,7 @@ test('poll sequence: first full fetch, then deltas that only carry new rows', ()
   // body differs from the full window so the validator rolls over) and every
   // repeat delta after that 304s.
   const p2 = pollOnce(backend, state, cache)
-  assert.equal(backend.requests[1], 'chats/1/messages?userId=u&afterId=2')
+  assert.equal(backend.requests[1], 'chats/1/messages?userId=u&afterId=2&withPagination=1')
   assert.equal(p2.notModified, false)
   assert.deepEqual(p2.forwarded, [], 'empty delta window forwards nothing')
   assert.equal(state.cursor, 2, 'an empty window never moves the cursor')
@@ -806,7 +806,8 @@ test('server.ts scopes the caller assistant header to opted-in GETs', () => {
   assert.ok(getBody.includes('opts?.callerAssistantId'))
   assert.equal(
     serverSource.match(/callerAssistantId: ASSISTANT_ID/g)?.length,
-    1,
+    // Poll, catch-up pages, and the exact authoritative edit read.
+    3,
   )
 })
 
@@ -818,7 +819,7 @@ test('server.ts filters self-authored poll rows through the tested predicate', (
   const filterIndex = pollBody.indexOf(
     'shouldForwardPollMessage(m.message, ASSISTANT_ID)',
   )
-  const forwardIndex = pollBody.indexOf('for (const msg of newUserMessages)')
+  const forwardIndex = pollBody.indexOf('for (const { row: msg, edit } of deliveries)')
   assert.ok(filterIndex >= 0, 'poll author filter must be wired')
   assert.ok(filterIndex < forwardIndex, 'author filter must run before forwarding')
 })

@@ -1,0 +1,31 @@
+✔ test/marketplace-attach.e2e.test.ts (95.82425ms)
+✖ marketplace: a rejected credentials file cannot lend its home to another agent (2.135709ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 1
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 119.690083
+
+✖ failing tests:
+
+test at test/marketplace-attach.test.ts:1:3864
+✖ marketplace: a rejected credentials file cannot lend its home to another agent (2.135709ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  'attach' !== 'refuse'
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.test.ts:88:12)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.start (node:internal/test_runner/test:1096:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:385:17) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'attach',
+    expected: 'refuse',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

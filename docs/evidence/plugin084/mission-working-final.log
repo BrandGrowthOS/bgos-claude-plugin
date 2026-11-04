@@ -1,0 +1,1667 @@
+TAP version 13
+# Subtest: the working and waiting paths are the pairing family routes, one goal each
+ok 1 - the working and waiting paths are the pairing family routes, one goal each
+  ---
+  duration_ms: 8.680708
+  type: 'test'
+  ...
+# Subtest: set_goal_working input: one or more positive integer ids and a boolean, anything else refused with the value named
+ok 2 - set_goal_working input: one or more positive integer ids and a boolean, anything else refused with the value named
+  ---
+  duration_ms: 0.63925
+  type: 'test'
+  ...
+# Subtest: set_goal_waiting body: { on, who, why } trimmed, or null to clear, judged as the backend judges it
+ok 3 - set_goal_waiting body: { on, who, why } trimmed, or null to clear, judged as the backend judges it
+  ---
+  duration_ms: 0.358083
+  type: 'test'
+  ...
+# Subtest: set_goal_working sends one PATCH per goal id, in order, to the working route, with { working }
+ok 4 - set_goal_working sends one PATCH per goal id, in order, to the working route, with { working }
+  ---
+  duration_ms: 257.2305
+  type: 'test'
+  ...
+# Subtest: set_goal_working with working false clears each mark the same way
+ok 5 - set_goal_working with working false clears each mark the same way
+  ---
+  duration_ms: 152.127917
+  type: 'test'
+  ...
+# Subtest: set_goal_working with unbound hook intake gives manual refresh guidance
+ok 6 - set_goal_working with unbound hook intake gives manual refresh guidance
+  ---
+  duration_ms: 63.023541
+  type: 'test'
+  ...
+# Subtest: set_goal_working with absent hook intake gives manual refresh guidance
+ok 7 - set_goal_working with absent hook intake gives manual refresh guidance
+  ---
+  duration_ms: 30.778333
+  type: 'test'
+  ...
+# Subtest: set_goal_working with a bound session describes its real hook lifecycle
+ok 8 - set_goal_working with a bound session describes its real hook lifecycle
+  ---
+  duration_ms: 9.435125
+  type: 'test'
+  ...
+# Subtest: set_goal_working on a recipient turn carries their caller header on every write
+ok 9 - set_goal_working on a recipient turn carries their caller header on every write
+  ---
+  duration_ms: 94.507
+  type: 'test'
+  ...
+# Subtest: set_goal_working with an explicit mission_id targets it, with no read on the owner turn
+ok 10 - set_goal_working with an explicit mission_id targets it, with no read on the owner turn
+  ---
+  duration_ms: 16.732625
+  type: 'test'
+  ...
+# Subtest: set_goal_working refuses a bad id or flag before ANY request, naming the value
+ok 11 - set_goal_working refuses a bad id or flag before ANY request, naming the value
+  ---
+  duration_ms: 272.349417
+  type: 'test'
+  ...
+# Subtest: set_goal_working surfaces a refusal word for word, still sends the other goals, and is an error
+ok 12 - set_goal_working surfaces a refusal word for word, still sends the other goals, and is an error
+  ---
+  duration_ms: 7.902709
+  type: 'test'
+  ...
+# Subtest: set_goal_working with every goal refused names each failure
+ok 13 - set_goal_working with every goal refused names each failure
+  ---
+  duration_ms: 241.215375
+  type: 'test'
+  ...
+# Subtest: with no open mission in the chat neither tool writes, and each says so
+ok 14 - with no open mission in the chat neither tool writes, and each says so
+  ---
+  duration_ms: 124.016166
+  type: 'test'
+  ...
+# Subtest: set_goal_waiting sends one PATCH to the waiting route with { waiting: { on, who, why } }
+ok 15 - set_goal_waiting sends one PATCH to the waiting route with { waiting: { on, who, why } }
+  ---
+  duration_ms: 40.155708
+  type: 'test'
+  ...
+# Subtest: set_goal_waiting with clear: true sends { waiting: null }
+ok 16 - set_goal_waiting with clear: true sends { waiting: null }
+  ---
+  duration_ms: 105.098417
+  type: 'test'
+  ...
+# Subtest: set_goal_waiting refuses a bad goal id or shape before ANY request
+ok 17 - set_goal_waiting refuses a bad goal id or shape before ANY request
+  ---
+  duration_ms: 275.316333
+  type: 'test'
+  ...
+# Subtest: set_goal_waiting surfaces the backend refusal word for word
+ok 18 - set_goal_waiting surfaces the backend refusal word for word
+  ---
+  duration_ms: 116.25575
+  type: 'test'
+  ...
+# Subtest: after a mark the owner's next Pause and Resume are still heard (found in review)
+ok 19 - after a mark the owner's next Pause and Resume are still heard (found in review)
+  ---
+  duration_ms: 104.670667
+  type: 'test'
+  ...
+# Subtest: set_goal_waiting takes a goal id only as a number, as set_goal_working does
+ok 20 - set_goal_waiting takes a goal id only as a number, as set_goal_working does
+  ---
+  duration_ms: 129.006291
+  type: 'test'
+  ...
+# Subtest: who refuses the line and paragraph separators the backend refuses
+ok 21 - who refuses the line and paragraph separators the backend refuses
+  ---
+  duration_ms: 0.166583
+  type: 'test'
+  ...
+# Subtest: both tools are declared with the brief schema, chat_id and mission_id optional
+ok 22 - both tools are declared with the brief schema, chat_id and mission_id optional
+  ---
+  duration_ms: 0.390834
+  type: 'test'
+  ...
+# Subtest: both tools are turn aware at admission, private for the helper guard in every install, and own tools for the hook rows
+ok 23 - both tools are turn aware at admission, private for the helper guard in every install, and own tools for the hook rows
+  ---
+  duration_ms: 0.606416
+  type: 'test'
+  ...
+# Subtest: the MCP instructions and the bundled fallback name both tools and the 30 minute refresh
+ok 24 - the MCP instructions and the bundled fallback name both tools and the 30 minute refresh
+  ---
+  duration_ms: 6.317708
+  type: 'test'
+  ...
+# Subtest: mission_goal_working is declared on every host, so the served canon tells the agent the working rule
+ok 25 - mission_goal_working is declared on every host, so the served canon tells the agent the working rule
+  ---
+  duration_ms: 2.034125
+  type: 'test'
+  ...
+# Subtest: a card is addressed through a keyed map, so a late update patches it
+ok 26 - a card is addressed through a keyed map, so a late update patches it
+  ---
+  duration_ms: 1.125166
+  type: 'test'
+  ...
+# Subtest: the write back is not gated on the turn being the one that started it
+ok 27 - the write back is not gated on the turn being the one that started it
+  ---
+  duration_ms: 0.514042
+  type: 'test'
+  ...
+# Subtest: a pending write survives a chat record that has gone stale
+ok 28 - a pending write survives a chat record that has gone stale
+  ---
+  duration_ms: 0.260209
+  type: 'test'
+  ...
+# Subtest: the turn end keeps a card whose child is still working
+ok 29 - the turn end keeps a card whose child is still working
+  ---
+  duration_ms: 0.689625
+  type: 'test'
+  ...
+# Subtest: a carried card takes its message over before the turn s keys are forgotten
+ok 30 - a carried card takes its message over before the turn s keys are forgotten
+  ---
+  duration_ms: 0.37725
+  type: 'test'
+  ...
+# Subtest: every card owed a write has a slot of its own
+ok 31 - every card owed a write has a slot of its own
+  ---
+  duration_ms: 0.949625
+  type: 'test'
+  ...
+# Subtest: the final write of a turn takes the one write at a time slot as well
+ok 32 - the final write of a turn takes the one write at a time slot as well
+  ---
+  duration_ms: 0.156208
+  type: 'test'
+  ...
+# Subtest: nothing but the turn end and the bounded remember touches the map entries
+ok 33 - nothing but the turn end and the bounded remember touches the map entries
+  ---
+  duration_ms: 0.691375
+  type: 'test'
+  ...
+# Subtest: the final card is still read out of the pending state before the turn end clears it
+ok 34 - the final card is still read out of the pending state before the turn end clears it
+  ---
+  duration_ms: 0.234125
+  type: 'test'
+  ...
+# Subtest: the intake keeps its live cadence while a child agent is still working
+ok 35 - the intake keeps its live cadence while a child agent is still working
+  ---
+  duration_ms: 0.161792
+  type: 'test'
+  ...
+# Subtest: the card state carries the key of the card it belongs to
+ok 36 - the card state carries the key of the card it belongs to
+  ---
+  duration_ms: 0.154375
+  type: 'test'
+  ...
+# Subtest: standing down forgets the cards, the way it forgets the pending state
+ok 37 - standing down forgets the cards, the way it forgets the pending state
+  ---
+  duration_ms: 0.147209
+  type: 'test'
+  ...
+# Subtest: a named chat rides the create body as a number
+ok 38 - a named chat rides the create body as a number
+  ---
+  duration_ms: 0.763709
+  type: 'test'
+  ...
+# Subtest: no chat means NO chatId key at all, never null
+ok 39 - no chat means NO chatId key at all, never null
+  ---
+  duration_ms: 0.733583
+  type: 'test'
+  ...
+# Subtest: a chat that is not a positive integer is refused with an actionable message
+ok 40 - a chat that is not a positive integer is refused with an actionable message
+  ---
+  duration_ms: 0.145333
+  type: 'test'
+  ...
+# Subtest: an empty or absent chat reads as "the main chat", not as a mistake to shout about
+ok 41 - an empty or absent chat reads as "the main chat", not as a mistake to shout about
+  ---
+  duration_ms: 0.073625
+  type: 'test'
+  ...
+# Subtest: the active path is byte identical to today when no chat is named
+ok 42 - the active path is byte identical to today when no chat is named
+  ---
+  duration_ms: 0.057875
+  type: 'test'
+  ...
+# Subtest: a named chat is appended as a query, so each chat gets its own ETag cache key
+ok 43 - a named chat is appended as a query, so each chat gets its own ETag cache key
+  ---
+  duration_ms: 0.057875
+  type: 'test'
+  ...
+# Subtest: a junk chat on the read is ignored rather than fatal: the agent still gets its main chat mission
+ok 44 - a junk chat on the read is ignored rather than fatal: the agent still gets its main chat mission
+  ---
+  duration_ms: 0.046875
+  type: 'test'
+  ...
+# Subtest: the turn chat is used when it is one of the owner own chats
+ok 45 - the turn chat is used when it is one of the owner own chats
+  ---
+  duration_ms: 0.105375
+  type: 'test'
+  ...
+# Subtest: a room is never chosen implicitly, and the search moves on to a chat that works
+ok 46 - a room is never chosen implicitly, and the search moves on to a chat that works
+  ---
+  duration_ms: 0.072292
+  type: 'test'
+  ...
+# Subtest: a chat whose last inbound came from somebody else is never chosen implicitly
+ok 47 - a chat whose last inbound came from somebody else is never chosen implicitly
+  ---
+  duration_ms: 0.089792
+  type: 'test'
+  ...
+# Subtest: when nothing is acceptable the answer is null, which means the agent main chat
+ok 48 - when nothing is acceptable the answer is null, which means the agent main chat
+  ---
+  duration_ms: 0.062208
+  type: 'test'
+  ...
+# Subtest: a single chat agent is unchanged: its one chat is the answer
+ok 49 - a single chat agent is unchanged: its one chat is the answer
+  ---
+  duration_ms: 0.04375
+  type: 'test'
+  ...
+# Subtest: a chat with no inbound seen is not refused for that: silence is not somebody else
+ok 50 - a chat with no inbound seen is not refused for that: silence is not somebody else
+  ---
+  duration_ms: 0.044042
+  type: 'test'
+  ...
+# Subtest: a blank turn chat falls through to the monitored list rather than becoming a chat id
+ok 51 - a blank turn chat falls through to the monitored list rather than becoming a chat id
+  ---
+  duration_ms: 0.052209
+  type: 'test'
+  ...
+# Subtest: parseMissionEvent never throws, whatever the socket hands it
+ok 52 - parseMissionEvent never throws, whatever the socket hands it
+  ---
+  duration_ms: 1.038667
+  type: 'test'
+  ...
+# Subtest: all eight mission frames parse from the real gateway envelope
+ok 53 - all eight mission frames parse from the real gateway envelope
+  ---
+  duration_ms: 0.296792
+  type: 'test'
+  ...
+# Subtest: an event for another assistant is dropped, whatever it says
+ok 54 - an event for another assistant is dropped, whatever it says
+  ---
+  duration_ms: 0.090125
+  type: 'test'
+  ...
+# Subtest: a backend that sends no chat and no cleared_by still parses
+ok 55 - a backend that sends no chat and no cleared_by still parses
+  ---
+  duration_ms: 0.064709
+  type: 'test'
+  ...
+# Subtest: the goal lane fields ride a mission_created frame through the parser
+ok 56 - the goal lane fields ride a mission_created frame through the parser
+  ---
+  duration_ms: 0.099542
+  type: 'test'
+  ...
+# Subtest: a backend older than the goal lane reads as off, and junk never becomes a cap
+ok 57 - a backend older than the goal lane reads as off, and junk never becomes a cap
+  ---
+  duration_ms: 0.071916
+  type: 'test'
+  ...
+# Subtest: the owner authored set is told: paused, resumed, set aside, marked done, started
+ok 58 - the owner authored set is told: paused, resumed, set aside, marked done, started
+  ---
+  duration_ms: 0.459291
+  type: 'test'
+  ...
+# Subtest: mission_ticked is never narrated, not even when the owner authored it
+ok 59 - mission_ticked is never narrated, not even when the owner authored it
+  ---
+  duration_ms: 0.089292
+  type: 'test'
+  ...
+# Subtest: an agent created mission is not narrated back to the agent
+ok 60 - an agent created mission is not narrated back to the agent
+  ---
+  duration_ms: 0.070334
+  type: 'test'
+  ...
+# Subtest: the agent own writes are not narrated: the self write stamp and cleared_by agent
+ok 61 - the agent own writes are not narrated: the self write stamp and cleared_by agent
+  ---
+  duration_ms: 0.129084
+  type: 'test'
+  ...
+# Subtest: a frame already seen is never told twice
+ok 62 - a frame already seen is never told twice
+  ---
+  duration_ms: 0.078541
+  type: 'test'
+  ...
+# Subtest: a mission the owner REPLACED is not narrated as a set aside
+ok 63 - a mission the owner REPLACED is not narrated as a set aside
+  ---
+  duration_ms: 0.091875
+  type: 'test'
+  ...
+# Subtest: mission_failed and mission_updated are not narrated in this stage
+ok 64 - mission_failed and mission_updated are not narrated in this stage
+  ---
+  duration_ms: 0.049959
+  type: 'test'
+  ...
+# Subtest: a closing notice carries the id, the title, and the refusal to tick or cite
+ok 65 - a closing notice carries the id, the title, and the refusal to tick or cite
+  ---
+  duration_ms: 0.204625
+  type: 'test'
+  ...
+# Subtest: the paused notice carries the reason when there is one and reads right when there is not
+ok 66 - the paused notice carries the reason when there is one and reads right when there is not
+  ---
+  duration_ms: 0.066542
+  type: 'test'
+  ...
+# Subtest: the resumed notice names the next open mini goal, and says nothing about one when all are ticked
+ok 67 - the resumed notice names the next open mini goal, and says nothing about one when all are ticked
+  ---
+  duration_ms: 0.089042
+  type: 'test'
+  ...
+# Subtest: the started notice carries the goal count and the checkbox ledger the model ticks from
+ok 68 - the started notice carries the goal count and the checkbox ledger the model ticks from
+  ---
+  duration_ms: 0.067584
+  type: 'test'
+  ...
+# Subtest: every meta value is a string, and an empty value is an omitted key, never an empty string
+ok 69 - every meta value is a string, and an empty value is an omitted key, never an empty string
+  ---
+  duration_ms: 0.179625
+  type: 'test'
+  ...
+# Subtest: no em dash and no en dash reaches the model, in any frame, in content or meta
+ok 70 - no em dash and no en dash reaches the model, in any frame, in content or meta
+  ---
+  duration_ms: 0.135167
+  type: 'test'
+  ...
+# Subtest: an owner authored title cannot forge a second [mission_ line
+ok 71 - an owner authored title cannot forge a second [mission_ line
+  ---
+  duration_ms: 0.119125
+  type: 'test'
+  ...
+# Subtest: a paused and a failed mission both format without a type error
+ok 72 - a paused and a failed mission both format without a type error
+  ---
+  duration_ms: 0.041292
+  type: 'test'
+  ...
+# Subtest: the frame dedupe key separates two writes and joins two copies of one
+ok 73 - the frame dedupe key separates two writes and joins two copies of one
+  ---
+  duration_ms: 0.059334
+  type: 'test'
+  ...
+# Subtest: only a frame that could be narrated may spend a pending self write stamp
+ok 74 - only a frame that could be narrated may spend a pending self write stamp
+  ---
+  duration_ms: 0.078084
+  type: 'test'
+  ...
+# Subtest: a backend that says who wrote the mission needs no stamp, and must not spend one
+ok 75 - a backend that says who wrote the mission needs no stamp, and must not spend one
+  ---
+  duration_ms: 0.05625
+  type: 'test'
+  ...
+# Subtest: the self write stamp is keyed on the WRITE, not on the frame
+ok 76 - the self write stamp is keyed on the WRITE, not on the frame
+  ---
+  duration_ms: 0.053834
+  type: 'test'
+  ...
+# Subtest: a write stamped only AFTER the response loses the race the socket wins
+ok 77 - a write stamped only AFTER the response loses the race the socket wins
+  ---
+  duration_ms: 0.10875
+  type: 'test'
+  ...
+# Subtest: one pending stamp answers for one frame, so the owner is still heard afterwards
+ok 78 - one pending stamp answers for one frame, so the owner is still heard afterwards
+  ---
+  duration_ms: 0.044666
+  type: 'test'
+  ...
+# Subtest: a tick riding the same call does not spend the stamp the completion needs
+ok 79 - a tick riding the same call does not spend the stamp the completion needs
+  ---
+  duration_ms: 0.036584
+  type: 'test'
+  ...
+# Subtest: the after the fact stamp still covers a frame that arrives late
+ok 80 - the after the fact stamp still covers a frame that arrives late
+  ---
+  duration_ms: 0.057708
+  type: 'test'
+  ...
+# Subtest: a frame that names its author is the backend answer, and spends nothing
+ok 81 - a frame that names its author is the backend answer, and spends nothing
+  ---
+  duration_ms: 0.038084
+  type: 'test'
+  ...
+# Subtest: the ledger is bounded, because this is a daemon that runs for weeks
+ok 82 - the ledger is bounded, because this is a daemon that runs for weeks
+  ---
+  duration_ms: 0.860958
+  type: 'test'
+  ...
+# Subtest: the six mission tools are private for the helper guard, under any install prefix, in every install
+ok 83 - the six mission tools are private for the helper guard, under any install prefix, in every install
+  ---
+  duration_ms: 3.129875
+  type: 'test'
+  ...
+# Subtest: a helper started in an earlier turn cannot write a mission for the current sender
+ok 84 - a helper started in an earlier turn cannot write a mission for the current sender
+  ---
+  duration_ms: 3703.859167
+  type: 'test'
+  ...
+# Subtest: the admission gate is turn aware for every mission tool: a verified turn frozen, an unverified recipient prompt refused, else the owner
+ok 85 - the admission gate is turn aware for every mission tool: a verified turn frozen, an unverified recipient prompt refused, else the owner
+  ---
+  duration_ms: 527.35125
+  type: 'test'
+  ...
+# Subtest: on a recipient turn the implicit chat is that turn own chat, never an owner chat
+ok 86 - on a recipient turn the implicit chat is that turn own chat, never an owner chat
+  ---
+  duration_ms: 0.469792
+  type: 'test'
+  ...
+# Subtest: a recipient turn that names no chat is refused, never null (null is the owner main chat)
+ok 87 - a recipient turn that names no chat is refused, never null (null is the owner main chat)
+  ---
+  duration_ms: 0.3235
+  type: 'test'
+  ...
+# Subtest: on the owner own turn, and with no private turn, the implicit chat is exactly what it was
+ok 88 - on the owner own turn, and with no private turn, the implicit chat is exactly what it was
+  ---
+  duration_ms: 0.192083
+  type: 'test'
+  ...
+# Subtest: on a recipient turn every mission request names them, in their own chat, with no chat named
+ok 89 - on a recipient turn every mission request names them, in their own chat, with no chat named
+  ---
+  duration_ms: 433.700625
+  type: 'test'
+  ...
+# Subtest: on the owner own turn every mission request is what it was: no header, the cached read, the same chat
+ok 90 - on the owner own turn every mission request is what it was: no header, the cached read, the same chat
+  ---
+  duration_ms: 85.820375
+  type: 'test'
+  ...
+# Subtest: a recipient turn with no chat of its own writes nothing and says why, for every mission tool
+ok 91 - a recipient turn with no chat of its own writes nothing and says why, for every mission tool
+  ---
+  duration_ms: 356.474792
+  type: 'test'
+  ...
+# Subtest: on a recipient turn a chat named that is not their own is refused, for every mission tool
+ok 92 - on a recipient turn a chat named that is not their own is refused, for every mission tool
+  ---
+  duration_ms: 702.895166
+  type: 'test'
+  ...
+# Subtest: on a recipient turn a mission id is never taken at face value: it must be the open mission of their own chat
+ok 93 - on a recipient turn a mission id is never taken at face value: it must be the open mission of their own chat
+  ---
+  duration_ms: 601.546959
+  type: 'test'
+  ...
+# Subtest: bgosGet with a private turn headers never rides the shared ETag cache; without them it is unchanged
+ok 94 - bgosGet with a private turn headers never rides the shared ETag cache; without them it is unchanged
+  ---
+  duration_ms: 3.569083
+  type: 'test'
+  ...
+# Subtest: successful working tool selections feed hook refreshes with the admitted session and actor
+ok 95 - successful working tool selections feed hook refreshes with the admitted session and actor
+  ---
+  duration_ms: 162.470334
+  type: 'test'
+  ...
+# Subtest: Stop during the first goal write prevents later goals of the same tool call from starting
+ok 96 - Stop during the first goal write prevents later goals of the same tool call from starting
+  ---
+  duration_ms: 116.244583
+  type: 'test'
+  ...
+# Subtest: Stop during mission lookup prevents the waiting tool call from making a working mark
+ok 97 - Stop during mission lookup prevents the waiting tool call from making a working mark
+  ---
+  duration_ms: 87.721542
+  type: 'test'
+  ...
+# Subtest: busy session refreshes every selected goal with the original actor and exact working route
+ok 98 - busy session refreshes every selected goal with the original actor and exact working route
+  ---
+  duration_ms: 315.655583
+  type: 'test'
+  ...
+# Subtest: idle sweep clears without another hook and activity resumes only the selected goals
+ok 99 - idle sweep clears without another hook and activity resumes only the selected goals
+  ---
+  duration_ms: 62.57825
+  type: 'test'
+  ...
+# Subtest: Stop clears and forgets this session without clearing another session
+ok 100 - Stop clears and forgets this session without clearing another session
+  ---
+  duration_ms: 5.856334
+  type: 'test'
+  ...
+# Subtest: SessionEnd clears and forgets this session without clearing another session
+ok 101 - SessionEnd clears and forgets this session without clearing another session
+  ---
+  duration_ms: 3.037709
+  type: 'test'
+  ...
+# Subtest: UserPromptSubmit clears and forgets this session without clearing another session
+ok 102 - UserPromptSubmit clears and forgets this session without clearing another session
+  ---
+  duration_ms: 3.393
+  type: 'test'
+  ...
+# Subtest: 409 drops a ticked goal so later activity and stop do not retry it
+ok 103 - 409 drops a ticked goal so later activity and stop do not retry it
+  ---
+  duration_ms: 3.170917
+  type: 'test'
+  ...
+# Subtest: 400 refusal during Stop retires the goal without later writes
+ok 104 - 400 refusal during Stop retires the goal without later writes
+  ---
+  duration_ms: 65.904625
+  type: 'test'
+  ...
+# Subtest: 400 refusal during idle retires the goal without later writes
+ok 105 - 400 refusal during idle retires the goal without later writes
+  ---
+  duration_ms: 22.584667
+  type: 'test'
+  ...
+# Subtest: 400 refusal during explicit retires the goal without later writes
+ok 106 - 400 refusal during explicit retires the goal without later writes
+  ---
+  duration_ms: 3.386083
+  type: 'test'
+  ...
+# Subtest: 400 refusal during refresh retires the goal without later writes
+ok 107 - 400 refusal during refresh retires the goal without later writes
+  ---
+  duration_ms: 39.31175
+  type: 'test'
+  ...
+# Subtest: 400 refusal during reselect retires the goal without later writes
+ok 108 - 400 refusal during reselect retires the goal without later writes
+  ---
+  duration_ms: 3.610208
+  type: 'test'
+  ...
+# Subtest: 403 refusal during Stop retires the goal without later writes
+ok 109 - 403 refusal during Stop retires the goal without later writes
+  ---
+  duration_ms: 3.178041
+  type: 'test'
+  ...
+# Subtest: 403 refusal during idle retires the goal without later writes
+ok 110 - 403 refusal during idle retires the goal without later writes
+  ---
+  duration_ms: 11.606167
+  type: 'test'
+  ...
+# Subtest: 403 refusal during explicit retires the goal without later writes
+ok 111 - 403 refusal during explicit retires the goal without later writes
+  ---
+  duration_ms: 3.454375
+  type: 'test'
+  ...
+# Subtest: 403 refusal during refresh retires the goal without later writes
+ok 112 - 403 refusal during refresh retires the goal without later writes
+  ---
+  duration_ms: 3.361125
+  type: 'test'
+  ...
+# Subtest: 403 refusal during reselect retires the goal without later writes
+ok 113 - 403 refusal during reselect retires the goal without later writes
+  ---
+  duration_ms: 2.6965
+  type: 'test'
+  ...
+# Subtest: 404 refusal during Stop retires the goal without later writes
+ok 114 - 404 refusal during Stop retires the goal without later writes
+  ---
+  duration_ms: 2.496375
+  type: 'test'
+  ...
+# Subtest: 404 refusal during idle retires the goal without later writes
+ok 115 - 404 refusal during idle retires the goal without later writes
+  ---
+  duration_ms: 2.176042
+  type: 'test'
+  ...
+# Subtest: 404 refusal during explicit retires the goal without later writes
+ok 116 - 404 refusal during explicit retires the goal without later writes
+  ---
+  duration_ms: 2.596
+  type: 'test'
+  ...
+# Subtest: 404 refusal during refresh retires the goal without later writes
+ok 117 - 404 refusal during refresh retires the goal without later writes
+  ---
+  duration_ms: 2.664833
+  type: 'test'
+  ...
+# Subtest: 404 refusal during reselect retires the goal without later writes
+ok 118 - 404 refusal during reselect retires the goal without later writes
+  ---
+  duration_ms: 3.657375
+  type: 'test'
+  ...
+# Subtest: 409 refusal during Stop retires the goal without later writes
+ok 119 - 409 refusal during Stop retires the goal without later writes
+  ---
+  duration_ms: 2.62575
+  type: 'test'
+  ...
+# Subtest: 409 refusal during idle retires the goal without later writes
+ok 120 - 409 refusal during idle retires the goal without later writes
+  ---
+  duration_ms: 2.965917
+  type: 'test'
+  ...
+# Subtest: 409 refusal during explicit retires the goal without later writes
+ok 121 - 409 refusal during explicit retires the goal without later writes
+  ---
+  duration_ms: 103.597458
+  type: 'test'
+  ...
+# Subtest: 409 refusal during refresh retires the goal without later writes
+ok 122 - 409 refusal during refresh retires the goal without later writes
+  ---
+  duration_ms: 2.373375
+  type: 'test'
+  ...
+# Subtest: 409 refusal during reselect retires the goal without later writes
+ok 123 - 409 refusal during reselect retires the goal without later writes
+  ---
+  duration_ms: 4.844
+  type: 'test'
+  ...
+# Subtest: 429 clear failures back off across sweeps and tool events, then recover
+ok 124 - 429 clear failures back off across sweeps and tool events, then recover
+  ---
+  duration_ms: 20.131209
+  type: 'test'
+  ...
+# Subtest: 500 clear failures back off across sweeps and tool events, then recover
+ok 125 - 500 clear failures back off across sweeps and tool events, then recover
+  ---
+  duration_ms: 14.928042
+  type: 'test'
+  ...
+# Subtest: 503 clear failures back off across sweeps and tool events, then recover
+ok 126 - 503 clear failures back off across sweeps and tool events, then recover
+  ---
+  duration_ms: 7.141667
+  type: 'test'
+  ...
+# Subtest: network clear failures back off across sweeps and tool events, then recover
+ok 127 - network clear failures back off across sweeps and tool events, then recover
+  ---
+  duration_ms: 15.774792
+  type: 'test'
+  ...
+# Subtest: an explicit selection bypasses and resets a failed clear backoff
+ok 128 - an explicit selection bypasses and resets a failed clear backoff
+  ---
+  duration_ms: 7.355875
+  type: 'test'
+  ...
+# Subtest: clear retry backoff caps at ten minutes instead of abandoning the clear
+ok 129 - clear retry backoff caps at ten minutes instead of abandoning the clear
+  ---
+  duration_ms: 57.437125
+  type: 'test'
+  ...
+# Subtest: refresh failures resolve normally, preserve other goals, and reserve the rate limit
+ok 130 - refresh failures resolve normally, preserve other goals, and reserve the rate limit
+  ---
+  duration_ms: 36.499333
+  type: 'test'
+  ...
+# Subtest: parallel hook bursts cannot refresh any goal more than once in ten minutes
+ok 131 - parallel hook bursts cannot refresh any goal more than once in ten minutes
+  ---
+  duration_ms: 9.089167
+  type: 'test'
+  ...
+# Subtest: stop queued behind an in-flight refresh wins and a failed clear is retried
+ok 132 - stop queued behind an in-flight refresh wins and a failed clear is retried
+  ---
+  duration_ms: 4.206917
+  type: 'test'
+  ...
+# Subtest: a stop while the initial selection is in flight clears the landed mark
+ok 133 - a stop while the initial selection is in flight clears the landed mark
+  ---
+  duration_ms: 55.483125
+  type: 'test'
+  ...
+# Subtest: unarmed daemon and stale spool activity cannot refresh a working mark
+ok 134 - unarmed daemon and stale spool activity cannot refresh a working mark
+  ---
+  duration_ms: 50.200458
+  type: 'test'
+  ...
+# Subtest: real forwarder and admitted spool drive refresh and stop; hook failure never blocks a tool
+ok 135 - real forwarder and admitted spool drive refresh and stop; hook failure never blocks a tool
+  ---
+  duration_ms: 791.088667
+  type: 'test'
+  ...
+# Subtest: a late boundary from an older turn cannot clear a newer explicit selection
+ok 136 - a late boundary from an older turn cannot clear a newer explicit selection
+  ---
+  duration_ms: 3.320208
+  type: 'test'
+  ...
+# Subtest: a failed explicit selection does not become a hook-owned goal
+ok 137 - a failed explicit selection does not become a hook-owned goal
+  ---
+  duration_ms: 2.524291
+  type: 'test'
+  ...
+# Subtest: a response with no mission is never adopted as a successful goal selection
+ok 138 - a response with no mission is never adopted as a successful goal selection
+  ---
+  duration_ms: 2.788125
+  type: 'test'
+  ...
+# Subtest: sweep cannot forget a new selection queued while its previous clear finishes
+ok 139 - sweep cannot forget a new selection queued while its previous clear finishes
+  ---
+  duration_ms: 4.52925
+  type: 'test'
+  ...
+# Subtest: one captured tool call cannot select its later goals after a Stop or session rebind
+ok 140 - one captured tool call cannot select its later goals after a Stop or session rebind
+  ---
+  duration_ms: 3.282209
+  type: 'test'
+  ...
+# Subtest: a newer session owns the shared goal even if the old session clear failed
+ok 141 - a newer session owns the shared goal even if the old session clear failed
+  ---
+  duration_ms: 5.492708
+  type: 'test'
+  ...
+# Subtest: a true write with a lost response remains eligible for Stop cleanup
+ok 142 - a true write with a lost response remains eligible for Stop cleanup
+  ---
+  duration_ms: 3.165708
+  type: 'test'
+  ...
+# Subtest: hook refresh errors produce no stdout or stderr and exit normally
+ok 143 - hook refresh errors produce no stdout or stderr and exit normally
+  ---
+  duration_ms: 678.696084
+  type: 'test'
+  ...
+# Subtest: failed reselection preserves the previously confirmed selection
+ok 144 - failed reselection preserves the previously confirmed selection
+  ---
+  duration_ms: 4.052458
+  type: 'test'
+  ...
+# Subtest: an older 409 cannot invalidate a newer successful queued selection
+ok 145 - an older 409 cannot invalidate a newer successful queued selection
+  ---
+  duration_ms: 4.367042
+  type: 'test'
+  ...
+# Subtest: failed handover preserves the confirmed owner and original actor
+ok 146 - failed handover preserves the confirmed owner and original actor
+  ---
+  duration_ms: 5.480958
+  type: 'test'
+  ...
+# Subtest: the pairing write lock holds through async completion and releases after rejection
+ok 147 - the pairing write lock holds through async completion and releases after rejection
+  ---
+  duration_ms: 200.66025
+  type: 'test'
+  ...
+# Subtest: two real processes cannot deliver a successor write before an older delayed clear, different timezones=false
+ok 148 - two real processes cannot deliver a successor write before an older delayed clear, different timezones=false
+  ---
+  duration_ms: 1042.091459
+  type: 'test'
+  ...
+# Subtest: two real processes cannot deliver a successor write before an older delayed clear, different timezones=true
+ok 149 - two real processes cannot deliver a successor write before an older delayed clear, different timezones=true
+  ---
+  duration_ms: 1163.836709
+  type: 'test'
+  ...
+# Subtest: a dead process queue record is removed, including an interrupted ticket choice
+ok 150 - a dead process queue record is removed, including an interrupted ticket choice
+  ---
+  duration_ms: 219.726458
+  type: 'test'
+  ...
+# Subtest: a live holder is never evicted by timeout and a waiting operation sends nothing
+ok 151 - a live holder is never evicted by timeout and a waiting operation sends nothing
+  ---
+  duration_ms: 84.571084
+  type: 'test'
+  ...
+# Subtest: a reused live PID cannot block working=true with an orphan ticket=null
+ok 152 - a reused live PID cannot block working=true with an orphan ticket=null
+  ---
+  duration_ms: 28.518958
+  type: 'test'
+  ...
+# Subtest: a reused live PID cannot block working=false with an orphan ticket=null
+ok 153 - a reused live PID cannot block working=false with an orphan ticket=null
+  ---
+  duration_ms: 62.110417
+  type: 'test'
+  ...
+# Subtest: a reused live PID cannot block working=true with an orphan ticket=1
+ok 154 - a reused live PID cannot block working=true with an orphan ticket=1
+  ---
+  duration_ms: 36.544208
+  type: 'test'
+  ...
+# Subtest: a reused live PID cannot block working=false with an orphan ticket=1
+ok 155 - a reused live PID cannot block working=false with an orphan ticket=1
+  ---
+  duration_ms: 124.881542
+  type: 'test'
+  ...
+# Subtest: reclaiming a reused PID queue ticket retains its independent uncertain HTTP receipt
+ok 156 - reclaiming a reused PID queue ticket retains its independent uncertain HTTP receipt
+  ---
+  duration_ms: 99.6065
+  type: 'test'
+  ...
+# Subtest: ticket selection waits for a live choosing record before comparing order
+ok 157 - ticket selection waits for a live choosing record before comparing order
+  ---
+  duration_ms: 124.558292
+  type: 'test'
+  ...
+# Subtest: one goal can proceed while another goal holds its write gate
+ok 158 - one goal can proceed while another goal holds its write gate
+  ---
+  duration_ms: 20.241458
+  type: 'test'
+  ...
+# Subtest: an acknowledged 400 clear refusal releases its receipt
+ok 159 - an acknowledged 400 clear refusal releases its receipt
+  ---
+  duration_ms: 76.356
+  type: 'test'
+  ...
+# Subtest: an acknowledged 403 clear refusal releases its receipt
+ok 160 - an acknowledged 403 clear refusal releases its receipt
+  ---
+  duration_ms: 31.5765
+  type: 'test'
+  ...
+# Subtest: an acknowledged 404 clear refusal releases its receipt
+ok 161 - an acknowledged 404 clear refusal releases its receipt
+  ---
+  duration_ms: 39.861458
+  type: 'test'
+  ...
+# Subtest: an acknowledged 409 clear refusal releases its receipt
+ok 162 - an acknowledged 409 clear refusal releases its receipt
+  ---
+  duration_ms: 25.622417
+  type: 'test'
+  ...
+# Subtest: an acknowledged 503 clear refusal releases its receipt
+ok 163 - an acknowledged 503 clear refusal releases its receipt
+  ---
+  duration_ms: 42.7715
+  type: 'test'
+  ...
+# Subtest: an unsent clear does not leave a false uncertainty fence
+ok 164 - an unsent clear does not leave a false uncertainty fence
+  ---
+  duration_ms: 21.584542
+  type: 'test'
+  ...
+# Subtest: death during a clear preserves its fence after dead queue records are removed
+ok 165 - death during a clear preserves its fence after dead queue records are removed
+  ---
+  duration_ms: 613.841125
+  type: 'test'
+  ...
+# Subtest: death during a true write preserves its fence after dead queue records are removed
+ok 166 - death during a true write preserves its fence after dead queue records are removed
+  ---
+  duration_ms: 503.093417
+  type: 'test'
+  ...
+# Subtest: an inherited receipt stays unconfirmed even when its PID has been reused
+ok 167 - an inherited receipt stays unconfirmed even when its PID has been reused
+  ---
+  duration_ms: 44.454375
+  type: 'test'
+  ...
+# Subtest: two trackers: a daemon losing the pairing cannot clear its successor mark
+ok 168 - two trackers: a daemon losing the pairing cannot clear its successor mark
+  ---
+  duration_ms: 2.034208
+  type: 'test'
+  ...
+# Subtest: two trackers: a delayed predecessor clear finishes before the successor mark
+ok 169 - two trackers: a delayed predecessor clear finishes before the successor mark
+  ---
+  duration_ms: 3.672125
+  type: 'test'
+  ...
+# Subtest: unbound replacement cancels old retries and replayed frames, later binding=false
+ok 170 - unbound replacement cancels old retries and replayed frames, later binding=false
+  ---
+  duration_ms: 0.388584
+  type: 'test'
+  ...
+# Subtest: unbound replacement cancels old retries and replayed frames, later binding=true
+ok 171 - unbound replacement cancels old retries and replayed frames, later binding=true
+  ---
+  duration_ms: 0.186625
+  type: 'test'
+  ...
+# Subtest: unbound replacement waits for an in-flight old clear before catching up
+ok 172 - unbound replacement waits for an in-flight old clear before catching up
+  ---
+  duration_ms: 6.807167
+  type: 'test'
+  ...
+# Subtest: a committed true write with a lost response remains clearable, idle restoration=false
+ok 173 - a committed true write with a lost response remains clearable, idle restoration=false
+  ---
+  duration_ms: 34.044916
+  type: 'test'
+  ...
+# Subtest: a committed true write with a lost response remains clearable, idle restoration=true
+ok 174 - a committed true write with a lost response remains clearable, idle restoration=true
+  ---
+  duration_ms: 24.533125
+  type: 'test'
+  ...
+# Subtest: a deleted uncertain goal is retired after one 404 cleanup refusal
+ok 175 - a deleted uncertain goal is retired after one 404 cleanup refusal
+  ---
+  duration_ms: 0.381709
+  type: 'test'
+  ...
+# Subtest: shutdown invalidates an unbound selection waiting behind another daemon write
+ok 176 - shutdown invalidates an unbound selection waiting behind another daemon write
+  ---
+  duration_ms: 0.313166
+  type: 'test'
+  ...
+# Subtest: a queued request checks pairing ownership after acquiring the write gate
+ok 177 - a queued request checks pairing ownership after acquiring the write gate
+  ---
+  duration_ms: 0.191
+  type: 'test'
+  ...
+# Subtest: an uncertain predecessor write cannot clear a new daemon successful selection
+ok 178 - an uncertain predecessor write cannot clear a new daemon successful selection
+  ---
+  duration_ms: 0.165584
+  type: 'test'
+  ...
+# Subtest: a failed stand-down gate cannot revive old cleanup after the pairing is reclaimed
+ok 179 - a failed stand-down gate cannot revive old cleanup after the pairing is reclaimed
+  ---
+  duration_ms: 0.143791
+  type: 'test'
+  ...
+# Subtest: a locally timed-out clear fences later selections while its remote commit can still arrive
+ok 180 - a locally timed-out clear fences later selections while its remote commit can still arrive
+  ---
+  duration_ms: 134.676292
+  type: 'test'
+  ...
+# Subtest: a delayed true after local timeout is cleared again without admitting a successor mark
+ok 181 - a delayed true after local timeout is cleared again without admitting a successor mark
+  ---
+  duration_ms: 62.844917
+  type: 'test'
+  ...
+# Subtest: an uncertain first write survives a failed cleanup and its retry window
+ok 182 - an uncertain first write survives a failed cleanup and its retry window
+  ---
+  duration_ms: 0.311041
+  type: 'test'
+  ...
+# Subtest: a passive manual clear preserves cleanup of an older unresolved true
+ok 183 - a passive manual clear preserves cleanup of an older unresolved true
+  ---
+  duration_ms: 134.783958
+  type: 'test'
+  ...
+# Subtest: the real passive daemon accepts an unbound explicit working=true call
+ok 184 - the real passive daemon accepts an unbound explicit working=true call
+  ---
+  duration_ms: 237.713208
+  type: 'test'
+  ...
+# Subtest: the real passive daemon accepts an unbound explicit working=false call
+ok 185 - the real passive daemon accepts an unbound explicit working=false call
+  ---
+  duration_ms: 41.591
+  type: 'test'
+  ...
+# Subtest: a passive manual write survives the active daemon's failed clear retry
+ok 186 - a passive manual write survives the active daemon's failed clear retry
+  ---
+  duration_ms: 71.219209
+  type: 'test'
+  ...
+# Subtest: a passive manual write survives the active daemon's normal Stop
+ok 187 - a passive manual write survives the active daemon's normal Stop
+  ---
+  duration_ms: 98.591334
+  type: 'test'
+  ...
+# Subtest: a passive manual write survives the active daemon's automatic refresh
+ok 188 - a passive manual write survives the active daemon's automatic refresh
+  ---
+  duration_ms: 74.3595
+  type: 'test'
+  ...
+# Subtest: a passive manual write survives the active daemon's Stop queued behind manual write
+ok 189 - a passive manual write survives the active daemon's Stop queued behind manual write
+  ---
+  duration_ms: 117.125084
+  type: 'test'
+  ...
+# Subtest: a passive manual write survives the active daemon's failed reselection
+ok 190 - a passive manual write survives the active daemon's failed reselection
+  ---
+  duration_ms: 120.622667
+  type: 'test'
+  ...
+# Subtest: the real daemon transport protects a successor across handover, delayed clear=false
+ok 191 - the real daemon transport protects a successor across handover, delayed clear=false
+  ---
+  duration_ms: 152.890541
+  type: 'test'
+  ...
+# Subtest: the real daemon transport protects a successor across handover, delayed clear=true
+ok 192 - the real daemon transport protects a successor across handover, delayed clear=true
+  ---
+  duration_ms: 122.803041
+  type: 'test'
+  ...
+# Subtest: the actual admitted hook handler refreshes selected goals and clears them on Stop
+ok 193 - the actual admitted hook handler refreshes selected goals and clears them on Stop
+  ---
+  duration_ms: 5.519291
+  type: 'test'
+  ...
+# Subtest: the actual PATCH transport preserves HTTP 409 for the hook tracker
+ok 194 - the actual PATCH transport preserves HTTP 409 for the hook tracker
+  ---
+  duration_ms: 1.572917
+  type: 'test'
+  ...
+# Subtest: the daemon starts an unrefed idle sweep and stops it on stand-down
+ok 195 - the daemon starts an unrefed idle sweep and stops it on stand-down
+  ---
+  duration_ms: 20.489291
+  type: 'test'
+  ...
+# Subtest: each real stand-down path clears marks after changing the actual armed flags
+    # Subtest: stand-down path 1
+    ok 1 - stand-down path 1
+      ---
+      duration_ms: 1.8875
+      type: 'test'
+      ...
+    # Subtest: stand-down path 2
+    ok 2 - stand-down path 2
+      ---
+      duration_ms: 1.488125
+      type: 'test'
+      ...
+    # Subtest: stand-down path 3
+    ok 3 - stand-down path 3
+      ---
+      duration_ms: 1.463083
+      type: 'test'
+      ...
+    # Subtest: stand-down path 4
+    ok 4 - stand-down path 4
+      ---
+      duration_ms: 1.733958
+      type: 'test'
+      ...
+    1..4
+ok 196 - each real stand-down path clears marks after changing the actual armed flags
+  ---
+  duration_ms: 6.962917
+  type: 'test'
+  ...
+# Subtest: stand-down makes a final clear attempt during an earlier failure backoff
+ok 197 - stand-down makes a final clear attempt during an earlier failure backoff
+  ---
+  duration_ms: 1.857916
+  type: 'test'
+  ...
+# Subtest: graceful shutdown keeps authority until clears finish, with a bounded fallback
+ok 198 - graceful shutdown keeps authority until clears finish, with a bounded fallback
+  ---
+  duration_ms: 108.147708
+  type: 'test'
+  ...
+# Subtest: the derived tool-case scan can actually see the cases (control for every derived test below)
+ok 199 - the derived tool-case scan can actually see the cases (control for every derived test below)
+  ---
+  duration_ms: 1.895167
+  type: 'test'
+  ...
+# Subtest: all eight mission frames are registered as literals, through the stand-down gate
+ok 200 - all eight mission frames are registered as literals, through the stand-down gate
+  ---
+  duration_ms: 0.908875
+  type: 'test'
+  ...
+# Subtest: no socket registration anywhere takes a variable frame name
+ok 201 - no socket registration anywhere takes a variable frame name
+  ---
+  duration_ms: 0.858833
+  type: 'test'
+  ...
+# Subtest: every mission handler opens with the update drain guard
+ok 202 - every mission handler opens with the update drain guard
+  ---
+  duration_ms: 0.84625
+  type: 'test'
+  ...
+# Subtest: every mission handler hands the frame to the one function that cannot throw
+ok 203 - every mission handler hands the frame to the one function that cannot throw
+  ---
+  duration_ms: 0.970833
+  type: 'test'
+  ...
+# Subtest: each mission tool case stamps its own write, so the echo can never start
+ok 204 - each mission tool case stamps its own write, so the echo can never start
+  ---
+  duration_ms: 0.328625
+  type: 'test'
+  ...
+# Subtest: the writing tools stamp the mission BEFORE the request, not after the answer
+ok 205 - the writing tools stamp the mission BEFORE the request, not after the answer
+  ---
+  duration_ms: 0.394792
+  type: 'test'
+  ...
+# Subtest: the goal mark tools take NO pending stamp, only the landed one (lib/missions.ts MISSION_MARK_TOOLS)
+ok 206 - the goal mark tools take NO pending stamp, only the landed one (lib/missions.ts MISSION_MARK_TOOLS)
+  ---
+  duration_ms: 0.314791
+  type: 'test'
+  ...
+# Subtest: the mission listener asks the ledger, so both stamps are consulted on one line
+ok 207 - the mission listener asks the ledger, so both stamps are consulted on one line
+  ---
+  duration_ms: 0.186042
+  type: 'test'
+  ...
+# Subtest: missionChatId reads the mission first and falls back to the first monitored chat LAST
+ok 208 - missionChatId reads the mission first and falls back to the first monitored chat LAST
+  ---
+  duration_ms: 0.682375
+  type: 'test'
+  ...
+# Subtest: the implicit mission chat goes through the pure rule, never straight to the first chat
+ok 209 - the implicit mission chat goes through the pure rule, never straight to the first chat
+  ---
+  duration_ms: 0.399667
+  type: 'test'
+  ...
+# Subtest: the mission tools accept an optional chat, and it stays optional
+ok 210 - the mission tools accept an optional chat, and it stays optional
+  ---
+  duration_ms: 0.90775
+  type: 'test'
+  ...
+# Subtest: the create_mission description says one open mission per CHAT, because that is now true
+ok 211 - the create_mission description says one open mission per CHAT, because that is now true
+  ---
+  duration_ms: 0.124375
+  type: 'test'
+  ...
+# Subtest: the active-mission read is scoped to a chat, or a tick lands on another chat card
+ok 212 - the active-mission read is scoped to a chat, or a tick lands on another chat card
+  ---
+  duration_ms: 0.184459
+  type: 'test'
+  ...
+# Subtest: the goal lane stamps the mission BEFORE its complete and its fail leave
+ok 213 - the goal lane stamps the mission BEFORE its complete and its fail leave
+  ---
+  duration_ms: 0.187166
+  type: 'test'
+  ...
+# Subtest: the goal lane reads nothing from SubagentStop, which is not the checker
+ok 214 - the goal lane reads nothing from SubagentStop, which is not the checker
+  ---
+  duration_ms: 0.533375
+  type: 'test'
+  ...
+# Subtest: a slow sweep runs beside the resting one, so a missed hook strands nothing
+ok 215 - a slow sweep runs beside the resting one, so a missed hook strands nothing
+  ---
+  duration_ms: 0.146125
+  type: 'test'
+  ...
+# Subtest: the goal lane hears every mission frame, even one the model is never told about
+ok 216 - the goal lane hears every mission frame, even one the model is never told about
+  ---
+  duration_ms: 0.179958
+  type: 'test'
+  ...
+# Subtest: the owner Pause reaches the mission this lane REPORTS on, not only one it armed
+ok 217 - the owner Pause reaches the mission this lane REPORTS on, not only one it armed
+  ---
+  duration_ms: 0.509917
+  type: 'test'
+  ...
+# Subtest: the arm is recorded as pending BEFORE the keystrokes, and released at the sentinel and at the timeout
+ok 218 - the arm is recorded as pending BEFORE the keystrokes, and released at the sentinel and at the timeout
+  ---
+  duration_ms: 0.522084
+  type: 'test'
+  ...
+# Subtest: the sentinel consults the owner's stop BEFORE it hands the mission back
+ok 219 - the sentinel consults the owner's stop BEFORE it hands the mission back
+  ---
+  duration_ms: 0.24675
+  type: 'test'
+  ...
+# Subtest: the goal set is the ONLY chat derived text this daemon ever types
+ok 220 - the goal set is the ONLY chat derived text this daemon ever types
+  ---
+  duration_ms: 0.805792
+  type: 'test'
+  ...
+# Subtest: the stall stop hears whether the owner armed the goal, from every place a goal is taken on
+ok 221 - the stall stop hears whether the owner armed the goal, from every place a goal is taken on
+  ---
+  duration_ms: 0.588083
+  type: 'test'
+  ...
+# Subtest: create: builds a camelCase body from snake_case tool args
+ok 222 - create: builds a camelCase body from snake_case tool args
+  ---
+  duration_ms: 3.896959
+  type: 'test'
+  ...
+# Subtest: create: accepts doneWhen alias key on goals
+ok 223 - create: accepts doneWhen alias key on goals
+  ---
+  duration_ms: 0.136125
+  type: 'test'
+  ...
+# Subtest: create: rejects a missing or empty title
+ok 224 - create: rejects a missing or empty title
+  ---
+  duration_ms: 0.171875
+  type: 'test'
+  ...
+# Subtest: create: rejects an over-long title with the cap in the message
+ok 225 - create: rejects an over-long title with the cap in the message
+  ---
+  duration_ms: 0.066208
+  type: 'test'
+  ...
+# Subtest: create: rejects too few and too many goals, teaching the 4..10 target
+ok 226 - create: rejects too few and too many goals, teaching the 4..10 target
+  ---
+  duration_ms: 0.086792
+  type: 'test'
+  ...
+# Subtest: create: boundary counts pass (2 and 12)
+ok 227 - create: boundary counts pass (2 and 12)
+  ---
+  duration_ms: 0.065875
+  type: 'test'
+  ...
+# Subtest: create: rejects a goal without a done_when check
+ok 228 - create: rejects a goal without a done_when check
+  ---
+  duration_ms: 0.060292
+  type: 'test'
+  ...
+# Subtest: create: rejects over-long goal fields with caps in the message
+ok 229 - create: rejects over-long goal fields with caps in the message
+  ---
+  duration_ms: 0.807917
+  type: 'test'
+  ...
+# Subtest: create: rejects a non-array mini_goals
+ok 230 - create: rejects a non-array mini_goals
+  ---
+  duration_ms: 0.107709
+  type: 'test'
+  ...
+# Subtest: tick: builds { goalId } and trims evidence
+ok 231 - tick: builds { goalId } and trims evidence
+  ---
+  duration_ms: 0.150958
+  type: 'test'
+  ...
+# Subtest: tick: omits empty evidence
+ok 232 - tick: omits empty evidence
+  ---
+  duration_ms: 0.070959
+  type: 'test'
+  ...
+# Subtest: tick: rejects a missing or non-positive-integer goal_id
+ok 233 - tick: rejects a missing or non-positive-integer goal_id
+  ---
+  duration_ms: 0.1005
+  type: 'test'
+  ...
+# Subtest: tick: rejects over-long evidence
+ok 234 - tick: rejects over-long evidence
+  ---
+  duration_ms: 0.042292
+  type: 'test'
+  ...
+# Subtest: complete: includes a summary when given
+ok 235 - complete: includes a summary when given
+  ---
+  duration_ms: 0.125125
+  type: 'test'
+  ...
+# Subtest: complete: trims the summary
+ok 236 - complete: trims the summary
+  ---
+  duration_ms: 0.068167
+  type: 'test'
+  ...
+# Subtest: complete: truncates the summary at 500 chars
+ok 237 - complete: truncates the summary at 500 chars
+  ---
+  duration_ms: 0.138917
+  type: 'test'
+  ...
+# Subtest: complete: drops a lone high surrogate at the 500 unit boundary
+ok 238 - complete: drops a lone high surrogate at the 500 unit boundary
+  ---
+  duration_ms: 0.053958
+  type: 'test'
+  ...
+# Subtest: complete: rejects a non-string summary
+ok 239 - complete: rejects a non-string summary
+  ---
+  duration_ms: 0.0805
+  type: 'test'
+  ...
+# Subtest: complete: preserves an empty body when summary is absent, null, or whitespace
+ok 240 - complete: preserves an empty body when summary is absent, null, or whitespace
+  ---
+  duration_ms: 0.053791
+  type: 'test'
+  ...
+# Subtest: progress: carries the verdict and the run report only when they are supplied
+ok 241 - progress: carries the verdict and the run report only when they are supplied
+  ---
+  duration_ms: 0.198666
+  type: 'test'
+  ...
+# Subtest: progress: refuses an unknown verdict word and drops one with no reason
+ok 242 - progress: refuses an unknown verdict word and drops one with no reason
+  ---
+  duration_ms: 0.050208
+  type: 'test'
+  ...
+# Subtest: progress: a run report field the wire cannot carry is DROPPED, never clamped
+ok 243 - progress: a run report field the wire cannot carry is DROPPED, never clamped
+  ---
+  duration_ms: 0.048125
+  type: 'test'
+  ...
+# Subtest: progress: clips the feed line and the reason to their own wire limits
+ok 244 - progress: clips the feed line and the reason to their own wire limits
+  ---
+  duration_ms: 0.0415
+  type: 'test'
+  ...
+# Subtest: progress: refuses a body that would change nothing
+ok 245 - progress: refuses a body that would change nothing
+  ---
+  duration_ms: 0.024667
+  type: 'test'
+  ...
+# Subtest: pause and resume: the stop pause and its resume ride the user scoped routes (P6 stage 3)
+ok 246 - pause and resume: the stop pause and its resume ride the user scoped routes (P6 stage 3)
+  ---
+  duration_ms: 0.094042
+  type: 'test'
+  ...
+# Subtest: fail: builds the body and the path this repository did not have
+ok 247 - fail: builds the body and the path this repository did not have
+  ---
+  duration_ms: 0.7885
+  type: 'test'
+  ...
+# Subtest: complete: carries a met verdict and the run report the runtime counted
+ok 248 - complete: carries a met verdict and the run report the runtime counted
+  ---
+  duration_ms: 0.095208
+  type: 'test'
+  ...
+# Subtest: snapshot: keepWorking and the turn cap are read off the mission
+ok 249 - snapshot: keepWorking and the turn cap are read off the mission
+  ---
+  duration_ms: 0.098542
+  type: 'test'
+  ...
+# Subtest: paths: build the user-scoped mission routes
+ok 250 - paths: build the user-scoped mission routes
+  ---
+  duration_ms: 0.136917
+  type: 'test'
+  ...
+# Subtest: paths: reject a bad mission id
+ok 251 - paths: reject a bad mission id
+  ---
+  duration_ms: 0.045958
+  type: 'test'
+  ...
+# Subtest: summary: reports progress, the goal ledger with ids, and the next goal
+ok 252 - summary: reports progress, the goal ledger with ids, and the next goal
+  ---
+  duration_ms: 0.083792
+  type: 'test'
+  ...
+# Subtest: summary: completed mission says so and has no next goal
+ok 253 - summary: completed mission says so and has no next goal
+  ---
+  duration_ms: 0.084542
+  type: 'test'
+  ...
+# Subtest: set goals body: same goals shape and bounds as create, and nothing else on the wire
+ok 254 - set goals body: same goals shape and bounds as create, and nothing else on the wire
+  ---
+  duration_ms: 0.077834
+  type: 'test'
+  ...
+# Subtest: set goals body: refuses too few, too many, and a goal with no check
+ok 255 - set goals body: refuses too few, too many, and a goal with no check
+  ---
+  duration_ms: 0.054292
+  type: 'test'
+  ...
+# Subtest: set goals path: the pairing family, PUT .../goals
+ok 256 - set goals path: the pairing family, PUT .../goals
+  ---
+  duration_ms: 0.046209
+  type: 'test'
+  ...
+# Subtest: add goals body: ONE goal is enough, unlike the fill door
+ok 257 - add goals body: ONE goal is enough, unlike the fill door
+  ---
+  duration_ms: 0.053958
+  type: 'test'
+  ...
+# Subtest: add goals body: trims, accepts the doneWhen alias, and keeps the twelve ceiling
+ok 258 - add goals body: trims, accepts the doneWhen alias, and keeps the twelve ceiling
+  ---
+  duration_ms: 0.058125
+  type: 'test'
+  ...
+# Subtest: add goals body: the refusal tells the agent to send only the NEW goals
+ok 259 - add goals body: the refusal tells the agent to send only the NEW goals
+  ---
+  duration_ms: 0.02975
+  type: 'test'
+  ...
+# Subtest: add goals path: the same path as the fill, which is what the POST means
+ok 260 - add goals path: the same path as the fill, which is what the POST means
+  ---
+  duration_ms: 0.045375
+  type: 'test'
+  ...
+# Subtest: cancel goal path: the goal id is in the path and validated before the network
+ok 261 - cancel goal path: the goal id is in the path and validated before the network
+  ---
+  duration_ms: 0.072
+  type: 'test'
+  ...
+# Subtest: a verified turn is used as requirePrivateTurn answers it
+ok 262 - a verified turn is used as requirePrivateTurn answers it
+  ---
+  duration_ms: 8.662458
+  type: 'test'
+  ...
+# Subtest: the goal lane: a typed /goal and its continuations run as the owner, whoever spoke last
+ok 263 - the goal lane: a typed /goal and its continuations run as the owner, whoever spoke last
+  ---
+  duration_ms: 6.213833
+  type: 'test'
+  ...
+# Subtest: a recipient prompt that could not be verified is refused, never done as the owner
+ok 264 - a recipient prompt that could not be verified is refused, never done as the owner
+  ---
+  duration_ms: 1.561041
+  type: 'test'
+  ...
+# Subtest: a recipient message that reaches a running owner turn is refused until the next prompt
+ok 265 - a recipient message that reaches a running owner turn is refused until the next prompt
+  ---
+  duration_ms: 236.539083
+  type: 'test'
+  ...
+# Subtest: a recipient message during an unverified owner turn (the goal lane) is refused too, until the turn ends
+ok 266 - a recipient message during an unverified owner turn (the goal lane) is refused too, until the turn ends
+  ---
+  duration_ms: 9.646125
+  type: 'test'
+  ...
+# Subtest: a peer agent message, mid turn or as its own prompt, is the owner, as on main
+ok 267 - a peer agent message, mid turn or as its own prompt, is the owner, as on main
+  ---
+  duration_ms: 14.732291
+  type: 'test'
+  ...
+# Subtest: turnSenders names the prompt and the people who reached it; a Stop starts a fresh record
+ok 268 - turnSenders names the prompt and the people who reached it; a Stop starts a fresh record
+  ---
+  duration_ms: 44.86475
+  type: 'test'
+  ...
+# Subtest: a recipient message after a Stop reaches the goal continuation that runs with no prompt: refused
+ok 269 - a recipient message after a Stop reaches the goal continuation that runs with no prompt: refused
+  ---
+  duration_ms: 10.925208
+  type: 'test'
+  ...
+# Subtest: the admission gate, for every turn aware tool: verified, someone else unverified, the owner
+ok 270 - the admission gate, for every turn aware tool: verified, someone else unverified, the owner
+  ---
+  duration_ms: 1196.640708
+  type: 'test'
+  ...
+# Subtest: boards and schedule stay gated exactly as on main
+ok 271 - boards and schedule stay gated exactly as on main
+  ---
+  duration_ms: 134.085209
+  type: 'test'
+  ...
+# Subtest: a prompt carrying several deliveries at once (queued messages, the boot sweep) counts every sender
+ok 272 - a prompt carrying several deliveries at once (queued messages, the boot sweep) counts every sender
+  ---
+  duration_ms: 5.255417
+  type: 'test'
+  ...
+1..272
+# tests 276
+# suites 0
+# pass 276
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 10821.407667

@@ -16,14 +16,14 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process'
-import { closeSync, constants, existsSync, mkdtempSync, openSync, readFileSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { closeSync, constants, existsSync, openSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { win32GateHelperArgs } from '../bin/hoai-core.mjs'
+import { scratchDir } from './helpers/scratch-dirs'
 
 const skip = process.platform !== 'win32' ? 'the helper drives the Windows console API' : false
 const BIN_DIR = fileURLToPath(new URL('../bin/', import.meta.url)).replace(/[\\/]+$/, '')
@@ -90,7 +90,7 @@ function stop(pid: number) {
 }
 
 test('attached then accepted: the helper presses Enter once the gate is on screen, logs start, attached and accepted, and exits 0', { skip, timeout: 120_000 }, async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'hoai-gate-console-'))
+  const dir = scratchDir('hoai-gate-console-')
   const logFile = join(dir, 'win32-gate-helper.log')
   const gate = startFakeGate(dir)
   try {
@@ -107,7 +107,7 @@ test('attached then accepted: the helper presses Enter once the gate is on scree
 })
 
 test('the 888 condition: another process holds the log open for reading the whole time, and every line still lands (start, attached, accepted, exit 0)', { skip, timeout: 120_000 }, async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'hoai-gate-console-'))
+  const dir = scratchDir('hoai-gate-console-')
   const logFile = join(dir, 'win32-gate-helper.log')
   writeFileSync(logFile, '')
   const reader = openSync(logFile, 'r')
@@ -125,7 +125,7 @@ test('the 888 condition: another process holds the log open for reading the whol
 })
 
 test('a log nothing can write (held exclusively): the helper still presses Enter, says why on stderr, and exits 6, not 0', { skip, timeout: 120_000 }, async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'hoai-gate-console-'))
+  const dir = scratchDir('hoai-gate-console-')
   const logFile = join(dir, 'win32-gate-helper.log')
   writeFileSync(logFile, '')
   // libuv's UV_FS_O_EXLOCK (share nothing), which node does not export by name.

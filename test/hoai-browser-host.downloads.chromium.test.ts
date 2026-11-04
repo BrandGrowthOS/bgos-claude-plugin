@@ -50,7 +50,7 @@ type CaseKey = keyof typeof CASES
 
 test(
   'a download the agent starts is asked for: Deny leaves no file, Allow lands where the ask said, no answer keeps it owner only and the agent reads it as kept, Deny on the kept card deletes it, nothing outside the agent folder',
-  { timeout: 300_000, skip },
+  { timeout: 240_000, skip }, // under the runner's file deadline; it takes about 25 s on Windows
   async (t) => {
     if (skip) return
     const home = realpathSync(mkdtempSync(join(tmpdir(), 'bh-dl-')))

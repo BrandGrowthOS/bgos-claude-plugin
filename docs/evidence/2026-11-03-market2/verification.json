@@ -1,0 +1,75 @@
+{
+  "base_commit": "fbb997a789d634173881f77a2fb723de7e6f0030",
+  "branch": "fix/daemon-attach-scope-impl",
+  "typecheck_command": "node_modules/.bin/tsc --noEmit",
+  "typecheck_exit": 0,
+  "full_suite_command": "PATH=\"$PWD/node_modules/.bin:$PATH\" TMPDIR=\"$PWD/.tmp\" npm test",
+  "full_suite_exit": 0,
+  "node": {
+    "tests": 7897,
+    "passed": 7850,
+    "failed": 0,
+    "skipped": 47
+  },
+  "chromium": {
+    "tests": 15,
+    "passed": 11,
+    "failed": 0,
+    "skipped": 4
+  },
+  "bun": {
+    "passed": 374,
+    "skipped": 1,
+    "failed": 0
+  },
+  "total_passed": 8235,
+  "total_failed": 0,
+  "total_skipped": 52,
+  "related": {
+    "tests": 831,
+    "passed": 824,
+    "skipped": 7,
+    "failed": 0
+  },
+  "compiling_mutants_killed": 11,
+  "regression_mutation_coverage": {
+    "market2 launcher: legacy plus numbered launches the effective agent 42": [
+      "M1",
+      "M5"
+    ],
+    "market2 launcher: explicit path plus numbered launches the effective agent 42": [
+      "M2",
+      "M5"
+    ],
+    "market2 launcher: legacy without home launches the effective agent 42": [
+      "M3",
+      "M5"
+    ],
+    "market2 launcher: explicit legacy without home launches the effective agent 42": [
+      "M3",
+      "M4",
+      "M5"
+    ],
+    "market2 forecast: pin admission still forecasts its strict refusal": [
+      "M6",
+      "M7"
+    ],
+    "market2 forecast: recorded home admission still forecasts its strict refusal": [
+      "M6",
+      "M7"
+    ],
+    "market2 diagnostics: doctor preserves the effective marketplace home mode": [
+      "M8",
+      "M10"
+    ],
+    "market2 diagnostics: installed marketplace CLI reports effective home and the legacy setting": [
+      "M9",
+      "M10",
+      "M11"
+    ]
+  },
+  "worker_cap": 4,
+  "frontend_changed": false,
+  "frontend_gates": "Not applicable: no frontend changes",
+  "source_bytes_restored": true
+}

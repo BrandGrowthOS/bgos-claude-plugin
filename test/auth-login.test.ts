@@ -1575,13 +1575,13 @@ const src = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').repla
 const SHAPE = 'pins SHAPE only: the source text, not that this code runs'
 
 test('the code is offered to the sign-in flow on every rail that forwards human text, before anything logs or forwards it (shape pin)', () => {
-  assert.equal((src.match(/consumedAsLoginCode\(\{/g) ?? []).length, 4, `poll, ws, stream and meeting; ${SHAPE}`)
+  assert.equal((src.match(/consumedAsLoginCode\(\{/g) ?? []).length, 8, `poll, ws, stream, meeting and edit/preparation guards; ${SHAPE}`)
   // As the WHOLE condition of an if, at the start of a statement: a counted
   // call can be disarmed with `false && ` and still be counted (measured: that
   // mutation of the stream site stayed green against the count alone).
   assert.equal(
     (src.match(/\n[ ]+if \(consumedAsLoginCode\(\{\n/g) ?? []).length,
-    4,
+    8,
     `each site is a bare \`if (consumedAsLoginCode({\`; ${SHAPE}`,
   )
   // Poll: before the permission parse and the content log.

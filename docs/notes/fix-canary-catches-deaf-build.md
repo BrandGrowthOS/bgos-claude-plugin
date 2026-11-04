@@ -1,6 +1,6 @@
 # fix/canary-catches-deaf-build (board row 42499778)
 
-Stacked on #291 (`fix/idle-agent-loads-staged-update`), merges after it. Ships as 0.85.1.
+Stacked on #291 (`fix/idle-agent-loads-staged-update`), merges after it. Ships as 0.85.2.
 
 ## The gap
 
@@ -32,7 +32,7 @@ Left, on purpose, in DESIGN.md Residuals: the wall clock grace, a chat that was 
 
 ## The new test's cost to the rest of the suite
 
-Run in the pool, four daemons at a time, the new file pushed fixed 15 s limits elsewhere past their time: 10 failures in the node pool against 4 once it runs after the pool (same tree, same disk, nothing else running). It is `*.daemon.test.ts` now, in a stage of its own in `scripts/run-tests.mjs`.
+Run in the pool, four daemons at a time, the new file pushed fixed 15 s limits elsewhere past their time: 10 failures in the node pool against 4 once it runs after the pool (same tree, same disk, nothing else running). It is `*.daemon.test.ts` now, in a group of its own in `testGroups` (`scripts/run-test-files.mjs`), one at a time, after the pool.
 
 ## What it does not catch
 

@@ -118,7 +118,8 @@ test('owner normal browser creates, switches and closes real agent tabs and navi
   await f.page.locator('#popup').click()
   const popup = await popupPromise
   await popup.waitForLoadState('domcontentloaded')
-  const popupDeadline = Date.now() + 3000
+  // Still must happen; only how long a busy machine may take is wider (3 s failed at load 300 and up).
+  const popupDeadline = Date.now() + 15_000
   while (state().tabs.length !== 3 || state().activeIndex !== 2) {
     if (Date.now() > popupDeadline) throw new Error('The owner popup did not become the selected remote tab')
     await new Promise(resolve => setTimeout(resolve, 10))

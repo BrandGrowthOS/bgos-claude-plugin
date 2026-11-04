@@ -1,0 +1,63 @@
+TAP version 13
+# Subtest: market2 launcher: legacy without home launches the effective agent 42
+not ok 1 - market2 launcher: legacy without home launches the effective agent 42
+  ---
+  duration_ms: 415.3895
+  type: 'test'
+  location: '/Users/kc/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:2:5362'
+  failureType: 'testCodeFailure'
+  error: |-
+    scope follows the selected credentials, not another filename
+
+    '' !== '42'
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: '42'
+  actual: ''
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:274:14)
+    process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    async Test.run (node:internal/test_runner/test:1208:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3)
+  ...
+# Subtest: market2 launcher: explicit legacy without home launches the effective agent 42
+not ok 2 - market2 launcher: explicit legacy without home launches the effective agent 42
+  ---
+  duration_ms: 529.1895
+  type: 'test'
+  location: '/Users/kc/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:2:5362'
+  failureType: 'testCodeFailure'
+  error: |-
+    scope follows the selected credentials, not another filename
+
+    '' !== '42'
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: '42'
+  actual: ''
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:274:14)
+    process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    async Test.run (node:internal/test_runner/test:1208:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+  ...
+1..0
+# Subtest: test/marketplace-attach.test.ts
+ok 2 - test/marketplace-attach.test.ts
+  ---
+  duration_ms: 132.377916
+  type: 'test'
+  ...
+1..3
+# tests 3
+# suites 0
+# pass 1
+# fail 2
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1094.608667

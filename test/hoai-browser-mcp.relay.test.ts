@@ -23,9 +23,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
-import { mkdirSync, mkdtempSync, unlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { scratchDir } from './helpers/scratch-dirs'
 
 const SHIM = join(process.cwd(), 'bin', 'hoai-browser-mcp.mjs')
 const PAIRING = 'pair-token-abcdefghijklmnopqrstuvwxyz'
@@ -312,7 +312,7 @@ async function fakeLocal() {
 }
 
 function tempHome() {
-  return mkdtempSync(join(tmpdir(), 'hoai-shim-relay-'))
+  return scratchDir('hoai-shim-relay-')
 }
 
 function client(env: Record<string, string>) {

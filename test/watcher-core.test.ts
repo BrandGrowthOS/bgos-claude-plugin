@@ -1403,6 +1403,81 @@ test('runWatcher: a sweep that throws is logged and the loop goes on polling', a
   assert.ok(backend.calls.some((c) => c.path.includes('/machine-rpc/pending')))
 })
 
+// -- the limit watch in the loop (lib/watcher-limit.mjs runLimitPass). The pass here is a fake that only
+// records what it is handed: no screen is read and no key can be sent from these tests.
+
+const windowsNone = async () => ({ memory: {}, report: { mode: 'none', reason: 'unsupported' } })
+
+test('runWatcher: the limit pass runs right after the sweep, for the agents the sweep cleared (valid ids only), with the watcher effects', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const order: string[] = []
+  const passes: any[] = []
+  const { deps } = baseDeps(fs, fakeBackend(), fakeClock(), {
+    modules: stubModules(),
+    keepAliveSweep: async () => {
+      order.push('sweep')
+      return { enabled: true, agents: [{ id: '912' }, { id: 913 }, { id: '91 2; rm -rf' }, { id: '' }, {}, null] }
+    },
+    limitPass: async (ctx: any) => {
+      order.push('limit')
+      passes.push(ctx)
+      return { agents: [] }
+    },
+    windowsPass: async () => {
+      order.push('windows')
+      return windowsNone()
+    },
+  })
+  assert.equal(await runWatcher(deps as any), 0)
+  assert.deepEqual(order.slice(0, 2), ['sweep', 'limit'], 'after the sweep, before anything else')
+  assert.equal(passes.length, 1, 'once per heartbeat')
+  assert.deepEqual(passes[0].assistantIds, ['912', '913'], 'only the ids the sweep cleared, and only well formed ones')
+  for (const key of ['exec', 'execSync', 'now', 'sleep', 'log', 'keepOnline', 'pidAlive']) assert.equal(typeof passes[0][key], 'function', key)
+  assert.equal(passes[0].home, HOME)
+  assert.equal(passes[0].platform, 'linux')
+})
+
+test('runWatcher: the limit pass never runs when the keep-alive switch is off, or when the sweep cleared no agent', async () => {
+  for (const report of [
+    { enabled: false, agents: [{ id: '912' }] },
+    { enabled: true, agents: [] },
+    { enabled: true, agents: [{ id: 'not-an-id' }] },
+  ]) {
+    const fs = machineFs()
+    manifestFor(fs)
+    let passes = 0
+    const { deps } = baseDeps(fs, fakeBackend(), fakeClock(), {
+      modules: stubModules(),
+      keepAliveSweep: async () => report,
+      limitPass: async () => {
+        passes += 1
+        return { agents: [] }
+      },
+      windowsPass: windowsNone,
+    })
+    assert.equal(await runWatcher(deps as any), 0)
+    assert.equal(passes, 0, JSON.stringify(report))
+  }
+})
+
+test('runWatcher: a limit pass that throws is logged and the loop goes on polling', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const backend = fakeBackend()
+  const { deps, logs } = baseDeps(fs, backend, fakeClock(), {
+    modules: stubModules(),
+    keepAliveSweep: async () => ({ enabled: true, agents: [{ id: '912' }] }),
+    limitPass: async () => {
+      throw new Error('boom')
+    },
+    windowsPass: windowsNone,
+  })
+  assert.equal(await runWatcher(deps as any), 0)
+  assert.ok(logs.some((l) => l.includes('limit watch failed: boom')))
+  assert.ok(backend.calls.some((c) => c.path.includes('/machine-rpc/pending')))
+})
+
 test('runWatcher: a successful poll records lastPollOkAt (the crash-loop rule); a failed one does not; it survives a restart', async () => {
   const fs = machineFs()
   manifestFor(fs)

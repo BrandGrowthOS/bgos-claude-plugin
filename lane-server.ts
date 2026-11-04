@@ -678,12 +678,13 @@ async function poll(): Promise<void> {
       .filter((r): r is { raw: unknown; d: LaneDelivery } => r.d !== null)
       .sort((a, b) => a.d.messageId - b.d.messageId)
     const boot = firstPoll
-    // New rows: on the very first start only the turn that woke the lane
-    // (selectLaneBacklog); after that, every row past the cursor.
-    let backlog = selectLaneBacklog(rows.filter((r) => !inbox.delivered.includes(r.d.messageId)).map((r) => r.d), {
-      cursor: inbox.cursor,
-      nowMs: Date.now(),
-    })
+    // New rows: at a boot what selectLaneBacklog chooses to re-offer; after that,
+    // every row past the cursor. The cursor moves over every row read below, so a
+    // row left out of a running lane's poll is gone (D04-1).
+    const notHandedOver = rows.filter((r) => !inbox.delivered.includes(r.d.messageId)).map((r) => r.d)
+    let backlog = boot
+      ? selectLaneBacklog(notHandedOver, { cursor: inbox.cursor, nowMs: Date.now() })
+      : notHandedOver.filter((d) => d.messageId > inbox.cursor)
     if (boot && !launchHadNote && backlog.length > 0) {
       // A lane whose folders were deleted boots with no inbox note and would
       // re-answer the person's last 15 minutes: the server's record of what

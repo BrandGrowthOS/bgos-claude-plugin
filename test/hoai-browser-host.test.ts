@@ -25,10 +25,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { tmpdir } from 'node:os'
 import { basename, dirname, join, sep } from 'node:path'
 
 import {
@@ -69,6 +68,7 @@ import {
 } from '../bin/hoai-browser-host.mjs'
 import { startFakeRelay } from './helpers/fake-browser-relay.ts'
 import { processesMatching } from './helpers/processes.ts'
+import { scratchDir } from './helpers/scratch-dirs.ts'
 
 const HOST_BIN = join(process.cwd(), 'bin', 'hoai-browser-host.mjs')
 const ROOT = join(sep, 'home', 'kc', '.bgos-agent')
@@ -360,7 +360,7 @@ test('the host opens one socket per pairing, each listing only its own agents, a
   // and agent machine in the fleet. Canonicalising the TEST root keeps the
   // production check exactly as strict: ~/.bgos-agent, the real profile root,
   // has no symlink in its chain.
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'bh-host-')))
+  const root = realpathSync(scratchDir('bh-host-'))
   writeFileSync(join(root, 'credentials-900.json'), JSON.stringify({ backendUrl: relayA.backendUrl, pairingToken: 'tokA', pairingId: 39, assistantId: 900 }))
   writeFileSync(join(root, 'credentials-905.json'), JSON.stringify({ backendUrl: relayA.backendUrl, pairingToken: 'tokA', pairingId: 39, assistantId: 905 }))
   writeFileSync(join(root, 'credentials-901.json'), JSON.stringify({ backendUrl: relayB.backendUrl, pairingToken: 'tokB', pairingId: 68, assistantId: 901 }))
@@ -578,7 +578,7 @@ test('the browser_ roster is loaded on first use, once, and a failed load is ret
 // ── 4. The roster and the browser ────────────────────────────────────────────
 
 test('the roster is the desktop one: four session tools, Playwright tools minus the never set, wait_seconds where a gate could rise', { timeout: 60_000 }, async () => {
-  const tools = servedBrowserTools(await listTools({ caps: DEFAULT_CAPS, outputDir: realpathSync(mkdtempSync(join(tmpdir(), 'bh-out-'))) }))
+  const tools = servedBrowserTools(await listTools({ caps: DEFAULT_CAPS, outputDir: realpathSync(scratchDir('bh-out-')) }))
   const names = tools.map((t: any) => t.name)
   assert.ok(names.includes('browser_navigate') && names.includes('browser_snapshot') && names.includes('browser_pdf_save'))
   assert.ok(!names.some((n: string) => NEVER_TOOLS.has(n)), 'no never-exposed tool')
@@ -652,7 +652,7 @@ test('chromeArgs: remote debugging on a free port, the profile as the user data 
 })
 
 test('readDevToolsActivePort: only a well formed endpoint is reattached to', () => {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'bh-port-')))
+  const dir = realpathSync(scratchDir('bh-port-'))
   assert.equal(readDevToolsActivePort(dir), null)
   writeFileSync(join(dir, 'DevToolsActivePort'), '9222\n/devtools/browser/abc-123\n')
   assert.equal(readDevToolsActivePort(dir), 'ws://127.0.0.1:9222/devtools/browser/abc-123')
@@ -739,11 +739,11 @@ test('the host process stays up with no live socket: no credentials yet, or refu
     return child
   }
   // No credentials at all: it waits for a pairing instead of exiting.
-  const empty = realpathSync(mkdtempSync(join(tmpdir(), 'bh-empty-')))
+  const empty = realpathSync(scratchDir('bh-empty-'))
   const idle = daemonStarted({ HOME: empty, USERPROFILE: empty })
   // Refused by the gateway: it waits out its backoff instead of exiting.
   const relay = await startFakeRelay({ token: 'tok-refused', admissible: [] })
-  const refusedHome = realpathSync(mkdtempSync(join(tmpdir(), 'bh-refused-')))
+  const refusedHome = realpathSync(scratchDir('bh-refused-'))
   const refused = daemonStarted({ HOME: refusedHome, USERPROFILE: refusedHome, HOAI_BROWSER_HOST_PAIRING_TOKEN: 'tok-refused', HOAI_BROWSER_HOST_BACKEND_URL: relay.backendUrl, HOAI_BROWSER_HOST_ASSISTANT_ID: '900' })
   try {
     const deadline = Date.now() + 20_000
@@ -775,7 +775,7 @@ test('a daemon-started host connects only its daemon pairing, even with another 
   if (!nodeOnPath) return
   const mine = await startFakeRelay({ token: 'tok-mine', admissible: [900, 905] })
   const other = await startFakeRelay({ token: 'tok-other', admissible: [901] })
-  const home = realpathSync(mkdtempSync(join(tmpdir(), 'bh-scope-')))
+  const home = realpathSync(scratchDir('bh-scope-'))
   const agentRoot = join(home, '.bgos-agent')
   mkdirSync(agentRoot, { recursive: true })
   writeFileSync(join(agentRoot, 'credentials-900.json'), JSON.stringify({ backendUrl: mine.backendUrl, pairingToken: 'tok-mine', pairingId: 1, assistantId: 900 }))
@@ -809,7 +809,7 @@ test(
     if (e2eSkip) return // bun ignores the skip option; this is the same skip
     const site = await startCookieSite()
     const relay = await startFakeRelay({ token: 'tok-e2e', admissible: [900] })
-    const home = realpathSync(mkdtempSync(join(tmpdir(), 'bh-e2e-')))
+    const home = realpathSync(scratchDir('bh-e2e-'))
     const agentRoot = join(home, '.bgos-agent')
     mkdirSync(agentRoot, { recursive: true, mode: 0o700 })
     writeFileSync(join(agentRoot, 'credentials-900.json'), JSON.stringify({ backendUrl: relay.backendUrl, pairingToken: 'tok-e2e', pairingId: 5, assistantId: 900 }))

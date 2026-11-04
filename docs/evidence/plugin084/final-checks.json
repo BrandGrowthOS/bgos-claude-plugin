@@ -1,0 +1,113 @@
+{
+  "versions": {
+    "package.json": "0.84.0",
+    "package-lock.json": "0.84.0",
+    ".claude-plugin/plugin.json": "0.84.0",
+    "lock root": "0.84.0"
+  },
+  "main_report_preserved": true,
+  "all_reviewed_tips_are_ancestors": true,
+  "merge_order": [
+    {
+      "branch": "fix/threads-hardening-2",
+      "merge": "cca3732722b06555e8611a94847111e3272200ca",
+      "parents": [
+        "309ef744bbb6d03ad771492df0af0e7df13ed5c9",
+        "f0056b963dd432d53b9c87d83c88d0182fcc22d4"
+      ]
+    },
+    {
+      "branch": "feat/mission-working-hooks",
+      "merge": "20d06d00f38c49aabd437fef90c060739d065597",
+      "parents": [
+        "cca3732722b06555e8611a94847111e3272200ca",
+        "a141232feb6d37b2f2ae83018ddea232b642e599"
+      ]
+    },
+    {
+      "branch": "fix/edit-after-delivery",
+      "merge": "36238cfa6ba9c0b3841c0189bf55ff2397af3531",
+      "parents": [
+        "20d06d00f38c49aabd437fef90c060739d065597",
+        "2298111ac23a8daf2970f9a07aaa3505e8d75f8d"
+      ]
+    },
+    {
+      "branch": "fix/daemon-attach-scope-impl",
+      "merge": "d80e6e2355fceb404f67a7ac647670d6145373e3",
+      "parents": [
+        "36238cfa6ba9c0b3841c0189bf55ff2397af3531",
+        "5ec1909cde91d42e2d5ef5c08c7286c34168c6b7"
+      ]
+    }
+  ],
+  "single_changelog_entry_prior_history_matches_main": true,
+  "final_sources_match_tested_tree": 796,
+  "command_results": {
+    "main-doctor-final": {
+      "exit_code": 0,
+      "seconds": 0.848
+    },
+    "typecheck-final": {
+      "exit_code": 0,
+      "seconds": 82.342
+    },
+    "launcher-node": {
+      "exit_code": 0,
+      "seconds": 9.563
+    },
+    "attach-scope-node": {
+      "exit_code": 0,
+      "seconds": 21.035
+    },
+    "edit-delivery-node": {
+      "exit_code": 0,
+      "seconds": 202.646
+    },
+    "threads-node": {
+      "exit_code": 0,
+      "seconds": 7.265
+    },
+    "mission-working-node": {
+      "exit_code": 1,
+      "seconds": 14.206
+    },
+    "doctor-final": {
+      "exit_code": 0,
+      "seconds": 0.71
+    },
+    "full": {
+      "exit_code": 1,
+      "seconds": 732.053
+    },
+    "main-thread-lifecycle": {
+      "exit_code": 0,
+      "seconds": 1.4
+    },
+    "typecheck": {
+      "exit_code": 0,
+      "seconds": 99.18
+    },
+    "main-doctor-nested": {
+      "exit_code": 1,
+      "seconds": 0.603
+    },
+    "edit-delivery-bun": {
+      "exit_code": 0,
+      "seconds": 0.101
+    },
+    "mission-working-final": {
+      "exit_code": 0,
+      "seconds": 11.514
+    },
+    "marketplace-node": {
+      "exit_code": 0,
+      "seconds": 38.335
+    }
+  },
+  "full_suite_once": true,
+  "new_prose_has_no_em_or_en_dashes": true,
+  "staged_source_and_prose_whitespace_check": "passed; raw .log and .diff evidence excluded to preserve exact output",
+  "required_report_staged": true,
+  "staged_paths_reviewed": 54
+}

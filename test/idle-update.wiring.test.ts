@@ -331,7 +331,7 @@ test('a permission verdict the daemon consumed is settled on both lanes that rea
 test('the permission watch settles every typed verdict it moves the cursor past, or the poll never sees it to settle it', () => {
   const at = server.indexOf('verdictFrom')
   assert.ok(at >= 0, 'the watch moved')
-  const advances = [...server.matchAll(/^(\s*)advanceChatCursor\(chatId, msg\.message\.id\)$/gm)]
+  const advances = [...server.matchAll(/^(\s*)passCursorOverAnswer\(chatId, msg\.message\.id\)$/gm)]
   assert.ok(advances.length >= 2, `the watch's two advances: ${advances.length}`)
   for (const advance of advances) {
     const before = server.slice(Math.max(0, advance.index! - 120), advance.index!)
@@ -360,4 +360,11 @@ test('the proof reads nothing outside the moments it can mean something, and dro
   assert.match(read, /deliveryProof\.keepChats\(/)
   const undelivered = server.slice(server.indexOf('function readUndelivered(): boolean {'), server.indexOf('function readUndelivered(): boolean {') + 200)
   assert.match(undelivered, /!lockHeld \|\| !channelArmed \|\| updateDrainMode/)
+})
+
+test('the controller is given the real thread work, and a voice_rpc frame starts none once drained', () => {
+  assert.match(block(), /threadWork: \(\) => liveThreadWork\(threadLanes, asideForks\),/)
+  const at = server.indexOf("realtimeSocket.on('voice_rpc', whenArmed('voice_rpc'")
+  assert.ok(at >= 0)
+  assert.match(server.slice(at, at + 120), /\n\s*if \(updateDrainMode\) return\n/)
 })

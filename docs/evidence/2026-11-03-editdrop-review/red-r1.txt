@@ -1,0 +1,88 @@
+✖ review R1: a replayed unversioned B cannot roll C back or cause a restoring poll card (85.258084ms)
+✖ review R1: two trackers distinguish the same old text replay from an authoritative revert (1.157792ms)
+✖ review R1: a stale unversioned poll snapshot fetched after C is authoritatively reconciled (59.080084ms)
+✖ review R1: stable message revisions reject replay even when edit timestamps are absent (53.071875ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 0
+ℹ fail 4
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 743.067334
+
+✖ failing tests:
+
+test at test/message-edits.test.ts:4:18010
+✖ review R1: a replayed unversioned B cannot roll C back or cause a restoring poll card (85.258084ms)
+  AssertionError [ERR_ASSERTION]: the replay must not become a fourth correction
+
+  4 !== 3
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/test/message-edits.test.ts:665:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 4,
+    expected: 3,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/message-edits.test.ts:4:18451
+✖ review R1: two trackers distinguish the same old text replay from an authoritative revert (1.157792ms)
+  AssertionError [ERR_ASSERTION]: tracker one receives an old frame while the row still says C
+  + actual - expected
+
+    [
+      'A',
+      'B',
+      'C',
+  +   'B'
+    ]
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/test/message-edits.test.ts:682:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: [ 'A', 'B', 'C', 'B' ],
+    expected: [ 'A', 'B', 'C' ],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/message-edits.test.ts:4:19434
+✖ review R1: a stale unversioned poll snapshot fetched after C is authoritatively reconciled (59.080084ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  4 !== 3
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/test/message-edits.test.ts:693:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 4,
+    expected: 3,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/message-edits.test.ts:4:19772
+✖ review R1: stable message revisions reject replay even when edit timestamps are absent (53.071875ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  4 !== 3
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/test/message-edits.test.ts:702:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 4,
+    expected: 3,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

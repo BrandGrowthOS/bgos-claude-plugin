@@ -1,0 +1,32 @@
+{
+  "base_commit": "ccaee4ea347b157b3b8147c15241133ddb8b139f",
+  "node": {
+    "tests": 8219,
+    "pass": 8167,
+    "fail": 0,
+    "skipped": 52
+  },
+  "chromium": {
+    "tests": 15,
+    "pass": 11,
+    "fail": 0,
+    "skipped": 4
+  },
+  "bun": {
+    "tests": 378,
+    "pass": 377,
+    "fail": 0,
+    "skipped": 1
+  },
+  "total": {
+    "tests": 8612,
+    "pass": 8555,
+    "fail": 0,
+    "skipped": 57
+  },
+  "max_workers": 4,
+  "tsc_exit": 0,
+  "mutation_checks": 30,
+  "mutation_survivors": 0,
+  "new_red_first_scenarios": 29
+}

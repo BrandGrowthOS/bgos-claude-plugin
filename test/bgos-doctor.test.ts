@@ -38,9 +38,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { join } from 'node:path'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-
+import { mkdirSync, writeFileSync } from 'node:fs'
 import {
   buildDoctorRows,
   renderDoctorTable,
@@ -79,6 +77,7 @@ import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import { bunInstallHint } from '../bin/bgos-launch.mjs'
 import { launchCommand, MARKETPLACE_CHANNEL_SPEC, CLONE_CHANNEL_SPEC } from '../bin/bgos-install-method.mjs'
+import { scratchDir } from './helpers/scratch-dirs'
 
 // ── Shared probe fixtures ────────────────────────────────────────────────────
 
@@ -1851,7 +1850,7 @@ test('provePairedTopology: both verifiers are asked about the SUPERVISED environ
 })
 
 function pairedHome(): { home: string; workspace: string; npxBin: string } {
-  const home = mkdtempSync(join(tmpdir(), 'hoai-topology-'))
+  const home = scratchDir('hoai-topology-')
   const workspace = join(home, '.bgos-agent', '936-workspace')
   mkdirSync(workspace, { recursive: true })
   writeFileSync(join(workspace, '.bgos-agent-id'), '936\n')
@@ -1998,7 +1997,7 @@ test('doctor: the credentials row prints the home and where it came from, in eve
 })
 
 test('doctor: probeCredentials reads the home, its source, and whether this folder would be refused', () => {
-  const root = mkdtempSync(join(tmpdir(), 'doctor-home-'))
+  const root = scratchDir('doctor-home-')
   const agentHome = join(root, 'hoai-agents', 'ava')
   const repo = join(root, 'code', 'repo')
   mkdirSync(join(root, '.bgos-agent'), { recursive: true })

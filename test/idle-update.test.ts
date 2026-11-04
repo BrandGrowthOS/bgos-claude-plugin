@@ -54,6 +54,7 @@ function idle(over: Record<string, unknown> = {}): any {
     safe: { turnInFlight: false, turnSignal: 'hooks', pendingMessages: 0, pendingPermissions: 0, activeOperations: 0 },
     openAsks: 0,
     goalRunning: false,
+    threadWork: 0,
     call: { pendingConsults: 0, openContinuations: 0, lastVoiceAtMs: null, openMeetings: 0 },
     lastBrowserToolAtMs: null,
     personAttached: false,
@@ -940,6 +941,13 @@ test('rollback: the canary always, any other agent once, and an expired login ne
 })
 
 /** The rollback restart's facts, everything quiet: the one case that goes. */
+test('thread work holds the restart and the way back, and only work does', () => {
+  assert.deepEqual(m.decideIdleUpdate(idle({ threadWork: 1 })), { action: 'wait', reason: 'thread_work' })
+  assert.equal(m.decideIdleUpdate(idle({ threadWork: 0 })).action, 'restart')
+  assert.deepEqual(m.decideRollbackMoment(quietRollback({ threadWork: 2 })), { go: false, reason: 'thread_work' })
+  assert.equal(m.decideRollbackMoment(quietRollback({ threadWork: 0 })).go, true)
+})
+
 function quietRollback(over: Record<string, unknown> = {}): any {
   const f = idle()
   return {

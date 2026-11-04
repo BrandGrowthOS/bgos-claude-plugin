@@ -1,0 +1,1085 @@
+# New tests against the runner as it stood at d5dc139 (only the folder argument added), v24.22.2, bun 1.3.14
+TAP version 13
+# Subtest: a blocked test fails by file name and releases its worker before the deadline
+ok 1 - a blocked test fails by file name and releases its worker before the deadline
+  ---
+  duration_ms: 1555.052167
+  type: 'test'
+  ...
+# Subtest: a file stuck after its test passes loses its detached descendant too
+ok 2 - a file stuck after its test passes loses its detached descendant too
+  ---
+  duration_ms: 5056.778833
+  type: 'test'
+  ...
+# Subtest: an unsuccessful file and a missing executable fail without waiting for the watchdog
+ok 3 - an unsuccessful file and a missing executable fail without waiting for the watchdog
+  ---
+  duration_ms: 36.537333
+  type: 'test'
+  ...
+# Subtest: file scheduling caps requested concurrency at four and continues after a failure
+ok 4 - file scheduling caps requested concurrency at four and continues after a failure
+  ---
+  duration_ms: 384.51125
+  type: 'test'
+  ...
+# Subtest: a healthy file of blocking tests keeps resetting the deadline
+ok 5 - a healthy file of blocking tests keeps resetting the deadline
+  ---
+  duration_ms: 25135.307542
+  type: 'test'
+  ...
+# Subtest: a worker that exits while an orphan holds its pipes finishes without waiting for the deadline
+ok 6 - a worker that exits while an orphan holds its pipes finishes without waiting for the deadline
+  ---
+  duration_ms: 3051.815375
+  type: 'test'
+  ...
+# Subtest: a run reports each file whole, then its failures by name and its totals
+ok 7 - a run reports each file whole, then its failures by name and its totals
+  ---
+  duration_ms: 88.697542
+  type: 'test'
+  ...
+# Subtest: stopping the run ends a worker in flight, detached or not
+ok 8 - stopping the run ends a worker in flight, detached or not
+  ---
+  duration_ms: 88.006958
+  type: 'test'
+  ...
+# Subtest: no test asks for longer than the file deadline, or its hang could not fail by its own name
+ok 9 - no test asks for longer than the file deadline, or its hang could not fail by its own name
+  ---
+  duration_ms: 116.511084
+  type: 'test'
+  ...
+# Subtest: a file that throws at top level after its first test fails by name, and its error can be read
+not ok 10 - a file that throws at top level after its first test fails by name, and its error can be read
+  ---
+  duration_ms: 102.145583
+  type: 'test'
+  location: '/Users/kc/hoai-work/mbwintest/test/run-tests-timeout.test.ts:19:180'
+  failureType: 'testCodeFailure'
+  error: |-
+    no FAIL line for thrown.test.mjs:
+    [run-tests] START control-healthy.test.mjs
+    [run-tests] START thrown.test.mjs
+    TAP version 13
+    # Subtest: fine
+    ok 1 - fine
+      ---
+      duration_ms: 3.319125
+      type: 'test'
+      ...
+    1..1
+    # tests 1
+    # suites 0
+    # pass 1
+    # fail 0
+    # cancelled 0
+    # skipped 0
+    # todo 0
+    # duration_ms 43.105458
+    [run-tests] PASS control-healthy.test.mjs (0.085s)
+    TAP version 13
+    # Subtest: fine
+    ok 1 - fine
+      ---
+      duration_ms: 2.7235
+      type: 'test'
+      ...
+    1..1
+    # tests 1
+    # suites 0
+    # pass 1
+    # fail 0
+    # cancelled 0
+    # skipped 0
+    # todo 0
+    # duration_ms 44.137458
+    [run-tests] PASS thrown.test.mjs (0.089s)
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  actual: |-
+    [run-tests] START control-healthy.test.mjs
+    [run-tests] START thrown.test.mjs
+    TAP version 13
+    # Subtest: fine
+    ok 1 - fine
+      ---
+      duration_ms: 3.319125
+      type: 'test'
+      ...
+    1..1
+    # tests 1
+    # suites 0
+    # pass 1
+    # fail 0
+    # cancelled 0
+    # skipped 0
+    # todo 0
+    # duration_ms 43.105458
+    [run-tests] PASS control-healthy.test.mjs (0.085s)
+    TAP version 13
+    # Subtest: fine
+    ok 1 - fine
+      ---
+      duration_ms: 2.7235
+      type: 'test'
+      ...
+    1..1
+    # tests 1
+    # suites 0
+    # pass 1
+    # fail 0
+    # cancelled 0
+    # skipped 0
+    # todo 0
+    # duration_ms 44.137458
+    [run-tests] PASS thrown.test.mjs (0.089s)
+    
+  operator: 'match'
+  stack: |-
+    assertFailedByName (/Users/kc/hoai-work/mbwintest/test/run-tests-timeout.test.ts:264:10)
+    TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/run-tests-timeout.test.ts:273:3)
+    process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    async Test.run (node:internal/test_runner/test:1409:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
+  ...
+# Subtest: a file whose top level await rejects after its first test fails by name, and its error can be read
+not ok 11 - a file whose top level await rejects after its first test fails by name, and its error can be read
+  ---
+  duration_ms: 97.81075
+  type: 'test'
+  location: '/Users/kc/hoai-work/mbwintest/test/run-tests-timeout.test.ts:19:607'
+  failureType: 'testCodeFailure'
+  error: |-
+    no FAIL line for rejected.test.mjs:
+    [run-tests] START control-healthy.test.mjs
+    [run-tests] START rejected.test.mjs
+    TAP version 13
+    # Subtest: fine
+    ok 1 - fine
+      ---
+      duration_ms: 2.799208
+      type: 'test'
+      ...
+    1..1
+    # tests 1
+    # suites 0
+    # pass 1
+    # fail 0
+    # cancelled 0
+    # skipped 0
+    # todo 0
+    # duration_ms 47.305875
+    [run-tests] PASS control-healthy.test.mjs (0.091s)
+    TAP version 13
+    # Subtest: fine
+    ok 1 - fine
+      ---
+      duration_ms: 4.823959
+      type: 'test'
+      ...
+    1..1
+    # tests 1
+    # suites 0
+    # pass 1
+    # fail 0
+    # cancelled 0
+    # skipped 0
+    # todo 0
+    # duration_ms 49.706542
+    [run-tests] PASS rejected.test.mjs (0.091s)
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  actual: |-
+    [run-tests] START control-healthy.test.mjs
+    [run-tests] START rejected.test.mjs
+    TAP version 13
+    # Subtest: fine
+    ok 1 - fine
+      ---
+      duration_ms: 2.799208
+      type: 'test'
+      ...
+    1..1
+    # tests 1
+    # suites 0
+    # pass 1
+    # fail 0
+    # cancelled 0
+    # skipped 0
+    # todo 0
+    # duration_ms 47.305875
+    [run-tests] PASS control-healthy.test.mjs (0.091s)
+    TAP version 13
+    # Subtest: fine
+    ok 1 - fine
+      ---
+      duration_ms: 4.823959
+      type: 'test'
+      ...
+    1..1
+    # tests 1
+    # suites 0
+    # pass 1
+    # fail 0
+    # cancelled 0
+    # skipped 0
+    # todo 0
+    # duration_ms 49.706542
+    [run-tests] PASS rejected.test.mjs (0.091s)
+    
+  operator: 'match'
+  stack: |-
+    assertFailedByName (/Users/kc/hoai-work/mbwintest/test/run-tests-timeout.test.ts:264:10)
+    TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/run-tests-timeout.test.ts:281:3)
+    process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    async Test.run (node:internal/test_runner/test:1409:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
+  ...
+# Subtest: the same deaths in TypeScript and CommonJS, as the suite and its fixtures are written
+not ok 12 - the same deaths in TypeScript and CommonJS, as the suite and its fixtures are written
+  ---
+  duration_ms: 134.104708
+  type: 'test'
+  location: '/Users/kc/hoai-work/mbwintest/test/run-tests-timeout.test.ts:19:1061'
+  failureType: 'testCodeFailure'
+  error: |-
+    no FAIL line for typed.test.ts:
+    [run-tests] START control-healthy.test.mjs
+    [run-tests] START typed.test.ts
+    [run-tests] START typed-await.test.ts
+    [run-tests] START plain.test.cjs
+    TAP version 13
+    # Subtest: fine
+    ok 1 - fine
+      ---
+      duration_ms: 2.62075
+      type: 'test'
+      ...
+    1..1
+    # tests 1
+    # suites 0
+    # pass 1
+    # fail 0
+    # cancelled 0
+    # skipped 0
+    # todo 0
+    # duration_ms 42.764916
+    [run-tests] PASS control-healthy.test.mjs (0.084s)
+    TAP version 13
+    # Subtest: fine
+    ok 1 - fine
+      ---
+      duration_ms: 2.678459
+      type: 'test'
+      ...
+    1..1
+    # tests 1
+    # suites 0
+    # pass 1
+    # fail 0
+    # cancelled 0
+    # skipped 0
+    # todo 0
+    # duration_ms 47.02025
+    [run-tests] PASS plain.test.cjs (0.087s)
+    TAP version 13
+    # Subtest: typed-await.test.ts
+    not ok 1 - typed-await.test.ts
+      ---
+      duration_ms: 3.192542
+      type: 'test'
+      location: '/private/var/folders/vy/23bb9ndx7q71czjmr5d6h1hr0000gn/T/runner-died-70R3FL/typed-await.test.ts:1:1'
+      name: 'TransformError'
+      error: |-
+        Transform failed with 1 error:
+        /private/var/folders/vy/23bb9ndx7q71czjmr5d6h1hr0000gn/T/runner-died-70R3FL/typed-await.test.ts:1:84: ERROR: Top-level await is currently not supported with the "cjs" output format
+      name: 'TransformError'
+      stack: |-
+        failureErrorWithLog (/Users/kc/hoai-work/mbwintest/node_modules/esbuild/lib/main.js:1748:15)
+        /Users/kc/hoai-work/mbwintest/node_modules/esbuild/lib/main.js:1017:50
+        responseCallbacks.<computed> (/Users/kc/hoai-work/mbwintest/node_modules/esbuild/lib/main.js:884:9)
+        handleIncomingPacket (/Users/kc/hoai-work/mbwintest/node_modules/esbuild/lib/main.js:939:12)
+        Socket.readFromStdout (/Users/kc/hoai-work/mbwintest/node_modules/esbuild/lib/main.js:862:7)
+        Socket.emit (node:events:514:28)
+        addChunk (node:internal/streams/readable:569:12)
+        readableAddChunkPushByteMode (node:internal/streams/readable:520:3)
+        Readable.push (node:internal/streams/readable:400:5)
+        Pipe.onStreamRead (node:internal/stream_base_commons:194:23)
+      ...
+    1..1
+    # tests 1
+    # suites 0
+    # pass 0
+    # fail 1
+    # cancelled 0
+    # skipped 0
+    # todo 0
+    # duration_ms 81.298125
+    [run-tests] FAIL typed-await.test.ts (0.124s)
+    TAP version 13
+    # Subtest: fine
+    ok 1 - fine
+      ---
+      duration_ms: 3.268958
+      type: 'test'
+      ...
+    1..1
+    # tests 1
+    # suites 0
+    # pass 1
+    # fail 0
+    # cancelled 0
+    # skipped 0
+    # todo 0
+    # duration_ms 86.615208
+    [run-tests] PASS typed.test.ts (0.128s)
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  actual: |-
+    [run-tests] START control-healthy.test.mjs
+    [run-tests] START typed.test.ts
+    [run-tests] START typed-await.test.ts
+    [run-tests] START plain.test.cjs
+    TAP version 13
+    # Subtest: fine
+    ok 1 - fine
+      ---
+      duration_ms: 2.62075
+      type: 'test'
+      ...
+    1..1
+    # tests 1
+    # suites 0
+    # pass 1
+    # fail 0
+    # cancelled 0
+    # skipped 0
+    # todo 0
+    # duration_ms 42.764916
+    [run-tests] PASS control-healthy.test.mjs (0.084s)
+    TAP version 13
+    # Subtest: fine
+    ok 1 - fine
+      ---
+      duration_ms: 2.678459
+      type: 'test'
+      ...
+    1..1
+    # tests 1
+    # suites 0
+    # pass 1
+    # fail 0
+    # cancelled 0
+    # skipped 0
+    # todo 0
+    # duration_ms 47.02025
+    [run-tests] PASS plain.test.cjs (0.087s)
+    TAP version 13
+    # Subtest: typed-await.test.ts
+    not ok 1 - typed-await.test.ts
+      ---
+      duration_ms: 3.192542
+      type: 'test'
+      location: '/private/var/folders/vy/23bb9ndx7q71czjmr5d6h1hr0000gn/T/runner-died-70R3FL/typed-await.test.ts:1:1'
+      name: 'TransformError'
+      error: |-
+        Transform failed with 1 error:
+        /private/var/folders/vy/23bb9ndx7q71czjmr5d6h1hr0000gn/T/runner-died-70R3FL/typed-await.test.ts:1:84: ERROR: Top-level await is currently not supported with the "cjs" output format
+      name: 'TransformError'
+      stack: |-
+        failureErrorWithLog (/Users/kc/hoai-work/mbwintest/node_modules/esbuild/lib/main.js:1748:15)
+        /Users/kc/hoai-work/mbwintest/node_modules/esbuild/lib/main.js:1017:50
+        responseCallbacks.<computed> (/Users/kc/hoai-work/mbwintest/node_modules/esbuild/lib/main.js:884:9)
+        handleIncomingPacket (/Users/kc/hoai-work/mbwintest/node_modules/esbuild/lib/main.js:939:12)
+        Socket.readFromStdout (/Users/kc/hoai-work/mbwintest/node_modules/esbuild/lib/main.js:862:7)
+        Socket.emit (node:events:514:28)
+        addChunk (node:internal/streams/readable:569:12)
+        readableAddChunkPushByteMode (node:internal/streams/readable:520:3)
+        Readable.push (node:internal/streams/readable:400:5)
+        Pipe.onStreamRead (node:internal/stream_base_commons:194:23)
+      ...
+    1..1
+    # tests 1
+    # suites 0
+    # pass 0
+    # fail 1
+    # cancelled 0
+    # skipped 0
+    # todo 0
+    # duration_ms 81.298125
+    [run-tests] FAIL typed-await.test.ts (0.124s)
+    TAP version 13
+    # Subtest: fine
+    ok 1 - fine
+      ---
+      duration_ms: 3.268958
+      type: 'test'
+      ...
+    1..1
+    # tests 1
+    # suites 0
+    # pass 1
+    # fail 0
+    # cancelled 0
+    # skipped 0
+    # todo 0
+    # duration_ms 86.615208
+    [run-tests] PASS typed.test.ts (0.128s)
+    
+  operator: 'match'
+  stack: |-
+    assertFailedByName (/Users/kc/hoai-work/mbwintest/test/run-tests-timeout.test.ts:264:10)
+    TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/run-tests-timeout.test.ts:293:45)
+    process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    async Test.run (node:internal/test_runner/test:1409:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
+  ...
+# Subtest: a file that stopped early with a clean exit fails by name
+not ok 13 - a file that stopped early with a clean exit fails by name
+  ---
+  duration_ms: 60049.107333
+  type: 'test'
+  location: '/Users/kc/hoai-work/mbwintest/test/run-tests-timeout.test.ts:19:1651'
+  failureType: 'testCodeFailure'
+  error: |-
+    no FAIL line for exit-at-top.test.mjs:
+    [run-tests] START control-healthy.test.mjs
+    [run-tests] START never-settles.test.mjs
+    [run-tests] START exit-at-top.test.mjs
+    [run-tests] START exit-later.test.mjs
+    [run-tests] PASS exit-at-top.test.mjs (0.076s)
+    [run-tests] START exit-in-test.test.mjs
+    TAP version 13
+    # Subtest: fine
+    ok 1 - fine
+      ---
+      duration_ms: 2.913583
+      type: 'test'
+      ...
+    1..1
+    # tests 1
+    # suites 0
+    # pass 1
+    # fail 0
+    # cancelled 0
+    # skipped 0
+    # todo 0
+    # duration_ms 41.905167
+    [run-tests] PASS control-healthy.test.mjs (0.085s)
+    [run-tests] START failed-then-exit.test.mjs
+    [run-tests] PASS exit-in-test.test.mjs (0.080s)
+    TAP version 13
+    [run-tests] PASS failed-then-exit.test.mjs (0.084s)
+    TAP version 13
+    [run-tests] PASS exit-later.test.mjs (0.178s)
+    TAP version 13
+    [run-tests] TIMEOUT never-settles.test.mjs: no test completed for 60000ms
+    [run-tests] FAIL never-settles.test.mjs (60.043s)
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  actual: |-
+    [run-tests] START control-healthy.test.mjs
+    [run-tests] START never-settles.test.mjs
+    [run-tests] START exit-at-top.test.mjs
+    [run-tests] START exit-later.test.mjs
+    [run-tests] PASS exit-at-top.test.mjs (0.076s)
+    [run-tests] START exit-in-test.test.mjs
+    TAP version 13
+    # Subtest: fine
+    ok 1 - fine
+      ---
+      duration_ms: 2.913583
+      type: 'test'
+      ...
+    1..1
+    # tests 1
+    # suites 0
+    # pass 1
+    # fail 0
+    # cancelled 0
+    # skipped 0
+    # todo 0
+    # duration_ms 41.905167
+    [run-tests] PASS control-healthy.test.mjs (0.085s)
+    [run-tests] START failed-then-exit.test.mjs
+    [run-tests] PASS exit-in-test.test.mjs (0.080s)
+    TAP version 13
+    [run-tests] PASS failed-then-exit.test.mjs (0.084s)
+    TAP version 13
+    [run-tests] PASS exit-later.test.mjs (0.178s)
+    TAP version 13
+    [run-tests] TIMEOUT never-settles.test.mjs: no test completed for 60000ms
+    [run-tests] FAIL never-settles.test.mjs (60.043s)
+    
+  operator: 'match'
+  stack: |-
+    assertFailedByName (/Users/kc/hoai-work/mbwintest/test/run-tests-timeout.test.ts:264:10)
+    TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/run-tests-timeout.test.ts:306:45)
+    process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    async Test.run (node:internal/test_runner/test:1409:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
+  ...
+# Subtest: an exit handler that resets the exit code does not turn a dead or failed file green
+not ok 14 - an exit handler that resets the exit code does not turn a dead or failed file green
+  ---
+  duration_ms: 92.895459
+  type: 'test'
+  location: '/Users/kc/hoai-work/mbwintest/test/run-tests-timeout.test.ts:19:2514'
+  failureType: 'testCodeFailure'
+  error: |-
+    no FAIL line for reset-after-throw.test.mjs:
+    [run-tests] START control-healthy.test.mjs
+    [run-tests] START reset-after-throw.test.mjs
+    [run-tests] START reset-after-reject.test.mjs
+    [run-tests] START reset-after-failure.test.mjs
+    TAP version 13
+    # Subtest: the named failure
+    not ok 1 - the named failure
+      ---
+      duration_ms: 2.74725
+      type: 'test'
+      location: '/private/var/folders/vy/23bb9ndx7q71czjmr5d6h1hr0000gn/T/runner-died-7EtH9P/reset-after-failure.test.mjs:1:85'
+      failureType: 'testCodeFailure'
+      error: 'no'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        TestContext.<anonymous> (file:///private/var/folders/vy/23bb9ndx7q71czjmr5d6h1hr0000gn/T/runner-died-7EtH9P/reset-after-failure.test.mjs:1:125)
+        Test.runInAsyncScope (node:async_hooks:227:14)
+        Test.run (node:internal/test_runner/test:1402:25)
+        Test.start (node:internal/test_runner/test:1262:17)
+        startSubtestAfterBootstrap (node:internal/test_runner/harness:387:17)
+      ...
+    1..1
+    # tests 1
+    # suites 0
+    # pass 0
+    # fail 1
+    # cancelled 0
+    # skipped 0
+    # todo 0
+    # duration_ms 50.858375
+    [run-tests] PASS reset-after-failure.test.mjs (0.087s)
+    TAP version 13
+    # Subtest: fine
+    ok 1 - fine
+      ---
+      duration_ms: 2.589458
+      type: 'test'
+      ...
+    1..1
+    # tests 1
+    # suites 0
+    # pass 1
+    # fail 0
+    # cancelled 0
+    # skipped 0
+    # todo 0
+    # duration_ms 47.965458
+    [run-tests] PASS control-healthy.test.mjs (0.089s)
+    TAP version 13
+    # Subtest: fine
+    ok 1 - fine
+      ---
+      duration_ms: 2.654875
+      type: 'test'
+      ...
+    1..1
+    # tests 1
+    # suites 0
+    # pass 1
+    # fail 0
+    # cancelled 0
+    # skipped 0
+    # todo 0
+    # duration_ms 49.336125
+    [run-tests] PASS reset-after-reject.test.mjs (0.088s)
+    TAP version 13
+    # Subtest: fine
+    ok 1 - fine
+      ---
+      duration_ms: 2.720292
+      type: 'test'
+      ...
+    1..1
+    # tests 1
+    # suites 0
+    # pass 1
+    # fail 0
+    # cancelled 0
+    # skipped 0
+    # todo 0
+    # duration_ms 46.680417
+    [run-tests] PASS reset-after-throw.test.mjs (0.090s)
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  actual: |-
+    [run-tests] START control-healthy.test.mjs
+    [run-tests] START reset-after-throw.test.mjs
+    [run-tests] START reset-after-reject.test.mjs
+    [run-tests] START reset-after-failure.test.mjs
+    TAP version 13
+    # Subtest: the named failure
+    not ok 1 - the named failure
+      ---
+      duration_ms: 2.74725
+      type: 'test'
+      location: '/private/var/folders/vy/23bb9ndx7q71czjmr5d6h1hr0000gn/T/runner-died-7EtH9P/reset-after-failure.test.mjs:1:85'
+      failureType: 'testCodeFailure'
+      error: 'no'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        TestContext.<anonymous> (file:///private/var/folders/vy/23bb9ndx7q71czjmr5d6h1hr0000gn/T/runner-died-7EtH9P/reset-after-failure.test.mjs:1:125)
+        Test.runInAsyncScope (node:async_hooks:227:14)
+        Test.run (node:internal/test_runner/test:1402:25)
+        Test.start (node:internal/test_runner/test:1262:17)
+        startSubtestAfterBootstrap (node:internal/test_runner/harness:387:17)
+      ...
+    1..1
+    # tests 1
+    # suites 0
+    # pass 0
+    # fail 1
+    # cancelled 0
+    # skipped 0
+    # todo 0
+    # duration_ms 50.858375
+    [run-tests] PASS reset-after-failure.test.mjs (0.087s)
+    TAP version 13
+    # Subtest: fine
+    ok 1 - fine
+      ---
+      duration_ms: 2.589458
+      type: 'test'
+      ...
+    1..1
+    # tests 1
+    # suites 0
+    # pass 1
+    # fail 0
+    # cancelled 0
+    # skipped 0
+    # todo 0
+    # duration_ms 47.965458
+    [run-tests] PASS control-healthy.test.mjs (0.089s)
+    TAP version 13
+    # Subtest: fine
+    ok 1 - fine
+      ---
+      duration_ms: 2.654875
+      type: 'test'
+      ...
+    1..1
+    # tests 1
+    # suites 0
+    # pass 1
+    # fail 0
+    # cancelled 0
+    # skipped 0
+    # todo 0
+    # duration_ms 49.336125
+    [run-tests] PASS reset-after-reject.test.mjs (0.088s)
+    TAP version 13
+    # Subtest: fine
+    ok 1 - fine
+      ---
+      duration_ms: 2.720292
+      type: 'test'
+      ...
+    1..1
+    # tests 1
+    # suites 0
+    # pass 1
+    # fail 0
+    # cancelled 0
+    # skipped 0
+    # todo 0
+    # duration_ms 46.680417
+    [run-tests] PASS reset-after-throw.test.mjs (0.090s)
+    
+  operator: 'match'
+  stack: |-
+    assertFailedByName (/Users/kc/hoai-work/mbwintest/test/run-tests-timeout.test.ts:264:10)
+    TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/run-tests-timeout.test.ts:318:45)
+    process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    async Test.run (node:internal/test_runner/test:1409:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
+  ...
+# Subtest: a file with no tests ran nothing, so it fails by name
+not ok 15 - a file with no tests ran nothing, so it fails by name
+  ---
+  duration_ms: 103.738958
+  type: 'test'
+  location: '/Users/kc/hoai-work/mbwintest/test/run-tests-timeout.test.ts:19:3258'
+  failureType: 'testCodeFailure'
+  error: |-
+    no FAIL line for no-tests.test.mjs:
+    [run-tests] START control-healthy.test.mjs
+    [run-tests] START no-tests.test.mjs
+    TAP version 13
+    # Subtest: no-tests.test.mjs
+    ok 1 - no-tests.test.mjs
+      ---
+      duration_ms: 2.510792
+      type: 'test'
+      ...
+    1..1
+    # tests 1
+    # suites 0
+    # pass 1
+    # fail 0
+    # cancelled 0
+    # skipped 0
+    # todo 0
+    # duration_ms 44.919917
+    [run-tests] PASS no-tests.test.mjs (0.100s)
+    TAP version 13
+    # Subtest: fine
+    ok 1 - fine
+      ---
+      duration_ms: 3.070208
+      type: 'test'
+      ...
+    1..1
+    # tests 1
+    # suites 0
+    # pass 1
+    # fail 0
+    # cancelled 0
+    # skipped 0
+    # todo 0
+    # duration_ms 54.125
+    [run-tests] PASS control-healthy.test.mjs (0.102s)
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  actual: |-
+    [run-tests] START control-healthy.test.mjs
+    [run-tests] START no-tests.test.mjs
+    TAP version 13
+    # Subtest: no-tests.test.mjs
+    ok 1 - no-tests.test.mjs
+      ---
+      duration_ms: 2.510792
+      type: 'test'
+      ...
+    1..1
+    # tests 1
+    # suites 0
+    # pass 1
+    # fail 0
+    # cancelled 0
+    # skipped 0
+    # todo 0
+    # duration_ms 44.919917
+    [run-tests] PASS no-tests.test.mjs (0.100s)
+    TAP version 13
+    # Subtest: fine
+    ok 1 - fine
+      ---
+      duration_ms: 3.070208
+      type: 'test'
+      ...
+    1..1
+    # tests 1
+    # suites 0
+    # pass 1
+    # fail 0
+    # cancelled 0
+    # skipped 0
+    # todo 0
+    # duration_ms 54.125
+    [run-tests] PASS control-healthy.test.mjs (0.102s)
+    
+  operator: 'match'
+  stack: |-
+    assertFailedByName (/Users/kc/hoai-work/mbwintest/test/run-tests-timeout.test.ts:264:10)
+    TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/run-tests-timeout.test.ts:325:3)
+    process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    async Test.run (node:internal/test_runner/test:1409:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
+  ...
+# Subtest: a file of only skipped tests still counts as run
+ok 16 - a file of only skipped tests still counts as run
+  ---
+  duration_ms: 88.406417
+  type: 'test'
+  ...
+# Subtest: a bun file that did not complete fails by name too
+not ok 17 - a bun file that did not complete fails by name too
+  ---
+  duration_ms: 1200.379375
+  type: 'test'
+  location: '/Users/kc/hoai-work/mbwintest/test/run-tests-timeout.test.ts:19:3827'
+  failureType: 'testCodeFailure'
+  error: |-
+    no FAIL line for bun-exit-at-top.test.ts:
+    [run-tests] START control-healthy.test.ts
+    [run-tests] START bun-thrown.test.ts
+    [run-tests] START bun-rejected.test.ts
+    [run-tests] START bun-exit-at-top.test.ts
+    bun test v1.3.14 (0d9b296a)
+    
+    bun-rejected.test.ts:
+    
+    # Unhandled error between tests
+    -------------------------------
+    1 | import { test } from 'bun:test';test('fine', () => {});await Promise.reject(new Error('rejected at top level'))
+                                                                                        ^
+    error: rejected at top level
+          at /private/var/folders/vy/23bb9ndx7q71czjmr5d6h1hr0000gn/T/runner-died-f7Xcgg/bun-rejected.test.ts:1:81
+    -------------------------------
+    
+    
+     0 pass
+     1 fail
+     1 error
+    Ran 1 test across 1 file. [603.00ms]
+    [run-tests] FAIL bun-rejected.test.ts (0.620s)
+    [run-tests] START bun-exit-in-test.test.ts
+    bun test v1.3.14 (0d9b296a)
+    [run-tests] PASS bun-exit-at-top.test.ts (0.626s)
+    [run-tests] START bun-no-tests.test.ts
+    bun test v1.3.14 (0d9b296a)
+    
+    bun-thrown.test.ts:
+    
+    # Unhandled error between tests
+    -------------------------------
+    1 | import { test } from 'bun:test';test('fine', () => {});throw new Error('thrown at top level')
+                                                                         ^
+    error: thrown at top level
+          at /private/var/folders/vy/23bb9ndx7q71czjmr5d6h1hr0000gn/T/runner-died-f7Xcgg/bun-thrown.test.ts:1:66
+    -------------------------------
+    
+    
+     0 pass
+     1 fail
+     1 error
+    Ran 1 test across 1 file. [626.00ms]
+    [run-tests] FAIL bun-thrown.test.ts (0.636s)
+    bun test v1.3.14 (0d9b296a)
+    
+     1 pass
+     0 fail
+    Ran 1 test across 1 file. [632.00ms]
+    [run-tests] PASS control-healthy.test.ts (0.640s)
+    bun test v1.3.14 (0d9b296a)
+    
+     0 pass
+     0 fail
+    Ran 0 tests across 1 file. [535.00ms]
+    [run-tests] PASS bun-no-tests.test.ts (0.557s)
+    bun test v1.3.14 (0d9b296a)
+    [run-tests] PASS bun-exit-in-test.test.ts (0.574s)
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  actual: |-
+    [run-tests] START control-healthy.test.ts
+    [run-tests] START bun-thrown.test.ts
+    [run-tests] START bun-rejected.test.ts
+    [run-tests] START bun-exit-at-top.test.ts
+    bun test v1.3.14 (0d9b296a)
+    
+    bun-rejected.test.ts:
+    
+    # Unhandled error between tests
+    -------------------------------
+    1 | import { test } from 'bun:test';test('fine', () => {});await Promise.reject(new Error('rejected at top level'))
+                                                                                        ^
+    error: rejected at top level
+          at /private/var/folders/vy/23bb9ndx7q71czjmr5d6h1hr0000gn/T/runner-died-f7Xcgg/bun-rejected.test.ts:1:81
+    -------------------------------
+    
+    
+     0 pass
+     1 fail
+     1 error
+    Ran 1 test across 1 file. [603.00ms]
+    [run-tests] FAIL bun-rejected.test.ts (0.620s)
+    [run-tests] START bun-exit-in-test.test.ts
+    bun test v1.3.14 (0d9b296a)
+    [run-tests] PASS bun-exit-at-top.test.ts (0.626s)
+    [run-tests] START bun-no-tests.test.ts
+    bun test v1.3.14 (0d9b296a)
+    
+    bun-thrown.test.ts:
+    
+    # Unhandled error between tests
+    -------------------------------
+    1 | import { test } from 'bun:test';test('fine', () => {});throw new Error('thrown at top level')
+                                                                         ^
+    error: thrown at top level
+          at /private/var/folders/vy/23bb9ndx7q71czjmr5d6h1hr0000gn/T/runner-died-f7Xcgg/bun-thrown.test.ts:1:66
+    -------------------------------
+    
+    
+     0 pass
+     1 fail
+     1 error
+    Ran 1 test across 1 file. [626.00ms]
+    [run-tests] FAIL bun-thrown.test.ts (0.636s)
+    bun test v1.3.14 (0d9b296a)
+    
+     1 pass
+     0 fail
+    Ran 1 test across 1 file. [632.00ms]
+    [run-tests] PASS control-healthy.test.ts (0.640s)
+    bun test v1.3.14 (0d9b296a)
+    
+     0 pass
+     0 fail
+    Ran 0 tests across 1 file. [535.00ms]
+    [run-tests] PASS bun-no-tests.test.ts (0.557s)
+    bun test v1.3.14 (0d9b296a)
+    [run-tests] PASS bun-exit-in-test.test.ts (0.574s)
+    
+  operator: 'match'
+  stack: |-
+    assertFailedByName (/Users/kc/hoai-work/mbwintest/test/run-tests-timeout.test.ts:264:10)
+    TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/run-tests-timeout.test.ts:344:45)
+    process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    async Test.run (node:internal/test_runner/test:1409:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
+  ...
+# Subtest: a top level await that never settles under bun meets the file deadline, by name
+ok 18 - a top level await that never settles under bun meets the file deadline, by name
+  ---
+  duration_ms: 6053.920083
+  type: 'test'
+  ...
+# Subtest: a test that hangs under the real flags fails by its own name, and the file is not called a timeout
+ok 19 - a test that hangs under the real flags fails by its own name, and the file is not called a timeout
+  ---
+  duration_ms: 1588.098666
+  type: 'test'
+  ...
+# Subtest: run-tests.mjs exits nonzero for a failing file, names it, and hands its files the real temp folder
+ok 20 - run-tests.mjs exits nonzero for a failing file, names it, and hands its files the real temp folder
+  ---
+  duration_ms: 163.86575
+  type: 'test'
+  ...
+# Subtest: run-tests.mjs exits zero only when every file completed
+not ok 21 - run-tests.mjs exits zero only when every file completed
+  ---
+  duration_ms: 772.938917
+  type: 'test'
+  location: '/Users/kc/hoai-work/mbwintest/test/run-tests-timeout.test.ts:20:275'
+  failureType: 'testCodeFailure'
+  error: |-
+    
+    [run-tests] node:test family: 3 files, 4 workers
+    [run-tests] START test/died.test.ts
+    [run-tests] START test/one.test.ts
+    [run-tests] START test/two.test.ts
+    TAP version 13
+    # Subtest: fine
+    ok 1 - fine
+      ---
+      duration_ms: 2.692333
+      type: 'test'
+      ...
+    1..1
+    # tests 1
+    # suites 0
+    # pass 1
+    # fail 0
+    # cancelled 0
+    # skipped 0
+    # todo 0
+    # duration_ms 55.908625
+    [run-tests] PASS test/two.test.ts (0.098s)
+    TAP version 13
+    # Subtest: fine
+    ok 1 - fine
+      ---
+      duration_ms: 3.7265
+      type: 'test'
+      ...
+    1..1
+    # tests 1
+    # suites 0
+    # pass 1
+    # fail 0
+    # cancelled 0
+    # skipped 0
+    # todo 0
+    # duration_ms 73.008458
+    [run-tests] PASS test/one.test.ts (0.118s)
+    TAP version 13
+    # Subtest: fine
+    ok 1 - fine
+      ---
+      duration_ms: 3.758
+      type: 'test'
+      ...
+    1..1
+    # tests 1
+    # suites 0
+    # pass 1
+    # fail 0
+    # cancelled 0
+    # skipped 0
+    # todo 0
+    # duration_ms 87.264083
+    [run-tests] PASS test/died.test.ts (0.141s)
+    
+    [run-tests] runner regression tests: 0 files, 1 workers
+    
+    [run-tests] real Chromium files, one at a time: 0 files, 1 workers
+    
+    [run-tests] bun:test family: 1 files, 4 workers
+    [run-tests] START test/three.test.ts
+    bun test v1.3.14 (0d9b296a)
+    
+     1 pass
+     0 fail
+    Ran 1 test across 1 file. [213.00ms]
+    [run-tests] PASS test/three.test.ts (0.224s)
+    
+    [run-tests] 4 passed, 0 failed, 0 skipped, 4 files, 0.4 s
+    
+    [run-tests] both families green
+    
+    
+    
+    0 !== 1
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 1
+  actual: 0
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/run-tests-timeout.test.ts:429:12)
+    async Test.run (node:internal/test_runner/test:1409:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
+  ...
+1..21
+# tests 21
+# suites 0
+# pass 13
+# fail 8
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 105964.870625
+exit 1
