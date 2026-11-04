@@ -783,7 +783,7 @@ export const OFFICE_TEXT_MAX = 25 * MB
  */
 export const OFFICE_ELEMENTS_MAX = 3_000_000
 
-/** Round 6: a Word or Excel file that would cost too much to read (a zip bomb's shape, or past the clock). */
+/** Round 6: a Word or Excel file that would cost too much to read (a zip bomb's shape). Past the clock is OverBudget. */
 class OfficeUnsafe extends Error {}
 /** What inflating a part answers when the budget ends during it. */
 const OUT_OF_TIME = 'out of time'
@@ -892,7 +892,7 @@ function zipEntries(bytes: Uint8Array, clock: StageClock = NO_CLOCK): ZipEntry[]
  * Round 6: a deflate stream inflated until it ends or until `limit` bytes are out, whichever comes first: the bytes, and
  * whether there was more. A stream is used so the inflate stops at the limit, never inflating the rest.
  */
-function inflateUpTo(body: Uint8Array, limit: number, read: OfficeRead, declared: number): Promise<{ out: Uint8Array; more: boolean } | 'unreadable' | 'unsafe'> {
+function inflateUpTo(body: Uint8Array, limit: number, read: OfficeRead, declared: number): Promise<{ out: Uint8Array; more: boolean } | 'unreadable' | typeof OUT_OF_TIME> {
   return new Promise((resolve) => {
     const z = createInflateRaw({ chunkSize: 64 * 1024 })
     // Round 10: inflated into ONE buffer, sized by the size the zip declares (at most limit + 1, to see there is more)
@@ -901,7 +901,7 @@ function inflateUpTo(body: Uint8Array, limit: number, read: OfficeRead, declared
     let out = new Uint8Array(Math.min(limit + 1, Math.max(64 * 1024, declared + 1)))
     let size = 0
     let done = false
-    const finish = (value: { out: Uint8Array; more: boolean } | 'unreadable' | 'unsafe' | typeof OUT_OF_TIME) => {
+    const finish = (value: { out: Uint8Array; more: boolean } | 'unreadable' | typeof OUT_OF_TIME) => {
       if (done) return
       done = true
       resolve(value)
@@ -943,12 +943,11 @@ async function zipInflate(read: OfficeRead, entry: ZipEntry, head?: number, max?
   // Round 8: `max`, a part's own cap that refuses the file past it (Word's main part: OFFICE_TEXT_MAX).
   const cap = head ?? max ?? OFFICE_PART_MAX
   const limit = Math.min(cap, read.left)
-  let got: { out: Uint8Array; more: boolean } | 'unreadable' | 'unsafe' | typeof OUT_OF_TIME
+  let got: { out: Uint8Array; more: boolean } | 'unreadable' | typeof OUT_OF_TIME
   if (method === 0) got = { out: body.subarray(0, limit), more: body.length > limit }
   else if (method === 8) got = await inflateUpTo(body, limit, read, entry.size)
   else return 'unreadable'
   if (got === OUT_OF_TIME) throw new OverBudget()
-  if (got === 'unsafe') throw new OfficeUnsafe()
   if (got === 'unreadable') return got
   read.left -= got.out.length
   // Round 9: the budget grows to what has been inflated (the words are read from it).
@@ -1272,8 +1271,8 @@ function workbookTarget(target: string): string {
  * read as one row (the stricter reading). A PDF's words are not read.
  *
  * Round 6: bounded. One inflate budget for the whole file, only the head of each sheet, at most SHEETS_MAX sheets, no
- * two entries over the same bytes, linear scans, and a wall clock budget: past any of them the file is refused
- * ('unsafe'). The sheets read are those the workbook's relationships name (wherever they are) and those in
+ * two entries over the same bytes and linear scans: past any of them the file is refused ('unsafe'). Past the wall
+ * clock budget it is refused too ('over_budget', from outboundContentVerdict). The sheets read are those the workbook's relationships name (wherever they are) and those in
  * xl/worksheets/; a sheet the relationships name that is not in the file is refused. With no relationships part (not
  * a file Excel writes), the shared strings no judged row used are judged as one more row. Each Word table's first
  * column, and column A of each sheet's first rows, are judged as one row too.
@@ -1656,7 +1655,7 @@ async function verdictWithin(bytes: Uint8Array, type: ContentType, name: string,
     text = new TextDecoder().decode(bytes)
   } else {
     const words = await officeWords(bytes, type, budget)
-    // Round 6: a file that would cost too much to read (a zip bomb's shape, or past the clock) is never attached.
+    // Round 6: a file that would cost too much to read (a zip bomb's shape) is never attached.
     if (!words.ok) return { kind: words.unsafe ? 'unsafe' : 'unread' }
     text = words.text
     // Round 9: the checks below read the words, so the budget is that of the words when they are more than the file.
