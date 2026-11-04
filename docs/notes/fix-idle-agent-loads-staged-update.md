@@ -98,6 +98,23 @@ Merged #296's head, which holds main at 09f96a9a0c (#313), by Data's ruling of 4
 The litter guard (#302) left this chain. #313 rewrote `scripts/run-tests.mjs`, so the runner here is main's as it stands.
 The guard goes to its own PR off main after this chain; row 92946637 stays open until then.
 
+## Thread work holds the restart (Data's ruling)
+
+Data: "an update must never stop a running thread turn or By the way fork." The idle check now counts it, as `threadWork`, gate 12a. The way back and the hook restart wait for it too.
+
+What the counts really mean, read before using them:
+
+- `liveChildren()` does not mean busy. It counts lane processes alive, running, idle or exiting. An idle lane counts for up to 20 minutes after its turn, and a turn with no process yet (just taken, or waiting behind the 2 slot limit) does not count at all. So it is not used. `activeWork()` is new and counts turns and background steps.
+- `asideForks.size()` means what it says: forks with a live process, from spawn to exit, so a fork counts past its answer.
+
+A correction to how this was first reported. It was reported as nothing holding these back. Read closer, an aside's handler is an active operation, and any `voice_rpc` frame holds `call_active` for 30 minutes, which happens to equal `THREAD_TURN_TIMEOUT_MS`. The real holes were narrower: a turn started by the read of pending threads, which has no frame; a turn queued past that window; a fork or an answer post near its end.
+
+The gap between the check and the restart:
+
+- Closed for the idle restart and the way back: the second decision reads fresh facts after the close look's awaits, then `act` reaches `deps.drain(true)` with no await in between. Draining disconnects the socket, `voice_rpc` frames return at once, and a read of pending threads starts nothing. A read already out counts as work.
+- Not closed, and it cannot be from this side: a frame the backend sends in the moment between the drain and the process ending starts nothing here. A thread turn is read again at the next boot's reconcile; that the backend still lists it was not checked from this repo. An aside sent then gets no answer.
+- The hourly sweep of closed lanes can start a removal in that gap. That is not a turn.
+
 ## Proof limits
 
 Local Chromium was build 1148 (131), not the pinned 1248. `expect` is not installed locally, so those tests skip

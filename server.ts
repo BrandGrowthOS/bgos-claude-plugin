@@ -1170,7 +1170,7 @@ import {
   watch,
   writeFileSync,
 } from 'node:fs'
-import { ThreadLaneManager, threadsPendingPath } from './lib/thread-lanes.ts'
+import { ThreadLaneManager, liveThreadWork, threadsPendingPath } from './lib/thread-lanes.ts'
 import { AsideForks, runAside } from './lib/aside-fork.ts'
 import { ThreadsCliGate, threadsCliProblem, type ThreadsCliAnswer } from './lib/threads-cli.ts'
 import { killProcessGroup, processRunsIn, processStamp } from './lib/lane-process.ts'
@@ -14333,7 +14333,8 @@ function reconcilePendingThreads(why: string): void {
     .then((answer) => {
       // A cold-start probe may finish after the channel arms. Wait without
       // blocking, then check the lock again before recovering pending turns.
-      if (!answer.ok || !channelArmed) return 0
+      // Nor once an update has drained: a turn started now would die with the restart, and the reconnect reads again.
+      if (!answer.ok || !channelArmed || updateDrainMode) return 0
       // no-cache: an ETag 304 would hide turns this new process never ran.
       return threadLanes.reconcile(() => bgosGet(threadsPendingPath(assistantIds), { headers: { 'Cache-Control': 'no-cache' } }), { assistantIds })
     })
@@ -19080,6 +19081,7 @@ async function main(): Promise<void> {
         turnInFlight: hookTurnLive || hookTurn.carried.size > 0,
         turnSignal: hookTurnSignal({ lastEventAtMs: lastHookEventAtMs, endedSessionId: hookEndedSessionId }),
         ...updateDrainSnapshot(),
+        activeOperations: updateDrainSnapshot().activeOperations + liveThreadWork(threadLanes, asideForks),
       }),
       activityMs: () => [DAEMON_START_MS, lastInboundAtMs, lastHookEventAtMs, agentTranscript().activityMs],
       claudePid: () => agentClaudePid(),
@@ -19146,6 +19148,7 @@ async function main(): Promise<void> {
       openAsks: () => idleOpenAsks(Date.now()),
       goalRunning: () =>
         (goalLane.condition !== null && !goalLane.closed) || goalPendingArm !== null || goalInjectionsInFlight > 0 || goalSelfClears > 0,
+      threadWork: () => liveThreadWork(threadLanes, asideForks),
       call: () => ({
         pendingConsults: voiceRpc.pendingConsultCount,
         openContinuations: voiceRpc.openContinuationCount,

@@ -1655,3 +1655,59 @@ test('a turn waits for the CLI answer without blocking, and fails with its cause
   assert.equal(r.spawned.length, 0)
   assert.match(String(replyTexts(r).at(-1)), /version could not be read/)
 })
+
+// -- activeWork: what a restart would cut off ----------------------------------------------------------------------
+
+test('activeWork counts a turn from the moment it is taken, before its process exists, and an idle lane is not work', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  assert.equal(r.manager.liveChildren(), 0, 'no process yet')
+  assert.ok(r.manager.activeWork() > 0, 'the turn is taken')
+  await flush()
+  const child = r.spawned[0]!.child
+  child.init(FORK_A)
+  assert.ok(r.manager.activeWork() > 0, 'the turn is running')
+  child.result('done')
+  await flush()
+  assert.equal(r.manager.runningCount(), 0)
+  assert.equal(r.manager.liveChildren(), 1, 'it sits idle on its process for 20 minutes')
+  assert.equal(r.manager.activeWork(), 0, 'and a restart would cost it nothing: the next turn resumes by its id')
+})
+
+test('activeWork counts a turn waiting for a slot, which no process runs yet', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  r.manager.turn(turn('102'))
+  r.manager.turn(turn('103'))
+  await flush()
+  assert.equal(r.manager.runningCount(), 2, 'two slots')
+  assert.equal(r.manager.liveChildren(), 2, 'and two processes: the third has none')
+  assert.equal(r.manager.activeWork(), 3, 'all three are work')
+})
+
+test('activeWork counts an answer still being posted', async () => {
+  let failing = true
+  const r = rig({ failPosts: (path) => failing && path === 'integrations/threads/reply' })
+  r.manager.turn(turn('101'))
+  await flush()
+  const child = r.spawned[0]!.child
+  child.init(FORK_A)
+  child.result('done')
+  await flush()
+  assert.equal(r.manager.runningCount(), 0, 'the turn is over')
+  assert.ok(r.manager.activeWork() > 0, 'its answer is not delivered yet')
+  failing = false
+  for (const t of r.live(THREAD_POST_RETRY_MS[0]!)) r.fire(t)
+  await flush()
+  assert.equal(r.manager.activeWork(), 0)
+})
+
+test('activeWork counts a read of pending turns while it is out, and the turns it starts', async () => {
+  const r = rig()
+  let answer: (rows: unknown) => void = () => {}
+  const read = r.manager.reconcile(() => new Promise((resolve) => { answer = resolve }))
+  assert.ok(r.manager.activeWork() > 0, 'a turn may be on its way')
+  answer({ turns: [turn('101')] })
+  assert.equal(await read, 1)
+  assert.ok(r.manager.activeWork() > 0, 'the turn it found')
+})

@@ -199,6 +199,7 @@ function agent(
     activityMs: () => s.activity,
     openAsks: () => s.openAsks,
     goalRunning: () => s.goalRunning,
+    threadWork: () => 0,
     call: () => s.call,
     lastBrowserToolAtMs: () => s.browserAt,
     sessionWakeAtMs: () => s.sessionWakeAt,

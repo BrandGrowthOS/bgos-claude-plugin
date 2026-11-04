@@ -21,9 +21,14 @@ import { join } from 'node:path'
 import { pendingMarketplaceRestartVersion } from '../lib/marketplace-update.mjs'
 import { RESTART_WATCHDOG_MS, UpdateRpcHandler } from '../lib/update-rpc'
 import type { RestartAuthority } from '../lib/update-readiness'
+import { ThreadLaneManager, type ThreadLaneDeps } from '../lib/thread-lanes'
+import { AsideForks, runAside } from '../lib/aside-fork'
+import { sessionTranscriptPath } from '../bin/hoai-core.mjs'
+import type { StreamJsonChild } from '../lib/stream-json-child'
 
 const m: any = await import('../lib/idle-update.mjs')
 const host: any = await import('../lib/idle-update-host.mjs')
+const lanesLib: any = await import('../lib/thread-lanes')
 
 const PIN = '0d6f2a8e-3c1b-4e7a-9f20-5b8c7d6e4f31'
 const T0 = Date.parse('2026-10-28T12:00:00.000Z')
@@ -51,7 +56,7 @@ function world(home: string) {
   return { home, clock, machineDir: join(home, '.bgos-agent', m.IDLE_UPDATE_DIR_NAME) }
 }
 
-function agent(w: ReturnType<typeof world>, id: number, opts: { running?: string; staged?: string; stagedVersion?: () => string | null; fromRoot?: string; rollbackInstall?: (record: any) => Promise<any> } = {}) {
+function agent(w: ReturnType<typeof world>, id: number, opts: { threadWork?: () => number; onCloseLook?: () => void; running?: string; staged?: string; stagedVersion?: () => string | null; fromRoot?: string; rollbackInstall?: (record: any) => Promise<any> } = {}) {
   const stateDir = join(w.home, '.bgos-agent', String(id))
   mkdirSync(stateDir, { recursive: true })
   const b = id * 100
@@ -131,6 +136,7 @@ function agent(w: ReturnType<typeof world>, id: number, opts: { running?: string
     activityMs: () => facts.activity,
     openAsks: () => 0,
     goalRunning: () => false,
+    threadWork: opts.threadWork ?? (() => 0),
     call: () => ({ pendingConsults: 0, openContinuations: 0, openMeetings: 0, lastVoiceAtMs: null }),
     lastBrowserToolAtMs: () => null,
     claudePid: () => b + 40,
@@ -138,7 +144,10 @@ function agent(w: ReturnType<typeof world>, id: number, opts: { running?: string
     listProcesses: async () => ({ ok: true, processes: gen2Table(id, inputs.ownSockets[0]) }),
     launcher: () => host.readLauncherClaim({ stateDir, fs, alive: () => true }),
     unattendedInputs: () => host.readUnattendedInputs({ platform: 'darwin', home: w.home, assistantId: String(id), stateDir, fs }),
-    personAttached: async () => false,
+    personAttached: async () => {
+      opts.onCloseLook?.()
+      return false
+    },
     wakeSchedule: async () => ({ ok: true, tasks: [] }),
     startupComplete: () => true,
     heartbeatOkAtMs: () => facts.heartbeatOkAtMs,
@@ -430,6 +439,182 @@ test('the watcher sweeping this HOME owns its updates: the idle update stands do
     const a = agent(w, 912)
     assert.equal(await a.controller.tick(), 'watcher_owns_updates')
     assert.equal(existsSync(a.marker), false)
+  } finally {
+    rmSync(w.home, { recursive: true, force: true })
+  }
+})
+
+// -- Thread lanes and By the way forks: an update must never stop one (Data's ruling, 4 Nov) ----------------------
+
+class StandInChild implements StreamJsonChild {
+  pid?: number
+  private out: Array<(c: string) => void> = []
+  private exits: Array<(code: number | null, signal: string | null) => void> = []
+  write() {}
+  end() {}
+  kill() {}
+  onStdout(cb: (c: string) => void) { this.out.push(cb) }
+  onExit(cb: (code: number | null, signal: string | null) => void) { this.exits.push(cb) }
+  frame(f: Record<string, unknown>) { for (const cb of this.out) cb(`${JSON.stringify(f)}\n`) }
+  exit() { for (const cb of this.exits) cb(0, null) }
+}
+
+/** The real lane manager and the real forks, the two the daemon asks. Only the child processes, git and the disk are stand-ins. */
+function threadWorld() {
+  const FORK = 'dbd3b62b-f099-4f95-be1d-4687b4af9042'
+  const children: StandInChild[] = []
+  const spawn = () => {
+    const child = new StandInChild()
+    child.pid = 4000 + children.length
+    children.push(child)
+    return child
+  }
+  const files = new Map<string, string>([[sessionTranscriptPath('/h', '/a', PIN, ''), '{}\n']])
+  const deps: ThreadLaneDeps = {
+    spawn,
+    claudeBin: () => '/bin/claude',
+    cliProblem: () => null,
+    mainSessionId: () => PIN,
+    agentFolder: '/a',
+    stateDir: '/h/threads',
+    home: '/h',
+    configDir: '',
+    emptyMcpConfigPath: () => '/h/threads/empty.json',
+    processes: { stamp: async () => 'S', runsIn: async () => true, kill: () => {} },
+    shellSandbox: () => true,
+    platform: 'darwin',
+    git: async () => ({ ok: false, stdout: '' }),
+    fs: {
+      exists: (p) => files.has(p),
+      mkdir: () => {},
+      readFile: (p) => { const v = files.get(p); if (v === undefined) throw new Error(`ENOENT ${p}`); return v },
+      writeFile: (p, c) => { files.set(p, c) },
+      appendFile: (p, c) => { files.set(p, (files.get(p) ?? '') + c) },
+      copyFile: (a, b) => { files.set(b, files.get(a) ?? '') },
+      unlink: (p) => { files.delete(p) },
+      rmrf: () => {},
+      createExclusive: (p, c) => { if (files.has(p)) throw new Error(`EEXIST ${p}`); files.set(p, c) },
+      rename: (a, b) => { files.set(b, files.get(a) ?? ''); files.delete(a) },
+      list: () => [],
+    },
+    post: async () => ({}),
+    now: () => T0,
+    setTimer: () => ({}),
+    clearTimer: () => {},
+    log: () => {},
+  }
+  const lanes = new ThreadLaneManager(deps)
+  const forks = new AsideForks()
+  const flush = async () => { for (let i = 0; i < 20; i++) await new Promise((done) => setImmediate(done)) }
+  return {
+    lanes,
+    forks,
+    children,
+    flush,
+    work: () => lanesLib.liveThreadWork(lanes, forks) as number,
+    startTurn: (rootId: string) => lanes.turn({ chatId: '55', rootId, replyId: `${rootId}0`, mode: 'start', text: 'work', title: 'T', rootText: 'root' }),
+    finishTurn: (child: StandInChild) => {
+      child.frame({ type: 'system', subtype: 'init', session_id: FORK })
+      child.frame({ type: 'result', subtype: 'success', is_error: false, result: 'the answer' })
+    },
+    startFork: () => runAside({ question: 'why?', quote: '', history: [] }, {
+      spawn,
+      claudeBin: () => '/bin/claude',
+      cliProblem: () => null,
+      mainSessionId: () => PIN,
+      mainFolder: '/a',
+      home: '/h',
+      configDir: '',
+      emptyMcpConfigPath: () => '/h/threads/empty.json',
+      unlink: () => {},
+      onDelta: () => {},
+      setTimer: () => ({}),
+      clearTimer: () => {},
+      forks,
+    }).catch(() => ({ text: '' })),
+  }
+}
+
+test('a running thread turn holds the restart off, and the restart goes ahead once the turn is over', async () => {
+  const w = world(scratchHome())
+  try {
+    const t = threadWorld()
+    t.startTurn('101')
+    await t.flush()
+    assert.equal(t.children.length, 1, 'the turn has its process')
+    const a = agent(w, 931, { threadWork: t.work })
+    assert.equal(await a.controller.tick(), 'thread_work', a.out.logs.join('\n'))
+    assert.ok(!existsSync(a.marker), 'no restart was asked over the turn')
+    assert.deepEqual(a.out.drains, [], 'intake stays open while the agent waits')
+    t.finishTurn(t.children[0]!)
+    await t.flush()
+    assert.equal(t.lanes.liveChildren(), 1, 'the lane still sits idle on its process, and that is not work')
+    assert.equal(await a.controller.tick(), 'requested', a.out.logs.join('\n'))
+    assert.ok(existsSync(a.marker))
+  } finally {
+    rmSync(w.home, { recursive: true, force: true })
+  }
+})
+
+test('a running By the way fork holds the restart off, and the restart goes ahead once it has exited', async () => {
+  const w = world(scratchHome())
+  try {
+    const t = threadWorld()
+    const answered = t.startFork()
+    await t.flush()
+    assert.equal(t.forks.size(), 1)
+    const a = agent(w, 932, { threadWork: t.work })
+    assert.equal(await a.controller.tick(), 'thread_work', a.out.logs.join('\n'))
+    assert.ok(!existsSync(a.marker))
+    t.children[0]!.frame({ type: 'result', subtype: 'success', is_error: false, result: 'because' })
+    await answered
+    assert.equal(await a.controller.tick(), 'thread_work', 'answered, but its process has not exited and a restart would kill it')
+    t.children[0]!.exit()
+    assert.equal(await a.controller.tick(), 'requested', a.out.logs.join('\n'))
+  } finally {
+    rmSync(w.home, { recursive: true, force: true })
+  }
+})
+
+test('with a turn and a fork both running, the restart waits for the last of them', async () => {
+  const w = world(scratchHome())
+  try {
+    const t = threadWorld()
+    t.startTurn('101')
+    await t.flush()
+    void t.startFork()
+    await t.flush()
+    const a = agent(w, 933, { threadWork: t.work })
+    assert.equal(await a.controller.tick(), 'thread_work')
+    t.finishTurn(t.children[0]!)
+    await t.flush()
+    assert.equal(await a.controller.tick(), 'thread_work', 'the fork still runs')
+    t.children[1]!.exit()
+    assert.equal(await a.controller.tick(), 'requested', a.out.logs.join('\n'))
+  } finally {
+    rmSync(w.home, { recursive: true, force: true })
+  }
+})
+
+test('the race: a turn that starts while the controller takes its close look stops the restart before anything drains', async () => {
+  const w = world(scratchHome())
+  try {
+    const t = threadWorld()
+    const a = agent(w, 934, { threadWork: t.work, onCloseLook: () => t.startTurn('101') })
+    assert.equal(await a.controller.tick(), 'thread_work', a.out.logs.join('\n'))
+    assert.ok(!existsSync(a.marker))
+    assert.deepEqual(a.out.drains, [])
+  } finally {
+    rmSync(w.home, { recursive: true, force: true })
+  }
+})
+
+test('thread work that cannot be read counts as work', async () => {
+  const w = world(scratchHome())
+  try {
+    const a = agent(w, 935, { threadWork: () => { throw new Error('unreadable') } })
+    assert.equal(await a.controller.tick(), 'thread_work', a.out.logs.join('\n'))
+    assert.ok(!existsSync(a.marker))
   } finally {
     rmSync(w.home, { recursive: true, force: true })
   }

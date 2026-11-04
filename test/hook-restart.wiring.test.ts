@@ -81,3 +81,7 @@ test('the shutdown path never names the hook restart: it is inert once shutdown 
   const end = server.indexOf('process.exit(code)', at)
   assert.doesNotMatch(server.slice(at, end), /hookRestart/, 'test/stand-down-sites.test.ts runs this site in a sandbox that names only the daemon state it needs')
 })
+
+test('a hook restart waits for thread work like any other operation', () => {
+  assert.match(block(), /\.\.\.updateDrainSnapshot\(\),\n\s*activeOperations: updateDrainSnapshot\(\)\.activeOperations \+ liveThreadWork\(threadLanes, asideForks\),/)
+})

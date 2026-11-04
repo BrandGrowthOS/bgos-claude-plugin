@@ -95,6 +95,7 @@ Each rule has its own test and its own mutant.
 | 10 | Turn in flight, a reply owed, a permission card, an active operation | the `decideSafeMoment` reason | Turns use its 2 h stale rule. Inbounds and operations use the update path's 30 min rule (`updateDrainSnapshot`). |
 | 11 | A blocking ask, a plan card, or an own ask card younger than 24 h | `wait: open_ask` | Older non-blocking cards survive a restart (`lib/ask-tracker.ts`). |
 | 12 | A goal armed, arming, injecting, or clearing | `wait: goal_running` | |
+| 12a | A thread turn taken, running or queued, a read of pending turns, an answer still being posted, or a By the way fork with a live process | `wait: thread_work` | `liveThreadWork` in `lib/thread-lanes.ts`. Not `liveChildren()`: that counts an idle lane for 20 minutes and misses a turn before its process exists. An unreadable count is work. The way back and the hook restart wait for it too. |
 | 12b | The last Stop's `session_crons` held a one-shot entry, within 2 h | `wait: session_wake` | A self-paced `/loop` (ScheduleWakeup) does not survive a plain `--resume`. See "What a restart does to /loop and scheduled wakes". |
 | 13 | Voice consults pending, open continuations, a voice frame in the last 30 min, or an open meeting | `wait: call_active` | |
 | 14 | A browser tool used in the last 30 min | `wait: browser_in_use` | The host is the daemon's child, so a restart closes Chrome. |

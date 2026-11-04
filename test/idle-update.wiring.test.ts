@@ -322,3 +322,10 @@ test('a broken pipe on the daemon\'s own output is its reader gone (a clean end)
     assert.doesNotMatch(handler, /stdout-epipe/, head)
   }
 })
+
+test('the controller is given the real thread work, and a voice_rpc frame starts none once drained', () => {
+  assert.match(block(), /threadWork: \(\) => liveThreadWork\(threadLanes, asideForks\),/)
+  const at = server.indexOf("realtimeSocket.on('voice_rpc', whenArmed('voice_rpc'")
+  assert.ok(at >= 0)
+  assert.match(server.slice(at, at + 120), /\n\s*if \(updateDrainMode\) return\n/)
+})
