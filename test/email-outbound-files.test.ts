@@ -2100,17 +2100,20 @@ test('review round 8: ONE long lived content Worker reads every file; only a dea
     ['good g.txt', true, 6],
     ['hang.txt', false, 6],
     ['good h.txt', true, 7],
-    // Last, so this test closes its own Worker. It has a stdout of its own that nothing reads, and left idle with a
-    // byte on it (main's runner preload writes one there) it keeps this whole file from ending.
-    ['exit.txt', false, 7],
   ]
-  for (const [name, goes, workers] of steps) {
-    const got = await memRefusal(name, plan, { contentWorker: url })
-    assert.equal(got.why, goes ? null : unsafeSentence(got.path), name)
-    if (name !== 'hang.txt') assert.ok(got.ms < R7_DEADLINE_MS / 2, `${name} took ${Math.round(got.ms)} ms`)
-    assert.equal(lib.outboundContentWorkersStarted(url), workers, `${name}: Workers started`)
-    // A turn for any message the Worker sends after its reply, before the next file.
-    await new Promise((resolve) => setTimeout(resolve, 50))
+  try {
+    for (const [name, goes, workers] of steps) {
+      const got = await memRefusal(name, plan, { contentWorker: url })
+      assert.equal(got.why, goes ? null : unsafeSentence(got.path), name)
+      if (name !== 'hang.txt') assert.ok(got.ms < R7_DEADLINE_MS / 2, `${name} took ${Math.round(got.ms)} ms`)
+      assert.equal(lib.outboundContentWorkersStarted(url), workers, `${name}: Workers started`)
+      // A turn for any message the Worker sends after its reply, before the next file.
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+  } finally {
+    // This test closes its own Worker, passing or not. It has a stdout of its own that nothing reads, and left idle
+    // with a byte on it (main's runner preload writes one there) it keeps this whole file from ending.
+    await memRefusal('exit.txt', plan, { contentWorker: url })
   }
 })
 
