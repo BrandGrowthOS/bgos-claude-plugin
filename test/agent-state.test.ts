@@ -74,13 +74,14 @@ test('buildAgentState is exactly the section 7 contract, field for field, in ord
     pendingMessages: 0,
     pendingPermissions: 0,
     activeOperations: 0,
+    threadWork: 0,
     lastActivityAt: '2026-10-06T19:00:00.000Z',
     sessionId: SESSION,
     updatedAt: '2026-10-06T19:00:30.000Z',
   })
   assert.deepEqual(Object.keys(state!), [
     'schemaVersion', 'assistantId', 'pid', 'claudePid', 'runningVersion', 'pendingRestartVersion',
-    'turnInFlight', 'turnSignal', 'pendingMessages', 'pendingPermissions', 'activeOperations', 'lastActivityAt',
+    'turnInFlight', 'turnSignal', 'pendingMessages', 'pendingPermissions', 'activeOperations', 'threadWork', 'lastActivityAt',
     'sessionId', 'updatedAt',
   ])
 })
@@ -100,6 +101,8 @@ test('buildAgentState fails closed on what it cannot vouch for', () => {
   assert.equal(s.pendingMessages, 2)
   assert.equal(s.pendingPermissions, 0)
   assert.equal(s.activeOperations, 0)
+  assert.equal(build({ threadWork: 2 })!.threadWork, 2, 'thread work is published')
+  assert.equal(build({ threadWork: -1 })!.threadWork, 0)
   assert.equal(build({ claudePid: 1 })!.claudePid, null)
   assert.equal(build({ runningVersion: '' })!.runningVersion, null)
   assert.equal(build({ pendingRestartVersion: undefined })!.pendingRestartVersion, null)

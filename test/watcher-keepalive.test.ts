@@ -643,6 +643,32 @@ test('safe moment: a turn in flight waits; after 24 h of waiting the entry carri
   assert.equal(rec.calls.some((c) => c.file === 'launchctl'), false)
 })
 
+test('safe moment: a running thread turn or By the way fork holds an update, and the restart goes ahead once the work is over', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: { threadWork: 1 } }])
+  const rec = recorder({ ps: IDLE_PS })
+  const clock = fakeClock()
+  answerProbes(fs, clock, ['912'])
+  const { ctx } = ctxFor(fs, rec, clock)
+  const held = await runKeepAliveSweep(ctx as any)
+  assert.deepEqual(held.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'thread_work']])
+  assert.equal(rec.calls.some((c) => c.file === 'launchctl'), false)
+  assert.deepEqual(rec.kills, [])
+  fs.writeFile(`${HOME}/.bgos-plugin-state/912/agent-state.json`, stateBody('912', clock.now(), { threadWork: 0 }))
+  const free = await runKeepAliveSweep(ctx as any)
+  assert.deepEqual(free.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'launchctl').map((c) => c.args), KICKSTART_912)
+})
+
+test('safe moment: a daemon from before thread work publishes no count, and the sweep reads that as none, as it always has', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical' }])
+  const rec = recorder({ ps: IDLE_PS })
+  const clock = fakeClock()
+  answerProbes(fs, clock, ['912'])
+  const { ctx } = ctxFor(fs, rec, clock)
+  const report = await runKeepAliveSweep(ctx as any)
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
+})
+
 test('safe moment: a turn flag that has been quiet for 3 h with no job under claude is stale: the NORMAL restart path, never a kill', async () => {
   const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: { turnInFlight: true, lastActivityAt: new Date(T0 - 180 * MIN).toISOString() } }])
   const rec = recorder({ ps: IDLE_PS })

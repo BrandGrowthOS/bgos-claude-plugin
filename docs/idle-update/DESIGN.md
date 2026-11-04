@@ -95,7 +95,7 @@ Each rule has its own test and its own mutant.
 | 10 | Turn in flight, a reply owed, a permission card, an active operation | the `decideSafeMoment` reason | Turns use its 2 h stale rule. Inbounds and operations use the update path's 30 min rule (`updateDrainSnapshot`). |
 | 11 | A blocking ask, a plan card, or an own ask card younger than 24 h | `wait: open_ask` | Older non-blocking cards survive a restart (`lib/ask-tracker.ts`). |
 | 12 | A goal armed, arming, injecting, or clearing | `wait: goal_running` | |
-| 12a | A thread turn taken, running or queued, a read of pending turns, an answer still being posted, or a By the way fork with a live process | `wait: thread_work` | `liveThreadWork` in `lib/thread-lanes.ts`. Not `liveChildren()`: that counts an idle lane for 20 minutes and misses a turn before its process exists. An unreadable count is work. The way back, the hook restart, a clone's scheduled update, a click's drain and the watcher's sweep read it too, the last four as an active operation. |
+| 12a | A thread turn taken, running or queued, a read of pending turns, an answer still being posted, or a By the way fork with a live process | `wait: thread_work` | `liveThreadWork` in `lib/thread-lanes.ts`. Not `liveChildren()`: that counts an idle lane for 20 minutes and misses a turn before its process exists. An unreadable count is work. The way back, the hook restart, a clone's scheduled update, a click's drain and the watcher's sweep read it too. A click with a version already staged has no drain. |
 | 12b | The last Stop's `session_crons` held a one-shot entry, within 2 h | `wait: session_wake` | A self-paced `/loop` (ScheduleWakeup) does not survive a plain `--resume`. See "What a restart does to /loop and scheduled wakes". |
 | 13 | Voice consults pending, open continuations, a voice frame in the last 30 min, or an open meeting | `wait: call_active` | |
 | 14 | A browser tool used in the last 30 min | `wait: browser_in_use` | The host is the daemon's child, so a restart closes Chrome. |
@@ -275,7 +275,7 @@ Data's question, fix 5. hoai relaunches claude with a plain `--resume <pin>`. Re
 - An older Claude Code that sends no `session_crons` gives no reading: no stamp, the behaviour before this fix.
 - The rollback restart does not wait on gate 12b: it leaves a failing build, so it ends a self-paced loop, and the conversation carries on without it.
 - `context_lost` loses every session schedule, interval ones too: a new session has no transcript to restore from. It is reported as `idle_update_context_lost`.
-- A click, the watcher's sweep, a clone's scheduled update, the hook restart and hoai's own health relaunch do not read gate 12b, as they read none of these gates but thread work. Each ends a self-paced loop the same way, as on main.
+- A click, the watcher's sweep, a clone's scheduled update, the hook restart and hoai's own health relaunch do not read gate 12b, as they read none of the other gates. Each ends a self-paced loop the same way, as on main.
 - The stamp lives in the daemon's memory: a daemon that restarts for another reason forgets it until the next Stop.
 - A one-shot is held for 2 h from the last Stop, not until its time. One that falls due inside a later restart can be lost, and only backend wakes reach gate 21.
 - The hold has no report: a loop that never ends leaves the agent on the old build, says so once in the log (`waiting: session_wake`), and shows nothing in the app. It needs no person, as a goal that runs for days does not.

@@ -6633,7 +6633,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
   // waited for work to finish, and that work was waiting on a send). A call is
   // admitted while the daemon is merely waiting for in-flight work; it is
   // refused only once the daemon is drained and the restart is committed.
-  if (decideToolAdmission({ drainMode: updateDrainMode, snapshot: updateDrainSnapshot() }) === 'refuse') {
+  if (decideToolAdmission({ drainMode: updateDrainMode, snapshot: restartDrainSnapshot() }) === 'refuse') {
     return Promise.resolve({
       content: [
         {
@@ -14851,8 +14851,9 @@ const agentStatePublisher = new AgentStatePublisher({
     turnSignal: hookTurnSignal({ lastEventAtMs: lastHookEventAtMs, endedSessionId: hookEndedSessionId }),
     pendingMessages: pendingInbounds.size,
     pendingPermissions: pendingPermissions.size,
-    // Thread work too: the watcher's sweep reads this, and its restart would stop a thread turn or a fork.
-    activeOperations: messageActivity.activeOperations + liveThreadWork(threadLanes, asideForks),
+    activeOperations: messageActivity.activeOperations,
+    // Apart from the operations: the watcher's update sweep waits for it, and a recovery restart does not.
+    threadWork: liveThreadWork(threadLanes, asideForks),
     // Boot counts as activity: a session that just started may have a person
     // at its keyboard, and the watcher's quiet window should run from there.
     // The transcript the agent is writing counts too, hooks or not.
@@ -15081,7 +15082,7 @@ function updateDrainSnapshot() {
 
 /**
  * What an update's drain waits for: the fresh work above, and thread work, which a restart would stop. Tool admission
- * keeps the snapshot above: a tool call must not be refused because a thread is running. Bounded by each caller.
+ * reads it too: while a thread runs, the restart is not committed, so a tool call is not refused.
  */
 function restartDrainSnapshot() {
   const snapshot = updateDrainSnapshot()

@@ -372,7 +372,7 @@ describe('schedule and drain decisions', () => {
     // The tool handler's own refusal used to be this bare `if (updateDrainMode)`, which refused
     // every send for as long as a staged update waited (product board row a741d98b, Pylon 929).
     // It is now admitted while the update only waits and refused once drained: decideToolAdmission.
-    expect(source).toContain("if (decideToolAdmission({ drainMode: updateDrainMode, snapshot: updateDrainSnapshot() }) === 'refuse') {\n    return Promise.resolve({")
+    expect(source).toContain("if (decideToolAdmission({ drainMode: updateDrainMode, snapshot: restartDrainSnapshot() }) === 'refuse') {\n    return Promise.resolve({")
     // The permission relay closes admission like every entry point above it,
     // and since 0.49.0 it also ANSWERS the CLI on the way out: the old
     // `return Promise.resolve()` sent no verdict at all, so a request raised
@@ -2687,13 +2687,14 @@ describe('server.ts wiring of the update drain (a source pin: nothing here can r
   const source = readFileSync(join(import.meta.dir, '..', 'server.ts'), 'utf8')
 
   test('the tool handler decides admission through decideToolAdmission, never a bare drain flag', () => {
-    expect(source).toContain('decideToolAdmission({ drainMode: updateDrainMode, snapshot: updateDrainSnapshot() })')
+    // The snapshot the drain waits on: a thread still running means the restart is not committed, so nothing is refused.
+    expect(source).toContain('decideToolAdmission({ drainMode: updateDrainMode, snapshot: restartDrainSnapshot() })')
     // The refusal text exists exactly once, behind that decision.
     expect(source.split('The BGOS channel is restarting for an update. Retry this tool shortly.').length - 1).toBe(1)
     expect(source).not.toMatch(/if \(updateDrainMode\) \{\s*return Promise\.resolve\(\{\s*content: \[\s*\{\s*type: 'text' as const,\s*text: 'The BGOS channel is restarting/)
   })
 
-  test('the updater and the restart ladder both count only fresh work', () => {
+  test('the updater and the restart ladder both count only fresh work, and thread work', () => {
     expect(source.split('drainSnapshot: restartDrainSnapshot,').length - 1).toBe(2)
     const fn = source.slice(source.indexOf('function updateDrainSnapshot()'), source.indexOf('const updateRpc = new UpdateRpcHandler'))
     expect(fn).toContain('messageActivity.freshOperations(nowMs, UPDATE_STALE_WORK_MS)')
