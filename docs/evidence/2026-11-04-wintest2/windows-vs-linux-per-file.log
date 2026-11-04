@@ -1,0 +1,8 @@
+# Read only, from the last round's CI: plugin-tests run 41746594543 at d5dc139.
+# Left: Linux job 126301043445. Right: Windows job 126301044388. A test count is pass + fail + skip per file.
+linux files 439 win files 439
+linux totals [8976, 0, 55] win totals [8622, 1, 408]
+only on one side: []
+files with a different test COUNT (pass, fail, skip), linux then win: 0
+files with different skip counts: 55
+win FAIL lines: ['test/attach-scope.test.ts']

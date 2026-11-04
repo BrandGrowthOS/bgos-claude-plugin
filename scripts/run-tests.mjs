@@ -15,12 +15,13 @@
  * also removes Windows cmd.exe's command-line limit and .cmd shell quoting.
  */
 import { readdirSync, readFileSync } from 'node:fs'
-import { join, dirname } from 'node:path'
+import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { useRealTmpdir } from './run-tests-env.mjs'
 import { testGroups, runTestFiles, stopActiveTests, summarize } from './run-test-files.mjs'
 
-const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
+// `npm test` runs this repository. Another folder is how test/run-tests-timeout.test.ts runs this script for real.
+const repoRoot = process.argv[2] ? resolve(process.argv[2]) : join(dirname(fileURLToPath(import.meta.url)), '..')
 // Every family gets the REAL temp folder: on macOS $TMPDIR is a link, which the browser profile code refuses.
 useRealTmpdir(process.env)
 for (const signal of ['SIGINT', 'SIGTERM']) {
@@ -40,7 +41,7 @@ for (const { label, files, ...options } of groups) {
   results.push(...await runTestFiles(files, { ...options, cwd: repoRoot }))
 }
 console.log(`\n${summarize(results, ((performance.now() - started) / 1000).toFixed(1))}`)
-if (results.some((result) => result.code !== 0)) {
+if (results.some((result) => result.problem)) {
   console.error('\n[run-tests] FAILED')
   process.exitCode = 1
 } else console.log('\n[run-tests] both families green')

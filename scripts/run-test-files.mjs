@@ -8,6 +8,7 @@
  * Here a stuck file fails by name, and every other file still reports.
  */
 import { spawn, execFile } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 
 export const MAX_TEST_WORKERS = 4
 /** Applies to a test that yields. The slowest test on a green Windows job took 41 s. */
@@ -23,6 +24,8 @@ export const FILE_IDLE_TIMEOUT_MS = 270_000
 const CLEANUP_BOUND_MS = 10_000
 /** How long the pipes of an exited worker may stay open before an orphan is assumed to hold them. */
 const PIPE_DRAIN_MS = 3_000
+/** Printed by scripts/test-file-entry.mjs after a node:test file's last top level statement. */
+export const FILE_BODY_FINISHED = '[run-tests] file body finished'
 
 export function partitionTests(entries) {
   const parallelFiles = [], chromiumFiles = [], runnerFiles = [], bunFiles = []
@@ -43,18 +46,20 @@ export function testGroups(entries) {
   const { parallelFiles, chromiumFiles, runnerFiles, bunFiles } = partitionTests(entries)
   // Absolute loader and preload: --import is inherited by a child that reuses
   // execArgv, and a bare name would resolve against that child's own folder.
-  // Isolation none: this process is already the one for this file, and with
-  // process isolation --test-timeout would bound the whole file, not each test.
+  // No --test: this process is already the one for this file. Under --test with
+  // process isolation --test-timeout bounds the whole file, not each test, and
+  // with isolation none a load error after the first test() is dropped.
   const nodeArgs = [
     '--import', import.meta.resolve('tsx'),
     '--import', import.meta.resolve('./test-progress.mjs'),
-    '--test', '--experimental-test-isolation=none', '--test-reporter=tap', `--test-timeout=${TEST_TIMEOUT_MS}`,
+    '--test-reporter=tap', `--test-timeout=${TEST_TIMEOUT_MS}`,
+    fileURLToPath(import.meta.resolve('./test-file-entry.mjs')),
   ]
   return [
-    { label: 'node:test family', files: parallelFiles, command: process.execPath, args: nodeArgs, concurrency: 4 },
-    { label: 'runner regression tests', files: runnerFiles, command: process.execPath, args: nodeArgs, concurrency: 1 },
-    { label: 'real Chromium files, one at a time', files: chromiumFiles, command: process.execPath, args: nodeArgs, concurrency: 1 },
-    { label: 'bun:test family', files: bunFiles, command: 'bun', args: ['test', '--max-concurrency=1', `--timeout=${TEST_TIMEOUT_MS}`], concurrency: 4 },
+    { label: 'node:test family', files: parallelFiles, command: process.execPath, args: nodeArgs, concurrency: 4, family: 'node' },
+    { label: 'runner regression tests', files: runnerFiles, command: process.execPath, args: nodeArgs, concurrency: 1, family: 'node' },
+    { label: 'real Chromium files, one at a time', files: chromiumFiles, command: process.execPath, args: nodeArgs, concurrency: 1, family: 'node' },
+    { label: 'bun:test family', files: bunFiles, command: 'bun', args: ['test', '--max-concurrency=1', `--timeout=${TEST_TIMEOUT_MS}`], concurrency: 4, family: 'bun' },
   ]
 }
 
@@ -99,6 +104,10 @@ const BUN_FAILURE = /^\(fail\) (.*?)(?: \[[\d.]+ms\])?\s*$/
 
 /** Read one output line into the file's totals and its failing test names. */
 function noteLine(line, seen) {
+  if (line === FILE_BODY_FINISHED) {
+    seen.bodyFinished = true
+    return
+  }
   const node = NODE_TALLY.exec(line)
   if (node) {
     const name = node[1] === 'cancelled' ? 'fail' : node[1]
@@ -118,19 +127,37 @@ function noteLine(line, seen) {
 }
 
 /**
+ * Why a file's run does not count as a pass, or null when it does. For a test
+ * family (`family`), exit 0 is not enough: the file must have reached its end,
+ * reported totals, failed nothing and run something. Without a family the command
+ * is any process, and only its exit code can speak.
+ */
+function findProblem({ code, timedOut, tally, bodyFinished }, family) {
+  if (timedOut) return 'TIMED OUT'
+  const incomplete = family === 'node' && !bodyFinished
+  if (code !== 0) return incomplete ? `did not complete: its top level stopped, exited ${code}` : `exited ${code}`
+  if (!family) return null
+  if (incomplete) return 'did not complete: its top level stopped, though it exited 0'
+  if (!tally) return 'did not complete: exited 0 with no totals, so it stopped early'
+  if (tally.fail > 0) return 'a test failed, though it exited 0'
+  if (tally.pass + tally.skipped === 0) return 'ran no tests'
+  return null
+}
+
+/**
  * Fail a silent file within the deadline, including blocked JS and leaked
  * handles after the last test. Completed TAP tests reset the deadline, so a
  * long file of individually bounded tests remains valid. Arbitrary child
  * chatter does not reset it. The final cleanup wait is also bounded.
  */
 export function runTestFile(file, {
-  command, args, cwd, timeoutMs = FILE_IDLE_TIMEOUT_MS,
+  command, args, cwd, timeoutMs = FILE_IDLE_TIMEOUT_MS, family = null,
   onOutput = (chunk) => { process.stdout.write(chunk) },
 }) {
   return new Promise((resolve) => {
     let settled = false, timedOut = false, exitCode = null, timer, cleanupTimer, drainTimer
     const buffers = { stdout: '', stderr: '' }
-    const seen = { tally: null, failures: [] }
+    const seen = { tally: null, failures: [], bodyFinished: false }
     const emit = (text) => onOutput(text, file)
     // A runner started from inside `node --test` must not make its workers talk
     // that parent's private protocol instead of TAP.
@@ -144,7 +171,7 @@ export function runTestFile(file, {
     } catch (err) {
       // Windows refuses a .cmd without a shell by throwing here, not by an 'error' event.
       emit(`[run-tests] FAILED ${file}: ${err.code ?? err.message}\n`)
-      resolve({ file, code: 1, timedOut: false, tally: null, failures: seen.failures })
+      resolve({ file, code: 1, timedOut: false, tally: null, failures: seen.failures, problem: `could not start: ${err.code ?? err.message}` })
       return
     }
     active.add(child)
@@ -156,7 +183,8 @@ export function runTestFile(file, {
       clearTimeout(cleanupTimer)
       clearTimeout(drainTimer)
       for (const stream of ['stdout', 'stderr']) if (buffers[stream]) noteLine(buffers[stream], seen)
-      resolve({ file, code: timedOut ? 1 : (code ?? 1), timedOut, tally: seen.tally, failures: seen.failures })
+      const result = { file, code: timedOut ? 1 : (code ?? 1), timedOut, tally: seen.tally, failures: seen.failures }
+      resolve({ ...result, problem: findProblem({ ...result, bodyFinished: seen.bodyFinished }, family) })
     }
     const letGoOfPipes = () => {
       child.stdout.destroy()
@@ -234,7 +262,7 @@ export async function runTestFiles(files, options) {
       const result = await runTestFile(file, { ...options, onOutput })
       results[index] = result
       const seconds = ((performance.now() - started) / 1000).toFixed(3)
-      const line = `[run-tests] ${result.code === 0 ? 'PASS' : 'FAIL'} ${file} (${seconds}s)\n`
+      const line = `[run-tests] ${result.problem ? 'FAIL' : 'PASS'} ${file} (${seconds}s)\n`
       if (options.onOutput) options.onOutput(line, file)
       else write(`${block}${block === '' || block.endsWith('\n') ? '' : '\n'}${line}`)
     }
@@ -248,10 +276,10 @@ export function summarize(results, seconds) {
   const rows = []
   for (const result of results) {
     for (const key of Object.keys(total)) total[key] += result.tally?.[key] ?? 0
-    if (result.code === 0) continue
-    if (result.timedOut) rows.push(`  ${result.file}: TIMED OUT`)
+    if (!result.problem) continue
     for (const name of result.failures) rows.push(`  ${result.file}: ${name}`)
-    if (!result.timedOut && result.failures.length === 0) rows.push(`  ${result.file}: exited ${result.code}`)
+    // A named failure already explains a plain nonzero exit. Anything else is news.
+    if (result.failures.length === 0 || result.problem !== `exited ${result.code}`) rows.push(`  ${result.file}: ${result.problem}`)
   }
   const line = `[run-tests] ${total.pass} passed, ${total.fail} failed, ${total.skipped} skipped, ${results.length} files, ${seconds} s`
   return [line, ...rows].join('\n')

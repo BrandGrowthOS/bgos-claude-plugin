@@ -372,7 +372,8 @@ test('bin/hoai-attach-scope.mjs prints the machine tally: what each mode WOULD r
     recordAttachScopeEvent({ dir: stateDir, decision: decideAttachScope({ mode: 'off', ...c }), mode: 'off', now })
   }
   const script = fileURLToPath(new URL('../bin/hoai-attach-scope.mjs', import.meta.url))
-  const text = spawnSync(process.execPath, [script], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: home } })
+  // USERPROFILE is what os.homedir() reads on Windows. With HOME alone this tally reads the real profile.
+  const text = spawnSync(process.execPath, [script], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: home, USERPROFILE: home } })
   assert.equal(text.status, 0, text.stderr)
   assert.match(text.stdout, /mode off \(default\)/)
   assert.match(text.stdout, /3 starts, 1 right agent, 1 wrong agent, 1 unscoped/)
@@ -380,7 +381,7 @@ test('bin/hoai-attach-scope.mjs prints the machine tally: what each mode WOULD r
   assert.doesNotMatch(text.stdout, /[\u2013\u2014]/)
   const json = spawnSync(process.execPath, [script, '--json', '--days', '1'], {
     encoding: 'utf8',
-    env: { PATH: process.env.PATH, HOME: home, [ATTACH_SCOPE_MODE_ENV]: 'wrong-agent' },
+    env: { PATH: process.env.PATH, HOME: home, USERPROFILE: home, [ATTACH_SCOPE_MODE_ENV]: 'wrong-agent' },
   })
   assert.equal(json.status, 0, json.stderr)
   const parsed = JSON.parse(json.stdout)

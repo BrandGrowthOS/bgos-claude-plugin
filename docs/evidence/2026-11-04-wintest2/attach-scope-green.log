@@ -1,0 +1,246 @@
+# The fixed fixture, Windows' home lookup simulated, v24.22.2
+TAP version 13
+# Subtest: readAttachScope: no variable is an unscoped session
+ok 1 - readAttachScope: no variable is an unscoped session
+  ---
+  duration_ms: 1.9075
+  type: 'test'
+  ...
+# Subtest: readAttachScope: digits name the agent the launcher meant
+ok 2 - readAttachScope: digits name the agent the launcher meant
+  ---
+  duration_ms: 0.299459
+  type: 'test'
+  ...
+# Subtest: readAttachScope: anything else is unreadable, never a guess
+ok 3 - readAttachScope: anything else is unreadable, never a guess
+  ---
+  duration_ms: 0.134
+  type: 'test'
+  ...
+# Subtest: readAttachScope: an env object that throws is unreadable
+ok 4 - readAttachScope: an env object that throws is unreadable
+  ---
+  duration_ms: 0.079875
+  type: 'test'
+  ...
+# Subtest: right agent attaches in every mode
+ok 5 - right agent attaches in every mode
+  ---
+  duration_ms: 0.463166
+  type: 'test'
+  ...
+# Subtest: wrong agent is REFUSED when the setting is on (wrong-agent and strict)
+ok 6 - wrong agent is REFUSED when the setting is on (wrong-agent and strict)
+  ---
+  duration_ms: 0.132417
+  type: 'test'
+  ...
+# Subtest: wrong agent still attaches when the setting is OFF, and is counted as a would-refuse
+ok 7 - wrong agent still attaches when the setting is OFF, and is counted as a would-refuse
+  ---
+  duration_ms: 0.070083
+  type: 'test'
+  ...
+# Subtest: an unscoped session is refused only in strict, and counted as a strict would-refuse
+ok 8 - an unscoped session is refused only in strict, and counted as a strict would-refuse
+  ---
+  duration_ms: 0.08825
+  type: 'test'
+  ...
+# Subtest: FAIL OPEN: a scope that cannot be read attaches in every mode, strict included
+ok 9 - FAIL OPEN: a scope that cannot be read attaches in every mode, strict included
+  ---
+  duration_ms: 0.106083
+  type: 'test'
+  ...
+# Subtest: FAIL OPEN: an env that throws attaches in every mode
+ok 10 - FAIL OPEN: an env that throws attaches in every mode
+  ---
+  duration_ms: 0.134584
+  type: 'test'
+  ...
+# Subtest: FAIL OPEN: an agent identity that cannot be read attaches, even with a scope, in every mode
+ok 11 - FAIL OPEN: an agent identity that cannot be read attaches, even with a scope, in every mode
+  ---
+  duration_ms: 0.099375
+  type: 'test'
+  ...
+# Subtest: an unknown mode is OFF: nothing is refused
+ok 12 - an unknown mode is OFF: nothing is refused
+  ---
+  duration_ms: 0.057625
+  type: 'test'
+  ...
+# Subtest: the default mode is off, so shipping this changes nothing for anyone
+ok 13 - the default mode is off, so shipping this changes nothing for anyone
+  ---
+  duration_ms: 0.03775
+  type: 'test'
+  ...
+# Subtest: resolveAttachScopeMode: nothing set is the default, off
+ok 14 - resolveAttachScopeMode: nothing set is the default, off
+  ---
+  duration_ms: 0.099875
+  type: 'test'
+  ...
+# Subtest: resolveAttachScopeMode: the env var sets it for one process
+ok 15 - resolveAttachScopeMode: the env var sets it for one process
+  ---
+  duration_ms: 0.068167
+  type: 'test'
+  ...
+# Subtest: resolveAttachScopeMode: the machine file sets it for every agent on this computer
+ok 16 - resolveAttachScopeMode: the machine file sets it for every agent on this computer
+  ---
+  duration_ms: 0.07525
+  type: 'test'
+  ...
+# Subtest: resolveAttachScopeMode: the env var wins over the file
+ok 17 - resolveAttachScopeMode: the env var wins over the file
+  ---
+  duration_ms: 0.032584
+  type: 'test'
+  ...
+# Subtest: resolveAttachScopeMode: an unreadable setting is OFF and says why
+ok 18 - resolveAttachScopeMode: an unreadable setting is OFF and says why
+  ---
+  duration_ms: 0.237625
+  type: 'test'
+  ...
+# Subtest: recordAttachScopeEvent appends one line per evaluation, and the summary counts would-refuses
+ok 19 - recordAttachScopeEvent appends one line per evaluation, and the summary counts would-refuses
+  ---
+  duration_ms: 2.265334
+  type: 'test'
+  ...
+# Subtest: summarizeAttachScopeEvents counts only the window, and counts real refusals
+ok 20 - summarizeAttachScopeEvents counts only the window, and counts real refusals
+  ---
+  duration_ms: 0.097625
+  type: 'test'
+  ...
+# Subtest: readAttachScopeEvents skips torn lines and reads a missing file as empty
+ok 21 - readAttachScopeEvents skips torn lines and reads a missing file as empty
+  ---
+  duration_ms: 0.507291
+  type: 'test'
+  ...
+# Subtest: the events file is rotated at its cap, so it can never grow without bound
+ok 22 - the events file is rotated at its cap, so it can never grow without bound
+  ---
+  duration_ms: 1.01375
+  type: 'test'
+  ...
+# Subtest: telemetry NEVER throws: an unwritable folder answers false
+ok 23 - telemetry NEVER throws: an unwritable folder answers false
+  ---
+  duration_ms: 0.705209
+  type: 'test'
+  ...
+# Subtest: the boot line names the mode, the scope, the agent and what it would do
+ok 24 - the boot line names the mode, the scope, the agent and what it would do
+  ---
+  duration_ms: 0.155709
+  type: 'test'
+  ...
+# Subtest: the refusal names both agents and the way out
+ok 25 - the refusal names both agents and the way out
+  ---
+  duration_ms: 0.087333
+  type: 'test'
+  ...
+# Subtest: the check up row is OK for a match, WARN for a wrong agent, and carries the machine tally
+ok 26 - the check up row is OK for a match, WARN for a wrong agent, and carries the machine tally
+  ---
+  duration_ms: 0.154708
+  type: 'test'
+  ...
+# Subtest: nothing a person reads carries an em or en dash
+ok 27 - nothing a person reads carries an em or en dash
+  ---
+  duration_ms: 0.109958
+  type: 'test'
+  ...
+# Subtest: bin/hoai-attach-scope.mjs prints the machine tally: what each mode WOULD refuse
+ok 28 - bin/hoai-attach-scope.mjs prints the machine tally: what each mode WOULD refuse
+  ---
+  duration_ms: 90.587042
+  type: 'test'
+  ...
+# Subtest: a scope carried into ANOTHER folder was inherited: unscoped, launcher inherited, a strict would-refuse
+ok 29 - a scope carried into ANOTHER folder was inherited: unscoped, launcher inherited, a strict would-refuse
+  ---
+  duration_ms: 0.478708
+  type: 'test'
+  ...
+# Subtest: the scope folder compares as a folder: trailing separator, and case on macOS and Windows
+ok 30 - the scope folder compares as a folder: trailing separator, and case on macOS and Windows
+  ---
+  duration_ms: 0.093917
+  type: 'test'
+  ...
+# Subtest: the scope folder compares through realpath (a symlinked spelling is the same folder)
+ok 31 - the scope folder compares through realpath (a symlinked spelling is the same folder)
+  ---
+  duration_ms: 0.046917
+  type: 'test'
+  ...
+# Subtest: a folder pin naming ANOTHER agent is the wrong agent, even when the inherited scope agrees with the env
+ok 32 - a folder pin naming ANOTHER agent is the wrong agent, even when the inherited scope agrees with the env
+  ---
+  duration_ms: 0.073084
+  type: 'test'
+  ...
+# Subtest: a folder pin naming THIS agent, or no usable pin, changes nothing
+ok 33 - a folder pin naming THIS agent, or no usable pin, changes nothing
+  ---
+  duration_ms: 0.049917
+  type: 'test'
+  ...
+# Subtest: the scope names a wrong agent "by scope"
+ok 34 - the scope names a wrong agent "by scope"
+  ---
+  duration_ms: 0.030625
+  type: 'test'
+  ...
+# Subtest: ids compare as numbers: a leading zero is the same agent
+ok 35 - ids compare as numbers: a leading zero is the same agent
+  ---
+  duration_ms: 0.02675
+  type: 'test'
+  ...
+# Subtest: the launcher is recorded: hoai (its folder), generation one (BGOS_CONTINUE), or none
+ok 36 - the launcher is recorded: hoai (its folder), generation one (BGOS_CONTINUE), or none
+  ---
+  duration_ms: 0.037
+  type: 'test'
+  ...
+# Subtest: market3 scope: folder-only launch intent uses the resolved agent without bypassing wrong-agent checks
+ok 37 - market3 scope: folder-only launch intent uses the resolved agent without bypassing wrong-agent checks
+  ---
+  duration_ms: 0.080417
+  type: 'test'
+  ...
+# Subtest: the summary splits by launcher and by signal, and counts distinct sessions, not boots
+ok 38 - the summary splits by launcher and by signal, and counts distinct sessions, not boots
+  ---
+  duration_ms: 2.119834
+  type: 'test'
+  ...
+# Subtest: no source file of this change carries an em or en dash
+ok 39 - no source file of this change carries an em or en dash
+  ---
+  duration_ms: 1.365875
+  type: 'test'
+  ...
+1..39
+# tests 39
+# suites 0
+# pass 39
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 135.865208
+exit 0
