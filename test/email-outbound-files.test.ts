@@ -2662,7 +2662,7 @@ test('a file over its budget gets the try again words and is not attached, on an
 test('a content refusal keeps its never words and has no try again in it, however long it took', { timeout: 60_000 }, async () => {
   for (const [name, bytes, words] of [
     ['server.txt', Buffer.from(`-----BEGIN RSA PRIVATE KEY-----\n${'QUJD'.repeat(40)}\n-----END RSA PRIVATE KEY-----\n`), /holds a private key, so it is never attached/],
-    ['logins.csv', Buffer.from('Site,Username,Password\nexample.com,sam,rig dummy\n'), /has a password column, so it looks like a password export and is never attached/],
+    ['people.csv', Buffer.from('Site,Username,Password\nexample.com,sam,rig dummy\n'), /has a password column, so it looks like a password export and is never attached/],
     // Past a cap and not past the clock: the shape of the file is the reason, so another try changes nothing.
     ['runs.docx', docxRaw(`<w:p>${'<w:r/>'.repeat(Math.ceil((26 * MB) / 6))}</w:p>`), /could not be read safely, so it is never attached/],
   ] as const) {
