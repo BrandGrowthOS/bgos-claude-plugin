@@ -145,7 +145,7 @@ interface Fault {
 
 /** The loop runs, reads and moves its cursor, and no message reaches the hand-off. */
 const DROPS_EVERY_ROW: Fault[] = [
-  { find: 'for (const msg of newUserMessages) {', replace: 'for (const msg of [] as typeof newUserMessages) {' },
+  { find: 'for (const { row: msg, edit } of deliveries) {', replace: 'for (const { row: msg, edit } of [] as typeof deliveries) {' },
   {
     find: "      const messageId = Number(payload?.messageId ?? payload?.message_id)\n      if (!Number.isFinite(messageId)) return\n      if (forwardedMessageIds.has(messageId)) return",
     replace: "      const messageId = Number(payload?.messageId ?? payload?.message_id)\n      if (Number.isFinite(messageId)) return\n      if (forwardedMessageIds.has(messageId)) return",
@@ -159,7 +159,7 @@ const HAND_OFF_FAILS: Fault[] = [
 
 /** Every read of the chat's messages comes back empty: nothing is ever seen to deliver. */
 const POLL_READS_NOTHING: Fault[] = [
-  { find: 'const data = raw as ChatHistoryResponse\n    if (!data.messages?.length) return', replace: 'const data = { messages: [] } as ChatHistoryResponse\n    if (!data.messages?.length) return' },
+  { find: 'const firstPage = raw as ChatHistoryResponse\n    if (!firstPage.messages?.length) {', replace: 'const firstPage = { messages: [] } as ChatHistoryResponse\n    if (!firstPage.messages?.length) {' },
 ]
 
 /** Each card goes out in a shape Claude Code silently drops: a meta value that is not a string. */
