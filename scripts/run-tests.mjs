@@ -19,6 +19,7 @@ import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { useRealTmpdir } from './run-tests-env.mjs'
 import { testGroups, runTestFiles, stopActiveTests, summarize, focusesATest } from './run-test-files.mjs'
+import { snapshotWorkingTree } from './test-tree-snapshot.mjs'
 
 // `npm test` runs this repository. Another folder is how test/run-tests-timeout.test.ts runs this script for real.
 const repoRoot = process.argv[2] ? resolve(process.argv[2]) : join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -36,6 +37,12 @@ const groups = testGroups(entries)
 const emptyFamilies = ['node', 'bun'].filter((family) => !groups.some((group) => group.family === family && group.files.length > 0))
 const focused = new Set(entries.filter(({ source }) => focusesATest(source)).map(({ file }) => file))
 
+// A test of this runner meets the file deadline with this, in seconds and not 270 s. Nothing else sets it.
+const fileDeadlineMs = Number(process.env.RUN_TESTS_FILE_DEADLINE_MS)
+
+// What the tree holds before any file runs. A scan that fails here fails the run, as an uncaught error.
+const pathsBefore = snapshotWorkingTree(repoRoot)
+
 const started = performance.now()
 const results = []
 for (const file of focused) {
@@ -46,11 +53,20 @@ for (const file of focused) {
 for (const { label, files, ...options } of groups) {
   const toRun = files.filter((file) => !focused.has(file))
   console.log(`\n[run-tests] ${label}: ${toRun.length} files, ${options.concurrency} workers`)
-  results.push(...await runTestFiles(toRun, { ...options, cwd: repoRoot }))
+  results.push(...await runTestFiles(toRun, { ...options, cwd: repoRoot, ...(fileDeadlineMs > 0 ? { timeoutMs: fileDeadlineMs } : {}) }))
 }
+// Every file ends in runTestFiles, a hung one as TIMED OUT, so a hang reaches this scan like any other file. Its
+// kill is bounded, not sure: a tree still alive, or an orphan the kill could not find, can write after this scan
+// or remove a folder during it, which fails the run below as a tree it could not read. A stop (SIGINT, SIGTERM)
+// exits above and does not get here. The scan sees new paths: not a changed file, and not one that was already there.
+const unreadable = []
+const newPaths = [...snapshotWorkingTree(repoRoot, (error) => unreadable.push(error))].filter((path) => !pathsBefore.has(path)).sort()
 console.log(`\n${summarize(results, ((performance.now() - started) / 1000).toFixed(1))}`)
 for (const family of emptyFamilies) console.error(`[run-tests] no ${family} test files in ${join(repoRoot, 'test')}`)
-if (emptyFamilies.length > 0 || results.some((result) => result.problem)) {
+if (newPaths.length > 0) console.error(`\n[run-tests] the run left ${newPaths.length} new paths in the working tree:`)
+for (const path of newPaths) console.error(`[run-tests] NEW PATH: ${JSON.stringify(path)}`)
+for (const error of unreadable) console.error(`\n[run-tests] could not read the working tree after the run, so it cannot say no test left a file: ${error.message}`)
+if (emptyFamilies.length > 0 || results.some((result) => result.problem) || newPaths.length > 0 || unreadable.length > 0) {
   console.error('\n[run-tests] FAILED')
   process.exitCode = 1
 } else console.log('\n[run-tests] both families green')
