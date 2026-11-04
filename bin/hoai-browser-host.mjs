@@ -84,6 +84,7 @@ import { GateKeeper, deniedMessage, waitSecondsFrom, GATE_ATTACH_MS, GATE_WAIT_M
 import { RemoteBrowserViews, REMOTE_BROWSER_TAB_MAX } from '../lib/remote-view.mjs'
 import { OWNER_CONTROL_MESSAGE, runAgentBrowserWork } from '../lib/remote-input.mjs'
 import { AgentBrowserProfileCompanion } from '../lib/browser-profile-companion.mjs'
+import { loadMachineSignIns } from '../lib/browser-sign-in-copy.mjs'
 import { reviewAgentProfilePeer } from '../lib/browser-profile-peer-review.mjs'
 
 /**
@@ -1654,11 +1655,13 @@ export class ChromiumEngine {
  * Chrome, and one principal's concurrent first calls share one launch.
  */
 export class BrowserPool {
-  constructor({ agentRoot, createEngine, idleMs = BROWSER_IDLE_MS, log = () => {}, bindEngine = /** @type {((engine: any, slot: any, ctx: any) => void) | null} */ (null) }) {
+  constructor({ agentRoot, createEngine, idleMs = BROWSER_IDLE_MS, log = () => {}, loadSignIns = null, bindEngine = /** @type {((engine: any, slot: any, ctx: any) => void) | null} */ (null) }) {
     this._agentRoot = agentRoot
     this._createEngine = createEngine
     /** Called with each new engine, its slot and the call's context, before it starts. */
     this.bindEngine = bindEngine
+    /** An approved machine's sealed sign-ins for this call's person and agent (lib/browser-sign-in-copy.mjs). */
+    this._loadSignIns = loadSignIns
     this._idleMs = idleMs
     this._log = log
     this._slots = new Map()
@@ -1710,6 +1713,15 @@ export class BrowserPool {
             engine.onStarted?.()
           } catch {}
           slot.engine = engine
+          // With nobody there: an approved machine opens its own sealed copy. A locked key
+          // store or a failed read leaves an ordinary browser with no sign-ins, never a stop.
+          slot.signIns = null; slot.signInsApplied = false
+          if (this._loadSignIns) {
+            try {
+              slot.signIns = await this._loadSignIns(ctx)
+              slot.signInsApplied = (await slot.signIns?.applyTo(engine.vault?.context)) === true
+            } catch (err) { this._log(`sign-ins: not opened (${err?.code || 'unavailable'})`) }
+          }
           slot.openedAt = new Date().toISOString()
           return engine
         })().finally(() => {
@@ -1756,12 +1768,22 @@ export class BrowserPool {
     return [...this._slots.values()].filter((s) => s.engine && s.engine.alive !== false).map((s) => s.paths.profileDir)
   }
 
+  /** A sign-in made here goes back sealed. Never holds up or fails a close. */
+  async _sendSignInsBack(slot) {
+    const holder = slot.signIns
+    slot.signIns = null
+    if (!holder) return
+    try { await holder.sendBack(slot.engine?.vault?.context) } catch (err) { this._log(`sign-ins: not sent back (${err?.code || 'failed'})`) }
+    try { holder.dispose?.() } catch {}
+  }
+
   _stopSlot(slot, beforeStop) {
     if (slot.stopping) return slot.stopping
     // Reserve synchronously, before draining input. Agent admission cannot
     // slip between the last owner event and the encrypted profile snapshot.
     const stopping = Promise.resolve().then(async () => {
       await beforeStop?.()
+      await this._sendSignInsBack(slot)
       return this._finishStopSlot(slot)
     })
     slot.stopping = stopping.finally(() => { slot.stopping = null })
@@ -2253,6 +2275,7 @@ export class BrowserHostCore {
       if (purpose) slot.purpose = purpose
       // One browser per agent (BGOS mission 173): the agent never chooses a profile, so an older
       // client's profile argument changes nothing here.
+      if (slot.signInsApplied) return text(`Browser session is open on ${this.deviceLabel}, the machine you run on: your own browser, headless, already signed in where your owner's sealed copy reaches. Those sign-ins are not readable by any tool; browse as usual. A site that needs your owner asks them.`)
       return text(
         `Browser session is open on ${this.deviceLabel}, the machine you run on: your own browser, headless, with login storage locked until the owner unlocks it in the pane. Browsing state is discarded at close unless the owner unlocks encrypted storage. Navigate with browser_navigate, then browser_snapshot.`,
       )
@@ -2823,7 +2846,8 @@ export class BrowserHost {
     this.downloadStores = new Map()
     this._downloadsTimer = null
     this._lastSweep = 0
-    this.pool = new BrowserPool({ agentRoot, createEngine, log, bindEngine: (engine, slot, ctx) => this.core?.bindEngine(engine, slot, ctx) })
+    this.pool = new BrowserPool({ agentRoot, createEngine, log, bindEngine: (engine, slot, ctx) => this.core?.bindEngine(engine, slot, ctx),
+      loadSignIns: ctx => this._machineSignIns(ctx) })
     this.remoteViews = new RemoteBrowserViews({ pool: this.pool })
     this.connections = new Map()
     this.retiringConnections = new Map()
@@ -2847,6 +2871,7 @@ export class BrowserHost {
       sleep,
       log,
     })
+    this._signInEnv = env
     this.core = new BrowserHostCore({ pool: this.pool, browserTools, deviceLabel, gates: this.gates, downloadStore: (id) => this.downloadStore(id), log })
     const version = readPackageVersion()
     this.relay = new RelaySessions({ core: this.core, serverInfo: { name: 'hoai-agent-browser', version }, instructions: hostInstructions(deviceLabel), log })
@@ -2891,6 +2916,13 @@ export class BrowserHost {
    * a disconnected pairing must read as "cannot ask" rather than be handed a
    * blank id the backend would refuse.
    */
+  /** This machine's sealed sign-ins for a call's person and agent, on the pairing that serves it. */
+  _machineSignIns(ctx) {
+    const conn = this.connectionFor(ctx.assistantId)
+    if (!conn) return null
+    return loadMachineSignIns({ agentRoot: this.agentRoot, pairing: conn.pairing, assistantId: ctx.assistantId, principal: ctx.principal, environment: this._signInEnv, log: line => this._log(line) })
+  }
+
   connectionFor(assistantId) {
     const id = assistantIdOrNull(assistantId)
     if (id === null) return null
