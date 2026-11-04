@@ -19,7 +19,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -1400,6 +1400,12 @@ async function memRefusal(name: string, bytes: Buffer, extra: Record<string, unk
 }
 
 const unsafeSentence = (path: string) => `${path} could not be read safely, so it is never attached.`
+/** A file its check ran out of time on: still refused, and it may go on another try, so no "never". */
+const tryAgainSentence = (path: string) => `${path} took too long to check, so it is not attached this time. Try again in a few minutes.`
+/** A fixed budget past any test's own timeout: how busy the runner is cannot decide a file under it. */
+const UNDER_BUDGET_MS = 600_000
+/** A budget already spent when the stage starts: over it on any runner. */
+const OVER_BUDGET_MS = -1
 const tableSentence6 = (path: string) => `${path} has a password column, so it looks like a password export and is never attached. ${NO_WAY_AROUND}`
 const unreadSentence = (path: string) => `${path} could not be read to check it for a password or key, so it is not attached.`
 
@@ -1580,8 +1586,8 @@ test('review round 6: reading one Word or Excel file\'s words has a wall clock b
     ['gradebook.xlsx', xlsxSheetsOf([gradebook])],
   ] as const) {
     // A budget already spent when the read starts: the clock is checked inside the read, so the file is refused.
-    const slow = await memRefusal(name, bytes, { officeReadMs: -1 })
-    assert.equal(slow.why, unsafeSentence(slow.path), name)
+    const slow = await memRefusal(name, bytes, { officeReadMs: OVER_BUDGET_MS })
+    assert.equal(slow.why, tryAgainSentence(slow.path), name)
     // The control: the same file under the default budget goes.
     assert.equal((await memRefusal(name, bytes)).why, null, name)
   }
@@ -1729,22 +1735,57 @@ test('review round 7: the four hostile inputs each settle within the Worker dead
   }
 })
 
-test('review round 7 (round 8: the deadline grows with the file): text the checks take long on is given 5 s plus 1 s per MB, and the main thread keeps running', { timeout: 90_000 }, async (t) => {
+test('review round 7 (round 8: the deadline grows with the file): a file is given 5 s plus 1 s per MB, and the main thread keeps running', { timeout: 90_000 }, async (t) => {
   const lib = await m()
   const { pathToFileURL } = await import('node:url')
-  // A Worker that takes 7 s on every file: an 8 MB file (deadline 13 s) goes, a small one (5 s) is refused at 5 s.
+  // A Worker that answers only when this test tells it to, and a main thread clock this test moves: an 8 MB file
+  // (deadline 13 s) is still waiting 1 ms before its deadline and goes; a small one is refused at its own, and no sooner.
   const dir = join(scratchHome(t), 'workers')
   mkdirSync(dir, { recursive: true })
-  const slow = join(dir, 'slow.mjs')
-  writeFileSync(slow, `import { parentPort } from 'node:worker_threads'
-parentPort.on('message', (m) => setTimeout(() => parentPort.postMessage({ id: m.id, verdict: { kind: 'ok' }, buffer: m.buffer, length: m.length }, [m.buffer]), 7000))
+  const slow = join(dir, 'held.mjs')
+  writeFileSync(slow, `import { existsSync, writeFileSync } from 'node:fs'
+import { parentPort } from 'node:worker_threads'
+const dir = ${JSON.stringify(dir)}
+parentPort.on('message', (m) => {
+  if (m.name === 'exit.txt') process.exit(0)
+  writeFileSync(dir + '/seen ' + m.name, '')
+  const wait = setInterval(() => {
+    if (!existsSync(dir + '/go ' + m.name) && !existsSync(dir + '/go all')) return
+    clearInterval(wait)
+    parentPort.postMessage({ id: m.id, verdict: { kind: 'ok' }, buffer: m.buffer, length: m.length }, [m.buffer])
+  }, 5)
+})
 `)
-  const big = await heartbeatRefusal('big.txt', Buffer.alloc(8 * MB, 0x61), { contentWorker: pathToFileURL(slow) })
-  assert.equal(big.why, null, `big.txt after ${Math.round(big.ms)} ms`)
-  assert.ok(big.ms >= 6900 && big.ms < 9000, `big.txt took ${Math.round(big.ms)} ms`)
-  const small = await heartbeatRefusal('small.txt', Buffer.from('Plan for Monday.\n'), { contentWorker: pathToFileURL(slow) })
-  assert.equal(small.why, unsafeSentence(small.path))
-  assert.ok(small.ms >= R7_DEADLINE_MS - 100 && small.ms < R7_DEADLINE_MS + 1000, `small.txt was refused after ${Math.round(small.ms)} ms`)
+  const contentWorker = pathToFileURL(slow)
+  const turn = () => new Promise((done) => setImmediate(done))
+  const held = async (name: string, bytes: Buffer) => {
+    const job = { settled: false, got: memRefusal(name, bytes, { contentWorker }).finally(() => { job.settled = true }) }
+    // The deadline's timer is set before the Worker is handed the file, so a file the Worker has seen is timed.
+    while (!existsSync(join(dir, `seen ${name}`))) await turn()
+    return job
+  }
+  const plan = Buffer.from('Plan for Monday.\n')
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  try {
+    const big = await held('big.txt', Buffer.alloc(8 * MB, 0x61))
+    t.mock.timers.tick(13_000 - 1)
+    await turn()
+    assert.equal(big.settled, false, 'big.txt 1 ms before its deadline of 13 s')
+    writeFileSync(join(dir, 'go big.txt'), '')
+    assert.equal((await big.got).why, null, 'big.txt, answered before its deadline')
+    const small = await held('small.txt', plan)
+    t.mock.timers.tick(lib.outboundContentDeadlineMs(plan.length) - 1)
+    await turn()
+    assert.equal(small.settled, false, 'small.txt 1 ms before its deadline')
+    t.mock.timers.tick(1)
+    const late = await small.got
+    assert.equal(late.why, tryAgainSentence(late.path), 'small.txt, at its deadline')
+  } finally {
+    t.mock.timers.reset()
+    // This test closes its own Worker, passing or not: left idle it would keep this whole file from ending.
+    writeFileSync(join(dir, 'go all'), '')
+    await memRefusal('exit.txt', plan, { contentWorker })
+  }
   // Round 8: 5 s plus 1 s per MB, at most 40 s.
   assert.equal(typeof lib.outboundContentDeadlineMs, 'function', 'outboundContentDeadlineMs is exported')
   assert.deepEqual(
@@ -1754,15 +1795,17 @@ parentPort.on('message', (m) => setTimeout(() => parentPort.postMessage({ id: m.
   // Round 8: the budget for reading a Word or Excel file's words grows with it too, 3 s inside the deadline.
   const C = await import('../lib/email-outbound-content.ts')
   assert.deepEqual([0, MB, 6 * MB, 25 * MB, 100 * MB].map((size) => C.officeReadBudgetMs(size)), [2000, 3000, 8000, 27000, 37000])
-  // 8 MB of '=aws' and a closing dot: each position costs the aws_secret_access_key rule a bounded but long try that
-  // finds nothing (about 7 s under node with tsx; round 7 refused it at its 5 s deadline). Its deadline is now 13 s.
+  // A clean 8 MB file, read to the end by every check on the real Worker. Under a budget no runner can spend, so this
+  // says what the file is, and not how busy the runner was; over a spent one it is refused.
+  const longText = Buffer.from(`${'=aws'.repeat(2 * 1024 * 1024)}.`)
   const stop = await stopOf(async () => {
-    const got = await heartbeatRefusal('slow.txt', Buffer.from(`${'=aws'.repeat(2 * 1024 * 1024)}.`))
+    const got = await heartbeatRefusal('long.txt', longText, { officeReadMs: UNDER_BUDGET_MS })
     assert.equal(got.why, null)
-    assert.ok(got.ms <= 13_000 + 1000, `slow.txt took ${Math.round(got.ms)} ms`)
     return got.maxGap
   })
-  assert.ok(stop <= 100, `slow.txt stopped the main thread for ${Math.round(stop)} ms`)
+  const spent = await memRefusal('long.txt', longText, { officeReadMs: OVER_BUDGET_MS })
+  assert.equal(spent.why, tryAgainSentence(spent.path))
+  assert.ok(stop <= 100, `long.txt stopped the main thread for ${Math.round(stop)} ms`)
   // The next file: a gradebook goes.
   assert.equal((await memRefusal('gradebook.xlsx', xlsxSheetsOf([R7_GRADEBOOK]))).why, null)
 })
@@ -1805,7 +1848,7 @@ test('review round 7: the content Worker fails closed: one that cannot start, th
   const looping = worker('busy', 'parentPort.once("message", () => { for (;;) {} })')
   const stop = await stopOf(async () => {
     const busy = await heartbeatRefusal('plan.txt', Buffer.from('Plan for Monday.\n'), { contentWorker: looping })
-    assert.equal(busy.why, unsafeSentence(busy.path))
+    assert.equal(busy.why, tryAgainSentence(busy.path))
     assert.ok(busy.ms <= R7_DEADLINE_MS + 1000, `busy took ${Math.round(busy.ms)} ms`)
     return busy.maxGap
   })
@@ -2104,7 +2147,8 @@ test('review round 8: ONE long lived content Worker reads every file; only a dea
   try {
     for (const [name, goes, workers] of steps) {
       const got = await memRefusal(name, plan, { contentWorker: url })
-      assert.equal(got.why, goes ? null : unsafeSentence(got.path), name)
+      // Out of time is not a fault of the file: only the Worker's own faults keep the never words.
+      assert.equal(got.why, goes ? null : name === 'hang.txt' ? tryAgainSentence(got.path) : unsafeSentence(got.path), name)
       if (name !== 'hang.txt') assert.ok(got.ms < R7_DEADLINE_MS / 2, `${name} took ${Math.round(got.ms)} ms`)
       assert.equal(lib.outboundContentWorkersStarted(url), workers, `${name}: Workers started`)
       // A turn for any message the Worker sends after its reply, before the next file.
@@ -2403,36 +2447,31 @@ const realWorkerAt = (tag: string) => new URL(`../lib/email-outbound-content-wor
 test('review round 9: a file over its budget is refused by the Worker itself, inside the walks, and the Worker is not replaced', { timeout: 120_000 }, async () => {
   const lib = await m()
   const url = realWorkerAt('r9-budget')
-  // 8 MB of 'pw ' in a text file, under a 100 ms budget (ctx.officeReadMs): before round 9 the budget covered only a
-  // Word or Excel file's read, and this text went after about a second of checks.
+  // 8 MB of 'pw ' in a text file over its budget (ctx.officeReadMs): the Worker itself answers, which the count below
+  // proves. That the walks read the budget as they go is the next test's, on a clock it moves.
   const text = Buffer.from('pw '.repeat(Math.floor((8 * MB) / 3)))
   const stop = await stopOf(async () => {
-    const slow = await heartbeatRefusal('notes.txt', text, { contentWorker: url, officeReadMs: 100 })
-    assert.equal(slow.why, unsafeSentence(slow.path))
-    // Its hard deadline is 13 s: the Worker's own budget answered long before it.
-    assert.ok(slow.ms < 2500, `notes.txt took ${Math.round(slow.ms)} ms`)
+    const slow = await heartbeatRefusal('notes.txt', text, { contentWorker: url, officeReadMs: OVER_BUDGET_MS })
+    assert.equal(slow.why, tryAgainSentence(slow.path))
     return slow.maxGap
   })
   assert.ok(stop <= 100, `notes.txt stopped the main thread for ${Math.round(stop)} ms`)
-  // The reviewer's docxslow (24 KB, 24 MB of 'pw '), 10 times under a 300 ms budget: each refused by the budget, and
-  // the one Worker reads them all (under bun each Worker replaced cost about 27 MB that is never given back).
+  // The reviewer's docxslow (24 KB, 24 MB of 'pw '), 10 times over its budget: each refused, and the one Worker reads
+  // them all (under bun each Worker replaced cost about 27 MB that is never given back).
   const bytes = docxSlow(24)
   for (let i = 1; i <= 10; i++) {
-    const got = await memRefusal(`memo${i}.docx`, bytes, { contentWorker: url, officeReadMs: 300 })
-    assert.equal(got.why, unsafeSentence(got.path), `memo${i}.docx`)
-    assert.ok(got.ms < 3000, `memo${i}.docx took ${Math.round(got.ms)} ms`)
+    const got = await memRefusal(`memo${i}.docx`, bytes, { contentWorker: url, officeReadMs: OVER_BUDGET_MS })
+    assert.equal(got.why, tryAgainSentence(got.path), `memo${i}.docx`)
   }
-  // Under the default budget (sized from its 24 MB of words, not its 24 KB) it goes, still on the same Worker.
-  assert.equal((await memRefusal('memo.docx', bytes, { contentWorker: url })).why, null)
-  // The budget grows with the words: 16 MB of '=aws' in a 16 KB docx takes about 4 s of checks under node, past the
-  // 2 s its size gives, and goes (its words give 18 s).
-  const aws = await memRefusal('aws.docx', docxSlow(16, '=aws'), { contentWorker: url })
-  assert.equal(aws.why, null, `aws.docx after ${Math.round(aws.ms)} ms`)
+  // Under its budget it goes, still on the same Worker, read to the end by every check; so does a second small Word
+  // file. What budget each is given is test 'the budget grows with the words', on a stopped clock.
+  assert.equal((await memRefusal('memo.docx', bytes, { contentWorker: url, officeReadMs: UNDER_BUDGET_MS })).why, null)
+  assert.equal((await memRefusal('long.docx', docxSlow(16, '=aws'), { contentWorker: url, officeReadMs: UNDER_BUDGET_MS })).why, null, 'long.docx')
   assert.equal((await memRefusal('plan.txt', Buffer.from('Plan for Monday.\n'), { contentWorker: url })).why, null)
   assert.equal(lib.outboundContentWorkersStarted(url), 1, 'the Worker was never replaced')
 })
 
-test('review round 9: each walk checks the budget as it goes; with none it reads to the end', { timeout: 60_000 }, async () => {
+test('review round 9: each walk checks the budget as it goes; with none it reads to the end', { timeout: 60_000 }, async (t) => {
   const C = await import('../lib/email-outbound-content.ts')
   const W = (C as Record<string, any>).CONTENT_WALKS_FOR_TESTS
   assert.equal(typeof W.OverBudget, 'function', 'the walks export the budget error')
@@ -2446,20 +2485,109 @@ test('review round 9: each walk checks the budget as it goes; with none it reads
     ['recovery key labels', W.hasRecoveryKey, 'recovery key: no\n'],
   ] as const) {
     const text = unit.repeat(Math.floor((24 * MB) / unit.length))
-    // A budget already spent: the walk stops at its first check.
-    const t0 = performance.now()
-    assert.throws(() => walk(text, { deadline: Date.now() - 1 }), W.OverBudget, `${label}: spent`)
-    assert.ok(performance.now() - t0 < 100, `${label}: a spent budget took ${Math.round(performance.now() - t0)} ms`)
-    // A budget of 20 ms: the walk stops soon after it, not at the end of 24 MB.
-    const t1 = performance.now()
-    assert.throws(() => walk(text, { deadline: Date.now() + 20 }), W.OverBudget, `${label}: 20 ms`)
-    assert.ok(performance.now() - t1 < 250, `${label}: a 20 ms budget took ${Math.round(performance.now() - t1)} ms`)
+    // A clock this test moves, 1 ms each time it is read, so the walk's reads are counted and no runner's speed counts.
+    let now = 1_000_000
+    const clock = t.mock.method(Date, 'now', () => now++)
+    try {
+      // A budget already spent: the walk stops at its first check.
+      assert.throws(() => walk(text, { deadline: now - 1 }), W.OverBudget, `${label}: spent`)
+      assert.ok(now - 1_000_000 <= 2, `${label}: a spent budget took ${now - 1_000_000} reads`)
+      // A budget that ends after 20 reads: the walk reads it as it goes and stops there, not at the end of 24 MB.
+      const start = now
+      assert.throws(() => walk(text, { deadline: start + 20 }), W.OverBudget, `${label}: 20 reads`)
+      assert.ok(now - start >= 20 && now - start <= 22, `${label}: stopped after ${now - start} reads`)
+    } finally {
+      clock.mock.restore()
+    }
     // No budget: the walk reads to the end.
     assert.doesNotThrow(() => walk(text), label)
   }
   // The scanner's pieces: a spent budget stops it between pieces.
   await assert.rejects(W.firstSecretRule('notes.txt', 'plain line of notes\n'.repeat(200_000), { deadline: Date.now() - 1 }), W.OverBudget)
   assert.equal(await W.firstSecretRule('notes.txt', 'plain line of notes\n'.repeat(200_000)), null)
+})
+
+test('the budget grows with the words: on a stopped clock each file reads to the end, under the budget its size and words give', { timeout: 60_000 }, async (t) => {
+  const C = await import('../lib/email-outbound-content.ts')
+  const W = (C as Record<string, any>).CONTENT_WALKS_FOR_TESTS
+  const clock = t.mock.method(Date, 'now', () => 1_000_000)
+  try {
+    const word = await W.verdictWithBudget(new Uint8Array(docxSlow(16, '=aws')), 'docx', 'long.docx', [])
+    assert.equal(word.verdict.kind, 'ok', 'the Word file is clean')
+    // 2 s plus 1 s per MB of its words, and not the 2 s its 16 KB would give.
+    assert.ok(word.budgetMs >= 18_000 && word.budgetMs <= 18_001, `the Word file's budget is ${word.budgetMs} ms`)
+    const text = await W.verdictWithBudget(new Uint8Array(Buffer.from(`${'=aws'.repeat(2 * MB)}.`)), 'text', 'long.txt', [])
+    assert.equal(text.verdict.kind, 'ok', 'the text file is clean')
+    assert.equal(text.budgetMs, 10_001, "the text file's budget")
+  } finally {
+    clock.mock.restore()
+  }
+})
+
+test('past its budget at any read of the clock a file is over_budget, never a content refusal; a clock that stays inside it reads to the end', { timeout: 60_000 }, async (t) => {
+  const C = await import('../lib/email-outbound-content.ts')
+  const plan = Buffer.from('Plan for Monday.\n')
+  for (const [type, name, bytes] of [
+    ['text', 'plan.txt', plan],
+    ['docx', 'memo.docx', docxOf(['Plan for Monday'])],
+    ['xlsx', 'book.xlsx', xlsxSheetsOf([R7_GRADEBOOK])],
+  ] as const) {
+    let reads = 0
+    for (let after = 1; ; after++) {
+      // The clock stands still for `after` reads, then jumps an hour: every read of it in the stage gets its turn.
+      let seen = 0
+      const clock = t.mock.method(Date, 'now', () => (seen++ < after ? 1_000_000 : 4_600_000))
+      let kind: string
+      try {
+        kind = (await C.outboundContentVerdict(new Uint8Array(bytes), type, name, [])).kind
+      } finally {
+        clock.mock.restore()
+      }
+      reads = after
+      if (kind === 'ok') break
+      assert.equal(kind, 'over_budget', `${name}: the clock jumps after read ${after}`)
+      assert.ok(after < 5000, `${name}: still over at read ${after}`)
+    }
+    assert.ok(reads >= 2, `${name}: the stage read its clock ${reads} times`)
+  }
+})
+
+test('a file over its budget gets the try again words and is not attached, on any file and even when it holds a key; under its budget it goes', { timeout: 60_000 }, async () => {
+  const lib = await m()
+  const key = Buffer.from(`-----BEGIN RSA PRIVATE KEY-----\n${'QUJD'.repeat(40)}\n-----END RSA PRIVATE KEY-----\n`)
+  for (const [name, bytes, goes] of [
+    ['plan.txt', Buffer.from('Plan for Monday.\n'), true],
+    ['sales.csv', Buffer.from('date,item,qty\n2026-10-01,widget,4\n'), true],
+    ['memo.docx', docxOf(['Plan for Monday']), true],
+    ['book.xlsx', xlsxSheetsOf([R7_GRADEBOOK]), true],
+    ['server.txt', key, false],
+  ] as const) {
+    const path = `${MEM_HOME}\\Documents\\${name}`
+    const over = await lib.readOutboundFiles([path], { home: MEM_HOME, fs: memFs(bytes), officeReadMs: OVER_BUDGET_MS })
+    assert.equal(over.ok, false, `${name}: not attached`)
+    assert.equal(over.files, undefined, `${name}: no file comes back`)
+    assert.equal(over.error, tryAgainSentence(path), name)
+    assert.doesNotMatch(over.error, /never/, name)
+    // The words say it ran out of time, and nothing of what the check looks for.
+    assert.doesNotMatch(over.error.replace(path, ''), /password|secret|\bkey|virus|phrase|scan|label|credential/i, name)
+    const under = await lib.readOutboundFiles([path], { home: MEM_HOME, fs: memFs(bytes), officeReadMs: UNDER_BUDGET_MS })
+    assert.equal(under.ok, goes, `${name}: under its budget`)
+    // Trying again is no way past a check: the same key, once it is read, gets its own refusal.
+    if (!goes) assert.match(under.error, /holds a private key, so it is never attached/, name)
+  }
+})
+
+test('a content refusal keeps its never words and has no try again in it, however long it took', { timeout: 60_000 }, async () => {
+  for (const [name, bytes, words] of [
+    ['server.txt', Buffer.from(`-----BEGIN RSA PRIVATE KEY-----\n${'QUJD'.repeat(40)}\n-----END RSA PRIVATE KEY-----\n`), /holds a private key, so it is never attached/],
+    ['logins.csv', Buffer.from('Site,Username,Password\nexample.com,sam,rig dummy\n'), /has a password column, so it looks like a password export and is never attached/],
+    // Past a cap and not past the clock: the shape of the file is the reason, so another try changes nothing.
+    ['runs.docx', docxRaw(`<w:p>${'<w:r/>'.repeat(Math.ceil((26 * MB) / 6))}</w:p>`), /could not be read safely, so it is never attached/],
+  ] as const) {
+    const got = await memRefusal(name, bytes, { officeReadMs: UNDER_BUDGET_MS })
+    assert.match(String(got.why), words, name)
+    assert.doesNotMatch(String(got.why), /try again|too long/i, name)
+  }
 })
 
 test('review round 9: the hard deadline always ends after the Worker\'s own budget', async () => {

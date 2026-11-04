@@ -647,7 +647,7 @@ async function localReal(fs: OutboundFs, given: string, answer: string, ctx: Out
 
 /**
  * Round 7: the hard deadline of the content stage. The content Worker is terminated this long after it is started,
- * whatever it is doing, and the file is refused as "could not be read safely" (fail closed). Round 8: the base of the
+ * whatever it is doing, and the file is refused with the try again words (fail closed). Round 8: the base of the
  * deadline, which grows with the file (outboundContentDeadlineMs).
  */
 export const OUTBOUND_CONTENT_DEADLINE_MS = 5000
@@ -693,6 +693,8 @@ export const OUTBOUND_CONTENT_WORKERS_MAX = 8
 
 /** Round 9: the run of a file past OUTBOUND_CONTENT_WORKERS_MAX. */
 const WORKERS_SPENT = 'workers spent'
+/** The run of a file still being read at its hard deadline: out of time, which says nothing about the file. */
+const OUT_OF_TIME = 'out of time'
 
 /** Round 7: the content Worker's module, beside this file (bun and node with tsx both load a .ts worker by its URL). */
 const CONTENT_WORKER = new URL('./email-outbound-content-worker.ts', import.meta.url)
@@ -726,7 +728,7 @@ interface ContentJob {
   length: number
   message: Record<string, unknown>
   deadlineMs: number
-  resolve: (value: ContentResult | null | typeof WORKERS_SPENT) => void
+  resolve: (value: ContentResult | null | typeof WORKERS_SPENT | typeof OUT_OF_TIME) => void
 }
 
 /**
@@ -752,7 +754,7 @@ class ContentWorkerHost {
   /** Round 8: how many Workers this host has started (a test reads it: one for many files). */
   started = 0
 
-  run(owned: ArrayBuffer, length: number, message: Record<string, unknown>, deadlineMs: number): Promise<ContentResult | null | typeof WORKERS_SPENT> {
+  run(owned: ArrayBuffer, length: number, message: Record<string, unknown>, deadlineMs: number): Promise<ContentResult | null | typeof WORKERS_SPENT | typeof OUT_OF_TIME> {
     return new Promise((resolve) => {
       const id = this.nextId++
       this.queue.push({ id, owned, length, message: { ...message, id, buffer: owned, length }, deadlineMs, resolve })
@@ -801,7 +803,7 @@ class ContentWorkerHost {
         job.resolve(worker)
         continue
       }
-      const timer = setTimeout(() => this.fail(), job.deadlineMs)
+      const timer = setTimeout(() => this.fail(OUT_OF_TIME), job.deadlineMs)
       this.current = { job, timer }
       try {
         worker.postMessage(job.message, [job.owned])
@@ -831,13 +833,13 @@ class ContentWorkerHost {
   }
 
   /** Past the deadline, an error, an exit or a bad reply: the running job is refused and the Worker replaced. */
-  private fail(): void {
+  private fail(outcome: null | typeof OUT_OF_TIME = null): void {
     this.retire()
     const current = this.current
     if (current !== null) {
       clearTimeout(current.timer)
       this.current = null
-      current.job.resolve(null)
+      current.job.resolve(outcome)
     }
     this.pump()
   }
@@ -875,13 +877,17 @@ export function outboundContentWorkersStarted(url: URL = CONTENT_WORKER): number
  * is still running at the deadline: then it is terminated. Round 8: on the one long lived Worker
  * (ContentWorkerHost), under a deadline that grows with the file (outboundContentDeadlineMs).
  */
-function contentInWorker(owned: ArrayBuffer, length: number, type: ContentType, name: string, ctx: OutboundFileCtx): Promise<ContentResult | null | typeof WORKERS_SPENT> {
+function contentInWorker(owned: ArrayBuffer, length: number, type: ContentType, name: string, ctx: OutboundFileCtx): Promise<ContentResult | null | typeof WORKERS_SPENT | typeof OUT_OF_TIME> {
   const secrets = (ctx.secrets ?? []).filter((secret): secret is string => typeof secret === 'string')
   // Round 9: the backstop, after the Worker's own budget (which the Worker sizes from the file and its words, or a
   // test fixes with ctx.officeReadMs).
-  const deadlineMs = outboundContentHardDeadlineMs(type, length)
   const message: Record<string, unknown> = { type, name, secrets }
-  if (typeof ctx.officeReadMs === 'number') message.budgetMs = ctx.officeReadMs
+  let deadlineMs = outboundContentHardDeadlineMs(type, length)
+  if (typeof ctx.officeReadMs === 'number') {
+    message.budgetMs = ctx.officeReadMs
+    // A fixed budget keeps the rule that the hard deadline ends 3 s after the Worker's own budget.
+    deadlineMs = Math.max(deadlineMs, ctx.officeReadMs + 3000)
+  }
   return contentHost(ctx.contentWorker ?? CONTENT_WORKER).run(owned, length, message, deadlineMs)
 }
 
@@ -892,6 +898,13 @@ function contentInWorker(owned: ArrayBuffer, length: number, type: ContentType, 
 const outboundSafetyStop = (path: string): string =>
   `${shown(path)} is not attached for now: too many files could not be checked since this agent started, so no text, Word or Excel file is attached until the agent is restarted (a safety stop; nothing was found in this file).`
 
+/**
+ * The file's check ran out of time, by the Worker's budget or the hard deadline. Still refused, with no "never": it may
+ * go on another try, when it is checked to the end. It says nothing about what the check looks for.
+ */
+const outboundOutOfTime = (path: string): string =>
+  `${shown(path)} took too long to check, so it is not attached this time. Try again in a few minutes.`
+
 /** Round 7: the sentence for what the content stage found, or null when the file may go. */
 function contentSentence(verdict: ContentVerdict, path: string): string | null {
   const name = shown(path)
@@ -900,6 +913,8 @@ function contentSentence(verdict: ContentVerdict, path: string): string | null {
       return null
     case 'unsafe':
       return `${name} could not be read safely, so it is never attached.`
+    case 'over_budget':
+      return outboundOutOfTime(path)
     case 'unread':
       return `${name} could not be read to check it for a password or key, so it is not attached.`
     case 'table':
@@ -1067,6 +1082,7 @@ export async function readOutboundFile(path: unknown, ctx: OutboundFileCtx = {})
     // `bytes` is a view, at offset 0, of the buffer allocated above for this read alone: it is transferred, not copied.
     const checked = await contentInWorker(bytes.buffer as ArrayBuffer, bytes.length, type, name, ctx)
     if (checked === WORKERS_SPENT) return { ok: false, error: outboundSafetyStop(path) }
+    if (checked === OUT_OF_TIME) return { ok: false, error: outboundOutOfTime(path) }
     if (checked === null) return { ok: false, error: `${shown(path)} could not be read safely, so it is never attached.` }
     bytes = checked.bytes
     const why = contentSentence(checked.verdict, path)
