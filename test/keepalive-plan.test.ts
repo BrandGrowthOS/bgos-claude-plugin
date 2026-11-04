@@ -210,7 +210,7 @@ test('decideSafeMoment: the design 6 table, exact reasons', () => {
     ['turn in flight', { state: { ...fresh, turnInFlight: true } }, false, 'turn_in_flight'],
     ['a reply is owed', { state: { ...fresh, pendingMessages: 2 } }, false, 'pending_messages'],
     ['a permission is pending', { state: { ...fresh, pendingPermissions: 1 } }, false, 'pending_permission'],
-    ['a thread turn is not a recovery restart\'s business: the sweep reads it, this does not', { state: { ...fresh, threadWork: 1 } }, true, 'quiet'],
+    ['a thread turn is not a recovery restart\'s business: the sweep reads it, this does not', { state: { ...fresh, threadWork: 1 } }, true, 'idle'],
     ['a delivery is running', { state: { ...fresh, activeOperations: 1 } }, false, 'pending_messages'],
     ['a background job descendant', { descendants: ['node /x/server.ts', job] }, false, 'background_job'],
     ['the process tree could not be read', { descendants: null }, false, 'process_tree_unreadable'],

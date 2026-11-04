@@ -660,7 +660,7 @@ test('safe moment: a running thread turn or By the way fork holds an update, and
 })
 
 test('safe moment: a daemon from before thread work publishes no count, and the sweep reads that as none, as it always has', async () => {
-  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical' }])
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }])
   const rec = recorder({ ps: IDLE_PS })
   const clock = fakeClock()
   answerProbes(fs, clock, ['912'])
