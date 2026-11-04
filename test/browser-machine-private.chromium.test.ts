@@ -14,7 +14,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { ChromiumEngine, resolveChromeExecutable, sweepPageFiles } from '../bin/hoai-browser-host.mjs'
+import { ChromiumEngine, keepPageOutOfFiles, resolveChromeExecutable, sweepPageFiles } from '../bin/hoai-browser-host.mjs'
 
 const chrome = resolveChromeExecutable()
 const posix = process.platform !== 'win32'
@@ -207,4 +207,40 @@ test('a page file left for a principal that never opens again goes when the host
     assert.equal(readFileSync(join(home, '900', 'downloads', 'kept.bin'), 'utf8'), 'the owner kept this', 'a kept download is not a page file')
     assert.deepEqual(readdirSync(join(home, '901', 'browser-output')), ['user-a'], 'another agent is its own host\'s to sweep')
   } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test('a PDF of a page is a file, so it is refused while the browser holds a sign-in or its login storage is open, and gone at close otherwise', { timeout: 120_000, skip }, async () => {
+  const home = made('bh-pdf-')
+  const outputDir = join(home, 'browser-output', 'k')
+  const engine: any = new ChromiumEngine({ executable: chrome.path!, profileDir: join(home, 'browser', 'k'), outputDir, scope: 'fixture' })
+  try {
+    await engine.start()
+    await engine.callTool('browser_navigate', { url: 'data:text/html,<h1>made up</h1>' })
+    engine.holdsSignIns = true
+    const refused = await engine.callTool('browser_pdf_save', {})
+    assert.equal(refused.isError, true)
+    assert.match(JSON.stringify(refused), /not saved as a file/)
+    assert.deepEqual(readdirSync(outputDir), [])
+    engine.holdsSignIns = false
+    const realStatus = engine.vault.status.bind(engine.vault)
+    engine.vault.status = () => ({ ...realStatus(), unlocked: true })
+    assert.equal((await engine.callTool('browser_pdf_save', {})).isError, true, 'login storage open reads the same')
+    engine.vault.status = realStatus
+    const saved = await engine.callTool('browser_pdf_save', {})
+    assert.notEqual(saved.isError, true, JSON.stringify(saved).slice(0, 300))
+    assert.equal(readdirSync(outputDir).filter(name => name.endsWith('.pdf')).length, 1, 'a browser with nobody signed in keeps the tool')
+    await engine.stop()
+    assert.deepEqual(readdirSync(outputDir), [], 'and the file goes at close')
+  } finally {
+    await engine.stop().catch(() => {})
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('a Playwright that moved the methods the guard replaces stops the call, not the guard', () => {
+  assert.throws(() => keepPageOutOfFiles('browser_snapshot', {}, {}), { code: 'browser_unavailable' })
+  assert.throws(() => keepPageOutOfFiles('browser_snapshot', {}, { _writeFile() {}, addCode() {} }), { code: 'browser_unavailable' })
+  const response: any = { _writeFile() {}, addFileResult() {}, addCode() {} }
+  assert.deepEqual(keepPageOutOfFiles('browser_snapshot', { filename: 'x.yml', depth: 2 }, response), { depth: 2 }, 'a named file is not written anywhere')
+  return assert.rejects(response._writeFile({}, 'page text'), { code: 'not_available' })
 })

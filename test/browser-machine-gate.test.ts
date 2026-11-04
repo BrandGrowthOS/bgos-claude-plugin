@@ -123,6 +123,20 @@ test('a page tree read before a navigation names nothing after it', async () => 
   void call.catch(() => {})
 })
 
+test('what the agent is told about sign-ins is true: refused, opened, and neither', async () => {
+  const r = rig()
+  r.slot.signInsRefused = true
+  const refused = JSON.stringify(await r.core.callTool(OWNER, 'hoai_browser_open_session', { purpose: 'p' }))
+  assert.match(refused, /sign-ins stay on their computer/)
+  assert.match(refused, /same OS user/)
+  r.slot.signInsRefused = false; r.slot.signInsApplied = true
+  const opened = JSON.stringify(await r.core.callTool(OWNER, 'hoai_browser_open_session', { purpose: 'p' }))
+  assert.equal(/not readable by any tool/.test(opened), false, 'the old promise is gone')
+  assert.match(opened, /what a signed in page displays does reach your snapshots/)
+  r.slot.signInsApplied = false
+  assert.equal(/sign-ins/.test(JSON.stringify(await r.core.callTool(OWNER, 'hoai_browser_open_session', { purpose: 'p' }))), false, 'a machine with nothing to refuse says nothing')
+})
+
 // P2-6.
 test('a share recipient\'s browsing posts no card to the owner\'s chat: not the open, not the end', async () => {
   const r = rig()

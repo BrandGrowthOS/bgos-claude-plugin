@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import { killChromeProcess } from '../bin/hoai-browser-host.mjs'
+import { killProcessGroup } from '../lib/lane-process.ts'
 
 // kill(-1, signal) signals every process this user owns. A fake browser with pid 1 reached it
 // through killChromeProcess on 2026-11-04 and took down the whole Mac's sessions, twice.
@@ -33,4 +34,16 @@ test('killChromeProcess never signals its own process', () => {
 
 test('killChromeProcess still signals a real group', () => {
   assert.deepEqual(signalsFor(4321), [[-4321, 'SIGKILL']])
+})
+
+test('a lane\'s group kill sends nothing for pid 1 either', () => {
+  const real = process.kill
+  const seen: unknown[] = []
+  process.kill = ((target: number) => { seen.push(target); return true }) as typeof process.kill
+  try {
+    for (const pid of [1, 0, -1]) killProcessGroup(pid as number, 'SIGKILL')
+    assert.deepEqual(seen, [])
+    killProcessGroup(4321, 'SIGKILL')
+    assert.deepEqual(seen, [-4321])
+  } finally { process.kill = real }
 })
