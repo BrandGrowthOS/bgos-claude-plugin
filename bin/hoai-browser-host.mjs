@@ -105,6 +105,7 @@ const hostCoreRequire = createRequire(import.meta.url)
 export const policy = hostCoreRequire('../lib/browser-host-core/policy.js')
 export const hostSettings = hostCoreRequire('../lib/browser-host-core/settings.js')
 export const hostProfiles = hostCoreRequire('../lib/browser-host-core/profiles.js')
+const { gateFactsFor, snapshotTextOf } = hostCoreRequire('../lib/browser-host-core/snapshot-target.js')
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -306,6 +307,30 @@ export const WAIT_SECONDS_SCHEMA = {
  * machine's browser can hold a person's sealed sign-ins, so these are not served and
  * do not answer. The fixed DOM reading tools stay.
  */
+/** How long a card waits for the intent check before it posts without it. A person is waiting on this. */
+export const INTENT_CHECK_WAIT_MS = 2_500
+
+/** The agent's arguments with the page's own names beside its descriptions, for the policy's wording checks. */
+export function withHostNames(args, facts) {
+  if (!facts?.targetName) return args
+  return { ...args, element: [args?.element, facts.targetName].filter((word) => typeof word === 'string' && word).join(' \n ') }
+}
+
+/** The phrase a card prints. Where the phrase cannot carry the page's names (a form, a drag), they go after it. */
+export function hostWordedSummary(phrase, name, facts) {
+  if (!facts?.targetName || phrase.includes(facts.targetName)) return phrase.slice(0, 200)
+  return `${phrase} (the page names: ${facts.targetName})`.slice(0, 200)
+}
+
+/** The purpose a browser opened with none is given. A query, a fragment or a login in an address can hold a secret. */
+export function defaultPurposeFor(url) {
+  if (typeof url !== 'string') return 'Browsing on request'
+  try {
+    const parsed = new URL(url)
+    return `Browsing ${parsed.origin}${parsed.pathname}`.slice(0, 200)
+  } catch { return 'Browsing on request' }
+}
+
 /** What the agent hears where a person's sealed copy will not open on this machine. */
 export const SIGN_IN_STAYS_SENTENCE = 'Your owner\'s sign-ins stay on their computer: they are not opened on this machine, because you and this browser run as the same OS user.'
 
@@ -703,7 +728,7 @@ export function readPairings({ agentRoot, allow = null, listDir = defaultListDir
     const pairedAt = Date.parse(String(creds.pairedAt ?? '')) || 0
     let group = groups.get(key)
     if (!group) {
-      group = { key, pairingId, backendUrl: base, token, pairedAt, assistantIds: new Set(), tokens: new Set() }
+      group = { key, pairingId, backendUrl: base, token, pairedAt, ownerUserId: typeof creds.userId === 'string' && creds.userId ? creds.userId : null, assistantIds: new Set(), tokens: new Set() }
       groups.set(key, group)
     }
     group.assistantIds.add(assistantId)
@@ -723,6 +748,7 @@ export function readPairings({ agentRoot, allow = null, listDir = defaultListDir
       pairingId: g.pairingId,
       backendUrl: g.backendUrl,
       token: g.token,
+      ownerUserId: g.ownerUserId,
       staleTokens: g.tokens.size - 1,
       assistantIds: ids.slice(0, MAX_AGENTS_PER_PAIRING),
     }
@@ -2032,8 +2058,12 @@ export class BrowserHostCore {
    * resident), and an idle host that never receives a frame should not pay
    * for it, so it is loaded on the first tools/list or tools/call.
    */
-  constructor({ pool, browserTools, deviceLabel, gates = /** @type {any} */ (null), downloadStore = /** @type {((assistantId: number) => any) | null} */ (null), postSessionCard = /** @type {any} */ (null), log = () => {} }) {
+  constructor({ pool, browserTools, deviceLabel, gates = /** @type {any} */ (null), downloadStore = /** @type {((assistantId: number) => any) | null} */ (null), postSessionCard = /** @type {any} */ (null), isOwnerPrincipal = /** @type {((ctx: any) => boolean) | null} */ (null), intentCheck = /** @type {((assistantId: number, sessionId: string, body: any) => Promise<any>) | null} */ (null), log = () => {} }) {
     this.postSessionCard = postSessionCard
+    /** A browsing card is the owner's: another person's or a room's browsing is not told in the owner's chat. */
+    this.isOwnerPrincipal = isOwnerPrincipal
+    this.intentCheck = intentCheck
+    this.intentCheckWaitMs = INTENT_CHECK_WAIT_MS
     this.pool = pool
     /** The permission gate, or null on a host with no way to reach a backend. */
     this.gates = gates
@@ -2194,7 +2224,11 @@ export class BrowserHostCore {
    */
   async _permit(ctx, slot, name, engineArgs, waitSeconds, signal) {
     const settings = this._settingsFor(slot)
-    const classification = policy.classifyToolCall(name, engineArgs, { currentOrigin: await this._currentOrigin(slot) })
+    // What the host itself read of the target, never the agent's words: the same facts the desktop
+    // sends its intent check (snapshot-target.js). The page's own name is judged beside the agent's
+    // description, so calling a sensitive button something harmless does not make it harmless.
+    const facts = gateFactsFor(name, engineArgs, slot.lastSnapshotText || null)
+    const classification = policy.classifyToolCall(name, withHostNames(engineArgs, facts), { currentOrigin: await this._currentOrigin(slot) })
     const grants = this._grantsFor(ctx, slot)
     const decision = policy.decide({
       // Site permission policy remains the signed-in policy even while the
@@ -2221,7 +2255,8 @@ export class BrowserHostCore {
     const wait = waitSecondsFrom(waitSeconds)
     // The words after "<agent> wants to" on the card: the imperative the
     // desktop's strip prints, never the trail's past tense ("wants to opened").
-    const summary = policy.intentPhrase(name, engineArgs, { kind: decision.gate, origin: classification.origin ?? null })
+    // Where the host read the target's name, the card says that and not the agent's description.
+    const summary = hostWordedSummary(policy.intentPhrase(name, facts?.targetName ? { ...engineArgs, element: facts.targetName } : engineArgs, { kind: decision.gate, origin: classification.origin ?? null }), name, facts)
     // A download ask the page raised is not the agent's: its action waits for
     // it (at most its 60 s) rather than being told the browser is busy. The
     // wait comes out of this call's own budget: the relay cuts a call at
@@ -2245,6 +2280,7 @@ export class BrowserHostCore {
       // call that parks and a wait_gate that re-attaches share one run.
       action: run,
       attachMs,
+      beforePost: decision.gate === 'sensitive' ? (gate) => this._cautionFromIntentCheck(ctx, slot, gate, facts) : undefined,
     })
     if (raised.parked) return raised
     if (!raised.allowed) return { allowed: false, message: deniedMessage(raised.reason, wait) }
@@ -2437,9 +2473,41 @@ export class BrowserHostCore {
     }
   }
 
+  /**
+   * The intent check on a sensitive gate (backend POST session/:id/intent-check, as the desktop's
+   * renderer sends it). It only adds caution, and only a definite mismatch reaches the card. A check
+   * that is switched off, slow or unreachable leaves the card as it was and holds nothing up.
+   */
+  async _cautionFromIntentCheck(ctx, slot, gate, facts) {
+    if (!this.intentCheck || !slot.cardId || !facts?.tool) return null
+    const body = { assistantId: ctx.assistantId, gateId: gate.gateId, kind: 'sensitive', tool: facts.tool, action: gate.summary.slice(0, 200),
+      ...(gate.origin ? { origin: String(gate.origin).slice(0, 120) } : {}),
+      ...(facts.targetRole && facts.targetRole.length <= 40 ? { targetRole: facts.targetRole } : {}),
+      ...(facts.targetName ? { targetName: facts.targetName.slice(0, 80) } : {}) }
+    let timer
+    const answer = await Promise.race([
+      Promise.resolve().then(() => this.intentCheck(ctx.assistantId, slot.cardId, body)),
+      new Promise((resolve) => { timer = setTimeout(() => resolve(null), this.intentCheckWaitMs); timer.unref?.() }),
+    ]).finally(() => clearTimeout(timer))
+    if (answer?.verdict !== 'does_not_match' || typeof answer.quote !== 'string' || !answer.quote) return null
+    const caution = `This does not match what you asked ("${answer.quote.slice(0, 70)}"). `
+    return `${caution}${gate.summary}`.slice(0, 200)
+  }
+
+  /**
+   * What the gate's facts read: the host's own last whole page tree. A snapshot of one element is
+   * not the whole page. A call that moves the page drops the tree before it runs (_call).
+   */
+  _keepPageTree(slot, name, args, result) {
+    if (name !== 'browser_snapshot' || args?.target || args?.depth !== undefined) return
+    slot.lastSnapshotText = snapshotTextOf(name, result)
+  }
+
   /** The slot's one browsing card, in order. Best effort, and never awaited by a tool call. */
   _postSlotCard(ctx, slot, state) {
     if (!this.postSessionCard) return
+    // The owner's chat is told of the owner's own browsing. Another person's or a room's is not theirs to read.
+    if (this.isOwnerPrincipal?.(ctx) !== true) return
     slot.cardId ||= `bs_${randomBytes(9).toString('base64url').replace(/[^A-Za-z0-9]/g, 'x')}`
     slot.cardSeq = (slot.cardSeq || 0) + 1
     slot.cardStartedAt ||= new Date().toISOString()
@@ -2524,7 +2592,8 @@ export class BrowserHostCore {
     const slot = await this.pool.acquire(ctx)
     if (slot.ownerInputLease) throw new HostError('owner_control', OWNER_CONTROL_MESSAGE)
     if (ctx.assistantName) slot.agentName = ctx.assistantName
-    if (!slot.purpose) slot.purpose = typeof engineArgs.url === 'string' ? `Browsing ${engineArgs.url}` : 'Browsing on request'
+    if (!slot.purpose) slot.purpose = defaultPurposeFor(engineArgs.url)
+    if (name === 'browser_navigate' || name === 'browser_navigate_back' || name === 'browser_tabs') slot.lastSnapshotText = null
     const downloadsBefore = slot.downloads?.seq ?? 0
     const verdict = await this._permit(ctx, slot, name, engineArgs, waitSeconds, signal)
     if (verdict.parked) return this._parkedResult(verdict)
@@ -2535,7 +2604,9 @@ export class BrowserHostCore {
     // aborted the first (net::ERR_ABORTED). One owner is the only way "at
     // most once, whichever call returns it" can be true, because a parked
     // gate's action is run by whichever wait_gate re-attaches to it.
-    return this._withDownloads(slot, downloadsBefore, await this._runHeld(verdict))
+    const result = await this._runHeld(verdict)
+    this._keepPageTree(slot, name, engineArgs, result)
+    return this._withDownloads(slot, downloadsBefore, result)
   }
 }
 
@@ -2940,6 +3011,20 @@ export class PairingConnection {
     } catch { return false }
   }
 
+  /** The intent check on a sensitive gate. Null when it could not be asked; a card never waits on why. */
+  async intentCheck(sessionId, body) {
+    if (!this.socketId) return null
+    try {
+      const res = await this._fetch(`${backendBase(this.pairing.backendUrl)}/api/v1/browser/session/${encodeURIComponent(sessionId)}/intent-check`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-BGOS-Pairing': this.pairing.token },
+        body: JSON.stringify({ ...body, socketId: this.socketId }),
+        signal: AbortSignal.timeout(RESULT_POST_TIMEOUT_MS),
+      })
+      return res.ok ? await res.json() : null
+    } catch { return null }
+  }
+
   async postGateCard(card) {
     if (!this.socketId) {
       this._log(`${this._name}: cannot post permission ${card.gateId}: this host has no live socket`)
@@ -3073,7 +3158,10 @@ export class BrowserHost {
     })
     this._signInEnv = env
     this.core = new BrowserHostCore({ pool: this.pool, browserTools, deviceLabel, gates: this.gates,
-      postSessionCard: (assistantId, sessionId, payload) => this.connectionFor(assistantId)?.postSessionCard(assistantId, sessionId, payload) ?? false, downloadStore: (id) => this.downloadStore(id), log })
+      postSessionCard: (assistantId, sessionId, payload) => this.connectionFor(assistantId)?.postSessionCard(assistantId, sessionId, payload) ?? false,
+      isOwnerPrincipal: (ctx) => { const owner = this.connectionFor(ctx.assistantId)?.pairing.ownerUserId; return ctx.principal === OWNER_PRINCIPAL || (typeof owner === 'string' && ctx.principal === `user-${owner}`) },
+      intentCheck: (assistantId, sessionId, body) => this.connectionFor(assistantId)?.intentCheck(sessionId, body) ?? null,
+      downloadStore: (id) => this.downloadStore(id), log })
     const version = readPackageVersion()
     this.relay = new RelaySessions({ core: this.core, serverInfo: { name: 'hoai-agent-browser', version }, instructions: hostInstructions(deviceLabel), log })
     this._rescanTimer = null
