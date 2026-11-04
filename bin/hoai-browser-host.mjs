@@ -30,8 +30,8 @@
  * Playwright's own MCP tool implementations, `tools.BrowserBackend` over the
  * `tools.filteredTools` roster, called in process by name. The one swap: the
  * desktop connects to its Electron bridge, this host launches an INSTALLED
- * Chrome or Chromium with --remote-debugging-port and --user-data-dir and
- * connects over CDP. If no browser is installed, the pinned Playwright
+ * Chrome or Chromium through Playwright, over a private pipe that only this
+ * process holds, with --user-data-dir. If no browser is installed, the pinned Playwright
  * dependency installs its Chromium into the user cache on first use.
  *
  * THE PROFILE IS KEYED BY PRINCIPAL, NOT BY AGENT. A frame names the person
@@ -65,11 +65,13 @@ import { createRequire } from 'node:module'
 import { homedir, hostname, tmpdir } from 'node:os'
 import { delimiter, dirname, isAbsolute, join, posix as posixPath, win32 as win32Path } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { EventEmitter } from 'node:events'
 import { AgentBrowserVault, browserVaultScope } from '../lib/agent-browser-vault.mjs'
 import { ensureBrowser, bundledChromium, browserBootstrapReadiness, browserInstallActivity, cancelBrowserInstallations, whenBrowserInstallationsDrained } from '../lib/browser-bootstrap.mjs'
 import { terminateBrowserDaemon } from '../lib/browser-profile-daemon-stop.mjs'
 import { launcherProcessQuery, parseLauncherProcesses, readBootClock } from '../lib/agent-inventory.mjs'
 import { BrowserSecretRedactor } from '../lib/browser-secret-redactor.mjs'
+import { maskMaskedInputs } from '../lib/browser-snapshot-privacy.mjs'
 import { DOWNLOAD_ASK_WAIT_S, DownloadStore, SlotDownloads, downloadLines, downloadPaths } from '../lib/browser-downloads.mjs'
 import { SAVED_GRANT_WORDS, SAVED_SITES_MAX, forgetInGrants, readSavedSitesRequest, savedSiteDirs, savedSitesOf, withoutSavedSites } from '../lib/browser-saved-sites.mjs'
 
@@ -915,7 +917,8 @@ export class HostError extends Error {
 /** The command line for one profile. Headless unless asked otherwise. */
 export function chromeArgs({ profileDir, headless = true, platform = process.platform }) {
   const args = [
-    '--remote-debugging-port=0',
+    // A pipe only this host holds, never a port: a listening port answers any local process with no credential.
+    '--remote-debugging-pipe',
     `--user-data-dir=${profileDir}`,
     '--no-first-run',
     '--no-default-browser-check',
@@ -942,10 +945,6 @@ export function readDevToolsActivePort(profileDir, readText = defaultReadText) {
 }
 
 /**
- * Starts Chrome on one profile and resolves its browser CDP endpoint, read
- * from the "DevTools listening on" line Chrome prints for port 0.
- */
-/**
  * Every Chrome this host started that has not exited yet, including one still launching. When a
  * stop runs out of time (stopWithin) the host kills these before it exits: off Windows nothing
  * ends a node child when its parent exits, so a Chrome still launching, or one whose close hung,
@@ -962,61 +961,125 @@ export function killStartedChromes(chromes = startedChromes) {
   }
 }
 
-export function launchChromium({ executable, profileDir, headless = true, timeoutMs = BROWSER_START_TIMEOUT_MS, killWaitMs = BROWSER_KILL_WAIT_MS, spawnImpl = spawn, platform = process.platform, env = process.env }) {
-  return new Promise((resolve, reject) => {
-    let child
+/** Ends a Chrome and the helpers in its process group. Playwright starts it as a group leader off Windows. */
+export function killChromeProcess(pid, signal, platform = process.platform) {
+  // kill(-1) signals every process this user owns, so pid 1 and below never get here.
+  if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid) return
+  if (platform !== 'win32') {
     try {
-      child = spawnImpl(executable, chromeArgs({ profileDir, headless, platform }), { stdio: ['ignore', 'ignore', 'pipe'], env: chromeEnv(env, { platform, headed: !headless }) })
-    } catch (err) {
-      reject(new HostError('browser_start_failed', `Could not start ${executable}: ${err?.message ?? err}`))
+      process.kill(-pid, signal)
       return
+    } catch {}
+  }
+  try {
+    process.kill(pid, signal)
+  } catch {}
+}
+
+/**
+ * The Chrome one launch started, as the rest of this file treats a child process: it can be
+ * killed from the moment the launch begins, and it says when it has really gone. Playwright owns
+ * the process and the pipe, so `exit` is the pipe closing and then the pid being gone.
+ */
+class ChromeProcess extends EventEmitter {
+  constructor({ kill, alive, pollMs = 50 }) {
+    super()
+    this.pid = undefined
+    this.exitCode = null
+    this.signalCode = null
+    this._kill = kill
+    this._alive = alive
+    this._pollMs = pollMs
+    this._pendingKill = null
+  }
+
+  attach(pid) {
+    this.pid = pid
+    if (this._pendingKill) this._kill(pid, this._pendingKill)
+  }
+
+  kill(signal = 'SIGTERM') {
+    if (this.pid === undefined) this._pendingKill = signal
+    else if (this.signalCode === null && this.exitCode === null) this._kill(this.pid, signal)
+    return true
+  }
+
+  /** The pipe closed: reports the exit once the pid has gone too. */
+  watchExit() {
+    const check = () => {
+      if (this.pid !== undefined && this._alive(this.pid)) {
+        setTimeout(check, this._pollMs).unref?.()
+        return
+      }
+      this.markExited()
     }
-    startedChromes.add(child)
-    const forget = () => startedChromes.delete(child)
-    child.once('exit', forget)
-    child.once('error', forget)
-    let tail = ''
-    let settled = false
-    const finish = (err, endpoint) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      if (err) {
-        try {
-          child.kill('SIGKILL')
-        } catch {}
-        // The killed Chrome holds its runtime folder until it has exited (Windows; elsewhere its
-        // SingletonLock names its pid), and the caller removes that folder next. Bounded: a Chrome
-        // that never exits still fails the start.
-        if (child.pid !== undefined) void waitForExit(child, killWaitMs).then(() => reject(err))
-        else reject(err)
-      } else resolve({ child, endpoint })
+    check()
+  }
+
+  markExited() {
+    if (this.exitCode !== null || this.signalCode !== null) return
+    this.exitCode = 0
+    this.emit('exit', 0, null)
+  }
+}
+
+/**
+ * Starts Chrome on one profile through Playwright, over the pipe (no port, no endpoint file), and
+ * resolves the live browser with its process. A failed start ends its own Chrome and rejects once
+ * that Chrome has gone, bounded: until then it still holds the runtime folder the caller removes
+ * next. A start killed while launching (the host's stop deadline) ends as soon as its pid is known.
+ */
+export async function launchChromium({ executable, profileDir, headless = true, artifactsDir = /** @type {string | null} */ (null), timeoutMs = BROWSER_START_TIMEOUT_MS, killWaitMs = BROWSER_KILL_WAIT_MS, launchImpl = /** @type {any} */ (null), killImpl = killChromeProcess, aliveImpl = pidAlive, platform = process.platform, env = process.env }) {
+  const child = new ChromeProcess({ kill: killImpl, alive: aliveImpl })
+  startedChromes.add(child)
+  child.once('exit', () => startedChromes.delete(child))
+  const launch = launchImpl ?? ((/** @type {any} */ options) => loadPlaywright().chromium.launch(options))
+  let browser
+  try {
+    browser = await launch({
+      executablePath: executable,
+      args: chromeArgs({ profileDir, headless, platform }),
+      // Exactly the arguments above: Playwright's own would add its automation defaults, and a second user data folder.
+      ignoreDefaultArgs: true,
+      headless,
+      env: chromeEnv(env, { platform, headed: !headless }),
+      handleSIGINT: false,
+      handleSIGTERM: false,
+      handleSIGHUP: false,
+      timeout: timeoutMs,
+      ...(artifactsDir ? { artifactsDir } : {}),
+    })
+  } catch (err) {
+    const message = String(err?.message ?? err)
+    const pid = Number(/<launched> pid=(\d+)/.exec(message)?.[1])
+    if (Number.isSafeInteger(pid) && pid > 0) {
+      child.pid = pid
+      // The folder Chrome holds is free only once it has exited. Bounded: one that never exits still fails the start.
+      child.kill('SIGKILL')
+      const deadline = Date.now() + killWaitMs
+      while (aliveImpl(pid) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25))
     }
-    const timer = setTimeout(
-      () => finish(new HostError('browser_start_failed', `Chrome did not report its DevTools endpoint within ${timeoutMs} ms. ${lastLines(tail)}`)),
-      timeoutMs,
+    child.markExited()
+    const inUse = /already running|ProcessSingleton|profile.*in use/i.test(message)
+    throw new HostError(
+      'browser_start_failed',
+      inUse
+        ? `Chrome could not lock ${profileDir}: another Chrome that this host cannot reach is using that profile, or this Chrome may not write there (a sandboxed build such as a Snap). ${lastLines(message)}`
+        : `Could not start ${executable}: ${lastLines(message)}`,
     )
-    // Chrome keeps writing to stderr for its whole life. The pipe is drained
-    // for good, or a full pipe would stall the browser mid-page.
-    child.stderr?.on('data', (chunk) => {
-      tail = (tail + chunk.toString()).slice(-8192)
-      if (settled) return
-      const m = /DevTools listening on (ws:\/\/\S+)/.exec(tail)
-      if (m) finish(null, m[1])
-    })
-    child.on('error', (err) => finish(new HostError('browser_start_failed', `Could not start ${executable}: ${err?.message ?? err}`)))
-    child.on('exit', (code, signal) => {
-      const inUse = /already running|ProcessSingleton|profile.*in use/i.test(tail)
-      finish(
-        new HostError(
-          'browser_start_failed',
-          inUse
-            ? `Chrome could not lock ${profileDir}: another Chrome that this host cannot reach is using that profile, or this Chrome may not write there (a sandboxed build such as a Snap). ${lastLines(tail)}`
-            : `Chrome exited before it was ready (code ${code}, signal ${signal}). ${lastLines(tail)}`,
-        ),
-      )
-    })
-  })
+  }
+  browser.on('disconnected', () => child.watchExit())
+  try {
+    const session = await browser.newBrowserCDPSession()
+    const { processInfo } = await session.send('SystemInfo.getProcessInfo')
+    await session.detach().catch(() => {})
+    child.attach(processInfo.find((row) => row.type === 'browser')?.id)
+  } catch (err) {
+    await browser.close().catch(() => {})
+    child.markExited()
+    throw new HostError('browser_start_failed', `Chrome started but did not say which process it is: ${err?.message ?? err}`)
+  }
+  return { child, browser }
 }
 
 function lastLines(text, n = 3) {
@@ -1052,6 +1115,15 @@ export function loadPlaywright() {
     // Gone with a Playwright update, no browser starts rather than one that keeps them.
     if (typeof tools?.Tab?.prototype?._handleConsoleMessage !== 'function') throw new HostError('browser_unavailable', 'Browser diagnostic isolation unavailable')
     tools.Tab.prototype._handleConsoleMessage = function () {}
+    // A masked input is not on screen, so its value is not the agent's to read: the snapshot
+    // keeps that it holds something and no more (lib/browser-snapshot-privacy.mjs).
+    if (typeof tools.Tab.prototype.captureSnapshot !== 'function') throw new HostError('browser_unavailable', 'Browser snapshot privacy unavailable')
+    const captureSnapshot = tools.Tab.prototype.captureSnapshot
+    tools.Tab.prototype.captureSnapshot = async function (...args) {
+      const snapshot = await captureSnapshot.apply(this, args)
+      if (typeof snapshot?.ariaSnapshot === 'string') snapshot.ariaSnapshot = await maskMaskedInputs(snapshot.ariaSnapshot, ref => this.page.locator(`aria-ref=${ref}`))
+      return snapshot
+    }
     playwrightModules = { chromium, tools, z }
   }
   return playwrightModules
@@ -1079,7 +1151,47 @@ export async function resolveConfig({ caps, outputDir }) {
   const config = await tools.resolveCLIConfigForMCP({ webmcp: false, caps: caps.join(','), imageResponses: 'allow', outputDir }, {})
   config.outputDir = outputDir
   config.saveSession = false
+  // Playwright writes the whole page tree to a file on every action and links it. On this host the
+  // agent asks for the page with browser_snapshot, which answers in the reply and writes no file.
+  config.snapshot = { ...config.snapshot, mode: 'none' }
   return config
+}
+
+/**
+ * Makes one tool call write no page to a file. A page holds whatever the person's signed in
+ * session shows, and the agent's folder is readable by the agent and everything it runs. Fails
+ * closed: a Playwright update that moves these methods stops the call, not the guard.
+ */
+export function keepPageOutOfFiles(tool, params, response) {
+  if (typeof response?._writeFile !== 'function' || typeof response?.addFileResult !== 'function' || typeof response?.addCode !== 'function') throw new HostError('browser_unavailable', 'Browser file guard unavailable')
+  response._writeFile = async () => { throw new HostError('not_available', 'This browser writes no page to a file on this machine.') }
+  // An image still goes back in the reply; only the copy on disk and its link go.
+  response.addFileResult = async () => {}
+  if (tool === 'browser_take_screenshot') response.addCode = () => {}
+  if (params && typeof params === 'object' && 'filename' in params) {
+    const { filename: _named, ...rest } = params
+    return rest
+  }
+  return params
+}
+
+/** Removes everything in a browser's output folder. The folder itself stays. */
+export function clearPageFiles(dir, removeDir = (/** @type {string} */ path) => rmSync(path, { recursive: true, force: true })) {
+  let names = []
+  try { names = readdirSync(dir) } catch { return }
+  for (const name of names) {
+    try { removeDir(join(dir, name)) } catch {}
+  }
+}
+
+/**
+ * What an earlier version left in one agent's output folders, for a person whose browser may never
+ * open again. Only that agent's: a host on this machine serving another agent sweeps its own.
+ */
+export function sweepPageFiles({ agentRoot, assistantId }) {
+  const id = assistantIdOrNull(assistantId)
+  if (id === null) return
+  clearPageFiles(join(agentRoot, String(id), 'browser-output'))
 }
 
 /** engine.js listTools: the roster for a cap set, without a browser. */
@@ -1094,8 +1206,10 @@ export async function listTools({ caps, outputDir }) {
  * when the browser under it goes away, so the pool relaunches it.
  */
 export class PlaywrightEngine {
-  constructor({ endpoint, caps, outputDir, clientName, clientVersion, connectTimeoutMs = 0, artifactsDir = /** @type {string | null} */ (null), acceptDownloads = false, onDownload = /** @type {((download: any) => void) | null} */ (null), managedRuntime = /** @type {any} */ (null), log = /** @type {(line: string) => void} */ (() => {}) }) {
-    this._endpoint = endpoint
+  constructor({ browser = /** @type {any} */ (null), caps, outputDir, clientName, clientVersion, artifactsDir = /** @type {string | null} */ (null), acceptDownloads = false, pdfFiles = () => false, onDownload = /** @type {((download: any) => void) | null} */ (null), managedRuntime = /** @type {any} */ (null), log = /** @type {(line: string) => void} */ (() => {}) }) {
+    this._launched = browser
+    /** A PDF is a file by nature: asked before each one, and false by default. */
+    this._pdfFiles = pdfFiles
     // Chrome writes downloads into Playwright's artifacts folder. Given here it
     // is the held folder inside the agent's own folder; never given, Playwright
     // would make one in the system temp folder.
@@ -1103,7 +1217,6 @@ export class PlaywrightEngine {
     this._acceptDownloads = acceptDownloads === true
     this.onDownload = onDownload
     this._log = log
-    this._connectTimeoutMs = connectTimeoutMs
     this._managedRuntime = managedRuntime
     this._caps = caps
     this._outputDir = outputDir
@@ -1119,9 +1232,10 @@ export class PlaywrightEngine {
   }
 
   async start() {
-    const { chromium, tools } = loadPlaywright()
+    const { tools } = loadPlaywright()
     this._managedRuntime?.assertCurrent()
-    this._browser = this._managedRuntime ? this._managedRuntime.browser : await chromium.connectOverCDP(this._endpoint, { isLocal: true, timeout: this._connectTimeoutMs, noDefaults: true, ...(this._artifactsDir ? { artifactsDir: this._artifactsDir } : {}) })
+    this._browser = this._managedRuntime ? this._managedRuntime.browser : this._launched
+    if (!this._browser) throw new HostError('browser_start_failed', 'No browser was started for this engine.')
     this._browser.on('disconnected', () => this.onDisconnected?.())
     // Downloads are accepted only into a guarded held folder; otherwise Chrome
     // is told to refuse them (Browser.setDownloadBehavior deny).
@@ -1133,7 +1247,7 @@ export class PlaywrightEngine {
     const filtered = tools.filteredTools(config)
     this._toolSchemas = filtered.map(tool => tool.schema)
     this._toolNames = new Set(filtered.map((t) => t.schema.name))
-    this._backend = new tools.BrowserBackend(config, context, filtered)
+    this._backend = new tools.BrowserBackend(config, context, filtered.map(tool => this._withoutPageFiles(tool)))
     await this._backend.initialize({ cwd: this._outputDir, name: this._clientName, version: this._clientVersion })
     // Playwright uses this hook for snapshots, console collection, artifacts
     // and serialized MCP text. Hook before an owner can fill any login.
@@ -1141,6 +1255,18 @@ export class PlaywrightEngine {
     this._backend._context.redactSecrets = text => this._secrets.text(text)
     this._context = context
     return this
+  }
+
+  /** Playwright's shared tool descriptors stay as they are: the guard belongs to this engine's copy. */
+  _withoutPageFiles(tool) {
+    if (typeof tool.handle !== 'function') throw new HostError('browser_unavailable', 'Browser file guard unavailable')
+    return { ...tool, handle: async (context, params, response, signal) => {
+      if (tool.schema.name === 'browser_pdf_save') {
+        if (this._pdfFiles() !== true) throw new HostError('not_available', 'A signed in page is not saved as a file on this machine. Use a snapshot or a screenshot to read it.')
+        return tool.handle(context, params, response, signal)
+      }
+      return tool.handle(context, keepPageOutOfFiles(tool.schema.name, params, response), response, signal)
+    } }
   }
 
   hasTool(name) {
@@ -1236,7 +1362,7 @@ export class PlaywrightEngine {
 /** Shared by the daemon factory and the bounded native download probe. */
 export async function createManagedProfileEngine({ runtime, directory, onDownload, log = /** @type {(line:string)=>void} */ (() => {}) }) {
   ensurePrivateDir(directory)
-  return new PlaywrightEngine({ endpoint: null, managedRuntime: runtime, caps: DEFAULT_CAPS, outputDir: directory, onDownload, clientName: 'hoai-profile-companion', clientVersion: readPackageVersion(), log }).start()
+  return new PlaywrightEngine({ managedRuntime: runtime, caps: DEFAULT_CAPS, outputDir: directory, onDownload, clientName: 'hoai-profile-companion', clientVersion: readPackageVersion(), log }).start()
 }
 
 function waitForExit(child, ms) {
@@ -1460,11 +1586,14 @@ export class ChromiumEngine {
     this._scope = scope || JSON.stringify({ profile: profileDir })
     this.vault = null
     this._runtimeDir = null
+    /** Set by the pool once a sealed copy opened in this browser. */
+    this.holdsSignIns = false
   }
 
   async start() {
     this.vault = new AgentBrowserVault({ profileDir: this.profileDir, scope: this._scope })
     ensurePrivateDir(this.outputDir)
+    this._clearPageFiles()
     // Windows: runtime folders an earlier stop had to leave while Chrome still held them.
     for (const dir of leftRuntimeDirs) {
       try {
@@ -1484,6 +1613,11 @@ export class ChromiumEngine {
     return this
   }
 
+  /** The output folder holds nothing the host keeps; a profile folder does, so one handed in as both is left alone. */
+  _clearPageFiles() {
+    if (this.outputDir !== this.profileDir) clearPageFiles(this.outputDir)
+  }
+
   async _startIn() {
     ensurePrivateDir(this._runtimeDir)
     // Downloads only into the held folder, and only when its guard holds
@@ -1500,12 +1634,10 @@ export class ChromiumEngine {
     }
     this._acceptDownloads = acceptDownloads
     if (!this._engine) {
-      const { child, endpoint } = await this._launch({ executable: this._executable, profileDir: this._runtimeDir, headless: this._headless, platform: this._platform })
+      const { child, browser } = await this._launch({ executable: this._executable, profileDir: this._runtimeDir, headless: this._headless, platform: this._platform, artifactsDir: acceptDownloads ? this.heldDir : null })
       this._child = child
       child.on('exit', () => this._gone())
-      // Bounded: a connect that hangs after Chrome printed its endpoint would
-      // otherwise hold this principal's launch, and every call behind it.
-      const engine = this._newEngine(endpoint, BROWSER_START_TIMEOUT_MS)
+      const engine = this._newEngine(browser)
       try {
         await engine.start()
       } catch (err) {
@@ -1556,14 +1688,15 @@ export class ChromiumEngine {
     await this._removeRuntimeDir().catch((err) => this._log(`the browser's runtime folder ${this._runtimeDir} could not be removed (${err?.code ?? err?.message ?? err})`))
   }
 
-  _newEngine(endpoint, connectTimeoutMs = 0) {
+  _newEngine(browser) {
     return new PlaywrightEngine({
-      endpoint,
+      browser,
       caps: this._caps,
       outputDir: this.outputDir,
       clientName: this._clientName,
       clientVersion: this._clientVersion,
-      connectTimeoutMs,
+      // Only while this browser holds no person's sign-in: no copy opened here, and login storage locked.
+      pdfFiles: () => this.holdsSignIns !== true && this.vault?.status().unlocked !== true,
       artifactsDir: this.heldDir,
       acceptDownloads: this._acceptDownloads === true,
       onDownload: (download) => this._onDownload(download),
@@ -1630,6 +1763,7 @@ export class ChromiumEngine {
     await engine?.stop().catch(() => {})
     await this._killChild()
     await this.vault?.lock()
+    this._clearPageFiles()
     if (this._runtimeDir) await this._removeRuntimeDir()
     if (persistenceFailed) throw Object.assign(new HostError('credential_storage', 'The browser closed and locked, but its latest state could not be saved encrypted. The previous saved state is retained.'), { browserClosed: true })
   }
@@ -2903,6 +3037,8 @@ export class BrowserHost {
     this._deviceLabel = deviceLabel
     /** assistantId -> DownloadStore: what is held and kept for that agent (lib/browser-downloads.mjs). */
     this.downloadStores = new Map()
+    /** Agents whose earlier page files this host has removed. Once each, before it opens them a browser. */
+    this._swept = new Set()
     this._downloadsTimer = null
     this._lastSweep = 0
     this.pool = new BrowserPool({ agentRoot, createEngine, log, bindEngine: (engine, slot, ctx) => this.core?.bindEngine(engine, slot, ctx),
@@ -3025,6 +3161,7 @@ export class BrowserHost {
     for (const id of ids || []) {
       const store = this.downloadStore(id)
       void Promise.resolve(store?.ready).then(() => store?.tellOwners()).catch(() => {})
+      if (!this._swept.has(id)) { this._swept.add(id); sweepPageFiles({ agentRoot: this.agentRoot, assistantId: id }) }
     }
   }
 

@@ -514,22 +514,35 @@ test('the answer names the socket the frame ARRIVED on, even when the socket rec
   conn.stop()
 })
 
+/** Past any real pid on Linux or macOS. Every launch with a fake browser also injects its kill. */
+const FAKE_PID = 2 ** 30
+
+/** A browser as Playwright's launch answers one, naming its process over the pipe. */
+function fakeBrowser(pid: number) {
+  return Object.assign(new EventEmitter(), {
+    newBrowserCDPSession: async () => ({ send: async () => ({ processInfo: [{ type: 'browser', id: pid }] }), detach: async () => {} }),
+    close: async () => {},
+  })
+}
+
 test('Chrome is launched with the allow-listed environment only (the list itself: test/browser-env.test.ts)', async () => {
   const env = { PATH: '/usr/bin', HOME: '/h', DISPLAY: ':0', XAUTHORITY: '/x', LANG: 'en_US.UTF-8', SSH_AUTH_SOCK: '/tmp/agent.sock', HOAI_BROWSER_HOST_PAIRING_TOKEN: 'pair-secret', BGOS_API_KEY: 'k1', OPENAI_API_KEY: 'k2', GITHUB_TOKEN: 'k3' }
   assert.deepEqual(chromeEnv(env, { platform: 'linux', headed: false }), { PATH: '/usr/bin', HOME: '/h', LANG: 'en_US.UTF-8' })
   let seen: any = null
-  const fakeChrome = Object.assign(new EventEmitter(), { stderr: new EventEmitter(), pid: 1, kill() {} })
-  const launched = launchChromium({
+  const browser = fakeBrowser(FAKE_PID)
+  await launchChromium({
     executable: '/c',
     profileDir: '/p',
     env,
-    spawnImpl: ((_cmd: string, _args: string[], options: any) => {
+    launchImpl: (async (options: any) => {
       seen = options
-      return fakeChrome
+      return browser
     }) as any,
+    // A fake pid never reaches a real signal, and its entry goes: a later stop deadline kills every tracked Chrome.
+    killImpl: (() => {}) as any,
+    aliveImpl: (() => false) as any,
   })
-  fakeChrome.stderr.emit('data', Buffer.from('DevTools listening on ws://127.0.0.1:1/devtools/browser/x\n'))
-  await launched
+  browser.emit('disconnected')
   assert.ok(!Object.values(seen.env).includes('pair-secret'), 'the pairing token never reaches Chrome')
   assert.ok(!('SSH_AUTH_SOCK' in seen.env), 'nor the ssh-agent socket')
   assert.ok(!Object.values(seen.env).some((v) => ['k1', 'k2', 'k3'].includes(String(v))))
@@ -643,9 +656,10 @@ test('a Snap Chromium is skipped on linux, and the message says why', () => {
   assert.equal(both.path, '/opt/google/chrome/chrome', 'a usable Chrome behind a Snap one is still found')
 })
 
-test('chromeArgs: remote debugging on a free port, the profile as the user data dir, headless unless asked', () => {
+test('chromeArgs: remote debugging over a pipe and never a port, the profile as the user data dir, headless unless asked', () => {
   const args = chromeArgs({ profileDir: '/p/owner', headless: true, platform: 'linux' })
-  assert.ok(args.includes('--remote-debugging-port=0'))
+  assert.ok(args.includes('--remote-debugging-pipe'))
+  assert.equal(args.some((arg: string) => arg.startsWith('--remote-debugging-port')), false)
   assert.ok(args.includes('--user-data-dir=/p/owner'))
   assert.ok(args.includes('--headless=new'))
   assert.ok(!chromeArgs({ profileDir: '/p/owner', headless: false, platform: 'darwin' }).includes('--headless=new'))
@@ -687,15 +701,26 @@ test('a stop that runs out of time kills the browsers this host started BEFORE i
 })
 
 test('launchChromium tracks the Chrome it starts, launching or running, until that Chrome exits', async () => {
-  const child = Object.assign(new EventEmitter(), { stderr: new EventEmitter(), signals: [] as string[], kill(sig: string) { child.signals.push(sig); return true } })
-  const launching = launchChromium({ executable: '/fake/chrome', profileDir: '/fake/profile', timeoutMs: 60_000, spawnImpl: (() => child) as any, platform: 'linux', env: {} })
-  launching.catch(() => {})
-  assert.ok(startedChromes.has(child as any), 'tracked from the moment it is spawned, before it is ready')
-  killStartedChromes()
-  assert.deepEqual(child.signals, ['SIGKILL'])
-  child.emit('exit', null, 'SIGKILL')
-  await launching.catch(() => {})
-  assert.equal(startedChromes.has(child as any), false, 'and forgotten once it has exited')
+  const before = new Set(startedChromes)
+  const signals: string[] = []
+  let alive = true
+  const browser = fakeBrowser(FAKE_PID)
+  let ready: (value: any) => void = () => {}
+  const launching = launchChromium({ executable: '/fake/chrome', profileDir: '/fake/profile', timeoutMs: 60_000, platform: 'linux', env: {}, launchImpl: (() => new Promise((resolve) => { ready = resolve })) as any, killImpl: ((pid: number, signal: string) => { signals.push(`${pid} ${signal}`) }) as any, aliveImpl: (() => alive) as any })
+  await new Promise((r) => setImmediate(r))
+  const child = [...startedChromes].find((row) => !before.has(row))
+  assert.ok(child, 'tracked from the moment it is launched, before it is ready')
+  killStartedChromes(new Set([child]) as any)
+  assert.deepEqual(signals, [], 'it has no pid yet')
+  ready(browser)
+  await launching
+  assert.deepEqual(signals, [`${FAKE_PID} SIGKILL`], 'and the kill lands as soon as it has one')
+  assert.ok(startedChromes.has(child), 'still tracked: it has not gone yet')
+  browser.emit('disconnected')
+  assert.ok(startedChromes.has(child), 'a closed pipe alone is not an exit')
+  alive = false
+  for (let i = 0; i < 40 && startedChromes.has(child); i++) await new Promise((r) => setTimeout(r, 25))
+  assert.equal(startedChromes.has(child), false, 'and forgotten once it has exited')
 })
 
 test('a stop that finishes says so, and its deadline never fires afterwards', async () => {
