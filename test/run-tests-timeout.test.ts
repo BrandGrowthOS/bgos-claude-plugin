@@ -723,20 +723,41 @@ test('a file that hangs to the file deadline fails by name, and the stray file i
 // Windows has no mode bits that stop a read, and root reads anything.
 const CANNOT_LOCK = process.platform === 'win32' || process.getuid?.() === 0
 
-test('a tree the scan cannot read after the run fails it, and the run still reports its tests', { timeout: 120_000, skip: CANNOT_LOCK }, async () => {
-  const root = orchestratorFolder({
-    'locks.test.ts': `import { chmodSync, mkdirSync } from 'node:fs';${NODE_IMPORT}test('locks a folder', () => { mkdirSync('locked'); chmodSync('locked', 0) });`,
-    'bun.test.ts': `${BUN_IMPORT}${FINE}`,
-  })
+// The folder is there before the run and a test locks it, so it is not a new path.
+const LOCKS = (statement = '') => `import { chmodSync, writeFileSync } from 'node:fs';${NODE_IMPORT}test('locks a folder', () => { chmodSync('kept', 0); ${statement} });`
+
+function folderToLock(root: string) {
+  mkdirSync(join(root, 'kept'))
+  writeFileSync(join(root, 'kept', 'old.txt'), '')
+}
+
+test('a tree the scan cannot read after the run fails it by that alone, and the run still reports its tests', { timeout: 120_000, skip: CANNOT_LOCK }, async () => {
+  const root = orchestratorFolder({ 'locks.test.ts': LOCKS(), 'bun.test.ts': `${BUN_IMPORT}${FINE}` })
   try {
+    folderToLock(root)
     const run = await runOrchestrator(root)
     assert.equal(run.code, 1, `${run.stdout}\n${run.stderr}`)
-    assert.match(run.stdout, /2 passed, 0 failed, 0 skipped, 2 files/, 'the summary is not lost')
+    assert.match(run.stdout, /2 passed, 0 failed, 0 skipped, 2 files/, 'the tree is the only thing wrong with this run')
+    assert.doesNotMatch(run.stderr, /NEW PATH/, 'the tree is the only thing wrong with this run')
     assert.match(run.stderr, /\[run-tests\] could not read the working tree after the run/)
-    assert.match(run.stderr, /^\[run-tests\] NEW PATH: "locked"$/m, 'what could be read is still named')
     assert.match(run.stderr, /\[run-tests\] FAILED/)
+    assert.doesNotMatch(run.stdout, /both families green/)
   } finally {
-    if (existsSync(join(root, 'locked'))) chmodSync(join(root, 'locked'), 0o755)
+    chmodSync(join(root, 'kept'), 0o755)
+    removeScratchDir(root)
+  }
+})
+
+test('beside a tree the scan cannot read, a stray file it can read is still named', { timeout: 120_000, skip: CANNOT_LOCK }, async () => {
+  const root = orchestratorFolder({ 'locks.test.ts': LOCKS(`writeFileSync('stray.txt', '')`), 'bun.test.ts': `${BUN_IMPORT}${FINE}` })
+  try {
+    folderToLock(root)
+    const run = await runOrchestrator(root)
+    assert.equal(run.code, 1, `${run.stdout}\n${run.stderr}`)
+    assert.match(run.stderr, /\[run-tests\] could not read the working tree after the run/)
+    assert.match(run.stderr, /^\[run-tests\] NEW PATH: "stray\.txt"$/m)
+  } finally {
+    chmodSync(join(root, 'kept'), 0o755)
     removeScratchDir(root)
   }
 })

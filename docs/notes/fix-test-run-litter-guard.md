@@ -8,7 +8,7 @@
 
 ## Red first
 
-This head's tests on its runner with the guard taken out: 5 of 38 fail in `test/run-tests-timeout.test.ts`, the five that need the guard. With it: 42 of 42, with the scan's own tests in `test/run-tests-litter-guard.test.ts`. These run the real runner with real node and real bun on real test files that leave real files.
+This head's tests on its runner with the guard taken out: 6 of 39 fail in `test/run-tests-timeout.test.ts`, the six that need the guard. With it: 43 of 43, with the scan's own tests in `test/run-tests-litter-guard.test.ts`. These run the real runner with real node and real bun on real test files that leave real files.
 
 ## What it does not see
 
@@ -17,7 +17,7 @@ This head's tests on its runner with the guard taken out: 5 of 38 fail in `test/
 - A changed file, a deleted file, or a path that was already there. So a second local run with the same stray file left in place passes. CI's checkout is fresh.
 - A write inside an existing `node_modules` or `.git`.
 - Which test left the path. The run names the path only.
-- The branch that fails a run on an unreadable tree is proven on Linux and macOS only: Windows has no mode bits that stop a read, and root reads anything.
+- The branch that fails a run on an unreadable tree is proven on Linux only, CI's one job where a folder can be locked: Windows has no mode bits that stop a read, root reads anything, and no CI job runs on macOS. Its test locks a folder that was there before the run, so the tree is the only thing that can fail that run.
 - A scan before the run that fails stops the run as an uncaught error, with no test run. No test holds that.
 
 The whole suite under the guard has not run here, by the host's rule. CI's run on this PR is the first proof that main leaves no path of its own.
