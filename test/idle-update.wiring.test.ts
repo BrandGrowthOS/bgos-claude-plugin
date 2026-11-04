@@ -323,12 +323,12 @@ test('a broken pipe on the daemon\'s own output is its reader gone (a clean end)
   }
 })
 
-test('the nightly update, a click and the watcher wait for thread work too: an update must not stop a thread turn or a fork', () => {
+test('the nightly update, a click\'s drain and the watcher wait for thread work too: an update must not stop a thread turn or a fork', () => {
   const at = server.indexOf('function restartDrainSnapshot() {')
   assert.ok(at >= 0, 'restartDrainSnapshot is gone')
   assert.match(server.slice(at, server.indexOf('\n}\n', at)), /activeOperations: snapshot\.activeOperations \+ liveThreadWork\(threadLanes, asideForks\)/)
   assert.equal(server.split('drainSnapshot: restartDrainSnapshot,').length - 1, 2, 'the clicked update and the self updater')
-  assert.match(server, /activeOperations: messageActivity\.activeOperations \+ liveThreadWork\(threadLanes, asideForks\),/, 'the agent state the watcher reads')
+  assert.match(server, /activeOperations: messageActivity\.activeOperations,\n[\s\S]{0,240}threadWork: liveThreadWork\(threadLanes, asideForks\),/, 'the agent state the watcher reads')
 })
 
 test('the controller is given the real thread work, and a voice_rpc frame starts none once drained', () => {
