@@ -2473,7 +2473,7 @@ test('review round 9: a file over its budget is refused by the Worker itself, an
   // A Worker already started, so how long it takes to start cannot replace it on a busy runner.
   assert.equal((await memRefusal('first.txt', Buffer.from('Plan for Monday.\n'), { contentWorker: url })).why, null)
   // A large text file with a budget that ends before it is read (ctx.officeReadMs): the Worker itself answers, which the
-  // count below proves. That each check stops at its budget is the test 'every check stops at the first read past it'.
+  // count below proves. That each check stops at its budget is the test 'every check stops at the first read past its budget'.
   const text = Buffer.from('pw '.repeat(Math.floor((8 * MB) / 3)))
   const stop = await stopOf(async () => {
     const slow = await heartbeatRefusal('notes.txt', text, { contentWorker: url, officeReadMs: ALMOST_NO_BUDGET_MS })
@@ -2508,6 +2508,8 @@ test('review round 9: each walk checks the budget as it goes; with none it reads
     ['next line label', W.nextLineValues, 'pw '],
     ['recovery phrase', W.hasRecoveryPhrase, `${twelve}the `],
     ['recovery key labels', W.hasRecoveryKey, 'recovery key: no\n'],
+    ['private key armour', W.hasPrivateKeyArmour, '-----BEGIN x\n'],
+    ['blank lines after a label', W.nextLineValues, `pw:${'\n'.repeat(MB)}`],
   ] as const) {
     const text = unit.repeat(Math.floor((24 * MB) / unit.length))
     // A clock this test moves, 1 ms each time it is read, so the walk's reads are counted and no runner's speed counts.
@@ -2571,30 +2573,37 @@ test('a file is given the budget its size gives: at its end it goes, and 1 ms pa
   }
 })
 
-test('every check stops at the first read past its budget, wherever in a large file the budget ends', { timeout: 240_000 }, async (t) => {
+test('every check stops at the first read past its budget, at every read of the clock in the file', { timeout: 60_000 }, async (t) => {
   const C = await import('../lib/email-outbound-content.ts')
-  // Each text keeps one or more of the checks reading the clock for a long stretch of the file.
-  for (const [unit, step, least] of [['pw ', 499, 10], ['recovery key: no\n', 211, 10], ['-----BEGIN x\n', 211, 10]] as const) {
-    const bytes = new Uint8Array(Buffer.from(unit.repeat(Math.floor((8 * MB) / unit.length))))
-    let tried = 0
-    for (let after = 50; ; after += step) {
-      // The clock stands still for `after` reads and then jumps an hour. A check wired to the budget ends the stage at
-      // its next read; one that is not goes on reading the clock to the end of its walk.
-      let reads = 0
-      const clock = t.mock.method(Date, 'now', () => (reads++ < after ? 1_000_000 : 4_600_000))
-      let kind: string
-      try {
-        kind = (await C.outboundContentVerdict(bytes, 'text', 'notes.txt', [])).kind
-      } finally {
-        clock.mock.restore()
-      }
-      if (reads <= after) break
-      tried++
-      assert.equal(kind, 'over_budget', `${JSON.stringify(unit)}: the clock jumps after read ${after}`)
-      assert.ok(reads <= after + 3, `${JSON.stringify(unit)}: the clock jumps after read ${after}, and the stage read it ${reads} times`)
+  // Each check reads the clock here, a few times each, and the last line's length makes three pieces for the scanner.
+  const twelve = 'abandon ability able about above absent absorb abstract absurd abuse access '
+  const text = ['pw pass pin '.repeat(3000), `${twelve}the `.repeat(30), 'recovery key: no\n'.repeat(3000), '-----BEGIN x\n'.repeat(3000), `${'x'.repeat(99)}\n`.repeat(26_000)].join('\n')
+  const bytes = new Uint8Array(Buffer.from(text))
+  // One run first: the loader's cache reads the clock once in a process, on the first turn after it starts.
+  assert.equal((await C.outboundContentVerdict(bytes, 'text', 'notes.txt', [])).kind, 'ok')
+  let tried = 0
+  // Read 1 is the start and read 2 the file's first 4 KB, which is bounded and takes no budget.
+  for (let after = 2; ; after++) {
+    // The clock stands still for `after` reads and then jumps an hour. A check wired to the budget ends the stage at
+    // that read, and the one read after it is the stage's own closing one. A check that is not wired reads on.
+    let reads = 0
+    const clock = t.mock.method(Date, 'now', () => (reads++ < after ? 1_000_000 : 4_600_000))
+    let kind: string
+    try {
+      kind = (await C.outboundContentVerdict(bytes, 'text', 'notes.txt', [])).kind
+    } finally {
+      clock.mock.restore()
     }
-    assert.ok(tried >= least, `${JSON.stringify(unit)}: the budget ended at ${tried} places`)
+    // Only the closing read saw the jump: every read before it has been tried.
+    if (reads <= after + 1) {
+      assert.equal(kind, 'ok', `the stage read the clock ${reads} times and the jump came last`)
+      break
+    }
+    tried++
+    assert.equal(kind, 'over_budget', `the clock jumps after read ${after}`)
+    assert.equal(reads, after + 2, `the clock jumps after read ${after}`)
   }
+  assert.ok(tried >= 100, `the budget ended at ${tried} places`)
 })
 
 test('past its budget at any read of the clock a file is over_budget, never a content refusal; a clock that stays inside it reads to the end', { timeout: 60_000 }, async (t) => {
