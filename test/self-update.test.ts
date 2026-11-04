@@ -2694,7 +2694,7 @@ describe('server.ts wiring of the update drain (a source pin: nothing here can r
   })
 
   test('the updater and the restart ladder both count only fresh work', () => {
-    expect(source.split('drainSnapshot: updateDrainSnapshot,').length - 1).toBe(2)
+    expect(source.split('drainSnapshot: restartDrainSnapshot,').length - 1).toBe(2)
     const fn = source.slice(source.indexOf('function updateDrainSnapshot()'), source.indexOf('const updateRpc = new UpdateRpcHandler'))
     expect(fn).toContain('messageActivity.freshOperations(nowMs, UPDATE_STALE_WORK_MS)')
     expect(fn).toContain('nowMs - pending.ts < UPDATE_STALE_WORK_MS')

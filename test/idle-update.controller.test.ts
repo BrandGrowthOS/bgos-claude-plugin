@@ -113,6 +113,7 @@ function agent(
     activity: [T0 - 2 * HOUR] as number[],
     openAsks: 0,
     goalRunning: false,
+    threadWork: 0,
     call: { pendingConsults: 0, openContinuations: 0, lastVoiceAtMs: null as number | null, openMeetings: 0 },
     browserAt: null as number | null,
     sessionWakeAt: null as number | null,
@@ -199,7 +200,7 @@ function agent(
     activityMs: () => s.activity,
     openAsks: () => s.openAsks,
     goalRunning: () => s.goalRunning,
-    threadWork: () => 0,
+    threadWork: () => s.threadWork,
     call: () => s.call,
     lastBrowserToolAtMs: () => s.browserAt,
     sessionWakeAtMs: () => s.sessionWakeAt,
@@ -338,6 +339,7 @@ test('each busy case waits, and each reason is logged once', async () => {
     ['pending_messages', (s) => (s.safe = { ...s.safe, pendingMessages: 1 })],
     ['open_ask', (s) => (s.openAsks = 1)],
     ['goal_running', (s) => (s.goalRunning = true)],
+    ['thread_work', (s) => (s.threadWork = 1)],
     ['call_active', (s) => (s.call = { ...s.call, lastVoiceAtMs: T0 - 5 * MIN })],
     ['browser_in_use', (s) => (s.browserAt = T0 - 5 * MIN)],
     ['session_wake', (s) => (s.sessionWakeAt = T0 - 5 * MIN)],
@@ -670,6 +672,20 @@ test('the rollback restart waits for a quiet moment, never cutting a turn', asyn
   assert.equal(a.rollbackRestarts.length, 0)
   a.s.safe = { ...a.s.safe, turnInFlight: false }
   disk.clock.now += 3 * MIN
+  assert.equal(await a.c.tick(), 'rollback_requested')
+})
+
+test('the rollback restart waits for thread work too, and goes once it is over', async () => {
+  const disk = await afterAsk()
+  const a = agent(disk, { running: '0.81.0', staged: null })
+  await a.c.tick()
+  disk.clock.now += 15 * MIN + SEC
+  a.s.activity = [disk.clock.now - 3 * MIN]
+  a.s.threadWork = 1
+  assert.equal(await a.c.tick(), 'rollback')
+  assert.equal(await a.c.tick(), 'rollback_waiting')
+  assert.equal(a.rollbackRestarts.length, 0)
+  a.s.threadWork = 0
   assert.equal(await a.c.tick(), 'rollback_requested')
 })
 
