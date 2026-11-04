@@ -1,0 +1,15 @@
+Source: https://github.com/BrandGrowthOS/bgos-claude-plugin/actions/runs/41723343610/job/126221561764
+2026-11-03T21:37:15.1203718Z [run-tests] node:test family, batch 1 of 2: npx tsx --test --test-concurrency=4 ... (209 args)
+2026-11-03T21:37:55.1858964Z ✖ spec 15: the main transcript is byte identical after a By the way answer (a fake claude that writes its fork file) (16.4318ms)
+2026-11-03T21:40:22.6424632Z ✖ spec 15: the main transcript is byte identical after a By the way answer (a fake claude that writes its fork file) (16.4318ms)
+2026-11-03T21:40:23.1987775Z [run-tests] node:test family, batch 2 of 2: npx tsx --test --test-concurrency=4 ... (213 args)
+2026-11-03T21:42:12.5502649Z ✖ the real thread child keeps network settings without AWS, GitHub, or unknown exported tokens (66.3077ms)
+2026-11-03T21:42:12.5630189Z warning: in the working copy of 'a.txt', LF will be replaced by CRLF the next time Git touches it
+2026-11-03T21:42:12.5631446Z warning: in the working copy of 'a.txt', LF will be replaced by CRLF the next time Git touches it
+2026-11-03T21:42:12.5633084Z ✖ a real git: the worktree and its branch are made, and the sandbox protects the source repository state (668.7849ms)
+2026-11-03T21:42:12.5634406Z warning: in the working copy of 'a.txt', LF will be replaced by CRLF the next time Git touches it
+2026-11-03T21:42:12.5638932Z ✖ a real git: a branch left from an earlier worktree is reused, and Delete removes the worktree and only that branch (894.1951ms)
+2026-11-03T21:42:12.5640396Z warning: in the working copy of 'a.txt', LF will be replaced by CRLF the next time Git touches it
+2026-11-03T21:42:12.5643712Z ✖ a real git on Linux: branches kept only in packed-refs are written out loose, same commits, and git reads the repository as before (585.7986ms)
+2026-11-03T21:42:12.5645708Z ✖ a real git on Linux with no stash: the placeholders are invisible to git, and the owner can still stash and pop (538.5396ms)
+2026-11-03T22:06:46.1296876Z ##[error]The operation was canceled.

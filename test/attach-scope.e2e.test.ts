@@ -21,11 +21,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { removeScratchDir } from './helpers/scratch-dirs'
 import { ATTACH_SCOPE_DIR_ENV, ATTACH_SCOPE_ENV, ATTACH_SCOPE_EVENTS_FILE, ATTACH_SCOPE_MODE_ENV } from '../lib/attach-scope.mjs'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -40,7 +41,8 @@ interface Rig {
 }
 
 function rig(): Rig {
-  const home = realpathSync(mkdtempSync(join(tmpdir(), 'hoai-scope-e2e-')))
+  // Native: Windows temp folders can be 8.3 names (RUNNER~1), which bun's realpath expands and node's does not.
+  const home = realpathSync.native(mkdtempSync(join(tmpdir(), 'hoai-scope-e2e-')))
   const folder = join(home, 'agent')
   const stateDir = join(home, '.bgos-plugin-state')
   for (const dir of [folder, join(home, '.bgos-agent')]) mkdirSync(dir, { recursive: true })
@@ -73,6 +75,7 @@ function boot(r: Rig, extraEnv: Record<string, string>): Promise<Answer> {
       env: {
         PATH: process.env.PATH,
         HOME: r.home,
+        USERPROFILE: r.home, // what os.homedir() reads on Windows
         CLAUDE_CONFIG_DIR: join(r.home, '.claude'),
         BGOS_LAUNCH_CWD: r.folder,
         BGOS_PLUGIN_STATE_DIR: r.stateDir,
@@ -126,13 +129,15 @@ function boot(r: Rig, extraEnv: Record<string, string>): Promise<Answer> {
           send({ jsonrpc: '2.0', id: 2, method: 'tools/list' })
         } else if (msg.id === 2) {
           tools = msg.result?.tools ?? []
+          // Answer once it has gone: on Windows a live daemon's working folder cannot be removed.
           stop()
-          finish()
         }
       }
     })
     child.stderr.on('data', (d) => (err += d))
-    child.on('exit', finish)
+    // 'close' so the last of stderr has arrived; a process holding the pipes after the exit only gets a second.
+    child.on('close', finish)
+    child.on('exit', () => setTimeout(finish, 1000))
     send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'probe', version: '1' } } })
     const deadline = setTimeout(() => {
       stop()
@@ -162,7 +167,7 @@ test('wrong agent, setting ON (wrong-agent): REFUSED with the one notice tool, a
     assert.equal(e[0]!.assistantId, '42')
     assert.equal(e[0]!.scope, '41')
   } finally {
-    rmSync(r.home, { recursive: true, force: true })
+    removeScratchDir(r.home)
   }
 })
 
@@ -179,7 +184,7 @@ test('wrong agent, setting OFF (the default): the full daemon as before, counted
     assert.equal(e[0]!.verdict, 'attach')
     assert.equal(e[0]!.refusedFrom, 'wrong-agent')
   } finally {
-    rmSync(r.home, { recursive: true, force: true })
+    removeScratchDir(r.home)
   }
 })
 
@@ -190,7 +195,7 @@ test('right agent, strict: the full daemon', SLOW, async () => {
     assert.ok(a.names.includes('reply'), `${a.names.join(', ')}\n${a.stderr}`)
     assert.equal(events(r)[0]!.outcome, 'match')
   } finally {
-    rmSync(r.home, { recursive: true, force: true })
+    removeScratchDir(r.home)
   }
 })
 
@@ -202,7 +207,7 @@ test('an unreadable scope, strict: FAILS OPEN to the full daemon', SLOW, async (
     assert.equal(events(r)[0]!.outcome, 'unreadable')
     assert.equal(events(r)[0]!.verdict, 'attach')
   } finally {
-    rmSync(r.home, { recursive: true, force: true })
+    removeScratchDir(r.home)
   }
 })
 
@@ -226,7 +231,7 @@ test('THE BOARD ROW: a worker in agent 42\'s folder that inherited agent 41\'s e
       ['wrong-agent', 'folder', 'inherited', 'refuse'],
     ])
   } finally {
-    rmSync(r.home, { recursive: true, force: true })
+    removeScratchDir(r.home)
   }
 })
 
@@ -241,6 +246,6 @@ test('unscoped, strict: refused; the machine file sets the mode for every agent 
     assert.equal(events(r)[0]!.outcome, 'unscoped')
     assert.equal(events(r)[0]!.verdict, 'refuse')
   } finally {
-    rmSync(r.home, { recursive: true, force: true })
+    removeScratchDir(r.home)
   }
 })

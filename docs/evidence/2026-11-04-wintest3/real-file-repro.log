@@ -1,0 +1,16 @@
+# A root after hook appended to a scratch copy of test/peer-403-loop.test.ts, through scripts/run-tests.mjs
+[run-tests] PASS test/peer-closed-reply.test.ts (1.873s)
+[run-tests] FAIL test/peer-403-loop.test.ts (2.658s)
+[run-tests] PASS test/acting-user.test.ts (0.076s)
+[run-tests] 78 passed, 0 failed, 0 skipped, 3 files, 2.7 s
+  test/peer-403-loop.test.ts: test/peer-403-loop.test.ts
+  test/peer-403-loop.test.ts: it printed not ok, as a failing root hook does, though its totals count no failure and it exited 0
+[run-tests] FAILED
+
+# The first test of the same file focused, same run
+[run-tests] FAIL test/peer-403-loop.test.ts: focuses a test, which silently drops the rest of the file, so it was not run
+[run-tests] PASS test/peer-closed-reply.test.ts (3.070s)
+[run-tests] PASS test/acting-user.test.ts (0.055s)
+[run-tests] 56 passed, 0 failed, 0 skipped, 3 files, 3.1 s
+  test/peer-403-loop.test.ts: focuses a test, which silently drops the rest of the file, so it was not run
+[run-tests] FAILED
