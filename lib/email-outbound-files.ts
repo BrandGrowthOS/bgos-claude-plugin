@@ -21,7 +21,10 @@
 //   3. realpath.native, then steps 1 and 2 again on the real path: a link in
 //      a plain folder that leads into ~/.aws is caught here;
 //   4. a regular file, read through one open handle checked against the
-//      stat, at most 25 MB each and 25 MB in all, at most 10, and its bytes
+//      stat (mailharden: opened without blocking where the platform can,
+//      so a FIFO swapped in cannot hang it, and with one name only, on the
+//      stat and on the handle: a hard link passes every path rule above),
+//      at most 25 MB each and 25 MB in all, at most 10, and its bytes
 //      the type its name says, on the same safe list as an inbound file
 //      (lib/email-files.ts isType); a text file whose header has a password
 //      column is a renamed password export, and one that holds a private key
@@ -57,9 +60,10 @@
 //
 // No em or en dashes in this file.
 
-import { realpath as realpathCallback, realpathSync } from 'node:fs'
+import { constants as fsConstants, realpath as realpathCallback, realpathSync } from 'node:fs'
 import { lstat as lstatPromise, open as openPromise, realpath as realpathPromise } from 'node:fs/promises'
 import { homedir } from 'node:os'
+import { isAbsolute } from 'node:path'
 import { Worker } from 'node:worker_threads'
 
 import {
@@ -270,6 +274,8 @@ export interface OutboundStat {
   size: number
   dev?: number | bigint
   ino?: number | bigint
+  /** How many names the file has (mailharden 2: more than one is refused); a stat with none (a test's) counts as one. */
+  nlink?: number | bigint
 }
 
 /** What the read needs of an open file. */
@@ -283,7 +289,8 @@ export interface OutboundHandle {
 export interface OutboundFs {
   realpath(path: string): Promise<string>
   lstat(path: string): Promise<OutboundStat>
-  open(path: string, flags: 'r'): Promise<OutboundHandle>
+  /** Opens with outboundOpenFlags(): read only, and never blocking where the platform can say so. */
+  open(path: string, flags: number): Promise<OutboundHandle>
 }
 
 export interface OutboundFileCtx {
@@ -353,6 +360,22 @@ const REAL_FS: OutboundFs = {
 
 function fsOf(ctx: OutboundFileCtx): OutboundFs {
   return { ...REAL_FS, ...(ctx.fs ?? {}) } as OutboundFs
+}
+
+/**
+ * mailharden 3: the flags of the one open. O_NONBLOCK, where the platform has it, so a FIFO swapped in for the file after
+ * the lstat cannot hold the open (and the read) forever: it opens at once and the handle check refuses it as no regular
+ * file. Windows has no O_NONBLOCK (fs.constants leaves it undefined there) and no FIFO to swap in, so it opens read only,
+ * exactly as the 'r' flag did; undefined never reaches the flags.
+ */
+function outboundOpenFlags(): number {
+  const nonBlock = fsConstants.O_NONBLOCK
+  return fsConstants.O_RDONLY | (process.platform !== 'win32' && typeof nonBlock === 'number' ? nonBlock : 0)
+}
+
+/** mailharden 2: a file with more than one name (a hard link); a stat that gives no count (a test's) counts as one name. */
+function moreThanOneName(stat: OutboundStat): boolean {
+  return stat.nlink !== undefined && Number(stat.nlink) > 1
 }
 
 /** The path as the agent wrote it, kept to one line of a sentence. */
@@ -428,9 +451,28 @@ function secretWordsForm(form: string, ctx: OutboundFileCtx): string {
   return below ?? form
 }
 
-/** The owner's home folders: the home passed in, else this daemon's os.homedir() and, on Windows, USERPROFILE. */
+/**
+ * The owner's home folders: the home passed in, else this daemon's os.homedir() and, on Windows, USERPROFILE. mailharden 1:
+ * each beside its real path when that is another spelling, so a home reached through a link (macOS's /var is a link to
+ * /private/var; a junction or an 8.3 name on Windows) is the home by either spelling: a file named by the real path is
+ * read below the home, and a runtime folder that holds the real home is not taken as one. Only the home itself is
+ * resolved, never the path being checked, and only a home that is a full local path of this computer (homeForm, and
+ * absolute here), so a network, relative or drive top home reaches no file system call. A home that does not resolve
+ * stays alone.
+ */
 function homesOf(ctx: OutboundFileCtx): unknown[] {
-  return ctx.home !== undefined ? [ctx.home] : [homedir(), process.platform === 'win32' ? process.env.USERPROFILE : undefined]
+  const homes: unknown[] = ctx.home !== undefined ? [ctx.home] : [homedir(), process.platform === 'win32' ? process.env.USERPROFILE : undefined]
+  for (const home of [...homes]) {
+    if (typeof home !== 'string' || homeForm(home) === null || !isAbsolute(home)) continue
+    let real: string
+    try {
+      real = plainLocal(nativeRealpathSync(home))
+    } catch {
+      continue
+    }
+    if (!homes.includes(real)) homes.push(real)
+  }
+  return homes
 }
 
 /**
@@ -487,8 +529,9 @@ type Lexical = { kind: LexicalKind } | { kind: 'ok'; form: string }
 const NETWORK_OR_DEVICE = /^[\\/]{2}/
 
 /**
- * Steps 1 and 2 on one spelling: no file system call. `form` is the lower
- * case, forward slash, resolved path that both secret checks read.
+ * Steps 1 and 2 on one spelling: no file system call on the path (only the
+ * owner's home is resolved, homesOf). `form` is the lower case, forward
+ * slash, resolved path that both secret checks read.
  */
 function lexical(path: string, ctx: OutboundFileCtx): Lexical {
   // Round 8: before any regular expression reads it.
@@ -575,7 +618,8 @@ function lexicalSentence(kind: Exclude<LexicalKind, 'ok'>, path: string, followe
 }
 
 /**
- * Steps 1 and 2 alone, with no file system call: why this path is refused
+ * Steps 1 and 2 alone, with no file system call on the path (only the owner's
+ * home is resolved, homesOf): why this path is refused
  * before anything is read, or null. The permission relay runs it on the CLI's
  * preview so a key path never reaches a card or the floor check.
  */
@@ -1009,6 +1053,10 @@ export async function readOutboundFile(path: unknown, ctx: OutboundFileCtx = {})
     return { ok: false, error: notFound }
   }
   if (!stat.isFile()) return { ok: false, error: `${shown(path)} is not a regular file, so it is not attached.` }
+  // mailharden 2: a second name of a file (a hard link, which an ordinary user can make) passes every path rule, since
+  // realpath answers each name as its own; the file may also live in a key folder. Read here and again on the handle.
+  const hardLinked = `${shown(path)} has more than one name (a hard link), so it is not attached.`
+  if (moreThanOneName(stat)) return { ok: false, error: hardLinked }
   const tooBig = (size: number) =>
     `${shown(path)} is ${megabytes(size)} MB; one email can carry at most ${AGENT_EMAIL_OUTBOUND_MAX_BYTES / MB} MB of files, so it is not attached.`
   if (stat.size > AGENT_EMAIL_OUTBOUND_MAX_BYTES) return { ok: false, error: tooBig(stat.size) }
@@ -1025,12 +1073,14 @@ export async function readOutboundFile(path: unknown, ctx: OutboundFileCtx = {})
   let bytes: Uint8Array
   let handle: OutboundHandle
   try {
-    handle = await fs.open(real, 'r')
+    // mailharden 3: never blocking where the platform can say so, so a FIFO swapped in after the lstat cannot hang it.
+    handle = await fs.open(real, outboundOpenFlags())
   } catch {
     return { ok: false, error: notFound }
   }
   try {
-    // The handle must be the file just checked: a swap between the stat and the open is refused.
+    // The handle must be the file just checked: a swap between the stat and the open is refused, and so is anything
+    // but a regular file (a FIFO), before a byte is read.
     const opened = await handle.stat()
     const changed = `${shown(path)} changed while HOAI read it, so it is not attached.`
     // Compared by device and file number where the system gives them (a zero is none), else by size.
@@ -1038,6 +1088,8 @@ export async function readOutboundFile(path: unknown, ctx: OutboundFileCtx = {})
     if (!opened.isFile() || !sameFile) {
       return { ok: false, error: changed }
     }
+    // mailharden 2: the count of the open file itself (fstat), so a second name made after the lstat is caught too.
+    if (moreThanOneName(opened)) return { ok: false, error: hardLinked }
     // Final pre push fix: and the path, resolved again, still leads to this very file through no refused place.
     if (!(await stillLeadsTo(fs, path, ctx, opened, realCtx))) return { ok: false, error: changed }
     if (opened.size > AGENT_EMAIL_OUTBOUND_MAX_BYTES) return { ok: false, error: tooBig(opened.size) }

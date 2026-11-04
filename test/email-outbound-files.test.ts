@@ -19,7 +19,9 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { closeSync, constants as fsConstants, linkSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { lstat as lstatPromise } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -3666,9 +3668,10 @@ test('final fix: a path that leads somewhere else when HOAI looks again after op
   }
   assert.equal((await readOne(clean, { home, fs: swapTo(secret) })).error, changedSentence(clean), 'into a key folder')
   assert.equal((await readOne(clean, { home, fs: swapTo(other) })).error, changedSentence(clean), 'onto another plain file')
-  // The very same file (a second name of it in the key folder): the second look still runs steps 1 and 2.
-  const sameInKeys = join(home, '.ssh', 'same.pdf')
-  linkSync(clean, sameInKeys)
+  // The very same file, reached through the key folder (a junction in it to the file's folder; a hard link, a second
+  // name of the file, is refused before the open since mailharden 2): the second look still runs steps 1 and 2.
+  symlinkSync(join(home, 'docs', 'sw'), join(home, '.ssh', 'same'), 'junction')
+  const sameInKeys = join(home, '.ssh', 'same', 'report.pdf')
   assert.equal((await readOne(clean, { home, fs: swapTo(sameInKeys) })).error, changedSentence(clean), 'the same file, now reached through a key folder')
   // A second look that cannot resolve at all is refused the same way.
   let n = 0
@@ -3830,7 +3833,7 @@ test('Windows aliases: the real home bounds the word rules after an 8.3 prefix o
     const read = await readOne(path, { home, fs })
     assert.equal(read.ok, true, JSON.stringify(read.error))
     assert.equal(read.file.realPath, real)
-    assert.equal(calls.filter((c) => c === `realpath ${home}`).length, 1, 'the home is resolved after the lexical checks')
+    assert.equal(calls.filter((c) => c === `realpath ${home}`).length, 1, 'the given file system resolves the home once, after the lexical checks')
     assert.equal(calls.filter((c) => c === `realpath ${path}`).length, 2, 'the second look still resolves the original path')
   }
 })
@@ -3852,7 +3855,7 @@ test('Windows aliases: resolving the home never exempts a sibling, an outside li
   const { fs, calls } = spyFs()
   const key = `${home}\\.ssh\\report.pdf`
   assert.equal(await refusal(key, { home, fs }), `${key} looks like a key or password file, so it is never attached. ${NO_WAY_AROUND}`)
-  assert.deepEqual(calls, [], 'a lexical refusal still resolves nothing, including the home')
+  assert.deepEqual(calls, [], 'a lexical refusal still resolves nothing through the given file system, the home included (homesOf reads only the owner\'s own home, for its real path)')
 })
 
 test('final fix 2: a file on a mapped network drive goes, read by its drive letter, when the share path is the given path below the drive', async () => {
@@ -4249,4 +4252,167 @@ test('final fix 4: a main thread stop is read over rounds: one spike passes, a s
   const within = rounds(50, 900, 900)
   assert.equal(await stopOf(within.round, 50), 50)
   assert.equal(within.left(), 2)
+})
+
+// ── mailharden (board row 84f19b9f): a home behind a link, a file with two names, a FIFO swapped in ──
+
+const hardLinkSentence = (path: string) => `${path} has more than one name (a hard link), so it is not attached.`
+
+test('mailharden 1: a home reached through a link (macOS /var is one) is the home by its real path too: a file named by that path is not refused', async (t) => {
+  const lib = await m()
+  // The temp folder by its real path first (on Windows it can hold an 8.3 name), so the one link here is the one made below.
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'hoai-outbound-files-')))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  // As on macOS, where /var is a link to /private/var: the home is named through var, and really lives under private/var.
+  const realVar = join(root, 'private', 'var')
+  const realHome = join(realVar, 'John Key')
+  mkdirSync(join(realHome, 'Documents'), { recursive: true })
+  symlinkSync(realVar, join(root, 'var'), 'junction')
+  const home = join(root, 'var', 'John Key')
+  const report = join(realHome, 'Documents', 'report.pdf')
+  writeFileSync(report, PDF)
+  // Named by its real path, the word rules read below the home's real path, so the owner's name refuses nothing: the
+  // preflight, all four steps, and a runtime folder that holds the home (taken by its real path too) is not taken as one.
+  assert.equal(lib.outboundFileLexicalRefusal(report, { home }), null, 'the preflight')
+  assert.equal(await refusal(report, { home }), null, 'all four steps')
+  const dirs = lib.outboundRuntimeDirs([join(root, 'var')])
+  assert.equal(dirs.length, 2, JSON.stringify(dirs))
+  assert.equal(await refusal(report, { home, runtimeDirs: dirs }), null, 'a runtime folder that holds the home')
+  // Named through the link, as before.
+  assert.equal(await refusal(join(home, 'Documents', 'report.pdf'), { home }), null, 'through the link')
+  // The daemon passes no home: its own (os.homedir(), and USERPROFILE on Windows) counts by its real path the same way.
+  const was = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE }
+  process.env.HOME = home
+  process.env.USERPROFILE = home
+  try {
+    assert.equal(lib.outboundFileLexicalRefusal(report), null, 'no home passed: the preflight')
+    assert.equal(await refusal(report, {}), null, 'no home passed: all four steps')
+  } finally {
+    for (const [name, value] of Object.entries(was)) {
+      if (value === undefined) delete process.env[name]
+      else process.env[name] = value
+    }
+  }
+  // The controls: a key name below the real home, a key folder in it, a sibling of the real home, and a link from the home
+  // to that sibling stay refused; the real path exempts the home, nothing beside it.
+  const stripe = join(realHome, 'Documents', 'stripe key.txt')
+  assert.equal(await refusal(stripe, { home }), lookedSecret(stripe))
+  const ssh = join(realHome, '.ssh', 'report.pdf')
+  assert.equal(await refusal(ssh, { home }), lookedSecret(ssh))
+  const sibling = join(realVar, 'Bob Key')
+  mkdirSync(sibling, { recursive: true })
+  writeFileSync(join(sibling, 'report.pdf'), PDF)
+  assert.equal(await refusal(join(sibling, 'report.pdf'), { home }), lookedSecret(join(sibling, 'report.pdf')))
+  symlinkSync(sibling, join(realHome, 'Documents', 'bob'), 'junction')
+  const viaHome = join(home, 'Documents', 'bob', 'report.pdf')
+  assert.equal(await refusal(viaHome, { home }), `${viaHome} leads to a key or password file (HOAI followed its links), so it is never attached. ${NO_WAY_AROUND}`)
+})
+
+test('mailharden 2: a file with more than one name (a hard link) is refused, by its path and again on the open handle', async (t) => {
+  const home = scratchHome(t)
+  mkdirSync(join(home, '.ssh'))
+  // A file in a key folder, refused by its own path, and a second name of it in a plain folder (an ordinary user can make
+  // one): realpath answers the second name as its own, so only the link count tells.
+  const key = join(home, '.ssh', 'backup.pdf')
+  writeFileSync(key, Buffer.concat([PDF, Buffer.from('% rig dummy\n')]))
+  const named = join(home, 'docs', 'report.pdf')
+  linkSync(key, named)
+  assert.equal(await refusal(named, { home }), hardLinkSentence(named))
+  // Refused by the path's own count, before the file is opened.
+  const opens: string[] = []
+  const counted = { open: async (p: string) => { opens.push(p); throw Object.assign(new Error('EACCES'), { code: 'EACCES' }) } }
+  assert.equal(await refusal(named, { home, fs: counted }), hardLinkSentence(named))
+  assert.deepEqual(opens, [], 'not opened')
+  // The control: with one name again it goes.
+  rmSync(key)
+  assert.equal(await refusal(named, { home }), null, 'one name')
+  // On the handle: a second name made after the lstat (which saw one) and before the open is caught by the open file's
+  // own count (fstat).
+  const late = join(home, '.ssh', 'late.pdf')
+  let made = false
+  const fs = {
+    lstat: async (p: string) => {
+      const st = await lstatPromise(p)
+      if (!made) {
+        made = true
+        linkSync(p, late)
+      }
+      return st
+    },
+  }
+  assert.equal(await refusal(named, { home, fs }), hardLinkSentence(named))
+  assert.ok(made, 'the second name was made after the lstat')
+})
+
+test('mailharden 3: a FIFO swapped in for the file cannot freeze the read: the open never blocks (O_NONBLOCK; Windows opens read only, as before)', async (t) => {
+  // Windows has no FIFO to swap in (a named pipe is a \\.\pipe\ path, refused before any file system call).
+  if (process.platform !== 'win32') {
+    const home = scratchHome(t)
+    const path = join(home, 'docs', 'q3.pdf')
+    writeFileSync(path, PDF)
+    // lstat sees the regular file; then, before the open, the file is swapped for a FIFO no one writes to.
+    let swapped = false
+    const fs = {
+      lstat: async (p: string) => {
+        const st = await lstatPromise(p)
+        if (!swapped) {
+          swapped = true
+          rmSync(p)
+          execFileSync('mkfifo', [p])
+        }
+        return st
+      },
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const blocked = new Promise<'blocked'>((done) => {
+      timer = setTimeout(() => done('blocked'), 3000)
+    })
+    const outcome = await Promise.race([readOne(path, { home, fs }), blocked])
+    clearTimeout(timer)
+    if (outcome === 'blocked') {
+      // A writer arriving frees the open that hangs, so the run goes on; then the test fails.
+      try {
+        closeSync(openSync(path, fsConstants.O_WRONLY | fsConstants.O_NONBLOCK))
+      } catch {
+        // nothing waits on it
+      }
+      assert.fail('the open of a FIFO blocked for 3 s')
+    }
+    assert.ok(swapped)
+    assert.equal(outcome.error, changedSentence(path))
+  }
+  // The flags of the one open: a number on every platform (undefined never reaches them), O_NONBLOCK where the platform
+  // has it, and on Windows read only, exactly the old 'r'.
+  const flagsOf = async (): Promise<unknown> => {
+    let seen: unknown = 'not opened'
+    const mem = memFs(PDF)
+    const fs = { ...mem, open: async (_path: string, flags: unknown) => ((seen = flags), mem.open()) }
+    const read = await readOne(`${MEM_HOME}\\Documents\\q3.pdf`, { home: MEM_HOME, fs })
+    assert.equal(read.ok, true, JSON.stringify(read.error))
+    return seen
+  }
+  for (const platform of ['linux', 'darwin', process.platform]) {
+    const flags = platform === process.platform ? await flagsOf() : await asPlatform(platform, flagsOf)
+    assert.equal(typeof flags, 'number', `${platform}: ${String(flags)}`)
+    assert.equal((flags as number) & 3, fsConstants.O_RDONLY, `${platform}: read only`)
+    if (platform !== 'win32' && typeof fsConstants.O_NONBLOCK === 'number') assert.equal((flags as number) & fsConstants.O_NONBLOCK, fsConstants.O_NONBLOCK, `${platform}: O_NONBLOCK`)
+  }
+  assert.equal(await asPlatform('win32', flagsOf), fsConstants.O_RDONLY, 'win32: read only and nothing else, as before')
+  // The open handle must be a regular file before a byte is read: one that is not (a FIFO, with the very file number the
+  // lstat saw) is refused and never read.
+  const reads: number[] = []
+  const notRegular = {
+    ...memFs(PDF),
+    open: async () => ({
+      stat: async () => ({ isFile: () => false, size: PDF.length, dev: 1, ino: 7 }),
+      read: async () => {
+        reads.push(1)
+        return { bytesRead: 0 }
+      },
+      close: async () => {},
+    }),
+  }
+  const odd = `${MEM_HOME}\\Documents\\q3.pdf`
+  assert.equal((await readOne(odd, { home: MEM_HOME, fs: notRegular })).error, changedSentence(odd))
+  assert.deepEqual(reads, [], 'nothing read')
 })
