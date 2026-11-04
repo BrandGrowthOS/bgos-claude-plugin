@@ -22,3 +22,17 @@ Scratch probes under the runner's real flags, one idle Worker, 3 s alive, on nod
 **Left for Data, not changed:** the preload's hook runs in any file or data URL Worker a test starts. Any later test that leaves such a Worker idle with `{ stdout: true }` will hang the same way, and it would fail by the file's name, with no test named and no totals. With `{ stdout: false }` it prints a second `TAP version 13` into the file's output. `if (isMainThread)` around the hook ended the hang in probes. A test of it must not use an `eval` Worker, which stays green without the change.
 
 The comments in `lib/email-outbound-files.ts`, `lib/email-outbound-content-worker.ts` and `lib/email-outbound-content-quiet.ts` read "left unread" as safe. Left unread, one byte still refs the port. They are comments only, and the real Worker writes no byte.
+
+## A budget refusal says try again (Data's ruling)
+
+A file whose check runs out of time is still refused, and nothing is saved or sent. It was told "never attached", which was wrong: it may go on another try. It now hears "took too long to check, so it is not attached this time. Try again in a few minutes." That holds for the Worker's own budget and for the hard deadline. A real content refusal, a file over a cap and a Worker that breaks all keep their own words. The limit is unchanged.
+
+The tests no longer turn on how busy the runner is. A fixed budget, or a clock the test moves, proves over and under. Over budget refuses with the try again words, and under budget goes. Three things still read real time: the main thread stop checks, which have their own row; some checks in other rounds of this file; and the real deadline waits in the tests of a Worker that never answers, which assert its words and not how long it took.
+
+**1. What would a top engineer do here that was not asked?** Follow every route to the sentence and not only the two lines named, which is how the hard deadline and the read of a zip part came in. Check both runtimes, since the daemon runs on bun and the tests on node. Prove that trying again is no way past a check: the same file, once it is read to the end, gets its own refusal.
+
+**2. What would they start from?** Every place a file can be refused for time, and what an agent is told at each. Then what each test proves about the content, so that taking the clock out takes nothing else out.
+
+**3. Which tools?** The real content Worker under a fixed budget, mocked timers for the deadline, a stubbed `Date.now` for the budget, deliberate breaks of the product, and runs beside busy loops to show what still reads the clock.
+
+**4. What proves it right, independent of you and me?** Named tests going red under each deliberate break, CI's Linux and Windows jobs, a fresh reviewer, and Data's gate.

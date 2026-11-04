@@ -1391,21 +1391,32 @@ function memFs(bytes: Buffer) {
 
 const MEM_HOME = 'C:\\Users\\kc'
 
-/** Round 6: the refusal of one file held in memory, and how long it took. */
-async function memRefusal(name: string, bytes: Buffer, extra: Record<string, unknown> = {}): Promise<{ path: string; why: string | null; ms: number }> {
+/**
+ * Round 6: the refusal of one file held in memory, how long it took, and the CPU it took, which a busy runner does not
+ * add to. Under a budget no runner can spend, so the answer is what the file is. A test of the budget or the deadline
+ * passes its own officeReadMs (undefined for the real ones).
+ */
+async function memRefusal(name: string, bytes: Buffer, extra: Record<string, unknown> = {}): Promise<{ path: string; why: string | null; ms: number; cpuMs: number }> {
   const path = `${MEM_HOME}\\Documents\\${name}`
   const started = performance.now()
-  const why = await refusal(path, { home: MEM_HOME, fs: memFs(bytes), ...extra })
-  return { path, why, ms: performance.now() - started }
+  const cpu = process.cpuUsage()
+  const why = await refusal(path, { home: MEM_HOME, fs: memFs(bytes), officeReadMs: UNDER_BUDGET_MS, ...extra })
+  const used = process.cpuUsage(cpu)
+  return { path, why, ms: performance.now() - started, cpuMs: (used.user + used.system) / 1000 }
 }
 
 const unsafeSentence = (path: string) => `${path} could not be read safely, so it is never attached.`
 /** A file its check ran out of time on: still refused, and it may go on another try, so no "never". */
 const tryAgainSentence = (path: string) => `${path} took too long to check, so it is not attached this time. Try again in a few minutes.`
-/** A fixed budget past any test's own timeout: how busy the runner is cannot decide a file under it. */
-const UNDER_BUDGET_MS = 600_000
+/**
+ * A fixed budget past any test's own timeout: how busy the runner is cannot decide a file under it. The hard deadline
+ * follows it, and stays under the runner's 270 s, so a wedged Worker on a red run does not outlive the file's own limit.
+ */
+const UNDER_BUDGET_MS = 200_000
 /** A budget already spent when the stage starts: over it on any runner. */
 const OVER_BUDGET_MS = -1
+/** A budget that ends partway through a large read: a busier runner only goes further past it. */
+const ALMOST_NO_BUDGET_MS = 1
 const tableSentence6 = (path: string) => `${path} has a password column, so it looks like a password export and is never attached. ${NO_WAY_AROUND}`
 const unreadSentence = (path: string) => `${path} could not be read to check it for a password or key, so it is not attached.`
 
@@ -1588,7 +1599,7 @@ test('review round 6: reading one Word or Excel file\'s words has a wall clock b
     // A budget already spent when the read starts: the clock is checked inside the read, so the file is refused.
     const slow = await memRefusal(name, bytes, { officeReadMs: OVER_BUDGET_MS })
     assert.equal(slow.why, tryAgainSentence(slow.path), name)
-    // The control: the same file under the default budget goes.
+    // The control: the same file under its budget goes.
     assert.equal((await memRefusal(name, bytes)).why, null, name)
   }
 })
@@ -1676,7 +1687,7 @@ const R7_DEADLINE_MS = 5000
  * Round 7: the refusal of one file held in memory, timed in real time, with a heartbeat on the main thread: the
  * longest gap between two ticks of a 10 ms interval while the check ran.
  */
-async function heartbeatRefusal(name: string, bytes: Buffer, extra: Record<string, unknown> = {}): Promise<{ path: string; why: string | null; ms: number; maxGap: number }> {
+async function heartbeatRefusal(name: string, bytes: Buffer, extra: Record<string, unknown> = {}): Promise<{ path: string; why: string | null; ms: number; cpuMs: number; maxGap: number }> {
   let maxGap = 0
   let last = performance.now()
   const beat = setInterval(() => {
@@ -1728,7 +1739,7 @@ test('review round 7: the four hostile inputs each settle within the Worker dead
     const bytes = build()
     const stop = await stopOf(async () => {
       const got = await heartbeatRefusal(name, bytes)
-      assert.ok(got.ms <= R7_DEADLINE_MS + 1000, `${name} took ${Math.round(got.ms)} ms`)
+      assert.ok(got.cpuMs <= R7_DEADLINE_MS + 1000, `${name} took ${Math.round(got.cpuMs)} ms of CPU`)
       return got.maxGap
     })
     assert.ok(stop <= 100, `${name} stopped the main thread for ${Math.round(stop)} ms`)
@@ -1758,10 +1769,17 @@ parentPort.on('message', (m) => {
 `)
   const contentWorker = pathToFileURL(slow)
   const turn = () => new Promise((done) => setImmediate(done))
+  // Waits that end by themselves, in real time: on a red run the test fails by name and its finally closes the Worker.
+  const until = async (ready: () => boolean, what: string) => {
+    const end = performance.now() + 30_000
+    while (!ready() && performance.now() < end) await turn()
+    assert.ok(ready(), what)
+  }
   const held = async (name: string, bytes: Buffer) => {
-    const job = { settled: false, got: memRefusal(name, bytes, { contentWorker }).finally(() => { job.settled = true }) }
+    const job = { settled: false, got: memRefusal(name, bytes, { contentWorker, officeReadMs: undefined }).finally(() => { job.settled = true }) }
     // The deadline's timer is set before the Worker is handed the file, so a file the Worker has seen is timed.
-    while (!existsSync(join(dir, `seen ${name}`))) await turn()
+    await until(() => existsSync(join(dir, `seen ${name}`)) || job.settled, `${name}: the Worker has it`)
+    assert.equal(job.settled, false, `${name}: not answered before the Worker had it`)
     return job
   }
   const plan = Buffer.from('Plan for Monday.\n')
@@ -1772,12 +1790,14 @@ parentPort.on('message', (m) => {
     await turn()
     assert.equal(big.settled, false, 'big.txt 1 ms before its deadline of 13 s')
     writeFileSync(join(dir, 'go big.txt'), '')
+    await until(() => big.settled, 'big.txt, answered')
     assert.equal((await big.got).why, null, 'big.txt, answered before its deadline')
     const small = await held('small.txt', plan)
     t.mock.timers.tick(lib.outboundContentDeadlineMs(plan.length) - 1)
     await turn()
     assert.equal(small.settled, false, 'small.txt 1 ms before its deadline')
     t.mock.timers.tick(1)
+    await until(() => small.settled, 'small.txt, at its deadline')
     const late = await small.got
     assert.equal(late.why, tryAgainSentence(late.path), 'small.txt, at its deadline')
   } finally {
@@ -1840,16 +1860,15 @@ test('review round 7: the content Worker fails closed: one that cannot start, th
     ] as const) {
       const got = await memRefusal(name, bytes, { contentWorker: url })
       assert.equal(got.why, unsafeSentence(got.path), `${label}: ${name}`)
-      // Refused when it happens, not at the deadline.
-      assert.ok(got.ms < R7_DEADLINE_MS / 2, `${label}: ${name} took ${Math.round(got.ms)} ms`)
+      // Those are the words of a fault, when it happens: at the deadline they would be the try again words.
     }
   }
   // One that never replies (a busy loop): terminated at the deadline, and the main thread keeps running.
   const looping = worker('busy', 'parentPort.once("message", () => { for (;;) {} })')
   const stop = await stopOf(async () => {
-    const busy = await heartbeatRefusal('plan.txt', Buffer.from('Plan for Monday.\n'), { contentWorker: looping })
+    // At its real deadline; exactly when is the round 8 test's, on a clock it moves.
+    const busy = await heartbeatRefusal('plan.txt', Buffer.from('Plan for Monday.\n'), { contentWorker: looping, officeReadMs: undefined })
     assert.equal(busy.why, tryAgainSentence(busy.path))
-    assert.ok(busy.ms <= R7_DEADLINE_MS + 1000, `busy took ${Math.round(busy.ms)} ms`)
     return busy.maxGap
   })
   assert.ok(stop <= 100, `busy stopped the main thread for ${Math.round(stop)} ms`)
@@ -1920,7 +1939,7 @@ test('review round 7: a written value ending in a long run of dots is read in li
     ['prose.txt', `The password is ready${'.'.repeat(80000)}`, null],
   ] as const) {
     const got = await memRefusal(name, Buffer.from(text))
-    assert.ok(got.ms < 1000, `${name} took ${Math.round(got.ms)} ms`)
+    assert.ok(got.cpuMs < 1000, `${name} took ${Math.round(got.cpuMs)} ms of CPU`)
     assert.equal(got.why, sentence === null ? null : sentence(got.path), name)
   }
 })
@@ -1928,7 +1947,7 @@ test('review round 7: a written value ending in a long run of dots is read in li
 test('review round 7: a 23 MB CSV of one digit per line is checked in under 3 s and goes', { timeout: 60_000 }, async () => {
   const got = await memRefusal('digits.csv', digitLines(23 * MB))
   assert.equal(got.why, null)
-  assert.ok(got.ms < 3000, `digits.csv took ${Math.round(got.ms)} ms`)
+  assert.ok(got.cpuMs < 3000, `digits.csv took ${Math.round(got.cpuMs)} ms of CPU`)
 })
 
 test('review round 7: a tag ends at its first > outside a quoted attribute value; Word rows, cells and tables are read with any prefix', async () => {
@@ -2146,7 +2165,7 @@ test('review round 8: ONE long lived content Worker reads every file; only a dea
   ]
   try {
     for (const [name, goes, workers] of steps) {
-      const got = await memRefusal(name, plan, { contentWorker: url })
+      const got = await memRefusal(name, plan, { contentWorker: url, officeReadMs: undefined })
       // Out of time is not a fault of the file: only the Worker's own faults keep the never words.
       assert.equal(got.why, goes ? null : name === 'hang.txt' ? tryAgainSentence(got.path) : unsafeSentence(got.path), name)
       if (name !== 'hang.txt') assert.ok(got.ms < R7_DEADLINE_MS / 2, `${name} took ${Math.round(got.ms)} ms`)
@@ -2447,20 +2466,20 @@ const realWorkerAt = (tag: string) => new URL(`../lib/email-outbound-content-wor
 test('review round 9: a file over its budget is refused by the Worker itself, inside the walks, and the Worker is not replaced', { timeout: 120_000 }, async () => {
   const lib = await m()
   const url = realWorkerAt('r9-budget')
-  // 8 MB of 'pw ' in a text file over its budget (ctx.officeReadMs): the Worker itself answers, which the count below
-  // proves. That the walks read the budget as they go is the next test's, on a clock it moves.
+  // 8 MB of 'pw ' in a text file, with a budget that ends partway through it (ctx.officeReadMs): the Worker itself
+  // answers, which the count below proves, from inside the walks. How often they read it is the next test's.
   const text = Buffer.from('pw '.repeat(Math.floor((8 * MB) / 3)))
   const stop = await stopOf(async () => {
-    const slow = await heartbeatRefusal('notes.txt', text, { contentWorker: url, officeReadMs: OVER_BUDGET_MS })
+    const slow = await heartbeatRefusal('notes.txt', text, { contentWorker: url, officeReadMs: ALMOST_NO_BUDGET_MS })
     assert.equal(slow.why, tryAgainSentence(slow.path))
     return slow.maxGap
   })
   assert.ok(stop <= 100, `notes.txt stopped the main thread for ${Math.round(stop)} ms`)
-  // The reviewer's docxslow (24 KB, 24 MB of 'pw '), 10 times over its budget: each refused, and the one Worker reads
+  // The reviewer's docxslow (24 KB, 24 MB of 'pw '), 10 times with the same budget: each refused, and the one Worker reads
   // them all (under bun each Worker replaced cost about 27 MB that is never given back).
   const bytes = docxSlow(24)
   for (let i = 1; i <= 10; i++) {
-    const got = await memRefusal(`memo${i}.docx`, bytes, { contentWorker: url, officeReadMs: OVER_BUDGET_MS })
+    const got = await memRefusal(`memo${i}.docx`, bytes, { contentWorker: url, officeReadMs: ALMOST_NO_BUDGET_MS })
     assert.equal(got.why, tryAgainSentence(got.path), `memo${i}.docx`)
   }
   // Under its budget it goes, still on the same Worker, read to the end by every check; so does a second small Word
@@ -2496,6 +2515,10 @@ test('review round 9: each walk checks the budget as it goes; with none it reads
       const start = now
       assert.throws(() => walk(text, { deadline: start + 20 }), W.OverBudget, `${label}: 20 reads`)
       assert.ok(now - start >= 20 && now - start <= 22, `${label}: stopped after ${now - start} reads`)
+      // A budget that never ends here: the walk still reads it all the way through 24 MB.
+      const first = now
+      walk(text, { deadline: Number.MAX_SAFE_INTEGER })
+      assert.ok(now - first >= 100, `${label}: read the clock ${now - first} times in 24 MB`)
     } finally {
       clock.mock.restore()
     }
@@ -2634,7 +2657,7 @@ test('review round 9: at most 8 content Workers start in a process; past them ev
     // Round 10: one sentence, with no 'never' (a later restart lets the file go).
     assert.equal(got.why!.split(/[.:;] /).length, 3, `${name}: one sentence, its clauses after a colon and a semicolon`)
     assert.equal(/\bnever\b|\. [A-Z]/.test(got.why!), false, name)
-    assert.ok(got.ms < 500, `${name} took ${Math.round(got.ms)} ms`)
+    assert.ok(got.cpuMs < 500, `${name} took ${Math.round(got.cpuMs)} ms of CPU`)
     assert.equal(lib.outboundContentWorkersStarted(url), 8, `${name}: no Worker started past the cap`)
   }
   // A picture or a PDF has no words read, so it still goes; the real Worker's host is its own.
