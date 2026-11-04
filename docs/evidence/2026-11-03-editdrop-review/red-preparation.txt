@@ -1,0 +1,64 @@
+✖ review R1: an unversioned replay received during original preparation is reconciled (107.093083ms)
+✖ review privacy: a pending sign-in code during poll preparation stays private (75.283791ms)
+✖ review privacy: a pending sign-in code during stream preparation stays private (76.900042ms)
+ℹ tests 3
+ℹ suites 0
+ℹ pass 0
+ℹ fail 3
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 791.834083
+
+✖ failing tests:
+
+test at test/message-edits.test.ts:4:29641
+✖ review R1: an unversioned replay received during original preparation is reconciled (107.093083ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  'B' !== 'C'
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/test/message-edits.test.ts:938:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'B',
+    expected: 'C',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/message-edits.test.ts:4:30273
+✖ review privacy: a pending sign-in code during poll preparation stays private (75.283791ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  1 !== 0
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/test/message-edits.test.ts:957:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 0,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/message-edits.test.ts:4:30273
+✖ review privacy: a pending sign-in code during stream preparation stays private (76.900042ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  1 !== 0
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/test/message-edits.test.ts:957:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 0,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

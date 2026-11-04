@@ -289,7 +289,7 @@ test('the takeover and the yield each say why in one line', () => {
 const server = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
 
 test('server.ts records its route on EVERY acquire and refresh, and logs a route takeover on both paths', () => {
-  assert.match(server, /\nconst LOCK_ROUTE = lockRouteFor\(CREDENTIALS_SELECTION\.via\)\n/)
+  assert.match(server, /\nconst LOCK_ROUTE = CREDENTIALS_SELECTION\.via === 'recorded-home' \? 'pin' : lockRouteFor\(CREDENTIALS_SELECTION\.via\)\n/)
   const calls = server.match(/(?:acquirePairingLock|refreshPairingLockDetailed)\(\{[\s\S]*?\n\s*\}\)/g) ?? []
   assert.equal(calls.length, 5)
   for (const call of calls) assert.match(call, /\n\s*route: LOCK_ROUTE,\n/)

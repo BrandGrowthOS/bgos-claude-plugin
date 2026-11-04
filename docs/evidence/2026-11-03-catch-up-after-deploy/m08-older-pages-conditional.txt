@@ -1,0 +1,52 @@
+MUTANT m08-older-pages-conditional
+undoes: hole 2: older pages never ride a validator
+file: server.ts
+--- removed
+{ conditional: false, callerAssistantId: ASSISTANT_ID },
++++ added
+{ callerAssistantId: ASSISTANT_ID },
+exit=1
+
+▶ a reconnect or a failure in the middle of a page
+  ✖ an older page fails: nothing is lost or repeated, and the next read starts over without a validator on any page (59118.63699ms)
+✖ a reconnect or a failure in the middle of a page (59120.359567ms)
+ℹ tests 1
+ℹ suites 1
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 59484.752595
+
+✖ failing tests:
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:20954
+✖ an older page fails: nothing is lost or repeated, and the next read starts over without a validator on any page (59118.63699ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+  +   forwarded: '50 of 300',
+  -   forwarded: '300 of 300',
+      label: 'a failed page',
+  +   missing: '101-350',
+  -   missing: 'none',
+      oldestFirst: true,
+      twice: 'none',
+      unexpected: 'none'
+    }
+  
+      at assertExactlyOnceInOrder (/home/karim/lane-tmp/d041/mut/m08-older-pages-conditional.qkk9zcx9/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m08-older-pages-conditional.qkk9zcx9/test/catch-up-after-deploy.e2e.test.ts:1073:7)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 1)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { label: 'a failed page', forwarded: '50 of 300', missing: '101-350', unexpected: 'none', twice: 'none', oldestFirst: true },
+    expected: { label: 'a failed page', forwarded: '300 of 300', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: true },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }

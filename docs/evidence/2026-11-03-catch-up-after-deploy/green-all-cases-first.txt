@@ -1,0 +1,41 @@
+▶ hole 1: the reconnect skip
+  ✔ rows missed around a deploy, then a live message beats the catch up read: every row once, oldest first (11627.498643ms)
+  ✔ the catch up read fails, then a live message: the rows under it are still read, every row once (12026.191139ms)
+  ✔ a read that started before the socket came back is not the catch up: rows it could not see still arrive before a live message (21397.542117ms)
+✔ hole 1: the reconnect skip (21401.025615ms)
+▶ hole 2: the newest 50
+  ✔ a deploy with more than 50 missed rows in each of several chats: every row once, oldest first, in every chat (11604.600024ms)
+  ✔ the boot read: 120 rows above a persisted cursor all arrive once, oldest first, framed as backlog (4651.599762ms)
+  ✔ the limit is 50 rows of any sender: 60 rows of owner and agent turns lose no owner row (14360.131358ms)
+  ✔ a chat with open buttons, which every poll reads in full: 120 missed rows all arrive once (14867.709377ms)
+  ✔ an idle chat with a long history costs one conditional read: no page below the cursor, ever (12826.383265ms)
+✔ hole 2: the newest 50 (24431.494927ms)
+▶ hole 3: a chat that started empty
+  ✔ empty at its first read, then 120 rows: every row once, oldest first (17525.980922ms)
+  ✔ empty at its first read: an agent row among the rows does not hide the rows under it (13338.369014ms)
+  ✔ a group empty at its first read, more than 10 rows land while the daemon is down: not capped at the newest 10 (10862.535177ms)
+  ✔ a chat this daemon has never read: 120 unanswered rows above a long answered history, and the walk stops at the reply (3773.636336ms)
+  ✔ a genuine first install: 60 recent rows above 300 dormant ones, only the recent arrive, and the walk stops at the window (3788.830829ms)
+  ✔ a group this agent is added to mid run, with 300 rows of history: the newest 10, and no walk through the rest (15686.80587ms)
+✔ hole 3: a chat that started empty (30324.419934ms)
+▶ hole 4: a row the server never pushes
+  ✔ a live message right after it, no outage: it still reaches the agent, once, on the next read (10682.835688ms)
+✔ hole 4: a row the server never pushes (10683.338024ms)
+▶ a reconnect or a failure in the middle of a page
+  ✔ the socket drops and comes back while an older page is in flight, a live message lands: every row once, oldest first (14063.760108ms)
+  ✔ an older page fails: nothing is lost or repeated, and the next read starts over without a validator on any page (23466.044933ms)
+  ✔ the daemon restarts while an older page is in flight: every row once, oldest first, across both lives (20170.296689ms)
+✔ a reconnect or a failure in the middle of a page (23466.636791ms)
+▶ what a long read must not break
+  ✔ a wake card that never fills does not pin the cursor: the rows above it arrive once and the next read starts above them (21179.148487ms)
+  ✔ a wake card inside the newest page still waits for its body, and arrives once with it (18910.5934ms)
+  ✔ a drain of 600 rows in one chat does not make the daemon forget what it handed over in another (27119.399456ms)
+✔ what a long read must not break (27120.292729ms)
+ℹ tests 21
+ℹ suites 6
+ℹ pass 21
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 148383.287868

@@ -1,0 +1,343 @@
+== M1 wrong agent never refused  [lib/attach-scope.mjs]
+   - "const refuseWrong = effective === 'wrong-agent' || effective === 'strict'"
+   + const refuseWrong = false
+   -> KILLED; red: 4
+      ✖ wrong agent, setting ON (wrong-agent): REFUSED with the one notice tool, and the refusal is counted (492.21575ms)
+      ✖ THE BOARD ROW: a worker in agent 42's folder that inherited agent 41's env pin and scope is the wrong agent (by folder) and is refused when on (752.957ms)
+      ✖ wrong agent is REFUSED when the setting is on (wrong-agent and strict) (1.852042ms)
+      ✖ a folder pin naming ANOTHER agent is the wrong agent, even when the inherited scope agrees with the env (0.205959ms)
+== M2 fail open removed (unreadable judged)  [lib/attach-scope.mjs]
+   - "if (!envReadable || !self) return decide('attach', 'unreadable', null)"
+   + (line deleted)
+   -> KILLED; red: 5
+      ✖ an unreadable scope, strict: FAILS OPEN to the full daemon (167.265542ms)
+      ✖ FAIL OPEN: a scope that cannot be read attaches in every mode, strict included (1.699208ms)
+      ✖ FAIL OPEN: an env that throws attaches in every mode (0.270334ms)
+      ✖ FAIL OPEN: an agent identity that cannot be read attaches, even with a scope, in every mode (0.0995ms)
+== M3 match inverted  [lib/attach-scope.mjs]
+   - "if (ownScope && scopeId === self) return decide('attach', 'match', null)"
+   + if (ownScope && scopeId !== self) return decide('attach', 'match', null)
+   -> KILLED; red: 16
+      ✖ wrong agent, setting ON (wrong-agent): REFUSED with the one notice tool, and the refusal is counted (422.022125ms)
+      ✖ wrong agent, setting OFF (the default): the full daemon as before, counted as a would-refuse (406.694458ms)
+      ✖ right agent, strict: the full daemon (158.4415ms)
+      ✖ right agent attaches in every mode (1.603959ms)
+== M4 unscoped refused outside strict  [lib/attach-scope.mjs]
+   - "return decide(effective === 'strict' ? 'refuse' : 'attach', 'unscoped', 'strict')"
+   + return decide(effective !== 'off' ? 'refuse' : 'attach', 'unscoped', 'strict')
+   -> KILLED; red: 2
+      ✖ an unscoped session is refused only in strict, and counted as a strict would-refuse (1.426125ms)
+      ✖ a scope carried into ANOTHER folder was inherited: unscoped, launcher inherited, a strict would-refuse (0.318917ms)
+== M5 default mode on  [lib/attach-scope.mjs]
+   - "export const DEFAULT_ATTACH_SCOPE_MODE = 'off'"
+   + export const DEFAULT_ATTACH_SCOPE_MODE = 'strict'
+   -> KILLED; red: 7
+      ✖ wrong agent, setting OFF (the default): the full daemon as before, counted as a would-refuse (163.11ms)
+      ✖ THE BOARD ROW: a worker in agent 42's folder that inherited agent 41's env pin and scope is the wrong agent (by folder) and is refused when on (215.568959ms)
+      ✖ an unknown mode is OFF: nothing is refused (1.479375ms)
+      ✖ the default mode is off, so shipping this changes nothing for anyone (0.139708ms)
+== M6 unknown mode not off in decide  [lib/attach-scope.mjs]
+   - 'const effective = ATTACH_SCOPE_MODES.includes(mode) ? mode : DEFAULT_ATTACH_SCOPE_MODE'
+   + const effective = normalizeMode(mode) ?? 'wrong-agent'
+   -> KILLED; red: 1
+      ✖ an unknown mode is OFF: nothing is refused (1.88125ms)
+== M7 invalid env setting obeyed as strict  [lib/attach-scope.mjs]
+   - "return { mode: DEFAULT_ATTACH_SCOPE_MODE, source: 'env', invalid: `${ATTACH_SCOPE_MODE_ENV}=${oneLine(fromEnv, 40)}` }"
+   + return { mode: 'strict', source: 'env', invalid: `${ATTACH_SCOPE_MODE_ENV}=${oneLine(fromEnv, 40)}` }
+   -> KILLED; red: 1
+      ✖ resolveAttachScopeMode: an unreadable setting is OFF and says why (1.620209ms)
+== M8 env does not win over file  [lib/attach-scope.mjs]
+   - "if (mode) return { mode, source: 'env' }"
+   + if (mode && !readText) return { mode, source: 'env' }
+   -> KILLED; red: 3
+      ✖ resolveAttachScopeMode: the env var sets it for one process (2.785042ms)
+      ✖ resolveAttachScopeMode: the env var wins over the file (0.186666ms)
+      ✖ bin/hoai-attach-scope.mjs prints the machine tally: what each mode WOULD refuse (139.514958ms)
+== M9 scope digits check dropped  [lib/attach-scope.mjs]
+   - "if (!ID_RE.test(value)) return { state: 'unreadable' }"
+   + (line deleted)
+   -> KILLED; red: 3
+      ✖ readAttachScope: anything else is unreadable, never a guess (2.605875ms)
+      ✖ FAIL OPEN: a scope that cannot be read attaches in every mode, strict included (0.295708ms)
+      ✖ recordAttachScopeEvent appends one line per evaluation, and the summary counts would-refuses (2.197417ms)
+== M10 strict tally skips unscoped  [lib/attach-scope.mjs]
+   - 'summary.wouldRefuseStrict += 1'
+   + if (outcome === 'wrong-agent') summary.wouldRefuseStrict += 1
+   -> KILLED; red: 4
+      ✖ recordAttachScopeEvent appends one line per evaluation, and the summary counts would-refuses (3.251292ms)
+      ✖ summarizeAttachScopeEvents counts only the window, and counts real refusals (0.163125ms)
+      ✖ bin/hoai-attach-scope.mjs prints the machine tally: what each mode WOULD refuse (66.2315ms)
+      ✖ the summary splits by launcher and by signal, and counts distinct sessions, not boots (0.78325ms)
+== M11 no rotation  [lib/attach-scope.mjs]
+   - 'if (statSync(path).size >= maxBytes) renameSync(path, `${path}.1`)'
+   + if (false) renameSync(path, `${path}.1`)
+   -> KILLED; red: 1
+      ✖ the events file is rotated at its cap, so it can never grow without bound (1.70725ms)
+== M12 telemetry throws  [lib/attach-scope.mjs]
+   - '} catch {'
+   + } catch (err) {
+   -> KILLED; red: 1
+      ✖ telemetry NEVER throws: an unwritable folder answers false (0.350708ms)
+== M13 doctor row never WARN  [lib/attach-scope.mjs]
+   - "if (d.outcome === 'wrong-agent') {"
+   + if (d.outcome === 'wrong-agent') {
+   -> KILLED; red: 1
+      ✖ the check up row is OK for a match, WARN for a wrong agent, and carries the machine tally (2.018458ms)
+== M14 launcher keeps an inherited scope  [bin/hoai-core.mjs]
+   - 'if (/^\\d{1,12}$/.test(id)) env[ATTACH_SCOPE_ENV] = id'
+   + if (/^\d{1,12}$/.test(id) && !env[ATTACH_SCOPE_ENV]) env[ATTACH_SCOPE_ENV] = id
+   -> KILLED; red: 2
+      ✖ applyAttachScope: the launcher OVERRIDES an inherited scope, and clears one it cannot name (1.303958ms)
+      ✖ main: a supervised launch hands the daemon its scope, over an inherited one (52.92825ms)
+== M15 launcher passes an inherited scope it cannot name  [bin/hoai-core.mjs]
+   - 'else delete env[ATTACH_SCOPE_ENV]'
+   + (line deleted)
+   -> KILLED; red: 2
+      ✖ applyAttachScope: the scope folder is set and overridden with the scope, and cleared with nothing to name (1.365084ms)
+      ✖ applyAttachScope: the launcher OVERRIDES an inherited scope, and clears one it cannot name (0.12825ms)
+== M16 folder pin launch unscoped  [bin/hoai-core.mjs]
+   - 'attachScope: declared.id,'
+   + attachScope: '',
+   -> KILLED; red: 2
+      ✖ run plan: a folder pin scopes the launch to that agent (33.102958ms)
+      ✖ main: a supervised launch hands the daemon its scope, over an inherited one (51.221208ms)
+!! M17 launch never applies the scope anchor count 0
+== M18 supervised launch unscoped  [bin/hoai-core.mjs]
+   - 'attachScope: serviceId,'
+   + attachScope: '',
+   -> KILLED; red: 1
+      ✖ run plan: a supervised launch with a pinless folder scopes to the service agent (29.761833ms)
+== M19 server never refuses  [server.ts]
+   - "if (ATTACH_SCOPE.verdict === 'refuse') {"
+   + if (false) {
+   -> KILLED; red: 3
+      ✖ wrong agent, setting ON (wrong-agent): REFUSED with the one notice tool, and the refusal is counted (489.472ms)
+      ✖ THE BOARD ROW: a worker in agent 42's folder that inherited agent 41's env pin and scope is the wrong agent (by folder) and is refused when on (767.732166ms)
+      ✖ unscoped, strict: refused; the machine file sets the mode for every agent here (527.042042ms)
+== M20 server judges the scope against itself  [server.ts]
+   - "assistantId: String(ASSISTANT_ID ?? ''),"
+   + assistantId: String(process.env.HOAI_ATTACH_SCOPE ?? ''),
+   -> KILLED; red: 2
+      ✖ wrong agent, setting ON (wrong-agent): REFUSED with the one notice tool, and the refusal is counted (176.499209ms)
+      ✖ unscoped, strict: refused; the machine file sets the mode for every agent here (443.833125ms)
+== M21 server records nothing  [server.ts]
+   - 'recordAttachScopeEvent({'
+   + void ({
+   -> KILLED; red: 6
+      ✖ wrong agent, setting ON (wrong-agent): REFUSED with the one notice tool, and the refusal is counted (197.199917ms)
+      ✖ wrong agent, setting OFF (the default): the full daemon as before, counted as a would-refuse (469.902042ms)
+      ✖ right agent, strict: the full daemon (424.662791ms)
+      ✖ an unreadable scope, strict: FAILS OPEN to the full daemon (405.092083ms)
+== M22 measurement script ignores the env setting  [bin/hoai-attach-scope.mjs]
+   - 'const mode = resolveAttachScopeMode({'
+   + const mode = resolveAttachScopeMode({
+   -> KILLED; red: 1
+      ✖ bin/hoai-attach-scope.mjs prints the machine tally: what each mode WOULD refuse (110.908709ms)
+== M23 folder pin rule removed  [lib/attach-scope.mjs]
+   - 'if (pin && pin !== self) return decide('
+   + if (false) return decide(
+   -> KILLED; red: 3
+      ✖ THE BOARD ROW: a worker in agent 42's folder that inherited agent 41's env pin and scope is the wrong agent (by folder) and is refused when on (464.377125ms)
+      ✖ a folder pin naming ANOTHER agent is the wrong agent, even when the inherited scope agrees with the env (2.826166ms)
+      ✖ the summary splits by launcher and by signal, and counts distinct sessions, not boots (0.682708ms)
+== M24 inherited scope trusted  [lib/attach-scope.mjs]
+   - 'ownScope = false'
+   + (line deleted)
+   -> KILLED; red: 1
+      ✖ a scope carried into ANOTHER folder was inherited: unscoped, launcher inherited, a strict would-refuse (2.581917ms)
+== M25 folder compare ignores case rule  [lib/attach-scope.mjs]
+   - "return platform === 'win32' || platform === 'darwin' ? trimmed.toLowerCase() : trimmed"
+   + return trimmed
+   -> KILLED; red: 1
+      ✖ the scope folder compares as a folder: trailing separator, and case on macOS and Windows (1.919542ms)
+== M26 folder compare skips realpath  [lib/attach-scope.mjs]
+   - 'out = realpath(out) || out'
+   + (line deleted)
+   -> KILLED; red: 1
+      ✖ the scope folder compares through realpath (a symlinked spelling is the same folder) (2.810959ms)
+== M27 ids not normalized  [lib/attach-scope.mjs]
+   - "return id.replace(/^0+(?=\\d)/, '')"
+   + return id
+   -> KILLED; red: 2
+      ✖ a folder pin naming THIS agent, or no usable pin, changes nothing (2.105833ms)
+      ✖ ids compare as numbers: a leading zero is the same agent (0.147458ms)
+== M28 gen1 launcher not recorded  [lib/attach-scope.mjs]
+   - "else if (continued) launcher = 'gen1'"
+   + (line deleted)
+   -> KILLED; red: 2
+      ✖ the launcher is recorded: hoai (its folder), generation one (BGOS_CONTINUE), or none (2.00375ms)
+      ✖ the summary splits by launcher and by signal, and counts distinct sessions, not boots (1.464333ms)
+== M29 distinct count is the boot count  [lib/attach-scope.mjs]
+   - 'summary.distinctWouldRefuseStrict = strictKeys.size'
+   + summary.distinctWouldRefuseStrict = summary.wouldRefuseStrict
+   -> KILLED; red: 1
+      ✖ the summary splits by launcher and by signal, and counts distinct sessions, not boots (2.688625ms)
+== M30 wrong agent by folder tallied as by scope  [lib/attach-scope.mjs]
+   - "const by = event.by === 'folder' ? 'folder' : 'scope'"
+   + const by = 'scope'
+   -> KILLED; red: 1
+      ✖ the summary splits by launcher and by signal, and counts distinct sessions, not boots (3.723917ms)
+== M31 launcher never sets the scope folder  [bin/hoai-core.mjs]
+   - 'if (folder) env[ATTACH_SCOPE_DIR_ENV] = folder'
+   + (line deleted)
+   -> NO-COMPILE; red: 1
+      ✖ test/attach-scope.launcher.test.ts (113.048375ms)
+== M32 run plan omits the folder  [bin/hoai-core.mjs]
+   - 'attachScope: declared.id,'
+   + attachScope: declared.id,
+   -> KILLED; red: 2
+      ✖ run plan: a folder pin scopes the launch to that agent (34.920541ms)
+      ✖ main: a supervised launch hands the daemon its scope, over an inherited one (55.52125ms)
+== M33 server serves the home notice  [server.ts]
+   - 'const served = await serveScopeRefused({'
+   + const served = await serveHomeRefused({
+   -> KILLED; red: 1
+      ✖ wrong agent, setting ON (wrong-agent): REFUSED with the one notice tool, and the refusal is counted (193.046542ms)
+== M34 server reads no folder pin  [server.ts]
+   - 'folderPinId: readFolderPinId(ATTACH_SCOPE_FOLDER),'
+   + (line deleted)
+   -> KILLED; red: 1
+      ✖ THE BOARD ROW: a worker in agent 42's folder that inherited agent 41's env pin and scope is the wrong agent (by folder) and is refused when on (495.294708ms)
+ .claude-plugin/plugin.json         |   2 +-
+ CHANGELOG.md                       |  12 +
+ bin/hoai-attach-scope.mjs          |  77 ++++++
+ bin/hoai-core.mjs                  |  42 ++-
+ lib/attach-scope.mjs               | 537 +++++++++++++++++++++++++++++++++++++
+ lib/pair-required-server.mjs       |  92 +++++++
+ package-lock.json                  |   4 +-
+ package.json                       |   2 +-
+ server.ts                          |  94 ++++++-
+ test/attach-scope.e2e.test.ts      | 246 +++++++++++++++++
+ test/attach-scope.launcher.test.ts | 166 ++++++++++++
+ test/attach-scope.test.ts          | 535 ++++++++++++++++++++++++++++++++++++
+ 12 files changed, 1800 insertions(+), 9 deletions(-)
+
+SUMMARY
+KILLED       M1 wrong agent never refused
+KILLED       M2 fail open removed (unreadable judged)
+KILLED       M3 match inverted
+KILLED       M4 unscoped refused outside strict
+KILLED       M5 default mode on
+KILLED       M6 unknown mode not off in decide
+KILLED       M7 invalid env setting obeyed as strict
+KILLED       M8 env does not win over file
+KILLED       M9 scope digits check dropped
+KILLED       M10 strict tally skips unscoped
+KILLED       M11 no rotation
+KILLED       M12 telemetry throws
+KILLED       M13 doctor row never WARN
+KILLED       M14 launcher keeps an inherited scope
+KILLED       M15 launcher passes an inherited scope it cannot name
+KILLED       M16 folder pin launch unscoped
+SETUP-ERROR (anchor count 0) M17 launch never applies the scope
+KILLED       M18 supervised launch unscoped
+KILLED       M19 server never refuses
+KILLED       M20 server judges the scope against itself
+KILLED       M21 server records nothing
+KILLED       M22 measurement script ignores the env setting
+KILLED       M23 folder pin rule removed
+KILLED       M24 inherited scope trusted
+KILLED       M25 folder compare ignores case rule
+KILLED       M26 folder compare skips realpath
+KILLED       M27 ids not normalized
+KILLED       M28 gen1 launcher not recorded
+KILLED       M29 distinct count is the boot count
+KILLED       M30 wrong agent by folder tallied as by scope
+NO-COMPILE   M31 launcher never sets the scope folder
+KILLED       M32 run plan omits the folder
+KILLED       M33 server serves the home notice
+KILLED       M34 server reads no folder pin
+== M17 launch never applies the scope  [bin/hoai-core.mjs]
+   - 'applyAttachScope(env, plan.attachScope, plan.attachScopeDir)'
+   + (line deleted)
+   -> KILLED; red: 1
+      ✖ main: a supervised launch hands the daemon its scope, over an inherited one (61.29725ms)
+== M31 launcher never sets the scope folder  [bin/hoai-core.mjs]
+   - 'if (folder) env[ATTACH_SCOPE_DIR_ENV] = folder'
+   + if (false) env[ATTACH_SCOPE_DIR_ENV] = folder
+   -> KILLED; red: 2
+      ✖ applyAttachScope: the scope folder is set and overridden with the scope, and cleared with nothing to name (2.099416ms)
+      ✖ main: a supervised launch hands the daemon its scope, over an inherited one (62.050125ms)
+ .claude-plugin/plugin.json         |   2 +-
+ CHANGELOG.md                       |  12 +
+ bin/hoai-attach-scope.mjs          |  77 ++++++
+ bin/hoai-core.mjs                  |  42 ++-
+ lib/attach-scope.mjs               | 537 +++++++++++++++++++++++++++++++++++++
+ lib/pair-required-server.mjs       |  92 +++++++
+ package-lock.json                  |   4 +-
+ package.json                       |   2 +-
+ server.ts                          |  94 ++++++-
+ test/attach-scope.e2e.test.ts      | 246 +++++++++++++++++
+ test/attach-scope.launcher.test.ts | 166 ++++++++++++
+ test/attach-scope.test.ts          | 535 ++++++++++++++++++++++++++++++++++++
+ 12 files changed, 1800 insertions(+), 9 deletions(-)
+
+SUMMARY
+KILLED       M17 launch never applies the scope
+KILLED       M31 launcher never sets the scope folder
+== M19 server never refuses  [server.ts]
+   - "if (ATTACH_SCOPE.verdict !== 'refuse') return"
+   + if (true) return
+   -> KILLED; red: 3
+      ✖ wrong agent, setting ON (wrong-agent): REFUSED with the one notice tool, and the refusal is counted (626.85975ms)
+      ✖ THE BOARD ROW: a worker in agent 42's folder that inherited agent 41's env pin and scope is the wrong agent (by folder) and is refused when on (824.788708ms)
+      ✖ unscoped, strict: refused; the machine file sets the mode for every agent here (502.808167ms)
+== M20 server judges the scope against itself  [server.ts]
+   - "assistantId: String(ASSISTANT_ID ?? ''),"
+   + assistantId: String(process.env.HOAI_ATTACH_SCOPE ?? ''),
+   -> KILLED; red: 2
+      ✖ wrong agent, setting ON (wrong-agent): REFUSED with the one notice tool, and the refusal is counted (192.882083ms)
+      ✖ unscoped, strict: refused; the machine file sets the mode for every agent here (505.345833ms)
+== M21 server records nothing  [server.ts]
+   - 'recordAttachScopeEvent({'
+   + void ({
+   -> KILLED; red: 6
+      ✖ wrong agent, setting ON (wrong-agent): REFUSED with the one notice tool, and the refusal is counted (195.880834ms)
+      ✖ wrong agent, setting OFF (the default): the full daemon as before, counted as a would-refuse (471.978916ms)
+      ✖ right agent, strict: the full daemon (506.895625ms)
+      ✖ an unreadable scope, strict: FAILS OPEN to the full daemon (484.959916ms)
+== M33 server serves the home notice  [server.ts]
+   - 'const served = await serveScopeRefused({'
+   + const served = await serveHomeRefused({
+   -> KILLED; red: 1
+      ✖ wrong agent, setting ON (wrong-agent): REFUSED with the one notice tool, and the refusal is counted (183.121333ms)
+== M34 server reads no folder pin  [server.ts]
+   - 'folderPinId: readFolderPinId(ATTACH_SCOPE_FOLDER),'
+   + (line deleted)
+   -> KILLED; red: 1
+      ✖ THE BOARD ROW: a worker in agent 42's folder that inherited agent 41's env pin and scope is the wrong agent (by folder) and is refused when on (504.683459ms)
+== M35 main never runs the scope step  [server.ts]
+   - 'await attachScopeAtBoot()'
+   + (line deleted)
+   -> KILLED; red: 6
+      ✖ wrong agent, setting ON (wrong-agent): REFUSED with the one notice tool, and the refusal is counted (490.278083ms)
+      ✖ wrong agent, setting OFF (the default): the full daemon as before, counted as a would-refuse (442.034458ms)
+      ✖ right agent, strict: the full daemon (447.428875ms)
+      ✖ an unreadable scope, strict: FAILS OPEN to the full daemon (464.903584ms)
+== M36 scope step runs before the duplicate check  [server.ts]
+   - '{'
+   + await attachScopeAtBoot()
+   -> KILLED; red: 1
+      ✖ the plugin copy of a session that loads server:bgos serves ONE notice tool, declares no channel and takes no lock (6589.861458ms)
+ .claude-plugin/plugin.json         |   2 +-
+ CHANGELOG.md                       |  12 +
+ bin/hoai-attach-scope.mjs          |  77 ++++++
+ bin/hoai-core.mjs                  |  42 ++-
+ lib/attach-scope.mjs               | 537 +++++++++++++++++++++++++++++++++++++
+ lib/pair-required-server.mjs       |  92 +++++++
+ package-lock.json                  |   4 +-
+ package.json                       |   2 +-
+ server.ts                          | 105 +++++++-
+ test/attach-scope.e2e.test.ts      | 246 +++++++++++++++++
+ test/attach-scope.launcher.test.ts | 166 ++++++++++++
+ test/attach-scope.test.ts          | 535 ++++++++++++++++++++++++++++++++++++
+ 12 files changed, 1811 insertions(+), 9 deletions(-)
+
+SUMMARY
+KILLED       M19 server never refuses
+KILLED       M20 server judges the scope against itself
+KILLED       M21 server records nothing
+KILLED       M33 server serves the home notice
+KILLED       M34 server reads no folder pin
+KILLED       M35 main never runs the scope step
+KILLED       M36 scope step runs before the duplicate check

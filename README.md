@@ -858,6 +858,14 @@ What lets the BGOS app supervise a running session:
 - **A Stop while Keep working is armed (v0.59.0+)**: an armed `/goal` would re prompt the model the moment it stands down, so a cooperative stop would not stick. Where this daemon can type into its session (it declares `mission_pause`) and its goal lane holds an armed goal for the stopped chat's open mission, the Stop also pauses that mission with the reason "Stopped by you" (the native goal is cleared and its condition kept), and the owner's next message in that chat resumes it. A Pause the owner pressed in the app is never resumed by a message. Declared as `stop_pauses_mission`. With no armed goal, or on a host that cannot type (Windows), nothing is written and the notice alone keeps the mission open.
 - **Sessions library (`list_sessions`, v0.59.0+)**: the app's Sessions sheet lists the sessions in this agent's own folder (the Claude Code project folder of its working directory, the same one the context gauge reads): a title (the session's own name, else Claude Code's, else the owner's first message with the channel envelope off), when it was last active, a one line preview, the git branch, and a Current tag on the live session. At most the 200 newest transcripts are read, and only the first and last 64 KB of each; an unchanged file is not read again. A title or preview that looks like it holds a secret is withheld whole on this machine before anything leaves it, and search runs only on what is shown. Resuming or renaming a session from the app is a later update: `resume_session` and `rename_session` answer `unsupported`, and the list says so up front. Declared as `sessions_library` on every host.
 
+## Threads and By the way (v0.82.0+)
+
+In the agent chat (behind BGOS's thread flag) the owner can ask a private side question and start threads. This daemon declares `message_threads`, `thread_sessions` and `asides` where it can run them: a `claude` binary resolves, and not on Windows yet.
+
+- **By the way** (`aside`): a one shot fork of this agent's current session (`claude -p --resume <session> --fork-session --tools ""`), run in the session's own folder, answers from what the agent already knows, with no tools. The answer streams to the owner only, never becomes a message, a turn or a session, and the fork's session file is deleted when it is in.
+- **Threads** (`thread_turn`, `thread_close`): each thread is its own headless `claude -p` forked from this session, working in a git worktree at `.hoai/threads/<root>` on branch `hoai/thread-<root>` (read only when the agent folder is not a git repository). `.hoai/` is excluded locally through `.git/info/exclude`. Two threads run at once per agent and a third waits; a thread idle for 20 minutes stops and picks up again by its own session id. Closing keeps the worktree for 7 days; deleting removes it. Lane state lives in `~/.bgos-agent/<id>/threads/`.
+- The main session is never resumed without `--fork-session`, and lanes load no MCP server, so a thread never answers as the chat or delivers a message twice. CLI details: `docs/thread-lanes-spike.md`.
+
 ## Missions the owner can change while you work (v0.41.0+)
 
 A mission is the durable goal card the agent creates with `create_mission` and
@@ -896,6 +904,51 @@ this daemon can type: clearing the native goal stops the loop after the current
 turn, which is a pause it can honestly enforce, so `mission_pause` and
 `mission_goal_loop` are declared there and absent everywhere else. Mark done and
 Set aside have always reached the agent, and they end the mission.
+
+### Working marks follow session activity
+
+Call `set_goal_working` with `goal_ids: [2, 3]` and `working: true` to select
+all the goals you are working on, including parallel work. The agent chooses
+the goals; hooks never guess them from a command or a task description.
+`working: false` deselects and clears the named goals. A mark never ticks a goal.
+
+In a session connected to the hook intake, `PreToolUse`, `PostToolUse` and
+`PostToolUseFailure` keep selected goals fresh, with at most one automatic
+refresh attempt per goal every 10 minutes, including failed attempts. After
+15 minutes without a tool event, a daemon sweep clears the marks within the
+next 30 seconds. Tool activity can restore an idle selection. `Stop` and
+`SessionEnd` clear and forget the session's selections; select goals again
+when resuming work. A new prompt also clears old selections if Stop was missed.
+Helper tool activity counts for the parent session. A helper ending does not
+clear other workers' goals; the parent session's Stop clears all its selections.
+A single tool running silently for 15 minutes reaches the same idle threshold.
+
+The existing asynchronous forwarder writes only the hook spool, and the daemon
+uses the original acting-user scope for HTTP. No credentials are added to hook
+files or logs. Background failures never block a tool call, failed clears are
+retried, and HTTP 409 drops the refused goal. Marketplace and clone installs
+use their existing hook registrations. A disconnected session needs manual
+refresh within 30 minutes. If the daemon is killed or the backend stays down,
+the backend's existing 30-minute expiry is the final bound on a stale mark.
+
+HTTP 400, 403 and 404 also retire refused goals. Other failed clears back off
+from 30 seconds to ten minutes. A daemon that loses the pairing lock retires
+its local ownership; it must not clear the new holder's marks.
+Passive sessions can still explicitly mark or clear goals without a bound hook
+session. These writes use the same per-goal queue. Successful manual marks do
+not become hook-owned selections. Queue tickets include the process start identity
+so a reused PID cannot keep an orphan ticket alive. Unreadable identities and
+legacy tickets without one remain conservative; uncertain HTTP receipts are
+preserved independently of queue cleanup.
+
+If a working request times out or loses its response, its remote outcome may
+still be unknown. The daemon preserves cleanup for that goal but refuses new
+`working: true` selections until the old write can be safely reconciled.
+This fence survives a daemon restart and has no automatic expiry; other goals
+remain usable. Cleanup can repeat with backoff if an old true arrives late.
+Safe recovery requires confirmation that the old server operation cannot
+still run, or a server-enforced conditional write. Restarting alone does not
+provide that confirmation.
 
 ## Keep working until it is done: the goal lane (v0.42.0+)
 

@@ -39,8 +39,7 @@
  * Run: npm test, or npx tsx --test test/bgos-agent.install.test.ts
  */
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, utimesSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, utimesSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test, type TestContext } from 'node:test'
@@ -50,6 +49,7 @@ import { CLONE_CHANNEL_SPEC, MARKETPLACE_CHANNEL_SPEC } from '../bin/bgos-instal
 import { resolvePosixBash } from './helpers/posix-bash.ts'
 import { LAUNCHCTL_PRINT_NOT_LOADED, systemctlShowFromUnitFile } from './helpers/bash-service-probes.ts'
 import { watcherHomeId } from '../lib/watcher-service.mjs'
+import { scratchDir } from './helpers/scratch-dirs.ts'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 // bin/bgos-agent is the macOS and Linux installer: it refuses any other OS by name (on Windows it
@@ -84,13 +84,13 @@ interface Machine {
   agentBin: string
   pluginRoot: string
   calls: string
-  run: (args: string[], extraEnv?: Record<string, string>) => { status: number | null; out: string }
-  start: (args: string[], extraEnv?: Record<string, string>) => { child: ChildProcess; done: Promise<{ status: number | null; out: string }> }
+  run: (args: string[], extraEnv?: Record<string, string | undefined>) => { status: number | null; out: string }
+  start: (args: string[], extraEnv?: Record<string, string | undefined>) => { child: ChildProcess; done: Promise<{ status: number | null; out: string }> }
   serviceFiles: () => string[]
 }
 
 function machine({ fromClone = false, fromCache = false, pluginInstalled = true, pluginEnabled = true, withNode = true, realNode = false, os, holdInstall = false }: { fromClone?: boolean; fromCache?: boolean; pluginInstalled?: boolean; pluginEnabled?: boolean; withNode?: boolean; realNode?: boolean; os?: 'Linux' | 'Darwin'; holdInstall?: boolean } = {}): Machine {
-  const home = mkdtempSync(join(tmpdir(), 'hoai-install-'))
+  const home = scratchDir('hoai-install-')
   // Where the code runs from. npx-shaped by default; a plain checkout-shaped dir for the clone
   // case; a marketplace plugin's versioned cache dir (where the watcher's sweep runs it from).
   const pluginRoot = fromClone
@@ -148,8 +148,8 @@ function machine({ fromClone = false, fromCache = false, pluginInstalled = true,
   if (withNode) shim('node', realNode ? `exec "${process.execPath}" "$@"` : 'exit 0')
 
   const agentBin = join(pluginRoot, 'bin', 'bgos-agent')
-  const envFor = (extraEnv: Record<string, string>) => ({ HOME: home, USER: 'kc', LOGNAME: 'kc', NO_COLOR: '1', PATH: `${shims}:/usr/bin:/bin:/usr/sbin:/sbin`, ...extraEnv })
-  const run = (args: string[], extraEnv: Record<string, string> = {}) => {
+  const envFor = (extraEnv: Record<string, string | undefined>) => ({ HOME: home, USER: 'kc', LOGNAME: 'kc', NO_COLOR: '1', PATH: `${shims}:/usr/bin:/bin:/usr/sbin:/sbin`, ...extraEnv })
+  const run = (args: string[], extraEnv: Record<string, string | undefined> = {}) => {
     const result = spawnSync(BASH!, [agentBin, 'install', ...args], {
       cwd: home,
       encoding: 'utf8',
@@ -159,7 +159,7 @@ function machine({ fromClone = false, fromCache = false, pluginInstalled = true,
     return { status: result.status, out: `${result.stdout}\n${result.stderr}` }
   }
   /** The same install, in the background: resolves with its exit code and output when it ends. */
-  const start = (args: string[], extraEnv: Record<string, string> = {}) => {
+  const start = (args: string[], extraEnv: Record<string, string | undefined> = {}) => {
     const child = spawn(BASH!, [agentBin, 'install', ...args], { cwd: home, env: envFor(extraEnv) })
     let out = ''
     child.stdout.on('data', (d) => (out += String(d)))
@@ -280,6 +280,41 @@ test('the service carries CLAUDE_CONFIG_DIR and a valid HOAI_SERVICE_NAMESPACE f
   const plainService = readFileSync(plain.serviceFiles()[0]!, 'utf8')
   assert.doesNotMatch(plainService, /CLAUDE_CONFIG_DIR|HOAI_SERVICE_NAMESPACE/)
 })
+
+for (const os of ['Darwin', 'Linux'] as const) {
+  for (const { name, user, expected } of [
+    { name: 'set', user: 'fitecho', expected: 'fitecho' },
+    { name: 'unset', user: undefined, expected: 'bgos' },
+    { name: 'empty', user: '', expected: 'bgos' },
+  ]) {
+    test(`${os} service identity: USER ${name}, id -un is bgos`, SLOW, (t) => {
+      if (!ready(t)) return
+      const m = machine({ os })
+      const idShim = join(m.home, 'shims', 'id')
+      // Keep uid probes real, but make the account name differ from the login shell's USER.
+      writeFileSync(idShim, '#!/bin/sh\nif [ "$1" = "-un" ]; then echo bgos; else exec /usr/bin/id "$@"; fi\n')
+      chmodSync(idShim, 0o755)
+      if (os === 'Darwin' && process.platform !== 'darwin') {
+        const plutilShim = join(m.home, 'shims', 'plutil')
+        writeFileSync(plutilShim, '#!/bin/sh\nexit 0\n')
+        chmodSync(plutilShim, 0o755)
+      }
+      const workspace = pair(m, '904')
+      const result = m.run(['--assistant', '904', '--dir', workspace, '--always-on'], { USER: user, LOGNAME: 'different-logname' })
+      assert.equal(result.status, 0, result.out)
+      const files = m.serviceFiles()
+      assert.equal(files.length, 1, 'exactly one service file')
+      assert.ok(files[0]!.endsWith(os === 'Darwin' ? '.plist' : '.service'), files[0])
+      const service = readFileSync(files[0]!, 'utf8')
+      for (const key of ['USER', 'LOGNAME']) {
+        const entry = os === 'Darwin'
+          ? `<key>${key}</key><string>${expected}</string>`
+          : `Environment=${key}=${expected}`
+        assert.ok(service.split('\n').some((line) => line.trim() === entry), `missing ${entry}:\n${service}`)
+      }
+    })
+  }
+}
 
 test('every refusal is NAMED, exits nonzero, and leaves nothing behind: no wrapper, no service file, no service call', SLOW, (t) => {
   if (!ready(t)) return

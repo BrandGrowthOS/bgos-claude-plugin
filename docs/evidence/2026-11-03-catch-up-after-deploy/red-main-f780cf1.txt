@@ -1,0 +1,533 @@
+▶ hole 1: the reconnect skip
+  ✖ rows missed around a deploy, then a live message beats the catch up read: every row once, oldest first (53068.757625ms)
+  ✖ the catch up read fails, then a live message: the rows under it are still read, every row once (62544.718361ms)
+  ✖ a read that started before the socket came back is not the catch up: rows it could not see still arrive before a live message (66827.252096ms)
+✖ hole 1: the reconnect skip (66831.279428ms)
+▶ hole 2: the newest 50
+  ✖ a deploy with more than 50 missed rows in each of several chats: every row once, oldest first, in every chat (70068.42329ms)
+  ✖ the boot read: 120 rows above a persisted cursor all arrive once, oldest first, framed as backlog (50347.157523ms)
+  ✖ the limit is 50 rows of any sender: 60 rows of owner and agent turns lose no owner row (59496.452185ms)
+  ✖ a chat with open buttons, which every poll reads in full: 120 missed rows all arrive once (62981.366203ms)
+  ✔ an idle chat with a long history costs one conditional read: no page below the cursor, ever (16848.445902ms)
+✖ hole 2: the newest 50 (113330.410615ms)
+▶ hole 3: a chat that started empty
+  ✖ empty at its first read, then 120 rows: every row once, oldest first (92960.074713ms)
+  ✖ empty at its first read: an agent row among the rows does not hide the rows under it (92209.175506ms)
+  ✖ a group empty at its first read, more than 10 rows land while the daemon is down: not capped at the newest 10 (88836.734561ms)
+  ✖ a chat this daemon has never read: 120 unanswered rows above a long answered history, and the walk stops at the reply (48559.509544ms)
+  ✖ a genuine first install: 60 recent rows above 300 dormant ones, only the recent arrive, and the walk stops at the window (48508.482146ms)
+  ✔ a group this agent is added to mid run, with 300 rows of history: the newest 10, and no walk through the rest (15618.885359ms)
+✖ hole 3: a chat that started empty (140718.789898ms)
+▶ hole 4: a row the server never pushes
+  ✖ a live message right after it, no outage: it still reaches the agent, once, on the next read (56704.146191ms)
+✖ hole 4: a row the server never pushes (56704.703451ms)
+▶ a reconnect or a failure in the middle of a page
+  ✖ the socket drops and comes back while an older page is in flight, a live message lands: every row once, oldest first (134040.739817ms)
+  ✖ an older page fails: nothing is lost or repeated, and the next read starts over without a validator on any page (74524.354713ms)
+  ✖ the daemon restarts while an older page is in flight: every row once, oldest first, across both lives (73233.852121ms)
+✖ a reconnect or a failure in the middle of a page (134041.245761ms)
+▶ what a long read must not break
+  ✖ a wake card that never fills does not pin the cursor: the rows above it arrive once and the next read starts above them (57181.654411ms)
+  ✔ a wake card inside the newest page still waits for its body, and arrives once with it (23705.012919ms)
+  ✖ a drain of 600 rows in one chat does not make the daemon forget what it handed over in another (138330.4912ms)
+✖ what a long read must not break (138331.493854ms)
+ℹ tests 21
+ℹ suites 6
+ℹ pass 3
+ℹ fail 18
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 659750.167985
+
+✖ failing tests:
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:2847
+✖ rows missed around a deploy, then a live message beats the catch up read: every row once, oldest first (53068.757625ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+  +   forwarded: '1 of 8',
+  -   forwarded: '8 of 8',
+      label: 'PL2: 7 missed rows and one live',
+  +   missing: '101-107',
+  -   missing: 'none',
+      oldestFirst: true,
+      twice: 'none',
+      unexpected: 'none'
+    }
+  
+      at assertExactlyOnceInOrder (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:536:7)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 0)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { label: 'PL2: 7 missed rows and one live', forwarded: '1 of 8', missing: '101-107', unexpected: 'none', twice: 'none', oldestFirst: true },
+    expected: { label: 'PL2: 7 missed rows and one live', forwarded: '8 of 8', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: true },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:3452
+✖ the catch up read fails, then a live message: the rows under it are still read, every row once (62544.718361ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+  +   forwarded: '1 of 8',
+  -   forwarded: '8 of 8',
+      label: 'a failed read is not a catch up',
+  +   missing: '101-107',
+  -   missing: 'none',
+      oldestFirst: true,
+      twice: 'none',
+      unexpected: 'none'
+    }
+  
+      at assertExactlyOnceInOrder (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:557:7)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 1)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { label: 'a failed read is not a catch up', forwarded: '1 of 8', missing: '101-107', unexpected: 'none', twice: 'none', oldestFirst: true },
+    expected: { label: 'a failed read is not a catch up', forwarded: '8 of 8', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: true },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:4249
+✖ a read that started before the socket came back is not the catch up: rows it could not see still arrive before a live message (66827.252096ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+  +   forwarded: '1 of 8',
+  -   forwarded: '8 of 8',
+      label: 'a read from before the reconnect',
+  +   missing: '101-107',
+  -   missing: 'none',
+      oldestFirst: true,
+      twice: 'none',
+      unexpected: 'none'
+    }
+  
+      at assertExactlyOnceInOrder (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:588:7)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 2)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { label: 'a read from before the reconnect', forwarded: '1 of 8', missing: '101-107', unexpected: 'none', twice: 'none', oldestFirst: true },
+    expected: { label: 'a read from before the reconnect', forwarded: '8 of 8', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: true },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:5277
+✖ a deploy with more than 50 missed rows in each of several chats: every row once, oldest first, in every chat (70068.42329ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+  +   forwarded: '50 of 120',
+  -   forwarded: '120 of 120',
+      label: 'chat 501',
+  +   missing: '1001,1004,1007,1010,1013,1016,1019,1022,1025,1028,1031,1034,1037,1040,1043,1046,1049,1052,1055,1058,1061,1064,1067,1070,1073,1076,1079,1082,1085,1088,1091,1094,1097,1100,1103,1106,1109,1112,1115,1118,1121,1124,1127,1130,1133,1136,1139,1142,1145,1148,1151,1154,1156,1158,1160,1162,1164,1166,1168,1170,1172,1174,1176,1178,1180,1182,1184,1186,1188,1190',
+  -   missing: 'none',
+      oldestFirst: true,
+      twice: 'none',
+      unexpected: 'none'
+    }
+  
+      at assertExactlyOnceInOrder (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:623:42)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 0)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { label: 'chat 501', forwarded: '50 of 120', missing: '1001,1004,1007,1010,1013,1016,1019,1022,1025,1028,1031,1034,1037,1040,1043,1046,1049,1052,1055,1058,1061,1064,1067,1070,1073,1076,1079,1082,1085,1088,1091,1094,1097,1100,1103,1106,1109,1112,1115,1118,1121,1124,1127,1130,1133,1136,1139,1142,1145,1148,1151,1154,1156,1158,1160,1162,1164,1166,1168,1170,1172,1174,1176,1178,1180,1182,1184,1186,1188,1190', unexpected: 'none', twice: 'none', oldestFirst: true },
+    expected: { label: 'chat 501', forwarded: '120 of 120', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: true },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:6432
+✖ the boot read: 120 rows above a persisted cursor all arrive once, oldest first, framed as backlog (50347.157523ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+  +   forwarded: '50 of 120',
+  -   forwarded: '120 of 120',
+      label: 'PL1: the first poll after a restart',
+  +   missing: '101-170',
+  -   missing: 'none',
+      oldestFirst: true,
+      twice: 'none',
+      unexpected: 'none'
+    }
+  
+      at assertExactlyOnceInOrder (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:637:7)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 1)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { label: 'PL1: the first poll after a restart', forwarded: '50 of 120', missing: '101-170', unexpected: 'none', twice: 'none', oldestFirst: true },
+    expected: { label: 'PL1: the first poll after a restart', forwarded: '120 of 120', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: true },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:6955
+✖ the limit is 50 rows of any sender: 60 rows of owner and agent turns lose no owner row (59496.452185ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+  +   forwarded: '25 of 30',
+  -   forwarded: '30 of 30',
+      label: 'PL1: 30 owner rows among 60',
+  +   missing: '101,103,105,107,109',
+  -   missing: 'none',
+      oldestFirst: true,
+      twice: 'none',
+      unexpected: 'none'
+    }
+  
+      at assertExactlyOnceInOrder (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:661:7)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 2)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { label: 'PL1: 30 owner rows among 60', forwarded: '25 of 30', missing: '101,103,105,107,109', unexpected: 'none', twice: 'none', oldestFirst: true },
+    expected: { label: 'PL1: 30 owner rows among 60', forwarded: '30 of 30', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: true },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:7534
+✖ a chat with open buttons, which every poll reads in full: 120 missed rows all arrive once (62981.366203ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+  +   forwarded: '50 of 120',
+  -   forwarded: '120 of 120',
+      label: 'a full read',
+  +   missing: '101-170',
+  -   missing: 'none',
+      oldestFirst: true,
+      twice: 'none',
+      unexpected: 'none'
+    }
+  
+      at assertExactlyOnceInOrder (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:678:7)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Suite.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { label: 'a full read', forwarded: '50 of 120', missing: '101-170', unexpected: 'none', twice: 'none', oldestFirst: true },
+    expected: { label: 'a full read', forwarded: '120 of 120', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: true },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:8862
+✖ empty at its first read, then 120 rows: every row once, oldest first (92960.074713ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+  +   forwarded: '50 of 120',
+  -   forwarded: '120 of 120',
+      label: 'PL4 past one page',
+  +   missing: '101-170',
+  -   missing: 'none',
+      oldestFirst: true,
+      twice: 'none',
+      unexpected: 'none'
+    }
+  
+      at assertExactlyOnceInOrder (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:713:7)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 0)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { label: 'PL4 past one page', forwarded: '50 of 120', missing: '101-170', unexpected: 'none', twice: 'none', oldestFirst: true },
+    expected: { label: 'PL4 past one page', forwarded: '120 of 120', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: true },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:9296
+✖ empty at its first read: an agent row among the rows does not hide the rows under it (92209.175506ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+  +   forwarded: '1 of 15',
+  -   forwarded: '15 of 15',
+      label: 'the chat was empty, so nothing in it has been answered',
+  +   missing: '101-114',
+  -   missing: 'none',
+      oldestFirst: true,
+      twice: 'none',
+      unexpected: 'none'
+    }
+  
+      at assertExactlyOnceInOrder (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:732:7)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 1)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { label: 'the chat was empty, so nothing in it has been answered', forwarded: '1 of 15', missing: '101-114', unexpected: 'none', twice: 'none', oldestFirst: true },
+    expected: { label: 'the chat was empty, so nothing in it has been answered', forwarded: '15 of 15', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: true },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:9859
+✖ a group empty at its first read, more than 10 rows land while the daemon is down: not capped at the newest 10 (88836.734561ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+  +   forwarded: '10 of 14',
+  -   forwarded: '14 of 14',
+      label: 'the group had no history, so every row is owed',
+  +   missing: '3101-3104',
+  -   missing: 'none',
+      oldestFirst: true,
+      twice: 'none',
+      unexpected: 'none'
+    }
+  
+      at assertExactlyOnceInOrder (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:751:7)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 2)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { label: 'the group had no history, so every row is owed', forwarded: '10 of 14', missing: '3101-3104', unexpected: 'none', twice: 'none', oldestFirst: true },
+    expected: { label: 'the group had no history, so every row is owed', forwarded: '14 of 14', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: true },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:10561
+✖ a chat this daemon has never read: 120 unanswered rows above a long answered history, and the walk stops at the reply (48559.509544ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+  +   forwarded: '50 of 120',
+  -   forwarded: '120 of 120',
+      label: 'unanswered rows only',
+  +   missing: '1001-1070',
+  -   missing: 'none',
+      oldestFirst: true,
+      twice: 'none',
+      unexpected: 'none'
+    }
+  
+      at assertExactlyOnceInOrder (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:765:7)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Suite.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { label: 'unanswered rows only', forwarded: '50 of 120', missing: '1001-1070', unexpected: 'none', twice: 'none', oldestFirst: true },
+    expected: { label: 'unanswered rows only', forwarded: '120 of 120', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: true },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:11216
+✖ a genuine first install: 60 recent rows above 300 dormant ones, only the recent arrive, and the walk stops at the window (48508.482146ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+  +   forwarded: '50 of 60',
+  -   forwarded: '60 of 60',
+      label: 'the first run gate holds past one page',
+  +   missing: '301-310',
+  -   missing: 'none',
+      oldestFirst: true,
+      twice: 'none',
+      unexpected: 'none'
+    }
+  
+      at assertExactlyOnceInOrder (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:782:7)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Suite.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { label: 'the first run gate holds past one page', forwarded: '50 of 60', missing: '301-310', unexpected: 'none', twice: 'none', oldestFirst: true },
+    expected: { label: 'the first run gate holds past one page', forwarded: '60 of 60', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: true },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:12776
+✖ a live message right after it, no outage: it still reaches the agent, once, on the next read (56704.146191ms)
+  AssertionError [ERR_ASSERTION]: PL3: forwarded once each
+  + actual - expected
+  
+    [
+  -   101,
+      102
+    ]
+  
+      at TestContext.<anonymous> (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:828:14)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 0)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: [ 102 ],
+    expected: [ 101, 102 ],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:13601
+✖ the socket drops and comes back while an older page is in flight, a live message lands: every row once, oldest first (134040.739817ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+  +   forwarded: '50 of 301',
+  -   forwarded: '301 of 301',
+      label: 'a reconnect in the middle of a page',
+  +   missing: '101-350,900',
+  -   missing: 'none',
+      oldestFirst: true,
+      twice: 'none',
+      unexpected: 'none'
+    }
+  
+      at assertExactlyOnceInOrder (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:854:7)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 0)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { label: 'a reconnect in the middle of a page', forwarded: '50 of 301', missing: '101-350,900', unexpected: 'none', twice: 'none', oldestFirst: true },
+    expected: { label: 'a reconnect in the middle of a page', forwarded: '301 of 301', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: true },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:14450
+✖ an older page fails: nothing is lost or repeated, and the next read starts over without a validator on any page (74524.354713ms)
+  Error: timed out waiting for the failed page
+      at waitFor (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:72:35)
+      at runNextTicks (node:internal/process/task_queues:65:5)
+      at listOnTimeout (node:internal/timers:644:9)
+      at process.processTimers (node:internal/timers:618:7)
+      at async TestContext.<anonymous> (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:871:7)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 1)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:15413
+✖ the daemon restarts while an older page is in flight: every row once, oldest first, across both lives (73233.852121ms)
+  Error: timed out waiting for the daemon to stop in the middle of a page
+      at waitFor (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:72:35)
+      at async TestContext.<anonymous> (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:900:7)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 2)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:16346
+✖ a wake card that never fills does not pin the cursor: the rows above it arrive once and the next read starts above them (57181.654411ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+  +   forwarded: '50 of 69',
+  -   forwarded: '69 of 69',
+      label: 'rows above an abandoned card',
+  +   missing: '102-120',
+  -   missing: 'none',
+      oldestFirst: true,
+      twice: 'none',
+      unexpected: 'none'
+    }
+  
+      at assertExactlyOnceInOrder (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:924:7)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 0)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { label: 'rows above an abandoned card', forwarded: '50 of 69', missing: '102-120', unexpected: 'none', twice: 'none', oldestFirst: true },
+    expected: { label: 'rows above an abandoned card', forwarded: '69 of 69', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: true },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:17899
+✖ a drain of 600 rows in one chat does not make the daemon forget what it handed over in another (138330.4912ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+  +   forwarded: '50 of 600',
+  -   forwarded: '600 of 600',
+      label: 'a drain past the old 500 id bound',
+  +   missing: '1001-1550',
+  -   missing: 'none',
+      oldestFirst: true,
+      twice: 'none',
+      unexpected: 'none'
+    }
+  
+      at assertExactlyOnceInOrder (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:430:10)
+      at TestContext.<anonymous> (/mnt/e/bgos-worktrees/d041/plugin/test/catch-up-after-deploy.e2e.test.ts:975:7)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Promise.all (index 2)
+      at async Suite.run (node:internal/test_runner/test:1905:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { label: 'a drain past the old 500 id bound', forwarded: '50 of 600', missing: '1001-1550', unexpected: 'none', twice: 'none', oldestFirst: true },
+    expected: { label: 'a drain past the old 500 id bound', forwarded: '600 of 600', missing: 'none', unexpected: 'none', twice: 'none', oldestFirst: true },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }

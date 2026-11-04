@@ -1,0 +1,20 @@
+TAP version 13
+# Subtest: a failed reply post is retried with backoff and lands
+not ok 1 - a failed reply post is retried with backoff and lands
+  ---
+  duration_ms: 2007.149792
+  type: 'test'
+  location: '/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:6:30538'
+  failureType: 'testTimeoutFailure'
+  error: 'test timed out after 2000ms'
+  code: 'ERR_TEST_FAILURE'
+  ...
+1..1
+# tests 1
+# suites 0
+# pass 0
+# fail 0
+# cancelled 1
+# skipped 0
+# todo 0
+# duration_ms 2234.363292

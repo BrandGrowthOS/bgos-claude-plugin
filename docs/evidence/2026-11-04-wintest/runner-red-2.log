@@ -1,0 +1,169 @@
+TAP version 13
+# Subtest: a blocked test fails by file name and releases its worker before the deadline
+ok 1 - a blocked test fails by file name and releases its worker before the deadline
+  ---
+  duration_ms: 1568.45925
+  type: 'test'
+  ...
+# Subtest: a file stuck after its test passes loses its detached descendant too
+ok 2 - a file stuck after its test passes loses its detached descendant too
+  ---
+  duration_ms: 5067.165416
+  type: 'test'
+  ...
+# Subtest: an unsuccessful file and a missing executable fail without waiting for the watchdog
+not ok 3 - an unsuccessful file and a missing executable fail without waiting for the watchdog
+  ---
+  duration_ms: 35.18075
+  type: 'test'
+  location: '/Users/kc/hoai-work/mbwintest/test/run-tests-timeout.test.ts:7:772'
+  failureType: 'testCodeFailure'
+  error: "The argument 'args[0]' must be a string without null bytes. Received 'bad\\x00name'"
+  code: 'ERR_INVALID_ARG_VALUE'
+  name: 'TypeError'
+  stack: |-
+    validateArgumentNullCheck (node:child_process:1026:11)
+    validateArgumentsNullCheck (node:child_process:1033:5)
+    normalizeSpawnArguments (node:child_process:602:3)
+    spawn (node:child_process:806:13)
+    file:///Users/kc/hoai-work/mbwintest/scripts/run-test-files.mjs:137:19
+    new Promise (<anonymous>)
+    Module.runTestFile (file:///Users/kc/hoai-work/mbwintest/scripts/run-test-files.mjs:129:10)
+    TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/run-tests-timeout.test.ts:81:34)
+    process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    async Test.run (node:internal/test_runner/test:1409:7)
+  ...
+# Subtest: file scheduling caps requested concurrency at four and continues after a failure
+ok 4 - file scheduling caps requested concurrency at four and continues after a failure
+  ---
+  duration_ms: 389.729375
+  type: 'test'
+  ...
+# Subtest: a healthy file of blocking tests keeps resetting the deadline
+ok 5 - a healthy file of blocking tests keeps resetting the deadline
+  ---
+  duration_ms: 25156.308167
+  type: 'test'
+  ...
+# Subtest: a worker that exits while an orphan holds its pipes finishes without waiting for the deadline
+ok 6 - a worker that exits while an orphan holds its pipes finishes without waiting for the deadline
+  ---
+  duration_ms: 3045.345208
+  type: 'test'
+  ...
+# Subtest: a run reports each file whole, then its failures by name and its totals
+not ok 7 - a run reports each file whole, then its failures by name and its totals
+  ---
+  duration_ms: 142.83775
+  type: 'test'
+  location: '/Users/kc/hoai-work/mbwintest/test/run-tests-timeout.test.ts:16:549'
+  failureType: 'testCodeFailure'
+  error: |-
+    The input did not match the regular expression /^\[run-tests\] START good\.test\.cjs\n$/. Input:
+    
+    '[run-tests] START good.test.cjs\n' +
+      'TAP version 13\n' +
+      '# Subtest: fine\n' +
+      'ok 1 - fine\n' +
+      '  ---\n' +
+      '  duration_ms: 9.859667\n' +
+      "  type: 'test'\n" +
+      '  ...\n' +
+      '# Subtest: later\n' +
+      'ok 2 - later # SKIP why\n' +
+      '  ---\n' +
+      '  duration_ms: 0.14225\n' +
+      "  type: 'test'\n" +
+      '  ...\n' +
+      '1..2\n' +
+      '# tests 2\n' +
+      '# suites 0\n' +
+      '# pass 1\n' +
+      '# fail 0\n' +
+      '# cancelled 0\n' +
+      '# skipped 1\n' +
+      '# todo 0\n' +
+      '# duration_ms 84.558\n' +
+      '[run-tests] PASS good.test.cjs (0.129s)\n'
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  actual: |-
+    [run-tests] START good.test.cjs
+    TAP version 13
+    # Subtest: fine
+    ok 1 - fine
+      ---
+      duration_ms: 9.859667
+      type: 'test'
+      ...
+    # Subtest: later
+    ok 2 - later # SKIP why
+      ---
+      duration_ms: 0.14225
+      type: 'test'
+      ...
+    1..2
+    # tests 2
+    # suites 0
+    # pass 1
+    # fail 0
+    # cancelled 0
+    # skipped 1
+    # todo 0
+    # duration_ms 84.558
+    [run-tests] PASS good.test.cjs (0.129s)
+    
+  operator: 'match'
+  stack: |-
+    TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/run-tests-timeout.test.ts:184:12)
+    async Test.run (node:internal/test_runner/test:1409:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
+  ...
+# Subtest: stopping the run ends a worker in flight, detached or not
+ok 8 - stopping the run ends a worker in flight, detached or not
+  ---
+  duration_ms: 96.214334
+  type: 'test'
+  ...
+# Subtest: no test asks for longer than the file deadline, or its hang could not fail by its own name
+not ok 9 - no test asks for longer than the file deadline, or its hang could not fail by its own name
+  ---
+  duration_ms: 105.347542
+  type: 'test'
+  location: '/Users/kc/hoai-work/mbwintest/test/run-tests-timeout.test.ts:16:2548'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly deep-equal:
+    + actual - expected
+    
+    + [
+    +   'hoai-browser-host.downloads.chromium.test.ts: 300_000'
+    + ]
+    - []
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  actual:
+    0: 'hoai-browser-host.downloads.chromium.test.ts: 300_000'
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/run-tests-timeout.test.ts:224:10)
+    Test.runInAsyncScope (node:async_hooks:227:14)
+    Test.run (node:internal/test_runner/test:1402:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+    Test.postRun (node:internal/test_runner/test:1542:19)
+    Test.run (node:internal/test_runner/test:1467:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
+  ...
+1..9
+# tests 9
+# suites 0
+# pass 6
+# fail 3
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 35879.085208

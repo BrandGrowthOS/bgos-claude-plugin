@@ -32,13 +32,11 @@ import assert from 'node:assert/strict'
 import {
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import {
@@ -50,9 +48,10 @@ import {
   CURSOR_FILE_NAME,
 } from '../lib/cursor-store.ts'
 import { buildChatPollRequest } from '../lib/poll-core.ts'
+import { scratchDir } from './helpers/scratch-dirs.ts'
 
 function freshDir(prefix: string): string {
-  return mkdtempSync(join(tmpdir(), prefix))
+  return scratchDir(prefix)
 }
 
 // ── 1. Roundtrip ─────────────────────────────────────────────────────────────

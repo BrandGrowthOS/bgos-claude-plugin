@@ -753,3 +753,69 @@ test('bug 2: a turn the socket hands over while the server is asked, whose answe
     await stopLane(rig)
   }
 })
+
+// ── Catching up after a dropped socket (D04-1) ─────────────────────────────
+//
+// The cap of ten (five with no cursor) and the time window decide what a lane
+// BOOT re-offers (selectLaneBacklog). A poll in a running lane has no such choice
+// to make: the cursor moves over every row it reads, so a row left out is gone.
+
+function cutLaneSocket(backend: Backend): void {
+  // At the transport: a server side disconnect is one the client never retries.
+  for (const socket of backend.io.of('/').sockets.values()) socket.conn.close()
+}
+
+const handedOver = (rig: Rig) => rig.channel.map((c) => Number(c.messageId))
+
+async function waitQuietly(check: () => boolean, ms: number): Promise<void> {
+  const until = Date.now() + ms
+  while (!check() && Date.now() < until) await sleep(50)
+}
+
+test('D04-1: thirty rows the socket missed reach a running lane whole, oldest first, the oldest of them a day old', async () => {
+  const rows = [inboundRow(100, 1, 'Before the deploy')]
+  const backend = await startBackend({ rows })
+  const rig = await startLane(backend, { inbox: { cursor: 99, delivered: [], pending: [] } })
+  try {
+    await waitFor(() => handedOver(rig).includes(100) && backend.io.of('/').sockets.size > 0, 'the lane to be up')
+    const missed = Array.from({ length: 30 }, (_, i) => 101 + i)
+    for (const id of missed) rows.push(inboundRow(id, id === 101 ? 25 * 60 : 1, `Missed ${id}`))
+    cutLaneSocket(backend)
+    await waitQuietly(() => handedOver(rig).includes(130) && handedOver(rig).length >= 31, 20_000)
+    await sleep(500)
+    assert.deepEqual(handedOver(rig), [100, ...missed])
+  } finally {
+    await stopLane(rig)
+  }
+})
+
+test('D04-1: a lane that started with nothing to read is not treated as new at its later polls: eight rows, not the newest five', async () => {
+  const rows: Array<Record<string, unknown>> = []
+  const backend = await startBackend({ rows })
+  const rig = await startLane(backend, { inbox: { cursor: 0, delivered: [], pending: [] } })
+  try {
+    await waitFor(() => backend.inboundGets > 0 && backend.io.of('/').sockets.size > 0, 'the lane to be up')
+    await sleep(500)
+    const missed = Array.from({ length: 8 }, (_, i) => 201 + i)
+    for (const id of missed) rows.push(inboundRow(id, 1, `Missed ${id}`))
+    cutLaneSocket(backend)
+    await waitQuietly(() => handedOver(rig).includes(208) && handedOver(rig).length >= 8, 20_000)
+    await sleep(500)
+    assert.deepEqual(handedOver(rig), missed)
+  } finally {
+    await stopLane(rig)
+  }
+})
+
+test('D04-1: a relaunch still chooses for itself: twelve rows past its cursor offer the newest ten', async () => {
+  const rows = Array.from({ length: 12 }, (_, i) => inboundRow(301 + i, 1, `While stopped ${301 + i}`))
+  const backend = await startBackend({ rows })
+  const rig = await startLane(backend, { inbox: { cursor: 300, delivered: [], pending: [] } })
+  try {
+    await waitFor(() => handedOver(rig).length >= 10, 'the boot offer')
+    await sleep(500)
+    assert.deepEqual(handedOver(rig), rows.slice(2).map((r) => Number(r.id)))
+  } finally {
+    await stopLane(rig)
+  }
+})

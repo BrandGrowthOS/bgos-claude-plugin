@@ -7,9 +7,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:http'
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { scratchDir } from './helpers/scratch-dirs'
 
 const SHIM = join(process.cwd(), 'bin', 'hoai-browser-mcp.mjs')
 
@@ -56,7 +56,7 @@ function client(home: string) {
 }
 
 test('offline: initialize works and the only tool says the app is not running', async () => {
-  const home = mkdtempSync(join(tmpdir(), 'hoai-shim-offline-'))
+  const home = scratchDir('hoai-shim-offline-')
   const c = client(home)
   const init = await c.request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'claude-code', version: 'test' } })
   assert.equal(init.result.serverInfo.name, 'hoai-agent-browser')
@@ -91,7 +91,7 @@ test('online: the shim proxies initialize, tools/list and tools/call to the endp
   })
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()))
   const port = (server.address() as any).port
-  const home = mkdtempSync(join(tmpdir(), 'hoai-shim-online-'))
+  const home = scratchDir('hoai-shim-online-')
   mkdirSync(join(home, '.hoai'), { recursive: true })
   writeFileSync(join(home, '.hoai', 'agent-browser.json'), JSON.stringify({ version: 1, url: `http://127.0.0.1:${port}/mcp`, token: 'tok-123', pid: 1 }))
   const c = client(home)

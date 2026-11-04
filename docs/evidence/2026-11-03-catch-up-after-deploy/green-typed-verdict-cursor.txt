@@ -1,0 +1,12 @@
+▶ hole 4: a row the server never pushes
+  ✔ a typed permission answer does not move the place over rows under it: they still arrive, once, and the answer itself never does (9777.550708ms)
+✔ hole 4: a row the server never pushes (9778.698764ms)
+ℹ tests 1
+ℹ suites 1
+ℹ pass 1
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 17480.242873
+exit=0

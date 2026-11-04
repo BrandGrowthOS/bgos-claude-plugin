@@ -1,0 +1,158 @@
+✖ market2 launcher: legacy plus numbered launches the effective agent 42 (96.869833ms)
+✖ market2 launcher: explicit path plus numbered launches the effective agent 42 (55.49875ms)
+✖ market2 launcher: legacy without home launches the effective agent 42 (898.98225ms)
+✖ market2 diagnostics: installed marketplace CLI reports effective home and the legacy setting (111.872708ms)
+✖ market2 forecast: pin admission still forecasts its strict refusal (4.332375ms)
+✖ market2 forecast: recorded home admission still forecasts its strict refusal (0.724583ms)
+✖ market2 diagnostics: doctor preserves the effective marketplace home mode (0.67275ms)
+ℹ tests 7
+ℹ suites 0
+ℹ pass 0
+ℹ fail 7
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1352.399375
+
+✖ failing tests:
+
+test at test/marketplace-attach.e2e.test.ts:2:5331
+✖ market2 launcher: legacy plus numbered launches the effective agent 42 (96.869833ms)
+  AssertionError [ERR_ASSERTION]: scope follows the selected credentials, not another filename
+
+  '41' !== '42'
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:273:14)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.start (node:internal/test_runner/test:1096:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:385:17) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: '41',
+    expected: '42',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/marketplace-attach.e2e.test.ts:2:5331
+✖ market2 launcher: explicit path plus numbered launches the effective agent 42 (55.49875ms)
+  AssertionError [ERR_ASSERTION]: scope follows the selected credentials, not another filename
+
+  '41' !== '42'
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:273:14)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: '41',
+    expected: '42',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/marketplace-attach.e2e.test.ts:2:5331
+✖ market2 launcher: legacy without home launches the effective agent 42 (898.98225ms)
+  AssertionError [ERR_ASSERTION]: scope follows the selected credentials, not another filename
+
+  '' !== '42'
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:273:14)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: '',
+    expected: '42',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/marketplace-attach.e2e.test.ts:2:6823
+✖ market2 diagnostics: installed marketplace CLI reports effective home and the legacy setting (111.872708ms)
+  AssertionError [ERR_ASSERTION]: the installed marketplace enforces home by default
+
+  'off' !== 'home'
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:295:12)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 'off',
+    expected: 'home',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/marketplace-attach.test.ts:1:5857
+✖ market2 forecast: pin admission still forecasts its strict refusal (4.332375ms)
+  AssertionError [ERR_ASSERTION]: home admission must not hide strict rollout risk
+
+  0 !== 1
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.test.ts:130:14)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.start (node:internal/test_runner/test:1096:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:385:17) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 0,
+    expected: 1,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/marketplace-attach.test.ts:1:5857
+✖ market2 forecast: recorded home admission still forecasts its strict refusal (0.724583ms)
+  AssertionError [ERR_ASSERTION]: home admission must not hide strict rollout risk
+
+  0 !== 1
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.test.ts:130:14)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 0,
+    expected: 1,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/marketplace-attach.test.ts:1:7082
+✖ market2 diagnostics: doctor preserves the effective marketplace home mode (0.67275ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /^Mode home;/. Input:
+
+  'Mode off; this session: agent 41: matching home or explicit opt in. This computer, last 7 days: 0 session starts, 0 wrong agent, 0 unscoped, 0 unreadable, 0 refused.'
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.test.ts:148:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'Mode off; this session: agent 41: matching home or explicit opt in. This computer, last 7 days: 0 session starts, 0 wrong agent, 0 unscoped, 0 unreadable, 0 refused.',
+    expected: /^Mode home;/,
+    operator: 'match',
+    diff: 'simple'
+  }

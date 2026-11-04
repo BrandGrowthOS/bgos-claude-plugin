@@ -82,7 +82,7 @@ test('the folder is the launch folder under its own name, never the process fold
   )
   // And that check is the lib's, over this daemon's own binding (fc75c7c3:
   // an elimination start with no home to check against has not passed it).
-  assert.match(server, /\nconst HOME_CONFIRMED = homeCheckPassed\(HOME_BINDING\)\n/)
+  assert.match(server, /\nconst HOME_CONFIRMED = homeCheckPassed\(HOME_BINDING\) \|\| MARKETPLACE_ATTACH\?\.homeMatched === true\n/)
   assert.match(built, /\n\s*assistantId: \(\) => String\(ASSISTANT_ID \?\? ''\),\n/, 'the agent is this daemon own')
 })
 

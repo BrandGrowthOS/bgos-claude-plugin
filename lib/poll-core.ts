@@ -179,9 +179,164 @@ export function buildChatPollRequest(opts: {
   const base = `chats/${chatId}/messages?userId=${userId}`
   const cacheKey = `poll:${chatId}`
   if (lastSeen <= 0 || unansweredButtonCount > 0 || forceFull) {
-    return { path: base, cacheKey, mode: 'full' }
+    return { path: `${base}&withPagination=1`, cacheKey, mode: 'full' }
   }
-  return { path: `${base}&afterId=${lastSeen}`, cacheKey, mode: 'delta' }
+  return { path: `${base}&afterId=${lastSeen}&withPagination=1`, cacheKey, mode: 'delta' }
+}
+
+// ── The catch up walk (D04-1) ────────────────────────────────────────────────
+//
+// THE SERVER'S RULE, which decides the shape of everything below: a read returns
+// the NEWEST `limit` rows of its range, oldest first (BGOS message.repository.ts,
+// inner ORDER BY m.id DESC LIMIT n, outer ORDER BY id ASC). So a read of a chat
+// with more rows above the cursor than fit a page returns the top of them, and
+// moving the cursor to its newest id skipped the rest for good, without a word:
+// 51 missed rows lost 1, 80 lost 30, on the delta read and the boot read alike.
+// Reading again with afterId set to the newest id only goes up and skips the same
+// rows. The way to the cursor is DOWN, with beforeId, and nothing can be delivered
+// until the walk has reached it, because the rows must go out oldest first and a
+// failed page must leave the cursor where it was.
+
+/** The server's default page: the first read of a poll takes it, so an idle read stays flat. */
+export const CHAT_PAGE_DEFAULT_LIMIT = 50
+
+/** The most the server returns in one page (it clamps limit to 1..200). */
+export const CHAT_OLDER_PAGE_LIMIT = 200
+
+/**
+ * The next page down. `afterId` keeps the page above the cursor, so a chat with
+ * years of history below it never costs more than the rows actually owed.
+ * On a first read (no cursor) there is no lower bound, and the walk stops on
+ * firstPollNeedsOlderRows instead.
+ */
+export function buildOlderPagePath(opts: {
+  chatId: string
+  userId: string
+  lastSeen: number
+  beforeId: number
+}): string {
+  const { chatId, userId, lastSeen, beforeId } = opts
+  const above = lastSeen > 0 ? `&afterId=${lastSeen}` : ''
+  return `chats/${chatId}/messages?userId=${userId}&beforeId=${beforeId}&limit=${CHAT_OLDER_PAGE_LIMIT}${above}&withPagination=1`
+}
+
+/**
+ * Could older rows exist below this page? `hasMore` is the server's own answer,
+ * from a probe row, so it is believed in both directions. A backend that does not
+ * send it (from before BGOS #700) is read the old way: only a full page can have
+ * anything under it.
+ */
+export function pageMayHaveOlderRows(page: { rowCount: number; hasMore?: unknown; limit: number }): boolean {
+  if (typeof page.hasMore === 'boolean') return page.hasMore
+  return page.rowCount >= page.limit
+}
+
+/**
+ * Where a first read's owed rows start: the chat's live floor (see chatLiveFloor
+ * in server.ts), or just above the cursor if another read moved it while this one
+ * was in flight. Rows from here up are owed in full; only the rows below go through
+ * the walk back.
+ */
+export function firstReadOwedFrom(opts: { liveFloor: number | undefined; cursorNow: number }): number {
+  return Math.min(
+    opts.liveFloor ?? Number.POSITIVE_INFINITY,
+    opts.cursorNow > 0 ? opts.cursorNow + 1 : Number.POSITIVE_INFINITY,
+  )
+}
+
+/**
+ * Should a first read (no cursor) look further down? The same rules as
+ * selectFirstPollBacklogIds, read from the newest row, and it must stop exactly
+ * where more rows would change nothing the selection returns: at a real reply
+ * (everything older was handled), at a row the first run gate refuses (everything
+ * older is older still), or when a group's history cap is full. Without those
+ * stops a first install would page through every chat's whole history for rows it
+ * was always going to withhold. Running out of rows is the only reason to go on.
+ */
+export function firstPollNeedsOlderRows(opts: {
+  rows: FirstPollRow[]
+  recentCutoffMs: number | null
+  historyCap: { beforeMs: number; max: number } | null
+}): boolean {
+  const { rows, recentCutoffMs, historyCap } = opts
+  let history = 0
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const m = rows[i]!
+    if (m.pendingEmptySystem) continue
+    if (recentCutoffMs !== null && (m.sentDateMs === null || m.sentDateMs < recentCutoffMs)) return false
+    if (m.sender === 'assistant') {
+      if (i > 0 && rows[i - 1]!.sender === 'user') return false
+      continue
+    }
+    if (m.sender !== 'user' && m.sender !== 'system') continue
+    if (historyCap && (m.sentDateMs === null || m.sentDateMs < historyCap.beforeMs) && ++history >= historyCap.max) {
+      return false
+    }
+  }
+  return true
+}
+
+/**
+ * Should this read fetch another page? With a cursor, until the rows held touch it:
+ * `hasMore` alone would walk a long chat to its first row on every full read,
+ * though nothing below the cursor is owed. Without one, see firstPollNeedsOlderRows.
+ */
+export function readNeedsOlderPage(opts: {
+  mayHaveOlder: boolean
+  oldestId: number
+  lastSeen: number
+  firstRead: {
+    rows: FirstPollRow[]
+    recentCutoffMs: number | null
+    historyCap: { beforeMs: number; max: number } | null
+  } | null
+}): boolean {
+  if (!opts.mayHaveOlder) return false
+  if (opts.firstRead) return firstPollNeedsOlderRows(opts.firstRead)
+  return opts.oldestId > opts.lastSeen + 1
+}
+
+/**
+ * Read down until `needsOlder` says the read is whole, and return every row held,
+ * oldest first, each once. A read the first page finishes does nothing here, so an
+ * idle chat still costs one conditional GET.
+ *
+ * No cap on rows or pages: the row is "however many there are". What stops a server
+ * that does not honour beforeId from spinning this forever is the progress check: a
+ * page with no row below the one above it ends the walk, `onNoProgress` says so, and
+ * the rows held carry on. An error from `fetchOlder` goes up: the caller delivers
+ * nothing and moves no cursor, and the next read starts over.
+ */
+export async function walkOlderPages<R>(opts: {
+  rows: R[]
+  mayHaveOlder: boolean
+  idOf: (row: R) => number
+  needsOlder: (rowsOldestFirst: R[], mayHaveOlder: boolean) => boolean
+  fetchOlder: (beforeId: number) => Promise<{ rows: R[]; mayHaveOlder: boolean }>
+  /** Wraps the whole walk: it runs inside a tick, and the pairing lock goes stale in 15 s. */
+  during: <T>(work: () => Promise<T>) => Promise<T>
+  onNoProgress: (beforeId: number) => void
+}): Promise<R[]> {
+  const { idOf, needsOlder, fetchOlder } = opts
+  const oldestFirst = (rows: R[]) => [...rows].sort((a, b) => idOf(a) - idOf(b))
+  const first = oldestFirst(opts.rows)
+  if (!needsOlder(first, opts.mayHaveOlder)) return first
+  return opts.during(async () => {
+    let held = first
+    let mayHaveOlder: boolean = opts.mayHaveOlder
+    do {
+      const beforeId = idOf(held[0]!)
+      const page = await fetchOlder(beforeId)
+      const older = oldestFirst(page.rows.filter((r) => idOf(r) < beforeId))
+      if (older.length === 0) {
+        if (page.mayHaveOlder) opts.onNoProgress(beforeId)
+        return held
+      }
+      held = [...older, ...held]
+      mayHaveOlder = page.mayHaveOlder
+    } while (needsOlder(held, mayHaveOlder))
+    return held
+  })
 }
 
 // ── Cursor advance (P1b) ─────────────────────────────────────────────────────
@@ -202,8 +357,10 @@ export function advanceCursor(opts: {
   pendingEmptyIds: number[]
 }): number {
   const { lastSeen, maxId, pendingEmptyIds } = opts
-  const cap = pendingEmptyIds.length ? Math.min(...pendingEmptyIds) - 1 : maxId
-  return Math.max(lastSeen, Math.min(maxId, cap))
+  // A loop, not a spread: one read can now be longer than the engine's argument limit.
+  let cap = maxId
+  for (const id of pendingEmptyIds) cap = Math.min(cap, id - 1)
+  return Math.max(lastSeen, cap)
 }
 
 // ── First-poll backlog selection + first-run gate (restart-replay fix) ───────
@@ -653,4 +810,25 @@ export function planPollCycle(opts: {
     return { kind: 'fast', chatIds: opts.fastChatIds }
   }
   return { kind: 'idle' }
+}
+
+/** Keep originals in ID order; insert corrections at their edit time.
+ * An unversioned correction belongs after the owed originals, never ahead.
+ */
+export function mergeHumanEditDeliveries<T>(
+  originals: T[], edits: T[], sentAt: (row: T) => number | null, editedAt: (row: T) => number | null,
+): Array<{ row: T; edit: boolean }> {
+  const pending = [...edits].sort((a, b) => (editedAt(a) ?? Infinity) - (editedAt(b) ?? Infinity))
+  const editRows = new Set(edits)
+  const plan: Array<{ row: T; edit: boolean }> = []
+  for (const row of originals) {
+    if (editRows.has(row)) continue
+    const sent = sentAt(row)
+    while (pending.length && sent !== null && (editedAt(pending[0]!) ?? Infinity) <= sent) {
+      plan.push({ row: pending.shift()!, edit: true })
+    }
+    plan.push({ row, edit: false })
+  }
+  for (const row of pending) plan.push({ row, edit: true })
+  return plan
 }

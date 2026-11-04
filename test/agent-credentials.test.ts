@@ -500,7 +500,7 @@ test('server loads credentials from the folder-scoped selection and refuses the 
   // Phase two: boot resolves via the folder-scoped selection (with cwd), so a
   // <cwd>/.bgos-agent-id pin or a sole file self-resolves with no env var.
   assert.equal(
-    /const CREDENTIALS_SELECTION = resolveCredentialsSelection\(\{\s*env: process\.env,\s*defaultPath: DEFAULT_CREDENTIALS_FILE,\s*cwd: LAUNCH_CWD,\s*\}\)/.test(
+    /const CREDENTIALS_SELECTION = MARKETPLACE_ATTACH\?\.selection \?\? resolveCredentialsSelection\(\{\s*env: process\.env,\s*defaultPath: DEFAULT_CREDENTIALS_FILE,\s*cwd: LAUNCH_CWD,\s*\}\)/.test(
       serverSource,
     ),
     true,
@@ -520,7 +520,7 @@ test('server loads credentials from the folder-scoped selection and refuses the 
   // DIFFERENT file than the selection chose, which is the whole point of the
   // selection. Two separate loads would be two chances to diverge.
   assert.equal(
-    /const CREDENTIALS_FILE = loadCredentialsFile\(CREDENTIALS_PATH\)/.test(serverSource),
+    /const CREDENTIALS_FILE = MARKETPLACE_ATTACH && 'credentials' in MARKETPLACE_ATTACH\s*\? MARKETPLACE_ATTACH\.credentials \?\? null\s*: loadCredentialsFile\(CREDENTIALS_PATH\)/.test(serverSource),
     true,
   )
   assert.equal(/creds: CREDENTIALS_FILE/.test(serverSource), true)
@@ -533,7 +533,7 @@ test('server loads credentials from the folder-scoped selection and refuses the 
   // version would leave the stray speaking, which is the behaviour it exists
   // to stop. Scoped to the branch itself (test/home-refused-server.test.ts has
   // the notice): an exit found anywhere later in the file would prove nothing.
-  const refuseBranch = /if \(HOME_BINDING\.action === 'refuse'\) \{[\s\S]*?\n\}/.exec(serverSource)
+  const refuseBranch = /if \(HOME_BINDING\.action === 'refuse' && !MARKETPLACE_ATTACH\) \{[\s\S]*?\n\}/.exec(serverSource)
   assert.ok(refuseBranch, 'the refusal branch exists')
   assert.match(refuseBranch![0], /formatHomeBindingRefusal\(HOME_BINDING\)/)
   assert.match(refuseBranch![0], /\n\s*process\.exit\(served \? 0 : 1\)\n\}$/)
@@ -909,8 +909,8 @@ test('every identity call site uses the SAME directory', () => {
   const uses = serverSource.match(/cwd: LAUNCH_CWD/g) ?? []
   assert.equal(
     uses.length,
-    7,
-    `expected boot, recheck, boot-log, the env-only risk check, the deaf-notice route resolver, the home-folder binding and the duplicate-copy lookup to share LAUNCH_CWD, found ${uses.length}`,
+    8,
+    `expected boot, recheck, boot-log, the env-only risk check, the deaf-notice route resolver, the home-folder binding, the duplicate-copy lookup and the marketplace preflight to share LAUNCH_CWD, found ${uses.length}`,
   )
   // Scoped to the identity paths ON PURPOSE. Other call sites still pass
   // process.cwd() and should: the cursor-file path and the health report are
