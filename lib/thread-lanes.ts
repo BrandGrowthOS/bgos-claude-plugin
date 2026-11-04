@@ -266,8 +266,9 @@ export class ThreadLaneManager {
 
   /**
    * Work a restart would cut off: a turn running or waiting for a slot, a lane whose next turn is queued, and any
-   * background step still going (a start, an answer being posted, a read of pending turns, a removal). A lane that only
-   * sits idle is not work: liveChildren() counts it for 20 minutes after its turn, and its next turn resumes by its id.
+   * background step still going (a start, an answer being posted, a read of pending turns, a close or a delete). A lane
+   * that only sits idle is not work: liveChildren() counts it for 20 minutes after its turn, and its next turn resumes
+   * by its id. The hourly sweep of closed lanes is not counted: it runs no turn.
    */
   activeWork(): number {
     let n = this.work.size

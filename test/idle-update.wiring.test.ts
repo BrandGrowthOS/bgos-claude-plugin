@@ -362,6 +362,14 @@ test('the proof reads nothing outside the moments it can mean something, and dro
   assert.match(undelivered, /!lockHeld \|\| !channelArmed \|\| updateDrainMode/)
 })
 
+test('the nightly update, a click and the watcher wait for thread work too: an update must not stop a thread turn or a fork', () => {
+  const at = server.indexOf('function restartDrainSnapshot() {')
+  assert.ok(at >= 0, 'restartDrainSnapshot is gone')
+  assert.match(server.slice(at, server.indexOf('\n}\n', at)), /activeOperations: snapshot\.activeOperations \+ liveThreadWork\(threadLanes, asideForks\)/)
+  assert.equal(server.split('drainSnapshot: restartDrainSnapshot,').length - 1, 2, 'the clicked update and the self updater')
+  assert.match(server, /activeOperations: messageActivity\.activeOperations \+ liveThreadWork\(threadLanes, asideForks\),/, 'the agent state the watcher reads')
+})
+
 test('the controller is given the real thread work, and a voice_rpc frame starts none once drained', () => {
   assert.match(block(), /threadWork: \(\) => liveThreadWork\(threadLanes, asideForks\),/)
   const at = server.indexOf("realtimeSocket.on('voice_rpc', whenArmed('voice_rpc'")

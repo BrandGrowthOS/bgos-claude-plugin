@@ -109,11 +109,29 @@ What the counts really mean, read before using them:
 
 A correction to how this was first reported. It was reported as nothing holding these back. Read closer, an aside's handler is an active operation, and any `voice_rpc` frame holds `call_active` for 30 minutes, which happens to equal `THREAD_TURN_TIMEOUT_MS`. The real holes were narrower: a turn started by the read of pending threads, which has no frame; a turn queued past that window; a fork or an answer post near its end.
 
+A review found the idle check was not the only way to an update, so the same count goes on the others:
+
+| Way to an update | How it reads thread work | When it gives up |
+|---|---|---|
+| Idle restart, way back | `threadWork`, gate 12a | The way back stops waiting at `rollbackWaitMaxMs` and asks a person |
+| Hook restart | `restartDrainSnapshot` | Its own bound |
+| A clone's scheduled update | `restartDrainSnapshot` | 15 minute ceiling, then it skips, and nothing stops |
+| A click on a clone | `restartDrainSnapshot` | 45 s, then `drain_timeout`, and nothing stops |
+| A click on a plugin install | `restartDrainSnapshot` | **45 s, then it goes ahead and can stop a turn.** A person asked for it. Data's ruling is open. |
+| The watcher's sweep | `activeOperations` in `agent-state.json` | None. It holds until the work ends |
+
+The count has no stale rule of its own, unlike operations (30 minutes). A running turn ends at `THREAD_TURN_TIMEOUT_MS`, and the steps before a process exists have their own limits, but a start that hung would hold the idle restart and the sweep until a person looks. Read, not run.
+
+A hook restart held by thread work logs `pending_messages`, as the plan has no reason of its own for it.
+
 The gap between the check and the restart:
 
 - Closed for the idle restart and the way back: the second decision reads fresh facts after the close look's awaits, then `act` reaches `deps.drain(true)` with no await in between. Draining disconnects the socket, `voice_rpc` frames return at once, and a read of pending threads starts nothing. A read already out counts as work.
 - Not closed, and it cannot be from this side: a frame the backend sends in the moment between the drain and the process ending starts nothing here. A thread turn is read again at the next boot's reconcile; that the backend still lists it was not checked from this repo. An aside sent then gets no answer.
-- The hourly sweep of closed lanes can start a removal in that gap. That is not a turn.
+- The hourly sweep of closed lanes is not counted, in the gap or before it. It runs no turn.
+- The watcher's sweep has no drain. It reads a file the daemon writes each second, so a turn that starts after that read, before its signal, is not held. Not closed here.
+- A plugin install's click that goes ahead at 45 s leaves its drain on, but a read of pending threads already out can still start a turn. A read that has not gone out starts nothing.
+- After a daemon crash, a lane the old daemon started is not counted by the new one. A restart does not signal that process, so it is not stopped by this.
 
 ## Proof limits
 

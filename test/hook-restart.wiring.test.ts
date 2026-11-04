@@ -83,5 +83,5 @@ test('the shutdown path never names the hook restart: it is inert once shutdown 
 })
 
 test('a hook restart waits for thread work like any other operation', () => {
-  assert.match(block(), /\.\.\.updateDrainSnapshot\(\),\n\s*activeOperations: updateDrainSnapshot\(\)\.activeOperations \+ liveThreadWork\(threadLanes, asideForks\),/)
+  assert.match(block(), /\.\.\.restartDrainSnapshot\(\),\n\s*\}\),/)
 })
