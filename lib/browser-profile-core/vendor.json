@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "sourceCommit": "d78c20f673bf2440589104e121f063c7c9ea765b",
+  "sourceCommit": "a2eb30b1e89a2c6a8a7578ecb145d54c2061d9be",
   "why": "Byte-identical encrypted checkpoint, lossless storage, portable state and resume readiness, cookie codecs, typed runtime endpoint, signed stopped-head lineage, separate permissioned file crypto/client/private materialization and encrypted local journal shared with HOAI. Explicit fixed-principal active backup transport, scheduler, readonly capture and seal/journal workers are included as pure main-only dependencies; they provide no activation authority. NativeRuntime exports are pure until its injected Electron constructor runs. The pairing adapter shares pure endpoint and document validation and never instantiates or inherits the desktop Bearer client. ProfileFileClient fixes its principal explicitly; paired use obtains only fresh pairing proof. Electron OS folder policy and native dialogs are intentionally excluded.",
   "files": {
     "sign-in-copy.js": {

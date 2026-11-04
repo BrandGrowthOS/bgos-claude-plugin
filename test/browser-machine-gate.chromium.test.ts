@@ -19,7 +19,7 @@ const chrome = resolveChromeExecutable()
 const skip = !chrome.path ? 'no Chrome or Chromium is installed on this machine' : false
 const OWNER = { assistantId: 42, assistantName: 'Atlas', principal: 'user-owner_1' }
 const PAGES: Record<string, string> = {
-  '/': `<title>One</title><button id="quoted" onclick="fetch('/clicked/quoted')">Confirm: delete account</button><button id="pub" onclick="fetch('/clicked/pub')">Make /finance public</button><button id="harmless" onclick="fetch('/clicked/harmless')">Show the report</button><button id="bare" aria-label="" onclick="fetch('/clicked/bare')"><svg width="9" height="9"></svg></button><a id="next" href="/next">Next</a>`,
+  '/': `<title>One</title><button id="quoted" onclick="fetch('/clicked/quoted')">Confirm: delete account</button><button id="pub" onclick="fetch('/clicked/pub')">Make /finance public</button><button id="harmless" onclick="fetch('/clicked/harmless')">Show the report</button><button id="bare" aria-label="" onclick="fetch('/clicked/bare')"><svg width="9" height="9"></svg></button><input id="nameless" type="password" value="MADE_UP_NAMELESS_VALUE"><a id="next" href="/next">Next</a>`,
   '/next': `<title>Two</title><button id="after" onclick="fetch('/clicked/after')">Delete account</button>`,
 }
 
@@ -91,6 +91,21 @@ test('a target with no name the host can read asks on a browser that holds a coo
   const anonymous = await rig(t, { cookie: false })
   await anonymous.call('browser_click', { target: '#bare', element: 'Open the note', wait_seconds: 1 }); await settle()
   assert.equal(anonymous.cards.length, 0, JSON.stringify(anonymous.cards)); assert.deepEqual(anonymous.clicks, ['bare'], 'CONTROL')
+})
+
+test('a field with no name of its own: what it holds is not on the card, whatever way it is named', { timeout: 120_000, skip }, async (t) => {
+  const r = await rig(t)
+  await r.call('browser_click', { target: '#nameless', element: 'Open the note', wait_seconds: 1 }); await settle()
+  assert.equal(r.cards[0]?.kind, 'sensitive', JSON.stringify(r.cards))
+  assert.equal(JSON.stringify(r.cards).includes('MADE_UP_NAMELESS_VALUE'), false, JSON.stringify(r.cards))
+})
+
+test('reading a selector for a gate leaves the agent\'s refs working for a call with no gate', { timeout: 120_000, skip }, async (t) => {
+  const r = await rig(t), snap = await r.call('browser_snapshot'), ref = refOf(snap, 'Show the report')
+  await r.call('browser_click', { target: '#harmless', element: 'Show the report' }); await settle()
+  const part = JSON.stringify(await r.call('browser_snapshot', { target: ref }))
+  assert.match(part, /Show the report/, part.slice(0, 400))
+  assert.equal(r.cards.length, 0, JSON.stringify(r.cards))
 })
 
 test('CONTROL: a harmless name on a site the owner allowed clicks with no card, by ref and by selector', { timeout: 120_000, skip }, async (t) => {

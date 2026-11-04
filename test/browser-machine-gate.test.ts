@@ -75,6 +75,19 @@ test('a multi target action is judged and named by all its targets', async () =>
   void drag.catch(() => {})
 })
 
+test('another person\'s turn sends no page fact to the intent check, even on a slot that has a session card', async () => {
+  const asked: any[] = []
+  const r = rig({ owner: false, intentCheck: async (_a: number, _s: string, body: any) => { asked.push(body); return { verdict: 'does_not_match', quote: 'q', reason: 'x' } } })
+  await r.core.callTool(OWNER, 'browser_snapshot', {})
+  r.slot.cardId = 'card_1'
+  const call = r.core.callTool(OWNER, 'browser_click', { target: 'e2', element: 'Send the invoice', wait_seconds: 5 })
+  for (let i = 0; i < 50 && !r.cards.length; i++) await new Promise(resolve => setTimeout(resolve, 5))
+  assert.equal(r.cards.length, 1)
+  assert.equal(asked.length, 0, JSON.stringify(asked))
+  assert.equal(/does not match/i.test(r.cards[0].summary), false)
+  await call
+})
+
 test('a sensitive gate goes through the intent check with the host\'s own facts, and a mismatch is on the owner\'s card', async () => {
   const asked: any[] = []
   const r = rig({ intentCheck: async (_assistantId: number, sessionId: string, body: any) => { asked.push({ sessionId, body }); return { verdict: 'does_not_match', quote: 'send the invoice to finance', reason: 'x' } } })

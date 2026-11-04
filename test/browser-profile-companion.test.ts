@@ -346,6 +346,13 @@ test('direct receive stages original signed bytes, journals before acknowledgeme
 
 
 // A person's computer on this release refuses the move itself. An older one still asks, so the machine holds the line too.
+test('a machine that cannot say its agent is apart does not take a browser either',async t=>{
+  const f=await resumeFixture(t),lines:string[]=[];const log=f.companion.log;f.companion.log=(line:string)=>{lines.push(line);log?.(line)}
+  f.companion.sharesUser=()=>null
+  await f.companion._step(f.record)
+  assert.ok(lines.some(line=>/stays on the computer|same OS user/.test(line)),lines.join(' | '))
+  assert.equal(f.record.runtime??null,null)
+})
 test('a machine whose agent shares its OS user does not take a browser moved to it: it never answers ready, and says why',async t=>{
   const f=await resumeFixture(t),lines:string[]=[];const log=f.companion.log;f.companion.log=(line:string)=>{lines.push(line);log?.(line)}
   let ready=0;for(const name of ['readyRuntimeRequest','markRuntimeReady','submitReady','ready'])if(typeof f.client[name]==='function'){const real=f.client[name];f.client[name]=async(...args:any[])=>{ready++;return real(...args)}}

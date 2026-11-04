@@ -14,7 +14,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { ChromiumEngine, keepPageOutOfFiles, resolveChromeExecutable, sweepPageFiles } from '../bin/hoai-browser-host.mjs'
+import { ChromiumEngine, DEFAULT_CAPS, PlaywrightEngine, keepPageOutOfFiles, loadPlaywright, resolveChromeExecutable, sweepPageFiles } from '../bin/hoai-browser-host.mjs'
 import { maskMaskedInputs, maskedValuesOf } from '../lib/browser-snapshot-privacy.mjs'
 
 const chrome = resolveChromeExecutable()
@@ -274,16 +274,44 @@ test('a masked field keeps its value out of every reply on the real engine: a pl
     }
     inner._redactMaskedValues = redact; inner._secrets = secretsBefore
     // An error that quotes a value a call just typed into a masked box is redacted as well.
-    await page.locator('input[aria-label="Plain"]').fill(`${VALUES.plain}_NEW`)
+    const TYPED = `MADE_UP_TYPED_${randomBytes(6).toString('hex')}`
+    await page.locator('input[aria-label="Plain"]').fill(TYPED)
     const backend = inner._backend, real = backend.callTool
-    backend.callTool = async () => { throw new Error(`failed near ${VALUES.plain}_NEW`) }
-    await assert.rejects(engine.callTool('browser_snapshot', {}), (error: Error) => !error.message.includes(`${VALUES.plain}_NEW`))
+    backend.callTool = async () => { throw new Error(`failed near ${TYPED}`) }
+    await assert.rejects(engine.callTool('browser_snapshot', {}), (error: Error) => error.message.startsWith('failed near') && !error.message.includes(TYPED))
     backend.callTool = real
   } finally {
     await engine.stop().catch(() => {})
     await new Promise(resolve => server.close(resolve))
     rmSync(home, { recursive: true, force: true })
   }
+})
+
+test('a page that was already open when a managed browser started is masked on both doors', { timeout: 120_000, skip }, async () => {
+  const VALUE = `MADE_UP_OPEN_${randomBytes(6).toString('hex')}`
+  const home = made('bh-open-')
+  const { chromium } = loadPlaywright()
+  const browser = await chromium.launch({ executablePath: chrome.path!, headless: true })
+  const context = await browser.newContext(), page = await context.newPage()
+  await page.setContent(`<title>Keys</title><input type="password" aria-label="Open" value="${VALUE}">`)
+  const engine: any = new PlaywrightEngine({ caps: DEFAULT_CAPS, outputDir: home, clientName: 'fixture', clientVersion: '0', managedRuntime: { browser, context, assertCurrent() {} } })
+  try {
+    await engine.start()
+    engine._redactMaskedValues = async () => {} // this door alone
+    const found = JSON.stringify(await engine.callTool('browser_find', { regex: 'textbox' }))
+    assert.match(found, /Open/, found.slice(0, 300))
+    assert.equal(found.includes(VALUE), false, found.slice(0, 300))
+  } finally {
+    await browser.close().catch(() => {})
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('past the most fields a tree is asked about, a filled box reads as masked', async () => {
+  const tree = Array.from({ length: 70 }, (_, index) => `- textbox "F${index}" [ref=e${index}]: VALUE_${index}`).join('\n')
+  const lines = (await maskMaskedInputs(tree, () => ({ evaluate: async () => false }))).split('\n')
+  assert.ok(lines[63].endsWith(': VALUE_63'), 'CONTROL: an ordinary field inside the bound keeps its value')
+  assert.ok(lines.slice(64).every((line: string) => line.endsWith(': (masked)')), lines[64])
 })
 
 test('the snapshot mask reads every form Playwright writes a filled box in, and fails closed', async () => {

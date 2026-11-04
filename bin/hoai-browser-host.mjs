@@ -1396,8 +1396,8 @@ export class PlaywrightEngine {
 
   /**
    * What the live page calls each of these targets, or null for one it will not say. Never the agent's words.
-   * Any read of a tree replaces the one the page answers refs from, so a ref is read from a whole
-   * page tree, and a selector's read is followed by one, or the agent's refs stop working.
+   * Reading any tree replaces the one the page answers refs from, so each read is followed by
+   * a read of the whole page, or the agent's refs stop working.
    */
   async describeTargets(targets) {
     const tab = this._backend?._context?.currentTab?.()
@@ -1407,14 +1407,10 @@ export class PlaywrightEngine {
       try { return await Promise.race([work(), new Promise((resolve) => { timer = setTimeout(() => resolve(null), TARGET_READ_MS); timer.unref?.() })]) }
       catch { return null } finally { clearTimeout(timer) }
     }
-    const wholeTree = () => bounded(() => tab.page.ariaSnapshot({ mode: 'ai', timeout: TARGET_READ_MS }))
     const named = []
-    let tree = await wholeTree()
     for (const target of targets) {
-      const byRef = targetOfRef(tree, target)
-      if (byRef) { named.push(byRef); continue }
       named.push(targetOfTree(await bounded(async () => (await tab.targetLocator({ target })).locator.first().ariaSnapshot({ timeout: TARGET_READ_MS }))))
-      tree = await wholeTree()
+      await bounded(() => tab.page.ariaSnapshot({ mode: 'ai', timeout: TARGET_READ_MS }))
     }
     return named
   }
