@@ -9,7 +9,7 @@
 
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join, resolve, sep } from 'node:path'
 
 import {
   THREAD_ORPHAN_POLL_MS,
@@ -28,10 +28,13 @@ import { sessionTranscriptPath } from '../bin/hoai-core.mjs'
 const MAIN = '435f1f18-2716-4c27-bfd8-e2c48f28b3ac'
 const FORK_A = 'dbd3b62b-f099-4f95-be1d-4687b4af9042'
 const FORK_B = '060f0349-719c-4450-aab2-189517f87a76'
-const HOME = '/home/u'
-const AGENT = '/work/atlas'
-const STATE = '/home/u/.bgos-agent/7/threads'
-const MCP = `${STATE}/empty-mcp.json`
+// Absolute native paths even on Windows; drive-less \work fixtures fail confinement.
+const HOME = resolve('/home/u')
+const AGENT = resolve('/work/atlas')
+const STATE = join(HOME, '.bgos-agent', '7', 'threads')
+const MCP = join(STATE, 'empty-mcp.json')
+const WINDOWS = sep === '\\'
+const POSIX_SANDBOX = { skip: WINDOWS ? 'POSIX Bash sandbox only; Windows has no lane Bash sandbox' : false }
 const MIN = 60_000
 const DAY = 24 * 60 * MIN
 
@@ -109,8 +112,8 @@ function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; f
     home: HOME,
     configDir: '',
     emptyMcpConfigPath: () => MCP,
-    emailFilesDir: `${HOME}/.bgos-agent/email-files/7`,
-    shellSandbox: () => opts.shell ?? true,
+    emailFilesDir: join(HOME, '.bgos-agent/email-files/7'),
+    shellSandbox: () => opts.shell ?? !WINDOWS,
     platform: opts.platform ?? 'darwin',
     git: async (args) => {
       gitCalls.push(args)
@@ -120,8 +123,8 @@ function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; f
       if (over) return over
       if (sub[0] === 'rev-parse' && sub[1] === '--show-prefix') return { ok: true, stdout: '\n' }
       if (sub[0] === 'rev-parse' && sub[1] === '--git-path') return { ok: true, stdout: '.git/info/exclude\n' }
-      if (sub[0] === 'rev-parse' && sub[2] === '--git-common-dir') return { ok: true, stdout: `${AGENT}/.git\n` }
-      if (sub[0] === 'rev-parse' && sub[2] === '--git-dir') return { ok: true, stdout: `${AGENT}/.git/worktrees/${args[1]!.split('/').at(-1)}\n` }
+      if (sub[0] === 'rev-parse' && sub[2] === '--git-common-dir') return { ok: true, stdout: `${join(AGENT, '.git')}\n` }
+      if (sub[0] === 'rev-parse' && sub[2] === '--git-dir') return { ok: true, stdout: `${join(AGENT, '.git', 'worktrees', basename(args[1]!))}\n` }
       if (sub[0] === 'for-each-ref') return { ok: true, stdout: `refs/heads/main\nrefs/heads/hoai/thread-${'101'}\n` }
       if (sub[0] === 'branch' && sub[1] === '-D') { branchesDeleted.push(sub[2]!); return { ok: true, stdout: '' } }
       if (sub[0] === 'worktree' && sub[1] === 'add') { dirs.add(join(AGENT, sub[2]!)); return { ok: true, stdout: '' } }
@@ -158,16 +161,16 @@ function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; f
 
 /** The command the manager must build for a working lane in wt(root) (protected: the agent repo's own state). */
 const PROTECTED = [
-  `${AGENT}/.git/index`, `${AGENT}/.git/HEAD`, `${AGENT}/.git/packed-refs`, `${AGENT}/.git/config`, `${AGENT}/.git/hooks`,
-  ...['refs/stash', 'logs/refs/stash', 'refs/tags', 'refs/remotes', 'refs/notes', 'refs/replace'].map((p) => `${AGENT}/.git/${p}`),
-  `${AGENT}/.git/refs/heads/main`,
+  join(AGENT, '.git/index'), join(AGENT, '.git/HEAD'), join(AGENT, '.git/packed-refs'), join(AGENT, '.git/config'), join(AGENT, '.git/hooks'),
+  ...['refs/stash', 'logs/refs/stash', 'refs/tags', 'refs/remotes', 'refs/notes', 'refs/replace'].map((p) => join(AGENT, '.git', p)),
+  join(AGENT, '.git/refs/heads/main'),
 ]
 function workArgs(root: string, fork: string | null): string[] {
   return threadLaneArgs({
     mainSessionId: MAIN,
     forkSessionId: fork,
     emptyMcpConfigPath: MCP,
-    confinement: { root: wt(root), readOnly: false, shellSandbox: true, protectedPaths: PROTECTED, secretPaths: [], readablePaths: [`${HOME}/.bgos-agent/email-files/7`] },
+    confinement: { root: wt(root), readOnly: false, shellSandbox: !WINDOWS, protectedPaths: PROTECTED, secretPaths: [], readablePaths: [join(HOME, '.bgos-agent/email-files/7')] },
   })
 }
 
@@ -187,11 +190,13 @@ test('a first turn makes the worktree, copies the main transcript beside it, and
     ['-C', AGENT, 'rev-parse', '--show-prefix'],
     ['-C', AGENT, 'rev-parse', '--git-path', 'info/exclude'],
     ['-C', AGENT, 'worktree', 'add', join('.hoai', 'threads', '101'), '-b', 'hoai/thread-101'],
-    // The source repository's git state the lane's sandbox must refuse.
+    // Only hosts with the POSIX sandbox read these confinement paths.
+    ...(!WINDOWS ? [
     ['-C', AGENT, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
     ['-C', wt('101'), 'rev-parse', '--path-format=absolute', '--git-dir'],
     ['-C', AGENT, 'for-each-ref', '--format=%(refname)', 'refs/heads'],
     ['-C', AGENT, 'rev-parse', '--show-ref-format'],
+    ] : []),
   ])
   assert.equal(r.files.get(sessionTranscriptPath(HOME, wt('101'), MAIN, '')), '{"main":true}\n', 'the fork finds the main transcript from its own cwd')
   assert.equal(r.spawned.length, 1)
@@ -993,7 +998,7 @@ test('a lane whose repository state cannot be read runs without Bash, never with
   assert.equal(args[args.indexOf('--tools') + 1]!.split(',').includes('Bash'), false)
 })
 
-test('a close while the lane confinement is being read starts nothing and copies nothing', async () => {
+test('a close while the lane confinement is being read starts nothing and copies nothing', POSIX_SANDBOX, async () => {
   const r = rig()
   let release: () => void = () => {}
   const gate = new Promise<void>((done) => { release = done })
@@ -1034,14 +1039,14 @@ test('delete removes the fork session folder (its tool-results) with the session
 })
 
 test('a lane state file naming a folder outside <agent>/.hoai/threads/ never gets that folder removed', async () => {
-  for (const folder of ['/etc', '/home/u', `${AGENT}/src`, `${AGENT}/.hoai/threads/../../src`, `${AGENT}/.hoai/threads/102`, `${AGENT}/.hoai/threads`]) {
+  for (const folder of [resolve('/etc'), HOME, join(AGENT, 'src'), [AGENT, '.hoai', 'threads', '..', '..', 'src'].join(sep), join(AGENT, '.hoai/threads/102'), join(AGENT, '.hoai/threads')]) {
     for (const worktree of [true, false]) {
       const state = { rootId: '101', chatId: '55', title: 'T', forkSessionId: FORK_A, folder, cwd: folder, worktree, readOnly: !worktree, closedAt: 1 }
       const r = rig({ files: { [join(STATE, '101.json')]: JSON.stringify(state) } })
       r.dirs.add(folder)
       await r.manager.close({ rootId: '101', removeWorktree: true })
       await r.manager.idle()
-      assert.deepEqual(r.removed.filter((p) => !p.startsWith(`${HOME}/.claude/`)), [], `${folder} (worktree ${worktree})`)
+      assert.deepEqual(r.removed.filter((p) => !p.startsWith(join(HOME, '.claude') + sep)), [], `${folder} (worktree ${worktree})`)
       assert.equal(r.gitCalls.some((a) => a.includes('worktree') && a.includes(folder)), false, `${folder}: no git worktree remove`)
       assert.equal(r.branchesDeleted.length, 0, `${folder}: no branch deleted`)
       assert.equal(r.files.has(join(STATE, '101.json')), false, 'the bad state file itself goes')
@@ -1050,7 +1055,7 @@ test('a lane state file naming a folder outside <agent>/.hoai/threads/ never get
 })
 
 test('the 7 day sweep refuses a state folder outside the threads folder too', async () => {
-  const state = { rootId: '101', chatId: '55', title: 'T', forkSessionId: null, folder: '/work', cwd: '/work', worktree: false, readOnly: true, closedAt: 1 }
+  const state = { rootId: '101', chatId: '55', title: 'T', forkSessionId: null, folder: resolve('/work'), cwd: resolve('/work'), worktree: false, readOnly: true, closedAt: 1 }
   const r = rig({ files: { [join(STATE, '101.json')]: JSON.stringify(state) } })
   assert.deepEqual(await r.manager.sweepClosed(30 * DAY), ['101'])
   assert.deepEqual(r.removed, [])
@@ -1167,16 +1172,16 @@ test('on a claude too old for a confined lane the turn fails with the real cause
 
 // -- gate review finding 6: the manager hands the lane its secret paths --
 
-test('a working lane refuses Bash reads of ~/.ssh, the CLI credentials and ~/.bgos-agent', async () => {
-  const r = rig({ files: { [`${HOME}/.claude/.credentials.json`]: '{}', [`${HOME}/.bgos-agent/credentials-7.json`]: '{}' } })
-  r.dirs.add(`${HOME}/.ssh`)
-  r.dirs.add(`${HOME}/.bgos-agent`)
+test('a working lane refuses Bash reads of ~/.ssh, the CLI credentials and ~/.bgos-agent', POSIX_SANDBOX, async () => {
+  const r = rig({ files: { [join(HOME, '.claude/.credentials.json')]: '{}', [join(HOME, '.bgos-agent/credentials-7.json')]: '{}' } })
+  r.dirs.add(join(HOME, '.ssh'))
+  r.dirs.add(join(HOME, '.bgos-agent'))
   r.manager.turn(turn('101'))
   await r.manager.idle()
   const args = r.spawned[0]!.args
   const settings = JSON.parse(args[args.indexOf('--settings') + 1]!)
-  assert.deepEqual(settings.sandbox.filesystem.denyRead, [`${HOME}/.ssh`, `${HOME}/.claude/.credentials.json`, `${HOME}/.bgos-agent`])
-  assert.deepEqual(settings.sandbox.filesystem.allowRead, [`${HOME}/.bgos-agent/email-files/7`])
+  assert.deepEqual(settings.sandbox.filesystem.denyRead, [join(HOME, '.ssh'), join(HOME, '.claude/.credentials.json'), join(HOME, '.bgos-agent')])
+  assert.deepEqual(settings.sandbox.filesystem.allowRead, [join(HOME, '.bgos-agent/email-files/7')])
 })
 
 // -- gate review finding 4: the source repository's refs, all of them --
@@ -1186,7 +1191,7 @@ const laneSettings = (r: ReturnType<typeof rig>, i = 0) => {
   return { tools: args[args.indexOf('--tools') + 1]!.split(','), settings: JSON.parse(args[args.indexOf('--settings') + 1]!) }
 }
 
-test('a repository on the reftable backend keeps every ref in one place the sandbox cannot split: the lane runs without Bash', async () => {
+test('a repository on the reftable backend keeps every ref in one place the sandbox cannot split: the lane runs without Bash', POSIX_SANDBOX, async () => {
   const r = rig({ git: (sub) => (sub[0] === 'rev-parse' && sub[1] === '--show-ref-format' ? { ok: true, stdout: 'reftable\n' } : undefined) })
   r.manager.turn(turn('101'))
   await r.manager.idle()
@@ -1195,7 +1200,7 @@ test('a repository on the reftable backend keeps every ref in one place the sand
   assert.equal(settings.sandbox, undefined)
 })
 
-test('on Linux a branch kept only in packed-refs is written out as a loose ref before the lane starts, so the sandbox can protect it', async () => {
+test('on Linux a branch kept only in packed-refs is written out as a loose ref before the lane starts, so the sandbox can protect it', POSIX_SANDBOX, async () => {
   const SHA = 'a'.repeat(40)
   const r = rig({
     platform: 'linux',
@@ -1203,26 +1208,26 @@ test('on Linux a branch kept only in packed-refs is written out as a loose ref b
   })
   r.manager.turn(turn('101'))
   await r.manager.idle()
-  assert.equal(r.files.get(`${AGENT}/.git/refs/heads/main`), `${SHA}\n`, 'the loose ref, same commit as the packed one')
-  assert.equal(r.files.has(`${AGENT}/.git/refs/heads/main.lock`), false, 'written through a lock, then renamed')
+  assert.equal(r.files.get(join(AGENT, '.git/refs/heads/main')), `${SHA}\n`, 'the loose ref, same commit as the packed one')
+  assert.equal(r.files.has(join(AGENT, '.git/refs/heads/main.lock')), false, 'written through a lock, then renamed')
   assert.ok(r.gitCalls.some((a) => a.join(' ') === `-C ${AGENT} rev-parse --verify --quiet refs/heads/main^{commit}`))
-  assert.equal(r.files.has(`${AGENT}/.git/refs/heads/hoai/thread-101`), false, "never the lane's own branch")
-  for (const d of ['refs/tags', 'refs/remotes', 'refs/notes', 'refs/replace']) assert.ok(r.dirs.has(`${AGENT}/.git/${d}`), `${d} exists, so it can be bound read only`)
+  assert.equal(r.files.has(join(AGENT, '.git/refs/heads/hoai/thread-101')), false, "never the lane's own branch")
+  for (const d of ['refs/tags', 'refs/remotes', 'refs/notes', 'refs/replace']) assert.ok(r.dirs.has(join(AGENT, '.git', d)), `${d} exists, so it can be bound read only`)
   assert.ok(laneSettings(r).tools.includes('Bash'))
 })
 
-test('on Linux a packed-only branch that cannot be written out leaves the lane without Bash, never unprotected', async () => {
+test('on Linux a packed-only branch that cannot be written out leaves the lane without Bash, never unprotected', POSIX_SANDBOX, async () => {
   const r = rig({ platform: 'linux', git: (sub) => (sub[0] === 'rev-parse' && sub[1] === '--verify' ? { ok: false, stdout: '' } : undefined) })
   r.manager.turn(turn('101'))
   await r.manager.idle()
   assert.equal(laneSettings(r).tools.includes('Bash'), false)
 })
 
-test('on macOS nothing is written into the source repository (the sandbox denies a path that does not exist yet)', async () => {
+test('on macOS nothing is written into the source repository (the sandbox denies a path that does not exist yet)', POSIX_SANDBOX, async () => {
   const r = rig({ platform: 'darwin' })
   r.manager.turn(turn('101'))
   await r.manager.idle()
-  assert.equal(r.files.has(`${AGENT}/.git/refs/heads/main`), false)
+  assert.equal(r.files.has(join(AGENT, '.git/refs/heads/main')), false)
   assert.equal(r.gitCalls.some((a) => a.includes('--verify')), false)
 })
 
@@ -1403,78 +1408,78 @@ test('a lane state saved before lastDelivered existed still gets the notice (nev
 
 // -- follow up (Data, item 4): on Linux the stash paths exist before the lane starts --
 
-test('on Linux with no stash yet, refs/stash is made an empty folder and logs/refs/stash an empty file, so both can be bound read only', async () => {
+test('on Linux with no stash yet, refs/stash is made an empty folder and logs/refs/stash an empty file, so both can be bound read only', POSIX_SANDBOX, async () => {
   const SHA = 'a'.repeat(40)
   const r = rig({ platform: 'linux', git: (sub) => (sub[0] === 'rev-parse' && sub[1] === '--verify' ? { ok: true, stdout: `${SHA}\n` } : undefined) })
   r.manager.turn(turn('101'))
   await r.manager.idle()
-  assert.ok(r.dirs.has(`${AGENT}/.git/refs/stash`), 'an empty folder git ignores, and replaces on the owner\'s own git stash')
-  assert.equal(r.files.has(`${AGENT}/.git/refs/stash`), false, 'never an empty ref file (git warns of a broken ref)')
-  assert.equal(r.files.get(`${AGENT}/.git/logs/refs/stash`), '')
-  assert.ok(r.dirs.has(`${AGENT}/.git/hooks`))
+  assert.ok(r.dirs.has(join(AGENT, '.git/refs/stash')), 'an empty folder git ignores, and replaces on the owner\'s own git stash')
+  assert.equal(r.files.has(join(AGENT, '.git/refs/stash')), false, 'never an empty ref file (git warns of a broken ref)')
+  assert.equal(r.files.get(join(AGENT, '.git/logs/refs/stash')), '')
+  assert.ok(r.dirs.has(join(AGENT, '.git/hooks')))
   assert.ok(laneSettings(r).tools.includes('Bash'))
 })
 
-test('on Linux an existing stash is left exactly as it is', async () => {
+test('on Linux an existing stash is left exactly as it is', POSIX_SANDBOX, async () => {
   const SHA = 'a'.repeat(40)
   const r = rig({
     platform: 'linux',
-    files: { [`${AGENT}/.git/refs/stash`]: `${SHA}\n`, [`${AGENT}/.git/logs/refs/stash`]: 'entries\n' },
+    files: { [join(AGENT, '.git/refs/stash')]: `${SHA}\n`, [join(AGENT, '.git/logs/refs/stash')]: 'entries\n' },
     git: (sub) => (sub[0] === 'rev-parse' && sub[1] === '--verify' ? { ok: true, stdout: `${SHA}\n` } : undefined),
   })
   r.manager.turn(turn('101'))
   await r.manager.idle()
-  assert.equal(r.files.get(`${AGENT}/.git/refs/stash`), `${SHA}\n`)
-  assert.equal(r.files.get(`${AGENT}/.git/logs/refs/stash`), 'entries\n')
-  assert.equal(r.dirs.has(`${AGENT}/.git/refs/stash`), false)
+  assert.equal(r.files.get(join(AGENT, '.git/refs/stash')), `${SHA}\n`)
+  assert.equal(r.files.get(join(AGENT, '.git/logs/refs/stash')), 'entries\n')
+  assert.equal(r.dirs.has(join(AGENT, '.git/refs/stash')), false)
 })
 
-test('on Linux a stash log that cannot be made leaves the lane without Bash', async () => {
+test('on Linux a stash log that cannot be made leaves the lane without Bash', POSIX_SANDBOX, async () => {
   const SHA = 'a'.repeat(40)
   const r = rig({ platform: 'linux', git: (sub) => (sub[0] === 'rev-parse' && sub[1] === '--verify' ? { ok: true, stdout: `${SHA}\n` } : undefined) })
   const create = r.deps.fs.createExclusive
-  r.deps.fs.createExclusive = (p, d) => { if (p.endsWith('logs/refs/stash')) throw new Error('EACCES'); create(p, d) }
+  r.deps.fs.createExclusive = (p, d) => { if (p.endsWith(join('logs', 'refs', 'stash'))) throw new Error('EACCES'); create(p, d) }
   r.manager.turn(turn('101'))
   await r.manager.idle()
   assert.equal(laneSettings(r).tools.includes('Bash'), false)
 })
 
-test('a working lane can read its own email files but not the rest of ~/.bgos-agent', async () => {
-  const r = rig({ files: { [`${HOME}/.bgos-agent/credentials-7.json`]: '{}', [`${HOME}/.bgos-agent/email-files/7/1/a.pdf`]: 'x', [`${HOME}/.bgos-agent/email-files/8/1/b.pdf`]: 'y' } })
-  for (const d of ['.bgos-agent', '.bgos-agent/email-files', '.bgos-agent/email-files/7', '.bgos-agent/email-files/8']) r.dirs.add(`${HOME}/${d}`)
+test('a working lane can read its own email files but not the rest of ~/.bgos-agent', POSIX_SANDBOX, async () => {
+  const r = rig({ files: { [join(HOME, '.bgos-agent/credentials-7.json')]: '{}', [join(HOME, '.bgos-agent/email-files/7/1/a.pdf')]: 'x', [join(HOME, '.bgos-agent/email-files/8/1/b.pdf')]: 'y' } })
+  for (const d of ['.bgos-agent', '.bgos-agent/email-files', '.bgos-agent/email-files/7', '.bgos-agent/email-files/8']) r.dirs.add(join(HOME, d))
   r.deps.fs.list = (d) => ({
-    [`${HOME}/.bgos-agent`]: ['credentials-7.json', 'email-files'],
-    [`${HOME}/.bgos-agent/email-files`]: ['7', '8'],
+    [join(HOME, '.bgos-agent')]: ['credentials-7.json', 'email-files'],
+    [join(HOME, '.bgos-agent/email-files')]: ['7', '8'],
   } as Record<string, string[]>)[d] ?? []
   r.manager.turn(turn('101'))
   await r.manager.idle()
   const deny: string[] = laneSettings(r).settings.sandbox.filesystem.denyRead
-  assert.deepEqual(deny, [`${HOME}/.bgos-agent`])
-  assert.deepEqual(laneSettings(r).settings.sandbox.filesystem.allowRead, [`${HOME}/.bgos-agent/email-files/7`])
+  assert.deepEqual(deny, [join(HOME, '.bgos-agent')])
+  assert.deepEqual(laneSettings(r).settings.sandbox.filesystem.allowRead, [join(HOME, '.bgos-agent/email-files/7')])
 })
 
-test('pairing another agent after a lane starts cannot expose its new credentials through the attachment exception', async () => {
-  const agents = `${HOME}/.bgos-agent`
-  const ownFiles = `${agents}/email-files/7`
-  const r = rig({ files: { [`${agents}/credentials-7.json`]: '{}', [`${ownFiles}/1/a.pdf`]: 'attachment' } })
-  for (const path of [agents, `${agents}/email-files`, ownFiles]) r.dirs.add(path)
-  r.deps.fs.list = (dir) => dir === agents ? ['credentials-7.json', 'email-files'] : dir === `${agents}/email-files` ? ['7'] : []
+test('pairing another agent after a lane starts cannot expose its new credentials through the attachment exception', POSIX_SANDBOX, async () => {
+  const agents = join(HOME, '.bgos-agent')
+  const ownFiles = join(agents, 'email-files/7')
+  const r = rig({ files: { [join(agents, 'credentials-7.json')]: '{}', [join(ownFiles, '1/a.pdf')]: 'attachment' } })
+  for (const path of [agents, join(agents, 'email-files'), ownFiles]) r.dirs.add(path)
+  r.deps.fs.list = (dir) => dir === agents ? ['credentials-7.json', 'email-files'] : dir === join(agents, 'email-files') ? ['7'] : []
   r.manager.turn(turn('101'))
   await r.manager.idle()
   const filesystem = laneSettings(r).settings.sandbox.filesystem
   // The owner pairs agent 8 after this child's settings have been frozen.
-  const futureCredential = `${agents}/credentials-8.json`
+  const futureCredential = join(agents, 'credentials-8.json')
   r.files.set(futureCredential, '{"token":"new-agent"}')
   assert.ok(filesystem.denyRead.includes(agents), 'the parent deny covers credentials created after startup')
   assert.deepEqual(filesystem.allowRead, [ownFiles], 'only this agent attachments reopen the denied tree')
-  assert.equal(filesystem.allowRead.some((path: string) => futureCredential === path || futureCredential.startsWith(`${path}/`)), false)
+  assert.equal(filesystem.allowRead.some((path: string) => futureCredential === path || futureCredential.startsWith(`${path}${sep}`)), false)
   assert.ok(laneSettings(r).tools.includes('Bash'), 'attachment access does not cost the working lane its shell')
 })
 
-test('a workspace inside the credential tree and its attachments reopen only their own directories', async () => {
-  const agents = `${HOME}/.bgos-agent`
-  const workspace = `${agents}/7-workspace`
-  const ownFiles = `${agents}/email-files/7`
+test('a workspace inside the credential tree and its attachments reopen only their own directories', POSIX_SANDBOX, async () => {
+  const agents = join(HOME, '.bgos-agent')
+  const workspace = join(agents, '7-workspace')
+  const ownFiles = join(agents, 'email-files/7')
   const r = rig()
   r.deps.agentFolder = workspace
   r.dirs.add(agents)

@@ -7,11 +7,12 @@
  * Run: npx tsx --test test/run-tests-tmpdir.test.ts
  */
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync } from 'node:fs'
+import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { scratchDir } from './helpers/scratch-dirs'
+import { runTestFile } from '../scripts/run-test-files.mjs'
 
 const helper: any = await import('../scripts/run-tests-env.mjs').catch((err) => {
   if (err?.code === 'ERR_MODULE_NOT_FOUND') return null
@@ -44,10 +45,27 @@ test('on Windows the temp folder is left alone, and a folder that cannot be reso
   assert.deepEqual(gone, { TMPDIR: '/nowhere/at/all' })
 })
 
-test('the runner resolves the temp folder before it starts any test family', () => {
-  const runner = readFileSync(new URL('../scripts/run-tests.mjs', import.meta.url), 'utf8')
-  const call = runner.indexOf('useRealTmpdir(process.env')
-  assert.ok(call > -1, 'scripts/run-tests.mjs calls useRealTmpdir(process.env, ...)')
-  assert.ok(call < runner.indexOf("run('node:test family'") || runner.indexOf("run('node:test family'") === -1, 'before the first family runs')
-  assert.ok(call < runner.indexOf('spawnSync(command'), 'before the runner spawns anything')
+test('a file worker inherits the normalized temp directory', { skip: process.platform === 'win32' ? 'POSIX symlinked TMPDIR fixture' : false }, async () => {
+  const root = realpathSync(scratchDir('run-tests-env-child-'))
+  const real = join(root, 'real')
+  const link = join(root, 'link')
+  mkdirSync(real)
+  symlinkSync(real, link)
+  const probe = join(root, 'probe.cjs')
+  writeFileSync(probe, "process.stdout.write(require('node:os').tmpdir())")
+  const before = process.env.TMPDIR
+  let output = ''
+  try {
+    process.env.TMPDIR = link
+    helper.useRealTmpdir(process.env)
+    const result = await runTestFile(probe, {
+      command: process.execPath, args: [], cwd: root,
+      onOutput: (chunk: string) => { output += chunk },
+    })
+    assert.equal(result.code, 0)
+    assert.equal(output, real)
+  } finally {
+    if (before === undefined) delete process.env.TMPDIR
+    else process.env.TMPDIR = before
+  }
 })

@@ -1,0 +1,258 @@
+/**
+ * Bounded file workers for scripts/run-tests.mjs. The watchdog lives outside the
+ * process under test, so a blocked event loop or a leaked handle cannot stop it.
+ *
+ * Why this exists: on Windows one file that never finished (a test fixture that
+ * deadlocked, thread-lanes.test.ts) held the whole job silent until the 30 minute
+ * cancel, and the cancel also lost the failure details of every file in its batch.
+ * Here a stuck file fails by name, and every other file still reports.
+ */
+import { spawn, execFile } from 'node:child_process'
+
+export const MAX_TEST_WORKERS = 4
+/** Applies to a test that yields. The slowest test on a green Windows job took 41 s. */
+export const TEST_TIMEOUT_MS = 120_000
+/**
+ * The time a file may go without completing a test: for what TEST_TIMEOUT_MS
+ * cannot stop (a blocked event loop, a handle left open after the last test).
+ * Longer than any explicit test timeout in the suite (test/run-tests-timeout.test.ts
+ * holds that), so such a test still fails by its own name. With the cleanup bound
+ * this stays under 5 minutes.
+ */
+export const FILE_IDLE_TIMEOUT_MS = 270_000
+const CLEANUP_BOUND_MS = 10_000
+/** How long the pipes of an exited worker may stay open before an orphan is assumed to hold them. */
+const PIPE_DRAIN_MS = 3_000
+
+export function partitionTests(entries) {
+  const parallelFiles = [], chromiumFiles = [], runnerFiles = [], bunFiles = []
+  for (const { file, source } of entries) {
+    // No node loader serves the `bun:` scheme, so these need bun's own runner.
+    if (/from\s+['"]bun:test['"]/.test(source)) bunFiles.push(file)
+    // Real Chromium files fight over the machine when run side by side (two of
+    // remote-browser-controls.chromium's tests fail) and pass one at a time.
+    else if (file.endsWith('.chromium.test.ts')) chromiumFiles.push(file)
+    // This regression suite starts its own workers, so give it the machine.
+    else if (file.replace(/\\/g, '/').endsWith('/run-tests-timeout.test.ts')) runnerFiles.push(file)
+    else parallelFiles.push(file)
+  }
+  return { parallelFiles, chromiumFiles, runnerFiles, bunFiles }
+}
+
+export function testGroups(entries) {
+  const { parallelFiles, chromiumFiles, runnerFiles, bunFiles } = partitionTests(entries)
+  // Absolute loader and preload: --import is inherited by a child that reuses
+  // execArgv, and a bare name would resolve against that child's own folder.
+  // Isolation none: this process is already the one for this file, and with
+  // process isolation --test-timeout would bound the whole file, not each test.
+  const nodeArgs = [
+    '--import', import.meta.resolve('tsx'),
+    '--import', import.meta.resolve('./test-progress.mjs'),
+    '--test', '--experimental-test-isolation=none', '--test-reporter=tap', `--test-timeout=${TEST_TIMEOUT_MS}`,
+  ]
+  return [
+    { label: 'node:test family', files: parallelFiles, command: process.execPath, args: nodeArgs, concurrency: 4 },
+    { label: 'runner regression tests', files: runnerFiles, command: process.execPath, args: nodeArgs, concurrency: 1 },
+    { label: 'real Chromium files, one at a time', files: chromiumFiles, command: process.execPath, args: nodeArgs, concurrency: 1 },
+    { label: 'bun:test family', files: bunFiles, command: 'bun', args: ['test', '--max-concurrency=1', `--timeout=${TEST_TIMEOUT_MS}`], concurrency: 4 },
+  ]
+}
+
+async function killTree(child) {
+  if (!child.pid) return
+  if (process.platform === 'win32') {
+    // SIGTERM/child.kill() only ends one Windows process. No cmd.exe or shell
+    // quoting: taskkill receives separate arguments and ends descendants too.
+    await new Promise((resolve) => execFile('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'],
+      { windowsHide: true, timeout: 5000 }, () => resolve()))
+    return
+  }
+  // A lane may detach into its own process group. Snapshot descendants before
+  // ending their parent; killing only -child.pid misses those detached tools.
+  const rows = await new Promise((resolve) => execFile('ps', ['-A', '-o', 'pid=,ppid='],
+    { encoding: 'utf8', timeout: 5000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
+      resolve(err ? [] : stdout.trim().split('\n').map((line) => line.trim().split(/\s+/).map(Number)))
+    }))
+  const owned = [child.pid]
+  for (let i = 0; i < owned.length; i++) {
+    for (const [pid, parent] of rows) {
+      if (parent === owned[i] && pid > 1 && !owned.includes(pid)) owned.push(pid)
+    }
+  }
+  for (const pid of owned.slice(1).reverse()) {
+    try { process.kill(pid, 'SIGKILL') } catch {}
+  }
+  try { process.kill(-child.pid, 'SIGKILL') } catch { try { child.kill('SIGKILL') } catch {} }
+}
+
+const active = new Set()
+
+/** Workers are detached from the runner's process group, so ctrl-c must reach them from here. */
+export async function stopActiveTests() {
+  await Promise.all([...active].map((child) => killTree(child)))
+}
+
+const NODE_TALLY = /^# (pass|fail|cancelled|skipped) (\d+)\s*$/
+const BUN_TALLY = /^\s*(\d+) (pass|fail|skip)\s*$/
+const NODE_FAILURE = /^\s*not ok \d+ - (.*?)\s*$/
+const BUN_FAILURE = /^\(fail\) (.*?)(?: \[[\d.]+ms\])?\s*$/
+
+/** Read one output line into the file's totals and its failing test names. */
+function noteLine(line, seen) {
+  const node = NODE_TALLY.exec(line)
+  if (node) {
+    const name = node[1] === 'cancelled' ? 'fail' : node[1]
+    seen.tally ??= { pass: 0, fail: 0, skipped: 0 }
+    seen.tally[name] += Number(node[2])
+    return
+  }
+  const bun = BUN_TALLY.exec(line)
+  if (bun) {
+    const name = bun[2] === 'skip' ? 'skipped' : bun[2]
+    seen.tally ??= { pass: 0, fail: 0, skipped: 0 }
+    seen.tally[name] += Number(bun[1])
+    return
+  }
+  const failure = NODE_FAILURE.exec(line) ?? BUN_FAILURE.exec(line)
+  if (failure) seen.failures.push(failure[1])
+}
+
+/**
+ * Fail a silent file within the deadline, including blocked JS and leaked
+ * handles after the last test. Completed TAP tests reset the deadline, so a
+ * long file of individually bounded tests remains valid. Arbitrary child
+ * chatter does not reset it. The final cleanup wait is also bounded.
+ */
+export function runTestFile(file, {
+  command, args, cwd, timeoutMs = FILE_IDLE_TIMEOUT_MS,
+  onOutput = (chunk) => { process.stdout.write(chunk) },
+}) {
+  return new Promise((resolve) => {
+    let settled = false, timedOut = false, exitCode = null, timer, cleanupTimer, drainTimer
+    const buffers = { stdout: '', stderr: '' }
+    const seen = { tally: null, failures: [] }
+    const emit = (text) => onOutput(text, file)
+    // A runner started from inside `node --test` must not make its workers talk
+    // that parent's private protocol instead of TAP.
+    const { NODE_TEST_CONTEXT: _parentProtocol, ...env } = process.env
+    let child
+    try {
+      child = spawn(command, [...args, file], {
+        cwd, env, stdio: ['ignore', 'pipe', 'pipe'], shell: false,
+        windowsHide: true, detached: process.platform !== 'win32',
+      })
+    } catch (err) {
+      // Windows refuses a .cmd without a shell by throwing here, not by an 'error' event.
+      emit(`[run-tests] FAILED ${file}: ${err.code ?? err.message}\n`)
+      resolve({ file, code: 1, timedOut: false, tally: null, failures: seen.failures })
+      return
+    }
+    active.add(child)
+    const finish = (code) => {
+      if (settled) return
+      settled = true
+      active.delete(child)
+      clearTimeout(timer)
+      clearTimeout(cleanupTimer)
+      clearTimeout(drainTimer)
+      for (const stream of ['stdout', 'stderr']) if (buffers[stream]) noteLine(buffers[stream], seen)
+      resolve({ file, code: timedOut ? 1 : (code ?? 1), timedOut, tally: seen.tally, failures: seen.failures })
+    }
+    const letGoOfPipes = () => {
+      child.stdout.destroy()
+      child.stderr.destroy()
+      child.unref()
+    }
+    const arm = () => {
+      clearTimeout(timer)
+      timer = setTimeout(async () => {
+        timedOut = true
+        emit(`[run-tests] TIMEOUT ${file}: no test completed for ${timeoutMs}ms\n`)
+        // Bound even OS process inspection/termination, or inherited pipes
+        // whose owner has already exited. A failed kill must not hang us too.
+        cleanupTimer = setTimeout(() => {
+          try { child.kill('SIGKILL') } catch {}
+          letGoOfPipes()
+          finish(1)
+        }, CLEANUP_BOUND_MS)
+        await killTree(child)
+      }, timeoutMs)
+    }
+    for (const stream of ['stdout', 'stderr']) {
+      child[stream].setEncoding('utf8')
+      child[stream].on('data', (chunk) => {
+        emit(chunk)
+        const lines = (buffers[stream] + chunk).split('\n')
+        buffers[stream] = lines.pop().slice(-4096)
+        for (const line of lines) noteLine(line.replace(/\r$/, ''), seen)
+        if (!timedOut && lines.some((line) => /^\s*(?:not )?ok \d+\b/.test(line))) arm()
+      })
+    }
+    child.on('error', (err) => {
+      emit(`[run-tests] FAILED ${file}: ${err.code ?? err.message}\n`)
+      finish(1)
+    })
+    // The worker has said all it will. If something it started holds the pipes
+    // open, 'close' may never come: name the leak rather than wait for the deadline.
+    child.on('exit', (code) => {
+      exitCode = code
+      drainTimer = setTimeout(() => {
+        emit(`[run-tests] LEAK ${file}: exited ${code}, a process it started still holds its output\n`)
+        // Its group outlives its leader off Windows. On Windows an orphan cannot be found from here.
+        if (process.platform !== 'win32') { try { process.kill(-child.pid, 'SIGKILL') } catch {} }
+        letGoOfPipes()
+        finish(code)
+      }, PIPE_DRAIN_MS)
+    })
+    child.on('close', (code) => finish(code ?? exitCode))
+    arm()
+  })
+}
+
+/**
+ * Run files on at most MAX_TEST_WORKERS workers. `onOutput(text, file)` sees
+ * output live. Without it each file's output goes to `write` as one block once
+ * the file is done, because four files writing at once cannot be read.
+ */
+export async function runTestFiles(files, options) {
+  const count = Math.min(MAX_TEST_WORKERS, Math.max(1, Math.floor(options.concurrency ?? MAX_TEST_WORKERS)))
+  const write = options.write ?? ((text) => { process.stdout.write(text) })
+  const results = new Array(files.length)
+  let next = 0
+  await Promise.all(Array.from({ length: Math.min(count, files.length) }, async () => {
+    for (;;) {
+      const index = next++
+      if (index >= files.length) return
+      const file = files[index]
+      // At once, not with the block: a job cancelled from outside still shows what was running.
+      const start = `[run-tests] START ${file}\n`
+      if (options.onOutput) options.onOutput(start, file)
+      else write(start)
+      let block = ''
+      const onOutput = options.onOutput ?? ((text) => { block += text })
+      const started = performance.now()
+      const result = await runTestFile(file, { ...options, onOutput })
+      results[index] = result
+      const seconds = ((performance.now() - started) / 1000).toFixed(3)
+      const line = `[run-tests] ${result.code === 0 ? 'PASS' : 'FAIL'} ${file} (${seconds}s)\n`
+      if (options.onOutput) options.onOutput(line, file)
+      else write(`${block}${block === '' || block.endsWith('\n') ? '' : '\n'}${line}`)
+    }
+  }))
+  return results
+}
+
+/** The end of a run: what happened, and what failed by name, after thousands of lines of output. */
+export function summarize(results, seconds) {
+  const total = { pass: 0, fail: 0, skipped: 0 }
+  const rows = []
+  for (const result of results) {
+    for (const key of Object.keys(total)) total[key] += result.tally?.[key] ?? 0
+    if (result.code === 0) continue
+    if (result.timedOut) rows.push(`  ${result.file}: TIMED OUT`)
+    for (const name of result.failures) rows.push(`  ${result.file}: ${name}`)
+    if (!result.timedOut && result.failures.length === 0) rows.push(`  ${result.file}: exited ${result.code}`)
+  }
+  const line = `[run-tests] ${total.pass} passed, ${total.fail} failed, ${total.skipped} skipped, ${results.length} files, ${seconds} s`
+  return [line, ...rows].join('\n')
+}

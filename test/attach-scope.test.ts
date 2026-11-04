@@ -28,6 +28,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync, writeFileSync, existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { scratchDir } from './helpers/scratch-dirs'
 
 import {
@@ -370,7 +371,7 @@ test('bin/hoai-attach-scope.mjs prints the machine tally: what each mode WOULD r
   ]) {
     recordAttachScopeEvent({ dir: stateDir, decision: decideAttachScope({ mode: 'off', ...c }), mode: 'off', now })
   }
-  const script = new URL('../bin/hoai-attach-scope.mjs', import.meta.url).pathname
+  const script = fileURLToPath(new URL('../bin/hoai-attach-scope.mjs', import.meta.url))
   const text = spawnSync(process.execPath, [script], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: home } })
   assert.equal(text.status, 0, text.stderr)
   assert.match(text.stdout, /mode off \(default\)/)

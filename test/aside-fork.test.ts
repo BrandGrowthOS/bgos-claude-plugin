@@ -8,7 +8,7 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -251,7 +251,7 @@ test('a fork in flight is listed for the shutdown: stopAll signals it, killAll k
   assert.equal(forks.size(), 0)
 })
 
-test('spec 15: the main transcript is byte identical after a By the way answer (a fake claude that writes its fork file)', async () => {
+test('spec 15: the main transcript is byte identical after a By the way answer (a fake claude that writes its fork file)', async (t) => {
   // A stand in for claude: it reads the main transcript like the real fork
   // does, writes its OWN session file beside it, streams, answers, exits. No
   // model runs. The aside runs through the real spawner.
@@ -266,9 +266,8 @@ test('spec 15: the main transcript is byte identical after a By the way answer (
     mkdirSync(dirname(main), { recursive: true })
     writeFileSync(main, '{"type":"user","message":"Remember PELICAN-42."}\n{"type":"assistant","message":"ok"}\n')
     const before = createHash('sha256').update(readFileSync(main)).digest('hex')
-    const fake = join(dir, 'claude')
+    const fake = join(dir, 'claude.cjs')
     writeFileSync(fake, [
-      `#!${process.execPath}`,
       "const fs = require('fs')",
       `const main = ${JSON.stringify(main)}, fork = ${JSON.stringify(fork)}`,
       "const args = process.argv.slice(2)",
@@ -287,17 +286,17 @@ test('spec 15: the main transcript is byte identical after a By the way answer (
       "})",
       '',
     ].join('\n'))
-    chmodSync(fake, 0o755)
     const forks = new AsideForks()
     let exited: () => void = () => {}
     const gone = new Promise<void>((done) => { exited = done })
     const answer = await runAside(input, {
       spawn: (command, args, opts) => {
-        const child = spawnStreamJson(command, args, opts)
+        const child = spawnStreamJson(command, [fake, ...args], opts)
+        t.after(() => child.kill('SIGKILL'))
         child.onExit(() => exited())
         return child
       },
-      claudeBin: () => fake,
+      claudeBin: () => process.execPath,
       cliProblem: () => null,
       mainSessionId: () => MAIN,
       mainFolder: folder,

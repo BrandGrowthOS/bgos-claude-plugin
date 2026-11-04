@@ -103,24 +103,24 @@ test('the answer is cached per binary, asked again when the binary changes, neve
     let probes = 0
     let next = { ok: true, missing: [] as string[], version: '2.1.317' as string | null }
     const probe = () => { probes++; return next }
-    assert.deepEqual(threadsCliSupport({ claudePath: bin, cachePath, probe }), { ok: true, missing: [], version: '2.1.317', cached: false })
-    assert.deepEqual(threadsCliSupport({ claudePath: bin, cachePath, probe }), { ok: true, missing: [], version: '2.1.317', cached: true })
+    assert.deepEqual(threadsCliSupport({ platform: 'darwin', claudePath: bin, cachePath, probe }), { ok: true, missing: [], version: '2.1.317', cached: false })
+    assert.deepEqual(threadsCliSupport({ platform: 'darwin', claudePath: bin, cachePath, probe }), { ok: true, missing: [], version: '2.1.317', cached: true })
     assert.equal(probes, 1)
     // An updated binary (another size or time) is asked again.
     writeFileSync(bin, '#!/bin/sh\n# 2.1.250\n')
     utimesSync(bin, new Date(), new Date(Date.now() + 5_000))
     next = { ok: false, missing: ['version 2.1.301 or later'], version: '2.1.250' }
-    assert.equal(threadsCliSupport({ claudePath: bin, cachePath, probe }).ok, false)
+    assert.equal(threadsCliSupport({ platform: 'darwin', claudePath: bin, cachePath, probe }).ok, false)
     assert.equal(probes, 2)
     assert.equal(JSON.parse(readFileSync(cachePath, 'utf8')).version, '2.1.250')
     // A probe that read no version (a timeout) is not kept: the next call asks again.
     writeFileSync(bin, '#!/bin/sh\n# again\n')
     utimesSync(bin, new Date(), new Date(Date.now() + 10_000))
     next = { ok: false, missing: ['a readable version'], version: null }
-    threadsCliSupport({ claudePath: bin, cachePath, probe })
-    threadsCliSupport({ claudePath: bin, cachePath, probe })
+    threadsCliSupport({ platform: 'darwin', claudePath: bin, cachePath, probe })
+    threadsCliSupport({ platform: 'darwin', claudePath: bin, cachePath, probe })
     assert.equal(probes, 4)
-    assert.deepEqual(threadsCliSupport({ claudePath: null, cachePath, probe }), { ok: false, missing: [], version: null, cached: false, reason: 'no_claude' })
+    assert.deepEqual(threadsCliSupport({ platform: 'darwin', claudePath: null, cachePath, probe }), { ok: false, missing: [], version: null, cached: false, reason: 'no_claude' })
     assert.deepEqual(threadsCliSupport({ claudePath: bin, cachePath, probe, platform: 'win32' }), { ok: false, missing: [], version: null, cached: false, reason: 'platform' })
   } finally {
     rmSync(dir, { recursive: true, force: true })
@@ -155,6 +155,8 @@ function gateRig(probe: (path: string) => Promise<{ ok: boolean; missing: string
   const clock = { now: 1_000_000 }
   let probes = 0
   const make = (onAnswer?: (answer: ThreadsCliAnswer) => void) => new ThreadsCliGate({
+    // These are probe/cache unit cases, separate from the Windows platform gate.
+    platform: 'darwin',
     claudePath: () => bin,
     cachePath: join(dir, 'state', 'threads-cli-probe.json'),
     probe: (p) => { probes++; return probe(p) },
@@ -342,4 +344,14 @@ test('returning to a cached binary invalidates the other binary pending probe', 
   } finally {
     r.cleanup()
   }
+})
+
+
+test('the Windows CLI gate remains disabled without probing a binary', async () => {
+  const gate = new ThreadsCliGate({
+    platform: 'win32', claudePath: () => 'C:\\claude.exe', cachePath: 'unused',
+    probe: async () => { throw new Error('the Windows gate must not probe') },
+  })
+  assert.deepEqual(gate.current(), { ok: false, missing: [], version: null, reason: 'platform' })
+  assert.deepEqual(await gate.ready(), { ok: false, missing: [], version: null, reason: 'platform' })
 })
