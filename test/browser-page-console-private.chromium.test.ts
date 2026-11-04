@@ -42,7 +42,7 @@ test('a value a page logs reaches no reply and no file the agent can read', { ti
   const context = await browser.newContext()
   await context.newPage()
   const engine: any = new PlaywrightEngine({
-    endpoint: null, caps: DEFAULT_CAPS, outputDir: home, clientName: 'fixture', clientVersion: '0',
+    caps: DEFAULT_CAPS, outputDir: home, clientName: 'fixture', clientVersion: '0',
     managedRuntime: { browser, context, assertCurrent() {} },
   })
   try {

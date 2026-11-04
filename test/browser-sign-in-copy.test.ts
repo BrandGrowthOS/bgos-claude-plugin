@@ -39,7 +39,7 @@ function rig(t: any) {
   const seal = (sequence = 5, source = computer, state = STATE) => copyCore.sealSignInCopy({ state, scope: SCOPE, source, sequence, createdAt: sequence,
     recipient: { identity: machine.identity, keyFingerprint: identityFingerprint(machine.identity), grantVersion: 3 } })
   const logs: string[] = []
-  const make = () => new AgentSignInCopy({ directory, scope: SCOPE, endpoint: machine, grantVersion: 3, peers: [computer.identity], client, log: (line: string) => logs.push(line) })
+  const make = () => new AgentSignInCopy({ directory, scope: SCOPE, endpoint: machine, grantVersion: 3, peers: [computer.identity], client, log: ((line: string) => logs.push(line)) as any })
   return { directory, computer, machine, held, seal, make, logs, client }
 }
 const fakeContext = () => {
@@ -84,7 +84,7 @@ test('a sealed file is useless without this machine key: another machine, or a c
   const r = rig(t)
   r.held.copies = [r.seal(5)]
   await r.make().applyTo(fakeContext())
-  r.client.read = async () => ({ copies: [] })
+  r.client.read = (async () => ({ copies: [] })) as any
   const other = new AgentSignInCopy({ directory: r.directory, scope: SCOPE, endpoint: endpoint(), grantVersion: 3, peers: [], client: r.client, log: () => {} })
   const context = fakeContext()
   assert.equal(await other.applyTo(context), false)

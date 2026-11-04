@@ -66,7 +66,7 @@ async function machine(t: any, { backgroundUse = true, grant = 3 } = {}) {
   const pairing = { token: 'made-up-pairing-token', backendUrl, pairingId: PAIRING, ownerUserId: OWNER, assistantIds: [ASSISTANT] }
   const seal = (sequence: number) => copyCore.sealSignInCopy({ state: STATE, scope: { profileId, actingUserId: OWNER, assistantId: ASSISTANT }, source: computer, sequence, createdAt: sequence, recipient: { identity: endpoint.identity, keyFingerprint: fingerprint, grantVersion: grant } })
   const separate = () => false
-  const load = (extra: any = {}) => loadMachineSignIns({ agentRoot: root, pairing, assistantId: ASSISTANT, principal: `user-${OWNER}`, keyStore, sharesUser: separate, ...extra })
+  const load = (extra: any = {}) => loadMachineSignIns({ agentRoot: root, pairing, assistantId: ASSISTANT, principal: `user-${OWNER}`, keyStore, sharesUser: separate, ...extra } as any)
   return { root, folder, seen, copies, seal, load, endpoint, computer, profileId, noProfiles() { listed.none = true } }
 }
 
@@ -82,8 +82,8 @@ test('the real load opens a copy on a machine whose agent runs as another OS use
   assert.equal(browser.state.cookies[0].value, VALUE)
   assert.equal(f.seen.keyReads, 1, 'through the key store')
   assert.ok(f.seen.routes.some(route => route.endsWith('/discovery')) && f.seen.routes.some(route => route.endsWith('/sign-in-copies/read')))
-  assert.equal(holder.peers[0].endpointId, f.computer.identity.endpointId, 'the reviewed computer, from its signed pin file')
-  assert.equal(holder.grantVersion, 3, 'the grant the server states now')
+  assert.equal((holder as any).peers[0].endpointId, f.computer.identity.endpointId, 'the reviewed computer, from its signed pin file')
+  assert.equal((holder as any).grantVersion, 3, 'the grant the server states now')
 })
 
 test('a share recipient\'s browser gets nothing of the owner\'s, and neither does a room or another agent', async (t) => {
@@ -132,20 +132,20 @@ test('a machine with no endpoint for this person hears nothing about sign-ins, o
 })
 
 test('the check that decides this fails closed: only a folder another ordinary user owns reads as separate', { skip: process.platform === 'win32' && 'no OS user ids here' }, () => {
-  const stat = (uid: number) => () => ({ uid })
+  const stat = (uid: number): any => () => ({ uid })
   assert.equal(agentSharesHostUser({ agentRoot: '/a', getuid: () => 501, stat: stat(501) }), true, 'the agent\'s folder is the host\'s own')
   assert.equal(agentSharesHostUser({ agentRoot: '/a', getuid: () => 501, stat: stat(502) }), false, 'another user owns it')
   assert.equal(agentSharesHostUser({ agentRoot: '/a', getuid: () => 501, stat: stat(0) }), true, 'root owning it proves no separation')
   assert.equal(agentSharesHostUser({ agentRoot: '/a', getuid: () => 0, stat: stat(502) }), false, 'a host run as root by an administrator, the agent as a user')
-  assert.equal(agentSharesHostUser({ agentRoot: '/a', getuid: null, stat: stat(502) }), true, 'no user ids on this system')
-  assert.equal(agentSharesHostUser({ agentRoot: '/a', getuid: () => 501, stat: () => { throw new Error('gone') } }), true, 'cannot read it')
+  assert.equal(agentSharesHostUser({ agentRoot: '/a', getuid: null as any, stat: stat(502) }), true, 'no user ids on this system')
+  assert.equal(agentSharesHostUser({ agentRoot: '/a', getuid: () => 501, stat: (() => { throw new Error('gone') }) as any }), true, 'cannot read it')
 })
 
 test('CONTROL: on this machine, under this test, the real check reads the real folder as shared', { skip: process.platform === 'win32' && 'no OS user ids here' }, async (t) => {
   const f = await machine(t)
   assert.equal(agentSharesHostUser({ agentRoot: f.root }), true)
   assert.equal(statSync(f.root).uid, process.getuid!())
-  const holder: any = await loadMachineSignIns({ agentRoot: f.root, pairing: { token: 'made-up', backendUrl: 'http://127.0.0.1:1', pairingId: PAIRING, ownerUserId: OWNER, assistantIds: [ASSISTANT] }, assistantId: ASSISTANT, principal: `user-${OWNER}` })
+  const holder: any = await loadMachineSignIns({ agentRoot: f.root, pairing: { token: 'made-up', backendUrl: 'http://127.0.0.1:1', pairingId: PAIRING, ownerUserId: OWNER, assistantIds: [ASSISTANT] }, assistantId: ASSISTANT, principal: `user-${OWNER}` } as any)
   assert.equal(holder, null, 'another origin holds no endpoint for it, and the default never reaches a key store')
 })
 
