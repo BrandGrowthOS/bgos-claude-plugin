@@ -233,11 +233,11 @@ test('a PDF of a page is never written on this machine: a live cookie changes no
 })
 
 test('a masked field keeps its value out of every reply on the real engine: a plain line, a quoted line, a placeholder, a frame, and browser_find', { timeout: 180_000, skip }, async () => {
-  const VALUES = { plain: `MADE_UP_PLAIN_${randomBytes(6).toString('hex')}`, quoted: `MADE_UP_QUOTED_${randomBytes(6).toString('hex')}`, holder: `MADE_UP_HOLDER_${randomBytes(6).toString('hex')}`, framed: `MADE_UP_FRAMED_${randomBytes(6).toString('hex')}`, styled: `MADE_UP_STYLED_${randomBytes(6).toString('hex')}` }
+  const VALUES = { plain: `MADE_UP_PLAIN_${randomBytes(6).toString('hex')}`, quoted: `MADE_UP_QUOTED_${randomBytes(6).toString('hex')}`, holder: `MADE_UP_HOLDER_${randomBytes(6).toString('hex')}`, framed: `MADE_UP_FRAMED_${randomBytes(6).toString('hex')}`, styled: `MADE_UP_STYLED_${randomBytes(6).toString('hex')}`, area: `MADE_UP_AREA_${randomBytes(6).toString('hex')}`, editable: `MADE_UP_EDITABLE_${randomBytes(6).toString('hex')}` }
   const NOTE = 'an ordinary value', frame = `<input type=password aria-label='In frame' value='${VALUES.framed}'>`
   const server = createServer((_req, res) => {
     res.setHeader('content-type', 'text/html')
-    res.end(`<title>Keys</title><label>Plain <input type="password" aria-label="Plain" value="${VALUES.plain}"></label><input type="password" aria-label="Key: required" value="${VALUES.quoted}"><input type="password" aria-label="Holder" placeholder="Enter key" value="${VALUES.holder}"><input aria-label="Styled" style="-webkit-text-security:disc" value="${VALUES.styled}"><input aria-label="Note" value="${NOTE}"><iframe srcdoc="${frame}"></iframe>`)
+    res.end(`<title>Keys</title><label>Plain <input type="password" aria-label="Plain" value="${VALUES.plain}"></label><input type="password" aria-label="Key: required" value="${VALUES.quoted}"><input type="password" aria-label="Holder" placeholder="Enter key" value="${VALUES.holder}"><input aria-label="Styled" style="-webkit-text-security:disc" value="${VALUES.styled}"><textarea aria-label="Area" style="-webkit-text-security:disc">${VALUES.area}</textarea><div contenteditable role="textbox" aria-label="Editable" style="-webkit-text-security:disc">${VALUES.editable}</div><input aria-label="Note" value="${NOTE}"><iframe srcdoc="${frame}"></iframe>`)
   })
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()))
   const home = made('bh-mask-')
@@ -257,7 +257,7 @@ test('a masked field keeps its value out of every reply on the real engine: a pl
     }
     const tree = JSON.stringify(replies.snapshot)
     assert.ok(tree.includes(NOTE), 'an ordinary field keeps its value')
-    for (const name of ['Plain', 'Key: required', 'Holder', 'Styled', 'In frame']) assert.ok(tree.includes(name), `the field ${name} is still there: ${tree.slice(0, 600)}`)
+    for (const name of ['Plain', 'Key: required', 'Holder', 'Styled', 'Area', 'Editable', 'In frame']) assert.ok(tree.includes(name), `the field ${name} is still there: ${tree.slice(0, 600)}`)
     assert.match(JSON.stringify(replies.findFrame), /textbox/, 'find answered')
     for (const [name, reply] of Object.entries(replies)) for (const [form, value] of Object.entries(VALUES)) assert.equal(JSON.stringify(reply).includes(value), false, `${name} carried the ${form} value`)
     // The same value elsewhere on the page is that value too, by a route a line of the tree cannot show.
