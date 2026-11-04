@@ -2775,7 +2775,7 @@ test('review round 11: a cell longer than a header is judged on its last charact
   }, OverBudget)
 })
 
-test('review round 11: 900000 shared strings of 21 and of 25 characters go; siTiny is still refused', { timeout: 300_000 }, async () => {
+test('review round 11: 900000 shared strings of 21 and of 25 characters go; siTiny is still refused', { timeout: 240_000 }, async () => {
   const rels = '<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>'
   const orders = (n: number, length: number) => {
     const si: string[] = []

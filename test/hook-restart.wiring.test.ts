@@ -63,7 +63,7 @@ test('it waits for the safe moment the watcher waits for: the facts agent-state.
   const b = block()
   assert.match(b, /turnInFlight: hookTurnLive \|\| hookTurn\.carried\.size > 0/)
   assert.match(b, /turnSignal: hookTurnSignal\(\{ lastEventAtMs: lastHookEventAtMs, endedSessionId: hookEndedSessionId \}\)/)
-  assert.match(b, /\.\.\.updateDrainSnapshot\(\)/)
+  assert.match(b, /\.\.\.restartDrainSnapshot\(\)/)
   assert.match(b, /activityMs: \(\) => \[DAEMON_START_MS, lastInboundAtMs, lastHookEventAtMs, agentTranscript\(\)\.activityMs\]/)
   assert.match(b, /claudePid: \(\) => agentClaudePid\(\)/)
   assert.match(b, /listProcesses\(\{ platform: process\.platform, exec: nodeExec\(\), env: process\.env \}\)/)

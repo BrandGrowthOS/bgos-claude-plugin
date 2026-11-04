@@ -941,6 +941,7 @@ test('rollback: the canary always, any other agent once, and an expired login ne
 })
 
 test('thread work holds the restart and the way back, and only work does', () => {
+  const m = need()
   assert.deepEqual(m.decideIdleUpdate(idle({ threadWork: 1 })), { action: 'wait', reason: 'thread_work' })
   assert.equal(m.decideIdleUpdate(idle({ threadWork: 0 })).action, 'restart')
   assert.deepEqual(m.decideRollbackMoment(quietRollback({ threadWork: 2 })), { go: false, reason: 'thread_work' })
