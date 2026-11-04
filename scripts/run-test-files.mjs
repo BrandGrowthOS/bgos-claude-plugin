@@ -45,7 +45,7 @@ export function focusesATest(source) {
 }
 
 export function partitionTests(entries) {
-  const parallelFiles = [], chromiumFiles = [], runnerFiles = [], bunFiles = []
+  const parallelFiles = [], chromiumFiles = [], runnerFiles = [], daemonFiles = [], bunFiles = []
   for (const { file, source } of entries) {
     // No node loader serves the `bun:` scheme, so these need bun's own runner.
     if (/from\s+['"]bun:test['"]/.test(source)) bunFiles.push(file)
@@ -54,13 +54,16 @@ export function partitionTests(entries) {
     else if (file.endsWith('.chromium.test.ts')) chromiumFiles.push(file)
     // This regression suite starts its own workers, so give it the machine.
     else if (file.replace(/\\/g, '/').endsWith('/run-tests-timeout.test.ts')) runnerFiles.push(file)
+    // Files that boot real daemons, one at a time after the pool: four of them
+    // inside it pushed the fixed 15 s limits in browser-profile-node-runtime past their time.
+    else if (file.endsWith('.daemon.test.ts')) daemonFiles.push(file)
     else parallelFiles.push(file)
   }
-  return { parallelFiles, chromiumFiles, runnerFiles, bunFiles }
+  return { parallelFiles, chromiumFiles, runnerFiles, daemonFiles, bunFiles }
 }
 
 export function testGroups(entries) {
-  const { parallelFiles, chromiumFiles, runnerFiles, bunFiles } = partitionTests(entries)
+  const { parallelFiles, chromiumFiles, runnerFiles, daemonFiles, bunFiles } = partitionTests(entries)
   // Absolute loader and preload: --import is inherited by a child that reuses
   // execArgv, and a bare name would resolve against that child's own folder.
   // No --test: this process is already the one for this file. Under --test with
@@ -76,6 +79,7 @@ export function testGroups(entries) {
     { label: 'node:test family', files: parallelFiles, command: process.execPath, args: nodeArgs, concurrency: 4, family: 'node' },
     { label: 'runner regression tests', files: runnerFiles, command: process.execPath, args: nodeArgs, concurrency: 1, family: 'node' },
     { label: 'real Chromium files, one at a time', files: chromiumFiles, command: process.execPath, args: nodeArgs, concurrency: 1, family: 'node' },
+    { label: 'real daemon files, one at a time', files: daemonFiles, command: process.execPath, args: nodeArgs, concurrency: 1, family: 'node' },
     { label: 'bun:test family', files: bunFiles, command: 'bun', args: ['test', '--max-concurrency=1', `--timeout=${TEST_TIMEOUT_MS}`], concurrency: 4, family: 'bun' },
   ]
 }
