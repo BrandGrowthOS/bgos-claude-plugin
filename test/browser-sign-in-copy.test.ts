@@ -134,8 +134,18 @@ test('nothing it logs or reports carries a value', async (t) => {
   assert.equal(said.includes('crm.example'), false)
 })
 
+/** A browser that holds nothing as a copy opens, and then has a sign-in made in it. */
+function signedInAfterOpen() {
+  const context: any = fakeContext(), later = context.storageState
+  context.storageState = async () => ({ cookies: [], origins: [] })
+  return { context, signIn() { context.storageState = later } }
+}
+
 test('a sign-in made here goes back sealed to the pinned computer only', async (t) => {
-  const r = rig(t), holder = r.make(), context = fakeContext()
+  const r = rig(t), holder = r.make(), { context, signIn } = signedInAfterOpen()
+  r.held.copies = [r.seal(5)]
+  assert.equal(await holder.applyTo(context), true)
+  signIn()
   await holder.sendBack(context)
   assert.equal(r.held.uploads.length, 1)
   const { copy, sites } = r.held.uploads[0]
@@ -165,8 +175,12 @@ test('the two state shapes convert without losing a cookie field the computer re
 
 test('a computer whose key the server changed gets nothing back, whatever grant it names', async (t) => {
   const r = rig(t), holder = r.make()
+  const { context, signIn } = signedInAfterOpen()
+  r.held.copies = [r.seal(5)]
+  assert.equal(await holder.applyTo(context), true)
+  signIn()
   r.client.read = async () => ({ copies: [], peers: [{ endpointId: r.computer.identity.endpointId, keyFingerprint: 'a'.repeat(64), grantVersion: 1 }] })
-  await holder.sendBack(fakeContext())
+  await holder.sendBack(context)
   assert.deepEqual(r.held.uploads, [])
 })
 

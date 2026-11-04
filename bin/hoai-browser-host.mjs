@@ -306,6 +306,9 @@ export const WAIT_SECONDS_SCHEMA = {
  * machine's browser can hold a person's sealed sign-ins, so these are not served and
  * do not answer. The fixed DOM reading tools stay.
  */
+/** What the agent hears where a person's sealed copy will not open on this machine. */
+export const SIGN_IN_STAYS_SENTENCE = 'Your owner\'s sign-ins stay on their computer: they are not opened on this machine, because you and this browser run as the same OS user.'
+
 export const PRIVATE_PAGE_TOOLS = new Set(['browser_evaluate', 'browser_console_messages', 'browser_network_requests', 'browser_network_request'])
 
 /** Never reachable through HOAI (policy.js NEVER_TOOLS). */
@@ -1878,11 +1881,13 @@ export class BrowserPool {
           slot.engine = engine
           // With nobody there: an approved machine opens its own sealed copy. A locked key
           // store or a failed read leaves an ordinary browser with no sign-ins, never a stop.
-          slot.signIns = null; slot.signInsApplied = false
+          slot.signIns = null; slot.signInsApplied = false; slot.signInsRefused = false
           if (this._loadSignIns) {
             try {
               slot.signIns = await this._loadSignIns(ctx)
+              slot.signInsRefused = slot.signIns?.refused === true
               slot.signInsApplied = (await slot.signIns?.applyTo(engine.vault?.context)) === true
+              engine.holdsSignIns = slot.signInsApplied
             } catch (err) { this._log(`sign-ins: not opened (${err?.code || 'unavailable'})`) }
           }
           slot.openedAt = new Date().toISOString()
@@ -2451,9 +2456,9 @@ export class BrowserHostCore {
       this._postSlotCard(ctx, slot, 'browsing')
       // One browser per agent (BGOS mission 173): the agent never chooses a profile, so an older
       // client's profile argument changes nothing here.
-      if (slot.signInsApplied) return text(`Browser session is open on ${this.deviceLabel}, the machine you run on: your own browser, headless, already signed in where your owner's sealed copy reaches. Those sign-ins are not readable by any tool; browse as usual. A site that needs your owner asks them.`)
+      if (slot.signInsApplied) return text(`Browser session is open on ${this.deviceLabel}, the machine you run on: your own browser, headless, already signed in where your owner's sealed copy reaches. The browser tools return no cookie or stored value of those sign-ins, but what a signed in page displays does reach your snapshots and screenshots, so treat it as your owner's. Browse as usual. A site that needs your owner asks them.`)
       return text(
-        `Browser session is open on ${this.deviceLabel}, the machine you run on: your own browser, headless, with login storage locked until the owner unlocks it in the pane. Browsing state is discarded at close unless the owner unlocks encrypted storage. Navigate with browser_navigate, then browser_snapshot.`,
+        `Browser session is open on ${this.deviceLabel}, the machine you run on: your own browser, headless, with login storage locked until the owner unlocks it in the pane. Browsing state is discarded at close unless the owner unlocks encrypted storage. ${slot.signInsRefused ? `${SIGN_IN_STAYS_SENTENCE} ` : ''}Navigate with browser_navigate, then browser_snapshot.`,
       )
     }
     if (name === 'hoai_browser_close_session') {

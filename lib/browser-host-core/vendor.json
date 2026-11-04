@@ -3,7 +3,7 @@
   "files": {
     "policy.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/policy.js",
-      "sha256": "8219e9b39276b9ef90fb6288c80872b1b8c4f968fd21bde6fa79a0fe4cbc0048"
+      "sha256": "4745a171296d8d50a1d8deeb3a23334b2aabbb024da5efd07c48108254d9e44c"
     },
     "settings.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/settings.js",
@@ -13,11 +13,16 @@
       "source": "BGOS: frontend/electron-app/agent-browser/profiles.js",
       "sha256": "336225827578f3f66849d5d946aebacd6cea877c20cd793fd6c7080d8cd3119a",
       "whyThisOneToo": "It owns WHERE a remembered answer is stored (agentGrants per agent key, the legacy alwaysGrants overlay, withAlwaysGrant, withTrustGrant, withoutTrustGrant). Without it the daemon host would have had to re-implement that shape, and 'Always allow' meaning two different things on two machines is the same class of drift the policy copy exists to prevent."
+    },
+    "snapshot-target.js": {
+      "source": "BGOS: frontend/electron-app/agent-browser/snapshot-target.js",
+      "sha256": "24900b1f1153d9d0d2a2a2d6795ef20dacb45eca0d5c6bc32d54e304879ba560",
+      "whyThisOneToo": "What names a gate's target from the host's own last snapshot, not from the agent's words. A machine and a desktop must read a target the same way."
     }
   },
-  "vendoredAt": "2026-10-15, policy.js re vendored from BGOS d1bcd4e2b for current permission intent wording",
+  "vendoredAt": "2026-11-04, policy.js and snapshot-target.js from BGOS ff7598a5a: a gate names every target, read from the host's own snapshot",
   "whyADirectory": "settings.js and profiles.js both do require(\"./policy\"), so the copies keep their ORIGINAL filenames and sit together. package.json here pins type=commonjs, because the plugin root declares type=module and these files are CommonJS.",
   "howToUpdate": "Re-copy all three from the BGOS paths above, rerun the hashes, update this file, and run: HOAI_BROWSER_HOST_CORE_SOURCE=<BGOS agent-browser dir> npx tsx --test test/browser-host-core.vendor.test.ts",
   "theHalfThisCannotSee": "Nothing here fires when the BGOS originals change and these copies do not. That check lives on the BGOS side in frontend/electron-app/agent-browser/__tests__/hostCoreVendorPin.test.js, which pins the same two hashes.",
-  "sourceCommit": "d1bcd4e2b7cfc14df3e37dc367fd6a0184f75cba"
+  "sourceCommit": "ff7598a5a007e5023f019a8a92119a6e1d7ad14a"
 }
