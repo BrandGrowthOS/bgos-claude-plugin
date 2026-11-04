@@ -195,3 +195,18 @@ test('only the sites that changed since the copy opened go back, and the rest st
   const state = opened(sent[0].copy)
   assert.deepEqual(state.cookies.map((row: any) => row.domain), ['signed-in-here.example'], 'the site this machine only read stays with the person')
 })
+
+// Found by the real run on 2026-11-04. An approved machine has an enrolled record and no managed browser, and
+// the host refused every browser call for that person, so a sealed copy could never open and the refusal
+// sentence could never be said. Only a managed browser that exists, or is starting, owns the namespace.
+test('a person approved on this machine with no managed browser running reaches the ordinary browser; one running does not', async () => {
+  const { AgentBrowserProfileCompanion } = await import('../lib/browser-profile-companion.mjs')
+  const call = { assistantId: ASSISTANT, principal: `user-${OWNER}` }, row = (extra: any = {}) => ({ scope: { assistantId: ASSISTANT, actingUserId: OWNER }, runtime: null, ...extra })
+  const has = (records: any[], candidates: any[] = []) => AgentBrowserProfileCompanion.prototype.hasNamespace.call({ records: new Map(records.map((value, index) => [index, value])), candidates: new Map(candidates.map((value, index) => [index, value])) }, call)
+  assert.equal(has([row()]), false, 'enrolled, nothing running')
+  assert.equal(has([], [row()]), false, 'a pending enrollment owns no browser')
+  assert.equal(has([row({ runtime: {} })]), true, 'a managed browser is running')
+  assert.equal(has([row({ runtimeCreating: Promise.resolve() })]), true, 'or starting')
+  assert.equal(has([row({ returnTask: Promise.resolve() })]), true, 'or coming back')
+  assert.equal(AgentBrowserProfileCompanion.prototype.hasNamespace.call({ records: new Map([[0, row({ runtime: {} })]]), candidates: new Map() }, { ...call, principal: 'user-someone_else' }), false, 'and it owns only its own person')
+})
