@@ -155,6 +155,7 @@ test('a signed in page: no file under the agent\'s folder or temp holds its text
     assert.deepEqual(readdirSync(join(home, 'browser-output', 'k')), [], 'no page file of any kind: a picture of a page is that page')
     for (const { name, reply } of replies) {
       const body = JSON.stringify(reply)
+      assert.notEqual(reply.isError, true, `${name} answered: ${body.slice(0, 300)}`)
       assert.equal(/\.yml|page-\d|\.png\)/.test(body), false, `${name} links no file: ${body.slice(0, 400)}`)
     }
     const shot = replies.find(row => row.name === 'browser_take_screenshot').reply
