@@ -195,3 +195,16 @@ test('the pool puts sign-ins in as a browser opens and sends them back as it clo
   await broken.release(ctx)
 })
 
+
+// Without a card a person on a phone has no way into a browser on the machine.
+test('a browser opening on the machine posts its live card, naming the machine, and ending it posts the end', async (t) => {
+  const { sessionCardPayload } = await import('../bin/hoai-browser-host.mjs')
+  const open = sessionCardPayload({ sessionId: 'bs_x', seq: 1, state: 'browsing', agentName: 'Atlas', purpose: 'Check the CRM', startedAt: '2026-11-04T00:00:00.000Z' })
+  assert.equal(open.placement, 'daemon')
+  assert.equal(open.kind, 'browser_session')
+  assert.equal(open.state, 'browsing')
+  assert.equal(open.purpose, 'Check the CRM')
+  const ended = sessionCardPayload({ sessionId: 'bs_x', seq: 2, state: 'ended', agentName: 'Atlas', purpose: 'Check the CRM', startedAt: '2026-11-04T00:00:00.000Z' })
+  assert.equal(ended.state, 'ended')
+  assert.equal(ended.seq, 2)
+})

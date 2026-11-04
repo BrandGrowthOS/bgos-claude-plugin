@@ -563,6 +563,20 @@ export function resultUrl(base, rpcId) {
  * socketId must be a socket the gateway registered as an agent host of that
  * pairing, which a plain daemon holding the same token does not have.
  */
+/**
+ * The live browsing card of a browser on this machine. Without one a person on a
+ * phone has no way in (portable browser, screen 6). It says where the browser is,
+ * what it is for and whether it lives; no page text and no value.
+ */
+export function sessionCardPayload({ sessionId, seq, state, agentName, purpose, startedAt, signedIn = false }) {
+  const now = new Date().toISOString()
+  return {
+    kind: 'browser_session', v: 1, session_id: sessionId, seq, state, agent_name: agentName, purpose: purpose || 'Browsing',
+    profile: signedIn ? 'signed_in' : 'preview', placement: 'daemon', started_at: startedAt, step_count: 0, steps: [],
+    ...(state === 'ended' ? { ended_at: now, end_reason: 'agent_closed' } : {}),
+  }
+}
+
 export function gateCardUrl(base) {
   return `${backendBase(base)}/api/v1/browser/gate/card`
 }
@@ -1864,7 +1878,8 @@ export class BrowserHostCore {
    * resident), and an idle host that never receives a frame should not pay
    * for it, so it is loaded on the first tools/list or tools/call.
    */
-  constructor({ pool, browserTools, deviceLabel, gates = /** @type {any} */ (null), downloadStore = /** @type {((assistantId: number) => any) | null} */ (null), log = () => {} }) {
+  constructor({ pool, browserTools, deviceLabel, gates = /** @type {any} */ (null), downloadStore = /** @type {((assistantId: number) => any) | null} */ (null), postSessionCard = /** @type {any} */ (null), log = () => {} }) {
+    this.postSessionCard = postSessionCard
     this.pool = pool
     /** The permission gate, or null on a host with no way to reach a backend. */
     this.gates = gates
@@ -2268,11 +2283,22 @@ export class BrowserHostCore {
     }
   }
 
+  /** The slot's one browsing card, in order. Best effort, and never awaited by a tool call. */
+  _postSlotCard(ctx, slot, state) {
+    if (!this.postSessionCard) return
+    slot.cardId ||= `bs_${randomBytes(9).toString('base64url').replace(/[^A-Za-z0-9]/g, 'x')}`
+    slot.cardSeq = (slot.cardSeq || 0) + 1
+    slot.cardStartedAt ||= new Date().toISOString()
+    void Promise.resolve(this.postSessionCard(ctx.assistantId, slot.cardId, sessionCardPayload({ sessionId: slot.cardId, seq: slot.cardSeq, state, agentName: ctx.assistantName || slot.agentName || 'Agent', purpose: slot.purpose, startedAt: slot.cardStartedAt, signedIn: slot.signInsApplied === true }))).catch(() => {})
+    if (state === 'ended') { slot.cardId = null; slot.cardSeq = 0; slot.cardStartedAt = null }
+  }
+
   async _call(ctx, name, args, signal) {
     if (name === 'hoai_browser_open_session') {
       const slot = await this.pool.acquire(ctx)
       const purpose = typeof args.purpose === 'string' ? args.purpose.trim().slice(0, 200) : ''
       if (purpose) slot.purpose = purpose
+      this._postSlotCard(ctx, slot, 'browsing')
       // One browser per agent (BGOS mission 173): the agent never chooses a profile, so an older
       // client's profile argument changes nothing here.
       if (slot.signInsApplied) return text(`Browser session is open on ${this.deviceLabel}, the machine you run on: your own browser, headless, already signed in where your owner's sealed copy reaches. Those sign-ins are not readable by any tool; browse as usual. A site that needs your owner asks them.`)
@@ -2282,6 +2308,8 @@ export class BrowserHostCore {
     }
     if (name === 'hoai_browser_close_session') {
       if (this.pool.peek(ctx)?.ownerInputLease) return errorResult('owner_control', OWNER_CONTROL_MESSAGE)
+      const live = this.pool.peek(ctx)
+      if (live) this._postSlotCard(ctx, live, 'ended')
       const closed = await this.pool.release(ctx)
       return text(closed ? 'Session closed. Any unlocked login state was saved encrypted; the vault is now locked.' : 'No session was open.')
     }
@@ -2742,6 +2770,21 @@ export class PairingConnection {
    * the agent wait longer to be told the same thing. A 4xx is a refusal the
    * host should see in its log, not a transient.
    */
+  /** Best effort: a card that cannot post never stops a browser. */
+  async postSessionCard(assistantId, sessionId, payload) {
+    if (!this.socketId) return false
+    try {
+      const res = await this._fetch(`${backendBase(this.pairing.backendUrl)}/api/v1/browser/session/card`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-BGOS-Pairing': this.pairing.token },
+        body: JSON.stringify({ socketId: this.socketId, assistantId, sessionId, payload }),
+        signal: AbortSignal.timeout(RESULT_POST_TIMEOUT_MS),
+      })
+      if (!res.ok) this._log(`${this._name}: the browsing card was refused with ${res.status}`)
+      return res.ok
+    } catch { return false }
+  }
+
   async postGateCard(card) {
     if (!this.socketId) {
       this._log(`${this._name}: cannot post permission ${card.gateId}: this host has no live socket`)
@@ -2872,7 +2915,8 @@ export class BrowserHost {
       log,
     })
     this._signInEnv = env
-    this.core = new BrowserHostCore({ pool: this.pool, browserTools, deviceLabel, gates: this.gates, downloadStore: (id) => this.downloadStore(id), log })
+    this.core = new BrowserHostCore({ pool: this.pool, browserTools, deviceLabel, gates: this.gates,
+      postSessionCard: (assistantId, sessionId, payload) => this.connectionFor(assistantId)?.postSessionCard(assistantId, sessionId, payload) ?? false, downloadStore: (id) => this.downloadStore(id), log })
     const version = readPackageVersion()
     this.relay = new RelaySessions({ core: this.core, serverInfo: { name: 'hoai-agent-browser', version }, instructions: hostInstructions(deviceLabel), log })
     this._rescanTimer = null
