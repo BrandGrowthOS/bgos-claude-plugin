@@ -227,7 +227,7 @@ test('a browser opening on the machine posts its live card, naming the machine, 
 // and page logs, and a machine's browser now holds a person's sign-ins.
 test('no tool that can read a cookie, a header or stored value is served, or answers if called', async () => {
   const { servedBrowserTools, PRIVATE_PAGE_TOOLS, BrowserHostCore } = await import('../bin/hoai-browser-host.mjs')
-  const names = ['browser_evaluate', 'browser_console_messages', 'browser_network_requests', 'browser_network_request']
+  const names = ['browser_evaluate', 'browser_console_messages', 'browser_network_requests', 'browser_network_request', 'browser_pdf_save']
   assert.deepEqual([...PRIVATE_PAGE_TOOLS].sort(), [...names].sort())
   const served = servedBrowserTools([...names, 'browser_snapshot', 'browser_click'].map(name => ({ name, inputSchema: { type: 'object', properties: {} } }))).map((row: any) => row.name)
   assert.deepEqual(served.sort(), ['browser_click', 'browser_snapshot'])

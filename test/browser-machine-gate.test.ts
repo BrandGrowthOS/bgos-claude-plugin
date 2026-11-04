@@ -163,11 +163,45 @@ test('the end of a browsing card names a reason the server takes (found by the r
   assert.equal(ended.end_reason, 'closed_by_agent')
 })
 
-test('the default purpose carries where the browser went, never the query, the fragment or a login in the address', () => {
-  assert.equal(defaultPurposeFor('https://crm.example/a/b?token=SYNTHETIC&x=1#frag'), 'Browsing https://crm.example/a/b')
-  assert.equal(defaultPurposeFor('https://user:pw@crm.example/'), 'Browsing https://crm.example/')
+test('the default purpose names the site and nothing after it: a path can hold a token as well as a query can', () => {
+  assert.equal(defaultPurposeFor('https://crm.example/a/b?token=SYNTHETIC&x=1#frag'), 'Browsing https://crm.example')
+  assert.equal(defaultPurposeFor('https://site.example/reset/SYNTH_RESET_TOKEN'), 'Browsing https://site.example')
+  assert.equal(defaultPurposeFor('https://user:pw@crm.example/'), 'Browsing https://crm.example')
   assert.equal(defaultPurposeFor('not a url?token=SYNTHETIC'), 'Browsing on request')
   assert.equal(defaultPurposeFor(undefined), 'Browsing on request')
+})
+
+test('a gate on another person\'s turn still reaches the owner, who answers it, and tells them no page, no site and no purpose', async () => {
+  const r = rig()
+  r.slot.purpose = 'A private errand of the recipient'
+  r.slot.lastSnapshotText = PAGE
+  const call = r.core.callTool(RECIPIENT, 'browser_click', { target: 'e2', element: 'Pay invoice 8841 to Dr Lee', wait_seconds: 5 })
+  for (let i = 0; i < 50 && !r.cards.length; i++) await new Promise(resolve => setTimeout(resolve, 5))
+  assert.equal(r.cards.length, 1)
+  const card = r.cards[0], words = JSON.stringify(card)
+  for (const leak of ['Make /finance public', 'Pay invoice', 'private errand', 'crm.example']) assert.equal(words.includes(leak), false, `${leak}: ${words}`)
+  assert.match(card.summary, /someone you share this agent with/i)
+  assert.deepEqual(card.choices, ['allow_once', 'deny'], 'nothing an owner could remember blind')
+  assert.equal(card.kind, 'sensitive')
+  void call.catch(() => {})
+  // CONTROL: the owner's own turn keeps its words.
+  const own = rig()
+  own.slot.lastSnapshotText = PAGE
+  const mine = own.core.callTool(OWNER, 'browser_click', { target: 'e2', element: 'x', wait_seconds: 5 })
+  for (let i = 0; i < 50 && !own.cards.length; i++) await new Promise(resolve => setTimeout(resolve, 5))
+  assert.match(own.cards[0].summary, /Make \/finance public/)
+  void mine.catch(() => {})
+})
+
+test('a snapshot of one element or to a depth is not the whole page, and leaves the tree the gate reads alone', async () => {
+  const r = rig()
+  await r.core.callTool(OWNER, 'browser_snapshot', {})
+  const whole = r.slot.lastSnapshotText
+  r.slot.engine.callTool = async () => reply('### Snapshot\n```yaml\n- button "Part" [ref=e1]\n```')
+  await r.core.callTool(OWNER, 'browser_snapshot', { target: 'e1' })
+  assert.equal(r.slot.lastSnapshotText, whole)
+  await r.core.callTool(OWNER, 'browser_snapshot', { depth: 1 })
+  assert.equal(r.slot.lastSnapshotText, whole)
 })
 
 test('the owner comes from the credentials the pairing was made with', () => {

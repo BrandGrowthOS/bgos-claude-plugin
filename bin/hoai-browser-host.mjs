@@ -71,7 +71,7 @@ import { ensureBrowser, bundledChromium, browserBootstrapReadiness, browserInsta
 import { terminateBrowserDaemon } from '../lib/browser-profile-daemon-stop.mjs'
 import { launcherProcessQuery, parseLauncherProcesses, readBootClock } from '../lib/agent-inventory.mjs'
 import { BrowserSecretRedactor } from '../lib/browser-secret-redactor.mjs'
-import { maskMaskedInputs } from '../lib/browser-snapshot-privacy.mjs'
+import { maskMaskedInputs, maskedValuesOf } from '../lib/browser-snapshot-privacy.mjs'
 import { DOWNLOAD_ASK_WAIT_S, DownloadStore, SlotDownloads, downloadLines, downloadPaths } from '../lib/browser-downloads.mjs'
 import { SAVED_GRANT_WORDS, SAVED_SITES_MAX, forgetInGrants, readSavedSitesRequest, savedSiteDirs, savedSitesOf, withoutSavedSites } from '../lib/browser-saved-sites.mjs'
 
@@ -105,7 +105,7 @@ const hostCoreRequire = createRequire(import.meta.url)
 export const policy = hostCoreRequire('../lib/browser-host-core/policy.js')
 export const hostSettings = hostCoreRequire('../lib/browser-host-core/settings.js')
 export const hostProfiles = hostCoreRequire('../lib/browser-host-core/profiles.js')
-const { gateFactsFor, snapshotTextOf } = hostCoreRequire('../lib/browser-host-core/snapshot-target.js')
+const { factsOfTargets, gateFactsFor, snapshotTextOf, targetOfRef, targetOfTree, targetsNamedBy } = hostCoreRequire('../lib/browser-host-core/snapshot-target.js')
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -322,19 +322,21 @@ export function hostWordedSummary(phrase, name, facts) {
   return `${phrase} (the page names: ${facts.targetName})`.slice(0, 200)
 }
 
-/** The purpose a browser opened with none is given. A query, a fragment or a login in an address can hold a secret. */
+/** The purpose a browser opened with none is given. Any part of an address after the site can hold a secret. */
 export function defaultPurposeFor(url) {
   if (typeof url !== 'string') return 'Browsing on request'
   try {
-    const parsed = new URL(url)
-    return `Browsing ${parsed.origin}${parsed.pathname}`.slice(0, 200)
+    return `Browsing ${new URL(url).origin}`.slice(0, 200)
   } catch { return 'Browsing on request' }
 }
+
+/** The words after "<agent> wants to" on a card for another person's browsing: nothing of their page. */
+export const SOMEONE_ELSES_TURN = 'do something in the browser of someone you share this agent with, and it needs your yes'
 
 /** What the agent hears where a person's sealed copy will not open on this machine. */
 export const SIGN_IN_STAYS_SENTENCE = 'Your owner\'s sign-ins stay on their computer: no copy comes to this machine, because you and this browser run as the same OS user.'
 
-export const PRIVATE_PAGE_TOOLS = new Set(['browser_evaluate', 'browser_console_messages', 'browser_network_requests', 'browser_network_request'])
+export const PRIVATE_PAGE_TOOLS = new Set(['browser_evaluate', 'browser_console_messages', 'browser_network_requests', 'browser_network_request', 'browser_pdf_save'])
 
 /** Never reachable through HOAI (policy.js NEVER_TOOLS). */
 export const NEVER_TOOLS = new Set([
@@ -449,7 +451,7 @@ Supported page mutations wait for the person's fresh allow-once approval of the 
 
 browser_type without submit or slowly, and browser_fill_form textbox fields, support positively classified ordinary input/textarea fields after fresh Enter page text approval. Passwords, codes, payment fields, unknown fields, subframes, contenteditable, generic keys and scripts require the person to use the browser directly. Saved managed cookies and logins use OS-protected encrypted profile state, separate from legacy login storage. Never request credentials in chat or tool arguments.
 
-A collapsed pane retains the live session. Hand back to agent keeps that same live page. Moving between machines transfers supported saved state after stopping the source; it does not preserve a live heap, POST action, popup opener, unfinished sign-in or device-bound session. hoai_browser_close_session or browser_close retires this runtime and commits its encrypted stopped checkpoint; report an unconfirmed server commit and use explicit reconciliation.
+A collapsed pane retains the live session. Hand back to agent keeps that same live page. A person's computer moves a browser to a machine only once that machine proves it runs it as a separate OS user, and no machine can yet, so say that plainly when asked to move one here. A move transfers supported saved state after stopping the source; it does not preserve a live heap, POST action, popup opener, unfinished sign-in or device-bound session. hoai_browser_close_session or browser_close retires this runtime and commits its encrypted stopped checkpoint; report an unconfirmed server commit and use explicit reconciliation.
 
 hoai_browser_files and hoai_browser_send_file use opaque file/artifact tokens and separate per-file recipient consent. browser_file_upload accepts one hoai-file token plus its original site approval, never a host path. Managed downloads are private owned artifacts; cross-device release needs explicit recipient consent. Unknown uploads are not resent. Automatic encrypted backups are advisory snapshots, not authority to activate or fail over.
 
@@ -1186,6 +1188,20 @@ export async function resolveConfig({ caps, outputDir }) {
   return config
 }
 
+/** How long a gate waits for the live page to name a target before it treats the name as unreadable. */
+export const TARGET_READ_MS = 1_500
+
+/** browser_find reads the page's tree directly, past the tab's own snapshot: the same mask on that door. */
+function maskTreesOf(page) {
+  if (page.__hoaiMasked) return
+  Object.defineProperty(page, '__hoaiMasked', { value: true })
+  const read = page.ariaSnapshot.bind(page)
+  page.ariaSnapshot = async (options) => {
+    const tree = await read(options)
+    return options?.mode === 'ai' ? maskMaskedInputs(tree, ref => page.locator(`aria-ref=${ref}`)) : tree
+  }
+}
+
 /**
  * Makes one tool call write no page to a file. A page holds whatever the person's signed in
  * session shows, and the agent's folder is readable by the agent and everything it runs. Fails
@@ -1235,10 +1251,8 @@ export async function listTools({ caps, outputDir }) {
  * when the browser under it goes away, so the pool relaunches it.
  */
 export class PlaywrightEngine {
-  constructor({ browser = /** @type {any} */ (null), caps, outputDir, clientName, clientVersion, artifactsDir = /** @type {string | null} */ (null), acceptDownloads = false, pdfFiles = () => false, onDownload = /** @type {((download: any) => void) | null} */ (null), managedRuntime = /** @type {any} */ (null), log = /** @type {(line: string) => void} */ (() => {}) }) {
+  constructor({ browser = /** @type {any} */ (null), caps, outputDir, clientName, clientVersion, artifactsDir = /** @type {string | null} */ (null), acceptDownloads = false, onDownload = /** @type {((download: any) => void) | null} */ (null), managedRuntime = /** @type {any} */ (null), log = /** @type {(line: string) => void} */ (() => {}) }) {
     this._launched = browser
-    /** A PDF is a file by nature: asked before each one, and false by default. */
-    this._pdfFiles = pdfFiles
     // Chrome writes downloads into Playwright's artifacts folder. Given here it
     // is the held folder inside the agent's own folder; never given, Playwright
     // would make one in the system temp folder.
@@ -1269,7 +1283,8 @@ export class PlaywrightEngine {
     // Downloads are accepted only into a guarded held folder; otherwise Chrome
     // is told to refuse them (Browser.setDownloadBehavior deny).
     const context = this._managedRuntime ? this._managedRuntime.context : await this._browser.newContext({ viewport: { width: 1280, height: 800 }, acceptDownloads: this._acceptDownloads && !!this._artifactsDir })
-    context.on('page', page => { if (context.pages().length > REMOTE_BROWSER_TAB_MAX) void page.close().catch(() => {}) })
+    context.on('page', page => { maskTreesOf(page); if (context.pages().length > REMOTE_BROWSER_TAB_MAX) void page.close().catch(() => {}) })
+    context.pages().forEach(maskTreesOf)
     context.on('download', (download) => this._download(download))
     if (!this._managedRuntime) await context.newPage()
     const config = await resolveConfig({ caps: this._caps, outputDir: this._outputDir })
@@ -1290,10 +1305,8 @@ export class PlaywrightEngine {
   _withoutPageFiles(tool) {
     if (typeof tool.handle !== 'function') throw new HostError('browser_unavailable', 'Browser file guard unavailable')
     return { ...tool, handle: async (context, params, response, signal) => {
-      if (tool.schema.name === 'browser_pdf_save') {
-        if (this._pdfFiles() !== true) throw new HostError('not_available', 'A signed in page is not saved as a file on this machine. Use a snapshot or a screenshot to read it.')
-        return tool.handle(context, params, response, signal)
-      }
+      // A PDF is a file of the page by nature, and a person can sign in here in ways the host cannot see.
+      if (tool.schema.name === 'browser_pdf_save') throw new HostError('not_available', 'A page is not saved as a file on this machine. Use a snapshot or a screenshot to read it.')
       return tool.handle(context, keepPageOutOfFiles(tool.schema.name, params, response), response, signal)
     } }
   }
@@ -1359,12 +1372,52 @@ export class PlaywrightEngine {
     this._managedRuntime?.assertCurrent()
     if (!this._backend) throw new Error('Engine not started')
     if (name === 'browser_tabs' && args?.action === 'new' && this.pages().length >= REMOTE_BROWSER_TAB_MAX) throw new HostError('browser_tabs_full', 'The browser has reached its tab limit.')
-    try { return this._secrets.value(await this._backend.callTool(name, args || {}, signal)) }
-    catch (error) { throw Object.assign(new Error(this._secrets.text(String(error?.message || 'Browser command failed'))), { code: error?.code }) }
+    try {
+      const reply = await this._backend.callTool(name, args || {}, signal)
+      await this._redactMaskedValues()
+      return this._secrets.value(reply)
+    } catch (error) {
+      await this._redactMaskedValues()
+      throw Object.assign(new Error(this._secrets.text(String(error?.message || 'Browser command failed'))), { code: error?.code })
+    }
     finally { this.onSelectedPage?.(this.selectedPage()) }
   }
 
   registerSecret(secret) { this._secrets.register(secret) }
+
+  /** What a masked input holds right now is redacted from this reply and the rest of this browser's life, in any form it takes. */
+  async _redactMaskedValues() {
+    for (const page of this.pages()) {
+      for (const value of await maskedValuesOf(page).catch(() => [])) {
+        try { this._secrets.register(value) } catch {}
+      }
+    }
+  }
+
+  /**
+   * What the live page calls each of these targets, or null for one it will not say. Never the agent's words.
+   * Any read of a tree replaces the one the page answers refs from, so a ref is read from a whole
+   * page tree, and a selector's read is followed by one, or the agent's refs stop working.
+   */
+  async describeTargets(targets) {
+    const tab = this._backend?._context?.currentTab?.()
+    if (!tab) return targets.map(() => null)
+    const bounded = async (work) => {
+      let timer
+      try { return await Promise.race([work(), new Promise((resolve) => { timer = setTimeout(() => resolve(null), TARGET_READ_MS); timer.unref?.() })]) }
+      catch { return null } finally { clearTimeout(timer) }
+    }
+    const wholeTree = () => bounded(() => tab.page.ariaSnapshot({ mode: 'ai', timeout: TARGET_READ_MS }))
+    const named = []
+    let tree = await wholeTree()
+    for (const target of targets) {
+      const byRef = targetOfRef(tree, target)
+      if (byRef) { named.push(byRef); continue }
+      named.push(targetOfTree(await bounded(async () => (await tab.targetLocator({ target })).locator.first().ariaSnapshot({ timeout: TARGET_READ_MS }))))
+      tree = await wholeTree()
+    }
+    return named
+  }
 
   /** Asks Chrome itself to quit, which writes cookies to disk first. */
   async closeBrowserProcess() {
@@ -1724,8 +1777,6 @@ export class ChromiumEngine {
       outputDir: this.outputDir,
       clientName: this._clientName,
       clientVersion: this._clientVersion,
-      // Only while this browser holds no person's sign-in: no copy opened here, and login storage locked.
-      pdfFiles: () => this.holdsSignIns !== true && this.vault?.status().unlocked !== true,
       artifactsDir: this.heldDir,
       acceptDownloads: this._acceptDownloads === true,
       onDownload: (download) => this._onDownload(download),
@@ -1757,6 +1808,8 @@ export class ChromiumEngine {
     if (!this._engine || !this.alive) throw new HostError('browser_gone', 'The browser closed; call again to reopen it.')
     return this._engine.callTool(name, args, signal)
   }
+
+  describeTargets(targets) { return this._engine ? this._engine.describeTargets(targets) : Promise.resolve(targets.map(() => null)) }
 
   registerSecret(secret) {
     if (!this._engine || !this.alive) throw new HostError('browser_gone', 'The browser is unavailable.')
@@ -2227,8 +2280,14 @@ export class BrowserHostCore {
     // What the host itself read of the target, never the agent's words: the same facts the desktop
     // sends its intent check (snapshot-target.js). The page's own name is judged beside the agent's
     // description, so calling a sensitive button something harmless does not make it harmless.
-    const facts = gateFactsFor(name, engineArgs, slot.lastSnapshotText || null)
+    // The live page first, whatever form the target took, then the last tree. A target that neither
+    // can name, on a browser that may be signed in, is treated as sensitive.
+    const targets = policy.WRITE_TOOLS.has(name) ? await this._readTargets(slot, engineArgs) : null
+    const facts = targets ? factsOfTargets(name, targets.filter(Boolean)) : gateFactsFor(name, engineArgs, slot.lastSnapshotText || null)
     const classification = policy.classifyToolCall(name, withHostNames(engineArgs, facts), { currentOrigin: await this._currentOrigin(slot) })
+    if (classification.kind === 'write' && targets?.some((target) => !target?.name) && await this._maySignedIn(slot)) classification.kind = 'sensitive'
+    // The owner answers every gate, and on another person's turn reads nothing of that person's page.
+    const ownersTurn = !this.isOwnerPrincipal || this.isOwnerPrincipal(ctx) === true
     const grants = this._grantsFor(ctx, slot)
     const decision = policy.decide({
       // Site permission policy remains the signed-in policy even while the
@@ -2268,19 +2327,20 @@ export class BrowserHostCore {
       key: this.pool.slotKey(ctx),
       assistantId: ctx.assistantId,
       kind: decision.gate,
-      origin: classification.origin ?? null,
-      summary,
+      origin: ownersTurn ? classification.origin ?? null : null,
+      summary: ownersTurn ? summary : SOMEONE_ELSES_TURN,
       agentName: ctx.assistantName ?? null,
-      purpose: slot.purpose ?? null,
+      purpose: ownersTurn ? slot.purpose ?? null : null,
       waitSeconds: wait,
       // The owner's buttons, from the policy rather than from here, so this
       // host offers exactly what the desktop offers for the same gate kind.
-      choices: policy.gateChoices(decision.gate),
+      // Nothing an owner could remember for good about a page they were not shown.
+      choices: ownersTurn ? policy.gateChoices(decision.gate) : ['allow_once', 'deny'],
       // The gate HOLDS the action and is the only thing that runs it, so a
       // call that parks and a wait_gate that re-attaches share one run.
       action: run,
       attachMs,
-      beforePost: decision.gate === 'sensitive' ? (gate) => this._cautionFromIntentCheck(ctx, slot, gate, facts) : undefined,
+      beforePost: ownersTurn && decision.gate === 'sensitive' ? (gate) => this._cautionFromIntentCheck(ctx, slot, gate, facts) : undefined,
     })
     if (raised.parked) return raised
     if (!raised.allowed) return { allowed: false, message: deniedMessage(raised.reason, wait) }
@@ -2471,6 +2531,22 @@ export class BrowserHostCore {
       if (err instanceof HostError) return redact(errorResult(err.code, err.message))
       return redact(errorResult('tool_error', String(err?.message ?? err)))
     }
+  }
+
+  /** Each target this call names, as the live page calls it or else as the last tree did. Null when the call names none. */
+  async _readTargets(slot, args) {
+    const named = targetsNamedBy(args)
+    if (!named.length) return null
+    const live = typeof slot.engine.describeTargets === 'function' ? await slot.engine.describeTargets(named) : named.map(() => null)
+    return named.map((target, index) => (live[index]?.name ? live[index] : targetOfRef(slot.lastSnapshotText || '', target) || live[index]))
+  }
+
+  /** Could this browser hold a sign-in? A copy, open login storage, or any cookie for the page it is on. Unsure reads as yes. */
+  async _maySignedIn(slot) {
+    if (slot.engine.holdsSignIns === true || slot.engine.vault?.status?.().unlocked === true) return true
+    const context = slot.engine.vault?.context
+    if (!context) return false
+    try { return (await context.cookies(slot.engine.selectedPage()?.url())).length > 0 } catch { return true }
   }
 
   /**

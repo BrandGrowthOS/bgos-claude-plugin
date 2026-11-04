@@ -593,7 +593,8 @@ test('the browser_ roster is loaded on first use, once, and a failed load is ret
 test('the roster is the desktop one: four session tools, Playwright tools minus the never set, wait_seconds where a gate could rise', { timeout: 60_000 }, async () => {
   const tools = servedBrowserTools(await listTools({ caps: DEFAULT_CAPS, outputDir: realpathSync(scratchDir('bh-out-')) }))
   const names = tools.map((t: any) => t.name)
-  assert.ok(names.includes('browser_navigate') && names.includes('browser_snapshot') && names.includes('browser_pdf_save'))
+  assert.ok(names.includes('browser_navigate') && names.includes('browser_snapshot'))
+  assert.equal(names.includes('browser_pdf_save'), false, 'a PDF would be a file of the page in the agent\'s folder')
   assert.ok(!names.some((n: string) => NEVER_TOOLS.has(n)), 'no never-exposed tool')
   const byName = new Map<string, any>(tools.map((t: any) => [t.name, t]))
   assert.ok(byName.get('browser_click').inputSchema.properties.wait_seconds, 'a write carries wait_seconds')
@@ -889,7 +890,7 @@ test(
       const init = await rpc('user-user_2Alice', { jsonrpc: '2.0', id: ++id, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'hoai-browser-mcp', version: '0.44.0' } } })
       assert.equal(init.result.serverInfo.name, 'hoai-agent-browser')
       const list = await rpc('user-user_2Alice', { jsonrpc: '2.0', id: ++id, method: 'tools/list' })
-      assert.equal(list.result.tools.length, 25, 'the pinned roster: 4 session tools and 21 browser_ tools (page code and raw diagnostics are never served)')
+      assert.equal(list.result.tools.length, 24, 'the pinned roster: 4 session tools and 20 browser_ tools (page code, raw diagnostics and page files are never served)')
       assert.equal(list.result.tools.some((entry: { name: string }) => entry.name === 'browser_emulate_media'), true)
 
       // THE PERMISSION GATE, END TO END, on the real host process.
@@ -951,7 +952,12 @@ test(
       const first = relay.gateCards[0]!
       assert.equal(first.assistantId, 900, 'the card names the agent whose browser it is')
       assert.equal(first.kind, 'navigate', 'a first visit to an origin is a navigate gate')
-      assert.equal(first.origin, site.url, 'the owner is told which site they are being asked about')
+      assert.equal(first.origin ?? null, null, 'a card for another person\'s browsing names no site of theirs')
+      assert.equal(JSON.stringify(first).includes(new URL(site.url).host), false, 'in any field')
+      assert.match(String(first.summary), /someone you share this agent with/i, 'and says whose browsing it is')
+      const owners = relay.gateCards.find((c) => c.origin === site.url)
+      assert.ok(owners, 'the owner is told which site they are being asked about, on their own turn')
+      assert.equal(owners!.kind, 'navigate')
       assert.match(String(first.gateId), /^g_[A-Za-z0-9_-]{4,64}$/, 'the backend DTO refuses any other gate id shape')
       assert.ok(String(first.socketId).length > 0, 'the card carries the host socket the backend checks it against')
       assert.ok(Array.isArray(first.choices) && first.choices.includes('deny'), 'the owner must be able to say no')

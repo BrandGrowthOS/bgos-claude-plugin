@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { ChromiumEngine, keepPageOutOfFiles, resolveChromeExecutable, sweepPageFiles } from '../bin/hoai-browser-host.mjs'
+import { maskMaskedInputs, maskedValuesOf } from '../lib/browser-snapshot-privacy.mjs'
 
 const chrome = resolveChromeExecutable()
 const posix = process.platform !== 'win32'
@@ -211,32 +212,88 @@ test('a page file left for a principal that never opens again goes when the host
   } finally { rmSync(home, { recursive: true, force: true }) }
 })
 
-test('a PDF of a page is a file, so it is refused while the browser holds a sign-in or its login storage is open, and gone at close otherwise', { timeout: 120_000, skip }, async () => {
+test('a PDF of a page is never written on this machine: a live cookie changes nothing the host can see, so nothing opens it', { timeout: 120_000, skip }, async () => {
   const home = made('bh-pdf-')
   const outputDir = join(home, 'browser-output', 'k')
   const engine: any = new ChromiumEngine({ executable: chrome.path!, profileDir: join(home, 'browser', 'k'), outputDir, scope: 'fixture' })
   try {
     await engine.start()
     await engine.callTool('browser_navigate', { url: 'data:text/html,<h1>made up</h1>' })
-    engine.holdsSignIns = true
-    const refused = await engine.callTool('browser_pdf_save', {})
-    assert.equal(refused.isError, true)
-    assert.match(JSON.stringify(refused), /not saved as a file/)
-    assert.deepEqual(readdirSync(outputDir), [])
-    engine.holdsSignIns = false
-    const realStatus = engine.vault.status.bind(engine.vault)
-    engine.vault.status = () => ({ ...realStatus(), unlocked: true })
-    assert.equal((await engine.callTool('browser_pdf_save', {})).isError, true, 'login storage open reads the same')
-    engine.vault.status = realStatus
-    const saved = await engine.callTool('browser_pdf_save', {})
-    assert.notEqual(saved.isError, true, JSON.stringify(saved).slice(0, 300))
-    assert.equal(readdirSync(outputDir).filter(name => name.endsWith('.pdf')).length, 1, 'a browser with nobody signed in keeps the tool')
-    await engine.stop()
-    assert.deepEqual(readdirSync(outputDir), [], 'and the file goes at close')
+    for (const state of [{ holdsSignIns: false }, { holdsSignIns: true }]) {
+      Object.assign(engine, state)
+      const refused = await engine.callTool('browser_pdf_save', {})
+      assert.equal(refused.isError, true, JSON.stringify(refused).slice(0, 200))
+      assert.match(JSON.stringify(refused), /not saved as a file/)
+      assert.deepEqual(readdirSync(outputDir), [])
+    }
   } finally {
     await engine.stop().catch(() => {})
     rmSync(home, { recursive: true, force: true })
   }
+})
+
+test('a masked field keeps its value out of every reply on the real engine: a plain line, a quoted line, a placeholder, a frame, and browser_find', { timeout: 180_000, skip }, async () => {
+  const VALUES = { plain: `MADE_UP_PLAIN_${randomBytes(6).toString('hex')}`, quoted: `MADE_UP_QUOTED_${randomBytes(6).toString('hex')}`, holder: `MADE_UP_HOLDER_${randomBytes(6).toString('hex')}`, framed: `MADE_UP_FRAMED_${randomBytes(6).toString('hex')}`, styled: `MADE_UP_STYLED_${randomBytes(6).toString('hex')}` }
+  const NOTE = 'an ordinary value', frame = `<input type=password aria-label='In frame' value='${VALUES.framed}'>`
+  const server = createServer((_req, res) => {
+    res.setHeader('content-type', 'text/html')
+    res.end(`<title>Keys</title><label>Plain <input type="password" aria-label="Plain" value="${VALUES.plain}"></label><input type="password" aria-label="Key: required" value="${VALUES.quoted}"><input type="password" aria-label="Holder" placeholder="Enter key" value="${VALUES.holder}"><input aria-label="Styled" style="-webkit-text-security:disc" value="${VALUES.styled}"><input aria-label="Note" value="${NOTE}"><iframe srcdoc="${frame}"></iframe>`)
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()))
+  const home = made('bh-mask-')
+  const engine: any = new ChromiumEngine({ executable: chrome.path!, profileDir: join(home, 'browser', 'k'), outputDir: join(home, 'browser-output', 'k'), scope: 'fixture' })
+  try {
+    await engine.start()
+    await engine.callTool('browser_navigate', { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/` })
+    await sleep(300)
+    const page = engine.pages()[0], held = await page.locator('input[aria-label="Plain"]').inputValue()
+    assert.equal(held, VALUES.plain, 'CONTROL: the page really holds the value')
+    const replies: Record<string, any> = {
+      snapshot: await engine.callTool('browser_snapshot', {}),
+      findPlain: await engine.callTool('browser_find', { text: 'Plain' }),
+      findQuoted: await engine.callTool('browser_find', { text: 'Key' }),
+      findHolder: await engine.callTool('browser_find', { text: 'Holder' }),
+      findFrame: await engine.callTool('browser_find', { regex: 'textbox' }),
+    }
+    const tree = JSON.stringify(replies.snapshot)
+    assert.ok(tree.includes(NOTE), 'an ordinary field keeps its value')
+    for (const name of ['Plain', 'Key: required', 'Holder', 'Styled', 'In frame']) assert.ok(tree.includes(name), `the field ${name} is still there: ${tree.slice(0, 600)}`)
+    assert.match(JSON.stringify(replies.findFrame), /textbox/, 'find answered')
+    for (const [name, reply] of Object.entries(replies)) for (const [form, value] of Object.entries(VALUES)) assert.equal(JSON.stringify(reply).includes(value), false, `${name} carried the ${form} value`)
+    // The same value elsewhere on the page is that value too, by a route a line of the tree cannot show.
+    await page.evaluate((value: string) => { const p = document.createElement('p'); p.textContent = `Copied ${value}`; document.body.append(p) }, VALUES.plain)
+    assert.equal(JSON.stringify(await engine.callTool('browser_snapshot', {})).includes(VALUES.plain), false, 'text repeating a masked value')
+    assert.deepEqual((await maskedValuesOf(page)).sort(), Object.values(VALUES).sort(), 'the page is asked in every frame, about every way a box masks')
+    // The tree's own mask holds with the redaction off, on both doors.
+    const inner = engine._engine, redact = inner._redactMaskedValues, secretsBefore = inner._secrets
+    inner._redactMaskedValues = async () => {}
+    inner._secrets = new (secretsBefore.constructor)()
+    for (const args of [['browser_snapshot', {}], ['browser_find', { regex: 'textbox' }]] as const) {
+      const text = JSON.stringify(await engine.callTool(args[0], args[1]))
+      for (const [form, value] of Object.entries(VALUES)) if (form !== 'plain') assert.equal(text.includes(value), false, `${args[0]} carried the ${form} value with the redaction off`) // the plain one is now also on the page as text
+    }
+    inner._redactMaskedValues = redact; inner._secrets = secretsBefore
+    // An error that quotes a value a call just typed into a masked box is redacted as well.
+    await page.locator('input[aria-label="Plain"]').fill(`${VALUES.plain}_NEW`)
+    const backend = inner._backend, real = backend.callTool
+    backend.callTool = async () => { throw new Error(`failed near ${VALUES.plain}_NEW`) }
+    await assert.rejects(engine.callTool('browser_snapshot', {}), (error: Error) => !error.message.includes(`${VALUES.plain}_NEW`))
+    backend.callTool = real
+  } finally {
+    await engine.stop().catch(() => {})
+    await new Promise(resolve => server.close(resolve))
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('the snapshot mask reads every form Playwright writes a filled box in, and fails closed', async () => {
+  const masked = { evaluate: async () => true }, plain = { evaluate: async () => false }, broken = { evaluate: async () => { throw new Error('gone') } }
+  const tree = ['- textbox "Plain" [ref=e2]: SECRET_A', "- 'textbox \"Key: required\" [ref=e3]': SECRET_B", '- textbox "Holder" [ref=e4]:', '  - /placeholder: Enter key', '  - text: SECRET_C', '- textbox "Note" [ref=e5]: kept', '- textbox "Frame" [active] [ref=f1e6]: "SECRET: D"', '- textbox "Gone" [ref=e7]: SECRET_E', '- paragraph [ref=e8]: "textbox [ref=e2]: not a field"'].join('\n')
+  const out = await maskMaskedInputs(tree, (ref: string) => ref === 'e5' ? plain : ref === 'e7' ? broken : masked)
+  for (const secret of ['SECRET_A', 'SECRET_B', 'SECRET_C', 'SECRET: D', 'SECRET_E']) assert.equal(out.includes(secret), false, `${secret}: ${out}`)
+  assert.ok(out.includes('- textbox "Note" [ref=e5]: kept'), 'an ordinary field stays')
+  assert.ok(out.includes('/placeholder: Enter key'), 'a placeholder is on screen and stays')
+  assert.ok(out.includes('not a field'), 'other lines stay')
 })
 
 test('a Playwright that moved the methods the guard replaces stops the call, not the guard', () => {
