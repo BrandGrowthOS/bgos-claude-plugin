@@ -611,7 +611,7 @@ export function sessionCardPayload({ sessionId, seq, state, agentName, purpose, 
   return {
     kind: 'browser_session', v: 1, session_id: sessionId, seq, state, agent_name: agentName, purpose: purpose || 'Browsing',
     profile: signedIn ? 'signed_in' : 'preview', placement: 'daemon', started_at: startedAt, step_count: 0, steps: [],
-    ...(state === 'ended' ? { ended_at: now, end_reason: 'agent_closed' } : {}),
+    ...(state === 'ended' ? { ended_at: now, end_reason: 'closed_by_agent' } : {}),
   }
 }
 

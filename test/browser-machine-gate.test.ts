@@ -143,6 +143,12 @@ test('a room posts none, an unknown owner posts none, and the owner\'s own turn 
   assert.deepEqual(r.sessionCards.map((card: any) => card.state), ['browsing', 'ended'])
 })
 
+test('the end of a browsing card names a reason the server takes (found by the real run: it answered 400 and the card stayed open)', async () => {
+  const { sessionCardPayload } = await import('../bin/hoai-browser-host.mjs')
+  const ended = sessionCardPayload({ sessionId: 'bs_x', seq: 2, state: 'ended', agentName: 'Atlas', purpose: 'p', startedAt: '2026-11-04T00:00:00.000Z' })
+  assert.equal(ended.end_reason, 'closed_by_agent')
+})
+
 test('the default purpose carries where the browser went, never the query, the fragment or a login in the address', () => {
   assert.equal(defaultPurposeFor('https://crm.example/a/b?token=SYNTHETIC&x=1#frag'), 'Browsing https://crm.example/a/b')
   assert.equal(defaultPurposeFor('https://user:pw@crm.example/'), 'Browsing https://crm.example/')
