@@ -14762,7 +14762,8 @@ const agentStatePublisher = new AgentStatePublisher({
     turnSignal: hookTurnSignal({ lastEventAtMs: lastHookEventAtMs, endedSessionId: hookEndedSessionId }),
     pendingMessages: pendingInbounds.size,
     pendingPermissions: pendingPermissions.size,
-    activeOperations: messageActivity.activeOperations,
+    // Thread work too: the watcher's sweep reads this, and its restart would stop a thread turn or a fork.
+    activeOperations: messageActivity.activeOperations + liveThreadWork(threadLanes, asideForks),
     // Boot counts as activity: a session that just started may have a person
     // at its keyboard, and the watcher's quiet window should run from there.
     // The transcript the agent is writing counts too, hooks or not.
@@ -14989,6 +14990,15 @@ function updateDrainSnapshot() {
   }
 }
 
+/**
+ * What an update's drain waits for: the fresh work above, and thread work, which a restart would stop. Tool admission
+ * keeps the snapshot above: a tool call must not be refused because a thread is running. Bounded by each caller.
+ */
+function restartDrainSnapshot() {
+  const snapshot = updateDrainSnapshot()
+  return { ...snapshot, activeOperations: snapshot.activeOperations + liveThreadWork(threadLanes, asideForks) }
+}
+
 const updateRpc = new UpdateRpcHandler({
   postAck: (rpcId) =>
     bgosPost(`integrations/update-rpc/${encodeURIComponent(rpcId)}/ack`, {}),
@@ -15034,7 +15044,7 @@ const updateRpc = new UpdateRpcHandler({
       username: safeUsername(),
     })
   },
-  drainSnapshot: updateDrainSnapshot,
+  drainSnapshot: restartDrainSnapshot,
   postFailureDiagnostics: (diagnostics) => postFailureDiagnostics(bgosPost, diagnostics),
   restartAuthority: () =>
     chooseRestartAuthority({
@@ -18740,7 +18750,7 @@ async function main(): Promise<void> {
     env: process.env,
     runningVersion: readOwnVersion(import.meta.dir),
     log,
-    drainSnapshot: updateDrainSnapshot,
+    drainSnapshot: restartDrainSnapshot,
     setDrainMode: setUpdateDrainMode,
     exit: (code) => process.exit(code),
     // The nightly update asks the SAME ladder the clicked one uses (KC,
@@ -19080,8 +19090,7 @@ async function main(): Promise<void> {
       safeState: () => ({
         turnInFlight: hookTurnLive || hookTurn.carried.size > 0,
         turnSignal: hookTurnSignal({ lastEventAtMs: lastHookEventAtMs, endedSessionId: hookEndedSessionId }),
-        ...updateDrainSnapshot(),
-        activeOperations: updateDrainSnapshot().activeOperations + liveThreadWork(threadLanes, asideForks),
+        ...restartDrainSnapshot(),
       }),
       activityMs: () => [DAEMON_START_MS, lastInboundAtMs, lastHookEventAtMs, agentTranscript().activityMs],
       claudePid: () => agentClaudePid(),

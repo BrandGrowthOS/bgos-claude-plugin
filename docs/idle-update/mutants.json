@@ -2848,8 +2848,8 @@
       "id": "gate-12b-order",
       "rule": "the goal comes first, the quiet window after",
       "file": "lib/idle-update.mjs",
-      "find": "  if (f.goalRunning) return wait('goal_running')\n  if (within(now, f.sessionWakeAtMs, d.sessionWakeHoldMs)) return wait('session_wake')\n",
-      "replace": "  if (within(now, f.sessionWakeAtMs, d.sessionWakeHoldMs)) return wait('session_wake')\n  if (f.goalRunning) return wait('goal_running')\n",
+      "find": "  if (f.goalRunning) return wait('goal_running')\n  if (f.threadWork > 0) return wait('thread_work')\n  if (within(now, f.sessionWakeAtMs, d.sessionWakeHoldMs)) return wait('session_wake')\n",
+      "replace": "  if (within(now, f.sessionWakeAtMs, d.sessionWakeHoldMs)) return wait('session_wake')\n  if (f.goalRunning) return wait('goal_running')\n  if (f.threadWork > 0) return wait('thread_work')\n",
       "tests": [
         "test/idle-update.test.ts"
       ]
@@ -4936,6 +4936,156 @@
       "replace": "  return daemonPendingRestartVersion(undefined, { latched: false })\n",
       "tests": [
         "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "gate-12a-thread-work",
+      "rule": "12a a thread turn or a fork holds the idle restart",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (f.threadWork > 0) return wait('thread_work')\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-thread-work",
+      "rule": "the way back waits for thread work",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (f.threadWork > 0) return no('thread_work')\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.test.ts"
+      ]
+    },
+    {
+      "id": "thread-work-unreadable",
+      "rule": "12a a count that cannot be read is work",
+      "file": "lib/idle-update.mjs",
+      "find": "      threadWork: read(deps.threadWork, 1),\n      sessionWakeAtMs",
+      "replace": "      threadWork: read(deps.threadWork, 0),\n      sessionWakeAtMs",
+      "tests": [
+        "test/idle-update.integration.test.ts"
+      ]
+    },
+    {
+      "id": "rollback-reads-thread-work",
+      "rule": "the way back reads the count",
+      "file": "lib/idle-update.mjs",
+      "find": "          threadWork: read(deps.threadWork, 1),\n          call:",
+      "replace": "          call:",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "active-work-is-live-children",
+      "rule": "an idle lane is not work, a turn with no process is",
+      "file": "lib/thread-lanes.ts",
+      "find": "    let n = this.work.size\n    for (const lane of this.lanes.values()) if (lane.current || lane.queue.length > 0) n++\n    return n\n",
+      "replace": "    return this.liveChildren()\n",
+      "tests": [
+        "test/thread-lanes.test.ts"
+      ]
+    },
+    {
+      "id": "active-work-queue",
+      "rule": "a turn waiting for a slot is work",
+      "file": "lib/thread-lanes.ts",
+      "find": "if (lane.current || lane.queue.length > 0) n++\n    return n",
+      "replace": "if (lane.current) n++\n    return n",
+      "tests": [
+        "test/thread-lanes.test.ts"
+      ]
+    },
+    {
+      "id": "active-work-steps",
+      "rule": "an answer being posted is work",
+      "file": "lib/thread-lanes.ts",
+      "find": "    let n = this.work.size\n    for (const lane of this.lanes",
+      "replace": "    let n = 0\n    for (const lane of this.lanes",
+      "tests": [
+        "test/thread-lanes.test.ts"
+      ]
+    },
+    {
+      "id": "reconcile-tracked",
+      "rule": "a read of pending turns is work",
+      "file": "lib/thread-lanes.ts",
+      "find": "    this.track(run)\n    return run\n",
+      "replace": "    return run\n",
+      "tests": [
+        "test/thread-lanes.test.ts"
+      ]
+    },
+    {
+      "id": "thread-work-forks",
+      "rule": "a By the way fork is work",
+      "file": "lib/thread-lanes.ts",
+      "find": "  return lanes.activeWork() + forks.size()\n",
+      "replace": "  return lanes.activeWork()\n",
+      "tests": [
+        "test/idle-update.integration.test.ts"
+      ]
+    },
+    {
+      "id": "thread-work-lanes",
+      "rule": "a thread turn is work",
+      "file": "lib/thread-lanes.ts",
+      "find": "  return lanes.activeWork() + forks.size()\n",
+      "replace": "  return forks.size()\n",
+      "tests": [
+        "test/idle-update.integration.test.ts"
+      ]
+    },
+    {
+      "id": "reconcile-drained",
+      "rule": "a read of pending threads starts nothing once drained",
+      "file": "server.ts",
+      "find": "if (!answer.ok || !channelArmed || updateDrainMode) return 0",
+      "replace": "if (!answer.ok || !channelArmed) return 0",
+      "tests": [
+        "test/thread-lanes-wiring.test.ts"
+      ]
+    },
+    {
+      "id": "controller-thread-work",
+      "rule": "12a the controller is given the count",
+      "file": "server.ts",
+      "find": "      threadWork: () => liveThreadWork(threadLanes, asideForks),\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "drain-thread-work",
+      "rule": "a drain waits for thread work",
+      "file": "server.ts",
+      "find": "  return { ...snapshot, activeOperations: snapshot.activeOperations + liveThreadWork(threadLanes, asideForks) }\n",
+      "replace": "  return snapshot\n",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "agent-state-thread-work",
+      "rule": "the watcher sees thread work",
+      "file": "server.ts",
+      "find": "activeOperations: messageActivity.activeOperations + liveThreadWork(threadLanes, asideForks),",
+      "replace": "activeOperations: messageActivity.activeOperations,",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "hook-restart-thread-work",
+      "rule": "a hook restart waits for thread work",
+      "file": "server.ts",
+      "find": "        ...restartDrainSnapshot(),\n      }),\n      activityMs: () => [DAEMON_START_MS, lastInboundAtMs, lastHookEventAtMs, agentTranscript().activityMs],\n      claudePid:",
+      "replace": "        ...updateDrainSnapshot(),\n      }),\n      activityMs: () => [DAEMON_START_MS, lastInboundAtMs, lastHookEventAtMs, agentTranscript().activityMs],\n      claudePid:",
+      "tests": [
+        "test/hook-restart.wiring.test.ts"
       ]
     }
   ]
