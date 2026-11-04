@@ -33,10 +33,10 @@ test('shipped host configuration explicitly disables page-defined WebMCP for eac
   }
 })
 
-test('the upgraded actual roster exposes media and named isolated contexts as writes requiring separate policy admission', async () => {
+test('the actual roster excludes unsupported output paths and named contexts', async () => {
   const tools = await listTools({ caps: ['pdf'], outputDir: process.cwd() })
   const media = tools.find((tool: { name: string }) => tool.name === 'browser_emulate_media')
   const tabs = tools.find((tool: { name: string }) => tool.name === 'browser_tabs')
-  assert.equal(media?.annotations.readOnlyHint, false); assert.equal(tabs?.annotations.readOnlyHint, false)
-  assert.equal((tabs?.inputSchema as { properties?: { isolatedContext?: { type: string } } }).properties?.isolatedContext?.type, 'string')
+  assert.equal(media, undefined); assert.equal(tabs?.annotations.readOnlyHint, false)
+  assert.equal((tabs?.inputSchema as { properties?: { isolatedContext?: { type: string } } }).properties?.isolatedContext, undefined)
 })

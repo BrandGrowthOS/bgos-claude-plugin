@@ -131,6 +131,8 @@ test('a signed in page: no file under the agent\'s folder or temp holds its text
   const engine: any = new ChromiumEngine({ executable: chrome.path!, profileDir: join(home, 'browser', 'k'), outputDir: join(home, 'browser-output', 'k'), scope: 'fixture' })
   try {
     await engine.start()
+    const cleanShot = await engine.callTool('browser_take_screenshot', {})
+    assert.ok(cleanShot.content.some((part: any) => part.type === 'image'), 'a fresh page without protected content still has image output')
     const replies: any[] = []
     const call = async (name: string, args: any = {}) => { const reply = await engine.callTool(name, args); replies.push({ name, reply }); return reply }
     await call('browser_navigate', { url })
@@ -161,7 +163,8 @@ test('a signed in page: no file under the agent\'s folder or temp holds its text
       assert.equal(/\.yml|page-\d|\.png\)/.test(body), false, `${name} links no file: ${body.slice(0, 400)}`)
     }
     const shot = replies.find(row => row.name === 'browser_take_screenshot').reply
-    assert.ok(shot.content.some((part: any) => part.type === 'image'), 'a screenshot still reaches the agent as an image')
+    assert.equal(shot.content.some((part: any) => part.type === 'image'), false, 'protected form pixels are withheld')
+    assert.ok(shot.content.some((part: any) => /withheld/.test(part.text || '')), 'the refusal explains why')
 
     // CONTROL, same scanner: a file that holds it is found.
     writeFileSync(join(home, 'control.txt'), MARKER)
@@ -278,7 +281,7 @@ test('a masked field keeps its value out of every reply on the real engine: a pl
     await page.locator('input[aria-label="Plain"]').fill(TYPED)
     const backend = inner._backend, real = backend.callTool
     backend.callTool = async () => { throw new Error(`failed near ${TYPED}`) }
-    await assert.rejects(engine.callTool('browser_snapshot', {}), (error: Error) => error.message.startsWith('failed near') && !error.message.includes(TYPED))
+    await assert.rejects(engine.callTool('browser_snapshot', {}), (error: Error) => error.message === 'Browser command failed. Protected page details were withheld.' && !error.message.includes(TYPED))
     backend.callTool = real
   } finally {
     await engine.stop().catch(() => {})

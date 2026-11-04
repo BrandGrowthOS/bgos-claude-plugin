@@ -60,13 +60,15 @@ test('actual owner fill remains redacted from MCP snapshots, evaluate, console a
   await engine.callTool('browser_console_messages', { filename: 'console-encoded.txt' })
   const outputs = JSON.stringify([snapshot, evaluated, consoleMessages]) + files(paths.outputDir).filter(file => /\.(txt|log|md)$/.test(file)).map(file => readFileSync(file, 'utf8')).join('\n')
   for (const marker of [secret, JSON.stringify(secret).slice(1, -1), encodeURIComponent(secret)]) assert.equal(outputs.includes(marker), false, marker)
-  assert.ok(outputs.includes('[REDACTED]'))
+  assert.ok(outputs.includes('(masked)'))
+  assert.equal(evaluated.isError, true)
+  assert.equal(consoleMessages.isError, true)
   assert.deepEqual(engine.vault.list(origin), [])
   await page.evaluate((value: string) => { document.title = value; history.replaceState(null, '', '?' + encodeURIComponent(value)) }, secret)
   const core = new BrowserHostCore({ pool: { peek: () => slot } as any, browserTools: [], deviceLabel: 'fixture' })
   const status = JSON.stringify(await core.callTool(view.context, 'hoai_browser_status', {}))
   for (const marker of [secret, JSON.stringify(secret).slice(1, -1), encodeURIComponent(secret)]) assert.equal(status.includes(marker), false)
-  assert.ok(status.includes('[REDACTED]'))
+  assert.ok(status.includes('(masked)'))
 
   // Only a single explicit pointer gesture may submit the exact trusted form.
   view.cdp = await page.context().newCDPSession(page)

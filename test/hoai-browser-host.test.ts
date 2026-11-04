@@ -890,8 +890,17 @@ test(
       const init = await rpc('user-user_2Alice', { jsonrpc: '2.0', id: ++id, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'hoai-browser-mcp', version: '0.44.0' } } })
       assert.equal(init.result.serverInfo.name, 'hoai-agent-browser')
       const list = await rpc('user-user_2Alice', { jsonrpc: '2.0', id: ++id, method: 'tools/list' })
-      assert.equal(list.result.tools.length, 24, 'the pinned roster: 4 session tools and 20 browser_ tools (page code, raw diagnostics and page files are never served)')
-      assert.equal(list.result.tools.some((entry: { name: string }) => entry.name === 'browser_emulate_media'), true)
+      assert.equal(list.result.tools.length, 23, 'the pinned roster: 4 session tools and 19 supported browser tools')
+      assert.deepEqual(list.result.tools.map((entry: { name: string }) => entry.name).sort(), [
+        'hoai_browser_open_session', 'hoai_browser_close_session', 'hoai_browser_status', 'hoai_browser_wait_gate',
+        'browser_snapshot', 'browser_find', 'browser_take_screenshot', 'browser_wait_for',
+        'browser_navigate', 'browser_navigate_back', 'browser_tabs', 'browser_close',
+        'browser_click', 'browser_type', 'browser_fill_form', 'browser_select_option',
+        'browser_press_key', 'browser_hover', 'browser_drag', 'browser_handle_dialog',
+        'browser_resize', 'browser_file_upload', 'browser_drop',
+      ].sort(), 'only the explicitly reviewed roster is served')
+      assert.equal(list.result.tools.some((tool: any) => ['browser_emulate_media', 'browser_contexts'].includes(tool.name)), false)
+      assert.equal(list.result.tools.some((entry: { name: string }) => entry.name === 'browser_emulate_media'), false)
 
       // THE PERMISSION GATE, END TO END, on the real host process.
       //

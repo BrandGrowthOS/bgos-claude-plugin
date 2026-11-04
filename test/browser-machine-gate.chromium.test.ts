@@ -47,7 +47,8 @@ async function rig(t: any, { cookie = true } = {}) {
   core._grantsFor = () => ({ [origin]: { navigate: 'allow', write: 'allow' } })
   const call = (name: string, args: any = {}) => core.callTool(OWNER, name, args)
   await engine.callTool('browser_navigate', { url: `${origin}/` }) // the owner's yes on this site is not what these tests are about
-  return { core, call, cards, clicks, origin, engine, slot }
+  const refFor = async (selector: string) => { const tree = await engine.selectedPage().locator(selector).ariaSnapshot({ mode: 'ai' }); const ref = /\[ref=((?:f\d+)?e\d+)\]/.exec(tree)![1]; await engine.selectedPage().ariaSnapshot({ mode: 'ai' }); return ref };
+  return { core, call, cards, clicks, origin, engine, slot, refFor }
 }
 const refOf = (reply: unknown, name: string) => {
   const text = JSON.stringify(reply)
@@ -63,10 +64,10 @@ test('a ref to a name with a colon asks, and the card names it, though the agent
   assert.equal(r.cards[0]?.kind, 'sensitive'); assert.match(r.cards[0].summary, /Confirm: delete account/); assert.deepEqual(r.clicks, [])
 })
 
-test('a selector asks, by what the live page calls that element', { timeout: 120_000, skip }, async (t) => {
+test('a selector is refused before a page action', { timeout: 120_000, skip }, async (t) => {
   const r = await rig(t)
-  await r.call('browser_click', { target: '#pub', element: 'Open the note', wait_seconds: 1 }); await settle()
-  assert.equal(r.cards[0]?.kind, 'sensitive'); assert.match(r.cards[0].summary, /Make \/finance public/); assert.deepEqual(r.clicks, [])
+  const refused = await r.call('browser_click', { target: '#pub', element: 'Open the note', wait_seconds: 1 }); await settle()
+  assert.equal(refused.isError, true); assert.equal(r.cards.length, 0); assert.deepEqual(r.clicks, [])
 })
 
 test('a ref from a snapshot to a depth asks: no whole tree is needed', { timeout: 120_000, skip }, async (t) => {
@@ -84,34 +85,34 @@ test('after a click moved the page, a new ref asks by the new page\'s name', { t
   assert.equal(r.cards.at(-1)?.kind, 'sensitive'); assert.match(r.cards.at(-1).summary, /Delete account/); assert.deepEqual(r.clicks, [])
 })
 
-test('a target with no name the host can read asks on a browser that holds a cookie for the site, and not on one that holds none', { timeout: 120_000, skip }, async (t) => {
+test('a target with no name the host can read asks on a browser that holds a cookie for the site, including when it holds no cookie', { timeout: 120_000, skip }, async (t) => {
   const signedIn = await rig(t)
-  await signedIn.call('browser_click', { target: '#bare', element: 'Open the note', wait_seconds: 1 }); await settle()
+  await signedIn.call('browser_click', { target: await signedIn.refFor('#bare'), element: 'Open the note', wait_seconds: 1 }); await settle()
   assert.equal(signedIn.cards[0]?.kind, 'sensitive', JSON.stringify(signedIn.cards)); assert.deepEqual(signedIn.clicks, [])
   const anonymous = await rig(t, { cookie: false })
-  await anonymous.call('browser_click', { target: '#bare', element: 'Open the note', wait_seconds: 1 }); await settle()
-  assert.equal(anonymous.cards.length, 0, JSON.stringify(anonymous.cards)); assert.deepEqual(anonymous.clicks, ['bare'], 'CONTROL')
+  await anonymous.call('browser_click', { target: await anonymous.refFor('#bare'), element: 'Open the note', wait_seconds: 1 }); await settle()
+  assert.equal(anonymous.cards[0]?.kind, 'sensitive'); assert.deepEqual(anonymous.clicks, [], 'cookie absence proves nothing')
 })
 
 test('a field with no name of its own: what it holds is not on the card, whatever way it is named', { timeout: 120_000, skip }, async (t) => {
   const r = await rig(t)
-  await r.call('browser_click', { target: '#nameless', element: 'Open the note', wait_seconds: 1 }); await settle()
-  assert.equal(r.cards[0]?.kind, 'sensitive', JSON.stringify(r.cards))
+  await r.call('browser_click', { target: await r.refFor('#nameless'), element: 'Open the note', wait_seconds: 1 }); await settle()
+  assert.equal(r.cards[0]?.kind, 'credential', JSON.stringify(r.cards))
   assert.equal(JSON.stringify(r.cards).includes('MADE_UP_NAMELESS_VALUE'), false, JSON.stringify(r.cards))
 })
 
-test('reading a selector for a gate leaves the agent\'s refs working for a call with no gate', { timeout: 120_000, skip }, async (t) => {
+test('reading a live ref for a gate leaves the agent\'s refs working for a call with no gate', { timeout: 120_000, skip }, async (t) => {
   const r = await rig(t), snap = await r.call('browser_snapshot'), ref = refOf(snap, 'Show the report')
-  await r.call('browser_click', { target: '#harmless', element: 'Show the report' }); await settle()
+  await r.call('browser_click', { target: await r.refFor('#harmless'), element: 'Show the report' }); await settle()
   const part = JSON.stringify(await r.call('browser_snapshot', { target: ref }))
   assert.match(part, /Show the report/, part.slice(0, 400))
   assert.equal(r.cards.length, 0, JSON.stringify(r.cards))
 })
 
-test('CONTROL: a harmless name on a site the owner allowed clicks with no card, by ref and by selector', { timeout: 120_000, skip }, async (t) => {
+test('CONTROL: a harmless name on a site the owner allowed clicks with no card, through repeated live refs', { timeout: 120_000, skip }, async (t) => {
   const r = await rig(t), snap = await r.call('browser_snapshot')
   await r.call('browser_click', { target: refOf(snap, 'Show the report'), element: 'Show the report' }); await settle()
-  await r.call('browser_click', { target: '#harmless', element: 'Show the report' }); await settle()
+  await r.call('browser_click', { target: await r.refFor('#harmless'), element: 'Show the report' }); await settle()
   await r.call('browser_click', { target: refOf(snap, 'Show the report'), element: 'Show the report' }); await settle() // reading a selector left the agent's refs working
   assert.equal(r.cards.length, 0, JSON.stringify(r.cards)); assert.deepEqual(r.clicks, ['harmless', 'harmless', 'harmless'])
 })

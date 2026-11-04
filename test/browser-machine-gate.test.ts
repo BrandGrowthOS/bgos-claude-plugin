@@ -23,7 +23,7 @@ function rig({ intentCheck = null, owner = true }: any = {}) {
   const pool: any = { acquire: async () => slot, peek: () => slot, slotKey: () => 'k', pathsFor: () => slot.paths, release: async () => true }
   const gates = new GateKeeper({
     postCard: async (card: any) => { cards.push(card); return true },
-    readGate: async (gateId: string) => ({ gateId, status: 'answered', answer: 'allow_once', answered: true, choice: 'allow_once', reason: 'answered' }),
+    readGate: async (gateId: string) => ({ gateId, state: 'answered', status: 'answered', answer: 'allow_once', answered: true, choice: 'allow_once', reason: 'answered' }),
     randomBytes: (n: number) => Buffer.alloc(n, 7), sleep: async () => {}, log: () => {},
   } as any)
   const core: any = new BrowserHostCore({ pool, browserTools: TOOLS, deviceLabel: 'Build box', gates, postSessionCard: async (_a: number, _id: string, payload: any) => { sessionCards.push(payload); return true }, isOwnerPrincipal: (ctx: any) => owner && ctx.principal === OWNER.principal, intentCheck } as any)
@@ -46,7 +46,7 @@ test('an agent\'s harmless words on a sensitive target: the gate asks, and the c
   void call.catch(() => {})
 })
 
-test('CONTROL: the same words on a harmless target do not ask, and with no snapshot the agent\'s words are all there is', async () => {
+test('a harmless host name proceeds, while a missing host name asks', async () => {
   const r = rig()
   await r.core.callTool(OWNER, 'browser_snapshot', {})
   await r.core.callTool(OWNER, 'browser_click', { target: 'e7', element: 'Show the report' })
@@ -54,7 +54,7 @@ test('CONTROL: the same words on a harmless target do not ask, and with no snaps
   assert.deepEqual(r.engineCalls, ['browser_snapshot', 'browser_click'])
   const blind = rig()
   await blind.core.callTool(OWNER, 'browser_click', { target: 'e2', element: 'Show the report' })
-  assert.equal(blind.cards.length, 0)
+  assert.equal(blind.cards.length, 1); assert.equal(blind.cards[0].kind, 'sensitive')
 })
 
 test('typing into a field the page calls Password is a credential gate, whatever the agent called it', async () => {

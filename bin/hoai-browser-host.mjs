@@ -71,7 +71,8 @@ import { ensureBrowser, bundledChromium, browserBootstrapReadiness, browserInsta
 import { terminateBrowserDaemon } from '../lib/browser-profile-daemon-stop.mjs'
 import { launcherProcessQuery, parseLauncherProcesses, readBootClock } from '../lib/agent-inventory.mjs'
 import { BrowserSecretRedactor } from '../lib/browser-secret-redactor.mjs'
-import { maskMaskedInputs, maskedValuesOf } from '../lib/browser-snapshot-privacy.mjs'
+import privacy from '../lib/browser-host-core/answer-privacy.js'
+const { AnswerPrivacy, SAFE_TOOLS, pageFacts } = privacy
 import { DOWNLOAD_ASK_WAIT_S, DownloadStore, SlotDownloads, downloadLines, downloadPaths } from '../lib/browser-downloads.mjs'
 import { SAVED_GRANT_WORDS, SAVED_SITES_MAX, forgetInGrants, readSavedSitesRequest, savedSiteDirs, savedSitesOf, withoutSavedSites } from '../lib/browser-saved-sites.mjs'
 
@@ -412,7 +413,7 @@ export function withWaitSeconds(tool) {
 
 /** Playwright's browser_ roster as the desktop serves it. */
 export function servedBrowserTools(playwrightTools) {
-  return playwrightTools.filter((t) => !NEVER_TOOLS.has(t.name) && !PRIVATE_PAGE_TOOLS.has(t.name)).map(withWaitSeconds)
+  return playwrightTools.filter((t) => SAFE_TOOLS.has(t.name) && !NEVER_TOOLS.has(t.name) && !PRIVATE_PAGE_TOOLS.has(t.name)).map(withWaitSeconds)
 }
 
 /**
@@ -1146,15 +1147,6 @@ export function loadPlaywright() {
     // Gone with a Playwright update, no browser starts rather than one that keeps them.
     if (typeof tools?.Tab?.prototype?._handleConsoleMessage !== 'function') throw new HostError('browser_unavailable', 'Browser diagnostic isolation unavailable')
     tools.Tab.prototype._handleConsoleMessage = function () {}
-    // A masked input is not on screen, so its value is not the agent's to read: the snapshot
-    // keeps that it holds something and no more (lib/browser-snapshot-privacy.mjs).
-    if (typeof tools.Tab.prototype.captureSnapshot !== 'function') throw new HostError('browser_unavailable', 'Browser snapshot privacy unavailable')
-    const captureSnapshot = tools.Tab.prototype.captureSnapshot
-    tools.Tab.prototype.captureSnapshot = async function (...args) {
-      const snapshot = await captureSnapshot.apply(this, args)
-      if (typeof snapshot?.ariaSnapshot === 'string') snapshot.ariaSnapshot = await maskMaskedInputs(snapshot.ariaSnapshot, ref => this.page.locator(`aria-ref=${ref}`))
-      return snapshot
-    }
     playwrightModules = { chromium, tools, z }
   }
   return playwrightModules
@@ -1166,7 +1158,7 @@ export function toMcpTool(tool, z) {
   return {
     name: tool.name,
     description: tool.description,
-    inputSchema: z.toJSONSchema(tool.inputSchema),
+    inputSchema: (() => { const schema = z.toJSONSchema(tool.inputSchema); if (tool.name === 'browser_tabs') delete schema.properties.isolatedContext; return schema })(),
     annotations: {
       title: tool.title,
       readOnlyHint: readOnly,
@@ -1190,17 +1182,6 @@ export async function resolveConfig({ caps, outputDir }) {
 
 /** How long a gate waits for the live page to name a target before it treats the name as unreadable. */
 export const TARGET_READ_MS = 1_500
-
-/** browser_find reads the page's tree directly, past the tab's own snapshot: the same mask on that door. */
-function maskTreesOf(page) {
-  if (page.__hoaiMasked) return
-  Object.defineProperty(page, '__hoaiMasked', { value: true })
-  const read = page.ariaSnapshot.bind(page)
-  page.ariaSnapshot = async (options) => {
-    const tree = await read(options)
-    return options?.mode === 'ai' ? maskMaskedInputs(tree, ref => page.locator(`aria-ref=${ref}`)) : tree
-  }
-}
 
 /**
  * Makes one tool call write no page to a file. A page holds whatever the person's signed in
@@ -1243,7 +1224,7 @@ export function sweepPageFiles({ agentRoot, assistantId }) {
 export async function listTools({ caps, outputDir }) {
   const { tools, z } = loadPlaywright()
   const config = await resolveConfig({ caps, outputDir })
-  return tools.filteredTools(config).map((t) => toMcpTool(t.schema, z))
+  return tools.filteredTools(config).filter(t => SAFE_TOOLS.has(t.schema.name)).map((t) => toMcpTool(t.schema, z))
 }
 
 /**
@@ -1272,6 +1253,7 @@ export class PlaywrightEngine {
     this.onDisconnected = null
     this.onSelectedPage = null
     this._secrets = new BrowserSecretRedactor()
+    this._privacy = new AnswerPrivacy()
   }
 
   async start() {
@@ -1283,12 +1265,12 @@ export class PlaywrightEngine {
     // Downloads are accepted only into a guarded held folder; otherwise Chrome
     // is told to refuse them (Browser.setDownloadBehavior deny).
     const context = this._managedRuntime ? this._managedRuntime.context : await this._browser.newContext({ viewport: { width: 1280, height: 800 }, acceptDownloads: this._acceptDownloads && !!this._artifactsDir })
-    context.on('page', page => { maskTreesOf(page); if (context.pages().length > REMOTE_BROWSER_TAB_MAX) void page.close().catch(() => {}) })
-    context.pages().forEach(maskTreesOf)
+    context.on('page', page => { this._privacy.protectPage(page); if (context.pages().length > REMOTE_BROWSER_TAB_MAX) void page.close().catch(() => {}) })
+    context.pages().forEach(page => this._privacy.protectPage(page))
     context.on('download', (download) => this._download(download))
     if (!this._managedRuntime) await context.newPage()
     const config = await resolveConfig({ caps: this._caps, outputDir: this._outputDir })
-    const filtered = tools.filteredTools(config)
+    const filtered = tools.filteredTools(config).filter(tool => SAFE_TOOLS.has(tool.schema.name))
     this._toolSchemas = filtered.map(tool => tool.schema)
     this._toolNames = new Set(filtered.map((t) => t.schema.name))
     this._backend = new tools.BrowserBackend(config, context, filtered.map(tool => this._withoutPageFiles(tool)))
@@ -1296,7 +1278,9 @@ export class PlaywrightEngine {
     // Playwright uses this hook for snapshots, console collection, artifacts
     // and serialized MCP text. Hook before an owner can fill any login.
     if (typeof this._backend._context?.redactSecrets !== 'function') throw new Error('Browser secret redaction unavailable')
-    this._backend._context.redactSecrets = text => this._secrets.text(text)
+    this._backend._context.redactSecrets = text => this._secrets.text(this._privacy.text(text))
+    const toolContext = this._backend._context, created = toolContext._onPageCreated.bind(toolContext)
+    toolContext._onPageCreated = page => { created(page); this._privacy.protectTab(tools.Tab.forPage(page)) }
     this._context = context
     return this
   }
@@ -1307,7 +1291,15 @@ export class PlaywrightEngine {
     return { ...tool, handle: async (context, params, response, signal) => {
       // A PDF is a file of the page by nature, and a person can sign in here in ways the host cannot see.
       if (tool.schema.name === 'browser_pdf_save') throw new HostError('not_available', 'A page is not saved as a file on this machine. Use a snapshot or a screenshot to read it.')
-      return tool.handle(context, keepPageOutOfFiles(tool.schema.name, params, response), response, signal)
+      params = this._privacy.guardResponse(tool.schema.name, keepPageOutOfFiles(tool.schema.name, params, response), response)
+      if (tool.schema.name === 'browser_wait_for' && (params.text || params.textGone)) {
+        const tab = await context.ensureTab(), tree = await tab.page.ariaSnapshot({ mode: 'ai' })
+        const matches = params.text ? tree.includes(params.text) : !tree.includes(params.textGone)
+        if (matches) response.addTextResult('Protected page condition matched.')
+        else response.addError('Protected page condition did not match. Read the page before retrying.')
+        return
+      }
+      return tool.handle(context, params, response, signal)
     } }
   }
 
@@ -1368,31 +1360,33 @@ export class PlaywrightEngine {
     return (await this._backend._context.newTab()).page
   }
 
+  _hasDialog() { return this._backend?._context?.currentTab()?.modalStates?.().some(state => state.type === 'dialog') === true }
+
+  async protectAnswer(reply) {
+    if (this._hasDialog()) return { content: [{ type: 'text', text: 'A browser dialog is waiting. Accepting it requires permission.' }] }
+    await this._privacy.collect(this.pages())
+    return this._secrets.value(this._privacy.value(reply))
+  }
+
   async callTool(name, args, signal) {
     this._managedRuntime?.assertCurrent()
+    if (name === 'browser_pdf_save') return this._privacy.value(errorResult('not_available', 'A page is not saved as a file on this machine. Use a snapshot or a screenshot to read it.'), { trustedRefusal: true })
+    if (!SAFE_TOOLS.has(name)) return this._privacy.value(errorResult('not_available', 'This browser tool is not available.'), { trustedRefusal: true })
+    this._privacy.validate(args)
     if (!this._backend) throw new Error('Engine not started')
     if (name === 'browser_tabs' && args?.action === 'new' && this.pages().length >= REMOTE_BROWSER_TAB_MAX) throw new HostError('browser_tabs_full', 'The browser has reached its tab limit.')
     try {
+      if (!this._hasDialog()) await this._privacy.collect(this.pages())
+      else if (name !== 'browser_handle_dialog') return this.protectAnswer(null)
       const reply = await this._backend.callTool(name, args || {}, signal)
-      await this._redactMaskedValues()
-      return this._secrets.value(reply)
+      return await this.protectAnswer(reply)
     } catch (error) {
-      await this._redactMaskedValues()
-      throw Object.assign(new Error(this._secrets.text(String(error?.message || 'Browser command failed'))), { code: error?.code })
-    }
-    finally { this.onSelectedPage?.(this.selectedPage()) }
+      if (!this._hasDialog()) await this._privacy.collect(this.pages())
+      throw Object.assign(new Error(this._secrets.text(this._privacy.error(String(error?.message || 'Browser command failed')))), { code: error?.code })
+    } finally { this.onSelectedPage?.(this.selectedPage()) }
   }
 
   registerSecret(secret) { this._secrets.register(secret) }
-
-  /** What a masked input holds right now is redacted from this reply and the rest of this browser's life, in any form it takes. */
-  async _redactMaskedValues() {
-    for (const page of this.pages()) {
-      for (const value of await maskedValuesOf(page).catch(() => [])) {
-        try { this._secrets.register(value) } catch {}
-      }
-    }
-  }
 
   /**
    * What the live page calls each of these targets, or null for one it will not say. Never the agent's words.
@@ -1402,15 +1396,18 @@ export class PlaywrightEngine {
   async describeTargets(targets) {
     const tab = this._backend?._context?.currentTab?.()
     if (!tab) return targets.map(() => null)
-    const bounded = async (work) => {
-      let timer
-      try { return await Promise.race([work(), new Promise((resolve) => { timer = setTimeout(() => resolve(null), TARGET_READ_MS); timer.unref?.() })]) }
-      catch { return null } finally { clearTimeout(timer) }
-    }
+    await this._privacy.collect(this.pages())
+    const { proofs } = await pageFacts(tab.page, true)
     const named = []
     for (const target of targets) {
-      named.push(targetOfTree(await bounded(async () => (await tab.targetLocator({ target })).locator.first().ariaSnapshot({ timeout: TARGET_READ_MS }))))
-      await bounded(() => tab.page.ariaSnapshot({ mode: 'ai', timeout: TARGET_READ_MS }))
+      if (proofs[target]?.safe !== true) { named.push({ role: 'textbox', name: 'Protected credential field' }); continue }
+      try {
+        const { locator } = await tab.targetLocator({ target })
+        const ancestor = locator.locator('xpath=ancestor-or-self::*[self::button or self::a or @role="button" or @role="link" or self::input or self::select or self::textarea][last()]')
+        const element = await ancestor.count() === 1 ? ancestor : locator
+        const tree = await element.ariaSnapshot({ mode: 'ai', timeout: TARGET_READ_MS })
+        named.push(targetOfTree(await this._privacy.tree(tree, tab.page)))
+      } catch { named.push(null) }
     }
     return named
   }
@@ -1805,6 +1802,8 @@ export class ChromiumEngine {
     return this._engine.callTool(name, args, signal)
   }
 
+  protectAnswer(value) { return this._engine ? this._engine.protectAnswer(value) : Promise.resolve(value) }
+
   describeTargets(targets) { return this._engine ? this._engine.describeTargets(targets) : Promise.resolve(targets.map(() => null)) }
 
   registerSecret(secret) {
@@ -1817,7 +1816,8 @@ export class ChromiumEngine {
     // Capture patterns for that result without retaining secrets after it returns.
     const redactor = new BrowserSecretRedactor()
     redactor.patterns = this._engine?._secrets.patterns || []
-    return value => redactor.value(value)
+    const privacy = this._engine?._privacy
+    return (value, options) => redactor.value(privacy ? privacy.value(value, options) : value)
   }
 
   async stop() {
@@ -2168,7 +2168,7 @@ export class BrowserHostCore {
       key: slot.paths.key,
       gates: this.gates,
       gateKey: this.pool.slotKey(ctx),
-      context: () => ({ agentName: slot.agentName ?? null, purpose: slot.purpose ?? null }),
+      context: () => ({ agentName: slot.agentName ?? null, purpose: slot.purpose ?? null, ownerTurn: this.isOwnerPrincipal?.(ctx) === true }),
       decide: (origin) => policy.decide({ profile: 'signed-in', classification: { kind: 'download', origin }, grants: this._grantsFor(ctx, slot), settings: this._settingsFor(slot), preapproved: [] }),
       remember: (origin, choice) => this._remember(ctx, slot, this._settingsFor(slot), { gate: 'download', origin, choice }),
       // The owner holding the browser (not while the agent's work drains).
@@ -2281,6 +2281,7 @@ export class BrowserHostCore {
     const targets = policy.WRITE_TOOLS.has(name) ? await this._readTargets(slot, engineArgs) : null
     const facts = targets ? factsOfTargets(name, targets.filter(Boolean)) : gateFactsFor(name, engineArgs, slot.lastSnapshotText || null)
     const classification = policy.classifyToolCall(name, withHostNames(engineArgs, facts), { currentOrigin: await this._currentOrigin(slot) })
+    if (classification.kind !== 'credential' && (name === 'browser_press_key' && /Enter|Return|Space|^ $/i.test(engineArgs.key || '') || engineArgs.submit === true || name === 'browser_handle_dialog' && engineArgs.accept === true) && await this._maySignedIn(slot)) classification.kind = 'sensitive'
     if (classification.kind === 'write' && targets?.some((target) => !target?.name) && await this._maySignedIn(slot)) classification.kind = 'sensitive'
     // The owner answers every gate, and on another person's turn reads nothing of that person's page.
     const ownersTurn = !this.isOwnerPrincipal || this.isOwnerPrincipal(ctx) === true
@@ -2522,10 +2523,16 @@ export class BrowserHostCore {
   async callTool(ctx, name, args, signal) {
     const redact = this.pool.peek(ctx)?.engine?.resultRedactor?.() || (value => value)
     try {
-      return redact(await this._call(ctx, name, args || {}, signal))
+      if (name.startsWith('browser_')) new AnswerPrivacy().validate(args)
+      const initial = this.pool.peek(ctx)
+      if (!initial?.ownerInputLease && initial?.engine?.protectAnswer) await initial.engine.protectAnswer(null)
+      const reply = await this._call(ctx, name, args || {}, signal)
+      const engine = this.pool.peek(ctx)?.engine
+      return redact(engine?.protectAnswer ? await engine.protectAnswer(reply) : reply)
     } catch (err) {
-      if (err instanceof HostError) return redact(errorResult(err.code, err.message))
-      return redact(errorResult('tool_error', String(err?.message ?? err)))
+      try {
+        return redact(errorResult(err instanceof HostError ? err.code : 'tool_error', String(err?.message ?? 'Browser command failed')), { trustedRefusal: err instanceof HostError })
+      } catch { return errorResult('privacy_unavailable', 'Browser privacy could not be verified. No page output was released.') }
     }
   }
 
@@ -2537,13 +2544,8 @@ export class BrowserHostCore {
     return named.map((target, index) => (live[index]?.name ? live[index] : targetOfRef(slot.lastSnapshotText || '', target) || live[index]))
   }
 
-  /** Could this browser hold a sign-in? A copy, open login storage, or any cookie for the page it is on. Unsure reads as yes. */
-  async _maySignedIn(slot) {
-    if (slot.engine.holdsSignIns === true || slot.engine.vault?.status?.().unlocked === true) return true
-    const context = slot.engine.vault?.context
-    if (!context) return false
-    try { return (await context.cookies(slot.engine.selectedPage()?.url())).length > 0 } catch { return true }
-  }
+  /** Absence of a cookie is not proof that this browser holds no sign-in. */
+  async _maySignedIn(_slot) { return true }
 
   /**
    * The intent check on a sensitive gate (backend POST session/:id/intent-check, as the desktop's
