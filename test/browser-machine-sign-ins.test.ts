@@ -210,3 +210,28 @@ test('a person approved on this machine with no managed browser running reaches 
   assert.equal(has([row({ returnTask: Promise.resolve() })]), true, 'or coming back')
   assert.equal(AgentBrowserProfileCompanion.prototype.hasNamespace.call({ records: new Map([[0, row({ runtime: {} })]]), candidates: new Map() }, { ...call, principal: 'user-someone_else' }), false, 'and it owns only its own person')
 })
+
+// The computer seals a copy only to a machine proved to run its host as another OS user, and the machine has no
+// way to claim that: the agent next to it holds the same key. Vendored core, the machine's own copy of the rule.
+test('the shared rule: an approved machine with no proof is not one a copy is sealed to', async () => {
+  const machine = codec.createEndpointIdentity(randomUUID()), computer = codec.createEndpointIdentity(randomUUID()), uploads: any[] = []
+  assert.equal(copyCore.machineProvedSeparateUser({ kind: 'agent' }), false)
+  assert.equal(copyCore.machineProvedSeparateUser({ kind: 'agent', separateOsUser: true }), true, 'CONTROL')
+  const row = (extra: any) => ({ identity: machine.identity, keyFingerprint: codec.identityFingerprint(machine.identity), grantVersion: 3, signInsOnly: true, ...extra })
+  const send = (recipient: any) => copyCore.sendSignInCopies({ client: { upload: async (_id: string, copy: any) => { uploads.push(copy) } }, state: { cookies: STATE.cookies, origins: [], preferences: STATE.preferences }, scope: { profileId: randomUUID(), actingUserId: OWNER, assistantId: ASSISTANT }, source: computer, recipients: [recipient] })
+  assert.deepEqual(await send(row({})), [])
+  assert.equal(uploads.length, 0)
+  assert.equal((await send(row({ signInsProved: true }))).length, 1, 'CONTROL: the same machine, proved')
+})
+
+test('nothing on this machine can claim the proof, and the agent is told the sign-ins never came here', async () => {
+  const { readFileSync, readdirSync } = await import('node:fs')
+  const { SIGN_IN_STAYS_SENTENCE } = await import('../bin/hoai-browser-host.mjs')
+  const root = new URL('..', import.meta.url).pathname
+  const claims = (dir: string) => readdirSync(join(root, dir)).filter(name => /\.(mjs|ts)$/.test(name) && /separateOsUser|signInsProved/.test(readFileSync(join(root, dir, name), 'utf8')))
+  assert.deepEqual(claims('lib'), [])
+  assert.deepEqual(claims('bin'), [])
+  assert.match(SIGN_IN_STAYS_SENTENCE, /stay on their computer/)
+  assert.match(SIGN_IN_STAYS_SENTENCE, /no copy comes to this machine/)
+  assert.match(SIGN_IN_STAYS_SENTENCE, /same OS user/)
+})

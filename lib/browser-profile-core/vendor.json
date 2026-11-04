@@ -1,11 +1,11 @@
 {
   "version": 1,
-  "sourceCommit": "ff7598a5a007e5023f019a8a92119a6e1d7ad14a",
+  "sourceCommit": "987bc5a5891ba041ac41bd029462ffc752995c44",
   "why": "Byte-identical encrypted checkpoint, lossless storage, portable state and resume readiness, cookie codecs, typed runtime endpoint, signed stopped-head lineage, separate permissioned file crypto/client/private materialization and encrypted local journal shared with HOAI. Explicit fixed-principal active backup transport, scheduler, readonly capture and seal/journal workers are included as pure main-only dependencies; they provide no activation authority. NativeRuntime exports are pure until its injected Electron constructor runs. The pairing adapter shares pure endpoint and document validation and never instantiates or inherits the desktop Bearer client. ProfileFileClient fixes its principal explicitly; paired use obtains only fresh pairing proof. Electron OS folder policy and native dialogs are intentionally excluded.",
   "files": {
     "sign-in-copy.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/sign-in-copy.js",
-      "sha256": "008df47f2ba1db39d97c17effb1fb089a030cf1c490ccf5994ec15ed69afa07d"
+      "sha256": "05a0b2e68f24516032eefa52316488a2988e3a86ff3df79b8cd6cf0c9c874b33"
     },
     "sign-in-copy-client.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/sign-in-copy-client.js",
@@ -89,11 +89,11 @@
     },
     "active-backup-crypto.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/active-backup-crypto.js",
-      "sha256": "81bce16dd3374f30a771cc620b62c06e5d01ffbd133dbaefba2c67bd667c8b01"
+      "sha256": "854ac6bb068da9dc480f48c0888d0f2ce7ca4d7c1210c5f8477d06b160adaeac"
     },
     "live-backup-input.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/live-backup-input.js",
-      "sha256": "bb2af78a4167e05dc39c0fcde247d6679026e8a9d2d50fc89244b4188a971db7"
+      "sha256": "e8e9952c15e007fbe2316db49692f3b47905791dc6d540a368f85464c8ffb5b2"
     },
     "live-backup-capture.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/live-backup-capture.js",

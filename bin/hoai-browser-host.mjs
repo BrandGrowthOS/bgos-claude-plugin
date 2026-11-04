@@ -332,7 +332,7 @@ export function defaultPurposeFor(url) {
 }
 
 /** What the agent hears where a person's sealed copy will not open on this machine. */
-export const SIGN_IN_STAYS_SENTENCE = 'Your owner\'s sign-ins stay on their computer: they are not opened on this machine, because you and this browser run as the same OS user.'
+export const SIGN_IN_STAYS_SENTENCE = 'Your owner\'s sign-ins stay on their computer: no copy comes to this machine, because you and this browser run as the same OS user.'
 
 export const PRIVATE_PAGE_TOOLS = new Set(['browser_evaluate', 'browser_console_messages', 'browser_network_requests', 'browser_network_request'])
 
