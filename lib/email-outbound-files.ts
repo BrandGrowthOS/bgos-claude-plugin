@@ -267,14 +267,26 @@ const SAFE_LIST_WORDS = 'only PDF, pictures (PNG, JPG, GIF, WebP), text (TXT, CS
 /** What the read needs of a stat: the fields the swap check compares. */
 export interface OutboundStat {
   isFile(): boolean
-  size: number
+  size: number | bigint
   dev?: number | bigint
   ino?: number | bigint
 }
 
+/** A stat as the read keeps it: device and file number as they came, the size as a number. */
+interface ReadStat extends OutboundStat {
+  size: number
+}
+
+/** Every stat here asks for this, so sameFileAs compares device and file numbers as bigint. */
+const FILE_NUMBERS_AS_BIGINT = { bigint: true } as const
+
+function readStat(stat: OutboundStat): ReadStat {
+  return { isFile: () => stat.isFile(), size: Number(stat.size), dev: stat.dev, ino: stat.ino }
+}
+
 /** What the read needs of an open file. */
 export interface OutboundHandle {
-  stat(): Promise<OutboundStat>
+  stat(options: typeof FILE_NUMBERS_AS_BIGINT): Promise<OutboundStat>
   read(buffer: Uint8Array, offset: number, length: number, position: number): Promise<{ bytesRead: number }>
   close(): Promise<void>
 }
@@ -282,7 +294,7 @@ export interface OutboundHandle {
 /** The file system this file uses; a test passes its own to count the calls. */
 export interface OutboundFs {
   realpath(path: string): Promise<string>
-  lstat(path: string): Promise<OutboundStat>
+  lstat(path: string, options: typeof FILE_NUMBERS_AS_BIGINT): Promise<OutboundStat>
   open(path: string, flags: 'r'): Promise<OutboundHandle>
 }
 
@@ -340,16 +352,19 @@ function nativeRealpath(path: string): Promise<string> {
 
 const REAL_FS: OutboundFs = {
   realpath: nativeRealpath,
-  lstat: (path) => lstatPromise(path),
+  lstat: (path, options) => lstatPromise(path, options),
   open: async (path, flags) => {
     const handle = await openPromise(path, flags)
     return {
-      stat: () => handle.stat(),
+      stat: (options) => handle.stat(options),
       read: (buffer, offset, length, position) => handle.read(buffer, offset, length, position),
       close: () => handle.close(),
     }
   },
 }
+
+/** The real file system, for the test that it answers with bigints when asked. */
+export const OUTBOUND_REAL_FS_FOR_TESTS = REAL_FS
 
 function fsOf(ctx: OutboundFileCtx): OutboundFs {
   return { ...REAL_FS, ...(ctx.fs ?? {}) } as OutboundFs
@@ -942,7 +957,7 @@ function baseName(path: string): string {
 }
 
 /** The same file, by device and file number where the system gives them (a zero is none), else by size. */
-function sameFileAs(a: OutboundStat, b: OutboundStat): boolean {
+function sameFileAs(a: ReadStat, b: ReadStat): boolean {
   const known = (v: unknown) => v !== undefined && String(v) !== '0'
   return known(a.ino) && known(b.ino) ? String(a.ino) === String(b.ino) && String(a.dev) === String(b.dev) : a.size === b.size
 }
@@ -952,7 +967,7 @@ function sameFileAs(a: OutboundStat, b: OutboundStat): boolean {
  * name the very file the handle holds. A parent folder swapped for a junction after the first realpath leads both the
  * lstat and the open into the new place, so the handle check agrees with itself; this second look does not.
  */
-async function stillLeadsTo(fs: OutboundFs, path: string, ctx: OutboundFileCtx, opened: OutboundStat, realCtx: OutboundFileCtx): Promise<boolean> {
+async function stillLeadsTo(fs: OutboundFs, path: string, ctx: OutboundFileCtx, opened: ReadStat, realCtx: OutboundFileCtx): Promise<boolean> {
   let again: string
   try {
     const given = expandHome(path, ctx.home ?? homedir())
@@ -961,9 +976,9 @@ async function stillLeadsTo(fs: OutboundFs, path: string, ctx: OutboundFileCtx, 
     return false
   }
   if (lexical(again, realCtx).kind !== 'ok') return false
-  let seen: OutboundStat
+  let seen: ReadStat
   try {
-    seen = await fs.lstat(again)
+    seen = readStat(await fs.lstat(again, FILE_NUMBERS_AS_BIGINT))
   } catch {
     return false
   }
@@ -1017,9 +1032,9 @@ export async function readOutboundFile(path: unknown, ctx: OutboundFileCtx = {})
   // named invoice.pdf to passport.pdf shows passport.pdf; a short 8.3 or other cased spelling shows the real name).
   const name = baseName(real)
   // Step 4: a regular file, its size, its type by name and then by its bytes.
-  let stat: OutboundStat
+  let stat: ReadStat
   try {
-    stat = await fs.lstat(real)
+    stat = readStat(await fs.lstat(real, FILE_NUMBERS_AS_BIGINT))
   } catch {
     return { ok: false, error: notFound }
   }
@@ -1046,7 +1061,7 @@ export async function readOutboundFile(path: unknown, ctx: OutboundFileCtx = {})
   }
   try {
     // The handle must be the file just checked: a swap between the stat and the open is refused.
-    const opened = await handle.stat()
+    const opened = readStat(await handle.stat(FILE_NUMBERS_AS_BIGINT))
     const changed = `${shown(path)} changed while HOAI read it, so it is not attached.`
     // Compared by device and file number where the system gives them (a zero is none), else by size.
     const sameFile = sameFileAs(stat, opened)
