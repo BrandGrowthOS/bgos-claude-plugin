@@ -119,8 +119,9 @@ Two reviews found the idle check was not the only way to an update. What each wa
 | A clone's scheduled update | `restartDrainSnapshot` | 15 minute ceiling, then it skips, and nothing stops |
 | The watcher's update sweep | `threadWork` in `agent-state.json` | Never, while the state is fresh. A state older than 120 s, or a daemon without the lock, says nothing |
 | A click on a clone, nothing staged yet | `restartDrainSnapshot` | 45 s, then `drain_timeout`, and nothing stops |
+| A click on a clone, a validation pending | Not needed | It answers `update_in_flight`, and nothing stops |
 | **A click on a plugin install** | `restartDrainSnapshot` | **45 s, then it goes ahead and can stop a turn** |
-| **A click with a version already staged, or a validation pending** | **Nothing: no drain** | **It restarts at once and can stop a turn** |
+| **A click on a clone with a version already staged** | **Nothing: no drain** | **It restarts at once and can stop a turn** |
 | **The app's Restart now, after 24 h of waiting** | **Not traced** | **Not traced** |
 
 The rows in bold are a person's own act, older than this fix, and left for Data's ruling.
@@ -131,14 +132,16 @@ Tool admission reads `restartDrainSnapshot`, so a drain held by a thread refuses
 
 The count has no stale rule of its own, unlike operations (30 minutes). A running turn ends at `THREAD_TURN_TIMEOUT_MS`, a fork at 55 s, and the steps before a process exists have their own limits. A start that hung would hold every row above that says never, until a person looks. Read, not run.
 
-A hook restart held by thread work logs `pending_messages`, as that plan has no reason of its own for it. The sweep logs `thread_work`.
+A hook restart held by thread work logs `pending_messages`, as that plan has no reason of its own for it. The sweep logs `thread_work`. Whether the app and the backend show that new word well was not checked: neither is in this repo, and the only limit seen here is its length.
+
+A thread that ends does not start a quiet window, as `threadWork` is not part of busy. No running turn is stopped by that: the sweep can restart on its first look after the count reaches 0.
 
 The gap between the check and the restart:
 
 - Closed for the idle restart and the way back: the second decision reads fresh facts after the close look's awaits, then `act` reaches `deps.drain(true)` with no await in between. Draining disconnects the socket, `voice_rpc` frames return at once, and a read of pending threads starts nothing. A read already out counts as work.
 - Not closed, and it cannot be from this side: a frame the backend sends in the moment between the drain and the process ending starts nothing here. A thread turn is read again at the next boot's reconcile; that the backend still lists it was not checked from this repo. An aside sent then gets no answer.
 - The hourly sweep of closed lanes is not counted, in the gap or before it. It runs no turn.
-- The watcher's sweep has no drain. It reads a file the daemon writes each second, so a turn that starts after that read, before its signal, is not held. Not closed here.
+- The watcher's sweep has no drain. It reads a file the daemon rewrites within a second of a change, so a turn that starts after that read, before its signal, is not held. Not closed here.
 - A click on a plugin install that goes ahead at 45 s has its drain on, but a read of pending threads already out can still start a turn. A read that has not gone out starts nothing.
 - After a daemon crash, a lane the old daemon started is not counted by the new one. A restart does not signal it, but the next start of that thread stops it first, and the next boot's reconcile can be that start.
 

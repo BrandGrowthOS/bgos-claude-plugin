@@ -5421,6 +5421,17 @@
       "tests": [
         "test/idle-update.wiring.test.ts"
       ]
+    },
+    {
+      "id": "admission-thread-work",
+      "rule": "a drain held by a thread refuses no tool",
+      "file": "server.ts",
+      "find": "decideToolAdmission({ drainMode: updateDrainMode, snapshot: restartDrainSnapshot() })",
+      "replace": "decideToolAdmission({ drainMode: updateDrainMode, snapshot: updateDrainSnapshot() })",
+      "tests": [
+        "test/self-update.test.ts"
+      ],
+      "bun": true
     }
   ]
 }

@@ -15082,7 +15082,8 @@ function updateDrainSnapshot() {
 
 /**
  * What an update's drain waits for: the fresh work above, and thread work, which a restart would stop. Tool admission
- * reads it too: while a thread runs, the restart is not committed, so a tool call is not refused.
+ * reads it too: while a thread runs, the restart is not committed, so a tool call is not refused. A click on a plugin
+ * install that goes ahead at 45 s is the exception: it has committed, and the restart can cut off a call admitted then.
  */
 function restartDrainSnapshot() {
   const snapshot = updateDrainSnapshot()
