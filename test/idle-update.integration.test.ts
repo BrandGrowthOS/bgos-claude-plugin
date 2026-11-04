@@ -16,7 +16,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 
 import { pendingMarketplaceRestartVersion } from '../lib/marketplace-update.mjs'
 import { RESTART_WATCHDOG_MS, UpdateRpcHandler } from '../lib/update-rpc'
@@ -469,17 +469,22 @@ function threadWorld() {
     children.push(child)
     return child
   }
-  const files = new Map<string, string>([[sessionTranscriptPath('/h', '/a', PIN, ''), '{}\n']])
+  // Native absolute paths: on Windows the lane refuses a folder with no drive letter, and no turn starts.
+  const HOME = resolve('/h')
+  const FOLDER = resolve('/a')
+  const STATE_DIR = join(HOME, 'threads')
+  const EMPTY_MCP = join(STATE_DIR, 'empty.json')
+  const files = new Map<string, string>([[sessionTranscriptPath(HOME, FOLDER, PIN, ''), '{}\n']])
   const deps: ThreadLaneDeps = {
     spawn,
     claudeBin: () => '/bin/claude',
     cliProblem: () => null,
     mainSessionId: () => PIN,
-    agentFolder: '/a',
-    stateDir: '/h/threads',
-    home: '/h',
+    agentFolder: FOLDER,
+    stateDir: STATE_DIR,
+    home: HOME,
     configDir: '',
-    emptyMcpConfigPath: () => '/h/threads/empty.json',
+    emptyMcpConfigPath: () => EMPTY_MCP,
     processes: { stamp: async () => 'S', runsIn: async () => true, kill: () => {} },
     shellSandbox: () => true,
     platform: 'darwin',
@@ -522,10 +527,10 @@ function threadWorld() {
       claudeBin: () => '/bin/claude',
       cliProblem: () => null,
       mainSessionId: () => PIN,
-      mainFolder: '/a',
-      home: '/h',
+      mainFolder: FOLDER,
+      home: HOME,
       configDir: '',
-      emptyMcpConfigPath: () => '/h/threads/empty.json',
+      emptyMcpConfigPath: () => EMPTY_MCP,
       unlink: () => {},
       onDelta: () => {},
       setTimer: () => ({}),

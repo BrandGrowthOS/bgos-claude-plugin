@@ -123,6 +123,7 @@ Two reviews found the idle check was not the only way to an update. What each wa
 | **A click on a plugin install** | `restartDrainSnapshot` | **45 s, then it goes ahead and can stop a turn** |
 | **A click on a clone with a version already staged** | **Nothing: no drain** | **It restarts at once and can stop a turn** |
 | **The app's Restart now, after 24 h of waiting** | **Not traced** | **Not traced** |
+| **A watcher job with intent `update` or `reconcile`** (`lib/update-executor.mjs`, `restartAgentStep`) | **Nothing: the step reads no busy state** | **It restarts a running agent, and can stop a thread turn or a main session turn. Older than this PR. Who sends these jobs, and how often, is not traced. For Data's ruling** |
 
 The rows in bold are a person's own act, older than this fix, and left for Data's ruling.
 

@@ -2100,6 +2100,9 @@ test('review round 8: ONE long lived content Worker reads every file; only a dea
     ['good g.txt', true, 6],
     ['hang.txt', false, 6],
     ['good h.txt', true, 7],
+    // Last, so this test closes its own Worker. It has a stdout of its own that nothing reads, and left idle with a
+    // byte on it (main's runner preload writes one there) it keeps this whole file from ending.
+    ['exit.txt', false, 7],
   ]
   for (const [name, goes, workers] of steps) {
     const got = await memRefusal(name, plan, { contentWorker: url })
