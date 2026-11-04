@@ -5072,8 +5072,8 @@
       "id": "agent-state-thread-work",
       "rule": "the watcher sees thread work",
       "file": "server.ts",
-      "find": "activeOperations: messageActivity.activeOperations + liveThreadWork(threadLanes, asideForks),",
-      "replace": "activeOperations: messageActivity.activeOperations,",
+      "find": "    threadWork: liveThreadWork(threadLanes, asideForks),\n",
+      "replace": "    threadWork: 0,\n",
       "tests": [
         "test/idle-update.wiring.test.ts"
       ]
@@ -5086,6 +5086,56 @@
       "replace": "        ...updateDrainSnapshot(),\n      }),\n      activityMs: () => [DAEMON_START_MS, lastInboundAtMs, lastHookEventAtMs, agentTranscript().activityMs],\n      claudePid:",
       "tests": [
         "test/hook-restart.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "sweep-thread-work",
+      "rule": "the watcher's update sweep waits for thread work",
+      "file": "lib/watcher-keepalive.mjs",
+      "find": "    if (fresh && agentState?.threadWork > 0) return advanceAgentRecord(base, { state: 'waiting_idle', reason: 'thread_work' }, now())\n",
+      "replace": "",
+      "tests": [
+        "test/watcher-keepalive.test.ts"
+      ]
+    },
+    {
+      "id": "state-parse-thread-work",
+      "rule": "the sweep reads the count from the file",
+      "file": "lib/keepalive-plan.mjs",
+      "find": "    activeOperations,\n    threadWork,\n",
+      "replace": "    activeOperations,\n    threadWork: 0,\n",
+      "tests": [
+        "test/watcher-keepalive.test.ts"
+      ]
+    },
+    {
+      "id": "state-build-thread-work",
+      "rule": "the file carries the count",
+      "file": "lib/agent-state.ts",
+      "find": "    threadWork: count(input.threadWork),\n",
+      "replace": "    threadWork: 0,\n",
+      "tests": [
+        "test/agent-state.test.ts"
+      ]
+    },
+    {
+      "id": "click-drain-thread-work",
+      "rule": "a click's drain waits for thread work",
+      "file": "server.ts",
+      "find": "  drainSnapshot: restartDrainSnapshot,\n  postFailureDiagnostics:",
+      "replace": "  drainSnapshot: updateDrainSnapshot,\n  postFailureDiagnostics:",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
+      ]
+    },
+    {
+      "id": "self-updater-drain-thread-work",
+      "rule": "the self updater waits for thread work",
+      "file": "server.ts",
+      "find": "    drainSnapshot: restartDrainSnapshot,\n    setDrainMode:",
+      "replace": "    drainSnapshot: updateDrainSnapshot,\n    setDrainMode:",
+      "tests": [
+        "test/idle-update.wiring.test.ts"
       ]
     }
   ]
