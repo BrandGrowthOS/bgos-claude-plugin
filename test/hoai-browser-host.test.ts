@@ -858,13 +858,13 @@ test(
       }
       const cookieSeenBy = async (principal: string | undefined) => {
         await tool(principal, 'browser_navigate', { url: `${site.url}/show` })
-        return tool(principal, 'browser_evaluate', { function: "() => document.querySelector('h1').textContent" })
+        return tool(principal, 'browser_snapshot')
       }
 
       const init = await rpc('user-user_2Alice', { jsonrpc: '2.0', id: ++id, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'hoai-browser-mcp', version: '0.44.0' } } })
       assert.equal(init.result.serverInfo.name, 'hoai-agent-browser')
       const list = await rpc('user-user_2Alice', { jsonrpc: '2.0', id: ++id, method: 'tools/list' })
-      assert.equal(list.result.tools.length, 29, 'the pinned roster: 4 session tools and 25 browser_ tools')
+      assert.equal(list.result.tools.length, 25, 'the pinned roster: 4 session tools and 21 browser_ tools (page code and raw diagnostics are never served)')
       assert.equal(list.result.tools.some((entry: { name: string }) => entry.name === 'browser_emulate_media'), true)
 
       // THE PERMISSION GATE, END TO END, on the real host process.

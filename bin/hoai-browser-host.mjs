@@ -298,6 +298,14 @@ export const WAIT_SECONDS_SCHEMA = {
     "How long the owner may take to answer the permission this action may need, in seconds (default 60, max 1800). Past 60 seconds the request moves to a card in the owner's chat with you and this call answers gate_parked with a gateId; keep waiting with hoai_browser_wait_gate. Use it when the owner may be away from the browser pane.",
 }
 
+/**
+ * Page code and raw diagnostics can read cookies and stored tokens through aliases,
+ * frames, headers and page logs, the same set the desktop refuses (engine.js). A
+ * machine's browser can hold a person's sealed sign-ins, so these are not served and
+ * do not answer. The fixed DOM reading tools stay.
+ */
+export const PRIVATE_PAGE_TOOLS = new Set(['browser_evaluate', 'browser_console_messages', 'browser_network_requests', 'browser_network_request'])
+
 /** Never reachable through HOAI (policy.js NEVER_TOOLS). */
 export const NEVER_TOOLS = new Set([
   'browser_run_code_unsafe',
@@ -372,7 +380,7 @@ export function withWaitSeconds(tool) {
 
 /** Playwright's browser_ roster as the desktop serves it. */
 export function servedBrowserTools(playwrightTools) {
-  return playwrightTools.filter((t) => !NEVER_TOOLS.has(t.name)).map(withWaitSeconds)
+  return playwrightTools.filter((t) => !NEVER_TOOLS.has(t.name) && !PRIVATE_PAGE_TOOLS.has(t.name)).map(withWaitSeconds)
 }
 
 /**
@@ -1037,6 +1045,13 @@ export function loadPlaywright() {
     tools.Tab.prototype._downloadStarted = function () {
       return Promise.resolve()
     }
+    // A page can log what it holds, and Playwright's tab writes every console line to
+    // a log file in the agent's own output folder that a snapshot links to. On a
+    // machine holding sealed sign-ins no value reaches the agent's files, so the tab
+    // keeps no console, as the desktop engine does (engine.js _isolatePageDiagnostics).
+    // Gone with a Playwright update, no browser starts rather than one that keeps them.
+    if (typeof tools?.Tab?.prototype?._handleConsoleMessage !== 'function') throw new HostError('browser_unavailable', 'Browser diagnostic isolation unavailable')
+    tools.Tab.prototype._handleConsoleMessage = function () {}
     playwrightModules = { chromium, tools, z }
   }
   return playwrightModules
@@ -2294,6 +2309,7 @@ export class BrowserHostCore {
   }
 
   async _call(ctx, name, args, signal) {
+    if (PRIVATE_PAGE_TOOLS.has(name)) return errorResult('not_available', 'This browser tool is not available. Use snapshots, element search or screenshots to read the page.')
     if (name === 'hoai_browser_open_session') {
       const slot = await this.pool.acquire(ctx)
       const purpose = typeof args.purpose === 'string' ? args.purpose.trim().slice(0, 200) : ''
