@@ -3894,6 +3894,83 @@ test('final fix: a path that leads somewhere else when HOAI looks again after op
   assert.equal((await readOne(clean, { home })).ok, true)
 })
 
+test('the swap check compares device and file numbers as bigint, on every look', async (t) => {
+  const home = scratchHome(t)
+  mkdirSync(join(home, 'docs'), { recursive: true })
+  const path = join(home, 'docs', 'report.pdf')
+  writeFileSync(path, PDF)
+  const low = 2n ** 53n
+  const high = low + 1n
+  assert.equal(Number(low), Number(high))
+  type Ids = { dev: bigint, ino: bigint }
+  // A stat as node gives one: bigints when asked for, numbers when not.
+  const stat = (ids: Ids, options?: { bigint?: boolean }) => (options?.bigint
+    ? { isFile: () => true, size: BigInt(PDF.length), dev: ids.dev, ino: ids.ino }
+    : { isFile: () => true, size: PDF.length, dev: Number(ids.dev), ino: Number(ids.ino) })
+  // The path's first look, the handle, and the path's second look.
+  const reading = (first: Ids, opened: Ids, second: Ids) => {
+    const looks = [first, second]
+    let n = 0
+    return {
+      realpath: async (given: string) => given,
+      lstat: async (_: string, options?: { bigint?: boolean }) => stat(looks[n++]!, options),
+      open: async () => ({
+        stat: async (options?: { bigint?: boolean }) => stat(opened, options),
+        read: async (buffer: Uint8Array, offset: number, length: number, position: number) => {
+          const read = Math.max(0, Math.min(length, PDF.length - position))
+          buffer.set(PDF.subarray(position, position + read), offset)
+          return { bytesRead: read }
+        },
+        close: async () => {},
+      }),
+    }
+  }
+  const a = { dev: 1n, ino: low }
+  const b = { dev: 1n, ino: high }
+  const c = { dev: low, ino: 5n }
+  const d = { dev: high, ino: 5n }
+  for (const [first, opened, second, label] of [
+    [b, a, a, 'file number, first look'],
+    [a, b, b, 'file number, first look'],
+    [a, b, a, 'file number, the handle'],
+    [b, a, b, 'file number, the handle'],
+    [a, a, b, 'file number, second look'],
+    [b, b, a, 'file number, second look'],
+    [c, d, d, 'device, first look'],
+    [c, d, c, 'device, the handle'],
+    [c, c, d, 'device, second look'],
+  ] as const) {
+    assert.equal((await readOne(path, { home, fs: reading(first, opened, second) })).error, changedSentence(path), label)
+  }
+  for (const same of [a, b, c, d]) {
+    const read = await readOne(path, { home, fs: reading(same, same, same) })
+    assert.equal(read.ok, true, JSON.stringify(read.error))
+    assert.equal(read.file.size, PDF.length)
+  }
+})
+
+test('the real file system answers a stat with bigints, on a path and on an open file', async (t) => {
+  const lib = await m()
+  const home = scratchHome(t)
+  mkdirSync(join(home, 'docs'), { recursive: true })
+  const path = join(home, 'docs', 'report.pdf')
+  writeFileSync(path, PDF)
+  const fs = lib.OUTBOUND_REAL_FS_FOR_TESTS
+  const seen = await fs.lstat(path, { bigint: true })
+  assert.equal(typeof seen.ino, 'bigint')
+  assert.equal(typeof seen.dev, 'bigint')
+  const handle = await fs.open(path, 'r')
+  try {
+    const opened = await handle.stat({ bigint: true })
+    assert.equal(typeof opened.ino, 'bigint')
+    assert.equal(typeof opened.dev, 'bigint')
+    assert.equal(opened.ino, seen.ino)
+    assert.equal(opened.dev, seen.dev)
+  } finally {
+    await handle.close()
+  }
+})
+
 test('final fix: a file swapped in place between the check and the open is refused by the handle check (the inode)', async () => {
   // lstat sees file 7, the open lands on file 8 and the second look sees file 8 too: only the handle check sees it.
   const stats = [7, 8]
