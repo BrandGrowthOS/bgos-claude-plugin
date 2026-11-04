@@ -57,6 +57,7 @@ import {
   updateArgs,
 } from '../lib/plugin-cli.mjs'
 import { cliRunnerFor, makeSandbox, type Sandbox } from './helpers/sandbox.ts'
+import { scratchDir } from './helpers/scratch-dirs.ts'
 
 type MachineState = Parameters<typeof planMachine>[0]
 type Plan = Parameters<typeof executePlan>[0]
@@ -2235,10 +2236,9 @@ test('marketplace installs never run the registrar (their hooks come from the pl
 })
 
 test('clone: with no registrar injected, the default runs the NEW checkout\'s bin/hoai-register-hooks.mjs and the workspace hooks land on disk', async () => {
-  const { mkdtempSync, realpathSync } = await import('node:fs')
-  const { tmpdir } = await import('node:os')
+  const { realpathSync } = await import('node:fs')
   const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-  const workspace = realpathSync(mkdtempSync(join(tmpdir(), 'executor-hooks-ws-')))
+  const workspace = realpathSync(scratchDir('executor-hooks-ws-'))
   writeFileSync(join(workspace, '.mcp.json'), JSON.stringify({ mcpServers: { bgos: { command: 'bun', args: [join(root, 'server.ts')] } } }))
   const c = cloneWorld()
   const pkg = joinLike(root, 'package.json')

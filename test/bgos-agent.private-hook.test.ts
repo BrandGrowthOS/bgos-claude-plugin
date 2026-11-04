@@ -23,8 +23,7 @@
  */
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -36,6 +35,7 @@ import {
   registersPrivateHook,
 } from '../lib/private-hook-presence.ts'
 import { resolvePosixBash } from './helpers/posix-bash.ts'
+import { scratchDir } from './helpers/scratch-dirs.ts'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const BASH = process.platform === 'win32' ? null : resolvePosixBash()
@@ -69,7 +69,7 @@ function register(workdir: string, pluginDir: string) {
 }
 
 function workspace(mcp: unknown | null, settings?: unknown): string {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'phook-ws-')))
+  const dir = realpathSync(scratchDir('phook-ws-'))
   if (mcp) writeFileSync(join(dir, '.mcp.json'), JSON.stringify(mcp))
   if (settings) {
     mkdirSync(join(dir, '.claude'), { recursive: true })
@@ -97,7 +97,7 @@ test('a clone workspace with no hoai entry gets the private turn hook on every p
 })
 
 test('the same through a symlinked checkout: the .mcp.json may spell either side of an aliased home', { skip: SKIP }, () => {
-  const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'phook-alias-')))
+  const scratch = realpathSync(scratchDir('phook-alias-'))
   const alias = join(scratch, 'alias')
   symlinkSync(repoRoot, alias)
   const dir = workspace(mcpFor(join(alias, 'server.ts')))
@@ -118,7 +118,7 @@ test('a folder that already carries the rail keeps its floor hook', { skip: SKIP
 })
 
 test('a workspace that names another checkout, or has no .mcp.json, is left untouched', { skip: SKIP }, () => {
-  const other = realpathSync(mkdtempSync(join(tmpdir(), 'phook-other-')))
+  const other = realpathSync(scratchDir('phook-other-'))
   writeFileSync(join(other, 'server.ts'), '')
   const named = workspace(mcpFor(join(other, 'server.ts')))
   const none = workspace(null)

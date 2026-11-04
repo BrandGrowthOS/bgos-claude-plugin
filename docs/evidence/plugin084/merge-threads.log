@@ -1,0 +1,2 @@
+git merge --no-ff --no-commit fix/threads-hardening-2
+Automatic merge went well; stopped before committing as requested

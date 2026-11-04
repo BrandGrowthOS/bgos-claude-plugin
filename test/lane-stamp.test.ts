@@ -99,7 +99,7 @@ test('owner socket: the check runs before the stream router and the legacy deliv
 })
 
 test('owner poll: the check runs before the message claims its id or reaches the model', () => {
-  const body = bodyAfter(SERVER, 'for (const msg of newUserMessages) {', 2500)
+  const body = bodyAfter(SERVER, 'for (const { row: msg, edit } of deliveries) {', 5000)
   const check = body.indexOf('ownerLaneVerdict(msg.message)')
   assert.ok(check > 0)
   assert.ok(check < body.indexOf('lastInboundAtMs = Date.now()'))
@@ -108,7 +108,7 @@ test('owner poll: the check runs before the message claims its id or reaches the
 })
 
 test('owner stream: the check runs before the id is claimed', () => {
-  const body = bodyAfter(SERVER, 'async function forwardStreamInbound(', 900)
+  const body = bodyAfter(SERVER, 'async function forwardStreamInbound(', 1500)
   const check = body.indexOf('ownerLaneVerdict(view.raw)')
   assert.ok(check > 0)
   assert.ok(check < body.indexOf('rememberForwarded(view.messageId)'))

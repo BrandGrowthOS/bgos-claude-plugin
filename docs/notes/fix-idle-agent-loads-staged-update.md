@@ -66,7 +66,8 @@ written after a reading was not later than it in 2996 of 3000 tries, and 9p was 
 `os.tmpdir()`, which is ext4 even when the tree is on `/mnt/e`. The harness spun a fixed 2 ms.
 
 - Same tests with one tick of wait before the Stop: 27 of 30 failures became 0 of 30.
-- Old head c819c0f, three files repeated: 22 failures of 1840. With `test/helpers/settle.ts`: 0 of 1840.
+- Old head c819c0f, three files repeated: 22 failures of 1840. With this lane's helper, since dropped for main's
+  `test/helpers/file-clock.ts`, which #293 wrote for the same cause: 0 of 1840.
 - The diff from c819c0f to 81abb37 for those files is empty and the rule has been on main since 2026-10-16, so this
   was not caused by this lane. Why CI's Linux job does not hit it is not established.
 
@@ -88,6 +89,14 @@ The first Chromium test takes 22 to 40 s on five #291 lineage runs against about
 download failures landed on those. But 6215119 and c819c0f have the same tree (667d9313e1) and the same image, at 8 s
 and 28 s. So it is not simply the code, and no cause is claimed. A process listing before the Chromium family would
 be the next step.
+
+## The merge of main (0.85.1)
+
+Merged #296's head, which holds main at 09f96a9a0c (#313), by Data's ruling of 4 Nov. Versions: #296 0.85.0, #291 0.85.1,
+#300 0.85.2. `server.ts` keeps both sides: `noteEnded` stays synchronous, before main's bounded wait in shutdown.
+
+The litter guard (#302) left this chain. #313 rewrote `scripts/run-tests.mjs`, so the runner here is main's as it stands.
+The guard goes to its own PR off main after this chain; row 92946637 stays open until then.
 
 ## Proof limits
 

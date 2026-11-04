@@ -140,7 +140,7 @@ function sliceBetween(start: string, end: string): string {
 }
 
 const pollInbound = sliceBetween(
-  'for (const msg of newUserMessages)',
+  'for (const { row: msg, edit } of deliveries)',
   '// Advance the cursor only now',
 )
 const wsInbound = sliceBetween(

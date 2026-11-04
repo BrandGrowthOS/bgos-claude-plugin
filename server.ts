@@ -96,7 +96,7 @@ import { SkillsRpcHandler, normalizeSkillsRpc } from './lib/skills-rpc.js'
 import { listSkills, managedSkillsDir, removeAgentSkill } from './lib/skills-inventory.js'
 import { exportSkill, installBundle } from './lib/skills-share.js'
 import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
-import { DoctorRpcHandler, buildDoctorChecks, normalizeDoctorRpc } from './lib/doctor-rpc.ts'
+import { DoctorRpcHandler, buildDoctorChecks, normalizeDoctorRpc, type DoctorCheck } from './lib/doctor-rpc.ts'
 import { collectChanges, createNodeRunGit, nodeChangesFs } from './lib/git-changes.js'
 import { SESSION_ID_FILE_NAME, defaultPidAlive, pluginStateDirFor, readBootClock } from './lib/agent-inventory.mjs'
 import { createUnboundFrameRouter, createUnboundNoticeHandler } from './lib/agent-unbound.mjs'
@@ -319,6 +319,8 @@ import {
   MISSION_TITLE_MAX,
   type MissionSnapshot,
 } from './lib/missions.js'
+import { createMissionWorkingTracker, MISSION_WORKING_SWEEP_MS } from './lib/mission-working.ts'
+import { createMissionWorkingGeneration, createMissionWorkingWriteLock, hasUnconfirmedWorkingWrite } from './lib/mission-working-lock.ts'
 import {
   createMissionSelfWriteLedger,
   decideMissionNotice,
@@ -415,6 +417,14 @@ import {
   isNotModified,
   EtagCache,
   buildChatPollRequest,
+  buildOlderPagePath,
+  CHAT_OLDER_PAGE_LIMIT,
+  CHAT_PAGE_DEFAULT_LIMIT,
+  firstReadOwedFrom,
+  pageMayHaveOlderRows,
+  readNeedsOlderPage,
+  walkOlderPages,
+  mergeHumanEditDeliveries,
   advanceCursor,
   shouldForwardPollMessage,
   rememberReturnedMessageId,
@@ -476,6 +486,7 @@ import {
   probeRequestPath,
   LIVENESS_PROBE_POLL_MS,
 } from './lib/boot-hello.js'
+import { LIMIT_NOTICE_FILE_NAME, LIMIT_NOTICE_POLL_MS, createLimitNoticeIntake } from './lib/limit-notice.js'
 import {
   LOCK_HEARTBEAT_INTERVAL_MS,
   acquirePairingLock,
@@ -526,6 +537,8 @@ import {
   decideButtonsAnswered,
   decideMessageFinalized,
   decideMessageNew,
+  HumanMessageEdits,
+  humanEditTime,
   viewStreamMessage,
   type StreamMessageView,
 } from './lib/stream-apply.js'
@@ -750,7 +763,19 @@ import {
   resolveNodePath,
 } from './lib/watcher-install.mjs'
 import { readMarketplaceLatest, runClaudeCli } from './lib/plugin-cli.mjs'
-import { serveDuplicateCopy, serveHomeRefused, servePairRequired } from './lib/pair-required-server.mjs'
+import { serveDuplicateCopy, serveHomeRefused, servePairRequired, serveScopeRefused, serveMarketplaceDormant } from './lib/pair-required-server.mjs'
+import {
+  ATTACH_SCOPE_SETTINGS_FILE,
+  attachScopeDoctorCheck,
+  decideAttachScope,
+  formatAttachScopeBootLine,
+  formatAttachScopeRefusal,
+  readAttachScopeEvents,
+  recordAttachScopeEvent,
+  resolveAttachScopeMode,
+  summarizeAttachScopeEvents,
+} from './lib/attach-scope.mjs'
+import { evaluateMarketplaceAttach } from './lib/marketplace-attach.js'
 import { installWatcherBundle, nodeExec } from './lib/watcher-bundle.mjs'
 import { listProcesses } from './lib/process-tree.mjs'
 import {
@@ -804,7 +829,78 @@ const CLAUDE_CONFIG_DIR = pathResolve(LAUNCH_CWD, claudeConfigDir({ env: process
 // (and so, for now, are the memory folder and the session pin keeper).
 const CLAUDE_PROJECT_CWD = claudeProjectCwd(LAUNCH_CWD)
 
-const CREDENTIALS_SELECTION = resolveCredentialsSelection({
+// Install method + plugin root, detected once. For a marketplace install the
+// root is the VERSIONED cache dir this process was loaded from (design 7.3),
+// which is also where the watcher bundle is copied FROM.
+const INSTALL_DETECTION = (() => {
+  try {
+    return detectInstallMethod({ scriptPath: fileURLToPath(import.meta.url) })
+  } catch {
+    return null
+  }
+})()
+// `unknown` is unreachable in practice here (the daemon is loaded FROM the
+// install, so its own path is the evidence), but it is a real return value now
+// and it must not be spelled as a method: everything downstream only ever asks
+// `=== 'marketplace'`, so it lands on the clone branch either way, explicitly.
+const INSTALL_METHOD: 'marketplace' | 'clone' =
+  INSTALL_DETECTION?.method === 'marketplace' ? 'marketplace' : 'clone'
+const PLUGIN_ROOT =
+  (INSTALL_DETECTION?.pluginRoot ?? '') || (INSTALL_DETECTION?.executionRoot ?? '') || import.meta.dir
+
+// Duplicate detection remains first, before even dormant telemetry or identity refusal.
+async function preflightDuplicateCopy(): Promise<void> {
+  // THE PLUGIN'S SECOND COPY STANDS ASIDE (kc-server, 2026-10-13). When this is the marketplace
+  // copy and the session provably loads the checkout as its channel (server:bgos, this folder's
+  // .mcp.json), a second full daemon only adds a lock race and a second set of tools that refuse
+  // private calls. It serves a one tool notice instead and runs nothing else: no lock, no
+  // supervisor record, no polling, no channel capability. Every doubt keeps the daemon as it was
+  // (lib/duplicate-copy.mjs). Asked FIRST, before anything below writes a file or starts a timer.
+  {
+    const verdict = decideDuplicateCopy({
+      installMethod: INSTALL_METHOD,
+      ownSpec: INSTALL_DETECTION?.method === 'marketplace' ? marketplaceChannelSpec(INSTALL_DETECTION.marketplace) : '',
+      sessionSpecs:
+        INSTALL_METHOD === 'marketplace'
+          ? probeSessionChannelSpecs({ platform: process.platform, ownPid: process.pid, execSync: defaultExecSync })
+          : null,
+      sibling: INSTALL_METHOD === 'marketplace' ? findSiblingClone({ cwd: LAUNCH_CWD, ownRoot: import.meta.dir }) : null,
+      specMatches,
+    })
+    if (verdict.duplicate) {
+      process.stderr.write(`[bgos] duplicate plugin copy, standing aside: ${verdict.reason}\n`)
+      const served = await serveDuplicateCopy({
+        reason: verdict.reason,
+        version: readOwnVersion(import.meta.dir) ?? undefined,
+        log: (line: string) => process.stderr.write(`[bgos] ${line}\n`),
+      })
+      process.exit(served ? 0 : 1)
+    }
+  }
+}
+await preflightDuplicateCopy()
+
+// A marketplace copy is loaded in every session. Decide before identity/home
+// refusals, any state initialization, or any backend connection.
+const MARKETPLACE_ATTACH_FOLDER = LAUNCH_CWD
+const MARKETPLACE_ATTACH = INSTALL_METHOD === 'marketplace'
+  ? evaluateMarketplaceAttach({ cwd: LAUNCH_CWD, home: homedir(), env: process.env })
+  : null
+if (MARKETPLACE_ATTACH?.decision.verdict === 'refuse') {
+  process.stderr.write('[bgos] marketplace dormant: this session is outside its agent home or explicit attach scope.\n')
+  recordAttachScopeEvent({
+    dir: process.env.BGOS_PLUGIN_STATE_DIR?.trim() || pathJoin(homedir(), '.bgos-plugin-state'),
+    decision: MARKETPLACE_ATTACH.decision,
+    mode: MARKETPLACE_ATTACH.modeInfo.mode,
+    cwd: MARKETPLACE_ATTACH_FOLDER,
+    version: readOwnVersion(import.meta.dir),
+    route: MARKETPLACE_ATTACH.selection?.kind === 'ok' ? MARKETPLACE_ATTACH.selection.via : 'ambiguous',
+  })
+  const served = await serveMarketplaceDormant({ version: readOwnVersion(import.meta.dir) ?? undefined })
+  process.exit(served ? 0 : 1)
+}
+
+const CREDENTIALS_SELECTION = MARKETPLACE_ATTACH?.selection ?? resolveCredentialsSelection({
   env: process.env,
   defaultPath: DEFAULT_CREDENTIALS_FILE,
   cwd: LAUNCH_CWD,
@@ -814,7 +910,9 @@ if (CREDENTIALS_SELECTION.kind === 'refuse') {
   process.exit(1)
 }
 const CREDENTIALS_PATH = CREDENTIALS_SELECTION.path
-const CREDENTIALS_FILE = loadCredentialsFile(CREDENTIALS_PATH)
+const CREDENTIALS_FILE = MARKETPLACE_ATTACH && 'credentials' in MARKETPLACE_ATTACH
+  ? MARKETPLACE_ATTACH.credentials ?? null
+  : loadCredentialsFile(CREDENTIALS_PATH)
 
 // Stand-down reports (identity race plan step 3, board fc75c7c3): a refusal, a
 // passive spell, a lost lock, a fatal exit or a duty switched off tells the
@@ -843,7 +941,9 @@ const standDownReporter = createStandDownReporter({
 // resolves by elimination and speaks in that agent's name, and the pairing
 // lock cannot help because it picks a winner without knowing who is who.
 const HOME_BINDING = decideHomeBinding({
-  via: CREDENTIALS_SELECTION.via,
+  // The shared home binder treats a recorded-home selection as a file lookup;
+  // canonical confirmation comes from the marketplace preflight below.
+  via: CREDENTIALS_SELECTION.via === 'recorded-home' ? 'sole-per-assistant' : CREDENTIALS_SELECTION.via,
   cwd: LAUNCH_CWD,
   recordedHomeDir: CREDENTIALS_FILE?.homeDir ?? null,
   recordedHomeSource: CREDENTIALS_FILE?.homeSource ?? null,
@@ -853,7 +953,7 @@ const HOME_BINDING = decideHomeBinding({
   assistantId: String(CREDENTIALS_FILE?.assistantId ?? ''),
   env: process.env,
 })
-if (HOME_BINDING.action === 'refuse') {
+if (HOME_BINDING.action === 'refuse' && !MARKETPLACE_ATTACH) {
   process.stderr.write(`[bgos] ${formatHomeBindingRefusal(HOME_BINDING)}\n`)
   // Not process.exit(1) before the handshake: Claude Code could show only a
   // failed server (CONNECTION_CLOSED), and the session could not say why. A
@@ -876,11 +976,11 @@ if (HOME_BINDING.action === 'refuse') {
 // it runs, but it never repoints the resume pin and never serves the owner's
 // Memory and Changes panels (board fc75c7c3). Fixed for the life of the
 // process, because nothing below can change how this daemon was started.
-const HOME_CONFIRMED = homeCheckPassed(HOME_BINDING)
+const HOME_CONFIRMED = homeCheckPassed(HOME_BINDING) || MARKETPLACE_ATTACH?.homeMatched === true
 // How this daemon found its identity, in the one word the pairing lock
 // records ('pin', 'env' or 'elimination'): a pinned agent takes the channel
 // back from a stray that found it by elimination (lib/pairing-lock.ts).
-const LOCK_ROUTE = lockRouteFor(CREDENTIALS_SELECTION.via)
+const LOCK_ROUTE = CREDENTIALS_SELECTION.via === 'recorded-home' ? 'pin' : lockRouteFor(CREDENTIALS_SELECTION.via)
 
 // Warn when this daemon boots ONLY because an env var is present. See
 // describeEnvOnlyIdentityRisk: the failure it predicts is process.exit(1), not
@@ -907,6 +1007,8 @@ const AUTO_APPROVE = process.env.BGOS_AUTO_APPROVE === 'true'
 // lives above them all.
 /** Lanes can run here: a pairing, a host and a CLI with every locked flag (cached per binary). */
 let laneSupportMemo: { ok: boolean; missing: string[]; reason?: string } | null = null
+/** The last threads CLI answer logged (threadsCli, below): declared above every caller. */
+let threadsCliLogged: string | null = null
 function laneSupport(): { ok: boolean; missing: string[]; reason?: string } {
   if (laneSupportMemo) return laneSupportMemo
   if (AUTH.mode !== 'pairing') {
@@ -975,6 +1077,78 @@ if (!AUTH.complete) {
   process.exit(served ? 0 : 1)
 }
 
+// Attach scope (board row bab90cdb, design BGOS #1244, lib/attach-scope.mjs).
+// The launcher names the agent it launched (HOAI_ATTACH_SCOPE); this daemon
+// resolved ASSISTANT_ID. On a computer with several agents the machine wide
+// marketplace copy starts a daemon for every session, and an inherited
+// BGOS_ASSISTANT_ID can make a session launched for one agent attach as
+// another. The setting starts OFF: nothing is refused, every start is counted
+// with what it WOULD have done, so the flip is measured before it is made. A
+// scope, identity or setting that cannot be read fails open. DECIDED here,
+// once, after the unpaired notice above (an unpaired daemon attaches to
+// nothing): pure, it writes nothing. ACTED ON in main() (attachScopeAtBoot),
+// right after the duplicate copy check, which must stay the first thing that
+// runs and the only one a standing aside copy runs: that copy writes no
+// plugin state, not even this count. Still before any lock, socket or poll.
+const ATTACH_SCOPE_MODE = MARKETPLACE_ATTACH?.modeInfo ?? resolveAttachScopeMode({
+  env: process.env,
+  readText: (path: string) => {
+    try {
+      return readFileSync(path, 'utf8')
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return null
+      throw err
+    }
+  },
+  settingsPath: pathJoin(homedir(), '.bgos-agent', ATTACH_SCOPE_SETTINGS_FILE),
+})
+// The launch folder under a name of its own: the scope compares it with the
+// folder the launcher named and reads its pin, but it resolves no identity, so
+// it is not one of LAUNCH_CWD's counted identity sites
+// (test/agent-credentials.test.ts).
+const ATTACH_SCOPE_FOLDER = LAUNCH_CWD
+const ATTACH_SCOPE = MARKETPLACE_ATTACH?.decision ?? decideAttachScope({
+  mode: ATTACH_SCOPE_MODE.mode,
+  env: process.env,
+  assistantId: String(ASSISTANT_ID ?? ''),
+  cwd: ATTACH_SCOPE_FOLDER,
+  // The folder's own declaration: a pin naming another agent than the one
+  // resolved means an inherited BGOS_ASSISTANT_ID beat it.
+  folderPinId: readFolderPinId(ATTACH_SCOPE_FOLDER),
+})
+// The plugin state dir every daemon on this computer shares, so the tally is
+// the machine's.
+const ATTACH_SCOPE_STATE_DIR = process.env.BGOS_PLUGIN_STATE_DIR?.trim() || pathJoin(homedir(), '.bgos-plugin-state')
+
+/** Say the verdict, count it, and stand aside when it is a refusal (main(), see above). */
+async function attachScopeAtBoot(): Promise<void> {
+  process.stderr.write(`[bgos] ${formatAttachScopeBootLine(ATTACH_SCOPE, ATTACH_SCOPE_MODE)}\n`)
+  recordAttachScopeEvent({
+    dir: ATTACH_SCOPE_STATE_DIR,
+    decision: ATTACH_SCOPE,
+    mode: ATTACH_SCOPE_MODE.mode,
+    route: CREDENTIALS_SELECTION.kind === 'ok' ? CREDENTIALS_SELECTION.via : 'ambiguous',
+    version: readOwnVersion(import.meta.dir),
+    cwd: ATTACH_SCOPE_FOLDER,
+  })
+  if (ATTACH_SCOPE.verdict !== 'refuse') return
+  // Only when the setting is on. A quiet one tool notice like a refused
+  // stray's (hoai_not_this_agent, with its own text: the home check's advice
+  // to pin the folder would make it worse): no lock, no socket, no presence, no
+  // agent state, and never process.exit(1) before the handshake (a dead
+  // server reads as CONNECTION_CLOSED and invites a retry loop). No stand-down
+  // report: its reasons are the backend's fixed contract and none of them is
+  // this one, so a mislabelled report would be worse than none.
+  const reason = formatAttachScopeRefusal(ATTACH_SCOPE)
+  process.stderr.write(`[bgos] ${reason}\n`)
+  const served = await serveScopeRefused({
+    reason,
+    assistantId: String(ASSISTANT_ID ?? ''),
+    log: (line: string) => process.stderr.write(`[bgos] ${line}\n`),
+  })
+  process.exit(served ? 0 : 1)
+}
+
 function getApiBaseUrl(): string {
   const url = BACKEND_URL.replace(/\/$/, '')
   return url.endsWith('/api/v1') ? url : `${url}/api/v1`
@@ -984,15 +1158,25 @@ const API_BASE = getApiBaseUrl()
 
 import {
   appendFileSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
   readdirSync,
+  renameSync,
+  rmSync,
   statSync,
   unlinkSync,
   watch,
   writeFileSync,
 } from 'node:fs'
+import { ThreadLaneManager, threadsPendingPath } from './lib/thread-lanes.ts'
+import { AsideForks, runAside } from './lib/aside-fork.ts'
+import { ThreadsCliGate, threadsCliProblem, type ThreadsCliAnswer } from './lib/threads-cli.ts'
+import { killProcessGroup, processRunsIn, processStamp } from './lib/lane-process.ts'
+import { laneShellSandboxAvailable } from './lib/lane-policy.mjs'
+import { findOnPath } from './lib/lane-cli-probe.mjs'
+import { spawnStreamJson } from './lib/stream-json-child.ts'
 import { join as pathJoin, dirname as pathDirname, resolve as pathResolve } from 'node:path'
 import { ensureLogDir, resolveLogPath } from './lib/log-path.js'
 // Agent activity from the session's own hooks (stage 4). The mapper is pure
@@ -1380,7 +1564,7 @@ function noteBackendReach(status: number | null): void {
 
 async function bgosGet(
   path: string,
-  opts?: { cacheKey?: string; callerAssistantId?: string; headers?: Record<string, string> },
+  opts?: { cacheKey?: string; callerAssistantId?: string; headers?: Record<string, string>; conditional?: boolean },
 ): Promise<unknown> {
   const url = `${API_BASE}/${path.replace(/^\//, '')}`
   const cacheKey = opts?.cacheKey ?? path
@@ -1388,7 +1572,10 @@ async function bgosGet(
   // item 0.4). The ETag cache is keyed by the path alone, so a read made for
   // one person never rides it: no validator is sent and none is kept.
   const personal = opts?.headers != null && Object.keys(opts.headers).length > 0
-  const prevEtag = personal ? null : bgosEtagCache.ifNoneMatch(cacheKey)
+  // `conditional: false`: a page of a catch up walk. A 304 there would be a page
+  // with no rows, and its validator must never stand in for the chat's own.
+  const riddenByEtag = !personal && opts?.conditional !== false
+  const prevEtag = riddenByEtag ? bgosEtagCache.ifNoneMatch(cacheKey) : null
   return bgosCall(
     {
       url,
@@ -1411,7 +1598,7 @@ async function bgosGet(
         const text = await response.text().catch(() => '')
         throw new Error(`GET ${response.status}: ${errorBodyText(text)}`)
       }
-      if (!personal) bgosEtagCache.record(cacheKey, response.headers.get('etag'))
+      if (riddenByEtag) bgosEtagCache.record(cacheKey, response.headers.get('etag'))
       return response.json()
     },
   )
@@ -1668,7 +1855,7 @@ async function loadServedCapabilities(): Promise<ServedCapabilities> {
     // ONE declared list for the fetch AND the offline copy, so a fetch that
     // fails tells the agent no more than the served canon would have told
     // this daemon (capabilitiesFallbackFor, the stage 6 backend review).
-    const declared = declaredCapabilities({ canInjectGoal: false, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, authMode: AUTH.mode })
+    const declared = declaredCapabilities({ canInjectGoal: false, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, threads: threadsDeclared(), authMode: AUTH.mode })
     try {
       data = await bgosGetCapped(
         capabilitiesFetchPath(
@@ -1808,7 +1995,7 @@ async function bgosPatch(path: string, body: Record<string, unknown>, privateHea
     async (response) => {
       if (!response.ok) {
         const text = await response.text().catch(() => '')
-        throw new Error(`PATCH ${response.status}: ${errorBodyText(text)}`)
+        throw new HttpError(`PATCH ${response.status}: ${errorBodyText(text)}`, response.status)
       }
       return response.json()
     },
@@ -2015,6 +2202,36 @@ function resolveClaude(): string | null {
   })
 }
 const CLAUDE_EXECUTABLE: string | null = resolveClaude()
+// Threads phase 1: message_threads, thread_sessions and asides are declared
+// where a thread lane or a By the way fork can start: a claude binary this
+// daemon can spawn that passes the threads CLI probe (lib/threads-cli.ts:
+// --restricted, 2.1.301 and later, --tools, --fork-session, the stream json
+// flags, acceptEdits and dontAsk). Not Windows in phase 1. Resolved per
+// declaration, like /login's binary above; the probe is cached per binary.
+// The probe runs in the background and never on the event loop; a failed or
+// hung one is kept for a while (lib/threads-cli.ts ThreadsCliGate). Started at
+// boot, so the first heartbeats can already declare.
+const threadsCliGate = new ThreadsCliGate({
+  claudePath: () => resolveClaude(),
+  cachePath: pathJoin(process.env.BGOS_PLUGIN_STATE_DIR?.trim() || pathJoin(homedir(), '.bgos-plugin-state'), 'threads-cli-probe.json'),
+  onAnswer: (answer) => logThreadsCli(answer),
+})
+function logThreadsCli(answer: ThreadsCliAnswer): void {
+  const said = answer.ok
+    ? `threads: claude ${answer.version} can run thread lanes and By the way; declaring message_threads, thread_sessions and asides`
+    : `threads: not declared (${answer.reason ?? `claude ${answer.version ?? 'of unknown version'} lacks ${answer.missing.join(', ')}`})`
+  if (said !== threadsCliLogged) {
+    threadsCliLogged = said
+    log(said)
+  }
+}
+/** Never waits: the kept answer, or `probing` while the probe runs. */
+function threadsCli(): ThreadsCliAnswer {
+  return threadsCliGate.current()
+}
+function threadsDeclared(): boolean {
+  return process.platform !== 'win32' && threadsCli().ok
+}
 const bootSlashCommands = prepareSlashCommands(
   catalogForCapabilities({
     remoteCompact: compactTarget !== null,
@@ -3294,9 +3511,11 @@ const mcp = new Server(
       '   mission in another.',
       '7. Mark EVERY goal you are working on right now with',
       '   `set_goal_working` (goal_ids, working: true), as many as you run at',
-      '   once, and the card animates each one. The mark lapses after 30',
-      '   minutes: call it again within 30 minutes for every goal you are',
-      '   still on, and send working: false when you stop or hand one off. A',
+      '   once, and the card animates each one. Hooks refresh selected goals',
+      '   during tool activity at most once per 10 minutes. Stop clears the',
+      '   selection: select again on resuming. After 15 minutes without tool',
+      '   activity, marks clear until tools resume. Without hooks, refresh',
+      '   within 30 minutes. Send working: false when you hand a goal off. A',
       '   tick ends the mark, and a mark is not progress: it never ticks a',
       '   goal. When a goal waits on your owner or another agent, say so with',
       '   `set_goal_waiting` (goal_id, on "owner" or "agent", who, why), and',
@@ -4653,13 +4872,13 @@ async function waitForVerdict(
               `the hard floor holds this request, so only a tap on its card can allow it`,
           )
         }
-        advanceChatCursor(chatId, msg.message.id)
+        passCursorOverAnswer(chatId, msg.message.id)
         return null
       }
       if (!choice) return null
 
       // Update last seen so we don't re-process this message
-      advanceChatCursor(chatId, msg.message.id)
+      passCursorOverAnswer(chatId, msg.message.id)
 
       return choice
     },
@@ -5892,9 +6111,13 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'that mark, so the mission card animates every one of them at once. ' +
         'Pass every goal you are running in parallel in goal_ids (1 to 20), ' +
         'with working: true; pass working: false when you stop or hand a goal ' +
-        'off. REFRESH RULE: the mark lapses after 30 minutes, so call this ' +
-        'again with working: true within 30 minutes for every goal you are ' +
-        'still working on, or the card stops animating it. A tick ends the ' +
+        'off. In a hook-connected session, tool activity refreshes selected ' +
+        'goals at most once per 10 minutes. Stop or SessionEnd clears the ' +
+        'selection; select goals again when you resume. After 15 minutes ' +
+        'without tool activity, hooks clear the marks and restore them on ' +
+        'resumed activity. If hooks are unavailable, call this again with ' +
+        'working: true within 30 minutes for every goal you are still working ' +
+        'on, or the mark lapses. A tick ends the ' +
         'mark by itself, a ticked goal is refused, and a paused or closed ' +
         'mission takes no new mark. A mark is not progress: it never ticks a ' +
         'goal, so still call tick_mini_goal when a check is true. One request ' +
@@ -5915,8 +6138,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           working: {
             type: 'boolean',
             description:
-              'true: you are working on these goals now (send it again within ' +
-              '30 minutes to keep the mark). false: you are not any more.',
+              'true: select these goals for hook-driven refresh while tools run. ' +
+              'Without hooks, refresh within 30 minutes. false: deselect and clear.',
           },
           mission_id: {
             type: 'number',
@@ -6745,7 +6968,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
               chatId: String(resolvedChatId),
               text,
               declared: () =>
-                declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, authMode: AUTH.mode }).includes(UI_CARD),
+                declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, threads: threadsDeclared(), authMode: AUTH.mode }).includes(UI_CARD),
               log,
             })
         if (cardNudge) log(`reply to chat ${resolvedChatId}: card nudge given`)
@@ -8428,6 +8651,8 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
     }
 
     case 'set_goal_working': {
+      // Freeze the session before mission lookup and all per-goal awaits.
+      const workingContext = missionWorking.capture(hookIntake?.bound() ?? '')
       // Every id and the flag are judged BEFORE anything is read or written,
       // so a typo in the list never leaves half the goals marked.
       const built = buildMissionGoalWorkingInput({
@@ -8455,7 +8680,6 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
           }
         }
         const { goalIds, working } = built.body
-        const paths: string[] = []
         for (const goalId of goalIds) {
           const builtPath = buildMissionGoalWorkingPath(ASSISTANT_ID, missionId, goalId)
           if (!builtPath.ok) {
@@ -8464,7 +8688,6 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
               isError: true,
             }
           }
-          paths.push(builtPath.path)
         }
         // The backend takes ONE goal per request, so the marks go one by one,
         // in the order given. A refusal (a ticked goal, a paused mission) is
@@ -8481,7 +8704,10 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
           // owner's next Pause or Resume (lib/missions.ts MISSION_MARK_TOOLS).
           // The landed stamp below is what answers for this write's echo.
           try {
-            const result = (await bgosPatch(paths[i]!, { working }, privateCall!.headers)) as {
+            const result = (await missionWorking.mark({
+              sessionId: workingContext.sessionId, context: workingContext, missionId, goalId, working,
+              headers: privateCall!.headers,
+            })) as {
               mission?: MissionSnapshot
             }
             if (!result?.mission) {
@@ -8506,9 +8732,12 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
         if (marked.length > 0) {
           lines.push(
             working
-              ? `Marked working: ${named(marked)}. Call set_goal_working again with working: ` +
-                  `true within ${MISSION_GOAL_WORKING_REFRESH_MINUTES} minutes for each goal you ` +
-                  'are still on, or the mark lapses; send working: false when you stop.'
+              ? `Marked working: ${named(marked)}. ` +
+                  (workingContext.sessionId
+                    ? 'Hook activity refreshes selected goals; Stop clears the selection, so select again when you resume. Without hooks, '
+                    : 'There is no bound hook session for this mark; ') +
+                  `refresh within ${MISSION_GOAL_WORKING_REFRESH_MINUTES} minutes. ` +
+                  'Send working: false when you stop or hand a goal off.'
               : `Working mark cleared: ${named(marked)}.`,
           )
         }
@@ -8976,6 +9205,8 @@ interface ChatMessage {
 
 interface ChatHistoryResponse {
   messages: ChatMessage[]
+  /** withPagination=1: the server's own answer, from a probe row. Absent on an old backend. */
+  hasMore?: unknown
 }
 
 // ── Poll cursor persistence (restart-replay fix, Dutify aijvk1h8LM) ──────────
@@ -9142,12 +9373,43 @@ const FIRST_POLL_RECENT_CUTOFF_MS: number | null = cursorBoot.fileExisted
 // not capped.
 const MAX_RESTART_RECOVERY_FORWARD = 10
 
+// The cursor of a chat that read empty: below every real message id (ids are one
+// series across all chats and the store keeps positive integers only). The server
+// answers a chat this caller is not admitted to with no rows, not a refusal (its
+// WHERE clause is the authorization), so empty proves the chat is empty only for a
+// chat the caller is admitted to. Every chat read here comes from this assistant's
+// own inbox listing, or an open meeting it sits in, so that holds on every path
+// known today; a chat that broke it would hand over its history once admitted.
+const EMPTY_CHAT_CURSOR = 1
+
 // Chats fully processed by pollChat at least once since THIS process started.
 // A chat's first successful poll after boot is the one that may carry
 // messages that arrived while the daemon was down; those keep the [backlog]
 // framing even though the persisted cursor routes them through the delta
 // branch.
 const chatsPolledSinceBoot = new Set<string>()
+
+// Which connection of the socket this is, and per chat the latest connection a
+// finished read had STARTED under. A live message may move a chat's cursor only
+// when a read of that chat began on this very connection: a push fired while the
+// socket was down is never replayed, so "a read finished once" says nothing about
+// the rows missed since. A read that started before the reconnect does not count
+// either, however late it finishes: it may never have seen those rows. This used
+// to rest on chatsPolledSinceBoot alone, so after a deploy the first live message
+// moved the cursor over every row of the outage: 0 of 7 reached the agent (the D04
+// report, PL2). The epoch moves on every connect, the boot's first one included.
+let socketEpoch = 0
+const chatReadAtEpoch = new Map<string, number>()
+
+/** Has no read of this chat started on this connection of the socket? */
+function chatBehindSocket(chatId: string): boolean {
+  return chatReadAtEpoch.get(chatId) !== socketEpoch
+}
+
+/** A read of this chat finished. Overlapping reads can finish in either order. */
+function noteChatReadAtEpoch(chatId: string, startedAtEpoch: number): void {
+  chatReadAtEpoch.set(chatId, Math.max(chatReadAtEpoch.get(chatId) ?? 0, startedAtEpoch))
+}
 
 // Per chat, the lowest message id the socket received while it could not move
 // the chat's cursor (the boot poll had not completed). From that id on this
@@ -9164,6 +9426,53 @@ const chatLiveFloor = new Map<string, number>()
 // Chats with a read in flight that a live message started (deliverWsInbound):
 // a burst of live messages into a chat nobody has read yet starts one read.
 const liveReadsInFlight = new Set<string>()
+
+// Per chat, the live messages waiting for a catch up read, and the chats with such
+// a read running (holdLiveFrame). A set of its own: liveReadsInFlight also marks
+// reads nobody releases frames after.
+const heldLiveFrames = new Map<string, any[]>()
+const heldReadsInFlight = new Set<string>()
+
+// Per chat, where the next read starts when a live message has moved the cursor
+// past rows no read has returned. Some rows are never pushed at all, with no outage
+// to mark it: nginx keeps old sockets for 30 s after a deploy's reload and there is
+// no socket.io adapter, so a socket on the old container hears nothing the new one
+// commits. The cursor still moves (a restart must not hand back what the socket
+// delivered, and the forwarded ids do not survive one), but the next read starts
+// from here, under it, and so sees those rows; the dedupe drops what the socket
+// delivered. This also keeps a wake card still waiting for its body inside the read
+// when a live message lands above it. No read is scheduled for it: the next read
+// starts lower and carries those rows, in more pages when they are more than 50. In
+// memory, so a restart before that read loses the rows this was keeping in reach.
+const chatReadFloor = new Map<string, number>()
+
+/** A live message moved the cursor from `before`: the rows above that are unread. */
+function noteCursorPassedUnread(chatId: string, before: number): void {
+  if (before <= 0 || chatReadFloor.has(chatId) || streamCoveredChats.has(chatId)) return
+  if ((chatLastSeen.get(chatId) ?? 0) > before) chatReadFloor.set(chatId, before)
+}
+
+/**
+ * A typed permission answer moves the cursor with no read of the chat behind it.
+ * The rows under it are still owed, so the next read starts below them, and the
+ * answer itself stands down at the dedupe: by then its request is closed, and
+ * nothing else can tell a typed label is an answer.
+ */
+function passCursorOverAnswer(chatId: string, id: number): void {
+  const before = chatLastSeen.get(chatId) ?? 0
+  advanceChatCursor(chatId, id)
+  noteCursorPassedUnread(chatId, before)
+  rememberForwarded(id)
+}
+
+/** A read returned everything up to `readUpTo`. Anything the socket moved past since stays in reach. */
+function settleChatReadFloor(chatId: string, readUpTo: number): void {
+  if ((chatLastSeen.get(chatId) ?? 0) > readUpTo) {
+    chatReadFloor.set(chatId, Math.max(chatReadFloor.get(chatId) ?? 0, readUpTo))
+  } else {
+    chatReadFloor.delete(chatId)
+  }
+}
 
 // Per group chat, when this daemon first saw it listed (discoverChats). Rows
 // sent before then, below the chat's live floor, are history the agent may
@@ -9192,10 +9501,14 @@ function advanceChatCursor(chatId: string, id: number, adopt = false): void {
  * Take a cursor value from the shared cursor file as it is (the flush and the
  * re-arm merge): the file holds what this daemon or the holder already wrote,
  * and clamping it to this daemon's email holds would rewind it on the next
- * write. Monotonic like every advance.
+ * write. Monotonic like every advance. A value above this daemon's own means
+ * another daemon read the chat up to there, and the rows it delivered are not in
+ * this process's forwarded ids, so no read here may start below it any more.
  */
 function adoptChatCursor(chatId: string, id: number): void {
+  const before = chatLastSeen.get(chatId) ?? 0
   advanceChatCursor(chatId, id, true)
+  if ((chatLastSeen.get(chatId) ?? 0) > before) chatReadFloor.delete(chatId)
 }
 
 /**
@@ -10426,6 +10739,20 @@ const hookRailRefusedChats = createRefusedChats()
  *  which then answer the model locally instead of posting again. */
 const a2aRouteRefusedChats = createRefusedChats()
 let hookIntake: HookIntake | null = null
+let missionWorkingTimer: ReturnType<typeof setInterval> | null = null
+const missionWorking = createMissionWorkingTracker({
+  isArmed: () => channelArmed && lockHeld,
+  hasAuthority: () => pairingLockNamesThisDaemon(),
+  withWriteLock: createMissionWorkingWriteLock(`${PAIRING_LOCK_PATH}.working-writes`),
+  generation: createMissionWorkingGeneration(`${PAIRING_LOCK_PATH}.working-writes`),
+  hasUnconfirmedWrite: (scope) => hasUnconfirmedWorkingWrite(`${PAIRING_LOCK_PATH}.working-writes`, scope),
+  patch: (scope, working) => {
+    const built = buildMissionGoalWorkingPath(ASSISTANT_ID, scope.missionId, scope.goalId)
+    if (!built.ok) return Promise.reject(new Error(built.error))
+    return bgosPatch(built.path, { working }, scope.headers)
+  },
+  onMission: (mission) => rememberMissionSelfWrite(mission),
+})
 
 /**
  * Where a hook row is posted.
@@ -10970,6 +11297,9 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
   // with the Stop hook at the Stop, before the next prompt's hook can run. Its receivedAt comes after the forwarder's
   // cold start and stdin read, which can be after the next prompt's marker (the re-review of c09e214e).
   const lineAt = line?.startedAt ?? receivedAt
+  // Use the event's own time: a delayed spool line is not fresh activity.
+  // Fire and forget. A working-mark failure cannot block the tool or intake.
+  void missionWorking.onHook(payload, lineAt).catch(() => {})
   // The payload carries the CLI's own transcript_path, which is the strongest
   // binding evidence there is (lib/session-binding.ts). Feeding it here is what
   // lets the context gauge stop guessing.
@@ -11077,6 +11407,10 @@ function startHookIntakeIfHolder(): void {
       },
       log,
     })
+    if (missionWorkingTimer === null) {
+      missionWorkingTimer = setInterval(() => { void missionWorking.sweep().catch(() => {}) }, MISSION_WORKING_SWEEP_MS)
+      missionWorkingTimer.unref?.()
+    }
     log(`hook intake: draining ${hooksRoot(root)} (this daemon holds the pairing lock)`)
   } catch (err) {
     // A missing state directory or an unavailable watch must never stop a boot.
@@ -11086,7 +11420,9 @@ function startHookIntakeIfHolder(): void {
 }
 
 /** Stop consuming. Called on stand down and on exit, idempotent. */
-function stopHookIntake(): void {
+function stopHookIntake(): Promise<void> {
+  if (missionWorkingTimer !== null) clearInterval(missionWorkingTimer)
+  missionWorkingTimer = null
   try {
     hookIntake?.stop()
   } catch {
@@ -11102,6 +11438,7 @@ function stopHookIntake(): void {
   hookTurnCardKey = null
   hookCardIds.clear()
   stopHookStepsHeartbeat()
+  return missionWorking.stop().catch(() => {})
 }
 
 /**
@@ -11433,13 +11770,13 @@ function pollTurnStateOf(m: ChatMessage): string | null {
 }
 
 async function pollChat(chatId: string): Promise<void> {
-  if (updateDrainMode) return
+  if (updateDrainMode || humanMessageEdits.isChatDeleted(chatId)) return
   // A daemon that has lost the pairing lock reads no chat. The tick stands
   // down at its top, but the email download keepalive refreshes the lock too,
   // so the stand-down can now land in the middle of a sweep: the chats after
   // it are left to the holder.
   if (!lockHeld) return
-  await trackMessageOperation(async () => {
+  const operation = trackMessageOperation(async () => {
   // Delta polling (SERVERPERF P1a): after the first full fetch for a chat,
   // every poll passes afterId=<last seen id> so an idle chat costs an empty
   // window (usually a 304) instead of the full newest-50 envelope with its
@@ -11462,14 +11799,22 @@ async function pollChat(chatId: string): Promise<void> {
   // at 10. Never a rewind: advanceChatCursor below only moves forward, and
   // the forwarded-id dedupe skips the live message itself. (The first-poll
   // branch also looks at the cursor as it stands after the fetch, for
-  // owedFrom only.)
-  const lastSeen = chatLastSeen.get(chatId) ?? 0
+  // owedFrom only.) Under the cursor when a live message moved it past rows no
+  // read has returned: see chatReadFloor.
+  const lastSeen = chatReadFloor.get(chatId) ?? chatLastSeen.get(chatId) ?? 0
+  // Taken before the fetch for the reason the cursor is: see chatBehindSocket.
+  const startedAtEpoch = socketEpoch
+  const editReadGeneration = humanMessageEdits.readGeneration
+  const oldestHuman = humanMessageEdits.oldestInChat(chatId)
+  // Read existing human rows too: an edit keeps its ID and cannot appear in
+  // an afterId delta. The selection cursor below remains lastSeen.
+  const historyFloor = oldestHuman === undefined ? lastSeen : Math.min(lastSeen, oldestHuman - 1)
   const req = buildChatPollRequest({
     chatId,
     userId: USER_ID,
     lastSeen,
     unansweredButtonCount: chatUnansweredButtons.get(chatId)?.size ?? 0,
-    forceFull: isBootPoll,
+    forceFull: isBootPoll || oldestHuman !== undefined,
   })
   // The email cursor holds this batch took (emailFileSavesFor), let go when it ends.
   const pollEmailReleases: Array<() => void> = []
@@ -11479,11 +11824,103 @@ async function pollChat(chatId: string): Promise<void> {
       callerAssistantId: ASSISTANT_ID,
     })
     // 304: byte-identical to a response we already fully processed.
-    if (isNotModified(raw)) return
-    const data = raw as ChatHistoryResponse
-    if (!data.messages?.length) return
+    if (isNotModified(raw)) {
+      noteChatReadAtEpoch(chatId, startedAtEpoch)
+      return
+    }
+    const firstPage = raw as ChatHistoryResponse
+    if (!firstPage.messages?.length) {
+      noteChatReadAtEpoch(chatId, startedAtEpoch)
+      // A chat read empty has been read: every row that lands from now on is new.
+      // It gets a cursor to say so, and one that survives a restart, so its next
+      // read takes the delta path and owes all of them. Without one the next read
+      // was a first read again, for rows nobody had ever seen: the walk back
+      // stopped at the first agent row under a person's, and a group's history cap
+      // kept the newest 10, once a restart had lost the time it was first listed.
+      // Still not a completed boot poll (chatsPolledSinceBoot): that says the rows
+      // below the cursor were read, and a live bump relies on it.
+      if (lastSeen === 0) advanceChatCursor(chatId, EMPTY_CHAT_CURSOR)
+      return
+    }
 
-    const maxId = Math.max(...data.messages.map((m) => m.message.id))
+    // The rows a first read's walk back looks at, for the walk below and the
+    // selection further down alike, so the two cannot disagree on a stop.
+    const firstPollRowsOf = (rows: ChatMessage[], owedFrom: number) =>
+      rows
+        .filter((m) => m.message.id < owedFrom && shouldForwardPollMessage(m.message, ASSISTANT_ID))
+        .map((m) => ({
+          id: m.message.id,
+          sender: m.message.sender,
+          pendingEmptySystem: isPendingEmptySystem(m),
+          sentDateMs: sentDateToMs(m.message.sentDate),
+        }))
+    // A group chat's history (see chatFirstListedAtMs) is capped; every other
+    // chat, and a group's rows from its listing on, are not.
+    const groupHistoryCap = groupChatIds.has(chatId)
+      ? { beforeMs: chatFirstListedAtMs.get(chatId) ?? DAEMON_START_MS, max: MAX_GROUP_HISTORY_FORWARD }
+      : null
+
+    // The rest of the read (D04-1). The page above holds the NEWEST rows of the
+    // range, so everything between them and the cursor is read now, going down,
+    // and only then does anything below run: the rows go out oldest first, and a
+    // page that fails lands in the catch with nothing delivered and no cursor
+    // moved. See the note in lib/poll-core.ts.
+    const data: ChatHistoryResponse = {
+      ...firstPage,
+      messages: await walkOlderPages({
+        rows: firstPage.messages,
+        mayHaveOlder: pageMayHaveOlderRows({
+          rowCount: firstPage.messages.length,
+          hasMore: firstPage.hasMore,
+          limit: CHAT_PAGE_DEFAULT_LIMIT,
+        }),
+        idOf: (m: ChatMessage) => m.message.id,
+        needsOlder: (rows, mayHaveOlder) =>
+          readNeedsOlderPage({
+            mayHaveOlder,
+            oldestId: rows[0]!.message.id,
+            lastSeen: historyFloor,
+            firstRead:
+              lastSeen > 0
+                ? null
+                : {
+                    rows: firstPollRowsOf(
+                      rows,
+                      firstReadOwedFrom({ liveFloor: chatLiveFloor.get(chatId), cursorNow: chatLastSeen.get(chatId) ?? 0 }),
+                    ),
+                    recentCutoffMs: FIRST_POLL_RECENT_CUTOFF_MS,
+                    historyCap: groupHistoryCap,
+                  },
+          }),
+        fetchOlder: async (beforeId) => {
+          // The walk can outlast the checks at the top of this function. A daemon
+          // that stood down or is draining reads no more; the holder, or the next
+          // daemon, reads this chat from the cursor this leaves where it was.
+          if (updateDrainMode || !lockHeld) throw new Error('stood down during a catch up read')
+          // The validator the first page recorded says "you have these rows", and this
+          // read has not delivered them yet. A read starting now must not be told 304
+          // and call the chat caught up (noteChatReadAtEpoch).
+          bgosEtagCache.invalidate(req.cacheKey)
+          const older = (await bgosGet(
+            buildOlderPagePath({ chatId, userId: USER_ID, lastSeen: historyFloor, beforeId }),
+            { conditional: false, callerAssistantId: ASSISTANT_ID },
+          )) as ChatHistoryResponse
+          const rows = older.messages ?? []
+          return {
+            rows,
+            mayHaveOlder: pageMayHaveOlderRows({ rowCount: rows.length, hasMore: older.hasMore, limit: CHAT_OLDER_PAGE_LIMIT }),
+          }
+        },
+        // A walk runs inside the tick and the pairing lock goes stale in 15 s.
+        during: (work) => emailFilesKeepalive.during(work),
+        onNoProgress: (beforeId) =>
+          log(`WARN catch up read of chat ${chatId} stopped at message ${beforeId}: the server returned nothing below it but says there is more`),
+      }),
+    }
+    // The same question once more, now that the last page is in: a daemon that lost
+    // the lock during it, or during a read of one page, delivers nothing and moves
+    // no cursor. The catch below drops the validator, so whoever reads next gets rows.
+    if (updateDrainMode || !lockHeld) throw new Error('stood down during a catch up read')
 
     // Messages are returned oldest → newest by message id. Make sure we
     // operate on a stable ordered copy (defensive; the backend already
@@ -11491,12 +11928,15 @@ async function pollChat(chatId: string): Promise<void> {
     const ordered = [...data.messages].sort(
       (a, b) => a.message.id - b.message.id,
     )
+    // Preserve each raw row until original preparation or edit reconciliation.
+    // Folding a pending frame here would hide which version the read returned.
+    const maxId = ordered[ordered.length - 1]!.message.id
     const pollForwardableRows = ordered.filter((m) =>
-      shouldForwardPollMessage(m.message, ASSISTANT_ID),
+      !humanMessageEdits.isDeleted({ chatId, messageId: m.message.id }) && shouldForwardPollMessage(m.message, ASSISTANT_ID),
     )
 
     let newUserMessages: ChatMessage[]
-    let isBacklog = false
+    let readIsBacklog = false
     if (lastSeen === 0) {
       // First poll for a chat with no cursor: forward user messages that
       // haven't been answered yet WITHOUT over-forwarding historic ones.
@@ -11531,24 +11971,8 @@ async function pollChat(chatId: string): Promise<void> {
       // forwarded those). Only the rows below go through the walk-back, so an
       // answer above them, the agent replying to a live message, cannot end
       // it early.
-      const cursorNow = chatLastSeen.get(chatId) ?? 0
-      const owedFrom = Math.min(
-        chatLiveFloor.get(chatId) ?? Number.POSITIVE_INFINITY,
-        cursorNow > 0 ? cursorNow + 1 : Number.POSITIVE_INFINITY,
-      )
-      // A group chat's history (see chatFirstListedAtMs) is capped; every
-      // other chat, and a group's rows from its listing on, are not.
-      const groupHistoryCap = groupChatIds.has(chatId)
-        ? { beforeMs: chatFirstListedAtMs.get(chatId) ?? DAEMON_START_MS, max: MAX_GROUP_HISTORY_FORWARD }
-        : null
-      const firstPollRows = pollForwardableRows
-        .filter((m) => m.message.id < owedFrom)
-        .map((m) => ({
-          id: m.message.id,
-          sender: m.message.sender,
-          pendingEmptySystem: isPendingEmptySystem(m),
-          sentDateMs: sentDateToMs(m.message.sentDate),
-        }))
+      const owedFrom = firstReadOwedFrom({ liveFloor: chatLiveFloor.get(chatId), cursorNow: chatLastSeen.get(chatId) ?? 0 })
+      const firstPollRows = firstPollRowsOf(ordered, owedFrom)
       const backlogIds = new Set(
         selectFirstPollBacklogIds({
           rows: firstPollRows,
@@ -11596,7 +12020,7 @@ async function pollChat(chatId: string): Promise<void> {
       // explicit to Claude that these came in WHILE OFFLINE. Without
       // this, Claude can't tell a fresh user message apart from a
       // crash-recovered one and may treat it as already-handled.
-      isBacklog = newUserMessages.length > 0
+      readIsBacklog = newUserMessages.length > 0
     } else {
       newUserMessages = pollForwardableRows.filter(
         (m) =>
@@ -11661,7 +12085,7 @@ async function pollChat(chatId: string): Promise<void> {
           }
         }
       }
-      isBacklog =
+      readIsBacklog =
         isBootPoll &&
         newUserMessages.some((m) => {
           const t = sentDateToMs(m.message.sentDate)
@@ -11906,19 +12330,41 @@ async function pollChat(chatId: string): Promise<void> {
 
     // What this batch may spend waiting on email downloads (EMAIL_FILES_BATCH_BUDGET_MS).
     const pollEmailBudget = createEmailBatchBudget()
-    for (const msg of newUserMessages) {
+    const editRows = ordered.filter((row) => {
+      const view = viewStreamMessage({ seq: 0, kind: 'message_edited', chatId: Number(chatId), messageId: row.message.id, payload: row as unknown as Record<string, unknown> }, ASSISTANT_ID)
+      return view !== null && humanMessageEdits.has(view)
+    })
+    const deliveries = mergeHumanEditDeliveries(newUserMessages, editRows,
+      (row) => sentDateToMs(row.message.sentDate),
+      (row) => {
+        const view = viewStreamMessage({ seq: 0, kind: 'message_edited', chatId: Number(chatId), messageId: row.message.id, payload: row as unknown as Record<string, unknown> }, ASSISTANT_ID)
+        return view ? humanEditTime(view) : null
+      })
+    for (const { row: msg, edit } of deliveries) {
+      if (humanMessageEdits.isDeleted({ chatId, messageId: msg.message.id })) continue
+      if (edit) {
+        const view = viewStreamMessage({ seq: 0, kind: 'message_edited', chatId: Number(chatId), messageId: msg.message.id, payload: msg as unknown as Record<string, unknown> }, ASSISTANT_ID)
+        if (view) await forwardHumanEdit(view, 'poll', editReadGeneration)
+        continue
+      }
+      // A live message this read also delivers (holdLiveFrame) did not come in while
+      // this daemon was away, and the rows under it did: it keeps a live message's
+      // framing and its overdue timer. Only a boot read can be both.
+      const isBacklog = readIsBacklog && !(msg.message.id >= (chatLiveFloor.get(chatId) ?? Number.POSITIVE_INFINITY))
       // The second lock (person lanes), on the poll as on the socket.
       const pollLaneVerdict = ownerLaneVerdict(msg.message)
       if (!pollLaneVerdict.deliver) {
         noteLaneMisroute('poll', msg.message.id, pollLaneVerdict.stamp)
         continue
       }
-      const text = msg.message.text ?? ''
+      let text = msg.message.text ?? ''
       // Recorded HERE, where the message is accepted, and not further down where it is handed to the
       // model: the daemon-answered commands take a `continue` before that point, so /status was
       // reporting "no messages yet" while answering a message the user had just sent. Caught by
       // running the real daemon; every unit test around it passed either way.
-      lastInboundAtMs = Date.now()
+      // Not for a row already handed over: a read can start below rows the socket delivered
+      // (chatReadFloor), and that is no message coming in.
+      if (!forwardedMessageIds.has(msg.message.id)) lastInboundAtMs = Date.now()
       const isSlashCommand = isSlashCommandPayload(msg.message)
       // WS may arrive during the boot poll window where its cursor advance is
       // intentionally deferred. Text can tolerate that safety replay, but an
@@ -11988,6 +12434,36 @@ async function pollChat(chatId: string): Promise<void> {
       // in line: the batch, its order and the cursor wait for it, bounded,
       // and the batch's budget bounds them all together.
       const pollEmail = await emailFileSavesFor(msg.message, msg.messageFiles ?? [], { budget: pollEmailBudget, chatId, messageId: msg.message.id })
+      // An edit may have arrived while preparation yielded. Resolve it at
+      // the last synchronous stretch before constructing the delivered card.
+      const preparedView = viewStreamMessage({ seq: 0, kind: 'message_new', chatId: Number(chatId), messageId: msg.message.id, payload: msg as unknown as Record<string, unknown> }, ASSISTANT_ID)
+      const latestPrepared = preparedView ? await Promise.resolve(humanMessageEdits.resolveOriginal(preparedView, readHumanEdit)).catch((err) => {
+        forwardedMessageIds.delete(msg.message.id)
+        throw err
+      }) : undefined
+      if (latestPrepared === null) {
+        forwardedMessageIds.delete(msg.message.id)
+        pollEmail?.release(true)
+        continue
+      }
+      if (latestPrepared) {
+        if (latestPrepared.text !== text) {
+          if (consumedAsLoginCode({
+            chatId,
+            messageId: msg.message.id,
+            payload: latestPrepared.raw,
+            text: latestPrepared.text,
+            fromHuman: !isPollAgent && pollSenderType !== 'system',
+            via: 'poll',
+          })) continue
+        }
+        text = latestPrepared.text
+        Object.assign(msg.message, latestPrepared.raw)
+      }
+      if (humanMessageEdits.isDeleted({ chatId, messageId: msg.message.id })) {
+        pollEmail?.release(true)
+        continue
+      }
       const pollEmailSaves = pollEmail?.saves
       // Its cursor hold is let go once this batch is over (the finally below),
       // delivered when the batch kept its claim on it.
@@ -12039,10 +12515,15 @@ async function pollChat(chatId: string): Promise<void> {
         // Another party's words with no delivery token: an email_send in the turn it reaches refuses, and the tag on the
         // card's end names it in whatever CLI turn the card runs in (70f1898b).
         card.content += privateTurns.noteUntracked({ chatId })
-        void trackMessageOperation(() => mcp.notification({
+        const meetingHandoff = trackMessageOperation(() => mcp.notification({
           method: 'notifications/claude/channel',
           params: card,
-        })).catch((err) => {
+        }))
+        humanMessageEdits.rememberOriginal(
+          viewStreamMessage({ seq: 0, kind: 'message_new', chatId: Number(chatId), messageId: msg.message.id, payload: msg as unknown as Record<string, unknown> }, ASSISTANT_ID),
+          meetingHandoff, card.meta,
+        )
+        await meetingHandoff.catch((err) => {
           log(`Failed to deliver meeting poll inbound to Claude: ${err}`)
         })
         continue
@@ -12219,7 +12700,7 @@ async function pollChat(chatId: string): Promise<void> {
         text: content,
         now: Date.now(),
       })
-      void trackMessageOperation(() => deliverInbound(steerPlan, (interrupted) => mcp.notification({
+      const humanHandoff = trackMessageOperation(() => deliverInbound(steerPlan, (interrupted) => humanMessageEdits.isDeleted({ chatId, messageId: msg.message.id }) ? Promise.resolve() : mcp.notification({
         method: 'notifications/claude/channel',
         params: {
           content: privateTurns.deliver({ content, chatId, peerSourceAssistantId: pollAgentOrigin?.sourceAssistantId, emailBasis: emailSendBasis({ senderType: pollSenderType, agentOrigin: pollAgentOrigin, eventMeta: msg.message.eventMeta, messageId: msg.message.id, backlog: isBacklog }), fireKey: privateFireKey({ senderType: pollSenderType, eventMeta: msg.message.eventMeta, messageId: msg.message.id }), actingUserId: privateActor({ senderType: pollSenderType, senderUserId: privateSenderUserId(msg.message), agentOrigin: pollAgentOrigin, eventMeta: msg.message.eventMeta }) }),
@@ -12230,9 +12711,15 @@ async function pollChat(chatId: string): Promise<void> {
             interrupted ? STEER_INTERRUPTED_META : null,
           ),
         },
-      }))).catch((err) => {
+      })))
+      if (!isSlashCommand) humanMessageEdits.rememberOriginal(
+        viewStreamMessage({ seq: 0, kind: 'message_new', chatId: Number(chatId), messageId: msg.message.id, payload: msg as unknown as Record<string, unknown> }, ASSISTANT_ID),
+        humanHandoff,
+      )
+      await humanHandoff.catch((err) => {
         log(`Failed to deliver inbound to Claude: ${err}`)
       })
+      if (humanMessageEdits.isDeleted({ chatId, messageId: msg.message.id })) continue
       // Skip overdue tracking for backlog messages: they were forwarded
       // because the daemon was offline, not because they're new live
       // traffic. The previous session may have already handled them via
@@ -12283,9 +12770,24 @@ async function pollChat(chatId: string): Promise<void> {
     // delta branch one poll later, defeating the gate. Abandoned rows do not
     // park; rows of unknown age still do (could be a live scheduler race).
     // Keep in lockstep with test/first-poll-gate.test.ts (parkedPendingIds).
+    //
+    // Only a card on the NEWEST page parks. That is the bound this has always
+    // had: a card that never fills falls out of the newest page and the cursor
+    // moves on. A walk reads below that page, and a card found there must not
+    // park, or one card that never fills would pin the cursor for good and every
+    // later read would walk the same rows again.
     const gatedFirstPoll = lastSeen === 0 && FIRST_POLL_RECENT_CUTOFF_MS !== null
-    const pendingIds = ordered
-      .filter(isPendingEmptySystem)
+    const newestPageIds = new Set(firstPage.messages.map((m) => m.message.id))
+    const emptyCards = ordered.filter(isPendingEmptySystem)
+    const unwaitedCards = emptyCards.filter((m) => !newestPageIds.has(m.message.id))
+    if (unwaitedCards.length > 0) {
+      log(
+        `Chat ${chatId}: not waiting for ${unwaitedCards.length} empty wake card(s) below the newest page ` +
+          `(ids ${unwaitedCards.map((m) => m.message.id).join(', ')})`,
+      )
+    }
+    const pendingIds = emptyCards
+      .filter((m) => newestPageIds.has(m.message.id))
       .filter((m) => {
         if (!gatedFirstPoll) return true
         const t = sentDateToMs(m.message.sentDate)
@@ -12298,15 +12800,15 @@ async function pollChat(chatId: string): Promise<void> {
     // longer (lib/email-files.ts createEmailCursorHolds). Exactly the rows
     // this advance treats as handled.
     emailCursorHolds.settle(chatId, maxId)
-    advanceChatCursor(
-      chatId,
-      advanceCursor({ lastSeen, maxId, pendingEmptyIds: pendingIds }),
-    )
+    const readUpTo = advanceCursor({ lastSeen, maxId, pendingEmptyIds: pendingIds })
+    advanceChatCursor(chatId, readUpTo)
+    settleChatReadFloor(chatId, readUpTo)
 
     // Only now (everything processed without throwing) does this chat's boot
     // poll count as done; an error path retries as a boot poll so offline
     // backlog framing is not lost to a transient failure.
     chatsPolledSinceBoot.add(chatId)
+    noteChatReadAtEpoch(chatId, startedAtEpoch)
   } catch {
     // Silent, network blips. Drop the ETag validator for this chat: it may
     // have been recorded before the failure, and the cursor did NOT advance,
@@ -12317,6 +12819,15 @@ async function pollChat(chatId: string): Promise<void> {
     for (const release of pollEmailReleases) release()
   }
   })
+  const pending = chatPollsInFlight.get(chatId) ?? new Set<Promise<void>>()
+  pending.add(operation)
+  chatPollsInFlight.set(chatId, pending)
+  try {
+    await operation
+  } finally {
+    pending.delete(operation)
+    if (pending.size === 0) chatPollsInFlight.delete(chatId)
+  }
 }
 
 async function pollAllChats(): Promise<void> {
@@ -12339,8 +12850,9 @@ async function pollAllChats(): Promise<void> {
 //
 // Existing `pollChat` flow stays in place; it's the cold-start backfill +
 // reliability fallback. A WS-pushed message moves `chatLastSeen` only once
-// the chat's boot poll has completed (deliverWsInbound, wsCursorSafe);
-// before that a chat the poll covers is read instead (0.71.10). The
+// a read of the chat has completed that started on this connection of the
+// socket (deliverWsInbound, wsCursorSafe); before that a chat the poll covers
+// is read first and the message waits for it (holdLiveFrame, 0.81.1). The
 // meeting_message event does not move `chatLastSeen`. What keeps a later poll from handing a pushed
 // message over again is the bounded forwarded-id Set below, which both
 // transports read and write (slash deliveries included, so a delayed WS frame
@@ -12354,7 +12866,15 @@ const WS_URL = (() => {
 })()
 
 const forwardedMessageIds = new Set<number>()
+const humanMessageEdits = new HumanMessageEdits()
+const chatPollsInFlight = new Map<string, Set<Promise<void>>>()
 const FORWARD_CACHE_MAX = 500
+// The only dedupe between overlapping reads and between the socket and a read,
+// so it must outlast the longest read: at 500, across all chats, a catch up of
+// more rows than that forgot its own first rows while it was still running, and a
+// read overlapping it handed them over again. Far bigger than any other set here
+// because one number costs little and one duplicate turn costs a lot.
+const FORWARDED_IDS_MAX = 100_000
 // Click ids already announced to the agent by EITHER transport (the poll's
 // transition detector or a stream buttons_answered replay). The shared set
 // is what makes single-announce hold in both race orders AND for ids the
@@ -13533,7 +14053,7 @@ const stopPauseLane = new StopPauseLane({
  *  this daemon never pauses on a host whose owner was never offered Pause. */
 function stopGoalView(): StopGoalView {
   return {
-    pauseDeclared: declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, modelEffortPicker: modelEffortDeclared(), authMode: AUTH.mode }).includes('mission_pause'),
+    pauseDeclared: declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, modelEffortPicker: modelEffortDeclared(), threads: threadsDeclared(), authMode: AUTH.mode }).includes('mission_pause'),
     held: goalHeld,
     attachedMissionId: goalMissionId,
     pending: goalPendingArm,
@@ -13721,6 +14241,129 @@ const sessionLibrary = new AgentSessionLibrary({
   currentName: () => sessionBinder.resolve()?.binding.name ?? null,
 })
 
+// ── Threads phase 1: thread lanes and By the way (lib/thread-lanes.ts) ──────
+// A thread runs as its own headless claude, forked from the session this
+// daemon has proven it serves, in a git worktree of the agent folder under
+// .hoai/threads/<root>; By the way is a one shot tool-less fork of the same
+// session in the same folder. Lane state lives in ~/.bgos-agent/<id>/threads.
+const THREADS_STATE_DIR = pathJoin(agentStateDir(homedir(), ASSISTANT_ID) ?? pathJoin(homedir(), '.bgos-agent', 'unknown'), 'threads')
+function threadsEmptyMcpConfig(): string {
+  // --strict-mcp-config with no server: a lane never starts a second copy of
+  // this channel plugin, which would deliver every chat message twice.
+  const path = pathJoin(THREADS_STATE_DIR, 'empty-mcp.json')
+  if (!existsSync(path)) {
+    mkdirSync(THREADS_STATE_DIR, { recursive: true })
+    writeFileSync(path, '{"mcpServers":{}}\n')
+  }
+  return path
+}
+const threadLanes = new ThreadLaneManager({
+  spawn: spawnStreamJson,
+  claudeBin: resolveClaude,
+  cliProblem: async () => threadsCliProblem(await threadsCliGate.ready(), 'turn'),
+  mainSessionId: () => provenSessionId(),
+  agentFolder: CLAUDE_PROJECT_CWD,
+  stateDir: THREADS_STATE_DIR,
+  home: homedir(),
+  configDir: CLAUDE_CONFIG_DIR,
+  emptyMcpConfigPath: threadsEmptyMcpConfig,
+  // A lane's Bash reads none of ~/.bgos-agent but this agent's own email files.
+  emailFilesDir: pathJoin(EMAIL_FILES_ROOT, String(ASSISTANT_ID)),
+  pluginStateDir: process.env.BGOS_PLUGIN_STATE_DIR?.trim() || undefined,
+  // A lane gets Bash only inside the CLI's sandbox (sandbox-exec on macOS,
+  // bwrap and socat on Linux); without it, no Bash at all.
+  shellSandbox: () =>
+    laneShellSandboxAvailable({
+      platform: process.platform,
+      exists: (p: string) => existsSync(p),
+      onPath: (name: string) => findOnPath(name, { pathVar: process.env.PATH ?? '' }) !== null,
+    }),
+  platform: process.platform,
+  // A lane left from before a daemon crash is found by pid and start stamp, and stopped (lib/lane-process.ts).
+  processes: {
+    stamp: (pid) => processStamp(pid),
+    runsIn: (pid, dir) => processRunsIn(pid, dir),
+    kill: (pid, signal) => killProcessGroup(pid, signal),
+  },
+  git: async (args, cwd) => {
+    try {
+      const { stdout } = await execFileAsync('git', args, { cwd, timeout: 60_000, maxBuffer: 1024 * 1024 })
+      return { ok: true, stdout: String(stdout) }
+    } catch {
+      return { ok: false, stdout: '' }
+    }
+  },
+  fs: {
+    exists: (path) => existsSync(path),
+    mkdir: (path) => { mkdirSync(path, { recursive: true }) },
+    readFile: (path) => readFileSync(path, 'utf8'),
+    writeFile: (path, data) => writeFileSync(path, data),
+    appendFile: (path, data) => appendFileSync(path, data),
+    copyFile: (from, to) => copyFileSync(from, to),
+    unlink: (path) => unlinkSync(path),
+    rmrf: (path) => rmSync(path, { recursive: true, force: true }),
+    list: (dir) => readdirSync(dir),
+    createExclusive: (path, data) => writeFileSync(path, data, { flag: 'wx' }),
+    rename: (from, to) => renameSync(from, to),
+  },
+  post: (path, body) => bgosPost(path, body),
+  now: () => Date.now(),
+  setTimer: (fn, ms) => {
+    const timer = setTimeout(fn, ms)
+    timer.unref?.()
+    return timer
+  },
+  clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  log,
+})
+// By the way forks in flight, stopped and cleaned up on shutdown.
+const asideForks = new AsideForks()
+
+/**
+ * A thread turn the person sent while this daemon was away runs now
+ * (GET integrations/threads/pending, scoped to the agent this daemon serves).
+ * Only the lock holder runs lanes, and only where it declares threads, so it
+ * runs on every (re)connect once armed AND when the channel arms: the first
+ * connect after a boot comes before the arm.
+ */
+function reconcilePendingThreads(why: string): void {
+  if (!channelArmed) return
+  const assistantIds = [String(ASSISTANT_ID)]
+  void threadsCliGate.ready()
+    .then((answer) => {
+      // A cold-start probe may finish after the channel arms. Wait without
+      // blocking, then check the lock again before recovering pending turns.
+      if (!answer.ok || !channelArmed) return 0
+      // no-cache: an ETag 304 would hide turns this new process never ran.
+      return threadLanes.reconcile(() => bgosGet(threadsPendingPath(assistantIds), { headers: { 'Cache-Control': 'no-cache' } }), { assistantIds })
+    })
+    .then((started) => { if (started > 0) log(`threads: ${started} pending thread turn(s) started (${why})`) })
+    .catch((err) => log(`threads: pending reconcile failed (${why}): ${err instanceof Error ? err.name : 'error'}`))
+}
+
+const THREAD_CHILDREN_STOP_WAIT_MS = 3_000
+/**
+ * Shutdown: SIGTERM to every thread lane and By the way fork (each its own
+ * process group), at most THREAD_CHILDREN_STOP_WAIT_MS for them to exit,
+ * then SIGKILL for the rest and the forks' session files deleted. Null when
+ * none runs, so a shutdown without them exits at once as before.
+ */
+function stopThreadChildren(): Promise<void> | null {
+  if (threadLanes.liveChildren() === 0 && asideForks.size() === 0) return null
+  const all = Promise.allSettled([threadLanes.stopAll(), asideForks.stopAll()])
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      threadLanes.killAll()
+      asideForks.killAll()
+      resolve()
+    }, THREAD_CHILDREN_STOP_WAIT_MS)
+    void all.then(() => {
+      clearTimeout(timer)
+      resolve()
+    })
+  })
+}
+
 const voiceRpc = new VoiceRpcHandler({
   config: {
     openaiApiKey: VOICE_OPENAI_API_KEY,
@@ -13796,6 +14439,33 @@ const voiceRpc = new VoiceRpcHandler({
   modelEffort: modelEffortPicker,
   // A dispatch card queued behind a change is accepted at once.
   cardsHeld: () => modelEffortControl.busy,
+  // Threads phase 1 (lib/thread-rpc.ts): thread_turn, thread_close, aside.
+  // Not on Windows in phase 1: the ops answer unsupported there.
+  ...(process.platform !== 'win32'
+    ? {
+        threads: {
+          turn: (input) => threadLanes.turn(input),
+          close: (input) => threadLanes.close(input),
+          aside: (input, onDelta) =>
+            runAside(input, {
+              spawn: spawnStreamJson,
+              claudeBin: resolveClaude,
+              cliProblem: async () => threadsCliProblem(await threadsCliGate.ready(), 'aside'),
+              mainSessionId: () => provenSessionId(),
+              mainFolder: CLAUDE_PROJECT_CWD,
+              home: homedir(),
+              configDir: CLAUDE_CONFIG_DIR,
+              emptyMcpConfigPath: threadsEmptyMcpConfig,
+              unlink: (path) => unlinkSync(path),
+              onDelta,
+              log,
+              forks: asideForks,
+            }),
+        },
+      }
+    : {}),
+  postProgress: (rpcId, body) =>
+    bgosPost(`integrations/voice-rpc/${encodeURIComponent(rpcId)}/progress`, body),
   log,
 })
 
@@ -14151,25 +14821,6 @@ function checkSessionPin(): void {
     Date.now(),
   )
 }
-
-// Install method + plugin root, detected once. For a marketplace install the
-// root is the VERSIONED cache dir this process was loaded from (design 7.3),
-// which is also where the watcher bundle is copied FROM.
-const INSTALL_DETECTION = (() => {
-  try {
-    return detectInstallMethod({ scriptPath: fileURLToPath(import.meta.url) })
-  } catch {
-    return null
-  }
-})()
-// `unknown` is unreachable in practice here (the daemon is loaded FROM the
-// install, so its own path is the evidence), but it is a real return value now
-// and it must not be spelled as a method: everything downstream only ever asks
-// `=== 'marketplace'`, so it lands on the clone branch either way, explicitly.
-const INSTALL_METHOD: 'marketplace' | 'clone' =
-  INSTALL_DETECTION?.method === 'marketplace' ? 'marketplace' : 'clone'
-const PLUGIN_ROOT =
-  (INSTALL_DETECTION?.pluginRoot ?? '') || (INSTALL_DETECTION?.executionRoot ?? '') || import.meta.dir
 
 // Owner model and effort control: bring the status line bridge's stable copy
 // up to this version, only where an agent is opted in and the owner's own
@@ -14808,8 +15459,8 @@ const changesRpc = new ChangesRpcHandler({
 // network. `hoai doctor` on the computer stays the deep check.
 const doctorRpc = new DoctorRpcHandler({
   assistantId: () => String(ASSISTANT_ID ?? ''),
-  runChecks: async () =>
-    buildDoctorChecks({
+  runChecks: async () => [
+    ...buildDoctorChecks({
       now: Date.now(),
       runningVersion: RUNNING_VERSION,
       pendingRestartVersion: daemonPendingRestartVersion(),
@@ -14819,6 +15470,15 @@ const doctorRpc = new DoctorRpcHandler({
       login: claudeLoginState,
       resting: observedResting,
     }),
+    // Attach scope (lib/attach-scope.mjs): this session's verdict and the
+    // machine's tally of what the flip WOULD refuse, read from the local
+    // events file (no network, no child process, as the rows above).
+    attachScopeDoctorCheck({
+      decision: ATTACH_SCOPE,
+      mode: ATTACH_SCOPE_MODE.mode,
+      summary: summarizeAttachScopeEvents(readAttachScopeEvents({ dir: ATTACH_SCOPE_STATE_DIR })),
+    }) as DoctorCheck,
+  ],
   postAck: (rpcId) =>
     bgosPost(`integrations/doctor-rpc/${encodeURIComponent(rpcId)}/ack`, {}),
   postResult: (rpcId, body) =>
@@ -14829,11 +15489,109 @@ const doctorRpc = new DoctorRpcHandler({
   log,
 })
 
+/** Read one exact row, bypassing both the history snapshot and its ETag. */
+async function readHumanEdit(view: StreamMessageView): Promise<StreamMessageView | null> {
+  const data = await bgosGet(
+    `chats/${encodeURIComponent(view.chatId)}/messages?userId=${USER_ID}&afterId=${view.messageId - 1}&beforeId=${view.messageId + 1}&limit=1&withPagination=1`,
+    { conditional: false, callerAssistantId: ASSISTANT_ID },
+  ) as ChatHistoryResponse
+  const row = data.messages?.find((row) => row.message.id === view.messageId)
+  return row ? viewStreamMessage({ seq: 0, kind: 'message_edited', chatId: Number(view.chatId), messageId: view.messageId, payload: row as unknown as Record<string, unknown> }, ASSISTANT_ID) : null
+}
+
+/** A correction cannot pass the same reconnect/read barrier as a live original. */
+async function waitForHumanEditCatchup(chatId: string): Promise<boolean> {
+  if (!monitoredChatIds.includes(chatId)) return true
+  const pending = chatPollsInFlight.get(chatId)
+  if (pending?.size) await Promise.all([...pending])
+  if (streamCoveredChats.has(chatId)) return true
+  if (!chatBehindSocket(chatId) && !chatReadFloor.has(chatId)) return true
+  if (chatBehindSocket(chatId) || chatReadFloor.has(chatId)) await pollChat(chatId)
+  return !chatBehindSocket(chatId) && !chatReadFloor.has(chatId)
+}
+
+/** Deliver a replacement without executing commands from its quoted words. */
+async function forwardHumanEdit(view: StreamMessageView, transport: 'poll' | 'ws' | 'stream', readGeneration?: number): Promise<boolean> {
+  if (!channelArmed || updateDrainMode || humanMessageEdits.isDeleted(view) || !ownerLaneVerdict(view.raw).deliver) return false
+  if (transport !== 'poll' && !await waitForHumanEditCatchup(view.chatId)) return false
+  return humanMessageEdits.deliverEdit(view, async (edited, originalMeta) => {
+    // The queue may have waited for another handoff while this daemon stood down.
+    if (!channelArmed || updateDrainMode || humanMessageEdits.isDeleted(edited) || !ownerLaneVerdict(edited.raw).deliver) {
+      throw new Error('stood down before edit delivery')
+    }
+    if (consumedAsLoginCode({
+      chatId: edited.chatId,
+      messageId: edited.messageId,
+      payload: edited.raw,
+      text: edited.text,
+      fromHuman: true,
+      via: transport,
+    })) return
+    const senderUserId = edited.senderUserId ?? USER_ID
+    const card = buildInboundChannel({
+      chatId: edited.chatId,
+      messageId: edited.messageId,
+      userId: senderUserId,
+      assistantId: ASSISTANT_ID,
+      timestamp: new Date().toISOString(),
+      transport,
+      text: edited.text,
+      files: edited.files as Parameters<typeof buildInboundChannel>[0]['files'],
+      senderType: 'user',
+      serverSender: edited.raw,
+    })
+    const content = `[Message edited: message ${edited.messageId}. This replaces the earlier version of this message.]\n` +
+      card.content.split('\n').map((line) => `> ${line}`).join('\n')
+    const meta = {
+      ...card.meta,
+      ...(originalMeta?.meeting_id ? { meeting_id: originalMeta.meeting_id, your_turn: 'NO' } : {}),
+      sender_type: 'user', event_type: 'message_edited', replaces_message_id: String(edited.messageId),
+    }
+    if (originalMeta?.meeting_id) {
+      // A correction cannot grant private authority its meeting original lacked.
+      await trackMessageOperation(() => mcp.notification({
+        method: 'notifications/claude/channel',
+        params: { content: content + privateTurns.noteUntracked({ chatId: edited.chatId }), meta },
+      }))
+    } else {
+      await trackMessageOperation(() => mcp.notification({
+        method: 'notifications/claude/channel',
+        params: {
+          content: privateTurns.deliver({ content, chatId: edited.chatId, emailBasis: emailSendBasis({ senderType: 'user', messageId: edited.messageId, backlog: false }), fireKey: null, actingUserId: privateActor({ senderType: 'user', senderUserId: privateSenderUserId(edited.raw) }) }),
+          meta,
+        },
+      }))
+    }
+    if (humanMessageEdits.isDeleted(edited)) return
+    lastInboundAtMs = Date.now()
+    if (!originalMeta?.meeting_id) {
+      lastInboundUserByChat.set(edited.chatId, senderUserId)
+      actingUser.noteInbound({ chatId: edited.chatId, userId: senderUserId, senderType: 'user' })
+    }
+    turnChat.note({
+      chatId: edited.chatId, messageId: edited.messageId, kind: originalMeta?.meeting_id ? 'meeting' : 'user',
+      text: content, now: Date.now(),
+    })
+    if (!originalMeta?.meeting_id) {
+      recordInbound(edited.chatId, edited.messageId, undefined, 'user', privateActor({ senderType: 'user', senderUserId: privateSenderUserId(edited.raw) }), inboundAddressesAgent({ text: edited.text }))
+    }
+  }, readGeneration, readHumanEdit)
+}
+
+async function applyHumanEdit(payload: unknown): Promise<void> {
+  const raw = payload as Record<string, unknown> | null
+  if (!raw || (raw.assistantId != null && String(raw.assistantId) !== String(ASSISTANT_ID))) return
+  const view = viewStreamMessage({ seq: 0, kind: 'message_edited', chatId: null, messageId: null, payload: raw }, ASSISTANT_ID)
+  if (!view || !view.chatId || humanMessageEdits.isDeleted(view) || !ownerLaneVerdict(view.raw).deliver) return
+  if (humanMessageEdits.has(view)) await forwardHumanEdit(view, 'ws')
+  else humanMessageEdits.notePending(view)
+}
+
 function rememberForwarded(id: number): void {
   if (forwardedMessageIds.has(id)) return
   forwardedMessageIds.add(id)
   // Bound the set so a long-running plugin doesn't grow forever.
-  if (forwardedMessageIds.size > FORWARD_CACHE_MAX) {
+  if (forwardedMessageIds.size > FORWARDED_IDS_MAX) {
     const first = forwardedMessageIds.values().next().value
     if (first !== undefined) forwardedMessageIds.delete(first)
   }
@@ -14960,6 +15718,7 @@ async function forwardStreamInbound(
     return
   }
   const chatId = view.chatId
+  if (humanMessageEdits.isDeleted(view)) return
   // Claim the id first so the WS and poll transports dedup against it, the
   // same ordering the poll path uses.
   rememberForwarded(view.messageId)
@@ -15008,12 +15767,34 @@ async function forwardStreamInbound(
   // them (read attachments); undefined for every other message. This rail
   // resolves only after the handoff, so the stream cursor waits for it too.
   // Inside the WS down catch up the batch's budget bounds the downloads.
+  const textBeforePreparation = view.text
   const streamEmail = await emailFileSavesFor(view.raw, view.files, { budget: streamEmailBudget, chatId, messageId: view.messageId })
+  const prepared = await Promise.resolve(humanMessageEdits.resolveOriginal(view, readHumanEdit)).catch((err) => {
+    forwardedMessageIds.delete(view.messageId)
+    throw err
+  })
+  if (prepared === null) {
+    forwardedMessageIds.delete(view.messageId)
+    streamEmail?.release(true)
+    return
+  }
+  view = prepared ?? view
+  if (view.text !== textBeforePreparation) {
+    if (consumedAsLoginCode({
+      chatId,
+      messageId: view.messageId,
+      payload: view.raw,
+      text: view.text,
+      fromHuman: !isSystem && !view.agentOrigin && view.senderKind === 'user',
+      via: 'stream',
+    })) return
+  }
   const streamEmailSaves = streamEmail?.saves
   // Its cursor hold is let go when this delivery ends, however it ends:
   // delivered when this rail kept its claim (a failed handoff and a stand down
   // both un-claim it).
   try {
+    if (humanMessageEdits.isDeleted(view)) return
     // Stood down while the files downloaded (see the poll site): un-claim and
     // reject, so the chain pins the stream cursor and redelivers.
     if (streamEmail && !lockHeld) {
@@ -15170,8 +15951,8 @@ async function forwardStreamInbound(
     }
     log(`Stream replay message in chat ${chatId}: "${content.slice(0, 100)}${content.length > 100 ? '...' : ''}"`)
     try {
-      await trackMessageOperation(() =>
-        deliverInbound(steerPlan, (interrupted) => mcp.notification({
+      const humanHandoff = trackMessageOperation(() =>
+        deliverInbound(steerPlan, (interrupted) => humanMessageEdits.isDeleted(view) ? Promise.resolve() : mcp.notification({
           method: 'notifications/claude/channel',
           params: {
             content: privateTurns.deliver({ content, chatId, peerSourceAssistantId: view.agentOrigin?.sourceAssistantId, emailBasis: emailSendBasis({ senderType: isSystem && !streamIsEmail ? 'system' : view.senderKind, agentOrigin: view.agentOrigin, eventMeta: view.eventMetaRaw, messageId: view.messageId, backlog: sentBeforeStart(view.sentDate, DAEMON_START_MS) }), fireKey: privateFireKey({ senderType: isSystem ? 'system' : view.senderKind, eventMeta: view.eventMetaRaw, messageId: view.messageId }), actingUserId: privateActor({ senderType: isSystem ? 'system' : view.senderKind, senderUserId: privateSenderUserId(view.raw), agentOrigin: view.agentOrigin, eventMeta: view.eventMetaRaw }) }),
@@ -15184,6 +15965,9 @@ async function forwardStreamInbound(
           },
         })),
       )
+      if (!isSlash) humanMessageEdits.rememberOriginal(view, humanHandoff)
+      await humanHandoff
+      if (humanMessageEdits.isDeleted(view)) return
     } catch (err) {
       // The handoff did NOT resolve. Un-claim the pre-claimed id: the chain
       // pins the stream cursor on this rejection (5.7) and the retry must not
@@ -15471,11 +16255,16 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
 /** message_new / message_finalized from the stream, per the 5.7 contract. */
 async function applyStreamMessage(
   update: StreamUpdate,
-  cls: 'message_new' | 'message_finalized',
+  cls: 'message_new' | 'message_finalized' | 'message_edited',
 ): Promise<void> {
-  const view = viewStreamMessage(update, ASSISTANT_ID)
-  if (!view || !view.chatId) return
+  const rawView = viewStreamMessage(update, ASSISTANT_ID)
+  if (!rawView || !rawView.chatId || humanMessageEdits.isDeleted(rawView)) return
+  const view = rawView
   const chatId = view.chatId
+  if (cls !== 'message_new' && humanMessageEdits.has(view)) {
+    await forwardHumanEdit(view, 'stream')
+    return
+  }
   noteMonitoredChat(chatId)
   // Meeting chats keep their specialized turn framing: replay through ONE
   // poll of that chat (pollChat advances the per-chat cursor itself, so
@@ -15495,6 +16284,14 @@ async function applyStreamMessage(
     cls === 'message_new'
       ? decideMessageNew(view, { lastSeenInChat, alreadyForwarded, roomAgentWaiting })
       : decideMessageFinalized(view, { held, lastSeenInChat, alreadyForwarded, roomAgentWaiting })
+  if (decision.action === 'advance_only' && decision.reason === 'empty_non_system' &&
+      (humanMessageEdits.latest(view)?.text.trim().length ?? 0) > 0) {
+    // Pending text makes this an original delivery, but keep the raw version
+    // until the forwarder reconciles it. Do not advance past its body unseen.
+    await forwardStreamInbound(view, false)
+    advanceStreamChatCursor(chatId, view.messageId)
+    return
+  }
   if (decision.action === 'hold_empty') {
     // Remember the id, do not forward, and do NOT advance the per-chat
     // cursor past it: the later finalize (same id) delivers AS the wake.
@@ -15522,6 +16319,14 @@ async function applyStreamMessage(
   advanceStreamChatCursor(chatId, view.messageId)
 }
 
+function applyMessageDeleted(update: StreamUpdate): void {
+  const view = viewStreamMessage(update, ASSISTANT_ID)
+  if (!view) return
+  humanMessageEdits.deleteMessage(view.messageId)
+  streamHeldEmptyChatByMessageId.delete(view.messageId)
+  if (pendingInbounds.get(view.chatId)?.messageId === view.messageId) clearInbound(view.chatId)
+}
+
 /**
  * The consumer's applyUpdate dep: one replayed update, honoring 5.7.
  * Resolves only after the side effects for this update completed, so the
@@ -15532,7 +16337,11 @@ async function applyStreamUpdate(update: StreamUpdate): Promise<void> {
   switch (cls) {
     case 'message_new':
     case 'message_finalized':
+    case 'message_edited':
       await applyStreamMessage(update, cls)
+      return
+    case 'message_deleted':
+      applyMessageDeleted(update)
       return
     case 'buttons_answered':
       applyStreamButtonsAnswered(update)
@@ -15549,6 +16358,8 @@ async function applyStreamUpdate(update: StreamUpdate): Promise<void> {
     case 'chat_deleted': {
       const chatId = update.chatId != null ? String(update.chatId) : ''
       if (chatId) {
+        humanMessageEdits.deleteChat(chatId)
+        for (const [id, heldChat] of streamHeldEmptyChatByMessageId) if (heldChat === chatId) streamHeldEmptyChatByMessageId.delete(id)
         monitoredChatIds = monitoredChatIds.filter((id) => id !== chatId)
         streamCoveredChats.delete(chatId)
         clearInbound(chatId)
@@ -16042,6 +16853,11 @@ function connectWebsocket(): void {
 
   realtimeSocket.on('connect', () => {
     log(`WS connected (id=${realtimeSocket?.id}), polling will throttle`)
+    // From here every chat is behind this connection until a read says otherwise.
+    socketEpoch++
+    // Threads phase 1: a turn the person sent while this daemon was away is
+    // run now (also when the channel arms, for the first connect after boot).
+    reconcilePendingThreads('ws connect')
     // Pending ask groups are read again on every connect: an answer given
     // while this daemon was down or disconnected is due now, and a stream
     // entry for it may be behind a cursor this life never reads.
@@ -16372,6 +17188,26 @@ function connectWebsocket(): void {
     unboundFrames.onFrame(payload, ack)
   })
 
+  realtimeSocket.on('message_deleted', whenArmed('message_deleted', (payload: any) => {
+    if (updateDrainMode) return
+    if (payload?.assistantId != null && String(payload.assistantId) !== String(ASSISTANT_ID)) return
+    applyMessageDeleted({ seq: 0, kind: 'message_deleted', chatId: payload?.chatId ?? payload?.chat_id ?? null, messageId: payload?.messageId ?? payload?.message_id ?? null, payload })
+  }))
+  realtimeSocket.on('chat_deleted', whenArmed('chat_deleted', (payload: any) => {
+    if (updateDrainMode) return
+    if (payload?.assistantId != null && String(payload.assistantId) !== String(ASSISTANT_ID)) return
+    void trackMessageOperation(() => applyStreamUpdate({ seq: 0, kind: 'chat_deleted', chatId: payload?.chatId ?? payload?.chat_id ?? null, messageId: null, payload }))
+      .catch((err) => log(`chat_deleted delivery failed: ${err}`))
+  }))
+
+  realtimeSocket.on('message_edited', whenArmed('message_edited', (payload: any) => {
+    if (updateDrainMode) return
+    const deliver = (frame: unknown) => applyHumanEdit(frame)
+    if (routeStampedInbound(payload, deliver)) return
+    void trackMessageOperation(() => applyHumanEdit(payload))
+      .catch((err) => log(`message_edited delivery failed: ${err}`))
+  }))
+
   realtimeSocket.on('inbound_message', whenArmed('inbound_message', (payload: any) => {
     if (updateDrainMode) return
     // The second lock (person lanes): a delivery stamped for a person's lane
@@ -16386,8 +17222,60 @@ function connectWebsocket(): void {
     // delivery below (deliverWsInbound). Flag off, no stream mode, or an
     // unstamped payload: the legacy path runs untouched.
     if (routeStampedInbound(payload, deliverWsInbound)) return
+    if (holdLiveFrame(payload)) return
     deliverWsInbound(payload)
   }))
+
+  // A live message into a chat no read has caught up on this connection waits for
+  // that read: the rows it missed are older than this message and go first. The
+  // read delivers this message too (it is on the server by now), and the release
+  // below then stands down at the forwarded-id dedupe, so a live message right
+  // after a reconnect reaches the agent over the poll lane, in its place. Read now,
+  // not at the next sweep. A chat the inbox does not list is the socket's alone,
+  // so it is not held. Only the legacy path comes here: a stamped frame has the
+  // stream's own gap arithmetic.
+  function holdLiveFrame(payload: any): boolean {
+    if (!channelArmed) return false
+    const messageId = Number(payload?.messageId ?? payload?.message_id)
+    const chatId = String(payload?.chatId ?? payload?.chat_id ?? '')
+    if (!Number.isFinite(messageId) || !chatId || forwardedMessageIds.has(messageId)) return false
+    const caughtUp =
+      (chatsPolledSinceBoot.has(chatId) && !chatBehindSocket(chatId)) ||
+      streamCoveredChats.has(chatId)
+    // A chat can be caught up with frames still waiting for their read: going
+    // straight would put this message in front of them.
+    if ((caughtUp && !heldReadsInFlight.has(chatId)) || !monitoredChatIds.includes(chatId)) return false
+    noteLiveFloor(chatId, messageId)
+    const held = heldLiveFrames.get(chatId)
+    if (held) held.push(payload)
+    else heldLiveFrames.set(chatId, [payload])
+    log(`Live message ${messageId} in chat ${chatId} waits for the catch up read`)
+    readThenReleaseHeld(chatId)
+    return true
+  }
+
+  // One read per chat for the frames held so far, then let them go. A frame that
+  // lands during the read waits for the next one: this read may have started before
+  // that row was written. A failed read still lets its frames through (deliverWsInbound
+  // reads the chat again and moves no cursor): out of order at worst, because a live
+  // message must not wait on a server that cannot answer, and the rows under it are
+  // still read. A frame refused here (a drain, a stand down) moved no cursor, so
+  // whoever reads the chat next delivers it.
+  function readThenReleaseHeld(chatId: string): void {
+    if (heldReadsInFlight.has(chatId)) return
+    const frames = heldLiveFrames.get(chatId) ?? []
+    heldLiveFrames.delete(chatId)
+    heldReadsInFlight.add(chatId)
+    void pollChat(chatId)
+      .catch((err) => log(`Catch up read of chat ${chatId} failed: ${err}`))
+      .finally(() => {
+        heldReadsInFlight.delete(chatId)
+        const byId = (frame: any) => Number(frame?.messageId ?? frame?.message_id)
+        frames.sort((a, b) => byId(a) - byId(b))
+        if (!updateDrainMode) for (const frame of frames) deliverWsInbound(frame)
+        if (heldLiveFrames.has(chatId)) readThenReleaseHeld(chatId)
+      })
+  }
 
   // The legacy inbound delivery body, shared verbatim by the direct path
   // above and the stream-stamped apply. Hoisted declaration so the handler
@@ -16403,6 +17291,17 @@ function connectWebsocket(): void {
       const messageId = Number(payload?.messageId ?? payload?.message_id)
       if (!Number.isFinite(messageId)) return
       if (forwardedMessageIds.has(messageId)) return
+      const initialView = viewStreamMessage({ seq: 0, kind: 'message_new', chatId: null, messageId, payload }, ASSISTANT_ID)
+      if (initialView && humanMessageEdits.isDeleted(initialView)) return
+      if (initialView && humanMessageEdits.requiresOriginalRead(initialView)) {
+        void trackMessageOperation(async () => {
+          const current = await humanMessageEdits.resolveOriginal(initialView, readHumanEdit)
+          if (current) deliverWsInbound({ ...payload, ...current.raw, text: current.text }, emailSaves)
+        }).catch((err) => log(`pending original reconciliation failed: ${err}`))
+        return
+      }
+      const latest = initialView ? humanMessageEdits.latest(initialView) : null
+      if (latest) payload = { ...payload, ...latest.raw, text: latest.text }
       // An email whose files the owner lets the agent read (read attachments):
       // fetch and save them first, then deliver through this same function.
       // Nothing is claimed and no cursor moves until then, so a poll that
@@ -16455,16 +17354,23 @@ function connectWebsocket(): void {
       // socket. Only a chat the poll covers is read: a chat the inbox does not
       // list is the socket's alone until discoverChats lists it. Driven end to
       // end in test/first-read-cursor-zero.e2e.test.ts.
+      //
+      // A completed boot poll is not enough either (D04-1): the read must have
+      // started on this connection of the socket, see chatBehindSocket. Most frames
+      // that are not safe never get here: holdLiveFrame keeps them until the read.
+      // Driven end to end in test/catch-up-after-deploy.e2e.test.ts.
       const chatId = String(payload?.chatId ?? payload?.chat_id ?? '')
       if (chatId) {
         // A chat the update stream has fed since boot counts as covered
         // exactly like a completed boot poll (5.7: the stream feeds the
         // per-chat cursors; streamCoveredChats is empty with the flag off).
         const wsCursorSafe =
-          chatsPolledSinceBoot.has(chatId) ||
+          (chatsPolledSinceBoot.has(chatId) && !chatBehindSocket(chatId)) ||
           streamCoveredChats.has(chatId)
         if (wsCursorSafe) {
+          const cursorBefore = chatLastSeen.get(chatId) ?? 0
           advanceChatCursor(chatId, messageId)
+          noteCursorPassedUnread(chatId, cursorBefore)
           // Cut short below an email this daemon let go undelivered (it stood
           // down while its files downloaded, then re-armed): read the chat now,
           // so that email is delivered and settled at once, not at the next
@@ -16601,10 +17507,15 @@ function connectWebsocket(): void {
             `your_turn=${wsMeeting.yourTurn ? 'YES' : 'NO'})`,
         )
         card.content += privateTurns.noteUntracked({ chatId })
-        void trackMessageOperation(() => mcp.notification({
+        const meetingHandoff = trackMessageOperation(() => mcp.notification({
           method: 'notifications/claude/channel',
           params: card,
-        })).catch((err) => log(`meeting twin mcp.notification error: ${err}`))
+        }))
+        humanMessageEdits.rememberOriginal(
+          viewStreamMessage({ seq: 0, kind: 'message_new', chatId: null, messageId, payload }, ASSISTANT_ID),
+          meetingHandoff, card.meta,
+        )
+        void meetingHandoff.catch((err) => log(`meeting twin mcp.notification error: ${err}`))
         return
       }
       const wsChannel = buildInboundChannel({
@@ -16715,7 +17626,7 @@ function connectWebsocket(): void {
           | null
           | undefined,
       )
-      void trackMessageOperation(() => deliverInbound(steerPlan, (interrupted) => mcp.notification({
+      const humanHandoff = trackMessageOperation(() => deliverInbound(steerPlan, (interrupted) => humanMessageEdits.isDeleted({ chatId, messageId }) ? Promise.resolve() : mcp.notification({
         method: 'notifications/claude/channel',
         params: {
           content: privateTurns.deliver({ content, chatId, peerSourceAssistantId: wsAgentOrigin?.sourceAssistantId, emailBasis: emailSendBasis({ senderType: wsSenderType, agentOrigin: wsAgentOrigin, eventMeta: payload?.eventMeta ?? payload?.event_meta, messageId, backlog: sentBeforeStart(payload?.sentDate ?? payload?.sent_date, DAEMON_START_MS) }), fireKey: privateFireKey({ senderType: wsSenderType, eventMeta: payload?.eventMeta ?? payload?.event_meta, messageId }), actingUserId: privateActor({ senderType: wsSenderType, senderUserId: privateSenderUserId(payload), agentOrigin: wsAgentOrigin, eventMeta: payload?.eventMeta ?? payload?.event_meta }) }),
@@ -16726,7 +17637,12 @@ function connectWebsocket(): void {
             interrupted ? STEER_INTERRUPTED_META : null,
           ),
         },
-      }))).catch((err) => log(`WS forward error: ${err}`))
+      })))
+      if (!isWsSlashCommand) humanMessageEdits.rememberOriginal(
+        viewStreamMessage({ seq: 0, kind: 'message_new', chatId: null, messageId, payload }, ASSISTANT_ID),
+        humanHandoff,
+      )
+      void humanHandoff.catch((err) => log(`WS forward error: ${err}`))
       // If this inbound carries a peer_conversation_id, remember which
       // side-thread chat hosts it so peer_conversation_closed can clear
       // the overdue tracker without needing chatId in its own payload.
@@ -16983,7 +17899,7 @@ function connectWebsocket(): void {
       // Skip our own outbound replies, we'd already see them via the
       // POST response. Self-loops would confuse the model.
       if (senderId != null && senderId === Number(ASSISTANT_ID)) return
-      const text = String(payload?.text ?? '')
+      let text = String(payload?.text ?? '')
       // A sign-in code is never forwarded from a meeting either (see the poll
       // site). No sign-in starts in a meeting, so this can only withhold.
       if (consumedAsLoginCode({
@@ -17005,6 +17921,31 @@ function connectWebsocket(): void {
       const currentSpeakerRaw = payload?.currentSpeakerId
       const meetingFiles = Array.isArray(payload?.files) ? payload.files : []
       const sendMeetingCard = (emailFileSaves?: Array<EmailFileSave | null>): void => {
+        if (humanMessageEdits.isDeleted({ chatId, messageId })) return
+        const original = viewStreamMessage({ seq: 0, kind: 'message_new', chatId: null, messageId, payload }, ASSISTANT_ID)
+        if (original && humanMessageEdits.requiresOriginalRead(original)) {
+          void trackMessageOperation(async () => {
+            const current = await humanMessageEdits.resolveOriginal(original, readHumanEdit)
+            if (current) {
+              payload = { ...payload, ...current.raw, text: current.text }
+              sendMeetingCard(emailFileSaves)
+            }
+          }).catch((err) => log(`pending meeting reconciliation failed: ${err}`))
+          return
+        }
+        const latest = original ? humanMessageEdits.latest(original) : null
+        if (latest) {
+          text = latest.text
+          payload = { ...payload, ...latest.raw, text }
+        }
+        if (consumedAsLoginCode({
+          chatId,
+          messageId,
+          payload,
+          text,
+          fromHuman: senderId == null && payload?.senderType !== 'agent',
+          via: 'meeting',
+        })) return
         const card = buildMeetingCard({
           meetingId,
           chatId,
@@ -17034,10 +17975,15 @@ function connectWebsocket(): void {
           emailFileSaves,
         })
         card.content += privateTurns.noteUntracked({ chatId })
-        void trackMessageOperation(() => mcp.notification({
+        const meetingHandoff = trackMessageOperation(() => mcp.notification({
           method: 'notifications/claude/channel',
           params: card,
-        })).catch((err) => log(`meeting_message mcp.notification error: ${err}`))
+        }))
+        if (senderId == null) humanMessageEdits.rememberOriginal(
+          viewStreamMessage({ seq: 0, kind: 'message_new', chatId: null, messageId, payload }, ASSISTANT_ID),
+          meetingHandoff, card.meta,
+        )
+        void meetingHandoff.catch((err) => log(`meeting_message mcp.notification error: ${err}`))
       }
       // An email the server marks on this broadcast (none today) whose files
       // the owner lets the agent read: saved first, then sent, as on the
@@ -17770,33 +18716,11 @@ async function reconcileAlwaysOn(): Promise<void> {
 // ── Startup ──────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  // THE PLUGIN'S SECOND COPY STANDS ASIDE (kc-server, 2026-10-13). When this is the marketplace
-  // copy and the session provably loads the checkout as its channel (server:bgos, this folder's
-  // .mcp.json), a second full daemon only adds a lock race and a second set of tools that refuse
-  // private calls. It serves a one tool notice instead and runs nothing else: no lock, no
-  // supervisor record, no polling, no channel capability. Every doubt keeps the daemon as it was
-  // (lib/duplicate-copy.mjs). Asked FIRST, before anything below writes a file or starts a timer.
-  {
-    const verdict = decideDuplicateCopy({
-      installMethod: INSTALL_METHOD,
-      ownSpec: INSTALL_DETECTION?.method === 'marketplace' ? marketplaceChannelSpec(INSTALL_DETECTION.marketplace) : '',
-      sessionSpecs:
-        INSTALL_METHOD === 'marketplace'
-          ? probeSessionChannelSpecs({ platform: process.platform, ownPid: process.pid, execSync: defaultExecSync })
-          : null,
-      sibling: INSTALL_METHOD === 'marketplace' ? findSiblingClone({ cwd: LAUNCH_CWD, ownRoot: import.meta.dir }) : null,
-      specMatches,
-    })
-    if (verdict.duplicate) {
-      log(`duplicate plugin copy, standing aside: ${verdict.reason}`)
-      const served = await serveDuplicateCopy({
-        reason: verdict.reason,
-        version: readOwnVersion(import.meta.dir) ?? undefined,
-        log: (line: string) => process.stderr.write(`[bgos] ${line}\n`),
-      })
-      process.exit(served ? 0 : 1)
-    }
-  }
+  // Duplicate detection already ran in preflight, before identity and state setup.
+  // Count attachment and stand aside when required before starting the CLI probe.
+  await attachScopeAtBoot()
+  // A copy that stands aside must write no thread probe cache.
+  void threadsCliGate.ready()
   // The git self-updater is for CLONE installs only. A marketplace install's
   // plugin root is Claude Code's own cache dir, which the CLI leaves as a git
   // clone pinned to the release tag: without this gate the updater would
@@ -17987,21 +18911,39 @@ async function main(): Promise<void> {
     shuttingDown = true
     log(describeShutdownCause(cause))
     selfUpdater?.markGracefulStop()
-    stopHookIntake()
+    const workingStopped = stopHookIntake()
     // A clean end (its claude went away): the idle update's record says so, so the next boot of a new build being
     // validated is not read as a crash. Never on a fault: uncaughtException and main().catch do not come through
     // here, and the fault handlers' broken pipe on some other stream is 'broken-pipe', never a clean end.
     idleUpdate?.noteEnded(isCleanEnd(cause))
-    // A clean stop takes the published state away (only when it is ours), so
-    // the watcher never reads a dead daemon's "idle" as a live one's.
-    agentStatePublisher.shutdown()
-    flushChatCursors()
-    // No-op unless this daemon still owns the lock.
-    releasePairingLock({ lockPath: PAIRING_LOCK_PATH, selfPid: process.pid })
-    // Never leave a sign-in child behind (lib/auth-login.ts).
-    loginController.dispose()
-    browserHost?.stop()
-    process.exit(code)
+    // Give session-death clears a bounded chance before releasing authority.
+    // SIGKILL and a failed backend still rely on the server's lease expiry.
+    const finish = () => {
+      // A clean stop takes the published state away (only when it is ours), so
+      // the watcher never reads a dead daemon's "idle" as a live one's.
+      agentStatePublisher.shutdown()
+      flushChatCursors()
+      // No-op unless this daemon still owns the lock.
+      releasePairingLock({ lockPath: PAIRING_LOCK_PATH, selfPid: process.pid })
+      // Never leave a sign-in child behind (lib/auth-login.ts).
+      loginController.dispose()
+      // Nor a thread lane or a By the way fork (lib/thread-lanes.ts,
+      // lib/aside-fork.ts): a bounded wait for them, only when one runs.
+      const threadChildrenDown = stopThreadChildren()
+      if (threadChildrenDown) {
+        void threadChildrenDown.then(() => {
+          browserHost?.stop()
+          process.exit(code)
+        })
+        return
+      }
+      browserHost?.stop()
+      process.exit(code)
+    }
+    void Promise.race([
+      workingStopped,
+      new Promise<void>(resolve => setTimeout(resolve, 2000)),
+    ]).finally(finish)
   }
   // Sync backstop for any exit that did NOT route through shutdown() (a natural
   // exit, or the uncaughtException handler's process.exit(1) below): flush the
@@ -18013,6 +18955,8 @@ async function main(): Promise<void> {
     flushChatCursors()
     releasePairingLock({ lockPath: PAIRING_LOCK_PATH, selfPid: process.pid })
     loginController.dispose()
+    void threadLanes.stopAll()
+    asideForks.killAll()
     browserHost?.stop()
   })
 
@@ -18030,6 +18974,13 @@ async function main(): Promise<void> {
   // agent-state.json (design section 7): ticks from here on; it writes only
   // while this daemon holds the pairing lock, so a passive daemon never does.
   setInterval(() => { agentStatePublisher.tick(); publishBrowserPrivateTurn() }, AGENT_STATE_TICK_MS).unref()
+  // Threads phase 1: the worktree of a thread closed more than 7 days ago goes.
+  setInterval(() => {
+    void threadLanes
+      .sweepClosed(Date.now())
+      .then((removed) => { if (removed.length > 0) log(`threads: removed ${removed.length} closed thread worktree(s)`) })
+      .catch((err) => log(`threads: sweep failed: ${err instanceof Error ? err.name : 'error'}`))
+  }, 60 * 60_000).unref()
   // The session pin (finding 7): asks only while this daemon holds the channel
   // and its live session is not pinned yet (lib/session-pin.ts).
   setInterval(() => checkSessionPin(), SESSION_PIN_CHECK_MS).unref()
@@ -18504,11 +19455,18 @@ async function main(): Promise<void> {
       // backend. Acceptable, and documented rather than fixed, because forcing
       // a reconnect to chase it would cost the cheap re-arm this design is
       // built on.
+      //
+      // Every frame of the spell was ignored, and the socket never dropped, so this
+      // is the one thing that says the chats are behind. The first live message into
+      // each reads it first (holdLiveFrame); a chat with no live message is read at
+      // the next sweep. No sweep here, for the same cheap re-arm.
+      socketEpoch++
       channelArmed = true
       connectedSince = Date.now()
       channelEverArmed = true
       startHookIntakeIfHolder()
       handleUnboundBeforeArm()
+      reconcilePendingThreads('re-armed')
       log(
         `delivery re-armed after reclaiming the pairing lock; ` +
           `monitoring ${monitoredChatIds.length} chat(s)`,
@@ -18824,6 +19782,46 @@ async function main(): Promise<void> {
           }),
         ).catch((err) => log(`liveness probe delivery failed: ${err}`))
       }, LIVENESS_PROBE_POLL_MS).unref()
+    }
+
+    // Step 2.65: the limit watch's notice (lib/limit-notice.ts). When this agent was stuck on Claude
+    // Code's usage limit screen, the watcher presses Enter once as soon as usage is back (or says why
+    // it could not) and drops ~/.bgos-agent/<id>/limit-notice.json: tokens and times only. Here it is
+    // turned into the owner's words from fixed templates and posted into the owner's own chat, the
+    // deaf warning's way (deafNoticeChat: never a group, never somebody else's chat). No owner chat
+    // known yet: the file stays and the next tick tries again, at most once a minute.
+    const limitNoticeDir = agentStateDir(homedir(), ASSISTANT_ID)
+    if (limitNoticeDir) {
+      const limitNotices = createLimitNoticeIntake({
+        path: pathJoin(limitNoticeDir, LIMIT_NOTICE_FILE_NAME),
+        readFile: (path) => {
+          try {
+            return readFileSync(path, 'utf8')
+          } catch {
+            return null
+          }
+        },
+        removeFile: (path) => unlinkSync(path),
+        post: async (text) => {
+          const chat = deafNoticeChat({ pendingChatId: '', mainChatIds, ownership: chatOwnership })
+          if (!chat) return false
+          await sendConnectionNotice(chat, text)
+          return true
+        },
+        now: () => Date.now(),
+        log,
+      })
+      let limitNoticeBusy = false
+      setInterval(() => {
+        if (limitNoticeBusy) return
+        limitNoticeBusy = true
+        void limitNotices
+          .tick()
+          .catch((err) => log(`limit notice failed: ${err}`))
+          .finally(() => {
+            limitNoticeBusy = false
+          })
+      }, LIMIT_NOTICE_POLL_MS).unref()
     }
 
     // Step 2.7: Agent Update Stream (flag-gated; STRICT default OFF). Mint a
@@ -19231,7 +20229,7 @@ async function main(): Promise<void> {
       // CLI's composer, and lib/compact-capability.ts can discover that up to
       // thirty minutes after boot. See lib/declared-capabilities.ts.
       capabilities: () => [
-        ...declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, modelEffortPicker: modelEffortDeclared(), authMode: AUTH.mode }),
+        ...declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, modelEffortPicker: modelEffortDeclared(), threads: threadsDeclared(), authMode: AUTH.mode }),
       ],
       // One-click update telemetry (wire contract v1): the newest version this
       // daemon found at its own pinned source (origin/main for a clone, the
@@ -19343,6 +20341,8 @@ async function main(): Promise<void> {
     // session's hook spool. Only the holder consumes (see the guard inside).
     startHookIntakeIfHolder()
     handleUnboundBeforeArm()
+    // The first connect after a boot came before this arm: run what waits.
+    reconcilePendingThreads('armed')
   }
 
   // The passive watch loop, shared by the two ways a daemon can find itself

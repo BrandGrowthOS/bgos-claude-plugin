@@ -1,0 +1,105 @@
+server.ts SHA256 ae8d12c9ae1fbc296a6443303c5694a02d39d5cf1868d0eaa56bdcbd985ca39b
+
+MUTATION socket listener removed
+REPLACE realtimeSocket.on('message_edited',
+WITH realtimeSocket.on('message_edited_disabled',
+✖ socket: a delivered human message gets one labelled replacement (141.009292ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 755.392458
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop/mutation-kmID5P/test/message-edits.test.ts:5:2870
+✖ socket: a delivered human message gets one labelled replacement (141.009292ms)
+  AssertionError [ERR_ASSERTION]: original plus one edit; logs:
+
+  1 !== 2
+
+      at assertEdit (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop/mutation-kmID5P/test/message-edits.test.ts:235:10)
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop/mutation-kmID5P/test/message-edits.test.ts:251:3)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 2,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+MUTANT EXIT 1
+
+MUTATION poll replacement disabled
+REPLACE if (humanMessageEdits.has(view)) await forwardHumanEdit(view, 'poll', editReadGeneration)
+WITH if (false) await forwardHumanEdit(view, 'poll', editReadGeneration)
+✖ poll: a changed delivered row below the cursor gets one replacement (155.813208ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 727.283458
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop/mutation-j6hQH4/test/message-edits.test.ts:5:3336
+✖ poll: a changed delivered row below the cursor gets one replacement (155.813208ms)
+  AssertionError [ERR_ASSERTION]: original plus one edit; logs: New message in chat 7001: "Use the red folder"
+
+  1 !== 2
+
+      at assertEdit (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop/mutation-j6hQH4/test/message-edits.test.ts:235:10)
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop/mutation-j6hQH4/test/message-edits.test.ts:264:3)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 2,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+MUTANT EXIT 1
+
+MUTATION stream replacement disabled
+REPLACE if (cls !== 'message_new' && humanMessageEdits.has(view))
+WITH if (false && cls !== 'message_new' && humanMessageEdits.has(view))
+✖ stream: finalized and edited updates share replacement dedup with socket and poll (158.796417ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 776.949417
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop/mutation-EvZwjR/test/message-edits.test.ts:5:3845
+✖ stream: finalized and edited updates share replacement dedup with socket and poll (158.796417ms)
+  AssertionError [ERR_ASSERTION]: original plus one edit; logs: Stream replay message in chat 7001: "Use the red folder"
+
+  1 !== 2
+
+      at assertEdit (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop/mutation-EvZwjR/test/message-edits.test.ts:235:10)
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop/mutation-EvZwjR/test/message-edits.test.ts:274:3)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 2,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+MUTANT EXIT 1
+
+ALL THREE MUTANTS KILLED; production source unchanged

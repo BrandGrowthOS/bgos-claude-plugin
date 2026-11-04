@@ -1,0 +1,106 @@
+✔ marketplace: a non agent folder is dormant even with an inherited agent identity (0.994584ms)
+✔ marketplace: the agent home attaches without launcher scope (0.109125ms)
+✔ marketplace: two agents attach only in their own home (0.565834ms)
+✔ marketplace: a matching launcher scope opts in outside the home, inherited scope does not (0.178583ms)
+✔ marketplace: explicit opt-ins and malformed settings fail open (0.19075ms)
+✔ marketplace: unreadable evidence fails open and symlink homes match (0.1155ms)
+✖ marketplace: an unsubstituted assistant setting is absent on unpaired and multi-agent hosts (1.163167ms)
+✖ marketplace: a rejected credentials file cannot lend its home to another agent (0.158834ms)
+✖ marketplace: two recorded homes resolve without pins or environment, but a shared home is ambiguous (0.102834ms)
+✖ marketplace: canonical home proof reaches downstream home confirmation (0.150583ms)
+ℹ tests 10
+ℹ suites 0
+ℹ pass 6
+ℹ fail 4
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 136.963416
+
+✖ failing tests:
+
+test at test/marketplace-attach.test.ts:1:3330
+✖ marketplace: an unsubstituted assistant setting is absent on unpaired and multi-agent hosts (1.163167ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  'attach' !== 'refuse'
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.test.ts:75:12)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'attach',
+    expected: 'refuse',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/marketplace-attach.test.ts:1:3864
+✖ marketplace: a rejected credentials file cannot lend its home to another agent (0.158834ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  'attach' !== 'refuse'
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.test.ts:88:12)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'attach',
+    expected: 'refuse',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/marketplace-attach.test.ts:1:4471
+✖ marketplace: two recorded homes resolve without pins or environment, but a shared home is ambiguous (0.102834ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  'refuse' !== 'attach'
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.test.ts:95:12)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'refuse',
+    expected: 'attach',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/marketplace-attach.test.ts:1:5020
+✖ marketplace: canonical home proof reaches downstream home confirmation (0.150583ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+
+  + undefined
+  - true
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.test.ts:109:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    expected: true,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

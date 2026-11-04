@@ -20,8 +20,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -43,6 +42,7 @@ import {
   resolvedPathOrNull,
 } from '../lib/claude-preseed.mjs'
 import { claudeConfigDir } from '../bin/bgos-install-method.mjs'
+import { scratchDir } from './helpers/scratch-dirs'
 
 function memFs(initial: Record<string, string> = {}) {
   const files = new Map(Object.entries(initial))
@@ -264,7 +264,7 @@ test('preseedClaudeTrust on a REAL filesystem: garbage stays byte identical at i
   // The default fs seam (exists, modeOf, chmod, writeFile with a mode) had no
   // coverage at all: every other test here injects an in-memory one.
   if (process.platform === 'win32') return
-  const dir = mkdtempSync(join(tmpdir(), 'hoai-preseed-'))
+  const dir = scratchDir('hoai-preseed-')
   const garbage = join(dir, 'garbage')
   const good = join(dir, 'good')
   mkdirSync(garbage)

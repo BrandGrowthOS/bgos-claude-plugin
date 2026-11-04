@@ -1,0 +1,422 @@
+
+MUTATION skip equal-time reconciliation
+TEST review R4: socket rejects replayed B after C with identical timestamps
+FILE lib/message-edits.ts
+REPLACE ((incomingTime === null && incomingRevision === null) || ambiguousTime)
+WITH (incomingTime === null && incomingRevision === null)
+✖ review R4: socket rejects replayed B after C with identical timestamps (93.439875ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 546.492334
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-collisions/mutant-3jClrj/test/message-edits.test.ts:4:9344
+✖ review R4: socket rejects replayed B after C with identical timestamps (93.439875ms)
+  AssertionError [ERR_ASSERTION]: the current row is still C; replayed B must not become a fourth card
+
+  4 !== 3
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-collisions/mutant-3jClrj/test/message-edits.test.ts:422:14)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 4,
+    expected: 3,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED review R4: socket rejects replayed B after C with identical timestamps
+
+MUTATION skip equal-time reconciliation
+TEST review R4: socket rejects replayed B after C with microsecond timestamps
+FILE lib/message-edits.ts
+REPLACE ((incomingTime === null && incomingRevision === null) || ambiguousTime)
+WITH (incomingTime === null && incomingRevision === null)
+✖ review R4: socket rejects replayed B after C with microsecond timestamps (87.823875ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 497.947375
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-collisions/mutant-3jClrj/test/message-edits.test.ts:4:9344
+✖ review R4: socket rejects replayed B after C with microsecond timestamps (87.823875ms)
+  AssertionError [ERR_ASSERTION]: the current row is still C; replayed B must not become a fourth card
+
+  4 !== 3
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-collisions/mutant-3jClrj/test/message-edits.test.ts:422:14)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 4,
+    expected: 3,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED review R4: socket rejects replayed B after C with microsecond timestamps
+
+MUTATION skip equal-time reconciliation
+TEST review R4: poll rejects replayed B after C with identical timestamps
+FILE lib/message-edits.ts
+REPLACE ((incomingTime === null && incomingRevision === null) || ambiguousTime)
+WITH (incomingTime === null && incomingRevision === null)
+✖ review R4: poll rejects replayed B after C with identical timestamps (91.609125ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 507.143042
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-collisions/mutant-3jClrj/test/message-edits.test.ts:4:9344
+✖ review R4: poll rejects replayed B after C with identical timestamps (91.609125ms)
+  AssertionError [ERR_ASSERTION]: the current row is still C; replayed B must not become a fourth card
+
+  4 !== 3
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-collisions/mutant-3jClrj/test/message-edits.test.ts:422:14)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 4,
+    expected: 3,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED review R4: poll rejects replayed B after C with identical timestamps
+
+MUTATION skip equal-time reconciliation
+TEST review R4: poll rejects replayed B after C with microsecond timestamps
+FILE lib/message-edits.ts
+REPLACE ((incomingTime === null && incomingRevision === null) || ambiguousTime)
+WITH (incomingTime === null && incomingRevision === null)
+✖ review R4: poll rejects replayed B after C with microsecond timestamps (89.515208ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 514.091625
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-collisions/mutant-3jClrj/test/message-edits.test.ts:4:9344
+✖ review R4: poll rejects replayed B after C with microsecond timestamps (89.515208ms)
+  AssertionError [ERR_ASSERTION]: the current row is still C; replayed B must not become a fourth card
+
+  4 !== 3
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-collisions/mutant-3jClrj/test/message-edits.test.ts:422:14)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 4,
+    expected: 3,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED review R4: poll rejects replayed B after C with microsecond timestamps
+
+MUTATION skip equal-time reconciliation
+TEST review R4: stream rejects replayed B after C with identical timestamps
+FILE lib/message-edits.ts
+REPLACE ((incomingTime === null && incomingRevision === null) || ambiguousTime)
+WITH (incomingTime === null && incomingRevision === null)
+✖ review R4: stream rejects replayed B after C with identical timestamps (90.600291ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 497.3625
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-collisions/mutant-3jClrj/test/message-edits.test.ts:4:9344
+✖ review R4: stream rejects replayed B after C with identical timestamps (90.600291ms)
+  AssertionError [ERR_ASSERTION]: the current row is still C; replayed B must not become a fourth card
+
+  4 !== 3
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-collisions/mutant-3jClrj/test/message-edits.test.ts:422:14)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 4,
+    expected: 3,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED review R4: stream rejects replayed B after C with identical timestamps
+
+MUTATION skip equal-time reconciliation
+TEST review R4: stream rejects replayed B after C with microsecond timestamps
+FILE lib/message-edits.ts
+REPLACE ((incomingTime === null && incomingRevision === null) || ambiguousTime)
+WITH (incomingTime === null && incomingRevision === null)
+✖ review R4: stream rejects replayed B after C with microsecond timestamps (91.608042ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 502.046125
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-collisions/mutant-3jClrj/test/message-edits.test.ts:4:9344
+✖ review R4: stream rejects replayed B after C with microsecond timestamps (91.608042ms)
+  AssertionError [ERR_ASSERTION]: the current row is still C; replayed B must not become a fourth card
+
+  4 !== 3
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-collisions/mutant-3jClrj/test/message-edits.test.ts:422:14)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 4,
+    expected: 3,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED review R4: stream rejects replayed B after C with microsecond timestamps
+
+MUTATION reject all equal timestamps
+TEST review R4: socket delivers a later edit and genuine revert with identical timestamps
+FILE lib/message-edits.ts
+REPLACE time !== null && entry.time !== null && time < entry.time
+WITH time !== null && entry.time !== null && time <= entry.time
+✖ review R4: socket delivers a later edit and genuine revert with identical timestamps (86.310167ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 533.917625
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-collisions/mutant-mi80gv/test/message-edits.test.ts:4:10221
+✖ review R4: socket delivers a later edit and genuine revert with identical timestamps (86.310167ms)
+  AssertionError [ERR_ASSERTION]: timestamp equality must not discard the current C
+
+  2 !== 3
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-collisions/mutant-mi80gv/test/message-edits.test.ts:435:14)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 2,
+    expected: 3,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED review R4: socket delivers a later edit and genuine revert with identical timestamps
+
+MUTATION reject all equal timestamps
+TEST review R4: socket delivers a later edit and genuine revert with microsecond timestamps
+FILE lib/message-edits.ts
+REPLACE time !== null && entry.time !== null && time < entry.time
+WITH time !== null && entry.time !== null && time <= entry.time
+✖ review R4: socket delivers a later edit and genuine revert with microsecond timestamps (88.048875ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 497.083125
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-collisions/mutant-mi80gv/test/message-edits.test.ts:4:10221
+✖ review R4: socket delivers a later edit and genuine revert with microsecond timestamps (88.048875ms)
+  AssertionError [ERR_ASSERTION]: timestamp equality must not discard the current C
+
+  2 !== 3
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-collisions/mutant-mi80gv/test/message-edits.test.ts:435:14)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 2,
+    expected: 3,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED review R4: socket delivers a later edit and genuine revert with microsecond timestamps
+
+MUTATION reject all equal timestamps
+TEST review R4: poll delivers a later edit and genuine revert with identical timestamps
+FILE lib/message-edits.ts
+REPLACE time !== null && entry.time !== null && time < entry.time
+WITH time !== null && entry.time !== null && time <= entry.time
+✖ review R4: poll delivers a later edit and genuine revert with identical timestamps (122.585709ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 537.909584
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-collisions/mutant-mi80gv/test/message-edits.test.ts:4:10221
+✖ review R4: poll delivers a later edit and genuine revert with identical timestamps (122.585709ms)
+  AssertionError [ERR_ASSERTION]: timestamp equality must not discard the current C
+
+  2 !== 3
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-collisions/mutant-mi80gv/test/message-edits.test.ts:435:14)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 2,
+    expected: 3,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED review R4: poll delivers a later edit and genuine revert with identical timestamps
+
+MUTATION reject all equal timestamps
+TEST review R4: poll delivers a later edit and genuine revert with microsecond timestamps
+FILE lib/message-edits.ts
+REPLACE time !== null && entry.time !== null && time < entry.time
+WITH time !== null && entry.time !== null && time <= entry.time
+✖ review R4: poll delivers a later edit and genuine revert with microsecond timestamps (112.9455ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 545.311125
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-collisions/mutant-mi80gv/test/message-edits.test.ts:4:10221
+✖ review R4: poll delivers a later edit and genuine revert with microsecond timestamps (112.9455ms)
+  AssertionError [ERR_ASSERTION]: timestamp equality must not discard the current C
+
+  2 !== 3
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-collisions/mutant-mi80gv/test/message-edits.test.ts:435:14)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 2,
+    expected: 3,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED review R4: poll delivers a later edit and genuine revert with microsecond timestamps
+
+MUTATION reject all equal timestamps
+TEST review R4: stream delivers a later edit and genuine revert with identical timestamps
+FILE lib/message-edits.ts
+REPLACE time !== null && entry.time !== null && time < entry.time
+WITH time !== null && entry.time !== null && time <= entry.time
+✖ review R4: stream delivers a later edit and genuine revert with identical timestamps (132.77225ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 630.472375
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-collisions/mutant-mi80gv/test/message-edits.test.ts:4:10221
+✖ review R4: stream delivers a later edit and genuine revert with identical timestamps (132.77225ms)
+  AssertionError [ERR_ASSERTION]: timestamp equality must not discard the current C
+
+  2 !== 3
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-collisions/mutant-mi80gv/test/message-edits.test.ts:435:14)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 2,
+    expected: 3,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED review R4: stream delivers a later edit and genuine revert with identical timestamps
+
+MUTATION reject all equal timestamps
+TEST review R4: stream delivers a later edit and genuine revert with microsecond timestamps
+FILE lib/message-edits.ts
+REPLACE time !== null && entry.time !== null && time < entry.time
+WITH time !== null && entry.time !== null && time <= entry.time
+✖ review R4: stream delivers a later edit and genuine revert with microsecond timestamps (91.364583ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 501.147375
+
+✖ failing tests:
+
+test at node_modules/.cache/editdrop-collisions/mutant-mi80gv/test/message-edits.test.ts:4:10221
+✖ review R4: stream delivers a later edit and genuine revert with microsecond timestamps (91.364583ms)
+  AssertionError [ERR_ASSERTION]: timestamp equality must not discard the current C
+
+  2 !== 3
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/node_modules/.cache/editdrop-collisions/mutant-mi80gv/test/message-edits.test.ts:435:14)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 2,
+    expected: 3,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+KILLED review R4: stream delivers a later edit and genuine revert with microsecond timestamps
+
+ALL 12 COLLISION MUTANTS KILLED; production source and tests unchanged

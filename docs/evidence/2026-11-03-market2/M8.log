@@ -1,0 +1,41 @@
+TAP version 13
+1..0
+# Subtest: test/marketplace-attach.e2e.test.ts
+ok 1 - test/marketplace-attach.e2e.test.ts
+  ---
+  duration_ms: 164.6315
+  type: 'test'
+  ...
+# Subtest: market2 diagnostics: doctor preserves the effective marketplace home mode
+not ok 2 - market2 diagnostics: doctor preserves the effective marketplace home mode
+  ---
+  duration_ms: 3.184542
+  type: 'test'
+  location: '/Users/kc/hoai-work/mbmarket/test/marketplace-attach.test.ts:1:7082'
+  failureType: 'testCodeFailure'
+  error: |-
+    The input did not match the regular expression /^Mode home;/. Input:
+
+    'Mode off; this session: agent 41: matching home or explicit opt in. This computer, last 7 days: 0 session starts, 0 wrong agent, 0 unscoped, 0 unreadable, 0 refused.'
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  actual: 'Mode off; this session: agent 41: matching home or explicit opt in. This computer, last 7 days: 0 session starts, 0 wrong agent, 0 unscoped, 0 unreadable, 0 refused.'
+  operator: 'match'
+  stack: |-
+    TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.test.ts:148:10)
+    Test.runInAsyncScope (node:async_hooks:226:14)
+    Test.run (node:internal/test_runner/test:1201:25)
+    Test.start (node:internal/test_runner/test:1096:17)
+    startSubtestAfterBootstrap (node:internal/test_runner/harness:385:17)
+  ...
+1..2
+# tests 2
+# suites 0
+# pass 1
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 171.101916

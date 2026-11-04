@@ -15,13 +15,13 @@
 // the dispatcher.
 import { test, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { bashOrSkip, bashPath } from './helpers/posix-bash.ts'
+import { scratchDir } from './helpers/scratch-dirs.ts'
 
 const AGENT = join(fileURLToPath(new URL('.', import.meta.url)), '..', 'bin', 'bgos-agent')
 
@@ -67,7 +67,7 @@ function runRefresh(t: TestContext, workdir: string): string | null {
     body[0],
     'refresh_hook_entries 900',
   ].join('\n')
-  const script = join(mkdtempSync(join(tmpdir(), 'hoai-routing-')), 'run.sh')
+  const script = join(scratchDir('hoai-routing-'), 'run.sh')
   writeFileSync(script, harness)
   const out = spawnSync(bash, [bashPath(script)], { encoding: 'utf8', windowsHide: true })
   assert.equal(out.status, 0, `harness failed: ${out.stderr}`)
@@ -78,7 +78,7 @@ function runRefresh(t: TestContext, workdir: string): string | null {
 }
 
 function folder(opts: { claudeDir: boolean; settings?: string }): string {
-  const root = mkdtempSync(join(tmpdir(), 'hoai-agent-'))
+  const root = scratchDir('hoai-agent-')
   if (opts.claudeDir) mkdirSync(join(root, '.claude'), { recursive: true })
   if (opts.settings !== undefined) {
     writeFileSync(join(root, '.claude', 'settings.local.json'), opts.settings)

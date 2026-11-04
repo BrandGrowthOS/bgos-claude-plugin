@@ -789,6 +789,91 @@ function assertEmailDelivery(run: LaneRun, lane: string): void {
   for (const kind of run.recorded) assert.equal(inboundOwesReply(kind), false, `${lane}: no reply nudge`)
 }
 
+test('a row this daemon already handed over is not a new inbound: reading it again leaves the activity clock alone', async () => {
+  // A read can start below rows the socket delivered (chatReadFloor, D04-1). The
+  // clock says when a message last came in, and what reads it decides idleness.
+  const row = { message: { id: 9001, chatId: Number(CHAT), sender: 'user', text: 'hello', sentDate: '2026-11-03T00:00:00Z', senderUserId: OWNER }, messageFiles: [] }
+  const again = pollLane([row], { forwardedMessageIds: new Set([9001]) })
+  await again.fn(CHAT)
+  assert.equal(again.run.notifications.length, 0, 'the dedupe holds')
+  assert.equal('lastInboundAtMs' in again.scope, false, 'and the clock did not move')
+  const fresh = pollLane([row], { forwardedMessageIds: new Set<number>() })
+  await fresh.fn(CHAT)
+  assert.equal(typeof fresh.scope.lastInboundAtMs, 'number', 'a row not handed over yet still stamps it')
+})
+
+test('a frame that reaches the socket lane while the chat is behind this connection moves no cursor, and reads the chat', () => {
+  // A failed catch up read lets its frame through, and a stamped frame never waits.
+  // The persisted cursor must stay under the rows no read has returned, or a
+  // restart loses them (D04-1).
+  const lane = (behind: boolean) => {
+    const chatLastSeen = new Map([[CHAT, 9000]])
+    const kicked: string[] = []
+    const forwarded = new Set<number>()
+    const { fn, run } = compile([serverConst('EMAIL_NEVER_SLASH'), WS_SRC(), CURSOR_SRC()].join('\n'), 'deliverWsInbound', {
+      chatLastSeen,
+      chatBehindSocket: () => behind,
+      monitoredChatIds: [CHAT],
+      pollChat: async (chatId: string) => void kicked.push(chatId),
+      emailCursorHolds: { clamp: (_chat: string, id: number) => id, owes: () => false },
+      cursorStore: { markDirty: () => undefined },
+      forwardedMessageIds: forwarded,
+      rememberForwarded: (id: number) => forwarded.add(id),
+    })
+    fn(OWNER_WS(9010))
+    return { cursor: chatLastSeen.get(CHAT), kicked, delivered: run.notifications.length }
+  }
+  assert.deepEqual(lane(true), { cursor: 9000, kicked: [CHAT], delivered: 1 }, 'behind: delivered, no bump, a read')
+  assert.deepEqual(lane(false), { cursor: 9010, kicked: [], delivered: 1 }, 'caught up: delivered, the bump, no read')
+})
+
+test('the read floor: set once under the first move past unread rows, kept while the socket stays ahead of the reads', () => {
+  const chatLastSeen = new Map([[CHAT, 105]])
+  const chatReadFloor = new Map<string, number>()
+  const streamCoveredChats = new Set<string>()
+  const scope = { chatLastSeen, chatReadFloor, streamCoveredChats }
+  const passed = compile(serverFunction('function noteCursorPassedUnread('), 'noteCursorPassedUnread', scope).fn
+  const settled = compile(serverFunction('function settleChatReadFloor('), 'settleChatReadFloor', scope).fn
+
+  passed(CHAT, 105)
+  assert.equal(chatReadFloor.has(CHAT), false, 'the cursor did not move (an email held it): nothing was passed')
+  passed(CHAT, 0)
+  assert.equal(chatReadFloor.has(CHAT), false, 'from no cursor there is no position to go back to')
+  streamCoveredChats.add(CHAT)
+  passed(CHAT, 100)
+  assert.equal(chatReadFloor.has(CHAT), false, 'the stream has its own gap arithmetic')
+  streamCoveredChats.clear()
+
+  passed(CHAT, 100)
+  assert.equal(chatReadFloor.get(CHAT), 100)
+  chatLastSeen.set(CHAT, 110)
+  passed(CHAT, 105)
+  assert.equal(chatReadFloor.get(CHAT), 100, 'a later live message does not lift it over the rows still unread')
+
+  settled(CHAT, 104)
+  assert.equal(chatReadFloor.get(CHAT), 104, 'a read up to 104 while the socket is at 110: the rows above 104 stay in reach')
+  settled(CHAT, 102)
+  assert.equal(chatReadFloor.get(CHAT), 104, 'an older overlapping read finishing late does not rewind it')
+  settled(CHAT, 110)
+  assert.equal(chatReadFloor.has(CHAT), false, 'a read reached the cursor: it is gone')
+})
+
+test('a cursor taken from the shared file drops the read floor: the holder delivered those rows, and its ids are not in this process', () => {
+  const chatLastSeen = new Map([[CHAT, 105]])
+  const chatReadFloor = new Map([[CHAT, 100]])
+  const { fn } = compile(CURSOR_SRC(), 'adoptChatCursor', {
+    chatLastSeen,
+    chatReadFloor,
+    emailCursorHolds: { clamp: (_chat: string, id: number) => id },
+    cursorStore: { markDirty: () => undefined },
+  })
+  fn(CHAT, 105)
+  assert.equal(chatReadFloor.get(CHAT), 100, 'the file only says what this daemon wrote: the floor stays')
+  fn(CHAT, 120)
+  assert.equal(chatLastSeen.get(CHAT), 120)
+  assert.equal(chatReadFloor.has(CHAT), false, 'another daemon read this chat up to there')
+})
+
 test('the socket lane, run: an email reaches the model labelled, the owner never named', () => {
   const { fn, run } = wsLane()
   fn(wsEmail())

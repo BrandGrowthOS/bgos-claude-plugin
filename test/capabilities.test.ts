@@ -310,7 +310,7 @@ test('the canon fetch carries boards_playbook', () => {
   // the offline copy. Taken at the merge of main at 0.54.0.
   assert.match(
     body,
-    /const declared = declaredCapabilities\(\{ canInjectGoal: false, floorHook: FLOOR_HOOK\.registered, personLanes: laneSupport\(\)\.ok, authMode: AUTH\.mode \}\)/,
+    /const declared = declaredCapabilities\(\{ canInjectGoal: false, floorHook: FLOOR_HOOK\.registered, personLanes: laneSupport\(\)\.ok, threads: threadsDeclared\(\), authMode: AUTH\.mode \}\)/,
   )
   assert.match(body, /capabilitiesFetchPath\(\s*RUNNING_VERSION \?\? '0\.0\.0',\s*declared\s*,?\s*\)/)
   assert.equal(body.includes('integrations/capabilities?'), false, 'a hand built fetch path is back')

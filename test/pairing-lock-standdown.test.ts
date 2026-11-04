@@ -47,6 +47,9 @@ const PAIRING_FRAMES = [
   'update_rpc',
   'watcher_install_rpc',
   'inbound_message',
+  'message_edited',
+  'message_deleted',
+  'chat_deleted',
   'peer_conversation_closed',
   'peer_turn_yielded',
   'meeting_invitation',
@@ -399,7 +402,7 @@ test('every actingUser.noteInbound site notes the turn chat beside it', () => {
   const inbound = lines
     .map((line, i) => ({ line, i }))
     .filter(({ line }) => line.includes('actingUser.noteInbound('))
-  assert.equal(inbound.length, 3, 'the three inbound sites: poll, update stream, websocket')
+  assert.equal(inbound.length, 4, 'the original poll, stream and socket sites plus human edits')
   for (const { i } of inbound) {
     const window = lines.slice(i, i + 20).join('\n')
     assert.match(
@@ -420,8 +423,8 @@ test('every actingUser.noteInbound site notes the turn chat beside it', () => {
   // Plus the two meeting deliveries, which have no acting user at all.
   assert.equal(
     [...server.matchAll(/turnChat\.note\(/g)].length,
-    6,
-    'three inbound sites, the two meeting delivery sites, and the websocket ' +
+    7,
+    'four inbound sites, the two meeting delivery sites, and the websocket ' +
       'steer note (0.64.0: that rail notes the raw text before routing, a steer ' +
       'delivers its words without /steer, so it notes the delivered text too)',
   )

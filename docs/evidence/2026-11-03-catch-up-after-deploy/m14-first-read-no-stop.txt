@@ -1,0 +1,66 @@
+MUTANT m14-first-read-no-stop
+undoes: hole 3: a first read stops where more rows change nothing
+file: lib/poll-core.ts
+--- removed
+  if (opts.firstRead) return firstPollNeedsOlderRows(opts.firstRead)
+
++++ added
+  if (opts.firstRead) return true
+
+exit=1
+
+▶ hole 3: a chat that started empty
+  ✔ empty at its first read, then 120 rows: every row once, oldest first (11397.408285ms)
+  ✔ empty at its first read: an agent row among the rows does not hide the rows under it (9791.304052ms)
+  ✔ a group empty at its first read, more than 10 rows land while the daemon is down: not capped at the newest 10 (5277.866853ms)
+  ✖ a chat this daemon has never read: 120 unanswered rows above a long answered history, and the walk stops at the reply (2229.790609ms)
+  ✔ a genuine first install: 60 recent rows above 300 dormant ones, only the recent arrive, and the walk stops at the window (2201.159677ms)
+  ✖ a group this agent is added to mid run, with 300 rows of history: the newest 10, and no walk through the rest (16221.543994ms)
+✖ hole 3: a chat that started empty (25934.619209ms)
+✔ a first read defers to the rule above through readNeedsOlderPage (1.912475ms)
+ℹ tests 7
+ℹ suites 1
+ℹ pass 5
+ℹ fail 2
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 26393.401184
+
+✖ failing tests:
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:15612
+✖ a chat this daemon has never read: 120 unanswered rows above a long answered history, and the walk stops at the reply (2229.790609ms)
+  AssertionError [ERR_ASSERTION]: the answered history is not read: 6 older pages
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m14-first-read-no-stop.79cm2mmi/test/catch-up-after-deploy.e2e.test.ts:933:14)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Suite.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }
+
+test at test/catch-up-after-deploy.e2e.test.ts:3:16971
+✖ a group this agent is added to mid run, with 300 rows of history: the newest 10, and no walk through the rest (16221.543994ms)
+  AssertionError [ERR_ASSERTION]: no page below the history the cap keeps
+  + actual - expected
+  
+  + [
+  +   3251,
+  +   3051
+  + ]
+  - []
+  
+      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m14-first-read-no-stop.79cm2mmi/test/catch-up-after-deploy.e2e.test.ts:971:14)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Suite.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: [ 3251, 3051 ],
+    expected: [],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }

@@ -11,8 +11,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 
@@ -23,11 +22,12 @@ import {
   resolveStreamCursorFilePath,
   saveStreamCursorFile,
 } from '../lib/stream-cursor-store.ts'
+import { scratchDir } from './helpers/scratch-dirs.ts'
 
 const FP = pairingTokenFingerprint('pair_token_a')
 
 function freshDir(): string {
-  return mkdtempSync(join(tmpdir(), 'bgos-stream-cursor-'))
+  return scratchDir('bgos-stream-cursor-')
 }
 
 test('the fingerprint is sha256 of the pairing token, first 16 hex chars', () => {
