@@ -144,7 +144,8 @@ test('a signed in page: no file under the agent\'s folder or temp holds its text
     await call('browser_snapshot', { filename: 'named.yml' })
     await call('browser_take_screenshot', {})
     await call('browser_take_screenshot', { filename: 'named.png' })
-    await call('browser_find', { pattern: 'Recovery', filename: 'found.md' })
+    const found = await call('browser_find', { text: 'Recovery', filename: 'found.md' })
+    assert.ok(JSON.stringify(found).includes(MARKER), 'a named find answers in the reply instead')
     await sleep(300)
 
     // While the browser is open: the agent's folder and temp, the runtime folder included.
