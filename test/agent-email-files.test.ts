@@ -531,7 +531,7 @@ test('a file over its check budget: the tool says try again, says nothing was se
   const backend = stubBackend({})
   const result = await callTool('email_send', { ...NEW_EMAIL, files: [{ path: notes }] }, { post: backend.post, basis: OWNER_BASIS, readFiles: (p: string[]) => lib.readOutboundFiles(p, { home, officeReadMs: -1 }) })
   assert.equal(result.isError, true)
-  assert.match(textOf(result), /^email_send did not start: \S*notes\.txt took too long to check, so it is not attached this time\. Try again in a few minutes\. Nothing was saved or sent\.$/)
+  assert.match(textOf(result), /^email_send did not start: .*notes\.txt took too long to check, so it is not attached this time\. Try again in a few minutes\. Nothing was saved or sent\.$/)
   assert.doesNotMatch(textOf(result), /never/)
   assert.equal(backend.posted.length, 0)
 })

@@ -873,8 +873,8 @@ export function outboundContentWorkersStarted(url: URL = CONTENT_WORKER): number
 /**
  * Round 7: the content stage of one file, in a worker thread the main thread never waits on: the bytes are transferred
  * to it (`owned` is the file's own buffer, read by this file, so nothing else holds it), and its verdict comes back with
- * the bytes. Null (refused) when it cannot start, errs, exits, or replies with anything that does not parse, and when it
- * is still running at the deadline: then it is terminated. Round 8: on the one long lived Worker
+ * the bytes. Null (refused) when it cannot start, errs, exits, or replies with anything that does not parse. OUT_OF_TIME
+ * (refused) when it is still running at the deadline: then it is terminated. Round 8: on the one long lived Worker
  * (ContentWorkerHost), under a deadline that grows with the file (outboundContentDeadlineMs).
  */
 function contentInWorker(owned: ArrayBuffer, length: number, type: ContentType, name: string, ctx: OutboundFileCtx): Promise<ContentResult | null | typeof WORKERS_SPENT | typeof OUT_OF_TIME> {
