@@ -376,6 +376,55 @@ test('a test that hangs under the real flags fails by its own name, and the file
   } finally { removeScratchDir(dir) }
 })
 
+// ── A failure the totals do not count ───────────────────────────────────────
+//
+// A root hook that fails prints `not ok` with the file's path as its name, but
+// Node's totals stay at `# fail 0` and the process exits 0. Main failed this.
+
+test('a root after hook that fails, fails the file by name', { timeout: 120_000 }, async () => {
+  assert.ok(runner, 'the bounded file runner must exist')
+  const hook = "import { test, after } from 'node:test';"
+  const fixtures = {
+    'after-throws.test.mjs': `${hook}${FINE}after(() => { throw new Error('injected cleanup failure') })`,
+    'after-rejects.test.ts': `${hook}${FINE}after(async () => { throw new Error('injected cleanup failure') })`,
+  }
+  const run = await runDying('node', fixtures)
+  for (const name of Object.keys(fixtures)) assertFailedByName(run, name)
+  assert.match(run.output, /injected cleanup failure/, 'the error can be read')
+  // The tests themselves passed, so nothing but the hook can have made this red.
+  for (const result of run.results.filter((r) => Object.keys(fixtures).includes(r.file))) {
+    assert.deepEqual(result.tally, { pass: 1, fail: 0, skipped: 0 })
+    assert.equal(result.code, 0, 'Node itself exits 0 for this, which is the whole problem')
+  }
+})
+
+test('a failing todo test is not a failure, and is not listed as one', { timeout: 120_000 }, async () => {
+  assert.ok(runner, 'the bounded file runner must exist')
+  const todo = "test('known gap', { todo: true }, () => { throw new Error('no') });test('known gap with a reason', { todo: 'later' }, () => { throw new Error('no') });"
+  const run = await runDying('node', {
+    'todo-only-fails.test.mjs': `${NODE_IMPORT}${FINE}${todo}`,
+    'real-failure.test.mjs': `${NODE_IMPORT}${todo}test('the named failure', () => { throw new Error('no') })`,
+  })
+  assert.match(run.output, /PASS todo-only-fails\.test\.mjs/, run.output)
+  assert.match(run.summary, /real-failure\.test\.mjs: the named failure/)
+  assert.doesNotMatch(run.summary, /known gap/)
+})
+
+test('a failing test with the words # TODO in its name is still a failure, listed by name', { timeout: 120_000 }, async () => {
+  assert.ok(runner, 'the bounded file runner must exist')
+  const run = await runDying('node', { 'named-todo.test.mjs': `${NODE_IMPORT}test('fix # TODO here', () => { throw new Error('no') })` })
+  assertFailedByName(run, 'named-todo.test.mjs')
+  assert.match(run.summary, /named-todo\.test\.mjs: fix .*# TODO here/)
+})
+
+test('the other family\'s failure line, printed by a passing file, is not read as that file failing', { timeout: 120_000 }, async () => {
+  assert.ok(runner, 'the bounded file runner must exist')
+  const node = await runDying('node', { 'prints-bun-line.test.mjs': `${NODE_IMPORT}test('quotes a bun line', () => { console.log('(fail) someone else') })` })
+  assert.match(node.output, /PASS prints-bun-line\.test\.mjs/, node.output)
+  const bun = await runDying('bun', { 'prints-node-line.test.ts': `${BUN_IMPORT}test('quotes a node line', () => { console.log('not ok 1 - someone else') })` })
+  assert.match(bun.output, /PASS prints-node-line\.test\.ts/, bun.output)
+})
+
 // ── The orchestrator itself, run for real ───────────────────────────────────
 //
 // Every test above calls the runner's functions. These run scripts/run-tests.mjs
@@ -404,6 +453,8 @@ test('run-tests.mjs exits nonzero for a failing file, names it, and hands its fi
   const root = orchestratorFolder({
     'good.test.ts': `${NODE_IMPORT}import { tmpdir } from 'node:os';import { writeFileSync } from 'node:fs';test('records its temp folder', () => writeFileSync(process.env.PROBE_OUT!, tmpdir()))`,
     'bad.test.ts': `${NODE_IMPORT}test('the named failure', () => { throw new Error('no') })`,
+    // Both families are here so that the bad file is the only thing that can make this run exit 1.
+    'bun-good.test.ts': `${BUN_IMPORT}${FINE}`,
   })
   try {
     const real = join(root, 'real')
@@ -416,7 +467,7 @@ test('run-tests.mjs exits nonzero for a failing file, names it, and hands its fi
     }
     const run = await runOrchestrator(root, env)
     assert.equal(run.code, 1, `${run.stdout}\n${run.stderr}`)
-    assert.match(run.stdout, /\[run-tests\] 1 passed, 1 failed, 0 skipped, 2 files/)
+    assert.match(run.stdout, /\[run-tests\] 2 passed, 1 failed, 0 skipped, 3 files/)
     assert.match(run.stdout, /bad\.test\.ts: the named failure/)
     if (process.platform !== 'win32') assert.equal(readFileSync(env.PROBE_OUT!, 'utf8'), real)
   } finally { removeScratchDir(root) }
@@ -443,5 +494,131 @@ test('run-tests.mjs exits zero only when every file completed', { timeout: 120_0
     const quit = await runOrchestrator(root)
     assert.equal(quit.code, 1, `${quit.stdout}\n${quit.stderr}`)
     assert.match(quit.stdout, /^ {2}test[\\/]died\.test\.ts: /m)
+  } finally { removeScratchDir(root) }
+})
+
+// ── A focused test, which silently drops the rest of its file ───────────────
+//
+// Each word is in two pieces so that this file does not trip the check it tests.
+const ONLY = 'on' + 'ly'
+const DROPPED = "test('dropped', () => { throw new Error('this should have run') });"
+
+test('the focus check reads every way of focusing a test, and nothing that only looks like one', () => {
+  assert.ok(runner, 'the bounded file runner must exist')
+  const focused = [
+    `test.${ONLY}('x', () => {})`,
+    `it.${ONLY}('x', () => {})`,
+    `describe.${ONLY}('x', () => {})`,
+    `suite.${ONLY}('x', () => {})`,
+    `test.${ONLY}.if(true)('x', () => {})`,
+    `test\n  .${ONLY}('x', () => {})`,
+    `const focus = test.${ONLY}`,
+    `test('x', { ${ONLY}: true }, () => {})`,
+    `test('x', { ${ONLY}:true }, () => {})`,
+    `test('x', { '${ONLY}': true }, () => {})`,
+    `t.test('x', { "${ONLY}" : true }, () => {})`,
+    `import { test, ${ONLY} } from 'node:test'`,
+    `import { ${ONLY} as focus } from "node:test"`,
+    `import {\n  test,\n  ${ONLY},\n} from 'node:test'`,
+    `const { ${ONLY} } = require('node:test')`,
+  ]
+  for (const source of focused) assert.equal(runner.focusesATest(source), true, source)
+  const not = [
+    '',
+    `test('x', () => {})`,
+    // The real shape in test/lane-policy.test.ts: a local helper, called and spread.
+    `const ${ONLY} = (name) => ({ [name]: true })`,
+    `compare(${ONLY}('a'), { ...${ONLY}('a'), shell: true })`,
+    `test('x', { ${ONLY}: false }, () => {})`,
+    // Prose the suite really contains.
+    `// Tokens ${ONLY}: every line`,
+    `test('POSIX ${ONLY}', () => {})`,
+    `import { ${ONLY} } from './helpers/pick'`,
+    `const notonly = x.notonly; const y = { notonly: true }`,
+  ]
+  for (const source of not) assert.equal(runner.focusesATest(source), false, source)
+})
+
+test('a focused test fails its file by name, in both families, without running it', { timeout: 120_000 }, async () => {
+  assert.ok(runner, 'the bounded file runner must exist')
+  const fixtures: Record<string, string> = {
+    'calls-it.test.ts': `${NODE_IMPORT}test.${ONLY}('solo', () => {});${DROPPED}`,
+    'option.test.ts': `${NODE_IMPORT}test('solo', { ${ONLY}: true }, () => {});${DROPPED}`,
+    'imported.test.ts': `import { test, ${ONLY} } from 'node:test';${ONLY}('solo', () => {});${DROPPED}`,
+    'bun-calls-it.test.ts': `${BUN_IMPORT}test.${ONLY}('solo', () => {});${DROPPED}`,
+    'bun-conditional.test.ts': `${BUN_IMPORT}test.${ONLY}.if(true)('solo', () => {});${DROPPED}`,
+    'control.test.ts': `${NODE_IMPORT}${FINE}`,
+    'bun-control.test.ts': `${BUN_IMPORT}${FINE}`,
+  }
+  const root = orchestratorFolder(fixtures)
+  try {
+    const run = await runOrchestrator(root)
+    assert.equal(run.code, 1, `${run.stdout}\n${run.stderr}`)
+    for (const name of Object.keys(fixtures).filter((file) => !file.includes('control'))) {
+      assert.match(run.stdout, new RegExp(`^\\[run-tests\\] FAIL test[\\\\/]${name.replace(/\./g, '\\.')}`, 'm'), `no FAIL line for ${name}:\n${run.stdout}`)
+      assert.match(run.stdout, new RegExp(`^ {2}test[\\\\/]${name.replace(/\./g, '\\.')}: .*focus`, 'm'), `the summary does not name ${name}:\n${run.stdout}`)
+    }
+    assert.match(run.stdout, /PASS test[\\/]control\.test\.ts/, 'the rest of the suite still runs')
+    assert.match(run.stdout, /PASS test[\\/]bun-control\.test\.ts/)
+    assert.match(run.stdout, /2 passed, 0 failed, 0 skipped, 7 files/, 'the refused files are counted and their tests are not')
+    assert.doesNotMatch(run.stdout, /both families green/)
+  } finally { removeScratchDir(root) }
+})
+
+// ── A run that found nothing to run ─────────────────────────────────────────
+
+test('run-tests.mjs does not read an empty test folder as green', { timeout: 120_000 }, async () => {
+  assert.ok(runner, 'the bounded file runner must exist')
+  const root = orchestratorFolder({})
+  try {
+    const run = await runOrchestrator(root)
+    assert.equal(run.code, 1, `${run.stdout}\n${run.stderr}`)
+    assert.doesNotMatch(run.stdout, /both families green/)
+    assert.match(run.stderr, /no node test files/)
+    assert.match(run.stderr, /no bun test files/)
+    assert.match(run.stderr, /\[run-tests\] FAILED/)
+  } finally { removeScratchDir(root) }
+})
+
+test('run-tests.mjs does not read test files it cannot discover as green', { timeout: 120_000 }, async () => {
+  assert.ok(runner, 'the bounded file runner must exist')
+  const root = orchestratorFolder({ 'bad.test.mjs': `${NODE_IMPORT}test('bad', () => { throw new Error('no') })` })
+  try {
+    mkdirSync(join(root, 'test', 'sub'))
+    writeFileSync(join(root, 'test', 'sub', 'bad.test.ts'), `${NODE_IMPORT}test('bad', () => { throw new Error('no') })`)
+    const run = await runOrchestrator(root)
+    assert.equal(run.code, 1, `${run.stdout}\n${run.stderr}`)
+    assert.doesNotMatch(run.stdout, /both families green/)
+  } finally { removeScratchDir(root) }
+})
+
+test('run-tests.mjs fails when one family is empty, and names that family', { timeout: 120_000 }, async () => {
+  assert.ok(runner, 'the bounded file runner must exist')
+  const noBun = orchestratorFolder({ 'one.test.ts': `${NODE_IMPORT}${FINE}` })
+  const noNode = orchestratorFolder({ 'one.test.ts': `${BUN_IMPORT}${FINE}` })
+  try {
+    const bunMissing = await runOrchestrator(noBun)
+    assert.equal(bunMissing.code, 1, `${bunMissing.stdout}\n${bunMissing.stderr}`)
+    assert.match(bunMissing.stderr, /no bun test files/)
+    assert.doesNotMatch(bunMissing.stderr, /no node test files/)
+    assert.doesNotMatch(bunMissing.stdout, /both families green/)
+    const nodeMissing = await runOrchestrator(noNode)
+    assert.equal(nodeMissing.code, 1, `${nodeMissing.stdout}\n${nodeMissing.stderr}`)
+    assert.match(nodeMissing.stderr, /no node test files/)
+    assert.doesNotMatch(nodeMissing.stderr, /no bun test files/)
+    assert.doesNotMatch(nodeMissing.stdout, /both families green/)
+  } finally {
+    removeScratchDir(noBun)
+    removeScratchDir(noNode)
+  }
+})
+
+test('run-tests.mjs fails when its test folder is missing', { timeout: 120_000 }, async () => {
+  assert.ok(runner, 'the bounded file runner must exist')
+  const root = orchestratorFolder({})
+  try {
+    const run = await runOrchestrator(join(root, 'no-such-folder'))
+    assert.notEqual(run.code, 0, `${run.stdout}\n${run.stderr}`)
+    assert.doesNotMatch(run.stdout, /both families green/)
   } finally { removeScratchDir(root) }
 })

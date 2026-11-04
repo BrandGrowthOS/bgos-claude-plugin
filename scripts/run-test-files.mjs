@@ -27,6 +27,23 @@ const PIPE_DRAIN_MS = 3_000
 /** Printed by scripts/test-file-entry.mjs after a node:test file's last top level statement. */
 export const FILE_BODY_FINISHED = '[run-tests] file body finished'
 
+/**
+ * Without --test, Node honours a focused test and neither runs nor counts the rest
+ * of the file, and bun does the same: the file passes with a smaller total. Neither
+ * runner says so, so this reads the source of the test file itself. A computed key,
+ * an option that is not a literal true, or a focus inside a helper gets past it.
+ * `...only(x)` is a spread of a local helper, not a focus.
+ */
+const FOCUS = [
+  /(?<!\.\.)\.only\b/,
+  /\bonly['"]?\s*:\s*true\b/,
+  /\{[^{}]*\bonly\b[^{}]*\}\s*(?:from\s*|=\s*require\(\s*)['"](?:node|bun):test['"]/,
+]
+
+export function focusesATest(source) {
+  return FOCUS.some((pattern) => pattern.test(source))
+}
+
 export function partitionTests(entries) {
   const parallelFiles = [], chromiumFiles = [], runnerFiles = [], bunFiles = []
   for (const { file, source } of entries) {
@@ -100,6 +117,8 @@ export async function stopActiveTests() {
 const NODE_TALLY = /^# (pass|fail|cancelled|skipped) (\d+)\s*$/
 const BUN_TALLY = /^\s*(\d+) (pass|fail|skip)\s*$/
 const NODE_FAILURE = /^\s*not ok \d+ - (.*?)\s*$/
+/** A failing todo test is expected to fail. A `#` in a test's own name reaches TAP escaped, as `\#`. */
+const NODE_TODO = /\s# TODO\b/
 const BUN_FAILURE = /^\(fail\) (.*?)(?: \[[\d.]+ms\])?\s*$/
 
 /** Read one output line into the file's totals and its failing test names. */
@@ -122,8 +141,15 @@ function noteLine(line, seen) {
     seen.tally[name] += Number(bun[1])
     return
   }
-  const failure = NODE_FAILURE.exec(line) ?? BUN_FAILURE.exec(line)
-  if (failure) seen.failures.push(failure[1])
+  const notOk = NODE_FAILURE.exec(line)
+  if (notOk) {
+    if (NODE_TODO.test(notOk[1])) return
+    seen.notOk = true
+    seen.failures.push(notOk[1])
+    return
+  }
+  const bunFailure = BUN_FAILURE.exec(line)
+  if (bunFailure) seen.failures.push(bunFailure[1])
 }
 
 /**
@@ -132,7 +158,7 @@ function noteLine(line, seen) {
  * reported totals, failed nothing and run something. Without a family the command
  * is any process, and only its exit code can speak.
  */
-function findProblem({ code, timedOut, tally, bodyFinished }, family) {
+function findProblem({ code, timedOut, tally, bodyFinished, notOk }, family) {
   if (timedOut) return 'TIMED OUT'
   const incomplete = family === 'node' && !bodyFinished
   if (code !== 0) return incomplete ? `did not complete: its top level stopped, exited ${code}` : `exited ${code}`
@@ -140,6 +166,8 @@ function findProblem({ code, timedOut, tally, bodyFinished }, family) {
   if (incomplete) return 'did not complete: its top level stopped, though it exited 0'
   if (!tally) return 'did not complete: exited 0 with no totals, so it stopped early'
   if (tally.fail > 0) return 'a test failed, though it exited 0'
+  // A root hook that fails is `not ok` in the output, and in neither the totals nor the exit code.
+  if (family === 'node' && notOk) return 'it printed not ok, as a failing root hook does, though its totals count no failure and it exited 0'
   if (tally.pass + tally.skipped === 0) return 'ran no tests'
   return null
 }
@@ -157,7 +185,7 @@ export function runTestFile(file, {
   return new Promise((resolve) => {
     let settled = false, timedOut = false, exitCode = null, timer, cleanupTimer, drainTimer
     const buffers = { stdout: '', stderr: '' }
-    const seen = { tally: null, failures: [], bodyFinished: false }
+    const seen = { tally: null, failures: [], bodyFinished: false, notOk: false }
     const emit = (text) => onOutput(text, file)
     // A runner started from inside `node --test` must not make its workers talk
     // that parent's private protocol instead of TAP.
@@ -184,7 +212,7 @@ export function runTestFile(file, {
       clearTimeout(drainTimer)
       for (const stream of ['stdout', 'stderr']) if (buffers[stream]) noteLine(buffers[stream], seen)
       const result = { file, code: timedOut ? 1 : (code ?? 1), timedOut, tally: seen.tally, failures: seen.failures }
-      resolve({ ...result, problem: findProblem({ ...result, bodyFinished: seen.bodyFinished }, family) })
+      resolve({ ...result, problem: findProblem({ ...result, bodyFinished: seen.bodyFinished, notOk: seen.notOk }, family) })
     }
     const letGoOfPipes = () => {
       child.stdout.destroy()
