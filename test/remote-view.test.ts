@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { RemoteBrowserViews, REMOTE_VIEW_FRAME_MAX_BYTES } from '../lib/remote-view.mjs'
+import { RemoteBrowserViews, REMOTE_VIEW_FRAME_MAX_BYTES, captureParamsFor } from '../lib/remote-view.mjs'
 import { PairingConnection } from '../bin/hoai-browser-host.mjs'
 
 const tick = () => new Promise(resolve => setImmediate(resolve))
@@ -245,3 +245,16 @@ test('PairingConnection binds remote views to the admitting socket and this pair
   assert.equal(calls.at(-1).id, 'socket-original')
   conn.stop()
 })
+
+test('capture bounds: a phone start within its cap is honoured smaller, anything else keeps the host default', () => {
+  const host = { format: 'jpeg', quality: 70, maxWidth: 1600, maxHeight: 1200, everyNthFrame: 1 }
+  assert.deepEqual(captureParamsFor({}), host)
+  assert.deepEqual(captureParamsFor(undefined), host)
+  assert.deepEqual(captureParamsFor({ format: 'jpeg', quality: 40, maxWidth: 780, maxHeight: 1688 }), { format: 'jpeg', quality: 40, maxWidth: 780, maxHeight: 1688, everyNthFrame: 1 })
+  for (const bad of [{ format: 'png', quality: 40, maxWidth: 780, maxHeight: 1688 }, { format: 'jpeg', quality: 90, maxWidth: 780, maxHeight: 1688 },
+    { format: 'jpeg', quality: 40, maxWidth: 5000, maxHeight: 1688 }, { format: 'jpeg', quality: 40, maxWidth: 780, maxHeight: 9000 },
+    { format: 'jpeg', quality: 0, maxWidth: 780, maxHeight: 1688 }, { format: 'jpeg', quality: 40, maxWidth: 780 }]) {
+    assert.deepEqual(captureParamsFor(bad), host, JSON.stringify(bad))
+  }
+})
+

@@ -124,3 +124,49 @@ test('handover real Chromium expires after ten click-idle seconds and accepts th
       rmSync(absoluteRoot, { recursive: true, force: true })
     }
   })
+
+test('phone real Chromium takes a tap and whole Arabic text, refuses a password field, and the agent stays paused about ten seconds',
+  { skip: !process.env.HOAI_BROWSER_EXECUTABLE, timeout: 45000 }, async () => {
+    const root = mkdtempSync(join(tmpdir(), 'hoai-remote-input-test-'))
+    const pool = new BrowserPool({ agentRoot: root, createEngine: (args: any) => new ChromiumEngine({ ...args,
+      executable: process.env.HOAI_BROWSER_EXECUTABLE, headless: true }) })
+    const views = new RemoteBrowserViews({ pool })
+    const frames: any[] = []
+    try {
+      const context = { assistantId: 901, principal: 'user-fixture' }
+      const slot = await pool.acquire(context)
+      const page = slot.engine.pages()[0]
+      await page.setContent('<html><body><input id="ordinary"><input id="secret" type="password"></body></html>')
+      assert.equal(await views.open({ viewId: 'phone-view', ...context }, {
+        connectionId: 'phone-socket', sendFrame: (message: any) => { frames.push(message); return true }, sendClose: () => true,
+      }), true)
+      const ready = frames[0].frame.params
+      assert.equal(ready.remoteText, true)
+      let id = 0
+      const command = async (method: string, params: any) => {
+        const request = ++id
+        await views.command({ viewId: 'phone-view', frame: { id: request, method, params, sessionId: ready.sessionId, tabId: ready.tabId } }, 'phone-socket')
+        return frames.find(message => message.frame.id === request).frame
+      }
+      const { leaseId } = (await command('hoai.input.acquire', {})).result
+      const box = await page.locator('#ordinary').boundingBox()
+      assert.ok(box)
+      await command('hoai.input.pointer', { leaseId, type: 'down', x: box.x + 5, y: box.y + 5, button: 'left' })
+      await command('hoai.input.pointer', { leaseId, type: 'up', x: box.x + 5, y: box.y + 5, button: 'left' })
+      const focus = (await command('hoai.input.focus', { leaseId })).result
+      const words = 'مرحبا hello'
+      assert.deepEqual((await command('hoai.input.text', { leaseId, focusToken: focus.focusToken, text: words })).result, {})
+      assert.equal(await page.locator('#ordinary').inputValue(), words)
+      assert.throws(() => runAgentBrowserWork(slot, () => {}), /owner currently controls/)
+      await page.locator('#secret').focus()
+      assert.equal((await command('hoai.input.focus', { leaseId })).result.credential, true)
+      assert.equal(await page.locator('#secret').inputValue(), '')
+    } finally {
+      await views.stop()
+      await pool.stopAll()
+      const absoluteRoot = resolve(root)
+      assert.ok(absoluteRoot.startsWith(resolve(tmpdir()) + sep + 'hoai-remote-input-test-'))
+      rmSync(absoluteRoot, { recursive: true, force: true })
+    }
+  })
+

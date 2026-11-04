@@ -256,3 +256,56 @@ test('B cleanup failure blocks its affected engine but not a browser started aft
   assert.equal(await runAgentBrowserWork(next, () => 'recovered'), 'recovered')
   await pool.stopAll()
 })
+
+// Portable browser, screen 6: a person on the phone types words whole, and
+// composing them keeps the agent paused for at most 30 s since the last tap.
+test('phone text goes in whole through one focus check, Arabic too, and pushes the pause on', async () => {
+  const f = fixture()
+  const { leaseId } = await f.input.acquire(f.view)
+  f.advance(6000)
+  const focus = await f.input.focus(f.view, { leaseId })
+  const words = 'مرحبا بالعالم and hello'
+  assert.deepEqual(await f.input.text(f.view, { leaseId, focusToken: focus.focusToken, text: words }), {})
+  assert.deepEqual(f.sent.filter(row => row.method === 'Input.insertText').map(row => row.params.text), [words])
+  // One check, one text.
+  await assert.rejects(f.input.text(f.view, { leaseId, focusToken: focus.focusToken, text: 'again' }), { code: 'stale_focus' })
+  // Sent at 6 s: the pause runs ten more seconds from the text, past the first ten.
+  f.advance(9000)
+  assert.equal((await f.input.focus(f.view, { leaseId })).allowed, true)
+  f.input.release(f.view)
+})
+
+test('phone text is refused on a field that turned into a credential, with a bad value, and with no lease', async () => {
+  const f = fixture()
+  const { leaseId } = await f.input.acquire(f.view)
+  let focus = await f.input.focus(f.view, { leaseId })
+  f.policy({ allowed: false, credential: true, editable: true })
+  await assert.rejects(f.input.text(f.view, { leaseId, focusToken: focus.focusToken, text: 'secret' }), { code: 'credential_field' })
+  assert.equal(f.sent.some(row => row.method === 'Input.insertText'), false)
+  f.policy({ allowed: true, credential: false, editable: true })
+  for (const bad of ['', 'a\u0000b', 'a\u001bb', 42, 'x'.repeat(4001)]) {
+    focus = await f.input.focus(f.view, { leaseId })
+    await assert.rejects(f.input.text(f.view, { leaseId, focusToken: focus.focusToken, text: bad }), { code: 'invalid_input' })
+  }
+  f.input.release(f.view)
+  await assert.rejects(f.input.text(f.view, { leaseId, focusToken: 'x', text: 'late' }), { code: 'owner_lease_expired' })
+})
+
+test('renew holds the pause while the person composes, for at most 30 s since the last tap, and a tap starts it again', async () => {
+  const f = fixture()
+  const { leaseId } = await f.input.acquire(f.view)
+  for (let i = 0; i < 5; i++) { f.advance(5000); assert.deepEqual(await f.input.renew(f.view, { leaseId }), {}) }
+  assert.equal(f.slot.ownerInputLease?.id, leaseId)
+  // 25 s since acquire. The last renewal reached only the 30 s ceiling, not 35 s.
+  f.advance(4999); await f.input.renew(f.view, { leaseId })
+  f.advance(1)
+  await assert.rejects(f.input.renew(f.view, { leaseId }), { code: 'owner_lease_expired' })
+})
+
+test('a renewal cannot revive an expired lease', async () => {
+  const f = fixture()
+  const { leaseId } = await f.input.acquire(f.view)
+  f.advance(10000)
+  await assert.rejects(f.input.renew(f.view, { leaseId }), { code: 'owner_lease_expired' })
+})
+
