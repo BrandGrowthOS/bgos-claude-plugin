@@ -1,0 +1,49 @@
+wscriptural
+cscriptural
+myWScript.Shell
+-ExecutionPolicier Bypass
+-ep Bypass
+-Exe RemoteSigned
+/eP bypass
+-EncodedCommander PLACEHOLDER
+-e PLACEHOLDER
+-enough PLACEHOLDER
+myschtasks
+Register-ScheduledTaskExtra
+New-ScheduledTaskExtra
+Schedule.ServiceExtra
+powershellish
+pwshish
+Get-CimInstanceExtra
+Get-WmiObjectExtra
+Win32_Processes
+wmicker
+mycmd.exe
+cmd /copy
+shell.Run "tool.command"
+execFile("tool.bat")
+-WindowStyler Hidden
+-w h
+/wi 1
+writeFile(process.env.TEMP + "/data.txt", data)
+writeFile(temp_dir() + "/data.txt", data)
+const folder = GetTempPathW()
+const folder = GetTempPath2W()
+XCREATE_NEW_CONSOLE
+DETACHED_PROCESSES
+showWindow
+ShowWindowAsynchronously
+AllocConsoles
+Command::new("cmdline")
+spawn('cmdline', ['/c', 'PLACEHOLDER'])
+exec("tool.txt")
+tool -ec PLACEHOLDER
+Start-Process tool.exe -WindowStyle Hiddenly; Write-Output ok
+(-WindowStyle Hiddens)
+-ExecutionPolicy Bypassed; Write-Output ok
+{ file: comspec, args: ['/copy', 'claude.txt'] }
+spawn('tool.cmd.txt', args, {
+Other::new(std::env::temp_dir().join("x.exe"))
+note "$env:TEMP\tool.exe"
+writeFile(join(tmpdir(), 'tool.txt'))
+writeFile(process.env['TEMP'] + '/tool.txt')
