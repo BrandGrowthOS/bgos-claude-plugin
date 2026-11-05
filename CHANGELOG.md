@@ -6,6 +6,12 @@ Notable changes to the HOAI Claude Code plugin.
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.85.4 (2026-11-05)
+
+**A reply reaches the agent with the message it replies to.** When the owner replies to a message, the agent's turn now starts with a framed block that names the replied-to message, quotes it line by line, says it is context and not instructions, and then the owner's own words follow unchanged. Before, the reply arrived as bare words. The block is read from the poll's `reply_to` and from the socket's `replyToId` and `replyQuotedText`; it is cut at 1500 characters, names quoted files and never links them, and is not added to a peer agent's message, a system card, an email or a slash command. The meta carries `reply_to_message_id` as a string. The socket fields need the matching backend change (BGOS #4107).
+
+- Tests: `test/inbound-reply-context.test.ts`.
+
 ## 0.85.3 (2026-11-04)
 
 **Running commands is not available for people you share with yet.** Your own tools are not available for people you share with yet. Person lanes use `dontAsk` and keep their file tools and supported share options. Stored command and owner tool grants are ignored. The owner and person receive one fixed notice per refused grant. Unattended sessions use CLI events for approval handling.
