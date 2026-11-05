@@ -9,9 +9,9 @@ module.exports = (rig, host) => {
    const r = await rig(t), set = r.set; r.set = html => set(`<html lang=${lang}>${html}</html>`); await work(r, t);
   });
   check('1 ordinary forms stay readable and fillable', async r => {
-   const labels = lang === 'ar' ? ['رمز الدولة', 'رمز بريدي', 'رمز القسيمة', 'رمز التحقق', 'البحث برمز المنتج'] : ['Country code', 'Postal code', 'Coupon code', 'Verification code', 'Search by product code'];
+   const labels = lang === 'ar' ? ['رمز الدولة', 'رمز بريدي', 'رمز القسيمة', 'رمز الخصم', 'البحث برمز المنتج'] : ['Country code', 'Postal code', 'Coupon code', 'Discount code', 'Search by product code'];
    for (const [i, label] of labels.entries()) {
-    await r.set(`<h1>Ordinary form</h1><input aria-label="${label}" ${i === 1 ? 'autocomplete=postal-code' : i === 3 ? 'autocomplete=one-time-code name=otp' : ''} ${i === 4 ? 'type=search' : ''} value=ORDINARY123>`);
+    await r.set(`<h1>Ordinary form</h1><input aria-label="${label}" ${i === 1 ? 'autocomplete=postal-code' : i === 3 ? 'name=discount_code' : ''} ${i === 4 ? 'type=search' : ''} value=ORDINARY123>`);
     const reply = await r.route('browser_snapshot', {}, []); assert.equal(reply.cards.length, 0, label); assert.match(text(reply.result), /Ordinary form/);
     const target = /ref=((?:f\d+)?e\d+)/.exec(text(reply.result).split('\n').find(line => /textbox|searchbox/.test(line)) || '')?.[1]; assert.ok(target, text(reply.result));
     const fill = await r.route('browser_type', { target, text: 'MADEUP456', element: label }, ['allow_once']);
@@ -25,7 +25,7 @@ module.exports = (rig, host) => {
   check('1 unclear fields ask once per field including new documents', async r => {
    await r.set('<input aria-label=Pin value=4821>');
    let reply = await r.route('browser_snapshot', {}, ['allow_once']); assert.equal(reply.cards.length, 1); assert.match(text(reply.result), /4821/);
-   await r.page.evaluate(() => { const el = document.createElement('input'); el.setAttribute('aria-label', 'Token'); el.value = '7391'; document.body.append(el); });
+   await r.page.evaluate(() => { const el = document.createElement('input'); el.setAttribute('aria-label', 'Other reference'); el.value = '7391'; document.body.append(el); });
    reply = await r.route('browser_snapshot', {}, ['deny']); assert.equal(reply.cards.length, 1, 'a second field on this page has its own question');
    reply = await r.route('browser_snapshot', {}, []); assert.equal(reply.cards.length, 0, 'the same denied field does not ask twice');
    await r.set('<input aria-label=Pin value=8164>'); reply = await r.route('browser_snapshot', {}, ['deny']); assert.equal(reply.cards.length, 1, 'a new field on the same origin asks');
@@ -82,7 +82,7 @@ module.exports = (rig, host) => {
   });
   check('6 ordinary descriptions cannot approve a password labelled field', async r => {
    for (const html of ['<label id=p>Password</label><label id=h>Password hint: 12 characters</label><input aria-labelledby="p h" value=MADEUPSECRET>', '<input type=email aria-label=Password value=MADEUPSECRET>']) {
-    await r.set(html); const reply = await r.route('browser_snapshot', {}, ['deny']); assert.equal(reply.cards.length, 1); assert.doesNotMatch(text(reply.result), /MADEUPSECRET/);
+    await r.set(html); const reply = await r.route('browser_snapshot', {}, ['deny']); assert.equal(reply.cards.length, 0); assert.doesNotMatch(text(reply.result), /MADEUPSECRET/);
    }
    await r.set('<input type=email aria-label="Password hint" style="-webkit-text-security:disc" value=MADEUPSECRET>');
    const masked = await r.route('browser_snapshot', {}, []); assert.equal(masked.cards.length, 0); assert.doesNotMatch(text(masked.result), /MADEUPSECRET/);

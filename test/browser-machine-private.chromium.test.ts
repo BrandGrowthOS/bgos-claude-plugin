@@ -121,7 +121,7 @@ test('a signed in page: no file under the agent\'s folder or temp holds its text
   const LINKED = `MADE_UP_LINK_${randomBytes(9).toString('hex')}`
   const server = createServer((_req, res) => {
     res.setHeader('content-type', 'text/html')
-    res.end(`<title>Security settings</title><h1>Recovery code ${MARKER}</h1><label>Password <input type="password" aria-label="Password"></label><label>Note <input aria-label="Note" value="an ordinary value"></label><a href="/next?token=${LINKED}">Next</a><button>Show</button>`)
+    res.end(`<title>Security settings</title><h1>Recovery code ${MARKER}</h1><label>Password <input type="password" aria-label="Password"></label><label>Search <input aria-label="Search" value="an ordinary value"></label><a href="/next?token=${LINKED}">Next</a><button>Show</button>`)
   })
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()))
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/`

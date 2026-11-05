@@ -7,6 +7,7 @@ const ref = (s, name) => new RegExp(`${name}[^\\n]*?\\[ref=((?:f\\d+)?e\\d+)\\]`
 module.exports = function register(rig, host) {
   require("./page-routing-cases.cjs")(rig, host);
   require("./round12-cases.cjs")(rig, host);
+  require("./round13-cases.cjs")(rig, host);
   for (const lang of ["en", "ar"]) {
     const LINE = lang === "ar" ? "توجد كلمة مرور في هذه الصفحة. أكملها هنا، وسأتابع عندما تتغير الصفحة." : "A password is on this page. You finish it here, and I will carry on when the page changes.";
     const localized = async t => { const r = await rig(t); const set = r.set; r.set = html => set(`<html lang=${lang}>${html}</html>`); return r; };
@@ -20,11 +21,11 @@ module.exports = function register(rig, host) {
       ["replacement continuity", `<input id=p type=password value=4821><button id=b>Show</button><script>window.reveal=()=>{document.getElementById('p').outerHTML='<input value=4821>'}</script>`],
       ["card privacy", `<input type=password value=${made}><button>Delete ${made}</button>`],
       ["accessible names", `<input type=password aria-label=${made} placeholder=${made} value=${made}><span role=img style="-webkit-text-security:disc" aria-label=${made}>${made}</span>`],
-      ["field recognition", `<span id=l>${word}</span><input style="-webkit-text-security:disc" aria-labelledby=l value=${made}>`],
-      ["passphrase recognition", `<input type=password name=passphrase value=${made}>`],
-      ["time code recognition", `<input type=password name=totp value=${made}>`],
-      ["verification recognition", `<input type=password aria-label="Verification code" value=${made}>`],
-      ["identity recognition", `<input type=password aria-label="Social security number" value=${made}>`],
+      ["field recognition", `<span id=l>${word}</span><input aria-labelledby=l value=${made}>`],
+      ["passphrase recognition", `<input name=passphrase value=${made}>`],
+      ["time code recognition", `<input name=totp value=${made}>`],
+      ["verification recognition", `<input aria-label="Verification code" value=${made}>`],
+      ["identity recognition", `<input aria-label="Social security number" value=${made}>`],
       ["font recognition", `<input style="font-family:text-security-disc" value=${made}>`],
     ];
     for (const [label, html, closed, typed] of pages) test(`${host} ${lang} ${label}`, { timeout: 90000 }, async t => {
@@ -82,7 +83,7 @@ module.exports = function register(rig, host) {
       const r=await localized(t);
       for(const control of controls) {
         await r.set(`<form id=f onsubmit="document.title='submitted';return false">${control.includes('form=f')?'':control}</form>${control.includes('form=f')?control:''}<button form=f>Delete account</button>`);
-        await r.call('browser_snapshot');
+        await r.route('browser_snapshot',{},['allow_once']);
         for(const key of keys) {
           await r.page.locator('#q').focus();const result=await r.gate('browser_press_key',{key});
           assert.equal(result.kind,'sensitive',JSON.stringify({control,key,result}));assert.match(result.summary,/Delete account/);
@@ -106,7 +107,7 @@ module.exports = function register(rig, host) {
     });
     test(`${host} ${lang} uncertain field asks once`,{timeout:90000},async t=>{
       const r=await localized(t);await r.set('<input aria-label=Code value=4821><h1>Public</h1>');
-      const question=await r.gate('browser_snapshot',{});assert.equal(question.kind,'credential');assert.match(question.summary,lang === "ar" ? /خاص/ : /private/);assert.doesNotMatch(question.summary,/4821|Code|Public/);
+      const question=await r.gate('browser_snapshot',{});assert.equal(question.kind,'credential');assert.match(question.summary,lang === "ar" ? /خاص/ : /private/);assert.match(question.summary,/Code/);assert.doesNotMatch(question.summary,/4821|Public/);
       assert.equal(text(await r.call('browser_snapshot')),LINE);
       const ordinary = await localized(t);
       await ordinary.set('<input aria-label=Code value=4821><h1>Ordinary</h1>');

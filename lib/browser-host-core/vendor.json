@@ -21,7 +21,7 @@
     },
     "answer-privacy.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/answer-privacy.js",
-      "sha256": "d2b4d4122a0646fb8a50d92374da3480a388b3b0759f9cffde6407a168580a79",
+      "sha256": "17b7f7ec8e0df6ec6b6c284a2028f1e55d3e63e648e3857e6d114ea3ac4a7187",
       "sourceCommit": "e6bc4bad1fe385eaa948e9d7b39392358d5c0604"
     }
   },

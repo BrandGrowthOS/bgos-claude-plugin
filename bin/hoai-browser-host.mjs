@@ -1404,7 +1404,7 @@ export class PlaywrightEngine {
       const reply = await this._backend.callTool(back ? 'browser_navigate' : name, back ? { url: back } : args || {}, signal)
       if (name === 'browser_tabs' && args?.action === 'new' && !reply?.isError) this._agentPages.add(this.selectedPage())
       if (this.dialogWaiting() && name !== 'browser_handle_dialog') return dialogReply()
-      return this._privacy.forPage(this._currentTab()?.page, async () => {
+      return await this._privacy.forPage(this._currentTab()?.page, async () => {
         if (!READS_THE_TREE.has(name)) await this._privacy.after(this._currentTab()?.page)
         if (name === 'browser_tabs' && !reply?.isError) return this.tabsOverview()
         return this._privacy.keep(this._secrets.value(this._privacy.value(await this._privacy.image(reply, this._currentTab()?.page, { element: !!args?.target }))))
@@ -1413,7 +1413,7 @@ export class PlaywrightEngine {
       if (this._privacy.blocked) return this._privacy.handoff()
       if (error instanceof HostError || this._privacy.isUnreadable(error)) throw error
       throw Object.assign(new Error(this._secrets.text(this._privacy.error(String(error?.message || 'Browser command failed')))), { code: error?.code })
-    } finally { this._privacy.busy = false; this.onSelectedPage?.(this.selectedPage()) }
+    } finally { await this._privacy.endWriting(this._currentTab()?.page); this._privacy.busy = false; this.onSelectedPage?.(this.selectedPage()) }
   }
 
   tabsOverview() { return this._privacy.tabList(this._backend?._context?.tabs?.() || [], this._currentTab()?.page) }
@@ -2334,11 +2334,12 @@ export class BrowserHostCore {
     const settings = this._settingsFor(slot)
     validateTool(name, engineArgs)
     const privateState = await slot.engine.inspectPrivacy?.(name, engineArgs)
+    if (closesPage(name, engineArgs) && slot.engine.pages?.().length === 1) throw new HostError('last_tab', privateState?.language === 'ar' ? 'أبق علامة تبويب واحدة مفتوحة على الأقل.' : 'Keep at least one tab open.')
     const route = privateRoute(name, engineArgs, privateState, slot.engine.selectedPage?.()?.url())
     const question = !leavesPage(name, engineArgs) && privateState?.uncertain && this.gates && slot.engine.takePrivacyQuestion()
     if (question) {
       return this.gates.raise({ key: this.pool.slotKey(ctx), assistantId: ctx.assistantId, kind: 'credential', origin: null,
-        summary: privateState.question, purpose: null, choices: ['allow_once', 'deny'], waitSeconds: waitSecondsFrom(waitSeconds),
+        summary: question.summary, purpose: null, choices: ['allow_once', 'deny'], waitSeconds: waitSecondsFrom(waitSeconds),
         action: async () => {
           await slot.engine.inspectPrivacy(); slot.engine.confirmOrdinary(question)
           const next = await this._permit(ctx, slot, name, engineArgs, waitSeconds, signal)

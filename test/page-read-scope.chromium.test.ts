@@ -42,7 +42,7 @@ async function rig(t: any, html?: any, { answer = 'deny', write = 'allow', navig
 
 import register from './page-read-scope-cases.cjs'
 register(async(t:any,lang:string)=>{
- const r=await rig(t,`<html lang=${lang}><h1>Public page</h1><input aria-label=Notes value=Ordinary></html>`)
+ const r=await rig(t,`<html lang=${lang}><h1>Public page</h1><input aria-label=Search value=Ordinary></html>`)
  const pages=[r.page];for(let i=0;i<3;i++){const page=await r.page.context().newPage();await page.goto(`${r.origin}/other${i}`);pages.push(page)}
  await new Promise(resolve=>setTimeout(resolve,200));await r.engine.callTool('browser_tabs',{action:'select',index:0})
  return {pages,privacy:r.engine._engine._privacy,callEngine:(name:string,args:any)=>r.engine.callTool(name,args),call:r.call}
