@@ -3,7 +3,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -456,21 +456,28 @@ test('run-tests.mjs exits nonzero for a failing file, names it, and hands its fi
     // Both families are here so that the bad file is the only thing that can make this run exit 1.
     'bun-good.test.ts': `${BUN_IMPORT}${FINE}`,
   })
+  let outside = ''
   try {
-    const real = join(root, 'real')
+    // Outside the run's tree. Its files' tools write to their temp folder, which is not a path a test left.
+    outside = realpathSync(mkdtempSync(join(tmpdir(), 'runner-orchestrator-temp-')))
+    const real = join(outside, 'real')
     mkdirSync(real)
-    const env: Record<string, string> = { PROBE_OUT: join(root, 'probe.txt') }
+    const env: Record<string, string> = { PROBE_OUT: join(outside, 'probe.txt') }
     // Windows takes its temp folder from TEMP and TMP, and the rule leaves it alone there.
     if (process.platform !== 'win32') {
-      symlinkSync(real, join(root, 'link'))
-      env.TMPDIR = join(root, 'link')
+      symlinkSync(real, join(outside, 'link'))
+      env.TMPDIR = join(outside, 'link')
     }
     const run = await runOrchestrator(root, env)
     assert.equal(run.code, 1, `${run.stdout}\n${run.stderr}`)
     assert.match(run.stdout, /\[run-tests\] 2 passed, 1 failed, 0 skipped, 3 files/)
     assert.match(run.stdout, /bad\.test\.ts: the named failure/)
+    assert.doesNotMatch(run.stderr, /NEW PATH/)
     if (process.platform !== 'win32') assert.equal(readFileSync(env.PROBE_OUT!, 'utf8'), real)
-  } finally { removeScratchDir(root) }
+  } finally {
+    removeScratchDir(root)
+    if (outside) removeScratchDir(outside)
+  }
 })
 
 test('run-tests.mjs exits zero only when every file completed', { timeout: 120_000 }, async () => {
@@ -621,4 +628,136 @@ test('run-tests.mjs fails when its test folder is missing', { timeout: 120_000 }
     assert.notEqual(run.code, 0, `${run.stdout}\n${run.stderr}`)
     assert.doesNotMatch(run.stdout, /both families green/)
   } finally { removeScratchDir(root) }
+})
+
+// ── A path the run left behind ─────────────────────────
+//
+// The real runner, real node and real bun, on real test files that leave real
+// files. A stand in for either family could not show that a path a test leaves
+// fails the run.
+
+const LEAVES = (statement: string) => `import { mkdirSync, writeFileSync } from 'node:fs';${NODE_IMPORT}test('leaves a path', () => { ${statement} });`
+
+test('a stray file a real test leaves fails the run by its path, though every test passed, and the same run with none left passes', { timeout: 120_000 }, async () => {
+  const root = orchestratorFolder({
+    'litters.test.ts': LEAVES(`writeFileSync('stray.txt', '')`),
+    'bun.test.ts': `${BUN_IMPORT}${FINE}`,
+  })
+  try {
+    const dirty = await runOrchestrator(root)
+    assert.equal(dirty.code, 1, `${dirty.stdout}\n${dirty.stderr}`)
+    assert.match(dirty.stdout, /2 passed, 0 failed, 0 skipped, 2 files/, 'the stray file is the only thing wrong with this run')
+    assert.match(dirty.stderr, /^\[run-tests\] NEW PATH: "stray\.txt"$/m)
+    assert.match(dirty.stderr, /\[run-tests\] FAILED/)
+    assert.doesNotMatch(dirty.stdout, /both families green/)
+
+    rmSync(join(root, 'stray.txt'))
+    writeFileSync(join(root, 'test', 'litters.test.ts'), LEAVES(''))
+    const clean = await runOrchestrator(root)
+    assert.equal(clean.code, 0, `${clean.stdout}\n${clean.stderr}`)
+    assert.match(clean.stdout, /both families green/)
+    assert.doesNotMatch(clean.stderr, /NEW PATH/)
+  } finally { removeScratchDir(root) }
+})
+
+test('a bun test that leaves a path fails the run too, and the scan sees what git status would not', { timeout: 120_000 }, async () => {
+  const root = orchestratorFolder({
+    'bun-litters.test.ts': `import { mkdirSync, writeFileSync } from 'node:fs';${BUN_IMPORT}test('leaves paths', () => { mkdirSync('left-empty/.git', { recursive: true }); writeFileSync('left.backup', ''); writeFileSync('kept/new.backup', '') });`,
+    'node.test.ts': `${NODE_IMPORT}${FINE}`,
+  })
+  try {
+    writeFileSync(join(root, '.gitignore'), '*.backup\n')
+    mkdirSync(join(root, 'kept'))
+    writeFileSync(join(root, 'kept', 'old.backup'), '')
+    const run = await runOrchestrator(root)
+    assert.equal(run.code, 1, `${run.stdout}\n${run.stderr}`)
+    const named = [...run.stderr.matchAll(/^\[run-tests\] NEW PATH: (.+)$/gm)].map((match) => JSON.parse(match[1]!.trim()))
+    assert.deepEqual(named, ['kept/new.backup', 'left-empty', 'left-empty/.git', 'left.backup'])
+  } finally { removeScratchDir(root) }
+})
+
+test('a path that was there before the run is not new, even when a test writes to it', { timeout: 120_000 }, async () => {
+  const root = orchestratorFolder({
+    'rewrites.test.ts': LEAVES(`writeFileSync('kept.txt', 'changed')`),
+    'bun.test.ts': `${BUN_IMPORT}${FINE}`,
+  })
+  try {
+    writeFileSync(join(root, 'kept.txt'), '')
+    const run = await runOrchestrator(root)
+    assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
+    assert.equal(readFileSync(join(root, 'kept.txt'), 'utf8'), 'changed', 'the test really ran')
+  } finally { removeScratchDir(root) }
+})
+
+test('a failed test and a test past its own timeout do not hide the stray file, and the stray file does not hide them', { timeout: 120_000 }, async () => {
+  const root = orchestratorFolder({
+    'litters.test.ts': LEAVES(`writeFileSync('stray.txt', '')`),
+    'bad.test.ts': `${NODE_IMPORT}test('the named failure', () => { throw new Error('no') })`,
+    'hangs.test.ts': `${NODE_IMPORT}test('never settles', { timeout: 300 }, () => new Promise(() => {}))`,
+    'bun.test.ts': `${BUN_IMPORT}${FINE}`,
+  })
+  try {
+    const run = await runOrchestrator(root)
+    assert.equal(run.code, 1, `${run.stdout}\n${run.stderr}`)
+    assert.match(run.stdout, /bad\.test\.ts: the named failure/)
+    assert.match(run.stdout, /hangs\.test\.ts: never settles/)
+    assert.match(run.stderr, /^\[run-tests\] NEW PATH: "stray\.txt"$/m)
+  } finally { removeScratchDir(root) }
+})
+
+test('a file that hangs to the file deadline fails by name, and the stray file it left is still reported', { timeout: 120_000 }, async () => {
+  const root = orchestratorFolder({
+    // Blocked, so its own test timeout cannot fire. Only the file deadline ends it, as a real hang does.
+    'hangs.test.ts': LEAVES(`writeFileSync('stray-from-the-hang.txt', ''); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0)`),
+    'bun.test.ts': `${BUN_IMPORT}${FINE}`,
+  })
+  try {
+    const run = await runOrchestrator(root, { RUN_TESTS_FILE_DEADLINE_MS: '20000' })
+    assert.equal(run.code, 1, `${run.stdout}\n${run.stderr}`)
+    assert.match(run.stdout, /^ {2}test[\\/]hangs\.test\.ts: .*TIMED OUT/m)
+    assert.match(run.stderr, /^\[run-tests\] NEW PATH: "stray-from-the-hang\.txt"$/m)
+    assert.match(run.stderr, /\[run-tests\] FAILED/)
+  } finally { removeScratchDir(root) }
+})
+
+// Windows has no mode bits that stop a read, and root reads anything.
+const CANNOT_LOCK = process.platform === 'win32' || process.getuid?.() === 0
+
+// The folder is there before the run and a test locks it, so it is not a new path.
+const LOCKS = (statement = '') => `import { chmodSync, writeFileSync } from 'node:fs';${NODE_IMPORT}test('locks a folder', () => { chmodSync('kept', 0); ${statement} });`
+
+function folderToLock(root: string) {
+  mkdirSync(join(root, 'kept'))
+  writeFileSync(join(root, 'kept', 'old.txt'), '')
+}
+
+test('a tree the scan cannot read after the run fails it by that alone, and the run still reports its tests', { timeout: 120_000, skip: CANNOT_LOCK }, async () => {
+  const root = orchestratorFolder({ 'locks.test.ts': LOCKS(), 'bun.test.ts': `${BUN_IMPORT}${FINE}` })
+  try {
+    folderToLock(root)
+    const run = await runOrchestrator(root)
+    assert.equal(run.code, 1, `${run.stdout}\n${run.stderr}`)
+    assert.match(run.stdout, /2 passed, 0 failed, 0 skipped, 2 files/, 'the tree is the only thing wrong with this run')
+    assert.doesNotMatch(run.stderr, /NEW PATH/, 'the tree is the only thing wrong with this run')
+    assert.match(run.stderr, /\[run-tests\] could not read the working tree after the run/)
+    assert.match(run.stderr, /\[run-tests\] FAILED/)
+    assert.doesNotMatch(run.stdout, /both families green/)
+  } finally {
+    chmodSync(join(root, 'kept'), 0o755)
+    removeScratchDir(root)
+  }
+})
+
+test('beside a tree the scan cannot read, a stray file it can read is still named', { timeout: 120_000, skip: CANNOT_LOCK }, async () => {
+  const root = orchestratorFolder({ 'locks.test.ts': LOCKS(`writeFileSync('stray.txt', '')`), 'bun.test.ts': `${BUN_IMPORT}${FINE}` })
+  try {
+    folderToLock(root)
+    const run = await runOrchestrator(root)
+    assert.equal(run.code, 1, `${run.stdout}\n${run.stderr}`)
+    assert.match(run.stderr, /\[run-tests\] could not read the working tree after the run/)
+    assert.match(run.stderr, /^\[run-tests\] NEW PATH: "stray\.txt"$/m)
+  } finally {
+    chmodSync(join(root, 'kept'), 0o755)
+    removeScratchDir(root)
+  }
 })
