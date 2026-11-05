@@ -124,7 +124,7 @@ for (const scenario of [
     await a.mark({ ...scope, working: true })
     if (scenario.name === 'failed clear retry') {
       failClear = true
-      await a.onHook({ hook_event_name: 'Stop', session_id: scope.sessionId })
+      await a.onHook({ hook_event_name: 'SessionEnd', session_id: scope.sessionId })
       failClear = false
     }
     const selecting = b.mark({ ...scope, sessionId: '', working: scenario.working })
@@ -213,7 +213,7 @@ for (const delayed of [false, true]) {
   })
 }
 
-test('the actual admitted hook handler refreshes selected goals and clears them on Stop', async () => {
+test('the actual admitted hook handler refreshes selected goals and leaves their lease alone on Stop', async () => {
   let now = 1_000_000
   const writes: boolean[] = []
   const pending: Promise<void>[] = []
@@ -237,7 +237,11 @@ test('the actual admitted hook handler refreshes selected goals and clears them 
   await Promise.all(pending.splice(0))
   handle('Stop')
   await Promise.all(pending.splice(0))
-  assert.deepEqual(writes, [true, true, false])
+  assert.deepEqual(writes, [true, true])
+  now += 600_000
+  handle('PostToolUse')
+  await Promise.all(pending.splice(0))
+  assert.deepEqual(writes, [true, true], 'late tool activity after Stop cannot refresh')
 })
 
 test('the actual PATCH transport preserves HTTP 409 for the hook tracker', async () => {
@@ -329,7 +333,7 @@ test('stand-down makes a final clear attempt during an earlier failure backoff',
   })
   await tracker.mark({ ...scope, working: true })
   failure = true
-  await tracker.onHook({ hook_event_name: 'Stop', session_id: scope.sessionId })
+  await tracker.onHook({ hook_event_name: 'SessionEnd', session_id: scope.sessionId })
   await tracker.sweep()
   assert.deepEqual(writes, [true, false], 'ordinary sweeps must respect the backoff')
   failure = false

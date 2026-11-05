@@ -227,8 +227,11 @@ test('set_goal_working with a bound session describes its real hook lifecycle', 
   const r = rig(ownerCall)
   const result = await r.run('set_goal_working', { goal_ids: [3], working: true })
   assert.match(textOf(result), /Hook activity refreshes selected goals/)
-  assert.match(textOf(result), /Stop clears the selection/)
+  assert.match(textOf(result), /every 3 minutes while the turn is active/)
+  assert.match(textOf(result), /Stop leaves marks to lapse; your next prompt resumes the selection/)
   await r.tracker.onHook({ hook_event_name: 'Stop', session_id: 'session-a' })
+  assert.deepEqual(r.writes().map(call => call.body), [{ working: true }])
+  await r.tracker.onHook({ hook_event_name: 'SessionEnd', session_id: 'session-a' })
   assert.deepEqual(r.writes().map(call => call.body), [{ working: true }, { working: false }])
 })
 
@@ -410,7 +413,9 @@ test('both tools are declared with the brief schema, chat_id and mission_id opti
   // The DESCRIPTION, joined as the model reads it, not the schema below it:
   // the refresh rule must be the tool's own instruction, not a field hint.
   const description = working.slice(working.indexOf('description:'), working.indexOf('inputSchema:')).replace(/'\s*\+\s*'/g, '')
-  assert.match(description, /tool activity refreshes selected goals at most once per 10 minutes/, 'automatic refresh is described')
+  assert.match(description, /tool activity refreshes selected goals at most once per 3 minutes during an active turn/, 'automatic refresh is described')
+  assert.match(description, /Stop leaves the marks to lapse; the next prompt resumes your selected goals/, 'Stop expiry and prompt resumption are described')
+  assert.match(description, /SessionEnd clears the selection/, 'session cleanup is described')
   assert.match(description, /If hooks are unavailable, call this again with working: true within 30 minutes/, 'manual fallback is described')
   assert.match(description, /working: false when you stop/)
   assert.match(working, /integrations\/assistants\/:id\/missions\/:missionId\/goals\/:goalId\/working/)

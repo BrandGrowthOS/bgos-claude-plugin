@@ -323,14 +323,14 @@ test('successful working tool selections feed hook refreshes with the admitted s
   r.advance(600_000)
   await r.missionWorking.onHook({ hook_event_name: 'PreToolUse', session_id: 'session-a' }, r.now())
   assert.equal(r.sent.filter(call => call.method === 'PATCH').length, 4)
-  await r.missionWorking.onHook({ hook_event_name: 'Stop', session_id: 'session-a' }, r.now())
+  await r.missionWorking.onHook({ hook_event_name: 'SessionEnd', session_id: 'session-a' }, r.now())
   const clears = r.sent.filter(call => (call.body as any)?.working === false)
   assert.equal(clears.length, 2)
   for (const clear of clears) assert.deepEqual(clear.headers, { 'X-BGOS-Acting-User': RECIPIENT })
 })
 
 
-test('Stop during the first goal write prevents later goals of the same tool call from starting', async () => {
+test('Stop during the first goal write clears it and prevents later goals of the same tool call from starting', async () => {
   const r = rig({ actingUserId: OWNER, chatId: OWNER_CHAT, headers: {} })
   r.onPatch((scope, working) => {
     if (scope.goalId === 3 && working) void r.missionWorking.onHook({ hook_event_name: 'Stop', session_id: 'session-a' }, r.now())
