@@ -1859,7 +1859,7 @@ export function readGateBlock(read = (p) => readFileSync(p, 'utf8')) {
  * is none (no tmux, stdin is /dev/null): interact would read EOF there at once
  * and end the agent the moment it came up.
  * @param {{ claudePath: string, args: readonly string[], gateBlock?: string,
- *   supervised?: { stateDir: string, interactive: boolean, compact: string } | null }} params
+ *   supervised?: { stateDir: string, interactive: boolean, compact: string, denyPermissionPrompts?: boolean } | null }} params
  * @returns {string}
  */
 export function buildGateAutoAcceptExpect({ claudePath, args, gateBlock = readGateBlock(), supervised = null }) {
@@ -1909,7 +1909,21 @@ export function buildGateAutoAcceptExpect({ claudePath, args, gateBlock = readGa
       `if {$hoai_outcome eq "exited-during-startup"} { exit ${EXIT_SUPERVISED_STARTUP_EXIT} }`,
       `if {$hoai_outcome eq "live-but-not-signed-in"} { catch {close}; exit ${EXIT_SUPERVISED_SIGNED_OUT} }`,
       'set timeout -1',
-      supervised.interactive ? 'interact' : 'expect eof',
+      ...(supervised.denyPermissionPrompts ? [
+        // Only a CLI hook event can stop the unattended tail.
+        'set timeout 1',
+        'expect {',
+        '  timeout {',
+        '    if {[file exists "$hoai_statedir/permission-pending"]} { catch {exec kill [exp_pid]}; catch {close}; exit 88 }',
+        '    exp_continue',
+        '  }',
+        '  eof {}',
+        '  -re {.+} {',
+        '    if {[file exists "$hoai_statedir/permission-pending"]} { catch {exec kill [exp_pid]}; catch {close}; exit 88 }',
+        '    exp_continue -continue_timer',
+        '  }',
+        '}',
+      ] : [supervised.interactive ? 'interact' : 'expect eof']),
     ].join('\n')
   }
   return [
@@ -4317,8 +4331,8 @@ function defaultScriptDir() {
 export async function main(argv = process.argv.slice(2), opts = {}) {
   const env = opts.env ?? process.env
   const home = opts.home ?? homedir()
-  const cwd = opts.cwd ?? process.cwd()
   const platform = opts.platform ?? process.platform
+  const cwd = opts.cwd ?? process.cwd()
   const scriptDir = opts.scriptDir ?? defaultScriptDir()
   const readFile = opts.readFile ?? defaultReadText
   const listDir = opts.listDir ?? defaultListDir
