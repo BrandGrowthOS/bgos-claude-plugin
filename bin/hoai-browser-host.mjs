@@ -1440,8 +1440,7 @@ export class PlaywrightEngine {
       return this._privacy.privacyState()
     })
   }
-  takePrivacyQuestion() { return this._privacy.forPage(this._currentTab()?.page, () => this._privacy.takeQuestion()) }
-  confirmOrdinary(token) { return this._privacy.forPage(this._currentTab()?.page, () => this._privacy.confirmOrdinary(token)) }
+  handBackPrivacy(page = this._currentTab()?.page) { this._privacy.handBack(page) }
 
   /** What the host read of this call before anyone is asked, never the agent's words. */
   async describeAction(name, args) {
@@ -1857,8 +1856,7 @@ export class ChromiumEngine {
   tabsOverview() { return this._engine?.tabsOverview() }
   previousUrl() { return this._engine?.previousUrl() }
   inspectPrivacy(name, args) { return this._engine ? this._engine.inspectPrivacy(name, args) : Promise.resolve(null) }
-  takePrivacyQuestion() { return this._engine?.takePrivacyQuestion() }
-  confirmOrdinary(token) { return this._engine?.confirmOrdinary(token) }
+  handBackPrivacy(page) { return this._engine?.handBackPrivacy(page) }
 
   lastPageTree() { return this._engine?.lastPageTree() ?? null }
 
@@ -2336,25 +2334,9 @@ export class BrowserHostCore {
     const privateState = await slot.engine.inspectPrivacy?.(name, engineArgs)
     if (closesPage(name, engineArgs) && slot.engine.pages?.().length === 1) throw new HostError('last_tab', privateState?.language === 'ar' ? 'أبق علامة تبويب واحدة مفتوحة على الأقل.' : 'Keep at least one tab open.')
     const route = privateRoute(name, engineArgs, privateState, slot.engine.selectedPage?.()?.url())
-    const question = !leavesPage(name, engineArgs) && privateState?.uncertain && this.gates && slot.engine.takePrivacyQuestion()
-    if (question) {
-      return this.gates.raise({ key: this.pool.slotKey(ctx), assistantId: ctx.assistantId, kind: 'credential', origin: null,
-        summary: question.summary, purpose: null, choices: ['allow_once', 'deny'], waitSeconds: waitSecondsFrom(waitSeconds),
-        action: async () => {
-          await slot.engine.inspectPrivacy(); slot.engine.confirmOrdinary(question)
-          const next = await this._permit(ctx, slot, name, engineArgs, waitSeconds, signal)
-          if (next.parked) return this._parkedResult(next)
-          if (!next.allowed) return errorResult('policy_denied', next.message)
-          return toolResult(await next.ran)
-        } })
-    }
     if (route === 'hold') return { allowed: true, ran: Promise.resolve(text(privateState.handoff)) }
-    // What the host itself read of the target, never the agent's words: the same facts the desktop
-    // sends its intent check (snapshot-target.js). The page's own name is judged beside the agent's
-    // description, so calling a sensitive button something harmless does not make it harmless.
-    // The live page first, whatever form the target took, then the last tree. A target that neither
-    // can name, on a browser that may be signed in, is treated as sensitive.
-    // The live page first, then the host's own last tree. Never the agent's words.
+    // Private pages never contribute target words or raise a page-derived card.
+    // Otherwise judge the host's own live target beside the agent's description.
     const read = !privateState?.blocked && !closesPage(name, engineArgs) && (policy.WRITE_TOOLS.has(name) || name === 'browser_drop') ? readWithTree((await slot.engine.describeAction?.(name, engineArgs).catch(() => null)) || { targets: targetsNamedBy(engineArgs).map(() => ({ readable: false })), actuated: null, dialog: null }, engineArgs, slot.lastSnapshotText || null) : null
     if (read?.blocked || read?.targets?.some(item => item.sealed) && ['browser_type','browser_fill_form','browser_drag','browser_drop'].includes(name) || name === 'browser_press_key' && (read?.actuated?.sealed || read?.actuated?.focusUnreadable)) return { allowed: true, ran: Promise.resolve(text(read?.blocked ? privateState.handoff : (privateState?.person || privacy.COPY[privateState?.language === 'ar' ? 'ar' : 'en'].person))) }
     const readTargets = read ? [...read.targets, read.actuated].filter((item) => item?.name) : null

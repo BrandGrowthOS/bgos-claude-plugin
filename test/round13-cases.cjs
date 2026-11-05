@@ -30,32 +30,24 @@ module.exports = (rig, host) => {
     assert.doesNotMatch(text(held.result), new RegExp(value));
     r.nextPage(`<html lang=${lang}><title>Saved ${value}</title><h1>Your value ${value}</h1></html>`);
     await Promise.all([r.page.waitForEvent('domcontentloaded'), r.page.locator('button').click()]);
-    const echo = text(await r.call('browser_snapshot')); assert.match(echo, /Your value/); assert.doesNotMatch(echo, new RegExp(value), `${label} feeds the site net`);
+    const echo = text(await r.call('browser_snapshot')); assert.doesNotMatch(echo, /Your value/);await r.handBack();assert.match(text(await r.call('browser_snapshot')),/Your value/); assert.doesNotMatch(echo, new RegExp(value), `${label} feeds the site net`);
    });
   });
-  check('1 unmasked secret and denied unknown POST echoes feed the net', async (r, t) => {
-   for (const label of [secret[1], secret[3], secret[6], lang === 'ar' ? 'مرجع خاص' : 'Other reference']) await t.test(label, async () => {
+  check('1 unmasked secret POST echoes stay blind until Hand back', async (r, t) => {
+   for (const label of [secret[1], secret[3], secret[6]]) await t.test(label, async () => {
     await r.set(`<form method=post><input aria-label="${label}" value=MADEUPSECRET9876><button>Save</button></form>`);
-    await r.route('browser_snapshot', {}, ['deny']);
+    await r.route('browser_snapshot', {}, []);
     r.nextPage(`<html lang=${lang}><title>Saved</title><h1>Your key MADEUPSECRET9876</h1></html>`);
     await Promise.all([r.page.waitForEvent('domcontentloaded'), r.page.locator('button').click()]);
-    const reply = await r.call('browser_snapshot'); assert.match(text(reply), /Your key/); assert.doesNotMatch(text(reply), /MADEUPSECRET9876/);
+    assert.doesNotMatch(text(await r.call('browser_snapshot')),/Your key|MADEUPSECRET9876/); await r.handBack();
+    const reply=await r.call('browser_snapshot');assert.match(text(reply),/Your key/);assert.doesNotMatch(text(reply),/MADEUPSECRET9876/);
    });
   });
-  check('1 agent fills stay ordinary through reads then person input asks and denied fields stay sealed', async r => {
-   await r.set('<input aria-label="Other reference"><button>Done</button>');
-   const first = text(await r.call('browser_snapshot')), target = /textbox[^\n]*ref=((?:f\d+)?e\d+)/.exec(first)?.[1];
-   const filled = await r.route('browser_type', { target, text: 'AGENTMADEUP', element: 'Other reference' }, ['allow_once']); assert.notEqual(filled.result.isError, true, text(filled.result));
-   await r.route('browser_click', { target: /button[^\n]*ref=((?:f\d+)?e\d+)/.exec(first)?.[1], element: 'Done' }, ['allow_once']);
-   assert.match(text(await r.call('browser_snapshot')), /AGENTMADEUP/);
-   await r.page.locator('input').fill('PERSONMADEUP');
-   const held = await r.route('browser_snapshot', {}, ['deny']); assert.equal(held.cards.length, 1); assert.doesNotMatch(text(held.result), /PERSONMADEUP/);
-   await r.page.locator('input').fill('');
-   assert.doesNotMatch(text(await r.call('browser_snapshot')), /Other reference/);
-   await r.page.locator('input').fill('PERSONMADEUP');
-   const ctx = await r.page._connection.toImpl(r.page.mainFrame()).utilityContext(), injected = await ctx.injectedScript();
-   const raw = await injected.evaluate(i => globalThis[Symbol.for('hoai.browser.answerPrivacy')].sealedSnapshot.call(i, document.body, { mode: 'ai' }).json);
-   assert.doesNotMatch(JSON.stringify(raw), /PERSONMADEUP/);
+  check('1 agent fills and person edits of unknown controls stay ordinary', async r => {
+   await r.set('<input aria-label="Other reference">');
+   const first=text(await r.call('browser_snapshot')),target=/textbox[^\n]*ref=((?:f\d+)?e\d+)/.exec(first)?.[1];
+   await r.route('browser_type',{target,text:'AGENTMADEUP',element:'Other reference'},['allow_once']);assert.match(text(await r.call('browser_snapshot')),/AGENTMADEUP/);
+   await r.page.locator('input').fill('PERSONMADEUP');const reply=await r.route('browser_snapshot',{},[]);assert.equal(reply.cards.length,0);assert.match(text(reply.result),/PERSONMADEUP/);
   });
   check('1 SECRET autocomplete and masking override ordinary labels', async (r, t) => {
    for (const extra of ['autocomplete=current-password', 'autocomplete=new-password', 'autocomplete=cc-number', 'autocomplete=cc-csc', 'autocomplete=one-time-code', 'name=totp', 'name=otp', 'name=api_key', 'style="-webkit-text-security:disc"', 'type=password']) await t.test(extra, async () => {
@@ -71,17 +63,11 @@ module.exports = (rig, host) => {
     const filled = await r.route('browser_type', { target, text: 'ORDINARY456', element: label }, ['allow_once']); assert.notEqual(filled.result.isError, true, text(filled.result)); assert.equal(await r.page.locator('input').inputValue(), 'ORDINARY456');
    });
   });
-  check('1 and 5 all other filled fields ask once with distinct names and release only the approved net entry', async r => {
-   const labels = lang === 'ar' ? ['مرجع أول', 'مرجع ثان'] : ['First reference', 'Second reference'];
-   await r.set(`<input aria-label="${labels[0]}" value=MADEUPFIRST><input aria-label="${labels[1]}" value=MADEUPSECOND>`);
-   const reply = await r.route('browser_snapshot', {}, ['allow_once', 'deny']); assert.equal(reply.cards.length, 2);
-   assert.match(reply.cards[0].summary, new RegExp(labels[0])); assert.match(reply.cards[1].summary, new RegExp(labels[1]));
-   assert.doesNotMatch(JSON.stringify(reply.cards), /MADEUPFIRST|MADEUPSECOND/);
-   assert.equal((await r.route('browser_snapshot', {}, [])).cards.length, 0);
-   await r.set('<h1>MADEUPFIRST and MADEUPSECOND</h1>');
-   const echo = text(await r.call('browser_snapshot')); assert.match(echo, /MADEUPFIRST/); assert.doesNotMatch(echo, /MADEUPSECOND/);
+  check('1 and 5 unknown prefills are ordinary without approval', async r => {
+   await r.set('<input aria-label="First reference" value=MADEUPFIRST><input aria-label="Second reference" value=MADEUPSECOND>');
+   const reply=await r.route('browser_snapshot',{},[]);assert.equal(reply.cards.length,0);assert.match(text(reply.result),/MADEUPFIRST/);assert.match(text(reply.result),/MADEUPSECOND/);
   });
-  for (const kind of ['password', 'secret label', 'denied unknown', 'unanswered unknown']) for (const hop of ['redirect', 'replaceState']) check(`2 ${kind} GET blind follows ${hop}`, async (r, t) => {
+  for (const kind of ['password', 'secret label']) for (const hop of ['redirect', 'replaceState']) check(`2 ${kind} GET blind follows ${hop}`, async (r, t) => {
    const value = `MADEUP-${lang}-SECRET9876`;
    const server = createServer((req, res) => {
     res.setHeader('content-type', 'text/html; charset=utf-8');

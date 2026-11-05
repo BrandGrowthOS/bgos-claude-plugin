@@ -205,7 +205,7 @@ test('RULING a card says what the host read, marks the agent\'s words apart, and
   const before = r.cards.length
   const answer = await r.call('browser_click', { target: 'e2', element: 'x', wait_seconds: 1 })
   assert.equal(r.cards.length, before)
-  assert.equal(textOf(answer), 'A password is on this page. You finish it here, and I will carry on when the page changes.')
+  assert.equal(textOf(answer), 'This browser is private. Finish here, then press Hand back so I can carry on.')
   assert.doesNotMatch(JSON.stringify(r.cards), /MADEUPCARD/)
 })
 

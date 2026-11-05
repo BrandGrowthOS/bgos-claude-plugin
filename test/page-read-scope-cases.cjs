@@ -4,7 +4,7 @@ const text=reply=>(reply.content||[]).filter(p=>p.type==="text").map(p=>p.text).
 module.exports=function register(rig,label){
   for(const lang of ["en","ar"])for(const privateActive of [true,false])test(`${label} ${lang} response stays with its page (${privateActive?"private":"public"})`,{timeout:60000},async t=>{
     const r=await rig(t,lang),boundary=r.privacy,active=r.pages[0],others=r.pages.slice(1),fake="FictionScope9876";
-    const line=lang==="ar"?"توجد كلمة مرور في هذه الصفحة. أكملها هنا، وسأتابع عندما تتغير الصفحة.":"A password is on this page. You finish it here, and I will carry on when the page changes.";
+    const line=lang==="ar"?"هذا المتصفح خاص. أكمل هنا، ثم اضغط على إعادة التحكم لأتابع.":"This browser is private. Finish here, then press Hand back so I can carry on.";
     for(const p of r.pages)await boundary.read(p);
     if(!privateActive)for(const p of others)await p.evaluate(v=>{document.body.innerHTML=`<input type=password value=${v}><p>${v}</p>`;document.title=v;},fake);
     const states=[];
@@ -29,7 +29,7 @@ module.exports=function register(rig,label){
   });
   for(const lang of ["en","ar"])test(`${label} ${lang} capture keeps its own document verdict`,{timeout:60000},async t=>{
     const r=await rig(t,lang),page=r.pages[0],boundary=r.privacy,original=boundary.read.bind(boundary),fake="FictionScope9876";
-    const line=lang==="ar"?"توجد كلمة مرور في هذه الصفحة. أكملها هنا، وسأتابع عندما تتغير الصفحة.":"A password is on this page. You finish it here, and I will carry on when the page changes.";
+    const line=lang==="ar"?"هذا المتصفح خاص. أكمل هنا، ثم اضغط على إعادة التحكم لأتابع.":"This browser is private. Finish here, then press Hand back so I can carry on.";
     await page.evaluate(()=>document.body.innerHTML='<h1>Public page</h1><input id=p type=password><p id=echo></p>');
     let reads=0;
     boundary.read=async(target,options)=>{
@@ -44,6 +44,7 @@ module.exports=function register(rig,label){
       assert.equal(text(reply)===line,true,"a new document cannot release words captured from a private document");
       assert.equal(text(reply).includes(fake),false);assert.doesNotMatch(text(reply),/hoai-private-|hoai-proof-/);
     }finally{boundary.read=original;}
+    assert.equal(text(await r.callEngine("browser_snapshot",{})),line);boundary.handBack(page);
     assert.match(text(await r.callEngine("browser_snapshot",{})),/Public page/);
   });
 

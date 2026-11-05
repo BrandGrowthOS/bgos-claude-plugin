@@ -30,6 +30,6 @@ for (const [language, values] of [["en", ["abcdef", "xxabcdefgh"]], ["ar", ["ØªØ
     assert.equal(p.text("ordinaryLater"), "ordinaryLater");
   });
   test(`${language} privacy copy is complete`, () => {
-    for (const key of ["handoff", "person", "question"]) assert.equal(typeof (COPY as any)[language][key], "string");
+    for (const key of ["handoff", "person", "leave", "dialog", "accept", "dismiss", "prompt", "closed"]) assert.equal(typeof (COPY as any)[language][key], "string");
   });
 }

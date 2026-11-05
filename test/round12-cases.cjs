@@ -22,13 +22,11 @@ module.exports = (rig, host) => {
    const target = /combobox[^\n]*ref=((?:f\d+)?e\d+)/.exec(text(reply.result))?.[1];
    await r.route('browser_select_option', { target, values: ['2'], element: labels[0] }, ['allow_once']); assert.equal(await r.page.locator('select').inputValue(), '2');
   });
-  check('1 unclear fields ask once per field including new documents', async r => {
+  check('1 PIN seals without a card and unknown fields stay ordinary', async r => {
    await r.set('<input aria-label=Pin value=4821>');
-   let reply = await r.route('browser_snapshot', {}, ['allow_once']); assert.equal(reply.cards.length, 1); assert.match(text(reply.result), /4821/);
-   await r.page.evaluate(() => { const el = document.createElement('input'); el.setAttribute('aria-label', 'Other reference'); el.value = '7391'; document.body.append(el); });
-   reply = await r.route('browser_snapshot', {}, ['deny']); assert.equal(reply.cards.length, 1, 'a second field on this page has its own question');
-   reply = await r.route('browser_snapshot', {}, []); assert.equal(reply.cards.length, 0, 'the same denied field does not ask twice');
-   await r.set('<input aria-label=Pin value=8164>'); reply = await r.route('browser_snapshot', {}, ['deny']); assert.equal(reply.cards.length, 1, 'a new field on the same origin asks');
+   const sealed = await r.route('browser_snapshot', {}, ['allow_once']); assert.equal(sealed.cards.length, 0); assert.doesNotMatch(text(sealed.result), /4821/);
+   await r.set('<input aria-label="Other reference" value=7391>'); assert.doesNotMatch(text(await r.call('browser_snapshot')),/7391/); await r.handBack();
+   const ordinary=await r.route('browser_snapshot',{},[]);assert.equal(ordinary.cards.length,0);assert.match(text(ordinary.result),/7391/);
   });
   check('2 a person tab always needs a close card even with a write grant', async r => {
    await r.set('<h1>Person draft</h1>');

@@ -258,3 +258,14 @@ test('capture bounds: a phone start within its cap is honoured smaller, anything
   }
 })
 
+
+
+test('round14 only explicit handback clears privacy and a target change during drain refuses it', async t => {
+  const f=fixture();t.after(()=>f.views.stop());await f.open('view-one','host-socket',true);
+  let released:any[]=[];(f.engine as any).handBackPrivacy=(page:any)=>released.push(page);
+  await f.command('hoai.input.release');assert.equal(released.length,0);
+  await f.command('hoai.input.release',{handBackPrivacy:true});assert.deepEqual(released,[f.page]);
+  released=[];
+  f.views.input.drain=async(view:any)=>{view.tabId='replacement';};
+  assert.equal(await f.command('hoai.input.release',{handBackPrivacy:true}),false);assert.equal(released.length,0);assert.equal(f.frames.at(-1).frame.error.code,'stale_target');
+});

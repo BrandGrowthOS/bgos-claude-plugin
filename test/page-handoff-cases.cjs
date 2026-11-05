@@ -1,7 +1,7 @@
 "use strict";
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const LINE = "A password is on this page. You finish it here, and I will carry on when the page changes.";
+const LINE = "This browser is private. Finish here, then press Hand back so I can carry on.";
 const text = r => (r?.content || []).filter(p => p.type === "text").map(p => p.text).join("\n");
 const ref = (s, name) => new RegExp(`${name}[^\\n]*?\\[ref=((?:f\\d+)?e\\d+)\\]`).exec(s)?.[1];
 module.exports = function register(rig, host) {
@@ -9,7 +9,7 @@ module.exports = function register(rig, host) {
   require("./round12-cases.cjs")(rig, host);
   require("./round13-cases.cjs")(rig, host);
   for (const lang of ["en", "ar"]) {
-    const LINE = lang === "ar" ? "توجد كلمة مرور في هذه الصفحة. أكملها هنا، وسأتابع عندما تتغير الصفحة." : "A password is on this page. You finish it here, and I will carry on when the page changes.";
+    const LINE = lang === "ar" ? "هذا المتصفح خاص. أكمل هنا، ثم اضغط على إعادة التحكم لأتابع." : "This browser is private. Finish here, then press Hand back so I can carry on.";
     const localized = async t => { const r = await rig(t); const set = r.set; r.set = html => set(`<html lang=${lang}>${html}</html>`); return r; };
     const word = lang === "ar" ? "كلمة مرور" : "Password";
     const made = lang === "ar" ? "تجريبي٩٨٧٦" : "SAMPLE9876";
@@ -43,6 +43,7 @@ module.exports = function register(rig, host) {
       assert.equal(text(await r.call('browser_find',{regex:'Public|'+made})),LINE);
       assert.equal(text(await r.call('browser_take_screenshot')),LINE);
       await r.set('<h1>Welcome back</h1><p>SAMPLE9876</p>');
+      assert.equal(text(await r.call("browser_snapshot")), LINE); await r.handBack();
       assert.match(text(await r.call("browser_snapshot")), /Welcome back/);
     });
     test(`${host} ${lang} sealed reader remains a second wall`,{timeout:90000},async t=>{
@@ -105,18 +106,11 @@ module.exports = function register(rig, host) {
       await r.call('browser_click',{target:ref(tree,'Open'),element:'Open'});
       const result=await r.gate('browser_handle_dialog',{accept:true}); assert.equal(result.kind,'sensitive'); assert.ok(result.summary.includes(message),result.summary);
     });
-    test(`${host} ${lang} uncertain field asks once`,{timeout:90000},async t=>{
+    test(`${host} ${lang} unknown fields stay ordinary without cards`,{timeout:90000},async t=>{
       const r=await localized(t);await r.set('<input aria-label=Code value=4821><h1>Public</h1>');
-      const question=await r.gate('browser_snapshot',{});assert.equal(question.kind,'credential');assert.match(question.summary,lang === "ar" ? /خاص/ : /private/);assert.match(question.summary,/Code/);assert.doesNotMatch(question.summary,/4821|Public/);
-      assert.equal(text(await r.call('browser_snapshot')),LINE);
-      const ordinary = await localized(t);
-      await ordinary.set('<input aria-label=Code value=4821><h1>Ordinary</h1>');
-      await ordinary.gate('browser_snapshot',{},'allow_once');assert.match(text(await ordinary.call('browser_snapshot')),/4821/);
-      const count=ordinary.cards?.length;await ordinary.page.evaluate(()=>document.body.insertAdjacentHTML('beforeend','<input aria-label=Code value=9731>'));
-      const next=await ordinary.route('browser_snapshot',{},['deny']);
-      assert.equal(next.cards.length,1,'a new field asks its own question');
-      assert.doesNotMatch(text(next.result),/9731/,'an ordinary answer cannot approve a new unknown field');
-      assert.equal(ordinary.cards?.length,count+1,'the new field asks once');
+      const first=await r.route('browser_snapshot',{},[]);assert.equal(first.cards.length,0);assert.match(text(first.result),/4821|Public/);
+      await r.page.evaluate(()=>document.body.insertAdjacentHTML('beforeend','<input aria-label=Code value=9731>'));
+      const next=await r.route('browser_snapshot',{},[]);assert.equal(next.cards.length,0);assert.match(text(next.result),/9731/);
     });
     test(`${host} ${lang} agent cannot fill a secret`,{timeout:90000},async t=>{
       const r=await localized(t);await r.set('<input aria-label=Note><input type=password aria-label=Access>');
@@ -136,6 +130,7 @@ module.exports = function register(rig, host) {
       const r=await localized(t);await r.set('<input id=p type=password name=customField>');await r.call('browser_snapshot');
       await r.page.locator('#p').pressSequentially('Welcome1!');assert.equal(text(await r.call('browser_snapshot')),LINE);
       await r.set('<h1>Welcome back</h1><button>Delete Welcome1!</button>');
+      assert.equal(text(await r.call('browser_snapshot')),LINE);await r.handBack();
       const tree=text(await r.call('browser_snapshot'));assert.match(tree,/Welcome back/);assert.doesNotMatch(tree,/Welcome1!/);
       const card=await r.gate('browser_click',{target:ref(tree,'Delete'),element:'button'});assert.doesNotMatch(card.summary||'',/Welcome1!/);
     });
@@ -153,7 +148,7 @@ module.exports = function register(rig, host) {
       await r.page.locator('input[type=password]').pressSequentially(made);
       assert.equal(text(await r.call('browser_snapshot')),LINE);
       await r.page.locator('input[type=password]').fill(''); assert.equal(text(await r.call('browser_snapshot')),LINE);
-      await r.set('<h1>Welcome back</h1>'); assert.match(text(await r.call('browser_snapshot')),/Welcome back/);
+      await r.set('<h1>Welcome back</h1>'); assert.equal(text(await r.call('browser_snapshot')),LINE);await r.handBack(); assert.match(text(await r.call('browser_snapshot')),/Welcome back/);
     });
   }
 };

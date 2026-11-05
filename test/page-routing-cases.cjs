@@ -6,7 +6,7 @@ const text=r=>(r?.content||[]).filter(p=>p.type==='text').map(p=>p.text).join('\
 const ref=(s,name)=>new RegExp(`${name}[^\\n]*?\\[ref=((?:f\\d+)?e\\d+)\\]`).exec(s)?.[1];
 module.exports=(rig,host)=>{
  for(const lang of ['en','ar']){
-  const LINE=lang==='ar'?'توجد كلمة مرور في هذه الصفحة. أكملها هنا، وسأتابع عندما تتغير الصفحة.':'A password is on this page. You finish it here, and I will carry on when the page changes.';
+  const LINE=lang==='ar'?'هذا المتصفح خاص. أكمل هنا، ثم اضغط على إعادة التحكم لأتابع.':'This browser is private. Finish here, then press Hand back so I can carry on.';
   const value=lang==='ar'?'تجريبي٩٨٧٦':'SAMPLE9876';
   const local=async t=>{const r=await rig(t),set=r.set;r.set=html=>set(`<html lang=${lang}>${html}</html>`);return r;};
   const check=(label,work)=>test(`${host} ${lang} round11 ${label}`,{timeout:90000},async t=>work(await local(t),t));
@@ -21,11 +21,11 @@ module.exports=(rig,host)=>{
     await r.call('browser_unknown',{url:'javascript:document.title="STOLEN"'});assert.equal(r.page.url(),original);
    }
   });
-  check('2 privacy answer still asks about deleting',async r=>{
+  check('2 ordinary input still asks about deleting',async r=>{
    await r.set('<input aria-label=Code><button onclick="document.title=\'DELETED\'">Delete account</button>');
    const tree=text(await r.call('browser_snapshot'));await r.page.locator('input').fill('4821');
-   const {cards}=await r.route('browser_click',{target:ref(tree,'Delete account'),element:'Open'},['allow_once','deny']);
-   assert.equal(cards.length,2,JSON.stringify(cards));assert.equal(cards[0].kind,'credential');assert.equal(cards[1].kind,'sensitive');assert.match(cards[1].summary,/Delete account/);assert.notEqual(await r.page.title(),'DELETED');
+   const {cards}=await r.route('browser_click',{target:ref(tree,'Delete account'),element:'Open'},['deny']);
+   assert.equal(cards.length,1,JSON.stringify(cards));assert.equal(cards[0].kind,'sensitive');assert.match(cards[0].summary,/Delete account/);assert.notEqual(await r.page.title(),'DELETED');
   });
   check('3 failed closed inspection refuses a tree and retries',async r=>{
    r.engine._privacy.busy=true;
@@ -52,13 +52,13 @@ module.exports=(rig,host)=>{
    const old=r.page.url(),url=old.replace(/\/[^/]*$/,'/escaped');
    const denied=await r.route('browser_navigate',{url},['deny']);assert.equal(r.page.url(),old);assert.equal(denied.cards.length,1);assert.equal(denied.cards[0].kind,'sensitive','the native card must render the discard warning');assert.match(denied.cards[0].summary,lang==='ar'?/التخلي/:/discard/);
    r.nextPage(`<html lang=${lang}><h1>Welcome back</h1></html>`);
-   const allowed=await r.route('browser_navigate',{url},['allow_once']);assert.equal(r.page.url(),url,JSON.stringify(allowed));assert.equal(allowed.cards.length,1);assert.notEqual(allowed.result.isError,true,'14 a completed move reports success '+JSON.stringify(allowed.result));assert.match(text(await r.call('browser_snapshot')),/Welcome back/);
+   const allowed=await r.route('browser_navigate',{url},['allow_once']);assert.equal(r.page.url(),url,JSON.stringify(allowed));assert.equal(allowed.cards.length,1);assert.notEqual(allowed.result.isError,true,'14 a completed move reports success '+JSON.stringify(allowed.result));assert.equal(text(await r.call('browser_snapshot')),LINE);await r.handBack();assert.match(text(await r.call('browser_snapshot')),/Welcome back/);
   });
   check('4 back navigation asks before a real new document',async r=>{
    await r.set('<h1>First</h1>');const first=r.page.url();await r.set(`<input type=password value=${value}>`);await r.call('browser_snapshot');
    const denied=await r.route('browser_navigate_back',{},['deny']);assert.equal(denied.cards.length,1);assert.notEqual(r.page.url(),first);
    r.nextPage(`<html lang=${lang}><h1>Welcome back</h1></html>`);
-   const allowed=await r.route('browser_navigate_back',{},['allow_once']);assert.equal(allowed.cards.length,1);assert.equal(r.page.url(),first,JSON.stringify(allowed));assert.match(text(await r.call('browser_snapshot')),/Welcome back/);
+   const allowed=await r.route('browser_navigate_back',{},['allow_once']);assert.equal(allowed.cards.length,1);assert.equal(r.page.url(),first,JSON.stringify(allowed));assert.equal(text(await r.call('browser_snapshot')),LINE);await r.handBack();assert.match(text(await r.call('browser_snapshot')),/Welcome back/);
   });
   if(host==='machine')check('14 successful departure reports success',async r=>{
    await r.set(`<input type=password value=${value}>`);await r.call('browser_snapshot');const url=r.page.url().replace(/\/[^/]*$/,'/after');r.nextPage(`<html lang=${lang}><h1>Welcome</h1></html>`);
@@ -102,7 +102,7 @@ module.exports=(rig,host)=>{
   });
   if(host==='desktop')check('8 approval bypass cannot answer privacy',async r=>{
    await r.set('<input aria-label=Pin value=4821>');r.host.session.approvalBypass=true;
-   const reply=await r.route('browser_snapshot',{},['deny']);assert.equal(reply.cards.length,1);assert.doesNotMatch(text(reply.result),/4821/);
+   const reply=await r.route('browser_snapshot',{},['deny']);assert.equal(reply.cards.length,0);assert.doesNotMatch(text(reply.result),/4821/);
   });
   check('9 cross origin GET secrets never appear in addresses',async(r,t)=>{
    const other=createServer((_q,res)=>{res.setHeader('content-type','text/html');res.end(`<html lang=${lang}><h1>Welcome</h1></html>`)});await new Promise(resolve=>other.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>other.close(resolve)));
@@ -111,11 +111,14 @@ module.exports=(rig,host)=>{
    await Promise.all([r.page.waitForURL(origin+'/**'),r.page.locator('button').click()]);
    for(const name of ['browser_snapshot','browser_tabs']){const answer=await r.call(name,name==='browser_tabs'?{action:'list'}:{});assert.doesNotMatch(decodeURIComponent(text(answer)),new RegExp(value));}
   });
-  check('10 common secret labels ask only once',async r=>{
-   for(const label of ['PIN code','Your PIN','MFA code','2FA code','Authenticator code','Backup code','ssn','Credit card','Security answer','pass','user_pass','userpassword','Passwort','Mot de passe','Contraseña','رمز المصادقة']){
+  check('10 strong secret labels seal and unknown labels stay ordinary',async r=>{
+   for(const label of ['PIN code','Your PIN','MFA code','2FA code','Backup code','ssn','Credit card']){
     await r.set(`<input aria-label="${label}" value=4821><h1>Public</h1>`);
-    const first=await r.route('browser_snapshot',{},['deny']);assert.ok(first.cards.length===1||text(first.result)===LINE,label);assert.doesNotMatch(text(first.result),/4821/,label);
-    const next=await r.route('browser_snapshot',{},['deny']);assert.equal(next.cards.length,0,label);
+    const first=await r.route('browser_snapshot',{},[]);assert.equal(first.cards.length,0);assert.equal(text(first.result),LINE,label);
+   }
+   await r.set('<h1>Finished</h1>');assert.equal(text(await r.call('browser_snapshot')),LINE);await r.handBack();
+   for(const label of ['Security answer','Unlisted reference']){
+    await r.set(`<input aria-label="${label}" value=4821>`);const reply=await r.route('browser_snapshot',{},[]);assert.equal(reply.cards.length,0);assert.match(text(reply.result),/4821/);
    }
   });
   check('11 script document replacement keeps the lock',async r=>{
@@ -127,10 +130,10 @@ module.exports=(rig,host)=>{
    await r.call('browser_snapshot');await r.page.locator('#p').pressSequentially(value);
    assert.equal(text(await r.call('browser_snapshot')),LINE);
   });
-  check('15 a new field on the same site gets its own privacy question',async r=>{
+  check('15 ordinary fields on new documents never ask',async r=>{
    for(let i=0;i<3;i++){
     await r.set('<input aria-label=Code value=4821>');const reply=await r.route('browser_snapshot',{},['deny']);
-    assert.equal(reply.cards.length,1);assert.doesNotMatch(text(reply.result),/4821/);
+    assert.equal(reply.cards.length,0);assert.match(text(reply.result),/4821/);
    }
   });
   check('13 ordinary search and email do not become passwords',async r=>{

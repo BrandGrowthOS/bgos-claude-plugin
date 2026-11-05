@@ -257,7 +257,7 @@ test('a masked field keeps its value out of every reply on the real engine: a pl
       findFrame: await engine.callTool('browser_find', { regex: 'textbox' }),
     }
     const tree = JSON.stringify(replies.snapshot)
-    assert.equal(replies.snapshot.content[0].text, 'A password is on this page. You finish it here, and I will carry on when the page changes.')
+    assert.equal(replies.snapshot.content[0].text, 'This browser is private. Finish here, then press Hand back so I can carry on.')
     assert.equal(tree.includes(NOTE), false, 'a filled secret makes the whole page private')
     for (const reply of Object.values(replies)) assert.equal(reply.content[0].text, replies.snapshot.content[0].text)
     for (const [name, reply] of Object.entries(replies)) for (const [form, value] of Object.entries(VALUES)) assert.equal(JSON.stringify(reply).includes(value), false, `${name} carried the ${form} value`)
@@ -299,8 +299,8 @@ test('a page that was already open when a managed browser started is masked on b
     await engine.start()
     engine._privacy.text = (text: string) => text // the tree alone, with no net behind it
     const found = JSON.stringify(await engine.callTool('browser_find', { regex: 'textbox' }))
-    assert.equal(found, JSON.stringify({content:[{type:'text',text:'A password is on this page. You finish it here, and I will carry on when the page changes.'}]}))
-    assert.equal(await page.ariaSnapshot({mode:'ai'}), 'A password is on this page. You finish it here, and I will carry on when the page changes.')
+    assert.equal(found, JSON.stringify({content:[{type:'text',text:'This browser is private. Finish here, then press Hand back so I can carry on.'}]}))
+    assert.equal(await page.ariaSnapshot({mode:'ai'}), 'This browser is private. Finish here, then press Hand back so I can carry on.')
     assert.equal(found.includes(VALUE), false, found.slice(0, 300))
   } finally {
     await browser.close().catch(() => {})
