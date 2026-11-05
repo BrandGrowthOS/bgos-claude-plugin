@@ -29,7 +29,7 @@ async function rig(t: any, html?: any, { answer = 'deny', write = 'allow', navig
   const cards: any[] = []
   const slot: any = { engine, paths: { key: 'k' } }
   const pool: any = { acquire: async () => slot, peek: () => slot, slotKey: () => 'k', pathsFor: () => slot.paths, release: async () => true }
-  const gates = gated ? new GateKeeper({ postCard: async (card: any) => { cards.push(card); return true }, readGate: async (gateId: string) => (answer === 'pending' ? { gateId, state: 'pending', status: 'pending' } : { gateId, state: 'answered', status: 'answered', answered: true, choice: answer, answer }), randomBytes: (n: number) => Buffer.alloc(n, 7), sleep: async () => {}, log: () => {} } as any) : undefined
+  const gates = gated ? new GateKeeper({ postCard: async (card: any) => { cards.push(card); return true }, readGate: async (gateId: string) => (answer === 'pending' ? { gateId, state: 'pending', status: 'pending' } : { gateId, state: 'answered', status: 'answered', answered: true, choice: answer, answer }), randomBytes: (n: number) => Buffer.alloc(n, cards.length + 1), sleep: async () => {}, log: () => {} } as any) : undefined
   const core: any = new BrowserHostCore({ pool, browserTools: servedBrowserTools(await listTools({ caps: DEFAULT_CAPS, outputDir: join(home, 'tools') })), deviceLabel: 'Build box', gates, isOwnerPrincipal: () => true } as any)
   const intentChecks:any[]=[];core.intentCheck=async(...args:any[])=>{intentChecks.push(args);return {}}
   core._settingsFor = () => ({})
@@ -44,5 +44,8 @@ import register from './page-handoff-cases.cjs'
 register(async (t:any)=>{
  let body='<h1>Start</h1>', index=0
  const r=await rig(t,()=>body)
- return {...r,gate:async(name:string,args:any,choice="deny")=>{r.answer(choice);const before=r.cards.length;await r.call(name,args);return r.cards[before]||{}},set:async(html:string)=>{body=`<meta charset="utf-8">${html}`;await r.page.goto(`${r.origin}/${++index}`)},call:async(name:string,args:any={})=>{try{return await r.call(name,args)}catch(e:any){return {content:[{type:'text',text:e.message}]}}}}
+ return {...r,nextPage:(html:string)=>{body=html},engine:r.engine._engine,route:async(name:string,args:any,choices:string[]=[])=>{const start=r.cards.length;const post=r.core.gates._postCard;const read=r.core.gates._readGate;
+ const answers=new Map();r.core.gates._readGate=async(id:string)=>({gateId:id,state:'answered',choice:answers.get(id)||'deny'});
+ r.core.gates._postCard=async(card:any)=>{answers.set(card.gateId,choices.shift()||'deny');return post(card)};
+ try{return {result:await r.call(name,args),cards:r.cards.slice(start)}}finally{r.core.gates._postCard=post;r.core.gates._readGate=read}},gate:async(name:string,args:any,choice="deny")=>{r.answer(choice);const before=r.cards.length;await r.call(name,args);return r.cards[before]||{}},set:async(html:string)=>{body=`<meta charset="utf-8">${html}`;await r.page.goto(`${r.origin}/${++index}`)},call:async(name:string,args:any={})=>{try{return await r.call(name,args)}catch(e:any){return {content:[{type:'text',text:e.message}]}}}}
 }, 'machine')

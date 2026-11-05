@@ -121,7 +121,7 @@ test('a signed in page: no file under the agent\'s folder or temp holds its text
   const LINKED = `MADE_UP_LINK_${randomBytes(9).toString('hex')}`
   const server = createServer((_req, res) => {
     res.setHeader('content-type', 'text/html')
-    res.end(`<title>Security settings</title><h1>Recovery code ${MARKER}</h1><label>Password <input type="password" aria-label="Password" value="${MASKED}"></label><label>Note <input aria-label="Note" value="an ordinary value"></label><a href="/next?token=${LINKED}">Next</a><button>Show</button>`)
+    res.end(`<title>Security settings</title><h1>Recovery code ${MARKER}</h1><label>Password <input type="password" aria-label="Password"></label><label>Note <input aria-label="Note" value="an ordinary value"></label><a href="/next?token=${LINKED}">Next</a><button>Show</button>`)
   })
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()))
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/`
@@ -162,8 +162,7 @@ test('a signed in page: no file under the agent\'s folder or temp holds its text
       assert.equal(/\.yml|page-\d|\.png\)/.test(body), false, `${name} links no file: ${body.slice(0, 400)}`)
     }
     const shot = replies.find(row => row.name === 'browser_take_screenshot').reply
-    assert.equal(shot.content.some((part: any) => part.type === 'image'), false, 'protected form pixels are withheld')
-    assert.ok(shot.content.some((part: any) => /withheld/.test(part.text || '')), 'the refusal explains why')
+    assert.equal(shot.content.some((part: any) => part.type === 'image'), true, 'an empty password field keeps ordinary browsing readable')
 
     // CONTROL, same scanner: a file that holds it is found.
     writeFileSync(join(home, 'control.txt'), MARKER)
@@ -220,7 +219,7 @@ test('a PDF of a page is never written on this machine: a live cookie changes no
   const engine: any = new ChromiumEngine({ executable: chrome.path!, profileDir: join(home, 'browser', 'k'), outputDir, scope: 'fixture' })
   try {
     await engine.start()
-    await engine.callTool('browser_navigate', { url: 'data:text/html,<h1>made up</h1>' })
+    await engine.pages()[0].setContent('<h1>made up</h1>')
     for (const state of [{ holdsSignIns: false }, { holdsSignIns: true }]) {
       Object.assign(engine, state)
       const refused = await engine.callTool('browser_pdf_save', {})
@@ -258,9 +257,9 @@ test('a masked field keeps its value out of every reply on the real engine: a pl
       findFrame: await engine.callTool('browser_find', { regex: 'textbox' }),
     }
     const tree = JSON.stringify(replies.snapshot)
-    assert.ok(tree.includes(NOTE), 'an ordinary field keeps its value')
-    for (const name of ['Plain', 'Key: required', 'Holder', 'Styled', 'Area', 'Editable', 'In frame']) assert.ok(tree.includes(name), `the field ${name} is still there: ${tree.slice(0, 600)}`)
-    assert.match(JSON.stringify(replies.findFrame), /textbox/, 'find answered')
+    assert.equal(replies.snapshot.content[0].text, 'A password is on this page. You finish it here, and I will carry on when the page changes.')
+    assert.equal(tree.includes(NOTE), false, 'a filled secret makes the whole page private')
+    for (const reply of Object.values(replies)) assert.equal(reply.content[0].text, replies.snapshot.content[0].text)
     for (const [name, reply] of Object.entries(replies)) for (const [form, value] of Object.entries(VALUES)) assert.equal(JSON.stringify(reply).includes(value), false, `${name} carried the ${form} value`)
     // The same value elsewhere on the page is that value too, by a route a line of the tree cannot show.
     await page.evaluate((value: string) => { const p = document.createElement('p'); p.textContent = `Copied ${value}`; document.body.append(p) }, VALUES.plain)
@@ -279,7 +278,7 @@ test('a masked field keeps its value out of every reply on the real engine: a pl
     await page.locator('input[aria-label="Plain"]').fill(TYPED)
     const backend = inner._backend, real = backend.callTool
     backend.callTool = async () => { throw new Error(`failed near ${TYPED}`) }
-    await assert.rejects(engine.callTool('browser_snapshot', {}), (error: Error) => error.message === 'Browser command failed. No page details were released.' && !error.message.includes(TYPED))
+    assert.equal((await engine.callTool('browser_snapshot', {})).content[0].text, replies.snapshot.content[0].text, 'a locked read never enters the backend')
     backend.callTool = real
   } finally {
     await engine.stop().catch(() => {})
@@ -300,7 +299,8 @@ test('a page that was already open when a managed browser started is masked on b
     await engine.start()
     engine._privacy.text = (text: string) => text // the tree alone, with no net behind it
     const found = JSON.stringify(await engine.callTool('browser_find', { regex: 'textbox' }))
-    assert.match(found, /Open/, found.slice(0, 300))
+    assert.equal(found, JSON.stringify({content:[{type:'text',text:'A password is on this page. You finish it here, and I will carry on when the page changes.'}]}))
+    assert.equal(await page.ariaSnapshot({mode:'ai'}), 'A password is on this page. You finish it here, and I will carry on when the page changes.')
     assert.equal(found.includes(VALUE), false, found.slice(0, 300))
   } finally {
     await browser.close().catch(() => {})

@@ -19,7 +19,7 @@ const chrome = resolveChromeExecutable()
 const skip = !chrome.path ? 'no Chrome or Chromium is installed on this machine' : false
 const OWNER = { assistantId: 42, assistantName: 'Atlas', principal: 'user-owner_1' }
 const PAGES: Record<string, string> = {
-  '/': `<title>One</title><button id="quoted" onclick="fetch('/clicked/quoted')">Confirm: delete account</button><button id="pub" onclick="fetch('/clicked/pub')">Make /finance public</button><button id="harmless" onclick="fetch('/clicked/harmless')">Show the report</button><button id="bare" aria-label="" onclick="fetch('/clicked/bare')"><svg width="9" height="9"></svg></button><input id="nameless" type="password" value="MADE_UP_NAMELESS_VALUE"><a id="next" href="/next">Next</a>`,
+  '/': `<title>One</title><button id="quoted" onclick="fetch('/clicked/quoted')">Confirm: delete account</button><button id="pub" onclick="fetch('/clicked/pub')">Make /finance public</button><button id="harmless" onclick="fetch('/clicked/harmless')">Show the report</button><button id="bare" aria-label="" onclick="fetch('/clicked/bare')"><svg width="9" height="9"></svg></button><input id="nameless" type="password"><a id="next" href="/next">Next</a>`,
   '/next': `<title>Two</title><button id="after" onclick="fetch('/clicked/after')">Delete account</button>`,
 }
 

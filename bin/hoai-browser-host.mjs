@@ -72,7 +72,7 @@ import { terminateBrowserDaemon } from '../lib/browser-profile-daemon-stop.mjs'
 import { launcherProcessQuery, parseLauncherProcesses, readBootClock } from '../lib/agent-inventory.mjs'
 import { BrowserSecretRedactor } from '../lib/browser-secret-redactor.mjs'
 import privacy from '../lib/browser-host-core/answer-privacy.js'
-const { AnswerPrivacy, SAFE_TOOLS, DIALOG } = privacy
+const { AnswerPrivacy, SAFE_TOOLS, DIALOG, validateTool, privateRoute, closesPage, leavesPage } = privacy
 const READS_THE_TREE = new Set(['browser_snapshot', 'browser_find', 'browser_wait_for'])
 import { DOWNLOAD_ASK_WAIT_S, DownloadStore, SlotDownloads, downloadLines, downloadPaths } from '../lib/browser-downloads.mjs'
 import { SAVED_GRANT_WORDS, SAVED_SITES_MAX, forgetInGrants, readSavedSitesRequest, savedSiteDirs, savedSitesOf, withoutSavedSites } from '../lib/browser-saved-sites.mjs'
@@ -1362,18 +1362,32 @@ export class PlaywrightEngine {
     this._managedRuntime?.assertCurrent()
     if (name === 'browser_pdf_save') return errorResult('not_available', 'A page is not saved as a file on this machine. Use a snapshot or a screenshot to read it.')
     if (!SAFE_TOOLS.has(name)) return errorResult('not_available', 'This browser tool is not available.')
+    validateTool(name, args)
     this._privacy.validate(args)
     if (!this._backend) throw new Error('Engine not started')
     if (name === 'browser_tabs' && args?.action === 'new' && this.pages().length >= REMOTE_BROWSER_TAB_MAX) throw new HostError('browser_tabs_full', 'The browser has reached its tab limit.')
     const dialogReply = () => ({ content: [{ type: 'text', text: DIALOG }] })
     this._privacy.busy = true
     try {
+      if (closesPage(name, args)) {
+        const tab = name === 'browser_tabs' && args.index !== undefined ? this._backend._context.tabs()[args.index] : this._currentTab()
+        if (!tab) throw new Error('The browser tab is unavailable.')
+        await tab.page.close({ runBeforeUnload: false })
+        return this._privacy.keep(text(this._privacy.copy.closed))
+      }
+      if (this._unreadablePage && this._unreadablePage === this._currentTab()?.page && ['browser_navigate', 'browser_navigate_back'].includes(name)) {
+        const page = this._currentTab().page
+        const utility = await page._connection.toImpl(page.mainFrame()).utilityContext()
+        await utility.delegate._client.send('Runtime.terminateExecution')
+        this._unreadablePage = null
+      }
       if (!this.dialogWaiting() && (!READS_THE_TREE.has(name) || args?.target)) { const held = await this._privacy.preflight(this._currentTab()?.page, this._currentTab(), name, args); if (held) return held }
-      else if (this.dialogWaiting() && this._privacy.blocked) return this._privacy.handoff()
+      else if (this.dialogWaiting() && this._privacy.blocked && name !== 'browser_handle_dialog') return this._privacy.handoff()
       const up = this.dialogWaiting()
       if (up && name !== 'browser_handle_dialog') return dialogReply()
       // A read of the tree reads the page first by itself.
-      const reply = await this._backend.callTool(name, args || {}, signal)
+      const back = name === 'browser_navigate_back' && this._privacy.blocked ? await this.previousUrl() : null
+      const reply = await this._backend.callTool(back ? 'browser_navigate' : name, back ? { url: back } : args || {}, signal)
       if (this.dialogWaiting() && name !== 'browser_handle_dialog') return dialogReply()
       return this._privacy.forPage(this._currentTab()?.page, async () => {
         if (!READS_THE_TREE.has(name)) await this._privacy.after(this._currentTab()?.page)
@@ -1389,10 +1403,25 @@ export class PlaywrightEngine {
 
   tabsOverview() { return this._privacy.tabList(this._backend?._context?.tabs?.() || [], this._currentTab()?.page) }
 
-  async inspectPrivacy() {
+  async previousUrl() {
+    const page = this._currentTab()?.page
+    if (!page) return null
+    const utility = await page._connection.toImpl(page.mainFrame()).utilityContext()
+    const history = await utility.delegate._client.send('Page.getNavigationHistory')
+    return history.entries?.[history.currentIndex - 1]?.url || null
+  }
+
+  async inspectPrivacy(name, args = {}) {
     const page = this._currentTab()?.page
     return this._privacy.forPage(page, async () => {
-      if (!this.dialogWaiting() && page) await this._privacy.read(page)
+      if (!closesPage(name, args) && !this.dialogWaiting() && page) {
+        try { await this._privacy.read(page) }
+        catch (error) {
+          if (!leavesPage(name, args)) throw error
+          this._unreadablePage = page
+          return { ...this._privacy.privacyState(), blocked: true, unavailable: true }
+        }
+      }
       return this._privacy.privacyState()
     })
   }
@@ -1808,7 +1837,8 @@ export class ChromiumEngine {
 
   describeAction(name, args) { return this._engine ? this._engine.describeAction(name, args) : Promise.resolve(null) }
   tabsOverview() { return this._engine?.tabsOverview() }
-  inspectPrivacy() { return this._engine ? this._engine.inspectPrivacy() : Promise.resolve(null) }
+  previousUrl() { return this._engine?.previousUrl() }
+  inspectPrivacy(name, args) { return this._engine ? this._engine.inspectPrivacy(name, args) : Promise.resolve(null) }
   takePrivacyQuestion() { return this._engine?.takePrivacyQuestion() }
   confirmOrdinary(token) { return this._engine?.confirmOrdinary(token) }
 
@@ -2284,27 +2314,37 @@ export class BrowserHostCore {
    */
   async _permit(ctx, slot, name, engineArgs, waitSeconds, signal) {
     const settings = this._settingsFor(slot)
-    const privateState = await slot.engine.inspectPrivacy?.()
-    const question = privateState?.uncertain && this.gates && slot.engine.takePrivacyQuestion()
+    validateTool(name, engineArgs)
+    const privateState = await slot.engine.inspectPrivacy?.(name, engineArgs)
+    const route = privateRoute(name, engineArgs, privateState, slot.engine.selectedPage?.()?.url())
+    const question = !leavesPage(name, engineArgs) && privateState?.uncertain && this.gates && slot.engine.takePrivacyQuestion()
     if (question) {
       return this.gates.raise({ key: this.pool.slotKey(ctx), assistantId: ctx.assistantId, kind: 'credential', origin: null,
         summary: privateState.question, purpose: null, choices: ['allow_once', 'deny'], waitSeconds: waitSecondsFrom(waitSeconds),
-        action: async () => { await slot.engine.inspectPrivacy(); slot.engine.confirmOrdinary(question); return runAgentBrowserWork(slot, () => slot.engine.callTool(name, engineArgs, signal)) } })
+        action: async () => {
+          await slot.engine.inspectPrivacy(); slot.engine.confirmOrdinary(question)
+          const next = await this._permit(ctx, slot, name, engineArgs, waitSeconds, signal)
+          if (next.parked) return this._parkedResult(next)
+          if (!next.allowed) return errorResult('policy_denied', next.message)
+          return toolResult(await next.ran)
+        } })
     }
-    if (privateState?.blocked) return { allowed: true, ran: slot.engine.callTool(name, engineArgs, signal) }
+    if (route === 'hold') return { allowed: true, ran: Promise.resolve(text(privateState.handoff)) }
     // What the host itself read of the target, never the agent's words: the same facts the desktop
     // sends its intent check (snapshot-target.js). The page's own name is judged beside the agent's
     // description, so calling a sensitive button something harmless does not make it harmless.
     // The live page first, whatever form the target took, then the last tree. A target that neither
     // can name, on a browser that may be signed in, is treated as sensitive.
     // The live page first, then the host's own last tree. Never the agent's words.
-    const read = policy.WRITE_TOOLS.has(name) ? readWithTree((await slot.engine.describeAction?.(name, engineArgs).catch(() => null)) || { targets: targetsNamedBy(engineArgs).map(() => ({ readable: false })), actuated: null, dialog: null }, engineArgs, slot.lastSnapshotText || null) : null
-    if (read?.blocked || read?.targets?.some(item => item.sealed) && ['browser_type','browser_fill_form'].includes(name) || read?.actuated?.sealed && name === 'browser_press_key') return { allowed: true, ran: slot.engine.callTool(name, engineArgs, signal) }
+    const read = !privateState?.blocked && !closesPage(name, engineArgs) && (policy.WRITE_TOOLS.has(name) || name === 'browser_drop') ? readWithTree((await slot.engine.describeAction?.(name, engineArgs).catch(() => null)) || { targets: targetsNamedBy(engineArgs).map(() => ({ readable: false })), actuated: null, dialog: null }, engineArgs, slot.lastSnapshotText || null) : null
+    if (read?.blocked || read?.targets?.some(item => item.sealed) && ['browser_type','browser_fill_form','browser_drag','browser_drop'].includes(name) || name === 'browser_press_key' && (read?.actuated?.sealed || read?.actuated?.focusUnreadable)) return { allowed: true, ran: Promise.resolve(text(read?.blocked ? privateState.handoff : (privateState?.person || privacy.COPY[privateState?.language === 'ar' ? 'ar' : 'en'].person))) }
     const readTargets = read ? [...read.targets, read.actuated].filter((item) => item?.name) : null
     const rawFacts = readTargets ? factsOfTargets(name, readTargets) : gateFactsFor(name, engineArgs, slot.lastSnapshotText || null)
     const facts = rawFacts?.targetName ? { ...rawFacts, targetName: slot.engine.shownAddress?.(rawFacts.targetName) ?? rawFacts.targetName } : rawFacts
     const currentOrigin = await this._currentOrigin(slot)
-    const classification = policy.classifyRead(name, engineArgs, read, { currentOrigin })
+    const previous = name === 'browser_navigate_back' ? await slot.engine.previousUrl?.() : null
+    if (previous) validateTool('browser_navigate', { url: previous })
+    const classification = previous ? policy.classifyToolCall('browser_navigate', { url: previous }) : policy.classifyRead(name, engineArgs, read, { currentOrigin })
     // The owner answers every gate, and on another person's turn reads nothing of that person's page.
     const ownersTurn = !this.isOwnerPrincipal || this.isOwnerPrincipal(ctx) === true
     const grants = this._grantsFor(ctx, slot)
@@ -2318,6 +2358,9 @@ export class BrowserHostCore {
       settings,
       preapproved: [],
     })
+    const privacyExit = route === 'leave' || route === 'dialog'
+    if (privacyExit && decision.verdict !== 'deny') { decision.verdict = 'ask'; decision.gate = route === 'dialog' ? 'credential' : 'sensitive' }
+    if (closesPage(name, engineArgs)) decision.verdict = 'allow'
     const run = () => runAgentBrowserWork(slot, () => slot.engine.callTool(name, engineArgs, signal))
     if (decision.verdict === 'allow') return { allowed: true, ran: Promise.resolve().then(run) }
     if (decision.verdict === 'deny') {
@@ -2334,7 +2377,7 @@ export class BrowserHostCore {
     // The words after "<agent> wants to" on the card: the imperative the
     // desktop's strip prints, never the trail's past tense ("wants to opened").
     // Where the host read the target's name, the card says that and not the agent's description.
-    const summary = slot.engine.shownAddress?.(policy.hostCardPhrase(name, engineArgs, read, { kind: decision.gate, origin: classification.origin ?? null }, { blind: classification.blind === true })) ?? policy.hostCardPhrase(name, engineArgs, read, { kind: decision.gate, origin: classification.origin ?? null }, { blind: classification.blind === true })
+    const summary = privacyExit ? privateState[route === 'dialog' ? 'dialog' : 'leave'] : slot.engine.shownAddress?.(policy.hostCardPhrase(name, engineArgs, read, { kind: decision.gate, origin: classification.origin ?? null }, { blind: classification.blind === true })) ?? policy.hostCardPhrase(name, engineArgs, read, { kind: decision.gate, origin: classification.origin ?? null }, { blind: classification.blind === true })
     // A download ask the page raised is not the agent's: its action waits for
     // it (at most its 60 s) rather than being told the browser is busy. The
     // wait comes out of this call's own budget: the relay cuts a call at
@@ -2355,12 +2398,13 @@ export class BrowserHostCore {
       // host offers exactly what the desktop offers for the same gate kind.
       // Nothing an owner could remember for good about a page they were not shown.
       // A control the host could not read is answered once, or not at all.
-      choices: ownersTurn && !classification.blind ? policy.gateChoices(decision.gate) : ['allow_once', 'deny'],
+      choices: ownersTurn && !classification.blind && !privacyExit ? policy.gateChoices(decision.gate) : ['allow_once', 'deny'],
       // The gate HOLDS the action and is the only thing that runs it, so a
       // call that parks and a wait_gate that re-attaches share one run.
       action: run,
       attachMs,
       beforePost: ownersTurn ? async (gate) => {
+        if (privacyExit) return
         const current = await slot.engine.inspectPrivacy?.()
         if (current?.blocked) { gate.summary = current.handoff; return }
         gate.summary = slot.engine.shownAddress?.(gate.summary) ?? gate.summary
@@ -2690,7 +2734,6 @@ export class BrowserHostCore {
     if (name === 'browser_navigate' || name === 'browser_navigate_back' || name === 'browser_tabs') slot.lastSnapshotText = null
     const downloadsBefore = slot.downloads?.seq ?? 0
     // A call that cannot run while a dialog is up asks nobody.
-    if (name !== 'browser_handle_dialog' && slot.engine.dialogWaiting?.()) return text((await slot.engine.inspectPrivacy?.())?.blocked ? (await slot.engine.inspectPrivacy()).handoff : DIALOG)
     const verdict = await this._permit(ctx, slot, name, engineArgs, waitSeconds, signal)
     if (verdict.parked) return this._parkedResult(verdict)
     if (!verdict.allowed) return errorResult('policy_denied', verdict.message)

@@ -5,6 +5,7 @@ const LINE = "A password is on this page. You finish it here, and I will carry o
 const text = r => (r?.content || []).filter(p => p.type === "text").map(p => p.text).join("\n");
 const ref = (s, name) => new RegExp(`${name}[^\\n]*?\\[ref=((?:f\\d+)?e\\d+)\\]`).exec(s)?.[1];
 module.exports = function register(rig, host) {
+  require("./page-routing-cases.cjs")(rig, host);
   for (const lang of ["en", "ar"]) {
     const LINE = lang === "ar" ? "توجد كلمة مرور في هذه الصفحة. أكملها هنا، وسأتابع عندما تتغير الصفحة." : "A password is on this page. You finish it here, and I will carry on when the page changes.";
     const localized = async t => { const r = await rig(t); const set = r.set; r.set = html => set(`<html lang=${lang}>${html}</html>`); return r; };
@@ -106,11 +107,12 @@ module.exports = function register(rig, host) {
       const r=await localized(t);await r.set('<input aria-label=Code value=4821><h1>Public</h1>');
       const question=await r.gate('browser_snapshot',{});assert.equal(question.kind,'credential');assert.match(question.summary,lang === "ar" ? /خاص/ : /private/);assert.doesNotMatch(question.summary,/4821|Code|Public/);
       assert.equal(text(await r.call('browser_snapshot')),LINE);
-      await r.set('<input aria-label=Code value=4821><h1>Ordinary</h1>');
-      await r.gate('browser_snapshot',{},'allow_once');assert.match(text(await r.call('browser_snapshot')),/4821/);
-      const count=r.cards?.length;await r.page.evaluate(()=>document.body.insertAdjacentHTML('beforeend','<input aria-label=Code value=9731>'));
-      assert.equal(text(await r.call('browser_snapshot')),LINE,'an ordinary answer cannot approve a new unknown field');
-      assert.equal(r.cards?.length,count,'the page asks once');
+      const ordinary = await localized(t);
+      await ordinary.set('<input aria-label=Code value=4821><h1>Ordinary</h1>');
+      await ordinary.gate('browser_snapshot',{},'allow_once');assert.match(text(await ordinary.call('browser_snapshot')),/4821/);
+      const count=ordinary.cards?.length;await ordinary.page.evaluate(()=>document.body.insertAdjacentHTML('beforeend','<input aria-label=Code value=9731>'));
+      assert.equal(text(await ordinary.call('browser_snapshot')),LINE,'an ordinary answer cannot approve a new unknown field');
+      assert.equal(ordinary.cards?.length,count,'the page asks once');
     });
     test(`${host} ${lang} agent cannot fill a secret`,{timeout:90000},async t=>{
       const r=await localized(t);await r.set('<input aria-label=Note><input type=password aria-label=Access>');
@@ -134,11 +136,11 @@ module.exports = function register(rig, host) {
       const card=await r.gate('browser_click',{target:ref(tree,'Delete'),element:'button'});assert.doesNotMatch(card.summary||'',/Welcome1!/);
     });
     test(`${host} ${lang} ordinary fields and person typing`, {timeout:90000},async t=>{
-      const r=await localized(t); await r.set('<input aria-label="PIN code"><input aria-label="Token name"><input aria-label="Recovery email"><input aria-label="Max tokens"><input aria-label="Code"><input type=password aria-label="Password">');
+      const r=await localized(t); await r.set('<input aria-label="Postal address"><input aria-label="Token name"><input aria-label="Recovery email"><input aria-label="Max tokens"><input aria-label="Code"><input type=password aria-label="Password">');
       const tree=text(await r.call('browser_snapshot'));
       await r.page.locator('input[aria-label=Code]').focus();await r.call('browser_press_key',{key:'x'});
       assert.match(text(await r.call('browser_snapshot')),/Code/);
-      for(const name of ['PIN code','Token name','Recovery email','Max tokens','Code']) {
+      for(const name of ['Postal address','Token name','Recovery email','Max tokens','Code']) {
         const answer=await r.call('browser_type',{target:ref(tree,name),element:name,text:made}); assert.doesNotMatch(text(answer), /Protected|password is on|permission/i);
       }
       assert.match(text(await r.call('browser_snapshot')),new RegExp(made));
