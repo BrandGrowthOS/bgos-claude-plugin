@@ -87,16 +87,16 @@ test('idle sweep clears without another hook and activity resumes only the selec
 })
 
 for (const boundary of ['Stop', 'SessionEnd', 'UserPromptSubmit']) {
-  test(`${boundary} clears and forgets this session without clearing another session`, async t => {
+  test(`${boundary} changes only its own session and respects turn activity`, async t => {
     const r = await rig(t)
     await r.tracker.mark({ ...scope, working: true })
     await r.event(boundary, 'unrelated')
     assert.equal(r.calls.length, 1)
     await r.event(boundary)
-    assert.deepEqual(r.calls.map(c => c.body.working), [true, false])
-    r.advance(10 * minute)
+    assert.deepEqual(r.calls.map(c => c.body.working), boundary === 'SessionEnd' ? [true, false] : [true])
+    r.advance(3 * minute)
     await r.event()
-    assert.equal(r.calls.length, 2)
+    assert.deepEqual(r.calls.map(c => c.body.working), boundary === 'SessionEnd' ? [true, false] : boundary === 'Stop' ? [true] : [true, true])
   })
 }
 
@@ -109,12 +109,12 @@ test('409 drops a ticked goal so later activity and stop do not retry it', async
   r.setFailure(0)
   r.advance(10 * minute)
   await r.event()
-  await r.event('Stop')
+  await r.event('SessionEnd')
   assert.equal(r.calls.length, 2)
 })
 
 for (const status of [400, 403, 404, 409]) {
-  for (const trigger of ['Stop', 'idle', 'explicit', 'refresh', 'reselect']) {
+  for (const trigger of ['SessionEnd', 'idle', 'explicit', 'refresh', 'reselect']) {
     test(`${status} refusal during ${trigger} retires the goal without later writes`, async t => {
       const r = await rig(t)
       await r.tracker.mark({ ...scope, working: true })
@@ -128,7 +128,7 @@ for (const status of [400, 403, 404, 409]) {
         r.advance(10 * minute)
         await r.event()
       } else {
-        await r.event('Stop')
+        await r.event('SessionEnd')
       }
       assert.equal(r.calls.length, 2, 'the refusal must come from a real attempted write')
       r.setFailure(0)
@@ -137,7 +137,7 @@ for (const status of [400, 403, 404, 409]) {
         await r.tracker.sweep()
         await r.event()
       }
-      await r.event('Stop')
+      await r.event('SessionEnd')
       assert.equal(r.calls.length, 2, 'a final refusal must retire both the selection and the mark')
     })
   }
@@ -149,7 +149,7 @@ for (const failure of [429, 500, 503, 'network'] as const) {
     await r.tracker.mark({ ...scope, working: true })
     r.setFailure(typeof failure === 'number' ? failure : 503)
     if (failure === 'network') r.loseResponse()
-    await r.event('Stop')
+    await r.event('SessionEnd')
     for (let tick = 0; tick < 20; tick++) {
       r.advance(30_000)
       await r.tracker.sweep()
@@ -181,7 +181,7 @@ test('an explicit selection bypasses and resets a failed clear backoff', async t
   assert.equal(r.calls.length, 2, 'tool traffic must honor an explicit clear failure backoff')
   r.setFailure(0)
   await r.tracker.mark({ ...scope, working: true })
-  await r.event('Stop')
+  await r.event('SessionEnd')
   assert.deepEqual(r.calls.map(c => c.body.working), [true, false, true, false])
 })
 
@@ -189,7 +189,7 @@ test('clear retry backoff caps at ten minutes instead of abandoning the clear', 
   const r = await rig(t)
   await r.tracker.mark({ ...scope, working: true })
   r.setFailure(503)
-  await r.event('Stop')
+  await r.event('SessionEnd')
   let attempts = 2
   for (const delay of [30_000, 60_000, 120_000, 240_000, 480_000, 600_000, 600_000]) {
     r.advance(delay - 1)
@@ -210,7 +210,7 @@ test('refresh failures resolve normally, preserve other goals, and reserve the r
   await assert.doesNotReject(r.event())
   assert.equal(r.calls.length, 4, 'a failure for one goal must not prevent the other attempt')
   r.setFailure(0)
-  r.advance(10 * minute - 1)
+  r.advance(3 * minute - 1)
   await r.event()
   assert.equal(r.calls.length, 4, 'failed refresh still consumes the window')
   r.advance(1)
@@ -218,10 +218,10 @@ test('refresh failures resolve normally, preserve other goals, and reserve the r
   assert.equal(r.calls.length, 6)
 })
 
-test('parallel hook bursts cannot refresh any goal more than once in ten minutes', async t => {
+test('parallel hook bursts cannot refresh any goal more than once in three minutes', async t => {
   const r = await rig(t)
   await r.tracker.mark({ ...scope, working: true })
-  r.advance(10 * minute - 1)
+  r.advance(3 * minute - 1)
   await Promise.all(Array.from({ length: 20 }, () => r.event()))
   assert.equal(r.calls.length, 1)
   r.advance(1)
@@ -229,14 +229,14 @@ test('parallel hook bursts cannot refresh any goal more than once in ten minutes
   assert.equal(r.calls.length, 2)
 })
 
-test('stop queued behind an in-flight refresh wins and a failed clear is retried', async t => {
+test('session end queued behind an in-flight refresh wins and a failed clear is retried', async t => {
   const r = await rig(t)
   await r.tracker.mark({ ...scope, working: true })
   r.advance(10 * minute)
   const started = r.block()
   const refresh = r.event()
   await started
-  const stop = r.event('Stop')
+  const stop = r.event('SessionEnd')
   r.release()
   await Promise.all([refresh, stop])
   assert.deepEqual(r.calls.map(c => c.body.working), [true, true, false])
@@ -251,12 +251,12 @@ test('stop queued behind an in-flight refresh wins and a failed clear is retried
   assert.deepEqual(r.calls.slice(-3).map(c => c.body.working), [true, false, false])
 })
 
-test('a stop while the initial selection is in flight clears the landed mark', async t => {
+test('session end while the initial selection is in flight clears the landed mark', async t => {
   const r = await rig(t)
   const started = r.block()
   const marked = r.tracker.mark({ ...scope, working: true })
   await started
-  const stopped = r.event('Stop')
+  const stopped = r.event('SessionEnd')
   r.release()
   await Promise.all([marked, stopped])
   assert.deepEqual(r.calls.map(c => c.body.working), [true, false])
@@ -278,7 +278,7 @@ test('unarmed daemon and stale spool activity cannot refresh a working mark', as
   assert.equal(r.calls.length, 2)
 })
 
-test('real forwarder and admitted spool drive refresh and stop; hook failure never blocks a tool', async t => {
+test('real forwarder and admitted spool drive refresh and session end; hook failure never blocks a tool', async t => {
   const r = await rig(t)
   const root = mkdtempSync(join(tmpdir(), 'working-hooks-'))
   t.after(() => rmSync(root, { recursive: true, force: true }))
@@ -291,7 +291,7 @@ test('real forwarder and admitted spool drive refresh and stop; hook failure nev
   t.after(() => intake.stop())
   await r.tracker.mark({ ...scope, working: true })
   r.advance(10 * minute)
-  for (const name of ['PreToolUse', 'Stop']) {
+  for (const name of ['PreToolUse', 'SessionEnd']) {
     const result = spawnSync(process.execPath, ['bin/hoai-hook.mjs'], { encoding: 'utf8', env: { ...process.env, BGOS_PLUGIN_STATE_DIR: root },
       input: JSON.stringify({ hook_event_name: name, session_id: scope.sessionId, transcript_path: transcript, tool_name: 'Bash' }),
     })
@@ -326,7 +326,7 @@ test('a failed explicit selection does not become a hook-owned goal', async t =>
   r.advance(10 * minute)
   await r.event()
   assert.equal(r.calls.filter(c => c.body.working).length, 1)
-  await r.event('Stop')
+  await r.event('SessionEnd')
   await r.tracker.sweep()
   assert.deepEqual(r.calls.map(c => c.body.working), [true, false], 'an uncertain write is cleared without adopting it')
 })
@@ -344,7 +344,7 @@ test('a response with no mission is never adopted as a successful goal selection
 test('sweep cannot forget a new selection queued while its previous clear finishes', async t => {
   const r = await rig(t)
   await r.tracker.mark({ ...scope, working: true })
-  await r.event('Stop')
+  await r.event('SessionEnd')
   const sweep = r.tracker.sweep()
   const queuedSweeps = Array.from({ length: 4 }, () => r.tracker.sweep())
   const started = r.block()
@@ -358,12 +358,12 @@ test('sweep cannot forget a new selection queued while its previous clear finish
   assert.deepEqual(r.calls.map(c => c.body.working), [true, false, true, true])
 })
 
-test('one captured tool call cannot select its later goals after a Stop or session rebind', async t => {
+test('one captured tool call cannot select its later goals after a SessionEnd or session rebind', async t => {
   const r = await rig(t)
   assert.equal(typeof r.tracker.capture, 'function')
   const context = r.tracker.capture(scope.sessionId)
   await r.tracker.mark({ ...scope, context, working: true })
-  await r.event('Stop')
+  await r.event('SessionEnd')
   await assert.rejects(r.tracker.mark({ ...scope, goalId: 4, context, working: true }), /session ended/i)
   assert.deepEqual(r.calls.map(c => c.body.working), [true, false])
   const duringLookup = r.tracker.capture(scope.sessionId)
@@ -381,9 +381,9 @@ test('a newer session owns the shared goal even if the old session clear failed'
   r.advance(30_000)
   await r.tracker.sweep()
   assert.deepEqual(r.calls.map(c => c.body.working), [true, false, true])
-  await r.event('Stop')
-  assert.equal(r.calls.length, 3, 'a late old-session Stop cannot clear the new owner')
-  await r.event('Stop', 'session-b')
+  await r.event('SessionEnd')
+  assert.equal(r.calls.length, 3, 'a late old-session SessionEnd cannot clear the new owner')
+  await r.event('SessionEnd', 'session-b')
   assert.equal(r.calls.at(-1)?.body.working, false)
 })
 

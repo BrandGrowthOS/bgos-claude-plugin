@@ -320,7 +320,7 @@ test('a locally timed-out clear fences later selections while its remote commit 
   // boundedFetch's deadline is unrefed; keep the test live until it fires.
   const keepAlive = setInterval(() => {}, 100)
   try {
-    await a.onHook(event('Stop'))
+    await a.onHook(event('SessionEnd'))
     owner = 'B'
     await assert.rejects(b.mark({ ...scope, sessionId: 'session-b', working: true }), /unconfirmed write/i)
     release.resolve()

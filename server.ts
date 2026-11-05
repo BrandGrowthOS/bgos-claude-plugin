@@ -6121,8 +6121,9 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'Pass every goal you are running in parallel in goal_ids (1 to 20), ' +
         'with working: true; pass working: false when you stop or hand a goal ' +
         'off. In a hook-connected session, tool activity refreshes selected ' +
-        'goals at most once per 10 minutes. Stop or SessionEnd clears the ' +
-        'selection; select goals again when you resume. After 15 minutes ' +
+        'goals at most once per 3 minutes during an active turn. Stop leaves ' +
+        'the marks to lapse; the next prompt resumes your selected goals. ' +
+        'SessionEnd clears the selection. After 15 minutes ' +
         'without tool activity, hooks clear the marks and restore them on ' +
         'resumed activity. If hooks are unavailable, call this again with ' +
         'working: true within 30 minutes for every goal you are still working ' +
@@ -8746,7 +8747,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
             working
               ? `Marked working: ${named(marked)}. ` +
                   (workingContext.sessionId
-                    ? 'Hook activity refreshes selected goals; Stop clears the selection, so select again when you resume. Without hooks, '
+                    ? 'Hook activity refreshes selected goals every 3 minutes while the turn is active. Stop leaves marks to lapse; your next prompt resumes the selection. Without hooks, '
                     : 'There is no bound hook session for this mark; ') +
                   `refresh within ${MISSION_GOAL_WORKING_REFRESH_MINUTES} minutes. ` +
                   'Send working: false when you stop or hand a goal off.'
