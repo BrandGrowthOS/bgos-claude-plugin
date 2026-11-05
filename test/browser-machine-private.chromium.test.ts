@@ -15,7 +15,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { ChromiumEngine, DEFAULT_CAPS, PlaywrightEngine, keepPageOutOfFiles, loadPlaywright, resolveChromeExecutable, sweepPageFiles } from '../bin/hoai-browser-host.mjs'
-import { maskMaskedInputs, maskedValuesOf } from '../lib/browser-snapshot-privacy.mjs'
 
 const chrome = resolveChromeExecutable()
 const posix = process.platform !== 'win32'
@@ -266,22 +265,21 @@ test('a masked field keeps its value out of every reply on the real engine: a pl
     // The same value elsewhere on the page is that value too, by a route a line of the tree cannot show.
     await page.evaluate((value: string) => { const p = document.createElement('p'); p.textContent = `Copied ${value}`; document.body.append(p) }, VALUES.plain)
     assert.equal(JSON.stringify(await engine.callTool('browser_snapshot', {})).includes(VALUES.plain), false, 'text repeating a masked value')
-    assert.deepEqual((await maskedValuesOf(page)).sort(), Object.values(VALUES).sort(), 'the page is asked in every frame, about every way a box masks')
-    // The tree's own mask holds with the redaction off, on both doors.
-    const inner = engine._engine, redact = inner._redactMaskedValues, secretsBefore = inner._secrets
-    inner._redactMaskedValues = async () => {}
-    inner._secrets = new (secretsBefore.constructor)()
+    // With the last net off the fields still hold: their values were never read into a tree. Only the copy
+    // in plain text, which is the net's whole job, comes back.
+    const inner = engine._engine, net = inner._privacy.text
+    inner._privacy.text = (text: string) => text
     for (const args of [['browser_snapshot', {}], ['browser_find', { regex: 'textbox' }]] as const) {
       const text = JSON.stringify(await engine.callTool(args[0], args[1]))
-      for (const [form, value] of Object.entries(VALUES)) if (form !== 'plain') assert.equal(text.includes(value), false, `${args[0]} carried the ${form} value with the redaction off`) // the plain one is now also on the page as text
+      for (const [form, value] of Object.entries(VALUES)) if (form !== 'plain') assert.equal(text.includes(value), false, `${args[0]} carried the ${form} value with the net off`)
     }
-    inner._redactMaskedValues = redact; inner._secrets = secretsBefore
+    inner._privacy.text = net
     // An error that quotes a value a call just typed into a masked box is redacted as well.
     const TYPED = `MADE_UP_TYPED_${randomBytes(6).toString('hex')}`
     await page.locator('input[aria-label="Plain"]').fill(TYPED)
     const backend = inner._backend, real = backend.callTool
     backend.callTool = async () => { throw new Error(`failed near ${TYPED}`) }
-    await assert.rejects(engine.callTool('browser_snapshot', {}), (error: Error) => error.message === 'Browser command failed. Protected page details were withheld.' && !error.message.includes(TYPED))
+    await assert.rejects(engine.callTool('browser_snapshot', {}), (error: Error) => error.message === 'Browser command failed. No page details were released.' && !error.message.includes(TYPED))
     backend.callTool = real
   } finally {
     await engine.stop().catch(() => {})
@@ -300,7 +298,7 @@ test('a page that was already open when a managed browser started is masked on b
   const engine: any = new PlaywrightEngine({ caps: DEFAULT_CAPS, outputDir: home, clientName: 'fixture', clientVersion: '0', managedRuntime: { browser, context, assertCurrent() {} } })
   try {
     await engine.start()
-    engine._redactMaskedValues = async () => {} // this door alone
+    engine._privacy.text = (text: string) => text // the tree alone, with no net behind it
     const found = JSON.stringify(await engine.callTool('browser_find', { regex: 'textbox' }))
     assert.match(found, /Open/, found.slice(0, 300))
     assert.equal(found.includes(VALUE), false, found.slice(0, 300))
@@ -308,23 +306,6 @@ test('a page that was already open when a managed browser started is masked on b
     await browser.close().catch(() => {})
     rmSync(home, { recursive: true, force: true })
   }
-})
-
-test('past the most fields a tree is asked about, a filled box reads as masked', async () => {
-  const tree = Array.from({ length: 70 }, (_, index) => `- textbox "F${index}" [ref=e${index}]: VALUE_${index}`).join('\n')
-  const lines = (await maskMaskedInputs(tree, () => ({ evaluate: async () => false }))).split('\n')
-  assert.ok(lines[63].endsWith(': VALUE_63'), 'CONTROL: an ordinary field inside the bound keeps its value')
-  assert.ok(lines.slice(64).every((line: string) => line.endsWith(': (masked)')), lines[64])
-})
-
-test('the snapshot mask reads every form Playwright writes a filled box in, and fails closed', async () => {
-  const masked = { evaluate: async () => true }, plain = { evaluate: async () => false }, broken = { evaluate: async () => { throw new Error('gone') } }
-  const tree = ['- textbox "Plain" [ref=e2]: SECRET_A', "- 'textbox \"Key: required\" [ref=e3]': SECRET_B", '- textbox "Holder" [ref=e4]:', '  - /placeholder: Enter key', '  - text: SECRET_C', '- textbox "Note" [ref=e5]: kept', '- textbox "Frame" [active] [ref=f1e6]: "SECRET: D"', '- textbox "Gone" [ref=e7]: SECRET_E', '- paragraph [ref=e8]: "textbox [ref=e2]: not a field"'].join('\n')
-  const out = await maskMaskedInputs(tree, (ref: string) => ref === 'e5' ? plain : ref === 'e7' ? broken : masked)
-  for (const secret of ['SECRET_A', 'SECRET_B', 'SECRET_C', 'SECRET: D', 'SECRET_E']) assert.equal(out.includes(secret), false, `${secret}: ${out}`)
-  assert.ok(out.includes('- textbox "Note" [ref=e5]: kept'), 'an ordinary field stays')
-  assert.ok(out.includes('/placeholder: Enter key'), 'a placeholder is on screen and stays')
-  assert.ok(out.includes('not a field'), 'other lines stay')
 })
 
 test('a Playwright that moved the methods the guard replaces stops the call, not the guard', () => {

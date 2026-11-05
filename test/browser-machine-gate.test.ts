@@ -42,7 +42,8 @@ test('an agent\'s harmless words on a sensitive target: the gate asks, and the c
   assert.equal(r.cards.length, 1, 'it asked, though the agent\'s own words are harmless')
   assert.equal(r.cards[0].kind, 'sensitive')
   assert.match(r.cards[0].summary, /Make \/finance public/)
-  assert.equal(r.cards[0].summary.includes('Show the report'), false, 'the agent\'s description is not what the owner reads')
+  assert.match(r.cards[0].summary, /^[a-z ]*"Make \/finance public"/i, 'the card opens with what the page calls it')
+  assert.match(r.cards[0].summary, /\(the agent says: Show the report\)$/, 'and the agent\'s description is shown apart, marked as the agent\'s')
   void call.catch(() => {})
 })
 

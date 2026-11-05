@@ -72,7 +72,8 @@ import { terminateBrowserDaemon } from '../lib/browser-profile-daemon-stop.mjs'
 import { launcherProcessQuery, parseLauncherProcesses, readBootClock } from '../lib/agent-inventory.mjs'
 import { BrowserSecretRedactor } from '../lib/browser-secret-redactor.mjs'
 import privacy from '../lib/browser-host-core/answer-privacy.js'
-const { AnswerPrivacy, SAFE_TOOLS, pageFacts } = privacy
+const { AnswerPrivacy, SAFE_TOOLS, DIALOG } = privacy
+const READS_THE_TREE = new Set(['browser_snapshot', 'browser_find', 'browser_wait_for'])
 import { DOWNLOAD_ASK_WAIT_S, DownloadStore, SlotDownloads, downloadLines, downloadPaths } from '../lib/browser-downloads.mjs'
 import { SAVED_GRANT_WORDS, SAVED_SITES_MAX, forgetInGrants, readSavedSitesRequest, savedSiteDirs, savedSitesOf, withoutSavedSites } from '../lib/browser-saved-sites.mjs'
 
@@ -106,7 +107,7 @@ const hostCoreRequire = createRequire(import.meta.url)
 export const policy = hostCoreRequire('../lib/browser-host-core/policy.js')
 export const hostSettings = hostCoreRequire('../lib/browser-host-core/settings.js')
 export const hostProfiles = hostCoreRequire('../lib/browser-host-core/profiles.js')
-const { factsOfTargets, gateFactsFor, snapshotTextOf, targetOfRef, targetOfTree, targetsNamedBy } = hostCoreRequire('../lib/browser-host-core/snapshot-target.js')
+const { factsOfTargets, gateFactsFor, readWithTree, snapshotTextOf, targetsNamedBy } = hostCoreRequire('../lib/browser-host-core/snapshot-target.js')
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -311,18 +312,6 @@ export const WAIT_SECONDS_SCHEMA = {
 /** How long a card waits for the intent check before it posts without it. A person is waiting on this. */
 export const INTENT_CHECK_WAIT_MS = 2_500
 
-/** The agent's arguments with the page's own names beside its descriptions, for the policy's wording checks. */
-export function withHostNames(args, facts) {
-  if (!facts?.targetName) return args
-  return { ...args, element: [args?.element, facts.targetName].filter((word) => typeof word === 'string' && word).join(' \n ') }
-}
-
-/** The phrase a card prints. Where the phrase cannot carry the page's names (a form, a drag), they go after it. */
-export function hostWordedSummary(phrase, name, facts) {
-  if (!facts?.targetName || phrase.includes(facts.targetName)) return phrase.slice(0, 200)
-  return `${phrase} (the page names: ${facts.targetName})`.slice(0, 200)
-}
-
 /** The purpose a browser opened with none is given. Any part of an address after the site can hold a secret. */
 export function defaultPurposeFor(url) {
   if (typeof url !== 'string') return 'Browsing on request'
@@ -413,7 +402,12 @@ export function withWaitSeconds(tool) {
 
 /** Playwright's browser_ roster as the desktop serves it. */
 export function servedBrowserTools(playwrightTools) {
-  return playwrightTools.filter((t) => SAFE_TOOLS.has(t.name) && !NEVER_TOOLS.has(t.name) && !PRIVATE_PAGE_TOOLS.has(t.name)).map(withWaitSeconds)
+  return playwrightTools.filter((t) => SAFE_TOOLS.has(t.name) && !NEVER_TOOLS.has(t.name) && !PRIVATE_PAGE_TOOLS.has(t.name)).map((t) => {
+    // No page is written to a file on this host, so no tool offers to.
+    if (!t.inputSchema?.properties?.filename) return withWaitSeconds(t)
+    const { filename: _none, ...properties } = t.inputSchema.properties
+    return withWaitSeconds({ ...t, inputSchema: { ...t.inputSchema, properties, ...(t.inputSchema.required ? { required: t.inputSchema.required.filter((name) => name !== 'filename') } : {}) } })
+  })
 }
 
 /**
@@ -1177,11 +1171,10 @@ export async function resolveConfig({ caps, outputDir }) {
   // Playwright writes the whole page tree to a file on every action and links it. On this host the
   // agent asks for the page with browser_snapshot, which answers in the reply and writes no file.
   config.snapshot = { ...config.snapshot, mode: 'none' }
+  // Generated code prints a control's name. It is off, so no reply carries it.
+  config.codegen = 'none'
   return config
 }
-
-/** How long a gate waits for the live page to name a target before it treats the name as unreadable. */
-export const TARGET_READ_MS = 1_500
 
 /**
  * Makes one tool call write no page to a file. A page holds whatever the person's signed in
@@ -1278,7 +1271,7 @@ export class PlaywrightEngine {
     // Playwright uses this hook for snapshots, console collection, artifacts
     // and serialized MCP text. Hook before an owner can fill any login.
     if (typeof this._backend._context?.redactSecrets !== 'function') throw new Error('Browser secret redaction unavailable')
-    this._backend._context.redactSecrets = text => this._secrets.text(this._privacy.text(text))
+    this._backend._context.redactSecrets = text => this._secrets.text(text)
     const toolContext = this._backend._context, created = toolContext._onPageCreated.bind(toolContext)
     toolContext._onPageCreated = page => { created(page); this._privacy.protectTab(tools.Tab.forPage(page)) }
     this._context = context
@@ -1293,10 +1286,7 @@ export class PlaywrightEngine {
       if (tool.schema.name === 'browser_pdf_save') throw new HostError('not_available', 'A page is not saved as a file on this machine. Use a snapshot or a screenshot to read it.')
       params = this._privacy.guardResponse(tool.schema.name, keepPageOutOfFiles(tool.schema.name, params, response), response)
       if (tool.schema.name === 'browser_wait_for' && (params.text || params.textGone)) {
-        const tab = await context.ensureTab(), tree = await tab.page.ariaSnapshot({ mode: 'ai' })
-        const matches = params.text ? tree.includes(params.text) : !tree.includes(params.textGone)
-        if (matches) response.addTextResult('Protected page condition matched.')
-        else response.addError('Protected page condition did not match. Read the page before retrying.')
+        await this._privacy.waitFor(await context.ensureTab(), params, response, signal)
         return
       }
       return tool.handle(context, params, response, signal)
@@ -1360,57 +1350,48 @@ export class PlaywrightEngine {
     return (await this._backend._context.newTab()).page
   }
 
-  _hasDialog() { return this._backend?._context?.currentTab()?.modalStates?.().some(state => state.type === 'dialog') === true }
+  _currentTab() { return this._backend?._context?.currentTab?.() || null }
+  dialogWaiting() { return this._currentTab()?.modalStates?.().some(state => state.type === 'dialog') === true }
 
-  async protectAnswer(reply) {
-    if (this._hasDialog()) return { content: [{ type: 'text', text: 'A browser dialog is waiting. Accepting it requires permission.' }] }
-    await this._privacy.collect(this.pages())
-    return this._secrets.value(this._privacy.value(reply))
-  }
-
+  /** One page: the one this call is about. A dialog in another tab stops nothing, and that page is left alone. */
   async callTool(name, args, signal) {
     this._managedRuntime?.assertCurrent()
-    if (name === 'browser_pdf_save') return this._privacy.value(errorResult('not_available', 'A page is not saved as a file on this machine. Use a snapshot or a screenshot to read it.'), { trustedRefusal: true })
-    if (!SAFE_TOOLS.has(name)) return this._privacy.value(errorResult('not_available', 'This browser tool is not available.'), { trustedRefusal: true })
+    if (name === 'browser_pdf_save') return errorResult('not_available', 'A page is not saved as a file on this machine. Use a snapshot or a screenshot to read it.')
+    if (!SAFE_TOOLS.has(name)) return errorResult('not_available', 'This browser tool is not available.')
     this._privacy.validate(args)
     if (!this._backend) throw new Error('Engine not started')
     if (name === 'browser_tabs' && args?.action === 'new' && this.pages().length >= REMOTE_BROWSER_TAB_MAX) throw new HostError('browser_tabs_full', 'The browser has reached its tab limit.')
+    const dialogReply = () => ({ content: [{ type: 'text', text: DIALOG }] })
+    this._privacy.busy = true
     try {
-      if (!this._hasDialog()) await this._privacy.collect(this.pages())
-      else if (name !== 'browser_handle_dialog') return this.protectAnswer(null)
+      const up = this.dialogWaiting()
+      if (up && name !== 'browser_handle_dialog') return dialogReply()
+      // A read of the tree reads the page first by itself.
+      if (!up && (!READS_THE_TREE.has(name) || args?.target)) await this._privacy.before(this._currentTab()?.page, name)
       const reply = await this._backend.callTool(name, args || {}, signal)
-      return await this.protectAnswer(reply)
+      if (this.dialogWaiting() && name !== 'browser_handle_dialog') return dialogReply()
+      if (!READS_THE_TREE.has(name)) await this._privacy.after(this._currentTab()?.page)
+      return this._privacy.keep(this._secrets.value(this._privacy.value(await this._privacy.image(reply, this._currentTab()?.page, { element: !!args?.target }))))
     } catch (error) {
-      if (!this._hasDialog()) await this._privacy.collect(this.pages())
+      if (error instanceof HostError || this._privacy.isUnreadable(error)) throw error
       throw Object.assign(new Error(this._secrets.text(this._privacy.error(String(error?.message || 'Browser command failed')))), { code: error?.code })
-    } finally { this.onSelectedPage?.(this.selectedPage()) }
+    } finally { this._privacy.busy = false; this.onSelectedPage?.(this.selectedPage()) }
   }
+
+  /** What the host read of this call before anyone is asked, never the agent's words. */
+  async describeAction(name, args) {
+    const tab = this._currentTab()
+    if (!tab) return null
+    return this._privacy.describeAction(tab.page, tab, name, args, { targets: targetsNamedBy(args), reads: policy.readsBefore(name, args) })
+  }
+
+  /** The last whole page tree this host read for itself: proved, with no text removed. A gate reads this, not the model's copy. */
+  lastPageTree() { return this._privacy.lastTree }
+
+  /** A page's address, as a reply may show it. */
+  shownAddress(url) { return this._privacy.page(url) }
 
   registerSecret(secret) { this._secrets.register(secret) }
-
-  /**
-   * What the live page calls each of these targets, or null for one it will not say. Never the agent's words.
-   * Reading any tree replaces the one the page answers refs from, so each read is followed by
-   * a read of the whole page, or the agent's refs stop working.
-   */
-  async describeTargets(targets) {
-    const tab = this._backend?._context?.currentTab?.()
-    if (!tab) return targets.map(() => null)
-    await this._privacy.collect(this.pages())
-    const { proofs } = await pageFacts(tab.page, true)
-    const named = []
-    for (const target of targets) {
-      if (proofs[target]?.safe !== true) { named.push({ role: 'textbox', name: 'Protected credential field' }); continue }
-      try {
-        const { locator } = await tab.targetLocator({ target })
-        const ancestor = locator.locator('xpath=ancestor-or-self::*[self::button or self::a or @role="button" or @role="link" or self::input or self::select or self::textarea][last()]')
-        const element = await ancestor.count() === 1 ? ancestor : locator
-        const tree = await element.ariaSnapshot({ mode: 'ai', timeout: TARGET_READ_MS })
-        named.push(targetOfTree(await this._privacy.tree(tree, tab.page)))
-      } catch { named.push(null) }
-    }
-    return named
-  }
 
   /** Asks Chrome itself to quit, which writes cookies to disk first. */
   async closeBrowserProcess() {
@@ -1802,9 +1783,13 @@ export class ChromiumEngine {
     return this._engine.callTool(name, args, signal)
   }
 
-  protectAnswer(value) { return this._engine ? this._engine.protectAnswer(value) : Promise.resolve(value) }
+  dialogWaiting() { return this._engine?.dialogWaiting() === true }
 
-  describeTargets(targets) { return this._engine ? this._engine.describeTargets(targets) : Promise.resolve(targets.map(() => null)) }
+  describeAction(name, args) { return this._engine ? this._engine.describeAction(name, args) : Promise.resolve(null) }
+
+  lastPageTree() { return this._engine?.lastPageTree() ?? null }
+
+  shownAddress(url) { return this._engine ? this._engine.shownAddress(url) : url }
 
   registerSecret(secret) {
     if (!this._engine || !this.alive) throw new HostError('browser_gone', 'The browser is unavailable.')
@@ -1817,7 +1802,8 @@ export class ChromiumEngine {
     const redactor = new BrowserSecretRedactor()
     redactor.patterns = this._engine?._secrets.patterns || []
     const privacy = this._engine?._privacy
-    return (value, options) => redactor.value(privacy ? privacy.value(value, options) : value)
+    // A reply released by the answer boundary passes as it is; the host's own words go under the net.
+    return (value) => redactor.value(privacy ? privacy.host(value) : value)
   }
 
   async stop() {
@@ -2278,11 +2264,12 @@ export class BrowserHostCore {
     // description, so calling a sensitive button something harmless does not make it harmless.
     // The live page first, whatever form the target took, then the last tree. A target that neither
     // can name, on a browser that may be signed in, is treated as sensitive.
-    const targets = policy.WRITE_TOOLS.has(name) ? await this._readTargets(slot, engineArgs) : null
-    const facts = targets ? factsOfTargets(name, targets.filter(Boolean)) : gateFactsFor(name, engineArgs, slot.lastSnapshotText || null)
-    const classification = policy.classifyToolCall(name, withHostNames(engineArgs, facts), { currentOrigin: await this._currentOrigin(slot) })
-    if (classification.kind !== 'credential' && (name === 'browser_press_key' && /Enter|Return|Space|^ $/i.test(engineArgs.key || '') || engineArgs.submit === true || name === 'browser_handle_dialog' && engineArgs.accept === true) && await this._maySignedIn(slot)) classification.kind = 'sensitive'
-    if (classification.kind === 'write' && targets?.some((target) => !target?.name) && await this._maySignedIn(slot)) classification.kind = 'sensitive'
+    // The live page first, then the host's own last tree. Never the agent's words.
+    const read = policy.WRITE_TOOLS.has(name) ? readWithTree((await slot.engine.describeAction?.(name, engineArgs).catch(() => null)) || { targets: targetsNamedBy(engineArgs).map(() => ({ readable: false })), actuated: null, dialog: null }, engineArgs, slot.lastSnapshotText || null) : null
+    const readTargets = read ? [...read.targets, read.actuated].filter((item) => item?.name) : null
+    const facts = readTargets ? factsOfTargets(name, readTargets) : gateFactsFor(name, engineArgs, slot.lastSnapshotText || null)
+    const currentOrigin = await this._currentOrigin(slot)
+    const classification = policy.classifyRead(name, engineArgs, read, { currentOrigin })
     // The owner answers every gate, and on another person's turn reads nothing of that person's page.
     const ownersTurn = !this.isOwnerPrincipal || this.isOwnerPrincipal(ctx) === true
     const grants = this._grantsFor(ctx, slot)
@@ -2312,7 +2299,7 @@ export class BrowserHostCore {
     // The words after "<agent> wants to" on the card: the imperative the
     // desktop's strip prints, never the trail's past tense ("wants to opened").
     // Where the host read the target's name, the card says that and not the agent's description.
-    const summary = hostWordedSummary(policy.intentPhrase(name, facts?.targetName ? { ...engineArgs, element: facts.targetName } : engineArgs, { kind: decision.gate, origin: classification.origin ?? null }), name, facts)
+    const summary = policy.hostCardPhrase(name, engineArgs, read, { kind: decision.gate, origin: classification.origin ?? null }, { blind: classification.blind === true })
     // A download ask the page raised is not the agent's: its action waits for
     // it (at most its 60 s) rather than being told the browser is busy. The
     // wait comes out of this call's own budget: the relay cuts a call at
@@ -2332,7 +2319,8 @@ export class BrowserHostCore {
       // The owner's buttons, from the policy rather than from here, so this
       // host offers exactly what the desktop offers for the same gate kind.
       // Nothing an owner could remember for good about a page they were not shown.
-      choices: ownersTurn ? policy.gateChoices(decision.gate) : ['allow_once', 'deny'],
+      // A control the host could not read is answered once, or not at all.
+      choices: ownersTurn && !classification.blind ? policy.gateChoices(decision.gate) : ['allow_once', 'deny'],
       // The gate HOLDS the action and is the only thing that runs it, so a
       // call that parks and a wait_gate that re-attaches share one run.
       action: run,
@@ -2521,31 +2509,16 @@ export class BrowserHostCore {
   }
 
   async callTool(ctx, name, args, signal) {
-    const redact = this.pool.peek(ctx)?.engine?.resultRedactor?.() || (value => value)
+    // What finally leaves this host, whoever built it. Captured first: a close can drop the engine during this call.
+    const said = this.pool.peek(ctx)?.engine?.resultRedactor?.() || ((value) => value)
     try {
       if (name.startsWith('browser_')) new AnswerPrivacy().validate(args)
-      const initial = this.pool.peek(ctx)
-      if (!initial?.ownerInputLease && initial?.engine?.protectAnswer) await initial.engine.protectAnswer(null)
-      const reply = await this._call(ctx, name, args || {}, signal)
-      const engine = this.pool.peek(ctx)?.engine
-      return redact(engine?.protectAnswer ? await engine.protectAnswer(reply) : reply)
+      return said(await this._call(ctx, name, args || {}, signal))
     } catch (err) {
-      try {
-        return redact(errorResult(err instanceof HostError ? err.code : 'tool_error', String(err?.message ?? 'Browser command failed')), { trustedRefusal: err instanceof HostError })
-      } catch { return errorResult('privacy_unavailable', 'Browser privacy could not be verified. No page output was released.') }
+      if (err instanceof HostError || err?.code === 'privacy_unavailable') return said(errorResult(err.code, err.message))
+      return said(errorResult('tool_error', String(err?.message ?? 'Browser command failed')))
     }
   }
-
-  /** Each target this call names, as the live page calls it or else as the last tree did. Null when the call names none. */
-  async _readTargets(slot, args) {
-    const named = targetsNamedBy(args)
-    if (!named.length) return null
-    const live = typeof slot.engine.describeTargets === 'function' ? await slot.engine.describeTargets(named) : named.map(() => null)
-    return named.map((target, index) => (live[index]?.name ? live[index] : targetOfRef(slot.lastSnapshotText || '', target) || live[index]))
-  }
-
-  /** Absence of a cookie is not proof that this browser holds no sign-in. */
-  async _maySignedIn(_slot) { return true }
 
   /**
    * The intent check on a sensitive gate (backend POST session/:id/intent-check, as the desktop's
@@ -2574,7 +2547,7 @@ export class BrowserHostCore {
    */
   _keepPageTree(slot, name, args, result) {
     if (name !== 'browser_snapshot' || args?.target || args?.depth !== undefined) return
-    slot.lastSnapshotText = snapshotTextOf(name, result)
+    slot.lastSnapshotText = slot.engine.lastPageTree?.() ?? snapshotTextOf(name, result)
   }
 
   /** The slot's one browsing card, in order. Best effort, and never awaited by a tool call. */
@@ -2622,7 +2595,7 @@ export class BrowserHostCore {
           try {
             title = await page.title()
           } catch {}
-          return `${index}: ${title || '(untitled)'} ${page.url()}`
+          return `${index}: ${slot.engine.shownAddress?.(title || '(untitled)') ?? title} ${slot.engine.shownAddress?.(page.url()) ?? page.url()}`
         }),
       )
       return text(
@@ -2669,6 +2642,8 @@ export class BrowserHostCore {
     if (!slot.purpose) slot.purpose = defaultPurposeFor(engineArgs.url)
     if (name === 'browser_navigate' || name === 'browser_navigate_back' || name === 'browser_tabs') slot.lastSnapshotText = null
     const downloadsBefore = slot.downloads?.seq ?? 0
+    // A call that cannot run while a dialog is up asks nobody.
+    if (name !== 'browser_handle_dialog' && slot.engine.dialogWaiting?.()) return text(DIALOG)
     const verdict = await this._permit(ctx, slot, name, engineArgs, waitSeconds, signal)
     if (verdict.parked) return this._parkedResult(verdict)
     if (!verdict.allowed) return errorResult('policy_denied', verdict.message)
