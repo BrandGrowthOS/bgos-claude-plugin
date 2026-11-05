@@ -270,18 +270,30 @@ export interface OutboundStat {
   size: number | bigint
   dev?: number | bigint
   ino?: number | bigint
+  /** The modified, change and birth times in ns, which a stat asked for bigints gives. */
+  mtimeNs?: bigint
+  ctimeNs?: bigint
+  birthtimeNs?: bigint
 }
 
-/** A stat as the read keeps it: device and file number as they came, the size as a number. */
+/** A stat as the read keeps it: the numbers and times the swap check compares as they came, the size as a number. */
 interface ReadStat extends OutboundStat {
   size: number
 }
 
-/** Every stat here asks for this, so sameFileAs compares device and file numbers as bigint. */
+/** Every stat here asks for this, so sameFileAs compares device and file numbers and the times in ns as bigint. */
 const FILE_NUMBERS_AS_BIGINT = { bigint: true } as const
 
 function readStat(stat: OutboundStat): ReadStat {
-  return { isFile: () => stat.isFile(), size: Number(stat.size), dev: stat.dev, ino: stat.ino }
+  return {
+    isFile: () => stat.isFile(),
+    size: Number(stat.size),
+    dev: stat.dev,
+    ino: stat.ino,
+    mtimeNs: stat.mtimeNs,
+    ctimeNs: stat.ctimeNs,
+    birthtimeNs: stat.birthtimeNs,
+  }
 }
 
 /** What the read needs of an open file. */
@@ -350,7 +362,7 @@ function nativeRealpath(path: string): Promise<string> {
   return new Promise((resolve, reject) => native(path, (err, real) => (err ? reject(err) : resolve(String(real)))))
 }
 
-const REAL_FS: OutboundFs = {
+const REAL_FS: OutboundFs = Object.freeze<OutboundFs>({
   realpath: nativeRealpath,
   lstat: (path, options) => lstatPromise(path, options),
   open: async (path, flags) => {
@@ -361,7 +373,7 @@ const REAL_FS: OutboundFs = {
       close: () => handle.close(),
     }
   },
-}
+})
 
 /** The real file system, for the test that it answers with bigints when asked. */
 export const OUTBOUND_REAL_FS_FOR_TESTS = REAL_FS
@@ -956,10 +968,30 @@ function baseName(path: string): string {
   return parts[parts.length - 1] ?? ''
 }
 
-/** The same file, by device and file number where the system gives them (a zero is none), else by size. */
+/** A number the system gave (a device or file number, a birth time): one left out, or a zero, is unknown. */
+const known = (v: unknown): boolean => v !== undefined && v !== null && String(v) !== '0'
+
+/** A time the system gave: one left out is unknown (a zero is a time, the start of 1970). */
+const givenTime = (v: unknown): boolean => v !== undefined && v !== null
+
+/** Both sides gave the value and it is the same; an unknown value is never a match. */
+const bothSame = (given: (v: unknown) => boolean, x: unknown, y: unknown): boolean => given(x) && given(y) && String(x) === String(y)
+
+/**
+ * The same file. A device or file number that both sides gave and that differs means another file. With both numbers
+ * known on both sides and equal, it is the same file. Otherwise at least one number is unknown, and the size, the
+ * modified time and the change time in ns must all be given and equal, and the birth time too where both sides give
+ * one (Linux gives a zero when it has none). Reading a file changes none of these, so an unchanged file on a drive
+ * that reports no file number still goes; the access time is not compared, as reading changes it.
+ */
 function sameFileAs(a: ReadStat, b: ReadStat): boolean {
-  const known = (v: unknown) => v !== undefined && String(v) !== '0'
-  return known(a.ino) && known(b.ino) ? String(a.ino) === String(b.ino) && String(a.dev) === String(b.dev) : a.size === b.size
+  for (const key of ['dev', 'ino'] as const) {
+    if (known(a[key]) && known(b[key]) && String(a[key]) !== String(b[key])) return false
+  }
+  if (bothSame(known, a.dev, b.dev) && bothSame(known, a.ino, b.ino)) return true
+  if (a.size !== b.size) return false
+  if (!bothSame(givenTime, a.mtimeNs, b.mtimeNs) || !bothSame(givenTime, a.ctimeNs, b.ctimeNs)) return false
+  return !(known(a.birthtimeNs) && known(b.birthtimeNs)) || String(a.birthtimeNs) === String(b.birthtimeNs)
 }
 
 /**
@@ -1063,7 +1095,7 @@ export async function readOutboundFile(path: unknown, ctx: OutboundFileCtx = {})
     // The handle must be the file just checked: a swap between the stat and the open is refused.
     const opened = readStat(await handle.stat(FILE_NUMBERS_AS_BIGINT))
     const changed = `${shown(path)} changed while HOAI read it, so it is not attached.`
-    // Compared by device and file number where the system gives them (a zero is none), else by size.
+    // Compared by device and file number where the system gives both (a zero is none), else by size and times (sameFileAs).
     const sameFile = sameFileAs(stat, opened)
     if (!opened.isFile() || !sameFile) {
       return { ok: false, error: changed }

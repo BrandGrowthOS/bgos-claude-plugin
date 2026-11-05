@@ -1,6 +1,6 @@
 // ── Agent email files, outbound: the content stage of rule 4 ──
 //
-// HOAI row 5b141728, step 2 (DESIGN-OUT.md D7, rule 4), review round 7. What lib/email-outbound-files.ts reads of a
+// Step 2 (DESIGN-OUT.md D7, rule 4), review round 7. What lib/email-outbound-files.ts reads of a
 // text, Word or Excel file's words, moved here whole so it runs in a worker thread
 // (lib/email-outbound-content-worker.ts) that the daemon's main thread ends at a hard deadline: a text file's header
 // (a password column), a Word or Excel file's rows and words (officeWords), and on the decoded text a private key, a

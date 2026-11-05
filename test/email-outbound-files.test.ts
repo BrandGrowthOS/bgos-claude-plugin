@@ -3937,8 +3937,11 @@ test('the swap check compares device and file numbers as bigint, on every look',
     [a, a, b, 'file number, second look'],
     [b, b, a, 'file number, second look'],
     [c, d, d, 'device, first look'],
+    [d, c, c, 'device, first look'],
     [c, d, c, 'device, the handle'],
+    [d, c, d, 'device, the handle'],
     [c, c, d, 'device, second look'],
+    [d, d, c, 'device, second look'],
   ] as const) {
     assert.equal((await readOne(path, { home, fs: reading(first, opened, second) })).error, changedSentence(path), label)
   }
@@ -3947,6 +3950,120 @@ test('the swap check compares device and file numbers as bigint, on every look',
     assert.equal(read.ok, true, JSON.stringify(read.error))
     assert.equal(read.file.size, PDF.length)
   }
+})
+
+// ── the same-file check: a number left out or zero is unknown, and then the times decide ───────────────────────
+
+/** What a bigint stat carries that the same-file check reads. A field left undefined is one the system did not give. */
+type Look = { dev?: bigint, ino?: bigint, size?: bigint, mtimeNs?: bigint, ctimeNs?: bigint, birthtimeNs?: bigint }
+
+/** An unchanged file as a bigint stat gives it: device, file number, size and the three times in ns. */
+const UNCHANGED: Look = {
+  dev: 3n, ino: 41n, size: BigInt(PDF.length),
+  mtimeNs: 1_762_300_000_123_456_789n, ctimeNs: 1_762_300_000_223_456_789n, birthtimeNs: 1_762_200_000_000_000_001n,
+}
+
+/** A file system held in memory: the path's first look, the handle's look and the path's second look, each injected. */
+function lookFs(first: Look, opened: Look, second: Look) {
+  const stat = (look: Look) => ({ isFile: () => true, ...look, size: look.size ?? BigInt(PDF.length) })
+  const looks = [first, second]
+  let n = 0
+  return {
+    realpath: async (given: string) => given,
+    lstat: async () => stat(looks[Math.min(n++, 1)]!),
+    open: async () => ({
+      stat: async () => stat(opened),
+      read: async (buffer: Uint8Array, offset: number, length: number, position: number) => {
+        const read = Math.max(0, Math.min(length, PDF.length - position))
+        buffer.set(PDF.subarray(position, position + read), offset)
+        return { bytesRead: read }
+      },
+      close: async () => {},
+    }),
+  }
+}
+
+/** Reads one file with each of its three looks injected. */
+async function readLooks(first: Look, opened: Look, second: Look): Promise<any> {
+  return readOne(`${MEM_HOME}\\Documents\\q3.pdf`, { home: MEM_HOME, fs: lookFs(first, opened, second) })
+}
+
+/** Each way one look can differ from the other two: the first look, the handle, the second look. */
+function oneLookDiffers(same: Look, other: Look): Array<[Look, Look, Look, string]> {
+  return [[other, same, same, 'first look'], [same, other, same, 'the handle'], [same, same, other, 'second look']]
+}
+
+const MEM_CHANGED = changedSentence(`${MEM_HOME}\\Documents\\q3.pdf`)
+
+test('the same-file check: a device number left out on both sides is not a match, so the times decide', async () => {
+  const noDev: Look = { ...UNCHANGED, dev: undefined }
+  for (const [label, other] of [
+    ['modified time', { ...noDev, mtimeNs: noDev.mtimeNs! + 1n }],
+    ['change time', { ...noDev, ctimeNs: noDev.ctimeNs! + 1n }],
+  ] as const) {
+    for (const [first, opened, second, where] of oneLookDiffers(noDev, other)) {
+      assert.equal((await readLooks(first, opened, second)).error, MEM_CHANGED, `${label}, ${where}`)
+    }
+  }
+  // A device number of zero is none, as a file number of zero is.
+  const zeroDev: Look = { ...UNCHANGED, dev: 0n }
+  for (const [first, opened, second, where] of oneLookDiffers(zeroDev, { ...zeroDev, mtimeNs: zeroDev.mtimeNs! + 1n })) {
+    assert.equal((await readLooks(first, opened, second)).error, MEM_CHANGED, `zero device, ${where}`)
+  }
+  // A different file number still says another file, device or not.
+  for (const [first, opened, second, where] of oneLookDiffers(noDev, { ...noDev, ino: 42n })) {
+    assert.equal((await readLooks(first, opened, second)).error, MEM_CHANGED, `file number, ${where}`)
+  }
+  // The controls: the same file, with no device number or a zero one, still goes.
+  for (const same of [noDev, zeroDev]) {
+    const read = await readLooks(same, same, same)
+    assert.equal(read.ok, true, JSON.stringify(read.error))
+  }
+})
+
+test('the same-file check: with no file number (zero or left out) the size and the modified and change times in ns must all match', async () => {
+  for (const ino of [0n, undefined]) {
+    const same: Look = { ...UNCHANGED, ino }
+    for (const [label, other] of [
+      ['size', { ...same, size: same.size! + 1n }],
+      ['device number', { ...same, dev: same.dev! + 1n }],
+      ['modified time, 1 ns', { ...same, mtimeNs: same.mtimeNs! + 1n }],
+      ['change time, 1 ns', { ...same, ctimeNs: same.ctimeNs! + 1n }],
+      ['birth time, 1 ns', { ...same, birthtimeNs: same.birthtimeNs! + 1n }],
+      ['modified time left out', { ...same, mtimeNs: undefined }],
+      ['change time left out', { ...same, ctimeNs: undefined }],
+    ] as const) {
+      for (const [first, opened, second, where] of oneLookDiffers(same, other)) {
+        assert.equal((await readLooks(first, opened, second)).error, MEM_CHANGED, `file number ${ino}: ${label}, ${where}`)
+      }
+    }
+    // Times left out on every look prove nothing: the size alone does not pass.
+    const timeless: Look = { ...same, mtimeNs: undefined, ctimeNs: undefined, birthtimeNs: undefined }
+    assert.equal((await readLooks(timeless, timeless, timeless)).error, MEM_CHANGED, `file number ${ino}: no times at all`)
+    // The controls: an unchanged file on a drive that reports no file number goes, and so does one whose system
+    // gives no birth time (left out, or zero as Linux reports it without one) on either look.
+    const read = await readLooks(same, same, same)
+    assert.equal(read.ok, true, JSON.stringify(read.error))
+    assert.equal(read.file.size, PDF.length)
+    for (const birthtimeNs of [undefined, 0n]) {
+      for (const [first, opened, second, where] of oneLookDiffers(same, { ...same, birthtimeNs })) {
+        const read = await readLooks(first, opened, second)
+        assert.equal(read.ok, true, `file number ${ino}: birth time ${birthtimeNs} on the ${where} only: ${JSON.stringify(read.error)}`)
+      }
+    }
+  }
+})
+
+test('the same-file check: with full numbers on every look the times are not needed', async () => {
+  const numbersOnly: Look = { dev: 3n, ino: 41n }
+  const read = await readLooks(numbersOnly, numbersOnly, numbersOnly)
+  assert.equal(read.ok, true, JSON.stringify(read.error))
+})
+
+test('the real file system export is frozen, as the other test exports are', async () => {
+  const lib = await m()
+  assert.equal(Object.isFrozen(lib.OUTBOUND_REAL_FS_FOR_TESTS), true)
+  assert.throws(() => { lib.OUTBOUND_REAL_FS_FOR_TESTS.lstat = async () => ({}) }, TypeError)
 })
 
 test('the real file system answers a stat with bigints, on a path and on an open file', async (t) => {
@@ -3959,6 +4076,9 @@ test('the real file system answers a stat with bigints, on a path and on an open
   const seen = await fs.lstat(path, { bigint: true })
   assert.equal(typeof seen.ino, 'bigint')
   assert.equal(typeof seen.dev, 'bigint')
+  // And the times in ns, which the same-file check falls back on when a drive gives no file number.
+  assert.equal(typeof seen.mtimeNs, 'bigint')
+  assert.equal(typeof seen.ctimeNs, 'bigint')
   const handle = await fs.open(path, 'r')
   try {
     const opened = await handle.stat({ bigint: true })
@@ -3966,9 +4086,25 @@ test('the real file system answers a stat with bigints, on a path and on an open
     assert.equal(typeof opened.dev, 'bigint')
     assert.equal(opened.ino, seen.ino)
     assert.equal(opened.dev, seen.dev)
+    assert.equal(opened.mtimeNs, seen.mtimeNs)
+    assert.equal(opened.ctimeNs, seen.ctimeNs)
   } finally {
     await handle.close()
   }
+  // A drive that reports no file or device number: the real stats with those two set to zero. The file was written
+  // once above and is not touched again, so it is unchanged, and the times of the real looks agree: it still goes.
+  const noNumbers = (s: any) => ({
+    isFile: () => s.isFile(), size: s.size, dev: 0n, ino: 0n, mtimeNs: s.mtimeNs, ctimeNs: s.ctimeNs, birthtimeNs: s.birthtimeNs,
+  })
+  const zeroDrive = {
+    lstat: async (p: string, options: { bigint: true }) => noNumbers(await fs.lstat(p, options)),
+    open: async (p: string, flags: 'r') => {
+      const h = await fs.open(p, flags)
+      return { stat: async (options: { bigint: true }) => noNumbers(await h.stat(options)), read: h.read, close: h.close }
+    },
+  }
+  const read = await readOne(path, { home, fs: zeroDrive })
+  assert.equal(read.ok, true, JSON.stringify(read.error))
 })
 
 test('final fix: a file swapped in place between the check and the open is refused by the handle check (the inode)', async () => {
