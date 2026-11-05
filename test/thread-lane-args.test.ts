@@ -36,6 +36,8 @@ import {
   threadTurnPrompt,
 } from '../lib/thread-lane-args.ts'
 
+import { laneShellSandboxAvailable } from '../lib/lane-policy.mjs'
+
 const MAIN = '435f1f18-2716-4c27-bfd8-e2c48f28b3ac'
 const FORK = 'dbd3b62b-f099-4f95-be1d-4687b4af9042'
 const MCP = '/state/threads/empty-mcp.json'
@@ -340,4 +342,20 @@ test('the secret paths also cover AWS, gh, netrc, docker, npm and the plugin sta
   const moved = laneSecretPaths({ home, configDir: '', pluginStateDir: '/srv/state', exists: () => true })
   assert.ok(moved.includes('/srv/state'))
   assert.ok(moved.includes('/home/u/.bgos-plugin-state'))
+})
+
+
+test('owner thread on a Linux path keeps Bash and git commit with bwrap and socat', () => {
+  const root = '/home/owner/project/.hoai/threads/42'
+  const checked: string[] = []
+  const shellSandbox = laneShellSandboxAvailable({ platform: 'linux', exists: () => false, onPath: (name: string) => { checked.push(name); return ['bwrap', 'socat'].includes(name) } })
+  const confinement = { root, readOnly: false, shellSandbox, platform: 'linux' as const }
+  assert.deepEqual(checked, ['bwrap', 'socat'])
+  assert.ok(threadLaneTools(confinement).includes('Bash'))
+  const settings = threadLaneSettings(confinement) as { permissions: { allow: string[] }; sandbox?: { enabled: boolean; allowUnsandboxedCommands: boolean } }
+  assert.ok(settings.permissions.allow.includes('Bash(git add:*)'))
+  assert.ok(settings.permissions.allow.includes('Bash(git commit:*)'))
+  assert.equal(settings.sandbox?.enabled, true)
+  assert.equal(settings.sandbox?.allowUnsandboxedCommands, false)
+  assert.ok(flag(threadLaneArgs({ mainSessionId: MAIN, forkSessionId: null, emptyMcpConfigPath: MCP, confinement }), '--tools').split(',').includes('Bash'))
 })

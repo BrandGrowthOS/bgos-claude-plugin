@@ -52,14 +52,14 @@ function watch(launched: Record<string, unknown>, inFlight: string[] = []) {
 }
 
 test('tighter restarts NOW and cuts the turn in flight with the fixed sentence', () => {
-  const { w, notices, restarts } = watch({ shell: true, webFetch: true }, ['5'])
+  const { w, notices, restarts } = watch({ readAgentFolder: true, webFetch: true }, ['5'])
   assert.equal(w.onPolicy({ ...LOCKED_TOOL_POLICY, webFetch: true }, 'lane_policy_changed'), 'tighter')
   assert.deepEqual(restarts, [{ reasons: ['policy_tightened'], when: 'now', fresh: false, chatId: null }])
   assert.deepEqual(notices, [{ name: 'policy_tightened', chatIds: ['5'] }])
 })
 
 test('tighter with nothing in flight restarts now and tells nobody', () => {
-  const { w, notices, restarts } = watch({ shell: true })
+  const { w, notices, restarts } = watch({ readAgentFolder: true })
   assert.equal(w.onPolicy({ ...LOCKED_TOOL_POLICY }, 'heartbeat'), 'tighter')
   assert.equal(restarts[0]!.when, 'now')
   assert.deepEqual(notices, [])
@@ -76,15 +76,15 @@ test('the same policy asks nothing; one change is asked once, a new one again', 
   const { w, restarts } = watch({ webFetch: true })
   assert.equal(w.onPolicy({ ...LOCKED_TOOL_POLICY, webFetch: true }, 'boot'), 'same')
   assert.equal(w.onPolicy({ ...LOCKED_TOOL_POLICY, webFetch: true, browser: true }, 'heartbeat'), 'same', 'browser alone changes no launch')
-  assert.equal(w.onPolicy({ ...LOCKED_TOOL_POLICY, webFetch: true, shell: true }, 'heartbeat'), 'looser')
-  assert.equal(w.onPolicy({ ...LOCKED_TOOL_POLICY, webFetch: true, shell: true }, 'heartbeat'), 'already_asked')
+  assert.equal(w.onPolicy({ ...LOCKED_TOOL_POLICY, webFetch: true, readAgentFolder: true }, 'heartbeat'), 'looser')
+  assert.equal(w.onPolicy({ ...LOCKED_TOOL_POLICY, webFetch: true, readAgentFolder: true }, 'heartbeat'), 'already_asked')
   assert.equal(w.onPolicy({ ...LOCKED_TOOL_POLICY }, 'lane_policy_changed'), 'tighter')
   assert.equal(restarts.length, 2)
 })
 
 test('the launch it compares with: the daemon\'s own environment, never a file the lane could rewrite (review M1)', () => {
   assert.deepEqual(launchedFacts({}), { policy: { ...LOCKED_TOOL_POLICY }, model: null, effort: null }, 'a P3 launch is the locked base')
-  assert.deepEqual(launchedFacts({ HOAI_LANE_LAUNCH_POLICY: JSON.stringify({ v: 1, shell: true }), HOAI_LANE_LAUNCH_MODEL: 'haiku', HOAI_LANE_LAUNCH_EFFORT: 'low' }), { policy: { ...LOCKED_TOOL_POLICY, shell: true }, model: 'haiku', effort: 'low' })
+  assert.deepEqual(launchedFacts({ HOAI_LANE_LAUNCH_POLICY: JSON.stringify({ v: 1, readAgentFolder: true }), HOAI_LANE_LAUNCH_MODEL: 'haiku', HOAI_LANE_LAUNCH_EFFORT: 'low' }), { policy: { ...LOCKED_TOOL_POLICY, readAgentFolder: true }, model: 'haiku', effort: 'low' })
   assert.deepEqual(launchedFacts({ HOAI_LANE_LAUNCH_POLICY: 'garbage' }).policy, { ...LOCKED_TOOL_POLICY })
   assert.deepEqual(launchedFacts({ HOAI_LANE_LAUNCH_MODEL: 'x y', HOAI_LANE_LAUNCH_EFFORT: 'warp' }), { policy: { ...LOCKED_TOOL_POLICY }, model: null, effort: null }, 'model and effort checked before any report (review M2)')
   // A forged launch-policy.json changes nothing: the watch reads the environment.
@@ -93,7 +93,7 @@ test('the launch it compares with: the daemon\'s own environment, never a file t
     const paths = lanePaths({ home, assistantId: '1076', userId: 'user_ana' })
     mkdirSync(paths.laneDir, { recursive: true })
     writeFileSync(paths.launchPolicyPath, JSON.stringify({ v: 1, policy: { v: 1 } }))
-    const env = { HOAI_LANE_LAUNCH_POLICY: JSON.stringify({ v: 1, shell: true }) }
+    const env = { HOAI_LANE_LAUNCH_POLICY: JSON.stringify({ v: 1, readAgentFolder: true }) }
     const restarts: RestartAsk[] = []
     const w = new LanePolicyWatch({ launchedPolicy: () => launchedFacts(env).policy, inFlightChats: () => [], notice: () => {}, requestRestart: (n) => restarts.push(n), log: () => {} })
     assert.equal(w.onPolicy({ ...LOCKED_TOOL_POLICY }, 'heartbeat'), 'tighter')

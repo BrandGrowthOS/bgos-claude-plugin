@@ -1635,6 +1635,10 @@ async function runSupervisedFastFaults(home: string, cwd: string, exitDelaysMs: 
   const lines: string[] = []
   const t0 = Date.now()
   let n = 0
+  // The child is a fake, so its lifetime is explicit too. Real synchronous
+  // preparation and scheduler contention must not turn a 5 ms fixture into
+  // a healthy session. Keep the same deadlines and pin assertions.
+  let clock = Date.now()
   const code = await main([], {
     print: (line: string) => {
       lines.push(`${Date.now() - t0}ms ${line}`)
@@ -1645,6 +1649,11 @@ async function runSupervisedFastFaults(home: string, cwd: string, exitDelaysMs: 
     cwd,
     scriptDir: CLONE_SCRIPT_DIR,
     healthyMs,
+    now: () => clock,
+    setTimer: (fn: () => void, ms: number) => {
+      const deadline = clock + ms
+      return setTimeout(() => { clock = Math.max(clock, deadline); fn() }, ms)
+    },
     spawnImpl: ((file: string, args: readonly string[]) => {
       spawns.push({ file, args: [...args] })
       const delay = exitDelaysMs[n] ?? 0
@@ -1656,7 +1665,8 @@ async function runSupervisedFastFaults(home: string, cwd: string, exitDelaysMs: 
       child.stdin = null
       child.stdout = null
       child.stderr = null
-      setTimeout(() => child.emit('exit', 1, null), delay)
+      const deadline = clock + delay
+      setTimeout(() => { clock = Math.max(clock, deadline); child.emit('exit', 1, null) }, delay)
       return child
     }) as never,
   })

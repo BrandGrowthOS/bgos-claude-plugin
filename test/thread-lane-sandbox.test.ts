@@ -10,9 +10,22 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 
 import { laneSecretPaths, threadLaneSettings, threadLaneTools } from '../lib/thread-lane-args.ts'
-import { spawnStreamJson } from '../lib/stream-json-child.ts'
+import { LANE_CHILD_ENV_VARS, spawnStreamJson } from '../lib/stream-json-child.ts'
 
 const claude = process.env.THREADS_SANDBOX_CLAUDE
+
+// Names the daemon's allow list leaves out, and a login variable that must be absent from the thread's shell.
+const NOT_ALLOWED_NAMES = ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'GITHUB_TOKEN', 'FOO_TOKEN']
+// HOME is the control: it proves the check reads the environment at all.
+const ENV_CHECK_NAMES = ['HOME', ...NOT_ALLOWED_NAMES, 'CLAUDE_CODE_OAUTH_TOKEN']
+
+/** The NAME=value lines of a tool result, as a map. */
+function envLines(result: unknown): Record<string, string> {
+  const content = (result as { content: string | Array<{ text?: string }> }).content
+  const text = typeof content === 'string' ? content : content.map((part) => part.text ?? '').join('\n')
+  const lines = text.split('\n').filter((line) => /^[A-Z_]+=/.test(line))
+  return Object.fromEntries(lines.map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]))
+}
 
 test('the real thread starts with filtered credentials and its sandbox reads only permitted files', {
   skip: !claude || process.platform === 'win32', timeout: 45_000,
@@ -55,7 +68,8 @@ test('the real thread starts with filtered credentials and its sandbox reads onl
     const step = requests++
     // Pair only after the first sandboxed command has finished.
     if (step === 1) writeFileSync(credential, 'FUTURE_CREDENTIAL_8')
-    const envCheck = 'printenv AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN GITHUB_TOKEN FOO_TOKEN; echo ENV_CHECK_COMPLETE'
+    // env and a name filter, not printenv: printenv on macOS prints only the first name it is given.
+    const envCheck = `env | grep -E '^(${ENV_CHECK_NAMES.join('|')})='; echo ENV_CHECK_COMPLETE`
     const block = step < 3
       ? { type: 'tool_use', id: `tool_${step}`, name: 'Bash', input: { command: step === 2 ? envCheck : `cat ${quote(step === 0 ? attachment : credential)}`, description: 'Check thread isolation' } }
       : { type: 'text', text: 'Sandbox check complete.' }
@@ -84,6 +98,7 @@ test('the real thread starts with filtered credentials and its sandbox reads onl
     process.env = {
       HOME: home, PATH: parentEnv.PATH, TMPDIR: dir,
       CLAUDE_CONFIG_DIR: configDir, ANTHROPIC_API_KEY: 'local-test-not-a-real-key',
+      CLAUDE_CODE_OAUTH_TOKEN: 'fake-oauth-token',
       ANTHROPIC_BASE_URL: `http://127.0.0.1:${address.port}`,
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
       AWS_ACCESS_KEY_ID: 'fake-aws-id', AWS_SECRET_ACCESS_KEY: 'fake-aws-secret',
@@ -113,6 +128,8 @@ test('the real thread starts with filtered credentials and its sandbox reads onl
     assert.match(JSON.stringify(results[1]), /Operation not permitted|Permission denied/, output)
     assert.match(JSON.stringify(results[2]), /ENV_CHECK_COMPLETE/, output)
     assert.doesNotMatch(JSON.stringify(results[2]), /fake-aws|fake-github|fake-unknown/, output)
+    assert.deepEqual(envLines(results[2]), { HOME: home }, 'the control, and none of the listed names')
+    for (const name of NOT_ALLOWED_NAMES) assert.equal(LANE_CHILD_ENV_VARS.includes(name), false, `${name} on the allow list`)
   } finally {
     clearTimeout(timer)
     child.kill('SIGKILL')
