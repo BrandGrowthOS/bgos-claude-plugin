@@ -44,8 +44,8 @@ import register from './page-handoff-cases.cjs'
 register(async (t:any)=>{
  let body='<h1>Start</h1>', index=0
  const r=await rig(t,()=>body)
- return {...r,nextPage:(html:string)=>{body=html},engine:r.engine._engine,route:async(name:string,args:any,choices:string[]=[])=>{const start=r.cards.length;const post=r.core.gates._postCard;const read=r.core.gates._readGate;
+ return {...r,nextPage:(html:string)=>{body=html},engine:r.engine._engine,route:async(name:string,args:any,choices:Array<string|((card:any)=>string|Promise<string>)>=[])=>{const start=r.cards.length;const post=r.core.gates._postCard;const read=r.core.gates._readGate;
  const answers=new Map();r.core.gates._readGate=async(id:string)=>({gateId:id,state:'answered',choice:answers.get(id)||'deny'});
- r.core.gates._postCard=async(card:any)=>{answers.set(card.gateId,choices.shift()||'deny');return post(card)};
+ r.core.gates._postCard=async(card:any)=>{const choice=choices.shift();answers.set(card.gateId,typeof choice==='function'?await choice(card):choice||'deny');return post(card)};
  try{return {result:await r.call(name,args),cards:r.cards.slice(start)}}finally{r.core.gates._postCard=post;r.core.gates._readGate=read}},gate:async(name:string,args:any,choice="deny")=>{r.answer(choice);const before=r.cards.length;await r.call(name,args);return r.cards[before]||{}},set:async(html:string)=>{body=`<meta charset="utf-8">${html}`;await r.page.goto(`${r.origin}/${++index}`)},call:async(name:string,args:any={})=>{try{return await r.call(name,args)}catch(e:any){return {content:[{type:'text',text:e.message}]}}}}
 }, 'machine')

@@ -75,7 +75,8 @@ module.exports=(rig,host)=>{
    await r.page.evaluate(()=>{setTimeout(()=>confirm('PRIVATE DIALOG'),0)});await new Promise(resolve=>setTimeout(resolve,80));
    const denied=await r.route('browser_handle_dialog',{accept:true},['deny']);assert.equal(denied.cards.length,1);assert.doesNotMatch(JSON.stringify(denied.cards),/PRIVATE DIALOG/);
    const allowed=await r.route('browser_handle_dialog',{accept:false},['allow_once']);assert.equal(allowed.cards.length,1);
-   const closed=await r.route('browser_close',{},[]);assert.ok((r.isClosed?r.isClosed():r.page.isClosed()),text(closed.result));
+   if(r.host)await r.host._createTab('about:blank',{activate:false});else await r.page.context().newPage();
+   const closed=await r.route('browser_close',{},['allow_once']);assert.ok((r.isClosed?r.isClosed():r.page.isClosed()),text(closed.result));
   });
   check('6 unreadable page can navigate with permission',async r=>{
    await r.set('<h1>Stuck</h1>');await r.call('browser_snapshot');const old=r.page.url();
@@ -85,7 +86,8 @@ module.exports=(rig,host)=>{
   check('6 stuck page always closes',async r=>{
    await r.set('<h1>Stuck</h1>');await r.call('browser_snapshot');
    await r.page.evaluate(()=>{setTimeout(()=>{for(;;){}},20)});await new Promise(resolve=>setTimeout(resolve,80));
-   await r.route('browser_close',{},[]);assert.ok((r.isClosed?r.isClosed():r.page.isClosed()));
+   if(r.host)await r.host._createTab('about:blank',{activate:false});else await r.page.context().newPage();
+   await r.route('browser_close',{},['allow_once']);assert.ok((r.isClosed?r.isClosed():r.page.isClosed()));
   });
   check('7 keys cannot write through an unreadable frame focus',async r=>{
    await r.set('<iframe srcdoc="<input type=password id=p>"></iframe>');await r.call('browser_snapshot');const box=r.page.frames()[1].locator('#p');await box.focus();
@@ -125,10 +127,10 @@ module.exports=(rig,host)=>{
    await r.call('browser_snapshot');await r.page.locator('#p').pressSequentially(value);
    assert.equal(text(await r.call('browser_snapshot')),LINE);
   });
-  check('15 reloading the same site cannot repeat the privacy question',async r=>{
+  check('15 a new field on the same site gets its own privacy question',async r=>{
    for(let i=0;i<3;i++){
     await r.set('<input aria-label=Code value=4821>');const reply=await r.route('browser_snapshot',{},['deny']);
-    assert.equal(reply.cards.length,i===0?1:0);assert.doesNotMatch(text(reply.result),/4821/);
+    assert.equal(reply.cards.length,1);assert.doesNotMatch(text(reply.result),/4821/);
    }
   });
   check('13 ordinary search and email do not become passwords',async r=>{

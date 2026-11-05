@@ -1247,6 +1247,7 @@ export class PlaywrightEngine {
     this.onSelectedPage = null
     this._secrets = new BrowserSecretRedactor()
     this._privacy = new AnswerPrivacy()
+    this._agentPages = new WeakSet()
   }
 
   async start() {
@@ -1261,7 +1262,7 @@ export class PlaywrightEngine {
     context.on('page', page => { this._privacy.protectPage(page); if (context.pages().length > REMOTE_BROWSER_TAB_MAX) void page.close().catch(() => {}) })
     context.pages().forEach(page => this._privacy.protectPage(page))
     context.on('download', (download) => this._download(download))
-    if (!this._managedRuntime) await context.newPage()
+    if (!this._managedRuntime) this._agentPages.add(await context.newPage())
     const config = await resolveConfig({ caps: this._caps, outputDir: this._outputDir })
     const filtered = tools.filteredTools(config).filter(tool => SAFE_TOOLS.has(tool.schema.name))
     this._toolSchemas = filtered.map(tool => tool.schema)
@@ -1350,6 +1351,18 @@ export class PlaywrightEngine {
     return (await this._backend._context.newTab()).page
   }
 
+  toolPage(name, args = {}) { return name === 'browser_tabs' && args.action === 'close' && args.index !== undefined ? this._backend?._context?.tabs()?.[args.index]?.page : this.selectedPage() }
+  ownsToolTarget(name, args) { return this._agentPages.has(this.toolPage(name, args)) }
+  closeTarget(name, args) {
+    const page = this.toolPage(name, args)
+    if (!page || page.isClosed()) throw new HostError('target_changed', this._privacy.privacyState().language === 'ar' ? 'علامة تبويب المتصفح غير متاحة.' : 'The browser tab is unavailable.')
+    // Playwright updates this identity on every committed document. Reading its
+    // existing notification state keeps close available even when page JS is stuck.
+    const document = page._connection.toImpl(page.mainFrame())._currentDocument
+    if (!document) throw new HostError('target_changed', this._privacy.privacyState().language === 'ar' ? 'مستند المتصفح غير متاح.' : 'The browser document is unavailable.')
+    return { page, document }
+  }
+
   _currentTab() { return this._backend?._context?.currentTab?.() || null }
   dialogWaiting() { return this._currentTab()?.modalStates?.().some(state => state.type === 'dialog') === true }
 
@@ -1372,6 +1385,7 @@ export class PlaywrightEngine {
       if (closesPage(name, args)) {
         const tab = name === 'browser_tabs' && args.index !== undefined ? this._backend._context.tabs()[args.index] : this._currentTab()
         if (!tab) throw new Error('The browser tab is unavailable.')
+        if (this.pages().length === 1) throw new HostError('last_tab', this._privacy.privacyState().language === 'ar' ? 'أبق علامة تبويب واحدة مفتوحة على الأقل.' : 'Keep at least one tab open.')
         await tab.page.close({ runBeforeUnload: false })
         return this._privacy.keep(text(this._privacy.copy.closed))
       }
@@ -1388,6 +1402,7 @@ export class PlaywrightEngine {
       // A read of the tree reads the page first by itself.
       const back = name === 'browser_navigate_back' && this._privacy.blocked ? await this.previousUrl() : null
       const reply = await this._backend.callTool(back ? 'browser_navigate' : name, back ? { url: back } : args || {}, signal)
+      if (name === 'browser_tabs' && args?.action === 'new' && !reply?.isError) this._agentPages.add(this.selectedPage())
       if (this.dialogWaiting() && name !== 'browser_handle_dialog') return dialogReply()
       return this._privacy.forPage(this._currentTab()?.page, async () => {
         if (!READS_THE_TREE.has(name)) await this._privacy.after(this._currentTab()?.page)
@@ -1825,6 +1840,9 @@ export class ChromiumEngine {
   }
 
   selectedPage() { return this._engine?.selectedPage() }
+  toolPage(name, args) { return this._engine?.toolPage(name, args) }
+  ownsToolTarget(name, args) { return this._engine?.ownsToolTarget(name, args) === true }
+  closeTarget(name, args) { return this._engine?.closeTarget(name, args) }
   selectPage(page) { return this._engine.selectPage(page) }
   newPage() { return this._engine.newPage() }
 
@@ -2341,8 +2359,9 @@ export class BrowserHostCore {
     const readTargets = read ? [...read.targets, read.actuated].filter((item) => item?.name) : null
     const rawFacts = readTargets ? factsOfTargets(name, readTargets) : gateFactsFor(name, engineArgs, slot.lastSnapshotText || null)
     const facts = rawFacts?.targetName ? { ...rawFacts, targetName: slot.engine.shownAddress?.(rawFacts.targetName) ?? rawFacts.targetName } : rawFacts
-    const currentOrigin = await this._currentOrigin(slot)
+    const currentOrigin = closesPage(name, engineArgs) && slot.engine.toolPage ? policy.originOf(slot.engine.toolPage(name, engineArgs)?.url() || '') : await this._currentOrigin(slot)
     const previous = name === 'browser_navigate_back' ? await slot.engine.previousUrl?.() : null
+    if (previous && /^(?:about:blank|chrome:\/\/newtab\/?)$/.test(previous)) return { allowed: true, ran: Promise.resolve(text(privateState?.language === 'ar' ? 'لا توجد صفحة ويب سابقة للعودة إليها.' : 'There is no previous web page to go back to.')) }
     if (previous) validateTool('browser_navigate', { url: previous })
     const classification = previous ? policy.classifyToolCall('browser_navigate', { url: previous }) : policy.classifyRead(name, engineArgs, read, { currentOrigin })
     // The owner answers every gate, and on another person's turn reads nothing of that person's page.
@@ -2358,10 +2377,21 @@ export class BrowserHostCore {
       settings,
       preapproved: [],
     })
-    const privacyExit = route === 'leave' || route === 'dialog'
+    const personClose = closesPage(name, engineArgs) && !slot.engine.ownsToolTarget?.(name, engineArgs)
+    const privacyExit = route === 'leave' || route === 'dialog' || personClose
     if (privacyExit && decision.verdict !== 'deny') { decision.verdict = 'ask'; decision.gate = route === 'dialog' ? 'credential' : 'sensitive' }
-    if (closesPage(name, engineArgs)) decision.verdict = 'allow'
-    const run = () => runAgentBrowserWork(slot, () => slot.engine.callTool(name, engineArgs, signal))
+    if (closesPage(name, engineArgs) && !personClose) decision.verdict = 'allow'
+    const closing = closesPage(name, engineArgs) ? await slot.engine.closeTarget?.(name, engineArgs) : null
+    const closingPage = closing?.page
+    const run = () => runAgentBrowserWork(slot, async () => {
+      if (closingPage) {
+        const current = await slot.engine.closeTarget(name, engineArgs)
+        if (current.page !== closingPage || current.document !== closing.document || closingPage.isClosed() || policy.originOf(closingPage.url()) !== currentOrigin) throw new HostError('target_changed', privateState?.language === 'ar' ? 'تغيرت علامة التبويب الموافق عليها. اطلب الإذن مجددا قبل إغلاقها.' : 'The approved tab changed. Ask again before closing it.')
+        const latest = slot.engine.ownsToolTarget?.(name, engineArgs) ? { verdict: 'allow' } : policy.decide({ profile: 'signed-in', classification, grants: this._grantsFor(ctx, slot), settings: this._settingsFor(slot), preapproved: [] })
+        if (latest.verdict === 'deny') throw new HostError('policy_denied', this._refusedMessage(latest, classification))
+      }
+      return slot.engine.callTool(name, engineArgs, signal)
+    })
     if (decision.verdict === 'allow') return { allowed: true, ran: Promise.resolve().then(run) }
     if (decision.verdict === 'deny') {
       return { allowed: false, message: this._refusedMessage(decision, classification) }
@@ -2377,7 +2407,7 @@ export class BrowserHostCore {
     // The words after "<agent> wants to" on the card: the imperative the
     // desktop's strip prints, never the trail's past tense ("wants to opened").
     // Where the host read the target's name, the card says that and not the agent's description.
-    const summary = privacyExit ? privateState[route === 'dialog' ? 'dialog' : 'leave'] : slot.engine.shownAddress?.(policy.hostCardPhrase(name, engineArgs, read, { kind: decision.gate, origin: classification.origin ?? null }, { blind: classification.blind === true })) ?? policy.hostCardPhrase(name, engineArgs, read, { kind: decision.gate, origin: classification.origin ?? null }, { blind: classification.blind === true })
+    const summary = route === 'dialog' ? privacy.privateDialogSummary(privateState, engineArgs) : route === 'leave' ? privateState.leave : personClose ? (privateState?.language === 'ar' ? 'إغلاق علامة تبويب هذا الشخص والتخلي عن التغييرات غير المحفوظة؟' : "Close this person's tab and discard unsaved changes?") : slot.engine.shownAddress?.(policy.hostCardPhrase(name, engineArgs, read, { kind: decision.gate, origin: classification.origin ?? null }, { blind: classification.blind === true })) ?? policy.hostCardPhrase(name, engineArgs, read, { kind: decision.gate, origin: classification.origin ?? null }, { blind: classification.blind === true })
     // A download ask the page raised is not the agent's: its action waits for
     // it (at most its 60 s) rather than being told the browser is busy. The
     // wait comes out of this call's own budget: the relay cuts a call at
