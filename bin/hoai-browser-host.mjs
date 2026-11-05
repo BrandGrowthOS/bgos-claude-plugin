@@ -1873,7 +1873,7 @@ export class ChromiumEngine {
   dialogWaiting() { return this._engine?.dialogWaiting() === true }
 
   describeAction(name, args) { return this._engine ? this._engine.describeAction(name, args) : Promise.resolve(null) }
-  tabsOverview() { return this._engine?.tabsOverview() }
+  tabsOverview() { return this._engine?._privacy ? this._engine.tabsOverview() : undefined }
   previousUrl() { return this._engine?.previousUrl() }
   inspectPrivacy(name, args) { return this._engine ? this._engine.inspectPrivacy(name, args) : Promise.resolve(null) }
   reloadPagePrivacy(page, work) { return this._engine.reloadPagePrivacy(page, work) }
@@ -1884,7 +1884,7 @@ export class ChromiumEngine {
 
   lastPageTree() { return this._engine?.lastPageTree() ?? null }
 
-  shownAddress(url, page) { return this._engine ? this._engine.shownAddress(url, page) : url }
+  shownAddress(url, page) { return this._engine?._privacy ? this._engine.shownAddress(url, page) : url }
 
   registerSecret(secret) {
     if (!this._engine || !this.alive) throw new HostError('browser_gone', 'The browser is unavailable.')
