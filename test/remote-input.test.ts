@@ -308,4 +308,3 @@ test('a renewal cannot revive an expired lease', async () => {
   f.advance(10000)
   await assert.rejects(f.input.renew(f.view, { leaseId }), { code: 'owner_lease_expired' })
 })
-

@@ -239,4 +239,3 @@ test('no tool that can read a cookie, a header or stored value is served, or ans
     assert.match(answer.content[0].text, /not available/, name)
   }
 })
-

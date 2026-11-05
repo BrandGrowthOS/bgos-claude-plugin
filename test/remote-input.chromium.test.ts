@@ -169,4 +169,3 @@ test('phone real Chromium takes a tap and whole Arabic text, refuses a password 
       rmSync(absoluteRoot, { recursive: true, force: true })
     }
   })
-
