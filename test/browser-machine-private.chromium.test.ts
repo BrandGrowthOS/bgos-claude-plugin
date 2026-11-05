@@ -249,6 +249,10 @@ test('a masked field keeps its value out of every reply on the real engine: a pl
     await sleep(300)
     const page = engine.pages()[0], held = await page.locator('input[aria-label="Plain"]').inputValue()
     assert.equal(held, VALUES.plain, 'CONTROL: the page really holds the value')
+    // Isolate the filled-secret wall from any startup Person hold. Owner release
+    // must still leave every populated secret private, including the srcdoc frame.
+    assert.deepEqual(await engine.handBackPrivacy(page), { ok: true })
+    assert.equal(engine._engine._privacy.personMode(page), false)
     const replies: Record<string, any> = {
       snapshot: await engine.callTool('browser_snapshot', {}),
       findPlain: await engine.callTool('browser_find', { text: 'Plain' }),
@@ -278,7 +282,9 @@ test('a masked field keeps its value out of every reply on the real engine: a pl
     await page.locator('input[aria-label="Plain"]').fill(TYPED)
     const backend = inner._backend, real = backend.callTool
     backend.callTool = async () => { throw new Error(`failed near ${TYPED}`) }
-    assert.equal((await engine.callTool('browser_snapshot', {})).content[0].text, replies.snapshot.content[0].text, 'a locked read never enters the backend')
+    const heldSnapshot = await engine.callTool('browser_snapshot', {})
+    assert.equal(heldSnapshot.content[0].text, replies.snapshot.content[0].text, 'a locked read never returns backend details')
+    assert.equal(JSON.stringify(heldSnapshot).includes(TYPED), false, 'the later masked value stays private')
     backend.callTool = real
   } finally {
     await engine.stop().catch(() => {})
