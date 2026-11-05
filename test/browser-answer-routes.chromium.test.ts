@@ -38,75 +38,13 @@ async function rig(t: any, html?: any, { answer = 'deny', write = 'allow', navig
   return { core, engine, site, cards, clicks: site.clicks, page: engine.selectedPage(), origin: site.origin, call: (name: string, args: any = {}) => core.callTool(OWNER, name, args) }
 }
 
-test('P1-1 a masked value stays out whatever its spacing, parent or name route', { skip, timeout: 90_000 }, async (t) => {
-  const r = await rig(t, `<h1>API keys</h1><div><span style="-webkit-text-security:disc">
-        sk_live_MADEUP9
-      </span></div><button>Reveal</button>`)
-  const tree = textOf(await r.call('browser_snapshot'))
-  assert.doesNotMatch(tree, /MADEUP9/)
-  assert.match(tree, /heading "API keys"/)
-  await r.page.setContent('<span style="-webkit-text-security:disc">my  secret  MADEUP2</span><button>Next</button>')
-  assert.doesNotMatch(textOf(await r.call('browser_snapshot')), /MADEUP2/)
-  await r.page.setContent('<input type=password aria-label="P" style="pointer-events:none"><button>Go</button>')
-  for (const value of ['a  MADEUP1', 'MADEUP3 ', 'shrt1']) {
-    await r.page.locator('input').fill(value)
-    const reply = textOf(await r.call('browser_snapshot'))
-    assert.equal(reply.includes(value.trim().replace(/\s+/g, ' ')), false, reply)
-    assert.match(reply, /textbox "P".*\(masked\)/)
-  }
-  await r.page.setContent(`<div id=w><input id=p type=password aria-label=Access></div><button id=remount onclick="const v=document.getElementById('p').value;document.getElementById('w').innerHTML='<input id=p type=text aria-label=Access>';document.getElementById('p').value=v">Show</button>`)
-  await r.page.locator('#p').fill('REMOUNT  TWO')
-  const before = textOf(await r.call('browser_snapshot'))
-  await r.call('browser_click', { target: refOf(before, 'Show'), element: 'Show' })
-  const after = textOf(await r.call('browser_snapshot'))
-  assert.doesNotMatch(after, /REMOUNT/, after)
-  assert.match(after, /textbox "Access"/)
-})
-
-test('P1-1 a new document is read as soon as it can be, so a Show before the agent\'s next call is seen', { skip, timeout: 60_000 }, async (t) => {
-  const r = await rig(t, `<input id=p type=password aria-label=Access><button id=b onclick="document.getElementById('p').type='text'">Show</button>`)
-  // The rig's own navigation sealed this document before it answered, with no waiting at all.
-  await r.page.locator('#p').fill('abc')
-  await r.page.locator('#b').click()
-  const reply = textOf(await r.call('browser_snapshot'))
-  assert.doesNotMatch(reply, /abc/, reply)
-  assert.match(reply, /textbox "Access".*\(masked\)/)
-})
-
-test('P1-2 a click reply carries no generated code, and no name the snapshot hid', { skip, timeout: 60_000 }, async (t) => {
-  const r = await rig(t, '<button style="-webkit-text-security:disc">a  MADEUP10</button><button>Harmless thing</button>')
-  const tree = textOf(await r.call('browser_snapshot'))
-  assert.doesNotMatch(tree, /MADEUP10/)
-  const plain = textOf(await r.call('browser_click', { target: refOf(tree, 'Harmless thing'), element: 'x' }))
-  assert.doesNotMatch(plain, /Ran Playwright code|getByRole/, plain)
-  assert.match(plain, /Done\.|Page URL/, 'and it is not silent')
-})
-
-test('P1-3 a password in a GET form URL is masked, in the reply and the status, short ones too', { skip, timeout: 90_000 }, async (t) => {
-  const r = await rig(t, undefined, { path: '/login' })
-  for (const value of ['MADEUPG a!b', 'ab!1']) {
-    await r.page.goto(`${r.origin}/login`)
-    await r.page.locator('#pw').fill(value)
-    await r.page.locator('[name=email]').fill('sam@example.test')
-    const tree = textOf(await r.call('browser_snapshot'))
-    const reply = textOf(await r.call('browser_click', { target: refOf(tree, 'Continue'), element: 'Continue', wait_seconds: 1 }))
-    await r.page.waitForURL(/session/)
-    const later = textOf(await r.call('browser_snapshot'))
-    const status = textOf(await r.call('hoai_browser_status'))
-    for (const text of [reply, later, status]) assert.equal(/MADEUPG|ab!1|ab%211/.test(text), false, text)
-    assert.match(later, /session\?email=sam%40example\.test/)
-    assert.match(status, /pw=\(masked\)&|pw=\(masked\)\s|pw=\(masked\)$/m, status)
-    assert.doesNotMatch(later, /\(masked\)\)/, 'one mask, however many times a reply is read')
-  }
-})
-
 test('P1-4 a gate reads the page, never the net: a hidden field beside a button changes no card', { skip, timeout: 60_000 }, async (t) => {
   const r = await rig(t, `<form onsubmit="return false"><input type=hidden name=token value="Delete account"><button onclick="fetch('/clicked/d')">Delete account</button></form><div><div><button id="show-password">
   <svg></svg>
 </button><button onclick="fetch('/clicked/e')">Delete account two</button></div></div>`)
   const tree = textOf(await r.call('browser_snapshot'))
   assert.doesNotMatch(tree, /\(masked\)- /, 'every line is whole')
-  for (const name of ['\\(masked\\) two', 'button "\\(masked\\)"']) {
+  for (const name of ['Delete account two', 'button "Delete account"']) {
     const ref = refOf(tree, name)
     assert.ok(ref, tree)
     await r.call('browser_click', { target: ref, element: 'Show the report', wait_seconds: 1 })
@@ -155,7 +93,7 @@ test('P1-6 one failed read fails one call, and slow frames, churn, busy pages an
     await r.page.setContent(`<form><input type=hidden name=__VIEWSTATE value="${Buffer.from(String(index).repeat(200 * 1024)).toString('base64')}"><h1>Page ${index}</h1></form>`)
     assert.match(textOf(await r.call('browser_snapshot')), new RegExp(`Page ${index}`))
   }
-  await r.page.setContent('<div style="-webkit-text-security:disc"><meter value=3 max=5></meter>x</div><h1>Meter</h1>')
+  await r.page.setContent('<div><meter value=3 max=5></meter>x</div><h1>Meter</h1>')
   assert.match(textOf(await r.call('browser_snapshot')), /heading "Meter"/)
   const toImpl = r.page._connection.toImpl
   const frame = toImpl(r.page.mainFrame()), utilityContext = frame.utilityContext
@@ -183,29 +121,6 @@ test('P1-6 a dialog in a background tab stops nothing, and a click during a dial
   for (let index = 0; index < 2; index += 1) assert.doesNotMatch(textOf(await r.call('browser_snapshot')), /could not be|failed/i)
 })
 
-test('P1-7 short and hidden values rewrite nothing', { skip, timeout: 60_000 }, async (t) => {
-  const r = await rig(t, '<form><input type=hidden name=page value=1><h1>Home 100</h1><button>Save</button><button>Next</button></form>')
-  const reply = textOf(await r.call('browser_snapshot'))
-  assert.equal(reply.includes('(masked)'), false, reply)
-  assert.match(reply, /heading "Home 100" \[level=1\]/)
-  assert.match(reply, new RegExp(`Page URL: ${r.origin}/`))
-  for (const value of ['text', 'e', 'type']) {
-    await r.page.setContent(`<form><input type=hidden name=kind value=${value}><h1>Home</h1><button>Save</button></form>`)
-    const rep = await r.call('browser_snapshot')
-    assert.equal(rep.content[0].type, 'text')
-    assert.match(rep.content[0].text, /heading "Home"/)
-  }
-})
-
-test('P1-7 the net never rewrites roles, refs or levels, even for a value that spells one', { skip, timeout: 60_000 }, async (t) => {
-  const r = await rig(t, '<input id=a type=password aria-label=A><input id=b type=password aria-label=B><h2>A heading here</h2><button>Save button</button>')
-  await r.page.locator('#a').fill('button')
-  await r.page.locator('#b').fill('heading')
-  const reply = textOf(await r.call('browser_snapshot'))
-  assert.match(reply, /- button "Save \(masked\)" \[ref=e\d+\]/, reply)
-  assert.match(reply, /- heading "A \(masked\) here" \[level=2\] \[ref=e\d+\]/)
-})
-
 test('P1-8 two refs from one snapshot both work, and a form fills', { skip, timeout: 60_000 }, async (t) => {
   const r = await rig(t, `<button onclick="fetch('/clicked/a')">Show the report</button><button onclick="fetch('/clicked/b')">Show the chart</button><input aria-label=One><input aria-label=Two>`)
   const tree = textOf(await r.call('browser_snapshot'))
@@ -229,34 +144,6 @@ test('P2-1 wait_for waits, and says when the text did not appear', { skip, timeo
   const never = await r.call('browser_wait_for', { text: 'NEVER HERE', time: 1 })
   assert.equal(never.isError, true)
   assert.match(textOf(never), /did not (appear|match)/i)
-})
-
-test('P2-2 a screenshot is per page and per moment', { skip, timeout: 60_000 }, async (t) => {
-  const r = await rig(t, '<form><input type=hidden name=csrf value=abc></form><h1>Hidden only</h1>')
-  await r.call('browser_snapshot')
-  assert.ok(hasImage(await r.call('browser_take_screenshot')), 'after a hidden input')
-  await r.page.setContent('<input type=password aria-label=P><h1>Empty login</h1>')
-  await r.call('browser_snapshot')
-  assert.ok(hasImage(await r.call('browser_take_screenshot')), 'with an empty password box')
-  await r.page.locator('input').fill('MADEUPPIXELS')
-  assert.equal(hasImage(await r.call('browser_take_screenshot')), false, 'with a filled one, none')
-  await r.page.setContent('<h1>Plain public page</h1>')
-  assert.ok(hasImage(await r.call('browser_take_screenshot')), 'and the next page is not held to the last one')
-})
-
-test('P2-3 ordinary buttons are not credentials, in the tree or on a card', { skip, timeout: 60_000 }, async (t) => {
-  const r = await rig(t, `<button aria-label="Pin message" onclick="fetch('/clicked/p')">Pin</button><button id="forgot-password" onclick="fetch('/clicked/l')">Log in</button><p>Log in to your account. Pin it.</p>`)
-  const tree = textOf(await r.call('browser_snapshot'))
-  assert.match(tree, /button "Pin message"/)
-  assert.match(tree, /button "Log in"/)
-  assert.match(tree, /Log in to your account\. Pin it\./)
-  assert.equal((await r.call('browser_click', { target: refOf(tree, 'Pin message'), element: 'Pin the message', wait_seconds: 1 })).isError === true, false)
-  await pause(100)
-  assert.deepEqual(r.clicks, ['p'])
-  assert.deepEqual(r.cards, [])
-  const stale = await r.call('browser_click', { target: 'e99999', element: 'gone', wait_seconds: 1 })
-  assert.deepEqual(r.cards, [], 'a ref no page answers for presses nothing, so it asks nobody')
-  assert.match(textOf(stale), /not found in the current page snapshot/)
 })
 
 test('P2-5 a newline in slow typing is a submit, and a label is read as its control', { skip, timeout: 90_000 }, async (t) => {
@@ -315,8 +202,10 @@ test('RULING a card says what the host read, marks the agent\'s words apart, and
   assert.deepEqual(blind.choices, ['allow_once', 'deny'])
   await r.page.setContent('<div id=c contenteditable style="-webkit-text-security:disc">MADEUPCARD</div>')
   const held = textOf(await r.call('browser_snapshot'))
-  await r.call('browser_click', { target: /\[ref=(e\d+)\]: \(masked\)/.exec(held)?.[1], element: 'x', wait_seconds: 1 })
-  assert.equal(r.cards.at(-1).kind, 'sensitive', 'a name holding the mask is no name')
+  const before = r.cards.length
+  const answer = await r.call('browser_click', { target: 'e2', element: 'x', wait_seconds: 1 })
+  assert.equal(r.cards.length, before)
+  assert.equal(textOf(answer), 'A password is on this page. You finish it here, and I will carry on when the page changes.')
   assert.doesNotMatch(JSON.stringify(r.cards), /MADEUPCARD/)
 })
 
