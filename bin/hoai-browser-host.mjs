@@ -1386,6 +1386,7 @@ export class PlaywrightEngine {
       if (closesPage(name, args)) {
         const tab = name === 'browser_tabs' && args.index !== undefined ? this._backend._context.tabs()[args.index] : this._currentTab()
         if (!tab) throw new Error('The browser tab is unavailable.')
+        if (this._privacy.personMode(tab.page)) return this._privacy.forPage(tab.page, () => this._privacy.handoff())
         if (this.pages().length === 1) throw new HostError('last_tab', this._privacy.privacyState().language === 'ar' ? 'أبق علامة تبويب واحدة مفتوحة على الأقل.' : 'Keep at least one tab open.')
         await tab.page.close({ runBeforeUnload: false })
         return this._privacy.keep(text(this._privacy.copy.closed))
@@ -1428,7 +1429,7 @@ export class PlaywrightEngine {
   }
 
   async inspectPrivacy(name, args = {}) {
-    const page = this._currentTab()?.page
+    const page = this.toolPage(name, args)
     return this._privacy.forPage(page, async () => {
       if (!closesPage(name, args) && !this.dialogWaiting() && page) {
         try { await this._privacy.read(page) }

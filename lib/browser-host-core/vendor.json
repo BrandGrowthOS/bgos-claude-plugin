@@ -21,13 +21,13 @@
     },
     "answer-privacy.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/answer-privacy.js",
-      "sha256": "c6178ad45255f6773b6a7e215d4062dfaa1c2feba9a6eaf44c6f205c2183f4da",
-      "sourceCommit": "75a4cadbdfa326f7f95ff205d2ed523919ccc470"
+      "sha256": "26738cd804f972d8b5c93b0dd24b6a609e3e4421e010fcc04a6da7e70975d591",
+      "sourceCommit": "b9c6cf8c843a9e1d27da8b9b2fc51320a37bc828"
     }
   },
-  "vendoredAt": "2026-11-05, browser round 15 person input tab lock",
+  "vendoredAt": "2026-11-05, browser round 16 document and action provenance",
   "whyADirectory": "settings.js and profiles.js both do require(\"./policy\"), so the copies keep their ORIGINAL filenames and sit together. package.json here pins type=commonjs, because the plugin root declares type=module and these files are CommonJS.",
   "howToUpdate": "Re-copy every file named above from its BGOS path, rerun the hashes, update this file, and run: HOAI_BROWSER_HOST_CORE_SOURCE=<BGOS agent-browser dir> npx tsx --test test/browser-host-core.vendor.test.ts",
   "theHalfThisCannotSee": "Nothing here fires when the BGOS originals change and these copies do not. That check lives on the BGOS side in frontend/electron-app/agent-browser/__tests__/hostCoreVendorPin.test.js, which pins the same hashes.",
-  "sourceCommit": "75a4cadbdfa326f7f95ff205d2ed523919ccc470"
+  "sourceCommit": "b9c6cf8c843a9e1d27da8b9b2fc51320a37bc828"
 }
