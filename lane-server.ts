@@ -61,6 +61,7 @@ import { io as socketIoClient, type Socket } from 'socket.io-client'
 
 import {
   laneEventLine,
+  laneClaudeHome,
   lanePaths,
   laneStateBody,
   LANE_LOGIN_OWN_TOKEN,
@@ -316,17 +317,17 @@ async function fetchLaneInbound(from: number): Promise<unknown[]> {
 // ── NOTICE MODE ─────────────────────────────────────────────────────────────
 
 async function runNoticeMode(notice: string): Promise<number> {
-  if (!(await ensureSession())) {
-    log('notice mode: no lane session; the owner\'s daemon will report lane_failed alone')
-    return 2
-  }
+  const chatIds = new Set<number>()
   try {
+    if (!(await ensureSession())) {
+      log('notice mode: no lane session; recording without chat recipients')
+      return 2
+    }
     if (!laneMeMatches(await laneFetch('GET', 'integrations/lanes/me'), LANE)) {
       log('notice mode: lanes/me does not name this lane')
       return 3
     }
     const nowMs = Date.now()
-    const chatIds = new Set<number>()
     for (const raw of await fetchLaneInbound(0)) {
       const gate = laneDeliveryGate(raw, LANE)
       if (!gate.deliver) continue
@@ -335,12 +336,13 @@ async function runNoticeMode(notice: string): Promise<number> {
       if (d.chatKind !== 'main' || !Number.isFinite(at) || nowMs - at > 24 * 60 * 60_000) continue
       chatIds.add(Number(d.chatId))
     }
-    appendEvent({ event: 'notice', notice, chatIds: [...chatIds].slice(0, 5) })
     log(`notice mode: ${notice} for ${chatIds.size} chat(s)`)
     return 0
   } catch (err) {
     log(`notice mode failed: ${err instanceof LaneHttpError ? err.status : String(err)}`)
     return 4
+  } finally {
+    appendEvent({ event: 'notice', notice, chatIds: [...chatIds].slice(0, 5) })
   }
 }
 
@@ -868,9 +870,7 @@ async function heartbeat(): Promise<void> {
 // comes up with its channels off and never takes a turn, so no transcript is
 // written; measured on 2.1.302), and the transcript names a sign in refused
 // mid session (lib/claude-login.ts).
-const CLAUDE_HOME = process.env.CLAUDE_CONFIG_DIR && process.env.CLAUDE_CONFIG_DIR !== ''
-  ? process.env.CLAUDE_CONFIG_DIR
-  : join(HOME, '.claude')
+const CLAUDE_HOME = laneClaudeHome(process.env, HOME)
 const loginWatcher = new ClaudeLoginWatcher(CFG.workDir, CLAUDE_HOME)
 const CLAUDE_DEBUG_PATH = join(CFG.laneDir, 'claude-debug.log')
 

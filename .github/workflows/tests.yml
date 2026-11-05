@@ -97,3 +97,23 @@ jobs:
       - name: Type check
         if: success() || failure()
         run: bun run build
+
+  test-lane-cli:
+    name: test (lane CLI on macOS)
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Install lane CLI and expect
+        run: |
+          npm install --global @anthropic-ai/claude-code@2.1.318
+          command -v expect || brew install expect
+      - name: Run real lane CLI tests
+        run: node --import tsx --test --test-concurrency=4 test/lane-subprocess-env.test.ts
+        env:
+          HOAI_REQUIRE_LANE_CLI: '1'

@@ -39,7 +39,7 @@
  *
  * Create body: { title, miniGoals: [{ name, doneWhen }], chatId? }.
  * Complete body: { summary? }, where summary is at most 500 chars. The backend
- * accepts 2..12 goals (the trained flow targets 4 to 10), assigns goal ids
+ * accepts 2..20 goals (the trained flow targets 4 to 10), assigns goal ids
  * 1..n, auto-completes on the last tick, and treats a tick of an already-done
  * goal as an idempotent no-op. All write responses embed the full mission
  * snapshot as { ok, mission }; the active read returns { mission | null }.
@@ -60,7 +60,7 @@
  */
 
 export const MISSION_MIN_GOALS = 2
-export const MISSION_MAX_GOALS = 12
+export const MISSION_MAX_GOALS = 20
 export const MISSION_TITLE_MAX = 200
 export const MISSION_GOAL_NAME_MAX = 120
 export const MISSION_DONE_WHEN_MAX = 200
@@ -79,7 +79,7 @@ export const MISSION_TURN_CAP_MAX = 200
 /** MissionRunReportInputDto.workingMs, one day. */
 export const MISSION_WORKING_MS_MAX = 86_400_000
 
-/** What the trained flow should aim for (the hard caps are 2..12). */
+/** What the trained flow should aim for (the hard caps are 2..20). */
 export const MISSION_TARGET_RANGE = '4 to 10'
 
 export interface MissionGoalBody {
@@ -233,7 +233,7 @@ const GOALS_HELP =
   'observable check that proves the goal, e.g. "the URL returns 200".'
 
 /**
- * The 2..12 { name, done_when } goals a create and a set-goals write share,
+ * The 2..20 { name, done_when } goals a create and a set-goals write share,
  * validated once so the two tools can never disagree about what a goal is.
  */
 function parseMissionGoals(
@@ -329,7 +329,7 @@ export interface MissionAddGoalsBody {
  * Build the add_mission_goals body: goals to APPEND to a mission that already
  * has some.
  *
- * ONE to twelve, not two: the set-goals door writes a whole plan and a plan of
+ * ONE to twenty, not two: the set-goals door writes a whole plan and a plan of
  * one goal is a plan that was not made, but adding a single goal to a plan that
  * exists is the normal case and the reason this door exists at all.
  *
@@ -872,22 +872,25 @@ export interface MissionGoalWorkingInput {
  * anywhere in the list refuses the call, so a half applied list never happens
  * because of a typo. A repeated id is one goal and one request. The backend
  * takes one goal per request, so the tool loops; the cap is a mission's own
- * goal cap, since there are never more goals to mark than that.
+ * goal cap, since there are never more goals to mark than that, and it counts
+ * distinct ids, after the repeats are removed.
  */
 export function buildMissionGoalWorkingInput(input: {
   goal_ids?: unknown
   working?: unknown
 }): MissionBuildResult<MissionGoalWorkingInput> {
   const { goal_ids, working } = input
-  if (!Array.isArray(goal_ids) || goal_ids.length < 1 || goal_ids.length > MISSION_MAX_GOALS) {
-    return {
-      ok: false,
-      error:
-        `goal_ids must list 1 to ${MISSION_MAX_GOALS} goal ids, the ids shown on the mission card ` +
-        `(got ${JSON.stringify(goal_ids)}).`,
-    }
-  }
+  const countRefusal = (): { ok: false; error: string } => ({
+    ok: false,
+    error:
+      `goal_ids must list 1 to ${MISSION_MAX_GOALS} distinct goal ids, the ids shown on the mission card ` +
+      `(got ${JSON.stringify(goal_ids)}).`,
+  })
+  if (!Array.isArray(goal_ids) || goal_ids.length < 1) return countRefusal()
+  // The cap counts DISTINCT goals, so it is judged after repeats are folded
+  // away: [1..20, 1] is twenty goals and twenty requests, not twenty one.
   const goalIds: number[] = []
+  const seen = new Set<number>()
   for (let i = 0; i < goal_ids.length; i++) {
     const id = goal_ids[i]
     if (typeof id !== 'number' || !Number.isInteger(id) || id < 1) {
@@ -898,8 +901,12 @@ export function buildMissionGoalWorkingInput(input: {
           `(got ${JSON.stringify(id)}). Nothing was marked.`,
       }
     }
-    if (!goalIds.includes(id)) goalIds.push(id)
+    if (!seen.has(id)) {
+      seen.add(id)
+      goalIds.push(id)
+    }
   }
+  if (goalIds.length > MISSION_MAX_GOALS) return countRefusal()
   if (typeof working !== 'boolean') {
     return {
       ok: false,

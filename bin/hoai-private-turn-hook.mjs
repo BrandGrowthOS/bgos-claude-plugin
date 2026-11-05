@@ -218,6 +218,12 @@ export function recordSubagentTurn(payload, env = process.env) {
   return true
 }
 
+/** Does this email_draft input name files? Anything but a missing, null or empty list counts, so a bad value is checked too. */
+function draftCarriesFiles(input) {
+  const files = input && typeof input === 'object' && !Array.isArray(input) ? input.files : undefined
+  return files !== undefined && files !== null && !(Array.isArray(files) && files.length === 0)
+}
+
 /**
  * PreToolUse on a private tool: a helper may act only inside the live turn that
  * started it. The main agent is left to the daemon and the browser shim, which
@@ -225,6 +231,9 @@ export function recordSubagentTurn(payload, env = process.env) {
  */
 export function privateToolRefusal(payload, env = process.env) {
   if (!new RegExp(PRIVATE_TOOL_MATCHER).test(String(payload?.tool_name ?? ''))) return null
+  // email_draft is private only with files (outbound email files, rule 2: a helper from an earlier turn may not
+  // attach a file on the next sender's say). A text draft never sends and carries no file, so it passes as before.
+  if (/(?:^|_)email_draft$/.test(String(payload?.tool_name ?? '')) && !draftCarriesFiles(payload?.tool_input)) return null
   if (String(payload?.agent_id ?? '').trim() === '') return null
   const target = managedMarker(payload, env)
   // A helper in a session whose own daemon is not attached: the turn that started it cannot be checked.

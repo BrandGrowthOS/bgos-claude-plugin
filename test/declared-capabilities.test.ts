@@ -105,7 +105,7 @@ test('a host that cannot type declares the READ half only', () => {
   // the honest answer, and still sees every Last check.
   assert.deepEqual(
     [...declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode: 'pairing' })],
-    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'mission_goal_working', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'boards_download', 'sessions_library', 'changes_rpc', 'doctor_rpc', 'skills_list', 'skills_receive', 'ui_card', 'ask_answered', 'ask_multi_select', 'email_label', 'email_send', 'hard_floor', 'hard_floor_rules_2'],
+    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'mission_goal_working', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'boards_download', 'sessions_library', 'changes_rpc', 'doctor_rpc', 'skills_list', 'skills_receive', 'ui_card', 'ask_answered', 'ask_multi_select', 'email_label', 'email_send', 'email_files', 'hard_floor', 'hard_floor_rules_2'],
   )
 })
 
@@ -150,6 +150,7 @@ test('boards_playbook is declared on every host, because the tool is typed and h
       'ask_multi_select',
       'email_label',
       'email_send',
+      'email_files',
       'hard_floor',
       'hard_floor_rules_2',
       'mission_goal_loop',
@@ -258,6 +259,7 @@ test('permission_card is declared on every host, because the relay has no platfo
       'ask_multi_select',
       'email_label',
       'email_send',
+      'email_files',
       'hard_floor',
       'hard_floor_rules_2',
       'mission_goal_loop',
@@ -730,6 +732,7 @@ test('the stop pause token rides with mission_pause and nothing else, the gate t
       'ask_multi_select',
       'email_label',
       'email_send',
+      'email_files',
       'hard_floor',
       'hard_floor_rules_2',
       'mission_goal_loop',
@@ -881,7 +884,7 @@ test('no thread token on Windows in phase 1, nor where threads cannot run', () =
 test('the fullest declaration, every token in its place, is exactly this list', () => {
   assert.deepEqual(
     [...declaredCapabilities({ canInjectGoal: true, floorHook: true, personLanes: true, modelEffortPicker: true, threads: true, authMode: 'pairing', platform: 'darwin' })],
-    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'mission_goal_working', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'boards_download', 'sessions_library', 'changes_rpc', 'doctor_rpc', 'skills_list', 'skills_receive', 'ui_card', 'ask_answered', 'ask_multi_select', 'email_label', 'email_send', 'hard_floor', 'hard_floor_rules_2', 'mission_goal_loop', 'mission_goal_uncapped', 'mission_pause', 'stop_pauses_mission', 'person_lanes', 'lane_memory_rpc', 'model_effort_picker', 'message_threads', 'thread_sessions', 'asides'],
+    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'mission_goal_working', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'boards_download', 'sessions_library', 'changes_rpc', 'doctor_rpc', 'skills_list', 'skills_receive', 'ui_card', 'ask_answered', 'ask_multi_select', 'email_label', 'email_send', 'email_files', 'hard_floor', 'hard_floor_rules_2', 'mission_goal_loop', 'mission_goal_uncapped', 'mission_pause', 'stop_pauses_mission', 'person_lanes', 'lane_memory_rpc', 'model_effort_picker', 'message_threads', 'thread_sessions', 'asides'],
   )
 })
 

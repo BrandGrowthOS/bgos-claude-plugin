@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { EventEmitter } from 'node:events'
 
+import { removeScratchDir } from './helpers/scratch-dirs'
 import { ATTACH_SCOPE_EVENTS_FILE } from '../lib/attach-scope.mjs'
 import { buildRunPlan, main } from '../bin/hoai-core.mjs'
 
@@ -22,7 +23,9 @@ interface Rig {
 }
 
 function rig(): Rig {
-  const home = realpathSync(mkdtempSync(join(tmpdir(), 'hoai-scope-e2e-')))
+  // Native: Windows temp folders can be 8.3 names (RUNNER~1), which bun's realpath expands and node's does not.
+  // The daemon would then not find its own files under CLAUDE_CONFIG_DIR and read itself as a clone.
+  const home = realpathSync.native(mkdtempSync(join(tmpdir(), 'hoai-scope-e2e-')))
   const folder = join(home, 'agent')
   const stateDir = join(home, '.bgos-plugin-state')
   for (const dir of [folder, join(home, '.bgos-agent')]) mkdirSync(dir, { recursive: true })
@@ -70,6 +73,7 @@ function boot(r: Rig, extraEnv: Record<string, string> = {}, cwd = r.folder): Pr
       env: {
         PATH: process.env.PATH,
         HOME: r.home,
+        USERPROFILE: r.home, // what os.homedir() reads on Windows
         CLAUDE_CONFIG_DIR: join(r.home, '.claude'),
         BGOS_LAUNCH_CWD: cwd,
         BGOS_PLUGIN_STATE_DIR: r.stateDir,
@@ -131,7 +135,9 @@ function boot(r: Rig, extraEnv: Record<string, string> = {}, cwd = r.folder): Pr
     })
     child.on('error', () => finish())
     child.stderr.on('data', (d) => (err += d))
-    child.on('exit', finish)
+    // 'close' so the last of stderr has arrived; a process holding the pipes after the exit only gets a second.
+    child.on('close', finish)
+    child.on('exit', () => setTimeout(finish, 1000))
     send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'probe', version: '1' } } })
     const deadline = setTimeout(() => {
       stop()
@@ -196,7 +202,7 @@ test('marketplace real boot: a non agent folder stays dormant with no tools, cha
     assertDormant(await boot(r, { BGOS_ASSISTANT_ID: '42' }, cwd), r)
     assert.equal(events(r).length, 2)
     assert.deepEqual(readdirSync(r.stateDir), [ATTACH_SCOPE_EVENTS_FILE], 'dormant boot writes only telemetry')
-  } finally { rmSync(r.home, { recursive: true, force: true }) }
+  } finally { removeScratchDir(r.home) }
 })
 
 test('marketplace real boot: both agents attach in their own home and never as the other agent', SLOW, async () => {
@@ -210,7 +216,7 @@ test('marketplace real boot: both agents attach in their own home and never as t
       const wrong = id === '42' ? '41' : '42'
       assertDormant(await boot(r, { BGOS_ASSISTANT_ID: wrong }, cwd), r)
     }
-  } finally { rmSync(r.home, { recursive: true, force: true }) }
+  } finally { removeScratchDir(r.home) }
 })
 
 test('marketplace real boot: explicit scope opts in outside home, inherited scope does not', SLOW, async () => {
@@ -223,7 +229,7 @@ test('marketplace real boot: explicit scope opts in outside home, inherited scop
     assert.ok(opted.names.includes('reply'), opted.stderr)
     assert.equal(events(r).at(-1)!.outcome, 'match')
     assertDormant(await boot(r, { ...env, HOAI_ATTACH_SCOPE_DIR: r.folder }, cwd), r)
-  } finally { rmSync(r.home, { recursive: true, force: true }) }
+  } finally { removeScratchDir(r.home) }
 })
 
 test('marketplace real boot: unreadable scope fails open', SLOW, async () => {
@@ -232,7 +238,7 @@ test('marketplace real boot: unreadable scope fails open', SLOW, async () => {
     const a = await boot(r, { HOAI_ATTACH_SCOPE: 'broken' })
     assert.ok(a.names.includes('reply'), a.stderr)
     assert.equal(events(r).at(-1)!.outcome, 'unreadable')
-  } finally { rmSync(r.home, { recursive: true, force: true }) }
+  } finally { removeScratchDir(r.home) }
 })
 
 test('marketplace real boot: a sole agent in its recorded home needs no folder pin', SLOW, async () => {
@@ -244,7 +250,7 @@ test('marketplace real boot: a sole agent in its recorded home needs no folder p
     assert.ok(a.names.includes('reply'), a.stderr)
     assert.equal(events(r).at(-1)!.outcome, 'match')
     assert.equal(events(r).at(-1)!.assistantId, '42')
-  } finally { rmSync(r.home, { recursive: true, force: true }) }
+  } finally { removeScratchDir(r.home) }
 })
 
 test('marketplace real boot: two unpinned recorded homes select only their own agent', SLOW, async () => {
@@ -260,7 +266,7 @@ test('marketplace real boot: two unpinned recorded homes select only their own a
     const cwd = join(r.home, 'work')
     mkdirSync(cwd)
     assertDormant(await boot(r, {}, cwd), r)
-  } finally { rmSync(r.home, { recursive: true, force: true }) }
+  } finally { removeScratchDir(r.home) }
 })
 
 test('marketplace real boot: unsubstituted manifest identity stays dormant', SLOW, async () => {
@@ -272,7 +278,7 @@ test('marketplace real boot: unsubstituted manifest identity stays dormant', SLO
     assertDormant(await boot(r, env, cwd), r)
     for (const id of ['41', '42']) rmSync(join(r.home, '.bgos-agent', `credentials-${id}.json`))
     assertDormant(await boot(r, env, cwd), r)
-  } finally { rmSync(r.home, { recursive: true, force: true }) }
+  } finally { removeScratchDir(r.home) }
 })
 
 for (const layout of ['legacy plus numbered', 'explicit path plus numbered', 'legacy without home', 'explicit legacy without home'] as const) {
@@ -306,7 +312,7 @@ for (const layout of ['legacy plus numbered', 'explicit path plus numbered', 'le
       assert.equal(event.scope, '')
       assert.equal(event.verdict, 'attach')
       assert.equal(event.route, layout.startsWith('explicit') ? 'env-path' : 'legacy')
-    } finally { rmSync(r.home, { recursive: true, force: true }) }
+    } finally { removeScratchDir(r.home) }
   })
 }
 
@@ -329,7 +335,7 @@ test('market3 launcher: manifest agent 42 overrides legacy 41 without losing rep
     // A genuinely conflicting numeric scope is still refused in its own home.
     assertDormant(await boot(r, { ...daemonEnv, HOAI_ATTACH_SCOPE: '41' }), r)
     assert.equal(events(r).at(-1)!.outcome, 'wrong-agent')
-  } finally { rmSync(r.home, { recursive: true, force: true }) }
+  } finally { removeScratchDir(r.home) }
 })
 
 test('market2 diagnostics: installed marketplace CLI reports effective home and the legacy setting', SLOW, () => {
@@ -348,5 +354,5 @@ test('market2 diagnostics: installed marketplace CLI reports effective home and 
     assert.match(plain.stdout, /mode home \(default\)/)
     assert.match(plain.stdout, /setting off \(default\)/)
     assert.doesNotMatch(plain.stdout, /[\u2013\u2014]/)
-  } finally { rmSync(r.home, { recursive: true, force: true }) }
+  } finally { removeScratchDir(r.home) }
 })

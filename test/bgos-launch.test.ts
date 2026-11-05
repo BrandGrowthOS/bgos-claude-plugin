@@ -650,3 +650,22 @@ test('server.ts logs the thread options warning once at boot', async () => {
   assert.match(source, /import \{ threadOptionsWarning \} from '\.\/bin\/bgos-launch\.mjs'/)
   assert.match(source, /threadOptionsWarning\(\{ env: process\.env, platform: process\.platform \}\)/)
 })
+
+test('main: the shim leaves a hangup alone: a daemon that needs one gets it from the kernel, and the shim cannot know when it does', async () => {
+  const child = new FakeChild()
+  const handlers: Record<string, () => void> = {}
+  const done = main(['/opt/plugin/wrapper.mjs'], {
+    env: { PATH: '/usr/bin' },
+    home: '/home/kc',
+    platform: 'linux',
+    exists: existsIn(['/usr/bin/bun']),
+    spawnImpl: (() => child) as never,
+    writeErr: () => {},
+    onSignal: (signal: string, handler: () => void) => {
+      handlers[signal] = handler
+    },
+  })
+  assert.deepEqual(Object.keys(handlers).sort(), ['SIGINT', 'SIGTERM'])
+  child.emit('exit', 0, null)
+  await done
+})

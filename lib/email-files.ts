@@ -93,9 +93,10 @@ export function emailFilesRoot(home: string): string {
 
 // ── the type ─────────────────────────────────────────────────────────────────
 
-type EmailFileType = 'pdf' | 'png' | 'jpg' | 'gif' | 'webp' | 'text' | 'docx' | 'xlsx'
+export type EmailFileType = 'pdf' | 'png' | 'jpg' | 'gif' | 'webp' | 'text' | 'docx' | 'xlsx'
 
-const TYPE_OF_EXTENSION: Record<string, EmailFileType> = {
+/** The safe list, by extension: the same list for a file that comes in and one that goes out (lib/email-outbound-files.ts). */
+export const TYPE_OF_EXTENSION: Readonly<Record<string, EmailFileType>> = {
   pdf: 'pdf', png: 'png', jpg: 'jpg', gif: 'gif', webp: 'webp', txt: 'text', csv: 'text', docx: 'docx', xlsx: 'xlsx',
 }
 
@@ -130,14 +131,77 @@ const CONTENT_TYPES_MAX = 256 * 1024
 const DOCX_MAIN = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml'
 const XLSX_MAIN = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml'
 
+/**
+ * Email files review round 13: the longest entry name read, in bytes. A longer one refuses the file before it is
+ * decoded: no Office part name comes near it, and the type check runs on the main thread (an inbound download's and
+ * an outbound file's), where 1990 names of 12000 slashes, 23 MB of directory, stalled it for 240 to 370 ms.
+ */
+const ZIP_ENTRY_NAME_MAX = 1024
+/**
+ * Email files review round 14: the most entry name bytes of one directory, in all, read before its walk; past it the
+ * file is not typed as Office. A real Office directory's names are a few KB; at the other caps (2000 names of 1024
+ * bytes) the walk decoded 2 MB of names on the main thread, about 13 ms a file, and calls made at once queued them.
+ */
+const ZIP_NAME_BYTES_MAX = 256 * 1024
+
 /** An entry name that could leave the archive's root, or hide what it is. */
 function unsafeEntryName(name: string): boolean {
   return (
     name === '' ||
     name.startsWith('/') ||
     /[\\:\u0000-\u001F\u007F]/.test(name) ||
-    name.split('/').some((seg) => seg === '..' || seg === '.')
+    hasDotSegment(name)
   )
+}
+
+/** Round 13: whether a '/' separated name has a '.' or '..' segment, by an indexOf walk (split made every segment). */
+function hasDotSegment(name: string): boolean {
+  for (let at = 0; at <= name.length; ) {
+    const slash = name.indexOf('/', at)
+    const end = slash < 0 ? name.length : slash
+    const length = end - at
+    if ((length === 1 || length === 2) && name.charCodeAt(at) === 46 && name.charCodeAt(end - 1) === 46) return true
+    at = end + 1
+  }
+  return false
+}
+
+/**
+ * Email files review round 8: each <Override tag of [Content_Types].xml, found by indexOf: '<Override' (not a longer
+ * name), then its first '>' outside a quoted attribute value; the walk stops at a tag with no end. Each character is
+ * read a fixed number of times. The regex /<Override\b[^>]*>/g read to the end of the text again from every
+ * '<Override' with no '>' after it, which is quadratic, on the main thread (the type check runs there, for an inbound
+ * download and for an outbound file).
+ */
+function* overrideTags(xml: string): Generator<string> {
+  const open = '<Override'
+  let at = 0
+  for (;;) {
+    const lt = xml.indexOf(open, at)
+    if (lt < 0) return
+    const after = lt + open.length
+    // \b after Override: <OverrideX is another element.
+    if (after < xml.length && /\w/.test(xml[after]!)) {
+      at = after
+      continue
+    }
+    let quote = ''
+    let gt = -1
+    for (let k = after; k < xml.length; k++) {
+      const ch = xml[k]!
+      if (quote !== '') {
+        if (ch === quote) quote = ''
+      } else if (ch === '"' || ch === "'") {
+        quote = ch
+      } else if (ch === '>') {
+        gt = k
+        break
+      }
+    }
+    if (gt < 0) return
+    yield xml.slice(lt, gt + 1)
+    at = gt + 1
+  }
 }
 
 /**
@@ -165,6 +229,15 @@ function officeTypeOf(bytes: Uint8Array): 'docx' | 'xlsx' | null {
   // Zip64 and multi disk archives are refused, as the backend refuses them.
   if (disk !== 0 || diskWithDir !== 0 || onDisk !== count || count === 0xffff || dirSize === 0xffffffff || dirAt === 0xffffffff) return null
   if (count > ZIP_ENTRIES_MAX || dirAt + dirSize > end) return null
+  // Round 14: the names' lengths summed first, off the fixed headers alone (nothing decoded), fail closed.
+  let nameBytes = 0
+  for (let n = 0, at = dirAt; n < count; n++) {
+    if (at + 46 > end || view.getUint32(at, true) !== 0x02014b50) return null
+    const nameLength = view.getUint16(at + 28, true)
+    nameBytes += nameLength
+    if (nameBytes > ZIP_NAME_BYTES_MAX) return null
+    at += 46 + nameLength + view.getUint16(at + 30, true) + view.getUint16(at + 32, true)
+  }
   const names = new Set<string>()
   let contentTypes: { method: number; packed: number; size: number; local: number } | null = null
   let at = dirAt
@@ -178,6 +251,7 @@ function officeTypeOf(bytes: Uint8Array): 'docx' | 'xlsx' | null {
     const extraLength = view.getUint16(at + 30, true)
     const commentLength = view.getUint16(at + 32, true)
     const local = view.getUint32(at + 42, true)
+    if (nameLength > ZIP_ENTRY_NAME_MAX) return null
     if (at + 46 + nameLength > end) return null
     const name = new TextDecoder('utf-8').decode(bytes.subarray(at + 46, at + 46 + nameLength))
     const folded = name.toLowerCase()
@@ -214,9 +288,9 @@ function officeTypeOf(bytes: Uint8Array): 'docx' | 'xlsx' | null {
   if (/macroEnabled|vbaProject|activeX/i.test(xml)) return null
   let docx = false
   let xlsx = false
-  for (const m of xml.matchAll(/<Override\b[^>]*>/g)) {
-    const part = /\bPartName="([^"]*)"/.exec(m[0])?.[1]
-    const type = /\bContentType="([^"]*)"/.exec(m[0])?.[1]
+  for (const tag of overrideTags(xml)) {
+    const part = /\bPartName="([^"]*)"/.exec(tag)?.[1]
+    const type = /\bContentType="([^"]*)"/.exec(tag)?.[1]
     if (part === '/word/document.xml' && type === DOCX_MAIN) docx = true
     if (part === '/xl/workbook.xml' && type === XLSX_MAIN) xlsx = true
   }
@@ -226,7 +300,8 @@ function officeTypeOf(bytes: Uint8Array): 'docx' | 'xlsx' | null {
   return docx ? 'docx' : 'xlsx'
 }
 
-function isType(bytes: Uint8Array, type: EmailFileType): boolean {
+/** Are these bytes that type? Read off the bytes alone (an office file off its zip directory), never off a name. */
+export function isType(bytes: Uint8Array, type: EmailFileType): boolean {
   switch (type) {
     case 'pdf':
       return startsWith(bytes, ascii('%PDF-'))

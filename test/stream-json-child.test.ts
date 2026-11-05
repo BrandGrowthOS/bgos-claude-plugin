@@ -74,12 +74,13 @@ test('a lane child never inherits the main session identity or its messaging bri
   assert.deepEqual(env, { PATH: '/bin', HOME: '/h', CLAUDE_CONFIG_DIR: '/c' })
 })
 
-test('the real spawner writes stdin, reads stdout chunks and reports the exit', async () => {
+test('the real spawner writes stdin, reads stdout chunks and reports the exit', async (t) => {
   // node stands in for claude: it echoes each stdin line back upper cased.
   const child = spawnStreamJson(process.execPath, [
     '-e',
     'process.stdin.setEncoding("utf8");let b="";process.stdin.on("data",d=>{b+=d});process.stdin.on("end",()=>{process.stdout.write(b.toUpperCase());process.exit(3)})',
   ], { cwd: process.cwd() })
+  t.after(() => child.kill('SIGKILL'))
   let out = ''
   child.onStdout((c) => { out += c })
   const exited = new Promise<number | null>((resolve) => child.onExit((code) => resolve(code)))
@@ -148,19 +149,25 @@ test('the child preserves explicit proxy and certificate settings without unrela
   }), networkEnv)
 })
 
-test('the real thread child keeps network settings without AWS, GitHub, or unknown exported tokens', async () => {
+test('the real thread child keeps network settings without AWS, GitHub, or unknown exported tokens', async (t) => {
   const parentEnv = process.env
+  // Windows folds environment names. Exercise one value for each logical
+  // proxy variable there; the pure allowlist test above still covers both cases.
+  const childNetworkEnv = Object.fromEntries(Object.entries(networkEnv).filter(([name]) =>
+    process.platform !== 'win32' || name === name.toUpperCase(),
+  ))
   let child: ReturnType<typeof spawnStreamJson>
   try {
     // Only fabricated credentials are ever exposed to the pre-fix spawner.
     process.env = {
       PATH: parentEnv.PATH, HOME: parentEnv.HOME,
-      ...networkEnv,
+      ...childNetworkEnv,
       ANTHROPIC_API_KEY: 'fake-claude-key',
       AWS_ACCESS_KEY_ID: 'fake-aws-id', AWS_SECRET_ACCESS_KEY: 'fake-aws-secret',
       AWS_SESSION_TOKEN: 'fake-aws-session', GITHUB_TOKEN: 'fake-github', FOO_TOKEN: 'fake-unknown',
     }
     child = spawnStreamJson(process.execPath, ['-e', 'process.stdout.write(JSON.stringify(process.env))'], { cwd: process.cwd() })
+    t.after(() => child.kill('SIGKILL'))
   } finally {
     process.env = parentEnv
   }
@@ -168,9 +175,12 @@ test('the real thread child keeps network settings without AWS, GitHub, or unkno
   child.onStdout((chunk) => { output += chunk })
   const code = await new Promise<number | null>((done) => child.onExit(done))
   assert.equal(code, 0, 'the real child still starts')
-  const env = JSON.parse(output)
+  const parsed = JSON.parse(output)
+  const env = process.platform === 'win32'
+    ? Object.fromEntries(Object.entries(parsed).map(([name, value]) => [name.toUpperCase(), value]))
+    : parsed
   assert.equal(env.ANTHROPIC_API_KEY, 'fake-claude-key', 'Claude authentication survives')
-  for (const [name, value] of Object.entries(networkEnv)) {
+  for (const [name, value] of Object.entries(childNetworkEnv)) {
     assert.equal(env[name], value, `${name} is preserved in the actual child`)
   }
   for (const name of ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'GITHUB_TOKEN', 'FOO_TOKEN']) {

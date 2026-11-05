@@ -2254,6 +2254,7 @@ export class BrowserHostCore {
       remember: (origin, choice) => this._remember(ctx, slot, this._settingsFor(slot), { gate: 'download', origin, choice }),
       // The owner holding the browser (not while the agent's work drains).
       ownerControl: () => !!slot.ownerInputLease && slot.ownerInputLease.pending !== true,
+      ownerHeldSinceAgent: () => slot.ownerHeldSinceAgent === true,
       choices: policy.gateChoices('download'),
       originOf: (url) => policy.originOf(url),
       log: this._log,
@@ -2295,10 +2296,11 @@ export class BrowserHostCore {
     }
   }
 
-  /** "### Download" for the downloads a call started, so the agent learns of them in that reply. */
-  _withDownloads(slot, seqBefore, result) {
-    const started = slot?.downloads?.since?.(seqBefore) ?? []
-    if (!started.length || !result || !Array.isArray(result.content)) return result
+  /** "### Download" for the downloads no reply has named yet: this call's, or one Chrome raised after the last reply went. */
+  _withDownloads(slot, result) {
+    if (!result || !Array.isArray(result.content)) return result
+    const started = slot?.downloads?.untold?.() ?? []
+    if (!started.length) return result
     const lines = started.map((d) => {
       if (d.state === 'asking') return `- ${d.fileName} (${d.handle}): your owner is asked before it is saved; if they do not answer it is kept for them when it fits the keep limits (otherwise deleted), and you are not given it. Do not start it again; hoai_browser_status shows its state.`
       if (d.state === 'saving' || d.state === 'saved') return `- ${d.fileName} (${d.handle}): allowed by your owner's rules; it is saved in your browser folder when it finishes, and hoai_browser_status gives its path.`
@@ -2398,6 +2400,7 @@ export class BrowserHostCore {
         const latest = slot.engine.ownsToolTarget?.(name, engineArgs) ? { verdict: 'allow' } : policy.decide({ profile: 'signed-in', classification, grants: this._grantsFor(ctx, slot), settings: this._settingsFor(slot), preapproved: [] })
         if (latest.verdict === 'deny') throw new HostError('policy_denied', this._refusedMessage(latest, classification))
       }
+      slot.ownerHeldSinceAgent = false
       return slot.engine.callTool(name, engineArgs, signal)
     })
     if (decision.verdict === 'allow') return { allowed: true, ran: Promise.resolve().then(run) }
@@ -2770,7 +2773,6 @@ export class BrowserHostCore {
     if (ctx.assistantName) slot.agentName = ctx.assistantName
     if (!slot.purpose) slot.purpose = defaultPurposeFor(engineArgs.url)
     if (name === 'browser_navigate' || name === 'browser_navigate_back' || name === 'browser_tabs') slot.lastSnapshotText = null
-    const downloadsBefore = slot.downloads?.seq ?? 0
     // A call that cannot run while a dialog is up asks nobody.
     const verdict = await this._permit(ctx, slot, name, engineArgs, waitSeconds, signal)
     if (verdict.parked) return this._parkedResult(verdict)
@@ -2783,7 +2785,7 @@ export class BrowserHostCore {
     // gate's action is run by whichever wait_gate re-attaches to it.
     const result = await this._runHeld(verdict)
     this._keepPageTree(slot, name, engineArgs, result)
-    return this._withDownloads(slot, downloadsBefore, result)
+    return this._withDownloads(slot, result)
   }
 }
 

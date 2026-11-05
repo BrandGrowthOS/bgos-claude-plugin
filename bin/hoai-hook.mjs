@@ -307,6 +307,10 @@ export function clipPayload(payload, maxBytes = PAYLOAD_MAX_BYTES) {
       return out
     })
   }
+  // What a restart would lose (lib/idle-update.mjs sessionWakePending): whether each is recurring, never its prompt.
+  if (Array.isArray(payload.session_crons)) {
+    reduced.session_crons = payload.session_crons.slice(0, 100).map((task) => ({ recurring: isRecord(task) && task.recurring === true }))
+  }
   if (payload.hook_event_name === 'UserPromptSubmit' && typeof payload.prompt === 'string') {
     // The private turn needs only its opaque delivery token(s) and the full
     // prompt's hash, never the prompt text. Two tokens are kept so an

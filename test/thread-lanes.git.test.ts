@@ -36,14 +36,18 @@ class FakeChild implements StreamJsonChild {
 }
 
 function git(cwd: string, ...args: string[]): string {
-  return execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd, encoding: 'utf8' })
+  return execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd, encoding: 'utf8', timeout: 10_000 })
 }
 
 function setup(opts: { platform?: NodeJS.Platform } = {}) {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'thread-git-')))
+  // Git for Windows expands 8.3 temp names; use the same physical spelling.
+  const dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'thread-git-')))
   const agent = join(dir, 'agent')
   mkdirSync(agent)
   git(agent, 'init', '-q', '-b', 'main')
+  // Exercise a default Windows clone on every host. Git may warn when the
+  // initial LF file is added; the checkout in the new worktree is CRLF.
+  git(agent, 'config', 'core.autocrlf', 'true')
   writeFileSync(join(agent, 'a.txt'), 'a\n')
   git(agent, 'add', '.')
   git(agent, 'commit', '-qm', 'init')
@@ -68,12 +72,13 @@ function setup(opts: { platform?: NodeJS.Platform } = {}) {
     home,
     configDir: config,
     emptyMcpConfigPath: () => join(dir, 'empty-mcp.json'),
-    shellSandbox: () => true,
+    // Windows has no supported lane Bash sandbox. Do not invent one here.
+    shellSandbox: () => process.platform !== 'win32',
     platform: opts.platform ?? process.platform,
     processes: { stamp: async () => null, runsIn: async () => false, kill: () => {} },
     git: async (args, cwd) => {
       try {
-        const { stdout } = await run('git', args, { cwd })
+        const { stdout } = await run('git', args, { cwd, timeout: 10_000 })
         return { ok: true, stdout: String(stdout) }
       } catch {
         return { ok: false, stdout: '' }
@@ -117,11 +122,17 @@ test('a real git: the worktree and its branch are made, and the sandbox protects
     assert.equal(r.spawned.length, 1)
     assert.equal(r.spawned[0]!.cwd, wt)
     assert.ok(existsSync(join(wt, 'a.txt')), 'the worktree has the checkout')
+    assert.equal(readFileSync(join(wt, 'a.txt'), 'utf8'), 'a\r\n', 'the autocrlf checkout is usable')
     assert.equal(git(wt, 'rev-parse', '--abbrev-ref', 'HEAD').trim(), 'hoai/thread-101')
     assert.match(readFileSync(join(r.agent, '.git', 'info', 'exclude'), 'utf8'), /^\.hoai\/$/m)
     assert.equal(git(r.agent, 'status', '--porcelain'), '', 'the main checkout sees nothing new')
     const common = join(r.agent, '.git')
-    assert.deepEqual(denyWrite(r.spawned[0]!.args).sort(), [
+    if (process.platform === 'win32') {
+      const settings = JSON.parse(r.spawned[0]!.args[r.spawned[0]!.args.indexOf('--settings') + 1]!)
+      assert.deepEqual(settings.permissions.deny, ['Bash'])
+      assert.deepEqual(settings.permissions.additionalDirectories, [wt])
+      assert.equal(settings.sandbox, undefined, 'no unprotected Bash fallback')
+    } else assert.deepEqual(denyWrite(r.spawned[0]!.args).sort(), [
       join(common, 'HEAD'),
       join(common, 'index'),
       join(common, 'packed-refs'),
@@ -152,23 +163,27 @@ test('a real git: a branch left from an earlier worktree is reused, and Delete r
     const wt = join(r.agent, '.hoai', 'threads', '102')
     assert.equal(git(wt, 'rev-parse', '--abbrev-ref', 'HEAD').trim(), 'hoai/thread-102', 'the fallback checked out the existing branch')
     // A lane's sandbox protects the worktree admin dir of a lane that existed when it started.
-    const deny = denyWrite(r.spawned[1]!.args)
-    assert.ok(deny.includes(join(r.agent, '.git', 'worktrees', '103')))
-    assert.equal(deny.includes(join(r.agent, '.git', 'worktrees', '102')), false)
-    assert.ok(deny.includes(join(r.agent, '.git', 'refs', 'heads', 'hoai', 'thread-103')))
+    if (process.platform !== 'win32') {
+      const deny = denyWrite(r.spawned[1]!.args)
+      assert.ok(deny.includes(join(r.agent, '.git', 'worktrees', '103')))
+      assert.equal(deny.includes(join(r.agent, '.git', 'worktrees', '102')), false)
+      assert.ok(deny.includes(join(r.agent, '.git', 'refs', 'heads', 'hoai', 'thread-103')))
+    }
     await r.manager.close({ rootId: '102', removeWorktree: true })
     r.spawned[1]!.child.exit()
     await r.manager.idle()
     assert.equal(existsSync(wt), false)
-    const branches = git(r.agent, 'branch', '--format=%(refname:short)').split('\n').filter(Boolean).sort()
+    const branches = git(r.agent, 'branch', '--format=%(refname:short)').split(/\r?\n/).filter(Boolean).sort()
     assert.deepEqual(branches, ['feature/x', 'hoai/thread-103', 'main'])
-    assert.doesNotMatch(git(r.agent, 'worktree', 'list'), /threads\/102/)
+    assert.equal(git(r.agent, 'worktree', 'list', '--porcelain').replace(/\\/g, '/').includes('/threads/102'), false)
   } finally {
     r.cleanup()
   }
 })
 
-test('a real git on Linux: branches kept only in packed-refs are written out loose, same commits, and git reads the repository as before', async () => {
+const LINUX_SANDBOX = { skip: process.platform === 'win32' ? 'Linux sandbox ref placeholders are not used on Windows' : false }
+
+test('a real git on Linux: branches kept only in packed-refs are written out loose, same commits, and git reads the repository as before', LINUX_SANDBOX, async () => {
   const r = setup({ platform: 'linux' })
   try {
     git(r.agent, 'tag', 'v1')
@@ -189,7 +204,7 @@ test('a real git on Linux: branches kept only in packed-refs are written out loo
   }
 })
 
-test('a real git on Linux with no stash: the placeholders are invisible to git, and the owner can still stash and pop', async () => {
+test('a real git on Linux with no stash: the placeholders are invisible to git, and the owner can still stash and pop', LINUX_SANDBOX, async () => {
   const r = setup({ platform: 'linux' })
   try {
     r.manager.turn(turn('101'))
@@ -205,7 +220,7 @@ test('a real git on Linux with no stash: the placeholders are invisible to git, 
     git(r.agent, 'stash')
     assert.match(git(r.agent, 'stash', 'list'), /stash@\{0\}/)
     git(r.agent, 'stash', 'pop', '-q')
-    assert.equal(readFileSync(join(r.agent, 'a.txt'), 'utf8'), 'changed\n')
+    assert.equal(readFileSync(join(r.agent, 'a.txt'), 'utf8'), 'changed\r\n', 'stash pop honors the configured checkout endings')
   } finally {
     r.cleanup()
   }

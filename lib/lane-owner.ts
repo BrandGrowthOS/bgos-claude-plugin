@@ -32,11 +32,18 @@ import {
   isSafeAssistantId,
   isSafeLaneUserId,
   lanePaths,
+  LANE_ENV_KEEP,
+  LANE_SUPERVISOR_VERSION,
+  LANE_ENV_KEEP_WIN32,
+  LANE_LOGIN_ENV,
+  LANE_LOGIN_CONFIG_ENV,
   laneNoticeSentence,
+  laneEventLine,
   parseLaneEventLine,
   peopleDirOf,
 } from './lane-core.mjs'
 import { liveLaneSupervisor } from './lane-registry.mjs'
+import { readRefusalReceipts } from './lane-notices.mjs'
 
 /** A lane wake as the backend sends it (BGOS LaneWakeFrame). */
 export interface LaneWake {
@@ -170,6 +177,99 @@ export interface LaneEventSinks {
   report: (userId: string, event: 'lane_busy' | 'lane_stopped' | 'lane_failed') => Promise<void>
   /** Post one fixed sentence in one of the agent's chats, as the agent. */
   notify: (chatId: number, sentence: string) => Promise<void>
+  notifyOwner?: (sentence: string) => Promise<void>
+  /** Resolve this person's chats from the backend, never from a local claim. */
+  notifyPerson?: (userId: string, sentence: string) => Promise<void>
+}
+
+/** Stop old person launches at the next owner check, even during a turn. */
+export function sweepUnsafePersonLanes(deps: Omit<LaneOwnerDeps, 'startSupervisor'>): number {
+  if (!isSafeAssistantId(deps.assistantId)) return 0
+  const fs = deps.fs ?? nodeFs
+  const peopleDir = peopleDirOf({ home: deps.home, assistantId: deps.assistantId, platform: deps.platform })
+  let names: string[]
+  try { names = fs.readdirSync(peopleDir) } catch { return 0 }
+  let stopped = 0
+  for (const userId of names) {
+    if (!isSafeLaneUserId(userId)) continue
+    try {
+      const paths = lanePaths({ home: deps.home, assistantId: deps.assistantId, userId, stateRoot: deps.stateRoot, platform: deps.platform })
+      if (!fs.lstatSync(paths.laneDir).isDirectory()) continue
+      const launch = JSON.parse(fs.readFileSync(paths.launchPolicyPath, 'utf8'))
+      // A locked record does not prove that the running code is current.
+      // Retire unmarked supervisors before their old launch loop can restart.
+      if (launch?.supervisorVersion === LANE_SUPERVISOR_VERSION && !launch?.tools?.includes('Bash') && launch?.policy?.shell !== true &&
+          launch?.policy?.ownerMcpServers !== true && !(Array.isArray(launch?.ownerServers) && launch.ownerServers.length > 0)) continue
+      const pid = (deps.isSupervised ?? ((p) => liveLaneSupervisor(p)))(paths.launcherLockPath)
+      if (pid === null) continue
+      // The old supervisor already understands a stop request and exits its
+      // launch loop, so the next wake uses the updated code too.
+      writePrivate(fs, paths.stopRequestPath, `${JSON.stringify({ reason: 'sharing_update', by: 'owner-daemon' })}\n`)
+      stopped += 1
+      const marker = join(paths.laneDir, 'sharing-update-notice.json')
+      const key = JSON.stringify([pid, launch.at ?? null])
+      let prior = ''
+      try { prior = fs.readFileSync(marker, 'utf8').trim() } catch { /* first check */ }
+      if (prior !== key) {
+        fs.appendFileSync(paths.eventsPath, laneEventLine({ event: 'notice', notice: 'sharing_update' }), { mode: 0o600 })
+        writePrivate(fs, marker, `${key}\n`)
+        deps.log(`stopping ${userId} to apply updated sharing permissions`)
+      }
+    } catch (err) {
+      deps.log(`lane update check for ${userId} failed: ${String(err)}`)
+    }
+  }
+  return stopped
+}
+
+/** Persist successful recipients independently of the supervisor's generated flag. */
+async function deliverRefusalNotice(
+  fs: typeof nodeFs, laneDir: string, userId: string,
+  event: { notice?: string; chatIds?: number[] },
+  sentence: string, sinks: LaneEventSinks, log: (line: string) => void,
+): Promise<void> {
+  const path = join(laneDir, 'notice-delivery.json')
+  const receipts = readRefusalReceipts(fs, path)
+  const receipt = receipts[event.notice!] ??= { ownerDelivered: false, personDelivered: false, chatIds: [] }
+  const save = () => {
+    writePrivate(fs, path, `${JSON.stringify(receipts)}\n`)
+  }
+  let pending = false
+  log(sentence)
+  if (sinks.notifyOwner && !receipt.ownerDelivered) {
+    try {
+      await sinks.notifyOwner(sentence)
+      receipt.ownerDelivered = true
+      save()
+    } catch (err) {
+      pending = true
+      log(`lane owner notice for ${userId} not delivered: ${String(err)}`)
+    }
+  }
+  for (const chatId of event.chatIds ?? []) {
+    if (receipt.chatIds.includes(chatId)) continue
+    try {
+      await sinks.notify(chatId, sentence)
+      receipt.chatIds.push(chatId)
+      save()
+    } catch (err) {
+      pending = true
+      log(`lane notice for ${userId} in chat ${chatId} not delivered: ${String(err)}`)
+    }
+  }
+  if (!(event.chatIds ?? []).length && !receipt.personDelivered) {
+    try {
+      if (!sinks.notifyPerson) throw new Error('person notice sink unavailable')
+      await sinks.notifyPerson(userId, sentence)
+      receipt.personDelivered = true
+      save()
+    } catch (err) {
+      pending = true
+      log(`lane person notice for ${userId} not delivered: ${String(err)}`)
+    }
+  }
+  if (pending) throw new Error('notice delivery pending')
+  save()
 }
 
 /**
@@ -214,8 +314,23 @@ export async function drainLaneEvents(
         if (e.event === 'notice') {
           const sentence = laneNoticeSentence(e.notice)
           if (!sentence) continue
-          for (const chatId of e.chatIds ?? []) await sinks.notify(chatId, sentence)
-          deps.log(`lane notice ${e.notice} for ${userId} posted in ${(e.chatIds ?? []).length} chat(s)`)
+          if (e.notice === 'shell_refused' || e.notice === 'owner_mcp_refused') {
+            await deliverRefusalNotice(fs, join(peopleDir, userId), userId, e, sentence, sinks, deps.log)
+            handled += 1
+            continue
+          }
+          if (e.notice === 'sharing_update') {
+            if (!sinks.notifyPerson) throw new Error('person notice sink unavailable')
+            await sinks.notifyPerson(userId, sentence)
+          }
+          for (const chatId of e.chatIds ?? []) {
+            try {
+              await sinks.notify(chatId, sentence)
+            } catch (err) {
+              deps.log(`lane notice for ${userId} in chat ${chatId} not delivered: ${String(err)}`)
+            }
+          }
+          deps.log(`lane notice ${e.notice} for ${userId} attempted in ${(e.chatIds ?? []).length} chat(s)`)
         } else {
           await sinks.report(userId, e.event as 'lane_busy' | 'lane_stopped' | 'lane_failed')
           deps.log(`lane ${e.event} reported for ${userId}`)
@@ -223,33 +338,29 @@ export async function drainLaneEvents(
         handled += 1
       } catch (err) {
         deps.log(`lane event ${e.event} for ${userId} not delivered: ${err instanceof Error ? err.message : String(err)}`)
+        if (e.event === 'notice' && ['sharing_update', 'shell_refused', 'owner_mcp_refused'].includes(e.notice ?? '')) {
+          try { fs.appendFileSync(eventsPath, laneEventLine(e), { mode: 0o600 }) } catch (retryError) {
+            deps.log(`lane notice for ${userId} could not be kept: ${String(retryError)}`)
+          }
+        }
       }
     }
   }
   return handled
 }
 
-/** The owner's daemon environment, minus what a supervisor never needs. */
-export const SUPERVISOR_ENV_DROP = Object.freeze([
-  'BGOS_PAIRING_TOKEN',
-  'BGOS_API_KEY',
-  'BGOS_CREDENTIALS_PATH',
-  'BGOS_TMUX_SESSION',
-  'BGOS_TMUX_SOCKET',
-  'TMUX',
-  'TMUX_PANE',
-  'CLAUDE_PROJECT_DIR',
-  'HOAI_SUPERVISED',
-  'HOAI_SUPERVISED_ASSISTANT_ID',
-  'BGOS_LAUNCH_CWD',
+/** Explicit supervisor inputs, including login entries for locked inherit lanes. */
+export const SUPERVISOR_ENV_KEEP = Object.freeze([
+  ...LANE_ENV_KEEP, ...LANE_ENV_KEEP_WIN32,
+  'LC_ALL', 'LC_CTYPE', 'LC_COLLATE', 'LC_MESSAGES', 'LC_MONETARY', 'LC_NUMERIC', 'LC_TIME',
+  ...LANE_LOGIN_ENV, ...LANE_LOGIN_CONFIG_ENV,
 ])
 
 export function supervisorEnv(ownerEnv: Record<string, string | undefined>, backendUrl: string): Record<string, string> {
   const env: Record<string, string> = {}
-  for (const [name, value] of Object.entries(ownerEnv)) {
-    if (typeof value !== 'string') continue
-    if ((SUPERVISOR_ENV_DROP as readonly string[]).includes(name)) continue
-    env[name] = value
+  for (const name of SUPERVISOR_ENV_KEEP) {
+    const value = ownerEnv[name]
+    if (typeof value === 'string') env[name] = value
   }
   env.BGOS_BACKEND_URL = backendUrl
   return env

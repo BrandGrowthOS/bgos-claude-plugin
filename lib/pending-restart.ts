@@ -32,10 +32,18 @@
  * (the same root and reader the running version was captured with at boot)
  * against that running version is the answer.
  *
+ * WHY the latch (idle update, docs/idle-update/DESIGN.md). After an agent
+ * rolled a bad build back, Claude Code's startup update or a later pull
+ * can put that build on disk again. Every reader of this answer (the
+ * heartbeat, agent-state.json and so the watcher, a click) would then push it
+ * again. A version latched bad on this computer (lib/idle-update.mjs
+ * isVersionHeldBad) is therefore not pending; a newer one is.
+ *
  * Never throws: telemetry must never break a heartbeat. Each source is read
  * on its own guard, so one unreadable file cannot hide what another says.
  */
 
+import { isNewerVersion } from './idle-update.mjs'
 import { pendingMarketplaceRestartVersion } from './marketplace-update.mjs'
 import { installedEntryFrom, marketplaceConfigPaths } from './plugin-cli.mjs'
 import { pendingRestartVersionFrom } from './self-update.js'
@@ -97,17 +105,42 @@ export function resolvePendingRestartVersion(input: {
   /** The version in the package.json of the root this daemon runs from, read
    *  now (not at boot), or null when it is missing or unreadable. */
   readCheckoutVersion: () => string | null | undefined
+  /** Is this version latched bad on this computer? Optional: absent holds
+   *  nothing. A reader that throws holds nothing either: the latch is a guard,
+   *  never a reason to hide an update. A held answer does not hide a newer
+   *  build in the next source: a clone staged on a held build may have moved
+   *  on to a fix. An older one is a rollback's way down, and is not pending. */
+  heldBad?: (version: string) => boolean
 }): string | null {
+  const held = (version: string): boolean => {
+    try {
+      return input.heldBad?.(version) === true
+    } catch {
+      return false
+    }
+  }
   try {
     if (input.installMethod === 'marketplace') {
       const installed = installedEntryFrom(parseJsonOrNull(input.readInstalledPlugins()))
-      return pendingMarketplaceRestartVersion({ installed, runningVersion: input.runningVersion ?? null })
+      const pending = pendingMarketplaceRestartVersion({ installed, runningVersion: input.runningVersion ?? null })
+      return pending && held(pending) ? null : pending
     }
-    const fromUpdater = attempt(input.updaterPending)
-    if (fromUpdater) return fromUpdater
-    const staged = pendingRestartVersionFrom(input.runningVersion, attempt(input.stagedTargetVersion))
-    if (staged) return staged
-    return pendingRestartVersionFrom(input.runningVersion, attempt(input.readCheckoutVersion))
+    const sources = [
+      () => attempt(input.updaterPending),
+      () => pendingRestartVersionFrom(input.runningVersion, attempt(input.stagedTargetVersion)),
+      () => pendingRestartVersionFrom(input.runningVersion, attempt(input.readCheckoutVersion)),
+    ]
+    let passedHeld = false
+    for (const source of sources) {
+      const version = source()
+      if (!version) continue
+      if (held(version)) {
+        passedHeld = true
+        continue
+      }
+      return !passedHeld || isNewerVersion(version, input.runningVersion) ? version : null
+    }
+    return null
   } catch {
     return null
   }
