@@ -1896,7 +1896,7 @@ export class ChromiumEngine {
     // Capture patterns for that result without retaining secrets after it returns.
     const redactor = new BrowserSecretRedactor()
     redactor.patterns = this._engine?._secrets.patterns || []
-    const engine = this._engine, privacy = engine?._privacy, originalPage = engine?._currentTab()?.page
+    const engine = this._engine, privacy = engine?._privacy, originalPage = privacy ? engine._currentTab()?.page : null
     // The response is filtered under its own page even if another tab finishes a read after it.
     return (value) => redactor.value(privacy ? privacy.forPage(engine?._currentTab()?.page || originalPage, () => privacy.host(value)) : value)
   }
