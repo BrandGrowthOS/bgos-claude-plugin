@@ -41,7 +41,7 @@ const TOOL_NAMES = [
   'browser_tabs',
 ]
 
-function setup() {
+function setup(pageCount = 2) {
   const home = mkdtempSync(join(tmpdir(), 'card-words-'))
   const cards: Card[] = []
   const gates = new GateKeeper({
@@ -63,7 +63,7 @@ function setup() {
       async start() {
         this.alive = true
       },
-      pages: () => [{ url: () => `${SITE}/`, title: async () => 'Files' }],
+      pages: () => Array.from({length: pageCount}, () => ({url: () => `${SITE}/`, title: async () => 'Files'})),
       async callTool(name: string) {
         return { content: [{ type: 'text', text: `${name} ran` }] }
       },
@@ -133,9 +133,9 @@ const VERBS: Array<[string, Record<string, unknown>, string]> = [
   ['browser_handle_dialog', { accept: true }, `accept a dialog on ${WHERE}`],
   ['browser_handle_dialog', { accept: false }, `dismiss a dialog on ${WHERE}`],
   ['browser_resize', { width: 800, height: 600 }, `resize to 800x600 on ${WHERE}`],
-  ['browser_close', {}, `close the page on ${WHERE}`],
+  ['browser_close', {}, "Close this person's tab and discard unsaved changes?"],
   ['browser_tabs', { action: 'new' }, `open a new tab on ${WHERE}`],
-  ['browser_tabs', { action: 'close' }, `close a tab on ${WHERE}`],
+  ['browser_tabs', { action: 'close' }, "Close this person's tab and discard unsaved changes?"],
   ['browser_tabs', { action: 'select', index: 1 }, `switch tabs on ${WHERE}`],
 ]
 
@@ -157,4 +157,18 @@ test('every verb the host asks about reads after "wants to": the imperative, nev
   } finally {
     s.done()
   }
+})
+
+// The grammar fixture needs two tabs for a close action to be possible. The
+// one-tab near miss must still refuse before asking or running anything.
+test('the last tab refuses close without posting an impossible approval', async () => {
+  const s = setup(1)
+  try {
+    for (const [name, args] of [['browser_close', {}], ['browser_tabs', {action: 'close'}]] as const) {
+      const result = await s.core.callTool({assistantId: 900, principal: 'owner'}, name, args)
+      assert.equal(result.isError, true)
+      assert.match(JSON.stringify(result), /Keep at least one tab open/)
+      assert.equal(s.cards.length, 0)
+    }
+  } finally {s.done()}
 })

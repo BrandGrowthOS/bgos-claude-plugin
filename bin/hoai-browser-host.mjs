@@ -1247,6 +1247,8 @@ export class PlaywrightEngine {
     this.onSelectedPage = null
     this._secrets = new BrowserSecretRedactor()
     this._privacy = new AnswerPrivacy()
+    this._privacyListeners = new Set()
+    this._privacy.onReloadRequired = () => { for (const work of this._privacyListeners) work() }
     this._agentPages = new WeakSet()
   }
 
@@ -1403,7 +1405,19 @@ export class PlaywrightEngine {
       if (up && name !== 'browser_handle_dialog') return dialogReply()
       // A read of the tree reads the page first by itself.
       const back = name === 'browser_navigate_back' && this._privacy.blocked ? await this.previousUrl() : null
-      const reply = await this._privacy.agentAction(this._currentTab()?.page, () => this._backend.callTool(back ? 'browser_navigate' : name, back ? { url: back } : args || {}, signal))
+      const page = this._currentTab()?.page
+      const needsReload = this._privacy.reloadRequired(page)
+      const reload = needsReload && name === 'browser_navigate' && args.url === page.url()
+      const execute = async () => {
+        if (!reload) return this._backend.callTool(back ? 'browser_navigate' : name, back ? {url: back} : args || {}, signal)
+        signal?.throwIfAborted()
+        await page.reload({waitUntil: 'domcontentloaded'})
+        signal?.throwIfAborted()
+        return {content: []}
+      }
+      const reply = await this._privacy.agentAction(page, () =>
+        needsReload && ['browser_navigate', 'browser_navigate_back'].includes(name)
+          ? this._privacy.reloadPage(page, execute) : execute())
       if (name === 'browser_tabs' && args?.action === 'new' && !reply?.isError) this._agentPages.add(this.selectedPage())
       if (this.dialogWaiting() && name !== 'browser_handle_dialog') return dialogReply()
       return await this._privacy.forPage(this._currentTab()?.page, async () => {
@@ -1442,8 +1456,11 @@ export class PlaywrightEngine {
       return this._privacy.privacyState()
     })
   }
+  reloadPagePrivacy(page, work) { return this._privacy.reloadPage(page, work) }
+  pagePrivacy(page) { return {reloadRequired: this._privacy.reloadRequired(page)} }
+  onPrivacyChange(work) { this._privacyListeners.add(work); return () => this._privacyListeners.delete(work) }
   holdPersonPrivacy(page = this._currentTab()?.page) { this._privacy.holdPerson(page) }
-  handBackPrivacy(page = this._currentTab()?.page) { this._privacy.handBack(page) }
+  handBackPrivacy(page = this._currentTab()?.page) { return this._privacy.handBack(page) }
 
   /** What the host read of this call before anyone is asked, never the agent's words. */
   async describeAction(name, args) {
@@ -1859,6 +1876,9 @@ export class ChromiumEngine {
   tabsOverview() { return this._engine?.tabsOverview() }
   previousUrl() { return this._engine?.previousUrl() }
   inspectPrivacy(name, args) { return this._engine ? this._engine.inspectPrivacy(name, args) : Promise.resolve(null) }
+  reloadPagePrivacy(page, work) { return this._engine.reloadPagePrivacy(page, work) }
+  pagePrivacy(page) { return this._engine?.pagePrivacy(page) }
+  onPrivacyChange(work) { return this._engine?.onPrivacyChange(work) }
   holdPersonPrivacy(page) { return this._engine?.holdPersonPrivacy(page) }
   handBackPrivacy(page) { return this._engine?.handBackPrivacy(page) }
 
@@ -2366,7 +2386,7 @@ export class BrowserHostCore {
       preapproved: [],
     })
     const personClose = closesPage(name, engineArgs) && !slot.engine.ownsToolTarget?.(name, engineArgs)
-    const privacyExit = route === 'leave' || route === 'dialog' || personClose
+    const privacyExit = route === 'reload' || route === 'leave' || route === 'dialog' || personClose
     if (privacyExit && decision.verdict !== 'deny') { decision.verdict = 'ask'; decision.gate = route === 'dialog' ? 'credential' : 'sensitive' }
     if (closesPage(name, engineArgs) && !personClose) decision.verdict = 'allow'
     const closing = closesPage(name, engineArgs) ? await slot.engine.closeTarget?.(name, engineArgs) : null
@@ -2395,7 +2415,7 @@ export class BrowserHostCore {
     // The words after "<agent> wants to" on the card: the imperative the
     // desktop's strip prints, never the trail's past tense ("wants to opened").
     // Where the host read the target's name, the card says that and not the agent's description.
-    const summary = route === 'dialog' ? privacy.privateDialogSummary(privateState, engineArgs) : route === 'leave' ? privateState.leave : personClose ? (privateState?.language === 'ar' ? 'إغلاق علامة تبويب هذا الشخص والتخلي عن التغييرات غير المحفوظة؟' : "Close this person's tab and discard unsaved changes?") : slot.engine.shownAddress?.(policy.hostCardPhrase(name, engineArgs, read, { kind: decision.gate, origin: classification.origin ?? null }, { blind: classification.blind === true })) ?? policy.hostCardPhrase(name, engineArgs, read, { kind: decision.gate, origin: classification.origin ?? null }, { blind: classification.blind === true })
+    const summary = route === 'reload' ? privateState.reloadOffer : route === 'dialog' ? privacy.privateDialogSummary(privateState, engineArgs) : route === 'leave' ? privateState.leave : personClose ? (privateState?.language === 'ar' ? 'إغلاق علامة تبويب هذا الشخص والتخلي عن التغييرات غير المحفوظة؟' : "Close this person's tab and discard unsaved changes?") : slot.engine.shownAddress?.(policy.hostCardPhrase(name, engineArgs, read, { kind: decision.gate, origin: classification.origin ?? null }, { blind: classification.blind === true })) ?? policy.hostCardPhrase(name, engineArgs, read, { kind: decision.gate, origin: classification.origin ?? null }, { blind: classification.blind === true })
     // A download ask the page raised is not the agent's: its action waits for
     // it (at most its 60 s) rather than being told the browser is busy. The
     // wait comes out of this call's own budget: the relay cuts a call at

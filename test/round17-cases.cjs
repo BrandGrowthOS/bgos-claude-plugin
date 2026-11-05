@@ -13,17 +13,19 @@ module.exports = (rig, host) => {
       r.set = html => set(`<html lang="${language}">${html}</html>`);
       r.capture = async (phase, reply) => {
         if (!process.env.BROWSER17_EVIDENCE_DIR) return;
-        await r.page.evaluate(({reply, language}) => {
+        const targetPage = r.page?.isClosed?.() ? undefined : r.page;
+        const decorate = ({reply, language}) => {
           const note = document.createElement("pre");
           note.id = "browser17-proof";
           note.textContent = (language === "ar" ? "إجابة الأداة: " : "Tool reply: ") + reply;
           note.style = "position:fixed;inset:0 0 auto;z-index:2147483647;background:#163b2d;color:white;padding:16px;white-space:pre-wrap;font:16px sans-serif";
           document.documentElement.append(note);
-        }, {reply, language});
+        };
+        await r.raw(send => send("Runtime.evaluate", {expression: `(${decorate})(${JSON.stringify({reply, language})})`}), targetPage);
         try {
-          const shot = await r.raw(send => send("Page.captureScreenshot", {format:"png"}), r.page);
+          const shot = await r.raw(send => send("Page.captureScreenshot", {format:"png"}), targetPage);
           fs.writeFileSync(path.join(process.env.BROWSER17_EVIDENCE_DIR, `${host}-${language}-${name.replace(/[^a-z0-9]+/gi,"-")}-${phase}.png`), Buffer.from(shot.data,"base64"));
-        } finally { await r.page.evaluate(() => document.getElementById("browser17-proof")?.remove()); }
+        } finally { await r.raw(send => send("Runtime.evaluate", {expression: 'document.getElementById("browser17-proof")?.remove()'}), targetPage); }
       };
       await work(r, t);
       await r.capture("final", r.evidenceReply || text(await r.call("browser_snapshot")));
