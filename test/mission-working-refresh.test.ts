@@ -193,7 +193,7 @@ test('a delayed Stop from the previous turn cannot suspend a resumed choice', as
 
 for (const endPrevious of [false, true]) {
   for (const endPending of [false, true]) {
-    test(`a pending new owner's boundary controls its landed mark, old ended=${endPrevious}, new ended=${endPending}`, async () => {
+    test(`a pending new owner's boundary prevents adoption, old ended=${endPrevious}, new ended=${endPending}`, async () => {
       let now = 1_000_000
       const writes: Array<[string, boolean]> = []
       const tracker = createMissionWorkingTracker({ now: () => now, isArmed: () => true,
@@ -215,7 +215,7 @@ for (const endPrevious of [false, true]) {
         ['session-a', true],
         ...(endPrevious ? [['session-a', false] as [string, boolean]] : []),
         ['session-b', true],
-        ...(endPending ? [['session-b', false] as [string, boolean]] : []),
+        ['session-b', false],
       ])
       if (!endPending) {
         now += 3 * minute

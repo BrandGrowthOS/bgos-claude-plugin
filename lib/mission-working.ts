@@ -56,19 +56,12 @@ export function createMissionWorkingTracker(opts: {
   const contexts = new Set<{ sessionId: string; startedAt: number; live: boolean }>()
   const boundaries = new Map<string, { at: number; event: unknown }>()
   let authorityEpoch = 0
-  let shutdownEpoch = 0
   const capture = (sessionId: string): WorkingContext => {
     const token = { sessionId, startedAt: now(), live: true }
-    const epoch = shutdownEpoch
     const admittedBoundary = boundaries.get(sessionId)
     contexts.add(token)
     return { sessionId, startedAt: token.startedAt, isCurrent: () => token.live,
-      stoppedAt: () => {
-        if (token.live) return admittedBoundary?.event === 'Stop' ? admittedBoundary.at : null
-        const boundary = boundaries.get(sessionId)
-        return epoch === shutdownEpoch && boundary !== admittedBoundary &&
-          boundary?.event === 'Stop' && boundary.at >= token.startedAt ? boundary.at : null
-      },
+      stoppedAt: () => admittedBoundary?.event === 'Stop' ? admittedBoundary.at : null,
     }
   }
   const invalidate = (sessionId: string | null, at: number) => {
@@ -218,8 +211,8 @@ export function createMissionWorkingTracker(opts: {
         if (!input.working) { held.wanted = false; held.clearRequested = true }
         try {
           const result = await write(held, input.working, scope, check)
-          const stoppedAt = context.stoppedAt()
-          if (context.isCurrent() || (input.working && stoppedAt !== null)) {
+          if (context.isCurrent()) {
+            const stoppedAt = context.stoppedAt()
             held.ownerSession = scope.sessionId
             held.selectedAt = context.startedAt
             held.boundaryAt = stoppedAt ?? context.startedAt
@@ -234,8 +227,8 @@ export function createMissionWorkingTracker(opts: {
           } else if (held.wanted && held.ownerSession === scope.sessionId) {
             held.scope = previousScope
           } else {
-            // A different session's pending choice may have stopped while
-            // this HTTP request was in flight, before it owned the entry.
+            // A boundary-invalidated choice cannot be adopted after its
+            // PATCH lands. Keep its cleanup even if a later Stop arrived.
             held.wanted = false
             held.ownerSession = scope.sessionId
             held.suspended = false
@@ -295,7 +288,6 @@ export function createMissionWorkingTracker(opts: {
     },
     sweep: () => sweep(),
     async stop(): Promise<void> {
-      shutdownEpoch++
       invalidate(null, Infinity)
       const lostAuthority = opts.hasAuthority && !opts.hasAuthority()
       if (lostAuthority) authorityEpoch++

@@ -330,7 +330,7 @@ test('successful working tool selections feed hook refreshes with the admitted s
 })
 
 
-test('Stop during the first goal write prevents later goals of the same tool call from starting', async () => {
+test('Stop during the first goal write clears it and prevents later goals of the same tool call from starting', async () => {
   const r = rig({ actingUserId: OWNER, chatId: OWNER_CHAT, headers: {} })
   r.onPatch((scope, working) => {
     if (scope.goalId === 3 && working) void r.missionWorking.onHook({ hook_event_name: 'Stop', session_id: 'session-a' }, r.now())
@@ -341,6 +341,7 @@ test('Stop during the first goal write prevents later goals of the same tool cal
   const writes = r.sent.filter(call => call.method === 'PATCH')
   assert.deepEqual(writes.map(call => [call.path, call.body]), [
     ['integrations/assistants/900/missions/77/goals/3/working', { working: true }],
+    ['integrations/assistants/900/missions/77/goals/3/working', { working: false }],
   ])
 })
 

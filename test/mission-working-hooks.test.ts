@@ -302,6 +302,29 @@ test('session end while the initial selection is in flight clears the landed mar
   assert.equal(r.calls.length, 2)
 })
 
+for (const boundary of ['UserPromptSubmit', 'SessionEnd', 'Stop']) {
+  test(`a pending initial selection invalidated by ${boundary} cannot be adopted by a later Stop`, async t => {
+    const r = await rig(t)
+    const started = r.block()
+    const marking = r.tracker.mark({ ...scope, working: true })
+    await started
+    r.advance(1)
+    const invalidated = r.event(boundary)
+    r.advance(1)
+    const stopped = r.event('Stop')
+    r.release()
+    await Promise.all([marking, invalidated, stopped])
+    assert.deepEqual(r.calls.map(c => c.body.working), [true, false],
+      'a boundary-invalidated initial PATCH must be cleared without adopting its choice')
+    r.advance(3 * minute)
+    await r.event('UserPromptSubmit')
+    await r.event('PostToolUse')
+    await r.tracker.sweep()
+    assert.deepEqual(r.calls.map(c => c.body.working), [true, false],
+      'later prompts cannot resume a choice that never became current')
+  })
+}
+
 test('unarmed daemon and stale spool activity cannot refresh a working mark', async t => {
   const r = await rig(t)
   await r.tracker.mark({ ...scope, working: true })
