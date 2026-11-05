@@ -64,6 +64,7 @@ export function createMissionWorkingTracker(opts: {
     contexts.add(token)
     return { sessionId, startedAt: token.startedAt, isCurrent: () => token.live,
       stoppedAt: () => {
+        if (token.live) return admittedBoundary?.event === 'Stop' ? admittedBoundary.at : null
         const boundary = boundaries.get(sessionId)
         return epoch === shutdownEpoch && boundary !== admittedBoundary &&
           boundary?.event === 'Stop' && boundary.at >= token.startedAt ? boundary.at : null
@@ -217,7 +218,7 @@ export function createMissionWorkingTracker(opts: {
         if (!input.working) { held.wanted = false; held.clearRequested = true }
         try {
           const result = await write(held, input.working, scope, check)
-          const stoppedAt = context.isCurrent() ? null : context.stoppedAt()
+          const stoppedAt = context.stoppedAt()
           if (context.isCurrent() || (input.working && stoppedAt !== null)) {
             held.ownerSession = scope.sessionId
             held.selectedAt = context.startedAt

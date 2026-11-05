@@ -100,6 +100,43 @@ for (const boundary of ['Stop', 'SessionEnd', 'UserPromptSubmit']) {
   })
 }
 
+for (const goalId of [3, 4]) {
+  test(`a selection admitted after Stop stays suspended until a prompt, goal=${goalId}`, async t => {
+    const r = await rig(t)
+    await r.tracker.mark({ ...scope, working: true })
+    r.advance(1)
+    await r.event('Stop')
+    r.advance(1)
+    const context = r.tracker.capture(scope.sessionId)
+    await r.tracker.mark({ ...scope, goalId, context, working: true })
+    r.advance(3 * minute)
+    await r.event('PreToolUse')
+    await r.event('PostToolUse')
+    await r.tracker.sweep()
+    assert.deepEqual(r.calls.map(c => c.body.working), [true, true],
+      'new explicit intent cannot resume automatic writes after Stop')
+    await r.event('UserPromptSubmit')
+    assert.equal(r.calls.length, goalId === 3 ? 3 : 4,
+      'a new prompt resumes the confirmed explicit choices')
+    assert.ok(r.calls.every(c => c.body.working && c.actor === 'user_recipient'))
+  })
+}
+
+test('a delayed older Stop cannot suspend a selection admitted before its delivery', async t => {
+  const r = await rig(t)
+  r.advance(1)
+  const context = r.tracker.capture(scope.sessionId)
+  const started = r.block()
+  const marking = r.tracker.mark({ ...scope, context, working: true })
+  await started
+  const stopped = r.event('Stop', scope.sessionId, 1_000_000)
+  r.release()
+  await Promise.all([marking, stopped])
+  r.advance(3 * minute)
+  await r.event('PostToolUse')
+  assert.deepEqual(r.calls.map(c => c.body.working), [true, true])
+})
+
 test('409 drops a ticked goal so later activity and stop do not retry it', async t => {
   const r = await rig(t)
   await r.tracker.mark({ ...scope, working: true })
