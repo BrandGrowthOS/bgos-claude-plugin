@@ -326,14 +326,14 @@ test('source_shape_regressions_follow_the_specification', () => {
   try {
     tree.link('native/link', tree.root)
     actual.strictTraversalAttempted = false
-    fs.lstatSync = function (target: any, ...args: any[]) {
+    ;(fs as any).lstatSync = function (target: any, ...args: any[]) {
       if (resolve(String(target)).startsWith(join(tree.root, 'native', 'link') + sep)) actual.strictTraversalAttempted = true
       return (originalStat as any)(target, ...args)
     } as any
     const report = api().scan(tree.root, { strict: 'native/link/hooks' })
     actual.strictLinkedDescendant = report.exitCode
   } finally {
-    fs.lstatSync = originalStat
+    ;(fs as any).lstatSync = originalStat
     tree.cleanup()
   }
   assert.deepEqual(actual, {
