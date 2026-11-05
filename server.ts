@@ -153,7 +153,7 @@ import { recordKnownGood } from './lib/known-good-store.mjs'
 import { LANE_MEMORY_RPC_TOKEN, ownerAnnounceRefused, ownerLaneVerdict } from './lib/lane-core.mjs'
 import { classifyMemoryFrame, laneMemoryAnswer, LaneMemoryRpcHandler } from './lib/lane-memory-rpc.ts'
 import { laneCliSupport } from './lib/lane-cli-probe.mjs'
-import { drainLaneEvents, handleLaneRevoked, handleLaneWake, lanesOnFor, supervisorEnv } from './lib/lane-owner.js'
+import { drainLaneEvents, handleLaneRevoked, handleLaneWake, lanesOnFor, supervisorEnv, sweepUnsafePersonLanes } from './lib/lane-owner.js'
 import { claudeCandidates } from './lib/claude-binary.mjs'
 import {
   capabilitiesFetchPath,
@@ -16770,7 +16770,6 @@ async function initUpdateStream(): Promise<void> {
 let lanesOnForThisAgent = false
 let laneDrainTimer: ReturnType<typeof setInterval> | null = null
 const LANE_DRAIN_MS = 5_000
-
 /** The second lock in the owner's lane: refuse, log, never acknowledge. */
 function noteLaneMisroute(transport: string, messageId: unknown, stamp: string): void {
   log(`lane_misroute ${transport} message ${String(messageId)} stamped ${stamp}: not the owner's lane, not delivered`)
@@ -16802,7 +16801,7 @@ async function answerStoppedLaneMemory(frame: Parameters<LaneMemoryRpcHandler['h
   if (String(frame.assistantId) !== String(ASSISTANT_ID)) return
   if (!lanesOnForThisAgent) {
     try {
-      onLanesState(await bgosGet('integrations/lanes/state'))
+      await onLanesState(await bgosGet('integrations/lanes/state'))
     } catch (err) {
       log(`person lanes: lanes/state unreadable: ${String(err)}`)
     }
@@ -16835,15 +16834,22 @@ function startLaneSupervisor(userId: string): void {
   child.unref()
 }
 
-function onLanesState(frame: unknown): void {
+async function onLanesState(frame: unknown): Promise<void> {
   const on = lanesOnFor(frame, String(ASSISTANT_ID))
   if (on === null) return
   if (on !== lanesOnForThisAgent) log(`person lanes: the server says lanes are ${on ? 'ON' : 'off'} for this agent`)
   lanesOnForThisAgent = on && laneSupport().ok
-  if (lanesOnForThisAgent && !laneDrainTimer) {
+  await drainLaneEventsOnce()
+}
+
+// Old person supervisors must stop even before the backend sends lane state.
+// Every check stays gated on the owner daemon's lock below.
+function startLaneChecks(): void {
+  if (!laneDrainTimer) {
     laneDrainTimer = setInterval(() => void drainLaneEventsOnce(), LANE_DRAIN_MS)
     laneDrainTimer.unref?.()
   }
+  void drainLaneEventsOnce()
 }
 
 let laneDrainBusy = false
@@ -16851,7 +16857,32 @@ async function drainLaneEventsOnce(): Promise<void> {
   if (laneDrainBusy || !lockHeld) return
   laneDrainBusy = true
   try {
+    sweepUnsafePersonLanes(LANE_OWNER_DEPS)
     await drainLaneEvents(LANE_OWNER_DEPS, {
+      notifyPerson: async (userId, sentence) => {
+        const data = await bgosPeerGet('peers/inbox') as { chats: { id: number; assistantId: number; kind?: string; userId?: string; user_id?: string }[] }
+        const ids = [...new Set(data.chats.filter((c) => c.kind === 'main' &&
+          String(c.assistantId) === String(ASSISTANT_ID) && String(c.userId ?? c.user_id) === userId)
+          .map((c) => Number(c.id)))].filter((id) => Number.isSafeInteger(id) && id > 0).slice(0, 5)
+        if (ids.length === 0) throw new Error('person chat not available yet')
+        for (const chatId of ids) {
+          if (chatOwnership.isOwners(String(chatId))) continue
+          await bgosPost('send-message', {
+            chatId, assistantId: Number(ASSISTANT_ID), text: sentence,
+            sender: 'assistant', sentDate: new Date().toISOString(), hasAttachment: false,
+            files: [], options: [],
+          })
+        }
+      },
+      notifyOwner: async (sentence) => {
+        const chatId = chatOwnership.ownerChats().find((id) => mainChatIds.includes(id) && chatOwnership.isOwners(id)) ?? null
+        if (chatId === null) { log(sentence); return }
+        await bgosPost('send-message', {
+          chatId: Number(chatId), assistantId: Number(ASSISTANT_ID), text: sentence,
+          sender: 'assistant', sentDate: new Date().toISOString(), hasAttachment: false,
+          files: [], options: [],
+        })
+      },
       report: async (userId, event) => {
         await bgosPost('integrations/lanes/report', { assistantId: Number(ASSISTANT_ID), actorUserId: userId, event })
       },
@@ -17273,7 +17304,7 @@ function connectWebsocket(): void {
       // landed after the connect does not drop the person's turn.
       if (!lanesOnForThisAgent) {
         try {
-          onLanesState(await bgosGet('integrations/lanes/state'))
+          await onLanesState(await bgosGet('integrations/lanes/state'))
         } catch (err) {
           log(`person lanes: lanes/state unreadable: ${String(err)}`)
         }
@@ -20496,6 +20527,7 @@ async function main(): Promise<void> {
         // while (fourth review of #282, Important 2).
         refreshAskTracker('promotion')
         armIdleUpdate()
+        startLaneChecks()
         if (res.reason === 'channel-takeover') {
           log(
             `${formatChannelTakeoverLine({ selfPid: process.pid, holderPid: res.holderPid, selfReason: channelPresence().reason })}; ` +
@@ -20563,6 +20595,7 @@ async function main(): Promise<void> {
     lockHeld = true
     connectedSince = Date.now()
     armIdleUpdate()
+    startLaneChecks()
     log(
       lockAtBoot.reason === 'channel-takeover'
         ? `${formatChannelTakeoverLine({ selfPid: process.pid, holderPid: lockAtBoot.holderPid, selfReason: bootPresence.reason })}; ` +

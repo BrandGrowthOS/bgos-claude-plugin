@@ -51,7 +51,7 @@ function harness(opts: { authority?: RestartAuthority; ownership?: ServiceOwners
     updater: () => null,
     pendingRestartVersion: () => '0.81.0',
     marketplaceUpdate: async () => ({ kind: 'installed', targetVersion: '0.81.0' }) as any,
-    drainSnapshot: () => ({ activeOperations: 0, pendingInbounds: 0, pendingPermissions: 0 }) as any,
+    drainSnapshot: () => ({ activeOperations: 0, pendingMessages: 0, pendingPermissions: 0 }),
     restartAuthority: () => opts.authority ?? LAUNCHD_GEN2,
     spawnDetached: (file, args) => spawned.push({ file, args }),
     writeMarker: (path) => {

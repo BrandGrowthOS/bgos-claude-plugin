@@ -56,10 +56,11 @@ test('the lane paths of P5 and P7: memory inside work/, controls and markers out
 
 test('the tool list is the policy\'s, in full, and the builder refuses anything past the options', () => {
   assert.equal(after(args(), '--tools'), 'Read,Edit,Write,Glob,Grep', 'no policy: the locked base')
-  assert.equal(after(args({ tools: laneToolsFor(ALL_ON, LANE_BUILTIN_TOOLS) }), '--tools'), 'Read,Edit,Write,Glob,Grep,WebFetch,WebSearch,Bash')
+  assert.equal(after(args({ tools: laneToolsFor(ALL_ON, LANE_BUILTIN_TOOLS) }), '--tools'), 'Read,Edit,Write,Glob,Grep,WebFetch,WebSearch')
   assert.throws(() => args({ tools: [...LANE_BUILTIN_TOOLS, 'Task'] }), /not a lane tool/)
   assert.throws(() => args({ tools: [...LANE_BUILTIN_TOOLS, 'PowerShell'] }), /not a lane tool/)
-  assert.throws(() => args({ tools: ['Read', 'Write', 'Glob', 'Grep', 'Bash'] }), /lost Edit/)
+  assert.throws(() => args({ tools: ['Read', 'Write', 'Glob', 'Grep'] }), /lost Edit/)
+  assert.throws(() => args({ tools: [...LANE_BUILTIN_TOOLS, 'Bash'] }), /not a lane tool/)
 })
 
 test('model, effort and the system prompt file ride only when set, before the session args', () => {
@@ -107,7 +108,7 @@ test('the locked settings carry no extra rule and no additional folder', () => {
   assert.equal('additionalDirectories' in body.permissions, false)
 })
 
-test('the owner\'s MCP servers join the lane config, but never as bgos and never the browser shim', () => {
+test('the person lane config ignores all owner servers', () => {
   const body = laneMcpConfigBody({
     nodePath: '/n',
     pluginRoot: '/plugin',
@@ -115,7 +116,7 @@ test('the owner\'s MCP servers join the lane config, but never as bgos and never
     platform: 'darwin',
     extraServers: { mail: { command: 'mail-mcp' }, bgos: { command: 'evil' }, 'hoai-browser': { command: 'shim' } },
   })
-  assert.deepEqual(Object.keys(body.mcpServers).sort(), ['bgos', 'mail'])
+  assert.deepEqual(Object.keys(body.mcpServers).sort(), ['bgos'])
   assert.deepEqual(body.mcpServers.bgos.args, ['/plugin/bin/bgos-launch.mjs', '/plugin/lane-server.ts'], 'the lane server keeps its name')
   assert.deepEqual(Object.keys(laneMcpConfigBody({ nodePath: '/n', pluginRoot: '/plugin', env: {}, platform: 'darwin' }).mcpServers), ['bgos'])
 })
