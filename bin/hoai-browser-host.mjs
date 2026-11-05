@@ -1260,7 +1260,7 @@ export class PlaywrightEngine {
     // is told to refuse them (Browser.setDownloadBehavior deny).
     const context = this._managedRuntime ? this._managedRuntime.context : await this._browser.newContext({ viewport: { width: 1280, height: 800 }, acceptDownloads: this._acceptDownloads && !!this._artifactsDir })
     context.on('page', page => { this._privacy.protectPage(page); if (context.pages().length > REMOTE_BROWSER_TAB_MAX) void page.close().catch(() => {}) })
-    context.pages().forEach(page => this._privacy.protectPage(page))
+    for (const page of context.pages()) { this._privacy.protectPage(page); await this._privacy.watchPersonInput(page) }
     context.on('download', (download) => this._download(download))
     if (!this._managedRuntime) this._agentPages.add(await context.newPage())
     const config = await resolveConfig({ caps: this._caps, outputDir: this._outputDir })
@@ -1382,6 +1382,7 @@ export class PlaywrightEngine {
     const dialogReply = () => ({ content: [{ type: 'text', text: DIALOG }] })
     this._privacy.busy = true
     try {
+      if (this._privacy.personMode(this._currentTab()?.page)) return this._privacy.handoff()
       if (closesPage(name, args)) {
         const tab = name === 'browser_tabs' && args.index !== undefined ? this._backend._context.tabs()[args.index] : this._currentTab()
         if (!tab) throw new Error('The browser tab is unavailable.')
@@ -1401,7 +1402,7 @@ export class PlaywrightEngine {
       if (up && name !== 'browser_handle_dialog') return dialogReply()
       // A read of the tree reads the page first by itself.
       const back = name === 'browser_navigate_back' && this._privacy.blocked ? await this.previousUrl() : null
-      const reply = await this._backend.callTool(back ? 'browser_navigate' : name, back ? { url: back } : args || {}, signal)
+      const reply = await this._privacy.agentAction(this._currentTab()?.page, () => this._backend.callTool(back ? 'browser_navigate' : name, back ? { url: back } : args || {}, signal))
       if (name === 'browser_tabs' && args?.action === 'new' && !reply?.isError) this._agentPages.add(this.selectedPage())
       if (this.dialogWaiting() && name !== 'browser_handle_dialog') return dialogReply()
       return await this._privacy.forPage(this._currentTab()?.page, async () => {
@@ -1440,6 +1441,7 @@ export class PlaywrightEngine {
       return this._privacy.privacyState()
     })
   }
+  holdPersonPrivacy(page = this._currentTab()?.page) { this._privacy.holdPerson(page) }
   handBackPrivacy(page = this._currentTab()?.page) { this._privacy.handBack(page) }
 
   /** What the host read of this call before anyone is asked, never the agent's words. */
@@ -1856,6 +1858,7 @@ export class ChromiumEngine {
   tabsOverview() { return this._engine?.tabsOverview() }
   previousUrl() { return this._engine?.previousUrl() }
   inspectPrivacy(name, args) { return this._engine ? this._engine.inspectPrivacy(name, args) : Promise.resolve(null) }
+  holdPersonPrivacy(page) { return this._engine?.holdPersonPrivacy(page) }
   handBackPrivacy(page) { return this._engine?.handBackPrivacy(page) }
 
   lastPageTree() { return this._engine?.lastPageTree() ?? null }
@@ -2332,6 +2335,7 @@ export class BrowserHostCore {
     const settings = this._settingsFor(slot)
     validateTool(name, engineArgs)
     const privateState = await slot.engine.inspectPrivacy?.(name, engineArgs)
+    if (privateState?.personMode) return { allowed: true, ran: Promise.resolve(text(privateState.handoff)) }
     if (closesPage(name, engineArgs) && slot.engine.pages?.().length === 1) throw new HostError('last_tab', privateState?.language === 'ar' ? 'أبق علامة تبويب واحدة مفتوحة على الأقل.' : 'Keep at least one tab open.')
     const route = privateRoute(name, engineArgs, privateState, slot.engine.selectedPage?.()?.url())
     if (route === 'hold') return { allowed: true, ran: Promise.resolve(text(privateState.handoff)) }
@@ -2692,7 +2696,7 @@ export class BrowserHostCore {
       }
       const overview = await slot.engine.tabsOverview?.()
       const tabWords = overview?.content?.find(part => part.type === 'text')?.text
-      if (tabWords && Object.values(privacy.COPY).some(copy => copy.handoff === tabWords)) return overview
+      if (tabWords && Object.values(privacy.COPY).some(copy => copy.handoff === tabWords || copy.using === tabWords)) return overview
       const tabs = tabWords ? [tabWords] : await Promise.all(
         slot.engine.pages().map(async (page, index) => {
           let title = ''

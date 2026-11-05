@@ -269,3 +269,13 @@ test('round14 only explicit handback clears privacy and a target change during d
   f.views.input.drain=async(view:any)=>{view.tabId='replacement';};
   assert.equal(await f.command('hoai.input.release',{handBackPrivacy:true}),false);assert.equal(released.length,0);assert.equal(f.frames.at(-1).frame.error.code,'stale_target');
 });
+
+
+test('round15 the dedicated phone Hand back releases only its captured page', async t => {
+  const f=fixture();t.after(()=>f.views.stop());await f.open('view-one','host-socket',true);
+  const released:any[]=[];(f.engine as any).handBackPrivacy=(page:any)=>released.push(page);
+  await f.command('hoai.input.handBack');assert.deepEqual(released,[f.page]);released.length=0;
+  f.views.input.drain=async(view:any)=>{view.tabId='replacement';};
+  assert.equal(await f.command('hoai.input.handBack'),false);assert.equal(released.length,0);
+  assert.equal(f.frames.at(-1).frame.error.code,'stale_target');
+});

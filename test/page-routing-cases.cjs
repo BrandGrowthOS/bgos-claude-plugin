@@ -112,12 +112,12 @@ module.exports=(rig,host)=>{
    for(const name of ['browser_snapshot','browser_tabs']){const answer=await r.call(name,name==='browser_tabs'?{action:'list'}:{});assert.doesNotMatch(decodeURIComponent(text(answer)),new RegExp(value));}
   });
   check('10 strong secret labels seal and unknown labels stay ordinary',async r=>{
-   for(const label of ['PIN code','Your PIN','MFA code','2FA code','Backup code','ssn','Credit card']){
+   for(const label of ['Your PIN','MFA code','2FA code','Backup code','ssn','Credit card']){
     await r.set(`<input aria-label="${label}" value=4821><h1>Public</h1>`);
     const first=await r.route('browser_snapshot',{},[]);assert.equal(first.cards.length,0);assert.equal(text(first.result),LINE,label);
    }
    await r.set('<h1>Finished</h1>');assert.equal(text(await r.call('browser_snapshot')),LINE);await r.handBack();
-   for(const label of ['Security answer','Unlisted reference']){
+   for(const label of ['Security answer','Unlisted reference','PIN code','Pin to top']){
     await r.set(`<input aria-label="${label}" value=4821>`);const reply=await r.route('browser_snapshot',{},[]);assert.equal(reply.cards.length,0);assert.match(text(reply.result),/4821/);
    }
   });
