@@ -124,6 +124,7 @@ test('new login fills exact captured fields, never submits, and waits for separa
   assert.equal('password' in applied.pending, false)
   assert.equal(f.saved.length, 0)
   assert.ok(f.slot.ownerInputLease)
+  assert.equal(f.slot.ownerHeldSinceAgent, true, 'a download raised after this hand-back is not pushed to the agent')
   await assert.rejects(async () => runAgentBrowserWork(f.slot, async () => {}), { code: 'owner_control' })
   assert.deepEqual(await f.credentials.save(f.view, { pendingId: applied.pending.pendingId, save: true }), { saved: true })
   assert.deepEqual(f.saved, [{ origin: 'https://example.test', username: 'alice', password: 'local-fixture-secret' }])

@@ -135,10 +135,10 @@ test('set_goal_working input: one or more positive integer ids and a boolean, an
   // A repeated id is one goal, so it is one call, in first seen order.
   assert.deepEqual(m.buildMissionGoalWorkingInput({ goal_ids: [3, 2, 3], working: true }), { ok: true, body: { goalIds: [3, 2], working: true } })
   const refusals: Array<[unknown, RegExp]> = [
-    [{ goal_ids: [], working: true }, /goal_ids must list 1 to 12/],
-    [{ goal_ids: 3, working: true }, /goal_ids must list 1 to 12/],
-    [{ working: true }, /goal_ids must list 1 to 12/],
-    [{ goal_ids: Array.from({ length: 13 }, (_, i) => i + 1), working: true }, /goal_ids must list 1 to 12/],
+    [{ goal_ids: [], working: true }, /goal_ids must list 1 to 20/],
+    [{ goal_ids: 3, working: true }, /goal_ids must list 1 to 20/],
+    [{ working: true }, /goal_ids must list 1 to 20/],
+    [{ goal_ids: Array.from({ length: 21 }, (_, i) => i + 1), working: true }, /goal_ids must list 1 to 20/],
     [{ goal_ids: [2, 0], working: true }, /goal_ids\[1\] must be a positive integer.*got 0/],
     [{ goal_ids: [-1], working: true }, /got -1/],
     [{ goal_ids: [1.5], working: true }, /got 1\.5/],

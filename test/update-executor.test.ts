@@ -367,6 +367,195 @@ function seededUpdate(world: World, over: Record<string, unknown> = {}) {
   return plan
 }
 
+// -- A version held bad on this computer (docs/idle-update/DESIGN.md, Rollback) ---
+
+/** What a held target leaves: nothing installed, nobody restarted, no rollback. */
+function assertRefused(result: Result, deps: ReturnType<typeof memDeps>, kind: string) {
+  assert.equal(result.ok, false)
+  assert.equal(result.failedStep?.kind, kind)
+  assert.match(String(result.failedStep?.message), /version_held_bad$/)
+  assert.equal(result.rolledBack, false)
+  assert.deepEqual(deps.restarts, [])
+}
+
+test('a target held bad here stops before anything moves: no update, no restart, no rollback', async () => {
+  const world = memWorld()
+  const plan = seededUpdate(world)
+  const deps = memDeps(world, realisticScript(world, '0.38.3'), { heldBad: (version: string) => version === '0.38.3' } as Partial<Deps>)
+  const result = await executePlan(plan, deps.deps)
+  assertRefused(result, deps, 'update_plugin')
+  assert.equal(deps.calls.some((c) => c.startsWith('plugin update')), false, deps.calls.join(' | '))
+  assert.equal(world.installedVersion(), '0.38.1')
+})
+
+test('the check is made on the target after the refresh: a fix published since the plan goes on, past a pin that is held', async () => {
+  const world = memWorld()
+  const plan = seededUpdate(world)
+  const script = realisticScript(world, '0.38.4', {
+    [KEY.refresh]: () => {
+      world.setLatest('0.38.4')
+      return OUT.refreshed
+    },
+  })
+  const deps = memDeps(world, script, { heldBad: (version: string) => version === '0.38.3' } as Partial<Deps>)
+  const result = await executePlan(plan, deps.deps)
+  assert.equal(result.ok, true, JSON.stringify(result.failedStep))
+  assert.equal(world.installedVersion(), '0.38.4')
+})
+
+test('the check is made on the target after the refresh: a held build the refresh found is stopped, past a pin that is not', async () => {
+  const world = memWorld()
+  const plan = seededUpdate(world)
+  const script = realisticScript(world, '0.38.4', {
+    [KEY.refresh]: () => {
+      world.setLatest('0.38.4')
+      return OUT.refreshed
+    },
+  })
+  const deps = memDeps(world, script, { heldBad: (version: string) => version === '0.38.4' } as Partial<Deps>)
+  const result = await executePlan(plan, deps.deps)
+  assertRefused(result, deps, 'update_plugin')
+  assert.equal(world.installedVersion(), '0.38.1')
+})
+
+test('a plan that only restarts agents onto what is installed stops too, when that is held', async () => {
+  const world = memWorld()
+  world.seedMarketplace('0.38.3')
+  world.seedInstalled('0.38.3')
+  const plan = planMachine(updateState(world, { installed: { present: true, version: '0.38.3', installPath: world.installPathFor('0.38.3') } }))
+  assert.equal(plan.steps.some((s: any) => s.kind === 'restart_agent'), true, JSON.stringify(plan.steps))
+  const deps = memDeps(world, realisticScript(world, '0.38.3'), { heldBad: (version: string) => version === '0.38.3' } as Partial<Deps>)
+  const result = await executePlan(plan, deps.deps)
+  assertRefused(result, deps, 'restart_agent')
+})
+
+test('a rollback still restarts the agents, onto the old build: a mark on the target does not stop that', async () => {
+  const world = memWorld()
+  const plan = seededUpdate(world, { agents: [agentState('912'), agentState('913')] })
+  let held = false
+  let verifies = 0
+  const deps = memDeps(world, realisticScript(world, '0.38.3'), {
+    heldBad: (version: string) => held && version === '0.38.3',
+    verifyAgent: async () => {
+      verifies += 1
+      held = true
+      return verifies === 1 ? { ok: false, evidence: 'no heartbeat' } : { ok: true, evidence: 'live' }
+    },
+  } as Partial<Deps>)
+  const result = await executePlan(plan, deps.deps)
+  assert.equal(result.rolledBack, true, JSON.stringify(result.failedStep))
+  assert.equal(result.steps.some((s: any) => s.id.includes('restart_agent-913') && s.state === 'ok'), true, JSON.stringify(stepView(result.steps)))
+})
+
+test('a rollback onto a held build takes no other agent onto it, and the first failure stays the cause', async () => {
+  const world = memWorld()
+  const plan = seededUpdate(world, { agents: [agentState('912'), agentState('913')] })
+  let verifies = 0
+  const deps = memDeps(world, realisticScript(world, '0.38.3'), {
+    heldBad: (version: string) => version === '0.38.1',
+    verifyAgent: async () => {
+      verifies += 1
+      return verifies === 1 ? { ok: false, evidence: 'no heartbeat' } : { ok: true, evidence: 'live' }
+    },
+  } as Partial<Deps>)
+  const result = await executePlan(plan, deps.deps)
+  assert.equal(result.rolledBack, true, JSON.stringify(result.failedStep))
+  assert.equal(world.installedVersion(), '0.38.1')
+  assert.equal(deps.restarts.some((r: any) => r.id === '913'), false, JSON.stringify(deps.restarts))
+  assert.equal(deps.restarts.filter((r: any) => r.id === '912').length, 1, `the rollback's own retry reads the mark too: ${JSON.stringify(deps.restarts)}`)
+  assert.equal(String(result.failedStep?.message).endsWith('version_held_bad'), false, JSON.stringify(result.failedStep))
+})
+
+test('a mark that stops a run with no rollback names itself over a softer failure before it', async () => {
+  const world = memWorld()
+  const plan = seededUpdate(world, { agents: [agentState('912'), agentState('913')] })
+  let held = false
+  const deps = memDeps(world, realisticScript(world, '0.38.3'), {
+    heldBad: (version: string) => held && version === '0.38.3',
+    restartAgent: async () => {
+      held = true
+      return { ok: false, how: 'marker', message: 'no marker' }
+    },
+  } as Partial<Deps>)
+  const result = await executePlan(plan, deps.deps)
+  assert.match(String(result.failedStep?.message), /version_held_bad$/, JSON.stringify(result.failedStep))
+})
+
+test('a restart on a clone goes by the checkout', async () => {
+  const { world, pluginRoot, git, state } = cloneWorld()
+  const plan = planMachine(state)
+  const deps = memDeps(world, {}, { installMethod: 'clone', pluginRoot, git, heldBad: (version: string) => version === '0.38.1' } as Partial<Deps>)
+  const result = await executePlan({ ...plan, steps: [{ id: 's01', kind: 'restart_agent', target: '912', onFailure: 'continue', reason: 'r' }] } as any, deps.deps)
+  assertRefused(result, deps, 'restart_agent')
+})
+
+test('a restart with nothing readable on the install goes by the target', async () => {
+  const world = memWorld()
+  world.seedMarketplace('0.38.3')
+  const plan = planMachine(updateState(world))
+  const deps = memDeps(world, realisticScript(world, '0.38.3'), { heldBad: (version: string) => version === '0.38.3' } as Partial<Deps>)
+  const result = await executePlan({ ...plan, steps: [{ id: 's01', kind: 'restart_agent', target: '912', onFailure: 'continue', reason: 'r' }] } as any, deps.deps)
+  assertRefused(result, deps, 'restart_agent')
+})
+
+test('a restart goes by what is installed: a target the refresh moved past the mark lets no agent onto it', async () => {
+  const world = memWorld()
+  world.seedMarketplace('0.38.3')
+  world.seedInstalled('0.38.3')
+  const plan = planMachine(
+    updateState(world, {
+      marketplace: { registered: false, latestVersion: '0.38.3' },
+      installed: { present: true, version: '0.38.3', installPath: world.installPathFor('0.38.3') },
+    }),
+  )
+  assert.equal(plan.steps.some((s: any) => s.kind === 'restart_agent'), true, JSON.stringify(plan.steps))
+  assert.equal(plan.steps.some((s: any) => s.kind === 'update_plugin'), false, JSON.stringify(plan.steps))
+  const script = realisticScript(world, '0.38.4', {
+    [KEY.refresh]: () => {
+      world.setLatest('0.38.4')
+      return OUT.refreshed
+    },
+  })
+  const deps = memDeps(world, script, { heldBad: (version: string) => version === '0.38.3' } as Partial<Deps>)
+  const result = await executePlan(plan, deps.deps)
+  assertRefused(result, deps, 'restart_agent')
+})
+
+test('a restart a person asked for is not stopped: an agent already on a held build can still be bounced', async () => {
+  const world = memWorld()
+  world.seedMarketplace('0.38.3')
+  world.seedInstalled('0.38.3')
+  const plan = planMachine(
+    updateState(world, {
+      intent: 'restart_only',
+      installed: { present: true, version: '0.38.3', installPath: world.installPathFor('0.38.3') },
+    }),
+  )
+  const deps = memDeps(world, realisticScript(world, '0.38.3'), { heldBad: () => true } as Partial<Deps>)
+  const result = await executePlan(plan, deps.deps)
+  assert.equal(result.ok, true, JSON.stringify(result.failedStep))
+  assert.deepEqual(deps.restarts.map((r: any) => r.id), ['912'])
+})
+
+for (const kind of ['install_plugin', 'reinstall_plugin', 'git_fast_forward']) {
+  test(`a held target stops ${kind} as well`, async () => {
+    const world = memWorld()
+    const plan = seededUpdate(world)
+    const deps = memDeps(world, realisticScript(world, '0.38.3'), { heldBad: (version: string) => version === '0.38.3' } as Partial<Deps>)
+    const result = await executePlan({ ...plan, steps: [{ id: 's01', kind, onFailure: 'stop', reason: kind }] } as any, deps.deps)
+    assertRefused(result, deps, kind)
+    assert.deepEqual(deps.calls, [])
+  })
+}
+
+test('with no reading of the marks, a plan runs as it always did', async () => {
+  const world = memWorld()
+  const plan = seededUpdate(world)
+  const deps = memDeps(world, realisticScript(world, '0.38.3'))
+  const result = await executePlan(plan, deps.deps)
+  assert.equal(result.ok, true)
+})
+
 // -- Pure helpers ------------------------------------------------------------
 
 test('joinLike / dirnameLike keep the base path separator style', () => {

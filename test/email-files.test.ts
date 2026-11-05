@@ -922,3 +922,27 @@ test('holds: an email let go undelivered as the last hold stays owed until a pol
   assert.equal(holds.owes('e'), false)
   assert.equal(holds.clamp('e', 110), 110)
 })
+
+test('email files review round 8: a downloaded Word file whose [Content_Types].xml ends in 26000 unclosed <Override tags is typed in linear time', () => {
+  const docxWith = (extra: string) => zip([
+    { name: '[Content_Types].xml', data: contentTypes('/word/document.xml', DOCX_MAIN, extra) },
+    { name: 'word/document.xml', data: Buffer.from('<w:document><w:body><w:p><w:r><w:t>Pay me</w:t></w:r></w:p></w:body></w:document>') },
+  ])
+  // The type check runs on the daemon's main thread for every download: the regex /<Override\b[^>]*>/g took 2.9 s here.
+  const hostile = docxWith('<Override '.repeat(26000))
+  const started = performance.now()
+  assert.equal(ef.emailFileMatchesName(hostile, 'attachment-1.docx'), true)
+  const ms = performance.now() - started
+  assert.ok(ms < 100, `the type check took ${Math.round(ms)} ms`)
+  // A '>' in a quoted attribute is not the tag's end; a longer element name is not an Override.
+  assert.equal(ef.emailFileMatchesName(zip([
+    { name: '[Content_Types].xml', data: Buffer.from(`<Types><Override Note="a>b" PartName="/word/document.xml" ContentType="${DOCX_MAIN}"/></Types>`) },
+    { name: 'word/document.xml', data: Buffer.from('<w:document/>') },
+  ]), 'attachment-1.docx'), true)
+  assert.equal(ef.emailFileMatchesName(zip([
+    { name: '[Content_Types].xml', data: Buffer.from(`<Types><Overrides PartName="/word/document.xml" ContentType="${DOCX_MAIN}"/></Types>`) },
+    { name: 'word/document.xml', data: Buffer.from('<w:document/>') },
+  ]), 'attachment-1.docx'), false)
+  assert.equal(ef.emailFileMatchesName(DOCX, 'attachment-1.docx'), true)
+  assert.equal(ef.emailFileMatchesName(XLSX, 'attachment-1.xlsx'), true)
+})

@@ -372,7 +372,7 @@ describe('schedule and drain decisions', () => {
     // The tool handler's own refusal used to be this bare `if (updateDrainMode)`, which refused
     // every send for as long as a staged update waited (product board row a741d98b, Pylon 929).
     // It is now admitted while the update only waits and refused once drained: decideToolAdmission.
-    expect(source).toContain("if (decideToolAdmission({ drainMode: updateDrainMode, snapshot: updateDrainSnapshot() }) === 'refuse') {\n    return Promise.resolve({")
+    expect(source).toContain("if (decideToolAdmission({ drainMode: updateDrainMode, snapshot: restartDrainSnapshot() }) === 'refuse') {\n    return Promise.resolve({")
     // The permission relay closes admission like every entry point above it,
     // and since 0.49.0 it also ANSWERS the CLI on the way out: the old
     // `return Promise.resolve()` sent no verdict at all, so a request raised
@@ -1757,6 +1757,7 @@ describe('the lock loser takes the same restart decision as the winner', () => {
   function loserHarness(opts: {
     env?: Record<string, string | undefined>
     requestRestart?: (targetVersion: string | null) => Promise<boolean>
+    heldBad?: (version: string) => boolean
   }) {
     const rootDir = tempDir('self-update-loser-ladder-root-')
     mkdirSync(join(rootDir, '.git'))
@@ -1800,6 +1801,7 @@ describe('the lock loser takes the same restart decision as the winner', () => {
         },
         schedule: () => setTimeout(() => {}, 60_000),
         now: () => 1_001,
+        heldBad: opts.heldBad,
         requestRestart: opts.requestRestart
           ? async (target) => {
               lockHeldAtRestart.push(existsSync(lockPath))
@@ -1903,6 +1905,26 @@ describe('the lock loser takes the same restart decision as the winner', () => {
     expect(updater.pendingRestartVersion()).toBe('0.27.0')
   })
 
+  test('a loser that waited out the winner leaves a build marked meanwhile alone: no ladder, intake back, lock free', async () => {
+    const asked: Array<string | null> = []
+    let looks = 0
+    const h = loserHarness({
+      heldBad: () => ++looks > 1,
+      requestRestart: async (target) => {
+        asked.push(target)
+        return true
+      },
+    })
+    const updater = (await h.build())!
+    await updater.checkNow()
+    expect(asked).toEqual([])
+    expect(h.exits).toEqual([])
+    expect(h.drainModes.at(-1)).toBe(false)
+    expect(h.logs.some((line) => line.startsWith('Auto-update staged by another daemon'))).toBe(false)
+    expect(h.logs.some((line) => line.includes('held bad on this computer'))).toBe(true)
+    expect(existsSync(h.lockPath)).toBe(false)
+  })
+
   test('a TRIGGERED loser keeps its early return: no exit and no ladder here, even with the opt in and a ladder wired', async () => {
     const asked: Array<string | null> = []
     const h = loserHarness({
@@ -1926,6 +1948,7 @@ describe('updateNow (one-click update_rpc trigger)', () => {
   function updaterHarness(opts: {
     runner?: CommandRunner
     env?: Record<string, string | undefined>
+    heldBad?: (version: string) => boolean
   } = {}) {
     const rootDir = tempDir('self-update-now-root-')
     mkdirSync(join(rootDir, '.git'))
@@ -1951,6 +1974,7 @@ describe('updateNow (one-click update_rpc trigger)', () => {
         exit: (code) => exits.push(code),
         runner,
         schedule: () => setTimeout(() => {}, 60_000),
+        heldBad: opts.heldBad,
       })
     return { rootDir, stateFilePath, calls, exits, drainModes, logs, build }
   }
@@ -1993,6 +2017,15 @@ describe('updateNow (one-click update_rpc trigger)', () => {
     // No new inspection, no new drain, no stages: straight to the ladder.
     expect(stages).toEqual([])
     expect(h.calls.filter((c) => c.args[0] === 'fetch').length).toBe(fetchesBefore)
+  })
+
+  test('a version pending on this checkout and held bad here is not handed to the ladder', async () => {
+    let held = false
+    const h = updaterHarness({ heldBad: () => held })
+    const updater = (await h.build())!
+    await updater.updateNow(async () => {})
+    held = true
+    expect(await updater.updateNow(async () => {})).toEqual({ kind: 'no-update', latestVersion: '0.27.0', reason: 'version_held_bad' })
   })
 
   test('BGOS_EXIT_AFTER_UPDATE is ignored on the triggered path (the ladder owns restarts)', async () => {
@@ -2654,14 +2687,15 @@ describe('server.ts wiring of the update drain (a source pin: nothing here can r
   const source = readFileSync(join(import.meta.dir, '..', 'server.ts'), 'utf8')
 
   test('the tool handler decides admission through decideToolAdmission, never a bare drain flag', () => {
-    expect(source).toContain('decideToolAdmission({ drainMode: updateDrainMode, snapshot: updateDrainSnapshot() })')
+    // The snapshot the drain waits on: a thread still running means the restart is not committed, so nothing is refused.
+    expect(source).toContain('decideToolAdmission({ drainMode: updateDrainMode, snapshot: restartDrainSnapshot() })')
     // The refusal text exists exactly once, behind that decision.
     expect(source.split('The BGOS channel is restarting for an update. Retry this tool shortly.').length - 1).toBe(1)
     expect(source).not.toMatch(/if \(updateDrainMode\) \{\s*return Promise\.resolve\(\{\s*content: \[\s*\{\s*type: 'text' as const,\s*text: 'The BGOS channel is restarting/)
   })
 
-  test('the updater and the restart ladder both count only fresh work', () => {
-    expect(source.split('drainSnapshot: updateDrainSnapshot,').length - 1).toBe(2)
+  test('the updater and the restart ladder both count only fresh work, and thread work', () => {
+    expect(source.split('drainSnapshot: restartDrainSnapshot,').length - 1).toBe(2)
     const fn = source.slice(source.indexOf('function updateDrainSnapshot()'), source.indexOf('const updateRpc = new UpdateRpcHandler'))
     expect(fn).toContain('messageActivity.freshOperations(nowMs, UPDATE_STALE_WORK_MS)')
     expect(fn).toContain('nowMs - pending.ts < UPDATE_STALE_WORK_MS')

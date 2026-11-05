@@ -51,7 +51,7 @@ type CaseKey = keyof typeof CASES
 test(
   'a download the agent starts is asked for: Deny leaves no file, Allow lands where the ask said, no answer keeps it owner only and the agent reads it as kept, Deny on the kept card deletes it, nothing outside the agent folder',
   { timeout: 240_000, skip }, // under the runner's file deadline; it takes about 25 s on Windows
-  async () => {
+  async (t) => {
     if (skip) return
     const home = realpathSync(mkdtempSync(join(tmpdir(), 'bh-dl-')))
     // A whole profile, as the host end to end case explains (hoai-browser-host.test.ts):
@@ -138,8 +138,14 @@ test(
       assert.match(denied.card.summary, new RegExp(`^download ${escapeRe(CASES.deny.name)}`), 'the owner is asked about this file by name')
       assert.deepEqual(denied.card.choices, ['allow_once', 'allow_session', 'trust_site', 'deny'], "the desktop's download choices (policy.gateChoices)")
       assert.equal(denied.card.origin, site.url, 'the card names the site the file came from')
-      assert.match(denied.clicked.text, /your owner is asked/, `the click tells the agent the owner is asked:\n${denied.clicked.text}`)
-      assert.doesNotMatch(denied.clicked.text, /Downloaded file/, 'never the Playwright line that hands the agent a path')
+      // Chrome raises the download on its own clock. Usually that is inside the wait after the click, so the click's own
+      // reply names it. On a loaded Windows runner it can land after that reply has gone (runs 41299037606, 41498314780),
+      // and then the next reply does. By then the queued Deny may have settled it, hence the two wordings.
+      const inClickReply = denied.clicked.text.includes('### Download')
+      t.diagnostic(`the deny download was told in ${inClickReply ? "the click's own reply" : 'the next reply'}`)
+      const toldDeny = inClickReply ? denied.clicked.text : (await call('browser_snapshot')).text
+      assert.match(toldDeny, new RegExp(`### Download\\n- ${escapeRe(CASES.deny.name)} \\(dl_[0-9a-f]+\\): (your owner is asked|not saved)`), `the agent is told of the download by its next reply at the latest:\n${toldDeny}`)
+      assert.doesNotMatch(`${denied.clicked.text}\n${toldDeny}`, /Downloaded file/, 'never the Playwright line that hands the agent a path')
       await waitFor(async () => /Deny_\w+\.p8.*your owner said no/.test(await status()), async () => `status reads the Deny:\n${await status()}`)
       assert.deepEqual(markerFiles('deny'), [], `a denied download leaves no file: ${where()}`)
 

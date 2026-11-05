@@ -2,6 +2,40 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.85.2 (2026-11-04)
+
+**A new build that stops handing messages to the session is caught before the other agents move onto it (board row 42499778).** The first agent onto a new version proves it to the others on its computer, and that proof only read the polling loop: a build that kept polling and delivered nothing passed. It now also compares what the server holds with what actually reached Claude Code. A message left undelivered for 3 minutes stops the proof, so the other agents wait, and a build still being checked goes back. An agent with no messages at all still counts as healthy, and this costs no turn.
+
+Not caught yet: a session that receives a message and silently ignores it, when no message owes a reply during the wait. Only asking the session can show that, which is the channel check still open in the design notes.
+
+## 0.85.1 (2026-11-04)
+
+**An idle agent loads its staged update by itself (board row 5a455021).** A staged build only loads when the session restarts, and nothing restarted an idle one: Alex's 15 agents had 0.74.3 staged and still ran 0.69.12 to 0.74.0. Once an agent has been idle for a while it now restarts onto the new version through its existing restart authority, resumes its pinned session, and reports the version it came back on. The design, its rules and what it does not cover are in `docs/idle-update/DESIGN.md`.
+
+- **Never a busy agent, never a person's session.** A turn, an owed reply, an open ask, a goal, a running thread turn or By the way fork, a call, a browser in use, a wake due within 10 minutes or a person attached all wait, and only a launch proven unattended qualifies. `BGOS_AUTO_UPDATE` off means never.
+- **The updates that run by themselves wait for a thread turn or a By the way fork.** The idle restart, the way back, the hook restart, a clone's scheduled update and the watcher's sweep all do. A person's click can still stop one: on a plugin install it goes ahead after 45 seconds, and on a clone with a version already staged it restarts at once.
+- **One computer, one at a time.** A lease, a 2 minute spacing and per-agent jitter keep agents apart. The first agent onto a version is its canary, and the others wait for it.
+- **Followers wait 30 to 60 minutes after the canary validates,** and the canary keeps proving the build through that wait, counted in minutes it lived, so a sleep proves nothing. A fault that shows inside it stops the agents still waiting; a canary that went quiet gives up its proof, and a day later the next agent is a canary too, so two such faults mark the build bad. The wait survives a daemon restart.
+- **An agent that goes silent holds the version.** Breaking an expired lease writes `silent-<n>`: one holds the version 24 hours, two mark it bad on that computer.
+- **A failed build goes back.** The agent it failed on rolls the install back, marks the version bad on that computer and restarts onto the old build: the canary always, any other agent once. A rollback also takes the failed build's `gitCommitSha` out of the plugin entry.
+- **Two silences take the install off the build as well.** An agent on an older build that reads the mark puts the shared install back on its own build, with no restart, so a restart cannot land on a build already marked bad. In a mixed fleet the install ends on the newest good build running on that computer. A click, a push, a watcher job or a clone's pull is refused on a version held there (`version_held_bad`); a restart a person asks for stays open. To lift a hold, remove `~/.bgos-agent/idle-update/<version>/`.
+- **An agent running 0.84 or older needs one restart to load this.** By a person, the watcher's sweep or an owning service. From then on it updates itself.
+- Tests: `test/idle-update*.test.ts`, `test/update-rpc.own-launcher.test.ts`, `test/self-update.idle-rollback.test.ts`, with the mutants in `docs/idle-update/mutants.json` and the rig in `docs/idle-update/rig/`.
+
+**A download Chrome raises late is still told to the agent.** Chrome raises a download on its own clock. If it landed after the click's reply had gone, no reply named it and only `hoai_browser_status` showed it. The reply to the agent's next browser action in that session names it now, once. A browser session that closes first takes the line with it, and status still shows the file. A file that may be the owner's gets no such line: one raised while the owner holds the browser, or after that and before the next action of the agent's that runs, however it ends. That errs towards silence: one the agent started just before the owner took over is left to status too. Playwright does not say who started a download, so an owner's file whose event lands after the agent has run another action, a read-only one too, is still named, and so is one after a call the engine itself refuses, such as a new tab past the limit. This covers the `### Download` line only: a waiting ask's own summary and `hoai_browser_wait_gate` on it still name the file, as they did before. Tests: `test/hoai-browser-host.downloads.test.ts`.
+
+## 0.85.0 (2026-11-04)
+
+**`email_draft` and `email_send` attach checked local files (HOAI row 5b141728, KC: step 2 of email files).** Until now outbound email was text only on purpose (rule 8, "no files and no HTML"), so a tricked agent could never email out a private file. Both tools now take `files: [{ path }]` and keep that promise with five rules. BGOS side: BrandGrowthOS/BGOS#3780.
+
+- **Rule 2, owner basis:** files ride only on the owner's own turn, drafts included. The turn's reason must be `owner_message` or `owner_task` with no stranger's words in front of it. Email, peer and system turns are refused in plain words before any path is read.
+- **Rule 3, safe types and caps:** at most 10 files and 25 MB on one email (`AGENT_EMAIL_OUTBOUND_MAX_FILES`, `AGENT_EMAIL_OUTBOUND_MAX_BYTES`), and each file's bytes must be the type its name says, on the inbound safe list.
+- **Rule 4, secret looking paths and contents are refused** (`lib/email-outbound-files.ts`, `lib/email-outbound-content.ts`). A path is judged lexically before any file system call, against the secret list (every `.hoai` folder, hidden key shares, key and cookie files), again on its real path, then on one open handle that is checked against its stat and looked at a second time after the open. Mapped network drives are read by their share side. Text, Word and Excel contents are read in one terminable Worker for password tables, private keys, cookie files, this daemon's own credential, recovery keys and seed phrases, and fail closed. The refusal says why and tells the agent not to copy, rename or retype the file.
+- **Upload and the draft or send:** each file goes to the private BGOS route (`POST /api/v1/integrations/agent-email/outbound-files`) and the ids ride on the draft or send. A files send raises no chat approval card, because the card cannot show files: the server either sends it or holds it as a draft for the owner. Paths stay out of chat previews and card text (rule 5).
+- **Declares `email_files`** beside `email_send`, only while the files tools ship, on the heartbeat, the pair exchange and the canon fetch. An old backend ignores it and the agent hears "this HOAI server cannot attach files yet"; an old plugin keeps the text only sentence and refuses a `files` argument in plain words.
+- **Inbound defence:** email rows write file links into the turn only when `readAttachments` is true.
+- Tests: `test/email-outbound-files.test.ts`, `test/agent-email-files.test.ts`, `test/secret-scan.test.ts`, and the touched `agent-email-send`, `email-files-channel`, `external-email-label`, `permission-card-email-send` and `declared-capabilities` files.
+
 ## 0.84.0 (2026-11-04)
 
 - Threads recover safely after a restart, keep delivered answers from running again, and protect your credentials and repository while side conversations run. Checking CLI support runs in the background, so it does not stall your chat.
@@ -57,6 +91,13 @@ One release for the set merged in #305. The sections below written as 0.81.1, 0.
 - **They take NO pending self write stamp, unlike every other mission write (found in review).** A mark only ever emits `mission_updated`, which is never narrated and never spends a pending stamp, so one taken here would linger and the owner's next Pause or Resume (which carry no `cleared_by`) would read as the agent's own write and never reach it. `MISSION_MARK_TOOLS` in `lib/missions.ts` names the exemption, and `test/mission-ws-wiring.test.ts` holds both halves.
 - **Declares `mission_goal_working`** on every host, so the served canon now tells this agent BGOS's working mark paragraph. The MCP instructions (Missions, item 7) and the bundled fallback canon name both tools.
 - Tests: `test/goal-marks.test.ts` (red first, 22 cases: the paths, the input judges, one PATCH per goal id with its body and headers, refusals before any request, the backend's refusal surfaced, the owner's Pause and Resume still heard after a mark, the declarations, the guard, the canon text and the declared token), and the six-tool lists in `test/mission-private.test.ts` and `test/turn-aware-tools.test.ts` now run the two new tools through every private turn case.
+
+**A mission holds up to 20 mini goals (was 12), matching the BGOS backend (BGOS #3105; KC, 1048 msg 149968: "remove that 12 goals limit ... up to at least 20").** The connector checked the count itself before sending, so the backend's new limit could not reach an agent until this change (#274, folded into this release).
+
+- `lib/missions.ts`: `MISSION_MAX_GOALS` 12 to 20; the create, set and add doors all read it.
+- `server.ts`: every mission tool description that counts goals says 20: `create_mission` (2 to 20 accepted), `set_mission_goals` (2 to 20), `add_mission_goals` (1 to 20 per add, 20 in all; it still said 12 until review) and `set_goal_working` (`goal_ids` 1 to 20).
+- `set_goal_working` counts DISTINCT goal ids: the 1 to 20 cap is judged after repeats are removed, so `[1..20, 1]` is twenty goals and twenty requests, not a refusal (found in review).
+- Tests: `test/missions.test.ts` pins the literal 20 on all three doors (red before this change: actual 12), pins 20 in each counting mission tool's description read from the real `server.ts` with no 12 left in any mission tool's text (red on b59272a: add_mission_goals said 12), and holds the distinct id count (red on b59272a: refused); `test/goal-marks.test.ts` refuses 21 goal ids with "1 to 20".
 
 ## 0.81.0 (2026-10-31)
 

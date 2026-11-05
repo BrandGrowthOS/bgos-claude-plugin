@@ -649,21 +649,24 @@ export function serializeBeaconHeartbeat(hb: BeaconHeartbeat): string {
 }
 
 /** Best-effort write of the beacon heartbeat; its mtime is the real payload.
- *  Never throws: a heartbeat write must never crash the daemon. */
+ *  Never throws: a heartbeat write must never crash the daemon. Says whether
+ *  it was written: only a beacon the supervisor can see proves delivery live. */
 export function touchBeaconHeartbeat(input: {
   path: string
   now: number
   pid: number
   io?: LockIo
-}): void {
+}): boolean {
   const io = input.io ?? defaultLockIo
   try {
     io.writeFile(
       input.path,
       serializeBeaconHeartbeat({ beaconAt: input.now, pid: input.pid }),
     )
+    return true
   } catch {
     // Telemetry only.
+    return false
   }
 }
 

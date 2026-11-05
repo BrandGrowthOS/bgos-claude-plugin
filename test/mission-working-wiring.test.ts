@@ -229,6 +229,7 @@ test('the actual admitted hook handler refreshes selected goals and clears them 
       sessionBinder: { noteHookSession: () => {} }, lastHookEventAtMs: null, hookEndedSessionId: null,
       liveSessionId: 'session-a', liveSessionSeenAtMs: 0, floorEntrySession: () => '', floorEntrySessionWritten: '', markFloorAttachedIfHolder: () => {},
       privateTurns: { end: () => {} }, hookTurn: {}, applyHookEventToTurn: () => ({ next: {}, effects: [] }),
+      sessionWakePending: () => null, sessionWakeAtMs: null,
       hookLineAt: null, hookLineStartedAt: null, runHookEffects: () => {}, agentStatePublisher: { tick: () => {} }, publishBrowserPrivateTurn: () => {},
     })
   }
@@ -353,6 +354,7 @@ test('graceful shutdown keeps authority until clears finish, with a bounded fall
     const childrenDown = new Promise<void>(resolve => { finishChildren = resolve })
     const bindings = {
       shuttingDown: false, log: () => {}, describeShutdownCause: () => '', selfUpdater: null,
+      idleUpdate: { noteEnded: () => {} }, isCleanEnd: () => true,
       stopHookIntake: () => { steps.push('hooks'); return clearing },
       stopThreadChildren: () => { steps.push('threads'); return hasThreadChildren ? childrenDown : null },
       agentStatePublisher: { shutdown: () => {} }, flushChatCursors: () => {},

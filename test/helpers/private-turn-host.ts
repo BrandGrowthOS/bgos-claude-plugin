@@ -16,6 +16,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import ts from 'typescript'
+import { emailToolNeedsTurn, emailTurnRefusalText } from '../../lib/agent-email-tools.ts'
 import { appendEvent } from '../../bin/hoai-hook.mjs'
 import { recordPrivateBoundary } from '../../bin/hoai-private-turn-hook.mjs'
 import { fileClockPast } from './file-clock.ts'
@@ -463,23 +464,34 @@ export function toldTheServer(reason: unknown): unknown {
  * comes back as Promise.resolve({ isError }), an admitted call as the frozen privateCall and email_send reason.
  */
 export async function admit(host: Host, name: string): Promise<{ refused: string } | { actsFor: string; reason: unknown }> {
+  const result = await admitCall(host, name)
+  if ('refused' in result) return result
+  if (result.privateCall) return { actsFor: (result.privateCall as any).headers?.['X-BGOS-Acting-User'] ?? 'owner', reason: toldTheServer(result.emailSendReason) }
+  assert.ok(result.emailSendReason, `${name}: admitted with a reason`)
+  return { actsFor: 'owner', reason: toldTheServer(result.emailSendReason) }
+}
+
+/**
+ * The same admission block with the call's own arguments (outbound email files: an email_draft is admitted through
+ * the email_send turn check only when it carries files). A refusal comes back as its words, an admitted call as what
+ * the block froze for it, a call the block does not gate as two nulls.
+ */
+export async function admitCall(host: Host, name: string, args?: Record<string, unknown>): Promise<{ refused: string } | { privateCall: unknown; emailSendReason: unknown }> {
   const result = new Function(
     'req', 'lockHeld', 'privateTurns', 'PRIVATE_MARKER_PATHS', 'PRIVATE_HOOK', 'PRIVATE_HOOK_MISSING_REFUSAL', 'USER_ID', 'log',
     'requirePrivateTurn', 'turnAwarePrivateTurn', 'requireEmailSendTurn', 'PRIVATE_TURN_REFUSAL', 'recordPeerRefusal', 'pathDirname',
-    'CURSOR_FILE_PATH', 'ASSISTANT_ID', admissionJs,
+    'CURSOR_FILE_PATH', 'ASSISTANT_ID', 'emailToolNeedsTurn', 'emailTurnRefusalText', admissionJs,
   )(
-    { params: { name } }, true, host.tracker, host.markerPaths, { registered: true }, 'hook missing', OWNER, () => {},
+    { params: { name, ...(args === undefined ? {} : { arguments: args }) } }, true, host.tracker, host.markerPaths, { registered: true }, 'hook missing', OWNER, () => {},
     requirePrivateTurn, turnAwarePrivateTurn, requireEmailSendTurn, PRIVATE_TURN_REFUSAL, () => ({ line: '' }), () => '/s',
-    '/s/c', AGENT,
+    '/s/c', AGENT, emailToolNeedsTurn, emailTurnRefusalText,
   )
   if (typeof result?.then === 'function') {
     const settled = await result
     assert.equal(settled?.isError, true, `${name}: a refusal`)
     return { refused: String(settled.content[0].text) }
   }
-  if (result.privateCall) return { actsFor: result.privateCall.headers?.['X-BGOS-Acting-User'] ?? 'owner', reason: toldTheServer(result.emailSendReason) }
-  assert.ok(result.emailSendReason, `${name}: admitted with a reason`)
-  return { actsFor: 'owner', reason: toldTheServer(result.emailSendReason) }
+  return { privateCall: result.privateCall ?? null, emailSendReason: result.emailSendReason ?? null }
 }
 
 /** Who a private tool acts for: 'owner' (no acting user header), the header's person, or 'refused: <text>'. */

@@ -21,7 +21,7 @@ import { buildPermissionRequestBody, cardMessageIdFrom, choiceToBehavior, permis
 import { createChatOwnership } from '../lib/chat-ownership.ts'
 import { isOwnSendingTool } from '../lib/hard-floor.ts'
 import { createEmailSendApprovals, emailSendCardBinding, emailSendCardChat, emailSendCardTooLong } from '../lib/email-send-approval.ts'
-import { emailCallRefusal } from '../lib/agent-email-tools.ts'
+import { emailCallRefusal, emailSendFilesGetNoCard } from '../lib/agent-email-tools.ts'
 import { buildFloorRecord } from '../lib/floor-state.mjs'
 
 const OWNER = 'user_owner'
@@ -65,7 +65,8 @@ function relayRig(opts: { monitored: string[]; main: string[]; refuse?: string[]
     log: () => {},
     mcp: { notification: async (n: { params: { behavior: string } }) => { notes.push({ behavior: n.params.behavior, claimed: store.claim(SEND_ARGS) }) } },
     trackMessageOperation: (fn: () => Promise<unknown>) => fn(),
-    isOwnSendingTool, emailSendCardBinding, emailSendCardTooLong, emailSendCardChat, emailCallRefusal,
+    isOwnSendingTool, emailSendCardBinding, emailSendCardTooLong, emailSendCardChat, emailCallRefusal, emailSendFilesGetNoCard,
+    outboundFileCtx: () => ({}),
     AUTH: { mode: 'pairing', pairingToken: 'fake-pairing-token-for-tests-only-0000' },
     emailSendApprovals: store,
     privateTurns: { current: () => opts.turn ?? null },
@@ -98,11 +99,11 @@ function relayRig(opts: { monitored: string[]; main: string[]; refuse?: string[]
     },
   }
   const record = buildFloorRecord({ toolName: SEND_TOOL, toolInput: SEND_ARGS, match: { ruleId: 'acts_on_owners_behalf', rulesVersion: 3, evidence: SEND_TOOL } })
-  const relay = (requestId: string) => {
+  const relay = (requestId: string, inputPreview = previewOf(SEND_ARGS)) => {
     const js = ts.transpileModule(`${relaySource}\nreturn relayPermissionToOwner(params, 'acts_on_owners_behalf', true, record);`, {
       compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
     }).outputText
-    const all = { ...bindings, record, params: { request_id: requestId, tool_name: SEND_TOOL, description: 'email_send', input_preview: previewOf(SEND_ARGS) } }
+    const all = { ...bindings, record, params: { request_id: requestId, tool_name: SEND_TOOL, description: 'email_send', input_preview: inputPreview } }
     return new Function(...Object.keys(all), js)(...Object.values(all)) as Promise<void>
   }
   return { relay, posts, notes, chatOwnership, permissionCardRefusedChats }
@@ -132,6 +133,16 @@ test('when every main chat refuses the email_send card with the 403, each is tri
   await r.relay('cdefg')
   assert.deepEqual(r.posts.map((p) => p.chatId), ['20', '21'], 'never 30, which is not a main chat')
   assert.deepEqual(r.notes, [{ behavior: 'allow', claimed: { requestId: 'cdefg', approval: null, binding: SEND_BLOCK, noOwnerChat: true } }])
+})
+
+test('a held email_send with files posts no card anywhere and leaves no grant: the CLI hears allow and the server decides (outbound email files, D7)', async () => {
+  const r = relayRig({ monitored: ['10'], main: ['10'], turn: { actingUserId: OWNER, chatId: '10' } })
+  await r.relay('defgh', previewOf({ ...SEND_ARGS, files: [{ path: 'C:\\Users\\kc\\Documents\\q3.pdf' }] }))
+  assert.equal(r.posts.length, 0, 'no card: it cannot show the files')
+  assert.deepEqual(r.notes, [{ behavior: 'allow', claimed: null }], 'allowed, and no grant for any call to claim')
+  // The same email with no files still gets its card.
+  await r.relay('efghi')
+  assert.deepEqual(r.posts.map((p) => p.emailSend), [SEND_BLOCK])
 })
 
 test('emailSendCardChat: the owner\'s main chats first, never one known to be somebody else\'s; with no evidence, as before', () => {

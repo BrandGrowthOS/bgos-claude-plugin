@@ -85,6 +85,8 @@ export interface AgentState {
   pendingMessages: number
   pendingPermissions: number
   activeOperations: number
+  /** Thread turns, their background steps and By the way forks: what an update's restart would stop. */
+  threadWork: number
   lastActivityAt: string | null
   sessionId: string | null
   updatedAt: string
@@ -104,6 +106,7 @@ export interface AgentStateSnapshot {
   pendingMessages: number
   pendingPermissions: number
   activeOperations: number
+  threadWork?: number
   /** Every activity time the daemon knows (epoch ms; null when never). */
   activityAtMs: Array<number | null | undefined>
   sessionId: string | null | undefined
@@ -158,6 +161,7 @@ export function buildAgentState(
     pendingMessages: count(input.pendingMessages),
     pendingPermissions: count(input.pendingPermissions),
     activeOperations: count(input.activeOperations),
+    threadWork: count(input.threadWork),
     lastActivityAt: isoOrNull(input.lastActivityAtMs),
     sessionId: session && isSessionIdLike(session) ? session : null,
     updatedAt: isoOrNull(input.nowMs) ?? new Date(0).toISOString(),

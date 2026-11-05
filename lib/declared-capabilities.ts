@@ -239,6 +239,20 @@
  *                       tools are plain code. Declared only while
  *                       shipsEmailTools(), the tools' own check, holds (the
  *                       email_label precedent).
+ *   email_files         the two email tools take `files: [{path}]` and this
+ *                       daemon runs the rule 4 checks (secret path refusal
+ *                       after every link, secret content scan) on each file
+ *                       before it uploads it (outbound email files, HOAI row
+ *                       5b141728 step 2; lib/agent-email-tools.ts EMAIL_FILES,
+ *                       the backend's EMAIL_FILES). The backend serves the
+ *                       files send line and the files paragraph only to a
+ *                       daemon that declares email_send AND this (email_send
+ *                       alone hears main's text only sentence), and refuses an
+ *                       upload, or a draft or send naming fileIds, from a
+ *                       pairing whose stored list lacks it (403
+ *                       files_not_declared). Declared right after email_send,
+ *                       only while shipsEmailFilesTools(), the files tools'
+ *                       own check, holds.
  *   ui_card             this daemon's show_component sends a card the agent
  *                       composes (kind ui_card, mission 168): the tool
  *                       fetches the live renderables catalog on every call
@@ -293,7 +307,7 @@
 import { ASK_ANSWERED_TOKEN, ASK_MULTI_SELECT_TOKEN, HARD_FLOOR_RULES_2_TOKEN, HARD_FLOOR_TOKEN, PERMISSION_CARD, PLAN_CARD } from './claude-capability-tokens.js'
 import { SESSIONS_LIBRARY, STOP_PAUSES_MISSION } from './session-controls-contract.ts'
 import { EMAIL_LABEL, labelsExternalEmail } from './inbound-channel.ts'
-import { EMAIL_SEND, shipsEmailTools } from './agent-email-tools.ts'
+import { EMAIL_FILES, EMAIL_SEND, shipsEmailFilesTools, shipsEmailTools } from './agent-email-tools.ts'
 import { LANE_MEMORY_RPC_TOKEN, PERSON_LANES_TOKEN } from './lane-core.mjs'
 
 /** Declared wherever this plugin runs, on every host and every connection. */
@@ -425,6 +439,7 @@ export function declaredCapabilities(input: {
     ...DECLARED_CAPABILITIES_BASE,
     ...(labelsExternalEmail() ? [EMAIL_LABEL] : []),
     ...(shipsEmailTools() ? [EMAIL_SEND] : []),
+    ...(shipsEmailFilesTools() ? [EMAIL_FILES] : []),
     ...(input.authMode === 'pairing' && input.floorHook === true ? DECLARED_CAPABILITIES_PAIRING : []),
     ...(input.canInjectGoal === true ? DECLARED_CAPABILITIES_INJECTOR : []),
     ...(input.authMode === 'pairing' && input.personLanes === true ? [PERSON_LANES_TOKEN, LANE_MEMORY_RPC_TOKEN] : []),

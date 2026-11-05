@@ -580,6 +580,27 @@ test('runWatcher reconcile: blocked plans fail with the reason; nothing_to_do is
   }
 })
 
+test('runWatcher reconcile: the executor reads the marks the agents wrote, so a job never takes the fleet onto a build held bad here', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  fs.files.set(`${HOME}/.bgos-agent/idle-update/0.39.0/bad`, JSON.stringify({ assistantId: '913', reason: 'canaries_silent' }))
+  fs.files.set(`${HOME}/.bgos-agent/idle-update/../0.39.0/bad`, 'a file the shape check must keep out of reach')
+  const backend = fakeBackend({ frames: [{ rpcId: 'j', op: 'reconcile' }], jobs: { j: { op: 'reconcile', intent: 'update', targets: [] } } })
+  const clock = fakeClock()
+  let given: any = null
+  const execute = async (_plan: any, deps: any) => {
+    given = deps
+    return { ok: false, verdict: 'failed', failedStep: { id: 's03', kind: 'update_plugin', message: 'update_failed:version_held_bad' }, rolledBack: false, steps: [] }
+  }
+  const { deps } = baseDeps(fs, backend, clock, { modules: stubModules({ plan: updatePlan, execute }) })
+  await runWatcher(deps as any)
+  assert.equal(await given.heldBad('0.39.0'), true)
+  assert.equal(await given.heldBad('0.39.1'), false)
+  assert.equal(await given.heldBad(null), false)
+  assert.equal(await given.heldBad('../0.39.0'), false, 'a version from a plan never names a path')
+  assert.equal(backend.progress('j').at(-1)!.state, 'failed')
+})
+
 test('runWatcher reconcile: a verify failure rolls back, names the step, posts scrubbed diagnostics', async () => {
   const fs = machineFs()
   manifestFor(fs)

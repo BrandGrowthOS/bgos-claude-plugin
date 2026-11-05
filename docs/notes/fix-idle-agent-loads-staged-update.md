@@ -1,0 +1,152 @@
+# The Windows tests on the update chain
+
+Lane winpath, board row 8946f0b1. Branch fix/idle-agent-loads-staged-update (#291); #300 is stacked on it.
+
+## The two email failures
+
+Cause: #291 held an older #296 head (a0d5426) without 70b9325, "fix: resolve Windows home aliases in outbound
+file checks".
+
+- The same two tests failed on every Windows run holding a0319a8, b2b9e7c or a0d5426 without 70b9325: 41251239207,
+  41286330405, 41294335796, 41299037606, 41429313766, 41431071556, 41488354116, 41400416620, 41498314780.
+- a0d5426 red (41294335796) to 70b9325 green (41358828632) is a one commit A/B touching only those two files.
+- 70b9325 was the only #296 commit #291 lacked. Taken with a merge (076d252). After it, both email files are
+  identical to 70b9325.
+
+## The download failure
+
+A real bug, not a flake. It is on main too.
+
+- Failed on Windows runs at c819c0f (41498314780), 0c46817 (41299037606) and fec0dc8 (40628933756, an unrelated
+  branch). Not on main (last 200 runs) and not on #298 (41382829101).
+- Playwright builds the reply once, after a fixed 500 ms settle. A download Chrome raised later was past the window
+  of that call and of the next one, so no reply ever named it.
+- Reproduced on real Chromium on Linux by holding the host's download event back 1500 ms: the same assertion and
+  reply text as CI. With the fix the same run passes, told in the next reply.
+- Why Chrome lags on Windows is not proven. The Chromium test logs where the line was told, so CI records how often.
+- A slow site was my first theory, and it is false: with a 3 s server delay the click's own reply still named it.
+
+What the agent now gets: the reply to its next browser action names the download, once. A download that may be the
+owner's is left to status: one raised while the owner holds the browser, or after that and before the next action of
+the agent's that really runs. Playwright does not say who started a download, so this rule comes from the fact that the agent starts one
+only by acting. No time window is used, because nobody knows how late Chrome can be.
+
+Limits:
+
+- One the agent started just before the owner took over is left to status.
+- An owner's file whose event lands after the agent has run another action, a read-only one too, is still named.
+- A call the engine itself refuses still counts as the agent's action: with the tab limit reached, `browser_tabs` new
+  returns `browser_tabs_full` and an owner's late file is named after it. A reviewer ran this. It needs the limit, and
+  any read-only action opens the same window.
+- The credential lease has no pending state, so an agent's download raised while that lease drains reads as the
+  owner's and is left to status. Read, not run.
+- Only the `### Download` line is covered. `_parkedResult` prints an open ask's summary (`gate_parked: Another
+  permission request is already waiting for the owner (download medical-private.pdf ...`), and
+  `hoai_browser_wait_gate` on that id names the file. A reviewer ran this with two late owner files and a gated
+  navigation, after the 90 s wait ran out. The code is on main unchanged, so it is older than this lane, and it is left
+  for a decision of its own.
+- A session that closes first takes the line with it. Status still lists the file.
+
+Fresh reviews caught problems in my own fix three times: it pushed owner downloads into the agent's replies (fixed in
+81abb37); that fix missed downloads refused at the start and events landing after the hand-back (f735c23); and that
+one cleared its flag where the call arrives rather than where the action runs, so a refused call named an owner's file
+and a click held at the gate lost the agent's own line (fixed after it).
+
+## The Linux failures this lane found
+
+The goal was a green suite on Linux. On `/mnt/e` (9p, through WSL2) it was not green, for two separate reasons.
+
+Slow filesystem: 13 failures and 1 cancelled at 81abb37, 10 and 1 at 6125a4c, mostly `spawnSync ETIMEDOUT`, `no
+browser host connected` and time budgets. All of those passed on the same trees checked out on native ext4. Run this
+suite from a native Linux path, as CI does. `npm ci` alone took 23 s against 3 s.
+
+File clock (private turn tests): the rules compare a marker's mtime with a `Date.now()` reading (`entry.at <
+writtenAt`, `verifiedAt > at`). Linux stamps an mtime from the kernel's coarse clock: on WSL2 ext4 at HZ 250, a file
+written after a reading was not later than it in 2996 of 3000 tries, and 9p was 0 of 3000. The markers live under
+`os.tmpdir()`, which is ext4 even when the tree is on `/mnt/e`. The harness spun a fixed 2 ms.
+
+- Same tests with one tick of wait before the Stop: 27 of 30 failures became 0 of 30.
+- Old head c819c0f, three files repeated: 22 failures of 1840. With this lane's helper, since dropped for main's
+  `test/helpers/file-clock.ts`, which #293 wrote for the same cause: 0 of 1840.
+- The diff from c819c0f to 81abb37 for those files is empty and the rule has been on main since 2026-10-16, so this
+  was not caused by this lane. Why CI's Linux job does not hit it is not established.
+
+The product rule and the assertions are unchanged. A mutation by a reviewer showed the "not later" direction of
+`entry.at < writtenAt` has no test that pins it, on either harness. That predates this lane and is left open.
+
+## Left alone, on purpose
+
+`review round 7` in `test/email-outbound-files.test.ts` fails now and then under load, on 3 of the 8 native full
+runs of this lane (101, 108 and 117 ms on `digits.csv`, limit 100), including the last run of #300's head, b14e0a7.
+That run's other tests all passed, and #291's last run was fully green. The stall is real: 40 to 59 ms alone, 68 to 310 ms with 24 CPU
+spinners on 32 CPUs, where 1 run in 6 failed. Sustained load beats the test's median of three, which assumes noise
+comes once. The step on the main thread was not identified. The limit is #296's decision, and raising it would be a
+blind fix.
+
+## Open
+
+The first Chromium test takes 22 to 40 s on five #291 lineage runs against about 8 s elsewhere, and two of the three
+download failures landed on those. But 6215119 and c819c0f have the same tree (667d9313e1) and the same image, at 8 s
+and 28 s. So it is not simply the code, and no cause is claimed. A process listing before the Chromium family would
+be the next step.
+
+## The merge of main (0.85.1)
+
+Merged #296's head, which holds main at 09f96a9a0c (#313), by Data's ruling of 4 Nov. Versions: #296 0.85.0, #291 0.85.1,
+#300 0.85.2. `server.ts` keeps both sides: `noteEnded` stays synchronous, before main's bounded wait in shutdown.
+
+The litter guard (#302) left this chain. #313 rewrote `scripts/run-tests.mjs`, so the runner here is main's as it stands.
+The guard goes to its own PR off main after this chain; row 92946637 stays open until then.
+
+## Thread work holds the restart (Data's ruling)
+
+Data: "an update must never stop a running thread turn or By the way fork." The idle check now counts it, as `threadWork`, gate 12a. The way back and the hook restart wait for it too.
+
+What the counts really mean, read before using them:
+
+- `liveChildren()` does not mean busy. It counts lane processes alive, running, idle or exiting. An idle lane counts for up to 20 minutes after its turn, and a turn with no process yet (just taken, or waiting behind the 2 slot limit) does not count at all. So it is not used. `activeWork()` is new and counts turns and background steps.
+- `asideForks.size()` means what it says: forks with a live process, from spawn to exit, so a fork counts past its answer.
+
+A correction to how this was first reported. It was reported as nothing holding these back. Read closer, an aside's handler is an active operation, and any `voice_rpc` frame holds `call_active` for 30 minutes, which happens to equal `THREAD_TURN_TIMEOUT_MS`. The real holes were narrower: a turn started by the read of pending threads, which has no frame; a turn queued past that window; a fork or an answer post near its end.
+
+Two reviews found the idle check was not the only way to an update. What each way does now:
+
+| Way to an update | How it reads thread work | When it gives up |
+|---|---|---|
+| Idle restart | `threadWork`, gate 12a | Never. It waits |
+| Way back | `threadWork` | `rollbackWaitMaxMs` (3 h), then it asks for a restart by hand |
+| Hook restart | `restartDrainSnapshot` | Never, and no drain is on while it holds |
+| A clone's scheduled update | `restartDrainSnapshot` | 15 minute ceiling, then it skips, and nothing stops |
+| The watcher's update sweep | `threadWork` in `agent-state.json` | Never, while the state is fresh. A state older than 120 s, or a daemon without the lock, says nothing |
+| A click on a clone, nothing staged yet | `restartDrainSnapshot` | 45 s, then `drain_timeout`, and nothing stops |
+| A click on a clone, a validation pending | Not needed | It answers `update_in_flight`, and nothing stops |
+| **A click on a plugin install** | `restartDrainSnapshot` | **45 s, then it goes ahead and can stop a turn** |
+| **A click on a clone with a version already staged** | **Nothing: no drain** | **It restarts at once and can stop a turn** |
+| **The app's Restart now, after 24 h of waiting** | **Not traced** | **Not traced** |
+| **A watcher job with intent `update` or `reconcile`** (`lib/update-executor.mjs`, `restartAgentStep`) | **Nothing: the step reads no busy state** | **It restarts a running agent, and can stop a thread turn or a main session turn. Older than this PR. Who sends these jobs, and how often, is not traced. For Data's ruling** |
+
+The rows in bold are a person's own act, older than this fix, and left for Data's ruling.
+
+A recovery restart (`lib/agent-checkup.mjs`) does not read thread work, on purpose: a stuck session must not wait for a thread, and that restart can stop a turn. That is not an update, but it is a difference from the ruling's spirit, reported for a ruling too.
+
+Tool admission reads `restartDrainSnapshot`, so a drain held by a thread refuses no tool. Without that, a click on a clone during a turn refused every tool of the main session for 45 s and then did not restart.
+
+The count has no stale rule of its own, unlike operations (30 minutes). A running turn ends at `THREAD_TURN_TIMEOUT_MS`, a fork at 55 s, and the steps before a process exists have their own limits. A start that hung would hold every row above that says never, until a person looks. Read, not run.
+
+A hook restart held by thread work logs `pending_messages`, as that plan has no reason of its own for it. The sweep logs `thread_work`. Whether the app and the backend show that new word well was not checked: neither is in this repo, and the only limit seen here is its length.
+
+A thread that ends does not start a quiet window, as `threadWork` is not part of busy. No running turn is stopped by that: the sweep can restart on its first look after the count reaches 0.
+
+The gap between the check and the restart:
+
+- Closed for the idle restart and the way back: the second decision reads fresh facts after the close look's awaits, then `act` reaches `deps.drain(true)` with no await in between. Draining disconnects the socket, `voice_rpc` frames return at once, and a read of pending threads starts nothing. A read already out counts as work.
+- Not closed, and it cannot be from this side: a frame the backend sends in the moment between the drain and the process ending starts nothing here. A thread turn is read again at the next boot's reconcile; that the backend still lists it was not checked from this repo. An aside sent then gets no answer.
+- The hourly sweep of closed lanes is not counted, in the gap or before it. It runs no turn.
+- The watcher's sweep has no drain. It reads a file the daemon rewrites within a second of a change, so a turn that starts after that read, before its signal, is not held. Not closed here.
+- A click on a plugin install that goes ahead at 45 s has its drain on, but a read of pending threads already out can still start a turn. A read that has not gone out starts nothing.
+- After a daemon crash, a lane the old daemon started is not counted by the new one. A restart does not signal it, but the next start of that thread stops it first, and the next boot's reconcile can be that start.
+
+## Proof limits
+
+Local Chromium was build 1148 (131), not the pinned 1248. `expect` is not installed locally, so those tests skip
+here. Windows proof comes only from the plugin's CI job.

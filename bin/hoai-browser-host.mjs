@@ -1903,6 +1903,7 @@ export class BrowserHostCore {
       remember: (origin, choice) => this._remember(ctx, slot, this._settingsFor(slot), { gate: 'download', origin, choice }),
       // The owner holding the browser (not while the agent's work drains).
       ownerControl: () => !!slot.ownerInputLease && slot.ownerInputLease.pending !== true,
+      ownerHeldSinceAgent: () => slot.ownerHeldSinceAgent === true,
       choices: policy.gateChoices('download'),
       originOf: (url) => policy.originOf(url),
       log: this._log,
@@ -1944,10 +1945,11 @@ export class BrowserHostCore {
     }
   }
 
-  /** "### Download" for the downloads a call started, so the agent learns of them in that reply. */
-  _withDownloads(slot, seqBefore, result) {
-    const started = slot?.downloads?.since?.(seqBefore) ?? []
-    if (!started.length || !result || !Array.isArray(result.content)) return result
+  /** "### Download" for the downloads no reply has named yet: this call's, or one Chrome raised after the last reply went. */
+  _withDownloads(slot, result) {
+    if (!result || !Array.isArray(result.content)) return result
+    const started = slot?.downloads?.untold?.() ?? []
+    if (!started.length) return result
     const lines = started.map((d) => {
       if (d.state === 'asking') return `- ${d.fileName} (${d.handle}): your owner is asked before it is saved; if they do not answer it is kept for them when it fits the keep limits (otherwise deleted), and you are not given it. Do not start it again; hoai_browser_status shows its state.`
       if (d.state === 'saving' || d.state === 'saved') return `- ${d.fileName} (${d.handle}): allowed by your owner's rules; it is saved in your browser folder when it finishes, and hoai_browser_status gives its path.`
@@ -2015,7 +2017,12 @@ export class BrowserHostCore {
       settings,
       preapproved: [],
     })
-    const run = () => runAgentBrowserWork(slot, () => slot.engine.callTool(name, engineArgs, signal))
+    // Only here does the agent act: a call refused or parked starts no download, and one held at the gate runs later,
+    // perhaps after the owner looked in and handed back (SlotDownloads._mayBeOwners).
+    const run = () => runAgentBrowserWork(slot, () => {
+      slot.ownerHeldSinceAgent = false
+      return slot.engine.callTool(name, engineArgs, signal)
+    })
     if (decision.verdict === 'allow') return { allowed: true, ran: Promise.resolve().then(run) }
     if (decision.verdict === 'deny') {
       return { allowed: false, message: this._refusedMessage(decision, classification) }
@@ -2319,7 +2326,6 @@ export class BrowserHostCore {
     if (slot.ownerInputLease) throw new HostError('owner_control', OWNER_CONTROL_MESSAGE)
     if (ctx.assistantName) slot.agentName = ctx.assistantName
     if (!slot.purpose) slot.purpose = typeof engineArgs.url === 'string' ? `Browsing ${engineArgs.url}` : 'Browsing on request'
-    const downloadsBefore = slot.downloads?.seq ?? 0
     const verdict = await this._permit(ctx, slot, name, engineArgs, waitSeconds, signal)
     if (verdict.parked) return this._parkedResult(verdict)
     if (!verdict.allowed) return errorResult('policy_denied', verdict.message)
@@ -2329,7 +2335,7 @@ export class BrowserHostCore {
     // aborted the first (net::ERR_ABORTED). One owner is the only way "at
     // most once, whichever call returns it" can be true, because a parked
     // gate's action is run by whichever wait_gate re-attaches to it.
-    return this._withDownloads(slot, downloadsBefore, await this._runHeld(verdict))
+    return this._withDownloads(slot, await this._runHeld(verdict))
   }
 }
 

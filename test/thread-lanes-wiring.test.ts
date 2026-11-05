@@ -31,6 +31,7 @@ function reconcileStartup() {
   const requests: Array<{ path: string; options: unknown; assistantIds: string[] }> = []
   const scope = {
     channelArmed: true,
+    updateDrainMode: false,
     threadsDeclared: () => answer?.ok === true,
     threadsCliGate: { ready: () => probe },
     ASSISTANT_ID: 7,
@@ -72,6 +73,15 @@ test('a failed probe or a channel that lost its lock starts no pending threads',
     await r.settle()
     assert.deepEqual(r.requests, [])
   }
+})
+
+test('a read of pending threads waits behind an update that drained first: nothing starts, and the reconnect reads again', async () => {
+  const r = reconcileStartup()
+  r.reconcile('armed')
+  ;(r.scope as any).updateDrainMode = true
+  r.ready(true)
+  await r.settle()
+  assert.deepEqual(r.requests, [])
 })
 
 test('the lane manager forks the proven session from the folder that session runs in', () => {

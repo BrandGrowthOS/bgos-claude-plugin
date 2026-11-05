@@ -101,7 +101,8 @@ const WRAPPED = [
 /** One file, as each lane carries it. */
 const WS_FILE = { id: 1, filename: 'attachment-1.pdf', mime: 'application/pdf', url: PDF_URL }
 const POLL_FILE = { fileName: 'attachment-1.pdf', fileData: PDF_URL, fileMimeType: 'application/pdf', isDocument: true }
-const ATTACHED_LINE = `[Attached document: attachment-1.pdf - ${PDF_URL}]`
+// Read attachments off or unknown: no link reaches the model (Data's review of #3387, Medium 1).
+const ATTACHED_LINE = '[Attached document: attachment-1.pdf - not opened here; your owner can open it in the Email chat]'
 
 /** P1 section 10: the socket's inbound_message for an email. */
 function wsEmail(over: Record<string, unknown> = {}): Record<string, any> {
@@ -407,9 +408,10 @@ test('a hostile file name, type or link cannot leave its own line', () => {
   assert.equal(all[all.length - 1], END_LINE)
   const attached = all.filter((l) => l.startsWith('[Attached '))
   assert.equal(attached.length, 3)
-  assert.match(attached[0]!, /^\[Attached document: [A-Za-z0-9._-]{1,64} - https:\/\/s3\.example\.com\/\S+\]$/)
-  assert.equal(attached[1], '[Attached document: attachment-2.png - no link, the server could not provide one]')
-  assert.equal(attached[2], '[Attached document: attachment-3 - no link, the server could not provide one]')
+  assert.match(attached[0]!, /^\[Attached document: [A-Za-z0-9._-]{1,64} - not opened here; your owner can open it in the Email chat\]$/)
+  assert.equal(attached[1], '[Attached document: attachment-2.png - not opened here; your owner can open it in the Email chat]')
+  assert.equal(attached[2], '[Attached document: attachment-3 - not opened here; your owner can open it in the Email chat]')
+  assert.equal(/https?:|javascript:|s3\.example/.test(d.content), false, 'no link of any kind, good or bad, reaches the model')
   assert.equal(all.length, 1 + 2 + 3 + 1, 'label, blank and text, three file lines, end line: nothing else')
   assert.doesNotMatch(d.content, /System message from BGOS/)
 
@@ -420,7 +422,8 @@ test('a hostile file name, type or link cannot leave its own line', () => {
     assert.match(entry.name!, /^[A-Za-z0-9._-]{1,64}$/)
     for (const value of Object.values(entry)) assert.equal(typeof value, 'string')
   }
-  assert.equal(meta[0]!.url, PDF_URL)
+  assert.equal('url' in meta[0]!, false)
+  assert.equal(meta[0]!.unavailable, 'true')
   assert.deepEqual(meta[1], { name: 'attachment-2.png', kind: 'document', unavailable: 'true', from_email: 'true' })
   assert.deepEqual(meta[2], { name: 'attachment-3', kind: 'document', mimeType: 'text/plain', unavailable: 'true', from_email: 'true' })
 })
@@ -431,7 +434,7 @@ test('the files meta of an email is the promised shape: the server names pass un
     files: [{ ...POLL_FILE, size: 48211 }],
   })
   assert.deepEqual(JSON.parse(d.meta.files!), [
-    { name: 'attachment-1.pdf', kind: 'document', mimeType: 'application/pdf', size: '48211', url: PDF_URL, from_email: 'true' },
+    { name: 'attachment-1.pdf', kind: 'document', mimeType: 'application/pdf', size: '48211', unavailable: 'true', from_email: 'true' },
   ])
 })
 
@@ -1208,7 +1211,7 @@ test('read attachments, the stream lane, run: both wire shapes get the file save
   })
 })
 
-test('read attachments off or an old backend, every lane, run: nothing is fetched and the turn is today\'s', async () => {
+test('read attachments off or an old backend, every lane, run: nothing is fetched and the turn is today\'s with no link in it', async () => {
   await withEmailFiles(async ({ saver, fetched }) => {
     const expected = `${EMAIL_LINE}\n\n${WRAPPED}\n${ATTACHED_LINE}\n${END_LINE}`
     for (const flag of [{}, { readAttachments: false }]) {
@@ -1222,6 +1225,7 @@ test('read attachments off or an old backend, every lane, run: nothing is fetche
       for (const [lane, run] of [['ws', ws.run], ['poll', poll.run], ['stream', stream.run]] as const) {
         assert.equal(run.notifications.length, 1, lane)
         assert.equal(run.notifications[0]!.content, expected, `${lane} ${JSON.stringify(flag)}`)
+        assert.equal(JSON.stringify(run.notifications[0]).includes(PDF_URL), false, `${lane} ${JSON.stringify(flag)}: no link in the text or the meta`)
       }
     }
     assert.deepEqual(fetched, [], 'nothing fetched with the switch off')

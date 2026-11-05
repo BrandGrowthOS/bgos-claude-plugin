@@ -264,6 +264,18 @@ export class ThreadLaneManager {
     return n
   }
 
+  /**
+   * Work a restart would cut off: a turn running or waiting for a slot, a lane whose next turn is queued, and any
+   * background step still going (a start, an answer being posted, a read of pending turns, a close or a delete). A lane
+   * that only sits idle is not work: liveChildren() counts it for 20 minutes after its turn, and its next turn resumes
+   * by its id. The hourly sweep of closed lanes is not counted: it runs no turn.
+   */
+  activeWork(): number {
+    let n = this.work.size
+    for (const lane of this.lanes.values()) if (lane.current || lane.queue.length > 0) n++
+    return n
+  }
+
   /** Slots in use: lanes running a turn or holding a live process, and closed lanes still exiting. */
   private slotsUsed(): number {
     let n = this.closing.size
@@ -412,7 +424,14 @@ export class ThreadLaneManager {
    * naming the lane's last finished reply only puts the thread back to Open
    * with a short plain reply when nothing is left to land.
    */
-  async reconcile(fetchPending: () => Promise<unknown>, opts: { assistantIds?: readonly string[] } = {}): Promise<number> {
+  reconcile(fetchPending: () => Promise<unknown>, opts: { assistantIds?: readonly string[] } = {}): Promise<number> {
+    // Tracked from its first step: a read still out may start a turn, so a restart waits for it (activeWork).
+    const run = this.reconcileNow(fetchPending, opts)
+    this.track(run)
+    return run
+  }
+
+  private async reconcileNow(fetchPending: () => Promise<unknown>, opts: { assistantIds?: readonly string[] }): Promise<number> {
     const raw = await fetchPending()
     const body = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : null
     const rows: unknown[] = Array.isArray(body?.turns) ? (body!.turns as unknown[]) : []
@@ -1308,6 +1327,14 @@ export class ThreadLaneManager {
     this.work.add(p)
     void p.finally(() => this.work.delete(p)).catch(() => {})
   }
+}
+
+/**
+ * What a restart must wait for in threads: the lanes' work and every By the way fork with a live process. A fork
+ * counts until its process exits, past its answer, because the fork may still be writing.
+ */
+export function liveThreadWork(lanes: { activeWork(): number }, forks: { size(): number }): number {
+  return lanes.activeWork() + forks.size()
 }
 
 function str(v: unknown): string {
