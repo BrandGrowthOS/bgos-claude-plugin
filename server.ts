@@ -93,6 +93,7 @@ import {
 import { createClaudeMemoryStore, nodeMemoryFs, resolveMemoryFolder } from './lib/memory.js'
 import { MemoryRpcHandler, memoryRpcFailure } from './lib/memory-rpc.js'
 import { SkillsRpcHandler, normalizeSkillsRpc } from './lib/skills-rpc.js'
+import { seatChatsFrom, seatsRouteMissing } from './lib/room-seats.js'
 import { listSkills, managedSkillsDir, removeAgentSkill } from './lib/skills-inventory.js'
 import { exportSkill, installBundle } from './lib/skills-share.js'
 import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
@@ -5041,7 +5042,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             description:
               'The chat to reply in. Pass back the chat_id (or, if present, the ' +
               'session_handle) from the channel event you are answering. The ' +
-              'plugin rejects chat ids it has not received an inbound event for.',
+              'plugin rejects chat ids it has not received an inbound event for, except a group or channel this agent sits in.',
           },
           text: {
             type: 'string',
@@ -11624,7 +11625,7 @@ function resolveAuthorizedChat(rawChatId: string):
           type: 'text' as const,
           text:
             `Error: chat_id "${id}" is not one this assistant is a participant of. ` +
-            `Only reply/rename/ask in chats you received an inbound event from. ` +
+            `Only reply/rename/ask in chats you received an inbound event from, or a group or channel you sit in. ` +
             `Pass back the chat_id (or sessionHandle) from the channel event you are answering.`,
         },
       ],
@@ -11701,6 +11702,34 @@ async function discoverChats(): Promise<void> {
     for (const id of monitoredChatIds) noteMonitoredChat(id)
   } catch (err) {
     log(`Failed to discover chats: ${err}`)
+  }
+  await discoverSeatChats()
+}
+
+/**
+ * The groups and channels this agent holds a live seat in. The inbox never lists them, so without this a restarted agent
+ * could not post in its own group until somebody else wrote there. Admits only
+ * what the backend's seat answer names (lib/room-seats.ts), adds and never
+ * prunes like the inbox seed above, and is NOT added to monitoredChatIds: a
+ * group's messages still arrive on the socket and the stream, exactly as
+ * before. The backend stays the final gate on every POST.
+ */
+let seatsRouteMissingSaid = false
+async function discoverSeatChats(): Promise<void> {
+  try {
+    const seats = seatChatsFrom(await bgosPeerGet('peers/seats'))
+    for (const seat of seats) {
+      noteMonitoredChat(seat.chatId)
+      groupChatIds.add(seat.chatId)
+    }
+    seatsRouteMissingSaid = false
+  } catch (err) {
+    if (seatsRouteMissing(err)) {
+      if (!seatsRouteMissingSaid) log('peers/seats: this backend has no seat list yet; a group is admitted on its first inbound message, as before')
+      seatsRouteMissingSaid = true
+      return
+    }
+    log(`Failed to discover seats: ${err}`)
   }
 }
 

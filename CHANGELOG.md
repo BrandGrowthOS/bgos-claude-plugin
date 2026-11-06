@@ -4,6 +4,10 @@ Notable changes to the HOAI Claude Code plugin.
 
 ## Unreleased
 
+**A restarted agent can write in a group it sits in.** The daemon refuses a reply, rename or ask into a chat it was never told about, and it learnt a group or channel only from an inbound message, because `/peers/inbox` never lists them. That list lives in memory, so after a restart an agent could not post in its own group until somebody else wrote there. Chat discovery now also reads `GET /peers/seats`, the groups and channels where this agent holds a live seat and its owner an active membership, and admits exactly those. Nothing else is admitted: a group it is not seated in, one its owner left and one where only another person's agent sits are still refused before any POST, and the backend still decides every write. A backend without the route (404) is logged once and behaves as before. Needs the matching BGOS backend change.
+
+- Tests: `test/group-write-after-restart.e2e.test.ts` (the real daemon: restart then reply, red before the fix; negative controls; the 404 case) and `test/room-seats.test.ts`.
+
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
 ## 0.85.4 (2026-11-05)
