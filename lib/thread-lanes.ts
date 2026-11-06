@@ -33,6 +33,10 @@
  *    worktree's project dir; the copy goes once the fork's init frame shows it
  *    was read. The fork's own file stays: it is the thread's memory.
  *  - A summary turn posts the draft to the summary route instead of a reply.
+ *  - Selective hooks: a lane retains the plugin's non-Stop hooks, and its
+ *    transcript clears the inherited /goal before resume. Defence
+ *    below that: a turn a Stop hook blocks from ending more than twice is
+ *    stopped and failed with a reply naming the cause, never left looping.
  *  - Each result is ONE thread reply (`final` unless it ends asking a
  *    question), clipped to the server's 20,000 characters; a post that fails
  *    is retried with backoff, and one that still fails puts the thread back
@@ -60,6 +64,7 @@ import {
   protectedGitPaths,
   THREAD_LANE_REF_DIRS,
   threadLaneArgs,
+  threadLaneTranscript,
   threadTurnPrompt,
   type ThreadLaneConfinement,
   type ThreadTurnMode,
@@ -75,6 +80,14 @@ export const THREAD_LANE_KEEP_CLOSED_MS = 7 * 24 * 60 * 60_000
 export const THREAD_TURN_TIMEOUT_MS = 30 * 60_000
 /** How often a stop of a lane process left from before a daemon crash checks whether it is gone. */
 export const THREAD_ORPHAN_POLL_MS = 250
+/**
+ * How many times a Stop hook may block one turn from ending before the lane is
+ * stopped (THREADGOAL defence; the CLI's own cap is 9 and then it ends the
+ * turn with an empty result).
+ */
+export const THREAD_STOP_HOOK_BLOCKS_MAX = 2
+/** The prefix the CLI gives the synthetic user message a blocking Stop hook adds (measured, 2.1.319). */
+const STOP_HOOK_FEEDBACK = 'Stop hook feedback:'
 /** The waits between attempts of a post to BGOS (so 4 attempts in all). */
 export const THREAD_POST_RETRY_MS: readonly number[] = Object.freeze([2_000, 10_000, 30_000])
 
@@ -87,7 +100,21 @@ const NO_CLAUDE = 'This turn failed because this computer cannot run Claude Code
 const NO_WORKTREE = 'This thread could not start because its working copy could not be made.'
 const TIMED_OUT = 'This turn took longer than 30 minutes, so it was stopped. Send your reply again to retry.'
 const POST_FAILED = 'The answer to this turn could not be delivered, so send your reply again to retry.'
+const STOP_HOOK_LOOP =
+  'This turn was stopped because a Stop hook (such as a /goal set in the main chat) kept blocking it from ending. Send your reply again to retry.'
 const ORPHAN_ALIVE = 'This turn could not start because an earlier run of this thread is still stopping. Send your reply again in a minute.'
+
+/** A synthetic user message a blocking Stop hook added: its text starts with the CLI's feedback prefix. */
+function isStopHookFeedback(frame: Record<string, unknown>): boolean {
+  const message = frame.message as { content?: unknown } | undefined
+  const content = message?.content
+  if (typeof content === 'string') return content.startsWith(STOP_HOOK_FEEDBACK)
+  if (!Array.isArray(content)) return false
+  return content.some((block) => {
+    const b = block as { type?: unknown; text?: unknown } | null
+    return b?.type === 'text' && typeof b.text === 'string' && b.text.startsWith(STOP_HOOK_FEEDBACK)
+  })
+}
 
 /** The pending route, scoped to the agents this daemon serves (the server answers nothing without them). */
 export function threadsPendingPath(assistantIds: readonly string[]): string {
@@ -221,6 +248,8 @@ interface Lane {
   /** The turn written to the CURRENT child: only its exit or its result may end that turn. */
   childTurn: ThreadTurnInput | null
   turnTimer: unknown
+  /** Times a Stop hook blocked the current child turn from ending. */
+  stopHookBlocks: number
   /** A start in flight (worktree, confinement, spawn): close and delete wait for it. */
   starting: Promise<void> | null
   /** When the lane last finished a turn: the oldest idle lane gives its slot first. */
@@ -565,6 +594,7 @@ export class ThreadLaneManager {
       current: null,
       childTurn: null,
       turnTimer: null,
+      stopHookBlocks: 0,
       starting: null,
       idleSince: 0,
       copiedMainPath: null,
@@ -596,6 +626,7 @@ export class ThreadLaneManager {
       }
       if (lane.current !== turn || !lane.child || lane.closed) return
       lane.childTurn = turn
+      lane.stopHookBlocks = 0
       this.armTurnTimer(lane, turn)
       lane.child.write(userMessageLine(threadTurnPrompt({ ...turn, readOnly: lane.state.readOnly })))
     } catch (err) {
@@ -776,6 +807,22 @@ export class ThreadLaneManager {
         emptyMcpConfigPath: mcp,
         confinement,
       })
+      // Also clear goals in forks saved by versions that disabled all hooks.
+      const path = sessionTranscriptPath(this.deps.home, lane.state.cwd, lane.state.forkSessionId, this.deps.configDir)
+      if (this.deps.fs.exists(path)) {
+        const before = this.deps.fs.readFile(path)
+        const after = threadLaneTranscript(before)
+        if (after !== before) {
+          // A crash during an upgrade must not truncate the fork's memory.
+          const temporary = `${path}.thread-goal.tmp`
+          try {
+            this.deps.fs.writeFile(temporary, after)
+            this.deps.fs.rename(temporary, path)
+          } finally {
+            try { this.deps.fs.unlink(temporary) } catch {}
+          }
+        }
+      }
     } else {
       const mainId = this.deps.mainSessionId()
       if (!isSessionId(mainId)) throw new ThreadLaneError('no_session', NO_SESSION)
@@ -932,10 +979,10 @@ export class ThreadLaneManager {
     const { fs, home, configDir, agentFolder } = this.deps
     const from = sessionTranscriptPath(home, agentFolder, mainId, configDir)
     const to = sessionTranscriptPath(home, lane.state.cwd, mainId, configDir)
-    if (from === to) return
+    if (from === to) throw new ThreadLaneError('no_session', NO_SESSION)
     try {
       fs.mkdir(dirname(to))
-      fs.copyFile(from, to)
+      fs.writeFile(to, threadLaneTranscript(fs.readFile(from)))
     } catch {
       throw new ThreadLaneError('no_session', NO_SESSION)
     }
@@ -957,7 +1004,23 @@ export class ThreadLaneManager {
       if (lane.state.pidStamp === null) this.readStamp(lane, child)
       return
     }
+    if (frame.type === 'user' && isStopHookFeedback(frame)) this.onStopHookBlock(lane)
     if (frame.type === 'result') this.onResult(lane, frame)
+  }
+
+  /**
+   * A Stop hook blocked the turn from ending. Inherited Stop hooks are excluded, so this is
+   * a defence: past THREAD_STOP_HOOK_BLOCKS_MAX the lane is stopped and the
+   * turn failed with its cause, never a loop and never the generic failure.
+   */
+  private onStopHookBlock(lane: Lane): void {
+    const turn = lane.childTurn
+    if (!turn || lane.current !== turn) return
+    lane.stopHookBlocks++
+    if (lane.stopHookBlocks <= THREAD_STOP_HOOK_BLOCKS_MAX) return
+    this.deps.log(`threads: turn ${turn.rootId} was stopped, a Stop hook blocked it ${lane.stopHookBlocks} times`)
+    this.stopChild(lane)
+    this.failTurn(lane, turn, STOP_HOOK_LOOP)
   }
 
   private onExit(lane: Lane, child: StreamJsonChild): void {
