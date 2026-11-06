@@ -786,6 +786,7 @@ import {
   drawCatchupDelayMs,
   drawReconnectBaseDelayMs,
 } from './lib/reconnect-spread.js'
+import { watchSocketLiveness } from './lib/socket-liveness.js'
 import { readRollbackLatch } from './lib/watcher-core.mjs'
 import {
   applyWin32CredentialsAcl,
@@ -17023,6 +17024,7 @@ function connectWebsocket(): void {
     // frame by (pairing only; nothing else in the handshake changes).
     ...wsAuthOptions(AUTH, laneSupport().ok ? [LANE_MEMORY_RPC_TOKEN] : []),
   })
+  watchSocketLiveness(realtimeSocket.io, log)
 
   realtimeSocket.on('connect', () => {
     log(`WS connected (id=${realtimeSocket?.id}), polling will throttle`)
