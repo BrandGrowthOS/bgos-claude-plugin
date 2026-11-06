@@ -63,6 +63,9 @@ test('a clone workspace with no hoai entry gets the rail and the private turn ho
   assert.equal(result.outcome, 'registered')
   const hooks = settingsOf(dir).hooks
   for (const event of ['UserPromptSubmit', 'Stop', 'SessionEnd', 'SubagentStart']) assert.match(text(hooks[event]), /hoai-private-turn-hook\.mjs/)
+  // The mission turn check rides the same rail (missions that stay true).
+  for (const event of ['UserPromptSubmit', 'Stop']) assert.match(text(hooks[event]), /hoai-mission-turn-hook\.mjs/)
+  for (const event of ['SessionEnd', 'SubagentStart', 'PreToolUse']) assert.doesNotMatch(text(hooks[event]), /hoai-mission-turn-hook\.mjs/)
   assert.match(text(hooks.UserPromptSubmit), /hoai-hook\.mjs/)
   assert.doesNotMatch(text(hooks), /hoai-floor-hook\.mjs/)
   assert.match(text(hooks.PreToolUse), /gate\.py/, "the owner's own hook is kept")

@@ -352,3 +352,18 @@ test('Stop during mission lookup prevents the waiting tool call from making a wo
   assert.equal(result.isError, true)
   assert.equal(r.sent.filter(call => call.method === 'PATCH').length, 0)
 })
+
+
+test('nested waiting reaches the admitted recipient mission with their headers, and null clears it', async () => {
+  for (const waiting of [{ on: 'agent', who: 'Demo Agent', why: 'review' }, null]) {
+    const r = rig({ actingUserId: RECIPIENT, chatId: RECIPIENT_CHAT, headers: { 'X-BGOS-Acting-User': RECIPIENT } })
+    const result = await r.run('set_goal_waiting', { goal_id: 3, waiting })
+    assert.notEqual(result?.isError, true, JSON.stringify(result))
+    assert.deepEqual(r.sent.map(c => [c.method, c.path]), [
+      ['GET', `assistants/900/missions/active?chatId=${RECIPIENT_CHAT}`],
+      ['PATCH', 'integrations/assistants/900/missions/77/goals/3/waiting'],
+    ])
+    assert.deepEqual(r.sent[1]!.body, { waiting })
+    assert.deepEqual(r.sent[1]!.headers, { 'X-BGOS-Acting-User': RECIPIENT })
+  }
+})

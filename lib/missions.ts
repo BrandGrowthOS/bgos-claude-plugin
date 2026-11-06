@@ -59,6 +59,8 @@
  * as the tool result.
  */
 
+import { describeGoalCheck } from './mission-turn.mjs'
+
 export const MISSION_MIN_GOALS = 2
 export const MISSION_MAX_GOALS = 20
 export const MISSION_TITLE_MAX = 200
@@ -85,6 +87,21 @@ export const MISSION_TARGET_RANGE = '4 to 10'
 export interface MissionGoalBody {
   name: string
   doneWhen: string
+  /**
+   * The goal's machine check (missions that stay true, 2026-10-26), passed
+   * through UNCHANGED: the server's grammar refuses an unknown kind or an
+   * extra key with one sentence, so the tool never trims or drops a key that
+   * would turn that refusal into a silent rewrite. Absent when none.
+   */
+  check?: Record<string, unknown>
+}
+
+/** Who a goal waits on, as the server stores it. */
+export interface MissionGoalWaiting {
+  on: 'owner' | 'agent'
+  who: string
+  why: string
+  since?: string
 }
 
 export interface MissionCreateBody {
@@ -201,6 +218,12 @@ export interface MissionSnapshot {
     done: boolean
     doneAt: string | null
     evidence: string | null
+    /** The server's machine check of this goal, when it has one. */
+    check?: Record<string, unknown>
+    /** 'check' when the SERVER ticked it on its check. */
+    doneBy?: 'check'
+    /** Set while the next step is the owner's or another agent's. */
+    waiting?: MissionGoalWaiting | null
   }>
   /** The chat this mission belongs to; null (or absent) means the main chat. */
   chatId?: number | null
@@ -297,7 +320,20 @@ function parseMissionGoals(
           `max ${MISSION_DONE_WHEN_MAX}).`,
       }
     }
-    miniGoals.push({ name: trimmedName, doneWhen: trimmedDoneWhen })
+    const check = raw.check
+    if (check !== undefined && check !== null && !isPlainObject(check)) {
+      return {
+        ok: false,
+        error:
+          `Mini-goal ${i + 1} check must be an object such as ` +
+          '{ "kind": "pr_merged", "repo": "owner/name", "number": 12 }, or left out.',
+      }
+    }
+    miniGoals.push({
+      name: trimmedName,
+      doneWhen: trimmedDoneWhen,
+      ...(isPlainObject(check) ? { check } : {}),
+    })
   }
   return { ok: true, body: miniGoals }
 }
@@ -934,11 +970,22 @@ const CONTROL_CHARS = /[\u0000-\u001f\u007f\u2028\u2029]/
  * reaches the agent as the sentence below before any request is made.
  */
 export function buildMissionGoalWaitingBody(input: {
+  waiting?: unknown
   on?: unknown
   who?: unknown
   why?: unknown
   clear?: unknown
 }): MissionBuildResult<MissionGoalWaitingBody> {
+  if (input.waiting !== undefined) {
+    if (['on', 'who', 'why', 'clear'].some((key) => input[key as keyof typeof input] !== undefined)) {
+      return { ok: false, error: 'Send waiting, or on, who, why and clear, never both forms.' }
+    }
+    if (input.waiting === null) return { ok: true, body: { waiting: null } }
+    if (!isPlainObject(input.waiting)) {
+      return { ok: false, error: 'waiting must be null, or { on: "owner" or "agent", who, why }.' }
+    }
+    return buildMissionGoalWaitingBody({ on: input.waiting.on, who: input.waiting.who, why: input.waiting.why })
+  }
   const { on, who, why, clear } = input
   if (clear !== undefined && clear !== false) {
     if (clear !== true) {
@@ -972,6 +1019,17 @@ export function buildMissionGoalWaitingBody(input: {
     return { ok: false, error: `why is too long (${whyText.length} chars, max ${MISSION_WAITING_WHY_MAX}).` }
   }
   return { ok: true, body: { waiting: { on, who: whoText, why: whyText } } }
+}
+
+/**
+ * The goal checks read (missions that stay true, 2026-10-26): what each open
+ * goal's server check answers now. Read only, PAIRING family. The daemon asks
+ * it when a turn starts and when the Stop hook asks at turn end.
+ */
+export function buildMissionGoalChecksPath(assistantId: unknown, missionId: unknown): MissionPathResult {
+  const goals = buildMissionSetGoalsPath(assistantId, missionId)
+  if (!goals.ok) return goals
+  return { ok: true, path: goals.path.replace(/\/goals$/, '/goal-checks') }
 }
 
 /** The goal lane's check write. */
@@ -1027,10 +1085,19 @@ export function formatMissionSummary(mission: MissionSnapshot): string {
     `Mission #${mission.id}: "${mission.title}" (${mission.status}), ${done} of ${total} mini-goals done.`,
   ]
   for (const g of mission.miniGoals) {
-    lines.push(`  [${g.done ? 'x' : ' '}] ${g.id}. ${g.name} (done when ${g.doneWhen})`)
+    const check = describeGoalCheck(g.check)
+    const extras = [
+      check ? ` [server check: ${check}]` : '',
+      g.done && g.doneBy === 'check' ? ' [ticked by the server]' : '',
+      !g.done && g.waiting
+        ? ` [waiting on ${g.waiting.on === 'owner' ? 'your owner' : 'agent'} ${g.waiting.who}: ${g.waiting.why}]`
+        : '',
+    ].join('')
+    lines.push(`  [${g.done ? 'x' : ' '}] ${g.id}. ${g.name} (done when ${g.doneWhen})${extras}`)
   }
   if (mission.status === 'active') {
-    const next = mission.miniGoals.find((g) => !g.done)
+    // The next goal is the agent's own: one that waits on somebody is not.
+    const next = mission.miniGoals.find((g) => !g.done && !g.waiting)
     if (next) lines.push(`Next: ${next.id}. ${next.name}`)
   }
   return lines.join('\n')

@@ -105,7 +105,7 @@ test('a host that cannot type declares the READ half only', () => {
   // the honest answer, and still sees every Last check.
   assert.deepEqual(
     [...declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode: 'pairing' })],
-    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'mission_goal_working', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'boards_download', 'sessions_library', 'changes_rpc', 'doctor_rpc', 'skills_list', 'skills_receive', 'ui_card', 'ask_answered', 'ask_multi_select', 'email_label', 'email_send', 'email_files', 'hard_floor', 'hard_floor_rules_2'],
+    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'mission_server_checks', 'mission_goal_working', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'boards_download', 'sessions_library', 'changes_rpc', 'doctor_rpc', 'skills_list', 'skills_receive', 'ui_card', 'ask_answered', 'ask_multi_select', 'email_label', 'email_send', 'email_files', 'hard_floor', 'hard_floor_rules_2'],
   )
 })
 
@@ -132,6 +132,7 @@ test('boards_playbook is declared on every host, because the tool is typed and h
       'mission_events',
       'mission_goal_checks',
       'mission_set_goals',
+      'mission_server_checks',
       'mission_goal_working',
       'permission_card',
       'plan_card',
@@ -241,6 +242,7 @@ test('permission_card is declared on every host, because the relay has no platfo
       'mission_events',
       'mission_goal_checks',
       'mission_set_goals',
+      'mission_server_checks',
       'mission_goal_working',
       'permission_card',
       'plan_card',
@@ -714,6 +716,7 @@ test('the stop pause token rides with mission_pause and nothing else, the gate t
       'mission_events',
       'mission_goal_checks',
       'mission_set_goals',
+      'mission_server_checks',
       'mission_goal_working',
       'permission_card',
       'plan_card',
@@ -884,7 +887,7 @@ test('no thread token on Windows in phase 1, nor where threads cannot run', () =
 test('the fullest declaration, every token in its place, is exactly this list', () => {
   assert.deepEqual(
     [...declaredCapabilities({ canInjectGoal: true, floorHook: true, personLanes: true, modelEffortPicker: true, threads: true, authMode: 'pairing', platform: 'darwin' })],
-    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'mission_goal_working', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'boards_download', 'sessions_library', 'changes_rpc', 'doctor_rpc', 'skills_list', 'skills_receive', 'ui_card', 'ask_answered', 'ask_multi_select', 'email_label', 'email_send', 'email_files', 'hard_floor', 'hard_floor_rules_2', 'mission_goal_loop', 'mission_goal_uncapped', 'mission_pause', 'stop_pauses_mission', 'person_lanes', 'lane_memory_rpc', 'model_effort_picker', 'message_threads', 'thread_sessions', 'asides'],
+    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'mission_server_checks', 'mission_goal_working', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'boards_download', 'sessions_library', 'changes_rpc', 'doctor_rpc', 'skills_list', 'skills_receive', 'ui_card', 'ask_answered', 'ask_multi_select', 'email_label', 'email_send', 'email_files', 'hard_floor', 'hard_floor_rules_2', 'mission_goal_loop', 'mission_goal_uncapped', 'mission_pause', 'stop_pauses_mission', 'person_lanes', 'lane_memory_rpc', 'model_effort_picker', 'message_threads', 'thread_sessions', 'asides'],
   )
 })
 
@@ -896,4 +899,15 @@ test('server.ts declares threads from the live claude lookup, its threads CLI pr
   // Gate review finding 2: a binary alone is not enough, it must pass the probe.
   assert.match(server, /function threadsDeclared\(\): boolean \{\n\s*return process\.platform !== 'win32' && threadsCli\(\)\.ok\n\}/)
   assert.match(server, /claudePath: \(\) => resolveClaude\(\),/)
+})
+
+test('mission_server_checks is declared on every host, beside and distinct from mission_goal_checks', () => {
+  for (const canInjectGoal of SHAPES) {
+    for (const authMode of ['pairing', 'apikey'] as const) {
+      const declared = declaredCapabilities({ canInjectGoal, floorHook: true, authMode })
+      assert.ok(declared.includes('mission_server_checks'), `${authMode} canInjectGoal=${canInjectGoal}`)
+      assert.ok(declared.includes('mission_goal_checks'))
+    }
+  }
+  assert.ok(DECLARED_CAPABILITIES_BASE.includes('mission_server_checks'))
 })

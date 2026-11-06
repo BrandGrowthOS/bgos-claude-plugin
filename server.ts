@@ -297,6 +297,7 @@ import {
   buildMissionProgressBody,
   buildMissionCreatePath,
   buildMissionActivePath,
+  buildMissionGoalChecksPath,
   buildMissionTickPath,
   buildMissionAddGoalsBody,
   buildMissionAddGoalsPath,
@@ -588,6 +589,20 @@ import {
   markFloorAttached,
   takeFloorRecord,
 } from './lib/floor-state.mjs'
+import {
+  MISSION_TURN_ANSWER_BUDGET_MS,
+  answerMissionTurnAsk,
+  entryFromMission,
+  freshMissionTurnEntry,
+  entryFromReport,
+  mergeMissionTurnEntry,
+  missionTurnAnswerPath,
+  missionTurnAskPath,
+  missionTurnDir,
+  missionTurnStatePath,
+  openPassing,
+  writeMissionTurnJson,
+} from './lib/mission-turn.mjs'
 import {
   PENDING_PLAN_FAST_MAX_MS,
   buildPlanCardBody,
@@ -5930,6 +5945,18 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
                     'Observable completion check (<=200 chars), e.g. "the ' +
                     'URL returns 200". Must be verifiable, never vague.',
                 },
+                check: {
+                  type: 'object',
+                  description:
+                    'Optional machine check the SERVER evaluates every few minutes; it ticks this ' +
+                    'goal with its own evidence when the check passes, never on an error. One of ' +
+                    '{ kind: "pr_merged", repo: "owner/name", number }, ' +
+                    '{ kind: "prs_merged", repo, numbers }, ' +
+                    '{ kind: "release_published", repo, tag, feedUrl?, version? }, ' +
+                    '{ kind: "board_row_status", board, row, status } or ' +
+                    '{ kind: "url_ok", url } (https). Exact keys only; store_version is refused. ' +
+                    'Add one whenever a machine fact proves the goal.',
+                },
               },
               required: ['name', 'done_when'],
             },
@@ -6013,6 +6040,18 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
                   type: 'string',
                   description: 'Observable check that proves it (<=200 chars).',
                 },
+                check: {
+                  type: 'object',
+                  description:
+                    'Optional machine check the SERVER evaluates every few minutes; it ticks this ' +
+                    'goal with its own evidence when the check passes, never on an error. One of ' +
+                    '{ kind: "pr_merged", repo: "owner/name", number }, ' +
+                    '{ kind: "prs_merged", repo, numbers }, ' +
+                    '{ kind: "release_published", repo, tag, feedUrl?, version? }, ' +
+                    '{ kind: "board_row_status", board, row, status } or ' +
+                    '{ kind: "url_ok", url } (https). Exact keys only; store_version is refused. ' +
+                    'Add one whenever a machine fact proves the goal.',
+                },
               },
               required: ['name', 'done_when'],
             },
@@ -6063,6 +6102,18 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
                 done_when: {
                   type: 'string',
                   description: 'Observable check that proves it (<=200 chars).',
+                },
+                check: {
+                  type: 'object',
+                  description:
+                    'Optional machine check the SERVER evaluates every few minutes; it ticks this ' +
+                    'goal with its own evidence when the check passes, never on an error. One of ' +
+                    '{ kind: "pr_merged", repo: "owner/name", number }, ' +
+                    '{ kind: "prs_merged", repo, numbers }, ' +
+                    '{ kind: "release_published", repo, tag, feedUrl?, version? }, ' +
+                    '{ kind: "board_row_status", board, row, status } or ' +
+                    '{ kind: "url_ok", url } (https). Exact keys only; store_version is refused. ' +
+                    'Add one whenever a machine fact proves the goal.',
                 },
               },
               required: ['name', 'done_when'],
@@ -6178,7 +6229,11 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'agent owes it. Pass who (their name, up to 80 chars) and why (what ' +
         'they owe the goal, up to 200 chars). Send clear: true and nothing ' +
         'else once it no longer waits. A waiting goal is still open: tick it ' +
-        'with tick_mini_goal when its check is true. Targets your active ' +
+        'with tick_mini_goal when its check is true. Waiting goals are left ' +
+        'alone by the Keep working and stale mission wakes. When every open ' +
+        'goal waits, Keep working asks you to propose closing instead. You ' +
+        'can also pass waiting: { on, who, why }, or waiting: null to clear; ' +
+        'send one input form per call. Targets your active ' +
         'mission unless mission_id is passed. Maps to PATCH ' +
         '/api/v1/integrations/assistants/:id/missions/:missionId/goals/:goalId/waiting.',
       inputSchema: {
@@ -6188,6 +6243,10 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: 'number',
             description: 'The mini-goal id, as the mission card shows it.',
           },
+          waiting: {
+            type: ['object', 'null'],
+            description: '{ on: "owner" | "agent", who: name (<=80 chars), why: reason (<=200 chars) }, or null to clear. Omit on, who, why and clear when using this form.',
+          },
           on: {
             type: 'string',
             enum: ['owner', 'agent'],
@@ -6195,7 +6254,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           who: {
             type: 'string',
-            description: 'Their name, up to 80 chars, e.g. "Kc" or "Ares".',
+            description: 'Their name, up to 80 chars, e.g. "Demo Owner" or "Demo Agent".',
           },
           why: {
             type: 'string',
@@ -8794,6 +8853,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
         }
       }
       const built = buildMissionGoalWaitingBody({
+        waiting: rawArgs.waiting,
         on: rawArgs.on,
         who: rawArgs.who,
         why: rawArgs.why,
@@ -11371,6 +11431,7 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
     // the private turn decided. Without it a wake that opened no turn left nothing in the log (Vera, 2026-10-12).
     if (began !== 'repeat' && began !== 'replayed' && (began !== 'no-token' || matched !== null)) log(privateBeginLine(began, hookSessionId))
     turnChat.beginTurn({ chatId: matched?.chatId ?? null, now: Date.now() })
+    noteMissionTurnStart(turnChat.current(Date.now())?.chatId ?? null)
   }
   const { next, effects } = applyHookEventToTurn(hookTurn, event, receivedAt)
   hookTurn = next
@@ -13412,6 +13473,143 @@ function noteMissionPendingSelfWrite(missionId: number): void {
  *  test/mission-ws-wiring.test.ts. */
 function rememberMissionSelfWrite(mission: unknown): void {
   missionSelfWrites.noteWritten(mission)
+  noteMissionTurnSnapshot(mission)
+}
+
+// -- The mission turn check (mission turn checks) ----
+//
+// bin/hoai-mission-turn-hook.mjs runs synchronously on a prompt and at Stop and
+// reads no credentials, so THIS daemon, which holds the pairing and knows the
+// turn's chat, asks the server and keeps what it learned in
+// <state>/mission-turn/<key>.json (lib/mission-turn.mjs): each chat's open
+// mission goals, and which open goals' server checks passed. At Stop the hook
+// writes an ask beside it and this daemon answers it after a fresh goal checks
+// read. Every failure here is silent and lets the turn end.
+
+let missionTurnState: Record<string, any> | null = null
+let missionTurnAnswered: Record<string, string | null> = {}
+let missionTurnAnswering = false
+
+function writeMissionTurnState(): void {
+  if (!lockHeld) return
+  if (!missionTurnState) return
+  for (const key of FLOOR_KEYS) {
+    try {
+      writeMissionTurnJson(missionTurnStatePath(FLOOR_STATE_ROOT, key), missionTurnState)
+    } catch (err) {
+      log(`mission turn: could not write the state (${err})`)
+    }
+  }
+}
+
+function setMissionTurnEntry(chatId: string | null, entry: unknown, turnChatId?: string | null): void {
+  missionTurnState = mergeMissionTurnEntry(missionTurnState, chatId, entry, {
+    assistantId: ASSISTANT_ID,
+    now: Date.now(),
+    ...(turnChatId !== undefined ? { turnChatId } : {}),
+  })
+  writeMissionTurnState()
+}
+
+/** A mission snapshot this daemon saw (a frame, its own write): its goals, no network call. */
+function noteMissionTurnSnapshot(mission: unknown, envelopeChatId?: string | null): void {
+  try {
+    const snapshot = mission as MissionSnapshot | null
+    if (!snapshot || typeof snapshot !== 'object' || !Number.isInteger(snapshot.id)) return
+    // Missing chatId means a legacy main-chat snapshot, never the current
+    // recipient's chat. Only an explicit snapshot or envelope identity is safe.
+    const chatId = typeof snapshot.chatId === 'number' && Number.isInteger(snapshot.chatId) && snapshot.chatId > 0
+      ? String(snapshot.chatId)
+      : typeof envelopeChatId === 'string' && /^[1-9]\d*$/.test(envelopeChatId) ? envelopeChatId : null
+    if (!chatId) return
+    const previous = missionTurnState?.chats?.[chatId] ?? null
+    const open = snapshot.status === 'active' || snapshot.status === 'paused'
+    setMissionTurnEntry(chatId, open ? entryFromMission(snapshot, previous) : null)
+  } catch (err) {
+    log(`mission turn: snapshot not kept (${err})`)
+  }
+}
+
+/** Ask the server about one chat's open mission now, keep the answer, and return the entry (null: none open). */
+async function refreshMissionTurnChat(chatId: string): Promise<Record<string, any> | null> {
+  const activePath = buildMissionActivePath(ASSISTANT_ID, chatId)
+  if (!activePath.ok) return null
+  const active = (await bgosGetCachedOn304(activePath.path)) as { mission?: MissionSnapshot | null }
+  const mission = active?.mission ?? null
+  if (!mission || (mission.status !== 'active' && mission.status !== 'paused')) {
+    setMissionTurnEntry(chatId, null)
+    return null
+  }
+  const checksPath = buildMissionGoalChecksPath(ASSISTANT_ID, mission.id)
+  if (!checksPath.ok) return null
+  const report = await bgosGetCachedOn304(checksPath.path)
+  const entry = entryFromReport(report, mission.title, Date.now())
+  setMissionTurnEntry(chatId, entry)
+  return entry
+}
+
+/** A turn started: its chat is the one the Stop hook will ask about. */
+function noteMissionTurnStart(chatId: string | null): void {
+  setMissionTurnEntry(null, null, chatId)
+  if (!chatId || !lockHeld) return
+  void refreshMissionTurnChat(chatId).catch((err) => log(`mission turn: refresh of chat ${chatId} failed (${err})`))
+}
+
+/**
+ * What passes now in the chat the Stop hook's ask names: the chat its own prompt run recorded for this session, never
+ * this daemon's idea of the turn chat, which is bound when the async prompt line drains and can lag a turn. Answered
+ * only for a chat this daemon delivered to (or ran a turn in) recently, so an ask naming any other chat gets nothing.
+ * An entry checked under 30 s ago answers without two fresh reads.
+ */
+async function missionTurnAnswerFor(ask: { chatId?: unknown }): Promise<{ chatId?: string; missionId?: number; passing: unknown[] }> {
+  const chatId = typeof ask?.chatId === 'string' ? ask.chatId : null
+  if (!chatId || !turnChat.deliveredRecently(chatId, Date.now())) return { passing: [] }
+  const entry = freshMissionTurnEntry(missionTurnState, chatId, Date.now()) ?? (await refreshMissionTurnChat(chatId))
+  return { chatId, ...(entry ? { missionId: entry.missionId } : {}), passing: entry ? openPassing(entry) : [] }
+}
+
+/** Answer every new ask the Stop hook wrote, within the budget. Never throws. */
+async function answerMissionTurnAsks(): Promise<void> {
+  if (!lockHeld) return
+  if (missionTurnAnswering) return
+  missionTurnAnswering = true
+  try {
+    for (const key of FLOOR_KEYS) {
+      const askPath = missionTurnAskPath(FLOOR_STATE_ROOT, key)
+      if (!existsSync(askPath)) continue
+      const compute = (ask: { chatId?: unknown }) =>
+        Promise.race([
+          missionTurnAnswerFor(ask),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('the goal checks read took too long')), MISSION_TURN_ANSWER_BUDGET_MS).unref(),
+          ),
+        ])
+      missionTurnAnswered[key] = await answerMissionTurnAsk({
+        askPath,
+        answerPath: missionTurnAnswerPath(FLOOR_STATE_ROOT, key),
+        lastAnswered: missionTurnAnswered[key] ?? null,
+        compute,
+      })
+    }
+  } catch (err) {
+    log(`mission turn: answer failed (${err})`)
+  } finally {
+    missionTurnAnswering = false
+  }
+}
+
+/** Watch for the Stop hook's ask: fs.watch, plus a short poll as the fallback. Never keeps the process alive. */
+function startMissionTurnWatch(): void {
+  try {
+    mkdirSync(missionTurnDir(FLOOR_STATE_ROOT), { recursive: true, mode: 0o700 })
+    const watcher = watch(missionTurnDir(FLOOR_STATE_ROOT), { persistent: false }, (_event, name) => {
+      if (typeof name === 'string' && name.endsWith('.ask.json')) void answerMissionTurnAsks()
+    })
+    watcher.on('error', () => {})
+  } catch (err) {
+    log(`mission turn: no watcher (${err}); the poll answers`)
+  }
+  setInterval(() => void answerMissionTurnAsks(), 500).unref()
 }
 
 // ── The goal lane (stage 6 of the Mission program) ───────────────────────────
@@ -14080,6 +14278,7 @@ function handleMissionEvent(frame: string, payload: unknown): void {
     }
 
     const chatId = missionChatId(event.mission)
+    noteMissionTurnSnapshot(event.mission, event.chatId)
     // Asked ONCE: the ledger's pending stamp is consumed by the question, so
     // a second ask would answer no and narrate the daemon's own write back to
     // its model.
@@ -19138,6 +19337,8 @@ async function main(): Promise<void> {
       .then((removed) => { if (removed.length > 0) log(`threads: removed ${removed.length} closed thread worktree(s)`) })
       .catch((err) => log(`threads: sweep failed: ${err instanceof Error ? err.name : 'error'}`))
   }, 60 * 60_000).unref()
+  // The mission turn check's ask (missions that stay true): answered only while this daemon holds the lock.
+  startMissionTurnWatch()
   // The session pin (finding 7): asks only while this daemon holds the channel
   // and its live session is not pinned yet (lib/session-pin.ts).
   setInterval(() => checkSessionPin(), SESSION_PIN_CHECK_MS).unref()

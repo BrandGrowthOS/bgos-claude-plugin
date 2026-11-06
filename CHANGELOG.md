@@ -6,6 +6,12 @@ Notable changes to the HOAI Claude Code plugin.
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.86.1 (2026-11-06)
+
+- Mission goals carry server checks through create, set and add calls. Summaries show checks, server ticks and who a goal waits on. Waiting accepts both the existing flat arguments and a nested waiting object, or null to clear it.
+- A synchronous mission hook shows this chat's open goals at turn start and asks its own daemon about passing, unticked goals at turn end. It blocks at most once per turn and allows the turn to end on errors or missing answers. Prompt chat isolation, fresh check reuse, expired requests and request replacement races are covered.
+- Every host declares mission_server_checks alongside the existing mission capabilities.
+
 ## 0.86.0 (2026-11-06)
 
 - Saved Artifacts ship with artifact_create, artifact_update, artifact_read, artifact_list and artifact_versions on the paired connection. Dashboards, reports, charts, tables, plans and documents belong in an Artifact with a short chat reply linking to it. Revisions add a version to the same Artifact. Read the live content schema with artifact_read without an id.
