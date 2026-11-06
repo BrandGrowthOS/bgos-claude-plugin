@@ -19,7 +19,8 @@ import {
   showFingerprintOnTerminal,
   signFillIntent,
   verifyFillIntent,
-} from '../lib/vault-host.mjs'
+} from './helpers/vault-host.mjs'
+import { testSecurity } from './helpers/vault-host.mjs'
 import { VAULT_TOOL_DECLS, handleVaultTool } from '../lib/vault-tools.ts'
 import { PRIVATE_TOOL_MATCHER } from '../lib/private-turn.mjs'
 import { checkFillIntent, checkHostKeyProof, checkSignedRequest, referenceFingerprint } from './fixtures/vault-server-contract.ts'
@@ -105,16 +106,16 @@ function fakeBackend(identityPublic: string, opts: { failWith?: number; failBody
 async function pinnedHost() {
   const dir = tempDir()
   const key = agentSigningKey()
-  loadOrCreateHostKey(dir, ASSISTANT)
-  provisionSigningIdentity(dir, ASSISTANT, key.secret)
+  await loadOrCreateHostKey(dir, ASSISTANT)
+  await provisionSigningIdentity(dir, ASSISTANT, key.secret)
   const backend = fakeBackend(key.identityPublic)
   await registerHostKey({ stateDir: dir, assistantId: ASSISTANT, ownerId: OWNER, apiBase: API, pairingToken: PAIRING, fetch: backend.fetch })
-  confirmHostPin(dir)
+  await confirmHostPin(dir)
   return { dir, key, backend }
 }
 
 function deps(dir: string, fetch: typeof globalThis.fetch, logs: string[], acting = OWNER) {
-  return { assistantId: ASSISTANT, ownerId: OWNER, actingUserId: acting, apiBase: API, pairingToken: PAIRING, stateDir: dir, fetch, log: (line: string) => logs.push(line) }
+  return { security: testSecurity, assistantId: ASSISTANT, ownerId: OWNER, actingUserId: acting, apiBase: API, pairingToken: PAIRING, stateDir: dir, fetch, log: (line: string) => logs.push(line) }
 }
 
 function forbidden(record: Record<string, any>, extra: string[] = []): string[] {
@@ -127,10 +128,10 @@ function assertClean(text: string, needles: string[], where: string) {
 
 // ── 1. Host key: generated on first use, owner-only, reused ────────────────
 
-test('host key: first use creates an Ed25519 host key in an owner-only file and reuses it after', { skip: !posix }, () => {
+test('host key: first use creates an Ed25519 host key in an owner-only file and reuses it after', { skip: !posix }, async () => {
   const dir = tempDir()
   try {
-    const first = loadOrCreateHostKey(dir, ASSISTANT)
+    const first = await loadOrCreateHostKey(dir, ASSISTANT)
     const file = join(dir, VAULT_HOST_FILE_NAME)
     assert.equal(statSync(file).mode & 0o777, 0o600)
     assert.equal(statSync(dir).mode & 0o077, 0)
@@ -138,26 +139,26 @@ test('host key: first use creates an Ed25519 host key in an owner-only file and 
     assert.equal(seed.asymmetricKeyType, 'ed25519')
     assert.match(first.publicKey, /^[A-Za-z0-9_-]{43}$/)
     assert.equal(Buffer.from(first.publicKey, 'base64url').length, 32)
-    const again = loadOrCreateHostKey(dir, ASSISTANT)
+    const again = await loadOrCreateHostKey(dir, ASSISTANT)
     assert.equal(again.publicKey, first.publicKey)
     assert.equal(again.hostSeed, first.hostSeed)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('host key: a key file readable by group or others is refused, never used', { skip: !posix }, () => {
+test('host key: a key file readable by group or others is refused, never used', { skip: !posix }, async () => {
   const dir = tempDir()
   try {
-    loadOrCreateHostKey(dir, ASSISTANT)
+    await loadOrCreateHostKey(dir, ASSISTANT)
     chmodSync(join(dir, VAULT_HOST_FILE_NAME), 0o644)
-    assert.throws(() => readHostRecord(dir), /VAULT_HOST_KEY_EXPOSED/)
-    assert.throws(() => loadOrCreateHostKey(dir, ASSISTANT), /VAULT_HOST_KEY_EXPOSED/)
+    await assert.rejects(() => readHostRecord(dir), /VAULT_HOST_KEY_EXPOSED/)
+    await assert.rejects(() => loadOrCreateHostKey(dir, ASSISTANT), /VAULT_HOST_KEY_EXPOSED/)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('host key: the registered X25519 key is the Montgomery form of the Ed25519 host key and does ECDH', () => {
+test('host key: the registered X25519 key is the Montgomery form of the Ed25519 host key and does ECDH', async () => {
   const dir = tempDir()
   try {
-    const record = loadOrCreateHostKey(dir, ASSISTANT)
+    const record = await loadOrCreateHostKey(dir, ASSISTANT)
     const ed = createPublicKey(createPrivateKey({ key: Buffer.from(record.hostSeed, 'base64url'), format: 'der', type: 'pkcs8' }))
     const raw = ed.export({ format: 'der', type: 'spki' }).subarray(-32)
     const p = 2n ** 255n - 19n
@@ -180,15 +181,15 @@ test('host key: the registered X25519 key is the Montgomery form of the Ed25519 
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('signing identity: only an Ed25519 PKCS8 key is accepted and the file stays owner-only', { skip: !posix }, () => {
+test('signing identity: only an Ed25519 PKCS8 key is accepted and the file stays owner-only', { skip: !posix }, async () => {
   const dir = tempDir()
   try {
-    loadOrCreateHostKey(dir, ASSISTANT)
+    await loadOrCreateHostKey(dir, ASSISTANT)
     const x = generateKeyPairSync('x25519').privateKey.export({ format: 'der', type: 'pkcs8' }).toString('base64url')
-    assert.throws(() => provisionSigningIdentity(dir, ASSISTANT, x), /VAULT_SIGNING_KEY_INVALID/)
-    assert.throws(() => provisionSigningIdentity(dir, ASSISTANT, 'not a key'), /VAULT_SIGNING_KEY_INVALID/)
+    await assert.rejects(() => provisionSigningIdentity(dir, ASSISTANT, x), /VAULT_SIGNING_KEY_INVALID/)
+    await assert.rejects(() => provisionSigningIdentity(dir, ASSISTANT, 'not a key'), /VAULT_SIGNING_KEY_INVALID/)
     const key = agentSigningKey()
-    const out = provisionSigningIdentity(dir, ASSISTANT, key.secret)
+    const out = await provisionSigningIdentity(dir, ASSISTANT, key.secret)
     assert.equal(out.identityPublic, key.identityPublic)
     assert.ok(!JSON.stringify(out).includes(key.secret))
     assert.equal(statSync(join(dir, VAULT_HOST_FILE_NAME)).mode & 0o777, 0o600)
@@ -202,7 +203,7 @@ test('registration: POST host-key carries the independent proof, the A2A signatu
   try {
     const call = backend.calls.find(c => c.url.endsWith(`/vault/agent/${ASSISTANT}/host-key`))!
     assert.ok(call, 'host-key was posted')
-    const record = readHostRecord(dir)!
+    const record = (await readHostRecord(dir))!
     assert.deepEqual(JSON.parse(call.body).publicKey, record.publicKey)
     assert.equal(checkSignedRequest({ method: 'POST', path: new URL(call.url).pathname, assistantId: ASSISTANT, identityPublic: key.identityPublic, pairingToken: PAIRING, headers: call.headers, body: call.body }), null)
     assert.equal(hostPinStatus(record), 'pinned')
@@ -213,13 +214,13 @@ test('registration: POST host-key carries the independent proof, the A2A signatu
 test('registration: a server that refuses the proof leaves the host unregistered', async () => {
   const dir = tempDir()
   try {
-    loadOrCreateHostKey(dir, ASSISTANT)
-    provisionSigningIdentity(dir, ASSISTANT, agentSigningKey().secret)
+    await loadOrCreateHostKey(dir, ASSISTANT)
+    await provisionSigningIdentity(dir, ASSISTANT, agentSigningKey().secret)
     // The server knows a DIFFERENT identity, so the proof and the A2A signature fail.
     const backend = fakeBackend(agentSigningKey().identityPublic)
     await assert.rejects(registerHostKey({ stateDir: dir, assistantId: ASSISTANT, ownerId: OWNER, apiBase: API, pairingToken: PAIRING, fetch: backend.fetch }), /VAULT_UNAVAILABLE/)
-    assert.equal(hostPinStatus(readHostRecord(dir)!), 'unregistered')
-    assert.throws(() => confirmHostPin(dir), /VAULT_HOST_NOT_REGISTERED/)
+    assert.equal(hostPinStatus((await readHostRecord(dir))!), 'unregistered')
+    await assert.rejects(() => confirmHostPin(dir), /VAULT_HOST_NOT_REGISTERED/)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -228,7 +229,7 @@ test('registration: a server that refuses the proof leaves the host unregistered
 test('fingerprint: matches the app format and is written only to a TTY display', async () => {
   const { dir } = await pinnedHost()
   try {
-    const record = readHostRecord(dir)!
+    const record = (await readHostRecord(dir))!
     const expected = referenceFingerprint(record.identityPublic, record.publicKey)
     assert.equal(hostFingerprint(record.identityPublic, record.publicKey), expected)
     assert.match(expected, /^[0-9a-f]{4}( [0-9a-f]{4}){4}$/)
@@ -245,10 +246,10 @@ test('fingerprint: the terminal command refuses without a terminal and prints no
   const { dir } = await pinnedHost()
   const home = tempDir()
   try {
-    const record = readHostRecord(dir)!
+    const record = (await readHostRecord(dir))!
     const fp = hostFingerprint(record.identityPublic, record.publicKey)
     const run = spawnSync(process.execPath, [join(ROOT, 'bin', 'hoai-vault-host.mjs'), '--state-dir', dir, 'status'], {
-      encoding: 'utf8', env: { ...process.env, HOME: home, USERPROFILE: home }, input: '',
+      encoding: 'utf8', env: { ...process.env, HOME: home, USERPROFILE: home }, input: '', timeout: 15_000,
     })
     assert.notEqual(run.status, 0)
     assert.ok(!run.stdout.includes(fp) && !run.stderr.includes(fp), 'no fingerprint in piped output')
@@ -269,7 +270,7 @@ function intentFor(overrides: Record<string, unknown> = {}) {
   }
 }
 
-test('fill intent: the signature verifies under the server contract and the plugin verifier', () => {
+test('fill intent: the signature verifies under the server contract and the plugin verifier', async () => {
   const key = agentSigningKey()
   const intent = intentFor()
   const signature = signFillIntent(intent, key.secret)
@@ -279,7 +280,7 @@ test('fill intent: the signature verifies under the server contract and the plug
   assert.equal(fillIntentText(intent), JSON.stringify(['hoai-vault-fill-v1', OWNER, ASSISTANT, ASSISTANT, VAULT_ID, LOGIN, 7, 'session-1', 'tab-1', 'https://login.example.test', intent.nonce, intent.expiresAt]))
 })
 
-test('fill intent: any changed field, another key, an extra field or a late expiry fails verification', () => {
+test('fill intent: any changed field, another key, an extra field or a late expiry fails verification', async () => {
   const key = agentSigningKey()
   const intent = intentFor()
   const signature = signFillIntent(intent, key.secret)
@@ -308,7 +309,7 @@ test('fill intent: any changed field, another key, an extra field or a late expi
 
 const parse = (r: { content: Array<{ text: string }> }) => JSON.parse(r.content[0].text)
 
-test('tools: three vault tools are declared with strict inputs and no value field', () => {
+test('tools: three vault tools are declared with strict inputs and no value field', async () => {
   const names = VAULT_TOOL_DECLS.map(d => d.name).sort()
   assert.deepEqual(names, ['vault_fill_prepare', 'vault_items', 'vault_request_login'])
   for (const decl of VAULT_TOOL_DECLS) {
@@ -343,7 +344,7 @@ test('vault_fill_prepare: builds, signs and requests a ticket, returning the unc
     const sent = JSON.parse(fill.body)
     assert.deepEqual(sent.intent, out.request.intent, 'forwarded intent is the one the server accepted')
     assert.equal(sent.signature, out.request.signature)
-    const record = readHostRecord(dir)!
+    const record = (await readHostRecord(dir))!
     assertClean(result.content[0].text, forbidden(record), 'fill result')
     assertClean(logs.join('\n'), forbidden(record, [out.ticket, out.request.signature]), 'logs')
   } finally { rmSync(dir, { recursive: true, force: true }) }
@@ -361,7 +362,7 @@ test('vault_fill_prepare: refuses before any fill call when the owner has not pi
     assert.equal(out.error, 'VAULT_HOST_NOT_PINNED')
     assert.ok(existsSync(join(dir, VAULT_HOST_FILE_NAME)), 'host key generated on first use')
     // 2. Signing identity provisioned, not registered.
-    provisionSigningIdentity(dir, ASSISTANT, key.secret)
+    await provisionSigningIdentity(dir, ASSISTANT, key.secret)
     out = parse(await handleVaultTool('vault_fill_prepare', args, deps(dir, backend.fetch, logs)))
     assert.equal(out.error, 'VAULT_HOST_NOT_PINNED')
     // 3. Registered, but the owner has not compared and pinned it.
@@ -369,13 +370,13 @@ test('vault_fill_prepare: refuses before any fill call when the owner has not pi
     out = parse(await handleVaultTool('vault_fill_prepare', args, deps(dir, backend.fetch, logs)))
     assert.equal(out.error, 'VAULT_HOST_NOT_PINNED')
     // 4. A pin recorded for an earlier key does not carry over to a replaced signing identity.
-    confirmHostPin(dir)
-    provisionSigningIdentity(dir, ASSISTANT, agentSigningKey().secret)
+    await confirmHostPin(dir)
+    await provisionSigningIdentity(dir, ASSISTANT, agentSigningKey().secret)
     out = parse(await handleVaultTool('vault_fill_prepare', args, deps(dir, backend.fetch, logs)))
     assert.equal(out.error, 'VAULT_HOST_NOT_PINNED')
     assert.equal(backend.calls.filter(c => c.url.includes('/fill')).length, 0, 'no fill request was made')
     assert.match(out.message, /hoai vault-host/)
-    const record = readHostRecord(dir)!
+    const record = (await readHostRecord(dir))!
     assertClean(JSON.stringify(out), forbidden(record), 'refusal')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
@@ -416,7 +417,7 @@ test('vault_items: returns metadata only, never a value, ciphertext or extra ser
     }
     const call = backend.calls.find(c => c.url.includes('/items'))!
     assert.equal(new URL(call.url).searchParams.get('q'), 'example')
-    const record = readHostRecord(dir)!
+    const record = (await readHostRecord(dir))!
     assertClean(result.content[0].text, forbidden(record), 'items result')
     assertClean(logs.join('\n'), forbidden(record), 'logs')
   } finally { rmSync(dir, { recursive: true, force: true }) }
@@ -448,7 +449,7 @@ test('no secret in any tool result or log line, including server errors that ech
       await handleVaultTool('vault_request_login', { name: 'Example', website: 'https://login.example.test' }, deps(dir, failing.fetch, logs)),
       await handleVaultTool('vault_fill_prepare', { itemId: LOGIN, sessionId: 's', tabId: 't', origin: 'https://login.example.test' }, deps(dir, failing.fetch, logs)),
     ]
-    const record = readHostRecord(dir)!
+    const record = (await readHostRecord(dir))!
     for (const r of results) {
       assert.equal(r.isError, true)
       assertClean(r.content[0].text, forbidden(record), 'error result')
@@ -475,7 +476,7 @@ test('vault tools refuse a turn admitted for anyone but the owner, before any re
 
 // ── 6. Wiring ──────────────────────────────────────────────────────────────
 
-test('wiring: the daemon lists the vault tools and admits them only through the private turn gate', () => {
+test('wiring: the daemon lists the vault tools and admits them only through the private turn gate', async () => {
   const server = readFileSync(join(ROOT, 'server.ts'), 'utf8')
   assert.ok(server.includes('...VAULT_TOOL_DECLS'), 'tool list spreads VAULT_TOOL_DECLS')
   assert.ok(server.includes("req.params.name.startsWith('vault_')"), 'vault_ calls pass the private turn gate')
@@ -496,14 +497,14 @@ test('wiring: hoai vault-host reaches the terminal command', async () => {
 test('host key: a key another process created first is kept, not replaced', { skip: !posix }, async () => {
   const dir = tempDir()
   try {
-    const first = loadOrCreateHostKey(dir, ASSISTANT)
+    const first = await loadOrCreateHostKey(dir, ASSISTANT)
     const fs = await import('node:fs')
     let hidden = true
     // This process looks before the other one's file lands, then loses the race to create it.
     const racing = { ...fs, existsSync: (p: Parameters<typeof fs.existsSync>[0]) => (String(p).endsWith(VAULT_HOST_FILE_NAME) && hidden ? (hidden = false) : fs.existsSync(p)) } as typeof fs
-    const second = loadOrCreateHostKey(dir, ASSISTANT, racing)
+    const second = await loadOrCreateHostKey(dir, ASSISTANT, racing)
     assert.equal(second.hostSeed, first.hostSeed)
-    assert.equal(readHostRecord(dir)!.hostSeed, first.hostSeed)
+    assert.equal((await readHostRecord(dir))!.hostSeed, first.hostSeed)
     assert.deepEqual(fs.readdirSync(dir), [VAULT_HOST_FILE_NAME], 'no temporary file left behind')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })

@@ -4,7 +4,7 @@ import { generateKeyPairSync } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { confirmHostPin, hostPinStatus, loadOrCreateHostKey, provisionSigningIdentity, readHostRecord, registerHostKey } from '../lib/vault-host.mjs'
+import { confirmHostPin, hostPinStatus, loadOrCreateHostKey, provisionSigningIdentity, readHostRecord, registerHostKey } from './helpers/vault-host.mjs'
 import { checkHostKeyProof, checkSignedRequest } from './fixtures/vault-server-contract.ts'
 
 test('host proof: valid pairing and A2A signature reach and fail the independent proof for a different owner', async () => {
@@ -15,8 +15,8 @@ test('host proof: valid pairing and A2A signature reach and fail the independent
   const identityPublic = pair.publicKey.export({ format: 'der', type: 'spki' }).toString('base64url')
   let checkedProof = false
   try {
-    loadOrCreateHostKey(dir, 42)
-    provisionSigningIdentity(dir, 42, secret)
+    await loadOrCreateHostKey(dir, 42)
+    await provisionSigningIdentity(dir, 42, secret)
     const fetch = (async (url: string | URL, init: RequestInit = {}) => {
       const body = String(init.body)
       const headers = init.headers as Record<string, string>
@@ -29,7 +29,7 @@ test('host proof: valid pairing and A2A signature reach and fail the independent
     }) as typeof globalThis.fetch
     await assert.rejects(registerHostKey({ stateDir: dir, assistantId: 42, ownerId: 'fixture-wrong-owner', apiBase: 'https://api.example.test/api/v1', pairingToken: 'fixture-pairing', fetch }), /VAULT_UNAVAILABLE/)
     assert.equal(checkedProof, true)
-    assert.equal(hostPinStatus(readHostRecord(dir)), 'unregistered')
-    assert.throws(() => confirmHostPin(dir), /VAULT_HOST_NOT_REGISTERED/)
+    assert.equal(hostPinStatus(await readHostRecord(dir)), 'unregistered')
+    await assert.rejects(() => confirmHostPin(dir), /VAULT_HOST_NOT_REGISTERED/)
   } finally { rmSync(root, { recursive: true, force: true }) }
 })

@@ -86,6 +86,7 @@ export interface VaultToolDeps {
   pairingToken: string
   /** The agent's vault host folder (lib/vault-host.mjs vaultHostDir). */
   stateDir: string
+  security?: Parameters<typeof loadOrCreateHostKey>[3]
   fetch?: typeof globalThis.fetch
   /** Log sink. Gets codes and item ids only, never a value, key, ticket or fingerprint. */
   log?: (line: string) => void
@@ -157,7 +158,7 @@ export async function handleVaultTool(name: string, args: unknown, deps: VaultTo
     const assistantId = Number(deps.assistantId)
     if (!Number.isSafeInteger(assistantId) || assistantId <= 0) throw new ToolRefusal('VAULT_NOT_PAIRED')
     // First use creates the host key; a key other users can read is refused here.
-    const host = loadOrCreateHostKey(deps.stateDir, assistantId)
+    const host = await loadOrCreateHostKey(deps.stateDir, assistantId, undefined, deps.security)
     const call = (method: 'GET' | 'POST', sub: string, extra: { query?: Row; body?: Row } = {}) => {
       if (!host.signingSecret) throw new ToolRefusal('VAULT_HOST_SETUP_REQUIRED')
       return vaultCall({ method, apiBase: deps.apiBase, assistantId, sub, ...extra, signingSecret: host.signingSecret, pairingToken: deps.pairingToken, fetch: deps.fetch })

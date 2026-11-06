@@ -127,7 +127,7 @@ const STATUS_TEXT = {
   pinned: 'Registered and pinned. The agent can prepare vault fills.',
 }
 
-export async function main(argv = process.argv.slice(2)) {
+export async function main(argv = process.argv.slice(2), { security = undefined } = {}) {
   const args = parseArgs(argv)
   if (args.error) {
     process.stderr.write(`[hoai vault-host] ${args.error}\n`)
@@ -145,7 +145,7 @@ export async function main(argv = process.argv.slice(2)) {
   const stateDir = args.stateDir || agent.stateDir
   try {
     if (args.command === 'status') {
-      const record = readHostRecord(stateDir)
+      const record = await readHostRecord(stateDir, undefined, security)
       const status = hostPinStatus(record)
       process.stderr.write(`${STATUS_TEXT[status]}\n`)
       showFingerprintOnTerminal(record, process.stderr)
@@ -155,7 +155,7 @@ export async function main(argv = process.argv.slice(2)) {
       process.stderr.write(`[hoai vault-host] ${agent.error}\n`)
       return 1
     }
-    let record = loadOrCreateHostKey(stateDir, agent.assistantId)
+    let record = await loadOrCreateHostKey(stateDir, agent.assistantId, undefined, security)
     if (!record.signingSecret || args.newSigningKey) {
       process.stderr.write(
         'This agent needs its own Ed25519 signing key, minted by the owner for this agent in HOAI.\n' +
@@ -166,12 +166,12 @@ export async function main(argv = process.argv.slice(2)) {
         process.stderr.write('Cancelled. Nothing was changed.\n')
         return 1
       }
-      provisionSigningIdentity(stateDir, agent.assistantId, secret)
-      record = readHostRecord(stateDir)
+      await provisionSigningIdentity(stateDir, agent.assistantId, secret, undefined, security)
+      record = await readHostRecord(stateDir, undefined, security)
     }
     if (hostPinStatus(record) === 'unregistered') {
-      await registerHostKey({ stateDir, assistantId: agent.assistantId, ownerId: agent.ownerId, apiBase: agent.apiBase, pairingToken: agent.pairingToken })
-      record = readHostRecord(stateDir)
+      await registerHostKey({ security, stateDir, assistantId: agent.assistantId, ownerId: agent.ownerId, apiBase: agent.apiBase, pairingToken: agent.pairingToken })
+      record = await readHostRecord(stateDir, undefined, security)
       process.stderr.write('Host key registered with HOAI.\n')
     }
     showFingerprintOnTerminal(record, process.stderr)
@@ -185,7 +185,7 @@ export async function main(argv = process.argv.slice(2)) {
       process.stderr.write('Not confirmed. Run hoai vault-host again after you pinned the host.\n')
       return 1
     }
-    confirmHostPin(stateDir)
+    await confirmHostPin(stateDir, undefined, security)
     process.stderr.write(`${STATUS_TEXT.pinned}\n`)
     return 0
   } catch (error) {
