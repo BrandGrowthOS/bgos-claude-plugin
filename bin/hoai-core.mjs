@@ -530,6 +530,7 @@ export function resolveHoaiAction(argv) {
   if (lowered === 'setup') return route('setup', rest)
   if (lowered === 'logs') return route('logs', rest)
   if (lowered === 'install-cli') return route('install-cli', rest)
+  if (lowered === 'vault-host') return route('vault-host', rest)
   if (lowered === 'help' || lowered === '-h' || lowered === '--help') {
     return route('help', rest)
   }
@@ -4276,6 +4277,9 @@ Usage:
   hoai <CODE>          shorthand for hoai pair <CODE> (BGOS-... / OC-... codes)
   hoai install-cli     put the hoai command on your PATH (or repair it)
   hoai logs            show the last 60 lines of this agent's daemon log
+  hoai vault-host      set this machine up as the agent's vault host: register
+                       its host key and show the fingerprint here, in this
+                       terminal only, for the owner to compare and pin in HOAI
   hoai help            show this help
 
 To restart the agent by hand: type /exit, then run hoai from the same folder.
@@ -4356,6 +4360,11 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
 
   if (action === 'pair') {
     return runSiblingScript(joinDir(scriptDir, 'bgos-pair.mjs'), rest, spawnImpl)
+  }
+
+  if (action === 'vault-host') {
+    // Inherits this terminal: the host fingerprint is shown only on a TTY.
+    return runSiblingScript(joinDir(scriptDir, 'hoai-vault-host.mjs'), rest, spawnImpl)
   }
 
   if (action === 'setup') {

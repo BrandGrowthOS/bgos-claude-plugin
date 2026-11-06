@@ -206,13 +206,13 @@ test('the admission gate, for every turn aware tool: verified, someone else unve
 })
 
 test('boards, Artifacts and schedules require a verified private turn', async () => {
-  for (const name of ['schedule', 'list_schedules', 'cancel_schedule', 'boards_list', 'artifact_create', 'artifact_update', 'artifact_read', 'artifact_list', 'artifact_versions']) {
+  for (const name of ['schedule', 'list_schedules', 'cancel_schedule', 'boards_list', 'artifact_create', 'artifact_update', 'artifact_read', 'artifact_list', 'artifact_versions', 'vault_items', 'vault_request_login', 'vault_fill_prepare']) {
     const { result, strictCalls } = admit(name, stubTracker(null, null))
     const refused = await result
     assert.equal(strictCalls, 1, name)
     assert.equal(refused?.isError, true, `${name}: an unverified turn is refused, wherever it is`)
   }
-  assert.match(admissionSource, /if \(req\.params\.name\.startsWith\('boards_'\) \|\| req\.params\.name\.startsWith\('artifact_'\) \|\| \['schedule', 'list_schedules', 'cancel_schedule'\]\.includes\(req\.params\.name\)\) \{/, 'boards, Artifacts and schedules keep the strict private-turn gate')
+  assert.match(admissionSource, /if \(req\.params\.name\.startsWith\('boards_'\) \|\| req\.params\.name\.startsWith\('artifact_'\) \|\| req\.params\.name\.startsWith\('vault_'\) \|\| \['schedule', 'list_schedules', 'cancel_schedule'\]\.includes\(req\.params\.name\)\) \{/, 'boards, Artifacts, the vault and schedules keep the strict private-turn gate')
 })
 
 test('a prompt carrying several deliveries at once (queued messages, the boot sweep) counts every sender', (t) => {

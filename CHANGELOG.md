@@ -6,6 +6,12 @@ Notable changes to the HOAI Claude Code plugin.
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.86.1 (2026-11-06)
+
+- **Agent vault: request a login and fill a saved one.** Three tools for owner turns: `vault_items` lists the vault items this agent may use (metadata only), `vault_request_login {name, website, username?}` opens the owner's secure Add a login form, and `vault_fill_prepare {itemId, sessionId, tabId, origin}` builds and signs the fill intent on this machine, asks HOAI for a one-use ticket and returns `{ticket, sessionId, tabId, origin, request:{intent, signature}}` to pass unchanged to `hoai_vault_fill` on the HOAI desktop browser. No tool takes, returns or logs a password or other value.
+- **`hoai vault-host`** sets this machine up as the agent's vault host. On first use it creates an Ed25519 host key (its X25519 form is the registered host key) in an owner-only file, stores the agent's owner-minted signing key typed at the terminal, registers the host with the independent signed proof, and shows the host fingerprint in this terminal only, never in chat, a pipe or a log. Fills are refused until the owner has compared the fingerprint, pinned the host in HOAI and confirmed it here.
+- Tests: `test/vault-fill.test.ts`.
+
 ## 0.86.0 (2026-11-06)
 
 - Saved Artifacts ship with artifact_create, artifact_update, artifact_read, artifact_list and artifact_versions on the paired connection. Dashboards, reports, charts, tables, plans and documents belong in an Artifact with a short chat reply linking to it. Revisions add a version to the same Artifact. Read the live content schema with artifact_read without an id.

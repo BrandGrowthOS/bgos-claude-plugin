@@ -209,6 +209,8 @@ import {
 } from './lib/boards-tools.js'
 import { createActingUserTracker } from './lib/acting-user.js'
 import { ARTIFACT_TOOL_DECLS, handleArtifactTool } from './lib/artifacts-tools.js'
+import { VAULT_TOOL_DECLS, handleVaultTool } from './lib/vault-tools.js'
+import { vaultHostDir } from './lib/vault-host.mjs'
 import { createPrivateTurnTracker, emailSendBasis, PRIVATE_TURN_REFUSAL, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requireEmailSendTurn, requirePrivateTurn, turnAwarePrivateTurn } from './lib/private-turn.mjs'
 import { createFireLedger, createPostedButtons, privateFireKey, privateFiresPath, privateEndedLine, privateReplayLine, privateTapCard, privateUnrecordedLine } from './lib/private-turn.mjs'
 import {
@@ -3354,6 +3356,8 @@ const mcp = new Server(
       '',
       'When you produce a dashboard, report, chart, table, plan, document or any page a person will read, share or revisit, make it an Artifact instead of a long chat message, then send a short reply with its link. Update the same Artifact for revisions rather than creating new ones.',
       'Use artifact_create, artifact_update, artifact_read, artifact_list and artifact_versions.',
+      'Agent vault: never ask for or repeat a password in chat. vault_items lists metadata, vault_request_login asks the owner to add a login,',
+      'and vault_fill_prepare returns a signed one-use request to pass unchanged to hoai_vault_fill on the HOAI desktop browser.',
       'Read artifact_read without id for the live content schema. The server posts the reference beside the chat.',
       '',
       'When you receive a message, process it using your full capabilities, ',
@@ -6478,6 +6482,9 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     // never reveals that it exists.
     ...BOARDS_TOOL_DECLS,
     ...ARTIFACT_TOOL_DECLS,
+    // Agent vault, request and fill (lib/vault-tools.ts): metadata, an owner
+    // request card and a signed one-use fill ticket. Owner turns only.
+    ...VAULT_TOOL_DECLS,
     // Agent email (outgoing email modes, HOAI board row 2dd04488): save a
     // draft for the owner, or send on the owner's own instruction
     // (lib/agent-email-tools.ts). Both always listed; the backend answers
@@ -6652,7 +6659,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
   }
   // Freeze private authority at request admission, before any awaited work.
   let privateCall: ReturnType<typeof requirePrivateTurn> | null = null
-  if (req.params.name.startsWith('boards_') || req.params.name.startsWith('artifact_') || ['schedule', 'list_schedules', 'cancel_schedule'].includes(req.params.name)) {
+  if (req.params.name.startsWith('boards_') || req.params.name.startsWith('artifact_') || req.params.name.startsWith('vault_') || ['schedule', 'list_schedules', 'cancel_schedule'].includes(req.params.name)) {
     try {
       if (!lockHeld) throw new Error('This private action did not start because this daemon does not hold the active agent connection.')
       privateCall = requirePrivateTurn(privateTurns, PRIVATE_MARKER_PATHS, USER_ID)
@@ -6718,6 +6725,23 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
   }
   return trackMessageOperation(async () => {
   const rawArgs = req.params.arguments as Record<string, unknown>
+
+  if (req.params.name.startsWith('vault_')) {
+    // The vault routes accept only the owner's own pairing with a signed agent
+    // request: no acting user header is ever sent, and a turn admitted for
+    // anyone else is refused inside handleVaultTool before any request.
+    const stateDir = agentStateDir(homedir(), ASSISTANT_ID)
+    if (!stateDir) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'VAULT_NOT_PAIRED' }) }], isError: true }
+    return handleVaultTool(req.params.name, rawArgs, {
+      assistantId: ASSISTANT_ID,
+      ownerId: USER_ID,
+      actingUserId: privateCall!.actingUserId,
+      apiBase: API_BASE,
+      pairingToken: AUTH.mode === 'pairing' ? AUTH.pairingToken : '',
+      stateDir: vaultHostDir(stateDir),
+      log,
+    })
+  }
 
   if (req.params.name.startsWith('artifact_')) {
     return handleArtifactTool(req.params.name, rawArgs, {
