@@ -1,11 +1,13 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import * as sourceCheck from '../scripts/check-browser-shim-source.mjs'
 
-const { checkBrowserShimSource } = sourceCheck
+const { applyShimPatch, checkBrowserShimPin, checkBrowserShimSource } = sourceCheck
 
 const bytes = Buffer.from('synthetic committed shim\n')
 const sha256 = createHash('sha256').update(bytes).digest('hex')
@@ -90,20 +92,39 @@ test('a trusted run without the secret keeps the offline check and reports a ski
   assert.match(result.stdout, /::notice::Live BGOS source comparison skipped: BGOS_SOURCE_READ_TOKEN is unavailable/)
 })
 
-test('trusted CLI fetches source and runs the supplied-source vendor suite', () => {
-  const result = runVerifier(['--live'], 'synthetic-read-token', `
+// Answers with the BGOS bytes the pin records: the vendored copy at parity, or
+// the copy minus the committed ahead patch when this copy leads. Built here, as
+// importing the verifier inside its own preload would start its CLI early.
+function recordedSource(dir: string) {
+  const vendorPin = JSON.parse(readFileSync('bin/hoai-browser-mcp.vendor.json', 'utf8'))
+  const vendor = readFileSync(vendorPin.file)
+  const file = join(dir, 'recorded-source.mjs')
+  writeFileSync(file, vendorPin.aheadOfSource ? applyShimPatch(readFileSync(vendorPin.aheadOfSource.patch), vendor, { reverse: true }) : vendor)
+  return `
     import assert from 'node:assert/strict';
     import { readFileSync } from 'node:fs';
     const pin = JSON.parse(readFileSync('bin/hoai-browser-mcp.vendor.json', 'utf8'));
+    const source = readFileSync(${JSON.stringify(file)});
     globalThis.fetch = async (url, init) => {
       assert.ok(url.endsWith('?ref=' + pin.sourceCommit));
       assert.equal(new Headers(init.headers).get('authorization'), 'Bearer synthetic-read-token');
-      return new Response(readFileSync(pin.file));
+      return new Response(source);
     };
-  `)
+  `
+}
+
+test('trusted CLI fetches source and runs the supplied-source vendor suite', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'shim-live-'))
+  let result
+  try {
+    result = runVerifier(['--live'], 'synthetic-read-token', recordedSource(dir))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
   assert.equal(result.status, 0, result.stderr)
   assert.match(result.stdout, /Verified BGOS source/)
-  assert.match(result.stdout, /pass 6/)
+  assert.match(result.stdout, /pass 8/)
+  assert.match(result.stdout, /fail 0/)
   assert.match(result.stdout, /skipped 0/)
   assert.doesNotMatch(result.stdout, /comparison skipped/)
 })
@@ -127,4 +148,63 @@ test('plugin CI separates unconditional offline tests from trusted live verifica
   assert.doesNotMatch(live, /continue-on-error/)
   assert.match(workflow, /  schedule:\n    - cron:/)
   assert.doesNotMatch(workflow, /pull_request_target/)
+})
+
+// A synthetic copy that leads its source by one reviewed hunk.
+const base = Buffer.from('one\ntwo\nthree\nfour\n')
+const ahead = Buffer.from('one\ntwo\nguard\nthree\nfour\n')
+const patch = Buffer.from('--- a/shim.mjs\n+++ b/shim.mjs\n@@ -1,4 +1,5 @@\n one\n two\n+guard\n three\n four\n')
+const digest = (b: Buffer) => createHash('sha256').update(b).digest('hex')
+const aheadPin = {
+  sourceCommit: 'b'.repeat(40), sourceSha256: digest(base), sha256: digest(ahead),
+  aheadOfSource: { patch: 'bin/hoai-browser-mcp.ahead.patch', bgosFollowUp: 'land the synthetic patch' },
+}
+
+test('an ahead pin is its BGOS source plus exactly the committed patch', () => {
+  assert.ok(applyShimPatch(patch, base).equals(ahead))
+  assert.ok(checkBrowserShimPin(aheadPin, ahead, patch).equals(base), 'the offline check rebuilds the recorded source')
+  // Anything extra in the copy, a patch that does not match, or a wrong base hash fails.
+  const extra = Buffer.from('one\ntwo\nguard\nthree\nfour\nmore\n')
+  assert.throws(() => checkBrowserShimPin({ ...aheadPin, sha256: digest(extra) }, extra, patch), /not the recorded BGOS source/)
+  assert.throws(() => checkBrowserShimPin(aheadPin, ahead, Buffer.from(patch.toString().replace('+guard', '+other'))), /does not apply/)
+  assert.throws(() => checkBrowserShimPin({ ...aheadPin, sourceSha256: '0'.repeat(64) }, ahead, patch), /not the recorded BGOS source/)
+  assert.throws(() => checkBrowserShimPin(aheadPin, ahead, Buffer.from(patch.toString().replace('-1,4 +1,5', '-1,3 +1,5'))), /hunk counts/)
+  assert.throws(() => checkBrowserShimPin(aheadPin, ahead, Buffer.from(patch.toString().replace(/\n/g, '\r\n'))), /LF/)
+})
+
+test('an ahead pin must name its patch and follow-up, and cannot claim parity', () => {
+  assert.throws(() => checkBrowserShimPin(aheadPin, ahead), /needs bin\/hoai-browser-mcp.ahead.patch/)
+  assert.throws(() => checkBrowserShimPin({ ...aheadPin, aheadOfSource: 'BGOS must copy this' }, ahead, patch), /must name its patch/)
+  assert.throws(() => checkBrowserShimPin({ ...aheadPin, aheadOfSource: { ...aheadPin.aheadOfSource, patch: 'other.patch' } }, ahead, patch), /records its delta/)
+  assert.throws(() => checkBrowserShimPin({ ...aheadPin, aheadOfSource: { patch: aheadPin.aheadOfSource.patch } }, ahead, patch), /what BGOS must land/)
+  assert.throws(() => checkBrowserShimPin({ ...aheadPin, sourceSha256: digest(ahead) }, ahead, patch), /at parity remove aheadOfSource/)
+})
+
+test('live verification of an ahead pin fetches the base and rebuilds the copy from it', async () => {
+  const fetched = await checkBrowserShimSource(aheadPin, ahead, 'synthetic-read-token', async () => new Response(base), patch)
+  assert.ok(fetched.equals(base))
+  // BGOS answering with the copy itself, or anything else, is not the recorded base.
+  await assert.rejects(checkBrowserShimSource(aheadPin, ahead, 'synthetic-read-token', async () => new Response(ahead), patch), /committed BGOS source does not match sourceSha256/)
+})
+
+test('the armed cross-tree case fails on the bare base until BGOS holds the new bytes', () => {
+  const vendorPin = JSON.parse(readFileSync('bin/hoai-browser-mcp.vendor.json', 'utf8'))
+  if (vendorPin.aheadOfSource === undefined) return
+  const dir = mkdtempSync(join(tmpdir(), 'shim-ahead-'))
+  try {
+    const vendor = readFileSync(vendorPin.file)
+    const baseFile = join(dir, 'base.mjs'), landedFile = join(dir, 'landed.mjs')
+    writeFileSync(baseFile, applyShimPatch(readFileSync(vendorPin.aheadOfSource.patch), vendor, { reverse: true }))
+    writeFileSync(landedFile, vendor)
+    const run = (source: string) => spawnSync(process.execPath, ['--import', 'tsx', '--test', 'test/hoai-browser-mcp.vendor.test.ts'], {
+      encoding: 'utf8', timeout: 60_000, env: { ...process.env, HOAI_BROWSER_SHIM_SOURCE: source, NODE_TEST_CONTEXT: undefined },
+    })
+    const behind = run(baseFile)
+    assert.equal(behind.status, 1, behind.stdout)
+    assert.match(behind.stdout, /still the pinned base; this copy is ahead by bin\/hoai-browser-mcp\.ahead\.patch/)
+    const landed = run(landedFile)
+    assert.equal(landed.status, 0, landed.stdout)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

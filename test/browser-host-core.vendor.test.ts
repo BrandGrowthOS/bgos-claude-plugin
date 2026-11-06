@@ -183,6 +183,17 @@ test('the rules actually load and decide, so a passing hash is not the only thin
 })
 
 const bgosSource = process.env.HOAI_BROWSER_HOST_CORE_SOURCE
+test('activation keys anywhere in a chord require reading the focused control', () => {
+  const policy = createRequire(import.meta.url)(join(CORE, 'policy.js'))
+  for (const key of ['Enter+Shift', 'Space+Shift', 'NumpadEnter+Control', 'Return+Alt', 'Spacebar+Meta', ' +Shift', 'h+Enter+Shift', 'Shift+Enter+ArrowLeft', 'enter+Shift']) {
+    assert.equal(policy.readsBefore('browser_press_key', { key }), 'focused', key)
+    assert.equal(policy.classifyRead('browser_press_key', { key }, { targets: [], actuated: { name: 'Delete account B', readable: true } }, { currentOrigin: 'https://fixture.example' }).kind, 'sensitive', key)
+  }
+  for (const key of ['Backspace', 'Spacer', 'Shift+ArrowLeft', 'ControlOrMeta+Backspace', '+', 'Shift++']) {
+    assert.equal(policy.readsBefore('browser_press_key', { key }), null, key)
+  }
+})
+
 test('cross tree: each copy is byte-identical to the BGOS original', { skip: bgosSource ? false : 'set HOAI_BROWSER_HOST_CORE_SOURCE to the BGOS agent-browser directory' }, () => {
   for (const name of VENDORED) {
     const original = join(bgosSource!, name)

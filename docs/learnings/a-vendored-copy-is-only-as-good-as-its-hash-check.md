@@ -15,6 +15,12 @@ source provenance. Neither detects later changes to BGOS main.
 The plugin also runs `test/hoai-browser-mcp.cancellation.test.ts`, with local and
 relay transport cases adapted from BGOS's cancellation suite.
 
+**Update, 2026-11-07:** A copy that must lead BGOS now records its delta as
+`bin/hoai-browser-mcp.ahead.patch` under `aheadOfSource`. The checks reverse the
+patch out of the vendored bytes and require the recorded BGOS hash, so leading
+is a verified state, not a switched off check, and the armed cross-tree case
+stays red until BGOS holds the same bytes.
+
 **Context:** `bin/hoai-browser-mcp.mjs` is a byte-identical copy of the BGOS Agent Browser shim
 (`frontend/electron-app/agent-browser/shim/hoai-browser-mcp.mjs`). The shim is framework neutral on
 purpose: it never reads a plugin's files and takes its relay credentials from env, so every channel

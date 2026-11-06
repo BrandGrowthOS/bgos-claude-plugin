@@ -77,7 +77,9 @@ test('owner normal browser creates, switches and closes real agent tabs and navi
     }
     const requestId = ++id
     await views.command({ viewId: 'normal-view', frame: { id: requestId, method, params, sessionId: target.sessionId, tabId: target.tabId } }, 'fixture-host')
-    return frames.find(frame => frame.id === requestId)
+    const reply = frames.find(frame => frame.id === requestId)
+    assert.ok(reply, `Missing reply to ${method} ${params.action || ''}: ${JSON.stringify(closes)}`)
+    return reply
   }
   const owner = async () => (await command('hoai.input.acquire')).result.leaseId
   const action = async (method: string, params: any) => {

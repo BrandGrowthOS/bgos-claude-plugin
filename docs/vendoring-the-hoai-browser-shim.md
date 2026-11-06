@@ -106,6 +106,53 @@ BGOS, then bring the copy across with this list.
    shim as `vendor/hoai-browser-mcp.mjs`; re-vendor it in the same round or say
    plainly that its parity was not checked when it is outside the work scope.
 
+## When this copy leads (current, 0.86.12)
+
+Sometimes a fix must ship here before BGOS can take it. That copy is still not
+a fork: it is the BGOS blob at `sourceCommit` plus one committed, reviewable
+patch, and the checks prove that relationship instead of being switched off.
+
+1. **Keep `sourceCommit` and `sourceSha256` at the BGOS blob you started
+   from**, and set `sha256` to the new vendored bytes.
+2. **Commit the delta as `bin/hoai-browser-mcp.ahead.patch`**, a unified diff
+   from the BGOS source path to these bytes, so BGOS can apply it with
+   `git apply` unchanged:
+
+   ```bash
+   diff -u "<bgos shim at sourceCommit>" bin/hoai-browser-mcp.mjs \
+     | sed -e "1s#.*#--- a/frontend/electron-app/agent-browser/shim/hoai-browser-mcp.mjs#" \
+           -e "2s#.*#+++ b/frontend/electron-app/agent-browser/shim/hoai-browser-mcp.mjs#" \
+     > bin/hoai-browser-mcp.ahead.patch
+   ```
+
+3. **Record `aheadOfSource`** in `bin/hoai-browser-mcp.vendor.json` as
+   `{ "patch": "bin/hoai-browser-mcp.ahead.patch", "bgosFollowUp": "<what BGOS must land>" }`.
+4. **What the checks then require.** `node scripts/check-browser-shim-source.mjs`
+   and `test/hoai-browser-mcp.vendor.test.ts` reverse the patch out of the
+   vendored bytes offline and require the result to hash to `sourceSha256`,
+   then require the patch to rebuild the exact vendored bytes. Any change not in
+   the patch, a patch that does not apply, or a stale base fails. `--live`
+   fetches the blob at `sourceCommit`, checks it against `sourceSha256`, applies
+   the patch and requires the vendored bytes. An ahead pin whose two hashes are
+   equal fails: at parity, remove `aheadOfSource` and the patch.
+5. **The armed cross-tree case fails against BGOS until BGOS lands the patch**,
+   with a message naming the patch, and passes once the supplied BGOS shim is
+   these exact bytes. That keeps the BGOS vendor parity workflow red as a FORK
+   for exactly as long as the trees differ.
+6. **Then return to parity**: after BGOS commits the bytes, re-vendor with the
+   checklist above, pin the new BGOS commit, and delete `aheadOfSource` and the
+   patch.
+
+0.86.12 leads for the fill-only contract: tool schemas omit composite
+submission and sequential typing, `browser_fill_form` accepts textbox fields
+only, old composite calls are refused before forwarding, and submission
+requires a separate approved `browser_click` on the exact current submit
+control. Enter, Return and Space are refused in every key chord position, and
+only Alt, Control, ControlOrMeta, Meta and Shift may precede the final key (a
+literal plus remains a valid final key). The local and relay suites cover the
+refusals and ordinary fill forwarding. BGOS and `codex-channel-bgos` have not
+taken these bytes yet; `aheadOfSource.bgosFollowUp` says what they must land.
+
 ## Historical exception: when this copy led (0.72.0)
 
 Resolved on 2026-11-06: a fresh BGOS main clone at
@@ -147,3 +194,14 @@ As of the 2026-09-28 re-vendor (sha256 `24470ac3`, BGOS `8daa845bc`) the ported
 relay suite holds 32 cases, and 20 of them fail against the previous copy
 (`aaaff4b6`): the rate limit and throttle words, the dropped host, the refusals
 met while connecting, the collect of a sent call, and the refused host probe.
+
+## Filled-tab dispatcher contract
+
+The portable host now tracks filled fields per tab at its shared engine
+boundary. After a fill, actions require a fresh allow-once decision bound to
+that action and the current field revision, even with a saved write grant.
+Only fixed reads and more textbox fills remain available without that extra
+decision. Scripts and unclassified tools cannot receive an exception.
+`browser_fill_form` accepts textbox fields only, on both local and relay shim
+routes. The shim side of this contract is the recorded ahead patch above. See
+[browser-fill-submit.md](browser-fill-submit.md) for the host contract.
