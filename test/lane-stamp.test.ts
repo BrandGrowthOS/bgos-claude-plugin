@@ -118,7 +118,7 @@ test('button taps: once lanes run, a tap in a share recipient\'s chat never reac
   assert.equal(ownerAnnounceRefused({ lanesOn: true, chatIsOthers: true }), true)
   assert.equal(ownerAnnounceRefused({ lanesOn: false, chatIsOthers: true }), false, 'lanes off: today\'s path')
   assert.equal(ownerAnnounceRefused({ lanesOn: true, chatIsOthers: false }), false, 'the owner\'s or an unknown chat: today\'s path')
-  const poll = bodyAfter(SERVER, 'const announced = new Set(announce)', 900)
+  const poll = bodyAfter(SERVER, 'const announced = new Set(announce.filter(', 1200)
   assert.match(poll, /\n\s*if \(announced\.size > 0 && ownerAnnounceRefused\(\{ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership\.isOthers\(chatId\) \}\)\) \{\n[^\n]*\n\s*announced\.clear\(\)\n/, 'the condition itself guards the clear')
   assert.ok(poll.indexOf('announced.clear()') < poll.indexOf('rememberAnnouncedClick'), 'before the tap is claimed or announced')
   const stream = bodyAfter(SERVER, 'function applyStreamButtonsAnswered(', 2400)

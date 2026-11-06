@@ -326,8 +326,11 @@ function streamHarness(record: { requesterUserId?: string } = { requesterUserId:
     // The pending question groups (lib/ask-tracker.ts): none here, so every tap of this rig is a button tap.
     askTracker: { askIdOf: () => null },
     announcedClickIds,
+    postedButtonCards: new Map(),
     rememberAnnouncedClick: (id: number) => announcedClickIds.add(id),
     chatUnansweredButtons: new Map(),
+    loginMethodCard: null,
+    pendingLoginMethodCard: () => null,
     recentButtonPrompts: new Map(),
     pendingPermissions: new Map(),
     senderUserIdOf: (m: unknown) => permissionRelay.senderUserIdCandidate(m) ?? OWNER,
@@ -464,12 +467,15 @@ test('the record names the plan\'s person, from the permission relay\'s own sour
   assert.doesNotMatch(SERVER, /const requesterUserId = lastInboundUserByChat\.get\(chatId\) \?\? USER_ID/)
 })
 
-test('all three call sites pass a NULL AWARE clicker id and drop a refused tap', () => {
+test('all four call sites pass a NULL AWARE clicker id and drop a refused tap', () => {
   assert.equal(
     (SERVER.match(/applyPlanAnswer\(\{/g) ?? []).length,
-    3,
-    'the poll, the stream and the boot sweep, and no other',
+    4,
+    'the poll, the stream, posted-card recovery and the boot sweep',
   )
+  const direct = declaredFunction('announcePostedButtonAnswer')
+  assert.match(direct, /clickerUserId: senderUserIdCandidate\(payload\), via: 'poll',/)
+  assert.match(direct, /if \(planAnswer\.refused\) return/)
   // The poll: the answer payload, through the null aware reader.
   const poll = SERVER.slice(
     SERVER.indexOf('const planAnswer = applyPlanAnswer({\n        chatId,\n        messageId: mm.id,'),
