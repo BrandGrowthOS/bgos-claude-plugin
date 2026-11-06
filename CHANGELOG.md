@@ -6,6 +6,10 @@ Notable changes to the HOAI Claude Code plugin.
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.86.4 (2026-11-06)
+
+**On a Mac, a renewed Claude login clears the held "login expired" failure by itself.** The login lives in the Keychain, not in a credentials file, so the plugin never saw it change and the failure only cleared when the next answer succeeded. A cheap, rate limited, non interactive status check of the Claude CLI now notices the renewed login and clears the hold. It never reads or prints the secret, and it stays off on CLI versions that do not support the check.
+
 ## 0.86.3 (2026-11-06)
 
 **A silent connection is noticed in about 10 seconds.** When a network path quietly drops the WebSocket, the plugin used to wait for the server ping to time out, so an agent's messages could arrive up to a minute late. A client liveness check now closes a link that has been silent past the expected ping and reconnects at once with the existing backoff, then catches up without delivering anything twice. A healthy idle link is never dropped, and only one reconnect runs at a time.
