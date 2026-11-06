@@ -6,6 +6,10 @@ Notable changes to the HOAI Claude Code plugin.
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.86.3 (2026-11-06)
+
+**A silent connection is noticed in about 10 seconds.** When a network path quietly drops the WebSocket, the plugin used to wait for the server ping to time out, so an agent's messages could arrive up to a minute late. A client liveness check now closes a link that has been silent past the expected ping and reconnects at once with the existing backoff, then catches up without delivering anything twice. A healthy idle link is never dropped, and only one reconnect runs at a time.
+
 ## 0.86.2 (2026-11-06)
 
 **A thread answers even when the main chat has an active /goal.** A thread forks the agent's main session, and Claude Code's /goal is a Stop hook that the fork inherited: each time the thread tried to end its turn the goal check answered "Not satisfied" and blocked it, the thread looped on the mission, and the person saw "This turn failed before the agent could answer". Each lane now clears the inherited goal only in its own transcript, using the CLI's goal-clear sentinel. It explicitly keeps the plugin's non-Stop hooks, including the private prompt boundary, tool floor and private tool guard, while inherited settings stay excluded by `--restricted`. The same preparation covers later resumes and forks saved by the previous version. A lane that disables all hooks or changes its trusted hooks is refused. As a defence, a turn that a Stop hook blocks more than twice is stopped and the thread gets a reply that names the cause.
