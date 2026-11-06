@@ -1259,6 +1259,8 @@ What the flag turns on, when the backend serves the feature:
 | `BGOS_ASSISTANT_ID` | Yes | Numeric ID of the assistant to respond through |
 | `BGOS_AUTO_APPROVE` | No | `"true"` to auto-approve all tool permissions (default: interactive) |
 | `BGOS_AUTO_UPDATE` | No | Same-major self-updates are ON by default (unset or empty counts as on). Exact value `"off"` is the hard kill switch; any other value also disables. |
+| `BGOS_AUTO_UPDATE_INTERVAL_MS` | No | Clone release check interval in ms (default: `14400000`, four hours). Positive integer, at most `2147483647`; invalid values use the default. |
+| `BGOS_AUTO_UPDATE_JITTER_MS` | No | Maximum random delay added to each clone release check (default: `3600000`, one hour). Nonnegative integer; `0` disables jitter. Must fit with the interval within `2147483647` ms; invalid values use the default, capped to the remaining timer range. |
 | `BGOS_POLL_INTERVAL_MS` | No | Polling interval in ms (default: `2000`) |
 | `BGOS_OPENAI_API_KEY` | No | OpenAI API key with Realtime access — enables live voice calls (the Talk button). Falls back to `OPENAI_API_KEY`. Without it, chat works normally and voice calls fail with a descriptive "voice not configured" error |
 | `BGOS_VOICE_MODEL` | No | OpenAI realtime model for voice calls (default: `gpt-realtime-2.1`) |
@@ -1304,12 +1306,13 @@ The catalog refresh is best-effort: if `PUT /integrations/assistants/:id/command
 
 ## Updating the Plugin
 
-Automatic updates are off by default. To opt in, add
-`"BGOS_AUTO_UPDATE": "on"` to the plugin `env` object in `.mcp.json` and
-restart the agent (`/exit`, then run `hoai` from the same folder). The plugin
-checks at boot, then after each 24 hour interval
-plus a random zero to six hour jitter. It updates only to a newer version in
-the same major release line.
+Automatic updates are on by default for clone installs. The plugin checks at
+boot, then after each four hour interval plus a random zero to one hour jitter.
+Set `BGOS_AUTO_UPDATE_INTERVAL_MS` and `BGOS_AUTO_UPDATE_JITTER_MS` in the
+plugin's environment to override those delays (in milliseconds); restart the
+agent to apply configuration changes. It updates only to a newer version in
+the same major release line. Marketplace installs use Claude Code's own update
+path.
 
 The updater takes exactly the published release: the tag the hoai marketplace
 names (its `ref`), read from the public marketplace manifest. It fetches only
