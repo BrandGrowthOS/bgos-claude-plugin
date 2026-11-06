@@ -109,7 +109,12 @@ test('online: the shim proxies initialize, tools/list and tools/call to the endp
   assert.equal(call.result.content[0].text, 'called browser_navigate')
   assert.ok(seen.every((s) => s.auth === 'Bearer tok-123'), 'every upstream request carries the token')
   assert.ok(seen.some((s) => s.method === 'tools/call' && s.session === 'sess-1'), 'the upstream session id is reused')
-  for (const [name, args] of [['browser_type', { target: 'e1', text: 'hello', submit: true }], ['browser_type', { target: 'e1', text: 'hello\n', slowly: true }], ['browser_press_key', { key: 'Enter' }], ['browser_press_key', { key: 'Space' }]] as const) {
+  for (const [name, args] of [['browser_type', { target: 'e1', text: 'hello', submit: true }], ['browser_type', { target: 'e1', text: 'hello\n', slowly: true }], ['browser_press_key', { key: 'Enter' }], ['browser_press_key', { key: 'Space' }], ...[
+      'Enter+Shift', 'Space+Shift', 'NumpadEnter+Control', 'Return+Alt',
+      'Spacebar+Meta', ' +Shift', 'h+Enter+Shift', 'Shift+Enter+ArrowLeft',
+      'h+ArrowLeft', 'Backspace+Shift', 'shift+ArrowLeft', 'Shift++ArrowLeft', '',
+      'Shift+\n+ArrowLeft',
+    ].map(key => ['browser_press_key', { key }] as const)] as const) {
     const count = seen.length
     const refused = await c.request('tools/call', { name, arguments: args })
     assert.equal(refused.result.isError, true)

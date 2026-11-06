@@ -404,13 +404,19 @@ const FORM_CLICK_REQUIRED = "Fill only enters text. To submit a form, make a sep
 function refusesCompositeAction(name, args = {}) {
   if (name === "browser_press_sequentially") return true;
   if (name === "browser_type" && ["submit", "slowly"].some(key => Object.hasOwn(args, key) && args[key] !== false)) return true;
-  return name === "browser_press_key" && (/[\r\n]/.test(args.key || "") || /^(?:Enter|NumpadEnter|Return| |Space|Spacebar)$/i.test(String(args.key || "").split("+").pop()));
+  if (name !== "browser_press_key") return false;
+  const key = args.key;
+  // Playwright presses every component, not just the final key. Only real
+  // modifiers may precede it. A literal plus is valid as the final key.
+  return typeof key !== "string" || /[\r\n]/.test(key) ||
+    !/^(?:(?:Alt|Control|ControlOrMeta|Meta|Shift)\+)*(?:[^+]+|\+)$/.test(key) ||
+    key.split("+").some(part => /^(?:Enter|NumpadEnter|Return| |Space|Spacebar)$/i.test(part));
 }
 function fillOnlyTool(tool) {
   if (!["browser_type", "browser_press_key"].includes(tool?.name)) return tool;
   const schema = tool.inputSchema || { type: "object" };
   const { submit: _submit, slowly: _slowly, ...properties } = schema.properties || {};
-  return { ...tool, description: tool.name === "browser_type" ? "Fill text into an editable element. " + FORM_CLICK_REQUIRED : "Press a non-activating key. Enter, Return and Space are unavailable. " + FORM_CLICK_REQUIRED,
+  return { ...tool, description: tool.name === "browser_type" ? "Fill text into an editable element. " + FORM_CLICK_REQUIRED : "Press a non-activating key, optionally preceded by Alt, Control, ControlOrMeta, Meta or Shift modifiers. Enter, Return and Space are unavailable in any chord position. " + FORM_CLICK_REQUIRED,
     inputSchema: { ...schema, properties, ...(Array.isArray(schema.required) ? { required: schema.required.filter(key => key !== "submit" && key !== "slowly") } : {}) } };
 }
 function validateHostTool(name, args = {}) {
@@ -1300,7 +1306,7 @@ export class PlaywrightEngine {
   }
 
   async start() {
-    const { tools } = loadPlaywright()
+    const { tools, z } = loadPlaywright()
     this._managedRuntime?.assertCurrent()
     this._browser = this._managedRuntime ? this._managedRuntime.browser : this._launched
     if (!this._browser) throw new HostError('browser_start_failed', 'No browser was started for this engine.')
@@ -1314,7 +1320,7 @@ export class PlaywrightEngine {
     if (!this._managedRuntime) this._agentPages.add(await context.newPage())
     const config = await resolveConfig({ caps: this._caps, outputDir: this._outputDir })
     const filtered = tools.filteredTools(config).filter(tool => SAFE_TOOLS.has(tool.schema.name))
-    this._toolSchemas = filtered.map(tool => tool.schema)
+    this._toolSchemas = filtered.map(tool => toMcpTool(tool.schema, z))
     this._toolNames = new Set(filtered.map((t) => t.schema.name))
     this._backend = new tools.BrowserBackend(config, context, filtered.map(tool => this._withoutPageFiles(tool)))
     await this._backend.initialize({ cwd: this._outputDir, name: this._clientName, version: this._clientVersion })

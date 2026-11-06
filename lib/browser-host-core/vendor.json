@@ -3,7 +3,8 @@
   "files": {
     "policy.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/policy.js",
-      "sha256": "26db146c9ece89908249eed1d9e8a6abab2e36f42725f3751d93f4f53d53534a"
+      "sha256": "21fb90b35fc086e08d3857132f0cd000710699f1a40fa539b3d60ca0c32f58d6",
+      "aheadOfSource": "Plugin 0.86.2 reads activating keys in every chord position. The BGOS policy mirror and its pin must take these bytes; outside-checkout mirrors were not changed."
     },
     "settings.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/settings.js",
@@ -25,7 +26,7 @@
       "sourceCommit": "1108f55db11ed26027c013206e0ddd220092586b"
     }
   },
-  "vendoredAt": "2026-11-05, browser round 18 reload requirement and external prompt privacy",
+  "vendoredAt": "2026-11-06, whole-chord activation classification",
   "whyADirectory": "settings.js and profiles.js both do require(\"./policy\"), so the copies keep their ORIGINAL filenames and sit together. package.json here pins type=commonjs, because the plugin root declares type=module and these files are CommonJS.",
   "howToUpdate": "Re-copy every file named above from its BGOS path, rerun the hashes, update this file, and run: HOAI_BROWSER_HOST_CORE_SOURCE=<BGOS agent-browser dir> npx tsx --test test/browser-host-core.vendor.test.ts",
   "theHalfThisCannotSee": "Nothing here fires when the BGOS originals change and these copies do not. That check lives on the BGOS side in frontend/electron-app/agent-browser/__tests__/hostCoreVendorPin.test.js, which pins the same hashes.",

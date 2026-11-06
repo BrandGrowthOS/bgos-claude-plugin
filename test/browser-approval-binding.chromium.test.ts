@@ -38,7 +38,7 @@ async function rig(t: any) {
   core._grantsFor = () => ({})
   core._currentOrigin = async () => 'https://fixture.example'
   const call = (name: string, args: any = {}) => core.callTool(OWNER, name, args)
-  return { engine, page, cards, posted, allow, call }
+  return { engine, page, cards, posted, allow, call, core }
 }
 
 for (const change of ['tab', 'document', 'name', 'replacement', 'focus', 'preflight', 'unchanged']) {
@@ -89,6 +89,66 @@ for (const change of ['tab', 'document', 'name', 'replacement', 'focus', 'prefli
 const form = `<form onsubmit="window.submits=(window.submits||0)+1;return false">
 <label>Reference<input id=reference oninput="document.querySelector('#send')?.remove();document.querySelector('#delete').type='submit'"></label>
 <button id=send type=submit>Send report A</button><button id=delete type=button onclick="window.deleted=true">Delete account B</button></form>`
+
+for (const direct of [false, true]) {
+  for (const granted of [false, true]) {
+    test(`key grammar refuses composite chords via ${direct ? 'engine' : 'host'}, write grant=${granted}`, { skip, timeout: 90_000 }, async t => {
+      const r = await rig(t)
+      if (granted) r.core._grantsFor = () => ({ 'https://fixture.example': { write: 'allow' } })
+      r.allow()
+      for (const key of ['Enter+Shift', 'Space+Shift', 'NumpadEnter+Control', 'Return+Alt', 'Spacebar+Meta', ' +Shift', 'h+Enter+Shift', 'Shift+Enter+ArrowLeft', 'h+ArrowLeft', 'Backspace+Shift', 'shift+ArrowLeft', 'Shift++ArrowLeft', '', 'Shift+\n+ArrowLeft']) {
+        await t.test(JSON.stringify(key), async () => {
+          r.cards.length = 0
+          await r.page.setContent(form)
+          await refFor(r.page, '#reference')
+          await r.page.locator(key.startsWith('Space') || key.startsWith(' ') ? '#send' : '#reference').focus()
+          if (direct) {
+            await assert.rejects(r.engine.callTool('browser_press_key', { key }), { code: 'not_available' })
+          } else {
+            const result = await r.call('browser_press_key', { key })
+            assert.equal(result.isError, true, JSON.stringify(result))
+            assert.match(JSON.stringify(result), /separate.*browser_click/i)
+          }
+          assert.equal(r.cards.length, 0, 'refused before any approval, even with an existing write grant')
+          assert.equal(await r.page.locator('#reference').inputValue(), '')
+          assert.equal(await r.page.evaluate(() => (window as any).submits || 0), 0)
+          assert.equal(await r.page.evaluate(() => !!(window as any).deleted), false)
+        })
+      }
+    })
+  }
+}
+
+test('genuine modifier chords and literal plus keys still execute', { skip, timeout: 90_000 }, async t => {
+  const r = await rig(t)
+  r.core._grantsFor = () => ({ 'https://fixture.example': { write: 'allow' } })
+  await r.page.setContent('<label>Reference<input id=reference value=hello></label>')
+  await refFor(r.page, '#reference')
+  await r.page.locator('#reference').focus()
+  r.allow()
+  for (const key of ['Shift+ArrowLeft', 'Control+ArrowLeft', 'Alt+ArrowLeft', 'Meta+ArrowLeft', 'ControlOrMeta+ArrowLeft', 'Control+Shift+ArrowLeft', '+', 'Shift++']) {
+    const result = await r.call('browser_press_key', { key })
+    assert.notEqual(result.isError, true, `${key}: ${JSON.stringify(result)}`)
+  }
+  assert.equal(r.cards.length, 0)
+})
+
+test('real engine roster serializes complete JSON Schemas without composite fields', { skip, timeout: 90_000 }, async t => {
+  const r = await rig(t)
+  const roster = JSON.parse(JSON.stringify(r.engine._engine.roster()))
+  for (const [name, required] of [['browser_type', ['target', 'text']], ['browser_click', ['target']], ['browser_press_key', ['key']]] as const) {
+    const tool = roster.find((item: any) => item.name === name)
+    assert.equal(tool.inputSchema.type, 'object')
+    for (const key of required) {
+      assert.ok(tool.inputSchema.properties[key], `${name} advertises ${key}`)
+      assert.ok(tool.inputSchema.required.includes(key), `${name} requires ${key}`)
+    }
+    assert.ok(tool.inputSchema.properties.wait_seconds)
+  }
+  assert.ok(roster.find((item: any) => item.name === 'browser_type').inputSchema.properties.element)
+  assert.equal(roster.some((item: any) => item.name === 'browser_press_sequentially'), false)
+  assert.doesNotMatch(JSON.stringify(roster), /"(?:submit|slowly|def|_def)"\s*:/)
+})
 
 for (const action of ['submit', 'slowly', 'Enter', 'Control+Enter', 'NumpadEnter', 'Return', 'Space', ' ']) {
   test(`form submission requires a separate click, refuses ${JSON.stringify(action)}`, { skip, timeout: 90_000 }, async t => {

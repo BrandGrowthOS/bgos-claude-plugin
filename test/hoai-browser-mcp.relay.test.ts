@@ -1089,7 +1089,12 @@ test('relay: composite submission and activation keys never reach the host', asy
   const c = client({ HOAI_HOME: tempHome(), HOAI_RELAY_BACKEND_URL: relay.url, HOAI_RELAY_PAIRING_TOKEN: PAIRING })
   try {
     await c.init()
-    for (const [name, args] of [['browser_type', { target: 'e1', text: 'hello', submit: true }], ['browser_type', { target: 'e1', text: 'hello\n', slowly: true }], ['browser_press_key', { key: 'Shift+Enter' }], ['browser_press_key', { key: 'Space' }]] as const) {
+    for (const [name, args] of [['browser_type', { target: 'e1', text: 'hello', submit: true }], ['browser_type', { target: 'e1', text: 'hello\n', slowly: true }], ['browser_press_key', { key: 'Shift+Enter' }], ['browser_press_key', { key: 'Space' }], ...[
+      'Enter+Shift', 'Space+Shift', 'NumpadEnter+Control', 'Return+Alt',
+      'Spacebar+Meta', ' +Shift', 'h+Enter+Shift', 'Shift+Enter+ArrowLeft',
+      'h+ArrowLeft', 'Backspace+Shift', 'shift+ArrowLeft', 'Shift++ArrowLeft', '',
+      'Shift+\n+ArrowLeft',
+    ].map(key => ['browser_press_key', { key }] as const)] as const) {
       const count = relay.state.seen.length
       const refused = await c.request('tools/call', { name, arguments: args })
       assert.equal(refused.result.isError, true)
