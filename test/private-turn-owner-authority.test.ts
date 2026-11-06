@@ -291,8 +291,13 @@ test('control: a share recipient\'s wake of another chat never joins the owner\'
   const card = host.card(theirs)
   assert.ok(host.lines.includes(privateRevokeLine({ chatId: String(RECIPIENT_CHAT), why: 'another person' })))
   host.submit(card)
-  for (const name of GATED) assert.equal(await actsFor(host, name), RECIPIENT, `their wake's own prompt acts only as them: ${name}`)
+  await assertGatedRefused(host, 'the mixed turn grants neither sender authority')
   for (const name of TURN_AWARE) assert.notEqual(await actsFor(host, name), 'owner', name)
+  host.stop()
+  const next = wakeFrame(RECIPIENT_CHAT, 703)
+  next.eventMeta.payload.actingUserId = RECIPIENT
+  host.submit(host.card(next))
+  for (const name of GATED) assert.equal(await actsFor(host, name), RECIPIENT, `a fresh recipient turn: ${name}`)
 })
 
 // ── Security review of c09e214e (findings fixed red first) ──

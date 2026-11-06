@@ -10735,14 +10735,15 @@ const privateFires = createFireLedger({ path: privateFiresPath(FLOOR_STATE_ROOT,
 const PRIVATE_MARKER_PATHS = FLOOR_KEYS.map((key) => privateMarkerPath(FLOOR_STATE_ROOT, key))
 const privateTurns = createPrivateTurnTracker({ ownerUserId: USER_ID, markerPaths: PRIVATE_MARKER_PATHS, fires: privateFires, onRevoke: (info) => { log(privateRevokeLine(info)); publishBrowserPrivateTurn() }, onRepeat: (repeat) => log(privateRepeatLine(repeat)), onReplay: (replay) => log(privateReplayLine(replay)), onUnrecorded: (info) => log(privateUnrecordedLine(info)), onEnded: (info) => log(privateEndedLine(info)) })
 // Every channel card passes here. One that skipped privateTurns.deliver (a meeting line, a button tap, a voice
-// dispatch or stop) names nobody, so it ends a voice consult's private turn, whose authority is that consult's
-// alone. Chat and scheduler turns keep today's rules (privateTurns.rawCard). Its meta says which card it is: one that
+// dispatch or stop) names nobody, so it ends a recipient's or voice consult's private turn. All notifications retain
+// their provenance. Owner chat and scheduler turns keep their raw-card policy (privateTurns.rawCard). Its meta says which card it is: one that
 // names nobody but the owner (the owner's tap, a peer conversation close, a reply reminder) may run as a prompt of
 // the owner's turn without ending it (c09e214e).
 const sendMcpNotification = mcp.notification.bind(mcp)
 mcp.notification = ((notification: Parameters<typeof mcp.notification>[0]) => {
   if (notification?.method === 'notifications/claude/channel') {
     const params = notification.params as { content?: unknown; meta?: unknown } | undefined
+    if (params) params.content = privateTurns.tagRawCard(params.content ?? '')
     privateTurns.rawCard(String(params?.content ?? ''), params?.meta)
   }
   return sendMcpNotification(notification)

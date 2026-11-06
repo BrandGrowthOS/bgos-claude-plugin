@@ -69,7 +69,7 @@ function fixture(t: { after: (fn: () => void) => void }) {
   const env = { ...process.env, BGOS_PLUGIN_STATE_DIR: root, CLAUDE_PROJECT_DIR: cwd }
   markFloorAttached({ root, folders: [cwd] })
   const markerPaths = [privateMarkerPath(root, floorKey(cwd))]
-  const tracker = createPrivateTurnTracker()
+  const tracker = createPrivateTurnTracker({ ownerUserId: OWNER })
   const deliver = (turn: TurnShape): string => tracker.deliver({
     content: `turn text for message ${turn.messageId}`,
     chatId: turn.chatId,

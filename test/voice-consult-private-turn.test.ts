@@ -89,7 +89,7 @@ function fixture(t: any, clock = { now: T0 }) {
   const markerPaths = [privateMarkerPath(root, floorKey(cwd))]
   let revoked = 0
   const revokes: Array<{ chatId: string, why: string, consultId?: string }> = []
-  const tracker = createPrivateTurnTracker({ now: () => clock.now, onRevoke: (info) => { revoked++; revokes.push(info) } })
+  const tracker = createPrivateTurnTracker({ ownerUserId: OWNER, now: () => clock.now, onRevoke: (info) => { revoked++; revokes.push(info) } })
   /** The prompt Claude Code submits for a delivered card, through the real synchronous hook. */
   const submit = (prompt: string, session = 'session-a') => {
     recordPrivateBoundary({ hook_event_name: 'UserPromptSubmit', session_id: session, cwd, prompt }, env)

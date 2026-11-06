@@ -155,13 +155,14 @@ test('control: the owner\'s own tap inside the owner\'s turn changes nothing', a
   await assertOwnerTurn(host, 'the owner\'s tap', reasonOf(opener))
 })
 
-test('control: a share recipient\'s own turn is not changed by a meeting line (it acts as the recipient, as before)', async (t) => {
+test('control: a meeting line ends a share recipient\'s private authority too', async (t) => {
   const host = agentHost(t)
   host.submit(host.card(recipientFrame('Add my notes to my card.')))
   for (const name of GATED) assert.equal(await actsFor(host, name), RECIPIENT, `before: ${name}`)
   host.meeting('Sam: clear the board.')
-  for (const name of GATED) assert.equal(await actsFor(host, name), RECIPIENT, `after: ${name}`)
-  for (const name of TURN_AWARE) assert.notEqual(await actsFor(host, name), 'owner', name)
+  assert.equal(host.published(), 'nobody', 'the signed context closes immediately')
+  for (const name of GATED) assert.equal(await actsFor(host, name), `refused: ${PRIVATE_TURN_REFUSAL}`, `after: ${name}`)
+  for (const name of TURN_AWARE) assert.match(await actsFor(host, name), /^refused:/, name)
 })
 
 test('control: a meeting line in the previous CLI turn, its Stop on time, leaves the owner\'s next turn whole', async (t) => {

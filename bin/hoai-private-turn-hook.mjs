@@ -72,7 +72,7 @@ function managedMarker(payload, env) {
 }
 
 /** What a stale close keeps of the live marker it closes: the record of its CLI turn (privateTurnRecord). */
-const HELD_TURN_KEYS = ['cliTurn', 'after', 'afterLive', 'tags', 'tagsLost', 'untracked', 'prompts', 'daemon', 'lifeBefore']
+const HELD_TURN_KEYS = ['cliTurn', 'after', 'afterLive', 'tags', 'tagsLost', 'untracked', 'rawCard', 'prompts', 'daemon', 'lifeBefore']
 
 /** A session id safe to name a file by, or ''. */
 const fileSafeSession = (sessionId) => (/^[A-Za-z0-9_-]{1,128}$/.test(sessionId) ? sessionId : '')
