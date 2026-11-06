@@ -248,6 +248,8 @@ test('discoverChats marks each inbox row the backend names a user for', async ()
     ASSISTANT_ID: '900', log: () => {}, monitoredChatIds: [], noteMonitoredChat: () => {},
     reconcileMeetingContexts: () => {}, rememberMeetingContext: () => {}, bgosGetCachedOn304: async () => [],
     chatOwnership: owned,
+    // The seat read is its own function, tested in group-write-after-restart.e2e.test.ts.
+    discoverSeatChats: async () => {},
     bgosPeerGet: async () => ({ chats: [
       { id: 10, assistantId: 900, kind: 'main', userId: OWNER },
       { id: 20, assistantId: 900, kind: 'main', user_id: RECIPIENT },
