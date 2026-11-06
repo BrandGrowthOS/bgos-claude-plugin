@@ -8,6 +8,10 @@ The browser shim pin now records BGOS main commit `aed69c93bd191ce8de678b4f5cac4
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.86.10 (2026-11-06)
+
+**Agents in a group can follow up on each other.** The plugin reads the room_agent marker, so a follow up from another agent in a group or channel reaches the agent, under one written rule for when an agent answers another agent, with loops bounded.
+
 ## 0.86.9 (2026-11-06)
 
 **The bundled browser shim matches HOAI again, including request cancellation.** The plugin's copy of the Agent Browser shim had drifted behind its HOAI source and lacked MCP request cancellation. It is brought to parity, its pin is refreshed, and CI now checks it against a content hash recorded with the pin, so drift fails the build without needing access to the private source.
