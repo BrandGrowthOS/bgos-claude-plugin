@@ -1765,12 +1765,52 @@ export function fleetClaudeLoginAnswered({ configDir, since, listDir, mtimeMs, r
 
 /** Did the CLI sign in again after a failure at `since`? It rewrites `<configDir>/.credentials.json` on
  *  /login (and on each token refresh, which also proves the login works). Only the file's time is
- *  looked at, never what it holds; a login kept elsewhere (the macOS Keychain) has no such file, and
- *  only an answer clears its failure.
+ *  looked at, never what it holds. macOS uses the separate status probe below because its login is
+ *  in the Keychain, and a credential file there is not proof of that login.
  *  @param {{ configDir: string, since: number, mtimeMs: (path: string) => number | null }} input */
 export function claudeSignedInSince({ configDir, since, mtimeMs }) {
   const written = mtimeMs(joinDir(configDir, '.credentials.json'))
   return written != null && written > since
+}
+
+/** A non interactive status read of this launch's credential store. No credential file or Keychain
+ *  item is opened here, and neither CLI output nor account details escape this boolean probe.
+ *  A failed command, unknown format or non subscription login cannot lift a held login failure.
+ *  Keep CLAUDE_CONFIG_DIR exactly as launched: setting it only for the probe could select another
+ *  account file or Keychain store, even when the supplied directory is the default one.
+ *  @param {{ env?: Record<string, string | undefined>, run?: typeof spawnSync }} input */
+export function probeClaudeSignedIn({ env = process.env, run = spawnSync }) {
+  try {
+    const result = run('claude', ['auth', 'status', '--json'], {
+      env: { ...env },
+      encoding: 'utf8', timeout: 5000, maxBuffer: 16 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'], shell: false, windowsHide: true,
+    })
+    if (result?.error || result?.status !== 0) return false
+    const status = JSON.parse(String(result.stdout ?? ''))
+    return status?.loggedIn === true && status?.authMethod === 'claude.ai'
+  } catch {
+    return false
+  }
+}
+
+/** At most one macOS status command per three minutes, only while a login failure is held.
+ *  Never cache success: a later failure needs a new proof. Other platforms keep the stat-only path.
+ *  @param {{ platform: string, configDir: string, env?: Record<string, string | undefined>,
+ *    now?: () => number, mtimeMs?: (path: string) => number | null, probe?: () => boolean }} input */
+export function createClaudeSignInCheck({ platform, configDir, env, now = Date.now, mtimeMs = fileMtimeMs, probe = () => probeClaudeSignedIn({ env }) }) {
+  let nextProbeAt = 0
+  return (since) => {
+    if (platform !== 'darwin') return claudeSignedInSince({ configDir, since, mtimeMs })
+    const at = now()
+    if (at <= since || at < nextProbeAt) return false
+    nextProbeAt = at + 180_000
+    try {
+      return probe() === true
+    } catch {
+      return false
+    }
+  }
 }
 
 /** A file's modification time in ms, or null. Never throws. */
@@ -2288,6 +2328,7 @@ export function hostHasExpect({ platform, env = process.env, exists = existsSync
  *   clearConsole?: () => unknown,
  *   claudeLoginFailure?: () => { at: number, text: string } | null,
  *   claudeLoginBackSince?: (at: number) => boolean,
+ *   probeClaudeSignedIn?: () => boolean,
  * }} [opts]
  * @returns {Promise<number>}
  *
@@ -2675,10 +2716,11 @@ export async function superviseClaude(args, opts = {}) {
   // with no channel heartbeat: the CLI's own records, in the store it signs in through.
   const loginStore = { configDir: claudeConfigDir({ env, home }), listDir, mtimeMs: fileMtimeMs, readTail: (path) => readFileTail(path, LOGIN_TAIL_BYTES) }
   const claudeLoginFailure = opts.claudeLoginFailure ?? (() => fleetClaudeLoginFailure({ ...loginStore, now: now() }))
+  const signedInSince = createClaudeSignInCheck({ platform, configDir: loginStore.configDir, env, now, probe: opts.probeClaudeSignedIn })
   // Has the login come back since a failure: a sign-in after it, or an agent's answer after it.
   const claudeLoginBackSince =
     opts.claudeLoginBackSince ??
-    ((at) => claudeSignedInSince({ ...loginStore, since: at }) || fleetClaudeLoginAnswered({ ...loginStore, since: at }))
+    ((at) => signedInSince(at) || fleetClaudeLoginAnswered({ ...loginStore, since: at }))
   // The shared login failure an alert was made for: it stands, across relaunches too, until the
   // login comes back after it.
   let loginFailure = null
