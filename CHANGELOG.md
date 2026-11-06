@@ -8,7 +8,7 @@ Running commands is not available for people you share with yet. Your own tools 
 
 ## 0.86.8 (2026-11-07)
 
-**Sharing, installing, listing and removing skills no longer take two different folders for one.** The checks that keep an agent's skills folder apart from the computer's skills folder compared each folder's number as an ordinary number. On some drives those numbers are larger than an ordinary number can hold exactly, so two different folders could look identical and a skill could be refused for no reason. The numbers are now compared exactly. A folder whose number the drive does not give, or gives as zero, is treated as unknown and is never counted as the same folder as another. A folder that really is the computer's skills folder is still refused.
+**Sharing, installing, listing and removing skills no longer take two different folders for one.** The checks that keep an agent's skills folder apart from the computer's skills folder compared each folder's number as an ordinary number. On some drives those numbers are larger than an ordinary number can hold exactly, so two different folders could look identical and a skill could be refused for no reason. The numbers are now compared exactly. A folder whose number the drive does not give, or gives as zero, is treated as unknown and is never counted as the same folder as another. A folder that really is the computer's skills folder is still refused. On a drive that gives no folder numbers at all, folders are compared by where they really are (case and accents ignored), so the computer's skills folder is never taken for the agent's, and nothing is written into it.
 
 ## 0.86.7 (2026-11-06)
 

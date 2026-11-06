@@ -19,6 +19,7 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -78,7 +79,7 @@ function bundle(files: Array<{ path: string; content: string }>, extra: Record<s
 function inst(
   w: World,
   payload: Record<string, unknown>,
-  opts: { agentDir?: string | null; platform?: NodeJS.Platform; rename?: (a: string, b: string) => void } = {},
+  opts: { agentDir?: string | null; platform?: NodeJS.Platform; rename?: (a: string, b: string) => void; fs?: IdentFs; onStage?: (stage: string) => void } = {},
 ) {
   const stages: string[] = []
   return installBundle({
@@ -93,8 +94,10 @@ function inst(
     payload,
     progress: (s) => {
       stages.push(s)
+      opts.onStage?.(s)
     },
     ...(opts.rename ? { rename: opts.rename } : {}),
+    ...(opts.fs ? { fs: opts.fs } : {}),
   }).then((answer) => ({ answer, stages }))
 }
 
@@ -445,6 +448,77 @@ test('a file number the system left out or gave as zero is unknown, and unknown 
   assert.equal(exportWithFolderNumbers({ dev: 7n }, { dev: 7n }), 'ok')
   assert.equal(exportWithFolderNumbers({ ino: 42n }, { ino: 42n }), 'ok')
   assert.equal(exportWithFolderNumbers({ dev: 0n, ino: 42n }, { dev: 0n, ino: 42n }), 'ok')
+})
+
+/** A drive that gives no folder numbers: every folder it reports has a zero file number. */
+const NO_NUMBERS: FolderNumbers = { dev: 7n, ino: 0n }
+
+test('with no folder numbers, export still refuses an agent folder that is the computer skills folder, by where it is', () => {
+  const w = world()
+  write(join(w.config, 'skills', 'notes', 'SKILL.md'), SKILL)
+  // an agent launched in the home folder: its .claude/skills IS the computer's, and neither has a number
+  const fs = fakeIdentFs(new Map([[join(w.config, 'skills'), NO_NUMBERS]]))
+  const answer = exp(w, { name: 'notes', scope: 'agent' }, w.home, fs)
+  assert.equal(answer.ok ? 'ok' : answer.code, 'scope_refused')
+})
+
+test('with no folder numbers, export refuses an agent folder inside the computer skills folder too', () => {
+  const w = world()
+  const agentDir = join(w.config, 'skills', 'an-agent')
+  write(join(agentDir, '.claude', 'skills', 'notes', 'SKILL.md'), SKILL)
+  const fs = fakeIdentFs(new Map([[join(agentDir, '.claude', 'skills'), NO_NUMBERS], [join(w.config, 'skills'), NO_NUMBERS]]))
+  const answer = exp(w, { name: 'notes', scope: 'agent' }, agentDir, fs)
+  assert.equal(answer.ok ? 'ok' : answer.code, 'scope_refused')
+})
+
+test('with no folder numbers, install still never writes into the computer skills folder', async () => {
+  const w = world()
+  const fs = fakeIdentFs(new Map([[join(w.config, 'skills'), NO_NUMBERS]]))
+  const { answer } = await inst(w, bundle(FILES), { agentDir: w.home, fs })
+  assert.equal(answer.ok, false)
+  if (!answer.ok) assert.equal(answer.code, 'scope_refused')
+  assert.deepEqual(tree(join(w.config, 'skills')), [])
+})
+
+test('with no folder numbers, install refuses an agent launched inside the computer skills folder before its own skills folder exists', async () => {
+  const w = world()
+  const inner = join(w.config, 'skills', 'deep')
+  mkdirSync(inner, { recursive: true })
+  const fs = fakeIdentFs(new Map([[join(w.config, 'skills'), NO_NUMBERS]]))
+  const { answer } = await inst(w, bundle(FILES), { agentDir: inner, fs })
+  assert.equal(answer.ok, false)
+  if (!answer.ok) assert.equal(answer.code, 'scope_refused')
+  assert.deepEqual(tree(join(w.config, 'skills')), [])
+  // refused before anything was made there, not after
+  assert.ok(!existsSync(join(inner, '.claude')), 'no folder was made inside the computer skills folder')
+})
+
+test('with no folder numbers, install still installs into an agent skills folder that is not the computer one', async () => {
+  const w = world()
+  const fs = fakeIdentFs(new Map([[join(w.agent, '.claude', 'skills'), NO_NUMBERS], [join(w.config, 'skills'), NO_NUMBERS]]))
+  const { answer } = await inst(w, bundle(FILES), { fs })
+  assert.equal(answer.ok, true, JSON.stringify(answer))
+  assert.notDeepEqual(tree(join(w.agent, '.claude', 'skills')), [])
+  assert.deepEqual(tree(join(w.config, 'skills')), [])
+})
+
+test('with no folder numbers, install notices the agent folder swapped for a link to another folder while it worked', async () => {
+  const w = world()
+  const other = join(w.root, 'other-agent')
+  mkdirSync(join(other, '.claude', 'skills'), { recursive: true })
+  const fs = fakeIdentFs(new Map([[join(w.agent, '.claude', 'skills'), NO_NUMBERS], [join(w.config, 'skills'), NO_NUMBERS]]))
+  const { answer } = await inst(w, bundle(FILES), {
+    fs,
+    onStage: (stage) => {
+      if (stage !== 'writing') return
+      // the whole agent folder becomes a link to a folder that has real .claude and skills folders of its own
+      renameSync(w.agent, `${w.agent}-moved`)
+      linkFolder(other, w.agent)
+    },
+  })
+  assert.equal(answer.ok, false, JSON.stringify(answer))
+  if (!answer.ok) assert.equal(answer.code, 'scope_refused')
+  assert.deepEqual(tree(other), [], 'nothing was left in the folder it was swapped for')
 })
 
 test('export finds a skill by the name its list row showed, never a folder another row is named by', () => {

@@ -198,21 +198,63 @@ function chainOf(path: string, fs?: IdentFs): string[] {
 }
 
 /**
+ * Where a folder really is, spelled so a folding file system cannot hide it: its real path, NFC folded and
+ * lower cased. This is the fallback for a folder whose identity is unknown (see identOf), and on a case
+ * sensitive file system it only refuses more.
+ */
+function placeOf(path: string): string {
+  return (realOrNull(path) ?? resolve(path)).normalize('NFC').toLowerCase()
+}
+
+/** `child` is `parent` or inside it, both already spelled by placeOf. */
+function placeInside(child: string, parent: string): boolean {
+  return child === parent || child.startsWith(parent.endsWith(sep) ? parent : parent + sep)
+}
+
+/**
  * The same folder, or one inside the other, compared by identity and never by
  * spelling: on APFS and NTFS `/Users/x` and `/users/x` are one folder, and
- * node's realpathSync keeps whichever spelling it was given.
+ * node's realpathSync keeps whichever spelling it was given. When either folder's
+ * identity is unknown (a drive that keeps no folder numbers) the real places are
+ * compared instead, so an unknown folder is never waved through as separate.
  */
 export function overlaps(a: string, b: string, fs?: IdentFs): boolean {
   const ia = identOf(a, true, fs)
   const ib = identOf(b, true, fs)
-  if (!ia || !ib) return false
+  if (!ia || !ib) {
+    const pa = placeOf(a)
+    const pb = placeOf(b)
+    return placeInside(pa, pb) || placeInside(pb, pa)
+  }
   return chainOf(a, fs).includes(ib) || chainOf(b, fs).includes(ia)
 }
 
-/** `child` is `parent` or inside it, by identity. */
-function under(child: string, parent: string): boolean {
-  const ip = identOf(parent)
-  return !!ip && chainOf(child).includes(ip)
+/** `child` is `parent` or inside it, by identity; by real place where the parent's identity is unknown. */
+function under(child: string, parent: string, fs?: IdentFs): boolean {
+  const ip = identOf(parent, true, fs)
+  if (!ip) return placeInside(placeOf(child), placeOf(parent))
+  return chainOf(child, fs).includes(ip)
+}
+
+/** A folder as it stands: its identity where known, and where it really is. */
+export interface FolderMark {
+  id: string | null
+  place: string
+}
+
+export function markOf(path: string, fs?: IdentFs): FolderMark {
+  return { id: identOf(path, false, fs), place: placeOf(path) }
+}
+
+/**
+ * Still the same folder after a check and before a write. Both identities known: they decide. Both unknown (a
+ * drive that keeps no folder numbers): the real place decides, so a folder swapped for a link elsewhere is
+ * caught. One known and one unknown is a change.
+ */
+export function sameMark(before: FolderMark, after: FolderMark): boolean {
+  if (before.id !== null && after.id !== null) return before.id === after.id
+  if (before.id !== after.id) return false
+  return before.place === after.place
 }
 
 /**
@@ -221,17 +263,15 @@ function under(child: string, parent: string): boolean {
  * still missing by its spelling, case and NFC folded so a folding file system
  * cannot hide it (on a case sensitive one this only refuses more).
  */
-export function wouldBeUnder(child: string, root: string): boolean {
+export function wouldBeUnder(child: string, root: string, fs?: IdentFs): boolean {
   const childAt = existingAncestor(child)
-  if (existsSync(root)) return under(childAt, root)
+  if (existsSync(root)) return under(childAt, root, fs)
   const rootAt = existingAncestor(root)
-  if (!under(childAt, rootAt)) return false
+  if (!under(childAt, rootAt, fs)) return false
   const fold = (p: string) => p.normalize('NFC').toLowerCase()
   const childReal = join(realOrNull(childAt) ?? childAt, relative(childAt, resolve(child)))
   const rootReal = join(realOrNull(rootAt) ?? rootAt, relative(rootAt, resolve(root)))
-  const c = fold(childReal)
-  const r = fold(rootReal)
-  return c === r || c.startsWith(r.endsWith(sep) ? r : r + sep)
+  return placeInside(fold(childReal), fold(rootReal))
 }
 
 /** The nearest folder at or above `path` that exists. */
@@ -605,6 +645,8 @@ export type ListSkillsInput = {
   home: string
   managedDir: string
   log?: (msg: string) => void
+  /** The stat calls the folder checks make; a test hands in its own. Default: the real file system. */
+  fs?: IdentFs
 }
 
 export function nameKey(name: string): string {
@@ -627,7 +669,7 @@ export function listSkills(input: ListSkillsInput): SkillsList {
     const agentDir = resolve(input.agentDir)
     const agentSkills = join(agentDir, '.claude', 'skills')
     const exists = existsSync(agentSkills)
-    if (exists && foreign.some((f) => overlaps(agentSkills, f))) {
+    if (exists && foreign.some((f) => overlaps(agentSkills, f, input.fs))) {
       omitted.push({ scope: 'agent', reason: 'agent_is_computer' })
     } else {
       agentRoots.push({ scope: 'agent', dir: agentSkills, removable: agentParentsSafe(agentDir) })
@@ -635,7 +677,7 @@ export function listSkills(input: ListSkillsInput): SkillsList {
     }
     for (const level of repoLevels(agentDir)) {
       const dir = join(level, '.claude', 'skills')
-      if (!existsSync(dir) || foreign.some((f) => overlaps(dir, f))) continue
+      if (!existsSync(dir) || foreign.some((f) => overlaps(dir, f, input.fs))) continue
       foreign.push(dir)
       agentRoots.push({ scope: 'repo', dir })
     }
@@ -781,14 +823,14 @@ export function removeAgentSkill(input: RemoveSkillInput): SkillRemoveAnswer {
   // The trash is outside every skills root, or Claude Code would load the removed skill again.
   const trashDir = resolve(input.trashDir)
   const roots = [agentSkills, ...foreign, ...repoLevels(agentDir).map((l) => join(l, '.claude', 'skills'))]
-  if (roots.some((r) => wouldBeUnder(trashDir, r))) {
+  if (roots.some((r) => wouldBeUnder(trashDir, r, input.fs))) {
     return refuse('write_failed', 'the trash folder is inside a skills folder, so nothing was moved')
   }
 
   const shown = displayPath(target, home)
   // Read the way the moved entry is read after the move, or the two would never agree past 2^53.
   const targetId = identOf(target, false, input.fs)
-  const skillsId = identOf(agentSkills, false, input.fs)
+  const skillsMark = markOf(agentSkills, input.fs)
   let dest: string
   try {
     mkdirSync(trashDir, { recursive: true })
@@ -802,7 +844,7 @@ export function removeAgentSkill(input: RemoveSkillInput): SkillRemoveAnswer {
 
   // Checked again right before the move, and the moved entry checked after it:
   // a parent swapped for a link in between would otherwise move a computer skill.
-  if (!agentParentsSafe(agentDir) || identOf(agentSkills, false, input.fs) !== skillsId) {
+  if (!agentParentsSafe(agentDir) || !sameMark(markOf(agentSkills, input.fs), skillsMark)) {
     return refuse('scope_refused', 'the skills folder of this agent changed while removing, so nothing was moved')
   }
   try {
@@ -816,7 +858,7 @@ export function removeAgentSkill(input: RemoveSkillInput): SkillRemoveAnswer {
     }
     return refuse('write_failed', 'the skill could not be moved to the trash')
   }
-  if (identOf(dest, false, input.fs) !== targetId || !agentParentsSafe(agentDir) || identOf(agentSkills, false, input.fs) !== skillsId) {
+  if (identOf(dest, false, input.fs) !== targetId || !agentParentsSafe(agentDir) || !sameMark(markOf(agentSkills, input.fs), skillsMark)) {
     try {
       // put back with the real move, wherever the path now leads: it came from there
       renameSync(dest, target)

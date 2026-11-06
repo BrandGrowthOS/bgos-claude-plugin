@@ -39,10 +39,14 @@ import {
   displayPath,
   identOf,
   listSkills,
+  markOf,
   managedSkillsDir,
+  overlaps,
   parseFrontmatter,
   readSkillHead,
   removeAgentSkill,
+  sameMark,
+  wouldBeUnder,
   type IdentFs,
   type SkillItem,
 } from '../lib/skills-inventory.ts'
@@ -712,6 +716,95 @@ test('remove goes on when the drive gives no file number, as it did before: an u
     assert.equal(answer.ok, true, JSON.stringify(answer))
     assert.ok(!existsSync(target))
   }
+})
+
+/** A drive that gives no folder numbers: every folder it reports has a zero file number. */
+const NO_NUMBERS: FolderNumbers = { dev: 7n, ino: 0n }
+
+test('with no folder numbers, an agent folder whose skills ARE the computer skills is still listed once, as computer', () => {
+  const f = fixture()
+  const fs = fakeIdentFs(new Map([[join(f.home, '.claude', 'skills'), NO_NUMBERS]]))
+  const { skills, omitted } = listSkills({ agentDir: f.home, configDir: join(f.home, '.claude'), home: f.home, managedDir: f.managed, fs })
+  assert.ok(!skills.some((s) => s.scope === 'agent'), JSON.stringify(skills.filter((s) => s.scope === 'agent')))
+  assert.deepEqual(omitted, [{ scope: 'agent', reason: 'agent_is_computer' }])
+})
+
+test('with no folder numbers, remove still refuses a skill of the computer folder reached as the agent one', () => {
+  const f = fixture()
+  const fs = fakeIdentFs(new Map([[join(f.home, '.claude', 'skills'), NO_NUMBERS]]))
+  const { answer } = remove(f, { name: 'not-in-config', scope: 'agent', path: '~/.claude/skills/not-in-config' }, f.home, { fs })
+  assert.equal((answer as any).code, 'scope_refused')
+  assert.ok(existsSync(join(f.home, '.claude', 'skills', 'not-in-config')))
+})
+
+test('a folder is the same folder after a check by its number, or by where it is when it has no number', () => {
+  const f = fixture()
+  const a = join(f.home, 'one')
+  const b = join(f.home, 'two')
+  mkdirSync(a)
+  mkdirSync(b)
+  // known numbers decide
+  assert.equal(sameMark(markOf(a), markOf(a)), true)
+  assert.equal(sameMark(markOf(a), markOf(b)), false)
+  // no numbers: the place decides, so the same folder is the same and another folder is not
+  const none = fakeIdentFs(new Map([[a, NO_NUMBERS], [b, NO_NUMBERS]]))
+  assert.equal(markOf(a, none).id, null)
+  assert.equal(sameMark(markOf(a, none), markOf(a, none)), true)
+  assert.equal(sameMark(markOf(a, none), markOf(b, none)), false)
+  // a number that came and went, or went and came, is a change
+  const onlyA = fakeIdentFs(new Map([[a, NO_NUMBERS]]))
+  assert.equal(sameMark(markOf(a), markOf(a, onlyA)), false)
+  assert.equal(sameMark(markOf(a, onlyA), markOf(a)), false)
+})
+
+test('with no folder numbers, two different folders are not one, and a folder inside another is', () => {
+  const f = fixture()
+  const plain = join(f.home, 'plain-skills')
+  const sibling = join(f.home, 'plain-skills-old')
+  const inner = join(plain, 'inner')
+  mkdirSync(inner, { recursive: true })
+  mkdirSync(sibling)
+  const fs = fakeIdentFs(new Map([[plain, NO_NUMBERS], [sibling, NO_NUMBERS], [inner, NO_NUMBERS]]))
+  assert.equal(overlaps(plain, sibling, fs), false, 'a name that only starts the same is another folder')
+  assert.equal(overlaps(sibling, plain, fs), false)
+  assert.equal(overlaps(plain, inner, fs), true)
+  assert.equal(overlaps(inner, plain, fs), true)
+  assert.equal(wouldBeUnder(join(plain, 'not', 'made', 'yet'), plain, fs), true)
+  assert.equal(wouldBeUnder(join(sibling, 'not', 'made', 'yet'), plain, fs), false)
+})
+
+test('with no folder numbers, an agent folder that is not the computer one is still listed as the agent', () => {
+  const f = fixture()
+  const fs = fakeIdentFs(new Map([[join(f.agent, '.claude', 'skills'), NO_NUMBERS], [join(f.config, 'skills'), NO_NUMBERS]]))
+  const { skills, omitted } = listSkills({ agentDir: f.agent, configDir: f.config, home: f.home, managedDir: f.managed, fs })
+  assert.ok(skills.some((s) => s.scope === 'agent' && s.name === 'agent-skill'))
+  assert.ok(!(omitted ?? []).some((o) => o.reason === 'agent_is_computer'))
+})
+
+test('with no folder numbers, remove notices the agent folder swapped for a link to another folder around the move', () => {
+  const f = fixture()
+  const target = join(f.agent, '.claude', 'skills', 'agent-skill')
+  const trashDir = join(f.home, 'state', 'skills-trash')
+  const moved = join(trashDir, '001700000000000-agent-skill')
+  const other = join(f.home, 'other-agent')
+  mkdirSync(join(other, '.claude', 'skills'), { recursive: true })
+  const fs = fakeIdentFs(new Map([
+    [target, NO_NUMBERS],
+    [moved, NO_NUMBERS],
+    [join(f.agent, '.claude', 'skills'), NO_NUMBERS],
+  ]))
+  const { answer } = remove(f, { name: 'agent-skill', scope: 'agent', path: target }, f.agent, {
+    trashDir,
+    fs,
+    rename: (from, to) => {
+      renameSync(from, to)
+      // right after the move, the whole agent folder becomes a link to a folder with real .claude and skills folders
+      renameSync(f.agent, `${f.agent}-moved`)
+      linkFolder(other, f.agent)
+    },
+  })
+  assert.equal(answer.ok, false, JSON.stringify(answer))
+  assert.equal((answer as any).code, 'scope_refused')
 })
 
 test.after(() => {
