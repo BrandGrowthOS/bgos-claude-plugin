@@ -20,6 +20,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import ts from 'typescript'
+import * as peerClosedReply from '../lib/peer-closed-reply.ts'
 
 // Absent on code without the nudge, which is exactly what the red run needs.
 const shapes: Record<string, unknown> = await import('../lib/reply-card-shape.ts').catch(() => ({}))
@@ -135,6 +136,7 @@ function harness(opts: {
   const sent: string[] = []
   const logs: string[] = []
   const closedPeerChats = new Set<string>(opts.closedChats ?? [])
+  const peerConvByChat = new Map((opts.peerChats ?? []).map((c) => [c, '76']))
   let peerSendResult: unknown = null
   const recorder: unknown = new Proxy(function () {}, {
     get: (_t, key) => (key === Symbol.toPrimitive ? () => '' : recorder),
@@ -143,6 +145,7 @@ function harness(opts: {
   const Nudges = shapes.ReplyCardNudges as (new (o: { now: () => number }) => unknown) | undefined
   const known: Record<string, unknown> = {
     ...shapes,
+    ...peerClosedReply,
     Date: FakeDate,
     log: (line: string) => logs.push(line),
     ASSISTANT_ID: '947',
@@ -150,7 +153,11 @@ function harness(opts: {
     peerReplyRefusedChats: new Set<string>(),
     pendingInbounds: new Map<string, unknown>(),
     meetingIdByChatId: new Map<string, number>(),
-    peerConvByChat: new Map((opts.peerChats ?? []).map((c) => [c, '76'])),
+    peerConvByChat,
+    peerSideThreadChats: new Set<string>(),
+    mainChatIds: ['33001'],
+    groupChatIds: new Set<string>(),
+    meetingChatIds: new Set<string>(),
     peerConvChats: new Map((opts.peerChats ?? []).map((c) => ['76', c])),
     closedPeerChats,
     bgosPeerPost: async () => peerSendResult,
@@ -162,7 +169,11 @@ function harness(opts: {
       assert.equal(path, 'send-message')
       sent.push(JSON.stringify(body))
       if (opts.failSend) throw new Error('HTTP 500: Internal server error')
-      return { message: { id: 9002 } }
+      const chatId = String((body as { chatId: unknown }).chatId)
+      return {
+        message: { id: 9002 },
+        ...(peerConvByChat.has(chatId) ? { peerDelivery: { state: 'forwarded' } } : {}),
+      }
     },
     // The gate's own inputs, as a Linux pairing with no tmux target reads them.
     compactTarget: null,
