@@ -758,11 +758,25 @@ function withoutProfileChoice(text, rewrites = []) {
   return out.split("\n").map(line => line.split(SENTENCE_END).filter(sentence => !PROFILE_CHOICE.test(sentence)).join(" ")).join("\n");
 }
 
+const FORM_CLICK_REQUIRED = "Fill only enters text. To submit a form, make a separate browser_click on its current submit control, with its own approval and exact target check.";
+function refusesCompositeAction(name, args = {}) {
+  if (name === "browser_press_sequentially") return true;
+  if (name === "browser_type" && ["submit", "slowly"].some(key => Object.hasOwn(args, key) && args[key] !== false)) return true;
+  return name === "browser_press_key" && (/[\r\n]/.test(args.key || "") || /^(?:Enter|NumpadEnter|Return| |Space|Spacebar)$/i.test(String(args.key || "").split("+").pop()));
+}
+function fillOnlyTool(tool) {
+  if (!["browser_type", "browser_press_key"].includes(tool?.name)) return tool;
+  const schema = tool.inputSchema || { type: "object" };
+  const { submit: _submit, slowly: _slowly, ...properties } = schema.properties || {};
+  return { ...tool, description: tool.name === "browser_type" ? "Fill text into an editable element. " + FORM_CLICK_REQUIRED : "Press a non-activating key. Enter, Return and Space are unavailable. " + FORM_CLICK_REQUIRED,
+    inputSchema: { ...schema, properties, ...(Array.isArray(schema.required) ? { required: schema.required.filter(key => key !== "submit" && key !== "slowly") } : {}) } };
+}
+
 /** A host's tool list with no profile choice: hoai_browser_open_session loses its profile argument and says why. */
 function withoutProfileTools(message, route) {
   const tools = message?.result?.tools;
   if (!Array.isArray(tools)) return message;
-  const served = tools.map(tool => {
+  const served = tools.filter(tool => tool?.name !== "browser_press_sequentially").map(fillOnlyTool).map(tool => {
     if (!tool || typeof tool.name !== "string" || !tool.name.startsWith("hoai_browser_")) return tool;
     const copy = { ...tool, description: withoutProfileChoice(tool.description) };
     if (tool.name === "hoai_browser_open_session") {
@@ -914,11 +928,12 @@ async function handle(msg, entry) {
     const instructions = r.mode === "local" ? withoutProfileChoice(r.up.instructions, LOCAL_INSTRUCTION_REWRITES) : r.mode === "relay" ? withoutProfileChoice(r.relay.instructions, INSTRUCTION_REWRITES) : "";
     // A profile refusal comes from a browser that answered, so it is not told as an unreachable desktop app.
     const lead = r.refusal?.profile ? "HOAI Agent Browser: your default browser. " : "HOAI Agent Browser: your default browser once the Home of Agents desktop app is reachable. ";
+    const baseInstructions = instructions || lead + (r.refusal && r.refusal.connecting ? `${CONNECT_LEAD_INSTRUCTIONS} ${r.refusal.reason}` : offlineText(r.refusal, context));
     return reply({
       protocolVersion: clientProtocol,
       capabilities: { tools: { listChanged: true } },
       serverInfo: { name: "hoai-agent-browser", version: "shim-2" },
-      instructions: instructions || lead + (r.refusal && r.refusal.connecting ? `${CONNECT_LEAD_INSTRUCTIONS} ${r.refusal.reason}` : offlineText(r.refusal, context)),
+      instructions: r.mode === "offline" ? baseInstructions : [baseInstructions, FORM_CLICK_REQUIRED].join("\n\n"),
     });
   }
   if (method && method.startsWith("notifications/")) return; // no reply to notifications
@@ -943,6 +958,7 @@ async function handle(msg, entry) {
     return send({ ...withoutProfileTools(res.message, "relay"), id });
   }
   if (method === "tools/call") {
+    if (refusesCompositeAction(params?.name, params?.arguments || {})) return reply({ content: [{ type: "text", text: FORM_CLICK_REQUIRED }], isError: true });
     const r = await resolveRequestMode();
     if (r.mode === "offline") return reply({ content: [{ type: "text", text: offlineText(r.refusal, context) }], isError: params?.name !== "hoai_browser_status" });
     if (r.mode === "local") {

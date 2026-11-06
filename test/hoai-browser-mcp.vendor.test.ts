@@ -140,3 +140,12 @@ test(
     assert.equal(sha256(SHIM), expected, 'and the copy still matches, so the two trees agree')
   },
 )
+
+
+test('host and standalone shim enforce the same fill-only action contract', () => {
+  const host = readFileSync(join(ROOT, 'bin', 'hoai-browser-host.mjs'), 'utf8')
+  const shim = readFileSync(SHIM, 'utf8')
+  const contract = (source: string) => source.slice(source.indexOf('const FORM_CLICK_REQUIRED ='), source.indexOf('\n}', source.indexOf('function fillOnlyTool(')) + 2)
+  assert.ok(contract(host).includes('function refusesCompositeAction('))
+  assert.equal(contract(host), contract(shim), 'the dependency-free shim must carry the same refusal and schema rules')
+})

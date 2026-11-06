@@ -6,6 +6,10 @@ Notable changes to the HOAI Claude Code plugin.
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.86.1 (2026-11-06)
+
+**The portable agent browser.** Filling only enters text; submission requires a separate approved click bound to the exact submit control. Composite submission and activation keys are refused, and the shim pin is `f34e28fc93d1fd6694fbe0be73e09b2966b7797fa7a2fc7ac8359ca69eb6d8b0`. The vendor CLI resolves linked paths and cleanup fixtures use canonical temp roots. The browser host carries the portable browser: privacy exits and exact target and page rechecks, a cached page tree, safe purpose text, sign-ins that stay on the computer they were made on, and downloads the agent did not ask for kept for the owner. Owner held download history resets only right before an agent actually acts. Tab switches keep their remote stream when an old paint acknowledgement finishes late. Tests: the machine sign-ins check reads its folders through fileURLToPath, so it runs on Windows too.
+
 ## 0.86.0 (2026-11-06)
 
 - Saved Artifacts ship with artifact_create, artifact_update, artifact_read, artifact_list and artifact_versions on the paired connection. Dashboards, reports, charts, tables, plans and documents belong in an Artifact with a short chat reply linking to it. Revisions add a version to the same Artifact. Read the live content schema with artifact_read without an id.

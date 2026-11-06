@@ -15,7 +15,7 @@ For managed profiles, the shipped companion starts with the daemon's browser hos
 
 The managed companion uses the plugin's pinned, sandboxed Chromium by default. An explicit `HOAI_BROWSER_EXECUTABLE` override still has to pass the exact native browser qualification. Unsupported versions refuse profile movement. Movement refuses populated password or security-code fields, changed form fields, outstanding or uncertain network operations, and WebSocket, WebTransport or RTC history that cannot be safely moved. These checks are not a generic inventory of application memory or every unfinished OAuth flow. Finish sign-in in its current browser instead of bypassing a refusal or moving a pending login.
 
-For ordinary managed page text, request `browser_type` without `slowly` or `submit`, or `browser_fill_form` with textbox fields. Each needs a fresh **Enter page text** approval and exact current native field classification. Passwords, codes, unknown field purposes, subframes, contenteditable, global keys and automatic submission remain human handover cases. A refused or uncertain action is not retried. Do not put credentials in text arguments to work around that gate. See [managed plaintext fields](../../docs/browser-profile-fields.md).
+For ordinary managed page text, request `browser_type`, or `browser_fill_form` with textbox fields. Each needs a fresh **Enter page text** approval and exact current native field classification. Passwords, codes, unknown field purposes, subframes, contenteditable, global keys and automatic submission remain human handover cases. A refused or uncertain action is not retried. Do not put credentials in text arguments to work around that gate. See [managed plaintext fields](../../docs/browser-profile-fields.md).
 
 Before moving a person's desktop checkpoint to the agent machine, the machine operator must independently compare and review the desktop's full source fingerprint. HOAI exports public review JSON. The operator runs the shipped command only after that comparison:
 
@@ -76,3 +76,5 @@ Encryption protects saved files. The destination page and this agent machine rec
 Close the browser session when finished. An unlocked vault drains its last encrypted snapshot, then locks. No secrets should appear in the task summary.
 
 The pane's collapse arrows hide the view and keep the exact agent browser session running. The X control ends that person's session and saves unlocked encrypted state before confirming closure. An unconfirmed close is not proof of shutdown. Reconnect only restores the view; it never repeats the close request.
+
+Filling only enters text. Submit a form with a separate `browser_click` on the current submit control, with its own approval and exact target check. Composite submission, per-character typing and Enter, Return or Space activation keys are unavailable.

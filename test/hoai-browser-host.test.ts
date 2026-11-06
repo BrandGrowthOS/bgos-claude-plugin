@@ -514,22 +514,35 @@ test('the answer names the socket the frame ARRIVED on, even when the socket rec
   conn.stop()
 })
 
+/** Past any real pid on Linux or macOS. Every launch with a fake browser also injects its kill. */
+const FAKE_PID = 2 ** 30
+
+/** A browser as Playwright's launch answers one, naming its process over the pipe. */
+function fakeBrowser(pid: number) {
+  return Object.assign(new EventEmitter(), {
+    newBrowserCDPSession: async () => ({ send: async () => ({ processInfo: [{ type: 'browser', id: pid }] }), detach: async () => {} }),
+    close: async () => {},
+  })
+}
+
 test('Chrome is launched with the allow-listed environment only (the list itself: test/browser-env.test.ts)', async () => {
   const env = { PATH: '/usr/bin', HOME: '/h', DISPLAY: ':0', XAUTHORITY: '/x', LANG: 'en_US.UTF-8', SSH_AUTH_SOCK: '/tmp/agent.sock', HOAI_BROWSER_HOST_PAIRING_TOKEN: 'pair-secret', BGOS_API_KEY: 'k1', OPENAI_API_KEY: 'k2', GITHUB_TOKEN: 'k3' }
   assert.deepEqual(chromeEnv(env, { platform: 'linux', headed: false }), { PATH: '/usr/bin', HOME: '/h', LANG: 'en_US.UTF-8' })
   let seen: any = null
-  const fakeChrome = Object.assign(new EventEmitter(), { stderr: new EventEmitter(), pid: 1, kill() {} })
-  const launched = launchChromium({
+  const browser = fakeBrowser(FAKE_PID)
+  await launchChromium({
     executable: '/c',
     profileDir: '/p',
     env,
-    spawnImpl: ((_cmd: string, _args: string[], options: any) => {
+    launchImpl: (async (options: any) => {
       seen = options
-      return fakeChrome
+      return browser
     }) as any,
+    // A fake pid never reaches a real signal, and its entry goes: a later stop deadline kills every tracked Chrome.
+    killImpl: (() => {}) as any,
+    aliveImpl: (() => false) as any,
   })
-  fakeChrome.stderr.emit('data', Buffer.from('DevTools listening on ws://127.0.0.1:1/devtools/browser/x\n'))
-  await launched
+  browser.emit('disconnected')
   assert.ok(!Object.values(seen.env).includes('pair-secret'), 'the pairing token never reaches Chrome')
   assert.ok(!('SSH_AUTH_SOCK' in seen.env), 'nor the ssh-agent socket')
   assert.ok(!Object.values(seen.env).some((v) => ['k1', 'k2', 'k3'].includes(String(v))))
@@ -580,7 +593,8 @@ test('the browser_ roster is loaded on first use, once, and a failed load is ret
 test('the roster is the desktop one: four session tools, Playwright tools minus the never set, wait_seconds where a gate could rise', { timeout: 60_000 }, async () => {
   const tools = servedBrowserTools(await listTools({ caps: DEFAULT_CAPS, outputDir: realpathSync(scratchDir('bh-out-')) }))
   const names = tools.map((t: any) => t.name)
-  assert.ok(names.includes('browser_navigate') && names.includes('browser_snapshot') && names.includes('browser_pdf_save'))
+  assert.ok(names.includes('browser_navigate') && names.includes('browser_snapshot'))
+  assert.equal(names.includes('browser_pdf_save'), false, 'a PDF would be a file of the page in the agent\'s folder')
   assert.ok(!names.some((n: string) => NEVER_TOOLS.has(n)), 'no never-exposed tool')
   const byName = new Map<string, any>(tools.map((t: any) => [t.name, t]))
   assert.ok(byName.get('browser_click').inputSchema.properties.wait_seconds, 'a write carries wait_seconds')
@@ -643,9 +657,10 @@ test('a Snap Chromium is skipped on linux, and the message says why', () => {
   assert.equal(both.path, '/opt/google/chrome/chrome', 'a usable Chrome behind a Snap one is still found')
 })
 
-test('chromeArgs: remote debugging on a free port, the profile as the user data dir, headless unless asked', () => {
+test('chromeArgs: remote debugging over a pipe and never a port, the profile as the user data dir, headless unless asked', () => {
   const args = chromeArgs({ profileDir: '/p/owner', headless: true, platform: 'linux' })
-  assert.ok(args.includes('--remote-debugging-port=0'))
+  assert.ok(args.includes('--remote-debugging-pipe'))
+  assert.equal(args.some((arg: string) => arg.startsWith('--remote-debugging-port')), false)
   assert.ok(args.includes('--user-data-dir=/p/owner'))
   assert.ok(args.includes('--headless=new'))
   assert.ok(!chromeArgs({ profileDir: '/p/owner', headless: false, platform: 'darwin' }).includes('--headless=new'))
@@ -687,15 +702,26 @@ test('a stop that runs out of time kills the browsers this host started BEFORE i
 })
 
 test('launchChromium tracks the Chrome it starts, launching or running, until that Chrome exits', async () => {
-  const child = Object.assign(new EventEmitter(), { stderr: new EventEmitter(), signals: [] as string[], kill(sig: string) { child.signals.push(sig); return true } })
-  const launching = launchChromium({ executable: '/fake/chrome', profileDir: '/fake/profile', timeoutMs: 60_000, spawnImpl: (() => child) as any, platform: 'linux', env: {} })
-  launching.catch(() => {})
-  assert.ok(startedChromes.has(child as any), 'tracked from the moment it is spawned, before it is ready')
-  killStartedChromes()
-  assert.deepEqual(child.signals, ['SIGKILL'])
-  child.emit('exit', null, 'SIGKILL')
-  await launching.catch(() => {})
-  assert.equal(startedChromes.has(child as any), false, 'and forgotten once it has exited')
+  const before = new Set(startedChromes)
+  const signals: string[] = []
+  let alive = true
+  const browser = fakeBrowser(FAKE_PID)
+  let ready: (value: any) => void = () => {}
+  const launching = launchChromium({ executable: '/fake/chrome', profileDir: '/fake/profile', timeoutMs: 60_000, platform: 'linux', env: {}, launchImpl: (() => new Promise((resolve) => { ready = resolve })) as any, killImpl: ((pid: number, signal: string) => { signals.push(`${pid} ${signal}`) }) as any, aliveImpl: (() => alive) as any })
+  await new Promise((r) => setImmediate(r))
+  const child = [...startedChromes].find((row) => !before.has(row))
+  assert.ok(child, 'tracked from the moment it is launched, before it is ready')
+  killStartedChromes(new Set([child]) as any)
+  assert.deepEqual(signals, [], 'it has no pid yet')
+  ready(browser)
+  await launching
+  assert.deepEqual(signals, [`${FAKE_PID} SIGKILL`], 'and the kill lands as soon as it has one')
+  assert.ok(startedChromes.has(child), 'still tracked: it has not gone yet')
+  browser.emit('disconnected')
+  assert.ok(startedChromes.has(child), 'a closed pipe alone is not an exit')
+  alive = false
+  for (let i = 0; i < 40 && startedChromes.has(child); i++) await new Promise((r) => setTimeout(r, 25))
+  assert.equal(startedChromes.has(child), false, 'and forgotten once it has exited')
 })
 
 test('a stop that finishes says so, and its deadline never fires afterwards', async () => {
@@ -858,14 +884,23 @@ test(
       }
       const cookieSeenBy = async (principal: string | undefined) => {
         await tool(principal, 'browser_navigate', { url: `${site.url}/show` })
-        return tool(principal, 'browser_evaluate', { function: "() => document.querySelector('h1').textContent" })
+        return tool(principal, 'browser_snapshot')
       }
 
       const init = await rpc('user-user_2Alice', { jsonrpc: '2.0', id: ++id, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'hoai-browser-mcp', version: '0.44.0' } } })
       assert.equal(init.result.serverInfo.name, 'hoai-agent-browser')
       const list = await rpc('user-user_2Alice', { jsonrpc: '2.0', id: ++id, method: 'tools/list' })
-      assert.equal(list.result.tools.length, 29, 'the pinned roster: 4 session tools and 25 browser_ tools')
-      assert.equal(list.result.tools.some((entry: { name: string }) => entry.name === 'browser_emulate_media'), true)
+      assert.equal(list.result.tools.length, 23, 'the pinned roster: 4 session tools and 19 supported browser tools')
+      assert.deepEqual(list.result.tools.map((entry: { name: string }) => entry.name).sort(), [
+        'hoai_browser_open_session', 'hoai_browser_close_session', 'hoai_browser_status', 'hoai_browser_wait_gate',
+        'browser_snapshot', 'browser_find', 'browser_take_screenshot', 'browser_wait_for',
+        'browser_navigate', 'browser_navigate_back', 'browser_tabs', 'browser_close',
+        'browser_click', 'browser_type', 'browser_fill_form', 'browser_select_option',
+        'browser_press_key', 'browser_hover', 'browser_drag', 'browser_handle_dialog',
+        'browser_resize', 'browser_file_upload', 'browser_drop',
+      ].sort(), 'only the explicitly reviewed roster is served')
+      assert.equal(list.result.tools.some((tool: any) => ['browser_emulate_media', 'browser_contexts'].includes(tool.name)), false)
+      assert.equal(list.result.tools.some((entry: { name: string }) => entry.name === 'browser_emulate_media'), false)
 
       // THE PERMISSION GATE, END TO END, on the real host process.
       //
@@ -926,7 +961,12 @@ test(
       const first = relay.gateCards[0]!
       assert.equal(first.assistantId, 900, 'the card names the agent whose browser it is')
       assert.equal(first.kind, 'navigate', 'a first visit to an origin is a navigate gate')
-      assert.equal(first.origin, site.url, 'the owner is told which site they are being asked about')
+      assert.equal(first.origin ?? null, null, 'a card for another person\'s browsing names no site of theirs')
+      assert.equal(JSON.stringify(first).includes(new URL(site.url).host), false, 'in any field')
+      assert.match(String(first.summary), /someone you share this agent with/i, 'and says whose browsing it is')
+      const owners = relay.gateCards.find((c) => c.origin === site.url)
+      assert.ok(owners, 'the owner is told which site they are being asked about, on their own turn')
+      assert.equal(owners!.kind, 'navigate')
       assert.match(String(first.gateId), /^g_[A-Za-z0-9_-]{4,64}$/, 'the backend DTO refuses any other gate id shape')
       assert.ok(String(first.socketId).length > 0, 'the card carries the host socket the backend checks it against')
       assert.ok(Array.isArray(first.choices) && first.choices.includes('deny'), 'the owner must be able to say no')

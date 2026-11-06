@@ -65,9 +65,14 @@ test('actual Chromium keeps locked browsing ephemeral and restores encrypted ses
   assert.notEqual(runtime, paths.profileDir)
   await page.goto(origin + '/set')
   assert.equal((await context.cookies()).find((c: any) => c.name === 'session').expires, -1)
-  const nativeContext = engine._engine._browser.contexts()[0]
-  assert.notEqual(context, nativeContext, 'Authenticated browsing must not use the native disk context')
-  assert.deepEqual(await nativeContext.cookies(), [], 'The disk context never receives the login cookie')
+  // Chrome's own answer: the page's context is one it made off the record, and its default (disk) context holds nothing.
+  const root_ = await engine._engine._browser.newBrowserCDPSession()
+  const offTheRecord = (await root_.send('Target.getBrowserContexts')).browserContextIds
+  const targets = (await root_.send('Target.getTargets')).targetInfos.filter((row: any) => row.type === 'page' && row.url.startsWith(origin))
+  assert.equal(targets.length, 1)
+  assert.ok(offTheRecord.includes(targets[0].browserContextId), 'Authenticated browsing must not use the native disk context')
+  assert.deepEqual((await root_.send('Storage.getCookies')).cookies, [], 'The disk context never receives the login cookie')
+  await root_.detach()
   await engine.stop()
   assert.equal(existsSync(runtime), false)
   assert.equal(existsSync(join(paths.profileDir, 'agent-browser.vault.json')), false)

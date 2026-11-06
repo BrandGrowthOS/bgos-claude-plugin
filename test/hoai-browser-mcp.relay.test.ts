@@ -1082,3 +1082,21 @@ test('local wins over relay when the discovery file answers', async () => {
     await relay.close()
   }
 })
+
+
+test('relay: composite submission and activation keys never reach the host', async () => {
+  const relay = await fakeRelay()
+  const c = client({ HOAI_HOME: tempHome(), HOAI_RELAY_BACKEND_URL: relay.url, HOAI_RELAY_PAIRING_TOKEN: PAIRING })
+  try {
+    await c.init()
+    for (const [name, args] of [['browser_type', { target: 'e1', text: 'hello', submit: true }], ['browser_type', { target: 'e1', text: 'hello\n', slowly: true }], ['browser_press_key', { key: 'Shift+Enter' }], ['browser_press_key', { key: 'Space' }]] as const) {
+      const count = relay.state.seen.length
+      const refused = await c.request('tools/call', { name, arguments: args })
+      assert.equal(refused.result.isError, true)
+      assert.match(refused.result.content[0].text, /separate.*browser_click/i)
+      assert.equal(relay.state.seen.length, count)
+    }
+    const fill = await c.request('tools/call', { name: 'browser_type', arguments: { target: 'e1', text: 'hello' } })
+    assert.equal(fill.result.isError, false)
+  } finally { c.close(); await relay.close() }
+})

@@ -65,6 +65,16 @@ BGOS, then bring the copy across with this list.
    shim as `vendor/hoai-browser-mcp.mjs`; re-vendor it in the same round or say
    plainly that it is behind.
 
+## Fill and submission contract (0.86.1)
+
+This copy also leads for the fill-only contract: tool schemas omit composite
+submission and sequential typing, old composite calls are refused before
+forwarding, and submission requires a separate approved `browser_click` on the
+exact current submit control. Enter, Return and Space activation keys are
+refused. The local and relay suites cover refusal and ordinary fill forwarding.
+The BGOS and codex-channel-bgos mirrors must take these bytes and update their
+pins. They are outside this checkout and have not been updated by this release.
+
 ## When this copy leads (0.72.0)
 
 Plugin 0.72.0 (BGOS mission 173) changed this copy before BGOS could: the

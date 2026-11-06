@@ -18,6 +18,7 @@ bin/hoai-browser-mcp.mjs text eol=lf
 lib/browser-host-core/policy.js text eol=lf
 lib/browser-host-core/settings.js text eol=lf
 lib/browser-host-core/profiles.js text eol=lf
+lib/browser-host-core/snapshot-target.js text eol=lf
 # The hard floor fixture is a byte identical copy of the BGOS backend's
 # backend/src/services/hard-floor-fixture.ts, pinned by the sha256 of its
 # bytes on both sides, so it must not pick up CRLF on a Windows checkout.
@@ -42,3 +43,5 @@ lib/browser-profile-core/*.json text eol=lf
 # backend/src/services/hard-floor-lane-fixture.ts, pinned by sha256 on both
 # sides (test/hard-floor-lane.test.ts), so it must not pick up CRLF either.
 lib/hard-floor-lane-fixture.ts text eol=lf
+
+lib/browser-host-core/answer-privacy.js text eol=lf
