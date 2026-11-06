@@ -171,8 +171,9 @@ test('Stop ALLOWS when the daemon answers nothing passing, and ignores an answer
   let ask: any = null
   const deadline = Date.now() + 3000
   while (Date.now() < deadline && !(ask = readMissionTurnJson(askPath))) await new Promise((r) => setTimeout(r, 25))
-  if (ask?.askId) writeMissionTurnJson(missionTurnAnswerPath(f.root, f.key), { askId: ask.askId, passing: [], at: Date.now() })
-  await closed
+  assert.ok(ask?.askId, 'the hook asked before accepting an empty answer')
+  writeMissionTurnJson(missionTurnAnswerPath(f.root, f.key), { askId: ask.askId, passing: [], at: Date.now() })
+  assert.equal(await closed, 0)
   assert.equal(stdout, '')
 })
 
@@ -183,6 +184,7 @@ test('Stop with stop_hook_active goes through at once: the agent already ticked 
     turnChatId: '12',
     chats: { '12': { ...openEntry(), passing: [{ id: 2, name: 'Merge', evidence: 'e' }], checkedAt: Date.now() } },
   })
+  recordTurn(f, '12')
   const result = run(f, { hook_event_name: 'Stop', stop_hook_active: true })
   assert.equal(result.status, 0)
   assert.equal(result.stdout, '')

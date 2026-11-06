@@ -10,13 +10,13 @@ mkdirSync(scratch, { recursive: true })
 const sandbox = mkdtempSync(join(scratch, 'mutations-'))
 const original = readFileSync(join(root, 'lib/mission-turn.mjs'), 'utf8')
 const mutants = [
-  ['missing block', 'return { block: true, reason: blockReason', 'return { block: false, reason: blockReason'],
+  ['missing block', 'return reasons.length > 0 ? { block: true', 'return reasons.length > 0 ? { block: false'],
   ['second Stop blocks again', 'if (stopHookActive === true) return { block: false }', 'if (false) return { block: false }'],
   ['missing answer blocks', 'if (!isObject(answer)) return { block: false }', 'if (!isObject(answer)) return { block: true }'],
   ['forged embedded chat tag', 'const match = /^\\s*<channel', 'const match = /\\s*<channel'],
   ['expired ask answered', 'if (!Number.isFinite(ask.at) || now() - ask.at > MISSION_TURN_ASK_MAX_AGE_MS)', 'if (!Number.isFinite(ask.at))'],
   ['newer ask deleted', 'if (readMissionTurnJson(askPath)?.askId === ask.askId) removeQuietly(askPath)', 'removeQuietly(askPath)'],
-  ['freshness inverted', 'now - entry.checkedAt < MISSION_TURN_REUSE_MS', 'now - entry.checkedAt > MISSION_TURN_REUSE_MS'],
+  ['freshness inverted', 'now - entry.checkedAt >= MISSION_TURN_REUSE_MS', 'now - entry.checkedAt < MISSION_TURN_REUSE_MS'],
 ]
 try {
   for (const name of ['lib', 'test', 'tmp']) mkdirSync(join(sandbox, name))

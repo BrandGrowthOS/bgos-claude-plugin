@@ -99,6 +99,38 @@ test('a mission frame refreshes the goals and drops a passing goal the agent has
   assert.deepEqual(openPassing(ticked), [])
 })
 
+test('adding checked goals invalidates a fresh report, including a previously empty mission', () => {
+  for (const goals of [[], [PASS_GOAL]]) {
+    const previous = entryFromReport(report(goals), 'Ship it', NOW)
+    const entry = entryFromMission({ id: 12, status: 'active', miniGoals: [...goals, { ...PASS_GOAL, id: 3 }] }, previous)
+    assert.equal(freshMissionTurnEntry({ chats: { '12': entry } }, '12', NOW + 1), null)
+    assert.deepEqual(entry.passing, [], 'the old report did not cover the current checked goals')
+  }
+})
+
+test('changing or removing a check invalidates its old passing evidence', () => {
+  const previous = entryFromReport(report([PASS_GOAL]), 'Ship it', NOW)
+  for (const goal of [
+    { ...PASS_GOAL, check: { ...CHECK, number: 43 } },
+    { ...PASS_GOAL, check: undefined },
+    { ...PASS_GOAL, id: 3 },
+  ]) {
+    const entry = entryFromMission({ id: 12, status: 'active', miniGoals: [goal] }, previous)
+    assert.equal(freshMissionTurnEntry({ chats: { '12': entry } }, '12', NOW + 1), null)
+    assert.deepEqual(openPassing(entry), [])
+  }
+})
+
+test('unchanged checks reuse a report across goal reordering, waiting updates and ticks', () => {
+  const previous = entryFromReport(report([PASS_GOAL, { ...PASS_GOAL, id: 3 }]), 'Ship it', NOW)
+  const entry = entryFromMission({ id: 12, status: 'active', miniGoals: [
+    { ...PASS_GOAL, id: 3, done: true },
+    { ...PASS_GOAL, check: { number: 42, repo: 'example/project', kind: 'pr_merged' }, waiting: { on: 'owner', who: 'Demo', why: 'review' } },
+  ] }, previous)
+  assert.equal(freshMissionTurnEntry({ chats: { '12': entry } }, '12', NOW + 1), entry)
+  assert.deepEqual(openPassing(entry), [{ id: 2, name: 'Merge', evidence: PASS_GOAL.result.evidence }])
+})
+
 // -- the Stop decision ------------------------------------------------------
 
 test('BLOCKS while a goal whose check passes is unticked, naming it and its evidence', () => {
@@ -210,6 +242,27 @@ test('answerMissionTurnAsk answers a new ask once, with what compute found', asy
   writeMissionTurnJson(ask, { askId: 'ask-1', at: NOW })
   assert.equal(await answerMissionTurnAsk({ askPath: ask, answerPath, lastAnswered: 'ask-1', compute, now: () => NOW }), 'ask-1')
   assert.equal(computed, 1)
+})
+
+test('the daemon file answer preserves mission identities when goal ids overlap', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'hoai-mission-turn-multiple-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const askPath = missionTurnAskPath(root, 'demo')
+  const answerPath = missionTurnAnswerPath(root, 'demo')
+  writeMissionTurnJson(askPath, { askId: 'multiple', at: NOW })
+  await answerMissionTurnAsk({ askPath, answerPath, lastAnswered: null, now: () => NOW,
+    compute: async () => ({ chatId: '12', passing: [], missions: [
+      { missionId: 101, passing: [{ id: 1, name: 'First merge', evidence: 'merged' }] },
+      { missionId: 102, passing: [{ id: 1, name: 'Second merge', evidence: 'merged' }] },
+    ] }),
+  })
+  const answer = readMissionTurnJson(answerPath)
+  assert.equal(answer.askId, 'multiple')
+  assert.ok(Array.isArray(answer.missions), 'the file answer includes every mission')
+  assert.deepEqual(answer.missions.map((entry: any) => entry.missionId), [101, 102])
+  const decision = missionTurnStopDecision({ answer })
+  assert.equal(decision.block, true)
+  assert.match(decision.reason!, /Mission #101[\s\S]*First merge[\s\S]*Mission #102[\s\S]*Second merge/)
 })
 
 test('answerMissionTurnAsk answers an empty list when compute fails, so the hook allows at once', async (t) => {

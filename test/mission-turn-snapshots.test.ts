@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import ts from 'typescript'
 import { decideMissionNotice, parseMissionEvent } from '../lib/mission-events.ts'
 import { formatMissionSummary } from '../lib/missions.ts'
-import { entryFromMission, entryFromReport, missionTurnContext, missionTurnNeedsAsk } from '../lib/mission-turn.mjs'
+import { entryFromMission, entryFromReport, missionTurnContext, missionTurnEntries, missionTurnNeedsAsk } from '../lib/mission-turn.mjs'
 
 const check = { kind: 'pr_merged', repo: 'example/project', number: 42 }
 const mission = () => ({
@@ -54,8 +54,8 @@ const end = source.indexOf('\n}\n', start) + 3
 const snapshotFunction = ts.transpileModule(source.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
 function record(snapshot: unknown, envelopeChat?: string) {
   const writes: Array<{ chatId: string; entry: any }> = []
-  const call = new Function('missionTurnState', 'missionChatId', 'entryFromMission', 'setMissionTurnEntry', 'log', snapshotFunction + '\nreturn noteMissionTurnSnapshot;')(
-    null, () => '99', entryFromMission,
+  const call = new Function('missionTurnState', 'missionChatId', 'entryFromMission', 'missionTurnEntries', 'setMissionTurnEntry', 'log', snapshotFunction + '\nreturn noteMissionTurnSnapshot;')(
+    null, () => '99', entryFromMission, missionTurnEntries,
     (chatId: string, entry: any) => writes.push({ chatId, entry }), () => {},
   )
   call(snapshot, envelopeChat)

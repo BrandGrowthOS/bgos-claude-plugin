@@ -601,6 +601,7 @@ import {
   missionTurnAnswerPath,
   missionTurnAskPath,
   missionTurnDir,
+  missionTurnEntries,
   missionTurnStatePath,
   openPassing,
   writeMissionTurnJson,
@@ -13514,6 +13515,9 @@ function rememberMissionSelfWrite(mission: unknown): void {
 let missionTurnState: Record<string, any> | null = null
 let missionTurnAnswered: Record<string, string | null> = {}
 let missionTurnAnswering = false
+// Keep a revision even after the last mission is removed. Comparing cache
+// objects alone misses a create/complete pair during an initially empty read.
+const missionTurnRevisions = new Map<string, number>()
 
 function writeMissionTurnState(): void {
   if (!lockHeld) return
@@ -13527,11 +13531,13 @@ function writeMissionTurnState(): void {
   }
 }
 
-function setMissionTurnEntry(chatId: string | null, entry: unknown, turnChatId?: string | null): void {
+function setMissionTurnEntry(chatId: string | null, entry: unknown, turnChatId?: string | null, missionId?: number): void {
+  if (chatId) missionTurnRevisions.set(chatId, (missionTurnRevisions.get(chatId) ?? 0) + 1)
   missionTurnState = mergeMissionTurnEntry(missionTurnState, chatId, entry, {
     assistantId: ASSISTANT_ID,
     now: Date.now(),
     ...(turnChatId !== undefined ? { turnChatId } : {}),
+    ...(missionId !== undefined ? { missionId } : {}),
   })
   writeMissionTurnState()
 }
@@ -13547,30 +13553,54 @@ function noteMissionTurnSnapshot(mission: unknown, envelopeChatId?: string | nul
       ? String(snapshot.chatId)
       : typeof envelopeChatId === 'string' && /^[1-9]\d*$/.test(envelopeChatId) ? envelopeChatId : null
     if (!chatId) return
-    const previous = missionTurnState?.chats?.[chatId] ?? null
+    const previous = missionTurnEntries(missionTurnState?.chats?.[chatId]).find((entry) => entry.missionId === snapshot.id) ?? null
     const open = snapshot.status === 'active' || snapshot.status === 'paused'
-    setMissionTurnEntry(chatId, open ? entryFromMission(snapshot, previous) : null)
+    setMissionTurnEntry(chatId, open ? entryFromMission(snapshot, previous) : null, undefined, snapshot.id)
   } catch (err) {
     log(`mission turn: snapshot not kept (${err})`)
   }
 }
 
-/** Ask the server about one chat's open mission now, keep the answer, and return the entry (null: none open). */
+/** Check known mission ids explicitly; use the implicit lookup only to discover an uncached mission. */
 async function refreshMissionTurnChat(chatId: string): Promise<Record<string, any> | null> {
-  const activePath = buildMissionActivePath(ASSISTANT_ID, chatId)
-  if (!activePath.ok) return null
-  const active = (await bgosGetCachedOn304(activePath.path)) as { mission?: MissionSnapshot | null }
-  const mission = active?.mission ?? null
-  if (!mission || (mission.status !== 'active' && mission.status !== 'paused')) {
-    setMissionTurnEntry(chatId, null)
-    return null
+  const current = () => missionTurnState?.chats?.[chatId] ?? null
+  const revision = () => missionTurnRevisions.get(chatId) ?? 0
+  let missions = missionTurnEntries(current())
+  if (missions.length === 0) {
+    const before = revision()
+    const activePath = buildMissionActivePath(ASSISTANT_ID, chatId)
+    if (!activePath.ok) return current()
+    // Several open missions make the backend refuse an implicit lookup. Do
+    // not clear local state on that refusal; snapshots supply explicit ids.
+    const active = (await bgosGetCachedOn304(activePath.path)) as { mission?: MissionSnapshot | null }
+    if (revision() !== before) return current()
+    const mission = active?.mission ?? null
+    if (!mission || (mission.status !== 'active' && mission.status !== 'paused')) return current()
+    if (mission.chatId != null && String(mission.chatId) !== chatId) return current()
+    missions = [entryFromMission(mission)]
   }
-  const checksPath = buildMissionGoalChecksPath(ASSISTANT_ID, mission.id)
-  if (!checksPath.ok) return null
-  const report = await bgosGetCachedOn304(checksPath.path)
-  const entry = entryFromReport(report, mission.title, Date.now())
-  setMissionTurnEntry(chatId, entry)
-  return entry
+  for (const mission of missions) {
+    if (freshMissionTurnEntry({ chats: { [chatId]: mission } }, chatId, Date.now())) continue
+    const before = revision()
+    const checksPath = buildMissionGoalChecksPath(ASSISTANT_ID, mission.missionId)
+    if (!checksPath.ok) continue
+    let report: Record<string, unknown> | null
+    try {
+      report = await bgosGetCachedOn304(checksPath.path) as Record<string, unknown> | null
+    } catch (err) {
+      if (revision() !== before) return current()
+      log(`mission turn: mission ${mission.missionId} check read failed (${err})`)
+      continue
+    }
+    // A timed-out Promise.race does not cancel HTTP work. Every response is
+    // fenced before it can write state or contribute to a Stop answer.
+    if (revision() !== before) return current()
+    if (Number(report?.missionId) !== mission.missionId) continue
+    const entry = entryFromReport(report, mission.title, Date.now())
+    const open = entry.status === 'active' || entry.status === 'paused'
+    setMissionTurnEntry(chatId, open ? entry : null, undefined, mission.missionId)
+  }
+  return current()
 }
 
 /** A turn started: its chat is the one the Stop hook will ask about. */
@@ -13586,11 +13616,18 @@ function noteMissionTurnStart(chatId: string | null): void {
  * only for a chat this daemon delivered to (or ran a turn in) recently, so an ask naming any other chat gets nothing.
  * An entry checked under 30 s ago answers without two fresh reads.
  */
-async function missionTurnAnswerFor(ask: { chatId?: unknown }): Promise<{ chatId?: string; missionId?: number; passing: unknown[] }> {
+async function missionTurnAnswerFor(ask: { chatId?: unknown }): Promise<{ chatId?: string; missions?: Array<{ missionId: number; passing: unknown[] }>; passing: unknown[] }> {
   const chatId = typeof ask?.chatId === 'string' ? ask.chatId : null
   if (!chatId || !turnChat.deliveredRecently(chatId, Date.now())) return { passing: [] }
-  const entry = freshMissionTurnEntry(missionTurnState, chatId, Date.now()) ?? (await refreshMissionTurnChat(chatId))
-  return { chatId, ...(entry ? { missionId: entry.missionId } : {}), passing: entry ? openPassing(entry) : [] }
+  try {
+    if (!freshMissionTurnEntry(missionTurnState, chatId, Date.now())) await refreshMissionTurnChat(chatId)
+  } catch (err) {
+    log(`mission turn: check read failed (${err})`)
+  }
+  const missions = missionTurnEntries(missionTurnState?.chats?.[chatId])
+    .filter((entry) => entry.status === 'active' && freshMissionTurnEntry({ chats: { [chatId]: entry } }, chatId, Date.now()))
+    .map((entry) => ({ missionId: entry.missionId, passing: openPassing(entry) }))
+  return { chatId, missions, passing: [] }
 }
 
 /** Answer every new ask the Stop hook wrote, within the budget. Never throws. */

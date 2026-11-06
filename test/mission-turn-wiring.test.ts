@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import ts from 'typescript'
 
 /**
  * The daemon half of the mission turn check (missions that stay true), pinned
@@ -46,7 +47,16 @@ test('the watcher never keeps the process alive and has a polling fallback', () 
   const start = between('function startMissionTurnWatch(', '\n}\n')
   assert.match(start, /persistent: false/)
   assert.match(start, /setInterval\([\s\S]*\.unref\(\)/)
-  assert.match(source, /startMissionTurnWatch\(\)/)
+  const parsed = ts.createSourceFile('server.ts', source, ts.ScriptTarget.Latest, true)
+  const main = parsed.statements.find((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === 'main')
+  assert.ok(main?.body, 'daemon main exists')
+  let calls = 0
+  const visit = (node: ts.Node) => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'startMissionTurnWatch') calls++
+    ts.forEachChild(node, visit)
+  }
+  visit(main.body)
+  assert.equal(calls, 1, 'main invokes the mission watcher exactly once')
 })
 
 test('the state is written only by the lock holder', () => {
