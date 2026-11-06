@@ -1,23 +1,8 @@
 /**
- * A thread never answers when the main session has an active /goal (THREADGOAL).
- *
- * A thread lane forks the agent's MAIN session. Claude Code's /goal is a
- * session scoped Stop hook restored from the transcript, so before this fix
- * the fork inherited it: every time the thread tried to end its turn the goal
- * checker answered "Not satisfied" and blocked the stop, the CLI gave up after
- * 9 blocks with an EMPTY result, and the person saw "This turn failed before
- * the agent could answer". The lane's own `--settings` now carry
- * `disableAllHooks: true` (the documented switch, honoured under
- * --restricted; the CLI refuses /goal itself while it is set), and the start
- * prompt says the main chat's goal does not apply in the thread.
- *
- * The pure half always runs. The real CLI half is opt in like
- * test/thread-lane-sandbox.test.ts: THREADS_GOAL_CLAUDE=/absolute/path/to/claude.
- * It makes a real parent session with a real /goal against a local scripted
- * API (no model runs, a dummy key), then runs a real thread through
- * ThreadLaneManager. A control run of the same fork without the switch shows
- * the fixture's goal is live in a fork (it loops on the checker), and that the
- * manager's defence stops it with a failure that names the cause.
+ * THREADGOAL2: restricted forks retain trusted non-Stop hooks and clear only
+ * their inherited goal state. The opt-in real CLI test uses a local fake API,
+ * dummy credentials and isolated state. It checks the active parent, a fork,
+ * a later process resuming that fork, guard canaries and a looping control.
  */
 
 import { strict as assert } from 'node:assert'
@@ -30,9 +15,10 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 
-import { assertConfined, threadLaneArgs, threadLaneSettings, threadTurnPrompt } from '../lib/thread-lane-args.ts'
+import { assertConfined, threadLaneArgs, threadLaneSettings, threadLaneTranscript, threadTurnPrompt } from '../lib/thread-lane-args.ts'
 import { ThreadLaneManager, type ThreadLaneDeps } from '../lib/thread-lanes.ts'
 import { spawnStreamJson } from '../lib/stream-json-child.ts'
 import { sessionTranscriptPath } from '../bin/hoai-core.mjs'
@@ -54,29 +40,50 @@ function settingsOf(args: readonly string[]): Record<string, unknown> {
 }
 
 for (const [name, confinement] of Object.entries(CONFINEMENTS)) {
-  test(`a ${name} lane runs no hook at all, so it never inherits the main session's /goal Stop hook`, () => {
-    assert.equal(threadLaneSettings(confinement).disableAllHooks, true)
-    const first = threadLaneArgs({ mainSessionId: MAIN, forkSessionId: null, emptyMcpConfigPath: MCP, confinement })
-    const later = threadLaneArgs({ mainSessionId: MAIN, forkSessionId: FORK, emptyMcpConfigPath: MCP, confinement })
-    assert.equal(settingsOf(first).disableAllHooks, true, 'the first start, which forks the main session')
-    assert.equal(settingsOf(later).disableAllHooks, true, 'every later start, which resumes the fork (it holds the goal too)')
+  test(`a ${name} lane keeps trusted guards on first start and resume, with no Stop hook`, () => {
+    for (const forkSessionId of [null, FORK]) {
+      const args = threadLaneArgs({ mainSessionId: MAIN, forkSessionId, emptyMcpConfigPath: MCP, confinement })
+      const settings = settingsOf(args)
+      assert.notEqual(settings.disableAllHooks, true)
+      const hooks = settings.hooks as Record<string, unknown>
+      assert.ok(hooks?.UserPromptSubmit, 'the private prompt boundary remains')
+      assert.ok(hooks?.PreToolUse, 'the floor and private tool guard remain')
+      assert.equal(hooks.Stop, undefined, 'no parent Stop hook is installed')
+    }
   })
 }
 
-test('a lane command whose settings would let hooks run is refused, like any other unconfined lane', () => {
+test('a lane refuses global hook suppression, missing or altered trusted guards, Stop hooks and malformed settings', () => {
   const args = threadLaneArgs({ mainSessionId: MAIN, forkSessionId: null, emptyMcpConfigPath: MCP, confinement: CONFINEMENTS['working without Bash'] })
   assert.doesNotThrow(() => assertConfined(args))
   const at = args.indexOf('--settings')
-  const without = (patch: Record<string, unknown>) => {
+  const patched = (patch: Record<string, unknown>) => {
     const copy = [...args]
     copy[at + 1] = JSON.stringify({ ...settingsOf(args), ...patch })
     return copy
   }
-  assert.throws(() => assertConfined(without({ disableAllHooks: false })), /hook/)
-  assert.throws(() => assertConfined(without({ disableAllHooks: undefined })), /hook/)
+  assert.throws(() => assertConfined(patched({ disableAllHooks: true })), /hook/)
+  assert.throws(() => assertConfined(patched({ disableAllHooks: 'true' })), /hook/)
+  assert.throws(() => assertConfined(patched({ hooks: undefined })), /hook/)
+  assert.throws(() => assertConfined(patched({ hooks: { ...settingsOf(args).hooks as object, PreToolUse: [] } })), /hook/)
+  assert.throws(() => assertConfined(patched({ hooks: { ...settingsOf(args).hooks as object, Stop: [] } })), /hook/)
   const broken = [...args]
   broken[at + 1] = 'not json'
   assert.throws(() => assertConfined(broken), /hook/)
+})
+
+test('goal clearing preserves completed goals and transcript links, and is idempotent', () => {
+  const row = { type: 'attachment', uuid: 'fixture-row', parentUuid: 'fixture-parent', attachment: { type: 'goal_status', met: false, condition: 'fixture goal', reason: 'not met yet' } }
+  const source = `${JSON.stringify(row)}\n{"type":"user","message":"keep me"}\n`
+  const cleared = threadLaneTranscript(source)
+  assert.deepEqual(JSON.parse(cleared.split('\n')[0]!), { ...row, attachment: { type: 'goal_status', condition: row.attachment.condition, met: true, sentinel: true } })
+  assert.ok(cleared.endsWith('\n{"type":"user","message":"keep me"}\n'))
+  assert.equal(threadLaneTranscript(cleared), cleared)
+  for (const attachment of [{ ...row.attachment, met: true }, { ...row.attachment, failed: true }]) {
+    const history = `${source}${JSON.stringify({ ...row, attachment })}\n`
+    assert.equal(threadLaneTranscript(history), history, 'a terminal goal never revives an earlier active one')
+  }
+  assert.equal(threadLaneTranscript(''), '')
 })
 
 test('the first turn of a thread tells the fork that the main chat\'s goal does not apply here', () => {
@@ -86,17 +93,17 @@ test('the first turn of a thread tells the fork that the main chat\'s goal does 
   assert.ok(text.endsWith('\n\nWhat is two plus two?'))
 })
 
-// ── The real CLI ─────────────────────────────────────────────────────────────
+// The real CLI
 
 const claude = process.env.THREADS_GOAL_CLAUDE
 const CONDITION = 'the file done.txt contains GOALPROBE'
 const QUESTION = 'THREAD-QUESTION: what is two plus two?'
 
-interface ApiLog { judge: number; main: number; mainAnswers: string[] }
+interface ApiLog { judge: number; main: number; mainAnswers: string[]; tools: number }
 
 /** The scripted API: the goal checker always answers "not met", any other request gets a plain answer. */
 async function fakeApi(): Promise<{ url: string; log: ApiLog; reset(): void; close(): Promise<void> }> {
-  const log: ApiLog = { judge: 0, main: 0, mainAnswers: [] }
+  const log: ApiLog = { judge: 0, main: 0, mainAnswers: [], tools: 0 }
   let n = 0
   const server = createServer(async (req, res) => {
     const chunks: Buffer[] = []
@@ -119,8 +126,14 @@ async function fakeApi(): Promise<{ url: string; log: ApiLog; reset(): void; clo
       log.main++
       log.mainAnswers.push(text)
     }
+    const questionAt = body.messages?.findLastIndex((m: { role: string; content: unknown }) => m.role === 'user' && JSON.stringify(m.content).includes(QUESTION)) ?? -1
+    const probeAt = body.messages?.findLastIndex((m: { role: string; content: unknown }) => m.role === 'assistant' && JSON.stringify(m.content).includes('mcp__hoai-browser__probe')) ?? -1
+    const tool = !judge && questionAt > probeAt
+      ? body.tools?.find((t: { name: string }) => t.name === 'mcp__hoai-browser__probe') : undefined
+    if (tool) log.tools++
+    const content = tool ? { type: 'tool_use', id: `tool_${step}`, name: tool.name, input: {} } : { type: 'text', text }
     const usage = { input_tokens: 1, output_tokens: 1 }
-    const message = { id: `msg_${step}`, type: 'message', role: 'assistant', model: body.model, content: [{ type: 'text', text }], stop_reason: 'end_turn', stop_sequence: null, usage }
+    const message = { id: `msg_${step}`, type: 'message', role: 'assistant', model: body.model, content: [content], stop_reason: tool ? 'tool_use' : 'end_turn', stop_sequence: null, usage }
     if (!body.stream) {
       res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(message))
       return
@@ -128,10 +141,10 @@ async function fakeApi(): Promise<{ url: string; log: ApiLog; reset(): void; clo
     res.writeHead(200, { 'Content-Type': 'text/event-stream' })
     const event = (type: string, data: Record<string, unknown>) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`)
     event('message_start', { message: { ...message, content: [], stop_reason: null } })
-    event('content_block_start', { index: 0, content_block: { type: 'text', text: '' } })
-    event('content_block_delta', { index: 0, delta: { type: 'text_delta', text } })
+    event('content_block_start', { index: 0, content_block: tool ? content : { type: 'text', text: '' } })
+    if (!tool) event('content_block_delta', { index: 0, delta: { type: 'text_delta', text } })
     event('content_block_stop', { index: 0 })
-    event('message_delta', { delta: { stop_reason: 'end_turn', stop_sequence: null }, usage })
+    event('message_delta', { delta: { stop_reason: message.stop_reason, stop_sequence: null }, usage })
     event('message_stop', {})
     res.end()
   })
@@ -140,7 +153,7 @@ async function fakeApi(): Promise<{ url: string; log: ApiLog; reset(): void; clo
   return {
     url: `http://127.0.0.1:${port}`,
     log,
-    reset() { log.judge = 0; log.main = 0; log.mainAnswers = [] },
+    reset() { log.judge = 0; log.main = 0; log.mainAnswers = []; log.tools = 0 },
     async close() {
       server.closeAllConnections()
       await new Promise<void>((done) => server.close(() => done()))
@@ -155,8 +168,8 @@ function transcriptRows(path: string): Array<Record<string, any>> {
 const feedbackRows = (rows: Array<Record<string, any>>) =>
   rows.filter((r) => r.type === 'user' && JSON.stringify(r.message?.content ?? '').includes('Stop hook feedback'))
 
-test('a real thread forked from a session with an active /goal answers its own message, and a fork with hooks on is stopped with its cause', {
-  skip: !claude || process.platform === 'win32', timeout: 120_000,
+test('real CLI: active parent goal stays in the parent, trusted guards fire in the fork and its resume, third-block control terminates', {
+  skip: !claude || process.platform === 'win32', timeout: 180_000,
 }, async () => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'thread-goal-')))
   const home = join(dir, 'home')
@@ -172,6 +185,54 @@ test('a real thread forked from a session with an active /goal answers its own m
     CLAUDE_CONFIG_DIR: configDir, ANTHROPIC_API_KEY: 'local-test-not-a-real-key',
     ANTHROPIC_BASE_URL: api.url, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
   }
+  // Only the canary run swaps the empty MCP config for a harmless local tool.
+  // Production commands still expose no MCP tool. Matchers and guard bodies stay intact.
+  const canaryLog = join(dir, 'guards.jsonl')
+  const wrapper = join(dir, 'guard-canary.mjs')
+  writeFileSync(wrapper, `import { readFileSync, appendFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+const input = readFileSync(0);
+const child = spawnSync(process.execPath, [process.argv[2]], { input, env: process.env });
+appendFileSync(process.argv[3], JSON.stringify({ hook: process.argv[2].split('/').pop(), event: JSON.parse(input).hook_event_name, code: child.status }) + '\\n');
+process.stdout.write(child.stdout ?? ''); process.stderr.write(child.stderr ?? ''); process.exit(child.status ?? 1);
+`)
+  const mcpScript = join(dir, 'probe-mcp.mjs')
+  writeFileSync(mcpScript, `import { createInterface } from 'node:readline';
+createInterface({ input: process.stdin }).on('line', (line) => {
+  const m = JSON.parse(line); if (m.id === undefined) return;
+  const result = m.method === 'initialize' ? { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'fixture', version: '1' } }
+    : m.method === 'tools/list' ? { tools: [{ name: 'probe', description: 'A harmless canary', inputSchema: { type: 'object', properties: {} } }] }
+    : m.method === 'tools/call' ? { content: [{ type: 'text', text: 'CANARY-OK' }] } : {};
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: m.id, result }) + '\\n');
+});`)
+  const canaryMcp = join(dir, 'canary-mcp.json')
+  writeFileSync(canaryMcp, JSON.stringify({ mcpServers: { 'hoai-browser': { command: process.execPath, args: [mcpScript] } } }))
+  const quote = (value: string) => `'${value.replace(/'/g, "'\\''")}'`
+  const canaries = (args: string[]) => {
+    const copy = [...args]
+    const at = copy.indexOf('--settings')
+    const settings = JSON.parse(copy[at + 1]!)
+    for (const event of ['UserPromptSubmit', 'PreToolUse']) {
+      for (const matcher of settings.hooks[event]) {
+        for (const hook of matcher.hooks) {
+          const name = ['hoai-private-turn-hook.mjs', 'hoai-floor-hook.mjs'].find((name) => hook.command.includes(name))
+          if (name) hook.command = `node ${quote(wrapper)} ${quote(fileURLToPath(new URL(`../bin/${name}`, import.meta.url)))} ${quote(canaryLog)}`
+        }
+      }
+    }
+    settings.permissions.allow.push('mcp__hoai-browser__probe')
+    copy[at + 1] = JSON.stringify(settings)
+    copy[copy.indexOf('--mcp-config') + 1] = canaryMcp
+    return copy
+  }
+  const guardRows = () => transcriptRows(canaryLog)
+  const assertCanaries = (rows: Array<Record<string, any>>) => {
+    for (const [hook, event] of [
+      ['hoai-private-turn-hook.mjs', 'UserPromptSubmit'],
+      ['hoai-floor-hook.mjs', 'PreToolUse'],
+      ['hoai-private-turn-hook.mjs', 'PreToolUse'],
+    ]) assert.ok(rows.some((r) => r.hook === hook && r.event === event && r.code === 0), `${event}: ${hook} executed successfully`)
+  }
   const managers: ThreadLaneManager[] = []
   try {
     // 1. The parent: a real session with a real /goal that the checker never finds met.
@@ -183,24 +244,37 @@ test('a real thread forked from a session with an active /goal answers its own m
     const mainId = String(init?.session_id)
     const mainPath = sessionTranscriptPath(home, agent, mainId, configDir)
     assert.ok(existsSync(mainPath), `the parent transcript is where the daemon looks for it: ${mainPath}`)
+    const parentBytes = readFileSync(mainPath, 'utf8')
     const parentRows = transcriptRows(mainPath)
     const goalRows = parentRows.filter((r) => r.type === 'attachment' && r.attachment?.type === 'goal_status')
     assert.deepEqual(goalRows[0]?.attachment, { type: 'goal_status', met: false, sentinel: true, condition: CONDITION }, 'the goal was armed')
     assert.equal(goalRows.some((r) => r.attachment.met === true || r.attachment.failed === true), false, 'and is still active')
     assert.ok(api.log.judge >= 3, 'the parent goal Stop hook really blocked the parent')
+    // Compare our sentinel to the supported CLI command, without changing the parent.
+    const cleared = await promisify(execFile)(claude!, ['-p', '--resume', mainId, '--fork-session', '--output-format', 'stream-json', '--verbose', '/goal clear'], {
+      cwd: agent, env, encoding: 'utf8', timeout: 30_000, maxBuffer: 16 * 1024 * 1024,
+    })
+    const clearInit = cleared.stdout.split('\n').filter(Boolean).map((line) => JSON.parse(line)).find((r) => r.type === 'system' && r.subtype === 'init')
+    const clearRows = transcriptRows(sessionTranscriptPath(home, agent, clearInit.session_id, configDir))
+    assert.deepEqual(clearRows.filter((r) => r.type === 'attachment' && r.attachment?.type === 'goal_status').at(-1)?.attachment,
+      { type: 'goal_status', met: true, sentinel: true, condition: CONDITION }, 'real /goal clear uses the documented sentinel')
+    const preparedRows = threadLaneTranscript(parentBytes).split('\n').filter(Boolean).map((line) => JSON.parse(line))
+    assert.deepEqual(preparedRows.filter((r) => r.type === 'attachment' && r.attachment?.type === 'goal_status').at(-1)?.attachment, clearRows.filter((r) => r.type === 'attachment' && r.attachment?.type === 'goal_status').at(-1)?.attachment)
     const inherited = feedbackRows(parentRows).length
     assert.ok(inherited >= 3)
 
     // 2. A thread through the real manager, real spawn, real files.
     const posts: Array<{ path: string; body: Record<string, unknown> }> = []
     const logs: string[] = []
-    const manager = (patchArgs: (args: string[]) => string[]) => {
+    const signals: Array<{ cwd: string; signal: string }> = []
+    const manager = (patchArgs: (args: string[], cwd: string) => string[]) => {
       const deps: ThreadLaneDeps = {
         spawn: (command, args, opts) => {
           const saved = process.env
           process.env = env
           try {
-            return spawnStreamJson(command, patchArgs(args), opts)
+            const child = spawnStreamJson(command, patchArgs(args, opts.cwd), opts)
+            return { ...child, kill(signal) { signals.push({ cwd: opts.cwd, signal }); child.kill(signal) } }
           } finally {
             process.env = saved
           }
@@ -242,10 +316,10 @@ test('a real thread forked from a session with an active /goal answers its own m
       managers.push(m)
       return m
     }
-    const replyFor = async (rootId: string) => {
+    const replyFor = async (rootId: string, clientId = `thread-${rootId}-${rootId}0`) => {
       const until = Date.now() + 60_000
       while (Date.now() < until) {
-        const reply = posts.find((p) => p.path === 'integrations/threads/reply' && p.body.rootId === rootId)
+        const reply = posts.find((p) => p.path === 'integrations/threads/reply' && p.body.rootId === rootId && p.body.clientId === clientId)
         if (reply) return reply.body
         await new Promise((done) => setTimeout(done, 100))
       }
@@ -257,36 +331,62 @@ test('a real thread forked from a session with an active /goal answers its own m
       return transcriptRows(sessionTranscriptPath(home, state.cwd, state.forkSessionId, configDir))
     }
 
-    // The fix: the thread's own answer, one plain turn, no goal check at all.
+    // First prove the unmodified production command, with its empty MCP config.
     api.reset()
-    const fixed = manager((args) => args)
+    const plain = manager((args) => args)
+    plain.turn(turn('900'))
+    assert.equal((await replyFor('900')).final, true)
+    assert.equal(api.log.judge, 0)
+    assert.equal(api.log.main, 1)
+    await plain.stopAll()
+
+    // Exercise the exact trusted matchers with a harmless fixture MCP tool.
+    api.reset()
+    const fixed = manager(canaries)
     fixed.turn(turn('901'))
     const answer = await replyFor('901')
     assert.equal(api.log.judge, 0, 'the goal checker never ran in the thread')
-    assert.equal(api.log.main, 1, 'one model call: the thread answered its message and its turn ended')
-    assert.deepEqual(answer, { chatId: '55', rootId: '901', text: api.log.mainAnswers[0], final: true, clientId: 'thread-901-9010' })
+    assert.equal(api.log.main, 2, 'one harmless tool call followed by the answer')
+    assert.equal(api.log.tools, 1)
+    assertCanaries(guardRows())
+    assert.deepEqual(answer, { chatId: '55', rootId: '901', text: api.log.mainAnswers.at(-1), final: true, clientId: 'thread-901-9010' })
     assert.equal(feedbackRows(forkTranscript('901')).length, inherited, 'no new Stop hook feedback in the fork')
     const sent = forkTranscript('901').filter((r) => r.type === 'user' && JSON.stringify(r.message?.content ?? '').includes(QUESTION))
     assert.equal(sent.length, 1, 'the thread received its own message')
     await fixed.stopAll()
-
-    // The control (the mutant: the same fork with hooks on). The goal is live in a
-    // fork, and the defence stops the loop with a failure that names its cause.
+    const count = guardRows().length
+    const firstState = JSON.parse(readFileSync(join(stateDir, '901.json'), 'utf8'))
     api.reset()
-    const hooksOn = manager((args) => {
-      const at = args.indexOf('--settings')
-      const copy = [...args]
-      copy[at + 1] = JSON.stringify({ ...JSON.parse(args[at + 1]!), disableAllHooks: false })
-      return copy
+    const resumed = manager(canaries)
+    resumed.turn({ ...turn('901'), mode: 'reply', replyId: '9011', text: QUESTION })
+    const second = await replyFor('901', 'thread-901-9011')
+    assert.equal(second.final, true)
+    assert.equal(api.log.judge, 0, 'no inherited goal on a later resumed process')
+    assert.equal(api.log.main, 2)
+    assert.equal(api.log.tools, 1)
+    assertCanaries(guardRows().slice(count))
+    assert.equal(JSON.parse(readFileSync(join(stateDir, '901.json'), 'utf8')).forkSessionId, firstState.forkSessionId)
+    assert.equal(readFileSync(mainPath, 'utf8'), parentBytes, 'the active parent is unchanged')
+    await resumed.stopAll()
+
+    // The control bypasses only goal clearing; trusted hooks remain identical.
+    // The defence stops the inherited goal loop and names its cause.
+    api.reset()
+    const hooksOn = manager((args, cwd) => {
+      // Restore the untouched active parent in the child copy, bypassing only goal clearing.
+      writeFileSync(sessionTranscriptPath(home, cwd, mainId, configDir), parentBytes)
+      return args
     })
     hooksOn.turn(turn('902'))
     const failure = await replyFor('902')
-    assert.ok(api.log.judge >= 3, `with hooks on the fork ran the inherited goal checker (${api.log.judge} checks)`)
+    assert.equal(api.log.judge, 3, 'the control is terminated on the third block, before the CLI cap of nine')
+    assert.deepEqual(signals.filter((s) => s.cwd.endsWith('/902')).map((s) => s.signal), ['SIGTERM'])
     assert.equal(failure.final, false)
     assert.match(String(failure.text), /Stop hook/)
     assert.match(String(failure.text), /\/goal/)
     assert.equal(posts.filter((p) => p.path === 'integrations/threads/reply' && p.body.rootId === '902').length, 1, 'one failure, never a loop of them')
-    assert.ok(logs.some((l) => /Stop hook blocked/.test(l)), logs.join(' | '))
+    assert.ok(logs.some((l) => /Stop hook blocked it 3 times/.test(l)), logs.join(' | '))
+    console.log(`CLI proof: parent active; fork and resume 0 goal checks, all 3 guard canaries each; control blocked ${api.log.judge} times, one named failure`)
   } finally {
     for (const m of managers) await m.stopAll().catch(() => {})
     await api.close()

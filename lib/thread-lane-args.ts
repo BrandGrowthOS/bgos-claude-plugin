@@ -31,17 +31,19 @@
  * no Bash and no editing tool at all. assertConfined refuses any lane command
  * without these flags.
  *
- * NO HOOKS (THREADGOAL): a lane runs no hook at all (`disableAllHooks` in its
- * `--settings`). The fork inherits the main session's transcript, and with it
- * an active /goal, which is a session scoped Stop hook the CLI restores on
- * resume. Measured on CLI 2.1.319 against a fake API: without the switch the
- * thread's turn was blocked by the inherited goal checker 9 times, then ended
- * with an empty result ("This turn failed"); with it no check ran and the
- * thread answered its own message in one turn. The switch holds under
- * --restricted and also covers every later start, which resumes the fork.
+ * SELECTIVE HOOKS (THREADGOAL2): --restricted drops inherited settings and
+ * plugins. Reinstall this plugin's trusted non-Stop hooks explicitly. The
+ * manager clears the active goal only in the child transcript before resume,
+ * using the CLI's goal-clear sentinel, so its session Stop hook is not restored.
+ * Other hook events remain enabled, including the private prompt boundary,
+ * tool floor and private tool guard. Never disable all hooks in a thread.
  *
  * Erasable TypeScript only (no enums, no parameter properties).
  */
+
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { isDeepStrictEqual } from 'node:util'
 
 import { permissionRulePath } from './lane-core.mjs'
 
@@ -102,11 +104,42 @@ export interface ThreadLaneConfinement {
   platform?: NodeJS.Platform
 }
 
+/** Trusted hooks come from the manifest, so matcher, timeout and guard changes follow the child. */
+export function threadLaneHooks(): Record<string, unknown> {
+  const manifest = JSON.parse(readFileSync(new URL('../hooks/hooks.json', import.meta.url), 'utf8'))
+  const root = fileURLToPath(new URL('../', import.meta.url)).replace(/[\\/]$/, '')
+  const quote = (s: string) => `'${s.replace(/'/g, "'\\''")}'`
+  return Object.fromEntries(Object.entries(manifest.hooks as Record<string, Array<{ matcher?: string; hooks: Array<{ type: string; command: string; args?: string[]; timeout?: number; async?: boolean }> }>>)
+    .filter(([event]) => event !== 'Stop')
+    .map(([event, matchers]) => [event, matchers.map((matcher) => ({
+      ...matcher,
+      hooks: matcher.hooks.map(({ args, command, ...hook }) => ({
+        ...hook,
+        // Settings hooks use a shell command, unlike the plugin's command/args form.
+        command: [command, ...(args ?? []).map((arg: string) => quote(arg.replace('${CLAUDE_PLUGIN_ROOT}', root)))].join(' '),
+      })),
+    }))]))
+}
+
 /**
- * A lane's hooks are off (see the file header, NO HOOKS). The same switch as
- * ASIDE_SETTINGS, and the CLI refuses /goal itself while it is set.
+ * Clear only the latest active goal in a child transcript. Keep UUID and parent
+ * links, all conversation rows and historical verdicts. This is the same
+ * met:true/sentinel:true record the CLI writes for /goal clear (2.1.319).
+ * Never call this on the parent's transcript.
  */
-export const THREAD_LANE_HOOKS_OFF = Object.freeze({ disableAllHooks: true })
+export function threadLaneTranscript(transcript: string): string {
+  const lines = transcript.split('\n')
+  for (let i = lines.length - 1; i >= 0; i--) {
+    let row
+    try { row = JSON.parse(lines[i]!) } catch { continue }
+    if (row?.type !== 'attachment' || row.attachment?.type !== 'goal_status') continue
+    if (row.attachment.met || row.attachment.failed) return transcript
+    row.attachment = { type: 'goal_status', met: true, sentinel: true, condition: row.attachment.condition }
+    lines[i] = JSON.stringify(row)
+    return lines.join('\n')
+  }
+  return transcript
+}
 
 /** How many earlier By the way exchanges ride along with a new question. */
 export const ASIDE_HISTORY_MAX = 20
@@ -192,7 +225,7 @@ export function threadLaneSettings(c: ThreadLaneConfinement): Record<string, unk
         ...(dirs.length > 0 ? { additionalDirectories: dirs } : {}),
       },
       remoteControlAtStartup: false,
-      ...THREAD_LANE_HOOKS_OFF,
+      hooks: threadLaneHooks(),
     }
   }
   const shell = c.shellSandbox
@@ -217,14 +250,14 @@ export function threadLaneSettings(c: ThreadLaneConfinement): Record<string, unk
     // A lane left alone would open a Remote Control session on the owner's
     // account (spike S2 finding 2, person lanes).
     remoteControlAtStartup: false,
-    // The main session's /goal (a Stop hook) must not follow the fork (NO HOOKS).
-    ...THREAD_LANE_HOOKS_OFF,
+    // Keep trusted guards while the manager clears the child's inherited goal.
+    hooks: threadLaneHooks(),
   }
 }
 
 /**
  * Throws unless `args` are a confined lane command: --restricted, its own
- * tools, permission mode and settings with every hook off, and none of the
+ * tools, permission mode and trusted hooks without Stop, and none of the
  * forbidden flags.
  */
 export function assertConfined(args: readonly string[]): void {
@@ -235,8 +268,9 @@ export function assertConfined(args: readonly string[]): void {
   try {
     settings = JSON.parse(args[args.indexOf('--settings') + 1] ?? '')
   } catch {}
-  if ((settings as { disableAllHooks?: unknown } | null)?.disableAllHooks !== true) {
-    throw new Error('refusing a thread lane whose settings let hooks run: it would inherit the main session\'s /goal Stop hook')
+  const own = settings as { disableAllHooks?: unknown; hooks?: unknown } | null
+  if (!own || (own.disableAllHooks !== undefined && own.disableAllHooks !== false) || !isDeepStrictEqual(own.hooks, threadLaneHooks())) {
+    throw new Error('refusing a thread lane without its trusted hooks or with a Stop hook')
   }
   for (const arg of args) {
     if (THREAD_LANE_FORBIDDEN_FLAGS.includes(arg) || arg === 'bypassPermissions') {

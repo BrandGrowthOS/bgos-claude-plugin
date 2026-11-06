@@ -32,6 +32,7 @@ import {
   protectedGitPaths,
   threadLaneArgs,
   threadLaneSettings,
+  threadLaneHooks,
   threadLaneTools,
   threadTurnPrompt,
 } from '../lib/thread-lane-args.ts'
@@ -98,8 +99,7 @@ test('a working lane never inherits the owner permissions: --restricted, edits a
       filesystem: { denyWrite: ['/work/atlas/.git/index'] },
     },
     remoteControlAtStartup: false,
-    // THREADGOAL: the main session's /goal Stop hook never follows the fork.
-    disableAllHooks: true,
+    hooks: threadLaneHooks(),
   })
   const args = threadLaneArgs({ mainSessionId: MAIN, forkSessionId: null, emptyMcpConfigPath: MCP, confinement: WORK })
   assert.ok(args.includes('--restricted'), 'user, project and local settings are ignored, the file tools confined')
@@ -132,7 +132,7 @@ test('a read only lane (folder not a git repository) has no Bash and no editing 
       additionalDirectories: ['/work/atlas'],
     },
     remoteControlAtStartup: false,
-    disableAllHooks: true,
+    hooks: threadLaneHooks(),
   })
   assert.deepEqual(READ_ONLY_DENIED_TOOLS, ['Bash', 'Edit', 'Write', 'NotebookEdit'])
   // The variadic --mcp-config stays last so it never swallows another flag's value.

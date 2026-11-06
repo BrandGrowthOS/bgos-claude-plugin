@@ -33,8 +33,8 @@
  *    worktree's project dir; the copy goes once the fork's init frame shows it
  *    was read. The fork's own file stays: it is the thread's memory.
  *  - A summary turn posts the draft to the summary route instead of a reply.
- *  - No hooks: a lane runs with every hook off (lib/thread-lane-args.ts, NO
- *    HOOKS), so the main session's /goal never follows the fork. Defence
+ *  - Selective hooks: a lane retains the plugin's non-Stop hooks, and its
+ *    transcript clears the inherited /goal before resume. Defence
  *    below that: a turn a Stop hook blocks from ending more than twice is
  *    stopped and failed with a reply naming the cause, never left looping.
  *  - Each result is ONE thread reply (`final` unless it ends asking a
@@ -64,6 +64,7 @@ import {
   protectedGitPaths,
   THREAD_LANE_REF_DIRS,
   threadLaneArgs,
+  threadLaneTranscript,
   threadTurnPrompt,
   type ThreadLaneConfinement,
   type ThreadTurnMode,
@@ -806,6 +807,22 @@ export class ThreadLaneManager {
         emptyMcpConfigPath: mcp,
         confinement,
       })
+      // Also clear goals in forks saved by versions that disabled all hooks.
+      const path = sessionTranscriptPath(this.deps.home, lane.state.cwd, lane.state.forkSessionId, this.deps.configDir)
+      if (this.deps.fs.exists(path)) {
+        const before = this.deps.fs.readFile(path)
+        const after = threadLaneTranscript(before)
+        if (after !== before) {
+          // A crash during an upgrade must not truncate the fork's memory.
+          const temporary = `${path}.thread-goal.tmp`
+          try {
+            this.deps.fs.writeFile(temporary, after)
+            this.deps.fs.rename(temporary, path)
+          } finally {
+            try { this.deps.fs.unlink(temporary) } catch {}
+          }
+        }
+      }
     } else {
       const mainId = this.deps.mainSessionId()
       if (!isSessionId(mainId)) throw new ThreadLaneError('no_session', NO_SESSION)
@@ -962,10 +979,10 @@ export class ThreadLaneManager {
     const { fs, home, configDir, agentFolder } = this.deps
     const from = sessionTranscriptPath(home, agentFolder, mainId, configDir)
     const to = sessionTranscriptPath(home, lane.state.cwd, mainId, configDir)
-    if (from === to) return
+    if (from === to) throw new ThreadLaneError('no_session', NO_SESSION)
     try {
       fs.mkdir(dirname(to))
-      fs.copyFile(from, to)
+      fs.writeFile(to, threadLaneTranscript(fs.readFile(from)))
     } catch {
       throw new ThreadLaneError('no_session', NO_SESSION)
     }
@@ -992,7 +1009,7 @@ export class ThreadLaneManager {
   }
 
   /**
-   * A Stop hook blocked the turn from ending. A lane runs no hook, so this is
+   * A Stop hook blocked the turn from ending. Inherited Stop hooks are excluded, so this is
    * a defence: past THREAD_STOP_HOOK_BLOCKS_MAX the lane is stopped and the
    * turn failed with its cause, never a loop and never the generic failure.
    */

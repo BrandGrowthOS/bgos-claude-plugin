@@ -133,3 +133,16 @@ stdin closed -> exit 0; wt project dir holds only dbd3b62b-....jsonl; the main t
 - `threadLaneArgs` runs every lane confined (section (g)); `assertConfined` refuses a lane command without `--restricted`, `--tools`, `--permission-mode` or `--settings`, or with a bypass or `--add-dir`.
 
 None of this changes the wire contract with BGOS.
+
+
+## (h) Selective thread hooks and inherited goals (2026-11-06)
+
+Measured on CLI 2.1.319 on macOS with an isolated configuration, a local scripted Messages API and dummy credentials. See `test/thread-lane-goal.test.ts`; run with `THREADS_GOAL_CLAUDE` set to a local CLI executable.
+
+An active `/goal` is restored from the latest `goal_status` attachment, even in a restricted fork. `--settings` with an empty Stop array does not clear that session hook. Turning off all hooks prevents the trusted guards from running, so thread lanes no longer use that switch. The manager changes only the latest active goal attachment in the child transcript to the same `met: true, sentinel: true` attachment that the real `/goal clear` command writes. Transcript UUIDs, parent links, previous verdicts and conversation rows stay intact. The parent file stays byte for byte unchanged. Before a later process resumes an older fork, its own transcript receives the same preparation if needed.
+
+`--restricted` still excludes inherited settings and plugins. The lane explicitly installs the trusted hooks from `hooks/hooks.json`, resolving their script paths from the installed plugin and omitting only the Stop event. The UserPromptSubmit private boundary, PreToolUse floor and private tool guard keep their matchers, timeouts and synchronous execution. All other non-Stop plugin hooks remain too. No parent hook configuration is copied. The aside remains a separate, tool-free command with its existing settings.
+
+The unchanged production command answered in one model request with zero goal checks. For canary coverage, only the test replaces the empty strict MCP configuration with a harmless local fixture tool matching both trusted PreToolUse guards. Wrappers execute the real guard scripts and record their exit status without changing matchers or results. The private prompt boundary and both tool guards executed successfully on the first fork and in a new process resuming the same fork. Both turns ended with zero goal checks. Production still uses an empty strict MCP configuration and its confined built-in tool list.
+
+A control bypassing only child goal preparation restored the active parent into the child copy. The third feedback block caused SIGTERM and exactly one failure reply naming the Stop hook and `/goal`, before the CLI's nine-block fallback. This retains the loop breaker as a second line. These measurements cover this CLI version on macOS; the full suite covers the existing cross-platform argument, permission and hook contracts.
