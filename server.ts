@@ -1235,6 +1235,7 @@ import {
   peerDeliveryReason,
   peerReplyNotForwardedResult,
   peerReplyNotPassedOnResult,
+  peerReplyUnconfirmedResult,
 } from './lib/peer-closed-reply.js'
 import { messagesCallerHeaders } from './lib/messages-caller-header.js'
 import { createChatOwnership } from './lib/chat-ownership.js'
@@ -6953,15 +6954,12 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
 
         const result = await bgosPost('send-message', body)
         const msgId = (result as any)?.message?.id
-        // HOAI's own word on the forward to the other agent, on a backend that
-        // gives it (`peerDelivery`, side threads only; BGOS #3420). Not
-        // forwarded: the reply is saved in the side thread and the other agent
-        // does not have it, so it is not a Sent. Forwarded, or no word at all,
-        // is the Sent below. A reply into a closed conversation still goes to
-        // HOAI, which reopens it (Kc's rule, kept by Data on 2026-10-28); only
-        // its answer decides. The inbound this reply answered is dropped from
-        // the overdue sweep, as for the 403 below: the agent has been told.
-        if (peerDeliveryOf(result) === 'not_forwarded') {
+        // A 201 proves persistence, not peer delivery. Keep sending even into
+        // a closed thread so the backend can revive it, then require its word
+        // on the forward. A missing or unknown report on a known side thread
+        // is uncertain, never Sent, including another reply before an inbound.
+        const peerDelivery = peerDeliveryOf(result)
+        if (peerDelivery === 'not_forwarded') {
           if (pendingInbounds.get(String(resolvedChatId))?.messageId === answeringInboundId) {
             clearInbound(resolvedChatId)
           }
@@ -6972,6 +6970,20 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
           return peerConversationEnded(result)
             ? peerReplyNotForwardedResult(String(resolvedChatId), msgId, hasAttachment)
             : peerReplyNotPassedOnResult(String(resolvedChatId), msgId, peerDeliveryReason(result), hasAttachment)
+        }
+        if (
+          peerDelivery !== 'forwarded' &&
+          (peerSideThreadChats.has(String(resolvedChatId)) ||
+            peerConvByChat.has(String(resolvedChatId)) ||
+            closedPeerChats.has(String(resolvedChatId)) ||
+            (result as any)?.message?.peerConversationId != null ||
+            (result as any)?.peerDelivery != null)
+        ) {
+          if (pendingInbounds.get(String(resolvedChatId))?.messageId === answeringInboundId) {
+            clearInbound(resolvedChatId)
+          }
+          log(`reply to chat ${resolvedChatId} saved as ${msgId} but peer delivery is unconfirmed; told the agent`)
+          return peerReplyUnconfirmedResult(String(resolvedChatId), msgId, hasAttachment)
         }
         // Session binding: the CLI writes this tool call's result ("Sent
         // (message_id: N)...") verbatim into THIS session's transcript, so
@@ -9682,6 +9694,9 @@ const peerConvChats = new Map<string, string>()
 // Reverse map: side-thread chatId → peer_conversation_id, so an inbound or a
 // close that only knows the chatId can find its conversation, and vice versa.
 const peerConvByChat = new Map<string, string>()
+// Inbox classification survives a restart before any peer inbound gives us
+// a conversation id. A saved reply there still needs delivery confirmation.
+const peerSideThreadChats = new Set<string>()
 // Side-thread chat ids whose peer conversation is CLOSED (the peer or the agent
 // sent turn_state:'final', or a peer_conversation_closed event fired). A closed
 // thread owes no reply, so the overdue sweep must permanently skip it. This is
@@ -11709,6 +11724,9 @@ async function discoverChats(): Promise<void> {
       .filter((c) => c.assistantId === Number(ASSISTANT_ID) && c.kind === 'main')
       .map((c) => String(c.id))
     for (const c of data.chats) {
+      if (c.assistantId === Number(ASSISTANT_ID) && c.kind === 'a2a') {
+        peerSideThreadChats.add(String(c.id))
+      }
       if (c.assistantId === Number(ASSISTANT_ID) && c.kind === 'group') {
         groupChatIds.add(String(c.id))
         if (!chatFirstListedAtMs.has(String(c.id))) chatFirstListedAtMs.set(String(c.id), Date.now())

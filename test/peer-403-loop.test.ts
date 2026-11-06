@@ -37,6 +37,7 @@ import { readFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import ts from 'typescript'
+import * as peerClosedReply from '../lib/peer-closed-reply.ts'
 
 import { askPendingText, askQuestionsError, askWaitSeconds } from '../lib/ask-tracker.ts'
 
@@ -109,8 +110,11 @@ async function startBackend(mode: Mode): Promise<Backend> {
     count: (route) => counts.get(route) ?? 0,
   }
   const server = createServer((req, res) => {
-    req.resume()
+    const chunks: Buffer[] = []
+    req.on('data', (chunk: Buffer) => chunks.push(chunk))
     req.on('end', () => {
+      const raw = Buffer.concat(chunks).toString('utf8')
+      const body = raw ? JSON.parse(raw) : {}
       const path = req.url ?? '/'
       const route = `${req.method} ${path.split('?')[0]}`
       counts.set(route, (counts.get(route) ?? 0) + 1)
@@ -142,7 +146,10 @@ async function startBackend(mode: Mode): Promise<Backend> {
           return send(500, deniedBody(500, 'Internal server error', path))
         case 'ok':
           return route === 'POST /api/v1/send-message'
-            ? send(201, JSON.stringify({ message: { id: 9002 } }))
+            ? send(201, JSON.stringify({
+                message: { id: 9002 },
+                ...(String(body.chatId) === A2A ? { peerDelivery: { state: 'forwarded' } } : {}),
+              }))
             : send(201, JSON.stringify({ id: 9001 }))
       }
     })
@@ -286,6 +293,7 @@ function harness(apiBase: string, turnChat: string): Harness {
   })
   const known: Record<string, unknown> = {
     ...peerRefusal,
+    ...peerClosedReply,
     Date: FakeDate,
     log: (line: string) => logs.push(line),
     // HTTP, the daemon's own client against the mocked backend.
@@ -315,6 +323,7 @@ function harness(apiBase: string, turnChat: string): Harness {
     closedPeerChats: new Set<string>(),
     peerConvChats: new Map<string, string>(),
     peerConvByChat: new Map<string, string>(),
+    peerSideThreadChats: new Set<string>(),
     CLOSED_PEER_CHATS_MAX: 500,
     REPLY_OVERDUE_MS: 240_000,
     updateDrainMode: false,

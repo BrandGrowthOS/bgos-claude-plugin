@@ -1,34 +1,11 @@
 /**
- * A reply into a peer side thread whose conversation has CLOSED (board row
- * 28fed1cd), RUN against a stub HOAI and a stub peer.
+ * Run the real reply dispatch, HTTP client, conversation bookkeeping and close
+ * handler against a local backend and an independently recorded peer inbox.
+ * A saved reply must never become Sent without a confirmed peer handoff.
+ * Covers timeout, completed, final inbound, stream close, repeated replies,
+ * missing delivery reports, and the backend's reopen-on-write contract.
  *
- * THE BUG. Two agents talk in a side thread; the conversation closes on
- * timeout and the daemon gets `peer_conversation_closed`. A later `reply` into
- * that chat answered "Sent (message_id: N)", and the peer never received it,
- * nor a second reply sent before the peer answered. On 2026-10-27 five of
- * Data's replies never reached Ares, and Ares asked the same questions four
- * times.
- *
- * WHERE THE TRUTH LIVES. HOAI keeps the conversation's state. A participant's
- * /send-message into a closed side thread is accepted, the conversation is
- * reopened (BGOS ChatParticipationService, #1265, Kc's rule) and the reply
- * saved, and the forward to the other agent
- * (SendMessageService.bridgePeerReplyIfApplicable) is best effort. The answer
- * was 201 with the saved message either way, so "Sent" only ever meant
- * "saved". BGOS #3420 adds HOAI's word on the forward, `peerDelivery`.
- *
- * DATA'S DECISION (2026-10-28, on #287): the reopen rule holds. A reply into a
- * closed conversation goes to HOAI as always and reopens it. The daemon acts
- * on `not_forwarded` only: that is an error with a remedy that works, never a
- * Sent. `forwarded`, or no field at all (a backend without #3420), is the Sent
- * main gives.
- *
- * THE STUB revives a closed conversation on a reply when `revivesOnWrite` is
- * set (HOAI's rule); without it, it answers the way the agents saw it on
- * 10-27: saved, 201, and the stub peer receives nothing. In `reports` mode it
- * also sends `peerDelivery`, so the daemon is proven with and without #3420.
- *
- * Run with: node.exe --import tsx --test test/peer-closed-reply.test.ts
+ * Run: node --import tsx --test --test-concurrency=4 test/peer-closed-reply.test.ts
  */
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
@@ -53,7 +30,9 @@ const SIDE_B = '33018'
 const MAIN = '33001'
 const MEETING_CHAT = '33050'
 const MEETING_ID = 12
-const PEER = 950
+// Synthetic assistant identities used only by this local fixture.
+const SELF = 700_001
+const PEER = 700_002
 const CONV = 77
 
 // ── the stub HOAI and the stub peer ──────────────────────────────────────────
@@ -79,7 +58,8 @@ interface Backend {
   /** Runs while a reply is on the wire, before HOAI answers it. */
   onSendMessage?: () => void
   /** HOAI's word on the next reply only (`reports` mode): it saves it and passes nothing on. */
-  nextDelivery?: { state: 'not_forwarded'; reason: string }
+  nextDelivery?: unknown
+  reportConversationId?: boolean
   /** HOAI revives a closed conversation on a participant's write, and forwards (Kc's rule, BGOS #1265). */
   revivesOnWrite?: boolean
   count(route: string): number
@@ -90,7 +70,7 @@ after(async () => {
   await Promise.all(servers.map((s) => new Promise<void>((resolve) => s.close(() => resolve()))))
 })
 
-async function startBackend(mode: Mode = 'saves-silently'): Promise<Backend> {
+async function startBackend(mode: Mode = 'reports'): Promise<Backend> {
   let nextMessageId = 9000
   let nextConv = CONV + 1
   const backend: Backend = {
@@ -120,9 +100,10 @@ async function startBackend(mode: Mode = 'saves-silently'): Promise<Backend> {
         const chatId = String(body.chatId)
         const thread = backend.threads.get(chatId)
         if (!thread) return send(201, { message: { id, chatId: Number(chatId) } })
+        const overridesDelivery = 'nextDelivery' in backend
         const delivery = backend.nextDelivery
-        backend.nextDelivery = undefined
-        if (delivery && backend.mode === 'reports') {
+        delete backend.nextDelivery
+        if (overridesDelivery && backend.mode === 'reports') {
           return send(201, { message: { id, chatId: Number(chatId) }, peerDelivery: delivery })
         }
         if (!thread.open && backend.revivesOnWrite) thread.open = true
@@ -139,7 +120,7 @@ async function startBackend(mode: Mode = 'saves-silently'): Promise<Backend> {
         }
         // A closed conversation: saved, answered 201, and nothing forwarded.
         return send(201, {
-          message: { id, chatId: Number(chatId) },
+          message: { id, chatId: Number(chatId), ...(backend.reportConversationId ? { peerConversationId: thread.conv } : {}) },
           ...(backend.mode === 'reports'
             ? { peerDelivery: { state: 'not_forwarded', reason: 'conversation_not_open' } }
             : {}),
@@ -215,7 +196,7 @@ interface Harness {
   /** The peer wrote in a side thread (an inbound, as the socket delivers it). */
   peerSays(chatId: string, conv: number, messageId: number, turnState?: string): void
   /** HOAI's idle sweep closed the conversation and the socket told the daemon. */
-  timeoutClose(chatId: string): void
+  timeoutClose(chatId: string, reason?: 'timeout' | 'completed'): void
   /** The update stream's peer_closed for that conversation. */
   streamClose(chatId: string): void
   reply(chatId: string, text: string, extra?: Record<string, unknown>): Promise<ToolResult>
@@ -224,6 +205,7 @@ interface Harness {
   sendToPeer(text: string, turnState?: string): Promise<ToolResult>
   logs: string[]
   closeNotices: number
+  discoverSideThread(chatId: string): Promise<void>
 }
 
 function harness(backend: Backend): Harness {
@@ -237,6 +219,7 @@ function harness(backend: Backend): Harness {
     lift('function notePeerConversationOpened('),
     lift('function recordInbound('),
     lift('function clearInbound('),
+    lift('async function discoverChats('),
     ...refusalLedgers(),
     liftCloseHandler(),
     liftCase('reply', 'propose_plan', 'replyTool'),
@@ -269,14 +252,17 @@ function harness(backend: Backend): Harness {
     API_BASE: backend.url,
     AUTH: { mode: 'pairing', pairingToken: 'pair_test0000' },
     HTTP_TIMEOUT_MS: 5_000,
-    ASSISTANT_ID: '947',
-    USER_ID: 'user_kc',
+    ASSISTANT_ID: String(SELF),
+    USER_ID: 'fixture_owner',
     // Peer conversation bookkeeping.
     pendingInbounds,
     meetingChatIds: new Set<string>([MEETING_CHAT]),
     closedPeerChats,
     peerConvChats: new Map<string, string>(),
     peerConvByChat,
+    peerSideThreadChats: new Set<string>(),
+    chatOwnership: { noteRow: () => undefined },
+    bgosPeerGet: async () => ({ chats: [...backend.threads.keys()].map((id) => ({ id: Number(id), assistantId: SELF, kind: 'a2a' })) }),
     CLOSED_PEER_CHATS_MAX: 500,
     a2aRouteRefusedChats: { has: () => false },
     updateDrainMode: false,
@@ -322,7 +308,7 @@ function harness(backend: Backend): Harness {
   // eslint-disable-next-line no-new-func
   const factory = new Function(
     'scope',
-    `with (scope) {\n${js}\nreturn { recordInbound, rememberPeerConvChat, markConversationClosed, onPeerConversationClosed, replyTool, sendToPeerTool }\n}`,
+    `with (scope) {\n${js}\nreturn { recordInbound, rememberPeerConvChat, markConversationClosed, onPeerConversationClosed, replyTool, sendToPeerTool, discoverChats }\n}`,
   )
   const lifted = factory(scope) as {
     recordInbound(chatId: string, messageId: number, turnState?: string, senderKind?: string | null): void
@@ -331,9 +317,14 @@ function harness(backend: Backend): Harness {
     onPeerConversationClosed(payload: Record<string, unknown>): void
     replyTool(args: Record<string, unknown>): Promise<ToolResult>
     sendToPeerTool(args: Record<string, unknown>): Promise<ToolResult>
+    discoverChats(): Promise<void>
   }
 
   return {
+    discoverSideThread: async (chatId) => {
+      backend.threads.set(chatId, { conv: CONV, open: false })
+      await lifted.discoverChats()
+    },
     peerSays: (chatId, conv, messageId, turnState = 'expecting_reply') => {
       // HOAI first: the peer's write opens, or revives, its conversation.
       backend.threads.set(chatId, { conv, open: turnState !== 'final' })
@@ -344,7 +335,7 @@ function harness(backend: Backend): Harness {
       lifted.rememberPeerConvChat(convId, chatId)
       lifted.recordInbound(chatId, messageId, turnState, 'agent')
     },
-    timeoutClose: (chatId) => {
+    timeoutClose: (chatId, reason = 'timeout') => {
       const thread = backend.threads.get(chatId)
       assert.ok(thread, `chat ${chatId} holds a conversation`)
       thread.open = false
@@ -352,7 +343,7 @@ function harness(backend: Backend): Harness {
         event_type: 'peer_conversation_closed',
         conversation_id: String(thread.conv),
         closed_by_id: String(PEER),
-        reason: 'timeout',
+        reason,
       })
     },
     streamClose: (chatId) => {
@@ -384,12 +375,13 @@ function sendMessagePosts(backend: Backend, chatId: string): number {
 }
 
 /** A side thread the peer opened, its first message in, and the agent's answer delivered. */
-async function talking(mode: Mode = 'saves-silently'): Promise<{ backend: Backend; h: Harness }> {
+async function talking(mode: Mode = 'reports'): Promise<{ backend: Backend; h: Harness }> {
   const backend = await startBackend(mode)
   const h = harness(backend)
   h.peerSays(SIDE, CONV, 501)
   const first = await h.reply(SIDE, 'Here is the first answer.')
-  assert.match(first.content[0]!.text, /^Sent \(message_id: \d+\)/, 'an open thread replies as always')
+  if (mode === 'reports') assert.match(first.content[0]!.text, /^Sent \(message_id: \d+\)/)
+  else assert.equal(first.isError, true, 'an unreported handoff cannot claim Sent even when the peer got it')
   assert.deepEqual(backend.peerGot.map((m) => m.text), ['Here is the first answer.'])
   return { backend, h }
 }
@@ -423,18 +415,123 @@ function assertNotForwardedIsAnError(result: ToolResult, label: string): string 
   return said
 }
 
-// ── Data's decision: the reopen rule holds (red on fec0dc8) ──────────────────
+// Missing delivery reports must never hide a reply the peer did not receive.
+for (const reason of ['timeout', 'completed'] as const) {
+  test(`missing delivery report after ${reason}: error names send_to_peer, never Sent`, async () => {
+    const { backend, h } = await talking('reports')
+    backend.mode = 'saves-silently'
+    h.timeoutClose(SIDE, reason)
+    const text = `Follow up after ${reason}.`
+    const result = await h.reply(SIDE, text)
+    assert.equal(result.isError, true, result.content[0]?.text)
+    assert.doesNotMatch(result.content[0]!.text, /^Sent\b/)
+    assert.match(result.content[0]!.text, /not confirm.*other agent/)
+    assert.match(result.content[0]!.text, /send_to_peer/)
+    assert.equal(sendMessagePosts(backend, SIDE), 2, 'the backend can still revive a closed thread')
+    assert.ok(!backend.peerGot.some((m) => m.text === text), 'the peer received nothing')
+  })
+}
+
+test('missing delivery report: a second reply before the peer answers also fails loudly', async () => {
+  const { backend, h } = await talking('reports')
+  backend.mode = 'saves-silently'
+  h.timeoutClose(SIDE)
+  const texts = ['First follow up.', 'Second follow up before an answer.']
+  const results = []
+  for (const text of texts) results.push(await h.reply(SIDE, text))
+  for (const result of results) {
+    assert.equal(result.isError, true, result.content[0]?.text)
+    assert.doesNotMatch(result.content[0]!.text, /^Sent\b/)
+    assert.match(result.content[0]!.text, /send_to_peer/)
+  }
+  assert.equal(sendMessagePosts(backend, SIDE), 3)
+  assert.deepEqual(backend.peerGot.map((m) => m.text), ['Here is the first answer.'])
+})
+
+test('a side thread opened by send_to_peer needs confirmation before any peer answered', async () => {
+  const backend = await startBackend('saves-silently')
+  const h = harness(backend)
+  backend.nextSideThread = SIDE
+  await h.sendToPeer('Initial question.')
+  h.timeoutClose(SIDE)
+  const result = await h.reply(SIDE, 'Follow up before an answer.')
+  assert.equal(result.isError, true, result.content[0]?.text)
+  assert.match(result.content[0]!.text, /Delivery unconfirmed:.*send_to_peer/)
+  assert.deepEqual(backend.peerGot.map((m) => m.text), ['Initial question.'])
+})
+
+test('a discovered side thread needs confirmation after restart without a conversation mapping', async () => {
+  const backend = await startBackend('saves-silently')
+  const h = harness(backend)
+  await h.discoverSideThread(SIDE)
+  const result = await h.reply(SIDE, 'Follow up after restart.')
+  assert.equal(result.isError, true, result.content[0]?.text)
+  assert.match(result.content[0]!.text, /Delivery unconfirmed:.*send_to_peer/)
+  assert.deepEqual(backend.peerGot, [])
+})
+
+test('a returned peer conversation id needs confirmation even without local thread knowledge', async () => {
+  const backend = await startBackend('saves-silently')
+  backend.threads.set(SIDE, { conv: CONV, open: false })
+  backend.reportConversationId = true
+  const result = await harness(backend).reply(SIDE, 'Follow up with only a persisted conversation id.')
+  assert.equal(result.isError, true, result.content[0]?.text)
+  assert.match(result.content[0]!.text, /Delivery unconfirmed:.*send_to_peer/)
+  assert.deepEqual(backend.peerGot, [])
+})
+
+for (const report of [undefined, null, {}, { state: 'queued' }, { state: 'FORWARDED' }, { state: true }, 'forwarded']) {
+  test(`an unusable delivery report ${JSON.stringify(report)} cannot claim Sent`, async () => {
+    const { backend, h } = await talking()
+    backend.nextDelivery = report
+    const result = await h.reply(SIDE, 'Do not assume this was forwarded.')
+    assert.equal(result.isError, true, result.content[0]?.text)
+    assert.match(result.content[0]!.text, /Delivery unconfirmed:.*send_to_peer/)
+    assert.deepEqual(backend.peerGot.map((m) => m.text), ['Here is the first answer.'])
+  })
+}
+
+test('an unconfirmed handoff with files offers a remedy that preserves the files', async () => {
+  const { backend, h } = await talking()
+  backend.mode = 'saves-silently'
+  h.timeoutClose(SIDE)
+  const result = await h.reply(SIDE, 'Attached report.', { files: [{ url: 'data:application/pdf;base64,JVBERi0=' }] })
+  assert.equal(result.isError, true, result.content[0]?.text)
+  assert.match(result.content[0]!.text, /send the words with send_to_peer and share the files as a link/)
+  assert.match(result.content[0]!.text, /send_to_peer carries no files/)
+  assert.equal(sendMessagePosts(backend, SIDE), 2)
+})
+
+test('an unconfirmed handoff clears only the inbound it answered', async () => {
+  for (const newerInbound of [false, true]) {
+    const { backend, h } = await talking()
+    h.peerSays(SIDE, CONV, 502)
+    backend.nextDelivery = null
+    if (newerInbound) backend.onSendMessage = () => h.peerSays(SIDE, CONV, 503)
+    const result = await h.reply(SIDE, 'Answer to the tracked question.')
+    assert.equal(result.isError, true, result.content[0]?.text)
+    assert.equal(h.owed(SIDE), newerInbound ? 503 : undefined)
+  }
+})
+
+// Reopen remains a backend decision. Only a confirmed forward claims Sent.
 
 for (const mode of ['saves-silently', 'reports'] as const) {
   for (const signal of CLOSE_SIGNALS) {
-    test(`reopen rule (${mode === 'reports' ? 'HOAI reports forwarded' : 'no peerDelivery field'}): after the ${signal}, a reply is sent to HOAI, reopens the conversation and reaches the peer`, async () => {
+    test(`reopen rule (${mode}): after the ${signal}, a reply reaches the peer and claims Sent only when confirmed`, async () => {
       const { backend, h } = await talking(mode)
       backend.revivesOnWrite = true
       await close(backend, h, signal)
       const text = `One more thing after the ${signal}.`
       const result = await h.reply(SIDE, text)
-      assert.equal(result.isError, undefined, `the tool answered: ${result.content[0]?.text}`)
-      assert.match(result.content[0]!.text, /^Sent \(message_id: \d+\)$/, 'the Sent main gives, nothing added')
+      if (mode === 'reports') {
+        assert.equal(result.isError, undefined, result.content[0]?.text)
+        assert.match(result.content[0]!.text, /^Sent \(message_id: \d+\)$/)
+      } else {
+        assert.equal(result.isError, true, result.content[0]?.text)
+        assert.match(result.content[0]!.text, /^Delivery unconfirmed:/)
+        assert.doesNotMatch(result.content[0]!.text, /^Sent\b/)
+      }
       assert.equal(sendMessagePosts(backend, SIDE), 2, 'the reply went to HOAI')
       assert.ok(backend.peerGot.some((m) => m.text === text), 'the peer got it')
     })
@@ -614,7 +711,7 @@ test('with #3420: a message that lands while the failed reply is on the wire kee
   assert.equal(h.owed(SIDE), 503, 'the newer message is still owed an answer')
 })
 
-test('peerDelivery is read narrowly: only the two exact states count, anything else is no word at all', async () => {
+test('peerDelivery is read narrowly: only the two exact states count as a delivery report', async () => {
   const { peerDeliveryOf, peerDeliveryReason } = (await import('../lib/peer-closed-reply.ts')) as {
     peerDeliveryOf(answer: unknown): string | null
     peerDeliveryReason(answer: unknown): string
@@ -659,7 +756,7 @@ test('unchanged: a meeting reply goes to the meeting route', async () => {
   assert.equal(backend.posts.length, 1)
   assert.equal(backend.posts[0]!.route, `POST /api/v1/meetings/${MEETING_ID}/messages`)
   assert.equal(backend.posts[0]!.body.text, 'My turn: the numbers are in.')
-  assert.equal(backend.posts[0]!.body.asAssistantId, 947)
+  assert.equal(backend.posts[0]!.body.asAssistantId, SELF)
 })
 
 test('unchanged: an open side thread', async () => {
