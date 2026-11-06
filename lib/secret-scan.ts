@@ -41,7 +41,8 @@ interface SecretRule {
   pattern: RegExp
   /**
    * When set, finds what `pattern` finds (the same first match) in linear time; `pattern` stays the rule as both twins
-   * write it (email files review round 7: the jwt regex is quadratic on a long run of base64url characters).
+   * write it (email files review round 7: the jwt regex is quadratic on a long run of base64url characters). On a rule
+   * that allows placeholders it returns what the walk over every match returns: the first value that is not one.
    */
   match?: (line: string) => string | null
   /**
@@ -93,6 +94,8 @@ const RULES: SecretRule[] = [
     name: 'aws_secret_access_key',
     hint: /aws/i,
     pattern: /\baws.{0,30}?['"=:\s]([A-Za-z0-9/+=]{40})(?![A-Za-z0-9/+=])/i,
+    // Its own match: on a line of =aws repeated, the regex above reads each character about a hundred times.
+    match: (line) => awsSecretMatch(line),
     valueGroup: 1,
     allowPlaceholder: true,
   },
@@ -294,6 +297,79 @@ export function privateKeyBlockMatch(line: string): string | null {
   return null
 }
 
+/** A character of the aws secret value, [A-Za-z0-9/+=]: a letter, a digit, or / + =. */
+function isAwsValueCode(code: number): boolean {
+  return (code !== 95 && isWordCode(code)) || code === 47 || code === 43 || code === 61
+}
+
+/**
+ * The aws rule's separator, ['"=:\s]: a quote, = or :, or any character \s reads as a space (a tab, a line break, a
+ * no-break space and the like).
+ */
+function isAwsSeparatorCode(code: number): boolean {
+  return code === 39 || code === 34 || code === 61 || code === 58 || isRegexSpace(code)
+}
+
+/** A line break, which a regex dot does not read: \n, \r, U+2028 and U+2029. */
+function isLineBreakCode(code: number): boolean {
+  return code === 10 || code === 13 || code === 0x2028 || code === 0x2029
+}
+
+/**
+ * The aws_secret_access_key rule's value on one line, the same one the scan finds by walking every match of the
+ * rule's regex and keeping the first value that is not a placeholder, in linear time. The regex reads its window
+ * again at each separator after each aws, and up to 40 value characters each time, so on a line of =aws repeated it
+ * reads each character about a hundred times. This reads each character a few times at most.
+ *
+ * The value is 40 characters of [A-Za-z0-9/+=] with no such character after it, so it ends where a run of them ends,
+ * and its separator is the character 41 before that end. Each run of 40 or more gives that one spot, which counts
+ * when the character there is a separator. After an aws the regex tries a gap of 0 to 30 characters, shortest first,
+ * so it takes the first such spot at most 30 characters on, unless a line break comes before it. After a placeholder
+ * the regex looks again from the value's end. The aws, the runs and the line breaks are each read once, left to right.
+ */
+export function awsSecretMatch(line: string): string | null {
+  const n = line.length
+  // The first separator spot at or after the current gap's start, or n when none is left.
+  let separatorAt = -1
+  // Where reading the next run of value characters starts.
+  let runFrom = 0
+  // The first line break at or after the current gap's start, or n.
+  let lineBreak = -1
+  // aws, a separator, 40 value characters.
+  for (let at = 0; at + 3 + 1 + 40 <= n; at++) {
+    // | 32 reads A as a, W as w and S as s, and no other character as any of them.
+    if ((line.charCodeAt(at) | 32) !== 97 || (line.charCodeAt(at + 1) | 32) !== 119 || (line.charCodeAt(at + 2) | 32) !== 115) continue
+    // \b: the character before aws is not a letter, a digit or _.
+    if (at > 0 && isWordCode(line.charCodeAt(at - 1))) continue
+    const gapStart = at + 3
+    while (separatorAt < gapStart) {
+      separatorAt = n
+      while (runFrom < n) {
+        while (runFrom < n && !isAwsValueCode(line.charCodeAt(runFrom))) runFrom++
+        const runStart = runFrom
+        while (runFrom < n && isAwsValueCode(line.charCodeAt(runFrom))) runFrom++
+        if (runFrom - runStart >= 40 && runFrom >= 41 && isAwsSeparatorCode(line.charCodeAt(runFrom - 41))) {
+          separatorAt = runFrom - 41
+          break
+        }
+      }
+    }
+    // No spot is left for this aws or any later one.
+    if (separatorAt === n) return null
+    if (separatorAt - gapStart > 30) continue
+    if (lineBreak < gapStart) {
+      lineBreak = gapStart
+      while (lineBreak < n && !isLineBreakCode(line.charCodeAt(lineBreak))) lineBreak++
+    }
+    if (lineBreak < separatorAt) continue
+    const value = line.slice(separatorAt + 1, separatorAt + 41)
+    if (!isPlaceholderValue(value)) return value
+    // The regex looks for its next match from this one's end (the loop's at++ adds the last 1).
+    at = separatorAt + 40
+  }
+  return null
+}
+
 /** Canonical rules_version 1 rule names, in deterministic output order.
  *  Pinned by test/secret-scan.test.ts as the cross-repo canary: the backend
  *  twin must export the exact same strings. */
@@ -306,10 +382,10 @@ export const SECRET_SCAN_RULE_NAMES: string[] = RULES.map((r) => r.name)
  */
 /**
  * The global copy of each placeholder-gated rule's pattern, built once (email files review round 7: it was built
- * again for every line). matchAll clones it, so sharing it is safe.
+ * again for every line). matchAll clones it, so sharing it is safe. A rule with a match of its own needs none.
  */
 const GLOBAL_PATTERNS: ReadonlyMap<SecretRule, RegExp> = new Map(
-  RULES.filter((rule) => rule.allowPlaceholder).map((rule) => [
+  RULES.filter((rule) => rule.allowPlaceholder && !rule.match).map((rule) => [
     rule,
     new RegExp(rule.pattern.source, rule.pattern.flags.includes('g') ? rule.pattern.flags : `${rule.pattern.flags}g`),
   ]),
