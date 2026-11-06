@@ -1,0 +1,7 @@
+Node runtime: v24.22.2 (CI major: 24)
+Bun runtime: 1.3.14
+Runner niceness: 20
+File workers observed: 2
+Worker niceness: 20, 20
+Official Node archive, verified SHA-256:
+aa9549349e47dffaa42dcf95d6e06ade8c4bdafc980979883b88767670df385a  node-v24.22.2-darwin-arm64.tar.gz

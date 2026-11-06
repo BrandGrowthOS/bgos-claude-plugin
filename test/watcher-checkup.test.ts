@@ -700,6 +700,290 @@ function updateModules(opts: { latest?: string; verdict?: string; reason?: strin
 
 const IDLE_PS = [psLine(1, 0, '/sbin/init'), psLine(3000, 4242, `node ${ROOT}/bin/hoai-core.mjs`), psLine(5912, 3000, `claude --resume ${SID}`), psLine(4912, 5912, `node ${ROOT}/server.ts`)].join('\n')
 
+const PAIR_CODE = 'ABCDEF123456'
+const AGENT_CREDS = `${HOME}/.bgos-agent/credentials-912.json`
+const pairingCredentials = (token = 'agent-secret-912') => JSON.stringify({ assistantId: '912', pairingId: 3, pairingToken: token, backendUrl: 'https://api.example.test' })
+
+function pairingBackend(job: ReturnType<typeof checkupJob>, verdict: { status: number; body: any }) {
+  const backend = fakeBackend(job)
+  const probes: any[] = []
+  const fetch = async (url: string, init: any) => {
+    if (new URL(url).pathname.endsWith('/integrations/session')) {
+      assert.equal(init.method, 'POST')
+      assert.equal(init.redirect, 'error', 'never send an agent credential across a redirect')
+      probes.push({ url, headers: init.headers })
+      return { ok: verdict.status < 400, status: verdict.status, text: async () => JSON.stringify(verdict.body) }
+    }
+    return backend.fetch(url, init)
+  }
+  return { ...backend, fetch, probes }
+}
+
+test('revocation is reported to the owner without re-pairing, restarting, or exposing credentials', async () => {
+  const fs = agentFs({ [AGENT_CREDS]: pairingCredentials(), [`${PLUGIN_STATE}/agent-state.json`]: agentState() })
+  const backend = pairingBackend(checkupJob(), { status: 401, body: { code: 'pairing_revoked' } })
+  const run = rig(fs, backend, fakeClock(), IDLE_PS, { alive: [3000, 5912, 4912] })
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.deepEqual(terminal.findings.map((f: any) => f.cause), ['pairing_revoked'])
+  assert.match(terminal.findings[0].fix, /confirm/i)
+  assert.deepEqual(terminal.actions.map((a: any) => [a.did, a.outcome]), [['report', 'not_fixed']])
+  assert.equal(backend.probes.length, 1)
+  assert.equal(backend.probes[0].headers['X-BGOS-Pairing'], 'agent-secret-912')
+  assert.equal(fs.readFile(AGENT_CREDS), pairingCredentials())
+  assert.equal(restartRequested(fs), false)
+  assert.deepEqual(run.kills, [])
+  assert.deepEqual(run.spawns, [])
+  assertDtoShape(backend.progress('chk-1'))
+  assertNoSecrets(run.logs, 'log')
+  assertNoSecrets(backend.calls.map((c) => JSON.stringify(c.body ?? {})), 'owner report')
+})
+
+test('a confirmed repair pairs only the revoked agent, reloads it safely, and reports each step', async () => {
+  const fs = agentFs({ [AGENT_CREDS]: pairingCredentials(), [`${PLUGIN_STATE}/agent-state.json`]: agentState(), [`${ROOT}/bin/bgos-pair.mjs`]: '// pair' })
+  const job = checkupJob()
+  Object.assign(job.jobs['chk-1']!, { pairingRepair: { confirmed: true, assistantId: '912', pairingId: 3, pairCode: PAIR_CODE } })
+  const backend = pairingBackend(job, { status: 401, body: { code: 'pairing_revoked' } })
+  const clock = fakeClock()
+  daemonAnswersProbe(fs, clock)
+  const run = rig(fs, backend, clock, IDLE_PS, { alive: [3000, 5912, 4912] })
+  const exec = run.deps.exec
+  const pairs: any[] = []
+  run.deps.exec = async (file: string, args: string[], opts?: any) => {
+    if (args[0] === `${ROOT}/bin/bgos-pair.mjs`) {
+      pairs.push({ file, args, opts })
+      fs.writeFile(AGENT_CREDS, pairingCredentials('replacement-secret-912'))
+      return { code: 0, stdout: PAIR_CODE, stderr: '', error: null, timedOut: false }
+    }
+    return exec(file, args)
+  }
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.equal(terminal.state, 'done')
+  assert.equal(pairs.length, 1)
+  assert.equal(pairs[0].opts.cwd, AVA)
+  assert.ok(pairs[0].args.includes('--no-install-cli'))
+  assert.deepEqual(pairs[0].args.slice(2, 4), ['--assistant-id', '912'])
+  assert.equal(restartRequested(fs), true)
+  assert.deepEqual(terminal.actions.map((a: any) => [a.cause, a.did, a.outcome]), [
+    ['pairing_revoked', 're_pair', 'fixed'], ['pairing_revoked', 'restart_agent', 'fixed'],
+  ])
+  const progress = backend.progress('chk-1')
+  assert.ok(progress.some((p: any) => p.steps.some((s: any) => s.kind === 're_pair' && s.state === 'ok')))
+  assertDtoShape(progress)
+  assertNoSecrets([...run.logs, ...progress.map((p: any) => JSON.stringify(p))], 'report')
+  for (const secret of [PAIR_CODE, 'replacement-secret-912']) assert.ok(!JSON.stringify([...run.logs, ...progress]).includes(secret))
+})
+
+test('confirmation is bound to this agent and pairing, and cannot authorize a repair without a revoked finding', async () => {
+  for (const repair of [
+    undefined,
+    { confirmed: 'true', assistantId: '912', pairingId: 3, pairCode: PAIR_CODE },
+    { confirmed: true, assistantId: '913', pairingId: 3, pairCode: PAIR_CODE },
+    { confirmed: true, assistantId: '912', pairingId: 4, pairCode: PAIR_CODE },
+    { confirmed: true, assistantId: '912', pairingId: 3, pairCode: '--help' },
+  ]) {
+    const fs = agentFs({ [AGENT_CREDS]: pairingCredentials(), [`${PLUGIN_STATE}/agent-state.json`]: agentState() })
+    const job = checkupJob()
+    Object.assign(job.jobs['chk-1']!, { pairingRepair: repair })
+    const backend = pairingBackend(job, { status: 401, body: { code: 'pairing_revoked' } })
+    const run = rig(fs, backend, fakeClock(), IDLE_PS, { alive: [3000, 5912, 4912] })
+    await runWatcher(run.deps as any)
+    assert.deepEqual(terminalOf(backend).actions.map((a: any) => a.did), ['report'])
+    assert.equal(restartRequested(fs), false)
+    assert.ok(!run.execCalls.some((c) => c.includes('bgos-pair')))
+  }
+  for (const verdict of [
+    { status: 200, body: {} }, { status: 401, body: { code: 'session_expired' } },
+    { status: 403, body: { code: 'pairing_revoked' } }, { status: 503, body: {} },
+  ]) {
+    const fs = agentFs({ [AGENT_CREDS]: pairingCredentials(), [`${PLUGIN_STATE}/agent-state.json`]: agentState() })
+    const job = checkupJob()
+    Object.assign(job.jobs['chk-1']!, { pairingRepair: { confirmed: true, assistantId: '912', pairingId: 3, pairCode: PAIR_CODE } })
+    const backend = pairingBackend(job, verdict)
+    const run = rig(fs, backend, fakeClock(), IDLE_PS, { alive: [3000, 5912, 4912] })
+    await runWatcher(run.deps as any)
+    assert.deepEqual(terminalOf(backend).actions, [])
+    assert.equal(restartRequested(fs), false)
+    assert.ok(!run.execCalls.some((c) => c.includes('bgos-pair')))
+  }
+})
+
+test('a session that becomes busy during a plugin update is not restarted on the earlier idle observation', async () => {
+  const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState({ runningVersion: '0.38.3' }) })
+  const backend = fakeBackend(checkupJob())
+  const modules = updateModules()
+  const execute = modules.executePlan
+  modules.executePlan = async (...args: Parameters<typeof execute>) => {
+    const result = await execute(...args)
+    fs.writeFile(`${PLUGIN_STATE}/agent-state.json`, agentState({ runningVersion: '0.38.3', turnInFlight: true }))
+    return result
+  }
+  const run = rig(fs, backend, fakeClock(), IDLE_PS, { alive: [3000, 5912, 4912], modules })
+  await runWatcher(run.deps as any)
+  assert.equal(restartRequested(fs), false)
+  assert.equal(keepAliveRecord(fs), null)
+  const restart = terminalOf(backend).actions.find((a: any) => a.did === 'restart_agent')
+  assert.equal(restart.outcome, 'skipped')
+  assert.match(restart.detail, /turn_in_flight/)
+})
+
+test('a failed pairing repair never reloads the agent and keeps command output out of the owner report', async () => {
+  const fs = agentFs({ [AGENT_CREDS]: pairingCredentials(), [`${PLUGIN_STATE}/agent-state.json`]: agentState(), [`${ROOT}/bin/bgos-pair.mjs`]: '// pair' })
+  const job = checkupJob()
+  Object.assign(job.jobs['chk-1']!, { pairingRepair: { confirmed: true, assistantId: '912', pairingId: 3, pairCode: PAIR_CODE } })
+  const backend = pairingBackend(job, { status: 401, body: { code: 'pairing_revoked' } })
+  const run = rig(fs, backend, fakeClock(), IDLE_PS, { alive: [3000, 5912, 4912] })
+  const exec = run.deps.exec
+  run.deps.exec = async (file: string, args: string[]) => args[0]?.endsWith('/bgos-pair.mjs')
+    ? { code: 2, stdout: '', stderr: `${PAIR_CODE} agent-secret-912 ${HOME}`, error: null, timedOut: false }
+    : exec(file, args)
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.equal(terminal.state, 'failed')
+  assert.equal(terminal.failedStep.kind, 're_pair')
+  assert.deepEqual(terminal.actions.map((a: any) => [a.did, a.outcome]), [['re_pair', 'not_fixed'], ['restart_agent', 'skipped']])
+  assert.equal(restartRequested(fs), false)
+  assertNoSecrets([...run.logs, JSON.stringify(terminal)], 'failed pair report')
+  assert.ok(!JSON.stringify(terminal).includes(PAIR_CODE))
+})
+
+test('a restart cannot spend an attempt if its budget record cannot be saved', async () => {
+  const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState({ runningVersion: '0.38.3' }) })
+  const write = fs.writeFile
+  fs.writeFile = (path, text, opts) => {
+    if (path === KEEPALIVE_STATE) throw new Error('disk full')
+    return write(path, text, opts)
+  }
+  const backend = fakeBackend(checkupJob())
+  const run = rig(fs, backend, fakeClock(), IDLE_PS, { alive: [3000, 5912, 4912], modules: updateModules() })
+  await runWatcher(run.deps as any)
+  assert.equal(restartRequested(fs), false)
+  assert.equal(terminalOf(backend).state, 'failed')
+  assert.match(terminalOf(backend).actions.at(-1).detail, /restart_record_unsaved/)
+})
+
+test('a transient terminal report failure is retried so the owner receives the result', async () => {
+  const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState() })
+  const backend = fakeBackend(checkupJob())
+  let refused = false
+  const delivered: any[] = []
+  const fetch = backend.fetch
+  backend.fetch = async (url, init) => {
+    const body = init?.body ? JSON.parse(init.body) : null
+    if (url.endsWith('/chk-1/progress') && body?.state === 'done') {
+      if (!refused) {
+        refused = true
+        return { ok: false, status: 503, text: async () => '{}' }
+      }
+      delivered.push(body)
+    }
+    return fetch(url, init)
+  }
+  const run = rig(fs, backend, fakeClock(), IDLE_PS, { alive: [3000, 5912, 4912] })
+  await runWatcher(run.deps as any)
+  assert.equal(refused, true)
+  assert.equal(delivered.length, 1)
+  assert.deepEqual(delivered[0].findings, [])
+  assert.deepEqual(delivered[0].actions, [])
+})
+
+test('an undeliverable progress step holds the repair before it changes credentials or restarts', async () => {
+  const fs = agentFs({ [AGENT_CREDS]: pairingCredentials(), [`${PLUGIN_STATE}/agent-state.json`]: agentState(), [`${ROOT}/bin/bgos-pair.mjs`]: '// pair' })
+  const job = checkupJob()
+  Object.assign(job.jobs['chk-1']!, { pairingRepair: { confirmed: true, assistantId: '912', pairingId: 3, pairCode: PAIR_CODE } })
+  const backend = pairingBackend(job, { status: 401, body: { code: 'pairing_revoked' } })
+  const fetch = backend.fetch
+  backend.fetch = async (url, init) => {
+    const body = init?.body ? JSON.parse(init.body) : null
+    if (url.endsWith('/chk-1/progress') && body?.steps?.some((s: any) => s.kind === 're_pair' && s.state === 'running')) {
+      return { ok: false, status: 503, text: async () => '{}' }
+    }
+    return fetch(url, init)
+  }
+  const run = rig(fs, backend, fakeClock(), IDLE_PS, { alive: [3000, 5912, 4912] })
+  await runWatcher(run.deps as any)
+  assert.equal(terminalOf(backend).state, 'failed')
+  assert.equal(fs.readFile(AGENT_CREDS), pairingCredentials())
+  assert.ok(!run.execCalls.some((c) => c.includes('bgos-pair')))
+  assert.equal(restartRequested(fs), false)
+})
+
+test('a credential rotation after observation invalidates the pairing confirmation', async () => {
+  const fs = agentFs({ [AGENT_CREDS]: pairingCredentials(), [`${PLUGIN_STATE}/agent-state.json`]: agentState(), [`${ROOT}/bin/bgos-pair.mjs`]: '// pair' })
+  const job = checkupJob()
+  Object.assign(job.jobs['chk-1']!, { pairingRepair: { confirmed: true, assistantId: '912', pairingId: 3, pairCode: PAIR_CODE } })
+  const backend = pairingBackend(job, { status: 401, body: { code: 'pairing_revoked' } })
+  const fetch = backend.fetch
+  backend.fetch = async (url, init) => {
+    const body = init?.body ? JSON.parse(init.body) : null
+    if (body?.steps?.some((s: any) => s.kind === 're_pair' && s.state === 'running')) fs.writeFile(AGENT_CREDS, pairingCredentials('rotated-secret-912'))
+    return fetch(url, init)
+  }
+  const run = rig(fs, backend, fakeClock(), IDLE_PS, { alive: [3000, 5912, 4912] })
+  await runWatcher(run.deps as any)
+  assert.equal(terminalOf(backend).failedStep.message, 'pairing_changed')
+  assert.ok(!run.execCalls.some((c) => c.includes('bgos-pair')))
+  assert.equal(restartRequested(fs), false)
+})
+
+test('a successful pair command must replace verified credentials before any reload', async () => {
+  for (const mode of ['unchanged', 'wrong_agent', 'timed_out', 'spawn_failed', 'missing_script', 'unverified_folder']) {
+    const fs = agentFs({ [AGENT_CREDS]: pairingCredentials(), [`${PLUGIN_STATE}/agent-state.json`]: agentState(), [`${ROOT}/bin/bgos-pair.mjs`]: '// pair' })
+    if (mode === 'missing_script') fs.rm(`${ROOT}/bin/bgos-pair.mjs`)
+    const job = checkupJob()
+    Object.assign(job.jobs['chk-1']!, { pairingRepair: { confirmed: true, assistantId: '912', pairingId: 3, pairCode: PAIR_CODE } })
+    const backend = pairingBackend(job, { status: 401, body: { code: 'pairing_revoked' } })
+    const fetch = backend.fetch
+    backend.fetch = async (url, init) => {
+      if (mode === 'unverified_folder' && init?.body && JSON.parse(init.body).steps?.some((s: any) => s.kind === 're_pair' && s.state === 'running')) fs.rm(`${AVA}/.bgos-agent-id`)
+      return fetch(url, init)
+    }
+    const run = rig(fs, backend, fakeClock(), IDLE_PS, { alive: [3000, 5912, 4912] })
+    const exec = run.deps.exec
+    run.deps.exec = async (file: string, args: string[]) => {
+      if (!args[0]?.endsWith('/bgos-pair.mjs')) return exec(file, args)
+      if (mode === 'spawn_failed') throw new Error(`${PAIR_CODE} agent-secret-912 ${HOME}`)
+      if (mode === 'wrong_agent') fs.writeFile(AGENT_CREDS, JSON.stringify({ ...JSON.parse(pairingCredentials('new-secret-912')), assistantId: '913' }))
+      return { code: 0, stdout: '', stderr: '', error: null, timedOut: mode === 'timed_out' }
+    }
+    await runWatcher(run.deps as any)
+    const terminal = terminalOf(backend)
+    assert.equal(terminal.state, 'failed', mode)
+    assert.equal(terminal.failedStep.kind, 're_pair', mode)
+    assert.equal(restartRequested(fs), false, mode)
+    assert.equal(keepAliveRecord(fs), null, mode)
+    assertNoSecrets([...run.logs, JSON.stringify(terminal)], mode)
+  }
+})
+
+test('pairing credentials for another backend or agent are never sent in a probe', async () => {
+  for (const over of [{ backendUrl: 'https://other.example.test' }, { assistantId: '913' }]) {
+    const fs = agentFs({ [AGENT_CREDS]: JSON.stringify({ ...JSON.parse(pairingCredentials()), ...over }), [`${PLUGIN_STATE}/agent-state.json`]: agentState() })
+    const backend = pairingBackend(checkupJob(), { status: 401, body: { code: 'pairing_revoked' } })
+    const run = rig(fs, backend, fakeClock(), IDLE_PS, { alive: [3000, 5912, 4912] })
+    await runWatcher(run.deps as any)
+    assert.equal(backend.probes.length, 0)
+    assert.deepEqual(terminalOf(backend).actions, [])
+    assert.equal(restartRequested(fs), false)
+  }
+})
+
+test('a thrown plugin update remains a named failed step and cannot reload the agent', async () => {
+  const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState({ runningVersion: '0.38.3' }) })
+  const backend = fakeBackend(checkupJob())
+  const run = rig(fs, backend, fakeClock(), IDLE_PS, { alive: [3000, 5912, 4912], modules: {
+    ...updateModules(),
+    executePlan: async () => { throw new Error(`agent-secret-912 ${HOME}`) },
+  } })
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.equal(terminal.failedStep?.kind, 'update')
+  assert.deepEqual(terminal.actions.map((a: any) => [a.did, a.outcome]), [['update', 'not_fixed'], ['restart_agent', 'skipped']])
+  assert.equal(restartRequested(fs), false)
+  assertNoSecrets([...run.logs, JSON.stringify(terminal)], 'thrown file repair')
+})
+
 test('C6 stale plugin: the update runs FILE steps only (no executor restart), then the one gated restart applies it, verified', async () => {
   const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState({ runningVersion: '0.38.3', lastActivityAt: new Date(T0 - 40 * MIN).toISOString() }) })
   writeTranscript(fs, [ownerMessage(T0 - 41 * MIN), assistantTurn(T0 - 40 * MIN)], T0 - 40 * MIN)
@@ -826,4 +1110,8 @@ test('checkupTarget: exactly one agent, by number or by digits string', () => {
   assert.equal(checkupTarget({ targets: [] }).ok, false)
   assert.equal(checkupTarget({}).ok, false)
   assert.equal(checkupTarget({ targets: [{ assistantId: '../x' }] }).ok, false)
+})
+
+test('a malformed target alongside a valid agent is refused whole', () => {
+  assert.equal(checkupTarget({ targets: [{ assistantId: '912' }, { assistantId: '../x' }] }).ok, false)
 })

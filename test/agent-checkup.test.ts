@@ -108,6 +108,35 @@ test('healthy agent: no findings, no actions', () => {
   assert.deepEqual(pass.actions, [])
 })
 
+test('a revoked pairing requires confirmation before re-pairing or restarting', () => {
+  for (const confirmed of [false, true]) {
+    const pass = checkupPass(obs({ pairingRevoked: true, pairingRepairConfirmed: confirmed }))
+    assert.deepEqual(causes(pass.findings), ['C10'])
+    assert.equal(pass.findings[0].code, 'pairing_revoked')
+    assert.equal(pass.findings[0].fixable, confirmed)
+    assert.deepEqual(steps(pass.actions), confirmed
+      ? ['re_pair:planned', 'restart:planned', 'verify:planned']
+      : ['report:planned'])
+    if (!confirmed) assert.match(pass.actions[0].ownerAction?.text ?? '', /confirm/i)
+  }
+})
+
+test('revocation blocks unrelated restarts until pairing is confirmed; confirmation still respects busy and budget gates', () => {
+  const revoked = { pairingRevoked: true, daemonAlive: false }
+  const unconfirmed = checkupPass(obs(revoked))
+  assert.equal(plannedRestart(unconfirmed.actions), false)
+  assert.equal(unconfirmed.actions.at(-1)?.reason, 'blocked_by_pairing')
+  for (const over of [
+    { stateFresh: true, agentState: freshState({ turnInFlight: true }) },
+    { lastRestartAtMs: NOW - MIN },
+  ]) {
+    const pass = checkupPass(obs({ ...revoked, pairingRepairConfirmed: true, ...over }))
+    assert.equal(plannedRestart(pass.actions), false)
+    assert.ok(pass.actions.some((a) => a.action === 're_pair'))
+  }
+  assert.deepEqual(diagnoseAgent(obs({ pairingRevoked: null, pairingRepairConfirmed: true })), [])
+})
+
 test('an unreadable process table names no process cause (unknown is not a diagnosis)', () => {
   for (const over of [{ claudeAlive: null }, { daemonAlive: null }, { claudeAlive: null, daemonAlive: null }]) {
     const findings = diagnoseAgent(obs(over))

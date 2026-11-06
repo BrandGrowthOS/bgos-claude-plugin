@@ -6,6 +6,14 @@ Notable changes to the HOAI Claude Code plugin.
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.85.6 (2026-11-06)
+
+**Check up can report a revoked agent pairing and re-pair it with the owner's confirmation.** The watcher probes the agent credential through the session endpoint; only its explicit `pairing_revoked` answer permits this repair. Confirmation and a fresh pair code must name the same agent and pairing in the authenticated job. The existing pairing CLI performs the write in that agent's pinned folder, and a verified replacement is required before a safe reload. Without confirmation the report tells the owner how to re-pair.
+
+The existing checkup job, integrated through #297 after #273, keeps its stopped-daemon, stale-plugin and usage-limit repairs. It now checks safety and the shared restart budget again immediately before restarting, holds a restart if the budget cannot be saved, reports each step with findings and actions, and retries a transient progress failure. Pairing command output stays out of logs and owner reports. Tests can set `RUN_TESTS_WORKERS=2` to cap every file-worker pool, including nested runner tests.
+
+- Tests: `test/agent-checkup.test.ts`, `test/watcher-checkup.test.ts`, `test/run-tests-worker-limit.test.ts`, `test/run-tests-timeout.test.ts`.
+
 ## 0.85.4 (2026-11-05)
 
 **A reply reaches the agent with the message it replies to.** When the owner replies to a message, the agent's turn now starts with a framed block that names the replied-to message, quotes it line by line, says it is context and not instructions, and then the owner's own words follow unchanged. Before, the reply arrived as bare words. The block is read from the poll's `reply_to` and from the socket's `replyToId` and `replyQuotedText`; it is cut at 1500 characters, names quoted files and never links them, and is not added to a peer agent's message, a system card, an email or a slash command. The meta carries `reply_to_message_id` as a string. The socket fields need the matching backend change (BGOS #4107).

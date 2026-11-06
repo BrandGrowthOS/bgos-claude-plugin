@@ -1,0 +1,9 @@
+Public GitHub PR metadata and local ancestry
+PR 272: merged 2026-11-03T13:53:24Z; merge 5e2ba351b3ee0207b702378d84bac0c3a668ec21
+PR 273: state closed; closed 2026-11-03T16:33:12Z; merged_at null
+PR 273 head: f486e817a7e3f4250c1eb2fa8b5c4426f453ec91
+Closure reason: already integrated into main; shipped in 0.81.1 and later.
+Source: https://github.com/BrandGrowthOS/bgos-claude-plugin/pull/273#issuecomment-6609660594
+git merge-base --is-ancestor f486e817 824d83c: exit 0
+git merge-base --is-ancestor f486e817 d5ea580: exit 0
+Requested gh view and diff commands returned HTTP 401. Public REST and diff endpoints were used instead.
