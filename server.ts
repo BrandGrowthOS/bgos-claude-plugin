@@ -442,6 +442,7 @@ import {
   RECONCILE_ALWAYS_ON_INTERVAL_MS,
   selectClickTransitions,
   noteOwnUnansweredCard,
+  OwnCardNotes,
   FIRST_RUN_RECENT_WINDOW_MS,
 } from './lib/poll-core.js'
 import {
@@ -2522,7 +2523,7 @@ async function sendLoginText(
   // chat's next read is never announced.
   if (options.length > 0 && typeof msgId === 'number') {
     recentButtonPrompts.set(chatId, { messageId: msgId, sentAtMs: Date.now() })
-    noteOwnUnansweredCard(chatUnansweredButtons, chatId, msgId)
+    noteOwnUnansweredCard(chatUnansweredButtons, chatId, msgId, ownCardNotes)
     // When the card went out, so a tap's timing can be read against it.
     log(`/login: sign-in card ${msgId} posted to chat ${chatId}, open for a tap`)
   }
@@ -6957,7 +6958,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
         if (options.length > 0 && typeof msgId === 'number') {
           recentButtonPrompts.set(String(resolvedChatId), { messageId: msgId, sentAtMs: Date.now() })
           postedButtons.note(msgId, options, safeText)
-          noteOwnUnansweredCard(chatUnansweredButtons, String(resolvedChatId), msgId)
+          noteOwnUnansweredCard(chatUnansweredButtons, String(resolvedChatId), msgId, ownCardNotes)
         } else if (
           reply_to_id !== undefined &&
           Number(reply_to_id) === recentButtonPrompts.get(String(resolvedChatId))?.messageId
@@ -7167,7 +7168,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
           // Open from the moment it is posted, like the reply tool's and the
           // sign-in card. Not the permission card (its own watch reads the
           // card row) nor ask_user_input (the ask tracker owns its answers).
-          noteOwnUnansweredCard(chatUnansweredButtons, planChatId, cardMessageId)
+          noteOwnUnansweredCard(chatUnansweredButtons, planChatId, cardMessageId, ownCardNotes)
           // The CLI writes this tool result verbatim into the transcript, so
           // the minted id is proof of which transcript is ours, exactly as a
           // reply's is.
@@ -10068,6 +10069,7 @@ function checkReplyOverdue(): void {
  * handles its own polling/blocking.
  */
 const chatUnansweredButtons = new Map<string, Set<number>>()
+const ownCardNotes = new OwnCardNotes()
 /**
  * Latest inline-button prompt this daemon sent, per chat, so the chat earns
  * 2s polling until the tap lands, the window lapses, or the daemon sends
@@ -11839,6 +11841,7 @@ async function pollChat(chatId: string): Promise<void> {
     unansweredButtonCount: chatUnansweredButtons.get(chatId)?.size ?? 0,
     forceFull: isBootPoll || oldestHuman !== undefined,
   })
+  const clickRead = ownCardNotes.beginRead(req.mode === 'delta' ? lastSeen : 0)
   // The email cursor holds this batch took (emailFileSavesFor), let go when it ends.
   const pollEmailReleases: Array<() => void> = []
   try {
@@ -12159,6 +12162,8 @@ async function pollChat(chatId: string): Promise<void> {
       // A tap the stream announced first stays announced once, even when a
       // card this daemon noted open came back into prevUnanswered after it.
       alreadyAnnounced: announcedClickIds,
+      read: clickRead,
+      ownCardNotes: ownCardNotes.forChat(chatId),
       trackedAsks: askTracker.trackedMessageIds(),
     })
     const announced = new Set(announce)
@@ -12353,6 +12358,7 @@ async function pollChat(chatId: string): Promise<void> {
       })
     }
     chatUnansweredButtons.set(chatId, nextUnanswered)
+    ownCardNotes.reconcile(chatId, nextUnanswered)
 
     // What this batch may spend waiting on email downloads (EMAIL_FILES_BATCH_BUDGET_MS).
     const pollEmailBudget = createEmailBatchBudget()
@@ -16229,6 +16235,7 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
   // consults the same shared set.
   rememberAnnouncedClick(view.messageId)
   chatUnansweredButtons.get(chatId)?.delete(view.messageId)
+  ownCardNotes.reconcile(chatId, chatUnansweredButtons.get(chatId) ?? new Set())
   if (recentButtonPrompts.get(chatId)?.messageId === view.messageId) recentButtonPrompts.delete(chatId)
 
   if (decision === 'permission') {

@@ -590,6 +590,39 @@ export interface ClickRow {
   answered: boolean
 }
 
+/** The lower bound and own-card note generation captured before a read starts. */
+export interface ClickRead {
+  afterId: number
+  noteGeneration: number
+}
+
+/** Note generations live only as long as the corresponding open cards. */
+export class OwnCardNotes {
+  private generation = 0
+  private readonly chats = new Map<string, Map<number, number>>()
+
+  note(chatId: string, messageId: number): void {
+    let notes = this.chats.get(chatId)
+    if (!notes) this.chats.set(chatId, notes = new Map())
+    notes.set(messageId, ++this.generation)
+  }
+
+  beginRead(afterId: number): ClickRead {
+    return { afterId, noteGeneration: this.generation }
+  }
+
+  forChat(chatId: string): ReadonlyMap<number, number> | undefined {
+    return this.chats.get(chatId)
+  }
+
+  reconcile(chatId: string, open: ReadonlySet<number>): void {
+    const notes = this.chats.get(chatId)
+    if (!notes) return
+    for (const id of notes.keys()) if (!open.has(id)) notes.delete(id)
+    if (notes.size === 0) this.chats.delete(chatId)
+  }
+}
+
 /**
  * Decide which button clicks THIS poll should announce to the agent, and what
  * the chat's unanswered-button set becomes.
@@ -621,11 +654,11 @@ export interface ClickRow {
  * its answer is due however late. The tracker keeps the first answer per
  * question, so handing the same row over on every poll is harmless.
  *
- * A card in `prevUnanswered` NEWER than every row this read returned is kept
- * open: the read began before the card was posted, so it says nothing about
- * it (see noteOwnUnansweredCard). An open card older than the read's newest
- * row and missing from it left the window or was deleted, and is dropped as
- * before.
+ * A read cannot retire a card noted after it started, or one excluded by its
+ * afterId lower bound. The note generation is captured before fetching, so
+ * even a full read returning newer rows cannot erase a concurrent POST note.
+ * A missing card newer than every returned row also stays open. A later read
+ * that covers an older missing card can drop it as deleted or out of window.
  *
  * `alreadyAnnounced` is the set both transports mark a tap in. A tap in it is
  * never announced here: the stream can announce a tap before the post that
@@ -636,6 +669,8 @@ export function selectClickTransitions(opts: {
   prevUnanswered: ReadonlySet<number>
   isFirstPoll: boolean
   alreadyAnnounced?: ReadonlySet<number>
+  read?: ClickRead
+  ownCardNotes?: ReadonlyMap<number, number>
   /** Message ids of every question in a pending ask group. */
   trackedAsks?: ReadonlySet<number>
 }): { announce: number[]; nextUnanswered: Set<number>; askAnswered: number[] } {
@@ -661,7 +696,12 @@ export function selectClickTransitions(opts: {
     if (opts.alreadyAnnounced?.has(row.id)) continue
     announce.push(row.id)
   }
-  for (const id of opts.prevUnanswered) if (id > newestRead) nextUnanswered.add(id)
+  for (const id of opts.prevUnanswered) {
+    if (id > newestRead || (opts.read && (
+      id <= opts.read.afterId ||
+      (opts.ownCardNotes?.get(id) ?? 0) > opts.read.noteGeneration
+    ))) nextUnanswered.add(id)
+  }
   return { announce, nextUnanswered, askAnswered }
 }
 
@@ -692,7 +732,9 @@ export function noteOwnUnansweredCard(
   unanswered: Map<string, Set<number>>,
   chatId: string,
   messageId: number,
+  notes?: OwnCardNotes,
 ): void {
+  notes?.note(chatId, messageId)
   const open = unanswered.get(chatId)
   if (open) open.add(messageId)
   else unanswered.set(chatId, new Set([messageId]))

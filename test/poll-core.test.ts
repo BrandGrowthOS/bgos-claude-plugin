@@ -49,6 +49,7 @@ import {
   WS_DOWN_FULL_SWEEP_INTERVAL_MS,
   RECONCILE_ALWAYS_ON_INTERVAL_MS,
   selectClickTransitions,
+  OwnCardNotes,
 } from '../lib/poll-core.ts'
 // Off the module object, so a missing helper fails the assertion that uses it
 // rather than the whole file's import.
@@ -823,6 +824,130 @@ test('a card posted while a read was in flight survives that read, and its tap i
   assert.deepEqual(next.announce, [1002])
 })
 
+test('a POST held across read A and delta read B keeps its tap for a covering read', () => {
+  const unanswered = new Map<string, Set<number>>([['501', new Set()]])
+  const answered = clickRow({ id: 1002, answered: true })
+  // Read A sees the answer before the POST response has recorded an open card.
+  const a = selectClickTransitions({
+    rows: [answered], prevUnanswered: unanswered.get('501')!, isFirstPoll: false,
+  })
+  assert.deepEqual(a.announce, [])
+  unanswered.set('501', a.nextUnanswered)
+  const cursor = advanceCursor({ lastSeen: 1001, maxId: answered.id, pendingEmptyIds: [] })
+  const requestB = buildChatPollRequest({
+    chatId: '501', userId: 'u1', lastSeen: cursor,
+    unansweredButtonCount: unanswered.get('501')!.size,
+  })
+  assert.equal(requestB.mode, 'delta')
+  assert.match(requestB.path, /afterId=1002&/)
+
+  // B starts at generation zero. The POST returns during B, at generation one.
+  // The generation input also permits this regression to run on the old selector.
+  const readB = { afterId: cursor, noteGeneration: 0 }
+  noteOwnCard()(unanswered, '501', answered.id)
+  const ownCardNotes = new Map([[answered.id, 1]])
+  const b = selectClickTransitions({
+    rows: [clickRow({ id: 1003, hasOptions: false })],
+    prevUnanswered: unanswered.get('501')!, isFirstPoll: false,
+    read: readB, ownCardNotes,
+  } as Parameters<typeof selectClickTransitions>[0])
+  assert.deepEqual(b.announce, [])
+  assert.deepEqual([...b.nextUnanswered], [1002], 'B excluded the newly noted card, so it cannot erase it')
+  unanswered.set('501', b.nextUnanswered)
+
+  const requestC = buildChatPollRequest({
+    chatId: '501', userId: 'u1', lastSeen: 1003,
+    unansweredButtonCount: unanswered.get('501')!.size,
+  })
+  assert.equal(requestC.mode, 'full', 'the retained card forces a covering read')
+  const c = selectClickTransitions({
+    rows: [answered, clickRow({ id: 1003, hasOptions: false })],
+    prevUnanswered: unanswered.get('501')!, isFirstPoll: false,
+    read: { afterId: 0, noteGeneration: 1 }, ownCardNotes,
+  } as Parameters<typeof selectClickTransitions>[0])
+  assert.deepEqual(c.announce, [1002], 'the covering read delivers the method already tapped')
+  assert.deepEqual([...c.nextUnanswered], [])
+  assert.deepEqual(selectClickTransitions({
+    rows: [answered], prevUnanswered: c.nextUnanswered, isFirstPoll: false,
+  }).announce, [], 'later reads stay silent')
+})
+
+test('own card notes advance for every POST and are scoped and pruned with open cards', () => {
+  const notes = new OwnCardNotes()
+  const unanswered = new Map<string, Set<number>>()
+  const before = notes.beginRead(1002)
+  pollCore.noteOwnUnansweredCard(unanswered, '501', 1002, notes)
+  const first = notes.forChat('501')!.get(1002)!
+  assert.ok(first > before.noteGeneration)
+  pollCore.noteOwnUnansweredCard(unanswered, '502', 2002, notes)
+  assert.equal(notes.forChat('501')!.has(2002), false)
+  const during = notes.beginRead(0)
+  pollCore.noteOwnUnansweredCard(unanswered, '501', 1002, notes)
+  assert.ok(notes.forChat('501')!.get(1002)! > during.noteGeneration, 'repeated notes also get a fresh generation')
+  notes.reconcile('501', new Set([1002]))
+  assert.equal(notes.forChat('501')!.size, 1)
+  notes.reconcile('501', new Set())
+  assert.equal(notes.forChat('501'), undefined)
+  assert.equal(notes.forChat('502')!.size, 1, 'another chat retains its note')
+})
+
+for (const afterId of [0, 1002, 1004]) {
+  test(`a read started before a note cannot drop it, even with newer rows (afterId=${afterId})`, () => {
+    const notes = new OwnCardNotes()
+    const unanswered = new Map<string, Set<number>>()
+    const read = notes.beginRead(afterId)
+    pollCore.noteOwnUnansweredCard(unanswered, '501', 1002, notes)
+    const r = selectClickTransitions({
+      rows: [clickRow({ id: 1005, hasOptions: false })],
+      prevUnanswered: unanswered.get('501')!, isFirstPoll: false,
+      read, ownCardNotes: notes.forChat('501'),
+    })
+    assert.deepEqual([...r.nextUnanswered], [1002])
+    assert.deepEqual(r.announce, [])
+    const covering = selectClickTransitions({
+      rows: [clickRow({ id: 1005, hasOptions: false })],
+      prevUnanswered: r.nextUnanswered, isFirstPoll: false,
+      read: notes.beginRead(0), ownCardNotes: notes.forChat('501'),
+    })
+    assert.deepEqual([...covering.nextUnanswered], [], 'a later full read may retire a deleted or expired card')
+  })
+}
+
+for (const afterId of [1001, 1002, 1004]) {
+  test(`a read started after a note can drop it only when its lower bound covers it (afterId=${afterId})`, () => {
+    const notes = new OwnCardNotes()
+    const unanswered = new Map<string, Set<number>>()
+    pollCore.noteOwnUnansweredCard(unanswered, '501', 1002, notes)
+    const r = selectClickTransitions({
+      rows: [clickRow({ id: 1005, hasOptions: false })],
+      prevUnanswered: unanswered.get('501')!, isFirstPoll: false,
+      read: notes.beginRead(afterId), ownCardNotes: notes.forChat('501'),
+    })
+    assert.deepEqual([...r.nextUnanswered], afterId < 1002 ? [] : [1002])
+  })
+}
+
+test('a newer covering read can consume the note before an older read returns', () => {
+  const notes = new OwnCardNotes()
+  const unanswered = new Map<string, Set<number>>()
+  const olderRead = notes.beginRead(0)
+  pollCore.noteOwnUnansweredCard(unanswered, '501', 1002, notes)
+  const answered = clickRow({ id: 1002, answered: true })
+  const newer = selectClickTransitions({
+    rows: [answered], prevUnanswered: unanswered.get('501')!, isFirstPoll: false,
+    read: notes.beginRead(0), ownCardNotes: notes.forChat('501'),
+  })
+  assert.deepEqual(newer.announce, [1002])
+  notes.reconcile('501', newer.nextUnanswered)
+  const older = selectClickTransitions({
+    rows: [clickRow({ id: 1003, hasOptions: false })],
+    prevUnanswered: newer.nextUnanswered, isFirstPoll: false,
+    read: olderRead, ownCardNotes: notes.forChat('501'),
+  })
+  assert.deepEqual([...older.nextUnanswered], [])
+  assert.deepEqual(older.announce, [])
+})
+
 test('a tap the stream already announced is never announced by a read, even after the card was noted open again', () => {
   // With BGOS_UPDATE_STREAM on, the stream can announce the tap (and consume
   // the open entry) before the post that noted the card returns; the note
@@ -1004,6 +1129,18 @@ test('server.ts reads clicks against the ids either transport already announced'
   // the poll again, so the poll's selection is handed the same set.
   const call = serverSource.slice(serverSource.indexOf('selectClickTransitions({'))
   assert.match(call.slice(0, 600), /alreadyAnnounced: announcedClickIds,/)
+})
+
+test('server.ts captures click read coverage before fetching and reconciles note generations', () => {
+  const body = serverSource.slice(serverSource.indexOf('async function pollChat'))
+  const begin = body.indexOf("const clickRead = ownCardNotes.beginRead(req.mode === 'delta' ? lastSeen : 0)")
+  assert.ok(begin >= 0 && begin < body.indexOf('await bgosGet(req.path'))
+  const select = body.slice(body.indexOf('selectClickTransitions({'), body.indexOf('const announced = new Set(announce)'))
+  assert.match(select, /read: clickRead,/)
+  assert.match(select, /ownCardNotes: ownCardNotes.forChat\(chatId\),/)
+  assert.match(body, /chatUnansweredButtons.set\(chatId, nextUnanswered\)\s+ownCardNotes.reconcile\(chatId, nextUnanswered\)/)
+  assert.equal((serverSource.match(/noteOwnUnansweredCard\(chatUnansweredButtons, [^\n]+, ownCardNotes\)/g) ?? []).length, 3)
+  assert.match(serverSource, /chatUnansweredButtons.get\(chatId\)\?\.delete\(view.messageId\)\s+ownCardNotes.reconcile\(/)
 })
 
 test('server.ts registers NO inbound_click WS listener (single click path)', () => {

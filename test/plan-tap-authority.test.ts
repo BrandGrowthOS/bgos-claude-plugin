@@ -35,6 +35,7 @@ import * as permissionRelay from '../lib/permission-relay.ts'
 import * as streamApply from '../lib/stream-apply.ts'
 import * as messageText from '../lib/message-text.ts'
 import { LoginController } from '../lib/auth-login.ts'
+import { OwnCardNotes } from '../lib/poll-core.ts'
 import type { StreamUpdate } from '../lib/update-stream.ts'
 import { ownerAnnounceRefused, ownerLaneVerdict } from '../lib/lane-core.mjs'
 import { createPostedButtons, createPrivateTurnTracker, privateTapCard } from '../lib/private-turn.mjs'
@@ -328,6 +329,7 @@ function streamHarness(record: { requesterUserId?: string } = { requesterUserId:
     announcedClickIds,
     rememberAnnouncedClick: (id: number) => announcedClickIds.add(id),
     chatUnansweredButtons: new Map(),
+    ownCardNotes: new OwnCardNotes(),
     recentButtonPrompts: new Map(),
     pendingPermissions: new Map(),
     senderUserIdOf: (m: unknown) => permissionRelay.senderUserIdCandidate(m) ?? OWNER,
