@@ -14,6 +14,7 @@ bin/hoai text eol=lf
 # (frontend/electron-app/agent-browser/shim/), verified by sha256, so it must
 # not pick up CRLF on a Windows checkout.
 bin/hoai-browser-mcp.mjs text eol=lf
+bin/hoai-browser-mcp.ahead.patch text eol=lf
 *.sh text eol=lf
 lib/browser-host-core/policy.js text eol=lf
 lib/browser-host-core/settings.js text eol=lf

@@ -2323,20 +2323,35 @@ function r8BigWorkbook(n: number): Buffer {
   ])
 }
 
-test('review round 8: ordinary large files go: 24.9 MB of prose, a 24 MB log, a 22.5 MB CSV and a workbook of 900000 shared strings', { timeout: 180_000 }, async () => {
+test('review round 8: ordinary large files go: 24.9 MB of prose, a 24 MB log, a 22.5 MB CSV and a workbook of 900000 shared strings', { timeout: 180_000 }, async (t) => {
+  const { outboundContentVerdict } = await import('../lib/email-outbound-content.ts')
   for (const [name, build] of [
     ['notes.txt', () => r8Lines(24.9 * MB, (_, words) => `${words}\n`)],
     ['server.log.txt', () => r8Lines(24 * MB, (i, words) => `2026-10-28T03:${String(i % 60).padStart(2, '0')}:00Z INFO worker=${i % 17} ${words}\n`)],
     ['sales.csv', () => r8Lines(22.5 * MB, (i) => `2026-10-28,Widget blue large,SKU-${1234567 + i},12.50,warehouse ${i % 9}\n`)],
     ['orders.xlsx', () => r8BigWorkbook(900_000)],
   ] as const) {
-    const bytes = build()
-    const stop = await stopOf(async () => {
-      const got = await heartbeatRefusal(name, bytes)
-      assert.equal(got.why, null, `${name} (${(bytes.length / MB).toFixed(1)} MB)`)
-      return got.maxGap
+    await t.test(name, async (t) => {
+      const bytes = build()
+      const ratios: number[] = []
+      // Calibrate with the real content checks inline in this process, on these same bytes and under the same
+      // unspendable budget. A busy runner slows the calibration too. The Worker must keep its longest main thread
+      // pause below a quarter of that inline cost, rather than below a fixed number of milliseconds.
+      // Always take three paired samples: their median tolerates a scheduling or GC outlier in either measurement,
+      // while moving the content checks back onto the main thread leaves their long pauses visible in every round.
+      for (let round = 0; round < 3; round++) {
+        const started = performance.now()
+        assert.deepEqual(await outboundContentVerdict(bytes, name.endsWith('.xlsx') ? 'xlsx' : 'text', name, [], UNDER_BUDGET_MS), { kind: 'ok' }, `${name}: inline calibration`)
+        const baselineMs = performance.now() - started
+        const got = await heartbeatRefusal(name, bytes)
+        assert.equal(got.why, null, `${name} (${(bytes.length / MB).toFixed(1)} MB)`)
+        const ratio = got.maxGap / baselineMs
+        ratios.push(ratio)
+        t.diagnostic(`round ${round + 1}: inline ${baselineMs.toFixed(1)} ms, main thread gap ${got.maxGap.toFixed(1)} ms, ratio ${ratio.toFixed(3)}`)
+      }
+      const ratio = ratios.sort((a, b) => a - b)[1]!
+      assert.ok(ratio < 0.25, `${name}: median main thread pause / inline content time was ${ratio.toFixed(3)}, expected < 0.25`)
     })
-    assert.ok(stop <= 100, `${name} stopped the main thread for ${Math.round(stop)} ms`)
   }
 })
 

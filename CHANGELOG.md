@@ -4,15 +4,63 @@ Notable changes to the HOAI Claude Code plugin.
 
 ## Unreleased
 
+From 0.86.9 to 0.86.11 the browser shim pin recorded BGOS main commit `aed69c93bd191ce8de678b4f5cac4761f7130680` and its source content hash `2fd50404ff330d65f5f38017ffb7dd0a5df2f1c560b694c1f329b1bbe88f71ef`, with shipped bytes matching that source, including MCP cancellation; 0.86.12 leads that base by a recorded patch. Plugin CI verifies the recorded content hash offline on every pull request, including forks, without credentials. Trusted main-branch pushes and scheduled runs also fetch the blob at the pinned commit with a read-only BGOS credential and fail on fetch errors or differing source bytes. If that credential is absent, CI reports the skipped live comparison after the offline check passes. Cancellation tests cover the local and relay routes, queued calls, typed request IDs, in-flight relay collection abort, buffered successes consumed after cancellation, destination changes, delivery refusal and ID reuse during delivery. Targeted mutations prove the collection signal and reply suppression coverage. The queued-cancellation test holds delivery until after queue progress and awaits the HTTP receipt event, so it does not depend on platform scheduling.
+
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
+
+## 0.86.12 (2026-11-07)
+
+**The portable agent browser.** Filling only enters text: submission needs a separate approved click bound to the exact current submit control. Composite submission, sequential typing and activation keys are refused, key chords accept only genuine modifier prefixes with Enter, Return and Space refused in every position, and `browser_fill_form` takes textbox fields only. After a fill, every further action on that tab needs a fresh allow once decision bound to that action and the current field revision, even with a saved write grant, and the barrier survives approvals. The browser host carries privacy exits, exact target and page rechecks, a cached page tree, safe purpose text, sign-ins that stay on the computer they were made on, and downloads the agent did not ask for kept for the owner. The managed engine roster advertises real JSON Schemas with no composite fields.
+
+The bundled shim now leads its HOAI source with these protections. Its pin records the HOAI base (`aed69c93bd191ce8de678b4f5cac4761f7130680`, `2fd50404ff330d65f5f38017ffb7dd0a5df2f1c560b694c1f329b1bbe88f71ef`), the shipped bytes (`28b9fc680ddef334ff49958d605b27658e1ceb57a6f83d3bd20ffd7a2a4f02d6`) and the exact delta as `bin/hoai-browser-mcp.ahead.patch`. CI proves offline that the shipped shim is that base plus exactly that patch, the live job checks the base at the pinned commit, and the cross-tree check stays red against HOAI until HOAI lands the same bytes.
+
+## 0.86.11 (2026-11-06)
+
+**Faster button and sign-in taps** A tap on a sign-in, reply or plan card now reaches the agent right away instead of waiting for the next sweep.
+
+## 0.86.10 (2026-11-06)
+
+**Agents in a group can follow up on each other.** The plugin reads the room_agent marker, so a follow up from another agent in a group or channel reaches the agent, under one written rule for when an agent answers another agent, with loops bounded.
+
+## 0.86.9 (2026-11-06)
+
+**The bundled browser shim matches HOAI again, including request cancellation.** The plugin's copy of the Agent Browser shim had drifted behind its HOAI source and lacked MCP request cancellation. It is brought to parity, its pin is refreshed, and CI now checks it against a content hash recorded with the pin, so drift fails the build without needing access to the private source.
+
+## 0.86.8 (2026-11-06)
+
+**A test no longer fails just because CI is busy.** The large email attachment check measures against a baseline timed in the same run instead of a fixed number of milliseconds, so it still catches a frozen main thread but no longer fails on a loaded shared runner.
+
+## 0.86.7 (2026-11-06)
+
+**A reply to another agent is never silently lost.** A reply into a side conversation that has closed, or a second reply before the other agent answered, now either reaches that agent or fails with a plain error that names send_to_peer. It never reports Sent for a message that was not delivered.
+
+## 0.86.6 (2026-11-06)
+
+**Fixes reach your agents in hours, not a day.** The plugin now checks for a new release about every 4 hours with jitter instead of once a day plus up to 6 hours. Updates still apply only when the agent is idle, with the same staging and rollback safety.
+
+## 0.86.5 (2026-11-06)
+
+**On Windows the browser profile permission step no longer stalls.** Started from the daemon, PowerShell lacked environment variables it needs and could hang until the 30 second timeout, so every browser profile was refused as unsafe. The step now runs with the minimal environment PowerShell needs, without a profile, asynchronously with a timeout, and says plainly what to fix if it still fails.
+
+## 0.86.4 (2026-11-06)
+
+**On a Mac, a renewed Claude login clears the held "login expired" failure by itself.** The login lives in the Keychain, not in a credentials file, so the plugin never saw it change and the failure only cleared when the next answer succeeded. A cheap, rate limited, non interactive status check of the Claude CLI now notices the renewed login and clears the hold. It never reads or prints the secret, and it stays off on CLI versions that do not support the check.
+
+## 0.86.3 (2026-11-06)
+
+**A silent connection is noticed in about 10 seconds.** When a network path quietly drops the WebSocket, the plugin used to wait for the server ping to time out, so an agent's messages could arrive up to a minute late. A client liveness check now closes a link that has been silent past the expected ping and reconnects at once with the existing backoff, then catches up without delivering anything twice. A healthy idle link is never dropped, and only one reconnect runs at a time.
 
 ## 0.86.2 (2026-11-06)
 
-Browser key chords accept only genuine modifier prefixes and reject activation keys in every position, including reversed chords and calls with an existing write grant. The managed engine roster now advertises JSON Schemas with the required fill, click and key arguments and no composite submission fields. Host, direct engine, local shim, relay and serialized roster regressions cover both fixes. The shim and policy pins reflect the corrected bytes; outside-checkout mirrors still need these updates.
+**A thread answers even when the main chat has an active /goal.** A thread forks the agent's main session, and Claude Code's /goal is a Stop hook that the fork inherited: each time the thread tried to end its turn the goal check answered "Not satisfied" and blocked it, the thread looped on the mission, and the person saw "This turn failed before the agent could answer". Each lane now clears the inherited goal only in its own transcript, using the CLI's goal-clear sentinel. It explicitly keeps the plugin's non-Stop hooks, including the private prompt boundary, tool floor and private tool guard, while inherited settings stay excluded by `--restricted`. The same preparation covers later resumes and forks saved by the previous version. A lane that disables all hooks or changes its trusted hooks is refused. As a defence, a turn that a Stop hook blocks more than twice is stopped and the thread gets a reply that names the cause.
+
+- Tests: `test/thread-lane-goal.test.ts` (with `THREADS_GOAL_CLAUDE` set it drives the real CLI against a local API: an active parent goal, an unchanged production fork, all three guard canaries in a fork and later resume, and a control terminated on its third block), `test/thread-lanes.test.ts` and the existing sandbox check.
 
 ## 0.86.1 (2026-11-06)
 
-**The portable agent browser.** Filling only enters text; submission requires a separate approved click bound to the exact submit control. Composite submission and activation keys are refused, and the shim pin is `f34e28fc93d1fd6694fbe0be73e09b2966b7797fa7a2fc7ac8359ca69eb6d8b0`. The vendor CLI resolves linked paths and cleanup fixtures use canonical temp roots. The browser host carries the portable browser: privacy exits and exact target and page rechecks, a cached page tree, safe purpose text, sign-ins that stay on the computer they were made on, and downloads the agent did not ask for kept for the owner. Owner held download history resets only right before an agent actually acts. Tab switches keep their remote stream when an old paint acknowledgement finishes late. Tests: the machine sign-ins check reads its folders through fileURLToPath, so it runs on Windows too.
+- **Agent vault: request a login and fill a saved one.** Three tools for owner turns: `vault_items` lists the vault items this agent may use (metadata only), `vault_request_login {name, website, username?}` opens the owner's secure Add a login form, and `vault_fill_prepare {itemId, sessionId, tabId, origin}` builds and signs the fill intent on this machine, asks HOAI for a one-use ticket and returns `{ticket, sessionId, tabId, origin, request:{intent, signature}}` to pass unchanged to `hoai_vault_fill` on the HOAI desktop browser. No tool takes, returns or logs a password or other value.
+- **`hoai vault-host`** sets this machine up as the agent's vault host. On first use it creates an Ed25519 host key (its X25519 form is the registered host key) in an owner-only file, stores the agent's owner-minted signing key typed at the terminal, registers the host with the independent signed proof, and shows the host fingerprint in this terminal only, never in chat, a pipe or a log. Fills are refused until the owner has compared the fingerprint, pinned the host in HOAI and confirmed it here.
+- Tests: `test/vault-fill.test.ts`.
 
 ## 0.86.0 (2026-11-06)
 

@@ -18,8 +18,8 @@ import { readPublishedReleaseTag, releaseTagRefspec, releaseTagVersion } from '.
 export const AUTO_UPDATE_STATE_FILE = 'auto-update.json'
 export const AUTO_UPDATE_LOCK_FILE = 'bgos-auto-update.lock'
 export const AUTO_UPDATE_SAFETY_FILE = 'bgos-auto-update-disabled.json'
-export const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000
-export const UPDATE_JITTER_MAX_MS = 6 * 60 * 60 * 1000
+export const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000
+export const UPDATE_JITTER_MAX_MS = 60 * 60 * 1000
 export const UPDATE_HEALTHY_AFTER_MS = 60 * 1000
 export const UPDATE_DRAIN_POLL_MS = 500
 export const UPDATE_LOCK_STALE_MS = 10 * 60 * 1000
@@ -40,7 +40,7 @@ export const UPDATE_DRAIN_TIMEOUT_MS = 45_000
  *  expiry) would be the old outage again; 15 min covers the ordinary turn. */
 export const UPDATE_SCHEDULED_QUIET_CEILING_MS = 15 * 60 * 1000
 /** After a scheduled update gave up because the daemon never went quiet, the
- *  next attempt is this soon, not at the next daily check. */
+ *  next attempt is this soon, not at the next periodic check. */
 export const UPDATE_BUSY_RETRY_MS = 30 * 60 * 1000
 /** An in-flight operation, or an unanswered inbound, older than this is not
  *  work a drain should wait for: it is wedged or abandoned (a queued wake
@@ -203,15 +203,38 @@ export function pendingRestartVersionFrom(
   return installed
 }
 
-export function updateJitterMs(randomValue: number): number {
+export function updateJitterMs(randomValue: number, maxMs = UPDATE_JITTER_MAX_MS): number {
   const bounded = Number.isFinite(randomValue)
     ? Math.min(1, Math.max(0, randomValue))
     : 0
-  return Math.floor(bounded * UPDATE_JITTER_MAX_MS)
+  return Math.floor(bounded * maxMs)
 }
 
-export function nextUpdateCheckDelayMs(randomValue: number): number {
-  return UPDATE_CHECK_INTERVAL_MS + updateJitterMs(randomValue)
+// Node turns overflowing timeouts into 1ms timers. Reject unsafe overrides
+// rather than accidentally turning a slow release poll into a tight loop.
+const MAX_UPDATE_TIMEOUT_MS = 2_147_483_647
+
+function updateTimingMs(value: string | undefined, fallback: number, min: number, max: number): number {
+  if (!value?.trim()) return fallback
+  const parsed = Number(value)
+  return Number.isSafeInteger(parsed) && parsed >= min && parsed <= max ? parsed : fallback
+}
+
+export function nextUpdateCheckDelayMs(
+  randomValue: number,
+  env: Record<string, string | undefined> = {},
+): number {
+  const intervalMs = updateTimingMs(
+    env.BGOS_AUTO_UPDATE_INTERVAL_MS, UPDATE_CHECK_INTERVAL_MS, 1, MAX_UPDATE_TIMEOUT_MS,
+  )
+  const availableJitterMs = MAX_UPDATE_TIMEOUT_MS - intervalMs
+  const jitterMs = updateTimingMs(
+    env.BGOS_AUTO_UPDATE_JITTER_MS,
+    Math.min(UPDATE_JITTER_MAX_MS, availableJitterMs),
+    0,
+    availableJitterMs,
+  )
+  return intervalMs + updateJitterMs(randomValue, jitterMs)
 }
 
 export interface DrainSnapshot {
@@ -1059,7 +1082,7 @@ export class SelfUpdater {
   private healthyTimer: ReturnType<typeof setTimeout> | null = null
   private lastInspectedVersion: string | null = null
   /** Set by a scheduled update that gave up because the daemon never went quiet,
-   *  so the next check is soon and not at the daily interval. Cleared on use. */
+   *  so the next check is soon and not at the periodic interval. Cleared on use. */
   private nextCheckDelayOverrideMs: number | null = null
 
   constructor(
@@ -1148,7 +1171,7 @@ export class SelfUpdater {
 
   private scheduleNext(): void {
     if (this.exiting) return
-    const delayMs = this.nextCheckDelayOverrideMs ?? nextUpdateCheckDelayMs(this.random())
+    const delayMs = this.nextCheckDelayOverrideMs ?? nextUpdateCheckDelayMs(this.random(), this.opts.env)
     this.nextCheckDelayOverrideMs = null
     const timer = this.schedule(() => void this.checkNow(), delayMs)
     timer.unref?.()

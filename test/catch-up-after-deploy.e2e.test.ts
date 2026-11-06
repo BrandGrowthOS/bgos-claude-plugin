@@ -162,6 +162,8 @@ interface Backend {
   pushLive: (row: Row) => void
   /** Drop the daemon's socket at the transport, as a deploy does. */
   cutSocket: () => void
+  /** Stop outgoing packets without notifying the connected daemon. */
+  silenceSocket: () => void
   close: () => Promise<void>
 }
 
@@ -264,7 +266,7 @@ async function startBackend(): Promise<Backend> {
   })
   // A refused handshake, which the client retries with backoff, like a backend
   // that is down.
-  const io = new SocketServer(http, { allowRequest: (_req, callback) => callback(null, !refuse) })
+  const io = new SocketServer(http, { pingInterval: 10_000, pingTimeout: 30_000, allowRequest: (_req, callback) => callback(null, !refuse) })
   io.on('connection', () => {
     lastConnectAt = Date.now()
     const run = connectHook
@@ -303,6 +305,11 @@ async function startBackend(): Promise<Backend> {
     // socket.io client never reconnects from on its own.
     cutSocket: () => {
       for (const socket of io.of('/').sockets.values()) socket.conn.close()
+    },
+    silenceSocket: () => {
+      for (const socket of io.of('/').sockets.values()) {
+        socket.conn.transport.send = () => {}
+      }
     },
     close: () => new Promise<void>((resolve) => io.close(() => resolve())),
   }
@@ -547,6 +554,33 @@ function primed(backend: Backend, chatId: number, first: number): void {
 }
 
 describe('hole 1: the reconnect skip', { concurrency: 3 }, () => {
+  test('a silent link triggers recovery and overlapping replay delivers every missed row once', OPTS, async () => {
+    const w = await world({ '999': 5, [MAIN]: 100 })
+    try {
+      primed(w.backend, MAIN, 91)
+      const d = await w.boot()
+      await quietAfterBoot(w.backend, MAIN)
+      w.backend.pushLive(ownerRow(MAIN, 101))
+      await waitFor(() => hasAll(d.cards, MAIN, [101]), 'the live row before silence')
+      w.backend.silenceSocket()
+      const missed = ids(102, 108)
+      for (const id of missed) w.backend.rows.push(ownerRow(MAIN, id))
+      w.backend.onNextConnect(() => {
+        // Replay a previously delivered row and race a fresh live row against
+        // the actual daemon's reconnect catch-up read.
+        w.backend.pushLive(ownerRow(MAIN, 101))
+        w.backend.pushLive(ownerRow(MAIN, 200))
+      })
+      await waitFor(() => d.stderr.some((line) => line.includes('WS dead link:')), 'client liveness detection', 17_000)
+      await settle(() => d.cards, MAIN, [101, ...missed, 200])
+      assertExactlyOnceInOrder(arrived(d.cards, MAIN), [101, ...missed, 200], 'silent transport catch-up')
+      assert.equal(d.stderr.filter((line) => line.includes('WS dead link:')).length, 1)
+      assertHarnessRan(w.backend)
+    } finally {
+      await w.end()
+    }
+  })
+
   test('rows missed around a deploy, then a live message beats the catch up read: every row once, oldest first', OPTS, async () => {
     const w = await world({ '999': 5, [MAIN]: 100 })
     try {

@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { AgentBrowserVault, browserVaultScope } from '../lib/agent-browser-vault.mjs'
+import { hostEnv } from '../lib/browser-env.mjs'
 import * as vaultExports from '../lib/agent-browser-vault.mjs'
 import { BrowserPool, ChromiumEngine, BrowserHostCore, HostError } from '../bin/hoai-browser-host.mjs'
 
@@ -13,7 +14,7 @@ const PASSPHRASE = 'fixture owner passphrase 123'
 const STATE = { cookies: [{ name: 'session', value: 'COOKIE_CANARY_817', domain: 'example.test', path: '/', expires: -1,
   httpOnly: true, secure: true, sameSite: 'Lax' }], origins: [{ origin: 'https://example.test',
   localStorage: [{ name: 'auth', value: 'LOCAL_CANARY_836' }], indexedDB: [{ name: 'auth', version: 1, stores: [] }] }] }
-function fixture(t: any, suffix = 'a') {
+async function fixture(t: any, suffix = 'a') {
   // macOS: os.tmpdir() is /var/folders/..., and /var is a symlink to /private/var,
   // so a path built from it is an ALIAS. agent-browser-vault's secureProfileDir
   // deliberately refuses an alias (`realpathSync(absolute) !== absolute` throws
@@ -27,13 +28,13 @@ function fixture(t: any, suffix = 'a') {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'vault-test-')))
   t.after(() => rmSync(root, { recursive: true, force: true }))
   const dir = join(root, suffix), scope = browserVaultScope({ assistantId: 901, principal: 'user-fixture' })
-  const vault = new AgentBrowserVault({ profileDir: dir, scope, snapshotMs: 100000 })
+  const vault = await AgentBrowserVault.create({ profileDir: dir, scope, snapshotMs: 100000 })
   t.after(() => vault.lock())
   return { root, dir, scope, vault, file: join(dir, 'agent-browser.vault.json') }
 }
 
 test('locked browser never writes state; owner unlock encrypts state and passwords with no plaintext canaries', async t => {
-  const { vault, file, dir } = fixture(t)
+  const { vault, file, dir } = await fixture(t)
   vault.bind({ storageState: async () => STATE, setStorageState: async () => {} })
   await vault.snapshot(); assert.equal(existsSync(file), false)
   await vault.unlock(PASSPHRASE)
@@ -49,7 +50,7 @@ test('locked browser never writes state; owner unlock encrypts state and passwor
 })
 
 test('first setup may retain current sign-in but an existing vault cannot adopt replacement browsing state', async t => {
-  const { vault, file } = fixture(t)
+  const { vault, file } = await fixture(t)
   let replaced = false
   const context = { storageState: async () => STATE, setStorageState: async () => { replaced = true } }
   await vault.unlock(PASSPHRASE)
@@ -63,12 +64,12 @@ test('first setup may retain current sign-in but an existing vault cannot adopt 
 })
 
 test('restart restores session cookies and storage only after correct owner unlock; deletion is persisted', async t => {
-  const { vault, file, dir, scope } = fixture(t)
+  const { vault, file, dir, scope } = await fixture(t)
   let state = structuredClone(STATE)
   vault.bind({ storageState: async () => state, setStorageState: async () => {} })
   await vault.unlock(PASSPHRASE); await vault.restore(); await vault.snapshot(); await vault.lock()
   assert.equal(vault.status().unlocked, false)
-  const reopened = new AgentBrowserVault({ profileDir: dir, scope, snapshotMs: 100000 })
+  const reopened = await AgentBrowserVault.create({ profileDir: dir, scope, snapshotMs: 100000 })
   t.after(() => reopened.lock())
   await assert.rejects(reopened.unlock('wrong secret passphrase'), { code: 'vault_unlock_failed' })
   await reopened.unlock(PASSPHRASE)
@@ -83,21 +84,21 @@ test('restart restores session cookies and storage only after correct owner unlo
 })
 
 test('ciphertext tampering and copying ciphertext across a profile fail authentication', async t => {
-  const { vault, file, root, scope } = fixture(t)
+  const { vault, file, root, scope } = await fixture(t)
   await vault.unlock(PASSPHRASE); await vault.lock()
   const original = readFileSync(file, 'utf8'), envelope = JSON.parse(original)
   const ciphertext = Buffer.from(envelope.ciphertext, 'base64'); ciphertext[0] ^= 1
   writeFileSync(file, JSON.stringify({ ...envelope, ciphertext: ciphertext.toString('base64') }), { mode: 0o600 })
   await assert.rejects(vault.unlock(PASSPHRASE), { code: 'vault_unlock_failed' })
   writeFileSync(file, original, { mode: 0o600 })
-  const other = new AgentBrowserVault({ profileDir: join(root, 'b'), scope: scope.replace('901', '902') })
+  const other = await AgentBrowserVault.create({ profileDir: join(root, 'b'), scope: scope.replace('901', '902') })
   t.after(() => other.lock())
   writeFileSync(other.file, original, { mode: 0o600 })
   await assert.rejects(other.unlock(PASSPHRASE), { code: 'vault_unlock_failed' })
 })
 
 test('explicit legacy consent clears only fixed Chrome artifacts and preserves policy', async t => {
-  const { vault, dir } = fixture(t)
+  const { vault, dir } = await fixture(t)
   mkdirSync(join(dir, 'Default')); writeFileSync(join(dir, 'Default', 'Cookies'), 'legacy canary')
   writeFileSync(join(dir, 'agent-browser.settings.json'), '{"allowed":true}')
   assert.equal(vault.status().legacy, true)
@@ -109,7 +110,7 @@ test('explicit legacy consent clears only fixed Chrome artifacts and preserves p
 })
 
 test('unknown legacy files, live legacy browser and symbolic profile refuse clearing', async t => {
-  const { vault, dir, root } = fixture(t)
+  const { vault, dir, root } = await fixture(t)
   writeFileSync(join(dir, 'owner-notes.txt'), 'keep')
   await assert.rejects(vault.unlock(PASSPHRASE, { clearLegacy: true }), { code: 'legacy_cleanup_required' })
   assert.equal(readFileSync(join(dir, 'owner-notes.txt'), 'utf8'), 'keep')
@@ -122,7 +123,7 @@ test('unknown legacy files, live legacy browser and symbolic profile refuse clea
 })
 
 test('saved login metadata is origin scoped and locked vault never returns entries', async t => {
-  const { vault } = fixture(t)
+  const { vault } = await fixture(t)
   assert.throws(() => vault.list('https://example.test'), { code: 'vault_locked' })
   await vault.unlock(PASSPHRASE)
   await vault.saveLogin({ origin: 'https://example.test', username: 'a', password: 'secret' })
@@ -135,7 +136,7 @@ test('saved login metadata is origin scoped and locked vault never returns entri
 })
 
 test('snapshot between unlock and restore cannot replace saved auth state with an empty browser', async t => {
-  const { vault } = fixture(t)
+  const { vault } = await fixture(t)
   await vault.unlock(PASSPHRASE)
   await vault.restore({ setStorageState: async () => {}, storageState: async () => STATE })
   await vault.snapshot(); await vault.lock()
@@ -148,7 +149,7 @@ test('snapshot between unlock and restore cannot replace saved auth state with a
 })
 
 test('locking while scrypt is in flight forbids late key installation and disk writes', async t => {
-  const { vault, file } = fixture(t)
+  const { vault, file } = await fixture(t)
   const pending = vault.unlock(PASSPHRASE)
   await new Promise(resolve => setImmediate(resolve))
   const locking = vault.lock()
@@ -178,7 +179,7 @@ test('reacquire waits for the old encrypted snapshot and shutdown before launchi
 })
 
 test('failed final snapshot preserves the prior ciphertext, cleans up, and reports storage failure instead of saved success', async t => {
-  const { vault, file, dir } = fixture(t)
+  const { vault, file, dir } = await fixture(t)
   let state: any = STATE
   await vault.unlock(PASSPHRASE)
   await vault.restore({ setStorageState: async () => {}, storageState: async () => state })
@@ -220,19 +221,19 @@ test('confirmed closed storage failure is reported but permits a fresh locked br
   await pool.stopAll()
 })
 
-test('a new host process can reopen the already protected profile without elevated ACL privileges', async t => {
-  const { vault, dir, scope } = fixture(t)
+test('a new host with the daemon environment can reopen the protected profile without elevated ACL privileges', async t => {
+  const { vault, dir, scope } = await fixture(t)
   await vault.unlock(PASSPHRASE); await vault.lock()
   const module = new URL('../lib/agent-browser-vault.mjs', import.meta.url).href
   const child = spawnSync(process.execPath, ['--input-type=module', '-e',
-    `import { AgentBrowserVault } from ${JSON.stringify(module)}; const vault = new AgentBrowserVault(${JSON.stringify({ profileDir: dir, scope })}); console.log(JSON.stringify(vault.status()));`],
-  { encoding: 'utf8', windowsHide: true, timeout: 15000 })
+    `import { AgentBrowserVault } from ${JSON.stringify(module)}; const vault = await AgentBrowserVault.create(${JSON.stringify({ profileDir: dir, scope })}); console.log(JSON.stringify(vault.status()));`],
+  { encoding: 'utf8', windowsHide: true, timeout: 25000, env: hostEnv(process.env) })
   assert.equal(child.status, 0, child.stderr)
   assert.deepEqual(JSON.parse(child.stdout), { configured: true, unlocked: false, legacy: false })
 })
 
 test('restoring registers open SPA origins without replacing saved state or navigating pages', async t => {
-  const { vault } = fixture(t)
+  const { vault } = await fixture(t)
   await vault.unlock(PASSPHRASE)
   await vault.restore({ setStorageState: async () => {}, storageState: async () => STATE })
   await vault.snapshot()
@@ -249,7 +250,7 @@ test('restoring registers open SPA origins without replacing saved state or navi
 })
 
 test('an IndexedDB reset failure refuses restore and still detaches its CDP session', async t => {
-  const { vault } = fixture(t)
+  const { vault } = await fixture(t)
   await vault.unlock(PASSPHRASE)
   let detached = false, restored = false
   await assert.rejects(vault.restore({ pages: () => [{ frames: () => [{ url: () => 'https://example.test' }] }],
@@ -261,7 +262,7 @@ test('an IndexedDB reset failure refuses restore and still detaches its CDP sess
 })
 
 test('origin tracking retains closed-page and worker history until context close and refuses overflow', async t => {
-  const { vault } = fixture(t)
+  const { vault } = await fixture(t)
   const page: any = new EventEmitter(), context: any = new EventEmitter()
   page.frames = () => [{ url: () => 'https://current.test' }]
   context.pages = () => [page]; context.serviceWorkers = () => []
@@ -311,9 +312,9 @@ function fakePowerShell(...answers: any[]) {
 }
 let fakeFolders = 0
 const fakeFolder = () => `C:\\fixture\\profiles\\${++fakeFolders}\\José\u2019s it's here`
-/** The folder a script works on, decoded from the script, and the script is plain ASCII (stdin is read in the console code page). */
+/** The target is encoded separately from script syntax, including quotes and non-ASCII names. */
 function targetOf(script: string) {
-  assert.match(script, /^[\x00-\x7f]*$/, 'the script PowerShell reads from stdin is plain ASCII')
+  assert.match(script, /^[\x00-\x7f]*$/, 'the fixed permission script is plain ASCII')
   const b64 = /^\$target = \[System\.Text\.Encoding\]::Unicode\.GetString\(\[System\.Convert\]::FromBase64String\('([A-Za-z0-9+\/=]+)'\)\)$/m.exec(script)?.[1]
   assert.ok(b64, script)
   return Buffer.from(b64, 'base64').toString('utf16le')
@@ -330,31 +331,31 @@ function statementsInOrder(script: string, statements: string[]) {
   return true
 }
 
-test('Windows owner step, Full control (unchanged): one step, the 0.69.0 statements, owner set and access list written', () => {
+test('Windows owner step, Full control (unchanged): one step, the 0.69.0 statements, owner set and access list written', async () => {
   const folder = fakeFolder(), ps = fakePowerShell({ ...lockedForMe })
-  vaultModule.protectWindowsDirectory(folder, { ino: 1 }, ps.run)
+  await vaultModule.protectWindowsDirectory(folder, { ino: 1 }, ps.run)
   assert.equal(ps.scripts.length, 1)
   assert.ok(statementsInOrder(ps.scripts[0]!, MAIN_STATEMENTS), ps.scripts[0])
   assert.equal(targetOf(ps.scripts[0]!), folder)
   assert.ok(ps.scripts[0]!.includes('[System.IO.Directory]::SetAccessControl($target, $acl)'), ps.scripts[0])
-  vaultModule.protectWindowsDirectory(folder, { ino: 1 }, ps.run)
+  await vaultModule.protectWindowsDirectory(folder, { ino: 1 }, ps.run)
   assert.equal(ps.scripts.length, 1, 'the same folder is not stepped again in this process')
 })
 
-test('Windows owner step, Modify only but the user\'s own and private: locked with the same access list, without SetOwner', () => {
+test('Windows owner step, Modify only but the user\'s own and private: locked with the same access list, without SetOwner', async () => {
   const folder = fakeFolder(), ps = fakePowerShell(ownerRefused({ dacl: [entry(ME, MODIFY)] }), { ...lockedForMe })
-  vaultModule.protectWindowsDirectory(folder, { ino: 2 }, ps.run)
+  await vaultModule.protectWindowsDirectory(folder, { ino: 2 }, ps.run)
   assert.equal(ps.scripts.length, 2)
   assert.ok(!ps.scripts[1]!.includes('SetOwner'), ps.scripts[1])
   assert.ok(statementsInOrder(ps.scripts[1]!, MAIN_STATEMENTS.filter(s => !s.includes('SetOwner'))), ps.scripts[1])
   assert.ok(ps.scripts[1]!.includes('[System.IO.Directory]::SetAccessControl($target, $acl)'), ps.scripts[1])
   assert.equal(targetOf(ps.scripts[0]!), folder)
   assert.equal(targetOf(ps.scripts[1]!), folder)
-  vaultModule.protectWindowsDirectory(folder, { ino: 2 }, ps.run)
+  await vaultModule.protectWindowsDirectory(folder, { ino: 2 }, ps.run)
   assert.equal(ps.scripts.length, 2, 'accepted once, like a folder whose owner was set')
 })
 
-test('Windows owner step, read-only entries for others and deny entries do not refuse a private folder', () => {
+test('Windows owner step, read-only entries for others and deny entries do not refuse a private folder', async () => {
   const lists = [
     [entry(ME, MODIFY), entry('S-1-5-32-545', READ_EXECUTE), entry(OTHER, FULL, { type: 1 }), entry('S-1-5-11', FULL, { type: 10 })],
     // Inherit-only GENERIC_READ | GENERIC_EXECUTE, as PowerShell's [int] gives it: negative.
@@ -364,14 +365,14 @@ test('Windows owner step, read-only entries for others and deny entries do not r
   ]
   for (const dacl of lists) {
     const ps = fakePowerShell(ownerRefused({ dacl }), { ...lockedForMe })
-    vaultModule.protectWindowsDirectory(fakeFolder(), { ino: 3 }, ps.run)
+    await vaultModule.protectWindowsDirectory(fakeFolder(), { ino: 3 }, ps.run)
     assert.equal(ps.scripts.length, 2, JSON.stringify(dacl))
   }
 })
 
-test('Windows owner step, a folder another account owns is refused, says so, and is not touched', () => {
+test('Windows owner step, a folder another account owns is refused, says so, and is not touched', async () => {
   const ps = fakePowerShell(ownerRefused({ owner: OTHER, ownerName: NAMES[OTHER], dacl: [entry(ME, MODIFY)] }))
-  assert.throws(() => vaultModule.protectWindowsDirectory(fakeFolder(), { ino: 4 }, ps.run), (error: any) => {
+  await assert.rejects(vaultModule.protectWindowsDirectory(fakeFolder(), { ino: 4 }, ps.run), (error: any) => {
     assert.equal(error.code, 'unsafe_profile')
     assert.equal(error.reason, 'owner_foreign')
     assert.match(error.message, /^unsafe_profile: the browser profile folder belongs to another account\. /)
@@ -399,9 +400,9 @@ const OTHER_WRITERS: Array<[string, any, RegExp]> = [
   ['an entry with no account and no mask', { type: 3, flags: 0, mask: null, sid: null, name: null }, /an entry with no account/],
 ]
 for (const [label, other, named] of OTHER_WRITERS) {
-  test(`Windows owner step, another account can write (${label}): refused, says so, not touched`, () => {
+  test(`Windows owner step, another account can write (${label}): refused, says so, not touched`, async () => {
     const ps = fakePowerShell(ownerRefused({ dacl: [entry(ME, MODIFY), other] }))
-    assert.throws(() => vaultModule.protectWindowsDirectory(fakeFolder(), { ino: 5 }, ps.run), (error: any) => {
+    await assert.rejects(vaultModule.protectWindowsDirectory(fakeFolder(), { ino: 5 }, ps.run), (error: any) => {
       assert.equal(error.code, 'unsafe_profile')
       assert.equal(error.reason, 'other_writer')
       assert.match(error.message, /^unsafe_profile: another account can write to the browser profile folder\. /)
@@ -412,13 +413,13 @@ for (const [label, other, named] of OTHER_WRITERS) {
   })
 }
 
-test('Windows owner step, a folder with no access list at all lets everyone write: refused', () => {
+test('Windows owner step, a folder with no access list at all lets everyone write: refused', async () => {
   const ps = fakePowerShell(ownerRefused({ dacl: null }))
-  assert.throws(() => vaultModule.protectWindowsDirectory(fakeFolder(), { ino: 6 }, ps.run), { code: 'unsafe_profile', reason: 'other_writer' })
+  await assert.rejects(vaultModule.protectWindowsDirectory(fakeFolder(), { ino: 6 }, ps.run), { code: 'unsafe_profile', reason: 'other_writer' })
   assert.equal(ps.scripts.length, 1)
 })
 
-test('Windows owner step fails closed: no PowerShell, an unreadable owner, a lock that fails or does not read back as the user\'s alone', () => {
+test('Windows owner step fails closed: no PowerShell, an unreadable owner, a lock that fails or does not read back as the user\'s alone', async () => {
   const cases: Array<[string, any[], string]> = [
     ['PowerShell did not finish', [{ failed: 'PowerShell did not finish within 10 s' }], 'acl_step_failed'],
     ['the owner could not be read', [ownerRefused({ owner: undefined, ownerName: undefined, readError: 'denied' })], 'owner_not_set'],
@@ -437,7 +438,7 @@ test('Windows owner step fails closed: no PowerShell, an unreadable owner, a loc
   ]
   for (const [label, answers, reason] of cases) {
     const ps = fakePowerShell(...answers)
-    assert.throws(() => vaultModule.protectWindowsDirectory(fakeFolder(), { ino: 7 }, ps.run), (error: any) => {
+    await assert.rejects(vaultModule.protectWindowsDirectory(fakeFolder(), { ino: 7 }, ps.run), (error: any) => {
       assert.equal(error.code, 'unsafe_profile', label)
       assert.equal(error.reason, reason, label)
       assert.match(error.message, /^unsafe_profile: \S/, label)
@@ -485,6 +486,30 @@ function aclFolder(t: any, grants: string[], name = 'profile') {
 }
 const lockedSddl = (me: string) => new RegExp(`^O:${asTrustee(me)}D:P(AI)?\\(A;OICI;FA;;;${asTrustee(me)}\\)$`)
 const windowsOnly = { skip: process.platform !== 'win32' ? 'Windows only (the mocked cases above run everywhere)' : false }
+
+test('REAL ACL: a fresh host profile locks under the daemon allow list with PSModulePath absent', windowsOnly, async t => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'vault-daemon-env-')))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const dir = join(root, 'profile'), module = new URL('../lib/agent-browser-vault.mjs', import.meta.url).href
+  const env = hostEnv(process.env, { platform: 'win32' })
+  for (const name of Object.keys(env)) if (name.toUpperCase() === 'PSMODULEPATH') delete env[name]
+  const { spawn } = await import('node:child_process')
+  const result = await new Promise<{ code: number | null, output: string, error: string }>((resolve, reject) => {
+    const child = spawn(process.execPath, ['--input-type=module', '-e',
+      `import { AgentBrowserVault } from ${JSON.stringify(module)}; const vault = await AgentBrowserVault.create(${JSON.stringify({ profileDir: dir, scope: 'fixture' })}); await vault.snapshot(); console.log(JSON.stringify(vault.status()));`],
+    { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+    let output = '', error = ''
+    const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('profile permission deadline exceeded')) }, 25000)
+    child.stdout.on('data', chunk => { output += chunk })
+    child.stderr.on('data', chunk => { error += chunk })
+    child.once('error', err => { clearTimeout(timer); reject(err) })
+    child.once('close', code => { clearTimeout(timer); resolve({ code, output, error }) })
+  })
+  assert.equal(result.code, 0, result.error)
+  assert.deepEqual(JSON.parse(result.output), { configured: false, unlocked: false, legacy: false })
+  assert.deepEqual(readdirSync(dir), [], 'a locked browser never writes vault state')
+  assert.match(securityOf(dir), lockedSddl(currentSid()))
+})
 /**
  * Whether this token sets a folder's owner with Modify alone, asked the way
  * the vault asks (.NET SetAccessControl, which enables no privilege). A token
@@ -504,43 +529,43 @@ function takesAnyFolderOver(t: any): boolean {
   return takesAnyFolder
 }
 /** A folder the vault must refuse with Modify alone; a token that takes any folder over gets it locked, as with Full control. */
-function refusedOrTakenOver(dir: string, me: string, before: string, check: (error: any) => void) {
+async function refusedOrTakenOver(dir: string, me: string, before: string, check: (error: any) => void) {
   if (takesAnyFolder) {
-    assert.doesNotThrow(() => new AgentBrowserVault({ profileDir: dir, scope: 'fixture' }), 'this token takes any folder over, as with Full control')
+    await assert.doesNotReject(AgentBrowserVault.create({ profileDir: dir, scope: 'fixture' }), 'this token takes any folder over, as with Full control')
     assert.match(securityOf(dir), lockedSddl(me))
     return
   }
-  assert.throws(() => new AgentBrowserVault({ profileDir: dir, scope: 'fixture' }), (error: any) => { check(error); return true })
+  await assert.rejects(AgentBrowserVault.create({ profileDir: dir, scope: 'fixture' }), (error: any) => { check(error); return true })
   assert.equal(securityOf(dir), before)
 }
 
-test('REAL ACL: Modify only, the user\'s own and private: accepted, and locked to the user exactly as with Full control', windowsOnly, t => {
+test('REAL ACL: Modify only, the user\'s own and private: accepted, and locked to the user exactly as with Full control', windowsOnly, async t => {
   const { dir, me } = aclFolder(t, ['ME:(OI)(CI)M'])
-  assert.doesNotThrow(() => new AgentBrowserVault({ profileDir: dir, scope: 'fixture' }))
+  await assert.doesNotReject(AgentBrowserVault.create({ profileDir: dir, scope: 'fixture' }))
   assert.match(securityOf(dir), lockedSddl(me))
 })
 
-test('REAL ACL: Modify only, read-only for Users: accepted, and the read entry is gone afterwards', windowsOnly, t => {
+test('REAL ACL: Modify only, read-only for Users: accepted, and the read entry is gone afterwards', windowsOnly, async t => {
   const { dir, me } = aclFolder(t, ['ME:(OI)(CI)M', '*S-1-5-32-545:(OI)(CI)RX'])
-  assert.doesNotThrow(() => new AgentBrowserVault({ profileDir: dir, scope: 'fixture' }))
+  await assert.doesNotReject(AgentBrowserVault.create({ profileDir: dir, scope: 'fixture' }))
   assert.match(securityOf(dir), lockedSddl(me))
 })
 
-test('REAL ACL: Full control (unchanged): accepted and taken over, even with another account that can write', windowsOnly, t => {
+test('REAL ACL: Full control (unchanged): accepted and taken over, even with another account that can write', windowsOnly, async t => {
   const { dir, me } = aclFolder(t, ['ME:(OI)(CI)F', '*S-1-5-11:(OI)(CI)M'])
-  assert.doesNotThrow(() => new AgentBrowserVault({ profileDir: dir, scope: 'fixture' }))
+  await assert.doesNotReject(AgentBrowserVault.create({ profileDir: dir, scope: 'fixture' }))
   assert.match(securityOf(dir), lockedSddl(me))
 })
 
-test('REAL ACL: a folder name with a non-ASCII letter and a curly quote reaches Windows intact (Modify only and Full control)', windowsOnly, t => {
+test('REAL ACL: a folder name with a non-ASCII letter and a curly quote reaches Windows intact (Modify only and Full control)', windowsOnly, async t => {
   for (const grant of ['ME:(OI)(CI)M', 'ME:(OI)(CI)F']) {
     const { dir, me } = aclFolder(t, [grant], 'José\u2019s profile')
-    assert.doesNotThrow(() => new AgentBrowserVault({ profileDir: dir, scope: 'fixture' }), grant)
+    await assert.doesNotReject(AgentBrowserVault.create({ profileDir: dir, scope: 'fixture' }), grant)
     assert.match(securityOf(dir), lockedSddl(me), grant)
   }
   takesAnyFolderOver(t)
   const { dir, me, before } = aclFolder(t, ['ME:(OI)(CI)M', '*S-1-5-11:(OI)(CI)M'], 'José\u2019s profile')
-  refusedOrTakenOver(dir, me, before, error => {
+  await refusedOrTakenOver(dir, me, before, error => {
     assert.equal(error.reason, 'other_writer', error.detail)
     assert.ok(error.detail.includes(dir), error.detail)
   })
@@ -552,10 +577,10 @@ const REAL_WRITERS: Array<[string, string, RegExp]> = [
   ['SYSTEM with Full control', '*S-1-5-18:(OI)(CI)F', /SYSTEM|S-1-5-18/],
 ]
 for (const [label, grant, named] of REAL_WRITERS) {
-  test(`REAL ACL: Modify only and another account can write (${label}): refused with the reason, folder untouched`, windowsOnly, t => {
+  test(`REAL ACL: Modify only and another account can write (${label}): refused with the reason, folder untouched`, windowsOnly, async t => {
     takesAnyFolderOver(t)
     const { dir, me, before } = aclFolder(t, ['ME:(OI)(CI)M', grant])
-    refusedOrTakenOver(dir, me, before, error => {
+    await refusedOrTakenOver(dir, me, before, error => {
       assert.equal(error.code, 'unsafe_profile')
       assert.equal(error.reason, 'other_writer')
       assert.match(error.message, /^unsafe_profile: another account can write to the browser profile folder/)
@@ -564,7 +589,7 @@ for (const [label, grant, named] of REAL_WRITERS) {
   })
 }
 
-test('REAL ACL: Modify only and another account owns the folder: refused with the reason, folder untouched', windowsOnly, t => {
+test('REAL ACL: Modify only and another account owns the folder: refused with the reason, folder untouched', windowsOnly, async t => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'vault-acl-')))
   t.after(() => rmSync(root, { recursive: true, force: true }))
   const dir = join(root, 'profile'), me = currentSid()
@@ -576,7 +601,7 @@ test('REAL ACL: Modify only and another account owns the folder: refused with th
   }
   icacls(dir, '/inheritance:r', '/grant:r', `*${me}:(OI)(CI)M`)
   takesAnyFolderOver(t)
-  refusedOrTakenOver(dir, me, securityOf(dir), error => {
+  await refusedOrTakenOver(dir, me, securityOf(dir), error => {
     assert.equal(error.code, 'unsafe_profile')
     assert.equal(error.reason, 'owner_foreign')
     assert.match(error.detail, /Administrators|S-1-5-32-544/)
