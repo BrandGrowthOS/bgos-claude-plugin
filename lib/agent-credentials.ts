@@ -23,8 +23,9 @@
  * never logs or echoes any credential.
  */
 
-import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { resolveAuth as resolveAuthRuntime, resolveCredentialsSelection as resolveCredentialsSelectionRuntime } from './agent-credentials-core.mjs'
 
 export type AuthMode = 'pairing' | 'apikey'
 
@@ -133,14 +134,6 @@ function defaultReadText(path: string): string | null {
   }
 }
 
-function defaultListDir(path: string): string[] {
-  try {
-    return readdirSync(path)
-  } catch {
-    return []
-  }
-}
-
 /** The numeric id in a <cwd>/.bgos-agent-id pin, or '' when absent or junk. */
 function readFolderPinIdWith(cwd: string, readText: (path: string) => string | null): string {
   if (!cwd) return ''
@@ -148,15 +141,6 @@ function readFolderPinIdWith(cwd: string, readText: (path: string) => string | n
   if (raw == null) return ''
   const id = String(raw).trim()
   return /^\d+$/.test(id) ? id : ''
-}
-
-/** The assistant ids that have a credentials-<id>.json next to the default
- *  file, ascending. [] when the directory is missing or unreadable. */
-function listPerAssistantIds(agentDir: string, listDir: (path: string) => string[]): string[] {
-  return listDir(agentDir)
-    .map((name) => /^credentials-(\d+)\.json$/.exec(name)?.[1])
-    .filter((found): found is string => Boolean(found))
-    .sort((a, b) => Number(a) - Number(b))
 }
 
 /**
@@ -180,44 +164,7 @@ export function resolveCredentialsSelection(opts: {
   defaultPath: string
   cwd?: string
 } & FileProbes): CredentialsSelection {
-  const env: Env = opts.env ?? {}
-  const exists = opts.exists ?? existsSync
-  const readText = opts.readText ?? defaultReadText
-  const listDir = opts.listDir ?? defaultListDir
-  const cwd = str(opts.cwd).trim()
-  const agentDir = dirname(opts.defaultPath)
-
-  // Trimmed, matching the bgos-pair write side: a padded path must not make
-  // the daemon read a different file than pairing wrote.
-  const override = str(env.BGOS_CREDENTIALS_PATH).trim()
-  if (override) return { kind: 'ok', path: override, via: 'env-path' }
-
-  const assistantId = configuredAssistantId(env)
-  if (assistantId) {
-    const perAssistant = join(agentDir, `credentials-${assistantId}.json`)
-    if (exists(perAssistant)) return { kind: 'ok', path: perAssistant, via: 'env-assistant' }
-    // Configured id but no matching file: keep the legacy fallback unchanged.
-    // An explicit env pin, even a stale one, never triggers the refusal.
-    return { kind: 'ok', path: opts.defaultPath, via: 'legacy' }
-  }
-
-  // No env pin from here: the folder is the only per-process anchor.
-  const folderId = readFolderPinIdWith(cwd, readText)
-  if (folderId) {
-    const pinned = join(agentDir, `credentials-${folderId}.json`)
-    if (exists(pinned)) return { kind: 'ok', path: pinned, via: 'folder-pin' }
-    // A pin pointing at a missing file is stale: fall through, never obey it.
-  }
-
-  const ids = listPerAssistantIds(agentDir, listDir)
-  const hasLegacy = exists(opts.defaultPath)
-  if (ids.length === 1 && !hasLegacy) {
-    return { kind: 'ok', path: join(agentDir, `credentials-${ids[0]}.json`), via: 'sole-per-assistant' }
-  }
-  if (ids.length > 1) {
-    return { kind: 'refuse', candidateIds: ids, agentDir }
-  }
-  return { kind: 'ok', path: opts.defaultPath, via: 'legacy' }
+  return resolveCredentialsSelectionRuntime(opts)
 }
 
 /**
@@ -311,76 +258,7 @@ export function formatCredentialsRefusal(selection: CredentialsSelection): strin
  * credentials file. File IO is done by loadCredentialsFile so this stays pure.
  */
 export function resolveAuth(opts: { env?: Env; creds?: CredentialsFile | null }): ResolvedAuth {
-  const env: Env = opts.env ?? {}
-  const creds = opts.creds ?? null
-  const envAssistantId = configuredAssistantId(env)
-  const hasConfiguredAssistantId = Boolean(envAssistantId)
-  const pairingFileMatchesAssistant =
-    !hasConfiguredAssistantId || str(creds?.assistantId) === envAssistantId
-  // A usable pairing file that was read and REJECTED on assistant mismatch:
-  // recorded so the call site can warn instead of silently degrading.
-  const pairingFileRejection: PairingFileRejection | null =
-    !env.BGOS_PAIRING_TOKEN &&
-    creds &&
-    creds.pairingToken &&
-    !pairingFileMatchesAssistant
-      ? { fileAssistantId: str(creds.assistantId), configuredAssistantId: envAssistantId }
-      : null
-
-  let base: Omit<ResolvedAuth, 'complete' | 'missing' | 'pairingFileRejection'>
-
-  if (env.BGOS_PAIRING_TOKEN) {
-    base = {
-      mode: 'pairing',
-      source: 'pairing-env',
-      backendUrl: str(env.BGOS_BACKEND_URL),
-      userId: str(env.BGOS_USER_ID),
-      assistantId: str(env.BGOS_ASSISTANT_ID),
-      pairingToken: str(env.BGOS_PAIRING_TOKEN),
-      apiKey: '',
-    }
-  } else if (creds && creds.pairingToken && pairingFileMatchesAssistant) {
-    base = {
-      mode: 'pairing',
-      source: 'pairing-file',
-      // Once the identity boundary matches, paired values stay authoritative.
-      // Env remains a fallback for empty or unsubstituted userConfig values.
-      backendUrl: str(creds.backendUrl || env.BGOS_BACKEND_URL),
-      userId: str(creds.userId || env.BGOS_USER_ID),
-      assistantId: str((creds.assistantId ?? '') || env.BGOS_ASSISTANT_ID),
-      pairingToken: str(creds.pairingToken),
-      apiKey: '',
-    }
-  } else if (env.BGOS_API_KEY) {
-    base = {
-      mode: 'apikey',
-      source: 'apikey-env',
-      backendUrl: str(env.BGOS_BACKEND_URL),
-      userId: str(env.BGOS_USER_ID),
-      assistantId: str(env.BGOS_ASSISTANT_ID),
-      pairingToken: '',
-      apiKey: str(env.BGOS_API_KEY),
-    }
-  } else {
-    base = {
-      mode: 'apikey',
-      source: 'none',
-      backendUrl: str(env.BGOS_BACKEND_URL),
-      userId: str(env.BGOS_USER_ID),
-      assistantId: str(env.BGOS_ASSISTANT_ID),
-      pairingToken: '',
-      apiKey: '',
-    }
-  }
-
-  const missing: string[] = []
-  if (!base.backendUrl) missing.push('backendUrl')
-  if (!base.userId) missing.push('userId')
-  if (!base.assistantId) missing.push('assistantId')
-  if (base.mode === 'pairing' && !base.pairingToken) missing.push('pairingToken')
-  if (base.mode === 'apikey' && !base.apiKey) missing.push('apiKey')
-
-  return { ...base, complete: missing.length === 0, missing, pairingFileRejection }
+  return resolveAuthRuntime(opts)
 }
 
 /** A secret-free description of the selected credential source and identity. */

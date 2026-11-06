@@ -6,11 +6,25 @@ Notable changes to the HOAI Claude Code plugin.
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
-## 0.86.1 (2026-11-06)
-
 - Mission goals carry server checks through create, set and add calls. Summaries show checks, server ticks and who a goal waits on. Waiting accepts both the existing flat arguments and a nested waiting object, or null to clear it.
 - A synchronous mission hook shows this chat's open goals at turn start and asks its own daemon about passing, unticked goals at turn end. It blocks at most once per turn and allows the turn to end on errors or missing answers. Prompt chat isolation, fresh check reuse, expired requests and request replacement races are covered.
 - Every host declares mission_server_checks alongside the existing mission capabilities.
+
+## 0.86.3 (2026-11-06)
+
+**A silent connection is noticed in about 10 seconds.** When a network path quietly drops the WebSocket, the plugin used to wait for the server ping to time out, so an agent's messages could arrive up to a minute late. A client liveness check now closes a link that has been silent past the expected ping and reconnects at once with the existing backoff, then catches up without delivering anything twice. A healthy idle link is never dropped, and only one reconnect runs at a time.
+
+## 0.86.2 (2026-11-06)
+
+**A thread answers even when the main chat has an active /goal.** A thread forks the agent's main session, and Claude Code's /goal is a Stop hook that the fork inherited: each time the thread tried to end its turn the goal check answered "Not satisfied" and blocked it, the thread looped on the mission, and the person saw "This turn failed before the agent could answer". Each lane now clears the inherited goal only in its own transcript, using the CLI's goal-clear sentinel. It explicitly keeps the plugin's non-Stop hooks, including the private prompt boundary, tool floor and private tool guard, while inherited settings stay excluded by `--restricted`. The same preparation covers later resumes and forks saved by the previous version. A lane that disables all hooks or changes its trusted hooks is refused. As a defence, a turn that a Stop hook blocks more than twice is stopped and the thread gets a reply that names the cause.
+
+- Tests: `test/thread-lane-goal.test.ts` (with `THREADS_GOAL_CLAUDE` set it drives the real CLI against a local API: an active parent goal, an unchanged production fork, all three guard canaries in a fork and later resume, and a control terminated on its third block), `test/thread-lanes.test.ts` and the existing sandbox check.
+
+## 0.86.1 (2026-11-06)
+
+- **Agent vault: request a login and fill a saved one.** Three tools for owner turns: `vault_items` lists the vault items this agent may use (metadata only), `vault_request_login {name, website, username?}` opens the owner's secure Add a login form, and `vault_fill_prepare {itemId, sessionId, tabId, origin}` builds and signs the fill intent on this machine, asks HOAI for a one-use ticket and returns `{ticket, sessionId, tabId, origin, request:{intent, signature}}` to pass unchanged to `hoai_vault_fill` on the HOAI desktop browser. No tool takes, returns or logs a password or other value.
+- **`hoai vault-host`** sets this machine up as the agent's vault host. On first use it creates an Ed25519 host key (its X25519 form is the registered host key) in an owner-only file, stores the agent's owner-minted signing key typed at the terminal, registers the host with the independent signed proof, and shows the host fingerprint in this terminal only, never in chat, a pipe or a log. Fills are refused until the owner has compared the fingerprint, pinned the host in HOAI and confirmed it here.
+- Tests: `test/vault-fill.test.ts`.
 
 ## 0.86.0 (2026-11-06)
 
