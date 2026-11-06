@@ -36,6 +36,10 @@ async function rig(t: any, html?: any, { answer = 'deny', write = 'allow', navig
   core._grantsFor = () => ({ [site.origin]: { navigate, write, access: 'allow' } })
   t.after(async () => { await engine.stop().catch(() => {}); await site.close(); rmSync(home, { recursive: true, force: true }) })
   await engine.callTool('browser_navigate', { url: `${site.origin}${path}` })
+  // Start these field-classification probes after the owner's initial Hand back.
+  // Later person input and populated secret fields retain their normal guards.
+  await engine._engine._privacy.watchPersonInput(engine.selectedPage())
+  assert.deepEqual(await engine.handBackPrivacy(engine.selectedPage()), { ok: true })
   return { intentChecks, answer: (choice:string)=>{answer=choice}, core, engine, site, cards, clicks: site.clicks, page: engine.selectedPage(), origin: site.origin, call: (name: string, args: any = {}) => core.callTool(OWNER, name, args) }
 }
 

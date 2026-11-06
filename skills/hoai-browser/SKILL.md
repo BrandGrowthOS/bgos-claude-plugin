@@ -78,3 +78,11 @@ Close the browser session when finished. An unlocked vault drains its last encry
 The pane's collapse arrows hide the view and keep the exact agent browser session running. The X control ends that person's session and saves unlocked encrypted state before confirming closure. An unconfirmed close is not proof of shutdown. Reconnect only restores the view; it never repeats the close request.
 
 Filling only enters text. Submit a form with a separate `browser_click` on the current submit control, with its own approval and exact target check. Composite submission, per-character typing and Enter, Return or Space activation keys are unavailable.
+
+The portable host remembers fields filled on each tab. After filling, any further
+page action needs its own fresh allow-once approval, even with a saved write
+grant. Reads and more textbox fills can continue. Scripts and unknown tools are
+refused while filled fields remain pending. A later fill invalidates a held
+approval. `browser_fill_form` accepts textbox fields only; checkbox, radio and
+select changes must be separate actions. See the
+[filled-field approval contract](../../docs/browser-fill-submit.md).

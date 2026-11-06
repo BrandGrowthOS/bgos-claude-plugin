@@ -761,6 +761,8 @@ function withoutProfileChoice(text, rewrites = []) {
 const FORM_CLICK_REQUIRED = "Fill only enters text. To submit a form, make a separate browser_click on its current submit control, with its own approval and exact target check.";
 function refusesCompositeAction(name, args = {}) {
   if (name === "browser_press_sequentially") return true;
+  // No batch may click a control after an earlier field changes that control.
+  if (name === "browser_fill_form" && (!Array.isArray(args.fields) || args.fields.some(field => field?.type !== "textbox"))) return true;
   if (name === "browser_type" && ["submit", "slowly"].some(key => Object.hasOwn(args, key) && args[key] !== false)) return true;
   if (name !== "browser_press_key") return false;
   const key = args.key;
@@ -771,6 +773,12 @@ function refusesCompositeAction(name, args = {}) {
     key.split("+").some(part => /^(?:Enter|NumpadEnter|Return| |Space|Spacebar)$/i.test(part));
 }
 function fillOnlyTool(tool) {
+  if (tool?.name === "browser_fill_form") {
+    const schema = tool.inputSchema || { type: "object" }, fields = schema.properties?.fields;
+    const items = fields?.items;
+    return { ...tool, description: "Fill textbox fields only. Checkbox, radio and select changes require separate actions. " + FORM_CLICK_REQUIRED,
+      inputSchema: { ...schema, properties: { ...schema.properties, ...(items ? { fields: { ...fields, items: { ...items, properties: { ...items.properties, type: { type: "string", enum: ["textbox"] }, value: { type: "string", description: "Text to fill in the textbox" } } } } } : {}) } } };
+  }
   if (!["browser_type", "browser_press_key"].includes(tool?.name)) return tool;
   const schema = tool.inputSchema || { type: "object" };
   const { submit: _submit, slowly: _slowly, ...properties } = schema.properties || {};

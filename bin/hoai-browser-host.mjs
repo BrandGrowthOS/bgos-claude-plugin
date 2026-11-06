@@ -400,9 +400,22 @@ export function withWaitSeconds(tool) {
   }
 }
 
+// Every supported tool is classified here. Missing classifications fail closed on a filled tab.
+export const FORM_TOOL_CLASSES = Object.freeze({
+  browser_snapshot: 'read', browser_find: 'read', browser_take_screenshot: 'read', browser_wait_for: 'read',
+  browser_type: 'fill', browser_fill_form: 'fill',
+  browser_navigate: 'action', browser_navigate_back: 'action', browser_tabs: 'action', browser_close: 'action',
+  browser_click: 'action', browser_select_option: 'action', browser_press_key: 'action', browser_hover: 'action',
+  browser_drag: 'action', browser_handle_dialog: 'action', browser_resize: 'action', browser_file_upload: 'action', browser_drop: 'action',
+})
+const submitApprovals = new WeakMap()
+const submitRequired = () => new HostError('form_submit_approval_required', 'Filled fields need a separate owner approval for this specific next action. For form submission, use a separate browser_click on its current control.')
+
 const FORM_CLICK_REQUIRED = "Fill only enters text. To submit a form, make a separate browser_click on its current submit control, with its own approval and exact target check.";
 function refusesCompositeAction(name, args = {}) {
   if (name === "browser_press_sequentially") return true;
+  // No batch may click a control after an earlier field changes that control.
+  if (name === "browser_fill_form" && (!Array.isArray(args.fields) || args.fields.some(field => field?.type !== "textbox"))) return true;
   if (name === "browser_type" && ["submit", "slowly"].some(key => Object.hasOwn(args, key) && args[key] !== false)) return true;
   if (name !== "browser_press_key") return false;
   const key = args.key;
@@ -413,6 +426,12 @@ function refusesCompositeAction(name, args = {}) {
     key.split("+").some(part => /^(?:Enter|NumpadEnter|Return| |Space|Spacebar)$/i.test(part));
 }
 function fillOnlyTool(tool) {
+  if (tool?.name === "browser_fill_form") {
+    const schema = tool.inputSchema || { type: "object" }, fields = schema.properties?.fields;
+    const items = fields?.items;
+    return { ...tool, description: "Fill textbox fields only. Checkbox, radio and select changes require separate actions. " + FORM_CLICK_REQUIRED,
+      inputSchema: { ...schema, properties: { ...schema.properties, ...(items ? { fields: { ...fields, items: { ...items, properties: { ...items.properties, type: { type: "string", enum: ["textbox"] }, value: { type: "string", description: "Text to fill in the textbox" } } } } } : {}) } } };
+  }
   if (!["browser_type", "browser_press_key"].includes(tool?.name)) return tool;
   const schema = tool.inputSchema || { type: "object" };
   const { submit: _submit, slowly: _slowly, ...properties } = schema.properties || {};
@@ -448,7 +467,7 @@ export function hostInstructions(deviceLabel) {
 Workflow:
 1. hoai_browser_open_session with a one line purpose. Browsing starts without saved logins. The owner can unlock encrypted login storage for this agent and person in the pane; never request passwords or the vault passphrase in chat. One person's saved state is never restored for another. If you skip this, the first browser_ tool opens the session for you.
 2. browser_navigate to a URL, then browser_snapshot: it returns the page as an accessibility tree with refs like [ref=e12]. Act with browser_click, browser_type, browser_select_option and friends by passing that ref as "target" plus a short human description as "element". Use browser_find for one element instead of a whole snapshot, and browser_wait_for instead of polling.
-3. ${FORM_CLICK_REQUIRED} Screenshots (browser_take_screenshot) are for visual checks.
+3. ${FORM_CLICK_REQUIRED} After filling, every other page action needs a fresh allow-once approval, even with a saved grant. Reads and more textbox fills can continue; scripts cannot run while filled fields are pending. Screenshots (browser_take_screenshot) are for visual checks.
 4. hoai_browser_close_session when you are done; the browser closes by itself after 30 idle minutes. Unlocked login state is saved encrypted and locked. Other browsing state is discarded.
 
 Permissions work here, and nobody is watching this machine, so there is no strip to answer: the owner is asked as a CARD in their chat with you, and they may be minutes away from it. A new site, any write on one, a download, an upload, running scripts, and every sensitive action is asked for. If the answer does not come inside your call you get gate_parked with a gateId: call hoai_browser_wait_gate with it rather than retrying the action, which would ask them a second time. Use wait_seconds (up to 1800) when you know they are away. policy_denied is final, explain and ask, never retry it. You never type passwords, one time codes or card numbers: at a login, a CAPTCHA or a payment form, stop and tell the owner in one line.
@@ -1303,6 +1322,8 @@ export class PlaywrightEngine {
     this._privacyListeners = new Set()
     this._privacy.onReloadRequired = () => { for (const work of this._privacyListeners) work() }
     this._agentPages = new WeakSet()
+    this._filledTabs = new WeakMap()
+    this._toolWork = Promise.resolve()
   }
 
   async start() {
@@ -1483,12 +1504,56 @@ export class PlaywrightEngine {
   dialogWaiting() { return this._currentTab()?.modalStates?.().some(state => state.type === 'dialog') === true }
 
   /** One page: the one this call is about. A dialog in another tab stops nothing, and that page is left alone. */
-  callTool(name, args, signal, approved) {
-    return this._privacy.response(this._currentTab()?.page || this.pages()[0], () => this._callProtectedTool(name, args, signal, approved))
+  formSubmitRequirement(name, args = {}) {
+    const page = this.toolPage(name, args), state = page && this._filledTabs.get(page)
+    if (!state?.fields.size) return null
+    const kind = Object.hasOwn(FORM_TOOL_CLASSES, name) ? FORM_TOOL_CLASSES[name] : null
+    if (kind === 'fill' && refusesCompositeAction(name, args)) throw submitRequired()
+    if (kind === 'read' || kind === 'fill') return null
+    // Scripts and tools we have not classified never become approvable while dirty.
+    if (kind !== 'action') throw submitRequired()
+    return { engine: this, page, state, revision: state.revision, name, args: JSON.stringify(args) }
   }
 
-  async _callProtectedTool(name, args, signal, approved) {
+  _checkSubmitApproval(name, args, approval, consume = false) {
+    const required = this.formSubmitRequirement(name, args)
+    if (!required) return
+    const granted = approval && submitApprovals.get(approval)
+    if (!granted || granted.engine !== this || granted.page !== required.page || granted.state !== required.state ||
+        granted.revision !== required.revision || granted.name !== name || granted.args !== required.args) throw submitRequired()
+    if (consume) {
+      submitApprovals.delete(approval)
+      required.state.fields.clear()
+      ++required.state.revision
+    }
+  }
+
+  _markFilled(page, name, args) {
+    if (!page || FORM_TOOL_CLASSES[name] !== 'fill' && !['browser_press_key', 'browser_select_option'].includes(name)) return
+    let state = this._filledTabs.get(page)
+    if (!state) this._filledTabs.set(page, state = { fields: new Set(), revision: 0 })
+    for (const ref of name === 'browser_fill_form' ? args.fields.map(field => field.target ?? field.ref) : [args.target || 'focused-control']) state.fields.add(ref)
+    ++state.revision
+  }
+
+  callTool(name, args = {}, signal, approved, submitApproval) {
+    // Serialize the entire dispatch, including direct-engine callers and tab changes.
+    const work = this._toolWork.then(async () => {
+      this._managedRuntime?.assertCurrent()
+      const backend = this._backend
+      // Playwright chooses its first tab lazily. Bind every guard to that actual tab.
+      await backend?._context?.ensureBrowserContext?.()
+      this._managedRuntime?.assertCurrent()
+      if (this._backend !== backend) throw new HostError('target_changed', 'The browser session changed. Ask again.')
+      return this._privacy.response(this._currentTab()?.page || this.pages()[0], () => this._callProtectedTool(name, args, signal, approved, submitApproval))
+    })
+    this._toolWork = work.catch(() => {})
+    return work
+  }
+
+  async _callProtectedTool(name, args, signal, approved, submitApproval) {
     this._managedRuntime?.assertCurrent()
+    this._checkSubmitApproval(name, args, submitApproval)
     if (name === 'browser_pdf_save') return errorResult('not_available', 'A page is not saved as a file on this machine. Use a snapshot or a screenshot to read it.')
     if (!SAFE_TOOLS.has(name)) return errorResult('not_available', 'This browser tool is not available.')
     validateHostTool(name, args)
@@ -1504,6 +1569,8 @@ export class PlaywrightEngine {
         if (!tab) throw new Error('The browser tab is unavailable.')
         if (this._privacy.personMode(tab.page)) return this._privacy.forPage(tab.page, () => this._privacy.handoff())
         if (this.pages().length === 1) throw new HostError('last_tab', this._privacy.privacyState().language === 'ar' ? 'أبق علامة تبويب واحدة مفتوحة على الأقل.' : 'Keep at least one tab open.')
+        signal?.throwIfAborted()
+        this._checkSubmitApproval(name, args, submitApproval, true)
         await tab.page.close({ runBeforeUnload: false })
         return this._privacy.keep(text(this._privacy.copy.closed))
       }
@@ -1524,6 +1591,10 @@ export class PlaywrightEngine {
       const reload = needsReload && name === 'browser_navigate' && args.url === page.url()
       const execute = async () => {
         if (approved) await this.assertActionTarget(approved, name, args)
+        signal?.throwIfAborted()
+        this._checkSubmitApproval(name, args, submitApproval, true)
+        // Record before dispatch: a partial fill or error must retain the barrier.
+        this._markFilled(page, name, args)
         if (!reload) return this._backend.callTool(back ? 'browser_navigate' : name, back ? {url: back} : args || {}, signal)
         signal?.throwIfAborted()
         await page.reload({waitUntil: 'domcontentloaded'})
@@ -1982,9 +2053,11 @@ export class ChromiumEngine {
   selectPage(page) { return this._engine.selectPage(page) }
   newPage() { return this._engine.newPage() }
 
-  callTool(name, args, signal, approved) {
+  formSubmitRequirement(name, args) { return this._engine?.formSubmitRequirement(name, args) || null }
+
+  callTool(name, args, signal, approved, submitApproval) {
     if (!this._engine || !this.alive) throw new HostError('browser_gone', 'The browser closed; call again to reopen it.')
-    return this._engine.callTool(name, args, signal, approved)
+    return this._engine.callTool(name, args, signal, approved, submitApproval)
   }
 
   dialogWaiting() { return this._engine?.dialogWaiting() === true }
@@ -2473,9 +2546,10 @@ export class BrowserHostCore {
    */
   async _permit(ctx, slot, name, engineArgs, waitSeconds, signal) {
     const settings = this._settingsFor(slot)
-    validateHostTool(name, engineArgs)
     const engine = slot.engine
-    const bindsAction = !closesPage(name, engineArgs) && (policy.WRITE_TOOLS.has(name) || ['browser_navigate', 'browser_tabs', 'browser_drop', 'browser_file_upload'].includes(name))
+    const submitRequirement = engine.formSubmitRequirement?.(name, engineArgs)
+    validateHostTool(name, engineArgs)
+    const bindsAction = !closesPage(name, engineArgs) && (submitRequirement || policy.WRITE_TOOLS.has(name) || ['browser_navigate', 'browser_tabs', 'browser_drop', 'browser_file_upload'].includes(name))
     const privateState = await engine.inspectPrivacy?.(name, engineArgs)
     if (privateState?.personMode) return { allowed: true, ran: Promise.resolve(text(privateState.handoff)) }
     if (closesPage(name, engineArgs) && slot.engine.pages?.().length === 1) throw new HostError('last_tab', privateState?.language === 'ar' ? 'أبق علامة تبويب واحدة مفتوحة على الأقل.' : 'Keep at least one tab open.')
@@ -2511,9 +2585,10 @@ export class BrowserHostCore {
     const privacyExit = route === 'reload' || route === 'leave' || route === 'dialog' || personClose
     if (privacyExit && decision.verdict !== 'deny') { decision.verdict = 'ask'; decision.gate = route === 'dialog' ? 'credential' : 'sensitive' }
     if (closesPage(name, engineArgs) && !personClose) decision.verdict = 'allow'
+    if (submitRequirement && decision.verdict !== 'deny') { decision.verdict = 'ask'; decision.gate = 'sensitive' }
     const closing = closesPage(name, engineArgs) ? await slot.engine.closeTarget?.(name, engineArgs) : null
     const closingPage = closing?.page
-    const run = () => runAgentBrowserWork(slot, async () => {
+    const run = (freshApproval = false) => runAgentBrowserWork(slot, async () => {
       if (slot.engine !== engine) throw new HostError('target_changed', 'The approved browser session changed. Ask again.')
       if (approved) await engine.assertActionTarget(approved, name, engineArgs)
       if (closingPage) {
@@ -2523,9 +2598,11 @@ export class BrowserHostCore {
         if (latest.verdict === 'deny') throw new HostError('policy_denied', this._refusedMessage(latest, classification))
       }
       slot.ownerHeldSinceAgent = false
-      return engine.callTool(name, engineArgs, signal, approved)
+      const submitApproval = freshApproval && submitRequirement ? {} : null
+      if (submitApproval) submitApprovals.set(submitApproval, submitRequirement)
+      return engine.callTool(name, engineArgs, signal, approved, submitApproval)
     })
-    if (decision.verdict === 'allow') return { allowed: true, ran: Promise.resolve().then(run) }
+    if (decision.verdict === 'allow') return { allowed: true, ran: Promise.resolve().then(() => run()) }
     if (decision.verdict === 'deny') {
       return { allowed: false, message: this._refusedMessage(decision, classification) }
     }
@@ -2561,10 +2638,10 @@ export class BrowserHostCore {
       // host offers exactly what the desktop offers for the same gate kind.
       // Nothing an owner could remember for good about a page they were not shown.
       // A control the host could not read is answered once, or not at all.
-      choices: ownersTurn && !classification.blind && !privacyExit ? policy.gateChoices(decision.gate) : ['allow_once', 'deny'],
+      choices: ownersTurn && !classification.blind && !privacyExit && !submitRequirement ? policy.gateChoices(decision.gate) : ['allow_once', 'deny'],
       // The gate HOLDS the action and is the only thing that runs it, so a
       // call that parks and a wait_gate that re-attaches share one run.
-      action: run,
+      action: () => run(true),
       attachMs,
       beforePost: ownersTurn ? async (gate) => {
         if (privacyExit) return
@@ -2763,7 +2840,8 @@ export class BrowserHostCore {
     // What finally leaves this host, whoever built it. Captured first: a close can drop the engine during this call.
     const said = this.pool.peek(ctx)?.engine?.resultRedactor?.() || ((value) => value)
     try {
-      if (refusesCompositeAction(name, args || {})) throw new HostError('not_available', FORM_CLICK_REQUIRED)
+      const pendingSubmit = name.startsWith('browser_') ? this.pool.peek(ctx)?.engine?.formSubmitRequirement?.(name, args || {}) : null
+      if (refusesCompositeAction(name, args || {})) throw pendingSubmit ? submitRequired() : new HostError('not_available', FORM_CLICK_REQUIRED)
       if (name.startsWith('browser_')) new AnswerPrivacy().validate(args)
       return said(await this._call(ctx, name, args || {}, signal))
     } catch (err) {

@@ -109,7 +109,7 @@ test('online: the shim proxies initialize, tools/list and tools/call to the endp
   assert.equal(call.result.content[0].text, 'called browser_navigate')
   assert.ok(seen.every((s) => s.auth === 'Bearer tok-123'), 'every upstream request carries the token')
   assert.ok(seen.some((s) => s.method === 'tools/call' && s.session === 'sess-1'), 'the upstream session id is reused')
-  for (const [name, args] of [['browser_type', { target: 'e1', text: 'hello', submit: true }], ['browser_type', { target: 'e1', text: 'hello\n', slowly: true }], ['browser_press_key', { key: 'Enter' }], ['browser_press_key', { key: 'Space' }], ...[
+  for (const [name, args] of [['browser_fill_form', { fields: [{ target: 'e1', type: 'textbox', name: 'Reference', value: 'hello' }, { target: 'e2', type: 'checkbox', name: 'Include summary', value: 'true' }] }], ['browser_type', { target: 'e1', text: 'hello', submit: true }], ['browser_type', { target: 'e1', text: 'hello\n', slowly: true }], ['browser_press_key', { key: 'Enter' }], ['browser_press_key', { key: 'Space' }], ...[
       'Enter+Shift', 'Space+Shift', 'NumpadEnter+Control', 'Return+Alt',
       'Spacebar+Meta', ' +Shift', 'h+Enter+Shift', 'Shift+Enter+ArrowLeft',
       'h+ArrowLeft', 'Backspace+Shift', 'shift+ArrowLeft', 'Shift++ArrowLeft', '',
@@ -123,6 +123,8 @@ test('online: the shim proxies initialize, tools/list and tools/call to the endp
   }
   const fill = await c.request('tools/call', { name: 'browser_type', arguments: { target: 'e1', text: 'hello' } })
   assert.notEqual(fill.result.isError, true)
+  const batch = await c.request('tools/call', { name: 'browser_fill_form', arguments: { fields: [{ target: 'e1', type: 'textbox', name: 'Reference', value: 'hello' }] } })
+  assert.notEqual(batch.result.isError, true)
   c.close()
   server.close()
 })

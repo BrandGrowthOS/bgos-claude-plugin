@@ -127,8 +127,15 @@ test('genuine modifier chords and literal plus keys still execute', { skip, time
   await r.page.locator('#reference').focus()
   r.allow()
   for (const key of ['Shift+ArrowLeft', 'Control+ArrowLeft', 'Alt+ArrowLeft', 'Meta+ArrowLeft', 'ControlOrMeta+ArrowLeft', 'Control+Shift+ArrowLeft', '+', 'Shift++']) {
+    const page = await r.engine.newPage()
+    await page.setContent('<label>Reference<input id=reference value=hello></label>')
+    await r.engine.selectPage(page)
+    await refFor(page, '#reference')
+    await page.locator('#reference').focus()
     const result = await r.call('browser_press_key', { key })
     assert.notEqual(result.isError, true, `${key}: ${JSON.stringify(result)}`)
+    await r.engine.selectPage(r.page)
+    await page.close()
   }
   assert.equal(r.cards.length, 0)
 })
@@ -146,6 +153,7 @@ test('real engine roster serializes complete JSON Schemas without composite fiel
     assert.ok(tool.inputSchema.properties.wait_seconds)
   }
   assert.ok(roster.find((item: any) => item.name === 'browser_type').inputSchema.properties.element)
+  assert.deepEqual(roster.find((item: any) => item.name === 'browser_fill_form').inputSchema.properties.fields.items.properties.type.enum, ['textbox'])
   assert.equal(roster.some((item: any) => item.name === 'browser_press_sequentially'), false)
   assert.doesNotMatch(JSON.stringify(roster), /"(?:submit|slowly|def|_def)"\s*:/)
 })
@@ -196,4 +204,97 @@ test('served fill schema has no composite action or sequential typing', async ()
   assert.equal(type.inputSchema.properties.submit, undefined)
   assert.equal(type.inputSchema.properties.slowly, undefined)
   assert.doesNotMatch(type.description, /submit.*true|press.*Enter/i)
+})
+
+const changedCheckboxForm = `<form onsubmit="window.batchSubmits=(window.batchSubmits||0)+1;return false">
+<label>Reference<input id=reference oninput="document.querySelector('#include').textContent='Delete account B';document.querySelector('#include').type='submit'"></label>
+<button id=include type=button role=checkbox aria-checked=false onclick="this.setAttribute('aria-checked','true');window.batchDeleted=true">Include summary</button></form>`
+
+for (const direct of [false, true]) for (const granted of [false, true]) {
+  test(`batch fill cannot activate a changed checkbox via ${direct ? 'engine' : 'host'}, grant=${granted}`, { skip, timeout: 90_000 }, async t => {
+    const r = await rig(t)
+    await r.page.setContent(changedCheckboxForm)
+    const fields = [
+      { name: 'Reference', type: 'textbox', target: await refFor(r.page, '#reference'), value: 'hello' },
+      { name: 'Include summary', type: 'checkbox', target: await refFor(r.page, '#include'), value: 'true' },
+    ]
+    if (granted) r.core._grantsFor = () => ({ 'https://fixture.example': { write: 'allow' } })
+    r.allow()
+    if (direct) await assert.rejects(r.engine.callTool('browser_fill_form', { fields }), { code: 'not_available' })
+    else assert.equal((await r.call('browser_fill_form', { fields })).isError, true)
+    assert.equal(r.cards.length, 0)
+    assert.equal(await r.page.locator('#reference').inputValue(), '')
+    assert.equal(await r.page.evaluate(() => (window as any).batchSubmits || 0), 0)
+    assert.equal(await r.page.evaluate(() => !!(window as any).batchDeleted), false)
+  })
+}
+
+test('a write grant cannot approve the submit step after a fill', { skip, timeout: 90_000 }, async t => {
+  const r = await rig(t)
+  r.core._grantsFor = () => ({ 'https://fixture.example': { write: 'allow' } })
+  await r.page.setContent('<form onsubmit="window.submits=(window.submits||0)+1;return false"><label>Reference<input id=reference></label><button id=delete type=submit>Save draft</button></form>')
+  assert.notEqual((await r.call('browser_type', { target: await refFor(r.page, '#reference'), text: 'hello' })).isError, true)
+  const pending = r.call('browser_click', { target: await refFor(r.page, '#delete') })
+  await Promise.race([r.posted, pending.then((result: any) => { throw new Error(`Submit ran without a fresh gate: ${JSON.stringify(result)}`) })])
+  assert.match(r.cards[0].summary, /Save draft/)
+  assert.deepEqual(r.cards[0].choices, ['allow_once', 'deny'])
+  assert.equal(await r.page.evaluate(() => (window as any).submits || 0), 0)
+  r.allow()
+  assert.notEqual((await pending).isError, true)
+  assert.equal(await r.page.evaluate(() => (window as any).submits || 0), 1)
+  assert.equal(r.engine.formSubmitRequirement('browser_click', {}), null, 'approval clears the filled set')
+})
+
+test('another fill invalidates a held submit approval even when the target is unchanged', { skip, timeout: 90_000 }, async t => {
+  const r = await rig(t)
+  r.core._grantsFor = () => ({ 'https://fixture.example': { write: 'allow' } })
+  await r.page.setContent('<form onsubmit="window.submits=(window.submits||0)+1;return false"><label>Reference<input id=reference></label><button id=save>Save draft</button></form>')
+  const target = await refFor(r.page, '#reference')
+  await r.call('browser_type', { target, text: 'first' })
+  const pending = r.call('browser_click', { target: await refFor(r.page, '#save') })
+  await Promise.race([r.posted, pending.then((result: any) => { throw new Error(`No gate: ${JSON.stringify(result)}`) })])
+  await r.engine.callTool('browser_type', { target, text: 'second' })
+  r.allow()
+  const result = await pending
+  assert.equal(result.isError, true)
+  assert.match(JSON.stringify(result), /form_submit_approval_required/)
+  assert.equal(await r.page.evaluate(() => (window as any).submits || 0), 0)
+  assert.equal(await r.page.locator('#reference').inputValue(), 'second')
+})
+
+test('textbox-only batch fills two fields without activation and retains the submit barrier', { skip, timeout: 90_000 }, async t => {
+  const r = await rig(t)
+  r.core._grantsFor = () => ({ 'https://fixture.example': { write: 'allow' } })
+  await r.page.setContent('<form onsubmit="window.submits=(window.submits||0)+1;return false"><label>Reference<input id=reference></label><label>Summary<input id=summary></label><button id=save>Save draft</button></form>')
+  const fields = [
+    { target: await refFor(r.page, '#reference'), name: 'Reference', type: 'textbox', value: 'hello' },
+    { target: await refFor(r.page, '#summary'), name: 'Summary', type: 'textbox', value: 'world' },
+  ]
+  const result = await r.call('browser_fill_form', { fields })
+  assert.notEqual(result.isError, true, JSON.stringify(result))
+  assert.equal(r.cards.length, 0)
+  assert.equal(await r.page.locator('#reference').inputValue(), 'hello')
+  assert.equal(await r.page.locator('#summary').inputValue(), 'world')
+  assert.equal(await r.page.evaluate(() => (window as any).submits || 0), 0)
+  await assert.rejects(r.engine.callTool('browser_click', { target: await refFor(r.page, '#save') }), { code: 'form_submit_approval_required' })
+})
+
+test('a first direct-engine fill tracks its lazily selected tab', { skip, timeout: 90_000 }, async t => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'bh-first-fill-')))
+  const engine: any = new ChromiumEngine({ executable: chrome.path!, profileDir: join(home, 'browser', 'k'), outputDir: join(home, 'output', 'k'), scope: 'fixture' })
+  await engine.start()
+  t.after(async () => { await engine.stop(); rmSync(home, { recursive: true, force: true }) })
+  const page = engine.selectedPage()
+  await page.setContent('<form onsubmit="window.submits=(window.submits||0)+1;return false"><label>Reference<input id=reference></label><button id=save>Save draft</button></form>')
+  await engine._engine._privacy.watchPersonInput(page)
+  await engine.handBackPrivacy(page)
+  const target = await refFor(page, '#reference')
+  assert.equal(!!engine._engine._currentTab(), false, 'no prior tool or explicit tab selection initializes the backend')
+  const filled = await engine.callTool('browser_type', { target, text: 'hello' })
+  assert.notEqual(filled.isError, true, JSON.stringify(filled))
+  assert.equal(await page.locator('#reference').inputValue(), 'hello')
+  let refusal: any
+  try { await engine.callTool('browser_click', { target: await refFor(page, '#save') }) } catch (error) { refusal = error }
+  assert.equal(await page.evaluate(() => (window as any).submits || 0), 0, 'the first fill must not leave a native submission path')
+  assert.equal(refusal?.code, 'form_submit_approval_required')
 })

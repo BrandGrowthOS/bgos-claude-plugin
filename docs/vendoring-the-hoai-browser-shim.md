@@ -113,3 +113,15 @@ As of the 2026-09-28 re-vendor (sha256 `24470ac3`, BGOS `8daa845bc`) the ported
 relay suite holds 32 cases, and 20 of them fail against the previous copy
 (`aaaff4b6`): the rate limit and throttle words, the dropped host, the refusals
 met while connecting, the collect of a sent call, and the refused host probe.
+
+## Filled-tab dispatcher contract
+
+The portable host now tracks filled fields per tab at its shared engine
+boundary. After a fill, actions require a fresh allow-once decision bound to
+that action and the current field revision, even with a saved write grant.
+Only fixed reads and more textbox fills remain available without that extra
+decision. Scripts and unclassified tools cannot receive an exception.
+`browser_fill_form` accepts textbox fields only, on both local and relay shim
+routes. The other repositories must take the updated shim bytes and pin;
+they were not accessed or changed in this patch. See
+[browser-fill-submit.md](browser-fill-submit.md) for the host contract.
