@@ -48,6 +48,8 @@ export interface RoomAgentSettleDeps<V extends RoomAgentSettleView, H> {
   isForwarded(messageId: number): boolean
   /** Stable content revision: a repeated poll must not postpone settling. */
   versionOf?(view: V): string
+  /** Server edit time in milliseconds, or null when revision order is unknown. */
+  editTimeOf?(view: V): number | null
   /** Deliver the settled version; a rejection is tried once more after another wait. */
   deliver(view: V): void | Promise<void>
   log(line: string): void
@@ -114,6 +116,13 @@ export function createRoomAgentSettler<V extends RoomAgentSettleView, H>(
     note(view) {
       if (deps.isForwarded(view.messageId)) return
       const previous = waiting.get(view.messageId)
+      if (previous && deps.editTimeOf) {
+        const heldTime = deps.editTimeOf(previous.view)
+        const incomingTime = deps.editTimeOf(view)
+        // Poll and stream can finish out of order. Reject a known older
+        // revision before it can replace text, URLs, routing or the timer.
+        if (heldTime !== null && incomingTime !== null && incomingTime < heldTime) return
+      }
       if (previous && deps.versionOf && previous.version === deps.versionOf(view)) {
         // Keep fresh download URLs and routing data without restarting the clock.
         previous.view = view

@@ -383,8 +383,10 @@ function pollLane(rows: Array<Record<string, unknown>>, extra: Record<string, un
     serverFunction('function pollPeerConversationIdOf('),
     serverFunction('function pollTurnStateOf('),
     serverFunction('async function pollChat('),
+    serverFunction('async function applyStreamMessage('),
   ].join('\n')
-  return { ...compile(source, 'pollChat', {
+  // Both lanes use this one settler, cursor and forwarded-id ledger.
+  return { ...compile(source, '(input, kind) => typeof input === "string" ? pollChat(input) : applyStreamMessage(input, kind ?? input.kind)', {
     ...roomAgentSettle,
     setTimeout: clock.setTimeout,
     clearTimeout: clock.clearTimeout,
@@ -866,6 +868,77 @@ test('poll first read: another room agent is not an answer to the human, but our
     assert.equal(lane.run.notifications.some((n) => n.meta.message_id === '9100'), !own)
     assert.equal(lane.run.notifications.some((n) => n.meta.sender_type === 'room_agent'), !own)
   }
+})
+
+for (const selector of ['first read', 'restart'] as const) {
+  test(`${selector} selector: our reply across room context stops recovery of an answered human request`, () => {
+    const rows = [
+      { id: 9100, sender: 'user', pendingEmptySystem: false, sentDateMs: Date.parse(TS) },
+      { id: 9101, sender: 'room_agent', pendingEmptySystem: false, sentDateMs: Date.parse(TS) },
+      { id: 9102, sender: 'assistant', pendingEmptySystem: false, sentDateMs: Date.parse(TS) },
+    ]
+    const select = (input: typeof rows) => selector === 'first read'
+      ? pollCore.selectFirstPollBacklogIds({ rows: input, recentCutoffMs: null })
+      : pollCore.selectRestartRecoveryIds({ rows: input, lastSeen: 9102, maxForward: 10, nowMs: Date.parse(TS) + 60_000 })
+    assert.deepEqual(select(rows), [], 'our completed reply still answers the human across another agent')
+    assert.deepEqual(select(rows.slice(0, 2)), [9100], 'another agent alone never answers for us')
+    assert.deepEqual(select([rows[0]!, rows[1]!, { ...rows[1]!, id: 9102 }, { ...rows[2]!, id: 9103 }]), [], 'multiple context rows stay transparent')
+    assert.deepEqual(select([rows[0]!, { ...rows[1]!, sender: 'system' }, rows[2]!]), [9100, 9101], 'system traffic still separates a proactive assistant from the human')
+    assert.deepEqual(select([{ ...rows[0]!, sender: 'assistant' }, rows[1]!, rows[2]!]), [], 'assistant-only history remains proactive')
+  })
+
+  test(`poll ${selector}: human, other room agent, then our marked reply never re-offers completed work`, async () => {
+    const sentDate = new Date().toISOString()
+    const lane = pollLane([
+      { message: { id: 9100, sender: 'user', senderUserId: PERSON, text: 'Bring banners', sentDate }, messageFiles: [] },
+      pollAgentRow({ sentDate }),
+      pollAgentRow({ id: 9102, senderAssistantId: ASSISTANT_ID, text: 'Done, brought banners.', sentDate }),
+    ], {
+      chatLastSeen: new Map([[CHAT, selector === 'first read' ? 0 : 9102]]),
+      chatsPolledSinceBoot: new Set(),
+      MAX_RESTART_RECOVERY_FORWARD: 10,
+    })
+    await lane.fn(CHAT)
+    await lane.clock.elapse()
+    assert.equal(lane.run.notifications.some((n) => n.meta.message_id === '9100'), false, 'completed work must not be replayed')
+  })
+}
+
+test('first read paging: our reply across room context stops older reads at the same boundary as backlog selection', () => {
+  const rows = ['user', 'room_agent', 'assistant'].map((sender, index) => ({
+    id: 9100 + index, sender, pendingEmptySystem: false, sentDateMs: Date.parse(TS),
+  }))
+  const needsOlder = (input: typeof rows) => pollCore.firstPollNeedsOlderRows({
+    rows: input, recentCutoffMs: null, historyCap: null,
+  })
+  assert.equal(needsOlder(rows), false, 'our completed reply ends the page walk across room context')
+  assert.equal(needsOlder(rows.slice(0, 2)), true, 'another agent alone cannot stop paging')
+  assert.equal(needsOlder(rows.slice(1)), true, 'keep paging when the human may be on an older page')
+  assert.equal(needsOlder([rows[0]!, { ...rows[1]!, sender: 'system' }, rows[2]!]), true, 'system traffic still separates a proactive assistant')
+})
+
+test('poll racing stream: a deferred older poll cannot replace the final version or restart its settle deadline', async () => {
+  let release!: (response: unknown) => void
+  const response = new Promise((resolve) => { release = resolve })
+  const cursor = new Map([[CHAT, 9000]])
+  const lane = pollLane([], {
+    chatLastSeen: cursor,
+    bgosGet: () => response,
+    advanceStreamChatCursor: (chatId: string, id: number) => cursor.set(chatId, Math.max(cursor.get(chatId) ?? 0, id)),
+  })
+  const poll = lane.fn(CHAT)
+  await lane.fn(streamUpdate(streamAgentRow({ editedAt: '2026-10-17T09:00:10.000Z' }), 9101, 'message_finalized'), 'message_finalized')
+  assert.equal(cursor.get(CHAT), 9101, 'stream advanced the cursor while the older poll was in flight')
+  const finalTimer = lane.clock.timers.at(-1)
+  assert.ok(finalTimer)
+  release({ messages: [pollAgentRow({ text: 'First chunk', editedAt: '2026-10-17T09:00:01.000Z' })] })
+  await poll
+  assert.equal(lane.clock.timers.at(-1), finalTimer, 'a stale response must leave the final version deadline intact')
+  await lane.clock.elapse()
+  assertAgentFollowUp(lane.run, 'stream final after stale poll', 'stream')
+  await lane.fn(streamUpdate(streamAgentRow({ editedAt: '2026-10-17T09:00:10.000Z' }), 9101, 'message_finalized'), 'message_finalized')
+  await lane.clock.elapse()
+  assert.equal(lane.run.notifications.length, 1, 'the shared claim still delivers once')
 })
 
 test('channel poll: rotating file links keep the settle deadline and delivery uses the latest link', async () => {

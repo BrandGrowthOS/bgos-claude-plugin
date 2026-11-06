@@ -12029,9 +12029,9 @@ async function pollChat(chatId: string): Promise<void> {
       // The walk-back heuristic lives in selectFirstPollBacklogIds
       // (lib/poll-core.ts, extracted verbatim so it is testable): collect
       // trailing user/system messages, stopping only at a real
-      // user->assistant REPLY (an assistant message whose immediately
-      // preceding message is a user message). Proactive assistant messages
-      // (cron check-in, external trigger) do NOT terminate the scan. NOT
+      // user->assistant REPLY (an assistant message preceded by a user
+      // message, ignoring intervening room_agent context). Proactive assistant
+      // messages (cron check-in, external trigger) do NOT terminate the scan. NOT
       // capped (0.71.10): the cursor advance below moves this chat to the
       // newest row of the read, so a row the selection leaves out is never
       // read again. The old cap of 10 dropped the rest of the unanswered tail
@@ -16209,6 +16209,7 @@ const roomAgentSettler = createRoomAgentSettler<StreamMessageView & { inboundTra
   // define the version, while delivery keeps the latest download URLs.
   versionOf: (view) => JSON.stringify([view.text, humanEditTime(view), view.files],
     (key, value) => key === 'url' || key === 'fileData' ? undefined : value),
+  editTimeOf: humanEditTime,
   // A failed handoff un-claims the id (forwardStreamInbound) and rejects, and
   // the wait tries once more.
   deliver: (view) => {

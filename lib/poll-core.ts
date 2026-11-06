@@ -265,7 +265,7 @@ export function firstPollNeedsOlderRows(opts: {
     if (m.pendingEmptySystem) continue
     if (recentCutoffMs !== null && (m.sentDateMs === null || m.sentDateMs < recentCutoffMs)) return false
     if (m.sender === 'assistant') {
-      if (i > 0 && rows[i - 1]!.sender === 'user') return false
+      if (followsHumanRequest(rows, i)) return false
       continue
     }
     if (m.sender !== 'user' && m.sender !== 'system') continue
@@ -403,6 +403,13 @@ export interface FirstPollRow {
   sentDateMs: number | null
 }
 
+/** Other room agents supply context between a human request and our reply. */
+function followsHumanRequest(rows: FirstPollRow[], assistantIndex: number): boolean {
+  let previous = assistantIndex - 1
+  while (previous >= 0 && rows[previous]!.sender === 'room_agent') previous--
+  return previous >= 0 && rows[previous]!.sender === 'user'
+}
+
 /**
  * How many rows of a group's history the first read of a group chat hands
  * over: the newest this many of the rows sent before this daemon first listed
@@ -415,11 +422,11 @@ export const MAX_GROUP_HISTORY_FORWARD = 10
  * as [backlog]. Extracted verbatim from pollChat so it is testable and so
  * the first-run gate has one home.
  *
- * The walk-back heuristic (unchanged from the inline original): scan from
- * the newest row backward, collecting user/system messages, and stop only
- * at a real user->assistant REPLY (an assistant row whose immediately
- * preceding row is a user row). Proactive assistant rows (preceded by
- * another assistant row, or by nothing) do not terminate the scan, and
+ * The walk-back heuristic: scan from the newest row backward, collecting
+ * user/system messages, and stop only
+ * at a real user->assistant REPLY (an assistant row preceded by a user row,
+ * ignoring intervening room_agent context). Proactive assistant rows (preceded
+ * by another assistant row, or by nothing) do not terminate the scan, and
  * pending-empty system rows are skipped (the cursor parks under them so a
  * later poll re-reads them once the body fills).
  *
@@ -461,8 +468,7 @@ export function selectFirstPollBacklogIds(opts: {
       continue
     }
     if (m.sender === 'assistant') {
-      const prev = i > 0 ? rows[i - 1]! : null
-      if (prev && prev.sender === 'user') {
+      if (followsHumanRequest(rows, i)) {
         // Real reply, everything older was handled. Stop here.
         break
       }
@@ -520,8 +526,9 @@ export const RESTART_RECOVERY_WINDOW_MS = 24 * 60 * 60_000
  *
  * THE RULE IS THE SAME WALK-BACK `selectFirstPollBacklogIds` USES, on purpose:
  * scan from the newest row backward, collect user and system rows, and stop at
- * a real user then assistant REPLY. That stop is what makes this safe. If the
- * previous session DID answer, there is an assistant row after the user row and
+ * a real user then assistant REPLY, ignoring intervening room_agent context.
+ * That stop is what makes this safe. If the previous session DID answer,
+ * there is an assistant row after the user row and
  * the scan stops before reaching it, so an answered message is never re-offered.
  * A proactive assistant row (a cron check in, an external trigger) does not
  * terminate the scan, because it is not an answer to anything.
@@ -563,8 +570,7 @@ export function selectRestartRecoveryIds(opts: {
       continue
     }
     if (m.sender === 'assistant') {
-      const prev = i > 0 ? rows[i - 1]! : null
-      if (prev && prev.sender === 'user') {
+      if (followsHumanRequest(rows, i)) {
         // A real reply. Everything older was answered; stop.
         break
       }
