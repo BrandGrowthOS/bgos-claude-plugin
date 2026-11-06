@@ -1433,7 +1433,7 @@ export class ChromiumEngine {
   }
 
   async start() {
-    this.vault = new AgentBrowserVault({ profileDir: this.profileDir, scope: this._scope })
+    this.vault = await AgentBrowserVault.create({ profileDir: this.profileDir, scope: this._scope })
     ensurePrivateDir(this.outputDir)
     // Windows: runtime folders an earlier stop had to leave while Chrome still held them.
     for (const dir of leftRuntimeDirs) {
