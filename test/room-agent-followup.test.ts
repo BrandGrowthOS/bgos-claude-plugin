@@ -991,6 +991,58 @@ for (const c of [
 }
 
 for (const c of [
+  { name: 'ordered edits', original: '2026-10-17T09:00:01.000Z', final: '2026-10-17T09:00:10.000Z' },
+  { name: 'unstamped original', original: undefined, final: '2026-10-17T09:00:10.000Z' },
+  { name: 'neither version stamped', original: undefined, final: undefined },
+  { name: 'equal timestamps', original: TS, final: TS },
+  { name: 'unstamped final', original: TS, final: undefined },
+]) {
+  for (const newerFirst of [false, true]) {
+    test(`overlapping poll table: ${c.name}, ${newerFirst ? 'newer' : 'older'} response first`, async () => {
+      const releases: Array<(response: unknown) => void> = []
+      const cursor = new Map([[CHAT, 9000]])
+      const forwarded = new Set<number>()
+      const claims: number[] = []
+      const lane = pollLane([], {
+        chatLastSeen: cursor,
+        forwardedMessageIds: forwarded,
+        rememberForwarded: (id: number) => { claims.push(id); forwarded.add(id) },
+        advanceChatCursor: (chatId: string, id: number) => cursor.set(chatId, Math.max(cursor.get(chatId) ?? 0, id)),
+        bgosGet: () => new Promise((resolve) => { releases.push(resolve) }),
+      })
+      // Both reads start before either response reaches the shared settler.
+      const older = lane.fn(CHAT)
+      const newer = lane.fn(CHAT)
+      assert.equal(releases.length, 2, 'two overlapping history reads')
+      const finish = async (index: number) => {
+        releases[index]!({ messages: [pollAgentRow(index === 0
+          ? { text: 'First chunk', editedAt: c.original }
+          : { editedAt: c.final })] })
+        await (index === 0 ? older : newer)
+      }
+      await finish(newerFirst ? 1 : 0)
+      const firstTimer = lane.clock.timers.at(-1)
+      assert.ok(firstTimer)
+      await finish(newerFirst ? 0 : 1)
+      const finalTimer = lane.clock.timers.at(-1)
+      assert.equal(cursor.get(CHAT), 9100, 'the held message remains in the next poll window')
+      assert.equal(lane.clock.live(), 1)
+      await lane.clock.elapse()
+      assertAgentFollowUp(lane.run, 'overlapping polls final version', 'poll')
+      assert.equal(finalTimer === firstTimer, newerFirst,
+        'a newer edit resets settling; a late older read preserves the final deadline')
+      assert.deepEqual(claims, [9101], 'the final version claims the shared id once')
+      const repeated = lane.fn(CHAT)
+      releases[2]!({ messages: [pollAgentRow({ editedAt: c.final })] })
+      await repeated
+      await lane.clock.elapse()
+      assert.equal(lane.run.notifications.length, 1, 'a later final poll cannot correct an already claimed card')
+      assert.equal(cursor.get(CHAT), 9101, 'delivery releases the cursor')
+    })
+  }
+}
+
+for (const c of [
   { name: 'later unstamped read can bring a real edit', held: null, incoming: null, overlaps: false, same: false, newer: true },
   { name: 'known older revision loses even on a later read', held: 20, incoming: 10, overlaps: false, same: false, newer: false },
   { name: 'known newer revision wins during overlap', held: 10, incoming: 20, overlaps: true, same: false, newer: true },
@@ -1005,18 +1057,46 @@ for (const c of [
       editTimeOf: (v: { editedAt: number | null }) => v.editedAt,
       deliver: (v: { text: string; url: string }) => { delivered.push(v) }, log: () => undefined,
     })
-    const beforeRead = settler.readGeneration
+    const beforeRead = settler.beginRead()
     const view = { chatId: CHAT, messageId: 9101, text: 'Held', files: [], url: 'first', editedAt: c.held }
     settler.note(view)
     const deadline = clock.timers.at(-1)
-    const readGeneration = c.overlaps ? beforeRead : settler.readGeneration
-    settler.note({ ...view, text: c.same ? view.text : 'Incoming', url: 'fresh', editedAt: c.incoming }, readGeneration)
+    const readOrder = c.overlaps ? beforeRead : settler.beginRead()
+    settler.note({ ...view, text: c.same ? view.text : 'Incoming', url: 'fresh', editedAt: c.incoming }, readOrder)
     assert.equal(clock.timers.at(-1) === deadline, !c.newer, 'only accepted changed content restarts the timer')
     assert.equal(settler.size(), 1)
     await clock.elapse()
     assert.equal(delivered.length, 1)
     assert.equal(delivered[0]!.text, c.newer ? 'Incoming' : 'Held')
     assert.equal(delivered[0]!.url, c.newer || c.same ? 'fresh' : 'first')
+  })
+}
+
+for (const source of ['poll', 'live', 'live duplicate'] as const) {
+  test(`settle read provenance table: identical ${source} retains ordering`, async () => {
+    const clock = fakeTimers()
+    const delivered: Array<{ text: string; url: string }> = []
+    const settler = roomAgentSettle.createRoomAgentSettler({
+      schedule: clock.setTimeout, cancel: clock.clearTimeout, isForwarded: () => false,
+      versionOf: (v: { text: string }) => v.text,
+      deliver: (v: { text: string; url: string }) => { delivered.push(v) }, log: () => undefined,
+    })
+    const first = settler.beginRead()
+    const stale = settler.beginRead()
+    const latest = settler.beginRead()
+    const view = { chatId: CHAT, messageId: 9101, text: 'Final', files: [], url: 'first' }
+    settler.note(view, source === 'poll' ? first : undefined)
+    // The duplicate poll must advance poll order without erasing live evidence.
+    // A duplicate live arrival must protect against reads already in flight too.
+    const lateRead = source === 'live duplicate' ? settler.beginRead() : stale
+    const deadline = clock.timers.at(-1)
+    settler.note({ ...view, url: 'fresh' }, source === 'poll' ? latest : source === 'live' ? first : undefined)
+    settler.note({ ...view, text: 'First chunk', url: 'stale' }, lateRead)
+    assert.equal(clock.timers.at(-1), deadline, 'duplicate and rejected older content preserve the deadline')
+    await clock.elapse()
+    assert.equal(delivered.length, 1)
+    assert.equal(delivered[0]!.text, 'Final')
+    assert.equal(delivered[0]!.url, 'fresh')
   })
 }
 
