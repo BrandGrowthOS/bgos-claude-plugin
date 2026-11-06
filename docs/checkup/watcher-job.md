@@ -10,38 +10,20 @@ An owner Check up observes exactly one agent. `op: "reconcile"` with `intent: "c
 }
 ```
 
-The checkup never restarts a live process. Idle sessions, busy sessions, unresponsive daemons, live launchers and background processes receive an owner report with Restart now. Unreadable process information is reported as `process_unknown` with the same owner action. Stale heartbeats do not prove that a process stopped: recorded daemon, launcher, pairing-lock and keepalive PIDs are checked for liveness too. Process command lines and working directories, including subfolders, can establish that the target is alive. An unreadable working directory of a live process prevents automatic recovery.
+Checkup only observes and reports. It never starts, restarts, kickstarts, kills or takes over a daemon, launcher, tmux server or OS unit, including when every observed process is stopped. Stopped, idle, busy, unresponsive and unclear targets with findings receive an owner report and Restart now or the relevant owner action. Named launch failures and agents needing a first launch also receive Restart now guidance. Login and usage-limit reports retain their specific owner instructions.
 
-Automatic recovery only starts a target with no remaining process and a supervisor or launch recipe. After progress and any confirmed pairing work, the watcher takes two complete absence observations at least 500 ms apart and checks inventory identity again. The shared recovery budget allows one attempt per 30 minutes and three attempts per target; it must be saved before the start. Boot-hello verification and the terminal report stay inside the pass deadline.
+Only the owner's separate Restart now action enqueues the existing `restart_only` job. That job's planner, executor, restart ladder, launchers and verification are unchanged. Checkup does not invoke that job, write restart markers or probes, spend recovery budgets, stage plugin updates, replace credentials or press keys on usage-limit screens. Independent keep-alive sweeps are outside this job and unchanged.
 
-The start path cannot write restart markers or signal processes. It uses `systemctl --user start`, `launchctl kickstart` without `-k`, an owned Windows task's Run action, or a launch recipe. An incumbent appearing after confirmation cannot be stopped by these commands. Checkup no longer stages plugin updates, executes file repairs, evaluates idle/busy restart gates or presses keys on usage-limit screens. Stale plugins, stuck updates, login failures, usage limits and named launch failures are reported to the owner.
+Process observations still inspect recorded daemon, launcher, pairing-lock and keepalive PIDs, command lines and working directories, including subfolders. Unreadable process information is reported as `process_unknown`. These observations are snapshots: a new unrecorded process can appear during an asynchronous query or report. No observation grants checkup launch authority, so those races cannot cause checkup to start a competing launcher or stop an incumbent.
 
-## Revoked pairing
+## Pairing status
 
-Only a target credential for the watcher's backend is probed, via `POST integrations/session`. Only `401` with `code: "pairing_revoked"` proves revocation. Redirects are refused and successful session grants are discarded. Ordinary Check up reports revocation without replacing credentials.
-
-An authenticated job may explicitly authorize credential repair for the matching on-disk pairing:
-
-```json
-{
-  "op": "reconcile",
-  "intent": "checkup",
-  "targets": [{ "assistantId": 42, "pairingId": 7 }],
-  "pairingRepair": {
-    "confirmed": true,
-    "assistantId": 42,
-    "pairingId": 7,
-    "pairCode": "EXAMPLE-CODE"
-  }
-}
-```
-
-The credential snapshot and folder pin are checked before the existing pairing CLI runs with `--assistant-id` and `--no-install-cli`. Changed credentials for the same agent and backend, plus a verified folder pin, are required for success. Confirmation never authorizes a live restart. A live target receives Restart now after credential repair; a stopped target still requires both absence checks and the recovery budget. Producing this confirmation is the backend and app's responsibility.
+Only a target credential for the watcher's backend is probed, via `POST integrations/session`. Only `401` with `code: "pairing_revoked"` proves revocation. Redirects are refused and successful session grants are discarded. Checkup reports revocation without replacing credentials. Legacy `pairingRepair` payloads cannot authorize credential repair or a launch from checkup. Pairing is performed through the existing separate owner workflow.
 
 ## Reporting and verification
 
-Progress carries findings, completed actions and step state. A transient delivery failure is retried once; undeliverable progress stops the job before its next repair. Secrets and local identity are scrubbed from human-readable `message`, `detail` and `fix` fields while protocol identifiers remain intact. Pairing output is never forwarded. Notification metadata is unchanged.
+Progress carries findings, report actions and step state. A transient delivery failure is retried once; undeliverable progress fails the job. Secrets and local identity are scrubbed from human-readable `message`, `detail` and `fix` fields while protocol identifiers remain intact. Notification metadata is unchanged.
 
-Tests use an in-memory filesystem, fake clock and fake backend, with a sentinel rejecting real process operations. They cover live and unclear targets, stopped recovery, changes between the absence checks, start-only platform commands, shared budgets, pairing confirmation and report scrubbing. These checks do not prove a production app confirmation or owner-chat delivery flow. Local-only runs can set `RUN_TESTS_ALLOW_LOCAL_TMP=1` with a temp subfolder inside the checkout; removal is still required. `TSX_DISABLE_CACHE=1` prevents loader-cache leftovers.
+Tests use an in-memory filesystem, fake clock and fake backend, with a sentinel rejecting real process operations. Every command runner is stubbed in the cross-platform matrix: systemd, launchd, Windows tasks, tmux, script and hidden recipe launches across stopped, idle, busy, unresponsive and unclear states. The matrix requires zero mutating commands and no agent-file changes. Race tests create an unrecorded process during cwd queries and progress reporting. An integration test follows a checkup with the owner's `restart_only` job through the real planner, executor, restart and verification path.
 
-Validation: 9,902 passed, 53 skipped across 459 files; typecheck, 229 focused tests and all nine mutation checks passed. Test workers were capped at two. Raw evidence stays in the ignored local `.checkup3/` folder; a regression test enforces no tracked `docs/evidence/` files.
+The evidence covers plugin behavior, not production app button rendering or notification delivery. Local-only runs can set `RUN_TESTS_ALLOW_LOCAL_TMP=1` with a temp subfolder inside the checkout; removal is still required. `TSX_DISABLE_CACHE=1` prevents loader-cache leftovers. Test workers are capped at two. See `REPORT-CHECKUP4.md` for red-first, mutation, full-suite and typecheck results. Raw evidence remains in ignored `.checkup4/`; no raw machine paths or logs are published.

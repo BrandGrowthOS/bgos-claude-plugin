@@ -1,4 +1,4 @@
-/** Checkup diagnosis and the stopped-only recovery policy. All observations are synthetic. */
+/** Checkup diagnosis and the report-only policy. All observations are synthetic. */
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -8,10 +8,8 @@ import { fileURLToPath } from 'node:url'
 import {
   BEACON_STALE_MS,
   DRAIN_MAX_MS,
-  PASS_DEADLINE_MS,
   VALIDATION_WINDOW_MS,
   WEDGE_WINDOW_MS,
-  buildGates,
   checkupPass,
   diagnoseAgent,
   planRepairs,
@@ -113,16 +111,16 @@ test('C3: a fresh beacon and an unknown beacon are not stale', () => {
   assert.deepEqual(diagnoseAgent(obs({ beaconHeartbeatAtMs: null })), [])
 })
 
-test('C4: no claude and no daemon is not_running, fixable with a supervisor', () => {
+test('C4: no claude and no daemon is not_running, reported with a supervisor', () => {
   const findings = diagnoseAgent(obs({ claudeAlive: false, daemonAlive: false }))
   assert.deepEqual(causes(findings), ['C4'])
   assert.equal(findings[0].code, 'not_running')
-  assert.equal(findings[0].fixable, true)
+  assert.equal(findings[0].fixable, false)
 })
 
-test('C4: a launch recipe is as good as a supervisor', () => {
+test('C4: a launch recipe still requires owner action', () => {
   const findings = diagnoseAgent(obs({ claudeAlive: false, daemonAlive: false, hasSupervisor: false, hasLaunchRecipe: true }))
-  assert.equal(findings[0].fixable, true)
+  assert.equal(findings[0].fixable, false)
 })
 
 test('C4: a named launch failure is reported, never retried in a loop', () => {
@@ -347,24 +345,20 @@ test('a launcher, daemon or background process without visible Claude is alive a
   assert.deepEqual(steps(pass.actions), ['report:planned'])
 })
 
-test('process presence overrides a contradictory stopped observation', () => {
+test('contradictory process observations never authorize recovery', () => {
   for (const claudeAlive of [false, true, null]) {
     for (const daemonAlive of [false, true, null]) {
       const input = obs({ processState: 'stopped', claudeAlive, daemonAlive })
-      const gate = buildGates(input)
-      const stopped = claudeAlive === false && daemonAlive === false
-      assert.equal(gate.processState === 'stopped', stopped)
-      assert.equal(plannedRestart(checkupPass(input).actions), stopped)
+      assert.equal(plannedRestart(checkupPass(input).actions), false)
     }
   }
 })
 
-test('a completely stopped target is started once and verified by boot hello', () => {
+test('a completely stopped target is reported with Restart now', () => {
   const pass = checkupPass(obs({ claudeAlive: false, daemonAlive: false }))
-  assert.deepEqual(steps(pass.actions), ['start:planned', 'verify:planned'])
+  assert.deepEqual(steps(pass.actions), ['report:planned'])
   assert.deepEqual(pass.actions[0].causes, ['C4'])
-  assert.equal(pass.actions[1].via, 'boot_hello')
-  assert.equal(pass.actions[1].deadlineMs, PASS_DEADLINE_MS)
+  assert.match(pass.actions[0].ownerAction!.text, /Restart now/)
 })
 
 for (const [reason, over] of [
@@ -374,18 +368,17 @@ for (const [reason, over] of [
   ['blocked_by_usage_limit', { transcriptError: { kind: 'rate_limit', resetAt: null } }],
   ['blocked_by_pairing', { pairingRevoked: true }],
 ] as const) {
-  test(`stopped target: ${reason} holds the start and reports an owner action`, () => {
+  test(`stopped target: ${reason} still only reports an owner action`, () => {
     const pass = checkupPass(obs({ claudeAlive: false, daemonAlive: false, ...over }))
     assert.equal(plannedRestart(pass.actions), false)
-    assert.equal(pass.actions.find((a) => a.action === 'start')?.reason, reason)
+    assert.ok(pass.actions.every((a) => a.action === 'report'))
     assert.ok(pass.actions.some((a) => a.action === 'report' && a.causes.includes('C4') && /Restart now/.test(a.ownerAction!.text)))
-    assert.ok(!pass.actions.some((a) => a.action === 'verify'))
   })
 }
 
-test('a stopped start exactly at the shared rate limit edge is allowed', () => {
+test('a stopped target at the shared rate limit edge still only reports', () => {
   const pass = checkupPass(obs({ claudeAlive: false, daemonAlive: false, lastRestartAtMs: NOW - RESTART_MIN_INTERVAL_MS }))
-  assert.equal(plannedRestart(pass.actions), true)
+  assert.equal(plannedRestart(pass.actions), false)
 })
 
 for (const [code, update] of [
@@ -401,17 +394,18 @@ for (const [code, update] of [
   })
 }
 
-test('pairing confirmation authorizes re-pairing, never a live restart', () => {
-  for (const confirmed of [false, true]) {
-    const pass = checkupPass(obs({ pairingRevoked: true, pairingRepairConfirmed: confirmed }))
-    assert.deepEqual(steps(pass.actions), confirmed ? ['re_pair:planned', 'report:planned'] : ['report:planned'])
-    assert.equal(plannedRestart(pass.actions), false)
+test('pairing confirmation never authorizes checkup mutations in any process state', () => {
+  for (const processState of ['alive', 'unknown', 'stopped']) {
+    for (const confirmed of [false, true]) {
+      const pass = checkupPass(obs({ processState, claudeAlive: processState === 'alive', daemonAlive: false, pairingRevoked: true, pairingRepairConfirmed: confirmed }))
+      assert.ok(pass.actions.every((a) => a.action === 'report'))
+      assert.equal(plannedRestart(pass.actions), false)
+      assert.equal(pass.findings.find((f) => f.cause === 'C10')!.fixable, false)
+    }
   }
-  const stopped = checkupPass(obs({ claudeAlive: false, daemonAlive: false, pairingRevoked: true, pairingRepairConfirmed: true }))
-  assert.deepEqual(steps(stopped.actions), ['re_pair:planned', 'start:planned', 'verify:planned'])
 })
 
-test('invariant: live and unknown targets never receive an automatic action across all problem combinations', () => {
+test('invariant: every process state only receives reports across all problem combinations', () => {
   let cases = 0
   for (const processState of ['alive', 'unknown', 'stopped']) {
     for (let mask = 0; mask < 1 << PROBLEMS.length; mask++) {
@@ -424,9 +418,8 @@ test('invariant: live and unknown targets never receive an automatic action acro
           const pass = checkupPass(obs(over))
           const label = JSON.stringify(over)
           assert.ok(steps(pass.actions).every((step) => !/restart|free_limit|update|repair/.test(step)), label)
-          if (processState !== 'stopped') assert.ok(pass.actions.every((a) => a.action === 'report'), label)
+          assert.ok(pass.actions.every((a) => a.action === 'report'), label)
           if (kind) assert.equal(plannedRestart(pass.actions), false, label)
-          assert.ok(pass.actions.filter((a) => a.action === 'start' && a.outcome === 'planned').length <= 1, label)
           cases++
         }
       }
@@ -435,10 +428,8 @@ test('invariant: live and unknown targets never receive an automatic action acro
   assert.equal(cases, 576)
 })
 
-test('the planner accepts process-state gates without any busy-state decision', () => {
+test('the planner reports even a legacy fixable finding', () => {
   const findings = diagnoseAgent(obs({ claudeAlive: false, daemonAlive: false }))
-  for (const processState of ['alive', 'unknown', 'stopped']) {
-    const actions = planRepairs(findings, { now: NOW, lastRestartAtMs: null, attempts: 0, processState })
-    assert.deepEqual(steps(actions), processState === 'stopped' ? ['start:planned', 'verify:planned'] : ['report:planned'])
-  }
+  const actions = planRepairs(findings.map((f) => ({ ...f, fixable: true })))
+  assert.deepEqual(steps(actions), ['report:planned'])
 })

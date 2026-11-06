@@ -23,7 +23,6 @@ import {
   hoaiCorePath,
   recipeLaunchCommand,
   restartAgent,
-  startStoppedAgent,
   serviceRestartCommand,
   shellQuote,
   envForRecipe,
@@ -930,43 +929,4 @@ test('restartAgent win32 (review, F4 for the one shot): a session this agent sti
 test('recipeLaunchCommand win32: an id that is not digits is never written into the launcher (null)', () => {
   assert.equal(recipeLaunchCommand({ platform: 'win32', assistantId: '9"12', cwd: 'C:\\a', nodePath: 'node', pluginRoot: WIN_ROOT, stateDir: WIN_STATE } as any), null)
   assert.equal(recipeLaunchCommand({ platform: 'win32', assistantId: '', cwd: 'C:\\a', nodePath: 'node', pluginRoot: WIN_ROOT, stateDir: WIN_STATE } as any), null)
-})
-
-for (const [platform, command] of [
-  ['linux', { file: 'systemctl', args: ['--user', 'start', 'bgos-agent-912'] }],
-  ['darwin', { file: 'launchctl', args: ['kickstart', 'gui/501/ai.bgos.agent.912'] }],
-] as const) {
-  test(`startStoppedAgent ${platform}: start commands cannot stop an incumbent that appears after confirmation`, async () => {
-    const { calls, exec } = recordingExec()
-    const result = await startStoppedAgent(agentRow({ supervisor: 'service' }), {
-      ...BASE_DEPS, platform, fs: memoryFs(), exec, spawnDetached: recordingSpawn().spawnDetached,
-    })
-    assert.equal(result.ok, true)
-    assert.deepEqual(calls, [command])
-  })
-}
-
-test('startStoppedAgent win32: only probe and Run the owned task, never End or restart', async () => {
-  const fs = memoryFs()
-  const { calls, exec } = ownTaskHost(fs)
-  const result = await startStoppedAgent(agentRow({ ...WIN_ROW, supervisor: 'service', service: TASK }), {
-    ...BASE_DEPS, platform: 'win32', fs, exec, spawnDetached: recordingSpawn().spawnDetached,
-  })
-  assert.equal(result.ok, true)
-  assert.deepEqual(calls, [TASK_PROBE, { file: 'schtasks.exe', args: ['/Run', '/TN', TASK_NAME] }])
-})
-
-test('startStoppedAgent: live launcher, keepalive or daemon refuses even a start without writing a restart marker', async () => {
-  for (const over of [{ launcherLive: true }, { keepalive: { pid: 123, claudePid: 456 } }, {}]) {
-    const fs = memoryFs()
-    if (Object.keys(over).length === 0) fs.writeFile('/home/kc/.bgos-agent/credentials-912.json.lock', JSON.stringify({ pid: 4912, heartbeatAt: BASE_DEPS.now() }))
-    const { calls, exec } = recordingExec()
-    const { spawns, spawnDetached } = recordingSpawn()
-    const result = await startStoppedAgent(agentRow(over), { ...BASE_DEPS, platform: 'linux', fs, exec, spawnDetached, pidAlive: () => true })
-    assert.equal(result.ok, false)
-    assert.equal(result.message, 'target_alive')
-    assert.deepEqual(calls, [])
-    assert.deepEqual(spawns, [])
-    assert.equal(fs.readFile('/home/kc/.bgos-agent/912/restart-requested.json'), null)
-  }
 })
