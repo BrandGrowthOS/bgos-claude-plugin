@@ -6,6 +6,7 @@ import { test, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createServer, type ServerResponse } from 'node:http'
+import { once } from 'node:events'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -20,7 +21,7 @@ async function until(predicate: () => boolean, message: string) {
   assert.fail(message)
 }
 
-async function rig(t: TestContext, relay = false, refuseCancellation = false, holdCancellation = false, options: { holdCollection?: boolean; lateSuccess?: boolean } = {}) {
+async function rig(t: TestContext, relay = false, refuseCancellation = false, holdCancellation = false, options: { holdCollection?: boolean; lateSuccess?: boolean; holdCancellationDispatch?: boolean } = {}) {
   const frames: { message: any; clientId?: string; auth?: string; session?: string }[] = []
   const held: { message: any; response: ServerResponse; disconnected: boolean }[] = []
   const collections: { response: ServerResponse; disconnected: boolean }[] = []
@@ -46,6 +47,7 @@ async function rig(t: TestContext, relay = false, refuseCancellation = false, ho
     const body = JSON.parse(text), message = relay ? body.message : body
     frames.push({ message, clientId: body.clientId, auth: relay ? req.headers['x-bgos-pairing'] as string : req.headers.authorization, session: req.headers['mcp-session-id'] as string })
     if (message.method === 'notifications/cancelled') {
+      server.emit('cancellation', message)
       if (refuseCancellation) return answer(429, { code: 'rate_limited' })
       await gate
     }
@@ -84,6 +86,7 @@ async function rig(t: TestContext, relay = false, refuseCancellation = false, ho
     HOAI_RELAY_BACKEND_URL: origin, HOAI_RELAY_PAIRING_TOKEN: 'fixture-pairing', HOAI_RELAY_ASSISTANT_ID: '7',
   } : {})
   const preload = options.lateSuccess ? ['--import', pathToFileURL(join(process.cwd(), 'test/fixtures/shim-late-success.mjs')).href] : []
+  if (options.holdCancellationDispatch) preload.push('--import', pathToFileURL(join(process.cwd(), 'test/fixtures/shim-cancellation-delivery.mjs')).href)
   const child = spawn(process.execPath, [...preload, SHIM], { env, stdio: ['pipe', 'pipe', 'pipe', 'ipc'] })
   const { stdin, stdout, stderr: childStderr } = child
   assert.ok(stdin && stdout && childStderr, 'the shim must have piped stdio')
@@ -115,7 +118,7 @@ async function rig(t: TestContext, relay = false, refuseCancellation = false, ho
   const click = (id: Id) => send({ id, method: 'tools/call', params: { name: 'browser_click', arguments: { element: 'Save', target: 'e1' } } })
   await request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'fixture', version: '1' } })
   send({ method: 'notifications/initialized' })
-  return { frames, held, collections, stages, responses, request, cancel, click, releaseCancellation, discovery, releaseSuccess: () => child.send('release-success'), stderr: () => stderr }
+  return { frames, held, collections, stages, responses, request, cancel, click, releaseCancellation, discovery, releaseSuccess: () => child.send('release-success'), releaseCancellationDispatch: () => child.send('release-cancellation-dispatch'), nextCancellation: () => once(server, 'cancellation', { signal: AbortSignal.timeout(3000) }), stderr: () => stderr }
 }
 
 for (const relay of [false, true]) for (const id of [20, 0, '']) {
@@ -176,10 +179,16 @@ for (const relay of [false, true]) {
 }
 
 test('queued cancellation prevents dispatch and keeps numeric and string IDs distinct', { timeout: 10000 }, async t => {
-  const r = await rig(t)
+  const r = await rig(t, false, false, false, { holdCancellationDispatch: true })
   r.click(30); await until(() => r.held.length === 1, 'First click was not dispatched')
   r.click('31'); r.cancel(31); r.cancel('31'); r.cancel(30)
   await r.request('ping')
+  // Queue progress does not imply cancellation delivery. Force it to arrive
+  // after ping, then await the actual HTTP event before inspecting its frame.
+  assert.equal(r.frames.some(frame => frame.message.method === 'notifications/cancelled'), false)
+  const cancellation = r.nextCancellation()
+  r.releaseCancellationDispatch()
+  await cancellation
   assert.equal(r.held.length, 1)
   assert.equal(r.responses.some(msg => msg.id === '31'), false)
   assert.deepEqual(r.frames.filter(frame => frame.message.method === 'notifications/cancelled').map(frame => frame.message.params.requestId), [30])
