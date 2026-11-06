@@ -10,7 +10,9 @@
 import { spawn, execFile } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
-export const MAX_TEST_WORKERS = 4
+const requestedWorkers = Number(process.env.RUN_TESTS_WORKERS)
+export const MAX_TEST_WORKERS = Number.isInteger(requestedWorkers) && requestedWorkers > 0
+  ? Math.min(4, requestedWorkers) : 4
 /** Applies to a test that yields. The slowest test on a green Windows job took 41 s. */
 export const TEST_TIMEOUT_MS = 120_000
 /**
@@ -76,11 +78,11 @@ export function testGroups(entries) {
     fileURLToPath(import.meta.resolve('./test-file-entry.mjs')),
   ]
   return [
-    { label: 'node:test family', files: parallelFiles, command: process.execPath, args: nodeArgs, concurrency: 4, family: 'node' },
+    { label: 'node:test family', files: parallelFiles, command: process.execPath, args: nodeArgs, concurrency: MAX_TEST_WORKERS, family: 'node' },
     { label: 'runner regression tests', files: runnerFiles, command: process.execPath, args: nodeArgs, concurrency: 1, family: 'node' },
     { label: 'real Chromium files, one at a time', files: chromiumFiles, command: process.execPath, args: nodeArgs, concurrency: 1, family: 'node' },
     { label: 'real daemon files, one at a time', files: daemonFiles, command: process.execPath, args: nodeArgs, concurrency: 1, family: 'node' },
-    { label: 'bun:test family', files: bunFiles, command: 'bun', args: ['test', '--max-concurrency=1', `--timeout=${TEST_TIMEOUT_MS}`], concurrency: 4, family: 'bun' },
+    { label: 'bun:test family', files: bunFiles, command: 'bun', args: ['test', '--max-concurrency=1', `--timeout=${TEST_TIMEOUT_MS}`], concurrency: MAX_TEST_WORKERS, family: 'bun' },
   ]
 }
 

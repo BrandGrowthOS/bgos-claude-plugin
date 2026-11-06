@@ -208,6 +208,7 @@ import {
   sweepBoardFiles,
 } from './lib/boards-tools.js'
 import { createActingUserTracker } from './lib/acting-user.js'
+import { ARTIFACT_TOOL_DECLS, handleArtifactTool } from './lib/artifacts-tools.js'
 import { createPrivateTurnTracker, emailSendBasis, PRIVATE_TURN_REFUSAL, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requireEmailSendTurn, requirePrivateTurn, turnAwarePrivateTurn } from './lib/private-turn.mjs'
 import { createFireLedger, createPostedButtons, privateFireKey, privateFiresPath, privateEndedLine, privateReplayLine, privateTapCard, privateUnrecordedLine } from './lib/private-turn.mjs'
 import {
@@ -3351,6 +3352,10 @@ const mcp = new Server(
       'authoritative, always-current HOAI capability guide. It is fetched live',
       'from the backend at connect and supersedes the capability summary below.',
       '',
+      'When you produce a dashboard, report, chart, table, plan, document or any page a person will read, share or revisit, make it an Artifact instead of a long chat message, then send a short reply with its link. Update the same Artifact for revisions rather than creating new ones.',
+      'Use artifact_create, artifact_update, artifact_read, artifact_list and artifact_versions.',
+      'Read artifact_read without id for the live content schema. The server posts the reference beside the chat.',
+      '',
       'When you receive a message, process it using your full capabilities, ',
       'you can use Bash, Read, Write, Edit, Grep, Glob, WebSearch, and all',
       'other Claude Code tools to help the user.',
@@ -6472,6 +6477,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     // owner granted THIS assistant; an ungranted board answers not_found and
     // never reveals that it exists.
     ...BOARDS_TOOL_DECLS,
+    ...ARTIFACT_TOOL_DECLS,
     // Agent email (outgoing email modes, HOAI board row 2dd04488): save a
     // draft for the owner, or send on the owner's own instruction
     // (lib/agent-email-tools.ts). Both always listed; the backend answers
@@ -6646,7 +6652,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
   }
   // Freeze private authority at request admission, before any awaited work.
   let privateCall: ReturnType<typeof requirePrivateTurn> | null = null
-  if (req.params.name.startsWith('boards_') || ['schedule', 'list_schedules', 'cancel_schedule'].includes(req.params.name)) {
+  if (req.params.name.startsWith('boards_') || req.params.name.startsWith('artifact_') || ['schedule', 'list_schedules', 'cancel_schedule'].includes(req.params.name)) {
     try {
       if (!lockHeld) throw new Error('This private action did not start because this daemon does not hold the active agent connection.')
       privateCall = requirePrivateTurn(privateTurns, PRIVATE_MARKER_PATHS, USER_ID)
@@ -6712,6 +6718,13 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
   }
   return trackMessageOperation(async () => {
   const rawArgs = req.params.arguments as Record<string, unknown>
+
+  if (req.params.name.startsWith('artifact_')) {
+    return handleArtifactTool(req.params.name, rawArgs, {
+      ...boardsTransports(privateCall!.headers),
+      assistantId: ASSISTANT_ID,
+    })
+  }
 
   // ── Agent Boards ───────────────────────────────────────────────────────
   // One grouped route for the whole boards_* family: validation, path

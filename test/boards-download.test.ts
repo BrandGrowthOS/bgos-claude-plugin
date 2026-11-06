@@ -412,7 +412,7 @@ test('boards_download is a private tool: refused with no verified turn, like eve
   assert.ok(new RegExp(PRIVATE_TOOL_MATCHER).test('mcp__bgos__boards_download'))
   assert.ok(new RegExp(PRIVATE_TOOL_MATCHER).test('mcp__plugin_bgos_bgos__boards_download'))
   // The daemon's admission gate keys on the prefix, so the tool is gated there too.
-  assert.match(SERVER, /if \(req\.params\.name\.startsWith\('boards_'\) \|\| \['schedule', 'list_schedules', 'cancel_schedule'\]\.includes\(req\.params\.name\)\) \{\n    try \{\n      if \(!lockHeld\)/)
+  assert.match(SERVER, /if \(req\.params\.name\.startsWith\('boards_'\) \|\| req\.params\.name\.startsWith\('artifact_'\) \|\| \['schedule', 'list_schedules', 'cancel_schedule'\]\.includes\(req\.params\.name\)\) \{\n    try \{\n      if \(!lockHeld\)/)
 })
 
 test('the daemon declares boards_download on every host, so the canon tells its agent about the tool', () => {
