@@ -143,7 +143,8 @@ export async function processRunsIn(
 
 /** Signal the process group the lane leads (its tools with it), else the process alone. */
 export function killProcessGroup(pid: number, signal: 'SIGTERM' | 'SIGKILL'): void {
-  if (!Number.isInteger(pid) || pid <= 0) return
+  // kill(-1) signals every process this user owns, so pid 1 never gets here.
+  if (!Number.isInteger(pid) || pid <= 1) return
   try {
     process.kill(-pid, signal)
     return

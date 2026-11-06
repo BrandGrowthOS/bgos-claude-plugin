@@ -16,6 +16,7 @@
 
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
+import { readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -24,11 +25,12 @@ import { scratchDir } from './helpers/scratch-dirs'
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const missingBrowser = join(scratchDir('no-browser-'), process.platform === 'win32' ? 'chrome.exe' : 'chrome')
 
-function runAlone(file: string): Promise<{ code: number | null; timedOut: boolean; output: string }> {
+function runAlone(file: string): Promise<{ code: number | null; timedOut: boolean; output: string; leftovers: string[] }> {
   return new Promise((resolve) => {
+    const temp = scratchDir('no-browser-start-')
     const child = spawn(process.execPath, ['--import', 'tsx', join('test', file)], {
       cwd: repoRoot,
-      env: { ...process.env, HOAI_BROWSER_EXECUTABLE: missingBrowser },
+      env: { ...process.env, HOAI_BROWSER_EXECUTABLE: missingBrowser, TMPDIR: temp, TEMP: temp, TMP: temp },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     let output = ''
@@ -36,15 +38,19 @@ function runAlone(file: string): Promise<{ code: number | null; timedOut: boolea
     child.stderr.on('data', (chunk) => { output += chunk })
     let timedOut = false
     const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL') }, 120_000)
-    child.on('close', (code) => { clearTimeout(timer); resolve({ code, timedOut, output }) })
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      resolve({ code, timedOut, output, leftovers: readdirSync(temp).filter(name => /^playwright(?:-artifacts-|_chromiumdev_profile-)/.test(name)) })
+    })
   })
 }
 
 for (const file of ['remote-browser-controls.chromium.test.ts', 'agent-browser-vault.chromium.test.ts', 'remote-credentials.chromium.test.ts']) {
   test(`${file}: with a browser that cannot start, every test fails and the process exits`, { timeout: 150_000 }, async () => {
-    const { code, timedOut, output } = await runAlone(file)
+    const { code, timedOut, output, leftovers } = await runAlone(file)
     assert.equal(timedOut, false, `${file} was still running 120 s after it started: something it opened outlived its tests\n${output.slice(-2000)}`)
     assert.equal(code, 1, output.slice(-2000))
     assert.match(output, /\bpass 0\b/, output.slice(-2000))
+    assert.deepEqual(leftovers, [], 'a browser that never started must leave no Playwright profile or artifacts folders')
   })
 }
