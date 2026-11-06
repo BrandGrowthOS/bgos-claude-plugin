@@ -4706,7 +4706,7 @@ const TEXT_EDGES: readonly (readonly [string, Buffer, boolean])[] = [
   ['cut.txt', Buffer.from([0x61, 0x62, 0xe2, 0x82]), false],
   ['surrogate.txt', Buffer.from([0x61, 0xed, 0xa0, 0x80, 0x0a]), false],
   ['overlong.txt', Buffer.from([0xc0, 0xaf, 0x0a]), false],
-  ['bom.csv', Buffer.from('﻿Name,Qty\nChairs,12\n'), true],
+  ['bom.csv', Buffer.from('\ufeffName,Qty\nChairs,12\n'), true],
   ['spacing.txt', Buffer.from('a\tb\r\n\fc\n'), true],
   ['world.txt', Buffer.from('Grüße aus Köln, café, 日本語, thanks 🎉\n'), true],
   ['markup.txt', Buffer.from('<html><body>Quarterly notes</body></html>\n'), true],
@@ -4721,7 +4721,21 @@ test('a .txt or .csv file whose bytes are not clean text is refused with the sam
   }
 })
 
-test('the content stage answers not_type exactly where the inbound type check says not text, before any budget is read', async () => {
+/**
+ * The text rule as it was before the check moved into the Worker, copied here and frozen, so a change to the shared
+ * rule (lib/email-clean-text.ts) shows up as a change in what is accepted.
+ */
+function frozenCleanText(bytes: Uint8Array): boolean {
+  let text: string
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  } catch {
+    return false
+  }
+  return !/[\u0000-\u0008\u000B\u000E-\u001F\u007F-\u009F]/.test(text)
+}
+
+test('the text rule is unchanged: the inbound type check and the content stage both say not text exactly where the old rule did, before any budget is read', async () => {
   const { isType } = await import('../lib/email-files.ts')
   const { outboundContentVerdict } = await import('../lib/email-outbound-content.ts')
   const samples: Buffer[] = TEXT_EDGES.map(([, bytes]) => bytes)
@@ -4737,8 +4751,9 @@ test('the content stage answers not_type exactly where the inbound type check sa
   }
   let notText = 0
   for (const bytes of samples) {
-    const clean = isType(bytes, 'text')
+    const clean = frozenCleanText(bytes)
     if (!clean) notText++
+    assert.equal(isType(bytes, 'text'), clean, `${bytes.toString('hex')}: inbound type check`)
     for (const budget of [UNDER_BUDGET_MS, OVER_BUDGET_MS]) {
       const verdict = await outboundContentVerdict(new Uint8Array(bytes), 'text', 'sample.txt', [], budget)
       assert.equal(verdict.kind === 'not_type', !clean, `${bytes.toString('hex')} at budget ${budget}: ${verdict.kind}`)
@@ -4749,7 +4764,6 @@ test('the content stage answers not_type exactly where the inbound type check sa
 })
 
 test('the main thread is free while a large text file is checked: a timer queued as the read ends is not held by the check', { timeout: 180_000 }, async (t) => {
-  const lib = await m()
   const { isType } = await import('../lib/email-files.ts')
   for (const [name, build] of [
     ['digits.csv', () => digitLines(23 * MB)],

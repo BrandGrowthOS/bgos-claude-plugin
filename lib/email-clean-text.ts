@@ -7,8 +7,8 @@
 //
 // Both directions read this one function, so the rule cannot drift between them: a file that comes in
 // (lib/email-files.ts isType, on the daemon's main thread, for a download) and a file to attach (the content Worker,
-// lib/email-outbound-content.ts, which reads the text it returns, so the file is decoded once and never on the
-// main thread).
+// lib/email-outbound-content.ts, which reads the text it returns, so the whole file is decoded once and never on
+// the main thread).
 //
 // No em or en dashes in this file.
 

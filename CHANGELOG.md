@@ -8,7 +8,7 @@ Running commands is not available for people you share with yet. Your own tools 
 
 ## 0.86.11 (2026-11-07)
 
-**A large text or CSV file to attach no longer freezes the agent while it is checked.** The check that a .txt or .csv file really is plain text now runs in the background checker with the other content checks, instead of on the agent's main thread first. A 23 MB CSV used to hold the agent for about 20 ms on a fast computer, and much longer on a slow one; now it holds it for about 1 ms. Exactly the same files are attached or refused as before, and a file that is not really text is refused with the same words.
+**A large text or CSV file to attach no longer freezes the agent while it is checked.** The check that a .txt or .csv file really is plain text now runs in the background checker with the other content checks, instead of first, before the background check starts. A 23 MB CSV used to make the agent wait about 20 ms on a fast computer, and longer on a slow one; now the agent keeps working while it is checked. Exactly the same files are attached or refused as before, and a file that is not really text is refused with the same words.
 
 ## 0.86.8 (2026-11-06)
 

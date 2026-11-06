@@ -1624,9 +1624,9 @@ async function firstSecretRule(name: string, text: string, clock: StageClock = N
 export type ContentType = 'text' | 'docx' | 'xlsx'
 
 /**
- * Round 7: the whole content stage of one file whose type its bytes have already proved: a text file's whole text,
- * decoded once (at most 25 MB, already read), or a Word or Excel file's own words (round 3), then every check in the
- * order readOutboundFile ran them. Run in the content Worker; `name` is what the scanner's findings are filed under.
+ * Round 7: the whole content stage of one file: a text file's type check first (clean UTF-8 text, 'not_type' when it is
+ * not) and its whole text, decoded once (at most 25 MB, already read), or the words of a Word or Excel file whose type
+ * its bytes have already proved on the main thread (round 3), then every check in the order readOutboundFile ran them. Run in the content Worker; `name` is what the scanner's findings are filed under.
  * Round 9: under one budget for the whole stage (StageBudget): officeReadBudgetMs of the larger of the file's size and
  * its words, or `budgetMs` when given (a test's, fixed). Over it, at any check, the file is 'over_budget'.
  */
