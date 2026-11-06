@@ -227,7 +227,9 @@ test('the shared rule: an approved machine with no proof is not one a copy is se
 test('nothing on this machine can claim the proof, and the agent is told the sign-ins never came here', async () => {
   const { readFileSync, readdirSync } = await import('node:fs')
   const { SIGN_IN_STAYS_SENTENCE } = await import('../bin/hoai-browser-host.mjs')
-  const root = new URL('..', import.meta.url).pathname
+  const { fileURLToPath } = await import('node:url')
+  // fileURLToPath, never URL.pathname: on Windows the pathname is /D:/... and join() makes D:\D:\...
+  const root = fileURLToPath(new URL('..', import.meta.url))
   const claims = (dir: string) => readdirSync(join(root, dir)).filter(name => /\.(mjs|ts)$/.test(name) && /separateOsUser|signInsProved/.test(readFileSync(join(root, dir, name), 'utf8')))
   assert.deepEqual(claims('lib'), [])
   assert.deepEqual(claims('bin'), [])
