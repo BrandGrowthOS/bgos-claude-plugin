@@ -688,6 +688,8 @@ function compile(source: string, name: string, extra: Record<string, unknown> = 
     chatFirstListedAtMs: new Map<string, number>(),
     chatLastSeen: new Map([[CHAT, 9000]]),
     chatUnansweredButtons: new Map(),
+    loginMethodCard: null,
+    pendingLoginMethodCard: () => null,
     meetingIdByChatId: new Map(),
     meetingContexts: new Map(),
     peerConvByChat: new Map(),

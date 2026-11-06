@@ -879,6 +879,11 @@ export class LoginController {
 
   constructor(private readonly deps: LoginDeps) {}
 
+  /** Identifies the current method offer, including while its status read is pending. */
+  get methodOfferVersion(): number {
+    return this.offerSeq
+  }
+
   get phase(): LoginPhase {
     return this.state.phase
   }
@@ -1349,6 +1354,7 @@ export class LoginController {
         : 'This agent is not signed in. Pick how to sign in.'
     const text = forOwner ? `${lead}\n\n${consoleNote}` : `${lead}\n\n${RECIPIENT_LOGIN_SCOPE}\n\n${consoleNote}`
     const messageId = await this.reply(chatId, text, LOGIN_METHOD_BUTTONS)
+    if (seq !== this.offerSeq) return
     if (messageId !== null) this.dispatch({ type: 'card_posted', messageId })
   }
 

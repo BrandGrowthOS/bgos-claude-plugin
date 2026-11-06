@@ -255,6 +255,8 @@ function compile(source: string, name: string, extra: Record<string, unknown> = 
     streamHeldEmptyChatByMessageId: new Map<number, string>(),
     chatLastSeen: new Map([[CHAT, 9000]]),
     chatUnansweredButtons: new Map(),
+    loginMethodCard: null,
+    pendingLoginMethodCard: () => null,
     pendingInbounds: new Map(),
     FIRST_POLL_RECENT_CUTOFF_MS: null,
     isNotModified: () => false,

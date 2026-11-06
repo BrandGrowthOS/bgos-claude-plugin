@@ -5,15 +5,13 @@
  * immediate baseline, the transition detector loses that tap and sign-in
  * waits for a method the owner already picked.
  *
- * The daemon knows its own card is unanswered the moment it posts it. Every
+ * The daemon tracks its sign-in card independently of ordinary button baselines. Every
  * case here posts a card through the REAL daemon (a copy of server.ts under
  * bun) to a stand in backend that stamps the card answered before it even
  * answers the post, so no read can ever see it unanswered, and asserts the
  * tap still does what it is for:
  *   - the sign-in card, both chips: the chip's method starts (the stand in
- *     `claude` records its arguments, and its link is relayed to the chat);
- *   - a `reply` with buttons: the click reaches the session;
- *   - a `propose_plan` card: the answer reaches the session.
+ *     `claude` records its arguments, and its link is relayed to the chat).
  *
  * The real `claude` is never run: the stand in sits first on PATH and in
  * CLAUDE_CODE_EXECPATH, and the case asserts on the stand in's own record of
@@ -105,6 +103,7 @@ interface Backend {
   tapOnPost: ((body: Record<string, unknown>) => number | null) | null
   anchoredReads: Array<{ id: number; conditional: boolean }>
   pollRequests: Array<{ afterId: number; conditional: boolean; status: number }>
+  failAnchoredReads: number
   honorEtags: boolean
   holdPost: ((row: StoredRow) => Promise<void>) | null
   readsOf: (chatId: number) => number
@@ -113,7 +112,7 @@ interface Backend {
    * arrives, `during` runs, and only then is that page answered, so the daemon
    * gets a read that began before whatever `during` did.
    */
-  holdNextRead: (chatId: number, during: () => Promise<void>) => void
+  holdNextRead: (chatId: number, during: (afterId: number) => Promise<void>) => void
   /** Errors thrown inside a hold; the read is answered anyway. */
   holdErrors: string[]
   /** The next message id, from the same sequence the stored posts use. */
@@ -160,7 +159,7 @@ async function startBackend(): Promise<Backend> {
   const rows: StoredRow[] = [historyRow(101, 'user', 'morning'), historyRow(102, 'assistant', 'morning to you')]
   const posts: Post[] = []
   const reads = new Map<number, number>()
-  const holds = new Map<number, () => Promise<void>>()
+  const holds = new Map<number, (afterId: number) => Promise<void>>()
   const holdErrors: string[] = []
   let nextMessageId = 1000
   let nextOptionId = 15537
@@ -172,6 +171,7 @@ async function startBackend(): Promise<Backend> {
     tapOnPost: null,
     anchoredReads: [],
     pollRequests: [],
+    failAnchoredReads: 0,
     honorEtags: false,
     holdPost: null,
     readsOf: (chatId) => reads.get(chatId) ?? 0,
@@ -252,6 +252,10 @@ async function startBackend(): Promise<Backend> {
       const limit = Number(url.searchParams.get('limit') ?? 50)
       const anchored = limit === 1 && beforeId === afterId + 2
       if (anchored) backend.anchoredReads.push({ id: afterId + 1, conditional: req.headers['if-none-match'] !== undefined })
+      if (anchored && backend.failAnchoredReads > 0) {
+        backend.failAnchoredReads--
+        return json({ error: 'transient fixture failure' }, 503)
+      }
       // The real route: the NEWEST 50 rows above the cursor, oldest first.
       // Taken NOW, as the read arrives, and copied, so a held read answers
       // with the chat as it was when the read began.
@@ -266,7 +270,7 @@ async function startBackend(): Promise<Backend> {
       const hold = isPoll ? holds.get(chatId) : undefined
       if (hold) {
         holds.delete(chatId)
-        await hold().catch((err: unknown) => {
+        await hold(afterId).catch((err: unknown) => {
           holdErrors.push(String(err))
         })
       }
@@ -567,8 +571,6 @@ describe('a tap on a card this daemon posted is heard when it lands before the n
         await waitFor(() => loginCardOf(w.backend) !== undefined, 'the sign-in card')
 
         const cardId = loginCardOf(w.backend)!.id
-        await waitQuietly(() => w.backend.anchoredReads.some((r) => r.id === cardId), 2_000)
-        assert.deepEqual(w.backend.anchoredReads.filter((r) => r.id === cardId), [{ id: cardId, conditional: false }], 'one unconditional direct read of this sign-in card')
         // The card exactly as production received it: same words, both chips,
         // the first marked primary, inline.
         const card = loginCardOf(w.backend)!
@@ -595,6 +597,7 @@ describe('a tap on a card this daemon posted is heard when it lands before the n
           claudeCalls(w.rig).includes(`auth login ${flag}`),
           `the tap on "${chip.text}" started \`claude auth login ${flag}\`\n${evidence(w)}`,
         )
+        assert.deepEqual(w.backend.anchoredReads.filter((r) => r.id === cardId), [{ id: cardId, conditional: false }], 'one unconditional direct read of this sign-in card')
         assert.equal(
           claudeCalls(w.rig).filter((c) => c.startsWith('auth login')).length,
           1,
@@ -617,69 +620,6 @@ describe('a tap on a card this daemon posted is heard when it lands before the n
     })
   }
 
-  test('a reply with buttons, a button tapped at once: the click reaches the session once', OPTS, async () => {
-    const w = await world()
-    try {
-      w.backend.tapOnPost = (body) => (String(body.text ?? '') === 'Ship it now?' ? 0 : null)
-      const result = await w.daemon.client.callTool({
-        name: 'reply',
-        arguments: {
-          chat_id: String(MAIN),
-          text: 'Ship it now?',
-          buttons: [
-            { label: 'Ship it', value: 'ship' },
-            { label: 'Wait', value: 'wait' },
-          ],
-        },
-      })
-      assert.notEqual(result.isError, true, `the reply was sent: ${JSON.stringify(result.content)}`)
-      const posted = w.backend.posts.find((p) => p.body.text === 'Ship it now?')
-      assert.ok(posted, 'the reply reached the backend')
-      await waitQuietly(() => w.backend.anchoredReads.some((r) => r.id === posted.id), 2_000)
-      assert.deepEqual(w.backend.anchoredReads.filter((r) => r.id === posted.id), [{ id: posted.id, conditional: false }], 'one unconditional direct read by card id')
-      await waitQuietly(() => w.daemon.cards.some((c) => c.messageId === posted.id), 20_000)
-      const clicks = w.daemon.cards.filter((c) => c.messageId === posted.id)
-      assert.equal(clicks.length, 1, `the click reached the session once\n${evidence(w)}`)
-      assert.match(clicks[0]!.content, /Ship it/, 'the click names the button tapped')
-      // Later reads must not announce it a second time.
-      await forceReads(w, 2)
-      assert.equal(w.daemon.cards.filter((c) => c.messageId === posted.id).length, 1, 'never twice')
-    } finally {
-      await w.end()
-    }
-  })
-
-  test('a plan card, Go ahead tapped at once: the answer reaches the session once', OPTS, async () => {
-    const w = await world()
-    try {
-      w.backend.tapOnPost = (body) => {
-        const options = Array.isArray(body.options) ? (body.options as Array<{ callbackData?: string }>) : []
-        const go = options.findIndex((o) => o.callbackData === 'plan:go')
-        return go >= 0 ? go : null
-      }
-      const result = await w.daemon.client.callTool({
-        name: 'propose_plan',
-        arguments: {
-          chat_id: String(MAIN),
-          title: 'Rename the status field',
-          steps: [{ text: 'Rename the column' }, { text: 'Update the two readers' }],
-        },
-      })
-      assert.notEqual(result.isError, true, `the plan was posted: ${JSON.stringify(result.content)}`)
-      const posted = w.backend.posts.find((p) => p.route === 'messages')
-      assert.ok(posted, 'the plan card reached the backend')
-      await waitQuietly(() => w.backend.anchoredReads.some((r) => r.id === posted.id), 2_000)
-      assert.deepEqual(w.backend.anchoredReads.filter((r) => r.id === posted.id), [{ id: posted.id, conditional: false }], 'one unconditional direct read by card id')
-      await waitQuietly(() => w.daemon.cards.some((c) => c.messageId === posted.id), 20_000)
-      const answers = w.daemon.cards.filter((c) => c.messageId === posted.id)
-      assert.equal(answers.length, 1, `the plan answer reached the session once\n${evidence(w)}`)
-      await forceReads(w, 2)
-      assert.equal(w.daemon.cards.filter((c) => c.messageId === posted.id).length, 1, 'never twice')
-    } finally {
-      await w.end()
-    }
-  })
-
   test('review: a completed answered full read and repeated ETag 304s cannot hide a delayed POST answer', OPTS, async () => {
     const w = await world()
     try {
@@ -699,6 +639,70 @@ describe('a tap on a card this daemon posted is heard when it lands before the n
       assert.equal(completed, true, 'the POST returned only after the answered body and a 304 were processed')
       assert.ok(w.backend.pollRequests.some((r) => r.afterId === 0 && r.status === 304), 'the backend honored a full-read validator')
       assert.ok(claudeCalls(w.rig).includes('auth login --claudeai'), `the direct read delivered the cached answer\n${evidence(w)}`)
+      assert.equal(w.backend.anchoredReads.filter((r) => r.id === loginCardOf(w.backend)!.id).length, 1)
+    } finally { await w.end() }
+  })
+
+  test('review: cached answered history recovers after the one direct request fails with 503', OPTS, async () => {
+    const w = await world()
+    try {
+      await postOpenCard(w)
+      w.backend.honorEtags = true
+      w.backend.failAnchoredReads = 1
+      w.backend.tapOnPost = (body) => String(body.text ?? '').startsWith(SIGNED_OUT_LEAD) ? 0 : null
+      let completed = false
+      w.backend.holdPost = async (row) => {
+        if (!row.text.startsWith(SIGNED_OUT_LEAD)) return
+        const reads = w.backend.pollRequests.length
+        await waitFor(() => w.backend.pollRequests.length > reads, 'full read A of the already answered card')
+        await waitFor(() => w.backend.pollRequests.slice(reads).some((r) => r.status === 304), 'a cached full read returning 304')
+        completed = true
+      }
+      ownerSendsLogin(w.backend)
+      await waitQuietly(() => claudeCalls(w.rig).includes('auth login --claudeai'), 15_000)
+      assert.equal(completed, true, 'the POST returned only after the answered body and a 304 were processed')
+      assert.ok(w.backend.pollRequests.some((r) => r.afterId === 0 && r.status === 304), 'the backend honored a full-read validator')
+      assert.ok(claudeCalls(w.rig).includes('auth login --claudeai'), `a fresh history body delivered the cached answer after direct failure\n${evidence(w)}`)
+      assert.equal(w.backend.anchoredReads.filter((r) => r.id === loginCardOf(w.backend)!.id).length, 1)
+      assert.equal(w.backend.failAnchoredReads, 0, 'the single direct request actually failed')
+      const cached = w.backend.pollRequests.findIndex((r) => r.status === 304)
+      assert.ok(w.backend.pollRequests.slice(cached + 1).some((r) => r.afterId === 0 && !r.conditional && r.status === 200), 'ordinary polling obtained a fresh covering body after the cached read')
+      await forceReads(w, 2)
+      assert.equal(claudeCalls(w.rig).filter((c) => c.startsWith('auth login')).length, 1)
+      assert.ok(!w.backend.posts.some((p) => /no longer open/.test(String(p.body.text ?? ''))))
+    } finally { await w.end() }
+  })
+
+  test('review: answered read A, delta B above the card, POST during B and a failed direct read recover on full read C', OPTS, async () => {
+    const w = await world()
+    try {
+      const before = w.backend.readsOf(MAIN)
+      await postOpenCard(w)
+      await waitFor(() => w.backend.readsOf(MAIN) > before, 'the unrelated open-card baseline')
+      w.backend.rows.find((r) => r.text === OPEN_CARD_TEXT)!.options = []
+      w.backend.failAnchoredReads = 1
+      w.backend.tapOnPost = (body) => String(body.text ?? '').startsWith(SIGNED_OUT_LEAD) ? 0 : null
+      let deltaFloor = -1
+      let releasePost!: () => void
+      w.backend.holdPost = async (row) => {
+        if (!row.text.startsWith(SIGNED_OUT_LEAD)) return
+        const reads = w.backend.pollRequests.length
+        await waitFor(() => w.backend.pollRequests.slice(reads).some((r) => r.afterId === 0 && r.status === 200), 'read A of the answered card before POST returns')
+        w.backend.rows.push(historyRow(w.backend.allocateId(), 'assistant', 'A newer row for delta B'))
+        w.backend.holdNextRead(MAIN, async (afterId) => {
+          deltaFloor = afterId
+          releasePost()
+          await waitFor(() => w.daemon.stderr.some((l) => /\/login: sign-in card \d+ posted to chat 501/.test(l)), 'POST to return while delta B is in flight')
+        })
+        await new Promise<void>((resolve) => { releasePost = resolve })
+      }
+      ownerSendsLogin(w.backend)
+      await waitQuietly(() => claudeCalls(w.rig).includes('auth login --claudeai'), 25_000)
+      assert.equal(deltaFloor, loginCardOf(w.backend)!.id, 'B explicitly excluded the sign-in card')
+      assert.equal(w.backend.failAnchoredReads, 0)
+      assert.deepEqual(w.backend.holdErrors, [])
+      assert.ok(claudeCalls(w.rig).includes('auth login --claudeai'), evidence(w))
+      assert.ok(w.backend.pollRequests.some((r) => r.afterId === 0 && !r.conditional && r.status === 200), 'C fetched a fresh covering body')
       assert.equal(w.backend.anchoredReads.filter((r) => r.id === loginCardOf(w.backend)!.id).length, 1)
     } finally { await w.end() }
   })

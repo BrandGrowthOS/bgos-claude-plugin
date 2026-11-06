@@ -616,7 +616,6 @@ function callArgs(body: string, callee: string): string[] {
 
 const WS_LANE = region('  function deliverWsInbound(payload: any, emailSaves?: Array<EmailFileSave | null>): void {', "\n  realtimeSocket.on('peer_conversation_closed'")
 const POLL_LANE = region('async function pollChat(chatId: string): Promise<void> {', '\n}\n')
-const CARD_ANSWER_LANE = region('function announceCardAnswer(', '\n}\n')
 const STREAM_LANE = region('async function forwardStreamInbound(', '\nfunction applyStreamButtonsAnswered(')
 const STREAM_TAP_LANE = region('function applyStreamButtonsAnswered(', '\nasync function applyStreamMessage(')
 const SWEEP_TAP_LANE = region('async function announceMissedPlanAnswers(): Promise<void> {', '\n}\n')
@@ -667,7 +666,7 @@ test('wiring: every inbound lane puts its final meta together through finalInbou
 
 test('wiring: every button_clicked lane builds its meta from the server tapper, never USER_ID', () => {
   assert.doesNotMatch(SRC, /event_type: 'button_clicked'/, 'a hand built tap meta is back')
-  const [poll] = callArgs(CARD_ANSWER_LANE, 'buildButtonClickedMeta')
+  const [poll] = callArgs(POLL_LANE, 'buildButtonClickedMeta')
   assert.match(poll ?? '', /\n\s*tapperUserId: readTapperUserId\(payload\),\n/)
   const [sweep] = callArgs(SWEEP_TAP_LANE, 'buildButtonClickedMeta')
   assert.match(sweep ?? '', /\n\s*tapperUserId: readTapperUserId\(payload\),\n/)
@@ -675,10 +674,10 @@ test('wiring: every button_clicked lane builds its meta from the server tapper, 
   assert.match(stream ?? '', /\n\s*tapperUserId: answer\.tapperUserId,\n/)
   for (const call of [poll, sweep, stream]) assert.doesNotMatch(call ?? '', /USER_ID|senderUserIdOf/)
   // The builder's meta goes out as built: nothing wrapped round it, no user_id beside it.
-  assert.match(CARD_ANSWER_LANE, /\n\s*meta: buildButtonClickedMeta\(\{\n/)
+  assert.match(POLL_LANE, /\n\s*meta: buildButtonClickedMeta\(\{\n/)
   assert.match(SWEEP_TAP_LANE, /\n\s*meta: buildButtonClickedMeta\(\{\n/)
   assert.match(STREAM_TAP_LANE, /\n\s*meta: buildStreamClickMeta\(\{\n/)
-  for (const lane of [CARD_ANSWER_LANE, SWEEP_TAP_LANE, STREAM_TAP_LANE]) {
+  for (const lane of [POLL_LANE, SWEEP_TAP_LANE, STREAM_TAP_LANE]) {
     assert.doesNotMatch(lane, /\buser_id\s*:/)
   }
 })

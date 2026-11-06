@@ -8,11 +8,11 @@ Running commands is not available for people you share with yet. Your own tools 
 
 ## 0.85.6 (2026-11-06)
 
-**A sign-in method tapped as soon as its card appears is heard.** Cards this daemon posts for sign-in, reply buttons and plans are recorded open immediately, so a tap before the next read still reaches the session once. A read already in flight keeps a newer card open, and a tap already delivered by the update stream stays deduplicated. Pending ask groups retain their separate answer tracking.
+**A sign-in method tapped as soon as its card appears is heard.** The sign-in method card gets one immediate read by id. While it is open, fresh full history reads recover a fast tap even after a failed direct request or an older cached response. A single bounded sign-in record deduplicates direct, history and stream delivery. Missing cards retire on an empty direct result, cancellation or the method deadline.
 
 **A sign-in waiting for a method explains how to continue.** A second /login from its starter in the same chat offers /login subscription, /login console and /login cancel. Other callers retain the existing cancellation rules.
 
-- Tests: `test/own-card-fast-tap.e2e.test.ts`, `test/poll-core.test.ts` and `test/auth-login.test.ts`.
+- Tests: `test/own-card-fast-tap.e2e.test.ts`, `test/own-card-answer.test.ts` and `test/auth-login.test.ts`.
 
 ## 0.85.4 (2026-11-05)
 

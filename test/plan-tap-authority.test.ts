@@ -35,7 +35,6 @@ import * as permissionRelay from '../lib/permission-relay.ts'
 import * as streamApply from '../lib/stream-apply.ts'
 import * as messageText from '../lib/message-text.ts'
 import { LoginController } from '../lib/auth-login.ts'
-import { OwnCardNotes } from '../lib/poll-core.ts'
 import type { StreamUpdate } from '../lib/update-stream.ts'
 import { ownerAnnounceRefused, ownerLaneVerdict } from '../lib/lane-core.mjs'
 import { createPostedButtons, createPrivateTurnTracker, privateTapCard } from '../lib/private-turn.mjs'
@@ -329,7 +328,8 @@ function streamHarness(record: { requesterUserId?: string } = { requesterUserId:
     announcedClickIds,
     rememberAnnouncedClick: (id: number) => announcedClickIds.add(id),
     chatUnansweredButtons: new Map(),
-    ownCardNotes: new OwnCardNotes(),
+    loginMethodCard: null,
+    pendingLoginMethodCard: () => null,
     recentButtonPrompts: new Map(),
     pendingPermissions: new Map(),
     senderUserIdOf: (m: unknown) => permissionRelay.senderUserIdCandidate(m) ?? OWNER,
@@ -474,11 +474,11 @@ test('all three call sites pass a NULL AWARE clicker id and drop a refused tap',
   )
   // The poll: the answer payload, through the null aware reader.
   const poll = SERVER.slice(
-    SERVER.indexOf('const planAnswer = applyPlanAnswer({\n    chatId,\n    messageId: mm.id,'),
+    SERVER.indexOf('const planAnswer = applyPlanAnswer({\n        chatId,\n        messageId: mm.id,'),
   ).slice(0, 900)
   assert.match(poll, /clickerUserId: senderUserIdCandidate\(payload\),/)
   assert.match(poll, /via: 'poll',/)
-  assert.match(poll, /if \(planAnswer\.refused\) return/)
+  assert.match(poll, /if \(planAnswer\.refused\) continue/)
   // The stream: the id the normalisation CARRIED off the raw answer payload
   // (lib/stream-apply.ts answerPayloadOf). NOT senderUserIdCandidate(answer):
   // `answer` keeps only the button fields, so that read null on every stream

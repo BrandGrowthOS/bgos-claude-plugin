@@ -1691,11 +1691,15 @@ test('the code is offered to the sign-in flow on every rail that forwards human 
 
 test('both click intakes hand a tap to the sign-in card before the plan half (shape pin)', () => {
   const taps = [...src.matchAll(/loginController\.button\(\{/g)].map((m) => m.index ?? -1)
-  assert.equal(taps.length, 2, `poll and stream; ${SHAPE}`)
+  assert.equal(taps.length, 3, `poll, stream and the dedicated sign-in gate; ${SHAPE}`)
   const planCalls = [...src.matchAll(/const planAnswer = applyPlanAnswer\(\{/g)].map((m) => m.index ?? -1)
   assert.equal(planCalls.length, 3, 'poll, stream and the boot sweep')
   // Each intake's login check precedes its own plan half.
-  for (const tap of taps) assert.ok(planCalls.some((p) => p > tap && p - tap < 2500), SHAPE)
+  for (const tap of taps.filter((at) => at > src.indexOf('async function pollChat('))) {
+    assert.ok(planCalls.some((p) => p > tap && p - tap < 2500), SHAPE)
+  }
+  const gate = src.slice(src.indexOf('function deliverLoginMethodAnswer('), src.indexOf('function announceCardAnswer('))
+  assert.ok(gate.indexOf('settleLoginMethodCard(card)') < gate.indexOf('loginController.button('), 'the dedicated gate claims before effects')
 })
 
 test('the sign-in child is never left behind on shutdown (shape pin)', () => {
@@ -1873,4 +1877,32 @@ test('the stream rail, run: an allowed recipient\'s code goes to the child they 
   assert.equal(rail.privateDeliveries.length, 0)
   assert.deepEqual(h.child.writes, [`${CODE}\n`], 'it went to the child instead, once')
   assertNoSecrets(rail.logs, 'stream rail logs')
+})
+
+
+test('cancel and reopen with both card POSTs delayed: the older response cannot rebind the latest offer', async () => {
+  const clock = new FakeClock()
+  const pending: Array<(id: number | null) => void> = []
+  let spawned = 0
+  const controller = new LoginController({
+    ownerUserId: OWNER,
+    executable: () => '/opt/claude/bin/claude',
+    spawn: () => { spawned++; return { write: () => {}, kill: () => {} } },
+    readAuthStatus: async () => null,
+    send: async (_chat, _text, buttons) => buttons ? new Promise((resolve) => pending.push(resolve)) : null,
+    now: clock.now, setTimer: clock.setTimer, clearTimer: clock.clearTimer, log: () => {},
+  })
+  await controller.command(CHAT, '')
+  await settle()
+  await controller.command(CHAT, 'cancel')
+  await controller.command(CHAT, '')
+  await settle()
+  assert.equal(pending.length, 2)
+  pending[1]!(1004)
+  await settle()
+  pending[0]!(1002)
+  await settle()
+  controller.button({ chatId: CHAT, messageId: 1004, callbackData: 'login:claudeai', clickerUserId: OWNER })
+  assert.equal(spawned, 1, 'the current card still selects its method')
+  controller.dispose()
 })
