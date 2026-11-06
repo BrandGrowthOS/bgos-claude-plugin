@@ -592,6 +592,8 @@ import {
   takeFloorRecord,
 } from './lib/floor-state.mjs'
 import {
+  createMissionTurnStore,
+  sameMissionTurnGoals,
   MISSION_TURN_ANSWER_BUDGET_MS,
   answerMissionTurnAsk,
   entryFromMission,
@@ -13518,10 +13520,9 @@ let missionTurnAnswering = false
 // Keep a revision even after the last mission is removed. Comparing cache
 // objects alone misses a create/complete pair during an initially empty read.
 const missionTurnRevisions = new Map<string, number>()
-// Server write times order snapshots across HTTP and WebSocket delivery.
-// Keep closed missions too: removing their entry must not let an older active
-// response resurrect them later in this daemon's lifetime.
-const missionTurnSnapshotVersions = new Map<number, { updatedAt: number; open: boolean }>()
+// Canonical goal state from every source shares one server revision gate.
+// Its closed entries also survive display-cache eviction for this daemon.
+const missionTurnStore = createMissionTurnStore()
 
 function writeMissionTurnState(): void {
   if (!lockHeld) return
@@ -13536,7 +13537,16 @@ function writeMissionTurnState(): void {
 }
 
 function setMissionTurnEntry(chatId: string | null, entry: unknown, turnChatId?: string | null, missionId?: number): void {
-  if (chatId) missionTurnRevisions.set(chatId, (missionTurnRevisions.get(chatId) ?? 0) + 1)
+  if (chatId) {
+    const retained = missionTurnStore.keep(chatId, entry)
+    if (!retained.entry) return
+    const previous = missionTurnEntries(missionTurnState?.chats?.[chatId]).find((row) => row.missionId === retained.entry.missionId)
+    const open = retained.entry.status === 'active' || retained.entry.status === 'paused'
+    if (!retained.changed && (previous || !open)) return
+    entry = open ? retained.entry : null
+    missionId = retained.entry.missionId
+    missionTurnRevisions.set(chatId, (missionTurnRevisions.get(chatId) ?? 0) + 1)
+  }
   missionTurnState = mergeMissionTurnEntry(missionTurnState, chatId, entry, {
     assistantId: ASSISTANT_ID,
     now: Date.now(),
@@ -13558,21 +13568,41 @@ function noteMissionTurnSnapshot(mission: unknown, envelopeChatId?: string | nul
       : typeof envelopeChatId === 'string' && /^[1-9]\d*$/.test(envelopeChatId) ? envelopeChatId : null
     if (!chatId) return
     const previous = missionTurnEntries(missionTurnState?.chats?.[chatId]).find((entry) => entry.missionId === snapshot.id) ?? null
-    const open = snapshot.status === 'active' || snapshot.status === 'paused'
-    const updatedAt = typeof snapshot.updatedAt === 'string' ? Date.parse(snapshot.updatedAt) : NaN
-    const previousVersion = missionTurnSnapshotVersions.get(snapshot.id)
-    // Legacy snapshots work until a comparable server version has been seen.
-    // Equal versions may restore an evicted open entry, but never overwrite a
-    // cached entry or undo a completion remembered after its entry was removed.
-    if (previousVersion !== undefined) {
-      if (!Number.isFinite(updatedAt) || updatedAt < previousVersion.updatedAt) return
-      if (updatedAt === previousVersion.updatedAt && (previous || !open || !previousVersion.open)) return
-    }
-    if (Number.isFinite(updatedAt)) missionTurnSnapshotVersions.set(snapshot.id, { updatedAt, open })
-    setMissionTurnEntry(chatId, open ? entryFromMission(snapshot, previous) : null, undefined, snapshot.id)
+    setMissionTurnEntry(chatId, entryFromMission(snapshot, previous), undefined, snapshot.id)
   } catch (err) {
     log(`mission turn: snapshot not kept (${err})`)
   }
+}
+
+/**
+ * Old goal-check reports omit the mission's write revision. Re-read the check
+ * between two chat-scoped active snapshots and accept it only when the server revision
+ * stayed fixed and all reported goal state agrees. Never infer a write time
+ * from checkedAt or from this machine's clock.
+ */
+async function readMissionTurnReport(chatId: string, mission: Record<string, any>, checksPath: string): Promise<Record<string, any> | null> {
+  let report = await bgosGetCachedOn304(checksPath) as Record<string, any> | null
+  if (Number(report?.missionId) !== mission.missionId) return null
+  if (report?.updatedAt !== undefined) return entryFromReport(report, mission.title, Date.now())
+  const observation = entryFromReport(report, mission.title, Date.now())
+  // A legacy report may refresh checks for precisely the state already held.
+  // It cannot supply goals or status at the held revision. This also preserves
+  // explicit verification when several missions make /active ambiguous.
+  if (sameMissionTurnGoals(observation, mission)) return { ...observation, updatedAt: mission.updatedAt }
+  const path = buildMissionActivePath(ASSISTANT_ID, chatId)
+  if (!path.ok) return null
+  const before = (await bgosGetCachedOn304(path.path) as { mission?: MissionSnapshot })?.mission
+  report = await bgosGetCachedOn304(checksPath) as Record<string, any> | null
+  const after = (await bgosGetCachedOn304(path.path) as { mission?: MissionSnapshot })?.mission
+  if (!before || !after || before.id !== mission.missionId || after.id !== mission.missionId ||
+      String(before.chatId) !== chatId || String(after.chatId) !== chatId ||
+      typeof before.updatedAt !== 'string' || !Number.isFinite(Date.parse(before.updatedAt)) ||
+      Date.parse(before.updatedAt) !== Date.parse(after.updatedAt ?? '')) return null
+  const entry = entryFromReport(report, after.title, Date.now())
+  if (!sameMissionTurnGoals(entry, entryFromMission(before)) ||
+      !sameMissionTurnGoals(entry, entryFromMission(after))) return null
+  // The stable enclosing reads establish the revision of this legacy report.
+  return { ...entry, updatedAt: after.updatedAt }
 }
 
 /** Check known mission ids explicitly; use the implicit lookup only to discover an uncached mission. */
@@ -13589,7 +13619,7 @@ async function refreshMissionTurnChat(chatId: string): Promise<Record<string, an
     const active = (await bgosGetCachedOn304(activePath.path)) as { mission?: MissionSnapshot | null }
     if (revision() !== before) return current()
     const mission = active?.mission ?? null
-    if (!mission || (mission.status !== 'active' && mission.status !== 'paused')) return current()
+    if (!mission) return current()
     if (mission.chatId != null && String(mission.chatId) !== chatId) return current()
     noteMissionTurnSnapshot(mission, chatId)
     missions = missionTurnEntries(current())
@@ -13599,9 +13629,9 @@ async function refreshMissionTurnChat(chatId: string): Promise<Record<string, an
     const before = revision()
     const checksPath = buildMissionGoalChecksPath(ASSISTANT_ID, mission.missionId)
     if (!checksPath.ok) continue
-    let report: Record<string, unknown> | null
+    let entry: Record<string, any> | null
     try {
-      report = await bgosGetCachedOn304(checksPath.path) as Record<string, unknown> | null
+      entry = await readMissionTurnReport(chatId, mission, checksPath.path)
     } catch (err) {
       if (revision() !== before) return current()
       log(`mission turn: mission ${mission.missionId} check read failed (${err})`)
@@ -13610,14 +13640,8 @@ async function refreshMissionTurnChat(chatId: string): Promise<Record<string, an
     // A timed-out Promise.race does not cancel HTTP work. Every response is
     // fenced before it can write state or contribute to a Stop answer.
     if (revision() !== before) return current()
-    if (Number(report?.missionId) !== mission.missionId) continue
-    const entry = entryFromReport(report, mission.title, Date.now())
-    const open = entry.status === 'active' || entry.status === 'paused'
-    // Reports have no write timestamp. Keep the last comparable version as
-    // closed so an equal active snapshot cannot treat this removal as eviction.
-    const version = missionTurnSnapshotVersions.get(mission.missionId)
-    if (!open && version) version.open = false
-    setMissionTurnEntry(chatId, open ? entry : null, undefined, mission.missionId)
+    if (!entry) continue
+    setMissionTurnEntry(chatId, entry, undefined, mission.missionId)
   }
   return current()
 }

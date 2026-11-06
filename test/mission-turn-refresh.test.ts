@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import ts from 'typescript'
 import { floorKey, markFloorAttached } from '../lib/floor-state.mjs'
-import { createMissionSelfWriteLedger, parseMissionEvent } from '../lib/mission-events.ts'
+import { createMissionSelfWriteLedger, MISSION_FRAMES, parseMissionEvent } from '../lib/mission-events.ts'
 import * as turn from '../lib/mission-turn.mjs'
 import * as missions from '../lib/missions.ts'
 
@@ -23,11 +23,11 @@ const block = ts.transpileModule(source.slice(start, end), {
 
 const CHECK = { kind: 'pr_merged', repo: 'example/project', number: 42 }
 const mission = (id = 101, extra: any = {}) => ({
-  id, chatId: 12, title: `Demo ${id}`, status: 'active',
+  id, chatId: 12, title: `Demo ${id}`, status: 'active', updatedAt: '2026-11-06T09:59:58.000Z',
   miniGoals: [{ id: 1, name: `Merge ${id}`, doneWhen: 'merged', done: false, check: CHECK }],
   ...extra,
 })
-const report = (m: any) => ({ missionId: m.id, status: m.status, goals: m.miniGoals.map((g: any) => ({
+const report = (m: any) => ({ missionId: m.id, status: m.status, updatedAt: m.updatedAt, goals: m.miniGoals.map((g: any) => ({
   ...g, result: { outcome: 'pass', evidence: `merged for ${m.id}` },
 })) })
 
@@ -48,6 +48,7 @@ function daemon(read: (path: string) => Promise<any>, overrides: any = {}) {
   return new Function(...Object.keys(deps), block + `
     return { snapshot: noteMissionTurnSnapshot, selfWrite: rememberMissionSelfWrite, refresh: refreshMissionTurnChat,
       answer: missionTurnAnswerFor, answerAsks: answerMissionTurnAsks,
+      report: (r) => setMissionTurnEntry('12', entryFromReport(r, 'Demo 101', Date.now()), undefined, r.missionId),
       state: () => missionTurnState };
   `)(...Object.values(deps))
 }
@@ -86,8 +87,8 @@ const withCheck = () => unchecked({ updatedAt: NEW, miniGoals: [
   ...unchecked().miniGoals, { id: 3, name: 'Merge release', doneWhen: 'merged', done: false, check: CHECK },
 ] })
 
-function frame(d: any, snapshot: any) {
-  const event = parseMissionEvent('mission_updated', { mission: snapshot, chat_id: 12 })!
+function frame(d: any, snapshot: any, name = 'mission_updated') {
+  const event = parseMissionEvent(name, { mission: snapshot, chat_id: 12 })!
   assert.ok(event, 'the server frame parses')
   d.snapshot(event.mission, event.chatId)
 }
@@ -197,11 +198,11 @@ test('self-write ordering: timestamps compare instants across time zones', () =>
   assert.equal(turn.missionTurnNeedsAsk(d.state(), '12'), true)
 })
 
-test('self-write ordering: unversioned legacy snapshots work until a server version is known', () => {
+test('self-write ordering: unversioned snapshots cannot create or replace goal state', () => {
   const d = daemon(async () => { throw new Error('snapshots never fetch') })
   const legacy = unchecked({ updatedAt: undefined })
   d.selfWrite(legacy)
-  assert.match(turn.missionTurnContext(d.state().chats['12'])!, /Date/)
+  assert.equal(d.state(), null, 'no goal state is kept without a server revision')
   frame(d, withCheck())
   const latest = structuredClone(d.state())
   for (const updatedAt of [undefined, '', 'invalid', NEW]) {
@@ -272,7 +273,7 @@ test('self-write ordering: an unchanged open discovery can restore a mission aft
 })
 
 test('self-write ordering: a goal-check completion cannot be mistaken for chat cache eviction', async () => {
-  const d = daemon(async () => report({ ...withCheck(), status: 'completed' }))
+  const d = daemon(async () => report({ ...withCheck(), status: 'completed', updatedAt: T2 }))
   frame(d, withCheck())
   await d.refresh('12')
   assert.equal(turn.missionTurnContext(d.state().chats['12']), null)
@@ -290,7 +291,7 @@ test('closing one of two missions preserves the other in prompt context and Stop
   assert.match(context, /Mission #102/)
   assert.match(context, /mission_id: 101/)
   assert.match(context, /mission_id: 102/)
-  d.snapshot(mission(101, { status: 'completed' }))
+  d.snapshot(mission(101, { status: 'completed', updatedAt: NEW }))
   assert.match(turn.missionTurnContext(d.state().chats['12'])!, /Mission #102/)
   assert.equal(turn.missionTurnNeedsAsk(d.state(), '12'), true)
   d.snapshot(mission(103, { status: 'abandoned' }))
@@ -301,7 +302,7 @@ test('a completion removes only its mission when another open mission was most r
   const d = daemon(async () => { throw new Error('snapshots never fetch') })
   d.snapshot(mission(101))
   d.snapshot(mission(102))
-  d.snapshot(mission(101, { status: 'completed' }))
+  d.snapshot(mission(101, { status: 'completed', updatedAt: NEW }))
   assert.match(turn.missionTurnContext(d.state().chats['12'])!, /Mission #102/)
   assert.equal(turn.missionTurnNeedsAsk(d.state(), '12'), true)
 })
@@ -370,7 +371,7 @@ test('adding a checked goal after a fresh empty report performs a new verificati
     return report(current)
   })
   await d.refresh('12')
-  current = mission()
+  current = mission(101, { updatedAt: NEW })
   d.snapshot(current)
   assert.equal(turn.missionTurnNeedsAsk(d.state(), '12'), true)
   const decision = turn.missionTurnStopDecision({ answer: await d.answer({ chatId: '12' }) })
@@ -381,7 +382,7 @@ test('adding a checked goal after a fresh empty report performs a new verificati
 
 test('a closed explicit report removes only that mission and a wrong report id is ignored', async () => {
   const d = daemon(async (path) => path.endsWith('/101/goal-checks')
-    ? report(mission(101, { status: 'completed' }))
+    ? report(mission(101, { status: 'completed', updatedAt: NEW }))
     : report(mission(999)))
   d.snapshot(mission(101))
   d.snapshot(mission(102))
@@ -404,10 +405,10 @@ for (const change of ['tick', 'complete', 'replace', 'change check'] as const) {
     d.snapshot(mission())
     const answering = d.answer({ chatId: '12' })
     await entered.promise
-    if (change === 'tick') d.snapshot(mission(101, { miniGoals: [{ ...mission().miniGoals[0], done: true }] }))
-    if (change === 'complete' || change === 'replace') d.snapshot(mission(101, { status: 'completed' }))
+    if (change === 'tick') d.snapshot(mission(101, { updatedAt: NEW, miniGoals: [{ ...mission().miniGoals[0], done: true }] }))
+    if (change === 'complete' || change === 'replace') d.snapshot(mission(101, { status: 'completed', updatedAt: NEW }))
     if (change === 'replace') d.snapshot(mission(102))
-    if (change === 'change check') d.snapshot(mission(101, { miniGoals: [{ ...mission().miniGoals[0], check: { ...CHECK, number: 43 } }] }))
+    if (change === 'change check') d.snapshot(mission(101, { updatedAt: NEW, miniGoals: [{ ...mission().miniGoals[0], check: { ...CHECK, number: 43 } }] }))
     const latest = structuredClone(d.state())
     pending.resolve(report(mission()))
     const answer = await answering
@@ -426,7 +427,7 @@ test('a cold discovery cannot resurrect a mission created and completed while th
   })
   const answering = d.answer({ chatId: '12' })
   d.snapshot(mission())
-  d.snapshot(mission(101, { status: 'completed' }))
+  d.snapshot(mission(101, { status: 'completed', updatedAt: NEW }))
   const latest = structuredClone(d.state())
   active.resolve({ mission: mission() })
   const answer = await answering
@@ -459,7 +460,7 @@ test('HTTP work completing after the daemon answer budget cannot resurrect a com
     await entered.promise
     await answering
     assert.deepEqual(diskAnswer.passing, [])
-    d.snapshot(mission(101, { status: 'completed' }))
+    d.snapshot(mission(101, { status: 'completed', updatedAt: NEW }))
     const latest = structuredClone(d.state())
     pending.resolve(report(mission()))
     await new Promise((done) => setImmediate(done))
@@ -467,4 +468,197 @@ test('HTTP work completing after the daemon answer budget cannot resurrect a com
   } finally {
     clearTimeout(keepAlive)
   }
+})
+
+// One table crosses every goal-state ingress with every other ingress. The
+// tick frame is the delta notification path; its wire payload is a full mission.
+const revisionSources = ['snapshot', 'HTTP self-write', 'HTTP discovery', 'goal-check report', ...MISSION_FRAMES] as const
+const T2 = '2026-11-06T10:00:02.000Z'
+
+test('all goal-state sources obey one server revision rule', async (t) => {
+  for (const newest of revisionSources) for (const stale of revisionSources) for (const closed of [false, true]) {
+    await t.test(`${newest} then older ${stale}: ${closed ? 'completion' : 'checked goal'}`, async () => {
+      let lookup: any
+      let now = Date.now()
+      const d = daemon(async (path) => path.includes('/active?') ? { mission: lookup } : report(lookup), {
+        Date: { now: () => now, parse: Date.parse },
+      })
+      const deliver = async (source: typeof revisionSources[number], m: any) => {
+        if (source === 'snapshot') d.snapshot(m)
+        if (MISSION_FRAMES.includes(source as any)) frame(d, m, source)
+        if (source === 'HTTP self-write') await waitingTool(d, async () => ({ mission: m }))
+        if (source === 'goal-check report') d.report(report(m))
+        if (source === 'HTTP discovery') {
+          // Discovery only runs for an uncached chat. Evict its display entry,
+          // leaving the per-mission ordering memory intact.
+          for (let i = 0; i < turn.MISSION_TURN_MAX_CHATS; i++) {
+            now++
+            d.snapshot(mission(200 + i, { chatId: 200 + i, updatedAt: T2 }))
+          }
+          lookup = m
+          await d.refresh('12')
+        }
+      }
+      frame(d, unchecked({ updatedAt: '2026-11-06T09:59:59.000Z' }))
+      const latest = { ...withCheck(), updatedAt: T2, status: closed ? 'completed' : 'active' }
+      await deliver(newest, latest)
+      await deliver(stale, unchecked())
+      const context = turn.missionTurnContext(d.state()?.chats?.['12'])
+      assert.equal(turn.missionTurnNeedsAsk(d.state(), '12'), !closed)
+      if (closed) assert.equal(context, null, 'an intermediate active revision cannot undo completion')
+      else {
+        assert.match(context!, /3\. Merge release/, 'the newest checked goal survives every older source')
+        const held = turn.missionTurnEntries(d.state().chats['12'])[0]
+        assert.equal(held.updatedAt, T2, 'retained goals carry the server revision they came from')
+      }
+    })
+  }
+})
+
+for (const staleSource of ['HTTP', 'WebSocket'] as const) {
+  for (const closed of [false, true]) test(`T0 snapshot, T2 report, T1 ${staleSource} preserves ${closed ? 'closure' : 'Stop verification'}`, async (t) => {
+    const latest = { ...withCheck(), updatedAt: T2, status: closed ? 'completed' : 'active' }
+    const d = daemon(async () => report(latest))
+    frame(d, unchecked({ updatedAt: '2026-11-06T09:59:59.000Z' }))
+    const pending = deferred<any>()
+    const entered = deferred<void>()
+    const writing = staleSource === 'HTTP' ? waitingTool(d, async () => { entered.resolve(); return pending.promise }) : null
+    if (writing) await entered.promise
+    await d.refresh('12')
+    const installed = structuredClone(d.state())
+    if (writing) { pending.resolve({ mission: unchecked() }); await writing }
+    else frame(d, unchecked())
+    assert.deepEqual(d.state(), installed, 'the report advances the same revision gate as snapshots')
+    assert.equal(turn.missionTurnNeedsAsk(d.state(), '12'), !closed)
+    if (!closed) {
+      assert.match(turn.missionTurnContext(d.state().chats['12'])!, /3\. Merge release/)
+      assert.equal(turn.missionTurnStopDecision({ answer: await d.answer({ chatId: '12' }) }).block, true)
+      await assertReportStop(d, t)
+    }
+  })
+}
+
+for (const outcome of ['stable', 'write during check', 'different goals', 'wrong mission', 'wrong chat', 'missing revision', 'ambiguous'] as const) {
+  test(`legacy report reconciliation: ${outcome}`, async () => {
+    let reads = 0
+    let checks = 0
+    const latest = { ...withCheck(), updatedAt: T2 }
+    const d = daemon(async (path) => {
+      if (path.includes('/active?')) {
+        reads++
+        if (outcome === 'ambiguous') throw new Error('409: name a mission')
+        return { mission: { ...latest,
+          ...(outcome === 'write during check' && reads === 2 ? { updatedAt: '2026-11-06T10:00:03.000Z' } : {}),
+          ...(outcome === 'wrong mission' ? { id: 102 } : {}),
+          ...(outcome === 'wrong chat' ? { chatId: 13 } : {}),
+          ...(outcome === 'missing revision' ? { updatedAt: undefined } : {}),
+        } }
+      }
+      checks++
+      const raw = report(outcome === 'different goals' ? { ...latest, miniGoals: latest.miniGoals.map((goal: any) => ({ ...goal, name: 'Different goal' })) } : latest)
+      delete raw.updatedAt
+      return raw
+    })
+    frame(d, unchecked())
+    await d.refresh('12')
+    if (outcome === 'stable') {
+      assert.equal(reads, 2, 'stable snapshots bracket the repeated check')
+      assert.equal(checks, 2)
+      frame(d, unchecked({ updatedAt: NEW }))
+      assert.match(turn.missionTurnContext(d.state().chats['12'])!, /3\. Merge release/)
+      assert.equal(turn.missionTurnEntries(d.state().chats['12'])[0].updatedAt, T2)
+      assert.equal(turn.missionTurnStopDecision({ answer: await d.answer({ chatId: '12' }) }).block, true)
+    } else {
+      assert.equal(turn.missionTurnNeedsAsk(d.state(), '12'), false, 'unproven reports cannot change held goal state')
+      assert.equal(turn.missionTurnEntries(d.state().chats['12'])[0].updatedAt, OLD)
+    }
+  })
+}
+
+test('equal report revisions refresh check evidence only for identical held goals', async () => {
+  let raw = report({ ...withCheck(), updatedAt: T2 })
+  let now = Date.now()
+  const d = daemon(async () => raw, { Date: { now: () => now, parse: Date.parse } })
+  frame(d, { ...withCheck(), updatedAt: T2 })
+  const before = structuredClone(turn.missionTurnEntries(d.state().chats['12'])[0].goals)
+  await d.refresh('12')
+  assert.equal(turn.missionTurnStopDecision({ answer: await d.answer({ chatId: '12' }) }).block, true)
+  const first = structuredClone(d.state())
+  now += turn.MISSION_TURN_REUSE_MS
+  raw = report(unchecked({ updatedAt: T2 }))
+  await d.refresh('12')
+  assert.deepEqual(d.state(), first, 'equal revision with different goals cannot replace any state')
+  assert.deepEqual(turn.missionTurnEntries(d.state().chats['12'])[0].goals, before)
+  raw = report({ ...withCheck(), updatedAt: T2 })
+  for (const goal of raw.goals) goal.result = { outcome: 'fail', evidence: 'no longer passes' }
+  await d.refresh('12')
+  assert.equal(turn.missionTurnStopDecision({ answer: await d.answer({ chatId: '12' }) }).block, false)
+  assert.deepEqual(turn.missionTurnEntries(d.state().chats['12'])[0].goals, before)
+})
+
+test('a wrong-chat write cannot steal a held mission even with a newer timestamp', () => {
+  const d = daemon(async () => { throw new Error('no reads') })
+  frame(d, withCheck())
+  const held = structuredClone(d.state())
+  d.snapshot(unchecked({ updatedAt: T2, chatId: 13 }))
+  assert.deepEqual(d.state(), held)
+})
+
+
+async function assertReportStop(d: any, t: any) {
+  const root = mkdtempSync(join(tmpdir(), 'mission-report-stop-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const cwd = join(root, 'agent')
+  mkdirSync(cwd)
+  markFloorAttached({ root, folders: [cwd] })
+  const key = floorKey(cwd)
+  turn.writeMissionTurnJson(turn.missionTurnStatePath(root, key), d.state())
+  turn.writeMissionTurnJson(turn.missionTurnTurnPath(root, key), turn.missionTurnRecord({ sessionId: 'demo', chatId: '12', now: Date.now() }))
+  const child = spawn(process.execPath, ['bin/hoai-mission-turn-hook.mjs'], {
+    env: { ...process.env, BGOS_PLUGIN_STATE_DIR: root, CLAUDE_PROJECT_DIR: cwd },
+  })
+  t.after(() => { if (child.exitCode === null) child.kill() })
+  let stdout = ''
+  child.stdout.on('data', (chunk) => { stdout += chunk })
+  const closed = new Promise((resolve, reject) => { child.once('close', resolve); child.once('error', reject) })
+  child.stdin.end(JSON.stringify({ hook_event_name: 'Stop', session_id: 'demo', cwd }))
+  const deadline = Date.now() + 3000
+  let ask: any
+  while (Date.now() < deadline && !(ask = turn.readMissionTurnJson(turn.missionTurnAskPath(root, key)))) {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  assert.ok(ask?.askId, 'the real Stop subprocess must ask after report then stale snapshot')
+  assert.equal(ask.chatId, '12')
+  turn.writeMissionTurnJson(turn.missionTurnAnswerPath(root, key), { ...await d.answer(ask), askId: ask.askId, at: Date.now() })
+  assert.equal(await closed, 0)
+  const decision = JSON.parse(stdout)
+  assert.equal(decision.decision, 'block')
+  assert.match(decision.reason, /3\. Merge release/)
+}
+
+test('matching legacy reports verify every cached mission without an ambiguous implicit lookup', async () => {
+  const reads: string[] = []
+  const d = daemon(async (path) => {
+    reads.push(path)
+    if (path.includes('/active?')) throw new Error('409: multiple missions')
+    const raw = report(mission(path.endsWith('/101/goal-checks') ? 101 : 102))
+    delete raw.updatedAt
+    return raw
+  })
+  d.snapshot(mission(101))
+  d.snapshot(mission(102))
+  const goals = turn.missionTurnEntries(d.state().chats['12']).map((entry) => structuredClone(entry.goals))
+  const answer = await d.answer({ chatId: '12' })
+  assert.deepEqual(answer.missions.map((entry: any) => ({ missionId: entry.missionId, ids: entry.passing.map((goal: any) => goal.id) })), [
+    { missionId: 101, ids: [1] }, { missionId: 102, ids: [1] },
+  ])
+  assert.equal(turn.missionTurnStopDecision({ answer }).block, true)
+  assert.deepEqual(reads.sort(), [
+    'integrations/assistants/7/missions/101/goal-checks',
+    'integrations/assistants/7/missions/102/goal-checks',
+  ])
+  assert.deepEqual(turn.missionTurnEntries(d.state().chats['12']).map((entry) => entry.goals), goals)
+  assert.deepEqual(turn.missionTurnEntries(d.state().chats['12']).map((entry) => entry.updatedAt), [
+    '2026-11-06T09:59:58.000Z', '2026-11-06T09:59:58.000Z',
+  ])
 })

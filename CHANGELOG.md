@@ -2,14 +2,42 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
-## Unreleased
-
-Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
+## Unreleased mission changes
 
 - Mission goals carry server checks through create, set and add calls. Summaries show checks, server ticks and who a goal waits on. Waiting accepts both the existing flat arguments and a nested waiting object, or null to clear it.
 - A synchronous mission hook shows this chat's open goals at turn start and asks its own daemon about passing, unticked goals at turn end. It blocks at most once per turn and allows the turn to end on errors or missing answers. Prompt chat isolation, fresh check reuse, expired requests and request replacement races are covered.
 - Every host declares mission_server_checks alongside the existing mission capabilities.
-- Mission snapshots use server write timestamps to reject stale tool responses and frames. Newer checked goals stay in Stop verification, and completed missions cannot be restored by older active responses.
+- Mission goal state from snapshots, check reports, frames and HTTP reads shares one server revision gate. Checked goals and completion survive older responses and cache eviction. Reports without a revision are reconciled against stable server snapshots before their goals are kept.
+
+## Unreleased
+
+The browser shim pin now records BGOS main commit `aed69c93bd191ce8de678b4f5cac4761f7130680` and its source content hash `2fd50404ff330d65f5f38017ffb7dd0a5df2f1c560b694c1f329b1bbe88f71ef`. The shipped bytes already match that source, including MCP cancellation. Plugin CI verifies the recorded content hash offline on every pull request, including forks, without credentials. Trusted main-branch pushes and scheduled runs also fetch the blob at the pinned commit with a read-only BGOS credential and fail on fetch errors or differing source bytes. If that credential is absent, CI reports the skipped live comparison after the offline check passes. Cancellation tests cover the local and relay routes, queued calls, typed request IDs, in-flight relay collection abort, buffered successes consumed after cancellation, destination changes, delivery refusal and ID reuse during delivery. Targeted mutations prove the collection signal and reply suppression coverage. The queued-cancellation test holds delivery until after queue progress and awaits the HTTP receipt event, so it does not depend on platform scheduling.
+
+Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
+
+## 0.86.9 (2026-11-06)
+
+**The bundled browser shim matches HOAI again, including request cancellation.** The plugin's copy of the Agent Browser shim had drifted behind its HOAI source and lacked MCP request cancellation. It is brought to parity, its pin is refreshed, and CI now checks it against a content hash recorded with the pin, so drift fails the build without needing access to the private source.
+
+## 0.86.8 (2026-11-06)
+
+**A test no longer fails just because CI is busy.** The large email attachment check measures against a baseline timed in the same run instead of a fixed number of milliseconds, so it still catches a frozen main thread but no longer fails on a loaded shared runner.
+
+## 0.86.7 (2026-11-06)
+
+**A reply to another agent is never silently lost.** A reply into a side conversation that has closed, or a second reply before the other agent answered, now either reaches that agent or fails with a plain error that names send_to_peer. It never reports Sent for a message that was not delivered.
+
+## 0.86.6 (2026-11-06)
+
+**Fixes reach your agents in hours, not a day.** The plugin now checks for a new release about every 4 hours with jitter instead of once a day plus up to 6 hours. Updates still apply only when the agent is idle, with the same staging and rollback safety.
+
+## 0.86.5 (2026-11-06)
+
+**On Windows the browser profile permission step no longer stalls.** Started from the daemon, PowerShell lacked environment variables it needs and could hang until the 30 second timeout, so every browser profile was refused as unsafe. The step now runs with the minimal environment PowerShell needs, without a profile, asynchronously with a timeout, and says plainly what to fix if it still fails.
+
+## 0.86.4 (2026-11-06)
+
+**On a Mac, a renewed Claude login clears the held "login expired" failure by itself.** The login lives in the Keychain, not in a credentials file, so the plugin never saw it change and the failure only cleared when the next answer succeeded. A cheap, rate limited, non interactive status check of the Claude CLI now notices the renewed login and clears the hold. It never reads or prints the secret, and it stays off on CLI versions that do not support the check.
 
 ## 0.86.3 (2026-11-06)
 
