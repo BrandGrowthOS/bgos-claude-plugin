@@ -60,6 +60,8 @@ interface Backend {
   /** HOAI's word on the next reply only (`reports` mode): it saves it and passes nothing on. */
   nextDelivery?: unknown
   reportConversationId?: boolean
+  sendStatus?: number
+  sendErrorCode?: string
   /** HOAI revives a closed conversation on a participant's write, and forwards (Kc's rule, BGOS #1265). */
   revivesOnWrite?: boolean
   count(route: string): number
@@ -97,14 +99,19 @@ async function startBackend(mode: Mode = 'reports'): Promise<Backend> {
       const id = ++nextMessageId
       if (route === 'POST /api/v1/send-message') {
         backend.onSendMessage?.()
+        if (backend.sendStatus) return send(backend.sendStatus, { message: backend.sendErrorCode ?? 'fixture send failed', code: backend.sendErrorCode })
         const chatId = String(body.chatId)
         const thread = backend.threads.get(chatId)
         if (!thread) return send(201, { message: { id, chatId: Number(chatId) } })
+        const message = { id, chatId: Number(chatId), ...(backend.reportConversationId ? { peerConversationId: thread.conv } : {}) }
         const overridesDelivery = 'nextDelivery' in backend
         const delivery = backend.nextDelivery
         delete backend.nextDelivery
         if (overridesDelivery && backend.mode === 'reports') {
-          return send(201, { message: { id, chatId: Number(chatId) }, peerDelivery: delivery })
+          if ((delivery as { state?: unknown } | null)?.state === 'forwarded') {
+            backend.peerGot.push({ chatId, text: String(body.text) })
+          }
+          return send(201, { message, peerDelivery: delivery })
         }
         if (!thread.open && backend.revivesOnWrite) thread.open = true
         if (thread.open) {
@@ -114,13 +121,13 @@ async function startBackend(mode: Mode = 'reports'): Promise<Backend> {
             ...(typeof body.replyToId === 'number' ? { replyToId: body.replyToId } : {}),
           })
           return send(201, {
-            message: { id, chatId: Number(chatId) },
+            message,
             ...(backend.mode === 'reports' ? { peerDelivery: { state: 'forwarded' } } : {}),
           })
         }
         // A closed conversation: saved, answered 201, and nothing forwarded.
         return send(201, {
-          message: { id, chatId: Number(chatId), ...(backend.reportConversationId ? { peerConversationId: thread.conv } : {}) },
+          message,
           ...(backend.mode === 'reports'
             ? { peerDelivery: { state: 'not_forwarded', reason: 'conversation_not_open' } }
             : {}),
@@ -205,10 +212,20 @@ interface Harness {
   sendToPeer(text: string, turnState?: string): Promise<ToolResult>
   logs: string[]
   closeNotices: number
-  discoverSideThread(chatId: string): Promise<void>
+  discoverSideThread(chatId: string, kind?: 'a2a' | 'main' | 'group' | null): Promise<void>
 }
 
-function harness(backend: Backend): Harness {
+interface HarnessOptions {
+  mainChats?: string[]
+  groupChats?: string[]
+  peerChats?: string[]
+  sideChats?: string[]
+  closedChats?: string[]
+  sessionHandle?: string
+  fileError?: boolean
+}
+
+function harness(backend: Backend, opts: HarnessOptions = {}): Harness {
   const source = [
     lift('class HttpError extends Error {'),
     lift('function httpStatusOf('),
@@ -220,6 +237,8 @@ function harness(backend: Backend): Harness {
     lift('function recordInbound('),
     lift('function clearInbound('),
     lift('async function discoverChats('),
+    lift('function resolveAuthorizedChat('),
+    lift('function noteMonitoredChat('),
     ...refusalLedgers(),
     liftCloseHandler(),
     liftCase('reply', 'propose_plan', 'replyTool'),
@@ -232,8 +251,10 @@ function harness(backend: Backend): Harness {
   const logs: string[] = []
   let closeNotices = 0
   const pendingInbounds = new Map<string, unknown>()
-  const closedPeerChats = new Set<string>()
-  const peerConvByChat = new Map<string, string>()
+  const closedPeerChats = new Set<string>(opts.closedChats)
+  const peerConvByChat = new Map((opts.peerChats ?? []).map((id) => [id, String(CONV)]))
+  const monitoredChatSet = new Set([MAIN, MEETING_CHAT, SIDE_B])
+  let inboxKind: 'a2a' | 'main' | 'group' | null = 'a2a'
 
   const recorder: unknown = new Proxy(function () {}, {
     get: (_t, key) => (key === Symbol.toPrimitive ? () => '' : recorder),
@@ -260,13 +281,18 @@ function harness(backend: Backend): Harness {
     closedPeerChats,
     peerConvChats: new Map<string, string>(),
     peerConvByChat,
-    peerSideThreadChats: new Set<string>(),
+    peerSideThreadChats: new Set<string>(opts.sideChats),
+    mainChatIds: opts.mainChats ?? [MAIN],
+    groupChatIds: new Set<string>(opts.groupChats),
+    chatFirstListedAtMs: new Map<string, number>(),
+    monitoredChatSet,
+    knownSessionHandles: new Set<string>(opts.sessionHandle ? [opts.sessionHandle] : []),
+    sessionHandleByChat: new Map<string, string>(opts.sessionHandle ? [[SIDE_B, opts.sessionHandle]] : []),
     chatOwnership: { noteRow: () => undefined },
-    bgosPeerGet: async () => ({ chats: [...backend.threads.keys()].map((id) => ({ id: Number(id), assistantId: SELF, kind: 'a2a' })) }),
+    bgosPeerGet: async () => ({ chats: [...backend.threads.keys()].map((id) => ({ id: Number(id), assistantId: SELF, ...(inboxKind === null ? {} : { kind: inboxKind }) })) }),
     CLOSED_PEER_CHATS_MAX: 500,
     a2aRouteRefusedChats: { has: () => false },
     updateDrainMode: false,
-    noteMonitoredChat: () => undefined,
     inboundOwesReply,
     trackMessageOperation: (op: () => Promise<unknown>) => op(),
     mcp: {
@@ -275,17 +301,21 @@ function harness(backend: Backend): Harness {
       },
     },
     // The reply tool.
-    resolveAuthorizedChat: (id: string) => ({ ok: true, chatId: id, sessionHandle: undefined }),
     meetingIdByChatId: new Map<string, number>([[MEETING_CHAT, MEETING_ID]]),
     protectBackslashesForMarkdown: (text: string) => text,
     // A file the agent attaches, as the daemon resolves one.
-    resolveFile: async (spec: string) => ({
-      fileName: String(spec).split(/[\\/]/).pop(),
-      fileMimeType: 'application/pdf',
-      fileUrl: 'data:application/pdf;base64,JVBERi0=',
-    }),
+    resolveFile: async (spec: string) => {
+      if (opts.fileError) throw new Error('fixture upload failed')
+      return {
+        fileName: String(spec).split(/[\\/]/).pop(),
+        fileMimeType: 'application/pdf',
+        fileUrl: 'data:application/pdf;base64,JVBERi0=',
+      }
+    },
     getFileCategory: () => 'document',
     recentButtonPrompts: new Map<string, unknown>(),
+    replyCardNudges: { forReply: () => null },
+    decisionCount: () => 0,
     // send_to_peer: the daemon's peer client, against the same stub.
     bgosPeerPost: async (path: string, body: Record<string, unknown>) => {
       const response = await fetch(`${backend.url}/${path}`, {
@@ -321,7 +351,8 @@ function harness(backend: Backend): Harness {
   }
 
   return {
-    discoverSideThread: async (chatId) => {
+    discoverSideThread: async (chatId, kind = 'a2a') => {
+      inboxKind = kind
       backend.threads.set(chatId, { conv: CONV, open: false })
       await lifted.discoverChats()
     },
@@ -451,10 +482,10 @@ test('missing delivery report: a second reply before the peer answers also fails
 test('a side thread opened by send_to_peer needs confirmation before any peer answered', async () => {
   const backend = await startBackend('saves-silently')
   const h = harness(backend)
-  backend.nextSideThread = SIDE
+  backend.nextSideThread = SIDE_B
   await h.sendToPeer('Initial question.')
-  h.timeoutClose(SIDE)
-  const result = await h.reply(SIDE, 'Follow up before an answer.')
+  h.timeoutClose(SIDE_B)
+  const result = await h.reply(SIDE_B, 'Follow up before an answer.')
   assert.equal(result.isError, true, result.content[0]?.text)
   assert.match(result.content[0]!.text, /Delivery unconfirmed:.*send_to_peer/)
   assert.deepEqual(backend.peerGot.map((m) => m.text), ['Initial question.'])
@@ -470,11 +501,35 @@ test('a discovered side thread needs confirmation after restart without a conver
   assert.deepEqual(backend.peerGot, [])
 })
 
+for (const kind of [null, 'a2a'] as const) {
+  test(`restart discovery with ${kind ?? 'omitted'} kind: both consecutive replies need confirmation`, async () => {
+    const backend = await startBackend('saves-silently')
+    const h = harness(backend)
+    const unauthorized = await h.reply(SIDE, 'Not discovered yet.')
+    assert.equal(unauthorized.isError, true)
+    assert.match(unauthorized.content[0]!.text, /not one this assistant is a participant of/)
+    assert.equal(backend.posts.length, 0)
+    await h.discoverSideThread(SIDE, kind)
+    const results = []
+    for (const text of ['First reply after restart.', 'Second reply before an answer.']) {
+      results.push(await h.reply(SIDE, text))
+    }
+    assert.equal(sendMessagePosts(backend, SIDE), 2, 'discovery authorized both writes')
+    assert.deepEqual(backend.peerGot, [], 'neither saved reply reached the peer')
+    assert.deepEqual(results.map((r) => r.isError), [true, true], JSON.stringify(results))
+    for (const result of results) {
+      assert.equal(result.isError, true, result.content[0]?.text)
+      assert.doesNotMatch(result.content[0]!.text, /^Sent\b/)
+      assert.match(result.content[0]!.text, /^Delivery unconfirmed:.*send_to_peer/)
+    }
+  })
+}
+
 test('a returned peer conversation id needs confirmation even without local thread knowledge', async () => {
   const backend = await startBackend('saves-silently')
-  backend.threads.set(SIDE, { conv: CONV, open: false })
+  backend.threads.set(SIDE_B, { conv: CONV, open: false })
   backend.reportConversationId = true
-  const result = await harness(backend).reply(SIDE, 'Follow up with only a persisted conversation id.')
+  const result = await harness(backend).reply(SIDE_B, 'Follow up with only a persisted conversation id.')
   assert.equal(result.isError, true, result.content[0]?.text)
   assert.match(result.content[0]!.text, /Delivery unconfirmed:.*send_to_peer/)
   assert.deepEqual(backend.peerGot, [])
@@ -513,6 +568,109 @@ test('an unconfirmed handoff clears only the inbound it answered', async () => {
     assert.equal(h.owed(SIDE), newerInbound ? 503 : undefined)
   }
 })
+
+// Each way the reply handler can recognize (or fail to recognize) a side thread
+// runs through every delivery verdict. The peer recorder is separate from the tool.
+const SIDE_IDENTITIES: Array<{ name: string; options?: HarnessOptions; discovered?: 'a2a' | null; returnedId?: boolean; handle?: string }> = [
+  { name: 'authorized without kind or peer memory' },
+  { name: 'restart inbox omits kind', discovered: null },
+  { name: 'restart inbox identifies a2a', discovered: 'a2a' },
+  { name: 'conversation mapping only', options: { peerChats: [SIDE_B] } },
+  { name: 'closed marker only', options: { closedChats: [SIDE_B] } },
+  { name: 'side classification only', options: { sideChats: [SIDE_B] } },
+  { name: 'returned conversation id only', returnedId: true },
+  { name: 'opaque authorized handle without kind', handle: 'fixture_session' },
+  { name: 'peer mapping overrides main classification', options: { peerChats: [SIDE_B], mainChats: [SIDE_B] } },
+  { name: 'side classification overrides group classification', options: { sideChats: [SIDE_B], groupChats: [SIDE_B] } },
+]
+const DELIVERY_VERDICTS = [
+  { name: 'missing', report: undefined, prefix: /^Delivery unconfirmed:/ },
+  { name: 'null', report: null, prefix: /^Delivery unconfirmed:/ },
+  { name: 'empty', report: {}, prefix: /^Delivery unconfirmed:/ },
+  { name: 'unknown', report: { state: 'queued' }, prefix: /^Delivery unconfirmed:/ },
+  { name: 'malformed', report: 'forwarded', prefix: /^Delivery unconfirmed:/ },
+  { name: 'ended', report: { state: 'not_forwarded', reason: 'conversation_not_open' }, prefix: /^Not delivered:.*has ended/ },
+  { name: 'not passed on', report: { state: 'not_forwarded', reason: 'peer_offline' }, prefix: /^Not delivered:.*not connected/ },
+  { name: 'forwarded', report: { state: 'forwarded' }, prefix: /^Sent \(message_id: \d+\)$/ },
+]
+for (const identity of SIDE_IDENTITIES) {
+  for (const verdict of DELIVERY_VERDICTS) {
+    test(`side reply path table: ${identity.name} / ${verdict.name}`, async () => {
+      const backend = await startBackend('reports')
+      const h = harness(backend, { ...identity.options, sessionHandle: identity.handle })
+      const discovered = 'discovered' in identity
+      const chatId = discovered ? SIDE : SIDE_B
+      if (discovered) await h.discoverSideThread(chatId, identity.discovered)
+      else backend.threads.set(chatId, { conv: CONV, open: false })
+      backend.reportConversationId = identity.returnedId
+      const texts = ['First table reply.', 'Consecutive table reply before an answer.']
+      for (const text of texts) {
+        backend.nextDelivery = verdict.report
+        const result = await h.reply(identity.handle ?? chatId, text)
+        assert.match(result.content[0]!.text, verdict.prefix)
+        assert.equal(result.isError, verdict.name === 'forwarded' ? undefined : true)
+      }
+      assert.equal(sendMessagePosts(backend, chatId), 2)
+      assert.deepEqual(backend.peerGot.map((m) => m.text), verdict.name === 'forwarded' ? texts : [])
+      if (identity.handle) {
+        assert.ok(backend.posts.every((p) => p.body.sessionHandle === identity.handle))
+      }
+    })
+  }
+}
+
+// Non-peer classification is a positive exception, and peer evidence still wins.
+for (const kind of ['main', 'group'] as const) {
+  for (const report of [undefined, null, {}, { state: 'queued' }, { state: 'not_forwarded', reason: 'no_conversation' }]) {
+    test(`non-peer reply path table: known ${kind} / ${JSON.stringify(report)}`, async () => {
+      const backend = await startBackend()
+      const h = harness(backend)
+      await h.discoverSideThread(SIDE, kind)
+      if (report !== undefined) backend.nextDelivery = report
+      else backend.mode = 'saves-silently'
+      const result = await h.reply(SIDE, 'Reply in a positively classified non-peer chat.')
+      const peerEvidence = report != null
+      assert.equal(result.isError, peerEvidence ? true : undefined)
+      assert.match(result.content[0]!.text, peerEvidence ? /^(Delivery unconfirmed|Not delivered):/ : /^Sent \(message_id:/)
+      assert.equal(sendMessagePosts(backend, SIDE), 1)
+    })
+  }
+}
+
+const EARLY_REPLY_PATHS = [
+  { name: 'missing chat id', chatId: '', text: 'Hello.', extra: {}, error: /chat_id is required/ },
+  { name: 'empty content', chatId: SIDE_B, text: '', extra: {}, error: /at least one of text, files, or buttons/ },
+  { name: 'unauthorized chat', chatId: '33999', text: 'Hello.', extra: {}, error: /not one this assistant is a participant of/ },
+  { name: 'too many buttons', chatId: SIDE_B, text: 'Choose.', extra: { buttons: Array.from({ length: 7 }, () => ({ label: 'Yes', value: 'yes' })) }, error: /6 or fewer/ },
+  { name: 'invalid button', chatId: SIDE_B, text: 'Choose.', extra: { buttons: [{ label: 'Yes' }] }, error: /both `label` and `value`/ },
+  { name: 'attachment resolution error', chatId: SIDE_B, text: 'Attached.', extra: { files: ['fixture.pdf'] }, fileError: true, error: /^Failed to send: fixture upload failed/ },
+]
+for (const row of EARLY_REPLY_PATHS) {
+  test(`side reply path table: ${row.name} exits before POST`, async () => {
+    const backend = await startBackend()
+    const h = harness(backend, { peerChats: [SIDE_B], fileError: row.fileError })
+    const result = await h.reply(row.chatId, row.text, row.extra)
+    assert.match(result.content[0]!.text, row.error)
+    assert.doesNotMatch(result.content[0]!.text, /^Sent\b/)
+    assert.equal(backend.posts.length, 0)
+  })
+}
+for (const status of [403, 500]) {
+  test(`side reply path table: HTTP ${status}${status === 403 ? ' participant refusal, then cached refusal' : ' transport error'}`, async () => {
+    const backend = await startBackend()
+    const h = harness(backend, { peerChats: [SIDE_B] })
+    backend.sendStatus = status
+    if (status === 403) backend.sendErrorCode = peerRefusal.PEER_NOT_PARTICIPANT
+    const results = [await h.reply(SIDE_B, 'First attempt.'), await h.reply(SIDE_B, 'Second attempt.')]
+    for (const result of results) {
+      assert.equal(result.isError, true)
+      assert.doesNotMatch(result.content[0]!.text, /^Sent\b/)
+      assert.match(result.content[0]!.text, status === 403 ? /not a participant/ : /^Failed to send:/)
+    }
+    assert.equal(sendMessagePosts(backend, SIDE_B), status === 403 ? 1 : 2)
+    assert.deepEqual(backend.peerGot, [])
+  })
+}
 
 // Reopen remains a backend decision. Only a confirmed forward claims Sent.
 

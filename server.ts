@@ -6956,8 +6956,9 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
         const msgId = (result as any)?.message?.id
         // A 201 proves persistence, not peer delivery. Keep sending even into
         // a closed thread so the backend can revive it, then require its word
-        // on the forward. A missing or unknown report on a known side thread
-        // is uncertain, never Sent, including another reply before an inbound.
+        // on the forward. Unknown chat kinds can be side threads after restart.
+        // Only a positively known non-peer chat may omit confirmation; missing
+        // or unknown reports otherwise stay uncertain, even on repeated replies.
         const peerDelivery = peerDeliveryOf(result)
         if (peerDelivery === 'not_forwarded') {
           if (pendingInbounds.get(String(resolvedChatId))?.messageId === answeringInboundId) {
@@ -6977,7 +6978,10 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
             peerConvByChat.has(String(resolvedChatId)) ||
             closedPeerChats.has(String(resolvedChatId)) ||
             (result as any)?.message?.peerConversationId != null ||
-            (result as any)?.peerDelivery != null)
+            (result as any)?.peerDelivery != null ||
+            (!mainChatIds.includes(String(resolvedChatId)) &&
+              !groupChatIds.has(String(resolvedChatId)) &&
+              !meetingChatIds.has(String(resolvedChatId))))
         ) {
           if (pendingInbounds.get(String(resolvedChatId))?.messageId === answeringInboundId) {
             clearInbound(resolvedChatId)

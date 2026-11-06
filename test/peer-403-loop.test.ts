@@ -324,6 +324,8 @@ function harness(apiBase: string, turnChat: string): Harness {
     peerConvChats: new Map<string, string>(),
     peerConvByChat: new Map<string, string>(),
     peerSideThreadChats: new Set<string>(),
+    mainChatIds: [MAIN],
+    groupChatIds: new Set<string>(),
     CLOSED_PEER_CHATS_MAX: 500,
     REPLY_OVERDUE_MS: 240_000,
     updateDrainMode: false,
