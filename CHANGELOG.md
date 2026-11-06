@@ -6,6 +6,10 @@ Notable changes to the HOAI Claude Code plugin.
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.86.5 (2026-11-06)
+
+**On Windows the browser profile permission step no longer stalls.** Started from the daemon, PowerShell lacked environment variables it needs and could hang until the 30 second timeout, so every browser profile was refused as unsafe. The step now runs with the minimal environment PowerShell needs, without a profile, asynchronously with a timeout, and says plainly what to fix if it still fails.
+
 ## 0.86.4 (2026-11-06)
 
 **On a Mac, a renewed Claude login clears the held "login expired" failure by itself.** The login lives in the Keychain, not in a credentials file, so the plugin never saw it change and the failure only cleared when the next answer succeeded. A cheap, rate limited, non interactive status check of the Claude CLI now notices the renewed login and clears the hold. It never reads or prints the secret, and it stays off on CLI versions that do not support the check.
