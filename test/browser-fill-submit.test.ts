@@ -75,6 +75,30 @@ test('concurrent fill and activation serialize at the dispatch boundary', async 
   assert.deepEqual(calls, ['browser_type'])
 })
 
+test('a second permitted fill waits until the first backend invocation completes', async () => {
+  const { engine, calls } = dispatcher()
+  let enter!: () => void, release!: () => void
+  const entered = new Promise<void>(resolve => { enter = resolve })
+  const held = new Promise<void>(resolve => { release = resolve })
+  engine._backend.callTool = async (name: string) => {
+    calls.push(name)
+    if (calls.length === 1) { enter(); await held }
+    return { content: [] }
+  }
+  const first = engine.callTool('browser_type', argsFor('browser_type'))
+  await entered
+  const second = engine.callTool('browser_fill_form', argsFor('browser_fill_form'))
+  try {
+    // Give a dispatcher without the queue a full turn to enter the backend.
+    await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(calls, ['browser_type'], 'the second permitted call must stay queued')
+  } finally {
+    release()
+    await Promise.all([first, second])
+  }
+  assert.deepEqual(calls, ['browser_type', 'browser_fill_form'])
+})
+
 function gatedDispatcher() {
   const r = dispatcher(), cards: any[] = []
   const { engine, page } = r
@@ -109,9 +133,48 @@ test('every classified action needs its own fresh approval even with a write gra
       assert.equal(cards.length, 1, name)
       assert.deepEqual(cards[0].choices, ['allow_once', 'deny'])
       assert.deepEqual(calls, [name])
-      assert.equal(!!engine.formSubmitRequirement('browser_click', {}), ['browser_press_key', 'browser_select_option'].includes(name))
+      assert.ok(engine.formSubmitRequirement('browser_click', {}), 'approval consumes only the action capability, not the filled fields')
+      await assert.rejects(engine.callTool('browser_click', { target: 'e3' }), { code: 'form_submit_approval_required' })
     })
   }
+})
+
+test('approval lifetime table preserves the barrier for unrelated, stale and reused approvals', async t => {
+  for (const scenario of ['resize', 'list', 'non-submit click', 'failed action', 'failed result', 'stale approval', 'reused approval']) await t.test(scenario, async () => {
+    const { engine, core, cards, calls } = gatedDispatcher()
+    const dispatch = engine.callTool.bind(engine)
+    const name = scenario === 'resize' ? 'browser_resize' : scenario === 'list' ? 'browser_tabs' : 'browser_click'
+    const args = scenario === 'resize' ? { width: 1100, height: 750 } : scenario === 'list' ? { action: 'list' } : { target: scenario === 'non-submit click' ? 'e4' : 'e3' }
+    let capability: any, target: any
+    engine.callTool = async (tool: string, values: any, signal: any, approved: any, approval: any) => {
+      capability = approval; target = approved
+      if (scenario === 'stale approval') await dispatch('browser_type', { target: 'e1', text: 'later' })
+      return dispatch(tool, values, signal, approved, approval)
+    }
+    await dispatch('browser_type', argsFor('browser_type'))
+    calls.length = 0
+    const backend = engine._backend.callTool
+    engine._backend.callTool = async (...values: any[]) => {
+      if (values[0] === name && scenario === 'failed action') throw new Error('fixture action failure')
+      if (values[0] === name && scenario === 'failed result') return { isError: true, content: [] }
+      return backend(...values)
+    }
+    const result = await core.callTool({ assistantId: 42, principal: 'owner' }, name, args)
+    assert.ok(capability, 'the owner issued an opaque capability')
+    assert.equal(cards.length, 1)
+    assert.equal(!!result.isError, ['failed action', 'failed result', 'stale approval'].includes(scenario))
+    const before = calls.length
+    if (scenario === 'reused approval') await assert.rejects(dispatch(name, args, undefined, target, capability), { code: 'form_submit_approval_required' })
+    await assert.rejects(dispatch('browser_click', { target: 'e3' }), { code: 'form_submit_approval_required' })
+    assert.equal(calls.length, before, 'unapproved submit must not enter the backend')
+    assert.ok(engine.formSubmitRequirement('browser_click', { target: 'e3' }))
+    engine.callTool = dispatch
+    engine._backend.callTool = backend
+    const submitted = await core.callTool({ assistantId: 42, principal: 'owner' }, 'browser_click', { target: 'e3' })
+    assert.notEqual(submitted.isError, true, JSON.stringify(submitted))
+    assert.equal(cards.length, 2, 'the later submit needs its own fresh card despite the write grant')
+    assert.deepEqual(cards[1].choices, ['allow_once', 'deny'])
+  })
 })
 
 test('host refuses scripts, future tools and composite keys with the same filled-tab code', async () => {

@@ -38,7 +38,7 @@ async function rig(t: any) {
   core._grantsFor = () => ({})
   core._currentOrigin = async () => 'https://fixture.example'
   const call = (name: string, args: any = {}) => core.callTool(OWNER, name, args)
-  return { engine, page, cards, posted, allow, call, core }
+  return { engine, page, cards, posted, allow, call, core, slot, gates }
 }
 
 for (const change of ['tab', 'document', 'name', 'replacement', 'focus', 'preflight', 'unchanged']) {
@@ -242,8 +242,51 @@ test('a write grant cannot approve the submit step after a fill', { skip, timeou
   r.allow()
   assert.notEqual((await pending).isError, true)
   assert.equal(await r.page.evaluate(() => (window as any).submits || 0), 1)
-  assert.equal(r.engine.formSubmitRequirement('browser_click', {}), null, 'approval clears the filled set')
+  assert.ok(r.engine.formSubmitRequirement('browser_click', {}), 'a submit that retains the filled form must retain tracking')
+  await assert.rejects(r.engine.callTool('browser_click', { target: await refFor(r.page, '#delete') }), { code: 'form_submit_approval_required' })
+  assert.equal(await r.page.evaluate(() => (window as any).submits || 0), 1)
+  assert.notEqual((await r.call('browser_click', { target: await refFor(r.page, '#delete') })).isError, true)
+  assert.equal(r.cards.length, 2, 'repeating the same submit requires another approval')
+  assert.equal(await r.page.evaluate(() => (window as any).submits || 0), 2)
 })
+
+for (const action of ['resize', 'list', 'non-submit click', 'failed resize']) for (const direct of [false, true]) {
+  test(`unrelated ${action} approval preserves native submit barrier via ${direct ? 'engine' : 'host'}`, { skip, timeout: 90_000 }, async t => {
+    const r = await rig(t)
+    // Use the real origin and grant lookup, with an in-process synthetic route.
+    delete r.core._currentOrigin
+    delete r.core._grantsFor
+    r.slot.grants = { 'https://fixture.example': { write: 'allow' } }
+    await r.page.route('https://fixture.example/**', async (route: any) => {
+      return route.fulfill({ contentType: 'text/html', body: '<form onsubmit="window.submits=(window.submits||0)+1;return false"><label>Reference<input id=reference></label><button id=save type=submit>Save draft</button><button id=other type=button>Preview</button></form>' })
+    })
+    assert.notEqual((await r.engine.callTool('browser_navigate', { url: 'https://fixture.example/form' })).isError, true)
+    await r.engine._engine._privacy.watchPersonInput(r.page)
+    assert.deepEqual(await r.engine.handBackPrivacy(r.page), { ok: true })
+    assert.notEqual((await r.call('browser_type', { target: await refFor(r.page, '#reference'), text: 'hello' })).isError, true)
+    assert.equal(r.cards.length, 0, 'the saved grant permits the fill')
+    r.allow()
+    const result = await r.call(action === 'resize' || action === 'failed resize' ? 'browser_resize' : action === 'list' ? 'browser_tabs' : 'browser_click',
+      action === 'resize' || action === 'failed resize' ? { width: action === 'failed resize' ? -1 : 1100, height: 750 } : action === 'list' ? { action: 'list' } : { target: await refFor(r.page, '#other') })
+    assert.equal(!!result.isError, action === 'failed resize', JSON.stringify(result))
+    assert.equal(r.cards.length, 1, 'only the unrelated action has been approved')
+    assert.doesNotMatch(r.cards[0].summary, /Save draft/)
+    assert.equal(await r.page.locator('#reference').inputValue(), 'hello')
+    assert.equal(await r.page.evaluate(() => (window as any).submits || 0), 0)
+    const target = await refFor(r.page, '#save')
+    if (direct) await assert.rejects(r.engine.callTool('browser_click', { target }), { code: 'form_submit_approval_required' })
+    else {
+      r.gates._readGate = async () => ({ state: 'answered', choice: 'deny' })
+      assert.equal((await r.call('browser_click', { target })).isError, true)
+      assert.equal(r.cards.length, 2, 'the later submit needs its own card')
+      assert.match(r.cards[1].summary, /Save draft/)
+      assert.deepEqual(r.cards[1].choices, ['allow_once', 'deny'])
+    }
+    assert.equal(await r.page.evaluate(() => (window as any).submits || 0), 0)
+    assert.equal(await r.page.locator('#reference').inputValue(), 'hello')
+    assert.ok(r.engine.formSubmitRequirement('browser_click', { target }))
+  })
+}
 
 test('another fill invalidates a held submit approval even when the target is unchanged', { skip, timeout: 90_000 }, async t => {
   const r = await rig(t)

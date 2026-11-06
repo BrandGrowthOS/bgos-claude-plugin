@@ -22,10 +22,15 @@ Its closure issues an opaque single-use capability for the exact page, tool,
 arguments and field revision only when that gate runs the held action. A normal
 write approval, an agent argument or a target-binding object cannot substitute
 for it. The engine checks it again immediately before dispatch, after privacy
-preflight and live target binding. Approval clears the pending set. A key or
-select action may immediately begin a new pending set. Concurrent engine calls
+preflight and live target binding. Consuming approval permits only that exact
+dispatch once; it never clears filled-field tracking. An unrelated approval,
+a failed action, or even a successful submit that retains the populated form
+leaves the barrier in place. The next submit needs its own approval. Keys and
+select changes also advance the field revision. Concurrent engine calls
 are serialized so fills cannot overlap an activation inside the dispatcher.
 A fill during a held approval invalidates that approval's revision.
+Tracking is conservative across document changes; approval alone is never
+evidence that fields or their document have gone away.
 
 Batch fill accepts textbox operations only. It validates the entire batch
 before any fill or gate, so a later checkbox, radio or select operation cannot

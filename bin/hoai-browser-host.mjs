@@ -1523,8 +1523,8 @@ export class PlaywrightEngine {
         granted.revision !== required.revision || granted.name !== name || granted.args !== required.args) throw submitRequired()
     if (consume) {
       submitApprovals.delete(approval)
-      required.state.fields.clear()
-      ++required.state.revision
+      // Approval permits this exact dispatch once. It says nothing about the
+      // lifetime of fields, including when an action fails or a submit stays put.
     }
   }
 
