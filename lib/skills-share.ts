@@ -85,6 +85,7 @@ import {
   removeAgentSkill,
   repoLevels,
   wouldBeUnder,
+  type IdentFs,
 } from './skills-inventory.ts'
 
 /** Why a file the walk found stays behind, beyond the rules' own reasons. */
@@ -296,6 +297,8 @@ export type ExportSkillInput = {
   managedDir: string
   payload: Record<string, unknown>
   log?: (msg: string) => void
+  /** The stat calls the folder checks make; a test hands in its own. Default: the real file system. */
+  fs?: IdentFs
 }
 
 /**
@@ -361,7 +364,7 @@ export function exportSkill(input: ExportSkillInput): ExportAnswer {
       return fail('unavailable', 'this agent was started without its launch folder, so it has no agent skills')
     }
     root = join(resolve(input.agentDir), '.claude', 'skills')
-    if (existsSync(root) && foreign.some((f) => overlaps(root, f))) {
+    if (existsSync(root) && foreign.some((f) => overlaps(root, f, input.fs))) {
       return fail('scope_refused', 'the skills folder of this agent is the computer skills folder')
     }
   } else {

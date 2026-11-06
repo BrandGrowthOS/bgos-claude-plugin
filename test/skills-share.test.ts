@@ -30,6 +30,8 @@ import { join } from 'node:path'
 
 import { bundleSha256, sha256Hex } from '../lib/skill-share-content-rules.ts'
 import { exportSkill, installBundle, readSkillFolder } from '../lib/skills-share.ts'
+import type { IdentFs } from '../lib/skills-inventory.ts'
+import { fakeIdentFs, type FolderNumbers } from './helpers/fake-ident-fs.ts'
 import { fileSymlinkRefused, linkFolder } from './helpers/links.ts'
 import { scratchDir } from './helpers/scratch-dirs.ts'
 
@@ -58,8 +60,8 @@ function agentSkill(w: World, name: string, files: Record<string, string | Buffe
   return dir
 }
 
-function exp(w: World, payload: Record<string, unknown>, agentDir: string | null = w.agent) {
-  return exportSkill({ agentDir, configDir: w.config, home: w.home, managedDir: w.managed, payload })
+function exp(w: World, payload: Record<string, unknown>, agentDir: string | null = w.agent, fs?: IdentFs) {
+  return exportSkill({ agentDir, configDir: w.config, home: w.home, managedDir: w.managed, payload, ...(fs ? { fs } : {}) })
 }
 
 function bundle(files: Array<{ path: string; content: string }>, extra: Record<string, unknown> = {}) {
@@ -411,6 +413,38 @@ test('export refuses a bad name, another scope, an agent folder that is the comp
   assert.equal(code(exp(w, { name: 'notes', scope: 'agent' }, w.home)), 'scope_refused')
   assert.equal(code(exp(w, { name: 'notes', scope: 'agent' }, null)), 'unavailable')
   assert.equal(code(exp(w, { name: 'nothere', scope: 'agent' })), 'not_found')
+})
+
+const PAST_2_53 = 2n ** 53n
+
+/** An agent with one skill and the computer skills folder beside it, the two folders given these numbers. */
+function exportWithFolderNumbers(agentFolder: FolderNumbers, computerFolder: FolderNumbers) {
+  const w = world()
+  agentSkill(w, 'notes', { 'SKILL.md': SKILL })
+  const given = new Map<string, FolderNumbers>([
+    [join(w.agent, '.claude', 'skills'), agentFolder],
+    [join(w.config, 'skills'), computerFolder],
+  ])
+  const answer = exp(w, { name: 'notes', scope: 'agent' }, w.agent, fakeIdentFs(given))
+  return answer.ok ? 'ok' : answer.code
+}
+
+test('export does not take two different folders for one when their file numbers differ only past 2^53', () => {
+  // As plain numbers 2^53 and 2^53 + 1 are the same number; as whole numbers they are two folders.
+  assert.equal(Number(PAST_2_53), Number(PAST_2_53 + 1n))
+  assert.equal(exportWithFolderNumbers({ dev: 7n, ino: PAST_2_53 }, { dev: 7n, ino: PAST_2_53 + 1n }), 'ok')
+})
+
+test('export still refuses an agent folder that is the computer skills folder, whatever its file number', () => {
+  assert.equal(exportWithFolderNumbers({ dev: 7n, ino: PAST_2_53 + 1n }, { dev: 7n, ino: PAST_2_53 + 1n }), 'scope_refused')
+  assert.equal(exportWithFolderNumbers({ dev: 7n, ino: 42n }, { dev: 7n, ino: 42n }), 'scope_refused')
+})
+
+test('a file number the system left out or gave as zero is unknown, and unknown folders are never taken for one', () => {
+  assert.equal(exportWithFolderNumbers({ dev: 7n, ino: 0n }, { dev: 7n, ino: 0n }), 'ok')
+  assert.equal(exportWithFolderNumbers({ dev: 7n }, { dev: 7n }), 'ok')
+  assert.equal(exportWithFolderNumbers({ ino: 42n }, { ino: 42n }), 'ok')
+  assert.equal(exportWithFolderNumbers({ dev: 0n, ino: 42n }, { dev: 0n, ino: 42n }), 'ok')
 })
 
 test('export finds a skill by the name its list row showed, never a folder another row is named by', () => {
