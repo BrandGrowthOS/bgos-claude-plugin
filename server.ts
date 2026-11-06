@@ -3907,7 +3907,7 @@ const mcp = new Server(
       '## Another Agent In A Group (sender_type room_agent, NOT a person)',
       '',
       'In a group or a channel, BGOS can hand you a message ANOTHER AGENT seated',
-      'there wrote, as a follow-up: you were not named in it. Its meta carries',
+      'there wrote, as a follow-up or because it tagged you. Its meta carries',
       '`sender_type = "room_agent"`, `user = "Agent"`, `sender_assistant_id` (that',
       'agent\'s id) and `user_id = "room_agent:<that id>"`, and no sender',
       'relationship: no person wrote it, and it is never your owner\'s or any',
@@ -3915,6 +3915,12 @@ const mcp = new Server(
       'with reply_to_id set to it, only if it is meant for you. Otherwise send',
       'nothing: silence is a correct answer and nothing waits for your reply. Your',
       'own messages never come back to you this way.',
+      'A reply stays in this room: use this card\'s chat_id and reply_to_id.',
+      'The backend hands window holders the next two messages only. A follow-up',
+      'never opens another window, and agents woken together never receive each other\'s',
+      'answers as follow-ups. Explicit tags use the room\'s separate agent tag budget',
+      '(five wakes by default until a person speaks, or the room\'s chosen limit).',
+      'Do not keep a conversation going with acknowledgements or repeated tags.',
       '',
       '## Usage Self-Report (automatic, no action needed)',
       '',
@@ -12044,6 +12050,13 @@ async function pollChat(chatId: string): Promise<void> {
   const loginCard = pendingLoginMethodCard(chatId)
   const pendingButtonCard = hasPendingPostedButtonCard(chatId)
   const freshButtonCard = hasPendingPostedButtonCard(chatId, true)
+  // Another room agent is context, never the reply boundary of our human turn.
+  const pollStoredSenderOf = (m: ChatMessage): string | null => {
+    const agent = readRoomAgentSender(m)
+    return agent && agent.senderAssistantId !== String(ASSISTANT_ID)
+      ? ROOM_AGENT_SENDER_TYPE
+      : m.message.sender
+  }
   if (updateDrainMode || humanMessageEdits.isChatDeleted(chatId)) return
   // A daemon that has lost the pairing lock reads no chat. The tick stands
   // down at its top, but the email download keepalive refreshes the lock too,
@@ -12079,6 +12092,7 @@ async function pollChat(chatId: string): Promise<void> {
   // Taken before the fetch for the reason the cursor is: see chatBehindSocket.
   const startedAtEpoch = socketEpoch
   const editReadGeneration = humanMessageEdits.readGeneration
+  const roomAgentReadOrder = roomAgentSettler.beginRead()
   const oldestHuman = humanMessageEdits.oldestInChat(chatId)
   // Read existing human rows too: an edit keeps its ID and cannot appear in
   // an afterId delta. The selection cursor below remains lastSeen.
@@ -12125,7 +12139,7 @@ async function pollChat(chatId: string): Promise<void> {
         .filter((m) => m.message.id < owedFrom && shouldForwardPollMessage(m.message, ASSISTANT_ID))
         .map((m) => ({
           id: m.message.id,
-          sender: m.message.sender,
+          sender: pollStoredSenderOf(m),
           pendingEmptySystem: isPendingEmptySystem(m),
           sentDateMs: sentDateToMs(m.message.sentDate),
         }))
@@ -12219,9 +12233,9 @@ async function pollChat(chatId: string): Promise<void> {
       // The walk-back heuristic lives in selectFirstPollBacklogIds
       // (lib/poll-core.ts, extracted verbatim so it is testable): collect
       // trailing user/system messages, stopping only at a real
-      // user->assistant REPLY (an assistant message whose immediately
-      // preceding message is a user message). Proactive assistant messages
-      // (cron check-in, external trigger) do NOT terminate the scan. NOT
+      // user->assistant REPLY (an assistant message preceded by a user
+      // message, ignoring intervening room_agent context). Proactive assistant
+      // messages (cron check-in, external trigger) do NOT terminate the scan. NOT
       // capped (0.71.10): the cursor advance below moves this chat to the
       // newest row of the read, so a row the selection leaves out is never
       // read again. The old cap of 10 dropped the rest of the unanswered tail
@@ -12334,7 +12348,7 @@ async function pollChat(chatId: string): Promise<void> {
           selectRestartRecoveryIds({
             rows: pollForwardableRows.map((m) => ({
               id: m.message.id,
-              sender: m.message.sender,
+              sender: pollStoredSenderOf(m),
               pendingEmptySystem: isPendingEmptySystem(m),
               sentDateMs: sentDateToMs(m.message.sentDate),
             })),
@@ -12368,6 +12382,26 @@ async function pollChat(chatId: string): Promise<void> {
         })
     }
 
+    // A marked room row on the poll uses the same settle wait and claim as
+    // the stream. Unmarked assistant history remains an outbound reply.
+    // On a first read, use the same age, reply boundary and history cap as
+    // human backlog, without ever recovering optional room context on restart.
+    const roomBacklogIds = lastSeen === 0 ? new Set(selectFirstPollBacklogIds({
+      rows: firstPollRowsOf(ordered, Number.POSITIVE_INFINITY),
+      includeRoomAgents: true,
+      recentCutoffMs: FIRST_POLL_RECENT_CUTOFF_MS,
+      historyCap: groupHistoryCap,
+    })) : null
+    for (const row of pollForwardableRows) {
+      if (row.message.id <= lastSeen || forwardedMessageIds.has(row.message.id)) continue
+      if (roomBacklogIds && !roomBacklogIds.has(row.message.id)) continue
+      const agent = readRoomAgentSender(row)
+      if (!agent || isOwnRoomAgentMessage(agent, ASSISTANT_ID)) continue
+      const view = viewStreamMessage({ seq: 0, kind: 'message_new', chatId: Number(chatId),
+        messageId: row.message.id, payload: row as unknown as Record<string, unknown> }, ASSISTANT_ID)
+      if (view?.roomAgent) roomAgentSettler.note({ ...view, inboundTransport: 'poll' }, roomAgentReadOrder)
+    }
+
     // If an assistant message has already been written that supersedes our
     // pending unanswered inbound (covers replies sent via non-Claude paths
     // like n8n agents or scheduled callbacks), clear the overdue tracker.
@@ -12376,7 +12410,7 @@ async function pollChat(chatId: string): Promise<void> {
       const supersedingAssistant = ordered.find(
         (m) =>
           m.message.id > pendingForChat.messageId &&
-          m.message.sender === 'assistant',
+          pollStoredSenderOf(m) === 'assistant',
       )
       if (supersedingAssistant) clearInbound(chatId)
     }
@@ -13093,6 +13127,14 @@ async function pollChat(chatId: string): Promise<void> {
         return t === null || t >= FIRST_POLL_RECENT_CUTOFF_MS
       })
       .map((m) => m.message.id)
+    // A poll-only room row can still be streaming. Keep it inside delta
+    // reads until the shared settle wait delivers its final version. Like
+    // empty system cards, only the newest page can hold the cursor.
+    for (const row of firstPage.messages) {
+      if (readRoomAgentSender(row) && roomAgentSettler.has(row.message.id) && !forwardedMessageIds.has(row.message.id)) {
+        pendingIds.push(row.message.id)
+      }
+    }
     // This batch read the chat from below any email owed in it (the cursor is
     // clamped there) and finished without throwing: every owed id through
     // maxId was delivered, claimed, or is gone, so none holds the cursor any
@@ -16090,13 +16132,15 @@ function noteLiveFloor(chatId: string, messageId: number): void {
 /**
  * Forward one replayed message as an inbound card. Mirrors the poll path's
  * delivery (system prefix, slash routing, permission-verdict skip, session
- * handle capture, overdue arming) with transport marker 'stream'. Resolves
+ * handle capture, overdue arming). Polled room agents use the same forwarder
+ * with transport marker 'poll'. Resolves
  * only after the MCP handoff resolves (5.7 handoff before advance), so a
  * failed handoff pins the stream cursor for redelivery.
  */
 async function forwardStreamInbound(
   view: StreamMessageView,
   isSystem: boolean,
+  transport: 'stream' | 'poll' = 'stream',
 ): Promise<void> {
   // The second lock (person lanes), on the stream as on the socket and poll.
   const streamLaneVerdict = ownerLaneVerdict(view.raw)
@@ -16204,7 +16248,7 @@ async function forwardStreamInbound(
       userId: senderUserId,
       assistantId: ASSISTANT_ID,
       timestamp: view.sentDate,
-      transport: 'stream',
+      transport: transport,
       text: view.text,
       files: view.files as never[],
       senderType: streamIsEmail
@@ -16374,11 +16418,11 @@ async function forwardStreamInbound(
 }
 
 /**
- * Another agent's message in a group or channel, held on the stream until its
+ * Another agent's message in a group or channel, held on stream or poll until its
  * text has settled (lib/room-agent-settle.ts). Delivered through the same
  * forwarder as any stream message, under the same gates the lanes check.
  */
-const roomAgentSettler = createRoomAgentSettler<StreamMessageView, ReturnType<typeof setTimeout>>({
+const roomAgentSettler = createRoomAgentSettler<StreamMessageView & { inboundTransport?: 'poll' }, ReturnType<typeof setTimeout>>({
   schedule: (fire, ms) => {
     const handle = setTimeout(fire, ms)
     handle.unref?.()
@@ -16386,6 +16430,11 @@ const roomAgentSettler = createRoomAgentSettler<StreamMessageView, ReturnType<ty
   },
   cancel: (handle) => clearTimeout(handle),
   isForwarded: (messageId) => forwardedMessageIds.has(messageId),
+  // A new presign is not an edit. Text, edit time, file ids and file metadata
+  // define the version, while delivery keeps the latest download URLs.
+  versionOf: (view) => JSON.stringify([view.text, humanEditTime(view), view.files],
+    (key, value) => key === 'url' || key === 'fileData' ? undefined : value),
+  editTimeOf: humanEditTime,
   // A failed handoff un-claims the id (forwardStreamInbound) and rejects, and
   // the wait tries once more.
   deliver: (view) => {
@@ -16393,7 +16442,7 @@ const roomAgentSettler = createRoomAgentSettler<StreamMessageView, ReturnType<ty
       log(`stream: room_agent message ${view.messageId} not delivered: this daemon stood down or is draining for an update`)
       return
     }
-    return trackMessageOperation(() => forwardStreamInbound(view, false))
+    return trackMessageOperation(() => forwardStreamInbound(view, false, view.inboundTransport))
   },
   log,
 })

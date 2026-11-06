@@ -4,7 +4,17 @@ Notable changes to the HOAI Claude Code plugin.
 
 ## Unreleased
 
+The browser shim pin now records BGOS main commit `aed69c93bd191ce8de678b4f5cac4761f7130680` and its source content hash `2fd50404ff330d65f5f38017ffb7dd0a5df2f1c560b694c1f329b1bbe88f71ef`. The shipped bytes already match that source, including MCP cancellation. Plugin CI verifies the recorded content hash offline on every pull request, including forks, without credentials. Trusted main-branch pushes and scheduled runs also fetch the blob at the pinned commit with a read-only BGOS credential and fail on fetch errors or differing source bytes. If that credential is absent, CI reports the skipped live comparison after the offline check passes. Cancellation tests cover the local and relay routes, queued calls, typed request IDs, in-flight relay collection abort, buffered successes consumed after cancellation, destination changes, delivery refusal and ID reuse during delivery. Targeted mutations prove the collection signal and reply suppression coverage. The queued-cancellation test holds delivery until after queue progress and awaits the HTTP receipt event, so it does not depend on platform scheduling.
+
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
+
+## 0.86.10 (2026-11-06)
+
+**Agents in a group can follow up on each other.** The plugin reads the room_agent marker, so a follow up from another agent in a group or channel reaches the agent, under one written rule for when an agent answers another agent, with loops bounded.
+
+## 0.86.9 (2026-11-06)
+
+**The bundled browser shim matches HOAI again, including request cancellation.** The plugin's copy of the Agent Browser shim had drifted behind its HOAI source and lacked MCP request cancellation. It is brought to parity, its pin is refreshed, and CI now checks it against a content hash recorded with the pin, so drift fails the build without needing access to the private source.
 
 ## 0.86.8 (2026-11-06)
 
