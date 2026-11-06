@@ -56,6 +56,12 @@ after(() => {
   // A checkout that itself sits under the OS temp folder cannot tell its tree from the temp folder, so only the removal is checked there.
   const tempRoot = real(tmpdir())
   const checkoutInTemp = inside(repoRoot, tempRoot) && !inside(tempRoot, repoRoot)
+  // A folder-only run may explicitly allow an isolated scratch subfolder.
+  // Never excuse the checkout itself, and require containment and cleanup.
+  const isolatedRepoTemp = process.env.HOAI_ALLOW_REPO_TEST_TMP === '1' && tempRoot !== repoRoot && inside(tempRoot, repoRoot)
+  if (isolatedRepoTemp) {
+    assert.deepEqual(made.filter((dir) => !inside(join(real(dirname(dir)), basename(dir)), tempRoot)), [], 'scratch folders escaped the configured temp folder')
+  }
   // Local-only runs may deliberately keep all temporary files in the checkout.
   // Never excuse the checkout itself or a fixture outside the selected temp root.
   const localTemp = tempRoot !== repoRoot && inside(tempRoot, repoRoot) &&
@@ -63,7 +69,7 @@ after(() => {
   // The folders are gone by now, so the folder that held them (tmpdir()) is what gets resolved.
   const inTree = checkoutInTemp ? [] : made.filter((dir) => {
     const path = join(real(dirname(dir)), basename(dir))
-    return inside(path, repoRoot) && !(localTemp && inside(path, tempRoot))
+    return inside(path, repoRoot) && !((localTemp || isolatedRepoTemp) && inside(path, tempRoot))
   })
   const left = made.filter((dir) => existsSync(dir))
   assert.deepEqual(inTree, [], 'scratch folders were created inside the repo working tree')

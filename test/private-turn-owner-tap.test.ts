@@ -156,16 +156,16 @@ test('server.ts: every tap site announces through privateTapCard with its own la
   const source = readFileSync('server.ts', 'utf8')
   assert.equal(typeof (privateTurn as any).privateTapCard, 'function', 'lib/private-turn.mjs exports privateTapCard')
   const sites = [...source.matchAll(/content: privateTapCard\(\{ tracker: privateTurns, lane: '(boot|poll|stream)', ownerUserId: USER_ID, chatId: String\(chatId\), messageId: [^,]+, tapperUserId: [^,]+, answeredAt: ([^,]+), receivedAt: ([^,]+), callbackData: ([^,]+), customText: ([^,]+), posted: ([^,]+), content: contentLines\.join\('\\n'\) \}\),\n/g)]
-  assert.deepEqual(sites.map((m) => m[1]), ['boot', 'poll', 'stream'], 'the boot sweep, the poll and the stream, in that order')
+  assert.deepEqual(sites.map((m) => m[1]), ['boot', 'poll', 'poll', 'stream'], 'the boot sweep, posted-card recovery, the poll and the stream, in that order')
   const stream = sites.find((m) => m[1] === 'stream')!
   assert.equal(stream[2], 'update.payload.answeredAt ?? update.payload.answered_at', 'the stream passes the backend\'s answeredAt')
   assert.equal(stream[3], 'receivedAtMs', 'and the moment the stream received it')
   // Data's review of #261 (M2): each site passes the tap's own button value and the words typed with it, so a Custom
   // reply opens no turn (ownerTapOpens).
-  assert.deepEqual(sites.map((m) => [m[4], m[5]]), [['callbackData', 'customText'], ['agentCallbackData', 'customText'], ['agentCallbackData', 'answer.customText']])
+  assert.deepEqual(sites.map((m) => [m[4], m[5]]), [['callbackData', 'customText'], ['agentCallbackData', 'customText'], ['agentCallbackData', 'customText'], ['agentCallbackData', 'answer.customText']])
   // Its re-verify: every site checks the tap against the buttons this daemon posted, so the owner's words as posted
   // are carried on every lane and anything else is noted as someone else's (privateTapCard).
-  assert.deepEqual(sites.map((m) => m[6]), ['postedButton', 'postedButton', 'postedButton'])
+  assert.deepEqual(sites.map((m) => m[6]), ['postedButton', 'postedButton', 'postedButton', 'postedButton'])
   assert.equal((source.match(/privateTurns\.noteTap\(/g) ?? []).length, 0, 'no tap site appends noteTap\'s tag by itself any more')
 })
 
@@ -805,7 +805,7 @@ test('re-verify (Medium): server.ts notes the buttons of the reply tool\'s and t
   const source = readFileSync('server.ts', 'utf8').replace(/\r\n/g, '\n')
   assert.match(source, /\nconst postedButtons = createPostedButtons\(\)\n/)
   assert.equal((source.match(/postedButtons\.note\(/g) ?? []).length, 2, 'the reply tool and the plan card')
-  assert.match(source, /recentButtonPrompts\.set\(String\(resolvedChatId\), \{ messageId: msgId, sentAtMs: Date\.now\(\) \}\)\n(?: *\/\/[^\n]*\n)* *postedButtons\.note\(msgId, options, safeText\)\n/)
+  assert.match(source, /postedButtons\.note\(msgId, options, safeText\)\n *notePostedButtonCard\(String\(resolvedChatId\), msgId\)\n/)
   assert.match(source, /openPlansByChat\.set\(planChatId, \{[\s\S]{0,2400}?\n {10}\}\)\n(?: *\/\/[^\n]*\n)* *postedButtons\.note\(cardMessageId, bodyBuild\.body\.options, bodyBuild\.body\.text\)\n/)
   assert.match(source, /\n {2}const postedButton = postedButtons\.posted\(view\.messageId, answer\.callbackData, answer\.buttonText, view\.text\)\n/)
 })

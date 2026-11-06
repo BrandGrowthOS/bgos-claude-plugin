@@ -571,8 +571,8 @@ test('the plan half of a click runs on BOTH transports, from one function', () =
   // noteSlashPlanDelivery is counted, for the same reason.
   assert.equal(
     (SERVER.match(/applyPlanAnswer\(/g) ?? []).length,
-    4,
-    'one declaration plus exactly three call sites (poll, stream, boot sweep)',
+    5,
+    'one declaration plus four call sites (posted-card recovery, poll, stream, boot sweep)',
   )
   // And each intake hands it the RAW callbackData plus the row, never the
   // agent-unescaped value.
@@ -589,10 +589,8 @@ test('the plan classification happens BEFORE the agent unescape, on both rails',
   // would be turned back into `plan:go` and read as the owner approving a real
   // plan. The permission intake has always classified off the raw value; these
   // two now do the same, and the ORDER is the guard.
-  const poll = SERVER.slice(
-    SERVER.indexOf('const permOutcome = resolvePermissionClick({'),
-    SERVER.indexOf('const kind ='),
-  )
+  const pollStart = SERVER.indexOf('const permOutcome = resolvePermissionClick({')
+  const poll = SERVER.slice(pollStart, SERVER.indexOf('const kind =', pollStart))
   assert.ok(poll.length > 0)
   assert.ok(
     poll.indexOf('applyPlanAnswer({') < poll.indexOf('unescapeAgentButtonValue('),
@@ -612,25 +610,25 @@ test('the plan classification happens BEFORE the agent unescape, on both rails',
 test('the plan wording and the directive replace the generic ones everywhere', () => {
   assert.equal(
     (SERVER.match(/planAnswer\.summary \?\?/g) ?? []).length,
-    3,
-    'the poll, the stream and the boot sweep must all prefer the plan wording',
+    4,
+    'posted-card recovery, the poll, the stream and the boot sweep must all prefer the plan wording',
   )
   assert.equal(
     (SERVER.match(/if \(planAnswer\.directive\) contentLines\.push\(planAnswer\.directive\)/g) ?? [])
       .length,
-    3,
-    'the poll, the stream and the boot sweep must all carry the directive',
+    4,
+    'posted-card recovery, the poll, the stream and the boot sweep must all carry the directive',
   )
 })
 
-test('all three deliveries put the promised plan code back on the meta', () => {
+test('all four deliveries put the promised plan code back on the meta', () => {
   // A revision arrives under the __custom__ sentinel, so without this the
   // model would be handed callback_data __custom__ on an event every one of
   // its instructions calls plan:change.
   assert.equal(
     (SERVER.match(/planAnswer\.callbackData \?\?/g) ?? []).length,
-    3,
-    'the poll, the stream and the boot sweep must all relabel the code',
+    4,
+    'posted-card recovery, the poll, the stream and the boot sweep must all relabel the code',
   )
 })
 
