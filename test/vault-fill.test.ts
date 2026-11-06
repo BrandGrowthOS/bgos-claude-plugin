@@ -33,7 +33,9 @@ const SECRET = 'fixture-secret-value-Xy7!'
 const posix = process.platform !== 'win32'
 
 function tempDir(): string {
-  return mkdtempSync(join(tmpdir(), 'vault-host-'))
+  const dir = mkdtempSync(join(tmpdir(), 'vault-host-'))
+  rmSync(dir, { recursive: true })
+  return dir
 }
 
 function agentSigningKey() {
@@ -282,7 +284,7 @@ test('fill intent: any changed field, another key, an extra field or a late expi
   const intent = intentFor()
   const signature = signFillIntent(intent, key.secret)
   const changes: Record<string, unknown> = {
-    ownerId: 'user_someone_else', assistantId: 43, vaultAssistantId: 44, vaultId: randomUUID(), itemId: randomUUID(), revision: 8,
+    version: 2, ownerId: 'user_someone_else', assistantId: 43, vaultAssistantId: 44, vaultId: randomUUID(), itemId: randomUUID(), revision: 8,
     sessionId: 'session-2', tabId: 'tab-2', origin: 'https://evil.example.test', nonce: randomUUID(), expiresAt: intent.expiresAt + 1,
   }
   for (const [field, value] of Object.entries(changes)) {
@@ -294,6 +296,10 @@ test('fill intent: any changed field, another key, an extra field or a late expi
   assert.equal(verifyFillIntent({ ...intent, extra: 1 }, signature, key.identityPublic), false)
   const late = intentFor({ expiresAt: Date.now() + 120_000 })
   assert.equal(verifyFillIntent(late, signFillIntent(late, key.secret), key.identityPublic), false)
+  const expired = intentFor({ expiresAt: Date.now() - 1_000 })
+  const expiredSignature = signFillIntent(expired, key.secret)
+  assert.equal(verifyFillIntent(expired, expiredSignature, key.identityPublic), false)
+  assert.throws(() => checkFillIntent(expired, expiredSignature, key.identityPublic), /Invalid signed vault fill request/)
   const http = intentFor({ origin: 'http://login.example.test' })
   assert.equal(verifyFillIntent(http, signFillIntent(http, key.secret), key.identityPublic), false)
 })

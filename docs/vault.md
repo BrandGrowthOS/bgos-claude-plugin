@@ -32,7 +32,10 @@ or chat.
    `~/.bgos-agent/<id>/vault/vault-host.json`, a file only your user can read
    (mode 0600 in a 0700 folder; a looser file is refused, never used). The
    key's standard X25519 form is the host encryption key that HOAI wraps item
-   keys to.
+   keys to. On Windows, the folder and every key file must have a protected
+   ACL owned by the current account, with no access granted to other accounts.
+   Setup restricts and verifies an empty temporary file before writing keys;
+   existing exposed folders or files are refused.
 2. **Agent signing key.** HOAI only trusts an agent signing identity that the
    owner minted for this agent (`POST /api/v1/assistants/<id>/signing-key/rotate`,
    which returns the private key once). Paste it when asked; it is not echoed
@@ -48,6 +51,21 @@ or chat.
    fill. Never compare through a chat message: the server can rewrite one.
 
 `hoai vault-host status` shows the state and the fingerprint again.
+
+Setup uses the daemon's credential resolver: `BGOS_CREDENTIALS_PATH`, the
+configured assistant or folder pin, per-assistant credentials and the legacy
+credentials file. Environment pairing takes precedence over file pairing.
+The effective pairing supplies both the identity and backend. `--assistant`
+selects an agent explicitly; a conflicting configured or paired identity is
+refused.
+
+If Windows reports `VAULT_HOST_KEY_EXPOSED`, open the vault folder and key
+file's Properties > Security > Advanced in File Explorer. Set your account as
+the owner, disable inheritance, and remove access for every other account.
+Remove the exposed record and run `hoai vault-host` again to create a new host
+key. If a signing key was exposed, rotate it in HOAI before provisioning it
+again. Setup also refuses if Windows ACL inspection or protection fails.
+
 
 ## What this does not do
 

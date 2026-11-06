@@ -23,7 +23,8 @@
  * No em or en dashes in this file.
  */
 
-import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
+import { resolveAuth, resolveCredentialsSelection } from '../lib/agent-credentials-core.mjs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -55,30 +56,29 @@ export function parseArgs(argv) {
 }
 
 /** The paired agent's credentials: assistant id, owner, backend and pairing. */
-export function resolveAgent({ assistant, env = process.env, cwd = process.cwd(), home = homedir() }) {
+export function resolveAgent({ assistant = '', env = process.env, cwd = process.cwd(), home = homedir() }) {
   const dir = join(home, '.bgos-agent')
-  let id = String(assistant || env.BGOS_ASSISTANT_ID || '').trim()
-  if (!id) {
-    try { id = readFileSync(join(cwd, '.bgos-agent-id'), 'utf8').trim() } catch {}
+  const requestedId = String(assistant || '').trim()
+  const configuredId = String(env.BGOS_ASSISTANT_ID || '').trim()
+  if (requestedId && (!/^\d+$/.test(requestedId) || (configuredId && configuredId !== '${user_config.assistant_id}' && configuredId !== requestedId))) {
+    return { error: 'The requested assistant does not match this pairing identity.' }
   }
-  if (!id) {
-    let ids = []
-    try { ids = readdirSync(dir).map((n) => /^credentials-(\d+)\.json$/.exec(n)?.[1]).filter(Boolean) } catch {}
-    if (ids.length === 1) id = ids[0]
+  const effectiveEnv = requestedId ? { ...env, BGOS_ASSISTANT_ID: requestedId } : env
+  const selection = resolveCredentialsSelection({ env: effectiveEnv, cwd, defaultPath: join(dir, 'credentials.json') })
+  if (selection.kind !== 'ok') return { error: 'Run this from the agent folder, or pass --assistant <id>.' }
+  let creds = null
+  try { creds = JSON.parse(readFileSync(selection.path, 'utf8')) } catch {}
+  const auth = resolveAuth({ env: effectiveEnv, creds })
+  if (auth.pairingFileRejection || (requestedId && auth.assistantId !== requestedId)) {
+    return { error: 'The requested assistant does not match this pairing identity.' }
   }
-  if (!/^\d+$/.test(id)) return { error: 'Run this from the agent folder, or pass --assistant <id>.' }
-  const files = [join(dir, `credentials-${id}.json`), join(dir, 'credentials.json')]
-  for (const file of files) {
-    if (!existsSync(file)) continue
-    try {
-      const c = JSON.parse(readFileSync(file, 'utf8'))
-      if (String(c.assistantId ?? '') !== id) continue
-      if (!c.pairingToken || !c.userId || !c.backendUrl) return { error: 'This agent is not paired. Pair it first with hoai pair.' }
-      const base = String(c.backendUrl).replace(/\/+$/, '')
-      return { assistantId: Number(id), ownerId: c.userId, pairingToken: c.pairingToken, apiBase: base.endsWith('/api/v1') ? base : `${base}/api/v1`, stateDir: vaultHostDir(join(dir, id)) }
-    } catch {}
+  if (!auth.complete || auth.mode !== 'pairing' || !/^\d+$/.test(auth.assistantId)) {
+    return { error: 'This agent is not paired on this machine. Pair it first with hoai pair.' }
   }
-  return { error: 'This agent is not paired on this machine. Pair it first with hoai pair.' }
+  const id = Number(auth.assistantId)
+  if (!Number.isSafeInteger(id) || id <= 0) return { error: 'This pairing has an invalid assistant id.' }
+  const base = auth.backendUrl.replace(/\/+$/, '')
+  return { assistantId: id, ownerId: auth.userId, pairingToken: auth.pairingToken, apiBase: base.endsWith('/api/v1') ? base : `${base}/api/v1`, stateDir: vaultHostDir(join(dir, auth.assistantId)) }
 }
 
 function askHidden(prompt) {
