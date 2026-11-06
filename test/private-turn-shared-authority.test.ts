@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { PRIVATE_TURN_REFUSAL, TURN_AWARE_REFUSAL } from '../lib/private-turn.mjs'
+import { PRIVATE_TURN_REFUSAL, TURN_AWARE_REFUSAL, readPrivateJson, writePrivateJson } from '../lib/private-turn.mjs'
 import {
   GATED, TURN_AWARE, OWNER, actsFor, admitCall, agentHost, emailFrame, peerFrame, personFrame, wakeFrame, type Host,
 } from './helpers/private-turn-host.ts'
@@ -99,4 +99,30 @@ for (const [index, notification] of notifications.entries()) {
     host.submit(card)
     await assertClosed(host)
   })
+
+  test(`notification provenance remains part of the submitted turn (${index + 1})`, async (t) => {
+    const host = agentHost(t)
+    host.submit(host.card(frame(A)))
+    await assertRecipient(host, A)
+    const card = notification(host)
+    host.stop()
+    host.submit(`${card}\n${host.card(frame(A))}`)
+    await assertClosed(host)
+    host.stop()
+    host.submit(host.card(frame(A)))
+    await assertRecipient(host, A)
+  })
 }
+
+test('an adopted turn requires valid provenance on every authority read', async (t) => {
+  const host = agentHost(t)
+  host.submit(host.card(frame(A)))
+  await assertRecipient(host, A)
+  for (const path of host.markerPaths) {
+    const marker = readPrivateJson(path, 8192)
+    assert.equal(marker?.live, true)
+    assert.equal(marker.rawCard, false)
+    writePrivateJson(path, { ...marker, rawCard: true })
+  }
+  await assertClosed(host)
+})

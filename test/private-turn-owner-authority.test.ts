@@ -1,32 +1,7 @@
 /**
- * A verified owner turn keeps its private turn authority to the end of its CLI turn (HOAI board row c09e214e, Data,
- * agent 900): boards, schedule, the missions and the Agent Browser refused with "sender could not be verified" in
- * the middle of an owner turn when a peer message, a peer conversation close, a button click or a second owner stamped
- * wake in the same second arrived.
- *
- * Captured on main (0.71.1) with the real forwarder, hook, intake, tracker and server.ts's admission block
- * (test/helpers/private-turn-host.ts). What ended the turn, in lib/private-turn.mjs at 0.71.1:
- *
- *   (a) A second prompt of the same CLI turn (a second owner wake or message of the same chat) whose forwarder line
- *       lands after the first prompt was adopted and before its own marker: begin() of the second prompt keeps both
- *       admitted (:663-667, :717), the publish after the line (server.ts:9822) re-adopts the FIRST on its marker still on
- *       disk (:930), the second prompt's hook then writes its marker, and from there current() returns null at :956
- *       with `active` set, so the admitted prompts are never looked at again (:924). Refused to the end of the turn.
- *   (b) Two owner wakes in the same second in two chats: begin() keeps prompts together only for the same chat
- *       (sameTurn, :715-717), so the marker names the one begin() dropped. Refused for the whole CLI turn.
- *   (c) A second owner wake of another chat delivered into the running turn: deliver() revokes it, 'another chat'
- *       (:807, :813), until the next prompt.
- *   (d) The second wake run as the next CLI turn right after the Stop, the first turn's Stop line late (a cold node
- *       start on Windows): end() empties the turn begin() of the second wake had just admitted and adopted (:1038).
- *   (e) A card the daemon pushes with no delivery (the owner's own tap on the poll lane, a peer conversation close, a
- *       reply-overdue reminder) that the CLI runs as its own prompt: the hook stamps a marker of that prompt (:956
- *       refuses at once), and begin() of a prompt with no token empties the turn (:665, :693), silently (server.ts:9813
- *       logs no begin line for a prompt it cannot match to a delivery).
- *   (f) A peer agent's message: deliver() revokes the turn, 'a peer agent' (:807, :811). By design since #208: a peer's
- *       words never ride on the owner's authority (the PEER default, argued in the PR, Data decides). The owner's next
- *       prompt in the same CLI turn is the owner's again (and email_send asks, #254).
- *
- * Run with: npx tsx --test test/private-turn-owner-authority.test.ts
+ * Verified owner authority remains scoped to the complete CLI turn.
+ * Carried notifications and lifecycle events preserve sender isolation.
+ * These tests exercise production hooks, intake, tracker, tool admission and signed browser contexts.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -300,11 +275,7 @@ test('control: a share recipient\'s wake of another chat never joins the owner\'
   for (const name of GATED) assert.equal(await actsFor(host, name), RECIPIENT, `a fresh recipient turn: ${name}`)
 })
 
-// ── Security review of c09e214e (findings fixed red first) ──
-// High: a carried card followed the marker after someone else's prompt ran in the same CLI turn, so the owner's
-// authority came back with nobody's bar re-checked. Medium: a carried card whose marker came before the owner's prompt
-// was adopted stranded the owner's turn. Medium: a Stop whose hook never closed the marker no longer ended the turn.
-// Low: a carried card kept a voice consult's turn.
+// Carried notifications respect complete turn provenance.
 
 /** Once the stranger's own line lands, a share recipient's turn acts as them (#247); nothing ever acts as the owner. */
 async function assertNeverOwner(host: Host, label: string) {
@@ -476,13 +447,7 @@ test('review: server.ts ends the private turn at the hook line\'s own time (the 
   assert.match(source, /hookLineAt = lineAt\n(  hookLineStartedAt = line\?\.startedAt\n)?  try \{\n    runHookEffects\(effects\)\n  \} finally \{\n    hookLineAt = null\n(    hookLineStartedAt = undefined\n)?  \}/, 'set only while the line\'s effects run')
 })
 
-// ── The security re-review of c09e214e ──
-// Medium: the forwarder stamps receivedAt after its cold start and its stdin read, which on a slow start comes after the
-// next prompt's marker, so end({ at }) took a late Stop line for a Stop after that prompt and ended the owner's next
-// turn: bug (d) again. The line now carries the forwarder's process start (startedAt), which claude spawns with the
-// Stop hook at the Stop, before the next prompt's hook can run. Low: a Stop whose hook never closed the marker, then a
-// carried card run as the next CLI turn's first prompt, kept the owner's authority past the Stop: end() measured the
-// marker written last, the carried card's, not the one the owner's turn was verified on.
+// Stop processing preserves turn boundaries.
 
 test('re-review (Medium): the real forwarder stamps its line with its own process start (startedAt), at or before its receivedAt', (t) => {
   const base = mkdtempSync(join(tmpdir(), 'hoai-forwarder-'))
@@ -554,11 +519,7 @@ test('re-review (Low) control: a Stop whose hook was killed, the owner\'s next m
   await assertOwnerTurn(host, 'after the Stop line', reasonOf(next))
 })
 
-// ── Final re-review of c09e214e (findings fixed red first) ──
-// Medium (older than round 5): the same peer close announced twice while the owner's turn works runs as two prompts
-// back to back. The second has the first's words and meta, so its promptHash, and current() took it for the same words
-// submitted again after an interrupt (a new prompt_id): the owner lost every gated tool to the end of the CLI turn. A
-// carried card restamped under a new prompt_id is followed as a carried card, through the same checks and bars.
+// Repeated carried notifications retain only valid current-turn authority.
 async function ownerMessageTurn(t: any, withRecipient: boolean) {
   const host = agentHost(t)
   if (withRecipient) {
@@ -651,11 +612,7 @@ test('final re-review control: the marker\'s list of prompts full (fifteen reply
   for (const name of GATED) assert.notEqual(await actsFor(host, name), 'owner', `${name}; explain: ${host.explain()}`)
 })
 
-// ── Data's review of #261 (M1, fixed red first) ──
-// A reply reminder was carried for any chat: one about a share recipient's or a peer agent's unanswered message, run as
-// a prompt of the owner's later CLI turn, kept boards, schedule, missions, the signed browser and a direct email_send
-// the owner's while the daemon itself pointed the model at that request. server.ts marks the card `owner_inbound` only
-// when the message it names was the owner's own (recordInbound), and only that card is carried.
+// Reply reminders preserve the identity of their source.
 
 for (const who of ['a share recipient', 'a peer agent'] as const) {
   test(`Data's review (M1): ${who}'s message run in one CLI turn with no reply, the owner's message as the next, then the reply reminder for ${who}'s message as a prompt of the owner's turn: nothing acts as the owner`, async (t) => {
