@@ -8,6 +8,10 @@ The browser shim pin now records BGOS main commit `aed69c93bd191ce8de678b4f5cac4
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.86.9 (2026-11-06)
+
+**The bundled browser shim matches HOAI again, including request cancellation.** The plugin's copy of the Agent Browser shim had drifted behind its HOAI source and lacked MCP request cancellation. It is brought to parity, its pin is refreshed, and CI now checks it against a content hash recorded with the pin, so drift fails the build without needing access to the private source.
+
 ## 0.86.8 (2026-11-06)
 
 **A test no longer fails just because CI is busy.** The large email attachment check measures against a baseline timed in the same run instead of a fixed number of milliseconds, so it still catches a frozen main thread but no longer fails on a loaded shared runner.
