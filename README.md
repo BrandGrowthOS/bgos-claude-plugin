@@ -800,7 +800,7 @@ For local files:
 | Image | JPEG, PNG, GIF, WebP, SVG, BMP, TIFF | 10 MB |
 | Video | MP4, WebM, MOV, AVI, MKV | 100 MB |
 | Audio | MP3, WAV, OGG, M4A, AAC, FLAC | 20 MB |
-| Document | PDF, TXT, CSV, DOC/DOCX, XLS/XLSX, PPT/PPTX, JSON, ZIP | 25 MB |
+| Document | PDF, TXT, CSV, DOC/DOCX, XLS/XLSX, PPT/PPTX, JSON, ZIP | 200 MB |
 
 Files under 5 MB are sent inline (base64). Larger files are uploaded via S3 presigned URL.
 

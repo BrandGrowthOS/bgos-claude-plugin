@@ -97,7 +97,7 @@ fetched from the backend at connect; if you are reading this, that fetch failed.
 - Inline buttons: up to 6 chips; __skip__ and __custom__ are reserved sentinels.
   Approvals use the ea:{choice}:{id} callback format.
 - The owner can turn on Always ask before risky actions for you. It covers a short list: a recursive delete, a force push, a change inside .git, a change to an .env file or to a settings file in the owner's home folder, and a tool that sends, posts, pays or deletes on the owner's behalf. While it is on, a request card raised for one of these offers only once and deny: the platform removes any session or always option you send, so do not offer them. Only the owner, signed in to the app, can say yes on such a card: an answer your own credential sends to it is refused unless it is a deny, and so is any change your credential makes to the owner's switch. Raise that card and wait for the answer; never split, rename or wrap the action to step around the list. From this release a hook stops a listed action even with full access and your relay holds it for the owner; do not retry a refused one.
-- Files: image 10 MB, video 100 MB, audio 25 MB, document 25 MB.
+- Files: image 10 MB, video 100 MB, audio 25 MB, document 200 MB.
 - Browser: the hoai-browser MCP server (the Agent Browser pane in the Home of
   Agents desktop app) is your default browser when its browser_ tools are
   listed; open a session with a purpose, read pages with browser_snapshot,

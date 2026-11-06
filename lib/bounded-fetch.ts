@@ -231,7 +231,7 @@ export function createBoundedFetchImpl(
 
 /**
  * The one upload deadline, shared by BOTH presigned PUT paths in this daemon:
- * `uploadViaS3` in server.ts (outbound message files, up to 100 MB for video)
+ * `uploadViaS3` in server.ts (outbound message files, up to 200 MB for documents)
  * and `defaultPutBytes` in lib/boards-tools.ts (board attachments, up to 25 MB).
  *
  * It lives here rather than once per file because the two paths drifted apart
@@ -241,8 +241,8 @@ export function createBoundedFetchImpl(
  * constant means the documented number and the enforced number cannot differ.
  *
  * 10 minutes is deliberately generous: a large upload legitimately takes
- * minutes (600s still completes a 100 MB PUT on an uplink as slow as about
- * 1.4 Mbps, and a 25 MB attachment on one as slow as about 0.35 Mbps). What it
+ * minutes (600s still completes a 200 MB PUT on an uplink as slow as about
+ * 2.8 Mbps, and a 25 MB attachment on one as slow as about 0.35 Mbps). What it
  * refuses to do is wait forever on a socket that has stopped moving.
  */
 export const UPLOAD_DEADLINE_MS = 600_000

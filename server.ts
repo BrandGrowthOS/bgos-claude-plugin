@@ -1435,7 +1435,7 @@ async function trackMessageOperation<T>(operation: () => Promise<T>): Promise<T>
 
 const SIZE_LIMITS: Record<string, number> = {
   image: 10 * 1024 * 1024, video: 100 * 1024 * 1024,
-  audio: 20 * 1024 * 1024, document: 25 * 1024 * 1024,
+  audio: 20 * 1024 * 1024, document: 200 * 1024 * 1024,
 }
 
 const S3_THRESHOLD = 5 * 1024 * 1024
@@ -1477,7 +1477,7 @@ const STARTUP_WARMUP_TIMEOUT_MS = 8_000
 //    deadline BELOW that would cut off a legitimate reply, so this one is
 //    deliberately the longest ordinary bound: the server cap plus margin.
 const PEER_HTTP_TIMEOUT_MS = 75_000
-//  - S3 uploads: the outbound video limit is 100 MB, which on a slow uplink is
+//  - S3 uploads: the outbound document limit is 200 MB, which on a slow uplink is
 //    genuinely many minutes of PUT. Bounded, but generously, because the
 //    failure this guards is a stalled socket and not a slow one. The number
 //    and its rationale live in lib/bounded-fetch.ts because the BOARDS
@@ -3144,7 +3144,7 @@ async function uploadViaS3(
         headers: { 'Content-Type': contentType },
         body: new Uint8Array(fileBuffer),
       },
-      // A 100 MB video on a slow uplink is genuinely minutes of PUT, so this
+      // A 200 MB document on a slow uplink takes minutes of PUT, so this
       // deadline is generous on purpose. What it still refuses to do is wait
       // forever on a socket that stopped moving.
       timeoutMs: UPLOAD_TIMEOUT_MS,
@@ -3579,7 +3579,7 @@ const mcp = new Server(
       '- Optional fields: `file_name` (display name), `mime_type` (override auto-detection).',
       '- Supported images: JPEG, PNG, GIF, WebP, SVG, BMP, TIFF (max 10 MB).',
       '- Supported videos: MP4, WebM, MOV, AVI, MKV (max 100 MB).',
-      '- Supported documents: PDF, TXT, CSV, DOC/DOCX, XLS/XLSX, PPT/PPTX, JSON, YAML/YML, ZIP (max 25 MB).',
+      '- Supported documents: PDF, TXT, CSV, DOC/DOCX, XLS/XLSX, PPT/PPTX, JSON, YAML/YML, ZIP (max 200 MB).',
       '- Images display as thumbnails the user can tap to view full-size.',
       '- Videos play inline in the chat.',
       '- Documents show as download cards.',
