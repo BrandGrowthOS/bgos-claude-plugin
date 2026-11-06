@@ -103,6 +103,10 @@ interface Backend {
    * before the post is answered, so no read can ever see the card unanswered.
    */
   tapOnPost: ((body: Record<string, unknown>) => number | null) | null
+  anchoredReads: Array<{ id: number; conditional: boolean }>
+  pollRequests: Array<{ afterId: number; conditional: boolean; status: number }>
+  honorEtags: boolean
+  holdPost: ((row: StoredRow) => Promise<void>) | null
   readsOf: (chatId: number) => number
   /**
    * Hold the NEXT poll read of a chat: its page is taken when the read
@@ -166,6 +170,10 @@ async function startBackend(): Promise<Backend> {
     rows,
     posts,
     tapOnPost: null,
+    anchoredReads: [],
+    pollRequests: [],
+    honorEtags: false,
+    holdPost: null,
     readsOf: (chatId) => reads.get(chatId) ?? 0,
     holdNextRead: (chatId, during) => {
       holds.set(chatId, during)
@@ -240,15 +248,19 @@ async function startBackend(): Promise<Backend> {
       if (isPoll) reads.set(chatId, (reads.get(chatId) ?? 0) + 1)
       const afterParam = url.searchParams.get('afterId')
       const afterId = afterParam === null ? 0 : Number(afterParam)
+      const beforeId = Number(url.searchParams.get('beforeId') ?? Infinity)
+      const limit = Number(url.searchParams.get('limit') ?? 50)
+      const anchored = limit === 1 && beforeId === afterId + 2
+      if (anchored) backend.anchoredReads.push({ id: afterId + 1, conditional: req.headers['if-none-match'] !== undefined })
       // The real route: the NEWEST 50 rows above the cursor, oldest first.
       // Taken NOW, as the read arrives, and copied, so a held read answers
       // with the chat as it was when the read began.
       const page = JSON.parse(
         JSON.stringify(
           rows
-            .filter((r) => r.chatId === chatId && r.id > afterId)
+            .filter((r) => r.chatId === chatId && r.id > afterId && r.id < beforeId)
             .sort((a, b) => a.id - b.id)
-            .slice(-50),
+            .slice(-limit),
         ),
       ) as StoredRow[]
       const hold = isPoll ? holds.get(chatId) : undefined
@@ -258,7 +270,7 @@ async function startBackend(): Promise<Backend> {
           holdErrors.push(String(err))
         })
       }
-      return json({
+      const response = {
         messages: page.map((r) => ({
           message: {
             id: r.id,
@@ -277,14 +289,22 @@ async function startBackend(): Promise<Backend> {
           messageFiles: [],
           messageOptions: r.options.map((o) => ({ ...o, messageId: r.id })),
         })),
-      })
+      }
+      const etag = `"${Buffer.from(JSON.stringify(response)).toString('base64url')}"`
+      const status = backend.honorEtags && req.headers['if-none-match'] === etag ? 304 : 200
+      if (isPoll && !anchored) backend.pollRequests.push({ afterId, conditional: req.headers['if-none-match'] !== undefined, status })
+      if (backend.honorEtags) res.setHeader('ETag', etag)
+      if (status === 304) { res.writeHead(304); res.end(); return }
+      return json(response)
     }
     if (req.method === 'POST' && path === 'send-message') {
       const row = store('send-message', body)
+      await backend.holdPost?.(row)
       return json({ message: { id: row.id, chatId: row.chatId, text: row.text } })
     }
     if (req.method === 'POST' && path === 'messages') {
       const row = store('messages', body)
+      await backend.holdPost?.(row)
       return json({ id: row.id, chatId: row.chatId, text: row.text })
     }
     return json({})
@@ -546,6 +566,9 @@ describe('a tap on a card this daemon posted is heard when it lands before the n
         ownerSendsLogin(w.backend)
         await waitFor(() => loginCardOf(w.backend) !== undefined, 'the sign-in card')
 
+        const cardId = loginCardOf(w.backend)!.id
+        await waitQuietly(() => w.backend.anchoredReads.some((r) => r.id === cardId), 2_000)
+        assert.deepEqual(w.backend.anchoredReads.filter((r) => r.id === cardId), [{ id: cardId, conditional: false }], 'one unconditional direct read of this sign-in card')
         // The card exactly as production received it: same words, both chips,
         // the first marked primary, inline.
         const card = loginCardOf(w.backend)!
@@ -612,6 +635,8 @@ describe('a tap on a card this daemon posted is heard when it lands before the n
       assert.notEqual(result.isError, true, `the reply was sent: ${JSON.stringify(result.content)}`)
       const posted = w.backend.posts.find((p) => p.body.text === 'Ship it now?')
       assert.ok(posted, 'the reply reached the backend')
+      await waitQuietly(() => w.backend.anchoredReads.some((r) => r.id === posted.id), 2_000)
+      assert.deepEqual(w.backend.anchoredReads.filter((r) => r.id === posted.id), [{ id: posted.id, conditional: false }], 'one unconditional direct read by card id')
       await waitQuietly(() => w.daemon.cards.some((c) => c.messageId === posted.id), 20_000)
       const clicks = w.daemon.cards.filter((c) => c.messageId === posted.id)
       assert.equal(clicks.length, 1, `the click reached the session once\n${evidence(w)}`)
@@ -643,6 +668,8 @@ describe('a tap on a card this daemon posted is heard when it lands before the n
       assert.notEqual(result.isError, true, `the plan was posted: ${JSON.stringify(result.content)}`)
       const posted = w.backend.posts.find((p) => p.route === 'messages')
       assert.ok(posted, 'the plan card reached the backend')
+      await waitQuietly(() => w.backend.anchoredReads.some((r) => r.id === posted.id), 2_000)
+      assert.deepEqual(w.backend.anchoredReads.filter((r) => r.id === posted.id), [{ id: posted.id, conditional: false }], 'one unconditional direct read by card id')
       await waitQuietly(() => w.daemon.cards.some((c) => c.messageId === posted.id), 20_000)
       const answers = w.daemon.cards.filter((c) => c.messageId === posted.id)
       assert.equal(answers.length, 1, `the plan answer reached the session once\n${evidence(w)}`)
@@ -651,6 +678,29 @@ describe('a tap on a card this daemon posted is heard when it lands before the n
     } finally {
       await w.end()
     }
+  })
+
+  test('review: a completed answered full read and repeated ETag 304s cannot hide a delayed POST answer', OPTS, async () => {
+    const w = await world()
+    try {
+      await postOpenCard(w)
+      w.backend.honorEtags = true
+      w.backend.tapOnPost = (body) => String(body.text ?? '').startsWith(SIGNED_OUT_LEAD) ? 0 : null
+      let completed = false
+      w.backend.holdPost = async (row) => {
+        if (!row.text.startsWith(SIGNED_OUT_LEAD)) return
+        const reads = w.backend.pollRequests.length
+        await waitFor(() => w.backend.pollRequests.length > reads, 'full read A of the already answered card')
+        await waitFor(() => w.backend.pollRequests.slice(reads).some((r) => r.status === 304), 'a cached full read returning 304')
+        completed = true
+      }
+      ownerSendsLogin(w.backend)
+      await waitQuietly(() => claudeCalls(w.rig).includes('auth login --claudeai'), 15_000)
+      assert.equal(completed, true, 'the POST returned only after the answered body and a 304 were processed')
+      assert.ok(w.backend.pollRequests.some((r) => r.afterId === 0 && r.status === 304), 'the backend honored a full-read validator')
+      assert.ok(claudeCalls(w.rig).includes('auth login --claudeai'), `the direct read delivered the cached answer\n${evidence(w)}`)
+      assert.equal(w.backend.anchoredReads.filter((r) => r.id === loginCardOf(w.backend)!.id).length, 1)
+    } finally { await w.end() }
   })
 
   test('a read already in flight when the sign-in card is posted does not erase it: the tap is heard on the next read', OPTS, async () => {
@@ -678,6 +728,7 @@ describe('a tap on a card this daemon posted is heard when it lands before the n
         heldReadAnswered = true
       })
       await waitQuietly(() => claudeCalls(w.rig).includes('auth login --claudeai'), 25_000)
+      await waitFor(() => heldReadAnswered, 'the stale held read to finish after the direct answer')
       assert.equal(heldReadAnswered, true, `the held read ran\n${evidence(w)}`)
       assert.deepEqual(w.backend.holdErrors, [], 'the hold itself did not fail')
       assert.ok(

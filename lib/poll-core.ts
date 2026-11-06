@@ -590,35 +590,24 @@ export interface ClickRow {
   answered: boolean
 }
 
-/** The lower bound and own-card note generation captured before a read starts. */
-export interface ClickRead {
-  afterId: number
-  noteGeneration: number
-}
-
-/** Note generations live only as long as the corresponding open cards. */
+/** Own cards stay open until their row is observed settled, independent of read order. */
 export class OwnCardNotes {
-  private generation = 0
-  private readonly chats = new Map<string, Map<number, number>>()
+  private readonly chats = new Map<string, Set<number>>()
 
   note(chatId: string, messageId: number): void {
     let notes = this.chats.get(chatId)
-    if (!notes) this.chats.set(chatId, notes = new Map())
-    notes.set(messageId, ++this.generation)
+    if (!notes) this.chats.set(chatId, notes = new Set())
+    notes.add(messageId)
   }
 
-  beginRead(afterId: number): ClickRead {
-    return { afterId, noteGeneration: this.generation }
-  }
-
-  forChat(chatId: string): ReadonlyMap<number, number> | undefined {
+  forChat(chatId: string): ReadonlySet<number> | undefined {
     return this.chats.get(chatId)
   }
 
   reconcile(chatId: string, open: ReadonlySet<number>): void {
     const notes = this.chats.get(chatId)
     if (!notes) return
-    for (const id of notes.keys()) if (!open.has(id)) notes.delete(id)
+    for (const id of notes) if (!open.has(id)) notes.delete(id)
     if (notes.size === 0) this.chats.delete(chatId)
   }
 }
@@ -627,21 +616,11 @@ export class OwnCardNotes {
  * Decide which button clicks THIS poll should announce to the agent, and what
  * the chat's unanswered-button set becomes.
  *
- * THE SINGLE-ANNOUNCE CONTRACT. This poll is the ONLY path by which a Claude
- * Code agent learns about a button tap: the daemon registers no `inbound_click`
- * WS listener, and the backend correspondingly withholds that push from
- * unpaired assistants (backend `message.service.ts`, `if (pairingId !== null)`,
- * pinned by `message.service.click-delivery.spec.ts`). A tap must therefore be
- * announced exactly once here, no matter how many times the message is polled
- * afterwards, and anyone adding a WS listener must retire this detector in the
- * same change or the agent hears every tap twice.
- *
- * The rule (extracted verbatim from pollChat, behaviour unchanged): announce a
- * message only on a real live transition, i.e. we saw THIS id unanswered on a
- * previous poll and it is answered now. That is what makes it once-only:
- * announcing removes the id from the set (it is answered, so it does not go
- * into `nextUnanswered`), so a later poll of the same answered row finds no
- * prior unanswered entry and stays silent.
+ * History only announces a live transition from an open card to its answer.
+ * Own posts also start one unconditional read by id and deliver through the
+ * same daemon announce gate. The stream shares that gate's receipt set, so
+ * whichever read or transport arrives first claims the card synchronously.
+ * No `inbound_click` WS listener is registered.
  *
  * On the FIRST poll for a chat we only baseline the unanswered set and never
  * announce. Historic clicks from before the daemon started are not replayed
@@ -654,23 +633,21 @@ export class OwnCardNotes {
  * its answer is due however late. The tracker keeps the first answer per
  * question, so handing the same row over on every poll is harmless.
  *
- * A read cannot retire a card noted after it started, or one excluded by its
- * afterId lower bound. The note generation is captured before fetching, so
- * even a full read returning newer rows cannot erase a concurrent POST note.
- * A missing card newer than every returned row also stays open. A later read
- * that covers an older missing card can drop it as deleted or out of window.
+ * A missing own card stays open: a direct read by id, started after its
+ * POST returns, owns the initial answer check. History reads can be older,
+ * exclude the id, or return 304. A row observed settled always consumes its
+ * open entry, including when another transport already announced it.
  *
  * `alreadyAnnounced` is the set both transports mark a tap in. A tap in it is
  * never announced here: the stream can announce a tap before the post that
- * noted its card open returns, and the note then puts the id back.
+ * noted its card open returns. Stale unanswered rows cannot reopen it.
  */
 export function selectClickTransitions(opts: {
   rows: ClickRow[]
   prevUnanswered: ReadonlySet<number>
   isFirstPoll: boolean
   alreadyAnnounced?: ReadonlySet<number>
-  read?: ClickRead
-  ownCardNotes?: ReadonlyMap<number, number>
+  ownCardNotes?: ReadonlySet<number>
   /** Message ids of every question in a pending ask group. */
   trackedAsks?: ReadonlySet<number>
 }): { announce: number[]; nextUnanswered: Set<number>; askAnswered: number[] } {
@@ -678,6 +655,7 @@ export function selectClickTransitions(opts: {
   const nextUnanswered = new Set<number>()
   const askAnswered: number[] = []
   let newestRead = -Infinity
+  const observed = new Set(opts.rows.map((row) => row.id))
   for (const row of opts.rows) {
     if (row.id > newestRead) newestRead = row.id
     if (row.sender !== 'assistant') continue
@@ -686,6 +664,7 @@ export function selectClickTransitions(opts: {
       continue
     }
     if (row.messageType === 'ask_user_input') continue
+    if (opts.alreadyAnnounced?.has(row.id)) continue
     if (!row.hasOptions) continue
     if (!row.answered) {
       nextUnanswered.add(row.id)
@@ -693,14 +672,11 @@ export function selectClickTransitions(opts: {
     }
     if (opts.isFirstPoll) continue
     if (!opts.prevUnanswered.has(row.id)) continue
-    if (opts.alreadyAnnounced?.has(row.id)) continue
     announce.push(row.id)
   }
   for (const id of opts.prevUnanswered) {
-    if (id > newestRead || (opts.read && (
-      id <= opts.read.afterId ||
-      (opts.ownCardNotes?.get(id) ?? 0) > opts.read.noteGeneration
-    ))) nextUnanswered.add(id)
+    if (opts.alreadyAnnounced?.has(id) || observed.has(id)) continue
+    if (id > newestRead || opts.ownCardNotes?.has(id)) nextUnanswered.add(id)
   }
   return { announce, nextUnanswered, askAnswered }
 }
@@ -721,8 +697,7 @@ export function selectClickTransitions(opts: {
  * no cursor as a first read, which announces nothing), and a chat with an open
  * card is read in full, so a cursor that moved past the card cannot hide it.
  * Single announce still holds: a read's announce consumes the entry, and a tap
- * the stream announced first (it can, before the post returns and the note
- * re-opens the id) is in `alreadyAnnounced`, which the read skips.
+ * the stream announced before the post returned is never re-opened.
  *
  * Called for the sign-in card, the reply tool's buttons and the plan card.
  * Not for the permission card (its own watch reads the card row) nor
@@ -733,7 +708,9 @@ export function noteOwnUnansweredCard(
   chatId: string,
   messageId: number,
   notes?: OwnCardNotes,
+  alreadyAnnounced?: ReadonlySet<number>,
 ): void {
+  if (alreadyAnnounced?.has(messageId)) return
   notes?.note(chatId, messageId)
   const open = unanswered.get(chatId)
   if (open) open.add(messageId)

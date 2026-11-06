@@ -474,11 +474,11 @@ test('all three call sites pass a NULL AWARE clicker id and drop a refused tap',
   )
   // The poll: the answer payload, through the null aware reader.
   const poll = SERVER.slice(
-    SERVER.indexOf('const planAnswer = applyPlanAnswer({\n        chatId,\n        messageId: mm.id,'),
+    SERVER.indexOf('const planAnswer = applyPlanAnswer({\n    chatId,\n    messageId: mm.id,'),
   ).slice(0, 900)
   assert.match(poll, /clickerUserId: senderUserIdCandidate\(payload\),/)
   assert.match(poll, /via: 'poll',/)
-  assert.match(poll, /if \(planAnswer\.refused\) continue/)
+  assert.match(poll, /if \(planAnswer\.refused\) return/)
   // The stream: the id the normalisation CARRIED off the raw answer payload
   // (lib/stream-apply.ts answerPayloadOf). NOT senderUserIdCandidate(answer):
   // `answer` keeps only the button fields, so that read null on every stream

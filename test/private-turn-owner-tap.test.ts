@@ -892,7 +892,7 @@ test('re-verify (Medium): privateTapCard notes an owner stamped tap as someone e
 test('re-verify (Medium): server.ts checks every lane\'s tap against the cards this daemon posted, and forgets a plan card it retired', () => {
   const source = readFileSync('server.ts', 'utf8').replace(/\r\n/g, '\n')
   assert.match(source, /\n {6}const postedButton = postedButtons\.posted\(row\.id, callbackData, buttonText, mm\.text\)\n/, 'the boot sweep')
-  assert.match(source, /\n {6}const postedButton = postedButtons\.posted\(mm\.id, callbackData, buttonText, mm\.text\)\n/, 'the poll')
+  assert.match(source, /\n {2}const postedButton = postedButtons\.posted\(mm\.id, callbackData, buttonText, mm\.text\)\n/, 'the poll')
   assert.match(source, /await bgosPatch\(`messages\/\$\{payload\.supersedes\}`, retireBody\)\n {10}postedButtons\.forget\(payload\.supersedes\)\n/, 'the retired plan card')
 })
 

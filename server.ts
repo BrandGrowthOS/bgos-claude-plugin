@@ -2523,7 +2523,8 @@ async function sendLoginText(
   // chat's next read is never announced.
   if (options.length > 0 && typeof msgId === 'number') {
     recentButtonPrompts.set(chatId, { messageId: msgId, sentAtMs: Date.now() })
-    noteOwnUnansweredCard(chatUnansweredButtons, chatId, msgId, ownCardNotes)
+    noteOwnUnansweredCard(chatUnansweredButtons, chatId, msgId, ownCardNotes, announcedClickIds)
+    void readOwnPostedCard(chatId, msgId)
     // When the card went out, so a tap's timing can be read against it.
     log(`/login: sign-in card ${msgId} posted to chat ${chatId}, open for a tap`)
   }
@@ -6958,7 +6959,8 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
         if (options.length > 0 && typeof msgId === 'number') {
           recentButtonPrompts.set(String(resolvedChatId), { messageId: msgId, sentAtMs: Date.now() })
           postedButtons.note(msgId, options, safeText)
-          noteOwnUnansweredCard(chatUnansweredButtons, String(resolvedChatId), msgId, ownCardNotes)
+          noteOwnUnansweredCard(chatUnansweredButtons, String(resolvedChatId), msgId, ownCardNotes, announcedClickIds)
+          void readOwnPostedCard(String(resolvedChatId), msgId)
         } else if (
           reply_to_id !== undefined &&
           Number(reply_to_id) === recentButtonPrompts.get(String(resolvedChatId))?.messageId
@@ -7168,7 +7170,8 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
           // Open from the moment it is posted, like the reply tool's and the
           // sign-in card. Not the permission card (its own watch reads the
           // card row) nor ask_user_input (the ask tracker owns its answers).
-          noteOwnUnansweredCard(chatUnansweredButtons, planChatId, cardMessageId, ownCardNotes)
+          noteOwnUnansweredCard(chatUnansweredButtons, planChatId, cardMessageId, ownCardNotes, announcedClickIds)
+          void readOwnPostedCard(planChatId, cardMessageId)
           // The CLI writes this tool result verbatim into the transcript, so
           // the minted id is proof of which transcript is ours, exactly as a
           // reply's is.
@@ -11794,6 +11797,198 @@ function pollTurnStateOf(m: ChatMessage): string | null {
   )
 }
 
+/** Both the history transition and the post's direct read deliver through this gate. */
+function announceCardAnswer(chatId: string, m: ChatMessage): void {
+  const mm = m.message
+  if (announcedClickIds.has(mm.id)) return
+  if (updateDrainMode || !lockHeld || humanMessageEdits.isChatDeleted(chatId)) return
+  const lane = ownerLaneVerdict(m)
+  if (!lane.deliver || ownerAnnounceRefused({ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership.isOthers(chatId) })) {
+    noteLaneMisroute('card answer', mm.id, lane.deliver ? 'a recipient chat' : lane.stamp)
+    return
+  }
+  rememberAnnouncedClick(mm.id)
+  chatUnansweredButtons.get(chatId)?.delete(mm.id)
+  ownCardNotes.reconcile(chatId, chatUnansweredButtons.get(chatId) ?? new Set())
+  if (recentButtonPrompts.get(chatId)?.messageId === mm.id) recentButtonPrompts.delete(chatId)
+  const payload = mm.answerPayload ?? {}
+  const callbackData = payload.callbackData ?? payload.callback_data ?? ''
+  const buttonText = payload.buttonText ?? payload.button_text ?? ''
+  const customText = payload.customText ?? payload.custom_text ?? undefined
+
+  // Internal permission-flow intercept: ea:(once|deny):<request_id>, plus
+  // the retired perm: vocabulary for a prompt an older build of this
+  // daemon posted and is still holding. Swallow these, do NOT forward to
+  // Claude as a channel event; resolve the pending verdict instead. The
+  // user binding and every log line below are unchanged; the parse and the
+  // resolve now live in lib/permission-relay.ts so both transports share
+  // one copy of them.
+  //
+  // This intake does not read the tapper the backend now stamps on the
+  // answer (`answeredByUserId`, BGOS #1592; the channel tag reads it through
+  // readTapperUserId), so this read falls back to the owner: on a SHARED assistant, where the
+  // requester is the person the agent was shared with, their own click is
+  // refused here as foreign. That rule predates the card read and is left
+  // exactly as it is, because the tap is not lost when it happens, whenever
+  // the card's id came back off the post: the watch then reads the same
+  // answer off the card row a tick later, and THAT read is null aware (see
+  // answeredOn in waitForVerdict; with no card id that read is off).
+  //
+  // The tapper the server stamps (`answeredByUserId`) is read FIRST since
+  // shared agents Phase 0, item 0.8: a permission request is bound to the
+  // owner, so a click the server names as a share recipient's is foreign.
+  // A click it names nobody for keeps the owner fallback above.
+  const permOutcome = resolvePermissionClick({
+    callbackData,
+    clickerUserId: readTapperUserId(payload) ?? senderUserIdOf(payload),
+    pending: pendingPermissions,
+    emailSendApproval: payload.emailSendApproval,
+  })
+  if (permOutcome.kind !== 'not_permission') {
+    if (permOutcome.kind === 'resolved') {
+      log(`Permission inline-button click: ${permOutcome.choice} [${permOutcome.requestId}]`)
+    } else if (permOutcome.kind === 'foreign') {
+      log(
+        `Ignoring permission button click ${permOutcome.choice} [${permOutcome.requestId}] from ` +
+          `user ${permOutcome.clickerUserId} (request belongs to ${permOutcome.requesterUserId})`,
+      )
+    } else {
+      log(
+        `Stale permission click ${permOutcome.choice} [${permOutcome.requestId}], no pending entry`,
+      )
+    }
+    return
+  }
+
+  // The daemon's own sign-in card (lib/auth-login.ts), off the RAW value
+  // and above the unescape, like the permission half above: a `login:`
+  // value can only have come off this daemon's card, since every agent
+  // authored chip goes out as `u:` + its value.
+  if (
+    loginController.button({
+      chatId,
+      messageId: mm.id,
+      callbackData: String(callbackData),
+      clickerUserId: senderUserIdCandidate(payload),
+    }) === 'consumed'
+  ) {
+    log(`/login: tap on message ${mm.id} in chat ${chatId} handled via poll`)
+    return
+  }
+
+  // A PLAN ANSWER, if it is one, and it is decided HERE, above the
+  // unescape, off the raw value, for the reason written on applyPlanAnswer.
+  // Three things separate a plan answer from an ordinary click:
+  //   1. Change the plan arrives as a click carrying the owner's typed
+  //      words in `custom_text` under the `__custom__` sentinel, because
+  //      the chip arms the composer rather than answering. The generic
+  //      wording would render that as `Custom reply: "make it shorter"`,
+  //      which reads as a button label rather than as what the owner said.
+  //   2. The click is the whole instruction on this channel: nothing here
+  //      starts a turn, flips a mode or blocks a tool, so what to do next
+  //      has to travel with the answer.
+  //   3. The wait is over either way, so the status line comes down, the
+  //      chat leaves the fast scope and the chip is reported off.
+  const planAnswer = applyPlanAnswer({
+    chatId,
+    messageId: mm.id,
+    callbackData,
+    customText,
+    eventMetaPayload: mm.eventMeta?.payload,
+    // NULL AWARE, unlike the permission intake's senderUserIdOf above:
+    // see foreignPlanTap for why the owner fallback must not be used here.
+    clickerUserId: senderUserIdCandidate(payload),
+    via: 'poll',
+  })
+  // A tap from someone other than the plan's person: drop it, the way the
+  // permission intake drops a foreign click. foreignPlanTap logged it.
+  if (planAnswer.refused) return
+
+  // Strip the `u:` namespace sentinel so the agent receives the exact value
+  // it authored. Reserved sentinels (__skip__/__custom__) are never escaped
+  // and pass through untouched.
+  const agentCallbackData = unescapeAgentButtonValue(callbackData)
+  // The raw value and label, as posted: the owner's tap is the owner's words only on a card as this daemon posted it.
+  const postedButton = postedButtons.posted(mm.id, callbackData, buttonText, mm.text)
+
+  const kind =
+    agentCallbackData === '__skip__'
+      ? 'Skipped'
+      : agentCallbackData === '__custom__'
+        ? 'Custom reply'
+        : 'Clicked'
+  const summary =
+    planAnswer.summary ??
+    (customText
+      ? `${kind}: "${customText}"`
+      : buttonText
+        ? `${kind}: ${buttonText}`
+        : `${kind}: ${agentCallbackData}`)
+  const contentLines = [
+    `[button_clicked] ${summary}`,
+    `(in reply to message_id=${mm.id})`,
+  ]
+  if (planAnswer.directive) contentLines.push(planAnswer.directive)
+  if (mm.text && mm.text.trim().length > 0) {
+    const quoted = mm.text.length > 200 ? mm.text.slice(0, 197) + '…' : mm.text
+    contentLines.push(`Original question: ${quoted}`)
+  }
+  // WHICH LANE DELIVERED THIS. The stream path logs its own receipt; this
+  // one logged nothing on success, so a click arriving here produced
+  // silence indistinguishable from a click that never arrived at all.
+  // That gap is the whole question: a missed WS push followed by the
+  // WS-healthy full poll cycle explains the observed 4.5 and 5.5 minute
+  // delays exactly, and only a positive line from THIS path can show the
+  // poll rescued it rather than the stream simply arriving late.
+  log(
+    `button_clicked ANNOUNCED via POLL for message ${mm.id} in chat ${chatId} ` +
+      `(answeredAt=${mm.answeredAt}); the stream lane did not deliver it first`,
+  )
+  void trackMessageOperation(() => mcp.notification({
+    method: 'notifications/claude/channel',
+    params: {
+      // 70f1898b: a tap by anyone but the owner is someone else's words in the turn it reaches. The poll opens no
+      // private turn, however fresh the tap (4bf28148: only the stream's, in its window).
+      content: privateTapCard({ tracker: privateTurns, lane: 'poll', ownerUserId: USER_ID, chatId: String(chatId), messageId: mm.id, tapperUserId: readTapperUserId(payload), answeredAt: mm.answeredAt, receivedAt: Date.now(), callbackData: agentCallbackData, customText: customText, posted: postedButton, content: contentLines.join('\n') }),
+      // `user_id` is the tapper the server stamped on the answer, or
+      // absent. It was this daemon's own USER_ID, so every tap read as
+      // the owner's whoever made it.
+      meta: buildButtonClickedMeta({
+        chatId,
+        messageId: mm.id,
+        callbackData: planAnswer.callbackData ?? agentCallbackData,
+        buttonText,
+        customText,
+        tapperUserId: readTapperUserId(payload),
+        assistantId: ASSISTANT_ID,
+        ts: mm.answeredAt,
+      }),
+    },
+  })).catch((err) => {
+    log(`Failed to deliver button_clicked to Claude: ${err}`)
+  })
+}
+
+/** One unconditional, ID-bounded request, independent of history cursors and ETags. */
+async function readOwnPostedCard(chatId: string, messageId: number): Promise<void> {
+  try {
+    const raw = await bgosGet(
+      `chats/${encodeURIComponent(chatId)}/messages?userId=${USER_ID}&afterId=${messageId - 1}&beforeId=${messageId + 1}&limit=1`,
+      { conditional: false },
+    ) as ChatHistoryResponse
+    const row = raw.messages?.find((entry) => entry.message.id === messageId && String(entry.message.chatId) === chatId)
+    if (row?.message.sender !== 'assistant') return
+    if (row.message.answeredAt) announceCardAnswer(chatId, row)
+    if (row.message.answeredAt || !(row.messageOptions ?? []).length) {
+      chatUnansweredButtons.get(chatId)?.delete(messageId)
+      ownCardNotes.reconcile(chatId, chatUnansweredButtons.get(chatId) ?? new Set())
+    }
+  } catch (err) {
+    // A transient direct-read failure leaves the card open for history polling.
+    log(`Own card ${messageId} answer read failed: ${err}`)
+  }
+}
+
 async function pollChat(chatId: string): Promise<void> {
   if (updateDrainMode || humanMessageEdits.isChatDeleted(chatId)) return
   // A daemon that has lost the pairing lock reads no chat. The tick stands
@@ -11841,7 +12036,6 @@ async function pollChat(chatId: string): Promise<void> {
     unansweredButtonCount: chatUnansweredButtons.get(chatId)?.size ?? 0,
     forceFull: isBootPoll || oldestHuman !== undefined,
   })
-  const clickRead = ownCardNotes.beginRead(req.mode === 'delta' ? lastSeen : 0)
   // The email cursor holds this batch took (emailFileSavesFor), let go when it ends.
   const pollEmailReleases: Array<() => void> = []
   try {
@@ -12162,7 +12356,6 @@ async function pollChat(chatId: string): Promise<void> {
       // A tap the stream announced first stays announced once, even when a
       // card this daemon noted open came back into prevUnanswered after it.
       alreadyAnnounced: announcedClickIds,
-      read: clickRead,
       ownCardNotes: ownCardNotes.forChat(chatId),
       trackedAsks: askTracker.trackedMessageIds(),
     })
@@ -12174,14 +12367,7 @@ async function pollChat(chatId: string): Promise<void> {
       noteLaneMisroute('poll tap', [...announced].join(','), 'a recipient chat')
       announced.clear()
     }
-    // Cross-transport single-announce: every id this poll announces joins
-    // the shared dedup set so a stream buttons_answered replay of the same
-    // tap stays silent (see rememberAnnouncedClick).
-    for (const id of announced) rememberAnnouncedClick(id)
-    // The prompt this chat was fast-polled for has been answered: drop the
-    // chat from the 2s scope (both lanes do this; see applyStreamButtonsAnswered).
-    const promptHere = recentButtonPrompts.get(chatId)
-    if (promptHere && announced.has(promptHere.messageId)) recentButtonPrompts.delete(chatId)
+    // announceCardAnswer marks the shared dedup set and clears fast polling.
     // Answers to a pending ask group on this page (lib/ask-tracker.ts): the
     // row itself names the option, so it is recorded straight off it, and a
     // group it completes is announced once (announceCompleteAsks). The same
@@ -12197,165 +12383,7 @@ async function pollChat(chatId: string): Promise<void> {
       announceCompleteAsks('poll')
     }
     for (const m of data.messages) {
-      const mm = m.message
-      if (!announced.has(mm.id)) continue
-
-      const payload = mm.answerPayload ?? {}
-      const callbackData = payload.callbackData ?? payload.callback_data ?? ''
-      const buttonText = payload.buttonText ?? payload.button_text ?? ''
-      const customText = payload.customText ?? payload.custom_text ?? undefined
-
-      // Internal permission-flow intercept: ea:(once|deny):<request_id>, plus
-      // the retired perm: vocabulary for a prompt an older build of this
-      // daemon posted and is still holding. Swallow these, do NOT forward to
-      // Claude as a channel event; resolve the pending verdict instead. The
-      // user binding and every log line below are unchanged; the parse and the
-      // resolve now live in lib/permission-relay.ts so both transports share
-      // one copy of them.
-      //
-      // This intake does not read the tapper the backend now stamps on the
-      // answer (`answeredByUserId`, BGOS #1592; the channel tag reads it through
-      // readTapperUserId), so this read falls back to the owner: on a SHARED assistant, where the
-      // requester is the person the agent was shared with, their own click is
-      // refused here as foreign. That rule predates the card read and is left
-      // exactly as it is, because the tap is not lost when it happens, whenever
-      // the card's id came back off the post: the watch then reads the same
-      // answer off the card row a tick later, and THAT read is null aware (see
-      // answeredOn in waitForVerdict; with no card id that read is off).
-      //
-      // The tapper the server stamps (`answeredByUserId`) is read FIRST since
-      // shared agents Phase 0, item 0.8: a permission request is bound to the
-      // owner, so a click the server names as a share recipient's is foreign.
-      // A click it names nobody for keeps the owner fallback above.
-      const permOutcome = resolvePermissionClick({
-        callbackData,
-        clickerUserId: readTapperUserId(payload) ?? senderUserIdOf(payload),
-        pending: pendingPermissions,
-        emailSendApproval: payload.emailSendApproval,
-      })
-      if (permOutcome.kind !== 'not_permission') {
-        if (permOutcome.kind === 'resolved') {
-          log(`Permission inline-button click: ${permOutcome.choice} [${permOutcome.requestId}]`)
-        } else if (permOutcome.kind === 'foreign') {
-          log(
-            `Ignoring permission button click ${permOutcome.choice} [${permOutcome.requestId}] from ` +
-              `user ${permOutcome.clickerUserId} (request belongs to ${permOutcome.requesterUserId})`,
-          )
-        } else {
-          log(
-            `Stale permission click ${permOutcome.choice} [${permOutcome.requestId}], no pending entry`,
-          )
-        }
-        continue
-      }
-
-      // The daemon's own sign-in card (lib/auth-login.ts), off the RAW value
-      // and above the unescape, like the permission half above: a `login:`
-      // value can only have come off this daemon's card, since every agent
-      // authored chip goes out as `u:` + its value.
-      if (
-        loginController.button({
-          chatId,
-          messageId: mm.id,
-          callbackData: String(callbackData),
-          clickerUserId: senderUserIdCandidate(payload),
-        }) === 'consumed'
-      ) {
-        log(`/login: tap on message ${mm.id} in chat ${chatId} handled via poll`)
-        continue
-      }
-
-      // A PLAN ANSWER, if it is one, and it is decided HERE, above the
-      // unescape, off the raw value, for the reason written on applyPlanAnswer.
-      // Three things separate a plan answer from an ordinary click:
-      //   1. Change the plan arrives as a click carrying the owner's typed
-      //      words in `custom_text` under the `__custom__` sentinel, because
-      //      the chip arms the composer rather than answering. The generic
-      //      wording would render that as `Custom reply: "make it shorter"`,
-      //      which reads as a button label rather than as what the owner said.
-      //   2. The click is the whole instruction on this channel: nothing here
-      //      starts a turn, flips a mode or blocks a tool, so what to do next
-      //      has to travel with the answer.
-      //   3. The wait is over either way, so the status line comes down, the
-      //      chat leaves the fast scope and the chip is reported off.
-      const planAnswer = applyPlanAnswer({
-        chatId,
-        messageId: mm.id,
-        callbackData,
-        customText,
-        eventMetaPayload: mm.eventMeta?.payload,
-        // NULL AWARE, unlike the permission intake's senderUserIdOf above:
-        // see foreignPlanTap for why the owner fallback must not be used here.
-        clickerUserId: senderUserIdCandidate(payload),
-        via: 'poll',
-      })
-      // A tap from someone other than the plan's person: drop it, the way the
-      // permission intake drops a foreign click. foreignPlanTap logged it.
-      if (planAnswer.refused) continue
-
-      // Strip the `u:` namespace sentinel so the agent receives the exact value
-      // it authored. Reserved sentinels (__skip__/__custom__) are never escaped
-      // and pass through untouched.
-      const agentCallbackData = unescapeAgentButtonValue(callbackData)
-      // The raw value and label, as posted: the owner's tap is the owner's words only on a card as this daemon posted it.
-      const postedButton = postedButtons.posted(mm.id, callbackData, buttonText, mm.text)
-
-      const kind =
-        agentCallbackData === '__skip__'
-          ? 'Skipped'
-          : agentCallbackData === '__custom__'
-            ? 'Custom reply'
-            : 'Clicked'
-      const summary =
-        planAnswer.summary ??
-        (customText
-          ? `${kind}: "${customText}"`
-          : buttonText
-            ? `${kind}: ${buttonText}`
-            : `${kind}: ${agentCallbackData}`)
-      const contentLines = [
-        `[button_clicked] ${summary}`,
-        `(in reply to message_id=${mm.id})`,
-      ]
-      if (planAnswer.directive) contentLines.push(planAnswer.directive)
-      if (mm.text && mm.text.trim().length > 0) {
-        const quoted = mm.text.length > 200 ? mm.text.slice(0, 197) + '…' : mm.text
-        contentLines.push(`Original question: ${quoted}`)
-      }
-      // WHICH LANE DELIVERED THIS. The stream path logs its own receipt; this
-      // one logged nothing on success, so a click arriving here produced
-      // silence indistinguishable from a click that never arrived at all.
-      // That gap is the whole question: a missed WS push followed by the
-      // WS-healthy full poll cycle explains the observed 4.5 and 5.5 minute
-      // delays exactly, and only a positive line from THIS path can show the
-      // poll rescued it rather than the stream simply arriving late.
-      log(
-        `button_clicked ANNOUNCED via POLL for message ${mm.id} in chat ${chatId} ` +
-          `(answeredAt=${mm.answeredAt}); the stream lane did not deliver it first`,
-      )
-      void trackMessageOperation(() => mcp.notification({
-        method: 'notifications/claude/channel',
-        params: {
-          // 70f1898b: a tap by anyone but the owner is someone else's words in the turn it reaches. The poll opens no
-          // private turn, however fresh the tap (4bf28148: only the stream's, in its window).
-          content: privateTapCard({ tracker: privateTurns, lane: 'poll', ownerUserId: USER_ID, chatId: String(chatId), messageId: mm.id, tapperUserId: readTapperUserId(payload), answeredAt: mm.answeredAt, receivedAt: Date.now(), callbackData: agentCallbackData, customText: customText, posted: postedButton, content: contentLines.join('\n') }),
-          // `user_id` is the tapper the server stamped on the answer, or
-          // absent. It was this daemon's own USER_ID, so every tap read as
-          // the owner's whoever made it.
-          meta: buildButtonClickedMeta({
-            chatId,
-            messageId: mm.id,
-            callbackData: planAnswer.callbackData ?? agentCallbackData,
-            buttonText,
-            customText,
-            tapperUserId: readTapperUserId(payload),
-            assistantId: ASSISTANT_ID,
-            ts: mm.answeredAt,
-          }),
-        },
-      })).catch((err) => {
-        log(`Failed to deliver button_clicked to Claude: ${err}`)
-      })
+      if (announced.has(m.message.id)) announceCardAnswer(chatId, m)
     }
     chatUnansweredButtons.set(chatId, nextUnanswered)
     ownCardNotes.reconcile(chatId, nextUnanswered)
@@ -12989,17 +13017,13 @@ const FORWARDED_IDS_MAX = 100_000
 // is what makes single-announce hold in both race orders AND for ids the
 // poll never baselined (under stream mode the healthy sweep is daily, so a
 // tracked-only gate on the stream side would black-hole those taps: the
-// poll can never announce an id it never saw unanswered). Bounded like
-// forwardedMessageIds.
+// poll can never announce an id it never saw unanswered). Retained for this
+// daemon life: evicting a settled id can replay a delayed direct-read response.
 const announcedClickIds = new Set<number>()
 
 function rememberAnnouncedClick(id: number): void {
   if (announcedClickIds.has(id)) return
   announcedClickIds.add(id)
-  if (announcedClickIds.size > FORWARD_CACHE_MAX) {
-    const first = announcedClickIds.values().next().value
-    if (first !== undefined) announcedClickIds.delete(first)
-  }
 }
 
 // ── Late ask answers (lib/ask-tracker.ts) ────────────────────────────────────

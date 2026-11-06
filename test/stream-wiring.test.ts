@@ -235,16 +235,18 @@ test('a stream-announced click marks the shared set and consumes the baseline BE
 
 test('the poll announce path feeds the shared announced-ids set', () => {
   assert.ok(
-    serverSource.includes('for (const id of announced) rememberAnnouncedClick(id)'),
+    serverSource.includes('if (announced.has(m.message.id)) announceCardAnswer(chatId, m)') &&
+      serverSource.includes('rememberAnnouncedClick(mm.id)'),
     'poll-announced ids must block a later stream replay of the same tap',
   )
 })
 
-test('the announced-ids set is bounded like forwardedMessageIds', () => {
+test('the announced-ids set retains delivery receipts for the daemon life', () => {
   const body = serverSource.slice(
     serverSource.indexOf('function rememberAnnouncedClick('),
   )
-  assert.ok(body.indexOf('announcedClickIds.size > FORWARD_CACHE_MAX') !== -1)
+  assert.ok(body.includes('announcedClickIds.add(id)'))
+  assert.ok(!body.slice(0, body.indexOf('\n}')).includes('announcedClickIds.delete('), '500 later clicks must not permit a delayed direct answer to repeat')
 })
 
 test('a rejecting stream handoff un-claims the forwarded id before rethrowing', () => {
