@@ -46,7 +46,7 @@ This repository implements the watcher consumer. Producing and forwarding this o
 
 Progress includes completed actions as well as step state, so the owner can follow the repair. A transient progress failure is retried once within a bounded request budget. A progress step that cannot be delivered stops the job before its next repair. If reporting remains unavailable, delivery cannot be guaranteed; the watcher records a failed job rather than claiming success.
 
-Pair codes, original and replacement credentials, home paths and usernames are scrubbed from report strings. Pairing stdout, stderr and exception text are never forwarded. No new channel notifications or notification metadata are introduced. The existing all-string notification metadata contract remains covered by the plugin suite.
+Pair codes, original and replacement credentials, home paths and usernames are scrubbed from human-readable report fields (`message`, `detail`, `fix`). Protocol fields such as cause, action, state and step identifiers remain intact, including when the username is `agent` or `daemon`. Pairing stdout, stderr and exception text are never forwarded. No new channel notifications or notification metadata are introduced. The existing all-string notification metadata contract remains covered by the plugin suite.
 
 ## Verification
 
@@ -54,4 +54,4 @@ The checkup tests run the real watcher loop, classifier, restart ladder and boot
 
 The repository test runner supports `RUN_TESTS_WORKERS=2`. The cap also applies when a test requests a larger nested pool. Default maximum concurrency remains four for callers that do not supply a smaller cap.
 
-The restart-target review regressions were red before the fix, then all 188 classifier, inventory, restart and watcher tests passed with two workers. Raw checkup evidence is retained locally, outside the shipped plugin files.
+Both review findings have failing regressions before their fixes. The focused run passed 200 tests; the full plugin suite passed 9,913 tests with 58 skips across 459 files, and typecheck passed. Test workers were capped at two. Raw checkup evidence is retained locally, outside the shipped plugin files.

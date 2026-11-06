@@ -93,6 +93,13 @@ function fakeBackend(opts: { frames?: any[]; jobs?: Record<string, any> } = {}) 
     }
     const m = /\/machine-rpc\/([^/]+)$/.exec(u.pathname)
     if (m && init?.method === 'GET') return respond(200, opts.jobs?.[decodeURIComponent(m[1]!)] ?? {})
+    if (u.pathname.endsWith('/progress')) {
+      try {
+        assertDtoShape([calls.at(-1)!.body])
+      } catch {
+        return respond(400, { message: 'invalid_progress' })
+      }
+    }
     return respond(200, {})
   }
   const progress = (rpcId: string) => calls.filter((c) => c.path.endsWith(`/machine-rpc/${rpcId}/progress`)).map((c) => c.body)
@@ -271,6 +278,61 @@ function assertNoSecrets(texts: string[], what: string) {
 
 const keepAliveRecord = (fs: MemoryFs) => JSON.parse(fs.readFile(KEEPALIVE_STATE) ?? '{"agents":{}}').agents?.['912'] ?? null
 const restartRequested = (fs: MemoryFs) => fs.files.has(`${STATE_DIR}/restart-requested.json`)
+
+for (const username of ['agent', 'daemon', 'running', 'observe', 'restart', 'ok', 'fixed', 'FAIL', 'done', '912']) {
+  test(`report scrubbing preserves protocol fields for username ${username}`, async () => {
+    const fs = agentFs()
+    writeTranscript(fs, [apiError(T0 - 45 * MIN, 'authentication_failed', 'Please run /login')], T0 - 45 * MIN)
+    const ps = [psLine(3000, 4242, `node ${ROOT}/bin/hoai-core.mjs`), psLine(5912, 3000, `claude --resume ${SID}`)].join('\n')
+    const backend = fakeBackend(checkupJob())
+    const clock = fakeClock()
+    daemonAnswersProbe(fs, clock)
+    const run = rig(fs, backend, clock, ps, { alive: [3000, 5912], username, env: { USER: username } })
+    await runWatcher(run.deps as any)
+    const terminal = terminalOf(backend)
+    assert.equal(terminal.state, 'done', 'the backend must accept every progress body, including after the repair')
+    assert.deepEqual(terminal.findings.map((f: any) => [f.cause, f.status, f.target]), [
+      ['daemon_down', 'FAIL', '912'], ['login_expired', 'FAIL', '912'],
+    ])
+    assert.deepEqual(terminal.actions.map((a: any) => [a.cause, a.target, a.did, a.outcome]), [
+      ['login_expired', '912', 'report', 'not_fixed'], ['daemon_down', '912', 'restart_agent', 'fixed'],
+    ])
+    assert.deepEqual(terminal.steps.map((s: any) => [s.id, s.kind, s.state]), [
+      ['observe', 'observe', 'ok'], ['a1-report', 'report', 'ok'],
+      ['a2-restart_agent', 'restart_agent', 'ok'], ['a3-verify_agent', 'verify_agent', 'ok'],
+    ])
+    assert.equal(restartRequested(fs), true)
+    assertDtoShape(backend.progress('chk-1'))
+    assertNoSecrets([...run.logs, ...backend.progress('chk-1').map((p: any) => JSON.stringify(p))], 'scrubbed report')
+    if (username === 'agent') {
+      assert.match(terminal.findings[1].fix, /<user>/)
+      assert.match(terminal.actions[0].detail, /<user>/)
+    }
+    if (username === 'daemon') assert.match(terminal.findings[0].detail, /<user>/)
+    if (username === 'fixed') assert.match(terminal.message, /<user>/)
+  })
+}
+
+test('report scrubbing removes secrets from failed step text while preserving its protocol fields', async () => {
+  const fs = agentFs()
+  const write = fs.writeFile
+  fs.writeFile = (path, text, opts) => {
+    if (path === `${STATE_DIR}/restart-requested.json`) throw new Error(`agent ${HOME} ${TOKEN} agent-secret-912`)
+    return write(path, text, opts)
+  }
+  const backend = fakeBackend(checkupJob())
+  const ps = [psLine(3000, 4242, `node ${ROOT}/bin/hoai-core.mjs`), psLine(5912, 3000, `claude --resume ${SID}`)].join('\n')
+  const run = rig(fs, backend, fakeClock(), ps, { alive: [3000, 5912], username: 'agent' })
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.equal(terminal.state, 'failed')
+  assert.deepEqual([terminal.failedStep?.id, terminal.failedStep?.kind, terminal.failedStep?.target], ['a1-restart_agent', 'restart_agent', '912'])
+  assert.match(terminal.failedStep.message, /<user> ~ <redacted> <redacted>/)
+  assert.match(terminal.steps.find((s: any) => s.kind === 'restart_agent').message, /<user> ~ <redacted> <redacted>/)
+  assert.match(terminal.actions[0].detail, /<user> ~ <redacted> <redacted>/)
+  assertDtoShape(backend.progress('chk-1'))
+  assertNoSecrets([...run.logs, JSON.stringify(terminal)], 'failed step')
+})
 
 // -- the brief's three cases --------------------------------------------------------------------
 
