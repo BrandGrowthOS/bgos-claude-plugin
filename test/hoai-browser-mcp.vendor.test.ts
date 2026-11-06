@@ -22,9 +22,10 @@
  *  - LF, and the .gitattributes entry that guarantees it: without that entry
  *    `core.autocrlf` hands a Windows checkout a different byte sequence and the
  *    hash is unverifiable on disk for exactly the people most likely to check.
- *  - committed source content hash: every CI run checks parity against the
- *    source hash recorded with its immutable BGOS commit, without credentials
- *    or a local BGOS checkout. An optional checkout verifies that record too.
+ *  - local content hash consistency: these assertions alone do not prove the
+ *    source commit contains the shim. Plugin CI separately runs
+ *    scripts/check-browser-shim-source.mjs, which fetches the pinned BGOS blob
+ *    and runs this suite with HOAI_BROWSER_SHIM_SOURCE set to those bytes.
  *
  * What this still does NOT buy: nothing here fires when the BGOS shim changes
  * and this copy does not move. That check can only live on the BGOS side. The
@@ -90,13 +91,13 @@ test('the pin names the file it pins, the BGOS source, and a real hash', () => {
   assert.match(p.crossTreeCheck, /HOAI_BROWSER_SHIM_SOURCE/, 'the pin says how to check the other tree')
 })
 
-test('CI parity: the vendored bytes match the content hash recorded at the source commit', () => {
+test('local pin consistency: the vendored bytes match the recorded source hash', () => {
   const p = pin()
   assert.match(p.sourceCommit, /^[0-9a-f]{40}$/, 'pin an immutable BGOS commit')
   assert.match(p.sourceSha256, /^[0-9a-f]{64}$/, 'record the hash measured from that committed source')
   assert.equal(p.aheadOfSource, undefined, 'a parity pin cannot claim to be ahead of its source')
   assert.equal(p.sourceSha256, p.sha256, 'the source and vendor pins must agree')
-  assert.equal(sha256(SHIM), p.sourceSha256, 'CI checks source content parity without a BGOS path or network')
+  assert.equal(sha256(SHIM), p.sourceSha256, 'local hash agreement; the CI upstream fetch verifies provenance')
 })
 
 test('the vendored copy is LF, and .gitattributes is what keeps it that way', () => {
@@ -123,13 +124,13 @@ test('the re-vendor checklist exists and names the pin, the guard and the cross-
   }
 })
 
-// Optional audit of the committed source hash used by the unconditional CI
-// parity case. A supplied but missing checkout is an error, not a skipped audit.
+// CI supplies the blob fetched at sourceCommit; developers can also supply a
+// checkout. A supplied but missing path is an error, not a skipped audit.
 const source = (process.env.HOAI_BROWSER_SHIM_SOURCE ?? '').trim()
 test(
-  'a supplied BGOS checkout verifies the recorded source content hash',
+  'a supplied BGOS source blob verifies cross-tree parity',
   {
-    skip: source === '' ? 'optional checkout audit; CI parity uses the recorded source content hash above' : false,
+    skip: source === '' ? 'no source blob supplied; plugin CI requires the pinned upstream fetch separately' : false,
   },
   () => {
     // bun's node:test ignores the skip option and runs the body; this is the same skip.

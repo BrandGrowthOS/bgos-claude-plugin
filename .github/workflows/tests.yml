@@ -5,7 +5,8 @@ on:
     branches: [main]
   pull_request:
 
-# Tests read the repo and nothing else: the token they get cannot write to it.
+# The default token only reads this plugin. Source verification uses a separate
+# credential with read-only contents access to BGOS.
 permissions:
   contents: read
 
@@ -30,6 +31,13 @@ jobs:
       # that proved nothing.
       - name: Install expect
         run: sudo apt-get update && sudo apt-get install -y expect
+
+      # BGOS is private. A missing read credential fails this check, including
+      # fork PRs; never run untrusted PR code with pull_request_target secrets.
+      - name: Verify pinned BGOS browser shim
+        run: node scripts/check-browser-shim-source.mjs
+        env:
+          BGOS_SOURCE_READ_TOKEN: ${{ secrets.BGOS_SOURCE_READ_TOKEN }}
 
       - name: Run tests
         run: npm test

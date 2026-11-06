@@ -7,5 +7,5 @@
   "sourceCommit": "aed69c93bd191ce8de678b4f5cac4761f7130680",
   "why": "Verified byte for byte against a fresh clone of BrandGrowthOS/BGOS main at sourceCommit. sourceSha256 was measured from the committed frontend/electron-app/agent-browser/shim/hoai-browser-mcp.mjs blob. These bytes already include MCP request cancellation; the stale ahead-of-source metadata is removed and the plugin now exercises cancellation directly.",
   "howToUpdate": "docs/vendoring-the-hoai-browser-shim.md",
-  "crossTreeCheck": "CI: node --import tsx --test --test-concurrency=4 test/hoai-browser-mcp.vendor.test.ts checks sourceSha256 recorded at sourceCommit without network or a BGOS checkout. Optional checkout audit: HOAI_BROWSER_SHIM_SOURCE=<path to the pinned BGOS shim> node --import tsx --test --test-concurrency=4 test/hoai-browser-mcp.vendor.test.ts"
+  "crossTreeCheck": "CI: BGOS_SOURCE_READ_TOKEN=<read-only BGOS contents token> node scripts/check-browser-shim-source.mjs fetches the source blob at sourceCommit, verifies both hashes and byte parity, then runs the vendor suite with HOAI_BROWSER_SHIM_SOURCE set. Missing credentials or source fail the check. Local checkout audit: HOAI_BROWSER_SHIM_SOURCE=<path to the pinned BGOS shim> node --import tsx --test --test-concurrency=4 test/hoai-browser-mcp.vendor.test.ts"
 }

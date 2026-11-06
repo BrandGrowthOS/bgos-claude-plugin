@@ -40,11 +40,28 @@ BGOS, then bring the copy across with this list.
    the guard test fails until the pin and the file agree, so a re-vendor cannot
    land without someone stating the new hash in the tree.
 
-4. **Run the guard.** Every `npm test`, including plugin CI, compares the
-   vendored bytes with `sourceSha256` recorded at `sourceCommit`. This content
-   hash check needs neither BGOS credentials, network access nor a local BGOS
-   path. To audit the recorded hash, use a fresh read-only clone of BGOS,
-   check out `sourceCommit`, and measure the committed source blob:
+4. **Run the guard and upstream verification.** Every `npm test` compares the
+   vendored bytes with the two local hash fields. That consistency check alone
+   cannot establish what BGOS contains at `sourceCommit`.
+
+   The Linux plugin CI job also runs `node scripts/check-browser-shim-source.mjs`
+   unconditionally. It fetches the raw source blob from the GitHub contents API
+   at the full immutable `sourceCommit`, compares its hash and bytes with the
+   local pin and shim, then runs `test/hoai-browser-mcp.vendor.test.ts` with
+   `HOAI_BROWSER_SHIM_SOURCE` set to that fetched file. It never executes BGOS
+   code. A wrong commit, stale commit, missing credential, failed fetch or
+   different blob fails the job; none of these conditions skips the check.
+
+   BGOS is private. Repository administrators must configure the Actions secret
+   `BGOS_SOURCE_READ_TOKEN` with read-only contents access to BrandGrowthOS/BGOS.
+   The plugin's `GITHUB_TOKEN` only reads this plugin and cannot replace it.
+   Fork PRs do not receive this secret and fail the source verification until
+   tested in a trusted branch with the credential available. Do not change this
+   to `pull_request_target` to expose credentials to untrusted PR code.
+
+   For a local network check, supply that token as `BGOS_SOURCE_READ_TOKEN` and
+   run the script above. Alternatively, use a read-only BGOS clone and measure
+   the committed source blob:
 
    ```bash
    git -C "<bgos>" show "<sourceCommit>:frontend/electron-app/agent-browser/shim/hoai-browser-mcp.mjs" | sha256sum
@@ -57,9 +74,9 @@ BGOS, then bring the copy across with this list.
      node --import tsx --test --test-concurrency=4 test/hoai-browser-mcp.vendor.test.ts
    ```
 
-   Without that variable only the optional checkout audit is skipped. The
-   recorded source content hash parity check always runs. A supplied path that
-   does not exist fails rather than silently skipping. CI verifies the recorded
+   Without that variable the direct audit is skipped in ordinary `npm test`.
+   The separate CI source verification always runs. A supplied path that does
+   not exist fails rather than silently skipping. CI verifies the recorded
    commit's content, not the latest moving BGOS main; re-vendoring still requires
    measuring that committed blob and reviewing the upstream diff.
 
