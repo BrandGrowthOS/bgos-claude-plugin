@@ -6,8 +6,12 @@
 and `sourceSha256` measured from its committed BGOS shim blob. Plugin CI always
 compares the vendored bytes to that recorded source content hash without a local
 BGOS checkout or network access. `HOAI_BROWSER_SHIM_SOURCE` remains an optional
-audit of the record; an explicitly supplied missing path fails. This verifies
-parity with the pinned source, and still cannot detect later changes to BGOS main.
+audit of the record; an explicitly supplied missing path fails. A separate job
+on trusted pushes and scheduled runs uses `scripts/check-browser-shim-source.mjs
+--live` to fetch the pinned blob when `BGOS_SOURCE_READ_TOKEN` is available.
+Missing credentials produce a skip notice and never prevent public PR tests.
+The offline check establishes recorded hash consistency; the live check audits
+source provenance. Neither detects later changes to BGOS main.
 The plugin also runs `test/hoai-browser-mcp.cancellation.test.ts`, with local and
 relay transport cases adapted from BGOS's cancellation suite.
 

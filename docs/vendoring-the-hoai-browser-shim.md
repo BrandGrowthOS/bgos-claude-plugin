@@ -44,24 +44,34 @@ BGOS, then bring the copy across with this list.
    vendored bytes with the two local hash fields. That consistency check alone
    cannot establish what BGOS contains at `sourceCommit`.
 
-   The Linux plugin CI job also runs `node scripts/check-browser-shim-source.mjs`
-   unconditionally. It fetches the raw source blob from the GitHub contents API
-   at the full immutable `sourceCommit`, compares its hash and bytes with the
-   local pin and shim, then runs `test/hoai-browser-mcp.vendor.test.ts` with
-   `HOAI_BROWSER_SHIM_SOURCE` set to that fetched file. It never executes BGOS
-   code. A wrong commit, stale commit, missing credential, failed fetch or
-   different blob fails the job; none of these conditions skips the check.
+   The Linux plugin CI job runs `node scripts/check-browser-shim-source.mjs`
+   unconditionally, including on fork PRs. It validates the immutable commit,
+   both recorded hashes and the vendored bytes without network access or a
+   secret. It emits a notice that the live comparison was skipped. This verifies
+   the recorded content hash, not independently fetched source provenance.
 
-   BGOS is private. Repository administrators must configure the Actions secret
+   A separate CI job runs `node scripts/check-browser-shim-source.mjs --live`
+   on pushes to this repository's main branch and on the daily schedule. When
+   `BGOS_SOURCE_READ_TOKEN` is available, it fetches the raw source blob from
+   the GitHub contents API at the full immutable `sourceCommit`, compares its
+   hash and bytes with the local pin and shim, then runs
+   `test/hoai-browser-mcp.vendor.test.ts` with `HOAI_BROWSER_SHIM_SOURCE` set
+   to that fetched file. It never executes BGOS code. A wrong commit, stale
+   commit, failed fetch or different blob fails the live job. The ordinary
+   Linux behavioral suite runs independently of that job.
+
+   BGOS is private. Repository administrators can configure the Actions secret
    `BGOS_SOURCE_READ_TOKEN` with read-only contents access to BrandGrowthOS/BGOS.
    The plugin's `GITHUB_TOKEN` only reads this plugin and cannot replace it.
-   Fork PRs do not receive this secret and fail the source verification until
-   tested in a trusted branch with the credential available. Do not change this
-   to `pull_request_target` to expose credentials to untrusted PR code.
+   An unavailable token emits an explicit skip notice after validating the
+   recorded hash offline. PRs never receive this credential, and fork PRs can
+   run the entire ordinary suite. Keep the live job limited to trusted push
+   and scheduled events.
 
    For a local network check, supply that token as `BGOS_SOURCE_READ_TOKEN` and
-   run the script above. Alternatively, use a read-only BGOS clone and measure
-   the committed source blob:
+   run `node scripts/check-browser-shim-source.mjs --live`. The command without
+   `--live` remains offline even if a token is present. Alternatively, use a
+   read-only BGOS clone and measure the committed source blob:
 
    ```bash
    git -C "<bgos>" show "<sourceCommit>:frontend/electron-app/agent-browser/shim/hoai-browser-mcp.mjs" | sha256sum
@@ -75,8 +85,8 @@ BGOS, then bring the copy across with this list.
    ```
 
    Without that variable the direct audit is skipped in ordinary `npm test`.
-   The separate CI source verification always runs. A supplied path that does
-   not exist fails rather than silently skipping. CI verifies the recorded
+   The offline CI hash verification always runs. A supplied path that does
+   not exist fails rather than silently skipping. Live CI verifies the recorded
    commit's content, not the latest moving BGOS main; re-vendoring still requires
    measuring that committed blob and reviewing the upstream diff.
 

@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: '23 4 * * *'
 
 # The default token only reads this plugin. Source verification uses a separate
 # credential with read-only contents access to BGOS.
@@ -32,12 +34,9 @@ jobs:
       - name: Install expect
         run: sudo apt-get update && sudo apt-get install -y expect
 
-      # BGOS is private. A missing read credential fails this check, including
-      # fork PRs; never run untrusted PR code with pull_request_target secrets.
+      # Every PR, including forks, checks the recorded hash without credentials.
       - name: Verify pinned BGOS browser shim
         run: node scripts/check-browser-shim-source.mjs
-        env:
-          BGOS_SOURCE_READ_TOKEN: ${{ secrets.BGOS_SOURCE_READ_TOKEN }}
 
       - name: Run tests
         run: npm test
@@ -48,6 +47,24 @@ jobs:
       - name: Type check
         if: success() || failure()
         run: bun run build
+
+  # Keep private source access independent of the ordinary behavioral suite.
+  # Only trusted push and scheduled events receive the read credential. The
+  # verifier emits a notice and retains the offline check if it is unavailable.
+  verify-browser-shim-source:
+    if: github.event_name == 'push' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Compare pinned BGOS browser shim with live source
+        run: node scripts/check-browser-shim-source.mjs --live
+        env:
+          BGOS_SOURCE_READ_TOKEN: ${{ secrets.BGOS_SOURCE_READ_TOKEN }}
 
   # The same suite on Windows, the other host this plugin ships to. Before this leg existed the suite
   # had only ever run on Linux, and on a Windows box it went 31 to 44 red: path, line ending and

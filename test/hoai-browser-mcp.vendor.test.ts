@@ -24,8 +24,9 @@
  *    hash is unverifiable on disk for exactly the people most likely to check.
  *  - local content hash consistency: these assertions alone do not prove the
  *    source commit contains the shim. Plugin CI separately runs
- *    scripts/check-browser-shim-source.mjs, which fetches the pinned BGOS blob
- *    and runs this suite with HOAI_BROWSER_SHIM_SOURCE set to those bytes.
+ *    scripts/check-browser-shim-source.mjs offline on every PR. A separate
+ *    trusted push/scheduled job uses --live when credentials are available to
+ *    fetch the pinned BGOS blob and run this suite with HOAI_BROWSER_SHIM_SOURCE.
  *
  * What this still does NOT buy: nothing here fires when the BGOS shim changes
  * and this copy does not move. That check can only live on the BGOS side. The
@@ -97,7 +98,7 @@ test('local pin consistency: the vendored bytes match the recorded source hash',
   assert.match(p.sourceSha256, /^[0-9a-f]{64}$/, 'record the hash measured from that committed source')
   assert.equal(p.aheadOfSource, undefined, 'a parity pin cannot claim to be ahead of its source')
   assert.equal(p.sourceSha256, p.sha256, 'the source and vendor pins must agree')
-  assert.equal(sha256(SHIM), p.sourceSha256, 'local hash agreement; the CI upstream fetch verifies provenance')
+  assert.equal(sha256(SHIM), p.sourceSha256, 'local hash agreement; trusted CI can independently verify the source with --live')
 })
 
 test('the vendored copy is LF, and .gitattributes is what keeps it that way', () => {
@@ -124,13 +125,13 @@ test('the re-vendor checklist exists and names the pin, the guard and the cross-
   }
 })
 
-// CI supplies the blob fetched at sourceCommit; developers can also supply a
+// Trusted CI can supply the blob fetched at sourceCommit; developers can supply a
 // checkout. A supplied but missing path is an error, not a skipped audit.
 const source = (process.env.HOAI_BROWSER_SHIM_SOURCE ?? '').trim()
 test(
   'a supplied BGOS source blob verifies cross-tree parity',
   {
-    skip: source === '' ? 'no source blob supplied; plugin CI requires the pinned upstream fetch separately' : false,
+    skip: source === '' ? 'no source blob supplied; recorded source hash checked offline, live comparison needs trusted credentials' : false,
   },
   () => {
     // bun's node:test ignores the skip option and runs the body; this is the same skip.

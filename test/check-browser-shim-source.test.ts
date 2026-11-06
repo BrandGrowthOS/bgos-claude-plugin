@@ -2,7 +2,10 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import { checkBrowserShimSource } from '../scripts/check-browser-shim-source.mjs'
+import { spawnSync } from 'node:child_process'
+import * as sourceCheck from '../scripts/check-browser-shim-source.mjs'
+
+const { checkBrowserShimSource } = sourceCheck
 
 const bytes = Buffer.from('synthetic committed shim\n')
 const sha256 = createHash('sha256').update(bytes).digest('hex')
@@ -48,11 +51,80 @@ test('malformed commits, inconsistent pins and vendor drift fail', async () => {
   await assert.rejects(checkBrowserShimSource(pin, Buffer.from('drift'), 'token', fetchSource), /vendored shim does not match/)
 })
 
-test('plugin CI runs the upstream check without a conditional skip', () => {
+test('the offline check validates the committed source hash without a token or fetch', () => {
+  assert.equal(typeof sourceCheck.checkBrowserShimPin, 'function', 'export the offline pin verifier')
+  sourceCheck.checkBrowserShimPin(pin, bytes)
+  assert.throws(() => sourceCheck.checkBrowserShimPin({ ...pin, sourceCommit: '../main' }, bytes), /immutable BGOS commit/)
+  assert.throws(() => sourceCheck.checkBrowserShimPin({ ...pin, sourceSha256: 'not-a-hash' }, bytes), /committed source hash/)
+  assert.throws(() => sourceCheck.checkBrowserShimPin({ ...pin, sha256: '0'.repeat(64) }, bytes), /source and vendor pins must agree/)
+  assert.throws(() => sourceCheck.checkBrowserShimPin(pin, Buffer.from('drift')), /vendored shim does not match/)
+})
+
+function runVerifier(args: string[], token: string, preload: string) {
+  return spawnSync(process.execPath, [
+    '--import', `data:text/javascript,${encodeURIComponent(preload)}`,
+    'scripts/check-browser-shim-source.mjs', ...args,
+  ], {
+    encoding: 'utf8', timeout: 30_000,
+    env: { ...process.env, BGOS_SOURCE_READ_TOKEN: token, HOAI_BROWSER_SHIM_SOURCE: '', NODE_TEST_CONTEXT: undefined },
+  })
+}
+
+const noNetwork = `globalThis.fetch = () => { throw Error('network forbidden in offline verification') }`
+
+test('fork CLI checks the recorded hash offline and clearly skips live verification', () => {
+  const result = runVerifier([], '', noNetwork)
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /Verified recorded BGOS source hash/)
+  assert.match(result.stdout, /::notice::Live BGOS source comparison skipped/)
+  // Even a populated local environment must not make the default command fetch.
+  const withToken = runVerifier([], 'synthetic-read-token', noNetwork)
+  assert.equal(withToken.status, 0, withToken.stderr)
+  assert.match(withToken.stdout, /comparison skipped/)
+})
+
+test('a trusted run without the secret keeps the offline check and reports a skip', () => {
+  const result = runVerifier(['--live'], '', noNetwork)
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /Verified recorded BGOS source hash/)
+  assert.match(result.stdout, /::notice::Live BGOS source comparison skipped: BGOS_SOURCE_READ_TOKEN is unavailable/)
+})
+
+test('trusted CLI fetches source and runs the supplied-source vendor suite', () => {
+  const result = runVerifier(['--live'], 'synthetic-read-token', `
+    import assert from 'node:assert/strict';
+    import { readFileSync } from 'node:fs';
+    const pin = JSON.parse(readFileSync('bin/hoai-browser-mcp.vendor.json', 'utf8'));
+    globalThis.fetch = async (url, init) => {
+      assert.ok(url.endsWith('?ref=' + pin.sourceCommit));
+      assert.equal(new Headers(init.headers).get('authorization'), 'Bearer synthetic-read-token');
+      return new Response(readFileSync(pin.file));
+    };
+  `)
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /Verified BGOS source/)
+  assert.match(result.stdout, /pass 6/)
+  assert.match(result.stdout, /skipped 0/)
+  assert.doesNotMatch(result.stdout, /comparison skipped/)
+})
+
+test('plugin CI separates unconditional offline tests from trusted live verification', () => {
   const workflow = readFileSync('.github/workflows/tests.yml', 'utf8')
-  const step = workflow.match(/      - name: Verify pinned BGOS browser shim\n(?:(?!      - ).*\n)*/)?.[0]
-  assert.ok(step, 'the plugin test job must verify the upstream source')
-  assert.match(step, /run: node scripts\/check-browser-shim-source\.mjs/)
-  assert.match(step, /BGOS_SOURCE_READ_TOKEN: \$\{\{ secrets\.BGOS_SOURCE_READ_TOKEN \}\}/)
-  assert.doesNotMatch(step, /\bif:|continue-on-error/)
+  const linux = workflow.match(/^  test:\n[\s\S]*?(?=^  [a-z]|$(?![\s\S]))/m)?.[0]
+  assert.ok(linux)
+  const offline = linux.match(/      - name: Verify pinned BGOS browser shim\n(?:(?!      - ).*\n)*/)?.[0]
+  assert.ok(offline, 'Linux tests always check the recorded source hash')
+  assert.match(offline, /run: node scripts\/check-browser-shim-source\.mjs\n/)
+  assert.doesNotMatch(offline, /\bif:|secrets\.|--live|continue-on-error/)
+  assert.doesNotMatch(linux, /BGOS_SOURCE_READ_TOKEN|needs:/)
+  assert.match(linux, /- name: Run tests\n        run: npm test/)
+
+  const live = workflow.match(/^  verify-browser-shim-source:\n[\s\S]*?(?=^  [a-z]|$(?![\s\S]))/m)?.[0]
+  assert.ok(live, 'keep a separate live provenance job')
+  assert.match(live, /if: github\.event_name == 'push' \|\| github\.event_name == 'schedule'/)
+  assert.match(live, /run: node scripts\/check-browser-shim-source\.mjs --live/)
+  assert.match(live, /BGOS_SOURCE_READ_TOKEN: \$\{\{ secrets\.BGOS_SOURCE_READ_TOKEN \}\}/)
+  assert.doesNotMatch(live, /continue-on-error/)
+  assert.match(workflow, /  schedule:\n    - cron:/)
+  assert.doesNotMatch(workflow, /pull_request_target/)
 })
