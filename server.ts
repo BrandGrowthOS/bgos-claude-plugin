@@ -434,6 +434,7 @@ import {
   rememberReturnedMessageId,
   fastScopeChatIds,
   activeButtonPromptChatIds,
+  BUTTON_PROMPT_FAST_WINDOW_MS,
   type ButtonPromptRecord,
   planPollCycle,
   selectFirstPollBacklogIds,
@@ -689,6 +690,7 @@ import {
 } from './lib/steer.js'
 import {
   LoginController,
+  LOGIN_METHOD_WINDOW_MS,
   buildAuthStatusArgv,
   buildLoginEnv,
   isRoomContext,
@@ -2508,6 +2510,14 @@ async function sendLoginText(
     callbackData: b.callbackData,
     ...(b.style ? { style: b.style } : {}),
   }))
+  // One slot, created before the POST so late responses cannot replace a newer offer.
+  const card: LoginMethodCard | null = options.length > 0
+    ? { chatId, messageId: null, settled: false, offerVersion: loginController.methodOfferVersion, expiresAtMs: Date.now() + LOGIN_METHOD_WINDOW_MS }
+    : null
+  if (card) {
+    if (loginMethodCard) settleLoginMethodCard(loginMethodCard)
+    loginMethodCard = card
+  }
   const result = await bgosPost('send-message', {
     chatId: Number(chatId),
     assistantId: Number(ASSISTANT_ID),
@@ -2520,10 +2530,16 @@ async function sendLoginText(
     ...(options.length > 0 ? { renderMode: 'inline' } : {}),
   })
   const msgId = (result as { message?: { id?: unknown } } | null)?.message?.id
-  // The reply tool's fast-poll scope, for the same reason: without the update
-  // stream a tap otherwise reaches this daemon only on the slow chat sweep.
-  if (options.length > 0 && typeof msgId === 'number') {
-    recentButtonPrompts.set(chatId, { messageId: msgId, sentAtMs: Date.now() })
+  if (card && loginMethodCard === card && typeof msgId === 'number') {
+    card.messageId = msgId
+    // The stream or a typed method may already have taken this offer while POST waited.
+    card.settled = loginController.phase !== 'awaiting_method' ||
+      card.offerVersion !== loginController.methodOfferVersion || announcedClickIds.has(msgId)
+    if (!card.settled) {
+      recentButtonPrompts.set(chatId, { messageId: msgId, sentAtMs: Date.now() })
+      void readOwnPostedCard(chatId, msgId, card)
+    }
+    log(`/login: sign-in card ${msgId} posted to chat ${chatId}`)
   }
   return typeof msgId === 'number' ? msgId : null
 }
@@ -3891,7 +3907,7 @@ const mcp = new Server(
       '## Another Agent In A Group (sender_type room_agent, NOT a person)',
       '',
       'In a group or a channel, BGOS can hand you a message ANOTHER AGENT seated',
-      'there wrote, as a follow-up: you were not named in it. Its meta carries',
+      'there wrote, as a follow-up or because it tagged you. Its meta carries',
       '`sender_type = "room_agent"`, `user = "Agent"`, `sender_assistant_id` (that',
       'agent\'s id) and `user_id = "room_agent:<that id>"`, and no sender',
       'relationship: no person wrote it, and it is never your owner\'s or any',
@@ -3899,6 +3915,12 @@ const mcp = new Server(
       'with reply_to_id set to it, only if it is meant for you. Otherwise send',
       'nothing: silence is a correct answer and nothing waits for your reply. Your',
       'own messages never come back to you this way.',
+      'A reply stays in this room: use this card\'s chat_id and reply_to_id.',
+      'The backend hands window holders the next two messages only. A follow-up',
+      'never opens another window, and agents woken together never receive each other\'s',
+      'answers as follow-ups. Explicit tags use the room\'s separate agent tag budget',
+      '(five wakes by default until a person speaks, or the room\'s chosen limit).',
+      'Do not keep a conversation going with acknowledgements or repeated tags.',
       '',
       '## Usage Self-Report (automatic, no action needed)',
       '',
@@ -7003,8 +7025,8 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
         // "any send supersedes" would have emptied the window in minutes
         // (Ares, reviewing #129).
         if (options.length > 0 && typeof msgId === 'number') {
-          recentButtonPrompts.set(String(resolvedChatId), { messageId: msgId, sentAtMs: Date.now() })
           postedButtons.note(msgId, options, safeText)
+          notePostedButtonCard(String(resolvedChatId), msgId)
         } else if (
           reply_to_id !== undefined &&
           Number(reply_to_id) === recentButtonPrompts.get(String(resolvedChatId))?.messageId
@@ -7170,6 +7192,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
         try {
           await bgosPatch(`messages/${payload.supersedes}`, retireBody)
           postedButtons.forget(payload.supersedes)
+          settlePostedButtonCard(payload.supersedes)
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err)
           return {
@@ -7197,7 +7220,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
           // next revision and no way to tie the answer back to this plan.
           log(`propose_plan: the messages route returned no id (chat ${planChatId})`)
         } else {
-          openPlansByChat.set(planChatId, {
+          if (!announcedClickIds.has(cardMessageId)) openPlansByChat.set(planChatId, {
             chatId: planChatId,
             messageId: cardMessageId,
             planId: payload.plan_id,
@@ -7211,6 +7234,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
             requesterUserId: lastInboundUserByChat.get(planChatId) ?? USER_ID,
           })
           postedButtons.note(cardMessageId, bodyBuild.body.options, bodyBuild.body.text)
+          notePostedButtonCard(planChatId, cardMessageId, PENDING_PLAN_FAST_MAX_MS)
           // The CLI writes this tool result verbatim into the transcript, so
           // the minted id is proof of which transcript is ours, exactly as a
           // reply's is.
@@ -10114,6 +10138,23 @@ function checkReplyOverdue(): void {
  * handles its own polling/blocking.
  */
 const chatUnansweredButtons = new Map<string, Set<number>>()
+
+// LoginController permits one sign-in at a time. Keep one card receipt as well,
+// including settlement until the next offer, so delayed reads do not need an
+// unbounded shared receipt ledger. Reply, plan, permission and ask tracking stay separate.
+interface LoginMethodCard {
+  offerVersion: number
+  chatId: string
+  messageId: number | null
+  settled: boolean
+  expiresAtMs: number
+}
+let loginMethodCard: LoginMethodCard | null = null
+
+// Reply and plan receipts outlive individual history snapshots and unrelated
+// clicks. Bound them independently of the shared cross-transport click ledger.
+const postedButtonCards = new Map<number, { chatId: string; settled: boolean; fresh: boolean; recoverUntilMs: number }>()
+
 /**
  * Latest inline-button prompt this daemon sent, per chat, so the chat earns
  * 2s polling until the tap lands, the window lapses, or the daemon sends
@@ -11841,7 +11882,181 @@ function pollTurnStateOf(m: ChatMessage): string | null {
   )
 }
 
+/** Retire only this sign-in card's fast scope; the single slot keeps its receipt. */
+function settleLoginMethodCard(card: LoginMethodCard): void {
+  card.settled = true
+  if (recentButtonPrompts.get(card.chatId)?.messageId === card.messageId) recentButtonPrompts.delete(card.chatId)
+}
+
+/** The open sign-in alone requests fresh full history, for at most its method window. */
+function pendingLoginMethodCard(chatId: string): LoginMethodCard | null {
+  const card = loginMethodCard
+  if (!card || card.chatId !== chatId || card.settled || card.messageId === null) return null
+  if (card.offerVersion !== loginController.methodOfferVersion ||
+      Date.now() >= card.expiresAtMs || loginController.phase !== 'awaiting_method' ||
+      loginController.chatId !== chatId || humanMessageEdits.isChatDeleted(chatId)) {
+    settleLoginMethodCard(card)
+    return null
+  }
+  return card
+}
+
+/** Shared sign-in claim for direct, history and stream delivery. */
+function deliverLoginMethodAnswer(
+  chatId: string, messageId: number, raw: unknown,
+  callbackData: string, clickerUserId: string | null, via: 'poll' | 'stream',
+): void {
+  const card = pendingLoginMethodCard(chatId)
+  if (!card || card.messageId !== messageId) return
+  if (updateDrainMode || !lockHeld || humanMessageEdits.isChatDeleted(chatId)) return
+  const lane = ownerLaneVerdict(raw)
+  if (!lane.deliver || ownerAnnounceRefused({ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership.isOthers(chatId) })) {
+    noteLaneMisroute('sign-in answer', messageId, lane.deliver ? 'a recipient chat' : lane.stamp)
+    return
+  }
+  // Claim synchronously, before any controller effect can notify or start a child.
+  settleLoginMethodCard(card)
+  rememberAnnouncedClick(messageId)
+  loginController.button({ chatId, messageId, callbackData, clickerUserId })
+  log(`/login: tap on message ${messageId} in chat ${chatId} handled via ${via}`)
+}
+
+/** Only a sign-in card enters this path; its stamp belongs to the message itself. */
+function announceCardAnswer(chatId: string, m: ChatMessage): void {
+  const mm = m.message
+  const payload = mm.answerPayload ?? {}
+  deliverLoginMethodAnswer(chatId, mm.id, mm,
+    String(payload.callbackData ?? payload.callback_data ?? ''), senderUserIdCandidate(payload), 'poll')
+}
+
+/** One unconditional request for this sign-in card, independent of history reads. */
+async function readOwnPostedCard(chatId: string, messageId: number, card: LoginMethodCard): Promise<void> {
+  if (loginMethodCard !== card || pendingLoginMethodCard(chatId) !== card || updateDrainMode || !lockHeld) return
+  try {
+    const raw = await bgosGet(
+      `chats/${encodeURIComponent(chatId)}/messages?userId=${USER_ID}&afterId=${messageId - 1}&beforeId=${messageId + 1}&limit=1`,
+      { conditional: false },
+    ) as ChatHistoryResponse
+    // A response started for an older, cancelled or settled offer has no authority.
+    if (loginMethodCard !== card || pendingLoginMethodCard(chatId) !== card) return
+    const row = raw.messages?.find((entry) => entry.message.id === messageId && String(entry.message.chatId) === chatId)
+    if (raw.messages?.length === 0) { settleLoginMethodCard(card); return }
+    if (row?.message.sender !== 'assistant') return
+    if (row.message.answeredAt) announceCardAnswer(chatId, row)
+    else if (!(row.messageOptions ?? []).length) settleLoginMethodCard(card)
+  } catch (err) {
+    // While this offer is open, ordinary polls bypass validators and obtain a
+    // fresh full body even if an older in-flight read cached the answer first.
+    log(`Own card ${messageId} answer read failed: ${err}`)
+  }
+}
+
+/** Record a reply or plan card only after its POST has supplied its identity. */
+function notePostedButtonCard(chatId: string, messageId: number, recoveryWindowMs = BUTTON_PROMPT_FAST_WINDOW_MS): void {
+  if (postedButtonCards.has(messageId)) return
+  postedButtonCards.set(messageId, { chatId, settled: announcedClickIds.has(messageId), fresh: false, recoverUntilMs: Date.now() + recoveryWindowMs })
+  if (postedButtonCards.size > FORWARD_CACHE_MAX) {
+    const oldest = postedButtonCards.keys().next().value
+    if (oldest !== undefined) postedButtonCards.delete(oldest)
+  }
+  if (postedButtonCards.get(messageId)!.settled) return
+  recentButtonPrompts.set(chatId, { messageId, sentAtMs: Date.now() })
+  void readPostedButtonCard(chatId, messageId)
+}
+
+function settlePostedButtonCard(messageId: number): void {
+  const card = postedButtonCards.get(messageId)
+  if (!card) return
+  card.settled = true
+  chatUnansweredButtons.get(card.chatId)?.delete(messageId)
+  if (recentButtonPrompts.get(card.chatId)?.messageId === messageId) recentButtonPrompts.delete(card.chatId)
+}
+
+/** A delta or cached history response cannot erase a card noted during it. */
+function hasPendingPostedButtonCard(chatId: string, freshOnly = false): boolean {
+  if (humanMessageEdits.isChatDeleted(chatId)) return false
+  const now = Date.now()
+  for (const card of postedButtonCards.values()) {
+    if (card.chatId === chatId && !card.settled && now < card.recoverUntilMs && (!freshOnly || card.fresh)) return true
+  }
+  return false
+}
+
+/** One unconditional, ID-bounded read, using the same request as sign-in. */
+async function readPostedButtonCard(chatId: string, messageId: number): Promise<void> {
+  if (updateDrainMode || !lockHeld || humanMessageEdits.isChatDeleted(chatId)) return
+  try {
+    const raw = await bgosGet(
+      `chats/${encodeURIComponent(chatId)}/messages?userId=${USER_ID}&afterId=${messageId - 1}&beforeId=${messageId + 1}&limit=1`,
+      { conditional: false },
+    ) as ChatHistoryResponse
+    if (raw.messages?.length === 0) { settlePostedButtonCard(messageId); return }
+    const row = raw.messages?.find((entry) => entry.message.id === messageId && String(entry.message.chatId) === chatId)
+    if (row) announcePostedButtonAnswer(chatId, row)
+  } catch (err) {
+    // Keep the card pending so the next history read bypasses validators.
+    const card = postedButtonCards.get(messageId)
+    if (card) card.fresh = true
+    log(`Own button card ${messageId} answer read failed: ${err}`)
+  }
+}
+
+/** Direct and history reads share the same claim and nested message lane check. */
+function announcePostedButtonAnswer(chatId: string, m: ChatMessage): void {
+  const mm = m.message
+  const card = postedButtonCards.get(mm.id)
+  if (!card || card.chatId !== chatId || String(mm.chatId) !== chatId || card.settled || mm.sender !== 'assistant') return
+  if (updateDrainMode || !lockHeld || humanMessageEdits.isChatDeleted(chatId)) return
+  const lane = ownerLaneVerdict(mm)
+  if (!lane.deliver || ownerAnnounceRefused({ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership.isOthers(chatId) })) {
+    noteLaneMisroute('card answer', mm.id, lane.deliver ? 'a recipient chat' : lane.stamp)
+    return
+  }
+  if (!mm.answeredAt) {
+    if (!(m.messageOptions ?? []).length) settlePostedButtonCard(mm.id)
+    return
+  }
+  if (announcedClickIds.has(mm.id)) { settlePostedButtonCard(mm.id); return }
+  const payload = mm.answerPayload ?? {}
+  const callbackData = payload.callbackData ?? payload.callback_data ?? ''
+  const buttonText = payload.buttonText ?? payload.button_text ?? ''
+  const customText = payload.customText ?? payload.custom_text ?? undefined
+  // Claim synchronously before plan settlement or notification can yield.
+  rememberAnnouncedClick(mm.id)
+  const planAnswer = applyPlanAnswer({
+    chatId, messageId: mm.id, callbackData, customText,
+    eventMetaPayload: mm.eventMeta?.payload,
+    clickerUserId: senderUserIdCandidate(payload), via: 'poll',
+  })
+  if (planAnswer.refused) return
+  const agentCallbackData = unescapeAgentButtonValue(callbackData)
+  const kind = agentCallbackData === '__skip__' ? 'Skipped' : agentCallbackData === '__custom__' ? 'Custom reply' : 'Clicked'
+  const summary = planAnswer.summary ?? (customText ? `${kind}: "${customText}"` : `${kind}: ${buttonText || agentCallbackData}`)
+  const contentLines = [`[button_clicked] ${summary}`, `(in reply to message_id=${mm.id})`]
+  if (planAnswer.directive) contentLines.push(planAnswer.directive)
+  if (mm.text?.trim()) contentLines.push(`Original question: ${mm.text.length > 200 ? mm.text.slice(0, 197) + '...' : mm.text}`)
+  const postedButton = postedButtons.posted(mm.id, callbackData, buttonText, mm.text)
+  log(`button_clicked ANNOUNCED via POLL for message ${mm.id} in chat ${chatId} (answeredAt=${mm.answeredAt})`)
+  void trackMessageOperation(() => mcp.notification({
+    method: 'notifications/claude/channel',
+    params: {
+      content: privateTapCard({ tracker: privateTurns, lane: 'poll', ownerUserId: USER_ID, chatId: String(chatId), messageId: mm.id, tapperUserId: readTapperUserId(payload), answeredAt: mm.answeredAt, receivedAt: Date.now(), callbackData: agentCallbackData, customText: customText, posted: postedButton, content: contentLines.join('\n') }),
+      meta: buildButtonClickedMeta({ chatId, messageId: mm.id, callbackData: planAnswer.callbackData ?? agentCallbackData, buttonText, customText, tapperUserId: readTapperUserId(payload), assistantId: ASSISTANT_ID, ts: mm.answeredAt }),
+    },
+  })).catch((err) => log(`Failed to deliver button_clicked to Claude: ${err}`))
+}
+
 async function pollChat(chatId: string): Promise<void> {
+  const loginCard = pendingLoginMethodCard(chatId)
+  const pendingButtonCard = hasPendingPostedButtonCard(chatId)
+  const freshButtonCard = hasPendingPostedButtonCard(chatId, true)
+  // Another room agent is context, never the reply boundary of our human turn.
+  const pollStoredSenderOf = (m: ChatMessage): string | null => {
+    const agent = readRoomAgentSender(m)
+    return agent && agent.senderAssistantId !== String(ASSISTANT_ID)
+      ? ROOM_AGENT_SENDER_TYPE
+      : m.message.sender
+  }
   if (updateDrainMode || humanMessageEdits.isChatDeleted(chatId)) return
   // A daemon that has lost the pairing lock reads no chat. The tick stands
   // down at its top, but the email download keepalive refreshes the lock too,
@@ -11877,6 +12092,7 @@ async function pollChat(chatId: string): Promise<void> {
   // Taken before the fetch for the reason the cursor is: see chatBehindSocket.
   const startedAtEpoch = socketEpoch
   const editReadGeneration = humanMessageEdits.readGeneration
+  const roomAgentReadOrder = roomAgentSettler.beginRead()
   const oldestHuman = humanMessageEdits.oldestInChat(chatId)
   // Read existing human rows too: an edit keeps its ID and cannot appear in
   // an afterId delta. The selection cursor below remains lastSeen.
@@ -11886,7 +12102,7 @@ async function pollChat(chatId: string): Promise<void> {
     userId: USER_ID,
     lastSeen,
     unansweredButtonCount: chatUnansweredButtons.get(chatId)?.size ?? 0,
-    forceFull: isBootPoll || oldestHuman !== undefined,
+    forceFull: isBootPoll || oldestHuman !== undefined || loginCard !== null || pendingButtonCard,
   })
   // The email cursor holds this batch took (emailFileSavesFor), let go when it ends.
   const pollEmailReleases: Array<() => void> = []
@@ -11894,6 +12110,7 @@ async function pollChat(chatId: string): Promise<void> {
     const raw = await bgosGet(req.path, {
       cacheKey: req.cacheKey,
       callerAssistantId: ASSISTANT_ID,
+      ...(loginCard || freshButtonCard ? { conditional: false } : {}),
     })
     // 304: byte-identical to a response we already fully processed.
     if (isNotModified(raw)) {
@@ -11922,7 +12139,7 @@ async function pollChat(chatId: string): Promise<void> {
         .filter((m) => m.message.id < owedFrom && shouldForwardPollMessage(m.message, ASSISTANT_ID))
         .map((m) => ({
           id: m.message.id,
-          sender: m.message.sender,
+          sender: pollStoredSenderOf(m),
           pendingEmptySystem: isPendingEmptySystem(m),
           sentDateMs: sentDateToMs(m.message.sentDate),
         }))
@@ -12016,9 +12233,9 @@ async function pollChat(chatId: string): Promise<void> {
       // The walk-back heuristic lives in selectFirstPollBacklogIds
       // (lib/poll-core.ts, extracted verbatim so it is testable): collect
       // trailing user/system messages, stopping only at a real
-      // user->assistant REPLY (an assistant message whose immediately
-      // preceding message is a user message). Proactive assistant messages
-      // (cron check-in, external trigger) do NOT terminate the scan. NOT
+      // user->assistant REPLY (an assistant message preceded by a user
+      // message, ignoring intervening room_agent context). Proactive assistant
+      // messages (cron check-in, external trigger) do NOT terminate the scan. NOT
       // capped (0.71.10): the cursor advance below moves this chat to the
       // newest row of the read, so a row the selection leaves out is never
       // read again. The old cap of 10 dropped the rest of the unanswered tail
@@ -12131,7 +12348,7 @@ async function pollChat(chatId: string): Promise<void> {
           selectRestartRecoveryIds({
             rows: pollForwardableRows.map((m) => ({
               id: m.message.id,
-              sender: m.message.sender,
+              sender: pollStoredSenderOf(m),
               pendingEmptySystem: isPendingEmptySystem(m),
               sentDateMs: sentDateToMs(m.message.sentDate),
             })),
@@ -12165,6 +12382,26 @@ async function pollChat(chatId: string): Promise<void> {
         })
     }
 
+    // A marked room row on the poll uses the same settle wait and claim as
+    // the stream. Unmarked assistant history remains an outbound reply.
+    // On a first read, use the same age, reply boundary and history cap as
+    // human backlog, without ever recovering optional room context on restart.
+    const roomBacklogIds = lastSeen === 0 ? new Set(selectFirstPollBacklogIds({
+      rows: firstPollRowsOf(ordered, Number.POSITIVE_INFINITY),
+      includeRoomAgents: true,
+      recentCutoffMs: FIRST_POLL_RECENT_CUTOFF_MS,
+      historyCap: groupHistoryCap,
+    })) : null
+    for (const row of pollForwardableRows) {
+      if (row.message.id <= lastSeen || forwardedMessageIds.has(row.message.id)) continue
+      if (roomBacklogIds && !roomBacklogIds.has(row.message.id)) continue
+      const agent = readRoomAgentSender(row)
+      if (!agent || isOwnRoomAgentMessage(agent, ASSISTANT_ID)) continue
+      const view = viewStreamMessage({ seq: 0, kind: 'message_new', chatId: Number(chatId),
+        messageId: row.message.id, payload: row as unknown as Record<string, unknown> }, ASSISTANT_ID)
+      if (view?.roomAgent) roomAgentSettler.note({ ...view, inboundTransport: 'poll' }, roomAgentReadOrder)
+    }
+
     // If an assistant message has already been written that supersedes our
     // pending unanswered inbound (covers replies sent via non-Claude paths
     // like n8n agents or scheduled callbacks), clear the overdue tracker.
@@ -12173,7 +12410,7 @@ async function pollChat(chatId: string): Promise<void> {
       const supersedingAssistant = ordered.find(
         (m) =>
           m.message.id > pendingForChat.messageId &&
-          m.message.sender === 'assistant',
+          pollStoredSenderOf(m) === 'assistant',
       )
       if (supersedingAssistant) clearInbound(chatId)
     }
@@ -12195,8 +12432,25 @@ async function pollChat(chatId: string): Promise<void> {
     // set becomes) is the pure `selectClickTransitions` in lib/poll-core.ts:
     // it is the single-announce contract and is unit-tested there. This loop
     // only renders the announcements it returns.
+    // The sign-in slot survives snapshots started before its POST response.
+    // Missing history rows do not settle it: history may exclude the card.
+    for (const m of data.messages) {
+      announcePostedButtonAnswer(chatId, m)
+      const card = pendingLoginMethodCard(chatId)
+      if (!card || card.messageId !== m.message.id || String(m.message.chatId) !== chatId) continue
+      if (m.message.answeredAt) announceCardAnswer(chatId, m)
+      else if (!(m.messageOptions ?? []).length) settleLoginMethodCard(card)
+    }
     const { announce, nextUnanswered, askAnswered } = selectClickTransitions({
-      rows: data.messages.map((m) => ({
+      rows: data.messages.filter((m) => {
+        // Reserved sign-in values have their own lifetime, including before
+        // POST returns and after an older offer has left the bounded ledger.
+        // Agent-authored button values are escaped as u:, so they stay here.
+        const payload = m.message.answerPayload
+        return !(loginMethodCard?.chatId === chatId && loginMethodCard.messageId === m.message.id) &&
+          !String(payload?.callbackData ?? payload?.callback_data ?? '').startsWith('login:') &&
+          !(m.messageOptions ?? []).some((option) => String(option.callbackData ?? '').startsWith('login:'))
+      }).map((m) => ({
         id: m.message.id,
         sender: m.message.sender,
         messageType: m.message.messageType,
@@ -12207,7 +12461,11 @@ async function pollChat(chatId: string): Promise<void> {
       isFirstPoll,
       trackedAsks: askTracker.trackedMessageIds(),
     })
-    const announced = new Set(announce)
+    const announced = new Set(announce.filter((id) => !postedButtonCards.has(id) && !announcedClickIds.has(id)))
+    // Open cards retain the ordinary history baseline after recovery expires
+    // or the bounded receipt is evicted. Settled cards cannot be reopened by
+    // an older unanswered snapshot.
+    for (const [id, card] of postedButtonCards) if (card.settled) nextUnanswered.delete(id)
     // The second lock (person lanes) for taps: once lanes run for this agent,
     // a tap in a share recipient's chat is that person's turn, never the
     // owner's (lib/lane-core.mjs ownerAnnounceRefused).
@@ -12869,6 +13127,14 @@ async function pollChat(chatId: string): Promise<void> {
         return t === null || t >= FIRST_POLL_RECENT_CUTOFF_MS
       })
       .map((m) => m.message.id)
+    // A poll-only room row can still be streaming. Keep it inside delta
+    // reads until the shared settle wait delivers its final version. Like
+    // empty system cards, only the newest page can hold the cursor.
+    for (const row of firstPage.messages) {
+      if (readRoomAgentSender(row) && roomAgentSettler.has(row.message.id) && !forwardedMessageIds.has(row.message.id)) {
+        pendingIds.push(row.message.id)
+      }
+    }
     // This batch read the chat from below any email owed in it (the cursor is
     // clamped there) and finished without throwing: every owed id through
     // maxId was delivered, claimed, or is gone, so none holds the cursor any
@@ -13034,6 +13300,7 @@ const FORWARDED_IDS_MAX = 100_000
 const announcedClickIds = new Set<number>()
 
 function rememberAnnouncedClick(id: number): void {
+  settlePostedButtonCard(id)
   if (announcedClickIds.has(id)) return
   announcedClickIds.add(id)
   if (announcedClickIds.size > FORWARD_CACHE_MAX) {
@@ -15865,13 +16132,15 @@ function noteLiveFloor(chatId: string, messageId: number): void {
 /**
  * Forward one replayed message as an inbound card. Mirrors the poll path's
  * delivery (system prefix, slash routing, permission-verdict skip, session
- * handle capture, overdue arming) with transport marker 'stream'. Resolves
+ * handle capture, overdue arming). Polled room agents use the same forwarder
+ * with transport marker 'poll'. Resolves
  * only after the MCP handoff resolves (5.7 handoff before advance), so a
  * failed handoff pins the stream cursor for redelivery.
  */
 async function forwardStreamInbound(
   view: StreamMessageView,
   isSystem: boolean,
+  transport: 'stream' | 'poll' = 'stream',
 ): Promise<void> {
   // The second lock (person lanes), on the stream as on the socket and poll.
   const streamLaneVerdict = ownerLaneVerdict(view.raw)
@@ -15979,7 +16248,7 @@ async function forwardStreamInbound(
       userId: senderUserId,
       assistantId: ASSISTANT_ID,
       timestamp: view.sentDate,
-      transport: 'stream',
+      transport: transport,
       text: view.text,
       files: view.files as never[],
       senderType: streamIsEmail
@@ -16149,11 +16418,11 @@ async function forwardStreamInbound(
 }
 
 /**
- * Another agent's message in a group or channel, held on the stream until its
+ * Another agent's message in a group or channel, held on stream or poll until its
  * text has settled (lib/room-agent-settle.ts). Delivered through the same
  * forwarder as any stream message, under the same gates the lanes check.
  */
-const roomAgentSettler = createRoomAgentSettler<StreamMessageView, ReturnType<typeof setTimeout>>({
+const roomAgentSettler = createRoomAgentSettler<StreamMessageView & { inboundTransport?: 'poll' }, ReturnType<typeof setTimeout>>({
   schedule: (fire, ms) => {
     const handle = setTimeout(fire, ms)
     handle.unref?.()
@@ -16161,6 +16430,11 @@ const roomAgentSettler = createRoomAgentSettler<StreamMessageView, ReturnType<ty
   },
   cancel: (handle) => clearTimeout(handle),
   isForwarded: (messageId) => forwardedMessageIds.has(messageId),
+  // A new presign is not an edit. Text, edit time, file ids and file metadata
+  // define the version, while delivery keeps the latest download URLs.
+  versionOf: (view) => JSON.stringify([view.text, humanEditTime(view), view.files],
+    (key, value) => key === 'url' || key === 'fileData' ? undefined : value),
+  editTimeOf: humanEditTime,
   // A failed handoff un-claims the id (forwardStreamInbound) and rejects, and
   // the wait tries once more.
   deliver: (view) => {
@@ -16168,7 +16442,7 @@ const roomAgentSettler = createRoomAgentSettler<StreamMessageView, ReturnType<ty
       log(`stream: room_agent message ${view.messageId} not delivered: this daemon stood down or is draining for an update`)
       return
     }
-    return trackMessageOperation(() => forwardStreamInbound(view, false))
+    return trackMessageOperation(() => forwardStreamInbound(view, false, view.inboundTransport))
   },
   log,
 })
@@ -16248,10 +16522,17 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
     )
     return
   }
+  // A method tap before POST returns waits for the numeric card identity;
+  // its direct read or fresh history will recover it. An older offer's replay
+  // must never fall through to the controller while a new card is unbound.
+  if ((loginMethodCard?.chatId === chatId && loginMethodCard.messageId === view.messageId) || answer.callbackData.startsWith('login:')) {
+    deliverLoginMethodAnswer(chatId, view.messageId, view.raw, answer.callbackData, answer.clickerUserId, 'stream')
+    return
+  }
   const decision = decideButtonsAnswered({
     messageType: view.messageType,
     callbackData: answer.callbackData,
-    alreadyAnnounced: announcedClickIds.has(view.messageId),
+    alreadyAnnounced: announcedClickIds.has(view.messageId) || postedButtonCards.get(view.messageId)?.settled === true,
     // Both vocabularies: a new ea: click, and a perm: click from a prompt an
     // older build of this daemon left on screen across an update.
     permissionRe: PERMISSION_CLICK_RE,

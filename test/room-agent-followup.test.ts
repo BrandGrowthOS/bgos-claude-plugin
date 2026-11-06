@@ -34,7 +34,8 @@
  *     push, whichever comes first, wins; neither takes it for this agent's
  *     reply (a stream read closes the push's row, so the stream must deliver);
  *   - a person's follow-up is delivered exactly as before, also when another
- *     agent's follows it, and the poll lane is unchanged;
+ *     agent's follows it; marked poll rows share the stream's settle wait,
+ *     and unmarked assistant history remains an outbound reply;
  *   - this agent's own message never wakes it: the socket drops it, and on the
  *     stream it stays the reply boundary it always was;
  *   - every meta value is a string (wake-card contract).
@@ -255,6 +256,12 @@ function compile(source: string, name: string, extra: Record<string, unknown> = 
     streamHeldEmptyChatByMessageId: new Map<number, string>(),
     chatLastSeen: new Map([[CHAT, 9000]]),
     chatUnansweredButtons: new Map(),
+    loginMethodCard: null,
+    pendingLoginMethodCard: () => null,
+    hasPendingPostedButtonCard: () => false,
+    announcePostedButtonAnswer: () => {},
+    postedButtonCards: new Map(),
+    announcedClickIds: new Set(),
     pendingInbounds: new Map(),
     FIRST_POLL_RECENT_CUTOFF_MS: null,
     isNotModified: () => false,
@@ -372,15 +379,26 @@ function forwarderLane(extra: Record<string, unknown> = {}) {
 }
 
 function pollLane(rows: Array<Record<string, unknown>>, extra: Record<string, unknown> = {}) {
+  const clock = fakeTimers()
   const source = [
     serverConst('EMAIL_NEVER_SLASH'),
+    serverFunction('async function forwardStreamInbound('),
+    serverFunction('const roomAgentSettler = createRoomAgentSettler', '\n})\n'),
     serverFunction('function pollAgentOriginOf('),
     serverFunction('function pollSenderTypeOf('),
     serverFunction('function pollPeerConversationIdOf('),
     serverFunction('function pollTurnStateOf('),
     serverFunction('async function pollChat('),
+    serverFunction('async function applyStreamMessage('),
   ].join('\n')
-  return compile(source, 'pollChat', { bgosGet: async () => ({ messages: rows }), ...extra })
+  // Both lanes use this one settler, cursor and forwarded-id ledger.
+  return { ...compile(source, '(input, kind) => typeof input === "string" ? pollChat(input) : applyStreamMessage(input, kind ?? input.kind)', {
+    ...roomAgentSettle,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    bgosGet: async () => ({ messages: rows }),
+    ...extra,
+  }), clock }
 }
 
 /** Another agent's follow-up, delivered: its text unchanged, labelled as that agent, never a person. */
@@ -760,7 +778,7 @@ test('socket: dropping an own or unreadable room_agent message says so in the lo
   assert.ok(run.logs.some((l) => l.includes('9104') && l.includes('could not be read')), run.logs.join(' | '))
 })
 
-test('poll, control: the history route never forwards an agent\'s row, a person\'s row is delivered as before', async () => {
+test('poll, control: unmarked assistant history stays outbound, a person\'s row is delivered as before', async () => {
   const { fn, run } = pollLane([
     { message: { id: 9101, text: 'The venue moved to Pier 4.', sender: 'assistant', senderAssistantId: OTHER_AGENT, messageType: 'standard', sentDate: TS }, messageFiles: [] },
     { message: { id: 9102, text: 'And bring the banners.', sender: 'user', senderUserId: PERSON, messageType: 'standard', sentDate: TS }, messageFiles: [] },
@@ -770,6 +788,348 @@ test('poll, control: the history route never forwards an agent\'s row, a person\
   assert.equal(run.notifications[0]!.content, 'And bring the banners.')
   assert.equal(run.notifications[0]!.meta.user_id, PERSON)
   assert.deepEqual(run.recorded, ['user'])
+})
+
+function pollAgentRow(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    message: { id: 9101, sender: 'assistant', senderType: 'room_agent', senderAssistantId: OTHER_AGENT,
+      text: AGENT_FRAMED, messageType: 'standard', sentDate: TS, sessionHandle: 'sh_room_7001', ...over },
+    messageFiles: [],
+  }
+}
+
+test('poll: a marked room agent settles once, names the author, and keeps the pending human reply', async () => {
+  const lane = pollLane([pollAgentRow()], { pendingInbounds: new Map([[CHAT, { messageId: 9050 }]]) })
+  await lane.fn(CHAT)
+  assert.deepEqual(lane.run.cleared, [], 'another agent did not answer our human')
+  assert.equal(lane.run.notifications.length, 0, 'wait for settled text')
+  assert.equal(lane.clock.live(), 1)
+  assert.equal(lane.clock.timers.at(-1)!.ms, 20_000)
+  await lane.clock.elapse()
+  assertAgentFollowUp(lane.run, 'poll settled', 'poll')
+  assert.equal(lane.run.notifications[0]!.meta.session_handle, 'sh_room_7001')
+  await lane.fn(CHAT)
+  await lane.clock.elapse()
+  assert.equal(lane.run.notifications.length, 1, 'repeated reads do not start another turn')
+})
+
+test('poll: self, unreadable author, and dormant first-install room rows never wake the agent', async () => {
+  for (const author of [ASSISTANT_ID, undefined, -1, 'bad']) {
+    const lane = pollLane([pollAgentRow({ senderAssistantId: author })])
+    await lane.fn(CHAT)
+    await lane.clock.elapse()
+    assert.equal(lane.run.notifications.length, 0, String(author))
+  }
+  const dormant = pollLane([pollAgentRow()], {
+    chatLastSeen: new Map([[CHAT, 0]]),
+    FIRST_POLL_RECENT_CUTOFF_MS: Date.parse(TS) + 1,
+  })
+  await dormant.fn(CHAT)
+  await dormant.clock.elapse()
+  assert.equal(dormant.run.notifications.length, 0)
+})
+
+test('poll then push: the settled push wins the shared room agent claim', async () => {
+  const forwardedMessageIds = new Set<number>()
+  const shared = { forwardedMessageIds, rememberForwarded: (id: number) => forwardedMessageIds.add(id) }
+  const poll = pollLane([pollAgentRow()], shared)
+  await poll.fn(CHAT)
+  assert.equal(poll.clock.live(), 1)
+  const push = wsLane(shared)
+  push.fn(wsAgentFollowUp())
+  assertAgentFollowUp(push.run, 'push after poll', 'ws')
+  await poll.clock.elapse()
+  assert.equal(poll.run.notifications.length, 0)
+})
+
+test('poll: repeated reads keep the settle deadline, real edits replace text, and the cursor waits', async () => {
+  const rows = [pollAgentRow({ text: 'First chunk' })]
+  const advances: number[] = []
+  const cursor = new Map([[CHAT, 9000]])
+  const lane = pollLane(rows, { chatLastSeen: cursor,
+    advanceChatCursor: (_chat: string, id: number) => { advances.push(id); cursor.set(CHAT, id) } })
+  await lane.fn(CHAT)
+  assert.equal(advances.at(-1), 9100, 'delta reads must keep the waiting row in range')
+  const firstTimer = lane.clock.timers.at(-1)
+  await lane.fn(CHAT)
+  assert.equal(lane.clock.timers.at(-1), firstTimer, 'same version does not postpone delivery')
+  rows[0] = pollAgentRow()
+  await lane.fn(CHAT)
+  assert.notEqual(lane.clock.timers.at(-1), firstTimer, 'changed text restarts the settle time')
+  await lane.clock.elapse()
+  assertAgentFollowUp(lane.run, 'poll latest version', 'poll')
+  await lane.fn(CHAT)
+  assert.equal(advances.at(-1), 9101, 'delivery releases the cursor')
+})
+
+test('poll first read: another room agent is not an answer to the human, but our own reply is', async () => {
+  for (const own of [false, true]) {
+    const rows = [
+      { message: { id: 9100, sender: 'user', senderUserId: PERSON, text: 'Bring banners', sentDate: TS }, messageFiles: [] },
+      pollAgentRow({ senderAssistantId: own ? ASSISTANT_ID : OTHER_AGENT }),
+    ]
+    const lane = pollLane(rows, { chatLastSeen: new Map([[CHAT, 0]]) })
+    await lane.fn(CHAT)
+    await lane.clock.elapse()
+    assert.equal(lane.run.notifications.some((n) => n.meta.message_id === '9100'), !own)
+    assert.equal(lane.run.notifications.some((n) => n.meta.sender_type === 'room_agent'), !own)
+  }
+})
+
+for (const selector of ['first read', 'restart'] as const) {
+  test(`${selector} selector: our reply across room context stops recovery of an answered human request`, () => {
+    const rows = [
+      { id: 9100, sender: 'user', pendingEmptySystem: false, sentDateMs: Date.parse(TS) },
+      { id: 9101, sender: 'room_agent', pendingEmptySystem: false, sentDateMs: Date.parse(TS) },
+      { id: 9102, sender: 'assistant', pendingEmptySystem: false, sentDateMs: Date.parse(TS) },
+    ]
+    const select = (input: typeof rows) => selector === 'first read'
+      ? pollCore.selectFirstPollBacklogIds({ rows: input, recentCutoffMs: null })
+      : pollCore.selectRestartRecoveryIds({ rows: input, lastSeen: 9102, maxForward: 10, nowMs: Date.parse(TS) + 60_000 })
+    assert.deepEqual(select(rows), [], 'our completed reply still answers the human across another agent')
+    assert.deepEqual(select(rows.slice(0, 2)), [9100], 'another agent alone never answers for us')
+    assert.deepEqual(select([rows[0]!, rows[1]!, { ...rows[1]!, id: 9102 }, { ...rows[2]!, id: 9103 }]), [], 'multiple context rows stay transparent')
+    assert.deepEqual(select([rows[0]!, { ...rows[1]!, sender: 'system' }, rows[2]!]), [9100, 9101], 'system traffic still separates a proactive assistant from the human')
+    assert.deepEqual(select([{ ...rows[0]!, sender: 'assistant' }, rows[1]!, rows[2]!]), [], 'assistant-only history remains proactive')
+  })
+
+  test(`poll ${selector}: human, other room agent, then our marked reply never re-offers completed work`, async () => {
+    const sentDate = new Date().toISOString()
+    const lane = pollLane([
+      { message: { id: 9100, sender: 'user', senderUserId: PERSON, text: 'Bring banners', sentDate }, messageFiles: [] },
+      pollAgentRow({ sentDate }),
+      pollAgentRow({ id: 9102, senderAssistantId: ASSISTANT_ID, text: 'Done, brought banners.', sentDate }),
+    ], {
+      chatLastSeen: new Map([[CHAT, selector === 'first read' ? 0 : 9102]]),
+      chatsPolledSinceBoot: new Set(),
+      MAX_RESTART_RECOVERY_FORWARD: 10,
+    })
+    await lane.fn(CHAT)
+    await lane.clock.elapse()
+    assert.deepEqual(lane.run.notifications, [], 'neither the human nor room context may replay completed work')
+  })
+}
+
+test('first read paging: our reply across room context stops older reads at the same boundary as backlog selection', () => {
+  const rows = ['user', 'room_agent', 'assistant'].map((sender, index) => ({
+    id: 9100 + index, sender, pendingEmptySystem: false, sentDateMs: Date.parse(TS),
+  }))
+  const needsOlder = (input: typeof rows) => pollCore.firstPollNeedsOlderRows({
+    rows: input, recentCutoffMs: null, historyCap: null,
+  })
+  assert.equal(needsOlder(rows), false, 'our completed reply ends the page walk across room context')
+  assert.equal(needsOlder(rows.slice(0, 2)), true, 'another agent alone cannot stop paging')
+  assert.equal(needsOlder(rows.slice(1)), true, 'keep paging when the human may be on an older page')
+  assert.equal(needsOlder([rows[0]!, { ...rows[1]!, sender: 'system' }, rows[2]!]), true, 'system traffic still separates a proactive assistant')
+})
+
+// Each row is the same boundary rule under a different collection policy.
+const answeredTurnCases = [
+  { name: 'human alone', senders: ['user'], human: [0], context: [0], older: true },
+  { name: 'other agent cannot answer for us', senders: ['user', 'room_agent'], human: [0], context: [0, 1], older: true },
+  { name: 'own marked reply answers human', senders: ['user', 'assistant'], human: [], context: [], older: false },
+  { name: 'both reviews: own reply across room context', senders: ['user', 'room_agent', 'assistant'], human: [], context: [], older: false },
+  { name: 'several context rows', senders: ['user', 'room_agent', 'room_agent', 'assistant'], human: [], context: [], older: false },
+  { name: 'optional agent request alone', senders: ['room_agent'], human: [], context: [0], older: true },
+  { name: 'incomplete page needs its human turn anchor', senders: ['room_agent', 'assistant'], human: [], context: [0], older: true },
+  { name: 'proactive assistant alone', senders: ['assistant'], human: [], context: [], older: true },
+  { name: 'proactive assistant before request', senders: ['assistant', 'user'], human: [1], context: [1], older: true },
+  { name: 'system is not a human request', senders: ['user', 'system', 'assistant'], human: [0, 1], context: [0, 1], older: true },
+  { name: 'room context cannot bridge a system turn boundary', senders: ['user', 'system', 'room_agent', 'assistant'], human: [0, 1], context: [0, 1, 2], older: true },
+  { name: 'new human turn after answer', senders: ['user', 'room_agent', 'assistant', 'user'], human: [3], context: [3], older: false },
+  { name: 'new agent turn after answer', senders: ['user', 'room_agent', 'assistant', 'room_agent'], human: [], context: [3], older: false },
+]
+for (const c of answeredTurnCases) {
+  test(`answered turn table: ${c.name}`, async () => {
+    const sentDate = new Date().toISOString()
+    const rows = c.senders.map((sender, i) => ({
+      id: 9100 + i, sender, pendingEmptySystem: false, sentDateMs: Date.parse(sentDate),
+    }))
+    const ids = (indexes: number[]) => indexes.map((i) => 9100 + i)
+    assert.deepEqual(pollCore.selectFirstPollBacklogIds({ rows, recentCutoffMs: null }), ids(c.human), 'human collection')
+    assert.deepEqual(pollCore.selectFirstPollBacklogIds({ rows, recentCutoffMs: null, includeRoomAgents: true }), ids(c.context), 'room collection preserves boundary')
+    assert.deepEqual(pollCore.selectRestartRecoveryIds({ rows, lastSeen: 9200, maxForward: 10, nowMs: Date.parse(sentDate) }), ids(c.human), 'restart shares boundary')
+    assert.equal(pollCore.firstPollNeedsOlderRows({ rows, recentCutoffMs: null, historyCap: null }), c.older, 'paging shares boundary')
+    const wireRows = c.senders.map((sender, i) => sender === 'room_agent' || sender === 'assistant'
+      ? pollAgentRow({ id: 9100 + i, senderAssistantId: sender === 'assistant' ? ASSISTANT_ID : OTHER_AGENT, sentDate })
+      : { message: { id: 9100 + i, sender, senderUserId: PERSON, text: 'Request', sentDate }, messageFiles: [] })
+    for (const restart of [false, true]) {
+      const lane = pollLane(wireRows, {
+        chatLastSeen: new Map([[CHAT, restart ? 9200 : 0]]), chatsPolledSinceBoot: new Set(), MAX_RESTART_RECOVERY_FORWARD: 10,
+      })
+      await lane.fn(CHAT)
+      await lane.clock.elapse()
+      assert.deepEqual(lane.run.notifications.map((n) => Number(n.meta.message_id)), ids(restart ? c.human : c.context), restart ? 'restart integration' : 'first-read integration')
+    }
+  })
+}
+
+for (const c of [
+  { name: 'round 1 ordered edits', original: '2026-10-17T09:00:01.000Z', final: '2026-10-17T09:00:10.000Z' },
+  { name: 'round 2 unstamped original', original: undefined, final: '2026-10-17T09:00:10.000Z' },
+  { name: 'neither version stamped', original: undefined, final: undefined },
+  { name: 'equal timestamps need read ordering', original: TS, final: TS },
+  { name: 'unstamped stream version', original: TS, final: undefined },
+]) {
+  test(`poll racing stream table: ${c.name}`, async () => {
+    let release!: (response: unknown) => void
+    const response = new Promise((resolve) => { release = resolve })
+    const cursor = new Map([[CHAT, 9000]])
+    const lane = pollLane([], {
+      chatLastSeen: cursor,
+      bgosGet: () => response,
+      advanceStreamChatCursor: (chatId: string, id: number) => cursor.set(chatId, Math.max(cursor.get(chatId) ?? 0, id)),
+    })
+    const poll = lane.fn(CHAT)
+    await lane.fn(streamUpdate(streamAgentRow({ editedAt: c.final }), 9101, 'message_finalized'), 'message_finalized')
+    assert.equal(cursor.get(CHAT), 9101, 'stream advanced the cursor while the older poll was in flight')
+    const finalTimer = lane.clock.timers.at(-1)
+    assert.ok(finalTimer)
+    release({ messages: [pollAgentRow({ text: 'First chunk', sentDate: TS, editedAt: c.original })] })
+    await poll
+    assert.equal(lane.clock.timers.at(-1), finalTimer, 'a stale response leaves the final deadline intact')
+    await lane.clock.elapse()
+    assertAgentFollowUp(lane.run, 'stream final after stale poll', 'stream')
+    await lane.fn(streamUpdate(streamAgentRow({ editedAt: c.final }), 9101, 'message_finalized'), 'message_finalized')
+    await lane.clock.elapse()
+    assert.equal(lane.run.notifications.length, 1, 'the shared claim still delivers once')
+  })
+}
+
+for (const c of [
+  { name: 'ordered edits', original: '2026-10-17T09:00:01.000Z', final: '2026-10-17T09:00:10.000Z' },
+  { name: 'unstamped original', original: undefined, final: '2026-10-17T09:00:10.000Z' },
+  { name: 'neither version stamped', original: undefined, final: undefined },
+  { name: 'equal timestamps', original: TS, final: TS },
+  { name: 'unstamped final', original: TS, final: undefined },
+]) {
+  for (const newerFirst of [false, true]) {
+    test(`overlapping poll table: ${c.name}, ${newerFirst ? 'newer' : 'older'} response first`, async () => {
+      const releases: Array<(response: unknown) => void> = []
+      const cursor = new Map([[CHAT, 9000]])
+      const forwarded = new Set<number>()
+      const claims: number[] = []
+      const lane = pollLane([], {
+        chatLastSeen: cursor,
+        forwardedMessageIds: forwarded,
+        rememberForwarded: (id: number) => { claims.push(id); forwarded.add(id) },
+        advanceChatCursor: (chatId: string, id: number) => cursor.set(chatId, Math.max(cursor.get(chatId) ?? 0, id)),
+        bgosGet: () => new Promise((resolve) => { releases.push(resolve) }),
+      })
+      // Both reads start before either response reaches the shared settler.
+      const older = lane.fn(CHAT)
+      const newer = lane.fn(CHAT)
+      assert.equal(releases.length, 2, 'two overlapping history reads')
+      const finish = async (index: number) => {
+        releases[index]!({ messages: [pollAgentRow(index === 0
+          ? { text: 'First chunk', editedAt: c.original }
+          : { editedAt: c.final })] })
+        await (index === 0 ? older : newer)
+      }
+      await finish(newerFirst ? 1 : 0)
+      const firstTimer = lane.clock.timers.at(-1)
+      assert.ok(firstTimer)
+      await finish(newerFirst ? 0 : 1)
+      const finalTimer = lane.clock.timers.at(-1)
+      assert.equal(cursor.get(CHAT), 9100, 'the held message remains in the next poll window')
+      assert.equal(lane.clock.live(), 1)
+      await lane.clock.elapse()
+      assertAgentFollowUp(lane.run, 'overlapping polls final version', 'poll')
+      assert.equal(finalTimer === firstTimer, newerFirst,
+        'a newer edit resets settling; a late older read preserves the final deadline')
+      assert.deepEqual(claims, [9101], 'the final version claims the shared id once')
+      const repeated = lane.fn(CHAT)
+      releases[2]!({ messages: [pollAgentRow({ editedAt: c.final })] })
+      await repeated
+      await lane.clock.elapse()
+      assert.equal(lane.run.notifications.length, 1, 'a later final poll cannot correct an already claimed card')
+      assert.equal(cursor.get(CHAT), 9101, 'delivery releases the cursor')
+    })
+  }
+}
+
+for (const c of [
+  { name: 'later unstamped read can bring a real edit', held: null, incoming: null, overlaps: false, same: false, newer: true },
+  { name: 'known older revision loses even on a later read', held: 20, incoming: 10, overlaps: false, same: false, newer: false },
+  { name: 'known newer revision wins during overlap', held: 10, incoming: 20, overlaps: true, same: false, newer: true },
+  { name: 'identical overlapping read refreshes URLs', held: null, incoming: null, overlaps: true, same: true, newer: false },
+]) {
+  test(`settle revision table: ${c.name}`, async () => {
+    const clock = fakeTimers()
+    const delivered: Array<{ text: string; url: string }> = []
+    const settler = roomAgentSettle.createRoomAgentSettler({
+      schedule: clock.setTimeout, cancel: clock.clearTimeout, isForwarded: () => false,
+      versionOf: (v: { text: string; editedAt: number | null }) => JSON.stringify([v.text, v.editedAt]),
+      editTimeOf: (v: { editedAt: number | null }) => v.editedAt,
+      deliver: (v: { text: string; url: string }) => { delivered.push(v) }, log: () => undefined,
+    })
+    const beforeRead = settler.beginRead()
+    const view = { chatId: CHAT, messageId: 9101, text: 'Held', files: [], url: 'first', editedAt: c.held }
+    settler.note(view)
+    const deadline = clock.timers.at(-1)
+    const readOrder = c.overlaps ? beforeRead : settler.beginRead()
+    settler.note({ ...view, text: c.same ? view.text : 'Incoming', url: 'fresh', editedAt: c.incoming }, readOrder)
+    assert.equal(clock.timers.at(-1) === deadline, !c.newer, 'only accepted changed content restarts the timer')
+    assert.equal(settler.size(), 1)
+    await clock.elapse()
+    assert.equal(delivered.length, 1)
+    assert.equal(delivered[0]!.text, c.newer ? 'Incoming' : 'Held')
+    assert.equal(delivered[0]!.url, c.newer || c.same ? 'fresh' : 'first')
+  })
+}
+
+for (const source of ['poll', 'live', 'live duplicate'] as const) {
+  test(`settle read provenance table: identical ${source} retains ordering`, async () => {
+    const clock = fakeTimers()
+    const delivered: Array<{ text: string; url: string }> = []
+    const settler = roomAgentSettle.createRoomAgentSettler({
+      schedule: clock.setTimeout, cancel: clock.clearTimeout, isForwarded: () => false,
+      versionOf: (v: { text: string }) => v.text,
+      deliver: (v: { text: string; url: string }) => { delivered.push(v) }, log: () => undefined,
+    })
+    const first = settler.beginRead()
+    const stale = settler.beginRead()
+    const latest = settler.beginRead()
+    const view = { chatId: CHAT, messageId: 9101, text: 'Final', files: [], url: 'first' }
+    settler.note(view, source === 'poll' ? first : undefined)
+    // The duplicate poll must advance poll order without erasing live evidence.
+    // A duplicate live arrival must protect against reads already in flight too.
+    const lateRead = source === 'live duplicate' ? settler.beginRead() : stale
+    const deadline = clock.timers.at(-1)
+    settler.note({ ...view, url: 'fresh' }, source === 'poll' ? latest : source === 'live' ? first : undefined)
+    settler.note({ ...view, text: 'First chunk', url: 'stale' }, lateRead)
+    assert.equal(clock.timers.at(-1), deadline, 'duplicate and rejected older content preserve the deadline')
+    await clock.elapse()
+    assert.equal(delivered.length, 1)
+    assert.equal(delivered[0]!.text, 'Final')
+    assert.equal(delivered[0]!.url, 'fresh')
+  })
+}
+
+test('channel poll: rotating file links keep the settle deadline and delivery uses the latest link', async () => {
+  const rows = [{ ...pollAgentRow({ groupContext: { chatKind: 'channel', mentionedBy: 'Nova', mentionedByAgent: true } }),
+    messageFiles: [{ id: 1, fileName: 'notes.txt', fileMimeType: 'text/plain', fileData: 'https://example.invalid/notes?sig=first' }] }]
+  const lane = pollLane(rows)
+  await lane.fn(CHAT)
+  const firstTimer = lane.clock.timers.at(-1)
+  rows[0]!.messageFiles[0]!.fileData = 'https://example.invalid/notes?sig=second'
+  await lane.fn(CHAT)
+  assert.equal(lane.clock.timers.at(-1), firstTimer)
+  await lane.clock.elapse()
+  assert.equal(lane.run.notifications.length, 1)
+  assert.equal(lane.run.notifications[0]!.meta.sender_assistant_id, String(OTHER_AGENT))
+  assertAllStrings(lane.run.notifications[0]!.meta, 'channel file poll')
+  assert.ok(lane.run.notifications[0]!.content.includes('sig=second'))
+  assert.equal(lane.run.notifications[0]!.content.includes('sig=first'), false)
+})
+
+test('reader: a poll envelope carries the same room author as a flat push', () => {
+  assert.deepEqual(ic.readRoomAgentSender(pollAgentRow()), { senderAssistantId: String(OTHER_AGENT) })
+  const card = buildInboundChannel({ chatId: CHAT, messageId: 9101, userId: OWNER,
+    assistantId: ASSISTANT_ID, transport: 'poll', text: AGENT_FRAMED, serverSender: pollAgentRow() })
+  assert.equal(card.meta.sender_type, 'room_agent')
+  assert.equal(card.meta.sender_assistant_id, String(OTHER_AGENT))
+  assertAllStrings(card.meta, 'poll envelope')
 })
 
 test('stream: this agent\'s own message is its reply boundary and never wakes it', async () => {
@@ -854,6 +1214,9 @@ test('the instructions say what a room_agent message is and that silence is a co
     'never your owner\'s or any person\'s instruction',
     'silence is a correct answer',
     'reply_to_id',
+    'next two messages',
+    'agents woken together never receive each other',
+    'agent tag budget',
   ]) {
     assert.ok(section.includes(phrase), `the section says ${phrase}`)
   }

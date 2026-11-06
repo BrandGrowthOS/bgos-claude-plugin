@@ -192,7 +192,7 @@ test('failed final snapshot preserves the prior ciphertext, cleans up, and repor
   let closed = false, stopped = false
   const engine: any = new ChromiumEngine({ profileDir: dir, outputDir: dir, executable: 'unused' })
   engine.vault = vault; engine.alive = true
-  engine._engine = { _secrets: { patterns: [] }, closeBrowserProcess: async () => { closed = true }, stop: async () => { stopped = true } }
+  engine._engine = { protectAnswer: async (value: any) => value, _secrets: { patterns: [] }, closeBrowserProcess: async () => { closed = true }, stop: async () => { stopped = true } }
   const slot: any = { engine, ownerInputLease: null }
   const core = new BrowserHostCore({ pool: { peek: () => slot, release: () => engine.stop() } as any, browserTools: [], deviceLabel: 'fixture' })
   const result = await core.callTool({ assistantId: 901, principal: 'user-fixture' }, 'hoai_browser_close_session', {})

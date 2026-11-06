@@ -149,7 +149,7 @@ function setup(over: Record<string, any> = {}) {
     key: 'owner',
     gates,
     gateKey: join(agentRoot, '900', 'browser', 'owner'),
-    context: () => ({ agentName: 'agentName' in over ? over.agentName : 'Data', purpose: 'Create an App Store Connect key' }),
+    context: () => ({ agentName: 'agentName' in over ? over.agentName : 'Data', purpose: 'Create an App Store Connect key', ownerTurn: over.ownerTurn ?? true }),
     decide: () => verdict,
     remember: (origin: string | null, choice: string) => remembered.push({ origin, choice }),
     ownerControl: () => owner,
@@ -1007,4 +1007,25 @@ test('the folder guard under a service account: its alias (SY) is the user, neve
 test('a held download reads truthfully: it waits for the next start of the browser host on this machine', () => {
   const [line] = downloadLines([{ handle: 'dl_aa11', fileName: 'held.p8', bytes: 5, state: 'held' }])
   assert.equal(line, "Downloads: dl_aa11 held.p8, 5 B, held on this machine for your owner, because its private folder could not be checked; it is settled when this machine's browser host next starts. You are not given it.")
+})
+
+
+test('a recipient download discloses no page detail in either owner card', async () => {
+  const s = setup({ ownerTurn: false })
+  try {
+    s.slot.onDownload(fakeDownload(s.paths.held, { name: 'private-fixture.pdf', url: 'https://private-fixture.example/invoice' }))
+    await until(() => s.downloadCards().length === 1, () => 'first card')
+    const ask = s.downloadCards()[0]!
+    const check = (card: Card) => {
+      const received = JSON.stringify(card)
+      for (const value of ['private-fixture', 'Create an App Store', s.store.displayOutputDir('owner')]) assert.equal(received.includes(value), false, 'recipient detail reached the owner')
+      assert.equal(card.origin, null)
+      assert.equal(card.purpose, null)
+      assert.deepEqual(card.choices, ['allow_once', 'deny'])
+    }
+    check(ask)
+    s.srv.answer(String(ask.gateId), null, 'expired')
+    await until(() => s.downloadCards().length === 2, () => 'kept card')
+    check(s.downloadCards()[1]!)
+  } finally { s.done() }
 })

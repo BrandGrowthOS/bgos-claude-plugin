@@ -2814,7 +2814,7 @@ test('server.ts notes every button tap announced to the session with its tapper 
   // Through privateTapCard since 0.71.3 (4bf28148), which notes a tap with noteTap unless it is the owner's own on the
   // stream, in its window (test/private-turn-owner-tap.test.ts).
   const tagged = SRC.match(/content: privateTapCard\(\{ tracker: privateTurns, lane: '(?:boot|poll|stream)', ownerUserId: USER_ID, chatId: String\(chatId\), [^\n]+, content: contentLines\.join\('\\n'\) \}\),\n/g) ?? []
-  assert.equal(announced.length, 3, 'the boot sweep, the poll and the stream')
+  assert.equal(announced.length, 4, 'the boot sweep, posted-card recovery, the poll and the stream')
   assert.equal(tagged.length, announced.length)
 })
 
