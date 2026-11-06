@@ -32,40 +32,60 @@ BGOS, then bring the copy across with this list.
    The BGOS side must be **committed** there, or the claim is unverifiable from
    git and a reviewer diffing the two committed blobs sees them disagree.
 
-3. **Bump the pin.** Put the new hash and today's date in
-   `bin/hoai-browser-mcp.vendor.json`. This is the step that makes drift loud:
+3. **Update the pin.** Record the full immutable BGOS `sourceCommit`, the
+   SHA-256 of its committed shim blob as `sourceSha256`, the identical vendor
+   `sha256`, and today's `vendoredAt` date in
+   `bin/hoai-browser-mcp.vendor.json`. Remove `aheadOfSource` once parity holds.
+   This is the step that makes drift loud:
    the guard test fails until the pin and the file agree, so a re-vendor cannot
    land without someone stating the new hash in the tree.
 
-4. **Run the guard with the cross-tree check armed**, on the machine that has
-   both trees:
+4. **Run the guard.** Every `npm test`, including plugin CI, compares the
+   vendored bytes with `sourceSha256` recorded at `sourceCommit`. This content
+   hash check needs neither BGOS credentials, network access nor a local BGOS
+   path. To audit the recorded hash, use a fresh read-only clone of BGOS,
+   check out `sourceCommit`, and measure the committed source blob:
+
+   ```bash
+   git -C "<bgos>" show "<sourceCommit>:frontend/electron-app/agent-browser/shim/hoai-browser-mcp.mjs" | sha256sum
+   ```
+
+   With that pinned checkout available, also run the direct cross-tree audit:
 
    ```bash
    HOAI_BROWSER_SHIM_SOURCE="<bgos>/frontend/electron-app/agent-browser/shim/hoai-browser-mcp.mjs" \
-     npx tsx --test test/hoai-browser-mcp.vendor.test.ts
+     node --import tsx --test --test-concurrency=4 test/hoai-browser-mcp.vendor.test.ts
    ```
 
-   Without that variable the cross-tree case is skipped with a reason: BGOS is a
-   separate private repo and is not on this repo's CI runner, so CI can only
-   check the copy against the pin, never against BGOS.
+   Without that variable only the optional checkout audit is skipped. The
+   recorded source content hash parity check always runs. A supplied path that
+   does not exist fails rather than silently skipping. CI verifies the recorded
+   commit's content, not the latest moving BGOS main; re-vendoring still requires
+   measuring that committed blob and reviewing the upstream diff.
 
 5. **Run the behavioural cover, which is what catches a shim that no longer
    works rather than one that merely changed.**
 
    ```bash
-   npx tsx --test test/hoai-browser-mcp.relay.test.ts test/hoai-browser-mcp.test.ts
+   node --import tsx --test --test-concurrency=4 test/hoai-browser-mcp.cancellation.test.ts test/hoai-browser-mcp.relay.test.ts test/hoai-browser-mcp.test.ts
    npm test && npm run build
    ```
 
-6. **Say it in `CHANGELOG.md`** under the version that ships the new copy, with
-   the hash, and bump `.claude-plugin/plugin.json` + `package.json` so the fleet
-   can actually receive it. A vendored fix nobody publishes reaches nobody.
+6. **Say it in `CHANGELOG.md`** under Unreleased, with the source commit and
+   hash. Version changes belong to the release order; a re-vendor alone does
+   not bump `.claude-plugin/plugin.json` or `package.json`.
 
 7. **The other plugin ships the same bytes.** `codex-channel-bgos` vendors the
    shim as `vendor/hoai-browser-mcp.mjs`; re-vendor it in the same round or say
-   plainly that it is behind.
+   plainly that its parity was not checked when it is outside the work scope.
 
-## When this copy leads (0.72.0)
+## Historical exception: when this copy led (0.72.0)
+
+Resolved on 2026-11-06: a fresh BGOS main clone at
+`aed69c93bd191ce8de678b4f5cac4761f7130680` contains the exact vendored bytes
+(SHA-256 `2fd50404ff330d65f5f38017ffb7dd0a5df2f1c560b694c1f329b1bbe88f71ef`).
+The pin now records parity and no longer claims to lead. Cancellation was
+already present in both copies; the plugin now runs its transport cases too.
 
 Plugin 0.72.0 (BGOS mission 173) changed this copy before BGOS could: the
 desktop tree was being changed by other work at the time, and the agent side had

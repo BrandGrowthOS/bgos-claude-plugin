@@ -4,6 +4,8 @@ Notable changes to the HOAI Claude Code plugin.
 
 ## Unreleased
 
+The browser shim pin now records BGOS main commit `aed69c93bd191ce8de678b4f5cac4761f7130680` and its source content hash `2fd50404ff330d65f5f38017ffb7dd0a5df2f1c560b694c1f329b1bbe88f71ef`. The shipped bytes already match that source, including MCP cancellation. Plugin CI checks the recorded source hash without a local BGOS checkout. Cancellation tests cover the local and relay routes, queued calls, typed request IDs, late replies, destination changes, delivery refusal and ID reuse during delivery.
+
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
 ## 0.86.8 (2026-11-06)

@@ -2,6 +2,15 @@
 
 **Date:** 2026-09-12
 
+**Update, 2026-11-06:** The pin now records both an immutable `sourceCommit`
+and `sourceSha256` measured from its committed BGOS shim blob. Plugin CI always
+compares the vendored bytes to that recorded source content hash without a local
+BGOS checkout or network access. `HOAI_BROWSER_SHIM_SOURCE` remains an optional
+audit of the record; an explicitly supplied missing path fails. This verifies
+parity with the pinned source, and still cannot detect later changes to BGOS main.
+The plugin also runs `test/hoai-browser-mcp.cancellation.test.ts`, with local and
+relay transport cases adapted from BGOS's cancellation suite.
+
 **Context:** `bin/hoai-browser-mcp.mjs` is a byte-identical copy of the BGOS Agent Browser shim
 (`frontend/electron-app/agent-browser/shim/hoai-browser-mcp.mjs`). The shim is framework neutral on
 purpose: it never reads a plugin's files and takes its relay credentials from env, so every channel

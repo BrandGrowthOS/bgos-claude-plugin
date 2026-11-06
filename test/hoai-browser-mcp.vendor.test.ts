@@ -22,11 +22,9 @@
  *  - LF, and the .gitattributes entry that guarantees it: without that entry
  *    `core.autocrlf` hands a Windows checkout a different byte sequence and the
  *    hash is unverifiable on disk for exactly the people most likely to check.
- *  - the cross-tree case: the BGOS tree is a separate private repo and is NOT
- *    on this repo's CI runner, so this suite cannot compare the two on its own.
- *    It is skipped with a reason unless HOAI_BROWSER_SHIM_SOURCE points at the
- *    BGOS shim, which is what the re-vendor checklist tells you to do on a
- *    machine that has both trees.
+ *  - committed source content hash: every CI run checks parity against the
+ *    source hash recorded with its immutable BGOS commit, without credentials
+ *    or a local BGOS checkout. An optional checkout verifies that record too.
  *
  * What this still does NOT buy: nothing here fires when the BGOS shim changes
  * and this copy does not move. That check can only live on the BGOS side. The
@@ -51,6 +49,9 @@ const CHECKLIST = join(ROOT, 'docs', 'vendoring-the-hoai-browser-shim.md')
 interface Pin {
   file: string
   source: string
+  sourceCommit: string
+  sourceSha256: string
+  aheadOfSource?: string
   sha256: string
   vendoredAt: string
   why: string
@@ -89,6 +90,15 @@ test('the pin names the file it pins, the BGOS source, and a real hash', () => {
   assert.match(p.crossTreeCheck, /HOAI_BROWSER_SHIM_SOURCE/, 'the pin says how to check the other tree')
 })
 
+test('CI parity: the vendored bytes match the content hash recorded at the source commit', () => {
+  const p = pin()
+  assert.match(p.sourceCommit, /^[0-9a-f]{40}$/, 'pin an immutable BGOS commit')
+  assert.match(p.sourceSha256, /^[0-9a-f]{64}$/, 'record the hash measured from that committed source')
+  assert.equal(p.aheadOfSource, undefined, 'a parity pin cannot claim to be ahead of its source')
+  assert.equal(p.sourceSha256, p.sha256, 'the source and vendor pins must agree')
+  assert.equal(sha256(SHIM), p.sourceSha256, 'CI checks source content parity without a BGOS path or network')
+})
+
 test('the vendored copy is LF, and .gitattributes is what keeps it that way', () => {
   const bytes = readFileSync(SHIM)
   assert.ok(!bytes.includes(Buffer.from('\r\n')), 'a CRLF copy has a different sha256 and cannot be verified on disk')
@@ -113,25 +123,19 @@ test('the re-vendor checklist exists and names the pin, the guard and the cross-
   }
 })
 
-// The cross-tree comparison. BGOS is a separate private repo and is not on this
-// repo's CI runner, so this is an opt-in case rather than a check this suite can
-// make on its own: point HOAI_BROWSER_SHIM_SOURCE at the BGOS shim on a machine
-// that has both trees (the re-vendor checklist tells you to) and it runs.
+// Optional audit of the committed source hash used by the unconditional CI
+// parity case. A supplied but missing checkout is an error, not a skipped audit.
 const source = (process.env.HOAI_BROWSER_SHIM_SOURCE ?? '').trim()
-const sourceReadable = source !== '' && existsSync(source)
 test(
-  'the BGOS source of truth hashes to the same pin (opt-in, needs both trees)',
+  'a supplied BGOS checkout verifies the recorded source content hash',
   {
-    skip: sourceReadable
-      ? false
-      : source === ''
-        ? 'HOAI_BROWSER_SHIM_SOURCE is not set: the BGOS tree is a separate repo and is not on this runner, so the cross-tree hash cannot be checked here'
-        : `HOAI_BROWSER_SHIM_SOURCE points at ${source}, which does not exist on this machine`,
+    skip: source === '' ? 'optional checkout audit; CI parity uses the recorded source content hash above' : false,
   },
   () => {
     // bun's node:test ignores the skip option and runs the body; this is the same skip.
-    if (!sourceReadable) return
-    const expected = pin().sha256
+    if (source === '') return
+    assert.ok(existsSync(source), 'HOAI_BROWSER_SHIM_SOURCE was supplied but does not exist')
+    const expected = pin().sourceSha256
     assert.equal(
       sha256(source),
       expected,
