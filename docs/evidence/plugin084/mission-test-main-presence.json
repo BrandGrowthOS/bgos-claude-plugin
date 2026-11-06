@@ -1,6 +1,0 @@
-{
-  "main": "309ef744bbb6d03ad771492df0af0e7df13ed5c9",
-  "path": "test/mission-working-wiring.test.ts",
-  "exit_code": 128,
-  "stderr": "fatal: path 'test/mission-working-wiring.test.ts' exists on disk, but not in '309ef744bbb6d03ad771492df0af0e7df13ed5c9'\n"
-}

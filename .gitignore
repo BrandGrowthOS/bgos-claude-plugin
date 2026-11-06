@@ -1,8 +1,8 @@
 node_modules/
 dist/
-# Contains credentials for dev testing — use .mcp.json.example as template
+# Contains credentials for dev testing; use .mcp.json.example as template
 .mcp.json
-# Internal dev context — not for public distribution
+# Internal dev context; not for public distribution
 CLAUDE.md
 *.backup
 node_modules
@@ -12,3 +12,4 @@ node_modules
 .laneenv5-suite/
 .laneenv6-tmp/
 .laneenv6-suite/
+.checkup3/

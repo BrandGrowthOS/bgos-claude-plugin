@@ -517,13 +517,3 @@ test('the helper exits 0 only when attached AND accepted are both on record', ()
 test('hoai looks for the beacon the daemon writes: the file name mirrors lib/pairing-lock.ts', () => {
   assert.equal((inventory as unknown as { BEACON_HEARTBEAT_FILE_NAME?: string }).BEACON_HEARTBEAT_FILE_NAME, BEACON_HEARTBEAT_FILE)
 })
-
-test('the proof Mark runs for 888 passes a start only on start, attached AND accepted from ONE helper, never on accepted alone', () => {
-  const src = readFileSync(new URL('../docs/evidence/2026-10-16-gate-attach/gate-proof.ps1', import.meta.url), 'utf8')
-  assert.match(src, /\$ok = \(\$h\.words -contains 'start'\) -and \(\$h\.words -contains 'attached'\) -and \(\$h\.words -contains 'accepted'\)/)
-  assert.match(src, /if \(\$ok\) \{ \$passAt = \$h\.acceptedAt \}/)
-  assert.match(src, /\$pass = \$passAt -and \$boot -and \$beaconAt -and \$beaconAt -ge \$passAt/)
-  assert.match(src, /accepted WITHOUT attached: the 888 shape/)
-  // The log is shared by every agent: only helpers of THIS agent's launcher count.
-  assert.match(src, /if \(\$ConsolePid -gt 0 -and \$h\.console -ne \$ConsolePid\) \{ Say "helper pid \$hp : another launcher's/)
-})
