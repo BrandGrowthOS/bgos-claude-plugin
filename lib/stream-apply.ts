@@ -391,8 +391,10 @@ export type ButtonsAnsweredDecision = 'forward' | 'permission' | 'skip' | 'ask'
  * announced by selectClickTransitions either (it only announces ids seen
  * unanswered on a PREVIOUS poll). Single-announce holds in both race
  * orders: poll-first, the shared set blocks the stream replay; stream
- * first, the caller consumes the tracked baseline entry so the poll's
- * prevUnanswered can never contain the id again.
+ * first, the caller consumes the tracked baseline entry, and the poll skips
+ * every id in the shared set (selectClickTransitions' alreadyAnnounced), so
+ * a card the daemon notes open after the stream took its tap
+ * (noteOwnUnansweredCard) is not announced again.
  *
  * 'ask': the message is a question of a group the ask tracker holds
  * (lib/ask-tracker.ts), answered however late. Its hydrated entry carries no

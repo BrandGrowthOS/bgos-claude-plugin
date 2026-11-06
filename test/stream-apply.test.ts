@@ -20,7 +20,7 @@ import {
   decideMessageNew,
   viewStreamMessage,
 } from '../lib/stream-apply.ts'
-import { selectClickTransitions } from '../lib/poll-core.ts'
+import { noteOwnUnansweredCard, selectClickTransitions } from '../lib/poll-core.ts'
 import { senderUserIdCandidate } from '../lib/permission-relay.ts'
 import type { StreamUpdate } from '../lib/update-stream.ts'
 
@@ -527,6 +527,7 @@ function pollTick(
       answered: r.answered,
     })),
     prevUnanswered: h.unanswered,
+    alreadyAnnounced: h.announced,
     isFirstPoll,
   })
   for (const id of announce) h.announced.add(id)
@@ -556,6 +557,17 @@ test('stream-first: the consumed baseline blocks the later poll announce', () =>
     [],
     'the poll must not announce the same tap a second time',
   )
+})
+
+test('stream-first: a post returning after its tap cannot reopen it for a duplicate poll delivery', () => {
+  const h: ClickHarness = { announced: new Set(), unanswered: new Set() }
+  assert.equal(streamReplay(h, 1002), true, 'the tap arrives before the post returns')
+  const open = new Map([['501', h.unanswered as Set<number>]])
+  noteOwnUnansweredCard(open, '501', 1002)
+  assert.equal(h.unanswered.has(1002), true, 'the returning post notes its card open')
+  assert.deepEqual(pollTick(h, [{ id: 1002, answered: true }], false), [], 'the shared set blocks a duplicate')
+  assert.deepEqual([...h.unanswered], [], 'the answered card leaves the baseline')
+  assert.equal(streamReplay(h, 1002), false, 'a later stream replay stays silent too')
 })
 
 test('poll-first: the announced set blocks the later stream replay', () => {

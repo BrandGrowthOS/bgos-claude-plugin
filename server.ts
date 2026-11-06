@@ -441,6 +441,7 @@ import {
   globalIntervalMs,
   RECONCILE_ALWAYS_ON_INTERVAL_MS,
   selectClickTransitions,
+  noteOwnUnansweredCard,
   FIRST_RUN_RECENT_WINDOW_MS,
 } from './lib/poll-core.js'
 import {
@@ -2517,8 +2518,13 @@ async function sendLoginText(
   const msgId = (result as { message?: { id?: unknown } } | null)?.message?.id
   // The reply tool's fast-poll scope, for the same reason: without the update
   // stream a tap otherwise reaches this daemon only on the slow chat sweep.
+  // And the card is open from the moment it is posted, or a tap that beats the
+  // chat's next read is never announced.
   if (options.length > 0 && typeof msgId === 'number') {
     recentButtonPrompts.set(chatId, { messageId: msgId, sentAtMs: Date.now() })
+    noteOwnUnansweredCard(chatUnansweredButtons, chatId, msgId)
+    // When the card went out, so a tap's timing can be read against it.
+    log(`/login: sign-in card ${msgId} posted to chat ${chatId}, open for a tap`)
   }
   return typeof msgId === 'number' ? msgId : null
 }
@@ -6951,6 +6957,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
         if (options.length > 0 && typeof msgId === 'number') {
           recentButtonPrompts.set(String(resolvedChatId), { messageId: msgId, sentAtMs: Date.now() })
           postedButtons.note(msgId, options, safeText)
+          noteOwnUnansweredCard(chatUnansweredButtons, String(resolvedChatId), msgId)
         } else if (
           reply_to_id !== undefined &&
           Number(reply_to_id) === recentButtonPrompts.get(String(resolvedChatId))?.messageId
@@ -7157,6 +7164,10 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
             requesterUserId: lastInboundUserByChat.get(planChatId) ?? USER_ID,
           })
           postedButtons.note(cardMessageId, bodyBuild.body.options, bodyBuild.body.text)
+          // Open from the moment it is posted, like the reply tool's and the
+          // sign-in card. Not the permission card (its own watch reads the
+          // card row) nor ask_user_input (the ask tracker owns its answers).
+          noteOwnUnansweredCard(chatUnansweredButtons, planChatId, cardMessageId)
           // The CLI writes this tool result verbatim into the transcript, so
           // the minted id is proof of which transcript is ours, exactly as a
           // reply's is.
@@ -12145,6 +12156,9 @@ async function pollChat(chatId: string): Promise<void> {
       })),
       prevUnanswered,
       isFirstPoll,
+      // A tap the stream announced first stays announced once, even when a
+      // card this daemon noted open came back into prevUnanswered after it.
+      alreadyAnnounced: announcedClickIds,
       trackedAsks: askTracker.trackedMessageIds(),
     })
     const announced = new Set(announce)
