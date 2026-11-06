@@ -61,12 +61,14 @@ test('busy session refreshes every selected goal with the original actor and exa
   await r.tracker.mark({ ...scope, goalId: 4, working: true })
   r.advance(10 * minute)
   await r.event()
-  assert.deepEqual(r.calls.map(c => [c.path, c.body, c.actor]), [
+  const expected = [
     ['/integrations/assistants/900/missions/77/goals/3/working', { working: true }, 'user_recipient'],
     ['/integrations/assistants/900/missions/77/goals/4/working', { working: true }, 'user_recipient'],
-    ['/integrations/assistants/900/missions/77/goals/3/working', { working: true }, 'user_recipient'],
-    ['/integrations/assistants/900/missions/77/goals/4/working', { working: true }, 'user_recipient'],
-  ])
+  ]
+  const calls = r.calls.map(c => [c.path, c.body, c.actor])
+  assert.deepEqual(calls.slice(0, 2), expected, 'explicit marks complete in order')
+  // Refreshes are concurrent HTTP requests; both routes, bodies and actors must match.
+  assert.deepEqual(calls.slice(2).sort((a, b) => String(a[0]).localeCompare(String(b[0]))), expected)
 })
 
 test('idle sweep clears without another hook and activity resumes only the selected goals', async t => {

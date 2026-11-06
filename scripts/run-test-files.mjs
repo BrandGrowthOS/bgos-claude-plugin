@@ -11,6 +11,11 @@ import { spawn, execFile } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 export const MAX_TEST_WORKERS = 4
+/** A local resource cap also applies to tests that start their own file workers. */
+export function testWorkerLimit(env = process.env) {
+  const requested = Number(env.RUN_TESTS_WORKERS)
+  return Number.isInteger(requested) && requested > 0 ? Math.min(requested, MAX_TEST_WORKERS) : MAX_TEST_WORKERS
+}
 /** Applies to a test that yields. The slowest test on a green Windows job took 41 s. */
 export const TEST_TIMEOUT_MS = 120_000
 /**
@@ -275,7 +280,7 @@ export function runTestFile(file, {
  * the file is done, because four files writing at once cannot be read.
  */
 export async function runTestFiles(files, options) {
-  const count = Math.min(MAX_TEST_WORKERS, Math.max(1, Math.floor(options.concurrency ?? MAX_TEST_WORKERS)))
+  const count = Math.min(testWorkerLimit(), Math.max(1, Math.floor(options.concurrency ?? MAX_TEST_WORKERS)))
   const write = options.write ?? ((text) => { process.stdout.write(text) })
   const results = new Array(files.length)
   let next = 0

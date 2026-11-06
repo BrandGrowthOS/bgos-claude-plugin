@@ -18,7 +18,7 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { useRealTmpdir } from './run-tests-env.mjs'
-import { testGroups, runTestFiles, stopActiveTests, summarize, focusesATest } from './run-test-files.mjs'
+import { testGroups, runTestFiles, stopActiveTests, summarize, focusesATest, testWorkerLimit } from './run-test-files.mjs'
 import { snapshotWorkingTree } from './test-tree-snapshot.mjs'
 
 // `npm test` runs this repository. Another folder is how test/run-tests-timeout.test.ts runs this script for real.
@@ -52,6 +52,7 @@ for (const file of focused) {
 }
 for (const { label, files, ...options } of groups) {
   const toRun = files.filter((file) => !focused.has(file))
+  options.concurrency = Math.min(options.concurrency, testWorkerLimit())
   console.log(`\n[run-tests] ${label}: ${toRun.length} files, ${options.concurrency} workers`)
   results.push(...await runTestFiles(toRun, { ...options, cwd: repoRoot, ...(fileDeadlineMs > 0 ? { timeoutMs: fileDeadlineMs } : {}) }))
 }

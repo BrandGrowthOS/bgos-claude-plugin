@@ -14,6 +14,29 @@ const runner: any = await import('../scripts/run-test-files.mjs').catch((e) => {
   throw e
 })
 
+test('a local two-worker cap also bounds a caller requesting more workers', async () => {
+  const previous = process.env.RUN_TESTS_WORKERS
+  process.env.RUN_TESTS_WORKERS = '2'
+  let active = 0
+  let peak = 0
+  try {
+    const results = await runner.runTestFiles(['one', 'two', 'three', 'four'], {
+      command: process.execPath, args: ['-e', 'setTimeout(() => {}, 100)'],
+      cwd: process.cwd(), concurrency: 99, timeoutMs: 5000,
+      onOutput: (chunk: string) => {
+        if (chunk.startsWith('[run-tests] START')) peak = Math.max(peak, ++active)
+        if (chunk.startsWith('[run-tests] PASS')) active--
+      },
+    })
+    assert.equal(peak, 2)
+    assert.equal(active, 0)
+    assert.ok(results.every((result: any) => !result.problem))
+  } finally {
+    if (previous === undefined) delete process.env.RUN_TESTS_WORKERS
+    else process.env.RUN_TESTS_WORKERS = previous
+  }
+})
+
 test('a blocked test fails by file name and releases its worker before the deadline', { timeout: 60_000 }, async () => {
   assert.ok(runner, 'the bounded file runner must exist')
   const dir = mkdtempSync(join(tmpdir(), 'runner-hang-'))

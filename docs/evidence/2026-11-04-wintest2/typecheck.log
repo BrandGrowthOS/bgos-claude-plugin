@@ -1,6 +1,0 @@
-# npm run build, v24.22.2
-
-> claude-channel-bgos@0.84.0 build
-> tsc --noEmit
-
-exit 0

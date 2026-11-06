@@ -1,2 +1,0 @@
-Command: TMPDIR="$PWD/node_modules/.cache/threadsfix4" ./node_modules/.bin/tsc --noEmit
-Exit: 0

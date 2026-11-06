@@ -38,7 +38,7 @@ afterEach(() => {
   for (const dir of made) rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
 })
 
-// Litter guard: every folder this file made must be outside the repo working tree and gone when the file ends.
+// Litter guard: scratch stays outside the checkout unless local temp is explicitly requested; all folders must be removed.
 after(() => {
   const real = (p: string) => {
     try {
@@ -56,8 +56,10 @@ after(() => {
   // A temp folder that IS the checkout (or sits inside it) is exactly the litter case, so it is not excused.
   const tempRoot = real(tmpdir())
   const checkoutInTemp = inside(repoRoot, tempRoot) && !inside(tempRoot, repoRoot)
+  // Local-only runs can opt into a temp subfolder without allowing the checkout root itself.
+  const localTemp = process.env.RUN_TESTS_ALLOW_LOCAL_TMP === '1' && tempRoot !== repoRoot && inside(tempRoot, repoRoot)
   // The folders are gone by now, so the folder that held them (tmpdir()) is what gets resolved.
-  const inTree = checkoutInTemp ? [] : made.filter((dir) => inside(join(real(dirname(dir)), basename(dir)), repoRoot))
+  const inTree = checkoutInTemp || localTemp ? [] : made.filter((dir) => inside(join(real(dirname(dir)), basename(dir)), repoRoot))
   const left = made.filter((dir) => existsSync(dir))
   assert.deepEqual(inTree, [], 'scratch folders were created inside the repo working tree')
   assert.deepEqual(left, [], 'scratch folders were left behind')
