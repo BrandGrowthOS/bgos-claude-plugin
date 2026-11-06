@@ -280,7 +280,7 @@ describe('version decision', () => {
 })
 
 describe('schedule and drain decisions', () => {
-  test('jitter stays within zero and six hours after the 24 hour interval', () => {
+  test('jitter stays within zero and one hour after the four hour interval', () => {
     expect(nextUpdateCheckDelayMs(0)).toBe(UPDATE_CHECK_INTERVAL_MS)
     expect(nextUpdateCheckDelayMs(1)).toBe(
       UPDATE_CHECK_INTERVAL_MS + UPDATE_JITTER_MAX_MS,
@@ -2587,7 +2587,7 @@ describe('a staged scheduled update only DEFERS the restart', () => {
     })
   }
 
-  test('a busy daemon keeps intake open while it waits, gives up at the ceiling, installs nothing, and retries soon (not in 24 h)', async () => {
+  test('a busy daemon keeps intake open while it waits, gives up at the ceiling, installs nothing, and retries before the next periodic check', async () => {
     const drainModes: boolean[] = []
     const scheduled: number[] = []
     const calls: Array<{ file: string; args: readonly string[] }> = []

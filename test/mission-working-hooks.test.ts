@@ -61,9 +61,12 @@ test('busy session refreshes every selected goal with the original actor and exa
   await r.tracker.mark({ ...scope, goalId: 4, working: true })
   r.advance(10 * minute)
   await r.event()
-  assert.deepEqual(r.calls.map(c => [c.path, c.body, c.actor]), [
+  assert.deepEqual(r.calls.slice(0, 2).map(c => [c.path, c.body, c.actor]), [
     ['/integrations/assistants/900/missions/77/goals/3/working', { working: true }, 'user_recipient'],
     ['/integrations/assistants/900/missions/77/goals/4/working', { working: true }, 'user_recipient'],
+  ])
+  // Different goals refresh concurrently; arrival order is not a contract.
+  assert.deepEqual(r.calls.slice(2).sort((a, b) => a.path.localeCompare(b.path)).map(c => [c.path, c.body, c.actor]), [
     ['/integrations/assistants/900/missions/77/goals/3/working', { working: true }, 'user_recipient'],
     ['/integrations/assistants/900/missions/77/goals/4/working', { working: true }, 'user_recipient'],
   ])

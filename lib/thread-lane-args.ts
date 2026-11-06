@@ -31,8 +31,19 @@
  * no Bash and no editing tool at all. assertConfined refuses any lane command
  * without these flags.
  *
+ * SELECTIVE HOOKS (THREADGOAL2): --restricted drops inherited settings and
+ * plugins. Reinstall this plugin's trusted non-Stop hooks explicitly. The
+ * manager clears the active goal only in the child transcript before resume,
+ * using the CLI's goal-clear sentinel, so its session Stop hook is not restored.
+ * Other hook events remain enabled, including the private prompt boundary,
+ * tool floor and private tool guard. Never disable all hooks in a thread.
+ *
  * Erasable TypeScript only (no enums, no parameter properties).
  */
+
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { isDeepStrictEqual } from 'node:util'
 
 import { permissionRulePath } from './lane-core.mjs'
 
@@ -91,6 +102,43 @@ export interface ThreadLaneConfinement {
   /** Folders a read only lane may read (the agent folder). Absolute. */
   readDirs?: readonly string[]
   platform?: NodeJS.Platform
+}
+
+/** Trusted hooks come from the manifest, so matcher, timeout and guard changes follow the child. */
+export function threadLaneHooks(): Record<string, unknown> {
+  const manifest = JSON.parse(readFileSync(new URL('../hooks/hooks.json', import.meta.url), 'utf8'))
+  const root = fileURLToPath(new URL('../', import.meta.url)).replace(/[\\/]$/, '')
+  const quote = (s: string) => `'${s.replace(/'/g, "'\\''")}'`
+  return Object.fromEntries(Object.entries(manifest.hooks as Record<string, Array<{ matcher?: string; hooks: Array<{ type: string; command: string; args?: string[]; timeout?: number; async?: boolean }> }>>)
+    .filter(([event]) => event !== 'Stop')
+    .map(([event, matchers]) => [event, matchers.map((matcher) => ({
+      ...matcher,
+      hooks: matcher.hooks.map(({ args, command, ...hook }) => ({
+        ...hook,
+        // Settings hooks use a shell command, unlike the plugin's command/args form.
+        command: [command, ...(args ?? []).map((arg: string) => quote(arg.replace('${CLAUDE_PLUGIN_ROOT}', root)))].join(' '),
+      })),
+    }))]))
+}
+
+/**
+ * Clear only the latest active goal in a child transcript. Keep UUID and parent
+ * links, all conversation rows and historical verdicts. This is the same
+ * met:true/sentinel:true record the CLI writes for /goal clear (2.1.319).
+ * Never call this on the parent's transcript.
+ */
+export function threadLaneTranscript(transcript: string): string {
+  const lines = transcript.split('\n')
+  for (let i = lines.length - 1; i >= 0; i--) {
+    let row
+    try { row = JSON.parse(lines[i]!) } catch { continue }
+    if (row?.type !== 'attachment' || row.attachment?.type !== 'goal_status') continue
+    if (row.attachment.met || row.attachment.failed) return transcript
+    row.attachment = { type: 'goal_status', met: true, sentinel: true, condition: row.attachment.condition }
+    lines[i] = JSON.stringify(row)
+    return lines.join('\n')
+  }
+  return transcript
 }
 
 /** How many earlier By the way exchanges ride along with a new question. */
@@ -177,6 +225,7 @@ export function threadLaneSettings(c: ThreadLaneConfinement): Record<string, unk
         ...(dirs.length > 0 ? { additionalDirectories: dirs } : {}),
       },
       remoteControlAtStartup: false,
+      hooks: threadLaneHooks(),
     }
   }
   const shell = c.shellSandbox
@@ -201,16 +250,27 @@ export function threadLaneSettings(c: ThreadLaneConfinement): Record<string, unk
     // A lane left alone would open a Remote Control session on the owner's
     // account (spike S2 finding 2, person lanes).
     remoteControlAtStartup: false,
+    // Keep trusted guards while the manager clears the child's inherited goal.
+    hooks: threadLaneHooks(),
   }
 }
 
 /**
  * Throws unless `args` are a confined lane command: --restricted, its own
- * tools, permission mode and settings, and none of the forbidden flags.
+ * tools, permission mode and trusted hooks without Stop, and none of the
+ * forbidden flags.
  */
 export function assertConfined(args: readonly string[]): void {
   for (const flag of ['--restricted', '--tools', '--permission-mode', '--settings']) {
     if (!args.includes(flag)) throw new Error(`refusing a thread lane without ${flag}: it would run with the owner's permissions`)
+  }
+  let settings: unknown = null
+  try {
+    settings = JSON.parse(args[args.indexOf('--settings') + 1] ?? '')
+  } catch {}
+  const own = settings as { disableAllHooks?: unknown; hooks?: unknown } | null
+  if (!own || (own.disableAllHooks !== undefined && own.disableAllHooks !== false) || !isDeepStrictEqual(own.hooks, threadLaneHooks())) {
+    throw new Error('refusing a thread lane without its trusted hooks or with a Stop hook')
   }
   for (const arg of args) {
     if (THREAD_LANE_FORBIDDEN_FLAGS.includes(arg) || arg === 'bypassPermissions') {
@@ -439,7 +499,8 @@ export function threadTurnPrompt(input: {
   return (
     `[You are now working in a thread of this chat titled "${input.title}". ` +
     `It is a separate conversation about this message: ${rootSentence} ` +
-    `Work on it in this folder only.${readOnly} The main conversation continues without you.]\n\n` +
+    `Work on it in this folder only.${readOnly} The main conversation continues without you. ` +
+    'Any goal (/goal) set in the main conversation does not apply in this thread. Answer only this thread\'s message.]\n\n' +
     input.text
   )
 }

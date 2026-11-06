@@ -3,9 +3,21 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { partitionTests, testGroups } from '../scripts/run-test-files.mjs'
+import { execFileSync } from 'node:child_process'
+import { MAX_TEST_WORKERS, partitionTests, testGroups } from '../scripts/run-test-files.mjs'
 
 const ROOT = join(import.meta.dirname, '..')
+
+test('RUN_TESTS_WORKERS limits both test families and the scheduler cap', () => {
+  const script = `import { MAX_TEST_WORKERS, testGroups } from './scripts/run-test-files.mjs'; console.log(JSON.stringify({ cap: MAX_TEST_WORKERS, workers: testGroups([]).map(group => group.concurrency) }))`
+  for (const workers of ['1', '2']) {
+    const output = JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e', script], {
+      cwd: ROOT, env: { ...process.env, RUN_TESTS_WORKERS: workers }, encoding: 'utf8',
+    }))
+    assert.equal(output.cap, Number(workers))
+    assert.deepEqual(output.workers, [Number(workers), 1, 1, 1, Number(workers)])
+  }
+})
 
 test('real Chromium files leave the parallel pool and run with a concurrency of one', () => {
   const groups = testGroups([
@@ -17,7 +29,7 @@ test('real Chromium files leave the parallel pool and run with a concurrency of 
   assert.deepEqual(groups.map(({ files }) => files), [
     ['test/unit.test.ts'], ['test\\run-tests-timeout.test.ts'], ['test/browser.chromium.test.ts'], [], ['test/bun.test.ts'],
   ])
-  assert.deepEqual(groups.map(({ concurrency }) => concurrency), [4, 1, 1, 1, 4])
+  assert.deepEqual(groups.map(({ concurrency }) => concurrency), [MAX_TEST_WORKERS, 1, 1, 1, MAX_TEST_WORKERS])
   assert.ok(groups[2]!.args.includes('--test-timeout=120000'))
 })
 

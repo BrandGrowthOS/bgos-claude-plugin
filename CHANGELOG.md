@@ -6,19 +6,45 @@ Notable changes to the HOAI Claude Code plugin.
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
-## 0.85.7 (2026-11-06)
+## 0.86.8 (2026-11-06)
 
-**Reply buttons and plan cards tapped as soon as they appear are heard.** Each posted card gets one immediate, unconditional read by id. Pending cards survive overlapping history reads, and a failed direct request is recovered by fresh full history. Bounded card receipts deduplicate direct, history and stream delivery. The message's own lane stamp is checked before claiming an answer. Plan requester binding and private-turn rules are preserved.
+**A test no longer fails just because CI is busy.** The large email attachment check measures against a baseline timed in the same run instead of a fixed number of milliseconds, so it still catches a frozen main thread but no longer fails on a loaded shared runner.
 
-- Tests: `test/own-card-fast-tap.e2e.test.ts` and `test/posted-card-answer.test.ts`.
+## 0.86.7 (2026-11-06)
 
-## 0.85.6 (2026-11-06)
+**A reply to another agent is never silently lost.** A reply into a side conversation that has closed, or a second reply before the other agent answered, now either reaches that agent or fails with a plain error that names send_to_peer. It never reports Sent for a message that was not delivered.
 
-**A sign-in method tapped as soon as its card appears is heard.** The sign-in method card gets one immediate read by id. While it is open, fresh full history reads recover a fast tap even after a failed direct request or an older cached response. A single bounded sign-in record deduplicates direct, history and stream delivery. Missing cards retire on an empty direct result, cancellation or the method deadline.
+## 0.86.6 (2026-11-06)
 
-**A sign-in waiting for a method explains how to continue.** A second /login from its starter in the same chat offers /login subscription, /login console and /login cancel. Other callers retain the existing cancellation rules.
+**Fixes reach your agents in hours, not a day.** The plugin now checks for a new release about every 4 hours with jitter instead of once a day plus up to 6 hours. Updates still apply only when the agent is idle, with the same staging and rollback safety.
 
-- Tests: `test/own-card-fast-tap.e2e.test.ts`, `test/own-card-answer.test.ts` and `test/auth-login.test.ts`.
+## 0.86.5 (2026-11-06)
+
+**On Windows the browser profile permission step no longer stalls.** Started from the daemon, PowerShell lacked environment variables it needs and could hang until the 30 second timeout, so every browser profile was refused as unsafe. The step now runs with the minimal environment PowerShell needs, without a profile, asynchronously with a timeout, and says plainly what to fix if it still fails.
+
+## 0.86.4 (2026-11-06)
+
+**On a Mac, a renewed Claude login clears the held "login expired" failure by itself.** The login lives in the Keychain, not in a credentials file, so the plugin never saw it change and the failure only cleared when the next answer succeeded. A cheap, rate limited, non interactive status check of the Claude CLI now notices the renewed login and clears the hold. It never reads or prints the secret, and it stays off on CLI versions that do not support the check.
+
+## 0.86.3 (2026-11-06)
+
+**A silent connection is noticed in about 10 seconds.** When a network path quietly drops the WebSocket, the plugin used to wait for the server ping to time out, so an agent's messages could arrive up to a minute late. A client liveness check now closes a link that has been silent past the expected ping and reconnects at once with the existing backoff, then catches up without delivering anything twice. A healthy idle link is never dropped, and only one reconnect runs at a time.
+
+## 0.86.2 (2026-11-06)
+
+**A thread answers even when the main chat has an active /goal.** A thread forks the agent's main session, and Claude Code's /goal is a Stop hook that the fork inherited: each time the thread tried to end its turn the goal check answered "Not satisfied" and blocked it, the thread looped on the mission, and the person saw "This turn failed before the agent could answer". Each lane now clears the inherited goal only in its own transcript, using the CLI's goal-clear sentinel. It explicitly keeps the plugin's non-Stop hooks, including the private prompt boundary, tool floor and private tool guard, while inherited settings stay excluded by `--restricted`. The same preparation covers later resumes and forks saved by the previous version. A lane that disables all hooks or changes its trusted hooks is refused. As a defence, a turn that a Stop hook blocks more than twice is stopped and the thread gets a reply that names the cause.
+
+- Tests: `test/thread-lane-goal.test.ts` (with `THREADS_GOAL_CLAUDE` set it drives the real CLI against a local API: an active parent goal, an unchanged production fork, all three guard canaries in a fork and later resume, and a control terminated on its third block), `test/thread-lanes.test.ts` and the existing sandbox check.
+
+## 0.86.1 (2026-11-06)
+
+- **Agent vault: request a login and fill a saved one.** Three tools for owner turns: `vault_items` lists the vault items this agent may use (metadata only), `vault_request_login {name, website, username?}` opens the owner's secure Add a login form, and `vault_fill_prepare {itemId, sessionId, tabId, origin}` builds and signs the fill intent on this machine, asks HOAI for a one-use ticket and returns `{ticket, sessionId, tabId, origin, request:{intent, signature}}` to pass unchanged to `hoai_vault_fill` on the HOAI desktop browser. No tool takes, returns or logs a password or other value.
+- **`hoai vault-host`** sets this machine up as the agent's vault host. On first use it creates an Ed25519 host key (its X25519 form is the registered host key) in an owner-only file, stores the agent's owner-minted signing key typed at the terminal, registers the host with the independent signed proof, and shows the host fingerprint in this terminal only, never in chat, a pipe or a log. Fills are refused until the owner has compared the fingerprint, pinned the host in HOAI and confirmed it here.
+- Tests: `test/vault-fill.test.ts`.
+
+## 0.86.0 (2026-11-06)
+
+- Saved Artifacts ship with artifact_create, artifact_update, artifact_read, artifact_list and artifact_versions on the paired connection. Dashboards, reports, charts, tables, plans and documents belong in an Artifact with a short chat reply linking to it. Revisions add a version to the same Artifact. Read the live content schema with artifact_read without an id.
 
 ## 0.85.4 (2026-11-05)
 

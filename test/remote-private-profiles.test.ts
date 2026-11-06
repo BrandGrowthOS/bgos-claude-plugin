@@ -11,8 +11,8 @@ import { RemoteBrowserViews } from '../lib/remote-view.mjs'
 test('two recipients keep distinct engine, encrypted cookie/login profile and view; owner cannot select either', async t => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'hoai-private-profiles-')))
   const engines: any[] = []
-  const pool = new BrowserPool({ agentRoot: root, createEngine: ({ principal, profileDir, scope }: any) => {
-    const vault = new AgentBrowserVault({ profileDir, scope, snapshotMs: 100000 })
+  const pool = new BrowserPool({ agentRoot: root, createEngine: async ({ principal, profileDir, scope }: any) => {
+    const vault = await AgentBrowserVault.create({ profileDir, scope, snapshotMs: 100000 })
     const cdp: any = Object.assign(new EventEmitter(), { send: async () => ({ cssVisualViewport: { clientWidth: 800, clientHeight: 600 } }), detach: async () => {} })
     let state: any = { cookies: [], origins: [] }
     const page: any = Object.assign(new EventEmitter(), { isClosed: () => false, viewportSize: () => ({ width: 800, height: 600 }), title: async () => principal, url: () => 'https://private.test/', context: () => ({ newCDPSession: async () => cdp }) })

@@ -208,6 +208,9 @@ import {
   sweepBoardFiles,
 } from './lib/boards-tools.js'
 import { createActingUserTracker } from './lib/acting-user.js'
+import { ARTIFACT_TOOL_DECLS, handleArtifactTool } from './lib/artifacts-tools.js'
+import { VAULT_TOOL_DECLS, handleVaultTool } from './lib/vault-tools.js'
+import { vaultHostDir } from './lib/vault-host.mjs'
 import { createPrivateTurnTracker, emailSendBasis, PRIVATE_TURN_REFUSAL, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requireEmailSendTurn, requirePrivateTurn, turnAwarePrivateTurn } from './lib/private-turn.mjs'
 import { createFireLedger, createPostedButtons, privateFireKey, privateFiresPath, privateEndedLine, privateReplayLine, privateTapCard, privateUnrecordedLine } from './lib/private-turn.mjs'
 import {
@@ -785,6 +788,7 @@ import {
   drawCatchupDelayMs,
   drawReconnectBaseDelayMs,
 } from './lib/reconnect-spread.js'
+import { watchSocketLiveness } from './lib/socket-liveness.js'
 import { readRollbackLatch } from './lib/watcher-core.mjs'
 import {
   applyWin32CredentialsAcl,
@@ -1233,6 +1237,7 @@ import {
   peerDeliveryReason,
   peerReplyNotForwardedResult,
   peerReplyNotPassedOnResult,
+  peerReplyUnconfirmedResult,
 } from './lib/peer-closed-reply.js'
 import { messagesCallerHeaders } from './lib/messages-caller-header.js'
 import { createChatOwnership } from './lib/chat-ownership.js'
@@ -3366,6 +3371,12 @@ const mcp = new Server(
       'At the START of a session, call the `bgos_capabilities` tool to load the',
       'authoritative, always-current HOAI capability guide. It is fetched live',
       'from the backend at connect and supersedes the capability summary below.',
+      '',
+      'When you produce a dashboard, report, chart, table, plan, document or any page a person will read, share or revisit, make it an Artifact instead of a long chat message, then send a short reply with its link. Update the same Artifact for revisions rather than creating new ones.',
+      'Use artifact_create, artifact_update, artifact_read, artifact_list and artifact_versions.',
+      'Agent vault: never ask for or repeat a password in chat. vault_items lists metadata, vault_request_login asks the owner to add a login,',
+      'and vault_fill_prepare returns a signed one-use request to pass unchanged to hoai_vault_fill on the HOAI desktop browser.',
+      'Read artifact_read without id for the live content schema. The server posts the reference beside the chat.',
       '',
       'When you receive a message, process it using your full capabilities, ',
       'you can use Bash, Read, Write, Edit, Grep, Glob, WebSearch, and all',
@@ -6488,6 +6499,10 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     // owner granted THIS assistant; an ungranted board answers not_found and
     // never reveals that it exists.
     ...BOARDS_TOOL_DECLS,
+    ...ARTIFACT_TOOL_DECLS,
+    // Agent vault, request and fill (lib/vault-tools.ts): metadata, an owner
+    // request card and a signed one-use fill ticket. Owner turns only.
+    ...VAULT_TOOL_DECLS,
     // Agent email (outgoing email modes, HOAI board row 2dd04488): save a
     // draft for the owner, or send on the owner's own instruction
     // (lib/agent-email-tools.ts). Both always listed; the backend answers
@@ -6662,7 +6677,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
   }
   // Freeze private authority at request admission, before any awaited work.
   let privateCall: ReturnType<typeof requirePrivateTurn> | null = null
-  if (req.params.name.startsWith('boards_') || ['schedule', 'list_schedules', 'cancel_schedule'].includes(req.params.name)) {
+  if (req.params.name.startsWith('boards_') || req.params.name.startsWith('artifact_') || req.params.name.startsWith('vault_') || ['schedule', 'list_schedules', 'cancel_schedule'].includes(req.params.name)) {
     try {
       if (!lockHeld) throw new Error('This private action did not start because this daemon does not hold the active agent connection.')
       privateCall = requirePrivateTurn(privateTurns, PRIVATE_MARKER_PATHS, USER_ID)
@@ -6728,6 +6743,30 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
   }
   return trackMessageOperation(async () => {
   const rawArgs = req.params.arguments as Record<string, unknown>
+
+  if (req.params.name.startsWith('vault_')) {
+    // The vault routes accept only the owner's own pairing with a signed agent
+    // request: no acting user header is ever sent, and a turn admitted for
+    // anyone else is refused inside handleVaultTool before any request.
+    const stateDir = agentStateDir(homedir(), ASSISTANT_ID)
+    if (!stateDir) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'VAULT_NOT_PAIRED' }) }], isError: true }
+    return handleVaultTool(req.params.name, rawArgs, {
+      assistantId: ASSISTANT_ID,
+      ownerId: USER_ID,
+      actingUserId: privateCall!.actingUserId,
+      apiBase: API_BASE,
+      pairingToken: AUTH.mode === 'pairing' ? AUTH.pairingToken : '',
+      stateDir: vaultHostDir(stateDir),
+      log,
+    })
+  }
+
+  if (req.params.name.startsWith('artifact_')) {
+    return handleArtifactTool(req.params.name, rawArgs, {
+      ...boardsTransports(privateCall!.headers),
+      assistantId: ASSISTANT_ID,
+    })
+  }
 
   // ── Agent Boards ───────────────────────────────────────────────────────
   // One grouped route for the whole boards_* family: validation, path
@@ -6931,15 +6970,13 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
 
         const result = await bgosPost('send-message', body)
         const msgId = (result as any)?.message?.id
-        // HOAI's own word on the forward to the other agent, on a backend that
-        // gives it (`peerDelivery`, side threads only; BGOS #3420). Not
-        // forwarded: the reply is saved in the side thread and the other agent
-        // does not have it, so it is not a Sent. Forwarded, or no word at all,
-        // is the Sent below. A reply into a closed conversation still goes to
-        // HOAI, which reopens it (Kc's rule, kept by Data on 2026-10-28); only
-        // its answer decides. The inbound this reply answered is dropped from
-        // the overdue sweep, as for the 403 below: the agent has been told.
-        if (peerDeliveryOf(result) === 'not_forwarded') {
+        // A 201 proves persistence, not peer delivery. Keep sending even into
+        // a closed thread so the backend can revive it, then require its word
+        // on the forward. Unknown chat kinds can be side threads after restart.
+        // Only a positively known non-peer chat may omit confirmation; missing
+        // or unknown reports otherwise stay uncertain, even on repeated replies.
+        const peerDelivery = peerDeliveryOf(result)
+        if (peerDelivery === 'not_forwarded') {
           if (pendingInbounds.get(String(resolvedChatId))?.messageId === answeringInboundId) {
             clearInbound(resolvedChatId)
           }
@@ -6950,6 +6987,23 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
           return peerConversationEnded(result)
             ? peerReplyNotForwardedResult(String(resolvedChatId), msgId, hasAttachment)
             : peerReplyNotPassedOnResult(String(resolvedChatId), msgId, peerDeliveryReason(result), hasAttachment)
+        }
+        if (
+          peerDelivery !== 'forwarded' &&
+          (peerSideThreadChats.has(String(resolvedChatId)) ||
+            peerConvByChat.has(String(resolvedChatId)) ||
+            closedPeerChats.has(String(resolvedChatId)) ||
+            (result as any)?.message?.peerConversationId != null ||
+            (result as any)?.peerDelivery != null ||
+            (!mainChatIds.includes(String(resolvedChatId)) &&
+              !groupChatIds.has(String(resolvedChatId)) &&
+              !meetingChatIds.has(String(resolvedChatId))))
+        ) {
+          if (pendingInbounds.get(String(resolvedChatId))?.messageId === answeringInboundId) {
+            clearInbound(resolvedChatId)
+          }
+          log(`reply to chat ${resolvedChatId} saved as ${msgId} but peer delivery is unconfirmed; told the agent`)
+          return peerReplyUnconfirmedResult(String(resolvedChatId), msgId, hasAttachment)
         }
         // Session binding: the CLI writes this tool call's result ("Sent
         // (message_id: N)...") verbatim into THIS session's transcript, so
@@ -9662,6 +9716,9 @@ const peerConvChats = new Map<string, string>()
 // Reverse map: side-thread chatId → peer_conversation_id, so an inbound or a
 // close that only knows the chatId can find its conversation, and vice versa.
 const peerConvByChat = new Map<string, string>()
+// Inbox classification survives a restart before any peer inbound gives us
+// a conversation id. A saved reply there still needs delivery confirmation.
+const peerSideThreadChats = new Set<string>()
 // Side-thread chat ids whose peer conversation is CLOSED (the peer or the agent
 // sent turn_state:'final', or a peer_conversation_closed event fired). A closed
 // thread owes no reply, so the overdue sweep must permanently skip it. This is
@@ -11706,6 +11763,9 @@ async function discoverChats(): Promise<void> {
       .filter((c) => c.assistantId === Number(ASSISTANT_ID) && c.kind === 'main')
       .map((c) => String(c.id))
     for (const c of data.chats) {
+      if (c.assistantId === Number(ASSISTANT_ID) && c.kind === 'a2a') {
+        peerSideThreadChats.add(String(c.id))
+      }
       if (c.assistantId === Number(ASSISTANT_ID) && c.kind === 'group') {
         groupChatIds.add(String(c.id))
         if (!chatFirstListedAtMs.has(String(c.id))) chatFirstListedAtMs.set(String(c.id), Date.now())
@@ -17218,6 +17278,7 @@ function connectWebsocket(): void {
     // frame by (pairing only; nothing else in the handshake changes).
     ...wsAuthOptions(AUTH, laneSupport().ok ? [LANE_MEMORY_RPC_TOKEN] : []),
   })
+  watchSocketLiveness(realtimeSocket.io, log)
 
   realtimeSocket.on('connect', () => {
     log(`WS connected (id=${realtimeSocket?.id}), polling will throttle`)
