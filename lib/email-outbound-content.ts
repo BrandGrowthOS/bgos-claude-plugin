@@ -2,7 +2,8 @@
 //
 // Step 2 (DESIGN-OUT.md D7, rule 4), review round 7. What lib/email-outbound-files.ts reads of a
 // text, Word or Excel file's words, moved here whole so it runs in a worker thread
-// (lib/email-outbound-content-worker.ts) that the daemon's main thread ends at a hard deadline: a text file's header
+// (lib/email-outbound-content-worker.ts) that the daemon's main thread ends at a hard deadline: a text file's type
+// check (clean UTF-8 text, lib/email-clean-text.ts, first, before any budget is read), a text file's header
 // (a password column), a Word or Excel file's rows and words (officeWords), and on the decoded text a private key, a
 // cookie file's header, this daemon's own credential, a recovery key, a wallet recovery phrase, the shared secret
 // scanner (lib/secret-scan.ts) and a password written out. No file system call and no clock other than the Worker's
@@ -15,6 +16,7 @@
 import { createInflateRaw } from 'node:zlib'
 
 import { BIP39_ENGLISH_WORDS } from './bip39-english.ts'
+import { cleanTextOf } from './email-clean-text.ts'
 import { scanText } from './secret-scan.ts'
 
 const MB = 1024 * 1024
@@ -1566,6 +1568,8 @@ function holdsOwnCredential(text: string, secrets: readonly string[]): boolean {
 /** Round 7: what the content stage found, first by the order the checks run in; email-outbound-files.ts says the sentence. */
 export type ContentVerdict =
   | { kind: 'ok' }
+  /** A .txt or .csv file whose bytes are not clean text (lib/email-clean-text.ts): refused as not that type. */
+  | { kind: 'not_type' }
   | { kind: 'unsafe' }
   /** Out of time, which says nothing about the file: refused, and it may go on another try. */
   | { kind: 'over_budget' }
@@ -1581,7 +1585,7 @@ export type ContentVerdict =
 
 /** Round 7: every kind a verdict may have (the main thread refuses a reply with any other). */
 export const CONTENT_VERDICT_KINDS: readonly ContentVerdict['kind'][] = Object.freeze([
-  'ok', 'unsafe', 'over_budget', 'unread', 'table', 'private_key', 'cookie', 'own_credential', 'recovery_key', 'recovery_phrase', 'secret', 'written',
+  'ok', 'not_type', 'unsafe', 'over_budget', 'unread', 'table', 'private_key', 'cookie', 'own_credential', 'recovery_key', 'recovery_phrase', 'secret', 'written',
 ])
 
 /**
@@ -1651,8 +1655,14 @@ async function verdictWithin(bytes: Uint8Array, type: ContentType, name: string,
   let text = ''
   let table = false
   if (type === 'text') {
+    // The type check of a .txt or .csv file comes first, before any budget is read, so a file that is not clean text
+    // is refused as not text whatever the budget, as it was when the main thread ran it before the hand off. It runs
+    // here, off the main thread (a 23 MB file held that thread for tens of ms on a fast machine), and its decoded text
+    // is the text every check below reads, so the file is decoded once.
+    const clean = cleanTextOf(bytes)
+    if (clean === null) return { kind: 'not_type' }
     table = hasPasswordColumn(bytes)
-    text = new TextDecoder().decode(bytes)
+    text = clean
   } else {
     const words = await officeWords(bytes, type, budget)
     // Round 6: a file that would cost too much to read (a zip bomb's shape) is never attached.

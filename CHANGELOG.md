@@ -6,6 +6,10 @@ Notable changes to the HOAI Claude Code plugin.
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.86.11 (2026-11-07)
+
+**A large text or CSV file to attach no longer freezes the agent while it is checked.** The check that a .txt or .csv file really is plain text now runs in the background checker with the other content checks, instead of on the agent's main thread first. A 23 MB CSV used to hold the agent for about 20 ms on a fast computer, and much longer on a slow one; now it holds it for about 1 ms. Exactly the same files are attached or refused as before, and a file that is not really text is refused with the same words.
+
 ## 0.86.8 (2026-11-06)
 
 **A test no longer fails just because CI is busy.** The large email attachment check measures against a baseline timed in the same run instead of a fixed number of milliseconds, so it still catches a frozen main thread but no longer fails on a loaded shared runner.
