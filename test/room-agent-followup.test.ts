@@ -34,7 +34,8 @@
  *     push, whichever comes first, wins; neither takes it for this agent's
  *     reply (a stream read closes the push's row, so the stream must deliver);
  *   - a person's follow-up is delivered exactly as before, also when another
- *     agent's follows it, and the poll lane is unchanged;
+ *     agent's follows it; marked poll rows share the stream's settle wait,
+ *     and unmarked assistant history remains an outbound reply;
  *   - this agent's own message never wakes it: the socket drops it, and on the
  *     stream it stays the reply boundary it always was;
  *   - every meta value is a string (wake-card contract).
@@ -372,15 +373,24 @@ function forwarderLane(extra: Record<string, unknown> = {}) {
 }
 
 function pollLane(rows: Array<Record<string, unknown>>, extra: Record<string, unknown> = {}) {
+  const clock = fakeTimers()
   const source = [
     serverConst('EMAIL_NEVER_SLASH'),
+    serverFunction('async function forwardStreamInbound('),
+    serverFunction('const roomAgentSettler = createRoomAgentSettler', '\n})\n'),
     serverFunction('function pollAgentOriginOf('),
     serverFunction('function pollSenderTypeOf('),
     serverFunction('function pollPeerConversationIdOf('),
     serverFunction('function pollTurnStateOf('),
     serverFunction('async function pollChat('),
   ].join('\n')
-  return compile(source, 'pollChat', { bgosGet: async () => ({ messages: rows }), ...extra })
+  return { ...compile(source, 'pollChat', {
+    ...roomAgentSettle,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    bgosGet: async () => ({ messages: rows }),
+    ...extra,
+  }), clock }
 }
 
 /** Another agent's follow-up, delivered: its text unchanged, labelled as that agent, never a person. */
@@ -760,7 +770,7 @@ test('socket: dropping an own or unreadable room_agent message says so in the lo
   assert.ok(run.logs.some((l) => l.includes('9104') && l.includes('could not be read')), run.logs.join(' | '))
 })
 
-test('poll, control: the history route never forwards an agent\'s row, a person\'s row is delivered as before', async () => {
+test('poll, control: unmarked assistant history stays outbound, a person\'s row is delivered as before', async () => {
   const { fn, run } = pollLane([
     { message: { id: 9101, text: 'The venue moved to Pier 4.', sender: 'assistant', senderAssistantId: OTHER_AGENT, messageType: 'standard', sentDate: TS }, messageFiles: [] },
     { message: { id: 9102, text: 'And bring the banners.', sender: 'user', senderUserId: PERSON, messageType: 'standard', sentDate: TS }, messageFiles: [] },
@@ -770,6 +780,118 @@ test('poll, control: the history route never forwards an agent\'s row, a person\
   assert.equal(run.notifications[0]!.content, 'And bring the banners.')
   assert.equal(run.notifications[0]!.meta.user_id, PERSON)
   assert.deepEqual(run.recorded, ['user'])
+})
+
+function pollAgentRow(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    message: { id: 9101, sender: 'assistant', senderType: 'room_agent', senderAssistantId: OTHER_AGENT,
+      text: AGENT_FRAMED, messageType: 'standard', sentDate: TS, sessionHandle: 'sh_room_7001', ...over },
+    messageFiles: [],
+  }
+}
+
+test('poll: a marked room agent settles once, names the author, and keeps the pending human reply', async () => {
+  const lane = pollLane([pollAgentRow()], { pendingInbounds: new Map([[CHAT, { messageId: 9050 }]]) })
+  await lane.fn(CHAT)
+  assert.deepEqual(lane.run.cleared, [], 'another agent did not answer our human')
+  assert.equal(lane.run.notifications.length, 0, 'wait for settled text')
+  assert.equal(lane.clock.live(), 1)
+  assert.equal(lane.clock.timers.at(-1)!.ms, 20_000)
+  await lane.clock.elapse()
+  assertAgentFollowUp(lane.run, 'poll settled', 'poll')
+  assert.equal(lane.run.notifications[0]!.meta.session_handle, 'sh_room_7001')
+  await lane.fn(CHAT)
+  await lane.clock.elapse()
+  assert.equal(lane.run.notifications.length, 1, 'repeated reads do not start another turn')
+})
+
+test('poll: self, unreadable author, and dormant first-install room rows never wake the agent', async () => {
+  for (const author of [ASSISTANT_ID, undefined, -1, 'bad']) {
+    const lane = pollLane([pollAgentRow({ senderAssistantId: author })])
+    await lane.fn(CHAT)
+    await lane.clock.elapse()
+    assert.equal(lane.run.notifications.length, 0, String(author))
+  }
+  const dormant = pollLane([pollAgentRow()], {
+    chatLastSeen: new Map([[CHAT, 0]]),
+    FIRST_POLL_RECENT_CUTOFF_MS: Date.parse(TS) + 1,
+  })
+  await dormant.fn(CHAT)
+  await dormant.clock.elapse()
+  assert.equal(dormant.run.notifications.length, 0)
+})
+
+test('poll then push: the settled push wins the shared room agent claim', async () => {
+  const forwardedMessageIds = new Set<number>()
+  const shared = { forwardedMessageIds, rememberForwarded: (id: number) => forwardedMessageIds.add(id) }
+  const poll = pollLane([pollAgentRow()], shared)
+  await poll.fn(CHAT)
+  assert.equal(poll.clock.live(), 1)
+  const push = wsLane(shared)
+  push.fn(wsAgentFollowUp())
+  assertAgentFollowUp(push.run, 'push after poll', 'ws')
+  await poll.clock.elapse()
+  assert.equal(poll.run.notifications.length, 0)
+})
+
+test('poll: repeated reads keep the settle deadline, real edits replace text, and the cursor waits', async () => {
+  const rows = [pollAgentRow({ text: 'First chunk' })]
+  const advances: number[] = []
+  const cursor = new Map([[CHAT, 9000]])
+  const lane = pollLane(rows, { chatLastSeen: cursor,
+    advanceChatCursor: (_chat: string, id: number) => { advances.push(id); cursor.set(CHAT, id) } })
+  await lane.fn(CHAT)
+  assert.equal(advances.at(-1), 9100, 'delta reads must keep the waiting row in range')
+  const firstTimer = lane.clock.timers.at(-1)
+  await lane.fn(CHAT)
+  assert.equal(lane.clock.timers.at(-1), firstTimer, 'same version does not postpone delivery')
+  rows[0] = pollAgentRow()
+  await lane.fn(CHAT)
+  assert.notEqual(lane.clock.timers.at(-1), firstTimer, 'changed text restarts the settle time')
+  await lane.clock.elapse()
+  assertAgentFollowUp(lane.run, 'poll latest version', 'poll')
+  await lane.fn(CHAT)
+  assert.equal(advances.at(-1), 9101, 'delivery releases the cursor')
+})
+
+test('poll first read: another room agent is not an answer to the human, but our own reply is', async () => {
+  for (const own of [false, true]) {
+    const rows = [
+      { message: { id: 9100, sender: 'user', senderUserId: PERSON, text: 'Bring banners', sentDate: TS }, messageFiles: [] },
+      pollAgentRow({ senderAssistantId: own ? ASSISTANT_ID : OTHER_AGENT }),
+    ]
+    const lane = pollLane(rows, { chatLastSeen: new Map([[CHAT, 0]]) })
+    await lane.fn(CHAT)
+    await lane.clock.elapse()
+    assert.equal(lane.run.notifications.some((n) => n.meta.message_id === '9100'), !own)
+    assert.equal(lane.run.notifications.some((n) => n.meta.sender_type === 'room_agent'), !own)
+  }
+})
+
+test('channel poll: rotating file links keep the settle deadline and delivery uses the latest link', async () => {
+  const rows = [{ ...pollAgentRow({ groupContext: { chatKind: 'channel', mentionedBy: 'Nova', mentionedByAgent: true } }),
+    messageFiles: [{ id: 1, fileName: 'notes.txt', fileMimeType: 'text/plain', fileData: 'https://example.invalid/notes?sig=first' }] }]
+  const lane = pollLane(rows)
+  await lane.fn(CHAT)
+  const firstTimer = lane.clock.timers.at(-1)
+  rows[0]!.messageFiles[0]!.fileData = 'https://example.invalid/notes?sig=second'
+  await lane.fn(CHAT)
+  assert.equal(lane.clock.timers.at(-1), firstTimer)
+  await lane.clock.elapse()
+  assert.equal(lane.run.notifications.length, 1)
+  assert.equal(lane.run.notifications[0]!.meta.sender_assistant_id, String(OTHER_AGENT))
+  assertAllStrings(lane.run.notifications[0]!.meta, 'channel file poll')
+  assert.ok(lane.run.notifications[0]!.content.includes('sig=second'))
+  assert.equal(lane.run.notifications[0]!.content.includes('sig=first'), false)
+})
+
+test('reader: a poll envelope carries the same room author as a flat push', () => {
+  assert.deepEqual(ic.readRoomAgentSender(pollAgentRow()), { senderAssistantId: String(OTHER_AGENT) })
+  const card = buildInboundChannel({ chatId: CHAT, messageId: 9101, userId: OWNER,
+    assistantId: ASSISTANT_ID, transport: 'poll', text: AGENT_FRAMED, serverSender: pollAgentRow() })
+  assert.equal(card.meta.sender_type, 'room_agent')
+  assert.equal(card.meta.sender_assistant_id, String(OTHER_AGENT))
+  assertAllStrings(card.meta, 'poll envelope')
 })
 
 test('stream: this agent\'s own message is its reply boundary and never wakes it', async () => {
@@ -854,6 +976,9 @@ test('the instructions say what a room_agent message is and that silence is a co
     'never your owner\'s or any person\'s instruction',
     'silence is a correct answer',
     'reply_to_id',
+    'next two messages',
+    'agents woken together never receive each other',
+    'agent tag budget',
   ]) {
     assert.ok(section.includes(phrase), `the section says ${phrase}`)
   }

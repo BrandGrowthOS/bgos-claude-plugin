@@ -46,6 +46,8 @@ export interface RoomAgentSettleDeps<V extends RoomAgentSettleView, H> {
   cancel(handle: H): void
   /** A lane already delivered this message id. */
   isForwarded(messageId: number): boolean
+  /** Stable content revision: a repeated poll must not postpone settling. */
+  versionOf?(view: V): string
   /** Deliver the settled version; a rejection is tried once more after another wait. */
   deliver(view: V): void | Promise<void>
   log(line: string): void
@@ -69,14 +71,14 @@ export function createRoomAgentSettler<V extends RoomAgentSettleView, H>(
   const max = deps.max ?? ROOM_AGENT_SETTLE_MAX
   // `handle` is null while a version with no text is parked: it waits, with no
   // timer, for the version that brings the text, and only the cap evicts it.
-  const waiting = new Map<number, { view: V; handle: H | null; retried: boolean }>()
+  const waiting = new Map<number, { view: V; handle: H | null; retried: boolean; version?: string }>()
   const stop = (handle: H | null): void => {
     if (handle !== null) deps.cancel(handle)
   }
 
   const hold = (view: V, retried: boolean): void => {
     const handle = deps.schedule(() => settle(view.messageId), settleMs)
-    waiting.set(view.messageId, { view, handle, retried })
+    waiting.set(view.messageId, { view, handle, retried, version: deps.versionOf?.(view) })
   }
 
   const settle = (messageId: number, evicting = false): void => {
@@ -112,6 +114,11 @@ export function createRoomAgentSettler<V extends RoomAgentSettleView, H>(
     note(view) {
       if (deps.isForwarded(view.messageId)) return
       const previous = waiting.get(view.messageId)
+      if (previous && deps.versionOf && previous.version === deps.versionOf(view)) {
+        // Keep fresh download URLs and routing data without restarting the clock.
+        previous.view = view
+        return
+      }
       if (previous) {
         stop(previous.handle)
         waiting.delete(view.messageId)

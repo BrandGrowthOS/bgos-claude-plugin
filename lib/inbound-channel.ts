@@ -749,10 +749,12 @@ export function readRoomAgentSender(...records: unknown[]): RoomAgentSender | nu
   let marked = false
   const ids: unknown[] = []
   for (const record of records) {
-    const r = plainObject(record)
-    if (!r) continue
-    if (isRoomAgentSenderType(r.senderType) || isRoomAgentSenderType(r.sender_type)) marked = true
-    ids.push(r.senderAssistantId, r.sender_assistant_id)
+    const envelope = plainObject(record)
+    for (const r of [envelope, plainObject(envelope?.message)]) {
+      if (!r) continue
+      if (isRoomAgentSenderType(r.senderType) || isRoomAgentSenderType(r.sender_type)) marked = true
+      ids.push(r.senderAssistantId, r.sender_assistant_id)
+    }
   }
   return marked ? { senderAssistantId: agreed(ids, statedAssistantId) } : null
 }
