@@ -6,6 +6,10 @@ Notable changes to the HOAI Claude Code plugin.
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.86.6 (2026-11-06)
+
+**Fixes reach your agents in hours, not a day.** The plugin now checks for a new release about every 4 hours with jitter instead of once a day plus up to 6 hours. Updates still apply only when the agent is idle, with the same staging and rollback safety.
+
 ## 0.86.5 (2026-11-06)
 
 **On Windows the browser profile permission step no longer stalls.** Started from the daemon, PowerShell lacked environment variables it needs and could hang until the 30 second timeout, so every browser profile was refused as unsafe. The step now runs with the minimal environment PowerShell needs, without a profile, asynchronously with a timeout, and says plainly what to fix if it still fails.
