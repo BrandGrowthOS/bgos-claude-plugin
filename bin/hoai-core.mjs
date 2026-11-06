@@ -1773,19 +1773,41 @@ export function claudeSignedInSince({ configDir, since, mtimeMs }) {
   return written != null && written > since
 }
 
-/** A non interactive status read of this launch's credential store. No credential file or Keychain
+/** A non interactive status probe of this launch's credential store. No credential file or Keychain
  *  item is opened here, and neither CLI output nor account details escape this boolean probe.
  *  A failed command, unknown format or non subscription login cannot lift a held login failure.
  *  Keep CLAUDE_CONFIG_DIR exactly as launched: setting it only for the probe could select another
  *  account file or Keychain store, even when the supplied directory is the default one.
- *  @param {{ env?: Record<string, string | undefined>, run?: typeof spawnSync }} input */
-export function probeClaudeSignedIn({ env = process.env, run = spawnSync }) {
+ *  Only stable CLI releases >= 2.1.317 may run auth status: older releases can abandon an OAuth
+ *  refresh before saving its replacement and invalidate the shared login. Recheck on every probe
+ *  so an update or downgrade takes effect without restarting the supervisor.
+ *  @param {{ env?: Record<string, string | undefined>, run?: typeof spawnSync,
+ *    onUnsupportedVersion?: () => void }} input */
+export function probeClaudeSignedIn({ env = process.env, run = spawnSync, onUnsupportedVersion = () => {} }) {
   try {
-    const result = run('claude', ['auth', 'status', '--json'], {
+    const options = {
       env: { ...env },
       encoding: 'utf8', timeout: 5000, maxBuffer: 16 * 1024,
       stdio: ['ignore', 'pipe', 'ignore'], shell: false, windowsHide: true,
-    })
+    }
+    let version
+    try {
+      version = run('claude', ['--version'], options)
+    } catch {
+      // Missing CLI and failed version reads leave the hold in place, with update guidance.
+    }
+    const match = !version?.error && version?.status === 0
+      ? /^(\d+)\.(\d+)\.(\d+)(?: \(Claude Code\))?$/.exec(String(version.stdout ?? '').trim())
+      : null
+    const parts = match ? match.slice(1).map(Number) : []
+    const [major, minor, patch] = parts
+    const safe = parts.length === 3 && parts.every(Number.isSafeInteger) &&
+      (major > 2 || (major === 2 && (minor > 1 || (minor === 1 && patch >= 317))))
+    if (!safe) {
+      onUnsupportedVersion()
+      return false
+    }
+    const result = run('claude', ['auth', 'status', '--json'], options)
     if (result?.error || result?.status !== 0) return false
     const status = JSON.parse(String(result.stdout ?? ''))
     return status?.loggedIn === true && status?.authMethod === 'claude.ai'
@@ -1797,16 +1819,23 @@ export function probeClaudeSignedIn({ env = process.env, run = spawnSync }) {
 /** At most one macOS status command per three minutes, only while a login failure is held.
  *  Never cache success: a later failure needs a new proof. Other platforms keep the stat-only path.
  *  @param {{ platform: string, configDir: string, env?: Record<string, string | undefined>,
- *    now?: () => number, mtimeMs?: (path: string) => number | null, probe?: () => boolean }} input */
-export function createClaudeSignInCheck({ platform, configDir, env, now = Date.now, mtimeMs = fileMtimeMs, probe = () => probeClaudeSignedIn({ env }) }) {
+ *    now?: () => number, mtimeMs?: (path: string) => number | null, run?: typeof spawnSync,
+ *    onUnsupportedVersion?: () => void, probe?: () => boolean }} input */
+export function createClaudeSignInCheck({ platform, configDir, env, now = Date.now, mtimeMs = fileMtimeMs, run, onUnsupportedVersion = () => {}, probe }) {
   let nextProbeAt = 0
+  let versionNoticeSent = false
+  const statusProbe = probe ?? (() => probeClaudeSignedIn({ env, run, onUnsupportedVersion: () => {
+    if (versionNoticeSent) return
+    versionNoticeSent = true
+    onUnsupportedVersion()
+  } }))
   return (since) => {
     if (platform !== 'darwin') return claudeSignedInSince({ configDir, since, mtimeMs })
     const at = now()
     if (at <= since || at < nextProbeAt) return false
     nextProbeAt = at + 180_000
     try {
-      return probe() === true
+      return statusProbe() === true
     } catch {
       return false
     }
@@ -2716,7 +2745,13 @@ export async function superviseClaude(args, opts = {}) {
   // with no channel heartbeat: the CLI's own records, in the store it signs in through.
   const loginStore = { configDir: claudeConfigDir({ env, home }), listDir, mtimeMs: fileMtimeMs, readTail: (path) => readFileTail(path, LOGIN_TAIL_BYTES) }
   const claudeLoginFailure = opts.claudeLoginFailure ?? (() => fleetClaudeLoginFailure({ ...loginStore, now: now() }))
-  const signedInSince = createClaudeSignInCheck({ platform, configDir: loginStore.configDir, env, now, probe: opts.probeClaudeSignedIn })
+  const signedInSince = createClaudeSignInCheck({
+    platform, configDir: loginStore.configDir, env, now, run: opts.spawnSyncImpl, probe: opts.probeClaudeSignedIn,
+    onUnsupportedVersion: () => print(
+      '[hoai] Automatic login status checks require Claude Code 2.1.317 or newer. Update Claude Code to 2.1.317 or newer ' +
+      'to enable them. The login failure stays held until a safe status check succeeds or an agent answers after the failure.',
+    ),
+  })
   // Has the login come back since a failure: a sign-in after it, or an agent's answer after it.
   const claudeLoginBackSince =
     opts.claudeLoginBackSince ??

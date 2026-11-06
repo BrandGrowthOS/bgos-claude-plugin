@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { test } from 'node:test'
 import * as core from '../bin/hoai-core.mjs'
 
@@ -10,6 +13,8 @@ const recovery = core as unknown as {
 const START = Date.parse('2026-11-01T12:00:00Z')
 const INTERVAL = 180_000
 const CONFIG = '/fixture/claude-store'
+const VERSION = { status: 0, stdout: '2.1.317 (Claude Code)\n' }
+const SIGNED_IN = { status: 0, stdout: '{"loggedIn":true,"authMethod":"claude.ai"}' }
 
 test('macOS recovery probes a renewed login without a credential file or an agent answer', () => {
   let at = START
@@ -64,21 +69,26 @@ test('the status command is bounded, non interactive, scoped to this store and r
   const calls: unknown[][] = []
   const run = (...args: unknown[]) => {
     calls.push(args)
-    return { status: 0, stdout: JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', email: 'sample@example.invalid' }) }
+    return (args[1] as string[])[0] === '--version' ? VERSION
+      : { status: 0, stdout: JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', email: 'sample@example.invalid' }) }
   }
   assert.equal(recovery.probeClaudeSignedIn({ env: { PATH: '/fixture/bin', CLAUDE_CONFIG_DIR: CONFIG }, run }), true)
-  assert.deepEqual(calls, [['claude', ['auth', 'status', '--json'], {
+  const options = {
     env: { PATH: '/fixture/bin', CLAUDE_CONFIG_DIR: CONFIG },
     encoding: 'utf8', timeout: 5000, maxBuffer: 16 * 1024,
     stdio: ['ignore', 'pipe', 'ignore'], shell: false, windowsHide: true,
-  }]])
+  }
+  assert.deepEqual(calls, [
+    ['claude', ['--version'], options],
+    ['claude', ['auth', 'status', '--json'], options],
+  ])
 })
 
 test('a default macOS login keeps CLAUDE_CONFIG_DIR unset, exactly as in the running launcher', () => {
   const env = { PATH: '/fixture/bin' }
-  assert.equal(recovery.probeClaudeSignedIn({ env, run: (_file: string, _args: string[], options: { env: unknown }) => {
+  assert.equal(recovery.probeClaudeSignedIn({ env, run: (_file: string, args: string[], options: { env: unknown }) => {
     assert.deepEqual(options.env, env)
-    return { status: 0, stdout: '{"loggedIn":true,"authMethod":"claude.ai"}' }
+    return args[0] === '--version' ? VERSION : SIGNED_IN
   } }), true)
   assert.deepEqual(env, { PATH: '/fixture/bin' }, 'the launcher environment is not mutated')
 })
@@ -95,9 +105,85 @@ test('the status probe fails closed for logged out, API key, malformed, failed, 
     { status: 0, error: new Error('ENOENT'), stdout: '{"loggedIn":true,"authMethod":"claude.ai"}' },
     null,
   ]) {
-    assert.equal(recovery.probeClaudeSignedIn({ env: {}, run: () => result }), false)
+    assert.equal(recovery.probeClaudeSignedIn({ env: {}, run: (_file: string, args: string[]) => args[0] === '--version' ? VERSION : result }), false)
   }
   assert.equal(recovery.probeClaudeSignedIn({ env: {}, run: () => { throw new Error('fixture') } }), false)
+})
+
+test('affected older and unknown CLI versions never receive automatic auth status, even if it would report a login', () => {
+  for (const version of [
+    '2.1.277 (Claude Code)', '2.1.301 (Claude Code)', '2.1.316 (Claude Code)',
+    '2.0.999 (Claude Code)', '1.9.999 (Claude Code)', '', 'unknown',
+    '2.1.317-rc.1 (Claude Code)', '2.1.999-beta (Claude Code)',
+    'wrapper 2.1.317', '2.1.317 (Claude Code)\nunexpected output',
+  ]) {
+    const commands: string[][] = []
+    const notices: unknown[][] = []
+    assert.equal(recovery.probeClaudeSignedIn({
+      env: {},
+      run: (_file: string, args: string[]) => {
+        commands.push(args)
+        return args[0] === '--version' ? { status: 0, stdout: version } : SIGNED_IN
+      },
+      onUnsupportedVersion: (...args: unknown[]) => notices.push(args),
+    }), false, version)
+    assert.deepEqual(commands, [['--version']], version)
+    assert.deepEqual(notices, [[]], 'no raw CLI output escapes the version gate')
+  }
+})
+
+test('failed, timed out, missing and throwing version checks never reach auth status', () => {
+  for (const result of [
+    { ...VERSION, status: 1 }, { ...VERSION, status: null },
+    { ...VERSION, error: new Error('ETIMEDOUT') }, null, new Error('ENOENT'),
+  ]) {
+    const commands: string[][] = []
+    assert.equal(recovery.probeClaudeSignedIn({ env: {}, run: (_file: string, args: string[]) => {
+      commands.push(args)
+      if (result instanceof Error) throw result
+      return result
+    } }), false)
+    assert.deepEqual(commands, [['--version']])
+  }
+})
+
+test('the fixed release and newer stable versions probe status only after a successful numeric version check', () => {
+  for (const version of ['2.1.317 (Claude Code)', '2.1.318', '2.1.1000', '2.2.0 (Claude Code)', '3.0.0 (Claude Code)']) {
+    const commands: string[][] = []
+    assert.equal(recovery.probeClaudeSignedIn({ env: {}, run: (_file: string, args: string[]) => {
+      commands.push(args)
+      return args[0] === '--version' ? { status: 0, stdout: version } : SIGNED_IN
+    } }), true, version)
+    assert.deepEqual(commands, [['--version'], ['auth', 'status', '--json']])
+  }
+})
+
+test('recovery retries the version gate after an update and does not reuse success after a downgrade', () => {
+  let at = START
+  let version = '2.1.277 (Claude Code)'
+  const commands: string[][] = []
+  let notices = 0
+  const check = recovery.createClaudeSignInCheck({
+    platform: 'darwin', configDir: CONFIG, env: {}, now: () => at,
+    run: (_file: string, args: string[]) => {
+      commands.push(args)
+      return args[0] === '--version' ? { status: 0, stdout: version } : SIGNED_IN
+    },
+    onUnsupportedVersion: () => { notices++ },
+  })
+  assert.equal(check(START - 1), false)
+  assert.equal(check(START - 1), false)
+  assert.deepEqual(commands, [['--version']], 'version checks share the recovery throttle')
+  at += INTERVAL
+  assert.equal(check(START - 1), false)
+  assert.equal(notices, 1, 'update guidance is printed once per checker')
+  version = '2.1.317 (Claude Code)'
+  at += INTERVAL
+  assert.equal(check(START - 1), true, 'an in-place update enables recovery')
+  version = '2.1.277 (Claude Code)'
+  at += INTERVAL
+  assert.equal(check(at - 1), false, 'a later failure cannot reuse the safe version')
+  assert.equal(commands.filter((args) => args[0] === 'auth').length, 1)
 })
 
 class FakeClaude extends EventEmitter {
@@ -110,56 +196,84 @@ class FakeClaude extends EventEmitter {
   }
 }
 
-test('the macOS supervisor releases its held failure after the injected status probe succeeds, without an answer', async (t) => {
-  const files = new Map<string, string>()
-  const children: FakeClaude[] = []
-  const timers: Array<{ fn: () => void; ms: number; cleared: boolean; fired: boolean }> = []
-  const prints: string[] = []
-  const stop = new AbortController()
-  let at = START
-  let signedIn = false
-  let probes = 0
-  const done = core.superviseClaude(['--dangerously-load-development-channels', 'plugin:hoai@hoai'], {
-    platform: 'darwin', home: '/fixture/home', cwd: '/fixture/agent',
-    scriptDir: '/fixture/.claude/plugins/cache/hoai/hoai/0.0.0/bin',
-    env: { HOAI_SUPERVISED: '1', HOAI_SUPERVISED_ASSISTANT_ID: '123', CLAUDE_CONFIG_DIR: CONFIG },
-    readFile: (path: string) => files.get(path) ?? null, listDir: () => [],
-    exists: (path: string) => files.has(path),
-    writeFile: (path: string, body: string) => { files.set(path, body); return true },
-    removeFile: (path: string) => files.delete(path),
-    spawnImpl: (() => { const child = new FakeClaude(); children.push(child); return child }) as never,
-    hasExpect: true, listProcesses: () => [], pidAlive: () => false, pidProcess: () => null,
-    probeIdentityFlag: () => null, generateId: () => '12345678-1234-4234-8234-123456789abc',
-    now: () => at, writeErr: () => {}, print: (line: string) => prints.push(line),
-    setTimer: (fn: () => void, ms: number) => { const timer = { fn, ms, cleared: false, fired: false }; timers.push(timer); return timer },
-    clearTimer: (timer: { cleared: boolean }) => { timer.cleared = true },
-    claudeLoginFailure: () => ({ at: START - 1000, text: 'Login expired' }),
-    probeClaudeSignedIn: () => { probes++; return signedIn },
-    pollMs: 5, signal: stop.signal,
-  } as never)
-  t.after(async () => { stop.abort(); await done })
-  const settle = async () => { for (let i = 0; i < 10; i++) await new Promise<void>((resolve) => setImmediate(resolve)) }
-  const fire = async () => {
-    const timer = timers.find((timer) => timer.ms === INTERVAL && !timer.cleared && !timer.fired)
-    assert.ok(timer, 'heartbeat check armed')
-    timer.fired = true
-    at += INTERVAL
-    timer.fn()
+for (const mode of ['injected', 'fixed', 'old', 'unknown']) {
+  test(`the macOS supervisor recovers safely with the ${mode} CLI probe`, async (t) => {
+    const store = mkdtempSync(join(tmpdir(), 'hoai-keychain-login-'))
+    t.after(() => rmSync(store, { recursive: true, force: true }))
+    const files = new Map<string, string>()
+    const children: FakeClaude[] = []
+    const timers: Array<{ fn: () => void; ms: number; cleared: boolean; fired: boolean }> = []
+    const prints: string[] = []
+    const stop = new AbortController()
+    let at = START
+    let signedIn = false
+    let probes = 0
+    const commands: string[][] = []
+    const blocked = mode === 'old' || mode === 'unknown'
+    const done = core.superviseClaude(['--dangerously-load-development-channels', 'plugin:hoai@hoai'], {
+      platform: 'darwin', home: '/fixture/home', cwd: '/fixture/agent',
+      scriptDir: '/fixture/.claude/plugins/cache/hoai/hoai/0.0.0/bin',
+      env: { HOAI_SUPERVISED: '1', HOAI_SUPERVISED_ASSISTANT_ID: '123', CLAUDE_CONFIG_DIR: store },
+      readFile: (path: string) => files.get(path) ?? null,
+      listDir: (path: string) => { try { return path.startsWith(store) ? readdirSync(path) : [] } catch { return [] } },
+      exists: (path: string) => files.has(path),
+      writeFile: (path: string, body: string) => { files.set(path, body); return true },
+      removeFile: (path: string) => files.delete(path),
+      spawnImpl: (() => { const child = new FakeClaude(); children.push(child); return child }) as never,
+      hasExpect: true, listProcesses: () => [], pidAlive: () => false, pidProcess: () => null,
+      probeIdentityFlag: () => null, generateId: () => '12345678-1234-4234-8234-123456789abc',
+      now: () => at, writeErr: () => {}, print: (line: string) => prints.push(line),
+      setTimer: (fn: () => void, ms: number) => { const timer = { fn, ms, cleared: false, fired: false }; timers.push(timer); return timer },
+      clearTimer: (timer: { cleared: boolean }) => { timer.cleared = true },
+      claudeLoginFailure: () => ({ at: START - 1000, text: 'Login expired' }),
+      ...(mode === 'injected' ? { probeClaudeSignedIn: () => { probes++; return signedIn } } : {}),
+      spawnSyncImpl: (_file: string, args: string[]) => {
+        commands.push(args)
+        if (args[0] === '--version') return { status: 0, stdout: mode === 'old' ? '2.1.277 (Claude Code)' : mode === 'unknown' ? 'unknown' : VERSION.stdout }
+        probes++
+        return blocked || signedIn ? SIGNED_IN : { status: 0, stdout: '{"loggedIn":false}' }
+      },
+      pollMs: 5, signal: stop.signal,
+    } as never)
+    t.after(async () => { stop.abort(); await done })
+    const settle = async () => { for (let i = 0; i < 10; i++) await new Promise<void>((resolve) => setImmediate(resolve)) }
+    const fire = async () => {
+      const timer = timers.find((timer) => timer.ms === INTERVAL && !timer.cleared && !timer.fired)
+      assert.ok(timer, 'heartbeat check armed')
+      timer.fired = true
+      at += INTERVAL
+      timer.fn()
+      await settle()
+    }
     await settle()
-  }
-  await settle()
-  assert.equal(children.length, 1)
-  await fire()
-  assert.equal(children.length, 1)
-  assert.equal(probes, 0, 'only a held failure needs a recovery probe')
-  await fire()
-  assert.equal(children.length, 1)
-  assert.equal(probes, 1)
-  assert.match(prints.join('\n'), /ALERT \(claude-login-expired\)/)
-  signedIn = true
-  await fire()
-  assert.equal(probes, 2)
-  for (let i = 0; i < 200 && children.length < 2; i++) await new Promise((resolve) => setTimeout(resolve, 5))
-  assert.equal(children.length, 2, `recovery releases the hold and permits the one heartbeat relaunch: ${prints.join('\n')}`)
-  assert.match(prints.join('\n'), /Relaunching claude/)
-})
+    assert.equal(children.length, 1)
+    await fire()
+    assert.equal(children.length, 1)
+    assert.equal(probes, 0, 'only a held failure needs a recovery probe')
+    await fire()
+    assert.equal(children.length, 1)
+    assert.equal(probes, blocked ? 0 : 1)
+    assert.match(prints.join('\n'), /ALERT \(claude-login-expired\)/)
+    if (blocked) {
+      assert.deepEqual(commands, [['--version']])
+      assert.match(prints.join('\n'), /[Uu]pdate Claude Code to 2\.1\.317 or newer/)
+      assert.match(prints.join('\n'), /agent.*answer/)
+      await fire()
+      assert.equal(children.length, 1, 'unsafe status cannot lift the login hold')
+      assert.equal(probes, 0)
+      assert.equal(prints.filter((line) => /[Uu]pdate Claude Code to/.test(line)).length, 1)
+      const project = join(store, 'projects', 'fixture-agent')
+      mkdirSync(project, { recursive: true })
+      writeFileSync(join(project, 'answer.jsonl'), JSON.stringify({
+        type: 'assistant', timestamp: new Date(at).toISOString(),
+        message: { role: 'assistant', model: 'fixture-model', content: [{ type: 'text', text: 'fixture answer' }] },
+      }) + '\n')
+    }
+    signedIn = true
+    await fire()
+    assert.equal(probes, blocked ? 0 : 2)
+    for (let i = 0; i < 200 && children.length < 2; i++) await new Promise((resolve) => setTimeout(resolve, 5))
+    assert.equal(children.length, 2, `recovery releases the hold and permits the one heartbeat relaunch: ${prints.join('\n')}`)
+    assert.match(prints.join('\n'), /Relaunching claude/)
+  })
+}
