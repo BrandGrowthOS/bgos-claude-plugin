@@ -13518,6 +13518,10 @@ let missionTurnAnswering = false
 // Keep a revision even after the last mission is removed. Comparing cache
 // objects alone misses a create/complete pair during an initially empty read.
 const missionTurnRevisions = new Map<string, number>()
+// Server write times order snapshots across HTTP and WebSocket delivery.
+// Keep closed missions too: removing their entry must not let an older active
+// response resurrect them later in this daemon's lifetime.
+const missionTurnSnapshotVersions = new Map<number, { updatedAt: number; open: boolean }>()
 
 function writeMissionTurnState(): void {
   if (!lockHeld) return
@@ -13555,6 +13559,16 @@ function noteMissionTurnSnapshot(mission: unknown, envelopeChatId?: string | nul
     if (!chatId) return
     const previous = missionTurnEntries(missionTurnState?.chats?.[chatId]).find((entry) => entry.missionId === snapshot.id) ?? null
     const open = snapshot.status === 'active' || snapshot.status === 'paused'
+    const updatedAt = typeof snapshot.updatedAt === 'string' ? Date.parse(snapshot.updatedAt) : NaN
+    const previousVersion = missionTurnSnapshotVersions.get(snapshot.id)
+    // Legacy snapshots work until a comparable server version has been seen.
+    // Equal versions may restore an evicted open entry, but never overwrite a
+    // cached entry or undo a completion remembered after its entry was removed.
+    if (previousVersion !== undefined) {
+      if (!Number.isFinite(updatedAt) || updatedAt < previousVersion.updatedAt) return
+      if (updatedAt === previousVersion.updatedAt && (previous || !open || !previousVersion.open)) return
+    }
+    if (Number.isFinite(updatedAt)) missionTurnSnapshotVersions.set(snapshot.id, { updatedAt, open })
     setMissionTurnEntry(chatId, open ? entryFromMission(snapshot, previous) : null, undefined, snapshot.id)
   } catch (err) {
     log(`mission turn: snapshot not kept (${err})`)
@@ -13577,7 +13591,8 @@ async function refreshMissionTurnChat(chatId: string): Promise<Record<string, an
     const mission = active?.mission ?? null
     if (!mission || (mission.status !== 'active' && mission.status !== 'paused')) return current()
     if (mission.chatId != null && String(mission.chatId) !== chatId) return current()
-    missions = [entryFromMission(mission)]
+    noteMissionTurnSnapshot(mission, chatId)
+    missions = missionTurnEntries(current())
   }
   for (const mission of missions) {
     if (freshMissionTurnEntry({ chats: { [chatId]: mission } }, chatId, Date.now())) continue
@@ -13598,6 +13613,10 @@ async function refreshMissionTurnChat(chatId: string): Promise<Record<string, an
     if (Number(report?.missionId) !== mission.missionId) continue
     const entry = entryFromReport(report, mission.title, Date.now())
     const open = entry.status === 'active' || entry.status === 'paused'
+    // Reports have no write timestamp. Keep the last comparable version as
+    // closed so an equal active snapshot cannot treat this removal as eviction.
+    const version = missionTurnSnapshotVersions.get(mission.missionId)
+    if (!open && version) version.open = false
     setMissionTurnEntry(chatId, open ? entry : null, undefined, mission.missionId)
   }
   return current()

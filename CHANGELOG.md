@@ -9,6 +9,7 @@ Running commands is not available for people you share with yet. Your own tools 
 - Mission goals carry server checks through create, set and add calls. Summaries show checks, server ticks and who a goal waits on. Waiting accepts both the existing flat arguments and a nested waiting object, or null to clear it.
 - A synchronous mission hook shows this chat's open goals at turn start and asks its own daemon about passing, unticked goals at turn end. It blocks at most once per turn and allows the turn to end on errors or missing answers. Prompt chat isolation, fresh check reuse, expired requests and request replacement races are covered.
 - Every host declares mission_server_checks alongside the existing mission capabilities.
+- Mission snapshots use server write timestamps to reject stale tool responses and frames. Newer checked goals stay in Stop verification, and completed missions cannot be restored by older active responses.
 
 ## 0.86.3 (2026-11-06)
 

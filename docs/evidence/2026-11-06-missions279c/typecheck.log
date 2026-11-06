@@ -1,0 +1,6 @@
+npm run build (tsc --noEmit)
+Exit code: 0
+
+
+> claude-channel-bgos@0.86.3 build
+> tsc --noEmit

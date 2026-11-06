@@ -54,8 +54,8 @@ const end = source.indexOf('\n}\n', start) + 3
 const snapshotFunction = ts.transpileModule(source.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
 function record(snapshot: unknown, envelopeChat?: string) {
   const writes: Array<{ chatId: string; entry: any }> = []
-  const call = new Function('missionTurnState', 'missionChatId', 'entryFromMission', 'missionTurnEntries', 'setMissionTurnEntry', 'log', snapshotFunction + '\nreturn noteMissionTurnSnapshot;')(
-    null, () => '99', entryFromMission, missionTurnEntries,
+  const call = new Function('missionTurnState', 'missionTurnSnapshotVersions', 'missionChatId', 'entryFromMission', 'missionTurnEntries', 'setMissionTurnEntry', 'log', snapshotFunction + '\nreturn noteMissionTurnSnapshot;')(
+    null, new Map(), () => '99', entryFromMission, missionTurnEntries,
     (chatId: string, entry: any) => writes.push({ chatId, entry }), () => {},
   )
   call(snapshot, envelopeChat)

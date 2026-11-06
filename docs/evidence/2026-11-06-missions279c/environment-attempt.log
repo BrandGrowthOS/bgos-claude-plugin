@@ -1,0 +1,243 @@
+Interrupted full-suite attempt: exit 130, no full-suite success claimed.
+TMPDIR was under node_modules, causing the doctor clone fixture to be classified as a package-runner install.
+Runner received SIGINT and stopped its own workers. Other FAIL lines can name workers interrupted during cleanup.
+The corrected environment and complete rerun are recorded separately.
+
+[run-tests] node:test family: 449 files, 4 workers
+[run-tests] START test/agent-browser-vault.test.ts
+[run-tests] START test/agent-checkup.test.ts
+[run-tests] START test/agent-credentials.test.ts
+[run-tests] START test/agent-email-files-admission.test.ts
+[run-tests] PASS test/agent-checkup.test.ts (0.240s)
+[run-tests] START test/agent-email-files.test.ts
+[run-tests] PASS test/agent-credentials.test.ts (0.315s)
+[run-tests] START test/agent-email-send.test.ts
+[run-tests] PASS test/agent-email-files-admission.test.ts (0.643s)
+[run-tests] START test/agent-identity.test.ts
+[run-tests] PASS test/agent-email-files.test.ts (0.574s)
+[run-tests] START test/agent-inventory.boot-clock.test.ts
+[run-tests] PASS test/agent-inventory.boot-clock.test.ts (0.218s)
+[run-tests] START test/agent-inventory.launcher.test.ts
+[run-tests] PASS test/agent-inventory.launcher.test.ts (0.543s)
+[run-tests] START test/agent-inventory.test.ts
+[run-tests] PASS test/agent-browser-vault.test.ts (2.022s)
+[run-tests] START test/agent-restart.test.ts
+[run-tests] PASS test/agent-inventory.test.ts (0.801s)
+[run-tests] START test/agent-service.home-scope.test.ts
+[run-tests] PASS test/agent-service.home-scope.test.ts (0.452s)
+[run-tests] START test/agent-state.ancestor-probe.test.ts
+[run-tests] PASS test/agent-state.ancestor-probe.test.ts (0.192s)
+[run-tests] START test/agent-state.test.ts
+[run-tests] PASS test/agent-state.test.ts (0.224s)
+[run-tests] START test/agent-task-win32.home-scope.test.ts
+[run-tests] PASS test/agent-restart.test.ts (1.415s)
+[run-tests] START test/agent-task-win32.test.ts
+[run-tests] PASS test/agent-task-win32.home-scope.test.ts (0.202s)
+[run-tests] START test/agent-unbound.test.ts
+[run-tests] PASS test/agent-task-win32.test.ts (0.193s)
+[run-tests] START test/agent-verify.test.ts
+[run-tests] PASS test/agent-verify.test.ts (0.165s)
+[run-tests] START test/agent-viewer-script.test.ts
+[run-tests] PASS test/agent-viewer-script.test.ts (0.147s)
+[run-tests] START test/agent-windows.test.ts
+[run-tests] PASS test/agent-windows.test.ts (0.192s)
+[run-tests] START test/always-on-grace.test.ts
+[run-tests] PASS test/always-on-grace.test.ts (0.156s)
+[run-tests] START test/always-on-reconcile.test.ts
+[run-tests] PASS test/agent-email-send.test.ts (4.014s)
+[run-tests] START test/artifacts-tools.test.ts
+[run-tests] PASS test/always-on-reconcile.test.ts (0.252s)
+[run-tests] START test/aside-fork.test.ts
+[run-tests] PASS test/artifacts-tools.test.ts (0.275s)
+[run-tests] START test/ask-multi-select-wiring.test.ts
+[run-tests] PASS test/aside-fork.test.ts (0.246s)
+[run-tests] START test/ask-review-282.test.ts
+[run-tests] PASS test/ask-multi-select-wiring.test.ts (0.548s)
+[run-tests] START test/ask-review-wiring.test.ts
+[run-tests] PASS test/ask-review-wiring.test.ts (0.177s)
+[run-tests] START test/ask-tracker.test.ts
+[run-tests] PASS test/ask-review-282.test.ts (1.223s)
+[run-tests] START test/attach-scope.e2e.test.ts
+[run-tests] PASS test/ask-tracker.test.ts (2.771s)
+[run-tests] START test/attach-scope.launcher.test.ts
+[run-tests] PASS test/attach-scope.launcher.test.ts (0.556s)
+[run-tests] START test/attach-scope.test.ts
+[run-tests] PASS test/attach-scope.test.ts (0.374s)
+[run-tests] START test/auth-login.test.ts
+[run-tests] PASS test/auth-login.test.ts (0.771s)
+[run-tests] START test/auth-recheck.test.ts
+[run-tests] PASS test/auth-recheck.test.ts (0.173s)
+[run-tests] START test/auth-rejection.test.ts
+[run-tests] PASS test/auth-rejection.test.ts (0.179s)
+[run-tests] START test/bgos-agent.commands.test.ts
+[run-tests] PASS test/attach-scope.e2e.test.ts (5.186s)
+[run-tests] START test/bgos-agent.gate.test.ts
+[run-tests] PASS test/agent-identity.test.ts (14.873s)
+[run-tests] START test/bgos-agent.home-scope.test.ts
+[run-tests] PASS test/bgos-agent.commands.test.ts (11.912s)
+[run-tests] START test/bgos-agent.install.test.ts
+[run-tests] PASS test/agent-unbound.test.ts (29.009s)
+[run-tests] START test/bgos-agent.lock.test.ts
+[run-tests] PASS test/bgos-agent.lock.test.ts (4.579s)
+[run-tests] START test/bgos-agent.private-hook.test.ts
+[run-tests] PASS test/bgos-agent.private-hook.test.ts (0.673s)
+[run-tests] START test/bgos-agent.runsh.test.ts
+[run-tests] PASS test/bgos-agent.gate.test.ts (35.200s)
+[run-tests] START test/bgos-agent.static.test.ts
+[run-tests] PASS test/bgos-agent.static.test.ts (0.233s)
+[run-tests] START test/bgos-agent.update-reexec.test.ts
+[run-tests] PASS test/bgos-agent.runsh.test.ts (18.673s)
+[run-tests] START test/bgos-claim.test.ts
+[run-tests] PASS test/bgos-claim.test.ts (0.376s)
+[run-tests] START test/bgos-doctor.identity-resolver.test.ts
+[run-tests] PASS test/bgos-doctor.identity-resolver.test.ts (0.342s)
+[run-tests] START test/bgos-doctor.identity.test.ts
+[run-tests] PASS test/bgos-agent.update-reexec.test.ts (13.132s)
+[run-tests] START test/bgos-doctor.test.ts
+[run-tests] FAIL test/bgos-doctor.test.ts (0.253s)
+[run-tests] START test/bgos-install-method.test.ts
+[run-tests] PASS test/bgos-install-method.test.ts (0.181s)
+[run-tests] START test/bgos-launch.test.ts
+[run-tests] PASS test/bgos-launch.test.ts (0.182s)
+[run-tests] START test/bgos-pair.test.ts
+[run-tests] PASS test/bgos-pair.test.ts (0.597s)
+[run-tests] START test/boards-download.test.ts
+[run-tests] PASS test/boards-download.test.ts (0.315s)
+[run-tests] START test/boards-tools.test.ts
+[run-tests] PASS test/boards-tools.test.ts (0.248s)
+[run-tests] START test/boot-hello.test.ts
+[run-tests] PASS test/boot-hello.test.ts (0.174s)
+[run-tests] START test/bootstrap-askuserquestion-deny.test.ts
+[run-tests] PASS test/bootstrap-askuserquestion-deny.test.ts (1.145s)
+[run-tests] START test/bootstrap-ps1.static.test.ts
+[run-tests] PASS test/bootstrap-ps1.static.test.ts (0.154s)
+[run-tests] START test/bootstrap-sh.static.test.ts
+[run-tests] PASS test/bootstrap-sh.static.test.ts (0.181s)
+[run-tests] START test/bounded-fetch.test.ts
+[run-tests] PASS test/bounded-fetch.test.ts (0.395s)
+[run-tests] START test/browser-bootstrap.test.ts
+[run-tests] PASS test/browser-bootstrap.test.ts (0.655s)
+[run-tests] START test/browser-downloads.test.ts
+[run-tests] PASS test/bgos-doctor.identity.test.ts (10.015s)
+[run-tests] START test/browser-env.test.ts
+[run-tests] PASS test/bgos-agent.install.test.ts (55.160s)
+[run-tests] START test/browser-gate.test.ts
+[run-tests] PASS test/browser-env.test.ts (13.680s)
+[run-tests] START test/browser-host-core.vendor.test.ts
+[run-tests] PASS test/browser-host-core.vendor.test.ts (0.172s)
+[run-tests] START test/browser-host-supervisor.test.ts
+[run-tests] PASS test/browser-downloads.test.ts (25.940s)
+[run-tests] START test/browser-install-lifetime.test.ts
+[run-tests] PASS test/browser-install-lifetime.test.ts (0.173s)
+[run-tests] START test/browser-profile-active-backup.test.ts
+[run-tests] PASS test/browser-profile-active-backup.test.ts (7.039s)
+[run-tests] START test/browser-profile-artifact-inventory.test.ts
+[run-tests] PASS test/browser-profile-artifact-inventory.test.ts (0.197s)
+[run-tests] START test/browser-profile-artifacts.test.ts
+[run-tests] PASS test/browser-profile-artifacts.test.ts (0.175s)
+[run-tests] START test/browser-profile-backup-workers.test.ts
+[run-tests] PASS test/browser-profile-backup-workers.test.ts (0.428s)
+[run-tests] START test/browser-profile-cdp-targets.test.ts
+[run-tests] PASS test/browser-profile-cdp-targets.test.ts (0.682s)
+[run-tests] START test/browser-profile-companion-backups.test.ts
+[run-tests] PASS test/browser-profile-companion-backups.test.ts (0.396s)
+[run-tests] START test/browser-profile-companion-client.test.ts
+[run-tests] PASS test/browser-profile-companion-client.test.ts (0.272s)
+[run-tests] START test/browser-profile-companion-downloads.test.ts
+[run-tests] PASS test/browser-profile-companion-downloads.test.ts (0.394s)
+[run-tests] START test/browser-profile-companion-fields.test.ts
+[run-tests] PASS test/browser-profile-companion-fields.test.ts (0.423s)
+[run-tests] START test/browser-profile-companion-files.test.ts
+[run-tests] PASS test/browser-profile-companion-files.test.ts (0.386s)
+[run-tests] START test/browser-profile-companion-host.test.ts
+[run-tests] PASS test/browser-profile-companion-host.test.ts (0.716s)
+[run-tests] START test/browser-profile-companion-permission.test.ts
+[run-tests] PASS test/browser-profile-companion-permission.test.ts (0.741s)
+[run-tests] START test/browser-profile-companion-state.test.ts
+[run-tests] PASS test/browser-profile-companion-state.test.ts (0.337s)
+[run-tests] START test/browser-profile-companion-transfer.test.ts
+[run-tests] PASS test/browser-profile-companion-transfer.test.ts (0.209s)
+[run-tests] START test/browser-profile-companion.test.ts
+[run-tests] PASS test/browser-profile-companion.test.ts (0.570s)
+[run-tests] START test/browser-profile-core.vendor.test.ts
+[run-tests] PASS test/browser-profile-core.vendor.test.ts (0.166s)
+[run-tests] START test/browser-profile-daemon-stop.test.ts
+[run-tests] PASS test/browser-profile-daemon-stop.test.ts (0.181s)
+[run-tests] START test/browser-profile-downloads-failure.test.ts
+[run-tests] PASS test/browser-profile-downloads-failure.test.ts (2.513s)
+[run-tests] START test/browser-profile-downloads-runtime.test.ts
+[run-tests] PASS test/browser-profile-downloads-runtime.test.ts (0.592s)
+[run-tests] START test/browser-profile-downloads.test.ts
+[run-tests] PASS test/browser-profile-downloads.test.ts (4.034s)
+[run-tests] START test/browser-profile-engine-selection.test.ts
+[run-tests] PASS test/browser-profile-engine-selection.test.ts (0.700s)
+[run-tests] START test/browser-profile-field-input.test.ts
+[run-tests] PASS test/browser-profile-field-input.test.ts (0.269s)
+[run-tests] START test/browser-profile-file-area.test.ts
+[run-tests] PASS test/browser-host-supervisor.test.ts (30.911s)
+[run-tests] START test/browser-profile-files.test.ts
+[run-tests] PASS test/browser-profile-file-area.test.ts (0.343s)
+[run-tests] START test/browser-profile-kdf.test.ts
+[run-tests] PASS test/browser-profile-kdf.test.ts (0.330s)
+[run-tests] START test/browser-profile-live-capture.test.ts
+[run-tests] PASS test/browser-profile-live-capture.test.ts (0.513s)
+[run-tests] START test/browser-profile-live-read.test.ts
+[run-tests] PASS test/browser-profile-files.test.ts (1.258s)
+[run-tests] START test/browser-profile-managed-instructions.test.ts
+[run-tests] PASS test/browser-profile-live-read.test.ts (0.322s)
+[run-tests] START test/browser-profile-node-runtime.test.ts
+[run-tests] PASS test/browser-profile-managed-instructions.test.ts (0.789s)
+[run-tests] START test/browser-profile-pairing-client.test.ts
+[run-tests] PASS test/browser-profile-pairing-client.test.ts (0.743s)
+[run-tests] START test/browser-profile-peer-pins.test.ts
+[run-tests] PASS test/browser-profile-peer-pins.test.ts (0.695s)
+[run-tests] START test/browser-profile-peer-review.test.ts
+[run-tests] PASS test/browser-profile-peer-review.test.ts (0.304s)
+[run-tests] START test/browser-profile-permission-client.test.ts
+[run-tests] PASS test/browser-profile-permission-client.test.ts (0.334s)
+[run-tests] START test/browser-profile-portable-extras.test.ts
+[run-tests] PASS test/browser-profile-portable-extras.test.ts (0.678s)
+[run-tests] START test/browser-profile-resume-ledger.test.ts
+[run-tests] PASS test/browser-profile-node-runtime.test.ts (3.564s)
+[run-tests] START test/browser-profile-resume-runtime.test.ts
+[run-tests] PASS test/browser-profile-resume-ledger.test.ts (0.167s)
+[run-tests] START test/browser-profile-return-client.test.ts
+[run-tests] PASS test/browser-profile-resume-runtime.test.ts (0.200s)
+[run-tests] START test/browser-profile-return-handover.test.ts
+[run-tests] PASS test/browser-profile-return-client.test.ts (0.243s)
+[run-tests] START test/browser-profile-rtc-activity.test.ts
+[run-tests] PASS test/browser-profile-return-handover.test.ts (0.266s)
+[run-tests] START test/browser-profile-runtime-bootstrap.test.ts
+[run-tests] PASS test/browser-profile-rtc-activity.test.ts (0.254s)
+[run-tests] START test/browser-profile-runtime-security.test.ts
+[run-tests] PASS test/browser-profile-runtime-bootstrap.test.ts (0.459s)
+[run-tests] START test/browser-profile-runtime.test.ts
+[run-tests] PASS test/browser-profile-runtime-security.test.ts (0.501s)
+[run-tests] START test/browser-profile-sdk-pin.test.ts
+[run-tests] PASS test/browser-profile-sdk-pin.test.ts (0.278s)
+[run-tests] START test/browser-profile-sync-key-store.test.ts
+[run-tests] PASS test/browser-profile-sync-key-store.test.ts (0.815s)
+[run-tests] START test/browser-runtime-folder.test.ts
+[run-tests] PASS test/browser-profile-runtime.test.ts (1.517s)
+[run-tests] START test/browser-secret-redactor.test.ts
+[run-tests] PASS test/browser-secret-redactor.test.ts (0.366s)
+[run-tests] START test/bundled-instructions.test.ts
+[run-tests] PASS test/bundled-instructions.test.ts (0.456s)
+[run-tests] START test/call-owner-private.test.ts
+[run-tests] PASS test/call-owner-private.test.ts (0.995s)
+[run-tests] START test/call-owner.test.ts
+[run-tests] PASS test/call-owner.test.ts (0.172s)
+[run-tests] START test/capabilities-fetch-path.test.ts
+[run-tests] PASS test/capabilities-fetch-path.test.ts (0.253s)
+[run-tests] START test/capabilities.test.ts
+[run-tests] PASS test/capabilities.test.ts (0.283s)
+[run-tests] START test/catch-up-after-deploy.e2e.test.ts
+[run-tests] PASS test/browser-runtime-folder.test.ts (14.408s)
+[run-tests] START test/catch-up-paging.test.ts
+[run-tests] FAIL test/bgos-agent.home-scope.test.ts (117.998s)
+[run-tests] START test/changes-rpc.test.ts
+[run-tests] FAIL test/browser-gate.test.ts (56.292s)
+[run-tests] START test/changes-wiring.test.ts
+
+Assertion failures before interruption:
+not ok 104 - provePairedTopology, with the REAL verifiers: the same folder is refused when any one of the three is taken away
