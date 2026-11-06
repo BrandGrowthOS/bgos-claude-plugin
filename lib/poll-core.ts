@@ -265,7 +265,7 @@ export function firstPollNeedsOlderRows(opts: {
     if (m.pendingEmptySystem) continue
     if (recentCutoffMs !== null && (m.sentDateMs === null || m.sentDateMs < recentCutoffMs)) return false
     if (m.sender === 'assistant') {
-      if (followsHumanRequest(rows, i)) return false
+      if (answersInboundTurn(rows, i)) return false
       continue
     }
     if (m.sender !== 'user' && m.sender !== 'system') continue
@@ -403,8 +403,15 @@ export interface FirstPollRow {
   sentDateMs: number | null
 }
 
-/** Other room agents supply context between a human request and our reply. */
-function followsHumanRequest(rows: FirstPollRow[], assistantIndex: number): boolean {
+/**
+ * Only our assistant row answers a human-led turn. Other room agents supply
+ * context for that turn, never an answer on our behalf. System traffic and
+ * proactive assistant rows separate turns; a page without the human anchor
+ * cannot yet establish a reply boundary. Preserve sender identity regardless
+ * of collection policy. The context scan strictly decreases its row index.
+ */
+function answersInboundTurn(rows: FirstPollRow[], assistantIndex: number): boolean {
+  if (rows[assistantIndex]?.sender !== 'assistant') return false
   let previous = assistantIndex - 1
   while (previous >= 0 && rows[previous]!.sender === 'room_agent') previous--
   return previous >= 0 && rows[previous]!.sender === 'user'
@@ -424,8 +431,8 @@ export const MAX_GROUP_HISTORY_FORWARD = 10
  *
  * The walk-back heuristic: scan from the newest row backward, collecting
  * user/system messages, and stop only
- * at a real user->assistant REPLY (an assistant row preceded by a user row,
- * ignoring intervening room_agent context). Proactive assistant rows (preceded
+ * at our reply to a human-led turn, across optional room-agent context.
+ * Proactive assistant rows (preceded
  * by another assistant row, or by nothing) do not terminate the scan, and
  * pending-empty system rows are skipped (the cursor parks under them so a
  * later poll re-reads them once the body fills).
@@ -457,18 +464,20 @@ export function selectFirstPollBacklogIds(opts: {
    * Rows sent from `beforeMs` on are not touched. Null or absent: no cap.
    */
   historyCap?: { beforeMs: number; max: number } | null
+  /** Collect optional room context without changing its role at reply boundaries. */
+  includeRoomAgents?: boolean
 }): number[] {
   const { rows, recentCutoffMs } = opts
   const collected: FirstPollRow[] = []
   for (let i = rows.length - 1; i >= 0; i--) {
     const m = rows[i]!
     if (m.pendingEmptySystem) continue
-    if (m.sender === 'user' || m.sender === 'system') {
+    if (m.sender === 'user' || m.sender === 'system' || (opts.includeRoomAgents && m.sender === 'room_agent')) {
       collected.push(m)
       continue
     }
     if (m.sender === 'assistant') {
-      if (followsHumanRequest(rows, i)) {
+      if (answersInboundTurn(rows, i)) {
         // Real reply, everything older was handled. Stop here.
         break
       }
@@ -526,7 +535,7 @@ export const RESTART_RECOVERY_WINDOW_MS = 24 * 60 * 60_000
  *
  * THE RULE IS THE SAME WALK-BACK `selectFirstPollBacklogIds` USES, on purpose:
  * scan from the newest row backward, collect user and system rows, and stop at
- * a real user then assistant REPLY, ignoring intervening room_agent context.
+ * our reply to a human-led turn, preserving intervening room-agent identity.
  * That stop is what makes this safe. If the previous session DID answer,
  * there is an assistant row after the user row and
  * the scan stops before reaching it, so an answered message is never re-offered.
@@ -570,7 +579,7 @@ export function selectRestartRecoveryIds(opts: {
       continue
     }
     if (m.sender === 'assistant') {
-      if (followsHumanRequest(rows, i)) {
+      if (answersInboundTurn(rows, i)) {
         // A real reply. Everything older was answered; stop.
         break
       }

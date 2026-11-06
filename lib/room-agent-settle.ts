@@ -56,8 +56,10 @@ export interface RoomAgentSettleDeps<V extends RoomAgentSettleView, H> {
 }
 
 export interface RoomAgentSettler<V extends RoomAgentSettleView> {
-  /** A version of another agent's message arrived on the stream. */
-  note(view: V): void
+  /** Capture before a poll fetch so its late response cannot undo a live edit. */
+  readonly readGeneration: number
+  /** A version arrived; polls pass the generation captured before their read. */
+  note(view: V, readGeneration?: number): void
   /** Is this message waiting? (a later version of it may still come) */
   has(messageId: number): boolean
   /** Forget what one chat holds (its seat was taken away, or it was deleted). */
@@ -73,14 +75,15 @@ export function createRoomAgentSettler<V extends RoomAgentSettleView, H>(
   const max = deps.max ?? ROOM_AGENT_SETTLE_MAX
   // `handle` is null while a version with no text is parked: it waits, with no
   // timer, for the version that brings the text, and only the cap evicts it.
-  const waiting = new Map<number, { view: V; handle: H | null; retried: boolean; version?: string }>()
+  let generation = 0
+  const waiting = new Map<number, { view: V; handle: H | null; retried: boolean; version?: string; generation: number }>()
   const stop = (handle: H | null): void => {
     if (handle !== null) deps.cancel(handle)
   }
 
   const hold = (view: V, retried: boolean): void => {
     const handle = deps.schedule(() => settle(view.messageId), settleMs)
-    waiting.set(view.messageId, { view, handle, retried, version: deps.versionOf?.(view) })
+    waiting.set(view.messageId, { view, handle, retried, version: deps.versionOf?.(view), generation: ++generation })
   }
 
   const settle = (messageId: number, evicting = false): void => {
@@ -113,15 +116,22 @@ export function createRoomAgentSettler<V extends RoomAgentSettleView, H>(
   }
 
   return {
-    note(view) {
+    get readGeneration() { return generation },
+    note(view, readGeneration) {
       if (deps.isForwarded(view.messageId)) return
       const previous = waiting.get(view.messageId)
-      if (previous && deps.editTimeOf) {
-        const heldTime = deps.editTimeOf(previous.view)
-        const incomingTime = deps.editTimeOf(view)
-        // Poll and stream can finish out of order. Reject a known older
-        // revision before it can replace text, URLs, routing or the timer.
-        if (heldTime !== null && incomingTime !== null && incomingTime < heldTime) return
+      if (previous) {
+        const heldTime = deps.editTimeOf?.(previous.view) ?? null
+        const incomingTime = deps.editTimeOf?.(view) ?? null
+        const comparable = heldTime !== null && incomingTime !== null
+        // Revision acceptance has one home. Known older edits always lose.
+        // A live version received during a read also wins over that response
+        // unless comparable timestamps prove the response is newer. Identical
+        // versions may still refresh URLs without postponing the deadline.
+        if (comparable && incomingTime < heldTime) return
+        const sameVersion = deps.versionOf && previous.version === deps.versionOf(view)
+        if (readGeneration !== undefined && previous.generation > readGeneration &&
+          !sameVersion && !(comparable && incomingTime > heldTime)) return
       }
       if (previous && deps.versionOf && previous.version === deps.versionOf(view)) {
         // Keep fresh download URLs and routing data without restarting the clock.

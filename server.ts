@@ -11890,6 +11890,7 @@ async function pollChat(chatId: string): Promise<void> {
   // Taken before the fetch for the reason the cursor is: see chatBehindSocket.
   const startedAtEpoch = socketEpoch
   const editReadGeneration = humanMessageEdits.readGeneration
+  const roomAgentReadGeneration = roomAgentSettler.readGeneration
   const oldestHuman = humanMessageEdits.oldestInChat(chatId)
   // Read existing human rows too: an edit keeps its ID and cannot appear in
   // an afterId delta. The selection cursor below remains lastSeen.
@@ -12183,9 +12184,8 @@ async function pollChat(chatId: string): Promise<void> {
     // On a first read, use the same age, reply boundary and history cap as
     // human backlog, without ever recovering optional room context on restart.
     const roomBacklogIds = lastSeen === 0 ? new Set(selectFirstPollBacklogIds({
-      rows: firstPollRowsOf(ordered, Number.POSITIVE_INFINITY).map((row) => ({
-        ...row, sender: row.sender === ROOM_AGENT_SENDER_TYPE ? 'system' : row.sender,
-      })),
+      rows: firstPollRowsOf(ordered, Number.POSITIVE_INFINITY),
+      includeRoomAgents: true,
       recentCutoffMs: FIRST_POLL_RECENT_CUTOFF_MS,
       historyCap: groupHistoryCap,
     })) : null
@@ -12196,7 +12196,7 @@ async function pollChat(chatId: string): Promise<void> {
       if (!agent || isOwnRoomAgentMessage(agent, ASSISTANT_ID)) continue
       const view = viewStreamMessage({ seq: 0, kind: 'message_new', chatId: Number(chatId),
         messageId: row.message.id, payload: row as unknown as Record<string, unknown> }, ASSISTANT_ID)
-      if (view?.roomAgent) roomAgentSettler.note({ ...view, inboundTransport: 'poll' })
+      if (view?.roomAgent) roomAgentSettler.note({ ...view, inboundTransport: 'poll' }, roomAgentReadGeneration)
     }
 
     // If an assistant message has already been written that supersedes our
