@@ -13,6 +13,7 @@ import * as messageText from '../lib/message-text.ts'
 import * as pollCore from '../lib/poll-core.ts'
 import * as meetingCard from '../lib/meeting-card.ts'
 import * as streamApply from '../lib/stream-apply.ts'
+import type { RoomAgentSettler } from '../lib/room-agent-settle.ts'
 import { senderUserIdCandidate, parsePermissionChoice } from '../lib/permission-relay.ts'
 import * as privateTurnModule from '../lib/private-turn.mjs'
 import { privateActor, privateSenderUserId } from '../lib/private-turn.mjs'
@@ -172,7 +173,10 @@ function compile(source: string, name: string, extra: Record<string, unknown> = 
     emailFileSavesFor: async () => undefined,
     streamEmailBudget: null,
     streamHeldEmptyChatByMessageId: new Map(),
-    roomAgentSettler: { has: () => false, note: () => undefined, dropChat: () => undefined },
+    roomAgentSettler: {
+      beginRead: () => ({ liveGeneration: 0, sequence: 0 }),
+      has: () => false, note: () => undefined, dropChat: () => undefined, size: () => 0,
+    } satisfies RoomAgentSettler<streamApply.StreamMessageView>,
     ...extra,
   }
   const operations = new Set<Promise<unknown>>()
