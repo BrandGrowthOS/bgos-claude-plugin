@@ -947,6 +947,80 @@ test('a turn with no result after 30 minutes is failed and its lane stopped, fre
   assert.equal(r.spawned.length, 3)
 })
 
+/** A Stop hook blocking the turn from ending, as the real CLI streams it (2.1.319, a /goal inherited by a fork). */
+const stopHookBlock = (c: FakeChild) => c.frame({
+  type: 'user',
+  message: { role: 'user', content: [{ type: 'text', text: 'Stop hook feedback:\n[the file done.txt contains GOALPROBE]: Not satisfied: done.txt is missing' }] },
+  parent_tool_use_id: null, session_id: FORK_A, isSynthetic: true,
+})
+
+test('a turn a Stop hook keeps blocking (an inherited /goal) is stopped on the third block with a failure that names the cause, never a loop', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  r.manager.turn(turn('102'))
+  r.manager.turn(turn('103'))
+  await r.manager.idle()
+  const c = r.spawned[0]!.child
+  c.init(FORK_A)
+  stopHookBlock(c)
+  stopHookBlock(c)
+  await r.manager.idle()
+  assert.deepEqual(c.killed, [], 'two blocks are tolerated')
+  stopHookBlock(c)
+  await r.manager.idle()
+  assert.deepEqual(c.killed, ['SIGTERM'], 'the third block stops the lane')
+  const replies = r.posts.filter((p) => p.path === 'integrations/threads/reply' && p.body.rootId === '101').map((p) => p.body)
+  assert.equal(replies.length, 1)
+  assert.equal(replies[0]!.final, false)
+  assert.match(String(replies[0]!.text), /Stop hook/)
+  assert.match(String(replies[0]!.text), /\/goal/)
+  assert.doesNotMatch(String(replies[0]!.text), /failed before the agent could answer/)
+  assert.ok(statePosts(r).includes('101:open'))
+  // The CLI's own cap ends the blocked turn with an empty result: it is dropped, never a second failure.
+  stopHookBlock(c)
+  c.frame({ type: 'result', subtype: 'success', is_error: false, result: '' })
+  c.exit(null)
+  await r.manager.idle()
+  assert.equal(r.posts.filter((p) => p.path === 'integrations/threads/reply' && p.body.rootId === '101').length, 1, 'failed once')
+  assert.equal(r.spawned.length, 3, 'its slot went to the waiting thread')
+  assert.equal(r.live(THREAD_TURN_TIMEOUT_MS).filter((t) => r.timers.indexOf(t) === 0).length, 0, 'its turn timer is gone')
+})
+
+test('Stop hook blocks are counted per turn: two in each of two turns never stop the lane', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const c = r.spawned[0]!.child
+  c.init(FORK_A)
+  stopHookBlock(c)
+  stopHookBlock(c)
+  c.result('First answer.')
+  await r.manager.idle()
+  r.manager.turn(turn('101', { mode: 'reply', replyId: '1011', text: 'and then?' }))
+  await r.manager.idle()
+  stopHookBlock(c)
+  stopHookBlock(c)
+  c.result('Second answer.')
+  await r.manager.idle()
+  assert.deepEqual(c.killed, [])
+  assert.deepEqual(r.posts.filter((p) => p.path === 'integrations/threads/reply').map((p) => p.body.text), ['First answer.', 'Second answer.'])
+})
+
+test('a user frame that is not Stop hook feedback (a tool result) never counts as a block', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const c = r.spawned[0]!.child
+  c.init(FORK_A)
+  for (let i = 0; i < 5; i++) {
+    c.frame({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `t${i}`, content: 'Stop hook feedback: quoted in a file' }] } })
+  }
+  c.result('Done.')
+  await r.manager.idle()
+  assert.deepEqual(c.killed, [])
+  assert.deepEqual(r.posts.filter((p) => p.path === 'integrations/threads/reply').map((p) => p.body.text), ['Done.'])
+})
+
 test('a result ends its turn timer', async () => {
   const r = rig()
   r.manager.turn(turn('101'))

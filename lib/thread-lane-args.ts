@@ -31,6 +31,15 @@
  * no Bash and no editing tool at all. assertConfined refuses any lane command
  * without these flags.
  *
+ * NO HOOKS (THREADGOAL): a lane runs no hook at all (`disableAllHooks` in its
+ * `--settings`). The fork inherits the main session's transcript, and with it
+ * an active /goal, which is a session scoped Stop hook the CLI restores on
+ * resume. Measured on CLI 2.1.319 against a fake API: without the switch the
+ * thread's turn was blocked by the inherited goal checker 9 times, then ended
+ * with an empty result ("This turn failed"); with it no check ran and the
+ * thread answered its own message in one turn. The switch holds under
+ * --restricted and also covers every later start, which resumes the fork.
+ *
  * Erasable TypeScript only (no enums, no parameter properties).
  */
 
@@ -92,6 +101,12 @@ export interface ThreadLaneConfinement {
   readDirs?: readonly string[]
   platform?: NodeJS.Platform
 }
+
+/**
+ * A lane's hooks are off (see the file header, NO HOOKS). The same switch as
+ * ASIDE_SETTINGS, and the CLI refuses /goal itself while it is set.
+ */
+export const THREAD_LANE_HOOKS_OFF = Object.freeze({ disableAllHooks: true })
 
 /** How many earlier By the way exchanges ride along with a new question. */
 export const ASIDE_HISTORY_MAX = 20
@@ -177,6 +192,7 @@ export function threadLaneSettings(c: ThreadLaneConfinement): Record<string, unk
         ...(dirs.length > 0 ? { additionalDirectories: dirs } : {}),
       },
       remoteControlAtStartup: false,
+      ...THREAD_LANE_HOOKS_OFF,
     }
   }
   const shell = c.shellSandbox
@@ -201,16 +217,26 @@ export function threadLaneSettings(c: ThreadLaneConfinement): Record<string, unk
     // A lane left alone would open a Remote Control session on the owner's
     // account (spike S2 finding 2, person lanes).
     remoteControlAtStartup: false,
+    // The main session's /goal (a Stop hook) must not follow the fork (NO HOOKS).
+    ...THREAD_LANE_HOOKS_OFF,
   }
 }
 
 /**
  * Throws unless `args` are a confined lane command: --restricted, its own
- * tools, permission mode and settings, and none of the forbidden flags.
+ * tools, permission mode and settings with every hook off, and none of the
+ * forbidden flags.
  */
 export function assertConfined(args: readonly string[]): void {
   for (const flag of ['--restricted', '--tools', '--permission-mode', '--settings']) {
     if (!args.includes(flag)) throw new Error(`refusing a thread lane without ${flag}: it would run with the owner's permissions`)
+  }
+  let settings: unknown = null
+  try {
+    settings = JSON.parse(args[args.indexOf('--settings') + 1] ?? '')
+  } catch {}
+  if ((settings as { disableAllHooks?: unknown } | null)?.disableAllHooks !== true) {
+    throw new Error('refusing a thread lane whose settings let hooks run: it would inherit the main session\'s /goal Stop hook')
   }
   for (const arg of args) {
     if (THREAD_LANE_FORBIDDEN_FLAGS.includes(arg) || arg === 'bypassPermissions') {
@@ -439,7 +465,8 @@ export function threadTurnPrompt(input: {
   return (
     `[You are now working in a thread of this chat titled "${input.title}". ` +
     `It is a separate conversation about this message: ${rootSentence} ` +
-    `Work on it in this folder only.${readOnly} The main conversation continues without you.]\n\n` +
+    `Work on it in this folder only.${readOnly} The main conversation continues without you. ` +
+    'Any goal (/goal) set in the main conversation does not apply in this thread. Answer only this thread\'s message.]\n\n' +
     input.text
   )
 }

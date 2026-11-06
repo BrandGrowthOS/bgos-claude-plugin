@@ -98,6 +98,8 @@ test('a working lane never inherits the owner permissions: --restricted, edits a
       filesystem: { denyWrite: ['/work/atlas/.git/index'] },
     },
     remoteControlAtStartup: false,
+    // THREADGOAL: the main session's /goal Stop hook never follows the fork.
+    disableAllHooks: true,
   })
   const args = threadLaneArgs({ mainSessionId: MAIN, forkSessionId: null, emptyMcpConfigPath: MCP, confinement: WORK })
   assert.ok(args.includes('--restricted'), 'user, project and local settings are ignored, the file tools confined')
@@ -130,6 +132,7 @@ test('a read only lane (folder not a git repository) has no Bash and no editing 
       additionalDirectories: ['/work/atlas'],
     },
     remoteControlAtStartup: false,
+    disableAllHooks: true,
   })
   assert.deepEqual(READ_ONLY_DENIED_TOOLS, ['Bash', 'Edit', 'Write', 'NotebookEdit'])
   // The variadic --mcp-config stays last so it never swallows another flag's value.
@@ -272,7 +275,7 @@ test('a thread start tells the lane it is a separate conversation in its own fol
   const text = threadTurnPrompt({ mode: 'start', text: 'Look at the flaky test.', title: 'Flaky test', rootText: 'CI is red again.' })
   assert.equal(
     text,
-    '[You are now working in a thread of this chat titled "Flaky test". It is a separate conversation about this message: CI is red again. Work on it in this folder only. The main conversation continues without you.]\n\nLook at the flaky test.',
+    '[You are now working in a thread of this chat titled "Flaky test". It is a separate conversation about this message: CI is red again. Work on it in this folder only. The main conversation continues without you. Any goal (/goal) set in the main conversation does not apply in this thread. Answer only this thread\'s message.]\n\nLook at the flaky test.',
   )
 })
 
