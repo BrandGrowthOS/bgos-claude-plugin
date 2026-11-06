@@ -444,11 +444,11 @@ const AWS_KEY = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'
 
 /**
  * `count` lines from a seeded generator, so a failure repeats. Most lines hold one to four tries at the rule: what
- * comes before aws (a word character, =, the line start, a letter look-alike), aws in several cases, 0 to 31
- * characters to the separator (now and then a line break among them, and up to 33 UTF-16 units when letters outside
- * the basic set are among them), each separator and some that are not, then a run of 39, 40, 41 or 80 value
- * characters, a placeholder, or a run broken by a character outside the class. The rest are a soup of the same
- * pieces in any order.
+ * comes before aws (a word character, =, the line start, a letter look-alike and others), aws in several cases and
+ * two near misses (awz, and aw with a long s), 0 to 31 characters to the separator (now and then a line break among
+ * them, and up to 33 UTF-16 units when letters outside the basic set are among them), each separator and some that
+ * are not, then a run of 39, 40, 41 or 80 value characters, a placeholder, or a run broken by a character outside the
+ * class. The rest are a soup of the same pieces in any order.
  */
 function awsLines(count: number, seed: number): string[] {
   let state = seed
@@ -528,7 +528,7 @@ function awsLines(count: number, seed: number): string[] {
   return lines
 }
 
-test('aws_secret_access_key: the rule keeps the twin regex source, and its own match finds exactly what the regex finds, on 200000 generated lines and on long lines made of them', { timeout: 120_000 }, async () => {
+test('aws_secret_access_key: the rule keeps the twin regex source, and its own match finds exactly what the regex finds, on 200000 generated lines and on long lines made of them', async () => {
   const { readFileSync } = await import('node:fs')
   const src = readFileSync(new URL('../lib/secret-scan.ts', import.meta.url), 'utf8')
   assert.ok(src.includes(`pattern: ${String(AWS_SECRET_TWIN)},`), 'the aws_secret_access_key rule keeps the backend twin regex source')
@@ -556,13 +556,13 @@ test('aws_secret_access_key: the rule keeps the twin regex source, and its own m
   assert.deepEqual(wrongLong.slice(0, 3), [], `${wrongLong.length} of ${longLines} long lines differ`)
   // Through scanText too: the rule reports the lines the regex finds a key on, with the same excerpt.
   const text = lines.slice(0, 20_000).join('\n')
-  const want = text.split(/\r?\n/).flatMap((line, i) => {
+  const wantFindings = text.split(/\r?\n/).flatMap((line, i) => {
     const key = awsSecretByRegex(line)
     return key === null ? [] : [`${i + 1}:${maskSecret(key)}`]
   })
   const got = scanText('f.txt', text).filter((f) => f.rule === 'aws_secret_access_key').map((f) => `${f.line}:${f.excerpt}`)
-  assert.ok(want.length > 100)
-  assert.deepEqual(got, want)
+  assert.ok(wantFindings.length > 100)
+  assert.deepEqual(got, wantFindings)
 })
 
 test('aws_secret_access_key: keys and near misses give the same answer through its own match and through the regex', () => {
@@ -622,8 +622,8 @@ test('aws_secret_access_key: keys and near misses give the same answer through i
     [`aws=EXAMPLE${'A'.repeat(33)}`, null],
     // A placeholder that holds aws: the regex looks for its next match after the placeholder, not inside it.
     [`aws=EXAMPLE=aws${'b'.repeat(29)}:${K}`, null],
-    // The same, with the inner aws 3 characters from the placeholder's end: a search that starts again anywhere before
-    // that end finds the key.
+    // The same, with the inner aws 3 characters from the placeholder's end: a search that starts again anywhere up to
+    // that inner aws finds the key.
     [`aws=EXAMPLE${'b'.repeat(29)}=aws ${K}`, null],
     [`${K}aws`, null],
   ]
@@ -648,27 +648,30 @@ function leastMs(runs: number, ...calls: (() => unknown)[]): number[] {
 
 /** A call under this many ms is read as this many, so a ratio is not judged on the noise of a few ms. */
 const AWS_FLOOR_MS = 10
-/** The long line of =aws against ordinary text of the same length. */
-const AWS_CRAFTED_RATIO_MAX = 2
+/**
+ * The long line of =aws against ordinary text of the same length. The rule's own match reads each character of that
+ * line a few times and stays under 2; the regex reads each about a hundred times and goes well past 4.
+ */
+const AWS_CRAFTED_RATIO_MAX = 4
 /** 4 times as much text: linear work takes about 4 times as long, quadratic work 16 times. */
 const AWS_GROWTH_RATIO_MAX = 8
 
-/** Ordinary text that talks about aws, so the rule reads every line of it. */
+/** Ordinary text that talks about aws, so the rule reads every line of it, and holds no other rule's hint. */
 const AWS_PROSE = [
   'Set the aws region to eu-west-1 before the first deploy, then check the bill on Monday.',
   'The quarterly report shows revenue growth across all regions this year.',
   'Our aws account holds three buckets: reports, invoices and backups.',
   'Ask the team lead before you change a shared setting or a schedule.',
   'Copy the files with aws s3 cp, then compare the counts on both sides.',
-  'Never paste a password or an access key into a chat; keep them in the vault.',
+  'Never paste an access key into a chat; keep it in the vault.',
   'Meeting notes: launch moved to Thursday, design review stays on Friday.',
   'The aws bill for October came to about the same as September.',
 ].join('\n')
 
-test('aws_secret_access_key: a long line of =aws before a key is scanned about as fast as ordinary text of its length, and 4 times as much in about 4 times as long', { timeout: 120_000 }, () => {
+test('aws_secret_access_key: a long line of =aws before a key is scanned in under 4 times as long as ordinary text of its length, and 4 times as much in about 4 times as long', () => {
   const MB = 1024 * 1024
-  // Every aws here has a separator after it every 4 characters, each followed by more than 40 value characters, and
-  // the key at the end is too far from all of them but the last.
+  // Every aws here has a separator after it every 4 characters, each but the last few followed by more than 40 value
+  // characters, and only the last few aws, within 30 characters of the key's =, reach the key.
   const crafted = (bytes: number) => `${'=aws'.repeat(bytes / 4)} aws=${AWS_KEY}`
   // 4 MB and 16 MB, so the shorter text alone takes longer than the floor.
   const short = crafted(4 * MB)

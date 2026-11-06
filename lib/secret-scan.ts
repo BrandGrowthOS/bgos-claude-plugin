@@ -41,8 +41,10 @@ interface SecretRule {
   pattern: RegExp
   /**
    * When set, finds what `pattern` finds (the same first match) in linear time; `pattern` stays the rule as both twins
-   * write it (email files review round 7: the jwt regex is quadratic on a long run of base64url characters). On a rule
-   * that allows placeholders it returns what the walk over every match returns: the first value that is not one.
+   * write it (email files review round 7: the jwt regex is quadratic on a long run of base64url characters).
+   * It returns the rule's value: the valueGroup capture of the first match or, on a rule that allows placeholders, of
+   * the first match whose value is not a placeholder, in the order matchAll finds them (each search starts where the
+   * last match ended).
    */
   match?: (line: string) => string | null
   /**
@@ -317,9 +319,9 @@ function isLineBreakCode(code: number): boolean {
 
 /**
  * The aws_secret_access_key rule's value on one line, the same one the scan finds by walking every match of the
- * rule's regex and keeping the first value that is not a placeholder, in linear time. The regex reads its window
- * again at each separator after each aws, and up to 40 value characters each time, so on a line of =aws repeated it
- * reads each character about a hundred times. This reads each character a few times at most.
+ * rule's regex and keeping the first value that is not a placeholder, in linear time. For each aws the regex reads up
+ * to 31 characters after it, and after each separator among them 40 value characters, so on a line of =aws repeated
+ * it reads each character about a hundred times. This reads each character a few times at most.
  *
  * The value is 40 characters of [A-Za-z0-9/+=] with no such character after it, so it ends where a run of them ends,
  * and its separator is the character 41 before that end. Each run of 40 or more gives that one spot, which counts
@@ -342,6 +344,7 @@ export function awsSecretMatch(line: string): string | null {
     // \b: the character before aws is not a letter, a digit or _.
     if (at > 0 && isWordCode(line.charCodeAt(at - 1))) continue
     const gapStart = at + 3
+    // Move to the first separator spot at or after the gap's start, or to n when there is none, reading each run once.
     while (separatorAt < gapStart) {
       separatorAt = n
       while (runFrom < n) {
