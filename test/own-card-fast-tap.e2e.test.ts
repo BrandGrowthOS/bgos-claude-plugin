@@ -61,6 +61,26 @@ async function waitQuietly(check: () => boolean, ms: number): Promise<void> {
   while (!check() && Date.now() < until) await sleep(25)
 }
 
+async function fixtureDeadline<T>(work: Promise<T>, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`fixture timed out waiting for ${what}`)), 25_000)
+  })
+  try { return await Promise.race([work, deadline]) }
+  finally { clearTimeout(timer!) }
+}
+
+async function startHeldRead(backend: Backend, entered: () => boolean): Promise<void> {
+  const until = Date.now() + 20_000
+  while (!entered()) {
+    if (Date.now() > until) throw new Error('fixture could not start the held read')
+    // A reconnect catch-up can coalesce with read A before A has finished.
+    // Keep triggering the normal catch-up path until read B really enters.
+    backend.reconnect()
+    await waitQuietly(entered, 2_000)
+  }
+}
+
 interface StoredOption {
   id: number
   text: string
@@ -118,6 +138,7 @@ interface Backend {
   /** The next message id, from the same sequence the stored posts use. */
   allocateId: () => number
   connected: () => number
+  reconnect: () => void
   emit: (event: string, payload: Record<string, unknown>) => void
   close: () => Promise<void>
 }
@@ -181,6 +202,7 @@ async function startBackend(): Promise<Backend> {
     holdErrors,
     allocateId: () => nextMessageId++,
     connected: () => 0,
+    reconnect: () => {},
     emit: () => {},
     close: async () => {},
   }
@@ -303,12 +325,12 @@ async function startBackend(): Promise<Backend> {
     }
     if (req.method === 'POST' && path === 'send-message') {
       const row = store('send-message', body)
-      await backend.holdPost?.(row)
+      if (backend.holdPost) await fixtureDeadline(backend.holdPost(row), 'send-message POST release')
       return json({ message: { id: row.id, chatId: row.chatId, text: row.text } })
     }
     if (req.method === 'POST' && path === 'messages') {
       const row = store('messages', body)
-      await backend.holdPost?.(row)
+      if (backend.holdPost) await fixtureDeadline(backend.holdPost(row), 'messages POST release')
       return json({ id: row.id, chatId: row.chatId, text: row.text })
     }
     return json({})
@@ -324,10 +346,16 @@ async function startBackend(): Promise<Backend> {
   await new Promise<void>((resolve) => http.listen(0, '127.0.0.1', resolve))
   backend.url = `http://127.0.0.1:${(http.address() as AddressInfo).port}/api/v1`
   backend.connected = () => io.of('/').sockets.size
+  backend.reconnect = () => {
+    for (const socket of io.of('/').sockets.values()) socket.conn.close()
+  }
   backend.emit = (event, payload) => {
     io.emit(event, payload)
   }
-  backend.close = () => new Promise<void>((resolve) => io.close(() => resolve()))
+  backend.close = () => new Promise<void>((resolve) => {
+    io.close(() => resolve())
+    http.closeAllConnections()
+  })
   return backend
 }
 
@@ -432,6 +460,7 @@ async function startDaemon(rig: Rig): Promise<Daemon> {
       HOAI_BROWSER_HOST: 'off',
       BGOS_BOOT_HELLO: 'off',
       BGOS_AUTO_UPDATE: 'disabled',
+      TMPDIR: rig.root,
     },
     stderr: 'pipe',
   })
@@ -694,7 +723,9 @@ describe('a tap on a card this daemon posted is heard when it lands before the n
           releasePost()
           await waitFor(() => w.daemon.stderr.some((l) => /\/login: sign-in card \d+ posted to chat 501/.test(l)), 'POST to return while delta B is in flight')
         })
-        await new Promise<void>((resolve) => { releasePost = resolve })
+        const postRelease = new Promise<void>((resolve) => { releasePost = resolve })
+        await startHeldRead(w.backend, () => deltaFloor >= 0)
+        await postRelease
       }
       ownerSendsLogin(w.backend)
       await waitQuietly(() => claudeCalls(w.rig).includes('auth login --claudeai'), 25_000)
@@ -743,4 +774,107 @@ describe('a tap on a card this daemon posted is heard when it lands before the n
       await w.end()
     }
   })
+})
+
+const FAST_CARD_TEXT = 'Review the sample change'
+type FastCardKind = 'reply' | 'plan'
+
+function isFastCard(body: Record<string, unknown>): boolean {
+  return String(body.text ?? '').includes(FAST_CARD_TEXT)
+}
+
+async function postFastCard(w: World, kind: FastCardKind): Promise<void> {
+  const result = await w.daemon.client.callTool(kind === 'reply' ? {
+    name: 'reply',
+    arguments: { chat_id: String(MAIN), text: FAST_CARD_TEXT, buttons: [{ label: 'Continue', value: 'continue' }] },
+  } : {
+    name: 'propose_plan',
+    arguments: { chat_id: String(MAIN), title: FAST_CARD_TEXT, steps: [{ text: 'Update the sample' }], door: 'decided' },
+  })
+  assert.notEqual(result.isError, true, JSON.stringify(result.content))
+}
+
+async function assertFastCardDelivered(w: World, kind: FastCardKind): Promise<number> {
+  const post = w.backend.posts.find((p) => isFastCard(p.body))!
+  assert.ok(post, 'the card was posted')
+  await waitQuietly(() => w.daemon.cards.some((c) => c.messageId === post.id), 12_000)
+  const delivered = w.daemon.cards.filter((c) => c.messageId === post.id)
+  assert.equal(delivered.length, 1, `the ${kind} tap reaches the model exactly once\n${evidence(w)}`)
+  assert.match(delivered[0].content, kind === 'plan' ? /Go ahead/ : /Clicked: Continue/)
+  if (kind === 'plan') assert.match(delivered[0].content, /proceed|approved/i, 'the plan directive reaches the model')
+  assert.deepEqual(w.backend.anchoredReads.filter((r) => r.id === post.id), [{ id: post.id, conditional: false }], 'one unconditional read by card ID')
+  await forceReads(w, 2)
+  assert.equal(w.daemon.cards.filter((c) => c.messageId === post.id).length, 1, 'later history reads do not replay the tap')
+  return post.id
+}
+
+describe('reply and plan cards recover fast taps', { concurrency: 1 }, () => {
+  for (const kind of ['reply', 'plan'] as const) {
+    test(`${kind}: a tap between history reads is delivered by the direct card read`, OPTS, async () => {
+      const w = await world()
+      try {
+        w.backend.tapOnPost = (body) => isFastCard(body) ? 0 : null
+        await postFastCard(w, kind)
+        await assertFastCardDelivered(w, kind)
+      } finally { await w.end() }
+    })
+
+    test(`${kind}: delayed POST after answered history and ETag 304 still delivers once`, OPTS, async () => {
+      const w = await world()
+      try {
+        await postOpenCard(w)
+        w.backend.honorEtags = true
+        w.backend.tapOnPost = (body) => isFastCard(body) ? 0 : null
+        let completed = false
+        w.backend.holdPost = async (row) => {
+          if (!row.text.includes(FAST_CARD_TEXT)) return
+          const reads = w.backend.pollRequests.length
+          await waitFor(() => w.backend.pollRequests.length > reads, 'answered history before POST returns')
+          await waitFor(() => w.backend.pollRequests.slice(reads).some((r) => r.status === 304), 'cached history before POST returns')
+          completed = true
+        }
+        await postFastCard(w, kind)
+        assert.equal(completed, true)
+        await assertFastCardDelivered(w, kind)
+      } finally { await w.end() }
+    })
+
+    test(`${kind}: an in-flight delta cannot erase a posted card after its direct read fails`, OPTS, async () => {
+      const w = await world()
+      try {
+        const before = w.backend.readsOf(MAIN)
+        await postOpenCard(w)
+        await waitFor(() => w.backend.readsOf(MAIN) > before, 'the unrelated card baseline')
+        w.backend.rows.find((r) => r.text === OPEN_CARD_TEXT)!.options = []
+        w.backend.honorEtags = true
+        w.backend.tapOnPost = (body) => isFastCard(body) ? 0 : null
+        w.backend.failAnchoredReads = 1
+        let deltaFloor = -1
+        let releasePost!: () => void
+        w.backend.holdPost = async (row) => {
+          if (!row.text.includes(FAST_CARD_TEXT)) return
+          const reads = w.backend.pollRequests.length
+          await waitFor(() => w.backend.pollRequests.slice(reads).some((r) => r.afterId === 0 && r.status === 200), 'answered read A before POST returns')
+          w.backend.rows.push(historyRow(w.backend.allocateId(), 'assistant', 'A newer sample row'))
+          w.backend.holdNextRead(MAIN, async (afterId) => {
+            deltaFloor = afterId
+            releasePost()
+            await waitFor(() => w.backend.failAnchoredReads === 0, 'the direct read to fail while delta B is in flight')
+          })
+          const postRelease = new Promise<void>((resolve) => { releasePost = resolve })
+          // Retiring the unrelated card removes its fast scope. A local
+          // reconnect starts read B without waiting for the global sweep.
+          await startHeldRead(w.backend, () => deltaFloor >= 0)
+          await postRelease
+        }
+        await postFastCard(w, kind)
+        const id = await assertFastCardDelivered(w, kind)
+        assert.equal(deltaFloor, id, 'delta B explicitly excluded this card')
+        assert.deepEqual(w.backend.holdErrors, [])
+        const deltaRead = w.backend.pollRequests.findIndex((r) => r.afterId === id)
+        assert.ok(deltaRead >= 0, 'the excluding delta response completed')
+        assert.ok(w.backend.pollRequests.slice(deltaRead + 1).some((r) => r.afterId === 0 && !r.conditional && r.status === 200), 'after delta B, a fresh full read C bypassed the cached full body and recovered the answer')
+      } finally { await w.end() }
+    })
+  }
 })

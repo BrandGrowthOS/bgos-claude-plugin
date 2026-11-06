@@ -1693,7 +1693,7 @@ test('both click intakes hand a tap to the sign-in card before the plan half (sh
   const taps = [...src.matchAll(/loginController\.button\(\{/g)].map((m) => m.index ?? -1)
   assert.equal(taps.length, 3, `poll, stream and the dedicated sign-in gate; ${SHAPE}`)
   const planCalls = [...src.matchAll(/const planAnswer = applyPlanAnswer\(\{/g)].map((m) => m.index ?? -1)
-  assert.equal(planCalls.length, 3, 'poll, stream and the boot sweep')
+  assert.equal(planCalls.length, 4, 'posted-card recovery, poll, stream and the boot sweep')
   // Each intake's login check precedes its own plan half.
   for (const tap of taps.filter((at) => at > src.indexOf('async function pollChat('))) {
     assert.ok(planCalls.some((p) => p > tap && p - tap < 2500), SHAPE)

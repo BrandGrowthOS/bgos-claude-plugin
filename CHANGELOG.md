@@ -6,6 +6,12 @@ Notable changes to the HOAI Claude Code plugin.
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.85.7 (2026-11-06)
+
+**Reply buttons and plan cards tapped as soon as they appear are heard.** Each posted card gets one immediate, unconditional read by id. Pending cards survive overlapping history reads, and a failed direct request is recovered by fresh full history. Bounded card receipts deduplicate direct, history and stream delivery. The message's own lane stamp is checked before claiming an answer. Plan requester binding and private-turn rules are preserved.
+
+- Tests: `test/own-card-fast-tap.e2e.test.ts` and `test/posted-card-answer.test.ts`.
+
 ## 0.85.6 (2026-11-06)
 
 **A sign-in method tapped as soon as its card appears is heard.** The sign-in method card gets one immediate read by id. While it is open, fresh full history reads recover a fast tap even after a failed direct request or an older cached response. A single bounded sign-in record deduplicates direct, history and stream delivery. Missing cards retire on an empty direct result, cancellation or the method deadline.

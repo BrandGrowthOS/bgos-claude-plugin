@@ -41,6 +41,7 @@ function rig(read: (path: string, opts: unknown) => Promise<unknown>, post = asy
   const scope = {
     bgosGet: read, bgosPost: post, USER_ID: 'owner', ASSISTANT_ID: '42', LOGIN_METHOD_WINDOW_MS,
     chatUnansweredButtons: open, announcedClickIds: announced, FORWARD_CACHE_MAX: 500,
+    postedButtonCards: new Map(),
     recentButtonPrompts: prompts,
     updateDrainMode: false, lockHeld: true, humanMessageEdits: { isChatDeleted: () => flags.deleted },
     ownerLaneVerdict, ownerAnnounceRefused, lanesOnForThisAgent: false,
@@ -54,7 +55,7 @@ function rig(read: (path: string, opts: unknown) => Promise<unknown>, post = asy
     PERMISSION_CLICK_RE: /^ea:/,
   }
   const js = ts.transpileModule([
-    declaration('rememberAnnouncedClick'), declaration('settleLoginMethodCard'), declaration('pendingLoginMethodCard'),
+    declaration('rememberAnnouncedClick'), declaration('settlePostedButtonCard'), declaration('settleLoginMethodCard'), declaration('pendingLoginMethodCard'),
     declaration('deliverLoginMethodAnswer'), declaration('announceCardAnswer'),
     declaration('readOwnPostedCard'), declaration('applyStreamButtonsAnswered'), declaration('sendLoginText'),
   ].join('\n'), { compilerOptions: { target: ts.ScriptTarget.ESNext } }).outputText

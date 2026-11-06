@@ -431,6 +431,7 @@ import {
   rememberReturnedMessageId,
   fastScopeChatIds,
   activeButtonPromptChatIds,
+  BUTTON_PROMPT_FAST_WINDOW_MS,
   type ButtonPromptRecord,
   planPollCycle,
   selectFirstPollBacklogIds,
@@ -6964,8 +6965,8 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
         // "any send supersedes" would have emptied the window in minutes
         // (Ares, reviewing #129).
         if (options.length > 0 && typeof msgId === 'number') {
-          recentButtonPrompts.set(String(resolvedChatId), { messageId: msgId, sentAtMs: Date.now() })
           postedButtons.note(msgId, options, safeText)
+          notePostedButtonCard(String(resolvedChatId), msgId)
         } else if (
           reply_to_id !== undefined &&
           Number(reply_to_id) === recentButtonPrompts.get(String(resolvedChatId))?.messageId
@@ -7131,6 +7132,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
         try {
           await bgosPatch(`messages/${payload.supersedes}`, retireBody)
           postedButtons.forget(payload.supersedes)
+          settlePostedButtonCard(payload.supersedes)
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err)
           return {
@@ -7158,7 +7160,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
           // next revision and no way to tie the answer back to this plan.
           log(`propose_plan: the messages route returned no id (chat ${planChatId})`)
         } else {
-          openPlansByChat.set(planChatId, {
+          if (!announcedClickIds.has(cardMessageId)) openPlansByChat.set(planChatId, {
             chatId: planChatId,
             messageId: cardMessageId,
             planId: payload.plan_id,
@@ -7172,6 +7174,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
             requesterUserId: lastInboundUserByChat.get(planChatId) ?? USER_ID,
           })
           postedButtons.note(cardMessageId, bodyBuild.body.options, bodyBuild.body.text)
+          notePostedButtonCard(planChatId, cardMessageId, PENDING_PLAN_FAST_MAX_MS)
           // The CLI writes this tool result verbatim into the transcript, so
           // the minted id is proof of which transcript is ours, exactly as a
           // reply's is.
@@ -10085,6 +10088,10 @@ interface LoginMethodCard {
 }
 let loginMethodCard: LoginMethodCard | null = null
 
+// Reply and plan receipts outlive individual history snapshots and unrelated
+// clicks. Bound them independently of the shared cross-transport click ledger.
+const postedButtonCards = new Map<number, { chatId: string; settled: boolean; fresh: boolean; recoverUntilMs: number }>()
+
 /**
  * Latest inline-button prompt this daemon sent, per chat, so the chat earns
  * 2s polling until the tap lands, the window lapses, or the daemon sends
@@ -11878,8 +11885,105 @@ async function readOwnPostedCard(chatId: string, messageId: number, card: LoginM
   }
 }
 
+/** Record a reply or plan card only after its POST has supplied its identity. */
+function notePostedButtonCard(chatId: string, messageId: number, recoveryWindowMs = BUTTON_PROMPT_FAST_WINDOW_MS): void {
+  if (postedButtonCards.has(messageId)) return
+  postedButtonCards.set(messageId, { chatId, settled: announcedClickIds.has(messageId), fresh: false, recoverUntilMs: Date.now() + recoveryWindowMs })
+  if (postedButtonCards.size > FORWARD_CACHE_MAX) {
+    const oldest = postedButtonCards.keys().next().value
+    if (oldest !== undefined) postedButtonCards.delete(oldest)
+  }
+  if (postedButtonCards.get(messageId)!.settled) return
+  recentButtonPrompts.set(chatId, { messageId, sentAtMs: Date.now() })
+  void readPostedButtonCard(chatId, messageId)
+}
+
+function settlePostedButtonCard(messageId: number): void {
+  const card = postedButtonCards.get(messageId)
+  if (!card) return
+  card.settled = true
+  chatUnansweredButtons.get(card.chatId)?.delete(messageId)
+  if (recentButtonPrompts.get(card.chatId)?.messageId === messageId) recentButtonPrompts.delete(card.chatId)
+}
+
+/** A delta or cached history response cannot erase a card noted during it. */
+function hasPendingPostedButtonCard(chatId: string, freshOnly = false): boolean {
+  if (humanMessageEdits.isChatDeleted(chatId)) return false
+  const now = Date.now()
+  for (const card of postedButtonCards.values()) {
+    if (card.chatId === chatId && !card.settled && now < card.recoverUntilMs && (!freshOnly || card.fresh)) return true
+  }
+  return false
+}
+
+/** One unconditional, ID-bounded read, using the same request as sign-in. */
+async function readPostedButtonCard(chatId: string, messageId: number): Promise<void> {
+  if (updateDrainMode || !lockHeld || humanMessageEdits.isChatDeleted(chatId)) return
+  try {
+    const raw = await bgosGet(
+      `chats/${encodeURIComponent(chatId)}/messages?userId=${USER_ID}&afterId=${messageId - 1}&beforeId=${messageId + 1}&limit=1`,
+      { conditional: false },
+    ) as ChatHistoryResponse
+    if (raw.messages?.length === 0) { settlePostedButtonCard(messageId); return }
+    const row = raw.messages?.find((entry) => entry.message.id === messageId && String(entry.message.chatId) === chatId)
+    if (row) announcePostedButtonAnswer(chatId, row)
+  } catch (err) {
+    // Keep the card pending so the next history read bypasses validators.
+    const card = postedButtonCards.get(messageId)
+    if (card) card.fresh = true
+    log(`Own button card ${messageId} answer read failed: ${err}`)
+  }
+}
+
+/** Direct and history reads share the same claim and nested message lane check. */
+function announcePostedButtonAnswer(chatId: string, m: ChatMessage): void {
+  const mm = m.message
+  const card = postedButtonCards.get(mm.id)
+  if (!card || card.chatId !== chatId || String(mm.chatId) !== chatId || card.settled || mm.sender !== 'assistant') return
+  if (updateDrainMode || !lockHeld || humanMessageEdits.isChatDeleted(chatId)) return
+  const lane = ownerLaneVerdict(mm)
+  if (!lane.deliver || ownerAnnounceRefused({ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership.isOthers(chatId) })) {
+    noteLaneMisroute('card answer', mm.id, lane.deliver ? 'a recipient chat' : lane.stamp)
+    return
+  }
+  if (!mm.answeredAt) {
+    if (!(m.messageOptions ?? []).length) settlePostedButtonCard(mm.id)
+    return
+  }
+  if (announcedClickIds.has(mm.id)) { settlePostedButtonCard(mm.id); return }
+  const payload = mm.answerPayload ?? {}
+  const callbackData = payload.callbackData ?? payload.callback_data ?? ''
+  const buttonText = payload.buttonText ?? payload.button_text ?? ''
+  const customText = payload.customText ?? payload.custom_text ?? undefined
+  // Claim synchronously before plan settlement or notification can yield.
+  rememberAnnouncedClick(mm.id)
+  const planAnswer = applyPlanAnswer({
+    chatId, messageId: mm.id, callbackData, customText,
+    eventMetaPayload: mm.eventMeta?.payload,
+    clickerUserId: senderUserIdCandidate(payload), via: 'poll',
+  })
+  if (planAnswer.refused) return
+  const agentCallbackData = unescapeAgentButtonValue(callbackData)
+  const kind = agentCallbackData === '__skip__' ? 'Skipped' : agentCallbackData === '__custom__' ? 'Custom reply' : 'Clicked'
+  const summary = planAnswer.summary ?? (customText ? `${kind}: "${customText}"` : `${kind}: ${buttonText || agentCallbackData}`)
+  const contentLines = [`[button_clicked] ${summary}`, `(in reply to message_id=${mm.id})`]
+  if (planAnswer.directive) contentLines.push(planAnswer.directive)
+  if (mm.text?.trim()) contentLines.push(`Original question: ${mm.text.length > 200 ? mm.text.slice(0, 197) + '...' : mm.text}`)
+  const postedButton = postedButtons.posted(mm.id, callbackData, buttonText, mm.text)
+  log(`button_clicked ANNOUNCED via POLL for message ${mm.id} in chat ${chatId} (answeredAt=${mm.answeredAt})`)
+  void trackMessageOperation(() => mcp.notification({
+    method: 'notifications/claude/channel',
+    params: {
+      content: privateTapCard({ tracker: privateTurns, lane: 'poll', ownerUserId: USER_ID, chatId: String(chatId), messageId: mm.id, tapperUserId: readTapperUserId(payload), answeredAt: mm.answeredAt, receivedAt: Date.now(), callbackData: agentCallbackData, customText: customText, posted: postedButton, content: contentLines.join('\n') }),
+      meta: buildButtonClickedMeta({ chatId, messageId: mm.id, callbackData: planAnswer.callbackData ?? agentCallbackData, buttonText, customText, tapperUserId: readTapperUserId(payload), assistantId: ASSISTANT_ID, ts: mm.answeredAt }),
+    },
+  })).catch((err) => log(`Failed to deliver button_clicked to Claude: ${err}`))
+}
+
 async function pollChat(chatId: string): Promise<void> {
   const loginCard = pendingLoginMethodCard(chatId)
+  const pendingButtonCard = hasPendingPostedButtonCard(chatId)
+  const freshButtonCard = hasPendingPostedButtonCard(chatId, true)
   if (updateDrainMode || humanMessageEdits.isChatDeleted(chatId)) return
   // A daemon that has lost the pairing lock reads no chat. The tick stands
   // down at its top, but the email download keepalive refreshes the lock too,
@@ -11924,7 +12028,7 @@ async function pollChat(chatId: string): Promise<void> {
     userId: USER_ID,
     lastSeen,
     unansweredButtonCount: chatUnansweredButtons.get(chatId)?.size ?? 0,
-    forceFull: isBootPoll || oldestHuman !== undefined || loginCard !== null,
+    forceFull: isBootPoll || oldestHuman !== undefined || loginCard !== null || pendingButtonCard,
   })
   // The email cursor holds this batch took (emailFileSavesFor), let go when it ends.
   const pollEmailReleases: Array<() => void> = []
@@ -11932,7 +12036,7 @@ async function pollChat(chatId: string): Promise<void> {
     const raw = await bgosGet(req.path, {
       cacheKey: req.cacheKey,
       callerAssistantId: ASSISTANT_ID,
-      ...(loginCard ? { conditional: false } : {}),
+      ...(loginCard || freshButtonCard ? { conditional: false } : {}),
     })
     // 304: byte-identical to a response we already fully processed.
     if (isNotModified(raw)) {
@@ -12237,6 +12341,7 @@ async function pollChat(chatId: string): Promise<void> {
     // The sign-in slot survives snapshots started before its POST response.
     // Missing history rows do not settle it: history may exclude the card.
     for (const m of data.messages) {
+      announcePostedButtonAnswer(chatId, m)
       const card = pendingLoginMethodCard(chatId)
       if (!card || card.messageId !== m.message.id || String(m.message.chatId) !== chatId) continue
       if (m.message.answeredAt) announceCardAnswer(chatId, m)
@@ -12262,7 +12367,11 @@ async function pollChat(chatId: string): Promise<void> {
       isFirstPoll,
       trackedAsks: askTracker.trackedMessageIds(),
     })
-    const announced = new Set(announce)
+    const announced = new Set(announce.filter((id) => !postedButtonCards.has(id) && !announcedClickIds.has(id)))
+    // Open cards retain the ordinary history baseline after recovery expires
+    // or the bounded receipt is evicted. Settled cards cannot be reopened by
+    // an older unanswered snapshot.
+    for (const [id, card] of postedButtonCards) if (card.settled) nextUnanswered.delete(id)
     // The second lock (person lanes) for taps: once lanes run for this agent,
     // a tap in a share recipient's chat is that person's turn, never the
     // owner's (lib/lane-core.mjs ownerAnnounceRefused).
@@ -13089,6 +13198,7 @@ const FORWARDED_IDS_MAX = 100_000
 const announcedClickIds = new Set<number>()
 
 function rememberAnnouncedClick(id: number): void {
+  settlePostedButtonCard(id)
   if (announcedClickIds.has(id)) return
   announcedClickIds.add(id)
   if (announcedClickIds.size > FORWARD_CACHE_MAX) {
@@ -16313,7 +16423,7 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
   const decision = decideButtonsAnswered({
     messageType: view.messageType,
     callbackData: answer.callbackData,
-    alreadyAnnounced: announcedClickIds.has(view.messageId),
+    alreadyAnnounced: announcedClickIds.has(view.messageId) || postedButtonCards.get(view.messageId)?.settled === true,
     // Both vocabularies: a new ea: click, and a perm: click from a prompt an
     // older build of this daemon left on screen across an update.
     permissionRe: PERMISSION_CLICK_RE,
