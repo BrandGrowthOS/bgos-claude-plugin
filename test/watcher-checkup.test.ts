@@ -775,6 +775,96 @@ test('a confirmed repair pairs only the revoked agent, reloads it safely, and re
   for (const secret of [PAIR_CODE, 'replacement-secret-912']) assert.ok(!JSON.stringify([...run.logs, ...progress]).includes(secret))
 })
 
+function keepalivePairRig() {
+  const markerPath = `${STATE_DIR}/keepalive.json`
+  const marker = (claudePid: number) => JSON.stringify({ kind: 'keepalive', pid: 33108, claudePid, capabilities: ['relaunch'], startedAt: new Date(T0 - 5 * MIN).toISOString() })
+  const fs = agentFs({
+    [AGENT_CREDS]: pairingCredentials(),
+    [`${PLUGIN_STATE}/agent-state.json`]: agentState(),
+    [`${ROOT}/bin/bgos-pair.mjs`]: '// pair',
+    [markerPath]: marker(5912),
+  })
+  fs.rm(`${STATE_DIR}/supervisor.json`)
+  const job = checkupJob()
+  Object.assign(job.jobs['chk-1']!, { pairingRepair: { confirmed: true, assistantId: '912', pairingId: 3, pairCode: PAIR_CODE } })
+  const backend = pairingBackend(job, { status: 401, body: { code: 'pairing_revoked' } })
+  const clock = fakeClock()
+  daemonAnswersProbe(fs, clock)
+  let currentPid = 5912
+  const run = rig(fs, backend, clock, '', { alive: [33108, 5912, 6912, 4912], execSync: (file: string, args: string[]) => {
+    if (file === 'ps' && args[0] === '-A') return { code: 0, stdout: `33108 1 501 01:00:00\n${currentPid} 33108 501 10:00\n` }
+    if (file === 'ps' && args[1] === 'comm=') return { code: 0, stdout: Number(args[3]) === currentPid ? 'claude\n' : 'sleep\n' }
+    return { code: 1, stdout: '' }
+  } })
+  const exec = run.deps.exec
+  run.deps.exec = async (file: string, args: string[]) => {
+    if (args[0] === `${ROOT}/bin/bgos-pair.mjs`) {
+      fs.writeFile(AGENT_CREDS, pairingCredentials('replacement-secret-912'))
+      return { code: 0, stdout: '', stderr: '', error: null, timedOut: false }
+    }
+    if (file === 'ps') return { code: 0, stdout: [
+      psLine(33108, 1, 'bash keepalive.sh'),
+      psLine(currentPid, 33108, `claude --resume ${SID}`),
+      psLine(4912, currentPid, `node ${ROOT}/server.ts`),
+      ...(currentPid === 5912 ? [] : [psLine(5912, 1, 'sleep 1000')]),
+    ].join('\n'), stderr: '', error: null, timedOut: false }
+    return exec(file, args)
+  }
+  const replaceClaude = (busy = false) => {
+    currentPid = 6912
+    fs.writeFile(markerPath, marker(currentPid))
+    fs.writeFile(`${PLUGIN_STATE}/agent-state.json`, agentState({ claudePid: currentPid, turnInFlight: busy }))
+  }
+  return { fs, backend, run, replaceClaude }
+}
+
+test('a keepalive replacement during pairing refreshes both the safety row and the restart PID', async () => {
+  for (const busy of [false, true]) {
+    const { fs, backend, run, replaceClaude } = keepalivePairRig()
+    const exec = run.deps.exec
+    run.deps.exec = async (file: string, args: string[]) => {
+      const result = await exec(file, args)
+      if (args[0] === `${ROOT}/bin/bgos-pair.mjs`) replaceClaude(busy)
+      return result
+    }
+    await runWatcher(run.deps as any)
+    assert.deepEqual(run.kills, busy ? [] : [[6912, 'SIGTERM']], 'the reused PID 5912 must never be signalled')
+    assert.deepEqual(run.spawns, [])
+    assert.equal(restartRequested(fs), false)
+    const restart = terminalOf(backend).actions.find((a: any) => a.did === 'restart_agent')
+    assert.equal(restart.outcome, busy ? 'skipped' : 'fixed')
+    if (busy) {
+      assert.match(restart.detail, /turn_in_flight/)
+      assert.equal(keepAliveRecord(fs), null)
+    } else assert.equal(terminalOf(backend).state, 'done')
+  }
+})
+
+test('a keepalive PID changed during the final safety observation holds the restart without spending its budget', async () => {
+  for (const staleMarker of [false, true]) {
+    const { fs, backend, run, replaceClaude } = keepalivePairRig()
+    const marker = fs.readFile(`${STATE_DIR}/keepalive.json`)!
+    const exec = run.deps.exec
+    let observations = 0
+    run.deps.exec = async (file: string, args: string[]) => {
+      const result = await exec(file, args)
+      if (file === 'ps' && ++observations === 2) {
+        replaceClaude()
+        if (staleMarker) fs.writeFile(`${STATE_DIR}/keepalive.json`, marker)
+      }
+      return result
+    }
+    await runWatcher(run.deps as any)
+    assert.deepEqual(run.kills, [])
+    assert.deepEqual(run.spawns, [])
+    assert.equal(restartRequested(fs), false)
+    assert.equal(keepAliveRecord(fs), null)
+    const restart = terminalOf(backend).actions.find((a: any) => a.did === 'restart_agent')
+    assert.equal(restart.outcome, 'skipped')
+    assert.match(restart.detail, /restart_target_changed/)
+  }
+})
+
 test('confirmation is bound to this agent and pairing, and cannot authorize a repair without a revoked finding', async () => {
   for (const repair of [
     undefined,

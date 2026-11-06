@@ -1,2 +1,0 @@
-> claude-channel-bgos@0.85.6 build
-> tsc --noEmit

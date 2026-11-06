@@ -14,7 +14,7 @@ An ordinary owner Check up asks for one agent:
 
 `op: "checkup"` is accepted too. Empty, multiple-agent and malformed target lists are refused. Duplicate references to the same valid agent remain accepted. A checkup never falls through to machine-wide reconcile.
 
-The watcher observes the target, calls `checkupPass`, runs its planned repairs and sends step progress plus findings and actions to the machine-RPC progress endpoint. Stopped-daemon and stale-plugin repairs retain the existing safety table, restart ladder and shared restart budget. The watcher observes safety again after file work and progress, before restarting. A failed or unrecorded restart budget prevents the act. A thrown file repair is reported as a failed step and holds its dependent reload.
+The watcher observes the target, calls `checkupPass`, runs its planned repairs and sends step progress plus findings and actions to the machine-RPC progress endpoint. Stopped-daemon and stale-plugin repairs retain the existing safety table, restart ladder and shared restart budget. After file work and progress, the watcher refreshes the inventory row and observes safety for that row. It verifies the process identity again after the observation; a changed target holds the restart without spending its budget. Restart and boot verification use the refreshed row. A failed or unrecorded restart budget prevents the act. A thrown file repair is reported as a failed step and holds its dependent reload.
 
 ## Revoked pairing and confirmation
 
@@ -53,3 +53,5 @@ Pair codes, original and replacement credentials, home paths and usernames are s
 The checkup tests run the real watcher loop, classifier, restart ladder and boot-hello verification against an in-memory filesystem, fake clock and fake backend. The real-OS sentinel prevents those tests from listing, signalling or starting actual agents. They prove the plugin-side progress contract, including terminal report delivery and retry against the fake backend. They do not prove a live app confirmation flow or production owner-chat delivery.
 
 The repository test runner supports `RUN_TESTS_WORKERS=2`. The cap also applies when a test requests a larger nested pool. Default maximum concurrency remains four for callers that do not supply a smaller cap.
+
+The restart-target review regressions were red before the fix, then all 188 classifier, inventory, restart and watcher tests passed with two workers. Raw checkup evidence is retained locally, outside the shipped plugin files.
