@@ -264,6 +264,7 @@ test('the heartbeat alone starts the probe (an updated claude is asked again wit
     utimesSync(r.bin, new Date(), new Date(Date.now() + 5_000))
     assert.equal(gate.current().reason, 'probing')
     assert.equal(r.probes(), 2)
+    await gate.ready()
   } finally {
     r.cleanup()
   }
