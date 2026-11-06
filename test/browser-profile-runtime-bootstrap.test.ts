@@ -1,6 +1,7 @@
 import {test} from 'node:test'
 import assert from 'node:assert/strict'
-import {EventEmitter} from 'node:events'
+import {EventEmitter,once} from 'node:events'
+import {spawn} from 'node:child_process'
 import {BrowserProfileRuntime,profileCrypto} from '../lib/browser-profile-runtime.mjs'
 import {bindFakeProfileNativePipe} from './helpers/browser-profile-flat-native'
 
@@ -9,7 +10,7 @@ import {bindFakeProfileNativePipe} from './helpers/browser-profile-flat-native'
 function fixture(options:any={}){
  const calls:string[]=[],ids:string[]=[],targets=new Map<string,any>(),root:any=new EventEmitter(),context:any=new EventEmitter();let connected=true,created=0
  root.send=async(method:string,params:any={})=>{
-  if(method==='SystemInfo.getProcessInfo')return{processInfo:[{type:'browser',id:123}]}
+  if(method==='SystemInfo.getProcessInfo')return{processInfo:[{type:'browser',id:options.pid||123}]}
   if(method==='Target.getBrowserContexts')return{browserContextIds:[...ids]}
   if(method==='Target.getTargets')return{targetInfos:[...targets.values()]}
   if(method==='Target.attachToTarget')return{sessionId:'legacy-'+params.targetId}
@@ -47,4 +48,39 @@ test('mixed proof factories fail before launch and disposal failure cannot skip 
 
 test('a noncanonical native package binding refuses without fallback and positively closes the newly owned browser',async()=>{
  const f=fixture({foreignNativeConnection:true});await assert.rejects(BrowserProfileRuntime.create(f.config),{code:'profile_target_native_binding_invalid'});assert.equal(f.created,0);assert.equal(f.calls.includes('owned-context'),false);assert.ok(f.calls.includes('browser-close'));assert.equal(f.browser.isConnected(),false)
+})
+
+for(const emergency of [false,true])test(`real Darwin runtime ${emergency?'emergency group stop':'normal close'} proves its owned child exited`,{skip:process.platform!=='darwin',timeout:15000},async t=>{
+ const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'})
+ const exited=once(child,'exit')
+ t.after(async()=>{if(child.exitCode===null&&child.signalCode===null)child.kill('SIGKILL');await exited})
+ await once(child,'spawn')
+ const f=fixture({pid:child.pid}),close=f.browser.close
+ f.browser.close=async()=>{if(child.exitCode===null&&child.signalCode===null)child.kill('SIGTERM');await exited;await close()}
+ let owned:any
+ const runtime=await BrowserProfileRuntime.create({...f.config,captureProcessIdentity:undefined,assertProcessExited:undefined,transferQualificationFactory:undefined,onOwnedProcess:(value:any)=>owned=value}) as BrowserProfileRuntime&{processIdentity:{pid:number,started:string}}
+ assert.equal(runtime.processIdentity.pid,child.pid)
+ assert.equal(typeof owned.stop,'function')
+ if(emergency){
+  // Mutable public metadata cannot retarget the private native stop capability.
+  runtime.processIdentity={pid:process.pid,started:'1234'}
+  const stopped=await runtime.emergencyStopOwnedProcess()
+  assert.deepEqual(stopped,{stopped:true,recoveryRequired:true})
+  await exited
+  assert.equal(child.signalCode,'SIGKILL')
+  await f.browser.close()
+ }else{
+  await runtime.dispose()
+  assert.equal(f.browser.isConnected(),false)
+  assert.equal(child.signalCode,'SIGTERM')
+ }
+})
+
+test('Windows keeps the unavailable process exit proof code and closes the new browser',async t=>{
+ const descriptor=Object.getOwnPropertyDescriptor(process,'platform')!
+ t.after(()=>Object.defineProperty(process,'platform',descriptor))
+ Object.defineProperty(process,'platform',{...descriptor,value:'win32'})
+ const f=fixture()
+ await assert.rejects(BrowserProfileRuntime.create({...f.config,captureProcessIdentity:undefined,assertProcessExited:undefined}),{code:'profile_process_exit_proof_unavailable'})
+ assert.equal(f.browser.isConnected(),false)
 })

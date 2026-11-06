@@ -8,6 +8,10 @@ From 0.86.9 to 0.86.11 the browser shim pin recorded BGOS main commit `aed69c93b
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.86.13 (2026-11-06)
+
+**macOS agents can start their own browser** A Mac agent can now start and stop its own managed browser: the exit proof no longer depends on Linux only /proc.
+
 ## 0.86.12 (2026-11-07)
 
 **The portable agent browser.** Filling only enters text: submission needs a separate approved click bound to the exact current submit control. Composite submission, sequential typing and activation keys are refused, key chords accept only genuine modifier prefixes with Enter, Return and Space refused in every position, and `browser_fill_form` takes textbox fields only. After a fill, every further action on that tab needs a fresh allow once decision bound to that action and the current field revision, even with a saved write grant, and the barrier survives approvals. The browser host carries privacy exits, exact target and page rechecks, a cached page tree, safe purpose text, sign-ins that stay on the computer they were made on, and downloads the agent did not ask for kept for the owner. The managed engine roster advertises real JSON Schemas with no composite fields.
