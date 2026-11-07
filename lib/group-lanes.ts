@@ -31,6 +31,13 @@
  *    the session is forgotten here too.
  *  - Replies go to the group through the injected reply (the normal send
  *    path, with the delivery's session handle), never the owner's main chat.
+ *  - A daemon crash leaves a lane finishing its turn: its pid and start stamp
+ *    are in the lane state (lib/lane-process.ts), so the next start, resume or
+ *    end stops it first and waits for it to exit. Never two processes on one
+ *    group session.
+ *  - The server's `state: new` drops the local session only when the server
+ *    ACCEPTED a live or paused report for it (`acked`); a session it never
+ *    heard of is kept, resumed, and reported live again.
  *  - The level (talk, approvals, full) is enforced by the command
  *    (lib/group-lane-args.ts) and by the injected approve, which the CLI asks
  *    for every permission prompt over stdio.
@@ -61,6 +68,7 @@ import {
 } from './group-lane-args.ts'
 import { isSessionId } from './thread-lane-args.ts'
 import { lineSplitter, userMessageLine, type SpawnStreamJson, type StreamJsonChild } from './stream-json-child.ts'
+import { THREAD_ORPHAN_POLL_MS } from './thread-lanes.ts'
 
 export const GROUP_LANE_MAX_LIVE = 3
 export const GROUP_LANE_IDLE_MS = 30 * 60_000
@@ -139,6 +147,17 @@ export interface GroupLaneDeps {
   /** A new random UUID for a fresh group session. */
   newSessionId(): string
   agentFolder: string
+  /**
+   * The machine's processes (lib/lane-process.ts), as thread lanes use them:
+   * a process's start stamp while it is alive, and a signal to its group.
+   */
+  processes: {
+    /** Start stamp while alive, null if gone, undefined if inspection failed. */
+    stamp(pid: number): Promise<string | null | undefined>
+    /** True if in this folder, false if absent or elsewhere, null if inspection failed. */
+    runsIn(pid: number, dir: string): Promise<boolean | null>
+    kill(pid: number, signal: 'SIGTERM' | 'SIGKILL'): void
+  }
   /** Where lane state files live, ~/.bgos-agent/<assistantId>/groups. */
   stateDir: string
   emptyMcpConfigPath(): string
@@ -176,6 +195,14 @@ export interface GroupLaneState {
   started: boolean
   firstMessageId: number | null
   lastMessageId: number | null
+  /** The server answered 2xx to a live or paused report for this session: it knows it. */
+  acked: boolean
+  /**
+   * The lane's process while it runs, and its start stamp: a daemon that
+   * crashed leaves it finishing its turn, and the next start stops it first.
+   */
+  pid: number | null
+  pidStamp: string | null
 }
 
 type Waited = Record<string, unknown> | 'timeout' | null
@@ -306,11 +333,15 @@ export class GroupLaneManager {
           const saved = this.load(chatId)
           if (saved) lane.st = saved
         }
+        // Its process from before a daemon crash stops too.
+        if (!(await this.stopOrphan(lane.st))) this.deps.log(`groups: group ${chatId} has a process from before a restart that would not stop`)
         sessionId = lane.st.sessionId
         if (this.lanes.get(chatId) === lane) this.lanes.delete(chatId)
         this.releaseSlot(lane)
       } else {
-        sessionId = this.load(chatId)?.sessionId ?? null
+        const saved = this.load(chatId)
+        if (saved && !(await this.stopOrphan(saved))) this.deps.log(`groups: group ${chatId} has a process from before a restart that would not stop`)
+        sessionId = saved?.sessionId ?? null
       }
       this.forget(chatId)
       this.deps.log(`groups: group ${chatId} thread ended (${String(input?.reason ?? 'unknown')})`)
@@ -351,7 +382,7 @@ export class GroupLaneManager {
     if (existing && !existing.closed) return existing
     const lane: Lane = {
       chatId,
-      st: { chatId, title: '', sessionId: null, started: false, firstMessageId: null, lastMessageId: null },
+      st: { chatId, title: '', sessionId: null, started: false, firstMessageId: null, lastMessageId: null, acked: false, pid: null, pidStamp: null },
       loaded: false,
       level: 'approvals',
       childLevel: 'approvals',
@@ -417,6 +448,7 @@ export class GroupLaneManager {
       await lane.exited
       lane.st.sessionId = null
       lane.st.started = false
+      lane.st.acked = false
       lane.st.firstMessageId = null
       lane.st.lastMessageId = null
       this.forget(lane.chatId)
@@ -430,14 +462,22 @@ export class GroupLaneManager {
     // The server's word on the session (restart, or a thread it closed).
     if (!lane.child) {
       if (d.state === 'new' && lane.st.sessionId !== null && d.sessionId === null) {
-        // Closed on the server since this lane last ran: a new session.
-        lane.st.sessionId = null
-        lane.st.started = false
-        lane.st.firstMessageId = null
-        lane.st.lastMessageId = null
+        if (lane.st.acked) {
+          // The server knew this session and now has none: it closed the
+          // thread since this lane last ran, so the next start is a new one.
+          lane.st.sessionId = null
+          lane.st.started = false
+          lane.st.acked = false
+          lane.st.firstMessageId = null
+          lane.st.lastMessageId = null
+        }
+        // Never acknowledged (a live report that never landed): the server
+        // cannot have closed what it never heard of, so the session is kept,
+        // resumed, and reported live again below.
       } else if (lane.st.sessionId === null && isSessionId(d.sessionId)) {
         lane.st.sessionId = d.sessionId
         lane.st.started = true
+        lane.st.acked = true
       }
     }
     lane.level = groupLevel(d.level)
@@ -605,11 +645,17 @@ export class GroupLaneManager {
       const problem = this.deps.cliProblem ? await this.deps.cliProblem() : null
       if (problem) throw new GroupLaneError('unsupported', problem)
       if (lane.closed) return
+      // A process left from before a daemon crash still runs this session: never a second one.
+      if (!(await this.stopOrphan(lane.st))) {
+        throw new GroupLaneError('busy', 'an earlier run of this group thread is still stopping')
+      }
+      if (lane.closed || lane.child) return
       const folder = await this.prepareFolder(lane.chatId)
       let resume = lane.st.started && isSessionId(lane.st.sessionId)
       if (!isSessionId(lane.st.sessionId)) {
         lane.st.sessionId = this.deps.newSessionId()
         lane.st.started = false
+        lane.st.acked = false
         resume = false
       }
       const args = groupLaneArgs({
@@ -627,6 +673,7 @@ export class GroupLaneManager {
       lane.childLevel = lane.level
       lane.stopping = false
       lane.contextTokens = 0
+      this.recordPid(lane, child)
       lane.exited = new Promise<void>((done) => {
         child.onExit(() => {
           this.onExit(lane, child)
@@ -642,6 +689,11 @@ export class GroupLaneManager {
 
   private onFrame(lane: Lane, child: StreamJsonChild, frame: Record<string, unknown>): void {
     if (lane.child !== child) return
+    if (frame.type === 'system' && frame.subtype === 'init') {
+      // A stamp that could not be read at spawn is asked for again.
+      if (lane.st.pidStamp === null) this.readStamp(lane, child)
+      return
+    }
     if (frame.type === 'assistant') {
       const tokens = contextTokensOf(frame)
       if (tokens !== null) lane.contextTokens = tokens
@@ -690,6 +742,11 @@ export class GroupLaneManager {
     if (lane.child !== child) return
     lane.child = null
     lane.stopping = false
+    if (lane.st.pid !== null && lane.st.pid === child.pid) {
+      lane.st.pid = null
+      lane.st.pidStamp = null
+      if (this.lanes.get(lane.chatId) === lane) this.persist(lane)
+    }
     if (lane.graceTimer !== null) {
       this.deps.clearTimer(lane.graceTimer)
       lane.graceTimer = null
@@ -697,6 +754,88 @@ export class GroupLaneManager {
     this.clearIdle(lane)
     lane.waiter?.(null)
     this.releaseSlot(lane)
+  }
+
+  /** The pid goes into the lane state at once, and its start stamp as soon as it can be read. */
+  private recordPid(lane: Lane, child: StreamJsonChild): void {
+    const pid = child.pid
+    if (typeof pid !== 'number') return
+    lane.st.pid = pid
+    lane.st.pidStamp = null
+    this.persist(lane)
+    this.readStamp(lane, child)
+  }
+
+  private readStamp(lane: Lane, child: StreamJsonChild): void {
+    const pid = child.pid
+    if (typeof pid !== 'number' || lane.st.pid !== pid || lane.st.pidStamp !== null) return
+    this.track(
+      this.deps.processes.stamp(pid).then((stamp) => {
+        if (typeof stamp !== 'string' || lane.child !== child || lane.st.pid !== pid || lane.st.pidStamp !== null) return
+        lane.st.pidStamp = stamp
+        this.persist(lane)
+      }),
+    )
+  }
+
+  /**
+   * Stop the process a lane state names if it still runs under the same start
+   * stamp (a daemon crash left it finishing its turn): SIGTERM to its group,
+   * SIGKILL after the grace, and true once it is gone. A pid now held by
+   * another process is never signalled. False when it would not stop, or its
+   * identity cannot be verified while something may still use the folder.
+   * The thread lanes' rule, lib/thread-lanes.ts stopOrphan.
+   */
+  private async stopOrphan(st: GroupLaneState): Promise<boolean> {
+    const { pid, pidStamp } = st
+    if (pid === null) return true
+    const procs = this.deps.processes
+    const cwd = join(this.deps.agentFolder, '.hoai', 'groups', st.chatId)
+    if (pidStamp === null && (await procs.runsIn(pid, cwd)) !== false) {
+      this.deps.log(`groups: group ${st.chatId} has an unverified process that may still use its folder; waiting for it to exit`)
+      return false
+    }
+    const alive = async (): Promise<boolean | null> => {
+      if (pidStamp === null) return false
+      const stamp = await procs.stamp(pid)
+      return stamp === undefined ? null : stamp === pidStamp
+    }
+    const inspected = await alive()
+    if (inspected === null) {
+      this.deps.log(`groups: group ${st.chatId} has an unreadable process stamp; waiting for verified identity or exit`)
+      return false
+    }
+    if (inspected) {
+      this.deps.log(`groups: group ${st.chatId} still runs from before a restart, it is stopped first`)
+      const grace = this.deps.killGraceMs ?? GROUP_LANE_KILL_GRACE_MS
+      procs.kill(pid, 'SIGTERM')
+      if (!(await this.gone(alive, grace))) {
+        const current = await alive()
+        if (current === null) return false
+        if (current) {
+          procs.kill(pid, 'SIGKILL')
+          if (!(await this.gone(alive, grace))) {
+            this.deps.log(`groups: group ${st.chatId} from before a restart would not stop`)
+            return false
+          }
+        }
+      }
+    }
+    if (st.pid === pid) {
+      st.pid = null
+      st.pidStamp = null
+      this.persistState(st)
+    }
+    return true
+  }
+
+  /** Only affirmative absence ends the wait; failed inspection keeps polling up to ms. */
+  private async gone(alive: () => Promise<boolean | null>, ms: number): Promise<boolean> {
+    for (let waited = 0; ; waited += THREAD_ORPHAN_POLL_MS) {
+      if ((await alive()) === false) return true
+      if (waited >= ms) return false
+      await new Promise<void>((done) => this.deps.setTimer(done, THREAD_ORPHAN_POLL_MS))
+    }
   }
 
   private stopChild(lane: Lane): void {
@@ -772,6 +911,11 @@ export class GroupLaneManager {
       for (let attempt = 0; ; attempt++) {
         try {
           await this.deps.post(GROUP_STATE_PATH, full)
+          // The server accepted a live or paused report: it knows this session.
+          if (lane && (body.state === 'live' || body.state === 'paused') && body.sessionId !== null && lane.st.sessionId === body.sessionId && !lane.st.acked) {
+            lane.st.acked = true
+            this.persist(lane)
+          }
           return
         } catch (err) {
           if (isGroupThreadClosed(err)) {
@@ -803,9 +947,13 @@ export class GroupLaneManager {
 
   private persist(lane: Lane): void {
     if (lane.closed) return
+    this.persistState(lane.st)
+  }
+
+  private persistState(st: GroupLaneState): void {
     try {
       this.deps.fs.mkdir(this.deps.stateDir)
-      this.deps.fs.writeFile(this.statePath(lane.chatId), `${JSON.stringify(lane.st)}\n`)
+      this.deps.fs.writeFile(this.statePath(st.chatId), `${JSON.stringify(st)}\n`)
     } catch (err) {
       this.deps.log(`groups: could not save lane state (${err instanceof Error ? err.name : 'error'})`)
     }
@@ -835,6 +983,9 @@ export class GroupLaneManager {
       started: sessionId !== null && r.started === true,
       firstMessageId: id(r.firstMessageId),
       lastMessageId: id(r.lastMessageId),
+      acked: sessionId !== null && r.acked === true,
+      pid: typeof r.pid === 'number' && Number.isInteger(r.pid) && r.pid > 0 ? r.pid : null,
+      pidStamp: typeof r.pidStamp === 'string' && r.pidStamp !== '' ? r.pidStamp : null,
     }
   }
 

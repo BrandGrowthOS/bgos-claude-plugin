@@ -15146,6 +15146,12 @@ const groupLanes = new GroupLaneManager({
   mainSessionId: () => provenSessionId(),
   newSessionId: () => crypto.randomUUID(),
   agentFolder: CLAUDE_PROJECT_CWD,
+  // A lane left from before a daemon crash is found by pid and start stamp, and stopped (lib/lane-process.ts).
+  processes: {
+    stamp: (pid) => processStamp(pid),
+    runsIn: (pid, dir) => processRunsIn(pid, dir),
+    kill: (pid, signal) => killProcessGroup(pid, signal),
+  },
   stateDir: GROUPS_STATE_DIR,
   emptyMcpConfigPath: threadsEmptyMcpConfig,
   git: async (args, cwd) => {

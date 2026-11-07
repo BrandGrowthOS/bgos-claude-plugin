@@ -108,6 +108,9 @@ test('server.ts routes a group stamp to the lane BEFORE ownerLaneVerdict on the 
 
 test('server.ts answers group_thread_end through the group lanes, and stops them on shutdown', () => {
   assert.match(server, /groupEnd: \(input\) => groupLanes\.end\(input\),/)
+  // A group lane left from before a daemon crash is found the way a thread lane is (lib/lane-process.ts).
+  const manager = server.slice(server.indexOf('const groupLanes = new GroupLaneManager({'), server.indexOf('\n})\n', server.indexOf('const groupLanes = new GroupLaneManager({')))
+  assert.match(manager, /stamp: \(pid\) => processStamp\(pid\),\n\s*runsIn: \(pid, dir\) => processRunsIn\(pid, dir\),\n\s*kill: \(pid, signal\) => killProcessGroup\(pid, signal\),/)
   assert.match(server, /Promise\.allSettled\(\[threadLanes\.stopAll\(\), groupLanes\.stopAll\(\), asideForks\.stopAll\(\)\]\)/)
   assert.match(server, /onPaused: \(\{ chatId, title, summary \}\) => groupSummaries\.add\(\{ chatId, title, summary \}\)/)
   // A group lane's prompt meets the owner's gate: approvals always the card, full the owner's whole handler.

@@ -22,6 +22,7 @@ import {
   type GroupLaneDeps,
 } from '../lib/group-lanes.ts'
 import { GROUP_COMPACT_COMMAND, GROUP_SUMMARY_INSTRUCTION } from '../lib/group-lane-args.ts'
+import { THREAD_ORPHAN_POLL_MS } from '../lib/thread-lanes.ts'
 import type { StreamJsonChild } from '../lib/stream-json-child.ts'
 
 const MAIN = '435f1f18-2716-4c27-bfd8-e2c48f28b3ac'
@@ -37,7 +38,7 @@ const AGENT = resolve('/work/atlas')
 const STATE = resolve('/home/u/.bgos-agent/7/groups')
 
 class FakeChild implements StreamJsonChild {
-  pid = 1
+  pid?: number
   stdin: string[] = []
   killed: string[] = []
   private out: Array<(c: string) => void> = []
@@ -71,12 +72,31 @@ function rig(opts: { maxLive?: number; failPost?: (body: Record<string, unknown>
   const timers: Timer[] = []
   const clock = { now: 1_000_000 }
   let next = 0
+  /** The machine's processes as the lanes see them: a stamp while alive, and what stops each. */
+  const procs = new Map<number, { stamp: string; alive: boolean; dies: 'SIGTERM' | 'SIGKILL' | 'never' }>()
+  const procKills: Array<[number, string]> = []
+  const procCwd = new Map<number, string>()
+  let lastPid = 4000
   const deps: GroupLaneDeps = {
     assistantId: '7',
     spawn: (_command, args, o) => {
       const child = new FakeChild()
+      const pid = ++lastPid
+      child.pid = pid
+      procs.set(pid, { stamp: `S${pid}`, alive: true, dies: 'SIGTERM' })
+      procCwd.set(pid, o.cwd)
+      child.onExit(() => { procs.get(pid)!.alive = false })
       spawned.push({ args, cwd: o.cwd, child })
       return child
+    },
+    processes: {
+      stamp: async (pid) => { const p = procs.get(pid); return p && p.alive ? p.stamp : null },
+      runsIn: async (pid, dir) => { const p = procs.get(pid); return p !== undefined && p.alive && procCwd.get(pid) === dir },
+      kill: (pid, signal) => {
+        procKills.push([pid, signal])
+        const p = procs.get(pid)
+        if (p && p.dies !== 'never' && (signal === 'SIGKILL' || p.dies === signal)) p.alive = false
+      },
     },
     claudeBin: () => '/bin/claude',
     cliProblem: async () => null,
@@ -113,7 +133,7 @@ function rig(opts: { maxLive?: number; failPost?: (body: Record<string, unknown>
   const fire = (ms: number) => {
     for (const t of timers.filter((t) => !t.cleared && t.ms === ms)) { t.cleared = true; t.fn() }
   }
-  return { lanes, deps, files, spawned, posts, replies, approvals, paused, timers, clock, fire }
+  return { lanes, deps, files, spawned, posts, replies, approvals, paused, timers, clock, fire, procs, procKills }
 }
 
 async function settle(): Promise<void> {
@@ -432,4 +452,130 @@ test('a level lowered while the lane runs restarts it under the new level, resum
   assert.equal(valueAfter(second.args, '--resume'), IDS[0])
   assert.equal(valueAfter(second.args, '--tools'), '')
   assert.equal(valueAfter(second.args, '--permission-mode'), 'dontAsk')
+})
+
+// -- a daemon crash: the lane process left from before is stopped first ------
+
+const statePath = join(STATE, '123.json')
+const saved = (r: ReturnType<typeof rig>) => JSON.parse(r.files.get(statePath)!)
+
+/** A daemon that crashed while group 123 ran: its state names the process, which is still finishing its turn. */
+function crashedWithOrphan(dies: 'SIGTERM' | 'SIGKILL' | 'never', stamp = 'S777') {
+  const files = new Map<string, string>([[statePath, JSON.stringify({
+    chatId: '123', title: 'Launch team', sessionId: IDS[4], started: true, firstMessageId: 501, lastMessageId: 501, acked: true, pid: 777, pidStamp: 'S777',
+  })]])
+  const r = rig({ files })
+  r.procs.set(777, { stamp, alive: true, dies })
+  return r
+}
+
+/** Fire the orphan wait's poll timers until the lane spawns or the wait gives up. */
+async function pollOut(r: ReturnType<typeof rig>) {
+  for (let i = 0; i < 200; i++) {
+    await settle()
+    const t = r.timers.filter((x) => !x.cleared && x.ms === THREAD_ORPHAN_POLL_MS)
+    if (t.length === 0) break
+    t[0]!.cleared = true
+    t[0]!.fn()
+  }
+  await settle()
+}
+
+test('a group lane process is written into the lane state with its start stamp, and taken out when it exits', async () => {
+  const r = rig()
+  r.lanes.deliver(delivery())
+  await settle()
+  const pid = r.spawned[0]!.child.pid!
+  assert.equal(saved(r).pid, pid)
+  assert.equal(saved(r).pidStamp, `S${pid}`)
+  r.spawned[0]!.child.exit()
+  await settle()
+  assert.equal(saved(r).pid, null)
+  assert.equal(saved(r).pidStamp, null)
+})
+
+test('after a daemon crash the old group process is stopped before the session is resumed: never two on one session', async () => {
+  const r = crashedWithOrphan('SIGTERM')
+  r.lanes.deliver(delivery({ state: 'live', sessionId: IDS[4] }))
+  await pollOut(r)
+  assert.deepEqual(r.procKills, [[777, 'SIGTERM']])
+  assert.equal(r.procs.get(777)!.alive, false)
+  assert.equal(r.spawned.length, 1, 'one process, never two')
+  assert.equal(valueAfter(r.spawned[0]!.args, '--resume'), IDS[4])
+  assert.equal(saved(r).pid, r.spawned[0]!.child.pid)
+})
+
+test('an old group process that ignores SIGTERM gets SIGKILL after the grace, then the new one starts', async () => {
+  const r = crashedWithOrphan('SIGKILL')
+  r.lanes.deliver(delivery({ state: 'live', sessionId: IDS[4] }))
+  await settle()
+  assert.equal(r.spawned.length, 0, 'nothing starts while the old one lives')
+  await pollOut(r)
+  assert.deepEqual(r.procKills, [[777, 'SIGTERM'], [777, 'SIGKILL']])
+  assert.equal(r.spawned.length, 1)
+})
+
+test('an old group process that cannot be stopped starts nothing, and frees the slot', async () => {
+  const r = crashedWithOrphan('never')
+  r.lanes.deliver(delivery({ state: 'live', sessionId: IDS[4] }))
+  await pollOut(r)
+  assert.equal(r.spawned.length, 0)
+  assert.equal(r.lanes.slotsUsed(), 0)
+  assert.equal(saved(r).pid, 777, 'still named, so the next start tries again')
+})
+
+test('a pid now held by another process (its start stamp differs) is never signalled', async () => {
+  const r = crashedWithOrphan('SIGTERM', 'S-someone-else')
+  r.lanes.deliver(delivery({ state: 'live', sessionId: IDS[4] }))
+  await pollOut(r)
+  assert.deepEqual(r.procKills, [])
+  assert.equal(r.spawned.length, 1)
+})
+
+test('group_thread_end after a daemon crash stops the old group process too, and waits for it', async () => {
+  const r = crashedWithOrphan('SIGTERM')
+  const ending = r.lanes.end({ chatId: '123', reason: 'removed' })
+  await pollOut(r)
+  assert.deepEqual(await ending, { ok: true })
+  assert.deepEqual(r.procKills, [[777, 'SIGTERM']])
+  assert.equal(r.procs.get(777)!.alive, false)
+  await settle()
+  assert.deepEqual(r.posts.at(-1), { assistantId: 7, chatId: 123, state: 'closed', sessionId: IDS[4] })
+  assert.equal(r.files.has(statePath), false)
+})
+
+// -- the server's "new": only a session it accepted is dropped ----------------
+
+test('state new keeps a session the server never acknowledged: it is resumed and reported live again', async () => {
+  const files = new Map<string, string>()
+  const live = Object.assign(new Error('POST 503'), { status: 503 })
+  const first = rig({ files, failPost: (body) => (body.state === 'live' ? live : null) })
+  first.deps.postRetryMs = []
+  first.lanes.deliver(delivery())
+  await settle()
+  first.spawned[0]!.child.result('ok')
+  await settle()
+  assert.equal(JSON.parse(files.get(statePath)!).acked, false, 'the live report never landed')
+  const second = rig({ files })
+  second.lanes.deliver(delivery({ messageId: 700, key: '700', state: 'new', sessionId: null }))
+  await settle()
+  assert.equal(valueAfter(second.spawned[0]!.args, '--resume'), IDS[0])
+  assert.ok(!second.spawned[0]!.args.includes('--session-id'))
+  assert.deepEqual(second.posts.at(-1), { assistantId: 7, chatId: 123, state: 'live', sessionId: IDS[0] })
+  assert.equal(JSON.parse(files.get(statePath)!).acked, true, 'now the server knows it')
+})
+
+test('state new drops a session the server had accepted (a 2xx to its live report): the next start is fresh', async () => {
+  const files = new Map<string, string>()
+  const first = rig({ files })
+  first.lanes.deliver(delivery())
+  await settle()
+  first.spawned[0]!.child.result('ok')
+  await settle()
+  assert.equal(JSON.parse(files.get(statePath)!).acked, true)
+  const second = rig({ files })
+  second.lanes.deliver(delivery({ messageId: 700, key: '700', state: 'new', sessionId: null }))
+  await settle()
+  assert.ok(second.spawned[0]!.args.includes('--session-id'))
+  assert.ok(!second.spawned[0]!.args.includes('--resume'))
 })
