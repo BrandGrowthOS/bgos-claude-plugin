@@ -1,0 +1,12 @@
+Control: unmodified behavioral, daemon, hook and wiring tests pass; one worker
+{"mutation":"completion clears the chat","status":"caught","failingTests":["a completion removes only its mission when another open mission was most recently seen"]}
+{"mutation":"new mission drops existing missions","status":"caught","failingTests":["closing one of two missions preserves the other in prompt context and Stop eligibility"]}
+{"mutation":"changed checked goals retain freshness","status":"caught","failingTests":["adding checked goals invalidates a fresh report, including a previously empty mission","changing or removing a check invalidates its old passing evidence"]}
+{"mutation":"late HTTP reports ignore revision fences","status":"caught","failingTests":["a late HTTP report cannot overwrite a newer tick snapshot or produce a stale Stop block","a late HTTP report cannot overwrite a newer complete snapshot or produce a stale Stop block","a late HTTP report cannot overwrite a newer replace snapshot or produce a stale Stop block","a late HTTP report cannot overwrite a newer change check snapshot or produce a stale Stop block","a cold discovery cannot resurrect a mission created and completed while the read was pending","HTTP work completing after the daemon answer budget cannot resurrect a completed mission"]}
+{"mutation":"daemon watcher never starts","status":"caught","failingTests":["the watcher never keeps the process alive and has a polling fallback"]}
+{"mutation":"hook second Stop writes an ask","status":"caught","failingTests":["Stop with stop_hook_active goes through at once: the agent already ticked or said why"]}
+{"mutation":"hook silently skips the ask","status":"caught","failingTests":["Stop ALLOWS when the daemon answers nothing passing, and ignores an answer to another ask"]}
+{"mutation":"wire answer loses other missions","status":"caught","failingTests":["the daemon file answer preserves mission identities when goal ids overlap"]}
+{"mutation":"known missions use ambiguous implicit reads","status":"caught","failingTests":["multiple cached missions are checked by explicit id and Stop names every passing mission"]}
+{"mutation":"one failed mission aborts all checks","status":"caught","failingTests":["a failed check read for one mission does not prevent verification of another mission"]}
+Result: 10 of 10 mutants caught; production files untouched; one worker

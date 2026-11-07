@@ -68,6 +68,10 @@
  *                       caller declaring this (MISSION_GOAL_WORKING_TOKEN in
  *                       BGOS capability-canon.ts). Every host: a plain HTTP
  *                       write the model makes itself.
+ *   mission_server_checks
+ *                       goal tools carry server machine checks and waiting
+ *                       goals on every host. Distinct from mission_goal_checks,
+ *                       which promises the native goal checker's verdict.
  *   mission_pause       a pause truly stops the work. ONLY where the injector
  *                       answers, because the pause this daemon can enforce IS
  *                       clearing the native goal. It is honest about its
@@ -315,6 +319,7 @@ export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   'mission_events',
   'mission_goal_checks',
   'mission_set_goals',
+  'mission_server_checks',
   'mission_goal_working',
   PERMISSION_CARD,
   PLAN_CARD,
