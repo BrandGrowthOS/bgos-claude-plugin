@@ -99,6 +99,34 @@ export interface ScheduleCreateBody {
   everyHours?: number
   recurrence?: ScheduleRecurrence
   chatId?: number
+  /** The boards each run of a wake may use (0.86.20): the server's grant. */
+  boards?: Array<{ boardId: string; access: 'read' | 'write' }>
+}
+
+/** How many boards one schedule may name (the server's SCHEDULE_GRANT_MAX_BOARDS). */
+export const SCHEDULE_BOARDS_MAX = 10
+const BOARD_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * The boards a wake names, as the server reads them: one entry per board (write wins), lower case ids. An error
+ * sentence for anything else.
+ */
+function buildScheduleBoards(input: unknown, kind: unknown): { ok: true; boards: ScheduleCreateBody['boards'] } | { ok: false; error: string } {
+  if (input == null) return { ok: true, boards: undefined }
+  if (!Array.isArray(input)) return { ok: false, error: 'boards must be a list of { board_id, access } (access is read or write).' }
+  if (input.length === 0) return { ok: true, boards: undefined }
+  if (kind !== 'wake') return { ok: false, error: 'Only a wake can name boards; a call rings the owner and uses none.' }
+  const byId = new Map<string, 'read' | 'write'>()
+  for (const item of input) {
+    const raw = isPlainObject(item) ? (item.board_id ?? item.boardId) : undefined
+    const boardId = typeof raw === 'string' ? raw.trim().toLowerCase() : ''
+    if (!BOARD_ID_RE.test(boardId)) return { ok: false, error: 'Each board needs its board id (the id boards_list shows), not its name.' }
+    const access = isPlainObject(item) && item.access != null ? item.access : 'read'
+    if (access !== 'read' && access !== 'write') return { ok: false, error: "A board's access is read or write." }
+    byId.set(boardId, byId.get(boardId) === 'write' ? 'write' : access)
+  }
+  if (byId.size > SCHEDULE_BOARDS_MAX) return { ok: false, error: `A schedule can name at most ${SCHEDULE_BOARDS_MAX} boards.` }
+  return { ok: true, boards: [...byId].map(([boardId, access]) => ({ boardId, access })) }
 }
 
 export interface ScheduleCreateInput {
@@ -112,6 +140,8 @@ export interface ScheduleCreateInput {
   when?: unknown
   /** Chat to bind to. Omitted from the body unless a finite number. */
   chatId?: number | null
+  /** Optional, wakes only: [{ board_id, access }] the runs may use whoever posts meanwhile. */
+  boards?: unknown
 }
 
 export type ScheduleBuildResult =
@@ -415,6 +445,10 @@ export function buildScheduleCreateBody(input: ScheduleCreateInput): ScheduleBui
   if (typeof chatId === 'number' && Number.isFinite(chatId)) {
     body.chatId = chatId
   }
+
+  const boards = buildScheduleBoards(input.boards, kind)
+  if (!boards.ok) return boards
+  if (boards.boards) body.boards = boards.boards
 
   return { ok: true, body }
 }

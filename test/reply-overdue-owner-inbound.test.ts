@@ -8,6 +8,7 @@
  * Runs recordInbound and checkReplyOverdue out of server.ts (it cannot be imported), as test/peer-403-loop.test.ts does.
  */
 
+import { channelNotifyFor } from './helpers/channel-notify.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -53,6 +54,8 @@ function overdueSweep() {
     USER_ID: OWNER,
     log: () => undefined,
     trackMessageOperation: (op: () => Promise<unknown>) => op(),
+    // channelNotify sends through the same double (0.86.20, test/helpers/channel-notify.ts).
+    get channelNotify(): ReturnType<typeof channelNotifyFor> { return channelNotifyFor(() => (this as unknown as { mcp: { notification: (n: unknown) => unknown } }).mcp) },
     mcp: { notification: async (n: { params: Card }) => { cards.push(n.params) } },
   }
   const scope = new Proxy(known, {

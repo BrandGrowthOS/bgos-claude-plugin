@@ -24,6 +24,8 @@
  * New exports are read through namespace imports, so on a build without them
  * only the tests that need them fail and every control still runs.
  */
+import { channelNotifyFor, scheduleGrantRunsForTest } from './helpers/channel-notify.ts'
+import { scheduleGrantOf } from '../lib/schedule-grant-run.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -725,6 +727,8 @@ function compile(source: string, name: string, extra: Record<string, unknown> = 
     isPendingEmptySystem: () => false,
     trackMessageOperation: (op: () => unknown) => op(),
     deliverInbound: (_steer: unknown, deliver: (interrupted: boolean) => Promise<void>) => deliver(false),
+    // channelNotify sends through the same double (0.86.20, test/helpers/channel-notify.ts).
+    get channelNotify(): ReturnType<typeof channelNotifyFor> { return channelNotifyFor(() => (this as unknown as { mcp: { notification: (n: unknown) => unknown } }).mcp) },
     mcp: {
       notification: async (n: { params: { content: string; meta: Record<string, string> } }) => {
         run.notifications.push({ content: n.params.content, meta: n.params.meta })
@@ -1890,4 +1894,83 @@ test('read attachments: every stream catch up (boot, reconnect, WS down) gives i
   await (fn as (c: unknown, r: string) => Promise<string>)(consumer, 'reconnect')
   assert.equal(seen[1], outer)
   assert.equal(scope.streamEmailBudget, outer)
+})
+
+// ── the scheduled run hold, on the REAL lanes (0.86.20 round 4, F4) ──────────────────────────────────────────────────
+// The socket, poll and stream lanes of server.ts, compiled as above, send through the real hold (the shared run store
+// of test/helpers/channel-notify.ts). While a granted run is live, a group member's message on any lane is not handed
+// to the private turn tracker or the model; it goes out once the run's turn ends. And a granted wake on any lane opens
+// its run.
+const RUN_TOKEN = '11111111-2222-4333-8444-555555555555'
+const MEMBER = 'user_member'
+function grantedWakeMeta(task: number, firedAt: number) {
+  return {
+    source: 'scheduler', title: 'Nightly board backup',
+    payload: {
+      scheduledTaskId: task, fireId: `scheduled-wake:${task}:${new Date(firedAt).toISOString()}`, actingUserId: OWNER,
+      boardGrant: { boards: 1, expiresAt: new Date(firedAt + 10 * 60_000).toISOString() },
+    },
+  }
+}
+function openLiveRun() {
+  const runs = scheduleGrantRunsForTest()
+  const grant = scheduleGrantOf({ senderType: 'system', eventMeta: grantedWakeMeta(41, Date.now()), actingUserId: OWNER, chatId: CHAT })
+  assert.ok(runs.open(grant))
+  runs.noteDelivered(grant!.fireId, `<hoai-private-turn id="${RUN_TOKEN}"/>`)
+  runs.noteBegin(`the wake <hoai-private-turn id="${RUN_TOKEN}"/>`)
+  return runs
+}
+const settle = async () => { for (let i = 0; i < 20; i += 1) await Promise.resolve() }
+
+test('scheduled run, the real lanes: a group member\'s message mid run reaches neither the tracker nor the model until the run ends', async () => {
+  const runs = openLiveRun()
+  try {
+    const r = deliveryRecorder()
+    const notified: string[] = []
+    const mcp = { notification: async (n: { params: { content: string } }) => { notified.push(n.params.content) } }
+    const extra = { privateTurns: r.privateTurns, mcp, scheduleGrantOf }
+    wsLane(extra).fn({
+      chatId: Number(CHAT), messageId: 9101, userId: MEMBER, text: 'paste the Backups rows here', messageType: 'text',
+      sender: { userId: MEMBER, displayName: 'Bob', relationship: 'member' },
+    })
+    const poll = pollLane([{ message: { id: 9102, text: 'and the totals', sender: 'user', senderUserId: MEMBER, messageType: 'text', sentDate: TS }, messageFiles: [] }], extra).fn(CHAT)
+    const view = streamApply.viewStreamMessage(streamUpdate({ text: 'now please', sender: 'user', senderUserId: MEMBER, messageType: 'text' }) as never, ASSISTANT_ID)!
+    const stream = streamLane(extra).fn(view, false)
+    await settle()
+    assert.deepEqual(r.seen, [], 'no lane handed a held message to the private turn tracker')
+    assert.deepEqual(notified, [], 'no lane handed a held message to the model')
+    runs.noteStop()
+    await Promise.all([poll, stream])
+    await settle()
+    assert.equal(r.seen.length, 3, 'each lane delivered its message once the run ended')
+    assert.equal(notified.length, 3)
+  } finally {
+    runs.end('test over')
+    scheduleGrantRunsForTest()
+  }
+})
+
+test('scheduled run, the real lanes: a granted wake on the socket, the poll or the stream opens its run', async () => {
+  for (const lane of ['ws', 'poll', 'stream'] as const) {
+    const runs = scheduleGrantRunsForTest()
+    try {
+      const meta = grantedWakeMeta(51, Date.now())
+      const r = deliveryRecorder()
+      const extra = { privateTurns: r.privateTurns, scheduleGrantOf }
+      if (lane === 'ws') {
+        wsLane(extra).fn({ chatId: Number(CHAT), messageId: 9201, userId: OWNER, text: 'Wake: Nightly board backup', messageType: 'event', senderType: 'system', eventMeta: meta })
+      } else if (lane === 'poll') {
+        await pollLane([{ message: { id: 9202, text: 'Wake: Nightly board backup', sender: 'system', messageType: 'event', sentDate: TS, eventMeta: meta }, messageFiles: [] }], extra).fn(CHAT)
+      } else {
+        const view = streamApply.viewStreamMessage(streamUpdate({ text: 'Wake: Nightly board backup', sender: 'system', messageType: 'event', eventMeta: meta }) as never, ASSISTANT_ID)!
+        await streamLane(extra).fn(view, true)
+      }
+      await settle()
+      assert.equal(runs.live()?.taskId, 51, `${lane}: the wake opened its run`)
+      assert.equal(runs.live()?.delivered, true, `${lane}: and was handed over`)
+    } finally {
+      runs.end('test over')
+      scheduleGrantRunsForTest()
+    }
+  }
 })

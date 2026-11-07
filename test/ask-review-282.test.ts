@@ -7,6 +7,7 @@
  * lifted code reads that this harness does not provide throws, so a stub can
  * never stand in for something silently.
  */
+import { channelNotifyFor } from './helpers/channel-notify.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -200,6 +201,8 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; handedOn?: number[]; c
     noteLaneMisroute: () => {},
     askDelivering,
     trackMessageOperation: (op: () => Promise<unknown>) => op(),
+    // channelNotify sends through the same double (0.86.20, test/helpers/channel-notify.ts).
+    get channelNotify(): ReturnType<typeof channelNotifyFor> { return channelNotifyFor(() => (this as unknown as { mcp: { notification: (n: unknown) => unknown } }).mcp) },
     mcp: {
       notification: async (n: { params: { content: string; meta: Record<string, string> } }) => {
         notes.push(n)

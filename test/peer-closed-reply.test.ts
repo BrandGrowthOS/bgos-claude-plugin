@@ -7,6 +7,7 @@
  *
  * Run: node --import tsx --test --test-concurrency=4 test/peer-closed-reply.test.ts
  */
+import { channelNotifyFor } from './helpers/channel-notify.ts'
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -295,6 +296,8 @@ function harness(backend: Backend, opts: HarnessOptions = {}): Harness {
     updateDrainMode: false,
     inboundOwesReply,
     trackMessageOperation: (op: () => Promise<unknown>) => op(),
+    // channelNotify sends through the same double (0.86.20, test/helpers/channel-notify.ts).
+    get channelNotify(): ReturnType<typeof channelNotifyFor> { return channelNotifyFor(() => (this as unknown as { mcp: { notification: (n: unknown) => unknown } }).mcp) },
     mcp: {
       notification: async (n: { params: { meta?: { event_type?: string } } }) => {
         if (n.params.meta?.event_type === 'peer_conversation_closed') closeNotices++

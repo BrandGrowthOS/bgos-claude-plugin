@@ -119,7 +119,10 @@ test('the notice is delivered over LOCAL IPC, not the HTTP channel being refused
   // class of bug this PR is fixing.
   const fn = /function noteAuthOutcome\([\s\S]*?\n\}/.exec(serverSource)
   assert.ok(fn, 'noteAuthOutcome must exist')
-  assert.match(fn[0], /method: 'notifications\/claude\/channel'/)
+  // Since 0.86.20 every channel card goes through channelNotify, which spells the method once
+  // (test/schedule-grant-run.test.ts holds that); the exact method is pinned there.
+  assert.match(fn[0], /channelNotify\(\(\) =>/)
+  assert.match(serverSource, /function channelNotify\([\s\S]*?method: 'notifications\/claude\/channel',/)
   assert.doesNotMatch(fn[0], /sendDaemonText|bgosPost|monitoredChatIds/)
   // And it must log unconditionally, because that is what `hoai logs` prints.
   assert.match(fn[0], /log\(`WARN/)

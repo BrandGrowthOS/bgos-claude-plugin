@@ -211,6 +211,7 @@ import { createActingUserTracker } from './lib/acting-user.js'
 import { ARTIFACT_TOOL_DECLS, handleArtifactTool } from './lib/artifacts-tools.js'
 import { VAULT_TOOL_DECLS, handleVaultTool } from './lib/vault-tools.js'
 import { vaultHostDir } from './lib/vault-host.mjs'
+import { createScheduleGrantRuns, holdChannelCardsDuringGrantedRun, requireBoardsTurn, scheduleGrantOf } from './lib/schedule-grant-run.mjs'
 import { createPrivateTurnTracker, emailSendBasis, PRIVATE_TURN_REFUSAL, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requireEmailSendTurn, requirePrivateTurn, turnAwarePrivateTurn } from './lib/private-turn.mjs'
 import { createFireLedger, createPostedButtons, privateFireKey, privateFiresPath, privateEndedLine, privateReplayLine, privateTapCard, privateUnrecordedLine } from './lib/private-turn.mjs'
 import {
@@ -1550,11 +1551,7 @@ function noteAuthOutcome(status: number): void {
   // module evaluation would hit the temporal dead zone. A diagnostic that can
   // fail a request is worse than no diagnostic.
   try {
-    void mcp
-      .notification({
-        method: 'notifications/claude/channel',
-        params: { content: notice.content, meta: notice.meta },
-      })
+    void channelNotify(() => ({ content: notice.content, meta: notice.meta }))
       .catch((err) => log(`Failed to deliver auth-rejection notice: ${err}`))
   } catch (err) {
     log(`auth-rejection notice could not be dispatched (ignored): ${err}`)
@@ -2760,6 +2757,27 @@ function deliverInbound(
   if (modelEffortControl.busy) return modelEffortControl.whenIdle().then(() => deliverInbound(steer, deliver))
   if (!steer) return steerGate.ordinary(() => deliver(false))
   return steerGate.steer({ messageId: steer.messageId, plan: steer.plan, deliver }).then(() => {})
+}
+
+/** A channel card's params, built when the card really goes out (channelNotify). */
+type ChannelCardParams = { content: string; meta?: unknown } & Record<string, unknown>
+
+/**
+ * THE ONLY WAY A CHANNEL CARD IS SENT (0.86.20, the scheduled run hold). The card is a builder: it runs only once the
+ * card passes every hold (lib/schedule-grant-run.mjs holdChannelCardsDuringGrantedRun, the model and effort lock),
+ * so whatever it records in the private turn tracker (deliver, noteUntracked, a tap) happens when the card reaches the
+ * session, never while it waits. A builder that returns null sends nothing. A granted wake names its grant. The method
+ * is spelled here and nowhere else (test/schedule-grant-run.test.ts fails a card sent any other way).
+ */
+function channelNotify(
+  build: () => ChannelCardParams | null,
+  options: { scheduleGrant?: ReturnType<typeof scheduleGrantOf> } = {},
+): Promise<void> {
+  return mcp.notification({
+    method: 'notifications/claude/channel',
+    params: build,
+    ...(options.scheduleGrant ? { scheduleGrant: options.scheduleGrant } : {}),
+  } as unknown as Parameters<typeof mcp.notification>[0])
 }
 
 // ── Owner model and effort control (Route A, KC 2026-10-23) ──────────────────
@@ -5888,6 +5906,25 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
               'Chat to bind the task to. Omit to use your main chat with the ' +
               'owner (the platform default).',
           },
+          boards: {
+            type: 'array',
+            maxItems: 10,
+            description:
+              'Wakes only. The boards each run needs, as [{ board_id, access }] ' +
+              '(board_id from boards_list, access read or write, default read). ' +
+              'Each run then keeps those board actions for up to twenty minutes even ' +
+              'when other people post meanwhile (their messages wait until the ' +
+              'run ends), as the person scheduling and on those boards only. What ' +
+              'a run produces goes only to that person\'s private chat with you.',
+            items: {
+              type: 'object',
+              properties: {
+                board_id: { type: 'string' },
+                access: { type: 'string', enum: ['read', 'write'] },
+              },
+              required: ['board_id'],
+            },
+          },
         },
         required: ['kind', 'topic', 'when'],
       },
@@ -6748,7 +6785,11 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
   if (req.params.name.startsWith('boards_') || req.params.name.startsWith('artifact_') || req.params.name.startsWith('vault_') || ['schedule', 'list_schedules', 'cancel_schedule'].includes(req.params.name)) {
     try {
       if (!lockHeld) throw new Error('This private action did not start because this daemon does not hold the active agent connection.')
-      privateCall = requirePrivateTurn(privateTurns, PRIVATE_MARKER_PATHS, USER_ID)
+      // A boards call in a granted scheduled run carries its grant, and is admitted on it alone after another
+      // person's message reached the turn (lib/schedule-grant-run.mjs). Every other private tool is as before.
+      privateCall = req.params.name.startsWith('boards_')
+        ? requireBoardsTurn({ requirePrivateTurn, tracker: privateTurns, markerPaths: PRIVATE_MARKER_PATHS, ownerUserId: USER_ID, runs: scheduleGrantRuns })
+        : requirePrivateTurn(privateTurns, PRIVATE_MARKER_PATHS, USER_ID)
     }
     catch (err) {
       // A refused call on a PEER agent's turn is counted (ids and the tool's name only, no content), so the
@@ -8362,6 +8403,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
         instruction: rawArgs.instruction,
         when: rawArgs.when,
         chatId: resolvedChatId,
+        boards: rawArgs.boards,
       })
       if (!built.ok) {
         return {
@@ -10107,10 +10149,7 @@ function checkReplyOverdue(): void {
       )
       const probe = buildLivenessProbeNotification({ chatId })
       void trackMessageOperation(() =>
-        mcp.notification({
-          method: 'notifications/claude/channel',
-          params: { content: probe.content, meta: probe.meta },
-        }),
+        channelNotify(() => ({ content: probe.content, meta: probe.meta })),
       ).catch((err) => log(`deaf-session probe delivery failed: ${err}`))
     } else if (deafAction === 'escalate') {
       deafEscalationDone = true
@@ -10173,9 +10212,7 @@ function checkReplyOverdue(): void {
     p.reminded = true
     const ageSec = Math.round((now - p.ts) / 1000)
     log(`reply-overdue fired for chat ${chatId} message ${p.messageId} (${ageSec}s)`)
-    void trackMessageOperation(() => mcp.notification({
-      method: 'notifications/claude/channel',
-      params: {
+    void trackMessageOperation(() => channelNotify(() => ({
         content:
           `[reply-overdue] Message in chat_id=${chatId} (message_id=${p.messageId}) ` +
           `arrived ${ageSec}s ago and no reply has been sent yet. ` +
@@ -10189,8 +10226,7 @@ function checkReplyOverdue(): void {
           ts: new Date(now).toISOString(),
           ...(p.ownerInbound ? { owner_inbound: 'true' } : {}),
         },
-      },
-    })).catch((err) => log(`Failed to deliver reply-overdue: ${err}`))
+      }))).catch((err) => log(`Failed to deliver reply-overdue: ${err}`))
   }
 }
 /**
@@ -10675,9 +10711,7 @@ async function announceMissedPlanAnswers(): Promise<void> {
           `(answeredAt=${mm.answeredAt}), missed by a run that had stopped`,
       )
       void trackMessageOperation(() =>
-        mcp.notification({
-          method: 'notifications/claude/channel',
-          params: {
+        channelNotify(() => ({
             // 70f1898b: a tap by anyone but the owner is someone else's words in the turn it reaches. A late announce
             // opens no private turn (4bf28148: only the stream's, in its window).
             content: privateTapCard({ tracker: privateTurns, lane: 'boot', ownerUserId: USER_ID, chatId: String(chatId), messageId: row.id, tapperUserId: readTapperUserId(payload), answeredAt: mm.answeredAt, receivedAt: Date.now(), callbackData: callbackData, customText: customText, posted: postedButton, content: contentLines.join('\n') }),
@@ -10692,8 +10726,7 @@ async function announceMissedPlanAnswers(): Promise<void> {
               assistantId: ASSISTANT_ID,
               ts: mm.answeredAt ?? '',
             }),
-          },
-        }),
+          })),
       ).catch((err) => {
         log(`Plan boot sweep: failed to deliver the answer to Claude: ${err}`)
       })
@@ -10797,6 +10830,17 @@ const turnChat = createTurnChatTracker()
 const privateFires = createFireLedger({ path: privateFiresPath(FLOOR_STATE_ROOT, ASSISTANT_ID) })
 const PRIVATE_MARKER_PATHS = FLOOR_KEYS.map((key) => privateMarkerPath(FLOOR_STATE_ROOT, key))
 const privateTurns = createPrivateTurnTracker({ ownerUserId: USER_ID, markerPaths: PRIVATE_MARKER_PATHS, fires: privateFires, onRevoke: (info) => { log(privateRevokeLine(info)); publishBrowserPrivateTurn() }, onRepeat: (repeat) => log(privateRepeatLine(repeat)), onReplay: (replay) => log(privateReplayLine(replay)), onUnrecorded: (info) => log(privateUnrecordedLine(info)), onEnded: (info) => log(privateEndedLine(info)) })
+// A scheduled run keeps the permission of the person who scheduled it (lib/schedule-grant-run.mjs, 0.86.20). While a
+// granted run is live, every other channel card waits (the hold in the notification chain below) and the boards calls
+// of the wake's own turn carry the grant. Its end tells the server, which uses the grant up for good and lifts its
+// hold on the agent's output.
+const scheduleGrantRuns = createScheduleGrantRuns({
+  onEnded: (run, reason) => {
+    log(`scheduled run ${run.taskId}: board grant ended (${reason})`)
+    void bgosPeerPost(`scheduled-tasks/agent/${run.taskId}/grant/end`, { fireId: run.fireId })
+      .catch((err) => log(`scheduled run ${run.taskId}: the server was not told the run ended (its window ends it): ${err}`))
+  },
+})
 // Every channel card passes here. One that skipped privateTurns.deliver (a meeting line, a button tap, a voice
 // dispatch or stop) names nobody, so it ends a recipient's or voice consult's private turn. All notifications retain
 // their provenance. Owner chat and scheduler turns keep their raw-card policy (privateTurns.rawCard). Its meta says which card it is: one that
@@ -10810,6 +10854,14 @@ mcp.notification = ((notification: Parameters<typeof mcp.notification>[0]) => {
     privateTurns.rawCard(String(params?.content ?? ''), params?.meta)
   }
   return sendMcpNotification(notification)
+}) as typeof mcp.notification
+// The scheduled run hold (lib/schedule-grant-run.mjs, 0.86.20): while a granted run is live every channel card but the
+// run's own wake waits, and each card is BUILT here, after this hold and the lock below, so a held card never reaches
+// the private turn tracker. Inside the lock, outside the raw card record. A released card goes back through the whole
+// chain (resend), so it waits for the lock again and the lock stamps when it really went out.
+mcp.notification = holdChannelCardsDuringGrantedRun(scheduleGrantRuns, mcp.notification.bind(mcp), {
+  log,
+  resend: (notification: Parameters<typeof mcp.notification>[0]) => mcp.notification(notification),
 }) as typeof mcp.notification
 // OUTERMOST, so the private turn record above runs when a held card really
 // goes out: the model and effort control's lock over every card that can open
@@ -11377,6 +11429,8 @@ function endHookTurn(keepCard: boolean): void {
   // The Stop line's stamp, when a hook line ended the turn: a live marker written before it is the turn that stopped,
   // and a prompt submitted before its forwarder's start ran in that turn (startedAt).
   privateTurns.end(hookLineAt === null ? {} : { at: hookLineAt, startedAt: hookLineStartedAt })
+  // A granted scheduled run whose turn began ends with it, and what waited is delivered.
+  scheduleGrantRuns.noteStop()
   publishBrowserPrivateTurn()
 }
 
@@ -11505,11 +11559,14 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
   // none once that session ended, so the first prompt of the session a /clear starts writes its own (the fourth).
   if (floorEntrySession(liveSessionId, hookEndedSessionId) !== floorEntrySessionWritten) markFloorAttachedIfHolder()
   if (event.name === 'SessionEnd') privateTurns.end({ at: lineAt, startedAt: line?.startedAt })
+  // The session that ran a granted scheduled run is gone: the run is over, and what waited is delivered.
+  if (event.name === 'SessionEnd') scheduleGrantRuns.end('session ended')
   if (event.name === 'UserPromptSubmit') {
     // A prompt past the forwarder's clip arrives as its token(s) plus the full prompt's hash.
     // startedAt: when claude submitted it (the forwarder's own start), so a Stop line places it by that, wherever the
     // two lines land (lib/private-turn.mjs ranSinceStop, the final review of e7166041).
     const began = privateTurns.begin({ prompt: payload.prompt, promptHash: payload.hoai_clipped === true ? payload.prompt_sha256 : undefined, sessionId: hookSessionId, promptId: payload.prompt_id, startedAt: line?.startedAt })
+    scheduleGrantRuns.noteBegin(payload.prompt)
     hookTurnLive = true
     // The turn's chat is decided HERE and held until Stop. The prompt carries
     // the message we delivered, so the delivery it matches names the chat; with
@@ -12102,13 +12159,10 @@ function announcePostedButtonAnswer(chatId: string, m: ChatMessage): void {
   if (mm.text?.trim()) contentLines.push(`Original question: ${mm.text.length > 200 ? mm.text.slice(0, 197) + '...' : mm.text}`)
   const postedButton = postedButtons.posted(mm.id, callbackData, buttonText, mm.text)
   log(`button_clicked ANNOUNCED via POLL for message ${mm.id} in chat ${chatId} (answeredAt=${mm.answeredAt})`)
-  void trackMessageOperation(() => mcp.notification({
-    method: 'notifications/claude/channel',
-    params: {
+  void trackMessageOperation(() => channelNotify(() => ({
       content: privateTapCard({ tracker: privateTurns, lane: 'poll', ownerUserId: USER_ID, chatId: String(chatId), messageId: mm.id, tapperUserId: readTapperUserId(payload), answeredAt: mm.answeredAt, receivedAt: Date.now(), callbackData: agentCallbackData, customText: customText, posted: postedButton, content: contentLines.join('\n') }),
       meta: buildButtonClickedMeta({ chatId, messageId: mm.id, callbackData: planAnswer.callbackData ?? agentCallbackData, buttonText, customText, tapperUserId: readTapperUserId(payload), assistantId: ASSISTANT_ID, ts: mm.answeredAt }),
-    },
-  })).catch((err) => log(`Failed to deliver button_clicked to Claude: ${err}`))
+    }))).catch((err) => log(`Failed to deliver button_clicked to Claude: ${err}`))
 }
 
 async function pollChat(chatId: string): Promise<void> {
@@ -12697,9 +12751,7 @@ async function pollChat(chatId: string): Promise<void> {
         `button_clicked ANNOUNCED via POLL for message ${mm.id} in chat ${chatId} ` +
           `(answeredAt=${mm.answeredAt}); the stream lane did not deliver it first`,
       )
-      void trackMessageOperation(() => mcp.notification({
-        method: 'notifications/claude/channel',
-        params: {
+      void trackMessageOperation(() => channelNotify(() => ({
           // 70f1898b: a tap by anyone but the owner is someone else's words in the turn it reaches. The poll opens no
           // private turn, however fresh the tap (4bf28148: only the stream's, in its window).
           content: privateTapCard({ tracker: privateTurns, lane: 'poll', ownerUserId: USER_ID, chatId: String(chatId), messageId: mm.id, tapperUserId: readTapperUserId(payload), answeredAt: mm.answeredAt, receivedAt: Date.now(), callbackData: agentCallbackData, customText: customText, posted: postedButton, content: contentLines.join('\n') }),
@@ -12716,8 +12768,7 @@ async function pollChat(chatId: string): Promise<void> {
             assistantId: ASSISTANT_ID,
             ts: mm.answeredAt,
           }),
-        },
-      })).catch((err) => {
+        }))).catch((err) => {
         log(`Failed to deliver button_clicked to Claude: ${err}`)
       })
     }
@@ -12912,10 +12963,10 @@ async function pollChat(chatId: string): Promise<void> {
         })
         // Another party's words with no delivery token: an email_send in the turn it reaches refuses, and the tag on the
         // card's end names it in whatever CLI turn the card runs in (70f1898b).
-        card.content += privateTurns.noteUntracked({ chatId })
-        const meetingHandoff = trackMessageOperation(() => mcp.notification({
-          method: 'notifications/claude/channel',
-          params: card,
+        // Its untracked tag is recorded when the card really goes out (the scheduled run hold, 0.86.20).
+        const meetingHandoff = trackMessageOperation(() => channelNotify(() => {
+          card.content += privateTurns.noteUntracked({ chatId })
+          return card
         }))
         humanMessageEdits.rememberOriginal(
           viewStreamMessage({ seq: 0, kind: 'message_new', chatId: Number(chatId), messageId: msg.message.id, payload: msg as unknown as Record<string, unknown> }, ASSISTANT_ID),
@@ -13098,9 +13149,11 @@ async function pollChat(chatId: string): Promise<void> {
         text: content,
         now: Date.now(),
       })
-      const humanHandoff = trackMessageOperation(() => deliverInbound(steerPlan, (interrupted) => humanMessageEdits.isDeleted({ chatId, messageId: msg.message.id }) ? Promise.resolve() : mcp.notification({
-        method: 'notifications/claude/channel',
-        params: {
+      // The board grant a scheduled wake carries (0.86.20): the card names it, and the notification chain's hold opens
+      // the run when the card goes out and holds every other card while the run is live.
+      const pollActor = privateActor({ senderType: pollSenderType, senderUserId: privateSenderUserId(msg.message), agentOrigin: pollAgentOrigin, eventMeta: msg.message.eventMeta })
+      const pollGrant = scheduleGrantOf({ senderType: pollSenderType, eventMeta: msg.message.eventMeta, actingUserId: pollActor, chatId })
+      const humanHandoff = trackMessageOperation(() => deliverInbound(steerPlan, (interrupted) => humanMessageEdits.isDeleted({ chatId, messageId: msg.message.id }) ? Promise.resolve() : channelNotify(() => ({
           content: privateTurns.deliver({ content, chatId, peerSourceAssistantId: pollAgentOrigin?.sourceAssistantId, emailBasis: emailSendBasis({ senderType: pollSenderType, agentOrigin: pollAgentOrigin, eventMeta: msg.message.eventMeta, messageId: msg.message.id, backlog: isBacklog }), fireKey: privateFireKey({ senderType: pollSenderType, eventMeta: msg.message.eventMeta, messageId: msg.message.id }), actingUserId: privateActor({ senderType: pollSenderType, senderUserId: privateSenderUserId(msg.message), agentOrigin: pollAgentOrigin, eventMeta: msg.message.eventMeta }) }),
           meta: finalInboundMeta(
             pollChannel.meta,
@@ -13108,8 +13161,7 @@ async function pollChat(chatId: string): Promise<void> {
             !isSlashCommand && !pollIsEmail ? pollEventMeta : null,
             interrupted ? STEER_INTERRUPTED_META : null,
           ),
-        },
-      })))
+        }), { scheduleGrant: pollGrant })))
       if (!isSlashCommand) humanMessageEdits.rememberOriginal(
         viewStreamMessage({ seq: 0, kind: 'message_new', chatId: Number(chatId), messageId: msg.message.id, payload: msg as unknown as Record<string, unknown> }, ASSISTANT_ID),
         humanHandoff,
@@ -13480,16 +13532,13 @@ function announceCompleteAsks(via: string): void {
     const event = buildAskAnsweredEvent(ask, { assistantId: String(ASSISTANT_ID) })
     const ageMin = Math.round((Date.now() - ask.postedAt) / 60_000)
     void trackMessageOperation(() =>
-      mcp.notification({
-        method: 'notifications/claude/channel',
-        params: {
+      channelNotify(() => ({
           // The backend stamps no tapper on an ask answer, and typed words
           // ride in it, so it is never shown to be the owner's own words: it
           // opens no private turn and is noted like any other untracked card.
           content: privateTapCard({ tracker: privateTurns, lane: 'ask', ownerUserId: USER_ID, chatId: ask.chatId, messageId: ask.questions[0]?.messageId, tapperUserId: null, answeredAt: null, receivedAt: Date.now(), callbackData: '', customText: null, posted: false, content: event.content }),
           meta: event.meta,
-        },
-      }),
+        })),
     )
       .then(() => {
         askTracker.delivered(ask.askId)
@@ -13723,10 +13772,7 @@ function sendAskWithdrawn(ask: PendingAsk, withdrawn: number, opts: AskWithdrawn
   const event = askWithdrawnContent(ask, withdrawn, opts)
   if (!event) return Promise.resolve()
   return trackMessageOperation(() =>
-    mcp.notification({
-      method: 'notifications/claude/channel',
-      params: { content: event.content, meta: event.meta },
-    }),
+    channelNotify(() => ({ content: event.content, meta: event.meta })),
   )
     .then(() => log(`ask_withdrawn: retired group ${ask.askId} in chat ${ask.chatId} and told this session${opts.toAsker ? ', which asked it' : ''}, via ${opts.via}`))
     .catch((err) => {
@@ -14704,10 +14750,7 @@ function handleMissionEvent(frame: string, payload: unknown): void {
         `(chat ${chatId ?? 'unknown'})`,
     )
     void trackMessageOperation(() =>
-      mcp.notification({
-        method: 'notifications/claude/channel',
-        params: { content: notice.content, meta: notice.meta },
-      }),
+      channelNotify(() => ({ content: notice.content, meta: notice.meta })),
     ).catch((err) => log(`${frame} notice delivery failed: ${err}`))
   } catch (err) {
     log(`${frame} handler error: ${err}`)
@@ -14926,10 +14969,7 @@ async function refreshIdentityWhileRunning(): Promise<void> {
     log(`identity: renamed while running; telling the live session its name (${JSON.stringify(cleanIdentityName(identity.name))})`)
     await trackMessageOperation(() => {
       const notice = buildIdentityNotice({ assistantName: identity.name, ownerFirstName: identity.ownerFirstName })
-      return mcp.notification({
-        method: 'notifications/claude/channel',
-        params: { content: notice.content, meta: notice.meta },
-      })
+      return channelNotify(() => ({ content: notice.content, meta: notice.meta }))
     })
   } catch (err) {
     log(`identity: the refresh while running failed (${err})`)
@@ -15101,9 +15141,7 @@ const voiceRpc = new VoiceRpcHandler({
       body as unknown as Record<string, unknown>,
     ),
   notify: (content, meta, consult) =>
-    mcp.notification({
-      method: 'notifications/claude/channel',
-      params: {
+    channelNotify(() => ({
         // A voice consult card is a delivery like any message: its own
         // single use token, and the owner only when the backend's stamp
         // verified (lib/private-turn.mjs voiceConsultActor). Its turn is
@@ -15117,8 +15155,7 @@ const voiceRpc = new VoiceRpcHandler({
           })
           : content,
         meta,
-      },
-    }),
+      })),
   onConsultEnded: (consultId) => {
     privateTurns.endConsult(consultId)
   },
@@ -16267,18 +16304,12 @@ async function forwardHumanEdit(view: StreamMessageView, transport: 'poll' | 'ws
     }
     if (originalMeta?.meeting_id) {
       // A correction cannot grant private authority its meeting original lacked.
-      await trackMessageOperation(() => mcp.notification({
-        method: 'notifications/claude/channel',
-        params: { content: content + privateTurns.noteUntracked({ chatId: edited.chatId }), meta },
-      }))
+      await trackMessageOperation(() => channelNotify(() => ({ content: content + privateTurns.noteUntracked({ chatId: edited.chatId }), meta })))
     } else {
-      await trackMessageOperation(() => mcp.notification({
-        method: 'notifications/claude/channel',
-        params: {
+      await trackMessageOperation(() => channelNotify(() => ({
           content: privateTurns.deliver({ content, chatId: edited.chatId, emailBasis: emailSendBasis({ senderType: 'user', messageId: edited.messageId, backlog: false }), fireKey: null, actingUserId: privateActor({ senderType: 'user', senderUserId: privateSenderUserId(edited.raw) }) }),
           meta,
-        },
-      }))
+        })))
     }
     if (humanMessageEdits.isDeleted(edited)) return
     lastInboundAtMs = Date.now()
@@ -16674,10 +16705,10 @@ async function forwardStreamInbound(
     }
     log(`Stream replay message in chat ${chatId}: "${content.slice(0, 100)}${content.length > 100 ? '...' : ''}"`)
     try {
+      const streamActor = privateActor({ senderType: isSystem ? 'system' : view.senderKind, senderUserId: privateSenderUserId(view.raw), agentOrigin: view.agentOrigin, eventMeta: view.eventMetaRaw })
+      const streamGrant = scheduleGrantOf({ senderType: isSystem ? 'system' : view.senderKind, eventMeta: view.eventMetaRaw, actingUserId: streamActor, chatId })
       const humanHandoff = trackMessageOperation(() =>
-        deliverInbound(steerPlan, (interrupted) => humanMessageEdits.isDeleted(view) ? Promise.resolve() : mcp.notification({
-          method: 'notifications/claude/channel',
-          params: {
+        deliverInbound(steerPlan, (interrupted) => humanMessageEdits.isDeleted(view) ? Promise.resolve() : channelNotify(() => ({
             content: privateTurns.deliver({ content, chatId, peerSourceAssistantId: view.agentOrigin?.sourceAssistantId, emailBasis: emailSendBasis({ senderType: isSystem && !streamIsEmail ? 'system' : view.senderKind, agentOrigin: view.agentOrigin, eventMeta: view.eventMetaRaw, messageId: view.messageId, backlog: sentBeforeStart(view.sentDate, DAEMON_START_MS) }), fireKey: privateFireKey({ senderType: isSystem ? 'system' : view.senderKind, eventMeta: view.eventMetaRaw, messageId: view.messageId }), actingUserId: privateActor({ senderType: isSystem ? 'system' : view.senderKind, senderUserId: privateSenderUserId(view.raw), agentOrigin: view.agentOrigin, eventMeta: view.eventMetaRaw }) }),
             meta: finalInboundMeta(
               streamChannel.meta,
@@ -16685,8 +16716,7 @@ async function forwardStreamInbound(
               streamEventMeta,
               interrupted ? STEER_INTERRUPTED_META : null,
             ),
-          },
-        })),
+          }), { scheduleGrant: streamGrant })),
       )
       if (!isSlash) humanMessageEdits.rememberOriginal(view, humanHandoff)
       await humanHandoff
@@ -16955,9 +16985,7 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
   // The raw value and label, as posted: the owner's tap opens a private turn only on a card as this daemon posted it.
   const postedButton = postedButtons.posted(view.messageId, answer.callbackData, answer.buttonText, view.text)
   void trackMessageOperation(() =>
-    mcp.notification({
-      method: 'notifications/claude/channel',
-      params: {
+    channelNotify(() => ({
         // 70f1898b: a tap by anyone but the owner is someone else's words in the turn it reaches. The owner's own tap,
         // as the backend stamped it, within PRIVATE_TAP_WINDOW_MS of its answeredAt, opens a private turn as the owner
         // (4bf28148), and the fire ledger makes a second announce of it a replay.
@@ -16971,8 +16999,7 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
           tapperUserId: answer.tapperUserId,
           assistantId: String(ASSISTANT_ID),
         }),
-      },
-    }),
+      })),
   )
     .then(() =>
       // Handoff to the MCP transport, NOT the moment the agent's turn applies
@@ -17854,9 +17881,7 @@ function connectWebsocket(): void {
       }
       const { taskId, question, context, chatId } = parsed.task
       log(`voice_task_dispatch received (task=${taskId})`)
-      void trackMessageOperation(() => mcp.notification({
-        method: 'notifications/claude/channel',
-        params: {
+      void trackMessageOperation(() => channelNotify(() => ({
           content: buildVoiceTaskDispatchText({ taskId, question, context }),
           meta: channelMeta(
             {
@@ -17868,8 +17893,7 @@ function connectWebsocket(): void {
             },
             { task_id: taskId },
           ),
-        },
-      })).catch((err) => log(`voice_task_dispatch mcp.notification error: ${err}`))
+        }))).catch((err) => log(`voice_task_dispatch mcp.notification error: ${err}`))
     } catch (err) {
       log(`voice_task_dispatch handler error: ${err}`)
     }
@@ -18273,10 +18297,10 @@ function connectWebsocket(): void {
           `meeting twin rx (meeting=${wsMeeting.meetingId} msg=${messageId} ` +
             `your_turn=${wsMeeting.yourTurn ? 'YES' : 'NO'})`,
         )
-        card.content += privateTurns.noteUntracked({ chatId })
-        const meetingHandoff = trackMessageOperation(() => mcp.notification({
-          method: 'notifications/claude/channel',
-          params: card,
+        // Its untracked tag is recorded when the card really goes out (the scheduled run hold, 0.86.20).
+        const meetingHandoff = trackMessageOperation(() => channelNotify(() => {
+          card.content += privateTurns.noteUntracked({ chatId })
+          return card
         }))
         humanMessageEdits.rememberOriginal(
           viewStreamMessage({ seq: 0, kind: 'message_new', chatId: null, messageId, payload }, ASSISTANT_ID),
@@ -18393,9 +18417,9 @@ function connectWebsocket(): void {
           | null
           | undefined,
       )
-      const humanHandoff = trackMessageOperation(() => deliverInbound(steerPlan, (interrupted) => humanMessageEdits.isDeleted({ chatId, messageId }) ? Promise.resolve() : mcp.notification({
-        method: 'notifications/claude/channel',
-        params: {
+      const wsActor = privateActor({ senderType: wsSenderType, senderUserId: privateSenderUserId(payload), agentOrigin: wsAgentOrigin, eventMeta: payload?.eventMeta ?? payload?.event_meta })
+      const wsGrant = scheduleGrantOf({ senderType: wsSenderType, eventMeta: payload?.eventMeta ?? payload?.event_meta, actingUserId: wsActor, chatId })
+      const humanHandoff = trackMessageOperation(() => deliverInbound(steerPlan, (interrupted) => humanMessageEdits.isDeleted({ chatId, messageId }) ? Promise.resolve() : channelNotify(() => ({
           content: privateTurns.deliver({ content, chatId, peerSourceAssistantId: wsAgentOrigin?.sourceAssistantId, emailBasis: emailSendBasis({ senderType: wsSenderType, agentOrigin: wsAgentOrigin, eventMeta: payload?.eventMeta ?? payload?.event_meta, messageId, backlog: sentBeforeStart(payload?.sentDate ?? payload?.sent_date, DAEMON_START_MS) }), fireKey: privateFireKey({ senderType: wsSenderType, eventMeta: payload?.eventMeta ?? payload?.event_meta, messageId }), actingUserId: privateActor({ senderType: wsSenderType, senderUserId: privateSenderUserId(payload), agentOrigin: wsAgentOrigin, eventMeta: payload?.eventMeta ?? payload?.event_meta }) }),
           meta: finalInboundMeta(
             wsChannel.meta,
@@ -18403,8 +18427,7 @@ function connectWebsocket(): void {
             !isWsSlashCommand && !wsIsEmail ? wsEventMeta : null,
             interrupted ? STEER_INTERRUPTED_META : null,
           ),
-        },
-      })))
+        }), { scheduleGrant: wsGrant })))
       if (!isWsSlashCommand) humanMessageEdits.rememberOriginal(
         viewStreamMessage({ seq: 0, kind: 'message_new', chatId: null, messageId, payload }, ASSISTANT_ID),
         humanHandoff,
@@ -18453,9 +18476,7 @@ function connectWebsocket(): void {
     if (convId != null) {
       markConversationClosed({ convId })
     }
-    void trackMessageOperation(() => mcp.notification({
-      method: 'notifications/claude/channel',
-      params: {
+    void trackMessageOperation(() => channelNotify(() => ({
         content:
           `[peer_conversation_closed] reason=${payload?.reason ?? 'unknown'}\n` +
           `(conversation_id=${payload?.conversation_id ?? '?'}, ` +
@@ -18469,8 +18490,7 @@ function connectWebsocket(): void {
           assistant_id: ASSISTANT_ID,
           transport: 'ws',
         },
-      },
-    })).catch(() => {})
+      }))).catch(() => {})
   }))
 
   realtimeSocket.on('peer_turn_yielded', whenArmed('peer_turn_yielded', (payload: any) => {
@@ -18551,10 +18571,10 @@ function connectWebsocket(): void {
         `meeting_invitation accepted (id=${meetingId}, peers=${peerNames}, history=${rawHistory.length})`,
       )
       // Like a meeting line: the room's earlier words ride on it, so an email_send in a turn it reached asks the owner.
-      const untracked = privateTurns.noteUntracked({ chatId: String(payload?.chatId ?? '') })
-      void trackMessageOperation(() => mcp.notification({
-        method: 'notifications/claude/channel',
-        params: {
+      void trackMessageOperation(() => channelNotify(() => {
+        // Recorded when the card really goes out (the scheduled run hold, 0.86.20).
+        const untracked = privateTurns.noteUntracked({ chatId: String(payload?.chatId ?? '') })
+        return ({
           content:
             `[meeting_invitation] You have been added to meeting #${meetingId}` +
             `${payload?.title ? ` "${payload.title}"` : ''}.\n` +
@@ -18571,7 +18591,7 @@ function connectWebsocket(): void {
             assistant_id: ASSISTANT_ID,
             transport: 'ws',
           },
-        },
+        })
       })).catch(() => {})
     } catch (err) {
       log(`meeting_invitation handler error: ${err}`)
@@ -18741,10 +18761,10 @@ function connectWebsocket(): void {
           filesUnknown: !Array.isArray(payload?.files),
           emailFileSaves,
         })
-        card.content += privateTurns.noteUntracked({ chatId })
-        const meetingHandoff = trackMessageOperation(() => mcp.notification({
-          method: 'notifications/claude/channel',
-          params: card,
+        // Its untracked tag is recorded when the card really goes out (the scheduled run hold, 0.86.20).
+        const meetingHandoff = trackMessageOperation(() => channelNotify(() => {
+          card.content += privateTurns.noteUntracked({ chatId })
+          return card
         }))
         if (senderId == null) humanMessageEdits.rememberOriginal(
           viewStreamMessage({ seq: 0, kind: 'message_new', chatId: null, messageId, payload }, ASSISTANT_ID),
@@ -18796,9 +18816,7 @@ function connectWebsocket(): void {
     }
     if (becameMyTurn) {
       log(`meeting_turn_changed → my turn in meeting #${meetingId}`)
-      void trackMessageOperation(() => mcp.notification({
-        method: 'notifications/claude/channel',
-        params: {
+      void trackMessageOperation(() => channelNotify(() => ({
           content:
             `[Meeting #${meetingId}] It is now your turn. Reply via the ` +
             `meeting_reply tool with meeting_id=${meetingId}, or send "PASS" ` +
@@ -18810,8 +18828,7 @@ function connectWebsocket(): void {
             user_id: USER_ID,
             assistant_id: ASSISTANT_ID,
           },
-        },
-      })).catch(() => {})
+        }))).catch(() => {})
     }
   }))
 
@@ -18870,9 +18887,7 @@ function connectWebsocket(): void {
       }
 
       log(`meeting_state_resync → it is my turn in meeting #${meetingId}`)
-      void trackMessageOperation(() => mcp.notification({
-        method: 'notifications/claude/channel',
-        params: {
+      void trackMessageOperation(() => channelNotify(() => ({
           content:
             `[Meeting #${meetingId}] (reconnect catch-up) It is your turn. ` +
             `Reply via the meeting_reply tool with meeting_id=${meetingId}, ` +
@@ -18884,8 +18899,7 @@ function connectWebsocket(): void {
             user_id: USER_ID,
             assistant_id: ASSISTANT_ID,
           },
-        },
-      })).catch(() => {})
+        }))).catch(() => {})
     } catch (err) {
       log(`meeting_state_resync handler error: ${err}`)
     }
@@ -18897,9 +18911,7 @@ function connectWebsocket(): void {
     if (!Number.isFinite(meetingId)) return
     forgetMeetingContext(meetingId)
     log(`meeting_closed id=${meetingId} reason=${payload?.reason}`)
-    void trackMessageOperation(() => mcp.notification({
-      method: 'notifications/claude/channel',
-      params: {
+    void trackMessageOperation(() => channelNotify(() => ({
         content:
           `[Meeting #${meetingId}] Meeting closed (reason: ${payload?.reason ?? 'unknown'}).` +
           ` Stop sending meeting_reply for this meeting.`,
@@ -18910,8 +18922,7 @@ function connectWebsocket(): void {
           user_id: USER_ID,
           assistant_id: ASSISTANT_ID,
         },
-      },
-    })).catch(() => {})
+      }))).catch(() => {})
   }))
 
   realtimeSocket.on('meeting_participant_left', whenArmed('meeting_participant_left', (payload: any) => {
@@ -20449,10 +20460,7 @@ async function main(): Promise<void> {
           .then((name) =>
             trackMessageOperation(() => {
               const hello = buildBootHelloNotification({ assistantName: name, chatId: helloChat })
-              return mcp.notification({
-                method: 'notifications/claude/channel',
-                params: { content: hello.content, meta: hello.meta },
-              })
+              return channelNotify(() => ({ content: hello.content, meta: hello.meta }))
             }),
           )
           .catch((err) => log(`boot hello delivery failed: ${err}`))
@@ -20480,10 +20488,7 @@ async function main(): Promise<void> {
         log(`identity: telling the live session its name (${JSON.stringify(cleanIdentityName(identity.name))})`)
         return trackMessageOperation(() => {
           const notice = buildIdentityNotice({ assistantName: identity.name, ownerFirstName: identity.ownerFirstName })
-          return mcp.notification({
-            method: 'notifications/claude/channel',
-            params: { content: notice.content, meta: notice.meta },
-          })
+          return channelNotify(() => ({ content: notice.content, meta: notice.meta }))
         })
       })
       .catch((err) => log(`identity notice delivery failed: ${err}`))
@@ -20557,10 +20562,7 @@ async function main(): Promise<void> {
         const probe = buildLivenessProbeNotification({ chatId: monitoredChatIds[0], afterRestart: true })
         log('liveness probe: probe-requested.json seen, asking the session to call channel_ack')
         void trackMessageOperation(() =>
-          mcp.notification({
-            method: 'notifications/claude/channel',
-            params: { content: probe.content, meta: probe.meta },
-          }),
+          channelNotify(() => ({ content: probe.content, meta: probe.meta })),
         ).catch((err) => log(`liveness probe delivery failed: ${err}`))
       }, LIVENESS_PROBE_POLL_MS).unref()
     }

@@ -1,4 +1,5 @@
 import test from 'node:test'
+import { channelNotifyFor } from './helpers/channel-notify.ts'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import ts from 'typescript'
@@ -59,6 +60,8 @@ function rig(read: (path: string, opts: unknown) => Promise<unknown> = async () 
     lanesOnForThisAgent: lanesOn, chatOwnership: { isOthers: () => flags.others },
     ownerAnnounceRefused, ownerLaneVerdict, noteLaneMisroute: (...args: unknown[]) => refused.push(args),
     log: () => {}, trackMessageOperation: (op: () => Promise<void>) => op(),
+    // channelNotify sends through the same double (0.86.20, test/helpers/channel-notify.ts).
+    get channelNotify(): ReturnType<typeof channelNotifyFor> { return channelNotifyFor(() => (this as unknown as { mcp: { notification: (n: unknown) => unknown } }).mcp) },
     mcp: { notification: async (note: (typeof notes)[number]) => { notes.push(note) } },
     privateTurns: createPrivateTurnTracker({ ownerUserId: OWNER }), privateTapCard,
     settlePlan: (chatId: string) => { settlements.push(chatId); openPlansByChat.delete(chatId) },
