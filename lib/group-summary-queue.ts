@@ -50,6 +50,32 @@ export function withGroupSummaries(content: string, items: readonly QueuedGroupS
   return `${groupSummaryPrefix(items)}\n\n${content}`
 }
 
+/**
+ * Is this channel card the OWNER speaking in their own chat with the agent?
+ * Only such a card takes the summaries (review finding 2): a share
+ * recipient's card, a room member's, a peer agent's, a system card, or the
+ * owner in a group would put one group's summary into a turn answered to
+ * someone else. Read off the card's own meta, all of it required:
+ *  - user_id is the owner, and sender_relationship, when stated, is owner;
+ *  - no sender_type (a system, agent or room agent card) and no peer conversation;
+ *  - the chat is one of the owner's main chats with this agent, and not one
+ *    known to belong to someone else.
+ */
+export function isOwnerCard(
+  meta: unknown,
+  ctx: { ownerUserId: string; mainChatIds: readonly string[]; isOthers(chatId: string): boolean },
+): boolean {
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return false
+  const m = meta as Record<string, unknown>
+  const owner = String(ctx.ownerUserId ?? '')
+  if (owner === '' || m.user_id !== owner) return false
+  if (m.sender_relationship !== undefined && m.sender_relationship !== 'owner') return false
+  if (m.sender_type !== undefined || m.system !== undefined || m.peer_conversation_id !== undefined) return false
+  const chatId = typeof m.chat_id === 'string' ? m.chat_id : ''
+  if (chatId === '' || !ctx.mainChatIds.includes(chatId)) return false
+  return !ctx.isOthers(chatId)
+}
+
 export interface GroupSummaryQueue {
   add(item: QueuedGroupSummary): void
   size(): number

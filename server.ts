@@ -1200,7 +1200,7 @@ import { randomInt } from 'node:crypto'
 import { GroupLaneManager, type GroupApproval } from './lib/group-lanes.ts'
 import { groupRouteOf, groupTapLine, readGroupDelivery } from './lib/group-delivery.ts'
 import { groupIdleOverrideMs, type GroupLevel } from './lib/group-lane-args.ts'
-import { createGroupSummaryQueue, withGroupSummaries } from './lib/group-summary-queue.ts'
+import { createGroupSummaryQueue, isOwnerCard, withGroupSummaries } from './lib/group-summary-queue.ts'
 import { AsideForks, runAside } from './lib/aside-fork.ts'
 import { ThreadsCliGate, threadsCliProblem, type ThreadsCliAnswer } from './lib/threads-cli.ts'
 import { killProcessGroup, processRunsIn, processStamp } from './lib/lane-process.ts'
@@ -10829,7 +10829,7 @@ const groupSummaries = createGroupSummaryQueue({
 /** The permission prompts group lanes raised, by request id: their verdict goes to the lane. */
 const groupPermissionVerdicts = new Map<string, (behavior: string) => void>()
 function groupNotificationStep(notification: { method?: string; params?: unknown } | undefined): { swallow?: true; restore?: () => void } | null {
-  const params = notification?.params as { content?: unknown; request_id?: unknown; behavior?: unknown } | undefined
+  const params = notification?.params as { content?: unknown; meta?: unknown; request_id?: unknown; behavior?: unknown } | undefined
   if (notification?.method === 'notifications/claude/channel/permission' && typeof params?.request_id === 'string') {
     const verdict = groupPermissionVerdicts.get(params.request_id)
     if (!verdict) return null
@@ -10839,6 +10839,8 @@ function groupNotificationStep(notification: { method?: string; params?: unknown
   }
   if (notification?.method !== 'notifications/claude/channel' || !params || typeof params.content !== 'string') return null
   if (groupSummaries.size() === 0) return null
+  // Only the owner's own card in their own chat takes them; any other card leaves them queued.
+  if (!isOwnerCard(params.meta, { ownerUserId: USER_ID, mainChatIds, isOthers: (chatId) => chatOwnership.isOthers(chatId) })) return null
   const taken = groupSummaries.take()
   if (!taken) return null
   const before = params.content

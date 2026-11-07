@@ -27,6 +27,7 @@ import { VoiceRpcHandler, normalizeVoiceRpc, type VoiceRpcDeps, type VoiceRpcRes
 import {
   GROUP_SUMMARY_QUEUE_MAX,
   createGroupSummaryQueue,
+  isOwnerCard,
   groupSummaryHeader,
   withGroupSummaries,
 } from '../lib/group-summary-queue.ts'
@@ -218,7 +219,7 @@ test('the summaries survive a restart, keep only the last 10, and come back when
   first.add({ chatId: '1', title: 'x', summary: '   ' })
 })
 
-test('server.ts puts the summaries in front of every channel card, keeps its private turn, and puts them back on a failed send', () => {
+test('server.ts puts the summaries in front of the owner\'s next card, keeps its private turn, and puts them back on a failed send', () => {
   const step = server.slice(server.indexOf('function groupNotificationStep('), server.indexOf('const sendMcpNotification = mcp.notification.bind(mcp)'))
   assert.match(step, /const taken = groupSummaries\.take\(\)/)
   assert.match(step, /params\.content = withGroupSummaries\(before, taken\.items\)/)
@@ -243,4 +244,33 @@ test('a delivered card with the summaries in front of it is still the same deliv
   assert.equal(tracker.tagRawCard(grown), grown, 'known: not tagged as a raw card')
   assert.notEqual(tracker.tagRawCard(card), card, 'the old text is no delivery any more')
   assert.equal(tracker.rekeyCard('never delivered', 'x'), false)
+})
+
+test('review 2: only a card from the OWNER in their own chat with the agent takes the summaries', () => {
+  const ctx = { ownerUserId: 'user_owner', mainChatIds: ['10'], isOthers: (chatId: string) => chatId === '20' }
+  const owner = { chat_id: '10', message_id: '1', user: 'User', user_id: 'user_owner' }
+  assert.equal(isOwnerCard(owner, ctx), true)
+  assert.equal(isOwnerCard({ ...owner, sender_relationship: 'owner' }, ctx), true)
+  for (const [why, meta] of [
+    ['a share recipient', { ...owner, user_id: 'user_recipient', sender_relationship: 'shared_recipient' }],
+    ['the owner\'s id with another relationship', { ...owner, sender_relationship: 'room_member' }],
+    ['a room member', { ...owner, chat_id: '77', user_id: 'user_member' }],
+    ['the owner in a group', { ...owner, chat_id: '77' }],
+    ['a chat known to be someone else\'s', { ...owner, chat_id: '20' }],
+    ['a peer agent', { ...owner, sender_type: 'agent' }],
+    ['a peer conversation', { ...owner, peer_conversation_id: '5' }],
+    ['a system card', { ...owner, system: 'true', sender_type: 'system' }],
+    ['another agent in a room', { ...owner, sender_type: 'room_agent' }],
+    ['no meta', null],
+    ['no user', { chat_id: '10' }],
+  ] as const) {
+    assert.equal(isOwnerCard(meta, ctx), false, why)
+  }
+})
+
+test('review 2: server.ts takes the queue only for an owner card; any other card leaves it queued', () => {
+  const step = server.slice(server.indexOf('function groupNotificationStep('), server.indexOf('const sendMcpNotification = mcp.notification.bind(mcp)'))
+  const gate = step.indexOf('isOwnerCard(')
+  assert.ok(gate > 0 && gate < step.indexOf('groupSummaries.take()'), 'the owner check comes before the take')
+  assert.match(step, /if \(!isOwnerCard\(params\.meta, \{ ownerUserId: USER_ID, mainChatIds, isOthers: \(chatId\) => chatOwnership\.isOthers\(chatId\) \}\)\) return null/)
 })
