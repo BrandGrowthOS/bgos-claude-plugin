@@ -793,3 +793,59 @@ test('held messages: the quiet hours messages ride before the message as data, o
   // A held message is now seen: a late poll of it runs nothing.
   assert.equal(r.lanes.deliver(delivery({ messageId: 701, key: '701' })), false)
 })
+
+test('each group message once per turn: a fresh lane\'s first turn shows a held message once, not in the seed, the held block and the server\'s backlog', async () => {
+  // The server framed the message with its backlog ("Said in this group since your last turn") and sends the same
+  // lines in groupContext; the quiet hours hold sends one of them again as a held message.
+  const framed = [
+    '[BGOS group: Launch team]',
+    'You are in a group, not a private chat. Everyone listed here reads what you say.',
+    'Said in this group since your last turn, oldest first:',
+    '- Ana: held and in the backlog',
+    'Ana wrote the message below.',
+    '',
+    '@Atlas good morning',
+  ].join('\n')
+  const r = rig()
+  r.lanes.deliver(delivery({
+    messageId: 705, key: '705', text: framed,
+    backlog: [{ sender: 'Ana', text: 'held and in the backlog' }],
+    earlier: [
+      { messageId: 701, sender: 'Ana', text: 'held and in the backlog', sentAt: '2026-01-01T22:00:00Z' },
+      { messageId: 702, sender: 'Ben', text: 'held only', sentAt: '2026-01-01T22:10:00Z' },
+    ],
+  }))
+  await settle()
+  const seed = r.spawned[0]!.child.messages()[0]!
+  assert.equal(seed.split('held and in the backlog').length - 1, 1, seed)
+  assert.equal(seed.split('held only').length - 1, 1)
+  assert.ok(!seed.includes('Recent messages, oldest first:'), 'the framed message already carries the backlog')
+
+  // Not framed (a poll row): the seed's recent messages carry the backlog, and the held block leaves that line out.
+  const plain = rig()
+  plain.lanes.deliver(delivery({
+    messageId: 705, key: '705', text: '@Atlas good morning',
+    backlog: [{ sender: 'Ana', text: 'held and in the backlog' }],
+    earlier: [{ messageId: 701, sender: 'Ana', text: 'held and in the backlog', sentAt: null }, { messageId: 702, sender: 'Ben', text: 'held only', sentAt: null }],
+  }))
+  await settle()
+  const seed2 = plain.spawned[0]!.child.messages()[0]!
+  assert.equal(seed2.split('held and in the backlog').length - 1, 1, seed2)
+  assert.ok(seed2.includes('Recent messages, oldest first:'))
+  assert.equal(seed2.split('held only').length - 1, 1)
+})
+
+test('each group message once per turn, never none: a later unframed turn, which shows no backlog, keeps every held message', async () => {
+  const r = rig()
+  r.lanes.deliver(delivery())
+  await settle()
+  r.spawned[0]!.child.result('ok')
+  await settle()
+  r.lanes.deliver(delivery({
+    messageId: 705, key: '705', text: '@Atlas good morning',
+    backlog: [{ sender: 'Ana', text: 'held and in the backlog' }],
+    earlier: [{ messageId: 701, sender: 'Ana', text: 'held and in the backlog', sentAt: null }],
+  }))
+  await settle()
+  assert.equal(r.spawned[0]!.child.messages()[1]!.split('held and in the backlog').length - 1, 1)
+})

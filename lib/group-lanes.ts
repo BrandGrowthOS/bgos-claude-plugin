@@ -54,6 +54,8 @@ import { join } from 'node:path'
 import {
   clipGroupReply,
   contextTokensOf,
+  framedCarriesBacklog,
+  withoutBacklogRepeats,
   GROUP_COMPACT_COMMAND,
   GROUP_SUMMARY_FALLBACK,
   GROUP_SUMMARY_INSTRUCTION,
@@ -546,7 +548,12 @@ export class GroupLaneManager {
     await this.ensureChild(lane)
     if (lane.closed || !lane.child) return
     const seed = !lane.st.started
-    const prompt = seed ? groupSeedBrief({ ...d, level: lane.level }) : groupTurnText(d)
+    // Each group message once per turn: a held or backlog row the turn already
+    // shows (the seed's recent messages, or the server's framed backlog) is
+    // left out of the earlier messages.
+    const shown = seed || framedCarriesBacklog(d.text)
+    const turn: GroupDelivery = shown ? { ...d, earlier: withoutBacklogRepeats(d.earlier ?? [], d.backlog) } : d
+    const prompt = seed ? groupSeedBrief({ ...turn, level: lane.level }) : groupTurnText(turn)
     const sessionId = lane.st.sessionId!
     lane.st.started = true
     if (d.messageId !== null) {

@@ -277,6 +277,7 @@ export interface GroupBriefInput {
   roster: GroupRosterEntry[]
   agents: string[]
   backlog: GroupBacklogLine[]
+  earlier?: readonly GroupEarlierMessage[]
 }
 
 function clip(text: string, max: number): string {
@@ -295,6 +296,33 @@ const LEVEL_SENTENCE: Record<GroupLevel, string> = {
   talk: 'In this group you can only reply: you have no tools here.',
   approvals: 'Anything you do here that changes something (an edit, a command, a message) first asks your owner through an approval card in their own chat, and waits for their answer.',
   full: 'In this group you work as you do in your owner\'s own chat, with the same approvals.',
+}
+
+/**
+ * Does the message text carry the server's own backlog? The server frames a
+ * live group delivery with a `[BGOS ...]` block whose "Said in this group
+ * since your last turn, oldest first:" lines are the same lines as the
+ * delivery's groupContext backlog.
+ */
+export function framedCarriesBacklog(text: string): boolean {
+  if (!text.startsWith('[BGOS ')) return false
+  const head = text.split(/\n\n/)[0] ?? ''
+  return head.split('\n').some((line) => /^Said in this .+ since your last turn, oldest first:$/.test(line))
+}
+
+function sameLine(a: string, b: string): boolean {
+  return oneLine(a).replace(/\s+/g, ' ') === oneLine(b).replace(/\s+/g, ' ')
+}
+
+/**
+ * Each group message once per turn: the earlier messages without the ones
+ * the turn already shows in its backlog (the seed's recent messages, or the
+ * server's framed backlog). A backlog line carries no message id, so it is
+ * matched by its text and, where both name one, its sender.
+ */
+export function withoutBacklogRepeats(earlier: readonly GroupEarlierMessage[], backlog: readonly GroupBacklogLine[]): GroupEarlierMessage[] {
+  return earlier.filter((m) => !backlog.some((b) =>
+    sameLine(b.text, m.text) && (!b.sender || !m.sender || sameLine(b.sender, m.sender))))
 }
 
 /** The turn text of a delivery: earlier messages as data, the server's frame, if any, then the message. */
@@ -331,7 +359,8 @@ export function groupSeedBrief(input: GroupBriefInput): string {
     : ''
   let note = input.note && input.note.trim() ? `Your owner's note for this group: ${input.note.trim()}` : ''
   let summary = input.summary && input.summary.trim() ? `Where this group thread left off:\n${input.summary.trim()}` : ''
-  const backlog = input.backlog.map((m) => `  ${oneLine(m.sender) || 'Someone'}: ${oneLine(m.text)}`)
+  // The server's framed message already carries these lines: never twice.
+  const backlog = framedCarriesBacklog(input.text) ? [] : input.backlog.map((m) => `  ${oneLine(m.sender) || 'Someone'}: ${oneLine(m.text)}`)
   const assemble = (): string => {
     const parts = [head]
     if (note) parts.push(note)
