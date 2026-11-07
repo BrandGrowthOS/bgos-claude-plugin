@@ -121,6 +121,50 @@ export function groupStampChatId(stamp: unknown): string | null {
   return isGroupChatId(id) ? id : null
 }
 
+/**
+ * The line the approval card adds for a file call (round 4, finding 2): the
+ * REAL path the call touches, links resolved, relative paths read from the
+ * lane's folder, and a plain warning when it is outside this group's folder.
+ * Bash names no single path, so its card says where it runs.
+ */
+export function groupCallPathNote(toolName: string, input: unknown, laneFolder: string, realpath: (p: string) => string): string | null {
+  const x = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>
+  const lane = trimSlash(laneFolder)
+  // The nearest folder that exists is resolved, and the rest kept as written
+  // (a file being made, or one that is not there, still shows where it lands).
+  const real = (p: string): string => {
+    const parts = trimSlash(p).split('/')
+    for (let cut = parts.length; cut > 0; cut--) {
+      const head = parts.slice(0, cut).join('/') || '/'
+      try {
+        const resolved = trimSlash(realpath(head))
+        const rest = parts.slice(cut).join('/')
+        return rest ? `${resolved === '/' ? '' : resolved}/${rest}` : resolved
+      } catch {}
+    }
+    return trimSlash(p)
+  }
+  if (toolName === 'Bash') return `Runs in: ${real(lane)}`
+  const raw = toolName === 'Grep' || toolName === 'Glob'
+    ? (typeof x.path === 'string' && x.path !== '' ? x.path : lane)
+    : typeof x.file_path === 'string' ? x.file_path : typeof x.notebook_path === 'string' ? x.notebook_path : null
+  if (raw === null) return null
+  const absolute = raw.startsWith('/') || /^[A-Za-z]:[\\/]/.test(raw) ? raw : `${lane}/${raw}`
+  const path = real(normalizePath(absolute))
+  return inside(path, real(lane)) ? `Path: ${path}` : `Path: ${path}. This is OUTSIDE this group's folder.`
+}
+
+/** `.` and `..` segments folded, without touching the disk. */
+function normalizePath(p: string): string {
+  const out: string[] = []
+  for (const part of p.split('/')) {
+    if (part === '' || part === '.') continue
+    if (part === '..') out.pop()
+    else out.push(part)
+  }
+  return `/${out.join('/')}`
+}
+
 /** Flags no group lane command may carry. */
 export const GROUP_LANE_FORBIDDEN_FLAGS: readonly string[] = Object.freeze([
   '--fork-session',
@@ -149,8 +193,12 @@ export interface GroupLaneFence {
   home: string
   configDir: string
   stateRoot: string
+  /** Every group's folder sits under this root: the sandbox reads only this group's own. */
+  laneRoot?: string
   laneFolder: string
-  /** The host can run the CLI's Bash sandbox (lib/lane-policy.mjs laneShellSandboxAvailable). */
+  /** Where the CLI keeps the output of every session's background commands (/tmp/claude-<uid> and its twins). */
+  tempRoots?: readonly string[]
+  /** The host's CLI sandbox really works (lib/group-lane-root.ts groupSandboxWorks), not only that its binaries exist. */
   sandbox: boolean
 }
 
@@ -226,7 +274,19 @@ export function groupLaneSettings(
             // The sandbox confines Bash; it never lets Bash run without the gate.
             autoAllowBashIfSandboxed: false,
             allowUnsandboxedCommands: false,
-            filesystem: { denyRead: [...fenced], denyWrite: [...fenced] },
+            // Reads: none of the fenced paths, none of the other groups' folders
+            // (the lane root, with this group's own folder reopened) and none of
+            // the CLI's temp output roots (round 4, finding 2). Writes outside the
+            // working folder are the sandbox's own default refusal.
+            filesystem: {
+              denyRead: [
+                ...fenced,
+                ...(fence.laneRoot ? [trimSlash(requireAbsolute(fence.laneRoot, 'the lane root'))] : []),
+                ...(fence.tempRoots ?? []).map((p) => trimSlash(requireAbsolute(p, 'a temp root'))),
+              ],
+              ...(fence.laneRoot ? { allowRead: [lane] } : {}),
+              denyWrite: [...fenced],
+            },
           },
         }
       : {}),

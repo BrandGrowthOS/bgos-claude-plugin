@@ -660,7 +660,7 @@ import {
   LateCompactUpgrader,
   LATE_UPGRADE_PROBE_INTERVAL_MS,
 } from './lib/compact-capability.js'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import {
   readOwnVersion,
   startVersionHeartbeat,
@@ -1190,6 +1190,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -15170,6 +15171,8 @@ const groupLanes = new GroupLaneManager({
     home: homedir(),
     configDir: CLAUDE_CONFIG_DIR || pathJoin(homedir(), '.claude'),
     stateRoot: pathJoin(homedir(), '.bgos-agent'),
+    // Where the CLI keeps every session's background command output.
+    tempRoots: [...new Set([`/tmp/claude-${process.getuid?.() ?? ''}`, `/private/tmp/claude-${process.getuid?.() ?? ''}`, pathJoin(tmpdir(), `claude-${process.getuid?.() ?? ''}`)])],
     sandbox: laneShellSandboxAvailable({
       platform: process.platform,
       exists: (p: string) => existsSync(p),
@@ -15184,6 +15187,7 @@ const groupLanes = new GroupLaneManager({
     writeFile: (path, data) => writeFileSync(path, data),
     appendFile: (path, data) => appendFileSync(path, data),
     unlink: (path) => unlinkSync(path),
+    realpath: (path) => realpathSync(path),
   },
   post: (path, body) => bgosPost(path, body),
   // The normal reply path into the group, with the delivery's session handle:

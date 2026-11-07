@@ -10,6 +10,7 @@ import { test } from 'node:test'
 
 import {
   GROUP_SEED_MAX_CHARS,
+  groupCallPathNote,
   assertGroupLane,
   groupLaneArgs,
   groupLaneSettings,
@@ -28,7 +29,11 @@ const ID = '11111111-1111-4111-8111-111111111111'
 const base = { sessionId: ID, emptyMcpConfigPath: '/tmp/empty-mcp.json', agentFolder: '/work/atlas', mainSessionId: MAIN, platform: 'linux' as const }
 const after = (args: string[], flag: string) => args[args.indexOf(flag) + 1]
 /** Where a group lane may never reach below Full: generic paths. The lane's own folder is outside all of them. */
-const FENCE = { home: '/home/u', configDir: '/home/u/.claude', stateRoot: '/home/u/.bgos-agent', laneFolder: '/var/tmp/hoai-group-lanes-1000/7/123', sandbox: false }
+const FENCE = {
+  home: '/home/u', configDir: '/home/u/.claude', stateRoot: '/home/u/.bgos-agent',
+  laneRoot: '/var/tmp/hoai-group-lanes-1000/7', laneFolder: '/var/tmp/hoai-group-lanes-1000/7/123',
+  tempRoots: ['/tmp/claude-1000', '/private/tmp/claude-1000'], sandbox: false,
+}
 const FENCED = ['/home/u', '/work/atlas', '/home/u/.bgos-agent', '/home/u/.claude']
 const FILE_TOOLS = ['Read', 'Grep', 'Glob', 'Edit', 'Write']
 
@@ -171,7 +176,11 @@ test('boundary: with a sandbox Bash is confined (denyRead and denyWrite on the s
     enabled: true,
     autoAllowBashIfSandboxed: false,
     allowUnsandboxedCommands: false,
-    filesystem: { denyRead: FENCED, denyWrite: FENCED },
+    filesystem: {
+      denyRead: [...FENCED, '/var/tmp/hoai-group-lanes-1000/7', '/tmp/claude-1000', '/private/tmp/claude-1000'],
+      allowRead: ['/var/tmp/hoai-group-lanes-1000/7/123'],
+      denyWrite: FENCED,
+    },
   })
   assert.ok(s.permissions.ask!.includes('Bash'), 'Bash still asks every time')
 })
@@ -186,7 +195,7 @@ test('boundary: without a sandbox there is no sandbox block, and Bash still asks
 test('boundary (finding B): an agent folder that IS the home folder is fenced the same, each path once', () => {
   const s = groupLaneSettings('approvals', '/home/u', 'linux', { ...FENCE, sandbox: true }) as Settings
   const paths = ['/home/u', '/home/u/.bgos-agent', '/home/u/.claude']
-  assert.deepEqual(s.sandbox!.filesystem.denyRead, paths)
+  assert.deepEqual(s.sandbox!.filesystem.denyWrite, paths)
   assert.deepEqual(s.permissions.deny, paths.flatMap((p) => FILE_TOOLS.map((tool) => `${tool}(/${p}/**)`)))
   assert.equal(s.permissions.allow, undefined)
 })
@@ -221,4 +230,37 @@ test('round 4, finding 1: below Full the lane is launched with ONLY its tools, b
   assert.equal(s.permissions.allow, undefined)
   // Full keeps the owner's own tools, as in their own chat.
   assert.ok(!groupLaneArgs({ ...base, resume: false, level: 'full' }).includes('--tools'))
+})
+
+// -- round 4, finding 2: confined to the group's own folder ----------------------
+
+test('round 4, finding 2: the sandbox reads only the group\'s OWN folder of the lane root, and none of the CLI\'s temp output roots', () => {
+  const s = groupLaneSettings('approvals', '/work/atlas', 'linux', { ...FENCE, sandbox: true }) as Settings
+  const fs = s.sandbox!.filesystem
+  assert.ok(fs.denyRead.includes('/var/tmp/hoai-group-lanes-1000/7'), 'the lane root, so every other group\'s folder')
+  assert.deepEqual(fs.allowRead, ['/var/tmp/hoai-group-lanes-1000/7/123'], 'reopened for this group only')
+  for (const temp of ['/tmp/claude-1000', '/private/tmp/claude-1000']) assert.ok(fs.denyRead.includes(temp), temp)
+})
+
+test('round 4, finding 2: the card shows the real resolved path, and says so plainly when it is outside this group\'s folder', () => {
+  const lane = '/var/tmp/hoai-group-lanes-1000/7/123'
+  const links: Record<string, string> = { '/var/tmp/hoai-group-lanes-1000/7/123/cfg': '/home/u/.claude' }
+  const realpath = (p: string) => {
+    for (const [from, to] of Object.entries(links)) if (p === from || p.startsWith(from + '/')) return to + p.slice(from.length)
+    return p
+  }
+  assert.equal(groupCallPathNote('Read', { file_path: `${lane}/notes.txt` }, lane, realpath), `Path: ${lane}/notes.txt`)
+  assert.equal(groupCallPathNote('Read', { file_path: 'notes.txt' }, lane, realpath), `Path: ${lane}/notes.txt`, 'relative to the lane folder')
+  assert.equal(
+    groupCallPathNote('Read', { file_path: '../456/other.txt' }, lane, realpath),
+    'Path: /var/tmp/hoai-group-lanes-1000/7/456/other.txt. This is OUTSIDE this group\'s folder.',
+  )
+  assert.equal(
+    groupCallPathNote('Edit', { file_path: `${lane}/cfg/settings.json` }, lane, realpath),
+    'Path: /home/u/.claude/settings.json. This is OUTSIDE this group\'s folder.',
+    'a link is resolved to where it really points',
+  )
+  assert.equal(groupCallPathNote('Grep', { pattern: 'x', path: '/etc' }, lane, realpath), 'Path: /etc. This is OUTSIDE this group\'s folder.')
+  assert.equal(groupCallPathNote('Glob', { pattern: '*' }, lane, realpath), `Path: ${lane}`, 'no path is the working folder')
+  assert.equal(groupCallPathNote('Bash', { command: 'ls' }, lane, realpath), `Runs in: ${lane}`)
 })

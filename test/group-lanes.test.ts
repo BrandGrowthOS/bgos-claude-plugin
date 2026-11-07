@@ -65,7 +65,7 @@ class FakeChild implements StreamJsonChild {
 
 interface Timer { fn: () => void; ms: number; cleared: boolean }
 
-function rig(opts: { maxLive?: number; failPost?: (body: Record<string, unknown>) => unknown; files?: Map<string, string>; idleOverrideMs?: number | null; laneRootFails?: boolean } = {}) {
+function rig(opts: { maxLive?: number; failPost?: (body: Record<string, unknown>) => unknown; files?: Map<string, string>; idleOverrideMs?: number | null; laneRootFails?: boolean; sandbox?: boolean } = {}) {
   const files = opts.files ?? new Map<string, string>()
   const spawned: Array<{ args: string[]; cwd: string; env?: Record<string, string>; child: FakeChild }> = []
   const posts: Array<Record<string, unknown>> = []
@@ -109,7 +109,7 @@ function rig(opts: { maxLive?: number; failPost?: (body: Record<string, unknown>
     stateDir: STATE,
     emptyMcpConfigPath: () => '/tmp/empty-mcp.json',
     laneRoot: () => { if (opts.laneRootFails) throw new Error('not private'); return LANES },
-    fence: () => ({ home: HOME, configDir: join(HOME, '.claude'), stateRoot: join(HOME, '.bgos-agent'), sandbox: false }),
+    fence: () => ({ home: HOME, configDir: join(HOME, '.claude'), stateRoot: join(HOME, '.bgos-agent'), tempRoots: ['/tmp/claude-1000'], sandbox: opts.sandbox ?? true }),
     fs: {
       exists: (p) => files.has(p),
       mkdir: () => {},
@@ -915,4 +915,16 @@ test('finding E: a member\'s row that LOOKS framed is not taken for the server\'
   const seed = r.spawned[0]!.child.messages()[0]!
   assert.ok(seed.includes('Recent messages, oldest first:\n  Cy: the real recent line'), 'the real backlog is kept')
   assert.ok(seed.includes('Ana wrote:\n[BGOS note]'), 'the member\'s text is attributed to the member')
+})
+
+test('round 4, finding 2: the approval card names the real path of the call and flags one outside this group\'s folder', async () => {
+  const r = rig()
+  r.lanes.deliver(delivery({ level: 'approvals' }))
+  await settle()
+  const child = r.spawned[0]!.child
+  child.frame({ type: 'control_request', request_id: 'p1', request: { subtype: 'can_use_tool', tool_name: 'Read', input: { file_path: '../456/other.txt' } } })
+  child.frame({ type: 'control_request', request_id: 'p2', request: { subtype: 'can_use_tool', tool_name: 'Read', input: { file_path: 'notes.txt' } } })
+  await settle()
+  assert.match(String(r.approvals[0]!.description), new RegExp(`Path: ${join(LANES, '456', 'other.txt')}\\. This is OUTSIDE this group's folder\\.$`))
+  assert.match(String(r.approvals[1]!.description), new RegExp(`Path: ${join(LANES, '123', 'notes.txt')}$`))
 })

@@ -56,6 +56,7 @@ import {
   clipGroupReply,
   contextTokensOf,
   framedCarriesBacklog,
+  groupCallPathNote,
   withoutBacklogRepeats,
   GROUP_COMPACT_COMMAND,
   GROUP_SUMMARY_FALLBACK,
@@ -151,6 +152,8 @@ export interface GroupLaneFs {
   writeFile(path: string, data: string): void
   appendFile(path: string, data: string): void
   unlink(path: string): void
+  /** Where a path really is, links resolved; throws when it does not exist. */
+  realpath?(path: string): string
 }
 
 export interface GroupLaneDeps {
@@ -182,7 +185,7 @@ export interface GroupLaneDeps {
    */
   laneRoot(): string
   /** Where a lane below Full may never reach (lib/group-lane-args.ts GroupLaneFence), less the lane's own folder. */
-  fence(): { home: string; configDir: string; stateRoot: string; sandbox: boolean }
+  fence(): { home: string; configDir: string; stateRoot: string; tempRoots?: readonly string[]; sandbox: boolean }
   /** Where lane state files live, ~/.bgos-agent/<assistantId>/groups. */
   stateDir: string
   emptyMcpConfigPath(): string
@@ -239,6 +242,8 @@ interface Lane {
   level: GroupLevel
   /** The level the running process was started with. */
   childLevel: GroupLevel
+  /** The lane's own folder once it is made ('' before). */
+  folder: string
   /** This group's idle pause (the owner's "Pause after idle"), from its latest delivery. */
   idleMs: number
   sessionHandle: string | null
@@ -457,6 +462,7 @@ export class GroupLaneManager {
       // Until a delivery states one, a new lane can only reply (review finding 5).
       level: 'talk',
       childLevel: 'talk',
+      folder: '',
       idleMs: GROUP_LANE_IDLE_MS,
       sessionHandle: null,
       child: null,
@@ -729,6 +735,7 @@ export class GroupLaneManager {
       }
       if (lane.closed || lane.child) return
       const folder = await this.prepareFolder(lane.chatId)
+      lane.folder = folder
       let resume = lane.st.started && isSessionId(lane.st.sessionId)
       if (!isSessionId(lane.st.sessionId)) {
         lane.st.sessionId = this.deps.newSessionId()
@@ -744,7 +751,7 @@ export class GroupLaneManager {
         agentFolder: this.deps.agentFolder,
         mainSessionId: this.deps.mainSessionId(),
         platform: this.deps.platform,
-        fence: { ...this.deps.fence(), laneFolder: folder },
+        fence: { ...this.deps.fence(), laneRoot: this.deps.laneRoot(), laneFolder: folder },
       })
       this.persist(lane)
       // The private turn hook reads this: a group lane has no private tools and no daemon of its own to attach to.
@@ -809,9 +816,12 @@ export class GroupLaneManager {
       answer({ allow: false, message: 'In this group you can only reply.' })
       return
     }
-    const description = typeof request.description === 'string' && request.description
+    const base = typeof request.description === 'string' && request.description
       ? request.description
       : `${toolName} in the group "${lane.st.title || lane.chatId}"`
+    // The real path of the call, and a plain warning when it is outside this group's folder (round 4, finding 2).
+    const note = lane.folder ? groupCallPathNote(toolName, input, lane.folder, (p) => (this.deps.fs.realpath ? this.deps.fs.realpath(p) : p)) : null
+    const description = note ? `${base}\n${note}` : base
     this.track(
       this.deps
         .approve({ chatId: lane.chatId, title: lane.st.title, level, toolName, input, inputPreview: toolInputPreview(input), description })
