@@ -926,6 +926,28 @@ meeting room, or a chat whose last message came from somebody other than the
 owner, such as a share recipient's own chat with the agent); when none is left
 the mission lands in the agent's main chat.
 
+**Mission turn checks.** The synchronous turn hook shows this chat's open goals
+at turn start and asks the paired daemon about passing, unticked goals at Stop.
+Goal state normally follows the mission's server `updatedAt`. An unversioned
+report can refresh checks for identical held goals. Changed goals require a
+repeated report between two stable, matching chat-scoped snapshots; this can
+also correct goals at an equal timestamp after the 30 second check reuse window.
+Ordinary conflicting equal-time frames and reports cannot replace goals.
+
+A missed closure frame is recovered from two explicit goal-check reports that
+agree on the known mission id, terminal status and goals. Only `completed`,
+`abandoned` and `failed` qualify. Closed missions refuse further writes, so an
+unversioned terminal confirmation keeps a permanent tombstone for that id,
+without inventing a closure revision. Later active frames, tool responses and
+cold discovery cannot resurrect it. A local update during either report read
+invalidates the confirmation. Other missions in the same chat remain available.
+Versioned closures retain the existing server timestamp ordering behavior.
+
+The canonical entries and closure tombstones last for the daemon's lifetime;
+the display cache remains bounded. A server write stamped earlier than the held
+write is still rejected even when legacy reads agree with it. Correct ordering
+of such inverted timestamps requires a monotonic revision from the backend.
+
 **Which controls the owner is offered is reported, never assumed.** The daemon
 says what it can do on every heartbeat (`lib/declared-capabilities.ts`), and the
 app shows only what was declared. Until 0.42.0 that was `mission_events` alone

@@ -27,9 +27,11 @@ const mission = (id = 101, extra: any = {}) => ({
   miniGoals: [{ id: 1, name: `Merge ${id}`, doneWhen: 'merged', done: false, check: CHECK }],
   ...extra,
 })
-const report = (m: any) => ({ missionId: m.id, status: m.status, updatedAt: m.updatedAt, goals: m.miniGoals.map((g: any) => ({
-  ...g, result: { outcome: 'pass', evidence: `merged for ${m.id}` },
+// The production report has checkedAt but no mission updatedAt revision.
+const report = (m: any) => ({ missionId: m.id, status: m.status, checkedAt: '2026-11-06T10:00:03.000Z', goals: m.miniGoals.map((g: any) => ({
+  ...g, ...(g.check ? { result: { outcome: 'pass', evidence: `merged for ${m.id}` } } : {}),
 })) })
+const versionedReport = (m: any) => ({ ...report(m), updatedAt: m.updatedAt })
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -472,7 +474,7 @@ test('HTTP work completing after the daemon answer budget cannot resurrect a com
 
 // One table crosses every goal-state ingress with every other ingress. The
 // tick frame is the delta notification path; its wire payload is a full mission.
-const revisionSources = ['snapshot', 'HTTP self-write', 'HTTP discovery', 'goal-check report', ...MISSION_FRAMES] as const
+const revisionSources = ['snapshot', 'HTTP self-write', 'HTTP discovery', 'versioned goal-check report', ...MISSION_FRAMES] as const
 const T2 = '2026-11-06T10:00:02.000Z'
 
 test('all goal-state sources obey one server revision rule', async (t) => {
@@ -487,7 +489,7 @@ test('all goal-state sources obey one server revision rule', async (t) => {
         if (source === 'snapshot') d.snapshot(m)
         if (MISSION_FRAMES.includes(source as any)) frame(d, m, source)
         if (source === 'HTTP self-write') await waitingTool(d, async () => ({ mission: m }))
-        if (source === 'goal-check report') d.report(report(m))
+        if (source === 'versioned goal-check report') d.report(versionedReport(m))
         if (source === 'HTTP discovery') {
           // Discovery only runs for an uncached chat. Evict its display entry,
           // leaving the per-mission ordering memory intact.
@@ -515,10 +517,11 @@ test('all goal-state sources obey one server revision rule', async (t) => {
   }
 })
 
-for (const staleSource of ['HTTP', 'WebSocket'] as const) {
-  for (const closed of [false, true]) test(`T0 snapshot, T2 report, T1 ${staleSource} preserves ${closed ? 'closure' : 'Stop verification'}`, async (t) => {
+for (const reportShape of ['unversioned', 'versioned'] as const) for (const staleSource of ['HTTP', 'WebSocket'] as const) {
+  for (const closed of [false, true]) test(`T0 snapshot, T2 ${reportShape} report, T1 ${staleSource} preserves ${closed ? 'closure' : 'Stop verification'}`, async (t) => {
     const latest = { ...withCheck(), updatedAt: T2, status: closed ? 'completed' : 'active' }
-    const d = daemon(async () => report(latest))
+    const d = daemon(async (path) => path.includes('/active?') ? { mission: closed ? null : latest }
+      : reportShape === 'versioned' ? versionedReport(latest) : report(latest))
     frame(d, unchecked({ updatedAt: '2026-11-06T09:59:59.000Z' }))
     const pending = deferred<any>()
     const entered = deferred<void>()
@@ -556,7 +559,6 @@ for (const outcome of ['stable', 'write during check', 'different goals', 'wrong
       }
       checks++
       const raw = report(outcome === 'different goals' ? { ...latest, miniGoals: latest.miniGoals.map((goal: any) => ({ ...goal, name: 'Different goal' })) } : latest)
-      delete raw.updatedAt
       return raw
     })
     frame(d, unchecked())
@@ -576,7 +578,7 @@ for (const outcome of ['stable', 'write during check', 'different goals', 'wrong
 }
 
 test('equal report revisions refresh check evidence only for identical held goals', async () => {
-  let raw = report({ ...withCheck(), updatedAt: T2 })
+  let raw = versionedReport({ ...withCheck(), updatedAt: T2 })
   let now = Date.now()
   const d = daemon(async () => raw, { Date: { now: () => now, parse: Date.parse } })
   frame(d, { ...withCheck(), updatedAt: T2 })
@@ -585,11 +587,11 @@ test('equal report revisions refresh check evidence only for identical held goal
   assert.equal(turn.missionTurnStopDecision({ answer: await d.answer({ chatId: '12' }) }).block, true)
   const first = structuredClone(d.state())
   now += turn.MISSION_TURN_REUSE_MS
-  raw = report(unchecked({ updatedAt: T2 }))
+  raw = versionedReport(unchecked({ updatedAt: T2 }))
   await d.refresh('12')
   assert.deepEqual(d.state(), first, 'equal revision with different goals cannot replace any state')
   assert.deepEqual(turn.missionTurnEntries(d.state().chats['12'])[0].goals, before)
-  raw = report({ ...withCheck(), updatedAt: T2 })
+  raw = versionedReport({ ...withCheck(), updatedAt: T2 })
   for (const goal of raw.goals) goal.result = { outcome: 'fail', evidence: 'no longer passes' }
   await d.refresh('12')
   assert.equal(turn.missionTurnStopDecision({ answer: await d.answer({ chatId: '12' }) }).block, false)
@@ -642,7 +644,6 @@ test('matching legacy reports verify every cached mission without an ambiguous i
     reads.push(path)
     if (path.includes('/active?')) throw new Error('409: multiple missions')
     const raw = report(mission(path.endsWith('/101/goal-checks') ? 101 : 102))
-    delete raw.updatedAt
     return raw
   })
   d.snapshot(mission(101))
@@ -661,4 +662,211 @@ test('matching legacy reports verify every cached mission without an ambiguous i
   assert.deepEqual(turn.missionTurnEntries(d.state().chats['12']).map((entry) => entry.updatedAt), [
     '2026-11-06T09:59:58.000Z', '2026-11-06T09:59:58.000Z',
   ])
+})
+
+for (const change of ['tick', 'add check'] as const) {
+  test(`confirmed equal revision repairs ${change} after check reuse expires`, async () => {
+    let now = Date.now()
+    let current = { ...withCheck(), updatedAt: T2 }
+    let checks = 0
+    const d = daemon(async (path) => {
+      if (path.includes('/active?')) return { mission: current }
+      checks++
+      return report(current)
+    }, { Date: { now: () => now, parse: Date.parse } })
+    frame(d, current)
+    await d.refresh('12')
+    current = { ...current, miniGoals: change === 'tick'
+      ? current.miniGoals.map((goal: any) => ({ ...goal, done: goal.id === 3 }))
+      : [...current.miniGoals, { id: 4, name: 'Publish', doneWhen: 'merged', done: false, check: CHECK }] }
+    frame(d, current)
+    assert.doesNotMatch(turn.missionTurnContext(d.state().chats['12'])!, /4\. Publish/,
+      'an equal-time frame alone cannot establish which goals are newer')
+    now += turn.MISSION_TURN_REUSE_MS
+    const answer = await d.answer({ chatId: '12' })
+    if (change === 'tick') {
+      assert.equal(turn.missionTurnNeedsAsk(d.state(), '12'), false)
+      assert.doesNotMatch(turn.missionTurnContext(d.state().chats['12'])!, /3\. Merge release/)
+      assert.equal(turn.missionTurnStopDecision({ answer }).block, false)
+    } else {
+      assert.match(turn.missionTurnContext(d.state().chats['12'])!, /4\. Publish/)
+      const decision = turn.missionTurnStopDecision({ answer })
+      assert.equal(decision.block, true)
+      assert.match(decision.reason!, /4\. Publish/)
+    }
+    assert.equal(checks, 3, 'the changed legacy report is repeated between stable reads')
+    frame(d, { ...withCheck(), updatedAt: T2 })
+    assert.equal(turn.missionTurnNeedsAsk(d.state(), '12'), change !== 'tick',
+      'a conflicting equal-time frame cannot undo the confirmed correction')
+  })
+}
+
+for (const status of ['completed', 'abandoned', 'failed'] as const) {
+  test(`unversioned terminal ${status} clears missed frames and cannot be resurrected`, async (t) => {
+    let checks = 0
+    const closedMission = { ...withCheck(), status }
+    const d = daemon(async (path) => {
+      if (path === 'assistants/7/missions/active?chatId=12') return { mission: null }
+      assert.equal(path, 'integrations/assistants/7/missions/101/goal-checks')
+      checks++
+      return report(closedMission)
+    })
+    frame(d, withCheck())
+    const pendingWrite = deferred<any>()
+    const writing = waitingTool(d, async () => pendingWrite.promise)
+    for (let nextTurn = 0; nextTurn < 3; nextTurn++) {
+      await d.refresh('12')
+      assert.equal(turn.missionTurnContext(d.state()?.chats?.['12']), null)
+      assert.equal(turn.missionTurnNeedsAsk(d.state(), '12'), false)
+      assert.equal(turn.missionTurnStopDecision({ answer: await d.answer({ chatId: '12' }) }).block, false)
+    }
+    assert.equal(checks, 2, 'two explicit terminal reports suffice without active reconciliation')
+    const latest = structuredClone(d.state())
+    pendingWrite.resolve({ mission: { ...withCheck(), updatedAt: T2 } })
+    assert.equal((await writing).isError, undefined)
+    frame(d, { ...withCheck(), updatedAt: '2026-11-06T10:01:00.000Z' })
+    assert.deepEqual(d.state(), latest, 'a terminal mission id cannot be reopened by any later stamp')
+    if (status === 'completed') await assertClosedStop(d, t)
+    d.snapshot(mission(102))
+    assert.match(turn.missionTurnContext(d.state().chats['12'])!, /Mission #102/,
+      'the terminal tombstone does not prevent a new mission in the same chat')
+  })
+}
+
+for (const mismatch of ['wrong id', 'different status', 'paused status', 'unknown second status', 'different goals', 'read failure', 'unknown status'] as const) {
+  test(`unversioned terminal confirmation rejects ${mismatch}`, async () => {
+    let checks = 0
+    const closed = { ...withCheck(), status: 'completed' }
+    const d = daemon(async (path) => {
+      if (path.includes('/active?')) return { mission: null }
+      checks++
+      if (mismatch === 'read failure' && checks === 2) throw new Error('offline')
+      return report({ ...closed,
+        ...(mismatch === 'wrong id' && checks === 2 ? { id: 999 } : {}),
+        ...(mismatch === 'different status' && checks === 2 ? { status: 'active' } : {}),
+        ...(mismatch === 'paused status' && checks === 2 ? { status: 'paused' } : {}),
+        ...(mismatch === 'unknown second status' && checks === 2 ? { status: 'unknown' } : {}),
+        ...(mismatch === 'unknown status' ? { status: 'unknown' } : {}),
+        ...(mismatch === 'different goals' && checks === 2 ? { miniGoals: unchecked().miniGoals } : {}),
+      })
+    })
+    frame(d, withCheck())
+    const before = structuredClone(d.state())
+    await d.refresh('12')
+    assert.deepEqual(d.state(), before)
+    assert.equal(turn.missionTurnNeedsAsk(d.state(), '12'), true)
+  })
+}
+
+for (const writer of ['frame', 'self-write'] as const) for (const pendingRead of [1, 2]) {
+  test(`unversioned terminal read ${pendingRead} with ${writer} cannot cross a newer chat revision`, async () => {
+    const pending = deferred<any>()
+    const entered = deferred<void>()
+    let checks = 0
+    const d = daemon(async (path) => {
+      if (path.includes('/active?')) return { mission: null }
+      if (++checks === pendingRead) { entered.resolve(); return pending.promise }
+      return report({ ...withCheck(), status: 'completed' })
+    })
+    frame(d, withCheck())
+    const refreshing = d.refresh('12')
+    await entered.promise
+    const newerMission = { ...withCheck(), updatedAt: T2, miniGoals: [
+      ...withCheck().miniGoals, { id: 4, name: 'New work', doneWhen: 'merged', done: false, check: CHECK },
+    ] }
+    if (writer === 'frame') frame(d, newerMission)
+    else await waitingTool(d, async () => ({ mission: newerMission }))
+    const newer = structuredClone(d.state())
+    pending.resolve(report({ ...withCheck(), status: 'completed' }))
+    await refreshing
+    assert.deepEqual(d.state(), newer, 'the in-flight terminal confirmation must be discarded')
+    assert.match(turn.missionTurnContext(d.state().chats['12'])!, /4\. New work/)
+  })
+}
+
+test('unversioned completion preserves other missions without an implicit lookup', async () => {
+  const d = daemon(async (path) => {
+    if (path === 'integrations/assistants/7/missions/101/goal-checks') return report(mission(101, { status: 'completed' }))
+    assert.equal(path, 'integrations/assistants/7/missions/102/goal-checks')
+    return report(mission(102))
+  })
+  d.snapshot(mission(101))
+  d.snapshot(mission(102))
+  const answer = await d.answer({ chatId: '12' })
+  const context = turn.missionTurnContext(d.state().chats['12'])!
+  assert.doesNotMatch(context, /Mission #101/)
+  assert.match(context, /Mission #102/)
+  const decision = turn.missionTurnStopDecision({ answer })
+  assert.equal(decision.block, true)
+  assert.doesNotMatch(decision.reason!, /Mission #101/)
+  assert.match(decision.reason!, /Mission #102/)
+})
+
+async function assertClosedStop(d: any, t: any) {
+  const root = mkdtempSync(join(tmpdir(), 'mission-closed-stop-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const cwd = join(root, 'agent')
+  mkdirSync(cwd)
+  markFloorAttached({ root, folders: [cwd] })
+  const key = floorKey(cwd)
+  turn.writeMissionTurnJson(turn.missionTurnStatePath(root, key), d.state())
+  turn.writeMissionTurnJson(turn.missionTurnTurnPath(root, key), turn.missionTurnRecord({ sessionId: 'demo', chatId: '12', now: Date.now() }))
+  const child = spawn(process.execPath, ['bin/hoai-mission-turn-hook.mjs'], {
+    env: { ...process.env, BGOS_PLUGIN_STATE_DIR: root, CLAUDE_PROJECT_DIR: cwd },
+  })
+  t.after(() => { if (child.exitCode === null) child.kill() })
+  let stdout = ''
+  child.stdout.on('data', (chunk) => { stdout += chunk })
+  const closed = new Promise((resolve, reject) => { child.once('close', resolve); child.once('error', reject) })
+  child.stdin.end(JSON.stringify({ hook_event_name: 'Stop', session_id: 'demo', cwd }))
+  assert.equal(await closed, 0)
+  assert.equal(stdout, '')
+  assert.equal(turn.readMissionTurnJson(turn.missionTurnAskPath(root, key)), null,
+    'the real Stop hook exits without an ask for the closed mission')
+}
+
+test('unversioned terminal tombstone survives eviction and newer cold discovery', async () => {
+  let now = Date.now()
+  let checks = 0
+  const d = daemon(async (path) => {
+    if (path.includes('/active?')) return { mission: { ...withCheck(), updatedAt: '2026-11-06T11:00:00.000Z' } }
+    checks++
+    return report({ ...withCheck(), status: 'completed' })
+  }, { Date: { now: () => now, parse: Date.parse } })
+  frame(d, withCheck())
+  await d.refresh('12')
+  for (let i = 0; i < turn.MISSION_TURN_MAX_CHATS; i++) {
+    now++
+    d.snapshot(mission(200 + i, { chatId: 200 + i }))
+  }
+  await d.refresh('12')
+  assert.equal(turn.missionTurnContext(d.state()?.chats?.['12']), null)
+  assert.equal(turn.missionTurnNeedsAsk(d.state(), '12'), false)
+  assert.equal(checks, 2, 'a cold active discovery cannot restart verification of a terminal id')
+})
+
+test('unversioned terminal confirmation requires a known mission in its original chat and invents no revision', () => {
+  const store = turn.createMissionTurnStore()
+  const closed = turn.entryFromReport(report(mission(101, { status: 'completed' })), 'Demo', 123)
+  assert.deepEqual(store.keep('12', closed, { terminalConfirmed: true }), { entry: null, changed: false })
+  store.keep('12', turn.entryFromMission(mission(101)))
+  assert.deepEqual(store.keep('13', closed, { terminalConfirmed: true }), { entry: null, changed: false })
+  const accepted = store.keep('12', closed, { terminalConfirmed: true })
+  assert.equal(accepted.changed, true)
+  assert.equal(accepted.entry.updatedAt, null, 'neither checkedAt nor the held active revision becomes a closure revision')
+  assert.equal(accepted.entry.status, 'completed')
+  const later = store.keep('12', turn.entryFromMission(mission(101, { updatedAt: T2 })))
+  assert.equal(later.changed, false)
+  assert.equal(later.entry.status, 'completed')
+})
+
+test('confirmed legacy reads with an inverted timestamp cannot replace newer held goal state', async () => {
+  const d = daemon(async (path) => path.includes('/active?')
+    ? { mission: withCheck() } : report(withCheck()))
+  frame(d, unchecked({ updatedAt: T2 }))
+  const before = structuredClone(d.state())
+  await d.refresh('12')
+  assert.deepEqual(d.state(), before)
+  assert.equal(turn.missionTurnNeedsAsk(d.state(), '12'), false)
+  assert.equal(turn.missionTurnStopDecision({ answer: await d.answer({ chatId: '12' }) }).block, false)
 })

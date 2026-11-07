@@ -13536,9 +13536,11 @@ function writeMissionTurnState(): void {
   }
 }
 
-function setMissionTurnEntry(chatId: string | null, entry: unknown, turnChatId?: string | null, missionId?: number): void {
+type MissionTurnAcceptance = { reconciled?: boolean; terminalConfirmed?: boolean }
+
+function setMissionTurnEntry(chatId: string | null, entry: unknown, turnChatId?: string | null, missionId?: number, acceptance: MissionTurnAcceptance = {}): void {
   if (chatId) {
-    const retained = missionTurnStore.keep(chatId, entry)
+    const retained = missionTurnStore.keep(chatId, entry, acceptance)
     if (!retained.entry) return
     const previous = missionTurnEntries(missionTurnState?.chats?.[chatId]).find((row) => row.missionId === retained.entry.missionId)
     const open = retained.entry.status === 'active' || retained.entry.status === 'paused'
@@ -13577,18 +13579,25 @@ function noteMissionTurnSnapshot(mission: unknown, envelopeChatId?: string | nul
 /**
  * Old goal-check reports omit the mission's write revision. Re-read the check
  * between two chat-scoped active snapshots and accept it only when the server revision
- * stayed fixed and all reported goal state agrees. Never infer a write time
- * from checkedAt or from this machine's clock.
+ * stayed fixed and all reported goal state agrees. Closed missions cannot be
+ * reopened: two matching terminal reports confirm a permanent tombstone instead
+ * of consulting the open-only lookup. Never infer a write time from checkedAt
+ * or from this machine's clock.
  */
-async function readMissionTurnReport(chatId: string, mission: Record<string, any>, checksPath: string): Promise<Record<string, any> | null> {
+async function readMissionTurnReport(chatId: string, mission: Record<string, any>, checksPath: string): Promise<{ entry: Record<string, any>; acceptance?: MissionTurnAcceptance } | null> {
   let report = await bgosGetCachedOn304(checksPath) as Record<string, any> | null
   if (Number(report?.missionId) !== mission.missionId) return null
-  if (report?.updatedAt !== undefined) return entryFromReport(report, mission.title, Date.now())
+  if (report?.updatedAt !== undefined) return { entry: entryFromReport(report, mission.title, Date.now()) }
   const observation = entryFromReport(report, mission.title, Date.now())
   // A legacy report may refresh checks for precisely the state already held.
   // It cannot supply goals or status at the held revision. This also preserves
   // explicit verification when several missions make /active ambiguous.
-  if (sameMissionTurnGoals(observation, mission)) return { ...observation, updatedAt: mission.updatedAt }
+  if (sameMissionTurnGoals(observation, mission)) return { entry: { ...observation, updatedAt: mission.updatedAt } }
+  if (['completed', 'abandoned', 'failed'].includes(observation.status)) {
+    const confirmed = entryFromReport(await bgosGetCachedOn304(checksPath), mission.title, Date.now())
+    if (!sameMissionTurnGoals(observation, confirmed)) return null
+    return { entry: confirmed, acceptance: { terminalConfirmed: true } }
+  }
   const path = buildMissionActivePath(ASSISTANT_ID, chatId)
   if (!path.ok) return null
   const before = (await bgosGetCachedOn304(path.path) as { mission?: MissionSnapshot })?.mission
@@ -13602,7 +13611,7 @@ async function readMissionTurnReport(chatId: string, mission: Record<string, any
   if (!sameMissionTurnGoals(entry, entryFromMission(before)) ||
       !sameMissionTurnGoals(entry, entryFromMission(after))) return null
   // The stable enclosing reads establish the revision of this legacy report.
-  return { ...entry, updatedAt: after.updatedAt }
+  return { entry: { ...entry, updatedAt: after.updatedAt }, acceptance: { reconciled: true } }
 }
 
 /** Check known mission ids explicitly; use the implicit lookup only to discover an uncached mission. */
@@ -13629,9 +13638,9 @@ async function refreshMissionTurnChat(chatId: string): Promise<Record<string, an
     const before = revision()
     const checksPath = buildMissionGoalChecksPath(ASSISTANT_ID, mission.missionId)
     if (!checksPath.ok) continue
-    let entry: Record<string, any> | null
+    let observation: Awaited<ReturnType<typeof readMissionTurnReport>>
     try {
-      entry = await readMissionTurnReport(chatId, mission, checksPath.path)
+      observation = await readMissionTurnReport(chatId, mission, checksPath.path)
     } catch (err) {
       if (revision() !== before) return current()
       log(`mission turn: mission ${mission.missionId} check read failed (${err})`)
@@ -13640,8 +13649,8 @@ async function refreshMissionTurnChat(chatId: string): Promise<Record<string, an
     // A timed-out Promise.race does not cancel HTTP work. Every response is
     // fenced before it can write state or contribute to a Stop answer.
     if (revision() !== before) return current()
-    if (!entry) continue
-    setMissionTurnEntry(chatId, entry, undefined, mission.missionId)
+    if (!observation) continue
+    setMissionTurnEntry(chatId, observation.entry, undefined, mission.missionId, observation.acceptance)
   }
   return current()
 }
