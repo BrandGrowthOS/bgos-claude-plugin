@@ -71,6 +71,7 @@ import {
 import { isSessionId } from './thread-lane-args.ts'
 import { lineSplitter, userMessageLine, type SpawnStreamJson, type StreamJsonChild } from './stream-json-child.ts'
 import { THREAD_ORPHAN_POLL_MS } from './thread-lanes.ts'
+import { GROUP_LANE_ENV } from './private-turn.mjs'
 
 export const GROUP_LANE_MAX_LIVE = 3
 export const GROUP_LANE_IDLE_MS = 30 * 60_000
@@ -677,7 +678,8 @@ export class GroupLaneManager {
         platform: this.deps.platform,
       })
       this.persist(lane)
-      const child = this.deps.spawn(claude, args, { cwd: folder })
+      // The private turn hook reads this: a group lane has no private tools and no daemon of its own to attach to.
+      const child = this.deps.spawn(claude, args, { cwd: folder, env: { [GROUP_LANE_ENV]: lane.chatId } })
       lane.child = child
       lane.childLevel = lane.level
       lane.stopping = false

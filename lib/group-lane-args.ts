@@ -14,10 +14,19 @@
  *  - talk: the lane has no tools at all (`--tools ""`, the mechanism By the
  *    way uses) and `dontAsk`, so it can only answer; its answer is the reply.
  *  - approvals (the default, and what a missing or unknown level reads as):
- *    `--restricted` (the owner's settings, and so their allow rules, do not
- *    apply), the CLI's default tools, permission mode `default`, and every
- *    prompt goes to the daemon (`--permission-prompt-tool stdio`), which
- *    raises the existing approval card in the owner's main chat.
+ *    `--setting-sources ""` (the owner's user, project and local settings,
+ *    and so their allow rules, do not apply; `--settings` still does), the
+ *    CLI's own default tools, permission mode `default`, and every prompt
+ *    goes to the daemon (`--permission-prompt-tool stdio`), which raises the
+ *    existing approval card in the owner's main chat.
+ *
+ *    NOT `--restricted` (measured on CLI 2.1.319, the init frame's tools):
+ *    under --restricted, `--tools default` offers the default set WITHOUT
+ *    Bash, WebFetch, Monitor, Workflow and CronCreate, and any named list
+ *    offers exactly the names given (`default,Bash` offers Bash alone), so
+ *    the shell could never be asked for, only refused. `--setting-sources ""`
+ *    with `--tools default` offers the full default set, Bash included, and
+ *    each changing use prompts, so it reaches the owner's card.
  *  - full: the owner's own settings, permission mode `default`, and every
  *    prompt goes to the daemon, which answers it exactly as it answers the
  *    owner's own chat (auto approve and the hard floor included).
@@ -160,7 +169,7 @@ export function groupLaneArgs(input: {
   if (level === 'talk') {
     args.push('--restricted', '--tools', '', '--permission-mode', 'dontAsk')
   } else if (level === 'approvals') {
-    args.push('--restricted', '--tools', 'default', '--permission-mode', 'default', '--permission-prompt-tool', 'stdio')
+    args.push('--setting-sources', '', '--tools', 'default', '--permission-mode', 'default', '--permission-prompt-tool', 'stdio')
   } else {
     args.push('--permission-mode', 'default', '--permission-prompt-tool', 'stdio')
   }

@@ -64,7 +64,7 @@ interface Timer { fn: () => void; ms: number; cleared: boolean }
 
 function rig(opts: { maxLive?: number; failPost?: (body: Record<string, unknown>) => unknown; files?: Map<string, string>; idleOverrideMs?: number | null } = {}) {
   const files = opts.files ?? new Map<string, string>()
-  const spawned: Array<{ args: string[]; cwd: string; child: FakeChild }> = []
+  const spawned: Array<{ args: string[]; cwd: string; env?: Record<string, string>; child: FakeChild }> = []
   const posts: Array<Record<string, unknown>> = []
   const replies: Array<{ chatId: string; text: string; sessionHandle: string | null }> = []
   const approvals: Array<Record<string, unknown>> = []
@@ -86,7 +86,7 @@ function rig(opts: { maxLive?: number; failPost?: (body: Record<string, unknown>
       procs.set(pid, { stamp: `S${pid}`, alive: true, dies: 'SIGTERM' })
       procCwd.set(pid, o.cwd)
       child.onExit(() => { procs.get(pid)!.alive = false })
-      spawned.push({ args, cwd: o.cwd, child })
+      spawned.push({ args, cwd: o.cwd, env: o.env, child })
       return child
     },
     processes: {
@@ -177,6 +177,7 @@ test('the first start is a FRESH session seeded with the group brief: no fork, n
   assert.ok(!args.includes('--resume'))
   assert.ok(!args.includes(MAIN), 'the owner\'s main session is never named')
   assert.equal(cwd, join(AGENT, '.hoai', 'groups', '123'))
+  assert.deepEqual(r.spawned[0]!.env, { HOAI_GROUP_LANE: '123' }, 'the private turn hook knows a group lane by it')
   const seed = child.messages()[0]!
   for (const part of ['Launch team', 'Keep answers short.', 'Ana asked for the venue', 'Ben: the venue is ready', 'Ana (owner)', '@Atlas what time is the launch?']) {
     assert.ok(seed.includes(part), part)
@@ -432,7 +433,8 @@ test('a missing or unknown level is approvals (fail closed)', async () => {
   r.lanes.deliver(delivery({ level: 'everything' as never }))
   await settle()
   const args = r.spawned[0]!.args
-  assert.ok(args.includes('--restricted'))
+  assert.equal(valueAfter(args, '--setting-sources'), '')
+  assert.equal(valueAfter(args, '--tools'), 'default')
   assert.equal(valueAfter(args, '--permission-mode'), 'default')
   assert.equal(valueAfter(args, '--permission-prompt-tool'), 'stdio')
 })

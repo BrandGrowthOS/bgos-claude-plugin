@@ -22,7 +22,8 @@ export interface StreamJsonChild {
   onExit(cb: (code: number | null, signal: string | null) => void): void
 }
 
-export type SpawnStreamJson = (command: string, args: string[], opts: { cwd: string }) => StreamJsonChild
+/** `env`: names added to the child's allow listed environment (laneChildEnv), never the daemon's whole one. */
+export type SpawnStreamJson = (command: string, args: string[], opts: { cwd: string; env?: Record<string, string> }) => StreamJsonChild
 
 /** NDJSON: whole lines only, JSON objects only; anything else is skipped. */
 export function lineSplitter(onFrame: (frame: Record<string, unknown>) => void): (chunk: string) => void {
@@ -91,11 +92,11 @@ export function laneChildEnv(env: Record<string, string | undefined>): Record<st
  * a dev server) stop with it. Its stdin stays a pipe, so a daemon that dies
  * outright still closes it, and `claude -p` ends on that.
  */
-export function spawnStreamJson(command: string, args: string[], opts: { cwd: string }): StreamJsonChild {
+export function spawnStreamJson(command: string, args: string[], opts: { cwd: string; env?: Record<string, string> }): StreamJsonChild {
   const ownGroup = process.platform !== 'win32'
   const child = spawn(command, args, {
     cwd: opts.cwd,
-    env: laneChildEnv(process.env),
+    env: { ...laneChildEnv(process.env), ...(opts.env ?? {}) },
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,
     detached: ownGroup,

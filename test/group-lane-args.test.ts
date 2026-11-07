@@ -12,6 +12,7 @@ import {
   GROUP_SEED_MAX_CHARS,
   assertGroupLane,
   groupLaneArgs,
+  groupLaneSettings,
   groupIdleOverrideMs,
   groupIdlePauseMs,
   groupLevel,
@@ -34,32 +35,41 @@ test('the level: talk, approvals and full; anything else is approvals (fail clos
   for (const raw of [undefined, null, '', 'FULL', 'admin', 3, {}]) assert.equal(groupLevel(raw), 'approvals', String(raw))
 })
 
-test('talk: no tools at all and dontAsk, so the lane can only answer; nobody is asked', () => {
-  const args = groupLaneArgs({ ...base, resume: false, level: 'talk' })
-  assert.equal(after(args, '--tools'), '')
-  assert.equal(after(args, '--permission-mode'), 'dontAsk')
-  assert.ok(args.includes('--restricted'))
-  assert.ok(!args.includes('--permission-prompt-tool'))
+// The exact commands, pinned. Measured on the installed CLI (2.1.319) by the tools its init frame offers:
+//  - `--restricted --tools ""` offers no tool at all (talk);
+//  - under `--restricted`, `--tools default` offers the default set WITHOUT Bash, WebFetch, Monitor, Workflow and
+//    CronCreate, and a named list offers exactly the names (`default,Bash` offered Bash alone): the shell could
+//    only be refused, never asked for, so approvals does NOT run restricted;
+//  - `--setting-sources "" --tools default` offers the full default set with Bash, and ignores the owner's user,
+//    project and local settings (their model and deny rules did not apply), while `--settings` still does.
+const MCP_TAIL = ['--strict-mcp-config', '--mcp-config', '/tmp/empty-mcp.json']
+const HEAD = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--session-id', ID]
+
+test('talk: exactly no tools and dontAsk, so the lane can only answer; nobody is asked', () => {
+  assert.deepEqual(groupLaneArgs({ ...base, resume: false, level: 'talk' }), [
+    ...HEAD, '--restricted', '--tools', '', '--permission-mode', 'dontAsk',
+    '--settings', JSON.stringify(groupLaneSettings('talk', '/work/atlas', 'linux')), ...MCP_TAIL,
+  ])
 })
 
-test('approvals: restricted (the owner\'s allow rules do not apply), mode default, every prompt to the daemon\'s gate', () => {
+test('approvals: the owner\'s settings off, the CLI\'s full default tools (Bash too), mode default, every prompt to the gate', () => {
   const args = groupLaneArgs({ ...base, resume: false, level: 'approvals' })
-  assert.ok(args.includes('--restricted'))
-  assert.equal(after(args, '--tools'), 'default', 'the CLI\'s own set, never a hand made list')
-  assert.equal(after(args, '--permission-mode'), 'default')
-  assert.equal(after(args, '--permission-prompt-tool'), 'stdio')
+  assert.deepEqual(args, [
+    ...HEAD, '--setting-sources', '', '--tools', 'default', '--permission-mode', 'default', '--permission-prompt-tool', 'stdio',
+    '--settings', JSON.stringify(groupLaneSettings('approvals', '/work/atlas', 'linux')), ...MCP_TAIL,
+  ])
+  assert.ok(!args.includes('--restricted'), 'restricted would take Bash away, so a shell request could never reach the card')
   const settings = JSON.parse(after(args, '--settings')!)
-  assert.deepEqual(settings.permissions.allow, ['Read(//work/atlas/**)'])
+  assert.deepEqual(settings.permissions.allow, ['Read(//work/atlas/**)'], 'reads of the agent folder only; nothing that changes is allowed ahead')
+  assert.equal(settings.permissions.deny, undefined, 'no tool is denied ahead: each changing use asks the owner')
   assert.equal(settings.remoteControlAtStartup, false)
 })
 
-test('full: the owner\'s own settings and mode default, every prompt to the same gate as the owner\'s chat', () => {
-  const args = groupLaneArgs({ ...base, resume: false, level: 'full' })
-  assert.ok(!args.includes('--restricted'))
-  assert.ok(!args.includes('--tools'))
-  assert.equal(after(args, '--permission-mode'), 'default')
-  assert.equal(after(args, '--permission-prompt-tool'), 'stdio')
-  assert.deepEqual(JSON.parse(after(args, '--settings')!), { remoteControlAtStartup: false })
+test('full: the owner\'s own settings and default tools, mode default, every prompt to the owner\'s own chat handling', () => {
+  assert.deepEqual(groupLaneArgs({ ...base, resume: false, level: 'full' }), [
+    ...HEAD, '--permission-mode', 'default', '--permission-prompt-tool', 'stdio',
+    '--settings', JSON.stringify({ remoteControlAtStartup: false }), ...MCP_TAIL,
+  ])
 })
 
 test('a fresh session names its id with --session-id; a later start resumes it; never a fork, never bypass', () => {
