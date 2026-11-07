@@ -727,3 +727,43 @@ test('review 5: a delivery that states no level keeps the lane\'s level, and a n
   assert.equal(valueAfter(fresh.spawned[0]!.args, '--tools'), '', 'a new lane with no stated level is talk')
   assert.equal(valueAfter(fresh.spawned[0]!.args, '--permission-mode'), 'dontAsk')
 })
+
+test('review 6: backlog rows of one poll read are ONE group lane turn: the newest is the message, the rest earlier messages', async () => {
+  const r = rig()
+  const rows = [
+    delivery({ messageId: 801, key: '801', sender: 'Ana', text: 'first old line' }),
+    delivery({ messageId: 802, key: '802', sender: 'Ben', text: 'second old line' }),
+    delivery({ messageId: 803, key: '803', sender: 'Ana', text: '@Atlas the newest one' }),
+  ]
+  assert.equal(r.lanes.deliverBatch(rows), true)
+  await settle()
+  assert.equal(r.spawned.length, 1)
+  const turns = r.spawned[0]!.child.messages()
+  assert.equal(turns.length, 1, 'one turn, not three')
+  const turn = turns[0]!
+  assert.ok(turn.indexOf('first old line') < turn.indexOf('second old line'))
+  assert.ok(turn.indexOf('second old line') < turn.indexOf('@Atlas the newest one'))
+  assert.match(turn, /Earlier messages in this group/)
+  r.spawned[0]!.child.result('ok')
+  await settle()
+  assert.equal(r.replies.length, 1, 'one reply')
+  // Each row is now seen: a repeat of any of them, alone or as a batch, runs nothing.
+  assert.equal(r.lanes.deliver(delivery({ messageId: 802, key: '802' })), false)
+  assert.equal(r.lanes.deliverBatch(rows), false)
+})
+
+test('review 6: a backlog batch drops rows the lane already took from another transport', async () => {
+  const r = rig()
+  r.lanes.deliver(delivery({ messageId: 803, key: '803', text: 'live already' }))
+  await settle()
+  r.spawned[0]!.child.result('ok')
+  await settle()
+  assert.equal(r.lanes.deliverBatch([
+    delivery({ messageId: 802, key: '802', text: 'older' }),
+    delivery({ messageId: 803, key: '803', text: 'live already' }),
+  ]), true)
+  await settle()
+  const turn = r.spawned[0]!.child.messages()[1]!
+  assert.ok(turn.includes('older'))
+  assert.ok(!turn.includes('live already'), 'the row the socket handed over is not run again')
+})

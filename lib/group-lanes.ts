@@ -68,6 +68,7 @@ import {
   parseGroupSummary,
   toolInputPreview,
   type GroupBacklogLine,
+  type GroupEarlierMessage,
   type GroupLevel,
   type GroupRosterEntry,
 } from './group-lane-args.ts'
@@ -129,6 +130,8 @@ export interface GroupDelivery {
   roster: GroupRosterEntry[]
   agents: string[]
   backlog: GroupBacklogLine[]
+  /** Group messages the lane never had as turns, oldest first (shown before the message as data). */
+  earlier?: GroupEarlierMessage[]
 }
 
 export interface GroupApproval {
@@ -301,12 +304,44 @@ export class GroupLaneManager {
    */
   deliver(d: GroupDelivery): boolean {
     if (!d || !isGroupChatId(d.chatId)) return false
-    const key = `${d.chatId}:${d.key}`
-    if (d.key !== '' && this.seen.has(key)) return false
-    if (d.key !== '') {
-      this.seen.add(key)
-      while (this.seen.size > GROUP_SEEN_MAX) this.seen.delete(this.seen.values().next().value as string)
-    }
+    if (!this.claim(d.chatId, d.key)) return false
+    this.queue(d, [])
+    return true
+  }
+
+  /**
+   * The backlog rows of one poll read of a group (review finding 6): ONE
+   * turn, never one per row. Rows the lane already took (the socket or the
+   * stream handed them over) are dropped; the newest row left is the
+   * message and the others ride before it as earlier messages. False when
+   * nothing is left.
+   */
+  deliverBatch(rows: readonly GroupDelivery[]): boolean {
+    const chatId = rows[0]?.chatId ?? ''
+    if (!isGroupChatId(chatId)) return false
+    const kept = rows.filter((d) => d && d.chatId === chatId && this.claim(chatId, d.key))
+    const last = kept.at(-1)
+    if (!last) return false
+    const earlier: GroupEarlierMessage[] = kept.slice(0, -1).map((d) => ({ messageId: d.messageId, sender: d.sender, text: d.text, sentAt: null }))
+    this.queue(last, earlier)
+    return true
+  }
+
+  /** Claim a delivery key for a group: false when it was taken already. */
+  private claim(chatId: string, key: string): boolean {
+    if (key === '') return true
+    const full = `${chatId}:${key}`
+    if (this.seen.has(full)) return false
+    this.seen.add(full)
+    while (this.seen.size > GROUP_SEEN_MAX) this.seen.delete(this.seen.values().next().value as string)
+    return true
+  }
+
+  private queue(input: GroupDelivery, rows: GroupEarlierMessage[]): void {
+    // Earlier messages the server sent are dropped when the lane already had them.
+    const sent = (input.earlier ?? []).filter((m) => m.messageId === null || this.claim(input.chatId, String(m.messageId)))
+    const earlier = [...sent, ...rows].sort((a, b) => (a.messageId ?? 0) - (b.messageId ?? 0))
+    const d: GroupDelivery = { ...input, earlier }
     const lane = this.laneFor(d.chatId)
     // The level applies AT ONCE (review finding 4): a lowered level must not
     // wait behind a turn still running under the old one. The gate answers by
@@ -315,7 +350,6 @@ export class GroupLaneManager {
     if (d.level !== null) lane.level = groupLevel(d.level)
     if (d.sessionHandle) lane.sessionHandle = d.sessionHandle
     void this.enqueue(lane, () => this.runTurn(lane, d))
-    return true
   }
 
   /** True when this manager already took the delivery (a transport repeating it). */

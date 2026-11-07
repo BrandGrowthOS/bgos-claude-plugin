@@ -1197,7 +1197,7 @@ import {
 } from 'node:fs'
 import { ThreadLaneManager, liveThreadWork, threadsPendingPath } from './lib/thread-lanes.ts'
 import { randomInt } from 'node:crypto'
-import { GroupLaneManager, type GroupApproval } from './lib/group-lanes.ts'
+import { GroupLaneManager, type GroupApproval, type GroupDelivery } from './lib/group-lanes.ts'
 import { groupRouteOf, groupTapLine, readGroupDelivery } from './lib/group-delivery.ts'
 import { groupIdleOverrideMs, type GroupLevel } from './lib/group-lane-args.ts'
 import { createGroupSummaryQueue, isOwnerCard, withGroupSummaries } from './lib/group-summary-queue.ts'
@@ -12787,6 +12787,8 @@ async function pollChat(chatId: string): Promise<void> {
         const view = viewStreamMessage({ seq: 0, kind: 'message_edited', chatId: Number(chatId), messageId: row.message.id, payload: row as unknown as Record<string, unknown> }, ASSISTANT_ID)
         return view ? humanEditTime(view) : null
       })
+    // Group threads: the backlog rows of a group this read finds, handed to its lane as ONE turn after the loop.
+    const groupPollBacklog: GroupDelivery[] = []
     for (const { row: msg, edit } of deliveries) {
       if (humanMessageEdits.isDeleted({ chatId, messageId: msg.message.id })) continue
       if (edit) {
@@ -12798,8 +12800,8 @@ async function pollChat(chatId: string): Promise<void> {
       // this daemon was away, and the rows under it did: it keeps a live message's
       // framing and its overdue timer. Only a boot read can be both.
       const isBacklog = readIsBacklog && !(msg.message.id >= (chatLiveFloor.get(chatId) ?? Number.POSITIVE_INFINITY))
-      // Group threads: a group's message goes to its own lane first.
-      if (routeGroupPollRow(msg)) continue
+      // Group threads: a group's message goes to its own lane first; its backlog rows wait for one turn.
+      if (routeGroupPollRow(msg, isBacklog ? groupPollBacklog : null)) continue
       // The second lock (person lanes), on the poll as on the socket.
       const pollLaneVerdict = ownerLaneVerdict(msg.message)
       if (!pollLaneVerdict.deliver) {
@@ -13197,6 +13199,7 @@ async function pollChat(chatId: string): Promise<void> {
         )
       }
     }
+    flushGroupPollBacklog(groupPollBacklog)
 
     // Advance the cursor only now, AFTER the batch above was handed to the
     // notification transport: the cursor is persisted, so advancing before
@@ -15234,13 +15237,27 @@ function routeGroupSocketInbound(payload: any): boolean {
     sessionHandle: payload?.sessionHandle ?? payload?.session_handle,
   }, 'socket')
 }
-function routeGroupPollRow(msg: ChatMessage): boolean {
-  return routeGroupDelivery([msg.message, msg], {
+function routeGroupPollRow(msg: ChatMessage, backlog: GroupDelivery[] | null): boolean {
+  const input = {
     key: String(msg.message.id),
     messageId: msg.message.id,
     text: msg.message.text ?? '',
     sessionHandle: (msg.message as { sessionHandle?: unknown }).sessionHandle,
-  }, 'poll')
+  }
+  if (backlog === null) return routeGroupDelivery([msg.message, msg], input, 'poll')
+  // A backlog row (review finding 6): gathered, never a turn of its own.
+  const chatId = groupRouteOf([msg.message, msg], groupLanesOn())
+  if (chatId === null) return false
+  if (!updateDrainMode) backlog.push(readGroupDelivery([msg.message, msg], { chatId, ...input }))
+  return true
+}
+
+/** The backlog rows one poll read gathered for a group: one lane turn (lib/group-lanes.ts deliverBatch). */
+function flushGroupPollBacklog(rows: GroupDelivery[]): void {
+  if (rows.length === 0 || updateDrainMode) return
+  const taken = groupLanes.deliverBatch(rows)
+  for (const row of rows) if (row.messageId !== null) rememberForwarded(row.messageId)
+  if (taken) log(`groups: ${rows.length} poll backlog row(s) handed to the lane of group ${rows[0]!.chatId} as one turn`)
 }
 function routeGroupStreamView(view: StreamMessageView, transport: string): boolean {
   return routeGroupDelivery([view.raw], { key: String(view.messageId), messageId: view.messageId, text: view.text, sessionHandle: view.sessionHandle }, transport)

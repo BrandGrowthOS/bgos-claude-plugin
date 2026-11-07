@@ -101,7 +101,7 @@ test('server.ts routes a group stamp to the lane BEFORE ownerLaneVerdict on the 
     assert.ok(route > 0 && route < verdict, `${name}: the group route comes before ownerLaneVerdict`)
     assert.ok(verdict - route < 1500, `${name}: in the same handler`)
   }
-  for (const helper of ['routeGroupSocketInbound(payload)', 'routeGroupPollRow(msg)', 'routeGroupStreamView(view, transport)', 'routeGroupStreamTap(view)']) {
+  for (const helper of ['routeGroupSocketInbound(payload)', 'routeGroupPollRow(msg, isBacklog ? groupPollBacklog : null)', 'routeGroupStreamView(view, transport)', 'routeGroupStreamTap(view)']) {
     assert.ok(server.includes(`if (${helper}) `), helper)
   }
   // Only where group lanes run: the same condition that declares group_threads.
@@ -298,4 +298,13 @@ test('review 5: no groupThread block, or no level in it, states no level; only a
   assert.equal(readGroupDelivery([{ ...stamped, groupThread: { ...stamped.groupThread, level: 5 } }], base).level, null)
   assert.equal(readGroupDelivery([{ ...stamped, groupThread: { ...stamped.groupThread, level: 'root' } }], base).level, 'approvals')
   assert.equal(readGroupDelivery([stamped], base).level, 'talk')
+})
+
+test('review 6: the poll gathers a group\'s backlog rows and hands them to the lane as one turn after the read', () => {
+  assert.match(server, /if \(routeGroupPollRow\(msg, isBacklog \? groupPollBacklog : null\)\) continue/)
+  const at = server.indexOf('const groupPollBacklog: GroupDelivery[] = []')
+  const route = server.indexOf('if (routeGroupPollRow(msg, isBacklog ? groupPollBacklog : null)) continue')
+  const flush = server.indexOf('flushGroupPollBacklog(groupPollBacklog)')
+  assert.ok(at > 0 && at < route && route < flush, 'declared before the loop, flushed after it')
+  assert.match(server, /function flushGroupPollBacklog\(rows: GroupDelivery\[\]\): void \{[\s\S]{0,400}groupLanes\.deliverBatch\(rows\)/)
 })
