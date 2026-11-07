@@ -63,6 +63,7 @@ import {
   GROUP_SUMMARY_INSTRUCTION,
   groupLaneArgs,
   groupIdlePauseMs,
+  groupLaunchLevel,
   groupLevel,
   groupSeedBrief,
   stricterLevel,
@@ -185,7 +186,12 @@ export interface GroupLaneDeps {
    */
   laneRoot(): string
   /** Where a lane below Full may never reach (lib/group-lane-args.ts GroupLaneFence), less the lane's own folder. */
-  fence(): { home: string; configDir: string; stateRoot: string; tempRoots?: readonly string[]; sandbox: boolean }
+  fence(): GroupFenceBase | Promise<GroupFenceBase>
+  /**
+   * Called once per daemon life, the first time a With approvals lane runs as
+   * Talk only because the host has no working sandbox: the owner is told.
+   */
+  onNoSandbox?(): void
   /** Where lane state files live, ~/.bgos-agent/<assistantId>/groups. */
   stateDir: string
   emptyMcpConfigPath(): string
@@ -265,6 +271,16 @@ interface Lane {
   serverClosed: boolean
 }
 
+/** Where a lane below Full may never reach, less the lane's own folder and root (lib/group-lane-args.ts GroupLaneFence). */
+export interface GroupFenceBase {
+  home: string
+  configDir: string
+  stateRoot: string
+  tempRoots?: readonly string[]
+  /** The host's CLI sandbox really starts (lib/group-lane-root.ts groupSandboxWorks). */
+  sandbox: boolean
+}
+
 export class GroupLaneManager {
   private readonly deps: GroupLaneDeps
   private readonly lanes = new Map<string, Lane>()
@@ -272,6 +288,7 @@ export class GroupLaneManager {
   private readonly seen = new Set<string>()
   private slotWaiters: Array<() => void> = []
   private readonly work = new Set<Promise<unknown>>()
+  private toldNoSandbox = false
 
   constructor(deps: GroupLaneDeps) {
     this.deps = deps
@@ -559,17 +576,26 @@ export class GroupLaneManager {
       }
     }
     lane.idleMs = groupIdlePauseMs(d.idlePauseMinutes)
+    // The level this lane is launched at: With approvals with no working
+    // sandbox runs as Talk only (finding 3), and the owner is told once.
+    const fence = await this.deps.fence()
+    const launch = groupLaunchLevel(lane.level, fence.sandbox)
+    if (launch !== lane.level && !this.toldNoSandbox) {
+      this.toldNoSandbox = true
+      this.deps.log('groups: this computer has no working sandbox, so With approvals groups run as Talk only')
+      this.deps.onNoSandbox?.()
+    }
     // The owner changed the level (deliver() set it, from the newest
     // delivery): the running process was started with the old one, so it
     // stops first and the session resumes under the new one.
-    if (lane.child && lane.childLevel !== lane.level) {
+    if (lane.child && lane.childLevel !== launch) {
       this.deps.log(`groups: group ${lane.chatId} level is now ${lane.level}, its lane restarts under it`)
       this.stopChild(lane)
       await lane.exited
     }
     await this.acquireSlot(lane)
     if (lane.closed) return
-    await this.ensureChild(lane)
+    await this.ensureChild(lane, launch, fence)
     if (lane.closed || !lane.child) return
     const seed = !lane.st.started
     // Each group message once per turn: a held or backlog row the turn already
@@ -720,7 +746,7 @@ export class GroupLaneManager {
     for (const wake of waiters) wake()
   }
 
-  private async ensureChild(lane: Lane): Promise<void> {
+  private async ensureChild(lane: Lane, launch: GroupLevel, fence: GroupFenceBase): Promise<void> {
     if (lane.child && lane.stopping) await lane.exited
     if (lane.closed || lane.child) return
     try {
@@ -746,18 +772,18 @@ export class GroupLaneManager {
       const args = groupLaneArgs({
         sessionId: lane.st.sessionId!,
         resume,
-        level: lane.level,
+        level: launch,
         emptyMcpConfigPath: this.deps.emptyMcpConfigPath(),
         agentFolder: this.deps.agentFolder,
         mainSessionId: this.deps.mainSessionId(),
         platform: this.deps.platform,
-        fence: { ...this.deps.fence(), laneRoot: this.deps.laneRoot(), laneFolder: folder },
+        fence: { ...fence, laneRoot: this.deps.laneRoot(), laneFolder: folder },
       })
       this.persist(lane)
       // The private turn hook reads this: a group lane has no private tools and no daemon of its own to attach to.
       const child = this.deps.spawn(claude, args, { cwd: folder, env: { [GROUP_LANE_ENV]: lane.chatId } })
       lane.child = child
-      lane.childLevel = lane.level
+      lane.childLevel = launch
       lane.stopping = false
       lane.contextTokens = 0
       this.recordPid(lane, child)

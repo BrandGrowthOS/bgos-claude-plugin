@@ -1204,6 +1204,7 @@ import { GroupLaneManager, type GroupApproval, type GroupDelivery } from './lib/
 import { groupRouteOf, groupTapKey, groupTapLine, readGroupDelivery } from './lib/group-delivery.ts'
 import { groupIdleOverrideMs, type GroupLevel } from './lib/group-lane-args.ts'
 import { createGroupSummaryQueue, isOwnerCard, withGroupSummaries } from './lib/group-summary-queue.ts'
+import { ensureGroupLaneRoot, groupSandboxWorks } from './lib/group-lane-root.ts'
 import { AsideForks, runAside } from './lib/aside-fork.ts'
 import { ThreadsCliGate, threadsCliProblem, type ThreadsCliAnswer } from './lib/threads-cli.ts'
 import { killProcessGroup, processRunsIn, processStamp } from './lib/lane-process.ts'
@@ -15167,18 +15168,20 @@ const groupLanes = new GroupLaneManager({
   // Below Full a lane never reaches the home folder, the agent folder, the
   // agent state root or the CLI config dir; Bash is fenced by the CLI sandbox
   // where the host has one (lib/group-lane-args.ts groupLaneSettings).
-  fence: () => ({
+  fence: async () => ({
     home: homedir(),
     configDir: CLAUDE_CONFIG_DIR || pathJoin(homedir(), '.claude'),
     stateRoot: pathJoin(homedir(), '.bgos-agent'),
     // Where the CLI keeps every session's background command output.
     tempRoots: [...new Set([`/tmp/claude-${process.getuid?.() ?? ''}`, `/private/tmp/claude-${process.getuid?.() ?? ''}`, pathJoin(tmpdir(), `claude-${process.getuid?.() ?? ''}`)])],
-    sandbox: laneShellSandboxAvailable({
-      platform: process.platform,
-      exists: (p: string) => existsSync(p),
-      onPath: (name: string) => findOnPath(name, { pathVar: process.env.PATH ?? '' }) !== null,
-    }),
+    sandbox: await groupSandboxWorksHere(),
   }),
+  // Told once, in the owner's own chat, through the connection's own notice path.
+  onNoSandbox: () => {
+    const chat = deafNoticeChat({ pendingChatId: '', mainChatIds, ownership: chatOwnership })
+    if (chat === null) return
+    void sendConnectionNotice(chat, noGroupSandboxText()).catch((err) => log(`groups: the no sandbox notice could not be posted: ${err}`))
+  },
   emptyMcpConfigPath: threadsEmptyMcpConfig,
   fs: {
     exists: (path) => existsSync(path),
@@ -15233,15 +15236,37 @@ const groupLanes = new GroupLaneManager({
  * again and the session resumes.
  */
 function groupLaneRoot(): string {
-  const uid = typeof process.getuid === 'function' ? process.getuid() : -1
-  const top = pathJoin('/var/tmp', `hoai-group-lanes-${uid}`)
-  mkdirSync(top, { recursive: true, mode: 0o700 })
-  const st = lstatSync(top)
-  if (st.isSymbolicLink() || !st.isDirectory() || st.uid !== uid) throw new Error('the group lanes folder is not this user\'s own')
-  if ((st.mode & 0o077) !== 0) chmodSync(top, 0o700)
-  const root = pathJoin(top, String(ASSISTANT_ID))
-  mkdirSync(root, { recursive: true, mode: 0o700 })
-  return root
+  return ensureGroupLaneRoot({
+    base: '/var/tmp',
+    uid: typeof process.getuid === 'function' ? process.getuid() : -1,
+    assistantId: String(ASSISTANT_ID),
+    fs: {
+      mkdir: (path, mode) => { mkdirSync(path, { recursive: true, mode }) },
+      lstat: (path) => lstatSync(path),
+      chmod: (path, mode) => chmodSync(path, mode),
+    },
+  })
+}
+
+/**
+ * Does the CLI sandbox really START on this host (round 4, finding 3)? Asked
+ * once per daemon life: CLI 2.1.319 skips a sandbox it cannot run and then
+ * runs Bash unfenced, so without one With approvals groups run as Talk only.
+ */
+let groupSandboxCheck: Promise<boolean> | null = null
+function groupSandboxWorksHere(): Promise<boolean> {
+  groupSandboxCheck ??= groupSandboxWorks({
+    platform: process.platform,
+    run: (command, args) =>
+      execFileAsync(command, args, { timeout: 10_000 }).then(() => true, () => false),
+  })
+  return groupSandboxCheck
+}
+
+/** The one sentence the owner reads when this computer cannot fence group threads. */
+function noGroupSandboxText(): string {
+  const name = cleanIdentityName(identityToldName ?? '') || 'this agent'
+  return `This computer cannot fence group threads, so ${name} only replies in groups until a sandbox is available.`
 }
 
 /** The thread lanes' and the group lanes' work together, for the restart and drain counts. */

@@ -357,3 +357,13 @@ test('finding E: the socket and the stream say the server framed the text; the p
   assert.doesNotMatch(poll, /serverFramed/)
   assert.equal(readGroupDelivery([stamped], { chatId: '123', key: '1', messageId: 1, text: '[BGOS x]' }).serverFramed, false, 'absent reads as not framed')
 })
+
+test('round 4, findings 3 and 7: server.ts asks whether the sandbox really starts, tells the owner once in their own chat, and makes the lane root through the checked helper', () => {
+  const manager = server.slice(server.indexOf('const groupLanes = new GroupLaneManager({'), server.indexOf('\n})\n', server.indexOf('const groupLanes = new GroupLaneManager({')))
+  assert.match(manager, /sandbox: await groupSandboxWorksHere\(\),/)
+  assert.match(manager, /onNoSandbox: \(\) => \{[\s\S]{0,300}deafNoticeChat\(\{ pendingChatId: '', mainChatIds, ownership: chatOwnership \}\)[\s\S]{0,200}sendConnectionNotice\(chat, noGroupSandboxText\(\)\)/)
+  assert.match(server, /return `This computer cannot fence group threads, so \$\{name\} only replies in groups until a sandbox is available\.`/)
+  assert.match(server, /groupSandboxCheck \?\?= groupSandboxWorks\(\{/)
+  const root = server.slice(server.indexOf('function groupLaneRoot(): string {'), server.indexOf('\n}\n', server.indexOf('function groupLaneRoot(): string {')))
+  assert.match(root, /return ensureGroupLaneRoot\(\{\n\s*base: '\/var\/tmp',/)
+})

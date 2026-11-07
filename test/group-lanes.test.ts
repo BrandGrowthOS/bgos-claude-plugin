@@ -928,3 +928,39 @@ test('round 4, finding 2: the approval card names the real path of the call and 
   assert.match(String(r.approvals[0]!.description), new RegExp(`Path: ${join(LANES, '456', 'other.txt')}\\. This is OUTSIDE this group's folder\\.$`))
   assert.match(String(r.approvals[1]!.description), new RegExp(`Path: ${join(LANES, '123', 'notes.txt')}$`))
 })
+
+test('round 4, finding 3: with no working sandbox, With approvals runs as Talk only, and the owner is told once', async () => {
+  const r = rig({ sandbox: false })
+  let told = 0
+  r.deps.onNoSandbox = () => { told++ }
+  r.lanes.deliver(delivery({ chatId: '601', key: 'a', level: 'approvals' }))
+  r.lanes.deliver(delivery({ chatId: '602', key: 'b', level: 'approvals' }))
+  await settle()
+  for (const s of r.spawned) {
+    assert.equal(valueAfter(s.args, '--tools'), '', 'reply only')
+    assert.equal(valueAfter(s.args, '--permission-mode'), 'dontAsk')
+  }
+  assert.equal(told, 1, 'once, not per group')
+  // A tool prompt that still arrives is refused without the gate.
+  r.spawned[0]!.child.frame({ type: 'control_request', request_id: 'n1', request: { subtype: 'can_use_tool', tool_name: 'Bash', input: {} } })
+  await settle()
+  assert.equal(r.approvals.length, 0)
+})
+
+test('round 4, finding 3: with a working sandbox, With approvals runs as itself and nobody is told', async () => {
+  const r = rig({ sandbox: true })
+  let told = 0
+  r.deps.onNoSandbox = () => { told++ }
+  r.lanes.deliver(delivery({ level: 'approvals' }))
+  await settle()
+  assert.equal(valueAfter(r.spawned[0]!.args, '--tools'), 'Bash,Read,Grep,Glob,Edit,Write')
+  assert.equal(told, 0)
+})
+
+test('round 4, finding 3: Full is the owner\'s own chat and never falls back, sandbox or not', async () => {
+  const r = rig({ sandbox: false })
+  r.lanes.deliver(delivery({ level: 'full' }))
+  await settle()
+  assert.equal(valueAfter(r.spawned[0]!.args, '--permission-mode'), 'default')
+  assert.ok(!r.spawned[0]!.args.includes('--tools'))
+})

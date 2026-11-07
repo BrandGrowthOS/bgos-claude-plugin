@@ -49,6 +49,15 @@ export function stricterLevel(a: GroupLevel, b: GroupLevel): GroupLevel {
   return LEVEL_RANK[a] <= LEVEL_RANK[b] ? a : b
 }
 
+/**
+ * The level a lane is LAUNCHED at (round 4, finding 3): With approvals needs
+ * a working sandbox to fence Bash, so on a host without one it runs as Talk
+ * only. Full is the owner's own chat and is not fenced either way.
+ */
+export function groupLaunchLevel(level: GroupLevel, sandboxWorks: boolean): GroupLevel {
+  return level === 'approvals' && !sandboxWorks ? 'talk' : level
+}
+
 /** The lane stamp prefix the server puts on every group delivery. */
 export const GROUP_LANE_PREFIX = 'group:'
 
