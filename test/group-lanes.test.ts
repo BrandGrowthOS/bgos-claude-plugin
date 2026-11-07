@@ -631,3 +631,13 @@ test('the test only override (HOAI_GROUP_LANE_IDLE_MS) wins over the group\'s ch
   await settle()
   assert.ok(r.posts.some((p) => p.state === 'paused'))
 })
+
+// -- review round 2 ------------------------------------------------------------
+
+test('review 8: two groups that deliver the same key both run: the dedupe is per group', async () => {
+  const r = rig()
+  assert.equal(r.lanes.deliver(delivery({ chatId: '301', key: '700', messageId: 700 })), true)
+  assert.equal(r.lanes.deliver(delivery({ chatId: '302', key: '700', messageId: 700 })), true)
+  await settle()
+  assert.deepEqual(r.spawned.map((s) => s.cwd.split(/[\\/]/).at(-1)), ['301', '302'])
+})
