@@ -8,6 +8,10 @@ From 0.86.9 to 0.86.11 the browser shim pin recorded BGOS main commit `aed69c93b
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.86.16 (2026-11-06)
+
+**Each turn keeps its own sender in shared chats** In a chat shared with other people, each turn stays bound to the person who sent it.
+
 ## 0.86.15 (2026-11-06)
 
 **Steadier Windows tests** The Windows test job no longer fails on browser fixture timing or deadline ordering; test code only.
