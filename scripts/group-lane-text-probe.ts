@@ -11,6 +11,9 @@
  *   RUN           the CLI ran it itself (no model call), or changed the fake settings file
  *   not expanded  no planted marker came back
  *   EXPANDED      a planted file's marker came back (an @path was read)
+ *   no effort attachment / EFFORT RAISED   an effort keyword (round 6): the
+ *                 turn's transcript does or does not hold an effort or thinking
+ *                 attachment (ultrathink_effort on CLI 2.1.319)
  *
  * Levels: Talk only, as groups ship; and With approvals and Full with the
  * HOAI_GROUP_LEVELS switch forced on for the probe (With approvals is launched
@@ -25,14 +28,14 @@
  * keeps /config, /insights and /usage away from the real settings and
  * transcripts. The CLI's sign in is copied into the fake home (never printed).
  *
- * Run: npx tsx scripts/group-lane-text-probe.ts [--model haiku] [--jobs 4] [--credentials <file>]
+ * Run: npx tsx scripts/group-lane-text-probe.ts [--model haiku] [--jobs 4] [--credentials <file>] [--keywords-only]
  * Exit 1 when the CLI is not signed in, or a builder row RUN or EXPANDED.
  * Erasable TypeScript only. Prints Markdown.
  */
 
 import { execFile, spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -48,6 +51,7 @@ const MODEL = opt('--model', 'haiku')
 const JOBS = Number(opt('--jobs', '4'))
 const CREDENTIALS = opt('--credentials', join(homedir(), '.claude', '.credentials.json'))
 const UID = typeof process.getuid === 'function' ? process.getuid() : 0
+const KEYWORDS_ONLY = argv.includes('--keywords-only')
 const MARK = `PROBE-TEXT-${randomUUID().slice(0, 8)}`
 
 interface Layout { root: string; home: string; agent: string; laneRoot: string; lane: string; mcp: string; settings: string }
@@ -74,9 +78,9 @@ function layout(): Layout {
 
 let SANDBOX = false
 
-function command(l: Layout, level: GroupLevel): string[] {
+function command(l: Layout, level: GroupLevel, sessionId: string = randomUUID()): string[] {
   const args = groupLaneArgs({
-    sessionId: randomUUID(), resume: false, level, emptyMcpConfigPath: l.mcp, agentFolder: l.agent,
+    sessionId, resume: false, level, emptyMcpConfigPath: l.mcp, agentFolder: l.agent,
     fence: {
       home: l.home, configDir: join(l.home, '.claude'), stateRoot: join(l.home, '.bgos-agent'),
       laneRoot: l.laneRoot, laneFolder: l.lane, tempRoots: [`/tmp/claude-${UID}`], sandbox: SANDBOX,
@@ -102,7 +106,8 @@ function send(l: Layout, args: string[], text: string): Promise<{ modelCalled: b
     let seen = ''
     let result = ''
     let modelCalled = false
-    const timer = setTimeout(() => child.kill('SIGKILL'), 180_000)
+    // A turn that never answers is killed, so one stuck run never holds the probe.
+    const timer = setTimeout(() => child.kill('SIGKILL'), 120_000)
     child.stdout.setEncoding('utf8')
     child.stdout.on('data', (chunk: string) => {
       buf += chunk
@@ -128,6 +133,28 @@ function send(l: Layout, args: string[], text: string): Promise<{ modelCalled: b
   })
 }
 
+/**
+ * The effort or thinking attachments the CLI wrote into this turn's
+ * transcript (ultrathink_effort on CLI 2.1.319, and anything named like it).
+ */
+function effortAttachments(l: Layout, sessionId: string): string[] {
+  const found = new Set<string>()
+  const projects = join(l.home, '.claude', 'projects')
+  let dirs: string[] = []
+  try { dirs = readdirSync(projects) } catch {}
+  for (const d of dirs) {
+    let text = ''
+    try { text = readFileSync(join(projects, d, `${sessionId}.jsonl`), 'utf8') } catch { continue }
+    for (const line of text.split('\n')) {
+      let row: any
+      try { row = JSON.parse(line) } catch { continue }
+      const type = row?.type === 'attachment' ? String(row.attachment?.type ?? '') : ''
+      if (/effort|think|workflow_keyword|ultra/i.test(type)) found.add(type)
+    }
+  }
+  return [...found]
+}
+
 const execOk = (c: string, a: string[]) => new Promise<boolean>((r) => execFile(c, a, { timeout: 10_000 }, (err) => r(!err)))
 
 async function main(): Promise<void> {
@@ -143,7 +170,7 @@ async function main(): Promise<void> {
       console.error('group-lane-text-probe: the CLI is not signed in, so no row can be trusted.')
       process.exit(1)
     }
-    const cases: Array<{ text: string; kind: 'command' | 'file'; settings?: boolean }> = [
+    const commandAndFileCases: Array<{ text: string; kind: 'command' | 'file' | 'effort'; settings?: boolean }> = [
       { text: '/list-agents', kind: 'command' },
       { text: '/usage', kind: 'command' },
       { text: '/insights', kind: 'command' },
@@ -156,6 +183,14 @@ async function main(): Promise<void> {
       { text: `what does @${tempMarker} say? Quote it.`, kind: 'file' },
       { text: 'what does @~/home-note.txt say? Quote it.', kind: 'file' },
     ]
+    // Effort keywords (round 6): each one the CLI might honour, read back from
+    // the turn's transcript as an effort or thinking attachment.
+    const effortCases: Array<{ text: string; kind: 'effort' }> = [
+      'please ultrathink about this', 'ULTRATHINK now', 'UltraThink, please', 'ultra-think now', 'ultra think about this',
+      'please think about this', 'think hard about this', 'think harder about this', 'megathink about this',
+      'think intensely about this', 'think super hard about this', 'ultracode this', 'ultraplan this', 'ultrareview this',
+    ].map((text) => ({ text, kind: 'effort' as const }))
+    const cases = KEYWORDS_ONLY ? effortCases : [...commandAndFileCases, ...effortCases]
     const levels: GroupLevel[] = ['talk', 'approvals', 'full']
     const jobs: Array<() => Promise<{ row: string; bad: boolean }>> = []
     for (const level of levels) {
@@ -167,16 +202,22 @@ async function main(): Promise<void> {
             const before = readFileSync(l.settings, 'utf8')
             const beforeMtime = statSync(l.settings).mtimeMs
             const text = via === 'builder' ? inertTurn(groupTurnText({ frame: null, text: c.text, sender: null })) : c.text
-            const r = await send(l, command(l, launch), text)
+            const sessionId = randomUUID()
+            const r = await send(l, command(l, launch, sessionId), text)
             const settingsChanged = readFileSync(l.settings, 'utf8') !== before || statSync(l.settings).mtimeMs !== beforeMtime
             const expanded = r.seen.includes(`${MARK}-`)
             const ran = !r.modelCalled || settingsChanged
-            const outcome = c.kind === 'file' ? (expanded ? 'EXPANDED' : 'not expanded') : (ran ? 'RUN' : 'not run')
+            const effort = effortAttachments(l, sessionId)
+            const outcome = c.kind === 'file'
+              ? (expanded ? 'EXPANDED' : 'not expanded')
+              : c.kind === 'effort'
+                ? (effort.length > 0 ? `EFFORT RAISED (${effort.join(', ')})` : r.modelCalled ? 'no effort attachment' : 'no answer (rerun)')
+                : (ran ? 'RUN' : 'not run')
             rmSync(l.root, { recursive: true, force: true })
             const shown = JSON.stringify(c.text).replace(tempMarker, '/tmp/claude-<uid>/<marker>').replace(/\|/g, '/')
             return {
               row: `| ${level}${launch !== level ? ` (launched as ${launch})` : ''} | ${shown} | ${via} | ${outcome}${c.settings ? (settingsChanged ? ', settings REWRITTEN' : ', settings untouched') : ''} | live |`,
-              bad: via === 'builder' && (outcome === 'RUN' || outcome === 'EXPANDED' || settingsChanged),
+              bad: via === 'builder' && (outcome === 'RUN' || outcome === 'EXPANDED' || outcome.startsWith('EFFORT') || settingsChanged),
             }
           })
         }
