@@ -19,6 +19,7 @@
  * Schedule is allowed inside that consult and refused before it, after it was
  * answered, and for a replay of the same frame.
  */
+import { channelNotifyFor } from './helpers/channel-notify.ts'
 import { createScheduleGrantRuns, requireBoardsTurn } from '../lib/schedule-grant-run.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -67,6 +68,8 @@ test('the backend stamped consult frame allows schedule only inside that consult
   // server.ts, executed: the voice deps and the private tool admission.
   const cards: string[] = []
   const wiring = execute(`return ({ ${voiceDepsSource} })`, {
+    // channelNotify sends through the same double (0.86.20, test/helpers/channel-notify.ts).
+    get channelNotify(): ReturnType<typeof channelNotifyFor> { return channelNotifyFor(() => (this as unknown as { mcp: { notification: (n: unknown) => unknown } }).mcp) },
     mcp: { notification: async (n: { params: { content: string } }) => { cards.push(n.params.content) } },
     privateTurns,
   })

@@ -25,6 +25,7 @@
  *
  * Run with: npx tsx --test test/plan-tap-authority.test.ts
  */
+import { channelNotifyFor } from './helpers/channel-notify.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -335,6 +336,8 @@ function streamHarness(record: { requesterUserId?: string } = { requesterUserId:
     pendingPermissions: new Map(),
     senderUserIdOf: (m: unknown) => permissionRelay.senderUserIdCandidate(m) ?? OWNER,
     trackMessageOperation: (op: () => Promise<unknown>) => op(),
+    // channelNotify sends through the same double (0.86.20, test/helpers/channel-notify.ts).
+    get channelNotify(): ReturnType<typeof channelNotifyFor> { return channelNotifyFor(() => (this as unknown as { mcp: { notification: (n: unknown) => unknown } }).mcp) },
     mcp: {
       notification: async (n: StreamHarness['notes'][number]) => {
         notes.push(n)

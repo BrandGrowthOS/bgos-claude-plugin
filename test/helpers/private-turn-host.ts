@@ -10,7 +10,7 @@
  * peer conversation close, a meeting line) through the notification wrapper's rawCard, the fire keys the ledger was
  * asked to record, and the daemon's private turn log lines.
  */
-import { createScheduleGrantRuns, requireBoardsTurn } from '../../lib/schedule-grant-run.mjs'
+import { createScheduleGrantRuns, holdChannelCardsDuringGrantedRun, requireBoardsTurn } from '../../lib/schedule-grant-run.mjs'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
@@ -245,7 +245,8 @@ export function agentHost(t: any) {
   let life = daemon()
   const notify = (content: string, meta: Record<string, string>): string => {
     const mcp = { notification: (notification: any) => String(notification.params.content) }
-    const notification = new Function('mcp', 'privateTurns', notificationJs)(mcp, life.tracker)
+    // The scheduled run hold sits in this chain (0.86.20); with no run open every card passes it unchanged.
+    const notification = new Function('mcp', 'privateTurns', 'holdChannelCardsDuringGrantedRun', 'scheduleGrantRuns', 'log', notificationJs)(mcp, life.tracker, holdChannelCardsDuringGrantedRun, createScheduleGrantRuns(), () => {})
     return notification({ method: 'notifications/claude/channel', params: { content, meta } })
   }
   const payloadOf = (event: string, extra: Record<string, unknown> = {}) =>

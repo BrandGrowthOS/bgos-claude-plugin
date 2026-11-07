@@ -3,33 +3,40 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import ts from 'typescript'
 import {
+  BEGIN_WITHIN_MS,
   SCHEDULE_GRANT_HEADER,
   SCHEDULE_GRANT_MAX_MS,
   createScheduleGrantRuns,
+  holdChannelCardsDuringGrantedRun,
   requireBoardsTurn,
   scheduleGrantOf,
 } from '../lib/schedule-grant-run.mjs'
 import { PRIVATE_TURN_REFUSAL } from '../lib/private-turn.mjs'
+import { buildScheduleCreateBody } from '../lib/schedule.js'
 
-// A scheduled run keeps the permission of the person who scheduled it (0.86.20). Unit tests of the run, then the
-// real server.ts admission and delivery code run with doubles around it.
+// A scheduled run keeps the permission of the person who scheduled it (0.86.20, round 3): one choke point holds every
+// channel card while a granted run is live, the run begins only on the wake's own prompt, and a boards call never runs
+// on the grant alone. Unit tests of the run and the choke point, then the real server.ts wiring.
 
 const OWNER = 'user_owner'
 const MEMBER = 'user_member'
 const FIRED = Date.parse('2026-11-07T02:00:00.000Z')
-const FIRE_ID = `scheduled-wake:41:${new Date(FIRED).toISOString()}`
-const wakeMeta = (over: Record<string, unknown> = {}) => ({
+const fireIdOf = (task: number, at = FIRED) => `scheduled-wake:${task}:${new Date(at).toISOString()}`
+const wakeMeta = (task = 41, over: Record<string, unknown> = {}) => ({
   source: 'scheduler',
   payload: {
-    scheduledTaskId: 41,
-    fireId: FIRE_ID,
+    scheduledTaskId: task,
+    fireId: fireIdOf(task),
     actingUserId: OWNER,
     boardGrant: { boards: 1, expiresAt: new Date(FIRED + SCHEDULE_GRANT_MAX_MS).toISOString() },
     ...over,
   },
 })
-const grantAt = (now: number, meta: Record<string, unknown> = wakeMeta()) =>
-  scheduleGrantOf({ senderType: 'system', eventMeta: meta, actingUserId: OWNER, chatId: 900, now })
+const grantAt = (now: number, meta: Record<string, unknown> = wakeMeta(), actingUserId = OWNER) =>
+  scheduleGrantOf({ senderType: 'system', eventMeta: meta, actingUserId, chatId: 900, now })
+const TOKEN = '11111111-2222-4333-8444-555555555555'
+const OTHER_TOKEN = '99999999-2222-4333-8444-555555555555'
+const tag = (id: string) => `<hoai-private-turn id="${id}"/>`
 
 function fakeClock(start = FIRED + 60_000) {
   let t = start
@@ -41,158 +48,161 @@ function fakeClock(start = FIRED + 60_000) {
     advance(ms: number) { t += ms; for (const h of timers) if (!h.done && h.at <= t) { h.done = true; h.fn() } },
   }
 }
+const flush = async () => { for (let i = 0; i < 5; i += 1) await Promise.resolve() }
+
+/** A run store and the choke point over a recording sender. */
+function rig() {
+  const clock = fakeClock()
+  const ended: string[] = []
+  const runs = createScheduleGrantRuns({ ...clock, onEnded: (_run: unknown, reason: string) => { ended.push(reason) } })
+  const sent: string[] = []
+  const notify = holdChannelCardsDuringGrantedRun(runs, async (n: { params: { content: string } }) => { sent.push(n.params.content) })
+  const card = (content: string, scheduleGrant?: unknown, built?: string[]) => ({
+    method: 'notifications/claude/channel',
+    params: () => { built?.push(content); return { content, meta: {} } },
+    ...(scheduleGrant ? { scheduleGrant } : {}),
+  })
+  return { clock, runs, sent, ended, notify, card }
+}
 
 test('a granted wake carries a grant; anything else does not', () => {
   const g = grantAt(FIRED + 1000)
   assert.ok(g)
   assert.equal(g!.taskId, 41)
-  assert.equal(g!.fireId, FIRE_ID)
-  assert.equal(g!.actingUserId, OWNER)
-  assert.equal(g!.chatId, '900')
-  // No boardGrant, a status card, a payload kind, a fire id of another task, a person's message: none.
-  assert.equal(grantAt(FIRED, wakeMeta({ boardGrant: undefined })), null)
+  assert.equal(g!.fireId, fireIdOf(41))
+  assert.equal(grantAt(FIRED, wakeMeta(41, { boardGrant: undefined })), null)
   assert.equal(grantAt(FIRED, { ...wakeMeta(), status: 'could_not_start' }), null)
-  assert.equal(grantAt(FIRED, wakeMeta({ kind: 'routine_created' })), null)
-  assert.equal(grantAt(FIRED, wakeMeta({ fireId: FIRE_ID.replace(':41:', ':42:') })), null)
+  assert.equal(grantAt(FIRED, wakeMeta(41, { kind: 'routine_created' })), null)
+  assert.equal(grantAt(FIRED, wakeMeta(41, { fireId: fireIdOf(42) })), null)
   assert.equal(scheduleGrantOf({ senderType: 'user', eventMeta: wakeMeta(), actingUserId: OWNER, chatId: 1, now: FIRED }), null)
   assert.equal(scheduleGrantOf({ senderType: 'system', eventMeta: wakeMeta(), actingUserId: null, chatId: 1, now: FIRED }), null)
 })
 
 test('a payload never makes the window longer than two hours after the fire, and an ended window grants nothing', () => {
-  const long = grantAt(FIRED, wakeMeta({ boardGrant: { boards: 1, expiresAt: new Date(FIRED + 10 * SCHEDULE_GRANT_MAX_MS).toISOString() } }))
+  const long = grantAt(FIRED, wakeMeta(41, { boardGrant: { boards: 1, expiresAt: new Date(FIRED + 10 * SCHEDULE_GRANT_MAX_MS).toISOString() } }))
   assert.equal(long!.expiresAtMs, FIRED + SCHEDULE_GRANT_MAX_MS)
   assert.equal(grantAt(FIRED + SCHEDULE_GRANT_MAX_MS), null)
 })
 
-test("during a granted run other people's deliveries wait, the scheduler's do not, and the run's end releases them", async () => {
-  const clock = fakeClock()
-  const ended: string[] = []
-  const runs = createScheduleGrantRuns({ ...clock, onEnded: (_run: unknown, reason: string) => ended.push(reason) })
-  assert.equal(runs.open(grantAt(clock.now())), true)
-  assert.equal(runs.holds({ actingUserId: MEMBER }), true)
-  assert.equal(runs.holds({ actingUserId: null }), true) // an agent or an email
-  assert.equal(runs.holds({ actingUserId: OWNER }), false)
-  let released = false
-  void runs.whenReleased().then(() => { released = true })
-  // A Stop before the run's own turn began (the CLI was busy with an earlier turn) does not end it.
+// One test per kind of card: while the run is live it waits, and is not even BUILT (so the private turn tracker never
+// sees it and cannot revoke the run's turn). It goes out once the run's turn ends.
+const LANES = [
+  'a group member\'s message',
+  'a group member\'s edit of an old message',
+  'a button tap or a Custom reply by someone else',
+  'an ask answer',
+  'a meeting line',
+  'a meeting invitation with the room\'s history',
+  'a peer agent\'s message',
+  'an email from outside',
+  'a voice task dispatch',
+  'a daemon notice (reply reminder, liveness probe)',
+  'the scheduler\'s own new message',
+]
+for (const lane of LANES) {
+  test(`hold: ${lane} mid run waits, unbuilt, until the run's turn ends`, async () => {
+    const { runs, sent, notify, card, clock } = rig()
+    await notify(card(`wake ${tag(TOKEN)}`, grantAt(clock.now())))
+    runs.noteBegin(`the wake ${tag(TOKEN)}`)
+    const built: string[] = []
+    const held = notify(card(lane, undefined, built))
+    await flush()
+    assert.deepEqual(built, [], 'not built while held')
+    assert.deepEqual(sent, [`wake ${tag(TOKEN)}`])
+    runs.noteStop()
+    await held
+    assert.deepEqual(built, [lane])
+    assert.deepEqual(sent, [`wake ${tag(TOKEN)}`, lane])
+  })
+}
+
+test('a newer granted wake never supersedes a live run: it waits, then opens its own run', async () => {
+  const { runs, sent, notify, card, clock, ended } = rig()
+  await notify(card(`first ${tag(TOKEN)}`, grantAt(clock.now(), wakeMeta(41))))
+  runs.noteBegin(tag(TOKEN))
+  const queued = notify(card(`second ${tag(OTHER_TOKEN)}`, grantAt(clock.now(), wakeMeta(42), MEMBER)))
+  await flush()
+  assert.deepEqual(sent, [`first ${tag(TOKEN)}`])
+  assert.equal(runs.live()!.taskId, 41)
+  // Asked directly, the store refuses to open a second run over a live one.
+  assert.equal(runs.open(grantAt(clock.now(), wakeMeta(44), MEMBER)), false)
+  assert.equal(runs.live()!.taskId, 41)
   runs.noteStop()
-  await Promise.resolve()
-  assert.equal(released, false)
-  runs.noteBegin()
-  runs.noteStop()
-  await Promise.resolve()
-  assert.equal(released, true)
+  await queued
   assert.deepEqual(ended, ['turn ended'])
-  assert.equal(runs.holds({ actingUserId: MEMBER }), false)
-  // The same wake delivered again never reopens it.
-  assert.equal(runs.open(grantAt(clock.now())), false)
+  assert.equal(runs.live()!.taskId, 42)
+  assert.equal(runs.live()!.actingUserId, MEMBER)
 })
 
-test('the window running out ends the run and releases what waited', async () => {
-  const clock = fakeClock()
-  const ended: string[] = []
-  const runs = createScheduleGrantRuns({ ...clock, onEnded: (_run: unknown, reason: string) => ended.push(reason) })
-  runs.open(grantAt(clock.now()))
-  let released = false
-  void runs.whenReleased().then(() => { released = true })
-  clock.advance(SCHEDULE_GRANT_MAX_MS)
-  await Promise.resolve()
-  assert.equal(released, true)
-  assert.deepEqual(ended, ['expired'])
+test('the run begins only on the prompt that is the wake alone', async () => {
+  const { runs, notify, card, clock, ended } = rig()
+  await notify(card(`wake ${tag(TOKEN)}`, grantAt(clock.now())))
+  runs.noteBegin(`an earlier queued message ${tag(OTHER_TOKEN)}`)
+  assert.equal(runs.live()!.begun, false)
+  runs.noteBegin(`two at once ${tag(OTHER_TOKEN)} ${tag(TOKEN)}`)
+  assert.equal(runs.live()!.begun, false)
+  // That earlier turn's Stop does not end the run.
+  runs.noteStop()
+  assert.equal(runs.live()!.ended, false)
+  runs.noteBegin(`the wake ${tag(TOKEN)}`)
+  assert.equal(runs.live()!.begun, true)
+  runs.noteStop()
+  assert.deepEqual(ended, ['turn ended'])
+})
+
+test('a run whose turn never begins ends, and what waited goes out (the agent never goes deaf)', async () => {
+  const { notify, card, clock, ended, sent } = rig()
+  await notify(card(`wake ${tag(TOKEN)}`, grantAt(clock.now())))
+  void notify(card('later'))
+  clock.advance(BEGIN_WITHIN_MS)
+  await flush()
+  assert.deepEqual(ended, ['never began'])
+  assert.equal(sent.at(-1), 'later')
+})
+
+test('a wake that could not be handed over opens no run', async () => {
+  const { runs, notify, clock, ended } = rig()
+  await notify({ method: 'notifications/claude/channel', params: () => null, scheduleGrant: grantAt(clock.now()) })
+  assert.equal(runs.live(), null)
+  assert.deepEqual(ended, ['not delivered'])
+  const failing = holdChannelCardsDuringGrantedRun(runs, async () => { throw new Error('pipe closed') })
+  await assert.rejects(failing({ method: 'notifications/claude/channel', params: () => ({ content: tag(TOKEN) }), scheduleGrant: grantAt(clock.now(), wakeMeta(43)) }))
   assert.equal(runs.live(), null)
 })
 
-test('boards: a verified turn of the scheduler carries the grant; a revoked one is admitted on the grant alone, once its turn began', () => {
-  const clock = fakeClock()
-  const runs = createScheduleGrantRuns(clock)
-  runs.open(grantAt(clock.now()))
+test('the window running out ends the run and releases what waited; the same fire never reopens', async () => {
+  const { runs, sent, notify, card, clock, ended } = rig()
+  const grant = grantAt(clock.now())
+  await notify(card(`wake ${tag(TOKEN)}`, grant))
+  runs.noteBegin(tag(TOKEN))
+  const held = notify(card('later'))
+  clock.advance(SCHEDULE_GRANT_MAX_MS)
+  await held
+  assert.deepEqual(ended, ['expired'])
+  assert.equal(sent.at(-1), 'later')
+  assert.equal(runs.open(grant), false)
+})
+
+test('boards: the grant rides only the scheduler\'s verified turn of the wake; a refused turn stays refused', async () => {
+  const { runs, notify, card, clock } = rig()
   const verified = () => ({ actingUserId: OWNER, chatId: '900', headers: {} })
   const revoked = () => { throw new Error(PRIVATE_TURN_REFUSAL) }
   const call = (requirePrivateTurn: () => unknown) =>
     requireBoardsTurn({ requirePrivateTurn: requirePrivateTurn as never, tracker: {}, markerPaths: [], ownerUserId: OWNER, runs })
-  assert.deepEqual(call(verified).headers, { [SCHEDULE_GRANT_HEADER]: FIRE_ID })
-  // Before the run's own turn began, a revoked turn is still refused.
+  await notify(card(`wake ${tag(TOKEN)}`, grantAt(clock.now())))
+  // Before the wake's own turn begins, the owner's earlier turn keeps its full reach: no grant.
+  assert.deepEqual(call(verified).headers, {})
+  runs.noteBegin(tag(TOKEN))
+  assert.deepEqual(call(verified).headers, { [SCHEDULE_GRANT_HEADER]: fireIdOf(41) })
+  // No admission on the grant alone: a refused turn is refused, run or no run.
   assert.throws(() => call(revoked), { message: PRIVATE_TURN_REFUSAL })
-  runs.noteBegin()
-  const granted = call(revoked) as { actingUserId: string; headers: Record<string, string> }
-  assert.equal(granted.actingUserId, OWNER)
-  assert.deepEqual(granted.headers, { [SCHEDULE_GRANT_HEADER]: FIRE_ID })
   // Another person's verified turn never carries this run's grant.
-  const other = call(() => ({ actingUserId: MEMBER, chatId: '900', headers: { 'X-BGOS-Acting-User': MEMBER } }))
-  assert.deepEqual((other as { headers: unknown }).headers, { 'X-BGOS-Acting-User': MEMBER })
-  // After the run, the refusal is exactly as before.
+  assert.deepEqual(call(() => ({ actingUserId: MEMBER, chatId: '900', headers: { 'X-BGOS-Acting-User': MEMBER } })).headers, { 'X-BGOS-Acting-User': MEMBER })
   runs.noteStop()
-  assert.throws(() => call(revoked), { message: PRIVATE_TURN_REFUSAL })
   assert.deepEqual(call(verified).headers, {})
 })
 
-// ── server.ts, the real code ────────────────────────────────────────────────────────────────────────────────────
-const source = readFileSync('server.ts', 'utf8')
-function execute(body: string, bindings: Record<string, unknown>) {
-  const js = ts.transpileModule(body, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText
-  return new Function(...Object.keys(bindings), js)(...Object.values(bindings))
-}
-const admissionStart = source.indexOf('  // Freeze private authority at request admission')
-const admissionSource = source.slice(admissionStart, source.indexOf('  return trackMessageOperation(async () => {', admissionStart))
-const deliverStart = source.indexOf('function deliverInbound(')
-const deliverSource = source.slice(deliverStart, source.indexOf('\n}\n', deliverStart) + 2)
-
-test('server: a boards call after a group message mid run still runs, on the grant', async () => {
-  const clock = fakeClock()
-  const runs = createScheduleGrantRuns(clock)
-  runs.open(grantAt(clock.now()))
-  runs.noteBegin()
-  const bindings = {
-    req: { params: { name: 'boards_query' } }, lockHeld: true, privateTurns: {}, PRIVATE_MARKER_PATHS: [],
-    PRIVATE_HOOK: { registered: true }, PRIVATE_HOOK_MISSING_REFUSAL: 'hook missing', USER_ID: OWNER, log: () => {},
-    // The private turn gate refuses: someone else's message reached this turn.
-    requirePrivateTurn: () => { throw new Error(PRIVATE_TURN_REFUSAL) },
-    requireBoardsTurn, scheduleGrantRuns: runs,
-    recordPeerRefusal: () => ({ line: '' }), CURSOR_FILE_PATH: '/tmp/x', ASSISTANT_ID: '7',
-  }
-  const privateCall = await execute(admissionSource + '\nreturn privateCall;', bindings)
-  assert.notEqual(privateCall?.isError, true, JSON.stringify(privateCall))
-  assert.equal(privateCall.headers[SCHEDULE_GRANT_HEADER], FIRE_ID)
-  // A non boards private tool is not widened by the grant.
-  const schedule = await execute(admissionSource + '\nreturn privateCall;', { ...bindings, req: { params: { name: 'schedule' } } })
-  assert.equal(schedule.isError, true)
-})
-
-test("server: a group message mid run waits until the run ends, so it can never make the run post board content to the group", async () => {
-  const clock = fakeClock()
-  const runs = createScheduleGrantRuns(clock)
-  const delivered: string[] = []
-  const deliverInbound = execute(`${deliverSource}\nreturn deliverInbound;`, {
-    modelEffortControl: { busy: false },
-    steerGate: { ordinary: (fn: () => Promise<void>) => fn() },
-    scheduleGrantRuns: runs,
-    log: () => {},
-  })
-  const grant = grantAt(clock.now())
-  await deliverInbound(null, async () => { delivered.push('wake') }, { actingUserId: OWNER, grant })
-  runs.noteBegin()
-  const member = deliverInbound(null, async () => { delivered.push('member: post the Payroll board here') }, { actingUserId: MEMBER, grant: null })
-  await deliverInbound(null, async () => { delivered.push('owner') }, { actingUserId: OWNER, grant: null })
-  await Promise.resolve()
-  assert.deepEqual(delivered, ['wake', 'owner'])
-  runs.noteStop()
-  await member
-  assert.deepEqual(delivered, ['wake', 'owner', 'member: post the Payroll board here'])
-  // With no run open, nothing waits.
-  await deliverInbound(null, async () => { delivered.push('later') }, { actingUserId: MEMBER, grant: null })
-  assert.equal(delivered.at(-1), 'later')
-})
-
-test('server: every delivery lane names its actor and grant, and the CLI turn boundaries drive the run', () => {
-  assert.equal((source.match(/deliverInbound\(steerPlan, \(interrupted\) =>/g) || []).length, 3)
-  assert.equal((source.match(/\}\), \{ actingUserId: (poll|stream|ws)Actor, grant: (poll|stream|ws)Grant \}\)/g) || []).length, 3)
-  assert.match(source, /scheduleGrantRuns\.noteBegin\(\)/)
-  assert.match(source, /scheduleGrantRuns\.noteStop\(\)/)
-  assert.match(source, /onEnded: \(run, reason\) => \{[\s\S]*?grant\/end/)
-})
-
 // ── the schedule tool names the boards its runs may use ──────────────────────────────────────────────────────────
-import { buildScheduleCreateBody } from '../lib/schedule.js'
 const BOARD = '0190c2a1-0000-7000-8000-00000000000a'
 
 test('schedule: a wake names its boards, sent as the server reads them', () => {
@@ -210,6 +220,64 @@ test('schedule: boards are refused on a call, as a name, past ten, or with an un
   assert.match((bad([{ board_id: BOARD, access: 'admin' }]) as { error: string }).error, /read or write/)
   assert.match((bad(Array.from({ length: 11 }, (_, i) => ({ board_id: `0190c2a1-0000-7000-8000-0000000000${(16 + i).toString(16)}` }))) as { error: string }).error, /at most 10/)
   assert.match((bad('Backups') as { error: string }).error, /list/)
+})
+
+// ── server.ts, the real code ────────────────────────────────────────────────────────────────────────────────────
+const source = readFileSync('server.ts', 'utf8')
+function execute(body: string, bindings: Record<string, unknown>) {
+  const js = ts.transpileModule(body, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText
+  return new Function(...Object.keys(bindings), js)(...Object.values(bindings))
+}
+const admissionStart = source.indexOf('  // Freeze private authority at request admission')
+const admissionSource = source.slice(admissionStart, source.indexOf('  return trackMessageOperation(async () => {', admissionStart))
+
+test('server: a boards call in the wake\'s turn carries the grant, and a refused turn is refused', async () => {
+  const { runs, notify, card, clock } = rig()
+  await notify(card(`wake ${tag(TOKEN)}`, grantAt(clock.now())))
+  runs.noteBegin(tag(TOKEN))
+  const bindings = {
+    req: { params: { name: 'boards_query' } }, lockHeld: true, privateTurns: {}, PRIVATE_MARKER_PATHS: [],
+    PRIVATE_HOOK: { registered: true }, PRIVATE_HOOK_MISSING_REFUSAL: 'hook missing', USER_ID: OWNER, log: () => {},
+    requirePrivateTurn: () => ({ actingUserId: OWNER, chatId: '900', headers: {} }),
+    requireBoardsTurn, scheduleGrantRuns: runs,
+    recordPeerRefusal: () => ({ line: '' }), CURSOR_FILE_PATH: '/tmp/x', ASSISTANT_ID: '7',
+  }
+  const privateCall = await execute(admissionSource + '\nreturn privateCall;', bindings)
+  assert.equal(privateCall.headers[SCHEDULE_GRANT_HEADER], fireIdOf(41))
+  const refused = await execute(admissionSource + '\nreturn privateCall;', { ...bindings, requirePrivateTurn: () => { throw new Error(PRIVATE_TURN_REFUSAL) } })
+  assert.equal(refused.isError, true)
+  // A non boards private tool never carries the grant.
+  const schedule = await execute(admissionSource + '\nreturn privateCall;', { ...bindings, req: { params: { name: 'schedule' } } })
+  assert.equal(schedule.headers[SCHEDULE_GRANT_HEADER], undefined)
+})
+
+test('server: every channel card goes through the one choke point, built when sent', () => {
+  // GUARD: the method is spelled once, in channelNotify. A new card that calls mcp.notification with it directly
+  // bypasses the hold and fails here.
+  const spelled = source.match(/method: 'notifications\/claude\/channel'/g) ?? []
+  assert.equal(spelled.length, 1, 'notifications/claude/channel is sent only through channelNotify')
+  // channelNotify hands the builder itself to the chain, never a built card.
+  assert.match(source, /method: 'notifications\/claude\/channel',\n\s*params: build,/)
+  // Every card is a builder, and the tracker is reached only inside one.
+  assert.ok((source.match(/channelNotify\(\(\) =>/g) ?? []).length >= 29)
+  // The meeting lines and the invitation record their untracked tag inside their builder, never before the send.
+  assert.doesNotMatch(source, /noteUntracked\(\{ chatId \}\)\n\s*const meetingHandoff/)
+  assert.equal((source.match(/channelNotify\(\(\) => \{\n(?:\s*\/\/[^\n]*\n)?\s*card\.content \+= privateTurns\.noteUntracked/g) ?? []).length, 3)
+  assert.match(source, /channelNotify\(\(\) => \{\n(?:\s*\/\/[^\n]*\n)?\s*const untracked = privateTurns\.noteUntracked/)
+  // The chain: the grant hold sits outside the raw card record and inside the model and effort lock.
+  const chain = source.slice(source.indexOf('const sendMcpNotification = mcp.notification.bind(mcp)'), source.indexOf('function publishBrowserPrivateTurn'))
+  const rawAt = chain.indexOf('privateTurns.rawCard(')
+  const holdAt = chain.indexOf('holdChannelCardsDuringGrantedRun(scheduleGrantRuns,')
+  const effortAt = chain.indexOf('holdChannelCardsWhileBusy(modelEffortControl,')
+  assert.ok(rawAt > 0 && holdAt > rawAt && effortAt > holdAt, 'raw card < grant hold < effort lock')
+})
+
+test('server: the three message lanes name the wake\'s grant, and the CLI turn boundaries drive the run', () => {
+  assert.equal((source.match(/scheduleGrant: (poll|stream|ws)Grant/g) ?? []).length, 3)
+  assert.match(source, /scheduleGrantRuns\.noteBegin\(payload\.prompt\)/)
+  assert.match(source, /scheduleGrantRuns\.noteStop\(\)/)
+  assert.match(source, /if \(event\.name === 'SessionEnd'\) scheduleGrantRuns\.end\('session ended'\)/)
+  assert.match(source, /onEnded: \(run, reason\) => \{[\s\S]*?grant\/end/)
 })
 
 test('server: the schedule tool offers boards and passes them through', () => {

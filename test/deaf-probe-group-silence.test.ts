@@ -32,6 +32,7 @@
  * New exports are read through namespace imports, so on a build without them
  * only the tests that need them fail and every control still runs.
  */
+import { channelNotifyFor } from './helpers/channel-notify.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -282,6 +283,8 @@ function daemon(laneSource: string, laneName: string, extra: Record<string, unkn
     planSteerFor: () => null,
     deliverInbound: (_steer: unknown, deliver: (interrupted: boolean) => Promise<void>) => deliver(false),
     trackMessageOperation: (op: () => unknown) => op(),
+    // channelNotify sends through the same double (0.86.20, test/helpers/channel-notify.ts).
+    get channelNotify(): ReturnType<typeof channelNotifyFor> { return channelNotifyFor(() => (this as unknown as { mcp: { notification: (n: unknown) => unknown } }).mcp) },
     mcp: {
       notification: async (n: { params: { content: string; meta: Record<string, string> } }) => {
         cards.push({ content: n.params.content, meta: n.params.meta })

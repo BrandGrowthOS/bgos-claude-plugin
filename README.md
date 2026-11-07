@@ -753,7 +753,7 @@ All share the same plugin installation at `~/bgos-claude-plugin/`.
 | `complete_voice_task` | Report the outcome of a voice-dispatched background task (v0.13.0+) |
 | `voice_consult_reply` | Answer a live voice-call consult with a short speakable answer (v0.14.0+) |
 | `call_owner` | Ring the owner with a live in-app voice call, immediately (v0.15.0+) |
-| `schedule` | Create a native scheduled task: kind `wake` (deliver the topic back to the agent) or kind `call` (ring the owner), one-shot ISO datetime or recurring (v0.16.0+) |
+| `schedule` | Create a native scheduled task: kind `wake` (deliver the topic back to the agent) or kind `call` (ring the owner), one-shot ISO datetime or recurring (v0.16.0+). A wake may name `boards: [{ board_id, access }]` (read or write, up to 10): each run then keeps those board actions while other people post, as the person scheduling and on those boards only, once and for at most two hours; every other message waits until the run's turn ends, and what the run produces goes only to that person's private chat (v0.86.20+) |
 | `list_schedules` | List the agent's own pending scheduled tasks (v0.16.0+) |
 | `cancel_schedule` | Cancel one of the agent's scheduled tasks by id (v0.16.0+) |
 | `vault_items` | List the vault items this agent may use, metadata only (v0.86.1+) |

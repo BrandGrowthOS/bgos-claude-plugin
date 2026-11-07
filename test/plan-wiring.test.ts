@@ -690,7 +690,7 @@ test('boot sweeps for plan answers this daemon was not running to hear', () => {
   // no longer found. A failed announce costs one delivery; a failed strip
   // after a successful announce would repeat it on every boot.
   const retireAt = fn.indexOf('buildPlanRetireBody()')
-  const announceAt = fn.indexOf('mcp.notification(')
+  const announceAt = fn.indexOf('channelNotify(')
   assert.ok(retireAt > 0 && announceAt > 0)
   assert.ok(retireAt < announceAt, 'strip the chips before announcing')
   assert.match(fn, /rememberAnnouncedClick\(row\.id\)/)
