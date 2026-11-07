@@ -53,7 +53,10 @@ export function partitionTests(entries) {
     if (/from\s+['"]bun:test['"]/.test(source)) bunFiles.push(file)
     // Real Chromium files fight over the machine when run side by side (two of
     // remote-browser-controls.chromium's tests fail) and pass one at a time.
-    else if (file.endsWith('.chromium.test.ts')) chromiumFiles.push(file)
+    // The host end to end file also launches real Chrome, despite its old name.
+    // Keep it out of the unit pool on Windows too: cold Chrome starts contend
+    // with the file/Worker tests and can miss the host's 30 s startup deadline.
+    else if (file.endsWith('.chromium.test.ts') || file.replace(/\\/g, '/').endsWith('/hoai-browser-host.test.ts')) chromiumFiles.push(file)
     // This regression suite starts its own workers, so give it the machine.
     else if (file.replace(/\\/g, '/').endsWith('/run-tests-timeout.test.ts')) runnerFiles.push(file)
     // Files that boot real daemons, one at a time after the pool: four of them
