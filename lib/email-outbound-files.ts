@@ -41,7 +41,9 @@
 //      lives in lib/email-outbound-content.ts and runs in a worker thread
 //      that is terminated at OUTBOUND_CONTENT_DEADLINE_MS (5 seconds); late,
 //      broken or unreadable, the file is refused. Steps 1 to 3 and the size
-//      and type checks of step 4 stay on the main thread. Round 8: one long
+//      and type checks of step 4 stay on the main thread, all but a text
+//      file's type check, which the Worker runs first (it decodes the whole
+//      file, so it is never run on the main thread). Round 8: one long
 //      lived Worker, reused for every file and replaced only after a deadline,
 //      an error, an exit or a bad reply; the deadline is 5 seconds plus 1 per
 //      MB (at most 40); a path over 4096 characters is refused before any
@@ -932,12 +934,18 @@ const outboundSafetyStop = (path: string): string =>
 const outboundOutOfTime = (path: string): string =>
   `${shown(path)} took too long to check, so it is not attached this time. Try again in a few minutes.`
 
+/** The sentence for a file whose bytes are not the type its name says. */
+const notThatType = (path: string, type: EmailFileType): string =>
+  `${shown(path)} is not really a ${TYPE_LABEL[type]} file (its contents say otherwise), so it is not attached.`
+
 /** Round 7: the sentence for what the content stage found, or null when the file may go. */
-function contentSentence(verdict: ContentVerdict, path: string): string | null {
+function contentSentence(verdict: ContentVerdict, path: string, type: EmailFileType): string | null {
   const name = shown(path)
   switch (verdict.kind) {
     case 'ok':
       return null
+    case 'not_type':
+      return notThatType(path, type)
     case 'unsafe':
       return `${name} could not be read safely, so it is never attached.`
     case 'over_budget':
@@ -1119,12 +1127,14 @@ export async function readOutboundFile(path: unknown, ctx: OutboundFileCtx = {})
   } finally {
     await handle.close().catch(() => {})
   }
-  if (!isType(bytes, type)) {
-    return { ok: false, error: `${shown(path)} is not really a ${TYPE_LABEL[type]} file (its contents say otherwise), so it is not attached.` }
-  }
-  // Round 7: the content stage (a text file's header and whole text, a Word or Excel file's rows and words, and every
-  // check on them) runs in the content Worker under a hard deadline; the steps above stay on this thread. A picture
-  // or a PDF has no words read here.
+  // A text file's type check (clean UTF-8 text, lib/email-clean-text.ts) reads and decodes the whole file, tens of ms
+  // for a large one, so it is not run on this thread: the content Worker runs it first, before any other check and
+  // whatever the budget, and answers not_type, which gets this same sentence. Every other type is read off its first
+  // bytes or its zip directory, under small caps, here.
+  if (type !== 'text' && !isType(bytes, type)) return { ok: false, error: notThatType(path, type) }
+  // Round 7: the content stage (a text file's type check, header and whole text, a Word or Excel file's rows and words,
+  // and every check on them) runs in the content Worker under a hard deadline; the steps above stay on this thread. A
+  // picture or a PDF has no words read here.
   if (type === 'text' || type === 'docx' || type === 'xlsx') {
     // `bytes` is a view, at offset 0, of the buffer allocated above for this read alone: it is transferred, not copied.
     const checked = await contentInWorker(bytes.buffer as ArrayBuffer, bytes.length, type, name, ctx)
@@ -1132,7 +1142,7 @@ export async function readOutboundFile(path: unknown, ctx: OutboundFileCtx = {})
     if (checked === OUT_OF_TIME) return { ok: false, error: outboundOutOfTime(path) }
     if (checked === null) return { ok: false, error: `${shown(path)} could not be read safely, so it is never attached.` }
     bytes = checked.bytes
-    const why = contentSentence(checked.verdict, path)
+    const why = contentSentence(checked.verdict, path, type)
     if (why !== null) return { ok: false, error: why }
   }
   return { ok: true, file: { path, realPath: real, name, type, mime: TYPE_MIME[type], size: bytes.length, bytes } }

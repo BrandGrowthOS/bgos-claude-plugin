@@ -8,9 +8,17 @@ From 0.86.9 to 0.86.11 the browser shim pin recorded BGOS main commit `aed69c93b
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
-## 0.86.13 (2026-11-07)
+## 0.86.17 (2026-11-07)
 
 **Sharing, installing, listing and removing skills no longer take two different folders for one.** The checks that keep an agent's skills folder apart from the computer's skills folder compared each folder's number as an ordinary number. On some drives those numbers are larger than an ordinary number can hold exactly, so two different folders could look identical and a skill could be refused for no reason. The numbers are now compared exactly. A folder whose number the drive does not give, or gives as zero, is treated as unknown and is never counted as the same folder as another. A folder that really is the computer's skills folder is still refused. On a drive that gives no folder numbers at all, folders are compared by where they really are (case and accents ignored), so the computer's skills folder is never taken for the agent's, and nothing is written into it.
+
+## 0.86.14 (2026-11-07)
+
+**A large text or CSV file to attach no longer freezes the agent while it is checked.** The check that a .txt or .csv file really is plain text now runs in the background checker with the other content checks, instead of first, before the background check starts. A 23 MB CSV used to make the agent wait about 20 ms on a fast computer, and longer on a slow one; now the agent keeps working while it is checked. Exactly the same files are attached or refused as before, and a file that is not really text is refused with the same words.
+
+## 0.86.13 (2026-11-06)
+
+**macOS agents can start their own browser** A Mac agent can now start and stop its own managed browser: the exit proof no longer depends on Linux only /proc.
 
 ## 0.86.12 (2026-11-07)
 
