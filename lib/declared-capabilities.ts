@@ -391,6 +391,14 @@ export const THREAD_CAPABILITY_TOKENS: readonly string[] = Object.freeze(['messa
  */
 export const GROUP_THREADS_TOKEN = 'group_threads'
 
+/**
+ * Group levels above Talk only (round 5, B): declared only beside
+ * group_threads and only while this daemon's HOAI_GROUP_LEVELS switch is on
+ * (lib/group-lane-args.ts groupLevelsEnabled). Without it the server sends
+ * Talk only, and the daemon runs every group at Talk only whatever it says.
+ */
+export const GROUP_LEVELS_TOKEN = 'group_levels'
+
 /** Declared only while this daemon can type into its own CLI's composer. */
 export const DECLARED_CAPABILITIES_INJECTOR: readonly string[] = Object.freeze([
   'mission_goal_loop',
@@ -447,6 +455,8 @@ export function declaredCapabilities(input: {
    * declared on win32 in phase 1. Also carries group_threads, on a pairing.
    */
   threads?: boolean
+  /** HOAI_GROUP_LEVELS is on (lib/group-lane-args.ts groupLevelsEnabled): group_levels beside group_threads. */
+  groupLevels?: boolean
   authMode: 'pairing' | 'apikey'
   /** The host platform; process.platform when absent. The picker and the thread tokens are never declared on win32. */
   platform?: NodeJS.Platform
@@ -464,7 +474,7 @@ export function declaredCapabilities(input: {
       : []),
     ...(input.threads === true && (input.platform ?? process.platform) !== 'win32' ? THREAD_CAPABILITY_TOKENS : []),
     ...(input.authMode === 'pairing' && input.threads === true && (input.platform ?? process.platform) !== 'win32'
-      ? [GROUP_THREADS_TOKEN]
+      ? [GROUP_THREADS_TOKEN, ...(input.groupLevels === true ? [GROUP_LEVELS_TOKEN] : [])]
       : []),
   ]
 }

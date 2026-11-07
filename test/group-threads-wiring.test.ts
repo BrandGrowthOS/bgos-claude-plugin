@@ -21,7 +21,8 @@ import { join } from 'node:path'
 
 import { groupRouteOf, groupTapKey, groupTapLine, readGroupDelivery } from '../lib/group-delivery.ts'
 import { ownerLaneVerdict } from '../lib/lane-core.mjs'
-import { declaredCapabilities, GROUP_THREADS_TOKEN } from '../lib/declared-capabilities.ts'
+import { declaredCapabilities, GROUP_LEVELS_TOKEN, GROUP_THREADS_TOKEN } from '../lib/declared-capabilities.ts'
+import { groupLevelsEnabled } from '../lib/group-lane-args.ts'
 import { GROUP_THREAD_END, GROUP_THREAD_LEVEL, isThreadOp, type ThreadRpcDeps } from '../lib/thread-rpc.ts'
 import { VoiceRpcHandler, normalizeVoiceRpc, type VoiceRpcDeps, type VoiceRpcResultBody } from '../lib/voice-rpc.ts'
 import {
@@ -392,4 +393,23 @@ test('round 4, finding 6: group_thread_level arrives on the thread ops rail and 
   await handler.handle(normalizeVoiceRpc({ rpcId: 'rpc-l2', op: GROUP_THREAD_LEVEL, assistantId: '42', agentRoute: '', chatId: '123', payload: { chatId: '123', level: 'root' } })!)
   assert.equal(results.at(-1)!.error?.code, 'bad_request')
   assert.match(server, /groupLevel: \(input\) => groupLanes\.setLevel\(input\),/)
+})
+
+test('round 5 B: HOAI_GROUP_LEVELS is on only for the literal true, and group_levels is declared only then, beside group_threads', () => {
+  assert.equal(groupLevelsEnabled({ HOAI_GROUP_LEVELS: 'true' }), true)
+  assert.equal(groupLevelsEnabled({ HOAI_GROUP_LEVELS: ' true ' }), true)
+  for (const v of [undefined, '', '1', 'yes', 'on', 'TRUE', 'True', 'false', 'truee']) {
+    assert.equal(groupLevelsEnabled({ HOAI_GROUP_LEVELS: v }), false, String(v))
+  }
+  const base = { canInjectGoal: false, floorHook: true, threads: true, authMode: 'pairing' as const, platform: 'darwin' as const }
+  assert.deepEqual(declaredCapabilities({ ...base, groupLevels: true }).slice(-2), [GROUP_THREADS_TOKEN, GROUP_LEVELS_TOKEN])
+  assert.equal(declaredCapabilities({ ...base, groupLevels: false }).includes(GROUP_LEVELS_TOKEN), false)
+  assert.equal(declaredCapabilities(base).includes(GROUP_LEVELS_TOKEN), false, 'absent is off')
+  assert.equal(declaredCapabilities({ ...base, groupLevels: true, authMode: 'apikey' }).includes(GROUP_LEVELS_TOKEN), false, 'never without group_threads')
+  assert.equal(declaredCapabilities({ ...base, groupLevels: true, platform: 'win32' }).includes(GROUP_LEVELS_TOKEN), false)
+  const calls = server.match(/declaredCapabilities\(\{[^}]*\}\)/g) ?? []
+  assert.ok(calls.length >= 4)
+  for (const call of calls) assert.match(call, /groupLevels: groupLevelsEnabled\(process\.env\),/)
+  const manager = server.slice(server.indexOf('const groupLanes = new GroupLaneManager({'), server.indexOf('\n})\n', server.indexOf('const groupLanes = new GroupLaneManager({')))
+  assert.match(manager, /levelsEnabled: groupLevelsEnabled\(process\.env\),/)
 })

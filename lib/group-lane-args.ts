@@ -58,6 +58,17 @@ export function groupLaunchLevel(level: GroupLevel, sandboxWorks: boolean): Grou
   return level === 'approvals' && !sandboxWorks ? 'talk' : level
 }
 
+/**
+ * HOAI_GROUP_LEVELS (round 5, B): groups ship at Talk only. With approvals
+ * and Full run only when this daemon's own switch is exactly `true`
+ * (trimmed), and are NOT for production until a group lane runs as a
+ * separate OS user: below that, a lane is the owner's own user, and four
+ * review rounds found new routes to the owner's files each time.
+ */
+export function groupLevelsEnabled(env: Record<string, string | undefined>): boolean {
+  return typeof env.HOAI_GROUP_LEVELS === 'string' && env.HOAI_GROUP_LEVELS.trim() === 'true'
+}
+
 /** The lane stamp prefix the server puts on every group delivery. */
 export const GROUP_LANE_PREFIX = 'group:'
 

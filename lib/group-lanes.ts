@@ -189,6 +189,12 @@ export interface GroupLaneDeps {
   /** Where a lane below Full may never reach (lib/group-lane-args.ts GroupLaneFence), less the lane's own folder. */
   fence(): GroupFenceBase | Promise<GroupFenceBase>
   /**
+   * HOAI_GROUP_LEVELS (lib/group-lane-args.ts groupLevelsEnabled): only then
+   * does a stated level other than talk take effect. Absent or false, every
+   * group runs at Talk only (round 5, B).
+   */
+  levelsEnabled?: boolean
+  /**
    * Called once per daemon life, the first time a With approvals lane runs as
    * Talk only because the host has no working sandbox: the owner is told.
    */
@@ -410,7 +416,9 @@ export class GroupLaneManager {
    * under the old level; the queued turn then resumes the session under the
    * new one.
    */
-  private applyLevel(lane: Lane, level: GroupLevel): void {
+  private applyLevel(lane: Lane, stated: GroupLevel): void {
+    // Groups ship at Talk only: another level needs HOAI_GROUP_LEVELS (round 5, B).
+    const level: GroupLevel = this.deps.levelsEnabled === true ? stated : 'talk'
     lane.level = level
     if (lane.child && !lane.stopping && lane.level !== lane.childLevel && stricterLevel(lane.level, lane.childLevel) === lane.level) {
       this.deps.log(`groups: group ${lane.chatId} level lowered to ${lane.level}, its running turn is stopped`)

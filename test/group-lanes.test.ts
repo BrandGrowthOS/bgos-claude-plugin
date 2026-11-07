@@ -69,7 +69,7 @@ class FakeChild implements StreamJsonChild {
 
 interface Timer { fn: () => void; ms: number; cleared: boolean }
 
-function rig(opts: { maxLive?: number; failPost?: (body: Record<string, unknown>) => unknown; files?: Map<string, string>; idleOverrideMs?: number | null; laneRootFails?: boolean; sandbox?: boolean } = {}) {
+function rig(opts: { maxLive?: number; failPost?: (body: Record<string, unknown>) => unknown; files?: Map<string, string>; idleOverrideMs?: number | null; laneRootFails?: boolean; sandbox?: boolean; levels?: boolean } = {}) {
   const files = opts.files ?? new Map<string, string>()
   const spawned: Array<{ args: string[]; cwd: string; env?: Record<string, string>; child: FakeChild }> = []
   const posts: Array<Record<string, unknown>> = []
@@ -138,6 +138,8 @@ function rig(opts: { maxLive?: number; failPost?: (body: Record<string, unknown>
     log: () => {},
     maxLive: opts.maxLive,
     idleOverrideMs: opts.idleOverrideMs,
+    // The levels behind HOAI_GROUP_LEVELS: on for the tests of the gated levels, off by default in the daemon.
+    levelsEnabled: opts.levels ?? true,
   }
   const lanes = new GroupLaneManager(deps)
   const fire = (ms: number) => {
@@ -1041,4 +1043,38 @@ test('round 5 A: what a lane is sent never lets the CLI read member text as a co
     assert.ok(!/@(?!⁠)/.test(turn), 'every @ neutralised')
     assert.ok(!/(^|\n)[ \t]*\//.test(turn), 'no line starts with a slash')
   }
+})
+
+// -- round 5 (B): groups ship at Talk only ------------------------------------------
+
+test('round 5 B: without HOAI_GROUP_LEVELS every stated level runs as Talk only', async () => {
+  for (const level of ['approvals', 'full'] as const) {
+    const r = rig({ levels: false })
+    r.lanes.deliver(delivery({ level }))
+    await settle()
+    assert.equal(valueAfter(r.spawned[0]!.args, '--tools'), '', level)
+    assert.equal(valueAfter(r.spawned[0]!.args, '--permission-mode'), 'dontAsk', level)
+    r.spawned[0]!.child.frame({ type: 'control_request', request_id: 'b1', request: { subtype: 'can_use_tool', tool_name: 'Bash', input: {} } })
+    await settle()
+    assert.equal(r.approvals.length, 0, level)
+  }
+})
+
+test('round 5 B: without the switch group_thread_level cannot raise a lane either', async () => {
+  const r = rig({ levels: false })
+  r.lanes.deliver(delivery({ level: 'talk' }))
+  await settle()
+  assert.deepEqual(await r.lanes.setLevel({ chatId: '123', level: 'full' }), { ok: true })
+  r.spawned[0]!.child.result('ok')
+  await settle()
+  r.lanes.deliver(delivery({ messageId: 502, key: '502', level: null }))
+  await settle()
+  assert.deepEqual(r.spawned[0]!.child.killed, [], 'still talk: no restart')
+})
+
+test('round 5 B: with HOAI_GROUP_LEVELS on, the stated level is used', async () => {
+  const r = rig({ levels: true })
+  r.lanes.deliver(delivery({ level: 'approvals' }))
+  await settle()
+  assert.equal(valueAfter(r.spawned[0]!.args, '--tools'), 'Bash,Read,Grep,Glob,Edit,Write')
 })
