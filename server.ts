@@ -1198,7 +1198,7 @@ import {
 import { ThreadLaneManager, liveThreadWork, threadsPendingPath } from './lib/thread-lanes.ts'
 import { randomInt } from 'node:crypto'
 import { GroupLaneManager, type GroupApproval, type GroupDelivery } from './lib/group-lanes.ts'
-import { groupRouteOf, groupTapLine, readGroupDelivery } from './lib/group-delivery.ts'
+import { groupRouteOf, groupTapKey, groupTapLine, readGroupDelivery } from './lib/group-delivery.ts'
 import { groupIdleOverrideMs, type GroupLevel } from './lib/group-lane-args.ts'
 import { createGroupSummaryQueue, isOwnerCard, withGroupSummaries } from './lib/group-summary-queue.ts'
 import { AsideForks, runAside } from './lib/aside-fork.ts'
@@ -12590,6 +12590,8 @@ async function pollChat(chatId: string): Promise<void> {
       noteLaneMisroute('poll tap', [...announced].join(','), 'a recipient chat')
       announced.clear()
     }
+    // Group threads: a stamped tap is a turn line in its group's lane, never the main session's.
+    routeGroupPollTaps(announced, data.messages)
     // Cross-transport single-announce: every id this poll announces joins
     // the shared dedup set so a stream buttons_answered replay of the same
     // tap stays silent (see rememberAnnouncedClick).
@@ -15262,11 +15264,37 @@ function flushGroupPollBacklog(rows: GroupDelivery[]): void {
 function routeGroupStreamView(view: StreamMessageView, transport: string): boolean {
   return routeGroupDelivery([view.raw], { key: String(view.messageId), messageId: view.messageId, text: view.text, sessionHandle: view.sessionHandle }, transport)
 }
+/**
+ * The taps a poll read found (review finding 7): one stamped for a group
+ * goes to that group's lane, under the stream's key, and is no longer
+ * announced into the main session; it is claimed so no transport announces it.
+ */
+function routeGroupPollTaps(announced: Set<number>, rows: ChatMessage[]): void {
+  for (const row of rows) {
+    const mm = row.message
+    if (!announced.has(mm.id)) continue
+    const payload = (mm.answerPayload ?? {}) as Record<string, unknown>
+    const callbackData = String(payload.callbackData ?? payload.callback_data ?? '')
+    const buttonText = String(payload.buttonText ?? payload.button_text ?? '')
+    const custom = payload.customText ?? payload.custom_text
+    const customText = typeof custom === 'string' ? custom : null
+    const routed = routeGroupDelivery([mm, row], {
+      key: groupTapKey(mm.id, callbackData, customText),
+      messageId: mm.id,
+      text: groupTapLine({ tapper: null, buttonText, customText }),
+      sessionHandle: (mm as { sessionHandle?: unknown }).sessionHandle,
+    }, 'poll tap')
+    if (!routed) continue
+    announced.delete(mm.id)
+    rememberAnnouncedClick(mm.id)
+  }
+}
+
 /** A tap stamped for a group becomes a short turn line in that group's lane. */
 function routeGroupStreamTap(view: StreamMessageView): boolean {
   const answer = view.answerPayload
   return routeGroupDelivery([view.raw], {
-    key: `tap:${view.messageId}:${answer?.callbackData ?? ''}:${answer?.customText ?? ''}`,
+    key: groupTapKey(view.messageId, answer?.callbackData, answer?.customText),
     messageId: view.messageId,
     text: groupTapLine({ tapper: null, buttonText: answer?.buttonText ?? '', customText: answer?.customText ?? null }),
     sessionHandle: view.sessionHandle,

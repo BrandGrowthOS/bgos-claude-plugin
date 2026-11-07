@@ -138,6 +138,11 @@ export function readGroupDelivery(
   }
 }
 
+/** The dedupe key of a tap, the same on the stream and the poll, so a tap both carry runs once. */
+export function groupTapKey(messageId: unknown, callbackData: string | null | undefined, customText: string | null | undefined): string {
+  return `tap:${String(messageId)}:${callbackData ?? ''}:${customText ?? ''}`
+}
+
 /** A tap in a group, as the short turn line its lane reads. */
 export function groupTapLine(input: { tapper: string | null; buttonText: string; customText?: string | null }): string {
   const who = input.tapper && input.tapper.trim() ? input.tapper.trim() : 'Someone'

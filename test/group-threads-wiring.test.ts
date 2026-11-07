@@ -19,7 +19,7 @@ import { test } from 'node:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { groupRouteOf, groupTapLine, readGroupDelivery } from '../lib/group-delivery.ts'
+import { groupRouteOf, groupTapKey, groupTapLine, readGroupDelivery } from '../lib/group-delivery.ts'
 import { ownerLaneVerdict } from '../lib/lane-core.mjs'
 import { declaredCapabilities, GROUP_THREADS_TOKEN } from '../lib/declared-capabilities.ts'
 import { GROUP_THREAD_END, isThreadOp, type ThreadRpcDeps } from '../lib/thread-rpc.ts'
@@ -307,4 +307,19 @@ test('review 6: the poll gathers a group\'s backlog rows and hands them to the l
   const flush = server.indexOf('flushGroupPollBacklog(groupPollBacklog)')
   assert.ok(at > 0 && at < route && route < flush, 'declared before the loop, flushed after it')
   assert.match(server, /function flushGroupPollBacklog\(rows: GroupDelivery\[\]\): void \{[\s\S]{0,400}groupLanes\.deliverBatch\(rows\)/)
+})
+
+test('review 7: a stamped tap the POLL finds goes to the group lane like a stream tap, under the same dedupe key', () => {
+  assert.equal(groupTapKey(501, 'yes', null), 'tap:501:yes:')
+  assert.equal(groupTapKey(501, '', 'later please'), 'tap:501::later please')
+  const at = server.indexOf('const announced = new Set(announce.filter(')
+  const block = server.slice(at, server.indexOf('for (const id of announced) rememberAnnouncedClick(id)', at))
+  assert.ok(block.includes('routeGroupPollTaps(announced, data.messages)'), 'routed before any tap is announced into the main session')
+  assert.ok(block.indexOf('announced.clear()') < block.indexOf('routeGroupPollTaps('), 'after the recipient lock')
+  const fn = server.slice(server.indexOf('function routeGroupPollTaps('), server.indexOf('\n}\n', server.indexOf('function routeGroupPollTaps(')))
+  assert.match(fn, /key: groupTapKey\(/)
+  assert.match(fn, /announced\.delete\(/)
+  assert.match(fn, /rememberAnnouncedClick\(/)
+  const stream = server.slice(server.indexOf('function routeGroupStreamTap('), server.indexOf('\n}\n', server.indexOf('function routeGroupStreamTap(')))
+  assert.match(stream, /key: groupTapKey\(/, 'the stream uses the same key, so a tap seen on both runs once')
 })

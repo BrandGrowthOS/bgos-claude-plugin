@@ -59,7 +59,7 @@ function rig(read: (path: string, opts: unknown) => Promise<unknown> = async () 
     lanesOnForThisAgent: lanesOn, chatOwnership: { isOthers: () => flags.others },
     ownerAnnounceRefused, ownerLaneVerdict, noteLaneMisroute: (...args: unknown[]) => refused.push(args),
     // No group lanes here: no tap is a group's.
-    routeGroupStreamTap: () => false,
+    routeGroupStreamTap: () => false, routeGroupPollTaps: () => undefined,
     log: () => {}, trackMessageOperation: (op: () => Promise<void>) => op(),
     mcp: { notification: async (note: (typeof notes)[number]) => { notes.push(note) } },
     privateTurns: createPrivateTurnTracker({ ownerUserId: OWNER }), privateTapCard,
