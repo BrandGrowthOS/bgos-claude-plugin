@@ -154,8 +154,17 @@ export interface GroupLaneFence {
   sandbox: boolean
 }
 
+/**
+ * At approvals the lane is launched with ONLY these tools, named one by one
+ * (round 4, finding 1), never the CLI's default set: on CLI 2.1.319 that set
+ * holds 28 tools, among them ListAgents and SendMessage, which reach every
+ * other Claude session on the computer with no prompt. A tool a later CLI
+ * adds stays off until it is listed here. Each of these asks, every time.
+ * There is no reply tool: a lane replies with its final text.
+ */
+export const GROUP_LANE_TOOLS: readonly string[] = Object.freeze(['Bash', 'Read', 'Grep', 'Glob', 'Edit', 'Write'])
 /** At approvals EVERY use of these goes to the gate: no CLI auto allow of any kind. */
-export const GROUP_GATED_TOOLS: readonly string[] = Object.freeze(['Bash', 'Read', 'Grep', 'Glob', 'Edit', 'Write', 'NotebookEdit', 'WebFetch'])
+export const GROUP_GATED_TOOLS: readonly string[] = GROUP_LANE_TOOLS
 /** The file tools refused outright on the fenced paths (defence in depth under the sandbox). */
 export const GROUP_FENCED_TOOLS: readonly string[] = Object.freeze(['Read', 'Grep', 'Glob', 'Edit', 'Write'])
 
@@ -255,7 +264,7 @@ export function groupLaneArgs(input: {
   if (level === 'talk') {
     args.push('--restricted', '--tools', '', '--permission-mode', 'dontAsk')
   } else if (level === 'approvals') {
-    args.push('--setting-sources', '', '--tools', 'default', '--permission-mode', 'default', '--permission-prompt-tool', 'stdio')
+    args.push('--setting-sources', '', '--tools', GROUP_LANE_TOOLS.join(','), '--permission-mode', 'default', '--permission-prompt-tool', 'stdio')
   } else {
     args.push('--permission-mode', 'default', '--permission-prompt-tool', 'stdio')
   }

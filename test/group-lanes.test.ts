@@ -439,7 +439,7 @@ test('a missing or unknown level is approvals (fail closed)', async () => {
   await settle()
   const args = r.spawned[0]!.args
   assert.equal(valueAfter(args, '--setting-sources'), '')
-  assert.equal(valueAfter(args, '--tools'), 'default')
+  assert.equal(valueAfter(args, '--tools'), 'Bash,Read,Grep,Glob,Edit,Write')
   assert.equal(valueAfter(args, '--permission-mode'), 'default')
   assert.equal(valueAfter(args, '--permission-prompt-tool'), 'stdio')
 })
@@ -865,7 +865,8 @@ test('boundary: an approvals lane runs in its folder outside the home folder, wi
   assert.equal(cwd, join(LANES, '123'))
   assert.ok(!cwd.startsWith(HOME + '/'), 'outside the home folder')
   const settings = JSON.parse(valueAfter(args, '--settings')!)
-  assert.deepEqual(settings.permissions.ask, ['Bash', 'Read', 'Grep', 'Glob', 'Edit', 'Write', 'NotebookEdit', 'WebFetch'])
+  assert.deepEqual(settings.permissions.ask, ['Bash', 'Read', 'Grep', 'Glob', 'Edit', 'Write'])
+  assert.equal(valueAfter(args, '--tools'), 'Bash,Read,Grep,Glob,Edit,Write')
   assert.equal(settings.permissions.allow, undefined)
   assert.ok(settings.permissions.deny.includes(`Read(/${join(HOME, '.bgos-agent')}/**)`))
   assert.ok(settings.permissions.deny.includes(`Read(/${AGENT}/**)`))

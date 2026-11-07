@@ -56,10 +56,10 @@ test('talk: exactly no tools and dontAsk, so the lane can only answer; nobody is
   ])
 })
 
-test('approvals: the owner\'s settings off, the CLI\'s full default tools (Bash too), mode default, every prompt to the gate', () => {
+test('approvals: the owner\'s settings off, only its six tools by name (Bash too), mode default, every prompt to the gate', () => {
   const args = groupLaneArgs({ ...base, resume: false, level: 'approvals', fence: FENCE })
   assert.deepEqual(args, [
-    ...HEAD, '--setting-sources', '', '--tools', 'default', '--permission-mode', 'default', '--permission-prompt-tool', 'stdio',
+    ...HEAD, '--setting-sources', '', '--tools', 'Bash,Read,Grep,Glob,Edit,Write', '--permission-mode', 'default', '--permission-prompt-tool', 'stdio',
     '--settings', JSON.stringify(groupLaneSettings('approvals', '/work/atlas', 'linux', FENCE)), ...MCP_TAIL,
   ])
   assert.ok(!args.includes('--restricted'), 'restricted would take Bash away, so a shell request could never reach the card')
@@ -152,9 +152,9 @@ test('review 1: full denies reads of the agent folder\'s .hoai (the owner\'s thr
 
 type Settings = { permissions: { allow?: string[]; ask?: string[]; deny?: string[]; additionalDirectories?: string[] }; sandbox?: Record<string, any> }
 
-test('boundary: approvals sends EVERY Bash, Read, Grep, Glob, Edit, Write, NotebookEdit and WebFetch call to the gate: no allow, no widened folder', () => {
+test('boundary: approvals sends EVERY Bash, Read, Grep, Glob, Edit and Write call to the gate: no allow, no widened folder', () => {
   const s = groupLaneSettings('approvals', '/work/atlas', 'linux', FENCE) as Settings
-  assert.deepEqual(s.permissions.ask, ['Bash', 'Read', 'Grep', 'Glob', 'Edit', 'Write', 'NotebookEdit', 'WebFetch'])
+  assert.deepEqual(s.permissions.ask, ['Bash', 'Read', 'Grep', 'Glob', 'Edit', 'Write'])
   assert.equal(s.permissions.allow, undefined, 'no allow rule: nothing runs without the gate')
   assert.equal(s.permissions.additionalDirectories, undefined, 'no folder widens reads')
 })
@@ -203,4 +203,22 @@ test('boundary: talk stays reply only (no tools at all), whatever the fence', ()
   const args = groupLaneArgs({ ...base, resume: false, level: 'talk', fence: FENCE })
   assert.equal(after(args, '--tools'), '')
   assert.equal(after(args, '--permission-mode'), 'dontAsk')
+})
+
+// -- round 4: an allow list of tools by name ------------------------------------
+
+test('round 4, finding 1: below Full the lane is launched with ONLY its tools, by name, never the CLI\'s default set', () => {
+  // Measured live on CLI 2.1.319: `--tools Bash,Read,Grep,Glob,Edit,Write` offers exactly those six, so ListAgents,
+  // SendMessage and anything a later CLI adds are not there at all. A lane replies with its final text: no reply tool.
+  const approvals = groupLaneArgs({ ...base, resume: false, level: 'approvals', fence: FENCE })
+  assert.equal(after(approvals, '--tools'), 'Bash,Read,Grep,Glob,Edit,Write')
+  assert.equal(approvals.filter((a) => a === '--tools').length, 1)
+  assert.notEqual(after(approvals, '--tools'), 'default', 'never the default set')
+  const talk = groupLaneArgs({ ...base, resume: false, level: 'talk', fence: FENCE })
+  assert.equal(after(talk, '--tools'), '')
+  const s = groupLaneSettings('approvals', '/work/atlas', 'linux', FENCE) as Settings
+  assert.deepEqual(s.permissions.ask, ['Bash', 'Read', 'Grep', 'Glob', 'Edit', 'Write'], 'each listed tool asks, every time')
+  assert.equal(s.permissions.allow, undefined)
+  // Full keeps the owner's own tools, as in their own chat.
+  assert.ok(!groupLaneArgs({ ...base, resume: false, level: 'full' }).includes('--tools'))
 })
