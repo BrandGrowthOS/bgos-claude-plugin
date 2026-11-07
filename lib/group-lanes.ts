@@ -7,10 +7,11 @@
  *
  *  - Key: `group:<chatId>`, the lane stamp the server puts on every delivery
  *    of that group's messages to this agent. One manager serves one agent.
- *  - Folder: `<stateDir>/<chatId>`, beside the lane's state and OUTSIDE the
- *    agent folder, so a lane that may read the owner's files never finds
- *    another group's folder or the owner's thread worktrees among them (and
- *    the settings deny reads of the agent folder's `.hoai/` besides).
+ *  - Folder: `<laneRoot>/<chatId>`, outside the home folder and the agent
+ *    folder. Below Full a lane is fenced (lib/group-lane-args.ts): every
+ *    Bash, Read, Grep, Glob, Edit and Write call goes to the gate, and the
+ *    home folder, the agent folder, ~/.bgos-agent and the CLI config dir are
+ *    refused outright (and to Bash by the CLI sandbox where the host has one).
  *  - Session: FRESH on the first start (`--session-id <new uuid>`, never a
  *    fork, never the main session), seeded with a group brief built from the
  *    delivery (title, the owner's note, the last pause summary, roster,
@@ -172,6 +173,14 @@ export interface GroupLaneDeps {
     runsIn(pid: number, dir: string): Promise<boolean | null>
     kill(pid: number, signal: 'SIGTERM' | 'SIGKILL'): void
   }
+  /**
+   * The folder the lanes work in, one subfolder per group: OUTSIDE the home
+   * folder, private to this user (server.ts makes it 0700 and checks its
+   * owner; it throws when it cannot, and the lane then starts nothing).
+   */
+  laneRoot(): string
+  /** Where a lane below Full may never reach (lib/group-lane-args.ts GroupLaneFence), less the lane's own folder. */
+  fence(): { home: string; configDir: string; stateRoot: string; sandbox: boolean }
   /** Where lane state files live, ~/.bgos-agent/<assistantId>/groups. */
   stateDir: string
   emptyMcpConfigPath(): string
@@ -726,6 +735,7 @@ export class GroupLaneManager {
         agentFolder: this.deps.agentFolder,
         mainSessionId: this.deps.mainSessionId(),
         platform: this.deps.platform,
+        fence: { ...this.deps.fence(), laneFolder: folder },
       })
       this.persist(lane)
       // The private turn hook reads this: a group lane has no private tools and no daemon of its own to attach to.
@@ -852,8 +862,11 @@ export class GroupLaneManager {
     const { pid, pidStamp } = st
     if (pid === null) return true
     const procs = this.deps.processes
-    const cwd = this.laneFolder(st.chatId)
-    if (pidStamp === null && (await procs.runsIn(pid, cwd)) !== false) {
+    let cwd = ''
+    try {
+      cwd = this.laneFolder(st.chatId)
+    } catch {}
+    if (pidStamp === null && (cwd === '' || (await procs.runsIn(pid, cwd)) !== false)) {
       this.deps.log(`groups: group ${st.chatId} has an unverified process that may still use its folder; waiting for it to exit`)
       return false
     }
@@ -929,12 +942,12 @@ export class GroupLaneManager {
   }
 
   /**
-   * The lane's own folder: beside its state, OUTSIDE the agent folder, so no
-   * group's files sit among the owner's (which a lane may read) and no lane
-   * can read another group's folder or the owner's thread worktrees there.
+   * The lane's own folder: under the lane root, OUTSIDE the home folder and
+   * the agent folder, so the fence below Full (lib/group-lane-args.ts) can
+   * refuse all of those while the lane still works in its own folder.
    */
   private laneFolder(chatId: string): string {
-    return join(this.deps.stateDir, chatId)
+    return join(this.deps.laneRoot(), chatId)
   }
 
   private async prepareFolder(chatId: string): Promise<string> {

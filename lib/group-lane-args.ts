@@ -138,28 +138,89 @@ function requireAbsolute(path: unknown, what: string): string {
 }
 
 /** The lane's own settings for its level (passed as `--settings <json>`). */
-export function groupLaneSettings(level: GroupLevel, agentFolder: string, platform: NodeJS.Platform = process.platform): Record<string, unknown> {
+/**
+ * Where a group lane below Full may never reach (round 3, the boundary): the
+ * home folder, the agent folder (its .hoai included), the agent state root
+ * (~/.bgos-agent: credentials, every lane's state, other groups) and the
+ * CLI's config dir (~/.claude: the owner's transcripts and sign in). The
+ * lane's own folder must lie outside all of them.
+ */
+export interface GroupLaneFence {
+  home: string
+  configDir: string
+  stateRoot: string
+  laneFolder: string
+  /** The host can run the CLI's Bash sandbox (lib/lane-policy.mjs laneShellSandboxAvailable). */
+  sandbox: boolean
+}
+
+/** At approvals EVERY use of these goes to the gate: no CLI auto allow of any kind. */
+export const GROUP_GATED_TOOLS: readonly string[] = Object.freeze(['Bash', 'Read', 'Grep', 'Glob', 'Edit', 'Write', 'NotebookEdit', 'WebFetch'])
+/** The file tools refused outright on the fenced paths (defence in depth under the sandbox). */
+export const GROUP_FENCED_TOOLS: readonly string[] = Object.freeze(['Read', 'Grep', 'Glob', 'Edit', 'Write'])
+
+function trimSlash(p: string): string {
+  return p.length > 1 ? p.replace(/[\\/]+$/, '') : p
+}
+
+function inside(child: string, parent: string): boolean {
+  const c = trimSlash(child)
+  const p = trimSlash(parent)
+  return c === p || c.startsWith(`${p}/`) || c.startsWith(`${p}\\`)
+}
+
+/** The fenced paths, absolute, each once (an agent folder that is the home folder is listed once: finding B). */
+export function groupFencedPaths(agentFolder: string, fence: GroupLaneFence): string[] {
+  const paths = [fence.home, agentFolder, fence.stateRoot, fence.configDir].map((p, i) =>
+    trimSlash(requireAbsolute(p, ['the home folder', 'the agent folder', 'the agent state folder', 'the CLI config folder'][i]!)))
+  return [...new Set(paths)]
+}
+
+export function groupLaneSettings(
+  level: GroupLevel,
+  agentFolder: string,
+  platform: NodeJS.Platform = process.platform,
+  fence?: GroupLaneFence,
+): Record<string, unknown> {
   if (level === 'talk') {
     return { remoteControlAtStartup: false, hooks: threadLaneHooks() }
   }
   const folder = requireAbsolute(agentFolder, 'the agent folder')
-  // The agent folder's .hoai/ holds the owner's thread worktrees (their
-  // private work) and, from older versions, other groups' folders: never
-  // read from a group, whatever else allows it (deny beats allow).
-  const hoai = `Read(${permissionRulePath(folder, platform)}/.hoai/**)`
   if (level === 'full') {
-    // The owner's own settings apply, as in their own chat, plus the .hoai
-    // deny. Remote Control is kept off: a lane left alone would open one on
-    // their account.
-    return { permissions: { deny: [hoai] }, remoteControlAtStartup: false }
+    // The owner's own settings apply, as in their own chat, plus a deny of
+    // the agent folder's .hoai (the owner's thread worktrees). Remote Control
+    // is kept off: a lane left alone would open one on their account.
+    return { permissions: { deny: [`Read(${permissionRulePath(folder, platform)}/.hoai/**)`] }, remoteControlAtStartup: false }
   }
+  // approvals: the boundary. Every Bash, Read, Grep, Glob, Edit, Write,
+  // NotebookEdit and WebFetch call asks (an explicit ask rule, measured live
+  // on CLI 2.1.319 to send even a read inside the working folder and a read
+  // only grep to the gate); no allow rule, no additional directory. The
+  // fenced paths are refused outright to the file tools, and, where the host
+  // has the CLI sandbox, to Bash too; without one, Bash still asks every time.
+  if (!fence) throw new Error('a group lane below Full needs its fence')
+  const fenced = groupFencedPaths(folder, fence)
+  const lane = trimSlash(requireAbsolute(fence.laneFolder, 'the lane folder'))
+  for (const p of fenced) {
+    if (inside(lane, p)) throw new Error('the lane folder lies inside a fenced path')
+  }
+  const rule = (abs: string) => `${permissionRulePath(abs, platform)}/**`
   return {
-    // The owner's files may be read (spec 3), but not .hoai/; everything else asks the owner.
     permissions: {
-      allow: [`Read(${permissionRulePath(folder, platform)}/**)`],
-      deny: [hoai],
-      additionalDirectories: [folder],
+      ask: [...GROUP_GATED_TOOLS],
+      deny: fenced.flatMap((p) => GROUP_FENCED_TOOLS.map((tool) => `${tool}(${rule(p)})`)),
     },
+    ...(fence.sandbox
+      ? {
+          sandbox: {
+            enabled: true,
+            // The sandbox confines Bash; it never lets Bash run without the gate.
+            autoAllowBashIfSandboxed: false,
+            allowUnsandboxedCommands: false,
+            filesystem: { denyRead: [...fenced], denyWrite: [...fenced] },
+          },
+        }
+      : {}),
     remoteControlAtStartup: false,
     hooks: threadLaneHooks(),
   }
@@ -178,6 +239,8 @@ export function groupLaneArgs(input: {
   agentFolder: string
   mainSessionId?: string | null
   platform?: NodeJS.Platform
+  /** Required below Full (approvals): where the lane may never reach. */
+  fence?: GroupLaneFence
 }): string[] {
   if (!isSessionId(input.sessionId)) throw new Error('the group session id is not a UUID')
   if (input.mainSessionId && input.sessionId.toLowerCase() === String(input.mainSessionId).toLowerCase()) {
@@ -196,7 +259,7 @@ export function groupLaneArgs(input: {
   } else {
     args.push('--permission-mode', 'default', '--permission-prompt-tool', 'stdio')
   }
-  args.push('--settings', JSON.stringify(groupLaneSettings(level, input.agentFolder, input.platform)))
+  args.push('--settings', JSON.stringify(groupLaneSettings(level, input.agentFolder, input.platform, input.fence)))
   // --mcp-config is variadic, so it stays last and the prompt goes on stdin.
   args.push('--strict-mcp-config', '--mcp-config', input.emptyMcpConfigPath)
   assertGroupLane(args, input.mainSessionId ?? null)

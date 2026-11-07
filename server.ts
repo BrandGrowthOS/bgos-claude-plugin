@@ -1183,8 +1183,10 @@ const API_BASE = getApiBaseUrl()
 
 import {
   appendFileSync,
+  chmodSync,
   copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -15160,6 +15162,20 @@ const groupLanes = new GroupLaneManager({
     kill: (pid, signal) => killProcessGroup(pid, signal),
   },
   stateDir: GROUPS_STATE_DIR,
+  laneRoot: groupLaneRoot,
+  // Below Full a lane never reaches the home folder, the agent folder, the
+  // agent state root or the CLI config dir; Bash is fenced by the CLI sandbox
+  // where the host has one (lib/group-lane-args.ts groupLaneSettings).
+  fence: () => ({
+    home: homedir(),
+    configDir: CLAUDE_CONFIG_DIR || pathJoin(homedir(), '.claude'),
+    stateRoot: pathJoin(homedir(), '.bgos-agent'),
+    sandbox: laneShellSandboxAvailable({
+      platform: process.platform,
+      exists: (p: string) => existsSync(p),
+      onPath: (name: string) => findOnPath(name, { pathVar: process.env.PATH ?? '' }) !== null,
+    }),
+  }),
   emptyMcpConfigPath: threadsEmptyMcpConfig,
   fs: {
     exists: (path) => existsSync(path),
@@ -15202,6 +15218,27 @@ const groupLanes = new GroupLaneManager({
   // TEST ONLY: a live run can show a pause in a minute (README, Group threads).
   idleOverrideMs: groupIdleOverrideMs(process.env.HOAI_GROUP_LANE_IDLE_MS),
 })
+
+/**
+ * The group lanes' own folders (round 3, the boundary): OUTSIDE the home
+ * folder, so a lane below Full can be refused the whole home folder and
+ * still work in its own. /var/tmp/hoai-group-lanes-<uid>/<assistantId>,
+ * made 0700; a top folder that is a link, not a folder, or another user's is
+ * refused (and the lane then starts nothing). /var/tmp outlives a reboot;
+ * the session itself is kept by the CLI, so a folder cleaned away is made
+ * again and the session resumes.
+ */
+function groupLaneRoot(): string {
+  const uid = typeof process.getuid === 'function' ? process.getuid() : -1
+  const top = pathJoin('/var/tmp', `hoai-group-lanes-${uid}`)
+  mkdirSync(top, { recursive: true, mode: 0o700 })
+  const st = lstatSync(top)
+  if (st.isSymbolicLink() || !st.isDirectory() || st.uid !== uid) throw new Error('the group lanes folder is not this user\'s own')
+  if ((st.mode & 0o077) !== 0) chmodSync(top, 0o700)
+  const root = pathJoin(top, String(ASSISTANT_ID))
+  mkdirSync(root, { recursive: true, mode: 0o700 })
+  return root
+}
 
 /** The thread lanes' and the group lanes' work together, for the restart and drain counts. */
 const laneWork = { activeWork: () => threadLanes.activeWork() + groupLanes.activeWork() }

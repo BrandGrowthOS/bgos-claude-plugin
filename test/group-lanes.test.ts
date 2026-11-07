@@ -36,6 +36,9 @@ const IDS = [
 const SERVER_SESSION = '99999999-9999-4999-8999-999999999999'
 const AGENT = resolve('/work/atlas')
 const STATE = resolve('/home/u/.bgos-agent/7/groups')
+/** The lanes' own folders, outside the home folder (round 3, the boundary). */
+const LANES = resolve('/var/tmp/hoai-group-lanes-1000/7')
+const HOME = resolve('/home/u')
 
 class FakeChild implements StreamJsonChild {
   pid?: number
@@ -62,7 +65,7 @@ class FakeChild implements StreamJsonChild {
 
 interface Timer { fn: () => void; ms: number; cleared: boolean }
 
-function rig(opts: { maxLive?: number; failPost?: (body: Record<string, unknown>) => unknown; files?: Map<string, string>; idleOverrideMs?: number | null } = {}) {
+function rig(opts: { maxLive?: number; failPost?: (body: Record<string, unknown>) => unknown; files?: Map<string, string>; idleOverrideMs?: number | null; laneRootFails?: boolean } = {}) {
   const files = opts.files ?? new Map<string, string>()
   const spawned: Array<{ args: string[]; cwd: string; env?: Record<string, string>; child: FakeChild }> = []
   const posts: Array<Record<string, unknown>> = []
@@ -105,6 +108,8 @@ function rig(opts: { maxLive?: number; failPost?: (body: Record<string, unknown>
     agentFolder: AGENT,
     stateDir: STATE,
     emptyMcpConfigPath: () => '/tmp/empty-mcp.json',
+    laneRoot: () => { if (opts.laneRootFails) throw new Error('not private'); return LANES },
+    fence: () => ({ home: HOME, configDir: join(HOME, '.claude'), stateRoot: join(HOME, '.bgos-agent'), sandbox: false }),
     fs: {
       exists: (p) => files.has(p),
       mkdir: () => {},
@@ -176,7 +181,7 @@ test('the first start is a FRESH session seeded with the group brief: no fork, n
   assert.ok(!args.includes('--fork-session'))
   assert.ok(!args.includes('--resume'))
   assert.ok(!args.includes(MAIN), 'the owner\'s main session is never named')
-  assert.equal(cwd, join(STATE, '123'))
+  assert.equal(cwd, join(LANES, '123'))
   assert.deepEqual(r.spawned[0]!.env, { HOAI_GROUP_LANE: '123' }, 'the private turn hook knows a group lane by it')
   const seed = child.messages()[0]!
   for (const part of ['Launch team', 'Keep answers short.', 'Ana asked for the venue', 'Ben: the venue is ready', 'Ana (owner)', '@Atlas what time is the launch?']) {
@@ -326,7 +331,7 @@ test('at most 3 live group lanes: a 4th wake pauses the longest idle one (summar
   oldest.exit()
   await settle()
   assert.equal(r.spawned.length, 4)
-  assert.equal(r.spawned[3]!.cwd, join(STATE, '104'))
+  assert.equal(r.spawned[3]!.cwd, join(LANES, '104'))
   const paused = r.posts.find((p) => p.state === 'paused')!
   assert.equal(paused.chatId, 101)
   assert.deepEqual(paused.needsYou, [])
@@ -642,12 +647,12 @@ test('review 8: two groups that deliver the same key both run: the dedupe is per
   assert.deepEqual(r.spawned.map((s) => s.cwd.split(/[\\/]/).at(-1)), ['301', '302'])
 })
 
-test('review 1: a group lane works OUTSIDE the agent folder, beside its lane state, so no group folder is under the owner\'s files', async () => {
+test('review 1: a group lane works OUTSIDE the agent folder, so no group folder is under the owner\'s files', async () => {
   const r = rig()
   r.lanes.deliver(delivery())
   await settle()
   const cwd = r.spawned[0]!.cwd
-  assert.equal(cwd, join(STATE, '123'))
+  assert.equal(cwd, join(LANES, '123'))
   const inside = (dir: string, root: string) => dir === root || dir.startsWith(root + '/') || dir.startsWith(root + '\\')
   assert.equal(inside(cwd, AGENT), false, 'not under the agent folder')
 })
@@ -848,4 +853,28 @@ test('each group message once per turn, never none: a later unframed turn, which
   }))
   await settle()
   assert.equal(r.spawned[0]!.child.messages()[1]!.split('held and in the backlog').length - 1, 1)
+})
+
+// -- round 3: the boundary --------------------------------------------------------
+
+test('boundary: an approvals lane runs in its folder outside the home folder, with its fence: every tool use asks, the fenced paths are refused', async () => {
+  const r = rig()
+  r.lanes.deliver(delivery({ level: 'approvals' }))
+  await settle()
+  const { args, cwd } = r.spawned[0]!
+  assert.equal(cwd, join(LANES, '123'))
+  assert.ok(!cwd.startsWith(HOME + '/'), 'outside the home folder')
+  const settings = JSON.parse(valueAfter(args, '--settings')!)
+  assert.deepEqual(settings.permissions.ask, ['Bash', 'Read', 'Grep', 'Glob', 'Edit', 'Write', 'NotebookEdit', 'WebFetch'])
+  assert.equal(settings.permissions.allow, undefined)
+  assert.ok(settings.permissions.deny.includes(`Read(/${join(HOME, '.bgos-agent')}/**)`))
+  assert.ok(settings.permissions.deny.includes(`Read(/${AGENT}/**)`))
+})
+
+test('boundary: a lane folder that cannot be made private starts nothing (fail closed)', async () => {
+  const r = rig({ laneRootFails: true })
+  r.lanes.deliver(delivery({ level: 'approvals' }))
+  await settle()
+  assert.equal(r.spawned.length, 0)
+  assert.equal(r.lanes.slotsUsed(), 0)
 })

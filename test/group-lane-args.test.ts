@@ -27,6 +27,10 @@ const MAIN = '435f1f18-2716-4c27-bfd8-e2c48f28b3ac'
 const ID = '11111111-1111-4111-8111-111111111111'
 const base = { sessionId: ID, emptyMcpConfigPath: '/tmp/empty-mcp.json', agentFolder: '/work/atlas', mainSessionId: MAIN, platform: 'linux' as const }
 const after = (args: string[], flag: string) => args[args.indexOf(flag) + 1]
+/** Where a group lane may never reach below Full: generic paths. The lane's own folder is outside all of them. */
+const FENCE = { home: '/home/u', configDir: '/home/u/.claude', stateRoot: '/home/u/.bgos-agent', laneFolder: '/var/tmp/hoai-group-lanes-1000/7/123', sandbox: false }
+const FENCED = ['/home/u', '/work/atlas', '/home/u/.bgos-agent', '/home/u/.claude']
+const FILE_TOOLS = ['Read', 'Grep', 'Glob', 'Edit', 'Write']
 
 test('the level: talk, approvals and full; anything else is approvals (fail closed)', () => {
   assert.equal(groupLevel('talk'), 'talk')
@@ -53,16 +57,13 @@ test('talk: exactly no tools and dontAsk, so the lane can only answer; nobody is
 })
 
 test('approvals: the owner\'s settings off, the CLI\'s full default tools (Bash too), mode default, every prompt to the gate', () => {
-  const args = groupLaneArgs({ ...base, resume: false, level: 'approvals' })
+  const args = groupLaneArgs({ ...base, resume: false, level: 'approvals', fence: FENCE })
   assert.deepEqual(args, [
     ...HEAD, '--setting-sources', '', '--tools', 'default', '--permission-mode', 'default', '--permission-prompt-tool', 'stdio',
-    '--settings', JSON.stringify(groupLaneSettings('approvals', '/work/atlas', 'linux')), ...MCP_TAIL,
+    '--settings', JSON.stringify(groupLaneSettings('approvals', '/work/atlas', 'linux', FENCE)), ...MCP_TAIL,
   ])
   assert.ok(!args.includes('--restricted'), 'restricted would take Bash away, so a shell request could never reach the card')
-  const settings = JSON.parse(after(args, '--settings')!)
-  assert.deepEqual(settings.permissions.allow, ['Read(//work/atlas/**)'], 'reads of the agent folder only; nothing that changes is allowed ahead')
-  assert.deepEqual(settings.permissions.deny, ['Read(//work/atlas/.hoai/**)'], 'no tool is denied ahead (each changing use asks the owner); only reads of .hoai are')
-  assert.equal(settings.remoteControlAtStartup, false)
+  assert.equal(JSON.parse(after(args, '--settings')!).remoteControlAtStartup, false)
 })
 
 test('full: the owner\'s own settings and default tools, mode default, every prompt to the owner\'s own chat handling', () => {
@@ -74,10 +75,10 @@ test('full: the owner\'s own settings and default tools, mode default, every pro
 
 test('a fresh session names its id with --session-id; a later start resumes it; never a fork, never bypass', () => {
   for (const level of ['talk', 'approvals', 'full'] as GroupLevel[]) {
-    const fresh = groupLaneArgs({ ...base, resume: false, level })
+    const fresh = groupLaneArgs({ ...base, resume: false, level, fence: FENCE })
     assert.equal(after(fresh, '--session-id'), ID)
     assert.ok(!fresh.includes('--resume'))
-    const resumed = groupLaneArgs({ ...base, resume: true, level })
+    const resumed = groupLaneArgs({ ...base, resume: true, level, fence: FENCE })
     assert.equal(after(resumed, '--resume'), ID)
     for (const args of [fresh, resumed]) {
       assert.ok(!args.includes('--fork-session'))
@@ -139,15 +140,67 @@ test('HOAI_GROUP_LANE_IDLE_MS is read only as a positive whole number of ms, and
   }
 })
 
-test('review 1: approvals and full deny reads of the agent folder\'s .hoai (other groups, the owner\'s thread worktrees)', () => {
-  const approvals = groupLaneSettings('approvals', '/work/atlas', 'linux') as { permissions: { allow: string[]; deny?: string[] } }
-  assert.deepEqual(approvals.permissions.deny, ['Read(//work/atlas/.hoai/**)'])
-  assert.deepEqual(approvals.permissions.allow, ['Read(//work/atlas/**)'], 'the owner\'s other files stay readable (spec 3); deny beats allow')
+test('review 1: full denies reads of the agent folder\'s .hoai (the owner\'s thread worktrees)', () => {
   const full = groupLaneSettings('full', '/work/atlas', 'linux') as { permissions?: { deny?: string[] }; remoteControlAtStartup: boolean }
   assert.deepEqual(full.permissions?.deny, ['Read(//work/atlas/.hoai/**)'])
   assert.equal(full.remoteControlAtStartup, false)
-  for (const level of ['approvals', 'full'] as const) {
-    const args = groupLaneArgs({ ...base, resume: false, level })
-    assert.deepEqual(JSON.parse(after(args, '--settings')!).permissions.deny, ['Read(//work/atlas/.hoai/**)'], level)
+  const args = groupLaneArgs({ ...base, resume: false, level: 'full' })
+  assert.deepEqual(JSON.parse(after(args, '--settings')!).permissions.deny, ['Read(//work/atlas/.hoai/**)'])
+})
+
+// -- round 3: the boundary below Full -------------------------------------------
+
+type Settings = { permissions: { allow?: string[]; ask?: string[]; deny?: string[]; additionalDirectories?: string[] }; sandbox?: Record<string, any> }
+
+test('boundary: approvals sends EVERY Bash, Read, Grep, Glob, Edit, Write, NotebookEdit and WebFetch call to the gate: no allow, no widened folder', () => {
+  const s = groupLaneSettings('approvals', '/work/atlas', 'linux', FENCE) as Settings
+  assert.deepEqual(s.permissions.ask, ['Bash', 'Read', 'Grep', 'Glob', 'Edit', 'Write', 'NotebookEdit', 'WebFetch'])
+  assert.equal(s.permissions.allow, undefined, 'no allow rule: nothing runs without the gate')
+  assert.equal(s.permissions.additionalDirectories, undefined, 'no folder widens reads')
+})
+
+test('boundary: approvals denies Read, Grep, Glob, Edit and Write on the home folder, the agent folder, ~/.bgos-agent and the CLI config dir', () => {
+  const s = groupLaneSettings('approvals', '/work/atlas', 'linux', FENCE) as Settings
+  const expected = FENCED.flatMap((p) => FILE_TOOLS.map((tool) => `${tool}(/${p}/**)`))
+  assert.deepEqual(s.permissions.deny, expected)
+})
+
+test('boundary: with a sandbox Bash is confined (denyRead and denyWrite on the same paths) and never allowed by the sandbox alone', () => {
+  const s = groupLaneSettings('approvals', '/work/atlas', 'linux', { ...FENCE, sandbox: true }) as Settings
+  assert.deepEqual(s.sandbox, {
+    enabled: true,
+    autoAllowBashIfSandboxed: false,
+    allowUnsandboxedCommands: false,
+    filesystem: { denyRead: FENCED, denyWrite: FENCED },
+  })
+  assert.ok(s.permissions.ask!.includes('Bash'), 'Bash still asks every time')
+})
+
+test('boundary: without a sandbox there is no sandbox block, and Bash still asks every time while the deny rules still refuse the reads', () => {
+  const s = groupLaneSettings('approvals', '/work/atlas', 'linux', FENCE) as Settings
+  assert.equal(s.sandbox, undefined)
+  assert.ok(s.permissions.ask!.includes('Bash'))
+  assert.ok(s.permissions.deny!.includes('Read(//home/u/.bgos-agent/**)'))
+})
+
+test('boundary (finding B): an agent folder that IS the home folder is fenced the same, each path once', () => {
+  const s = groupLaneSettings('approvals', '/home/u', 'linux', { ...FENCE, sandbox: true }) as Settings
+  const paths = ['/home/u', '/home/u/.bgos-agent', '/home/u/.claude']
+  assert.deepEqual(s.sandbox!.filesystem.denyRead, paths)
+  assert.deepEqual(s.permissions.deny, paths.flatMap((p) => FILE_TOOLS.map((tool) => `${tool}(/${p}/**)`)))
+  assert.equal(s.permissions.allow, undefined)
+})
+
+test('boundary: approvals refuses to run without its fence, or with a lane folder inside a fenced path', () => {
+  assert.throws(() => groupLaneSettings('approvals', '/work/atlas', 'linux'), /fence/)
+  for (const laneFolder of ['/home/u/.bgos-agent/7/groups/123', '/work/atlas/.hoai/groups/123', '/home/u', '/home/u/.claude/x']) {
+    assert.throws(() => groupLaneSettings('approvals', '/work/atlas', 'linux', { ...FENCE, laneFolder }), /lane folder/, laneFolder)
   }
+  assert.throws(() => groupLaneArgs({ ...base, resume: false, level: 'approvals' }), /fence/)
+})
+
+test('boundary: talk stays reply only (no tools at all), whatever the fence', () => {
+  const args = groupLaneArgs({ ...base, resume: false, level: 'talk', fence: FENCE })
+  assert.equal(after(args, '--tools'), '')
+  assert.equal(after(args, '--permission-mode'), 'dontAsk')
 })
