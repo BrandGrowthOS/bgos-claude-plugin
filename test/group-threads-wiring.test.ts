@@ -340,3 +340,10 @@ test('held messages: groupThread.heldMessages is read as earlier messages, oldes
   assert.deepEqual(readGroupDelivery([stamped], base).earlier, [])
   assert.deepEqual(readGroupDelivery([{ ...stamped, groupThread: { ...stamped.groupThread, heldMessages: 'nope' } }], base).earlier, [])
 })
+
+test('finding D: a main chat known to be someone else\'s never takes the summaries, even with the owner\'s id on the card', () => {
+  // A recipient's chat can be listed as a main chat of this agent, and a sender less row falls back to the owner's id.
+  const ctx = { ownerUserId: 'user_owner', mainChatIds: ['10', '11'], isOthers: (chatId: string) => chatId === '11' }
+  assert.equal(isOwnerCard({ chat_id: '10', user_id: 'user_owner' }, ctx), true)
+  assert.equal(isOwnerCard({ chat_id: '11', user_id: 'user_owner' }, ctx), false)
+})
