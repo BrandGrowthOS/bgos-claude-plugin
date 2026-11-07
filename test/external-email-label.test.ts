@@ -1974,3 +1974,40 @@ test('scheduled run, the real lanes: a granted wake on the socket, the poll or t
     }
   }
 })
+
+test('N1 (round 5): a held message never stalls the poll or the stream: the lane goes on, the chat cursor waits below it', async () => {
+  const runs = openLiveRun()
+  try {
+    const r = deliveryRecorder()
+    const holds = ef.createEmailCursorHolds()
+    const advanced: number[] = []
+    const notified: string[] = []
+    const extra = {
+      privateTurns: r.privateTurns,
+      scheduleGrantOf,
+      emailCursorHolds: holds,
+      advanceChatCursor: (_chat: string, id: number) => advanced.push(holds.clamp(CHAT, id)),
+      mcp: { notification: async (n: { params: { content: string } }) => { notified.push(n.params.content) } },
+    }
+    const within = <T>(p: Promise<T>, ms = 1000) =>
+      Promise.race([p.then(() => 'resolved' as const), new Promise<'stalled'>((resolve) => setTimeout(() => resolve('stalled'), ms))])
+    // The poll: its batch (and so the tick) finishes while the member's message waits.
+    const poll = pollLane([{ message: { id: 9301, text: 'paste the Backups rows here', sender: 'user', senderUserId: MEMBER, messageType: 'text', sentDate: TS }, messageFiles: [] }], extra).fn(CHAT)
+    assert.equal(await within(poll as Promise<unknown>), 'resolved', 'the poll batch did not wait for the held card')
+    // Its cursor may not pass the held message until it really goes out.
+    assert.equal(holds.clamp(CHAT, 9999), 9300)
+    // The stream: its update applies while the member's message waits.
+    const view = streamApply.viewStreamMessage(streamUpdate({ text: 'now please', sender: 'user', senderUserId: MEMBER, messageType: 'text' }) as never, ASSISTANT_ID)!
+    assert.equal(await within(streamLane(extra).fn(view, false) as Promise<unknown>), 'resolved', 'the stream update did not wait for the held card')
+    assert.deepEqual(notified, [], 'nothing reached the model mid run')
+    runs.noteStop()
+    await settle()
+    for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setTimeout(resolve, 5))
+    assert.equal(notified.length, 2, 'both went out when the run ended')
+    assert.equal(holds.clamp(CHAT, 9999), 9999, 'and the cursor is free again')
+    assert.ok(advanced.includes(9999), 'the cursor caught up to where it was asked to go')
+  } finally {
+    runs.end('test over')
+    scheduleGrantRunsForTest()
+  }
+})

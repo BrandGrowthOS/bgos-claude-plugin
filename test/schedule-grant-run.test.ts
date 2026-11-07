@@ -7,6 +7,7 @@ import {
   SCHEDULE_GRANT_HEADER,
   SCHEDULE_GRANT_MAX_MS,
   createScheduleGrantRuns,
+  heldHandoff,
   holdChannelCardsDuringGrantedRun,
   requireBoardsTurn,
   scheduleGrantOf,
@@ -151,6 +152,58 @@ test('F5: a newer granted wake held behind other cards is released first, alone,
   runs.noteStop()
   await message
   assert.deepEqual(sent.at(-1), 'a group member\'s message')
+})
+
+test('N1: a held card tells its lane at once (onHeld), so the lane can go on; a card that is not held never does', async () => {
+  const { runs, notify, card, clock } = rig()
+  const heldCalls: string[] = []
+  const sentShapes: unknown[] = []
+  const shaped = holdChannelCardsDuringGrantedRun(runs, async (n: Record<string, unknown>) => { sentShapes.push(Object.keys(n).sort()) })
+  await shaped({ ...card(`wake ${tag(TOKEN)}`, grantAt(clock.now())), onHeld: () => heldCalls.push('wake') })
+  runs.noteBegin(tag(TOKEN))
+  const held = shaped({ ...card('member'), onHeld: () => heldCalls.push('member') })
+  assert.deepEqual(heldCalls, ['member'], 'told synchronously, before the card goes out')
+  runs.noteStop()
+  await held
+  assert.deepEqual(heldCalls, ['member'], 'told once')
+  for (const keys of sentShapes) assert.deepEqual(keys, ['method', 'params'], 'onHeld and scheduleGrant never reach the session')
+  void notify
+})
+
+test('N1: heldHandoff lets a lane go on as soon as its card is held, and still settles with the delivery', async () => {
+  const { runs, notify, card, clock } = rig()
+  await notify(card(`wake ${tag(TOKEN)}`, grantAt(clock.now())))
+  runs.noteBegin(tag(TOKEN))
+  const h = heldHandoff()
+  const handoff = notify({ ...card('member'), onHeld: h.onHeld })
+  assert.equal(await h.wait(handoff), 'held')
+  const free = heldHandoff()
+  runs.noteStop()
+  await handoff
+  assert.equal(await free.wait(notify({ ...card('after'), onHeld: free.onHeld })), 'done')
+})
+
+test('N2: a card passed over by one granted wake goes out before the next granted wake opens a run', async () => {
+  const { runs, sent, notify, card, clock } = rig()
+  await notify(card(`A ${tag(TOKEN)}`, grantAt(clock.now(), wakeMeta(41))))
+  runs.noteBegin(tag(TOKEN))
+  const member = notify(card('member'))
+  const wakeB = notify(card(`B ${tag(OTHER_TOKEN)}`, grantAt(clock.now(), wakeMeta(42))))
+  await flush()
+  runs.noteStop() // A ends: B goes first (F5), the member card is passed over once.
+  await wakeB
+  await flush()
+  assert.equal(runs.live()!.taskId, 42)
+  assert.equal(sent.includes('member'), false)
+  const THIRD = '77777777-2222-4333-8444-555555555555'
+  const wakeC = notify(card(`C ${tag(THIRD)}`, grantAt(clock.now(), wakeMeta(43))))
+  runs.noteBegin(tag(OTHER_TOKEN))
+  runs.noteStop() // B ends: the member card waited through a whole run, so it goes before C.
+  await Promise.race([member, new Promise((resolve) => setTimeout(resolve, 200))])
+  await flush()
+  assert.ok(sent.indexOf('member') >= 0, 'the member card went out')
+  assert.ok(sent.indexOf('member') < sent.indexOf(`C ${tag(THIRD)}`) || !sent.includes(`C ${tag(THIRD)}`), 'before the next granted wake')
+  void wakeC
 })
 
 test('a newer granted wake never supersedes a live run: it waits, then opens its own run', async () => {
@@ -322,9 +375,11 @@ test('server: the real channelNotify hands a granted wake\'s grant to the hold, 
   assert.equal(runs.live()?.fireId, grant!.fireId, 'the wake opened its run')
   assert.deepEqual(sent, [`wake ${tag(TOKEN)}`])
   const built: string[] = []
-  const held = channelNotify(() => { built.push('member'); return { content: 'member' } })
+  let told = 0
+  const held = channelNotify(() => { built.push('member'); return { content: 'member' } }, { onHeld: () => { told += 1 } })
   await flush()
   assert.deepEqual(built, [], 'a card sent through the real channelNotify waits unbuilt')
+  assert.equal(told, 1, 'and the real channelNotify hands the hold its onHeld, so the lane goes on (round 5, N1)')
   runs.end('turn ended')
   await held
   assert.deepEqual(sent, [`wake ${tag(TOKEN)}`, 'member'])
