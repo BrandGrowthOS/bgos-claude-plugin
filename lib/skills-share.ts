@@ -76,15 +76,17 @@ import {
   agentParentsSafe,
   computerRoots,
   displayPath,
-  identOf,
   inside,
   listedNameOf,
+  markOf,
   nameKey,
   overlaps,
   realOrNull,
   removeAgentSkill,
   repoLevels,
+  sameMark,
   wouldBeUnder,
+  type IdentFs,
 } from './skills-inventory.ts'
 
 /** Why a file the walk found stays behind, beyond the rules' own reasons. */
@@ -296,6 +298,8 @@ export type ExportSkillInput = {
   managedDir: string
   payload: Record<string, unknown>
   log?: (msg: string) => void
+  /** The stat calls the folder checks make; a test hands in its own. Default: the real file system. */
+  fs?: IdentFs
 }
 
 /**
@@ -361,7 +365,7 @@ export function exportSkill(input: ExportSkillInput): ExportAnswer {
       return fail('unavailable', 'this agent was started without its launch folder, so it has no agent skills')
     }
     root = join(resolve(input.agentDir), '.claude', 'skills')
-    if (existsSync(root) && foreign.some((f) => overlaps(root, f))) {
+    if (existsSync(root) && foreign.some((f) => overlaps(root, f, input.fs))) {
       return fail('scope_refused', 'the skills folder of this agent is the computer skills folder')
     }
   } else {
@@ -452,6 +456,8 @@ export type InstallBundleInput = {
   /** The final move; renameSync unless a test stands in for it. */
   rename?: (from: string, to: string) => void
   log?: (msg: string) => void
+  /** The stat calls the folder checks make; a test hands in its own. Default: the real file system. */
+  fs?: IdentFs
 }
 
 type BundleFile = { path: string; sha256: string; content: string }
@@ -569,16 +575,16 @@ export async function installBundle(input: InstallBundleInput): Promise<InstallA
   const agentSkills = join(claudeDir, 'skills')
   const foreign = computerRoots(input.configDir, home, input.managedDir)
   const sharedRoots = [...foreign, ...repoLevels(agentDir).map((l) => join(l, '.claude', 'skills'))]
-  if (sharedRoots.some((r) => wouldBeUnder(agentSkills, r) || (existsSync(r) && existsSync(agentSkills) && overlaps(agentSkills, r)))) {
+  if (sharedRoots.some((r) => wouldBeUnder(agentSkills, r, input.fs) || (existsSync(r) && existsSync(agentSkills) && overlaps(agentSkills, r, input.fs)))) {
     return fail('scope_refused', 'the skills folder of this agent is a shared skills folder')
   }
   if (!ensureRealDir(claudeDir) || !ensureRealDir(agentSkills) || !agentParentsSafe(agentDir)) {
     return fail('scope_refused', 'the skills folder of this agent is a link, so nothing is written in it')
   }
-  if (sharedRoots.some((r) => existsSync(r) && overlaps(agentSkills, r))) {
+  if (sharedRoots.some((r) => existsSync(r) && overlaps(agentSkills, r, input.fs))) {
     return fail('scope_refused', 'the skills folder of this agent is a shared skills folder')
   }
-  const skillsId = identOf(agentSkills, false)
+  const skillsMark = markOf(agentSkills, input.fs)
   const dest = join(agentSkills, name)
   const shown = displayPath(dest, home)
 
@@ -639,6 +645,7 @@ export async function installBundle(input: InstallBundleInput): Promise<InstallA
       now: input.now,
       payload: { scope: 'agent', name: old, path: join(agentSkills, old) },
       log,
+      ...(input.fs ? { fs: input.fs } : {}),
     })
     if (!removed.ok) {
       putBack()
@@ -649,7 +656,7 @@ export async function installBundle(input: InstallBundleInput): Promise<InstallA
   }
 
   // ── Into place ──
-  if (!agentParentsSafe(agentDir) || identOf(agentSkills, false) !== skillsId) {
+  if (!agentParentsSafe(agentDir) || !sameMark(markOf(agentSkills, input.fs), skillsMark)) {
     putBack()
     removeTemp(temp, log)
     return fail('scope_refused', 'the skills folder of this agent changed while installing, so nothing was written')
