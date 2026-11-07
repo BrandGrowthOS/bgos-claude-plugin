@@ -323,3 +323,20 @@ test('review 7: a stamped tap the POLL finds goes to the group lane like a strea
   const stream = server.slice(server.indexOf('function routeGroupStreamTap('), server.indexOf('\n}\n', server.indexOf('function routeGroupStreamTap(')))
   assert.match(stream, /key: groupTapKey\(/, 'the stream uses the same key, so a tap seen on both runs once')
 })
+
+test('held messages: groupThread.heldMessages is read as earlier messages, oldest first; a bad entry is skipped; none is none', () => {
+  const base = { chatId: '123', key: '9', messageId: 9, text: 'now' }
+  const held = [
+    { messageId: 7, senderName: 'Ana', text: 'one', sentAt: '2026-01-01T22:00:00Z' },
+    { messageId: 'x', senderName: 'Bad', text: 'skipped', sentAt: '' },
+    { messageId: 8, senderName: null, text: 'two', sentAt: '2026-01-01T22:30:00Z' },
+    { messageId: 6, senderName: 'Ben', text: 5, sentAt: '' },
+  ]
+  const d = readGroupDelivery([{ ...stamped, groupThread: { ...stamped.groupThread, heldMessages: held } }], base)
+  assert.deepEqual(d.earlier, [
+    { messageId: 7, sender: 'Ana', text: 'one', sentAt: '2026-01-01T22:00:00Z' },
+    { messageId: 8, sender: null, text: 'two', sentAt: '2026-01-01T22:30:00Z' },
+  ])
+  assert.deepEqual(readGroupDelivery([stamped], base).earlier, [])
+  assert.deepEqual(readGroupDelivery([{ ...stamped, groupThread: { ...stamped.groupThread, heldMessages: 'nope' } }], base).earlier, [])
+})

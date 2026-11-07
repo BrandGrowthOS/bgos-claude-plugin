@@ -18,7 +18,7 @@
  * Erasable TypeScript only.
  */
 
-import { statedGroupLevel, groupStampChatId, type GroupBacklogLine, type GroupRosterEntry } from './group-lane-args.ts'
+import { statedGroupLevel, groupStampChatId, type GroupBacklogLine, type GroupEarlierMessage, type GroupRosterEntry } from './group-lane-args.ts'
 import { readLaneStamp } from './lane-core.mjs'
 import { isSessionId } from './thread-lane-args.ts'
 import type { GroupDelivery } from './group-lanes.ts'
@@ -132,10 +132,32 @@ export function readGroupDelivery(
     state: state === 'live' || state === 'paused' ? state : 'new',
     frame: strOrNull(block.frame),
     idlePauseMinutes: typeof block.idlePauseMinutes === 'number' ? block.idlePauseMinutes : null,
+    earlier: readHeldMessages(block.heldMessages),
     roster: ctx.roster,
     agents: ctx.agents,
     backlog: ctx.backlog,
   }
+}
+
+/**
+ * `groupThread.heldMessages`: group messages the agent was asked during the
+ * owner's quiet hours and never received as turns, oldest first (the server
+ * caps them at 30 messages and 8,000 characters, and omits the field when
+ * there are none). Read as earlier messages of the turn; an entry without a
+ * numeric id or a text is skipped.
+ */
+export function readHeldMessages(raw: unknown): GroupEarlierMessage[] {
+  if (!Array.isArray(raw)) return []
+  const out: GroupEarlierMessage[] = []
+  for (const item of raw) {
+    const x = rec(item)
+    if (!x) continue
+    const id = x.messageId
+    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0) continue
+    if (typeof x.text !== 'string') continue
+    out.push({ messageId: id, sender: strOrNull(x.senderName), text: x.text, sentAt: strOrNull(x.sentAt) })
+  }
+  return out
 }
 
 /** The dedupe key of a tap, the same on the stream and the poll, so a tap both carry runs once. */
