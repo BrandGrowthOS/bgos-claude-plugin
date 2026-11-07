@@ -380,6 +380,17 @@ export const MODEL_EFFORT_PICKER_TOKEN = 'model_effort_picker'
  */
 export const THREAD_CAPABILITY_TOKENS: readonly string[] = Object.freeze(['message_threads', 'thread_sessions', 'asides'])
 
+/**
+ * Group threads (the server's group threads contract): this daemon runs each
+ * group the agent sits in as its own paused and resumed lane
+ * (lib/group-lanes.ts) and answers group_thread_end. Declared only where a
+ * thread lane can run (the `threads` condition: a claude binary that passes
+ * the probe, not Windows) and only on a pairing: the server serves group
+ * threads to a pairing alone, and an older daemon never declares it, so it
+ * keeps today's frames.
+ */
+export const GROUP_THREADS_TOKEN = 'group_threads'
+
 /** Declared only while this daemon can type into its own CLI's composer. */
 export const DECLARED_CAPABILITIES_INJECTOR: readonly string[] = Object.freeze([
   'mission_goal_loop',
@@ -433,7 +444,7 @@ export function declaredCapabilities(input: {
   /**
    * Can this host run thread lanes and By the way forks (server.ts
    * threadsDeclared: a claude binary resolves)? Absent reads as no. Never
-   * declared on win32 in phase 1.
+   * declared on win32 in phase 1. Also carries group_threads, on a pairing.
    */
   threads?: boolean
   authMode: 'pairing' | 'apikey'
@@ -452,5 +463,8 @@ export function declaredCapabilities(input: {
       ? [MODEL_EFFORT_PICKER_TOKEN]
       : []),
     ...(input.threads === true && (input.platform ?? process.platform) !== 'win32' ? THREAD_CAPABILITY_TOKENS : []),
+    ...(input.authMode === 'pairing' && input.threads === true && (input.platform ?? process.platform) !== 'win32'
+      ? [GROUP_THREADS_TOKEN]
+      : []),
   ]
 }

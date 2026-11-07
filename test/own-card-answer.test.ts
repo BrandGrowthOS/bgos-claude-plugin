@@ -45,6 +45,8 @@ function rig(read: (path: string, opts: unknown) => Promise<unknown>, post = asy
     recentButtonPrompts: prompts,
     updateDrainMode: false, lockHeld: true, humanMessageEdits: { isChatDeleted: () => flags.deleted },
     ownerLaneVerdict, ownerAnnounceRefused, lanesOnForThisAgent: false,
+    // No group lanes here: no tap is a group's.
+    routeGroupStreamTap: () => false,
     chatOwnership: { isOthers: () => flags.others }, noteLaneMisroute: (...args: unknown[]) => refused.push(args),
     log: (line: string) => logs.push(line),
     resolvePermissionClick: () => ({ kind: 'not_permission' }), pendingPermissions: new Map(),
