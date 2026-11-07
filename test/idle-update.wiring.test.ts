@@ -365,13 +365,15 @@ test('the proof reads nothing outside the moments it can mean something, and dro
 test('the nightly update, a click\'s drain and the watcher wait for thread work too: an update must not stop a thread turn or a fork', () => {
   const at = server.indexOf('function restartDrainSnapshot() {')
   assert.ok(at >= 0, 'restartDrainSnapshot is gone')
-  assert.match(server.slice(at, server.indexOf('\n}\n', at)), /activeOperations: snapshot\.activeOperations \+ liveThreadWork\(threadLanes, asideForks\)/)
+  assert.match(server.slice(at, server.indexOf('\n}\n', at)), /activeOperations: snapshot\.activeOperations \+ liveThreadWork\(laneWork, asideForks\)/)
   assert.equal(server.split('drainSnapshot: restartDrainSnapshot,').length - 1, 2, 'the clicked update and the self updater')
-  assert.match(server, /activeOperations: messageActivity\.activeOperations,\n[\s\S]{0,240}threadWork: liveThreadWork\(threadLanes, asideForks\),/, 'the agent state the watcher reads')
+  assert.match(server, /activeOperations: messageActivity\.activeOperations,\n[\s\S]{0,240}threadWork: liveThreadWork\(laneWork, asideForks\),/, 'the agent state the watcher reads')
+  // The group lanes' turns count as thread work too (lib/group-lanes.ts).
+  assert.match(server, /const laneWork = \{ activeWork: \(\) => threadLanes\.activeWork\(\) \+ groupLanes\.activeWork\(\) \}/)
 })
 
 test('the controller is given the real thread work, and a voice_rpc frame starts none once drained', () => {
-  assert.match(block(), /threadWork: \(\) => liveThreadWork\(threadLanes, asideForks\),/)
+  assert.match(block(), /threadWork: \(\) => liveThreadWork\(laneWork, asideForks\),/)
   const at = server.indexOf("realtimeSocket.on('voice_rpc', whenArmed('voice_rpc'")
   assert.ok(at >= 0)
   assert.match(server.slice(at, at + 120), /\n\s*if \(updateDrainMode\) return\n/)

@@ -144,9 +144,10 @@ test('a daemon shutdown stops every lane and By the way fork with a bounded wait
   const shutdown = block('const shutdown = (cause: ShutdownCause | string, code: number): void => {', "process.on('exit', () => {")
   assert.match(shutdown, /const threadChildrenDown = stopThreadChildren\(\)\n\s*if \(threadChildrenDown\) \{\n\s*void threadChildrenDown\.then\(\(\) => \{\n\s*browserHost\?\.stop\(\)\n\s*process\.exit\(code\)/)
   const stop = block('function stopThreadChildren(): Promise<void> | null {', '\n}\n')
-  assert.match(stop, /if \(threadLanes\.liveChildren\(\) === 0 && asideForks\.size\(\) === 0\) return null/)
-  assert.match(stop, /Promise\.allSettled\(\[threadLanes\.stopAll\(\), asideForks\.stopAll\(\)\]\)/)
-  assert.match(stop, /threadLanes\.killAll\(\)\n\s*asideForks\.killAll\(\)/)
+  // Group lanes (lib/group-lanes.ts) stop with them.
+  assert.match(stop, /if \(threadLanes\.liveChildren\(\) === 0 && groupLanes\.liveChildren\(\) === 0 && asideForks\.size\(\) === 0\) return null/)
+  assert.match(stop, /Promise\.allSettled\(\[threadLanes\.stopAll\(\), groupLanes\.stopAll\(\), asideForks\.stopAll\(\)\]\)/)
+  assert.match(stop, /threadLanes\.killAll\(\)\n\s*groupLanes\.killAll\(\)\n\s*asideForks\.killAll\(\)/)
   assert.match(server, /const THREAD_CHILDREN_STOP_WAIT_MS = 3_000/)
   const onExit = block("process.on('exit', () => {", '\n  })\n')
   assert.match(onExit, /threadLanes\.stopAll\(\)/)

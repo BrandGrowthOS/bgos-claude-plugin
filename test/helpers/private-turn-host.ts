@@ -244,7 +244,8 @@ export function agentHost(t: any) {
   let life = daemon()
   const notify = (content: string, meta: Record<string, string>): string => {
     const mcp = { notification: (notification: any) => String(notification.params.content) }
-    const notification = new Function('mcp', 'privateTurns', notificationJs)(mcp, life.tracker)
+    // No group lane here: group threads' step (summaries, lane verdicts) passes every card through.
+    const notification = new Function('mcp', 'privateTurns', 'groupNotificationStep', notificationJs)(mcp, life.tracker, () => null)
     return notification({ method: 'notifications/claude/channel', params: { content, meta } })
   }
   const payloadOf = (event: string, extra: Record<string, unknown> = {}) =>
