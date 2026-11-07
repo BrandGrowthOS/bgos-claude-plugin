@@ -64,6 +64,7 @@ import {
   groupLaneArgs,
   groupIdlePauseMs,
   groupLaunchLevel,
+  inertTurn,
   groupLevel,
   groupSeedBrief,
   stricterLevel,
@@ -626,7 +627,8 @@ export class GroupLaneManager {
     // left out of the earlier messages.
     const shown = seed || (d.serverFramed === true && framedCarriesBacklog(d.text))
     const turn: GroupDelivery = shown ? { ...d, earlier: withoutBacklogRepeats(d.earlier ?? [], d.backlog) } : d
-    const prompt = seed ? groupSeedBrief({ ...turn, level: lane.level }) : groupTurnText(turn)
+    // Member text is never read by the CLI as a command or a file (round 5, A): inertTurn is the last step.
+    const prompt = inertTurn(seed ? groupSeedBrief({ ...turn, level: lane.level }) : groupTurnText(turn))
     const sessionId = lane.st.sessionId!
     lane.st.started = true
     if (d.messageId !== null) {
