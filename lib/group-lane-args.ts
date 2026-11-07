@@ -122,19 +122,25 @@ function requireAbsolute(path: unknown, what: string): string {
 
 /** The lane's own settings for its level (passed as `--settings <json>`). */
 export function groupLaneSettings(level: GroupLevel, agentFolder: string, platform: NodeJS.Platform = process.platform): Record<string, unknown> {
-  if (level === 'full') {
-    // The owner's own settings apply, as in their own chat. Only Remote
-    // Control is kept off: a lane left alone would open one on their account.
-    return { remoteControlAtStartup: false }
-  }
   if (level === 'talk') {
     return { remoteControlAtStartup: false, hooks: threadLaneHooks() }
   }
   const folder = requireAbsolute(agentFolder, 'the agent folder')
+  // The agent folder's .hoai/ holds the owner's thread worktrees (their
+  // private work) and, from older versions, other groups' folders: never
+  // read from a group, whatever else allows it (deny beats allow).
+  const hoai = `Read(${permissionRulePath(folder, platform)}/.hoai/**)`
+  if (level === 'full') {
+    // The owner's own settings apply, as in their own chat, plus the .hoai
+    // deny. Remote Control is kept off: a lane left alone would open one on
+    // their account.
+    return { permissions: { deny: [hoai] }, remoteControlAtStartup: false }
+  }
   return {
-    // The owner's files may be read (spec 3); everything else asks the owner.
+    // The owner's files may be read (spec 3), but not .hoai/; everything else asks the owner.
     permissions: {
       allow: [`Read(${permissionRulePath(folder, platform)}/**)`],
+      deny: [hoai],
       additionalDirectories: [folder],
     },
     remoteControlAtStartup: false,

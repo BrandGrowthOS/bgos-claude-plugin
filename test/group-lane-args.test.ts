@@ -61,14 +61,14 @@ test('approvals: the owner\'s settings off, the CLI\'s full default tools (Bash 
   assert.ok(!args.includes('--restricted'), 'restricted would take Bash away, so a shell request could never reach the card')
   const settings = JSON.parse(after(args, '--settings')!)
   assert.deepEqual(settings.permissions.allow, ['Read(//work/atlas/**)'], 'reads of the agent folder only; nothing that changes is allowed ahead')
-  assert.equal(settings.permissions.deny, undefined, 'no tool is denied ahead: each changing use asks the owner')
+  assert.deepEqual(settings.permissions.deny, ['Read(//work/atlas/.hoai/**)'], 'no tool is denied ahead (each changing use asks the owner); only reads of .hoai are')
   assert.equal(settings.remoteControlAtStartup, false)
 })
 
 test('full: the owner\'s own settings and default tools, mode default, every prompt to the owner\'s own chat handling', () => {
   assert.deepEqual(groupLaneArgs({ ...base, resume: false, level: 'full' }), [
     ...HEAD, '--permission-mode', 'default', '--permission-prompt-tool', 'stdio',
-    '--settings', JSON.stringify({ remoteControlAtStartup: false }), ...MCP_TAIL,
+    '--settings', JSON.stringify(groupLaneSettings('full', '/work/atlas', 'linux')), ...MCP_TAIL,
   ])
 })
 
@@ -136,5 +136,18 @@ test('HOAI_GROUP_LANE_IDLE_MS is read only as a positive whole number of ms, and
   assert.equal(groupIdleOverrideMs(' 1500 '), 1500)
   for (const raw of [undefined, '', '0', '-5', '1.5', '1e4', 'abc', '60s', '99999999999', '007']) {
     assert.equal(groupIdleOverrideMs(raw), null, String(raw))
+  }
+})
+
+test('review 1: approvals and full deny reads of the agent folder\'s .hoai (other groups, the owner\'s thread worktrees)', () => {
+  const approvals = groupLaneSettings('approvals', '/work/atlas', 'linux') as { permissions: { allow: string[]; deny?: string[] } }
+  assert.deepEqual(approvals.permissions.deny, ['Read(//work/atlas/.hoai/**)'])
+  assert.deepEqual(approvals.permissions.allow, ['Read(//work/atlas/**)'], 'the owner\'s other files stay readable (spec 3); deny beats allow')
+  const full = groupLaneSettings('full', '/work/atlas', 'linux') as { permissions?: { deny?: string[] }; remoteControlAtStartup: boolean }
+  assert.deepEqual(full.permissions?.deny, ['Read(//work/atlas/.hoai/**)'])
+  assert.equal(full.remoteControlAtStartup, false)
+  for (const level of ['approvals', 'full'] as const) {
+    const args = groupLaneArgs({ ...base, resume: false, level })
+    assert.deepEqual(JSON.parse(after(args, '--settings')!).permissions.deny, ['Read(//work/atlas/.hoai/**)'], level)
   }
 })

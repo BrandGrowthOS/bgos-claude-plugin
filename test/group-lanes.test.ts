@@ -176,7 +176,7 @@ test('the first start is a FRESH session seeded with the group brief: no fork, n
   assert.ok(!args.includes('--fork-session'))
   assert.ok(!args.includes('--resume'))
   assert.ok(!args.includes(MAIN), 'the owner\'s main session is never named')
-  assert.equal(cwd, join(AGENT, '.hoai', 'groups', '123'))
+  assert.equal(cwd, join(STATE, '123'))
   assert.deepEqual(r.spawned[0]!.env, { HOAI_GROUP_LANE: '123' }, 'the private turn hook knows a group lane by it')
   const seed = child.messages()[0]!
   for (const part of ['Launch team', 'Keep answers short.', 'Ana asked for the venue', 'Ben: the venue is ready', 'Ana (owner)', '@Atlas what time is the launch?']) {
@@ -326,7 +326,7 @@ test('at most 3 live group lanes: a 4th wake pauses the longest idle one (summar
   oldest.exit()
   await settle()
   assert.equal(r.spawned.length, 4)
-  assert.equal(r.spawned[3]!.cwd, join(AGENT, '.hoai', 'groups', '104'))
+  assert.equal(r.spawned[3]!.cwd, join(STATE, '104'))
   const paused = r.posts.find((p) => p.state === 'paused')!
   assert.equal(paused.chatId, 101)
   assert.deepEqual(paused.needsYou, [])
@@ -640,4 +640,14 @@ test('review 8: two groups that deliver the same key both run: the dedupe is per
   assert.equal(r.lanes.deliver(delivery({ chatId: '302', key: '700', messageId: 700 })), true)
   await settle()
   assert.deepEqual(r.spawned.map((s) => s.cwd.split(/[\\/]/).at(-1)), ['301', '302'])
+})
+
+test('review 1: a group lane works OUTSIDE the agent folder, beside its lane state, so no group folder is under the owner\'s files', async () => {
+  const r = rig()
+  r.lanes.deliver(delivery())
+  await settle()
+  const cwd = r.spawned[0]!.cwd
+  assert.equal(cwd, join(STATE, '123'))
+  const inside = (dir: string, root: string) => dir === root || dir.startsWith(root + '/') || dir.startsWith(root + '\\')
+  assert.equal(inside(cwd, AGENT), false, 'not under the agent folder')
 })

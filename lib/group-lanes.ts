@@ -7,8 +7,10 @@
  *
  *  - Key: `group:<chatId>`, the lane stamp the server puts on every delivery
  *    of that group's messages to this agent. One manager serves one agent.
- *  - Folder: `.hoai/groups/<chatId>` in the agent folder, a plain folder
- *    (`.hoai/` is excluded through `.git/info/exclude`, as for threads).
+ *  - Folder: `<stateDir>/<chatId>`, beside the lane's state and OUTSIDE the
+ *    agent folder, so a lane that may read the owner's files never finds
+ *    another group's folder or the owner's thread worktrees among them (and
+ *    the settings deny reads of the agent folder's `.hoai/` besides).
  *  - Session: FRESH on the first start (`--session-id <new uuid>`, never a
  *    fork, never the main session), seeded with a group brief built from the
  *    delivery (title, the owner's note, the last pause summary, roster,
@@ -47,7 +49,7 @@
  * with fakes (test/group-lanes.test.ts). Erasable TypeScript only.
  */
 
-import { dirname, join, resolve } from 'node:path'
+import { join } from 'node:path'
 
 import {
   clipGroupReply,
@@ -166,7 +168,6 @@ export interface GroupLaneDeps {
   /** Where lane state files live, ~/.bgos-agent/<assistantId>/groups. */
   stateDir: string
   emptyMcpConfigPath(): string
-  git?(args: string[], cwd: string): Promise<{ ok: boolean; stdout: string }>
   fs: GroupLaneFs
   /** POST to BGOS (the state route). Throws an error carrying `status` on a refusal. */
   post(path: string, body: Record<string, unknown>): Promise<unknown>
@@ -801,7 +802,7 @@ export class GroupLaneManager {
     const { pid, pidStamp } = st
     if (pid === null) return true
     const procs = this.deps.processes
-    const cwd = join(this.deps.agentFolder, '.hoai', 'groups', st.chatId)
+    const cwd = this.laneFolder(st.chatId)
     if (pidStamp === null && (await procs.runsIn(pid, cwd)) !== false) {
       this.deps.log(`groups: group ${st.chatId} has an unverified process that may still use its folder; waiting for it to exit`)
       return false
@@ -877,35 +878,19 @@ export class GroupLaneManager {
     lane.idleTimer = null
   }
 
-  private async prepareFolder(chatId: string): Promise<string> {
-    const { fs, agentFolder } = this.deps
-    const folder = join(agentFolder, '.hoai', 'groups', chatId)
-    if (!fs.exists(folder)) fs.mkdir(folder)
-    await this.ensureExcluded()
-    return folder
+  /**
+   * The lane's own folder: beside its state, OUTSIDE the agent folder, so no
+   * group's files sit among the owner's (which a lane may read) and no lane
+   * can read another group's folder or the owner's thread worktrees there.
+   */
+  private laneFolder(chatId: string): string {
+    return join(this.deps.stateDir, chatId)
   }
 
-  private excluded = false
-
-  /** `.hoai/` in .git/info/exclude (local, untracked), added once. */
-  private async ensureExcluded(): Promise<void> {
-    const { fs, git, agentFolder } = this.deps
-    if (this.excluded || !git) return
-    this.excluded = true
-    const found = await git(['-C', agentFolder, 'rev-parse', '--git-path', 'info/exclude'], agentFolder)
-    if (!found.ok || found.stdout.trim() === '') return
-    const path = resolve(agentFolder, found.stdout.trim())
-    let current = ''
-    try {
-      current = fs.readFile(path)
-    } catch {}
-    if (current.split(/\r?\n/).some((line) => ['.hoai/', '/.hoai/', '.hoai'].includes(line.trim()))) return
-    try {
-      fs.mkdir(dirname(path))
-      fs.appendFile(path, `${current !== '' && !current.endsWith('\n') ? '\n' : ''}.hoai/\n`)
-    } catch (err) {
-      this.deps.log(`groups: could not exclude .hoai/ locally (${err instanceof Error ? err.name : 'error'})`)
-    }
+  private async prepareFolder(chatId: string): Promise<string> {
+    const folder = this.laneFolder(chatId)
+    if (!this.deps.fs.exists(folder)) this.deps.fs.mkdir(folder)
+    return folder
   }
 
   /**

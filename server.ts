@@ -15154,14 +15154,6 @@ const groupLanes = new GroupLaneManager({
   },
   stateDir: GROUPS_STATE_DIR,
   emptyMcpConfigPath: threadsEmptyMcpConfig,
-  git: async (args, cwd) => {
-    try {
-      const { stdout } = await execFileAsync('git', args, { cwd, timeout: 60_000, maxBuffer: 1024 * 1024 })
-      return { ok: true, stdout: String(stdout) }
-    } catch {
-      return { ok: false, stdout: '' }
-    }
-  },
   fs: {
     exists: (path) => existsSync(path),
     mkdir: (path) => { mkdirSync(path, { recursive: true }) },
