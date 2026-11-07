@@ -640,6 +640,79 @@ test('the folder guard on Windows: the built in Administrator reads back as LA, 
   const strange = new KeptFolderGuard({ ...guard, dir: guard.dir, platform: 'win32', env: { SystemRoot: 'C:\\Windows' }, home: 'C:\\Users\\runneradmin', run: (guard as any).run, fsImpl: (guard as any).fs })
   assert.equal(await strange.prepare(), false)
   assert.equal(strange.reason, 'not_owner_only')
+  assert.match((strange.detail ?? ''), /an entry this guard cannot name \(XY\)/, (strange.detail ?? ''))
+})
+
+/** A Windows guard whose icacls answers from `acl`: the SDDL read back, and what /remove:g does. */
+function windowsGuardOver(acl: { sddl: string; remove: (sids: string[]) => void }, sid = 'S-1-5-21-1-2-3-1001') {
+  const files = new Map<string, Buffer>()
+  const logs: string[] = []
+  const guard = new KeptFolderGuard({
+    dir: 'D:\\Agents\\.bgos-agent\\900\\browser-downloads',
+    platform: 'win32',
+    env: { SystemRoot: 'C:\\Windows' },
+    home: 'C:\\Users\\someone',
+    log: (line: string) => logs.push(line),
+    run: async (file: string, args: string[]) => {
+      if (/whoami/i.test(file)) return { stdout: `"host\\\\someone","${sid}"\r\n` }
+      if (/reg\.exe/i.test(file)) throw new Error('value not found')
+      if (args.includes('/save')) files.set(args[2]!, Buffer.from(`\uFEFFbrowser-downloads\r\n${acl.sddl}\r\n`, 'utf16le'))
+      const at = args.indexOf('/remove:g')
+      if (at >= 0) acl.remove(args.slice(at + 1).map((a) => a.replace(/^\*/, '')))
+      return { stdout: '' }
+    },
+    fsImpl: {
+      mkdirSync: () => {},
+      lstatSync: () => ({ isDirectory: () => true, isSymbolicLink: () => false, dev: 1, ino: 2 }),
+      realpathSync: { native: (p: string) => p },
+      readFileSync: (p: string) => files.get(p)!,
+      unlinkSync: () => {},
+    } as any,
+  })
+  return { guard, logs }
+}
+
+test('the folder guard on Windows: an unnamed (orphan) account it cannot remove is refused, and the refusal says so plainly', async () => {
+  // A SID whose account is gone (a deleted user, an earlier Windows): icacls
+  // cannot look it up and fails with 1332 (ERROR_NONE_MAPPED). Seen on a PC
+  // whose temp drive carried such an entry.
+  const orphan = 'S-1-5-21-9-8-7-1005'
+  const acl = {
+    sddl: `D:PAI(A;OICI;FA;;;S-1-5-21-1-2-3-1001)(A;OICI;FA;;;${orphan})(A;OICI;FA;;;SY)`,
+    remove(sids: string[]) {
+      if (sids.includes(orphan)) throw Object.assign(new Error('Command failed: icacls.exe\r\nNo mapping between account names and security IDs was done.'), { code: 1332 })
+      for (const s of sids) this.sddl = this.sddl.replace(`(A;OICI;FA;;;${s === 'S-1-5-18' ? 'SY' : s})`, '')
+    },
+  }
+  const { guard, logs } = windowsGuardOver(acl)
+  assert.equal(await guard.prepare(), false)
+  assert.equal(guard.reason, 'not_owner_only', 'refused as not owner only, not as a broken machine')
+  assert.match((guard.detail ?? ''), new RegExp(`an unnamed account \\(${orphan}\\)`), (guard.detail ?? ''))
+  assert.match((guard.detail ?? ''), /Windows has no name for it/, (guard.detail ?? ''))
+  assert.doesNotMatch((guard.detail ?? ''), /SYSTEM/, `SYSTEM was removed, so it is not named: ${(guard.detail ?? '')}`)
+  assert.ok(logs.some((l) => l.includes('not_owner_only') && l.includes(orphan)), `the log names the account: ${logs.join(' | ')}`)
+})
+
+test('the folder guard on Windows: an entry still there after removal (not owner only on read back) names each account kind', async () => {
+  const acl = {
+    sddl: 'D:PAI(A;OICI;FA;;;S-1-5-21-1-2-3-1001)(A;OICI;FA;;;S-1-5-21-1-2-3-1002)(A;OICI;0x1200a9;;;BU)',
+    remove() {}, // icacls answers 0 and leaves them
+  }
+  const { guard } = windowsGuardOver(acl)
+  assert.equal(await guard.prepare(), false)
+  assert.equal(guard.reason, 'not_owner_only')
+  assert.match((guard.detail ?? ''), /another user account \(S-1-5-21-1-2-3-1002\)/, (guard.detail ?? ''))
+  assert.match((guard.detail ?? ''), /the Users group/, (guard.detail ?? ''))
+  // A deny entry is never removed or guessed at: refused, and named.
+  const denied = { sddl: 'D:PAI(D;OICI;FA;;;WD)(A;OICI;FA;;;S-1-5-21-1-2-3-1001)', remove() {} }
+  const second = windowsGuardOver(denied).guard
+  assert.equal(await second.prepare(), false)
+  assert.equal(second.reason, 'not_owner_only')
+  assert.match((second.detail ?? ''), /a deny entry for Everyone/, (second.detail ?? ''))
+  // An owner only folder carries no detail.
+  const fine = windowsGuardOver({ sddl: 'D:PAI(A;OICI;FA;;;S-1-5-21-1-2-3-1001)', remove() {} }).guard
+  assert.equal(await fine.prepare(), true, `${fine.reason} ${fine.detail}`)
+  assert.equal(fine.detail, null)
 })
 
 test('the folder guard on the REAL file system makes a folder owner only even when it starts with explicit entries for others', { skip: process.platform !== 'win32' ? 'Windows only' : false }, async () => {
