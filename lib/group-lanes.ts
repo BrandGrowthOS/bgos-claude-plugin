@@ -188,6 +188,8 @@ export interface GroupLaneDeps {
   laneRoot(): string
   /** Where a lane below Full may never reach (lib/group-lane-args.ts GroupLaneFence), less the lane's own folder. */
   fence(): GroupFenceBase | Promise<GroupFenceBase>
+  /** TEST ONLY: the turn text builder (groupSeedBrief or groupTurnText by default); inertTurn still runs after it. */
+  turnText?(d: GroupDelivery, seed: boolean, level: GroupLevel): string
   /**
    * HOAI_GROUP_LEVELS (lib/group-lane-args.ts groupLevelsEnabled): only then
    * does a stated level other than talk take effect. Absent or false, every
@@ -635,8 +637,10 @@ export class GroupLaneManager {
     // left out of the earlier messages.
     const shown = seed || (d.serverFramed === true && framedCarriesBacklog(d.text))
     const turn: GroupDelivery = shown ? { ...d, earlier: withoutBacklogRepeats(d.earlier ?? [], d.backlog) } : d
-    // Member text is never read by the CLI as a command or a file (round 5, A): inertTurn is the last step.
-    const prompt = inertTurn(seed ? groupSeedBrief({ ...turn, level: lane.level }) : groupTurnText(turn))
+    // Member text is never read by the CLI as a command, a file or an effort
+    // keyword (round 5, A; round 6): inertTurn is the last step, whatever the builder returned.
+    const built = this.deps.turnText ? this.deps.turnText(turn, seed, lane.level) : seed ? groupSeedBrief({ ...turn, level: lane.level }) : groupTurnText(turn)
+    const prompt = inertTurn(built)
     const sessionId = lane.st.sessionId!
     lane.st.started = true
     if (d.messageId !== null) {
