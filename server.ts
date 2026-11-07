@@ -5912,7 +5912,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             description:
               'Wakes only. The boards each run needs, as [{ board_id, access }] ' +
               '(board_id from boards_list, access read or write, default read). ' +
-              'Each run then keeps those board actions for up to two hours even ' +
+              'Each run then keeps those board actions for up to twenty minutes even ' +
               'when other people post meanwhile (their messages wait until the ' +
               'run ends), as the person scheduling and on those boards only. What ' +
               'a run produces goes only to that person\'s private chat with you.',
@@ -10857,8 +10857,12 @@ mcp.notification = ((notification: Parameters<typeof mcp.notification>[0]) => {
 }) as typeof mcp.notification
 // The scheduled run hold (lib/schedule-grant-run.mjs, 0.86.20): while a granted run is live every channel card but the
 // run's own wake waits, and each card is BUILT here, after this hold and the lock below, so a held card never reaches
-// the private turn tracker. Inside the lock, outside the raw card record.
-mcp.notification = holdChannelCardsDuringGrantedRun(scheduleGrantRuns, mcp.notification.bind(mcp), { log }) as typeof mcp.notification
+// the private turn tracker. Inside the lock, outside the raw card record. A released card goes back through the whole
+// chain (resend), so it waits for the lock again and the lock stamps when it really went out.
+mcp.notification = holdChannelCardsDuringGrantedRun(scheduleGrantRuns, mcp.notification.bind(mcp), {
+  log,
+  resend: (notification: Parameters<typeof mcp.notification>[0]) => mcp.notification(notification),
+}) as typeof mcp.notification
 // OUTERMOST, so the private turn record above runs when a held card really
 // goes out: the model and effort control's lock over every card that can open
 // a turn (lib/model-effort-control.ts holdChannelCardsWhileBusy, round 3 review

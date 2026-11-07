@@ -12,6 +12,7 @@ import {
   scheduleGrantOf,
 } from '../lib/schedule-grant-run.mjs'
 import { PRIVATE_TURN_REFUSAL } from '../lib/private-turn.mjs'
+import { holdChannelCardsWhileBusy } from '../lib/model-effort-control.ts'
 import { buildScheduleCreateBody } from '../lib/schedule.js'
 
 // A scheduled run keeps the permission of the person who scheduled it (0.86.20, round 3): one choke point holds every
@@ -78,43 +79,79 @@ test('a granted wake carries a grant; anything else does not', () => {
   assert.equal(scheduleGrantOf({ senderType: 'system', eventMeta: wakeMeta(), actingUserId: null, chatId: 1, now: FIRED }), null)
 })
 
-test('a payload never makes the window longer than two hours after the fire, and an ended window grants nothing', () => {
+test('a payload never makes the window longer than twenty minutes after the fire, and an ended window grants nothing', () => {
+  // Round 4 (Data's rule 3): the run is capped at twenty minutes, on the server's clock and here.
+  assert.equal(SCHEDULE_GRANT_MAX_MS, 20 * 60 * 1000)
   const long = grantAt(FIRED, wakeMeta(41, { boardGrant: { boards: 1, expiresAt: new Date(FIRED + 10 * SCHEDULE_GRANT_MAX_MS).toISOString() } }))
   assert.equal(long!.expiresAtMs, FIRED + SCHEDULE_GRANT_MAX_MS)
   assert.equal(grantAt(FIRED + SCHEDULE_GRANT_MAX_MS), null)
 })
 
-// One test per kind of card: while the run is live it waits, and is not even BUILT (so the private turn tracker never
-// sees it and cannot revoke the run's turn). It goes out once the run's turn ends.
-const LANES = [
-  'a group member\'s message',
-  'a group member\'s edit of an old message',
-  'a button tap or a Custom reply by someone else',
-  'an ask answer',
-  'a meeting line',
-  'a meeting invitation with the room\'s history',
-  'a peer agent\'s message',
-  'an email from outside',
-  'a voice task dispatch',
-  'a daemon notice (reply reminder, liveness probe)',
-  'the scheduler\'s own new message',
-]
-for (const lane of LANES) {
-  test(`hold: ${lane} mid run waits, unbuilt, until the run's turn ends`, async () => {
-    const { runs, sent, notify, card, clock } = rig()
-    await notify(card(`wake ${tag(TOKEN)}`, grantAt(clock.now())))
-    runs.noteBegin(`the wake ${tag(TOKEN)}`)
-    const built: string[] = []
-    const held = notify(card(lane, undefined, built))
-    await flush()
-    assert.deepEqual(built, [], 'not built while held')
-    assert.deepEqual(sent, [`wake ${tag(TOKEN)}`])
-    runs.noteStop()
-    await held
-    assert.deepEqual(built, [lane])
-    assert.deepEqual(sent, [`wake ${tag(TOKEN)}`, lane])
-  })
-}
+// The lib hold: while the run is live any card waits and is not even BUILT (so the private turn tracker never sees it
+// and cannot revoke the run's turn). It goes out once the run's turn ends. The real lanes of server.ts are driven
+// under a live run in test/external-email-label.test.ts and test/message-edits.test.ts (round 4, F4).
+test('hold: a card mid run waits, unbuilt, until the run\'s turn ends', async () => {
+  const { runs, sent, notify, card, clock } = rig()
+  await notify(card(`wake ${tag(TOKEN)}`, grantAt(clock.now())))
+  runs.noteBegin(`the wake ${tag(TOKEN)}`)
+  const built: string[] = []
+  const held = notify(card('a group member\'s message', undefined, built))
+  await flush()
+  assert.deepEqual(built, [], 'not built while held')
+  assert.deepEqual(sent, [`wake ${tag(TOKEN)}`])
+  runs.noteStop()
+  await held
+  assert.deepEqual(built, ['a group member\'s message'])
+  assert.deepEqual(sent, [`wake ${tag(TOKEN)}`, 'a group member\'s message'])
+})
+
+test('F2: a card released at the run\'s end goes through the model and effort lock again, stamped when it really goes out', async () => {
+  const clock = fakeClock()
+  const runs = createScheduleGrantRuns(clock)
+  const sent: string[] = []
+  const stamps: string[] = []
+  let busy = false
+  let idle: () => void = () => {}
+  const lock = { get busy() { return busy }, whenIdle: () => new Promise<void>((resolve) => { idle = resolve }) }
+  // The production order: the grant hold inside, the lock outermost, and a release resends through the whole chain.
+  let chain: (n: any) => Promise<unknown> = async () => undefined
+  const inner = holdChannelCardsDuringGrantedRun(runs, async (n: { params: { content: string } }) => { sent.push(n.params.content) }, { resend: (n: unknown) => chain(n) })
+  chain = holdChannelCardsWhileBusy(lock, inner, () => { stamps.push(`stamp ${sent.length}`) })
+  const card = (content: string, scheduleGrant?: unknown) => ({ method: 'notifications/claude/channel', params: () => ({ content }), ...(scheduleGrant ? { scheduleGrant } : {}) })
+  await chain(card(`wake ${tag(TOKEN)}`, grantAt(clock.now())))
+  runs.noteBegin(tag(TOKEN))
+  const held = chain(card('a group member\'s message'))
+  await flush()
+  stamps.length = 0
+  // The owner opens the model picker just as the run ends: the released card must wait for the lock.
+  busy = true
+  runs.noteStop()
+  await flush()
+  assert.deepEqual(sent, [`wake ${tag(TOKEN)}`], 'a released card never goes out while the lock is busy')
+  busy = false
+  idle()
+  await held
+  assert.deepEqual(sent, [`wake ${tag(TOKEN)}`, 'a group member\'s message'])
+  assert.deepEqual(stamps, ['stamp 1'], 'the lock stamped the card when it really went out, after the release')
+})
+
+test('F5: a newer granted wake held behind other cards is released first, alone, and the rest wait for its run', async () => {
+  const { runs, sent, notify, card, clock } = rig()
+  await notify(card(`first ${tag(TOKEN)}`, grantAt(clock.now(), wakeMeta(41))))
+  runs.noteBegin(tag(TOKEN))
+  const message = notify(card('a group member\'s message'))
+  const wake = notify(card(`second ${tag(OTHER_TOKEN)}`, grantAt(clock.now(), wakeMeta(42))))
+  await flush()
+  runs.noteStop()
+  await wake
+  await flush()
+  assert.deepEqual(sent, [`first ${tag(TOKEN)}`, `second ${tag(OTHER_TOKEN)}`], 'the newer wake goes out first and alone')
+  assert.equal(runs.live()!.taskId, 42)
+  runs.noteBegin(tag(OTHER_TOKEN))
+  runs.noteStop()
+  await message
+  assert.deepEqual(sent.at(-1), 'a group member\'s message')
+})
 
 test('a newer granted wake never supersedes a live run: it waits, then opens its own run', async () => {
   const { runs, sent, notify, card, clock, ended } = rig()
@@ -270,6 +307,57 @@ test('server: every channel card goes through the one choke point, built when se
   const holdAt = chain.indexOf('holdChannelCardsDuringGrantedRun(scheduleGrantRuns,')
   const effortAt = chain.indexOf('holdChannelCardsWhileBusy(modelEffortControl,')
   assert.ok(rawAt > 0 && holdAt > rawAt && effortAt > holdAt, 'raw card < grant hold < effort lock')
+  // A released card goes back through the whole chain (F2).
+  assert.match(chain, /resend: \(notification: [^)]*\) => mcp\.notification\(notification\)/)
+})
+
+test('server: the real channelNotify hands a granted wake\'s grant to the hold, so the wake opens its run (F4 A)', async () => {
+  const { runs } = rig()
+  const fn = source.slice(source.indexOf('function channelNotify('), source.indexOf('\n}\n', source.indexOf('function channelNotify(')) + 3)
+  const sent: string[] = []
+  const mcp = { notification: holdChannelCardsDuringGrantedRun(runs, async (n: { params: { content: string } }) => { sent.push(n.params.content) }) }
+  const channelNotify = execute(fn + '\nreturn channelNotify;', { mcp })
+  const grant = grantAt(FIRED + 60_000)
+  await channelNotify(() => ({ content: `wake ${tag(TOKEN)}` }), { scheduleGrant: grant })
+  assert.equal(runs.live()?.fireId, grant!.fireId, 'the wake opened its run')
+  assert.deepEqual(sent, [`wake ${tag(TOKEN)}`])
+  const built: string[] = []
+  const held = channelNotify(() => { built.push('member'); return { content: 'member' } })
+  await flush()
+  assert.deepEqual(built, [], 'a card sent through the real channelNotify waits unbuilt')
+  runs.end('turn ended')
+  await held
+  assert.deepEqual(sent, [`wake ${tag(TOKEN)}`, 'member'])
+})
+
+test('server: every private turn tracker call of a card is inside that card\'s channelNotify builder (F4 B)', () => {
+  // A deliver or noteUntracked made before the card is handed to channelNotify runs while the card waits, and a held
+  // card would then revoke the run's turn. Read from the syntax tree, whatever the formatting.
+  const file = ts.createSourceFile('server.ts', source, ts.ScriptTarget.ES2022, true)
+  const sites: string[] = []
+  const outside: string[] = []
+  const insideBuilder = (node: ts.Node): boolean => {
+    for (let at: ts.Node | undefined = node.parent; at; at = at.parent) {
+      if (ts.isArrowFunction(at) || ts.isFunctionExpression(at)) {
+        const call = at.parent
+        if (call && ts.isCallExpression(call) && call.arguments[0] === at && ts.isIdentifier(call.expression) && call.expression.text === 'channelNotify') return true
+      }
+      if (ts.isFunctionDeclaration(at) || ts.isMethodDeclaration(at)) return false
+    }
+    return false
+  }
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && ts.isIdentifier(node.expression.expression)
+      && node.expression.expression.text === 'privateTurns' && ['deliver', 'noteUntracked'].includes(node.expression.name.text)) {
+      const line = file.getLineAndCharacterOfPosition(node.getStart()).line + 1
+      sites.push(String(line))
+      if (!insideBuilder(node)) outside.push(`server.ts:${line} ${node.expression.name.text}`)
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(file)
+  assert.ok(sites.length >= 10, `found ${sites.length} tracker calls`)
+  assert.deepEqual(outside, [], 'every tracker call of a card runs inside its builder')
 })
 
 test('server: the three message lanes name the wake\'s grant, and the CLI turn boundaries drive the run', () => {

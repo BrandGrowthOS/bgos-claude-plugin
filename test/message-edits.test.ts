@@ -1,7 +1,8 @@
 /** Runs the production socket registration, stream apply and poll functions.
  * Restoring ID-only dedup on either lane must drop the second notification.
  */
-import { channelNotifyFor } from './helpers/channel-notify.ts'
+import { channelNotifyFor, scheduleGrantRunsForTest } from './helpers/channel-notify.ts'
+import { scheduleGrantOf } from '../lib/schedule-grant-run.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -739,6 +740,41 @@ test('meeting edits retain the untracked private-tool boundary of their original
   assertEdit(h, 'corrected meeting words')
   assert.equal(privateDeliveries, 0, 'an edit must not upgrade a meeting into a private owner turn')
   assert.equal(untracked, 2)
+})
+
+test('scheduled run, the real edit lane: a meeting edit mid run records nothing in the tracker until the run ends (round 4, F4)', async () => {
+  // forwardHumanEdit, the real code: its untracked tag is taken inside the card's builder, so while a granted run holds
+  // the card it never reaches the private turn tracker (a tag taken while the card waits would revoke the run's turn).
+  const h = harness()
+  const context = { chatId: Number(CHAT), participants: [], currentSpeakerId: Number(ASSISTANT_ID), lastSeenMessageId: 0 }
+  ;(h.scope.meetingIdByChatId as Map<string, number>).set(CHAT, 5)
+  ;(h.scope.meetingContexts as Map<number, unknown>).set(5, context)
+  let untracked = 0
+  h.scope.privateTurns = { deliver: (d: any) => d.content, noteUntracked: () => { untracked++; return '[untracked meeting]' } }
+  h.setRows([row('meeting words')])
+  await h.poll()
+  const before = { untracked, cards: h.run.notifications.length }
+  const runs = scheduleGrantRunsForTest()
+  try {
+    const firedAt = Date.now()
+    const fireId = `scheduled-wake:41:${new Date(firedAt).toISOString()}`
+    const grant = scheduleGrantOf({ senderType: 'system', actingUserId: OWNER, chatId: CHAT, eventMeta: { source: 'scheduler', payload: { scheduledTaskId: 41, fireId, actingUserId: OWNER, boardGrant: { boards: 1, expiresAt: new Date(firedAt + 600_000).toISOString() } } } })
+    const token = '11111111-2222-4333-8444-555555555555'
+    assert.ok(runs.open(grant))
+    runs.noteDelivered(fireId, `<hoai-private-turn id="${token}"/>`)
+    runs.noteBegin(`<hoai-private-turn id="${token}"/>`)
+    const edited = h.edit('corrected meeting words')
+    for (let i = 0; i < 20; i += 1) await Promise.resolve()
+    assert.equal(untracked, before.untracked, 'a held edit took no untracked tag')
+    assert.equal(h.run.notifications.length, before.cards, 'and reached no model')
+    runs.noteStop()
+    await edited
+    assert.equal(untracked, before.untracked + 1)
+    assertEdit(h, 'corrected meeting words')
+  } finally {
+    runs.end('test over')
+    scheduleGrantRunsForTest()
+  }
 })
 
 test('review R1: a replayed unversioned B cannot roll C back or cause a restoring poll card', async () => {
