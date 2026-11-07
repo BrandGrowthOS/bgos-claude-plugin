@@ -359,6 +359,13 @@ export class GroupLaneManager {
     // the stricter of this and the level the process started with.
     // A delivery that states no level keeps the lane's (talk for a new lane): review finding 5.
     if (d.level !== null) lane.level = groupLevel(d.level)
+    // Lowered below the running process (finding C): its turn stops NOW, so
+    // nothing the CLI would allow by itself keeps running under the old
+    // level; the queued turn then resumes the session under the new one.
+    if (lane.child && !lane.stopping && lane.level !== lane.childLevel && stricterLevel(lane.level, lane.childLevel) === lane.level) {
+      this.deps.log(`groups: group ${lane.chatId} level lowered to ${lane.level}, its running turn is stopped`)
+      this.stopChild(lane)
+    }
     if (d.sessionHandle) lane.sessionHandle = d.sessionHandle
     void this.enqueue(lane, () => this.runTurn(lane, d))
   }

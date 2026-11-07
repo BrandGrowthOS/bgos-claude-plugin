@@ -878,3 +878,30 @@ test('boundary: a lane folder that cannot be made private starts nothing (fail c
   assert.equal(r.spawned.length, 0)
   assert.equal(r.lanes.slotsUsed(), 0)
 })
+
+test('finding C: a level lowered below the running process stops its turn at once, and the queued turn resumes under the new level', async () => {
+  const r = rig()
+  r.lanes.deliver(delivery({ level: 'full' }))
+  await settle()
+  const first = r.spawned[0]!
+  r.lanes.deliver(delivery({ messageId: 502, key: '502', level: 'talk', state: 'live', sessionId: IDS[0] }))
+  await settle()
+  assert.deepEqual(first.child.killed, ['SIGTERM'], 'stopped at once, not after its turn')
+  first.child.exit()
+  await settle()
+  const next = r.spawned[1]!
+  assert.equal(valueAfter(next.args, '--resume'), IDS[0], 'the same session')
+  assert.equal(valueAfter(next.args, '--tools'), '')
+  assert.ok(next.child.messages()[0]!.includes('@Atlas what time is the launch?'), 'the queued turn runs under the new level')
+})
+
+test('finding C: a level raised, or kept, never stops the running turn', async () => {
+  for (const [from, to] of [['approvals', 'full'], ['approvals', 'approvals'], ['talk', 'approvals']] as const) {
+    const r = rig()
+    r.lanes.deliver(delivery({ level: from }))
+    await settle()
+    r.lanes.deliver(delivery({ messageId: 502, key: '502', level: to }))
+    await settle()
+    assert.deepEqual(r.spawned[0]!.child.killed, [], `${from} to ${to}`)
+  }
+})
