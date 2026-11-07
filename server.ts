@@ -15253,7 +15253,7 @@ const laneWork = { activeWork: () => threadLanes.activeWork() + groupLanes.activ
  */
 function routeGroupDelivery(
   records: unknown[],
-  input: { key: string; messageId: unknown; text: string; sender?: string | null; sessionHandle?: unknown },
+  input: { key: string; messageId: unknown; text: string; sender?: string | null; sessionHandle?: unknown; serverFramed?: boolean },
   transport: string,
 ): boolean {
   const chatId = groupRouteOf(records, groupLanesOn())
@@ -15274,6 +15274,8 @@ function routeGroupSocketInbound(payload: any): boolean {
     messageId,
     text: String(payload?.text ?? ''),
     sessionHandle: payload?.sessionHandle ?? payload?.session_handle,
+    // The socket carries the server's framed text (finding E: never decided from the text).
+    serverFramed: true,
   }, 'socket')
 }
 function routeGroupPollRow(msg: ChatMessage, backlog: GroupDelivery[] | null): boolean {
@@ -15299,7 +15301,8 @@ function flushGroupPollBacklog(rows: GroupDelivery[]): void {
   if (taken) log(`groups: ${rows.length} poll backlog row(s) handed to the lane of group ${rows[0]!.chatId} as one turn`)
 }
 function routeGroupStreamView(view: StreamMessageView, transport: string): boolean {
-  return routeGroupDelivery([view.raw], { key: String(view.messageId), messageId: view.messageId, text: view.text, sessionHandle: view.sessionHandle }, transport)
+  // The update stream carries the server's framed text; a polled room row through this path does not.
+  return routeGroupDelivery([view.raw], { key: String(view.messageId), messageId: view.messageId, text: view.text, sessionHandle: view.sessionHandle, serverFramed: transport === 'stream' }, transport)
 }
 /**
  * The taps a poll read found (review finding 7): one stamped for a group

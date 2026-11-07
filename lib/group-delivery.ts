@@ -110,7 +110,7 @@ function readGroupContext(records: readonly unknown[]): {
  */
 export function readGroupDelivery(
   records: readonly unknown[],
-  input: { chatId: string; key: string; messageId: unknown; text: string; sender?: string | null; sessionHandle?: unknown },
+  input: { chatId: string; key: string; messageId: unknown; text: string; sender?: string | null; sessionHandle?: unknown; serverFramed?: boolean },
 ): GroupDelivery {
   const found = stampedRecord(records)
   const block = rec(found?.record.groupThread ?? found?.record.group_thread) ?? {}
@@ -133,6 +133,7 @@ export function readGroupDelivery(
     frame: strOrNull(block.frame),
     idlePauseMinutes: typeof block.idlePauseMinutes === 'number' ? block.idlePauseMinutes : null,
     earlier: readHeldMessages(block.heldMessages),
+    serverFramed: input.serverFramed === true,
     roster: ctx.roster,
     agents: ctx.agents,
     backlog: ctx.backlog,

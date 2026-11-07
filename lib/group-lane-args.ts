@@ -341,6 +341,8 @@ export interface GroupBriefInput {
   agents: string[]
   backlog: GroupBacklogLine[]
   earlier?: readonly GroupEarlierMessage[]
+  /** The transport delivered the server's own framed text (the socket, the stream); never decided from the text. */
+  serverFramed?: boolean
 }
 
 function clip(text: string, max: number): string {
@@ -389,9 +391,11 @@ export function withoutBacklogRepeats(earlier: readonly GroupEarlierMessage[], b
 }
 
 /** The turn text of a delivery: earlier messages as data, the server's frame, if any, then the message. */
-export function groupTurnText(input: { frame: string | null; text: string; sender: string | null; earlier?: readonly GroupEarlierMessage[] }): string {
+export function groupTurnText(input: { frame: string | null; text: string; sender: string | null; earlier?: readonly GroupEarlierMessage[]; serverFramed?: boolean }): string {
   const body = clip(input.text, GROUP_MESSAGE_MAX_CHARS)
-  const framed = body.trimStart().startsWith('[')
+  // Framed only when the TRANSPORT says the server framed it (finding E): a
+  // member's own text that looks like a frame is still the member's.
+  const framed = input.serverFramed === true && body.trimStart().startsWith('[')
   const parts: string[] = []
   const earlier = groupEarlierBlock(input.earlier)
   if (earlier) parts.push(earlier)
@@ -423,7 +427,7 @@ export function groupSeedBrief(input: GroupBriefInput): string {
   let note = input.note && input.note.trim() ? `Your owner's note for this group: ${input.note.trim()}` : ''
   let summary = input.summary && input.summary.trim() ? `Where this group thread left off:\n${input.summary.trim()}` : ''
   // The server's framed message already carries these lines: never twice.
-  const backlog = framedCarriesBacklog(input.text) ? [] : input.backlog.map((m) => `  ${oneLine(m.sender) || 'Someone'}: ${oneLine(m.text)}`)
+  const backlog = input.serverFramed === true && framedCarriesBacklog(input.text) ? [] : input.backlog.map((m) => `  ${oneLine(m.sender) || 'Someone'}: ${oneLine(m.text)}`)
   const assemble = (): string => {
     const parts = [head]
     if (note) parts.push(note)

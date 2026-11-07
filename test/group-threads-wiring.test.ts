@@ -347,3 +347,13 @@ test('finding D: a main chat known to be someone else\'s never takes the summari
   assert.equal(isOwnerCard({ chat_id: '10', user_id: 'user_owner' }, ctx), true)
   assert.equal(isOwnerCard({ chat_id: '11', user_id: 'user_owner' }, ctx), false)
 })
+
+test('finding E: the socket and the stream say the server framed the text; the poll never does', () => {
+  const socket = server.slice(server.indexOf('function routeGroupSocketInbound('), server.indexOf('\n}\n', server.indexOf('function routeGroupSocketInbound(')))
+  assert.match(socket, /serverFramed: true,/)
+  const stream = server.slice(server.indexOf('function routeGroupStreamView('), server.indexOf('\n}\n', server.indexOf('function routeGroupStreamView(')))
+  assert.match(stream, /serverFramed: transport === 'stream'/)
+  const poll = server.slice(server.indexOf('function routeGroupPollRow('), server.indexOf('\n}\n', server.indexOf('function routeGroupPollRow(')))
+  assert.doesNotMatch(poll, /serverFramed/)
+  assert.equal(readGroupDelivery([stamped], { chatId: '123', key: '1', messageId: 1, text: '[BGOS x]' }).serverFramed, false, 'absent reads as not framed')
+})

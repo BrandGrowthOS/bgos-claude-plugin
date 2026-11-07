@@ -135,6 +135,8 @@ export interface GroupDelivery {
   backlog: GroupBacklogLine[]
   /** Group messages the lane never had as turns, oldest first (shown before the message as data). */
   earlier?: GroupEarlierMessage[]
+  /** The transport delivered the server's own framed text (the socket, the stream): finding E. */
+  serverFramed?: boolean
 }
 
 export interface GroupApproval {
@@ -567,7 +569,7 @@ export class GroupLaneManager {
     // Each group message once per turn: a held or backlog row the turn already
     // shows (the seed's recent messages, or the server's framed backlog) is
     // left out of the earlier messages.
-    const shown = seed || framedCarriesBacklog(d.text)
+    const shown = seed || (d.serverFramed === true && framedCarriesBacklog(d.text))
     const turn: GroupDelivery = shown ? { ...d, earlier: withoutBacklogRepeats(d.earlier ?? [], d.backlog) } : d
     const prompt = seed ? groupSeedBrief({ ...turn, level: lane.level }) : groupTurnText(turn)
     const sessionId = lane.st.sessionId!
