@@ -1,11 +1,21 @@
 {
   "version": 1,
-  "sourceCommit": "6dc212c22f9a62490b3307f9ee2cb832f92033a7",
-  "why": "Byte-identical encrypted checkpoint, lossless storage, portable state and resume readiness, cookie codecs, typed runtime endpoint, signed stopped-head lineage, separate permissioned file crypto/client/private materialization and encrypted local journal shared with HOAI. Explicit fixed-principal active backup transport, scheduler, readonly capture and seal/journal workers are included as pure main-only dependencies; they provide no activation authority. NativeRuntime exports are pure until its injected Electron constructor runs. The pairing adapter shares pure endpoint and document validation and never instantiates or inherits the desktop Bearer client. ProfileFileClient fixes its principal explicitly; paired use obtains only fresh pairing proof. Electron OS folder policy and native dialogs are intentionally excluded.",
+  "sourceCommit": "a2eb30b1e89a2c6a8a7578ecb145d54c2061d9be",
+  "why": "Pinned encrypted checkpoint, lossless storage, portable state and resume readiness, cookie codecs, typed runtime endpoint, signed stopped-head lineage, separate permissioned file crypto/client/private materialization and encrypted local journal shared with HOAI. Explicit fixed-principal active backup transport, scheduler, readonly capture and seal/journal workers are included as pure main-only dependencies; they provide no activation authority. NativeRuntime exports are pure until its injected Electron constructor runs. The pairing adapter shares pure endpoint and document validation and never instantiates or inherits the desktop Bearer client. ProfileFileClient fixes its principal explicitly; paired use obtains only fresh pairing proof. Electron OS folder policy and native dialogs are intentionally excluded. Public copies remove only personal attribution in comments; upstreamSha256 pins the original committed bytes when they differ, and sha256 pins the shipped bytes.",
   "files": {
+    "sign-in-copy.js": {
+      "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/sign-in-copy.js",
+      "sha256": "f888f3d3d8049b3d3432165c75fd12f3e9519463c67afa78bc568c2932bf7035",
+      "upstreamSha256": "5bb200f6d0cc4082d10dbcf8a30d8651964fb1a4e576f8af4073dcab922833e8"
+    },
+    "sign-in-copy-client.js": {
+      "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/sign-in-copy-client.js",
+      "sha256": "3d1713c64da4dab3c32b15bae99a51425e933c581e3cff2f088b1cfaf7e83d6e"
+    },
     "crypto.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/crypto.js",
-      "sha256": "5c11e3361bbb62be9a8aca69f92e88d38b343a1e642ea604b46fa6f2a6d5945e"
+      "sha256": "5a8b148225626e0a69d2fef666e54ef6066aa78c9b2b14376d4f10f68dc083a0",
+      "upstreamSha256": "abc82c87c974e83db3932ac05d1e05affee1379c59ab77d36d5ed49a1fe56cd0"
     },
     "storage.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/storage.js",
@@ -25,11 +35,11 @@
     },
     "native-runtime.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/native-runtime.js",
-      "sha256": "97bfe89abb752aec51b4f083851140da4eaf7de6c0786398a0dc4e0241864d8f"
+      "sha256": "4c7f0de2c3b529c6dda22e907f2a7708902951dfbf4878b3a5466e6fed70ed65"
     },
     "coordinator-client.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/coordinator-client.js",
-      "sha256": "b0ea86161533843dd1e5fa9e4fe4ec06d21de1bd6300e4c8c416dad64a1fd911"
+      "sha256": "5afdd41cdb398812437f9abb259316f7c57aeea66b33ee58bb71f7407fb53a92"
     },
     "runtime-endpoint.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/runtime-endpoint.js",
@@ -37,11 +47,11 @@
     },
     "stopped-head-stage.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/stopped-head-stage.js",
-      "sha256": "4b350549a4e99d4ef5d8d939ab43e4e9d712c294d9b43329a5364fbf32751eac"
+      "sha256": "17611aaab1f61a9d46d418b7c2bb074050a0bfcbfcef494b0d22b37081224de0"
     },
     "checkpoint-store.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/checkpoint-store.js",
-      "sha256": "a0ca3ffb3bd8d030bdd1225882a96d1d6801da84534d5190928cf5f71f91a1ac"
+      "sha256": "ced69edbe63875d615620b3fbad9b0de5458f060701f9531ad1e804f3e1c7520"
     },
     "runtime-status-client.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/runtime-status-client.js",
@@ -69,23 +79,23 @@
     },
     "active-backup-client.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/active-backup-client.js",
-      "sha256": "f6ef0a300dd39ccb929621150c8411381c2fe2ce2d3ed38c036f37e0aaa97f61"
+      "sha256": "f2d0bf25d22c48317bae1e7f71f7362d72a1fb24272d5fa9a9c6ae71ab4791bd"
     },
     "active-backup-scheduler.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/active-backup-scheduler.js",
-      "sha256": "d50d4932e109f4357cdb7bc6048c9006c9b586140d7e3565e7186bb0ffcdddd9"
+      "sha256": "324da144ff1f134b55a74a61a236bf4a880da113274bc894468c5af8696b9661"
     },
     "active-backup-wire.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/active-backup-wire.js",
-      "sha256": "8ddde4d3e4bf58d6a4dbdf25dbfd32f2c4238dfaaf5c958a46d8240a53f42ce0"
+      "sha256": "e1bb9d2b421c9623b246d1cfc34572ca0e9078478837b7a1013b905dadb55b6f"
     },
     "active-backup-crypto.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/active-backup-crypto.js",
-      "sha256": "f5f1d965d5b18f6ca26304b7aecb236c604a857052f24b835a5d08b158857a45"
+      "sha256": "854ac6bb068da9dc480f48c0888d0f2ce7ca4d7c1210c5f8477d06b160adaeac"
     },
     "live-backup-input.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/live-backup-input.js",
-      "sha256": "aa3c3459293cc866066e1938c6f0b101e507ab822266905fb45d448b69e02284"
+      "sha256": "e8e9952c15e007fbe2316db49692f3b47905791dc6d540a368f85464c8ffb5b2"
     },
     "live-backup-capture.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/live-backup-capture.js",

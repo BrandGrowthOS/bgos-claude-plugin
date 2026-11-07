@@ -612,8 +612,12 @@ export type LoginEvent =
 
 export type LoginEffect =
   | { kind: 'offer'; chatId: string }
-  /** `canCancel`: the asker started the running sign-in, or is the owner. */
-  | { kind: 'busy'; chatId: string; phase: LoginPhase; canCancel: boolean }
+  /**
+   * `canCancel`: the asker started the running sign-in, or is the owner.
+   * `canPick`: the asker started it, in that chat, and it still waits for the
+   * method, so they can pick it by typing.
+   */
+  | { kind: 'busy'; chatId: string; phase: LoginPhase; canCancel: boolean; canPick: boolean }
   | { kind: 'spawn'; attempt: number; method: LoginMethod }
   | { kind: 'send_url'; chatId: string; url: string }
   | { kind: 'write_code'; attempt: number; code: string }
@@ -682,7 +686,14 @@ export function reduceLogin(state: LoginState, event: LoginEvent): LoginTransiti
         // Never rebinds the running sign-in. Whether the asker may stop it
         // decides only what the busy reply suggests.
         const canCancel = event.byOwner || event.starterUserId === state.starterUserId
-        return stay([{ kind: 'busy', chatId: event.chatId, phase: state.phase, canCancel }])
+        // Still waiting on the method, asked by whoever started it in the chat
+        // the card went to: command() takes a typed method from them, which
+        // needs no card at all.
+        const canPick =
+          state.phase === 'awaiting_method' &&
+          event.starterUserId === state.starterUserId &&
+          event.chatId === state.chatId
+        return stay([{ kind: 'busy', chatId: event.chatId, phase: state.phase, canCancel, canPick }])
       }
       return {
         state: {
@@ -867,6 +878,11 @@ export class LoginController {
   private offerSeq = 0
 
   constructor(private readonly deps: LoginDeps) {}
+
+  /** Identifies the current method offer, including while its status read is pending. */
+  get methodOfferVersion(): number {
+    return this.offerSeq
+  }
 
   get phase(): LoginPhase {
     return this.state.phase
@@ -1199,11 +1215,14 @@ export class LoginController {
       case 'busy':
         void this.reply(
           effect.chatId,
-          effect.canCancel
-            ? `A sign-in is already running (${describePhase(effect.phase)}). Only one can run at a time. ` +
-                'Send /login cancel to stop it, then /login to start again.'
-            : `A sign-in is already running (${describePhase(effect.phase)}). Only one can run at a time, and ` +
-                "only the person who started it, or this agent's owner, can stop it. Send /login again once it has finished.",
+          effect.canPick
+            ? `A sign-in is already running (${describePhase(effect.phase)}). ` +
+                'Send /login subscription or /login console to pick one now, or /login cancel to stop it.'
+            : effect.canCancel
+              ? `A sign-in is already running (${describePhase(effect.phase)}). Only one can run at a time. ` +
+                  'Send /login cancel to stop it, then /login to start again.'
+              : `A sign-in is already running (${describePhase(effect.phase)}). Only one can run at a time, and ` +
+                  "only the person who started it, or this agent's owner, can stop it. Send /login again once it has finished.",
         )
         return
       case 'spawn':
@@ -1335,6 +1354,7 @@ export class LoginController {
         : 'This agent is not signed in. Pick how to sign in.'
     const text = forOwner ? `${lead}\n\n${consoleNote}` : `${lead}\n\n${RECIPIENT_LOGIN_SCOPE}\n\n${consoleNote}`
     const messageId = await this.reply(chatId, text, LOGIN_METHOD_BUTTONS)
+    if (seq !== this.offerSeq) return
     if (messageId !== null) this.dispatch({ type: 'card_posted', messageId })
   }
 

@@ -144,7 +144,7 @@ function fixture(t: any, { wired = false }: { wired?: boolean } = {}) {
   markFloorAttached({ root, folders: [cwd] })
   const markerPaths = [privateMarkerPath(root, floorKey(cwd))]
   // wired: the tracker as server.ts builds it, told the owner and the markers to read.
-  const tracker = wired ? createPrivateTurnTracker({ ownerUserId: OWNER, markerPaths }) : createPrivateTurnTracker()
+  const tracker = createPrivateTurnTracker({ ownerUserId: OWNER, ...(wired ? { markerPaths } : {}) })
   /** Deliver one turn exactly as the three lanes do. Returns the prompt. */
   const deliver = (turn: TurnShape, content = `turn text for message ${turn.messageId}`) =>
     tracker.deliver({
@@ -2814,7 +2814,7 @@ test('server.ts notes every button tap announced to the session with its tapper 
   // Through privateTapCard since 0.71.3 (4bf28148), which notes a tap with noteTap unless it is the owner's own on the
   // stream, in its window (test/private-turn-owner-tap.test.ts).
   const tagged = SRC.match(/content: privateTapCard\(\{ tracker: privateTurns, lane: '(?:boot|poll|stream)', ownerUserId: USER_ID, chatId: String\(chatId\), [^\n]+, content: contentLines\.join\('\\n'\) \}\),\n/g) ?? []
-  assert.equal(announced.length, 3, 'the boot sweep, the poll and the stream')
+  assert.equal(announced.length, 4, 'the boot sweep, posted-card recovery, the poll and the stream')
   assert.equal(tagged.length, announced.length)
 })
 

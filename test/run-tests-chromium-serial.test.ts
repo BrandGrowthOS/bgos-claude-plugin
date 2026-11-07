@@ -23,11 +23,14 @@ test('real Chromium files leave the parallel pool and run with a concurrency of 
   const groups = testGroups([
     { file: 'test/unit.test.ts', source: "import { test } from 'node:test'" },
     { file: 'test/browser.chromium.test.ts', source: "import { test } from 'node:test'" },
+    { file: 'test/hoai-browser-host.test.ts', source: "import { test } from 'node:test'" },
+    { file: 'test\\hoai-browser-host.test.ts', source: "import { test } from 'node:test'" },
     { file: 'test/bun.test.ts', source: "import { test } from " + "'bun:test'" },
     { file: 'test\\run-tests-timeout.test.ts', source: "import { test } from 'node:test'" },
   ])
   assert.deepEqual(groups.map(({ files }) => files), [
-    ['test/unit.test.ts'], ['test\\run-tests-timeout.test.ts'], ['test/browser.chromium.test.ts'], [], ['test/bun.test.ts'],
+    ['test/unit.test.ts'], ['test\\run-tests-timeout.test.ts'],
+    ['test/browser.chromium.test.ts', 'test/hoai-browser-host.test.ts', 'test\\hoai-browser-host.test.ts'], [], ['test/bun.test.ts'],
   ])
   assert.deepEqual(groups.map(({ concurrency }) => concurrency), [MAX_TEST_WORKERS, 1, 1, 1, MAX_TEST_WORKERS])
   assert.ok(groups[2]!.args.includes('--test-timeout=120000'))

@@ -1,33 +1,7 @@
 /**
- * call_owner, the mission tools and list_chats are TURN AWARE, not turn gated
- * (shared agents Phase 0, items 0.3, 0.4, 0.7, as the delegated review of the
- * branch found, in two rounds).
- *
- * WHY NOT GATED. The owner's own work runs on turns no delivery opened: the
- * native goal lane types `/goal` into the composer and runs every
- * continuation after a Stop has ended the private turn, the mission_started
- * and mission_resumed cards and a button tap reach the session with no
- * delivery token, and a peer agent's message has no person behind it. Gated
- * like boards, a Keep working mission could never tick or complete a goal.
- *
- * WHY THE TRACKER AND NOT THE CHAT. The first fix refused when the turn's
- * chat was a recipient's. A typed `/goal` and a mission card inherit the chat
- * of whatever was delivered last, so a goal run could be refused for good,
- * and a recipient's message injected into a running owner turn left the
- * owner's chat in place and ran as the owner. The private turn tracker knows
- * both facts directly: who the delivery the prompt carried named, and which
- * people's deliveries reached the turn since it began.
- *
- * WHAT THESE TESTS HOLD (lib/private-turn.mjs turnAwarePrivateTurn and the
- * tracker's turnSenders, with the real tracker; and the admission gate in
- * server.ts that uses them):
- *   - a verified turn is used as requirePrivateTurn answers it;
- *   - no verified turn, and the prompt's delivery named someone other than the
- *     owner, or another person's delivery reached the turn: refused;
- *   - otherwise the owner, with no headers, as every such call was on main;
- *   - boards and schedule stay gated exactly as on main.
- *
- * Run with: npx tsx --test test/turn-aware-tools.test.ts
+ * Turn-aware tools use the verified sender and complete turn provenance.
+ * Without a verified turn, another person's content cannot grant owner authority.
+ * The owner's supported continuation policy and gated tool checks remain enforced.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'

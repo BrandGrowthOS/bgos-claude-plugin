@@ -119,6 +119,14 @@ const admissionJs = ts.transpileModule(`${admissionSource}\nreturn { privateCall
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
 }).outputText
 
+// Exercise the production notification boundary with a local transport sink.
+const notificationStart = source.indexOf('const sendMcpNotification = mcp.notification.bind(mcp)')
+const notificationSource = source.slice(notificationStart, source.indexOf('// OUTERMOST', notificationStart))
+assert.ok(notificationStart > 0 && notificationSource.includes('privateTurns.rawCard'), 'the notification boundary was found')
+const notificationJs = ts.transpileModule(`${notificationSource}\nreturn mcp.notification;`, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+}).outputText
+
 /**
  * The clock moves on past this instant, so a marker written before it and a time stamped after it never share one
  * millisecond (end() compares the two; on a real machine a hook's cold start keeps them seconds apart). The FILE clock
@@ -234,6 +242,11 @@ export function agentHost(t: any) {
   }
 
   let life = daemon()
+  const notify = (content: string, meta: Record<string, string>): string => {
+    const mcp = { notification: (notification: any) => String(notification.params.content) }
+    const notification = new Function('mcp', 'privateTurns', notificationJs)(mcp, life.tracker)
+    return notification({ method: 'notifications/claude/channel', params: { content, meta } })
+  }
   const payloadOf = (event: string, extra: Record<string, unknown> = {}) =>
     ({ session_id: session, transcript_path: transcript, cwd: folder, hook_event_name: event, permission_mode: 'bypassPermissions', ...extra })
   /**
@@ -273,7 +286,7 @@ export function agentHost(t: any) {
         fireKey: privateFireKey({ senderType, eventMeta: frame.eventMeta, messageId: frame.messageId }),
         actingUserId: privateActor({ senderType, senderUserId: privateSenderUserId(frame), agentOrigin, eventMeta: frame.eventMeta }),
       })
-      return renderChannel(content, channel.meta)
+      return renderChannel(notify(content, channel.meta), channel.meta)
     },
     /**
      * A channel card server.ts pushes without deliver(): the notification wrapper (server.ts:9150) hands it to rawCard
@@ -281,7 +294,7 @@ export function agentHost(t: any) {
      */
     raw(content: string, meta: Record<string, string> = {}): string {
       // The push is its own moment, as each hook's is (settle): a Stop or prompt after it is later (turnBetween).
-      life.tracker.rawCard(content, meta); settle()
+      content = notify(content, meta); settle()
       return renderChannel(content, meta)
     },
     /** A button tap card, as server.ts's poll and boot sweep announce one with no delivery: noteTap's tag on its end. */
@@ -318,8 +331,8 @@ export function agentHost(t: any) {
         button_text: custom ? 'Custom reply' : opts.text ?? 'Yes, go ahead', ...(custom ? { custom_text: String(opts.customText) } : {}),
         user: 'User', ...(opts.tapperUserId ? { user_id: opts.tapperUserId } : {}), assistant_id: AGENT, ts: new Date().toISOString(),
       }
-      life.tracker.rawCard(card, meta); settle()
-      return renderChannel(card, meta)
+      const sent = notify(card, meta); settle()
+      return renderChannel(sent, meta)
     },
     /** server.ts's peer_conversation_closed card (server.ts:14596): the backend's fixed reason, no peer's words. */
     peerClose(reason = 'completed', conversationId = 4411): string {

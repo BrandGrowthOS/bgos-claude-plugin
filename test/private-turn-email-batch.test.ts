@@ -1,16 +1,7 @@
 /**
- * Release 0.69.0, where #228 (email_send's reason) meets #232 (several admitted prompts for one turn).
- *
- * #228 decides per prompt whether a delivery that cannot send (an email, a peer, a scheduler state report) is in
- * front of the model, and refuses email_send for that turn. #232 measured that deliveries submitted together reach
- * the daemon as SEPARATE prompts of ONE turn (claude 2.1.299: one UserPromptSubmit per delivery, the marker left is
- * the last one's, the forwarder lines in either order), and keeps every prompt of that turn admitted. So a refusal
- * decided for one prompt of the turn must still hold when another prompt of the same turn is admitted after it.
- * And since #232 may adopt the turn on ANY admitted prompt, email_send's look back starts at the earliest admitted
- * prompt, so a delivery between two admitted owner prompts is read (the delegated review's finding: owner A, an
- * email, owner B submitted together, the lines landing email, B, A, sent naming B).
- *
- * Run with: npx tsx --test test/private-turn-email-batch.test.ts
+ * Email admission considers every prompt and delivery in the CLI turn.
+ * A refusal remains in force across admission and hook processing order.
+ * These tests exercise the production tracker and turn admission checks.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -69,7 +60,7 @@ function fixture(t: { after: (fn: () => void) => void }) {
   const env = { ...process.env, BGOS_PLUGIN_STATE_DIR: root, CLAUDE_PROJECT_DIR: cwd }
   markFloorAttached({ root, folders: [cwd] })
   const markerPaths = [privateMarkerPath(root, floorKey(cwd))]
-  const tracker = createPrivateTurnTracker()
+  const tracker = createPrivateTurnTracker({ ownerUserId: OWNER })
   const deliver = (turn: TurnShape): string => tracker.deliver({
     content: `turn text for message ${turn.messageId}`,
     chatId: turn.chatId,

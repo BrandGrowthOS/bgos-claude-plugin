@@ -106,7 +106,7 @@ function setup() {
     { name: 'browser_click', description: '', inputSchema: { type: 'object', properties: { element: { type: 'string' } } } },
     { name: 'browser_snapshot', description: '', inputSchema: { type: 'object', properties: {} } },
   ]
-  const core: any = new BrowserHostCore({ pool, browserTools: tools, deviceLabel: 'box-1', gates, downloadStore: () => store })
+  const core: any = new BrowserHostCore({ pool, browserTools: tools, deviceLabel: 'box-1', gates, downloadStore: () => store, isOwnerPrincipal: () => true })
   const ctx = { assistantId: 900, principal: 'owner', assistantName: 'Data' }
   const call = async (name: string, args: Record<string, unknown> = {}) => {
     const r = await core.callTool(ctx, name, args)

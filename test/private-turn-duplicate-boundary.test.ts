@@ -569,6 +569,9 @@ test('control: a late record of an older submission never displaces the newer tu
   const ownerPromptId = vera.lastPromptId
   vera.pump()
   assert.equal(vera.privateCall()?.actingUserId, OWNER)
+  // A different sender needs a fresh CLI turn, so this control isolates duplicate handling.
+  vera.hook('Stop', { stop_hook_active: false })
+  vera.pump()
   vera.deliver(wakeFrame(vera.chatId, 'user_stranger42'))
   vera.pump()
   assert.equal(vera.privateCall()?.actingUserId, 'user_stranger42')
@@ -590,12 +593,12 @@ test('control: past 64 remembered submissions a late record fails closed', () =>
   }
   const root = mkdtempSync(join(tmpdir(), 'dup-cap-'))
   try {
-    const last = tracker.deliver({ content: 'last', actingUserId: 'user_shared7', chatId: '2' })
+    const last = tracker.deliver({ content: 'last', actingUserId: OWNER, chatId: '1' })
     const lastId = randomUUID()
     tracker.begin({ prompt: last, sessionId: 's', promptId: lastId })
     const markerPath = privateMarkerPath(root, 'k')
     writePrivateJson(markerPath, { schemaVersion: 1, turnId: 't', sessionId: 's', promptHash: privatePromptHash(last), live: true, promptId: lastId })
-    assert.equal(tracker.current({ markerPaths: [markerPath] })?.actingUserId, 'user_shared7')
+    assert.equal(tracker.current({ markerPaths: [markerPath] })?.actingUserId, OWNER)
     // The first submission fell out of the memory: its late record is a new prompt, its token is spent.
     tracker.begin({ ...first, sessionId: 's' })
     assert.equal(tracker.current({ markerPaths: [markerPath] }), null)
@@ -761,7 +764,7 @@ test('a refused call after adoption names the adopted marker and what changed in
     const prompt = tracker.deliver({ content: 'list the boards', actingUserId: OWNER, chatId: '1' })
     const hash = privatePromptHash(prompt)
     const stamp = (p: string, fields: Record<string, unknown>) =>
-      writePrivateJson(p, { schemaVersion: 1, turnId: randomUUID(), sessionId: 's', promptHash: hash, live: true, promptId: 'p1', ...fields })
+      writePrivateJson(p, { schemaVersion: 1, turnId: randomUUID(), sessionId: 's', promptHash: hash, live: true, rawCard: false, promptId: 'p1', ...fields })
     stamp(pA, {})
     tracker.begin({ prompt, sessionId: 's', promptId: 'p1' })
     const adopted = tracker.current({ markerPaths: [pA, pB] })!
