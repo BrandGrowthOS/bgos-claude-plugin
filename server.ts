@@ -2771,12 +2771,13 @@ type ChannelCardParams = { content: string; meta?: unknown } & Record<string, un
  */
 function channelNotify(
   build: () => ChannelCardParams | null,
-  options: { scheduleGrant?: ReturnType<typeof scheduleGrantOf> } = {},
+  options: { scheduleGrant?: ReturnType<typeof scheduleGrantOf>; onHeld?: () => void } = {},
 ): Promise<void> {
   return mcp.notification({
     method: 'notifications/claude/channel',
     params: build,
     ...(options.scheduleGrant ? { scheduleGrant: options.scheduleGrant } : {}),
+    ...(options.onHeld ? { onHeld: options.onHeld } : {}),
   } as unknown as Parameters<typeof mcp.notification>[0])
 }
 
@@ -5915,7 +5916,9 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
               'Each run then keeps those board actions for up to twenty minutes even ' +
               'when other people post meanwhile (their messages wait until the ' +
               'run ends), as the person scheduling and on those boards only. What ' +
-              'a run produces goes only to that person\'s private chat with you.',
+              'a run produces goes only to that person\'s private chat with you. ' +
+              'Takes effect only when the HOAI server has scheduled run grants switched on; ' +
+              'otherwise the boards are ignored and the routine runs as before.',
             items: {
               type: 'object',
               properties: {
@@ -13153,6 +13156,10 @@ async function pollChat(chatId: string): Promise<void> {
       // the run when the card goes out and holds every other card while the run is live.
       const pollActor = privateActor({ senderType: pollSenderType, senderUserId: privateSenderUserId(msg.message), agentOrigin: pollAgentOrigin, eventMeta: msg.message.eventMeta })
       const pollGrant = scheduleGrantOf({ senderType: pollSenderType, eventMeta: msg.message.eventMeta, actingUserId: pollActor, chatId })
+      // A card a granted run holds is told at once (onHeld): the batch, and so the tick with its lock heartbeat and
+      // beacon, goes on, and this chat's cursor waits below the message until the card really goes out (round 5, N1).
+      let pollTellHeld: () => void = () => {}
+      const pollHeldSignal = new Promise<'held'>((resolve) => { pollTellHeld = () => resolve('held') })
       const humanHandoff = trackMessageOperation(() => deliverInbound(steerPlan, (interrupted) => humanMessageEdits.isDeleted({ chatId, messageId: msg.message.id }) ? Promise.resolve() : channelNotify(() => ({
           content: privateTurns.deliver({ content, chatId, peerSourceAssistantId: pollAgentOrigin?.sourceAssistantId, emailBasis: emailSendBasis({ senderType: pollSenderType, agentOrigin: pollAgentOrigin, eventMeta: msg.message.eventMeta, messageId: msg.message.id, backlog: isBacklog }), fireKey: privateFireKey({ senderType: pollSenderType, eventMeta: msg.message.eventMeta, messageId: msg.message.id }), actingUserId: privateActor({ senderType: pollSenderType, senderUserId: privateSenderUserId(msg.message), agentOrigin: pollAgentOrigin, eventMeta: msg.message.eventMeta }) }),
           meta: finalInboundMeta(
@@ -13161,14 +13168,30 @@ async function pollChat(chatId: string): Promise<void> {
             !isSlashCommand && !pollIsEmail ? pollEventMeta : null,
             interrupted ? STEER_INTERRUPTED_META : null,
           ),
-        }), { scheduleGrant: pollGrant })))
+        }), { scheduleGrant: pollGrant, onHeld: () => pollTellHeld() })))
       if (!isSlashCommand) humanMessageEdits.rememberOriginal(
         viewStreamMessage({ seq: 0, kind: 'message_new', chatId: Number(chatId), messageId: msg.message.id, payload: msg as unknown as Record<string, unknown> }, ASSISTANT_ID),
         humanHandoff,
       )
-      await humanHandoff.catch((err) => {
-        log(`Failed to deliver inbound to Claude: ${err}`)
-      })
+      const pollOutcome = await Promise.race([
+        humanHandoff.then(() => 'done' as const, (err) => {
+          log(`Failed to deliver inbound to Claude: ${err}`)
+          return 'done' as const
+        }),
+        pollHeldSignal,
+      ])
+      if (pollOutcome === 'held') {
+        const heldId = Number(msg.message.id)
+        emailCursorHolds.hold(chatId, heldId)
+        const letGo = (delivered: boolean): void => {
+          const catchUp = emailCursorHolds.release(chatId, heldId, delivered)
+          if (catchUp !== null) advanceChatCursor(chatId, catchUp)
+        }
+        humanHandoff.then(() => letGo(true), (err) => {
+          log(`Failed to deliver inbound to Claude: ${err}`)
+          letGo(false)
+        })
+      }
       if (humanMessageEdits.isDeleted({ chatId, messageId: msg.message.id })) continue
       // Skip overdue tracking for backlog messages: they were forwarded
       // because the daemon was offline, not because they're new live
@@ -16707,6 +16730,9 @@ async function forwardStreamInbound(
     try {
       const streamActor = privateActor({ senderType: isSystem ? 'system' : view.senderKind, senderUserId: privateSenderUserId(view.raw), agentOrigin: view.agentOrigin, eventMeta: view.eventMetaRaw })
       const streamGrant = scheduleGrantOf({ senderType: isSystem ? 'system' : view.senderKind, eventMeta: view.eventMetaRaw, actingUserId: streamActor, chatId })
+      // As on the poll (round 5, N1): a card a granted run holds lets the stream go on, its chat's cursor waiting below it.
+      let streamTellHeld: () => void = () => {}
+      const streamHeldSignal = new Promise<'held'>((resolve) => { streamTellHeld = () => resolve('held') })
       const humanHandoff = trackMessageOperation(() =>
         deliverInbound(steerPlan, (interrupted) => humanMessageEdits.isDeleted(view) ? Promise.resolve() : channelNotify(() => ({
             content: privateTurns.deliver({ content, chatId, peerSourceAssistantId: view.agentOrigin?.sourceAssistantId, emailBasis: emailSendBasis({ senderType: isSystem && !streamIsEmail ? 'system' : view.senderKind, agentOrigin: view.agentOrigin, eventMeta: view.eventMetaRaw, messageId: view.messageId, backlog: sentBeforeStart(view.sentDate, DAEMON_START_MS) }), fireKey: privateFireKey({ senderType: isSystem ? 'system' : view.senderKind, eventMeta: view.eventMetaRaw, messageId: view.messageId }), actingUserId: privateActor({ senderType: isSystem ? 'system' : view.senderKind, senderUserId: privateSenderUserId(view.raw), agentOrigin: view.agentOrigin, eventMeta: view.eventMetaRaw }) }),
@@ -16716,10 +16742,24 @@ async function forwardStreamInbound(
               streamEventMeta,
               interrupted ? STEER_INTERRUPTED_META : null,
             ),
-          }), { scheduleGrant: streamGrant })),
+          }), { scheduleGrant: streamGrant, onHeld: () => streamTellHeld() })),
       )
       if (!isSlash) humanMessageEdits.rememberOriginal(view, humanHandoff)
-      await humanHandoff
+      const streamOutcome = await Promise.race([humanHandoff.then(() => 'done' as const), streamHeldSignal])
+      if (streamOutcome === 'held') {
+        const heldId = view.messageId
+        emailCursorHolds.hold(chatId, heldId)
+        const letGo = (delivered: boolean): void => {
+          const catchUp = emailCursorHolds.release(chatId, heldId, delivered)
+          if (catchUp !== null) advanceChatCursor(chatId, catchUp)
+        }
+        humanHandoff.then(() => letGo(true), (err) => {
+          // Never handed over: un-claim it so the next read delivers it, and keep the cursor below it.
+          forwardedMessageIds.delete(heldId)
+          log(`Failed to deliver inbound to Claude: ${err}`)
+          letGo(false)
+        })
+      }
       if (humanMessageEdits.isDeleted(view)) return
     } catch (err) {
       // The handoff did NOT resolve. Un-claim the pre-claimed id: the chain
