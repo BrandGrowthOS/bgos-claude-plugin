@@ -62,7 +62,7 @@ class FakeChild implements StreamJsonChild {
 
 interface Timer { fn: () => void; ms: number; cleared: boolean }
 
-function rig(opts: { maxLive?: number; failPost?: (body: Record<string, unknown>) => unknown; files?: Map<string, string> } = {}) {
+function rig(opts: { maxLive?: number; failPost?: (body: Record<string, unknown>) => unknown; files?: Map<string, string>; idleOverrideMs?: number | null } = {}) {
   const files = opts.files ?? new Map<string, string>()
   const spawned: Array<{ args: string[]; cwd: string; child: FakeChild }> = []
   const posts: Array<Record<string, unknown>> = []
@@ -128,6 +128,7 @@ function rig(opts: { maxLive?: number; failPost?: (body: Record<string, unknown>
     clearTimer: (h) => { (h as Timer).cleared = true },
     log: () => {},
     maxLive: opts.maxLive,
+    idleOverrideMs: opts.idleOverrideMs,
   }
   const lanes = new GroupLaneManager(deps)
   const fire = (ms: number) => {
@@ -155,6 +156,7 @@ function delivery(over: Partial<GroupDelivery> = {}): GroupDelivery {
     sessionId: null,
     state: 'new',
     frame: null,
+    idlePauseMinutes: null,
     roster: [{ name: 'Ana', role: 'owner' }, { name: 'Ben', role: 'member' }],
     agents: [],
     backlog: [{ sender: 'Ben', text: 'the venue is ready' }],
@@ -578,4 +580,52 @@ test('state new drops a session the server had accepted (a 2xx to its live repor
   await settle()
   assert.ok(second.spawned[0]!.args.includes('--session-id'))
   assert.ok(!second.spawned[0]!.args.includes('--resume'))
+})
+
+// -- the owner's "Pause after idle", and the test only override ---------------
+
+/** The idle pause armed once a turn of this delivery has answered. */
+async function armedIdle(r: ReturnType<typeof rig>, over: Partial<GroupDelivery>): Promise<number[]> {
+  r.lanes.deliver(delivery(over))
+  await settle()
+  r.spawned.at(-1)!.child.result('ok')
+  await settle()
+  return r.timers.filter((t) => !t.cleared && t.ms >= 60_000 && t.ms !== 45 * 60_000).map((t) => t.ms)
+}
+
+test('each group pauses after its own idle time: 15, 30 or 60 minutes, anything else 30', async () => {
+  for (const [minutes, ms] of [[15, 15 * 60_000], [30, 30 * 60_000], [60, 60 * 60_000], [45, 30 * 60_000], [0, 30 * 60_000], [null, 30 * 60_000]] as const) {
+    const r = rig()
+    assert.deepEqual(await armedIdle(r, { idlePauseMinutes: minutes }), [ms], String(minutes))
+  }
+})
+
+test('two groups keep their own idle times, and a changed choice applies from the next delivery', async () => {
+  const r = rig()
+  r.lanes.deliver(delivery({ chatId: '201', key: 'a', idlePauseMinutes: 15 }))
+  r.lanes.deliver(delivery({ chatId: '202', key: 'b', idlePauseMinutes: 60 }))
+  await settle()
+  for (const s of r.spawned) s.child.result('ok')
+  await settle()
+  const live = () => r.timers.filter((t) => !t.cleared && t.ms !== 45 * 60_000).map((t) => t.ms).sort((a, b) => a - b)
+  assert.deepEqual(live(), [15 * 60_000, 60 * 60_000])
+  r.lanes.deliver(delivery({ chatId: '201', key: 'c', idlePauseMinutes: 30 }))
+  await settle()
+  r.spawned[0]!.child.result('ok')
+  await settle()
+  assert.deepEqual(live(), [30 * 60_000, 60 * 60_000])
+})
+
+test('the test only override (HOAI_GROUP_LANE_IDLE_MS) wins over the group\'s choice, and its timer pauses the lane', async () => {
+  const r = rig({ idleOverrideMs: 60_000 })
+  assert.deepEqual(await armedIdle(r, { idlePauseMinutes: 15 }), [60_000])
+  r.fire(60_000)
+  await settle()
+  const child = r.spawned[0]!.child
+  assert.equal(child.messages().at(-1), GROUP_SUMMARY_INSTRUCTION)
+  child.result('- asked\n- Needs you: nothing')
+  await settle()
+  child.exit()
+  await settle()
+  assert.ok(r.posts.some((p) => p.state === 'paused'))
 })

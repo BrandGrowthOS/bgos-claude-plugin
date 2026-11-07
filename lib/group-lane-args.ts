@@ -50,6 +50,29 @@ const GROUP_NEEDS_YOU_MAX = 5
 /** What the lane answers when nothing needs saying: nothing is posted. */
 export const GROUP_SILENT = '(silent)'
 
+/** The owner's "Pause after idle" choices, in minutes; anything else is the default. */
+export const GROUP_IDLE_PAUSE_MINUTES: readonly number[] = Object.freeze([15, 30, 60])
+export const GROUP_IDLE_PAUSE_DEFAULT_MINUTES = 30
+
+/** A group's idle pause in ms, from `groupThread.idlePauseMinutes`: 15, 30 or 60, else 30. */
+export function groupIdlePauseMs(minutes: unknown): number {
+  const m = typeof minutes === 'number' && GROUP_IDLE_PAUSE_MINUTES.includes(minutes) ? minutes : GROUP_IDLE_PAUSE_DEFAULT_MINUTES
+  return m * 60_000
+}
+
+/**
+ * TEST ONLY: `HOAI_GROUP_LANE_IDLE_MS`, a positive whole number of ms, wins
+ * over every group's own idle pause so a live run can show a pause in a
+ * minute. Anything else (unset, empty, zero, negative, not a whole number,
+ * too large) is ignored and answers null.
+ */
+export function groupIdleOverrideMs(raw: string | undefined): number | null {
+  const text = typeof raw === 'string' ? raw.trim() : ''
+  if (!/^[1-9][0-9]{0,9}$/.test(text)) return null
+  const ms = Number(text)
+  return Number.isSafeInteger(ms) && ms > 0 && ms <= 2_147_483_647 ? ms : null
+}
+
 /** The slash command that compacts the lane's own session in place. */
 export const GROUP_COMPACT_COMMAND = '/compact'
 

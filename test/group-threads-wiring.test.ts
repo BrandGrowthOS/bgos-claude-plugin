@@ -38,7 +38,7 @@ const stamped = {
   chatId: 123,
   text: '@Atlas hello',
   lane: 'group:123',
-  groupThread: { chatId: 123, title: 'Launch team', level: 'talk', note: null, summary: 'before', sessionId: null, state: 'new', frame: null },
+  groupThread: { chatId: 123, title: 'Launch team', level: 'talk', note: null, summary: 'before', sessionId: null, state: 'new', frame: null, idlePauseMinutes: 15 },
   groupContext: {
     chatKind: 'room', chatTitle: 'Launch team', mentionedBy: 'Ana',
     participants: [{ userId: 'u1', displayName: 'Ana', relationship: 'owner' }],
@@ -76,6 +76,8 @@ test('a group delivery reads its title, level, summary, roster, backlog and fram
   assert.deepEqual(d.agents, ['Scout'], 'the agent itself is not listed as someone else')
   assert.deepEqual(d.backlog, [{ sender: 'Ben', text: 'earlier' }])
   assert.equal(d.messageId, 501)
+  assert.equal(d.idlePauseMinutes, 15)
+  assert.equal(readGroupDelivery([{ ...stamped, groupThread: { ...stamped.groupThread, idlePauseMinutes: undefined } }], { chatId: '123', key: '1', messageId: 1, text: '' }).idlePauseMinutes, null)
   const unknown = readGroupDelivery([{ ...stamped, groupThread: { ...stamped.groupThread, level: 'root' } }], { chatId: '123', key: '1', messageId: 1, text: '' })
   assert.equal(unknown.level, 'approvals')
   assert.match(groupTapLine({ tapper: null, buttonText: 'Yes' }), /Someone pressed "Yes"/)
@@ -108,6 +110,8 @@ test('server.ts routes a group stamp to the lane BEFORE ownerLaneVerdict on the 
 
 test('server.ts answers group_thread_end through the group lanes, and stops them on shutdown', () => {
   assert.match(server, /groupEnd: \(input\) => groupLanes\.end\(input\),/)
+  // TEST ONLY: the idle override comes from the environment and nowhere else.
+  assert.match(server, /idleOverrideMs: groupIdleOverrideMs\(process\.env\.HOAI_GROUP_LANE_IDLE_MS\),/)
   // A group lane left from before a daemon crash is found the way a thread lane is (lib/lane-process.ts).
   const manager = server.slice(server.indexOf('const groupLanes = new GroupLaneManager({'), server.indexOf('\n})\n', server.indexOf('const groupLanes = new GroupLaneManager({')))
   assert.match(manager, /stamp: \(pid\) => processStamp\(pid\),\n\s*runsIn: \(pid, dir\) => processRunsIn\(pid, dir\),\n\s*kill: \(pid, signal\) => killProcessGroup\(pid, signal\),/)

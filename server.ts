@@ -1199,7 +1199,7 @@ import { ThreadLaneManager, liveThreadWork, threadsPendingPath } from './lib/thr
 import { randomInt } from 'node:crypto'
 import { GroupLaneManager, type GroupApproval } from './lib/group-lanes.ts'
 import { groupRouteOf, groupTapLine, readGroupDelivery } from './lib/group-delivery.ts'
-import type { GroupLevel } from './lib/group-lane-args.ts'
+import { groupIdleOverrideMs, type GroupLevel } from './lib/group-lane-args.ts'
 import { createGroupSummaryQueue, withGroupSummaries } from './lib/group-summary-queue.ts'
 import { AsideForks, runAside } from './lib/aside-fork.ts'
 import { ThreadsCliGate, threadsCliProblem, type ThreadsCliAnswer } from './lib/threads-cli.ts'
@@ -15200,6 +15200,8 @@ const groupLanes = new GroupLaneManager({
   clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
   log,
   platform: process.platform,
+  // TEST ONLY: a live run can show a pause in a minute (README, Group threads).
+  idleOverrideMs: groupIdleOverrideMs(process.env.HOAI_GROUP_LANE_IDLE_MS),
 })
 
 /** The thread lanes' and the group lanes' work together, for the restart and drain counts. */

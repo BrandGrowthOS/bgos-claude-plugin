@@ -18,7 +18,8 @@
  *  - Turns for one group are serialized (one chain of operations per lane).
  *  - Slots: at most 3 live group lanes, counted apart from the thread lanes.
  *    A 4th group's wake PAUSES the longest idle lane and takes its slot.
- *  - Idle 30 minutes PAUSES the lane, never closes it: a summary turn (at
+ *  - Idle for the group's "Pause after idle" (`groupThread.idlePauseMinutes`:
+ *    15, 30 or 60, else 30) PAUSES the lane, never closes it: a summary turn (at
  *    most 6 lines, with its "Needs you" items), the process stopped, the
  *    session kept, and `state: paused` posted with the summary. The summary
  *    is also handed to onPaused, which queues it for the main session's next
@@ -55,6 +56,7 @@ import {
   GROUP_SUMMARY_FALLBACK,
   GROUP_SUMMARY_INSTRUCTION,
   groupLaneArgs,
+  groupIdlePauseMs,
   groupLevel,
   groupSeedBrief,
   groupTurnText,
@@ -117,6 +119,8 @@ export interface GroupDelivery {
   sessionId: string | null
   state: 'new' | 'live' | 'paused'
   frame: string | null
+  /** The owner's "Pause after idle" for this group (15, 30 or 60), or null. */
+  idlePauseMinutes: number | null
   roster: GroupRosterEntry[]
   agents: string[]
   backlog: GroupBacklogLine[]
@@ -177,7 +181,8 @@ export interface GroupLaneDeps {
   log(msg: string): void
   platform?: NodeJS.Platform
   maxLive?: number
-  idleMs?: number
+  /** TEST ONLY (HOAI_GROUP_LANE_IDLE_MS, lib/group-lane-args.ts groupIdleOverrideMs): wins over every group's own idle pause. */
+  idleOverrideMs?: number | null
   killGraceMs?: number
   turnTimeoutMs?: number
   summaryTimeoutMs?: number
@@ -214,6 +219,8 @@ interface Lane {
   level: GroupLevel
   /** The level the running process was started with. */
   childLevel: GroupLevel
+  /** This group's idle pause (the owner's "Pause after idle"), from its latest delivery. */
+  idleMs: number
   sessionHandle: string | null
   child: StreamJsonChild | null
   exited: Promise<void>
@@ -386,6 +393,7 @@ export class GroupLaneManager {
       loaded: false,
       level: 'approvals',
       childLevel: 'approvals',
+      idleMs: GROUP_LANE_IDLE_MS,
       sessionHandle: null,
       child: null,
       exited: Promise.resolve(),
@@ -481,6 +489,7 @@ export class GroupLaneManager {
       }
     }
     lane.level = groupLevel(d.level)
+    lane.idleMs = groupIdlePauseMs(d.idlePauseMinutes)
     // The owner changed the level: the running process was started with the
     // old one, so it stops first and the session resumes under the new one.
     if (lane.child && lane.childLevel !== lane.level) {
@@ -857,7 +866,7 @@ export class GroupLaneManager {
         lane.pausing = true
         void this.enqueue(lane, () => this.pauseNow(lane, 'idle'))
       }
-    }, this.deps.idleMs ?? GROUP_LANE_IDLE_MS)
+    }, this.deps.idleOverrideMs ?? lane.idleMs)
   }
 
   private clearIdle(lane: Lane): void {

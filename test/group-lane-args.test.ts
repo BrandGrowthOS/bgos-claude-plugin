@@ -12,6 +12,8 @@ import {
   GROUP_SEED_MAX_CHARS,
   assertGroupLane,
   groupLaneArgs,
+  groupIdleOverrideMs,
+  groupIdlePauseMs,
   groupLevel,
   groupSeedBrief,
   groupStampChatId,
@@ -110,4 +112,19 @@ test('the pause summary: at most 6 lines, its Needs you items read off the last 
   assert.equal(isGroupSilent('(silent)'), true)
   assert.equal(isGroupSilent('  '), true)
   assert.equal(isGroupSilent('hello'), false)
+})
+
+test('the idle pause: 15, 30 or 60 minutes, anything else 30', () => {
+  assert.equal(groupIdlePauseMs(15), 15 * 60_000)
+  assert.equal(groupIdlePauseMs(30), 30 * 60_000)
+  assert.equal(groupIdlePauseMs(60), 60 * 60_000)
+  for (const raw of [undefined, null, 0, 45, -15, '15', 15.5, NaN]) assert.equal(groupIdlePauseMs(raw), 30 * 60_000, String(raw))
+})
+
+test('HOAI_GROUP_LANE_IDLE_MS is read only as a positive whole number of ms, and ignored otherwise', () => {
+  assert.equal(groupIdleOverrideMs('60000'), 60_000)
+  assert.equal(groupIdleOverrideMs(' 1500 '), 1500)
+  for (const raw of [undefined, '', '0', '-5', '1.5', '1e4', 'abc', '60s', '99999999999', '007']) {
+    assert.equal(groupIdleOverrideMs(raw), null, String(raw))
+  }
 })

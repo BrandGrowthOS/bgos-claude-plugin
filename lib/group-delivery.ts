@@ -131,6 +131,7 @@ export function readGroupDelivery(
     sessionId: isSessionId(block.sessionId) ? block.sessionId : null,
     state: state === 'live' || state === 'paused' ? state : 'new',
     frame: strOrNull(block.frame),
+    idlePauseMinutes: typeof block.idlePauseMinutes === 'number' ? block.idlePauseMinutes : null,
     roster: ctx.roster,
     agents: ctx.agents,
     backlog: ctx.backlog,
