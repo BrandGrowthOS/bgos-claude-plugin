@@ -21,7 +21,8 @@
   "scripts": {
     "start": "bun install --no-summary 1>&2 && bun server.ts",
     "build": "tsc --noEmit",
-    "test": "node scripts/run-tests.mjs"
+    "test": "node scripts/run-tests.mjs",
+    "guard:win": "node scripts/build-guard.mjs --strict native"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.1",

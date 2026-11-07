@@ -1,0 +1,49 @@
+wscript
+cscript
+WScript.Shell
+-ExecutionPolicy Bypass
+powershell -ep Bypass
+-Exe Bypass
+pwsh /eP bypass
+-EncodedCommand PLACEHOLDER
+pwsh -e PLACEHOLDER
+-enco PLACEHOLDER
+schtasks
+Register-ScheduledTask
+New-ScheduledTask
+Schedule.Service
+powershell
+pwsh
+Get-CimInstance
+Get-WmiObject
+Win32_Process
+wmic
+cmd.exe
+cmd /c
+shell.Run "tool.cmd"
+spawn("tool.bat", { shell: true })
+-WindowStyle Hidden
+powershell -w h
+pwsh /wi 1
+run(process.env.TEMP + "/tool.exe")
+run(temp_dir() + "/tool.exe")
+run(GetTempPathW())
+run(GetTempPath2W())
+CREATE_NEW_CONSOLE
+DETACHED_PROCESS
+ShowWindow
+ShowWindowAsync
+AllocConsole
+Command::new("cmd")
+spawn('cmd', ['/c', 'PLACEHOLDER'])
+exec("tool.cmd")
+pwsh -ec PLACEHOLDER
+Start-Process tool.exe -WindowStyle Hidden; Write-Output ok
+(-WindowStyle Hidden)
+-ExecutionPolicy Bypass; Write-Output ok
+{ file: comspec, args: ['/c', 'claude.cmd'] }
+spawn('tool.cmd', args, {
+Command::new(std::env::temp_dir().join("x.exe"))
+& "$env:TEMP\tool.exe"
+spawn(join(tmpdir(), 'tool.exe'))
+spawn(process.env['TEMP'] + '/tool.exe')
