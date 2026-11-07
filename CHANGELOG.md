@@ -8,6 +8,10 @@ From 0.86.9 to 0.86.11 the browser shim pin recorded BGOS main commit `aed69c93b
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.86.21 (2026-11-07)
+
+**Your agent can set its own profile image when you ask.** A new `set_profile_image` tool sends an image your agent made with its own image tool (HOAI does not make it) as its profile picture: PNG, JPEG, WebP or GIF, up to 5 MB. With a group id it sets that group's picture instead, only as an admin agent of the group. It runs only on the owner's turn; on the turn of a person the agent is shared with it changes nothing, and the server refuses it too.
+
 ## 0.86.19 (2026-11-07)
 
 **The agent browser's downloads folder says plainly why it is refused.** When the private downloads folder on Windows can be opened by an account other than the agent's own, the folder is still refused, and the log now names each such account and its kind: an unnamed account (one Windows has no name for, which is what a deleted user or an earlier Windows install leaves behind), another user account, a group such as Users, or a deny entry. An unnamed account used to read as "unavailable", as though the computer were broken; it now reads as not owner only, with the account and the way to fix it: remove that entry from the folder's permissions, or keep the agent's folder on a drive without it.

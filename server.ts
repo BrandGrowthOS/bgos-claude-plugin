@@ -209,6 +209,7 @@ import {
 } from './lib/boards-tools.js'
 import { createActingUserTracker } from './lib/acting-user.js'
 import { ARTIFACT_TOOL_DECLS, handleArtifactTool } from './lib/artifacts-tools.js'
+import { PROFILE_IMAGE_TOOL_DECLS, handleProfileImageTool } from './lib/profile-image-tools.js'
 import { VAULT_TOOL_DECLS, handleVaultTool } from './lib/vault-tools.js'
 import { vaultHostDir } from './lib/vault-host.mjs'
 import { createPrivateTurnTracker, emailSendBasis, PRIVATE_TURN_REFUSAL, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requireEmailSendTurn, requirePrivateTurn, turnAwarePrivateTurn } from './lib/private-turn.mjs'
@@ -6576,6 +6577,9 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     // (lib/agent-email-tools.ts). Both always listed; the backend answers
     // 404 where agent email is off for this owner.
     ...EMAIL_TOOL_DECLS,
+    // set_profile_image (lib/profile-image-tools.ts): the agent's own profile
+    // image, or its group's as an admin agent, only on the owner's ask.
+    ...PROFILE_IMAGE_TOOL_DECLS,
   ],
 }))
 
@@ -6766,7 +6770,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       const text = !PRIVATE_HOOK.registered && lockHeld ? PRIVATE_HOOK_MISSING_REFUSAL : String((err as Error).message)
       return Promise.resolve({ content: [{ type: 'text' as const, text }], isError: true })
     }
-  } else if (['call_owner', 'list_chats', 'create_mission', 'tick_mini_goal', 'set_mission_goals', 'add_mission_goals', 'cancel_mission_goal', 'set_goal_working', 'set_goal_waiting', 'complete_mission'].includes(req.params.name)) {
+  } else if (['call_owner', 'list_chats', 'create_mission', 'tick_mini_goal', 'set_mission_goals', 'add_mission_goals', 'cancel_mission_goal', 'set_goal_working', 'set_goal_waiting', 'complete_mission', 'set_profile_image'].includes(req.params.name)) {
     // TURN AWARE, not turn gated (shared agents Phase 0, items 0.3, 0.4, 0.7;
     // lib/private-turn.mjs turnAwarePrivateTurn). A verified turn is used as
     // above, so a share recipient's is named; with none the owner's own work
@@ -6826,6 +6830,18 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       pairingToken: AUTH.mode === 'pairing' ? AUTH.pairingToken : '',
       stateDir: vaultHostDir(stateDir),
       log,
+    })
+  }
+
+  if (req.params.name === 'set_profile_image') {
+    // Turn aware (admitted above): a share recipient's turn names them, and the
+    // tool refuses it before reading the file; the backend refuses it again.
+    return handleProfileImageTool(req.params.name, rawArgs, {
+      assistantId: ASSISTANT_ID,
+      ownerUserId: USER_ID,
+      actingUserId: privateCall?.actingUserId ?? USER_ID,
+      privateHeaders: privateCall?.headers ?? {},
+      bgosPut,
     })
   }
 
