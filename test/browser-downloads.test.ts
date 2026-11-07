@@ -640,7 +640,7 @@ test('the folder guard on Windows: the built in Administrator reads back as LA, 
   const strange = new KeptFolderGuard({ ...guard, dir: guard.dir, platform: 'win32', env: { SystemRoot: 'C:\\Windows' }, home: 'C:\\Users\\runneradmin', run: (guard as any).run, fsImpl: (guard as any).fs })
   assert.equal(await strange.prepare(), false)
   assert.equal(strange.reason, 'not_owner_only')
-  assert.match(strange.detail, /an entry this guard cannot name \(XY\)/, strange.detail)
+  assert.match((strange.detail ?? ''), /an entry this guard cannot name \(XY\)/, (strange.detail ?? ''))
 })
 
 /** A Windows guard whose icacls answers from `acl`: the SDDL read back, and what /remove:g does. */
@@ -687,9 +687,9 @@ test('the folder guard on Windows: an unnamed (orphan) account it cannot remove 
   const { guard, logs } = windowsGuardOver(acl)
   assert.equal(await guard.prepare(), false)
   assert.equal(guard.reason, 'not_owner_only', 'refused as not owner only, not as a broken machine')
-  assert.match(guard.detail, new RegExp(`an unnamed account \\(${orphan}\\)`), guard.detail)
-  assert.match(guard.detail, /Windows has no name for it/, guard.detail)
-  assert.doesNotMatch(guard.detail, /SYSTEM/, `SYSTEM was removed, so it is not named: ${guard.detail}`)
+  assert.match((guard.detail ?? ''), new RegExp(`an unnamed account \\(${orphan}\\)`), (guard.detail ?? ''))
+  assert.match((guard.detail ?? ''), /Windows has no name for it/, (guard.detail ?? ''))
+  assert.doesNotMatch((guard.detail ?? ''), /SYSTEM/, `SYSTEM was removed, so it is not named: ${(guard.detail ?? '')}`)
   assert.ok(logs.some((l) => l.includes('not_owner_only') && l.includes(orphan)), `the log names the account: ${logs.join(' | ')}`)
 })
 
@@ -701,14 +701,14 @@ test('the folder guard on Windows: an entry still there after removal (not owner
   const { guard } = windowsGuardOver(acl)
   assert.equal(await guard.prepare(), false)
   assert.equal(guard.reason, 'not_owner_only')
-  assert.match(guard.detail, /another user account \(S-1-5-21-1-2-3-1002\)/, guard.detail)
-  assert.match(guard.detail, /the Users group/, guard.detail)
+  assert.match((guard.detail ?? ''), /another user account \(S-1-5-21-1-2-3-1002\)/, (guard.detail ?? ''))
+  assert.match((guard.detail ?? ''), /the Users group/, (guard.detail ?? ''))
   // A deny entry is never removed or guessed at: refused, and named.
   const denied = { sddl: 'D:PAI(D;OICI;FA;;;WD)(A;OICI;FA;;;S-1-5-21-1-2-3-1001)', remove() {} }
   const second = windowsGuardOver(denied).guard
   assert.equal(await second.prepare(), false)
   assert.equal(second.reason, 'not_owner_only')
-  assert.match(second.detail, /a deny entry for Everyone/, second.detail)
+  assert.match((second.detail ?? ''), /a deny entry for Everyone/, (second.detail ?? ''))
   // An owner only folder carries no detail.
   const fine = windowsGuardOver({ sddl: 'D:PAI(A;OICI;FA;;;S-1-5-21-1-2-3-1001)', remove() {} }).guard
   assert.equal(await fine.prepare(), true, `${fine.reason} ${fine.detail}`)
