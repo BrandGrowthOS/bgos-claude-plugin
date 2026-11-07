@@ -651,3 +651,60 @@ test('review 1: a group lane works OUTSIDE the agent folder, beside its lane sta
   const inside = (dir: string, root: string) => dir === root || dir.startsWith(root + '/') || dir.startsWith(root + '\\')
   assert.equal(inside(cwd, AGENT), false, 'not under the agent folder')
 })
+
+test('review 4: a level the owner LOWERS applies at once, even while a turn under the old level is still running', async () => {
+  const r = rig()
+  r.lanes.deliver(delivery({ level: 'full' }))
+  await settle()
+  const child = r.spawned[0]!.child
+  // The full turn is still running when the owner sets the group to Talk only.
+  r.lanes.deliver(delivery({ messageId: 502, key: '502', level: 'talk' }))
+  await settle()
+  child.frame({ type: 'control_request', request_id: 'req-9', request: { subtype: 'can_use_tool', tool_name: 'Bash', input: { command: 'rm -rf build' } } })
+  await settle()
+  assert.equal(r.approvals.length, 0, 'never asked at the old level')
+  const response = JSON.parse(child.stdin.at(-1)!)
+  assert.equal(response.response.request_id, 'req-9')
+  assert.equal(response.response.response.behavior, 'deny')
+})
+
+test('review 4: full lowered to approvals while a turn runs asks at approvals, the stricter level', async () => {
+  const r = rig()
+  r.lanes.deliver(delivery({ level: 'full' }))
+  await settle()
+  const child = r.spawned[0]!.child
+  r.lanes.deliver(delivery({ messageId: 502, key: '502', level: 'approvals' }))
+  await settle()
+  child.frame({ type: 'control_request', request_id: 'req-10', request: { subtype: 'can_use_tool', tool_name: 'Bash', input: { command: 'ls' } } })
+  await settle()
+  assert.equal(r.approvals.length, 1)
+  assert.equal(r.approvals[0]!.level, 'approvals')
+})
+
+test('review 4: a level RAISED while a turn runs does not widen that turn: the stricter of the two answers', async () => {
+  const r = rig()
+  r.lanes.deliver(delivery({ level: 'approvals' }))
+  await settle()
+  const child = r.spawned[0]!.child
+  r.lanes.deliver(delivery({ messageId: 502, key: '502', level: 'full' }))
+  await settle()
+  child.frame({ type: 'control_request', request_id: 'req-11', request: { subtype: 'can_use_tool', tool_name: 'Bash', input: { command: 'ls' } } })
+  await settle()
+  assert.equal(r.approvals[0]!.level, 'approvals', 'the process started at approvals keeps approvals')
+})
+
+test('review 4: an older queued turn never puts back the level a newer delivery lowered', async () => {
+  const r = rig()
+  r.lanes.deliver(delivery({ level: 'full' }))
+  r.lanes.deliver(delivery({ messageId: 502, key: '502', level: 'full' }))
+  r.lanes.deliver(delivery({ messageId: 503, key: '503', level: 'talk' }))
+  await settle()
+  const first = r.spawned[0]!.child
+  first.result('first')
+  await settle()
+  // The queued full turn (502) runs next: it must answer at talk, the level the owner set since.
+  first.frame({ type: 'control_request', request_id: 'req-12', request: { subtype: 'can_use_tool', tool_name: 'Bash', input: {} } })
+  await settle()
+  assert.equal(r.approvals.length, 0, 'not asked at full')
+  assert.equal(JSON.parse(first.stdin.at(-1)!).response.response.behavior, 'deny')
+})

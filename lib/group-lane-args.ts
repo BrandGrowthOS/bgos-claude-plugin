@@ -42,6 +42,13 @@ export type GroupLevel = 'talk' | 'approvals' | 'full'
 
 export const GROUP_LEVELS: readonly GroupLevel[] = Object.freeze(['talk', 'approvals', 'full'])
 
+const LEVEL_RANK: Record<GroupLevel, number> = { talk: 0, approvals: 1, full: 2 }
+
+/** The stricter of two levels (talk < approvals < full). */
+export function stricterLevel(a: GroupLevel, b: GroupLevel): GroupLevel {
+  return LEVEL_RANK[a] <= LEVEL_RANK[b] ? a : b
+}
+
 /** The lane stamp prefix the server puts on every group delivery. */
 export const GROUP_LANE_PREFIX = 'group:'
 

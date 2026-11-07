@@ -61,6 +61,7 @@ import {
   groupIdlePauseMs,
   groupLevel,
   groupSeedBrief,
+  stricterLevel,
   groupTurnText,
   isGroupChatId,
   isGroupSilent,
@@ -306,6 +307,10 @@ export class GroupLaneManager {
       while (this.seen.size > GROUP_SEEN_MAX) this.seen.delete(this.seen.values().next().value as string)
     }
     const lane = this.laneFor(d.chatId)
+    // The level applies AT ONCE (review finding 4): a lowered level must not
+    // wait behind a turn still running under the old one. The gate answers by
+    // the stricter of this and the level the process started with.
+    lane.level = groupLevel(d.level)
     if (d.sessionHandle) lane.sessionHandle = d.sessionHandle
     void this.enqueue(lane, () => this.runTurn(lane, d))
     return true
@@ -490,10 +495,10 @@ export class GroupLaneManager {
         lane.st.acked = true
       }
     }
-    lane.level = groupLevel(d.level)
     lane.idleMs = groupIdlePauseMs(d.idlePauseMinutes)
-    // The owner changed the level: the running process was started with the
-    // old one, so it stops first and the session resumes under the new one.
+    // The owner changed the level (deliver() set it, from the newest
+    // delivery): the running process was started with the old one, so it
+    // stops first and the session resumes under the new one.
     if (lane.child && lane.childLevel !== lane.level) {
       this.deps.log(`groups: group ${lane.chatId} level is now ${lane.level}, its lane restarts under it`)
       this.stopChild(lane)
@@ -736,7 +741,8 @@ export class GroupLaneManager {
         : { behavior: 'deny', message: verdict.message ?? 'Your owner did not allow this in the group.' }
       child.write(`${JSON.stringify({ type: 'control_response', response: { subtype: 'success', request_id: requestId, response } })}\n`)
     }
-    if (lane.childLevel === 'talk' || lane.level === 'talk') {
+    const level = stricterLevel(lane.level, lane.childLevel)
+    if (level === 'talk') {
       answer({ allow: false, message: 'In this group you can only reply.' })
       return
     }
@@ -745,7 +751,7 @@ export class GroupLaneManager {
       : `${toolName} in the group "${lane.st.title || lane.chatId}"`
     this.track(
       this.deps
-        .approve({ chatId: lane.chatId, title: lane.st.title, level: lane.childLevel, toolName, input, inputPreview: toolInputPreview(input), description })
+        .approve({ chatId: lane.chatId, title: lane.st.title, level, toolName, input, inputPreview: toolInputPreview(input), description })
         .then(answer, () => answer({ allow: false, message: 'The approval could not be asked, so this was not done.' })),
     )
   }
