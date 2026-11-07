@@ -209,6 +209,7 @@ import {
 } from './lib/boards-tools.js'
 import { createActingUserTracker } from './lib/acting-user.js'
 import { ARTIFACT_TOOL_DECLS, handleArtifactTool } from './lib/artifacts-tools.js'
+import { PROFILE_IMAGE_TOOL_DECLS, handleProfileImageTool, profileImageTurn } from './lib/profile-image-tools.js'
 import { VAULT_TOOL_DECLS, handleVaultTool } from './lib/vault-tools.js'
 import { vaultHostDir } from './lib/vault-host.mjs'
 import { createPrivateTurnTracker, emailSendBasis, PRIVATE_TURN_REFUSAL, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requireEmailSendTurn, requirePrivateTurn, turnAwarePrivateTurn } from './lib/private-turn.mjs'
@@ -6576,6 +6577,9 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     // (lib/agent-email-tools.ts). Both always listed; the backend answers
     // 404 where agent email is off for this owner.
     ...EMAIL_TOOL_DECLS,
+    // set_profile_image (lib/profile-image-tools.ts): the agent's own profile
+    // image, or its group's as an admin agent, only on the owner's ask.
+    ...PROFILE_IMAGE_TOOL_DECLS,
   ],
 }))
 
@@ -6780,6 +6784,20 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       return Promise.resolve({ content: [{ type: 'text' as const, text: String((err as Error).message) }], isError: true })
     }
   }
+  if (req.params.name === 'set_profile_image') {
+    // GATED, not turn aware (AVATARSELF review round 2): only a verified turn
+    // the owner's own message or tap opened (lib/profile-image-tools.ts
+    // profileImageTurn). A peer agent, an email or system card, a mission
+    // card, the goal lane and a scheduled wake are refused before anything
+    // is read or sent.
+    try {
+      if (!lockHeld) throw new Error('This private action did not start because this daemon does not hold the active agent connection.')
+      privateCall = profileImageTurn(privateTurns, PRIVATE_MARKER_PATHS, USER_ID) as typeof privateCall
+    } catch (err) {
+      try { if (lockHeld) log(`private turn: refused set_profile_image: ${privateTurns.explain({ markerPaths: PRIVATE_MARKER_PATHS })}`) } catch { /* A diagnostic line never changes the refusal. */ }
+      return Promise.resolve({ content: [{ type: 'text' as const, text: String((err as Error).message) }], isError: true })
+    }
+  }
   // email_send names its reason from the turn admitted HERE, before any
   // awaited work: the owner's message that started it, or the scheduled
   // task that woke the agent (lib/private-turn.mjs requireEmailSendTurn).
@@ -6826,6 +6844,19 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       pairingToken: AUTH.mode === 'pairing' ? AUTH.pairingToken : '',
       stateDir: vaultHostDir(stateDir),
       log,
+    })
+  }
+
+  if (req.params.name === 'set_profile_image') {
+    // Gated (admitted above): the admitted turn, never the owner by default. A
+    // share recipient's turn names them, and the tool refuses it before
+    // reading the file; the backend refuses it again from the acting header.
+    return handleProfileImageTool(req.params.name, rawArgs, {
+      assistantId: ASSISTANT_ID,
+      ownerUserId: USER_ID,
+      actingUserId: privateCall?.actingUserId ?? null,
+      privateHeaders: privateCall?.headers ?? {},
+      bgosPut,
     })
   }
 
