@@ -301,3 +301,27 @@ test('round 5 A: the seed neutralises the title, note, summary, roster, backlog 
   assert.ok(!/@(?!⁠)/.test(seed), seed)
   assert.ok(!/(^|\n)[ \t]*[/!#&]/.test(seed))
 })
+
+// -- round 6: effort keywords in member text ----------------------------------------
+
+test('round 6, finding 1: an effort keyword in member text is made literal (a word joiner inside it), case blind, and still reads the same', () => {
+  const WJ = '⁠'
+  assert.equal(inertMemberText('please ultrathink about it'), `please ultra${WJ}think about it`)
+  assert.equal(inertMemberText('ULTRATHINK'), `ULTRA${WJ}THINK`)
+  assert.equal(inertMemberText('UltraThink.'), `Ultra${WJ}Think.`)
+  for (const w of ['ultracode', 'ultraplan', 'ultrareview']) assert.equal(inertMemberText(w), `ultra${WJ}${w.slice(5)}`, w)
+  assert.equal(inertMemberText(inertMemberText('ultrathink')), `ultra${WJ}think`, 'once, however often it runs')
+  assert.equal(inertMemberText('ultra think, think hard').replace(/⁠/g, ''), 'ultra think, think hard', 'the text reads the same')
+  assert.equal(inertMemberText('please ultrathink').replace(/⁠/g, ''), 'please ultrathink')
+})
+
+test('round 6, finding 1: no builder lets an effort keyword through, in any field', () => {
+  const seed = groupSeedBrief({
+    title: 'ultrathink team', level: 'talk', note: 'ULTRATHINK', summary: 'UltraThink', frame: 'ultrathink', text: 'ultrathink', sender: 'ultrathink',
+    roster: [{ name: 'ultrathink', role: 'member' }], agents: ['ultrathink'], backlog: [{ sender: 'ultrathink', text: 'ultrathink' }],
+    earlier: [{ messageId: 1, sender: 'ultrathink', text: 'ultrathink', sentAt: null }],
+  })
+  assert.ok(!/ultrathink/i.test(seed), 'no bare keyword left')
+  const turn = groupTurnText({ frame: 'ultrathink', text: 'ultrathink', sender: 'ultrathink', earlier: [{ messageId: 2, sender: null, text: 'UltraThink', sentAt: null }] })
+  assert.ok(!/ultrathink/i.test(turn))
+})

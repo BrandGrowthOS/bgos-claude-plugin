@@ -489,14 +489,20 @@ export const WORD_JOINER = '\u2060'
  * command with no model call (`/list-agents`, `/usage`, `/config` rewriting
  * the owner's settings), and an `@path` anywhere is expanded into the file's
  * content. `!`, `#` and `&` at a line start reach the model as text there, but
- * are neutralised too. Every `@` gets a word joiner after it, and every line
- * whose first visible character is `/`, `!`, `#` or `&` gets one before it.
+ * are neutralised too. Every `@` gets a word joiner after it, every line
+ * whose first visible character is `/`, `!`, `#` or `&` gets one before it,
+ * and an effort keyword (ultrathink and its family) gets one inside it.
  * Idempotent. Pure.
  */
 export function inertMemberText(text: string): string {
   return String(text ?? '')
     .replace(/@(?!\u2060)/g, `@${WORD_JOINER}`)
     .replace(/(^|\n)([ \t]*)([/!#&])/g, `$1$2${WORD_JOINER}$3`)
+    // Effort keywords (round 6): on CLI 2.1.319 "ultrathink" anywhere in a
+    // turn, any case, adds an ultrathink_effort attachment and raises the
+    // turn's effort (measured live). The CLI's own family, ultra + think,
+    // code, plan or review, gets a word joiner inside, so it reads the same.
+    .replace(/(ultra)(?=think|code|plan|review)/gi, `$1${WORD_JOINER}`)
 }
 
 /** The fixed first line of every turn: a turn never starts with member text (round 5, A). */
