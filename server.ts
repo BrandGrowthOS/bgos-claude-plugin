@@ -15501,6 +15501,8 @@ const voiceRpc = new VoiceRpcHandler({
           close: (input) => threadLanes.close(input),
           // Group threads: the server ends a group's thread.
           groupEnd: (input) => groupLanes.end(input),
+          // Group threads: the owner changed a group's level.
+          groupLevel: (input) => groupLanes.setLevel(input),
           aside: (input, onDelta) =>
             runAside(input, {
               spawn: spawnStreamJson,

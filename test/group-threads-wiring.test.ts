@@ -22,7 +22,7 @@ import { join } from 'node:path'
 import { groupRouteOf, groupTapKey, groupTapLine, readGroupDelivery } from '../lib/group-delivery.ts'
 import { ownerLaneVerdict } from '../lib/lane-core.mjs'
 import { declaredCapabilities, GROUP_THREADS_TOKEN } from '../lib/declared-capabilities.ts'
-import { GROUP_THREAD_END, isThreadOp, type ThreadRpcDeps } from '../lib/thread-rpc.ts'
+import { GROUP_THREAD_END, GROUP_THREAD_LEVEL, isThreadOp, type ThreadRpcDeps } from '../lib/thread-rpc.ts'
 import { VoiceRpcHandler, normalizeVoiceRpc, type VoiceRpcDeps, type VoiceRpcResultBody } from '../lib/voice-rpc.ts'
 import {
   GROUP_SUMMARY_QUEUE_MAX,
@@ -366,4 +366,30 @@ test('round 4, findings 3 and 7: server.ts asks whether the sandbox really start
   assert.match(server, /groupSandboxCheck \?\?= groupSandboxWorks\(\{/)
   const root = server.slice(server.indexOf('function groupLaneRoot(): string {'), server.indexOf('\n}\n', server.indexOf('function groupLaneRoot(): string {')))
   assert.match(root, /return ensureGroupLaneRoot\(\{\n\s*base: '\/var\/tmp',/)
+})
+
+test('round 4, finding 6: group_thread_level arrives on the thread ops rail and answers ok', async () => {
+  assert.equal(isThreadOp(GROUP_THREAD_LEVEL), true)
+  const levels: unknown[] = []
+  const results: VoiceRpcResultBody[] = []
+  const handler = new VoiceRpcHandler({
+    config: { openaiApiKey: '', model: 'm', voice: 'v', persona: '', assistantId: '42' },
+    postAck: async () => {},
+    postResult: async (_rpcId, body) => { results.push(body) },
+    notify: async () => {},
+    getIdentity: async () => null,
+    threads: {
+      turn: () => ({ accepted: true, state: 'working' }),
+      close: async () => ({ stopped: true }),
+      aside: async () => ({ text: '' }),
+      groupLevel: async (input) => { levels.push(input); return { ok: true } },
+    },
+    log: () => {},
+  })
+  await handler.handle(normalizeVoiceRpc({ rpcId: 'rpc-l1', op: GROUP_THREAD_LEVEL, assistantId: '42', agentRoute: '', chatId: '123', payload: { chatId: '123', level: 'talk' } })!)
+  assert.deepEqual(levels, [{ chatId: '123', level: 'talk' }])
+  assert.deepEqual(results.at(-1), { ok: true, payload: { ok: true } })
+  await handler.handle(normalizeVoiceRpc({ rpcId: 'rpc-l2', op: GROUP_THREAD_LEVEL, assistantId: '42', agentRoute: '', chatId: '123', payload: { chatId: '123', level: 'root' } })!)
+  assert.equal(results.at(-1)!.error?.code, 'bad_request')
+  assert.match(server, /groupLevel: \(input\) => groupLanes\.setLevel\(input\),/)
 })

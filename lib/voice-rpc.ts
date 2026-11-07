@@ -85,10 +85,12 @@ import { isModelEffortOp, rpcLogTag, type ModelEffortOp, type PickerAnswer, type
 import {
   ASIDE,
   GROUP_THREAD_END,
+  GROUP_THREAD_LEVEL,
   THREAD_CLOSE,
   THREAD_TURN,
   asidePayload,
   groupThreadEndPayload,
+  groupThreadLevelPayload,
   isThreadOp,
   threadClosePayload,
   threadRefusal,
@@ -955,6 +957,11 @@ export class VoiceRpcHandler {
       if (frame.op === THREAD_CLOSE) {
         await threads.close(threadClosePayload(frame.payload))
         return { stopped: true }
+      }
+      if (frame.op === GROUP_THREAD_LEVEL) {
+        if (!threads.groupLevel) throw new VoiceRpcError('unsupported', 'Group threads are not available on this agent.')
+        await threads.groupLevel(groupThreadLevelPayload(frame.payload, frame.chatId))
+        return { ok: true }
       }
       if (frame.op === GROUP_THREAD_END) {
         if (!threads.groupEnd) throw new VoiceRpcError('unsupported', 'Group threads are not available on this agent.')

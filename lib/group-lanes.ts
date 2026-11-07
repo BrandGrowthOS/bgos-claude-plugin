@@ -382,16 +382,39 @@ export class GroupLaneManager {
     // wait behind a turn still running under the old one. The gate answers by
     // the stricter of this and the level the process started with.
     // A delivery that states no level keeps the lane's (talk for a new lane): review finding 5.
-    if (d.level !== null) lane.level = groupLevel(d.level)
-    // Lowered below the running process (finding C): its turn stops NOW, so
-    // nothing the CLI would allow by itself keeps running under the old
-    // level; the queued turn then resumes the session under the new one.
+    if (d.level !== null) this.applyLevel(lane, groupLevel(d.level))
+    if (d.sessionHandle) lane.sessionHandle = d.sessionHandle
+    void this.enqueue(lane, () => this.runTurn(lane, d))
+  }
+
+  /**
+   * The server's `group_thread_level` (round 4, finding 6): the owner changed
+   * the group's level. Handled exactly as a delivery's stated level: a lower
+   * level stops the running turn at once, a raise applies from the next turn.
+   * A group with no lane yet keeps it for its first turn.
+   */
+  async setLevel(input: { chatId: string; level: GroupLevel }): Promise<{ ok: true }> {
+    const chatId = String(input?.chatId ?? '')
+    if (!isGroupChatId(chatId)) throw new GroupLaneError('bad_request', 'A group level needs its chat.')
+    if (typeof input.level !== 'string' || !['talk', 'approvals', 'full'].includes(input.level)) {
+      throw new GroupLaneError('bad_request', 'A group level is talk, approvals or full.')
+    }
+    this.applyLevel(this.laneFor(chatId), input.level)
+    return { ok: true }
+  }
+
+  /**
+   * Set a lane's level. Lowered below the running process (finding C): its
+   * turn stops NOW, so nothing the CLI would allow by itself keeps running
+   * under the old level; the queued turn then resumes the session under the
+   * new one.
+   */
+  private applyLevel(lane: Lane, level: GroupLevel): void {
+    lane.level = level
     if (lane.child && !lane.stopping && lane.level !== lane.childLevel && stricterLevel(lane.level, lane.childLevel) === lane.level) {
       this.deps.log(`groups: group ${lane.chatId} level lowered to ${lane.level}, its running turn is stopped`)
       this.stopChild(lane)
     }
-    if (d.sessionHandle) lane.sessionHandle = d.sessionHandle
-    void this.enqueue(lane, () => this.runTurn(lane, d))
   }
 
   /** True when this manager already took the delivery (a transport repeating it). */

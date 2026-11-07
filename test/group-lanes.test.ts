@@ -964,3 +964,40 @@ test('round 4, finding 3: Full is the owner\'s own chat and never falls back, sa
   assert.equal(valueAfter(r.spawned[0]!.args, '--permission-mode'), 'default')
   assert.ok(!r.spawned[0]!.args.includes('--tools'))
 })
+
+test('round 4, finding 6: group_thread_level lowers the level at once: the running turn stops, and the next turn runs under it', async () => {
+  const r = rig()
+  r.lanes.deliver(delivery({ level: 'full' }))
+  await settle()
+  const first = r.spawned[0]!
+  assert.deepEqual(await r.lanes.setLevel({ chatId: '123', level: 'talk' }), { ok: true })
+  assert.deepEqual(first.child.killed, ['SIGTERM'], 'no group message needed')
+  first.child.exit()
+  await settle()
+  r.lanes.deliver(delivery({ messageId: 502, key: '502', level: null, state: 'live', sessionId: IDS[0] }))
+  await settle()
+  assert.equal(valueAfter(r.spawned[1]!.args, '--tools'), '', 'the next turn runs at talk')
+})
+
+test('round 4, finding 6: group_thread_level raising the level never stops a turn; it applies from the next one', async () => {
+  const r = rig()
+  r.lanes.deliver(delivery({ level: 'talk' }))
+  await settle()
+  assert.deepEqual(await r.lanes.setLevel({ chatId: '123', level: 'full' }), { ok: true })
+  assert.deepEqual(r.spawned[0]!.child.killed, [])
+  r.spawned[0]!.child.result('ok')
+  await settle()
+  r.lanes.deliver(delivery({ messageId: 502, key: '502', level: null }))
+  await settle()
+  assert.deepEqual(r.spawned[0]!.child.killed, ['SIGTERM'], 'the next turn restarts the lane at the new level')
+})
+
+test('round 4, finding 6: group_thread_level for a group with no lane yet is kept for its first turn; a bad level is refused', async () => {
+  const r = rig()
+  assert.deepEqual(await r.lanes.setLevel({ chatId: '777', level: 'talk' }), { ok: true })
+  r.lanes.deliver(delivery({ chatId: '777', key: 'x', level: null }))
+  await settle()
+  assert.equal(valueAfter(r.spawned[0]!.args, '--tools'), '')
+  await assert.rejects(r.lanes.setLevel({ chatId: '777', level: 'root' as never }), /level/)
+  await assert.rejects(r.lanes.setLevel({ chatId: 'x', level: 'talk' }), /chat/)
+})
