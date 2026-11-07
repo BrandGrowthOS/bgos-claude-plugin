@@ -339,7 +339,7 @@ test('server: every private turn tracker call of a card is inside that card\'s c
   const insideBuilder = (node: ts.Node): boolean => {
     for (let at: ts.Node | undefined = node.parent; at; at = at.parent) {
       if (ts.isArrowFunction(at) || ts.isFunctionExpression(at)) {
-        const call = at.parent
+        const call: ts.Node | undefined = at.parent
         if (call && ts.isCallExpression(call) && call.arguments[0] === at && ts.isIdentifier(call.expression) && call.expression.text === 'channelNotify') return true
       }
       if (ts.isFunctionDeclaration(at) || ts.isMethodDeclaration(at)) return false
