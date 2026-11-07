@@ -404,12 +404,19 @@ test('round 5 B: HOAI_GROUP_LEVELS is on only for the literal true, and group_le
   const base = { canInjectGoal: false, floorHook: true, threads: true, authMode: 'pairing' as const, platform: 'darwin' as const }
   assert.deepEqual(declaredCapabilities({ ...base, groupLevels: true }).slice(-2), [GROUP_THREADS_TOKEN, GROUP_LEVELS_TOKEN])
   assert.equal(declaredCapabilities({ ...base, groupLevels: false }).includes(GROUP_LEVELS_TOKEN), false)
-  assert.equal(declaredCapabilities(base).includes(GROUP_LEVELS_TOKEN), false, 'absent is off')
+  // Absent, the daemon's own environment decides.
+  const saved = process.env.HOAI_GROUP_LEVELS
+  try {
+    delete process.env.HOAI_GROUP_LEVELS
+    assert.equal(declaredCapabilities(base).includes(GROUP_LEVELS_TOKEN), false, 'unset is off')
+    process.env.HOAI_GROUP_LEVELS = 'true'
+    assert.equal(declaredCapabilities(base).includes(GROUP_LEVELS_TOKEN), true, 'the switch on')
+  } finally {
+    if (saved === undefined) delete process.env.HOAI_GROUP_LEVELS
+    else process.env.HOAI_GROUP_LEVELS = saved
+  }
   assert.equal(declaredCapabilities({ ...base, groupLevels: true, authMode: 'apikey' }).includes(GROUP_LEVELS_TOKEN), false, 'never without group_threads')
   assert.equal(declaredCapabilities({ ...base, groupLevels: true, platform: 'win32' }).includes(GROUP_LEVELS_TOKEN), false)
-  const calls = server.match(/declaredCapabilities\(\{[^}]*\}\)/g) ?? []
-  assert.ok(calls.length >= 4)
-  for (const call of calls) assert.match(call, /groupLevels: groupLevelsEnabled\(process\.env\),/)
   const manager = server.slice(server.indexOf('const groupLanes = new GroupLaneManager({'), server.indexOf('\n})\n', server.indexOf('const groupLanes = new GroupLaneManager({')))
   assert.match(manager, /levelsEnabled: groupLevelsEnabled\(process\.env\),/)
 })

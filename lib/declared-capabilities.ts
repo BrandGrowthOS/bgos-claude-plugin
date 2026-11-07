@@ -308,6 +308,7 @@
  * agent silently untold.
  */
 
+import { groupLevelsEnabled } from './group-lane-args.ts'
 import { ASK_ANSWERED_TOKEN, ASK_MULTI_SELECT_TOKEN, HARD_FLOOR_RULES_2_TOKEN, HARD_FLOOR_TOKEN, PERMISSION_CARD, PLAN_CARD } from './claude-capability-tokens.js'
 import { SESSIONS_LIBRARY, STOP_PAUSES_MISSION } from './session-controls-contract.ts'
 import { EMAIL_LABEL, labelsExternalEmail } from './inbound-channel.ts'
@@ -455,7 +456,11 @@ export function declaredCapabilities(input: {
    * declared on win32 in phase 1. Also carries group_threads, on a pairing.
    */
   threads?: boolean
-  /** HOAI_GROUP_LEVELS is on (lib/group-lane-args.ts groupLevelsEnabled): group_levels beside group_threads. */
+  /**
+   * HOAI_GROUP_LEVELS is on (lib/group-lane-args.ts groupLevelsEnabled):
+   * group_levels beside group_threads. Absent, the daemon's own environment
+   * is read, as the email tokens read theirs.
+   */
   groupLevels?: boolean
   authMode: 'pairing' | 'apikey'
   /** The host platform; process.platform when absent. The picker and the thread tokens are never declared on win32. */
@@ -474,7 +479,7 @@ export function declaredCapabilities(input: {
       : []),
     ...(input.threads === true && (input.platform ?? process.platform) !== 'win32' ? THREAD_CAPABILITY_TOKENS : []),
     ...(input.authMode === 'pairing' && input.threads === true && (input.platform ?? process.platform) !== 'win32'
-      ? [GROUP_THREADS_TOKEN, ...(input.groupLevels === true ? [GROUP_LEVELS_TOKEN] : [])]
+      ? [GROUP_THREADS_TOKEN, ...((input.groupLevels ?? groupLevelsEnabled(process.env)) ? [GROUP_LEVELS_TOKEN] : [])]
       : []),
   ]
 }

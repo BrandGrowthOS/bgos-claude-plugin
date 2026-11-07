@@ -1895,7 +1895,7 @@ async function loadServedCapabilities(): Promise<ServedCapabilities> {
     // ONE declared list for the fetch AND the offline copy, so a fetch that
     // fails tells the agent no more than the served canon would have told
     // this daemon (capabilitiesFallbackFor, the stage 6 backend review).
-    const declared = declaredCapabilities({ canInjectGoal: false, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, threads: threadsDeclared(), groupLevels: groupLevelsEnabled(process.env), authMode: AUTH.mode })
+    const declared = declaredCapabilities({ canInjectGoal: false, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, threads: threadsDeclared(), authMode: AUTH.mode })
     try {
       data = await bgosGetCapped(
         capabilitiesFetchPath(
@@ -7125,7 +7125,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
               chatId: String(resolvedChatId),
               text,
               declared: () =>
-                declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, threads: threadsDeclared(), groupLevels: groupLevelsEnabled(process.env), authMode: AUTH.mode }).includes(UI_CARD),
+                declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, threads: threadsDeclared(), authMode: AUTH.mode }).includes(UI_CARD),
               log,
             })
         if (cardNudge) log(`reply to chat ${resolvedChatId}: card nudge given`)
@@ -14821,7 +14821,7 @@ const stopPauseLane = new StopPauseLane({
  *  this daemon never pauses on a host whose owner was never offered Pause. */
 function stopGoalView(): StopGoalView {
   return {
-    pauseDeclared: declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, modelEffortPicker: modelEffortDeclared(), threads: threadsDeclared(), groupLevels: groupLevelsEnabled(process.env), authMode: AUTH.mode }).includes('mission_pause'),
+    pauseDeclared: declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, modelEffortPicker: modelEffortDeclared(), threads: threadsDeclared(), authMode: AUTH.mode }).includes('mission_pause'),
     held: goalHeld,
     attachedMissionId: goalMissionId,
     pending: goalPendingArm,
@@ -21370,7 +21370,7 @@ async function main(): Promise<void> {
       // CLI's composer, and lib/compact-capability.ts can discover that up to
       // thirty minutes after boot. See lib/declared-capabilities.ts.
       capabilities: () => [
-        ...declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, modelEffortPicker: modelEffortDeclared(), threads: threadsDeclared(), groupLevels: groupLevelsEnabled(process.env), authMode: AUTH.mode }),
+        ...declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, modelEffortPicker: modelEffortDeclared(), threads: threadsDeclared(), authMode: AUTH.mode }),
       ],
       // One-click update telemetry (wire contract v1): the newest version this
       // daemon found at its own pinned source (origin/main for a clone, the
