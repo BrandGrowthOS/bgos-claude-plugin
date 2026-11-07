@@ -116,7 +116,8 @@ export interface GroupDelivery {
   sender: string | null
   sessionHandle: string | null
   title: string
-  level: GroupLevel
+  /** The level this delivery states, or null: it states none, and the lane keeps its own. */
+  level: GroupLevel | null
   note: string | null
   summary: string | null
   /** The thread's session id the server last heard, or null. */
@@ -310,7 +311,8 @@ export class GroupLaneManager {
     // The level applies AT ONCE (review finding 4): a lowered level must not
     // wait behind a turn still running under the old one. The gate answers by
     // the stricter of this and the level the process started with.
-    lane.level = groupLevel(d.level)
+    // A delivery that states no level keeps the lane's (talk for a new lane): review finding 5.
+    if (d.level !== null) lane.level = groupLevel(d.level)
     if (d.sessionHandle) lane.sessionHandle = d.sessionHandle
     void this.enqueue(lane, () => this.runTurn(lane, d))
     return true
@@ -398,8 +400,9 @@ export class GroupLaneManager {
       chatId,
       st: { chatId, title: '', sessionId: null, started: false, firstMessageId: null, lastMessageId: null, acked: false, pid: null, pidStamp: null },
       loaded: false,
-      level: 'approvals',
-      childLevel: 'approvals',
+      // Until a delivery states one, a new lane can only reply (review finding 5).
+      level: 'talk',
+      childLevel: 'talk',
       idleMs: GROUP_LANE_IDLE_MS,
       sessionHandle: null,
       child: null,
@@ -509,7 +512,7 @@ export class GroupLaneManager {
     await this.ensureChild(lane)
     if (lane.closed || !lane.child) return
     const seed = !lane.st.started
-    const prompt = seed ? groupSeedBrief(d) : groupTurnText(d)
+    const prompt = seed ? groupSeedBrief({ ...d, level: lane.level }) : groupTurnText(d)
     const sessionId = lane.st.sessionId!
     lane.st.started = true
     if (d.messageId !== null) {

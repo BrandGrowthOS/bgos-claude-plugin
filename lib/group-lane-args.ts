@@ -99,9 +99,19 @@ export function isGroupChatId(value: unknown): value is string {
   return typeof value === 'string' && CHAT_ID_RE.test(value)
 }
 
-/** The level from the delivery. Missing or unknown reads as approvals (fail closed). */
+/** A known level as is; anything else reads as approvals. */
 export function groupLevel(raw: unknown): GroupLevel {
   return typeof raw === 'string' && (GROUP_LEVELS as readonly string[]).includes(raw) ? (raw as GroupLevel) : 'approvals'
+}
+
+/**
+ * The level a delivery STATES (review finding 5): null when it states none
+ * (no groupThread block, or no level string in it), so the lane keeps its own
+ * level, talk for a new lane. Only an explicit string the daemon does not
+ * know reads as approvals.
+ */
+export function statedGroupLevel(raw: unknown): GroupLevel | null {
+  return typeof raw === 'string' ? groupLevel(raw) : null
 }
 
 /** The chat id a `group:<chatId>` stamp names, or null for any other stamp. */

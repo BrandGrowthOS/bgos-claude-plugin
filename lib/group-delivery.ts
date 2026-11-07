@@ -18,7 +18,7 @@
  * Erasable TypeScript only.
  */
 
-import { groupLevel, groupStampChatId, type GroupBacklogLine, type GroupRosterEntry } from './group-lane-args.ts'
+import { statedGroupLevel, groupStampChatId, type GroupBacklogLine, type GroupRosterEntry } from './group-lane-args.ts'
 import { readLaneStamp } from './lane-core.mjs'
 import { isSessionId } from './thread-lane-args.ts'
 import type { GroupDelivery } from './group-lanes.ts'
@@ -125,7 +125,7 @@ export function readGroupDelivery(
     sender: input.sender ?? ctx.mentionedBy,
     sessionHandle: strOrNull(input.sessionHandle),
     title: str(block.title) || ctx.title,
-    level: groupLevel(block.level),
+    level: statedGroupLevel(block.level),
     note: strOrNull(block.note),
     summary: strOrNull(block.summary),
     sessionId: isSessionId(block.sessionId) ? block.sessionId : null,

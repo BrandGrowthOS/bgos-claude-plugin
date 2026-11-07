@@ -708,3 +708,22 @@ test('review 4: an older queued turn never puts back the level a newer delivery 
   assert.equal(r.approvals.length, 0, 'not asked at full')
   assert.equal(JSON.parse(first.stdin.at(-1)!).response.response.behavior, 'deny')
 })
+
+test('review 5: a delivery that states no level keeps the lane\'s level, and a new lane starts at talk', async () => {
+  const r = rig()
+  r.lanes.deliver(delivery({ level: 'talk' }))
+  await settle()
+  r.spawned[0]!.child.result('ok')
+  await settle()
+  r.lanes.deliver(delivery({ messageId: 502, key: '502', level: null }))
+  await settle()
+  assert.equal(r.spawned.length, 1, 'no restart: still talk')
+  assert.deepEqual(r.spawned[0]!.child.killed, [])
+  assert.equal(valueAfter(r.spawned[0]!.args, '--tools'), '')
+
+  const fresh = rig()
+  fresh.lanes.deliver(delivery({ chatId: '404', key: 'n', level: null }))
+  await settle()
+  assert.equal(valueAfter(fresh.spawned[0]!.args, '--tools'), '', 'a new lane with no stated level is talk')
+  assert.equal(valueAfter(fresh.spawned[0]!.args, '--permission-mode'), 'dontAsk')
+})

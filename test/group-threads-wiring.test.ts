@@ -287,3 +287,15 @@ test('review 3: a summary a member steered is framed as data, quoted line by lin
   assert.equal(lines[5], '[End of the summary from the group "Board".]')
   assert.equal(lines.filter((l) => l === '[End of the summary from the group "Board".]').length, 1, 'only the real end line stands unquoted')
 })
+
+test('review 5: no groupThread block, or no level in it, states no level; only an explicit unknown string reads as approvals', () => {
+  const base = { chatId: '123', key: '1', messageId: 1, text: '' }
+  const noBlock: Record<string, unknown> = { ...stamped }
+  delete noBlock.groupThread
+  assert.equal(readGroupDelivery([noBlock], base).level, null)
+  assert.equal(readGroupDelivery([{ ...stamped, groupThread: { ...stamped.groupThread, level: undefined } }], base).level, null)
+  assert.equal(readGroupDelivery([{ ...stamped, groupThread: { ...stamped.groupThread, level: null } }], base).level, null)
+  assert.equal(readGroupDelivery([{ ...stamped, groupThread: { ...stamped.groupThread, level: 5 } }], base).level, null)
+  assert.equal(readGroupDelivery([{ ...stamped, groupThread: { ...stamped.groupThread, level: 'root' } }], base).level, 'approvals')
+  assert.equal(readGroupDelivery([stamped], base).level, 'talk')
+})
