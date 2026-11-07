@@ -1,9 +1,17 @@
 import { execFile } from 'node:child_process'
-import type { ChildProcess } from 'node:child_process'
 import { ChromiumEngine, launchChromium } from '../../bin/hoai-browser-host.mjs'
 
+/** What the fixture needs of a browser process: a ChildProcess, or the host's ChromeProcess. */
+export interface TestBrowserProcess {
+  readonly pid?: number | undefined
+  readonly exitCode: number | null
+  readonly signalCode: NodeJS.Signals | string | null
+  once(event: 'exit', listener: () => void): unknown
+  removeListener(event: 'exit', listener: () => void): unknown
+}
+
 /** Wait for the OS exit event, never a sleep that assumes Chrome has closed. */
-export function waitForTestBrowserExit(child: ChildProcess, ms: number): Promise<boolean> {
+export function waitForTestBrowserExit(child: TestBrowserProcess, ms: number): Promise<boolean> {
   if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true)
   return new Promise(resolve => {
     const exited = () => { clearTimeout(timer); child.removeListener('exit', exited); resolve(true) }
@@ -21,7 +29,7 @@ export function killTestBrowserTree(pid: number, exec: typeof execFile = execFil
   })
 }
 
-export async function stopWindowsTestBrowser(child: ChildProcess, killTree = killTestBrowserTree): Promise<void> {
+export async function stopWindowsTestBrowser(child: TestBrowserProcess, killTree = killTestBrowserTree): Promise<void> {
   // Browser.close has already been sent. Give slow hosted runners time to close
   // before forcing the owned tree, then require a real exit before removing files.
   if (await waitForTestBrowserExit(child, 20_000)) return
