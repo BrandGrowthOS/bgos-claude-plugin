@@ -144,7 +144,7 @@ function fixture(t: any, { wired = false }: { wired?: boolean } = {}) {
   markFloorAttached({ root, folders: [cwd] })
   const markerPaths = [privateMarkerPath(root, floorKey(cwd))]
   // wired: the tracker as server.ts builds it, told the owner and the markers to read.
-  const tracker = wired ? createPrivateTurnTracker({ ownerUserId: OWNER, markerPaths }) : createPrivateTurnTracker()
+  const tracker = createPrivateTurnTracker({ ownerUserId: OWNER, ...(wired ? { markerPaths } : {}) })
   /** Deliver one turn exactly as the three lanes do. Returns the prompt. */
   const deliver = (turn: TurnShape, content = `turn text for message ${turn.messageId}`) =>
     tracker.deliver({

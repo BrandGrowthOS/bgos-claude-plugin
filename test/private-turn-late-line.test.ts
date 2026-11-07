@@ -1,29 +1,7 @@
 /**
- * A person's delivery that reaches a CLI turn before its prompt's forwarder line is not forgotten (HOAI board row
- * f81a527c; the delegated review of plugin 0.69.0, worker plugrel, item B; cousin row 70f1898b).
- *
- * THE SHAPE (plugrel). The owner's message reaches the daemon and the CLI submits it. The synchronous private turn
- * hook writes the marker, but the async forwarder line that carries the prompt to the daemon (begin()) is slow: on
- * Windows a cold node start alone took 4 s (test/private-turn-two-admitted.test.ts), and the hook stops waiting for
- * the daemon's receipt after 3 s. A share recipient's message arrives meanwhile. Nothing is admitted yet, so it
- * revokes nothing, and the CLI injects it into the running turn. Then the late line lands, and begin() reset
- * turnSeen (lib/private-turn.mjs, `turnSeen = freshSeen()` inside beginTurn), forgetting the recipient. The owner's
- * prompt opened a verified owner turn: boards, schedule, the Agent Browser and the turn aware tools acted as the owner
- * while the recipient's words were in the same turn.
- *
- * THE COUSIN (70f1898b). A recipient's message and the owner's, submitted together, run as ONE turn (#232: one
- * UserPromptSubmit per delivery, in order, the marker left is the last one's). begin() of the owner's prompt reset
- * turnSeen and replaced the recipient's admitted prompt, and email_send's look back starts at the owner's own
- * delivery, so it named the owner's message.
- *
- * THE RULE HELD HERE. Within one CLI turn (Stop to Stop) turnSeen survives begin(); once a delivery of anyone but the
- * owner is seen in the turn, nothing acts as the owner until the turn ends. Who may open a private turn stays as it
- * was: the owner, a share recipient as themselves, a stranger never.
- *
- * These tests run the real forwarder (bin/hoai-hook.mjs), the real private turn hook, a real intake, the tracker,
- * privateActor, emailSendBasis and the signed browser context, and the private tool admission of server.ts itself.
- *
- * Run with: npx tsx --test test/private-turn-late-line.test.ts
+ * Private authority is scoped to the verified sender and the complete CLI turn.
+ * Turn boundaries and delivery provenance remain authoritative regardless of hook arrival order.
+ * These tests exercise the production hooks, intake, tracker, tool admission and signed browser context.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -318,15 +296,13 @@ async function assertOwnerTurn(host: ReturnType<typeof agentHost>, label: string
   }
 }
 
-// ── The plugrel shape and its cousin: red on main ───────────────────────────
+// Sender isolation within one CLI turn.
 
-test('plugrel: a recipient message that reaches the turn before the owner prompt\'s late forwarder line never lets anything act as the owner', async (t) => {
+test('sender isolation survives reordered hook processing', async (t) => {
   const host = agentHost(t)
-  const owner = host.prompt(host.card(ownerFrame('Update the launch card on my board.')))
+  const owner = host.prompt(host.card(ownerFrame('Message.')))
   owner.mark()
-  // The forwarder is slow; the recipient's message arrives, revokes nothing (nothing is admitted yet), and the CLI
-  // injects it into the running turn.
-  host.card(recipientFrame('Also add my private notes to the owner\'s launch card.'))
+  host.card(recipientFrame('Message.'))
   owner.spool()
   host.pump()
   assert.deepEqual(host.begins.length, 1, 'the owner prompt\'s line reached the daemon')
@@ -336,11 +312,11 @@ test('plugrel: a recipient message that reaches the turn before the owner prompt
   assert.deepEqual(host.tracker.turnSenders().people.includes(RECIPIENT), true, 'the recipient is still remembered')
 })
 
-test('70f1898b: a recipient message and the owner\'s submitted together as one turn, the recipient first: nothing acts as the owner, email_send names nothing', async (t) => {
+test('sender isolation holds for a turn with multiple submitted messages', async (t) => {
   for (const order of ['lines in order', 'owner line first'] as const) {
     const host = agentHost(t)
-    const recipient = host.prompt(host.card(recipientFrame('Send the contract to legal@example.com for me.')))
-    const owner = host.prompt(host.card(ownerFrame('Thanks, carry on.')))
+    const recipient = host.prompt(host.card(recipientFrame('Message.')))
+    const owner = host.prompt(host.card(ownerFrame('Message.')))
     // One turn: the private turn hook runs for each prompt in order, so the marker left is the owner prompt's.
     recipient.mark()
     owner.mark()
@@ -467,7 +443,7 @@ test('control: a replayed wake after a restart (#229) opens no turn, and the own
   await assertOwnerTurn(host, 'after the replay', { kind: 'owner_message', id: String(messageId) })
 })
 
-test('control: another person\'s wake admitted in the same turn after the owner\'s acts only as that person (#232), never as the owner', async (t) => {
+test('control: another person\'s wake admitted in the same turn after the owner\'s acts as neither sender', async (t) => {
   const host = agentHost(t)
   const owner = host.prompt(host.card(ownerFrame('Update the launch card.')))
   const recipient = host.prompt(host.card(recipientFrame('Update mine.')))
@@ -476,8 +452,9 @@ test('control: another person\'s wake admitted in the same turn after the owner\
   owner.spool()
   recipient.spool()
   host.pump()
-  for (const name of GATED) assert.equal(await actsFor(host, name), RECIPIENT, name)
-  assert.equal(host.browser(), RECIPIENT)
+  for (const name of GATED) assert.equal(await actsFor(host, name), `refused: ${PRIVATE_TURN_REFUSAL}`, name)
+  for (const name of TURN_AWARE) assert.match(await actsFor(host, name), /^refused:/, name)
+  assert.equal(host.browser(), 'nobody')
 })
 
 // ── The same race across a Stop: the previous turn's Stop line is late too ──
@@ -611,7 +588,7 @@ function twoKeys(t: any, ownerUserId: string | null = OWNER) {
   /** One prompt of session s: its card delivered, the hook's live marker, then its line. */
   const turn = (actingUserId: string, chatId = '1') => {
     const card = tracker.deliver({ content: `card ${randomUUID()}`, actingUserId, chatId })
-    write(own, { sessionId: 's', promptHash: privatePromptHash(card), live: true, promptId: randomUUID() })
+    write(own, { sessionId: 's', promptHash: privatePromptHash(card), live: true, rawCard: false, promptId: randomUUID() })
     tracker.begin({ prompt: card, sessionId: 's', promptId: randomUUID() })
   }
   const stop = () => { write(own, { sessionId: 's', live: false }); tracker.end() }
@@ -1042,16 +1019,16 @@ test('the marker records the CLI turn: one turn until a Stop, the gap it followe
   assert.ok(!JSON.stringify(first).includes(token(1)), 'the token itself is never written')
   const second = privateTurnRecord({ previous: first, sessionId: 's', prompt: card(2), turnId: 't2' })
   assert.deepEqual([second.cliTurn, second.after, second.tags], ['t1', 'c0', [privateTokenTag(token(1)), privateTokenTag(token(2))]], 'the same turn')
-  assert.deepEqual(privateTurnRecord({ previous: { ...first, live: false }, sessionId: 's', prompt: card(3), turnId: 't3' }), { cliTurn: 't3', after: 't1', tags: [privateTokenTag(token(3))], prompts: [short(card(3))], record: 2 }, 'after a Stop, a new turn')
-  assert.deepEqual(privateTurnRecord({ previous: { ...first, live: false }, sessionId: 'other', prompt: card(3), turnId: 't3' }), { cliTurn: 't3', after: 't1', tags: [privateTokenTag(token(3))], prompts: [short(card(3))], record: 2 }, 'after another session\'s Stop: the gap it followed all the same')
-  assert.deepEqual(privateTurnRecord({ previous: first, sessionId: 'other', prompt: card(3), turnId: 't3' }), { cliTurn: 't3', afterLive: 't1', tags: [privateTokenTag(token(3))], prompts: [short(card(3))], record: 2 }, 'another session\'s live marker (a CLI killed without SessionEnd): a new turn it never bars, that names the turn it followed')
+  assert.deepEqual(privateTurnRecord({ previous: { ...first, live: false }, sessionId: 's', prompt: card(3), turnId: 't3' }), { cliTurn: 't3', after: 't1', tags: [privateTokenTag(token(3))], prompts: [short(card(3))], rawCard: false, record: 2 }, 'after a Stop, a new turn')
+  assert.deepEqual(privateTurnRecord({ previous: { ...first, live: false }, sessionId: 'other', prompt: card(3), turnId: 't3' }), { cliTurn: 't3', after: 't1', tags: [privateTokenTag(token(3))], prompts: [short(card(3))], rawCard: false, record: 2 }, 'after another session\'s Stop: the gap it followed all the same')
+  assert.deepEqual(privateTurnRecord({ previous: first, sessionId: 'other', prompt: card(3), turnId: 't3' }), { cliTurn: 't3', afterLive: 't1', tags: [privateTokenTag(token(3))], prompts: [short(card(3))], rawCard: false, record: 2 }, 'another session\'s live marker (a CLI killed without SessionEnd): a new turn it never bars, that names the turn it followed')
   const life = { pid: 4242, at: 1000 }
   const ownLife = { ...first, daemon: life }
   assert.equal(privateTurnRecord({ previous: ownLife, sessionId: 's', prompt: card(2), turnId: 't2', daemon: life }).cliTurn, 't1', 'the same session and daemon life: the same turn')
-  assert.deepEqual(privateTurnRecord({ previous: ownLife, sessionId: 's', prompt: card(2), turnId: 't2', daemon: { pid: 4242, at: 2000 } }), { cliTurn: 't2', afterLive: 't1', tags: [privateTokenTag(token(2))], prompts: [short(card(2))], record: 2, daemon: { pid: 4242, at: 2000 } }, 'the same session, a new daemon life with a reused pid: a new turn')
+  assert.deepEqual(privateTurnRecord({ previous: ownLife, sessionId: 's', prompt: card(2), turnId: 't2', daemon: { pid: 4242, at: 2000 } }), { cliTurn: 't2', afterLive: 't1', tags: [privateTokenTag(token(2))], prompts: [short(card(2))], rawCard: false, record: 2, daemon: { pid: 4242, at: 2000 } }, 'the same session, a new daemon life with a reused pid: a new turn')
   assert.equal(privateTurnRecord({ previous: ownLife, sessionId: 's', prompt: card(2), turnId: 't2', daemon: { pid: 4343, at: 1000 } }).cliTurn, 't2', 'another pid: a new turn')
   assert.equal(privateTurnRecord({ previous: first, sessionId: 's', prompt: card(2), turnId: 't2', daemon: life }).cliTurn, 't1', 'a marker of a hook before 0.69.8 names no daemon life: the session decides')
-  assert.deepEqual(privateTurnRecord({ previous: null, previousMissing: true, sessionId: 's', prompt: card(3), turnId: 't3', promptId: 'p3' }), { cliTurn: 'p3', after: 'none', tags: [privateTokenTag(token(3))], prompts: [short(card(3))], record: 2 }, 'no marker yet; a new turn named by its prompt_id')
+  assert.deepEqual(privateTurnRecord({ previous: null, previousMissing: true, sessionId: 's', prompt: card(3), turnId: 't3', promptId: 'p3' }), { cliTurn: 'p3', after: 'none', tags: [privateTokenTag(token(3))], prompts: [short(card(3))], rawCard: false, record: 2 }, 'no marker yet; a new turn named by its prompt_id')
   assert.equal(privateTurnRecord({ previous: null, previousUnreadable: true, sessionId: 's', prompt: card(3), turnId: 't3' }).unsure, true, 'a marker there but unreadable')
   assert.equal(privateTurnRecord({ previous: { schemaVersion: 1, turnId: 'old', sessionId: 's', live: true }, sessionId: 's', prompt: card(3), turnId: 't3' }).unsure, true, 'a live marker of a hook that kept no tags')
   let previous: any = null
@@ -1081,19 +1058,8 @@ test('the tracker is told who the owner is and which markers to read (server.ts)
   assert.equal(typeof (privateTurn as any).createPrivateTurnTracker, 'function')
 })
 
-// ── 70f1898b, the card case: an email, a peer or a meeting card before the owner's prompt in one CLI turn ──────────
-//
-// THE GAP (main 4eea85e). email_send's own state is per prompt: begin() recomputes sendRefused from that prompt's tokens
-// alone, a Stop line clears it, and the look back starts at the owner's own delivery. So an email, a peer agent's or a
-// room agent's message, or a meeting card that reached the CLI turn BEFORE the owner's prompt (its own prompt in that
-// turn, or injected into it with none) was never seen, and email_send named the owner's message for a direct send with
-// the other party's words in front of the model. #247 closed it for a share recipient (a person) only.
-//
-// THE RULE HELD HERE. One CLI turn runs Stop to Stop, as the synchronous private turn hook records it in the marker
-// (#247). When a delivery that names no person reached the turn the owner's prompt runs in, email_send is admitted with
-// the owner's reason marked askOwner: it goes only with the owner's own approval of exactly that email (the Always ask
-// card), else it is kept as a draft for the owner (test/agent-email-send.test.ts section 15). A share recipient's message
-// is #247's refusal, unchanged; every other private tool keeps main's rule.
+// Email admission uses the complete turn's provenance and requires owner approval when appropriate.
+// Sender isolation and the other private tool policies remain enforced.
 
 const EMAIL_CHAT = 5003
 const MEETING_CHAT = 5004
