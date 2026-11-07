@@ -759,6 +759,7 @@ All share the same plugin installation at `~/bgos-claude-plugin/`.
 | `vault_items` | List the vault items this agent may use, metadata only (v0.86.1+) |
 | `vault_request_login` | Open the owner's secure Add a login form for a name, website and optional username (v0.86.1+) |
 | `vault_fill_prepare` | Sign a one-use fill request for a saved login, to pass unchanged to `hoai_vault_fill` on the HOAI desktop (v0.86.1+) |
+| `set_profile_image` | Set the agent's own profile image (or, with `groupChatId`, a group's picture as an admin agent of it) from an image file its own image tool made: PNG, JPEG, WebP or GIF, up to 5 MB. Only on a verified turn of the owner's own message (v0.86.21+) |
 | `complete_side_thread` | Legacy: mark a parent message's side-thread complete with a summary (use `complete_peer_thread` for new flows) |
 
 Claude Code retains all its built-in tools: `Bash`, `Read`, `Write`, `Edit`, `Grep`, `Glob`, `WebSearch`, `WebFetch`, etc.

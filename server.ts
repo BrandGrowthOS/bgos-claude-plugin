@@ -209,7 +209,7 @@ import {
 } from './lib/boards-tools.js'
 import { createActingUserTracker } from './lib/acting-user.js'
 import { ARTIFACT_TOOL_DECLS, handleArtifactTool } from './lib/artifacts-tools.js'
-import { PROFILE_IMAGE_TOOL_DECLS, handleProfileImageTool } from './lib/profile-image-tools.js'
+import { PROFILE_IMAGE_TOOL_DECLS, handleProfileImageTool, profileImageTurn } from './lib/profile-image-tools.js'
 import { VAULT_TOOL_DECLS, handleVaultTool } from './lib/vault-tools.js'
 import { vaultHostDir } from './lib/vault-host.mjs'
 import { createPrivateTurnTracker, emailSendBasis, PRIVATE_TURN_REFUSAL, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requireEmailSendTurn, requirePrivateTurn, turnAwarePrivateTurn } from './lib/private-turn.mjs'
@@ -6770,7 +6770,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       const text = !PRIVATE_HOOK.registered && lockHeld ? PRIVATE_HOOK_MISSING_REFUSAL : String((err as Error).message)
       return Promise.resolve({ content: [{ type: 'text' as const, text }], isError: true })
     }
-  } else if (['call_owner', 'list_chats', 'create_mission', 'tick_mini_goal', 'set_mission_goals', 'add_mission_goals', 'cancel_mission_goal', 'set_goal_working', 'set_goal_waiting', 'complete_mission', 'set_profile_image'].includes(req.params.name)) {
+  } else if (['call_owner', 'list_chats', 'create_mission', 'tick_mini_goal', 'set_mission_goals', 'add_mission_goals', 'cancel_mission_goal', 'set_goal_working', 'set_goal_waiting', 'complete_mission'].includes(req.params.name)) {
     // TURN AWARE, not turn gated (shared agents Phase 0, items 0.3, 0.4, 0.7;
     // lib/private-turn.mjs turnAwarePrivateTurn). A verified turn is used as
     // above, so a share recipient's is named; with none the owner's own work
@@ -6781,6 +6781,20 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       privateCall = turnAwarePrivateTurn({ tracker: privateTurns, markerPaths: PRIVATE_MARKER_PATHS, ownerUserId: USER_ID })
     } catch (err) {
       try { log(`private turn: refused ${req.params.name}: no verified sender, and another person reached this prompt`) } catch { /* A diagnostic line never changes the refusal. */ }
+      return Promise.resolve({ content: [{ type: 'text' as const, text: String((err as Error).message) }], isError: true })
+    }
+  }
+  if (req.params.name === 'set_profile_image') {
+    // GATED, not turn aware (AVATARSELF review round 2): only a verified turn
+    // the owner's own message or tap opened (lib/profile-image-tools.ts
+    // profileImageTurn). A peer agent, an email or system card, a mission
+    // card, the goal lane and a scheduled wake are refused before anything
+    // is read or sent.
+    try {
+      if (!lockHeld) throw new Error('This private action did not start because this daemon does not hold the active agent connection.')
+      privateCall = profileImageTurn(privateTurns, PRIVATE_MARKER_PATHS, USER_ID) as typeof privateCall
+    } catch (err) {
+      try { if (lockHeld) log(`private turn: refused set_profile_image: ${privateTurns.explain({ markerPaths: PRIVATE_MARKER_PATHS })}`) } catch { /* A diagnostic line never changes the refusal. */ }
       return Promise.resolve({ content: [{ type: 'text' as const, text: String((err as Error).message) }], isError: true })
     }
   }
@@ -6834,12 +6848,13 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
   }
 
   if (req.params.name === 'set_profile_image') {
-    // Turn aware (admitted above): a share recipient's turn names them, and the
-    // tool refuses it before reading the file; the backend refuses it again.
+    // Gated (admitted above): the admitted turn, never the owner by default. A
+    // share recipient's turn names them, and the tool refuses it before
+    // reading the file; the backend refuses it again from the acting header.
     return handleProfileImageTool(req.params.name, rawArgs, {
       assistantId: ASSISTANT_ID,
       ownerUserId: USER_ID,
-      actingUserId: privateCall?.actingUserId ?? USER_ID,
+      actingUserId: privateCall?.actingUserId ?? null,
       privateHeaders: privateCall?.headers ?? {},
       bgosPut,
     })

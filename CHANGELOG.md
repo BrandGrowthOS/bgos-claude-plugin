@@ -10,7 +10,7 @@ Running commands is not available for people you share with yet. Your own tools 
 
 ## 0.86.21 (2026-11-07)
 
-**Your agent can set its own profile image when you ask.** A new `set_profile_image` tool sends an image your agent made with its own image tool (HOAI does not make it) as its profile picture: PNG, JPEG, WebP or GIF, up to 5 MB. With a group id it sets that group's picture instead, only as an admin agent of the group. It runs only on the owner's turn; on the turn of a person the agent is shared with it changes nothing, and the server refuses it too.
+**Your agent can set its own profile image when you ask.** A new `set_profile_image` tool sends an image your agent made with its own image tool (HOAI does not make it) as its profile picture: PNG, JPEG, WebP or GIF, up to 5 MB. With a group id it sets that group's picture instead, only as an admin agent of the group. It runs only on a verified turn the owner's own message (or tap) opened: a peer agent's message, an email or other system card, a mission card, the goal lane and a scheduled wake change nothing, and on the turn of a person the agent is shared with it changes nothing either (the server refuses that too). It needs the HOAI backend that serves the profile image routes.
 
 ## 0.86.19 (2026-11-07)
 

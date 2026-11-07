@@ -117,13 +117,15 @@ test('exactly one source; a relative path and an unknown argument are refused', 
   assert.deepEqual(h.calls, [])
 })
 
-test('the declaration tells the owner-ask rule, and the tool is turn aware in the server and the helper guard', () => {
+test('the declaration tells the owner-ask rule, and the tool is gated in the server and in the helper guard', () => {
   const [decl] = PROFILE_IMAGE_TOOL_DECLS
   assert.equal(decl.name, 'set_profile_image')
   assert.match(decl.description, /ONLY when your owner asks/)
+  assert.match(decl.description, /only when your owner asks you there/)
   assert.match(decl.description, /HOAI does not make the image/)
   assert.ok(new RegExp(PRIVATE_TOOL_MATCHER).test('mcp__bgos__set_profile_image'))
   const server = readFileSync(new URL('../server.ts', import.meta.url), 'utf8')
-  assert.match(server, /'complete_mission', 'set_profile_image'\]\.includes\(req\.params\.name\)/)
+  assert.doesNotMatch(server, /'complete_mission', 'set_profile_image'\]/, 'not turn aware')
+  assert.match(server, /privateCall = profileImageTurn\(privateTurns, PRIVATE_MARKER_PATHS, USER_ID\)/)
   assert.match(server, /\.\.\.PROFILE_IMAGE_TOOL_DECLS,/)
 })
