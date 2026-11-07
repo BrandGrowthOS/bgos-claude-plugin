@@ -211,6 +211,7 @@ import { createActingUserTracker } from './lib/acting-user.js'
 import { ARTIFACT_TOOL_DECLS, handleArtifactTool } from './lib/artifacts-tools.js'
 import { VAULT_TOOL_DECLS, handleVaultTool } from './lib/vault-tools.js'
 import { vaultHostDir } from './lib/vault-host.mjs'
+import { createScheduleGrantRuns, requireBoardsTurn, scheduleGrantOf } from './lib/schedule-grant-run.mjs'
 import { createPrivateTurnTracker, emailSendBasis, PRIVATE_TURN_REFUSAL, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requireEmailSendTurn, requirePrivateTurn, turnAwarePrivateTurn } from './lib/private-turn.mjs'
 import { createFireLedger, createPostedButtons, privateFireKey, privateFiresPath, privateEndedLine, privateReplayLine, privateTapCard, privateUnrecordedLine } from './lib/private-turn.mjs'
 import {
@@ -2753,11 +2754,20 @@ const steerGate = new SteerGate({
 function deliverInbound(
   steer: ArrivingSteer | null,
   deliver: (interrupted: boolean) => Promise<void>,
+  // Who the delivery is from (privateActor) and the grant a scheduled wake carries (scheduleGrantOf), 0.86.20.
+  who: { actingUserId: string | null; grant: ReturnType<typeof scheduleGrantOf> } | null = null,
 ): Promise<void> {
   // A model or effort command being typed and confirmed holds every delivery
   // until it ends: a message arriving between the checks and the Enter would
   // open a turn under the typed command (lib/model-effort-control.ts).
-  if (modelEffortControl.busy) return modelEffortControl.whenIdle().then(() => deliverInbound(steer, deliver))
+  if (modelEffortControl.busy) return modelEffortControl.whenIdle().then(() => deliverInbound(steer, deliver, who))
+  // A granted scheduled run opens with its wake, and while it is live everyone else's delivery waits for its end: the
+  // agent never acts on another person's message mid run, and that message cannot open a turn under it.
+  if (who?.grant && scheduleGrantRuns.open(who.grant)) log(`scheduled run ${who.grant.taskId}: board grant open; other deliveries wait until it ends`)
+  if (who && scheduleGrantRuns.holds(who)) {
+    log('scheduled run: a delivery from someone else waits until the run ends')
+    return scheduleGrantRuns.whenReleased().then(() => deliverInbound(steer, deliver, { actingUserId: who.actingUserId, grant: null }))
+  }
   if (!steer) return steerGate.ordinary(() => deliver(false))
   return steerGate.steer({ messageId: steer.messageId, plan: steer.plan, deliver }).then(() => {})
 }
@@ -5888,6 +5898,25 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
               'Chat to bind the task to. Omit to use your main chat with the ' +
               'owner (the platform default).',
           },
+          boards: {
+            type: 'array',
+            maxItems: 10,
+            description:
+              'Wakes only. The boards each run needs, as [{ board_id, access }] ' +
+              '(board_id from boards_list, access read or write, default read). ' +
+              'Each run then keeps those board actions for up to two hours even ' +
+              'when other people post meanwhile (their messages wait until the ' +
+              'run ends), as the person scheduling and on those boards only. What ' +
+              'a run produces goes only to that person\'s private chat with you.',
+            items: {
+              type: 'object',
+              properties: {
+                board_id: { type: 'string' },
+                access: { type: 'string', enum: ['read', 'write'] },
+              },
+              required: ['board_id'],
+            },
+          },
         },
         required: ['kind', 'topic', 'when'],
       },
@@ -6748,7 +6777,11 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
   if (req.params.name.startsWith('boards_') || req.params.name.startsWith('artifact_') || req.params.name.startsWith('vault_') || ['schedule', 'list_schedules', 'cancel_schedule'].includes(req.params.name)) {
     try {
       if (!lockHeld) throw new Error('This private action did not start because this daemon does not hold the active agent connection.')
-      privateCall = requirePrivateTurn(privateTurns, PRIVATE_MARKER_PATHS, USER_ID)
+      // A boards call in a granted scheduled run carries its grant, and is admitted on it alone after another
+      // person's message reached the turn (lib/schedule-grant-run.mjs). Every other private tool is as before.
+      privateCall = req.params.name.startsWith('boards_')
+        ? requireBoardsTurn({ requirePrivateTurn, tracker: privateTurns, markerPaths: PRIVATE_MARKER_PATHS, ownerUserId: USER_ID, runs: scheduleGrantRuns })
+        : requirePrivateTurn(privateTurns, PRIVATE_MARKER_PATHS, USER_ID)
     }
     catch (err) {
       // A refused call on a PEER agent's turn is counted (ids and the tool's name only, no content), so the
@@ -8362,6 +8395,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
         instruction: rawArgs.instruction,
         when: rawArgs.when,
         chatId: resolvedChatId,
+        boards: rawArgs.boards,
       })
       if (!built.ok) {
         return {
@@ -10797,6 +10831,16 @@ const turnChat = createTurnChatTracker()
 const privateFires = createFireLedger({ path: privateFiresPath(FLOOR_STATE_ROOT, ASSISTANT_ID) })
 const PRIVATE_MARKER_PATHS = FLOOR_KEYS.map((key) => privateMarkerPath(FLOOR_STATE_ROOT, key))
 const privateTurns = createPrivateTurnTracker({ ownerUserId: USER_ID, markerPaths: PRIVATE_MARKER_PATHS, fires: privateFires, onRevoke: (info) => { log(privateRevokeLine(info)); publishBrowserPrivateTurn() }, onRepeat: (repeat) => log(privateRepeatLine(repeat)), onReplay: (replay) => log(privateReplayLine(replay)), onUnrecorded: (info) => log(privateUnrecordedLine(info)), onEnded: (info) => log(privateEndedLine(info)) })
+// A scheduled run keeps the permission of the person who scheduled it (lib/schedule-grant-run.mjs, 0.86.20). While a
+// granted run is live, other people's deliveries wait (deliverInbound) and its boards calls carry the grant. Its end
+// tells the server, so the hold on the agent's group posts lifts then rather than at the end of the window.
+const scheduleGrantRuns = createScheduleGrantRuns({
+  onEnded: (run, reason) => {
+    log(`scheduled run ${run.taskId}: board grant ended (${reason})`)
+    void bgosPeerPost(`scheduled-tasks/agent/${run.taskId}/grant/end`, { fireId: run.fireId })
+      .catch((err) => log(`scheduled run ${run.taskId}: the server was not told the run ended (its window ends it): ${err}`))
+  },
+})
 // Every channel card passes here. One that skipped privateTurns.deliver (a meeting line, a button tap, a voice
 // dispatch or stop) names nobody, so it ends a recipient's or voice consult's private turn. All notifications retain
 // their provenance. Owner chat and scheduler turns keep their raw-card policy (privateTurns.rawCard). Its meta says which card it is: one that
@@ -11377,6 +11421,8 @@ function endHookTurn(keepCard: boolean): void {
   // The Stop line's stamp, when a hook line ended the turn: a live marker written before it is the turn that stopped,
   // and a prompt submitted before its forwarder's start ran in that turn (startedAt).
   privateTurns.end(hookLineAt === null ? {} : { at: hookLineAt, startedAt: hookLineStartedAt })
+  // A granted scheduled run whose turn began ends with it, and what waited is delivered.
+  scheduleGrantRuns.noteStop()
   publishBrowserPrivateTurn()
 }
 
@@ -11505,11 +11551,14 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
   // none once that session ended, so the first prompt of the session a /clear starts writes its own (the fourth).
   if (floorEntrySession(liveSessionId, hookEndedSessionId) !== floorEntrySessionWritten) markFloorAttachedIfHolder()
   if (event.name === 'SessionEnd') privateTurns.end({ at: lineAt, startedAt: line?.startedAt })
+  // The session that ran a granted scheduled run is gone: the run is over, and what waited is delivered.
+  if (event.name === 'SessionEnd') scheduleGrantRuns.end('session ended')
   if (event.name === 'UserPromptSubmit') {
     // A prompt past the forwarder's clip arrives as its token(s) plus the full prompt's hash.
     // startedAt: when claude submitted it (the forwarder's own start), so a Stop line places it by that, wherever the
     // two lines land (lib/private-turn.mjs ranSinceStop, the final review of e7166041).
     const began = privateTurns.begin({ prompt: payload.prompt, promptHash: payload.hoai_clipped === true ? payload.prompt_sha256 : undefined, sessionId: hookSessionId, promptId: payload.prompt_id, startedAt: line?.startedAt })
+    scheduleGrantRuns.noteBegin()
     hookTurnLive = true
     // The turn's chat is decided HERE and held until Stop. The prompt carries
     // the message we delivered, so the delivery it matches names the chat; with
@@ -13098,6 +13147,10 @@ async function pollChat(chatId: string): Promise<void> {
         text: content,
         now: Date.now(),
       })
+      // Who it is from, and the board grant a scheduled wake carries (0.86.20): deliverInbound opens the run and
+      // holds everyone else's delivery while it is live.
+      const pollActor = privateActor({ senderType: pollSenderType, senderUserId: privateSenderUserId(msg.message), agentOrigin: pollAgentOrigin, eventMeta: msg.message.eventMeta })
+      const pollGrant = scheduleGrantOf({ senderType: pollSenderType, eventMeta: msg.message.eventMeta, actingUserId: pollActor, chatId })
       const humanHandoff = trackMessageOperation(() => deliverInbound(steerPlan, (interrupted) => humanMessageEdits.isDeleted({ chatId, messageId: msg.message.id }) ? Promise.resolve() : mcp.notification({
         method: 'notifications/claude/channel',
         params: {
@@ -13109,7 +13162,7 @@ async function pollChat(chatId: string): Promise<void> {
             interrupted ? STEER_INTERRUPTED_META : null,
           ),
         },
-      })))
+      }), { actingUserId: pollActor, grant: pollGrant }))
       if (!isSlashCommand) humanMessageEdits.rememberOriginal(
         viewStreamMessage({ seq: 0, kind: 'message_new', chatId: Number(chatId), messageId: msg.message.id, payload: msg as unknown as Record<string, unknown> }, ASSISTANT_ID),
         humanHandoff,
@@ -16674,6 +16727,8 @@ async function forwardStreamInbound(
     }
     log(`Stream replay message in chat ${chatId}: "${content.slice(0, 100)}${content.length > 100 ? '...' : ''}"`)
     try {
+      const streamActor = privateActor({ senderType: isSystem ? 'system' : view.senderKind, senderUserId: privateSenderUserId(view.raw), agentOrigin: view.agentOrigin, eventMeta: view.eventMetaRaw })
+      const streamGrant = scheduleGrantOf({ senderType: isSystem ? 'system' : view.senderKind, eventMeta: view.eventMetaRaw, actingUserId: streamActor, chatId })
       const humanHandoff = trackMessageOperation(() =>
         deliverInbound(steerPlan, (interrupted) => humanMessageEdits.isDeleted(view) ? Promise.resolve() : mcp.notification({
           method: 'notifications/claude/channel',
@@ -16686,7 +16741,7 @@ async function forwardStreamInbound(
               interrupted ? STEER_INTERRUPTED_META : null,
             ),
           },
-        })),
+        }), { actingUserId: streamActor, grant: streamGrant }),
       )
       if (!isSlash) humanMessageEdits.rememberOriginal(view, humanHandoff)
       await humanHandoff
@@ -18393,6 +18448,8 @@ function connectWebsocket(): void {
           | null
           | undefined,
       )
+      const wsActor = privateActor({ senderType: wsSenderType, senderUserId: privateSenderUserId(payload), agentOrigin: wsAgentOrigin, eventMeta: payload?.eventMeta ?? payload?.event_meta })
+      const wsGrant = scheduleGrantOf({ senderType: wsSenderType, eventMeta: payload?.eventMeta ?? payload?.event_meta, actingUserId: wsActor, chatId })
       const humanHandoff = trackMessageOperation(() => deliverInbound(steerPlan, (interrupted) => humanMessageEdits.isDeleted({ chatId, messageId }) ? Promise.resolve() : mcp.notification({
         method: 'notifications/claude/channel',
         params: {
@@ -18404,7 +18461,7 @@ function connectWebsocket(): void {
             interrupted ? STEER_INTERRUPTED_META : null,
           ),
         },
-      })))
+      }), { actingUserId: wsActor, grant: wsGrant }))
       if (!isWsSlashCommand) humanMessageEdits.rememberOriginal(
         viewStreamMessage({ seq: 0, kind: 'message_new', chatId: null, messageId, payload }, ASSISTANT_ID),
         humanHandoff,

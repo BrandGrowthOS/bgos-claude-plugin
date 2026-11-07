@@ -19,6 +19,7 @@
  * Schedule is allowed inside that consult and refused before it, after it was
  * answered, and for a replay of the same frame.
  */
+import { createScheduleGrantRuns, requireBoardsTurn } from '../lib/schedule-grant-run.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
@@ -71,7 +72,7 @@ test('the backend stamped consult frame allows schedule only inside that consult
   })
   const admit = (name: string) => execute(admissionSource + '\nreturn privateCall;', {
     req: { params: { name } }, lockHeld: true, privateTurns, PRIVATE_MARKER_PATHS: markerPaths, USER_ID: owner,
-    PRIVATE_HOOK: { registered: true }, PRIVATE_HOOK_MISSING_REFUSAL: 'hook missing', requirePrivateTurn,
+    PRIVATE_HOOK: { registered: true }, PRIVATE_HOOK_MISSING_REFUSAL: 'hook missing', requirePrivateTurn, requireBoardsTurn, scheduleGrantRuns: createScheduleGrantRuns(),
     log: () => {}, recordPeerRefusal: () => ({ line: '' }), pathDirname: () => root, CURSOR_FILE_PATH: join(root, 'cursor.json'), ASSISTANT_ID: wire.assistantId,
   })
   const scheduled: Array<{ path: string; headers: unknown }> = []
