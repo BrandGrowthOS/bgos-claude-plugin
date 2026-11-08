@@ -418,6 +418,37 @@ describe('capabilities resend on change', () => {
     stop(h)
   })
 
+  test('a changed set whose post fails is sent again on the next poll', async () => {
+    let caps = ['a']
+    let failNext = false
+    const calls: Array<Record<string, unknown>> = []
+    const h = startVersionHeartbeat({
+      authMode: 'pairing',
+      rootDir: dirWithPackage('0.85.5'),
+      post: async (_path, body) => {
+        if (failNext) {
+          failNext = false
+          throw new Error('server down')
+        }
+        calls.push(body)
+        return {}
+      },
+      log: () => {},
+      machineId: () => 'm',
+      capabilities: () => caps,
+    })
+    await Bun.sleep(0)
+    expect(calls.length).toBe(1)
+    caps = ['a', 'b']
+    failNext = true
+    await h!.pollReadiness()
+    expect(calls.length).toBe(1)
+    await h!.pollReadiness()
+    expect(calls.length).toBe(2)
+    expect(calls[1]!.capabilities).toEqual(['a', 'b'])
+    stop(h)
+  })
+
   test('works with no updateStatus provider at all', async () => {
     let caps = ['a']
     const calls: Array<Record<string, unknown>> = []

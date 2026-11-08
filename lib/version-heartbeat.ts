@@ -296,11 +296,11 @@ export function startVersionHeartbeat(deps: {
         } catch {}
       }
       const declared = readCapabilities()
-      if (declared) {
-        body.capabilities = declared
-        lastSentCapabilities = capabilitiesSignature(declared)
-      }
+      if (declared) body.capabilities = declared
       await deps.post('integrations/heartbeat', body)
+      // Recorded only once the server took it, so a failed post is tried
+      // again on the next poll instead of waiting for the 6h beat.
+      if (declared) lastSentCapabilities = capabilitiesSignature(declared)
       if (sessionReport) lastStatusSentSignature = sessionStatusSignature(sessionReport)
     } catch {
       // Telemetry only: never let a heartbeat failure surface.
