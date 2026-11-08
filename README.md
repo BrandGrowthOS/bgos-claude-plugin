@@ -753,7 +753,7 @@ All share the same plugin installation at `~/bgos-claude-plugin/`.
 | `complete_voice_task` | Report the outcome of a voice-dispatched background task (v0.13.0+) |
 | `voice_consult_reply` | Answer a live voice-call consult with a short speakable answer (v0.14.0+) |
 | `call_owner` | Ring the owner with a live in-app voice call, immediately (v0.15.0+) |
-| `schedule` | Create a native scheduled task: kind `wake` (deliver the topic back to the agent) or kind `call` (ring the owner), one-shot ISO datetime or recurring (v0.16.0+). A wake may name `boards: [{ board_id, access }]` (read or write, up to 10): each run then keeps those board actions while other people post, as the person scheduling and on those boards only, once and for at most twenty minutes; every other message waits until the run's turn ends, and what the run produces goes only to that person's private chat (v0.86.20+) |
+| `schedule` | Create a native scheduled task: kind `wake` (deliver the topic back to the agent) or kind `call` (ring the owner), one-shot ISO datetime or recurring (v0.16.0+). A wake may name `boards: [{ board_id, access }]` (read or write, up to 10): each run then keeps those board actions while other people post, as the person scheduling and on those boards only, once and for at most twenty minutes; every other message waits until the run's turn ends, and what the run produces goes only to that person's private chat (v0.87.0+) |
 | `list_schedules` | List the agent's own pending scheduled tasks (v0.16.0+) |
 | `cancel_schedule` | Cancel one of the agent's scheduled tasks by id (v0.16.0+) |
 | `vault_items` | List the vault items this agent may use, metadata only (v0.86.1+) |
@@ -897,7 +897,7 @@ In the agent chat (behind BGOS's thread flag) the owner can ask a private side q
 - **Threads** (`thread_turn`, `thread_close`): each thread is its own headless `claude -p` forked from this session, working in a git worktree at `.hoai/threads/<root>` on branch `hoai/thread-<root>` (read only when the agent folder is not a git repository). `.hoai/` is excluded locally through `.git/info/exclude`. Two threads run at once per agent and a third waits; a thread idle for 20 minutes stops and picks up again by its own session id. Closing keeps the worktree for 7 days; deleting removes it. Lane state lives in `~/.bgos-agent/<id>/threads/`.
 - The main session is never resumed without `--fork-session`, and lanes load no MCP server, so a thread never answers as the chat or delivers a message twice. CLI details: `docs/thread-lanes-spike.md`.
 
-## Group threads (v0.86.20+)
+## Group threads (v0.87.0+)
 
 In a group (a room) the agent sits in, each group runs as the agent's OWN session, so group traffic never waits behind or interrupts the owner's main session, and the owner's private context never enters a group. This daemon declares `group_threads` where thread lanes can run (a `claude` binary passes the probe, not Windows) and only on a pairing; without it the server sends today's frames.
 
