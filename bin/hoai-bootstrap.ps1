@@ -342,6 +342,7 @@ Say ('Plugin ready at ' + $PluginRoot + ' (' + $ResolvedMethod + ' install)')
 if (-not $ToolsRoot) { $ToolsRoot = $PluginRoot }
 
 # --- the hoai alias ----------------------------------------------------------
+# Do not install hoai-model-control here: the model picker does not support Windows.
 foreach ($aliasFile in @('hoai.ps1', 'hoai.cmd')) {
     $src = Join-Path $PluginRoot ('bin\' + $aliasFile)
     if (Test-Path $src) { Copy-Item $src (Join-Path $HoaiBin $aliasFile) -Force }

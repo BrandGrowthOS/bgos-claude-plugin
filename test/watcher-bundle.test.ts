@@ -53,6 +53,8 @@ test('WATCHER_BUNDLE_FILES is exactly the design 7.5 list (order and names)', ()
     'lib/published-release.mjs',
     'lib/update-planner.mjs',
     'lib/update-executor.mjs',
+    // The updater shares the guarded installer's POSIX command list.
+    'lib/hoai-wrapper-install.mjs',
     // Added 2026-10-05 with the file itself: update-executor imports it, the
     // list never named it, and the 0.61.1 watcher crashed on start on every
     // machine that installed it. This pinned copy is the reason a one-line

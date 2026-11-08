@@ -474,18 +474,23 @@ else
 fi
 say "Plugin ready at $PLUGIN_ROOT ($RESOLVED_METHOD install)"
 
-# --- the hoai alias ----------------------------------------------------------
+# --- the hoai commands -------------------------------------------------------
 # A symlink is enough here: bin/hoai resolves its own directory THROUGH
 # symlinks, so a ~/.local/bin/hoai link still finds the real checkout and
 # needs no hoai-plugin-root.txt breadcrumb (that file is for copied installs).
-if [ -f "$PLUGIN_ROOT/bin/hoai" ]; then
-    chmod +x "$PLUGIN_ROOT/bin/hoai" 2>/dev/null
-    if [ "$PLUGIN_ROOT/bin/hoai" != "$LOCAL_BIN/hoai" ]; then
-        ln -sf "$PLUGIN_ROOT/bin/hoai" "$LOCAL_BIN/hoai"
+# The model picker is supported on macOS and Linux and uses the same PATH.
+for command in hoai hoai-model-control; do
+    source_file="$command"
+    if [ "$command" = hoai-model-control ]; then source_file="$command.mjs"; fi
+    if [ -f "$PLUGIN_ROOT/bin/$source_file" ]; then
+        chmod +x "$PLUGIN_ROOT/bin/$source_file" 2>/dev/null
+        if [ "$PLUGIN_ROOT/bin/$source_file" != "$LOCAL_BIN/$command" ]; then
+            ln -sf "$PLUGIN_ROOT/bin/$source_file" "$LOCAL_BIN/$command"
+        fi
+    else
+        say "[hoai] warning: $PLUGIN_ROOT/bin/$source_file not found; the $command command will not be on PATH."
     fi
-else
-    say "[hoai] warning: $PLUGIN_ROOT/bin/hoai not found; the hoai command will not be on PATH."
-fi
+done
 ensure_on_path_now "$LOCAL_BIN"
 
 # --- CLAUDE.md stub (the agent's standing instructions) ----------------------

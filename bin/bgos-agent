@@ -2161,8 +2161,20 @@ cmd_link() {
   mkdir -p "$HOME/.local/bin"
   ln -sf "$SELF" "$HOME/.local/bin/hoai-agent"
   ln -sf "$SELF" "$HOME/.local/bin/bgos-agent"
-  # hoai is the bash dispatcher next to this script; it must reach hoai-core.mjs.
-  ln -sf "$BIN_DIR/hoai" "$HOME/.local/bin/hoai"
+  # Both commands run from the plugin root and share this PATH directory.
+  local command source_file
+  for command in hoai hoai-model-control; do
+    source_file="$command"
+    [ "$command" != hoai-model-control ] || source_file="$command.mjs"
+    if [ -f "$BIN_DIR/$source_file" ]; then
+      chmod +x "$BIN_DIR/$source_file"
+      if [ "$BIN_DIR/$source_file" != "$HOME/.local/bin/$command" ]; then
+        ln -sf "$BIN_DIR/$source_file" "$HOME/.local/bin/$command"
+      fi
+    else
+      warn "$BIN_DIR/$source_file not found; the $command command will not be on PATH."
+    fi
+  done
   ok "linked → $HOME/.local/bin/hoai-agent"
   case ":$PATH:" in
     *":$HOME/.local/bin:"*) : ;;
