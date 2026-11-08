@@ -47,8 +47,8 @@
  * clientRequestId is the request's own name. The backend
  * answers a second send of the same id with the same body by returning the
  * first result and making nothing new; the same id with another body is a 409.
- * An older backend either drops the field without a word or (strict
- * validation) refuses it with a 400; ./schedule-send.ts handles both. The
+ * An older backend either drops the field without a word or refuses it with
+ * a 400; ./schedule-send.ts handles both. The
  * builder only checks the shape and carries the id: it never makes one (no
  * randomness here) and never derives one from the body, because two identical
  * routines that were both asked for must both be made.

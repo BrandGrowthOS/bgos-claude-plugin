@@ -11,10 +11,13 @@
  * The retry paths a create has in this add-on, all of them:
  *
  *   1. A LOST ANSWER (no answer in time, a dropped connection, an answer cut
- *      off, or a gateway 502/503/504): asked once more, with the SAME id. The
- *      server then returns the first result. Only when the body carries an id:
+ *      off, a gateway 502/503/504, or the server's 429 "another request is
+ *      still being decided"): asked once more, with the SAME id. The server
+ *      then returns the first result, or (if the first ask is still running)
+ *      makes the second wait and then returns the first result, or refuses
+ *      the second with that same 429 and writes nothing. Only when the body carries an id:
  *      without one a second ask could make a second routine, so there is none.
- *   2. An OLDER SERVER that refuses the field (strict validation answers 400
+ *   2. An OLDER SERVER that refuses the field (it answers 400
  *      "property clientRequestId should not exist"): that refusal made nothing,
  *      so the same body is sent once more WITHOUT the id and the call works as
  *      it always did. An older server that quietly drops the field needs no
@@ -24,11 +27,18 @@
  *      a second routine there. The 201 answer does not echo the id, so the
  *      add-on cannot tell such a server from a current one; the cost ends
  *      when that server is updated.
- *   3. No other path. The transport (boundedFetch) makes one attempt, and the
- *      queue/poll loops never touch a create. An AGENT calling `schedule`
+ *   3. No other path. The transport (boundedFetch) makes one attempt (fetch
+ *      itself re-sends a POST on a 307 or 308 redirect, with the same body and
+ *      id, which is harmless), and the queue/poll loops never touch a create. An AGENT calling `schedule`
  *      again after a failure is a new tool call: it gets a new id and is not
  *      covered. The body is never hashed into an id, because two identical
  *      routines that were both asked for must both be made.
+ *
+ * When every ask got no usable answer the agent reads one sentence (the
+ * routine may already exist, call list_schedules before asking again), never
+ * the raw transport line and never the server's "try again in a moment": a
+ * fresh call is a new request with a new id, and the first ask may still be
+ * making its routine.
  *
  * Pure in the sense that matters for tests: the post and the sleep are passed
  * in, so a fake server and a no-wait clock drive it. server.ts is the thin
@@ -78,6 +88,13 @@ export const SCHEDULE_CLASH_TEXT =
 export const SCHEDULE_DELETED_TEXT =
   'This routine was made and then deleted by the owner, so it was not made again. Call schedule again if it is still wanted.'
 
+/** What the agent reads when no ask got a usable answer. The routine may exist. */
+export const SCHEDULE_UNKNOWN_TEXT =
+  'The server did not give an answer that could be read, so the routine may already exist. Call list_schedules to check before asking again.'
+
+/** The server's 429 for an ask that met another ask still being decided. It wrote nothing. */
+const BUSY_RE = /another scheduling request is still being decided/i
+
 const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
 function statusOf(err: unknown): number | null {
@@ -91,9 +108,14 @@ function textOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
-/** A gateway that never got the backend's answer: the routine may exist. */
-function isLostAnswer(status: number | null): boolean {
-  return status === null || status === 502 || status === 503 || status === 504
+/**
+ * No usable answer: nothing came back, or a gateway never got the backend's
+ * answer, or the server said another ask is still being decided. In every case
+ * the routine may exist (or be made a moment later by the ask still running).
+ */
+function isLostAnswer(status: number | null, text: string): boolean {
+  if (status === null || status === 502 || status === 503 || status === 504) return true
+  return status === 429 && BUSY_RE.test(text)
 }
 
 function withoutId(body: ScheduleCreateBody): ScheduleCreateBody {
@@ -112,7 +134,8 @@ export async function sendScheduleCreate(opts: ScheduleSendOptions): Promise<Sch
       return { ok: true, result: await opts.post(body) }
     } catch (err) {
       const status = statusOf(err)
-      if (isLostAnswer(status) && body.clientRequestId !== undefined && !askedAgain) {
+      const lost = isLostAnswer(status, textOf(err))
+      if (lost && body.clientRequestId !== undefined && !askedAgain) {
         askedAgain = true
         log('schedule: no usable answer, asking once more with the same request id')
         await sleep(SCHEDULE_REASK_DELAY_MS)
@@ -135,6 +158,10 @@ export async function sendScheduleCreate(opts: ScheduleSendOptions): Promise<Sch
           return { ok: false, error: /deleted/.test(text) ? SCHEDULE_DELETED_TEXT : SCHEDULE_CLASH_TEXT }
         }
         return { ok: false, error: text }
+      }
+      if (lost) {
+        log(`schedule: no usable answer after ${askedAgain ? 2 : 1} ask(s): ${err instanceof Error ? err.message : String(err)}`)
+        return { ok: false, error: SCHEDULE_UNKNOWN_TEXT }
       }
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
     }

@@ -12,13 +12,16 @@
  * real `case 'schedule'` source out of server.ts, so the id is minted where the
  * handler mints it, and the fake server counts the routines that exist.
  *
- * Retry paths the add-on has for a create :
+ * Retry paths the add-on has for a create:
  *   1. a lost answer (no answer in time, a dropped connection, an unreadable
- *      body, or a gateway 502/503/504): asked once more, with the SAME id;
- *   2. an older server that refuses the field (strict validation, 400 "should
- *      not exist"): sent once more WITHOUT the id (nothing was made);
+ *      body, a gateway 502/503/504, or the server's "another request is still
+ *      being decided" 429): asked once more, with the SAME id;
+ *   2. an older server that refuses the field (400 "should not exist"): sent
+ *      once more WITHOUT the id (nothing was made);
  *   3. nothing else. An agent calling `schedule` again is a new tool call and
  *      gets a new id (see the "not covered" test).
+ * When every ask gets no usable answer the agent reads one sentence: the
+ * routine may already exist, call list_schedules before asking again.
  */
 
 import { test } from 'node:test'
@@ -41,13 +44,13 @@ import {
 // ── the fake server ─────────────────────────────────────────────────────────
 
 /** What one request does. 'drop' and 'stall' make the task FIRST, then lose the answer. */
-type Step = 'ok' | 'drop' | 'stall' | 'garble' | 502 | 503 | 504 | 500 | 400 | 403
+type Step = 'ok' | 'drop' | 'stall' | 'garble' | 'slow' | 'busy' | 502 | 503 | 504 | 500 | 429 | 400 | 403
 /**
  * current: knows clientRequestId.
- * old-lenient: an older server, validation strips unknown fields (whitelist only).
- * old-strict: an older server with strict validation on (forbidNonWhitelisted): 400.
+ * old-drops: an older server that drops the field without a word.
+ * old-refuses: an older server that refuses the field with a 400.
  */
-type Mode = 'current' | 'old-lenient' | 'old-strict'
+type Mode = 'current' | 'old-drops' | 'old-refuses'
 
 const REUSED =
   'This clientRequestId was already used for a different request. Send a new clientRequestId for a new request, or the same body again to repeat the first one.'
@@ -77,40 +80,72 @@ function digestOf(body: Record<string, unknown>): string {
   return JSON.stringify(Object.fromEntries(Object.entries(rest).sort(([a], [b]) => (a < b ? -1 : 1))))
 }
 
-async function startFake(mode: Mode, script: Step[] = []): Promise<Fake> {
+interface FakeOptions {
+  /**
+   * What a second ask meets while the first is still being decided for the same person and agent.
+   * queue: it waits for the first and then reads what the first remembered (one server process).
+   * busy: it waits up to `lockWaitMs`, then is refused with 429 and writes nothing (another server process).
+   * Unset: no admission lock is modelled (every ask is decided at once).
+   */
+  race?: 'queue' | 'busy'
+  /** How long a 'slow' ask holds the admission before it makes the routine. */
+  holdMs?: number
+  lockWaitMs?: number
+}
+
+const BUSY = 'Another scheduling request is still being decided. Try again in a moment.'
+const sleepMs = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
+async function startFake(mode: Mode, script: Step[] = [], opts: FakeOptions = {}): Promise<Fake> {
   const tasks: FakeTask[] = []
   const requests: Array<Record<string, unknown>> = []
   const remembered = new Map<string, { digest: string; taskId: number | null }>()
   let nth = 0
   const stalled: ServerResponse[] = []
+  // The admission lock of one person and agent: one ask is decided at a time.
+  let lockTail: Promise<void> = Promise.resolve()
+  const admit = async <T,>(work: () => Promise<T>): Promise<T | 'busy'> => {
+    if (!opts.race) return work()
+    const ahead = lockTail
+    let release!: () => void
+    const mine = new Promise<void>((resolve) => (release = resolve))
+    lockTail = ahead.then(() => mine)
+    try {
+      if (opts.race === 'busy') {
+        const got = await Promise.race([ahead.then(() => true), sleepMs(opts.lockWaitMs ?? 100).then(() => false)])
+        if (!got) return 'busy'
+      } else {
+        await ahead
+      }
+      return await work()
+    } finally {
+      release()
+    }
+  }
 
-  const handle = (req: IncomingMessage, res: ServerResponse) => {
-    let raw = ''
-    req.on('data', (chunk) => (raw += chunk))
-    req.on('end', () => {
-      const step = script[nth++] ?? 'ok'
-      const sent = JSON.parse(raw) as Record<string, unknown>
-      requests.push(sent)
-      const json = (status: number, payload: unknown) => {
-        res.writeHead(status, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify(payload))
-      }
-      if (typeof step === 'number') {
-        return json(step, { statusCode: step, message: `refused with ${step}` })
-      }
-      if (mode === 'old-strict' && 'clientRequestId' in sent) {
-        return json(400, { statusCode: 400, message: ['property clientRequestId should not exist'], error: 'Bad Request' })
-      }
+  const decide = async (sent: Record<string, unknown>, step: Step, res: ServerResponse) => {
+    const json = (status: number, payload: unknown) => {
+      if (res.destroyed || res.writableEnded) return
+      res.writeHead(status, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(payload))
+    }
+    if (step === 'busy') return json(429, { statusCode: 429, message: BUSY })
+    if (typeof step === 'number') return json(step, { statusCode: step, message: `refused with ${step}` })
+    if (mode === 'old-refuses' && 'clientRequestId' in sent) {
+      return json(400, { statusCode: 400, message: ['property clientRequestId should not exist'], error: 'Bad Request' })
+    }
+    const outcome = await admit(async () => {
+      if (step === 'slow') await sleepMs(opts.holdMs ?? 400)
       const body = { ...sent }
-      if (mode === 'old-lenient') delete body.clientRequestId
+      if (mode === 'old-drops') delete body.clientRequestId
       const id = typeof body.clientRequestId === 'string' ? body.clientRequestId : null
       let task: FakeTask | undefined
       if (id !== null) {
         const key = `person-1|agent-1|${id}`
         const before = remembered.get(key)
         if (before) {
-          if (before.digest !== digestOf(body)) return json(409, { statusCode: 409, code: 'schedule_request_id_reused', message: REUSED })
-          if (before.taskId === null) return json(409, { statusCode: 409, code: 'schedule_request_task_deleted', message: TASK_DELETED })
+          if (before.digest !== digestOf(body)) return { conflict: 'schedule_request_id_reused', message: REUSED }
+          if (before.taskId === null) return { conflict: 'schedule_request_task_deleted', message: TASK_DELETED }
           task = tasks.find((t) => t.id === before.taskId)
         } else {
           task = { id: tasks.length + 1, topic: String(body.topic) }
@@ -121,14 +156,28 @@ async function startFake(mode: Mode, script: Step[] = []): Promise<Fake> {
         task = { id: tasks.length + 1, topic: String(body.topic) }
         tasks.push(task)
       }
-      // The task exists now. The answer may still be lost on its way back.
-      if (step === 'drop') return void res.socket?.destroy()
-      if (step === 'stall') return void stalled.push(res)
-      if (step === 'garble') {
-        res.writeHead(201, { 'Content-Type': 'application/json' })
-        return void res.end('{"id": 1, "top')
-      }
-      json(201, task)
+      return { task }
+    })
+    if (outcome === 'busy') return json(429, { statusCode: 429, message: BUSY })
+    if ('conflict' in outcome) return json(409, { statusCode: 409, code: outcome.conflict, message: outcome.message })
+    // The task exists now. The answer may still be lost on its way back.
+    if (step === 'drop') return void res.socket?.destroy()
+    if (step === 'stall') return void stalled.push(res)
+    if (step === 'garble') {
+      res.writeHead(201, { 'Content-Type': 'application/json' })
+      return void res.end('{"id": 1, "top')
+    }
+    json(201, outcome.task)
+  }
+
+  const handle = (req: IncomingMessage, res: ServerResponse) => {
+    let raw = ''
+    req.on('data', (chunk) => (raw += chunk))
+    req.on('end', () => {
+      const step = script[nth++] ?? 'ok'
+      const sent = JSON.parse(raw) as Record<string, unknown>
+      requests.push(sent)
+      void decide(sent, step, res)
     })
   }
 
@@ -169,8 +218,8 @@ function postTo(fake: Fake, timeoutMs = 400) {
 
 const noSleep = async () => {}
 
-async function withFake<T>(mode: Mode, script: Step[], run: (fake: Fake) => Promise<T>): Promise<T> {
-  const fake = await startFake(mode, script)
+async function withFake<T>(mode: Mode, script: Step[], run: (fake: Fake) => Promise<T>, opts: FakeOptions = {}): Promise<T> {
+  const fake = await startFake(mode, script, opts)
   try {
     return await run(fake)
   } finally {
@@ -199,9 +248,9 @@ const scheduleCase = serverSource.slice(serverSource.indexOf("    case 'schedule
 function runScheduleCase(
   fake: Fake,
   rawArgs: Record<string, unknown>,
-  overrides: { newScheduleRequestId?: () => string } = {},
+  overrides: { newScheduleRequestId?: () => string; timeoutMs?: number } = {},
 ) {
-  const post = postTo(fake)
+  const post = postTo(fake, overrides.timeoutMs)
   const bindings = {
     name: 'schedule',
     rawArgs,
@@ -338,7 +387,7 @@ test('with no id there is no second ask after a lost answer (it could not be mad
 })
 
 test('an older server that refuses the field still gets the routine: sent once more without the id', async () => {
-  await withFake('old-strict', [], async (fake) => {
+  await withFake('old-refuses', [], async (fake) => {
     const sent = await sendScheduleCreate({ body: buildBody(), post: (b) => postTo(fake)('scheduled-tasks/agent', b as never), sleep: noSleep })
     assert.equal(sent.ok, true)
     assert.equal(fake.requests.length, 2)
@@ -349,8 +398,8 @@ test('an older server that refuses the field still gets the routine: sent once m
 })
 
 test('after the resend without the id there is no further ask, even if that answer is lost', async () => {
-  // Request 1 is refused by the strict older server; request 2 (no id) makes the routine and loses its answer.
-  await withFake('old-strict', ['ok', 'drop', 'ok'], async (fake) => {
+  // Request 1 is refused by the older server that refuses the field; request 2 (no id) makes the routine and loses its answer.
+  await withFake('old-refuses', ['ok', 'drop', 'ok'], async (fake) => {
     const sent = await sendScheduleCreate({ body: buildBody(), post: (b) => postTo(fake)('scheduled-tasks/agent', b as never), sleep: noSleep })
     assert.equal(sent.ok, false)
     assert.equal(fake.requests.length, 2, 'a third ask without an id could make a second routine')
@@ -359,11 +408,120 @@ test('after the resend without the id there is no further ask, even if that answ
 })
 
 test('an older server that quietly ignores the field behaves as before: one send, one routine', async () => {
-  await withFake('old-lenient', [], async (fake) => {
+  await withFake('old-drops', [], async (fake) => {
     const sent = await sendScheduleCreate({ body: buildBody(), post: (b) => postTo(fake)('scheduled-tasks/agent', b as never), sleep: noSleep })
     assert.equal(sent.ok, true)
     assert.equal(fake.requests.length, 1)
     assert.equal(fake.tasks.length, 1)
+  })
+})
+
+// ── the second ask arrives while the first is still being decided ───────────
+//
+// A timed out ask looks exactly like this to the server: the first ask is
+// still running (it holds the agent's admission) when the second arrives. The
+// server answers one of two ways. In the same server process the second waits
+// its turn and then reads what the first remembered: 201 with the first
+// routine. On another process it waits up to five seconds for the admission,
+// then is refused with 429 "Another scheduling request is still being
+// decided. Try again in a moment." and writes nothing; the first ask goes on
+// and makes the routine. The fake does both.
+
+const UNKNOWN_TEXT =
+  'Failed to create the schedule: The server did not give an answer that could be read, so the routine may already exist. Call list_schedules to check before asking again.'
+
+async function until(check: () => boolean, ms = 3000) {
+  const end = Date.now() + ms
+  while (!check() && Date.now() < end) await sleepMs(20)
+}
+
+test('RACE, same server process: the second ask waits for the first and the agent reads one routine', async () => {
+  await withFake(
+    'current',
+    ['slow', 'ok'],
+    async (fake) => {
+      const result = await runScheduleCase(fake, SCHEDULE_ARGS, { timeoutMs: 250 })
+      assert.notEqual(result.isError, true, result.content[0].text)
+      assert.match(result.content[0].text, /^Scheduled\./)
+      assert.equal(fake.requests.length, 2)
+      assert.equal(fake.requests[1].clientRequestId, fake.requests[0].clientRequestId)
+      assert.equal(fake.tasks.length, 1, 'one routine')
+    },
+    { race: 'queue', holdMs: 400 },
+  )
+})
+
+test('RACE, another server process: the agent is told the routine may exist, never "try again", and one routine results', async () => {
+  await withFake(
+    'current',
+    ['slow', 'ok'],
+    async (fake) => {
+      const result = await runScheduleCase(fake, SCHEDULE_ARGS, { timeoutMs: 250 })
+      assert.equal(result.isError, true)
+      assert.equal(result.content[0].text, UNKNOWN_TEXT)
+      assert.doesNotMatch(result.content[0].text, /try again in a moment|decided/i)
+      assert.equal(fake.requests.length, 2)
+      assert.equal(fake.requests[1].clientRequestId, fake.requests[0].clientRequestId)
+      // The first ask goes on after the add-on gave up on it.
+      await until(() => fake.tasks.length >= 1)
+      await sleepMs(150)
+      assert.equal(fake.tasks.length, 1, 'the routine the agent was warned about exists, and only one')
+    },
+    { race: 'busy', holdMs: 700, lockWaitMs: 100 },
+  )
+})
+
+test('a busy answer to the first ask (another request is being decided) is asked again with the same id', async () => {
+  await withFake('current', ['busy', 'ok'], async (fake) => {
+    const body = buildBody()
+    const sent = await sendScheduleCreate({ body, post: (b) => postTo(fake)('scheduled-tasks/agent', b as never), sleep: noSleep })
+    assert.equal(sent.ok, true)
+    assert.equal(fake.requests.length, 2)
+    assert.deepEqual(fake.requests[1], fake.requests[0])
+    assert.equal(fake.tasks.length, 1)
+  })
+})
+
+test('a 429 that is not the busy answer is never asked again and keeps the server words', async () => {
+  await withFake('current', [429, 'ok'], async (fake) => {
+    const sent = await sendScheduleCreate({ body: buildBody(), post: (b) => postTo(fake)('scheduled-tasks/agent', b as never), sleep: noSleep })
+    assert.equal(sent.ok, false)
+    assert.equal(fake.requests.length, 1)
+    assert.match((sent as { error: string }).error, /refused with 429/)
+  })
+})
+
+// ── what the agent reads when no ask got a usable answer ────────────────────
+
+const UNKNOWN_SENTENCE =
+  'The server did not give an answer that could be read, so the routine may already exist. Call list_schedules to check before asking again.'
+const RAW_LINES = /timed out|fetch failed|\bPOST\b|\d+ ?ms|Unexpected|JSON|50\d/i
+
+test('PROOF: both asks lost, the real handler tells the agent the routine may exist, not the raw line', async () => {
+  for (const script of [['drop', 'drop'], ['stall', 'stall'], [504, 504], ['garble', 'garble']] as Step[][]) {
+    await withFake('current', script, async (fake) => {
+      const result = await runScheduleCase(fake, SCHEDULE_ARGS, { timeoutMs: 150 })
+      assert.equal(result.isError, true, JSON.stringify(script))
+      assert.equal(result.content[0].text, UNKNOWN_TEXT, JSON.stringify(script))
+      assert.doesNotMatch(result.content[0].text, RAW_LINES, JSON.stringify(script))
+      assert.equal(fake.requests.length, 2)
+    })
+  }
+})
+
+test('one lost ask with no id to repeat reads the same sentence', async () => {
+  await withFake('current', ['drop'], async (fake) => {
+    const { clientRequestId: _gone, ...noId } = buildBody()
+    const sent = await sendScheduleCreate({ body: noId, post: (b) => postTo(fake)('scheduled-tasks/agent', b as never), sleep: noSleep })
+    assert.deepEqual(sent, { ok: false, error: UNKNOWN_SENTENCE })
+  })
+})
+
+test('an answered refusal still shows the server words, not the may-exist sentence', async () => {
+  await withFake('current', [403], async (fake) => {
+    const sent = await sendScheduleCreate({ body: buildBody(), post: (b) => postTo(fake)('scheduled-tasks/agent', b as never), sleep: noSleep })
+    assert.equal(sent.ok, false)
+    assert.doesNotMatch((sent as { error: string }).error, /may already exist/)
   })
 })
 
