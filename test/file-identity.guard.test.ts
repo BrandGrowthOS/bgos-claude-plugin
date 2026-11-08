@@ -2,7 +2,8 @@
  * No new plain device or inode comparisons in lib. Missing file numbers are
  * unknown, and number stats can round large file ids. The existing sites are
  * debt, not examples to copy: remove entries from the allow list as they are
- * fixed; never add entries. This guard deliberately does no type inference.
+ * fixed, lowering the pinned count too; never add entries. Unused allowances
+ * fail so fixed sites cannot leave credits. This guard does no type inference.
  *
  * Sites use a relative path and a printed comparison, not a line number, so
  * comments and unrelated line shifts do not require refreshing the baseline.
@@ -17,6 +18,7 @@ import ts from 'typescript'
 import { scratchDir } from './helpers/scratch-dirs.ts'
 
 const LIB = fileURLToPath(new URL('../lib/', import.meta.url))
+const ALLOWED_SITE_COUNT = 37
 const ALLOW_LIST: string[] = JSON.parse(readFileSync(new URL('./fixtures/file-identity-allowlist.json', import.meta.url), 'utf8'))
 const SOURCE_FILE = /\.(?:[cm]?[jt]s|[jt]sx)$/
 const COMPARISONS = new Set([
@@ -70,23 +72,33 @@ function scanLib(root: string): Site[] {
   return sites
 }
 
-function unlistedSites(sites: Site[], allowed: readonly string[]): Site[] {
+function auditAllowances(sites: Site[], allowed: readonly string[]): { unlisted: Site[], unused: string[] } {
   const remaining = new Map<string, number>()
   for (const key of allowed) remaining.set(key, (remaining.get(key) ?? 0) + 1)
-  return sites.filter(({ key }) => {
+  const unlisted = sites.filter(({ key }) => {
     const count = remaining.get(key) ?? 0
     if (count === 0) return true
     remaining.set(key, count - 1)
     return false
   })
+  const unused = [...remaining].flatMap(([key, count]) => Array<string>(count).fill(key))
+  return { unlisted, unused }
 }
 
+test('the allow list has exactly the reviewed number of sites', () => {
+  assert.equal(ALLOW_LIST.length, ALLOWED_SITE_COUNT,
+    'Allow-list size changed. Remove fixed sites and lower ALLOWED_SITE_COUNT together; do not add allowances.')
+})
+
 test('lib has no new plain device or inode comparison sites', () => {
-  const offenders = unlistedSites(scanLib(LIB), ALLOW_LIST)
+  const { unlisted: offenders, unused } = auditAllowances(scanLib(LIB), ALLOW_LIST)
   assert.deepEqual(offenders, [],
     'New plain file number comparison(s). Treat missing numbers as unknown and preserve large file ids; ' +
     'do not grow test/fixtures/file-identity-allowlist.json.\n' +
     offenders.map(site => `${site.location}: ${site.key}`).join('\n'))
+  assert.deepEqual(unused, [],
+    'Unused file number comparison allowance(s). Remove fixed sites from ' +
+    'test/fixtures/file-identity-allowlist.json and lower ALLOWED_SITE_COUNT.\n' + unused.join('\n'))
 })
 
 test('the scanner catches both file numbers, either operand and every comparison operator', () => {
@@ -132,13 +144,20 @@ test('comments, strings, other properties, type checks and non-comparison uses a
 
 test('allowances are tied to the file, expression and number of occurrences', () => {
   const [site] = comparisonSites('lib/known.mjs', 'a.ino === b.ino')
-  assert.deepEqual(unlistedSites([site], [site.key]), [])
-  assert.deepEqual(unlistedSites([site, site], [site.key]), [site])
-  assert.equal(unlistedSites(comparisonSites('lib/new.mjs', 'a.ino === b.ino'), [site.key]).length, 1)
-  assert.equal(unlistedSites(comparisonSites('lib/known.mjs', 'a.dev === b.dev'), [site.key]).length, 1)
-  assert.equal(unlistedSites(comparisonSites('lib/known.mjs', 'a.ino !== b.ino'), [site.key]).length, 1)
-  // Removing a comparison is allowed without replacing it with new debt.
-  assert.deepEqual(unlistedSites([], [site.key]), [])
+  assert.deepEqual(auditAllowances([site], [site.key]), { unlisted: [], unused: [] })
+  assert.deepEqual(auditAllowances([site, site], [site.key]), { unlisted: [site], unused: [] })
+  assert.deepEqual(auditAllowances([site, site], [site.key, site.key]), { unlisted: [], unused: [] })
+  for (const source of [
+    comparisonSites('lib/new.mjs', 'a.ino === b.ino'),
+    comparisonSites('lib/known.mjs', 'a.dev === b.dev'),
+    comparisonSites('lib/known.mjs', 'a.ino !== b.ino'),
+  ]) {
+    assert.deepEqual(auditAllowances(source, [site.key]), { unlisted: source, unused: [site.key] })
+  }
+  // Fixed sites and surplus duplicate allowances must be removed from the list.
+  assert.deepEqual(auditAllowances([], [site.key]), { unlisted: [], unused: [site.key] })
+  assert.deepEqual(auditAllowances([site], [site.key, site.key]), { unlisted: [], unused: [site.key] })
+  assert.deepEqual(auditAllowances([], [site.key, site.key]), { unlisted: [], unused: [site.key, site.key] })
 })
 
 test('site keys ignore line shifts and comments while diagnostics retain the source line', () => {
@@ -157,10 +176,10 @@ test('the lib walk reads nested source files and detects a new comparison in a s
   writeFileSync(join(root, 'notes.md'), 'a.ino === b.ino')
   const sites = scanLib(root)
   assert.equal(sites.length, 8)
-  assert.equal(unlistedSites(sites, []).length, 8)
-  assert.deepEqual(unlistedSites(sites, sites.map(site => site.key)), [])
+  assert.equal(auditAllowances(sites, []).unlisted.length, 8)
+  assert.deepEqual(auditAllowances(sites, sites.map(site => site.key)), { unlisted: [], unused: [] })
   writeFileSync(join(root, 'scratch.mjs'), 'a.ino === b.ino')
-  assert.deepEqual(unlistedSites(scanLib(root), sites.map(site => site.key)).map(site => site.key), [
+  assert.deepEqual(auditAllowances(scanLib(root), sites.map(site => site.key)).unlisted.map(site => site.key), [
     'lib/scratch.mjs: a.ino === b.ino',
   ])
 })
