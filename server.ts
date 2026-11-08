@@ -17184,7 +17184,10 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
   // for a person, or a tap in a share recipient's chat once lanes run, is
   // never announced into the owner's session.
   // Group threads: a group's tap is a turn line in its lane, never the main session's.
-  if (routeGroupStreamTap(view)) return
+  if (routeGroupStreamTap(view)) {
+    log(`button_clicked SKIPPED for the main session: message ${view.messageId} is a group's tap, for its group lane (streamAuthority=${authorityAtReceipt})`)
+    return
+  }
   const tapLaneVerdict = ownerLaneVerdict(view.raw)
   if (!tapLaneVerdict.deliver || ownerAnnounceRefused({ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership.isOthers(chatId) })) {
     noteLaneMisroute('stream tap', view.messageId, tapLaneVerdict.deliver ? 'a recipient chat' : tapLaneVerdict.stamp)

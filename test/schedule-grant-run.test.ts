@@ -371,5 +371,9 @@ test('server: the three message lanes name the wake\'s grant, and the CLI turn b
 test('server: the schedule tool offers boards and passes them through', () => {
   const schema = source.slice(source.indexOf("name: 'schedule',"), source.indexOf("required: ['kind', 'topic', 'when']"))
   assert.match(schema, /boards: \{\n\s+type: 'array'/)
-  assert.match(source, /boards: rawArgs\.boards,\n\s+\}\)/)
+  // The create body's own call, whatever else it passes (the request's own name rides beside the boards since 0.87.0).
+  const createStart = source.indexOf('const built = buildScheduleCreateBody({')
+  assert.ok(createStart > 0, 'the schedule tool builds its create body')
+  const createCall = source.slice(createStart, source.indexOf('\n      })', createStart))
+  assert.match(createCall, /\n\s+boards: rawArgs\.boards,\n/)
 })
