@@ -293,6 +293,7 @@ import {
   buildScheduleListPath,
   buildScheduleCancelPath,
 } from './lib/schedule.js'
+import { httpFailure, newScheduleRequestId, sendScheduleCreate } from './lib/schedule-send.js'
 import {
   buildMissionCreateBody,
   buildMissionTickBody,
@@ -3138,7 +3139,8 @@ async function bgosPeerPost(path: string, body: Record<string, unknown>, private
     async (response) => {
       if (!response.ok) {
         const text = await response.text().catch(() => '')
-        throw new Error(`POST ${response.status}: ${errorBodyText(text)}`)
+        // The same message as ever; the status rides along so the schedule create can tell "refused" from "no answer".
+        throw httpFailure('POST', response.status, errorBodyText(text))
       }
       return response.json()
     },
@@ -8422,6 +8424,9 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
         when: rawArgs.when,
         chatId: resolvedChatId,
         boards: rawArgs.boards,
+        // ONE name for this tool call: a second ask by the add-on (lib/schedule-send.ts) reuses it, so the
+        // server answers it with the first result. The agent calling the tool again is a new call, a new id.
+        clientRequestId: newScheduleRequestId(),
       })
       if (!built.ok) {
         return {
@@ -8434,11 +8439,19 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
         // The peer client carries X-Caller-Assistant-Id alongside X-API-Key;
         // the agent-scoped endpoints resolve WHICH assistant owns the task
         // from that header.
-        const result = await bgosPeerPost(
-          'scheduled-tasks/agent',
-          built.body as unknown as Record<string, unknown>,
-          privateCall!.headers,
-        )
+        const sent = await sendScheduleCreate({
+          body: built.body,
+          post: (body) =>
+            bgosPeerPost('scheduled-tasks/agent', body as unknown as Record<string, unknown>, privateCall!.headers),
+          log,
+        })
+        if (!sent.ok) {
+          return {
+            content: [{ type: 'text', text: `Failed to create the schedule: ${sent.error}` }],
+            isError: true,
+          }
+        }
+        const result = sent.result
         const mode = built.body.recurrence
           ? `recurrence freq=${built.body.recurrence.freq}`
           : built.body.everyHours != null
