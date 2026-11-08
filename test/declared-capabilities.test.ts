@@ -105,7 +105,7 @@ test('a host that cannot type declares the READ half only', () => {
   // the honest answer, and still sees every Last check.
   assert.deepEqual(
     [...declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode: 'pairing' })],
-    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'mission_server_checks', 'mission_goal_working', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'boards_download', 'sessions_library', 'changes_rpc', 'doctor_rpc', 'skills_list', 'skills_receive', 'ui_card', 'ask_answered', 'ask_multi_select', 'email_label', 'email_send', 'email_files', 'hard_floor', 'hard_floor_rules_2'],
+    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'mission_server_checks', 'mission_goal_working', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'boards_download', 'sessions_library', 'changes_rpc', 'doctor_rpc', 'skills_list', 'skills_receive', 'ui_card', 'ui_card_answers', 'ask_answered', 'ask_multi_select', 'email_label', 'email_send', 'email_files', 'hard_floor', 'hard_floor_rules_2'],
   )
 })
 
@@ -147,6 +147,7 @@ test('boards_playbook is declared on every host, because the tool is typed and h
       'skills_list',
       'skills_receive',
       'ui_card',
+      'ui_card_answers',
       'ask_answered',
       'ask_multi_select',
       'email_label',
@@ -257,6 +258,7 @@ test('permission_card is declared on every host, because the relay has no platfo
       'skills_list',
       'skills_receive',
       'ui_card',
+      'ui_card_answers',
       'ask_answered',
       'ask_multi_select',
       'email_label',
@@ -731,6 +733,7 @@ test('the stop pause token rides with mission_pause and nothing else, the gate t
       'skills_list',
       'skills_receive',
       'ui_card',
+      'ui_card_answers',
       'ask_answered',
       'ask_multi_select',
       'email_label',
@@ -887,7 +890,7 @@ test('no thread token on Windows in phase 1, nor where threads cannot run', () =
 test('the fullest declaration, every token in its place, is exactly this list', () => {
   assert.deepEqual(
     [...declaredCapabilities({ canInjectGoal: true, floorHook: true, personLanes: true, modelEffortPicker: true, threads: true, authMode: 'pairing', platform: 'darwin' })],
-    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'mission_server_checks', 'mission_goal_working', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'boards_download', 'sessions_library', 'changes_rpc', 'doctor_rpc', 'skills_list', 'skills_receive', 'ui_card', 'ask_answered', 'ask_multi_select', 'email_label', 'email_send', 'email_files', 'hard_floor', 'hard_floor_rules_2', 'mission_goal_loop', 'mission_goal_uncapped', 'mission_pause', 'stop_pauses_mission', 'person_lanes', 'lane_memory_rpc', 'model_effort_picker', 'message_threads', 'thread_sessions', 'asides'],
+    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'mission_server_checks', 'mission_goal_working', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'boards_download', 'sessions_library', 'changes_rpc', 'doctor_rpc', 'skills_list', 'skills_receive', 'ui_card', 'ui_card_answers', 'ask_answered', 'ask_multi_select', 'email_label', 'email_send', 'email_files', 'hard_floor', 'hard_floor_rules_2', 'mission_goal_loop', 'mission_goal_uncapped', 'mission_pause', 'stop_pauses_mission', 'person_lanes', 'lane_memory_rpc', 'model_effort_picker', 'message_threads', 'thread_sessions', 'asides'],
   )
 })
 
@@ -910,4 +913,23 @@ test('mission_server_checks is declared on every host, beside and distinct from 
     }
   }
   assert.ok(DECLARED_CAPABILITIES_BASE.includes('mission_server_checks'))
+})
+
+/**
+ * ui_card_answers: this daemon hands the agent a card's answer as quoted,
+ * bounded data under a line saying it is data, not instructions, and who
+ * entered it (lib/card-answer.ts, on the poll, the stream and the direct
+ * read). The served canon promises an agent its card's values only when its
+ * daemon declares this token, so it rides beside ui_card on every host and
+ * connection, right after it: a daemon that sends cards reads their answers.
+ */
+test('ui_card_answers is declared on every host, once, right after ui_card', () => {
+  for (const { host, canInjectGoal, personLanes } of HOSTS) {
+    for (const authMode of ['pairing', 'apikey'] as const) {
+      const declared = [...declaredCapabilities({ canInjectGoal, floorHook: true, personLanes, authMode })]
+      assert.equal(declared.filter((t) => t === 'ui_card_answers').length, 1, `once on ${host}, ${authMode}`)
+      assert.equal(declared.indexOf('ui_card_answers'), declared.indexOf('ui_card') + 1, `after ui_card on ${host}, ${authMode}`)
+    }
+  }
+  assert.ok(DECLARED_CAPABILITIES_BASE.includes('ui_card_answers'))
 })
