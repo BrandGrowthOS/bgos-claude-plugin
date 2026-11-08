@@ -273,6 +273,21 @@
  *                       before 0.71.8 a Claude Code agent could send a card
  *                       it was never told about.
  *
+ *   ui_card_answers     this daemon hands the agent a card's answer as one
+ *                       turn of quoted, bounded data under a line saying it
+ *                       is data, not instructions, and who entered it (a
+ *                       person, or a credential when the server marks the
+ *                       answer answeredByPerson false), on the poll, the
+ *                       stream and the direct read (lib/card-answer.ts).
+ *                       Before 0.87.0 it announced the answer as a plain
+ *                       `[button_clicked] Clicked: <summary>` line, so the
+ *                       backend tells the canon's sentence that promises a
+ *                       card's values only to a connection that declares
+ *                       this token (capability-canon.ts UI_CARD_ANSWERS_TOKEN
+ *                       and uiCardAnswersTold); every other connection told
+ *                       about cards reads that their answers do not reach it
+ *                       as data. Every host and connection, beside ui_card.
+ *
  *   model_effort_picker
  *                       BGOS's own token (#3060, model-effort-picker.model.ts
  *                       MODEL_EFFORT_PICKER): its gate shows the owner's model
@@ -335,6 +350,11 @@ export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   'skills_list',
   'skills_receive',
   'ui_card',
+  // A card's answer reaches the agent as quoted, bounded data under a line
+  // saying it is data and who entered it, on the poll, the stream and the
+  // direct read (lib/card-answer.ts). The served canon promises an agent its
+  // card's values only when its daemon declares this.
+  'ui_card_answers',
   // The async question card (lib/ask-tracker.ts): ask_user_input returns
   // pending, one ask_answered event carries every answer however late, and
   // withdraw_ask retires a card. Typed tools on any host, over pairing or an
