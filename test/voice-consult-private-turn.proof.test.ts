@@ -31,6 +31,7 @@ import { floorKey, markFloorAttached } from '../lib/floor-state.mjs'
 import { recordPrivateBoundary } from '../bin/hoai-private-turn-hook.mjs'
 import { VoiceRpcHandler, normalizeVoiceRpc } from '../lib/voice-rpc.ts'
 import { buildScheduleCancelPath, buildScheduleCreateBody, buildScheduleListPath } from '../lib/schedule.js'
+import { newScheduleRequestId, sendScheduleCreate } from '../lib/schedule-send.js'
 
 const framePath = process.env.VOICE_CONSULT_FRAME_FILE || join('test', 'fixtures', 'voice-consult-stamped-frame.json')
 const raw = readFileSync(framePath, 'utf8')
@@ -79,7 +80,7 @@ test('the backend stamped consult frame allows schedule only inside that consult
     const privateCall = await admit('schedule')
     if (privateCall?.isError) return privateCall
     return execute(`return (async () => { switch(name) { ${scheduleSource} } })();`, {
-      name: 'schedule', privateCall, buildScheduleCancelPath, buildScheduleCreateBody, buildScheduleListPath, log: () => {},
+      name: 'schedule', privateCall, buildScheduleCancelPath, buildScheduleCreateBody, buildScheduleListPath, newScheduleRequestId, sendScheduleCreate, log: () => {},
       resolveAuthorizedChat: (chatId: string) => ({ ok: true, chatId }),
       bgosPeerPost: async (path: string, _body: unknown, headers: unknown) => { scheduled.push({ path, headers }); return { ok: true } },
       bgosPeerGet: async () => [], bgosPeerDelete: async () => ({ ok: true }),

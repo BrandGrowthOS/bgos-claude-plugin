@@ -5,6 +5,7 @@ import ts from 'typescript'
 import { privateActor, privateSenderUserId } from '../lib/private-turn.mjs'
 import * as privateTurnModule from '../lib/private-turn.mjs'
 import { buildScheduleCancelPath, buildScheduleCreateBody, buildScheduleListPath } from '../lib/schedule.js'
+import { newScheduleRequestId, sendScheduleCreate } from '../lib/schedule-send.js'
 
 const source = readFileSync('server.ts', 'utf8')
 const scheduleSource = source.slice(source.indexOf("    case 'schedule': {"), source.indexOf("    case 'create_mission': {"))
@@ -36,7 +37,7 @@ test('actual schedule create/list/cancel carry frozen recipient header; omitted 
   const privateCall = execute(admissionSource + '\nreturn privateCall;', { req: { params: { name: 'schedule' } }, lockHeld: true, privateTurns: {}, PRIVATE_MARKER_PATHS: [], PRIVATE_HOOK: { registered: true }, PRIVATE_HOOK_MISSING_REFUSAL: 'hook missing', USER_ID: 'user_owner', requirePrivateTurn: () => structuredClone(current) })
   current = { actingUserId: 'user_other', chatId: '300', headers: { 'X-BGOS-Acting-User': 'user_other' } }
   const bindings = {
-    privateCall, buildScheduleCancelPath, buildScheduleCreateBody, buildScheduleListPath, log: () => {},
+    privateCall, buildScheduleCancelPath, buildScheduleCreateBody, buildScheduleListPath, newScheduleRequestId, sendScheduleCreate, log: () => {},
     resolveAuthorizedChat: (chatId: string) => ({ ok: true, chatId }),
     bgosPeerPost: async (path: string, body: any, headers: any) => { calls.push({ path, body, headers }); return { ok: true } },
     bgosPeerGet: async (path: string, headers: any) => { calls.push({ path, headers }); return [] },
