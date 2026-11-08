@@ -5,7 +5,7 @@
  * Why. A create whose answer is lost (the server made the routine, the reply
  * never arrived) used to leave two doors open to a second routine. The server
  * now answers a repeat of the same id and body with the first result and makes
- * nothing new (backend contract 4.9, POST scheduled-tasks/agent). This module
+ * nothing new (POST scheduled-tasks/agent). This module
  * is the plugin half: it is what makes "the same request" mean the same id.
  *
  * The retry paths a create has in this add-on, all of them:
@@ -18,8 +18,12 @@
  *      "property clientRequestId should not exist"): that refusal made nothing,
  *      so the same body is sent once more WITHOUT the id and the call works as
  *      it always did. An older server that quietly drops the field needs no
- *      handling: the call works as it always did (and, with no memory of the
- *      id, a lost answer there can still make two routines, as before).
+ *      handling for the normal case: the call works as it always did. ONE
+ *      COST: that server has no memory of the id, so if it made the routine
+ *      and the answer was lost, path 1 asks again and the add-on itself makes
+ *      a second routine there. The 201 answer does not echo the id, so the
+ *      add-on cannot tell such a server from a current one; the cost ends
+ *      when that server is updated.
  *   3. No other path. The transport (boundedFetch) makes one attempt, and the
  *      queue/poll loops never touch a create. An AGENT calling `schedule`
  *      again after a failure is a new tool call: it gets a new id and is not

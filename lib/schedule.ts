@@ -44,7 +44,7 @@
  *   201 response is the agent task view { id, kind, topic, instruction,
  *   chatId, nextFireAt, everyHours, recurrence, status }.
  *
- * clientRequestId is the request's own name. The backend (contract 4.9)
+ * clientRequestId is the request's own name. The backend
  * answers a second send of the same id with the same body by returning the
  * first result and making nothing new; the same id with another body is a 409.
  * An older backend either drops the field without a word or (strict

@@ -2,7 +2,7 @@
  * The schedule tool sends a request id with every create, so asking again after
  * a lost answer makes one routine, not two.
  *
- * The server half (backend contract 4.9): POST scheduled-tasks/agent takes an
+ * The server half: POST scheduled-tasks/agent takes an
  * optional clientRequestId (16 to 100 of A-Z a-z 0-9 _ -). Same person and
  * agent, same id, same body: the first result, 201, nothing new. Same id with
  * another body: 409 with one sentence. No id: as before.
@@ -12,7 +12,7 @@
  * real `case 'schedule'` source out of server.ts, so the id is minted where the
  * handler mints it, and the fake server counts the routines that exist.
  *
- * Retry paths the add-on has for a create (the full trace is in the PR text):
+ * Retry paths the add-on has for a create :
  *   1. a lost answer (no answer in time, a dropped connection, an unreadable
  *      body, or a gateway 502/503/504): asked once more, with the SAME id;
  *   2. an older server that refuses the field (strict validation, 400 "should
@@ -41,9 +41,9 @@ import {
 // ── the fake server ─────────────────────────────────────────────────────────
 
 /** What one request does. 'drop' and 'stall' make the task FIRST, then lose the answer. */
-type Step = 'ok' | 'drop' | 'stall' | 'garble' | 504 | 500 | 400 | 403
+type Step = 'ok' | 'drop' | 'stall' | 'garble' | 502 | 503 | 504 | 500 | 400 | 403
 /**
- * current: knows clientRequestId (contract 4.9).
+ * current: knows clientRequestId.
  * old-lenient: an older server, validation strips unknown fields (whitelist only).
  * old-strict: an older server with strict validation on (forbidNonWhitelisted): 400.
  */
@@ -95,7 +95,7 @@ async function startFake(mode: Mode, script: Step[] = []): Promise<Fake> {
         res.writeHead(status, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify(payload))
       }
-      if (step === 400 || step === 403 || step === 500 || step === 504) {
+      if (typeof step === 'number') {
         return json(step, { statusCode: step, message: `refused with ${step}` })
       }
       if (mode === 'old-strict' && 'clientRequestId' in sent) {
@@ -296,14 +296,16 @@ test('an answer that arrives cut off is a lost answer: asked again, still one ro
   })
 })
 
-test('a gateway timeout (504) is a lost answer: asked again with the same id', async () => {
-  await withFake('current', [504, 'ok'], async (fake) => {
-    const body = buildBody()
-    const sent = await sendScheduleCreate({ body, post: (b) => postTo(fake)('scheduled-tasks/agent', b as never), sleep: noSleep })
-    assert.equal(sent.ok, true)
-    assert.equal(fake.requests.length, 2)
-    assert.equal(fake.requests[1].clientRequestId, body.clientRequestId)
-  })
+test('a gateway failure (502, 503, 504) is a lost answer: asked again with the same id', async () => {
+  for (const status of [502, 503, 504] as const) {
+    await withFake('current', [status, 'ok'], async (fake) => {
+      const body = buildBody()
+      const sent = await sendScheduleCreate({ body, post: (b) => postTo(fake)('scheduled-tasks/agent', b as never), sleep: noSleep })
+      assert.equal(sent.ok, true, `status ${status}`)
+      assert.equal(fake.requests.length, 2, `status ${status}`)
+      assert.deepEqual(fake.requests[1], fake.requests[0], `status ${status}: the second ask is the same body and id`)
+    })
+  }
 })
 
 test('it asks again only once: two lost answers in a row stop, with one routine made', async () => {
