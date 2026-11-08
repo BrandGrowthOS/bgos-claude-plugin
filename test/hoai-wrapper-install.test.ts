@@ -52,10 +52,6 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
  *  everything the installer wrote, copied, linked or appended. */
 function fakeFs(present: string[] = []) {
   const exists = new Set(present)
-  // A POSIX plugin fixture contains both packaged command sources.
-  for (const path of present) {
-    if (path.endsWith('/bin/hoai')) exists.add(`${path}-model-control.mjs`)
-  }
   const written = new Map<string, string>()
   const copied: { from: string; to: string }[] = []
   const linked: { target: string; link: string }[] = []
@@ -162,12 +158,11 @@ test('wrapperBinDir: the SAME locations the bootstrap and update-executor alread
   assert.equal(wrapperBinDir({ platform: 'win32', home: WIN_HOME, localAppData: null }), '')
 })
 
-test('planWrapperInstall: posix is two symlinks, win32 is two shims plus the breadcrumb', () => {
+test('planWrapperInstall: posix is one symlink, win32 is two shims plus the breadcrumb', () => {
   const posix = planWrapperInstall({ platform: 'linux', home: POSIX_HOME, pluginRoot: CLONE_ROOT })
   assert.equal(posix.ok, true)
   assert.deepEqual(posix.ok && posix.entries, [
     { kind: 'symlink', from: `${CLONE_ROOT}/bin/hoai`, to: '/home/kc/.local/bin/hoai' },
-    { kind: 'symlink', from: `${CLONE_ROOT}/bin/hoai-model-control.mjs`, to: `${POSIX_HOME}/.local/bin/hoai-model-control` },
   ])
 
   const win = planWrapperInstall({
@@ -214,7 +209,6 @@ test('installWrapper on posix: symlinks ~/.local/bin/hoai at the plugin bin', ()
   assert.equal(result.ok, true)
   assert.deepEqual(fs.linked, [
     { target: `${CLONE_ROOT}/bin/hoai`, link: '/home/kc/.local/bin/hoai' },
-    { target: `${CLONE_ROOT}/bin/hoai-model-control.mjs`, link: `${POSIX_HOME}/.local/bin/hoai-model-control` },
   ])
   // And the PATH line lands in the profile, byte identical to the bootstrap's.
   assert.deepEqual(
@@ -302,8 +296,8 @@ test('installWrapper: a clone whose bin IS the bin dir is left alone, not linked
     effects: fs.effects,
   })
   assert.equal(result.ok, true)
-  assert.deepEqual(fs.linked, [{ target: `${root}/bin/hoai-model-control.mjs`, link: `${POSIX_HOME}/.local/bin/hoai-model-control` }])
-  assert.deepEqual(result.wrote, [`${POSIX_HOME}/.local/bin/hoai`, `${POSIX_HOME}/.local/bin/hoai-model-control`])
+  assert.deepEqual(fs.linked, [])
+  assert.deepEqual(result.wrote, ['/home/kc/.local/bin/hoai'])
 })
 
 // -- PATH persistence ---------------------------------------------------------
@@ -330,7 +324,7 @@ test('installWrapper: a shim belonging to ANOTHER install is left alone and anno
   })
   assert.deepEqual(fs.linked, [], 'nothing may be linked over a foreign shim')
   assert.deepEqual(result.wrote, [], 'a declined shim is not a written one')
-  assert.equal(result.kept.length, 2)
+  assert.equal(result.kept.length, 1)
   assert.equal(result.kept[0].path, `${POSIX_HOME}/.local/bin/hoai`)
   assert.equal(result.kept[0].pointsAt, OTHER, 'the announcement names where the existing shim goes')
   assert.equal(result.kept[0].wanted, `${CLONE_ROOT}/bin/hoai`, 'and where this install would have pointed it')
@@ -342,7 +336,7 @@ test('installWrapper: a regular file the owner put there is left alone too', () 
   // readlink answers null for "not a symlink" exactly as it does for "absent",
   // so the presence check is what tells the two apart. Getting this backwards
   // would delete a file the owner wrote.
-  const fs = fakeFs([`${CLONE_ROOT}/bin/hoai`, `${POSIX_HOME}/.local/bin/hoai`, `${POSIX_HOME}/.local/bin/hoai-model-control`])
+  const fs = fakeFs([`${CLONE_ROOT}/bin/hoai`, `${POSIX_HOME}/.local/bin/hoai`])
   const result = installWrapper({
     pluginRoot: CLONE_ROOT,
     platform: 'linux',
@@ -351,7 +345,7 @@ test('installWrapper: a regular file the owner put there is left alone too', () 
     effects: fs.effects,
   })
   assert.deepEqual(fs.linked, [], "the owner's own file is not replaced")
-  assert.equal(result.kept.length, 2)
+  assert.equal(result.kept.length, 1)
   assert.equal(result.kept[0].reason, 'foreign-file')
 })
 
@@ -364,12 +358,9 @@ test('installWrapper: a shim already pointing at THIS install is rewritten, so a
     platform: 'linux',
     home: POSIX_HOME,
     env: { PATH: `${POSIX_HOME}/.local/bin` },
-    effects: { ...fs.effects, readlink: (path: string) => path.endsWith('/hoai') ? `${CLONE_ROOT}/bin/hoai` : `${CLONE_ROOT}/bin/hoai-model-control.mjs` },
+    effects: { ...fs.effects, readlink: () => `${CLONE_ROOT}/bin/hoai` },
   })
-  assert.deepEqual(fs.linked, [
-    { target: `${CLONE_ROOT}/bin/hoai`, link: `${POSIX_HOME}/.local/bin/hoai` },
-    { target: `${CLONE_ROOT}/bin/hoai-model-control.mjs`, link: `${POSIX_HOME}/.local/bin/hoai-model-control` },
-  ])
+  assert.deepEqual(fs.linked, [{ target: `${CLONE_ROOT}/bin/hoai`, link: `${POSIX_HOME}/.local/bin/hoai` }])
   assert.deepEqual(result.kept, [], 'our own shim is not a foreign one')
 })
 
@@ -383,10 +374,7 @@ test('installWrapper: force re-points a foreign shim, because a deliberate ask i
     effects: { ...fs.effects, readlink: () => '/home/kc/some-other-checkout/bin/hoai' },
     force: true,
   })
-  assert.deepEqual(fs.linked, [
-    { target: `${CLONE_ROOT}/bin/hoai`, link: `${POSIX_HOME}/.local/bin/hoai` },
-    { target: `${CLONE_ROOT}/bin/hoai-model-control.mjs`, link: `${POSIX_HOME}/.local/bin/hoai-model-control` },
-  ])
+  assert.deepEqual(fs.linked, [{ target: `${CLONE_ROOT}/bin/hoai`, link: `${POSIX_HOME}/.local/bin/hoai` }])
   assert.deepEqual(result.kept, [], 'an explicit force is an ask, so nothing is declined')
 })
 

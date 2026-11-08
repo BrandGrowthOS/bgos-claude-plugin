@@ -23,8 +23,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -205,7 +204,6 @@ function memWorld(opts: { home?: string; configDir?: string } = {}) {
     },
     seedInstalled(version: string) {
       const installPath = world.installPathFor(version)
-      files.set(joinLike(installPath, 'bin', 'hoai-model-control.mjs'), '// model command fixture\n')
       files.set(joinLike(installPath, '.claude-plugin', 'plugin.json'), `${JSON.stringify({ name: 'hoai', version }, null, 2)}\n`)
       files.set(
         paths.installedPlugins,
@@ -1176,8 +1174,6 @@ test('verify_agent fails -> rollback + one retry on the restored version -> late
   assert.equal(plan.steps.at(-1)?.kind, 'refresh_watcher')
   const link = aliasSymlinkPath(world.home)
   world.links.set(link, joinLike(world.installPathFor('0.38.1'), 'bin', 'hoai'))
-  const modelLink = joinLike(dirnameLike(link), 'hoai-model-control')
-  world.links.set(modelLink, joinLike(world.installPathFor('0.38.1'), 'bin', 'hoai-model-control.mjs'))
   let verify912 = 0
   const { deps, restarts, verifies } = memDeps(world, realisticScript(world, '0.38.3'), {
     agents: [
@@ -1218,9 +1214,6 @@ test('verify_agent fails -> rollback + one retry on the restored version -> late
   assert.equal(stepById(result, 's06-verify_agent-912').detail, 'no channel-live marker newer than restart')
   // The alias followed the install forward at verify and back at rollback.
   assert.equal(world.links.get(link), joinLike(world.installPathFor('0.38.1'), 'bin', 'hoai'))
-  assert.equal(world.links.get(modelLink), joinLike(world.installPathFor('0.38.1'), 'bin', 'hoai-model-control.mjs'))
-  assert.ok(stepById(result, 's04-verify_installed').detail?.includes('model_control:symlink_updated'))
-  assert.ok(stepById(result, 's06-verify_agent-912.rollback').detail?.includes('model_control:symlink_updated'))
   assert.ok(stepById(result, 's04-verify_installed').detail?.includes('alias:symlink_updated'))
   assert.ok(stepById(result, 's06-verify_agent-912.rollback').detail?.includes('alias:symlink_updated'))
 })
@@ -1477,57 +1470,6 @@ test('alias refresh on posix: a symlink into the cache (absolute or relative) is
   const none = await run(null)
   assert.equal(none.link, undefined)
   assert.ok(none.detail.includes('alias:absent'), none.detail)
-})
-
-for (const platform of ['darwin', 'linux']) {
-  for (const kind of ['absent', 'absolute', 'relative', 'current', 'clone', 'file', 'missing-source']) {
-    test(`model command refresh on ${platform}: ${kind}`, async () => {
-      const world = memWorld({ home: '/home/owner' })
-      world.seedMarketplace('0.38.3')
-      world.seedInstalled('0.38.1')
-      const link = joinLike(world.home, '.local', 'bin', 'hoai-model-control')
-      const target = joinLike(world.installPathFor('0.38.3'), 'bin', 'hoai-model-control.mjs')
-      const before = kind === 'clone' ? '/home/owner/clone/bin/hoai-model-control.mjs'
-        : kind === 'relative' ? '../../.claude/plugins/cache/hoai/hoai/0.38.1/bin/hoai-model-control.mjs'
-        : kind === 'current' ? target
-        : joinLike(world.installPathFor('0.38.1'), 'bin', 'hoai-model-control.mjs')
-      if (kind === 'file') world.files.set(link, 'owner command\n')
-      else if (!['absent', 'missing-source'].includes(kind)) world.links.set(link, before)
-      const plan = planMachine(updateState(world, { agents: [] }))
-      const script = realisticScript(world, '0.38.3')
-      if (kind === 'missing-source') {
-        const update = script[KEY.update] as (call: CliCall) => CliOut
-        script[KEY.update] = (call) => {
-          const result = update(call)
-          world.files.delete(target)
-          return result
-        }
-      }
-      const { deps } = memDeps(world, script, { platform })
-      const result = await executePlan(plan, deps)
-      assert.equal(result.verdict, 'done', stepView(result.steps).join(' | '))
-      if (kind === 'clone') assert.equal(world.links.get(link), before)
-      else if (kind === 'file') {
-        assert.equal(world.files.get(link), 'owner command\n')
-        assert.equal(world.links.has(link), false)
-      } else if (kind === 'missing-source') assert.equal(world.links.has(link), false)
-      else assert.equal(world.links.get(link), target)
-      const detail = stepById(result, 's04-verify_installed').detail ?? ''
-      const token = kind === 'clone' ? 'untouched(clone)' : kind === 'file' ? 'untouched(file)'
-        : kind === 'missing-source' ? 'skipped(missing_source)' : kind === 'current' ? 'current' : 'symlink_updated'
-      assert.ok(detail.includes(`model_control:${token}`), detail)
-    })
-  }
-}
-
-test('Windows update refresh never installs the unsupported model command', async () => {
-  const world = memWorld({ home: 'C:\\Users\\owner' })
-  world.seedMarketplace('0.38.3')
-  world.seedInstalled('0.38.1')
-  const { deps } = memDeps(world, realisticScript(world, '0.38.3'), { platform: 'win32', localAppData: 'C:\\Local' })
-  const result = await executePlan(planMachine(updateState(world, { agents: [] })), deps)
-  assert.equal(result.verdict, 'done')
-  assert.equal([...world.links.keys()].some((path) => path.includes('hoai-model-control')), false)
 })
 
 // -- Clone installs ----------------------------------------------------------
@@ -1940,12 +1882,6 @@ test('sandbox: update ok, and the hoai alias of this host platform follows the n
       aliasPath = aliasSymlinkPath(sandbox.home)
       mkdirSync(dirname(aliasPath), { recursive: true })
       symlinkSync(join(oldInstall, 'bin', 'hoai'), aliasPath)
-      // An existing installation has hoai on PATH but no model command yet.
-      for (const file of ['bin/hoai-model-control.mjs', 'lib/model-control-store.mjs']) {
-        const dest = join(dirname(oldInstall), '0.38.3', file)
-        mkdirSync(dirname(dest), { recursive: true })
-        copyFileSync(fileURLToPath(new URL(`../${file}`, import.meta.url)), dest)
-      }
     }
     const plan = planMachine(await sandboxState(sandbox, ONE_AGENT))
     assert.equal(plan.targetVersion, '0.38.3')
@@ -1968,17 +1904,6 @@ test('sandbox: update ok, and the hoai alias of this host platform follows the n
     } else {
       assert.equal(readlinkSync(aliasPath), join(newInstall, 'bin', 'hoai'))
       assert.ok(stepById(result, 's04-verify_installed').detail?.includes('alias:symlink_updated'))
-      const modelLink = join(dirname(aliasPath), 'hoai-model-control')
-      assert.equal(readlinkSync(modelLink), join(newInstall, 'bin', 'hoai-model-control.mjs'))
-      assert.ok(existsSync(modelLink), 'the new command resolves to an existing source after update')
-      const command = spawnSync('hoai-model-control', ['status', '--assistant', 'example-agent'], {
-        cwd: sandbox.home, encoding: 'utf8', timeout: 10_000,
-        env: { ...process.env, ...sandbox.env, PATH: `${dirname(aliasPath)}:${process.env.PATH}`,
-          BGOS_PLUGIN_STATE_DIR: join(sandbox.home, 'state') },
-      })
-      assert.equal(command.error, undefined)
-      assert.equal(command.status, 0, command.stderr)
-      assert.match(command.stdout, /Remote model and effort control is off for agent example-agent/)
     }
   } finally {
     sandbox.cleanup()
