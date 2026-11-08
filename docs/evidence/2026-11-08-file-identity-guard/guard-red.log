@@ -1,0 +1,45 @@
+$ node --import tsx --test --test-concurrency=2 --test-name-pattern="^lib has no new plain" test/file-identity.guard.test.ts
+Scratch source: export const same = (a, b) => a.ino === b.ino
+
+✖ lib has no new plain device or inode comparison sites (363.697375ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 726.816958
+
+✖ failing tests:
+
+test at test/file-identity.guard.test.ts:1:2857
+✖ lib has no new plain device or inode comparison sites (363.697375ms)
+  AssertionError [ERR_ASSERTION]: New plain file number comparison(s). Treat missing numbers as unknown and preserve large file ids; do not grow test/fixtures/file-identity-allowlist.json.
+  lib/file-identity-guard-scratch.mjs:1:31: lib/file-identity-guard-scratch.mjs: a.ino === b.ino
+  + actual - expected
+
+  + [
+  +   {
+  +     key: 'lib/file-identity-guard-scratch.mjs: a.ino === b.ino',
+  +     location: 'lib/file-identity-guard-scratch.mjs:1:31'
+  +   }
+  + ]
+  - []
+
+      at TestContext.<anonymous> (<checkout>/test/file-identity.guard.test.ts:86:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1382:25)
+      at Test.start (node:internal/test_runner/test:1242:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:387:17) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: [ { key: 'lib/file-identity-guard-scratch.mjs: a.ino === b.ino', location: 'lib/file-identity-guard-scratch.mjs:1:31' } ],
+    expected: [],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+exit status: 1
+
+The scratch file was removed in a finally block.

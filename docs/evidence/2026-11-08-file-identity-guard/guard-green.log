@@ -1,0 +1,19 @@
+$ node --import tsx --test --test-concurrency=2 test/file-identity.guard.test.ts
+
+✔ lib has no new plain device or inode comparison sites (302.422125ms)
+✔ the scanner catches both file numbers, either operand and every comparison operator (0.946375ms)
+✔ formatting, optional and bracket access, casts and numeric conversions cannot hide a comparison (0.440916ms)
+✔ comments, strings, other properties, type checks and non-comparison uses are not sites (0.080625ms)
+✔ allowances are tied to the file, expression and number of occurrences (0.146459ms)
+✔ site keys ignore line shifts and comments while diagnostics retain the source line (0.093542ms)
+✔ the lib walk reads nested source files and detects a new comparison in a scratch lib file (1.445917ms)
+ℹ tests 7
+ℹ suites 0
+ℹ pass 7
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 650.930917
+
+exit status: 0

@@ -1,0 +1,46 @@
+$ node scripts/codegraph/query.mjs docs/evidence/2026-11-08-file-identity-guard/README.md
+exit status: 1
+MODULE_NOT_FOUND: scripts/codegraph/query.mjs is absent from this checkout.
+
+$ node scripts/codegraph/query.mjs docs/evidence/2026-11-08-file-identity-guard/guard-red.log
+exit status: 1
+MODULE_NOT_FOUND: scripts/codegraph/query.mjs is absent from this checkout.
+
+$ node scripts/codegraph/query.mjs docs/evidence/2026-11-08-file-identity-guard/guard-green.log
+exit status: 1
+MODULE_NOT_FOUND: scripts/codegraph/query.mjs is absent from this checkout.
+
+$ node scripts/codegraph/query.mjs docs/evidence/2026-11-08-file-identity-guard/full-suite.log
+exit status: 1
+MODULE_NOT_FOUND: scripts/codegraph/query.mjs is absent from this checkout.
+
+$ node scripts/codegraph/query.mjs docs/evidence/2026-11-08-file-identity-guard/typecheck.log
+exit status: 1
+MODULE_NOT_FOUND: scripts/codegraph/query.mjs is absent from this checkout.
+
+$ node scripts/codegraph/query.mjs docs/evidence/2026-11-08-file-identity-guard/code-map.log
+exit status: 1
+MODULE_NOT_FOUND: scripts/codegraph/query.mjs is absent from this checkout.
+
+Per-file source queries were also attempted before editing. Repeated here to retain the final diagnostics.
+
+$ node scripts/codegraph/query.mjs test/file-identity.guard.test.ts
+exit status: 1
+MODULE_NOT_FOUND: scripts/codegraph/query.mjs is absent from this checkout.
+
+$ node scripts/codegraph/query.mjs test/fixtures/file-identity-allowlist.json
+exit status: 1
+MODULE_NOT_FOUND: scripts/codegraph/query.mjs is absent from this checkout.
+
+$ node scripts/codegraph/query.mjs lib/file-identity-guard-scratch.mjs
+exit status: 1
+MODULE_NOT_FOUND: scripts/codegraph/query.mjs is absent from this checkout.
+
+$ node scripts/codegraph/query.mjs --changed origin/main
+exit status: 1
+MODULE_NOT_FOUND: scripts/codegraph/query.mjs is absent from this checkout.
+No guard, mirror, test or contract names were returned.
+
+$ git rev-parse --verify origin/main
+exit status: 128
+origin/main is absent; no fetch was performed.
