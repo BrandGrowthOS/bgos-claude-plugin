@@ -59,6 +59,8 @@ function rig(read: (path: string, opts: unknown) => Promise<unknown> = async () 
     humanMessageEdits: { isChatDeleted: () => flags.deleted },
     lanesOnForThisAgent: lanesOn, chatOwnership: { isOthers: () => flags.others },
     ownerAnnounceRefused, ownerLaneVerdict, noteLaneMisroute: (...args: unknown[]) => refused.push(args),
+    // No group lanes here: no tap is a group's.
+    routeGroupStreamTap: () => false, routeGroupPollTaps: () => undefined,
     log: () => {}, trackMessageOperation: (op: () => Promise<void>) => op(),
     // channelNotify sends through the same double (0.86.20, test/helpers/channel-notify.ts).
     get channelNotify(): ReturnType<typeof channelNotifyFor> { return channelNotifyFor(() => (this as unknown as { mcp: { notification: (n: unknown) => unknown } }).mcp) },

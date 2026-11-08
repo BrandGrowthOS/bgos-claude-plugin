@@ -661,7 +661,7 @@ import {
   LateCompactUpgrader,
   LATE_UPGRADE_PROBE_INTERVAL_MS,
 } from './lib/compact-capability.js'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import {
   readOwnVersion,
   startVersionHeartbeat,
@@ -1184,11 +1184,14 @@ const API_BASE = getApiBaseUrl()
 
 import {
   appendFileSync,
+  chmodSync,
   copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -1197,6 +1200,12 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { ThreadLaneManager, liveThreadWork, threadsPendingPath } from './lib/thread-lanes.ts'
+import { randomInt } from 'node:crypto'
+import { GroupLaneManager, type GroupApproval, type GroupDelivery } from './lib/group-lanes.ts'
+import { groupRouteOf, groupTapKey, groupTapLine, readGroupDelivery } from './lib/group-delivery.ts'
+import { groupIdleOverrideMs, groupLevelsEnabled, type GroupLevel } from './lib/group-lane-args.ts'
+import { createGroupSummaryQueue, isOwnerCard, withGroupSummaries } from './lib/group-summary-queue.ts'
+import { ensureGroupLaneRoot, groupSandboxWorks } from './lib/group-lane-root.ts'
 import { AsideForks, runAside } from './lib/aside-fork.ts'
 import { ThreadsCliGate, threadsCliProblem, type ThreadsCliAnswer } from './lib/threads-cli.ts'
 import { killProcessGroup, processRunsIn, processStamp } from './lib/lane-process.ts'
@@ -10846,14 +10855,61 @@ const scheduleGrantRuns = createScheduleGrantRuns({
 // their provenance. Owner chat and scheduler turns keep their raw-card policy (privateTurns.rawCard). Its meta says which card it is: one that
 // names nobody but the owner (the owner's tap, a peer conversation close, a reply reminder) may run as a prompt of
 // the owner's turn without ending it (c09e214e).
+// Group threads, before the boundary below (lib/group-lanes.ts):
+//  - the pause summaries the group lanes drafted ride in front of the main
+//    session's NEXT card, as context, never as a turn of their own
+//    (lib/group-summary-queue.ts). Kept beside the group lanes' state, so a
+//    restart keeps them; a card that does not go out puts them back.
+//  - a verdict for a group lane's permission prompt (it asked over its own
+//    stdio, not this channel) goes back to that lane, never to the CLI here.
+const GROUPS_STATE_DIR = pathJoin(agentStateDir(homedir(), ASSISTANT_ID) ?? pathJoin(homedir(), '.bgos-agent', 'unknown'), 'groups')
+const groupSummaries = createGroupSummaryQueue({
+  path: pathJoin(GROUPS_STATE_DIR, 'main-summaries.json'),
+  dir: GROUPS_STATE_DIR,
+  fs: {
+    readFile: (path) => readFileSync(path, 'utf8'),
+    writeFile: (path, data) => writeFileSync(path, data),
+    mkdir: (path) => { mkdirSync(path, { recursive: true }) },
+    unlink: (path) => unlinkSync(path),
+  },
+  log,
+})
+/** The permission prompts group lanes raised, by request id: their verdict goes to the lane. */
+const groupPermissionVerdicts = new Map<string, (behavior: string) => void>()
+function groupNotificationStep(notification: { method?: string; params?: unknown } | undefined): { swallow?: true; restore?: () => void } | null {
+  const params = notification?.params as { content?: unknown; meta?: unknown; request_id?: unknown; behavior?: unknown } | undefined
+  if (notification?.method === 'notifications/claude/channel/permission' && typeof params?.request_id === 'string') {
+    const verdict = groupPermissionVerdicts.get(params.request_id)
+    if (!verdict) return null
+    groupPermissionVerdicts.delete(params.request_id)
+    verdict(String(params.behavior ?? 'deny'))
+    return { swallow: true }
+  }
+  if (notification?.method !== 'notifications/claude/channel' || !params || typeof params.content !== 'string') return null
+  if (groupSummaries.size() === 0) return null
+  // Only the owner's own card in their own chat takes them; any other card leaves them queued.
+  if (!isOwnerCard(params.meta, { ownerUserId: USER_ID, mainChatIds, isOthers: (chatId) => chatOwnership.isOthers(chatId) })) return null
+  const taken = groupSummaries.take()
+  if (!taken) return null
+  const before = params.content
+  params.content = withGroupSummaries(before, taken.items)
+  // The same delivery: its private turn still finds it by its text.
+  privateTurns.rekeyCard(before, params.content as string)
+  log(`groups: ${taken.items.length} group summary(ies) handed to the main session with its next card`)
+  return { restore: () => taken.restore() }
+}
 const sendMcpNotification = mcp.notification.bind(mcp)
 mcp.notification = ((notification: Parameters<typeof mcp.notification>[0]) => {
+  const group = groupNotificationStep(notification)
+  if (group?.swallow) return Promise.resolve()
   if (notification?.method === 'notifications/claude/channel') {
     const params = notification.params as { content?: unknown; meta?: unknown } | undefined
     if (params) params.content = privateTurns.tagRawCard(params.content ?? '')
     privateTurns.rawCard(String(params?.content ?? ''), params?.meta)
   }
-  return sendMcpNotification(notification)
+  const sent = sendMcpNotification(notification)
+  if (group?.restore) sent.catch(group.restore)
+  return sent
 }) as typeof mcp.notification
 // The scheduled run hold (lib/schedule-grant-run.mjs, 0.86.20): while a granted run is live every channel card but the
 // run's own wake waits, and each card is BUILT here, after this hold and the lock below, so a held card never reaches
@@ -12592,6 +12648,8 @@ async function pollChat(chatId: string): Promise<void> {
       noteLaneMisroute('poll tap', [...announced].join(','), 'a recipient chat')
       announced.clear()
     }
+    // Group threads: a stamped tap is a turn line in its group's lane, never the main session's.
+    routeGroupPollTaps(announced, data.messages)
     // Cross-transport single-announce: every id this poll announces joins
     // the shared dedup set so a stream buttons_answered replay of the same
     // tap stays silent (see rememberAnnouncedClick).
@@ -12786,6 +12844,8 @@ async function pollChat(chatId: string): Promise<void> {
         const view = viewStreamMessage({ seq: 0, kind: 'message_edited', chatId: Number(chatId), messageId: row.message.id, payload: row as unknown as Record<string, unknown> }, ASSISTANT_ID)
         return view ? humanEditTime(view) : null
       })
+    // Group threads: the backlog rows of a group this read finds, handed to its lane as ONE turn after the loop.
+    const groupPollBacklog: GroupDelivery[] = []
     for (const { row: msg, edit } of deliveries) {
       if (humanMessageEdits.isDeleted({ chatId, messageId: msg.message.id })) continue
       if (edit) {
@@ -12797,6 +12857,8 @@ async function pollChat(chatId: string): Promise<void> {
       // this daemon was away, and the rows under it did: it keeps a live message's
       // framing and its overdue timer. Only a boot read can be both.
       const isBacklog = readIsBacklog && !(msg.message.id >= (chatLiveFloor.get(chatId) ?? Number.POSITIVE_INFINITY))
+      // Group threads: a group's message goes to its own lane first; its backlog rows wait for one turn.
+      if (routeGroupPollRow(msg, isBacklog ? groupPollBacklog : null)) continue
       // The second lock (person lanes), on the poll as on the socket.
       const pollLaneVerdict = ownerLaneVerdict(msg.message)
       if (!pollLaneVerdict.deliver) {
@@ -13195,6 +13257,7 @@ async function pollChat(chatId: string): Promise<void> {
         )
       }
     }
+    flushGroupPollBacklog(groupPollBacklog)
 
     // Advance the cursor only now, AFTER the batch above was handed to the
     // notification transport: the cursor is persisted, so advancing before
@@ -15064,6 +15127,291 @@ const threadLanes = new ThreadLaneManager({
 // By the way forks in flight, stopped and cleaned up on shutdown.
 const asideForks = new AsideForks()
 
+// ── Group threads (lib/group-lanes.ts) ────────────────────────────────────────
+// Each group (room) the agent sits in runs as its own session in
+// .hoai/groups/<chatId>: fresh on its first wake (never a fork of the main
+// session), paused after 30 idle minutes with a summary, resumed by its id on
+// the next wake. Only where thread lanes can run and only on a pairing (the
+// server serves group threads to a pairing alone), the same condition that
+// declares group_threads (lib/declared-capabilities.ts).
+function groupLanesOn(): boolean {
+  return AUTH.mode === 'pairing' && threadsDeclared()
+}
+
+/** A request id in the shape the approval card's buttons carry (lib/permission-relay.ts REQUEST_ID_PATTERN). */
+function mintGroupPermissionRequestId(): string {
+  const letters = 'abcdefghijkmnopqrstuvwxyz'
+  for (;;) {
+    let id = ''
+    for (let i = 0; i < 5; i++) id += letters[randomInt(letters.length)]
+    if (!pendingPermissions.has(id)) return id
+  }
+}
+
+/**
+ * A group lane's permission prompt, through the gate the owner's own chat
+ * uses. `approvals`: the approval card in the owner's main chat, always, which
+ * only the owner presses. `full`: exactly what the owner's own chat would do
+ * with the same request (auto approve, the hard floor, the card).
+ */
+function approveGroupTool(input: { title: string; level: GroupLevel; toolName: string; inputPreview: string; description: string }): Promise<GroupApproval> {
+  const params: PermissionRequestParams = {
+    request_id: mintGroupPermissionRequestId(),
+    tool_name: input.toolName,
+    description: `In the group "${input.title || 'a group'}": ${input.description}`,
+    input_preview: input.inputPreview,
+  }
+  return new Promise<GroupApproval>((resolve) => {
+    let settled = false
+    const settle = (allow: boolean): void => {
+      if (settled) return
+      settled = true
+      groupPermissionVerdicts.delete(params.request_id)
+      resolve({ allow })
+    }
+    groupPermissionVerdicts.set(params.request_id, (behavior) => settle(behavior === 'allow'))
+    // full: the very handler the owner's own chat's prompts go through.
+    const ownHandler = input.level === 'full' ? permissionRequestHandler() : null
+    const run = ownHandler
+      ? ownHandler({ method: 'notifications/claude/channel/permission_request', params })
+      : relayPermissionToOwner(params)
+    void Promise.resolve(run)
+      .catch((err) => log(`groups: a permission prompt could not be asked (${err instanceof Error ? err.name : 'error'})`))
+      .finally(() => settle(false))
+  })
+}
+
+/** The channel's permission request handler as the SDK keeps it, or null (then the card is asked, fail closed). */
+function permissionRequestHandler(): ((notification: unknown) => unknown) | null {
+  const handlers = (mcp as unknown as { _notificationHandlers?: unknown })._notificationHandlers
+  if (!(handlers instanceof Map)) return null
+  const handler = handlers.get('notifications/claude/channel/permission_request')
+  return typeof handler === 'function' ? (handler as (notification: unknown) => unknown) : null
+}
+
+const groupLanes = new GroupLaneManager({
+  assistantId: String(ASSISTANT_ID),
+  spawn: spawnStreamJson,
+  claudeBin: resolveClaude,
+  cliProblem: async () => threadsCliProblem(await threadsCliGate.ready(), 'turn'),
+  mainSessionId: () => provenSessionId(),
+  newSessionId: () => crypto.randomUUID(),
+  agentFolder: CLAUDE_PROJECT_CWD,
+  // A lane left from before a daemon crash is found by pid and start stamp, and stopped (lib/lane-process.ts).
+  processes: {
+    stamp: (pid) => processStamp(pid),
+    runsIn: (pid, dir) => processRunsIn(pid, dir),
+    kill: (pid, signal) => killProcessGroup(pid, signal),
+  },
+  stateDir: GROUPS_STATE_DIR,
+  laneRoot: groupLaneRoot,
+  // Below Full a lane never reaches the home folder, the agent folder, the
+  // agent state root or the CLI config dir; Bash is fenced by the CLI sandbox
+  // where the host has one (lib/group-lane-args.ts groupLaneSettings).
+  fence: async () => ({
+    home: homedir(),
+    configDir: CLAUDE_CONFIG_DIR || pathJoin(homedir(), '.claude'),
+    stateRoot: pathJoin(homedir(), '.bgos-agent'),
+    // Where the CLI keeps every session's background command output.
+    tempRoots: [...new Set([`/tmp/claude-${process.getuid?.() ?? ''}`, `/private/tmp/claude-${process.getuid?.() ?? ''}`, pathJoin(tmpdir(), `claude-${process.getuid?.() ?? ''}`)])],
+    sandbox: await groupSandboxWorksHere(),
+  }),
+  // Told once, in the owner's own chat, through the connection's own notice path.
+  onNoSandbox: () => {
+    const chat = deafNoticeChat({ pendingChatId: '', mainChatIds, ownership: chatOwnership })
+    if (chat === null) return
+    void sendConnectionNotice(chat, noGroupSandboxText()).catch((err) => log(`groups: the no sandbox notice could not be posted: ${err}`))
+  },
+  emptyMcpConfigPath: threadsEmptyMcpConfig,
+  fs: {
+    exists: (path) => existsSync(path),
+    mkdir: (path) => { mkdirSync(path, { recursive: true }) },
+    readFile: (path) => readFileSync(path, 'utf8'),
+    writeFile: (path, data) => writeFileSync(path, data),
+    appendFile: (path, data) => appendFileSync(path, data),
+    unlink: (path) => unlinkSync(path),
+    realpath: (path) => realpathSync(path),
+  },
+  post: (path, body) => bgosPost(path, body),
+  // The normal reply path into the group, with the delivery's session handle:
+  // never the owner's main chat.
+  reply: async ({ chatId, text, sessionHandle }) => {
+    const handle = sessionHandle ?? sessionHandleByChat.get(chatId) ?? null
+    const result = await bgosPost('send-message', {
+      chatId: Number(chatId),
+      assistantId: Number(ASSISTANT_ID),
+      text: protectBackslashesForMarkdown(text),
+      sender: 'assistant',
+      sentDate: new Date().toISOString(),
+      hasAttachment: false,
+      files: [],
+      options: [],
+      ...(handle ? { sessionHandle: handle } : {}),
+    })
+    rememberReturnedMessageId(result, rememberForwarded)
+    return result
+  },
+  approve: (input) => approveGroupTool(input),
+  onPaused: ({ chatId, title, summary }) => groupSummaries.add({ chatId, title, summary }),
+  now: () => Date.now(),
+  setTimer: (fn, ms) => {
+    const timer = setTimeout(fn, ms)
+    timer.unref?.()
+    return timer
+  },
+  clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  log,
+  platform: process.platform,
+  // Groups ship at Talk only: another level needs this daemon's own switch (round 5, B).
+  levelsEnabled: groupLevelsEnabled(process.env),
+  // TEST ONLY: a live run can show a pause in a minute (README, Group threads).
+  idleOverrideMs: groupIdleOverrideMs(process.env.HOAI_GROUP_LANE_IDLE_MS),
+})
+
+/**
+ * The group lanes' own folders (round 3, the boundary): OUTSIDE the home
+ * folder, so a lane below Full can be refused the whole home folder and
+ * still work in its own. /var/tmp/hoai-group-lanes-<uid>/<assistantId>,
+ * made 0700; a top folder that is a link, not a folder, or another user's is
+ * refused (and the lane then starts nothing). /var/tmp outlives a reboot;
+ * the session itself is kept by the CLI, so a folder cleaned away is made
+ * again and the session resumes.
+ */
+function groupLaneRoot(): string {
+  return ensureGroupLaneRoot({
+    base: '/var/tmp',
+    uid: typeof process.getuid === 'function' ? process.getuid() : -1,
+    assistantId: String(ASSISTANT_ID),
+    fs: {
+      mkdir: (path, mode) => { mkdirSync(path, { recursive: true, mode }) },
+      lstat: (path) => lstatSync(path),
+      chmod: (path, mode) => chmodSync(path, mode),
+    },
+  })
+}
+
+/**
+ * Does the CLI sandbox really START on this host (round 4, finding 3)? Asked
+ * once per daemon life: CLI 2.1.319 skips a sandbox it cannot run and then
+ * runs Bash unfenced, so without one With approvals groups run as Talk only.
+ */
+let groupSandboxCheck: Promise<boolean> | null = null
+function groupSandboxWorksHere(): Promise<boolean> {
+  groupSandboxCheck ??= groupSandboxWorks({
+    platform: process.platform,
+    run: (command, args) =>
+      execFileAsync(command, args, { timeout: 10_000 }).then(() => true, () => false),
+  })
+  return groupSandboxCheck
+}
+
+/** The one sentence the owner reads when this computer cannot fence group threads. */
+function noGroupSandboxText(): string {
+  const name = cleanIdentityName(identityToldName ?? '') || 'this agent'
+  return `This computer cannot fence group threads, so ${name} only replies in groups until a sandbox is available.`
+}
+
+/** The thread lanes' and the group lanes' work together, for the restart and drain counts. */
+const laneWork = { activeWork: () => threadLanes.activeWork() + groupLanes.activeWork() }
+
+/**
+ * A delivery stamped `group:<chatId>` goes to that group's lane, BEFORE
+ * ownerLaneVerdict (which keeps refusing it for the main session), on every
+ * transport. Only where group lanes run; anywhere else this answers false and
+ * the refusal stands as today. A repeat of a delivery the lane already took
+ * (the poll and the stream repeat the socket) is dropped. True when the
+ * delivery was the group lane's.
+ */
+function routeGroupDelivery(
+  records: unknown[],
+  input: { key: string; messageId: unknown; text: string; sender?: string | null; sessionHandle?: unknown; serverFramed?: boolean },
+  transport: string,
+): boolean {
+  const chatId = groupRouteOf(records, groupLanesOn())
+  if (chatId === null) return false
+  if (updateDrainMode) return true
+  const taken = groupLanes.deliver(readGroupDelivery(records, { chatId, ...input }))
+  const id = Number(input.messageId)
+  if (taken && Number.isSafeInteger(id) && !String(input.key).startsWith('tap:')) rememberForwarded(id)
+  if (taken) log(`groups: ${transport} delivery ${String(input.key)} handed to the lane of group ${chatId}`)
+  return true
+}
+
+/** The four transports, each read the way that transport carries a message. */
+function routeGroupSocketInbound(payload: any): boolean {
+  const messageId = payload?.messageId ?? payload?.message_id
+  return routeGroupDelivery([payload], {
+    key: String(messageId ?? ''),
+    messageId,
+    text: String(payload?.text ?? ''),
+    sessionHandle: payload?.sessionHandle ?? payload?.session_handle,
+    // The socket carries the server's framed text (finding E: never decided from the text).
+    serverFramed: true,
+  }, 'socket')
+}
+function routeGroupPollRow(msg: ChatMessage, backlog: GroupDelivery[] | null): boolean {
+  const input = {
+    key: String(msg.message.id),
+    messageId: msg.message.id,
+    text: msg.message.text ?? '',
+    sessionHandle: (msg.message as { sessionHandle?: unknown }).sessionHandle,
+  }
+  if (backlog === null) return routeGroupDelivery([msg.message, msg], input, 'poll')
+  // A backlog row (review finding 6): gathered, never a turn of its own.
+  const chatId = groupRouteOf([msg.message, msg], groupLanesOn())
+  if (chatId === null) return false
+  if (!updateDrainMode) backlog.push(readGroupDelivery([msg.message, msg], { chatId, ...input }))
+  return true
+}
+
+/** The backlog rows one poll read gathered for a group: one lane turn (lib/group-lanes.ts deliverBatch). */
+function flushGroupPollBacklog(rows: GroupDelivery[]): void {
+  if (rows.length === 0 || updateDrainMode) return
+  const taken = groupLanes.deliverBatch(rows)
+  for (const row of rows) if (row.messageId !== null) rememberForwarded(row.messageId)
+  if (taken) log(`groups: ${rows.length} poll backlog row(s) handed to the lane of group ${rows[0]!.chatId} as one turn`)
+}
+function routeGroupStreamView(view: StreamMessageView, transport: string): boolean {
+  // The update stream carries the server's framed text; a polled room row through this path does not.
+  return routeGroupDelivery([view.raw], { key: String(view.messageId), messageId: view.messageId, text: view.text, sessionHandle: view.sessionHandle, serverFramed: transport === 'stream' }, transport)
+}
+/**
+ * The taps a poll read found (review finding 7): one stamped for a group
+ * goes to that group's lane, under the stream's key, and is no longer
+ * announced into the main session; it is claimed so no transport announces it.
+ */
+function routeGroupPollTaps(announced: Set<number>, rows: ChatMessage[]): void {
+  for (const row of rows) {
+    const mm = row.message
+    if (!announced.has(mm.id)) continue
+    const payload = (mm.answerPayload ?? {}) as Record<string, unknown>
+    const callbackData = String(payload.callbackData ?? payload.callback_data ?? '')
+    const buttonText = String(payload.buttonText ?? payload.button_text ?? '')
+    const custom = payload.customText ?? payload.custom_text
+    const customText = typeof custom === 'string' ? custom : null
+    const routed = routeGroupDelivery([mm, row], {
+      key: groupTapKey(mm.id, callbackData, customText),
+      messageId: mm.id,
+      text: groupTapLine({ tapper: null, buttonText, customText }),
+      sessionHandle: (mm as { sessionHandle?: unknown }).sessionHandle,
+    }, 'poll tap')
+    if (!routed) continue
+    announced.delete(mm.id)
+    rememberAnnouncedClick(mm.id)
+  }
+}
+
+/** A tap stamped for a group becomes a short turn line in that group's lane. */
+function routeGroupStreamTap(view: StreamMessageView): boolean {
+  const answer = view.answerPayload
+  return routeGroupDelivery([view.raw], {
+    key: groupTapKey(view.messageId, answer?.callbackData, answer?.customText),
+    messageId: view.messageId,
+    text: groupTapLine({ tapper: null, buttonText: answer?.buttonText ?? '', customText: answer?.customText ?? null }),
+    sessionHandle: view.sessionHandle,
+  }, 'stream tap')
+}
+
 /**
  * A thread turn the person sent while this daemon was away runs now
  * (GET integrations/threads/pending, scoped to the agent this daemon serves).
@@ -15095,11 +15443,12 @@ const THREAD_CHILDREN_STOP_WAIT_MS = 3_000
  * none runs, so a shutdown without them exits at once as before.
  */
 function stopThreadChildren(): Promise<void> | null {
-  if (threadLanes.liveChildren() === 0 && asideForks.size() === 0) return null
-  const all = Promise.allSettled([threadLanes.stopAll(), asideForks.stopAll()])
+  if (threadLanes.liveChildren() === 0 && groupLanes.liveChildren() === 0 && asideForks.size() === 0) return null
+  const all = Promise.allSettled([threadLanes.stopAll(), groupLanes.stopAll(), asideForks.stopAll()])
   return new Promise<void>((resolve) => {
     const timer = setTimeout(() => {
       threadLanes.killAll()
+      groupLanes.killAll()
       asideForks.killAll()
       resolve()
     }, THREAD_CHILDREN_STOP_WAIT_MS)
@@ -15189,6 +15538,10 @@ const voiceRpc = new VoiceRpcHandler({
         threads: {
           turn: (input) => threadLanes.turn(input),
           close: (input) => threadLanes.close(input),
+          // Group threads: the server ends a group's thread.
+          groupEnd: (input) => groupLanes.end(input),
+          // Group threads: the owner changed a group's level.
+          groupLevel: (input) => groupLanes.setLevel(input),
           aside: (input, onDelta) =>
             runAside(input, {
               spawn: spawnStreamJson,
@@ -15506,7 +15859,7 @@ const agentStatePublisher = new AgentStatePublisher({
     pendingPermissions: pendingPermissions.size,
     activeOperations: messageActivity.activeOperations,
     // Apart from the operations: the watcher's update sweep waits for it, and a recovery restart does not.
-    threadWork: liveThreadWork(threadLanes, asideForks),
+    threadWork: liveThreadWork(laneWork, asideForks),
     // Boot counts as activity: a session that just started may have a person
     // at its keyboard, and the watcher's quiet window should run from there.
     // The transcript the agent is writing counts too, hooks or not.
@@ -15740,7 +16093,7 @@ function updateDrainSnapshot() {
  */
 function restartDrainSnapshot() {
   const snapshot = updateDrainSnapshot()
-  return { ...snapshot, activeOperations: snapshot.activeOperations + liveThreadWork(threadLanes, asideForks) }
+  return { ...snapshot, activeOperations: snapshot.activeOperations + liveThreadWork(laneWork, asideForks) }
 }
 
 const updateRpc = new UpdateRpcHandler({
@@ -16462,6 +16815,8 @@ async function forwardStreamInbound(
   isSystem: boolean,
   transport: 'stream' | 'poll' = 'stream',
 ): Promise<void> {
+  // Group threads: a group's message goes to its own lane first.
+  if (routeGroupStreamView(view, transport)) return
   // The second lock (person lanes), on the stream as on the socket and poll.
   const streamLaneVerdict = ownerLaneVerdict(view.raw)
   if (!streamLaneVerdict.deliver) {
@@ -16797,6 +17152,8 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
   // The second lock (person lanes) for taps, as on the poll: a stamped row
   // for a person, or a tap in a share recipient's chat once lanes run, is
   // never announced into the owner's session.
+  // Group threads: a group's tap is a turn line in its lane, never the main session's.
+  if (routeGroupStreamTap(view)) return
   const tapLaneVerdict = ownerLaneVerdict(view.raw)
   if (!tapLaneVerdict.deliver || ownerAnnounceRefused({ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership.isOthers(chatId) })) {
     noteLaneMisroute('stream tap', view.messageId, tapLaneVerdict.deliver ? 'a recipient chat' : tapLaneVerdict.stamp)
@@ -18001,6 +18358,8 @@ function connectWebsocket(): void {
 
   realtimeSocket.on('inbound_message', whenArmed('inbound_message', (payload: any) => {
     if (updateDrainMode) return
+    // Group threads: a group's message goes to its own lane first.
+    if (routeGroupSocketInbound(payload)) return
     // The second lock (person lanes): a delivery stamped for a person's lane
     // never runs in the owner's. No stamp is today's path, untouched.
     const laneVerdict = ownerLaneVerdict(payload)
@@ -19742,6 +20101,7 @@ async function main(): Promise<void> {
     releasePairingLock({ lockPath: PAIRING_LOCK_PATH, selfPid: process.pid })
     loginController.dispose()
     void threadLanes.stopAll()
+    void groupLanes.stopAll()
     asideForks.killAll()
     browserHost?.stop()
   })
@@ -19934,7 +20294,7 @@ async function main(): Promise<void> {
       openAsks: () => idleOpenAsks(Date.now()),
       goalRunning: () =>
         (goalLane.condition !== null && !goalLane.closed) || goalPendingArm !== null || goalInjectionsInFlight > 0 || goalSelfClears > 0,
-      threadWork: () => liveThreadWork(threadLanes, asideForks),
+      threadWork: () => liveThreadWork(laneWork, asideForks),
       call: () => ({
         pendingConsults: voiceRpc.pendingConsultCount,
         openContinuations: voiceRpc.openContinuationCount,

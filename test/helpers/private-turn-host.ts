@@ -245,8 +245,9 @@ export function agentHost(t: any) {
   let life = daemon()
   const notify = (content: string, meta: Record<string, string>): string => {
     const mcp = { notification: (notification: any) => String(notification.params.content) }
-    // The scheduled run hold sits in this chain (0.86.20); with no run open every card passes it unchanged.
-    const notification = new Function('mcp', 'privateTurns', 'holdChannelCardsDuringGrantedRun', 'scheduleGrantRuns', 'log', notificationJs)(mcp, life.tracker, holdChannelCardsDuringGrantedRun, createScheduleGrantRuns(), () => {})
+    // The notification chain as server.ts builds it: group threads' step (summaries, lane verdicts) passes every card
+    // through with no group lane here, and the scheduled run hold (0.86.20) passes every card unchanged with no run open.
+    const notification = new Function('mcp', 'groupNotificationStep', 'privateTurns', 'holdChannelCardsDuringGrantedRun', 'scheduleGrantRuns', 'log', notificationJs)(mcp, () => null, life.tracker, holdChannelCardsDuringGrantedRun, createScheduleGrantRuns(), () => {})
     return notification({ method: 'notifications/claude/channel', params: { content, meta } })
   }
   const payloadOf = (event: string, extra: Record<string, unknown> = {}) =>

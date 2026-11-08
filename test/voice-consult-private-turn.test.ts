@@ -449,7 +449,7 @@ test('every channel card the daemon pushes passes privateTurns.rawCard; a raw on
   const f = fixture(t, { now: Date.now() })
   const pushed: unknown[] = []
   const mcp = { notification: async (n: unknown) => { pushed.push(n) } }
-  execute(source.slice(start, end) + '}) as typeof mcp.notification', { mcp, privateTurns: f.tracker })
+  execute(source.slice(start, end) + '}) as typeof mcp.notification', { mcp, privateTurns: f.tracker, groupNotificationStep: () => null })
   const card = f.consultCard(live())
   f.submit(card)
   await mcp.notification({ method: 'notifications/claude/channel', params: { content: card, meta: {} } })

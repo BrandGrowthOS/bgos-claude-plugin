@@ -313,6 +313,8 @@ function streamHarness(record: { requesterUserId?: string } = { requesterUserId:
     ownerLaneVerdict,
     ownerAnnounceRefused,
     noteLaneMisroute: () => undefined,
+    // No group lanes here: no tap is a group's.
+    routeGroupStreamTap: () => false,
     lanesOnForThisAgent: false,
     chatOwnership: { isOthers: () => false },
     USER_ID: OWNER,
