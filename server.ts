@@ -2864,7 +2864,9 @@ const modelEffortControl: ModelEffortControl = new ModelEffortControl({
  * lib/declared-capabilities.ts)? Opted in, the injector
  * answers, the bridge has a fresh observation of the proven session, and the
  * installed CLI's help offers something. The help is read in the background
- * the first time, so the token appears on the beat after.
+ * the first time, so the boot beat never carries the token: the heartbeat's
+ * one minute poll re-sends a changed capability set (lib/version-heartbeat.ts),
+ * so it goes out within a minute instead of on the 6h beat.
  */
 function modelEffortDeclared(): boolean {
   try {

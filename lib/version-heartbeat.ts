@@ -232,6 +232,21 @@ export function startVersionHeartbeat(deps: {
   // The readiness block as last SENT, so the poll below can tell a change
   // from a repeat without keeping the object itself around.
   let lastSentReadiness: string | null = null
+  // The capability set as last SENT, compared as a set (sorted), the way the
+  // backend compares it. A token that can only be known after boot (the
+  // model_effort_picker reads `claude --help` in the background, so the boot
+  // beat never carries it) would otherwise wait for the 6h beat.
+  let lastSentCapabilities: string | null = null
+  const readCapabilities = (): string[] | null => {
+    if (!deps.capabilities) return null
+    try {
+      const declared = deps.capabilities()
+      return Array.isArray(declared) && declared.length > 0 ? declared : null
+    } catch {
+      return null
+    }
+  }
+  const capabilitiesSignature = (declared: string[]): string => JSON.stringify([...new Set(declared)].sort())
   // The session status as last TRIED and as last TAKEN by the server: the gap
   // runs from a try (a down server is not hammered), the news is measured
   // against what the server took (a failed send is tried again).
@@ -280,11 +295,10 @@ export function startVersionHeartbeat(deps: {
           body.lastError = deps.lastError()
         } catch {}
       }
-      if (deps.capabilities) {
-        try {
-          const declared = deps.capabilities()
-          if (Array.isArray(declared) && declared.length > 0) body.capabilities = declared
-        } catch {}
+      const declared = readCapabilities()
+      if (declared) {
+        body.capabilities = declared
+        lastSentCapabilities = capabilitiesSignature(declared)
       }
       await deps.post('integrations/heartbeat', body)
       if (sessionReport) lastStatusSentSignature = sessionStatusSignature(sessionReport)
@@ -316,24 +330,27 @@ export function startVersionHeartbeat(deps: {
       // Tried again once the gap allows; never surfaces.
     }
   }
-  // Change-driven readiness resend: re-read the snapshot cheaply and post
-  // only when it differs from what the backend last received. Guarded like
-  // the providers themselves: a throwing probe means "no change seen".
+  // Change-driven resend: re-read the readiness snapshot and the capability
+  // set cheaply and post only when either differs from what the backend last
+  // received. Guarded like the providers themselves: a throwing probe means
+  // "no change seen".
   const pollReadiness = async (): Promise<void> => {
+    let readinessChanged = false
     const status = deps.updateStatus
-    if (!status) return
-    let current: string
-    try {
-      current = JSON.stringify(status.updateReadiness())
-    } catch {
-      return
+    if (status) {
+      try {
+        const current = JSON.stringify(status.updateReadiness())
+        readinessChanged = lastSentReadiness === null || current !== lastSentReadiness
+      } catch {}
     }
-    if (lastSentReadiness !== null && current === lastSentReadiness) return
+    const declared = readCapabilities()
+    const capabilitiesChanged = declared !== null && capabilitiesSignature(declared) !== lastSentCapabilities
+    if (!readinessChanged && !capabilitiesChanged) return
     await send()
   }
   void send()
   deps.log(
-    `version heartbeat armed (v${version}, every 6h; readiness re-sent within a minute of a change` +
+    `version heartbeat armed (v${version}, every 6h; readiness and capabilities re-sent within a minute of a change` +
       `${deps.sessionStatus ? '; session status within a minute of a change and every 2 min while busy' : ''})`,
   )
   const timer = setInterval(send, VERSION_HEARTBEAT_INTERVAL_MS)
