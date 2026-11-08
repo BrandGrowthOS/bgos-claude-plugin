@@ -10,7 +10,7 @@
 
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
-import { join, resolve } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 
 import {
   GROUP_CONTEXT_BUDGET_TOKENS,
@@ -23,6 +23,7 @@ import {
 } from '../lib/group-lanes.ts'
 import { GROUP_COMPACT_COMMAND, GROUP_SUMMARY_INSTRUCTION } from '../lib/group-lane-args.ts'
 import { THREAD_ORPHAN_POLL_MS } from '../lib/thread-lanes.ts'
+import { permissionRulePath } from '../lib/lane-core.mjs'
 import type { StreamJsonChild } from '../lib/stream-json-child.ts'
 
 const MAIN = '435f1f18-2716-4c27-bfd8-e2c48f28b3ac'
@@ -869,13 +870,14 @@ test('boundary: an approvals lane runs in its folder outside the home folder, wi
   await settle()
   const { args, cwd } = r.spawned[0]!
   assert.equal(cwd, join(LANES, '123'))
-  assert.ok(!cwd.startsWith(HOME + '/'), 'outside the home folder')
+  assert.ok(!cwd.startsWith(HOME + sep), 'outside the home folder')
   const settings = JSON.parse(valueAfter(args, '--settings')!)
   assert.deepEqual(settings.permissions.ask, ['Bash', 'Read', 'Grep', 'Glob', 'Edit', 'Write'])
   assert.equal(valueAfter(args, '--tools'), 'Bash,Read,Grep,Glob,Edit,Write')
   assert.equal(settings.permissions.allow, undefined)
-  assert.ok(settings.permissions.deny.includes(`Read(/${join(HOME, '.bgos-agent')}/**)`))
-  assert.ok(settings.permissions.deny.includes(`Read(/${AGENT}/**)`))
+  // The CLI's own rule spelling for this machine's paths (on Windows //c/... with forward slashes).
+  assert.ok(settings.permissions.deny.includes(`Read(${permissionRulePath(join(HOME, '.bgos-agent'))}/**)`))
+  assert.ok(settings.permissions.deny.includes(`Read(${permissionRulePath(AGENT)}/**)`))
 })
 
 test('boundary: a lane folder that cannot be made private starts nothing (fail closed)', async () => {
@@ -931,8 +933,9 @@ test('round 4, finding 2: the approval card names the real path of the call and 
   child.frame({ type: 'control_request', request_id: 'p1', request: { subtype: 'can_use_tool', tool_name: 'Read', input: { file_path: '../456/other.txt' } } })
   child.frame({ type: 'control_request', request_id: 'p2', request: { subtype: 'can_use_tool', tool_name: 'Read', input: { file_path: 'notes.txt' } } })
   await settle()
-  assert.match(String(r.approvals[0]!.description), new RegExp(`Path: ${join(LANES, '456', 'other.txt')}\\. This is OUTSIDE this group's folder\\.$`))
-  assert.match(String(r.approvals[1]!.description), new RegExp(`Path: ${join(LANES, '123', 'notes.txt')}$`))
+  // Plain text ends, not a pattern built from a path: a Windows path's backslashes are not regex escapes.
+  assert.ok(String(r.approvals[0]!.description).endsWith(`\nPath: ${join(LANES, '456', 'other.txt')}. This is OUTSIDE this group's folder.`), String(r.approvals[0]!.description))
+  assert.ok(String(r.approvals[1]!.description).endsWith(`\nPath: ${join(LANES, '123', 'notes.txt')}`), String(r.approvals[1]!.description))
 })
 
 test('round 4, finding 3: with no working sandbox, With approvals runs as Talk only, and the owner is told once', async () => {

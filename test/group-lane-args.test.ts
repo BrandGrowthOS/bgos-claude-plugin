@@ -268,6 +268,51 @@ test('round 4, finding 2: the card shows the real resolved path, and says so pla
   assert.equal(groupCallPathNote('Bash', { command: 'ls' }, lane, realpath), `Runs in: ${lane}`)
 })
 
+test('round 4, finding 2, Windows: the card reads a Windows lane folder with Windows paths: either separator, no case, links resolved', () => {
+  const lane = 'C:\\Users\\u\\AppData\\Local\\Temp\\hoai-group-lanes-1000\\7\\123'
+  const links: Record<string, string> = { [`${lane}\\cfg`]: 'C:\\Users\\u\\.claude' }
+  const asked: string[] = []
+  const realpath = (p: string) => {
+    asked.push(p)
+    for (const [from, to] of Object.entries(links)) if (p === from || p.startsWith(from + '\\')) return to + p.slice(from.length)
+    return p
+  }
+  const out = (path: string) => `Path: ${path}. This is OUTSIDE this group's folder.`
+  assert.equal(groupCallPathNote('Read', { file_path: `${lane}\\notes.txt` }, lane, realpath), `Path: ${lane}\\notes.txt`)
+  assert.equal(groupCallPathNote('Read', { file_path: 'notes.txt' }, lane, realpath), `Path: ${lane}\\notes.txt`, 'relative to the lane folder')
+  assert.equal(groupCallPathNote('Read', { file_path: 'sub/notes.txt' }, lane, realpath), `Path: ${lane}\\sub\\notes.txt`, 'a forward slash is a separator too')
+  assert.equal(groupCallPathNote('Read', { file_path: 'c:/users/U/appdata/local/temp/hoai-group-lanes-1000/7/123/x.txt' }, lane, realpath),
+    'Path: c:\\users\\U\\appdata\\local\\temp\\hoai-group-lanes-1000\\7\\123\\x.txt', 'another spelling of the same folder is inside it')
+  assert.equal(groupCallPathNote('Read', { file_path: '..\\456\\other.txt' }, lane, realpath),
+    out('C:\\Users\\u\\AppData\\Local\\Temp\\hoai-group-lanes-1000\\7\\456\\other.txt'))
+  assert.equal(groupCallPathNote('Read', { file_path: '../456/other.txt' }, lane, realpath),
+    out('C:\\Users\\u\\AppData\\Local\\Temp\\hoai-group-lanes-1000\\7\\456\\other.txt'))
+  assert.equal(groupCallPathNote('Read', { file_path: `${lane}2\\x.txt` }, lane, realpath), out(`${lane}2\\x.txt`), 'a sibling with the same prefix is outside')
+  assert.equal(groupCallPathNote('Edit', { file_path: `${lane}\\cfg\\settings.json` }, lane, realpath), out('C:\\Users\\u\\.claude\\settings.json'), 'a link is resolved')
+  assert.equal(groupCallPathNote('Grep', { pattern: 'x', path: 'D:\\secrets' }, lane, realpath), out('D:\\secrets'), 'another drive')
+  assert.equal(groupCallPathNote('Grep', { pattern: 'x', path: '/etc' }, lane, realpath), out('C:\\etc'), 'a rooted path is on the lane folder\'s drive')
+  assert.equal(groupCallPathNote('Glob', { pattern: '*' }, lane, realpath), `Path: ${lane}`, 'no path is the working folder')
+  assert.equal(groupCallPathNote('Bash', { command: 'dir' }, lane, realpath), `Runs in: ${lane}`)
+  assert.ok(asked.every((p) => !p.includes('/')), 'the real path is only asked for Windows paths')
+  assert.ok(!asked.includes(''), 'never an empty path, which would read the working folder')
+  const share = '\\\\host\\share\\lanes\\123'
+  assert.equal(groupCallPathNote('Read', { file_path: 'a.txt' }, share, (p) => p), `Path: ${share}\\a.txt`, 'a share is a Windows folder too')
+  assert.equal(groupCallPathNote('Read', { file_path: '..\\..\\..\\other\\a.txt' }, share, (p) => p), out('\\\\host\\share\\other\\a.txt'), 'never above the share')
+})
+
+test('round 4, finding 2, Windows: the fence names Windows folders in the CLI\'s rule spelling', () => {
+  const fence = {
+    home: 'C:\\Users\\u', configDir: 'C:\\Users\\u\\.claude', stateRoot: 'C:\\Users\\u\\.bgos-agent',
+    laneRoot: 'C:\\Temp\\hoai-group-lanes-1000\\7', laneFolder: 'C:\\Temp\\hoai-group-lanes-1000\\7\\123',
+    tempRoots: [], sandbox: false,
+  }
+  const s = groupLaneSettings('approvals', 'D:\\work\\atlas', 'win32', fence) as Settings
+  for (const rule of ['//c/Users/u', '//d/work/atlas', '//c/Users/u/.bgos-agent', '//c/Users/u/.claude']) {
+    for (const tool of FILE_TOOLS) assert.ok(s.permissions.deny!.includes(`${tool}(${rule}/**)`), `${tool}(${rule}/**)`)
+  }
+  assert.throws(() => groupLaneSettings('approvals', 'D:\\work\\atlas', 'win32', { ...fence, laneFolder: 'C:\\Users\\u\\lanes\\123' }), /inside a fenced path/)
+})
+
 // -- round 5 (A): member text is never interpreted by the CLI ---------------------
 
 test('round 5 A: every @ is neutralised, and a line that starts with a CLI prefix is made literal', () => {

@@ -7,6 +7,7 @@
 
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
+import { join, posix, win32 } from 'node:path'
 
 import { ensureGroupLaneRoot, groupSandboxWorks } from '../lib/group-lane-root.ts'
 
@@ -24,10 +25,22 @@ function fsRig(st: { link?: boolean; dir?: boolean; uid?: number; mode?: number 
 }
 
 test('round 4, finding 7: the lane root is base/hoai-group-lanes-<uid>/<assistant>, made 0700', () => {
+  // This machine's own paths, as the daemon joins them.
   const r = fsRig()
-  assert.equal(ensureGroupLaneRoot({ base: '/var/tmp', uid: 1000, assistantId: '7', fs: r.fs }), '/var/tmp/hoai-group-lanes-1000/7')
-  assert.deepEqual(r.made, [['/var/tmp/hoai-group-lanes-1000', 0o700], ['/var/tmp/hoai-group-lanes-1000/7', 0o700]])
+  assert.equal(ensureGroupLaneRoot({ base: '/var/tmp', uid: 1000, assistantId: '7', fs: r.fs }), join('/var/tmp', 'hoai-group-lanes-1000', '7'))
+  assert.deepEqual(r.made, [[join('/var/tmp', 'hoai-group-lanes-1000'), 0o700], [join('/var/tmp', 'hoai-group-lanes-1000', '7'), 0o700]])
   assert.deepEqual(r.chmods, [])
+})
+
+test('round 4, finding 7: the lane root layout holds for POSIX and for Windows paths on any machine', () => {
+  const p = fsRig()
+  assert.equal(ensureGroupLaneRoot({ base: '/var/tmp', uid: 1000, assistantId: '7', fs: p.fs, path: posix }), '/var/tmp/hoai-group-lanes-1000/7')
+  assert.deepEqual(p.made, [['/var/tmp/hoai-group-lanes-1000', 0o700], ['/var/tmp/hoai-group-lanes-1000/7', 0o700]])
+  const w = fsRig({ mode: 0o40755 })
+  const base = 'C:\\Users\\u\\AppData\\Local\\Temp'
+  assert.equal(ensureGroupLaneRoot({ base, uid: 1000, assistantId: '7', fs: w.fs, path: win32 }), 'C:\\Users\\u\\AppData\\Local\\Temp\\hoai-group-lanes-1000\\7')
+  assert.deepEqual(w.made, [['C:\\Users\\u\\AppData\\Local\\Temp\\hoai-group-lanes-1000', 0o700], ['C:\\Users\\u\\AppData\\Local\\Temp\\hoai-group-lanes-1000\\7', 0o700]])
+  assert.deepEqual(w.chmods, [['C:\\Users\\u\\AppData\\Local\\Temp\\hoai-group-lanes-1000', 0o700]])
 })
 
 test('round 4, finding 7: a top folder that is a link is refused', () => {
@@ -45,7 +58,7 @@ test('round 4, finding 7: a top folder another user owns is refused', () => {
 test('round 4, finding 7: a top folder others can open is made 0700 again', () => {
   const r = fsRig({ mode: 0o40755 })
   ensureGroupLaneRoot({ base: '/var/tmp', uid: 1000, assistantId: '7', fs: r.fs })
-  assert.deepEqual(r.chmods, [['/var/tmp/hoai-group-lanes-1000', 0o700]])
+  assert.deepEqual(r.chmods, [[join('/var/tmp', 'hoai-group-lanes-1000'), 0o700]])
 })
 
 test('round 4, finding 3: a sandbox counts only when it really starts', async () => {

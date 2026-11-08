@@ -16,7 +16,7 @@
  * Every effect is injected. Erasable TypeScript only.
  */
 
-import { join } from 'node:path'
+import { join as joinHere } from 'node:path'
 
 export interface GroupLaneRootFs {
   mkdir(path: string, mode: number): void
@@ -24,7 +24,13 @@ export interface GroupLaneRootFs {
   chmod(path: string, mode: number): void
 }
 
-export function ensureGroupLaneRoot(input: { base: string; uid: number; assistantId: string; fs: GroupLaneRootFs }): string {
+/** How the folders are joined: this machine's own paths unless a test names POSIX or Windows. */
+export interface GroupLaneRootPath {
+  join(...parts: string[]): string
+}
+
+export function ensureGroupLaneRoot(input: { base: string; uid: number; assistantId: string; fs: GroupLaneRootFs; path?: GroupLaneRootPath }): string {
+  const join = input.path?.join ?? joinHere
   const top = join(input.base, `hoai-group-lanes-${input.uid}`)
   input.fs.mkdir(top, 0o700)
   const st = input.fs.lstat(top)

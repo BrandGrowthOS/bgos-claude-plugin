@@ -35,6 +35,8 @@
  * starts a second copy of this channel plugin. Erasable TypeScript only.
  */
 
+import { win32 } from 'node:path'
+
 import { isSessionId, threadLaneHooks } from './thread-lane-args.ts'
 import { permissionRulePath } from './lane-core.mjs'
 
@@ -149,6 +151,8 @@ export function groupStampChatId(stamp: unknown): string | null {
  */
 export function groupCallPathNote(toolName: string, input: unknown, laneFolder: string, realpath: (p: string) => string): string | null {
   const x = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>
+  // A Windows lane folder (a drive or a share) is read with Windows paths: both separators, no case.
+  if (isWindowsPath(laneFolder)) return groupCallPathNoteWin32(toolName, x, laneFolder, realpath)
   const lane = trimSlash(laneFolder)
   // The nearest folder that exists is resolved, and the rest kept as written
   // (a file being made, or one that is not there, still shows where it lands).
@@ -172,6 +176,52 @@ export function groupCallPathNote(toolName: string, input: unknown, laneFolder: 
   const absolute = raw.startsWith('/') || /^[A-Za-z]:[\\/]/.test(raw) ? raw : `${lane}/${raw}`
   const path = real(normalizePath(absolute))
   return inside(path, real(lane)) ? `Path: ${path}` : `Path: ${path}. This is OUTSIDE this group's folder.`
+}
+
+function isWindowsPath(p: string): boolean {
+  // A drive (C:\ or C:/) or a share (\\server\share). Two forward slashes stay POSIX.
+  return /^[A-Za-z]:[\\/]/.test(p) || /^\\{2}[^\\]/.test(p)
+}
+
+/**
+ * groupCallPathNote for a Windows lane folder: the same note, with the path
+ * resolved and compared as Windows does (either separator, `..` folded, a
+ * relative path read from the lane folder, the drive or share kept as its
+ * root, and no case difference between two spellings of one folder).
+ */
+function groupCallPathNoteWin32(toolName: string, x: Record<string, unknown>, laneFolder: string, realpath: (p: string) => string): string | null {
+  const strip = (p: string): string => {
+    const root = win32.parse(p).root
+    return p.length > root.length ? p.replace(/[\\/]+$/, '') : p
+  }
+  // The nearest folder that exists is resolved, and the rest kept as written.
+  const real = (p: string): string => {
+    const full = win32.resolve(p)
+    const root = win32.parse(full).root
+    const parts = full.slice(root.length).split('\\').filter((part) => part !== '')
+    for (let cut = parts.length; cut >= 0; cut--) {
+      const head = cut === 0 ? root : win32.join(root, ...parts.slice(0, cut))
+      try {
+        const resolved = strip(realpath(head))
+        const rest = parts.slice(cut)
+        return rest.length > 0 ? win32.join(resolved, ...rest) : resolved
+      } catch {}
+    }
+    return strip(full)
+  }
+  const within = (child: string, parent: string): boolean => {
+    const c = strip(child).toLowerCase()
+    const p = strip(parent).toLowerCase()
+    return c === p || c.startsWith(p.endsWith('\\') ? p : `${p}\\`)
+  }
+  const lane = real(laneFolder)
+  if (toolName === 'Bash') return `Runs in: ${lane}`
+  const raw = toolName === 'Grep' || toolName === 'Glob'
+    ? (typeof x.path === 'string' && x.path !== '' ? x.path : laneFolder)
+    : typeof x.file_path === 'string' ? x.file_path : typeof x.notebook_path === 'string' ? x.notebook_path : null
+  if (raw === null) return null
+  const path = real(win32.resolve(laneFolder, raw))
+  return within(path, lane) ? `Path: ${path}` : `Path: ${path}. This is OUTSIDE this group's folder.`
 }
 
 /** `.` and `..` segments folded, without touching the disk. */
