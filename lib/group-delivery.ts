@@ -20,6 +20,7 @@
 
 import { statedGroupLevel, groupStampChatId, type GroupBacklogLine, type GroupEarlierMessage, type GroupRosterEntry } from './group-lane-args.ts'
 import { readLaneStamp } from './lane-core.mjs'
+import { cardAnswerText, type CardAnswerClick } from './card-answer.ts'
 import { isSessionId } from './thread-lane-args.ts'
 import type { GroupDelivery } from './group-lanes.ts'
 
@@ -166,9 +167,15 @@ export function groupTapKey(messageId: unknown, callbackData: string | null | un
   return `tap:${String(messageId)}:${callbackData ?? ''}:${customText ?? ''}`
 }
 
-/** A tap in a group, as the short turn line its lane reads. */
-export function groupTapLine(input: { tapper: string | null; buttonText: string; customText?: string | null }): string {
+/**
+ * A tap in a group, as the short turn line its lane reads. A card's answer
+ * (lib/card-answer.ts) keeps what was entered: the line says a card was
+ * answered, then the same quoted, bounded data the main session would read.
+ */
+export function groupTapLine(input: { tapper: string | null; buttonText: string; customText?: string | null; card?: CardAnswerClick | null }): string {
   const who = input.tapper && input.tapper.trim() ? input.tapper.trim() : 'Someone'
+  const card = input.card ? cardAnswerText(input.card) : null
+  if (card) return `[Button tap in this group] ${who} answered your card on your message.\n${card}`
   const what = input.customText && input.customText.trim() ? `answered "${input.customText.trim()}"` : `pressed "${input.buttonText.trim() || 'a button'}"`
   return `[Button tap in this group] ${who} ${what} on your message.`
 }

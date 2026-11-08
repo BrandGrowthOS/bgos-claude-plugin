@@ -15423,7 +15423,8 @@ function routeGroupPollTaps(announced: Set<number>, rows: ChatMessage[]): void {
     const routed = routeGroupDelivery([mm, row], {
       key: groupTapKey(mm.id, callbackData, customText),
       messageId: mm.id,
-      text: groupTapLine({ tapper: null, buttonText, customText }),
+      // A card's answer keeps its entered values in the group lane too (lib/card-answer.ts).
+      text: groupTapLine({ tapper: null, buttonText, customText, card: cardAnswerClickOf(mm.id, payload) }),
       sessionHandle: (mm as { sessionHandle?: unknown }).sessionHandle,
     }, 'poll tap')
     if (!routed) continue
@@ -15438,7 +15439,13 @@ function routeGroupStreamTap(view: StreamMessageView): boolean {
   return routeGroupDelivery([view.raw], {
     key: groupTapKey(view.messageId, answer?.callbackData, answer?.customText),
     messageId: view.messageId,
-    text: groupTapLine({ tapper: null, buttonText: answer?.buttonText ?? '', customText: answer?.customText ?? null }),
+    text: groupTapLine({
+      tapper: null,
+      buttonText: answer?.buttonText ?? '',
+      customText: answer?.customText ?? null,
+      // A card's answer keeps its entered values in the group lane too (lib/card-answer.ts).
+      card: answer?.card ? { ...answer.card, messageId: view.messageId } : null,
+    }),
     sessionHandle: view.sessionHandle,
   }, 'stream tap')
 }
@@ -17185,7 +17192,7 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
   // never announced into the owner's session.
   // Group threads: a group's tap is a turn line in its lane, never the main session's.
   if (routeGroupStreamTap(view)) {
-    log(`button_clicked SKIPPED for the main session: message ${view.messageId} is a group's tap, for its group lane (streamAuthority=${authorityAtReceipt})`)
+    log(`button_clicked SKIPPED for the main session: message ${view.messageId} is a group's tap, which only its group lane may take (streamAuthority=${authorityAtReceipt})`)
     return
   }
   const tapLaneVerdict = ownerLaneVerdict(view.raw)
