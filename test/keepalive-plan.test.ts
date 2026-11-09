@@ -26,6 +26,7 @@ import {
   AGENT_STATE_FRESH_MS,
   CREATE_LAUNCH_REASONS,
   KEEPALIVE_SWITCH_STATES,
+  KEEPALIVE_AGENT_WINDOWS_MAX,
   INSTALL_RETRY_MS,
   KEEPALIVE_CACHE_MAX_AGE_MS,
   LAUNCHER_STABLE_MS,
@@ -566,6 +567,44 @@ test('parseKeepAliveResponse: the owner setting and the computer switch arrive a
   }
   // enabled is what the sweep acts on, so it decides: enabled true is on whatever switchState says.
   assert.equal(parseKeepAliveResponse({ enabled: true, enabledAt: 'x', assistantIds: [], switchState: 'never_set' })!.switchState, 'on')
+})
+
+test('parseKeepAliveResponse: agentWindows, one On or Off per agent, is kept beside showAgentWindows (digit ids, true or false only, capped); absent or not a map is no field at all (an older server)', () => {
+  const base = { enabled: false, enabledAt: null, assistantIds: [], showAgentWindows: false }
+  assert.deepEqual(parseKeepAliveResponse({ ...base, agentWindows: { '7': true, '912': false } }), {
+    enabled: false,
+    enabledAt: null,
+    assistantIds: [],
+    switchState: 'off',
+    showAgentWindows: false,
+    agentWindows: { '7': true, '912': false },
+  })
+  assert.deepEqual(parseKeepAliveResponse({ ...base, agentWindows: {} })!.agentWindows, {}, 'an empty map is a map: nobody On')
+  assert.deepEqual(
+    parseKeepAliveResponse({ ...base, agentWindows: { '7': true, x: true, '-1': true, ' 8': true, '9': 'true', '10': 1, '11': null, '1.5': true, '12': false } })!.agentWindows,
+    { '7': true, '12': false },
+    'junk entries are dropped (that agent stays Off)',
+  )
+  for (const notAMap of [undefined, null, [], 'all', true, 7]) {
+    const parsed = parseKeepAliveResponse({ ...base, agentWindows: notAMap })!
+    assert.equal('agentWindows' in parsed, false, JSON.stringify(notAMap ?? 'absent'))
+  }
+  const many = Object.fromEntries(Array.from({ length: KEEPALIVE_AGENT_WINDOWS_MAX + 5 }, (_, i) => [String(i + 1), true]))
+  assert.equal(Object.keys(parseKeepAliveResponse({ ...base, agentWindows: many })!.agentWindows!).length, KEEPALIVE_AGENT_WINDOWS_MAX)
+})
+
+test('agentWindows rides the live answer, the cache and the decision; a refusal or no answer carries none (windows off as today); a cache without it reads as an older server', () => {
+  const live = { enabled: true, enabledAt: 'x', assistantIds: ['912'], switchState: 'on' as const, showAgentWindows: false, agentWindows: { '912': true } }
+  const body = buildKeepAliveCache(live, NOW - 60 * MIN)
+  assert.deepEqual(JSON.parse(body).agentWindows, { '912': true })
+  const cache = parseKeepAliveCache(body)
+  assert.deepEqual(cache!.agentWindows, { '912': true })
+  assert.deepEqual(decideKeepAliveConsent({ live, cache: null, now: NOW }), { ...live, source: 'live' })
+  assert.deepEqual(decideKeepAliveConsent({ live: null, cache, now: NOW }), { ...live, source: 'cache' })
+  assert.equal('agentWindows' in decideKeepAliveConsent({ live: null, cache, now: NOW, refused: true }), false)
+  assert.equal('agentWindows' in decideKeepAliveConsent({ live: null, cache: null, now: NOW }), false)
+  const plain = { enabled: true, enabledAt: 'x', assistantIds: ['912'], switchState: 'on' as const, showAgentWindows: true }
+  assert.equal(buildKeepAliveCache(plain, NOW), `${JSON.stringify({ schemaVersion: 1, enabled: true, enabledAt: 'x', assistantIds: ['912'], switchState: 'on', showAgentWindows: true, fetchedAt: new Date(NOW).toISOString() }, null, 2)}\n`, 'no field, the same bytes as before')
 })
 
 test('decideKeepAliveConsent: live answer wins; a failure falls back to a cache younger than 24 h; otherwise OFF', () => {
