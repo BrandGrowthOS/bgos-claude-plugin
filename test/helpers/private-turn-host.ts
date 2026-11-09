@@ -10,6 +10,7 @@
  * peer conversation close, a meeting line) through the notification wrapper's rawCard, the fire keys the ledger was
  * asked to record, and the daemon's private turn log lines.
  */
+import { createScheduleGrantRuns, holdChannelCardsDuringGrantedRun, requireBoardsTurn } from '../../lib/schedule-grant-run.mjs'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
@@ -244,7 +245,9 @@ export function agentHost(t: any) {
   let life = daemon()
   const notify = (content: string, meta: Record<string, string>): string => {
     const mcp = { notification: (notification: any) => String(notification.params.content) }
-    const notification = new Function('mcp', 'privateTurns', notificationJs)(mcp, life.tracker)
+    // The notification chain as server.ts builds it: group threads' step (summaries, lane verdicts) passes every card
+    // through with no group lane here, and the scheduled run hold (0.86.20) passes every card unchanged with no run open.
+    const notification = new Function('mcp', 'groupNotificationStep', 'privateTurns', 'holdChannelCardsDuringGrantedRun', 'scheduleGrantRuns', 'log', notificationJs)(mcp, () => null, life.tracker, holdChannelCardsDuringGrantedRun, createScheduleGrantRuns(), () => {})
     return notification({ method: 'notifications/claude/channel', params: { content, meta } })
   }
   const payloadOf = (event: string, extra: Record<string, unknown> = {}) =>
@@ -493,11 +496,11 @@ export async function admitCall(host: Host, name: string, args?: Record<string, 
   const result = new Function(
     'req', 'lockHeld', 'privateTurns', 'PRIVATE_MARKER_PATHS', 'PRIVATE_HOOK', 'PRIVATE_HOOK_MISSING_REFUSAL', 'USER_ID', 'log',
     'requirePrivateTurn', 'turnAwarePrivateTurn', 'requireEmailSendTurn', 'PRIVATE_TURN_REFUSAL', 'recordPeerRefusal', 'pathDirname',
-    'CURSOR_FILE_PATH', 'ASSISTANT_ID', 'emailToolNeedsTurn', 'emailTurnRefusalText', admissionJs,
+    'CURSOR_FILE_PATH', 'ASSISTANT_ID', 'emailToolNeedsTurn', 'emailTurnRefusalText', 'requireBoardsTurn', 'scheduleGrantRuns', admissionJs,
   )(
     { params: { name, ...(args === undefined ? {} : { arguments: args }) } }, true, host.tracker, host.markerPaths, { registered: true }, 'hook missing', OWNER, () => {},
     requirePrivateTurn, turnAwarePrivateTurn, requireEmailSendTurn, PRIVATE_TURN_REFUSAL, () => ({ line: '' }), () => '/s',
-    '/s/c', AGENT, emailToolNeedsTurn, emailTurnRefusalText,
+    '/s/c', AGENT, emailToolNeedsTurn, emailTurnRefusalText, requireBoardsTurn, createScheduleGrantRuns(),
   )
   if (typeof result?.then === 'function') {
     const settled = await result

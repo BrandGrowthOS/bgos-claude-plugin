@@ -366,7 +366,7 @@ describe('schedule and drain decisions', () => {
       'meeting_state_resync',
       'meeting_closed',
     ]) {
-      expect(handlerBody(event)).toContain('trackMessageOperation(() => mcp.notification')
+      expect(handlerBody(event)).toContain('trackMessageOperation(() => channelNotify(')
     }
     expect(source).not.toContain('void handleRemoteCompact(')
     // The tool handler's own refusal used to be this bare `if (updateDrainMode)`, which refused
