@@ -1,0 +1,32 @@
+✔ every vendored file matches the sha256 the tree declares for it (1.129041ms)
+✔ vendor.json pins EXACTLY the files that are here, so a copy cannot arrive unpinned (0.321375ms)
+✔ the pin names a BGOS source path for each file, so the original is findable (0.131833ms)
+✔ the vendored files are LF only, and .gitattributes says so (0.506709ms)
+✔ the copies keep their original filenames, because settings.js requires ./policy by name (0.064917ms)
+✔ the nested package.json declares commonjs, without which the host cannot load the rules at all (0.077792ms)
+✔ the rules actually load and decide, so a passing hash is not the only thing proven (3.0675ms)
+✔ activation keys anywhere in a chord require reading the focused control (1.209208ms)
+﹣ cross tree: each copy is byte-identical to the BGOS original (0.043625ms) # set HOAI_BROWSER_HOST_CORE_SOURCE to the BGOS agent-browser directory
+✔ P1-6 a protected snapshot finishes while a page keeps adding frames every 5 ms (3448.13725ms)
+ℹ protected snapshot completed in 1824 ms with 324 delayed frame seeds
+✔ P1-6 a frame arriving during a read is rechecked before any of its text can be returned (1149.928959ms)
+ℹ late frame checked 5 times; protected read and snapshot withheld its text
+ℹ tests 11
+ℹ suites 0
+ℹ pass 10
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 1
+ℹ todo 0
+ℹ duration_ms 4807.582125
+
+✔ the read cutoff includes work registered while admission is still becoming ready (2.417334ms)
+✔ a later failed frame proof is retried after the bounded wait and blocks release until checked (1.3465ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 117.502333
