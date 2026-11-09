@@ -110,18 +110,28 @@ export function spawnStreamJson(command: string, args: string[], opts: { cwd: st
   }
   child.on('error', () => finish(null, null))
   child.on('exit', (code, signal) => finish(code, signal))
+  // A pipe error of a lane (EPIPE when it died with input unread) belongs to
+  // the lane alone. Unhandled, it would reach the daemon's fault handlers,
+  // which read a broken pipe as the daemon's own reader gone and stop it
+  // (THREADCRASH). The lane's exit reports what happened to it.
   child.stdin?.on('error', () => {})
+  child.stdout?.on('error', () => {})
+  child.stderr?.on('error', () => {})
   child.stdout?.setEncoding('utf8')
   child.stderr?.resume()
   return {
     pid: child.pid,
     write(chunk) {
       if (gone || !child.stdin || child.stdin.destroyed) return
-      child.stdin.write(chunk)
+      try {
+        child.stdin.write(chunk, () => {})
+      } catch {}
     },
     end() {
       if (gone || !child.stdin || child.stdin.destroyed) return
-      child.stdin.end()
+      try {
+        child.stdin.end()
+      } catch {}
     },
     kill(signal) {
       if (gone) return

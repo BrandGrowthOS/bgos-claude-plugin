@@ -95,14 +95,23 @@ const ROOT_ID_RE = /^[A-Za-z0-9_-]{1,64}$/
 const MODES: readonly string[] = ['start', 'reply', 'summary']
 
 const FAILED_TURN = 'This turn failed before the agent could answer, so send your reply again to retry.'
-const NO_SESSION = 'This thread could not start because the agent has no running session to fork yet.'
-const NO_CLAUDE = 'This turn failed because this computer cannot run Claude Code right now.'
-const NO_WORKTREE = 'This thread could not start because its working copy could not be made.'
+/**
+ * Every way a thread can fail to open reads the same in the thread
+ * (THREADCRASH): this prefix and a plain reason, never silence.
+ */
+export const COULD_NOT_OPEN = 'I could not open this thread:'
+function couldNotOpen(reason: string): string {
+  return `${COULD_NOT_OPEN} ${reason}`
+}
+const NO_SESSION = couldNotOpen('the agent has no running session to fork yet. Send your reply again once the agent has answered in the main chat.')
+const NO_CLAUDE = couldNotOpen('this computer cannot run Claude Code right now.')
+const NO_WORKTREE = couldNotOpen('its working copy could not be made. Send your reply again to retry.')
+const NO_COPY = couldNotOpen('the main conversation could not be copied for it. Send your reply again to retry.')
 const TIMED_OUT = 'This turn took longer than 30 minutes, so it was stopped. Send your reply again to retry.'
 const POST_FAILED = 'The answer to this turn could not be delivered, so send your reply again to retry.'
 const STOP_HOOK_LOOP =
   'This turn was stopped because a Stop hook (such as a /goal set in the main chat) kept blocking it from ending. Send your reply again to retry.'
-const ORPHAN_ALIVE = 'This turn could not start because an earlier run of this thread is still stopping. Send your reply again in a minute.'
+const ORPHAN_ALIVE = couldNotOpen('an earlier run of this thread is still stopping. Send your reply again in a minute.')
 
 /** A synthetic user message a blocking Stop hook added: its text starts with the CLI's feedback prefix. */
 function isStopHookFeedback(frame: Record<string, unknown>): boolean {
@@ -192,6 +201,21 @@ export interface ThreadLaneDeps {
   /** process.platform: on Linux the sandbox protects only paths that exist (protectedPaths). */
   platform?: NodeJS.Platform
   git(args: string[], cwd: string): Promise<{ ok: boolean; stdout: string }>
+  /**
+   * Why a worktree of the agent folder would copy too much (lib/thread-repo-size.ts),
+   * as a short plain phrase, or null. When it answers a reason the lane runs
+   * read only in a plain folder and reads the agent folder in place. Absent:
+   * every repository gets its worktree.
+   */
+  checkoutTooLarge?(agentFolder: string): Promise<string | null>
+  /**
+   * The transcript work on disk, in pieces and off the event loop
+   * (lib/thread-transcript.ts). Absent (unit fakes), it goes through `fs`.
+   */
+  transcripts?: {
+    copyClearingGoal(from: string, to: string): Promise<void>
+    clearGoal(path: string): Promise<unknown>
+  }
   fs: ThreadLaneFs
   post(path: string, body: Record<string, unknown>): Promise<unknown>
   now(): number
@@ -250,6 +274,8 @@ interface Lane {
   turnTimer: unknown
   /** Times a Stop hook blocked the current child turn from ending. */
   stopHookBlocks: number
+  /** The current child sent its init frame: an exit before it means the thread never opened. */
+  sawInit: boolean
   /** A start in flight (worktree, confinement, spawn): close and delete wait for it. */
   starting: Promise<void> | null
   /** When the lane last finished a turn: the oldest idle lane gives its slot first. */
@@ -595,6 +621,7 @@ export class ThreadLaneManager {
       childTurn: null,
       turnTimer: null,
       stopHookBlocks: 0,
+      sawInit: false,
       starting: null,
       idleSince: 0,
       copiedMainPath: null,
@@ -630,8 +657,23 @@ export class ThreadLaneManager {
       this.armTurnTimer(lane, turn)
       lane.child.write(userMessageLine(threadTurnPrompt({ ...turn, readOnly: lane.state.readOnly })))
     } catch (err) {
-      this.deps.log(`threads: turn ${turn.rootId} could not start (${err instanceof ThreadLaneError ? err.code : 'error'})`)
-      this.failTurn(lane, turn, err instanceof ThreadLaneError ? err.message : FAILED_TURN)
+      // Nothing on a thread's start may reach the daemon's fault handlers: every
+      // error ends here, as one plain log line and one reply in the thread.
+      this.safely(`turn ${turn.rootId} failure`, () => {
+        this.deps.log(`threads: turn ${turn.rootId} could not start (${describeError(err)})`)
+        this.failTurn(lane, turn, err instanceof ThreadLaneError ? err.message : couldNotOpen(`something went wrong while starting it (${errorName(err)}). Send your reply again to retry.`))
+      })
+    }
+  }
+
+  /** Run a callback that must never throw into the event loop (a child's exit, a frame, a timer). */
+  private safely(what: string, fn: () => void): void {
+    try {
+      fn()
+    } catch (err) {
+      try {
+        this.deps.log(`threads: ${what} failed (${describeError(err)})`)
+      } catch {}
     }
   }
 
@@ -790,7 +832,7 @@ export class ThreadLaneManager {
     // An older CLI refuses --restricted: say so, never the generic "turn failed".
     // Asynchronous: a probe still running is waited for off the event loop.
     const problem = await this.deps.cliProblem()
-    if (problem) throw new ThreadLaneError('unsupported', problem)
+    if (problem) throw new ThreadLaneError('unsupported', couldNotOpen(problem))
     if (lane.closed || lane.child) return
     await this.prepareFolder(lane)
     if (lane.closed) return
@@ -810,36 +852,60 @@ export class ThreadLaneManager {
       // Also clear goals in forks saved by versions that disabled all hooks.
       const path = sessionTranscriptPath(this.deps.home, lane.state.cwd, lane.state.forkSessionId, this.deps.configDir)
       if (this.deps.fs.exists(path)) {
-        const before = this.deps.fs.readFile(path)
-        const after = threadLaneTranscript(before)
-        if (after !== before) {
-          // A crash during an upgrade must not truncate the fork's memory.
-          const temporary = `${path}.thread-goal.tmp`
-          try {
-            this.deps.fs.writeFile(temporary, after)
-            this.deps.fs.rename(temporary, path)
-          } finally {
-            try { this.deps.fs.unlink(temporary) } catch {}
-          }
+        try {
+          await this.clearForkGoal(path)
+        } catch (err) {
+          // The fork resumes as it is: its goal, if any, is caught by the Stop hook defence.
+          this.deps.log(`threads: lane ${lane.state.rootId} could not clear its inherited goal (${describeError(err)})`)
         }
       }
     } else {
       const mainId = this.deps.mainSessionId()
       if (!isSessionId(mainId)) throw new ThreadLaneError('no_session', NO_SESSION)
       args = threadLaneArgs({ mainSessionId: mainId, forkSessionId: null, emptyMcpConfigPath: mcp, confinement })
-      this.copyMainTranscript(lane, mainId)
+      await this.copyMainTranscript(lane, mainId)
+      if (lane.closed) {
+        this.dropCopiedMain(lane)
+        return
+      }
     }
-    const child = this.deps.spawn(claude, args, { cwd: lane.state.cwd })
+    let child: StreamJsonChild
+    try {
+      child = this.deps.spawn(claude, args, { cwd: lane.state.cwd })
+    } catch (err) {
+      this.dropCopiedMain(lane)
+      throw new ThreadLaneError('spawn_failed', couldNotOpen(`Claude Code could not be started for it (${errorName(err)}). Send your reply again to retry.`))
+    }
     lane.child = child
     lane.stopping = false
+    lane.sawInit = false
     this.recordPid(lane, child)
     lane.exited = new Promise<void>((done) => {
-      child.onExit(() => {
-        this.onExit(lane, child)
+      child.onExit((code) => {
+        this.safely(`lane ${lane.state.rootId} exit`, () => this.onExit(lane, child, code))
         done()
       })
     })
-    child.onStdout(lineSplitter((frame) => this.onFrame(lane, child, frame)))
+    child.onStdout(lineSplitter((frame) => this.safely(`lane ${lane.state.rootId} frame`, () => this.onFrame(lane, child, frame))))
+  }
+
+  /** The fork's own transcript, its inherited goal cleared in place. */
+  private async clearForkGoal(path: string): Promise<void> {
+    if (this.deps.transcripts) {
+      await this.deps.transcripts.clearGoal(path)
+      return
+    }
+    const before = this.deps.fs.readFile(path)
+    const after = threadLaneTranscript(before)
+    if (after === before) return
+    // A crash during an upgrade must not truncate the fork's memory.
+    const temporary = `${path}.thread-goal.tmp`
+    try {
+      this.deps.fs.writeFile(temporary, after)
+      this.deps.fs.rename(temporary, path)
+    } finally {
+      try { this.deps.fs.unlink(temporary) } catch {}
+    }
   }
 
   /** Where this lane may write and what it may run (lib/thread-lane-args.ts). */
@@ -975,24 +1041,39 @@ export class ThreadLaneManager {
     }
   }
 
-  private copyMainTranscript(lane: Lane, mainId: string): void {
+  /**
+   * The main transcript, copied where the CLI looks a `--resume` id up for the
+   * lane's folder, with its active goal cleared in the copy. On disk and in
+   * pieces (THREADCRASH): an agent's main transcript can be hundreds of
+   * megabytes, and reading it whole on the event loop took the daemon down.
+   */
+  private async copyMainTranscript(lane: Lane, mainId: string): Promise<void> {
     const { fs, home, configDir, agentFolder } = this.deps
     const from = sessionTranscriptPath(home, agentFolder, mainId, configDir)
     const to = sessionTranscriptPath(home, lane.state.cwd, mainId, configDir)
     if (from === to) throw new ThreadLaneError('no_session', NO_SESSION)
+    if (!fs.exists(from)) throw new ThreadLaneError('no_session', NO_SESSION)
+    // Named before the copy: a copy cut short is removed like a finished one.
+    lane.copiedMainPath = to
     try {
       fs.mkdir(dirname(to))
-      fs.writeFile(to, threadLaneTranscript(fs.readFile(from)))
-    } catch {
-      throw new ThreadLaneError('no_session', NO_SESSION)
+      if (this.deps.transcripts) {
+        await this.deps.transcripts.copyClearingGoal(from, to)
+      } else {
+        fs.writeFile(to, threadLaneTranscript(fs.readFile(from)))
+      }
+    } catch (err) {
+      this.deps.log(`threads: lane ${lane.state.rootId} could not copy the main transcript (${describeError(err)})`)
+      this.dropCopiedMain(lane)
+      throw new ThreadLaneError('copy_failed', NO_COPY)
     }
-    lane.copiedMainPath = to
   }
 
   private onFrame(lane: Lane, child: StreamJsonChild, frame: Record<string, unknown>): void {
     // A stopping child (closed, timed out, idle) speaks for no turn any more.
     if (lane.child !== child || lane.stopping) return
     if (frame.type === 'system' && frame.subtype === 'init') {
+      lane.sawInit = true
       const id = frame.session_id
       // Stream json input repeats init at every turn: the first one counts.
       if (!lane.state.forkSessionId && isSessionId(id) && id !== this.deps.mainSessionId()) {
@@ -1023,8 +1104,10 @@ export class ThreadLaneManager {
     this.failTurn(lane, turn, STOP_HOOK_LOOP)
   }
 
-  private onExit(lane: Lane, child: StreamJsonChild): void {
+  private onExit(lane: Lane, child: StreamJsonChild, code: number | null = null): void {
     if (lane.child !== child) return
+    // Gone before it ever said it started: the fork itself failed to open.
+    const neverStarted = !lane.sawInit && !lane.stopping
     lane.child = null
     lane.stopping = false
     if (lane.state.pid !== null && lane.state.pid === child.pid) {
@@ -1045,8 +1128,14 @@ export class ThreadLaneManager {
     // it was stopping waits in ensureChild and runs on the next child.
     const ran = lane.childTurn
     lane.childTurn = null
-    if (ran && lane.current === ran) this.failTurn(lane, ran, FAILED_TURN)
-    else this.pump()
+    if (ran && lane.current === ran) {
+      if (neverStarted) {
+        this.deps.log(`threads: lane ${lane.state.rootId} exited before it started (exit code ${code === null ? 'none' : code})`)
+        this.failTurn(lane, ran, couldNotOpen(`Claude Code stopped before it could start the thread (exit code ${code === null ? 'none' : code}). Send your reply again to retry.`))
+      } else {
+        this.failTurn(lane, ran, FAILED_TURN)
+      }
+    } else this.pump()
   }
 
   /**
@@ -1157,13 +1246,13 @@ export class ThreadLaneManager {
 
   private armTurnTimer(lane: Lane, turn: ThreadTurnInput): void {
     this.clearTurnTimer(lane)
-    lane.turnTimer = this.deps.setTimer(() => {
+    lane.turnTimer = this.deps.setTimer(() => this.safely(`turn ${turn.rootId} timer`, () => {
       lane.turnTimer = null
       if (lane.current !== turn) return
       this.deps.log(`threads: turn ${turn.rootId} timed out, its lane is stopped`)
       this.stopChild(lane)
       this.failTurn(lane, turn, TIMED_OUT)
-    }, this.deps.turnTimeoutMs ?? THREAD_TURN_TIMEOUT_MS)
+    }), this.deps.turnTimeoutMs ?? THREAD_TURN_TIMEOUT_MS)
   }
 
   private clearTurnTimer(lane: Lane): void {
@@ -1175,10 +1264,10 @@ export class ThreadLaneManager {
   private armIdle(lane: Lane): void {
     this.clearIdle(lane)
     if (!lane.child) return
-    lane.idleTimer = this.deps.setTimer(() => {
+    lane.idleTimer = this.deps.setTimer(() => this.safely(`lane ${lane.state.rootId} idle stop`, () => {
       lane.idleTimer = null
       if (!lane.current && lane.queue.length === 0) this.stopChild(lane)
-    }, this.deps.idleMs ?? THREAD_LANE_IDLE_MS)
+    }), this.deps.idleMs ?? THREAD_LANE_IDLE_MS)
   }
 
   private clearIdle(lane: Lane): void {
@@ -1194,14 +1283,38 @@ export class ThreadLaneManager {
     const rel = join('.hoai', 'threads', rootId)
     const folder = join(agentFolder, rel)
     const prefix = await git(['-C', agentFolder, 'rev-parse', '--show-prefix'], agentFolder)
-    if (prefix.ok) {
-      await this.ensureExcluded()
+    // A repository too large to check out again (THREADCRASH): the lane reads it in place, read only.
+    let tooLarge: string | null = null
+    if (prefix.ok && this.deps.checkoutTooLarge && !fs.exists(folder)) {
+      try {
+        tooLarge = await this.deps.checkoutTooLarge(agentFolder)
+      } catch (err) {
+        tooLarge = `its size could not be measured (${errorName(err)})`
+      }
+      if (tooLarge) this.deps.log(`threads: thread ${rootId} runs read only in the agent folder, no worktree: the repository is too large to copy (${tooLarge})`)
+    }
+    // `.hoai/` stays out of the owner's git status either way.
+    if (prefix.ok) await this.ensureExcluded()
+    if (prefix.ok && !tooLarge) {
       if (!fs.exists(folder)) {
         const branch = `hoai/thread-${rootId}`
         let added = await git(['-C', agentFolder, 'worktree', 'add', rel, '-b', branch], agentFolder)
         // The branch is left from an earlier worktree of this thread.
         if (!added.ok) added = await git(['-C', agentFolder, 'worktree', 'add', rel, branch], agentFolder)
-        if (!added.ok) throw new ThreadLaneError('worktree_failed', NO_WORKTREE)
+        if (!added.ok) {
+          // A checkout cut short (a timeout) leaves a half folder git knows: it goes, so a retry starts clean.
+          if (fs.exists(folder)) {
+            const removed = await git(['-C', agentFolder, 'worktree', 'remove', '--force', folder], agentFolder)
+            if (!removed.ok) {
+              try {
+                fs.rmrf(folder)
+              } catch {}
+            }
+            await git(['-C', agentFolder, 'worktree', 'prune'], agentFolder)
+          }
+          this.deps.log(`threads: thread ${rootId} could not get its worktree (git worktree add failed)`)
+          throw new ThreadLaneError('worktree_failed', NO_WORKTREE)
+        }
       }
       const inside = prefix.stdout.trim()
       lane.state.folder = folder
@@ -1209,7 +1322,12 @@ export class ThreadLaneManager {
       lane.state.worktree = true
       lane.state.readOnly = false
     } else {
-      fs.mkdir(folder)
+      try {
+        fs.mkdir(folder)
+      } catch (err) {
+        this.deps.log(`threads: thread ${rootId} could not make its folder (${describeError(err)})`)
+        throw new ThreadLaneError('worktree_failed', NO_WORKTREE)
+      }
       lane.state.folder = folder
       lane.state.cwd = folder
       lane.state.worktree = false
@@ -1398,6 +1516,24 @@ export class ThreadLaneManager {
  */
 export function liveThreadWork(lanes: { activeWork(): number }, forks: { size(): number }): number {
   return lanes.activeWork() + forks.size()
+}
+
+/** An error's kind for the person (never its message: it can carry this machine's paths). */
+function errorName(err: unknown): string {
+  if (err && typeof err === 'object') {
+    const code = (err as { code?: unknown }).code
+    if (typeof code === 'string' && /^[A-Z0-9_]{2,40}$/.test(code)) return code
+    const name = (err as { name?: unknown }).name
+    if (typeof name === 'string' && name !== '') return name
+  }
+  return 'error'
+}
+
+/** An error for this machine's own log: its kind and its message, on one line. */
+function describeError(err: unknown): string {
+  if (err instanceof ThreadLaneError) return err.code
+  const message = err instanceof Error ? err.message : String(err)
+  return `${errorName(err)}: ${message.replace(/\s+/g, ' ').slice(0, 300)}`
 }
 
 function str(v: unknown): string {

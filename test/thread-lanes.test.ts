@@ -1273,14 +1273,14 @@ test('a reconnect after every post of a finished turn failed puts the thread bac
 // -- gate review finding 2: a CLI that cannot run a lane says so --
 
 test('on a claude too old for a confined lane the turn fails with the real cause, and nothing is made or started', async () => {
-  const sentence = 'This turn failed because Claude Code on this computer cannot run threads: it is version 2.1.250 and threads need 2.1.301 or later. Update Claude Code, then send your reply again.'
+  const sentence = 'Claude Code on this computer cannot run threads: it is version 2.1.250 and threads need 2.1.301 or later. Update Claude Code, then send your reply again.'
   const r = rig({ cliProblem: sentence })
   r.manager.turn(turn('101'))
   await r.manager.idle()
   assert.equal(r.spawned.length, 0)
   assert.equal(r.gitCalls.some((a) => a.includes('worktree')), false, 'no worktree for a lane that cannot start')
   assert.deepEqual(statePosts(r), ['101:working', '101:open'])
-  assert.deepEqual(replyTexts(r), [sentence])
+  assert.deepEqual(replyTexts(r), [`I could not open this thread: ${sentence}`])
   assert.equal(r.manager.runningCount(), 0, 'its slot is free')
 })
 
@@ -1824,4 +1824,121 @@ test('activeWork counts a read of pending turns while it is out, and the turns i
   answer({ turns: [turn('101')] })
   assert.equal(await read, 1)
   assert.ok(r.manager.activeWork() > 0, 'the turn it found')
+})
+
+// -- THREADCRASH (0.87.1): nothing on a thread's start takes the daemon down, and every failure answers in the thread --
+
+test('THREADCRASH: a main transcript too large to hold in memory still opens its thread: it is copied on disk, never read whole', async () => {
+  const r = rig()
+  // What 0.87.0 did to a long lived agent: it read the whole main transcript
+  // into one string on the event loop. Here that read cannot succeed at all.
+  const read = r.deps.fs.readFile
+  r.deps.fs.readFile = (p) => {
+    if (p === r.mainSrc) throw new RangeError('Out of memory')
+    return read(p)
+  }
+  const copies: Array<[string, string]> = []
+  r.deps.transcripts = {
+    copyClearingGoal: async (from, to) => {
+      copies.push([from, to])
+      r.deps.fs.copyFile(from, to)
+    },
+    clearGoal: async () => false,
+  }
+  r.manager.turn(turn('101'))
+  await flush()
+  assert.equal(r.spawned.length, 1, 'the lane starts')
+  assert.deepEqual(copies, [[r.mainSrc, sessionTranscriptPath(HOME, wt('101'), MAIN, '')]])
+  assert.deepEqual(replyTexts(r), [], 'no failure')
+})
+
+test('THREADCRASH: a lane that cannot be spawned answers in its own thread, removes its copy, and the next thread still opens', async () => {
+  const r = rig()
+  const spawn = r.deps.spawn
+  let fail = true
+  r.deps.spawn = (command, args, o) => {
+    if (fail) {
+      fail = false
+      throw Object.assign(new Error('spawn /bin/claude EAGAIN'), { code: 'EAGAIN' })
+    }
+    return spawn(command, args, o)
+  }
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  assert.match(String(replyTexts(r).at(-1)), /^I could not open this thread: Claude Code could not be started for it \(EAGAIN\)/)
+  assert.deepEqual(statePosts(r), ['101:working', '101:open'])
+  assert.equal(r.files.has(sessionTranscriptPath(HOME, wt('101'), MAIN, '')), false, 'the copy of the main transcript went')
+  assert.equal(r.manager.runningCount(), 0, 'its slot is free')
+  r.manager.turn(turn('102'))
+  await flush()
+  assert.equal(r.spawned.length, 1, 'another thread opens')
+})
+
+test('THREADCRASH: a worktree git could not make (a checkout cut off by its timeout) answers in its thread and leaves no half folder', async () => {
+  const holder: { dirs: Set<string> | null } = { dirs: null }
+  const r = rig({
+    git: (sub) => {
+      if (sub[0] === 'worktree' && sub[1] === 'add') {
+        holder.dirs?.add(join(AGENT, sub[2]!))
+        return { ok: false, stdout: '' }
+      }
+      return undefined
+    },
+  })
+  holder.dirs = r.dirs
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  assert.equal(r.spawned.length, 0)
+  assert.match(String(replyTexts(r).at(-1)), /^I could not open this thread: its working copy could not be made/)
+  assert.ok(r.gitCalls.some((a) => a[2] === 'worktree' && a[3] === 'remove' && a.includes('--force')), 'the half worktree is removed')
+  assert.ok(r.gitCalls.some((a) => a[2] === 'worktree' && a[3] === 'prune'))
+  assert.equal(r.dirs.has(wt('101')), false)
+})
+
+test('THREADCRASH: a lane that exits before it ever started says so in its thread, with its exit code', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await flush()
+  r.spawned[0]!.child.exit(1)
+  await r.manager.idle()
+  assert.match(String(replyTexts(r).at(-1)), /^I could not open this thread: Claude Code stopped before it could start the thread \(exit code 1\)/)
+  assert.deepEqual(statePosts(r), ['101:working', '101:open'])
+})
+
+test('THREADCRASH: a repository too large to copy gets a read only lane that reads the agent folder in place, never a worktree', async () => {
+  const r = rig()
+  const asked: string[] = []
+  r.deps.checkoutTooLarge = async (folder) => {
+    asked.push(folder)
+    return 'it holds more than 1.0 GB of files'
+  }
+  r.manager.turn(turn('101'))
+  await flush()
+  assert.deepEqual(asked, [AGENT])
+  assert.equal(r.gitCalls.some((a) => a[2] === 'worktree'), false, 'no checkout of the repository')
+  assert.ok(r.gitCalls.some((a) => a[2] === 'rev-parse' && a[3] === '--git-path'), '.hoai/ is still kept out of git status')
+  const s = r.spawned[0]!
+  assert.equal(s.cwd, wt('101'))
+  assert.deepEqual(s.args, threadLaneArgs({
+    mainSessionId: MAIN,
+    forkSessionId: null,
+    emptyMcpConfigPath: MCP,
+    confinement: { root: wt('101'), readOnly: true, shellSandbox: false, readDirs: [AGENT] },
+  }))
+  assert.match(s.child.stdin[0]!, /read only/)
+})
+
+test('THREADCRASH: a fault while handling a lane frame stays in the lane and never reaches the event loop', async () => {
+  const r = rig()
+  r.ctl.stampDown = true
+  r.manager.turn(turn('101'))
+  await flush()
+  // The next stamp read (asked again on the init frame) throws where it is called.
+  r.deps.processes.stamp = () => {
+    throw new TypeError('ps vanished')
+  }
+  assert.doesNotThrow(() => r.spawned[0]!.child.init(FORK_A))
+  r.spawned[0]!.child.result('answer')
+  await r.manager.idle()
+  assert.equal(replyTexts(r).at(-1), 'answer', 'the lane goes on')
 })
