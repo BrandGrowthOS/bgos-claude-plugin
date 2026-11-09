@@ -260,7 +260,7 @@ export class ModelEffortPickerHandler {
       return { ok: false, code: 'failed', message: `The model was switched to ${name}. ${effort}. ${outcome.message}` }
     }
     // The answer is the session's own report, never the selection echoed.
-    const current = { model: pickerModelOf(outcome.report.model), effort: outcome.report.effort }
+    const current = { model: isModelFamily(model) ? pickerModelOf(outcome.report.model) : outcome.report.model, effort: outcome.report.effort }
     if (current.model !== model || current.effort !== effort) {
       return refuse('not_confirmed', 'The command was typed but the session did not report the change in time.')
     }

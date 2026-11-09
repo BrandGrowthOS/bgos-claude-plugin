@@ -131,7 +131,7 @@ test('a CLI that cannot run threads gives a plain sentence with the real cause, 
   const old = { ok: false, missing: ['version 2.1.301 or later'], version: '2.1.250' }
   assert.equal(
     threadsCliProblem(old, 'turn'),
-    'This turn failed because Claude Code on this computer cannot run threads: it is version 2.1.250 and threads need 2.1.301 or later. Update Claude Code, then send your reply again.',
+    'Claude Code on this computer cannot run threads: it is version 2.1.250 and threads need 2.1.301 or later. Update Claude Code, then send your reply again.',
   )
   assert.equal(
     threadsCliProblem(old, 'aside'),

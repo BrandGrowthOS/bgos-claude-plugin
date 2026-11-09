@@ -212,7 +212,7 @@ export function threadsCliProblem(answer: ThreadsCliAnswer, what: 'turn' | 'asid
       ? `it is version ${answer.version} and ${turn ? 'threads need' : 'they need'} ${THREADS_MIN_CLI} or later`
       : `version ${answer.version} lacks ${answer.missing.join(', ')}`
   return turn
-    ? `This turn failed because Claude Code on this computer cannot run threads: ${why}. Update Claude Code, then send your reply again.`
+    ? `Claude Code on this computer cannot run threads: ${why}. Update Claude Code, then send your reply again.`
     : `Claude Code on this computer cannot answer side questions: ${why}. Update Claude Code, then ask again.`
 }
 

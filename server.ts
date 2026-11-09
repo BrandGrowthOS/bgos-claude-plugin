@@ -1202,6 +1202,8 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { ThreadLaneManager, liveThreadWork, threadsPendingPath } from './lib/thread-lanes.ts'
+import { clearActiveGoal, copyTranscriptClearingGoal } from './lib/thread-transcript.ts'
+import { checkoutLimits, checkoutTooLarge } from './lib/thread-repo-size.ts'
 import { randomInt } from 'node:crypto'
 import { GroupLaneManager, type GroupApproval, type GroupDelivery } from './lib/group-lanes.ts'
 import { groupRouteOf, groupTapKey, groupTapLine, readGroupDelivery } from './lib/group-delivery.ts'
@@ -15133,6 +15135,14 @@ const threadLanes = new ThreadLaneManager({
     } catch {
       return { ok: false, stdout: '' }
     }
+  },
+  // THREADCRASH (0.87.1): a repository too large to check out again runs its
+  // threads read only in place, and the main transcript is copied on disk in
+  // pieces, never read whole on the event loop (lib/thread-transcript.ts).
+  checkoutTooLarge: (folder) => checkoutTooLarge(folder, checkoutLimits(process.env)),
+  transcripts: {
+    copyClearingGoal: (from, to) => copyTranscriptClearingGoal(from, to),
+    clearGoal: (path) => clearActiveGoal(path),
   },
   fs: {
     exists: (path) => existsSync(path),

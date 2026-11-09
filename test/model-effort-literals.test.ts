@@ -16,6 +16,8 @@ import {
   EFFORT_LITERALS,
   INJECTABLE_LITERALS,
   MODEL_LITERALS,
+  EXACT_MODEL_LITERALS,
+  EXACT_MODEL_LABELS,
   buildPaneCaptureArgs,
   buildPaneStateArgs,
   buildSetEffortInjectionSteps,
@@ -80,7 +82,7 @@ test('set_effort types its fixed literal then ONE Enter, nothing else', () => {
 test('every injection attempt builds NO argv at all', () => {
   const attempts: unknown[] = [
     '', ' ', 'Opus', 'OPUS', ' opus', 'opus ', 'opus\n', 'opus\r', 'opus;', 'opus && rm -rf ~',
-    'opus\u001b[A', '/model opus', 'claude-opus-5-5', 'opus[1m]', 'default', 'gpt-5', 'opusplan',
+    'opus\u001b[A', '/model opus', 'claude-opus-99', 'opus[1m]', 'default', 'gpt-5', 'opusplan',
     'toString', 'constructor', '__proto__', 'hasOwnProperty', 'valueOf',
     null, undefined, 1, true, {}, [], ['opus'], { toString: () => 'opus' },
   ]
@@ -95,6 +97,19 @@ test('every injection attempt builds NO argv at all', () => {
   for (const value of effortAttempts) {
     assert.equal(buildSetEffortInjectionSteps(T, value), null, `effort ${JSON.stringify(String(value))}`)
     assert.equal(isEffortLevel(value), false)
+  }
+})
+
+test('exact models have frozen literals; near misses never build argv', () => {
+  assert.ok(Object.isFrozen(EXACT_MODEL_LITERALS))
+  assert.ok(Object.isFrozen(EXACT_MODEL_LABELS))
+  assert.equal(Object.keys(EXACT_MODEL_LITERALS).length, 22, 'the installed 2.1.319 registry has 22 id/family/display_name rows')
+  assert.deepEqual(Object.keys(EXACT_MODEL_LABELS), Object.keys(EXACT_MODEL_LITERALS))
+  for (const [id, literal] of Object.entries(EXACT_MODEL_LITERALS)) {
+    assert.equal(buildSetModelInjectionSteps(T, id)![0]!.argv.at(-1), literal)
+    for (const bad of [id + ' ', id + '\n', id.toUpperCase(), id + ';whoami', id + '[1m]']) {
+      assert.equal(buildSetModelInjectionSteps(T, bad), null, bad)
+    }
   }
 })
 
